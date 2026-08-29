@@ -1,0 +1,11 @@
+{
+  "id": "07-29-caff-ui-m4",
+  "name": "07-29-caff-ui-m4",
+  "title": "CAFF M4 chat experience redesign",
+  "status": "completed",
+  "dev_type": "frontend",
+  "createdAt": "2026-07-29",
+  "completedAt": "2026-08-04",
+  "commit": "7a73aadabe3a3320dda9ddfbd1da85cb9c605fac",
+  "notes": "Condensed from the legacy M4 design discussion, measurements, screenshots, and Clowder-experience specification."
+}

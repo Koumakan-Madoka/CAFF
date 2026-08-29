@@ -1,0 +1,45 @@
+{
+  "id": "agent-stall-watchdogs",
+  "name": "agent-stall-watchdogs",
+  "title": "Fix agent stalls caused by live handles and false heartbeats",
+  "description": "",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-08-16",
+  "completedAt": "2026-08-18",
+  "branch": "fix/agent-stall-watchdogs",
+  "base_branch": "feat/auto-conv-title",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": "33d389428a1f2f8b155e8f1635967334d2dfe2b8",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Delivered on develop in the consolidated DAG/model-limit/watchdog merge 33d3894; the original planning status was stale.",
+  "meta": {}
+}

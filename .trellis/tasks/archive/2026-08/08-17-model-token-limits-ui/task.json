@@ -1,0 +1,15 @@
+{
+  "id": "model-token-limits-ui",
+  "name": "model-token-limits-ui",
+  "title": "Model context and output limits UI",
+  "description": "Expose contextWindow and maxTokens in model provider management with validated round-trip persistence.",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "priority": "P1",
+  "createdAt": "2026-08-17",
+  "completedAt": "2026-08-18",
+  "branch": "feat/model-token-limits-ui",
+  "base_branch": "feat/dag-execution",
+  "commit": "33d389428a1f2f8b155e8f1635967334d2dfe2b8",
+  "notes": "Delivered on develop in the consolidated DAG/model-limit/watchdog merge 33d3894; the original review status was stale."
+}

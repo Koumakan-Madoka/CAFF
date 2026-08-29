@@ -1,0 +1,11 @@
+{
+  "id": "07-28-f002-pi-sdk-host-migration",
+  "name": "07-28-f002-pi-sdk-host-migration",
+  "title": "F002 pinned Pi SDK host migration",
+  "status": "completed",
+  "dev_type": "runtime",
+  "createdAt": "2026-07-28",
+  "completedAt": "2026-07-28",
+  "commit": "6e6af446d36572e463fc2bb1a75d18ae5284933b",
+  "notes": "Condensed from the legacy SDK-host review request and quality-gate evidence. The current feature document and runtime spec remain authoritative."
+}

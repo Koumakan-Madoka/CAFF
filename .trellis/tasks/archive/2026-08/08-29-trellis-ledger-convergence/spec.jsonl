@@ -1,0 +1,3 @@
+{"at":"2026-08-29T04:00:00.000Z","file":".trellis/workflow.md","summary":"Defined current truth, task archive, and ephemeral evidence storage classes; prohibited root-level process-document directories and stale top-level task states."}
+{"at":"2026-08-29T04:00:00.000Z","file":".trellis/spec/frontend/model-family-management.md","summary":"Condensed the live provider/role management, secret handling, responsive modal, and Pi capability-source contracts out of historical design-gate documents."}
+{"at":"2026-08-29T04:00:00.000Z","file":"AGENTS.md","summary":"Added a repository-wide guardrail directing durable process records and raw evidence to their authoritative storage classes."}

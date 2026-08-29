@@ -63,6 +63,15 @@
 
 使用 `record-session` skill 归档任务后，任务目录会被移动到 `tasks/archive/` 下按日期组织。
 
+### 持久化与真相源
+
+- `.trellis/spec/` 和 `docs/` 只保留仍然有效的跨任务契约、架构说明和产品文档；同一契约必须有一个明确的当前真相源。
+- `.trellis/tasks/<task>/` 保存进行中的 PRD、研究和结构化检查记录；完成后核正 `task.json` 的状态、完成日期和提交，再移动到 `tasks/archive/<year-month>/`。
+- 任务归档保留最终目标、关键决策、交付提交、验收结论和当前真相源链接，不保留逐轮 review 请求/回复、重复 verdict、完整命令日志或重复规格副本。
+- PNG、WebM、完整日志和测量 JSON 等原始证据默认写入 Git 忽略的 `.tmp/`，或由 CI artifact 保存。Git 中只记录复现命令、结果摘要、提交 SHA 和必要的非敏感结论。
+- 禁止在仓库根目录创建 `review-notes/`、`feature-discussions/`、`project-evidence/`、`project-reflections/`、`feature-specs/` 或其他任务过程目录。
+- `.current-task` 只能指向一个实际存在的顶层任务；任务归档时必须清除该指针。顶层任务不得长期保留 `planning`、`active` 或 `review` 状态来代表已经进入 `develop` 的交付。
+
 ## Spec 目录说明
 
 ### 规格文档组织

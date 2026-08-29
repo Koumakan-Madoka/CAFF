@@ -2,7 +2,7 @@
 // Measures the chat experience layout so V2 numbers are evidence-based, not guessed.
 // Usage:
 //   node scripts/ui/measure-density.mjs --out <path-to-json>
-// Default out: feature-discussions/2026-07-29-caff-ui-m4-design/v2-density/before-measurements.json
+// Default out: .tmp/ui-evidence/caff-ui-m4/v2-density/before-measurements.json
 
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -29,7 +29,7 @@ const VERIFICATION_ROLE_ID = 'ui-verification-role';
 const outFlag = process.argv.indexOf('--out');
 const OUT_PATH = outFlag > -1
   ? path.resolve(process.argv[outFlag + 1])
-  : path.join(ROOT_DIR, 'feature-discussions', '2026-07-29-caff-ui-m4-design', 'v2-density', 'before-measurements.json');
+  : path.join(ROOT_DIR, '.tmp', 'ui-evidence', 'caff-ui-m4', 'v2-density', 'before-measurements.json');
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

@@ -1,0 +1,11 @@
+{
+  "id": "07-28-f001-long-conversation-pagination",
+  "name": "07-28-f001-long-conversation-pagination",
+  "title": "F001 long conversation cursor pagination",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "createdAt": "2026-07-28",
+  "completedAt": "2026-07-28",
+  "commit": "241a42e469bca4565a1f6e18f84e57a69af26b62",
+  "notes": "Condensed from legacy feature specifications, evidence, review packets, browser media, and reflection."
+}

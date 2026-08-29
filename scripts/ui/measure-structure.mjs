@@ -1,6 +1,6 @@
 // CAFF-UI-M4 V3 structural measurement (real browser, isolated app).
-// Measures computed geometry against the V3 design-gate contract
-// (feature-discussions/2026-07-29-caff-ui-m4-design/v3-structure/README.md):
+// Measures computed geometry against the current transcript-layout contract in
+// .trellis/spec/frontend/ui-structure.md:
 //   1. assistant medium/long rows span >= ~95% of the column (transcript form)
 //   2. assistant rows have no card shell (transparent background, no radius,
 //      no card padding beyond the agent-color attribution bar)
@@ -10,7 +10,7 @@
 //   4. visible message cards per screen >= the V2 baseline (9 @1440x820)
 // Usage:
 //   node scripts/ui/measure-structure.mjs --tag before --out <json> --shots <dir>
-// Defaults: --tag after, out/shots under v3-structure/.
+// Defaults: --tag after, out/shots under .tmp/ui-evidence/caff-ui-m4/v3-structure/.
 
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -34,7 +34,7 @@ const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const RUN_ID = randomUUID().slice(0, 8);
 const TITLE_PREFIX = `STRUCT-${RUN_ID}`;
 const VERIFICATION_ROLE_ID = 'ui-verification-role';
-const EVIDENCE_DIR = path.join(ROOT_DIR, 'feature-discussions', '2026-07-29-caff-ui-m4-design', 'v3-structure');
+const EVIDENCE_DIR = path.join(ROOT_DIR, '.tmp', 'ui-evidence', 'caff-ui-m4', 'v3-structure');
 
 function flagValue(name, fallback) {
   const index = process.argv.indexOf(`--${name}`);

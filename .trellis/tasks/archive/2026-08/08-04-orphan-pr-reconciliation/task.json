@@ -1,0 +1,11 @@
+{
+  "id": "08-04-orphan-pr-reconciliation",
+  "name": "08-04-orphan-pr-reconciliation",
+  "title": "Orphan PR reconciliation and readiness",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "createdAt": "2026-08-04",
+  "completedAt": "2026-08-04",
+  "commit": "0231d0ca188959567ea7f5f7ec07758fb72866fb",
+  "notes": "Condensed from the legacy implementation plan and review request."
+}

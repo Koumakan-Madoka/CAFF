@@ -1,0 +1,14 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/workflow.md", "reason": "Verify archive and truth-source policy"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Regression evidence conventions"}
+{"at":"2026-08-29T04:00:00.000Z","command":"npm run check && npm run typecheck && npm run build","result":"pass"}
+{"at":"2026-08-29T04:00:00.000Z","command":"node tests/ui/model-family-roles-ui-gate.test.js","result":"pass real Edge UI Design Gate contract"}
+{"at":"2026-08-29T04:00:00.000Z","command":"NODE_PATH=/e/pythonproject/caff/node_modules node --test tests/ui/chat-experience-m4.test.js","result":"15/15 pass"}
+{"at":"2026-08-29T04:00:00.000Z","command":"repository JSON/JSONL and changed-Markdown relative-link validation","result":"76 task.json valid; 206 JSONL files/1422 records valid; changed Markdown relative links valid. The pre-existing broken links in .agents/skills/check-cross-layer/SKILL.md are unchanged and out of scope."}
+{"at":"2026-08-29T04:00:00.000Z","command":"git diff --check and legacy-root reference sweep","result":"pass; remaining legacy directory names are governance prohibitions or explicit Git-history provenance only"}
+{"at":"2026-08-29T04:10:00.000Z","command":"npm run test:smoke","result":"pass 75/75 (server 71/71, ModeStore 4/4)"}
+{"at":"2026-08-29T04:10:00.000Z","command":"npm run test:fast","result":"business assertions passed through turn-orchestrator (102/102); command stopped with two pre-existing Windows fs.rmSync EPERM after-hook cleanup failures before later suites. Target model-family Edge gate and M4 15/15 were run separately and passed."}
+{"at":"2026-08-29T04:25:00.000Z","command":"independent review of 45ad285761ff0d0c0c7695d17c3f42b370894b21 by Kimi","result":"REQUEST_CHANGES with three low-severity model-family archive findings: include the 2026-08-04 catalog review, correct review packet count from 15 to 14, and broaden the evidence source pattern to include browser media."}
+{"at":"2026-08-29T04:25:00.000Z","command":"review finding resolution validation","result":"pass; 14 matching review packets confirmed in develop baseline, 9fc0a62 exists on develop and documents the catalog/dark-mode follow-up, source pattern now covers markdown and browser-media descendants, git diff --check passes."}
+{"at":"2026-08-29T04:35:00.000Z","command":"independent follow-up review of d9d9cac9d550907c4ab6b6e7028a16f46246fabd by Kimi","result":"APPROVE with no findings; F1-F3 resolved. Reviewer independently validated 14 review packets, the full 9fc0a62 develop ancestry and scope, browser-media source coverage, 207 JSONL files/1434 records, 76 task.json files, and git diff --check."}

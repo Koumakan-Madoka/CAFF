@@ -45,8 +45,7 @@ feature_fit_review:
     - "R1 continuity review：43.5px verifier 容差收紧为精确 44px"
   evidence_refs:
     - "message:0001784943824058-001634-16bccd22"
-    - "feature-specs/2026-07-25-caff-ui-theme-icons.md"
-    - "review-notes/2026-07-25-caff-ui-theme-icons-review-request.md"
+    - ".trellis/tasks/archive/2026-07/07-25-caff-ui-foundation/prd.md"
     - "docs/bug-report/caff-theme-participant-card/bug-report.md"
     - "docs/bug-report/caff-theme-toggle-verifier-threshold/bug-report.md"
     - "message:0001784954231371-001784-392e4b17"

@@ -1,7 +1,7 @@
 // CAFF-UI-M4 chat experience regression tests (jsdom + source contracts).
 // V3 structural contract (2026-07-29, operator rejected V2 because typical
-// message geometry barely moved; design gate in
-// feature-discussions/2026-07-29-caff-ui-m4-design/v3-structure/README.md):
+// message geometry barely moved; current truth source:
+// .trellis/spec/frontend/ui-structure.md):
 // - assistant/system messages render as full-width transcript rows: no card
 //   shell (no background block, no big radius, no card padding), only a thin
 //   --agent-color attribution bar and a compact meta row above the content

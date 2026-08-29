@@ -1,0 +1,45 @@
+{
+  "id": "08-29-trellis-ledger-convergence",
+  "name": "08-29-trellis-ledger-convergence",
+  "title": "Trellis ledger convergence",
+  "description": "",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "scope": "documentation, Trellis ledger, UI evidence paths",
+  "package": null,
+  "priority": "P2",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-29",
+  "completedAt": "2026-08-29",
+  "branch": "room/523e9df5-caff",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/523e9df5-caff",
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": "d9d9cac9d550907c4ab6b6e7028a16f46246fabd",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Implementation and author validation complete. Kimi approved d9d9cac after the initial review findings were resolved; the archive-only final SHA remains subject to exact-SHA review.",
+  "meta": {}
+}

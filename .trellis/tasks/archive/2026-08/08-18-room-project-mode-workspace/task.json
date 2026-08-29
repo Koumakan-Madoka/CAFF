@@ -1,0 +1,57 @@
+{
+  "id": "room-project-mode-workspace",
+  "name": "room-project-mode-workspace",
+  "title": "Room project mode workspace",
+  "description": "Room 创建必选 Project 与固定 Mode；开发前绑定 branch/worktree；运行上下文注入编排；验收证据；破坏性下线旧游戏与 Skill Test。",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "scope": "fullstack",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-18",
+  "completedAt": "2026-08-19",
+  "branch": "room/b6fae6e6-room-project-mode-workspace",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/b6fae6e6-room-project-mode-workspace",
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 3,
+      "action": "finish-work"
+    },
+    {
+      "phase": 4,
+      "action": "human-acceptance"
+    },
+    {
+      "phase": 5,
+      "action": "archive"
+    }
+  ],
+  "commit": "74a62d597078357ba540d6b7721bde36d2adfe0d",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/api/conversations-controller.ts",
+    "server/domain/conversation/room-workspace.ts",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "server/domain/conversation/turn/agent-prompt.ts",
+    "lib/chat-app-store.ts",
+    "lib/mode-store.ts",
+    "storage/sqlite/migrations.ts",
+    "public/chat/new-conversation-dialog.js",
+    "tests/http/room-conversation-create.test.js",
+    "tests/runtime/room-workspace.test.js",
+    "tests/smoke/mode-store.test.js",
+    ".trellis/spec/backend/room-context-workspace.md"
+  ],
+  "notes": "Candidate 188d7f9 passed independent cross-family review and was integrated to develop by merge 74a62d5. Subsequent room-workspace capability work remains in develop; the original review status was stale.",
+  "meta": {
+    "independentReview": "approved",
+    "reviewedCandidate": "188d7f9"
+  }
+}

@@ -153,8 +153,7 @@ Cross-family review is required after quality-gate and fresh-context scan. Domai
 
 ## Links
 
-- [Kickoff discussion and decision record](../../feature-discussions/2026-08-06-F004-models-dev-catalog/README.md)
-- [Implementation plan](../../feature-specs/2026-08-06-F004-models-dev-catalog-implementation-plan.md)
+- [Trellis Task Archive](../../.trellis/tasks/archive/2026-08/08-06-f004-models-dev-catalog/prd.md)
 - [F002 Pi SDK Host Migration](F002-pi-sdk-host-migration.md)
 - [F003 Cross-Conversation Delivery and Pi MCP Bridge](F003-cross-conversation-delivery-pi-mcp-bridge.md)
 

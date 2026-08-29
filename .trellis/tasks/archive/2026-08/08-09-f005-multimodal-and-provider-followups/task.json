@@ -1,0 +1,11 @@
+{
+  "id": "08-09-f005-multimodal-and-provider-followups",
+  "name": "08-09-f005-multimodal-and-provider-followups",
+  "title": "F005 multimodal input and provider follow-ups",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "createdAt": "2026-08-09",
+  "completedAt": "2026-08-13",
+  "commit": "eb96a4fc46ad9426d1b1b256dceb6f1f5ede9060",
+  "notes": "Condensed from legacy architecture/UI discussions, Phase C plan, provider review pairs, F005 hotfix reviews, and text-only degradation review."
+}

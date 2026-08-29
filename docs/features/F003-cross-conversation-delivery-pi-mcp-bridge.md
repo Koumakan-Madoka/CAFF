@@ -253,6 +253,5 @@ CAFF 的 Agent 目前只能在当前聊天室内发言、私信和使用 invocat
 
 ## Links
 
-- [Kickoff Discussion and Decision Record](../../feature-discussions/2026-08-05-F003-cross-conversation-pi-mcp/README.md)
-- [Technical Design Gate](../../feature-specs/2026-08-05-F003-cross-conversation-pi-mcp-design.md)
+- [Trellis Task Archive](../../.trellis/tasks/archive/2026-08/08-05-f003-cross-conversation/prd.md)
 - [F002 Pi SDK Host Migration](F002-pi-sdk-host-migration.md)

@@ -212,7 +212,7 @@ SDK。CAFF 主进程不直接加载 SDK，通过 `fork()` 创建的 Node IPC cha
 
 ## Links
 
-- [Quality Gate](../../project-evidence/F002-quality-gate.md)
+- [Trellis Task Archive](../../.trellis/tasks/archive/2026-07/07-28-f002-pi-sdk-host-migration/prd.md)
 - [Smoke Fixture Regression](../bug-report/pi-sdk-host-smoke-fixture/bug-report.md)
 
 ## Tips Contribution
