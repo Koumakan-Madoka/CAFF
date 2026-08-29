@@ -1,0 +1,54 @@
+{
+  "id": "retire-digest-experience",
+  "name": "retire-digest-experience",
+  "title": "Retire Digest Experience Extraction",
+  "description": "Remove digest experience extraction, write-experience, pending-experience triggering, and automatic Skill draft creation while preserving historical read compatibility and manual extraction.",
+  "status": "review",
+  "dev_type": "fullstack",
+  "scope": "digest, agent bridge, skill draft auto-hook, focused backend/runtime/UI tests and specs",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-29",
+  "completedAt": null,
+  "branch": "room/523e9df5-caff",
+  "base_branch": "develop",
+  "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/conversation-digest.ts",
+    "server/domain/conversation/system-model-submission.ts",
+    "server/domain/conversation/skill-draft.ts",
+    "server/app/create-server.ts",
+    "lib/agent-chat-tools.ts",
+    "server/domain/runtime/agent-tool-bridge.ts",
+    "tests/smoke/server-smoke.test.js",
+    "tests/runtime/turn-orchestrator.test.js"
+  ],
+  "notes": "Complete retirement implemented with historical metadata retained as inert read compatibility. Initial review of 7a3b2ff requested one low-severity cleanup: pendingExperienceDraftCount and experience-specific digest status wording remained in the manual SSE/browser path. The revision adds red-first SSE/UI regressions, removes that state and wording, and passes check/typecheck/build, smoke 68/68 plus mode-store 4/4, and UI 16/16. Exact-SHA re-review remains pending. Earlier focused CLI/bridge 52/52 and Agent hook/PI 17/17 remain valid; turn-orchestrator business assertions were 102/102 with only two known Windows fs.rmSync EPERM after-hooks. DAG worker lease repair remains a separate follow-up.",
+  "meta": {}
+}

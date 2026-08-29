@@ -53,7 +53,7 @@ const CONVERSATIONS_PER_DAY = 9; // 256 / 9 -> days 0..28
 
 const TASK_EVENT_COUNT = 484602;
 const AGENT_ROSTER = ['role-family-gpt', 'role-family-glm', 'role-family-kimi'];
-const TOOL_NAMES = ['send-public', 'send-private', 'read-context', 'search-messages', 'write-experience'];
+const TOOL_NAMES = ['send-public', 'send-private', 'read-context', 'search-messages', 'update-goal-checklist'];
 const TOOL_WEIGHTS = [0.34, 0.18, 0.2, 0.18, 0.1];
 
 function createRandom(seed) {

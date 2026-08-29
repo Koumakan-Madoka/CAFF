@@ -9,22 +9,6 @@ export const RECOVERY_NOTE_NON_EXECUTION_STATEMENT = '这是只读现场整理�
 
 const digestItem = Type.String({ minLength: 1, maxLength: 240 });
 const digestItems = Type.Array(digestItem, { maxItems: 8 });
-const digestExperienceItems = Type.Array(Type.Object({
-  sourceDraftId: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
-  title: Type.String({ minLength: 1, maxLength: 240 }),
-  category: Type.String({ minLength: 1, maxLength: 80 }),
-  scenario: Type.String({ maxLength: 240 }),
-  steps: Type.Array(digestItem, { maxItems: 5 }),
-  pitfalls: Type.Array(digestItem, { maxItems: 5 }),
-  validation: Type.Array(digestItem, { maxItems: 5 }),
-  artifacts: Type.Array(digestItem, { maxItems: 5 }),
-  confidence: Type.Union([
-    Type.Literal('low'),
-    Type.Literal('medium'),
-    Type.Literal('high'),
-  ]),
-}, { additionalProperties: false }), { maxItems: 5 });
-
 export const CONVERSATION_DIGEST_SUBMISSION_TOOL = {
   name: CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME,
   description: 'Submit the complete bounded conversation digest. This schema-only return channel performs no action.',
@@ -35,7 +19,6 @@ export const CONVERSATION_DIGEST_SUBMISSION_TOOL = {
     openQuestions: digestItems,
     nextActions: digestItems,
     artifacts: digestItems,
-    experience: digestExperienceItems,
   }, { additionalProperties: false }),
   constrainedSampling: { type: 'json_schema' as const, strict: 'prefer' as const },
 };

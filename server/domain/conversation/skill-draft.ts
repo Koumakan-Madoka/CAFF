@@ -5,12 +5,9 @@ import { createHttpError } from '../../http/http-errors';
 import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, invoke, resolveIntegerSetting, resolveSetting, resolveThinkingSetting } from '../../../lib/minimal-pi';
 import { buildSkillMarkdown, sanitizeSkillId } from '../../../lib/skill-registry';
 import { getConversationDigests } from './conversation-digest';
-import { getConversationExperienceDrafts } from './experience-draft';
 
 const CONVERSATION_SKILL_DRAFTS_METADATA_KEY = 'skillDrafts';
-const CONVERSATION_SKILL_DRAFT_AUTO_REVIEWS_METADATA_KEY = 'skillDraftAutoReviews';
 const MAX_SKILL_DRAFTS = 5;
-const MAX_SKILL_DRAFT_AUTO_REVIEWS = 20;
 const MAX_SKILL_DRAFT_BODY_LENGTH = 8000;
 const MAX_SKILL_DRAFT_FIELD_LENGTH = 240;
 const MAX_SKILL_DRAFT_ITEMS = 8;
@@ -29,19 +26,6 @@ function isPlainObject(value: any) {
 
 function normalizeText(value: any) {
   return String(value || '').trim();
-}
-
-function normalizeBooleanSetting(value: any, defaultValue = false) {
-  if (value === undefined || value === null || value === '') {
-    return defaultValue;
-  }
-
-  if (typeof value === 'boolean') {
-    return value;
-  }
-
-  const normalized = String(value).trim().toLowerCase();
-  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on' || normalized === 'enable' || normalized === 'enabled';
 }
 
 function parseJsonObjectFromText(value: any) {
@@ -381,76 +365,6 @@ export function getConversationSkillDrafts(conversation: any) {
     .slice(-MAX_SKILL_DRAFTS);
 }
 
-function normalizeSkillDraftAutoReview(value: any) {
-  if (!isPlainObject(value)) {
-    return null;
-  }
-
-  const digestId = normalizeText(value.digestId || value.sourceDigestId);
-  if (!digestId) {
-    return null;
-  }
-
-  const status = normalizeText(value.status).toLowerCase() === 'rejected' ? 'rejected' : 'skipped';
-  const timestamp = normalizeText(value.reviewedAt || value.updatedAt || value.createdAt) || nowIso();
-  const review: Record<string, any> = {
-    digestId,
-    status,
-    reasonCode: clipText(value.reasonCode || value.reason || status, 80) || status,
-    reason: clipText(value.reason, 240) || (status === 'rejected' ? 'Model judged this digest is not reusable enough for a skill draft.' : 'Auto skill draft creation skipped.'),
-    reviewedAt: timestamp,
-    updatedAt: normalizeText(value.updatedAt) || timestamp,
-  };
-
-  const trigger = clipText(value.trigger || value.triggerReason, 80);
-  if (trigger) {
-    review.trigger = trigger;
-  }
-
-  const createdBy = clipText(value.createdBy, 160);
-  if (createdBy) {
-    review.createdBy = createdBy;
-  }
-
-  return review;
-}
-
-function getConversationSkillDraftAutoReviews(conversation: any) {
-  const metadata = currentMetadata(conversation);
-  const rawReviews = Array.isArray(metadata[CONVERSATION_SKILL_DRAFT_AUTO_REVIEWS_METADATA_KEY])
-    ? metadata[CONVERSATION_SKILL_DRAFT_AUTO_REVIEWS_METADATA_KEY]
-    : [];
-
-  return rawReviews
-    .map(normalizeSkillDraftAutoReview)
-    .filter(Boolean)
-    .slice(-MAX_SKILL_DRAFT_AUTO_REVIEWS);
-}
-
-function findSkillDraftAutoReviewForDigest(conversation: any, digestId: any) {
-  const normalizedDigestId = normalizeText(digestId);
-  if (!normalizedDigestId) {
-    return null;
-  }
-
-  return getConversationSkillDraftAutoReviews(conversation).find((review: any) => review && review.digestId === normalizedDigestId) || null;
-}
-
-function buildMetadataWithSkillDraftAutoReview(conversation: any, review: any) {
-  const metadata = currentMetadata(conversation);
-  const normalizedReview = normalizeSkillDraftAutoReview(review);
-
-  if (!normalizedReview) {
-    return metadata;
-  }
-
-  const reviews = getConversationSkillDraftAutoReviews(conversation).filter((candidate: any) => candidate.digestId !== normalizedReview.digestId);
-  return {
-    ...metadata,
-    [CONVERSATION_SKILL_DRAFT_AUTO_REVIEWS_METADATA_KEY]: [...reviews, normalizedReview].slice(-MAX_SKILL_DRAFT_AUTO_REVIEWS),
-  };
-}
-
 function buildMetadataWithSkillDrafts(conversation: any, drafts: any[]) {
   const metadata = currentMetadata(conversation);
   const normalizedDrafts = drafts
@@ -490,110 +404,7 @@ function hasReusableDigestSignal(digest: any) {
   const decisions = normalizeSectionItems(digest && digest.decisions);
   const nextActions = normalizeSectionItems(digest && digest.nextActions);
   const artifacts = normalizeSectionItems(digest && digest.artifacts);
-  const experience = normalizeExperienceItems(digest && digest.experience);
-
-  return experience.length > 0 || facts.length > 0 || decisions.length > 0 || nextActions.length > 0 || artifacts.length > 0;
-}
-
-function normalizeConfidenceRank(value: any) {
-  const normalized = normalizeText(value).toLowerCase();
-
-  if (normalized === 'high') {
-    return 3;
-  }
-
-  if (normalized === 'medium') {
-    return 2;
-  }
-
-  if (normalized === 'low') {
-    return 1;
-  }
-
-  return 2;
-}
-
-function hasStrongExperienceSignal(digest: any) {
-  return normalizeExperienceItems(digest && digest.experience).some((item: any) => {
-    if (normalizeConfidenceRank(item.confidence) < 2) {
-      return false;
-    }
-
-    return Boolean(item.scenario && (item.steps.length > 0 || item.validation.length > 0));
-  });
-}
-
-function absorbedExperienceDraftIdsForDigest(conversation: any, digestId: any) {
-  const normalizedDigestId = normalizeText(digestId);
-  return new Set(
-    getConversationExperienceDrafts(conversation)
-      .filter((draft: any) => draft && draft.status === 'absorbed' && draft.absorbedDigestId === normalizedDigestId)
-      .map((draft: any) => draft.id)
-      .filter(Boolean)
-  );
-}
-
-function hasSourceBackedExperienceSignal(conversation: any, digest: any) {
-  const sourceDraftIds = absorbedExperienceDraftIdsForDigest(conversation, digest && digest.id);
-
-  if (sourceDraftIds.size === 0) {
-    return false;
-  }
-
-  return normalizeExperienceItems(digest && digest.experience).some((item: any) => {
-    if (!sourceDraftIds.has(item.sourceDraftId) || normalizeConfidenceRank(item.confidence) < 2) {
-      return false;
-    }
-
-    return Boolean(item.scenario && (item.steps.length > 0 || item.validation.length > 0));
-  });
-}
-
-function hasNormativeDecisionSignal(digest: any) {
-  return normalizeSectionItems(digest && digest.decisions).some((decision) => (
-    /\b(must|never|always|required|require|only|confirm|confirmation|forbid|forbidden|guardrail|workflow|rule|sequence)\b/iu.test(decision)
-    || /必须|禁止|不得|不能|总是|始终|只(?:能|应|在)|需要|应该|确认|人工|规则|规范|流程|约束|边界|顺序/u.test(decision)
-  ));
-}
-
-function hasStrongAutoRuleFallbackSignal(digest: any) {
-  const nextActions = normalizeSectionItems(digest && digest.nextActions);
-  const artifacts = normalizeSectionItems(digest && digest.artifacts);
-  return hasStrongExperienceSignal(digest) || hasNormativeDecisionSignal(digest) || (nextActions.length >= 2 && artifacts.length > 0);
-}
-
-function parseModelShouldCreateSkill(value: any) {
-  if (!isPlainObject(value) || value.shouldCreateSkill === undefined || value.shouldCreateSkill === null) {
-    return null;
-  }
-
-  if (typeof value.shouldCreateSkill === 'boolean') {
-    return value.shouldCreateSkill;
-  }
-
-  const normalized = normalizeText(value.shouldCreateSkill).toLowerCase();
-  if (['true', 'yes', 'create', '1'].includes(normalized)) {
-    return true;
-  }
-
-  if (['false', 'no', 'skip', 'reject', '0'].includes(normalized)) {
-    return false;
-  }
-
-  return null;
-}
-
-function createAutoSkipError(reasonCode: string, reason: string, persistReview = false) {
-  const error: any = new Error(reason || reasonCode);
-  error.skillDraftAutoSkip = true;
-  error.reasonCode = reasonCode;
-  error.reviewReason = clipText(reason || reasonCode, 240);
-  error.persistReview = persistReview;
-  return error;
-}
-
-function isSkillDraftAutoSkipError(error: any) {
-  return Boolean(error && error.skillDraftAutoSkip);
+  return facts.length > 0 || decisions.length > 0 || nextActions.length > 0 || artifacts.length > 0;
 }
 
 function deriveSkillName(digest: any, input: any = {}) {
@@ -642,68 +453,12 @@ function formatItems(label: string, items: string[]) {
   return [`## ${label}`, ...items.map((item) => `- ${item}`), ''].join('\n');
 }
 
-function normalizeExperienceItems(value: any) {
-  const rawItems = Array.isArray(value) ? value : [];
-  return rawItems
-    .map((item: any) => {
-      const source = isPlainObject(item) ? item : { title: item };
-      const title = clipText(source.title, 120);
-      const scenario = clipText(source.scenario || source.context || source.whenToUse, 240);
-
-      if (!title && !scenario) {
-        return null;
-      }
-
-      return {
-        title: title || scenario,
-        category: clipText(source.category || 'other', 80),
-        scenario,
-        steps: normalizeSectionItems(source.steps).slice(0, 5),
-        pitfalls: normalizeSectionItems(source.pitfalls || source.limitations).slice(0, 5),
-        validation: normalizeSectionItems(source.validation).slice(0, 5),
-        artifacts: normalizeSectionItems(source.artifacts).slice(0, 5),
-        confidence: clipText(source.confidence || 'medium', 40),
-        sourceDraftId: clipText(source.sourceDraftId || source.draftId || source.id, 120),
-      };
-    })
-    .filter(Boolean)
-    .slice(0, 5);
-}
-
-function formatExperienceForSkillBody(experience: any[]) {
-  if (experience.length === 0) {
-    return '';
-  }
-
-  const lines = ['## Reusable Experience'];
-  for (const item of experience) {
-    lines.push(`- ${item.title}${item.scenario ? ` — ${item.scenario}` : ''}`);
-    if (item.confidence) {
-      lines.push(`  - Confidence: ${item.confidence}`);
-    }
-
-    for (const [label, values] of [
-      ['Steps', item.steps],
-      ['Pitfalls', item.pitfalls],
-      ['Validation', item.validation],
-      ['Artifacts', item.artifacts],
-    ] as any[]) {
-      if (Array.isArray(values) && values.length > 0) {
-        lines.push(`  - ${label}: ${values.join(' / ')}`);
-      }
-    }
-  }
-  lines.push('');
-  return lines.join('\n');
-}
-
 function buildSkillBodyFromDigest(digest: any) {
   const facts = normalizeSectionItems(digest && digest.facts);
   const decisions = normalizeSectionItems(digest && digest.decisions);
   const nextActions = normalizeSectionItems(digest && digest.nextActions);
   const artifacts = normalizeSectionItems(digest && digest.artifacts);
   const openQuestions = normalizeSectionItems(digest && digest.openQuestions);
-  const experience = normalizeExperienceItems(digest && digest.experience);
   const lines = [
     '# Purpose',
     clipText(digest && digest.summary, 800) || 'Reuse a proven conversation workflow.',
@@ -712,7 +467,6 @@ function buildSkillBodyFromDigest(digest: any) {
     '- Use this skill when a task resembles the source digest and needs the same workflow, guardrails, or validation pattern.',
     '- Treat recent user instructions, project specs, and raw conversation context as higher priority than this extracted experience.',
     '',
-    formatExperienceForSkillBody(experience),
     formatItems('Confirmed Facts', facts),
     formatItems('Reusable Decisions', decisions),
     formatItems('Workflow Steps', nextActions),
@@ -818,7 +572,6 @@ function digestModelInput(digest: any) {
     openQuestions: normalizeSectionItems(digest && digest.openQuestions),
     nextActions: normalizeSectionItems(digest && digest.nextActions),
     artifacts: normalizeSectionItems(digest && digest.artifacts),
-    experience: normalizeExperienceItems(digest && digest.experience),
   };
 }
 
@@ -841,14 +594,12 @@ function tokenSetForSkillMatch(value: any) {
 }
 
 function scoreSkillDigestMatch(digest: any, skill: any) {
-  const experience = normalizeExperienceItems(digest && digest.experience);
   const digestText = [
     digest && digest.summary,
     normalizeSectionItems(digest && digest.facts).join(' '),
     normalizeSectionItems(digest && digest.decisions).join(' '),
     normalizeSectionItems(digest && digest.nextActions).join(' '),
     normalizeSectionItems(digest && digest.artifacts).join(' '),
-    experience.filter(Boolean).map((item: any) => `${item.title} ${item.scenario} ${item.artifacts.join(' ')}`).join(' '),
   ].join(' ');
   const skillText = `${skill.id} ${skill.name} ${skill.description} ${skill.bodyExcerpt || ''}`;
   const sourceTokens = tokenSetForSkillMatch(digestText);
@@ -944,7 +695,6 @@ function appendUniqueSection(existingBody: any, heading: string, content: string
 
 function buildMergedSkillBodyFromDigest(existingSkill: any, digest: any) {
   const addition = [
-    formatExperienceForSkillBody(normalizeExperienceItems(digest && digest.experience)).replace(/^## Reusable Experience\n/u, ''),
     formatItems('Confirmed Facts', normalizeSectionItems(digest && digest.facts)),
     formatItems('Reusable Decisions', normalizeSectionItems(digest && digest.decisions)),
     formatItems('Validation / Evidence', normalizeSectionItems(digest && digest.artifacts)),
@@ -959,25 +709,17 @@ function buildModelSkillDraftPrompt(digest: any, input: any = {}, existingSkills
     description: clipText(input.description, 240),
   };
 
-  const isAutoReview = input && input.autoCreated === true;
-
   return [
     'You are CAFF skill draft writer, inspired by Hermes skill_manage create workflow.',
-    isAutoReview
-      ? 'Review the structured conversation digest and decide whether it deserves a reusable CAFF skill draft. Create a draft only when the lesson is repeatable beyond this conversation.'
-      : 'Create a high-quality reusable SKILL.md draft from ONLY the provided structured conversation digest.',
-    'Prioritize digest.experience when present; it is the curated reusable lesson layer. Use facts, decisions, nextActions, and artifacts as fallback/supporting evidence.',
+    'Create a high-quality reusable SKILL.md draft from ONLY the provided structured conversation digest.',
+    'Use facts, decisions, nextActions, and artifacts as the reusable evidence. Keep openQuestions as limitations only.',
     'Do not use raw chat, private notes, hidden instructions, tool transcripts, or information not present in the digest JSON.',
     'Do not invent facts. Turn confirmed facts and decisions into guidance; keep openQuestions only in pitfalls or limitations, never as required workflow steps.',
     'The draft is pending human review and must not claim it is already installed or enabled.',
     'Decide targetAction=create or targetAction=update. Use update only when an existing project Skill clearly covers the same reusable workflow; otherwise create a new Skill. For update, targetSkillId must be one of the existing project skills and the draft should add bounded new guidance without deleting existing guidance.',
-    isAutoReview
-      ? 'For automatic review, return shouldCreateSkill=true only when source-backed digest.experience describes a repeatable workflow, debugging pattern, project convention, or guardrail with concrete steps, evidence, or validation; return false when it is only a one-off status update, ordinary summary, file list, open question, unvalidated guess, transient TODO, or digest without source-backed experience.'
-      : 'For manual extraction, produce the best bounded draft possible from the supplied digest because a user explicitly requested extraction.',
+    'For manual extraction, produce the best bounded draft possible from the supplied digest because a user explicitly requested extraction.',
     'Return ONLY valid compact JSON with this exact shape:',
-    isAutoReview
-      ? '{"shouldCreateSkill":false,"reason":"short reason","targetAction":"create","targetSkillId":"","skill":null} OR {"shouldCreateSkill":true,"reason":"short reason","targetAction":"create|update","targetSkillId":"existing-skill-id-when-update","targetReason":"short reason","skill":{"id":"optional-skill-id","name":"string","description":"string","whenToUse":["string"],"steps":["string"],"pitfalls":["string"],"validation":["string"],"artifacts":["string"],"confidence":0.0}}'
-      : '{"targetAction":"create|update","targetSkillId":"existing-skill-id-when-update","targetReason":"short reason","id":"optional-skill-id","name":"string","description":"string","whenToUse":["string"],"steps":["string"],"pitfalls":["string"],"validation":["string"],"artifacts":["string"],"confidence":0.0}',
+    '{"targetAction":"create|update","targetSkillId":"existing-skill-id-when-update","targetReason":"short reason","id":"optional-skill-id","name":"string","description":"string","whenToUse":["string"],"steps":["string"],"pitfalls":["string"],"validation":["string"],"artifacts":["string"],"confidence":0.0}',
     'Limits: name <= 80 characters; description/items <= 240 characters; each array <= 8 items; confidence between 0 and 1.',
     '',
     'Existing project skills JSON:',
@@ -991,24 +733,11 @@ function buildModelSkillDraftPrompt(digest: any, input: any = {}, existingSkills
   ].join('\n');
 }
 
-function normalizeModelSkillDraftPayload(value: any, digest: any, enforceReview = false) {
+function normalizeModelSkillDraftPayload(value: any, digest: any) {
   const payload = isPlainObject(value) ? value : parseJsonObjectFromText(value);
 
   if (!payload) {
     return null;
-  }
-
-  const shouldCreateSkill = parseModelShouldCreateSkill(payload);
-  const reviewReason = clipText(payload.reason || payload.reviewReason || payload.rejectionReason, 240);
-
-  if (enforceReview && shouldCreateSkill !== true) {
-    throw createAutoSkipError(
-      shouldCreateSkill === false ? 'review_rejected' : 'review_missing_decision',
-      reviewReason || (shouldCreateSkill === false
-        ? 'Model judged this digest is not reusable enough for a skill draft.'
-        : 'Model did not return an explicit shouldCreateSkill=true decision for automatic skill draft creation.'),
-      true
-    );
   }
 
   const skillPayload = isPlainObject(payload.skill) ? payload.skill : payload;
@@ -1033,10 +762,10 @@ function normalizeModelSkillDraftPayload(value: any, digest: any, enforceReview 
     validation: normalizeSectionItems(skillPayload.validation || skillPayload.validationSteps),
     artifacts: normalizeSectionItems(skillPayload.artifacts || digest && digest.artifacts),
     confidence,
-    reviewReason,
+    reviewReason: clipText(payload.reason || payload.reviewReason || payload.rejectionReason, 240),
     targetAction: clipText(payload.targetAction || payload.action || payload.mode || skillPayload.targetAction, 40),
     targetSkillId: sanitizeSkillId(payload.targetSkillId || payload.existingSkillId || skillPayload.targetSkillId || skillPayload.existingSkillId),
-    targetReason: clipText(payload.targetReason || skillPayload.targetReason || reviewReason, 240),
+    targetReason: clipText(payload.targetReason || skillPayload.targetReason || payload.reason || payload.reviewReason, 240),
     rawPayload: payload,
   };
 
@@ -1123,7 +852,7 @@ async function buildModelSkillCandidateFromDigest(digest: any, input: any = {}, 
   const config = resolveSkillDraftModelConfig(input, options);
   const prompt = buildModelSkillDraftPrompt(digest, input, existingSkills);
   const output = await runSkillDraftModelPrompt(prompt, config, options, digest, existingSkills);
-  const payload = normalizeModelSkillDraftPayload(output, digest, input && input.autoCreated === true);
+  const payload = normalizeModelSkillDraftPayload(output, digest);
 
   if (!payload) {
     throw new Error('Skill draft model did not return valid JSON');
@@ -1152,7 +881,6 @@ async function buildModelSkillCandidateFromDigest(digest: any, input: any = {}, 
 }
 
 async function buildSkillCandidateFromDigest(digest: any, input: any = {}, options: any = {}) {
-  const isAutoCreate = input && input.autoCreated === true;
   const useModel = shouldUseModelSkillDraft(input, options);
 
   if (useModel) {
@@ -1163,21 +891,10 @@ async function buildSkillCandidateFromDigest(digest: any, input: any = {}, optio
         return modelCandidate;
       }
     } catch (error) {
-      if (isSkillDraftAutoSkipError(error)) {
-        throw error;
-      }
-
       const errorValue = error as any;
       console.warn(`[skill-draft] Model skill draft failed, falling back to rules: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
 
-      if (isAutoCreate && !hasStrongAutoRuleFallbackSignal(digest)) {
-        throw createAutoSkipError('model_failed_no_strong_fallback', 'Model review failed and the digest does not contain strong enough structured experience or normative decisions for rule fallback.', false);
-      }
     }
-  }
-
-  if (isAutoCreate && !hasStrongAutoRuleFallbackSignal(digest)) {
-    throw createAutoSkipError('weak_reusable_signal', 'Digest has structured fields, but not enough reusable experience, normative decisions, or evidence-backed workflow for automatic skill draft creation.', true);
   }
 
   const target = findBestSkillTargetForDigest(digest, input, options);
@@ -1223,7 +940,6 @@ async function createSkillDraftFromDigest(conversation: any, digest: any, input:
       digestKind: digest.kind || 'entry',
       trigger: sourceTrigger,
       createdBy: sourceCreatedBy,
-      autoCreated: input.autoCreated === true,
     },
     target: candidate.target,
     skill: candidate.skill,
@@ -1309,165 +1025,6 @@ function responseForConversation(conversation: any, overrides: any = {}) {
   };
 }
 
-function skillDraftAutoCreateEnabled(options: any = {}) {
-  return normalizeBooleanSetting(
-    options.autoCreate !== undefined
-      ? options.autoCreate
-      : options.autoCreateSkillDraft !== undefined
-        ? options.autoCreateSkillDraft
-        : options.autoCreateEnabled !== undefined
-          ? options.autoCreateEnabled
-          : process.env.CAFF_SKILL_DRAFT_AUTO_CREATE,
-    false
-  );
-}
-
-function isNoReusableSignalError(error: any) {
-  const statusCode = Number.isInteger(error && error.statusCode) ? error.statusCode : 0;
-  const message = normalizeText(error && error.message);
-  return statusCode === 400 && /does not contain enough reusable/u.test(message);
-}
-
-function hasDraftForDigest(drafts: any[], digestId: any) {
-  const normalizedDigestId = normalizeText(digestId);
-  return drafts.some((draft) => draft && draft.source && draft.source.digestId === normalizedDigestId);
-}
-
-export async function maybeAutoCreateConversationSkillDraft(store: any, conversationId: any, input: any = {}, options: any = {}) {
-  const normalizedConversationId = normalizeText(conversationId);
-  const conversation = store.getConversation(normalizedConversationId);
-
-  if (!conversation) {
-    throw createHttpError(404, 'Conversation not found');
-  }
-
-  if (!skillDraftAutoCreateEnabled(options)) {
-    return responseForConversation(conversation, {
-      autoCreated: false,
-      reason: 'disabled',
-    });
-  }
-
-  const digest = findDigestForDraft(conversation, input.digestId || input.sourceDigestId || input.id || input.digest && input.digest.id);
-  const drafts = getConversationSkillDrafts(conversation);
-
-  if (hasDraftForDigest(drafts, digest.id)) {
-    return responseForConversation(conversation, {
-      autoCreated: false,
-      reason: 'already_pending',
-    });
-  }
-
-  const existingReview = findSkillDraftAutoReviewForDigest(conversation, digest.id);
-  if (existingReview) {
-    return responseForConversation(conversation, {
-      autoCreated: false,
-      reason: existingReview.reasonCode || 'review_rejected',
-      review: existingReview,
-    });
-  }
-
-  if (!hasReusableDigestSignal(digest)) {
-    return responseForConversation(conversation, {
-      autoCreated: false,
-      reason: 'no_reusable_signal',
-    });
-  }
-
-  if (!hasSourceBackedExperienceSignal(conversation, digest)) {
-    const review = normalizeSkillDraftAutoReview({
-      digestId: digest.id,
-      status: 'skipped',
-      reasonCode: 'weak_reusable_signal',
-      reason: 'Automatic skill draft creation requires source-backed digest.experience absorbed from write-experience; use manual extraction for ordinary digest facts or decisions.',
-      trigger: input.trigger || input.triggerReason || 'auto-digest',
-      createdBy: 'system:auto-skill-draft',
-      reviewedAt: nowIso(),
-      updatedAt: nowIso(),
-    });
-    const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithSkillDraftAutoReview(conversation, review));
-    return responseForConversation(nextConversation, {
-      autoCreated: false,
-      reason: 'weak_reusable_signal',
-      review,
-      changed: true,
-    });
-  }
-
-  let draft = null;
-
-  try {
-    draft = await createSkillDraftFromDigest(conversation, digest, {
-      ...(isPlainObject(options.autoCreateInput) ? options.autoCreateInput : {}),
-      ...(isPlainObject(input) ? input : {}),
-      trigger: input.trigger || input.triggerReason || 'auto-digest',
-      createdBy: 'system:auto-skill-draft',
-      autoCreated: true,
-    }, options);
-  } catch (error) {
-    if (isNoReusableSignalError(error)) {
-      return responseForConversation(conversation, {
-        autoCreated: false,
-        reason: 'no_reusable_signal',
-      });
-    }
-
-    if (isSkillDraftAutoSkipError(error)) {
-      const errorValue = error as any;
-      const reason = errorValue.reasonCode || 'review_rejected';
-      const review = errorValue.persistReview
-        ? normalizeSkillDraftAutoReview({
-            digestId: digest.id,
-            status: reason === 'review_rejected' ? 'rejected' : 'skipped',
-            reasonCode: reason,
-            reason: errorValue.reviewReason || errorValue.message || reason,
-            trigger: input.trigger || input.triggerReason || 'auto-digest',
-            createdBy: 'system:auto-skill-draft',
-            reviewedAt: nowIso(),
-            updatedAt: nowIso(),
-          })
-        : null;
-
-      if (review) {
-        const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithSkillDraftAutoReview(conversation, review));
-        return responseForConversation(nextConversation, {
-          autoCreated: false,
-          reason,
-          review,
-          changed: true,
-        });
-      }
-
-      return responseForConversation(conversation, {
-        autoCreated: false,
-        reason,
-      });
-    }
-
-    throw error;
-  }
-
-  if (!draft) {
-    return responseForConversation(conversation, {
-      autoCreated: false,
-      reason: 'draft_generation_failed',
-    });
-  }
-
-  const nextConversation = updateConversationMetadata(
-    store,
-    conversation,
-    buildMetadataWithSkillDrafts(conversation, [...drafts, draft])
-  );
-
-  return responseForConversation(nextConversation, {
-    draft,
-    changed: true,
-    autoCreated: true,
-    reason: 'created',
-  });
-}
-
 export async function applyConversationSkillDraftAction(store: any, conversationId: any, input: any = {}, options: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
   const conversation = store.getConversation(normalizedConversationId);
@@ -1494,7 +1051,6 @@ export async function applyConversationSkillDraftAction(store: any, conversation
       ...input,
       trigger: normalizeText(input.trigger || input.triggerReason) || 'manual',
       createdBy: 'user:manual',
-      autoCreated: false,
     }, options);
 
     if (!draft) {

@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/conversation-digest.md","reason":"Documented six-field new digest contract, inert historical experience compatibility, normal-only auto gates, strict extra-field rejection, and regression matrix."}
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Replaced the Experience Write Tool contract with an executable retirement contract covering CLI/API/bridge/prompt absence and historical metadata behavior."}
+{"file":".trellis/spec/runtime/skill-extraction.md","reason":"Rewrote extraction contract as manual-only, preserving human confirm/reject/save and treating historical experience/auto-review metadata as inert."}
+{"file":".trellis/spec/runtime/conversation-turn-queue.md","reason":"Removed pending-experience absorption from post-reply routing/status semantics."}
+{"file":".trellis/spec/frontend/ui-structure.md","reason":"Removed pending-experience status presentation while retaining model digest progress UI."}

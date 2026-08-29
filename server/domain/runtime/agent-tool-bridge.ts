@@ -7,7 +7,6 @@ const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = re
 const { filterRoutableConversationAgents } = require('../roles/system-actor-catalog');
 const { applySessionGoalAction, getSessionGoalProposal, proposeSessionGoalAction } = require('../conversation/session-goal');
 const { getDagNodeGoalBinding } = require('../conversation/dag-goal-binding');
-const { createConversationExperienceDraft } = require('../conversation/experience-draft');
 const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
@@ -2394,103 +2393,6 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
-  function handleWriteExperience(body: any = {}) {
-    const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
-    const activeStore = store;
-    const toolCallId = randomUUID();
-    const title = clipText(body.title, 100);
-    const category = clipText(body.category || 'other', 80);
-
-    setContextCurrentTool(context, {
-      toolName: 'write-experience',
-      toolKind: 'bridge',
-      toolStepId: toolCallId,
-      inferred: false,
-      request: {
-        title,
-        category,
-      },
-    });
-
-    try {
-      const result = createConversationExperienceDraft(activeStore, context.conversationId, body, {
-        agentId: context.agentId,
-        agentName: context.agentName,
-        turnId: context.turnId,
-        assistantMessageId: context.assistantMessageId,
-      });
-      const response = {
-        ok: true,
-        draft: result.draft,
-        experienceDrafts: result.experienceDrafts,
-      };
-
-      broadcastEvent('conversation_experience_draft_updated', {
-        conversationId: context.conversationId,
-        draft: result.draft,
-        experienceDrafts: result.experienceDrafts,
-      });
-      broadcastConversationSummary(context.conversationId);
-
-      tryAppendInvocationEvent(context, 'agent_tool_call', {
-        schemaVersion: 1,
-        toolCallId,
-        tool: 'write-experience',
-        status: 'succeeded',
-        durationMs: Date.now() - startedAt,
-        invocationId: context.invocationId,
-        conversationId: context.conversationId,
-        turnId: context.turnId,
-        agentId: context.agentId,
-        agentName: context.agentName,
-        assistantMessageId: context.assistantMessageId,
-        request: {
-          title,
-          category,
-        },
-        result: {
-          draftId: result.draft && result.draft.id ? result.draft.id : null,
-          draftCount: Array.isArray(result.experienceDrafts) ? result.experienceDrafts.length : 0,
-        },
-      });
-
-      return response;
-    } catch (error) {
-      const errorValue = error as any;
-      tryAppendInvocationEvent(context, 'agent_tool_call', {
-        schemaVersion: 1,
-        toolCallId,
-        tool: 'write-experience',
-        status: 'failed',
-        durationMs: Date.now() - startedAt,
-        invocationId: context.invocationId,
-        conversationId: context.conversationId,
-        turnId: context.turnId,
-        agentId: context.agentId,
-        agentName: context.agentName,
-        assistantMessageId: context.assistantMessageId,
-        request: {
-          title,
-          category,
-        },
-        error: {
-          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
-          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
-          ...(Array.isArray(errorValue && errorValue.issues) ? { issues: errorValue.issues.slice(0, 5) } : {}),
-        },
-      });
-
-      if (errorValue && errorValue.statusCode) {
-        throw error;
-      }
-
-      throw createHttpError(400, errorValue && errorValue.message ? String(errorValue.message) : 'Failed to write experience draft');
-    } finally {
-      setContextCurrentTool(context, null);
-    }
-  }
-
   function handleUpdateMemory(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken);
@@ -3614,7 +3516,6 @@ export function createAgentToolBridge(options: any = {}) {
     handleReadContext,
     handleSaveMemory,
     handleSearchMemory,
-    handleWriteExperience,
     handleSearchMessages,
     handleSuggestGoal,
     handleUpdateGoalChecklist,

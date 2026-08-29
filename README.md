@@ -101,7 +101,6 @@ npm ci --omit=optional
 | `CHAT_APP_HOST` | `127.0.0.1` | 服务监听地址 |
 | `CHAT_APP_PORT` | `3100` | 服务端口 |
 | `CHAT_APP_ADVERTISE_URL` | — | 供 sandbox / 外部环境回连本机 CAFF 时使用的可达 base URL |
-| `CAFF_SKILL_DRAFT_AUTO_CREATE` | `false` | 自动摘要创建后是否后台提炼 pending skill draft；仍需人工确认才会写入 `.agents/skills` |
 | `CAFF_SKILL_DRAFT_GENERATION_MODE` | `rules` | Skill 草稿生成模式：`rules` 保守模板，`model` 强制模型 JSON，`auto` 在配置专用模型时使用模型 |
 | `CAFF_SKILL_DRAFT_PROVIDER` / `CAFF_SKILL_DRAFT_MODEL` | — | Skill 草稿模型配置；未设置时模型模式回退到 `PI_PROVIDER` / `PI_MODEL` |
 | `CAFF_SKILL_DRAFT_THINKING` | — | Skill 草稿模型 thinking / reasoning 配置 |

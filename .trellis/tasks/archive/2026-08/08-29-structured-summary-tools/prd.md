@@ -52,7 +52,7 @@ arguments and renders persisted output deterministically.
       SSE, and UI contracts do not regress.
 - [x] Applicable lint, typecheck, build, focused tests, and broader project tests
       pass, with any environment limitation recorded accurately.
-- [ ] A reviewer other than the author reviews the exact candidate SHA and all
+- [x] A reviewer other than the author reviews the exact candidate SHA and all
       findings are resolved or explicitly accepted.
 
 ## Non-Goals

@@ -1,0 +1,19 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Digest write/read/rollup compatibility contract"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Agent CLI, API, bridge, prompt and mirrored tool removal"}
+{"file": ".trellis/spec/runtime/skill-extraction.md", "reason": "Manual extraction preservation and automatic path retirement"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Post-reply hook and status contract"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Pending-experience status wording removal"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Observable regression and baseline-red expectations"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer removal audit"}
+{"file":"server/domain/conversation/system-model-submission.ts","reason":"Reduced submit_conversation_digest to six required fields; strict additionalProperties rejects legacy experience/sourceDraftId model output."}
+{"file":"server/domain/conversation/conversation-digest.ts","reason":"Removed experience new writes, model/rollup prompts, rollup propagation, prompt formatting, pending-experience trigger/bypass, and draft absorption while retaining historical read normalization."}
+{"file":"lib/agent-chat-tools.ts","reason":"Removed write-experience CLI command, payload builder, export, and command listing."}
+{"file":"server/domain/runtime/agent-tool-bridge.ts","reason":"Removed experience draft handler, telemetry, broadcasts, and domain dependency; matching HTTP route and Agent tool availability were removed."}
+{"file":"server/domain/conversation/skill-draft.ts","reason":"Removed source-backed experience parsing and all automatic review/create branches; manual extraction now uses facts, decisions, nextActions, artifacts, and openQuestions limitations only."}
+{"file":"server/app/create-server.ts","reason":"Removed pending-experience status and automatic Skill draft post-digest hook; model digest progress remains."}
+{"file":"tests/smoke/server-smoke.test.js","reason":"Red evidence: six-field digest submission initially failed because experience remained required; pending historical draft initially auto-created a digest. Green coverage locks strict legacy-field rejection, inert metadata, no rollup/prompt propagation, no auto-Skill hook, and manual extraction."}
+{"file":"server/api/conversations-controller.ts","reason":"Resolved independent review F1 by removing the retired pendingExperienceDraftCount from manual digest progress SSE; browser digest status projection/timeline/composer fallbacks now use summary-only wording."}
+{"file":"tests/ui/chat-experience-m4.test.js","reason":"Regression starts red on pendingExperienceDraftCount and experience-specific status wording across app, timeline, and composer sources, then passes after the UI cleanup."}

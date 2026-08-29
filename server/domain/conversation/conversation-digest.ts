@@ -3,7 +3,6 @@ import * as path from 'node:path';
 
 import { createHttpError } from '../../http/http-errors';
 import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting, resolveThinkingSetting } from '../../../lib/minimal-pi';
-import { absorbExperienceDraftsInMetadata, experienceDraftsForDigest, getPendingConversationExperienceDrafts } from './experience-draft';
 import {
   CONVERSATION_DIGEST_SUBMISSION_TOOL,
   CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME,
@@ -608,11 +607,6 @@ function buildExtractiveDigestFromMessages(normalizedMessages: any[], input: any
     entry[key] = overrideItems.length > 0 ? overrideItems : uniqueSectionItems(bucket[key]);
   }
 
-  const experience = normalizeDigestExperienceItems(input && input.experience);
-  if (experience.length > 0) {
-    entry.experience = experience;
-  }
-
   return normalizeDigestEntry(entry);
 }
 
@@ -721,11 +715,11 @@ function modelDigestSubmissionInstructionLines() {
     'Do not emit visible text, prose, markdown, code fences, XML, comments, or a JSON object in the assistant body.',
     'Provide every tool argument defined by the schema. Use empty arrays when evidence is missing instead of inventing filler items.',
     'Write a concise summary only from supported evidence. Facts require user statements, explicit results, or verified code/test outcomes.',
-    'Limits are enforced by the tool schema: summary <= 800 characters; each main array <= 8 items; experience <= 5 items.',
+    'Limits are enforced by the tool schema: summary <= 800 characters; each main array <= 8 items.',
   ];
 }
 
-function buildModelDigestPrompt(normalizedMessages: any[], experience: any[] = []) {
+function buildModelDigestPrompt(normalizedMessages: any[]) {
   const sourceMessages = normalizedMessages.slice(-MAX_DIGEST_MODEL_MESSAGES).map((message: any, index: number) => ({
     index: index + 1,
     id: message.id,
@@ -734,18 +728,13 @@ function buildModelDigestPrompt(normalizedMessages: any[], experience: any[] = [
     createdAt: message.createdAt,
     content: message.content,
   }));
-  const sourceExperience = normalizeDigestExperienceItems(experience);
 
   return [
     'You are CAFF conversation digest writer.',
     'Summarize the provided public chat messages into bounded long-term memory for future agents.',
     'Do not invent facts. Facts must be user-stated facts, explicit tool/results evidence, or verified code/test outcomes; never promote agent speculation into facts.',
     'Decisions must be user-confirmed or already implemented. Put unconfirmed agent proposals in openQuestions or nextActions, not facts.',
-    'If source experience drafts are provided, preserve them as reusable experience candidates and keep their caveats bounded.',
     ...modelDigestSubmissionInstructionLines(),
-    '',
-    'Source experience drafts JSON:',
-    JSON.stringify(sourceExperience, null, 2),
     '',
     'Public messages JSON:',
     JSON.stringify(sourceMessages, null, 2),
@@ -764,7 +753,6 @@ function buildModelRollupPrompt(sources: any[]) {
     openQuestions: normalizeSectionItems(digest.openQuestions),
     nextActions: normalizeSectionItems(digest.nextActions),
     artifacts: normalizeSectionItems(digest.artifacts),
-    experience: normalizeDigestExperienceItems(digest.experience),
   }));
 
   return [
@@ -772,7 +760,6 @@ function buildModelRollupPrompt(sources: any[]) {
     'Merge older digest entries into one bounded historical rollup for future agents.',
     'Keep stable history and unresolved work. Remove duplicates. Do not invent facts or promote unconfirmed agent speculation.',
     'If source digests conflict, keep the conflict in openQuestions instead of choosing a winner.',
-    'Preserve reusable experience candidates only when they remain supported by the source digests.',
     ...modelDigestSubmissionInstructionLines(),
     '',
     'Source digest entries JSON:',
@@ -924,11 +911,6 @@ function normalizeModelDigestPayload(value: any) {
 
   for (const key of DIGEST_SECTION_KEYS) {
     normalized[key] = normalizeSectionItems(payload[key]);
-  }
-
-  const experience = normalizeDigestExperienceItems(payload.experience);
-  if (experience.length > 0) {
-    normalized.experience = experience;
   }
 
   if (!normalized.summary) {
@@ -1669,7 +1651,7 @@ async function buildDigestFromMessages(messages: any[], input: any, timestamp: s
     .filter(Boolean) as any[];
 
   try {
-    const modelPayload = await generateModelDigestPayload(buildModelDigestPrompt(modelMessages, input && input.experience), input, {
+    const modelPayload = await generateModelDigestPayload(buildModelDigestPrompt(modelMessages), input, {
       ...options,
       purpose: 'entry',
     });
@@ -1743,11 +1725,6 @@ function buildExtractiveRollupDigest(sources: any[], timestamp: string) {
 
   for (const key of DIGEST_SECTION_KEYS) {
     rollup[key] = uniqueSectionItems(sources.flatMap((source: any) => normalizeSectionItems(source[key])));
-  }
-
-  const experience = normalizeDigestExperienceItems(sources.flatMap((source: any) => normalizeDigestExperienceItems(source.experience)));
-  if (experience.length > 0) {
-    rollup.experience = experience;
   }
 
   return normalizeDigestEntry(rollup);
@@ -2462,19 +2439,15 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
     stateChanged,
     timestamp,
   } = recomputed;
-  const pendingExperienceDrafts = getPendingConversationExperienceDrafts(stateConversation);
-  const pendingExperienceTriggered = pendingExperienceDrafts.length > 0 && sourceMessages.length > 0;
   const highValueTriggered = digestAutoHighValueEnabled(options)
     && sourceMessages.length >= highValueMinMessages
     && anySignalFlag(state.signalFlags);
   const budgetReached = sourceMessages.length >= messageBudget;
-  const triggerReason = pendingExperienceTriggered && !budgetReached
-    ? 'pending_experience'
-    : highValueTriggered && !budgetReached
-      ? 'high_value_signal'
-      : 'message_budget';
+  const triggerReason = highValueTriggered && !budgetReached
+    ? 'high_value_signal'
+    : 'message_budget';
 
-  if (!budgetReached && !highValueTriggered && !pendingExperienceTriggered) {
+  if (!budgetReached && !highValueTriggered) {
     return responseForConversation(stateConversation, {
       autoCreated: false,
       reason: 'below_budget',
@@ -2488,7 +2461,7 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
   }
 
   const cooldownMs = digestAutoCooldownMs(options);
-  const cooldownRemainingMs = pendingExperienceTriggered ? 0 : autoDigestCooldownRemainingMs(state, timestamp, cooldownMs);
+  const cooldownRemainingMs = autoDigestCooldownRemainingMs(state, timestamp, cooldownMs);
 
   if (cooldownRemainingMs > 0) {
     return responseForConversation(stateConversation, {
@@ -2505,7 +2478,7 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
   }
 
   const idleMs = digestAutoIdleMs(options);
-  const idleRemainingMs = pendingExperienceTriggered ? 0 : autoDigestIdleRemainingMs(sourceMessages, timestamp, idleMs);
+  const idleRemainingMs = autoDigestIdleRemainingMs(sourceMessages, timestamp, idleMs);
 
   if (idleRemainingMs > 0) {
     return responseForConversation(stateConversation, {
@@ -2521,11 +2494,9 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
     });
   }
 
-  const digestExperience = experienceDraftsForDigest(pendingExperienceDrafts);
   const input = {
     action: 'create',
     ...(isPlainObject(options.autoCreateInput) ? options.autoCreateInput : {}),
-    ...(digestExperience.length > 0 ? { experience: digestExperience } : {}),
     autoCreated: true,
     triggerReason,
   };
@@ -2549,16 +2520,10 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
     lastTriggerReason: triggerReason,
   });
   const metadataWithDigests = buildMetadataWithDigests(latestConversation, compactResult.digests);
-  const absorbedMetadata = absorbExperienceDraftsInMetadata(
-    { ...latestConversation, metadata: metadataWithDigests },
-    digestExperience.map((item: any) => item.sourceDraftId),
-    digest.id,
-    timestamp
-  );
   const nextConversation = updateConversationMetadata(
     store,
     latestConversation,
-    buildMetadataWithDigestState({ ...latestConversation, metadata: absorbedMetadata }, stateAfterCreate)
+    buildMetadataWithDigestState({ ...latestConversation, metadata: metadataWithDigests }, stateAfterCreate)
   );
   syncSummarySegmentFromDigest(store, nextConversation, digest, timestamp, { trigger: 'auto-create' }, options);
   syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, timestamp, { trigger: 'auto-compaction' }, options);
@@ -2678,11 +2643,8 @@ export async function applyConversationDigestAction(store: any, conversationId: 
 
   const timestamp = nowIso();
   const messages = typeof store.listMessages === 'function' ? store.listMessages(normalizedConversationId) : [];
-  const pendingExperienceDrafts = getPendingConversationExperienceDrafts(conversation);
-  const digestExperience = experienceDraftsForDigest(pendingExperienceDrafts);
   const digestInput = {
     ...input,
-    ...(digestExperience.length > 0 && !Object.prototype.hasOwnProperty.call(input, 'experience') ? { experience: digestExperience } : {}),
     triggerReason: normalizeText(input.triggerReason) || 'manual',
   };
   const digestOptions = {
@@ -2702,16 +2664,10 @@ export async function applyConversationDigestAction(store: any, conversationId: 
     lastTriggerReason: digestInput.triggerReason,
   });
   const metadataWithDigests = buildMetadataWithDigests(conversation, compactResult.digests);
-  const absorbedMetadata = absorbExperienceDraftsInMetadata(
-    { ...conversation, metadata: metadataWithDigests },
-    digestExperience.map((item: any) => item.sourceDraftId),
-    digest.id,
-    timestamp
-  );
   const nextConversation = updateConversationMetadata(
     store,
     conversation,
-    buildMetadataWithDigestState({ ...conversation, metadata: absorbedMetadata }, stateAfterCreate)
+    buildMetadataWithDigestState({ ...conversation, metadata: metadataWithDigests }, stateAfterCreate)
   );
   syncSummarySegmentFromDigest(store, nextConversation, digest, timestamp, { trigger: 'manual-create' }, options);
   syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, timestamp, { trigger: 'auto-compaction' }, options);
@@ -2766,20 +2722,6 @@ export function formatConversationDigestsForPrompt(conversation: any) {
       ? ` · compacted from ${digest.sourceDigestIds.length} digests`
       : '';
     lines.push('', `${label} ${digest.id} · ${digest.createdAt}${range}${sourceText}`, `Summary: ${digest.summary}`);
-
-    const experience = normalizeDigestExperienceItems(digest.experience);
-    if (experience.length > 0) {
-      lines.push('Experience:');
-      for (const item of experience) {
-        const details = [
-          item.scenario ? `scenario: ${item.scenario}` : '',
-          item.steps && item.steps.length > 0 ? `steps: ${item.steps.join(' / ')}` : '',
-          item.pitfalls && item.pitfalls.length > 0 ? `pitfalls: ${item.pitfalls.join(' / ')}` : '',
-          item.validation && item.validation.length > 0 ? `validation: ${item.validation.join(' / ')}` : '',
-        ].filter(Boolean).join('; ');
-        lines.push(`- ${item.title}${details ? ` (${details})` : ''}`);
-      }
-    }
 
     for (const [key, sectionLabel] of [
       ['decisions', 'Decisions'],

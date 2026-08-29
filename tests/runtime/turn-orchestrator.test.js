@@ -1061,6 +1061,11 @@ test('buildAgentTurnPrompt includes current conversation digest before recent hi
           openQuestions: [],
           nextActions: [],
           artifacts: [],
+          experience: [{
+            sourceDraftId: 'legacy-source-id-must-not-enter-prompt',
+            title: 'LEGACY_EXPERIENCE_MARKER',
+            scenario: 'Historical compatibility data only.',
+          }],
         },
       ],
     },
@@ -1109,6 +1114,7 @@ test('buildAgentTurnPrompt includes current conversation digest before recent hi
   assert.match(prompt, /Rollups are auto-compacted from older digest entries/u);
   assert.match(prompt, /recent raw conversation messages override digest content/u);
   assert.match(prompt, /server\/domain\/conversation\/conversation-digest\.ts/u);
+  assert.doesNotMatch(prompt, /LEGACY_EXPERIENCE_MARKER|legacy-source-id-must-not-enter-prompt/u);
   assert.ok(prompt.indexOf('Current Conversation Digest / 当前聊天室摘要:') < prompt.indexOf('Conversation history:'));
   assert.ok(prompt.indexOf('Rollup digest rollup-1') < prompt.indexOf('Digest digest-1'));
 });
@@ -1588,11 +1594,10 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.doesNotMatch(prompt, /update-memory/u);
   assert.doesNotMatch(prompt, /forget-memory/u);
   assert.doesNotMatch(prompt, /Browser tool:/u);
-  assert.match(prompt, /write-experience --title "lesson title" --category bug_fix/u);
+  assert.doesNotMatch(prompt, /write-experience/u);
   assert.match(prompt, /Room workspace: use the model-visible `room_workspace_preview` tool/u);
   assert.match(prompt, /`room_workspace_bind` with `\{ "confirm": true \}`/u);
   assert.match(prompt, /Never invent or pass conversation IDs, branches, paths, repositories, or base refs/u);
-  assert.match(prompt, /reusable, validated lessons/u);
   assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
   assert.match(prompt, /successful send-public call completes the turn automatically unless you pass --no-finalize/u);
   assert.match(prompt, /send-public \[--no-finalize\] --content-stdin/u);

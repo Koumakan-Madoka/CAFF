@@ -2519,9 +2519,7 @@
     }
 
     function digestStatusTimelineContent(status) {
-      const pendingCount = Math.max(0, Number(status.pendingExperienceDraftCount || 0));
-      const countSuffix = pendingCount > 0 ? `（${pendingCount} 条经验草稿）` : '';
-      const lines = [`${status.message || '正在整理本轮经验，并写入会话摘要…'}${countSuffix}`];
+      const lines = [status.message || '会话摘要模型正在生成…'];
       const model = status.model && typeof status.model === 'object' ? status.model : null;
       const modelTrace = status.modelTrace && typeof status.modelTrace === 'object' ? status.modelTrace : null;
 
