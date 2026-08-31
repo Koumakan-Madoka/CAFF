@@ -2143,6 +2143,163 @@ test('conversations controller accepts one validated digest submission tool call
   assert.equal(Object.prototype.hasOwnProperty.call(result.json.digest, 'experience'), false);
 });
 
+test('conversations controller accepts digest submission summaries through 1600 characters and stores 800', async (t) => {
+  for (const summaryLength of [801, 1600]) {
+    await t.test(`${summaryLength} characters`, async (subtest) => {
+      const calls = [];
+      global.__CAFF_WIDE_DIGEST_SUMMARY_CALLS = calls;
+      subtest.after(() => {
+        delete global.__CAFF_WIDE_DIGEST_SUMMARY_CALLS;
+      });
+      const summaryPrefix = `wide-summary-${summaryLength}:`;
+      const submittedSummary = summaryPrefix + 'x'.repeat(summaryLength - summaryPrefix.length);
+      const moduleSource = `
+        export function getModel(provider, model) {
+          return { id: model, name: model, api: 'openai-completions', provider, maxTokens: 24576 };
+        }
+        export async function completeSimple(model, context, options) {
+          globalThis.__CAFF_WIDE_DIGEST_SUMMARY_CALLS.push({
+            summaryMaxLength: context.tools[0].parameters.properties.summary.maxLength,
+            sectionMaxItems: context.tools[0].parameters.properties.facts.maxItems,
+            itemMaxLength: context.tools[0].parameters.properties.facts.items.maxLength,
+            toolChoice: options.toolChoice,
+          });
+          return {
+            role: 'assistant',
+            content: [{
+              type: 'toolCall',
+              id: 'wide-digest-summary-${summaryLength}',
+              name: 'submit_conversation_digest',
+              arguments: {
+                summary: ${JSON.stringify(submittedSummary)},
+                facts: [],
+                decisions: [],
+                openQuestions: [],
+                nextActions: [],
+                artifacts: []
+              }
+            }],
+            stopReason: 'toolUse',
+            timestamp: Date.now()
+          };
+        }
+      `;
+      const { handler, store } = createConversationsControllerHarness(subtest, {
+        digestOptions: {
+          piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+        },
+      });
+      const conversation = createSmokeConversation(store, {
+        id: `digest-wide-summary-${summaryLength}`,
+        title: `Digest Wide Summary ${summaryLength}`,
+      });
+      store.createMessage({
+        id: `digest-wide-summary-message-${summaryLength}`,
+        conversationId: conversation.id,
+        turnId: `digest-wide-summary-turn-${summaryLength}`,
+        role: 'user',
+        senderName: 'User',
+        content: '决定接受略长的模型摘要，但保持原有落库预算。',
+      });
+
+      const result = await invokeConversationsController(handler, {
+        method: 'POST',
+        pathname: `/api/conversations/${conversation.id}/digest`,
+        body: { action: 'create', summaryMode: 'model' },
+      });
+
+      assert.equal(result.statusCode, 200);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].summaryMaxLength, 1600);
+      assert.equal(calls[0].sectionMaxItems, 8);
+      assert.equal(calls[0].itemMaxLength, 240);
+      assert.equal(calls[0].toolChoice, 'auto');
+      assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
+      assert.equal(result.json.digest.summary.length, 800);
+      assert.ok(result.json.digest.summary.startsWith(summaryPrefix));
+      assert.ok(result.json.digest.summary.endsWith('…'));
+    });
+  }
+});
+
+test('conversations controller rejects a 1601-character digest summary with bounded length diagnostics', async (t) => {
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.join(' '));
+  const calls = [];
+  global.__CAFF_OVERFLOW_DIGEST_SUMMARY_CALLS = calls;
+  t.after(() => {
+    console.warn = originalWarn;
+    delete global.__CAFF_OVERFLOW_DIGEST_SUMMARY_CALLS;
+  });
+
+  const privateSummaryMarker = 'private-overflow-summary-marker:';
+  const submittedSummary = privateSummaryMarker
+    + '😀'.repeat(1601 - Array.from(privateSummaryMarker).length);
+  const moduleSource = `
+    export function getModel(provider, model) {
+      return { id: model, name: model, api: 'openai-completions', provider, maxTokens: 24576 };
+    }
+    export async function completeSimple(model, context, options) {
+      globalThis.__CAFF_OVERFLOW_DIGEST_SUMMARY_CALLS.push({
+        summaryMaxLength: context.tools[0].parameters.properties.summary.maxLength,
+        toolChoice: options.toolChoice,
+      });
+      return {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'overflow-digest-summary',
+          name: 'submit_conversation_digest',
+          arguments: {
+            summary: ${JSON.stringify(submittedSummary)},
+            facts: [],
+            decisions: [],
+            openQuestions: [],
+            nextActions: [],
+            artifacts: []
+          }
+        }],
+        stopReason: 'toolUse',
+        timestamp: Date.now()
+      };
+    }
+  `;
+  const { handler, store } = createConversationsControllerHarness(t, {
+    digestOptions: {
+      piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+    },
+  });
+  const conversation = createSmokeConversation(store, {
+    id: 'digest-overflow-summary-1601',
+    title: 'Digest Overflow Summary 1601',
+  });
+  store.createMessage({
+    id: 'digest-overflow-summary-message-1601',
+    conversationId: conversation.id,
+    turnId: 'digest-overflow-summary-turn-1601',
+    role: 'user',
+    senderName: 'User',
+    content: '决定超出接收上限的摘要继续安全回退。',
+  });
+
+  const result = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: { action: 'create', summaryMode: 'model' },
+  });
+  const warningText = warnings.join('\n');
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].summaryMaxLength, 1600);
+  assert.equal(calls[0].toolChoice, 'auto');
+  assert.equal(result.json.digest.createdBy, 'user');
+  assert.match(result.json.digest.summary, /^Extractive digest of 1 public messages\./u);
+  assert.match(warningText, /field=summary; actualLength=1601; acceptedLimit=1600/u);
+  assert.doesNotMatch(warningText, new RegExp(privateSummaryMarker, 'u'));
+});
+
 test('conversations controller rejects plain-text JSON instead of treating it as a digest submission', async (t) => {
   const calls = [];
   global.__CAFF_JSON_MODE_DIGEST_CALLS = calls;

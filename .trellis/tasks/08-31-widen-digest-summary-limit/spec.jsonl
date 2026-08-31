@@ -1,0 +1,1 @@
+{"file":".trellis/spec/backend/conversation-digest.md","reason":"Separated 1600-character submission-envelope acceptance from the existing 800-character normalized storage/prompt budget; documented overflow fallback, safe diagnostics, and exact boundary tests."}

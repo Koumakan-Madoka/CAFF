@@ -1,0 +1,6 @@
+{"file":".trellis/workflow.md","reason":"Project task lifecycle and evidence rules"}
+{"file":".trellis/spec/backend/index.md","reason":"Backend pre-development checklist"}
+{"file":".trellis/spec/backend/architecture.md","reason":"Backend domain ownership"}
+{"file":".trellis/spec/backend/conversation-digest.md","reason":"Current digest tool schema, normalization, fallback, diagnostics, and test contract"}
+{"file":".trellis/spec/unit-test/runtime-tests.md","reason":"System model output and regression test expectations"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Single-source constant and search-before-change guidance"}
