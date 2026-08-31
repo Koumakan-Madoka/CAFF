@@ -1205,9 +1205,24 @@ function createModelDigestError(message: string, output: any, diagnostic: any = 
 function warnSystemModelDiagnostic(diagnostic: any, config: any, options: any = {}) {
   const purpose = normalizeText(options.purpose) || 'summary';
   const modelLabel = `${normalizeText(config && config.provider) || 'unknown'}/${normalizeText(config && config.model) || 'unknown'}`;
+  const field = normalizeText(diagnostic && diagnostic.field)
+    .replace(/[^A-Za-z0-9_.-]/gu, '')
+    .slice(0, 80);
+  const actualLength = Number.isSafeInteger(diagnostic && diagnostic.actualLength)
+    && diagnostic.actualLength >= 0
+    ? diagnostic.actualLength
+    : null;
+  const acceptedLimit = Number.isSafeInteger(diagnostic && diagnostic.acceptedLimit)
+    && diagnostic.acceptedLimit >= 0
+    ? diagnostic.acceptedLimit
+    : null;
+  const lengthDiagnostic = field && actualLength !== null && acceptedLimit !== null
+    ? `field=${field}; actualLength=${actualLength}; acceptedLimit=${acceptedLimit}; `
+    : '';
   console.warn(
     `[conversation-digest] System model output diagnostic (${purpose}, ${modelLabel}): `
       + `${normalizeText(diagnostic && diagnostic.diagnosticCode) || 'none'}; `
+      + lengthDiagnostic
       + `attempt=${diagnostic && diagnostic.attempt || 0}; `
       + `maxTokens=${diagnostic && diagnostic.maxTokens || 0}; `
       + `thinking=${normalizeText(diagnostic && diagnostic.thinking) || 'off'}; `
@@ -1295,11 +1310,14 @@ async function runStructuredDigestModelPrompt(prompt: string, config: any, optio
       progress.finished('结构化摘要已提交。');
       return normalized;
     } catch (error) {
-      const diagnostic = markSystemModelInvalidOutput(inspection.diagnostic);
-      warnSystemModelDiagnostic(diagnostic, config, options);
       const submissionError = error instanceof SystemModelSubmissionError
         ? error
         : new SystemModelSubmissionError('submission_invalid', safeSystemModelErrorText(error));
+      const diagnostic = {
+        ...markSystemModelInvalidOutput(inspection.diagnostic),
+        ...(submissionError.diagnostic || {}),
+      };
+      warnSystemModelDiagnostic(diagnostic, config, options);
       const modelError = createModelDigestError(
         `Invalid digest tool submission: ${submissionError.message}`,
         '',

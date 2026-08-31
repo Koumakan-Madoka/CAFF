@@ -4,6 +4,7 @@ import { Compile } from 'typebox/compile';
 export const CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME = 'submit_conversation_digest';
 export const RECOVERY_NOTE_SUBMISSION_TOOL_NAME = 'submit_recovery_note';
 export const RECOVERY_NOTE_NON_EXECUTION_STATEMENT = '这是只读现场整理，不会执行或重放原任务。';
+export const CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH = 1600;
 
 const digestItem = Type.String({ minLength: 1, maxLength: 240 });
 const digestItems = Type.Array(digestItem, { maxItems: 8 });
@@ -11,7 +12,7 @@ export const CONVERSATION_DIGEST_SUBMISSION_TOOL = {
   name: CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME,
   description: 'Submit the complete bounded conversation digest. This schema-only return channel performs no action.',
   parameters: Type.Object({
-    summary: Type.String({ minLength: 1, maxLength: 800 }),
+    summary: Type.String({ minLength: 1, maxLength: CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH }),
     facts: digestItems,
     decisions: digestItems,
     openQuestions: digestItems,
@@ -79,13 +80,62 @@ function firstValidationIssue(validator: ReturnType<typeof Compile>, value: any)
   return message;
 }
 
+type SystemModelSubmissionDiagnostic = {
+  field: string;
+  actualLength: number;
+  acceptedLimit: number;
+};
+
+function stringCharacterLength(value: string) {
+  let length = 0;
+  for (const _character of value) {
+    length += 1;
+  }
+  return length;
+}
+
+function stringLengthDiagnostic(parameters: any, value: any): SystemModelSubmissionDiagnostic | null {
+  const properties = isPlainObject(parameters && parameters.properties)
+    ? parameters.properties
+    : {};
+
+  for (const [field, rawSchema] of Object.entries(properties)) {
+    const fieldSchema = isPlainObject(rawSchema) ? rawSchema : {};
+    const acceptedLimit = Number((fieldSchema as any).maxLength);
+    const fieldValue = value[field];
+    const actualLength = typeof fieldValue === 'string'
+      ? stringCharacterLength(fieldValue)
+      : 0;
+    if (
+      typeof fieldValue === 'string'
+      && Number.isSafeInteger(acceptedLimit)
+      && acceptedLimit >= 0
+      && actualLength > acceptedLimit
+    ) {
+      return {
+        field,
+        actualLength,
+        acceptedLimit,
+      };
+    }
+  }
+
+  return null;
+}
+
 export class SystemModelSubmissionError extends Error {
   code: string;
+  diagnostic: SystemModelSubmissionDiagnostic | null;
 
-  constructor(code: string, message: string) {
+  constructor(
+    code: string,
+    message: string,
+    diagnostic: SystemModelSubmissionDiagnostic | null = null
+  ) {
     super(message);
     this.name = 'SystemModelSubmissionError';
     this.code = code;
+    this.diagnostic = diagnostic;
   }
 }
 
@@ -119,9 +169,11 @@ export function extractSingleSystemModelSubmission(output: any, tool: any) {
   const validator = validatorFor(tool);
   if (!validator.Check(toolCall.arguments)) {
     const issue = firstValidationIssue(validator, toolCall.arguments);
+    const diagnostic = stringLengthDiagnostic(tool.parameters, toolCall.arguments);
     throw new SystemModelSubmissionError(
       'submission_schema_invalid',
-      `System model submission arguments failed schema validation${issue ? `: ${issue}` : ''}`
+      `System model submission arguments failed schema validation${issue ? `: ${issue}` : ''}`,
+      diagnostic
     );
   }
 

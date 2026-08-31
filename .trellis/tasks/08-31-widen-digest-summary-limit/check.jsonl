@@ -1,0 +1,6 @@
+{"file":"tests/smoke/server-smoke.test.js","reason":"Baseline red: exact 801 and 1600 summaries saw offered maxLength 800 and fell back; 1601 lacked safe field/actual/limit diagnostics. Green after implementation: focused boundary suite 4/4 and full server smoke 71/71."}
+{"file":"server/domain/conversation/system-model-submission.ts","reason":"Raised only digest summary envelope limit to 1600 and attached bounded top-level string length metadata to schema validation errors without retaining field values; final build and typecheck passed."}
+{"file":"server/domain/conversation/conversation-digest.ts","reason":"Propagated safe schema length metadata into existing invalid-output diagnostics and kept normalizeModelDigestPayload storage clipping at 800; npm run check and typecheck passed."}
+{"file":"tests/runtime/message-recovery.test.js","reason":"Shared submission parser regression gate passed 25/25; Recovery schema, rendering, retry, and fallback behavior remain unchanged."}
+{"file":"tests/smoke/mode-store.test.js","reason":"Applicable smoke companion suite passed 4/4."}
+{"file":".trellis/tasks/08-31-widen-digest-summary-limit/task.json","reason":"task.py validate passed current implement/check records; task JSON and all JSONL records parse; git diff --check passed with only informational Windows autocrlf warning."}

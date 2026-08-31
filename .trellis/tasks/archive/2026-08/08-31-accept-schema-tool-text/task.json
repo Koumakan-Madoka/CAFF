@@ -3,7 +3,7 @@
   "name": "accept-schema-tool-text",
   "title": "Accept Schema Tool Calls With Companion Text",
   "description": "Accept a unique schema-valid system-model submission tool call even when the provider includes companion visible text; preserve strict rejection for invalid tool protocol and arguments.",
-  "status": "review",
+  "status": "completed",
   "dev_type": "backend",
   "scope": "memory",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "GPT",
   "assignee": "GPT",
   "createdAt": "2026-08-31",
-  "completedAt": null,
+  "completedAt": "2026-08-31",
   "branch": "room/523e9df5-caff",
   "base_branch": "develop",
   "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
@@ -34,8 +34,8 @@
       "action": "create-pr"
     }
   ],
-  "commit": null,
-  "pr_url": null,
+  "commit": "623f54aca61e9c39cf22204d7c3ef2e4c5de1229",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/122",
   "subtasks": [],
   "children": [],
   "parent": null,
@@ -46,6 +46,6 @@
     ".trellis/spec/backend/conversation-digest.md",
     ".trellis/spec/backend/message-recovery.md"
   ],
-  "notes": "Real deepseek-v4-flash returned one valid submit_conversation_digest call plus 61 visible characters and was rejected by the former visible-text veto. Red tests reproduced extractive/mechanical fallback. The shared parser now ignores companion text only after unique name/object/schema validation; focused and full applicable gates pass. Awaiting exact-SHA independent review.",
+  "notes": "Completed and merged through PR #122. Exact candidate 623f54aca61e9c39cf22204d7c3ef2e4c5de1229 was independently reviewed by Kimi with APPROVE and no findings. Focused and full applicable tests, check, typecheck, and build passed. A post-fix isolated real deepseek-v4-flash call made exactly one provider request and stored a strict six-field model digest; the provider returned thinking plus one valid tool call on that run. PR #122 merged by merge commit to develop@a5dad05b387a5730df032517c1b0dafa151db08d.",
   "meta": {}
 }
