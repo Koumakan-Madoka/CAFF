@@ -2062,7 +2062,7 @@ test('conversations controller creates model-generated conversation digests when
   assert.ok(createResult.json.digest.decisions.some((item) => item.includes('保留规则摘要')));
 });
 
-test('conversations controller accepts one validated digest submission tool call', async (t) => {
+test('conversations controller accepts one validated digest submission tool call with companion text', async (t) => {
   const calls = [];
   global.__CAFF_DIGEST_TOOL_SUBMISSION_CALLS = calls;
   t.after(() => {
@@ -2082,19 +2082,22 @@ test('conversations controller accepts one validated digest submission tool call
       });
       return {
         role: 'assistant',
-        content: [{
-          type: 'toolCall',
-          id: 'submit-conversation-digest-1',
-          name: 'submit_conversation_digest',
-          arguments: {
-            summary: '工具摘要：provider 通过参数提交结构化结果。',
-            facts: ['工具事实：正文不再手写 JSON。'],
-            decisions: ['工具决策：服务端校验提交参数。'],
-            openQuestions: [],
-            nextActions: ['继续验证非法调用回退。'],
-            artifacts: ['server/domain/conversation/conversation-digest.ts']
+        content: [
+          { type: 'text', text: '摘要已经整理完成。' },
+          {
+            type: 'toolCall',
+            id: 'submit-conversation-digest-1',
+            name: 'submit_conversation_digest',
+            arguments: {
+              summary: '工具摘要：provider 通过参数提交结构化结果。',
+              facts: ['工具事实：正文不再手写 JSON。'],
+              decisions: ['工具决策：服务端校验提交参数。'],
+              openQuestions: [],
+              nextActions: ['继续验证非法调用回退。'],
+              artifacts: ['server/domain/conversation/conversation-digest.ts']
+            }
           }
-        }],
+        ],
         stopReason: 'toolUse',
         timestamp: Date.now()
       };
@@ -2136,6 +2139,7 @@ test('conversations controller accepts one validated digest submission tool call
   assert.match(calls[0].systemPrompt, /submit_conversation_digest/u);
   assert.equal(result.json.digest.summary, '工具摘要：provider 通过参数提交结构化结果。');
   assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
+  assert.doesNotMatch(JSON.stringify(result.json.digest), /摘要已经整理完成/u);
   assert.equal(Object.prototype.hasOwnProperty.call(result.json.digest, 'experience'), false);
 });
 
@@ -2441,7 +2445,7 @@ test('conversations controller falls back when digest tool arguments are not an 
   assert.ok(warnings.some((warning) => warning.includes('arguments must be an object')));
 });
 
-test('conversations controller rejects wrong, multiple, and mixed-body digest submissions', async (t) => {
+test('conversations controller rejects wrong, multiple, and schema-invalid digest submissions', async (t) => {
   const validArguments = {
     summary: 'invalid-submission-marker',
     facts: [],
@@ -2483,18 +2487,6 @@ test('conversations controller rejects wrong, multiple, and mixed-body digest su
           }],
         },
       }],
-    },
-    {
-      label: 'visible text with call',
-      content: [
-        { type: 'text', text: JSON.stringify(validArguments) },
-        {
-          type: 'toolCall',
-          id: 'mixed-body-digest-tool',
-          name: 'submit_conversation_digest',
-          arguments: validArguments,
-        },
-      ],
     },
   ];
 

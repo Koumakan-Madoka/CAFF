@@ -371,24 +371,27 @@ test('manual recovery is durable and idempotent before one non-Agent scribe job 
   );
 });
 
-test('scribe accepts one validated submission tool call and renders the fixed recovery note', async (t) => {
+test('scribe accepts one validated submission tool call with companion text and renders the fixed recovery note', async (t) => {
   const fixture = createFixture(t, {
     modelResponses: [{
       role: 'assistant',
       stopReason: 'toolUse',
-      content: [{
-        type: 'toolCall',
-        id: 'submit-recovery-note-1',
-        name: 'submit_recovery_note',
-        arguments: {
-          alreadyCompleted: ['npm run build'],
-          failureLocation: ['stream_read_error'],
-          possiblyEffective: ['kubectl apply'],
-          notCompleted: ['browser acceptance'],
-          recoveryPoint: ['verify rollout state'],
-          unknown: ['provider-side cause'],
-        },
-      }],
+      content: [
+        { type: 'text', text: '现场已经整理完成。' },
+        {
+          type: 'toolCall',
+          id: 'submit-recovery-note-1',
+          name: 'submit_recovery_note',
+          arguments: {
+            alreadyCompleted: ['npm run build'],
+            failureLocation: ['stream_read_error'],
+            possiblyEffective: ['kubectl apply'],
+            notCompleted: ['browser acceptance'],
+            recoveryPoint: ['verify rollout state'],
+            unknown: ['provider-side cause'],
+          },
+        }
+      ],
       usage: { input: 100, output: 50 },
     }],
   });
@@ -406,6 +409,7 @@ test('scribe accepts one validated submission tool call and renders the fixed re
   assert.match(message.content, /### 已经完成\n- npm run build/u);
   assert.match(message.content, /### 建议恢复点\n- verify rollout state/u);
   assert.match(message.content, /这是只读现场整理，不会执行或重放原任务。/u);
+  assert.doesNotMatch(message.content, /现场已经整理完成/u);
   assert.doesNotMatch(message.content, /"alreadyCompleted"/u);
 });
 
@@ -616,7 +620,7 @@ test('invalid scribe output uses the same one-message mechanical fallback contra
   assert.equal(fixture.store.listMessages(fixture.conversation.id).filter((item) => item.metadata.recoveryResult).length, 1);
 });
 
-test('scribe rejects wrong, multiple, visible-text, and schema-invalid submissions without retrying', async (t) => {
+test('scribe rejects wrong, multiple, and schema-invalid submissions without retrying', async (t) => {
   const { unknown: _unknown, ...missingUnknown } = VALID_RECOVERY_SUBMISSION;
   const cases = [
     ['wrong tool', recoverySubmissionOutput({}, { name: 'wrong_recovery_tool' })],
@@ -627,9 +631,6 @@ test('scribe rejects wrong, multiple, visible-text, and schema-invalid submissio
         name: 'submit_recovery_note',
         arguments: VALID_RECOVERY_SUBMISSION,
       }],
-    })],
-    ['visible text', recoverySubmissionOutput({}, {
-      prefixContent: [{ type: 'text', text: JSON.stringify(VALID_RECOVERY_SUBMISSION) }],
     })],
     ['missing field', {
       role: 'assistant',

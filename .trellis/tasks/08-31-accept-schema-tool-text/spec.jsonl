@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Companion-text acceptance and unchanged strict failure matrix"}
+{"file": ".trellis/spec/backend/message-recovery.md", "reason": "Shared Recovery companion-text acceptance and one-call terminal behavior"}

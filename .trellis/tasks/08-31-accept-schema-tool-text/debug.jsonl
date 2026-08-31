@@ -1,0 +1,4 @@
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": "server/domain/conversation/system-model-submission.ts", "reason": "Root cause: visible text gate precedes valid tool parsing"}
+{"file": "tests/smoke/server-smoke.test.js", "reason": "Baseline red: text plus one valid digest call fell back extractively with submission_visible_text_not_allowed"}
+{"file": "tests/runtime/message-recovery.test.js", "reason": "Baseline red: text plus one valid Recovery call persisted failed mechanical fallback"}

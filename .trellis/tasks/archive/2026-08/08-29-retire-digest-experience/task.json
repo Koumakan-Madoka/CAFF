@@ -3,7 +3,7 @@
   "name": "retire-digest-experience",
   "title": "Retire Digest Experience Extraction",
   "description": "Remove digest experience extraction, write-experience, pending-experience triggering, and automatic Skill draft creation while preserving historical read compatibility and manual extraction.",
-  "status": "review",
+  "status": "completed",
   "dev_type": "fullstack",
   "scope": "digest, agent bridge, skill draft auto-hook, focused backend/runtime/UI tests and specs",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "GPT",
   "assignee": "GPT",
   "createdAt": "2026-08-29",
-  "completedAt": null,
+  "completedAt": "2026-08-31",
   "branch": "room/523e9df5-caff",
   "base_branch": "develop",
   "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
@@ -34,8 +34,8 @@
       "action": "create-pr"
     }
   ],
-  "commit": null,
-  "pr_url": null,
+  "commit": "7c424df0a213c095de5165201ef41095168d4f3f",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/121",
   "subtasks": [],
   "children": [],
   "parent": null,
@@ -49,6 +49,6 @@
     "tests/smoke/server-smoke.test.js",
     "tests/runtime/turn-orchestrator.test.js"
   ],
-  "notes": "Complete retirement implemented with historical metadata retained as inert read compatibility. Initial review of 7a3b2ff requested one low-severity cleanup: pendingExperienceDraftCount and experience-specific digest status wording remained in the manual SSE/browser path. The revision adds red-first SSE/UI regressions, removes that state and wording, and passes check/typecheck/build, smoke 68/68 plus mode-store 4/4, and UI 16/16. Exact-SHA re-review remains pending. Earlier focused CLI/bridge 52/52 and Agent hook/PI 17/17 remain valid; turn-orchestrator business assertions were 102/102 with only two known Windows fs.rmSync EPERM after-hooks. DAG worker lease repair remains a separate follow-up.",
+  "notes": "Complete retirement implemented with historical metadata retained as inert read compatibility. Initial review of 7a3b2ff requested one low-severity cleanup: pendingExperienceDraftCount and experience-specific digest status wording remained in the manual SSE/browser path. Final candidate 7c424df removed that state and wording; Kimi independently re-reviewed the exact SHA and approved with F1 resolved and no new findings. Checks passed before PR #121 merged by merge commit to develop@b2b4bfc. Earlier focused CLI/bridge 52/52 and Agent hook/PI 17/17 remained valid; turn-orchestrator business assertions were 102/102 with only two known Windows fs.rmSync EPERM after-hooks. DAG worker lease repair remains a separate follow-up.",
   "meta": {}
 }

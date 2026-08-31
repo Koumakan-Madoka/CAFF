@@ -1,0 +1,9 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Runtime regression test expectations"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Verified companion-text acceptance, one-call terminal behavior, six-field strict schema, and unchanged invalid-output matrix against implementation and tests."}
+{"file": ".trellis/spec/backend/message-recovery.md", "reason": "Verified Recovery valid-call companion-text behavior and text-only/wrong/multiple/schema-invalid fallback matrix against shared parser and tests."}
+{"file": "server/domain/conversation/system-model-submission.ts", "reason": "Reviewed final boundary: companion text is non-authoritative; call count, name, object, and TypeBox validation remain fail-closed."}
+{"file": "tests/smoke/server-smoke.test.js", "reason": "npm run test:smoke passed server 67/67 and mode-store 4/4; focused digest companion/invalid matrix passed 6/6."}
+{"file": "tests/runtime/message-recovery.test.js", "reason": "Full Recovery suite passed 25/25; focused companion/invalid matrix passed 6/6."}
+{"file": "package.json", "reason": "npm run check, npm run typecheck, and npm run build passed"}
