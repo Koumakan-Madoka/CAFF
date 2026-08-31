@@ -1,8 +1,6 @@
 import { Type } from 'typebox';
 import { Compile } from 'typebox/compile';
 
-import { extractSystemModelVisibleText } from './system-model-output';
-
 export const CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME = 'submit_conversation_digest';
 export const RECOVERY_NOTE_SUBMISSION_TOOL_NAME = 'submit_recovery_note';
 export const RECOVERY_NOTE_NON_EXECUTION_STATEMENT = '这是只读现场整理，不会执行或重放原任务。';
@@ -94,15 +92,9 @@ export class SystemModelSubmissionError extends Error {
 export function extractSingleSystemModelSubmission(output: any, tool: any) {
   const message = assistantMessage(output);
   const content = Array.isArray(message && message.content) ? message.content : [];
-  const visibleText = extractSystemModelVisibleText(output);
+  // Provider companion text is non-authoritative; only the validated tool envelope is consumed.
   const toolCalls = content.filter((item: any) => normalizeContentType(item && item.type) === 'toolcall');
 
-  if (visibleText) {
-    throw new SystemModelSubmissionError(
-      'submission_visible_text_not_allowed',
-      'System model submission included visible text outside the tool call'
-    );
-  }
   if (toolCalls.length !== 1) {
     throw new SystemModelSubmissionError(
       'submission_call_count_invalid',

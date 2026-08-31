@@ -1,0 +1,51 @@
+{
+  "id": "accept-schema-tool-text",
+  "name": "accept-schema-tool-text",
+  "title": "Accept Schema Tool Calls With Companion Text",
+  "description": "Accept a unique schema-valid system-model submission tool call even when the provider includes companion visible text; preserve strict rejection for invalid tool protocol and arguments.",
+  "status": "review",
+  "dev_type": "backend",
+  "scope": "memory",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-31",
+  "completedAt": null,
+  "branch": "room/523e9df5-caff",
+  "base_branch": "develop",
+  "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/system-model-submission.ts",
+    "tests/smoke/server-smoke.test.js",
+    "tests/runtime/message-recovery.test.js",
+    ".trellis/spec/backend/conversation-digest.md",
+    ".trellis/spec/backend/message-recovery.md"
+  ],
+  "notes": "Real deepseek-v4-flash returned one valid submit_conversation_digest call plus 61 visible characters and was rejected by the former visible-text veto. Red tests reproduced extractive/mechanical fallback. The shared parser now ignores companion text only after unique name/object/schema validation; focused and full applicable gates pass. Awaiting exact-SHA independent review.",
+  "meta": {}
+}

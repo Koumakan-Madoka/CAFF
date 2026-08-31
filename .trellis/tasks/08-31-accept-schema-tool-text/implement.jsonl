@@ -1,0 +1,7 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Digest structured submission contract and validation matrix"}
+{"file": ".trellis/spec/backend/message-recovery.md", "reason": "Shared Recovery schema-only submission contract"}
+{"file": "server/domain/conversation/system-model-submission.ts", "reason": "Removed the visible-text veto after red reproduction; unique call count, expected name, object arguments, and strict schema validation remain authoritative, with no tool execution or model continuation added."}
+{"file": "tests/smoke/server-smoke.test.js", "reason": "Regression accepts V4-style companion text plus one valid digest call in one provider request; text-only, wrong, multiple, non-object, missing-field, and legacy experience cases retain fallback coverage."}
+{"file": "tests/runtime/message-recovery.test.js", "reason": "Regression accepts companion text plus one valid Recovery call in one request; wrong, multiple, missing-field, text-only, and provider failure cases retain mechanical fallback coverage."}
