@@ -49,7 +49,7 @@ so the whole result fell back extractively. Provider constrained sampling is
 - [x] Arrays and all other structural/schema guardrails remain unchanged.
 - [x] Digest specs distinguish the 1600 envelope limit from the 800 stored limit.
 - [x] Focused tests, check, typecheck, build, and smoke tests pass.
-- [ ] An independent reviewer approves the exact candidate SHA.
+- [x] An independent reviewer approves the exact candidate SHA.
 
 ## Validation Matrix
 

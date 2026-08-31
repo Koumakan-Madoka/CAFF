@@ -1,0 +1,1 @@
+{"file":".trellis/spec/backend/conversation-digest.md","reason":"Updated the executable digest contract: provider schema remains 1600, only an overlong string summary may be clipped to the existing 800 budget before complete strict revalidation, all other schema failures still fall back, and safe diagnostics add action=clipped without raw arguments."}

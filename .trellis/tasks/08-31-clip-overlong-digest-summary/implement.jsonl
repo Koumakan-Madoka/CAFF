@@ -1,0 +1,6 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Digest submission schema, normalization, fallback, and diagnostics contract"}
+{"file": "server/domain/conversation/system-model-submission.ts", "reason": "Shared tool-call count/name/object/schema validation boundary"}
+{"file": "server/domain/conversation/conversation-digest.ts", "reason": "Digest-only prevalidation normalization and safe diagnostics"}
+{"file": "tests/smoke/server-smoke.test.js", "reason": "Observable model/fallback boundary regressions"}

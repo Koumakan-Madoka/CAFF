@@ -1,0 +1,5 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "System model output and regression test expectations"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Verify executable digest contract matches code"}
+{"file": "server/domain/conversation/message-recovery.ts", "reason": "Confirm shared parser change does not relax Recovery"}

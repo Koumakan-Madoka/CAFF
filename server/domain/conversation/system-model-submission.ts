@@ -80,13 +80,19 @@ function firstValidationIssue(validator: ReturnType<typeof Compile>, value: any)
   return message;
 }
 
-type SystemModelSubmissionDiagnostic = {
+export type SystemModelSubmissionDiagnostic = {
   field: string;
   actualLength: number;
   acceptedLimit: number;
+  action?: 'clipped';
 };
 
-function stringCharacterLength(value: string) {
+export type SystemModelSubmissionPreparation = {
+  submission: any;
+  diagnostic?: SystemModelSubmissionDiagnostic | null;
+};
+
+export function countUnicodeCodePoints(value: string) {
   let length = 0;
   for (const _character of value) {
     length += 1;
@@ -104,7 +110,7 @@ function stringLengthDiagnostic(parameters: any, value: any): SystemModelSubmiss
     const acceptedLimit = Number((fieldSchema as any).maxLength);
     const fieldValue = value[field];
     const actualLength = typeof fieldValue === 'string'
-      ? stringCharacterLength(fieldValue)
+      ? countUnicodeCodePoints(fieldValue)
       : 0;
     if (
       typeof fieldValue === 'string'
@@ -139,7 +145,11 @@ export class SystemModelSubmissionError extends Error {
   }
 }
 
-export function extractSingleSystemModelSubmission(output: any, tool: any) {
+function extractSystemModelSubmission(
+  output: any,
+  tool: any,
+  prepareArguments: ((value: any) => SystemModelSubmissionPreparation) | null
+) {
   const message = assistantMessage(output);
   const content = Array.isArray(message && message.content) ? message.content : [];
   // Provider companion text is non-authoritative; only the validated tool envelope is consumed.
@@ -166,10 +176,20 @@ export function extractSingleSystemModelSubmission(output: any, tool: any) {
     );
   }
 
+  const preparation = prepareArguments
+    ? prepareArguments(toolCall.arguments)
+    : { submission: toolCall.arguments, diagnostic: null };
+  if (!isPlainObject(preparation && preparation.submission)) {
+    throw new SystemModelSubmissionError(
+      'submission_arguments_invalid',
+      'Prepared system model submission arguments must be an object'
+    );
+  }
+
   const validator = validatorFor(tool);
-  if (!validator.Check(toolCall.arguments)) {
-    const issue = firstValidationIssue(validator, toolCall.arguments);
-    const diagnostic = stringLengthDiagnostic(tool.parameters, toolCall.arguments);
+  if (!validator.Check(preparation.submission)) {
+    const issue = firstValidationIssue(validator, preparation.submission);
+    const diagnostic = stringLengthDiagnostic(tool.parameters, preparation.submission);
     throw new SystemModelSubmissionError(
       'submission_schema_invalid',
       `System model submission arguments failed schema validation${issue ? `: ${issue}` : ''}`,
@@ -177,7 +197,22 @@ export function extractSingleSystemModelSubmission(output: any, tool: any) {
     );
   }
 
-  return toolCall.arguments;
+  return {
+    submission: preparation.submission,
+    diagnostic: preparation.diagnostic || null,
+  };
+}
+
+export function extractSingleSystemModelSubmission(output: any, tool: any) {
+  return extractSystemModelSubmission(output, tool, null).submission;
+}
+
+export function extractPreparedSingleSystemModelSubmission(
+  output: any,
+  tool: any,
+  prepareArguments: (value: any) => SystemModelSubmissionPreparation
+) {
+  return extractSystemModelSubmission(output, tool, prepareArguments);
 }
 
 function normalizeRecoveryLine(value: any) {
