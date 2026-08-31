@@ -1,0 +1,51 @@
+{
+  "id": "clip-overlong-digest-summary",
+  "name": "clip-overlong-digest-summary",
+  "title": "Clip Overlong Digest Summary Submissions",
+  "description": "Preserve structurally valid model digests by clipping only an overlong summary before strict schema validation while keeping all other invalid submissions fail closed.",
+  "status": "review",
+  "dev_type": "backend",
+  "scope": "conversation digest overlong-summary preprocessing, strict validation, diagnostics, tests, and spec",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-31",
+  "completedAt": null,
+  "branch": "room/523e9df5-caff",
+  "base_branch": "develop",
+  "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/system-model-submission.ts",
+    "server/domain/conversation/conversation-digest.ts",
+    "server/domain/conversation/message-recovery.ts",
+    "tests/smoke/server-smoke.test.js",
+    ".trellis/spec/backend/conversation-digest.md"
+  ],
+  "notes": "User-confirmed summary-only repair implemented. Baseline red: otherwise-valid 1601- and 4097-code-point summaries made one provider call but fell back extractively, while extra-field and oversized-array controls already rejected. Green: focused matrix 10/10; full server smoke 77/77, mode-store 4/4, Recovery 25/25, npm run check, typecheck, build, Trellis validation, and git diff check passed. Provider schema remains 1600, stored summary remains 800, arrays remain 8x240, and successful repair diagnostics contain only field/actualLength/acceptedLimit/action plus existing bounded attempt metadata. Awaiting exact-SHA independent review.",
+  "meta": {}
+}

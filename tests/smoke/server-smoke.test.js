@@ -2222,82 +2222,184 @@ test('conversations controller accepts digest submission summaries through 1600 
   }
 });
 
-test('conversations controller rejects a 1601-character digest summary with bounded length diagnostics', async (t) => {
-  const originalWarn = console.warn;
-  const warnings = [];
-  console.warn = (...args) => warnings.push(args.join(' '));
-  const calls = [];
-  global.__CAFF_OVERFLOW_DIGEST_SUMMARY_CALLS = calls;
-  t.after(() => {
-    console.warn = originalWarn;
-    delete global.__CAFF_OVERFLOW_DIGEST_SUMMARY_CALLS;
-  });
-
-  const privateSummaryMarker = 'private-overflow-summary-marker:';
-  const submittedSummary = privateSummaryMarker
-    + '😀'.repeat(1601 - Array.from(privateSummaryMarker).length);
-  const moduleSource = `
-    export function getModel(provider, model) {
-      return { id: model, name: model, api: 'openai-completions', provider, maxTokens: 24576 };
-    }
-    export async function completeSimple(model, context, options) {
-      globalThis.__CAFF_OVERFLOW_DIGEST_SUMMARY_CALLS.push({
-        summaryMaxLength: context.tools[0].parameters.properties.summary.maxLength,
-        toolChoice: options.toolChoice,
+test('conversations controller clips overlong digest summaries before strict validation', async (t) => {
+  for (const summaryLength of [1601, 4097]) {
+    await t.test(`${summaryLength} Unicode characters`, async (subtest) => {
+      const originalWarn = console.warn;
+      const warnings = [];
+      console.warn = (...args) => warnings.push(args.join(' '));
+      const calls = [];
+      global.__CAFF_OVERFLOW_DIGEST_SUMMARY_CALLS = calls;
+      subtest.after(() => {
+        console.warn = originalWarn;
+        delete global.__CAFF_OVERFLOW_DIGEST_SUMMARY_CALLS;
       });
-      return {
-        role: 'assistant',
-        content: [{
-          type: 'toolCall',
-          id: 'overflow-digest-summary',
-          name: 'submit_conversation_digest',
-          arguments: {
-            summary: ${JSON.stringify(submittedSummary)},
-            facts: [],
-            decisions: [],
-            openQuestions: [],
-            nextActions: [],
-            artifacts: []
-          }
-        }],
-        stopReason: 'toolUse',
-        timestamp: Date.now()
-      };
-    }
-  `;
-  const { handler, store } = createConversationsControllerHarness(t, {
-    digestOptions: {
-      piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+
+      const privateSummaryMarker = `private-overflow-summary-${summaryLength}:`;
+      const submittedSummary = privateSummaryMarker
+        + '😀'.repeat(summaryLength - Array.from(privateSummaryMarker).length);
+      const moduleSource = `
+        export function getModel(provider, model) {
+          return { id: model, name: model, api: 'openai-completions', provider, maxTokens: 24576 };
+        }
+        export async function completeSimple(model, context, options) {
+          globalThis.__CAFF_OVERFLOW_DIGEST_SUMMARY_CALLS.push({
+            summaryMaxLength: context.tools[0].parameters.properties.summary.maxLength,
+            toolChoice: options.toolChoice,
+          });
+          return {
+            role: 'assistant',
+            content: [{
+              type: 'toolCall',
+              id: 'overflow-digest-summary-${summaryLength}',
+              name: 'submit_conversation_digest',
+              arguments: {
+                summary: ${JSON.stringify(submittedSummary)},
+                facts: ['保留结构化事实。'],
+                decisions: [],
+                openQuestions: [],
+                nextActions: [],
+                artifacts: []
+              }
+            }],
+            stopReason: 'toolUse',
+            timestamp: Date.now()
+          };
+        }
+      `;
+      const { handler, store } = createConversationsControllerHarness(subtest, {
+        digestOptions: {
+          piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+        },
+      });
+      const conversation = createSmokeConversation(store, {
+        id: `digest-overflow-summary-${summaryLength}`,
+        title: `Digest Overflow Summary ${summaryLength}`,
+      });
+      store.createMessage({
+        id: `digest-overflow-summary-message-${summaryLength}`,
+        conversationId: conversation.id,
+        turnId: `digest-overflow-summary-turn-${summaryLength}`,
+        role: 'user',
+        senderName: 'User',
+        content: '决定只修复超长 summary 并保留严格结构校验。',
+      });
+
+      const result = await invokeConversationsController(handler, {
+        method: 'POST',
+        pathname: `/api/conversations/${conversation.id}/digest`,
+        body: { action: 'create', summaryMode: 'model' },
+      });
+      const warningText = warnings.join('\n');
+
+      assert.equal(result.statusCode, 200);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].summaryMaxLength, 1600);
+      assert.equal(calls[0].toolChoice, 'auto');
+      assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
+      assert.equal(result.json.digest.summary.length, 800);
+      assert.ok(result.json.digest.summary.startsWith(privateSummaryMarker));
+      assert.ok(result.json.digest.summary.endsWith('…'));
+      assert.deepEqual(result.json.digest.facts, ['保留结构化事实。']);
+      assert.match(
+        warningText,
+        new RegExp(`field=summary; actualLength=${summaryLength}; acceptedLimit=1600; action=clipped`, 'u')
+      );
+      assert.doesNotMatch(warningText, new RegExp(privateSummaryMarker, 'u'));
+    });
+  }
+});
+
+test('conversations controller does not let overlong summary repair hide other schema violations', async (t) => {
+  const cases = [
+    {
+      name: 'extra field',
+      suffix: ', unexpectedField: true',
     },
-  });
-  const conversation = createSmokeConversation(store, {
-    id: 'digest-overflow-summary-1601',
-    title: 'Digest Overflow Summary 1601',
-  });
-  store.createMessage({
-    id: 'digest-overflow-summary-message-1601',
-    conversationId: conversation.id,
-    turnId: 'digest-overflow-summary-turn-1601',
-    role: 'user',
-    senderName: 'User',
-    content: '决定超出接收上限的摘要继续安全回退。',
-  });
+    {
+      name: 'oversized section',
+      facts: `Array.from({ length: 9 }, (_, index) => 'fact-' + index)`,
+    },
+    {
+      name: 'wrong field type',
+      decisions: `'not-an-array'`,
+    },
+  ];
 
-  const result = await invokeConversationsController(handler, {
-    method: 'POST',
-    pathname: `/api/conversations/${conversation.id}/digest`,
-    body: { action: 'create', summaryMode: 'model' },
-  });
-  const warningText = warnings.join('\n');
+  for (const testCase of cases) {
+    await t.test(testCase.name, async (subtest) => {
+      const originalWarn = console.warn;
+      const warnings = [];
+      console.warn = (...args) => warnings.push(args.join(' '));
+      const calls = [];
+      global.__CAFF_INVALID_OVERFLOW_DIGEST_CALLS = calls;
+      subtest.after(() => {
+        console.warn = originalWarn;
+        delete global.__CAFF_INVALID_OVERFLOW_DIGEST_CALLS;
+      });
 
-  assert.equal(result.statusCode, 200);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].summaryMaxLength, 1600);
-  assert.equal(calls[0].toolChoice, 'auto');
-  assert.equal(result.json.digest.createdBy, 'user');
-  assert.match(result.json.digest.summary, /^Extractive digest of 1 public messages\./u);
-  assert.match(warningText, /field=summary; actualLength=1601; acceptedLimit=1600/u);
-  assert.doesNotMatch(warningText, new RegExp(privateSummaryMarker, 'u'));
+      const privateSummaryMarker = `private-invalid-overflow-${testCase.name}:`;
+      const submittedSummary = privateSummaryMarker + 'x'.repeat(1701 - privateSummaryMarker.length);
+      const moduleSource = `
+        export function getModel(provider, model) {
+          return { id: model, name: model, api: 'openai-completions', provider, maxTokens: 24576 };
+        }
+        export async function completeSimple() {
+          globalThis.__CAFF_INVALID_OVERFLOW_DIGEST_CALLS.push(true);
+          return {
+            role: 'assistant',
+            content: [{
+              type: 'toolCall',
+              id: 'invalid-overflow-digest-summary',
+              name: 'submit_conversation_digest',
+              arguments: {
+                summary: ${JSON.stringify(submittedSummary)},
+                facts: ${testCase.facts || '[]'},
+                decisions: ${testCase.decisions || '[]'},
+                openQuestions: [],
+                nextActions: [],
+                artifacts: []${testCase.suffix || ''}
+              }
+            }],
+            stopReason: 'toolUse',
+            timestamp: Date.now()
+          };
+        }
+      `;
+      const { handler, store } = createConversationsControllerHarness(subtest, {
+        digestOptions: {
+          piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+        },
+      });
+      const conversation = createSmokeConversation(store, {
+        id: `digest-invalid-overflow-${testCase.name.replace(/\s+/gu, '-')}`,
+        title: `Digest Invalid Overflow ${testCase.name}`,
+      });
+      store.createMessage({
+        id: `digest-invalid-overflow-message-${testCase.name.replace(/\s+/gu, '-')}`,
+        conversationId: conversation.id,
+        turnId: `digest-invalid-overflow-turn-${testCase.name.replace(/\s+/gu, '-')}`,
+        role: 'user',
+        senderName: 'User',
+        content: '决定除 summary 外的 schema 错误必须继续回退。',
+      });
+
+      const result = await invokeConversationsController(handler, {
+        method: 'POST',
+        pathname: `/api/conversations/${conversation.id}/digest`,
+        body: { action: 'create', summaryMode: 'model' },
+      });
+      const warningText = warnings.join('\n');
+
+      assert.equal(result.statusCode, 200);
+      assert.equal(calls.length, 1);
+      assert.equal(result.json.digest.createdBy, 'user');
+      assert.match(result.json.digest.summary, /^Extractive digest of 1 public messages\./u);
+      assert.match(warningText, /invalid_output/u);
+      assert.doesNotMatch(warningText, /action=clipped/u);
+      assert.doesNotMatch(warningText, new RegExp(privateSummaryMarker, 'u'));
+    });
+  }
 });
 
 test('conversations controller rejects plain-text JSON instead of treating it as a digest submission', async (t) => {

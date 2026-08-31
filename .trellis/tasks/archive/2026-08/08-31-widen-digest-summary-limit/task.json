@@ -3,7 +3,7 @@
   "name": "widen-digest-summary-limit",
   "title": "Widen Digest Summary Submission Limit",
   "description": "Accept digest summary tool arguments up to 1600 characters while preserving the existing 800-character normalized storage budget and adding safe numeric overflow diagnostics.",
-  "status": "review",
+  "status": "completed",
   "dev_type": "backend",
   "scope": "conversation digest schema, normalization, diagnostics, tests, and spec",
   "package": null,
@@ -11,19 +11,31 @@
   "creator": "GPT",
   "assignee": "GPT",
   "createdAt": "2026-08-31",
-  "completedAt": null,
+  "completedAt": "2026-08-31",
   "branch": "room/523e9df5-caff",
   "base_branch": "develop",
   "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
   "current_phase": 2,
   "next_action": [
-    { "phase": 1, "action": "implement" },
-    { "phase": 2, "action": "check" },
-    { "phase": 3, "action": "finish" },
-    { "phase": 4, "action": "create-pr" }
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
   ],
-  "commit": null,
-  "pr_url": null,
+  "commit": "7e231725f93dbab6a837541a506ef34bb47cb365",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/123",
   "subtasks": [],
   "children": [],
   "parent": null,
@@ -33,6 +45,6 @@
     "tests/smoke/server-smoke.test.js",
     ".trellis/spec/backend/conversation-digest.md"
   ],
-  "notes": "Confirmed boundary implemented: digest summary tool envelopes accept up to 1600, normalized storage remains 800, section limits remain 8x240, and 1601 fails closed with field/actual/limit-only diagnostics. Red baseline reproduced 801/1600 fallback at the former 800 schema limit. Green focused boundaries passed 4/4; full server smoke 71/71, mode-store 4/4, Recovery 25/25, check, typecheck, build, git diff check, Trellis validation, and JSON/JSONL parsing passed. Awaiting exact-SHA independent review.",
+  "notes": "Completed and merged through PR #123. Exact candidate 7e231725f93dbab6a837541a506ef34bb47cb365 was independently reviewed by Kimi with APPROVE and no findings. Tool envelopes accept summary through 1600 Unicode code points while normalized storage remains 800; arrays remain 8x240 and larger summaries fail closed with bounded diagnostics. Focused boundaries 4/4, server smoke 71/71, mode-store 4/4, Recovery 25/25, check, typecheck, build, Trellis, and diff validation passed. PR #123 merged by merge commit to develop@1ceda1600284fd21ef996a709e74c33dfb0b6ec2.",
   "meta": {}
 }

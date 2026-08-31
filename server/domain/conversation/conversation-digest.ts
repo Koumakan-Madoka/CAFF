@@ -4,10 +4,12 @@ import * as path from 'node:path';
 import { createHttpError } from '../../http/http-errors';
 import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting, resolveThinkingSetting } from '../../../lib/minimal-pi';
 import {
+  CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH,
   CONVERSATION_DIGEST_SUBMISSION_TOOL,
   CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME,
   SystemModelSubmissionError,
-  extractSingleSystemModelSubmission,
+  countUnicodeCodePoints,
+  extractPreparedSingleSystemModelSubmission,
 } from './system-model-submission';
 import {
   SystemModelOutputError,
@@ -111,6 +113,31 @@ function clipText(value: any, maxLength: number) {
   }
 
   return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function prepareDigestSubmissionArguments(value: any) {
+  const summary = value && value.summary;
+  if (typeof summary !== 'string') {
+    return { submission: value, diagnostic: null };
+  }
+
+  const actualLength = countUnicodeCodePoints(summary);
+  if (actualLength <= CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH) {
+    return { submission: value, diagnostic: null };
+  }
+
+  return {
+    submission: {
+      ...value,
+      summary: clipText(summary, MAX_DIGEST_SUMMARY_LENGTH),
+    },
+    diagnostic: {
+      field: 'summary',
+      actualLength,
+      acceptedLimit: CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH,
+      action: 'clipped' as const,
+    },
+  };
 }
 
 function stringifyDigestModelOutput(value: any) {
@@ -1216,13 +1243,18 @@ function warnSystemModelDiagnostic(diagnostic: any, config: any, options: any = 
     && diagnostic.acceptedLimit >= 0
     ? diagnostic.acceptedLimit
     : null;
+  const action = normalizeText(diagnostic && diagnostic.action) === 'clipped'
+    ? 'clipped'
+    : '';
   const lengthDiagnostic = field && actualLength !== null && acceptedLimit !== null
     ? `field=${field}; actualLength=${actualLength}; acceptedLimit=${acceptedLimit}; `
     : '';
+  const actionDiagnostic = action ? `action=${action}; ` : '';
   console.warn(
     `[conversation-digest] System model output diagnostic (${purpose}, ${modelLabel}): `
       + `${normalizeText(diagnostic && diagnostic.diagnosticCode) || 'none'}; `
       + lengthDiagnostic
+      + actionDiagnostic
       + `attempt=${diagnostic && diagnostic.attempt || 0}; `
       + `maxTokens=${diagnostic && diagnostic.maxTokens || 0}; `
       + `thinking=${normalizeText(diagnostic && diagnostic.thinking) || 'off'}; `
@@ -1299,13 +1331,25 @@ async function runStructuredDigestModelPrompt(prompt: string, config: any, optio
     }
 
     try {
-      const submission = extractSingleSystemModelSubmission(output, CONVERSATION_DIGEST_SUBMISSION_TOOL);
-      const normalized = normalizeModelDigestPayload(submission);
+      const prepared = extractPreparedSingleSystemModelSubmission(
+        output,
+        CONVERSATION_DIGEST_SUBMISSION_TOOL,
+        prepareDigestSubmissionArguments
+      );
+      const normalized = normalizeModelDigestPayload(prepared.submission);
       if (!normalized) {
         throw new SystemModelSubmissionError(
           'submission_digest_normalization_failed',
           'System model submission did not normalize to a valid digest'
         );
+      }
+      if (prepared.diagnostic) {
+        warnSystemModelDiagnostic({
+          ...inspection.diagnostic,
+          ...prepared.diagnostic,
+          diagnosticCode: 'submission_summary_repaired',
+          retryScheduled: false,
+        }, config, options);
       }
       progress.finished('结构化摘要已提交。');
       return normalized;
