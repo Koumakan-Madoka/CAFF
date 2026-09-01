@@ -3,7 +3,7 @@
   "name": "clip-overlong-digest-summary",
   "title": "Clip Overlong Digest Summary Submissions",
   "description": "Preserve structurally valid model digests by clipping only an overlong summary before strict schema validation while keeping all other invalid submissions fail closed.",
-  "status": "review",
+  "status": "completed",
   "dev_type": "backend",
   "scope": "conversation digest overlong-summary preprocessing, strict validation, diagnostics, tests, and spec",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "GPT",
   "assignee": "GPT",
   "createdAt": "2026-08-31",
-  "completedAt": null,
+  "completedAt": "2026-09-01",
   "branch": "room/523e9df5-caff",
   "base_branch": "develop",
   "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
@@ -34,8 +34,8 @@
       "action": "create-pr"
     }
   ],
-  "commit": null,
-  "pr_url": null,
+  "commit": "9286cfcc5d99d56ae941d31dd9747d36118d437c",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/124",
   "subtasks": [],
   "children": [],
   "parent": null,
@@ -46,6 +46,6 @@
     "tests/smoke/server-smoke.test.js",
     ".trellis/spec/backend/conversation-digest.md"
   ],
-  "notes": "User-confirmed summary-only repair implemented. Baseline red: otherwise-valid 1601- and 4097-code-point summaries made one provider call but fell back extractively, while extra-field and oversized-array controls already rejected. Green: focused matrix 10/10; full server smoke 77/77, mode-store 4/4, Recovery 25/25, npm run check, typecheck, build, Trellis validation, and git diff check passed. Provider schema remains 1600, stored summary remains 800, arrays remain 8x240, and successful repair diagnostics contain only field/actualLength/acceptedLimit/action plus existing bounded attempt metadata. Awaiting exact-SHA independent review.",
+  "notes": "User-confirmed summary-only repair shipped through PR #124. Baseline red: otherwise-valid 1601- and 4097-code-point summaries made one provider call but fell back extractively, while extra-field and oversized-array controls already rejected. Green: focused matrix 10/10; full server smoke 77/77, mode-store 4/4, Recovery 25/25, npm run check, typecheck, build, Trellis validation, and git diff check passed. Kimi independently reviewed exact candidate 9286cfcc5d99d56ae941d31dd9747d36118d437c with APPROVE and no findings. GitHub Actions unit checks passed; PR #124 merged with merge commit 8066976b3b6cb193bc48bef72b0e4ef3d7255af8, whose tree matches the candidate.",
   "meta": {}
 }

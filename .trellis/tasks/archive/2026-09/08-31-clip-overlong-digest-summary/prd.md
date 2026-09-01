@@ -56,7 +56,7 @@ though the normal digest path already clips accepted summaries to 800.
       companion text handling, and Recovery behavior remain unchanged.
 - [x] Focused tests, smoke, Recovery, check, typecheck, build, Trellis, and diff
       validation pass.
-- [ ] An independent reviewer approves the exact candidate SHA.
+- [x] An independent reviewer approves the exact candidate SHA.
 
 ## Validation Matrix
 
