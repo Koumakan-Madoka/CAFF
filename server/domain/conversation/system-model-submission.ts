@@ -5,12 +5,20 @@ export const CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME = 'submit_conversation_dig
 export const RECOVERY_NOTE_SUBMISSION_TOOL_NAME = 'submit_recovery_note';
 export const RECOVERY_NOTE_NON_EXECUTION_STATEMENT = '这是只读现场整理，不会执行或重放原任务。';
 export const CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH = 1600;
+export const CONVERSATION_DIGEST_STORED_SUMMARY_MAX_LENGTH = 800;
+export const CONVERSATION_DIGEST_SUBMISSION_SECTION_MAX_ITEMS = 12;
+export const CONVERSATION_DIGEST_SUBMISSION_ITEM_MAX_LENGTH = 240;
 
-const digestItem = Type.String({ minLength: 1, maxLength: 240 });
-const digestItems = Type.Array(digestItem, { maxItems: 8 });
+const digestItem = Type.String({
+  minLength: 1,
+  maxLength: CONVERSATION_DIGEST_SUBMISSION_ITEM_MAX_LENGTH,
+});
+const digestItems = Type.Array(digestItem, {
+  maxItems: CONVERSATION_DIGEST_SUBMISSION_SECTION_MAX_ITEMS,
+});
 export const CONVERSATION_DIGEST_SUBMISSION_TOOL = {
   name: CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME,
-  description: 'Submit the complete bounded conversation digest. This schema-only return channel performs no action.',
+  description: `Submit the complete bounded conversation digest. Target summary <= ${CONVERSATION_DIGEST_STORED_SUMMARY_MAX_LENGTH} characters; each section <= ${CONVERSATION_DIGEST_SUBMISSION_SECTION_MAX_ITEMS} items; each item <= ${CONVERSATION_DIGEST_SUBMISSION_ITEM_MAX_LENGTH} characters. This schema-only return channel performs no action.`,
   parameters: Type.Object({
     summary: Type.String({ minLength: 1, maxLength: CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH }),
     facts: digestItems,
@@ -82,14 +90,16 @@ function firstValidationIssue(validator: ReturnType<typeof Compile>, value: any)
 
 export type SystemModelSubmissionDiagnostic = {
   field: string;
-  actualLength: number;
-  acceptedLimit: number;
+  actualLength?: number;
+  acceptedLimit?: number;
+  actualItems?: number;
+  acceptedItems?: number;
   action?: 'clipped';
 };
 
 export type SystemModelSubmissionPreparation = {
   submission: any;
-  diagnostic?: SystemModelSubmissionDiagnostic | null;
+  diagnostics?: SystemModelSubmissionDiagnostic[] | null;
 };
 
 export function countUnicodeCodePoints(value: string) {
@@ -178,7 +188,7 @@ function extractSystemModelSubmission(
 
   const preparation = prepareArguments
     ? prepareArguments(toolCall.arguments)
-    : { submission: toolCall.arguments, diagnostic: null };
+    : { submission: toolCall.arguments, diagnostics: [] };
   if (!isPlainObject(preparation && preparation.submission)) {
     throw new SystemModelSubmissionError(
       'submission_arguments_invalid',
@@ -199,7 +209,9 @@ function extractSystemModelSubmission(
 
   return {
     submission: preparation.submission,
-    diagnostic: preparation.diagnostic || null,
+    diagnostics: Array.isArray(preparation.diagnostics)
+      ? preparation.diagnostics
+      : [],
   };
 }
 

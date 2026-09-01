@@ -4,10 +4,14 @@ import * as path from 'node:path';
 import { createHttpError } from '../../http/http-errors';
 import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting, resolveThinkingSetting } from '../../../lib/minimal-pi';
 import {
+  CONVERSATION_DIGEST_SUBMISSION_ITEM_MAX_LENGTH,
+  CONVERSATION_DIGEST_SUBMISSION_SECTION_MAX_ITEMS,
   CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH,
+  CONVERSATION_DIGEST_STORED_SUMMARY_MAX_LENGTH,
   CONVERSATION_DIGEST_SUBMISSION_TOOL,
   CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME,
   SystemModelSubmissionError,
+  type SystemModelSubmissionDiagnostic,
   countUnicodeCodePoints,
   extractPreparedSingleSystemModelSubmission,
 } from './system-model-submission';
@@ -34,11 +38,11 @@ const CONVERSATION_DIGEST_ACTIONS = new Set(['get', 'create', 'delete', 'clear',
 const MAX_RECENT_DIGEST_ENTRIES = 3;
 const MAX_DIGEST_METADATA_ITEMS = 12;
 const MAX_PROMPT_DIGEST_ENTRIES = 3;
-const MAX_DIGEST_SECTION_ITEMS = 8;
+const MAX_DIGEST_SECTION_ITEMS = CONVERSATION_DIGEST_SUBMISSION_SECTION_MAX_ITEMS;
 const MAX_DIGEST_EXPERIENCE_ITEMS = 5;
 const MAX_DIGEST_EXPERIENCE_STEPS = 5;
-const MAX_DIGEST_ITEM_LENGTH = 240;
-const MAX_DIGEST_SUMMARY_LENGTH = 800;
+const MAX_DIGEST_ITEM_LENGTH = CONVERSATION_DIGEST_SUBMISSION_ITEM_MAX_LENGTH;
+const MAX_DIGEST_SUMMARY_LENGTH = CONVERSATION_DIGEST_STORED_SUMMARY_MAX_LENGTH;
 const MAX_DIGEST_SOURCE_IDS = 24;
 const MAX_DIGEST_MODEL_MESSAGES = 80;
 const MAX_DIGEST_MODEL_MESSAGE_LENGTH = 1000;
@@ -116,28 +120,79 @@ function clipText(value: any, maxLength: number) {
 }
 
 function prepareDigestSubmissionArguments(value: any) {
-  const summary = value && value.summary;
-  if (typeof summary !== 'string') {
-    return { submission: value, diagnostic: null };
-  }
-
-  const actualLength = countUnicodeCodePoints(summary);
-  if (actualLength <= CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH) {
-    return { submission: value, diagnostic: null };
-  }
-
-  return {
-    submission: {
-      ...value,
-      summary: clipText(summary, MAX_DIGEST_SUMMARY_LENGTH),
-    },
-    diagnostic: {
-      field: 'summary',
-      actualLength,
-      acceptedLimit: CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH,
-      action: 'clipped' as const,
-    },
+  let submission = value;
+  const diagnostics: SystemModelSubmissionDiagnostic[] = [];
+  const ensureSubmissionCopy = () => {
+    if (submission === value) {
+      submission = { ...value };
+    }
+    return submission;
   };
+
+  const summary = value && value.summary;
+  if (typeof summary === 'string') {
+    const actualLength = countUnicodeCodePoints(summary);
+    if (actualLength > CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH) {
+      ensureSubmissionCopy().summary = clipText(summary, MAX_DIGEST_SUMMARY_LENGTH);
+      diagnostics.push({
+        field: 'summary',
+        actualLength,
+        acceptedLimit: CONVERSATION_DIGEST_SUBMISSION_SUMMARY_MAX_LENGTH,
+        action: 'clipped' as const,
+      });
+    }
+  }
+
+  for (const field of DIGEST_SECTION_KEYS) {
+    const originalItems = value && value[field];
+    if (!Array.isArray(originalItems)) {
+      continue;
+    }
+    // Never let truncation erase a type or minLength error that strict validation must reject.
+    if (!originalItems.every((item: any) => (
+      typeof item === 'string'
+      && countUnicodeCodePoints(item) > 0
+    ))) {
+      continue;
+    }
+
+    let preparedItems = originalItems;
+    let changed = false;
+    if (originalItems.length > MAX_DIGEST_SECTION_ITEMS) {
+      preparedItems = originalItems.slice(0, MAX_DIGEST_SECTION_ITEMS);
+      changed = true;
+      diagnostics.push({
+        field,
+        actualItems: originalItems.length,
+        acceptedItems: MAX_DIGEST_SECTION_ITEMS,
+        action: 'clipped' as const,
+      });
+    }
+
+    preparedItems = preparedItems.map((item: any, index: number) => {
+      if (typeof item !== 'string') {
+        return item;
+      }
+      const actualLength = countUnicodeCodePoints(item);
+      if (actualLength <= MAX_DIGEST_ITEM_LENGTH) {
+        return item;
+      }
+      changed = true;
+      diagnostics.push({
+        field: `${field}.${index}`,
+        actualLength,
+        acceptedLimit: MAX_DIGEST_ITEM_LENGTH,
+        action: 'clipped' as const,
+      });
+      return clipText(item, MAX_DIGEST_ITEM_LENGTH);
+    });
+
+    if (changed) {
+      ensureSubmissionCopy()[field] = preparedItems;
+    }
+  }
+
+  return { submission, diagnostics };
 }
 
 function stringifyDigestModelOutput(value: any) {
@@ -742,7 +797,7 @@ function modelDigestSubmissionInstructionLines() {
     'Do not emit visible text, prose, markdown, code fences, XML, comments, or a JSON object in the assistant body.',
     'Provide every tool argument defined by the schema. Use empty arrays when evidence is missing instead of inventing filler items.',
     'Write a concise summary only from supported evidence. Facts require user statements, explicit results, or verified code/test outcomes.',
-    'Limits are enforced by the tool schema: summary <= 800 characters; each main array <= 8 items.',
+    `Limits are enforced by the tool schema: summary <= ${MAX_DIGEST_SUMMARY_LENGTH} characters; each main array <= ${MAX_DIGEST_SECTION_ITEMS} items; each item <= ${MAX_DIGEST_ITEM_LENGTH} characters.`,
   ];
 }
 
@@ -1243,17 +1298,29 @@ function warnSystemModelDiagnostic(diagnostic: any, config: any, options: any = 
     && diagnostic.acceptedLimit >= 0
     ? diagnostic.acceptedLimit
     : null;
+  const actualItems = Number.isSafeInteger(diagnostic && diagnostic.actualItems)
+    && diagnostic.actualItems >= 0
+    ? diagnostic.actualItems
+    : null;
+  const acceptedItems = Number.isSafeInteger(diagnostic && diagnostic.acceptedItems)
+    && diagnostic.acceptedItems >= 0
+    ? diagnostic.acceptedItems
+    : null;
   const action = normalizeText(diagnostic && diagnostic.action) === 'clipped'
     ? 'clipped'
     : '';
   const lengthDiagnostic = field && actualLength !== null && acceptedLimit !== null
     ? `field=${field}; actualLength=${actualLength}; acceptedLimit=${acceptedLimit}; `
     : '';
+  const itemCountDiagnostic = field && actualItems !== null && acceptedItems !== null
+    ? `field=${field}; actualItems=${actualItems}; acceptedItems=${acceptedItems}; `
+    : '';
   const actionDiagnostic = action ? `action=${action}; ` : '';
   console.warn(
     `[conversation-digest] System model output diagnostic (${purpose}, ${modelLabel}): `
       + `${normalizeText(diagnostic && diagnostic.diagnosticCode) || 'none'}; `
       + lengthDiagnostic
+      + itemCountDiagnostic
       + actionDiagnostic
       + `attempt=${diagnostic && diagnostic.attempt || 0}; `
       + `maxTokens=${diagnostic && diagnostic.maxTokens || 0}; `
@@ -1343,11 +1410,13 @@ async function runStructuredDigestModelPrompt(prompt: string, config: any, optio
           'System model submission did not normalize to a valid digest'
         );
       }
-      if (prepared.diagnostic) {
+      for (const diagnostic of prepared.diagnostics) {
         warnSystemModelDiagnostic({
           ...inspection.diagnostic,
-          ...prepared.diagnostic,
-          diagnosticCode: 'submission_summary_repaired',
+          ...diagnostic,
+          diagnosticCode: diagnostic.field === 'summary'
+            ? 'submission_summary_repaired'
+            : 'submission_digest_section_repaired',
           retryScheduled: false,
         }, config, options);
       }

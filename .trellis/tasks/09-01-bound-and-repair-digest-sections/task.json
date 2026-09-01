@@ -1,0 +1,51 @@
+{
+  "id": "bound-and-repair-digest-sections",
+  "name": "bound-and-repair-digest-sections",
+  "title": "Bound and Repair Digest Sections",
+  "description": "Raise digest sections to 12 retained items and deterministically clip oversized arrays/items before unchanged strict validation.",
+  "status": "review",
+  "dev_type": "backend",
+  "scope": "conversation digest section budgets, deterministic repair, safe diagnostics, prompts, tests, and spec",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-09-01",
+  "completedAt": null,
+  "branch": "room/523e9df5-caff",
+  "base_branch": "develop",
+  "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/system-model-submission.ts",
+    "server/domain/conversation/conversation-digest.ts",
+    "server/domain/conversation/message-recovery.ts",
+    "tests/smoke/server-smoke.test.js",
+    ".trellis/spec/backend/conversation-digest.md"
+  ],
+  "notes": "Confirmed Goal scope implemented. Shared constants now drive the 1600 summary envelope, 800 stored summary, 12 section items, and 240 item characters across tool schema, description, normalization, extractive/rollup paths, and model prompts. Digest-only preparation copies and repairs overlong summary/all-string arrays/string items, then reruns complete strict schema; non-string or empty items anywhere, wrong types, missing/extra fields, and protocol errors remain fail closed. Baseline red proved schema=8, exact 12 failed, and 13/241 submissions fell back. Final focused matrix 16/16, server smoke 83/83, mode-store 4/4, Recovery 25/25, npm run check, dual-tsconfig typecheck, build, Trellis validation, JSON/JSONL parse, and diff check passed. Full turn-orchestrator reached 102/104; two unrelated Windows temp-directory cleanup hooks fail with EPERM after their image-preflight assertions pass, including under a project-local TEMP. Awaiting exact-SHA independent review.",
+  "meta": {}
+}

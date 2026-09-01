@@ -1,0 +1,8 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "System model output and regression test expectations"}
+{"file": "server/domain/conversation/message-recovery.ts", "reason": "Verify shared parser changes do not preprocess Recovery"}
+{"file": "tests/smoke/server-smoke.test.js", "reason": "Baseline red proved schema=8, 12/13/241 model submissions failed or truncated; final focused 16/16 and full server smoke 83/83 passed"}
+{"file": "tests/runtime/message-recovery.test.js", "reason": "Full Recovery suite 25/25 passed with original strict parser and no digest preparation"}
+{"file": "tests/smoke/mode-store.test.js", "reason": "Mode-store smoke 4/4 passed"}
+{"file": ".trellis/tasks/09-01-bound-and-repair-digest-sections/task.json", "reason": "npm run check, dual-tsconfig typecheck, final build, diff check, JSON/JSONL parse, and Trellis validation evidence"}

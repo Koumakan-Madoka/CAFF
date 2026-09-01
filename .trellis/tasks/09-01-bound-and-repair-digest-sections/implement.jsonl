@@ -1,0 +1,8 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Executable digest schema, normalization, repair, diagnostics, and fallback contract"}
+{"file": "server/domain/conversation/system-model-submission.ts", "reason": "Shared provider tool schema constants and strict validation boundary"}
+{"file": "server/domain/conversation/conversation-digest.ts", "reason": "Digest-only deterministic preparation, normalization, prompts, and safe diagnostics"}
+{"file": "tests/smoke/server-smoke.test.js", "reason": "Observable 12/13/241 boundary and fail-closed regressions"}
+{"file": ".trellis/tasks/09-01-bound-and-repair-digest-sections/prd.md", "reason": "User-confirmed 12-item retention, deterministic repair, strict fallback, logging, and one-call acceptance contract"}
+{"file": ".trellis/tasks/archive/2026-09/08-31-clip-overlong-digest-summary/task.json", "reason": "Accurate archive metadata for independently approved and merged PR #124 baseline"}

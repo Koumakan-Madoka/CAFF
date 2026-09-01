@@ -2211,13 +2211,258 @@ test('conversations controller accepts digest submission summaries through 1600 
       assert.equal(result.statusCode, 200);
       assert.equal(calls.length, 1);
       assert.equal(calls[0].summaryMaxLength, 1600);
-      assert.equal(calls[0].sectionMaxItems, 8);
+      assert.equal(calls[0].sectionMaxItems, 12);
       assert.equal(calls[0].itemMaxLength, 240);
       assert.equal(calls[0].toolChoice, 'auto');
       assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
       assert.equal(result.json.digest.summary.length, 800);
       assert.ok(result.json.digest.summary.startsWith(summaryPrefix));
       assert.ok(result.json.digest.summary.endsWith('…'));
+    });
+  }
+});
+
+test('conversations controller retains 12 digest section items', async (t) => {
+  const calls = [];
+  global.__CAFF_TWELVE_DIGEST_SECTION_CALLS = calls;
+  t.after(() => {
+    delete global.__CAFF_TWELVE_DIGEST_SECTION_CALLS;
+  });
+  const sectionItems = Array.from({ length: 12 }, (_, index) => `fact-${index + 1}`);
+  const moduleSource = `
+    export function getModel(provider, model) {
+      return { id: model, name: model, api: 'openai-completions', provider, maxTokens: 24576 };
+    }
+    export async function completeSimple(model, context, options) {
+      globalThis.__CAFF_TWELVE_DIGEST_SECTION_CALLS.push({
+        sectionMaxItems: context.tools[0].parameters.properties.facts.maxItems,
+        itemMaxLength: context.tools[0].parameters.properties.facts.items.maxLength,
+        systemPrompt: context.systemPrompt,
+        prompt: context.messages[0].content[0].text,
+        toolChoice: options.toolChoice,
+      });
+      return {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'twelve-digest-sections',
+          name: 'submit_conversation_digest',
+          arguments: {
+            summary: '保留十二条结构化摘要证据。',
+            facts: ${JSON.stringify(sectionItems)},
+            decisions: ${JSON.stringify(sectionItems.map((item) => `decision-${item}`))},
+            openQuestions: ${JSON.stringify(sectionItems.map((item) => `question-${item}`))},
+            nextActions: ${JSON.stringify(sectionItems.map((item) => `action-${item}`))},
+            artifacts: ${JSON.stringify(sectionItems.map((item) => `artifact-${item}`))}
+          }
+        }],
+        stopReason: 'toolUse',
+        timestamp: Date.now()
+      };
+    }
+  `;
+  const { handler, store } = createConversationsControllerHarness(t, {
+    digestOptions: {
+      piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+    },
+  });
+  const conversation = createSmokeConversation(store, {
+    id: 'digest-twelve-sections',
+    title: 'Digest Twelve Sections',
+  });
+  store.createMessage({
+    id: 'digest-twelve-sections-message',
+    conversationId: conversation.id,
+    turnId: 'digest-twelve-sections-turn',
+    role: 'user',
+    senderName: 'User',
+    content: '决定将摘要结构化数组预算提高到十二条。',
+  });
+
+  const result = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: { action: 'create', summaryMode: 'model' },
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].sectionMaxItems, 12);
+  assert.equal(calls[0].itemMaxLength, 240);
+  assert.equal(calls[0].toolChoice, 'auto');
+  assert.match(calls[0].systemPrompt, /schema-only return channel/u);
+  assert.match(calls[0].prompt, /summary <= 800 characters; each main array <= 12 items; each item <= 240 characters/u);
+  assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
+  for (const field of ['facts', 'decisions', 'openQuestions', 'nextActions', 'artifacts']) {
+    assert.equal(result.json.digest[field].length, 12);
+  }
+  assert.deepEqual(result.json.digest.facts, sectionItems);
+
+  const manualSections = Object.fromEntries(
+    ['facts', 'decisions', 'openQuestions', 'nextActions', 'artifacts']
+      .map((field) => [field, sectionItems.map((item) => `${field}-${item}`)])
+  );
+  const extractiveResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: {
+      action: 'create',
+      summaryMode: 'extractive',
+      summary: '手动提取式摘要也保留十二条。',
+      ...manualSections,
+    },
+  });
+  assert.equal(extractiveResult.statusCode, 200);
+  for (const field of Object.keys(manualSections)) {
+    assert.equal(extractiveResult.json.digest[field].length, 12);
+  }
+
+  const readResult = await invokeConversationsController(handler, {
+    method: 'GET',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+  });
+  assert.equal(readResult.statusCode, 200);
+  assert.equal(readResult.json.digests.length, 2);
+  assert.equal(readResult.json.digests[0].facts.length, 12);
+  assert.equal(readResult.json.digests[1].facts.length, 12);
+
+  const compactResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: { action: 'compact', summaryMode: 'extractive' },
+  });
+  assert.equal(compactResult.statusCode, 200);
+  assert.equal(compactResult.json.compacted, true);
+  for (const field of ['facts', 'decisions', 'openQuestions', 'nextActions', 'artifacts']) {
+    assert.equal(compactResult.json.rollup[field].length, 12);
+  }
+});
+
+test('conversations controller clips oversized digest section arrays and items before strict validation', async (t) => {
+  const cases = [
+    {
+      name: '13 item section',
+      submission: {
+        summary: '十三条事实应保留前十二条。',
+        facts: Array.from({ length: 13 }, (_, index) => `fact-${index + 1}`),
+        decisions: [],
+        openQuestions: [],
+        nextActions: [],
+        artifacts: [],
+      },
+      expectedFacts: Array.from({ length: 12 }, (_, index) => `fact-${index + 1}`),
+      warning: /field=facts; actualItems=13; acceptedItems=12; action=clipped/u,
+    },
+    {
+      name: '241 character item',
+      submission: {
+        summary: '超长条目应按既有规则截断。',
+        facts: [`private-item-value:${'x'.repeat(260)}`],
+        decisions: [],
+        openQuestions: [],
+        nextActions: [],
+        artifacts: [],
+      },
+      expectedItemPrefix: 'private-item-value:',
+      warning: /field=facts\.0; actualLength=279; acceptedLimit=240; action=clipped/u,
+    },
+    {
+      name: 'multiple section repairs',
+      submission: {
+        summary: '多个数组和条目越界应在一次浅拷贝准备中修复。',
+        facts: Array.from({ length: 14 }, (_, index) => index === 0 ? `private-multi-item:${'😀'.repeat(300)}` : `fact-${index + 1}`),
+        decisions: Array.from({ length: 13 }, (_, index) => `decision-${index + 1}`),
+        openQuestions: [],
+        nextActions: [],
+        artifacts: [],
+      },
+      expectedFactsLength: 12,
+      expectedDecisionsLength: 12,
+      warnings: [
+        /field=facts; actualItems=14; acceptedItems=12; action=clipped/u,
+        /field=facts\.0; actualLength=319; acceptedLimit=240; action=clipped/u,
+        /field=decisions; actualItems=13; acceptedItems=12; action=clipped/u,
+      ],
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async (subtest) => {
+      const originalWarn = console.warn;
+      const warnings = [];
+      console.warn = (...args) => warnings.push(args.join(' '));
+      const calls = [];
+      global.__CAFF_SECTION_REPAIR_CALLS = calls;
+      subtest.after(() => {
+        console.warn = originalWarn;
+        delete global.__CAFF_SECTION_REPAIR_CALLS;
+      });
+      const moduleSource = `
+        export function getModel(provider, model) {
+          return { id: model, name: model, api: 'openai-completions', provider, maxTokens: 24576 };
+        }
+        export async function completeSimple() {
+          globalThis.__CAFF_SECTION_REPAIR_CALLS.push(true);
+          return {
+            role: 'assistant',
+            content: [{
+              type: 'toolCall',
+              id: 'digest-section-repair',
+              name: 'submit_conversation_digest',
+              arguments: ${JSON.stringify(testCase.submission)}
+            }],
+            stopReason: 'toolUse',
+            timestamp: Date.now()
+          };
+        }
+      `;
+      const { handler, store } = createConversationsControllerHarness(subtest, {
+        digestOptions: {
+          piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+        },
+      });
+      const idSuffix = testCase.name.replace(/\s+/gu, '-');
+      const conversation = createSmokeConversation(store, {
+        id: `digest-section-repair-${idSuffix}`,
+        title: `Digest Section Repair ${testCase.name}`,
+      });
+      store.createMessage({
+        id: `digest-section-repair-message-${idSuffix}`,
+        conversationId: conversation.id,
+        turnId: `digest-section-repair-turn-${idSuffix}`,
+        role: 'user',
+        senderName: 'User',
+        content: '决定对摘要数组和字符串条目做确定性截断。',
+      });
+
+      const result = await invokeConversationsController(handler, {
+        method: 'POST',
+        pathname: `/api/conversations/${conversation.id}/digest`,
+        body: { action: 'create', summaryMode: 'model' },
+      });
+      const warningText = warnings.join('\n');
+
+      assert.equal(result.statusCode, 200);
+      assert.equal(calls.length, 1);
+      assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
+      if (testCase.expectedFacts) {
+        assert.deepEqual(result.json.digest.facts, testCase.expectedFacts);
+      }
+      if (testCase.expectedItemPrefix) {
+        assert.equal(result.json.digest.facts[0].length, 240);
+        assert.ok(result.json.digest.facts[0].startsWith(testCase.expectedItemPrefix));
+        assert.ok(result.json.digest.facts[0].endsWith('…'));
+      }
+      if (testCase.expectedFactsLength) {
+        assert.equal(result.json.digest.facts.length, testCase.expectedFactsLength);
+      }
+      if (testCase.expectedDecisionsLength) {
+        assert.equal(result.json.digest.decisions.length, testCase.expectedDecisionsLength);
+      }
+      for (const warning of testCase.warnings || [testCase.warning]) {
+        assert.match(warningText, warning);
+      }
+      assert.doesNotMatch(warningText, /private-item-value|private-multi-item/u);
     });
   }
 });
@@ -2317,8 +2562,12 @@ test('conversations controller does not let overlong summary repair hide other s
       suffix: ', unexpectedField: true',
     },
     {
-      name: 'oversized section',
-      facts: `Array.from({ length: 9 }, (_, index) => 'fact-' + index)`,
+      name: 'non-string item after oversized section',
+      facts: `[...Array.from({ length: 12 }, (_, index) => 'fact-' + index), { value: 'not-a-string' }]`,
+    },
+    {
+      name: 'empty item after oversized section',
+      facts: `[...Array.from({ length: 12 }, (_, index) => 'fact-' + index), '']`,
     },
     {
       name: 'wrong field type',
