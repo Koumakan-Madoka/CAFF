@@ -64,6 +64,7 @@ test('configured model catalog exposes configured models and the exact runtime d
     familySource: 'explicit',
     supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
     input: ['text', 'image'],
+    contextWindow: null,
   });
   assert.deepEqual(options.find((option) => option.key === 'custom\u001fmystery-1'), {
     key: 'custom\u001fmystery-1',
@@ -76,6 +77,7 @@ test('configured model catalog exposes configured models and the exact runtime d
     familySource: 'explicit',
     supportedThinkingLevels: ['off'],
     input: ['text'],
+    contextWindow: null,
   });
   assert.equal(options.find((option) => option.key === 'moonshotai\u001fkimi-k2.5'), undefined);
   assert.deepEqual(options.find((option) => option.key === 'anthropic\u001fclaude-opus-4-7'), {
@@ -89,6 +91,7 @@ test('configured model catalog exposes configured models and the exact runtime d
     familySource: 'provider_alias',
     supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
     input: ['text'],
+    contextWindow: null,
   });
 });
 
@@ -124,6 +127,49 @@ test('configured model catalog caches snapshots until explicit invalidation', ()
   catalog.invalidate();
   catalog.getOptions();
   assert.deepEqual({ runtimeReads, providerReads }, { runtimeReads: 2, providerReads: 2 });
+});
+
+test('configured model catalog carries contextWindow from models.json and runtime models so session reuse can resolve it', () => {
+  const catalog = createConfiguredModelCatalog({
+    loadRuntimeModels: () => [
+      { provider: 'anthropic', id: 'claude-opus-4-7', name: 'Claude Opus 4.7', contextWindow: 200000 },
+    ],
+    readProviderDocument: () => ({
+      providers: {
+        custom: {
+          baseUrl: 'https://custom.example/v1',
+          api: 'openai-completions',
+          models: [
+            { id: 'with-window', name: 'With Window', family: 'qwen', contextWindow: 262144 },
+            { id: 'without-window', name: 'Without Window', family: 'qwen' },
+            { id: 'invalid-window', name: 'Invalid Window', family: 'qwen', contextWindow: 'big' },
+          ],
+        },
+      },
+    }),
+    readRuntimeDefault: () => ({ provider: 'anthropic', model: 'claude-opus-4-7' }),
+  });
+
+  const options = catalog.getOptions();
+  assert.equal(
+    options.find((option) => option.key === 'custom\u001fwith-window')?.contextWindow,
+    262144,
+    'models.json contextWindow must survive catalog assembly',
+  );
+  assert.equal(
+    options.find((option) => option.key === 'custom\u001fwithout-window')?.contextWindow,
+    null,
+  );
+  assert.equal(
+    options.find((option) => option.key === 'custom\u001finvalid-window')?.contextWindow,
+    null,
+    'non-integer contextWindow must normalize to null',
+  );
+  assert.equal(
+    options.find((option) => option.key === 'anthropic\u001fclaude-opus-4-7')?.contextWindow,
+    200000,
+    'runtime default must inherit the runtime model contextWindow',
+  );
 });
 
 test('bootstrap model options cannot be expanded by stale Agent or Profile rows', () => {

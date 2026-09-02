@@ -13,6 +13,8 @@ ADR：`docs/adr/0001-agent-session-reuse.md`（推翻"每轮新建 session"的�
 | 存在 reusable 行 | `no_prior_session` |
 | 距上次回复 < `PI_CHAT_SESSION_REUSE_MAX_IDLE_MS`（默认 1h） | `idle_timeout` |
 | 上次 assistant 调用 input tokens ÷ contextWindow < `PI_CHAT_SESSION_REUSE_MAX_USAGE_RATIO`（默认 0.5） | `usage_ratio_exceeded` |
+
+contextWindow 的来源链路：`resolveSessionReuseContextWindow` 从 `modelCatalog.getOptions()` 匹配 provider+model 并读取 `contextWindow` 字段。该字段必须由装配层透传——`lib/pi-model-catalog-host.mjs` 从 runtime 模型注册表携带（正整数，否则 null），`configured-model-catalog.ts` 的 rebuild 在 models.json 分支与 runtime 默认分支都必须复制该字段（`normalizeContextWindow` 只接受正整数，非法值归一为 null，models.json 值优先、runtime 值兜底）。任一环节丢字段都会导致 usage ratio 解析为 null → `usage_snapshot_missing` → 永远 fresh，且单测用 fake catalog 时不会暴露（必须用真实 `createConfiguredModelCatalog` 覆盖）。
 | 静态段 hash 一致 | `static_hash_mismatch` |
 | 游标一致性校验通过 | `cursor_history_mutated` → poison |
 

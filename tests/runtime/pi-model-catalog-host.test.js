@@ -40,6 +40,12 @@ test('Pi catalog host projects exact pinned thinking capabilities without creden
   }
   assert.equal(byKey.get('moonshotai\u001fkimi-k2.5').supportedThinkingLevels.includes('max'), false);
   assert.equal(byKey.get('moonshotai\u001fkimi-k3').supportedThinkingLevels.includes('max'), true);
+
+  const kimiContextWindow = byKey.get('moonshotai\u001fkimi-k2.5')?.contextWindow;
+  assert.ok(
+    Number.isInteger(kimiContextWindow) && kimiContextWindow > 0,
+    `runtime catalog must carry a positive integer contextWindow, got ${kimiContextWindow}`,
+  );
 });
 
 test('Pi catalog host CLI owns stdin without imported validators competing for the command', (t) => {
