@@ -42,6 +42,7 @@ const {
   verifySessionReuseCursor,
 } = require('./session-reuse');
 const { buildInvocationImages } = require('./image-invocation');
+const { buildPromptMessages } = require('./prompt-visibility');
 const { createAgentContextSnapshot } = require('./context-snapshot');
 const { markConversationRetrievalTraceUsage } = require('../retrieval-trace');
 const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
@@ -1585,7 +1586,11 @@ export function createAgentExecutor(options: any = {}) {
               sessionReuseCursorBaseSnapshot = buildSessionReuseCursorSnapshot(reuseMessages);
               sessionName = claimed.sessionName;
               resumeSession = true;
-              prompt = buildSessionReuseDeltaPrompt(decision.delta, conversation.agents);
+              const visibleDelta = buildPromptMessages(decision.delta, promptUserMessage, {
+                currentTurnId: turnId,
+                excludeIncompleteAssistantMessages: true,
+              });
+              prompt = buildSessionReuseDeltaPrompt(visibleDelta, conversation.agents);
               sessionReuseDecision = { reused: true, reason: 'reused' };
             } else {
               const conflictRow = store.getAgentSessionReuse(conversationId, agent.id, reuseProfileId);

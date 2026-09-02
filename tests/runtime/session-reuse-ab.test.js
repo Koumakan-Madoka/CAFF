@@ -262,7 +262,7 @@ function findAssistantCreate(store) {
   return create;
 }
 
-async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.' }) {
+async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.', promptUserMessage = null }) {
   const { createTurnState } = require(require.resolve('../../build/server/domain/conversation/turn/turn-state'));
   const turnState = createTurnState(conversation, turnId);
   await executor.executeConversationAgent({
@@ -272,7 +272,7 @@ async function runTurn({ executor, conversation, agent, store, turnId, reply = '
     rootTaskId: `root-${turnId}`,
     conversation,
     promptMessages: store.listMessages(conversation.id),
-    promptUserMessage: { id: `trigger-${turnId}`, role: 'user', content: 'Go.' },
+    promptUserMessage: promptUserMessage || { id: `trigger-${turnId}`, role: 'user', content: 'Go.' },
     queueItem: { triggerType: 'user', enqueueReason: 'user_message' },
     agent,
     turnState,
@@ -517,6 +517,73 @@ test('reused mode resumes the stored session with only the delta appended and ad
   assert.equal(env.captured[2].options.resume, true);
   assert.match(env.captured[2].prompt, /ARRIVED-DURING-RUN/u);
   assert.equal(env.captured[2].prompt.includes('DELTA-U3-CONTENT'), false);
+});
+
+test('reused delta applies the same private and incomplete-message visibility rules as fresh prompts', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'INITIAL-CONTENT');
+
+  const executor1 = env.createExecutor(store);
+  await runTurn({ executor: executor1, conversation, agent, store, turnId: 'turn-visibility-1' });
+
+  const privateMessage = store.createMessage({
+    id: 'private-other-agent',
+    conversationId: conversation.id,
+    role: 'user',
+    senderName: 'Other agent',
+    content: 'PRIVATE-DELTA-MUST-NOT-LEAK',
+    status: 'completed',
+    metadata: { privateOnly: true },
+  });
+  const visibleMessage = store.createMessage({
+    id: 'visible-trigger',
+    conversationId: conversation.id,
+    turnId: 'turn-visibility-2',
+    role: 'user',
+    senderName: 'User',
+    content: 'VISIBLE-DELTA-CONTENT',
+    status: 'completed',
+    metadata: { privateOnly: true },
+  });
+  const queuedAssistant = store.createMessage({
+    id: 'queued-peer',
+    conversationId: conversation.id,
+    turnId: 'turn-visibility-2',
+    role: 'assistant',
+    agentId: 'peer-agent',
+    senderName: 'Peer',
+    content: 'QUEUED-PARTIAL-MUST-NOT-APPEAR',
+    status: 'queued',
+  });
+
+  const executor2 = env.createExecutor(store);
+  await runTurn({
+    executor: executor2,
+    conversation,
+    agent,
+    store,
+    turnId: 'turn-visibility-2',
+    promptUserMessage: { ...visibleMessage, content: 'VISIBLE-DELTA-CLEANED' },
+  });
+
+  const reusedRun = env.captured[1];
+  assert.equal(reusedRun.options.resume, true);
+  assert.match(reusedRun.prompt, /VISIBLE-DELTA-CLEANED/u);
+  assert.equal(reusedRun.prompt.includes(visibleMessage.content), false, 'prompt user replacement must match fresh mode');
+  assert.equal(reusedRun.prompt.includes(privateMessage.content), false, 'other private-only messages must stay hidden');
+  assert.equal(reusedRun.prompt.includes(queuedAssistant.content), false, 'current-turn partial assistants must stay hidden');
+
+  const persisted = store.peekReuseRow();
+  const completedAssistants = store.messageWrites.creates.filter(
+    (input) => input.role === 'assistant' && input.status === 'queued' && input.agentId === agent.id
+  );
+  assert.equal(completedAssistants.length, 2);
+  assert.equal(persisted.cursorMessageCount, 6, 'storage cursor still covers hidden rows plus the completed reply');
+  assert.equal(persisted.cursorMessageId, completedAssistants[1].id);
 });
 
 test('routing executor can reuse after a fresh run with more than 24 stored messages', async (t) => {

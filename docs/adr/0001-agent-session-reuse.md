@@ -15,7 +15,7 @@ Status: accepted (Phase 1 + Phase 2 delivered)
 - 上一轮 run 必须 status=success 干净结束；中断/超时/报错结束的 session 标记 poisoned，永不复用。
 - 状态机 reusable/busy/poisoned 持久化于 `chat_agent_session_reuse` 表；复用判定与状态翻转在同一事务内，防并发竞态。claim 的单条 SQL 同时守卫复用行中的静态 hash / 游标四元组，并重算 `chat_messages` 游标前缀的 count + first id + max(updated_at)；判定后发生的编辑/删除不能绕过 claim。
 - 已读游标记录 session 已见的最后一条 chat_messages.id；复用前校验游标前消息一致性（count + 首尾 id + max(updated_at)），发现编辑/删除痕迹直接 poison（已注入内容无法从 provider session 撤回）。run 开始时冻结实际注入的消息边界，成功收尾只在该快照上追加本轮 assistant 回复；运行期间到达的消息留在游标之后，由下一轮 delta 拾取。
-- delta 消息合并为**一条** user message，与全量历史共用同一个 `formatHistory` 渲染函数，杜绝 fresh/reused 格式双轨；delta 路径不应用全量历史的 24 条展示窗口，游标后的消息必须全部渲染后才能推进游标。
+- delta 消息合并为**一条** user message，与全量历史共用同一个 `formatHistory` 渲染函数，杜绝 fresh/reused 格式双轨；delta 路径不应用全量历史的 24 条展示窗口，游标后的所有可见消息必须全部渲染后才能推进游标。渲染前必须复用 `buildPromptMessages` 可见性投影：只保留本次 `promptUserMessage` 对应的 private-only 消息，并排除当前 turn 的 queued/streaming assistant，禁止 resumed 路径绕过 fresh 路径的隐私与未完成消息边界。
 - 复用是纯优化：任何不确定一律回退旧路径（新 session + 全量历史注入）。复用决策（sessionReused + 原因）写入 message metadata 供审计。
 
 ## Considered Options
@@ -40,3 +40,4 @@ Status: accepted (Phase 1 + Phase 2 delivered)
 ## Known Limitations
 
 - 游标一致性校验依赖 `max(updated_at)` 在编辑/删除后严格前移。正常路径（repository 在 update 时写入当前时钟）成立；若消息行被人为未来日期化（时钟偏移、外部导入回填），对该行的后续编辑可能不会推进 `max(updated_at)`，从而逃过检测。接受该残余风险：它要求数据库被非正常写入，且后果等价于复用了一个含过期历史的 session（模型看到旧版本消息），不产生数据损坏。检测口径记录于 `tests/runtime/session-reuse-ab.test.js` 的夹具设计（显式 `updatedAt` 时间线）。
+- 并行批次中，某 agent 冻结完整存储游标时可能包含同 turn 的 queued/streaming peer assistant；该消息不会进入 delta prompt，但 peer 完成会推进 `updated_at`，所以下一轮一致性检查会 poison 旧 session 并回退 fresh。该路径失败安全且不会泄露或丢失消息，但会损失一次复用命中；若要消除，需要能表达非连续已见集合的游标，而不是弱化前缀一致性检查。

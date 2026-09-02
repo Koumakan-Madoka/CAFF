@@ -540,8 +540,10 @@ export function formatAgentTurnPromptSections(sections: any) {
 // single user message appended at the tail of the message array. This preserves
 // the provider KV cache prefix. It MUST reuse formatHistory so fresh and reused
 // modes render room messages byte-identically (no format drift between modes).
-// Unlike full history, delta is never truncated: every message after the
-// committed cursor must be appended before that cursor may advance.
+// Unlike full history, the already visibility-filtered delta is never
+// truncated: every visible message after the committed cursor must be appended
+// before that cursor may advance. Callers must apply the shared fresh-prompt
+// visibility projection before invoking this formatter.
 export function buildSessionReuseDeltaPrompt(deltaMessages: any, agents: any) {
   return ['New messages since your last reply:', formatHistory(deltaMessages, agents, { truncate: false })].join('\n');
 }
