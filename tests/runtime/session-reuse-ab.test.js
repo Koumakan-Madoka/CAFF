@@ -584,6 +584,33 @@ test('reused delta applies the same private and incomplete-message visibility ru
   assert.equal(completedAssistants.length, 2);
   assert.equal(persisted.cursorMessageCount, 6, 'storage cursor still covers hidden rows plus the completed reply');
   assert.equal(persisted.cursorMessageId, completedAssistants[1].id);
+
+  // The prior run intentionally hid this private-only handoff while advancing
+  // the storage cursor across it. When that message later becomes this run's
+  // trigger, reused mode must restore the cleaned anchor just like fresh
+  // routing's requiredMessageIds projection does. Add an unrelated post-cursor
+  // message so reuse stays eligible; otherwise no_delta_messages safely falls
+  // back to fresh mode before exercising the anchor-restoration path.
+  seedUserMessage(store, 'u3', 'UNRELATED-LATER-DELTA');
+  const executor3 = env.createExecutor(store);
+  await runTurn({
+    executor: executor3,
+    conversation,
+    agent,
+    store,
+    turnId: 'turn-visibility-3',
+    promptUserMessage: { ...privateMessage, content: 'PRIVATE-HANDOFF-CLEANED' },
+  });
+
+  const handoffRun = env.captured[2];
+  const handoffMetadata = store.messageWrites.creates.filter(
+    (input) => input.role === 'assistant' && input.agentId === agent.id
+  )[2].metadata;
+  assert.equal(handoffRun.options.resume, true, `expected reuse, got ${handoffMetadata.sessionReuseReason}`);
+  assert.match(handoffRun.prompt, /UNRELATED-LATER-DELTA/u);
+  assert.match(handoffRun.prompt, /PRIVATE-HANDOFF-CLEANED/u);
+  assert.equal(handoffRun.prompt.includes(privateMessage.content), false, 'raw private handoff text must be replaced');
+  assert.equal(handoffRun.prompt.includes(visibleMessage.content), false, 'already-consumed public delta must not repeat');
 });
 
 test('routing executor can reuse after a fresh run with more than 24 stored messages', async (t) => {

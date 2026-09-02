@@ -15,7 +15,7 @@ Status: accepted (Phase 1 + Phase 2 delivered)
 - 上一轮 run 必须 status=success 干净结束；中断/超时/报错结束的 session 标记 poisoned，永不复用。
 - 状态机 reusable/busy/poisoned 持久化于 `chat_agent_session_reuse` 表；复用判定与状态翻转在同一事务内，防并发竞态。claim 的单条 SQL 同时守卫复用行中的静态 hash / 游标四元组，并重算 `chat_messages` 游标前缀的 count + first id + max(updated_at)；判定后发生的编辑/删除不能绕过 claim。
 - 已读游标记录 session 已见的最后一条 chat_messages.id；复用前校验游标前消息一致性（count + 首尾 id + max(updated_at)），发现编辑/删除痕迹直接 poison（已注入内容无法从 provider session 撤回）。run 开始时冻结实际注入的消息边界，成功收尾只在该快照上追加本轮 assistant 回复；运行期间到达的消息留在游标之后，由下一轮 delta 拾取。
-- delta 消息合并为**一条** user message，与全量历史共用同一个 `formatHistory` 渲染函数，杜绝 fresh/reused 格式双轨；delta 路径不应用全量历史的 24 条展示窗口，游标后的所有可见消息必须全部渲染后才能推进游标。渲染前必须复用 `buildPromptMessages` 可见性投影：只保留本次 `promptUserMessage` 对应的 private-only 消息，并排除当前 turn 的 queued/streaming assistant，禁止 resumed 路径绕过 fresh 路径的隐私与未完成消息边界。
+- delta 消息合并为**一条** user message，与全量历史共用同一个 `formatHistory` 渲染函数，杜绝 fresh/reused 格式双轨；delta 路径不应用全量历史的 24 条展示窗口，游标后的所有可见消息必须全部渲染后才能推进游标。渲染前必须复用 `buildPromptMessages` 可见性投影：只保留本次 `promptUserMessage` 对应的 private-only 消息，并排除当前 turn 的 queued/streaming assistant，禁止 resumed 路径绕过 fresh 路径的隐私与未完成消息边界。若 `promptUserMessage` 已被中间 run 的存储游标越过而不在可见 delta 中，reused 路径必须将其清洗后版本追加到 delta 尾部，保持 fresh 路径的触发消息必达契约。
 - 复用是纯优化：任何不确定一律回退旧路径（新 session + 全量历史注入）。复用决策（sessionReused + 原因）写入 message metadata 供审计。
 
 ## Considered Options

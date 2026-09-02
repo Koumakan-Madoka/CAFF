@@ -1590,6 +1590,18 @@ export function createAgentExecutor(options: any = {}) {
                 currentTurnId: turnId,
                 excludeIncompleteAssistantMessages: true,
               });
+              // Fresh routing guarantees the trigger through requiredMessageIds.
+              // A resumed cursor may already have crossed that anchor during an
+              // earlier run, so restore it at the delta tail to keep handoffs
+              // (including private-only ones) deliverable without rehydrating
+              // hidden history.
+              const promptUserMessageId = String(promptUserMessage && promptUserMessage.id || '').trim();
+              if (
+                promptUserMessageId
+                && !visibleDelta.some((message: any) => String(message && message.id || '').trim() === promptUserMessageId)
+              ) {
+                visibleDelta.push(promptUserMessage);
+              }
               prompt = buildSessionReuseDeltaPrompt(visibleDelta, conversation.agents);
               sessionReuseDecision = { reused: true, reason: 'reused' };
             } else {
