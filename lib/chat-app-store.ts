@@ -281,6 +281,7 @@ function normalizeMessageRow(row: any) {
     errorMessage: row.error_message || '',
     metadata: parseJson(row.metadata_json),
     createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at,
   };
 }
 
