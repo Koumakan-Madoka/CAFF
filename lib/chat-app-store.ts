@@ -24,6 +24,7 @@ const {
   createCrossConversationDeliveryRepository,
 } = require('../storage/chat/cross-conversation-delivery.repository');
 const { createChatPlanRepository } = require('../storage/chat/plan.repository');
+const { createChatSessionReuseRepository } = require('../storage/chat/session-reuse.repository');
 const {
   NODE_STATUSES,
   validatePlanDoc,
@@ -968,6 +969,7 @@ export class ChatAppStore {
       this.imageUploadRepository = createImageUploadRepository(this.db);
       this.crossConversationDeliveryRepository = createCrossConversationDeliveryRepository(this.db);
       this.planRepository = createChatPlanRepository(this.db);
+      this.sessionReuseRepository = createChatSessionReuseRepository(this.db);
       this.listAcceptanceRecordsStatement = this.db.prepare(`
         SELECT * FROM chat_acceptance_records
         WHERE conversation_id = ?
@@ -3398,6 +3400,26 @@ export class ChatAppStore {
 
   listMessages(conversationId: any) {
     return this.messageRepository.listByConversationId(conversationId).map(normalizeMessageRow);
+  }
+
+  getAgentSessionReuse(conversationId: any, agentId: any, profileId: any) {
+    return this.sessionReuseRepository.get(conversationId, agentId, profileId);
+  }
+
+  claimAgentSessionReuse(payload: any) {
+    return this.sessionReuseRepository.claim(payload);
+  }
+
+  restoreAgentSessionReuse(snapshot: any, now: any) {
+    return this.sessionReuseRepository.restoreReusable(snapshot, now);
+  }
+
+  markAgentSessionReuseReusable(payload: any) {
+    return this.sessionReuseRepository.markReusable(payload);
+  }
+
+  markAgentSessionReusePoisoned(conversationId: any, agentId: any, profileId: any, poisonReason: any, now: any) {
+    return this.sessionReuseRepository.markPoisoned(conversationId, agentId, profileId, poisonReason, now);
   }
 
   listConversationIdsWithPendingUserMessages() {

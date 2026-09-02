@@ -533,6 +533,16 @@ export function formatAgentTurnPromptSections(sections: any) {
     .join('\n\n');
 }
 
+// Session reuse delta prompt: the cached provider session already contains the
+// original static sections and the full history up to the reuse cursor, so the
+// resumed run receives ONLY the messages that arrived afterwards, merged into a
+// single user message appended at the tail of the message array. This preserves
+// the provider KV cache prefix. It MUST reuse formatHistory so fresh and reused
+// modes render room messages byte-identically (no format drift between modes).
+export function buildSessionReuseDeltaPrompt(deltaMessages: any, agents: any) {
+  return ['New messages since your last reply:', formatHistory(deltaMessages, agents)].join('\n');
+}
+
 export function buildAgentTurnPromptSections({
   conversation,
   agent,
