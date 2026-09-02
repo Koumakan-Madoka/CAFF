@@ -251,6 +251,11 @@ function normalizeAgentRow(row: any) {
     roleKind: row.role_kind || 'custom',
     modelFamily: row.model_family || null,
     isDefaultChatRole: Boolean(row.is_default_chat_role),
+    // ADR 0001 Phase 2: per-agent reuse toggle defaults ON; legacy rows
+    // without the column (pre-migration reads in tests) also default ON.
+    sessionReuseEnabled: row.session_reuse_enabled === undefined || row.session_reuse_enabled === null
+      ? true
+      : Boolean(row.session_reuse_enabled),
     selectedModelProfileId: selectedModelProfileId || null,
     selectedModelProfile,
     conversationSkillIds: parseSkillRefs(row.conversation_skills_json),
@@ -2169,6 +2174,7 @@ export class ChatAppStore {
       roleKind: 'custom',
       modelFamily: null,
       isDefaultChatRole: Boolean(input.isDefaultChatRole),
+      sessionReuseEnabled: input.sessionReuseEnabled !== false,
     });
   }
 
@@ -2189,6 +2195,7 @@ export class ChatAppStore {
       thinking: String(input.thinking || '').trim(),
       modelProfiles: this.normalizeModelProfiles(input.modelProfiles),
       isDefaultChatRole: Boolean(input.isDefaultChatRole),
+      sessionReuseEnabled: input.sessionReuseEnabled !== false,
       ...(Object.hasOwn(input, 'avatarDataUrl') ? { avatarDataUrl: normalizeAvatarDataUrl(input.avatarDataUrl) } : {}),
     });
   }

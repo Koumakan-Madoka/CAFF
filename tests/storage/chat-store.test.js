@@ -1784,3 +1784,48 @@ test('listConversationIdsWithPendingUserMessages tolerates historical malformed 
 
   assert.deepEqual(result, [badMetadata.id]);
 });
+
+test('chat store persists the per-agent session reuse toggle with default ON (ADR 0001 Phase 2)', (t) => {
+  const tempDir = withTempDir('caff-session-reuse-toggle-');
+  const sqlitePath = path.join(tempDir, 'roles.sqlite');
+  let store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  // Fresh schema: family roles default ON.
+  assert.equal(store.getAgent('role-family-gpt').sessionReuseEnabled, true);
+
+  // Family role opt-out persists down to the column value.
+  store.saveSystemRoleConfig({
+    id: 'role-family-gpt',
+    provider: 'openai',
+    model: 'gpt-test',
+    thinking: 'high',
+    modelProfiles: [],
+    isDefaultChatRole: true,
+    sessionReuseEnabled: false,
+  });
+  assert.equal(store.getAgent('role-family-gpt').sessionReuseEnabled, false);
+  assert.equal(
+    store.db.prepare('SELECT session_reuse_enabled FROM chat_agents WHERE id = ?').get('role-family-gpt').session_reuse_enabled,
+    0
+  );
+
+  // Custom roles default ON at creation and accept an explicit opt-out.
+  const custom = store.saveCustomRoleConfig({ name: 'Reuse Toggle Role' });
+  assert.equal(custom.sessionReuseEnabled, true);
+  const updated = store.saveCustomRoleConfig({ id: custom.id, name: 'Reuse Toggle Role', sessionReuseEnabled: false });
+  assert.equal(updated.sessionReuseEnabled, false);
+
+  // Re-opening the store re-runs the family reconcile, which must not reset
+  // the toggle back to the default.
+  store.close();
+  store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  assert.equal(store.getAgent('role-family-gpt').sessionReuseEnabled, false);
+  assert.equal(store.getAgent(custom.id).sessionReuseEnabled, false);
+});

@@ -31,13 +31,17 @@ function normalizePositiveInteger(value: any, fallback: number) {
   return parsed;
 }
 
-// Phase 1: reuse is a pure optimization behind a flag that defaults OFF. Any
-// uncertainty in the decision path falls back to the legacy behavior (fresh
-// session + full history injection).
+// Phase 2 (ADR 0001): reuse defaults ON. The env flag remains the global kill
+// switch (explicit off wins), and each agent carries a per-role toggle
+// (chat_agents.session_reuse_enabled, default 1) that the executor honors.
+// Reuse is still a pure optimization: any uncertainty in the decision path
+// falls back to the legacy behavior (fresh session + full history injection).
 export function resolveSessionReuseConfig(env: any = process.env) {
   const source = env && typeof env === 'object' ? env : {};
   return {
-    enabled: normalizeBooleanFlag(source.PI_CHAT_SESSION_REUSE_ENABLED),
+    enabled: source.PI_CHAT_SESSION_REUSE_ENABLED === undefined
+      ? true
+      : normalizeBooleanFlag(source.PI_CHAT_SESSION_REUSE_ENABLED),
     maxUsageRatio: normalizeRatio(source.PI_CHAT_SESSION_REUSE_MAX_USAGE_RATIO, DEFAULT_REUSE_MAX_USAGE_RATIO),
     maxIdleMs: normalizePositiveInteger(source.PI_CHAT_SESSION_REUSE_MAX_IDLE_MS, DEFAULT_REUSE_MAX_IDLE_MS),
     busyStaleMs: normalizePositiveInteger(source.PI_CHAT_SESSION_REUSE_BUSY_STALE_MS, DEFAULT_REUSE_BUSY_STALE_MS),

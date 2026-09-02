@@ -35,6 +35,9 @@ Use this index for pi-mono runtime work and Trellis injection changes.
 - `skill-extraction.md`: manual digest-to-skill draft contract and active-project save guardrails
 - `conversation-turn-queue.md`: continuous-send turn orchestration, batch snapshot,
   runtime queue payload, message-history mutation idle state, and stop/delete guardrails
+- `agent-session-reuse.md`: provider session reuse decision matrix, state machine,
+  cursor consistency check, delta tail injection, and per-agent toggle contract
+  (ADR 0001)
 - `propose-plan.md`: `propose-plan` CLI/bridge contract for the shared DAG plan,
   self-repair error codes, and `agent_tool_call` event summaries
 - `runtime-observability.md`: `createRuntimeObservability` counter providers,

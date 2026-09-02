@@ -274,7 +274,9 @@ function setupExecutorTest(t, { reuseEnabled }) {
   if (reuseEnabled) {
     process.env.PI_CHAT_SESSION_REUSE_ENABLED = '1';
   } else {
-    delete process.env.PI_CHAT_SESSION_REUSE_ENABLED;
+    // Phase 2 default is ON, so an explicit off is required to exercise the
+    // disabled path (ADR 0001).
+    process.env.PI_CHAT_SESSION_REUSE_ENABLED = '0';
   }
 
   delete require.cache[agentExecutorPath];
@@ -456,6 +458,27 @@ test('reused mode resumes the stored session with only the delta appended and ad
   assert.equal(advanced.cursorMessageCount, 5, 'cursor now covers u1, u2, a1, u3, a2');
   assert.equal(advanced.cursorFirstMessageId, 'u1');
   assert.equal(advanced.staticSegmentHash, snapshot.staticSegmentHash, 'static segments unchanged across turns');
+});
+
+test('per-agent toggle off skips reuse entirely while the global flag stays on', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = { ...createAgent(), sessionReuseEnabled: false };
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'ALPHA-U1-CONTENT');
+  seedUserMessage(store, 'u2', 'BRAVO-U2-CONTENT');
+
+  const executor = env.createExecutor(store);
+  await runTurn({ executor, conversation, agent, store, turnId: 'turn-agent-off' });
+
+  assert.equal(env.captured.length, 1);
+  assert.equal(env.captured[0].options.resume, false);
+  assert.match(env.captured[0].prompt, /ALPHA-U1-CONTENT/u);
+  assert.deepEqual(store.reuseCalls, [], 'agent opt-out must not touch the reuse store at all');
+  const metadata = findAssistantCreate(store).metadata;
+  assert.equal(metadata.sessionReused, false);
+  assert.equal(metadata.sessionReuseReason, 'agent_disabled');
 });
 
 test('edited history poisons the cached session and falls back to a fresh full-history run', async (t) => {

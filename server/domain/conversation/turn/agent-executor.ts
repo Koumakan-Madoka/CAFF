@@ -1520,12 +1520,24 @@ export function createAgentExecutor(options: any = {}) {
       ) || `chat-${conversationId}-${turnId}`;
     let resumeSession = false;
     const sessionReuseConfig = resolveSessionReuseConfig(process.env);
+    // ADR 0001 Phase 2: per-agent toggle (default ON). The env flag is the
+    // global kill switch; agent.sessionReuseEnabled === false opts one role out
+    // without touching anyone else. Distinct reason keeps metrics attributable.
+    const sessionReuseAgentEnabled = agent && agent.sessionReuseEnabled === false ? false : true;
+    const sessionReuseActive = sessionReuseConfig.enabled && sessionReuseAgentEnabled;
     const reuseProfileId = agentConfig.profileId || 'default';
     const staticSegmentHash = computeStaticPromptHash(promptSections, [provider, model, reuseProfileId, thinking]);
     let sessionReuseClaim: any = null; // pre-claim reusable row snapshot, kept for restore/poison
-    let sessionReuseDecision: any = { reused: false, reason: sessionReuseConfig.enabled ? 'no_prior_session' : 'disabled' };
+    let sessionReuseDecision: any = {
+      reused: false,
+      reason: !sessionReuseConfig.enabled
+        ? 'disabled'
+        : sessionReuseAgentEnabled
+          ? 'no_prior_session'
+          : 'agent_disabled',
+    };
 
-    if (sessionReuseConfig.enabled && typeof store.getAgentSessionReuse === 'function') {
+    if (sessionReuseActive && typeof store.getAgentSessionReuse === 'function') {
       try {
         let reuseRow = store.getAgentSessionReuse(conversationId, agent.id, reuseProfileId);
         if (reuseRow && isSessionReuseBusyStale(reuseRow, sessionReuseConfig, nowIso())) {
@@ -2355,7 +2367,7 @@ export function createAgentExecutor(options: any = {}) {
       broadcastEvent('conversation_message_updated', { conversationId, message: assistantMessageDone });
       broadcastConversationSummary(conversationId);
 
-      if (sessionReuseConfig.enabled && typeof store.markAgentSessionReuseReusable === 'function') {
+      if (sessionReuseActive && typeof store.markAgentSessionReuseReusable === 'function') {
         // The run ended cleanly, so the (fresh or resumed) session now holds the
         // full static prefix + history up to and including this reply. Persist
         // the reusable snapshot; the next turn re-evaluates all preconditions.

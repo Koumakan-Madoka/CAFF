@@ -1,6 +1,6 @@
 # Agent session 复用（有条件地推翻"每轮新建 session"）
 
-Status: accepted
+Status: accepted (Phase 1 + Phase 2 delivered)
 
 ## 背景与决策
 
@@ -30,6 +30,12 @@ Status: accepted
 - 首轮 prompt 必须重构为静态/动态可分离结构；turnId、taskId、时间戳等每轮变化字段严禁进入静态段，否则 hash 比对与 KV cache 同时失效。
 - 需要 fresh/reused 双模式回归测试（同一历史场景 A/B），证明复用模式下 agent 能看到并回应 delta 消息且无幻觉引用。
 - 交付分两阶段：Phase 1 后端完整实现 + 本 ADR，feature flag 默认 OFF 合入；Phase 2 默认 ON + 前端 agent 开关。先 OFF 验证再翻默认值，避免一次性把风险带进生产路径。
+
+## Phase 2（已交付）
+
+- 全局默认 ON：`resolveSessionReuseConfig` 在 env 未设置时返回 `enabled: true`；`PI_CHAT_SESSION_REUSE_ENABLED=0/false/off/no` 是全局 kill switch。
+- per-agent 开关：`chat_agents.session_reuse_enabled`（默认 1），经 `PUT /api/agents/:id` 与 personas 角色编辑器"复用上一次会话" toggle 配置；关闭后 executor 跳过整个复用生命周期（不读写 `chat_agent_session_reuse`），metadata reason = `agent_disabled`，与全局 `disabled` 可区分。
+- 执行契约与测试点见 `.trellis/spec/runtime/agent-session-reuse.md`。
 
 ## Known Limitations
 

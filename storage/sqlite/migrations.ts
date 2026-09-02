@@ -648,6 +648,7 @@ CREATE TABLE IF NOT EXISTS chat_agents (
   role_kind TEXT NOT NULL CHECK (role_kind IN ('model_family', 'custom')),
   model_family TEXT,
   is_default_chat_role INTEGER NOT NULL DEFAULT 0 CHECK (is_default_chat_role IN (0, 1)),
+  session_reuse_enabled INTEGER NOT NULL DEFAULT 1 CHECK (session_reuse_enabled IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   CHECK (
@@ -1068,6 +1069,14 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   ensureColumn(db, 'chat_agents', 'avatar_data_url', 'avatar_data_url TEXT');
   ensureColumn(db, 'chat_agents', 'sandbox_name', 'sandbox_name TEXT');
   ensureColumn(db, 'chat_agents', 'skills_json', 'skills_json TEXT');
+  // ADR 0001 Phase 2: per-agent session reuse toggle, defaults ON. The env
+  // flag PI_CHAT_SESSION_REUSE_ENABLED remains the global kill switch.
+  ensureColumn(
+    db,
+    'chat_agents',
+    'session_reuse_enabled',
+    'session_reuse_enabled INTEGER NOT NULL DEFAULT 1 CHECK (session_reuse_enabled IN (0, 1))'
+  );
   ensureColumn(db, 'chat_conversations', 'type', "type TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'chat_conversations', 'metadata_json', 'metadata_json TEXT');
   ensureColumn(db, 'chat_conversations', 'branch', 'branch TEXT');

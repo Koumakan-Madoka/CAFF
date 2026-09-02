@@ -139,6 +139,7 @@
         </section>
         ${customPersonaMarkup()}
         <section class="management-card"><div class="toggle-row"><div><h3>新建普通聊天时默认预选</h3><p>只影响未来打开的新建聊天表单，不追写已有会话。</p></div><button id="default-toggle" class="toggle" type="button" aria-label="新建普通聊天时默认预选 ${utils.escapeHtml(draft.name || '当前角色')}" aria-pressed="${Boolean(draft.isDefaultChatRole)}" ${available ? '' : 'disabled'}></button></div></section>
+        <section class="management-card"><div class="toggle-row"><div><h3>复用上一次会话</h3><p>上下文使用率低于 50% 且距上次回复小于 1 小时时续用旧会话（保 KV cache），增量对话追加到消息尾部；关闭后每轮全新会话并注入完整历史。</p></div><button id="session-reuse-toggle" class="toggle" type="button" aria-label="复用上一次会话 ${utils.escapeHtml(draft.name || '当前角色')}" aria-pressed="${draft.sessionReuseEnabled !== false}"></button></div></section>
         <div class="management-actions"><button id="save-role" type="button">${draft.id ? '保存角色' : '创建自定义角色'}</button>${!isFamily() && draft.id ? '<button id="delete-role" class="ghost-button danger" type="button">删除角色</button>' : ''}</div>
         <p id="role-error" class="management-error hidden" role="alert"></p>`;
 
@@ -192,6 +193,7 @@
         card.querySelector('[data-field="thinking"]').addEventListener('change', (event) => { draft.modelProfiles[index].thinking = /** @type {HTMLSelectElement} */ (event.target).value; });
       });
       document.getElementById('default-toggle').addEventListener('click', () => { draft.isDefaultChatRole = !draft.isDefaultChatRole; render(); options.onDraftChange(draft); });
+      document.getElementById('session-reuse-toggle').addEventListener('click', () => { draft.sessionReuseEnabled = draft.sessionReuseEnabled === false; render(); options.onDraftChange(draft); });
       document.getElementById('save-role').addEventListener('click', async () => {
         try { await options.onSave(draft, utils.buildRolePayload(draft, options.getModelOptions())); } catch (error) { const target = document.getElementById('role-error'); target.textContent = utils.requestIssueMessage(error, '角色保存失败'); target.classList.remove('hidden'); }
       });

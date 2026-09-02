@@ -59,12 +59,18 @@ function decisionInput(overrides = {}) {
   };
 }
 
-test('session reuse config defaults to disabled with 50% ratio and 1h idle window', () => {
+test('session reuse config defaults to enabled with 50% ratio and 1h idle window (Phase 2)', () => {
   const config = resolveSessionReuseConfig({});
-  assert.equal(config.enabled, false);
+  assert.equal(config.enabled, true);
   assert.equal(config.maxUsageRatio, 0.5);
   assert.equal(config.maxIdleMs, 3600000);
   assert.ok(config.busyStaleMs > config.maxIdleMs);
+
+  // The env flag remains the global kill switch: an explicit off wins over the
+  // Phase 2 default-on.
+  const killed = resolveSessionReuseConfig({ PI_CHAT_SESSION_REUSE_ENABLED: '0' });
+  assert.equal(killed.enabled, false);
+  assert.equal(resolveSessionReuseConfig({ PI_CHAT_SESSION_REUSE_ENABLED: 'false' }).enabled, false);
 
   const enabled = resolveSessionReuseConfig({
     PI_CHAT_SESSION_REUSE_ENABLED: 'true',

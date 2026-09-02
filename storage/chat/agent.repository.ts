@@ -34,9 +34,10 @@ export class ChatAgentRepository {
         role_kind,
         model_family,
         is_default_chat_role,
+        session_reuse_enabled,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.updateStatement = db.prepare(`
       UPDATE chat_agents
@@ -55,6 +56,7 @@ export class ChatAgentRepository {
         role_kind = ?,
         model_family = ?,
         is_default_chat_role = ?,
+        session_reuse_enabled = ?,
         updated_at = ?
       WHERE id = ?
     `);
@@ -88,6 +90,7 @@ export class ChatAgentRepository {
         payload.roleKind,
         payload.modelFamily,
         payload.isDefaultChatRole ? 1 : 0,
+        payload.sessionReuseEnabled === false ? 0 : 1,
         payload.updatedAt,
         payload.id
       );
@@ -108,6 +111,7 @@ export class ChatAgentRepository {
         payload.roleKind,
         payload.modelFamily,
         payload.isDefaultChatRole ? 1 : 0,
+        payload.sessionReuseEnabled === false ? 0 : 1,
         payload.createdAt,
         payload.updatedAt
       );

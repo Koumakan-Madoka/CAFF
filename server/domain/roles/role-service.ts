@@ -28,6 +28,7 @@ const FAMILY_EDITABLE_FIELDS = Object.freeze([
   'modelProfiles',
   'isDefaultChatRole',
   'avatarDataUrl',
+  'sessionReuseEnabled',
 ]);
 const CUSTOM_EDITABLE_FIELDS = Object.freeze([
   'name',
@@ -42,6 +43,7 @@ const CUSTOM_EDITABLE_FIELDS = Object.freeze([
   'skillIds',
   'modelProfiles',
   'isDefaultChatRole',
+  'sessionReuseEnabled',
 ]);
 const FAMILY_UPDATE_FIELD_SET = new Set(FAMILY_EDITABLE_FIELDS);
 const FAMILY_RUNTIME_FIELD_SET = new Set(['provider', 'model', 'thinking', 'modelProfiles']);
@@ -672,6 +674,11 @@ export function createRoleService(options: any = {}) {
       isDefaultChatRole: hasOwn(source, 'isDefaultChatRole')
         ? Boolean(source.isDefaultChatRole)
         : Boolean(existing?.isDefaultChatRole),
+      // ADR 0001 Phase 2: per-agent reuse toggle; absent means keep existing
+      // (default ON for new roles).
+      sessionReuseEnabled: hasOwn(source, 'sessionReuseEnabled')
+        ? Boolean(source.sessionReuseEnabled)
+        : existing?.sessionReuseEnabled !== false,
     };
   }
 
@@ -760,6 +767,9 @@ export function createRoleService(options: any = {}) {
       isDefaultChatRole: hasOwn(input, 'isDefaultChatRole')
         ? Boolean(input.isDefaultChatRole)
         : Boolean(existing.isDefaultChatRole),
+      sessionReuseEnabled: hasOwn(input, 'sessionReuseEnabled')
+        ? Boolean(input.sessionReuseEnabled)
+        : existing.sessionReuseEnabled !== false,
     };
 
     if (touchesRuntime) {
