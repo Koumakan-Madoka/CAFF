@@ -93,7 +93,7 @@ const SECTION_DISPLAY_TITLES: Record<string, string> = {
 };
 
 export type ContextSnapshotVisibility = 'full' | 'summary' | 'presence';
-export type ContextSnapshotDeliveryMode = 'fresh' | 'resume';
+export type ContextSnapshotDeliveryMode = 'fresh' | 'resume' | 'unknown';
 
 export type RetainedSessionPrefixReference = {
   sessionName: string;
@@ -141,8 +141,9 @@ function normalizeKey(value: string) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'section';
 }
 
-function normalizeDeliveryMode(value: any): ContextSnapshotDeliveryMode {
-  return String(value || '').trim().toLowerCase() === 'resume' ? 'resume' : 'fresh';
+function normalizeDeliveryMode(value: any, fallback: ContextSnapshotDeliveryMode = 'unknown'): ContextSnapshotDeliveryMode {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'fresh' || normalized === 'resume' ? normalized : fallback;
 }
 
 function normalizeRetainedSessionPrefix(value: any, deliveryMode: ContextSnapshotDeliveryMode): RetainedSessionPrefixReference | null {
@@ -265,7 +266,7 @@ function sectionIsTruncated(section: ContextPromptSectionInput) {
 }
 
 export function createAgentContextSnapshot(input: any = {}) {
-  const deliveryMode = normalizeDeliveryMode(input.deliveryMode);
+  const deliveryMode = normalizeDeliveryMode(input.deliveryMode, 'fresh');
   const retainedSessionPrefix = normalizeRetainedSessionPrefix(input.retainedSessionPrefix, deliveryMode);
   const sections = (Array.isArray(input.sections) ? input.sections : [])
     .filter((section: any) => section && String(section.content || '').trim())
@@ -418,7 +419,9 @@ export function exportAgentContextSnapshotMarkdown(snapshot: any) {
 
   const deliveryLabel = materialized.deliveryMode === 'resume'
     ? 'resume（仅追加本轮增量，旧前缀由 Session 保留）'
-    : 'fresh（本轮完整注入）';
+    : materialized.deliveryMode === 'fresh'
+      ? 'fresh（本轮完整注入）'
+      : 'unknown（旧版快照未记录实际投递方式）';
   const lines = [
     '# Agent Context Snapshot / 智能体上下文快照',
     '',

@@ -3291,7 +3291,7 @@ function renderAgentContextInspector() {
       : inspector.errorMessage
         ? inspector.errorMessage
         : snapshot
-          ? `${snapshot.agentName || snapshot.agentId || 'Agent'} · 回合 ${snapshot.turnId || '-'} · ${snapshot.deliveryMode === 'resume' ? '本轮追加' : '本轮注入'} · 约 ${formatInspectorNumber(snapshot.totalApproxTokens)} tokens`
+          ? `${snapshot.agentName || snapshot.agentId || 'Agent'} · 回合 ${snapshot.turnId || '-'} · ${snapshot.deliveryMode === 'resume' ? '本轮追加' : snapshot.deliveryMode === 'fresh' ? '本轮注入' : '旧版快照'} · 约 ${formatInspectorNumber(snapshot.totalApproxTokens)} tokens`
           : '选择一条 AI 消息查看上下文快照';
     dom.agentContextStatus.classList.toggle('paused', Boolean(inspector.errorMessage));
   }
@@ -3313,12 +3313,21 @@ function renderAgentContextInspector() {
         ? inspector.runEvidence
         : null;
       const isResume = snapshot.deliveryMode === 'resume';
+      const isLegacyResume = snapshot.deliveryMode === 'unknown' && runEvidence && runEvidence.sessionReused === true;
+      const deliveryLabel = isResume
+        ? '恢复旧 Session（仅追加增量）'
+        : isLegacyResume
+          ? '旧版 Resume 快照（分区口径不可靠）'
+          : snapshot.deliveryMode === 'fresh'
+            ? 'Fresh（完整注入）'
+            : '旧版快照（投递方式未记录）';
+      const deltaScoped = isResume;
       const metaItems = [
         ['智能体', snapshot.agentName || snapshot.agentId || '-'],
         ['捕获时间', snapshot.capturedAt || '-'],
-        ['投递方式', isResume ? '恢复旧 Session（仅追加增量）' : 'Fresh（完整注入）'],
-        [isResume ? '本轮追加 tokens' : '本轮注入 tokens', formatInspectorNumber(snapshot.totalApproxTokens)],
-        [isResume ? '本轮追加字节数' : '本轮注入字节数', formatInspectorNumber(snapshot.totalByteSize)],
+        ['投递方式', deliveryLabel],
+        [deltaScoped ? '本轮追加 tokens' : snapshot.deliveryMode === 'fresh' ? '本轮注入 tokens' : '快照 tokens', formatInspectorNumber(snapshot.totalApproxTokens)],
+        [deltaScoped ? '本轮追加字节数' : snapshot.deliveryMode === 'fresh' ? '本轮注入字节数' : '快照字节数', formatInspectorNumber(snapshot.totalByteSize)],
       ];
       if (retainedPrefix) {
         metaItems.push(
@@ -3327,7 +3336,7 @@ function renderAgentContextInspector() {
           ['静态段 Hash', retainedPrefix.staticSegmentHash || '-']
         );
       }
-      if (isResume && runEvidence) {
+      if ((isResume || isLegacyResume) && runEvidence) {
         metaItems.push(
           ['Cache read tokens', runEvidence.cacheReadTokens === null ? '-' : formatInspectorNumber(runEvidence.cacheReadTokens)],
           ['未缓存 input tokens', runEvidence.uncachedInputTokens === null ? '-' : formatInspectorNumber(runEvidence.uncachedInputTokens)]

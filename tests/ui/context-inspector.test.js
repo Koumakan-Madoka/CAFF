@@ -96,3 +96,48 @@ test('Context Inspector distinguishes resumed delta from the retained session pr
   assert.match(dom.agentContextSectionList.textContent, /New messages since your last reply/u);
   assert.doesNotMatch(dom.agentContextSectionList.textContent, /第一次完整历史/u);
 });
+
+test('Context Inspector does not mislabel a legacy reused snapshot as fresh', () => {
+  const page = new JSDOM(`<!doctype html><body>
+    <p id="status"></p>
+    <button id="export"></button>
+    <div id="summary"></div>
+    <div id="sections"></div>
+  </body>`);
+  const { document } = page.window;
+  const state = {
+    contextInspector: {
+      loading: false,
+      errorMessage: '',
+      snapshot: {
+        agentName: 'GLM',
+        turnId: 'legacy-turn',
+        deliveryMode: 'unknown',
+        totalApproxTokens: 4403,
+        totalByteSize: 17611,
+        sections: [],
+      },
+      runEvidence: {
+        sessionReused: true,
+        sessionReuseReason: 'reused',
+        cacheReadTokens: 54581,
+        uncachedInputTokens: 2234,
+      },
+    },
+  };
+  const dom = {
+    agentContextStatus: document.getElementById('status'),
+    agentContextExportButton: document.getElementById('export'),
+    agentContextSummary: document.getElementById('summary'),
+    agentContextSectionList: document.getElementById('sections'),
+  };
+
+  loadContextInspectorRenderer(document, state, dom)();
+
+  const values = metaValues(document);
+  assert.match(dom.agentContextStatus.textContent, /旧版快照/u);
+  assert.equal(values.get('投递方式'), '旧版 Resume 快照（分区口径不可靠）');
+  assert.equal(values.get('快照 tokens'), '4,403');
+  assert.equal(values.get('Cache read tokens'), '54,581');
+  assert.equal(dom.agentContextSummary.textContent.includes('Fresh（完整注入）'), false);
+});

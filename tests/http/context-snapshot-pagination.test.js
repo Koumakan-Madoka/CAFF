@@ -172,6 +172,8 @@ test('context snapshot list uses bounded stable cursor pages across mixed old an
       cacheWriteTokens: 0,
     },
     modelUsage: { modelCallCount: 4 },
+    sessionReused: true,
+    sessionReuseReason: 'reused',
   }), newestId);
 
   const handler = createConversationsController({
@@ -233,6 +235,8 @@ test('context snapshot list uses bounded stable cursor pages across mixed old an
   assert.equal(resumedDetail.json.snapshot.deliveryMode, 'resume');
   assert.equal(resumedDetail.json.snapshot.retainedSessionPrefix.sessionName, 'chat-retained-session');
   assert.deepEqual(resumedDetail.json.runEvidence, {
+    sessionReused: true,
+    sessionReuseReason: 'reused',
     inputTokens: 56815,
     uncachedInputTokens: 2234,
     cacheReadTokens: 54581,

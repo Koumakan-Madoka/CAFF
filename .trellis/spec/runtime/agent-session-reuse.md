@@ -35,7 +35,7 @@ busy 行超过 `PI_CHAT_SESSION_REUSE_BUSY_STALE_MS`（默认 2h）视为僵尸 
 - 游标推进：复用生命周期启用时，executor 在调用 provider 前用同一时刻的完整 `store.listMessages(conversationId)` 冻结游标基线；该基线是存储一致性口径，不等于 prompt 投影。fresh prompt 即使只渲染最近 24 条或过滤 private-only 消息，仍以完整存储前缀建立下一轮 claim 可校验的快照；这与旧路径中窗口外/不可见消息不再注入的语义一致。收尾用 `appendSessionReuseCursorMessage(snapshot, assistantMessageDone)` 只加入本轮 assistant，禁止成功后重新读取全量消息，以免吞掉 run 期间到达的消息。
 - 静态段 hash：`computeStaticPromptHash(sections, [provider, model, profileId, thinking])`；7 个 dynamic 段不进 hash（见 `agent-prompt.ts` 的 stability 标签）。
 - 审计：queued/final/error metadata 均带 `sessionReused` + `sessionReuseReason`。
-- Inspector 快照：executor 必须区分判定前的 `promptSections`（用于静态 hash/fresh fallback）与实际 `deliveredPromptSections`。fresh 使用完整 sections；成功 claim 后 resume 使用唯一 `session_delta` section，并从它格式化实际 `startRun` prompt。snapshot schema v2 写 `deliveryMode=fresh|resume`；resume 的 `retainedSessionPrefix` 只引用 session name、static hash、cursor 四元组与 last reply，不得把游标前历史重新渲染为本轮 sections。详情 API 的 `runEvidence` 从完成消息 token/model usage 投影 cache-read 等运行后指标，不修改不可变快照。
+- Inspector 快照：executor 必须区分判定前的 `promptSections`（用于静态 hash/fresh fallback）与实际 `deliveredPromptSections`。fresh 使用完整 sections；成功 claim 后 resume 使用唯一 `session_delta` section，并从它格式化实际 `startRun` prompt。snapshot schema v2 写 `deliveryMode=fresh|resume`；resume 的 `retainedSessionPrefix` 只引用 session name、static hash、cursor 四元组与 last reply，不得把游标前历史重新渲染为本轮 sections。详情 API 的 `runEvidence` 从完成消息 session-reuse/token/model usage 投影 cache-read 等运行后指标，不修改不可变快照。缺少 delivery 字段的 schema v1 存量记录归一为 `unknown`；可依据 `runEvidence.sessionReused` 标记“旧版 Resume、分区口径不可靠”，但不得冒充 fresh 或精确 delta。
 
 ## API / 前端
 

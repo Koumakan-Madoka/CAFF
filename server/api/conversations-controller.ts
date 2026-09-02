@@ -128,6 +128,8 @@ function contextSnapshotRunEvidence(message: any) {
     return Number.isInteger(normalized) && normalized >= 0 ? normalized : null;
   };
   return {
+    sessionReused: metadata.sessionReused === true,
+    sessionReuseReason: String(metadata.sessionReuseReason || '').trim(),
     inputTokens: tokenCount(tokenUsage.inputTokens),
     uncachedInputTokens: tokenCount(tokenUsage.uncachedInputTokens),
     cacheReadTokens: tokenCount(tokenUsage.cacheReadTokens),

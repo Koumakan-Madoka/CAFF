@@ -12,7 +12,7 @@
 
 - Prompt section builder: `buildAgentTurnPromptSections(input) -> ContextPromptSectionInput[]`.
 - Prompt formatter: `formatAgentTurnPromptSections(sections) -> string`.
-- Snapshot builder: `createAgentContextSnapshot({ conversationId, turnId, messageId, agentId, agentName, promptVersion, deliveryMode, retainedSessionPrefix?, sections }) -> AgentContextSnapshot`；schema v2 的 `deliveryMode` 为 `fresh|resume`，resume 时 `retainedSessionPrefix` 保存 session name、静态段 hash 和游标引用。
+- Snapshot builder: `createAgentContextSnapshot({ conversationId, turnId, messageId, agentId, agentName, promptVersion, deliveryMode, retainedSessionPrefix?, sections }) -> AgentContextSnapshot`；schema v2 的生产写入 `deliveryMode` 为 `fresh|resume`，resume 时 `retainedSessionPrefix` 保存 session name、静态段 hash 和游标引用；缺少该字段的 schema v1 存量快照在读取时归一为 `unknown`，不得臆断成 fresh。
 - Snapshot read API: `GET /api/conversations/:conversationId/messages/:messageId/context-snapshot` returns `{ snapshot, runEvidence }` with safe display content plus post-run token evidence (`cacheReadTokens`, `uncachedInputTokens`, etc.).
 - Snapshot list API: `GET /api/conversations/:conversationId/context-snapshots?limit=<1..100>&before=<opaque>` returns `{ conversationId, snapshots, pageInfo: { hasMore, nextCursor } }` with newest-first metadata summaries; default limit is 50 and maximum is 100.
 - Markdown export API: `GET /api/conversations/:conversationId/messages/:messageId/context-snapshot-export` downloads `text/markdown`.
@@ -26,7 +26,7 @@
 - Detail/export and list reads are table-first with legacy metadata fallback. The list is driven by a single bounded `chat_messages` cursor query, never `getConversation()` or unbounded `listMessages()`.
 - The exact prompt sent to the model must be produced from the same **delivered** sections object passed into `createAgentContextSnapshot`; do not rebuild prompt context a second time for snapshot capture. Fresh runs use the complete prompt sections. Resume runs replace the fresh candidate sections with one `session_delta` section (`source=session/resume-delta`) and derive the actual appended user prompt from that section; cursor-prefix history must not reappear in the current snapshot.
 - Resume snapshots set `deliveryMode=resume` and retain only a `retainedSessionPrefix` reference (`sessionName`, `staticSegmentHash`, cursor id/count/first/max-updated-at, `lastReplyAt`). The prefix reference proves what the provider session already retains without re-rendering that content as a current prompt section. Fresh snapshots set `deliveryMode=fresh` and have no retained prefix.
-- `runEvidence` is computed at detail-read time from the completed assistant message's lightweight `tokenUsage`/`modelUsage`. It is not written back into the immutable pre-run snapshot because cache-read evidence does not exist until the provider run finishes.
+- `runEvidence` is computed at detail-read time from the completed assistant message's lightweight `sessionReused`, `sessionReuseReason`, `tokenUsage`, and `modelUsage`. It is not written back into the immutable pre-run snapshot because cache-read evidence does not exist until the provider run finishes. For legacy schema v1 snapshots, the UI may use `runEvidence.sessionReused=true` only to label the record as a legacy Resume snapshot whose old section projection is unreliable; it must not relabel those sections as an exact delta.
 - Prompt assembly should omit optional sections that have no material body instead of emitting placeholder-only content such as `- none`, `No private mailbox items.`, legacy `No saved memory cards.`, or `No prior messages.`; omitted sections must also be absent from Inspector snapshots. Memory Cards are deprecated and must not be newly injected even when stored cards exist.
 - Every section stores `sectionKey`, `title`, `source`, `visibility`, `contentHash`, `displayContentHash`, `approxTokens`, `byteSize`, `truncated`, `truncationNote`, `redacted`, `policyNote`, and safe display fields.
 - Visibility values are exactly `full`, `summary`, or `presence`:
@@ -46,6 +46,7 @@
 | Fresh run or fail-safe fallback | Snapshot `deliveryMode=fresh`; sections remain the full prompt sections and no retained prefix is present. |
 | Completed resume run has token usage | Detail API returns `runEvidence.cacheReadTokens`/`uncachedInputTokens`; the stored snapshot remains unchanged. |
 | Resume snapshot contains cursor-prefix history in sections | Regression failure: Inspector is reporting the fresh candidate rather than actual delivery. |
+| Legacy schema v1 snapshot lacks `deliveryMode` | Materialize as `unknown`; if message evidence says `sessionReused=true`, label “legacy Resume / section projection unreliable”, never fresh or exact delta. |
 | Assistant message has `metadata.agentContextSnapshot` | Read API returns materialized safe snapshot. |
 | Assistant message lacks snapshot | Read/export API returns `404 No context snapshot is available for this message`. |
 | Message is not assistant role | Read/export API returns `400 Only assistant messages can inspect context snapshots`. |
@@ -73,7 +74,7 @@
 - Delivery parity: session-reuse A/B asserts resume snapshot section content equals the exact `startRun` prompt and excludes pre-cursor history; fresh behavior remains unchanged.
 - Delivery metadata: context snapshot tests assert schema v2 `deliveryMode`, retained-prefix round trip, safe materialization, and Markdown export.
 - Post-run evidence: detail API test asserts cache-read/uncached token counts are projected from message metadata without mutating the snapshot.
-- UI: jsdom renders resume as “恢复旧 Session（仅追加增量）”, labels totals as this-turn appended values, shows retained prefix/cache evidence, and never uses the old “系统提示词 tokens 总数” label.
+- UI: jsdom renders resume as “恢复旧 Session（仅追加增量）”, labels totals as this-turn appended values, shows retained prefix/cache evidence, never uses the old “系统提示词 tokens 总数” label, and does not mislabel schema v1 reused snapshots as fresh.
 - Redaction: full-visibility sections containing known token/secret patterns render `[REDACTED]`.
 - Redaction policy: sandbox/private/env/tool-path values never expose raw values while their sections remain readable.
 - Export: Markdown preserves section metadata and readable content while omitting or redacting concrete sensitive values.
