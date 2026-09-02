@@ -32,12 +32,14 @@ const {
 } = require('../../../../lib/observability-timeline');
 const { buildAgentTurnPromptSections, buildSessionReuseDeltaPrompt, computeStaticPromptHash, formatAgentTurnPromptSections, AGENT_PROMPT_VERSION } = require('./agent-prompt');
 const {
+  appendSessionReuseCursorMessage,
   buildSessionReuseCursorSnapshot,
   evaluateSessionReuse,
   extractLastCallInputTokens,
   isSessionReuseBusyStale,
   resolveSessionReuseConfig,
   resolveSessionReuseContextWindow,
+  verifySessionReuseCursor,
 } = require('./session-reuse');
 const { buildInvocationImages } = require('./image-invocation');
 const { createAgentContextSnapshot } = require('./context-snapshot');
@@ -1528,6 +1530,7 @@ export function createAgentExecutor(options: any = {}) {
     const reuseProfileId = agentConfig.profileId || 'default';
     const staticSegmentHash = computeStaticPromptHash(promptSections, [provider, model, reuseProfileId, thinking]);
     let sessionReuseClaim: any = null; // pre-claim reusable row snapshot, kept for restore/poison
+    let sessionReuseCursorBaseSnapshot = buildSessionReuseCursorSnapshot(projectedConversationHistory);
     let sessionReuseDecision: any = {
       reused: false,
       reason: !sessionReuseConfig.enabled
@@ -1540,39 +1543,65 @@ export function createAgentExecutor(options: any = {}) {
     if (sessionReuseActive && typeof store.getAgentSessionReuse === 'function') {
       try {
         let reuseRow = store.getAgentSessionReuse(conversationId, agent.id, reuseProfileId);
-        if (reuseRow && isSessionReuseBusyStale(reuseRow, sessionReuseConfig, nowIso())) {
+        const busyStale = reuseRow && isSessionReuseBusyStale(reuseRow, sessionReuseConfig, nowIso());
+        if (busyStale) {
           // A run that died without flipping state left the row busy; the cached
           // session contents are unknowable, so poison it instead of reusing.
           store.markAgentSessionReusePoisoned(conversationId, agent.id, reuseProfileId, 'busy_stale', nowIso());
-          reuseRow = store.getAgentSessionReuse(conversationId, agent.id, reuseProfileId);
-        }
-        const decision = evaluateSessionReuse({
-          row: reuseRow,
-          staticSegmentHash,
-          config: sessionReuseConfig,
-          now: nowIso(),
-          messages: typeof store.listMessages === 'function' ? store.listMessages(conversationId) : [],
-        });
-        sessionReuseDecision = { reused: false, reason: decision.reason };
-        if (decision.poison) {
-          store.markAgentSessionReusePoisoned(conversationId, agent.id, reuseProfileId, decision.reason, nowIso());
-        }
-        if (decision.reuse) {
-          const claimed = store.claimAgentSessionReuse({
-            conversationId,
-            agentId: agent.id,
-            profileId: reuseProfileId,
-            expectedHash: staticSegmentHash,
+          sessionReuseDecision = { reused: false, reason: 'busy_stale' };
+        } else {
+          const reuseMessages = typeof store.listMessages === 'function' ? store.listMessages(conversationId) : [];
+          const decision = evaluateSessionReuse({
+            row: reuseRow,
+            staticSegmentHash,
+            config: sessionReuseConfig,
             now: nowIso(),
+            messages: reuseMessages,
           });
-          if (claimed) {
-            sessionReuseClaim = { ...reuseRow };
-            sessionName = claimed.sessionName;
-            resumeSession = true;
-            prompt = buildSessionReuseDeltaPrompt(decision.delta, conversation.agents);
-            sessionReuseDecision = { reused: true, reason: 'reused' };
-          } else {
-            sessionReuseDecision = { reused: false, reason: 'claim_conflict' };
+          sessionReuseDecision = { reused: false, reason: decision.reason };
+          if (decision.poison) {
+            store.markAgentSessionReusePoisoned(conversationId, agent.id, reuseProfileId, decision.reason, nowIso());
+          }
+          if (decision.reuse) {
+            const claimed = store.claimAgentSessionReuse({
+              conversationId,
+              agentId: agent.id,
+              profileId: reuseProfileId,
+              expectedHash: staticSegmentHash,
+              expectedCursorMessageId: reuseRow.cursorMessageId,
+              expectedCursorMessageCount: reuseRow.cursorMessageCount,
+              expectedCursorFirstMessageId: reuseRow.cursorFirstMessageId,
+              expectedCursorMaxUpdatedAt: reuseRow.cursorMaxUpdatedAt,
+              now: nowIso(),
+            });
+            if (claimed) {
+              sessionReuseClaim = { ...reuseRow };
+              sessionReuseCursorBaseSnapshot = buildSessionReuseCursorSnapshot(reuseMessages);
+              sessionName = claimed.sessionName;
+              resumeSession = true;
+              prompt = buildSessionReuseDeltaPrompt(decision.delta, conversation.agents);
+              sessionReuseDecision = { reused: true, reason: 'reused' };
+            } else {
+              const conflictRow = store.getAgentSessionReuse(conversationId, agent.id, reuseProfileId);
+              const conflictCursor = conflictRow && conflictRow.state === 'reusable'
+                ? verifySessionReuseCursor(
+                    conflictRow,
+                    typeof store.listMessages === 'function' ? store.listMessages(conversationId) : []
+                  )
+                : null;
+              if (conflictCursor && !conflictCursor.ok) {
+                store.markAgentSessionReusePoisoned(
+                  conversationId,
+                  agent.id,
+                  reuseProfileId,
+                  conflictCursor.reason,
+                  nowIso()
+                );
+                sessionReuseDecision = { reused: false, reason: conflictCursor.reason };
+              } else {
+                sessionReuseDecision = { reused: false, reason: 'claim_conflict' };
+              }
+            }
           }
         }
       } catch (reuseError: any) {
@@ -2368,12 +2397,13 @@ export function createAgentExecutor(options: any = {}) {
       broadcastConversationSummary(conversationId);
 
       if (sessionReuseActive && typeof store.markAgentSessionReuseReusable === 'function') {
-        // The run ended cleanly, so the (fresh or resumed) session now holds the
-        // full static prefix + history up to and including this reply. Persist
-        // the reusable snapshot; the next turn re-evaluates all preconditions.
+        // Freeze the message boundary that was actually sent to the provider.
+        // Messages arriving while the run is active stay beyond this cursor and
+        // become the next turn's delta instead of being marked consumed.
         try {
-          const cursorSnapshot = buildSessionReuseCursorSnapshot(
-            typeof store.listMessages === 'function' ? store.listMessages(conversationId) : []
+          const cursorSnapshot = appendSessionReuseCursorMessage(
+            sessionReuseCursorBaseSnapshot,
+            assistantMessageDone
           );
           const usageInputTokens = extractLastCallInputTokens(result.usageCalls);
           const usageContextWindow = resolveSessionReuseContextWindow(modelCatalog, provider, model);

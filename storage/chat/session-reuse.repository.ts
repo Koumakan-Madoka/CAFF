@@ -53,8 +53,10 @@ export class ChatSessionReuseRepository {
       WHERE conversation_id = ? AND agent_id = ? AND profile_id = ?
       LIMIT 1
     `);
-    // Atomic reusable -> busy flip guarded by the expected static segment hash,
-    // so the reuse decision and the state transition happen in one statement.
+    // The same UPDATE guards both the persisted reuse snapshot and the live
+    // chat_messages prefix represented by that snapshot. SQLite therefore
+    // cannot interleave an edit/delete between cursor verification and the
+    // reusable -> busy flip.
     this.claimStatement = db.prepare(`
       UPDATE chat_agent_session_reuse
       SET state = 'busy',
@@ -65,6 +67,67 @@ export class ChatSessionReuseRepository {
         AND profile_id = @profileId
         AND state = 'reusable'
         AND static_segment_hash = @expectedHash
+        AND cursor_message_id = @expectedCursorMessageId
+        AND cursor_message_count = @expectedCursorMessageCount
+        AND cursor_first_message_id = @expectedCursorFirstMessageId
+        AND cursor_max_updated_at = @expectedCursorMaxUpdatedAt
+        AND EXISTS (
+          SELECT 1
+          FROM chat_messages AS cursor_message
+          WHERE cursor_message.conversation_id = @conversationId
+            AND cursor_message.id = @expectedCursorMessageId
+        )
+        AND (
+          SELECT COUNT(*)
+          FROM chat_messages AS prefix_message
+          WHERE prefix_message.conversation_id = @conversationId
+            AND (
+              prefix_message.created_at < (
+                SELECT cursor_message.created_at
+                FROM chat_messages AS cursor_message
+                WHERE cursor_message.conversation_id = @conversationId
+                  AND cursor_message.id = @expectedCursorMessageId
+              )
+              OR (
+                prefix_message.created_at = (
+                  SELECT cursor_message.created_at
+                  FROM chat_messages AS cursor_message
+                  WHERE cursor_message.conversation_id = @conversationId
+                    AND cursor_message.id = @expectedCursorMessageId
+                )
+                AND prefix_message.id <= @expectedCursorMessageId
+              )
+            )
+        ) = @expectedCursorMessageCount
+        AND (
+          SELECT first_message.id
+          FROM chat_messages AS first_message
+          WHERE first_message.conversation_id = @conversationId
+          ORDER BY first_message.created_at ASC, first_message.id ASC
+          LIMIT 1
+        ) = @expectedCursorFirstMessageId
+        AND (
+          SELECT MAX(COALESCE(prefix_message.updated_at, prefix_message.created_at))
+          FROM chat_messages AS prefix_message
+          WHERE prefix_message.conversation_id = @conversationId
+            AND (
+              prefix_message.created_at < (
+                SELECT cursor_message.created_at
+                FROM chat_messages AS cursor_message
+                WHERE cursor_message.conversation_id = @conversationId
+                  AND cursor_message.id = @expectedCursorMessageId
+              )
+              OR (
+                prefix_message.created_at = (
+                  SELECT cursor_message.created_at
+                  FROM chat_messages AS cursor_message
+                  WHERE cursor_message.conversation_id = @conversationId
+                    AND cursor_message.id = @expectedCursorMessageId
+                )
+                AND prefix_message.id <= @expectedCursorMessageId
+              )
+            )
+        ) = @expectedCursorMaxUpdatedAt
     `);
     this.poisonStatement = db.prepare(`
       UPDATE chat_agent_session_reuse
@@ -150,14 +213,29 @@ export class ChatSessionReuseRepository {
     );
   }
 
-  // Returns the post-claim row when the flip succeeded, or null when the row
-  // disappeared, changed hash, or was no longer reusable (concurrent claim).
+  // Returns the post-claim row when the guarded flip succeeded, or null when
+  // the row or its live message-prefix fingerprint changed concurrently.
   claim(payload: any) {
+    const expectedCursorMessageCount = Number(payload.expectedCursorMessageCount);
+    if (!Number.isInteger(expectedCursorMessageCount) || expectedCursorMessageCount <= 0) {
+      throw new TypeError('expectedCursorMessageCount must be a positive integer');
+    }
+
     const result = this.claimStatement.run({
       conversationId: normalizeId(payload.conversationId, 'conversationId'),
       agentId: normalizeId(payload.agentId, 'agentId'),
       profileId: normalizeId(payload.profileId || 'default', 'profileId'),
       expectedHash: normalizeId(payload.expectedHash, 'expectedHash'),
+      expectedCursorMessageId: normalizeId(payload.expectedCursorMessageId, 'expectedCursorMessageId'),
+      expectedCursorMessageCount,
+      expectedCursorFirstMessageId: normalizeId(
+        payload.expectedCursorFirstMessageId,
+        'expectedCursorFirstMessageId'
+      ),
+      expectedCursorMaxUpdatedAt: normalizeId(
+        payload.expectedCursorMaxUpdatedAt,
+        'expectedCursorMaxUpdatedAt'
+      ),
       lastRunId: payload.lastRunId === null || payload.lastRunId === undefined ? null : payload.lastRunId,
       now: normalizeId(payload.now, 'now'),
     });

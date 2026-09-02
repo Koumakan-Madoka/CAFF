@@ -15,6 +15,24 @@ function createStore() {
     projectScopeId: 'project-1',
     participants: ['role-family-kimi'],
   });
+  store.createMessage({
+    id: 'm-1',
+    conversationId: conversation.id,
+    turnId: 'turn-1',
+    role: 'user',
+    senderName: 'User',
+    content: 'first message',
+    createdAt: '2026-09-02T09:59:00.000Z',
+  });
+  store.createMessage({
+    id: 'm-2',
+    conversationId: conversation.id,
+    turnId: 'turn-1',
+    role: 'user',
+    senderName: 'User',
+    content: 'second message',
+    createdAt: '2026-09-02T10:00:00.000Z',
+  });
   return { store, conversation };
 }
 
@@ -37,6 +55,21 @@ function reusablePayload(overrides = {}) {
     usageRatio: 0.3125,
     lastReplyAt: '2026-09-02T10:00:00.000Z',
     now: '2026-09-02T10:00:01.000Z',
+    ...overrides,
+  };
+}
+
+function claimPayload(overrides = {}) {
+  return {
+    conversationId: 'conv-reuse',
+    agentId: 'agent-1',
+    profileId: 'default',
+    expectedHash: 'hash-a',
+    expectedCursorMessageId: 'm-2',
+    expectedCursorMessageCount: 2,
+    expectedCursorFirstMessageId: 'm-1',
+    expectedCursorMaxUpdatedAt: '2026-09-02T10:00:00.000Z',
+    now: '2026-09-02T10:05:00.000Z',
     ...overrides,
   };
 }
@@ -76,25 +109,22 @@ test('session reuse repository: claim flips reusable to busy atomically and reje
   const { store } = createStore();
   try {
     store.markAgentSessionReuseReusable(reusablePayload());
-
-    const claimed = store.claimAgentSessionReuse({
+    store.createMessage({
+      id: 'm-3',
       conversationId: 'conv-reuse',
-      agentId: 'agent-1',
-      profileId: 'default',
-      expectedHash: 'hash-a',
-      now: '2026-09-02T10:05:00.000Z',
+      turnId: 'turn-2',
+      role: 'user',
+      senderName: 'User',
+      content: 'new delta after the cursor',
+      createdAt: '2026-09-02T10:01:00.000Z',
     });
+
+    const claimed = store.claimAgentSessionReuse(claimPayload());
     assert.ok(claimed);
     assert.equal(claimed.state, 'busy');
 
     // Second claim must fail: the row is busy now.
-    const second = store.claimAgentSessionReuse({
-      conversationId: 'conv-reuse',
-      agentId: 'agent-1',
-      profileId: 'default',
-      expectedHash: 'hash-a',
-      now: '2026-09-02T10:06:00.000Z',
-    });
+    const second = store.claimAgentSessionReuse(claimPayload({ now: '2026-09-02T10:06:00.000Z' }));
     assert.equal(second, null);
     assert.equal(store.getAgentSessionReuse('conv-reuse', 'agent-1', 'default').state, 'busy');
   } finally {
@@ -107,13 +137,41 @@ test('session reuse repository: claim rejects a stale static segment hash withou
   try {
     store.markAgentSessionReuseReusable(reusablePayload());
 
-    const claimed = store.claimAgentSessionReuse({
-      conversationId: 'conv-reuse',
-      agentId: 'agent-1',
-      profileId: 'default',
-      expectedHash: 'hash-b',
-      now: '2026-09-02T10:05:00.000Z',
-    });
+    const claimed = store.claimAgentSessionReuse(claimPayload({ expectedHash: 'hash-b' }));
+    assert.equal(claimed, null);
+    assert.equal(store.getAgentSessionReuse('conv-reuse', 'agent-1', 'default').state, 'reusable');
+  } finally {
+    store.close();
+  }
+});
+
+test('session reuse repository: claim atomically rejects an edited cursor prefix', () => {
+  const { store } = createStore();
+  try {
+    store.markAgentSessionReuseReusable(reusablePayload());
+    store.db.prepare(`
+      UPDATE chat_messages
+      SET content = ?, updated_at = ?
+      WHERE id = ?
+    `).run('edited after reuse evaluation', '2026-09-02T10:01:00.000Z', 'm-1');
+
+    const claimed = store.claimAgentSessionReuse(claimPayload());
+
+    assert.equal(claimed, null);
+    assert.equal(store.getAgentSessionReuse('conv-reuse', 'agent-1', 'default').state, 'reusable');
+  } finally {
+    store.close();
+  }
+});
+
+test('session reuse repository: claim atomically rejects a deleted cursor prefix', () => {
+  const { store } = createStore();
+  try {
+    store.markAgentSessionReuseReusable(reusablePayload());
+    store.db.prepare('DELETE FROM chat_messages WHERE id = ?').run('m-1');
+
+    const claimed = store.claimAgentSessionReuse(claimPayload());
+
     assert.equal(claimed, null);
     assert.equal(store.getAgentSessionReuse('conv-reuse', 'agent-1', 'default').state, 'reusable');
   } finally {
@@ -125,13 +183,7 @@ test('session reuse repository: restoreReusable writes back the pre-claim snapsh
   const { store } = createStore();
   try {
     const reusable = store.markAgentSessionReuseReusable(reusablePayload());
-    store.claimAgentSessionReuse({
-      conversationId: 'conv-reuse',
-      agentId: 'agent-1',
-      profileId: 'default',
-      expectedHash: 'hash-a',
-      now: '2026-09-02T10:05:00.000Z',
-    });
+    store.claimAgentSessionReuse(claimPayload());
     assert.equal(store.getAgentSessionReuse('conv-reuse', 'agent-1', 'default').state, 'busy');
 
     const restored = store.restoreAgentSessionReuse(reusable, '2026-09-02T10:07:00.000Z');
@@ -149,13 +201,7 @@ test('session reuse repository: markPoisoned records the reason and keeps audit 
   const { store } = createStore();
   try {
     store.markAgentSessionReuseReusable(reusablePayload());
-    store.claimAgentSessionReuse({
-      conversationId: 'conv-reuse',
-      agentId: 'agent-1',
-      profileId: 'default',
-      expectedHash: 'hash-a',
-      now: '2026-09-02T10:05:00.000Z',
-    });
+    store.claimAgentSessionReuse(claimPayload());
 
     store.markAgentSessionReusePoisoned('conv-reuse', 'agent-1', 'default', 'run_failed: boom', '2026-09-02T10:09:00.000Z');
     const poisoned = store.getAgentSessionReuse('conv-reuse', 'agent-1', 'default');
@@ -164,13 +210,7 @@ test('session reuse repository: markPoisoned records the reason and keeps audit 
     assert.equal(poisoned.sessionName, 'chat-conv-reuse-turn-1-agent-1');
 
     // A poisoned row can never be claimed again.
-    const claimed = store.claimAgentSessionReuse({
-      conversationId: 'conv-reuse',
-      agentId: 'agent-1',
-      profileId: 'default',
-      expectedHash: 'hash-a',
-      now: '2026-09-02T10:10:00.000Z',
-    });
+    const claimed = store.claimAgentSessionReuse(claimPayload({ now: '2026-09-02T10:10:00.000Z' }));
     assert.equal(claimed, null);
   } finally {
     store.close();

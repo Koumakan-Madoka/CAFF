@@ -55,14 +55,44 @@ function attachReuseStore(store, reuseState) {
     reuseState.calls.push(['get']);
     return reuseState.row ? { ...reuseState.row } : null;
   };
-  store.claimAgentSessionReuse = ({ expectedHash, now }) => {
-    reuseState.calls.push(['claim']);
+  store.claimAgentSessionReuse = (payload) => {
+    reuseState.calls.push(['claim', payload]);
+    if (typeof store.beforeReuseClaim === 'function') {
+      const beforeClaim = store.beforeReuseClaim;
+      store.beforeReuseClaim = null;
+      beforeClaim(payload);
+    }
     const row = reuseState.row;
-    if (!row || row.state !== 'reusable' || row.staticSegmentHash !== expectedHash) {
+    if (
+      !row
+      || row.state !== 'reusable'
+      || row.staticSegmentHash !== payload.expectedHash
+      || row.cursorMessageId !== payload.expectedCursorMessageId
+      || row.cursorMessageCount !== payload.expectedCursorMessageCount
+      || row.cursorFirstMessageId !== payload.expectedCursorFirstMessageId
+      || row.cursorMaxUpdatedAt !== payload.expectedCursorMaxUpdatedAt
+    ) {
+      return null;
+    }
+    const messages = store.listMessages(row.conversationId);
+    const cursorIndex = messages.findIndex((message) => message.id === row.cursorMessageId);
+    const prefix = cursorIndex >= 0 ? messages.slice(0, cursorIndex + 1) : [];
+    const maxUpdatedAt = prefix.reduce(
+      (max, message) => String(message.updatedAt || message.createdAt || '') > max
+        ? String(message.updatedAt || message.createdAt || '')
+        : max,
+      ''
+    );
+    if (
+      prefix.length !== row.cursorMessageCount
+      || !prefix[0]
+      || prefix[0].id !== row.cursorFirstMessageId
+      || maxUpdatedAt !== row.cursorMaxUpdatedAt
+    ) {
       return null;
     }
     const snapshot = { ...row };
-    reuseState.row = { ...row, state: 'busy', updatedAt: now };
+    reuseState.row = { ...row, state: 'busy', updatedAt: payload.now };
     return snapshot;
   };
   store.restoreAgentSessionReuse = (snapshot, now) => {
@@ -427,7 +457,11 @@ test('reused mode resumes the stored session with only the delta appended and ad
   // (reusable -> busy) before startRun and resumed with only the delta.
   seedUserMessage(store, 'u3', 'DELTA-U3-CONTENT');
   const executor2 = env.createExecutor(store, {
-    onStartRun: () => store.peekReuseRow(),
+    onStartRun: () => {
+      const busyRow = store.peekReuseRow();
+      seedUserMessage(store, 'u4', 'ARRIVED-DURING-RUN');
+      return busyRow;
+    },
   });
   await runTurn({ executor: executor2, conversation, agent, store, turnId: 'turn-reuse-2' });
 
@@ -452,12 +486,93 @@ test('reused mode resumes the stored session with only the delta appended and ad
 
   const leg2CallNames = store.reuseCalls.slice(2).map(([name]) => name);
   assert.deepEqual(leg2CallNames, ['get', 'claim', 'markReusable']);
+  const claim = store.reuseCalls[3][1];
+  assert.deepEqual(
+    {
+      cursorMessageId: claim.expectedCursorMessageId,
+      cursorMessageCount: claim.expectedCursorMessageCount,
+      cursorFirstMessageId: claim.expectedCursorFirstMessageId,
+      cursorMaxUpdatedAt: claim.expectedCursorMaxUpdatedAt,
+    },
+    {
+      cursorMessageId: snapshot.cursorMessageId,
+      cursorMessageCount: snapshot.cursorMessageCount,
+      cursorFirstMessageId: snapshot.cursorFirstMessageId,
+      cursorMaxUpdatedAt: snapshot.cursorMaxUpdatedAt,
+    }
+  );
   const advanced = store.reuseCalls[4][1];
   assert.equal(advanced.sessionName, freshRun.options.session, 'session identity survives across reused turns');
   assert.equal(advanced.cursorMessageId, assistantCreates[1].id);
-  assert.equal(advanced.cursorMessageCount, 5, 'cursor now covers u1, u2, a1, u3, a2');
+  assert.equal(advanced.cursorMessageCount, 5, 'cursor covers only u1, u2, a1, u3, and a2');
   assert.equal(advanced.cursorFirstMessageId, 'u1');
   assert.equal(advanced.staticSegmentHash, snapshot.staticSegmentHash, 'static segments unchanged across turns');
+
+  // u4 arrived after the resumed prompt was assembled. It must remain beyond
+  // the committed cursor and appear in the next resumed delta.
+  const executor3 = env.createExecutor(store);
+  await runTurn({ executor: executor3, conversation, agent, store, turnId: 'turn-reuse-3' });
+
+  assert.equal(env.captured.length, 3);
+  assert.equal(env.captured[2].options.resume, true);
+  assert.match(env.captured[2].prompt, /ARRIVED-DURING-RUN/u);
+  assert.equal(env.captured[2].prompt.includes('DELTA-U3-CONTENT'), false);
+});
+
+test('cursor edit between evaluation and claim poisons the cached session and runs fresh', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'ALPHA-U1-CONTENT');
+
+  const executor1 = env.createExecutor(store);
+  await runTurn({ executor: executor1, conversation, agent, store, turnId: 'turn-claim-race-1' });
+  seedUserMessage(store, 'u2', 'DELTA-U2-CONTENT');
+  store.beforeReuseClaim = () => {
+    store.updateMessage('u1', {
+      content: 'EDITED-BETWEEN-EVALUATION-AND-CLAIM',
+      updatedAt: '2099-01-01T00:00:00.000Z',
+    });
+  };
+
+  const executor2 = env.createExecutor(store);
+  await runTurn({ executor: executor2, conversation, agent, store, turnId: 'turn-claim-race-2' });
+
+  assert.equal(env.captured[1].options.resume, false);
+  const assistantCreates = store.messageWrites.creates.filter((input) => input.role === 'assistant');
+  assert.equal(assistantCreates[1].metadata.sessionReuseReason, 'cursor_history_mutated');
+  assert.deepEqual(
+    store.reuseCalls.slice(2).map(([name]) => name),
+    ['get', 'claim', 'get', 'markPoisoned', 'markReusable']
+  );
+});
+
+test('stale busy state keeps busy_stale as the audited fallback reason', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'ALPHA-U1-CONTENT');
+
+  const executor1 = env.createExecutor(store);
+  await runTurn({ executor: executor1, conversation, agent, store, turnId: 'turn-stale-1' });
+  store.seedReuseRow({
+    ...store.peekReuseRow(),
+    state: 'busy',
+    updatedAt: '2000-01-01T00:00:00.000Z',
+  });
+  seedUserMessage(store, 'u2', 'DELTA-AFTER-STALE-BUSY');
+
+  const executor2 = env.createExecutor(store);
+  await runTurn({ executor: executor2, conversation, agent, store, turnId: 'turn-stale-2' });
+
+  assert.equal(env.captured[1].options.resume, false);
+  const assistantCreates = store.messageWrites.creates.filter((input) => input.role === 'assistant');
+  assert.equal(assistantCreates[1].metadata.sessionReuseReason, 'busy_stale');
+  assert.deepEqual(store.reuseCalls.slice(2).map(([name]) => name), ['get', 'markPoisoned', 'markReusable']);
 });
 
 test('per-agent toggle off skips reuse entirely while the global flag stays on', async (t) => {

@@ -293,3 +293,17 @@ test('delta prompt renders messages through the same formatHistory path as full 
     assert.ok(fullPrompt.includes(line), `full prompt missing delta line: ${line}`);
   }
 });
+
+test('delta prompt preserves every message when more than the full-history window arrived', () => {
+  const delta = Array.from({ length: 25 }, (_, index) => ({
+    id: `m-${index}`,
+    role: 'user',
+    content: `DELTA-${index}`,
+  }));
+
+  const deltaPrompt = buildSessionReuseDeltaPrompt(delta, []);
+
+  for (let index = 0; index < delta.length; index += 1) {
+    assert.match(deltaPrompt, new RegExp(`User: DELTA-${index}(?:\\n|$)`, 'u'));
+  }
+});

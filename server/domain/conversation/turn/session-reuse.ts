@@ -123,6 +123,30 @@ export function buildSessionReuseCursorSnapshot(messages: any) {
   };
 }
 
+export function appendSessionReuseCursorMessage(snapshot: any, message: any) {
+  const messageId = String(message && message.id || '').trim();
+  if (!messageId) {
+    return snapshot || null;
+  }
+
+  if (!snapshot) {
+    return buildSessionReuseCursorSnapshot([message]);
+  }
+
+  const messageUpdatedAt = String(message.updatedAt || message.createdAt || '');
+  const priorMaxUpdatedAt = String(snapshot.cursorMaxUpdatedAt || '');
+  return {
+    cursorMessageId: messageId,
+    cursorMessageCount: Number.isInteger(snapshot.cursorMessageCount)
+      ? snapshot.cursorMessageCount + 1
+      : 1,
+    cursorFirstMessageId: snapshot.cursorFirstMessageId || messageId,
+    cursorMaxUpdatedAt: messageUpdatedAt > priorMaxUpdatedAt
+      ? messageUpdatedAt
+      : priorMaxUpdatedAt || null,
+  };
+}
+
 export function partitionMessagesAtCursor(messages: any, cursorMessageId: any) {
   const ordered = normalizeOrderedMessages(messages);
   const cursorId = String(cursorMessageId || '').trim();
