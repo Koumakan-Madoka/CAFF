@@ -483,6 +483,22 @@ test('reused mode resumes the stored session with only the delta appended and ad
   assert.equal(assistantCreates[1].metadata.sessionReused, true);
   assert.equal(assistantCreates[1].metadata.sessionReuseReason, 'reused');
   assert.equal(assistantCreates[1].metadata.sessionName, freshRun.options.session);
+  const reusedContextSnapshot = assistantCreates[1].contextSnapshot;
+  assert.equal(reusedContextSnapshot.deliveryMode, 'resume');
+  assert.equal(reusedContextSnapshot.sections.length, 1);
+  assert.equal(reusedContextSnapshot.sections[0].sectionKey, 'session_delta');
+  assert.equal(reusedContextSnapshot.sections[0].displayContent, reusedRun.prompt);
+  assert.equal(reusedContextSnapshot.sections[0].displayContent.includes('ALPHA-U1-CONTENT'), false);
+  assert.equal(reusedContextSnapshot.sections[0].displayContent.includes('BRAVO-U2-CONTENT'), false);
+  assert.deepEqual(reusedContextSnapshot.retainedSessionPrefix, {
+    sessionName: freshRun.options.session,
+    staticSegmentHash: snapshot.staticSegmentHash,
+    cursorMessageId: snapshot.cursorMessageId,
+    cursorMessageCount: snapshot.cursorMessageCount,
+    cursorFirstMessageId: snapshot.cursorFirstMessageId,
+    cursorMaxUpdatedAt: snapshot.cursorMaxUpdatedAt,
+    lastReplyAt: snapshot.lastReplyAt,
+  });
 
   const leg2CallNames = store.reuseCalls.slice(2).map(([name]) => name);
   assert.deepEqual(leg2CallNames, ['get', 'claim', 'markReusable']);

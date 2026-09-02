@@ -3364,6 +3364,10 @@ textarea {
   line-height: 1.45;
 }
 
+.agent-context-meta-grid strong {
+  overflow-wrap: anywhere;
+}
+
 .agent-context-token-bar {
   display: flex;
   overflow: hidden;

@@ -17,6 +17,7 @@ Status: accepted (Phase 1 + Phase 2 delivered)
 - 已读游标记录 session 已见的最后一条 chat_messages.id；复用前校验游标前消息一致性（count + 首尾 id + max(updated_at)），发现编辑/删除痕迹直接 poison（已注入内容无法从 provider session 撤回）。run 开始时冻结实际注入的消息边界，成功收尾只在该快照上追加本轮 assistant 回复；运行期间到达的消息留在游标之后，由下一轮 delta 拾取。
 - delta 消息合并为**一条** user message，与全量历史共用同一个 `formatHistory` 渲染函数，杜绝 fresh/reused 格式双轨；delta 路径不应用全量历史的 24 条展示窗口，游标后的所有可见消息必须全部渲染后才能推进游标。渲染前必须复用 `buildPromptMessages` 可见性投影：只保留本次 `promptUserMessage` 对应的 private-only 消息，并排除当前 turn 的 queued/streaming assistant，禁止 resumed 路径绕过 fresh 路径的隐私与未完成消息边界。若 `promptUserMessage` 已被中间 run 的存储游标越过而不在可见 delta 中，reused 路径必须将其清洗后版本追加到 delta 尾部，保持 fresh 路径的触发消息必达契约。
 - 复用是纯优化：任何不确定一律回退旧路径（新 session + 全量历史注入）。复用决策（sessionReused + 原因）写入 message metadata 供审计。
+- Context Inspector 必须展示**本轮实际投递**而不是复用判定前构造的 fresh 候选：fresh 快照记录完整 prompt sections；resume 快照只记录单一 `session_delta`（与实际追加的 user prompt 同源），旧上下文仅以 retained session prefix 的 session/hash/cursor 引用展示。cache-read/uncached token 属于运行后证据，从完成消息 metadata 在详情 API 投影，不回写运行前不可变快照。
 
 ## Considered Options
 
@@ -28,7 +29,7 @@ Status: accepted (Phase 1 + Phase 2 delivered)
 ## Consequences
 
 - 首轮 prompt 必须重构为静态/动态可分离结构；turnId、taskId、时间戳等每轮变化字段严禁进入静态段，否则 hash 比对与 KV cache 同时失效。
-- 需要 fresh/reused 双模式回归测试（同一历史场景 A/B），证明复用模式下 agent 能看到并回应 delta 消息且无幻觉引用。
+- 需要 fresh/reused 双模式回归测试（同一历史场景 A/B），证明复用模式下 agent 能看到并回应 delta 消息且无幻觉引用；同时断言 resume 快照的 `session_delta.displayContent` 与实际 `startRun` prompt 一致且不含游标前历史，Inspector 显示 retained prefix 引用和 cache-read 证据而非重复完整 sections。
 - 交付分两阶段：Phase 1 后端完整实现 + 本 ADR，feature flag 默认 OFF 合入；Phase 2 默认 ON + 前端 agent 开关。先 OFF 验证再翻默认值，避免一次性把风险带进生产路径。
 
 ## Phase 2（已交付）

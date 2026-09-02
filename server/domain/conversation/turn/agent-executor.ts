@@ -1486,7 +1486,8 @@ export function createAgentExecutor(options: any = {}) {
       projectedConversationHistory,
     };
     const promptSections = buildAgentTurnPromptSections(promptInput);
-    let prompt = formatAgentTurnPromptSections(promptSections);
+    let deliveredPromptSections = promptSections;
+    let prompt = formatAgentTurnPromptSections(deliveredPromptSections);
     const runtimeConfigResolved = Boolean(agent && agent.runtimeConfig && typeof agent.runtimeConfig === 'object');
     const provider = runtimeConfigResolved
       ? agentConfig.provider
@@ -1531,6 +1532,7 @@ export function createAgentExecutor(options: any = {}) {
     const reuseProfileId = agentConfig.profileId || 'default';
     const staticSegmentHash = computeStaticPromptHash(promptSections, [provider, model, reuseProfileId, thinking]);
     let sessionReuseClaim: any = null; // pre-claim reusable row snapshot, kept for restore/poison
+    let retainedSessionPrefix: any = null;
     let sessionReuseCursorBaseSnapshot: ReturnType<typeof buildSessionReuseCursorSnapshot> = null;
     let sessionReuseDecision: any = {
       reused: false,
@@ -1602,7 +1604,24 @@ export function createAgentExecutor(options: any = {}) {
               ) {
                 visibleDelta.push(promptUserMessage);
               }
-              prompt = buildSessionReuseDeltaPrompt(visibleDelta, conversation.agents);
+              const deltaPrompt = buildSessionReuseDeltaPrompt(visibleDelta, conversation.agents);
+              deliveredPromptSections = [{
+                sectionKey: 'session_delta',
+                title: 'Session Resume Delta',
+                source: 'session/resume-delta',
+                visibility: 'full',
+                content: deltaPrompt,
+              }];
+              prompt = formatAgentTurnPromptSections(deliveredPromptSections);
+              retainedSessionPrefix = {
+                sessionName: claimed.sessionName,
+                staticSegmentHash: reuseRow.staticSegmentHash,
+                cursorMessageId: reuseRow.cursorMessageId,
+                cursorMessageCount: reuseRow.cursorMessageCount,
+                cursorFirstMessageId: reuseRow.cursorFirstMessageId,
+                cursorMaxUpdatedAt: reuseRow.cursorMaxUpdatedAt,
+                lastReplyAt: reuseRow.lastReplyAt,
+              };
               sessionReuseDecision = { reused: true, reason: 'reused' };
             } else {
               const conflictRow = store.getAgentSessionReuse(conversationId, agent.id, reuseProfileId);
@@ -1630,7 +1649,9 @@ export function createAgentExecutor(options: any = {}) {
       } catch (reuseError: any) {
         sessionReuseClaim = null;
         resumeSession = false;
-        prompt = formatAgentTurnPromptSections(promptSections);
+        retainedSessionPrefix = null;
+        deliveredPromptSections = promptSections;
+        prompt = formatAgentTurnPromptSections(deliveredPromptSections);
         sessionReuseDecision = { reused: false, reason: 'reuse_evaluation_error' };
         console.error(
           '[session-reuse] evaluation failed, falling back to fresh session:',
@@ -1646,7 +1667,9 @@ export function createAgentExecutor(options: any = {}) {
       agentId: agent.id,
       agentName: agent.name,
       promptVersion: AGENT_PROMPT_VERSION,
-      sections: promptSections,
+      deliveryMode: resumeSession ? 'resume' : 'fresh',
+      retainedSessionPrefix,
+      sections: deliveredPromptSections,
     });
 
     const contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);

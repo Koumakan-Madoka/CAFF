@@ -150,6 +150,29 @@ test('context snapshot list uses bounded stable cursor pages across mixed old an
   const newestId = 'snapshot-message-054';
   const tableOnlyId = 'snapshot-message-053';
   store.db.prepare('UPDATE chat_messages SET metadata_json = ? WHERE id = ?').run('{}', tableOnlyId);
+  const resumedSnapshot = {
+    ...createSnapshot(conversation.id, newestId, 'source-054'),
+    deliveryMode: 'resume',
+    retainedSessionPrefix: {
+      sessionName: 'chat-retained-session',
+      staticSegmentHash: 'static-hash',
+      cursorMessageId: 'assistant-first',
+      cursorMessageCount: 3,
+      cursorFirstMessageId: 'user-first',
+      cursorMaxUpdatedAt: '2026-09-02T17:07:12.000Z',
+      lastReplyAt: '2026-09-02T17:07:12.000Z',
+    },
+  };
+  store.db.prepare('UPDATE chat_messages SET metadata_json = ? WHERE id = ?').run(JSON.stringify({
+    agentContextSnapshot: resumedSnapshot,
+    tokenUsage: {
+      inputTokens: 56815,
+      uncachedInputTokens: 2234,
+      cacheReadTokens: 54581,
+      cacheWriteTokens: 0,
+    },
+    modelUsage: { modelCallCount: 4 },
+  }), newestId);
 
   const handler = createConversationsController({
     store,
@@ -201,6 +224,21 @@ test('context snapshot list uses bounded stable cursor pages across mixed old an
   assert.equal(tableOnlyDetail.statusCode, 200);
   assert.equal(tableOnlyDetail.json.snapshot.snapshotId, 'snapshot-source-053');
   assert.equal(tableOnlyDetail.json.snapshot.messageId, tableOnlyId);
+
+  const resumedDetail = await invoke(
+    handler,
+    `/api/conversations/${conversation.id}/messages/${newestId}/context-snapshot`
+  );
+  assert.equal(resumedDetail.statusCode, 200);
+  assert.equal(resumedDetail.json.snapshot.deliveryMode, 'resume');
+  assert.equal(resumedDetail.json.snapshot.retainedSessionPrefix.sessionName, 'chat-retained-session');
+  assert.deepEqual(resumedDetail.json.runEvidence, {
+    inputTokens: 56815,
+    uncachedInputTokens: 2234,
+    cacheReadTokens: 54581,
+    cacheWriteTokens: 0,
+    modelCallCount: 4,
+  });
 
   const tableOnlyExport = await invoke(
     handler,

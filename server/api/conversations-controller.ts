@@ -119,6 +119,23 @@ function defaultContextSnapshotFileName(message: any) {
   return `agent-context-${agentName || 'agent'}-${turnId || 'turn'}.md`;
 }
 
+function contextSnapshotRunEvidence(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+  const tokenUsage = metadata.tokenUsage && typeof metadata.tokenUsage === 'object' ? metadata.tokenUsage : {};
+  const modelUsage = metadata.modelUsage && typeof metadata.modelUsage === 'object' ? metadata.modelUsage : {};
+  const tokenCount = (value: any) => {
+    const normalized = Number(value);
+    return Number.isInteger(normalized) && normalized >= 0 ? normalized : null;
+  };
+  return {
+    inputTokens: tokenCount(tokenUsage.inputTokens),
+    uncachedInputTokens: tokenCount(tokenUsage.uncachedInputTokens),
+    cacheReadTokens: tokenCount(tokenUsage.cacheReadTokens),
+    cacheWriteTokens: tokenCount(tokenUsage.cacheWriteTokens),
+    modelCallCount: tokenCount(modelUsage.modelCallCount),
+  };
+}
+
 function listKnownFeishuChats(store: any) {
   const conversationsById = new Map<string, any>(
     store.listConversations().map((conversation: any) => [conversation.id, conversation] as [string, any])
@@ -1131,7 +1148,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         return true;
       }
 
-      sendJson(res, 200, { snapshot: materializeAgentContextSnapshot(snapshot) });
+      sendJson(res, 200, {
+        snapshot: materializeAgentContextSnapshot(snapshot),
+        runEvidence: contextSnapshotRunEvidence(message),
+      });
       return true;
     }
 

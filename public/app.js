@@ -51,6 +51,7 @@ const state = {
     conversationId: '',
     messageId: '',
     snapshot: null,
+    runEvidence: null,
   },
 };
 
@@ -3290,7 +3291,7 @@ function renderAgentContextInspector() {
       : inspector.errorMessage
         ? inspector.errorMessage
         : snapshot
-          ? `${snapshot.agentName || snapshot.agentId || 'Agent'} · 回合 ${snapshot.turnId || '-'} · 约 ${formatInspectorNumber(snapshot.totalApproxTokens)} tokens`
+          ? `${snapshot.agentName || snapshot.agentId || 'Agent'} · 回合 ${snapshot.turnId || '-'} · ${snapshot.deliveryMode === 'resume' ? '本轮追加' : '本轮注入'} · 约 ${formatInspectorNumber(snapshot.totalApproxTokens)} tokens`
           : '选择一条 AI 消息查看上下文快照';
     dom.agentContextStatus.classList.toggle('paused', Boolean(inspector.errorMessage));
   }
@@ -3305,12 +3306,33 @@ function renderAgentContextInspector() {
       const totalTokens = Math.max(1, Number(snapshot.totalApproxTokens || 0));
       const meta = document.createElement('div');
       meta.className = 'agent-context-meta-grid';
+      const retainedPrefix = snapshot.retainedSessionPrefix && typeof snapshot.retainedSessionPrefix === 'object'
+        ? snapshot.retainedSessionPrefix
+        : null;
+      const runEvidence = inspector.runEvidence && typeof inspector.runEvidence === 'object'
+        ? inspector.runEvidence
+        : null;
+      const isResume = snapshot.deliveryMode === 'resume';
       const metaItems = [
         ['智能体', snapshot.agentName || snapshot.agentId || '-'],
         ['捕获时间', snapshot.capturedAt || '-'],
-        ['系统提示词 tokens 总数', formatInspectorNumber(snapshot.totalApproxTokens)],
-        ['总字节数', formatInspectorNumber(snapshot.totalByteSize)],
+        ['投递方式', isResume ? '恢复旧 Session（仅追加增量）' : 'Fresh（完整注入）'],
+        [isResume ? '本轮追加 tokens' : '本轮注入 tokens', formatInspectorNumber(snapshot.totalApproxTokens)],
+        [isResume ? '本轮追加字节数' : '本轮注入字节数', formatInspectorNumber(snapshot.totalByteSize)],
       ];
+      if (retainedPrefix) {
+        metaItems.push(
+          ['保留前缀 Session', retainedPrefix.sessionName || '-'],
+          ['保留前缀游标', `${formatInspectorNumber(retainedPrefix.cursorMessageCount)} 条 · ${retainedPrefix.cursorMessageId || '-'}`],
+          ['静态段 Hash', retainedPrefix.staticSegmentHash || '-']
+        );
+      }
+      if (isResume && runEvidence) {
+        metaItems.push(
+          ['Cache read tokens', runEvidence.cacheReadTokens === null ? '-' : formatInspectorNumber(runEvidence.cacheReadTokens)],
+          ['未缓存 input tokens', runEvidence.uncachedInputTokens === null ? '-' : formatInspectorNumber(runEvidence.uncachedInputTokens)]
+        );
+      }
       for (const item of metaItems) {
         const cell = document.createElement('div');
         const label = document.createElement('span');
@@ -3392,11 +3414,13 @@ async function openAgentContextInspector(conversationId, message) {
   state.contextInspector.conversationId = conversationId;
   state.contextInspector.messageId = message && message.id ? message.id : '';
   state.contextInspector.snapshot = null;
+  state.contextInspector.runEvidence = null;
   setAgentContextDrawerOpen(true);
 
   try {
     const result = await fetchJson(messageContextSnapshotUrl(conversationId, message.id));
     state.contextInspector.snapshot = result && result.snapshot ? result.snapshot : null;
+    state.contextInspector.runEvidence = result && result.runEvidence ? result.runEvidence : null;
     if (!state.contextInspector.snapshot) {
       state.contextInspector.errorMessage = '这条消息没有可展示的上下文快照';
     }
