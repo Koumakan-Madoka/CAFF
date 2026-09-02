@@ -240,6 +240,34 @@ test('session reuse repository: markReusable supersedes a poisoned row (fresh se
   }
 });
 
+test('session reuse repository: fresh completion cannot overwrite another run busy row', () => {
+  const { store } = createStore();
+  try {
+    const original = reusablePayload({
+      sessionName: 'claimed-session',
+      sessionPath: '/tmp/claimed-session.jsonl',
+    });
+    store.markAgentSessionReuseReusable(original);
+    const claimed = store.claimAgentSessionReuse(claimPayload());
+    assert.equal(claimed.state, 'busy');
+
+    const result = store.markAgentSessionReuseReusable(
+      reusablePayload({
+        sessionName: 'fresh-fallback-session',
+        sessionPath: '/tmp/fresh-fallback-session.jsonl',
+        now: '2026-09-02T10:11:00.000Z',
+      })
+    );
+
+    assert.equal(result, null);
+    const row = store.getAgentSessionReuse(original.conversationId, original.agentId, original.profileId);
+    assert.equal(row.state, 'busy');
+    assert.equal(row.sessionName, 'claimed-session');
+  } finally {
+    store.close();
+  }
+});
+
 test('session reuse repository: reusable rows reject incomplete snapshots at the schema level', () => {
   const { store } = createStore();
   try {

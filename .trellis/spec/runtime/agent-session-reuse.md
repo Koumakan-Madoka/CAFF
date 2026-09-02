@@ -21,7 +21,7 @@ busy 行超过 `PI_CHAT_SESSION_REUSE_BUSY_STALE_MS`（默认 2h）视为僵尸 
 ## 状态机（`chat_agent_session_reuse`）
 
 - `reusable → busy`：`claimAgentSessionReuse` 单条 UPDATE 完成。调用必须携带 `expectedHash`、`expectedCursorMessageId`、`expectedCursorMessageCount`、`expectedCursorFirstMessageId`、`expectedCursorMaxUpdatedAt`；SQL 同时比较复用行快照并从 `chat_messages` 重算游标前缀的 count / first id / max(updated_at)。任一不一致返回 `null`，不得启动 `--resume`；executor 随后重读 reusable 行，若游标校验已变异则先 poison 并审计具体 cursor reason，否则记 `claim_conflict`。
-- `busy → reusable`：run 干净结束 `markAgentSessionReuseReusable`。executor 在 provider 启动前冻结本次实际注入边界，收尾通过 `appendSessionReuseCursorMessage(baseSnapshot, assistantMessageDone)` 只追加本轮回复；run 期间到达的消息保持在游标之后。upsert 可覆盖 poisoned 行，自愈。
+- `busy → reusable`：run 干净结束 `markAgentSessionReuseReusable`。executor 在 provider 启动前冻结本次游标边界，收尾通过 `appendSessionReuseCursorMessage(baseSnapshot, assistantMessageDone)` 只追加本轮回复；run 期间到达的消息保持在游标之后。upsert 可覆盖 poisoned 行以自愈，但不得用不同 `session_name` 覆盖 busy 行；只有持有该 session 的完成/恢复路径能执行 `busy → reusable`。
 - `busy → reusable`（未触网中止）：`restoreAgentSessionReuse` 写回 claim 前快照。
 - `* → poisoned`：`markAgentSessionReusePoisoned`，保留 session_path 供审计；poisoned 永不复用。
 
@@ -30,7 +30,7 @@ busy 行超过 `PI_CHAT_SESSION_REUSE_BUSY_STALE_MS`（默认 2h）视为僵尸 
 - 配置解析：`resolveSessionReuseConfig(env)`（`server/domain/conversation/turn/session-reuse.ts`）。env 未设置时 Phase 2 默认 `enabled: true`。
 - per-agent 门禁：executor 内 `agent.sessionReuseEnabled === false` → 跳过整个复用生命周期（不读表、不写回），metadata reason = `agent_disabled`。
 - delta 注入：`buildSessionReuseDeltaPrompt(delta, agents)` 与全量历史共用 `formatHistory` 的逐条格式；delta 调用 `{ truncate: false }`，游标后的全部消息合并为一个 user message，不能套用全量历史的 `MAX_HISTORY_MESSAGES=24` 窗口。
-- 游标推进：`buildSessionReuseCursorSnapshot(actualPromptMessages)` 在调用 provider 前冻结边界；`appendSessionReuseCursorMessage(snapshot, assistantMessageDone)` 只加入本轮 assistant。不得在 run 成功后对 `store.listMessages(conversationId)` 全量重算游标。
+- 游标推进：复用生命周期启用时，executor 在调用 provider 前用同一时刻的完整 `store.listMessages(conversationId)` 冻结游标基线；该基线是存储一致性口径，不等于 prompt 投影。fresh prompt 即使只渲染最近 24 条或过滤 private-only 消息，仍以完整存储前缀建立下一轮 claim 可校验的快照；这与旧路径中窗口外/不可见消息不再注入的语义一致。收尾用 `appendSessionReuseCursorMessage(snapshot, assistantMessageDone)` 只加入本轮 assistant，禁止成功后重新读取全量消息，以免吞掉 run 期间到达的消息。
 - 静态段 hash：`computeStaticPromptHash(sections, [provider, model, profileId, thinking])`；7 个 dynamic 段不进 hash（见 `agent-prompt.ts` 的 stability 标签）。
 - 审计：queued/final/error metadata 均带 `sessionReused` + `sessionReuseReason`。
 
@@ -42,8 +42,8 @@ busy 行超过 `PI_CHAT_SESSION_REUSE_BUSY_STALE_MS`（默认 2h）视为僵尸 
 ## 验证矩阵（测试点）
 
 - `tests/runtime/session-reuse-decision.test.js`：配置默认 ON + env kill switch、判定矩阵、游标校验、delta parity，以及超过 24 条 delta 时首尾消息均保留。
-- `tests/storage/session-reuse-repository.test.js`：原子 claim、hash 与游标四元组守卫、claim 前编辑/删除真实消息前缀均拒绝、restore、poison 不可逆、schema 约束。
-- `tests/runtime/session-reuse-ab.test.js`：flag OFF 字节级不变、复用全链路（claim 先于 startRun、完整游标指纹下传、delta-only prompt）、判定后/claim 前编辑触发 poison、运行中新增消息留给下一轮、`busy_stale` 审计、per-agent 关闭、编辑即 poison + 自愈。
+- `tests/storage/session-reuse-repository.test.js`：原子 claim、hash 与游标四元组守卫、claim 前编辑/删除真实消息前缀均拒绝、restore、poison 不可逆、schema 约束，以及不同 fresh session 不得覆盖另一 run 的 busy claim。
+- `tests/runtime/session-reuse-ab.test.js`：flag OFF 字节级不变、复用全链路（claim 先于 startRun、完整游标指纹下传、delta-only prompt）、判定后/claim 前编辑触发 poison、运行中新增消息留给下一轮、`busy_stale` 审计、per-agent 关闭、编辑即 poison + 自愈；另经真实 routing executor 以最近 24 条 prompt 投影运行超过 24 条的会话，验证 fresh 建立完整游标且下一轮实际 resume。
 - `tests/storage/chat-store.test.js`：toggle 持久化、默认 ON、重开库（reconcile）不重置。
 - `tests/smoke/server-smoke.test.js`：family 角色 API round-trip 与缺省保留。
 

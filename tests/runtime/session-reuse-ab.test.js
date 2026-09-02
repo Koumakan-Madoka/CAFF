@@ -20,7 +20,7 @@ const LAST_CALL_INPUT_TOKENS = 100; // usage ratio 0.1, below the 0.5 threshold
 
 function createRunHandle(reply, overrides = {}) {
   const handle = new EventEmitter();
-  handle.runId = 'run-reuse-ab';
+  handle.runId = Object.hasOwn(overrides, 'runId') ? overrides.runId : 'run-reuse-ab';
   handle.sessionPath = '/tmp/reuse-ab/session.jsonl';
   const usageCall = {
     key: 'reuse-call-1',
@@ -327,14 +327,14 @@ function setupExecutorTest(t, { reuseEnabled }) {
   return {
     tempDir,
     captured,
-    createExecutor(store, { onStartRun } = {}) {
+    createExecutor(store, { onStartRun, runId = 'run-reuse-ab' } = {}) {
       startRunImpl = (provider, model, prompt, options) => {
         const record = { provider, model, prompt, options };
         if (typeof onStartRun === 'function') {
           record.midRunReuseRow = onStartRun(record);
         }
         captured.push(record);
-        return createRunHandle('Done.');
+        return createRunHandle('Done.', { runId });
       };
       return createAgentExecutor({
         store,
@@ -517,6 +517,78 @@ test('reused mode resumes the stored session with only the delta appended and ad
   assert.equal(env.captured[2].options.resume, true);
   assert.match(env.captured[2].prompt, /ARRIVED-DURING-RUN/u);
   assert.equal(env.captured[2].prompt.includes('DELTA-U3-CONTENT'), false);
+});
+
+test('routing executor can reuse after a fresh run with more than 24 stored messages', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  store.listPromptMessages = (conversationId, options = {}) => {
+    const messages = store.listMessages(conversationId);
+    const selectedIds = new Set(
+      (Array.isArray(options.requiredMessageIds) ? options.requiredMessageIds : [])
+        .map((messageId) => String(messageId || '').trim())
+        .filter(Boolean)
+    );
+    const historyLimit = Number(options.historyLimit) || 0;
+    if (historyLimit > 0) {
+      for (const message of messages.slice(-historyLimit)) {
+        selectedIds.add(message.id);
+      }
+    }
+    if (options.currentTurnId) {
+      for (const message of messages) {
+        if (message.turnId === options.currentTurnId) {
+          selectedIds.add(message.id);
+        }
+      }
+    }
+    return messages.filter((message) => selectedIds.has(message.id));
+  };
+
+  for (let index = 1; index <= 30; index += 1) {
+    seedUserMessage(store, `u${index}`, `HISTORY-${String(index).padStart(2, '0')}`);
+  }
+
+  const agentExecutor = env.createExecutor(store, { runId: null });
+  const { createRoutingExecutor } = require(
+    require.resolve('../../build/server/domain/conversation/turn/routing-executor')
+  );
+  const routingExecutor = createRoutingExecutor({
+    store,
+    executeConversationAgent: agentExecutor.executeConversationAgent,
+    agentDir: env.tempDir,
+    sqlitePath: path.join(env.tempDir, 'routing.sqlite'),
+    activeConversationIds: new Set(),
+    activeTurns: new Map(),
+  });
+
+  await routingExecutor(conversation.id, {
+    content: 'FIRST-ROUTED-MESSAGE',
+    initialAgentIds: [agent.id],
+    executionMode: 'queue',
+    allowHandoffs: false,
+  });
+
+  assert.equal(env.captured[0].options.resume, false);
+  assert.equal(env.captured[0].prompt.includes('HISTORY-01'), false, 'routing history remains bounded');
+  assert.match(env.captured[0].prompt, /FIRST-ROUTED-MESSAGE/u);
+  const freshSnapshot = store.peekReuseRow();
+  assert.equal(freshSnapshot.cursorFirstMessageId, 'u1');
+  assert.equal(freshSnapshot.cursorMessageCount, 32, 'cursor covers 30 stored messages, routed input, and reply');
+
+  await routingExecutor(conversation.id, {
+    content: 'DELTA-AFTER-BOUNDED-FRESH',
+    initialAgentIds: [agent.id],
+    executionMode: 'queue',
+    allowHandoffs: false,
+  });
+
+  assert.equal(env.captured[1].options.resume, true, 'real bounded orchestration must remain cursor-compatible');
+  assert.match(env.captured[1].prompt, /DELTA-AFTER-BOUNDED-FRESH/u);
+  assert.equal(env.captured[1].prompt.includes('HISTORY-30'), false);
 });
 
 test('cursor edit between evaluation and claim poisons the cached session and runs fresh', async (t) => {

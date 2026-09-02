@@ -138,6 +138,9 @@ export class ChatSessionReuseRepository {
         AND agent_id = @agentId
         AND profile_id = @profileId
     `);
+    // A busy row belongs to the provider session that claimed it. Completion
+    // may settle that same session, but a concurrent fresh fallback has a
+    // distinct session name and must not release or replace the active claim.
     this.markReusableStatement = db.prepare(`
       INSERT INTO chat_agent_session_reuse (
         conversation_id,
@@ -199,6 +202,8 @@ export class ChatSessionReuseRepository {
         last_reply_at = excluded.last_reply_at,
         poison_reason = NULL,
         updated_at = excluded.updated_at
+      WHERE chat_agent_session_reuse.state <> 'busy'
+         OR chat_agent_session_reuse.session_name = excluded.session_name
       RETURNING *
     `);
   }

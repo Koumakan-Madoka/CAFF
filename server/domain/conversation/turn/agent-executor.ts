@@ -1530,7 +1530,7 @@ export function createAgentExecutor(options: any = {}) {
     const reuseProfileId = agentConfig.profileId || 'default';
     const staticSegmentHash = computeStaticPromptHash(promptSections, [provider, model, reuseProfileId, thinking]);
     let sessionReuseClaim: any = null; // pre-claim reusable row snapshot, kept for restore/poison
-    let sessionReuseCursorBaseSnapshot = buildSessionReuseCursorSnapshot(projectedConversationHistory);
+    let sessionReuseCursorBaseSnapshot: ReturnType<typeof buildSessionReuseCursorSnapshot> = null;
     let sessionReuseDecision: any = {
       reused: false,
       reason: !sessionReuseConfig.enabled
@@ -1542,6 +1542,13 @@ export function createAgentExecutor(options: any = {}) {
 
     if (sessionReuseActive && typeof store.getAgentSessionReuse === 'function') {
       try {
+        // Cursor validation is defined over the full stored conversation, while
+        // prompt history is intentionally a bounded/visibility-filtered
+        // projection. Freeze the storage boundary before provider start so a
+        // fresh run can establish a cursor compatible with the next claim and
+        // messages arriving mid-run remain beyond it.
+        const reuseMessages = typeof store.listMessages === 'function' ? store.listMessages(conversationId) : [];
+        sessionReuseCursorBaseSnapshot = buildSessionReuseCursorSnapshot(reuseMessages);
         let reuseRow = store.getAgentSessionReuse(conversationId, agent.id, reuseProfileId);
         const busyStale = reuseRow && isSessionReuseBusyStale(reuseRow, sessionReuseConfig, nowIso());
         if (busyStale) {
@@ -1550,7 +1557,6 @@ export function createAgentExecutor(options: any = {}) {
           store.markAgentSessionReusePoisoned(conversationId, agent.id, reuseProfileId, 'busy_stale', nowIso());
           sessionReuseDecision = { reused: false, reason: 'busy_stale' };
         } else {
-          const reuseMessages = typeof store.listMessages === 'function' ? store.listMessages(conversationId) : [];
           const decision = evaluateSessionReuse({
             row: reuseRow,
             staticSegmentHash,
