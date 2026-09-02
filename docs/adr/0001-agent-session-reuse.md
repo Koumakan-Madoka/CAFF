@@ -30,3 +30,7 @@ Status: accepted
 - 首轮 prompt 必须重构为静态/动态可分离结构；turnId、taskId、时间戳等每轮变化字段严禁进入静态段，否则 hash 比对与 KV cache 同时失效。
 - 需要 fresh/reused 双模式回归测试（同一历史场景 A/B），证明复用模式下 agent 能看到并回应 delta 消息且无幻觉引用。
 - 交付分两阶段：Phase 1 后端完整实现 + 本 ADR，feature flag 默认 OFF 合入；Phase 2 默认 ON + 前端 agent 开关。先 OFF 验证再翻默认值，避免一次性把风险带进生产路径。
+
+## Known Limitations
+
+- 游标一致性校验依赖 `max(updated_at)` 在编辑/删除后严格前移。正常路径（repository 在 update 时写入当前时钟）成立；若消息行被人为未来日期化（时钟偏移、外部导入回填），对该行的后续编辑可能不会推进 `max(updated_at)`，从而逃过检测。接受该残余风险：它要求数据库被非正常写入，且后果等价于复用了一个含过期历史的 session（模型看到旧版本消息），不产生数据损坏。检测口径记录于 `tests/runtime/session-reuse-ab.test.js` 的夹具设计（显式 `updatedAt` 时间线）。
