@@ -411,9 +411,12 @@ chat_message_observability_timelines(
 
 ### 3. Contracts
 
-- A message timeline retains 16 mixed events: original first event and latest 15.
-  Each has stable `eventId`, `eventType`, and original positive
-  `timelineSequence`; updates to a running tool reuse both identity and sequence.
+- A message timeline retains 16 mixed events: chronological first event and
+  latest 15. Each has stable `eventId` and `eventType`; when both events have
+  valid occurrence evidence (`occurredAt`, tool `createdAt`, or provider
+  `timestamp`), ordering uses that evidence, while missing/invalid timestamps
+  fall back to the original positive `timelineSequence`. Updates to a running
+  tool reuse both identity and its retained chronological slot.
 - `timelineWindow` keeps full total/retained/dropped/truncated fields and the
   full model/tool/miss/failure/duration aggregates. `summary` and table aggregate
   columns keep the same full values; no consumer derives them from the 16
@@ -464,8 +467,9 @@ chat_message_observability_timelines(
 ### 5. Good / Base / Bad Cases
 
 - Good: five concurrent messages each receive 65 independent events; every
-  browser trace contains `1,51..65`, reports total 65, and newest events remain
-  live without a detail refetch.
+  browser trace contains the chronological first event and latest 15 (with the
+  omitted middle sequence gap), reports total 65, and newest events remain live
+  without a detail refetch.
 - Base: an old message has no unified row, so its first expansion performs one
   bounded compatibility projection and keeps the audit JSONL unchanged.
 - Base: a legacy row accumulated earlier same-turn messages, so its model count

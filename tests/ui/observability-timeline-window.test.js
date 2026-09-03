@@ -44,6 +44,25 @@ test('browser observability helper bounds five concurrent long timelines indepen
   });
 });
 
+test('browser observability helper reorders a late model event by occurrence time', () => {
+  const helper = loadHelper();
+  const first = helper.merge([], [{
+    eventId: 'tool:session:late-bash',
+    eventType: 'tool_execution',
+    timelineSequence: 1,
+    createdAt: 200,
+  }], { totalEventCount: 1 });
+  const second = helper.merge(first.events, [{
+    eventId: 'model-call:before-bash',
+    eventType: 'model_call',
+    timelineSequence: 2,
+    timestamp: 100,
+  }], { totalEventCount: 2 });
+
+  assert.deepEqual(second.events.map((event) => event.eventType), ['model_call', 'tool_execution']);
+  assert.deepEqual(second.events.map((event) => event.timelineSequence), [1, 2]);
+});
+
 test('timeline renderer exposes original sequence and one bounded omission row', () => {
   const source = fs.readFileSync(path.join(ROOT, 'public/chat/message-timeline.js'), 'utf8');
   const styles = fs.readFileSync(path.join(ROOT, 'public/styles.css'), 'utf8');

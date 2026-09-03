@@ -7,6 +7,8 @@ const { createSqliteRunStore } = require('../../build/lib/sqlite-store');
 const {
   createModelCallObservabilityEvent,
   createObservabilityTimelineState,
+  createToolObservabilityEvent,
+  snapshotObservabilityTimeline,
 } = require('../../build/lib/observability-timeline');
 const { createAgentToolBridge } = require('../../build/server/domain/runtime/agent-tool-bridge');
 const { markConversationRetrievalTraceUsage } = require('../../build/server/domain/conversation/retrieval-trace');
@@ -796,6 +798,36 @@ test('agent tool bridge keeps active runs alive when public posts opt out of fin
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(callbackCount, 1);
   assert.equal(context.publicPostCompletionRequested, true);
+});
+
+test('observability timeline orders a late model usage event before an earlier observed tool', () => {
+  const state = createObservabilityTimelineState();
+
+  createToolObservabilityEvent(state, {
+    stepId: 'session-bash-late-usage',
+    kind: 'session',
+    toolName: 'bash',
+    status: 'succeeded',
+    createdAt: '2026-09-03T10:18:05.000Z',
+  });
+  createModelCallObservabilityEvent(state, {
+    responseId: 'model-before-bash',
+    timestamp: '2026-09-03T10:17:57.000Z',
+    tokenUsage: {
+      inputTokens: 100,
+      uncachedInputTokens: 100,
+      outputTokens: 10,
+      totalTokens: 110,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+  });
+
+  const snapshot = snapshotObservabilityTimeline(state);
+  assert.deepEqual(snapshot.events.map((event) => event.eventType), ['model_call', 'tool_execution']);
+  assert.deepEqual(snapshot.events.map((event) => event.timelineSequence), [1, 2]);
+  assert.equal(snapshot.events[0].responseId, 'model-before-bash');
+  assert.equal(snapshot.events[1].toolName, 'bash');
 });
 
 test('agent tool bridge broadcasts live tool events for started and finished bridge steps', (t) => {

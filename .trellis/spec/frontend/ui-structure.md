@@ -790,16 +790,18 @@ const icon = window.CaffIcons.create('archive', {
 
 - Expanded assistant observability uses one mixed event list capped at 16 rows:
   the first event plus the latest 15. Model-call and tool SSE patches upsert by
-  stable `eventId`, preserve original `timelineSequence`, and immediately apply
-  the same browser window as the server.
+  stable `eventId`, order events by occurrence timestamp when both sides have
+  evidence (falling back to original `timelineSequence` when timestamps are
+  missing/invalid), and immediately apply the same browser window as the server.
 - Expansion performs one tool-trace GET. A later message status/run change does
   not invalidate that loaded snapshot; live SSE supplies subsequent events and
   terminal message refresh supplies authoritative aggregate metadata.
 - `timelineWindow` exposes total, retained, dropped, and truncated state plus the
   full model/tool/miss/failure/duration aggregates used by live SSE. When
   truncated, the renderer inserts exactly one `中间省略 N 条事件` row after the
-  first event and shows retained/total counts. Event badges display original
-  sequence values rather than renumbering the retained window.
+  first event and shows retained/total counts. Event badges display the
+  chronological sequence; the bounded window keeps the omitted middle gap
+  rather than pretending the retained rows are contiguous.
 - Aggregate merge is field-preserving: only present finite non-negative HTTP/SSE
   aggregate fields replace local values. A compatibility snapshot with only the
   four retention fields keeps the full `summary` / `modelUsageSummary`; missing

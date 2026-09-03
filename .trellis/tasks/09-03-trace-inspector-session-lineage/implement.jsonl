@@ -14,3 +14,4 @@
 {"file": "tests/runtime/message-tool-trace.test.js", "reason": "Object, secret, and circular partialJson regression coverage"}
 {"file": "tests/runtime/turn-orchestrator.test.js", "reason": "Structured live tool identity regression coverage"}
 {"file": "tests/ui/cross-conversation-ui.test.js", "reason": "Structured live tool DOM rendering regression coverage"}
+{"change": "Fixed mixed model/tool observability ordering by occurrence timestamp with original sequence fallback; mirrored server/browser bounded-window logic, added late-usage regressions, and synced timeline contracts in runtime/frontend/backend specs."}
