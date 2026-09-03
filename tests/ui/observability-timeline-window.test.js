@@ -51,5 +51,8 @@ test('timeline renderer exposes original sequence and one bounded omission row',
   assert.match(source, /Number\(call && call\.timelineSequence\)/u);
   assert.match(source, /Number\(step && step\.timelineSequence\)/u);
   assert.match(source, /保留 \$\{timelineWindow\.retainedEventCount\}\/\$\{timelineWindow\.totalEventCount\} 条/u);
+  assert.match(source, /JSON\.stringify\(value, \(key, entry\) =>/u);
+  assert.match(source, /\[结构化数据无法序列化\]/u);
+  assert.doesNotMatch(source, /const partialJson = step && step\.partialJson \? String\(step\.partialJson\)/u);
   assert.match(styles, /\.message-tool-trace-omission[\s\S]*overflow-wrap:\s*anywhere/u);
 });

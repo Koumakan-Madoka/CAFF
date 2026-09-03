@@ -7,3 +7,10 @@
 {"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Chat drawer, trace and responsive UI contracts"}
 {"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer API projection"}
 {"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Acceptance feedback: model/tool-first Trace with collapsed lifecycle diagnostics"}
+{"file": "server/domain/runtime/message-tool-trace.ts", "reason": "Structured trace payload serialization and circular-reference redaction"}
+{"file": "server/domain/conversation/turn/agent-executor.ts", "reason": "Live tool identity avoids implicit object coercion"}
+{"file": "public/chat/message-timeline.js", "reason": "Live Trace UI renders structured payloads as bounded JSON"}
+{"file": "public/app.js", "reason": "Fallback Trace failure summaries use safe structured serialization"}
+{"file": "tests/runtime/message-tool-trace.test.js", "reason": "Object, secret, and circular partialJson regression coverage"}
+{"file": "tests/runtime/turn-orchestrator.test.js", "reason": "Structured live tool identity regression coverage"}
+{"file": "tests/ui/cross-conversation-ui.test.js", "reason": "Structured live tool DOM rendering regression coverage"}

@@ -1003,7 +1003,7 @@ function stringifyLiveToolStepSignatureValue(value: any) {
   try {
     return clipText(JSON.stringify(value), 240);
   } catch {
-    return clipText(String(value), 240);
+    return '[结构化数据无法序列化]';
   }
 }
 
@@ -1018,7 +1018,7 @@ function liveSessionToolStepSignature(step: any) {
     step && step.bridgeToolHint ? String(step.bridgeToolHint).trim() : '',
     step && step.status ? String(step.status).trim().toLowerCase() : '',
     stringifyLiveToolStepSignatureValue(step && step.requestSummary !== undefined ? step.requestSummary : null),
-    stringifyLiveToolStepSignatureValue(step && step.partialJson ? step.partialJson : ''),
+    stringifyLiveToolStepSignatureValue(step && step.partialJson !== undefined ? step.partialJson : ''),
   ]);
 }
 
@@ -1034,7 +1034,7 @@ function stringifyLiveToolIdentityValue(value: any) {
   try {
     return JSON.stringify(value);
   } catch {
-    return String(value);
+    return '[结构化数据无法序列化]';
   }
 }
 
@@ -1055,7 +1055,7 @@ function liveAnonymousSessionToolFingerprint(input: any = {}) {
     String(input.toolKind || '').trim().toLowerCase(),
     String(input.rawToolName || '').trim().toLowerCase(),
     stringifyLiveToolIdentityValue(input.arguments !== undefined ? input.arguments : null),
-    String(input.partialJson || '').trim(),
+    stringifyLiveToolIdentityValue(input.partialJson !== undefined ? input.partialJson : null),
   ]);
 }
 
@@ -1106,13 +1106,15 @@ export function resolveLiveSessionToolIndex(toolCall: any, options: any = {}) {
   const currentToolKind = String(options.currentToolKind || '').trim().toLowerCase();
   const currentToolStepId = String(options.currentToolStepId || '').trim();
   const nextArgumentsText = stringifyLiveToolIdentityValue(toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null);
-  const nextPartialJsonText = String(toolCall && toolCall.partialJson ? toolCall.partialJson : '').trim();
+  const nextPartialJsonText = stringifyLiveToolIdentityValue(
+    toolCall && toolCall.partialJson !== undefined ? toolCall.partialJson : ''
+  ).trim();
   const nextFingerprint = liveAnonymousSessionToolFingerprint({
     toolName: resolvedToolName,
     toolKind: resolvedToolKind,
     rawToolName: options.rawToolName,
     arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
-    partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+    partialJson: toolCall && toolCall.partialJson !== undefined ? toolCall.partialJson : '',
   });
   const activeStepId = String(tracker.activeStepId || '').trim();
   const activeToolName = String(tracker.activeToolName || '').trim().toLowerCase();
@@ -1209,7 +1211,7 @@ export function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {
       id: toolCall && toolCall.id ? toolCall.id : '',
       toolCallId: toolCall && toolCall.toolCallId ? toolCall.toolCallId : '',
       arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
-      partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+      partialJson: toolCall && toolCall.partialJson !== undefined ? toolCall.partialJson : '',
     },
     {
       toolCallIndex,
@@ -1228,7 +1230,7 @@ export function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {
       id: toolCall && toolCall.id ? toolCall.id : '',
       name: rawToolName,
       arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
-      partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+      partialJson: toolCall && toolCall.partialJson !== undefined ? toolCall.partialJson : '',
     },
     {
       agentDir: options.agentDir,

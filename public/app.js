@@ -1522,6 +1522,39 @@ function computeToolTraceActivity(summary, steps) {
   };
 }
 
+function formatTraceFailureValue(value, maxLength = 1200) {
+  if (value == null || value === '') {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+  }
+
+  try {
+    const seen = new WeakSet();
+    const text = JSON.stringify(value, (key, entry) => {
+      if (typeof entry === 'bigint') {
+        return `${entry}n`;
+      }
+
+      if (!entry || typeof entry !== 'object') {
+        return entry;
+      }
+
+      if (seen.has(entry)) {
+        return '[循环引用]';
+      }
+
+      seen.add(entry);
+      return entry;
+    }, 2);
+    return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+  } catch {
+    return '[结构化数据无法序列化]';
+  }
+}
+
 function buildFallbackFailureContext(trace, message) {
   const normalizedTrace = trace && typeof trace === 'object' ? trace : createEmptyToolTraceData(message && message.id ? message.id : '');
   const normalizedSteps = Array.isArray(normalizedTrace.steps) ? normalizedTrace.steps.filter(Boolean) : [];
@@ -1534,15 +1567,16 @@ function buildFallbackFailureContext(trace, message) {
 
   if (failedStep) {
     const detail = failedStep.errorSummary || failedStep.resultSummary || failedStep.requestSummary || failedStep.partialJson || '';
+    const detailText = detail ? formatTraceFailureValue(detail, 360) : '';
     return {
       hasFailure: true,
       source: 'step',
       stepId: String(failedStep.stepId || ''),
       toolName: String(failedStep.toolName || ''),
-      summary: detail
-        ? `${failedStep.toolName || 'tool'} · ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+      summary: detailText
+        ? `${failedStep.toolName || 'tool'} · ${detailText}`
         : `工具 ${failedStep.toolName || 'tool'} 执行失败`,
-      text: detail ? `${failedStep.toolName || 'tool'} · ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : '',
+      text: detailText ? `${failedStep.toolName || 'tool'} · ${detailText}` : '',
     };
   }
 
@@ -2141,7 +2175,7 @@ function toolTraceDetailSignature(trace) {
     try {
       return JSON.stringify(value).slice(0, maxLength);
     } catch {
-      return String(value).slice(0, maxLength);
+      return '[结构化数据无法序列化]';
     }
   }
 

@@ -32,8 +32,41 @@ function nonNegativeInteger(value: any): number | null {
   return Number.isInteger(number) && number >= 0 ? number : null;
 }
 
+function safeTraceValueText(value: any) {
+  if (value === null || value === undefined || value === '') {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  try {
+    const seen = new WeakSet<object>();
+    const serialized = JSON.stringify(value, (_key, entry) => {
+      if (typeof entry === 'bigint') {
+        return `${entry}n`;
+      }
+
+      if (!entry || typeof entry !== 'object') {
+        return entry;
+      }
+
+      if (seen.has(entry)) {
+        return '[循环引用]';
+      }
+
+      seen.add(entry);
+      return entry;
+    }, 2);
+    return serialized === undefined ? '[结构化数据无法序列化]' : serialized;
+  } catch {
+    return '[结构化数据无法序列化]';
+  }
+}
+
 function clipSafeText(value: any, maxLength = 360) {
-  const text = redactContextInspectorSecrets(clean(value)).replace(/\s+/gu, ' ');
+  const text = redactContextInspectorSecrets(safeTraceValueText(value)).replace(/\s+/gu, ' ');
   if (text.length <= maxLength) {
     return text;
   }

@@ -883,9 +883,25 @@
       }
 
       try {
-        return JSON.stringify(value, null, 2);
+        const seen = new WeakSet();
+        return JSON.stringify(value, (key, entry) => {
+          if (typeof entry === 'bigint') {
+            return `${entry}n`;
+          }
+
+          if (!entry || typeof entry !== 'object') {
+            return entry;
+          }
+
+          if (seen.has(entry)) {
+            return '[循环引用]';
+          }
+
+          seen.add(entry);
+          return entry;
+        }, 2);
       } catch {
-        return String(value);
+        return '[结构化数据无法序列化]';
       }
     }
 
@@ -1155,7 +1171,7 @@
         if (Array.isArray(requestSummary.paths) && requestSummary.paths.length > 0) {
           return {
             label: '当前路径',
-            text: requestSummary.paths.join('\n'),
+            text: formatTracePayload(requestSummary.paths),
           };
         }
       }
@@ -1167,7 +1183,9 @@
         };
       }
 
-      const partialJson = step && step.partialJson ? String(step.partialJson).trim() : '';
+      const partialJson = step && hasDisplayableTraceDetail(step.partialJson)
+        ? formatTracePayload(step.partialJson).trim()
+        : '';
 
       if (partialJson) {
         return {

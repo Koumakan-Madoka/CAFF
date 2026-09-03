@@ -295,8 +295,12 @@ test('Trace Inspector projects model, tool, provider cache, and failed persisten
         status: 'succeeded',
         createdAt: '2026-09-03T01:00:02.000Z',
         durationMs: 250,
-        requestSummary: 'npm test',
-        resultSummary: 'passed',
+        requestSummary: {
+          command: 'npm test',
+          options: { coverage: true },
+          apiKey: 'sk-inspector-secret',
+        },
+        resultSummary: { status: 'passed', files: ['trace-inspector.test.js'] },
       },
       { eventId: 'model-call:response-2', eventType: 'model_call', timelineSequence: 3, ...modelUsage.calls[1] },
     ],
@@ -324,6 +328,12 @@ test('Trace Inspector projects model, tool, provider cache, and failed persisten
   assert.equal(calls[0].detail.providerCacheStatus, 'no_cache_read');
   assert.equal(calls[1].detail.sessionAction, null);
   assert.equal(calls[1].detail.providerCacheStatus, 'provider_miss');
+  const toolEvent = success.json.trace.events.find((event) => event.kind === 'tool_execution');
+  assert.match(toolEvent.detail.requestSummary, /npm test/u);
+  assert.match(toolEvent.detail.requestSummary, /coverage/u);
+  assert.equal(toolEvent.detail.requestSummary.includes('[object Object]'), false);
+  assert.equal(toolEvent.detail.requestSummary.includes('sk-inspector-secret'), false);
+  assert.match(toolEvent.detail.resultSummary, /files/u);
 
   createAssistant(store, conversation.id, 'unknown-input-usage', {
     tokenUsage: {

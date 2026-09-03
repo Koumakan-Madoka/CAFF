@@ -616,6 +616,93 @@ test('message timeline renders full aggregate counts beside a bounded event wind
   assert.equal(window.document.querySelectorAll('.message-tool-trace-step').length, 16);
 });
 
+test('message timeline formats structured live tool payloads without object coercion', () => {
+  const dom = new JSDOM('<div id="message-timeline"></div>', { runScripts: 'outside-only' });
+  const { window } = dom;
+  window.CaffChat = {};
+  window.CaffShared = {};
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/shared/conversation-digest.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/cross-conversation-ui.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/message-images.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/message-timeline.js'), 'utf8'));
+
+  const runningStep = {
+    stepId: 'session-structured-live',
+    kind: 'session',
+    toolName: 'read',
+    status: 'running',
+    partialJson: {
+      path: 'README.md',
+      options: { include: ['heading', 'body'] },
+    },
+  };
+  const traceState = {
+    open: true,
+    status: 'ready',
+    errorMessage: '',
+    data: {
+      summary: {
+        status: 'running',
+        totalSteps: 1,
+        toolExecutionCount: 1,
+        failedSteps: 0,
+      },
+      steps: [runningStep],
+      sessionToolCalls: [runningStep],
+      bridgeToolEvents: [],
+      activity: {
+        status: 'running',
+        hasCurrentTool: true,
+        currentToolName: 'read',
+        currentStepId: runningStep.stepId,
+        currentStepKind: 'session',
+        inferred: false,
+        label: '当前工具：read',
+      },
+      failureContext: { hasFailure: false },
+    },
+  };
+  const assistantMessage = {
+    id: 'trace-message-structured-live',
+    role: 'assistant',
+    senderName: 'Trace Agent',
+    content: '',
+    status: 'streaming',
+    createdAt: '2026-08-28T00:00:00.000Z',
+  };
+  const renderer = window.CaffChat.createMessageTimelineRenderer({
+    dom: { messageTimeline: window.document.getElementById('message-timeline') },
+    helpers: {
+      agentById: () => null,
+      buildAgentAvatarElement: () => window.document.createElement('span'),
+      canInspectToolTrace: () => true,
+      conversationSummaries: () => [],
+      crossConversationBundleForMessage: () => null,
+      displayedMessageBody: (message) => message.content,
+      digestStatusForConversation: () => null,
+      formatDateTime: () => '-',
+      isPrivateTimelineMessage: () => false,
+      liveStageForMessage: () => null,
+      liveStageLabel: () => '',
+      messageSessionInfo: () => ({ sessionPath: '', sessionName: '', canExport: false }),
+      privateRecipientNames: () => [],
+      renderMessageBody(container, text) { container.textContent = text; },
+      timelineMessagesForConversation: (value) => value.messages,
+      toolTraceSignatureForMessage: () => 'structured-live-payload',
+      toolTraceStateForMessage: () => traceState,
+    },
+    showToast() {},
+  });
+
+  renderer.render({ id: 'trace-conversation-structured-live', messages: [assistantMessage], agents: [], metadata: {} }, null, []);
+
+  const liveBody = window.document.querySelector('.message-tool-trace-live-command-body');
+  assert.ok(liveBody);
+  assert.match(liveBody.textContent, /README\.md/u);
+  assert.match(liveBody.textContent, /include/u);
+  assert.equal(liveBody.textContent.includes('[object Object]'), false);
+});
+
 test('message timeline ignores a stale running stage after the assistant message is terminal', () => {
   const dom = new JSDOM('<div id="message-timeline"></div>', { runScripts: 'outside-only' });
   const { window } = dom;
