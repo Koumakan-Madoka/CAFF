@@ -168,7 +168,7 @@
         <button role="tab" id="tab-summary" aria-controls="conversation-digest-drawer" aria-selected="false" tabindex="-1">摘要</button>
         <button role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">设置</button>
         <button role="tab" id="tab-drafts" aria-controls="skill-draft-drawer" aria-selected="false" tabindex="-1" hidden>草稿</button>
-        <button role="tab" id="tab-context" aria-controls="agent-context-drawer" aria-selected="false" tabindex="-1">上下文</button>
+        <button role="tab" id="tab-context" aria-controls="agent-context-drawer" aria-selected="false" tabindex="-1">Trace</button>
       </div>
       <div class="drawer-body">
         <div role="tabpanel" id="panel-participants" class="drawer-panel" aria-labelledby="tab-participants">
@@ -528,12 +528,26 @@
         </div>
 
         <div role="tabpanel" id="agent-context-drawer" class="drawer-panel" aria-labelledby="tab-context" hidden>
-          <p id="agent-context-status" class="session-goal-status-badge active">选择一条 AI 消息查看上下文快照</p>
-          <div id="agent-context-summary" class="agent-context-summary"></div>
-          <div class="button-row compact-button-row">
+          <p id="agent-context-status" class="session-goal-status-badge active">选择一条 AI 消息查看完整 Trace</p>
+          <div class="agent-trace-toolbar">
+            <button id="agent-context-back-button" class="ghost-button" type="button" hidden>返回上一条</button>
+            <div class="agent-trace-view-switch" role="tablist" aria-label="Trace Inspector 视图">
+              <button id="agent-trace-view-button" type="button" role="tab" aria-controls="agent-trace-view" aria-selected="true">Trace</button>
+              <button id="agent-context-view-button" class="ghost-button" type="button" role="tab" aria-controls="agent-context-view" aria-selected="false">上下文</button>
+            </div>
+            <button id="agent-context-copy-button" class="ghost-button" type="button">复制</button>
             <button id="agent-context-export-button" class="secondary-button" type="button">导出 Markdown</button>
           </div>
-          <div id="agent-context-section-list" class="agent-context-section-list"></div>
+          <p id="agent-context-page-notice" class="muted small-note" hidden></p>
+          <section id="agent-session-lineage" class="agent-session-lineage" aria-label="Session lineage"></section>
+          <div id="agent-trace-view" class="agent-trace-view">
+            <div id="agent-trace-summary" class="agent-trace-summary"></div>
+            <div id="agent-trace-event-list" class="agent-trace-event-list"></div>
+          </div>
+          <div id="agent-context-view" class="agent-context-view" hidden>
+            <div id="agent-context-summary" class="agent-context-summary"></div>
+            <div id="agent-context-section-list" class="agent-context-section-list"></div>
+          </div>
         </div>
       </div>
     </aside>

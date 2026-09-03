@@ -1,0 +1,45 @@
+{
+  "id": "trace-inspector-session-lineage",
+  "name": "trace-inspector-session-lineage",
+  "title": "Trace Inspector and Session Lineage",
+  "description": "Upgrade the context drawer into an auditable bounded trace inspector with safe session lineage.",
+  "status": "review",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-09-03",
+  "completedAt": null,
+  "branch": "room/649113f3-caff-session",
+  "base_branch": "develop",
+  "worktree_path": null,
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Implementation and author verification complete; independent review and 3210 acceptance refresh pending.",
+  "meta": {}
+}

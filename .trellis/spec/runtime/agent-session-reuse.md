@@ -41,6 +41,7 @@ busy 行超过 `PI_CHAT_SESSION_REUSE_BUSY_STALE_MS`（默认 2h）视为僵尸 
 
 - `PUT /api/agents/:id` 接受 `sessionReuseEnabled`（family 与 custom 角色的 `editableFields` 均含该字段）；请求体缺省时保留存量值。
 - `public/personas/role-editor.js` 渲染"复用上一次会话" toggle；`management-utils.js#buildRolePayload` 总是携带该字段（`role.sessionReuseEnabled !== false`）。
+- 可观测性文案必须把 Session 生命周期与 provider cache 分开：fresh 首次调用显示“新建 Session”，resume 首次调用显示“复用旧 Session”；`coldStartModelCallCount` 继续作为兼容字段，但不再作为用户可见 Session 文案。Trace Inspector 沿 resume 快照的 `retainedSessionPrefix.cursorMessageId` 提供最多 8 层元数据 lineage，绝不重渲染旧 prefix 内容。
 
 ## 验证矩阵（测试点）
 

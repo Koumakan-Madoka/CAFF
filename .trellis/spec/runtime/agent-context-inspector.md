@@ -16,6 +16,7 @@
 - Snapshot read API: `GET /api/conversations/:conversationId/messages/:messageId/context-snapshot` returns `{ snapshot, runEvidence }` with safe display content plus post-run token evidence (`cacheReadTokens`, `uncachedInputTokens`, etc.).
 - Snapshot list API: `GET /api/conversations/:conversationId/context-snapshots?limit=<1..100>&before=<opaque>` returns `{ conversationId, snapshots, pageInfo: { hasMore, nextCursor } }` with newest-first metadata summaries; default limit is 50 and maximum is 100.
 - Markdown export API: `GET /api/conversations/:conversationId/messages/:messageId/context-snapshot-export` downloads `text/markdown`.
+- Trace Inspector API: `GET /api/conversations/:conversationId/messages/:messageId/trace-inspector` returns one safe detail payload containing the materialized snapshot, same-message run evidence, bounded Session lineage, and lifecycle plus existing model/tool observability events. `trace-inspector-export` exports that same safe projection as Markdown.
 - Assistant message metadata key: `metadata.agentContextSnapshot` stores the immutable safe snapshot for that message during P2C-Expand.
 - Expand table: `chat_message_context_snapshots.message_id` stores the same full safe snapshot plus a lightweight summary. Reads prefer this row and fall back to message metadata.
 
@@ -36,6 +37,12 @@
 - Sections such as persona instructions, private mailbox, routing rules, tool instructions, memory excerpts, and sandbox guidance are user-inspectable when they were actually injected for the selected agent turn.
 - Concrete sensitive values such as `PI_AGENT_PRIVATE_DIR`, `CAFF_CHAT_TOOLS_PATH`, callback/auth/token values, API keys, and secret-like strings must be redacted inline rather than hiding the whole section.
 - Export uses materialized safe snapshot content and never reads raw session JSONL or recomputes current prompt context.
+- Trace Inspector does not add a second event store. It combines the immutable snapshot, lightweight message metadata, task/run terminal fields, and the existing first-one-plus-latest-15 model/tool timeline into a bounded projection. Lifecycle phases are `trigger -> reuse_decision -> claim -> session -> prompt -> model_call/tool -> usage -> failure? -> persistence`; missing evidence is marked skipped/unknown rather than synthesized.
+- Session lifecycle and provider cache are separate dimensions. The first model call is labeled `新建 Session` for `fresh` or `复用旧 Session` for `resume`; cache read, cache hit, and provider miss remain independent call evidence. The persisted `coldStart*` compatibility fields remain unchanged.
+- Session lineage starts at the selected assistant message and follows only schema-v2 `retainedSessionPrefix.cursorMessageId` references. It performs bounded point reads, returns at most 8 metadata-only nodes, and never returns ancestor message content, prompt sections, session paths, or privateOnly node identifiers.
+- Lineage terminates with a closed reason at a fresh root, legacy schema, missing/deleted parent, missing parent snapshot, protected parent, invalid/cross-conversation/cross-agent reference, cycle, or depth limit. A protected parent clears lineage cursor identifiers and strips retained-prefix identifiers from the response copy; the stored immutable snapshot remains unchanged.
+- The browser defaults to the Trace view while retaining a separate Context view. Parent/ancestor navigation loads by message id; a node present in the current page also scrolls into view, while an out-of-page node stays inspectable with an explicit notice and a local return stack.
+- Copy and Trace Markdown export consume only the safe Trace Inspector response. Large context and call detail remains lazy behind the dedicated endpoint and collapsed details.
 - Snapshot integrity is checked by recomputing `displayContentHash`; mismatches render an integrity warning placeholder.
 
 ### 4. Validation & Error Matrix
@@ -55,6 +62,13 @@
 | Stored display hash differs from display content | Materialized section sets `integrityOk=false` and shows warning placeholder. |
 | Optional persona skill, room skill, participant, private mailbox, deprecated memory card, or history input is empty | Prompt and snapshot omit the whole section rather than rendering placeholder-only body text; deprecated memory cards stay omitted even when stored cards exist. |
 | Markdown export requested | Response is a grouped `.md` document with metadata table and safe content/placeholders. |
+| Trace Inspector requested | One point-read detail combines safe snapshot/run evidence, high-level lifecycle, and the existing bounded model/tool window; no full-conversation hydration. |
+| Two consecutive resume snapshots | Lineage returns current, parent, and ancestor in order, then terminates at the fresh root. |
+| Parent is privateOnly | Terminate `protected_parent`; do not return the protected message id, session name, content, or snapshot. |
+| Parent is deleted/missing or schema v1 | Return the current safe nodes and terminate `parent_missing` or `legacy_schema`; never throw or guess. |
+| Lineage exceeds 8 nodes or cycles | Return at most 8 unique nodes and terminate `depth_limit` or `cycle`. |
+| Lineage node is outside the loaded message page | Point-load its Inspector, show `消息不在当前页`, and preserve a return action. |
+| First model call in fresh/resume | Show `新建 Session` / `复用旧 Session`; render provider cache result separately. |
 | Detail table row exists but message metadata is lightweight or differs | Table snapshot is authoritative for Inspector/export. |
 | Detail table row is absent | Read the legacy `metadata.agentContextSnapshot` object. |
 | Snapshot list omits `limit` | Return at most 50 newest summaries plus `pageInfo`. |
@@ -74,7 +88,9 @@
 - Delivery parity: session-reuse A/B asserts resume snapshot section content equals the exact `startRun` prompt and excludes pre-cursor history; fresh behavior remains unchanged.
 - Delivery metadata: context snapshot tests assert schema v2 `deliveryMode`, retained-prefix round trip, safe materialization, and Markdown export.
 - Post-run evidence: detail API test asserts cache-read/uncached token counts are projected from message metadata without mutating the snapshot.
-- UI: jsdom renders resume as “恢复旧 Session（仅追加增量）”, labels totals as this-turn appended values, shows retained prefix/cache evidence, never uses the old “系统提示词 tokens 总数” label, and does not mislabel schema v1 reused snapshots as fresh.
+- UI: jsdom renders resume as “复用旧 Session（仅追加增量）”, labels totals as this-turn appended values, shows retained prefix/cache evidence, never uses the old “系统提示词 tokens 总数” or visible “冷启动” labels, and does not mislabel schema v1 reused snapshots as fresh.
+- Trace API: real SQLite tests cover fresh, two consecutive resumes, mixed model/tool events, failed persistence, Markdown export, legacy/deleted/protected/cycle/depth-limit termination, and poison unbounded conversation hydration.
+- Trace UI: jsdom covers Trace/Context switching, three-node lineage, parent scroll, out-of-page lazy point load, return navigation, provider cache wording, and safe copy/export controls.
 - Redaction: full-visibility sections containing known token/secret patterns render `[REDACTED]`.
 - Redaction policy: sandbox/private/env/tool-path values never expose raw values while their sections remain readable.
 - Export: Markdown preserves section metadata and readable content while omitting or redacting concrete sensitive values.

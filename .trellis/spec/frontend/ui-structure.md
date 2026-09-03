@@ -739,6 +739,24 @@ const icon = window.CaffIcons.create('archive', {
 - `tests/ui/stream-recovery.test.js`: jsdom behavior tests + source-contract greps (app.js error handler calls `markStreamError` before reconnect scheduling; no lastEventId consumption anywhere).
 - `tests/smoke/server-smoke.test.js` and chat-experience suites keep the existing open/error contracts green (no regression in connection-status handling).
 
+## Trace Inspector Drawer
+
+### Contract
+
+- The existing message `上下文` action opens the drawer's Trace tab and performs one `trace-inspector` GET. The old context snapshot route remains compatible, but the interactive drawer uses the aggregate detail response.
+- The drawer defaults to `Trace` and offers a segmented `Trace / 上下文` switch. Context sections keep their existing collapsed safe rendering; model/tool detail objects are collapsed by default.
+- The summary displays Session action, provider/model, total duration, input/output/cache-read tokens, model/tool counts, provider miss count, and terminal state. Explicit null token evidence renders `-`, while real zero remains `0`.
+- Visible Session lifecycle labels are `新建 Session` and `复用旧 Session`. Provider cache labels (`缓存命中`, `未读取缓存`, `provider miss`) remain separate; browser text must not use `冷启动` as Session semantics even though compatibility payload fields retain that name.
+- Session lineage renders current, parent, and ancestor checkpoints. Current is inert; parent/ancestor are buttons. Clicking point-loads that message's Inspector, also scrolls/highlights when the message card is in the current page, otherwise shows `消息不在当前页`. A local return stack restores the previously inspected message.
+- Copy serializes only the safe Inspector DTO; Markdown export calls `trace-inspector-export`. Neither operation reads a message body, old prompt prefix, or privateOnly ancestor from browser state.
+- The Trace drawer widens to at most 680px/94vw. Summary tracks use responsive minmax columns; long ids/hash/detail text use `overflow-wrap:anywhere` or pre-wrap; all controls remain at least 44px.
+
+### Required Tests
+
+- `tests/ui/context-inspector.test.js` covers Session wording, provider cache wording, Trace/Context visibility, three-generation lineage, parent scroll, out-of-page lazy load, return navigation, and absence of visible `冷启动` text.
+- `tests/http/trace-inspector.test.js` covers the cross-layer response consumed by the drawer.
+- Browser verification covers desktop and 390px widths with long identifiers and expanded detail, with no document/drawer horizontal overflow.
+
 ## Cross-Layer Watch Points
 
 - UI payload expectations must stay aligned with controller and domain output.

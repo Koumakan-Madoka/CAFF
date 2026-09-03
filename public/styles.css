@@ -3442,6 +3442,259 @@ textarea {
   line-height: 1.55;
 }
 
+.agent-trace-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.agent-trace-toolbar > button,
+.agent-trace-view-switch > button,
+.agent-session-lineage-node {
+  min-height: 44px;
+}
+
+.agent-trace-view-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(88px, 1fr));
+  margin-right: auto;
+  border: 1px solid var(--caff-line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.agent-trace-view-switch > button {
+  border: 0;
+  border-radius: 0;
+}
+
+.agent-session-lineage {
+  display: grid;
+  gap: 0.55rem;
+  padding-block: 0.75rem;
+  border-bottom: 1px solid var(--caff-line);
+}
+
+.agent-session-lineage:empty {
+  display: none;
+}
+
+.agent-session-lineage-head,
+.agent-trace-event-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.agent-session-lineage-chain {
+  display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+  overflow-x: auto;
+  padding-block: 0.1rem 0.25rem;
+}
+
+.agent-session-lineage-node {
+  min-width: 132px;
+  max-width: 210px;
+  display: grid;
+  align-content: center;
+  gap: 0.15rem;
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  border: 1px solid var(--caff-line);
+  border-radius: var(--radius-sm);
+  background: var(--caff-surface);
+  color: var(--text);
+}
+
+.agent-session-lineage-node span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-session-lineage-node span:last-child {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.agent-session-lineage-node:disabled {
+  opacity: 1;
+  border-color: rgba(29, 117, 106, 0.48);
+  cursor: default;
+}
+
+.agent-session-lineage-connector {
+  align-self: center;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.agent-session-lineage-termination {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-trace-view,
+.agent-context-view,
+.agent-trace-event-list {
+  min-width: 0;
+}
+
+.agent-trace-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-block: 0.75rem;
+}
+
+.agent-trace-summary-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem;
+  border-bottom: 2px solid var(--caff-line);
+  background: var(--caff-surface-sunk);
+}
+
+.agent-trace-summary-grid span,
+.agent-trace-event-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.agent-trace-summary-grid strong {
+  overflow-wrap: anywhere;
+}
+
+.agent-trace-event-list {
+  display: grid;
+}
+
+.agent-trace-event {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+}
+
+.agent-trace-event-rail {
+  display: grid;
+  grid-template-rows: 30px minmax(16px, 1fr);
+  justify-items: center;
+}
+
+.agent-trace-event-sequence {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--caff-line);
+  border-radius: 50%;
+  background: var(--caff-surface);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.agent-trace-event-line {
+  width: 1px;
+  height: 100%;
+  background: var(--caff-line);
+}
+
+.agent-trace-event:last-child .agent-trace-event-line {
+  visibility: hidden;
+}
+
+.agent-trace-event-main {
+  min-width: 0;
+  padding: 0.15rem 0 1rem 0.65rem;
+}
+
+.agent-trace-event-header strong,
+.agent-trace-event-summary,
+.agent-trace-event-details pre {
+  overflow-wrap: anywhere;
+}
+
+.agent-trace-event-status {
+  flex: 0 0 auto;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-sm);
+  background: var(--caff-surface-sunk);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.agent-trace-event-status.completed {
+  color: #1d756a;
+}
+
+.agent-trace-event-status.failed {
+  color: #a43f31;
+}
+
+.agent-trace-event-status.running,
+.agent-trace-event-status.queued {
+  color: #8b6c1c;
+}
+
+.agent-trace-event-summary {
+  margin: 0.25rem 0 0;
+  line-height: 1.5;
+}
+
+.agent-trace-event-details {
+  margin-top: 0.45rem;
+}
+
+.agent-trace-event-details summary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.agent-trace-event-details pre {
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  padding: 0.65rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--caff-surface-sunk);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+}
+
+.message-card.trace-located {
+  outline: 2px solid #1d756a;
+  outline-offset: 2px;
+}
+
+@media (max-width: 480px) {
+  .agent-trace-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-trace-toolbar > button,
+  .agent-trace-view-switch {
+    flex: 1 1 auto;
+  }
+
+  .agent-context-section-card summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .agent-context-section-badges {
+    white-space: normal;
+  }
+}
+
 .session-goal-proposal-status {
   margin: 0;
   font-weight: 700;
@@ -6901,7 +7154,8 @@ body.chat-app .new-msg-pill {
 
 /* ── DAG 规划图 panel（dag-planning POC, PRD D8） ── */
 /* 规划 tab 激活时抽屉加宽（graph 需要更大可视面积） */
-body.chat-app .context-drawer:has(#plan-drawer:not([hidden])) {
+body.chat-app .context-drawer:has(#plan-drawer:not([hidden])),
+body.chat-app .context-drawer:has(#agent-context-drawer:not([hidden])) {
   width: min(680px, 94vw);
 }
 

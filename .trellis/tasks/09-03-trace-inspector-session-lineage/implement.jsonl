@@ -1,0 +1,8 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/runtime/agent-context-inspector.md", "reason": "Snapshot immutability, safe rendering, resume delta parity"}
+{"file": ".trellis/spec/runtime/agent-session-reuse.md", "reason": "Session reuse decision, cursor and privacy contracts"}
+{"file": ".trellis/spec/backend/message-detail-storage.md", "reason": "Bounded detail persistence and unified observability timeline"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Chat drawer, trace and responsive UI contracts"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer API projection"}

@@ -1311,6 +1311,9 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const db = options.db;
   const agentDir = String(options.agentDir || '').trim();
   const message = options.message && typeof options.message === 'object' ? options.message : null;
+  const messageMetadata = message && message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+    ? message.metadata
+    : {};
   const resolvedSessionPath = String(options.resolvedSessionPath || '').trim();
   const taskId = String(message && message.taskId ? message.taskId : '').trim();
   const taskRow = taskId ? loadTaskRow(db, taskId) : null;
@@ -1490,6 +1493,9 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
           taskId: taskId || null,
           runId: message.runId === undefined ? null : message.runId,
           createdAt: String(message.createdAt || '').trim(),
+          sessionReused: messageMetadata.sessionReused === true,
+          sessionReuseKnown: Object.prototype.hasOwnProperty.call(messageMetadata, 'sessionReused'),
+          sessionReuseReason: String(messageMetadata.sessionReuseReason || '').trim(),
           errorMessage:
             message.errorMessage === null || message.errorMessage === undefined
               ? ''

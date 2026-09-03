@@ -797,7 +797,9 @@ test('edited history poisons the cached session and falls back to a fresh full-h
   // snapshot's max), then add a new message. The cursor consistency check
   // must detect the edit, poison the session, and fall back to a fresh run
   // with the full (edited) history.
-  store.updateMessage('u1', { content: 'ALPHA-U1-EDITED', updatedAt: '2026-09-02T11:00:00.000Z' });
+  const firstReuseSnapshot = store.peekReuseRow();
+  const editedAt = new Date(Date.parse(firstReuseSnapshot.cursorMaxUpdatedAt) + 1000).toISOString();
+  store.updateMessage('u1', { content: 'ALPHA-U1-EDITED', updatedAt: editedAt });
   seedUserMessage(store, 'u3', 'DELTA-U3-CONTENT');
   const executor2 = env.createExecutor(store);
   await runTurn({ executor: executor2, conversation, agent, store, turnId: 'turn-mutate-2' });

@@ -239,6 +239,8 @@ test('context snapshot list uses bounded stable cursor pages across mixed old an
     sessionReuseReason: 'reused',
     inputTokens: 56815,
     uncachedInputTokens: 2234,
+    outputTokens: null,
+    totalTokens: null,
     cacheReadTokens: 54581,
     cacheWriteTokens: 0,
     modelCallCount: 4,

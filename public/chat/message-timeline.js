@@ -665,7 +665,7 @@
       return parts.join(' · ');
     }
 
-    function formatTokenUsageTitle(usage) {
+    function formatTokenUsageTitle(usage, sessionActionLabel = 'Session 首次调用') {
       if (!usage) {
         return '';
       }
@@ -705,7 +705,7 @@
 
       if (usage.modelCallCount !== null && usage.providerMissCount !== null) {
         const coldStartCount = usage.coldStartModelCallCount !== null ? usage.coldStartModelCallCount : Math.max(usage.modelCallCount - (usage.postColdModelCallCount || 0), 0);
-        parts.push(`模型调用 ${usage.modelCallCount} 次，冷启动 ${coldStartCount} 次，冷启动外 ${usage.postColdModelCallCount || 0} 次，provider miss ${usage.providerMissCount}`);
+        parts.push(`模型调用 ${usage.modelCallCount} 次，${sessionActionLabel} ${coldStartCount} 次，Session 内后续调用 ${usage.postColdModelCallCount || 0} 次，provider miss ${usage.providerMissCount}`);
       }
 
       if (usage.inputCostUsd !== null || usage.outputCostUsd !== null || usage.cacheReadCostUsd !== null || usage.cacheWriteCostUsd !== null) {
@@ -1522,7 +1522,13 @@
       return timelineEvents.map((event, index) => ({ ...event, timelineIndex: index }));
     }
 
-    function buildModelCallTraceStep(call, index, isLastStep) {
+    function traceSessionActionLabel(trace) {
+      const message = trace && trace.message && typeof trace.message === 'object' ? trace.message : null;
+      if (!message || message.sessionReuseKnown !== true) return '首次模型调用';
+      return message.sessionReused === true ? '复用旧 Session' : '新建 Session';
+    }
+
+    function buildModelCallTraceStep(call, index, isLastStep, sessionActionLabel) {
       const article = document.createElement('article');
       const rail = document.createElement('div');
       const indexBadge = document.createElement('span');
@@ -1540,9 +1546,10 @@
           ? Number(call.modelCallSequence)
           : index + 1;
       const tokenUsage = call && call.tokenUsage ? call.tokenUsage : {};
-      const isColdStart = Boolean(call && (call.coldStart || call.isColdStart));
-      const tone = call && call.providerMiss ? 'failed' : isColdStart ? 'neutral' : 'success';
-      const statusText = call && call.providerMiss ? 'provider miss' : isColdStart ? '冷启动' : '缓存命中';
+      const isFirstCall = sequence === 1 || Boolean(call && (call.coldStart || call.isColdStart));
+      const providerStatusText = call && call.providerMiss ? 'provider miss' : normalizeTokenCount(tokenUsage.cacheReadTokens) > 0 ? '缓存命中' : '未读取缓存';
+      const tone = call && call.providerMiss ? 'failed' : isFirstCall && sessionActionLabel === '新建 Session' ? 'neutral' : 'success';
+      const statusText = isFirstCall ? sessionActionLabel : providerStatusText;
       const stopReason = call && call.stopReason ? String(call.stopReason) : '';
       const bits = formatModelUsageCallBits(call);
       const outputTokens = normalizeTokenCount(tokenUsage.outputTokens);
@@ -1667,7 +1674,7 @@
           return;
         }
         const row = event && event.eventType === 'model_call'
-          ? buildModelCallTraceStep(event, eventIndex, eventIndex === events.length - 1)
+          ? buildModelCallTraceStep(event, eventIndex, eventIndex === events.length - 1, traceSessionActionLabel(trace))
           : buildTraceStep(event, eventIndex, eventIndex === events.length - 1);
         row.dataset.eventId = eventId;
         row.dataset.eventSignature = eventSignature;
@@ -2270,6 +2277,9 @@
       const crossConversationDelivery = crossConversationBundle && crossConversationBundle.delivery
         ? crossConversationBundle.delivery
         : null;
+      const sessionActionLabel = metadata && Object.prototype.hasOwnProperty.call(metadata, 'sessionReused')
+        ? metadata.sessionReused === true ? '复用旧 Session' : '新建 Session'
+        : 'Session 首次调用';
       const tokenUsageLabel = formatTokenUsageLabel(tokenUsage);
       const recipients = privateRecipientNames(message);
       const privacyLabel =
@@ -2303,6 +2313,7 @@
         sessionInfo.sessionName,
         sessionInfo.canExport ? 'exportable' : 'locked',
         contextSnapshot && contextSnapshot.snapshotId ? contextSnapshot.snapshotId : '',
+        sessionActionLabel,
         tokenUsageLabel,
         tokenUsage && tokenUsage.inputTokens !== null ? tokenUsage.inputTokens : '',
         tokenUsage && tokenUsage.uncachedInputTokens !== null ? tokenUsage.uncachedInputTokens : '',
@@ -2390,8 +2401,8 @@
           contextButton.disabled = !contextSnapshot;
           contextButton.textContent = '\u4e0a\u4e0b\u6587';
           contextButton.title = contextSnapshot
-            ? '\u67e5\u770b\u8fd9\u4e2a Agent turn \u5b9e\u9645\u6ce8\u5165\u7684\u4e0a\u4e0b\u6587\u5206\u533a'
-            : '\u8fd9\u6761\u6d88\u606f\u6682\u65e0\u4e0a\u4e0b\u6587\u5feb\u7167';
+            ? '查看该 Agent 回复的完整 Trace、Session lineage 与实际上下文'
+            : '这条消息暂无 Trace 快照';
           sender.appendChild(contextButton);
         }
       }
@@ -2461,7 +2472,7 @@
         const tokenBadge = document.createElement('span');
         tokenBadge.className = 'message-token-usage';
         tokenBadge.textContent = tokenUsageLabel;
-        tokenBadge.title = formatTokenUsageTitle(tokenUsage);
+        tokenBadge.title = formatTokenUsageTitle(tokenUsage, sessionActionLabel);
         time.appendChild(tokenBadge);
       }
 
