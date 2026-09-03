@@ -191,6 +191,7 @@ export function buildSessionLineage(options: any = {}) {
           ...currentNode.cursor,
           messageId: '',
           firstMessageId: '',
+          maxUpdatedAt: null,
         };
       }
       return {
@@ -337,9 +338,6 @@ function buildTraceEvents(message: any, snapshot: any, runEvidence: any, toolTra
     status: blockedBeforeProvider ? 'skipped' : traceStatusForMessage(message),
     title: session.label,
     occurredAt: task.startedAt || snapshot && snapshot.capturedAt,
-    durationMs: task.startedAt && task.endedAt
-      ? Math.max(0, Date.parse(task.endedAt) - Date.parse(task.startedAt))
-      : null,
     summary: blockedBeforeProvider
       ? '运行前门禁阻止 provider Session 启动'
       : session.mode === 'resume'
@@ -351,14 +349,20 @@ function buildTraceEvents(message: any, snapshot: any, runEvidence: any, toolTra
   });
   push({
     phase: 'prompt',
-    status: blockedBeforeProvider ? 'skipped' : 'completed',
+    status: blockedBeforeProvider
+      ? 'skipped'
+      : session.mode === 'unknown' && session.reused
+        ? 'observed'
+        : 'completed',
     title: session.mode === 'resume' ? '投递本轮增量' : session.mode === 'fresh' ? '投递完整上下文' : '投递上下文',
     occurredAt: snapshot && snapshot.capturedAt,
     summary: blockedBeforeProvider
       ? '快照已捕获，但 prompt 未投递给 provider'
       : session.mode === 'resume'
         ? `实际投递 session_delta，${Number(snapshot && snapshot.sections && snapshot.sections.length || 0)} 个分区`
-        : `实际投递完整 prompt，${Number(snapshot && snapshot.sections && snapshot.sections.length || 0)} 个分区`,
+        : session.mode === 'fresh' || !session.reused
+          ? `实际投递完整 prompt，${Number(snapshot && snapshot.sections && snapshot.sections.length || 0)} 个分区`
+          : '旧版复用快照未记录实际 prompt 投递方式，分区口径不可靠',
     detailRef: 'context',
   });
 
@@ -410,17 +414,16 @@ function buildTraceEvents(message: any, snapshot: any, runEvidence: any, toolTra
     });
   });
 
-  const usagePresent = [
-    runEvidence && runEvidence.inputTokens,
-    runEvidence && runEvidence.modelCallCount,
-  ].some((value) => nonNegativeInteger(value) !== null);
+  const usageModelCallCount = nonNegativeInteger(runEvidence && runEvidence.modelCallCount);
+  const usageInputTokens = nonNegativeInteger(runEvidence && runEvidence.inputTokens);
+  const usagePresent = usageInputTokens !== null || usageModelCallCount !== null;
   push({
     phase: 'usage',
     status: usagePresent ? 'completed' : 'skipped',
     title: '采集 usage',
     occurredAt: task.endedAt || message && message.updatedAt,
     summary: usagePresent
-      ? `${nonNegativeInteger(runEvidence.modelCallCount) || 0} 次模型调用，input ${nonNegativeInteger(runEvidence.inputTokens) || 0} tokens`
+      ? `${usageModelCallCount === null ? '模型调用次数未知' : `${usageModelCallCount} 次模型调用`}，${usageInputTokens === null ? 'input tokens 未知' : `input ${usageInputTokens} tokens`}`
       : '没有可用的 provider usage 证据',
     detailRef: 'usage',
   });
@@ -471,9 +474,10 @@ export function exportMessageTraceInspectorMarkdown(inspector: any) {
     '| --- | --- | --- | --- | --- | --- |',
   ];
 
+  const tableCell = (value: any) => clipSafeText(value).replace(/\|/gu, '\\|');
   for (const node of Array.isArray(inspector.lineage && inspector.lineage.nodes) ? inspector.lineage.nodes : []) {
     lines.push(
-      `| ${clean(node.relation)} | ${clean(node.messageId)} | ${clean(node.snapshotId)} | ${clean(node.sessionName)} | ${clean(node.deliveryMode)} | ${clean(node.capturedAt)} |`
+      `| ${tableCell(node.relation)} | ${tableCell(node.messageId)} | ${tableCell(node.snapshotId)} | ${tableCell(node.sessionName)} | ${tableCell(node.deliveryMode)} | ${tableCell(node.capturedAt)} |`
     );
   }
   lines.push(
@@ -486,9 +490,8 @@ export function exportMessageTraceInspectorMarkdown(inspector: any) {
     '| ---: | --- | --- | --- | --- | --- |'
   );
   for (const event of Array.isArray(inspector.trace && inspector.trace.events) ? inspector.trace.events : []) {
-    const cell = (value: any) => clipSafeText(value).replace(/\|/gu, '\\|');
     lines.push(
-      `| ${Number(event.sequence || 0)} | ${cell(event.phase)} | ${cell(event.status)} | ${cell(event.occurredAt || '')} | ${cell(event.title)} | ${cell(event.summary)} |`
+      `| ${Number(event.sequence || 0)} | ${tableCell(event.phase)} | ${tableCell(event.status)} | ${tableCell(event.occurredAt || '')} | ${tableCell(event.title)} | ${tableCell(event.summary)} |`
     );
   }
 

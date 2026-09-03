@@ -70,8 +70,13 @@ function createAssistant(store, conversationId, messageId, options = {}) {
     errorMessage: options.errorMessage || '',
     metadata: {
       sessionName: options.sessionName || `session-${messageId}`,
-      sessionReused: detail.deliveryMode === 'resume',
-      sessionReuseReason: detail.deliveryMode === 'resume' ? 'reused' : options.sessionReuseReason || 'no_prior_session',
+      sessionReused: options.sessionReused === undefined
+        ? detail.deliveryMode === 'resume'
+        : options.sessionReused === true,
+      sessionReuseReason: options.sessionReuseReason
+        || ((options.sessionReused === undefined ? detail.deliveryMode === 'resume' : options.sessionReused === true)
+          ? 'reused'
+          : 'no_prior_session'),
       privateOnly: options.privateOnly === true,
       triggeredByMessageId: options.triggeredByMessageId || 'trigger-root',
       triggerType: options.triggerType || 'user',
@@ -154,21 +159,21 @@ function traceUrl(conversationId, messageId) {
 test('Trace Inspector returns safe current-parent-ancestor lineage and complete bounded phases', async (t) => {
   const { store, conversation, handler } = createFixture(t, 'three-generations');
   createAssistant(store, conversation.id, 'assistant-root', {
-    sessionName: 'session-root',
+    sessionName: 'session|root',
     capturedAt: '2026-09-03T01:00:00.000Z',
   });
   createAssistant(store, conversation.id, 'assistant-parent', {
     deliveryMode: 'resume',
     parentMessageId: 'assistant-root',
-    parentSessionName: 'session-root',
-    sessionName: 'session-root',
+    parentSessionName: 'session|root',
+    sessionName: 'session|root',
     capturedAt: '2026-09-03T01:01:00.000Z',
   });
   createAssistant(store, conversation.id, 'assistant-current', {
     deliveryMode: 'resume',
     parentMessageId: 'assistant-parent',
-    parentSessionName: 'session-root',
-    sessionName: 'session-root',
+    parentSessionName: 'session|root',
+    sessionName: 'session|root',
     capturedAt: '2026-09-03T01:02:00.000Z',
   });
 
@@ -208,6 +213,7 @@ test('Trace Inspector returns safe current-parent-ancestor lineage and complete 
   assert.match(exported.headers['Content-Disposition'], /trace-inspector-GPT-turn-assistant-current\.md/u);
   assert.match(exported.body, /Trace Timeline/u);
   assert.match(exported.body, /复用旧 Session/u);
+  assert.equal(exported.body.includes('session\\|root'), true);
   assert.doesNotMatch(exported.body, /PRIVATE-PROMPT/u);
 });
 
@@ -307,6 +313,7 @@ test('Trace Inspector projects model, tool, provider cache, and failed persisten
   assert.equal(success.json.trace.summary.status, 'completed');
   assert.equal(success.json.trace.summary.totalDurationMs, 4000);
   assert.equal(success.json.trace.summary.totalToolDurationMs, 250);
+  assert.equal(success.json.trace.events.find((event) => event.phase === 'session').durationMs, null);
   assert.deepEqual(success.json.trace.events.filter((event) => event.kind !== 'lifecycle').map((event) => [event.kind, event.title]), [
     ['model_call', '新建 Session'],
     ['tool_execution', 'bash'],
@@ -317,6 +324,26 @@ test('Trace Inspector projects model, tool, provider cache, and failed persisten
   assert.equal(calls[0].detail.providerCacheStatus, 'no_cache_read');
   assert.equal(calls[1].detail.sessionAction, null);
   assert.equal(calls[1].detail.providerCacheStatus, 'provider_miss');
+
+  createAssistant(store, conversation.id, 'unknown-input-usage', {
+    tokenUsage: {
+      inputTokens: null,
+      uncachedInputTokens: null,
+      outputTokens: 3,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      totalTokens: null,
+    },
+    modelUsage: {
+      modelCallCount: 1,
+      coldStartModelCallCount: 1,
+      postColdModelCallCount: 0,
+      providerMissCount: 0,
+    },
+  });
+  const unknownUsage = await invoke(handler, traceUrl(conversation.id, 'unknown-input-usage'));
+  const unknownUsageEvent = unknownUsage.json.trace.events.find((event) => event.phase === 'usage');
+  assert.equal(unknownUsageEvent.summary, '1 次模型调用，input tokens 未知');
 
   createAssistant(store, conversation.id, 'mixed-failed', {
     status: 'failed',
@@ -336,6 +363,8 @@ test('Trace Inspector lineage fails closed for legacy, missing, protected, cycle
   createAssistant(store, conversation.id, 'legacy-parent', {
     schemaVersion: 1,
     sessionName: 'legacy-session',
+    sessionReused: true,
+    sessionReuseReason: 'reused',
   });
   store.db.prepare(`
     UPDATE chat_message_context_snapshots
@@ -343,6 +372,14 @@ test('Trace Inspector lineage fails closed for legacy, missing, protected, cycle
         summary_json = json_remove(summary_json, '$.deliveryMode', '$.retainedSessionPrefix')
     WHERE message_id = 'legacy-parent'
   `).run();
+  const legacyResume = await invoke(handler, traceUrl(conversation.id, 'legacy-parent'));
+  const legacyPrompt = legacyResume.json.trace.events.find((event) => event.phase === 'prompt');
+  assert.equal(legacyResume.json.session.mode, 'unknown');
+  assert.equal(legacyResume.json.session.reused, true);
+  assert.equal(legacyPrompt.status, 'observed');
+  assert.match(legacyPrompt.summary, /未记录实际 prompt 投递方式/u);
+  assert.doesNotMatch(legacyPrompt.summary, /完整 prompt/u);
+
   createAssistant(store, conversation.id, 'legacy-current', {
     deliveryMode: 'resume',
     parentMessageId: 'legacy-parent',
@@ -377,6 +414,7 @@ test('Trace Inspector lineage fails closed for legacy, missing, protected, cycle
   assert.doesNotMatch(JSON.stringify(protectedResult.json), /protected-parent|do-not-project/u);
   assert.equal(protectedResult.json.snapshot.retainedSessionPrefix.cursorMessageId, '');
   assert.equal(protectedResult.json.snapshot.retainedSessionPrefix.cursorFirstMessageId, '');
+  assert.equal(protectedResult.json.lineage.nodes[0].cursor.maxUpdatedAt, null);
   const protectedExport = await invoke(handler, `${traceUrl(conversation.id, 'protected-current')}-export`);
   assert.doesNotMatch(protectedExport.body, /protected-parent|do-not-project/u);
 
