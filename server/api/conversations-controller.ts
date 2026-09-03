@@ -124,6 +124,9 @@ function contextSnapshotRunEvidence(message: any) {
   const tokenUsage = metadata.tokenUsage && typeof metadata.tokenUsage === 'object' ? metadata.tokenUsage : {};
   const modelUsage = metadata.modelUsage && typeof metadata.modelUsage === 'object' ? metadata.modelUsage : {};
   const tokenCount = (value: any) => {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
     const normalized = Number(value);
     return Number.isInteger(normalized) && normalized >= 0 ? normalized : null;
   };

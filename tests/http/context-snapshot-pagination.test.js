@@ -244,6 +244,41 @@ test('context snapshot list uses bounded stable cursor pages across mixed old an
     modelCallCount: 4,
   });
 
+  const tokenUsageWithoutCacheRead = {
+    inputTokens: 56815,
+    uncachedInputTokens: 2234,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+  };
+  store.db.prepare('UPDATE chat_messages SET metadata_json = ? WHERE id = ?').run(JSON.stringify({
+    agentContextSnapshot: resumedSnapshot,
+    tokenUsage: tokenUsageWithoutCacheRead,
+    modelUsage: { modelCallCount: 4 },
+    sessionReused: true,
+    sessionReuseReason: 'reused',
+  }), newestId);
+  const unknownCacheReadDetail = await invoke(
+    handler,
+    `/api/conversations/${conversation.id}/messages/${newestId}/context-snapshot`
+  );
+  assert.equal(unknownCacheReadDetail.statusCode, 200);
+  assert.equal(unknownCacheReadDetail.json.runEvidence.cacheReadTokens, null);
+  assert.equal(unknownCacheReadDetail.json.runEvidence.cacheWriteTokens, null);
+
+  store.db.prepare('UPDATE chat_messages SET metadata_json = ? WHERE id = ?').run(JSON.stringify({
+    agentContextSnapshot: resumedSnapshot,
+    tokenUsage: { ...tokenUsageWithoutCacheRead, cacheReadTokens: 0 },
+    modelUsage: { modelCallCount: 4 },
+    sessionReused: true,
+    sessionReuseReason: 'reused',
+  }), newestId);
+  const zeroCacheReadDetail = await invoke(
+    handler,
+    `/api/conversations/${conversation.id}/messages/${newestId}/context-snapshot`
+  );
+  assert.equal(zeroCacheReadDetail.statusCode, 200);
+  assert.equal(zeroCacheReadDetail.json.runEvidence.cacheReadTokens, 0);
+
   const tableOnlyExport = await invoke(
     handler,
     `/api/conversations/${conversation.id}/messages/${tableOnlyId}/context-snapshot-export`
