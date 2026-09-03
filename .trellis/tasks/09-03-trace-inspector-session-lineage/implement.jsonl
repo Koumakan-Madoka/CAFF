@@ -6,3 +6,4 @@
 {"file": ".trellis/spec/backend/message-detail-storage.md", "reason": "Bounded detail persistence and unified observability timeline"}
 {"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Chat drawer, trace and responsive UI contracts"}
 {"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer API projection"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Acceptance feedback: model/tool-first Trace with collapsed lifecycle diagnostics"}

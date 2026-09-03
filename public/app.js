@@ -3380,6 +3380,60 @@ function renderAgentSessionLineage(inspector) {
   dom.agentSessionLineage.append(heading, chain, termination);
 }
 
+function createAgentTraceEvent(event, displaySequence, options = {}) {
+  const article = document.createElement('article');
+  const rail = document.createElement('div');
+  const sequence = document.createElement('span');
+  const line = document.createElement('span');
+  const main = document.createElement('div');
+  const header = document.createElement('div');
+  const title = document.createElement('strong');
+  const status = document.createElement('span');
+  const meta = document.createElement('div');
+  const summaryText = document.createElement('p');
+  article.className = `agent-trace-event ${event.kind || 'lifecycle'} ${event.status || 'observed'}`;
+  rail.className = 'agent-trace-event-rail';
+  sequence.className = 'agent-trace-event-sequence';
+  sequence.textContent = String(displaySequence || event.sequence || '');
+  line.className = 'agent-trace-event-line';
+  main.className = 'agent-trace-event-main';
+  header.className = 'agent-trace-event-header';
+  title.textContent = event.title || event.phase || 'Trace event';
+  status.className = `agent-trace-event-status ${event.status || 'observed'}`;
+  status.textContent = traceEventStatusLabel(event.status);
+  meta.className = 'agent-trace-event-meta';
+
+  const detail = event.detail && typeof event.detail === 'object' ? event.detail : null;
+  const tokenUsage = detail && detail.tokenUsage && typeof detail.tokenUsage === 'object' ? detail.tokenUsage : null;
+  const outputTokens = tokenUsage && tokenUsage.outputTokens !== null && tokenUsage.outputTokens !== undefined
+    ? Number(tokenUsage.outputTokens)
+    : null;
+  meta.textContent = [
+    options.showPhase ? event.phase || '' : '',
+    event.occurredAt ? formatInspectorTimestamp(event.occurredAt) : '时间未记录',
+    event.durationMs !== null && event.durationMs !== undefined ? `${formatInspectorNumber(event.durationMs)} ms` : '',
+    Number.isFinite(outputTokens) ? `输出 ${formatInspectorNumber(outputTokens)} tokens` : '',
+  ].filter(Boolean).join(' · ');
+  summaryText.className = 'agent-trace-event-summary';
+  summaryText.textContent = event.summary || '没有额外摘要';
+  header.append(title, status);
+  main.append(header, meta, summaryText);
+
+  if (detail) {
+    const details = document.createElement('details');
+    const detailsSummary = document.createElement('summary');
+    const body = document.createElement('pre');
+    details.className = 'agent-trace-event-details';
+    detailsSummary.textContent = event.kind === 'model_call' ? '模型调用详情' : event.kind === 'tool_execution' ? '工具执行详情' : '阶段详情';
+    body.textContent = JSON.stringify(detail, null, 2);
+    details.append(detailsSummary, body);
+    main.appendChild(details);
+  }
+  rail.append(sequence, line);
+  article.append(rail, main);
+  return article;
+}
+
 function renderAgentTrace(inspector) {
   if (dom.agentTraceSummary) {
     dom.agentTraceSummary.textContent = '';
@@ -3429,50 +3483,54 @@ function renderAgentTrace(inspector) {
 
   if (!dom.agentTraceEventList) return;
   const events = Array.isArray(trace.events) ? trace.events : [];
-  events.forEach((event) => {
-    const article = document.createElement('article');
-    const rail = document.createElement('div');
-    const sequence = document.createElement('span');
-    const line = document.createElement('span');
-    const main = document.createElement('div');
-    const header = document.createElement('div');
-    const title = document.createElement('strong');
-    const status = document.createElement('span');
-    const meta = document.createElement('div');
-    const summaryText = document.createElement('p');
-    article.className = `agent-trace-event ${event.kind || 'lifecycle'} ${event.status || 'observed'}`;
-    rail.className = 'agent-trace-event-rail';
-    sequence.className = 'agent-trace-event-sequence';
-    sequence.textContent = String(event.sequence || '');
-    line.className = 'agent-trace-event-line';
-    main.className = 'agent-trace-event-main';
-    header.className = 'agent-trace-event-header';
-    title.textContent = event.title || event.phase || 'Trace event';
-    status.className = `agent-trace-event-status ${event.status || 'observed'}`;
-    status.textContent = traceEventStatusLabel(event.status);
-    meta.className = 'agent-trace-event-meta';
-    meta.textContent = [event.phase || '', event.occurredAt ? formatInspectorTimestamp(event.occurredAt) : '时间未记录', event.durationMs !== null ? `${formatInspectorNumber(event.durationMs)} ms` : '']
-      .filter(Boolean)
-      .join(' · ');
-    summaryText.className = 'agent-trace-event-summary';
-    summaryText.textContent = event.summary || '没有额外摘要';
-    header.append(title, status);
-    main.append(header, meta, summaryText);
+  const primaryEvents = events.filter((event) => event && (event.kind === 'model_call' || event.kind === 'tool_execution'));
+  const diagnosticEvents = events.filter((event) => event && event.kind !== 'model_call' && event.kind !== 'tool_execution');
+  const timelineWindow = trace.timelineWindow && typeof trace.timelineWindow === 'object' ? trace.timelineWindow : {};
 
-    if (event.detail && typeof event.detail === 'object') {
-      const details = document.createElement('details');
-      const detailsSummary = document.createElement('summary');
-      const body = document.createElement('pre');
-      details.className = 'agent-trace-event-details';
-      detailsSummary.textContent = event.kind === 'model_call' ? '调用详情' : '执行详情';
-      body.textContent = JSON.stringify(event.detail, null, 2);
-      details.append(detailsSummary, body);
-      main.appendChild(details);
-    }
-    rail.append(sequence, line);
-    article.append(rail, main);
-    dom.agentTraceEventList.appendChild(article);
-  });
+  const primary = document.createElement('section');
+  const primaryHeader = document.createElement('div');
+  const primaryTitle = document.createElement('strong');
+  const primaryCount = document.createElement('span');
+  const primaryList = document.createElement('div');
+  primary.className = 'agent-trace-primary';
+  primaryHeader.className = 'agent-trace-section-head';
+  primaryTitle.textContent = '模型与工具';
+  primaryCount.className = 'muted';
+  primaryList.className = 'agent-trace-primary-events';
+  if (timelineWindow.truncated === true) {
+    primaryCount.textContent = `显示 ${formatInspectorNumber(timelineWindow.retainedEventCount)} / ${formatInspectorNumber(timelineWindow.totalEventCount)}，省略 ${formatInspectorNumber(timelineWindow.droppedEventCount)} 条`;
+  } else {
+    primaryCount.textContent = `${formatInspectorNumber(primaryEvents.length)} 个事件`;
+  }
+  primaryHeader.append(primaryTitle, primaryCount);
+  primaryEvents.forEach((event, index) => primaryList.appendChild(createAgentTraceEvent(event, index + 1)));
+  if (primaryEvents.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted small-note agent-trace-empty';
+    empty.textContent = '本次回复没有可展示的模型调用或工具执行事件。';
+    primaryList.appendChild(empty);
+  }
+  primary.append(primaryHeader, primaryList);
+  dom.agentTraceEventList.appendChild(primary);
+
+  if (diagnosticEvents.length > 0) {
+    const diagnostics = document.createElement('details');
+    const diagnosticsSummary = document.createElement('summary');
+    const diagnosticsTitle = document.createElement('strong');
+    const diagnosticsMeta = document.createElement('span');
+    const diagnosticsList = document.createElement('div');
+    const hasFailure = summary.status === 'failed' || diagnosticEvents.some((event) => event.status === 'failed');
+    diagnostics.className = 'agent-trace-diagnostics';
+    diagnostics.open = hasFailure;
+    diagnosticsTitle.textContent = '运行诊断';
+    diagnosticsMeta.className = hasFailure ? 'agent-trace-diagnostics-failed' : 'muted';
+    diagnosticsMeta.textContent = hasFailure ? `${diagnosticEvents.length} 个阶段 · 已自动展开失败证据` : `${diagnosticEvents.length} 个阶段`;
+    diagnosticsList.className = 'agent-trace-diagnostic-events';
+    diagnosticEvents.forEach((event) => diagnosticsList.appendChild(createAgentTraceEvent(event, event.sequence, { showPhase: true })));
+    diagnosticsSummary.append(diagnosticsTitle, diagnosticsMeta);
+    diagnostics.append(diagnosticsSummary, diagnosticsList);
+    dom.agentTraceEventList.appendChild(diagnostics);
+  }
 }
 
 function syncAgentTraceView(inspector) {

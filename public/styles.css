@@ -3569,8 +3569,59 @@ textarea {
   overflow-wrap: anywhere;
 }
 
-.agent-trace-event-list {
+.agent-trace-event-list,
+.agent-trace-primary-events,
+.agent-trace-diagnostic-events {
   display: grid;
+}
+
+.agent-trace-section-head,
+.agent-trace-diagnostics > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.agent-trace-section-head {
+  padding-block: 0.25rem;
+  border-bottom: 1px solid var(--caff-line);
+}
+
+.agent-trace-section-head > span,
+.agent-trace-diagnostics > summary > span {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.agent-trace-primary-events {
+  padding-top: 0.75rem;
+}
+
+.agent-trace-empty {
+  margin: 0;
+  padding: 0.75rem 0 1rem;
+}
+
+.agent-trace-diagnostics {
+  margin-top: 0.35rem;
+  border-top: 1px solid var(--caff-line);
+}
+
+.agent-trace-diagnostics > summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.agent-trace-diagnostics-failed {
+  color: #a43f31;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.agent-trace-diagnostic-events {
+  padding-top: 0.65rem;
 }
 
 .agent-trace-event {
@@ -3651,7 +3702,7 @@ textarea {
 }
 
 .agent-trace-event-details summary {
-  min-height: 36px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   cursor: pointer;

@@ -259,7 +259,7 @@ test('Context Inspector does not mislabel a legacy reused snapshot as fresh', ()
   assert.equal(dom.agentContextSummary.textContent.includes('新建 Session（完整注入）'), false);
 });
 
-test('Trace Inspector renders bounded lineage and full lifecycle separately from context sections', () => {
+test('Trace Inspector prioritizes model and tool events while keeping lifecycle diagnostics collapsed', () => {
   const page = new JSDOM(`<!doctype html><body>
     <p id="status"></p>
     <button id="back"></button>
@@ -298,7 +298,7 @@ test('Trace Inspector renders bounded lineage and full lifecycle separately from
       events: [
         { sequence: 1, kind: 'lifecycle', phase: 'trigger', status: 'observed', title: '触发回复', summary: 'user 触发' },
         { sequence: 2, kind: 'lifecycle', phase: 'claim', status: 'completed', title: 'Session claim', summary: '原子 claim 成功' },
-        { sequence: 3, kind: 'model_call', phase: 'model_call', status: 'completed', title: '复用旧 Session', summary: '复用旧 Session · 缓存命中', detail: { providerCacheStatus: 'cache_hit' } },
+        { sequence: 3, kind: 'model_call', phase: 'model_call', status: 'completed', title: '复用旧 Session', summary: '复用旧 Session · 缓存命中', detail: { providerCacheStatus: 'cache_hit', tokenUsage: { outputTokens: 42 } } },
         { sequence: 4, kind: 'tool_execution', phase: 'tool', status: 'completed', title: 'bash', summary: '执行完成' },
         { sequence: 5, kind: 'lifecycle', phase: 'persistence', status: 'completed', title: '消息落库', summary: 'completed' },
       ],
@@ -340,14 +340,56 @@ test('Trace Inspector renders bounded lineage and full lifecycle separately from
   assert.match(dom.agentSessionLineage.textContent, /已到达新建 Session 根节点/u);
   assert.match(dom.agentTraceSummary.textContent, /模型调用1/u);
   assert.match(dom.agentTraceSummary.textContent, /总耗时-/u);
-  assert.match(dom.agentTraceEventList.textContent, /触发回复/u);
-  assert.match(dom.agentTraceEventList.textContent, /Session claim/u);
-  assert.match(dom.agentTraceEventList.textContent, /复用旧 Session/u);
-  assert.match(dom.agentTraceEventList.textContent, /缓存命中/u);
-  assert.match(dom.agentTraceEventList.textContent, /消息落库/u);
+  const primary = dom.agentTraceEventList.querySelector('.agent-trace-primary-events');
+  const diagnostics = dom.agentTraceEventList.querySelector('.agent-trace-diagnostics');
+  assert.ok(primary);
+  assert.ok(diagnostics);
+  assert.equal(diagnostics.open, false);
+  assert.match(primary.textContent, /复用旧 Session/u);
+  assert.match(primary.textContent, /缓存命中/u);
+  assert.match(primary.textContent, /输出 42 tokens/u);
+  assert.match(primary.textContent, /bash/u);
+  assert.doesNotMatch(primary.textContent, /触发回复|Session claim|消息落库/u);
+  assert.match(diagnostics.textContent, /触发回复/u);
+  assert.match(diagnostics.textContent, /Session claim/u);
+  assert.match(diagnostics.textContent, /消息落库/u);
   assert.equal(dom.agentTraceView.hidden, false);
   assert.equal(dom.agentContextView.hidden, true);
   assert.equal(dom.agentContextPageNotice.hidden, false);
   assert.match(dom.agentContextPageNotice.textContent, /不在当前分页/u);
   assert.doesNotMatch(dom.agentTraceEventList.textContent, /冷启动/u);
+});
+
+test('Trace Inspector automatically expands lifecycle diagnostics for failed runs', () => {
+  const page = new JSDOM(`<!doctype html><body>
+    <div id="trace-summary"></div><div id="trace-events"></div>
+  </body>`);
+  const { document } = page.window;
+  const state = {
+    contextInspector: {
+      data: {
+        session: { label: '新建 Session' },
+        runEvidence: {},
+        trace: {
+          summary: { status: 'failed', modelCallCount: 1, toolExecutionCount: 0, providerMissCount: 0 },
+          events: [
+            { sequence: 1, kind: 'model_call', phase: 'model_call', status: 'failed', title: '新建 Session', summary: 'provider error' },
+            { sequence: 2, kind: 'lifecycle', phase: 'failure', status: 'failed', title: '运行失败', summary: 'provider error' },
+            { sequence: 3, kind: 'lifecycle', phase: 'persistence', status: 'failed', title: '消息落库', summary: 'failed' },
+          ],
+        },
+      },
+    },
+  };
+  const dom = {
+    agentTraceSummary: document.getElementById('trace-summary'),
+    agentTraceEventList: document.getElementById('trace-events'),
+  };
+
+  loadContextInspectorRenderer(document, state, dom)();
+
+  const diagnostics = dom.agentTraceEventList.querySelector('.agent-trace-diagnostics');
+  assert.ok(diagnostics);
+  assert.equal(diagnostics.open, true);
+  assert.match(diagnostics.textContent, /运行失败/u);
 });
