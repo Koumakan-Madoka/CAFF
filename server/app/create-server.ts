@@ -58,6 +58,7 @@ const {
 } = require('../domain/conversation/cross-conversation-delivery');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
+const { createAgentDelegationRuntime } = require('../domain/conversation/agent-delegation-runtime');
 const { createDagScheduler } = require('../domain/dag/dag-scheduler');
 const { prepareNodeWorktree, resolveDagWorktreePath } = require('../../lib/dag-worktree');
 const { prepareMergeNodeWorktree, verifyMergeOutcome } = require('../../lib/dag-merge');
@@ -165,6 +166,7 @@ export function createServerApp(options: any = {}) {
   let turnOrchestrator: any = null;
   let dagScheduler: any = null;
   let crossConversationDeliveryWorker: any = null;
+  let delegationRuntime: any = null;
   let deliveryMaintenanceTimer: any = null;
   let deliveryDrainPromise: Promise<any> | null = null;
   let deliveryDrainRequested = false;
@@ -398,6 +400,9 @@ export function createServerApp(options: any = {}) {
       crossConversationDeliveryWorker.recoverExpiredClaims();
       crossConversationDeliveryWorker.recoverPendingResponses();
       crossConversationDeliveryWorker.expireRequestDeadlines();
+      if (delegationRuntime && typeof delegationRuntime.scanDeadlines === 'function') {
+        delegationRuntime.scanDeadlines();
+      }
     } catch (error) {
       console.error(
         `[cross-conversation-delivery] Maintenance failed: ${
@@ -591,6 +596,20 @@ export function createServerApp(options: any = {}) {
       onDeliveryPersisted: handleCrossConversationDeliveryPersisted,
     });
 
+  delegationRuntime = createAgentDelegationRuntime({
+    store,
+    onChanged(change: any) {
+      if (change && change.delegation) broadcastEvent('agent_delegation_updated', change);
+    },
+    onCompletion(change: any) {
+      if (!change || !change.delegation) return;
+      broadcastEvent('agent_delegation_completed', change);
+      if (turnOrchestrator && typeof turnOrchestrator.enqueueDelegationContinuation === 'function') {
+        turnOrchestrator.enqueueDelegationContinuation(change.delegation);
+      }
+    },
+  });
+
   const agentToolBridge = createAgentToolBridge({
     store,
     agentDir,
@@ -666,6 +685,7 @@ export function createServerApp(options: any = {}) {
     resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
     modelCatalog,
     uploadsDir,
+    delegationRuntime,
     executeConversationAgent: options.executeConversationAgent,
     async onAssistantMessageCompleted(message: any) {
       await maybeAutoCreateDigestAfterAssistantMessage(message);

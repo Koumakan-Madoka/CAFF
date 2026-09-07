@@ -591,6 +591,7 @@ export function createRoutingExecutor(options: any = {}) {
           hop,
           remainingSlots: maxReplies - hop,
           enqueueAgent,
+          dispatchDelegation: options.dispatchDelegation,
           allowHandoffs: turnInput.allowHandoffs,
           finalStopsTurn,
         };
@@ -659,6 +660,7 @@ export function createRoutingExecutor(options: any = {}) {
           triggeredByAgentName: queueItem.triggeredByAgentName || '',
           triggeredByMessageId: queueItem.triggeredByMessageId || null,
           parentRunId: queueItem.parentRunId || null,
+          delegationId: queueItem.delegationId || null,
           enqueueReason: queueItem.enqueueReason || '',
           parallelGroupSize: 0,
           parallelGroupIndex: 0,
@@ -760,9 +762,11 @@ export function createRoutingExecutor(options: any = {}) {
 
         for (const batchAgentIds of splitIntoMentionBatches(uniqueAgentIds)) {
           const batchItems = refreshParallelGroupMetadata(
-            batchAgentIds.map((agentId: any) => ({
+            batchAgentIds.map((agentId: any, index: number) => ({
               agentId,
               triggerType: queueItem.triggerType || 'user',
+              delegationId: Array.isArray(queueItem.delegationChildIds) ? queueItem.delegationChildIds[index] || queueItem.delegationId || null : queueItem.delegationId || null,
+              delegationGroupId: queueItem.delegationId || null,
               triggeredByAgentId: queueItem.triggeredByAgentId || null,
               triggeredByAgentName: queueItem.triggeredByAgentName || '',
               triggeredByMessageId: queueItem.triggeredByMessageId || null,

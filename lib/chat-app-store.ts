@@ -23,6 +23,10 @@ const { createImageUploadRepository } = require('../storage/chat/image-upload.re
 const {
   createCrossConversationDeliveryRepository,
 } = require('../storage/chat/cross-conversation-delivery.repository');
+const {
+  createAgentDelegationRepository,
+  normalizeDelegationRow,
+} = require('../storage/chat/agent-delegation.repository');
 const { createChatPlanRepository } = require('../storage/chat/plan.repository');
 const { createChatSessionReuseRepository } = require('../storage/chat/session-reuse.repository');
 const {
@@ -973,6 +977,7 @@ export class ChatAppStore {
       this.externalEventRepository = createChatExternalEventRepository(this.db);
       this.imageUploadRepository = createImageUploadRepository(this.db);
       this.crossConversationDeliveryRepository = createCrossConversationDeliveryRepository(this.db);
+      this.agentDelegationRepository = createAgentDelegationRepository(this.db);
       this.planRepository = createChatPlanRepository(this.db);
       this.sessionReuseRepository = createChatSessionReuseRepository(this.db);
       this.listAcceptanceRecordsStatement = this.db.prepare(`
@@ -2300,6 +2305,124 @@ export class ChatAppStore {
         String(targetConversationId || '').trim()
       )
     );
+  }
+
+  getAgentDelegation(id: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.get(String(id || '').trim()));
+  }
+
+  getAgentDelegationByIdempotency(scope: any, key: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.getByIdempotency(
+      String(scope || '').trim(),
+      String(key || '').trim()
+    ));
+  }
+
+  listAgentDelegationsForInvocation(invocationId: any) {
+    return this.agentDelegationRepository
+      .listByRequester(String(invocationId || '').trim())
+      .map(normalizeDelegationRow)
+      .filter(Boolean);
+  }
+
+  listAgentDelegationChildren(parentId: any) {
+    return this.agentDelegationRepository
+      .listByParent(String(parentId || '').trim())
+      .map(normalizeDelegationRow)
+      .filter(Boolean);
+  }
+
+  listPendingAgentDelegationsForInvocation(invocationId: any) {
+    return this.agentDelegationRepository
+      .listPendingForRequester(String(invocationId || '').trim())
+      .map(normalizeDelegationRow)
+      .filter(Boolean);
+  }
+
+  listExpiredAgentDelegations(now: any, limit: any = 100) {
+    return this.agentDelegationRepository
+      .listExpired(String(now || '').trim(), limit)
+      .map(normalizeDelegationRow)
+      .filter(Boolean);
+  }
+
+  createAgentDelegation(payload: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.create(payload));
+  }
+
+  createAgentDelegationGroup(payload: any = {}) {
+    const transaction = this.db.transaction(() => {
+      const group = payload.group || {};
+      const existing = this.agentDelegationRepository.getByIdempotency(group.idempotencyScope, group.idempotencyKey);
+      if (existing) {
+        return existing;
+      }
+      this.agentDelegationRepository.create(group);
+      for (const child of Array.isArray(payload.children) ? payload.children : []) {
+        this.agentDelegationRepository.create(child);
+        this.agentDelegationRepository.appendEvent({
+          delegationId: child.id,
+          eventType: 'created',
+          event: { schemaVersion: 1, delegationId: child.id, parentId: group.id },
+          createdAt: child.createdAt || group.createdAt,
+        });
+      }
+      return this.agentDelegationRepository.get(group.id);
+    });
+    return normalizeDelegationRow(transaction());
+  }
+
+  markAgentDelegationRunning(id: any, at: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.markRunning(String(id || '').trim(), at));
+  }
+
+  markAgentDelegationAwaiting(id: any, at: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.markAwaiting(String(id || '').trim(), at));
+  }
+
+  settleAgentDelegation(id: any, status: any, result: any, at: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.settle(String(id || '').trim(), status, result, at));
+  }
+
+  failAgentDelegation(id: any, error: any, at: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.fail(String(id || '').trim(), error, at));
+  }
+
+  timeoutAgentDelegation(id: any, at: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.timeout(String(id || '').trim(), at));
+  }
+
+  requestAgentDelegationCancel(id: any, at: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.requestCancel(String(id || '').trim(), at));
+  }
+
+  cancelAgentDelegation(id: any, error: any, at: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.cancel(String(id || '').trim(), error, at));
+  }
+
+  recordLateAgentDelegationResult(id: any, at: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.recordLateResult(String(id || '').trim(), at));
+  }
+
+  markAgentDelegationContinuationEnqueued(id: any, at: any) {
+    return normalizeDelegationRow(this.agentDelegationRepository.markContinuationEnqueued(String(id || '').trim(), at));
+  }
+
+  appendAgentDelegationEvent(id: any, payload: any = {}) {
+    const row = this.agentDelegationRepository.appendEvent({
+      delegationId: String(id || '').trim(),
+      eventType: payload.eventType,
+      event: payload.event,
+      createdAt: payload.createdAt || nowIso(),
+    });
+    return row ? { ...row, payload: parseJson(row.event_json) } : null;
+  }
+
+  listAgentDelegationEvents(id: any) {
+    return this.agentDelegationRepository.listEvents(String(id || '').trim()).map((row: any) => ({
+      ...row,
+      payload: parseJson(row.event_json),
+    }));
   }
 
   listCrossConversationMessageReferenceIds(messageIds: any) {

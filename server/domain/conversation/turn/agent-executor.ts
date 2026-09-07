@@ -44,6 +44,7 @@ const {
 const { buildInvocationImages } = require('./image-invocation');
 const { buildPromptMessages } = require('./prompt-visibility');
 const { createAgentContextSnapshot } = require('./context-snapshot');
+const { settleAgentDelegationChild } = require('../agent-delegation');
 const { markConversationRetrievalTraceUsage } = require('../retrieval-trace');
 const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
@@ -1323,6 +1324,7 @@ export function createAgentExecutor(options: any = {}) {
   const onAssistantMessageCompleted =
     typeof options.onAssistantMessageCompleted === 'function' ? options.onAssistantMessageCompleted : null;
   const enableAutomaticRelatedMemory = options.enableAutomaticRelatedMemory === true;
+  const delegationRuntime = options.delegationRuntime || null;
 
   async function executeConversationAgent({
     runStore,
@@ -1341,6 +1343,7 @@ export function createAgentExecutor(options: any = {}) {
     hop,
     remainingSlots,
     enqueueAgent,
+    dispatchDelegation = null,
     allowHandoffs = true,
     finalStopsTurn = true,
     projectDir,
@@ -1699,6 +1702,7 @@ export function createAgentExecutor(options: any = {}) {
       triggeredByAgentName: queueItem.triggeredByAgentName || '',
       triggeredByMessageId: queueItem.triggeredByMessageId || null,
       triggerType: queueItem.triggerType || 'user',
+      delegationId: queueItem.delegationId || null,
       crossConversationDeliveryId: queueItem.crossConversationDeliveryId || null,
       agentContextSnapshot: contextSnapshotReference,
     };
@@ -1816,6 +1820,7 @@ export function createAgentExecutor(options: any = {}) {
         agentId: agent.id,
         agentName: agent.name,
         incomingDeliveryId: queueItem.crossConversationDeliveryId || null,
+        delegationId: queueItem.delegationId || null,
         assistantMessageId: assistantMessage.id,
         userMessageId: promptUserMessage && promptUserMessage.id ? promptUserMessage.id : null,
         promptUserMessage,
@@ -1825,8 +1830,24 @@ export function createAgentExecutor(options: any = {}) {
         observabilityTimelineState,
         turnState,
         enqueueAgent,
+        dispatchDelegation,
         allowHandoffs,
         autoCompleteOnPublicPost: true,
+        onDelegationYield(event: any = {}) {
+          if (!event.delegationId) {
+            return;
+          }
+          runStore.appendTaskEvent(stageTaskId, 'agent_reply_yielded', {
+            conversationId,
+            turnId,
+            agentId: agent.id,
+            agentName: agent.name,
+            delegationId: event.delegationId,
+          });
+          if (activeRunHandle && typeof activeRunHandle.complete === 'function') {
+            activeRunHandle.complete(`Yielding until delegation ${event.delegationId} reaches a terminal state.`);
+          }
+        },
         onPublicPostCompleted(event: any = {}) {
           if (bridgePublicCompletionRequested || !activeRunHandle || typeof activeRunHandle.complete !== 'function') {
             return;
@@ -1874,6 +1895,7 @@ export function createAgentExecutor(options: any = {}) {
         conversationSkillIds: agentConfig.conversationSkillIds,
         hop,
         routingMode,
+        delegationId: queueItem.delegationId || null,
         triggerType: queueItem.triggerType || 'user',
         triggeredByAgentId: queueItem.triggeredByAgentId || null,
         triggeredByMessageId: queueItem.triggeredByMessageId || null,
@@ -1891,6 +1913,7 @@ export function createAgentExecutor(options: any = {}) {
       modelProfileName: agentConfig.profileName,
       hop,
       routingMode,
+      delegationId: queueItem.delegationId || null,
       triggerType: queueItem.triggerType || 'user',
       triggeredByAgentId: queueItem.triggeredByAgentId || null,
     });
@@ -1905,6 +1928,8 @@ export function createAgentExecutor(options: any = {}) {
         'send-public': queuedMetadata.privateOnly ? 'forbidden' : 'required',
         'send-private': queuedMetadata.privateOnly ? 'required' : 'optional',
         'read-context': 'optional',
+        'create-delegation': 'optional',
+        'await-delegation': 'optional',
         'search-messages': 'optional',
         participants: 'optional',
         'trellis-init': 'optional',
@@ -1920,6 +1945,7 @@ export function createAgentExecutor(options: any = {}) {
         routingMode,
         privateOnly: queuedMetadata.privateOnly,
         allowHandoffs,
+        delegationId: queueItem.delegationId || null,
         triggerType: queueItem.triggerType || 'user',
         triggeredByAgentId: queueItem.triggeredByAgentId || null,
         triggeredByMessageId: queueItem.triggeredByMessageId || null,
@@ -2376,6 +2402,26 @@ export function createAgentExecutor(options: any = {}) {
       });
 
       completedReplies.push(assistantMessageDone);
+      const delegationSettlement = queueItem.delegationId && delegationRuntime && typeof delegationRuntime.settleRecipient === 'function'
+        ? delegationRuntime.settleRecipient({ delegationId: queueItem.delegationId, status: 'succeeded', result: {
+            messageId: assistantMessageDone.id,
+            agentId: agent.id,
+            content: String(assistantMessageDone.content || ''),
+          } })
+        : queueItem.delegationId && typeof store.getAgentDelegation === 'function'
+          ? settleAgentDelegationChild(store, queueItem.delegationId, 'succeeded', {
+              messageId: assistantMessageDone.id,
+              agentId: agent.id,
+              content: String(assistantMessageDone.content || ''),
+            }, nowIso())
+          : null;
+      if (delegationSettlement && delegationSettlement.parent && !delegationRuntime) {
+        runStore.appendTaskEvent(rootTaskId, 'agent_delegation_completed', {
+          delegationId: delegationSettlement.parent.id,
+          status: delegationSettlement.parent.status,
+          completion: delegationSettlement.parent.result,
+        });
+      }
       stage.status = 'completed';
       stage.runId = result.runId || handle.runId || null;
       stage.heartbeatCount = result.heartbeatCount || 0;
@@ -2626,6 +2672,19 @@ export function createAgentExecutor(options: any = {}) {
       if (!stopRequested) {
         failedReplies.push(assistantMessageFailed);
         turnState.failedCount += 1;
+      }
+
+      const delegationSettlement = queueItem.delegationId && delegationRuntime && typeof delegationRuntime.settleRecipient === 'function'
+        ? delegationRuntime.settleRecipient({ delegationId: queueItem.delegationId, status: stopRequested ? 'cancelled' : 'failed', result: { message: errorMessage } })
+        : queueItem.delegationId && typeof store.getAgentDelegation === 'function'
+          ? settleAgentDelegationChild(store, queueItem.delegationId, stopRequested ? 'cancelled' : 'failed', { message: errorMessage }, nowIso())
+          : null;
+      if (delegationSettlement && delegationSettlement.parent && !delegationRuntime) {
+        runStore.appendTaskEvent(rootTaskId, 'agent_delegation_completed', {
+          delegationId: delegationSettlement.parent.id,
+          status: delegationSettlement.parent.status,
+          completion: delegationSettlement.parent.result,
+        });
       }
 
       turnState.updatedAt = nowIso();

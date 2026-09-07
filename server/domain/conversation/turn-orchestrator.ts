@@ -845,6 +845,7 @@ export function createTurnOrchestrator(options: any = {}) {
 
   const providedExecuteConversationAgent =
     typeof options.executeConversationAgent === 'function' ? options.executeConversationAgent : null;
+  const delegationRuntime = options.delegationRuntime || null;
   const agentExecutor = providedExecuteConversationAgent
     ? null
     : createAgentExecutor({
@@ -865,6 +866,7 @@ export function createTurnOrchestrator(options: any = {}) {
         browserCliPath,
         modelCatalog,
         uploadsDir: options.uploadsDir,
+        delegationRuntime,
         onAssistantMessageCompleted: options.onAssistantMessageCompleted,
       });
   const baseExecuteConversationAgent = providedExecuteConversationAgent || agentExecutor.executeConversationAgent;
@@ -937,6 +939,7 @@ export function createTurnOrchestrator(options: any = {}) {
   const baseRunConversationTurn = createRoutingExecutor({
     store,
     executeConversationAgent: executeConversationAgentWithSlot,
+    dispatchDelegation: (input: any) => dispatchAgentDelegation(input),
     resolveRuntimeParticipants,
     getProjectDir,
     broadcastEvent,
@@ -980,6 +983,46 @@ export function createTurnOrchestrator(options: any = {}) {
       markConversationQueueBatchConsumed(normalizedConversationId, consumedMessageId);
     }
     return result;
+  }
+
+  function enqueueDelegationContinuation(delegation: any) {
+    const conversationId = String(delegation && delegation.requesterConversationId || '').trim();
+    const agentId = String(delegation && delegation.requesterAgentId || '').trim();
+    if (!conversationId || !agentId || !delegation || !delegation.terminalAt) return { scheduled: false, reason: 'invalid_delegation' };
+    const completion = JSON.stringify({ schemaVersion: 1, delegationId: delegation.id, status: delegation.status, aggregation: delegation.aggregation, result: delegation.result, error: delegation.error, terminalAt: delegation.terminalAt, lateResultCount: delegation.lateResultCount });
+    const message = store.createMessage({ id: randomUUID(), conversationId, turnId: `delegation-continuation:${delegation.id}`, role: 'user', senderName: 'Delegation Runtime', content: `Delegation ${delegation.id} completed. Structured completion follows:\n${completion}`, status: 'completed', metadata: { source: 'agent-delegation-continuation', delegationId: delegation.id, initialAgentIds: [agentId] } });
+    broadcastEvent('conversation_message_created', { conversationId, message });
+    void runConversationTurn(conversationId, { content: message.content, role: 'user', senderName: message.senderName, initialAgentIds: [agentId], metadata: message.metadata }).catch((error: any) => broadcastEvent('agent_delegation_continuation_failed', { conversationId, delegationId: delegation.id, error: error && error.message ? error.message : String(error || 'Continuation failed') }));
+    return { scheduled: true, delegationId: delegation.id };
+  }
+
+  function dispatchAgentDelegation(input: any = {}) {
+    const delegation = input.delegation;
+    const children = Array.isArray(input.childDelegations) ? input.childDelegations : [];
+    const conversation = delegation ? getConversationHeader(delegation.recipientConversationId) : null;
+    if (!delegation || !conversation) return [];
+    return children.map((child: any) => {
+      const acceptedMessage = store.createMessage({
+        id: randomUUID(),
+        conversationId: conversation.id,
+        turnId: `delegation:${child.id}`,
+        role: 'user',
+        senderName: delegation.requesterAgentName,
+        content: child.request && child.request.content ? child.request.content : delegation.request.content,
+        status: 'completed',
+        metadata: { source: 'agent-delegation', delegationId: child.id, privateOnly: true, initialAgentIds: [child.recipientAgentId] },
+      });
+      const target = getAgentById(conversation.agents, child.recipientAgentId);
+      if (!target) return { delegationId: child.id, outcome: 'failed', detail: 'Recipient is no longer a participant.' };
+      return {
+        delegationId: child.id,
+        ...submitSideDispatch(conversation, { content: acceptedMessage.content, metadata: acceptedMessage.metadata }, acceptedMessage, {
+          targetAgentId: child.recipientAgentId,
+          cleanedContent: acceptedMessage.content,
+          explicitIntent: 'delegation',
+        }, { promptUserMessage: acceptedMessage, delegationId: child.id }),
+      };
+    });
   }
 
   function syncConversationQueueProgress(conversationId: any) {
@@ -1436,6 +1479,7 @@ export function createTurnOrchestrator(options: any = {}) {
           enqueueReason: entry.enqueueReason || 'user_mentions',
           privateOnly: Boolean(entry.acceptedMessage && entry.acceptedMessage.metadata && entry.acceptedMessage.metadata.privateOnly),
           crossConversationDeliveryId: entry.crossConversationDeliveryId || null,
+          delegationId: entry.delegationId || null,
           toolInvocationId: entry.toolInvocationId || null,
         },
         agent,
@@ -1606,6 +1650,7 @@ export function createTurnOrchestrator(options: any = {}) {
             ? String(getProjectDir(snapshotConversation) || '').trim()
             : '',
       metadata: turnInput && turnInput.metadata,
+      delegationId: options.delegationId || null,
     };
   }
 
@@ -2117,6 +2162,7 @@ export function createTurnOrchestrator(options: any = {}) {
     requestStopCrossConversationDelivery,
     requestStopConversationTurn: requestStopMainTurn,
     resolveAssistantMessageSessionPath: sessionExporter.resolveAssistantMessageSessionPath,
+    enqueueDelegationContinuation,
     runConversationTurn,
     scheduleGoalContinuation,
     submitConversationMessage,

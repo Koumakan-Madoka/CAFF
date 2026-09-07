@@ -264,6 +264,35 @@ async function sendPrivate(config: any, flags: any, options: any = {}) {
   });
 }
 
+async function createDelegation(config: any, flags: any, options: any = {}) {
+  const recipientAgentIds = normalizeRecipients(flags.to || flags['recipient-agent'] || flags['recipient-agent-id']);
+  const content = await resolveMessageContent(flags, options);
+  const idempotencyKey = String(flags['idempotency-key'] || '').trim();
+  if (recipientAgentIds.length === 0) throw new Error('create-delegation requires --to "AgentId".');
+  if (!content) throw new Error('create-delegation requires --content or --content-stdin.');
+  if (!idempotencyKey) throw new Error('create-delegation requires --idempotency-key.');
+  const body: any = {
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+    recipientAgentIds,
+    content,
+    idempotencyKey,
+  };
+  if (flags.aggregation !== undefined) body.aggregation = String(flags.aggregation);
+  if (flags.reference !== undefined) body.reference = String(flags.reference);
+  if (flags['deadline-seconds'] !== undefined) body.deadlineSeconds = Number(flags['deadline-seconds']);
+  return requestJson(`${config.apiUrl}/api/agent-tools/delegation/create`, { method: 'POST', body });
+}
+
+async function awaitDelegation(config: any, flags: any) {
+  const delegationId = String(flags['delegation-id'] || flags.id || '').trim();
+  if (!delegationId) throw new Error('await-delegation requires --delegation-id.');
+  return requestJson(`${config.apiUrl}/api/agent-tools/delegation/await`, {
+    method: 'POST',
+    body: { invocationId: config.invocationId, callbackToken: config.callbackToken, delegationId },
+  });
+}
+
 async function readContext(config: any, flags: any) {
   const query = new URLSearchParams({
     invocationId: config.invocationId,
@@ -721,6 +750,10 @@ async function main() {
     result = await conversationNotify(config, flags);
   } else if (command === 'conversation-request') {
     result = await conversationRequest(config, flags);
+  } else if (command === 'create-delegation') {
+    result = await createDelegation(config, flags);
+  } else if (command === 'await-delegation') {
+    result = await awaitDelegation(config, flags);
   } else if (command === 'read-context') {
     result = await readContext(config, flags);
   } else if (command === 'search-messages') {
@@ -749,7 +782,7 @@ async function main() {
     result = await trellisWrite(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, conversation-notify, conversation-request, read-context, search-messages, search-memory, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, propose-plan, trellis-init, trellis-write.'
+      'Unknown command. Use one of: send-public, send-private, create-delegation, await-delegation, conversation-notify, conversation-request, read-context, search-messages, search-memory, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, propose-plan, trellis-init, trellis-write.'
     );
   }
 
@@ -767,6 +800,8 @@ if (require.main === module) {
 export {
   conversationNotify,
   conversationRequest,
+  createDelegation,
+  awaitDelegation,
   compactSendPrivateResult,
   compactSendPublicResult,
   formatCommandResult,
@@ -776,6 +811,7 @@ export {
   normalizeRecipients,
   parseArgs,
   proposePlan,
+  readContext,
   readTextStream,
   resolveMessageContent,
   resolveFileContent,
