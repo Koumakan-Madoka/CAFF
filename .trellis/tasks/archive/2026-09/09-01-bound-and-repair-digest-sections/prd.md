@@ -73,7 +73,7 @@ and tests, making partial limit changes likely to drift.
       execution, one-call behavior, and Recovery strict parsing remain intact.
 - [x] Focused tests, full server smoke, mode-store, Recovery, check, typecheck,
       build, Trellis validation, and diff validation pass.
-- [ ] An independent reviewer approves the exact candidate SHA.
+- [x] An independent reviewer approves the exact candidate SHA.
 
 ## Validation Matrix
 

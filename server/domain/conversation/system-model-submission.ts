@@ -82,18 +82,49 @@ function validatorFor(tool: any) {
 function firstValidationIssue(validator: ReturnType<typeof Compile>, value: any) {
   const first = validator.Errors(value)[0];
   if (!first) {
-    return '';
+    return { message: '', path: '' };
   }
-  const message = typeof first.message === 'string' ? first.message : 'schema validation failed';
-  return message;
+  const firstValue = first as any;
+  return {
+    message: typeof firstValue.message === 'string' ? firstValue.message : 'schema validation failed',
+    path: typeof firstValue.instancePath === 'string'
+      ? firstValue.instancePath
+      : typeof firstValue.path === 'string'
+        ? firstValue.path
+        : '',
+  };
+}
+
+function schemaShapeDiagnostic(parameters: any, value: any, issuePath: string): SystemModelSubmissionDiagnostic {
+  const properties = isPlainObject(parameters && parameters.properties)
+    ? parameters.properties
+    : {};
+  const propertyNames = Object.keys(properties).slice(0, 32);
+  const propertySet = new Set(propertyNames);
+  const requiredFields = Array.isArray(parameters && parameters.required)
+    ? parameters.required.filter((field: any) => typeof field === 'string' && propertySet.has(field)).slice(0, 32)
+    : propertyNames;
+  const valueFields = Object.keys(value);
+  const pathField = String(issuePath || '').split('/').filter(Boolean)[0] || '';
+  const field = propertySet.has(pathField) ? pathField : '';
+
+  return {
+    ...(field ? { field } : {}),
+    missingFields: requiredFields.filter((requiredField: string) => !Object.prototype.hasOwnProperty.call(value, requiredField)),
+    recognizedFieldCount: valueFields.filter((valueField) => propertySet.has(valueField)).length,
+    unknownFieldCount: valueFields.filter((valueField) => !propertySet.has(valueField)).length,
+  };
 }
 
 export type SystemModelSubmissionDiagnostic = {
-  field: string;
+  field?: string;
   actualLength?: number;
   acceptedLimit?: number;
   actualItems?: number;
   acceptedItems?: number;
+  missingFields?: string[];
+  recognizedFieldCount?: number;
+  unknownFieldCount?: number;
   action?: 'clipped';
 };
 
@@ -199,10 +230,13 @@ function extractSystemModelSubmission(
   const validator = validatorFor(tool);
   if (!validator.Check(preparation.submission)) {
     const issue = firstValidationIssue(validator, preparation.submission);
-    const diagnostic = stringLengthDiagnostic(tool.parameters, preparation.submission);
+    const diagnostic = {
+      ...schemaShapeDiagnostic(tool.parameters, preparation.submission, issue.path),
+      ...(stringLengthDiagnostic(tool.parameters, preparation.submission) || {}),
+    };
     throw new SystemModelSubmissionError(
       'submission_schema_invalid',
-      `System model submission arguments failed schema validation${issue ? `: ${issue}` : ''}`,
+      `System model submission arguments failed schema validation${issue.message ? `: ${issue.message}` : ''}`,
       diagnostic
     );
   }
