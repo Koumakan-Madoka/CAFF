@@ -1010,7 +1010,14 @@ export function createTurnOrchestrator(options: any = {}) {
           senderName: delegation.requesterAgentName,
           content: child.request && child.request.content ? child.request.content : delegation.request.content,
           status: 'completed',
-          metadata: { source: 'agent-delegation', delegationId: child.id, privateOnly: true, initialAgentIds: [child.recipientAgentId] },
+          metadata: {
+            source: 'agent-delegation',
+            delegationId: child.id,
+            privateOnly: true,
+            initialAgentIds: [child.recipientAgentId],
+            dispatchLane: 'side',
+            dispatchTargetAgentId: child.recipientAgentId,
+          },
         });
         const target = getAgentById(conversation.agents, child.recipientAgentId);
         if (!target) {
@@ -1428,6 +1435,7 @@ export function createTurnOrchestrator(options: any = {}) {
         sourceMessageId: entry.acceptedMessage.id,
         turnId: randomUUID(),
       });
+      slotState.delegationId = entry.delegationId || null;
       activeAgentSlots.set(slotState.slotId, slotState);
       broadcastRuntimeState();
       emitTurnProgress(slotState);
@@ -1712,6 +1720,7 @@ export function createTurnOrchestrator(options: any = {}) {
         conversationId,
         targetAgentId: entry.targetAgentId,
         sourceMessageId: entry.acceptedMessage.id,
+        delegationId: entry.delegationId || null,
         cancel(reason: any) {
           return slotRequest.cancel(reason || 'Stopped by user');
         },
@@ -1831,6 +1840,50 @@ export function createTurnOrchestrator(options: any = {}) {
 
     const slotRequest = startSideDispatch(entry);
     return slotRequest.executionPromise;
+  }
+
+  function requestStopAgentDelegation(input: any = {}, reason: any = 'Cancelled by requester') {
+    const conversationId = String(input.requesterConversationId || '').trim();
+    const childDelegationIds = new Set(
+      (Array.isArray(input.childDelegationIds) ? input.childDelegationIds : [])
+        .map((value: any) => String(value || '').trim())
+        .filter(Boolean)
+    );
+    const stopReason = String(reason || 'Cancelled by requester').trim() || 'Cancelled by requester';
+    if (!conversationId || childDelegationIds.size === 0) return false;
+    let stopped = false;
+
+    for (const queuedSideDispatch of listQueuedSideDispatches(conversationId)) {
+      if (!queuedSideDispatch || !childDelegationIds.has(String(queuedSideDispatch.delegationId || '').trim())) {
+        continue;
+      }
+      try {
+        stopped = queuedSideDispatch.cancel(stopReason) || stopped;
+      } catch {}
+      untrackQueuedSideDispatch(conversationId, queuedSideDispatch.requestId);
+    }
+
+    for (const slotState of listConversationActiveAgentSlots(conversationId)) {
+      if (!slotState || !childDelegationIds.has(String(slotState.delegationId || '').trim())) {
+        continue;
+      }
+      stopped = true;
+      slotState.stopRequested = true;
+      slotState.stopReason = stopReason;
+      slotState.stopRequestedAt = nowIso();
+      slotState.status = 'stopping';
+      const handles = slotState.runHandles instanceof Set ? (Array.from(slotState.runHandles) as any[]) : [];
+      for (const handle of handles) {
+        if (!handle || typeof handle.cancel !== 'function') continue;
+        try { handle.cancel(stopReason); } catch {}
+      }
+      slotState.updatedAt = nowIso();
+      syncCurrentTurnAgent(slotState);
+      emitTurnProgress(slotState);
+    }
+
+    if (stopped) broadcastRuntimeState();
+    return stopped;
   }
 
   function requestStopCrossConversationDelivery(delivery: any, reason: any = 'Cancelled by operator') {
@@ -2183,6 +2236,7 @@ export function createTurnOrchestrator(options: any = {}) {
   return {
     buildRuntimePayload,
     clearConversationState,
+    dispatchAgentDelegation,
     dispatchCrossConversationDelivery,
     emitTurnProgress,
     getConversationMutationState,
@@ -2192,6 +2246,7 @@ export function createTurnOrchestrator(options: any = {}) {
     listTurnSummaries,
     reconcileConversationQueueAfterMessageDeletion,
     requestStopConversationExecution,
+    requestStopAgentDelegation,
     requestStopCrossConversationDelivery,
     requestStopConversationTurn: requestStopMainTurn,
     resolveAssistantMessageSessionPath: sessionExporter.resolveAssistantMessageSessionPath,

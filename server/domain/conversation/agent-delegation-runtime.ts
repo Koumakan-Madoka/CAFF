@@ -6,6 +6,7 @@ export function createAgentDelegationRuntime(options: any = {}) {
   const now = typeof options.now === 'function' ? options.now : () => new Date();
   const onCompletion = typeof options.onCompletion === 'function' ? options.onCompletion : null;
   const onChanged = typeof options.onChanged === 'function' ? options.onChanged : null;
+  const onCancelRequested = typeof options.onCancelRequested === 'function' ? options.onCancelRequested : null;
   const runtimeId = String(options.runtimeId || `delegation-runtime-${randomUUID()}`).trim();
 
   if (!store) throw new Error('Agent delegation runtime requires a chat store');
@@ -120,21 +121,81 @@ export function createAgentDelegationRuntime(options: any = {}) {
     const at = currentIso();
     const requested = store.requestAgentDelegationCancel(id, at);
     if (!requested) return null;
-    if (typeof store.listAgentDelegationChildren === 'function') {
-      for (const child of store.listAgentDelegationChildren(id)) {
-        if (!child.terminalAt) {
-          settleRecipient({ delegationId: child.id, status: 'cancelled', result: { message: reason }, at });
-        }
+    const children = typeof store.listAgentDelegationChildren === 'function'
+      ? store.listAgentDelegationChildren(id)
+      : [];
+    const childDelegationIds = children.map((child: any) => child.id);
+
+    if (onCancelRequested) {
+      try {
+        onCancelRequested({
+          delegationId: id,
+          requesterConversationId: requested.requesterConversationId,
+          childDelegationIds,
+          reason,
+        });
+      } catch {
+        store.appendAgentDelegationEvent(id, {
+          eventType: 'dispatch_cancel_failed',
+          event: { delegationId: id, runtimeId },
+          createdAt: at,
+        });
       }
     }
-    const cancelled = store.cancelAgentDelegation(id, { code: 'delegation_cancelled', message: reason }, at);
+
+    if (requested.parentId) {
+      const settlement = settleRecipient({
+        delegationId: id,
+        status: 'cancelled',
+        result: { message: reason },
+        at,
+      });
+      return settlement && (settlement.parent || settlement.child)
+        ? settlement.parent || settlement.child
+        : store.getAgentDelegation(id);
+    }
+
+    for (const child of children) {
+      if (child.terminalAt) continue;
+      const cancelledChild = store.cancelAgentDelegation(
+        child.id,
+        { code: 'cancelled', message: 'Delegation recipient cancelled' },
+        at
+      );
+      if (!cancelledChild) continue;
+      store.appendAgentDelegationEvent(child.id, {
+        eventType: 'terminal',
+        event: { delegationId: child.id, status: 'cancelled' },
+        createdAt: at,
+      });
+      publish(cancelledChild, 'child_terminal');
+    }
+
+    const childResults = children.map((child: any) => {
+      const current = store.getAgentDelegation(child.id) || child;
+      return {
+        delegationId: current.id,
+        recipientAgentId: current.recipientAgentId,
+        status: current.status,
+        result: current.result,
+        error: current.error,
+      };
+    });
+    const cancelled = store.cancelAgentDelegation(
+      id,
+      { code: 'delegation_cancelled', message: reason },
+      at,
+      { childResults }
+    );
     if (!cancelled) return store.getAgentDelegation(id);
+
     store.appendAgentDelegationEvent(id, {
       eventType: 'cancelled',
       event: { delegationId: id, runtimeId, reason },
       createdAt: at,
     });
-    return notifyTerminal({ child: cancelled, parent: cancelled.parentId ? store.getAgentDelegation(cancelled.parentId) : null, late: false });
+    const notified = notifyTerminal({ child: null, parent: cancelled, late: false });
+    return notified && notified.parent ? notified.parent : cancelled;
   }
 
   return { cancel, runtimeId, scanDeadlines, settleRecipient };

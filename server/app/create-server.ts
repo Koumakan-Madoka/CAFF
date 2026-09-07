@@ -608,6 +608,12 @@ export function createServerApp(options: any = {}) {
         turnOrchestrator.enqueueDelegationContinuation(change.delegation);
       }
     },
+    onCancelRequested(change: any) {
+      if (!turnOrchestrator || typeof turnOrchestrator.requestStopAgentDelegation !== 'function') {
+        return false;
+      }
+      return turnOrchestrator.requestStopAgentDelegation(change, change && change.reason);
+    },
   });
 
   const agentToolBridge = createAgentToolBridge({

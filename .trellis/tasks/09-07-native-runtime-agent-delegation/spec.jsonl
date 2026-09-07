@@ -1,1 +1,2 @@
-{"timestamp":"2026-09-07T12:35:00.000Z","agent":"GPT","action":"spec-sync","status":"completed","documents":["docs/adr/0002-native-runtime-agent-delegation.md"],"result":"Canonical delegation contract, A2A boundary, validation matrix, and compatibility consequences are recorded."}
+{"file":".trellis/spec/runtime/agent-delegation.md","reason":"Executable signatures, contracts, validation matrix, cases, and required tests"}
+{"file":"docs/adr/0002-native-runtime-agent-delegation.md","reason":"Architectural decision and A2A boundary rationale"}

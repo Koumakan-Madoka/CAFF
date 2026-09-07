@@ -1,7 +1,9 @@
 # ADR: Native Runtime Agent Delegation
 
 ## Status
-Accepted for the first implementation slice.
+Accepted for the first implementation slice. The executable current contract is
+`.trellis/spec/runtime/agent-delegation.md`; this ADR records the architectural
+choice and rationale.
 
 ## Context
 CAFF Agents previously used ordinary private handoff and `read-context` as a practical way to coordinate. That left a caller with no durable task handle, no deterministic completion event, and no runtime control-flow boundary for waiting. Repeated context reads could therefore become pseudo-polling while retaining a model run slot.
@@ -13,11 +15,11 @@ A delegation has a stable ID, requester/recipient invocation identity, source tu
 
 The first supported aggregation is `all`. Group creation atomically creates one group and one child record per recipient. `any` and `quorum` remain reserved contract values and fail closed at creation until implemented.
 
-The authenticated bridge exposes `create-delegation` and `await-delegation`. Creation is idempotent by requester invocation plus idempotency key and enqueues recipient work with child delegation IDs. Await changes an active delegation to `awaiting`, schedules a runtime completion boundary, and returns without waiting on a Promise. `agent-executor` calls the runtime settlement path on recipient success/failure/cancellation. Parent completion is derived from child terminal states and emits a structured completion payload. The requester continuation is persisted as a normal user queue message and handed to the existing main-lane queue drain. A busy side slot therefore defers execution until the slot releases instead of losing a direct `409` attempt. Automatic session-goal continuation parks while the requester conversation has any pending delegation.
+The authenticated bridge exposes `create-delegation`, `await-delegation`, and `cancel-delegation`. Creation is idempotent by requester invocation plus idempotency key and enqueues recipient work with child delegation IDs. Recipient source messages persist `dispatchLane='side'` and their exact target, so main-lane queue recovery cannot replay delegated work. Await changes an active delegation to `awaiting`, schedules a runtime completion boundary, and returns without waiting on a Promise. A later invocation from the same requester Agent in the same conversation may inspect, await, or cancel that delegation; a different Agent or conversation receives the same not-found response as an unknown ID. `agent-executor` calls the runtime settlement path on recipient success/failure/cancellation. Parent completion is derived from child terminal states and emits a structured completion payload. The requester continuation is persisted as a normal user queue message and handed to the existing main-lane queue drain. A busy side slot therefore defers execution until the slot releases instead of losing a direct `409` attempt. Automatic session-goal continuation parks while the requester conversation has any pending delegation.
 
-Delegations receive a bounded default deadline when the caller omits one, so queued/running records remain discoverable by deadline maintenance after restart. Requesters may cancel through the authenticated `cancel-delegation` bridge; cancellation propagates to child records and running/queued side dispatches through their existing stop handles.
+Delegations receive a bounded default deadline when the caller omits one, so queued/running records remain discoverable by deadline maintenance after restart. Requesters may cancel through the authenticated `cancel-delegation` bridge. The runtime first signals the orchestrator to cancel matching queued side-slot waiters and stop matching running side-slot handles, then absorbs the group and unfinished child records into `cancelled`; a recipient result that races or follows cancellation is recorded as a late result and cannot reopen the group.
 
-`read-context` remains a message/participant projection. It now adds a per-invocation monotonic revision, `hasChanges`, `shortCircuited`, and bounded pending delegation summaries. It is not a task wait primitive.
+`read-context` remains a message/participant projection. It now adds a per-invocation monotonic revision, `hasChanges`, `shortCircuited`, and bounded pending top-level delegation summaries for the same requester Agent and conversation. It is not a task wait primitive.
 
 A2A wire protocol is explicitly out of scope. A future external adapter may translate this domain contract, but Agent Card, JSON-RPC, SSE wire format, and external task endpoints are not internal dependencies.
 

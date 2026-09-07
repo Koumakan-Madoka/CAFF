@@ -12,9 +12,9 @@
   "assignee": "GPT",
   "createdAt": "2026-09-07",
   "completedAt": null,
-  "branch": null,
-  "base_branch": "room/cda46b1b-caff-agent-delegation",
-  "worktree_path": null,
+  "branch": "room/cda46b1b-caff-agent-delegation",
+  "base_branch": "develop",
+  "worktree_path": "E:\\pythonproject\\worktrees\\room\\cda46b1b-caff-agent-delegation",
   "current_phase": 0,
   "next_action": [
     {

@@ -2339,6 +2339,16 @@ export class ChatAppStore {
       .filter(Boolean);
   }
 
+  listPendingAgentDelegationsForRequester(conversationId: any, agentId: any) {
+    return this.agentDelegationRepository
+      .listPendingForRequesterAgent(
+        String(conversationId || '').trim(),
+        String(agentId || '').trim()
+      )
+      .map(normalizeDelegationRow)
+      .filter(Boolean);
+  }
+
   listPendingAgentDelegationsForConversation(conversationId: any) {
     return this.agentDelegationRepository
       .listPendingForConversation(String(conversationId || '').trim())
@@ -2402,8 +2412,13 @@ export class ChatAppStore {
     return normalizeDelegationRow(this.agentDelegationRepository.requestCancel(String(id || '').trim(), at));
   }
 
-  cancelAgentDelegation(id: any, error: any, at: any) {
-    return normalizeDelegationRow(this.agentDelegationRepository.cancel(String(id || '').trim(), error, at));
+  cancelAgentDelegation(id: any, error: any, at: any, result: any = undefined) {
+    return normalizeDelegationRow(this.agentDelegationRepository.cancel(
+      String(id || '').trim(),
+      error,
+      at,
+      result
+    ));
   }
 
   recordLateAgentDelegationResult(id: any, at: any) {

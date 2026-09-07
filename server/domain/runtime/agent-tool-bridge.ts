@@ -762,9 +762,11 @@ export function createAgentToolBridge(options: any = {}) {
     const privateMessages = activeStore
       .listPrivateMessagesForAgent(context.conversationId, context.agentId, { limit: privateLimit })
       .map(serializeAgentToolPrivateMessage);
-    const pendingDelegations = activeStore && typeof activeStore.listPendingAgentDelegationsForInvocation === 'function'
-      ? activeStore.listPendingAgentDelegationsForInvocation(context.invocationId)
-      : [];
+    const pendingDelegations = activeStore && typeof activeStore.listPendingAgentDelegationsForRequester === 'function'
+      ? activeStore.listPendingAgentDelegationsForRequester(context.conversationId, context.agentId)
+      : activeStore && typeof activeStore.listPendingAgentDelegationsForInvocation === 'function'
+        ? activeStore.listPendingAgentDelegationsForInvocation(context.invocationId)
+        : [];
     const fingerprint = [
       conversation && conversation.updatedAt ? conversation.updatedAt : '',
       conversation && conversation.lastMessageAt ? conversation.lastMessageAt : '',
@@ -1501,7 +1503,11 @@ export function createAgentToolBridge(options: any = {}) {
       const recipientAgentIds = childDelegations.length > 0
         ? childDelegations.map((child: any) => child.recipientAgentId)
         : [delegation.recipientAgentId];
-      const childDelegationIds = childDelegations.map((child: any) => child.id);
+      const childDelegationIds = childDelegations.length > 0
+        ? childDelegations.map((child: any) => child.id)
+        : Array.isArray(delegation.children)
+          ? delegation.children.slice()
+          : [];
       if (!result.duplicate && delegation && context.dispatchDelegation) {
         const running = store.markAgentDelegationRunning(delegation.id, nowIso()) || delegation;
         result.delegation = running;
@@ -1580,16 +1586,25 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
+  function resolveRequesterDelegation(context: any, delegationId: string) {
+    const delegation = store.getAgentDelegation(delegationId);
+    if (
+      !delegation
+      || delegation.requesterConversationId !== context.conversationId
+      || delegation.requesterAgentId !== context.agentId
+    ) {
+      throw delegationError(404, 'delegation_not_found', 'Delegation not found');
+    }
+    return delegation;
+  }
+
   function handleAwaitDelegation(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken);
     const toolCallId = randomUUID();
     const delegationId = String(body.delegationId || '').trim();
     if (!delegationId) throw delegationError(400, 'delegation_invalid_request', 'delegationId is required', 'delegationId');
-    const delegation = store.getAgentDelegation(delegationId);
-    if (!delegation || delegation.requesterInvocationId !== context.invocationId) {
-      throw delegationError(404, 'delegation_not_found', 'Delegation not found');
-    }
+    const delegation = resolveRequesterDelegation(context, delegationId);
     setContextCurrentTool(context, {
       toolName: 'await-delegation',
       toolKind: 'bridge',
@@ -1630,10 +1645,7 @@ export function createAgentToolBridge(options: any = {}) {
     const context = getInvocation(body.invocationId, body.callbackToken);
     const delegationId = String(body.delegationId || '').trim();
     if (!delegationId) throw delegationError(400, 'delegation_invalid_request', 'delegationId is required', 'delegationId');
-    const delegation = store.getAgentDelegation(delegationId);
-    if (!delegation || delegation.requesterInvocationId !== context.invocationId) {
-      throw delegationError(404, 'delegation_not_found', 'Delegation not found');
-    }
+    const delegation = resolveRequesterDelegation(context, delegationId);
     if (!cancelDelegation) {
       throw delegationError(501, 'delegation_cancel_unavailable', 'Delegation cancellation is unavailable');
     }

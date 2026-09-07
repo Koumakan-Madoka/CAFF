@@ -124,6 +124,183 @@ test('awaited all delegation wakes exactly once when its children settle through
   assert.equal(completions.length, 1);
   assert.equal(completions[0].completion.status, 'succeeded');
 });
+
+test('requester agent can inspect and manage a pending delegation from a continuation invocation', (t) => {
+  const fixture = createFixture('continuation-auth');
+  t.after(() => fixture.cleanup());
+  fixture.context.enqueueAgent = () => ({ enqueuedAgentIds: [fixture.recipient.id], dispatch: [] });
+
+  const created = fixture.bridge.handleCreateDelegation({
+    invocationId: fixture.context.invocationId,
+    callbackToken: fixture.context.callbackToken,
+    recipientAgentIds: [fixture.recipient.id],
+    content: 'Remain manageable after the requester yields.',
+    idempotencyKey: 'continuation-auth-key',
+  });
+  const completions = [];
+  const runtime = createAgentDelegationRuntime({
+    store: fixture.store,
+    onCompletion(input) { completions.push(input); },
+  });
+  const continuationBridge = createAgentToolBridge({
+    store: fixture.store,
+    cancelDelegation(delegationId, reason) {
+      return runtime.cancel(delegationId, reason);
+    },
+  });
+  const continuationMessage = fixture.store.createMessage({
+    id: 'delegation-continuation-auth-message',
+    conversationId: fixture.context.conversationId,
+    turnId: 'delegation-continuation-auth-turn',
+    role: 'assistant',
+    agentId: fixture.agent.id,
+    senderName: fixture.agent.name,
+    content: 'Thinking...',
+    status: 'streaming',
+  });
+  const continuation = continuationBridge.registerInvocation(continuationBridge.createInvocationContext({
+    conversationId: fixture.context.conversationId,
+    turnId: continuationMessage.turnId,
+    agentId: fixture.agent.id,
+    agentName: fixture.agent.name,
+    assistantMessageId: continuationMessage.id,
+    stage: { status: 'running', runId: 'delegation-continuation-auth-run' },
+    turnState: { conversationId: fixture.context.conversationId, turnId: continuationMessage.turnId, stopRequested: false },
+  }));
+
+  const contextUrl = new URL('http://127.0.0.1/agent-tools/context');
+  contextUrl.searchParams.set('invocationId', continuation.invocationId);
+  contextUrl.searchParams.set('callbackToken', continuation.callbackToken);
+  const pending = continuationBridge.handleReadContext(contextUrl).pendingDelegations;
+  assert.deepEqual(pending.map((item) => item.delegationId), [created.delegationId]);
+
+  const recipientMessage = fixture.store.createMessage({
+    id: 'delegation-continuation-auth-recipient-message',
+    conversationId: fixture.context.conversationId,
+    turnId: 'delegation-continuation-auth-recipient-turn',
+    role: 'assistant',
+    agentId: fixture.recipient.id,
+    senderName: fixture.recipient.name,
+    content: 'Thinking...',
+    status: 'streaming',
+  });
+  const otherAgentInvocation = continuationBridge.registerInvocation(continuationBridge.createInvocationContext({
+    conversationId: fixture.context.conversationId,
+    turnId: recipientMessage.turnId,
+    agentId: fixture.recipient.id,
+    agentName: fixture.recipient.name,
+    assistantMessageId: recipientMessage.id,
+    stage: { status: 'running', runId: 'delegation-continuation-auth-recipient-run' },
+    turnState: { conversationId: fixture.context.conversationId, turnId: recipientMessage.turnId, stopRequested: false },
+  }));
+  assert.throws(
+    () => continuationBridge.handleAwaitDelegation({
+      invocationId: otherAgentInvocation.invocationId,
+      callbackToken: otherAgentInvocation.callbackToken,
+      delegationId: created.delegationId,
+    }),
+    (error) => error && error.statusCode === 404
+  );
+
+  const waiting = continuationBridge.handleAwaitDelegation({
+    invocationId: continuation.invocationId,
+    callbackToken: continuation.callbackToken,
+    delegationId: created.delegationId,
+  });
+  assert.equal(waiting.yielded, true);
+
+  const cancelled = continuationBridge.handleCancelDelegation({
+    invocationId: continuation.invocationId,
+    callbackToken: continuation.callbackToken,
+    delegationId: created.delegationId,
+  });
+  assert.equal(cancelled.ok, true);
+  assert.equal(cancelled.delegation.status, 'cancelled');
+  assert.equal(cancelled.completion.status, 'cancelled');
+  assert.equal(completions.length, 1);
+});
+
+test('delegation creation applies the bounded default deadline', (t) => {
+  const fixture = createFixture('default-deadline');
+  t.after(() => fixture.cleanup());
+  fixture.context.enqueueAgent = () => ({ enqueuedAgentIds: [fixture.recipient.id], dispatch: [] });
+
+  const before = Date.now();
+  const created = fixture.bridge.handleCreateDelegation({
+    invocationId: fixture.context.invocationId,
+    callbackToken: fixture.context.callbackToken,
+    recipientAgentIds: [fixture.recipient.id],
+    content: 'Use the default recovery deadline.',
+    idempotencyKey: 'default-deadline-key',
+  });
+  const deadlineMs = Date.parse(created.delegation.deadlineAt);
+
+  assert.equal(Number.isFinite(deadlineMs), true);
+  assert.equal(deadlineMs >= before + 86_399_000, true);
+  assert.equal(deadlineMs <= before + 86_401_000, true);
+});
+
+test('deadline scan aggregates already-terminal children before timing out the group', (t) => {
+  const fixture = createFixture('expired-group');
+  t.after(() => fixture.cleanup());
+  fixture.context.enqueueAgent = () => ({ enqueuedAgentIds: [fixture.recipient.id], dispatch: [] });
+  const created = fixture.bridge.handleCreateDelegation({
+    invocationId: fixture.context.invocationId,
+    callbackToken: fixture.context.callbackToken,
+    recipientAgentIds: [fixture.recipient.id],
+    content: 'Aggregate before applying the deadline.',
+    idempotencyKey: 'expired-group-key',
+  });
+  const childId = created.childDelegationIds[0];
+  fixture.store.settleAgentDelegation(childId, 'succeeded', { text: 'finished before scan' }, '2025-12-31T23:59:00.000Z');
+  fixture.store.db.prepare('UPDATE chat_agent_delegations SET deadline_at = ? WHERE id IN (?, ?)')
+    .run('2000-01-01T00:00:00.000Z', created.delegationId, childId);
+  const completions = [];
+  const runtime = createAgentDelegationRuntime({
+    store: fixture.store,
+    now: () => new Date('2026-01-01T00:00:00.000Z'),
+    onCompletion(input) { completions.push(input); },
+  });
+
+  runtime.scanDeadlines();
+
+  assert.equal(fixture.store.getAgentDelegation(created.delegationId).status, 'succeeded');
+  assert.equal(completions.length, 1);
+});
+
+test('top-level cancellation emits one completion and requests side-dispatch stop propagation', (t) => {
+  const fixture = createFixture('cancel-completion');
+  t.after(() => fixture.cleanup());
+  fixture.context.enqueueAgent = () => ({ enqueuedAgentIds: [fixture.recipient.id], dispatch: [] });
+  const created = fixture.bridge.handleCreateDelegation({
+    invocationId: fixture.context.invocationId,
+    callbackToken: fixture.context.callbackToken,
+    recipientAgentIds: [fixture.recipient.id],
+    content: 'Cancel after a child terminal race.',
+    idempotencyKey: 'cancel-completion-key',
+  });
+  fixture.store.settleAgentDelegation(created.childDelegationIds[0], 'succeeded', { text: 'raced' }, '2026-01-01T00:00:00.000Z');
+  const completions = [];
+  const stopRequests = [];
+  const runtime = createAgentDelegationRuntime({
+    store: fixture.store,
+    now: () => new Date('2026-01-01T00:01:00.000Z'),
+    onCompletion(input) { completions.push(input); },
+    onCancelRequested(input) { stopRequests.push(input); },
+  });
+
+  const cancelled = runtime.cancel(created.delegationId, 'Requester stopped waiting');
+
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(completions.length, 1);
+  assert.equal(completions[0].completion.status, 'cancelled');
+  assert.deepEqual(
+    completions[0].completion.result.childResults.map((child) => child.status),
+    ['succeeded']
+  );
+  assert.deepEqual(stopRequests[0].childDelegationIds, created.childDelegationIds);
+});
+
 test('delegation runtime settles concurrent all children once and records late results', (t) => {
   const fixture = createFixture('all');
   t.after(() => fixture.cleanup());
@@ -227,6 +404,7 @@ test('delegation creation is durable, idempotent, awaitable, and returns structu
   });
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.delegationId, created.delegationId);
+  assert.deepEqual(duplicate.childDelegationIds, created.childDelegationIds);
   assert.equal(enqueueCalls.length, 1);
 
   const waiting = fixture.bridge.handleAwaitDelegation({

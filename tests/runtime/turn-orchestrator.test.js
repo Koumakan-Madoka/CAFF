@@ -24,6 +24,7 @@ const { createAgentSlotRegistry } = require('../../build/server/domain/conversat
 const { resolveBrowserCliPath, createBrowserCliSessionName } = require('../../build/server/domain/conversation/turn/browser-cli');
 const { resolveCurrentTrellisTaskName } = require('../../build/server/domain/conversation/turn/trellis-context');
 const { extractSummaryMemorySearchTerms } = require('../../build/lib/summary-memory-query');
+const { createChatAppStore } = require('../../build/lib/chat-app-store');
 
 const { withTempDir } = require('../helpers/temp-dir');
 
@@ -4749,6 +4750,87 @@ test('delegation continuation is queued and drained through the main lane', { co
   assert.equal(executed[0].agentId, 'agent-a');
   assert.match(executed[0].content, /delegation-continuation-1/u);
 });
+
+test('delegation cancellation stops matching running and queued side dispatches', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-delegation-cancel-side-dispatch-');
+  const sqlitePath = path.join(tempDir, 'delegation-cancel-side-dispatch.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const requester = store.saveCustomRoleConfig({
+    id: 'delegation-cancel-requester',
+    name: 'Delegation Cancel Requester',
+    personaPrompt: 'Request work.',
+  });
+  const recipient = store.saveCustomRoleConfig({
+    id: 'delegation-cancel-recipient',
+    name: 'Delegation Cancel Recipient',
+    personaPrompt: 'Receive work.',
+  });
+  const conversation = store.createConversation({
+    id: 'conversation-delegation-cancel-side-dispatch',
+    title: 'Delegation cancellation side dispatch',
+    participants: [requester.id, recipient.id],
+  });
+  let releaseExecution;
+  const executionGate = new Promise((resolve) => { releaseExecution = resolve; });
+  const executedContents = [];
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async ({ promptUserMessage, turnState }) => {
+      executedContents.push(promptUserMessage.content);
+      await executionGate;
+      return turnState.stopRequested
+        ? { stopTurn: true, terminationReason: 'stopped_by_user' }
+        : { stopTurn: false };
+    },
+  });
+
+  t.after(() => {
+    releaseExecution();
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const childDelegations = ['child-running', 'child-queued'].map((id) => ({
+    id,
+    recipientAgentId: recipient.id,
+    request: { content: `Execute ${id}` },
+  }));
+  orchestrator.dispatchAgentDelegation({
+    delegation: {
+      id: 'group-cancel-side-dispatch',
+      requesterConversationId: conversation.id,
+      requesterAgentName: requester.name,
+      recipientConversationId: conversation.id,
+      request: { content: 'Execute both children.' },
+    },
+    childDelegations,
+  });
+
+  await waitForCondition(() => orchestrator.listAgentSlotSummaries({ conversationId: conversation.id }).length === 1);
+  assert.equal(orchestrator.getConversationMutationState(conversation.id).queuedAgentSlotCount, 1);
+
+  const stopped = orchestrator.requestStopAgentDelegation({
+    requesterConversationId: conversation.id,
+    childDelegationIds: childDelegations.map((child) => child.id),
+  }, 'Requester cancelled delegation');
+
+  assert.equal(stopped, true);
+  assert.equal(orchestrator.getConversationMutationState(conversation.id).queuedAgentSlotCount, 0);
+  assert.equal(orchestrator.listAgentSlotSummaries({ conversationId: conversation.id })[0].stopRequested, true);
+  releaseExecution();
+  await waitForCondition(() => orchestrator.listAgentSlotSummaries({ conversationId: conversation.id }).length === 0);
+  assert.deepEqual(executedContents, ['Execute child-running']);
+});
+
 test('turn orchestrator exposes runtime stats that count the active turn and settle to zero after completion', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-orchestrator-runtime-stats-');
   const sqlitePath = path.join(tempDir, 'orchestrator-runtime-stats.sqlite');

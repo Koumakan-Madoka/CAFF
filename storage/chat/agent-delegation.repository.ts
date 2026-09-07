@@ -71,6 +71,14 @@ export class AgentDelegationRepository {
           AND status IN ('queued', 'running', 'awaiting')
         ORDER BY created_at ASC, id ASC
       `),
+      listPendingForRequesterAgent: db.prepare(`
+        SELECT * FROM chat_agent_delegations
+        WHERE requester_conversation_id = ?
+          AND requester_agent_id = ?
+          AND kind = 'group'
+          AND status IN ('queued', 'running', 'awaiting')
+        ORDER BY created_at ASC, id ASC
+      `),
       listPendingForConversation: db.prepare(`
         SELECT * FROM chat_agent_delegations
         WHERE requester_conversation_id = ?
@@ -135,6 +143,7 @@ export class AgentDelegationRepository {
       cancel: db.prepare(`
         UPDATE chat_agent_delegations
         SET status = 'cancelled',
+            result_json = @resultJson,
             error_json = @errorJson,
             terminal_at = @at,
             updated_at = @at
@@ -174,6 +183,9 @@ export class AgentDelegationRepository {
   listByRequester(invocationId: string) { return this.statements.listByRequester.all(invocationId); }
   listByParent(parentId: string) { return this.statements.listByParent.all(parentId); }
   listPendingForRequester(invocationId: string) { return this.statements.listPendingForRequester.all(invocationId); }
+  listPendingForRequesterAgent(conversationId: string, agentId: string) {
+    return this.statements.listPendingForRequesterAgent.all(conversationId, agentId);
+  }
   listPendingForConversation(conversationId: string) { return this.statements.listPendingForConversation.all(conversationId); }
   listExpired(now: string, limit = 100) { return this.statements.listExpired.all(now, limit); }
 
@@ -228,8 +240,13 @@ export class AgentDelegationRepository {
     }) || null;
   }
   requestCancel(id: string, at: string) { return this.statements.requestCancel.get({ id, at }) || null; }
-  cancel(id: string, error: any, at: string) {
-    return this.statements.cancel.get({ id, at, errorJson: JSON.stringify(error || { code: 'cancelled' }) }) || null;
+  cancel(id: string, error: any, at: string, result: any = undefined) {
+    return this.statements.cancel.get({
+      id,
+      at,
+      resultJson: result === undefined ? null : JSON.stringify(result),
+      errorJson: JSON.stringify(error || { code: 'cancelled' }),
+    }) || null;
   }
   recordLateResult(id: string, at: string) { return this.statements.incrementLate.get({ id, at }) || null; }
   markContinuationEnqueued(id: string, at: string) { return this.statements.markContinuation.get({ id, at }) || null; }
