@@ -5,6 +5,7 @@ const MAX_DELEGATION_CONTENT_LENGTH = 12_000;
 const MAX_DELEGATION_REFERENCE_LENGTH = 200;
 const MAX_DELEGATION_IDEMPOTENCY_KEY_LENGTH = 200;
 const MAX_DELEGATION_DEADLINE_SECONDS = 86_400;
+const DEFAULT_DELEGATION_DEADLINE_SECONDS = 86_400;
 const SUPPORTED_AGGREGATIONS = new Set(['all']);
 const RESERVED_AGGREGATIONS = new Set(['any', 'quorum']);
 
@@ -82,9 +83,10 @@ function createAgentDelegation(store: any, context: any, input: any, options: an
   const createdAt = now.toISOString();
   const delegationId = String(typeof options.createId === 'function' ? options.createId() : randomUUID()).trim();
   const childIds = request.recipients.map(() => String(typeof options.createId === 'function' ? options.createId() : randomUUID()).trim());
-  const deadlineAt = request.deadlineSeconds === null
-    ? null
-    : new Date(now.getTime() + request.deadlineSeconds * 1000).toISOString();
+  const deadlineSeconds = request.deadlineSeconds === null
+    ? DEFAULT_DELEGATION_DEADLINE_SECONDS
+    : request.deadlineSeconds;
+  const deadlineAt = new Date(now.getTime() + deadlineSeconds * 1000).toISOString();
   const recipientAgent = conversation.agents.find((agent: any) => agent && agent.id === request.recipients[0]);
   const payload = {
     id: delegationId,
@@ -189,7 +191,7 @@ function settleAgentDelegationChild(store: any, childId: any, status: string, re
   if (!settledChild.parentId) return { child: settledChild, parent: null, late: false };
   const parent = store.getAgentDelegation(settledChild.parentId);
   const children = store.listAgentDelegationChildren(settledChild.parentId);
-  if (parent && parent.status === 'running' && children.length > 0 && children.every((item: any) => item.terminalAt)) {
+  if (parent && (parent.status === 'running' || parent.status === 'awaiting') && children.length > 0 && children.every((item: any) => item.terminalAt)) {
     const childResults = children.map((item: any) => ({
       delegationId: item.id,
       recipientAgentId: item.recipientAgentId,
@@ -214,6 +216,7 @@ function settleAgentDelegationChild(store: any, childId: any, status: string, re
 }
 
 export {
+  DEFAULT_DELEGATION_DEADLINE_SECONDS,
   MAX_DELEGATION_DEADLINE_SECONDS,
   settleAgentDelegationChild,
   buildCompletionPayload,

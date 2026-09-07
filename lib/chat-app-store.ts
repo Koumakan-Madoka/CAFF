@@ -2339,6 +2339,12 @@ export class ChatAppStore {
       .filter(Boolean);
   }
 
+  listPendingAgentDelegationsForConversation(conversationId: any) {
+    return this.agentDelegationRepository
+      .listPendingForConversation(String(conversationId || '').trim())
+      .map(normalizeDelegationRow)
+      .filter(Boolean);
+  }
   listExpiredAgentDelegations(now: any, limit: any = 100) {
     return this.agentDelegationRepository
       .listExpired(String(now || '').trim(), limit)

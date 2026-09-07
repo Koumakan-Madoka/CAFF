@@ -4696,6 +4696,59 @@ test('turn orchestrator routes goal continuation to the goal owner over the late
   assert.deepEqual(executedAgentIds, ['agent-b']);
 });
 
+test('delegation continuation is queued and drained through the main lane', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-delegation-continuation-');
+  const sqlitePath = path.join(tempDir, 'delegation-continuation.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    replies: [],
+    goalOwner: null,
+  });
+  conversation.id = 'conversation-delegation-continuation';
+  conversation.metadata.sessionGoal.status = 'paused';
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executed = [];
+  const orchestrator = createTurnOrchestrator({
+    store: createGoalOwnerStore(conversation),
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async ({ agent, promptUserMessage, completedReplies }) => {
+      executed.push({ agentId: agent.id, content: promptUserMessage.content });
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'Continuation handled.',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const result = orchestrator.enqueueDelegationContinuation({
+    id: 'delegation-continuation-1',
+    requesterConversationId: conversation.id,
+    requesterAgentId: 'agent-a',
+    terminalAt: '2026-08-24T00:01:00.000Z',
+    status: 'succeeded',
+    aggregation: 'all',
+    result: { childResults: [{ status: 'succeeded' }] },
+    error: null,
+    lateResultCount: 0,
+  });
+
+  assert.equal(result.scheduled, true);
+  await waitForCondition(() => executed.length === 1);
+  assert.equal(executed[0].agentId, 'agent-a');
+  assert.match(executed[0].content, /delegation-continuation-1/u);
+});
 test('turn orchestrator exposes runtime stats that count the active turn and settle to zero after completion', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-orchestrator-runtime-stats-');
   const sqlitePath = path.join(tempDir, 'orchestrator-runtime-stats.sqlite');

@@ -615,6 +615,11 @@ export function createServerApp(options: any = {}) {
     agentDir,
     piCapabilityBridge: options.piCapabilityBridge,
     crossConversationDeliveryService,
+    cancelDelegation(delegationId: any, reason: any) {
+      return delegationRuntime && typeof delegationRuntime.cancel === 'function'
+        ? delegationRuntime.cancel(delegationId, reason)
+        : null;
+    },
     resolveProject(projectScopeId: any) {
       const normalizedProjectScopeId = String(projectScopeId || '').trim();
       return projectManager.listProjects().find((project: any) => project && project.id === normalizedProjectScopeId) || null;

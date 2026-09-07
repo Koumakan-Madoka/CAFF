@@ -13,7 +13,9 @@ A delegation has a stable ID, requester/recipient invocation identity, source tu
 
 The first supported aggregation is `all`. Group creation atomically creates one group and one child record per recipient. `any` and `quorum` remain reserved contract values and fail closed at creation until implemented.
 
-The authenticated bridge exposes `create-delegation` and `await-delegation`. Creation is idempotent by requester invocation plus idempotency key and enqueues recipient work with child delegation IDs. Await changes an active delegation to `awaiting`, schedules a runtime completion boundary, and returns without waiting on a Promise. `agent-executor` calls the runtime settlement path on recipient success/failure/cancellation. Parent completion is derived from child terminal states and emits a structured completion payload. The requester continuation is scheduled by exact delegation ID through a targeted synthetic turn; recipient mention is not required.
+The authenticated bridge exposes `create-delegation` and `await-delegation`. Creation is idempotent by requester invocation plus idempotency key and enqueues recipient work with child delegation IDs. Await changes an active delegation to `awaiting`, schedules a runtime completion boundary, and returns without waiting on a Promise. `agent-executor` calls the runtime settlement path on recipient success/failure/cancellation. Parent completion is derived from child terminal states and emits a structured completion payload. The requester continuation is persisted as a normal user queue message and handed to the existing main-lane queue drain. A busy side slot therefore defers execution until the slot releases instead of losing a direct `409` attempt. Automatic session-goal continuation parks while the requester conversation has any pending delegation.
+
+Delegations receive a bounded default deadline when the caller omits one, so queued/running records remain discoverable by deadline maintenance after restart. Requesters may cancel through the authenticated `cancel-delegation` bridge; cancellation propagates to child records and running/queued side dispatches through their existing stop handles.
 
 `read-context` remains a message/participant projection. It now adds a per-invocation monotonic revision, `hasChanges`, `shortCircuited`, and bounded pending delegation summaries. It is not a task wait primitive.
 
@@ -21,9 +23,10 @@ A2A wire protocol is explicitly out of scope. A future external adapter may tran
 
 ## Consequences
 - Ordinary send-private and read-context remain compatible.
-- Deadline scanning and cancellation can settle durable records after restart.
+- Deadline scanning and cancellation can settle durable records after restart; omitted deadlines receive the bounded default deadline.
+- Continuation scheduling is durable and queue-backed: a busy target is left pending for the normal drain rather than treated as a lost `409`; exact delegation metadata prevents ordinary routing from confusing the continuation with a user message.
+- Automatic session-goal continuation parks while a delegation for the same requester conversation is pending.
 - Session reuse remains governed by its existing cursor/hash/poison rules. The continuation starts at a clean runtime boundary and can use a normal eligible reuse decision; it does not poison the recipient session on ordinary waiting.
-- Continuation scheduling must remain idempotent (`continuation_enqueued_at` CAS) and must fail visibly if the target conversation is busy.
 
 ## Validation Matrix
 - Good: duplicate create returns the same delegation and creates no second recipient enqueue.

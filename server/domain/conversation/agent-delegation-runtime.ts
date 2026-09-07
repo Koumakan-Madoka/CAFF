@@ -54,6 +54,33 @@ export function createAgentDelegationRuntime(options: any = {}) {
     return notifyTerminal(settlement);
   }
 
+  function settleExpiredGroup(delegation: any, at: string) {
+    const children = typeof store.listAgentDelegationChildren === 'function'
+      ? store.listAgentDelegationChildren(delegation.id)
+      : [];
+    const childResults = children.map((item: any) => ({
+      delegationId: item.id,
+      recipientAgentId: item.recipientAgentId,
+      status: item.status,
+      result: item.result,
+      error: item.error,
+    }));
+    if (!children.length || !children.every((item: any) => item.terminalAt)) return null;
+    const terminal = store.settleAgentDelegation(
+      delegation.id,
+      children.some((item: any) => item.status !== 'succeeded') ? 'failed' : 'succeeded',
+      { childResults },
+      at
+    );
+    if (!terminal) return null;
+    store.appendAgentDelegationEvent(delegation.id, {
+      eventType: 'terminal',
+      event: { delegationId: delegation.id, status: terminal.status, childResults },
+      createdAt: at,
+    });
+    return notifyTerminal({ child: null, parent: terminal, late: false });
+  }
+
   function scanDeadlines(limit = 100) {
     const at = currentIso();
     const results = [];
@@ -62,8 +89,18 @@ export function createAgentDelegationRuntime(options: any = {}) {
         results.push(settleRecipient({ delegationId: delegation.id, status: 'timed_out', at }));
         continue;
       }
-      for (const child of typeof store.listAgentDelegationChildren === 'function' ? store.listAgentDelegationChildren(delegation.id) : []) {
+      const children = typeof store.listAgentDelegationChildren === 'function'
+        ? store.listAgentDelegationChildren(delegation.id)
+        : [];
+      for (const child of children) {
         if (!child.terminalAt) results.push(settleRecipient({ delegationId: child.id, status: 'timed_out', at }));
+      }
+      const refreshed = store.getAgentDelegation(delegation.id);
+      if (!refreshed || refreshed.terminalAt) continue;
+      const grouped = settleExpiredGroup(refreshed, at);
+      if (grouped) {
+        results.push(grouped);
+        continue;
       }
       const timedOut = store.timeoutAgentDelegation(delegation.id, at);
       if (timedOut) {

@@ -376,6 +376,7 @@ export function createAgentToolBridge(options: any = {}) {
   const broadcastConversationSummary =
     typeof options.broadcastConversationSummary === 'function' ? options.broadcastConversationSummary : () => {};
   const onTurnUpdated = typeof options.onTurnUpdated === 'function' ? options.onTurnUpdated : () => {};
+  const cancelDelegation = typeof options.cancelDelegation === 'function' ? options.cancelDelegation : null;
   const crossConversationDeliveryService =
     options.crossConversationDeliveryService
     || (store ? createCrossConversationDeliveryService({ store }) : null);
@@ -1502,14 +1503,18 @@ export function createAgentToolBridge(options: any = {}) {
         : [delegation.recipientAgentId];
       const childDelegationIds = childDelegations.map((child: any) => child.id);
       if (!result.duplicate && delegation && context.dispatchDelegation) {
-        const dispatch = context.dispatchDelegation({ delegation, childDelegations, context });
-        result.delegation = store.markAgentDelegationRunning(delegation.id, nowIso()) || delegation;
+        const running = store.markAgentDelegationRunning(delegation.id, nowIso()) || delegation;
+        result.delegation = running;
+        const dispatch = context.dispatchDelegation({ delegation: running, childDelegations, context });
+        result.delegation = store.getAgentDelegation(delegation.id) || running;
         store.appendAgentDelegationEvent(delegation.id, {
           eventType: 'recipient_queued',
           event: { delegationId: delegation.id, childDelegationIds, dispatch },
           createdAt: nowIso(),
         });
       } else if (!result.duplicate && delegation && context.enqueueAgent) {
+        const running = store.markAgentDelegationRunning(delegation.id, nowIso()) || delegation;
+        result.delegation = running;
         const dispatch = context.enqueueAgent({
           agentIds: recipientAgentIds,
           delegationChildIds: childDelegationIds,
@@ -1522,13 +1527,12 @@ export function createAgentToolBridge(options: any = {}) {
           delegationId: delegation.id,
           privateOnly: true,
         });
-        const running = store.markAgentDelegationRunning(delegation.id, nowIso());
+        result.delegation = store.getAgentDelegation(delegation.id) || running;
         store.appendAgentDelegationEvent(delegation.id, {
           eventType: 'recipient_queued',
           event: { delegationId: delegation.id, childDelegationIds, dispatch },
           createdAt: nowIso(),
         });
-        result.delegation = running || delegation;
       }
       const response = {
         ok: true,
@@ -1622,6 +1626,27 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
+  function handleCancelDelegation(body: any = {}) {
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const delegationId = String(body.delegationId || '').trim();
+    if (!delegationId) throw delegationError(400, 'delegation_invalid_request', 'delegationId is required', 'delegationId');
+    const delegation = store.getAgentDelegation(delegationId);
+    if (!delegation || delegation.requesterInvocationId !== context.invocationId) {
+      throw delegationError(404, 'delegation_not_found', 'Delegation not found');
+    }
+    if (!cancelDelegation) {
+      throw delegationError(501, 'delegation_cancel_unavailable', 'Delegation cancellation is unavailable');
+    }
+    const cancelled = cancelDelegation(delegationId, String(body.reason || 'Cancelled by requester').trim() || 'Cancelled by requester');
+    const current = cancelled || store.getAgentDelegation(delegationId) || delegation;
+    return {
+      ok: true,
+      delegationId,
+      cancelled: Boolean(cancelled),
+      delegation: current,
+      completion: buildCompletionPayload(current),
+    };
+  }
   function handleReadContext(requestUrl: any) {
     const startedAt = Date.now();
     const context = getInvocation(
@@ -3696,6 +3721,7 @@ export function createAgentToolBridge(options: any = {}) {
     handleProposePlan,
     handleCreateDelegation,
     handleAwaitDelegation,
+    handleCancelDelegation,
     handleReadContext,
     handleSaveMemory,
     handleSearchMemory,

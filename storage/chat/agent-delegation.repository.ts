@@ -71,6 +71,12 @@ export class AgentDelegationRepository {
           AND status IN ('queued', 'running', 'awaiting')
         ORDER BY created_at ASC, id ASC
       `),
+      listPendingForConversation: db.prepare(`
+        SELECT * FROM chat_agent_delegations
+        WHERE requester_conversation_id = ?
+          AND status IN ('queued', 'running', 'awaiting')
+        ORDER BY created_at ASC, id ASC
+      `),
       listExpired: db.prepare(`
         SELECT * FROM chat_agent_delegations
         WHERE status IN ('queued', 'running', 'awaiting')
@@ -168,6 +174,7 @@ export class AgentDelegationRepository {
   listByRequester(invocationId: string) { return this.statements.listByRequester.all(invocationId); }
   listByParent(parentId: string) { return this.statements.listByParent.all(parentId); }
   listPendingForRequester(invocationId: string) { return this.statements.listPendingForRequester.all(invocationId); }
+  listPendingForConversation(conversationId: string) { return this.statements.listPendingForConversation.all(conversationId); }
   listExpired(now: string, limit = 100) { return this.statements.listExpired.all(now, limit); }
 
   create(payload: any) {

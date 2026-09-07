@@ -88,6 +88,42 @@ test('regression: authenticated bridge exposes structured delegation creation an
   assert.equal(typeof fixture.bridge.handleAwaitDelegation, 'function');
 });
 
+test('awaited all delegation wakes exactly once when its children settle through runtime', (t) => {
+  const fixture = createFixture('await-runtime');
+  t.after(() => fixture.cleanup());
+  fixture.context.enqueueAgent = () => ({ enqueuedAgentIds: [fixture.recipient.id], dispatch: [] });
+
+  const created = fixture.bridge.handleCreateDelegation({
+    invocationId: fixture.context.invocationId,
+    callbackToken: fixture.context.callbackToken,
+    recipientAgentIds: [fixture.recipient.id],
+    content: 'Settle through the child runtime path.',
+    idempotencyKey: 'await-runtime-key',
+  });
+  const waiting = fixture.bridge.handleAwaitDelegation({
+    invocationId: fixture.context.invocationId,
+    callbackToken: fixture.context.callbackToken,
+    delegationId: created.delegationId,
+  });
+  assert.equal(waiting.delegation.status, 'awaiting');
+
+  const completions = [];
+  const runtime = createAgentDelegationRuntime({
+    store: fixture.store,
+    onCompletion(input) { completions.push(input); },
+  });
+  const settled = runtime.settleRecipient({
+    delegationId: created.childDelegationIds[0],
+    status: 'succeeded',
+    result: { text: 'done' },
+    at: '2026-01-01T00:00:00.000Z',
+  });
+
+  assert.equal(settled.parent.status, 'succeeded');
+  assert.equal(fixture.store.getAgentDelegation(created.delegationId).status, 'succeeded');
+  assert.equal(completions.length, 1);
+  assert.equal(completions[0].completion.status, 'succeeded');
+});
 test('delegation runtime settles concurrent all children once and records late results', (t) => {
   const fixture = createFixture('all');
   t.after(() => fixture.cleanup());

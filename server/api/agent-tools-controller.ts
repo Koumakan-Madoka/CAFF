@@ -91,10 +91,16 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
       return true;
     }
 
+    if (pathname === '/api/agent-tools/delegation/cancel' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, agentToolBridge.handleCancelDelegation(body));
+      return true;
+    }
     if (pathname === '/api/agent-tools/context' && req.method === 'GET') {
       sendJson(res, 200, agentToolBridge.handleReadContext(requestUrl));
       return true;
     }
+
 
     if (pathname === '/api/agent-tools/search-messages' && req.method === 'POST') {
       const body = await readRequestJson(req);
