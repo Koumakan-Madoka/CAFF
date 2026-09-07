@@ -11,6 +11,10 @@ import { sendFileDownload, sendJson, sendTextDownload } from '../http/response';
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
 import { applyConversationDigestAction } from '../domain/conversation/conversation-digest';
 import { buildConversationMessagePage } from '../domain/conversation/message-pagination';
+import {
+  buildMessageTraceInspector,
+  exportMessageTraceInspectorMarkdown,
+} from '../domain/conversation/message-trace-inspector';
 import { buildContextSnapshotPage } from '../domain/conversation/context-snapshot-pagination';
 import { buildConversationDirectoryPage } from '../domain/conversation/conversation-directory-pagination';
 import { applyConversationSkillDraftAction } from '../domain/conversation/skill-draft';
@@ -119,6 +123,30 @@ function defaultContextSnapshotFileName(message: any) {
   return `agent-context-${agentName || 'agent'}-${turnId || 'turn'}.md`;
 }
 
+function contextSnapshotRunEvidence(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+  const tokenUsage = metadata.tokenUsage && typeof metadata.tokenUsage === 'object' ? metadata.tokenUsage : {};
+  const modelUsage = metadata.modelUsage && typeof metadata.modelUsage === 'object' ? metadata.modelUsage : {};
+  const tokenCount = (value: any) => {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    const normalized = Number(value);
+    return Number.isInteger(normalized) && normalized >= 0 ? normalized : null;
+  };
+  return {
+    sessionReused: metadata.sessionReused === true,
+    sessionReuseReason: String(metadata.sessionReuseReason || '').trim(),
+    inputTokens: tokenCount(tokenUsage.inputTokens),
+    uncachedInputTokens: tokenCount(tokenUsage.uncachedInputTokens),
+    outputTokens: tokenCount(tokenUsage.outputTokens),
+    totalTokens: tokenCount(tokenUsage.totalTokens),
+    cacheReadTokens: tokenCount(tokenUsage.cacheReadTokens),
+    cacheWriteTokens: tokenCount(tokenUsage.cacheWriteTokens),
+    modelCallCount: tokenCount(modelUsage.modelCallCount),
+  };
+}
+
 function listKnownFeishuChats(store: any) {
   const conversationsById = new Map<string, any>(
     store.listConversations().map((conversation: any) => [conversation.id, conversation] as [string, any])
@@ -217,6 +245,30 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       ? store.listConversationTree()
       : store.listConversations();
   }
+
+  function buildMessageToolTrace(message: any) {
+    let resolvedSessionPath = '';
+
+    try {
+      resolvedSessionPath = turnOrchestrator.resolveAssistantMessageSessionPath(message);
+    } catch {
+      resolvedSessionPath = '';
+    }
+
+    return buildAssistantMessageToolTrace({
+      db: store.db,
+      agentDir: store.agentDir,
+      message,
+      resolvedSessionPath,
+      modelUsage: typeof store.getMessageModelUsage === 'function'
+        ? store.getMessageModelUsage(message.id)
+        : null,
+      observabilityTimeline: typeof store.getMessageObservabilityTimeline === 'function'
+        ? store.getMessageObservabilityTimeline(message.id)
+        : null,
+    });
+  }
+
   const digestOptions = {
     ...(options.digestOptions || {}),
     digestModelRunner: options.digestModelRunner,
@@ -1074,6 +1126,58 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       }
     }
 
+    const messageTraceInspectorMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/trace-inspector(?:-(export))?$/);
+
+    if (messageTraceInspectorMatch && req.method === 'GET') {
+      const conversationId = decodeURIComponent(messageTraceInspectorMatch[1]);
+      const messageId = decodeURIComponent(messageTraceInspectorMatch[2]);
+      const exportMode = messageTraceInspectorMatch[3] === 'export';
+      const conversation = store.getConversationWithoutMessages(conversationId);
+
+      if (!conversation) {
+        throw createHttpError(404, 'Conversation not found');
+      }
+
+      const message = store.getMessage(messageId);
+      if (!message || message.conversationId !== conversationId) {
+        throw createHttpError(404, 'Message not found');
+      }
+      if (message.role !== 'assistant') {
+        throw createHttpError(400, 'Only assistant messages can inspect a trace');
+      }
+
+      const snapshot = store.getMessageContextSnapshot(messageId);
+      if (!snapshot) {
+        throw createHttpError(404, 'No context snapshot is available for this message');
+      }
+      const runEvidence = contextSnapshotRunEvidence(message);
+      const inspector = buildMessageTraceInspector({
+        conversationId,
+        message,
+        snapshot: materializeAgentContextSnapshot(snapshot),
+        runEvidence,
+        toolTrace: buildMessageToolTrace(message),
+        getMessage(parentMessageId: string) {
+          return store.getMessage(parentMessageId);
+        },
+        getSnapshot(parentMessageId: string) {
+          const parentSnapshot = store.getMessageContextSnapshot(parentMessageId);
+          return parentSnapshot ? materializeAgentContextSnapshot(parentSnapshot) : null;
+        },
+      });
+      if (exportMode) {
+        sendTextDownload(
+          res,
+          exportMessageTraceInspectorMarkdown(inspector),
+          defaultContextSnapshotFileName(message).replace(/^agent-context-/u, 'trace-inspector-'),
+          'text/markdown; charset=utf-8'
+        );
+        return true;
+      }
+      sendJson(res, 200, inspector);
+      return true;
+    }
+
     const contextSnapshotListMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/context-snapshots$/);
 
     if (contextSnapshotListMatch && req.method === 'GET') {
@@ -1131,7 +1235,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         return true;
       }
 
-      sendJson(res, 200, { snapshot: materializeAgentContextSnapshot(snapshot) });
+      sendJson(res, 200, {
+        snapshot: materializeAgentContextSnapshot(snapshot),
+        runEvidence: contextSnapshotRunEvidence(message),
+      });
       return true;
     }
 
@@ -1178,27 +1285,8 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         throw createHttpError(400, 'Only assistant messages can inspect a tool trace');
       }
 
-      let resolvedSessionPath = '';
-
-      try {
-        resolvedSessionPath = turnOrchestrator.resolveAssistantMessageSessionPath(message);
-      } catch {
-        resolvedSessionPath = '';
-      }
-
       sendJson(res, 200, {
-        trace: buildAssistantMessageToolTrace({
-          db: store.db,
-          agentDir: store.agentDir,
-          message,
-          resolvedSessionPath,
-          modelUsage: typeof store.getMessageModelUsage === 'function'
-            ? store.getMessageModelUsage(message.id)
-            : null,
-          observabilityTimeline: typeof store.getMessageObservabilityTimeline === 'function'
-            ? store.getMessageObservabilityTimeline(message.id)
-            : null,
-        }),
+        trace: buildMessageToolTrace(message),
       });
       return true;
     }

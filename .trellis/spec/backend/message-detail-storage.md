@@ -339,6 +339,15 @@ store.updateMessage(messageId, {
 The Store atomically persists full detail while serializing only the lightweight
 message metadata.
 
+## Trace Inspector Point-Read Projection
+
+- `GET /api/conversations/:conversationId/messages/:messageId/trace-inspector` is a table-first detail route layered over existing context snapshot/model usage/observability reads. It must not add a detail table, backfill rows, call `getConversation()`, or call unbounded `listMessages()`.
+- The selected message is validated once at the controller edge. The domain lineage projector may call `getMessage(id)` and `getMessageContextSnapshot(id)` for at most 8 same-conversation, same-agent assistant nodes.
+- A lineage node contains identifiers, delivery mode, capture time, agent identity, session name, and cursor metadata only. Ancestor `sections`, `displayContent`, message content, session path, task output, and raw JSONL never cross this projection.
+- An exact `metadata.privateOnly=true` parent is an absorbing boundary. The projector returns `protected_parent`, does not append that node, clears its target id and timeline timestamp from the prior lineage cursor, and strips retained-prefix session/hash/cursor/time identifiers from the Trace response copy without rewriting the stored immutable snapshot.
+- Trace export is generated from the already-safe Inspector payload. It escapes Markdown table delimiters in projected lineage/event cells and may append the existing safe Context Snapshot Markdown, but must not reopen session JSONL or recompute prompt state.
+- Required tests use a real `ChatAppStore`, poison full-conversation hydration, and cover consecutive resume ancestry, deleted/missing detail, legacy schema including reused records with unknown prompt delivery, protected parent identifiers/timestamps, cycles, depth limit, mixed model/tool events, unknown usage counters, terminal failures, and export leakage/delimiter markers.
+
 ## Unified Observability Timeline Detail
 
 - `chat_message_observability_timelines` is the table-first detail for mixed
@@ -402,9 +411,12 @@ chat_message_observability_timelines(
 
 ### 3. Contracts
 
-- A message timeline retains 16 mixed events: original first event and latest 15.
-  Each has stable `eventId`, `eventType`, and original positive
-  `timelineSequence`; updates to a running tool reuse both identity and sequence.
+- A message timeline retains 16 mixed events: chronological first event and
+  latest 15. Each has stable `eventId` and `eventType`; when both events have
+  valid occurrence evidence (`occurredAt`, tool `createdAt`, or provider
+  `timestamp`), ordering uses that evidence, while missing/invalid timestamps
+  fall back to the original positive `timelineSequence`. Updates to a running
+  tool reuse both identity and its retained chronological slot.
 - `timelineWindow` keeps full total/retained/dropped/truncated fields and the
   full model/tool/miss/failure/duration aggregates. `summary` and table aggregate
   columns keep the same full values; no consumer derives them from the 16
@@ -455,8 +467,9 @@ chat_message_observability_timelines(
 ### 5. Good / Base / Bad Cases
 
 - Good: five concurrent messages each receive 65 independent events; every
-  browser trace contains `1,51..65`, reports total 65, and newest events remain
-  live without a detail refetch.
+  browser trace contains the chronological first event and latest 15 (with the
+  omitted middle sequence gap), reports total 65, and newest events remain live
+  without a detail refetch.
 - Base: an old message has no unified row, so its first expansion performs one
   bounded compatibility projection and keeps the audit JSONL unchanged.
 - Base: a legacy row accumulated earlier same-turn messages, so its model count

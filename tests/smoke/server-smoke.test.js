@@ -5099,7 +5099,10 @@ test('role API protects model-family roles and shares one availability projectio
   const initialGpt = directory.agents.find((agent) => agent.id === 'role-family-gpt');
   const initialQwen = directory.agents.find((agent) => agent.id === 'role-family-qwen');
   assert.equal(initialGpt.systemManaged, true);
-  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole', 'avatarDataUrl']);
+  // ADR 0001 Phase 2: per-agent session reuse toggle is editable on family
+  // roles and defaults ON.
+  assert.equal(initialGpt.sessionReuseEnabled, true);
+  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole', 'avatarDataUrl', 'sessionReuseEnabled']);
   assert.deepEqual(initialGpt.availability, { status: 'default_model_missing', familyModelCount: 1 });
   assert.deepEqual(initialQwen.availability, { status: 'no_family_models', familyModelCount: 0 });
 
@@ -5122,6 +5125,24 @@ test('role API protects model-family roles and shares one availability projectio
     body: { avatarDataUrl: '' },
   });
   assert.equal(avatarCleared.agent.avatarDataUrl, '');
+
+  const reuseDisabled = await fetchJson(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { sessionReuseEnabled: false },
+  });
+  assert.equal(reuseDisabled.agent.sessionReuseEnabled, false);
+  // Unrelated updates must preserve the toggle (candidate falls back to the
+  // stored value when the field is absent from the request body).
+  const avatarAfterToggle = await fetchJson(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { avatarDataUrl: 'data:image/png;base64,iVBORw0KGgo=' },
+  });
+  assert.equal(avatarAfterToggle.agent.sessionReuseEnabled, false);
+  const reuseRestored = await fetchJson(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { sessionReuseEnabled: true, avatarDataUrl: '' },
+  });
+  assert.equal(reuseRestored.agent.sessionReuseEnabled, true);
 
   for (const body of [
     { personaPrompt: 'Pretend to be someone.' },

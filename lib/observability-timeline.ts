@@ -17,6 +17,76 @@ function normalizedEvents(value: any) {
   );
 }
 
+function timestampMillis(value: any) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // Provider timestamps are normally epoch milliseconds. Also accept epoch
+    // seconds from older/alternate producers so mixed model/tool events remain
+    // comparable with ISO timestamps.
+    return Math.abs(value) < 100000000000 ? value * 1000 : value;
+  }
+
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
+  }
+
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return timestampMillis(numeric);
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function eventTimestampMillis(event: any) {
+  for (const field of ['occurredAt', 'createdAt', 'timestamp']) {
+    const timestamp = timestampMillis(event && event[field]);
+    if (timestamp !== null) {
+      return timestamp;
+    }
+  }
+  return null;
+}
+
+function compareTimelineEvents(left: any, right: any, leftIndex = 0, rightIndex = 0) {
+  const leftTimestamp = eventTimestampMillis(left);
+  const rightTimestamp = eventTimestampMillis(right);
+
+  // Only compare timestamps when both sides have trustworthy evidence. A
+  // missing timestamp must fall back to the original sequence rather than
+  // silently jumping across a known event.
+  if (leftTimestamp !== null && rightTimestamp !== null && leftTimestamp !== rightTimestamp) {
+    return leftTimestamp - rightTimestamp;
+  }
+
+  const leftSequence = positiveInteger(left && left.timelineSequence, leftIndex + 1);
+  const rightSequence = positiveInteger(right && right.timelineSequence, rightIndex + 1);
+  return leftSequence - rightSequence || leftIndex - rightIndex;
+}
+
+function renumberChronologicalWindow(events: any[], totalEventCount: number) {
+  if (events.length === 0) {
+    return events;
+  }
+
+  // A complete, unbounded set can use a contiguous chronological sequence.
+  if (totalEventCount === events.length) {
+    return events.map((event, index) => ({ ...event, timelineSequence: index + 1 }));
+  }
+
+  // For the bounded first-one-plus-latest-fifteen window, preserve the omitted
+  // middle gap while assigning the retained events their chronological slots.
+  if (events.length === MAX_RETAINED_OBSERVABILITY_EVENTS) {
+    const tailStart = Math.max(2, totalEventCount - (events.length - 1) + 1);
+    return events.map((event, index) => ({
+      ...event,
+      timelineSequence: index === 0 ? 1 : tailStart + index - 1,
+    }));
+  }
+
+  return events;
+}
+
 function isActiveToolStatus(value: any) {
   const status = String(value || '').trim().toLowerCase();
   return status === 'running' || status === 'queued' || status === 'pending';
@@ -24,18 +94,20 @@ function isActiveToolStatus(value: any) {
 
 export function retainObservabilityEvents(events: any, totalEventCount?: any) {
   const sourceEvents = normalizedEvents(events)
-    .slice()
-    .sort((left, right) => positiveInteger(left.timelineSequence) - positiveInteger(right.timelineSequence));
+    .map((event, index) => ({ event, index }))
+    .sort((left, right) => compareTimelineEvents(left.event, right.event, left.index, right.index))
+    .map(({ event }) => event);
+  const normalizedTotal = Math.max(nonNegativeInteger(totalEventCount, sourceEvents.length), sourceEvents.length);
   const retainedEvents = sourceEvents.length <= MAX_RETAINED_OBSERVABILITY_EVENTS
     ? sourceEvents
     : [sourceEvents[0], ...sourceEvents.slice(-(MAX_RETAINED_OBSERVABILITY_EVENTS - 1))];
-  const normalizedTotal = Math.max(nonNegativeInteger(totalEventCount, sourceEvents.length), sourceEvents.length);
-  const droppedEventCount = Math.max(0, normalizedTotal - retainedEvents.length);
+  const chronologicalEvents = renumberChronologicalWindow(retainedEvents, normalizedTotal);
+  const droppedEventCount = Math.max(0, normalizedTotal - chronologicalEvents.length);
 
   return {
-    events: retainedEvents,
+    events: chronologicalEvents,
     totalEventCount: normalizedTotal,
-    retainedEventCount: retainedEvents.length,
+    retainedEventCount: chronologicalEvents.length,
     droppedEventCount,
     truncated: droppedEventCount > 0,
   };

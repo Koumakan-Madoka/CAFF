@@ -6526,7 +6526,12 @@ test('live session tool extraction gives anonymous calls stable monotonic step i
     {
       message: {
         role: 'assistant',
-        content: [{ type: 'toolCall', name: 'read', partialJson: '{"path":"/tmp/a.md"' }],
+        content: [{
+          type: 'toolCall',
+          name: 'read',
+          arguments: { path: '/tmp/a.md' },
+          partialJson: { path: '/tmp/a.md' },
+        }],
       },
     },
     {
@@ -6540,6 +6545,8 @@ test('live session tool extraction gives anonymous calls stable monotonic step i
 
   assert.ok(second);
   assert.equal(second.step.stepId, 'session-1');
+  assert.equal(second.step.partialJson.includes('[object Object]'), false);
+  assert.equal(anonymousTracker.activePartialJsonText.includes('[object Object]'), false);
 
   const third = extractLiveSessionToolFromPiEvent(
     {

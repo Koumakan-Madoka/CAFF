@@ -151,3 +151,45 @@ test('context snapshots remain isolated by message metadata', () => {
   assert.match(materializeAgentContextSnapshot(first).sections[0].displayContent, /A only/u);
   assert.doesNotMatch(materializeAgentContextSnapshot(first).sections[0].displayContent, /B only/u);
 });
+
+test('resume snapshot exports only the appended delta and references the retained prefix', () => {
+  const deltaPrompt = 'New messages since your last reply:\nUser: SECOND-TURN-ONLY';
+  const snapshot = createAgentContextSnapshot({
+    conversationId: 'conv-resume',
+    turnId: 'turn-resume',
+    messageId: 'msg-resume',
+    agentId: 'agent-resume',
+    agentName: 'Resume Agent',
+    promptVersion: 'test',
+    deliveryMode: 'resume',
+    retainedSessionPrefix: {
+      sessionName: 'chat-retained-session',
+      staticSegmentHash: 'static-hash',
+      cursorMessageId: 'assistant-first',
+      cursorMessageCount: 3,
+      cursorFirstMessageId: 'user-first',
+      cursorMaxUpdatedAt: '2026-09-02T17:07:12.000Z',
+      lastReplyAt: '2026-09-02T17:07:12.000Z',
+    },
+    sections: [{
+      sectionKey: 'session_delta',
+      title: 'Session Resume Delta',
+      source: 'session/resume-delta',
+      content: deltaPrompt,
+      visibility: 'full',
+    }],
+  });
+
+  const materialized = materializeAgentContextSnapshot(snapshot);
+  const markdown = exportAgentContextSnapshotMarkdown(snapshot);
+  assert.equal(materialized.deliveryMode, 'resume');
+  assert.equal(materialized.sections.length, 1);
+  assert.equal(materialized.sections[0].sectionKey, 'session_delta');
+  assert.equal(materialized.sections[0].displayContent, deltaPrompt);
+  assert.equal(materialized.retainedSessionPrefix.sessionName, 'chat-retained-session');
+  assert.equal(materialized.retainedSessionPrefix.cursorMessageCount, 3);
+  assert.match(markdown, /resume（仅追加本轮增量/u);
+  assert.match(markdown, /Retained session prefix: chat-retained-session/u);
+  assert.match(markdown, /SECOND-TURN-ONLY/u);
+  assert.doesNotMatch(markdown, /FIRST-TURN-FULL-HISTORY/u);
+});

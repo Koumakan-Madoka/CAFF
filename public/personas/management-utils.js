@@ -124,7 +124,7 @@
       ...(family ? {} : { personaPrompt: profile.personaPrompt || '' }),
     }));
     if (family) {
-      const payload = { isDefaultChatRole: Boolean(role.isDefaultChatRole), avatarDataUrl: role.avatarDataUrl || '' };
+      const payload = { isDefaultChatRole: Boolean(role.isDefaultChatRole), avatarDataUrl: role.avatarDataUrl || '', sessionReuseEnabled: role.sessionReuseEnabled !== false };
       if (role.model || roleModelOptions(role, modelOptions).length > 0) {
         Object.assign(payload, {
           provider: role.provider || '',
@@ -149,6 +149,7 @@
       skillIds: Array.isArray(role.skillIds) ? role.skillIds : [],
       modelProfiles: profiles,
       isDefaultChatRole: Boolean(role.isDefaultChatRole),
+      sessionReuseEnabled: role.sessionReuseEnabled !== false,
     };
   }
 

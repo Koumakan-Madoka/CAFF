@@ -30,8 +30,19 @@ const {
   finalizeObservabilityToolEvents,
   snapshotObservabilityTimeline,
 } = require('../../../../lib/observability-timeline');
-const { buildAgentTurnPromptSections, formatAgentTurnPromptSections, AGENT_PROMPT_VERSION } = require('./agent-prompt');
+const { buildAgentTurnPromptSections, buildSessionReuseDeltaPrompt, computeStaticPromptHash, formatAgentTurnPromptSections, AGENT_PROMPT_VERSION } = require('./agent-prompt');
+const {
+  appendSessionReuseCursorMessage,
+  buildSessionReuseCursorSnapshot,
+  evaluateSessionReuse,
+  extractLastCallInputTokens,
+  isSessionReuseBusyStale,
+  resolveSessionReuseConfig,
+  resolveSessionReuseContextWindow,
+  verifySessionReuseCursor,
+} = require('./session-reuse');
 const { buildInvocationImages } = require('./image-invocation');
+const { buildPromptMessages } = require('./prompt-visibility');
 const { createAgentContextSnapshot } = require('./context-snapshot');
 const { markConversationRetrievalTraceUsage } = require('../retrieval-trace');
 const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
@@ -992,7 +1003,7 @@ function stringifyLiveToolStepSignatureValue(value: any) {
   try {
     return clipText(JSON.stringify(value), 240);
   } catch {
-    return clipText(String(value), 240);
+    return '[结构化数据无法序列化]';
   }
 }
 
@@ -1007,7 +1018,7 @@ function liveSessionToolStepSignature(step: any) {
     step && step.bridgeToolHint ? String(step.bridgeToolHint).trim() : '',
     step && step.status ? String(step.status).trim().toLowerCase() : '',
     stringifyLiveToolStepSignatureValue(step && step.requestSummary !== undefined ? step.requestSummary : null),
-    stringifyLiveToolStepSignatureValue(step && step.partialJson ? step.partialJson : ''),
+    stringifyLiveToolStepSignatureValue(step && step.partialJson !== undefined ? step.partialJson : ''),
   ]);
 }
 
@@ -1023,7 +1034,7 @@ function stringifyLiveToolIdentityValue(value: any) {
   try {
     return JSON.stringify(value);
   } catch {
-    return String(value);
+    return '[结构化数据无法序列化]';
   }
 }
 
@@ -1044,7 +1055,7 @@ function liveAnonymousSessionToolFingerprint(input: any = {}) {
     String(input.toolKind || '').trim().toLowerCase(),
     String(input.rawToolName || '').trim().toLowerCase(),
     stringifyLiveToolIdentityValue(input.arguments !== undefined ? input.arguments : null),
-    String(input.partialJson || '').trim(),
+    stringifyLiveToolIdentityValue(input.partialJson !== undefined ? input.partialJson : null),
   ]);
 }
 
@@ -1095,13 +1106,15 @@ export function resolveLiveSessionToolIndex(toolCall: any, options: any = {}) {
   const currentToolKind = String(options.currentToolKind || '').trim().toLowerCase();
   const currentToolStepId = String(options.currentToolStepId || '').trim();
   const nextArgumentsText = stringifyLiveToolIdentityValue(toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null);
-  const nextPartialJsonText = String(toolCall && toolCall.partialJson ? toolCall.partialJson : '').trim();
+  const nextPartialJsonText = stringifyLiveToolIdentityValue(
+    toolCall && toolCall.partialJson !== undefined ? toolCall.partialJson : ''
+  ).trim();
   const nextFingerprint = liveAnonymousSessionToolFingerprint({
     toolName: resolvedToolName,
     toolKind: resolvedToolKind,
     rawToolName: options.rawToolName,
     arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
-    partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+    partialJson: toolCall && toolCall.partialJson !== undefined ? toolCall.partialJson : '',
   });
   const activeStepId = String(tracker.activeStepId || '').trim();
   const activeToolName = String(tracker.activeToolName || '').trim().toLowerCase();
@@ -1198,7 +1211,7 @@ export function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {
       id: toolCall && toolCall.id ? toolCall.id : '',
       toolCallId: toolCall && toolCall.toolCallId ? toolCall.toolCallId : '',
       arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
-      partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+      partialJson: toolCall && toolCall.partialJson !== undefined ? toolCall.partialJson : '',
     },
     {
       toolCallIndex,
@@ -1217,7 +1230,7 @@ export function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {
       id: toolCall && toolCall.id ? toolCall.id : '',
       name: rawToolName,
       arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
-      partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+      partialJson: toolCall && toolCall.partialJson !== undefined ? toolCall.partialJson : '',
     },
     {
       agentDir: options.agentDir,
@@ -1475,7 +1488,8 @@ export function createAgentExecutor(options: any = {}) {
       projectedConversationHistory,
     };
     const promptSections = buildAgentTurnPromptSections(promptInput);
-    const prompt = formatAgentTurnPromptSections(promptSections);
+    let deliveredPromptSections = promptSections;
+    let prompt = formatAgentTurnPromptSections(deliveredPromptSections);
     const runtimeConfigResolved = Boolean(agent && agent.runtimeConfig && typeof agent.runtimeConfig === 'object');
     const provider = runtimeConfigResolved
       ? agentConfig.provider
@@ -1500,14 +1514,153 @@ export function createAgentExecutor(options: any = {}) {
       'timeoutMs'
     );
     const stageTaskId = createTaskId('agent-turn');
-    // We already inject the full room history into every prompt, so reusing one
-    // long-lived provider session per agent only adds cross-turn contamination
-    // risk when a run is interrupted or the provider/tool chain records stray
-    // partial input. Keep each agent execution in its own session instead.
-    const sessionName =
+    // ADR 0001 (docs/adr/0001-agent-session-reuse.md) conditionally supersedes
+    // the previous "new session per turn" decision: when the reuse flag is on
+    // and all preconditions hold (usage ratio, idle window, static hash, cursor
+    // consistency), the previous provider session is resumed and only the delta
+    // messages are appended. Any uncertainty falls back to a fresh session with
+    // full history injection, which remains the default in Phase 1.
+    let sessionName =
       sanitizeSessionName(
         `chat-${conversationId}-${turnId}-${agent.id}-${agentConfig.profileId || 'default'}-${String(stageTaskId).slice(-12)}`
       ) || `chat-${conversationId}-${turnId}`;
+    let resumeSession = false;
+    const sessionReuseConfig = resolveSessionReuseConfig(process.env);
+    // ADR 0001 Phase 2: per-agent toggle (default ON). The env flag is the
+    // global kill switch; agent.sessionReuseEnabled === false opts one role out
+    // without touching anyone else. Distinct reason keeps metrics attributable.
+    const sessionReuseAgentEnabled = agent && agent.sessionReuseEnabled === false ? false : true;
+    const sessionReuseActive = sessionReuseConfig.enabled && sessionReuseAgentEnabled;
+    const reuseProfileId = agentConfig.profileId || 'default';
+    const staticSegmentHash = computeStaticPromptHash(promptSections, [provider, model, reuseProfileId, thinking]);
+    let sessionReuseClaim: any = null; // pre-claim reusable row snapshot, kept for restore/poison
+    let retainedSessionPrefix: any = null;
+    let sessionReuseCursorBaseSnapshot: ReturnType<typeof buildSessionReuseCursorSnapshot> = null;
+    let sessionReuseDecision: any = {
+      reused: false,
+      reason: !sessionReuseConfig.enabled
+        ? 'disabled'
+        : sessionReuseAgentEnabled
+          ? 'no_prior_session'
+          : 'agent_disabled',
+    };
+
+    if (sessionReuseActive && typeof store.getAgentSessionReuse === 'function') {
+      try {
+        // Cursor validation is defined over the full stored conversation, while
+        // prompt history is intentionally a bounded/visibility-filtered
+        // projection. Freeze the storage boundary before provider start so a
+        // fresh run can establish a cursor compatible with the next claim and
+        // messages arriving mid-run remain beyond it.
+        const reuseMessages = typeof store.listMessages === 'function' ? store.listMessages(conversationId) : [];
+        sessionReuseCursorBaseSnapshot = buildSessionReuseCursorSnapshot(reuseMessages);
+        let reuseRow = store.getAgentSessionReuse(conversationId, agent.id, reuseProfileId);
+        const busyStale = reuseRow && isSessionReuseBusyStale(reuseRow, sessionReuseConfig, nowIso());
+        if (busyStale) {
+          // A run that died without flipping state left the row busy; the cached
+          // session contents are unknowable, so poison it instead of reusing.
+          store.markAgentSessionReusePoisoned(conversationId, agent.id, reuseProfileId, 'busy_stale', nowIso());
+          sessionReuseDecision = { reused: false, reason: 'busy_stale' };
+        } else {
+          const decision = evaluateSessionReuse({
+            row: reuseRow,
+            staticSegmentHash,
+            config: sessionReuseConfig,
+            now: nowIso(),
+            messages: reuseMessages,
+          });
+          sessionReuseDecision = { reused: false, reason: decision.reason };
+          if (decision.poison) {
+            store.markAgentSessionReusePoisoned(conversationId, agent.id, reuseProfileId, decision.reason, nowIso());
+          }
+          if (decision.reuse) {
+            const claimed = store.claimAgentSessionReuse({
+              conversationId,
+              agentId: agent.id,
+              profileId: reuseProfileId,
+              expectedHash: staticSegmentHash,
+              expectedCursorMessageId: reuseRow.cursorMessageId,
+              expectedCursorMessageCount: reuseRow.cursorMessageCount,
+              expectedCursorFirstMessageId: reuseRow.cursorFirstMessageId,
+              expectedCursorMaxUpdatedAt: reuseRow.cursorMaxUpdatedAt,
+              now: nowIso(),
+            });
+            if (claimed) {
+              sessionReuseClaim = { ...reuseRow };
+              sessionReuseCursorBaseSnapshot = buildSessionReuseCursorSnapshot(reuseMessages);
+              sessionName = claimed.sessionName;
+              resumeSession = true;
+              const visibleDelta = buildPromptMessages(decision.delta, promptUserMessage, {
+                currentTurnId: turnId,
+                excludeIncompleteAssistantMessages: true,
+              });
+              // Fresh routing guarantees the trigger through requiredMessageIds.
+              // A resumed cursor may already have crossed that anchor during an
+              // earlier run, so restore it at the delta tail to keep handoffs
+              // (including private-only ones) deliverable without rehydrating
+              // hidden history.
+              const promptUserMessageId = String(promptUserMessage && promptUserMessage.id || '').trim();
+              if (
+                promptUserMessageId
+                && !visibleDelta.some((message: any) => String(message && message.id || '').trim() === promptUserMessageId)
+              ) {
+                visibleDelta.push(promptUserMessage);
+              }
+              const deltaPrompt = buildSessionReuseDeltaPrompt(visibleDelta, conversation.agents);
+              deliveredPromptSections = [{
+                sectionKey: 'session_delta',
+                title: 'Session Resume Delta',
+                source: 'session/resume-delta',
+                visibility: 'full',
+                content: deltaPrompt,
+              }];
+              prompt = formatAgentTurnPromptSections(deliveredPromptSections);
+              retainedSessionPrefix = {
+                sessionName: claimed.sessionName,
+                staticSegmentHash: reuseRow.staticSegmentHash,
+                cursorMessageId: reuseRow.cursorMessageId,
+                cursorMessageCount: reuseRow.cursorMessageCount,
+                cursorFirstMessageId: reuseRow.cursorFirstMessageId,
+                cursorMaxUpdatedAt: reuseRow.cursorMaxUpdatedAt,
+                lastReplyAt: reuseRow.lastReplyAt,
+              };
+              sessionReuseDecision = { reused: true, reason: 'reused' };
+            } else {
+              const conflictRow = store.getAgentSessionReuse(conversationId, agent.id, reuseProfileId);
+              const conflictCursor = conflictRow && conflictRow.state === 'reusable'
+                ? verifySessionReuseCursor(
+                    conflictRow,
+                    typeof store.listMessages === 'function' ? store.listMessages(conversationId) : []
+                  )
+                : null;
+              if (conflictCursor && !conflictCursor.ok) {
+                store.markAgentSessionReusePoisoned(
+                  conversationId,
+                  agent.id,
+                  reuseProfileId,
+                  conflictCursor.reason,
+                  nowIso()
+                );
+                sessionReuseDecision = { reused: false, reason: conflictCursor.reason };
+              } else {
+                sessionReuseDecision = { reused: false, reason: 'claim_conflict' };
+              }
+            }
+          }
+        }
+      } catch (reuseError: any) {
+        sessionReuseClaim = null;
+        resumeSession = false;
+        retainedSessionPrefix = null;
+        deliveredPromptSections = promptSections;
+        prompt = formatAgentTurnPromptSections(deliveredPromptSections);
+        sessionReuseDecision = { reused: false, reason: 'reuse_evaluation_error' };
+        console.error(
+          '[session-reuse] evaluation failed, falling back to fresh session:',
+          reuseError && reuseError.message ? reuseError.message : reuseError
+        );
+      }
+    }
     const assistantMessageId = randomUUID();
     const contextSnapshot = createAgentContextSnapshot({
       conversationId,
@@ -1516,7 +1669,9 @@ export function createAgentExecutor(options: any = {}) {
       agentId: agent.id,
       agentName: agent.name,
       promptVersion: AGENT_PROMPT_VERSION,
-      sections: promptSections,
+      deliveryMode: resumeSession ? 'resume' : 'fresh',
+      retainedSessionPrefix,
+      sections: deliveredPromptSections,
     });
 
     const contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
@@ -1532,6 +1687,8 @@ export function createAgentExecutor(options: any = {}) {
       conversationSkillIds: agentConfig.conversationSkillIds,
       sessionName,
       sessionScope: 'agent_turn',
+      sessionReused: resumeSession,
+      sessionReuseReason: sessionReuseDecision.reason,
       streaming: false,
       routingMode,
       hop,
@@ -1581,6 +1738,14 @@ export function createAgentExecutor(options: any = {}) {
     emitTurnProgress(turnState);
 
     if (imageBlock) {
+      if (sessionReuseClaim && typeof store.restoreAgentSessionReuse === 'function') {
+        // The run aborts before the provider session is touched, so the claimed
+        // session is still clean; restore its reusable snapshot.
+        try {
+          store.restoreAgentSessionReuse(sessionReuseClaim, nowIso());
+        } catch {}
+        sessionReuseClaim = null;
+      }
       const existingBlockedMessage = store.getMessage(assistantMessage.id);
       const blockedMessage = store.updateMessage(assistantMessage.id, {
         content: '',
@@ -1761,7 +1926,7 @@ export function createAgentExecutor(options: any = {}) {
       },
     });
 
-    const handle = startRun(provider, model, prompt, {
+    const runOptions: any = {
       thinking,
       images: invocationImages,
       extensionPaths: piCapabilityExtensionPath ? [piCapabilityExtensionPath] : [],
@@ -1792,6 +1957,7 @@ export function createAgentExecutor(options: any = {}) {
           : {}),
       },
       session: sessionName,
+      resume: resumeSession,
       streamOutput: false,
       parentRunId: queueItem.parentRunId || null,
       taskId: stageTaskId,
@@ -1814,7 +1980,21 @@ export function createAgentExecutor(options: any = {}) {
         triggeredByAgentId: queueItem.triggeredByAgentId || null,
         toolBridgeEnabled: true,
       },
-    });
+    };
+    let handle: any = null;
+    try {
+      handle = startRun(provider, model, prompt, runOptions);
+    } catch (startError) {
+      if (sessionReuseClaim && typeof store.restoreAgentSessionReuse === 'function') {
+        // The run never reached the provider session, so the claimed session is
+        // still clean; restore its reusable snapshot before propagating.
+        try {
+          store.restoreAgentSessionReuse(sessionReuseClaim, nowIso());
+        } catch {}
+        sessionReuseClaim = null;
+      }
+      throw startError;
+    }
     activeRunHandle = handle;
     registerTurnHandle(turnState, handle);
 
@@ -2143,6 +2323,8 @@ export function createAgentExecutor(options: any = {}) {
         heartbeatCount: result.heartbeatCount || 0,
         sessionName,
         sessionScope: 'agent_turn',
+        sessionReused: resumeSession,
+        sessionReuseReason: sessionReuseDecision.reason,
         sessionPath: result.sessionPath || handle.sessionPath || '',
         agentSandboxDir: agentSandbox.sandboxDir,
         agentPrivateDir: agentSandbox.privateDir,
@@ -2262,6 +2444,47 @@ export function createAgentExecutor(options: any = {}) {
       broadcastEvent('conversation_message_updated', { conversationId, message: assistantMessageDone });
       broadcastConversationSummary(conversationId);
 
+      if (sessionReuseActive && typeof store.markAgentSessionReuseReusable === 'function') {
+        // Freeze the message boundary that was actually sent to the provider.
+        // Messages arriving while the run is active stay beyond this cursor and
+        // become the next turn's delta instead of being marked consumed.
+        try {
+          const cursorSnapshot = appendSessionReuseCursorMessage(
+            sessionReuseCursorBaseSnapshot,
+            assistantMessageDone
+          );
+          const usageInputTokens = extractLastCallInputTokens(result.usageCalls);
+          const usageContextWindow = resolveSessionReuseContextWindow(modelCatalog, provider, model);
+          const usageRatio =
+            usageInputTokens !== null && usageContextWindow ? Math.min(1, usageInputTokens / usageContextWindow) : null;
+          const completedSessionPath = result.sessionPath || handle.sessionPath || '';
+          if (cursorSnapshot && completedSessionPath) {
+            store.markAgentSessionReuseReusable({
+              conversationId,
+              agentId: agent.id,
+              profileId: reuseProfileId,
+              sessionName,
+              sessionPath: completedSessionPath,
+              staticSegmentHash,
+              ...cursorSnapshot,
+              lastRunId: result.runId || handle.runId || null,
+              lastAssistantMessageId: assistantMessageDone.id,
+              usageInputTokens,
+              usageContextWindow,
+              usageRatio,
+              lastReplyAt: stage.endedAt || nowIso(),
+              now: nowIso(),
+            });
+          }
+        } catch (reuseError: any) {
+          console.error(
+            '[session-reuse] failed to mark session reusable:',
+            reuseError && reuseError.message ? reuseError.message : reuseError
+          );
+        }
+        sessionReuseClaim = null;
+      }
+
       if (onAssistantMessageCompleted) {
         try {
           await waitForAssistantMessageCompleted(onAssistantMessageCompleted, assistantMessageDone);
@@ -2358,6 +2581,8 @@ export function createAgentExecutor(options: any = {}) {
           model,
           sessionName,
           sessionScope: 'agent_turn',
+          sessionReused: resumeSession,
+          sessionReuseReason: sessionReuseDecision.reason,
           sessionPath: errorValue && errorValue.sessionPath ? errorValue.sessionPath : handle.sessionPath || '',
           agentSandboxDir: agentSandbox.sandboxDir,
           agentPrivateDir: agentSandbox.privateDir,
@@ -2426,6 +2651,21 @@ export function createAgentExecutor(options: any = {}) {
       broadcastEvent('conversation_message_updated', { conversationId, message: assistantMessageFailed });
       broadcastConversationSummary(conversationId);
       emitTurnProgress(turnState);
+
+      if (sessionReuseClaim && typeof store.markAgentSessionReusePoisoned === 'function') {
+        // The resumed session now contains a partial/interrupted run that can
+        // never be reconciled with the room history, so it must never be reused.
+        try {
+          store.markAgentSessionReusePoisoned(
+            conversationId,
+            agent.id,
+            reuseProfileId,
+            clipText(`run_${stopRequested ? 'interrupted' : 'failed'}: ${errorMessage}`, 300),
+            nowIso()
+          );
+        } catch {}
+        sessionReuseClaim = null;
+      }
 
       if (stopRequested) {
         return {

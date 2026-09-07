@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-const SNAPSHOT_SCHEMA_VERSION = 1;
+const SNAPSHOT_SCHEMA_VERSION = 2;
 const APPROX_CHARS_PER_TOKEN = 4;
 const CONTENT_PREVIEW_LENGTH = 180;
 const SUMMARY_PREVIEW_LENGTH = 360;
@@ -58,6 +58,7 @@ const SECTION_VISIBILITY: Record<string, 'full' | 'summary' | 'presence'> = {
   private_mailbox: 'full',
   memory_cards: 'full',
   conversation_history: 'full',
+  session_delta: 'full',
   turn_trigger: 'full',
   final_instruction: 'full',
 };
@@ -86,11 +87,23 @@ const SECTION_DISPLAY_TITLES: Record<string, string> = {
   private_mailbox: '仅自己可见的私有信箱',
   memory_cards: '精选记忆卡片（已停用）',
   conversation_history: '会话历史',
+  session_delta: '本轮追加内容',
   turn_trigger: '本轮路由状态',
   final_instruction: '最终回复指令',
 };
 
 export type ContextSnapshotVisibility = 'full' | 'summary' | 'presence';
+export type ContextSnapshotDeliveryMode = 'fresh' | 'resume' | 'unknown';
+
+export type RetainedSessionPrefixReference = {
+  sessionName: string;
+  staticSegmentHash: string;
+  cursorMessageId: string;
+  cursorMessageCount: number;
+  cursorFirstMessageId: string;
+  cursorMaxUpdatedAt: string | null;
+  lastReplyAt: string;
+};
 
 export type ContextPromptSectionInput = {
   sectionKey: string;
@@ -126,6 +139,32 @@ function clipText(value: string, maxLength: number) {
 
 function normalizeKey(value: string) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'section';
+}
+
+function normalizeDeliveryMode(value: any, fallback: ContextSnapshotDeliveryMode = 'unknown'): ContextSnapshotDeliveryMode {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'fresh' || normalized === 'resume' ? normalized : fallback;
+}
+
+function normalizeRetainedSessionPrefix(value: any, deliveryMode: ContextSnapshotDeliveryMode): RetainedSessionPrefixReference | null {
+  if (deliveryMode !== 'resume' || !value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const sessionName = String(value.sessionName || '').trim();
+  if (!sessionName) {
+    return null;
+  }
+  const cursorMessageCount = Number(value.cursorMessageCount);
+  return {
+    sessionName,
+    staticSegmentHash: String(value.staticSegmentHash || '').trim(),
+    cursorMessageId: String(value.cursorMessageId || '').trim(),
+    cursorMessageCount: Number.isInteger(cursorMessageCount) && cursorMessageCount >= 0 ? cursorMessageCount : 0,
+    cursorFirstMessageId: String(value.cursorFirstMessageId || '').trim(),
+    cursorMaxUpdatedAt: value.cursorMaxUpdatedAt ? String(value.cursorMaxUpdatedAt).trim() : null,
+    lastReplyAt: String(value.lastReplyAt || '').trim(),
+  };
 }
 
 function displayTitleForSection(sectionKey: string, title: string) {
@@ -227,6 +266,8 @@ function sectionIsTruncated(section: ContextPromptSectionInput) {
 }
 
 export function createAgentContextSnapshot(input: any = {}) {
+  const deliveryMode = normalizeDeliveryMode(input.deliveryMode, 'fresh');
+  const retainedSessionPrefix = normalizeRetainedSessionPrefix(input.retainedSessionPrefix, deliveryMode);
   const sections = (Array.isArray(input.sections) ? input.sections : [])
     .filter((section: any) => section && String(section.content || '').trim())
     .map((section: ContextPromptSectionInput, index: number) => {
@@ -272,6 +313,8 @@ export function createAgentContextSnapshot(input: any = {}) {
       input.messageId,
       input.agentId,
       input.promptVersion,
+      deliveryMode,
+      retainedSessionPrefix ? JSON.stringify(retainedSessionPrefix) : '',
       sections.map((section: any) => section.contentHash).join('|'),
     ].join('|')).slice(0, 24),
     capturedAt: new Date().toISOString(),
@@ -281,6 +324,8 @@ export function createAgentContextSnapshot(input: any = {}) {
     agentId: String(input.agentId || '').trim(),
     agentName: String(input.agentName || '').trim(),
     promptVersion: String(input.promptVersion || '').trim(),
+    deliveryMode,
+    retainedSessionPrefix,
     immutable: true,
     totalApproxTokens,
     totalByteSize,
@@ -294,6 +339,7 @@ export function summarizeAgentContextSnapshot(snapshot: any) {
   }
 
   const sections = Array.isArray(snapshot.sections) ? snapshot.sections : [];
+  const deliveryMode = normalizeDeliveryMode(snapshot.deliveryMode);
   return {
     schemaVersion: snapshot.schemaVersion || SNAPSHOT_SCHEMA_VERSION,
     snapshotId: snapshot.snapshotId || '',
@@ -304,6 +350,8 @@ export function summarizeAgentContextSnapshot(snapshot: any) {
     agentId: snapshot.agentId || '',
     agentName: snapshot.agentName || '',
     promptVersion: snapshot.promptVersion || '',
+    deliveryMode,
+    retainedSessionPrefix: normalizeRetainedSessionPrefix(snapshot.retainedSessionPrefix, deliveryMode),
     immutable: snapshot.immutable !== false,
     totalApproxTokens: Math.max(0, Number(snapshot.totalApproxTokens || 0)),
     totalByteSize: Math.max(0, Number(snapshot.totalByteSize || 0)),
@@ -369,6 +417,11 @@ export function exportAgentContextSnapshotMarkdown(snapshot: any) {
     return '# Agent Context Snapshot\n\nNo snapshot is available.\n';
   }
 
+  const deliveryLabel = materialized.deliveryMode === 'resume'
+    ? 'resume（仅追加本轮增量，旧前缀由 Session 保留）'
+    : materialized.deliveryMode === 'fresh'
+      ? 'fresh（本轮完整注入）'
+      : 'unknown（旧版快照未记录实际投递方式）';
   const lines = [
     '# Agent Context Snapshot / 智能体上下文快照',
     '',
@@ -377,13 +430,26 @@ export function exportAgentContextSnapshotMarkdown(snapshot: any) {
     `- 消息 / Message: ${materialized.messageId || 'unknown'}`,
     `- 捕获时间 / Captured at: ${materialized.capturedAt || 'unknown'}`,
     `- Prompt 版本 / Prompt version: ${materialized.promptVersion || 'unknown'}`,
+    `- 投递方式 / Delivery mode: ${deliveryLabel}`,
+  ];
+
+  if (materialized.retainedSessionPrefix) {
+    const retained = materialized.retainedSessionPrefix;
+    lines.push(
+      `- 保留的 Session 前缀 / Retained session prefix: ${retained.sessionName}`,
+      `- 前缀游标 / Prefix cursor: ${retained.cursorMessageCount} messages, last=${retained.cursorMessageId || 'unknown'}`,
+      `- 静态段 Hash / Static segment hash: ${retained.staticSegmentHash || 'unknown'}`
+    );
+  }
+
+  lines.push(
     `- 近似 tokens / Total approximate tokens: ${materialized.totalApproxTokens}`,
     `- 字节数 / Total byte size: ${materialized.totalByteSize}`,
     `- 完整性 / Integrity: ${materialized.integrityOk ? 'ok' : 'warning'}`,
     '',
     '| 分区 / Section | 来源 / Source | 可见性 / Visibility | Tokens | 字节 / Bytes | Hash | 是否截断 / Truncated |',
-    '| --- | --- | --- | ---: | ---: | --- | --- |',
-  ];
+    '| --- | --- | --- | ---: | ---: | --- | --- |'
+  );
 
   for (const section of materialized.sections) {
     lines.push(

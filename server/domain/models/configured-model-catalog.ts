@@ -20,6 +20,7 @@ type RuntimeModel = {
   name?: string;
   supportedThinkingLevels?: string[];
   input?: string[];
+  contextWindow?: number;
 };
 
 function normalize(value: any) {
@@ -39,6 +40,10 @@ function normalizeThinkingLevels(value: any) {
     ? value.map(normalize).filter((level) => THINKING_LEVELS.has(level))
     : [];
   return levels.length > 0 ? [...new Set(levels)] : ['off'];
+}
+
+function normalizeContextWindow(value: any) {
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 export function buildConfiguredModelKey(provider: any, model: any) {
@@ -104,6 +109,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
         label: normalize(runtimeModel.name) || `${provider} / ${model}`,
         supportedThinkingLevels: normalizeThinkingLevels(runtimeModel.supportedThinkingLevels),
         input: normalizeModelInput(runtimeModel.input),
+        contextWindow: normalizeContextWindow(runtimeModel.contextWindow),
       });
     }
 
@@ -127,6 +133,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
           explicitFamily: normalize(modelConfig?.family),
           supportedThinkingLevels: current?.supportedThinkingLevels || ['off'],
           input: normalizeModelInput(modelConfig?.input),
+          contextWindow: normalizeContextWindow(modelConfig?.contextWindow) ?? current?.contextWindow ?? null,
         });
       }
     }
@@ -147,6 +154,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
           explicitFamily: '',
           supportedThinkingLevels: current?.supportedThinkingLevels || ['off'],
           input: current?.input || ['text'],
+          contextWindow: current?.contextWindow ?? null,
         });
       }
     }
@@ -167,6 +175,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
         ...classification,
         supportedThinkingLevels: entry.supportedThinkingLevels,
         input: entry.input,
+        contextWindow: entry.contextWindow ?? null,
       };
     }).sort((left, right) => {
       const labelOrder = left.label.localeCompare(right.label, 'zh-CN');

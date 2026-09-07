@@ -1,0 +1,44 @@
+# Agent session 复用（有条件地推翻"每轮新建 session"）
+
+Status: accepted (Phase 1 + Phase 2 delivered)
+
+## 背景与决策
+
+`agent-executor.ts` 此前记录了一个刻意决策：每个 agent turn 新建 provider session，因为完整房间历史每次都注入 prompt，长生命 session 只会带来跨轮污染和中断残留风险。本 ADR 推翻该决策：当**上下文使用率 < 50% 且距上次回复 < 1 小时**（阈值走配置）时，同一 (conversationId, agentId, profileId) 复用上一轮 session（`--resume`），两轮之间的新增对话以**单条 user message 追加到消息数组尾部**，不再全量重注入历史。
+
+动机：全量历史重注入使每轮 input tokens 随房间历史线性增长，prefix KV cache 被动态段（turnId、时间戳、触发信息）击穿，长房间场景成本与延迟都不可接受。
+
+## 关键约束（复用的前置条件，全部满足才复用）
+
+- 复用键 = (conversationId, agentId, profileId)，跨会话不复用。
+- prompt 拆分为静态段 / 动态段；静态段（系统提示、skill 集合、agent 身份、工具说明、模型、profile、AGENT_PROMPT_VERSION）做 hash 存入 session 元数据，复用前比对，不一致即失效。
+- 上一轮 run 必须 status=success 干净结束；中断/超时/报错结束的 session 标记 poisoned，永不复用。
+- 状态机 reusable/busy/poisoned 持久化于 `chat_agent_session_reuse` 表；复用判定与状态翻转在同一事务内，防并发竞态。claim 的单条 SQL 同时守卫复用行中的静态 hash / 游标四元组，并重算 `chat_messages` 游标前缀的 count + first id + max(updated_at)；判定后发生的编辑/删除不能绕过 claim。
+- 已读游标记录 session 已见的最后一条 chat_messages.id；复用前校验游标前消息一致性（count + 首尾 id + max(updated_at)），发现编辑/删除痕迹直接 poison（已注入内容无法从 provider session 撤回）。run 开始时冻结实际注入的消息边界，成功收尾只在该快照上追加本轮 assistant 回复；运行期间到达的消息留在游标之后，由下一轮 delta 拾取。
+- delta 消息合并为**一条** user message，与全量历史共用同一个 `formatHistory` 渲染函数，杜绝 fresh/reused 格式双轨；delta 路径不应用全量历史的 24 条展示窗口，游标后的所有可见消息必须全部渲染后才能推进游标。渲染前必须复用 `buildPromptMessages` 可见性投影：只保留本次 `promptUserMessage` 对应的 private-only 消息，并排除当前 turn 的 queued/streaming assistant，禁止 resumed 路径绕过 fresh 路径的隐私与未完成消息边界。若 `promptUserMessage` 已被中间 run 的存储游标越过而不在可见 delta 中，reused 路径必须将其清洗后版本追加到 delta 尾部，保持 fresh 路径的触发消息必达契约。
+- 复用是纯优化：任何不确定一律回退旧路径（新 session + 全量历史注入）。复用决策（sessionReused + 原因）写入 message metadata 供审计。
+- Context Inspector 必须展示**本轮实际投递**而不是复用判定前构造的 fresh 候选：fresh 快照记录完整 prompt sections；resume 快照只记录单一 `session_delta`（与实际追加的 user prompt 同源），旧上下文仅以 retained session prefix 的 session/hash/cursor 引用展示。cache-read/uncached token 属于运行后证据，从完成消息 metadata 在详情 API 投影，不回写运行前不可变快照。
+
+## Considered Options
+
+- **保持每轮新建 session（原决策）**：简单、无污染风险，但 token 成本随历史线性增长，长房间不可用。拒绝。
+- **长生命 session + 运行中消息转发**：把运行期间到达的消息实时转发进 provider session。复杂度与竞态面过大；改为 delta 窗口在 prompt 构建瞬间快照关闭，运行中消息走现有路由由下一轮拾取。
+- **delta 注入系统提示词**：会破坏 KV cache 前缀，且与消息数组语义不符。拒绝，明确追加到消息数组尾部。
+- **复用状态挂到 `chat_conversation_agents` 加列**：该表是成员关系表，状态机 + 审计字段不属于成员关系行；新建独立表，migration 纯增量、可独立回滚。
+
+## Consequences
+
+- 首轮 prompt 必须重构为静态/动态可分离结构；turnId、taskId、时间戳等每轮变化字段严禁进入静态段，否则 hash 比对与 KV cache 同时失效。
+- 需要 fresh/reused 双模式回归测试（同一历史场景 A/B），证明复用模式下 agent 能看到并回应 delta 消息且无幻觉引用；同时断言 resume 快照的 `session_delta.displayContent` 与实际 `startRun` prompt 一致且不含游标前历史，Inspector 显示 retained prefix 引用和 cache-read 证据而非重复完整 sections。
+- 交付分两阶段：Phase 1 后端完整实现 + 本 ADR，feature flag 默认 OFF 合入；Phase 2 默认 ON + 前端 agent 开关。先 OFF 验证再翻默认值，避免一次性把风险带进生产路径。
+
+## Phase 2（已交付）
+
+- 全局默认 ON：`resolveSessionReuseConfig` 在 env 未设置时返回 `enabled: true`；`PI_CHAT_SESSION_REUSE_ENABLED=0/false/off/no` 是全局 kill switch。
+- per-agent 开关：`chat_agents.session_reuse_enabled`（默认 1），经 `PUT /api/agents/:id` 与 personas 角色编辑器"复用上一次会话" toggle 配置；关闭后 executor 跳过整个复用生命周期（不读写 `chat_agent_session_reuse`），metadata reason = `agent_disabled`，与全局 `disabled` 可区分。
+- 执行契约与测试点见 `.trellis/spec/runtime/agent-session-reuse.md`。
+
+## Known Limitations
+
+- 游标一致性校验依赖 `max(updated_at)` 在编辑/删除后严格前移。正常路径（repository 在 update 时写入当前时钟）成立；若消息行被人为未来日期化（时钟偏移、外部导入回填），对该行的后续编辑可能不会推进 `max(updated_at)`，从而逃过检测。接受该残余风险：它要求数据库被非正常写入，且后果等价于复用了一个含过期历史的 session（模型看到旧版本消息），不产生数据损坏。检测口径记录于 `tests/runtime/session-reuse-ab.test.js` 的夹具设计（显式 `updatedAt` 时间线）。
+- 并行批次中，某 agent 冻结完整存储游标时可能包含同 turn 的 queued/streaming peer assistant；该消息不会进入 delta prompt，但 peer 完成会推进 `updated_at`，所以下一轮一致性检查会 poison 旧 session 并回退 fresh。该路径失败安全且不会泄露或丢失消息，但会损失一次复用命中；若要消除，需要能表达非连续已见集合的游标，而不是弱化前缀一致性检查。

@@ -158,8 +158,9 @@ export class ChatMessageRepository {
         error_message,
         metadata_json,
         client_request_id,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.getByClientRequestStatement = db.prepare(`
       SELECT *
@@ -202,12 +203,14 @@ export class ChatMessageRepository {
         task_id = ?,
         run_id = ?,
         error_message = ?,
-        metadata_json = ?
+        metadata_json = ?,
+        updated_at = ?
       WHERE id = ?
     `);
     this.appendTextStatement = db.prepare(`
       UPDATE chat_messages
-      SET content = COALESCE(content, '') || ?
+      SET content = COALESCE(content, '') || ?,
+        updated_at = ?
       WHERE id = ?
     `);
     this.findCompletedCrossConversationReplyStatement = db.prepare(`
@@ -247,7 +250,8 @@ export class ChatMessageRepository {
       payload.errorMessage || null,
       payload.metadataJson,
       payload.clientRequestId || null,
-      payload.createdAt
+      payload.createdAt,
+      payload.updatedAt || payload.createdAt
     );
 
     return this.get(payload.id);
@@ -645,6 +649,7 @@ export class ChatMessageRepository {
       payload.runId,
       payload.errorMessage || null,
       payload.metadataJson,
+      new Date().toISOString(),
       messageId
     );
 
@@ -652,7 +657,7 @@ export class ChatMessageRepository {
   }
 
   appendText(messageId: string, delta: string) {
-    this.appendTextStatement.run(delta, messageId);
+    this.appendTextStatement.run(delta, new Date().toISOString(), messageId);
     return this.get(messageId);
   }
 

@@ -242,7 +242,7 @@ function redactString(value: any, options: any = {}) {
   return clipText(text);
 }
 
-function summarizeValue(value: any, options: any = {}, depth = 0, keyHint = ''): any {
+function summarizeValue(value: any, options: any = {}, depth = 0, keyHint = '', seen = new WeakSet<object>()): any {
   if (value == null) {
     return value;
   }
@@ -276,10 +276,16 @@ function summarizeValue(value: any, options: any = {}, depth = 0, keyHint = ''):
       return value.length > 0 ? [`[${value.length} items]`] : [];
     }
 
+    if (seen.has(value)) {
+      return '[循环引用]';
+    }
+
+    seen.add(value);
     const summarized = value
       .slice(0, MAX_COLLECTION_ITEMS)
-      .map((entry) => summarizeValue(entry, options, depth + 1, keyHint))
+      .map((entry) => summarizeValue(entry, options, depth + 1, keyHint, seen))
       .filter((entry) => entry !== undefined);
+    seen.delete(value);
 
     if (value.length > MAX_COLLECTION_ITEMS) {
       summarized.push(`[+${value.length - MAX_COLLECTION_ITEMS} more]`);
@@ -293,12 +299,18 @@ function summarizeValue(value: any, options: any = {}, depth = 0, keyHint = ''):
       return '[object]';
     }
 
+    if (seen.has(value)) {
+      return '[循环引用]';
+    }
+
+    seen.add(value);
     const entries = Object.entries(value).slice(0, MAX_COLLECTION_ITEMS);
     const summarized: Record<string, unknown> = {};
 
     for (const [key, entry] of entries) {
-      summarized[key] = summarizeValue(entry, options, depth + 1, key);
+      summarized[key] = summarizeValue(entry, options, depth + 1, key, seen);
     }
+    seen.delete(value);
 
     if (Object.keys(value).length > entries.length) {
       summarized.__truncated = `+${Object.keys(value).length - entries.length} keys`;
@@ -308,6 +320,22 @@ function summarizeValue(value: any, options: any = {}, depth = 0, keyHint = ''):
   }
 
   return clipText(String(value));
+}
+
+function formatTraceValue(value: any, options: any = {}, maxLength = 360) {
+  if (value == null || value === '') {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return clipText(redactString(value, options), maxLength);
+  }
+
+  try {
+    return clipText(JSON.stringify(summarizeValue(value, options), null, 2), maxLength);
+  } catch {
+    return '[结构化数据无法序列化]';
+  }
 }
 
 export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
@@ -411,7 +439,7 @@ export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
           toolCallId: item && item.id ? String(item.id) : '',
           toolName: item && item.name ? String(item.name) : '',
           arguments: item && item.arguments !== undefined ? item.arguments : null,
-          partialJson: item && item.partialJson ? String(item.partialJson) : '',
+          partialJson: item && item.partialJson !== undefined ? item.partialJson : '',
           assistantMessageIndex: assistantMessageTotal,
           modelCallSequence,
         });
@@ -634,7 +662,9 @@ function normalizeSessionToolCall(toolCall: any, index: number, options: any = {
     requestSummary:
       toolCall && toolCall.arguments !== undefined ? summarizeValue(toolCall.arguments, options, 0, 'arguments') : null,
     partialJson:
-      toolCall && toolCall.partialJson ? clipText(redactString(toolCall.partialJson, options), 360) : '',
+      toolCall && toolCall.partialJson !== undefined && toolCall.partialJson !== null && toolCall.partialJson !== ''
+        ? formatTraceValue(toolCall.partialJson, options, 360)
+        : '',
     bridgeToolHint,
     modelCallSequence: Number.isFinite(Number(toolCall && toolCall.modelCallSequence))
       ? Number(toolCall.modelCallSequence)
@@ -1045,7 +1075,7 @@ function formatFailureContextValue(value: any, maxLength = 1200) {
   try {
     return clipText(JSON.stringify(value, null, 2), maxLength);
   } catch {
-    return clipText(String(value), maxLength);
+    return '[结构化数据无法序列化]';
   }
 }
 
@@ -1311,6 +1341,9 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const db = options.db;
   const agentDir = String(options.agentDir || '').trim();
   const message = options.message && typeof options.message === 'object' ? options.message : null;
+  const messageMetadata = message && message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+    ? message.metadata
+    : {};
   const resolvedSessionPath = String(options.resolvedSessionPath || '').trim();
   const taskId = String(message && message.taskId ? message.taskId : '').trim();
   const taskRow = taskId ? loadTaskRow(db, taskId) : null;
@@ -1490,6 +1523,9 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
           taskId: taskId || null,
           runId: message.runId === undefined ? null : message.runId,
           createdAt: String(message.createdAt || '').trim(),
+          sessionReused: messageMetadata.sessionReused === true,
+          sessionReuseKnown: Object.prototype.hasOwnProperty.call(messageMetadata, 'sessionReused'),
+          sessionReuseReason: String(messageMetadata.sessionReuseReason || '').trim(),
           errorMessage:
             message.errorMessage === null || message.errorMessage === undefined
               ? ''

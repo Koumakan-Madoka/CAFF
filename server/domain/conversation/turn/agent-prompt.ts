@@ -1,3 +1,4 @@
+const { createHash } = require('node:crypto');
 const { getAgentById } = require('../mention-routing');
 const { filterRoutableConversationAgents } = require('../../roles/system-actor-catalog');
 const { formatConversationDigestsForPrompt } = require('../conversation-digest');
@@ -229,11 +230,12 @@ function formatRecoverySourceSuffix(message: any) {
   return ' [read-only recovery; source unavailable]';
 }
 
-function formatHistory(messages: any, agents: any) {
+function formatHistory(messages: any, agents: any, { truncate = true }: any = {}) {
   const agentMap = new Map(
     (Array.isArray(agents) ? agents : []).map((agent: any) => [agent.id, agent] as [string, any])
   );
-  const recentMessages = messages.slice(-MAX_HISTORY_MESSAGES);
+  const sourceMessages = Array.isArray(messages) ? messages : [];
+  const recentMessages = truncate ? sourceMessages.slice(-MAX_HISTORY_MESSAGES) : sourceMessages;
 
   if (recentMessages.length === 0) {
     return 'No prior messages.';
@@ -462,14 +464,41 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
   ].join('\n');
 }
 
-function promptSection(sectionKey: string, title: string, source: string, content: any, visibility?: 'full' | 'summary' | 'presence') {
+export type PromptSectionStability = 'static' | 'dynamic';
+
+function promptSection(sectionKey: string, title: string, source: string, content: any, visibility?: 'full' | 'summary' | 'presence', stability: PromptSectionStability = 'static') {
   return {
     sectionKey,
     title,
     source,
     visibility,
+    stability,
     content: String(content || ''),
   };
+}
+
+// Static sections are byte-identical across turns of the same (conversation, agent, profile)
+// unless the agent/room configuration changed; dynamic sections churn with conversation state
+// (history, digests, session goal checklist, trigger info). Session reuse hashes ONLY static
+// sections: a hash mismatch means the cached session prefix is stale and reuse must be refused.
+export function computeStaticPromptHash(sections: any, extraFingerprintParts?: any) {
+  const hash = createHash('sha256');
+  hash.update(AGENT_PROMPT_VERSION);
+  const extras = Array.isArray(extraFingerprintParts) ? extraFingerprintParts : [];
+  for (const part of extras) {
+    hash.update('\0');
+    hash.update(String(part == null ? '' : part));
+  }
+  for (const section of Array.isArray(sections) ? sections : []) {
+    if (!section || section.stability !== 'static') {
+      continue;
+    }
+    hash.update('\0');
+    hash.update(String(section.sectionKey || ''));
+    hash.update('\0');
+    hash.update(String(section.content || ''));
+  }
+  return hash.digest('hex');
 }
 
 function hasPromptItems(items: any) {
@@ -503,6 +532,20 @@ export function formatAgentTurnPromptSections(sections: any) {
     .map((section: any) => String(section && section.content || '').trim())
     .filter(Boolean)
     .join('\n\n');
+}
+
+// Session reuse delta prompt: the cached provider session already contains the
+// original static sections and the full history up to the reuse cursor, so the
+// resumed run receives ONLY the messages that arrived afterwards, merged into a
+// single user message appended at the tail of the message array. This preserves
+// the provider KV cache prefix. It MUST reuse formatHistory so fresh and reused
+// modes render room messages byte-identically (no format drift between modes).
+// Unlike full history, the already visibility-filtered delta is never
+// truncated: every visible message after the committed cursor must be appended
+// before that cursor may advance. Callers must apply the shared fresh-prompt
+// visibility projection before invoking this formatter.
+export function buildSessionReuseDeltaPrompt(deltaMessages: any, agents: any) {
+  return ['New messages since your last reply:', formatHistory(deltaMessages, agents, { truncate: false })].join('\n');
 }
 
 export function buildAgentTurnPromptSections({
@@ -736,16 +779,16 @@ export function buildAgentTurnPromptSections({
       ? promptSection('trellis_context', 'Trellis Project Context', 'trellis/project', ['Trellis project context:', trellisPromptContext].join('\n'), 'full')
       : null,
     sessionGoalSection
-      ? promptSection('session_goal', 'Session Goal', 'conversation/session-goal', ['Session goal:', sessionGoalSection].join('\n'), 'full')
+      ? promptSection('session_goal', 'Session Goal', 'conversation/session-goal', ['Session goal:', sessionGoalSection].join('\n'), 'full', 'dynamic')
       : null,
     conversationDigestSection
-      ? promptSection('conversation_digest', 'Current Conversation Digest', 'conversation/metadata', conversationDigestSection, 'full')
+      ? promptSection('conversation_digest', 'Current Conversation Digest', 'conversation/metadata', conversationDigestSection, 'full', 'dynamic')
       : null,
     retrievedMemorySection
-      ? promptSection('retrieved_memory', 'Retrieved Long-Term Memory', 'summary-memory/search', retrievedMemorySection, 'full')
+      ? promptSection('retrieved_memory', 'Retrieved Long-Term Memory', 'summary-memory/search', retrievedMemorySection, 'full', 'dynamic')
       : null,
     retrievalTraceSection
-      ? promptSection('retrieval_trace', 'Last Recalled Evidence Cache', 'conversation/retrieval-trace', retrievalTraceSection, 'full')
+      ? promptSection('retrieval_trace', 'Last Recalled Evidence Cache', 'conversation/retrieval-trace', retrievalTraceSection, 'full', 'dynamic')
       : null,
     privateMailboxSection
       ? promptSection(
@@ -753,14 +796,15 @@ export function buildAgentTurnPromptSections({
           'Private Mailbox Visible Only To You',
           'conversation/private-messages',
           ['Private mailbox visible only to you:', privateMailboxSection].join('\n'),
-          'full'
+          'full',
+          'dynamic'
         )
       : null,
     conversationHistorySection
-      ? promptSection('conversation_history', 'Conversation History', 'conversation/messages', ['Conversation history:', conversationHistorySection].join('\n'), 'full')
+      ? promptSection('conversation_history', 'Conversation History', 'conversation/messages', ['Conversation history:', conversationHistorySection].join('\n'), 'full', 'dynamic')
       : null,
     turnRoutingStateSection
-      ? promptSection('turn_trigger', 'Turn Routing State', 'runtime/routing', turnRoutingStateSection, 'full')
+      ? promptSection('turn_trigger', 'Turn Routing State', 'runtime/routing', turnRoutingStateSection, 'full', 'dynamic')
       : null,
     promptSection('final_instruction', 'Final Reply Instruction', 'runtime/prompt', 'Write your reply now.', 'full'),
   ].filter(Boolean);

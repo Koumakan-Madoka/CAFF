@@ -7,6 +7,28 @@ function nonNegativeInteger(value: any, fallback = 0) {
   return Number.isInteger(normalized) && normalized >= 0 ? normalized : fallback;
 }
 
+function projectContextSnapshotDelivery(snapshot: any) {
+  const deliveryMode = String(snapshot && snapshot.deliveryMode || '').trim().toLowerCase();
+  if (deliveryMode !== 'fresh' && deliveryMode !== 'resume') {
+    return {};
+  }
+
+  const projected: any = { deliveryMode };
+  const retained = snapshot && snapshot.retainedSessionPrefix;
+  if (deliveryMode === 'resume' && retained && typeof retained === 'object' && !Array.isArray(retained)) {
+    projected.retainedSessionPrefix = {
+      sessionName: String(retained.sessionName || '').trim(),
+      staticSegmentHash: String(retained.staticSegmentHash || '').trim(),
+      cursorMessageId: String(retained.cursorMessageId || '').trim(),
+      cursorMessageCount: nonNegativeInteger(retained.cursorMessageCount),
+      cursorFirstMessageId: String(retained.cursorFirstMessageId || '').trim(),
+      cursorMaxUpdatedAt: retained.cursorMaxUpdatedAt ? String(retained.cursorMaxUpdatedAt).trim() : null,
+      lastReplyAt: String(retained.lastReplyAt || '').trim(),
+    };
+  }
+  return projected;
+}
+
 export function buildStoredContextSnapshotSummary(snapshot: any) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
     return null;
@@ -23,6 +45,7 @@ export function buildStoredContextSnapshotSummary(snapshot: any) {
     agentId: String(snapshot.agentId || '').trim(),
     agentName: String(snapshot.agentName || '').trim(),
     promptVersion: String(snapshot.promptVersion || '').trim(),
+    ...projectContextSnapshotDelivery(snapshot),
     immutable: snapshot.immutable !== false,
     totalApproxTokens: nonNegativeInteger(snapshot.totalApproxTokens),
     totalByteSize: nonNegativeInteger(snapshot.totalByteSize),
@@ -91,6 +114,7 @@ export function buildLightweightContextSnapshotReference(snapshot: any) {
     agentId: String(snapshot.agentId || '').trim(),
     agentName: String(snapshot.agentName || '').trim(),
     promptVersion: String(snapshot.promptVersion || '').trim(),
+    ...projectContextSnapshotDelivery(snapshot),
     immutable: snapshot.immutable !== false,
     totalApproxTokens: nonNegativeInteger(snapshot.totalApproxTokens),
     totalByteSize: nonNegativeInteger(snapshot.totalByteSize),

@@ -128,6 +128,7 @@ test('role UI payload keeps family fields credential-free and preserves complete
     avatarDataUrl: 'data:image/png;base64,AAAA',
     modelProfiles: [{ id: 'deep', name: 'Deep', description: '', provider: 'openai', model: 'gpt-5.4', thinking: 'high' }],
     isDefaultChatRole: true,
+    sessionReuseEnabled: true,
   });
 
   const custom = utils.buildRolePayload({

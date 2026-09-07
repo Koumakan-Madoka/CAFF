@@ -1,0 +1,6 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Regression and real SQLite test patterns"}
+{"file": ".trellis/spec/runtime/agent-context-inspector.md", "reason": "Verify privacy, parity and old schema"}
+{"file": ".trellis/spec/backend/message-detail-storage.md", "reason": "Verify bounded point reads and detail contracts"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Verify trace UI, narrow layout and semantics"}

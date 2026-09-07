@@ -24,6 +24,7 @@ const {
   createCrossConversationDeliveryRepository,
 } = require('../storage/chat/cross-conversation-delivery.repository');
 const { createChatPlanRepository } = require('../storage/chat/plan.repository');
+const { createChatSessionReuseRepository } = require('../storage/chat/session-reuse.repository');
 const {
   NODE_STATUSES,
   validatePlanDoc,
@@ -250,6 +251,11 @@ function normalizeAgentRow(row: any) {
     roleKind: row.role_kind || 'custom',
     modelFamily: row.model_family || null,
     isDefaultChatRole: Boolean(row.is_default_chat_role),
+    // ADR 0001 Phase 2: per-agent reuse toggle defaults ON; legacy rows
+    // without the column (pre-migration reads in tests) also default ON.
+    sessionReuseEnabled: row.session_reuse_enabled === undefined || row.session_reuse_enabled === null
+      ? true
+      : Boolean(row.session_reuse_enabled),
     selectedModelProfileId: selectedModelProfileId || null,
     selectedModelProfile,
     conversationSkillIds: parseSkillRefs(row.conversation_skills_json),
@@ -281,6 +287,7 @@ function normalizeMessageRow(row: any) {
     errorMessage: row.error_message || '',
     metadata: parseJson(row.metadata_json),
     createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at,
   };
 }
 
@@ -967,6 +974,7 @@ export class ChatAppStore {
       this.imageUploadRepository = createImageUploadRepository(this.db);
       this.crossConversationDeliveryRepository = createCrossConversationDeliveryRepository(this.db);
       this.planRepository = createChatPlanRepository(this.db);
+      this.sessionReuseRepository = createChatSessionReuseRepository(this.db);
       this.listAcceptanceRecordsStatement = this.db.prepare(`
         SELECT * FROM chat_acceptance_records
         WHERE conversation_id = ?
@@ -2166,6 +2174,7 @@ export class ChatAppStore {
       roleKind: 'custom',
       modelFamily: null,
       isDefaultChatRole: Boolean(input.isDefaultChatRole),
+      sessionReuseEnabled: input.sessionReuseEnabled !== false,
     });
   }
 
@@ -2186,6 +2195,7 @@ export class ChatAppStore {
       thinking: String(input.thinking || '').trim(),
       modelProfiles: this.normalizeModelProfiles(input.modelProfiles),
       isDefaultChatRole: Boolean(input.isDefaultChatRole),
+      sessionReuseEnabled: input.sessionReuseEnabled !== false,
       ...(Object.hasOwn(input, 'avatarDataUrl') ? { avatarDataUrl: normalizeAvatarDataUrl(input.avatarDataUrl) } : {}),
     });
   }
@@ -3397,6 +3407,26 @@ export class ChatAppStore {
 
   listMessages(conversationId: any) {
     return this.messageRepository.listByConversationId(conversationId).map(normalizeMessageRow);
+  }
+
+  getAgentSessionReuse(conversationId: any, agentId: any, profileId: any) {
+    return this.sessionReuseRepository.get(conversationId, agentId, profileId);
+  }
+
+  claimAgentSessionReuse(payload: any) {
+    return this.sessionReuseRepository.claim(payload);
+  }
+
+  restoreAgentSessionReuse(snapshot: any, now: any) {
+    return this.sessionReuseRepository.restoreReusable(snapshot, now);
+  }
+
+  markAgentSessionReuseReusable(payload: any) {
+    return this.sessionReuseRepository.markReusable(payload);
+  }
+
+  markAgentSessionReusePoisoned(conversationId: any, agentId: any, profileId: any, poisonReason: any, now: any) {
+    return this.sessionReuseRepository.markPoisoned(conversationId, agentId, profileId, poisonReason, now);
   }
 
   listConversationIdsWithPendingUserMessages() {

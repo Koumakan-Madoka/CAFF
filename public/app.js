@@ -50,7 +50,11 @@ const state = {
     errorMessage: '',
     conversationId: '',
     messageId: '',
+    data: null,
     snapshot: null,
+    runEvidence: null,
+    view: 'trace',
+    navigationStack: [],
   },
 };
 
@@ -228,6 +232,16 @@ const dom = {
   agentContextDrawer: /** @type {HTMLElement | null} */ (document.getElementById('agent-context-drawer')),
   agentContextCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('agent-context-close-button')),
   agentContextStatus: /** @type {HTMLElement | null} */ (document.getElementById('agent-context-status')),
+  agentContextBackButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('agent-context-back-button')),
+  agentTraceViewButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('agent-trace-view-button')),
+  agentContextViewButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('agent-context-view-button')),
+  agentContextCopyButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('agent-context-copy-button')),
+  agentContextPageNotice: /** @type {HTMLElement | null} */ (document.getElementById('agent-context-page-notice')),
+  agentSessionLineage: /** @type {HTMLElement | null} */ (document.getElementById('agent-session-lineage')),
+  agentTraceView: /** @type {HTMLElement | null} */ (document.getElementById('agent-trace-view')),
+  agentTraceSummary: /** @type {HTMLElement | null} */ (document.getElementById('agent-trace-summary')),
+  agentTraceEventList: /** @type {HTMLElement | null} */ (document.getElementById('agent-trace-event-list')),
+  agentContextView: /** @type {HTMLElement | null} */ (document.getElementById('agent-context-view')),
   agentContextSummary: /** @type {HTMLElement | null} */ (document.getElementById('agent-context-summary')),
   agentContextExportButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('agent-context-export-button')),
   agentContextSectionList: /** @type {HTMLElement | null} */ (document.getElementById('agent-context-section-list')),
@@ -1508,6 +1522,39 @@ function computeToolTraceActivity(summary, steps) {
   };
 }
 
+function formatTraceFailureValue(value, maxLength = 1200) {
+  if (value == null || value === '') {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+  }
+
+  try {
+    const seen = new WeakSet();
+    const text = JSON.stringify(value, (key, entry) => {
+      if (typeof entry === 'bigint') {
+        return `${entry}n`;
+      }
+
+      if (!entry || typeof entry !== 'object') {
+        return entry;
+      }
+
+      if (seen.has(entry)) {
+        return '[循环引用]';
+      }
+
+      seen.add(entry);
+      return entry;
+    }, 2);
+    return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+  } catch {
+    return '[结构化数据无法序列化]';
+  }
+}
+
 function buildFallbackFailureContext(trace, message) {
   const normalizedTrace = trace && typeof trace === 'object' ? trace : createEmptyToolTraceData(message && message.id ? message.id : '');
   const normalizedSteps = Array.isArray(normalizedTrace.steps) ? normalizedTrace.steps.filter(Boolean) : [];
@@ -1520,15 +1567,16 @@ function buildFallbackFailureContext(trace, message) {
 
   if (failedStep) {
     const detail = failedStep.errorSummary || failedStep.resultSummary || failedStep.requestSummary || failedStep.partialJson || '';
+    const detailText = detail ? formatTraceFailureValue(detail, 360) : '';
     return {
       hasFailure: true,
       source: 'step',
       stepId: String(failedStep.stepId || ''),
       toolName: String(failedStep.toolName || ''),
-      summary: detail
-        ? `${failedStep.toolName || 'tool'} · ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+      summary: detailText
+        ? `${failedStep.toolName || 'tool'} · ${detailText}`
         : `工具 ${failedStep.toolName || 'tool'} 执行失败`,
-      text: detail ? `${failedStep.toolName || 'tool'} · ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : '',
+      text: detailText ? `${failedStep.toolName || 'tool'} · ${detailText}` : '',
     };
   }
 
@@ -2127,7 +2175,7 @@ function toolTraceDetailSignature(trace) {
     try {
       return JSON.stringify(value).slice(0, maxLength);
     } catch {
-      return String(value).slice(0, maxLength);
+      return '[结构化数据无法序列化]';
     }
   }
 
@@ -3239,8 +3287,8 @@ async function exportMessageSession(conversationId, message) {
   }, 0);
 }
 
-function messageContextSnapshotUrl(conversationId, messageId, exportMode = false) {
-  const suffix = exportMode ? 'context-snapshot-export' : 'context-snapshot';
+function messageTraceInspectorUrl(conversationId, messageId, exportMode = false) {
+  const suffix = exportMode ? 'trace-inspector-export' : 'trace-inspector';
   return `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/${suffix}`;
 }
 
@@ -3280,9 +3328,282 @@ function contextSectionDisplayTitle(section) {
   return section && (section.displayTitle || section.title || section.sectionKey) ? section.displayTitle || section.title || section.sectionKey : '分区';
 }
 
+function formatInspectorTimestamp(value) {
+  const timestamp = Date.parse(String(value || ''));
+  if (!Number.isFinite(timestamp)) return '-';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(timestamp));
+}
+
+function traceEventStatusLabel(value) {
+  if (value === 'completed' || value === 'succeeded') return '完成';
+  if (value === 'failed') return '失败';
+  if (value === 'running') return '进行中';
+  if (value === 'queued') return '排队';
+  if (value === 'skipped') return '跳过';
+  return '已观测';
+}
+
+function lineageTerminationLabel(value) {
+  const labels = {
+    fresh_root: '已到达新建 Session 根节点',
+    legacy_schema: '旧版快照没有可验证的父引用',
+    parent_missing: '父消息缺失或已删除',
+    parent_snapshot_missing: '父消息没有上下文快照',
+    protected_parent: '父节点受 privateOnly 保护，不能定位',
+    invalid_reference: '父引用无效，已停止回溯',
+    cycle: '检测到循环引用，已停止回溯',
+    depth_limit: '已达到 8 层回溯上限',
+  };
+  return labels[value] || 'Lineage 已停止';
+}
+
+function messageCardForInspectorMessage(messageId) {
+  return Array.from(document.querySelectorAll('.message-card[data-message-id]'))
+    .find((card) => card && card.getAttribute('data-message-id') === String(messageId || '')) || null;
+}
+
+function renderAgentSessionLineage(inspector) {
+  if (!dom.agentSessionLineage) return;
+  dom.agentSessionLineage.textContent = '';
+  const lineage = inspector.data && inspector.data.lineage;
+  if (!lineage || !Array.isArray(lineage.nodes) || lineage.nodes.length === 0) return;
+
+  const heading = document.createElement('div');
+  const title = document.createElement('strong');
+  const limit = document.createElement('span');
+  const chain = document.createElement('div');
+  heading.className = 'agent-session-lineage-head';
+  title.textContent = 'Session lineage';
+  limit.className = 'muted';
+  limit.textContent = `最多 ${formatInspectorNumber(lineage.maxDepth)} 层`;
+  heading.append(title, limit);
+  chain.className = 'agent-session-lineage-chain';
+
+  lineage.nodes.forEach((node, index) => {
+    if (index > 0) {
+      const connector = document.createElement('span');
+      connector.className = 'agent-session-lineage-connector';
+      connector.textContent = '←';
+      connector.setAttribute('aria-hidden', 'true');
+      chain.appendChild(connector);
+    }
+    const button = document.createElement('button');
+    const relation = document.createElement('span');
+    const meta = document.createElement('span');
+    button.type = 'button';
+    button.className = 'agent-session-lineage-node';
+    button.dataset.messageId = node.messageId || '';
+    button.disabled = index === 0 || !node.messageId;
+    relation.textContent = node.relation === 'current' ? '当前' : node.relation === 'parent' ? '父 Session' : `祖先 ${node.depth}`;
+    meta.textContent = `${node.deliveryMode === 'resume' ? '复用' : node.deliveryMode === 'fresh' ? '新建' : '旧版'} · ${String(node.messageId || '').slice(0, 12)}`;
+    button.append(relation, meta);
+    button.addEventListener('click', () => void navigateAgentContextLineageNode(node.messageId));
+    chain.appendChild(button);
+  });
+
+  const termination = document.createElement('p');
+  termination.className = 'agent-session-lineage-termination muted';
+  termination.textContent = lineageTerminationLabel(lineage.termination && lineage.termination.code);
+  dom.agentSessionLineage.append(heading, chain, termination);
+}
+
+function createAgentTraceEvent(event, displaySequence, options = {}) {
+  const article = document.createElement('article');
+  const rail = document.createElement('div');
+  const sequence = document.createElement('span');
+  const line = document.createElement('span');
+  const main = document.createElement('div');
+  const header = document.createElement('div');
+  const title = document.createElement('strong');
+  const status = document.createElement('span');
+  const meta = document.createElement('div');
+  const summaryText = document.createElement('p');
+  article.className = `agent-trace-event ${event.kind || 'lifecycle'} ${event.status || 'observed'}`;
+  rail.className = 'agent-trace-event-rail';
+  sequence.className = 'agent-trace-event-sequence';
+  sequence.textContent = String(displaySequence || event.sequence || '');
+  line.className = 'agent-trace-event-line';
+  main.className = 'agent-trace-event-main';
+  header.className = 'agent-trace-event-header';
+  title.textContent = event.title || event.phase || 'Trace event';
+  status.className = `agent-trace-event-status ${event.status || 'observed'}`;
+  status.textContent = traceEventStatusLabel(event.status);
+  meta.className = 'agent-trace-event-meta';
+
+  const detail = event.detail && typeof event.detail === 'object' ? event.detail : null;
+  const tokenUsage = detail && detail.tokenUsage && typeof detail.tokenUsage === 'object' ? detail.tokenUsage : null;
+  const outputTokens = tokenUsage && tokenUsage.outputTokens !== null && tokenUsage.outputTokens !== undefined
+    ? Number(tokenUsage.outputTokens)
+    : null;
+  meta.textContent = [
+    options.showPhase ? event.phase || '' : '',
+    event.occurredAt ? formatInspectorTimestamp(event.occurredAt) : '时间未记录',
+    event.durationMs !== null && event.durationMs !== undefined ? `${formatInspectorNumber(event.durationMs)} ms` : '',
+    Number.isFinite(outputTokens) ? `输出 ${formatInspectorNumber(outputTokens)} tokens` : '',
+  ].filter(Boolean).join(' · ');
+  summaryText.className = 'agent-trace-event-summary';
+  summaryText.textContent = event.summary || '没有额外摘要';
+  header.append(title, status);
+  main.append(header, meta, summaryText);
+
+  if (detail) {
+    const details = document.createElement('details');
+    const detailsSummary = document.createElement('summary');
+    const body = document.createElement('pre');
+    details.className = 'agent-trace-event-details';
+    detailsSummary.textContent = event.kind === 'model_call' ? '模型调用详情' : event.kind === 'tool_execution' ? '工具执行详情' : '阶段详情';
+    body.textContent = JSON.stringify(detail, null, 2);
+    details.append(detailsSummary, body);
+    main.appendChild(details);
+  }
+  rail.append(sequence, line);
+  article.append(rail, main);
+  return article;
+}
+
+function renderAgentTrace(inspector) {
+  if (dom.agentTraceSummary) {
+    dom.agentTraceSummary.textContent = '';
+  }
+  if (dom.agentTraceEventList) {
+    dom.agentTraceEventList.textContent = '';
+  }
+  const trace = inspector.data && inspector.data.trace;
+  if (!trace) return;
+
+  const summary = trace.summary && typeof trace.summary === 'object' ? trace.summary : {};
+  if (dom.agentTraceSummary) {
+    const runEvidence = inspector.data.runEvidence && typeof inspector.data.runEvidence === 'object'
+      ? inspector.data.runEvidence
+      : {};
+    const tokenValue = (value) => value === null || value === undefined ? '-' : formatInspectorNumber(value);
+    const modelLabel = [inspector.data.session && inspector.data.session.provider, inspector.data.session && inspector.data.session.model]
+      .filter(Boolean)
+      .join(' / ') || '-';
+    const items = [
+      ['Session', inspector.data.session && inspector.data.session.label || '-'],
+      ['模型', modelLabel],
+      ['总耗时', summary.totalDurationMs === null || summary.totalDurationMs === undefined
+        ? '-'
+        : Number.isFinite(Number(summary.totalDurationMs)) ? `${formatInspectorNumber(summary.totalDurationMs)} ms` : '-'],
+      ['Input tokens', tokenValue(runEvidence.inputTokens)],
+      ['Output tokens', tokenValue(runEvidence.outputTokens)],
+      ['Cache read', tokenValue(runEvidence.cacheReadTokens)],
+      ['模型调用', formatInspectorNumber(summary.modelCallCount)],
+      ['工具执行', formatInspectorNumber(summary.toolExecutionCount)],
+      ['Provider miss', formatInspectorNumber(summary.providerMissCount)],
+      ['状态', traceEventStatusLabel(summary.status)],
+    ];
+    const grid = document.createElement('div');
+    grid.className = 'agent-trace-summary-grid';
+    items.forEach(([labelText, valueText]) => {
+      const cell = document.createElement('div');
+      const label = document.createElement('span');
+      const value = document.createElement('strong');
+      label.textContent = labelText;
+      value.textContent = valueText;
+      cell.append(label, value);
+      grid.appendChild(cell);
+    });
+    dom.agentTraceSummary.appendChild(grid);
+  }
+
+  if (!dom.agentTraceEventList) return;
+  const events = Array.isArray(trace.events) ? trace.events : [];
+  const primaryEvents = events.filter((event) => event && (event.kind === 'model_call' || event.kind === 'tool_execution'));
+  const diagnosticEvents = events.filter((event) => event && event.kind !== 'model_call' && event.kind !== 'tool_execution');
+  const timelineWindow = trace.timelineWindow && typeof trace.timelineWindow === 'object' ? trace.timelineWindow : {};
+
+  const primary = document.createElement('section');
+  const primaryHeader = document.createElement('div');
+  const primaryTitle = document.createElement('strong');
+  const primaryCount = document.createElement('span');
+  const primaryList = document.createElement('div');
+  primary.className = 'agent-trace-primary';
+  primaryHeader.className = 'agent-trace-section-head';
+  primaryTitle.textContent = '模型与工具';
+  primaryCount.className = 'muted';
+  primaryList.className = 'agent-trace-primary-events';
+  if (timelineWindow.truncated === true) {
+    primaryCount.textContent = `显示 ${formatInspectorNumber(timelineWindow.retainedEventCount)} / ${formatInspectorNumber(timelineWindow.totalEventCount)}，省略 ${formatInspectorNumber(timelineWindow.droppedEventCount)} 条`;
+  } else {
+    primaryCount.textContent = `${formatInspectorNumber(primaryEvents.length)} 个事件`;
+  }
+  primaryHeader.append(primaryTitle, primaryCount);
+  primaryEvents.forEach((event, index) => primaryList.appendChild(createAgentTraceEvent(event, index + 1)));
+  if (primaryEvents.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted small-note agent-trace-empty';
+    empty.textContent = '本次回复没有可展示的模型调用或工具执行事件。';
+    primaryList.appendChild(empty);
+  }
+  primary.append(primaryHeader, primaryList);
+  dom.agentTraceEventList.appendChild(primary);
+
+  if (diagnosticEvents.length > 0) {
+    const diagnostics = document.createElement('details');
+    const diagnosticsSummary = document.createElement('summary');
+    const diagnosticsTitle = document.createElement('strong');
+    const diagnosticsMeta = document.createElement('span');
+    const diagnosticsList = document.createElement('div');
+    const hasFailure = summary.status === 'failed' || diagnosticEvents.some((event) => event.status === 'failed');
+    diagnostics.className = 'agent-trace-diagnostics';
+    diagnostics.open = hasFailure;
+    diagnosticsTitle.textContent = '运行诊断';
+    diagnosticsMeta.className = hasFailure ? 'agent-trace-diagnostics-failed' : 'muted';
+    diagnosticsMeta.textContent = hasFailure ? `${diagnosticEvents.length} 个阶段 · 已自动展开失败证据` : `${diagnosticEvents.length} 个阶段`;
+    diagnosticsList.className = 'agent-trace-diagnostic-events';
+    diagnosticEvents.forEach((event) => diagnosticsList.appendChild(createAgentTraceEvent(event, event.sequence, { showPhase: true })));
+    diagnosticsSummary.append(diagnosticsTitle, diagnosticsMeta);
+    diagnostics.append(diagnosticsSummary, diagnosticsList);
+    dom.agentTraceEventList.appendChild(diagnostics);
+  }
+}
+
+function syncAgentTraceView(inspector) {
+  const traceActive = inspector.view !== 'context';
+  if (dom.agentTraceView) dom.agentTraceView.hidden = !traceActive;
+  if (dom.agentContextView) dom.agentContextView.hidden = traceActive;
+  if (dom.agentTraceViewButton) {
+    dom.agentTraceViewButton.classList.toggle('ghost-button', !traceActive);
+    dom.agentTraceViewButton.setAttribute('aria-selected', traceActive ? 'true' : 'false');
+  }
+  if (dom.agentContextViewButton) {
+    dom.agentContextViewButton.classList.toggle('ghost-button', traceActive);
+    dom.agentContextViewButton.setAttribute('aria-selected', traceActive ? 'false' : 'true');
+  }
+}
+
 function renderAgentContextInspector() {
   const inspector = state.contextInspector;
   const snapshot = inspector.snapshot;
+  const sessionLabel = inspector.data && inspector.data.session ? inspector.data.session.label : '';
+
+  syncAgentTraceView(inspector);
+  renderAgentSessionLineage(inspector);
+  renderAgentTrace(inspector);
+
+  if (dom.agentContextBackButton) {
+    dom.agentContextBackButton.hidden = !Array.isArray(inspector.navigationStack) || inspector.navigationStack.length === 0;
+    dom.agentContextBackButton.disabled = inspector.loading;
+  }
+  if (dom.agentContextCopyButton) {
+    dom.agentContextCopyButton.disabled = !inspector.data || inspector.loading;
+  }
+  if (dom.agentContextPageNotice) {
+    const outsideCurrentPage = Boolean(inspector.messageId && !messageCardForInspectorMessage(inspector.messageId));
+    dom.agentContextPageNotice.hidden = !outsideCurrentPage;
+    dom.agentContextPageNotice.textContent = outsideCurrentPage
+      ? '这条 lineage 消息不在当前分页，已通过 messageId 单独加载。'
+      : '';
+  }
 
   if (dom.agentContextStatus) {
     dom.agentContextStatus.textContent = inspector.loading
@@ -3290,7 +3611,7 @@ function renderAgentContextInspector() {
       : inspector.errorMessage
         ? inspector.errorMessage
         : snapshot
-          ? `${snapshot.agentName || snapshot.agentId || 'Agent'} · 回合 ${snapshot.turnId || '-'} · 约 ${formatInspectorNumber(snapshot.totalApproxTokens)} tokens`
+          ? `${snapshot.agentName || snapshot.agentId || 'Agent'} · ${sessionLabel || (snapshot.deliveryMode === 'resume' ? '复用旧 Session' : snapshot.deliveryMode === 'fresh' ? '新建 Session' : '旧版 Session')} · 约 ${formatInspectorNumber(snapshot.totalApproxTokens)} tokens`
           : '选择一条 AI 消息查看上下文快照';
     dom.agentContextStatus.classList.toggle('paused', Boolean(inspector.errorMessage));
   }
@@ -3305,12 +3626,42 @@ function renderAgentContextInspector() {
       const totalTokens = Math.max(1, Number(snapshot.totalApproxTokens || 0));
       const meta = document.createElement('div');
       meta.className = 'agent-context-meta-grid';
+      const retainedPrefix = snapshot.retainedSessionPrefix && typeof snapshot.retainedSessionPrefix === 'object'
+        ? snapshot.retainedSessionPrefix
+        : null;
+      const runEvidence = inspector.runEvidence && typeof inspector.runEvidence === 'object'
+        ? inspector.runEvidence
+        : null;
+      const isResume = snapshot.deliveryMode === 'resume';
+      const isLegacyResume = snapshot.deliveryMode === 'unknown' && runEvidence && runEvidence.sessionReused === true;
+      const deliveryLabel = isResume
+        ? '复用旧 Session（仅追加增量）'
+        : isLegacyResume
+          ? '旧版 Resume 快照（分区口径不可靠）'
+          : snapshot.deliveryMode === 'fresh'
+            ? '新建 Session（完整注入）'
+            : '旧版快照（投递方式未记录）';
+      const deltaScoped = isResume;
       const metaItems = [
         ['智能体', snapshot.agentName || snapshot.agentId || '-'],
         ['捕获时间', snapshot.capturedAt || '-'],
-        ['系统提示词 tokens 总数', formatInspectorNumber(snapshot.totalApproxTokens)],
-        ['总字节数', formatInspectorNumber(snapshot.totalByteSize)],
+        ['投递方式', deliveryLabel],
+        [deltaScoped ? '本轮追加 tokens' : snapshot.deliveryMode === 'fresh' ? '本轮注入 tokens' : '快照 tokens', formatInspectorNumber(snapshot.totalApproxTokens)],
+        [deltaScoped ? '本轮追加字节数' : snapshot.deliveryMode === 'fresh' ? '本轮注入字节数' : '快照字节数', formatInspectorNumber(snapshot.totalByteSize)],
       ];
+      if (retainedPrefix) {
+        metaItems.push(
+          ['保留前缀 Session', retainedPrefix.sessionName || '-'],
+          ['保留前缀游标', `${formatInspectorNumber(retainedPrefix.cursorMessageCount)} 条 · ${retainedPrefix.cursorMessageId || '-'}`],
+          ['静态段 Hash', retainedPrefix.staticSegmentHash || '-']
+        );
+      }
+      if ((isResume || isLegacyResume) && runEvidence) {
+        metaItems.push(
+          ['Cache read tokens', runEvidence.cacheReadTokens === null ? '-' : formatInspectorNumber(runEvidence.cacheReadTokens)],
+          ['未缓存 input tokens', runEvidence.uncachedInputTokens === null ? '-' : formatInspectorNumber(runEvidence.uncachedInputTokens)]
+        );
+      }
       for (const item of metaItems) {
         const cell = document.createElement('div');
         const label = document.createElement('span');
@@ -3344,7 +3695,7 @@ function renderAgentContextInspector() {
   if (inspector.loading) {
     const loading = document.createElement('p');
     loading.className = 'muted small-note';
-    loading.textContent = '咕咕嘎嘎，正在啄上下文分区…';
+    loading.textContent = '正在加载上下文分区…';
     dom.agentContextSectionList.appendChild(loading);
     return;
   }
@@ -3385,37 +3736,90 @@ function renderAgentContextInspector() {
   }
 }
 
-async function openAgentContextInspector(conversationId, message) {
+async function openAgentContextInspector(conversationId, message, options = {}) {
+  if (!options.preserveHistory) {
+    state.contextInspector.navigationStack = [];
+    state.contextInspector.view = 'trace';
+  }
   state.contextInspector.open = true;
   state.contextInspector.loading = true;
   state.contextInspector.errorMessage = '';
   state.contextInspector.conversationId = conversationId;
   state.contextInspector.messageId = message && message.id ? message.id : '';
+  state.contextInspector.data = null;
   state.contextInspector.snapshot = null;
+  state.contextInspector.runEvidence = null;
   setAgentContextDrawerOpen(true);
 
   try {
-    const result = await fetchJson(messageContextSnapshotUrl(conversationId, message.id));
+    const result = await fetchJson(messageTraceInspectorUrl(conversationId, message.id));
+    state.contextInspector.data = result && typeof result === 'object' ? result : null;
     state.contextInspector.snapshot = result && result.snapshot ? result.snapshot : null;
+    state.contextInspector.runEvidence = result && result.runEvidence ? result.runEvidence : null;
     if (!state.contextInspector.snapshot) {
-      state.contextInspector.errorMessage = '这条消息没有可展示的上下文快照';
+      state.contextInspector.errorMessage = '这条消息没有可展示的 Trace';
     }
   } catch (error) {
-    state.contextInspector.errorMessage = error && error.message ? error.message : '上下文快照加载失败';
+    state.contextInspector.errorMessage = error && error.message ? error.message : 'Trace Inspector 加载失败';
   } finally {
     state.contextInspector.loading = false;
     renderAgentContextInspector();
   }
 }
 
+async function navigateAgentContextLineageNode(messageId) {
+  const inspector = state.contextInspector;
+  const targetMessageId = String(messageId || '').trim();
+  if (!targetMessageId || !inspector.conversationId || targetMessageId === inspector.messageId) return;
+  if (!Array.isArray(inspector.navigationStack)) inspector.navigationStack = [];
+  if (inspector.messageId) inspector.navigationStack.push(inspector.messageId);
+
+  const card = messageCardForInspectorMessage(targetMessageId);
+  if (card && typeof card.scrollIntoView === 'function') {
+    card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    card.classList.add('trace-located');
+    window.setTimeout(() => card.classList.remove('trace-located'), 1400);
+  }
+  await openAgentContextInspector(inspector.conversationId, { id: targetMessageId }, { preserveHistory: true });
+}
+
+async function navigateBackAgentContextInspector() {
+  const inspector = state.contextInspector;
+  if (!Array.isArray(inspector.navigationStack) || inspector.navigationStack.length === 0) return;
+  const targetMessageId = inspector.navigationStack.pop();
+  await openAgentContextInspector(inspector.conversationId, { id: targetMessageId }, { preserveHistory: true });
+}
+
+function setAgentTraceInspectorView(view) {
+  state.contextInspector.view = view === 'context' ? 'context' : 'trace';
+  renderAgentContextInspector();
+}
+
+async function copyAgentTraceInspector() {
+  const inspector = state.contextInspector;
+  if (!inspector.data) {
+    showToast('暂无可复制的 Trace');
+    return;
+  }
+  const text = JSON.stringify(inspector.data, null, 2);
+  if (typeof copyTextToClipboard === 'function') {
+    await copyTextToClipboard(text);
+  } else if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    await navigator.clipboard.writeText(text);
+  } else {
+    throw new Error('当前环境不支持复制');
+  }
+  showToast('已复制安全 Trace 投影');
+}
+
 async function exportAgentContextSnapshot() {
   const inspector = state.contextInspector;
   if (!inspector.conversationId || !inspector.messageId || !inspector.snapshot) {
-    showToast('暂无可导出的上下文快照');
+    showToast('暂无可导出的 Trace');
     return;
   }
 
-  const response = await fetch(messageContextSnapshotUrl(inspector.conversationId, inspector.messageId, true), {
+  const response = await fetch(messageTraceInspectorUrl(inspector.conversationId, inspector.messageId, true), {
     headers: { Accept: 'text/markdown' },
   });
 
@@ -3425,7 +3829,7 @@ async function exportAgentContextSnapshot() {
   }
 
   const blob = await response.blob();
-  const fileName = downloadFileNameFromResponse(response, `agent-context-${inspector.messageId}.md`);
+  const fileName = downloadFileNameFromResponse(response, `trace-inspector-${inspector.messageId}.md`);
   const objectUrl = window.URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = objectUrl;
@@ -4522,6 +4926,28 @@ function bindEvents() {
     });
   }
 
+  if (dom.agentContextBackButton) {
+    dom.agentContextBackButton.addEventListener('click', () => void navigateBackAgentContextInspector());
+  }
+
+  if (dom.agentTraceViewButton) {
+    dom.agentTraceViewButton.addEventListener('click', () => setAgentTraceInspectorView('trace'));
+  }
+
+  if (dom.agentContextViewButton) {
+    dom.agentContextViewButton.addEventListener('click', () => setAgentTraceInspectorView('context'));
+  }
+
+  if (dom.agentContextCopyButton) {
+    dom.agentContextCopyButton.addEventListener('click', async () => {
+      try {
+        await copyAgentTraceInspector();
+      } catch (error) {
+        showToast(error && error.message ? error.message : '复制失败');
+      }
+    });
+  }
+
   if (dom.agentContextExportButton) {
     dom.agentContextExportButton.addEventListener('click', async () => {
       const previousText = dom.agentContextExportButton.textContent;
@@ -4529,7 +4955,7 @@ function bindEvents() {
       dom.agentContextExportButton.textContent = '导出中';
       try {
         await exportAgentContextSnapshot();
-        showToast('上下文 Markdown 已导出');
+        showToast('Trace Markdown 已导出');
       } catch (error) {
         showToast(error && error.message ? error.message : '导出失败');
       } finally {

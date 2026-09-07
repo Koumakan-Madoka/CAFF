@@ -423,6 +423,57 @@ CREATE INDEX IF NOT EXISTS idx_chat_plans_owner
   `);
 }
 
+function ensureChatAgentSessionReuseSchema(db: any) {
+  // Per-(conversation, agent, profile) provider session reuse bookkeeping.
+  // See docs/adr/0001-agent-session-reuse.md. The cursor consistency snapshot
+  // (count + first/last message id + max updated_at over chat_messages up to
+  // the cursor) lets the executor detect edits/deletions of already-injected
+  // history and poison the session instead of silently reusing a stale one.
+  db.exec(`
+CREATE TABLE IF NOT EXISTS chat_agent_session_reuse (
+  conversation_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('reusable', 'busy', 'poisoned')),
+  session_name TEXT,
+  session_path TEXT,
+  static_segment_hash TEXT,
+  cursor_message_id TEXT,
+  cursor_message_count INTEGER NOT NULL DEFAULT 0 CHECK (cursor_message_count >= 0),
+  cursor_first_message_id TEXT,
+  cursor_max_updated_at TEXT,
+  last_run_id INTEGER,
+  last_assistant_message_id TEXT,
+  usage_input_tokens INTEGER CHECK (usage_input_tokens IS NULL OR usage_input_tokens >= 0),
+  usage_context_window INTEGER CHECK (usage_context_window IS NULL OR usage_context_window > 0),
+  usage_ratio REAL CHECK (usage_ratio IS NULL OR (usage_ratio >= 0 AND usage_ratio <= 1)),
+  last_reply_at TEXT,
+  poison_reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, agent_id, profile_id),
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  CHECK (length(trim(profile_id)) > 0),
+  CHECK (
+    state <> 'reusable'
+    OR (
+      session_path IS NOT NULL AND length(trim(session_path)) > 0
+      AND session_name IS NOT NULL AND length(trim(session_name)) > 0
+      AND static_segment_hash IS NOT NULL AND length(trim(static_segment_hash)) > 0
+      AND cursor_message_id IS NOT NULL AND length(trim(cursor_message_id)) > 0
+    )
+  ),
+  CHECK (
+    state <> 'poisoned'
+    OR (poison_reason IS NOT NULL AND length(trim(poison_reason)) > 0)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_agent_session_reuse_state
+  ON chat_agent_session_reuse (state, updated_at DESC);
+  `);
+}
+
 function ensureCrossConversationDeliverySchema(db: any) {
   db.exec(`
 CREATE TABLE IF NOT EXISTS chat_cross_conversation_deliveries (
@@ -597,6 +648,7 @@ CREATE TABLE IF NOT EXISTS chat_agents (
   role_kind TEXT NOT NULL CHECK (role_kind IN ('model_family', 'custom')),
   model_family TEXT,
   is_default_chat_role INTEGER NOT NULL DEFAULT 0 CHECK (is_default_chat_role IN (0, 1)),
+  session_reuse_enabled INTEGER NOT NULL DEFAULT 1 CHECK (session_reuse_enabled IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   CHECK (
@@ -1017,6 +1069,14 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   ensureColumn(db, 'chat_agents', 'avatar_data_url', 'avatar_data_url TEXT');
   ensureColumn(db, 'chat_agents', 'sandbox_name', 'sandbox_name TEXT');
   ensureColumn(db, 'chat_agents', 'skills_json', 'skills_json TEXT');
+  // ADR 0001 Phase 2: per-agent session reuse toggle, defaults ON. The env
+  // flag PI_CHAT_SESSION_REUSE_ENABLED remains the global kill switch.
+  ensureColumn(
+    db,
+    'chat_agents',
+    'session_reuse_enabled',
+    'session_reuse_enabled INTEGER NOT NULL DEFAULT 1 CHECK (session_reuse_enabled IN (0, 1))'
+  );
   ensureColumn(db, 'chat_conversations', 'type', "type TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'chat_conversations', 'metadata_json', 'metadata_json TEXT');
   ensureColumn(db, 'chat_conversations', 'branch', 'branch TEXT');
@@ -1034,6 +1094,15 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   ensureChatConversationLineageSchema(db);
   ensureChatPlanSchema(db);
   ensureCrossConversationDeliverySchema(db);
+  ensureChatAgentSessionReuseSchema(db);
+
+  // chat_messages rows are mutated in place (streaming append, final update)
+  // without an updated_at column on legacy databases; the session-reuse cursor
+  // consistency check needs max(updated_at), so backfill from created_at.
+  ensureColumn(db, 'chat_messages', 'updated_at', 'updated_at TEXT');
+  db.exec(`
+UPDATE chat_messages SET updated_at = created_at WHERE updated_at IS NULL;
+  `);
 
   ensureColumn(db, 'image_upload_batches', 'consumed_at', 'consumed_at TEXT');
 

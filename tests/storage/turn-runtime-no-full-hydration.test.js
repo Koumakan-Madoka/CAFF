@@ -461,7 +461,8 @@ test('message repository prompt projection preserves imported rows with null tur
       error_message TEXT,
       metadata_json TEXT,
       client_request_id TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      updated_at TEXT
     );
   `);
   const repository = createChatMessageRepository(db);

@@ -735,7 +735,10 @@ test('assistant message tool trace summarizes session calls and redacts sensitiv
               arguments: {
                 path: path.join(projectDir, '.trellis', 'spec', 'frontend', 'index.md'),
               },
-            },
+              partialJson: {
+                path: path.join(projectDir, '.trellis', 'spec', 'frontend', 'index.md'),
+                apiKey: 'sk-session-structured-secret',
+              },            },
             {
               type: 'text',
               text: 'done',
@@ -791,6 +794,9 @@ test('assistant message tool trace summarizes session calls and redacts sensitiv
   assert.equal(trace.summary.status, 'failed');
   assert.equal(trace.session.provider, 'demo-provider');
   assert.equal(trace.sessionToolCalls[0].toolName, 'read');
+  assert.equal(trace.sessionToolCalls[0].partialJson.includes('[object Object]'), false);
+  assert.equal(trace.sessionToolCalls[0].partialJson.includes('sk-session-structured-secret'), false);
+  assert.equal(trace.sessionToolCalls[0].partialJson.includes('"apiKey": "[redacted]"'), true);
   assert.equal(trace.bridgeToolEvents[0].toolName, 'send-public');
   assert.equal(trace.bridgeToolEvents[0].status, 'failed');
   assert.equal(trace.bridgeToolEvents[0].durationMs, 1250);
@@ -1548,6 +1554,36 @@ test('live tool step helpers keep stable ids and redact sensitive payloads', () 
       index: 1,
     }
   );
+  const structuredPartialJson = createLiveSessionToolStep(
+    {
+      name: 'read',
+      arguments: { path: 'README.md' },
+      partialJson: {
+        path: 'README.md',
+        options: { include: ['heading', 'body'] },
+        apiKey: 'sk-structured-secret',
+      },
+    },
+    {
+      agentDir: tempDir,
+      createdAt: '2026-04-10T00:00:00.600Z',
+      index: 2,
+    }
+  );
+  const cyclicPartialJson = {};
+  cyclicPartialJson.self = cyclicPartialJson;
+  const cyclicSessionStep = createLiveSessionToolStep(
+    {
+      name: 'read',
+      arguments: { path: 'README.md' },
+      partialJson: cyclicPartialJson,
+    },
+    {
+      agentDir: tempDir,
+      createdAt: '2026-04-10T00:00:00.700Z',
+      index: 3,
+    }
+  );
   const nextAnonymousSessionStep = createLiveSessionToolStep(
     {
       name: 'bash',
@@ -1597,7 +1633,13 @@ test('live tool step helpers keep stable ids and redact sensitive payloads', () 
   assert.equal(sessionStep.stepId, 'session-session-tool-live-1');
   assert.equal(sessionStep.createdAt, '2026-04-10T00:00:00.000Z');
   assert.equal(anonymousSessionStep.stepId, 'session-2');
+  assert.equal(structuredPartialJson.partialJson.includes('[object Object]'), false);
+  assert.equal(structuredPartialJson.partialJson.includes('sk-structured-secret'), false);
+  assert.equal(structuredPartialJson.partialJson.includes('"apiKey": "[redacted]"'), true);
+  assert.equal(cyclicSessionStep.partialJson.includes('[object Object]'), false);
+  assert.equal(cyclicSessionStep.partialJson.includes('[循环引用]'), true);
   assert.equal(nextAnonymousSessionStep.stepId, 'session-3');
+
   assert.equal(bridgeStep.stepId, 'bridge-tool-live-1');
   assert.equal(bridgeStep.status, 'failed');
   assert.equal(
