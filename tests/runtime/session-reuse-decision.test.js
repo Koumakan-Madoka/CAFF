@@ -188,6 +188,54 @@ test('evaluateSessionReuse happy path returns the delta for tail injection', () 
   assert.deepEqual(decision.delta.map((item) => item.id), ['m-3']);
 });
 
+test('evaluateSessionReuse applies strict Goal identity, revision, and 50% gates for auto continuation', () => {
+  const strictGoal = {
+    strict: true,
+    goalId: 'goal-a',
+    goalRevision: 3,
+    triggerGoalId: 'goal-a',
+    triggerGoalRevision: 3,
+  };
+  const strictInput = decisionInput({
+    row: reusableRow({ goalId: 'goal-a', goalRevision: 3 }),
+    goal: strictGoal,
+  });
+
+  assert.equal(evaluateSessionReuse(strictInput).reuse, true);
+  assert.equal(
+    evaluateSessionReuse({ ...strictInput, row: reusableRow({ goalId: 'goal-b', goalRevision: 3 }) }).reason,
+    'goal_identity_mismatch'
+  );
+  assert.equal(
+    evaluateSessionReuse({ ...strictInput, row: reusableRow({ goalId: 'goal-a', goalRevision: 2 }) }).reason,
+    'goal_revision_mismatch'
+  );
+  assert.equal(
+    evaluateSessionReuse({ ...strictInput, row: reusableRow({ goalId: null, goalRevision: null }) }).reason,
+    'goal_identity_missing'
+  );
+  assert.equal(
+    evaluateSessionReuse({ ...strictInput, row: reusableRow({ goalId: 'goal-a', goalRevision: 3, usageRatio: 0.5 }) }).reason,
+    'usage_ratio_above_threshold'
+  );
+  assert.equal(
+    evaluateSessionReuse({
+      ...strictInput,
+      config: { ...strictInput.config, maxUsageRatio: 0.8 },
+      row: reusableRow({ goalId: 'goal-a', goalRevision: 3, usageRatio: 0.5 }),
+    }).reason,
+    'usage_ratio_above_threshold'
+  );
+  assert.equal(
+    evaluateSessionReuse({
+      ...strictInput,
+      goal: { ...strictGoal, strict: false },
+      row: reusableRow({ goalId: 'goal-b', goalRevision: 99 }),
+    }).reuse,
+    true,
+    'human-triggered runs keep the normal reuse policy'
+  );
+});
 test('evaluateSessionReuse refuses with explicit reasons for every failure class', () => {
   assert.equal(evaluateSessionReuse(decisionInput({ row: null })).reason, 'no_prior_session');
   assert.equal(

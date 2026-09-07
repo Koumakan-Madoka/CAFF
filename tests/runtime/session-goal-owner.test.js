@@ -1,5 +1,10 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
+
+const { createChatAppStore } = require('../../build/lib/chat-app-store');
+const { withTempDir } = require('../helpers/temp-dir');
 
 const {
   applySessionGoalAction,
@@ -59,10 +64,98 @@ test('session goal owner persists through normalization and renders in the goal 
   const goal = getSessionGoal(conversation);
 
   assert.ok(goal);
+  assert.match(goal.goalId, /^legacy_goal_[0-9a-f]{24}$/u);
+  assert.equal(goal.goalId, getSessionGoal(conversation).goalId, 'legacy Goal identity must be stable across reads');
+  assert.equal(goal.revision, 1);
   assert.deepEqual(goal.owner, { agentId: 'agent-b', agentName: 'Bravo' });
 
   const prompt = formatSessionGoalForPrompt(conversation);
   assert.ok(prompt.includes('Owner: Bravo'), 'goal prompt should name the owner agent');
+});
+
+test('a checklist update preserves the same Goal continuation epoch and advances its revision', () => {
+  const { store, conversation } = createOwnerTestStore();
+  const initial = applySessionGoalAction(store, conversation.id, {
+    action: 'set',
+    objective: 'Keep the Goal identity stable while tracking progress',
+    checklist: [{ id: 'item-1', text: 'First step', status: 'todo' }],
+  });
+  const firstClaim = claimSessionGoalAutoContinue(store, conversation.id, { maxIterations: 20 });
+  assert.equal(firstClaim.runner.iteration, 1);
+
+  const updated = applySessionGoalAction(store, conversation.id, {
+    action: 'update-checklist',
+    checklist: [{ id: 'item-1', text: 'First step', status: 'done' }],
+  });
+  assert.equal(updated.goal.goalId, initial.goal.goalId);
+  assert.equal(updated.goal.revision, initial.goal.revision + 1);
+
+  const secondClaim = claimSessionGoalAutoContinue(store, conversation.id, { maxIterations: 20 });
+  assert.equal(secondClaim.runner.iteration, 2);
+});
+
+test('real SQLite preserves continuation iteration across checklist revision and restart', (t) => {
+  const tempDir = withTempDir('caff-goal-revision-runner-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  let store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = store.createConversation({
+    id: 'conversation-goal-revision-runner',
+    title: 'Goal revision runner',
+    type: 'standard',
+    projectScopeId: 'project-goal-revision-runner',
+    participants: ['role-family-gpt'],
+  });
+  const initial = applySessionGoalAction(store, conversation.id, {
+    action: 'set',
+    objective: 'Keep continuation count across a checklist update',
+    checklist: [{ id: 'item-1', text: 'First step', status: 'todo' }],
+  });
+  assert.equal(claimSessionGoalAutoContinue(store, conversation.id, { maxIterations: 20 }).runner.iteration, 1);
+
+  const updated = applySessionGoalAction(store, conversation.id, {
+    action: 'update-checklist',
+    checklist: [{ id: 'item-1', text: 'First step', status: 'done' }],
+  });
+  assert.equal(updated.goal.goalId, initial.goal.goalId);
+  assert.equal(updated.goal.revision, 2);
+
+  store.close();
+  store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const secondClaim = claimSessionGoalAutoContinue(store, conversation.id, { maxIterations: 20 });
+  assert.equal(secondClaim.runner.iteration, 2);
+  assert.equal(secondClaim.runner.consecutiveModelFailureCount, 0);
+});
+
+test('Goal identity is immutable within a lifecycle and renewed by set or resume', () => {
+  const { store, conversation } = createOwnerTestStore();
+  const initial = applySessionGoalAction(store, conversation.id, {
+    action: 'set',
+    objective: 'Track Goal identity and revision',
+  }).goal;
+  assert.match(initial.goalId, /^goal_/u);
+  assert.equal(initial.revision, 1);
+
+  const paused = applySessionGoalAction(store, conversation.id, { action: 'pause' }).goal;
+  assert.equal(paused.goalId, initial.goalId);
+  assert.equal(paused.revision, 2);
+
+  const resumed = applySessionGoalAction(store, conversation.id, { action: 'resume' }).goal;
+  assert.notEqual(resumed.goalId, initial.goalId);
+  assert.equal(resumed.revision, 1);
+
+  const replaced = applySessionGoalAction(store, conversation.id, {
+    action: 'set',
+    objective: 'A replacement Goal',
+  }).goal;
+  assert.notEqual(replaced.goalId, resumed.goalId);
+  assert.equal(replaced.revision, 1);
 });
 
 test('a user-created goal keeps owner empty', () => {

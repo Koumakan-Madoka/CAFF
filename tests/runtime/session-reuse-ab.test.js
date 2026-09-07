@@ -67,6 +67,8 @@ function attachReuseStore(store, reuseState) {
       !row
       || row.state !== 'reusable'
       || row.staticSegmentHash !== payload.expectedHash
+      || (row.goalId || null) !== (payload.expectedGoalId || null)
+      || (row.goalRevision || null) !== (payload.expectedGoalRevision || null)
       || row.cursorMessageId !== payload.expectedCursorMessageId
       || row.cursorMessageCount !== payload.expectedCursorMessageCount
       || row.cursorFirstMessageId !== payload.expectedCursorFirstMessageId
@@ -533,6 +535,145 @@ test('reused mode resumes the stored session with only the delta appended and ad
   assert.equal(env.captured[2].options.resume, true);
   assert.match(env.captured[2].prompt, /ARRIVED-DURING-RUN/u);
   assert.equal(env.captured[2].prompt.includes('DELTA-U3-CONTENT'), false);
+});
+
+test('Goal Runner reuse requires matching Goal identity, revision, and usage below 50%', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  conversation.metadata.sessionGoal = {
+    goalId: 'goal-strict-a',
+    revision: 3,
+    objective: 'Continue only with proven Goal context',
+    status: 'active',
+    createdAt: '2026-09-02T09:00:00.000Z',
+    updatedAt: '2026-09-02T09:00:00.000Z',
+  };
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'START-STRICT-GOAL');
+
+  await runTurn({
+    executor: env.createExecutor(store),
+    conversation,
+    agent,
+    store,
+    turnId: 'turn-goal-fresh',
+  });
+  assert.equal(env.captured[0].options.resume, false);
+  assert.equal(store.peekReuseRow().goalId, 'goal-strict-a');
+  assert.equal(store.peekReuseRow().goalRevision, 3);
+
+  const matchingGoalMessage = store.createMessage({
+    id: 'goal-runner-1',
+    conversationId: conversation.id,
+    turnId: 'turn-goal-resume',
+    role: 'user',
+    senderName: 'Goal Runner',
+    content: 'Continue Goal A revision 3',
+    status: 'completed',
+    metadata: {
+      source: 'goal-runner',
+      goalAutoContinue: true,
+      goalId: 'goal-strict-a',
+      goalRevision: 3,
+    },
+  });
+  await runTurn({
+    executor: env.createExecutor(store),
+    conversation,
+    agent,
+    store,
+    turnId: 'turn-goal-resume',
+    promptUserMessage: matchingGoalMessage,
+  });
+  assert.equal(env.captured[1].options.resume, true);
+  const assistantCreates = () => store.messageWrites.creates.filter((input) => input.role === 'assistant');
+  assert.equal(assistantCreates()[1].metadata.goalAutoContinue, true);
+  assert.equal(assistantCreates()[1].metadata.goalId, 'goal-strict-a');
+  assert.equal(assistantCreates()[1].metadata.goalRevision, 3);
+
+  conversation.metadata.sessionGoal = {
+    ...conversation.metadata.sessionGoal,
+    revision: 4,
+    updatedAt: '2026-09-02T09:10:00.000Z',
+  };
+  const revisedGoalMessage = store.createMessage({
+    id: 'goal-runner-2',
+    conversationId: conversation.id,
+    turnId: 'turn-goal-revision-fresh',
+    role: 'user',
+    senderName: 'Goal Runner',
+    content: 'Continue Goal A revision 4',
+    status: 'completed',
+    metadata: {
+      source: 'goal-runner',
+      goalAutoContinue: true,
+      goalId: 'goal-strict-a',
+      goalRevision: 4,
+    },
+  });
+  await runTurn({
+    executor: env.createExecutor(store),
+    conversation,
+    agent,
+    store,
+    turnId: 'turn-goal-revision-fresh',
+    promptUserMessage: revisedGoalMessage,
+  });
+  assert.equal(env.captured[2].options.resume, false);
+  assert.equal(assistantCreates()[2].metadata.sessionReuseReason, 'goal_revision_mismatch');
+  assert.equal(store.peekReuseRow().goalRevision, 4);
+
+  store.seedReuseRow({ ...store.peekReuseRow(), usageRatio: 0.5 });
+  const thresholdGoalMessage = store.createMessage({
+    id: 'goal-runner-3',
+    conversationId: conversation.id,
+    turnId: 'turn-goal-threshold-fresh',
+    role: 'user',
+    senderName: 'Goal Runner',
+    content: 'Continue at the strict usage boundary',
+    status: 'completed',
+    metadata: {
+      source: 'goal-runner',
+      goalAutoContinue: true,
+      goalId: 'goal-strict-a',
+      goalRevision: 4,
+    },
+  });
+  await runTurn({
+    executor: env.createExecutor(store),
+    conversation,
+    agent,
+    store,
+    turnId: 'turn-goal-threshold-fresh',
+    promptUserMessage: thresholdGoalMessage,
+  });
+  assert.equal(env.captured[3].options.resume, false);
+  assert.equal(assistantCreates()[3].metadata.sessionReuseReason, 'usage_ratio_above_threshold');
+
+  store.seedReuseRow({ ...store.peekReuseRow(), goalId: 'another-goal', goalRevision: 99 });
+  const humanMessage = store.createMessage({
+    id: 'u-human-after-goal',
+    conversationId: conversation.id,
+    turnId: 'turn-human-normal-policy',
+    role: 'user',
+    senderName: 'User',
+    content: 'A human follow-up keeps normal reuse rules',
+    status: 'completed',
+  });
+  await runTurn({
+    executor: env.createExecutor(store),
+    conversation,
+    agent,
+    store,
+    turnId: 'turn-human-normal-policy',
+    promptUserMessage: humanMessage,
+  });
+  assert.equal(env.captured[4].options.resume, true);
+  assert.equal(assistantCreates()[4].metadata.sessionReuseReason, 'reused');
+  assert.equal(store.peekReuseRow().goalId, 'another-goal');
+  assert.equal(store.peekReuseRow().goalRevision, 99);
 });
 
 test('reused delta applies the same private and incomplete-message visibility rules as fresh prompts', async (t) => {

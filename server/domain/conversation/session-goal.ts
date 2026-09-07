@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { requiresBoundedConversationProjections } from '../../../lib/conversation-hydration-contract';
 import { createHttpError } from '../../http/http-errors';
@@ -35,6 +35,19 @@ const DEFAULT_SESSION_GOAL_CHECKLIST_TEXTS = [
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function newGoalId() {
+  return `goal_${randomUUID()}`;
+}
+
+function legacyGoalId(createdAt: string, objective: string) {
+  return `legacy_goal_${createHash('sha256').update(`${createdAt}\0${objective}`).digest('hex').slice(0, 24)}`;
+}
+
+function normalizeRevision(value: any) {
+  const revision = Number(value === undefined || value === null ? 1 : value);
+  return Number.isInteger(revision) && revision > 0 ? revision : 1;
 }
 
 /**
@@ -228,13 +241,18 @@ function normalizeSessionGoal(value: any) {
   }
 
   const status = normalizeStatus(value.status);
-  const createdAt = normalizeText(value.createdAt || value.created_at) || nowIso();
+  const storedCreatedAt = normalizeText(value.createdAt || value.created_at);
+  const createdAt = storedCreatedAt || nowIso();
   const updatedAt = normalizeText(value.updatedAt || value.updated_at) || createdAt;
   const completedAt = normalizeText(value.completedAt || value.completed_at);
   const checklist = normalizeChecklistItems(value.checklist, updatedAt);
   const owner = normalizeGoalOwner(value.owner);
+  const goalId = normalizeText(value.goalId || value.goal_id) || legacyGoalId(storedCreatedAt, objective);
+  const revision = normalizeRevision(value.revision || value.goalRevision || value.goal_revision);
 
   return {
+    goalId,
+    revision,
     objective,
     status,
     createdAt,
@@ -794,6 +812,7 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
   const pausedGoal = {
     ...goal,
     status: 'paused',
+    revision: goal.revision + 1,
     updatedAt: occurredAt,
   };
   const pausedRunner = {
@@ -843,6 +862,8 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
       status: 'active',
       createdAt: existingGoal ? existingGoal.createdAt : timestamp,
       updatedAt: timestamp,
+      goalId: newGoalId(),
+      revision: 1,
       ...(checklist.length > 0 ? { checklist } : {}),
     };
   }
@@ -854,6 +875,8 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
   if (action === 'update-checklist' || action === 'update_checklist') {
     const checklist = normalizeChecklistItems(checklistInputValue(input), timestamp);
     return {
+      goalId: existingGoal.goalId,
+      revision: existingGoal.revision + 1,
       objective: existingGoal.objective,
       status: existingGoal.status,
       createdAt: existingGoal.createdAt,
@@ -866,7 +889,10 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
 
   const nextStatus = action === 'pause' ? 'paused' : action === 'resume' ? 'active' : 'complete';
   const checklist = Array.isArray(existingGoal.checklist) ? existingGoal.checklist : [];
+  const resumed = action === 'resume';
   return {
+    goalId: resumed ? newGoalId() : existingGoal.goalId,
+    revision: resumed ? 1 : existingGoal.revision + 1,
     objective: existingGoal.objective,
     status: nextStatus,
     createdAt: existingGoal.createdAt,
@@ -1049,11 +1075,12 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
           agentId: ownerAgentId,
           agentName: normalizeText(agent.name) || ownerAgentId,
         },
+        revision: existingGoal.revision + 1,
         updatedAt: timestamp,
       };
     } else {
       const { owner: _previousOwner, ...goalWithoutOwner } = existingGoal;
-      nextGoal = { ...goalWithoutOwner, updatedAt: timestamp };
+      nextGoal = { ...goalWithoutOwner, revision: existingGoal.revision + 1, updatedAt: timestamp };
     }
 
     // set-owner is a factual owner change inside the current goal epoch: it
@@ -1089,6 +1116,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
   }
 
   const goal = goalFromMutation(action, existingGoal, input, timestamp);
+  const checklistRunner = checklistOnly ? getSessionGoalRunner(conversation) : null;
   // Checklist progress is factual state inside the current goal epoch. It
   // must not erase a pending proposal or the durable ruling that proves how
   // the current lifecycle state was reached.
@@ -1096,6 +1124,15 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     ? updateConversationMetadata(store, conversation, {
       ...currentMetadata(conversation),
       [SESSION_GOAL_METADATA_KEY]: goal,
+      ...(checklistRunner && checklistRunner.goalUpdatedAt === goalRunnerKey(existingGoal)
+        ? {
+          [SESSION_GOAL_RUNNER_METADATA_KEY]: {
+            ...checklistRunner,
+            goalUpdatedAt: goalRunnerKey(goal),
+            updatedAt: timestamp,
+          },
+        }
+        : {}),
     })
     : updateConversationGoal(store, conversation, goal, {
       clearRunner: action === 'set' || action === 'resume',
@@ -1208,6 +1245,7 @@ export function pauseSessionGoalForRemovedOwner(store: any, conversationId: any,
   const pausedGoal = {
     ...goal,
     status: 'paused',
+    revision: goal.revision + 1,
     updatedAt: timestamp,
   };
   const reason = clipText(

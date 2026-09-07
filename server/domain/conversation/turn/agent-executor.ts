@@ -54,6 +54,7 @@ const { summarizeModelUsageCalls, summarizeTokenUsage } = require('../../runtime
 const { resolveCurrentTrellisTaskName } = require('./trellis-context');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
+const { getSessionGoal } = require('../session-goal');
 
 const HEARTBEAT_EVENT_REASON_LIMIT = 200;
 const TURN_PREVIEW_LENGTH = 180;
@@ -1448,8 +1449,19 @@ export function createAgentExecutor(options: any = {}) {
       conversationId,
       imageInvocation.projectedMessages || promptMessages
     );
-    const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
-    const goal = metadata.sessionGoal && typeof metadata.sessionGoal === 'object' ? metadata.sessionGoal : null;
+    const goal = getSessionGoal(conversation);
+    const promptUserMetadata = promptUserMessage && promptUserMessage.metadata && typeof promptUserMessage.metadata === 'object'
+      ? promptUserMessage.metadata
+      : {};
+    const strictGoalReuse = promptUserMetadata.goalAutoContinue === true
+      && String(promptUserMetadata.source || '').trim().toLowerCase() === 'goal-runner';
+    const sessionReuseGoal = {
+      strict: strictGoalReuse,
+      goalId: goal && goal.goalId,
+      goalRevision: goal && goal.revision,
+      triggerGoalId: promptUserMetadata.goalId,
+      triggerGoalRevision: promptUserMetadata.goalRevision,
+    };
     const plan = typeof store.getPlanForConversation === 'function' ? store.getPlanForConversation(conversation.id) : null;
     const orchestrationMode = plan && ['draft', 'active'].includes(String(plan.status || ''))
       ? 'dag'
@@ -1568,6 +1580,7 @@ export function createAgentExecutor(options: any = {}) {
             config: sessionReuseConfig,
             now: nowIso(),
             messages: reuseMessages,
+            goal: sessionReuseGoal,
           });
           sessionReuseDecision = { reused: false, reason: decision.reason };
           if (decision.poison) {
@@ -1579,6 +1592,8 @@ export function createAgentExecutor(options: any = {}) {
               agentId: agent.id,
               profileId: reuseProfileId,
               expectedHash: staticSegmentHash,
+              expectedGoalId: reuseRow.goalId,
+              expectedGoalRevision: reuseRow.goalRevision,
               expectedCursorMessageId: reuseRow.cursorMessageId,
               expectedCursorMessageCount: reuseRow.cursorMessageCount,
               expectedCursorFirstMessageId: reuseRow.cursorFirstMessageId,
@@ -1689,6 +1704,9 @@ export function createAgentExecutor(options: any = {}) {
       sessionScope: 'agent_turn',
       sessionReused: resumeSession,
       sessionReuseReason: sessionReuseDecision.reason,
+      goalAutoContinue: strictGoalReuse,
+      goalId: goal && goal.goalId || null,
+      goalRevision: goal && goal.revision || null,
       streaming: false,
       routingMode,
       hop,
@@ -2325,6 +2343,9 @@ export function createAgentExecutor(options: any = {}) {
         sessionScope: 'agent_turn',
         sessionReused: resumeSession,
         sessionReuseReason: sessionReuseDecision.reason,
+        goalAutoContinue: strictGoalReuse,
+        goalId: goal && goal.goalId || null,
+        goalRevision: goal && goal.revision || null,
         sessionPath: result.sessionPath || handle.sessionPath || '',
         agentSandboxDir: agentSandbox.sandboxDir,
         agentPrivateDir: agentSandbox.privateDir,
@@ -2458,6 +2479,12 @@ export function createAgentExecutor(options: any = {}) {
           const usageRatio =
             usageInputTokens !== null && usageContextWindow ? Math.min(1, usageInputTokens / usageContextWindow) : null;
           const completedSessionPath = result.sessionPath || handle.sessionPath || '';
+          const deliveredGoalId = resumeSession
+            ? sessionReuseClaim && sessionReuseClaim.goalId
+            : goal && goal.goalId;
+          const deliveredGoalRevision = resumeSession
+            ? sessionReuseClaim && sessionReuseClaim.goalRevision
+            : goal && goal.revision;
           if (cursorSnapshot && completedSessionPath) {
             store.markAgentSessionReuseReusable({
               conversationId,
@@ -2472,6 +2499,8 @@ export function createAgentExecutor(options: any = {}) {
               usageInputTokens,
               usageContextWindow,
               usageRatio,
+              goalId: deliveredGoalId || null,
+              goalRevision: deliveredGoalRevision || null,
               lastReplyAt: stage.endedAt || nowIso(),
               now: nowIso(),
             });
@@ -2583,6 +2612,9 @@ export function createAgentExecutor(options: any = {}) {
           sessionScope: 'agent_turn',
           sessionReused: resumeSession,
           sessionReuseReason: sessionReuseDecision.reason,
+          goalAutoContinue: strictGoalReuse,
+          goalId: goal && goal.goalId || null,
+          goalRevision: goal && goal.revision || null,
           sessionPath: errorValue && errorValue.sessionPath ? errorValue.sessionPath : handle.sessionPath || '',
           agentSandboxDir: agentSandbox.sandboxDir,
           agentPrivateDir: agentSandbox.privateDir,

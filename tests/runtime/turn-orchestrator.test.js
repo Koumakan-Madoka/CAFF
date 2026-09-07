@@ -4427,6 +4427,8 @@ test('turn orchestrator auto-continues active session goals until safety budget'
 
   const autoMessages = conversation.messages.filter((message) => message.metadata && message.metadata.goalAutoContinue);
   assert.equal(autoMessages.length, 2);
+  assert.ok(autoMessages.every((message) => typeof message.metadata.goalId === 'string' && message.metadata.goalId));
+  assert.ok(autoMessages.every((message) => message.metadata.goalRevision === 1));
   assert.equal(seenPrompts.length, 2);
   assert.ok(seenPrompts.every((content) => content.includes('Finish the autonomous goal loop')));
   assert.equal(conversation.metadata.sessionGoal.status, 'active');

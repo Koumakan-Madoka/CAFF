@@ -447,6 +447,8 @@ CREATE TABLE IF NOT EXISTS chat_agent_session_reuse (
   usage_input_tokens INTEGER CHECK (usage_input_tokens IS NULL OR usage_input_tokens >= 0),
   usage_context_window INTEGER CHECK (usage_context_window IS NULL OR usage_context_window > 0),
   usage_ratio REAL CHECK (usage_ratio IS NULL OR (usage_ratio >= 0 AND usage_ratio <= 1)),
+  goal_id TEXT,
+  goal_revision INTEGER CHECK (goal_revision IS NULL OR goal_revision > 0),
   last_reply_at TEXT,
   poison_reason TEXT,
   created_at TEXT NOT NULL,
@@ -454,6 +456,10 @@ CREATE TABLE IF NOT EXISTS chat_agent_session_reuse (
   PRIMARY KEY (conversation_id, agent_id, profile_id),
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
   CHECK (length(trim(profile_id)) > 0),
+  CHECK (
+    (goal_id IS NULL AND goal_revision IS NULL)
+    OR (goal_id IS NOT NULL AND length(trim(goal_id)) > 0 AND goal_revision > 0)
+  ),
   CHECK (
     state <> 'reusable'
     OR (
@@ -472,6 +478,14 @@ CREATE TABLE IF NOT EXISTS chat_agent_session_reuse (
 CREATE INDEX IF NOT EXISTS idx_chat_agent_session_reuse_state
   ON chat_agent_session_reuse (state, updated_at DESC);
   `);
+
+  ensureColumn(db, 'chat_agent_session_reuse', 'goal_id', 'goal_id TEXT');
+  ensureColumn(
+    db,
+    'chat_agent_session_reuse',
+    'goal_revision',
+    'goal_revision INTEGER CHECK (goal_revision IS NULL OR goal_revision > 0)'
+  );
 }
 
 function ensureCrossConversationDeliverySchema(db: any) {

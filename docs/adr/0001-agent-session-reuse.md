@@ -19,6 +19,14 @@ Status: accepted (Phase 1 + Phase 2 delivered)
 - 复用是纯优化：任何不确定一律回退旧路径（新 session + 全量历史注入）。复用决策（sessionReused + 原因）写入 message metadata 供审计。
 - Context Inspector 必须展示**本轮实际投递**而不是复用判定前构造的 fresh 候选：fresh 快照记录完整 prompt sections；resume 快照只记录单一 `session_delta`（与实际追加的 user prompt 同源），旧上下文仅以 retained session prefix 的 session/hash/cursor 引用展示。cache-read/uncached token 属于运行后证据，从完成消息 metadata 在详情 API 投影，不回写运行前不可变快照。
 
+## Goal Runner 严格连续性（后续决策）
+
+Goal Runner 自动续跑比普通用户触发采用更严格的复用证明：Goal 拥有不可变 `goalId` 和单调 `revision`；自动续跑消息、当前 Goal、`chat_agent_session_reuse` 中 provider 已知版本必须三方一致。Goal ID/revision 缺失或不一致一律 fresh，并分别审计 `goal_identity_missing`、`goal_identity_mismatch`、`goal_revision_mismatch`。人工消息继续使用普通复用条件。
+
+自动续跑的 usage ratio 上限固定为普通配置与 `0.5` 的较小值，达到 50% 必须 fresh。`goal_id/goal_revision` 以 nullable additive columns 持久化；fresh 完整 prompt 记录当前版本，resume 因未重新投递 Goal 段而继承旧值。Goal Runner claim 消息固化其 Goal ID/revision，避免排队期间 Goal 变化被误认成同一版本。checklist 更新仍递增 revision，但同一 Goal runner 的 iteration/failure streak 会在原子 metadata 写中迁移，不再因 `updatedAt` 变化反复回到 1。
+
+该严格策略不改变 provider session 文件、实际 prompt、delta、KV cache、privateOnly 或工具语义；它只增加是否允许执行现有 `--resume` 路径的保守门禁。
+
 ## Considered Options
 
 - **保持每轮新建 session（原决策）**：简单、无污染风险，但 token 成本随历史线性增长，长房间不可用。拒绝。

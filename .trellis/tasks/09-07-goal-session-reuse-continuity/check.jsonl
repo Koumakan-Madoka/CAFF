@@ -1,0 +1,10 @@
+{"file":".agents/skills/check/SKILL.md","reason":"Post-implementation project quality verification"}
+{"file":".agents/skills/finish-work/SKILL.md","reason":"Candidate freeze and review readiness"}
+{"check":"npm run check","result":"pass"}
+{"check":"npm run typecheck","result":"pass (server and public)"}
+{"check":"npm run build","result":"pass"}
+{"check":"focused Goal/session reuse/storage","result":"52/52 pass"}
+{"check":"npm run test:smoke","result":"server 83/83 and mode-store 4/4 pass"}
+{"check":"npm run test:ui","result":"113/113 and structure 15/15 pass"}
+{"check":"npm run test:fast","result":"all reached suites pass; only two established Windows turn-orchestrator after-hook rmSync EPERM cleanup failures; remaining suites rerun separately and pass"}
+{"check":"git diff --check","result":"pass"}

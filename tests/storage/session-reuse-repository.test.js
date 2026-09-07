@@ -53,6 +53,8 @@ function reusablePayload(overrides = {}) {
     usageInputTokens: 40000,
     usageContextWindow: 128000,
     usageRatio: 0.3125,
+    goalId: 'goal-a',
+    goalRevision: 3,
     lastReplyAt: '2026-09-02T10:00:00.000Z',
     now: '2026-09-02T10:00:01.000Z',
     ...overrides,
@@ -65,6 +67,8 @@ function claimPayload(overrides = {}) {
     agentId: 'agent-1',
     profileId: 'default',
     expectedHash: 'hash-a',
+    expectedGoalId: 'goal-a',
+    expectedGoalRevision: 3,
     expectedCursorMessageId: 'm-2',
     expectedCursorMessageCount: 2,
     expectedCursorFirstMessageId: 'm-1',
@@ -99,7 +103,27 @@ test('session reuse repository: markReusable inserts a reusable row and reads ba
     assert.equal(loaded.cursorFirstMessageId, 'm-1');
     assert.equal(loaded.cursorMaxUpdatedAt, '2026-09-02T10:00:00.000Z');
     assert.equal(loaded.lastRunId, 7);
+    assert.equal(loaded.goalId, 'goal-a');
+    assert.equal(loaded.goalRevision, 3);
     assert.equal(loaded.poisonReason, null);
+  } finally {
+    store.close();
+  }
+});
+
+test('session reuse repository: non-Goal rows keep nullable Goal evidence and can be claimed', () => {
+  const { store } = createStore();
+  try {
+    const saved = store.markAgentSessionReuseReusable(reusablePayload({ goalId: null, goalRevision: null }));
+    assert.equal(saved.goalId, null);
+    assert.equal(saved.goalRevision, null);
+
+    const claimed = store.claimAgentSessionReuse(claimPayload({
+      expectedGoalId: null,
+      expectedGoalRevision: null,
+    }));
+    assert.ok(claimed);
+    assert.equal(claimed.state, 'busy');
   } finally {
     store.close();
   }
@@ -139,6 +163,19 @@ test('session reuse repository: claim rejects a stale static segment hash withou
 
     const claimed = store.claimAgentSessionReuse(claimPayload({ expectedHash: 'hash-b' }));
     assert.equal(claimed, null);
+    assert.equal(store.getAgentSessionReuse('conv-reuse', 'agent-1', 'default').state, 'reusable');
+  } finally {
+    store.close();
+  }
+});
+
+test('session reuse repository: claim rejects stale Goal identity or revision without touching state', () => {
+  const { store } = createStore();
+  try {
+    store.markAgentSessionReuseReusable(reusablePayload());
+
+    assert.equal(store.claimAgentSessionReuse(claimPayload({ expectedGoalId: 'goal-b' })), null);
+    assert.equal(store.claimAgentSessionReuse(claimPayload({ expectedGoalRevision: 2 })), null);
     assert.equal(store.getAgentSessionReuse('conv-reuse', 'agent-1', 'default').state, 'reusable');
   } finally {
     store.close();
@@ -192,6 +229,8 @@ test('session reuse repository: restoreReusable writes back the pre-claim snapsh
     assert.equal(restored.staticSegmentHash, reusable.staticSegmentHash);
     assert.equal(restored.cursorMessageId, reusable.cursorMessageId);
     assert.equal(restored.usageRatio, reusable.usageRatio);
+    assert.equal(restored.goalId, reusable.goalId);
+    assert.equal(restored.goalRevision, reusable.goalRevision);
   } finally {
     store.close();
   }
@@ -276,6 +315,12 @@ test('session reuse repository: reusable rows reject incomplete snapshots at the
     );
     assert.throws(() =>
       store.markAgentSessionReuseReusable(reusablePayload({ staticSegmentHash: '' }))
+    );
+    assert.throws(() =>
+      store.markAgentSessionReuseReusable(reusablePayload({ goalRevision: null }))
+    );
+    assert.throws(() =>
+      store.markAgentSessionReuseReusable(reusablePayload({ goalRevision: 0 }))
     );
   } finally {
     store.close();

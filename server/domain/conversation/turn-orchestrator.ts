@@ -1159,6 +1159,8 @@ export function createTurnOrchestrator(options: any = {}) {
           goalAutoContinue: true,
           goalIteration: claim.runner.iteration,
           goalMaxIterations: claim.runner.maxIterations,
+          goalId: claim.goal.goalId,
+          goalRevision: claim.goal.revision,
           goalObjective: claim.goal.objective,
           // Goal owner routing: stamp the persisted owner as the explicit
           // initial target so the queued batch routes to the owner instead
