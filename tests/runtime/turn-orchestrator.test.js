@@ -4633,9 +4633,9 @@ function createGoalOwnerStore(conversation) {
   };
 }
 
-function createGoalOwnerOrchestrator({ conversation, executedAgentIds }) {
+function createGoalOwnerOrchestrator({ conversation, executedAgentIds, store = createGoalOwnerStore(conversation) }) {
   return createTurnOrchestrator({
-    store: createGoalOwnerStore(conversation),
+    store,
     skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
     modeStore: { get() { return null; } },
     agentToolBridge: {},
@@ -4695,6 +4695,46 @@ test('turn orchestrator routes goal continuation to the goal owner over the late
   await waitForCondition(() => executedAgentIds.length > 0);
 
   assert.deepEqual(executedAgentIds, ['agent-b']);
+});
+
+test('turn orchestrator parks goal continuation until pending delegation settles', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-goal-delegation-parking-');
+  const sqlitePath = path.join(tempDir, 'goal-delegation-parking.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: { agentId: 'agent-b', agentName: 'Bravo' },
+    replies: [],
+  });
+  conversation.id = 'conversation-goal-delegation-parking';
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+  const store = createGoalOwnerStore(conversation);
+  let pendingDelegations = [{ id: 'delegation-pending-1', status: 'awaiting' }];
+  store.listPendingAgentDelegationsForConversation = (conversationId) => {
+    assert.equal(conversationId, conversation.id);
+    return pendingDelegations;
+  };
+
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const orchestrator = createGoalOwnerOrchestrator({ conversation, executedAgentIds, store });
+  const parked = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.deepEqual(parked, { scheduled: false, reason: 'pending_delegation' });
+  assert.equal(conversation.messages.some((message) => message.metadata && message.metadata.goalAutoContinue), false);
+  assert.deepEqual(executedAgentIds, []);
+
+  pendingDelegations = [];
+  const resumed = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(resumed.scheduled, true);
+  await waitForCondition(() => executedAgentIds.length === 1);
+  assert.deepEqual(executedAgentIds, ['agent-b']);
+  assert.equal(conversation.messages.filter((message) => message.metadata && message.metadata.goalAutoContinue).length, 1);
+  await waitForCondition(() => {
+    const stats = orchestrator.getRuntimeStats();
+    return stats.activeTurns === 0 && stats.activeQueues === 0 && stats.activeAgentSlots === 0;
+  });
 });
 
 test('delegation continuation is queued and drained through the main lane', { concurrency: false }, async (t) => {

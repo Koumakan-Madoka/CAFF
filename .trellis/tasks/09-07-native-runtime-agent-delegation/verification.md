@@ -5,6 +5,7 @@
 - Base: `develop@bb13875b74d481d1892a515984680ca0a191674b`
 - Initial implementation: `1835231`
 - First review fix candidate: `e01785c8f1f8dcd1fb8b9a6e8bd1a676b0f51d5f`
+- Cancellation lifecycle candidate: `79ba395b2e3f3f49101d4263e390c209145b522e`
 
 ## Regression Evidence
 
@@ -42,7 +43,7 @@ node tests/runtime/agent-delegation.test.js
 10 passed
 
 node --test --test-name-pattern='delegation cancellation|delegation continuation|goal continuation' tests/runtime/turn-orchestrator.test.js
-4 passed
+5 passed
 
 node tests/runtime/agent-tool-bridge.test.js
 35 passed
@@ -63,9 +64,11 @@ npm run test:smoke
 The focused cancellation scenario proves one running child is marked stopped,
 one queued child is cancelled before grant, and delegation source messages are
 not replayed by the main queue. The cancellation completion includes final child
-outcomes.
+outcomes. The Goal parking regression proves that a pending delegation prevents
+Goal Runner message creation, then terminal settlement allows exactly one
+continuation routed to the persisted Goal owner.
 
-`node tests/runtime/turn-orchestrator.test.js` passed 104/106. The two failures
+`node tests/runtime/turn-orchestrator.test.js` passed 105/107. The two failures
 are the pre-existing Windows `EPERM` failures in image-preflight test cleanup
 hooks at lines 6986 and 7052; both test bodies pass before `fs.rmSync` fails.
 `npm test` reaches the same two failures after all preceding suites, including
@@ -85,5 +88,8 @@ main create/await/yield/settle/continuation path working, then identified:
 - exact invocation authorization blocked post-yield await/cancel/read-context;
 - a low-reach top-level cancellation path could miss completion.
 
-The current fix addresses those findings and adds focused regression coverage.
-The fixed candidate SHA is recorded in the independent review request.
+The `79ba395` independent focused review verified each prior P1/P2 fix with
+separate reproduction and found no blocking issue. Its sole merge condition was
+that the spec-declared Goal parking behavior lacked a regression test. This
+supplemental change adds that test without changing production behavior; the
+remaining P3 observations are recorded as non-blocking residual risks.
