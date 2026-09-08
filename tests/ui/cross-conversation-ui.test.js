@@ -1035,3 +1035,82 @@ test('message timeline renders durable receipt actions, external provenance, and
   assert.ok(birth.querySelector('[data-cross-conversation-action="retry"]'));
   assert.equal(birth.querySelector('.message-body').textContent, 'This is the complete public first message.');
 });
+
+test('message timeline labels delegation inputs and completions with explicit routes', () => {
+  const dom = new JSDOM('<div id="message-timeline"></div>', { runScripts: 'outside-only' });
+  const { window } = dom;
+  window.CaffChat = {};
+  window.CaffShared = {};
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/shared/conversation-digest.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/cross-conversation-ui.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/message-images.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/message-timeline.js'), 'utf8'));
+
+  const messages = [
+    {
+      id: 'delegation-input-ui',
+      role: 'user',
+      senderName: 'Acceptance Requester',
+      content: 'Complete the delegated task.',
+      status: 'completed',
+      createdAt: '2026-09-08T00:00:00.000Z',
+      metadata: {
+        source: 'agent-delegation',
+        dispatchLane: 'side',
+        dispatchTargetAgentId: 'recipient-agent',
+        initialAgentIds: ['recipient-agent'],
+      },
+    },
+    {
+      id: 'delegation-completion-ui',
+      role: 'user',
+      senderName: 'Delegation Runtime',
+      content: 'Structured completion follows.',
+      status: 'completed',
+      createdAt: '2026-09-08T00:01:00.000Z',
+      metadata: {
+        source: 'agent-delegation-continuation',
+        initialAgentIds: ['requester-agent'],
+      },
+    },
+  ];
+  const agents = [
+    { id: 'requester-agent', name: 'Acceptance Requester' },
+    { id: 'recipient-agent', name: 'Acceptance Recipient' },
+  ];
+  const renderer = window.CaffChat.createMessageTimelineRenderer({
+    dom: { messageTimeline: window.document.getElementById('message-timeline') },
+    helpers: {
+      agentById: () => null,
+      buildAgentAvatarElement: () => window.document.createElement('span'),
+      canInspectToolTrace: () => false,
+      conversationSummaries: () => [],
+      crossConversationBundleForMessage: () => null,
+      displayedMessageBody: (message) => message.content,
+      digestStatusForConversation: () => null,
+      formatDateTime: () => '-',
+      isPrivateTimelineMessage: () => false,
+      liveStageForMessage: () => null,
+      liveStageLabel: () => '',
+      messageSessionInfo: () => ({ sessionPath: '', sessionName: '', canExport: false }),
+      privateRecipientNames: () => [],
+      renderMessageBody(container, text) { container.textContent = text; },
+      timelineMessagesForConversation: (value) => value.messages,
+      toolTraceSignatureForMessage: () => '',
+      toolTraceStateForMessage: () => null,
+    },
+    showToast() {},
+  });
+
+  renderer.render({ id: 'delegation-ui-conversation', messages, agents, metadata: {} }, null, []);
+
+  const input = window.document.querySelector('[data-message-id="delegation-input-ui"]');
+  assert.equal(input.querySelector('.message-sender-label').textContent, 'Delegation');
+  assert.equal(input.querySelector('.message-delegation-route').textContent, '委托：Acceptance Requester → Acceptance Recipient');
+  assert.doesNotMatch(input.querySelector('.message-sender').textContent, /You/u);
+
+  const completion = window.document.querySelector('[data-message-id="delegation-completion-ui"]');
+  assert.equal(completion.querySelector('.message-sender-label').textContent, 'Completion');
+  assert.equal(completion.querySelector('.message-delegation-route').textContent, '回程：Delegation Runtime → Acceptance Requester');
+  assert.doesNotMatch(completion.querySelector('.message-sender').textContent, /You/u);
+});

@@ -1301,6 +1301,14 @@ textarea {
   align-items: center;
 }
 
+.message-delegation-route {
+  display: inline-flex;
+  align-items: center;
+  color: color-mix(in srgb, currentColor 72%, var(--teal) 28%);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
 .message-privacy-badge {
   display: inline-flex;
   align-items: center;
