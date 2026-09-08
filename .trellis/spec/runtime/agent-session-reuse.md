@@ -4,7 +4,7 @@ ADR：`docs/adr/0001-agent-session-reuse.md`（推翻"每轮新建 session"的�
 
 ## 判定契约
 
-复用键 = `(conversationId, agentId, profileId)`。全部满足才复用，任一不满足回退旧路径（新 session + 全量历史）：
+复用键 = `(conversationId, agentId, profileId)`。普通触发全部满足既有条件才复用；Goal Runner 自动续跑还必须通过下方严格 Goal 连续性门禁。任一不满足都回退旧路径（新 session + 全量历史）：
 
 | 条件 | 不满足时的 reason |
 |------|------------------|
@@ -17,6 +17,59 @@ ADR：`docs/adr/0001-agent-session-reuse.md`（推翻"每轮新建 session"的�
 contextWindow 的来源链路：`resolveSessionReuseContextWindow` 从 `modelCatalog.getOptions()` 匹配 provider+model 并读取 `contextWindow` 字段。该字段必须由装配层透传——`lib/pi-model-catalog-host.mjs` 从 runtime 模型注册表携带（正整数，否则 null），`configured-model-catalog.ts` 的 rebuild 在 models.json 分支与 runtime 默认分支都必须复制该字段（`normalizeContextWindow` 只接受正整数，非法值归一为 null，models.json 值优先、runtime 值兜底）。任一环节丢字段都会导致 usage ratio 解析为 null → `usage_snapshot_missing` → 永远 fresh，且单测用 fake catalog 时不会暴露（必须用真实 `createConfiguredModelCatalog` 覆盖）。
 | 静态段 hash 一致 | `static_hash_mismatch` |
 | 游标一致性校验通过 | `cursor_history_mutated` → poison |
+
+## Goal Runner 严格复用
+
+仅 `source=goal-runner && goalAutoContinue=true` 的自动续跑使用严格策略；用户消息、mention、handoff 等人工/普通触发继续使用上表的普通策略，不因会话存在 active Goal 而增加门禁。
+
+- Goal 元数据包含不可变 `goalId` 与正整数 `revision`。新建/替换/恢复 Goal 生成新 ID 和 revision 1；同一 Goal 的 objective/status/owner/checklist 变化保留 ID 并递增 revision。
+- Goal Runner 消息在 claim 时固化 `goalId + goalRevision`。严格判定要求消息固化值、当前 Goal 和 reusable 行记录的 provider 已知值三方一致。缺失返回 `goal_identity_missing`，ID 不一致返回 `goal_identity_mismatch`，revision 不一致返回 `goal_revision_mismatch`。
+- 严格策略的 usage ratio 必须 `< min(普通配置阈值, 0.5)`。因此达到 0.5 必须 fresh，即使 `PI_CHAT_SESSION_REUSE_MAX_USAGE_RATIO` 被配置为更高；配置为更低值时更低值继续生效。
+- reusable 行的 nullable `goal_id/goal_revision` 表示该 provider Session 最近实际收到的 Goal 版本。fresh 完整 prompt 成功后记录当前 Goal；resume 未重新投递 Goal 段，因此成功后继承 claim 前值，绝不能把外部发生的新 revision 冒充为 provider 已知。
+- 原子 claim 同时使用 null-safe equality 守卫 `goal_id/goal_revision`。旧 schema 行迁移后为 null/null：普通触发兼容，严格 Goal Runner 以 `goal_identity_missing` fresh，并在首次干净 fresh 成功后自愈。
+- checklist 更新在同一 metadata 写中迁移同 Goal runner 的 `goalUpdatedAt` key，保留 iteration 与失败 streak；这修复了每次 checklist 更新后 continuation iteration 回到 1 的问题。
+
+### Signatures And Fields
+
+```text
+sessionGoal = { goalId, revision, objective, status, ... }
+Goal Runner message.metadata = { source:'goal-runner', goalAutoContinue:true,
+                                goalId, goalRevision, goalIteration, ... }
+chat_agent_session_reuse = { ..., goal_id NULL|TEXT, goal_revision NULL|INTEGER }
+evaluateSessionReuse({ ..., goal:{ strict, goalId, goalRevision,
+                                   triggerGoalId, triggerGoalRevision } })
+```
+
+### Strict Validation Matrix
+
+| Case | Result |
+| --- | --- |
+| trigger/current/row ID and revision match; ratio `< min(config, 0.5)` | continue ordinary checks; eligible to resume |
+| any Goal evidence missing or malformed | fresh / `goal_identity_missing` |
+| trigger or row ID differs from current Goal | fresh / `goal_identity_mismatch` |
+| trigger or row revision differs from current Goal | fresh / `goal_revision_mismatch` |
+| ratio exactly `0.5`, with ordinary config `0.8` | fresh / `usage_ratio_above_threshold` |
+| human-triggered run with mismatched row Goal evidence | Goal gates skipped; ordinary decision remains authoritative |
+
+### Good / Base / Bad
+
+- Good: a fresh Goal run stores revision 4; the next revision-4 Goal Runner message resumes below 50%.
+- Base: an upgraded null/null row can still serve a human message, but the first Goal Runner continuation goes fresh and self-heals its evidence.
+- Bad: overwrite the row with the current Goal revision after an ordinary resume that delivered only `session_delta`; the provider never saw that Goal section.
+- Bad: apply a configured 80% ordinary threshold to Goal Runner; the strict 50% boundary is user-authorized and must still force fresh.
+
+### Wrong vs Correct
+
+```ts
+// Wrong: records metadata state that was not delivered on resume.
+markReusable({ goalId: currentGoal.goalId, goalRevision: currentGoal.revision });
+
+// Correct: fresh records the delivered full Goal; resume inherits the claim.
+markReusable({
+  goalId: resume ? claimed.goalId : currentGoal?.goalId ?? null,
+  goalRevision: resume ? claimed.goalRevision : currentGoal?.revision ?? null,
+});
+```
 
 busy 行超过 `PI_CHAT_SESSION_REUSE_BUSY_STALE_MS`（默认 2h）视为僵尸 → `busy_stale` poison。claim 冲突 → `claim_conflict`；判定异常 → `reuse_evaluation_error`。
 
@@ -34,7 +87,7 @@ busy 行超过 `PI_CHAT_SESSION_REUSE_BUSY_STALE_MS`（默认 2h）视为僵尸 
 - delta 注入：executor 先调用 `buildPromptMessages(delta, promptUserMessage, { currentTurnId, excludeIncompleteAssistantMessages: true })`，再将结果传给 `buildSessionReuseDeltaPrompt(delta, agents)`。这与 fresh 路径共用 private-only 与当前 turn 未完成 assistant 的可见性规则：其他 private-only 消息不可见，queued/streaming assistant 不进入 resumed prompt。fresh 路径通过 `requiredMessageIds` 保证触发消息必达；reused 路径若发现已清洗的 `promptUserMessage` 不在可见 delta 中（例如 private handoff 已被中间 run 的存储游标越过），必须将该 anchor 追加到 delta 尾部，不能让原文泄露或让触发消息静默丢失。最终文本继续共用 `formatHistory` 的逐条格式并使用 `{ truncate: false }`，游标后的全部可见消息合并为一个 user message，不能套用全量历史的 `MAX_HISTORY_MESSAGES=24` 窗口。
 - 游标推进：复用生命周期启用时，executor 在调用 provider 前用同一时刻的完整 `store.listMessages(conversationId)` 冻结游标基线；该基线是存储一致性口径，不等于 prompt 投影。fresh prompt 即使只渲染最近 24 条或过滤 private-only 消息，仍以完整存储前缀建立下一轮 claim 可校验的快照；这与旧路径中窗口外/不可见消息不再注入的语义一致。收尾用 `appendSessionReuseCursorMessage(snapshot, assistantMessageDone)` 只加入本轮 assistant，禁止成功后重新读取全量消息，以免吞掉 run 期间到达的消息。
 - 静态段 hash：`computeStaticPromptHash(sections, [provider, model, profileId, thinking])`；7 个 dynamic 段不进 hash（见 `agent-prompt.ts` 的 stability 标签）。
-- 审计：queued/final/error metadata 均带 `sessionReused` + `sessionReuseReason`。
+- 审计：queued/final/error metadata 均带 `sessionReused` + `sessionReuseReason`；Goal run 还带 `goalAutoContinue`、当前 `goalId` 与 `goalRevision`。
 - Inspector 快照：executor 必须区分判定前的 `promptSections`（用于静态 hash/fresh fallback）与实际 `deliveredPromptSections`。fresh 使用完整 sections；成功 claim 后 resume 使用唯一 `session_delta` section，并从它格式化实际 `startRun` prompt。snapshot schema v2 写 `deliveryMode=fresh|resume`；resume 的 `retainedSessionPrefix` 只引用 session name、static hash、cursor 四元组与 last reply，不得把游标前历史重新渲染为本轮 sections。详情 API 的 `runEvidence` 从完成消息 session-reuse/token/model usage 投影 cache-read 等运行后指标，不修改不可变快照。缺少 delivery 字段的 schema v1 存量记录归一为 `unknown`；可依据 `runEvidence.sessionReused` 标记“旧版 Resume、分区口径不可靠”，但不得冒充 fresh 或精确 delta。
 
 ## API / 前端
@@ -45,9 +98,9 @@ busy 行超过 `PI_CHAT_SESSION_REUSE_BUSY_STALE_MS`（默认 2h）视为僵尸 
 
 ## 验证矩阵（测试点）
 
-- `tests/runtime/session-reuse-decision.test.js`：配置默认 ON + env kill switch、判定矩阵、游标校验、delta parity，以及超过 24 条 delta 时首尾消息均保留。
-- `tests/storage/session-reuse-repository.test.js`：原子 claim、hash 与游标四元组守卫、claim 前编辑/删除真实消息前缀均拒绝、restore、poison 不可逆、schema 约束，以及不同 fresh session 不得覆盖另一 run 的 busy claim。
-- `tests/runtime/session-reuse-ab.test.js`：flag OFF 字节级不变、复用全链路（claim 先于 startRun、完整游标指纹下传、delta-only prompt）、resume snapshot 的唯一 `session_delta` 与实际 prompt 逐字一致且不含游标前历史、retained prefix 仅为引用、判定后/claim 前编辑触发 poison、运行中新增消息留给下一轮、private-only 与当前 turn 未完成 assistant 采用 fresh 可见性投影、已被中间游标越过的 private handoff 仍以清洗后 anchor 必达、`busy_stale` 审计、per-agent 关闭、编辑即 poison + 自愈；另经真实 routing executor 以最近 24 条 prompt 投影运行超过 24 条的会话，验证 fresh 建立完整游标且下一轮实际 resume。
+- `tests/runtime/session-reuse-decision.test.js`：配置默认 ON + env kill switch、普通判定矩阵、严格 Goal identity/revision/50% 门禁、游标校验、delta parity，以及超过 24 条 delta 时首尾消息均保留。
+- `tests/storage/session-reuse-repository.test.js`：原子 claim、hash/Goal 身份/revision 与游标四元组守卫、Goal 字段 round-trip/restore、claim 前编辑/删除真实消息前缀均拒绝、poison 不可逆、schema 约束，以及不同 fresh session 不得覆盖另一 run 的 busy claim。
+- `tests/runtime/session-reuse-ab.test.js`：flag OFF 字节级不变、普通复用全链路、Goal Runner 同 ID/revision 且 `<50%` resume、revision 变化与 `=50%` fresh、人工触发不收紧、provider 已知 Goal 版本写回/继承、claim 先于 startRun、完整游标指纹下传、delta-only prompt、resume snapshot 的唯一 `session_delta` 与实际 prompt 逐字一致且不含游标前历史、retained prefix 仅为引用、判定后/claim 前编辑触发 poison、运行中新增消息留给下一轮、private-only 与当前 turn 未完成 assistant 采用 fresh 可见性投影、已被中间游标越过的 private handoff 仍以清洗后 anchor 必达、`busy_stale` 审计、per-agent 关闭、编辑即 poison + 自愈；另经真实 routing executor 以最近 24 条 prompt 投影运行超过 24 条的会话，验证 fresh 建立完整游标且下一轮实际 resume。
 - `tests/runtime/context-snapshot.test.js` + `tests/http/context-snapshot-pagination.test.js` + `tests/ui/context-inspector.test.js`：schema v2 delivery 字段/Markdown、详情 API post-run cache evidence、UI 的 resume/delta/retained prefix 展示口径。
 - `tests/storage/chat-store.test.js`：toggle 持久化、默认 ON、重开库（reconcile）不重置。
 - `tests/smoke/server-smoke.test.js`：family 角色 API round-trip 与缺省保留。

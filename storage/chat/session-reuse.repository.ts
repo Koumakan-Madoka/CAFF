@@ -21,6 +21,8 @@ function normalizeReuseRow(row: any) {
     usageContextWindow:
       row.usage_context_window === null || row.usage_context_window === undefined ? null : row.usage_context_window,
     usageRatio: row.usage_ratio === null || row.usage_ratio === undefined ? null : row.usage_ratio,
+    goalId: row.goal_id || null,
+    goalRevision: row.goal_revision === null || row.goal_revision === undefined ? null : row.goal_revision,
     lastReplyAt: row.last_reply_at || null,
     poisonReason: row.poison_reason || null,
     createdAt: row.created_at,
@@ -36,6 +38,20 @@ function normalizeId(value: any, fieldName: string) {
   }
 
   return normalized;
+}
+
+function normalizeGoalEvidence(goalIdValue: any, goalRevisionValue: any) {
+  const goalId = String(goalIdValue || '').trim() || null;
+  const goalRevision = goalRevisionValue === null || goalRevisionValue === undefined
+    ? null
+    : Number(goalRevisionValue);
+  if ((goalId === null) !== (goalRevision === null)) {
+    throw new TypeError('goalId and goalRevision must both be present or both be null');
+  }
+  if (goalRevision !== null && (!Number.isInteger(goalRevision) || goalRevision <= 0)) {
+    throw new TypeError('goalRevision must be a positive integer');
+  }
+  return { goalId, goalRevision };
 }
 
 export class ChatSessionReuseRepository {
@@ -67,6 +83,8 @@ export class ChatSessionReuseRepository {
         AND profile_id = @profileId
         AND state = 'reusable'
         AND static_segment_hash = @expectedHash
+        AND goal_id IS @expectedGoalId
+        AND goal_revision IS @expectedGoalRevision
         AND cursor_message_id = @expectedCursorMessageId
         AND cursor_message_count = @expectedCursorMessageCount
         AND cursor_first_message_id = @expectedCursorFirstMessageId
@@ -159,6 +177,8 @@ export class ChatSessionReuseRepository {
         usage_input_tokens,
         usage_context_window,
         usage_ratio,
+        goal_id,
+        goal_revision,
         last_reply_at,
         poison_reason,
         created_at,
@@ -180,6 +200,8 @@ export class ChatSessionReuseRepository {
         @usageInputTokens,
         @usageContextWindow,
         @usageRatio,
+        @goalId,
+        @goalRevision,
         @lastReplyAt,
         NULL,
         @now,
@@ -199,6 +221,8 @@ export class ChatSessionReuseRepository {
         usage_input_tokens = excluded.usage_input_tokens,
         usage_context_window = excluded.usage_context_window,
         usage_ratio = excluded.usage_ratio,
+        goal_id = excluded.goal_id,
+        goal_revision = excluded.goal_revision,
         last_reply_at = excluded.last_reply_at,
         poison_reason = NULL,
         updated_at = excluded.updated_at
@@ -225,12 +249,15 @@ export class ChatSessionReuseRepository {
     if (!Number.isInteger(expectedCursorMessageCount) || expectedCursorMessageCount <= 0) {
       throw new TypeError('expectedCursorMessageCount must be a positive integer');
     }
+    const goalEvidence = normalizeGoalEvidence(payload.expectedGoalId, payload.expectedGoalRevision);
 
     const result = this.claimStatement.run({
       conversationId: normalizeId(payload.conversationId, 'conversationId'),
       agentId: normalizeId(payload.agentId, 'agentId'),
       profileId: normalizeId(payload.profileId || 'default', 'profileId'),
       expectedHash: normalizeId(payload.expectedHash, 'expectedHash'),
+      expectedGoalId: goalEvidence.goalId,
+      expectedGoalRevision: goalEvidence.goalRevision,
       expectedCursorMessageId: normalizeId(payload.expectedCursorMessageId, 'expectedCursorMessageId'),
       expectedCursorMessageCount,
       expectedCursorFirstMessageId: normalizeId(
@@ -277,6 +304,8 @@ export class ChatSessionReuseRepository {
         usageInputTokens: snapshot.usageInputTokens,
         usageContextWindow: snapshot.usageContextWindow,
         usageRatio: snapshot.usageRatio,
+        goalId: snapshot.goalId,
+        goalRevision: snapshot.goalRevision,
         lastReplyAt: snapshot.lastReplyAt,
         now: normalizeId(now, 'now'),
       })
@@ -284,6 +313,8 @@ export class ChatSessionReuseRepository {
   }
 
   markReusable(payload: any) {
+    const { goalId, goalRevision } = normalizeGoalEvidence(payload.goalId, payload.goalRevision);
+
     return normalizeReuseRow(
       this.markReusableStatement.get({
         conversationId: normalizeId(payload.conversationId, 'conversationId'),
@@ -305,6 +336,8 @@ export class ChatSessionReuseRepository {
             ? null
             : payload.usageContextWindow,
         usageRatio: payload.usageRatio === null || payload.usageRatio === undefined ? null : payload.usageRatio,
+        goalId,
+        goalRevision,
         lastReplyAt: payload.lastReplyAt || null,
         now: normalizeId(payload.now, 'now'),
       })

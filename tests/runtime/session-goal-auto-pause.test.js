@@ -173,6 +173,7 @@ test('three consecutive fast model failures pause the same Goal epoch and persis
   const runner = getSessionGoalRunner(conversation);
   assert.equal(third.paused, true);
   assert.equal(goal.status, 'paused');
+  assert.equal(goal.revision, 2);
   assert.equal(runner.status, 'error_paused');
   assert.equal(runner.goalUpdatedAt, goal.updatedAt);
   assert.equal(runner.consecutiveModelFailureCount, 3);

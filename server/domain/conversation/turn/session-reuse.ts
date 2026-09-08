@@ -3,6 +3,7 @@ const { summarizeTokenUsage } = require('../../runtime/token-usage');
 const DEFAULT_REUSE_MAX_USAGE_RATIO = 0.5;
 const DEFAULT_REUSE_MAX_IDLE_MS = 60 * 60 * 1000;
 const DEFAULT_REUSE_BUSY_STALE_MS = 2 * 60 * 60 * 1000;
+const GOAL_REUSE_MAX_USAGE_RATIO = 0.5;
 
 function normalizeBooleanFlag(value: any) {
   const normalized = String(value === undefined || value === null ? '' : value)
@@ -220,7 +221,7 @@ export function isSessionReuseBusyStale(row: any, config: any, now: any) {
 
 // Pure decision over an already-loaded row. Returns { reuse, reason, delta? };
 // callers persist side effects (claim / poison) after consulting this result.
-export function evaluateSessionReuse({ row, staticSegmentHash, config, now, messages }: any) {
+export function evaluateSessionReuse({ row, staticSegmentHash, config, now, messages, goal }: any) {
   if (!row) {
     return { reuse: false, reason: 'no_prior_session' };
   }
@@ -245,11 +246,43 @@ export function evaluateSessionReuse({ row, staticSegmentHash, config, now, mess
     return { reuse: false, reason: 'static_hash_mismatch' };
   }
 
+  if (goal && goal.strict === true) {
+    const goalId = String(goal.goalId || '').trim();
+    const triggerGoalId = String(goal.triggerGoalId || '').trim();
+    const goalRevision = Number(goal.goalRevision);
+    const triggerGoalRevision = Number(goal.triggerGoalRevision);
+    const rowGoalId = String(row.goalId || '').trim();
+    const rowGoalRevision = Number(row.goalRevision);
+
+    if (
+      !goalId
+      || !triggerGoalId
+      || !Number.isInteger(goalRevision)
+      || goalRevision <= 0
+      || !Number.isInteger(triggerGoalRevision)
+      || triggerGoalRevision <= 0
+      || !rowGoalId
+      || !Number.isInteger(rowGoalRevision)
+      || rowGoalRevision <= 0
+    ) {
+      return { reuse: false, reason: 'goal_identity_missing' };
+    }
+    if (triggerGoalId !== goalId || rowGoalId !== goalId) {
+      return { reuse: false, reason: 'goal_identity_mismatch' };
+    }
+    if (triggerGoalRevision !== goalRevision || rowGoalRevision !== goalRevision) {
+      return { reuse: false, reason: 'goal_revision_mismatch' };
+    }
+  }
+
   if (row.usageRatio === null || row.usageRatio === undefined) {
     return { reuse: false, reason: 'usage_snapshot_missing' };
   }
 
-  if (row.usageRatio >= config.maxUsageRatio) {
+  const maxUsageRatio = goal && goal.strict === true
+    ? Math.min(config.maxUsageRatio, GOAL_REUSE_MAX_USAGE_RATIO)
+    : config.maxUsageRatio;
+  if (row.usageRatio >= maxUsageRatio) {
     return { reuse: false, reason: 'usage_ratio_above_threshold' };
   }
 

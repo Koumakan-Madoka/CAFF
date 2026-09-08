@@ -1,0 +1,33 @@
+{
+  "id": "goal-session-reuse-continuity",
+  "name": "goal-session-reuse-continuity",
+  "title": "Goal Session Reuse Continuity",
+  "description": "Add immutable Goal identity and revisions, strict Goal Runner session reuse gates, and stable continuation iteration.",
+  "status": "review",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-09-07",
+  "completedAt": null,
+  "branch": "room/649113f3-caff-session",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/649113f3-caff-session",
+  "current_phase": 2,
+  "next_action": [
+    { "phase": 1, "action": "implement" },
+    { "phase": 2, "action": "check" },
+    { "phase": 3, "action": "finish" },
+    { "phase": 4, "action": "create-pr" }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Implementation, specs, migration probe, focused/full regression continuation, smoke and UI checks complete; candidate commit and independent review pending.",
+  "meta": {}
+}
