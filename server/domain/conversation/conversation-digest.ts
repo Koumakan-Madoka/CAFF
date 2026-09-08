@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -51,6 +52,11 @@ const MAX_DIGEST_MODEL_INVALID_OUTPUT_PREVIEW_LENGTH = 4000;
 const MAX_DIGEST_MODEL_REPAIR_OUTPUT_LENGTH = 4000;
 const DIGEST_MODEL_PROGRESS_MIN_INTERVAL_MS = 500;
 const DEFAULT_DIGEST_MODEL_TIMEOUT_MS = 90 * 1000;
+const DEFAULT_DIGEST_MODEL_RETRY_DELAY_MS = 100;
+const MAX_DIGEST_MODEL_ATTEMPTS = 4;
+const MAX_DIGEST_MODEL_RETRY_DELAY_MS = 2000;
+const MAX_DIGEST_MODEL_REPAIRS_PER_ATTEMPT = 16;
+const DIGEST_MODEL_DIAGNOSTICS_VERSION = 1;
 const DEFAULT_DIGEST_AUTO_CREATE_MESSAGE_BUDGET = 24;
 const DEFAULT_DIGEST_AUTO_IDLE_MS = 0;
 const DEFAULT_DIGEST_AUTO_COOLDOWN_MS = 0;
@@ -63,6 +69,22 @@ const MAX_TITLE_REFINE_MESSAGE_LENGTH = 300;
 const MAX_REFINED_TITLE_LENGTH = 15;
 const DEFAULT_TITLE_REFINE_TIMEOUT_MS = 30 * 1000;
 const DIGEST_SECTION_KEYS = ['facts', 'decisions', 'openQuestions', 'nextActions', 'artifacts'];
+const DIGEST_SUBMISSION_FIELDS = ['summary', ...DIGEST_SECTION_KEYS];
+const DIGEST_MODEL_ATTEMPT_OUTCOMES = new Set(['accepted', 'rejected', 'provider_error', 'timeout', 'cancelled']);
+const DIGEST_MODEL_FINAL_OUTCOMES = new Set(['model', 'extractive']);
+const DIGEST_MODEL_DIAGNOSTIC_CODES = new Set(['empty_text', 'length_exhausted', 'provider_error', 'aborted', 'invalid_output', 'timeout', 'cancelled']);
+const DIGEST_MODEL_SUBMISSION_CODES = new Set([
+  'submission_call_count_invalid',
+  'submission_tool_name_invalid',
+  'submission_arguments_invalid',
+  'submission_tool_schema_missing',
+  'submission_schema_invalid',
+  'submission_digest_normalization_failed',
+  'submission_invalid',
+]);
+const DIGEST_MODEL_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const DIGEST_MODEL_STOP_REASONS = new Set(['pending', 'stop', 'length', 'tooluse', 'error', 'aborted', 'deferred']);
+const DIGEST_MODEL_CONTENT_TYPES = new Set(['text', 'thinking', 'reasoning', 'redacted_thinking', 'output_text', 'toolcall', 'refusal', 'unknown']);
 
 function nowIso() {
   return new Date().toISOString();
@@ -449,6 +471,132 @@ function normalizeSourceDigestIds(value: any) {
   return result;
 }
 
+function boundedDiagnosticInteger(value: any, maxValue = 1_000_000_000) {
+  return Number.isSafeInteger(value) && value >= 0
+    ? Math.min(value, maxValue)
+    : null;
+}
+
+function isDigestModelRepairField(value: string) {
+  if (value === 'summary' || DIGEST_SECTION_KEYS.includes(value)) {
+    return true;
+  }
+  const match = value.match(/^([A-Za-z]+)\.(\d{1,2})$/u);
+  return Boolean(
+    match
+    && DIGEST_SECTION_KEYS.includes(match[1])
+    && Number.parseInt(match[2], 10) < MAX_DIGEST_SECTION_ITEMS
+  );
+}
+
+function normalizeDigestModelRepair(value: any) {
+  if (!isPlainObject(value) || normalizeText(value.action) !== 'clipped') {
+    return null;
+  }
+  const field = normalizeText(value.field).replace(/[^A-Za-z0-9_.-]/gu, '').slice(0, 80);
+  if (!field || !isDigestModelRepairField(field)) {
+    return null;
+  }
+  const actualLength = boundedDiagnosticInteger(value.actualLength);
+  const acceptedLimit = boundedDiagnosticInteger(value.acceptedLimit);
+  const actualItems = boundedDiagnosticInteger(value.actualItems);
+  const acceptedItems = boundedDiagnosticInteger(value.acceptedItems);
+  if ((actualLength === null || acceptedLimit === null) && (actualItems === null || acceptedItems === null)) {
+    return null;
+  }
+  return {
+    field,
+    ...(actualLength !== null && acceptedLimit !== null ? { actualLength, acceptedLimit } : {}),
+    ...(actualItems !== null && acceptedItems !== null ? { actualItems, acceptedItems } : {}),
+    action: 'clipped',
+  };
+}
+
+function normalizeDigestModelAttempt(value: any) {
+  if (!isPlainObject(value)) {
+    return null;
+  }
+  const rawAttempt = value.attempt;
+  const attempt = boundedDiagnosticInteger(rawAttempt, MAX_DIGEST_MODEL_ATTEMPTS);
+  const outcome = normalizeText(value.outcome).toLowerCase();
+  if (attempt === null || attempt < 1 || rawAttempt > MAX_DIGEST_MODEL_ATTEMPTS || !DIGEST_MODEL_ATTEMPT_OUTCOMES.has(outcome)) {
+    return null;
+  }
+  const diagnosticCode = normalizeText(value.diagnosticCode).toLowerCase();
+  const submissionCode = normalizeText(value.submissionCode).toLowerCase();
+  const thinking = normalizeText(value.thinking).toLowerCase();
+  const stopReason = normalizeText(value.stopReason).toLowerCase();
+  const rawContentBlockTypes = Array.isArray(value.contentBlockTypes)
+    ? value.contentBlockTypes.slice(0, 24)
+    : [];
+  const contentBlockTypes = Array.from(new Set(rawContentBlockTypes
+    .map((item: any) => normalizeText(item).toLowerCase())
+    .filter((item: string) => DIGEST_MODEL_CONTENT_TYPES.has(item))))
+    .slice(0, 12);
+  const suppliedMissingFields = new Set(
+    (Array.isArray(value.missingFields) ? value.missingFields : []).slice(0, 32)
+  );
+  const missingFields = DIGEST_SUBMISSION_FIELDS.filter((field) => suppliedMissingFields.has(field));
+  const visibleTextChars = boundedDiagnosticInteger(value.visibleTextChars);
+  const recognizedFieldCount = boundedDiagnosticInteger(value.recognizedFieldCount, DIGEST_SUBMISSION_FIELDS.length);
+  const unknownFieldCount = boundedDiagnosticInteger(value.unknownFieldCount, 1000);
+  const usageInput = isPlainObject(value.usage) ? value.usage : {};
+  const usage = Object.fromEntries([
+    ['inputTokens', boundedDiagnosticInteger(usageInput.inputTokens)],
+    ['outputTokens', boundedDiagnosticInteger(usageInput.outputTokens)],
+    ['reasoningTokens', boundedDiagnosticInteger(usageInput.reasoningTokens)],
+    ['totalTokens', boundedDiagnosticInteger(usageInput.totalTokens)],
+  ].filter((entry) => entry[1] !== null));
+  const repairs = (Array.isArray(value.repairs) ? value.repairs.slice(0, MAX_DIGEST_MODEL_REPAIRS_PER_ATTEMPT * 2) : [])
+    .map(normalizeDigestModelRepair)
+    .filter(Boolean)
+    .slice(0, MAX_DIGEST_MODEL_REPAIRS_PER_ATTEMPT);
+
+  return {
+    attempt,
+    outcome,
+    ...(DIGEST_MODEL_DIAGNOSTIC_CODES.has(diagnosticCode) ? { diagnosticCode } : {}),
+    ...(DIGEST_MODEL_SUBMISSION_CODES.has(submissionCode) ? { submissionCode } : {}),
+    retryScheduled: value.retryScheduled === true,
+    thinking: DIGEST_MODEL_THINKING_LEVELS.has(thinking) ? thinking : 'off',
+    ...(DIGEST_MODEL_STOP_REASONS.has(stopReason) ? { stopReason } : {}),
+    ...(contentBlockTypes.length > 0 ? { contentBlockTypes } : {}),
+    ...(visibleTextChars !== null ? { visibleTextChars } : {}),
+    ...(Object.keys(usage).length > 0 ? { usage } : {}),
+    ...(missingFields.length > 0 ? { missingFields } : {}),
+    ...(recognizedFieldCount !== null ? { recognizedFieldCount } : {}),
+    ...(unknownFieldCount !== null ? { unknownFieldCount } : {}),
+    ...(repairs.length > 0 ? { repairs } : {}),
+  };
+}
+
+function normalizeDigestModelDiagnostics(value: any, finalOutcomeOverride = '') {
+  if (!isPlainObject(value)) {
+    return null;
+  }
+  const finalOutcome = normalizeText(finalOutcomeOverride || value.finalOutcome).toLowerCase();
+  const attempts = (Array.isArray(value.attempts) ? value.attempts.slice(0, MAX_DIGEST_MODEL_ATTEMPTS) : [])
+    .map(normalizeDigestModelAttempt)
+    .filter(Boolean)
+    .slice(0, MAX_DIGEST_MODEL_ATTEMPTS);
+  if (!DIGEST_MODEL_FINAL_OUTCOMES.has(finalOutcome) || attempts.length === 0) {
+    return null;
+  }
+  const attemptsAreSequential = attempts.every((attempt: any, index: number) => attempt.attempt === index + 1);
+  const lastAttempt = attempts[attempts.length - 1] as any;
+  const outcomeIsConsistent = finalOutcome === 'model'
+    ? lastAttempt.outcome === 'accepted'
+    : !attempts.some((attempt: any) => attempt.outcome === 'accepted');
+  if (!attemptsAreSequential || !outcomeIsConsistent || lastAttempt.retryScheduled) {
+    return null;
+  }
+  return {
+    version: DIGEST_MODEL_DIAGNOSTICS_VERSION,
+    finalOutcome,
+    attempts,
+  };
+}
+
 function normalizeDigestEntry(value: any) {
   if (!isPlainObject(value)) {
     return null;
@@ -481,6 +629,11 @@ function normalizeDigestEntry(value: any) {
   const triggerReason = normalizeText(value.triggerReason || value.trigger_reason);
   if (triggerReason) {
     normalized.triggerReason = triggerReason;
+  }
+
+  const modelDiagnostics = normalizeDigestModelDiagnostics(value.modelDiagnostics || value.model_diagnostics);
+  if (modelDiagnostics) {
+    normalized.modelDiagnostics = modelDiagnostics;
   }
 
   if (kind === 'rollup') {
@@ -1015,15 +1168,150 @@ function buildStructuredDigestModelContext(prompt: string) {
       {
         role: 'user',
         content: [{ type: 'text', text: prompt }],
+        timestamp: Date.now(),
       },
     ],
     tools: [CONVERSATION_DIGEST_SUBMISSION_TOOL],
   };
 }
 
+class DigestModelTimeoutError extends Error {
+  constructor() {
+    super('Digest model request timed out');
+    this.name = 'DigestModelTimeoutError';
+  }
+}
+
+function createDigestAbortError() {
+  const error = new Error('Digest model request cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+function isDigestCallerCancelled(_error: any, options: any = {}) {
+  return Boolean(options.signal && options.signal.aborted);
+}
+
+function digestModelRetryDelayMs(options: any, failedAttempt: number) {
+  const configured = Number(options.digestModelRetryDelayMs);
+  const baseDelay = Number.isFinite(configured) && configured >= 0
+    ? Math.floor(configured)
+    : DEFAULT_DIGEST_MODEL_RETRY_DELAY_MS;
+  return Math.min(MAX_DIGEST_MODEL_RETRY_DELAY_MS, baseDelay * Math.max(1, failedAttempt));
+}
+
+async function waitForDigestModelRetry(options: any, failedAttempt: number) {
+  const delayMs = digestModelRetryDelayMs(options, failedAttempt);
+  const signal = options.signal;
+  if (signal && signal.aborted) {
+    throw createDigestAbortError();
+  }
+  if (delayMs <= 0) {
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (callback: () => void) => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      if (signal) {
+        signal.removeEventListener('abort', onAbort);
+      }
+      callback();
+    };
+    const onAbort = () => settle(() => reject(createDigestAbortError()));
+    timer = setTimeout(() => settle(resolve), delayMs);
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+      }
+    }
+  });
+}
+
+function digestAssistantMessage(output: any) {
+  return output && (output.message || output.assistantMessage || output);
+}
+
+function digestToolCalls(output: any) {
+  const message = digestAssistantMessage(output);
+  const content = Array.isArray(message && message.content) ? message.content : [];
+  return content.filter((item: any) => normalizeDigestModelContentType(item && item.type) === 'toolcall');
+}
+
+function boundedDigestRetryFeedback(diagnostic: any) {
+  const missingFields = DIGEST_SUBMISSION_FIELDS.filter((field) => (
+    Array.isArray(diagnostic && diagnostic.missingFields) && diagnostic.missingFields.includes(field)
+  ));
+  const field = DIGEST_SUBMISSION_FIELDS.includes(normalizeText(diagnostic && diagnostic.field))
+    ? normalizeText(diagnostic.field)
+    : '';
+  const recognizedFieldCount = boundedDiagnosticInteger(diagnostic && diagnostic.recognizedFieldCount, DIGEST_SUBMISSION_FIELDS.length);
+  const unknownFieldCount = boundedDiagnosticInteger(diagnostic && diagnostic.unknownFieldCount, 1000);
+  return JSON.stringify({
+    status: 'rejected',
+    toolExecuted: false,
+    diagnosticCode: DIGEST_MODEL_DIAGNOSTIC_CODES.has(normalizeText(diagnostic && diagnostic.diagnosticCode))
+      ? normalizeText(diagnostic.diagnosticCode)
+      : 'invalid_output',
+    ...(DIGEST_MODEL_SUBMISSION_CODES.has(normalizeText(diagnostic && diagnostic.submissionCode))
+      ? { submissionCode: normalizeText(diagnostic.submissionCode) }
+      : {}),
+    ...(field ? { field } : {}),
+    ...(missingFields.length > 0 ? { missingFields } : {}),
+    ...(recognizedFieldCount !== null ? { recognizedFieldCount } : {}),
+    ...(unknownFieldCount !== null ? { unknownFieldCount } : {}),
+    correction: `Call ${CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME} exactly once with all six schema fields and schema-valid values.`,
+  });
+}
+
+function appendDigestRetryFeedback(context: any, output: any, diagnostic: any) {
+  const assistant = digestAssistantMessage(output);
+  const toolCalls = digestToolCalls(output);
+  const replayableToolCall = toolCalls.length === 1
+    && normalizeText(toolCalls[0].id)
+    && normalizeText(toolCalls[0].name) === CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME
+    && isPlainObject(toolCalls[0].arguments);
+  const feedbackText = boundedDigestRetryFeedback(diagnostic);
+
+  if (replayableToolCall && isSystemModelAssistantOutput(assistant)) {
+    context.messages.push(assistant, {
+      role: 'toolResult',
+      toolCallId: normalizeText(toolCalls[0].id),
+      toolName: CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME,
+      content: [{ type: 'text', text: feedbackText }],
+      isError: true,
+      timestamp: Date.now(),
+    });
+    return;
+  }
+
+  if (toolCalls.length === 0 && isSystemModelAssistantOutput(assistant)) {
+    context.messages.push(assistant);
+  }
+  context.messages.push({
+    role: 'user',
+    content: [{ type: 'text', text: feedbackText }],
+    timestamp: Date.now(),
+  });
+}
+
+function attachDigestModelDiagnostics(error: any, attempts: any[]) {
+  const errorValue = (error instanceof Error ? error : new Error(safeSystemModelErrorText(error))) as any;
+  errorValue.digestModelDiagnostics = normalizeDigestModelDiagnostics({
+    version: DIGEST_MODEL_DIAGNOSTICS_VERSION,
+    finalOutcome: 'extractive',
+    attempts,
+  });
+  return errorValue;
+}
+
 async function completeDigestModel(complete: any, model: any, context: any, completeOptions: any, options: any = {}, config: any = {}) {
-  if (completeOptions && completeOptions.signal) {
-    return complete(model, context, completeOptions);
+  const callerSignal = completeOptions && completeOptions.signal;
+  if (callerSignal && callerSignal.aborted) {
+    throw createDigestAbortError();
   }
 
   const timeoutMs = Math.max(1000, resolveIntegerSetting(
@@ -1033,16 +1321,32 @@ async function completeDigestModel(complete: any, model: any, context: any, comp
     'digestModelTimeoutMs'
   ));
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
-  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  let timedOut = false;
+  const onCallerAbort = () => controller && controller.abort();
+  if (callerSignal && controller) {
+    callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+  }
+  const timer = controller ? setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs) : null;
 
   try {
     return await complete(model, context, {
       ...completeOptions,
-      ...(controller ? { signal: controller.signal } : {}),
+      ...(controller ? { signal: controller.signal } : callerSignal ? { signal: callerSignal } : {}),
     });
+  } catch (error) {
+    if (timedOut && !(callerSignal && callerSignal.aborted)) {
+      throw new DigestModelTimeoutError();
+    }
+    throw error;
   } finally {
     if (timer) {
       clearTimeout(timer);
+    }
+    if (callerSignal && controller) {
+      callerSignal.removeEventListener('abort', onCallerAbort);
     }
   }
 }
@@ -1309,6 +1613,12 @@ function warnSystemModelDiagnostic(diagnostic: any, config: any, options: any = 
   const action = normalizeText(diagnostic && diagnostic.action) === 'clipped'
     ? 'clipped'
     : '';
+  const submissionCode = normalizeText(diagnostic && diagnostic.submissionCode).toLowerCase();
+  const missingFields = DIGEST_SUBMISSION_FIELDS.filter((candidate) => (
+    Array.isArray(diagnostic && diagnostic.missingFields) && diagnostic.missingFields.includes(candidate)
+  ));
+  const recognizedFieldCount = boundedDiagnosticInteger(diagnostic && diagnostic.recognizedFieldCount, DIGEST_SUBMISSION_FIELDS.length);
+  const unknownFieldCount = boundedDiagnosticInteger(diagnostic && diagnostic.unknownFieldCount, 1000);
   const lengthDiagnostic = field && actualLength !== null && acceptedLimit !== null
     ? `field=${field}; actualLength=${actualLength}; acceptedLimit=${acceptedLimit}; `
     : '';
@@ -1316,12 +1626,20 @@ function warnSystemModelDiagnostic(diagnostic: any, config: any, options: any = 
     ? `field=${field}; actualItems=${actualItems}; acceptedItems=${acceptedItems}; `
     : '';
   const actionDiagnostic = action ? `action=${action}; ` : '';
+  const submissionDiagnostic = DIGEST_MODEL_SUBMISSION_CODES.has(submissionCode)
+    ? `submissionCode=${submissionCode}; `
+    : '';
+  const shapeDiagnostic = `${missingFields.length > 0 ? `missingFields=${missingFields.join(',')}; ` : ''}`
+    + `${recognizedFieldCount !== null ? `recognizedFieldCount=${recognizedFieldCount}; ` : ''}`
+    + `${unknownFieldCount !== null ? `unknownFieldCount=${unknownFieldCount}; ` : ''}`;
   console.warn(
     `[conversation-digest] System model output diagnostic (${purpose}, ${modelLabel}): `
       + `${normalizeText(diagnostic && diagnostic.diagnosticCode) || 'none'}; `
       + lengthDiagnostic
       + itemCountDiagnostic
       + actionDiagnostic
+      + submissionDiagnostic
+      + shapeDiagnostic
       + `attempt=${diagnostic && diagnostic.attempt || 0}; `
       + `maxTokens=${diagnostic && diagnostic.maxTokens || 0}; `
       + `thinking=${normalizeText(diagnostic && diagnostic.thinking) || 'off'}; `
@@ -1347,17 +1665,22 @@ async function runStructuredDigestModelPrompt(prompt: string, config: any, optio
   const model = resolvedModel.model;
   const outputBudget = resolveSystemModelOutputBudget(model);
   const progress = createDigestModelProgressReporter(config, options);
+  const context = buildStructuredDigestModelContext(prompt);
+  const sessionId = `conversation-digest-${randomUUID()}`;
+  const attempts = [] as any[];
   progress.started();
   let attempt = 1;
   let thinking = config.thinking;
 
-  while (attempt <= 2) {
+  while (attempt <= MAX_DIGEST_MODEL_ATTEMPTS) {
     let output: any;
     try {
-      output = await completeDigestModel(complete, model, buildStructuredDigestModelContext(prompt), {
+      output = await completeDigestModel(complete, model, context, {
         ...(resolvedModel.apiKey ? { apiKey: resolvedModel.apiKey } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
         maxTokens: outputBudget,
         reasoning: thinking,
+        sessionId,
         toolChoice: 'auto',
         metadata: {
           source: 'conversation_digest',
@@ -1370,8 +1693,37 @@ async function runStructuredDigestModelPrompt(prompt: string, config: any, optio
         },
       }, options, config);
     } catch (error) {
+      const cancelled = isDigestCallerCancelled(error, options);
+      const timedOut = error instanceof DigestModelTimeoutError;
+      const retryScheduled = !cancelled && attempt < MAX_DIGEST_MODEL_ATTEMPTS;
+      const diagnostic = {
+        attempt,
+        maxTokens: outputBudget,
+        thinking,
+        stopReason: '',
+        contentBlockTypes: [],
+        visibleTextChars: 0,
+        usage: {},
+        diagnosticCode: cancelled ? 'cancelled' : timedOut ? 'timeout' : 'provider_error',
+        retryScheduled,
+        outcome: cancelled ? 'cancelled' : timedOut ? 'timeout' : 'provider_error',
+      };
+      attempts.push(diagnostic);
+      warnSystemModelDiagnostic(diagnostic, config, options);
+      if (retryScheduled) {
+        try {
+          await waitForDigestModelRetry(options, attempt);
+        } catch (waitError) {
+          diagnostic.retryScheduled = false;
+          progress.failed(waitError);
+          throw attachDigestModelDiagnostics(waitError, attempts);
+        }
+        attempt += 1;
+        thinking = 'off';
+        continue;
+      }
       progress.failed(error);
-      throw error;
+      throw attachDigestModelDiagnostics(error, attempts);
     }
 
     const inspection = projectSystemModelOutputAttempt(output, {
@@ -1379,22 +1731,42 @@ async function runStructuredDigestModelPrompt(prompt: string, config: any, optio
       maxTokens: outputBudget,
       thinking,
     });
-    if (inspection.retryEligible) {
-      const diagnostic = { ...inspection.diagnostic, retryScheduled: true };
-      warnSystemModelDiagnostic(diagnostic, config, options);
-      attempt += 1;
-      thinking = 'off';
-      continue;
-    }
     if (inspection.diagnostic.diagnosticCode) {
-      warnSystemModelDiagnostic(inspection.diagnostic, config, options);
+      const cancelled = inspection.diagnostic.diagnosticCode === 'aborted'
+        && isDigestCallerCancelled(null, options);
+      const retryScheduled = !cancelled && attempt < MAX_DIGEST_MODEL_ATTEMPTS;
+      const diagnostic = {
+        ...inspection.diagnostic,
+        retryScheduled,
+        outcome: cancelled ? 'cancelled' : inspection.diagnostic.diagnosticCode === 'provider_error' || inspection.diagnostic.diagnosticCode === 'aborted'
+          ? 'provider_error'
+          : 'rejected',
+      };
+      attempts.push(diagnostic);
+      warnSystemModelDiagnostic(diagnostic, config, options);
+      if (retryScheduled) {
+        if (!['provider_error', 'aborted'].includes(inspection.diagnostic.diagnosticCode)) {
+          appendDigestRetryFeedback(context, output, diagnostic);
+        } else {
+          try {
+            await waitForDigestModelRetry(options, attempt);
+          } catch (waitError) {
+            diagnostic.retryScheduled = false;
+            progress.failed(waitError);
+            throw attachDigestModelDiagnostics(waitError, attempts);
+          }
+        }
+        attempt += 1;
+        thinking = 'off';
+        continue;
+      }
       const error = new SystemModelOutputError(
         `Digest model output failed: ${inspection.diagnostic.diagnosticCode}`,
-        inspection.diagnostic
+        diagnostic
       ) as any;
       error.digestModelOutput = inspection.visibleText;
       progress.failed(error);
-      throw error;
+      throw attachDigestModelDiagnostics(error, attempts);
     }
 
     try {
@@ -1410,6 +1782,12 @@ async function runStructuredDigestModelPrompt(prompt: string, config: any, optio
           'System model submission did not normalize to a valid digest'
         );
       }
+      attempts.push({
+        ...inspection.diagnostic,
+        outcome: 'accepted',
+        retryScheduled: false,
+        repairs: prepared.diagnostics,
+      });
       for (const diagnostic of prepared.diagnostics) {
         warnSystemModelDiagnostic({
           ...inspection.diagnostic,
@@ -1421,27 +1799,45 @@ async function runStructuredDigestModelPrompt(prompt: string, config: any, optio
         }, config, options);
       }
       progress.finished('结构化摘要已提交。');
-      return normalized;
+      return {
+        ...normalized,
+        modelDiagnostics: normalizeDigestModelDiagnostics({
+          version: DIGEST_MODEL_DIAGNOSTICS_VERSION,
+          finalOutcome: 'model',
+          attempts,
+        }),
+      };
     } catch (error) {
       const submissionError = error instanceof SystemModelSubmissionError
         ? error
         : new SystemModelSubmissionError('submission_invalid', safeSystemModelErrorText(error));
+      const retryScheduled = attempt < MAX_DIGEST_MODEL_ATTEMPTS;
       const diagnostic = {
         ...markSystemModelInvalidOutput(inspection.diagnostic),
         ...(submissionError.diagnostic || {}),
+        submissionCode: submissionError.code,
+        retryScheduled,
+        outcome: 'rejected',
       };
+      attempts.push(diagnostic);
       warnSystemModelDiagnostic(diagnostic, config, options);
+      if (retryScheduled) {
+        appendDigestRetryFeedback(context, output, diagnostic);
+        attempt += 1;
+        thinking = 'off';
+        continue;
+      }
       const modelError = createModelDigestError(
         `Invalid digest tool submission: ${submissionError.message}`,
         '',
         diagnostic
       );
       progress.failed(modelError);
-      throw modelError;
+      throw attachDigestModelDiagnostics(modelError, attempts);
     }
   }
 
-  throw new Error('Digest model retry budget was exhausted');
+  throw attachDigestModelDiagnostics(new Error('Digest model retry budget was exhausted'), attempts);
 }
 
 function appendTraceText(currentValue: string, nextValue: any) {
@@ -1793,8 +2189,12 @@ async function buildDigestFromMessages(messages: any[], input: any, timestamp: s
       createdBy: autoDigestCreatedBy(input, modelPayload.createdBy),
     });
   } catch (error) {
+    const errorValue = error as any;
     console.warn(`[conversation-digest] Model digest failed, falling back to extractive digest: ${safeSystemModelErrorText(error)}`);
-    return extractiveDigest;
+    const modelDiagnostics = normalizeDigestModelDiagnostics(errorValue && errorValue.digestModelDiagnostics, 'extractive');
+    return modelDiagnostics
+      ? normalizeDigestEntry({ ...extractiveDigest, modelDiagnostics })
+      : extractiveDigest;
   }
 }
 
@@ -1882,7 +2282,10 @@ async function buildRollupDigest(sources: any[], timestamp: string, input: any =
   } catch (error) {
     const errorValue = error as any;
     console.warn(`[conversation-digest] Model rollup failed, falling back to extractive rollup: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
-    return extractiveRollup;
+    const modelDiagnostics = normalizeDigestModelDiagnostics(errorValue && errorValue.digestModelDiagnostics, 'extractive');
+    return modelDiagnostics
+      ? normalizeDigestEntry({ ...extractiveRollup, modelDiagnostics })
+      : extractiveRollup;
   }
 }
 

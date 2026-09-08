@@ -1,0 +1,51 @@
+{
+  "id": "digest-semantic-retries-diagnostics",
+  "name": "digest-semantic-retries-diagnostics",
+  "title": "Digest Semantic Retries and Diagnostics",
+  "description": "Add up to three context-aware semantic retries for conversation digest generation and persist bounded safe diagnostics with the final digest.",
+  "status": "review",
+  "dev_type": "backend",
+  "scope": "conversation digest structured retries, safe feedback context, bounded persisted diagnostics, tests, and spec",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-09-07",
+  "completedAt": null,
+  "branch": "room/523e9df5-caff",
+  "base_branch": "develop",
+  "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/conversation-digest.ts",
+    "server/domain/conversation/system-model-submission.ts",
+    "server/domain/conversation/system-model-output.ts",
+    "tests/smoke/server-smoke.test.js",
+    ".trellis/spec/backend/conversation-digest.md"
+  ],
+  "notes": "Confirmed Goal implementation is complete from develop@bb13875 and awaits exact-SHA independent review. Baseline red proved empty-shell digest submissions made one call and fell back without durable diagnostics. The implementation now uses one in-memory pi-ai Context and stable sessionId for at most four calls, sends bounded validation feedback, persists normalized modelDiagnostics on model or extractive results, retries provider/internal-timeout failures, and does not retry caller cancellation. Focused retry/repair/readback matrix passed; final server smoke 91/91, mode-store 4/4, Recovery 25/25, npm run check, dual-tsconfig typecheck, build, Trellis validation, task JSON/JSONL parse, and diff check passed. Full turn-orchestrator remains 102/104 because two pre-existing Windows image-preflight cleanup hooks fail with EPERM after assertions pass; the failure paths share no digest code.",,
+  "meta": {}
+}

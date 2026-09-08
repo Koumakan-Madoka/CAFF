@@ -15,7 +15,10 @@ const { createMemoryController } = require('../../build/server/api/memory-contro
 const {
   createCrossConversationDeliveryService,
 } = require('../../build/server/domain/conversation/cross-conversation-delivery');
-const { maybeAutoCreateConversationDigest } = require('../../build/server/domain/conversation/conversation-digest');
+const {
+  formatConversationDigestsForPrompt,
+  maybeAutoCreateConversationDigest,
+} = require('../../build/server/domain/conversation/conversation-digest');
 const { createRoleService } = require('../../build/server/domain/roles/role-service');
 
 const { isolateExternalIntegrations } = require('../helpers/external-integrations');
@@ -2445,6 +2448,12 @@ test('conversations controller clips oversized digest section arrays and items b
       assert.equal(result.statusCode, 200);
       assert.equal(calls.length, 1);
       assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
+      assert.equal(result.json.digest.modelDiagnostics.finalOutcome, 'model');
+      assert.equal(result.json.digest.modelDiagnostics.attempts.length, 1);
+      assert.equal(
+        result.json.digest.modelDiagnostics.attempts[0].repairs.length,
+        (testCase.warnings || [testCase.warning]).length
+      );
       if (testCase.expectedFacts) {
         assert.deepEqual(result.json.digest.facts, testCase.expectedFacts);
       }
@@ -2542,6 +2551,9 @@ test('conversations controller clips overlong digest summaries before strict val
       assert.equal(calls[0].summaryMaxLength, 1600);
       assert.equal(calls[0].toolChoice, 'auto');
       assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
+      assert.equal(result.json.digest.modelDiagnostics.finalOutcome, 'model');
+      assert.equal(result.json.digest.modelDiagnostics.attempts[0].repairs.length, 1);
+      assert.equal(result.json.digest.modelDiagnostics.attempts[0].repairs[0].field, 'summary');
       assert.equal(result.json.digest.summary.length, 800);
       assert.ok(result.json.digest.summary.startsWith(privateSummaryMarker));
       assert.ok(result.json.digest.summary.endsWith('…'));
@@ -2641,8 +2653,11 @@ test('conversations controller does not let overlong summary repair hide other s
       const warningText = warnings.join('\n');
 
       assert.equal(result.statusCode, 200);
-      assert.equal(calls.length, 1);
+      assert.equal(calls.length, 4);
       assert.equal(result.json.digest.createdBy, 'user');
+      assert.equal(result.json.digest.modelDiagnostics.finalOutcome, 'extractive');
+      assert.equal(result.json.digest.modelDiagnostics.attempts.length, 4);
+      assert.ok(result.json.digest.modelDiagnostics.attempts.every((attempt) => !attempt.repairs));
       assert.match(result.json.digest.summary, /^Extractive digest of 1 public messages\./u);
       assert.match(warningText, /invalid_output/u);
       assert.doesNotMatch(warningText, /action=clipped/u);
@@ -2718,7 +2733,7 @@ test('conversations controller rejects plain-text JSON instead of treating it as
   });
 
   assert.equal(result.statusCode, 200);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 4);
   assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
   assert.equal(calls[0].toolChoice, 'auto');
   assert.equal(calls[0].hasPayloadHook, false);
@@ -2726,6 +2741,7 @@ test('conversations controller rejects plain-text JSON instead of treating it as
   assert.match(calls[0].systemPrompt, /submit_conversation_digest/u);
   assert.match(result.json.digest.summary, /^Extractive digest of 1 public messages\./u);
   assert.equal(result.json.digest.createdBy, 'user');
+  assert.equal(result.json.digest.modelDiagnostics.attempts.length, 4);
   assert.ok(result.json.digest.decisions.some((item) => item.includes('JSON Mode')));
 });
 
@@ -2873,10 +2889,12 @@ test('conversations controller falls back when a digest tool submission is missi
   });
 
   assert.equal(result.statusCode, 200);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 4);
   assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
   assert.equal(calls[0].toolChoice, 'auto');
   assert.equal(result.json.digest.createdBy, 'user');
+  assert.equal(result.json.digest.modelDiagnostics.attempts.length, 4);
+  assert.deepEqual(result.json.digest.modelDiagnostics.attempts[0].missingFields, ['openQuestions']);
   assert.match(result.json.digest.summary, /^Extractive digest of 1 public messages\./u);
   assert.ok(result.json.digest.decisions.some((item) => item.includes('规则摘要')));
   assert.ok(warnings.some((warning) => warning.includes('failed schema validation')));
@@ -2944,10 +2962,12 @@ test('conversations controller falls back when digest tool arguments are not an 
   });
 
   assert.equal(result.statusCode, 200);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 4);
   assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
   assert.equal(calls[0].toolChoice, 'auto');
   assert.equal(result.json.digest.createdBy, 'user');
+  assert.equal(result.json.digest.modelDiagnostics.attempts.length, 4);
+  assert.ok(result.json.digest.modelDiagnostics.attempts.every((attempt) => attempt.submissionCode === 'submission_arguments_invalid'));
   assert.match(result.json.digest.summary, /^Extractive digest of 1 public messages\./u);
   assert.ok(result.json.digest.nextActions.some((item) => item.includes('只能回退')));
   assert.ok(warnings.some((warning) => warning.includes('arguments must be an object')));
@@ -3048,10 +3068,11 @@ test('conversations controller rejects wrong, multiple, and schema-invalid diges
       });
 
       assert.equal(result.statusCode, 200);
-      assert.equal(calls.length, 1);
+      assert.equal(calls.length, 4);
       assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
       assert.equal(calls[0].toolChoice, 'auto');
       assert.equal(result.json.digest.createdBy, 'user');
+      assert.equal(result.json.digest.modelDiagnostics.attempts.length, 4);
       assert.doesNotMatch(result.json.digest.summary, /invalid-submission-marker/u);
     });
   }
@@ -3168,6 +3189,11 @@ test('conversations controller retries a thinking-only digest tool call once wit
   assert.equal(calls[1].maxTokens, 24_576);
   assert.match(result.json.rollup.createdBy, /^model:auto-compaction:/u);
   assert.equal(result.json.rollup.summary, '模型 rollup：关闭思考后提交了结构化参数。');
+  assert.equal(result.json.rollup.modelDiagnostics.finalOutcome, 'model');
+  assert.deepEqual(result.json.rollup.modelDiagnostics.attempts.map((attempt) => attempt.diagnosticCode || ''), [
+    'length_exhausted',
+    '',
+  ]);
   assert.ok(warnings.some((warning) => warning.includes('length_exhausted')));
   const runningStatusIndex = broadcastEvents.findIndex(
     (event) => event.eventName === 'conversation_digest_status'
@@ -5986,4 +6012,659 @@ test('server exposes runtime observability counters over HTTP with zeroed post-b
 
   await new Promise((resolve) => app.close(resolve));
   closed = true;
+});
+
+test('conversation digest retries an empty tool submission in one contextual pi-ai session', async (t) => {
+  const calls = [];
+  global.__CAFF_DIGEST_CONTEXTUAL_RETRY_CALLS = calls;
+  t.after(() => {
+    delete global.__CAFF_DIGEST_CONTEXTUAL_RETRY_CALLS;
+    delete global.__CAFF_DIGEST_CONTEXTUAL_RETRY_CONTEXT;
+  });
+
+  const moduleSource = `
+    export function getModel(provider, model) {
+      return { id: model, name: model, api: 'openai-completions', provider, reasoning: true, maxTokens: 24576 };
+    }
+    export async function completeSimple(model, context, options) {
+      const firstContext = globalThis.__CAFF_DIGEST_CONTEXTUAL_RETRY_CONTEXT;
+      if (!firstContext) globalThis.__CAFF_DIGEST_CONTEXTUAL_RETRY_CONTEXT = context;
+      const correction = context.messages.find((message) => message.role === 'toolResult');
+      globalThis.__CAFF_DIGEST_CONTEXTUAL_RETRY_CALLS.push({
+        sameContext: !firstContext || firstContext === context,
+        messageRoles: context.messages.map((message) => message.role),
+        correction: correction ? {
+          toolCallId: correction.toolCallId,
+          toolName: correction.toolName,
+          isError: correction.isError,
+          text: correction.content.map((item) => item.text || '').join(''),
+        } : null,
+        sessionId: options.sessionId,
+        reasoning: options.reasoning,
+        maxTokens: options.maxTokens,
+      });
+      if (globalThis.__CAFF_DIGEST_CONTEXTUAL_RETRY_CALLS.length === 1) {
+        return {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'private-empty-shell-thinking-marker' },
+            {
+              type: 'toolCall',
+              id: 'empty-shell-digest-call',
+              name: 'submit_conversation_digest',
+              arguments: {}
+            }
+          ],
+          stopReason: 'toolUse',
+          usage: { input: 123, output: 45, reasoning: 40, totalTokens: 168 },
+          timestamp: Date.now()
+        };
+      }
+      return {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'corrected-digest-call',
+          name: 'submit_conversation_digest',
+          arguments: {
+            summary: '纠错上下文让第二次提交通过严格校验。',
+            facts: ['第一次提交是空参数对象。'],
+            decisions: ['复用同一 pi-ai Context 反馈安全校验错误。'],
+            openQuestions: [],
+            nextActions: [],
+            artifacts: ['server/domain/conversation/conversation-digest.ts']
+          }
+        }],
+        stopReason: 'toolUse',
+        usage: { input: 200, output: 50, reasoning: 0, totalTokens: 250 },
+        timestamp: Date.now()
+      };
+    }
+  `;
+  const { handler, store } = createConversationsControllerHarness(t, {
+    systemModelConfig: {
+      enabled: false,
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      thinking: 'high',
+      timeoutMs: 30_000,
+    },
+    digestOptions: {
+      piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+      digestModelRetryDelayMs: 0,
+    },
+  });
+  const conversation = createSmokeConversation(store, {
+    id: 'digest-contextual-empty-shell-retry',
+    title: 'Digest Contextual Empty Shell Retry',
+  });
+  store.createMessage({
+    id: 'digest-contextual-empty-shell-message',
+    conversationId: conversation.id,
+    turnId: 'digest-contextual-empty-shell-turn',
+    role: 'user',
+    senderName: 'User',
+    content: '摘要工具空参数时应让模型看到安全诊断并重试。',
+  });
+
+  const result = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: { action: 'create', summaryMode: 'model' },
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].sameContext, true);
+  assert.equal(calls[1].sameContext, true);
+  assert.deepEqual(calls[0].messageRoles, ['user']);
+  assert.deepEqual(calls[1].messageRoles, ['user', 'assistant', 'toolResult']);
+  assert.equal(calls[1].correction.toolCallId, 'empty-shell-digest-call');
+  assert.equal(calls[1].correction.toolName, 'submit_conversation_digest');
+  assert.equal(calls[1].correction.isError, true);
+  for (const field of ['summary', 'facts', 'decisions', 'openQuestions', 'nextActions', 'artifacts']) {
+    assert.match(calls[1].correction.text, new RegExp(field, 'u'));
+  }
+  assert.doesNotMatch(calls[1].correction.text, /private-empty-shell-thinking-marker/u);
+  assert.ok(calls[0].sessionId);
+  assert.equal(calls[1].sessionId, calls[0].sessionId);
+  assert.equal(calls[0].reasoning, 'high');
+  assert.equal(calls[1].reasoning, 'off');
+  assert.equal(calls[0].maxTokens, 24_576);
+  assert.equal(calls[1].maxTokens, 24_576);
+  assert.equal(result.json.digest.createdBy, 'model:deepseek/deepseek-v4-flash');
+  assert.equal(result.json.digest.modelDiagnostics.finalOutcome, 'model');
+  assert.equal(result.json.digest.modelDiagnostics.attempts.length, 2);
+  assert.deepEqual(result.json.digest.modelDiagnostics.attempts[0].missingFields, [
+    'summary',
+    'facts',
+    'decisions',
+    'openQuestions',
+    'nextActions',
+    'artifacts',
+  ]);
+  assert.equal(result.json.digest.modelDiagnostics.attempts[0].recognizedFieldCount, 0);
+  assert.equal(result.json.digest.modelDiagnostics.attempts[0].unknownFieldCount, 0);
+  assert.equal(result.json.digest.modelDiagnostics.attempts[0].retryScheduled, true);
+  assert.deepEqual(result.json.digest.modelDiagnostics.attempts[0].usage, {
+    inputTokens: 123,
+    outputTokens: 45,
+    reasoningTokens: 40,
+    totalTokens: 168,
+  });
+  assert.equal(result.json.digest.modelDiagnostics.attempts[1].outcome, 'accepted');
+  assert.equal(JSON.stringify(result.json.digest.modelDiagnostics).includes('private-empty-shell-thinking-marker'), false);
+
+  const readResult = await invokeConversationsController(handler, {
+    method: 'GET',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+  });
+  assert.deepEqual(readResult.json.digests.at(-1).modelDiagnostics, result.json.digest.modelDiagnostics);
+});
+
+test('conversation digest stops after three semantic retries and persists bounded fallback diagnostics', async (t) => {
+  const calls = [];
+  global.__CAFF_DIGEST_RETRY_LIMIT_CALLS = calls;
+  t.after(() => {
+    delete global.__CAFF_DIGEST_RETRY_LIMIT_CALLS;
+  });
+
+  const moduleSource = `
+    export function getModel(provider, model) {
+      return { id: model, name: model, api: 'openai-completions', provider, reasoning: true, maxTokens: 24576 };
+    }
+    export async function completeSimple(model, context, options) {
+      globalThis.__CAFF_DIGEST_RETRY_LIMIT_CALLS.push({
+        messageCount: context.messages.length,
+        sessionId: options.sessionId,
+        reasoning: options.reasoning,
+      });
+      return {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'empty-shell-attempt-' + globalThis.__CAFF_DIGEST_RETRY_LIMIT_CALLS.length,
+          name: 'submit_conversation_digest',
+          arguments: {}
+        }],
+        stopReason: 'toolUse',
+        timestamp: Date.now()
+      };
+    }
+  `;
+  const { handler, store } = createConversationsControllerHarness(t, {
+    systemModelConfig: {
+      enabled: false,
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      thinking: 'high',
+      timeoutMs: 30_000,
+    },
+    digestOptions: {
+      piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+      digestModelRetryDelayMs: 0,
+    },
+  });
+  const conversation = createSmokeConversation(store, {
+    id: 'digest-three-semantic-retries',
+    title: 'Digest Three Semantic Retries',
+  });
+  store.createMessage({
+    id: 'digest-three-semantic-retries-message',
+    conversationId: conversation.id,
+    turnId: 'digest-three-semantic-retries-turn',
+    role: 'user',
+    senderName: 'User',
+    content: '连续不合法提交最多只重试三次，然后保留可诊断的提取式摘要。',
+  });
+
+  const result = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: { action: 'create', summaryMode: 'model' },
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(calls.length, 4);
+  assert.deepEqual(calls.map((call) => call.messageCount), [1, 3, 5, 7]);
+  assert.equal(new Set(calls.map((call) => call.sessionId)).size, 1);
+  assert.ok(calls[0].sessionId);
+  assert.deepEqual(calls.map((call) => call.reasoning), ['high', 'off', 'off', 'off']);
+  assert.equal(result.json.digest.createdBy, 'user');
+  assert.equal(result.json.digest.modelDiagnostics.version, 1);
+  assert.equal(result.json.digest.modelDiagnostics.finalOutcome, 'extractive');
+  assert.equal(result.json.digest.modelDiagnostics.attempts.length, 4);
+  assert.deepEqual(
+    result.json.digest.modelDiagnostics.attempts.map((attempt) => attempt.retryScheduled),
+    [true, true, true, false]
+  );
+  assert.ok(result.json.digest.modelDiagnostics.attempts.every((attempt) => attempt.submissionCode === 'submission_schema_invalid'));
+  assert.equal(JSON.stringify(result.json.digest.modelDiagnostics).includes('arguments'), false);
+});
+
+test('conversation digest enforces one four-call budget across mixed failure classes', async (t) => {
+  const calls = [];
+  global.__CAFF_DIGEST_MIXED_FAILURE_CALLS = calls;
+  t.after(() => {
+    delete global.__CAFF_DIGEST_MIXED_FAILURE_CALLS;
+  });
+  const moduleSource = `
+    export function getModel(provider, model) {
+      return { id: model, name: model, api: 'openai-completions', provider, reasoning: true, maxTokens: 24576 };
+    }
+    export async function completeSimple(model, context, options) {
+      const attempt = globalThis.__CAFF_DIGEST_MIXED_FAILURE_CALLS.length + 1;
+      globalThis.__CAFF_DIGEST_MIXED_FAILURE_CALLS.push({
+        attempt,
+        messageRoles: context.messages.map((message) => message.role),
+        sessionId: options.sessionId,
+        reasoning: options.reasoning,
+      });
+      if (attempt === 1) throw new Error('private-mixed-provider-marker');
+      if (attempt === 2) {
+        return {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: 'private-mixed-thinking-marker' }],
+          stopReason: 'length',
+          timestamp: Date.now()
+        };
+      }
+      if (attempt === 3) {
+        return {
+          role: 'assistant',
+          content: [{
+            type: 'toolCall',
+            id: 'mixed-wrong-tool',
+            name: 'wrong_digest_tool',
+            arguments: { privateValue: 'private-mixed-tool-marker' }
+          }],
+          stopReason: 'toolUse',
+          timestamp: Date.now()
+        };
+      }
+      return {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'mixed-empty-shell',
+          name: 'submit_conversation_digest',
+          arguments: {}
+        }],
+        stopReason: 'toolUse',
+        timestamp: Date.now()
+      };
+    }
+  `;
+  const { handler, store } = createConversationsControllerHarness(t, {
+    systemModelConfig: {
+      enabled: false,
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      thinking: 'high',
+      timeoutMs: 30_000,
+    },
+    digestOptions: {
+      piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+      digestModelRetryDelayMs: 0,
+    },
+  });
+  const conversation = createSmokeConversation(store, {
+    id: 'digest-mixed-failure-budget',
+    title: 'Digest Mixed Failure Budget',
+  });
+  store.createMessage({
+    id: 'digest-mixed-failure-budget-message',
+    conversationId: conversation.id,
+    turnId: 'digest-mixed-failure-budget-turn',
+    role: 'user',
+    senderName: 'User',
+    content: '不同摘要失败类型也必须共用同一个四次调用上限。',
+  });
+
+  const result = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: { action: 'create', summaryMode: 'model' },
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(calls.length, 4);
+  assert.equal(new Set(calls.map((call) => call.sessionId)).size, 1);
+  assert.deepEqual(calls.map((call) => call.reasoning), ['high', 'off', 'off', 'off']);
+  assert.deepEqual(calls.map((call) => call.messageRoles), [
+    ['user'],
+    ['user'],
+    ['user', 'assistant', 'user'],
+    ['user', 'assistant', 'user', 'user'],
+  ]);
+  assert.equal(result.json.digest.createdBy, 'user');
+  assert.equal(result.json.digest.modelDiagnostics.finalOutcome, 'extractive');
+  assert.deepEqual(result.json.digest.modelDiagnostics.attempts.map((attempt) => attempt.diagnosticCode), [
+    'provider_error',
+    'length_exhausted',
+    'invalid_output',
+    'invalid_output',
+  ]);
+  assert.deepEqual(result.json.digest.modelDiagnostics.attempts.map((attempt) => attempt.retryScheduled), [
+    true,
+    true,
+    true,
+    false,
+  ]);
+  const storedDiagnostics = JSON.stringify(result.json.digest.modelDiagnostics);
+  assert.doesNotMatch(storedDiagnostics, /private-mixed-provider-marker/u);
+  assert.doesNotMatch(storedDiagnostics, /private-mixed-thinking-marker/u);
+  assert.doesNotMatch(storedDiagnostics, /private-mixed-tool-marker/u);
+});
+
+test('conversation digest retries provider failures without persisting provider error text', async (t) => {
+  const calls = [];
+  global.__CAFF_DIGEST_PROVIDER_RETRY_CALLS = calls;
+  t.after(() => {
+    delete global.__CAFF_DIGEST_PROVIDER_RETRY_CALLS;
+  });
+  const privateProviderMarker = 'private-provider-error-marker';
+  const moduleSource = `
+    export function getModel(provider, model) {
+      return { id: model, name: model, api: 'openai-completions', provider, reasoning: true, maxTokens: 24576 };
+    }
+    export async function completeSimple(model, context, options) {
+      globalThis.__CAFF_DIGEST_PROVIDER_RETRY_CALLS.push({
+        messageCount: context.messages.length,
+        sessionId: options.sessionId,
+        reasoning: options.reasoning,
+      });
+      if (globalThis.__CAFF_DIGEST_PROVIDER_RETRY_CALLS.length === 1) {
+        throw new Error('${privateProviderMarker}');
+      }
+      return {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'provider-retry-success',
+          name: 'submit_conversation_digest',
+          arguments: {
+            summary: '瞬时 provider 失败后重试成功。',
+            facts: [],
+            decisions: [],
+            openQuestions: [],
+            nextActions: [],
+            artifacts: []
+          }
+        }],
+        stopReason: 'toolUse',
+        timestamp: Date.now()
+      };
+    }
+  `;
+  const { handler, store } = createConversationsControllerHarness(t, {
+    systemModelConfig: {
+      enabled: false,
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      thinking: 'high',
+      timeoutMs: 30_000,
+    },
+    digestOptions: {
+      piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+      digestModelRetryDelayMs: 0,
+    },
+  });
+  const conversation = createSmokeConversation(store, {
+    id: 'digest-provider-retry',
+    title: 'Digest Provider Retry',
+  });
+  store.createMessage({
+    id: 'digest-provider-retry-message',
+    conversationId: conversation.id,
+    turnId: 'digest-provider-retry-turn',
+    role: 'user',
+    senderName: 'User',
+    content: '瞬时 provider 失败应在同一摘要上下文重试。',
+  });
+
+  const result = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: { action: 'create', summaryMode: 'model' },
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map((call) => call.messageCount), [1, 1]);
+  assert.equal(new Set(calls.map((call) => call.sessionId)).size, 1);
+  assert.deepEqual(calls.map((call) => call.reasoning), ['high', 'off']);
+  assert.equal(result.json.digest.createdBy, 'model:deepseek/deepseek-v4-flash');
+  assert.equal(result.json.digest.modelDiagnostics.finalOutcome, 'model');
+  assert.deepEqual(result.json.digest.modelDiagnostics.attempts.map((attempt) => attempt.outcome), [
+    'provider_error',
+    'accepted',
+  ]);
+  assert.equal(JSON.stringify(result.json.digest.modelDiagnostics).includes(privateProviderMarker), false);
+});
+
+test('conversation digest retries its own timeout but not caller cancellation', async (t) => {
+  await t.test('internal timeout retries', async (subtest) => {
+    const calls = [];
+    global.__CAFF_DIGEST_TIMEOUT_RETRY_CALLS = calls;
+    subtest.after(() => {
+      delete global.__CAFF_DIGEST_TIMEOUT_RETRY_CALLS;
+    });
+    const moduleSource = `
+      export function getModel(provider, model) {
+        return { id: model, name: model, api: 'openai-completions', provider, reasoning: true, maxTokens: 24576 };
+      }
+      export async function completeSimple(model, context, options) {
+        globalThis.__CAFF_DIGEST_TIMEOUT_RETRY_CALLS.push({
+          sessionId: options.sessionId,
+          reasoning: options.reasoning,
+        });
+        if (globalThis.__CAFF_DIGEST_TIMEOUT_RETRY_CALLS.length === 1) {
+          return new Promise((resolve, reject) => {
+            options.signal.addEventListener('abort', () => {
+              const error = new Error('private-timeout-abort-marker');
+              error.name = 'AbortError';
+              reject(error);
+            }, { once: true });
+          });
+        }
+        return {
+          role: 'assistant',
+          content: [{
+            type: 'toolCall',
+            id: 'timeout-retry-success',
+            name: 'submit_conversation_digest',
+            arguments: {
+              summary: '摘要层超时后重试成功。',
+              facts: [],
+              decisions: [],
+              openQuestions: [],
+              nextActions: [],
+              artifacts: []
+            }
+          }],
+          stopReason: 'toolUse',
+          timestamp: Date.now()
+        };
+      }
+    `;
+    const { handler, store } = createConversationsControllerHarness(subtest, {
+      systemModelConfig: {
+        enabled: false,
+        provider: 'deepseek',
+        model: 'deepseek-v4-flash',
+        thinking: 'high',
+        timeoutMs: 30_000,
+      },
+      digestOptions: {
+        piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+        digestModelTimeoutMs: 1000,
+        digestModelRetryDelayMs: 0,
+      },
+    });
+    const conversation = createSmokeConversation(store, {
+      id: 'digest-timeout-retry',
+      title: 'Digest Timeout Retry',
+    });
+    store.createMessage({
+      id: 'digest-timeout-retry-message',
+      conversationId: conversation.id,
+      turnId: 'digest-timeout-retry-turn',
+      role: 'user',
+      senderName: 'User',
+      content: '摘要层自己的超时应短退避重试。',
+    });
+
+    const result = await invokeConversationsController(handler, {
+      method: 'POST',
+      pathname: `/api/conversations/${conversation.id}/digest`,
+      body: { action: 'create', summaryMode: 'model' },
+    });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].sessionId, calls[0].sessionId);
+    assert.deepEqual(calls.map((call) => call.reasoning), ['high', 'off']);
+    assert.deepEqual(result.json.digest.modelDiagnostics.attempts.map((attempt) => attempt.outcome), [
+      'timeout',
+      'accepted',
+    ]);
+    assert.equal(JSON.stringify(result.json.digest.modelDiagnostics).includes('private-timeout-abort-marker'), false);
+  });
+
+  await t.test('caller cancellation does not retry', async (subtest) => {
+    const calls = [];
+    global.__CAFF_DIGEST_CANCELLED_CALLS = calls;
+    subtest.after(() => {
+      delete global.__CAFF_DIGEST_CANCELLED_CALLS;
+    });
+    const moduleSource = `
+      export function getModel(provider, model) {
+        return { id: model, name: model, api: 'openai-completions', provider, reasoning: true, maxTokens: 24576 };
+      }
+      export async function completeSimple() {
+        globalThis.__CAFF_DIGEST_CANCELLED_CALLS.push(true);
+        throw new Error('provider must not be called after cancellation');
+      }
+    `;
+    const controller = new AbortController();
+    controller.abort();
+    const { handler, store } = createConversationsControllerHarness(subtest, {
+      digestOptions: {
+        piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+        signal: controller.signal,
+        digestModelRetryDelayMs: 0,
+      },
+    });
+    const conversation = createSmokeConversation(store, {
+      id: 'digest-caller-cancelled',
+      title: 'Digest Caller Cancelled',
+    });
+    store.createMessage({
+      id: 'digest-caller-cancelled-message',
+      conversationId: conversation.id,
+      turnId: 'digest-caller-cancelled-turn',
+      role: 'user',
+      senderName: 'User',
+      content: '调用方取消后不得再次请求摘要模型。',
+    });
+
+    const result = await invokeConversationsController(handler, {
+      method: 'POST',
+      pathname: `/api/conversations/${conversation.id}/digest`,
+      body: { action: 'create', summaryMode: 'model' },
+    });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(calls.length, 0);
+    assert.equal(result.json.digest.createdBy, 'user');
+    assert.equal(result.json.digest.modelDiagnostics.finalOutcome, 'extractive');
+    assert.equal(result.json.digest.modelDiagnostics.attempts.length, 1);
+    assert.equal(result.json.digest.modelDiagnostics.attempts[0].outcome, 'cancelled');
+    assert.equal(result.json.digest.modelDiagnostics.attempts[0].retryScheduled, false);
+  });
+});
+
+test('conversation digest normalizes persisted model diagnostics and omits them from prompts', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const conversation = createSmokeConversation(store, {
+    id: 'digest-diagnostics-normalization',
+    title: 'Digest Diagnostics Normalization',
+  });
+  const privateMarker = 'private-persisted-diagnostic-marker';
+  const repairs = Array.from({ length: 20 }, (_, index) => ({
+    field: `facts.${index % 12}`,
+    actualLength: 300 + index,
+    acceptedLimit: 240,
+    action: 'clipped',
+    rawValue: `${privateMarker}-${index}`,
+  }));
+  repairs.splice(1, 0, {
+    field: privateMarker,
+    actualLength: 999,
+    acceptedLimit: 1,
+    action: 'clipped',
+  });
+  const attempts = Array.from({ length: 6 }, (_, index) => ({
+    attempt: index + 1,
+    outcome: 'rejected',
+    diagnosticCode: 'invalid_output',
+    submissionCode: 'submission_schema_invalid',
+    retryScheduled: index < 3,
+    thinking: index === 0 ? 'high' : 'off',
+    stopReason: 'tooluse',
+    contentBlockTypes: ['toolcall', privateMarker],
+    visibleTextChars: 0,
+    usage: { inputTokens: 10 + index, privateUsage: privateMarker },
+    missingFields: ['summary', privateMarker],
+    recognizedFieldCount: 0,
+    unknownFieldCount: 1,
+    repairs,
+    errorMessage: privateMarker,
+    rawArguments: { secret: privateMarker },
+  }));
+  store.updateConversation(conversation.id, {
+    type: conversation.type,
+    metadata: {
+      ...conversation.metadata,
+      conversationDigests: [{
+        id: 'digest-diagnostics-normalization-entry',
+        kind: 'entry',
+        createdAt: '2026-09-07T00:00:00.000Z',
+        updatedAt: '2026-09-07T00:00:00.000Z',
+        createdBy: 'system:auto-digest',
+        messageRange: { messageCount: 1 },
+        summary: '诊断归一化测试摘要。',
+        facts: [],
+        decisions: [],
+        openQuestions: [],
+        nextActions: [],
+        artifacts: [],
+        modelDiagnostics: {
+          version: 999,
+          finalOutcome: 'extractive',
+          attempts,
+          rawTranscript: privateMarker,
+        },
+      }],
+    },
+  });
+
+  const result = await invokeConversationsController(handler, {
+    method: 'GET',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+  });
+
+  assert.equal(result.statusCode, 200);
+  const diagnostics = result.json.digests[0].modelDiagnostics;
+  assert.equal(diagnostics.version, 1);
+  assert.equal(diagnostics.finalOutcome, 'extractive');
+  assert.equal(diagnostics.attempts.length, 4);
+  assert.deepEqual(diagnostics.attempts[0].missingFields, ['summary']);
+  assert.deepEqual(diagnostics.attempts[0].contentBlockTypes, ['toolcall']);
+  assert.equal(diagnostics.attempts[0].repairs.length, 16);
+  assert.equal(JSON.stringify(diagnostics).includes(privateMarker), false);
+  const prompt = formatConversationDigestsForPrompt(store.getConversation(conversation.id));
+  assert.match(prompt, /诊断归一化测试摘要/u);
+  assert.doesNotMatch(prompt, /modelDiagnostics|private-persisted-diagnostic-marker/u);
 });
