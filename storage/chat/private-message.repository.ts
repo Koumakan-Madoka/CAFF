@@ -2,6 +2,7 @@ export class ChatPrivateMessageRepository {
   insertStatement: any;
   listByConversationStatement: any;
   listVisibleByConversationAgentStatement: any;
+  listVisibleByConversationAgentAfterStatement: any;
 
   constructor(db: any) {
     this.insertStatement = db.prepare(`
@@ -44,6 +45,28 @@ export class ChatPrivateMessageRepository {
         LIMIT @limit
       ) bounded_private_messages
       ORDER BY created_at ASC, id ASC
+    `);
+    this.listVisibleByConversationAgentAfterStatement = db.prepare(`
+      SELECT *
+      FROM chat_private_messages private_message
+      WHERE private_message.conversation_id = @conversationId
+        AND (
+          private_message.sender_agent_id = @agentId
+          OR (
+            json_valid(private_message.recipient_agent_ids_json) = 1
+            AND EXISTS (
+              SELECT 1
+              FROM json_each(private_message.recipient_agent_ids_json) recipient
+              WHERE recipient.value = @agentId
+            )
+          )
+        )
+        AND (
+          @createdAt = ''
+          OR (private_message.created_at, private_message.id) > (@createdAt, @messageId)
+        )
+      ORDER BY private_message.created_at ASC, private_message.id ASC
+      LIMIT @limit
     `);
   }
 
@@ -90,6 +113,24 @@ export class ChatPrivateMessageRepository {
       conversationId: normalizedConversationId,
       agentId: normalizedAgentId,
       limit: normalizedLimit,
+    });
+  }
+
+  listVisibleByConversationAgentAfter(conversationId: string, agentId: string, cursor: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedAgentId = String(agentId || '').trim();
+    const createdAt = String(cursor && cursor.createdAt || '').trim();
+    const messageId = String(cursor && cursor.messageId || '').trim();
+    if (!normalizedConversationId || !normalizedAgentId) {
+      return [];
+    }
+    const limit = 100;
+    return this.listVisibleByConversationAgentAfterStatement.all({
+      conversationId: normalizedConversationId,
+      agentId: normalizedAgentId,
+      createdAt,
+      messageId: messageId || '',
+      limit,
     });
   }
 }

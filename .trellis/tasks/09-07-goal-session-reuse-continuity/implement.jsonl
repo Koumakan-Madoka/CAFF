@@ -7,3 +7,6 @@
 {"migration_probe":"Copied the live 3210 preview SQLite through the backup API; source lacked goal columns, migrated copy added goal_id/goal_revision with integrity_check=ok and zero foreign_key_check rows."}
 {"change":"Fixed reused-session Trace fallback by persisting sessionAssistantStartIndex before provider start and filtering prior assistant JSONL records; current-turn post-boundary tool actions remain visible."}
 {"tests":"Focused Trace boundary regression 47/47; build, check and both typechecks pass."}
+{"change":"Added additive private-mailbox cursor evidence to Session reuse. Resume now claims a private cursor atomically, injects only authorized messages after the provider-known boundary, and old rows without a boundary fail closed for one fresh self-healing run."}
+{"tests":"Private cursor/reuse/storage regression 38/38; full turn-orchestrator and bridge business assertions pass, with only two pre-existing Windows rmSync EPERM after-hook failures."}
+{"validation":"npm run build, npm run check, npm run typecheck and git diff --check pass; no provider session file, prompt static section, KV cache, privateOnly or tool execution semantics changed."}

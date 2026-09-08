@@ -8,6 +8,7 @@ const {
 } = require('../../build/server/domain/conversation/turn/agent-prompt');
 const {
   buildSessionReuseCursorSnapshot,
+  buildPrivateMessageCursorSnapshot,
   evaluateSessionReuse,
   extractLastCallInputTokens,
   isSessionReuseBusyStale,
@@ -301,6 +302,27 @@ test('isSessionReuseBusyStale only fires for busy rows past the stale window', (
   );
 });
 
+test('private messages after the provider-known cursor are the only resume mailbox delta', () => {
+  const cursor = buildPrivateMessageCursorSnapshot([
+    { id: 'p-1', createdAt: '2026-09-02T10:00:00.000Z' },
+  ]);
+  const privateDelta = [
+    { id: 'p-2', createdAt: '2026-09-02T10:01:00.000Z', senderName: 'GLM', recipientAgentIds: ['agent-1'], content: 'new private context' },
+  ];
+  const decision = evaluateSessionReuse(decisionInput({
+    row: reusableRow({ privateCursorInitialized: true, privateCursorMessageId: 'p-1', privateCursorMessageCreatedAt: '2026-09-02T10:00:00.000Z' }),
+    privateDeltaMessages: privateDelta,
+  }));
+  assert.equal(cursor.privateCursorMessageId, 'p-1');
+  assert.equal(decision.reuse, true);
+  assert.match(buildSessionReuseDeltaPrompt([], [{ id: 'agent-1', name: 'Kimi' }], decision.privateDelta), /new private context/u);
+});
+
+test('legacy reuse rows without a private cursor fail closed for mailbox continuity', () => {
+  const decision = evaluateSessionReuse(decisionInput({ row: reusableRow({ privateCursorInitialized: false }) }));
+  assert.equal(decision.reuse, false);
+  assert.equal(decision.reason, 'private_cursor_missing');
+});
 test('delta prompt renders messages through the same formatHistory path as full history', () => {
   const agents = [
     { id: 'agent-1', name: 'Kimi' },

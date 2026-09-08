@@ -544,8 +544,26 @@ export function formatAgentTurnPromptSections(sections: any) {
 // truncated: every visible message after the committed cursor must be appended
 // before that cursor may advance. Callers must apply the shared fresh-prompt
 // visibility projection before invoking this formatter.
-export function buildSessionReuseDeltaPrompt(deltaMessages: any, agents: any) {
-  return ['New messages since your last reply:', formatHistory(deltaMessages, agents, { truncate: false })].join('\n');
+export function buildSessionReuseDeltaPrompt(deltaMessages: any, agents: any, privateMessages: any[] = []) {
+  const publicSection = Array.isArray(deltaMessages) && deltaMessages.length > 0
+    ? formatHistory(deltaMessages, agents, { truncate: false })
+    : '';
+  const privateSection = (Array.isArray(privateMessages) ? privateMessages : [])
+    .map((message: any) => {
+      const sender = String(message.senderName || 'System').trim() || 'System';
+      const recipients = (Array.isArray(message.recipientAgentIds) ? message.recipientAgentIds : [])
+        .map((agentId: any) => getAgentById(agents, agentId))
+        .filter(Boolean)
+        .map((agent: any) => agent.name)
+        .join(', ');
+      return `${sender}${recipients ? ` -> ${recipients}` : ''}: ${sanitizePromptMentions(message.content)}`;
+    })
+    .join('\n\n');
+  return [
+    'New messages since your last reply:',
+    publicSection,
+    privateSection ? `Private mailbox messages since your last reply:\n${privateSection}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 export function buildAgentTurnPromptSections({

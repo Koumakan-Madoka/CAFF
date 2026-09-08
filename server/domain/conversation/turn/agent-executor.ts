@@ -34,6 +34,7 @@ const {
 const { buildAgentTurnPromptSections, buildSessionReuseDeltaPrompt, computeStaticPromptHash, formatAgentTurnPromptSections, AGENT_PROMPT_VERSION } = require('./agent-prompt');
 const {
   appendSessionReuseCursorMessage,
+  buildPrivateMessageCursorSnapshot,
   buildSessionReuseCursorSnapshot,
   evaluateSessionReuse,
   extractLastCallInputTokens,
@@ -1388,6 +1389,7 @@ export function createAgentExecutor(options: any = {}) {
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
+    const privateCursorBaseSnapshot = buildPrivateMessageCursorSnapshot(privateMessages);
     const relatedMemorySegments = enableAutomaticRelatedMemory
       ? resolveRelatedMemorySegments(store, conversationId, conversation, promptMessages, {
           projectDir: resolvedProjectDir,
@@ -1549,6 +1551,7 @@ export function createAgentExecutor(options: any = {}) {
     let sessionReuseClaim: any = null; // pre-claim reusable row snapshot, kept for restore/poison
     let retainedSessionPrefix: any = null;
     let sessionReuseCursorBaseSnapshot: ReturnType<typeof buildSessionReuseCursorSnapshot> = null;
+    let privateCursorForRun = privateCursorBaseSnapshot;
     let sessionReuseDecision: any = {
       reused: false,
       reason: !sessionReuseConfig.enabled
@@ -1575,12 +1578,21 @@ export function createAgentExecutor(options: any = {}) {
           store.markAgentSessionReusePoisoned(conversationId, agent.id, reuseProfileId, 'busy_stale', nowIso());
           sessionReuseDecision = { reused: false, reason: 'busy_stale' };
         } else {
+          const privateDeltaMessages = reuseRow
+            && reuseRow.privateCursorInitialized === true
+            && typeof store.listPrivateMessagesForAgentAfter === 'function'
+            ? store.listPrivateMessagesForAgentAfter(conversationId, agent.id, {
+                messageId: reuseRow.privateCursorMessageId || '',
+                createdAt: reuseRow.privateCursorMessageCreatedAt || '',
+              })
+            : [];
           const decision = evaluateSessionReuse({
             row: reuseRow,
             staticSegmentHash,
             config: sessionReuseConfig,
             now: nowIso(),
             messages: reuseMessages,
+            privateDeltaMessages,
             goal: sessionReuseGoal,
           });
           sessionReuseDecision = { reused: false, reason: decision.reason };
@@ -1595,6 +1607,9 @@ export function createAgentExecutor(options: any = {}) {
               expectedHash: staticSegmentHash,
               expectedGoalId: reuseRow.goalId,
               expectedGoalRevision: reuseRow.goalRevision,
+              expectedPrivateCursorMessageId: reuseRow.privateCursorMessageId,
+              expectedPrivateCursorMessageCreatedAt: reuseRow.privateCursorMessageCreatedAt,
+              expectedPrivateCursorInitialized: reuseRow.privateCursorInitialized,
               expectedCursorMessageId: reuseRow.cursorMessageId,
               expectedCursorMessageCount: reuseRow.cursorMessageCount,
               expectedCursorFirstMessageId: reuseRow.cursorFirstMessageId,
@@ -1603,6 +1618,12 @@ export function createAgentExecutor(options: any = {}) {
             });
             if (claimed) {
               sessionReuseClaim = { ...reuseRow };
+              privateCursorForRun = decision.privateDelta && decision.privateDelta.length > 0
+                ? buildPrivateMessageCursorSnapshot(decision.privateDelta)
+                : {
+                    privateCursorMessageId: reuseRow.privateCursorMessageId,
+                    privateCursorMessageCreatedAt: reuseRow.privateCursorMessageCreatedAt,
+                  };
               sessionReuseCursorBaseSnapshot = buildSessionReuseCursorSnapshot(reuseMessages);
               sessionName = claimed.sessionName;
               resumeSession = true;
@@ -1622,7 +1643,11 @@ export function createAgentExecutor(options: any = {}) {
               ) {
                 visibleDelta.push(promptUserMessage);
               }
-              const deltaPrompt = buildSessionReuseDeltaPrompt(visibleDelta, conversation.agents);
+              const deltaPrompt = buildSessionReuseDeltaPrompt(
+                visibleDelta,
+                conversation.agents,
+                decision.privateDelta || []
+              );
               deliveredPromptSections = [{
                 sectionKey: 'session_delta',
                 title: 'Session Resume Delta',
@@ -2506,6 +2531,9 @@ export function createAgentExecutor(options: any = {}) {
               usageInputTokens,
               usageContextWindow,
               usageRatio,
+              privateCursorMessageId: privateCursorForRun.privateCursorMessageId,
+              privateCursorMessageCreatedAt: privateCursorForRun.privateCursorMessageCreatedAt,
+              privateCursorInitialized: true,
               goalId: deliveredGoalId || null,
               goalRevision: deliveredGoalRevision || null,
               lastReplyAt: stage.endedAt || nowIso(),
