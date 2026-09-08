@@ -1073,6 +1073,14 @@ test('message timeline labels delegation inputs and completions with explicit ro
         initialAgentIds: ['requester-agent'],
       },
     },
+    {
+      id: 'ordinary-user-ui',
+      role: 'user',
+      content: 'A real user message.',
+      status: 'completed',
+      createdAt: '2026-09-08T00:02:00.000Z',
+      metadata: {},
+    },
   ];
   const agents = [
     { id: 'requester-agent', name: 'Acceptance Requester' },
@@ -1105,12 +1113,22 @@ test('message timeline labels delegation inputs and completions with explicit ro
   renderer.render({ id: 'delegation-ui-conversation', messages, agents, metadata: {} }, null, []);
 
   const input = window.document.querySelector('[data-message-id="delegation-input-ui"]');
+  assert.ok(input.classList.contains('delegation-message'));
+  assert.ok(input.classList.contains('delegation-input'));
+  assert.ok(input.classList.contains('user'));
   assert.equal(input.querySelector('.message-sender-label').textContent, 'Delegation');
   assert.equal(input.querySelector('.message-delegation-route').textContent, '委托：Acceptance Requester → Acceptance Recipient');
   assert.doesNotMatch(input.querySelector('.message-sender').textContent, /You/u);
 
   const completion = window.document.querySelector('[data-message-id="delegation-completion-ui"]');
+  assert.ok(completion.classList.contains('delegation-message'));
+  assert.ok(completion.classList.contains('delegation-completion'));
   assert.equal(completion.querySelector('.message-sender-label').textContent, 'Completion');
   assert.equal(completion.querySelector('.message-delegation-route').textContent, '回程：Delegation Runtime → Acceptance Requester');
   assert.doesNotMatch(completion.querySelector('.message-sender').textContent, /You/u);
+
+  const ordinaryUser = window.document.querySelector('[data-message-id="ordinary-user-ui"]');
+  assert.ok(ordinaryUser.classList.contains('user'));
+  assert.ok(!ordinaryUser.classList.contains('delegation-message'));
+  assert.equal(ordinaryUser.querySelector('.message-sender-label').textContent, 'You');
 });

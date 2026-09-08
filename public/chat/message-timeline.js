@@ -73,6 +73,7 @@
         : 'Delegation Runtime';
 
       return {
+        source,
         label: source === 'agent-delegation' ? 'Delegation' : 'Completion',
         route: source === 'agent-delegation'
           ? `委托：${sourceName} → ${targetName}`
@@ -81,7 +82,7 @@
     }
 
     function delegationRouteSignature(route) {
-      return route ? `${route.label}\u001f${route.route}` : '';
+      return route ? `${route.source}\u001f${route.label}\u001f${route.route}` : '';
     }
 
     function deletionReasonLabel(reasonCode, fallback) {
@@ -2409,6 +2410,9 @@
       card.classList.toggle('digest-status', isDigestStatusMessage);
       card.classList.toggle('digest-result', isDigestResultMessage);
       card.classList.toggle('recovery-result', Boolean(metadata && metadata.recoveryResult));
+      card.classList.toggle('delegation-message', Boolean(delegationRoute));
+      card.classList.toggle('delegation-input', delegationRoute && delegationRoute.source === 'agent-delegation');
+      card.classList.toggle('delegation-completion', delegationRoute && delegationRoute.source === 'agent-delegation-continuation');
 
       if (agent && agent.accentColor) {
         card.style.setProperty('--agent-color', agent.accentColor);
