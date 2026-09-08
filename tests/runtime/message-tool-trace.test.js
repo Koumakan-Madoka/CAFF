@@ -1419,6 +1419,95 @@ test('assistant message tool trace builds one merged timeline for session and br
   assert.equal(trace.failureContext.text, '');
 });
 
+test('assistant message tool trace excludes prior session actions from the current running task', (t) => {
+  const tempDir = withTempDir('caff-message-tool-trace-session-boundary-');
+  const sqlitePath = path.join(tempDir, 'trace.sqlite');
+  const sessionsDir = path.join(tempDir, 'named-sessions');
+  const sessionPath = path.join(sessionsDir, 'trace-session-boundary.jsonl');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runStore = createSqliteRunStore({ agentDir: tempDir, sqlitePath });
+
+  fs.mkdirSync(sessionsDir, { recursive: true });
+
+  t.after(() => {
+    try {
+      runStore.close();
+    } catch {}
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveCustomRoleConfig({
+    id: 'trace-agent-session-boundary',
+    name: 'Trace Agent',
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: 'trace-conversation-session-boundary',
+    title: 'Trace Conversation',
+    participants: [agent.id],
+  });
+  const taskId = 'trace-task-session-boundary-1';
+  const assistantMessage = store.createMessage({
+    id: 'trace-message-session-boundary-1',
+    conversationId: conversation.id,
+    turnId: 'trace-turn-session-boundary-1',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Working...',
+    status: 'streaming',
+    taskId,
+    metadata: { sessionPath, sessionName: 'trace-session-boundary' },
+  });
+
+  const sessionEntries = [
+    {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        stopReason: 'end_turn',
+        content: [{ type: 'toolCall', name: 'send-public', id: 'prior-send-public', arguments: { content: 'previous turn' } }],
+      },
+    },
+    {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        stopReason: 'tool_call',
+        content: [{ type: 'toolCall', name: 'bash', id: 'current-bash', arguments: { command: 'printf current' } }],
+      },
+    },
+  ];
+  fs.writeFileSync(sessionPath, `${sessionEntries.map((entry) => JSON.stringify(entry)).join('\n')}\n`, 'utf8');
+  runStore.createTask({
+    taskId,
+    kind: 'conversation_agent_reply',
+    title: 'Trace Task',
+    status: 'running',
+    sessionPath,
+    metadata: {
+      sessionPath,
+      sessionAssistantStartIndex: 1,
+    },
+  });
+
+  const trace = buildAssistantMessageToolTrace({
+    db: store.db,
+    agentDir: tempDir,
+    message: assistantMessage,
+    resolvedSessionPath: sessionPath,
+  });
+
+  assert.equal(trace.sessionToolCalls.length, 1);
+  assert.equal(trace.sessionToolCalls[0].toolName, 'bash');
+  assert.equal(trace.steps.length, 1);
+  assert.equal(trace.activity.hasCurrentTool, true);
+  assert.equal(trace.activity.currentToolName, 'bash');
+});
+
 test('assistant message tool trace infers the current tool while a task is still running', (t) => {
   const tempDir = withTempDir('caff-message-tool-trace-running-');
   const sqlitePath = path.join(tempDir, 'trace.sqlite');

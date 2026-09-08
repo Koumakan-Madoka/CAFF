@@ -8,6 +8,7 @@ const {
   DEFAULT_THINKING,
   resolveIntegerSettingCandidates,
   resolveSetting,
+  resolveSessionPath,
   resolveThinkingSetting,
   sanitizeSessionName,
   startRun,
@@ -49,7 +50,7 @@ const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-mem
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { createBrowserCliSessionName, resolveBrowserCliPath } = require('./browser-cli');
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
-const { createLiveSessionToolStep } = require('../../runtime/message-tool-trace');
+const { createLiveSessionToolStep, countSessionAssistantMessages } = require('../../runtime/message-tool-trace');
 const { summarizeModelUsageCalls, summarizeTokenUsage } = require('../../runtime/token-usage');
 const { resolveCurrentTrellisTaskName } = require('./trellis-context');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
@@ -1676,6 +1677,10 @@ export function createAgentExecutor(options: any = {}) {
         );
       }
     }
+    const sessionAssistantStartIndex = countSessionAssistantMessages(
+      resolveSessionPath(sessionName, agentDir),
+      agentDir
+    );
     const assistantMessageId = randomUUID();
     const contextSnapshot = createAgentContextSnapshot({
       conversationId,
@@ -1701,6 +1706,7 @@ export function createAgentExecutor(options: any = {}) {
       skillIds: agentConfig.skillIds,
       conversationSkillIds: agentConfig.conversationSkillIds,
       sessionName,
+      sessionAssistantStartIndex,
       sessionScope: 'agent_turn',
       sessionReused: resumeSession,
       sessionReuseReason: sessionReuseDecision.reason,
@@ -1896,6 +1902,7 @@ export function createAgentExecutor(options: any = {}) {
         triggeredByAgentId: queueItem.triggeredByAgentId || null,
         triggeredByMessageId: queueItem.triggeredByMessageId || null,
         toolBridgeEnabled: true,
+        sessionAssistantStartIndex,
       },
       startedAt: nowIso(),
     });

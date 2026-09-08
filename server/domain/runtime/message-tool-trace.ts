@@ -338,7 +338,47 @@ function formatTraceValue(value: any, options: any = {}, maxLength = 360) {
   }
 }
 
-export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
+export function countSessionAssistantMessages(sessionPath: any, agentDir: any) {
+  const pathValue = String(sessionPath || '').trim();
+  const baseDir = String(agentDir || '').trim();
+
+  if (!pathValue || !baseDir) {
+    return null;
+  }
+
+  const sessionsDir = path.resolve(baseDir, 'named-sessions');
+  const resolvedPath = path.resolve(pathValue);
+
+  if (!isPathWithin(sessionsDir, resolvedPath)) {
+    return null;
+  }
+
+  let text = '';
+
+  try {
+    if (!fs.existsSync(resolvedPath)) {
+      return 0;
+    }
+
+    text = fs.readFileSync(resolvedPath, 'utf8');
+  } catch {
+    return null;
+  }
+
+  let count = 0;
+
+  for (const line of text.split(/\r?\n/)) {
+    const entry = safeJsonParse(String(line || '').trim());
+
+    if (entry && entry.type === 'message' && entry.message && entry.message.role === 'assistant') {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
+export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any, options: any = {}) {
   const pathValue = String(sessionPath || '').trim();
   const baseDir = String(agentDir || '').trim();
 
@@ -366,12 +406,19 @@ export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
   }
 
   const lines = text.split(/\r?\n/);
+  const assistantStartIndex = options.assistantStartIndex !== null
+    && options.assistantStartIndex !== undefined
+    && Number.isSafeInteger(Number(options.assistantStartIndex))
+    && Number(options.assistantStartIndex) >= 0
+    ? Number(options.assistantStartIndex)
+    : null;
   const thinkingParts: string[] = [];
   const textParts: string[] = [];
   const toolCalls: any[] = [];
   const modelCalls: any[] = [];
   const assistantErrors: string[] = [];
   let assistantMessageTotal = 0;
+  let selectedAssistantMessageTotal = 0;
   let lastAssistant: any = null;
 
   for (const line of lines) {
@@ -389,6 +436,10 @@ export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
 
     const message = entry.message;
     assistantMessageTotal += 1;
+    if (assistantStartIndex !== null && assistantMessageTotal <= assistantStartIndex) {
+      continue;
+    }
+    selectedAssistantMessageTotal += 1;
     lastAssistant = message;
 
     let modelCallSequence: number | null = null;
@@ -440,7 +491,7 @@ export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
           toolName: item && item.name ? String(item.name) : '',
           arguments: item && item.arguments !== undefined ? item.arguments : null,
           partialJson: item && item.partialJson !== undefined ? item.partialJson : '',
-          assistantMessageIndex: assistantMessageTotal,
+          assistantMessageIndex: selectedAssistantMessageTotal,
           modelCallSequence,
         });
       }
@@ -449,7 +500,7 @@ export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
 
   return {
     sessionPath: resolvedPath,
-    assistantMessageTotal,
+    assistantMessageTotal: assistantStartIndex === null ? assistantMessageTotal : selectedAssistantMessageTotal,
     stopReason: lastAssistant && lastAssistant.stopReason ? String(lastAssistant.stopReason) : '',
     errorMessage: lastAssistant && lastAssistant.errorMessage ? String(lastAssistant.errorMessage) : '',
     api: lastAssistant && lastAssistant.api ? String(lastAssistant.api) : '',
@@ -1351,6 +1402,13 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const runAssistantErrors = runRow ? safeJsonParse(runRow.assistant_errors_json) : null;
   const expectedCompletionEvent = loadExpectedCompletionEvent(db, taskId);
   const taskMetadata = taskRow ? safeJsonParse(taskRow.metadata_json) : null;
+  const sessionAssistantStartIndex = taskMetadata
+    && taskMetadata.sessionAssistantStartIndex !== null
+    && taskMetadata.sessionAssistantStartIndex !== undefined
+    && Number.isSafeInteger(Number(taskMetadata.sessionAssistantStartIndex))
+    && Number(taskMetadata.sessionAssistantStartIndex) >= 0
+    ? Number(taskMetadata.sessionAssistantStartIndex)
+    : null;
   const taskSessionPath = taskRow && taskRow.session_path ? String(taskRow.session_path).trim() : '';
   const storedTimelineCandidate = normalizeObservabilityTimeline(options.observabilityTimeline);
   const authoritativeModelUsage = normalizeAuthoritativeModelUsage(options.modelUsage);
@@ -1362,7 +1420,11 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const storedTimeline = storedTimelineContaminated ? null : storedTimelineCandidate;
   const sessionSnapshot = storedTimeline
     ? null
-    : readSessionAssistantSnapshot(taskSessionPath || resolvedSessionPath, agentDir);
+    : readSessionAssistantSnapshot(
+        taskSessionPath || resolvedSessionPath,
+        agentDir,
+        { assistantStartIndex: sessionAssistantStartIndex }
+      );
   const sessionToolSource = sessionSnapshot && Array.isArray(sessionSnapshot.toolCalls) ? sessionSnapshot.toolCalls : [];
   const sessionModelUsage = summarizeModelUsageCalls(sessionSnapshot && Array.isArray(sessionSnapshot.modelCalls) ? sessionSnapshot.modelCalls : []);
   const fallbackModelCalls = authoritativeModelUsage

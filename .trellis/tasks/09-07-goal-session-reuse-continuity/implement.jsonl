@@ -5,3 +5,5 @@
 {"change":"Implemented immutable Goal IDs and revisions, same-Goal checklist runner migration, strict Goal Runner identity/revision/50% reuse gates, additive nullable reuse evidence columns, null-safe atomic claim guards, and provider-known Goal evidence inheritance on resume."}
 {"tests":"Focused Goal/reuse/storage 52/52; executor/storage/Goal adjacent 62/62; smoke 83/83 + 4/4; UI 113/113 + structure 15/15; test:fast completed through all suites except two pre-existing Windows turn-orchestrator rmSync EPERM after-hooks, with all remaining suites rerun green."}
 {"migration_probe":"Copied the live 3210 preview SQLite through the backup API; source lacked goal columns, migrated copy added goal_id/goal_revision with integrity_check=ok and zero foreign_key_check rows."}
+{"change":"Fixed reused-session Trace fallback by persisting sessionAssistantStartIndex before provider start and filtering prior assistant JSONL records; current-turn post-boundary tool actions remain visible."}
+{"tests":"Focused Trace boundary regression 47/47; build, check and both typechecks pass."}

@@ -1323,6 +1323,9 @@ const eligible = budgetReached || strongHighValueSignal;
   contract.
 - Tool trace aggregation and redaction changes should also be covered by
   `tests/runtime/message-tool-trace.test.js`
+- Reused-session fallback boundaries must be covered by
+  `tests/runtime/message-tool-trace.test.js`, including exclusion of prior
+  assistant actions and retention of post-boundary current-turn actions.
 
 ## Bounded Live Observability Timeline
 
@@ -1348,6 +1351,7 @@ const eligible = budgetReached || strongHighValueSignal;
   contamination and projected from the message's own session/task evidence
   without rewriting either audit source. Historical messages without unified
   detail retain the same bounded compatibility path.
+- Session JSONL fallback for a live or legacy message may contain multiple assistant turns because reused provider sessions append to one file. New CAFF tasks persist `sessionAssistantStartIndex` in task metadata before provider start; fallback projection counts assistant records and includes only records after that boundary, so a prior turn's final tool cannot become the current activity. Tasks without the field retain the historical whole-file compatibility behavior.
 - If the change affects pi runtime CLI behavior, also inspect
   `tests/runtime/pi-runtime.test.js`
 - Dynamic skill path-loading prompt behavior is covered by `tests/runtime/skill-loading.test.js`
