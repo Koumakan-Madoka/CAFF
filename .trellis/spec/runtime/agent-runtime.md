@@ -926,13 +926,14 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - **Prompt instructions** for dynamic loading only appear when mode is `dynamic`;
   in `full` mode they are omitted to reduce noise.
 
-## Private Handoff and Commit-Pinned Review Guidance
+## Private Handoff Compatibility
 
-- `send-private` to another participant wakes an eligible idle recipient immediately in the current turn. A self-note or `--no-handoff` only persists the message.
-- Each source trace should send at most one complete private message per recipient. Do not poll, wait at P2, or send heartbeat follow-ups: server deduplication prevents a second launch and the already-running recipient may not see later content. If the same source run later includes that recipient in an actionable public mention, the public message remains visible but the turn-local `(sourceAgentId, sourceRunId, recipientAgentId)` ledger suppresses a second model invocation. `--no-handoff` does not enter that ledger.
+- `send-private` remains an underlying compatibility path for private-only game phases, historical messages, replay, and existing scripts/API callers. It is not advertised in new Agent prompt tool instructions or per-turn Agent expectations.
+- Private mailbox context remains available where the existing visibility policy requires it; removing the Agent-facing command does not remove stored private messages or their authorization boundaries.
+- New Agent task collaboration uses `create-delegation` and `await-delegation`. Legacy private handoff dispatch, compact CLI projection, telemetry, and storage remain readable and executable for compatibility callers.
 - Formal review requests include the exact commit SHA, review scope/risks, author validation evidence, and requested response format. After sending the request, the author does not modify repository files for the rest of that trace.
 - Review worktree selection is risk-based rather than automatic: immutable `git show`/`git diff <SHA>` needs no worktree; a clean room worktree already at the requested SHA is usable when it will remain stable; tests against a SHA while the room worktree may change require a detached review worktree with isolated runtime resources; requested code changes require a separate writable branch/worktree.
-- Keep bridge behavior, compact CLI projection, prompt wording, and telemetry aligned. `dispatch[]` exposes bounded outcome labels/details without private content while legacy `handoffRequested` and `enqueuedAgentIds` remain available.
+- Keep bridge behavior, compact CLI projection, prompt wording, and telemetry aligned. Historical `dispatch[]`, `handoffRequested`, and `enqueuedAgentIds` remain available without exposing private content.
 
 ## Agent Chat Bridge Prompt Guidance
 
@@ -1067,20 +1068,24 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 
 ### 1. Scope / Trigger
 - Trigger: changing the `Chat bridge tools` prompt block in `server/domain/conversation/turn/agent-prompt.ts`.
-- Goal: keep per-turn tool instructions compact while preserving operational safety, routing behavior, and command signatures that agents need to act correctly.
+- Goal: keep per-turn tool instructions compact while making delegation the Agent-facing collaboration path and preserving private compatibility behavior for non-prompt callers.
 
 ### 2. Signatures
-- Public send: `node <agentToolRelativePath> send-public [--no-finalize] --content-stdin`; the CLI maps `--no-finalize` to JSON `noFinalize: true` on `POST /api/agent-tools/post-message`.
-- Private send: `node <agentToolRelativePath> send-private [--to "AgentName[,AgentB]"] [--no-handoff] --content-stdin`.
+- Public send remains Agent-facing: `node <agentToolRelativePath> send-public [--no-finalize] --content-stdin`; the CLI maps `--no-finalize` to JSON `noFinalize: true` on `POST /api/agent-tools/post-message`.
+- Delegation is the Agent-facing task collaboration path: `create-delegation` followed by `await-delegation` when the result is required.
+- Private send remains an underlying compatibility command: `node <agentToolRelativePath> send-private [--to "AgentName[,AgentB]"] [--no-handoff] --content-stdin`. The command/API/bridge/storage/replay are retained but omitted from new Agent prompt instructions and `agent_expectations`.
 - Context recall: `read-context`, `search-messages --query "..." --limit 5`, and `search-memory --query "..." --limit 5` or `--latest`.
 - Governance: `list-participants`, `suggest-goal --action complete|pause|set --reason "..."`, and `update-goal-checklist --content-stdin` with `[ ]`, `[~]`, `[x]` rows.
 - Trellis writes: `trellis-init --task "my-task" [--confirm] [--force]` and `trellis-write --path ".trellis/..." --content-stdin [--confirm] [--force]`.
 
 ### 3. Contracts
 - Keep one shared `command_format_rules` section instead of repeating bash/heredoc/stdin/Windows-path rules under each tool.
-- Preserve exact public and private heredoc templates using `node "$CAFF_CHAT_TOOLS_PATH"` because they are the safest multiline examples and are covered by prompt tests.
+- New Agent prompts must not contain the `send-private` command, private heredoc template, private handoff wake/poll guidance, or a `send-private` expectation entry.
+- Private-only routing, private mailbox visibility, the private bridge/API/storage/replay compatibility path, and historical private telemetry remain unchanged.
+- New Agent task collaboration uses delegation rather than private-message polling or handoff instructions.
+- Preserve the public heredoc template using `node "$CAFF_CHAT_TOOLS_PATH"`; private send remains a compatibility API but is intentionally omitted from new Agent prompt examples.
 - Keep safety rules explicit in `command_format_rules`: never print tokens/secrets, check public content before `send-public`, put private roles/reasoning/scratch/game identity in private notes, and mark `--force` as dangerous.
-- Keep routing rules explicit in `rules` / `routing_instructions`: actionable mentions trigger only at line start or in a final pure mention block; inline mentions do not trigger; private messages wake recipients unless `--no-handoff`; no actionable mention stops the turn; up to 5 agents run at once.
+- Keep routing behavior explicit in backend/runtime contracts; private-message wake and deduplication remain compatibility behavior, but are not included in new Agent prompt guidance.
 - Successful `send-public` bridge calls in normal conversation turns must request runtime completion through the active run handle so the model does not need a second full-context call just to emit `{ "action": "final" }`; the final stored reply remains the last public bridge content.
 - `noFinalize: true` is the explicit exception for interim public updates: the bridge still persists/broadcasts the public content and tool telemetry, but it must not request active-run completion or set `publicPostCompletionRequested`. A later public post without `noFinalize: true` in the same invocation must still request completion normally. Only the JSON boolean `true` suppresses completion; missing, false, or non-boolean values keep the default finalize behavior.
 - Keep `tool_instructions` focused on compact command signatures and group low-frequency tools into capability lines rather than listing preview/apply/overwrite examples separately.
@@ -1090,7 +1095,9 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 ### 4. Validation & Error Matrix
 | Case | Expected behavior |
 | --- | --- |
-| Prompt includes chat bridge guidance | Contains public/private heredoc templates in `command_format_rules`, bash-only guidance, safety rules, and compact tool signatures in `tool_instructions`, including the interim-only `--no-finalize` exception. |
+| Prompt includes chat bridge guidance | Contains public heredoc guidance, bash-only guidance, safety rules, and compact delegation/retrieval/tool signatures without `send-private` or a private heredoc. |
+| Per-turn `agent_expectations` | Contains no `send-private` key for normal or private-only turns. |
+| Private-only or legacy caller | Existing private-only routing, mailbox, bridge/API, storage, replay, and historical metrics remain available. |
 | Public post omits `noFinalize` or sends a value other than boolean `true` | Persist/broadcast the post and request runtime completion once. |
 | Public post sends `noFinalize: true` | Persist/broadcast the post, keep the invocation active, and allow a later normal public post to request completion. |
 | Dynamic skill descriptors are present | Includes the one-line dynamic `read`/`Path` guidance as `dynamic_skill_loading`. |

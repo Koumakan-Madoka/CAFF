@@ -1926,7 +1926,6 @@ export function createAgentExecutor(options: any = {}) {
       },
       expectations: {
         'send-public': queuedMetadata.privateOnly ? 'forbidden' : 'required',
-        'send-private': queuedMetadata.privateOnly ? 'required' : 'optional',
         'read-context': 'optional',
         'create-delegation': 'optional',
         'await-delegation': 'optional',

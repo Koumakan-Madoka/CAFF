@@ -1581,10 +1581,8 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /Chat bridge tools:/u);
   assert.match(prompt, /This run executes shell commands with bash/u);
   assert.match(prompt, /cat <<'CAFF_PUBLIC_EOF' \| node "\$CAFF_CHAT_TOOLS_PATH" send-public --content-stdin/u);
-  assert.match(
-    prompt,
-    /cat <<'CAFF_PRIVATE_EOF' \| node "\$CAFF_CHAT_TOOLS_PATH" send-private --to "AgentName" --content-stdin/u
-  );
+  assert.doesNotMatch(prompt, /send-private/u);
+  assert.doesNotMatch(prompt, /Private messages.*wake/u);
   assert.match(prompt, /search-messages --query "topic keywords" --limit 5/u);
   assert.match(prompt, /--speaker "AgentName" or --agent-id "agent-id"/u);
   assert.match(prompt, /search-memory --query "topic keywords" --limit 5/u);
@@ -1603,15 +1601,11 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /successful send-public call completes the turn automatically unless you pass --no-finalize/u);
   assert.match(prompt, /send-public \[--no-finalize\] --content-stdin/u);
   assert.match(prompt, /--no-finalize posts an interim update and keeps the current run active/u);
-  assert.match(prompt, /if send-private succeeds without a public reply, use a tiny control reply/u);
-  assert.match(prompt, /wake idle recipients immediately/u);
-  assert.match(prompt, /Send at most one complete private message per recipient in one trace/u);
-  assert.match(prompt, /do not poll, wait at P2, or send follow-up heartbeats/u);
+  assert.match(prompt, /use a concise final reply when no public bridge post is needed/u);
   assert.match(prompt, /exact commit SHA, review scope and risks, author validation evidence, and desired response format/u);
   assert.match(prompt, /do not modify repository files for the rest of this trace/u);
   assert.match(prompt, /Review worktrees are risk-based/u);
   assert.match(prompt, /create a detached review worktree only when tests need a stable SHA while the room worktree may change/u);
-  assert.doesNotMatch(prompt, /After send-public\/send-private succeeds/u);
   assert.doesNotMatch(prompt, /PowerShell example/u);
 });
 
