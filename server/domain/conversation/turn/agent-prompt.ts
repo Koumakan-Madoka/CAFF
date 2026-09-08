@@ -149,13 +149,6 @@ function describeTurnTrigger(trigger: any, agents: any) {
   }
 
   if (trigger.triggerType === 'user') {
-    if (String(trigger.enqueueReason || '').startsWith('host_')) {
-      const privateOnlyNote = trigger.privateOnly
-        ? ' This phase is private-only; do not publish the phase result to the public room.'
-        : '';
-      return `The backend game host selected you for the current phase.${privateOnlyNote}`;
-    }
-
     return trigger.enqueueReason === 'user_mentions'
       ? 'The user explicitly mentioned you and wants your perspective first.'
       : '';
@@ -430,7 +423,7 @@ function buildCommandFormatRules(agentToolRelativePath: string) {
   return [
     'Command safety and format rules:',
     '- Public room output should go through the chat bridge; your final raw reply is private bookkeeping. A successful send-public call completes the turn automatically unless you pass --no-finalize for an interim update; use a concise final reply when no public bridge post is needed.',
-    '- Safety: never print tokens or secrets. Confirm content is public before send-public. Put secret roles, hidden reasoning, scratch notes, and game identity in private notes. `--force` overwrites files and is dangerous.',
+    '- Safety: never print tokens or secrets. Confirm content is public before send-public. Keep secret roles, hidden reasoning, and scratch notes out of public posts. `--force` overwrites files and is dangerous.',
     `- Command format: This run executes shell commands with bash. Multi-line or quoted content must use a quoted heredoc piped to --content-stdin; short safe one-liners may use --content. Do not print \`\`\`bash\`\`\` code blocks as answers, and Never put raw message text on a new shell line by itself; always pair it with --content or a pipe. Do not use PowerShell here-string syntax like @'... '@.`,
     `- Paths: use ${relativeCommandPrefix} from repo root; elsewhere use ${envCommandPrefix}. CAFF_CHAT_TOOLS_PATH is already bash-safe; on Windows bash avoid raw E:\\foo\\bar paths and use ${agentToolRelativePath} or "$CAFF_CHAT_TOOLS_PATH".`,
     '- Public heredoc template:',

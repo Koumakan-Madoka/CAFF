@@ -926,9 +926,9 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - **Prompt instructions** for dynamic loading only appear when mode is `dynamic`;
   in `full` mode they are omitted to reduce noise.
 
-## Private Handoff Compatibility
+## Private Handoff Compatibility and Review Guidance
 
-- `send-private` remains an underlying compatibility path for private-only game phases, historical messages, replay, and existing scripts/API callers. It is not advertised in new Agent prompt tool instructions or per-turn Agent expectations.
+- `send-private` remains an underlying compatibility path for historical messages, replay, and existing scripts/API callers. It is not advertised in new Agent prompt tool instructions or per-turn Agent expectations.
 - Private mailbox context remains available where the existing visibility policy requires it; removing the Agent-facing command does not remove stored private messages or their authorization boundaries.
 - New Agent task collaboration uses `create-delegation` and `await-delegation`. Legacy private handoff dispatch, compact CLI projection, telemetry, and storage remain readable and executable for compatibility callers.
 - Formal review requests include the exact commit SHA, review scope/risks, author validation evidence, and requested response format. After sending the request, the author does not modify repository files for the rest of that trace.
@@ -1084,7 +1084,7 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - Private-only routing, private mailbox visibility, the private bridge/API/storage/replay compatibility path, and historical private telemetry remain unchanged.
 - New Agent task collaboration uses delegation rather than private-message polling or handoff instructions.
 - Preserve the public heredoc template using `node "$CAFF_CHAT_TOOLS_PATH"`; private send remains a compatibility API but is intentionally omitted from new Agent prompt examples.
-- Keep safety rules explicit in `command_format_rules`: never print tokens/secrets, check public content before `send-public`, put private roles/reasoning/scratch/game identity in private notes, and mark `--force` as dangerous.
+- Keep safety rules explicit in `command_format_rules`: never print tokens/secrets, check public content before `send-public`, keep secret roles/reasoning/scratch notes out of public posts, and mark `--force` as dangerous.
 - Keep routing behavior explicit in backend/runtime contracts; private-message wake and deduplication remain compatibility behavior, but are not included in new Agent prompt guidance.
 - Successful `send-public` bridge calls in normal conversation turns must request runtime completion through the active run handle so the model does not need a second full-context call just to emit `{ "action": "final" }`; the final stored reply remains the last public bridge content.
 - `noFinalize: true` is the explicit exception for interim public updates: the bridge still persists/broadcasts the public content and tool telemetry, but it must not request active-run completion or set `publicPostCompletionRequested`. A later public post without `noFinalize: true` in the same invocation must still request completion normally. Only the JSON boolean `true` suppresses completion; missing, false, or non-boolean values keep the default finalize behavior.
