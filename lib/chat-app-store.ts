@@ -3756,6 +3756,18 @@ export class ChatAppStore {
       .filter(Boolean);
   }
 
+  listPrivateMessagesForAgentAfter(conversationId: any, agentId: any, cursor: any) {
+    const rows = this.privateMessageRepository.listVisibleByConversationAgentAfter(
+      String(conversationId || '').trim(),
+      String(agentId || '').trim(),
+      {
+        createdAt: cursor && cursor.createdAt,
+        messageId: cursor && cursor.messageId,
+      }
+    );
+    return rows.map(normalizePrivateMessageRow).filter(Boolean);
+  }
+
   getMessage(messageId: any) {
     return normalizeMessageRow(this.messageRepository.get(messageId));
   }

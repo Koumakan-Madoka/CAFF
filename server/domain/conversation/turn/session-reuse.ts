@@ -148,6 +148,21 @@ export function appendSessionReuseCursorMessage(snapshot: any, message: any) {
   };
 }
 
+export function buildPrivateMessageCursorSnapshot(messages: any) {
+  const ordered = (Array.isArray(messages) ? messages : []).filter((message: any) =>
+    Boolean(message && String(message.id || '').trim())
+  );
+  const last = ordered[ordered.length - 1];
+  if (!last) {
+    return { privateCursorMessageId: null, privateCursorMessageCreatedAt: null };
+  }
+  const createdAt = String(last.createdAt || '').trim();
+  return {
+    privateCursorMessageId: String(last.id).trim(),
+    privateCursorMessageCreatedAt: createdAt || null,
+  };
+}
+
 export function partitionMessagesAtCursor(messages: any, cursorMessageId: any) {
   const ordered = normalizeOrderedMessages(messages);
   const cursorId = String(cursorMessageId || '').trim();
@@ -221,7 +236,7 @@ export function isSessionReuseBusyStale(row: any, config: any, now: any) {
 
 // Pure decision over an already-loaded row. Returns { reuse, reason, delta? };
 // callers persist side effects (claim / poison) after consulting this result.
-export function evaluateSessionReuse({ row, staticSegmentHash, config, now, messages, goal }: any) {
+export function evaluateSessionReuse({ row, staticSegmentHash, config, now, messages, privateDeltaMessages, goal }: any) {
   if (!row) {
     return { reuse: false, reason: 'no_prior_session' };
   }
@@ -275,6 +290,10 @@ export function evaluateSessionReuse({ row, staticSegmentHash, config, now, mess
     }
   }
 
+  if (row.privateCursorInitialized === false) {
+    return { reuse: false, reason: 'private_cursor_missing' };
+  }
+
   if (row.usageRatio === null || row.usageRatio === undefined) {
     return { reuse: false, reason: 'usage_snapshot_missing' };
   }
@@ -304,8 +323,17 @@ export function evaluateSessionReuse({ row, staticSegmentHash, config, now, mess
   }
 
   if (!cursorCheck.delta || cursorCheck.delta.length === 0) {
-    return { reuse: false, reason: 'no_delta_messages' };
+    const privateDelta = Array.isArray(privateDeltaMessages) ? privateDeltaMessages : [];
+    if (privateDelta.length === 0) {
+      return { reuse: false, reason: 'no_delta_messages' };
+    }
+    return { reuse: true, reason: 'reused', delta: [], privateDelta };
   }
 
-  return { reuse: true, reason: 'reused', delta: cursorCheck.delta };
+  return {
+    reuse: true,
+    reason: 'reused',
+    delta: cursorCheck.delta,
+    privateDelta: Array.isArray(privateDeltaMessages) ? privateDeltaMessages : [],
+  };
 }

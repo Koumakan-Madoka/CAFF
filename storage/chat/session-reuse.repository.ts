@@ -15,6 +15,9 @@ function normalizeReuseRow(row: any) {
     cursorMessageCount: Number.isInteger(row.cursor_message_count) ? row.cursor_message_count : 0,
     cursorFirstMessageId: row.cursor_first_message_id || null,
     cursorMaxUpdatedAt: row.cursor_max_updated_at || null,
+    privateCursorMessageId: row.private_cursor_message_id || null,
+    privateCursorMessageCreatedAt: row.private_cursor_message_created_at || null,
+    privateCursorInitialized: row.private_cursor_initialized === undefined ? false : Boolean(row.private_cursor_initialized),
     lastRunId: row.last_run_id === null || row.last_run_id === undefined ? null : row.last_run_id,
     lastAssistantMessageId: row.last_assistant_message_id || null,
     usageInputTokens: row.usage_input_tokens === null || row.usage_input_tokens === undefined ? null : row.usage_input_tokens,
@@ -85,6 +88,9 @@ export class ChatSessionReuseRepository {
         AND static_segment_hash = @expectedHash
         AND goal_id IS @expectedGoalId
         AND goal_revision IS @expectedGoalRevision
+        AND private_cursor_message_id IS @expectedPrivateCursorMessageId
+        AND private_cursor_message_created_at IS @expectedPrivateCursorMessageCreatedAt
+        AND private_cursor_initialized = @expectedPrivateCursorInitialized
         AND cursor_message_id = @expectedCursorMessageId
         AND cursor_message_count = @expectedCursorMessageCount
         AND cursor_first_message_id = @expectedCursorFirstMessageId
@@ -172,6 +178,9 @@ export class ChatSessionReuseRepository {
         cursor_message_count,
         cursor_first_message_id,
         cursor_max_updated_at,
+        private_cursor_message_id,
+        private_cursor_message_created_at,
+        private_cursor_initialized,
         last_run_id,
         last_assistant_message_id,
         usage_input_tokens,
@@ -195,6 +204,9 @@ export class ChatSessionReuseRepository {
         @cursorMessageCount,
         @cursorFirstMessageId,
         @cursorMaxUpdatedAt,
+        @privateCursorMessageId,
+        @privateCursorMessageCreatedAt,
+        @privateCursorInitialized,
         @lastRunId,
         @lastAssistantMessageId,
         @usageInputTokens,
@@ -216,6 +228,9 @@ export class ChatSessionReuseRepository {
         cursor_message_count = excluded.cursor_message_count,
         cursor_first_message_id = excluded.cursor_first_message_id,
         cursor_max_updated_at = excluded.cursor_max_updated_at,
+        private_cursor_message_id = excluded.private_cursor_message_id,
+        private_cursor_message_created_at = excluded.private_cursor_message_created_at,
+        private_cursor_initialized = excluded.private_cursor_initialized,
         last_run_id = excluded.last_run_id,
         last_assistant_message_id = excluded.last_assistant_message_id,
         usage_input_tokens = excluded.usage_input_tokens,
@@ -250,6 +265,11 @@ export class ChatSessionReuseRepository {
       throw new TypeError('expectedCursorMessageCount must be a positive integer');
     }
     const goalEvidence = normalizeGoalEvidence(payload.expectedGoalId, payload.expectedGoalRevision);
+    const expectedPrivateCursorMessageId = String(payload.expectedPrivateCursorMessageId || '').trim() || null;
+    const expectedPrivateCursorMessageCreatedAt = String(payload.expectedPrivateCursorMessageCreatedAt || '').trim() || null;
+    if ((expectedPrivateCursorMessageId === null) !== (expectedPrivateCursorMessageCreatedAt === null)) {
+      throw new TypeError('expected private cursor fields must both be present or both be null');
+    }
 
     const result = this.claimStatement.run({
       conversationId: normalizeId(payload.conversationId, 'conversationId'),
@@ -258,6 +278,9 @@ export class ChatSessionReuseRepository {
       expectedHash: normalizeId(payload.expectedHash, 'expectedHash'),
       expectedGoalId: goalEvidence.goalId,
       expectedGoalRevision: goalEvidence.goalRevision,
+      expectedPrivateCursorMessageId,
+      expectedPrivateCursorMessageCreatedAt,
+      expectedPrivateCursorInitialized: payload.expectedPrivateCursorInitialized === false ? 0 : 1,
       expectedCursorMessageId: normalizeId(payload.expectedCursorMessageId, 'expectedCursorMessageId'),
       expectedCursorMessageCount,
       expectedCursorFirstMessageId: normalizeId(
@@ -299,6 +322,9 @@ export class ChatSessionReuseRepository {
         cursorMessageCount: snapshot.cursorMessageCount,
         cursorFirstMessageId: snapshot.cursorFirstMessageId,
         cursorMaxUpdatedAt: snapshot.cursorMaxUpdatedAt,
+        privateCursorMessageId: snapshot.privateCursorMessageId,
+        privateCursorMessageCreatedAt: snapshot.privateCursorMessageCreatedAt,
+        privateCursorInitialized: snapshot.privateCursorInitialized === false ? 0 : 1,
         lastRunId: snapshot.lastRunId,
         lastAssistantMessageId: snapshot.lastAssistantMessageId,
         usageInputTokens: snapshot.usageInputTokens,
@@ -327,6 +353,9 @@ export class ChatSessionReuseRepository {
         cursorMessageCount: Number.isInteger(payload.cursorMessageCount) ? payload.cursorMessageCount : 0,
         cursorFirstMessageId: payload.cursorFirstMessageId || null,
         cursorMaxUpdatedAt: payload.cursorMaxUpdatedAt || null,
+        privateCursorMessageId: payload.privateCursorMessageId || null,
+        privateCursorMessageCreatedAt: String(payload.privateCursorMessageCreatedAt || '').trim() || null,
+        privateCursorInitialized: payload.privateCursorInitialized === false ? 0 : 1,
         lastRunId: payload.lastRunId === null || payload.lastRunId === undefined ? null : payload.lastRunId,
         lastAssistantMessageId: payload.lastAssistantMessageId || null,
         usageInputTokens:

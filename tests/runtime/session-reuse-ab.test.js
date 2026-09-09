@@ -770,6 +770,194 @@ test('reused delta applies the same private and incomplete-message visibility ru
   assert.equal(handoffRun.prompt.includes(visibleMessage.content), false, 'already-consumed public delta must not repeat');
 });
 
+test('executor-level private mailbox cursor is persisted and resumes only new authorized private messages', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+
+  const privateMailbox = [];
+  const privateAfterCalls = [];
+  const orderedVisiblePrivateMailbox = (agentId) => privateMailbox
+    .filter((message) => (
+      message
+      && String(message.conversationId || '').trim() === conversation.id
+      && Array.isArray(message.recipientAgentIds)
+      && message.recipientAgentIds.includes(agentId)
+    ))
+    .sort((left, right) => {
+      const leftCreatedAt = String(left.createdAt || '');
+      const rightCreatedAt = String(right.createdAt || '');
+      return leftCreatedAt === rightCreatedAt
+        ? String(left.id || '').localeCompare(String(right.id || ''))
+        : leftCreatedAt.localeCompare(rightCreatedAt);
+    });
+
+  store.listPrivateMessagesForAgent = (conversationId, agentId, { limit } = {}) => {
+    if (conversationId !== conversation.id) {
+      return [];
+    }
+    const ordered = orderedVisiblePrivateMailbox(agentId);
+    const cap = Number.isInteger(limit) && limit > 0 ? limit : ordered.length;
+    return ordered.slice(Math.max(ordered.length - cap, 0));
+  };
+
+  store.listPrivateMessagesForAgentAfter = (conversationId, agentId, { messageId, createdAt } = {}) => {
+    if (conversationId !== conversation.id) {
+      return [];
+    }
+    const cursorMessageId = String(messageId || '');
+    const cursorCreatedAt = String(createdAt || '');
+    privateAfterCalls.push({
+      conversationId,
+      agentId,
+      cursorMessageId,
+      cursorCreatedAt,
+    });
+    return orderedVisiblePrivateMailbox(agentId).filter((message) => {
+      const messageCreatedAt = String(message.createdAt || '');
+      const messageIdValue = String(message.id || '');
+      return messageCreatedAt > cursorCreatedAt || (messageCreatedAt === cursorCreatedAt && messageIdValue > cursorMessageId);
+    });
+  };
+
+  const addPrivateMailboxMessage = (input) => {
+    privateMailbox.push({
+      conversationId: conversation.id,
+      createdAt: input.createdAt,
+      updatedAt: input.updatedAt || input.createdAt,
+      senderAgentId: input.senderAgentId || null,
+      senderName: input.senderName || 'Private Sender',
+      recipientAgentIds: Array.isArray(input.recipientAgentIds) ? input.recipientAgentIds.slice() : [],
+      content: input.content,
+      id: input.id,
+    });
+  };
+
+  const publicFresh = seedUserMessage(store, 'u1', 'PUBLIC-FRESH-1');
+  addPrivateMailboxMessage({
+    id: 'private-visible-1',
+    senderAgentId: 'peer-agent-1',
+    senderName: 'Peer One',
+    recipientAgentIds: [agent.id],
+    content: 'PRIVATE-OLD-1',
+    createdAt: '2026-09-02T10:00:01.000Z',
+  });
+  addPrivateMailboxMessage({
+    id: 'private-hidden-1',
+    senderAgentId: 'peer-agent-hidden',
+    senderName: 'Peer Hidden',
+    recipientAgentIds: ['other-agent'],
+    content: 'PRIVATE-HIDDEN-1',
+    createdAt: '2026-09-02T10:00:02.000Z',
+  });
+
+  const executor1 = env.createExecutor(store);
+  await runTurn({
+    executor: executor1,
+    conversation,
+    agent,
+    store,
+    turnId: 'turn-private-cursor-1',
+    promptUserMessage: publicFresh,
+  });
+
+  assert.equal(env.captured[0].options.resume, false);
+  assert.match(env.captured[0].prompt, /PUBLIC-FRESH-1/u);
+  assert.match(env.captured[0].prompt, /PRIVATE-OLD-1/u);
+  assert.equal(env.captured[0].prompt.includes('PRIVATE-HIDDEN-1'), false, 'unauthorized private messages must stay hidden');
+  assert.equal(env.captured[0].prompt.includes('Private mailbox visible only to you:'), true);
+  const firstSnapshot = store.peekReuseRow();
+  assert.equal(firstSnapshot.privateCursorInitialized, true);
+  assert.equal(firstSnapshot.privateCursorMessageId, 'private-visible-1');
+  assert.equal(firstSnapshot.privateCursorMessageCreatedAt, '2026-09-02T10:00:01.000Z');
+
+  const publicResume = seedUserMessage(store, 'u2', 'PUBLIC-RESUME-2');
+  addPrivateMailboxMessage({
+    id: 'private-visible-2',
+    senderAgentId: 'peer-agent-1',
+    senderName: 'Peer One',
+    recipientAgentIds: [agent.id],
+    content: 'PRIVATE-NEW-2',
+    createdAt: '2026-09-02T10:00:03.000Z',
+  });
+  addPrivateMailboxMessage({
+    id: 'private-hidden-2',
+    senderAgentId: 'peer-agent-hidden',
+    senderName: 'Peer Hidden',
+    recipientAgentIds: ['other-agent'],
+    content: 'PRIVATE-HIDDEN-2',
+    createdAt: '2026-09-02T10:00:04.000Z',
+  });
+
+  const executor2 = env.createExecutor(store, {
+    onStartRun: () => {
+      addPrivateMailboxMessage({
+        id: 'private-visible-3',
+        senderAgentId: 'peer-agent-1',
+        senderName: 'Peer One',
+        recipientAgentIds: [agent.id],
+        content: 'PRIVATE-LATE-3',
+        createdAt: '2026-09-02T10:00:05.000Z',
+      });
+    },
+  });
+  await runTurn({
+    executor: executor2,
+    conversation,
+    agent,
+    store,
+    turnId: 'turn-private-cursor-2',
+    promptUserMessage: publicResume,
+  });
+
+  assert.equal(env.captured[1].options.resume, true);
+  assert.match(env.captured[1].prompt, /PUBLIC-RESUME-2/u);
+  assert.match(env.captured[1].prompt, /PRIVATE-NEW-2/u);
+  assert.equal(env.captured[1].prompt.includes('PRIVATE-OLD-1'), false, 'private delta must not repeat older mailbox messages');
+  assert.equal(env.captured[1].prompt.includes('PRIVATE-HIDDEN-2'), false, 'unauthorized private messages must stay hidden');
+  assert.equal(env.captured[1].prompt.includes('PRIVATE-LATE-3'), false, 'messages arriving during run must remain beyond the committed cursor');
+  const secondSnapshot = store.peekReuseRow();
+  assert.equal(secondSnapshot.privateCursorInitialized, true);
+  assert.equal(secondSnapshot.privateCursorMessageId, 'private-visible-2');
+  assert.equal(secondSnapshot.privateCursorMessageCreatedAt, '2026-09-02T10:00:03.000Z');
+
+  const publicNext = seedUserMessage(store, 'u3', 'PUBLIC-AFTER-PRIVATE-3');
+  const executor3 = env.createExecutor(store);
+  await runTurn({
+    executor: executor3,
+    conversation,
+    agent,
+    store,
+    turnId: 'turn-private-cursor-3',
+    promptUserMessage: publicNext,
+  });
+
+  assert.equal(env.captured[2].options.resume, true);
+  assert.match(env.captured[2].prompt, /PUBLIC-AFTER-PRIVATE-3/u);
+  assert.match(env.captured[2].prompt, /PRIVATE-LATE-3/u);
+  assert.equal(env.captured[2].prompt.includes('PRIVATE-NEW-2'), false, 'next run must advance past the prior private delta');
+  const thirdSnapshot = store.peekReuseRow();
+  assert.equal(thirdSnapshot.privateCursorInitialized, true);
+  assert.equal(thirdSnapshot.privateCursorMessageId, 'private-visible-3');
+  assert.equal(thirdSnapshot.privateCursorMessageCreatedAt, '2026-09-02T10:00:05.000Z');
+
+  assert.equal(privateAfterCalls.length, 2);
+  assert.deepEqual(privateAfterCalls[0], {
+    conversationId: conversation.id,
+    agentId: agent.id,
+    cursorMessageId: 'private-visible-1',
+    cursorCreatedAt: '2026-09-02T10:00:01.000Z',
+  });
+  assert.deepEqual(privateAfterCalls[1], {
+    conversationId: conversation.id,
+    agentId: agent.id,
+    cursorMessageId: 'private-visible-2',
+    cursorCreatedAt: '2026-09-02T10:00:03.000Z',
+  });
+});
+
 test('routing executor can reuse after a fresh run with more than 24 stored messages', async (t) => {
   const env = setupExecutorTest(t, { reuseEnabled: true });
   const agent = createAgent();

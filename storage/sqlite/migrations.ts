@@ -449,6 +449,9 @@ CREATE TABLE IF NOT EXISTS chat_agent_session_reuse (
   usage_ratio REAL CHECK (usage_ratio IS NULL OR (usage_ratio >= 0 AND usage_ratio <= 1)),
   goal_id TEXT,
   goal_revision INTEGER CHECK (goal_revision IS NULL OR goal_revision > 0),
+  private_cursor_message_id TEXT,
+  private_cursor_message_created_at TEXT,
+  private_cursor_initialized INTEGER NOT NULL DEFAULT 0 CHECK (private_cursor_initialized IN (0, 1)),
   last_reply_at TEXT,
   poison_reason TEXT,
   created_at TEXT NOT NULL,
@@ -479,6 +482,9 @@ CREATE INDEX IF NOT EXISTS idx_chat_agent_session_reuse_state
   ON chat_agent_session_reuse (state, updated_at DESC);
   `);
 
+  ensureColumn(db, 'chat_agent_session_reuse', 'private_cursor_message_id', 'private_cursor_message_id TEXT');
+  ensureColumn(db, 'chat_agent_session_reuse', 'private_cursor_message_created_at', 'private_cursor_message_created_at TEXT');
+  ensureColumn(db, 'chat_agent_session_reuse', 'private_cursor_initialized', 'private_cursor_initialized INTEGER NOT NULL DEFAULT 0 CHECK (private_cursor_initialized IN (0, 1))');
   ensureColumn(db, 'chat_agent_session_reuse', 'goal_id', 'goal_id TEXT');
   ensureColumn(
     db,
