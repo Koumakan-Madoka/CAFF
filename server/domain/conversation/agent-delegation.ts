@@ -4,8 +4,6 @@ const { createHttpError } = require('../../http/http-errors');
 const MAX_DELEGATION_CONTENT_LENGTH = 12_000;
 const MAX_DELEGATION_REFERENCE_LENGTH = 200;
 const MAX_DELEGATION_IDEMPOTENCY_KEY_LENGTH = 200;
-const MAX_DELEGATION_DEADLINE_SECONDS = 86_400;
-const DEFAULT_DELEGATION_DEADLINE_SECONDS = 86_400;
 const SUPPORTED_AGGREGATIONS = new Set(['all']);
 const RESERVED_AGGREGATIONS = new Set(['any', 'quorum']);
 
@@ -44,16 +42,18 @@ function normalizeDelegationRequest(input: any = {}) {
   }
   const content = requiredText(input.content, 'content', MAX_DELEGATION_CONTENT_LENGTH);
   const idempotencyKey = requiredText(input.idempotencyKey, 'idempotencyKey', MAX_DELEGATION_IDEMPOTENCY_KEY_LENGTH);
-  const deadlineSeconds = input.deadlineSeconds === undefined || input.deadlineSeconds === null || input.deadlineSeconds === ''
-    ? null
-    : Number(input.deadlineSeconds);
-  if (deadlineSeconds !== null && (!Number.isInteger(deadlineSeconds) || deadlineSeconds < 1 || deadlineSeconds > MAX_DELEGATION_DEADLINE_SECONDS)) {
-    throw delegationError(400, 'delegation_invalid_deadline', `deadlineSeconds must be an integer between 1 and ${MAX_DELEGATION_DEADLINE_SECONDS}`, 'deadlineSeconds');
+  if (Object.prototype.hasOwnProperty.call(input, 'deadlineSeconds')) {
+    throw delegationError(
+      400,
+      'delegation_deadline_unsupported',
+      'deadlineSeconds is no longer supported; delegations remain pending until an explicit terminal result or cancellation',
+      'deadlineSeconds'
+    );
   }
   const reference = input.reference === undefined || input.reference === null || input.reference === ''
     ? null
     : requiredText(input.reference, 'reference', MAX_DELEGATION_REFERENCE_LENGTH);
-  return { aggregation, recipients, content, idempotencyKey, deadlineSeconds, reference };
+  return { aggregation, recipients, content, idempotencyKey, reference };
 }
 
 function assertConversationParticipant(conversation: any, agentId: string, field: string) {
@@ -83,10 +83,7 @@ function createAgentDelegation(store: any, context: any, input: any, options: an
   const createdAt = now.toISOString();
   const delegationId = String(typeof options.createId === 'function' ? options.createId() : randomUUID()).trim();
   const childIds = request.recipients.map(() => String(typeof options.createId === 'function' ? options.createId() : randomUUID()).trim());
-  const deadlineSeconds = request.deadlineSeconds === null
-    ? DEFAULT_DELEGATION_DEADLINE_SECONDS
-    : request.deadlineSeconds;
-  const deadlineAt = new Date(now.getTime() + deadlineSeconds * 1000).toISOString();
+  const deadlineAt = null;
   const recipientAgent = conversation.agents.find((agent: any) => agent && agent.id === request.recipients[0]);
   const payload = {
     id: delegationId,
@@ -216,8 +213,6 @@ function settleAgentDelegationChild(store: any, childId: any, status: string, re
 }
 
 export {
-  DEFAULT_DELEGATION_DEADLINE_SECONDS,
-  MAX_DELEGATION_DEADLINE_SECONDS,
   settleAgentDelegationChild,
   buildCompletionPayload,
   createAgentDelegation,

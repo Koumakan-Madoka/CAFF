@@ -93,3 +93,52 @@ separate reproduction and found no blocking issue. Its sole merge condition was
 that the spec-declared Goal parking behavior lacked a regression test. This
 supplemental change adds that test without changing production behavior; the
 remaining P3 observations are recorded as non-blocking residual risks.
+
+## No-Deadline And Post-Message Amendment
+
+After the first develop merge, a real model delegation with an explicit 300
+second deadline finished about five seconds late. The runtime correctly kept the
+timeout absorbing, but the product decision changed: new in-room delegations now
+have no automatic deadline. The Agent-facing CLI and prompt no longer advertise
+`--deadline-seconds`; both CLI and domain validation reject legacy input instead
+of silently ignoring it. Historical durable rows with a non-null `deadline_at`
+retain deadline scanning and late-result behavior.
+
+The same investigation reproduced a separate P1 regression: the CLI still sent
+public bridge messages to `/api/agent-tools/post-message`, but the controller no
+longer registered that route. Before the production fix, the focused regression
+suite failed 3/33 tests: the post-message controller returned unhandled, the CLI
+sent the retired deadline option, and new delegation records contained a 24-hour
+deadline.
+
+Post-fix evidence:
+
+```text
+node --test tests/runtime/agent-delegation.test.js tests/runtime/agent-tool-bridge.test.js tests/runtime/agent-executor-hook.test.js tests/runtime/session-reuse-decision.test.js tests/runtime/agent-chat-tools.test.js tests/http/conversation-deliveries-controller.test.js tests/runtime/agent-prompt-static-hash.test.js
+103 passed
+
+node --test --test-name-pattern='delegation cancellation|delegation continuation|goal continuation' tests/runtime/turn-orchestrator.test.js
+5 passed
+
+npm run test:smoke
+95 passed (91 server + 4 mode-store)
+
+npm run check
+passed
+
+npm run typecheck
+passed
+
+npm run build
+passed
+
+git diff --check
+passed
+```
+
+The no-deadline regression advances the clock by 100 years and proves both group
+and child remain active with `deadlineAt=null`. Existing historical-deadline
+tests still prove aggregation-before-timeout and absorbing late results. The
+controller regression invokes both `/api/agent-tools/post-message` and
+`/api/agent-tools/delegation/create` through the real route handler and proves
+both remain registered.

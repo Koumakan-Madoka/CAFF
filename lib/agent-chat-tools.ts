@@ -271,6 +271,9 @@ async function createDelegation(config: any, flags: any, options: any = {}) {
   if (recipientAgentIds.length === 0) throw new Error('create-delegation requires --to "AgentId".');
   if (!content) throw new Error('create-delegation requires --content or --content-stdin.');
   if (!idempotencyKey) throw new Error('create-delegation requires --idempotency-key.');
+  if (flags['deadline-seconds'] !== undefined) {
+    throw new Error('create-delegation no longer supports --deadline-seconds; delegations remain pending until completion or cancellation.');
+  }
   const body: any = {
     invocationId: config.invocationId,
     callbackToken: config.callbackToken,
@@ -280,7 +283,6 @@ async function createDelegation(config: any, flags: any, options: any = {}) {
   };
   if (flags.aggregation !== undefined) body.aggregation = String(flags.aggregation);
   if (flags.reference !== undefined) body.reference = String(flags.reference);
-  if (flags['deadline-seconds'] !== undefined) body.deadlineSeconds = Number(flags['deadline-seconds']);
   return requestJson(`${config.apiUrl}/api/agent-tools/delegation/create`, { method: 'POST', body });
 }
 

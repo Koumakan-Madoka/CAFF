@@ -141,6 +141,52 @@ test('agent delivery HTTP routes forward notify and request bodies to the invoca
   );
 });
 
+test('agent tool HTTP routes keep post-message and delegation creation available together', async () => {
+  const calls = [];
+  const controller = createAgentToolsController({
+    agentToolBridge: {
+      handlePostMessage(body) {
+        calls.push({ kind: 'post-message', body });
+        return { ok: true, visibility: body.visibility };
+      },
+      handleCreateDelegation(body) {
+        calls.push({ kind: 'delegation', body });
+        return { ok: true, delegationId: 'delegation-1' };
+      },
+    },
+  });
+
+  const posted = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/agent-tools/post-message',
+    body: {
+      invocationId: 'invocation-1',
+      callbackToken: 'token-1',
+      visibility: 'public',
+      content: 'Bridge route regression.',
+    },
+  });
+  const delegated = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/agent-tools/delegation/create',
+    body: {
+      invocationId: 'invocation-1',
+      callbackToken: 'token-1',
+      recipientAgentIds: ['agent-2'],
+      content: 'Delegation route remains available.',
+      idempotencyKey: 'delegation-route-regression',
+    },
+  });
+
+  assert.equal(posted.handled, true);
+  assert.equal(posted.statusCode, 200);
+  assert.equal(posted.json.visibility, 'public');
+  assert.equal(delegated.handled, true);
+  assert.equal(delegated.statusCode, 200);
+  assert.equal(delegated.json.delegationId, 'delegation-1');
+  assert.deepEqual(calls.map((call) => call.kind), ['post-message', 'delegation']);
+});
+
 test('operator delivery GET returns the durable row, projections, response, and append-only events', async () => {
   const store = createStoreFixture();
   const controller = createConversationDeliveriesController({ store, deliveryWorker: {} });
