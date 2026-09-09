@@ -845,6 +845,7 @@ export function createTurnOrchestrator(options: any = {}) {
 
   const providedExecuteConversationAgent =
     typeof options.executeConversationAgent === 'function' ? options.executeConversationAgent : null;
+  const delegationRuntime = options.delegationRuntime || null;
   const agentExecutor = providedExecuteConversationAgent
     ? null
     : createAgentExecutor({
@@ -865,6 +866,7 @@ export function createTurnOrchestrator(options: any = {}) {
         browserCliPath,
         modelCatalog,
         uploadsDir: options.uploadsDir,
+        delegationRuntime,
         onAssistantMessageCompleted: options.onAssistantMessageCompleted,
       });
   const baseExecuteConversationAgent = providedExecuteConversationAgent || agentExecutor.executeConversationAgent;
@@ -937,6 +939,7 @@ export function createTurnOrchestrator(options: any = {}) {
   const baseRunConversationTurn = createRoutingExecutor({
     store,
     executeConversationAgent: executeConversationAgentWithSlot,
+    dispatchDelegation: (input: any) => dispatchAgentDelegation(input),
     resolveRuntimeParticipants,
     getProjectDir,
     broadcastEvent,
@@ -980,6 +983,64 @@ export function createTurnOrchestrator(options: any = {}) {
       markConversationQueueBatchConsumed(normalizedConversationId, consumedMessageId);
     }
     return result;
+  }
+
+  function enqueueDelegationContinuation(delegation: any) {
+    const conversationId = String(delegation && delegation.requesterConversationId || '').trim();
+    const agentId = String(delegation && delegation.requesterAgentId || '').trim();
+    if (!conversationId || !agentId || !delegation || !delegation.terminalAt) return { scheduled: false, reason: 'invalid_delegation' };
+    const completion = JSON.stringify({ schemaVersion: 1, delegationId: delegation.id, status: delegation.status, aggregation: delegation.aggregation, result: delegation.result, error: delegation.error, terminalAt: delegation.terminalAt, lateResultCount: delegation.lateResultCount });
+    const message = store.createMessage({ id: randomUUID(), conversationId, turnId: `delegation-continuation:${delegation.id}`, role: 'user', senderName: 'Delegation Runtime', content: `Delegation ${delegation.id} completed. Structured completion follows:\n${completion}`, status: 'completed', metadata: { source: 'agent-delegation-continuation', delegationId: delegation.id, initialAgentIds: [agentId] } });
+    broadcastEvent('conversation_message_created', { conversationId, message });
+    drainConversationQueue(conversationId);
+    return { scheduled: true, delegationId: delegation.id };
+  }
+
+  function dispatchAgentDelegation(input: any = {}) {
+    const delegation = input.delegation;
+    const children = Array.isArray(input.childDelegations) ? input.childDelegations : [];
+    const conversation = delegation ? getConversationHeader(delegation.recipientConversationId) : null;
+    if (!delegation || !conversation) return [];
+      const dispatch = children.map((child: any) => {
+        const acceptedMessage = store.createMessage({
+          id: randomUUID(),
+          conversationId: conversation.id,
+          turnId: `delegation:${child.id}`,
+          role: 'user',
+          senderName: delegation.requesterAgentName,
+          content: child.request && child.request.content ? child.request.content : delegation.request.content,
+          status: 'completed',
+          metadata: {
+            source: 'agent-delegation',
+            delegationId: child.id,
+            privateOnly: true,
+            initialAgentIds: [child.recipientAgentId],
+            dispatchLane: 'side',
+            dispatchTargetAgentId: child.recipientAgentId,
+          },
+        });
+        const target = getAgentById(conversation.agents, child.recipientAgentId);
+        if (!target) {
+          if (delegationRuntime && typeof delegationRuntime.settleRecipient === 'function') {
+            delegationRuntime.settleRecipient({ delegationId: child.id, status: 'failed', result: { message: 'Recipient is no longer a participant.' } });
+          }
+          return { delegationId: child.id, outcome: 'failed', detail: 'Recipient is no longer a participant.' };
+        }
+        const submitted = submitSideDispatch(conversation, { content: acceptedMessage.content, metadata: acceptedMessage.metadata }, acceptedMessage, {
+          targetAgentId: child.recipientAgentId,
+          cleanedContent: acceptedMessage.content,
+          explicitIntent: 'delegation',
+        }, { promptUserMessage: acceptedMessage, delegationId: child.id });
+        if (submitted.executionPromise && delegationRuntime && typeof delegationRuntime.settleRecipient === 'function') {
+          void submitted.executionPromise.catch((error: any) => {
+            const current = store.getAgentDelegation(child.id);
+            if (!current || current.terminalAt) return;
+            delegationRuntime.settleRecipient({ delegationId: child.id, status: 'failed', result: { message: error && error.message ? error.message : String(error || 'Delegation recipient dispatch failed') } });
+          });
+        }
+        return { delegationId: child.id, ...submitted };
+      });
+      return dispatch;
   }
 
   function syncConversationQueueProgress(conversationId: any) {
@@ -1092,6 +1153,13 @@ export function createTurnOrchestrator(options: any = {}) {
 
     if (!goal || goal.status !== 'active') {
       return { scheduled: false, reason: 'inactive_goal' };
+    }
+
+    if (store && typeof store.listPendingAgentDelegationsForConversation === 'function') {
+      const pendingDelegations = store.listPendingAgentDelegationsForConversation(normalizedConversationId);
+      if (Array.isArray(pendingDelegations) && pendingDelegations.length > 0) {
+        return { scheduled: false, reason: 'pending_delegation' };
+      }
     }
 
     // Fail-closed owner removal (D3): the goal owner must still be a
@@ -1369,6 +1437,7 @@ export function createTurnOrchestrator(options: any = {}) {
         sourceMessageId: entry.acceptedMessage.id,
         turnId: randomUUID(),
       });
+      slotState.delegationId = entry.delegationId || null;
       activeAgentSlots.set(slotState.slotId, slotState);
       broadcastRuntimeState();
       emitTurnProgress(slotState);
@@ -1438,6 +1507,7 @@ export function createTurnOrchestrator(options: any = {}) {
           enqueueReason: entry.enqueueReason || 'user_mentions',
           privateOnly: Boolean(entry.acceptedMessage && entry.acceptedMessage.metadata && entry.acceptedMessage.metadata.privateOnly),
           crossConversationDeliveryId: entry.crossConversationDeliveryId || null,
+          delegationId: entry.delegationId || null,
           toolInvocationId: entry.toolInvocationId || null,
         },
         agent,
@@ -1529,6 +1599,16 @@ export function createTurnOrchestrator(options: any = {}) {
         });
       }
 
+      if (entry.delegationId && delegationRuntime && typeof delegationRuntime.settleRecipient === 'function') {
+        const currentDelegation = store.getAgentDelegation(entry.delegationId);
+        if (currentDelegation && !currentDelegation.terminalAt) {
+          delegationRuntime.settleRecipient({
+            delegationId: entry.delegationId,
+            status: slotState && slotState.stopRequested ? 'cancelled' : 'failed',
+            result: { message: errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Delegation recipient failed') },
+          });
+        }
+      }
       emitAgentSlotFinished(
         slotState || {
           slotId: `${entry.conversationId}:${entry.targetAgentId}`,
@@ -1608,6 +1688,7 @@ export function createTurnOrchestrator(options: any = {}) {
             ? String(getProjectDir(snapshotConversation) || '').trim()
             : '',
       metadata: turnInput && turnInput.metadata,
+      delegationId: options.delegationId || null,
     };
   }
 
@@ -1641,6 +1722,7 @@ export function createTurnOrchestrator(options: any = {}) {
         conversationId,
         targetAgentId: entry.targetAgentId,
         sourceMessageId: entry.acceptedMessage.id,
+        delegationId: entry.delegationId || null,
         cancel(reason: any) {
           return slotRequest.cancel(reason || 'Stopped by user');
         },
@@ -1677,11 +1759,16 @@ export function createTurnOrchestrator(options: any = {}) {
     const entry = buildSideDispatchEntry(conversation, turnInput, acceptedMessage, sideTarget, options);
     const slotRequest = startSideDispatch(entry);
 
-    return {
+    const result: any = {
       dispatch: slotRequest.queued ? 'queued' : 'started',
       dispatchLane: 'side',
       dispatchTargetAgentId: entry.targetAgentId,
     };
+    Object.defineProperty(result, 'executionPromise', {
+      value: slotRequest.executionPromise,
+      enumerable: false,
+    });
+    return result;
   }
 
   async function dispatchCrossConversationDelivery(input: any = {}) {
@@ -1755,6 +1842,50 @@ export function createTurnOrchestrator(options: any = {}) {
 
     const slotRequest = startSideDispatch(entry);
     return slotRequest.executionPromise;
+  }
+
+  function requestStopAgentDelegation(input: any = {}, reason: any = 'Cancelled by requester') {
+    const conversationId = String(input.requesterConversationId || '').trim();
+    const childDelegationIds = new Set(
+      (Array.isArray(input.childDelegationIds) ? input.childDelegationIds : [])
+        .map((value: any) => String(value || '').trim())
+        .filter(Boolean)
+    );
+    const stopReason = String(reason || 'Cancelled by requester').trim() || 'Cancelled by requester';
+    if (!conversationId || childDelegationIds.size === 0) return false;
+    let stopped = false;
+
+    for (const queuedSideDispatch of listQueuedSideDispatches(conversationId)) {
+      if (!queuedSideDispatch || !childDelegationIds.has(String(queuedSideDispatch.delegationId || '').trim())) {
+        continue;
+      }
+      try {
+        stopped = queuedSideDispatch.cancel(stopReason) || stopped;
+      } catch {}
+      untrackQueuedSideDispatch(conversationId, queuedSideDispatch.requestId);
+    }
+
+    for (const slotState of listConversationActiveAgentSlots(conversationId)) {
+      if (!slotState || !childDelegationIds.has(String(slotState.delegationId || '').trim())) {
+        continue;
+      }
+      stopped = true;
+      slotState.stopRequested = true;
+      slotState.stopReason = stopReason;
+      slotState.stopRequestedAt = nowIso();
+      slotState.status = 'stopping';
+      const handles = slotState.runHandles instanceof Set ? (Array.from(slotState.runHandles) as any[]) : [];
+      for (const handle of handles) {
+        if (!handle || typeof handle.cancel !== 'function') continue;
+        try { handle.cancel(stopReason); } catch {}
+      }
+      slotState.updatedAt = nowIso();
+      syncCurrentTurnAgent(slotState);
+      emitTurnProgress(slotState);
+    }
+
+    if (stopped) broadcastRuntimeState();
+    return stopped;
   }
 
   function requestStopCrossConversationDelivery(delivery: any, reason: any = 'Cancelled by operator') {
@@ -2107,6 +2238,7 @@ export function createTurnOrchestrator(options: any = {}) {
   return {
     buildRuntimePayload,
     clearConversationState,
+    dispatchAgentDelegation,
     dispatchCrossConversationDelivery,
     emitTurnProgress,
     getConversationMutationState,
@@ -2116,9 +2248,11 @@ export function createTurnOrchestrator(options: any = {}) {
     listTurnSummaries,
     reconcileConversationQueueAfterMessageDeletion,
     requestStopConversationExecution,
+    requestStopAgentDelegation,
     requestStopCrossConversationDelivery,
     requestStopConversationTurn: requestStopMainTurn,
     resolveAssistantMessageSessionPath: sessionExporter.resolveAssistantMessageSessionPath,
+    enqueueDelegationContinuation,
     runConversationTurn,
     scheduleGoalContinuation,
     submitConversationMessage,

@@ -15,6 +15,9 @@ Use this index for pi-mono runtime work and Trellis injection changes.
 ## Pre-Development Checklist
 
 - [ ] Read `agent-runtime.md`
+- [ ] Read `agent-delegation.md` when changing in-room delegation persistence,
+      bridge tools, await/yield, recipient side dispatch, cancellation, deadline
+      settlement, continuation, or read-context pending projections
 - [ ] Read `conversation-turn-queue.md` when changing conversation send/stop,
       queue drain, active-turn summaries, or runtime busy/queue payload fields
 - [ ] Read `../guides/cross-platform-thinking-guide.md` for path, shell, or env
@@ -30,6 +33,9 @@ Use this index for pi-mono runtime work and Trellis injection changes.
 
 - `agent-runtime.md`: pi-mono runtime flow, Trellis prompt injection, and safety
   rules
+- `agent-delegation.md`: durable in-room delegation state, requester identity,
+  side-lane execution/cancellation, await/yield, deadlines, continuation, and
+  read-context compatibility
 - `agent-context-inspector.md`: per-agent-turn prompt section snapshots,
   visibility policy, safe rendering, and Markdown export contracts
 - `skill-extraction.md`: manual digest-to-skill draft contract and active-project save guardrails

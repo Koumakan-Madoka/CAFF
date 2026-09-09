@@ -288,16 +288,17 @@ test('agent executor persists structured provider failure metadata on failed rep
   });
   const turnState = createTurnState(conversation, 'turn-structured-failure');
   const failedReplies = [];
+  const taskEvents = [];
 
   await executor.executeConversationAgent({
-    runStore: createFakeRunStore(),
+    runStore: createFakeRunStore(taskEvents),
     conversationId: conversation.id,
     turnId: turnState.turnId,
     rootTaskId: 'root-task-structured-failure',
     conversation,
     promptMessages: [{ role: 'user', content: 'Continue the Goal.' }],
     promptUserMessage: { id: 'goal-user-message', role: 'user', content: 'Continue the Goal.' },
-    queueItem: { triggerType: 'user', enqueueReason: 'goal_runner' },
+    queueItem: { triggerType: 'user', enqueueReason: 'goal_runner', privateOnly: true },
     agent,
     turnState,
     completedReplies: [],
@@ -312,6 +313,9 @@ test('agent executor persists structured provider failure metadata on failed rep
   });
 
   assert.equal(failedReplies.length, 1);
+  const expectationEvent = taskEvents.find((event) => event.eventName === 'agent_expectations');
+  assert.ok(expectationEvent);
+  assert.equal(Object.hasOwn(expectationEvent.payload.expectations, 'send-private'), false);
   assert.deepEqual(failedReplies[0].metadata.invocationFailure, {
     kind: 'provider',
     code: 'assistant_error',
@@ -337,7 +341,7 @@ test('agent executor persists structured provider failure metadata on failed rep
   const resolvedFailureReplies = [];
 
   await executor.executeConversationAgent({
-    runStore: createFakeRunStore(),
+    runStore: createFakeRunStore(taskEvents),
     conversationId: conversation.id,
     turnId: resolvedFailureTurnState.turnId,
     rootTaskId: 'root-task-resolved-structured-failure',

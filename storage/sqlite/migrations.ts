@@ -636,6 +636,74 @@ END;
   `);
 }
 
+function ensureAgentDelegationSchema(db: any) {
+  db.exec(`
+CREATE TABLE IF NOT EXISTS chat_agent_delegations (
+  id TEXT PRIMARY KEY,
+  parent_id TEXT,
+  idempotency_scope TEXT NOT NULL CHECK (length(trim(idempotency_scope)) > 0),
+  idempotency_key TEXT NOT NULL CHECK (length(trim(idempotency_key)) > 0),
+  kind TEXT NOT NULL CHECK (kind IN ('group', 'child')),
+  aggregation TEXT NOT NULL CHECK (aggregation IN ('all', 'any', 'quorum')),
+  requester_conversation_id TEXT NOT NULL,
+  requester_agent_id TEXT NOT NULL,
+  requester_agent_name TEXT NOT NULL CHECK (length(trim(requester_agent_name)) > 0),
+  requester_invocation_id TEXT NOT NULL,
+  requester_run_id TEXT,
+  requester_turn_id TEXT,
+  source_trace_id TEXT,
+  recipient_conversation_id TEXT NOT NULL,
+  recipient_agent_id TEXT NOT NULL,
+  recipient_agent_name TEXT NOT NULL CHECK (length(trim(recipient_agent_name)) > 0),
+  request_json TEXT NOT NULL CHECK (json_valid(request_json) = 1),
+  reference TEXT,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'awaiting', 'succeeded', 'failed', 'cancelled', 'timed_out')),
+  deadline_at TEXT,
+  cancel_requested_at TEXT,
+  result_json TEXT,
+  error_json TEXT,
+  children_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(children_json) = 1 AND json_type(children_json) = 'array'),
+  late_result_count INTEGER NOT NULL DEFAULT 0 CHECK (late_result_count >= 0),
+  wait_requested_at TEXT,
+  continuation_enqueued_at TEXT,
+  terminal_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (idempotency_scope, idempotency_key),
+  FOREIGN KEY (parent_id) REFERENCES chat_agent_delegations(id) ON DELETE RESTRICT,
+  FOREIGN KEY (requester_conversation_id) REFERENCES chat_conversations(id) ON DELETE RESTRICT,
+  FOREIGN KEY (recipient_conversation_id) REFERENCES chat_conversations(id) ON DELETE RESTRICT,
+  FOREIGN KEY (requester_agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT,
+  FOREIGN KEY (recipient_agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT,
+  CHECK (json_valid(COALESCE(result_json, '{}')) = 1),
+  CHECK (json_valid(COALESCE(error_json, '{}')) = 1),
+  CHECK (kind <> 'group' OR parent_id IS NULL),
+  CHECK (kind <> 'child' OR parent_id IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS chat_agent_delegation_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  delegation_id TEXT NOT NULL,
+  event_type TEXT NOT NULL CHECK (length(trim(event_type)) > 0),
+  event_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (delegation_id) REFERENCES chat_agent_delegations(id) ON DELETE RESTRICT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_delegation_idempotency
+  ON chat_agent_delegations (idempotency_scope, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_agent_delegation_requester
+  ON chat_agent_delegations (requester_invocation_id, created_at ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_agent_delegation_parent
+  ON chat_agent_delegations (parent_id, created_at ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_agent_delegation_deadline
+  ON chat_agent_delegations (status, deadline_at, id)
+  WHERE status IN ('queued', 'running', 'awaiting') AND deadline_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_delegation_events
+  ON chat_agent_delegation_events (delegation_id, created_at ASC, id ASC);
+`);
+}
+
 export function migrateChatSchema(db: any, options: any = {}) {
   migrateLegacyModelFamilyRoles(db, { backupPath: options.backupPath });
   db.exec(`
@@ -1114,6 +1182,7 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   ensureChatConversationLineageSchema(db);
   ensureChatPlanSchema(db);
   ensureCrossConversationDeliverySchema(db);
+  ensureAgentDelegationSchema(db);
   ensureChatAgentSessionReuseSchema(db);
 
   // chat_messages rows are mutated in place (streaming append, final update)

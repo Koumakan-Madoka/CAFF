@@ -52,6 +52,39 @@
     let selectionConversationId = '';
     let deleteInFlight = false;
 
+    function delegationRouteForMessage(message, agents) {
+      const metadata = message && message.metadata && typeof message.metadata === 'object'
+        ? message.metadata
+        : null;
+      const source = metadata && metadata.source;
+      if (source !== 'agent-delegation' && source !== 'agent-delegation-continuation') {
+        return null;
+      }
+
+      const recipientId = source === 'agent-delegation'
+        ? metadata.dispatchTargetAgentId
+        : Array.isArray(metadata.initialAgentIds) ? metadata.initialAgentIds[0] : '';
+      const recipient = Array.isArray(agents)
+        ? agents.find((item) => item && item.id === recipientId)
+        : null;
+      const targetName = recipient && recipient.name ? recipient.name : recipientId || '目标 Agent';
+      const sourceName = source === 'agent-delegation'
+        ? message.senderName || 'Requester'
+        : 'Delegation Runtime';
+
+      return {
+        source,
+        label: source === 'agent-delegation' ? 'Delegation' : 'Completion',
+        route: source === 'agent-delegation'
+          ? `委托：${sourceName} → ${targetName}`
+          : `回程：${sourceName} → ${targetName}`,
+      };
+    }
+
+    function delegationRouteSignature(route) {
+      return route ? `${route.source}\u001f${route.label}\u001f${route.route}` : '';
+    }
+
     function deletionReasonLabel(reasonCode, fallback) {
       const labels = {
         message_summarized: '这条消息已被摘要覆盖，不能删除',
@@ -2309,6 +2342,7 @@
         ? isConversationMessageDeletionBlocked(conversationId)
         : false;
       const traceSignature = toolTraceSignatureForMessage(message);
+      const delegationRoute = delegationRouteForMessage(message, agents);
       const signature = [
         message.id,
         message.role,
@@ -2361,6 +2395,7 @@
         message.recovery ? JSON.stringify(message.recovery) : '',
         message.recoveryCapability ? JSON.stringify(message.recoveryCapability) : '',
         recoveryRequestMessageIds.has(message.id) ? 'recovery-requesting' : '',
+        delegationRouteSignature(delegationRoute),
         traceSignature,
       ].join('\u001f');
 
@@ -2375,6 +2410,9 @@
       card.classList.toggle('digest-status', isDigestStatusMessage);
       card.classList.toggle('digest-result', isDigestResultMessage);
       card.classList.toggle('recovery-result', Boolean(metadata && metadata.recoveryResult));
+      card.classList.toggle('delegation-message', Boolean(delegationRoute));
+      card.classList.toggle('delegation-input', delegationRoute && delegationRoute.source === 'agent-delegation');
+      card.classList.toggle('delegation-completion', delegationRoute && delegationRoute.source === 'agent-delegation-continuation');
 
       if (agent && agent.accentColor) {
         card.style.setProperty('--agent-color', agent.accentColor);
@@ -2427,12 +2465,21 @@
 
       const senderLabel = document.createElement('span');
       senderLabel.className = 'message-sender-label';
-      senderLabel.textContent = message.role === 'user'
-        ? metadata && metadata.goalAutoContinue
-          ? message.senderName || 'Goal Runner'
-          : 'You'
-        : message.senderName;
+      senderLabel.textContent = delegationRoute
+        ? delegationRoute.label
+        : message.role === 'user'
+          ? metadata && metadata.goalAutoContinue
+            ? message.senderName || 'Goal Runner'
+            : 'You'
+          : message.senderName;
       sender.appendChild(senderLabel);
+
+      if (delegationRoute) {
+        const routeLabel = document.createElement('span');
+        routeLabel.className = 'message-delegation-route';
+        routeLabel.textContent = delegationRoute.route;
+        sender.appendChild(routeLabel);
+      }
 
       if (isPrivateTimelineMessage(message)) {
         const privacyBadge = document.createElement('span');

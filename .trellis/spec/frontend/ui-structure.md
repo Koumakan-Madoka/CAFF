@@ -250,10 +250,24 @@ const label = capability.sourceKind === 'user_cancelled'
   : '整理失败现场';
 ```
 
-## Chat Message Rendering
+## Delegation Message Provenance
 
-- Route assistant rich text rendering through shared helpers in `public/shared/`
-  instead of injecting raw HTML from `public/chat/` modules.
+### Scope / Trigger
+
+- Applies to timeline messages whose metadata `source` is `agent-delegation` or `agent-delegation-continuation`.
+
+### Contract
+
+- `source=agent-delegation` is an internal Agent-to-Agent input, not a local-user message. Render the sender label as `Delegation` and show `委托：<requester> → <recipient>`, resolving the recipient from `metadata.dispatchTargetAgentId` and the conversation roster.
+- `source=agent-delegation-continuation` is an internal runtime completion input, not a local-user message. Render the sender label as `Completion` and show `回程：Delegation Runtime → <requester>`, resolving the requester from `metadata.initialAgentIds` and the conversation roster.
+- These internal messages retain their persisted `role=user` for runtime compatibility, but must never use the ordinary `You` sender label. Ordinary user messages and Goal continuation messages keep their existing labels.
+- Internal delegation messages use the `delegation-message` card variant instead of the user-only right-aligned bubble: they render as full-width, low-emphasis runtime activity rows with a visible left status rail. `delegation-input` and `delegation-completion` distinguish the request and completion phases; this is presentation-only and does not change persisted role or deletion policy.
+
+### Required Tests
+
+- `tests/ui/cross-conversation-ui.test.js` asserts delegation input and completion labels, explicit requester/recipient routes, absence of `You`, the delegation card variants, and that ordinary user messages remain ordinary user cards.
+
+## Chat Message Rendering
 - `public/shared/safe-markdown.js` is the shared Markdown entry point for agent
   message bodies. Keep raw HTML disabled, sanitize link protocols, and fall back
   to plain text if rendering throws.

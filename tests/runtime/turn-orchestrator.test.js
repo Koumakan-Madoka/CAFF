@@ -24,6 +24,7 @@ const { createAgentSlotRegistry } = require('../../build/server/domain/conversat
 const { resolveBrowserCliPath, createBrowserCliSessionName } = require('../../build/server/domain/conversation/turn/browser-cli');
 const { resolveCurrentTrellisTaskName } = require('../../build/server/domain/conversation/turn/trellis-context');
 const { extractSummaryMemorySearchTerms } = require('../../build/lib/summary-memory-query');
+const { createChatAppStore } = require('../../build/lib/chat-app-store');
 
 const { withTempDir } = require('../helpers/temp-dir');
 
@@ -1580,10 +1581,8 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /Chat bridge tools:/u);
   assert.match(prompt, /This run executes shell commands with bash/u);
   assert.match(prompt, /cat <<'CAFF_PUBLIC_EOF' \| node "\$CAFF_CHAT_TOOLS_PATH" send-public --content-stdin/u);
-  assert.match(
-    prompt,
-    /cat <<'CAFF_PRIVATE_EOF' \| node "\$CAFF_CHAT_TOOLS_PATH" send-private --to "AgentName" --content-stdin/u
-  );
+  assert.doesNotMatch(prompt, /send-private/u);
+  assert.doesNotMatch(prompt, /Private messages.*wake/u);
   assert.match(prompt, /search-messages --query "topic keywords" --limit 5/u);
   assert.match(prompt, /--speaker "AgentName" or --agent-id "agent-id"/u);
   assert.match(prompt, /search-memory --query "topic keywords" --limit 5/u);
@@ -1602,15 +1601,11 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /successful send-public call completes the turn automatically unless you pass --no-finalize/u);
   assert.match(prompt, /send-public \[--no-finalize\] --content-stdin/u);
   assert.match(prompt, /--no-finalize posts an interim update and keeps the current run active/u);
-  assert.match(prompt, /if send-private succeeds without a public reply, use a tiny control reply/u);
-  assert.match(prompt, /wake idle recipients immediately/u);
-  assert.match(prompt, /Send at most one complete private message per recipient in one trace/u);
-  assert.match(prompt, /do not poll, wait at P2, or send follow-up heartbeats/u);
+  assert.match(prompt, /use a concise final reply when no public bridge post is needed/u);
   assert.match(prompt, /exact commit SHA, review scope and risks, author validation evidence, and desired response format/u);
   assert.match(prompt, /do not modify repository files for the rest of this trace/u);
   assert.match(prompt, /Review worktrees are risk-based/u);
   assert.match(prompt, /create a detached review worktree only when tests need a stable SHA while the room worktree may change/u);
-  assert.doesNotMatch(prompt, /After send-public\/send-private succeeds/u);
   assert.doesNotMatch(prompt, /PowerShell example/u);
 });
 
@@ -4634,9 +4629,9 @@ function createGoalOwnerStore(conversation) {
   };
 }
 
-function createGoalOwnerOrchestrator({ conversation, executedAgentIds }) {
+function createGoalOwnerOrchestrator({ conversation, executedAgentIds, store = createGoalOwnerStore(conversation) }) {
   return createTurnOrchestrator({
-    store: createGoalOwnerStore(conversation),
+    store,
     skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
     modeStore: { get() { return null; } },
     agentToolBridge: {},
@@ -4696,6 +4691,180 @@ test('turn orchestrator routes goal continuation to the goal owner over the late
   await waitForCondition(() => executedAgentIds.length > 0);
 
   assert.deepEqual(executedAgentIds, ['agent-b']);
+});
+
+test('turn orchestrator parks goal continuation until pending delegation settles', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-goal-delegation-parking-');
+  const sqlitePath = path.join(tempDir, 'goal-delegation-parking.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: { agentId: 'agent-b', agentName: 'Bravo' },
+    replies: [],
+  });
+  conversation.id = 'conversation-goal-delegation-parking';
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+  const store = createGoalOwnerStore(conversation);
+  let pendingDelegations = [{ id: 'delegation-pending-1', status: 'awaiting' }];
+  store.listPendingAgentDelegationsForConversation = (conversationId) => {
+    assert.equal(conversationId, conversation.id);
+    return pendingDelegations;
+  };
+
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  const orchestrator = createGoalOwnerOrchestrator({ conversation, executedAgentIds, store });
+  const parked = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.deepEqual(parked, { scheduled: false, reason: 'pending_delegation' });
+  assert.equal(conversation.messages.some((message) => message.metadata && message.metadata.goalAutoContinue), false);
+  assert.deepEqual(executedAgentIds, []);
+
+  pendingDelegations = [];
+  const resumed = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(resumed.scheduled, true);
+  await waitForCondition(() => executedAgentIds.length === 1);
+  assert.deepEqual(executedAgentIds, ['agent-b']);
+  assert.equal(conversation.messages.filter((message) => message.metadata && message.metadata.goalAutoContinue).length, 1);
+  await waitForCondition(() => {
+    const stats = orchestrator.getRuntimeStats();
+    return stats.activeTurns === 0 && stats.activeQueues === 0 && stats.activeAgentSlots === 0;
+  });
+});
+
+test('delegation continuation is queued and drained through the main lane', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-delegation-continuation-');
+  const sqlitePath = path.join(tempDir, 'delegation-continuation.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    replies: [],
+    goalOwner: null,
+  });
+  conversation.id = 'conversation-delegation-continuation';
+  conversation.metadata.sessionGoal.status = 'paused';
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executed = [];
+  const orchestrator = createTurnOrchestrator({
+    store: createGoalOwnerStore(conversation),
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async ({ agent, promptUserMessage, completedReplies }) => {
+      executed.push({ agentId: agent.id, content: promptUserMessage.content });
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'Continuation handled.',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const result = orchestrator.enqueueDelegationContinuation({
+    id: 'delegation-continuation-1',
+    requesterConversationId: conversation.id,
+    requesterAgentId: 'agent-a',
+    terminalAt: '2026-08-24T00:01:00.000Z',
+    status: 'succeeded',
+    aggregation: 'all',
+    result: { childResults: [{ status: 'succeeded' }] },
+    error: null,
+    lateResultCount: 0,
+  });
+
+  assert.equal(result.scheduled, true);
+  await waitForCondition(() => executed.length === 1);
+  assert.equal(executed[0].agentId, 'agent-a');
+  assert.match(executed[0].content, /delegation-continuation-1/u);
+});
+
+test('delegation cancellation stops matching running and queued side dispatches', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-delegation-cancel-side-dispatch-');
+  const sqlitePath = path.join(tempDir, 'delegation-cancel-side-dispatch.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const requester = store.saveCustomRoleConfig({
+    id: 'delegation-cancel-requester',
+    name: 'Delegation Cancel Requester',
+    personaPrompt: 'Request work.',
+  });
+  const recipient = store.saveCustomRoleConfig({
+    id: 'delegation-cancel-recipient',
+    name: 'Delegation Cancel Recipient',
+    personaPrompt: 'Receive work.',
+  });
+  const conversation = store.createConversation({
+    id: 'conversation-delegation-cancel-side-dispatch',
+    title: 'Delegation cancellation side dispatch',
+    participants: [requester.id, recipient.id],
+  });
+  let releaseExecution;
+  const executionGate = new Promise((resolve) => { releaseExecution = resolve; });
+  const executedContents = [];
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async ({ promptUserMessage, turnState }) => {
+      executedContents.push(promptUserMessage.content);
+      await executionGate;
+      return turnState.stopRequested
+        ? { stopTurn: true, terminationReason: 'stopped_by_user' }
+        : { stopTurn: false };
+    },
+  });
+
+  t.after(() => {
+    releaseExecution();
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const childDelegations = ['child-running', 'child-queued'].map((id) => ({
+    id,
+    recipientAgentId: recipient.id,
+    request: { content: `Execute ${id}` },
+  }));
+  orchestrator.dispatchAgentDelegation({
+    delegation: {
+      id: 'group-cancel-side-dispatch',
+      requesterConversationId: conversation.id,
+      requesterAgentName: requester.name,
+      recipientConversationId: conversation.id,
+      request: { content: 'Execute both children.' },
+    },
+    childDelegations,
+  });
+
+  await waitForCondition(() => orchestrator.listAgentSlotSummaries({ conversationId: conversation.id }).length === 1);
+  assert.equal(orchestrator.getConversationMutationState(conversation.id).queuedAgentSlotCount, 1);
+
+  const stopped = orchestrator.requestStopAgentDelegation({
+    requesterConversationId: conversation.id,
+    childDelegationIds: childDelegations.map((child) => child.id),
+  }, 'Requester cancelled delegation');
+
+  assert.equal(stopped, true);
+  assert.equal(orchestrator.getConversationMutationState(conversation.id).queuedAgentSlotCount, 0);
+  assert.equal(orchestrator.listAgentSlotSummaries({ conversationId: conversation.id })[0].stopRequested, true);
+  releaseExecution();
+  await waitForCondition(() => orchestrator.listAgentSlotSummaries({ conversationId: conversation.id }).length === 0);
+  assert.deepEqual(executedContents, ['Execute child-running']);
 });
 
 test('turn orchestrator exposes runtime stats that count the active turn and settle to zero after completion', { concurrency: false }, async (t) => {

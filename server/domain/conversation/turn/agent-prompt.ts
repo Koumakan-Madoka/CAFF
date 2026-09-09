@@ -149,13 +149,6 @@ function describeTurnTrigger(trigger: any, agents: any) {
   }
 
   if (trigger.triggerType === 'user') {
-    if (String(trigger.enqueueReason || '').startsWith('host_')) {
-      const privateOnlyNote = trigger.privateOnly
-        ? ' This phase requires PRIVATE communication only. Use send-private tool, not send-public.'
-        : '';
-      return `The backend game host selected you for the current phase.${privateOnlyNote}`;
-    }
-
     return trigger.enqueueReason === 'user_mentions'
       ? 'The user explicitly mentioned you and wants your perspective first.'
       : '';
@@ -429,18 +422,14 @@ function buildCommandFormatRules(agentToolRelativePath: string) {
 
   return [
     'Command safety and format rules:',
-    '- Public room output should go through the chat bridge; your final raw reply is private bookkeeping. A successful send-public call completes the turn automatically unless you pass --no-finalize for an interim update; if send-private succeeds without a public reply, use a tiny control reply like {"action":"final"} unless the bridge failed.',
-    '- Safety: never print tokens or secrets. Confirm content is public before send-public. Put secret roles, hidden reasoning, scratch notes, and game identity in private notes. `--force` overwrites files and is dangerous.',
+    '- Public room output should go through the chat bridge; your final raw reply is private bookkeeping. A successful send-public call completes the turn automatically unless you pass --no-finalize for an interim update; use a concise final reply when no public bridge post is needed.',
+    '- Safety: never print tokens or secrets. Confirm content is public before send-public. Keep secret roles, hidden reasoning, and scratch notes out of public posts. `--force` overwrites files and is dangerous.',
     `- Command format: This run executes shell commands with bash. Multi-line or quoted content must use a quoted heredoc piped to --content-stdin; short safe one-liners may use --content. Do not print \`\`\`bash\`\`\` code blocks as answers, and Never put raw message text on a new shell line by itself; always pair it with --content or a pipe. Do not use PowerShell here-string syntax like @'... '@.`,
     `- Paths: use ${relativeCommandPrefix} from repo root; elsewhere use ${envCommandPrefix}. CAFF_CHAT_TOOLS_PATH is already bash-safe; on Windows bash avoid raw E:\\foo\\bar paths and use ${agentToolRelativePath} or "$CAFF_CHAT_TOOLS_PATH".`,
     '- Public heredoc template:',
     `  cat <<'CAFF_PUBLIC_EOF' | ${envCommandPrefix} send-public --content-stdin`,
     '  your text here',
     '  CAFF_PUBLIC_EOF',
-    '- Private heredoc template:',
-    `  cat <<'CAFF_PRIVATE_EOF' | ${envCommandPrefix} send-private --to "AgentName" --content-stdin`,
-    '  your text here',
-    '  CAFF_PRIVATE_EOF',
     '- The required auth environment variables are already injected for this run. Never print tokens or secrets.',
   ].join('\n');
 }
@@ -455,8 +444,8 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
   return [
     'Chat bridge tools:',
     `- Speak publicly: ${relativeCommandPrefix} send-public [--no-finalize] --content-stdin (--no-finalize posts an interim update and keeps the current run active).`,
-    `- Private messages: ${relativeCommandPrefix} send-private [--to "AgentName[,AgentB]"] [--no-handoff] --content-stdin (omit --to for a note to yourself).`,
-    `- Context retrieval: ${relativeCommandPrefix} read-context for latest public context plus your private mailbox; ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 for older public messages in this conversation (optional --speaker "AgentName" or --agent-id "agent-id").`,
+    `- Delegation: ${relativeCommandPrefix} create-delegation --to "AgentId" --idempotency-key "stable-key" --content-stdin [--deadline-seconds N] [--reference "commit-or-reference"] creates one durable in-room task; when you need to wait use ${relativeCommandPrefix} await-delegation --delegation-id "id". Await yields the current run and releases its model slot; do not poll read-context or use shell sleep.`,
+    `- Context retrieval: ${relativeCommandPrefix} read-context for latest public context plus your private mailbox; the result includes a revision, hasChanges, pendingDelegations, and shortCircuited fields. Use await-delegation for pending work. ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 for older public messages (optional --speaker "AgentName" or --agent-id "agent-id").`,
     `- Long-term recall: when the user explicitly asks about prior context ("上次", "之前", "还记得吗", "回忆一下"), call ${relativeCommandPrefix} search-memory --query "topic keywords" --limit 5 or --latest. Do not assume long-term memory is automatically injected; default excludes the current conversation, use --include-current or optional filters --current-task/--task/--conversation/--kind/--since/--until when needed.`,
     `- Goal and participant governance: ${relativeCommandPrefix} list-participants refreshes visible participants; ${relativeCommandPrefix} suggest-goal --action complete|pause|set|accept|reject --reason "..." proposes user-confirmed goal changes (set also needs --objective "..." and may receive checklist lines through --checklist-stdin; accept/reject rule on a pending proposal raised by ANOTHER agent — you can never rule on your own proposal); ${relativeCommandPrefix} update-goal-checklist --content-stdin uses [ ] todo, [~] doing, [x] done lines and updates a pending set proposal before approval, otherwise the active goal.`,
     `- Trellis writes default to preview: ${relativeCommandPrefix} trellis-init --task "my-task" [--confirm] [--force] creates a .trellis scaffold; ${relativeCommandPrefix} trellis-write --path ".trellis/tasks/my-task/prd.md" --content-stdin [--confirm] [--force] writes one .trellis file. Add --confirm to write; --force is dangerous.`,
@@ -648,8 +637,6 @@ export function buildAgentTurnPromptSections({
         '- Public room output should go through the chat bridge instead of your final raw reply whenever possible.',
         '- Put actionable handoff mentions on their own line, or place a pure trailing mention block on the final line that contains only mentions.',
         '- Inline mentions in the middle of a sentence do not trigger routing unless they are part of that final trailing mention block.',
-        '- Private messages sent to other visible participants also wake idle recipients immediately without requiring a public mention; add --no-handoff only when you explicitly want persistence without wake-up.',
-        '- Send at most one complete private message per recipient in one trace: include all relevant context before sending, and do not poll, wait at P2, or send follow-up heartbeats. A later message is persisted but does not launch the same recipient twice and may not be visible to its current run.',
         '- Formal review requests must include the exact commit SHA, review scope and risks, author validation evidence, and desired response format. After sending one, do not modify repository files for the rest of this trace.',
         '- Review worktrees are risk-based: static git show/diff review needs none; a clean room worktree at the requested SHA may be used if the author will not keep writing; create a detached review worktree only when tests need a stable SHA while the room worktree may change, and use a separate writable branch/worktree if the reviewer must modify code.',
         `- Up to ${MAX_PARALLEL_MENTION_BATCH_SIZE} agents run at once; extra actionable mentions queue in later batches.`,
@@ -665,7 +652,6 @@ export function buildAgentTurnPromptSections({
         '- Keep your answer readable in a chat UI.',
         '- Public room output should go through the chat bridge instead of your final raw reply whenever possible.',
         '- Plain at-mentions are allowed for readability, but they will not continue this parallel turn.',
-        '- Private messages that would wake another participant are disabled in this parallel first-round mode.',
       ];
   const conversationDigestSection = formatConversationDigestsForPrompt(conversation);
   const retrievedMemorySection = formatRetrievedMemorySegments(relatedMemorySegments);

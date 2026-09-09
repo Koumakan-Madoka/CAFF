@@ -1,0 +1,6 @@
+{"file":"server/domain/conversation/agent-delegation.ts","reason":"Canonical creation, validation, completion payload, and child aggregation"}
+{"file":"server/domain/conversation/agent-delegation-runtime.ts","reason":"Terminal settlement, deadlines, cancellation, and completion notification"}
+{"file":"server/domain/runtime/agent-tool-bridge.ts","reason":"Authenticated create, await, cancel, and read-context contracts"}
+{"file":"server/domain/conversation/turn-orchestrator.ts","reason":"Side-lane dispatch, stop propagation, Goal parking, and requester continuation"}
+{"file":"storage/chat/agent-delegation.repository.ts","reason":"Durable delegation repository and requester projections"}
+{"file":".trellis/spec/runtime/agent-delegation.md","reason":"Executable current delegation contract"}

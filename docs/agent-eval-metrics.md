@@ -30,14 +30,14 @@ CAFF 在每个 `conversation_agent_reply` 任务（即每个 agent turn）写入
 默认策略（`policy.id = caff_default`, `policy.version = v1`）：
 
 - `send-public`：`privateOnly=false` 时 `required`；`privateOnly=true` 时 `forbidden`
-- `send-private`：`privateOnly=true` 时 `required`；否则 `optional`
+- `send-private`：不再写入新 Agent turn 的 expectation；历史 expectation 仍可用于报表兼容
 - `read-context / participants / trellis-init / trellis-write`：默认 `optional`
 
 这套标签的用途：把“工具使用”变成可算的混淆矩阵（TP/FP/FN/TN），而不是主观感受。
 
 ## 3. 工具调用埋点（Tool Calls）
 
-当 Agent 通过 chat bridge 调用工具时（HTTP `/api/agent-tools/**`），CAFF 会追加 `agent_tool_call` 事件：
+当 Agent 通过 chat bridge 调用工具时（HTTP `/api/agent-tools/**`），CAFF 会追加 `agent_tool_call` 事件。历史 `send-private` 调用仍按原格式保留，用于兼容已有报表与审计：
 
 - 事件表：`a2a_task_events`
 - `event_type = 'agent_tool_call'`
@@ -96,7 +96,7 @@ node scripts/agent-eval-report.js --agent agent-builder --json
 
 输出：
 
-- `agents[]`：每个 agent 的 turn 数、工具聊天率、`send-public/send-private` 混淆矩阵、工具成功率与延迟分位数
+- `agents[]`：每个 agent 的 turn 数、工具聊天率、`send-public` 混淆矩阵、工具成功率与延迟分位数；历史 `send-private` 统计继续保留
 - `tools[]`：全局按工具聚合的成功率与延迟
 
 ## 6. Dashboard 分组维度（建议）

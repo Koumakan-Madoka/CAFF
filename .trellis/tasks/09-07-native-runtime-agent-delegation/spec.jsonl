@@ -1,0 +1,2 @@
+{"file":".trellis/spec/runtime/agent-delegation.md","reason":"Executable signatures, contracts, validation matrix, cases, and required tests"}
+{"file":"docs/adr/0002-native-runtime-agent-delegation.md","reason":"Architectural decision and A2A boundary rationale"}

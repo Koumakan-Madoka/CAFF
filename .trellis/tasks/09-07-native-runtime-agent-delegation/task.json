@@ -1,0 +1,45 @@
+{
+  "id": "native-runtime-agent-delegation",
+  "name": "native-runtime-agent-delegation",
+  "title": "Native runtime agent delegation",
+  "description": "Implement traceable in-room Agent delegation with durable lifecycle, explicit non-blocking await/yield, deterministic completion, requester continuation, and read-context compatibility.",
+  "status": "review",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-09-07",
+  "completedAt": null,
+  "branch": "room/cda46b1b-caff-agent-delegation",
+  "base_branch": "develop",
+  "worktree_path": "E:\\pythonproject\\worktrees\\room\\cda46b1b-caff-agent-delegation",
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
