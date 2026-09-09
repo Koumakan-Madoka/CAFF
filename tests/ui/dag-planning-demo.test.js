@@ -274,6 +274,7 @@ test('DAG planning POC demo baseline: mock write → root render → child share
   };
   rootPanel.controller.applyPlanEvent(activatePayload);
   childPanel.controller.applyPlanEvent(activatePayload);
+  await flush();
   assert.equal(activated.plan.status, 'active');
   assert.equal(activated.plan.version, 2);
   assert.equal(rootPanel.refs.planAddNodeButton.disabled, true);

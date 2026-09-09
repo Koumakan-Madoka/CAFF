@@ -41,7 +41,6 @@ const { resolveToolRelativePath } = require('../http/path-utils');
 const { HOST, PORT, ROOT_DIR } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
 const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
-const { resolveCurrentTrellisTaskName } = require('../domain/conversation/turn/trellis-context');
 const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
 const {
   createConversationMutationCoordinator,
@@ -453,7 +452,7 @@ export function createServerApp(options: any = {}) {
     resolveSummaryMemoryTaskName:
       options.digestOptions && typeof options.digestOptions.resolveSummaryMemoryTaskName === 'function'
         ? options.digestOptions.resolveSummaryMemoryTaskName
-        : () => resolveCurrentTrellisTaskName({ startDir: activeProjectDir }),
+        : () => '',
   };
   const rawSkillDraftOptions = options.skillDraftOptions || {};
   const skillDraftOptions = {
@@ -1077,10 +1076,7 @@ export function createServerApp(options: any = {}) {
     createBootstrapController({ sseBus, turnOrchestrator, buildBootstrapPayload }),
     createFeishuController({ feishuService: feishuIntegration }),
     createMetricsController({ store }),
-    createMemoryController({
-      store,
-      resolveCurrentTaskName: () => resolveCurrentTrellisTaskName({ startDir: activeProjectDir }),
-    }),
+    createMemoryController({ store }),
     createRuntimeObservabilityController({
       getSnapshot: () => runtimeObservability.getSnapshot(),
     }),

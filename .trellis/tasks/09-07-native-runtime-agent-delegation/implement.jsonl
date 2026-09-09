@@ -1,9 +1,0 @@
-{"file":"server/domain/conversation/agent-delegation.ts","reason":"Canonical creation, validation, completion payload, and child aggregation"}
-{"file":"server/domain/conversation/agent-delegation-runtime.ts","reason":"Terminal settlement, deadlines, cancellation, and completion notification"}
-{"file":"server/domain/runtime/agent-tool-bridge.ts","reason":"Authenticated create, await, cancel, and read-context contracts"}
-{"file":"server/domain/conversation/turn-orchestrator.ts","reason":"Side-lane dispatch, stop propagation, Goal parking, and requester continuation"}
-{"file":"storage/chat/agent-delegation.repository.ts","reason":"Durable delegation repository and requester projections"}
-{"file":".trellis/spec/runtime/agent-delegation.md","reason":"Executable current delegation contract"}
-{"file":"server/api/agent-tools-controller.ts","reason":"Restore the post-message bridge route alongside delegation routes"}
-{"file":"lib/agent-chat-tools.ts","reason":"Remove the Agent-facing delegation deadline option and reject legacy CLI use"}
-{"file":"tests/http/conversation-deliveries-controller.test.js","reason":"Regression coverage for post-message and delegation route coexistence"}

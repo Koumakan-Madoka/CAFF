@@ -1,5 +1,0 @@
-{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
-{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review refactor work against boundary and contract risks"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Review extracted work for missed duplication or drift"}
-{"file": ".trellis/tasks/04-02-project-refactor-checklist/prd.md", "reason": "Closeout review for this planning-only refactor checklist before archival.", "status_update": "2026-04-12T23:10:17+08:00", "completed": ["Reviewed task metadata, PRD, research, and existing context JSONL files", "Confirmed the task stayed in planning and never had a standalone implementation branch, commit, or PR", "Confirmed the checklist is a historical roadmap whose ideas were later absorbed incrementally by newer tasks", "Chose archival over deletion to preserve architecture-review context and prioritization rationale"], "remaining": ["None - archive as preserved planning roadmap, not as a standalone delivered feature"]}

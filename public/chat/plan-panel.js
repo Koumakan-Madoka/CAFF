@@ -1,10 +1,9 @@
 // @ts-check
-// DAG 规划图 panel（PRD .trellis/tasks/dag-planning/prd.md §6, D8）。
+// DAG planning graph panel.
 //
-// 说明：PRD 原定 dagre 布局，但仓库内的 dagre-d3-es 是纯 ESM + d3 依赖，
-// 无法被无打包的 vanilla 前端直接加载。POC 期内置一个 dagre 风格的轻量
-// 分层布局（longest-path 分层 + barycenter 排序），手写 SVG 渲染，零新增
-// 依赖；后续若引入打包器可无缝换成 dagre。
+// The dependency-light frontend uses an internal layered layout and manual SVG
+// rendering. A future bundled frontend can replace this renderer without
+// changing the structured plan contract.
 
 (function registerPlanPanelModule() {
   const chat = window.CaffChat || (window.CaffChat = {});

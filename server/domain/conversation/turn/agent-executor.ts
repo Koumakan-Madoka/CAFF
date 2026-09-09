@@ -54,7 +54,6 @@ const { createBrowserCliSessionName, resolveBrowserCliPath } = require('./browse
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
 const { createLiveSessionToolStep, countSessionAssistantMessages } = require('../../runtime/message-tool-trace');
 const { summarizeModelUsageCalls, summarizeTokenUsage } = require('../../runtime/token-usage');
-const { resolveCurrentTrellisTaskName } = require('./trellis-context');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
 const { getSessionGoal } = require('../session-goal');
@@ -273,22 +272,7 @@ function normalizePromptMentionPlaceholders(text: any) {
 
 function resolveRelatedMemoryTaskName(options: any = {}) {
   const explicitTaskName = String(options.taskName || options.activeTaskName || '').trim();
-
-  if (explicitTaskName) {
-    return clipText(explicitTaskName, 160);
-  }
-
-  const projectDir = String(options.projectDir || '').trim();
-
-  if (!projectDir) {
-    return '';
-  }
-
-  try {
-    return clipText(resolveCurrentTrellisTaskName({ startDir: projectDir }), 160);
-  } catch {
-    return '';
-  }
+  return explicitTaskName ? clipText(explicitTaskName, 160) : '';
 }
 
 const GENERIC_RELATED_MEMORY_TITLES = new Set([
@@ -963,13 +947,11 @@ const LIVE_TOOL_BRIDGE_HINTS = [
   { token: 'search-messages', toolName: 'search-messages' },
   { token: 'list-memories', toolName: 'list-memories' },
   { token: 'suggest-goal', toolName: 'suggest-goal' },
-  { token: 'update-goal-checklist', toolName: 'update-goal-checklist' },
+  { token: 'update-goal', toolName: 'update-goal' },
   { token: 'save-memory', toolName: 'save-memory' },
   { token: 'update-memory', toolName: 'update-memory' },
   { token: 'forget-memory', toolName: 'forget-memory' },
   { token: 'list-participants', toolName: 'participants' },
-  { token: 'trellis-init', toolName: 'trellis-init' },
-  { token: 'trellis-write', toolName: 'trellis-write' },
 ];
 
 function normalizePiToolContentType(value: any) {
@@ -1981,8 +1963,8 @@ export function createAgentExecutor(options: any = {}) {
         'await-delegation': 'optional',
         'search-messages': 'optional',
         participants: 'optional',
-        'trellis-init': 'optional',
-        'trellis-write': 'optional',
+        'suggest-goal': 'optional',
+        'update-goal': 'optional',
       },
       context: {
         conversationId,

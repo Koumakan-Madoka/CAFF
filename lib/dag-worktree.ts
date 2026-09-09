@@ -1,7 +1,7 @@
 /**
  * dag-worktree.ts — per-node git worktree management for DAG execution (D22).
  *
- * Contract (dag-execution PRD):
+ * Contract: `docs/engineering/backend/dag-execution.md`.
  * - Every plan node gets its own worktree at
  *   `.worktrees/dag/<plan-id first 8 chars>/<node-id>/` under the repo root.
  * - The node branch is checked out into that worktree; the spawned

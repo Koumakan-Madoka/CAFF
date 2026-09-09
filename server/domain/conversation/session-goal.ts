@@ -3,15 +3,24 @@ import { createHash, randomUUID } from 'node:crypto';
 import { requiresBoundedConversationProjections } from '../../../lib/conversation-hydration-contract';
 import { createHttpError } from '../../http/http-errors';
 import { isNonRoutableSystemActorId } from '../roles/system-actor-catalog';
+import {
+  acceptedAdrChanges,
+  incompleteAcceptanceCriteria,
+  normalizeGoalDelivery,
+  provisionalDecisionChanges,
+  requireAcceptanceCriteria,
+  structuralGoalProjection,
+  validateGoalDelivery,
+} from './goal-contract';
 
 const SESSION_GOAL_METADATA_KEY = 'sessionGoal';
 const SESSION_GOAL_PROPOSAL_METADATA_KEY = 'sessionGoalProposal';
 const SESSION_GOAL_RULING_METADATA_KEY = 'sessionGoalRuling';
 const SESSION_GOAL_RUNNER_METADATA_KEY = 'sessionGoalRunner';
 const SESSION_GOAL_STATUSES = new Set(['active', 'paused', 'complete']);
-const SESSION_GOAL_PROPOSAL_ACTIONS = new Set(['set', 'pause', 'resume', 'complete', 'clear']);
+const SESSION_GOAL_PROPOSAL_ACTIONS = new Set(['set', 'revise', 'pause', 'resume', 'complete', 'clear']);
 const SESSION_GOAL_RULING_OUTCOMES = new Set(['accepted', 'rejected']);
-const SESSION_GOAL_ACTIONS = new Set(['set', 'pause', 'resume', 'complete', 'clear', 'set-owner', 'set_owner', 'update-checklist', 'update_checklist']);
+const SESSION_GOAL_ACTIONS = new Set(['set', 'revise', 'pause', 'resume', 'complete', 'clear', 'set-owner', 'set_owner', 'update-delivery', 'update_delivery', 'update-checklist', 'update_checklist']);
 const SESSION_GOAL_CHECKLIST_STATUSES = new Set(['todo', 'in_progress', 'done']);
 const MAX_SESSION_GOAL_OBJECTIVE_LENGTH = 2000;
 const MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH = 1000;
@@ -20,17 +29,11 @@ const MAX_SESSION_GOAL_CHECKLIST_ITEM_LENGTH = 200;
 const MAX_SESSION_GOAL_FAILURE_SUMMARY_LENGTH = 240;
 const MAX_SESSION_GOAL_FAILURE_REASON_LENGTH = 500;
 const SESSION_GOAL_MODEL_FAILURE_KINDS = new Set(['provider', 'timeout', 'process_exit']);
-const DEFAULT_SESSION_GOAL_CHECKLIST_TEXTS = [
-  '和其他 agent 一起头脑风暴，收敛目标、范围和风险',
-  '结论收敛后创建或更新 Trellis 任务与 PRD',
-  'Agent 校验 Trellis 任务、PRD、spec 上下文是否齐全',
-  '使用 before-dev 读取相关开发规范与思考指南',
-  '按 checklist 实现核心功能，并持续更新事实进度',
-  '补充或更新回归测试，覆盖关键行为和边界',
-  '运行 check、typecheck、build 和相关测试完成质量验证',
-  '使用 update-spec 同步规格、契约和关键决策',
-  '使用 finish-work 完成提交前收尾检查',
-  '人工验收后记录会话并归档 Trellis 任务',
+const DEFAULT_SESSION_GOAL_WORK_ITEM_TEXTS = [
+  'Confirm the delivery contract and independent review',
+  'Implement the smallest coherent behavior change',
+  'Record criterion-linked verification evidence',
+  'Run independent code review and resolve findings',
 ];
 
 function nowIso() {
@@ -48,6 +51,35 @@ function legacyGoalId(createdAt: string, objective: string) {
 function normalizeRevision(value: any) {
   const revision = Number(value === undefined || value === null ? 1 : value);
   return Number.isInteger(revision) && revision > 0 ? revision : 1;
+}
+
+function requestedGoalRevision(value: any) {
+  if (!isPlainObject(value)) {
+    return null;
+  }
+  const raw = value.goalRevision ?? value.goal_revision ?? value.revision;
+  if (raw === undefined || raw === null || raw === '') {
+    return null;
+  }
+  const revision = Number(raw);
+  return Number.isInteger(revision) && revision > 0 ? revision : null;
+}
+
+function assertGoalRevision(existingGoal: any, input: any, options: any = {}) {
+  const expectedRevision = requestedGoalRevision(input);
+  if (expectedRevision === null && options.required) {
+    throw createHttpError(400, 'Goal revision is required for this update', {
+      code: 'goal_revision_required',
+    });
+  }
+  if (expectedRevision !== null && existingGoal && expectedRevision !== existingGoal.revision) {
+    throw createHttpError(409, `Goal revision ${expectedRevision} is stale; current revision is ${existingGoal.revision}`, {
+      code: 'goal_revision_conflict',
+      expectedRevision,
+      currentRevision: existingGoal.revision,
+    });
+  }
+  return expectedRevision;
 }
 
 /**
@@ -163,8 +195,13 @@ function parseChecklistTextLine(value: any) {
   };
 }
 
+export function defaultSessionGoalWorkItemsText() {
+  return DEFAULT_SESSION_GOAL_WORK_ITEM_TEXTS.map((text) => `[ ] ${text}`).join('\n');
+}
+
+/** @deprecated Use defaultSessionGoalWorkItemsText. */
 export function defaultSessionGoalChecklistText() {
-  return DEFAULT_SESSION_GOAL_CHECKLIST_TEXTS.map((text) => `[ ] ${text}`).join('\n');
+  return defaultSessionGoalWorkItemsText();
 }
 
 function normalizeChecklistItems(value: any, timestamp = nowIso()) {
@@ -246,6 +283,7 @@ function normalizeSessionGoal(value: any) {
   const updatedAt = normalizeText(value.updatedAt || value.updated_at) || createdAt;
   const completedAt = normalizeText(value.completedAt || value.completed_at);
   const checklist = normalizeChecklistItems(value.checklist, updatedAt);
+  const delivery = normalizeGoalDelivery(value, updatedAt, { legacyChecklist: checklist });
   const owner = normalizeGoalOwner(value.owner);
   const goalId = normalizeText(value.goalId || value.goal_id) || legacyGoalId(storedCreatedAt, objective);
   const revision = normalizeRevision(value.revision || value.goalRevision || value.goal_revision);
@@ -259,7 +297,8 @@ function normalizeSessionGoal(value: any) {
     updatedAt,
     ...(completedAt ? { completedAt } : {}),
     ...(owner ? { owner } : {}),
-    ...(checklist.length > 0 ? { checklist } : {}),
+    ...delivery,
+    ...(Array.isArray(value.changeNotices) ? { changeNotices: value.changeNotices.slice(-20) } : {}),
   };
 }
 
@@ -276,7 +315,7 @@ function normalizeSessionGoalProposal(value: any) {
 
   const objective = normalizeText(value.objective);
 
-  if (action === 'set' && !objective) {
+  if ((action === 'set' || action === 'revise') && !objective) {
     return null;
   }
 
@@ -284,10 +323,18 @@ function normalizeSessionGoalProposal(value: any) {
   const createdAt = normalizeText(value.createdAt || value.created_at) || nowIso();
   const updatedAt = normalizeText(value.updatedAt || value.updated_at) || createdAt;
   const reason = clipText(value.reason, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH);
-  const proposalId = normalizeText(value.id);
-  const checklist = action === 'set'
-    ? (hasChecklistInput(value) ? normalizeChecklistItems(checklistInputValue(value), updatedAt) : normalizeChecklistItems(defaultSessionGoalChecklistText(), updatedAt))
+  const impact = clipText(value.impact, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH);
+  const affectedWorkItems = Array.isArray(value.affectedWorkItems)
+    ? value.affectedWorkItems.map((item: any) => clipText(item, 80)).filter(Boolean).slice(0, 40)
     : [];
+  const proposalId = normalizeText(value.id);
+  const baseRevision = requestedGoalRevision({ revision: value.baseRevision ?? value.base_revision });
+  const checklist = action === 'set'
+    ? (hasChecklistInput(value) ? normalizeChecklistItems(checklistInputValue(value), updatedAt) : [])
+    : [];
+  const delivery = action === 'set' || action === 'revise'
+    ? normalizeGoalDelivery(value, updatedAt, { legacyChecklist: checklist })
+    : null;
 
   return {
     action,
@@ -295,7 +342,10 @@ function normalizeSessionGoalProposal(value: any) {
     ...(proposalId ? { id: proposalId } : {}),
     ...(objective ? { objective } : {}),
     ...(reason ? { reason } : {}),
-    ...(action === 'set' ? { checklist } : {}),
+    ...(impact ? { impact } : {}),
+    ...(affectedWorkItems.length > 0 ? { affectedWorkItems } : {}),
+    ...(baseRevision !== null ? { baseRevision } : {}),
+    ...(delivery ? delivery : {}),
     proposedBy: {
       agentId: normalizeText(proposedBy.agentId),
       agentName: normalizeText(proposedBy.agentName) || 'Assistant',
@@ -570,8 +620,9 @@ function updateConversationProposalChecklist(store: any, conversation: any, chec
     throw createHttpError(404, 'No session goal proposal is pending');
   }
 
-  const { checklist: _checklist, ...proposalWithoutChecklist } = proposal;
-  const nextProposal = {
+  const proposalWithChecklist: any = proposal;
+  const { checklist: _checklist, ...proposalWithoutChecklist } = proposalWithChecklist;
+  const nextProposal: any = {
     ...proposalWithoutChecklist,
     updatedAt: timestamp,
     checklist,
@@ -854,17 +905,19 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
 
 function goalFromMutation(action: string, existingGoal: any, input: any, timestamp: string) {
   if (action === 'set') {
-    const checklist = hasChecklistInput(input)
-      ? normalizeChecklistItems(checklistInputValue(input), timestamp)
-      : normalizeChecklistItems(defaultSessionGoalChecklistText(), timestamp);
+    const objective = normalizeObjective(input && input.objective);
+    const delivery = normalizeGoalDelivery(input, timestamp, {
+      legacyChecklist: hasChecklistInput(input) ? normalizeChecklistItems(checklistInputValue(input), timestamp) : [],
+    });
+    requireAcceptanceCriteria(delivery);
     return {
-      objective: normalizeObjective(input && input.objective),
+      objective,
       status: 'active',
       createdAt: existingGoal ? existingGoal.createdAt : timestamp,
       updatedAt: timestamp,
       goalId: newGoalId(),
       revision: 1,
-      ...(checklist.length > 0 ? { checklist } : {}),
+      ...delivery,
     };
   }
 
@@ -872,34 +925,77 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
     throw createHttpError(404, 'No session goal is set');
   }
 
-  if (action === 'update-checklist' || action === 'update_checklist') {
-    const checklist = normalizeChecklistItems(checklistInputValue(input), timestamp);
+  if (action === 'revise') {
+    const objective = normalizeObjective(input && input.objective);
+    const delivery = normalizeGoalDelivery(input, timestamp);
+    requireAcceptanceCriteria(delivery);
     return {
-      goalId: existingGoal.goalId,
+      ...existingGoal,
+      objective,
       revision: existingGoal.revision + 1,
-      objective: existingGoal.objective,
-      status: existingGoal.status,
-      createdAt: existingGoal.createdAt,
       updatedAt: timestamp,
-      ...(existingGoal.completedAt ? { completedAt: existingGoal.completedAt } : {}),
-      ...(existingGoal.owner ? { owner: existingGoal.owner } : {}),
-      ...(checklist.length > 0 ? { checklist } : {}),
+      ...delivery,
     };
   }
 
+  if (action === 'update-delivery' || action === 'update_delivery') {
+    const delivery = normalizeGoalDelivery(input, timestamp);
+    validateGoalDelivery(delivery);
+    const nextGoal = {
+      ...existingGoal,
+      revision: existingGoal.revision + 1,
+      updatedAt: timestamp,
+      ...delivery,
+    };
+    if (structuralGoalProjection(nextGoal) !== structuralGoalProjection(existingGoal)) {
+      throw createHttpError(409, 'Factual Goal updates cannot change the objective, decisions, criteria, or work-item definitions', {
+        code: 'goal_structural_review_required',
+      });
+    }
+    const previousCriteria = new Map((existingGoal.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
+    const newlyWaived = (nextGoal.acceptanceCriteria || []).filter((criterion: any) => {
+      const previous: any = previousCriteria.get(criterion.id);
+      return criterion.status === 'waived' && (!previous || previous.status !== 'waived');
+    });
+    if (newlyWaived.length > 0) {
+      throw createHttpError(409, 'Acceptance waivers require a revise proposal and independent review', {
+        code: 'goal_waiver_review_required',
+        criterionIds: newlyWaived.map((criterion: any) => criterion.id),
+      });
+    }
+    return nextGoal;
+  }
+
+  if (action === 'update-checklist' || action === 'update_checklist') {
+    const workItems = normalizeGoalDelivery({
+      workItems: normalizeChecklistItems(checklistInputValue(input), timestamp),
+    }, timestamp).workItems;
+    return {
+      ...existingGoal,
+      revision: existingGoal.revision + 1,
+      updatedAt: timestamp,
+      workItems,
+    };
+  }
+
+  if (action === 'complete') {
+    const incomplete = incompleteAcceptanceCriteria(existingGoal);
+    if (incomplete.length > 0 || !Array.isArray(existingGoal.acceptanceCriteria) || existingGoal.acceptanceCriteria.length === 0) {
+      throw createHttpError(409, 'Goal cannot complete until every acceptance criterion is passed or waived', {
+        code: 'goal_acceptance_incomplete',
+        criterionIds: incomplete.map((criterion: any) => criterion && criterion.id).filter(Boolean),
+      });
+    }
+  }
+
   const nextStatus = action === 'pause' ? 'paused' : action === 'resume' ? 'active' : 'complete';
-  const checklist = Array.isArray(existingGoal.checklist) ? existingGoal.checklist : [];
-  const resumed = action === 'resume';
   return {
-    goalId: resumed ? newGoalId() : existingGoal.goalId,
-    revision: resumed ? 1 : existingGoal.revision + 1,
-    objective: existingGoal.objective,
+    ...existingGoal,
+    goalId: existingGoal.goalId,
+    revision: existingGoal.revision + 1,
     status: nextStatus,
-    createdAt: existingGoal.createdAt,
     updatedAt: timestamp,
-    ...(existingGoal.owner ? { owner: existingGoal.owner } : {}),
-    ...(nextStatus === 'complete' ? { completedAt: timestamp } : {}),
-    ...(checklist.length > 0 ? { checklist } : {}),
+    ...(nextStatus === 'complete' ? { completedAt: timestamp } : { completedAt: undefined }),
   };
 }
 
@@ -951,15 +1047,21 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
   }
 
   if (action === 'dismiss-proposal' || action === 'dismiss_proposal') {
-    // D28 durable ruling: the rejection (who ruled + feedback reason + the
-    // ruled proposal snapshot) is persisted in the SAME write that clears
-    // the proposal, so a crash before the cleared-event broadcast never
-    // loses the verdict — the scheduler re-drives feedback from this record.
+    const ruling = existingProposal
+      ? buildRulingRecord(existingProposal, 'rejected', input.ruledBy, input.reason, timestamp)
+      : null;
+    if (ruling?.ruledBy?.kind === 'agent'
+      && ruling.ruledBy.agentId === existingProposal?.proposedBy?.agentId) {
+      throw createHttpError(403, 'The proposer cannot review their own Goal proposal', {
+        code: 'goal_proposal_self_review',
+      });
+    }
+    // The rejection and proposal clear are persisted in the same write.
     let metadata = buildMetadataWithoutProposal(conversation);
-    if (existingProposal) {
+    if (ruling) {
       metadata = {
         ...metadata,
-        [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(existingProposal, 'rejected', input.ruledBy, input.reason, timestamp),
+        [SESSION_GOAL_RULING_METADATA_KEY]: ruling,
       };
     }
     const nextConversation = updateConversationMetadata(store, conversation, metadata);
@@ -976,6 +1078,12 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       throw createHttpError(404, 'No session goal proposal is pending');
     }
 
+    if (existingProposal.action !== 'set') {
+      assertGoalRevision(existingGoal, { revision: existingProposal.baseRevision }, {
+        required: existingProposal.baseRevision !== undefined,
+      });
+    }
+
     if (existingProposal.action === 'clear') {
       // Approving a clear wipes the whole goal epoch — including rulings.
       const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
@@ -990,22 +1098,86 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       });
     }
 
+    const ruling = buildRulingRecord(existingProposal, 'accepted', input.ruledBy, input.reason, timestamp);
+    if (ruling.ruledBy.kind === 'agent'
+      && ruling.ruledBy.agentId === existingProposal.proposedBy?.agentId) {
+      throw createHttpError(403, 'The proposer cannot review their own Goal proposal', {
+        code: 'goal_proposal_self_review',
+      });
+    }
     const goal = goalFromMutation(existingProposal.action, existingGoal, existingProposal, timestamp);
-    // Goal owner (D1): accepting a 'set' proposal stamps the proposer as the
-    // goal owner — only on the accept-proposal path, so a client-supplied
-    // proposedBy in a direct 'set' body can never forge an owner.
+    const adrChanges = existingProposal.action === 'revise'
+      ? acceptedAdrChanges(existingGoal, goal)
+      : [];
+    if (ruling.ruledBy.kind === 'agent' && adrChanges.length > 0) {
+      throw createHttpError(403, 'Accepted ADR decisions can only be changed by the user', {
+        code: 'goal_accepted_adr_change_user_required',
+        changes: adrChanges,
+      });
+    }
+    const previousCriteria = new Map((existingGoal && existingGoal.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
+    const newlyWaivedHighRisk = (goal.acceptanceCriteria || []).filter((criterion: any) => {
+      const previous: any = previousCriteria.get(criterion.id);
+      return criterion.status === 'waived' && criterion.risk === 'high' && (!previous || previous.status !== 'waived');
+    });
+    if (ruling.ruledBy.kind === 'agent' && newlyWaivedHighRisk.length > 0) {
+      throw createHttpError(403, 'High-risk acceptance criteria can only be waived by the user', {
+        code: 'goal_high_risk_waiver_user_required',
+        criterionIds: newlyWaivedHighRisk.map((criterion: any) => criterion.id),
+      });
+    }
+    const reviewedGoal = newlyWaivedHighRisk.length > 0 || (goal.acceptanceCriteria || []).some((criterion: any) => {
+      const previous: any = previousCriteria.get(criterion.id);
+      return criterion.status === 'waived' && (!previous || previous.status !== 'waived');
+    })
+      ? {
+          ...goal,
+          acceptanceCriteria: (goal.acceptanceCriteria || []).map((criterion: any) => {
+            const previous: any = previousCriteria.get(criterion.id);
+            if (criterion.status !== 'waived' || (previous && previous.status === 'waived')) return criterion;
+            const reviewer = ruling.ruledBy.kind === 'user'
+              ? 'user'
+              : ruling.ruledBy.agentName || ruling.ruledBy.agentId || 'reviewer';
+            return {
+              ...criterion,
+              waiver: {
+                ...(criterion.waiver || {}),
+                reason: criterion.waiver?.reason || existingProposal.reason || 'Approved during Goal review',
+                waivedBy: reviewer,
+                waivedAt: timestamp,
+              },
+            };
+          }),
+        }
+      : goal;
+    // Goal owner: accepting a set proposal stamps the proposer as owner.
     const acceptedOwner = existingProposal.action === 'set'
       ? normalizeGoalOwner(existingProposal.proposedBy)
       : null;
-    const goalWithOwner = acceptedOwner ? { ...goal, owner: acceptedOwner } : goal;
-    // D28 durable ruling: goal mutation + proposal clear + ruling record in
-    // ONE metadata write (buildMetadataWithGoal strips the stale proposal
-    // and any prior ruling; the fresh ruling is then attached atomically).
+    const goalWithOwner = acceptedOwner ? { ...reviewedGoal, owner: acceptedOwner } : reviewedGoal;
+    const provisionalChanges = existingProposal.action === 'revise'
+      ? provisionalDecisionChanges(existingGoal, goalWithOwner)
+      : [];
+    const changeNotice = provisionalChanges.length > 0
+      ? {
+          id: `notice_${randomUUID()}`,
+          type: 'provisional_decision_changed',
+          changes: provisionalChanges,
+          reason: existingProposal.reason || '',
+          impact: existingProposal.impact || '',
+          affectedWorkItems: existingProposal.affectedWorkItems || [],
+          reviewer: ruling.ruledBy,
+          createdAt: timestamp,
+        }
+      : null;
+    const goalWithNotice = changeNotice
+      ? { ...goalWithOwner, changeNotices: [...(existingGoal?.changeNotices || []), changeNotice].slice(-20) }
+      : goalWithOwner;
     const metadata = {
-      ...buildMetadataWithGoal(conversation, goalWithOwner, {
+      ...buildMetadataWithGoal(conversation, goalWithNotice, {
         clearRunner: existingProposal.action === 'set' || existingProposal.action === 'resume',
       }),
-      [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(existingProposal, 'accepted', input.ruledBy, input.reason, timestamp),
+      [SESSION_GOAL_RULING_METADATA_KEY]: ruling,
     };
     const nextConversation = updateConversationMetadata(store, conversation, metadata);
     return responseForConversation(nextConversation, {
@@ -1015,6 +1187,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       proposalChanged: true,
       proposalCleared: true,
       clearedProposal: existingProposal,
+      changeNotice,
     });
   }
 
@@ -1022,8 +1195,12 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     throw createHttpError(400, 'Unsupported goal action');
   }
 
-  const checklistOnly = action === 'update-checklist' || action === 'update_checklist';
-  if (checklistOnly && existingProposal && existingProposal.action === 'set') {
+  const factualOnly = action === 'update-checklist' || action === 'update_checklist'
+    || action === 'update-delivery' || action === 'update_delivery';
+  if (action === 'revise' || action === 'update-delivery' || action === 'update_delivery') {
+    assertGoalRevision(existingGoal, input, { required: true });
+  }
+  if ((action === 'update-checklist' || action === 'update_checklist') && existingProposal && existingProposal.action === 'set') {
     const checklist = normalizeChecklistItems(checklistInputValue(input), timestamp);
     const nextConversation = updateConversationProposalChecklist(store, conversation, checklist, timestamp);
     return responseForConversation(nextConversation, {
@@ -1116,18 +1293,18 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
   }
 
   const goal = goalFromMutation(action, existingGoal, input, timestamp);
-  const checklistRunner = checklistOnly ? getSessionGoalRunner(conversation) : null;
+  const factualRunner = factualOnly ? getSessionGoalRunner(conversation) : null;
   // Checklist progress is factual state inside the current goal epoch. It
   // must not erase a pending proposal or the durable ruling that proves how
   // the current lifecycle state was reached.
-  const nextConversation = checklistOnly
+  const nextConversation = factualOnly
     ? updateConversationMetadata(store, conversation, {
       ...currentMetadata(conversation),
       [SESSION_GOAL_METADATA_KEY]: goal,
-      ...(checklistRunner && checklistRunner.goalUpdatedAt === goalRunnerKey(existingGoal)
+      ...(factualRunner && factualRunner.goalUpdatedAt === goalRunnerKey(existingGoal)
         ? {
           [SESSION_GOAL_RUNNER_METADATA_KEY]: {
-            ...checklistRunner,
+            ...factualRunner,
             goalUpdatedAt: goalRunnerKey(goal),
             updatedAt: timestamp,
           },
@@ -1139,12 +1316,12 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     });
   return responseForConversation(nextConversation, {
     goal: getSessionGoal(nextConversation),
-    proposal: checklistOnly ? getSessionGoalProposal(nextConversation) : null,
+    proposal: factualOnly ? getSessionGoalProposal(nextConversation) : null,
     goalChanged: true,
-    proposalChanged: checklistOnly ? false : Boolean(existingProposal),
-    proposalCleared: checklistOnly ? false : Boolean(existingProposal),
-    clearedProposal: checklistOnly ? null : existingProposal || null,
-    autoContinue: !checklistOnly,
+    proposalChanged: factualOnly ? false : Boolean(existingProposal),
+    proposalCleared: factualOnly ? false : Boolean(existingProposal),
+    clearedProposal: factualOnly ? null : existingProposal || null,
+    autoContinue: !factualOnly,
   });
 }
 
@@ -1167,22 +1344,53 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
   if (action !== 'set' && !existingGoal) {
     throw createHttpError(404, 'No session goal is set');
   }
+  if (action === 'revise') {
+    assertGoalRevision(existingGoal, input);
+  }
 
-  const objective = action === 'set' ? normalizeObjective(input.objective) : '';
+  if (action === 'complete' && existingGoal) {
+    const incomplete = incompleteAcceptanceCriteria(existingGoal);
+    if (incomplete.length > 0 || existingGoal.acceptanceCriteria.length === 0) {
+      throw createHttpError(409, 'Goal completion cannot be proposed until every acceptance criterion is passed or waived', {
+        code: 'goal_acceptance_incomplete',
+        criterionIds: incomplete.map((criterion: any) => criterion && criterion.id).filter(Boolean),
+      });
+    }
+  }
+
+  const objective = action === 'set' || action === 'revise'
+    ? normalizeObjective(input.objective || (existingGoal && existingGoal.objective))
+    : '';
   const reason = normalizeProposalReason(input.reason);
   const timestamp = nowIso();
+  const proposedDelivery = action === 'set' || action === 'revise'
+    ? normalizeGoalDelivery(input, timestamp, {
+        legacyChecklist: hasChecklistInput(input) ? normalizeChecklistItems(checklistInputValue(input), timestamp) : [],
+      })
+    : null;
+  if (proposedDelivery) {
+    requireAcceptanceCriteria(proposedDelivery);
+  }
+  if (action === 'revise') {
+    const provisionalChanges = provisionalDecisionChanges(existingGoal, proposedDelivery);
+    const impact = clipText(input.impact, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH);
+    if (provisionalChanges.length > 0 && (!reason || !impact)) {
+      throw createHttpError(400, 'Changing a provisional decision requires both reason and impact', {
+        code: 'goal_provisional_change_context_required',
+        changes: provisionalChanges,
+      });
+    }
+  }
   const proposal = {
     action,
     status: 'pending',
     id: newProposalId(),
     ...(objective ? { objective } : {}),
     ...(reason ? { reason } : {}),
-    ...(action === 'set'
-      ? { checklist: normalizeChecklistItems(
-        hasChecklistInput(input) ? checklistInputValue(input) : defaultSessionGoalChecklistText(),
-        timestamp
-      ) }
-      : {}),
+    ...(action !== 'set' && existingGoal ? { baseRevision: existingGoal.revision } : {}),
+    ...(proposedDelivery || {}),
+    ...(clipText(input.impact, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH) ? { impact: clipText(input.impact, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH) } : {}),
+    ...(Array.isArray(input.affectedWorkItems) ? { affectedWorkItems: input.affectedWorkItems } : {}),
     proposedBy: {
       agentId: normalizeText(proposer.agentId),
       agentName: normalizeText(proposer.agentName) || 'Assistant',
@@ -1289,20 +1497,55 @@ export function pauseSessionGoalForRemovedOwner(store: any, conversationId: any,
   };
 }
 
-function formatGoalChecklistForPrompt(goal: any) {
-  const checklist = goal && Array.isArray(goal.checklist) ? goal.checklist : [];
+function formatGoalDeliveryForPrompt(goal: any) {
+  const workItems = goal && Array.isArray(goal.workItems) ? goal.workItems : [];
+  const criteria = goal && Array.isArray(goal.acceptanceCriteria) ? goal.acceptanceCriteria : [];
+  const evidence = goal && Array.isArray(goal.evidence) ? goal.evidence : [];
+  const decisions = goal && goal.decisions && typeof goal.decisions === 'object' ? goal.decisions : {};
+  const lines: string[] = [];
 
-  if (checklist.length === 0) {
-    return '';
+  for (const [label, field] of [
+    ['Committed decisions', 'committed'],
+    ['Provisional decisions', 'provisional'],
+    ['Open questions', 'openQuestions'],
+    ['Non-goals', 'nonGoals'],
+    ['Rejected options', 'rejectedOptions'],
+  ] as const) {
+    const items = Array.isArray(decisions[field]) ? decisions[field] : [];
+    if (items.length > 0) {
+      lines.push(`${label}:`);
+      for (const item of items) {
+        lines.push(`- ${item.statement || item.question || item.option}`);
+      }
+    }
   }
 
-  const doneCount = checklist.filter((item: any) => item && item.status === 'done').length;
-  const lines = checklist.map((item: any) => {
-    const status = item && item.status === 'done' ? 'x' : item && item.status === 'in_progress' ? '~' : ' ';
-    return `- [${status}] ${item.text}`;
-  });
+  if (criteria.length > 0) {
+    lines.push('Acceptance criteria:');
+    for (const criterion of criteria) {
+      lines.push(`- [${criterion.status}] ${criterion.statement} | verify: ${criterion.verifyBy || '(missing)'}`);
+    }
+  } else {
+    lines.push('Acceptance criteria: MISSING. Revise the Goal before claiming completion.');
+  }
 
-  return [`Checklist progress: ${doneCount}/${checklist.length} complete.`, ...lines].join('\n');
+  if (workItems.length > 0) {
+    const doneCount = workItems.filter((item: any) => item && item.status === 'done').length;
+    lines.push(`Work items: ${doneCount}/${workItems.length} complete.`);
+    for (const item of workItems) {
+      const status = item && item.status === 'done' ? 'x' : item && item.status === 'in_progress' ? '~' : ' ';
+      lines.push(`- [${status}] ${item.text}`);
+    }
+  }
+
+  if (evidence.length > 0) {
+    lines.push('Evidence:');
+    for (const item of evidence.slice(-20)) {
+      lines.push(`- ${item.id} [${item.kind}]: ${item.summary}`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 function formatGoalProposalForPrompt(proposal: any) {
@@ -1310,22 +1553,14 @@ function formatGoalProposalForPrompt(proposal: any) {
     return '';
   }
 
-  const checklist = Array.isArray(proposal.checklist) ? proposal.checklist : [];
-  const checklistLines = checklist.map((item: any) => {
-    const status = item && item.status === 'done' ? 'x' : item && item.status === 'in_progress' ? '~' : ' ';
-    return `- [${status}] ${item.text}`;
-  });
-
   return [
-    `Pending user-confirmation proposal: ${proposal.action}`,
+    `Pending independent-review proposal: ${proposal.action}`,
     proposal.objective ? `Proposed objective: ${proposal.objective}` : '',
-    ...(checklistLines.length > 0 ? ['Proposed checklist:', ...checklistLines] : []),
+    proposal.action === 'set' || proposal.action === 'revise' ? formatGoalDeliveryForPrompt(proposal) : '',
     proposal.reason ? `Agent reason: ${proposal.reason}` : '',
+    proposal.impact ? `Impact: ${proposal.impact}` : '',
     proposal.proposedBy && proposal.proposedBy.agentName ? `Proposed by: ${proposal.proposedBy.agentName}` : '',
-    proposal.action === 'set'
-      ? 'Before approval, update-goal-checklist edits this pending proposed checklist; it does not activate the goal.'
-      : '',
-    'Do not assume this proposal is applied until the user confirms it in the UI or with a goal command.',
+    'The user may rule directly. Otherwise exactly one participant other than the proposer must accept or reject it.',
   ].filter(Boolean).join('\n');
 }
 
@@ -1350,9 +1585,9 @@ export function formatSessionGoalForPrompt(conversation: any) {
           `Status: ${statusLabel}`,
           `Objective: ${goal.objective}`,
           goal.owner ? `Owner: ${goal.owner.agentName}` : '',
-          formatGoalChecklistForPrompt(goal),
-          goal.status === 'active' && Array.isArray(goal.checklist) && goal.checklist.length > 0
-            ? 'Keep the checklist current as work progresses; use update-goal-checklist for factual progress updates.'
+          formatGoalDeliveryForPrompt(goal),
+          goal.status === 'active'
+            ? 'Keep work items, criterion statuses, and evidence current with update-goal. Structural changes require a revise proposal and independent review.'
             : '',
           guidance,
         ].filter(Boolean).join('\n');

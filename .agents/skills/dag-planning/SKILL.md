@@ -9,9 +9,11 @@ CAFF 会话支持一份随会话树共享的 DAG 计划（plan）：整棵会话
 
 ## 何时使用
 
-- 开工前规划：与用户讨论后，把任务拆成有依赖关系的节点图并提交
-- 执行中回写：你完成了某个节点的工作，更新该节点的 `status`
-- **不要**用它替代闲聊或小任务——只有多步骤、有依赖关系的工作才值得出图
+- 仅当任务能拆成两个以上值得独立交付的纵向切片，且存在并行 frontier、真实依赖或汇合边时使用 DAG
+- 长但串行、由同一主理人跨 turn 推进的任务使用 Goal，不要为了步骤多而出图
+- 短且原子、能在当前 turn 完成并立即验证的任务使用 Direct
+- DAG 每个 work 节点必须包含一个端到端可观察结果，避免按“后端、前端、测试”水平分层
+- 激活前由用户或非规划者 Agent 审核节点粒度、验收口径和 `depends_on`；无依赖 frontier 默认并行
 
 ## 调用方式
 
@@ -60,7 +62,7 @@ PLAN_EOF
 
 - `draft`（讨论期）：可整体创建/替换 plan，结构随意改
 - `active`（用户点「开始执行」后）：**结构锁定**——你不能增删节点、改边、改 goal/branch/kind/verify/base_branch/worker/verifier，只能更新节点的 `status`；尝试结构修改会收到 `plan_locked_*` 错误。上游任一传递节点为 `blocked` 时，下游 `pending→doing` 会被 `409 plan_upstream_blocked` 拒绝（fail-closed），先解阻上游
-- 节点执行由子会话轻量 session goal 持续驱动（D27）：干完活要调 `suggest-goal --action complete --reason "<结果摘要>"` 宣布完工；有 verifier 的节点由验收 agent 裁决（accept→done，reject→带反馈重干，不限次数），不是「回完一条消息就算完」
+- 节点执行由子会话结构化 Goal 持续驱动（D27）：完成实现后先用 `update-goal` 记录真实 work-item 状态、criterion-linked evidence，并将满足的 criterion 标为 `passed`；只有全部 criterion 为 `passed` 或 `waived` 后，工作 Agent 才能调用 `suggest-goal --action complete --reason "<结果摘要>"`。有 verifier 的节点由验收 Agent 裁决（accept→done，reject→带反馈重干，不限次数），不是「回完一条消息就算完」
 - `done / archived`：拒写
 - draft→active 只能由用户或根会话主理人 agent 触发；子会话里的你没有 activate/revert 权限（403），可以建议，但不要替用户「开工」
 
@@ -80,4 +82,5 @@ PLAN_EOF
 - 多 agent 会话里给节点显式配 `worker` 主理人和 `verifier` 验收人（不能是同一 agent）；单 agent 会话无需配置 verifier
 - 深层依赖链上的节点设置 `base_branch` 指向父节点 branch，保证传递性成果能进集成分支
 - branch 命名遵循父会话派生约定，不要复用已有分支名
-- 提交前自检：无环、依赖 id 都存在、merge 入度 ≥ 2
+- 提交前自检：每个 work 节点都是纵向可验证切片；无环；依赖 id 都存在；阻塞边只表达真实前置条件；merge 入度 ≥ 2
+- 激活前把 draft 图交给用户或非规划者 Agent 审核粒度、依赖和验收口径；未审核不执行

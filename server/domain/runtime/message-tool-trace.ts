@@ -667,9 +667,7 @@ const BRIDGE_COMMAND_HINTS = [
   { token: 'read-context', toolName: 'read-context' },
   { token: 'list-participants', toolName: 'participants' },
   { token: 'suggest-goal', toolName: 'suggest-goal' },
-  { token: 'update-goal-checklist', toolName: 'update-goal-checklist' },
-  { token: 'trellis-init', toolName: 'trellis-init' },
-  { token: 'trellis-write', toolName: 'trellis-write' },
+  { token: 'update-goal', toolName: 'update-goal' },
 ];
 
 function normalizeToolNameKey(value: any) {

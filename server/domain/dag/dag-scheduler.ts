@@ -1,5 +1,5 @@
 /**
- * DAG execution scheduler (第二阶段, PRD .trellis/tasks/dag-execution/prd.md).
+ * DAG execution scheduler (`docs/engineering/backend/dag-execution.md`).
  *
  * Event-hook driven (D21 — no polling, no watcher process):
  * - `handleEvent('conversation_plan_updated', …)` → readiness dispatch:
@@ -1051,10 +1051,28 @@ export function createDagScheduler(options: any = {}) {
     const explicitRetry = isExplicitRetryPending(current.plan, node);
     if (!getSessionGoal(existingGoalConversation) || explicitRetry) {
       try {
+        const objective = buildNodeGoalObjective(current.plan, node, String(prepared.path || ''), verifierId);
         applySessionGoalAction(store, spawnedConversationId, {
           action: 'set',
-          objective: buildNodeGoalObjective(current.plan, node, String(prepared.path || ''), verifierId),
-          checklist: [],
+          objective,
+          acceptanceCriteria: [{
+            id: `dag-${nodeId}-acceptance`,
+            statement: clipText(String(node.goal || node.title || `Complete DAG node ${nodeId}`), 500),
+            verifyBy: node.verify
+              ? `Run: ${clipText(String(node.verify), 900)}`
+              : verifierId
+                ? `Independent review by ${verifierId}`
+                : 'Worker records implementation evidence and verifies the node result',
+            status: 'pending',
+            risk: 'normal',
+            evidenceRefs: [],
+          }],
+          workItems: [{
+            id: `dag-${nodeId}-work`,
+            text: clipText(String(node.title || node.goal || `Complete DAG node ${nodeId}`), 300),
+            status: 'in_progress',
+          }],
+          evidence: [],
         });
       } catch (goalError: any) {
         writeExecution(

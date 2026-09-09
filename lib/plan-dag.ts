@@ -6,8 +6,8 @@
  * - agent tool thin wrapper (propose-plan)
  * - frontend bundle (plain JS, no server-only deps allowed here)
  *
- * Contract (PRD .trellis/tasks/dag-planning/prd.md D3/D5,
- * .trellis/tasks/dag-execution/prd.md D18/D19/D23):
+ * Contract (`docs/engineering/backend/dag-planning.md` and
+ * `docs/engineering/backend/dag-execution.md`):
  * - plan doc: { nodes: [{id, title, goal, status, depends_on[], branch,
  *   spawned_conversation_id, kind, verify?, base_branch?, result?, worker?, verifier?}],
  *   edges?: [{from, to}], history?: [{node_id, from, to, at, actor, reason?}] }
@@ -248,7 +248,7 @@ export function validatePlanDoc(doc: any): PlanValidationResult {
     }
   }
 
-  // base_branch (D11, dag-execution PRD 3.3): when set, it must equal the
+  // base_branch: when set, it must equal the
   // branch of one of the node's parents. Nodes without parents should omit
   // base_branch and inherit the parent conversation branch (D6).
   const nodeById = new Map<string, AnyRecord>();

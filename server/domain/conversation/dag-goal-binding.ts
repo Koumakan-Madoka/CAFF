@@ -146,6 +146,7 @@ export function isDagBoundGoalMutationAllowed(action: any): boolean {
   const normalized = String(action || '').trim().toLowerCase().replace(/_/g, '-');
   return normalized === 'get'
     || normalized === 'update-checklist'
+    || normalized === 'update-delivery'
     || normalized === 'accept-proposal'
     || normalized === 'dismiss-proposal';
 }

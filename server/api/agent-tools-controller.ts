@@ -150,9 +150,9 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
       return true;
     }
 
-    if (pathname === '/api/agent-tools/goal/checklist' && req.method === 'POST') {
+    if (pathname === '/api/agent-tools/goal/update' && req.method === 'POST') {
       const body = await readRequestJson(req);
-      sendJson(res, 200, agentToolBridge.handleUpdateGoalChecklist(body));
+      sendJson(res, 200, agentToolBridge.handleUpdateGoal(body));
       return true;
     }
 
@@ -182,18 +182,6 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
     if (pathname === '/api/agent-tools/propose-plan' && req.method === 'POST') {
       const body = await readRequestJson(req);
       sendJson(res, 200, agentToolBridge.handleProposePlan(body));
-      return true;
-    }
-
-    if (pathname === '/api/agent-tools/trellis/init' && req.method === 'POST') {
-      const body = await readRequestJson(req);
-      sendJson(res, 200, agentToolBridge.handleTrellisInit(body));
-      return true;
-    }
-
-    if (pathname === '/api/agent-tools/trellis/write' && req.method === 'POST') {
-      const body = await readRequestJson(req);
-      sendJson(res, 200, agentToolBridge.handleTrellisWrite(body));
       return true;
     }
 

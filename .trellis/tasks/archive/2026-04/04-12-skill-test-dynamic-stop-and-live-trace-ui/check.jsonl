@@ -1,8 +1,0 @@
-{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
-{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
-{"file": ".trellis/spec/skills/skill-testing.md", "reason": "Verify dynamic-mode semantics and skill-test UI contract stay aligned"}
-{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify cancel and tool-trace event contracts stay mirrored"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review backend/frontend/runtime payload boundaries"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check shared trace UI reuse instead of copy-paste"}
-{"file": "tests/skill-test/skill-test-e2e.test.js", "reason": "Primary regression suite for skill test runs and result payloads"}
-{"file": "tests/runtime/message-tool-trace.test.js", "reason": "Trace contract regression coverage if chat trace code is reused"}

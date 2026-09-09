@@ -277,6 +277,21 @@ test('agent tool bridge creates pending session goal proposals without mutating 
       sessionGoal: {
         objective: 'Finish a long task',
         status: 'active',
+        acceptanceCriteria: [{
+          id: 'criterion-1',
+          statement: 'The requested work is complete',
+          verifyBy: 'Independent review',
+          status: 'passed',
+          risk: 'normal',
+          evidenceRefs: ['evidence-1'],
+        }],
+        workItems: [{ id: 'work-1', text: 'Finish the long task', status: 'done' }],
+        evidence: [{
+          id: 'evidence-1',
+          criterionIds: ['criterion-1'],
+          kind: 'review',
+          summary: 'Independent review confirmed completion',
+        }],
         createdAt: '2026-05-03T00:00:00.000Z',
         updatedAt: '2026-05-03T00:00:00.000Z',
       },
@@ -314,242 +329,94 @@ test('agent tool bridge creates pending session goal proposals without mutating 
   assert.deepEqual(summaryEvents, [fixture.conversation.id]);
 });
 
-test('agent tool bridge preserves and updates checklist content on pending set proposals', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-goal-set-checklist-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const broadcastEvents = [];
-  const bridge = createAgentToolBridge({
-    store,
-    broadcastEvent(eventName, payload) {
-      broadcastEvents.push({ eventName, payload });
-    },
-  });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'goal-set-checklist');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  const suggested = bridge.handleSuggestGoal({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    action: 'set',
-    objective: 'Ship pending goal checklist support',
-    reason: 'Keep approval content explicit',
-    checklistText: '[x] Reproduce\n[~] Implement\n[ ] Validate',
-  });
-
-  assert.equal(suggested.goal, null);
-  assert.equal(suggested.proposal.action, 'set');
-  assert.equal(suggested.proposal.checklist.length, 3);
-  assert.equal(suggested.proposal.checklist[0].status, 'done');
-  assert.equal(suggested.proposal.checklist[1].status, 'in_progress');
-
-  const updated = bridge.handleUpdateGoalChecklist({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    checklistText: '[x] Reproduce\n[x] Implement\n[~] Validate',
-  });
-  const conversation = store.getConversation(fixture.conversation.id);
-
-  assert.equal(updated.goal, null);
-  assert.equal(updated.checklistTarget, 'proposal');
-  assert.equal(updated.checklist[1].status, 'done');
-  assert.equal(conversation.metadata.sessionGoal, undefined);
-  assert.equal(conversation.metadata.sessionGoalProposal.checklist[2].status, 'in_progress');
-  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_proposal_updated'));
-});
-
-test('agent tool bridge seeds the default checklist on pending set proposals', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-goal-set-default-checklist-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+test('agent tool bridge exposes structured Goal updates and no Trellis writers', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-structured-goal-');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'bridge.sqlite') });
   const bridge = createAgentToolBridge({ store });
-
   t.after(() => {
-    try {
-      store.close();
-    } catch {}
+    try { store.close(); } catch {}
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const fixture = createPublicInvocationFixture(store, 'goal-set-default-checklist');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  const result = bridge.handleSuggestGoal({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    action: 'set',
-    objective: 'Use an explicit default checklist',
-  });
-
-  assert.equal(result.proposal.checklist.length, 10);
-  assert.equal(result.proposal.checklist[0].text, '和其他 agent 一起头脑风暴，收敛目标、范围和风险');
-  assert.equal(result.proposal.checklist[9].text, '人工验收后记录会话并归档 Trellis 任务');
-});
-
-test('agent tool bridge updates session goal checklist progress', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-goal-checklist-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const broadcastEvents = [];
-  const bridge = createAgentToolBridge({
-    store,
-    broadcastEvent(eventName, payload) {
-      broadcastEvents.push({ eventName, payload });
-    },
-  });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'goal-checklist');
+  const fixture = createPublicInvocationFixture(store, 'structured-goal');
   store.updateConversation(fixture.conversation.id, {
     metadata: {
       sessionGoal: {
-        objective: 'Finish a long task',
+        goalId: 'goal-structured',
+        revision: 1,
+        objective: 'Deliver structured Goal updates',
         status: 'active',
-        createdAt: '2026-05-03T00:00:00.000Z',
-        updatedAt: '2026-05-03T00:00:00.000Z',
+        decisions: { committed: [], provisional: [], openQuestions: [], nonGoals: [], rejectedOptions: [] },
+        acceptanceCriteria: [{
+          id: 'criterion-1',
+          statement: 'The bridge persists linked evidence',
+          verifyBy: 'runtime bridge assertion',
+          status: 'pending',
+          risk: 'normal',
+          evidenceRefs: [],
+        }],
+        workItems: [{ id: 'work-1', text: 'Update the Goal', status: 'in_progress' }],
+        evidence: [],
+        createdAt: '2026-09-09T00:00:00.000Z',
+        updatedAt: '2026-09-09T00:00:00.000Z',
       },
     },
   });
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
+  const context = bridge.registerInvocation(bridge.createInvocationContext({
+    conversationId: fixture.conversation.id,
+    turnId: fixture.assistantMessage.turnId,
+    agentId: fixture.agent.id,
+    agentName: fixture.agent.name,
+    assistantMessageId: fixture.assistantMessage.id,
+    conversationAgents: fixture.conversation.agents,
+    stage: fixture.stage,
+    turnState: fixture.turnState,
+  }));
 
-  const result = bridge.handleUpdateGoalChecklist({
+  const result = bridge.handleUpdateGoal({
     invocationId: context.invocationId,
     callbackToken: context.callbackToken,
-    checklistText: '[x] Plan\n[~] Implement\n[ ] Validate',
-  });
-
-  const updatedGoal = store.getConversation(fixture.conversation.id).metadata.sessionGoal;
-
-  assert.equal(result.ok, true);
-  assert.equal(result.checklist.length, 3);
-  assert.equal(updatedGoal.status, 'active');
-  assert.equal(updatedGoal.checklist[0].status, 'done');
-  assert.equal(updatedGoal.checklist[1].status, 'in_progress');
-  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_updated'));
-});
-
-test('agent tool bridge updates the active checklist when a non-set proposal is pending', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-goal-checklist-non-set-proposal-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'goal-checklist-non-set-proposal');
-  store.updateConversation(fixture.conversation.id, {
-    metadata: {
-      sessionGoal: {
-        objective: 'Finish an active task',
-        status: 'active',
-        createdAt: '2026-05-03T00:00:00.000Z',
-        updatedAt: '2026-05-03T00:00:00.000Z',
-      },
-      sessionGoalProposal: {
-        id: 'prop-complete-pending',
-        action: 'complete',
-        status: 'pending',
-        reason: 'Await user acceptance',
-        proposedBy: { agentId: 'agent-reviewer', agentName: 'Reviewer' },
-        createdAt: '2026-05-03T00:10:00.000Z',
-        updatedAt: '2026-05-03T00:10:00.000Z',
-      },
+    goal: {
+      goalRevision: 1,
+      objective: 'Deliver structured Goal updates',
+      decisions: { committed: [], provisional: [], openQuestions: [], nonGoals: [], rejectedOptions: [] },
+      acceptanceCriteria: [{
+        id: 'criterion-1',
+        statement: 'The bridge persists linked evidence',
+        verifyBy: 'runtime bridge assertion',
+        status: 'passed',
+        risk: 'normal',
+        evidenceRefs: ['evidence-1'],
+      }],
+      workItems: [{ id: 'work-1', text: 'Update the Goal', status: 'done' }],
+      evidence: [{ id: 'evidence-1', criterionIds: ['criterion-1'], kind: 'test', summary: 'Bridge assertion passed' }],
     },
   });
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
 
-  const result = bridge.handleUpdateGoalChecklist({
+  assert.equal(result.goal.acceptanceCriteria[0].status, 'passed');
+  assert.equal(result.goal.evidence[0].id, 'evidence-1');
+  assert.throws(() => bridge.handleUpdateGoal({
     invocationId: context.invocationId,
     callbackToken: context.callbackToken,
-    checklistText: '[x] Finish implementation\n[ ] Await acceptance',
-  });
-  const conversation = store.getConversation(fixture.conversation.id);
-
-  assert.equal(result.checklistTarget, 'goal');
-  assert.equal(result.goal.checklist[0].status, 'done');
-  assert.equal(conversation.metadata.sessionGoalProposal.action, 'complete');
-  assert.equal(conversation.metadata.sessionGoalProposal.checklist, undefined);
+    goal: { action: 'clear' },
+  }), (error) => error && error.statusCode === 400);
+  assert.equal(store.getConversation(fixture.conversation.id).metadata.sessionGoal.goalId, 'goal-structured');
+  assert.equal(bridge.handleTrellisInit, undefined);
+  assert.equal(bridge.handleTrellisWrite, undefined);
 });
 
-test('agent tool bridge keeps missing goal checklist updates as 404 without a pending set proposal', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-goal-checklist-missing-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  t.after(() => {
-    try {
+for (const pendingAction of [null, 'set', 'pause']) {
+  test(`structured Goal updates preserve pending ${pendingAction || 'none'} and reject missing goals`, (t) => {
+    const tempDir = withTempDir('caff-structured-goal-boundary-');
+    const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'bridge.sqlite') });
+    const events = [];
+    const bridge = createAgentToolBridge({ store, broadcastEvent: (name) => events.push(name) });
+    t.after(() => {
       store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'goal-checklist-missing');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+    const fixture = createPublicInvocationFixture(store, `goal-boundary-${pendingAction}`);
+    const context = bridge.registerInvocation(bridge.createInvocationContext({
       conversationId: fixture.conversation.id,
       turnId: fixture.assistantMessage.turnId,
       agentId: fixture.agent.id,
@@ -558,18 +425,38 @@ test('agent tool bridge keeps missing goal checklist updates as 404 without a pe
       conversationAgents: fixture.conversation.agents,
       stage: fixture.stage,
       turnState: fixture.turnState,
-    })
-  );
-
-  assert.throws(
-    () => bridge.handleUpdateGoalChecklist({
-      invocationId: context.invocationId,
-      callbackToken: context.callbackToken,
-      checklistText: '[ ] There is no target',
-    }),
-    (error) => error && error.statusCode === 404 && /No session goal is set/u.test(error.message)
-  );
-});
+    }));
+    const auth = { invocationId: context.invocationId, callbackToken: context.callbackToken };
+    const contract = {
+      objective: 'Deliver the observable result',
+      acceptanceCriteria: [{ id: 'c1', statement: 'Result is visible', verifyBy: 'Bridge test', status: 'pending' }],
+      workItems: [{ id: 'w1', text: 'Implement result', status: 'todo' }],
+      evidence: [],
+    };
+    if (pendingAction) {
+      if (pendingAction === 'pause') {
+        store.updateConversation(fixture.conversation.id, {
+          metadata: { sessionGoal: { ...contract, goalId: 'boundary-goal', revision: 1, status: 'active' } },
+        });
+      }
+      bridge.handleSuggestGoal({ ...auth, action: pendingAction, goal: contract, reason: 'Boundary test' });
+    }
+    const before = store.getConversation(fixture.conversation.id).metadata;
+    const update = { ...contract, goalRevision: 1, workItems: [{ id: 'w1', text: 'Implement result', status: 'done' }] };
+    if (pendingAction === 'pause') {
+      const result = bridge.handleUpdateGoal({ ...auth, goal: update });
+      assert.equal(result.goal.workItems[0].status, 'done');
+      assert.equal(result.goal.acceptanceCriteria[0].status, 'pending');
+      assert.ok(events.includes('conversation_goal_updated'));
+      assert.deepEqual(store.getConversation(fixture.conversation.id).metadata.sessionGoalProposal, before.sessionGoalProposal);
+      assert.throws(() => bridge.handleUpdateGoal({ ...auth, goal: update }), (error) => error.statusCode === 409);
+    } else {
+      assert.throws(() => bridge.handleUpdateGoal({ ...auth, goal: update }), (error) => error.statusCode === 404);
+      assert.deepEqual(store.getConversation(fixture.conversation.id).metadata, before);
+      assert.ok(!events.includes('conversation_goal_updated'));
+    }
+  });
+}
 
 test('agent tool bridge expires invocation auth tokens', (t) => {
   const tempDir = withTempDir('caff-agent-tool-bridge-auth-expiry-');
@@ -923,467 +810,6 @@ test('agent tool bridge broadcasts live tool events for started and finished bri
   );
 });
 
-test('agent tool trellis-init previews and applies a scaffold under the active project', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-trellis-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  const projectDir = path.join(tempDir, 'project');
-  fs.mkdirSync(projectDir, { recursive: true });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'trellis');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      projectDir,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  const preview = bridge.handleTrellisInit({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    taskName: 'demo',
-  });
-
-  assert.equal(preview.ok, true);
-  assert.equal(preview.applied, false);
-  assert.equal(fs.existsSync(path.join(projectDir, '.trellis')), false);
-  assert.ok(Array.isArray(preview.operations));
-  assert.ok(preview.operations.length > 0);
-
-  const applied = bridge.handleTrellisInit({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    taskName: 'demo',
-    confirm: true,
-  });
-
-  assert.equal(applied.ok, true);
-  assert.equal(applied.applied, true);
-  assert.ok(fs.existsSync(path.join(projectDir, '.trellis', 'workflow.md')));
-  assert.ok(fs.existsSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'prd.md')));
-});
-
-test('agent tool trellis-init refuses to follow symlinks inside .trellis', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-trellis-init-symlink-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  const projectDir = path.join(tempDir, 'project');
-  fs.mkdirSync(projectDir, { recursive: true });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const trellisDir = path.join(projectDir, '.trellis');
-  fs.mkdirSync(trellisDir, { recursive: true });
-
-  const externalDir = path.join(tempDir, 'external-target');
-  fs.mkdirSync(externalDir, { recursive: true });
-
-  const tasksLink = path.join(trellisDir, 'tasks');
-
-  try {
-    fs.symlinkSync(externalDir, tasksLink, process.platform === 'win32' ? 'junction' : 'dir');
-  } catch (error) {
-    t.skip(`symlink creation not supported in this environment: ${error && error.message ? error.message : error}`);
-    return;
-  }
-
-  const fixture = createPublicInvocationFixture(store, 'trellis-init-symlink');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      projectDir,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisInit({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        taskName: 'demo',
-        confirm: true,
-      }),
-    (err) => err && err.statusCode === 400
-  );
-
-  assert.equal(fs.existsSync(path.join(trellisDir, 'workflow.md')), false);
-});
-
-test('agent tool trellis-init rejects directory collisions before writing', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-trellis-init-dir-collision-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  const projectDir = path.join(tempDir, 'project');
-  fs.mkdirSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'prd.md'), { recursive: true });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'trellis-init-dir-collision');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      projectDir,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  assert.equal(fs.existsSync(path.join(projectDir, '.trellis', 'workflow.md')), false);
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisInit({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        taskName: 'demo',
-        confirm: true,
-        force: true,
-      }),
-    (error) => error && error.statusCode === 400
-  );
-
-  assert.equal(fs.existsSync(path.join(projectDir, '.trellis', 'workflow.md')), false);
-  assert.equal(fs.existsSync(path.join(projectDir, '.trellis', '.gitignore')), false);
-});
-
-test('agent tool trellis-init rejects invocations without an active projectDir', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-trellis-init-missing-project-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'trellis-init-missing-project');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      projectDir: '',
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisInit({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        taskName: 'demo',
-      }),
-    (error) => error && error.statusCode === 409
-  );
-});
-
-test('agent tool trellis-init rejects when .trellis exists as a file', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-trellis-init-root-file-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  const projectDir = path.join(tempDir, 'project');
-  fs.mkdirSync(projectDir, { recursive: true });
-  fs.writeFileSync(path.join(projectDir, '.trellis'), 'not a directory', 'utf8');
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'trellis-init-root-file');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      projectDir,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisInit({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        taskName: 'demo',
-        confirm: true,
-      }),
-    (error) => error && error.statusCode === 409
-  );
-});
-
-test('agent tool trellis-write previews and writes files under .trellis', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-trellis-write-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  const projectDir = path.join(tempDir, 'project');
-  fs.mkdirSync(projectDir, { recursive: true });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'trellis-write');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      projectDir,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  const preview = bridge.handleTrellisWrite({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    relativePath: '.trellis/tasks/demo/prd.md',
-    content: '# Hello\n\nFrom agent.\n',
-  });
-
-  assert.equal(preview.ok, true);
-  assert.equal(preview.applied, false);
-  assert.equal(fs.existsSync(path.join(projectDir, '.trellis')), false);
-  assert.ok(Array.isArray(preview.operations));
-  assert.ok(preview.operations.some((op) => op.path === '.trellis/tasks/demo/prd.md'));
-
-  const applied = bridge.handleTrellisWrite({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    relativePath: '.trellis/tasks/demo/prd.md',
-    content: '# Hello\n\nFrom agent.\n',
-    confirm: true,
-  });
-
-  assert.equal(applied.ok, true);
-  assert.equal(applied.applied, true);
-  assert.ok(fs.existsSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'prd.md')));
-  assert.equal(fs.readFileSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'prd.md'), 'utf8'), '# Hello\n\nFrom agent.\n');
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisWrite({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        relativePath: '../oops.txt',
-        content: 'nope',
-        confirm: true,
-      }),
-    (error) => error && error.statusCode === 400
-  );
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisWrite({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        files: [
-          { relativePath: '.trellis/tasks/demo/extra.md', content: 'ok' },
-          { relativePath: '../oops.txt', content: 'nope' },
-        ],
-        confirm: true,
-        force: true,
-      }),
-    (error) => error && error.statusCode === 400
-  );
-
-  assert.equal(fs.existsSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'extra.md')), false);
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisWrite({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        relativePath: '.trellis//',
-        content: 'nope',
-        confirm: true,
-        force: true,
-      }),
-    (error) => error && error.statusCode === 400
-  );
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisWrite({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        relativePath: '.trellis/.',
-        content: 'nope',
-        confirm: true,
-        force: true,
-      }),
-    (error) => error && error.statusCode === 400
-  );
-
-  fs.mkdirSync(path.join(projectDir, '.trellis', 'spec'), { recursive: true });
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisWrite({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        relativePath: '.trellis/spec',
-        content: 'nope',
-        confirm: true,
-        force: true,
-      }),
-    (error) => error && error.statusCode === 400
-  );
-});
-
-test('agent tool trellis-write rejects when .trellis exists as a file', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-trellis-write-root-file-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  const projectDir = path.join(tempDir, 'project');
-  fs.mkdirSync(projectDir, { recursive: true });
-  fs.writeFileSync(path.join(projectDir, '.trellis'), 'not a directory', 'utf8');
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'trellis-write-root-file');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      projectDir,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisWrite({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        relativePath: '.trellis/tasks/demo/prd.md',
-        content: '# Hello\n',
-        confirm: true,
-      }),
-    (error) => error && error.statusCode === 409
-  );
-});
-
-test('agent tool trellis-write rejects invocations without an active projectDir', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-trellis-write-missing-project-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'trellis-write-missing-project');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      projectDir: '',
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisWrite({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        relativePath: '.trellis/tasks/demo/prd.md',
-        content: '# Hello\n',
-      }),
-    (error) => error && error.statusCode === 409
-  );
-});
-
 test('agent tool bridge no longer exposes read-skill compatibility handler', (t) => {
   const tempDir = withTempDir('caff-agent-tool-no-read-skill-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
@@ -1692,10 +1118,6 @@ test('agent tool bridge searches cross-conversation summary memory by default', 
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
   const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
   const bridge = createAgentToolBridge({ store });
-  const trellisTaskDir = path.join(tempDir, '.trellis', 'tasks', 'bridge-current-task');
-  fs.mkdirSync(trellisTaskDir, { recursive: true });
-  fs.writeFileSync(path.join(tempDir, '.trellis', '.current-task'), '.trellis/tasks/bridge-current-task\n');
-  fs.writeFileSync(path.join(trellisTaskDir, 'task.json'), JSON.stringify({ title: 'Bridge Current Task' }));
 
   t.after(() => {
     try {
@@ -1870,19 +1292,6 @@ test('agent tool bridge searches cross-conversation summary memory by default', 
   });
   assert.equal(filtered.resultCount, 1);
   assert.equal(filtered.results[0].sourceDigestId, 'digest-other-summary-memory-rollup');
-
-  const currentTaskFiltered = bridge.handleSearchMemory({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    query: 'bridge-current-task-keyword',
-    currentTask: true,
-    limit: 5,
-  });
-
-  assert.equal(currentTaskFiltered.ok, true);
-  assert.equal(currentTaskFiltered.filters.taskName, 'Bridge Current Task');
-  assert.equal(currentTaskFiltered.resultCount, 1);
-  assert.equal(currentTaskFiltered.results[0].sourceDigestId, 'digest-current-task-summary-memory');
 
   const latest = bridge.handleSearchMemory({
     invocationId: context.invocationId,
@@ -2190,6 +1599,21 @@ function createDagBoundGoalFixture(store, suffix, participantCount = 2) {
       sessionGoal: {
         objective: 'DAG node goal',
         status: 'active',
+        acceptanceCriteria: [{
+          id: 'criterion-1',
+          statement: 'DAG node result is accepted',
+          verifyBy: 'Designated verifier review',
+          status: 'passed',
+          risk: 'normal',
+          evidenceRefs: ['evidence-1'],
+        }],
+        workItems: [{ id: 'work-1', text: 'Complete DAG node', status: 'done' }],
+        evidence: [{
+          id: 'evidence-1',
+          criterionIds: ['criterion-1'],
+          kind: 'test',
+          summary: 'DAG node verification command passed',
+        }],
         createdAt: '2026-08-16T00:00:00.000Z',
         updatedAt: '2026-08-16T00:00:00.000Z',
       },

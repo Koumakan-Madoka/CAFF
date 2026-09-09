@@ -18,7 +18,6 @@ const MAX_PATH_CHARS = 400;
 const MAX_OUTPUT_LINE_CHARS = 120;
 const CONTEXT_SECTION_ALLOWLIST = new Set([
   'workspace_header',
-  'trellis_context',
   'session_goal',
   'conversation_digest',
   'conversation_history',
@@ -33,8 +32,6 @@ const MUTATING_OR_EXTERNAL_TOOLS = new Set([
   'conversation_notify',
   'conversation_request',
   'room_workspace_bind',
-  'trellis-init',
-  'trellis-write',
 ]);
 const ERROR_LINE_PATTERN = /\b(error|failed?|fatal|exception|denied|timeout|timed out|enoent|stderr|unauthorized|forbidden)\b/iu;
 

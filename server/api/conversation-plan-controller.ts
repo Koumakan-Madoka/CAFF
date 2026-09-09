@@ -35,7 +35,7 @@ function planPayload(store: any, ownerConversationId: string, plan: any, extras:
 }
 
 /**
- * Plan API (PRD .trellis/tasks/dag-planning/prd.md §4):
+ * Plan API contract (`docs/engineering/backend/dag-planning.md`):
  * - GET    /api/conversations/:id/plan          — resolve root plan; 404 when none
  * - PUT    /api/conversations/:id/plan          — draft: full replace; active: status-only
  * - POST   /api/conversations/:id/plan/activate — draft → active (user entry)

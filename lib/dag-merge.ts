@@ -1,7 +1,7 @@
 /**
  * dag-merge.ts — merge-node git mechanics for DAG execution (D11/D19).
  *
- * Responsibility split (dag-execution PRD):
+ * Responsibility split (`docs/engineering/backend/dag-execution.md`):
  * - The MERGER AGENT performs the actual merges and conflict resolution
  *   inside its integration worktree (D10/D12/D26) — the scheduler spawns it
  *   with the branch order, verify command, and bounded-retry flow.

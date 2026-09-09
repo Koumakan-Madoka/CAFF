@@ -22,7 +22,6 @@ const { createTurnState, resetTurnStage, summarizeTurnState } = require('../../b
 const { createTurnStopper, registerTurnHandle } = require('../../build/server/domain/conversation/turn/turn-stop');
 const { createAgentSlotRegistry } = require('../../build/server/domain/conversation/turn/agent-slot-registry');
 const { resolveBrowserCliPath, createBrowserCliSessionName } = require('../../build/server/domain/conversation/turn/browser-cli');
-const { resolveCurrentTrellisTaskName } = require('../../build/server/domain/conversation/turn/trellis-context');
 const { extractSummaryMemorySearchTerms } = require('../../build/lib/summary-memory-query');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 
@@ -518,14 +517,6 @@ test('buildAgentTurnPrompt attributes recovery results to the server-resolved so
 
 test('buildAgentTurnPromptSections orders stable prompt sections before dynamic context', () => {
   const projectDir = withTempDir('caff-prompt-order-');
-  const taskDir = path.join(projectDir, '.trellis', 'tasks', 'prompt-order');
-  fs.mkdirSync(taskDir, { recursive: true });
-  fs.mkdirSync(path.join(projectDir, '.trellis', 'spec'), { recursive: true });
-  fs.writeFileSync(path.join(projectDir, '.trellis', 'workflow.md'), '# Workflow\n\nKeep prompt context ordered.\n');
-  fs.writeFileSync(path.join(projectDir, '.trellis', '.current-task'), 'prompt-order\n');
-  fs.writeFileSync(path.join(taskDir, 'prd.md'), '# PRD\n\nPrompt section ordering.\n');
-  fs.writeFileSync(path.join(taskDir, 'implement.jsonl'), '');
-  fs.writeFileSync(path.join(projectDir, '.trellis', 'spec', 'index.md'), '# Spec Index\n');
 
   const agent = {
     id: 'agent-order-builder',
@@ -668,7 +659,6 @@ test('buildAgentTurnPromptSections orders stable prompt sections before dynamic 
     'dynamic_skill_loading',
     'tool_instructions',
     'participants',
-    'trellis_context',
     'session_goal',
     'conversation_digest',
     'retrieved_memory',
@@ -1273,7 +1263,14 @@ test('buildAgentTurnPrompt includes active session goal guidance', () => {
         status: 'active',
         createdAt: '2026-05-03T00:00:00.000Z',
         updatedAt: '2026-05-03T00:00:00.000Z',
-        checklist: [
+        acceptanceCriteria: [{
+          id: 'criterion-1',
+          statement: 'Goal API and UI behavior is observable',
+          verifyBy: 'Run the Goal prompt regression test',
+          status: 'pending',
+          evidenceRefs: [],
+        }],
+        workItems: [
           {
             id: 'item-1',
             text: 'Add API lifecycle',
@@ -1323,12 +1320,14 @@ test('buildAgentTurnPrompt includes active session goal guidance', () => {
   assert.match(prompt, /Session goal:/u);
   assert.match(prompt, /Status: active/u);
   assert.match(prompt, /Objective: Port \/goal to CAFF/u);
-  assert.match(prompt, /Checklist progress: 1\/2 complete/u);
+  assert.match(prompt, /Acceptance criteria:/u);
+  assert.match(prompt, /Goal API and UI behavior is observable/u);
+  assert.match(prompt, /Work items: 1\/2 complete/u);
   assert.match(prompt, /\[x\] Add API lifecycle/u);
   assert.match(prompt, /\[~\] Wire progress UI/u);
-  assert.match(prompt, /update-goal-checklist/u);
+  assert.match(prompt, /update-goal/u);
   assert.match(prompt, /current completion target/u);
-  assert.match(prompt, /suggest-goal --action complete/u);
+  assert.match(prompt, /If the goal appears finished or blocked, create a goal proposal/u);
 });
 
 test('buildAgentTurnPrompt includes pending set proposal checklist guidance', () => {
@@ -1348,7 +1347,14 @@ test('buildAgentTurnPrompt includes pending set proposal checklist guidance', ()
         action: 'set',
         status: 'pending',
         objective: 'Ship pending checklist guidance',
-        checklist: [
+        acceptanceCriteria: [{
+          id: 'criterion-1',
+          statement: 'The proposed behavior is observable',
+          verifyBy: 'Run the prompt regression test',
+          status: 'pending',
+          evidenceRefs: [],
+        }],
+        workItems: [
           { id: 'item-1', text: 'Reproduce', status: 'done' },
           { id: 'item-2', text: 'Implement', status: 'in_progress' },
           { id: 'item-3', text: 'Validate', status: 'todo' },
@@ -1380,14 +1386,14 @@ test('buildAgentTurnPrompt includes pending set proposal checklist guidance', ()
     agentToolRelativePath: './lib/agent-chat-tools.js',
   });
 
-  assert.match(prompt, /Pending user-confirmation proposal: set/u);
+  assert.match(prompt, /Pending independent-review proposal: set/u);
   assert.match(prompt, /Proposed objective: Ship pending checklist guidance/u);
-  assert.match(prompt, /Proposed checklist:/u);
+  assert.match(prompt, /Acceptance criteria:/u);
+  assert.match(prompt, /Work items: 1\/3 complete/u);
   assert.match(prompt, /\[x\] Reproduce/u);
   assert.match(prompt, /\[~\] Implement/u);
   assert.match(prompt, /\[ \] Validate/u);
-  assert.match(prompt, /update-goal-checklist edits this pending proposed checklist/u);
-  assert.match(prompt, /does not activate the goal/u);
+  assert.match(prompt, /exactly one participant other than the proposer must accept or reject/u);
 });
 
 test('buildAgentTurnPrompt includes paused session goal guidance', () => {
@@ -1586,7 +1592,7 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /search-messages --query "topic keywords" --limit 5/u);
   assert.match(prompt, /--speaker "AgentName" or --agent-id "agent-id"/u);
   assert.match(prompt, /search-memory --query "topic keywords" --limit 5/u);
-  assert.match(prompt, /use --include-current or optional filters --current-task\/--task\/--conversation\/--kind\/--since\/--until/u);
+  assert.match(prompt, /use --include-current or optional filters --task\/--conversation\/--kind\/--since\/--until/u);
   assert.match(prompt, /default excludes the current conversation/u);
   assert.doesNotMatch(prompt, /list-memories/u);
   assert.doesNotMatch(prompt, /save-memory/u);
@@ -2291,17 +2297,7 @@ test('related memory recall drops low-signal single-term keyword matches', () =>
   assert.equal(results[1].recallReason, 'latest summary for current task: Summary Memory Retrieval Followup');
 });
 
-test('related memory search query includes active Trellis task title', (t) => {
-  const tempDir = withTempDir('caff-related-memory-task-query-');
-  const trellisDir = path.join(tempDir, '.trellis');
-  const taskDir = path.join(trellisDir, 'tasks', 'summary-memory-task');
-
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
-
-  fs.mkdirSync(taskDir, { recursive: true });
-  fs.writeFileSync(path.join(trellisDir, '.current-task'), 'summary-memory-task\n');
-  fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify({ title: 'Summary Memory Retrieval Followup', status: 'dev' }));
-
+test('related memory search query does not infer a task from project files', () => {
   const query = buildRelatedMemorySearchQuery(
     {
       title: 'New Conversation',
@@ -2312,10 +2308,10 @@ test('related memory search query includes active Trellis task title', (t) => {
       },
     },
     [{ content: 'Need digest environment regression lessons.' }],
-    { projectDir: tempDir }
+    { projectDir: 'E:/ignored-project-with-no-task-coupling' }
   );
 
-  assert.match(query, /Summary Memory Retrieval Followup/u);
+  assert.doesNotMatch(query, /Summary Memory Retrieval Followup/u);
   assert.match(query, /Improve cross-session memory recall/u);
   assert.match(query, /Need digest environment regression lessons/u);
   assert.doesNotMatch(query, /New Conversation/u);
@@ -2574,310 +2570,9 @@ test('related memory search query skips private-only recent messages', () => {
   assert.doesNotMatch(query, /Private mailbox note/u);
 });
 
-test('resolveCurrentTrellisTaskName reads active task titles', (t) => {
-  const tempDir = withTempDir('caff-trellis-task-name-');
-  const trellisDir = path.join(tempDir, '.trellis');
-  const taskDir = path.join(trellisDir, 'tasks', 'memory-task');
-
-  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
-
-  fs.mkdirSync(taskDir, { recursive: true });
-  fs.writeFileSync(path.join(trellisDir, '.current-task'), '.trellis/tasks/memory-task\n', 'utf8');
-  fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify({ title: 'Cross Task Memory Layer' }), 'utf8');
-
-  assert.equal(resolveCurrentTrellisTaskName({ startDir: tempDir }), 'Cross Task Memory Layer');
-});
-
-test('buildAgentTurnPrompt skips Trellis context when projectDir is empty', (t) => {
-  const tempDir = withTempDir('caff-trellis-skip-');
-  fs.mkdirSync(path.join(tempDir, '.trellis'), { recursive: true });
-
-  const previousCwd = process.cwd();
-  process.chdir(tempDir);
-
-  t.after(() => {
-    process.chdir(previousCwd);
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const agent = {
-    id: 'agent-skip-trellis',
-    name: 'Builder',
-    description: 'Explains implementation details clearly.',
-    personaPrompt: 'Stay calm and practical.',
-  };
-  const conversation = {
-    id: 'conversation-trellis-skip',
-    title: 'Skip Trellis',
-    type: 'standard',
-    agents: [agent],
-  };
-  const prompt = buildAgentTurnPrompt({
-    conversation,
-    agent,
-    agentConfig: {
-      profileName: 'Default',
-      personaPrompt: agent.personaPrompt,
-    },
-    resolvedPersonaSkills: [],
-    resolvedConversationSkills: [],
-    sandbox: {
-      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-skip-trellis',
-      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-skip-trellis/private',
-    },
-    projectDir: '',
-    agents: [agent],
-    messages: [],
-    privateMessages: [],
-    trigger: {
-      triggerType: 'user',
-      enqueueReason: 'default_first_agent',
-    },
-    remainingSlots: 7,
-    routingMode: 'mention_queue',
-    allowHandoffs: true,
-    agentToolRelativePath: './lib/agent-chat-tools.js',
-  });
-
-  assert.doesNotMatch(prompt, /Trellis project context:/u);
-});
-
-test('buildAgentTurnPrompt injects Trellis context for every Skill-backed Mode', (t) => {
-  const tempDir = withTempDir('caff-trellis-game-skip-');
-  const projectDir = path.join(tempDir, 'project');
-  const trellisDir = path.join(projectDir, '.trellis');
-  const taskDir = path.join(trellisDir, 'tasks', 'demo');
-
-  fs.mkdirSync(taskDir, { recursive: true });
-  fs.writeFileSync(path.join(trellisDir, '.current-task'), 'demo\n', 'utf8');
-  fs.writeFileSync(path.join(taskDir, 'prd.md'), 'SENTINEL_TRELLIS_PRD', 'utf8');
-  fs.writeFileSync(
-    path.join(taskDir, 'implement.jsonl'),
-    `${JSON.stringify({ file: '.trellis/tasks/demo/prd.md', reason: 'Test sentinel PRD injection' })}\n`,
-    'utf8'
-  );
-
-  t.after(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const agent = {
-    id: 'agent-game-skip-trellis',
-    name: 'Builder',
-    description: 'Explains implementation details clearly.',
-    personaPrompt: 'Stay calm and practical.',
-  };
-  const conversation = {
-    id: 'conversation-game-skip-trellis',
-    title: 'Skip Trellis Game Mode',
-    type: 'werewolf',
-    agents: [agent],
-  };
-  const prompt = buildAgentTurnPrompt({
-    conversation,
-    agent,
-    agentConfig: {
-      profileName: 'Default',
-      personaPrompt: agent.personaPrompt,
-    },
-    resolvedPersonaSkills: [],
-    resolvedConversationSkills: [],
-    sandbox: {
-      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-game-skip-trellis',
-      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-game-skip-trellis/private',
-    },
-    projectDir,
-    agents: [agent],
-    messages: [],
-    privateMessages: [],
-    trigger: {
-      triggerType: 'user',
-      enqueueReason: 'default_first_agent',
-    },
-    remainingSlots: 7,
-    routingMode: 'mention_queue',
-    allowHandoffs: true,
-    agentToolRelativePath: './lib/agent-chat-tools.js',
-  });
-
-  assert.match(prompt, /Trellis project context:/u);
-  assert.match(prompt, /SENTINEL_TRELLIS_PRD/u);
-});
-
-test('buildAgentTurnPrompt blocks absolute Trellis task dirs outside project', (t) => {
-  const tempDir = withTempDir('caff-trellis-scope-');
-  const projectDir = path.join(tempDir, 'project');
-  const outsideDir = path.join(tempDir, 'outside-task');
-
-  fs.mkdirSync(path.join(projectDir, '.trellis', 'tasks'), { recursive: true });
-  fs.mkdirSync(outsideDir, { recursive: true });
-  fs.writeFileSync(path.join(outsideDir, 'prd.md'), 'SENTINEL_OUTSIDE_PRD', 'utf8');
-  fs.writeFileSync(path.join(projectDir, '.trellis', '.current-task'), outsideDir, 'utf8');
-
-  t.after(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const agent = {
-    id: 'agent-block-abs-task',
-    name: 'Builder',
-    description: 'Explains implementation details clearly.',
-    personaPrompt: 'Stay calm and practical.',
-  };
-  const conversation = {
-    id: 'conversation-trellis-scope',
-    title: 'Trellis Scope',
-    type: 'standard',
-    agents: [agent],
-  };
-  const prompt = buildAgentTurnPrompt({
-    conversation,
-    agent,
-    agentConfig: {
-      profileName: 'Default',
-      personaPrompt: agent.personaPrompt,
-    },
-    resolvedPersonaSkills: [],
-    resolvedConversationSkills: [],
-    sandbox: {
-      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-block-abs-task',
-      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-block-abs-task/private',
-    },
-    projectDir,
-    agents: [agent],
-    messages: [],
-    privateMessages: [],
-    trigger: {
-      triggerType: 'user',
-      enqueueReason: 'default_first_agent',
-    },
-    remainingSlots: 7,
-    routingMode: 'mention_queue',
-    allowHandoffs: true,
-    agentToolRelativePath: './lib/agent-chat-tools.js',
-  });
-
-  assert.match(prompt, /Status: STALE POINTER/u);
-  assert.doesNotMatch(prompt, /SENTINEL_OUTSIDE_PRD/u);
-});
-
-test('buildAgentTurnPrompt requires loadable JSONL entries before marking task READY', (t) => {
-  const tempDir = withTempDir('caff-trellis-jsonl-ready-');
-  const projectDir = path.join(tempDir, 'project');
-  const trellisDir = path.join(projectDir, '.trellis');
-  const taskDir = path.join(trellisDir, 'tasks', 'demo');
-
-  fs.mkdirSync(path.join(trellisDir, 'spec'), { recursive: true });
-  fs.mkdirSync(taskDir, { recursive: true });
-  fs.writeFileSync(path.join(trellisDir, '.current-task'), '.trellis/tasks/demo\n', 'utf8');
-  fs.writeFileSync(path.join(taskDir, 'prd.md'), '# Demo PRD\n', 'utf8');
-  fs.writeFileSync(path.join(taskDir, 'implement.jsonl'), '{"file": ".trellis/spec"}\n', 'utf8');
-
-  t.after(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const agent = {
-    id: 'agent-jsonl-ready',
-    name: 'Builder',
-    description: 'Explains implementation details clearly.',
-    personaPrompt: 'Stay calm and practical.',
-  };
-  const conversation = {
-    id: 'conversation-trellis-jsonl-ready',
-    title: 'Trellis JSONL READY',
-    type: 'standard',
-    agents: [agent],
-  };
-  const prompt = buildAgentTurnPrompt({
-    conversation,
-    agent,
-    agentConfig: {
-      profileName: 'Default',
-      personaPrompt: agent.personaPrompt,
-    },
-    resolvedPersonaSkills: [],
-    resolvedConversationSkills: [],
-    sandbox: {
-      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-jsonl-ready',
-      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-jsonl-ready/private',
-    },
-    projectDir,
-    agents: [agent],
-    messages: [],
-    privateMessages: [],
-    trigger: {
-      triggerType: 'user',
-      enqueueReason: 'default_first_agent',
-    },
-    remainingSlots: 7,
-    routingMode: 'mention_queue',
-    allowHandoffs: true,
-    agentToolRelativePath: './lib/agent-chat-tools.js',
-  });
-
-  assert.match(prompt, /Status: NOT READY/u);
-  assert.match(prompt, /\[no JSONL context loaded\]/u);
-});
-
-test('buildAgentTurnPrompt preserves JSONL parse warnings when no context entries are usable', (t) => {
-  const tempDir = withTempDir('caff-trellis-jsonl-warn-');
-  const projectDir = path.join(tempDir, 'project');
-  const trellisDir = path.join(projectDir, '.trellis');
-  const taskDir = path.join(trellisDir, 'tasks', 'demo');
-
-  fs.mkdirSync(taskDir, { recursive: true });
-  fs.writeFileSync(path.join(trellisDir, '.current-task'), '.trellis/tasks/demo\n', 'utf8');
-  fs.writeFileSync(path.join(taskDir, 'prd.md'), '# Demo PRD\n', 'utf8');
-  fs.writeFileSync(path.join(taskDir, 'implement.jsonl'), '{not json}\n{"reason":"missing file"}\n', 'utf8');
-
-  t.after(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const agent = {
-    id: 'agent-jsonl-warn',
-    name: 'Builder',
-    description: 'Explains implementation details clearly.',
-    personaPrompt: 'Stay calm and practical.',
-  };
-  const conversation = {
-    id: 'conversation-trellis-jsonl-warn',
-    title: 'Trellis JSONL Warnings',
-    type: 'standard',
-    agents: [agent],
-  };
-  const prompt = buildAgentTurnPrompt({
-    conversation,
-    agent,
-    agentConfig: {
-      profileName: 'Default',
-      personaPrompt: agent.personaPrompt,
-    },
-    resolvedPersonaSkills: [],
-    resolvedConversationSkills: [],
-    sandbox: {
-      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-jsonl-warn',
-      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-jsonl-warn/private',
-    },
-    projectDir,
-    agents: [agent],
-    messages: [],
-    privateMessages: [],
-    trigger: {
-      triggerType: 'user',
-      enqueueReason: 'default_first_agent',
-    },
-    remainingSlots: 7,
-    routingMode: 'mention_queue',
-    allowHandoffs: true,
-    agentToolRelativePath: './lib/agent-chat-tools.js',
-  });
-
-  assert.match(prompt, /Warnings:/u);
-  assert.match(prompt, /JSON parse errors: 1/u);
-  assert.match(prompt, /Invalid JSONL entries: 1/u);
-  assert.match(prompt, /\[no JSONL context loaded\]/u);
+test('agent prompt never injects retired Trellis project context', () => {
+  const source = buildAgentTurnPromptSections.toString();
+  assert.doesNotMatch(source, /trellis_context|buildTrellisPromptContext/u);
 });
 
 test('routing executor defaults an unmentioned user message to the latest completed public-reply agent', async (t) => {
@@ -7004,7 +6699,7 @@ test('turn orchestrator preflight rejects 422 MODEL_NO_IMAGE_INPUT before create
   assert.equal(conversation.messages.length, 0, 'no partial message rows');
 });
 
-test('turn orchestrator preflight passes when all initial targets support images', { concurrency: false }, (t) => {
+test('turn orchestrator preflight passes when all initial targets support images', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-image-preflight-pass-');
   const sqlitePath = path.join(tempDir, 'image-preflight-pass.sqlite');
   const conversation = {
@@ -7071,9 +6766,10 @@ test('turn orchestrator preflight passes when all initial targets support images
   });
   assert.equal(createMessageCount, 1, 'message persisted after preflight pass');
   assert.equal(result.acceptedMessage.imageIds.length, 1);
+  await waitForCondition(() => orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0);
 });
 
-test('turn orchestrator preflight skips text-only messages entirely', { concurrency: false }, (t) => {
+test('turn orchestrator preflight skips text-only messages entirely', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-image-preflight-text-');
   const sqlitePath = path.join(tempDir, 'image-preflight-text.sqlite');
   const conversation = {
@@ -7131,6 +6827,7 @@ test('turn orchestrator preflight skips text-only messages entirely', { concurre
 
   const result = orchestrator.submitConversationMessage(conversation.id, { content: 'plain text only' });
   assert.equal(result.acceptedMessage.content, 'plain text only');
+  await waitForCondition(() => orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0);
 });
 
 test('cross-conversation delivery rejects image-bearing target messages with IMAGE_DELIVERY_NOT_SUPPORTED', { concurrency: false }, async (t) => {

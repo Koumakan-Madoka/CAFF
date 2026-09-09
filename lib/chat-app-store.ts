@@ -867,7 +867,7 @@ function createPlanError(statusCode: number, code: string, message: string, deta
 }
 
 /**
- * Plan actor (D15/D18, .trellis/tasks/dag-execution/prd.md §3.4):
+ * Plan actor for persisted DAG history:
  * - user   — the local single-user REST/UI channel (trusted)
  * - agent  — authenticated agent-tool bridge invocations; D15 restricts
  *            activate/revert to agents participating in the ROOT owner
@@ -2649,7 +2649,7 @@ export class ChatAppStore {
 
   /**
    * Walk the origin_conversation_id chain to the root conversation that owns
-   * the shared plan (PRD D1: one plan per conversation tree, hung on the
+   * the shared plan (one plan per conversation tree, stored on the
    * root). Returns the raw conversation row, or null when the conversation
    * does not exist or the lineage contains a cycle.
    */

@@ -6,7 +6,7 @@ const test = require('node:test');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createDagScheduler } = require('../../build/server/domain/dag/dag-scheduler');
-const { proposeSessionGoalAction } = require('../../build/server/domain/conversation/session-goal');
+const { proposeSessionGoalAction, applySessionGoalAction, getSessionGoal } = require('../../build/server/domain/conversation/session-goal');
 const {
   resolveDagWorktreePath,
   prepareNodeWorktree: libPrepareNodeWorktree,
@@ -240,7 +240,30 @@ const WORKER_ID = 'role-family-gpt';
  * 订阅的 proposal_updated 事件（桥接层在真实运行中负责广播）。
  * 本 fixture 的根会话只有单一 participant → 无 verifier（D28）→
  * 调度器代行 auto-accept，提案即落定 done。 */
+function recordWorkerAcceptance(store, childId, summary) {
+  const goal = getSessionGoal(store.getConversation(childId));
+  assert.ok(goal, `expected Goal for ${childId}`);
+  const evidenceId = `worker-proof-${goal.revision}`;
+  applySessionGoalAction(store, childId, {
+    ...goal,
+    action: 'update-delivery',
+    acceptanceCriteria: goal.acceptanceCriteria.map((criterion) => ({
+      ...criterion,
+      status: 'passed',
+      evidenceRefs: [...criterion.evidenceRefs, evidenceId],
+    })),
+    workItems: goal.workItems.map((item) => ({ ...item, status: 'done' })),
+    evidence: [...goal.evidence, {
+      id: evidenceId,
+      criterionIds: goal.acceptanceCriteria.map((criterion) => criterion.id),
+      kind: 'test',
+      summary: `Simulated worker result: ${summary}`,
+    }],
+  });
+}
+
 function announceComplete(store, scheduler, childId, resultText) {
+  recordWorkerAcceptance(store, childId, resultText);
   const result = proposeSessionGoalAction(
     store,
     childId,
@@ -426,6 +449,7 @@ test('基线 6：server 重启 reconcile——down 期间完结的回写传播�
 
   // 模拟 server 停机：r3 的 worker 在停机期间宣布了完工（goal complete
   // 提案已落库但调度器没活到路由它），r1 被中断（无任何完工信号）
+  recordWorkerAcceptance(store, r3Spawn.conversationId, 'r3 completed before restart');
   proposeSessionGoalAction(
     store,
     r3Spawn.conversationId,

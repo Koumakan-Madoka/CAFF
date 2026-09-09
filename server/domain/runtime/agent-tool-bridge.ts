@@ -1,6 +1,4 @@
 const { randomUUID } = require('node:crypto');
-const fs = require('node:fs');
-const path = require('node:path');
 const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
@@ -34,7 +32,6 @@ const {
   createPiCapabilityBridge,
   createRoomWorkspaceCapabilityDefinitions,
 } = require('./pi-capability-bridge');
-const { resolveCurrentTrellisTaskName } = require('../conversation/turn/trellis-context');
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
@@ -129,20 +126,6 @@ function normalizeOptionalSummaryMemoryDate(value: any, fieldName: string, endOf
   }
 
   return date.toISOString();
-}
-
-function resolveCurrentSummaryMemoryTaskName(context: any) {
-  const projectDir = String(context && context.projectDir || '').trim();
-
-  if (!projectDir) {
-    return '';
-  }
-
-  try {
-    return clipText(resolveCurrentTrellisTaskName({ startDir: projectDir }), MAX_SUMMARY_MEMORY_FILTER_LENGTH);
-  } catch {
-    return '';
-  }
 }
 
 function normalizeMemoryTtlDays(value: any) {
@@ -1900,6 +1883,15 @@ export function createAgentToolBridge(options: any = {}) {
           summary,
         });
         broadcastConversationSummary(context.conversationId);
+        if (result.changeNotice) {
+          broadcastEvent('conversation_goal_change_notice', {
+            conversationId: context.conversationId,
+            notice: result.changeNotice,
+            goal: result.goal,
+            conversation: result.conversation,
+            summary,
+          });
+        }
 
         const response = {
           ok: true,
@@ -1955,10 +1947,13 @@ export function createAgentToolBridge(options: any = {}) {
         }
       }
 
+      const goalInput = body.goal && typeof body.goal === 'object' && !Array.isArray(body.goal)
+        ? { ...body.goal, action, objective: body.goal.objective || objective, reason: body.goal.reason || reason }
+        : { ...body, action, objective, reason, ...(checklistText ? { checklistText } : {}) };
       const result = proposeSessionGoalAction(
         activeStore,
         context.conversationId,
-        { action, objective, reason, ...(checklistText ? { checklistText } : {}) },
+        goalInput,
         { agentId: context.agentId, agentName: context.agentName }
       );
       const summary = pickConversationSummary(result.conversation);
@@ -2036,64 +2031,51 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
-  function handleUpdateGoalChecklist(body: any = {}) {
+  function handleUpdateGoal(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken);
     const activeStore = store;
-    const checklistText = String(body.checklistText || body.checklist_text || body.content || '').trim();
+    const goalUpdate = body.goal && typeof body.goal === 'object' && !Array.isArray(body.goal) ? body.goal : null;
     const toolCallId = randomUUID();
 
     setContextCurrentTool(context, {
-      toolName: 'update-goal-checklist',
+      toolName: 'update-goal',
       toolKind: 'bridge',
       toolStepId: toolCallId,
       inferred: false,
-      request: {
-        checklistLength: checklistText.length,
-      },
+      request: { hasGoalUpdate: Boolean(goalUpdate) },
     });
 
     try {
-      if (!activeStore || typeof activeStore.getConversation !== 'function') {
-        throw createHttpError(501, 'Session goal checklist updates are not available');
+      if (!activeStore) {
+        throw createHttpError(501, 'Goal delivery updates are not available');
+      }
+      if (!goalUpdate) {
+        throw createHttpError(400, 'update-goal requires a goal JSON object');
       }
 
+      if (Object.hasOwn(goalUpdate, 'action')) {
+        throw createHttpError(400, 'update-goal does not accept an action override');
+      }
       const result = applySessionGoalAction(activeStore, context.conversationId, {
-        action: 'update-checklist',
-        checklistText,
+        ...goalUpdate,
+        action: 'update-delivery',
       });
       const summary = pickConversationSummary(result.conversation);
-
-      const checklistTarget = result.checklistTarget === 'proposal' ? 'proposal' : 'goal';
-      const checklist = checklistTarget === 'proposal'
-        ? result.proposal && Array.isArray(result.proposal.checklist) ? result.proposal.checklist : []
-        : result.goal && Array.isArray(result.goal.checklist) ? result.goal.checklist : [];
-      broadcastEvent(checklistTarget === 'proposal' ? 'conversation_goal_proposal_updated' : 'conversation_goal_updated', {
+      broadcastEvent('conversation_goal_updated', {
         conversationId: context.conversationId,
         goal: result.goal,
         proposal: result.proposal,
         conversation: result.conversation,
         summary,
       });
-      broadcastEvent('conversation_summary_updated', {
-        conversationId: context.conversationId,
-        summary,
-      });
       broadcastConversationSummary(context.conversationId);
 
-      const response = {
-        ok: true,
-        conversation: summary,
-        goal: result.goal,
-        proposal: result.proposal,
-        checklistTarget,
-        checklist,
-      };
-
+      const response = { ok: true, conversation: summary, goal: result.goal, proposal: result.proposal };
       tryAppendInvocationEvent(context, 'agent_tool_call', {
         schemaVersion: 1,
         toolCallId,
-        tool: 'update-goal-checklist',
+        tool: 'update-goal',
         status: 'succeeded',
         durationMs: Date.now() - startedAt,
         invocationId: context.invocationId,
@@ -2102,21 +2084,19 @@ export function createAgentToolBridge(options: any = {}) {
         agentId: context.agentId,
         agentName: context.agentName,
         assistantMessageId: context.assistantMessageId,
-        request: { checklistLength: checklistText.length },
         result: {
-          checklistCount: response.checklist.length,
-          checklistTarget,
-          goalStatus: result.goal ? result.goal.status : '',
+          workItemCount: Array.isArray(result.goal && result.goal.workItems) ? result.goal.workItems.length : 0,
+          criterionCount: Array.isArray(result.goal && result.goal.acceptanceCriteria) ? result.goal.acceptanceCriteria.length : 0,
+          evidenceCount: Array.isArray(result.goal && result.goal.evidence) ? result.goal.evidence.length : 0,
         },
       });
-
       return response;
     } catch (error) {
       const errorValue = error as any;
       tryAppendInvocationEvent(context, 'agent_tool_call', {
         schemaVersion: 1,
         toolCallId,
-        tool: 'update-goal-checklist',
+        tool: 'update-goal',
         status: 'failed',
         durationMs: Date.now() - startedAt,
         invocationId: context.invocationId,
@@ -2125,13 +2105,11 @@ export function createAgentToolBridge(options: any = {}) {
         agentId: context.agentId,
         agentName: context.agentName,
         assistantMessageId: context.assistantMessageId,
-        request: { checklistLength: checklistText.length },
         error: {
           statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
           message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
         },
       });
-
       throw error;
     } finally {
       setContextCurrentTool(context, null);
@@ -2275,17 +2253,7 @@ export function createAgentToolBridge(options: any = {}) {
     const excludeCurrentConversation = includeCurrentConversation
       ? false
       : normalizeBooleanFlag(body.excludeCurrentConversation, true);
-    const explicitTaskName = normalizeOptionalSummaryMemoryFilter(body.taskName || body.task, 'taskName');
-    const useCurrentTask = normalizeBooleanFlag(body.useCurrentTask || body.currentTask, false);
-    let taskName = explicitTaskName;
-
-    if (!taskName && useCurrentTask) {
-      taskName = resolveCurrentSummaryMemoryTaskName(context);
-
-      if (!taskName) {
-        throw createHttpError(400, 'Unable to resolve the current Trellis task for search-memory');
-      }
-    }
+    const taskName = normalizeOptionalSummaryMemoryFilter(body.taskName || body.task, 'taskName');
 
     const sourceKind = normalizeOptionalSummaryMemoryKind(body.sourceKind || body.kind);
     const conversationTitle = normalizeOptionalSummaryMemoryFilter(body.conversationTitle || body.title || body.conversation, 'conversationTitle');
@@ -2297,7 +2265,6 @@ export function createAgentToolBridge(options: any = {}) {
       limit,
       excludeCurrentConversation,
       ...(latest ? { latest: true } : {}),
-      ...(useCurrentTask ? { useCurrentTask: true } : {}),
       ...(taskName ? { taskName } : {}),
       ...(sourceKind ? { sourceKind } : {}),
       ...(conversationTitle ? { conversationTitle } : {}),
@@ -2840,773 +2807,6 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
-  function safeStat(filePath: any) {
-    try {
-      return fs.statSync(filePath);
-    } catch {
-      return null;
-    }
-  }
-
-  function safeLstat(filePath: any) {
-    try {
-      return fs.lstatSync(filePath);
-    } catch {
-      return null;
-    }
-  }
-
-  function isPathWithinDir(rootDir: any, candidatePath: any) {
-    const resolvedRoot = path.resolve(String(rootDir || '').trim());
-    const resolvedCandidate = path.resolve(String(candidatePath || '').trim());
-
-    if (!resolvedRoot || !resolvedCandidate) {
-      return false;
-    }
-
-    const rootKey = process.platform === 'win32' ? resolvedRoot.toLowerCase() : resolvedRoot;
-    const candidateKey = process.platform === 'win32' ? resolvedCandidate.toLowerCase() : resolvedCandidate;
-
-    const relative = path.relative(rootKey, candidateKey);
-
-    if (!relative) {
-      return true;
-    }
-
-    return !relative.startsWith('..') && !path.isAbsolute(relative);
-  }
-
-  function normalizeTaskName(value: any, fallback = 'demo') {
-    const normalized = String(value || '').trim() || String(fallback || '').trim();
-
-    if (!normalized) {
-      return '';
-    }
-
-    if (normalized === '.' || normalized === '..') {
-      return '';
-    }
-
-    if (normalized.includes('/') || normalized.includes('\\')) {
-      return '';
-    }
-
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(normalized)) {
-      return '';
-    }
-
-    return normalized;
-  }
-
-  function normalizeTrellisRelativePath(value: any) {
-    let normalized = String(value || '').trim();
-
-    if (!normalized) {
-      return '';
-    }
-
-    if (path.isAbsolute(normalized)) {
-      return '';
-    }
-
-    normalized = normalized.replace(/\\/g, '/');
-    while (normalized.startsWith('./')) {
-      normalized = normalized.slice(2);
-    }
-    while (normalized.startsWith('/')) {
-      normalized = normalized.slice(1);
-    }
-
-    const parts = normalized
-      .split('/')
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .filter((part) => part !== '.');
-
-    if (parts.length === 0) {
-      return '';
-    }
-
-    if (parts.some((part) => part === '..')) {
-      return '';
-    }
-
-    if (parts[0] !== '.trellis') {
-      parts.unshift('.trellis');
-    }
-
-    if (parts.length <= 1) {
-      return '';
-    }
-
-    return parts.join('/');
-  }
-
-  function hasSymlinkInPath(rootDir: any, candidatePath: any) {
-    const resolvedRoot = path.resolve(String(rootDir || '').trim());
-    const resolvedCandidate = path.resolve(String(candidatePath || '').trim());
-
-    if (!resolvedRoot || !resolvedCandidate) {
-      return false;
-    }
-
-    if (!isPathWithinDir(resolvedRoot, resolvedCandidate)) {
-      return false;
-    }
-
-    const relative = path.relative(resolvedRoot, resolvedCandidate);
-
-    if (!relative) {
-      const stat = safeLstat(resolvedRoot);
-      return Boolean(stat && stat.isSymbolicLink());
-    }
-
-    const parts = relative.split(path.sep).filter(Boolean);
-    let current = resolvedRoot;
-
-    for (const part of parts) {
-      current = path.join(current, part);
-      const stat = safeLstat(current);
-      if (stat && stat.isSymbolicLink()) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  function buildTrellisInitFiles(taskName: string) {
-    const safeTaskName = String(taskName || '').trim() || 'demo';
-
-    const trellisGitignore = [
-      '# Local-only Trellis runtime files',
-      '.developer',
-      '.current-task',
-      '.ralph-state.json',
-      '.agents/',
-      '.agent-log',
-      '.session-id',
-      '.plan-log',
-      '',
-      '# Atomic update temp files',
-      '*.tmp',
-      '*.new',
-      '',
-      '# Update backup directories',
-      '.backup-*',
-      '',
-      '# Python cache (if you use Trellis scripts)',
-      '**/__pycache__/',
-      '**/*.pyc',
-      '',
-    ].join('\n');
-
-    const workflow = [
-      '# Trellis Workflow',
-      '',
-      'This folder is used by CAFF to inject lightweight task/PRD/workflow context into agent prompts.',
-      '',
-      'Quick start:',
-      `1) Set the current task in \`.trellis/.current-task\` (example: \`.trellis/tasks/${safeTaskName}\`).`,
-      '2) Write a PRD in `.trellis/tasks/<task>/prd.md`.',
-      '3) Edit JSONL context files to list relevant specs/files for each phase:',
-      '   - implement.jsonl: dev specs + patterns to follow',
-      '   - check.jsonl: review/quality criteria',
-      '   - spec.jsonl: fallback specs (used when phase-specific JSONL is empty)',
-      '',
-      'JSONL format (one JSON object per line):',
-      '  {"file": ".trellis/spec/backend/index.md", "reason": "Backend guidelines"}',
-      '  {"file": "src/server/index.ts", "reason": "Entry point"}',
-      '',
-      'Optional:',
-      '- Add spec index files under `.trellis/spec/**/index.md` for discoverability hints.',
-      '',
-    ].join('\n');
-
-    const taskJson = JSON.stringify(
-      {
-        title: `Task: ${safeTaskName}`,
-        status: 'active',
-        createdAt: new Date().toISOString().slice(0, 10),
-      },
-      null,
-      2
-    );
-
-    const prd = [
-      `# PRD: ${safeTaskName}`,
-      '',
-      '## Goal',
-      '- Describe what you want to build.',
-      '',
-      '## Scope',
-      '- In scope:',
-      '- Out of scope:',
-      '',
-      '## Acceptance Criteria',
-      '- [ ] Item 1',
-      '',
-    ].join('\n');
-
-    const taskDirRef = `.trellis/tasks/${safeTaskName}`;
-    const implementJsonl = [
-      JSON.stringify({ file: `${taskDirRef}/prd.md`, reason: 'Task requirements (PRD).' }),
-      JSON.stringify({ file: '.trellis/spec/index.md', reason: 'Project spec index (edit/add more spec files).' }),
-    ].join('\n');
-
-    const checkJsonl = [JSON.stringify({ file: `${taskDirRef}/prd.md`, reason: 'Acceptance criteria to verify.' })].join(
-      '\n'
-    );
-
-    const specJsonl = [JSON.stringify({ file: '.trellis/spec/index.md', reason: 'Shared spec fallback.' })].join('\n');
-
-    const specIndex = ['# Spec Index', '', 'Add relevant spec links here.', ''].join('\n');
-
-    return [
-      { relativePath: '.trellis/.gitignore', content: trellisGitignore },
-      { relativePath: '.trellis/workflow.md', content: workflow },
-      { relativePath: '.trellis/.current-task', content: `${taskDirRef}\n` },
-      { relativePath: '.trellis/spec/index.md', content: specIndex },
-      { relativePath: `.trellis/tasks/${safeTaskName}/task.json`, content: `${taskJson}\n` },
-      { relativePath: `.trellis/tasks/${safeTaskName}/prd.md`, content: `${prd}\n` },
-      { relativePath: `.trellis/tasks/${safeTaskName}/implement.jsonl`, content: `${implementJsonl}\n` },
-      { relativePath: `.trellis/tasks/${safeTaskName}/check.jsonl`, content: `${checkJsonl}\n` },
-      { relativePath: `.trellis/tasks/${safeTaskName}/spec.jsonl`, content: `${specJsonl}\n` },
-    ];
-  }
-
-  function handleTrellisInit(body: any = {}) {
-    const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
-    const includeContent = body.includeContent === true;
-    const confirm = body.confirm === true;
-    const force = body.force === true;
-    const taskName = normalizeTaskName(body.taskName || body.task || body.name, 'demo');
-
-    const toolCallId = randomUUID();
-
-    setContextCurrentTool(context, {
-      toolName: 'trellis-init',
-      toolKind: 'bridge',
-      toolStepId: toolCallId,
-      inferred: false,
-      request: {
-        taskName,
-        confirm,
-        force,
-        includeContent,
-      },
-    });
-
-    try {
-      if (!taskName) {
-        throw createHttpError(400, 'taskName must be a simple directory name (letters/numbers/._-)');
-      }
-
-      const projectDirRaw = String(context.projectDir || '').trim();
-
-      if (!projectDirRaw) {
-        throw createHttpError(409, 'No active project directory is available for this invocation');
-      }
-
-      const projectDir = path.resolve(projectDirRaw);
-      const projectStat = safeStat(projectDir);
-
-      if (!projectStat || !projectStat.isDirectory()) {
-        throw createHttpError(409, 'Active project directory does not exist or is not a folder');
-      }
-
-      const trellisDir = path.join(projectDir, '.trellis');
-      const trellisLstat = safeLstat(trellisDir);
-
-      if (trellisLstat && trellisLstat.isSymbolicLink()) {
-        throw createHttpError(400, 'Refusing to write .trellis because it is a symlink');
-      }
-
-      if (trellisLstat && !trellisLstat.isDirectory()) {
-        throw createHttpError(409, 'Refusing to write .trellis because it exists and is not a directory');
-      }
-
-      const files = buildTrellisInitFiles(taskName);
-      const operations: any[] = [];
-
-      for (const file of files) {
-        const absolutePath = path.resolve(projectDir, file.relativePath);
-        const withinTrellis = isPathWithinDir(trellisDir, absolutePath);
-
-        if (!withinTrellis) {
-          throw createHttpError(400, `Refusing to write outside .trellis: ${file.relativePath}`);
-        }
-
-        const exists = fs.existsSync(absolutePath);
-        const existingStat = exists ? safeStat(absolutePath) : null;
-        const action =
-          existingStat && existingStat.isDirectory()
-            ? 'conflict-directory'
-            : exists
-              ? force
-                ? 'overwrite'
-                : 'skip-existing'
-              : 'create';
-
-        operations.push({
-          path: file.relativePath.replace(/\\/g, '/'),
-          action,
-          bytes: Buffer.byteLength(file.content, 'utf8'),
-          ...(includeContent ? { content: file.content } : {}),
-        });
-      }
-
-      if (!confirm) {
-        const response = {
-          ok: true,
-          applied: false,
-          projectDir,
-          trellisDir,
-          taskName,
-          operations,
-          willWriteCount: operations.filter((op) => op.action === 'create' || op.action === 'overwrite').length,
-          skippedCount: operations.filter((op) => op.action === 'skip-existing').length,
-          confirmRequired: true,
-        };
-
-        tryAppendInvocationEvent(context, 'agent_tool_call', {
-          schemaVersion: 1,
-          toolCallId,
-          tool: 'trellis-init',
-          status: 'succeeded',
-          durationMs: Date.now() - startedAt,
-          invocationId: context.invocationId,
-          conversationId: context.conversationId,
-          turnId: context.turnId,
-          agentId: context.agentId,
-          agentName: context.agentName,
-          assistantMessageId: context.assistantMessageId,
-          request: {
-            taskName,
-            confirm,
-            force,
-            includeContent,
-          },
-          result: {
-            applied: false,
-            operationCount: operations.length,
-            willWriteCount: response.willWriteCount,
-            skippedCount: response.skippedCount,
-          },
-        });
-
-        return response;
-      }
-
-      fs.mkdirSync(trellisDir, { recursive: true });
-
-      if (hasSymlinkInPath(projectDir, trellisDir)) {
-        throw createHttpError(400, 'Refusing to write .trellis because it contains a symlink');
-      }
-
-      for (const file of files) {
-        const absolutePath = path.resolve(projectDir, file.relativePath);
-        const exists = fs.existsSync(absolutePath);
-        const existingStat = exists ? safeStat(absolutePath) : null;
-
-        if (existingStat && existingStat.isDirectory()) {
-          throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
-        }
-
-        if (exists && !force) {
-          continue;
-        }
-
-        if (hasSymlinkInPath(trellisDir, absolutePath)) {
-          throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
-        }
-      }
-
-      const writtenFiles: string[] = [];
-      const skippedFiles: string[] = [];
-
-      for (const file of files) {
-        const absolutePath = path.resolve(projectDir, file.relativePath);
-        const exists = fs.existsSync(absolutePath);
-        const existingStat = exists ? safeStat(absolutePath) : null;
-
-        if (exists && !force) {
-          skippedFiles.push(file.relativePath.replace(/\\/g, '/'));
-          continue;
-        }
-
-        if (existingStat && existingStat.isDirectory()) {
-          throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
-        }
-
-        if (hasSymlinkInPath(trellisDir, absolutePath)) {
-          throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
-        }
-
-        fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-        fs.writeFileSync(absolutePath, file.content, 'utf8');
-        writtenFiles.push(file.relativePath.replace(/\\/g, '/'));
-      }
-
-      const response = {
-        ok: true,
-        applied: true,
-        projectDir,
-        trellisDir,
-        taskName,
-        writtenFiles,
-        skippedFiles,
-      };
-
-      tryAppendInvocationEvent(context, 'agent_tool_call', {
-        schemaVersion: 1,
-        toolCallId,
-        tool: 'trellis-init',
-        status: 'succeeded',
-        durationMs: Date.now() - startedAt,
-        invocationId: context.invocationId,
-        conversationId: context.conversationId,
-        turnId: context.turnId,
-        agentId: context.agentId,
-        agentName: context.agentName,
-        assistantMessageId: context.assistantMessageId,
-        request: {
-          taskName,
-          confirm,
-          force,
-          includeContent,
-        },
-        result: {
-          applied: true,
-          writtenCount: writtenFiles.length,
-          skippedCount: skippedFiles.length,
-        },
-      });
-
-      return response;
-    } catch (error) {
-      const errorValue = error as any;
-      tryAppendInvocationEvent(context, 'agent_tool_call', {
-        schemaVersion: 1,
-        toolCallId,
-        tool: 'trellis-init',
-        status: 'failed',
-        durationMs: Date.now() - startedAt,
-        invocationId: context.invocationId,
-        conversationId: context.conversationId,
-        turnId: context.turnId,
-        agentId: context.agentId,
-        agentName: context.agentName,
-        assistantMessageId: context.assistantMessageId,
-        request: {
-          taskName,
-          confirm,
-          force,
-          includeContent,
-        },
-        error: {
-          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
-          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
-        },
-      });
-
-      throw error;
-    } finally {
-      setContextCurrentTool(context, null);
-    }
-  }
-
-  function handleTrellisWrite(body: any = {}) {
-    const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
-    const includeContent = body.includeContent === true;
-    const confirm = body.confirm === true;
-    const force = body.force === true;
-    const toolCallId = randomUUID();
-
-    setContextCurrentTool(context, {
-      toolName: 'trellis-write',
-      toolKind: 'bridge',
-      toolStepId: toolCallId,
-      inferred: false,
-      request: {
-        confirm,
-        force,
-        includeContent,
-      },
-    });
-
-    let fileCount = 0;
-    let totalBytes = 0;
-    let pathsSample: string[] = [];
-
-    try {
-      const filesPayload = Array.isArray(body.files) ? body.files : null;
-      const files = filesPayload
-        ? filesPayload
-        : [
-            {
-              relativePath: body.relativePath || body.path,
-              content: body.content,
-            },
-          ];
-
-      const normalizedFiles: any[] = [];
-      const rejectedPaths: string[] = [];
-
-      for (const file of Array.isArray(files) ? files : []) {
-        const record = file && typeof file === 'object' ? file : null;
-        if (!record) {
-          rejectedPaths.push('[invalid file entry]');
-          continue;
-        }
-
-        const rawPath = record.relativePath ?? record.path ?? '';
-        const normalizedPath = normalizeTrellisRelativePath(rawPath);
-        if (!normalizedPath) {
-          rejectedPaths.push(String(rawPath || '').trim() || '[empty]');
-          continue;
-        }
-
-        normalizedFiles.push({
-          relativePath: normalizedPath,
-          content: typeof record.content === 'string' ? record.content : String(record.content ?? ''),
-        });
-      }
-
-      fileCount = normalizedFiles.length;
-      pathsSample = normalizedFiles.slice(0, 6).map((file: any) => file.relativePath);
-
-      if (rejectedPaths.length > 0) {
-        const examples = rejectedPaths
-          .filter(Boolean)
-          .slice(0, 6)
-          .map((item) => clipText(item, 120));
-        const suffix = rejectedPaths.length > examples.length ? ` (+${rejectedPaths.length - examples.length} more)` : '';
-        throw createHttpError(
-          400,
-          `Invalid .trellis paths. Expected a file path under .trellis/**. Rejected: ${examples.join(', ')}${suffix}`
-        );
-      }
-
-      if (normalizedFiles.length === 0) {
-        throw createHttpError(400, 'files must include at least one .trellis-relative path');
-      }
-
-      if (normalizedFiles.length > 20) {
-        throw createHttpError(400, 'Refusing to write more than 20 files in one request');
-      }
-
-      totalBytes = normalizedFiles.reduce((sum: number, file: any) => sum + Buffer.byteLength(file.content, 'utf8'), 0);
-      if (totalBytes > 256 * 1024) {
-        throw createHttpError(400, 'Refusing to write more than 256KB of content in one request');
-      }
-
-      const projectDirRaw = String(context.projectDir || '').trim();
-
-      if (!projectDirRaw) {
-        throw createHttpError(409, 'No active project directory is available for this invocation');
-      }
-
-      const projectDir = path.resolve(projectDirRaw);
-      const projectStat = safeStat(projectDir);
-
-      if (!projectStat || !projectStat.isDirectory()) {
-        throw createHttpError(409, 'Active project directory does not exist or is not a folder');
-      }
-
-      const trellisDir = path.join(projectDir, '.trellis');
-      const trellisLstat = safeLstat(trellisDir);
-
-      if (trellisLstat && trellisLstat.isSymbolicLink()) {
-        throw createHttpError(400, 'Refusing to write .trellis because it is a symlink');
-      }
-
-      if (trellisLstat && !trellisLstat.isDirectory()) {
-        throw createHttpError(409, 'Refusing to write .trellis because it exists and is not a directory');
-      }
-
-      const operations: any[] = [];
-
-      for (const file of normalizedFiles) {
-        const absolutePath = path.resolve(projectDir, file.relativePath);
-        const withinTrellis = isPathWithinDir(trellisDir, absolutePath);
-
-        if (!withinTrellis) {
-          throw createHttpError(400, `Refusing to write outside .trellis: ${file.relativePath}`);
-        }
-
-        const exists = fs.existsSync(absolutePath);
-        const existingStat = exists ? safeStat(absolutePath) : null;
-
-        if (existingStat && existingStat.isDirectory()) {
-          throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
-        }
-        const action = exists ? (force ? 'overwrite' : 'skip-existing') : 'create';
-
-        operations.push({
-          path: file.relativePath.replace(/\\/g, '/'),
-          action,
-          bytes: Buffer.byteLength(file.content, 'utf8'),
-          ...(includeContent ? { content: file.content } : {}),
-        });
-      }
-
-      if (!confirm) {
-        const response = {
-          ok: true,
-          applied: false,
-          projectDir,
-          trellisDir,
-          operations,
-          willWriteCount: operations.filter((op) => op.action === 'create' || op.action === 'overwrite').length,
-          skippedCount: operations.filter((op) => op.action === 'skip-existing').length,
-          confirmRequired: true,
-        };
-
-        tryAppendInvocationEvent(context, 'agent_tool_call', {
-          schemaVersion: 1,
-          toolCallId,
-          tool: 'trellis-write',
-          status: 'succeeded',
-          durationMs: Date.now() - startedAt,
-          invocationId: context.invocationId,
-          conversationId: context.conversationId,
-          turnId: context.turnId,
-          agentId: context.agentId,
-          agentName: context.agentName,
-          assistantMessageId: context.assistantMessageId,
-          request: {
-            confirm,
-            force,
-            includeContent,
-            fileCount,
-            totalBytes,
-            paths: pathsSample,
-          },
-          result: {
-            applied: false,
-            operationCount: operations.length,
-            willWriteCount: response.willWriteCount,
-            skippedCount: response.skippedCount,
-          },
-        });
-
-        return response;
-      }
-
-      fs.mkdirSync(trellisDir, { recursive: true });
-
-      if (hasSymlinkInPath(projectDir, trellisDir)) {
-        throw createHttpError(400, 'Refusing to write .trellis because it contains a symlink');
-      }
-
-      const writtenFiles: string[] = [];
-      const skippedFiles: string[] = [];
-
-      for (const file of normalizedFiles) {
-        const absolutePath = path.resolve(projectDir, file.relativePath);
-        const exists = fs.existsSync(absolutePath);
-
-        if (exists && !force) {
-          skippedFiles.push(file.relativePath.replace(/\\/g, '/'));
-          continue;
-        }
-
-        const existingStat = exists ? safeStat(absolutePath) : null;
-
-        if (existingStat && existingStat.isDirectory()) {
-          throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
-        }
-
-        if (hasSymlinkInPath(trellisDir, absolutePath)) {
-          throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
-        }
-
-        fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-        fs.writeFileSync(absolutePath, file.content, 'utf8');
-        writtenFiles.push(file.relativePath.replace(/\\/g, '/'));
-      }
-
-      const response = {
-        ok: true,
-        applied: true,
-        projectDir,
-        trellisDir,
-        writtenFiles,
-        skippedFiles,
-      };
-
-      tryAppendInvocationEvent(context, 'agent_tool_call', {
-        schemaVersion: 1,
-        toolCallId,
-        tool: 'trellis-write',
-        status: 'succeeded',
-        durationMs: Date.now() - startedAt,
-        invocationId: context.invocationId,
-        conversationId: context.conversationId,
-        turnId: context.turnId,
-        agentId: context.agentId,
-        agentName: context.agentName,
-        assistantMessageId: context.assistantMessageId,
-        request: {
-          confirm,
-          force,
-          includeContent,
-          fileCount,
-          totalBytes,
-          paths: pathsSample,
-        },
-        result: {
-          applied: true,
-          writtenCount: writtenFiles.length,
-          skippedCount: skippedFiles.length,
-        },
-      });
-
-      return response;
-    } catch (error) {
-      const errorValue = error as any;
-      tryAppendInvocationEvent(context, 'agent_tool_call', {
-        schemaVersion: 1,
-        toolCallId,
-        tool: 'trellis-write',
-        status: 'failed',
-        durationMs: Date.now() - startedAt,
-        invocationId: context.invocationId,
-        conversationId: context.conversationId,
-        turnId: context.turnId,
-        agentId: context.agentId,
-        agentName: context.agentName,
-        assistantMessageId: context.assistantMessageId,
-        request: {
-          confirm,
-          force,
-          includeContent,
-          fileCount,
-          totalBytes,
-          paths: pathsSample,
-        },
-        error: {
-          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
-          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
-        },
-      });
-
-      throw error;
-    } finally {
-      setContextCurrentTool(context, null);
-    }
-  }
-
-  /**
-   * propose-plan tool (PRD .trellis/tasks/dag-planning/prd.md §5):
-   * thin wrapper over the same store validation + optimistic concurrency
-   * used by the REST plan API. Draft: create/replace whole doc; active:
-   * status-only updates. Validation failures are returned with issue
-   * details so the model can self-repair and retry.
-   */
   function handleProposePlan(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken);
@@ -3739,9 +2939,7 @@ export function createAgentToolBridge(options: any = {}) {
     handleSearchMemory,
     handleSearchMessages,
     handleSuggestGoal,
-    handleUpdateGoalChecklist,
-    handleTrellisInit,
-    handleTrellisWrite,
+    handleUpdateGoal,
     handleUpdateMemory,
     registerInvocation,
     summarizeInvocationAuth,
