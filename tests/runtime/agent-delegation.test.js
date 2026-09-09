@@ -220,24 +220,40 @@ test('requester agent can inspect and manage a pending delegation from a continu
   assert.equal(completions.length, 1);
 });
 
-test('delegation creation applies the bounded default deadline', (t) => {
-  const fixture = createFixture('default-deadline');
+test('delegation creation has no deadline and rejects the retired deadline input', (t) => {
+  const fixture = createFixture('no-deadline');
   t.after(() => fixture.cleanup());
   fixture.context.enqueueAgent = () => ({ enqueuedAgentIds: [fixture.recipient.id], dispatch: [] });
 
-  const before = Date.now();
   const created = fixture.bridge.handleCreateDelegation({
     invocationId: fixture.context.invocationId,
     callbackToken: fixture.context.callbackToken,
     recipientAgentIds: [fixture.recipient.id],
-    content: 'Use the default recovery deadline.',
-    idempotencyKey: 'default-deadline-key',
+    content: 'Remain pending until an explicit terminal result.',
+    idempotencyKey: 'no-deadline-key',
   });
-  const deadlineMs = Date.parse(created.delegation.deadlineAt);
 
-  assert.equal(Number.isFinite(deadlineMs), true);
-  assert.equal(deadlineMs >= before + 86_399_000, true);
-  assert.equal(deadlineMs <= before + 86_401_000, true);
+  assert.equal(created.delegation.deadlineAt, null);
+  assert.equal(fixture.store.getAgentDelegation(created.childDelegationIds[0]).deadlineAt, null);
+  const runtime = createAgentDelegationRuntime({
+    store: fixture.store,
+    now: () => new Date('2126-01-01T00:00:00.000Z'),
+  });
+  assert.deepEqual(runtime.scanDeadlines(), []);
+  assert.equal(fixture.store.getAgentDelegation(created.delegationId).status, 'running');
+
+  assert.throws(
+    () => fixture.bridge.handleCreateDelegation({
+      invocationId: fixture.context.invocationId,
+      callbackToken: fixture.context.callbackToken,
+      recipientAgentIds: [fixture.recipient.id],
+      content: 'Do not accept legacy deadline controls.',
+      idempotencyKey: 'retired-deadline-key',
+      deadlineSeconds: 300,
+    }),
+    (error) => error && error.statusCode === 400
+      && error.issues[0].code === 'delegation_deadline_unsupported'
+  );
 });
 
 test('deadline scan aggregates already-terminal children before timing out the group', (t) => {

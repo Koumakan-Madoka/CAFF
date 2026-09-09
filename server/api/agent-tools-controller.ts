@@ -79,6 +79,12 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
   return async function handleAgentToolsRequest(context) {
     const { req, res, pathname, requestUrl } = context;
 
+    if (pathname === '/api/agent-tools/post-message' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, agentToolBridge.handlePostMessage(body));
+      return true;
+    }
+
     if (pathname === '/api/agent-tools/delegation/create' && req.method === 'POST') {
       const body = await readRequestJson(req);
       sendJson(res, 200, agentToolBridge.handleCreateDelegation(body));

@@ -4,8 +4,8 @@
 
 This contract applies to in-room Agent delegation created through the authenticated
 agent-tool bridge. It covers durable delegation state, side-lane recipient
-execution, explicit await/yield, cancellation, deadlines, requester continuation,
-and compatible `read-context` projection.
+execution, explicit await/yield, cancellation, requester continuation, legacy
+deadline recovery, and compatible `read-context` projection.
 
 Use this contract when changing any of:
 
@@ -31,7 +31,6 @@ create-delegation {
   content: string,
   idempotencyKey: string,
   aggregation?: "all" | "any" | "quorum",
-  deadlineSeconds?: integer,
   reference?: string
 }
 
@@ -100,10 +99,14 @@ while any child remains active.
   out child makes ordinary aggregation fail.
 - An explicit requester cancellation makes the group `cancelled` and absorbs
   unfinished children into `cancelled`.
-- Omitted deadlines use `DEFAULT_DELEGATION_DEADLINE_SECONDS=86400`, so restart
-  maintenance can eventually settle every pending record.
+- New delegations have `deadlineAt=null` and remain pending until recipient
+  completion, failure, or explicit requester cancellation. Supplying the retired
+  `deadlineSeconds` field fails with `delegation_deadline_unsupported`.
+- Deadline scanning remains restart-compatible for historical rows that already
+  have a non-null `deadline_at`; their terminal and late-result semantics are
+  unchanged.
 - Deadline scan aggregates already-terminal children before applying timeout to
-  a group.
+  a historical group.
 
 ### Execution and cancellation
 
@@ -151,7 +154,9 @@ while any child remains active.
 | Unknown, other-Agent, or other-conversation ID | 404 without disclosing ownership |
 | Create then await then all children succeed | Group succeeds; one completion and continuation |
 | Child fails/cancels/times out | Group terminal with structured child outcomes |
-| Group deadline expires after children already settled | Aggregate children first; do not report false timeout |
+| Legacy `deadlineSeconds` supplied at creation | 400 `delegation_deadline_unsupported` |
+| New delegation remains pending without recipient terminal result | `deadlineAt=null`; deadline scan leaves it active |
+| Historical group deadline expires after children already settled | Aggregate children first; do not report false timeout |
 | Requester cancels running and queued children | Running handles stop; queued waiters cancel; group is cancelled |
 | Recipient completes after cancel/timeout | Late event/count only; terminal state unchanged |
 | Recipient message reaches main queue discovery | Must be excluded by persisted `dispatchLane='side'` |
@@ -165,8 +170,8 @@ while any child remains active.
   continuation is routed back to the requester Agent.
 - Good: a later requester invocation sees the still-pending group and cancels it;
   one running recipient is stopped and one queued recipient never starts.
-- Base: no explicit deadline is supplied; the 24-hour default makes the record
-  restart-visible and deadline maintenance eventually settles it.
+- Base: no deadline is stored; the delegation remains restart-visible and
+  pending until the recipient settles or the requester explicitly cancels it.
 - Bad: authorize await by exact requester invocation ID. The continuation cannot
   await or cancel work created before yield.
 - Bad: persist delegation recipient messages without `dispatchLane='side'`.
@@ -183,7 +188,8 @@ while any child remains active.
   - await plus child settlement produces one completion
   - same-Agent continuation authorization and other-Agent 404
   - cancel bridge response, group cancellation, and completion exactly once
-  - default deadline, aggregation-before-timeout, late result, and read revision
+  - no-deadline creation, retired deadline rejection, historical aggregation-
+    before-timeout, late result, and read revision
 - `tests/runtime/turn-orchestrator.test.js`
   - queue-backed continuation routes to the exact requester
   - cancellation stops a running child, removes a queued child, and starts no

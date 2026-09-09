@@ -4,6 +4,7 @@ const test = require('node:test');
 const {
   conversationNotify,
   conversationRequest,
+  createDelegation,
   forgetMemory,
   formatCommandResult,
   main,
@@ -102,6 +103,28 @@ test('conversation request CLI rejects invalid explicit deadlines before HTTP', 
     ),
     /deadline-seconds must be a positive integer/
   );
+});
+
+test('delegation CLI rejects the retired deadline flag before HTTP', async (t) => {
+  let fetchCalls = 0;
+  t.mock.method(global, 'fetch', async () => {
+    fetchCalls += 1;
+    throw new Error('retired deadline flag must not call fetch');
+  });
+
+  await assert.rejects(
+    () => createDelegation(
+      { apiUrl: 'http://127.0.0.1:3100', invocationId: 'invocation-1', callbackToken: 'token-1' },
+      {
+        to: 'agent-2',
+        content: 'Do not accept a deadline.',
+        'idempotency-key': 'delegation-cli-retired-deadline',
+        'deadline-seconds': '300',
+      }
+    ),
+    /create-delegation no longer supports --deadline-seconds/u
+  );
+  assert.equal(fetchCalls, 0);
 });
 
 test('send-public tool results are compact by default', () => {
