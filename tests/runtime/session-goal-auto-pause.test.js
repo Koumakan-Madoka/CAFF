@@ -5,13 +5,28 @@ const test = require('node:test');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const {
-  applySessionGoalAction,
+  applySessionGoalAction: applySessionGoalActionRaw,
   claimSessionGoalAutoContinue,
   getSessionGoal,
   getSessionGoalRunner,
   isSessionGoalModelFailurePaused,
   recordSessionGoalContinuationOutcome,
 } = require('../../build/server/domain/conversation/session-goal');
+
+function applySessionGoalAction(store, conversationId, input = {}) {
+  if (input.action !== 'set') return applySessionGoalActionRaw(store, conversationId, input);
+  return applySessionGoalActionRaw(store, conversationId, {
+    acceptanceCriteria: [{
+      id: 'criterion-1',
+      statement: input.objective || 'Goal result is observable',
+      verifyBy: 'runtime test assertion',
+      status: 'pending',
+      risk: 'normal',
+      evidenceRefs: [],
+    }],
+    ...input,
+  });
+}
 const {
   classifyAgentInvocationFailure,
 } = require('../../build/server/domain/conversation/turn/agent-executor');

@@ -1,3 +1,0 @@
-{"file":"tests/runtime/agent-delegation.test.js","reason":"State, authorization, cancellation, deadline, late-result, and read-context regressions"}
-{"file":"tests/runtime/turn-orchestrator.test.js","reason":"Queue-backed continuation, Goal parking, and side-dispatch cancellation regressions"}
-{"file":".trellis/tasks/09-07-native-runtime-agent-delegation/verification.md","reason":"Reproduction, review, and validation evidence"}

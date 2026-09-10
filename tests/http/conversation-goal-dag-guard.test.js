@@ -67,8 +67,26 @@ function setupDagExecution(store, nodeStatus = 'doing') {
     type: 'standard',
     metadataJson: JSON.stringify({
       sessionGoal: {
+        goalId: 'goal-node-n1',
+        revision: 1,
         objective: 'node goal',
         status: 'active',
+        decisions: { committed: [], provisional: [], openQuestions: [], nonGoals: [], rejectedOptions: [] },
+        acceptanceCriteria: [{
+          id: 'criterion-1',
+          statement: 'Node behavior is verified',
+          verifyBy: 'DAG guard fixture',
+          status: 'passed',
+          risk: 'normal',
+          evidenceRefs: ['evidence-1'],
+        }],
+        workItems: [{ id: 'work-1', text: 'Deliver node behavior', status: 'in_progress' }],
+        evidence: [{
+          id: 'evidence-1',
+          criterionIds: ['criterion-1'],
+          kind: 'test',
+          summary: 'Node behavior assertion passed',
+        }],
         createdAt: '2026-08-16T00:00:00.000Z',
         updatedAt: '2026-08-16T00:00:00.000Z',
       },
@@ -136,7 +154,7 @@ test('DAG-bound doing node: direct goal mutations are rejected (dag_goal_mutatio
   assert.equal(conversation.metadata.sessionGoal.objective, 'node goal');
 });
 
-test('DAG-bound doing node: proposal rulings and checklist updates stay allowed', async (t) => {
+test('DAG-bound doing node: proposal rulings and factual delivery updates stay allowed', async (t) => {
   const store = createStore(t);
   setupDagExecution(store);
   const events = [];
@@ -147,11 +165,16 @@ test('DAG-bound doing node: proposal rulings and checklist updates stay allowed'
     },
   });
 
-  // Checklist maintenance is allowed.
-  const checklistResponse = await invoke(controller, {
-    body: { action: 'update-checklist', checklistText: '- [ ] step one' },
+  // Factual delivery maintenance is allowed when it carries the current revision.
+  const currentGoal = store.getConversation(CHILD_ID).metadata.sessionGoal;
+  const updateResponse = await invoke(controller, {
+    body: {
+      action: 'update-delivery',
+      ...currentGoal,
+      workItems: [{ id: 'work-1', text: 'Deliver node behavior', status: 'done' }],
+    },
   });
-  assert.equal(checklistResponse.statusCode, 200);
+  assert.equal(updateResponse.statusCode, 200);
 
   // The worker announces completion (proposal), then the USER accepts via
   // the UI — the D28 manual-verification path.

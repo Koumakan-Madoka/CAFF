@@ -12,7 +12,7 @@
 - **多 Agent 聊天工作台** — 在同一个房间里让多个 Agent 协作，支持 `@mention` 路由、串行/并行 handoff、停止当前 turn，以及公开 / 私有消息通道。
 - **人格管理** — 在 Web UI 中维护 Agent 的基础 persona、头像、默认模型，以及按模型拆分的 persona profile。
 - **Skill 与模式系统** — 统一管理 `.pi-sandbox/skills` 下的技能目录，并支持会话模式绑定、`dynamic` / `full` 两种注入策略。
-- **项目管理与 Trellis 上下文** — 选择当前激活项目目录，联动 Trellis 工作流上下文和项目内额外技能目录。
+- **项目与交付工作流** — 绑定独立项目工作区，通过 `grill-with-docs` 澄清需求、ADR 留存长期决策、结构化 Goal 跟踪验收，并按 Direct / Goal / DAG 路由执行。
 - **后端主持游戏模式** — 内置“谁是卧底”和“狼人杀”两种玩法，由后端推进阶段、分配身份、处理结算。
 - **评测工具** — 提供 Agent 指标报表。
 - **飞书接入 MVP** — 支持通过 webhook 或 long connection 收发飞书私聊 / 群聊文本消息。
@@ -65,7 +65,8 @@ CAFF 目前是一个以本地 Web 工作台为入口、Node/TypeScript 后端为
 | `lib/` | 共享运行时辅助、pi 集成、skill registry、project manager |
 | `public/` | 前端页面与共享 JS 模块 |
 | `tests/` | runtime、HTTP、storage、smoke 测试 |
-| `.trellis/` | Trellis 工作流、spec、task 与 workspace 上下文 |
+| `docs/engineering/` | 当前工程契约与开发规范 |
+| `docs/decisions/` | 已接受、跨任务有效的 ADR |
 | `.pi-sandbox/` | skills、agent sandboxes、本地 runtime 状态 |
 
 ## 🚀 Quick Start
@@ -124,7 +125,7 @@ CAFF 在 `npm run start` / `npm run start:dev` 时会自动读取 `./.env.local`
 | `/` | 聊天工作台：会话列表、消息流、参与人格、游戏主持台、发送 / 停止控制 |
 | `/personas.html` | 人格管理：基础 persona、模型 profile、头像、默认模型与常驻 skill |
 | `/skills.html` | Skill 与模式管理：维护 `SKILL.md`、额外文件、模式绑定与加载策略 |
-| `/projects.html` | 项目管理：维护项目列表、切换激活项目、联动 Trellis 与额外技能目录 |
+| `/projects.html` | 项目管理：维护项目列表、切换激活项目、管理工作区与额外技能目录 |
 | `/metrics.html` | Agent 指标报表：工具调用成功率、public/private 工具使用率、延迟分位数 |
 
 ## 🎛 Built-in Modes
@@ -147,7 +148,8 @@ CAFF 内置一个给 Agent 使用的本地聊天桥：运行时入口是 `build/
 - `send-private`：给自己或其他 Agent 发私有消息
 - `read-context`：读取最新公开 / 私有上下文
 - `list-participants`：读取当前房间参与者
-- `trellis-init` / `trellis-write`：辅助初始化或写入 `.trellis/` 文件
+- `suggest-goal` / `update-goal`：提出 Goal 生命周期或结构变更，并写入带 revision 的事实进度与验收证据
+- `propose-plan`：提出或更新 DAG 纵向切片、依赖和汇合节点
 
 这套工具是多 Agent 本地协作、private mailbox、handoff 路由和工具埋点的基础。
 
@@ -270,8 +272,11 @@ caff/
 ├── docs/                   # 设计文档与迁移笔记
 ├── scripts/                # 构建与实用脚本
 ├── types/                  # TypeScript 类型声明
-├── .trellis/               # Trellis workflow / spec / tasks / workspace
-└── .pi-sandbox/            # skills、agent sandboxes、本地状态与配置
+├── docs/
+│   ├── engineering/         # 当前工程契约与开发规范
+│   └── decisions/           # 已接受的跨任务 ADR
+├── .agents/                 # 项目级工作流与规划 skills
+└── .pi-sandbox/             # skills、agent sandboxes、本地状态与配置
 ```
 
 ## 🤝 Contributing
@@ -286,7 +291,7 @@ caff/
 
 - 新功能优先放到对应 domain module，不要把逻辑堆回 server 入口
 - 新页面优先复用 `public/shared/` 中的公共模块
-- 变更技能、运行时或跨层协议时，同步更新 `.trellis/spec/` 中的相关文档
+- 变更技能、运行时或跨层协议时，同步更新 `docs/engineering/` 中的当前契约；跨任务长期决策写入 `docs/decisions/`
 
 ## 📜 License
 

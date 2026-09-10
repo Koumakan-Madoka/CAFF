@@ -396,10 +396,6 @@ async function searchMemory(config: any, flags: any) {
     body.includeCurrentConversation = true;
   }
 
-  if (flags['current-task'] === true || flags.currentTask === true || flags.useCurrentTask === true) {
-    body.useCurrentTask = true;
-  }
-
   if (flags['exclude-current'] !== undefined || flags.excludeCurrent !== undefined || flags.excludeCurrentConversation !== undefined) {
     body.excludeCurrentConversation = flags['exclude-current'] ?? flags.excludeCurrent ?? flags.excludeCurrentConversation;
   }
@@ -540,45 +536,6 @@ async function forgetMemory(config: any, flags: any) {
   });
 }
 
-async function trellisInit(config: any, flags: any) {
-  const taskName = String(flags.task || flags['task-name'] || flags.name || '').trim();
-
-  return requestJson(`${config.apiUrl}/api/agent-tools/trellis/init`, {
-    method: 'POST',
-    body: {
-      invocationId: config.invocationId,
-      callbackToken: config.callbackToken,
-      taskName,
-      confirm: flags.confirm === true,
-      force: flags.force === true,
-      includeContent: flags['include-content'] === true,
-    },
-  });
-}
-
-async function trellisWrite(config: any, flags: any) {
-  const relativePath = String(flags.path || flags['relative-path'] || flags.file || '').trim();
-
-  if (!relativePath) {
-    throw new Error('Missing --path for trellis-write.');
-  }
-
-  const content = await resolveFileContent(flags);
-
-  return requestJson(`${config.apiUrl}/api/agent-tools/trellis/write`, {
-    method: 'POST',
-    body: {
-      invocationId: config.invocationId,
-      callbackToken: config.callbackToken,
-      relativePath,
-      content,
-      confirm: flags.confirm === true,
-      force: flags.force === true,
-      includeContent: flags['include-content'] === true,
-    },
-  });
-}
-
 async function proposePlan(config: any, flags: any, options: any = {}) {
   const docText = await resolveFileContent(flags, options);
 
@@ -629,16 +586,26 @@ async function listParticipants(config: any) {
 
 async function suggestGoal(config: any, flags: any, options: any = {}) {
   const action = String(flags.action || flags.status || '').trim().toLowerCase();
-  const objective = String(flags.objective || flags.goal || flags.content || '').trim();
+  const objective = String(flags.objective || flags.goal || '').trim();
   const reason = String(flags.reason || '').trim();
-  let checklistText = String(flags.checklist || flags.checklistText || flags['checklist-text'] || '').trim();
+  let goal: any = null;
 
-  if (!checklistText && (flags['checklist-stdin'] === true || flags['content-stdin'] === true || flags.stdin === true)) {
-    checklistText = String(await readTextStream(options.stream || process.stdin) || '').trim();
+  if (flags['goal-stdin'] === true || flags['content-stdin'] === true || flags.stdin === true || flags.file) {
+    const goalText = String(await resolveFileContent(flags, options) || '').trim();
+    if (goalText) {
+      try {
+        goal = JSON.parse(goalText);
+      } catch {
+        throw new Error('suggest-goal input must be a valid Goal JSON object.');
+      }
+      if (!goal || typeof goal !== 'object' || Array.isArray(goal)) {
+        throw new Error('suggest-goal input must be a Goal JSON object.');
+      }
+    }
   }
 
   if (!action) {
-    throw new Error('suggest-goal requires --action set|pause|resume|complete|clear.');
+    throw new Error('suggest-goal requires --action set|revise|pause|resume|complete|clear|accept|reject.');
   }
 
   return requestJson(`${config.apiUrl}/api/agent-tools/goal/suggest`, {
@@ -649,24 +616,29 @@ async function suggestGoal(config: any, flags: any, options: any = {}) {
       action,
       ...(objective ? { objective } : {}),
       ...(reason ? { reason } : {}),
-      ...(checklistText ? { checklistText } : {}),
+      ...(goal ? { goal } : {}),
     },
   });
 }
 
-async function updateGoalChecklist(config: any, flags: any, options: any = {}) {
-  const checklistText = await resolveFileContent(flags, options);
-
-  if (!checklistText.trim()) {
-    throw new Error('update-goal-checklist requires --content or --content-stdin with checklist lines.');
+async function updateGoal(config: any, flags: any, options: any = {}) {
+  const goalText = await resolveFileContent(flags, options);
+  let goal: any;
+  try {
+    goal = JSON.parse(goalText);
+  } catch {
+    throw new Error('update-goal requires a valid Goal JSON object via --content or --content-stdin.');
+  }
+  if (!goal || typeof goal !== 'object' || Array.isArray(goal)) {
+    throw new Error('update-goal requires a Goal JSON object.');
   }
 
-  return requestJson(`${config.apiUrl}/api/agent-tools/goal/checklist`, {
+  return requestJson(`${config.apiUrl}/api/agent-tools/goal/update`, {
     method: 'POST',
     body: {
       invocationId: config.invocationId,
       callbackToken: config.callbackToken,
-      checklistText,
+      goal,
     },
   });
 }
@@ -789,17 +761,13 @@ async function main() {
     result = await listParticipants(config);
   } else if (command === 'suggest-goal') {
     result = await suggestGoal(config, flags);
-  } else if (command === 'update-goal-checklist') {
-    result = await updateGoalChecklist(config, flags);
+  } else if (command === 'update-goal') {
+    result = await updateGoal(config, flags);
   } else if (command === 'propose-plan') {
     result = await proposePlan(config, flags);
-  } else if (command === 'trellis-init') {
-    result = await trellisInit(config, flags);
-  } else if (command === 'trellis-write') {
-    result = await trellisWrite(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, create-delegation, await-delegation, cancel-delegation, conversation-notify, conversation-request, read-context, search-messages, search-memory, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, propose-plan, trellis-init, trellis-write.'
+      'Unknown command. Use one of: send-public, send-private, create-delegation, await-delegation, cancel-delegation, conversation-notify, conversation-request, read-context, search-messages, search-memory, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal, propose-plan.'
     );
   }
 
@@ -835,7 +803,7 @@ export {
   sendPrivate,
   sendPublic,
   suggestGoal,
-  updateGoalChecklist,
+  updateGoal,
   forgetMemory,
   listMemories,
   saveMemory,

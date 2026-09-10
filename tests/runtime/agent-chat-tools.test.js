@@ -14,7 +14,7 @@ const {
   sendPublic,
   shouldEchoContent,
   suggestGoal,
-  updateGoalChecklist,
+  updateGoal,
   updateMemory,
 } = require('../../build/lib/agent-chat-tools');
 
@@ -307,7 +307,6 @@ test('search-memory forwards bounded long-term memory search payload', async (t)
       query: 'conversation digest regression',
       limit: 4,
       'include-current': true,
-      'current-task': true,
       task: 'digest-v2',
       kind: 'rollup',
       conversation: 'Digest Planning Notes',
@@ -324,7 +323,6 @@ test('search-memory forwards bounded long-term memory search payload', async (t)
     query: 'conversation digest regression',
     limit: 4,
     includeCurrentConversation: true,
-    useCurrentTask: true,
     taskName: 'digest-v2',
     sourceKind: 'rollup',
     conversationTitle: 'Digest Planning Notes',
@@ -449,78 +447,70 @@ test('suggest-goal forwards a pending goal proposal payload', async (t) => {
   });
 });
 
-test('suggest-goal forwards checklist payload for pending set proposals', async (t) => {
+test('suggest-goal forwards a structured Goal proposal from stdin', async (t) => {
   let requestUrl = '';
   let requestOptions = null;
+  const goal = {
+    objective: 'Ship a structured Goal',
+    decisions: { committed: [], provisional: [], openQuestions: [], nonGoals: [], rejectedOptions: [] },
+    acceptanceCriteria: [{ id: 'c1', statement: 'Behavior ships', verifyBy: 'node test.js', status: 'pending' }],
+    workItems: [{ id: 'w1', text: 'Implement behavior', status: 'todo' }],
+    evidence: [],
+  };
+  const stream = new PassThrough();
+  stream.end(JSON.stringify(goal));
 
   t.mock.method(global, 'fetch', async (url, options) => {
     requestUrl = String(url);
     requestOptions = options;
-    return {
-      ok: true,
-      async text() {
-        return JSON.stringify({ ok: true, proposal: { action: 'set' } });
-      },
-    };
+    return { ok: true, async text() { return JSON.stringify({ ok: true, proposal: { action: 'set' } }); } };
   });
 
   await suggestGoal(
-    {
-      apiUrl: 'http://127.0.0.1:3100',
-      invocationId: 'inv-goal-set-checklist',
-      callbackToken: 'token-goal-set-checklist',
-    },
-    {
-      action: 'set',
-      objective: 'Ship a goal with visible checklist',
-      'checklist-text': '[ ] Plan\n[~] Build\n[x] Validate',
-    }
+    { apiUrl: 'http://127.0.0.1:3100', invocationId: 'inv-goal-set', callbackToken: 'token-goal-set' },
+    { action: 'set', 'content-stdin': true },
+    { stream }
   );
 
   assert.equal(requestUrl, 'http://127.0.0.1:3100/api/agent-tools/goal/suggest');
   assert.deepEqual(JSON.parse(String(requestOptions.body)), {
-    invocationId: 'inv-goal-set-checklist',
-    callbackToken: 'token-goal-set-checklist',
+    invocationId: 'inv-goal-set',
+    callbackToken: 'token-goal-set',
     action: 'set',
-    objective: 'Ship a goal with visible checklist',
-    checklistText: '[ ] Plan\n[~] Build\n[x] Validate',
+    goal,
   });
 });
 
-test('update-goal-checklist forwards checklist progress payload from stdin', async (t) => {
+test('update-goal forwards a structured factual update from stdin', async (t) => {
   let requestUrl = '';
   let requestOptions = null;
+  const goal = {
+    objective: 'Ship a structured Goal',
+    acceptanceCriteria: [{ id: 'c1', statement: 'Behavior ships', verifyBy: 'node test.js', status: 'passed', evidenceRefs: ['e1'] }],
+    workItems: [{ id: 'w1', text: 'Implement behavior', status: 'done' }],
+    evidence: [{ id: 'e1', criterionIds: ['c1'], kind: 'test', summary: 'Tests passed' }],
+  };
   const stream = new PassThrough();
-  stream.end('[x] Add API\n[~] Wire UI\n[ ] Validate');
+  stream.end(JSON.stringify(goal));
 
   t.mock.method(global, 'fetch', async (url, options) => {
     requestUrl = String(url);
     requestOptions = options;
-
-    return {
-      ok: true,
-      async text() {
-        return JSON.stringify({ ok: true, checklist: [] });
-      },
-    };
+    return { ok: true, async text() { return JSON.stringify({ ok: true, goal }); } };
   });
 
-  await updateGoalChecklist(
-    {
-      apiUrl: 'http://127.0.0.1:3100',
-      invocationId: 'inv-goal-checklist',
-      callbackToken: 'token-goal-checklist',
-    },
+  await updateGoal(
+    { apiUrl: 'http://127.0.0.1:3100', invocationId: 'inv-goal-update', callbackToken: 'token-goal-update' },
     { 'content-stdin': true },
     { stream }
   );
 
-  assert.equal(requestUrl, 'http://127.0.0.1:3100/api/agent-tools/goal/checklist');
+  assert.equal(requestUrl, 'http://127.0.0.1:3100/api/agent-tools/goal/update');
   assert.equal(requestOptions.method, 'POST');
   assert.deepEqual(JSON.parse(String(requestOptions.body)), {
-    invocationId: 'inv-goal-checklist',
-    callbackToken: 'token-goal-checklist',
-    checklistText: '[x] Add API\n[~] Wire UI\n[ ] Validate',
+    invocationId: 'inv-goal-update',
+    callbackToken: 'token-goal-update',
+    goal,
   });
 });
 

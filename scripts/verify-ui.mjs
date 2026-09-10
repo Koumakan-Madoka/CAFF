@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { verifyManagementPages } from './ui/verify-management-pages.mjs';
 import { resolveVerificationRoomContext } from './ui/room-fixture.mjs';
+import { verifyGoalContract } from './ui/verify-goal-contract.mjs';
 import { verifyThemeIcons } from './ui/verify-theme-icons.mjs';
 
 let chromium;
@@ -945,6 +946,8 @@ await verifyThemeIcons({
   baseUrl: APP,
   ok,
 });
+
+await verifyGoalContract({ browser, baseUrl: APP, conversationId: baselineConversationId, ok });
 
 // evidence screenshots
 await page.setViewportSize({ width: 1440, height: 900 });

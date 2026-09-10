@@ -1,7 +1,0 @@
-{"file":".trellis/tasks/04-12-caff-feishu-integration/prd.md","reason":"Task requirements (PRD)."}
-{"file":".trellis/spec/index.md","reason":"Project spec index (edit/add more spec files)."}
-{"file":"lib/env-local-loader.ts","reason":"Automatic .env.local loading for npm start/start:dev without overriding existing environment values."}
-{"file":"server/domain/integrations/feishu/feishu-service.ts","reason":"Shared Feishu inbound/outbound MVP path: text-only inbound, chat_id conversation binding, /new rebinding, durable dedupe, and agent-name-prefixed outbound replies."}
-{"file":"server/domain/integrations/feishu/feishu-long-connection.ts","reason":"Official SDK long-connection source with shared event normalization, start-attempt vs ready logging, and reusable stop/start lifecycle."}
-{"file":"tests/http/feishu-controller.test.js","reason":"Regression coverage for group text without bot mention, non-text ignore, /new switching, bot self-message ignore, and downstream-failure dedupe retention."}
-{"file":"tests/runtime/feishu-delivery.test.js","reason":"Regression coverage for assistant outbound delivery with Agent display-name prefixes and duplicate outbound suppression."}

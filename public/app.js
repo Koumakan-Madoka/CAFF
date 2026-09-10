@@ -160,7 +160,13 @@ const dom = {
   sessionGoalDismissProposalButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-dismiss-proposal-button')),
   sessionGoalForm: /** @type {HTMLFormElement | null} */ (document.getElementById('session-goal-form')),
   sessionGoalObjective: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-objective')),
+  sessionGoalAcceptance: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-acceptance')),
   sessionGoalChecklist: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-checklist')),
+  sessionGoalDecisionsCommitted: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-decisions-committed')),
+  sessionGoalDecisionsProvisional: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-decisions-provisional')),
+  sessionGoalDecisionsOpen: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-decisions-open')),
+  sessionGoalDecisionsNonGoals: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-decisions-non-goals')),
+  sessionGoalDecisionsRejected: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-decisions-rejected')),
   sessionGoalChecklistPresetButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-checklist-preset-button')),
   sessionGoalSaveButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-save-button')),
   sessionGoalPauseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-pause-button')),
@@ -223,7 +229,6 @@ const dom = {
   summaryMemoryUpdatedAfter: /** @type {HTMLInputElement | null} */ (document.getElementById('summary-memory-updated-after')),
   summaryMemoryUpdatedBefore: /** @type {HTMLInputElement | null} */ (document.getElementById('summary-memory-updated-before')),
   summaryMemoryKind: /** @type {HTMLSelectElement | null} */ (document.getElementById('summary-memory-kind')),
-  summaryMemoryCurrentTask: /** @type {HTMLInputElement | null} */ (document.getElementById('summary-memory-current-task')),
   summaryMemoryIncludeCurrent: /** @type {HTMLInputElement | null} */ (document.getElementById('summary-memory-include-current')),
   summaryMemorySearchButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('summary-memory-search-button')),
   summaryMemoryRecentButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('summary-memory-recent-button')),
@@ -456,9 +461,7 @@ async function searchSummaryMemory(options = {}) {
     body.latest = true;
   }
 
-  if (options.useCurrentTask) {
-    body.useCurrentTask = true;
-  } else if (options.taskName) {
+  if (options.taskName) {
     body.taskName = options.taskName;
   }
 
@@ -612,6 +615,16 @@ function parseGoalCommand(content) {
   return {
     action: 'set',
     objective: rest,
+    acceptanceCriteria: [{
+      id: 'criterion-1',
+      statement: rest,
+      verifyBy: '由用户确认目标结果满足预期',
+      status: 'pending',
+      risk: 'normal',
+      evidenceRefs: [],
+    }],
+    workItems: [],
+    evidence: [],
   };
 }
 
@@ -4656,6 +4669,20 @@ function connectEventStream() {
 
   source.addEventListener('conversation_goal_proposal_cleared', (event) => {
     const payload = JSON.parse(event.data);
+    if (payload.summary) {
+      mergeConversationSummary(payload.summary);
+    }
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_goal_change_notice', (event) => {
+    const payload = JSON.parse(event.data);
+    const notice = payload && payload.notice && typeof payload.notice === 'object' ? payload.notice : {};
+    const changes = Array.isArray(notice.changes) ? notice.changes : [];
+    const summary = changes
+      .map((change) => `${change.previous || '(无)'} -> ${change.next || '(已移除)'}`)
+      .join('；');
+    showToast(`暂定决策已变更：${summary || notice.reason || '请查看 Goal 详情'}`);
     if (payload.summary) {
       mergeConversationSummary(payload.summary);
     }

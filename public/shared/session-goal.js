@@ -2,21 +2,15 @@
 
 (function registerSessionGoalHelpers() {
   const shared = window.CaffShared || (window.CaffShared = {});
-  const DEFAULT_TRELLIS_GOAL_CHECKLIST_ITEMS = [
-    '和其他 agent 一起头脑风暴，收敛目标、范围和风险',
-    '结论收敛后创建或更新 Trellis 任务与 PRD',
-    'Agent 校验 Trellis 任务、PRD、spec 上下文是否齐全',
-    '使用 before-dev 读取相关开发规范与思考指南',
-    '按 checklist 实现核心功能，并持续更新事实进度',
-    '补充或更新回归测试，覆盖关键行为和边界',
-    '运行 check、typecheck、build 和相关测试完成质量验证',
-    '使用 update-spec 同步规格、契约和关键决策',
-    '使用 finish-work 完成提交前收尾检查',
-    '人工验收后记录会话并归档 Trellis 任务',
+  const DEFAULT_GOAL_WORK_ITEMS = [
+    '确认交付契约并完成独立审核',
+    '实现最小完整行为变更',
+    '记录与验收条件关联的验证证据',
+    '完成独立代码审核并处理发现',
   ];
 
   function defaultChecklistText() {
-    return DEFAULT_TRELLIS_GOAL_CHECKLIST_ITEMS.map((text) => `[ ] ${text}`).join('\n');
+    return DEFAULT_GOAL_WORK_ITEMS.map((text) => `[ ] ${text}`).join('\n');
   }
 
   function goalForConversation(conversation) {
@@ -65,7 +59,11 @@
   }
 
   function checklistForGoal(goal) {
-    const checklist = goal && Array.isArray(goal.checklist) ? goal.checklist : [];
+    const checklist = goal && Array.isArray(goal.workItems)
+      ? goal.workItems
+      : goal && Array.isArray(goal.checklist)
+        ? goal.checklist
+        : [];
 
     return checklist
       .map((item, index) => {
@@ -104,6 +102,42 @@
     return { checklist, total, done, inProgress, percent };
   }
 
+  function acceptanceCriteriaForGoal(goal) {
+    return (goal && Array.isArray(goal.acceptanceCriteria) ? goal.acceptanceCriteria : [])
+      .map((criterion, index) => {
+        const statement = String((criterion && criterion.statement) || '').trim();
+        if (!statement) return null;
+        const rawStatus = String((criterion && criterion.status) || 'pending').trim().toLowerCase();
+        const status = ['pending', 'passed', 'failed', 'waived'].includes(rawStatus) ? rawStatus : 'pending';
+        return {
+          ...criterion,
+          id: String((criterion && criterion.id) || `criterion-${index + 1}`).trim(),
+          statement,
+          verifyBy: String((criterion && criterion.verifyBy) || '').trim(),
+          status,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function acceptanceCriteriaText(goal) {
+    return acceptanceCriteriaForGoal(goal)
+      .map((criterion) => `${criterion.statement} | ${criterion.verifyBy}`)
+      .join('\n');
+  }
+
+  function decisionText(goal, field) {
+    const decisions = goal && goal.decisions && typeof goal.decisions === 'object' ? goal.decisions : {};
+    return (Array.isArray(decisions[field]) ? decisions[field] : [])
+      .map((item) => String((item && (item.statement || item.question || item.option)) || '').trim())
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  function evidenceForGoal(goal) {
+    return goal && Array.isArray(goal.evidence) ? goal.evidence.filter(Boolean) : [];
+  }
+
   function statusValue(goal) {
     const status = String((goal && goal.status) || 'active').trim().toLowerCase();
     return status === 'paused' || status === 'complete' ? status : 'active';
@@ -111,7 +145,7 @@
 
   function proposalActionValue(proposal) {
     const action = String((proposal && proposal.action) || '').trim().toLowerCase();
-    return ['set', 'pause', 'resume', 'complete', 'clear'].includes(action) ? action : '';
+    return ['set', 'revise', 'pause', 'resume', 'complete', 'clear'].includes(action) ? action : '';
   }
 
   function statusLabel(goal) {
@@ -122,7 +156,10 @@
   function proposalActionLabel(proposal) {
     const action = proposalActionValue(proposal);
     if (action === 'set') {
-      return '替换目标';
+      return '创建目标';
+    }
+    if (action === 'revise') {
+      return '修订交付契约';
     }
     if (action === 'pause') {
       return '暂停目标';
@@ -207,6 +244,10 @@
     runnerForConversation,
     checklistForGoal,
     checklistTextForGoal,
+    acceptanceCriteriaForGoal,
+    acceptanceCriteriaText,
+    decisionText,
+    evidenceForGoal,
     progressForGoal,
     defaultChecklistText,
     statusValue,

@@ -107,6 +107,10 @@ function sessionGoalUtilsStub() {
     progressForGoal: () => ({ total: 0, done: 0, inProgress: 0, percent: 0, checklist: [] }),
     objectiveText: () => '',
     checklistTextForGoal: () => '',
+    acceptanceCriteriaForGoal: () => [],
+    acceptanceCriteriaText: () => '',
+    decisionText: () => '',
+    evidenceForGoal: () => [],
     defaultChecklistText: () => '',
   };
 }
@@ -129,7 +133,13 @@ function goalDom(document) {
     sessionGoalProposalDetails: byId('session-goal-proposal-details'),
     sessionGoalForm: byId('session-goal-form'),
     sessionGoalObjective: byId('session-goal-objective'),
+    sessionGoalAcceptance: byId('session-goal-acceptance'),
     sessionGoalChecklist: byId('session-goal-checklist'),
+    sessionGoalDecisionsCommitted: byId('session-goal-decisions-committed'),
+    sessionGoalDecisionsProvisional: byId('session-goal-decisions-provisional'),
+    sessionGoalDecisionsOpen: byId('session-goal-decisions-open'),
+    sessionGoalDecisionsNonGoals: byId('session-goal-decisions-non-goals'),
+    sessionGoalDecisionsRejected: byId('session-goal-decisions-rejected'),
     sessionGoalSaveButton: byId('session-goal-save-button'),
     sessionGoalChecklistPresetButton: byId('session-goal-checklist-preset-button'),
     sessionGoalPauseButton: byId('session-goal-pause-button'),
@@ -141,7 +151,7 @@ function goalDom(document) {
   };
 }
 
-function bootGoalPanel({ conversation = { id: 'conv-1' }, useRealUtils = false } = {}) {
+function bootGoalPanel({ conversation = { id: 'conv-1' }, useRealUtils = false, submitGoalCommand = async () => ({}) } = {}) {
   const { dom, window, document } = bootShell();
   window.CaffShared = useRealUtils ? {} : { sessionGoal: sessionGoalUtilsStub() };
   if (useRealUtils) {
@@ -154,7 +164,7 @@ function bootGoalPanel({ conversation = { id: 'conv-1' }, useRealUtils = false }
     dom: goalDom(document),
     helpers: {
       formatDateTime: (value) => String(value || ''),
-      submitGoalCommand: async () => ({}),
+      submitGoalCommand,
     },
     showToast: () => {},
   });
@@ -176,6 +186,62 @@ test('goal panel controller starts without legacy toggle/edge buttons', () => {
   assert.equal(submit.defaultPrevented, true, 'submit handler must be bound (cancelable submit prevented)');
 });
 
+test('editing a Goal preserves delivery identity and evidence on submit', async () => {
+  const goal = {
+    objective: 'Ship contract', goalId: 'goal-original', revision: 7, status: 'active',
+    decisions: { committed: [{ id: 'decision-original', statement: 'Use ADR', rationale: 'Durable decisions', adrPath: 'docs/decisions/001.md' }] },
+    acceptanceCriteria: [{ id: 'criterion-original', statement: 'Contract works', verifyBy: 'Run tests', status: 'passed', risk: 'high', evidenceRefs: ['proof'] }],
+    workItems: [{ id: 'work-original', text: 'Implement contract', status: 'done', criterionIds: ['criterion-original'] }],
+    evidence: [{ id: 'proof', summary: 'Tests passed', reference: 'test.log' }],
+  };
+  let submitted;
+  const { window, document, controller } = bootGoalPanel({
+    conversation: { id: 'conv-edit', metadata: { sessionGoal: goal } }, useRealUtils: true,
+    submitGoalCommand: async (_id, command) => { submitted = JSON.parse(JSON.stringify(command)); },
+  });
+  controller.render();
+  controller.bindEvents();
+  document.getElementById('session-goal-objective').value = 'Ship revised contract';
+  document.getElementById('session-goal-form').dispatchEvent(new window.Event('submit', { cancelable: true }));
+  await Promise.resolve();
+  assert.equal(submitted.action, 'revise');
+  assert.equal(submitted.goalRevision, 7);
+  assert.equal(submitted.objective, 'Ship revised contract');
+  assert.deepEqual(submitted.decisions.committed, goal.decisions.committed);
+  assert.deepEqual(submitted.acceptanceCriteria, goal.acceptanceCriteria);
+  assert.deepEqual(submitted.workItems, goal.workItems);
+  assert.deepEqual(submitted.evidence, goal.evidence);
+});
+
+test('Goal form reordering preserves IDs while changed criteria need fresh evidence', async () => {
+  const first = { id: 'criterion-1', statement: 'First', verifyBy: 'Test first', status: 'passed', evidenceRefs: ['proof'] };
+  const second = { id: 'criterion-2', statement: 'Second', verifyBy: 'Test second', status: 'waived', waiverReason: 'Reviewed waiver' };
+  let submitted;
+  const { window, document, controller } = bootGoalPanel({
+    conversation: { id: 'conv-edit', metadata: { sessionGoal: {
+      objective: 'Ship', revision: 3, acceptanceCriteria: [first, second],
+      workItems: [], evidence: [{ id: 'proof', summary: 'Passed', criterionIds: ['criterion-1', 'criterion-2'] }],
+    } } },
+    useRealUtils: true,
+    submitGoalCommand: async (_id, command) => { submitted = JSON.parse(JSON.stringify(command)); },
+  });
+  controller.render();
+  controller.bindEvents();
+  document.getElementById('session-goal-acceptance').value = 'New | New test\nSecond | Test second\nFirst | Changed test';
+  document.getElementById('session-goal-form').dispatchEvent(new window.Event('submit', { cancelable: true }));
+  await Promise.resolve();
+  const [added, unchanged, changed] = submitted.acceptanceCriteria;
+  assert.notEqual(added.id, first.id);
+  assert.equal(unchanged.id, second.id);
+  assert.equal(unchanged.status, 'waived');
+  assert.equal(unchanged.waiverReason, second.waiverReason);
+  assert.notEqual(changed.id, first.id);
+  assert.equal(changed.status, 'pending');
+  assert.deepEqual(changed.evidenceRefs, []);
+  assert.equal(new Set(submitted.acceptanceCriteria.map((item) => item.id)).size, 3);
+  assert.deepEqual(submitted.evidence, [{ id: 'proof', summary: 'Passed', criterionIds: ['criterion-2'] }]);
+});
+
 test('goal proposal card shows pending set objective and checklist for approval', () => {
   const conversation = {
     id: 'conv-proposal',
@@ -185,7 +251,10 @@ test('goal proposal card shows pending set objective and checklist for approval'
         action: 'set',
         status: 'pending',
         objective: 'Ship pending checklist UI',
-        checklist: [
+        acceptanceCriteria: [
+          { id: 'criterion-1', statement: 'Validation is observable', verifyBy: 'Run UI regression', status: 'pending' },
+        ],
+        workItems: [
           { id: 'item-1', text: 'Reproduce the bug', status: 'done' },
           { id: 'item-2', text: 'Implement the fix', status: 'in_progress' },
           { id: 'item-3', text: 'Validate behavior', status: 'todo' },
@@ -206,12 +275,14 @@ test('goal proposal card shows pending set objective and checklist for approval'
   assert.equal(card.classList.contains('hidden'), false);
   assert.match(details.textContent, /拟定目标/u);
   assert.match(details.textContent, /Ship pending checklist UI/u);
-  assert.match(details.textContent, /拟定 checklist/u);
+  assert.match(details.textContent, /验收条件/u);
+  assert.match(details.textContent, /Validation is observable/u);
+  assert.match(details.textContent, /工作项/u);
   assert.match(details.textContent, /\[x\] Reproduce the bug/u);
   assert.match(details.textContent, /\[~\] Implement the fix/u);
   assert.match(details.textContent, /\[ \] Validate behavior/u);
   assert.equal(document.getElementById('session-goal-objective').value, '');
-  assert.match(document.getElementById('session-goal-checklist').value, /和其他 agent 一起头脑风暴/u);
+  assert.match(document.getElementById('session-goal-checklist').value, /确认交付契约并完成独立审核/u);
 });
 
 test('goal panel explains an automatic model-failure pause and keeps Resume available', () => {

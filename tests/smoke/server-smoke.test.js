@@ -26,12 +26,6 @@ const { requireSpawn } = require('../helpers/spawn');
 const { withTempDir } = require('../helpers/temp-dir');
 
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
-const FAKE_PI_SDK_HOST_TRELLIS_TOOLS_PATH = path.join(
-  ROOT_DIR,
-  'tests',
-  'fixtures',
-  'fake-pi-sdk-host-trellis-tools.mjs'
-);
 
 isolateExternalIntegrations();
 
@@ -904,7 +898,20 @@ test('conversations controller manages session goal lifecycle in metadata', asyn
     body: {
       action: 'set',
       objective: 'Ship a CAFF session goal MVP',
-      checklistText: '[x] Add goal API\n[~] Build goal panel\n[ ] Run validation',
+      acceptanceCriteria: [{
+        id: 'criterion-1',
+        statement: 'The session Goal lifecycle is observable through HTTP',
+        verifyBy: 'Run server smoke tests',
+        status: 'pending',
+        risk: 'normal',
+        evidenceRefs: [],
+      }],
+      workItems: [
+        { id: 'work-1', text: 'Add goal API', status: 'done' },
+        { id: 'work-2', text: 'Build goal panel', status: 'in_progress' },
+        { id: 'work-3', text: 'Run validation', status: 'todo' },
+      ],
+      evidence: [],
     },
   });
 
@@ -914,9 +921,9 @@ test('conversations controller manages session goal lifecycle in metadata', asyn
   assert.equal(setResult.json.goal.status, 'active');
   assert.equal(setResult.json.conversation.metadata.sessionGoal.objective, 'Ship a CAFF session goal MVP');
   assert.equal(setResult.json.summary.metadata.sessionGoal.status, 'active');
-  assert.equal(setResult.json.goal.checklist.length, 3);
-  assert.equal(setResult.json.goal.checklist[0].status, 'done');
-  assert.equal(setResult.json.goal.checklist[1].status, 'in_progress');
+  assert.equal(setResult.json.goal.workItems.length, 3);
+  assert.equal(setResult.json.goal.workItems[0].status, 'done');
+  assert.equal(setResult.json.goal.workItems[1].status, 'in_progress');
 
   const checklistResult = await invokeConversationsController(handler, {
     method: 'POST',
@@ -928,7 +935,7 @@ test('conversations controller manages session goal lifecycle in metadata', asyn
   });
 
   assert.equal(checklistResult.json.goal.status, 'active');
-  assert.equal(checklistResult.json.goal.checklist[1].status, 'done');
+  assert.equal(checklistResult.json.goal.workItems[1].status, 'done');
   assert.equal(checklistResult.json.autoContinuation, null);
 
   const pauseResult = await invokeConversationsController(handler, {
@@ -947,6 +954,27 @@ test('conversations controller manages session goal lifecycle in metadata', asyn
   });
 
   assert.equal(resumeResult.json.goal.status, 'active');
+
+  const evidenceResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: {
+      action: 'update-delivery',
+      ...resumeResult.json.goal,
+      acceptanceCriteria: [{
+        ...resumeResult.json.goal.acceptanceCriteria[0],
+        status: 'passed',
+        evidenceRefs: ['evidence-1'],
+      }],
+      evidence: [{
+        id: 'evidence-1',
+        criterionIds: ['criterion-1'],
+        kind: 'test',
+        summary: 'Server smoke lifecycle assertions passed',
+      }],
+    },
+  });
+  assert.equal(evidenceResult.json.goal.acceptanceCriteria[0].status, 'passed');
 
   const completeResult = await invokeConversationsController(handler, {
     method: 'POST',
@@ -979,26 +1007,24 @@ test('conversations controller manages session goal lifecycle in metadata', asyn
   assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_cleared'));
 });
 
-test('conversations controller applies default Trellis checklist when setting goal without checklist', async (t) => {
+test('conversations controller rejects Goal creation without acceptance criteria', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
   const conversation = createSmokeConversation(store, {
-    id: 'goal-default-checklist-conversation',
-    title: 'Goal Default Checklist Conversation',
+    id: 'goal-missing-criteria-conversation',
+    title: 'Goal Missing Criteria Conversation',
   });
 
-  const setResult = await invokeConversationsController(handler, {
-    method: 'POST',
-    pathname: `/api/conversations/${conversation.id}/goal`,
-    body: {
-      action: 'set',
-      objective: 'Ship a Trellis-backed long task',
-    },
-  });
-
-  assert.equal(setResult.statusCode, 200);
-  assert.equal(setResult.json.goal.checklist.length, 10);
-  assert.equal(setResult.json.goal.checklist[0].text, '和其他 agent 一起头脑风暴，收敛目标、范围和风险');
-  assert.equal(setResult.json.goal.checklist[9].text, '人工验收后记录会话并归档 Trellis 任务');
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'POST',
+      pathname: `/api/conversations/${conversation.id}/goal`,
+      body: {
+        action: 'set',
+        objective: 'Ship a structured long task',
+      },
+    }),
+    (error) => error && error.statusCode === 400 && error.code === 'goal_acceptance_criteria_required'
+  );
 });
 
 test('conversations controller creates and deletes conversation digests in metadata', async (t) => {
@@ -1083,10 +1109,7 @@ test('memory controller searches summary segments and can exclude the active con
     id: 'memory-search-other-historical-conversation',
     title: 'Other Historical Conversation',
   });
-  const handler = createMemoryController({
-    store,
-    resolveCurrentTaskName: () => 'memory-panel-task',
-  });
+  const handler = createMemoryController({ store });
 
   store.saveSummarySegmentFromDigest(currentConversation.id, {
     id: 'digest-memory-search-current',
@@ -1144,37 +1167,37 @@ test('memory controller searches summary segments and can exclude the active con
   store.saveSummarySegmentFromDigest(historicalConversation.id, {
     id: 'digest-memory-current-task-filter',
     kind: 'entry',
-    summary: 'current-task-panel-keyword belongs to the active Trellis task.',
-    facts: ['Current task search should resolve the task filter server-side.'],
+    summary: 'explicit-task-panel-keyword belongs to the selected task.',
+    facts: ['Explicit task search uses the requested task filter.'],
     createdAt: '2026-05-03T00:03:00.000Z',
     updatedAt: '2026-05-03T00:03:00.000Z',
   }, { taskName: 'memory-panel-task' });
   store.saveSummarySegmentFromDigest(otherHistoricalConversation.id, {
     id: 'digest-memory-current-task-filter-other',
     kind: 'entry',
-    summary: 'current-task-panel-keyword belongs to another Trellis task.',
-    facts: ['This segment should be hidden by useCurrentTask.'],
+    summary: 'explicit-task-panel-keyword belongs to another task.',
+    facts: ['This segment should be hidden by the explicit task filter.'],
     createdAt: '2026-05-03T00:04:00.000Z',
     updatedAt: '2026-05-03T00:04:00.000Z',
   }, { taskName: 'other-memory-task' });
 
-  const currentTaskResult = await invokeConversationsController(handler, {
+  const explicitTaskResult = await invokeConversationsController(handler, {
     method: 'POST',
     pathname: '/api/memory/search',
     body: {
-      query: 'current-task-panel-keyword',
+      query: 'explicit-task-panel-keyword',
       excludeConversationId: currentConversation.id,
-      useCurrentTask: true,
+      taskName: 'memory-panel-task',
     },
   });
 
-  assert.equal(currentTaskResult.statusCode, 200);
-  assert.equal(currentTaskResult.json.resultCount, 1);
-  assert.deepEqual(currentTaskResult.json.filters, {
+  assert.equal(explicitTaskResult.statusCode, 200);
+  assert.equal(explicitTaskResult.json.resultCount, 1);
+  assert.deepEqual(explicitTaskResult.json.filters, {
     excludeConversationId: currentConversation.id,
     taskName: 'memory-panel-task',
   });
-  assert.equal(currentTaskResult.json.results[0].sourceDigestId, 'digest-memory-current-task-filter');
+  assert.equal(explicitTaskResult.json.results[0].sourceDigestId, 'digest-memory-current-task-filter');
 
   const latestResult = await invokeConversationsController(handler, {
     method: 'POST',
@@ -4249,6 +4272,21 @@ test('conversations controller accepts and dismisses session goal proposals', as
       sessionGoal: {
         objective: 'Finish long-running work',
         status: 'active',
+        acceptanceCriteria: [{
+          id: 'criterion-1',
+          statement: 'The long-running work is complete',
+          verifyBy: 'Independent acceptance review',
+          status: 'passed',
+          risk: 'normal',
+          evidenceRefs: ['evidence-1'],
+        }],
+        workItems: [{ id: 'work-1', text: 'Finish long-running work', status: 'done' }],
+        evidence: [{
+          id: 'evidence-1',
+          criterionIds: ['criterion-1'],
+          kind: 'review',
+          summary: 'Acceptance checks passed',
+        }],
         createdAt: '2026-05-03T00:00:00.000Z',
         updatedAt: '2026-05-03T00:00:00.000Z',
       },
@@ -4308,22 +4346,37 @@ test('conversations controller accepts and dismisses session goal proposals', as
   assert.equal(store.getConversation(conversation.id).metadata.sessionGoalProposal, undefined);
 });
 
-test('conversations controller promotes the latest pending set proposal checklist on acceptance', async (t) => {
+test('conversations controller promotes a structured pending set proposal on acceptance', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
   const conversation = createSmokeConversation(store, {
-    id: 'goal-set-proposal-checklist-conversation',
-    title: 'Goal Set Proposal Checklist Conversation',
+    id: 'goal-set-proposal-contract-conversation',
+    title: 'Goal Set Proposal Contract Conversation',
     metadata: {
       sessionGoalProposal: {
-        id: 'prop-set-checklist',
+        id: 'prop-set-contract',
         action: 'set',
         status: 'pending',
-        objective: 'Ship pending goal checklist support',
-        checklist: [
-          { id: 'item-1', text: 'Reproduce', status: 'done', createdAt: '2026-05-03T00:00:00.000Z', updatedAt: '2026-05-03T00:00:00.000Z' },
-          { id: 'item-2', text: 'Implement', status: 'in_progress', createdAt: '2026-05-03T00:00:00.000Z', updatedAt: '2026-05-03T00:00:00.000Z' },
-          { id: 'item-3', text: 'Validate', status: 'todo', createdAt: '2026-05-03T00:00:00.000Z', updatedAt: '2026-05-03T00:00:00.000Z' },
+        objective: 'Ship structured Goal proposal support',
+        decisions: {
+          committed: [{ id: 'decision-1', statement: 'Goal is the delivery source of truth' }],
+          provisional: [],
+          openQuestions: [],
+          nonGoals: [],
+          rejectedOptions: [],
+        },
+        acceptanceCriteria: [{
+          id: 'criterion-1',
+          statement: 'The approved proposal becomes the active Goal',
+          verifyBy: 'Inspect the Goal API response',
+          status: 'pending',
+          risk: 'normal',
+          evidenceRefs: [],
+        }],
+        workItems: [
+          { id: 'work-1', text: 'Implement proposal promotion', status: 'in_progress' },
+          { id: 'work-2', text: 'Validate the response', status: 'todo' },
         ],
+        evidence: [],
         proposedBy: {
           agentId: 'agent-builder',
           agentName: 'Builder',
@@ -4334,29 +4387,18 @@ test('conversations controller promotes the latest pending set proposal checklis
     },
   });
 
-  const updateResult = await invokeConversationsController(handler, {
-    method: 'POST',
-    pathname: `/api/conversations/${conversation.id}/goal`,
-    body: {
-      action: 'update-checklist',
-      checklistText: '[x] Reproduce\n[x] Implement\n[~] Validate',
-    },
-  });
-
-  assert.equal(updateResult.json.goal, null);
-  assert.equal(updateResult.json.proposal.checklist[1].status, 'done');
-  assert.equal(updateResult.json.proposal.checklist[2].status, 'in_progress');
-
   const acceptResult = await invokeConversationsController(handler, {
     method: 'POST',
     pathname: `/api/conversations/${conversation.id}/goal`,
     body: { action: 'accept-proposal' },
   });
 
-  assert.equal(acceptResult.json.goal.objective, 'Ship pending goal checklist support');
-  assert.equal(acceptResult.json.goal.checklist.length, 3);
-  assert.equal(acceptResult.json.goal.checklist[1].status, 'done');
-  assert.equal(acceptResult.json.goal.checklist[2].status, 'in_progress');
+  assert.equal(acceptResult.json.goal.objective, 'Ship structured Goal proposal support');
+  assert.equal(acceptResult.json.goal.acceptanceCriteria.length, 1);
+  assert.equal(acceptResult.json.goal.acceptanceCriteria[0].verifyBy, 'Inspect the Goal API response');
+  assert.equal(acceptResult.json.goal.workItems.length, 2);
+  assert.equal(acceptResult.json.goal.workItems[0].status, 'in_progress');
+  assert.equal(acceptResult.json.goal.decisions.committed[0].statement, 'Goal is the delivery source of truth');
   assert.equal(store.getConversation(conversation.id).metadata.sessionGoalProposal, undefined);
 });
 
@@ -5563,126 +5605,6 @@ test('role API protects model-family roles and shares one availability projectio
 
   await new Promise((resolve) => app.close(resolve));
   closed = true;
-});
-
-test('server smoke: pi-mono agent can initialize and write Trellis files for the active project', async (t) => {
-  if (!requireSpawn(t)) {
-    return;
-  }
-
-  const port = await findFreePort();
-  const tempDir = withTempDir('caff-pi-trellis-smoke-');
-  const projectDir = path.join(tempDir, 'project');
-  const sqlitePath = path.join(tempDir, 'pi-trellis-smoke.sqlite');
-  fs.mkdirSync(projectDir, { recursive: true });
-
-  const child = spawn(process.execPath, ['build/lib/app-server.js'], {
-    cwd: ROOT_DIR,
-    env: {
-      ...process.env,
-      CHAT_APP_HOST: '127.0.0.1',
-      CHAT_APP_PORT: String(port),
-      PI_CODING_AGENT_DIR: tempDir,
-      PI_SQLITE_PATH: sqlitePath,
-      PI_SDK_HOST_OVERRIDE: FAKE_PI_SDK_HOST_TRELLIS_TOOLS_PATH,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  let stderrText = '';
-  child.stderr.on('data', (chunk) => {
-    stderrText += String(chunk);
-  });
-
-  t.after(async () => {
-    await stopServer(child);
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const baseUrl = `http://127.0.0.1:${port}`;
-  await waitForServer(baseUrl, child);
-
-  const projectResult = await fetchJson(baseUrl, '/api/projects', {
-    method: 'POST',
-    body: {
-      name: 'pi Trellis Smoke Project',
-      path: projectDir,
-    },
-  });
-  assert.equal(projectResult.activeProject.path, projectDir);
-
-  const agentResult = await fetchJson(baseUrl, '/api/agents', {
-    method: 'POST',
-    body: {
-      name: 'pi Trellis Smoke Agent',
-      description: 'Executes Trellis tool smoke flow.',
-      personaPrompt: 'Initialize Trellis for the active project and write a PRD.',
-    },
-  });
-
-  const conversationResult = await fetchJson(baseUrl, '/api/conversations', {
-    method: 'POST',
-    body: {
-      title: 'pi Trellis Smoke Conversation',
-      projectScopeId: projectResult.activeProject.id,
-      modeId: 'standard',
-      participants: [agentResult.agent.id],
-    },
-  });
-
-  const trellisDir = path.join(projectDir, '.trellis');
-  const currentTaskPath = path.join(trellisDir, '.current-task');
-  const prdPath = path.join(trellisDir, 'tasks', 'pi-tool-smoke', 'prd.md');
-  const workflowPath = path.join(trellisDir, 'workflow.md');
-  const taskJsonPath = path.join(trellisDir, 'tasks', 'pi-tool-smoke', 'task.json');
-
-  const clientRequestId = 'smoke-client-request-id';
-  const messageResult = await fetchJson(
-    baseUrl,
-    `/api/conversations/${encodeURIComponent(conversationResult.conversation.id)}/messages`,
-    {
-      method: 'POST',
-      body: {
-        content: 'Please initialize Trellis for the active project and write the PRD for a smoke task.',
-        clientRequestId,
-      },
-    }
-  );
-
-  assert.match(String(messageResult.dispatch || ''), /^(started|queued)$/u);
-  assert.equal(messageResult.acceptedMessage.role, 'user');
-  assert.equal(messageResult.acceptedMessage.metadata.clientRequestId, clientRequestId);
-
-  const completedConversation = await waitForCondition(async () => {
-    if (!fs.existsSync(prdPath) || !fs.existsSync(taskJsonPath) || !fs.existsSync(workflowPath)) {
-      return null;
-    }
-
-    const encodedConversationId = encodeURIComponent(conversationResult.conversation.id);
-    const [conversationPayload, messagePage] = await Promise.all([
-      fetchJson(baseUrl, `/api/conversations/${encodedConversationId}?includePrivateMessages=1`),
-      fetchJson(baseUrl, `/api/conversations/${encodedConversationId}/messages?limit=100`),
-    ]);
-    const assistantReplies = Array.isArray(messagePage.items)
-      ? messagePage.items.filter((message) => message && message.role === 'assistant')
-      : [];
-
-    return assistantReplies.some((message) => message.status === 'completed')
-      ? { ...conversationPayload.conversation, messages: messagePage.items }
-      : null;
-  });
-
-  const assistantReplies = completedConversation.messages.filter((message) => message && message.role === 'assistant');
-  assert.ok(assistantReplies.length >= 1);
-  assert.equal(assistantReplies[assistantReplies.length - 1].status, 'completed');
-
-  assert.ok(fs.existsSync(trellisDir));
-  assert.ok(fs.existsSync(workflowPath));
-  assert.ok(fs.existsSync(taskJsonPath));
-  assert.ok(fs.existsSync(prdPath));
-  assert.equal(fs.readFileSync(currentTaskPath, 'utf8').trim(), '.trellis/tasks/pi-tool-smoke');
-  assert.match(fs.readFileSync(prdPath, 'utf8'), /Verify that a pi-mono agent can call trellis-init and trellis-write/u);
-  assert.equal(stderrText.trim(), '');
 });
 
 test('bootstrap leaves an empty conversation database untouched', (t) => {

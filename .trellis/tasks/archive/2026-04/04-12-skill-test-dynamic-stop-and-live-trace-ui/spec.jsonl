@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/skills/skill-testing.md", "reason": "Target spec to update if dynamic-mode semantics or UI contract changes."}
-{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Target spec to update if run cancel or live tool-event contracts change."}
-{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Target spec to update if trace UI reuse introduces a new shared browser pattern."}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer contract notes may need capture after implementation."}

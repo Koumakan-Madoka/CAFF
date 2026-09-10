@@ -309,15 +309,8 @@
         dom.summaryMemoryQuery.disabled = !hasConversation || isBusy;
       }
 
-      const useCurrentTask = Boolean(dom.summaryMemoryCurrentTask && dom.summaryMemoryCurrentTask.checked);
-
       if (dom.summaryMemoryTask) {
-        dom.summaryMemoryTask.disabled = !hasConversation || isBusy || useCurrentTask;
-        dom.summaryMemoryTask.placeholder = useCurrentTask ? '将自动使用当前 Trellis 任务' : '例如：05-03-conversation-digest';
-      }
-
-      if (dom.summaryMemoryCurrentTask) {
-        dom.summaryMemoryCurrentTask.disabled = !hasConversation || isBusy;
+        dom.summaryMemoryTask.disabled = !hasConversation || isBusy;
       }
 
       if (dom.summaryMemoryConversationTitle) {
@@ -385,8 +378,7 @@
           query,
           latest,
           limit: 5,
-          useCurrentTask: Boolean(dom.summaryMemoryCurrentTask && dom.summaryMemoryCurrentTask.checked),
-          taskName: dom.summaryMemoryCurrentTask && dom.summaryMemoryCurrentTask.checked ? '' : (dom.summaryMemoryTask ? dom.summaryMemoryTask.value.trim() : ''),
+          taskName: dom.summaryMemoryTask ? dom.summaryMemoryTask.value.trim() : '',
           sourceKind: dom.summaryMemoryKind ? dom.summaryMemoryKind.value.trim() : '',
           conversationTitle: dom.summaryMemoryConversationTitle ? dom.summaryMemoryConversationTitle.value.trim() : '',
           updatedAfter: dom.summaryMemoryUpdatedAfter ? dom.summaryMemoryUpdatedAfter.value.trim() : '',
@@ -482,9 +474,6 @@
         dom.summaryMemoryBackfillButton.addEventListener('click', submitBackfill);
       }
 
-      if (dom.summaryMemoryCurrentTask) {
-        dom.summaryMemoryCurrentTask.addEventListener('change', render);
-      }
 
       document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && isOpen) {

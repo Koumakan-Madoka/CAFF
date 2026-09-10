@@ -9,7 +9,7 @@ const {
   resolveNodeExecutionRoles,
 } = require('../../build/server/domain/dag/dag-scheduler');
 const {
-  applySessionGoalAction,
+  applySessionGoalAction: applySessionGoalActionRaw,
   createSessionGoalBudgetProposal,
   getSessionGoal,
   getSessionGoalProposal,
@@ -21,6 +21,25 @@ const { withTempDir } = require('../helpers/temp-dir');
 const ROOT_ID = 'root-conversation';
 const WORKER_ID = 'role-family-gpt';
 const VERIFIER_ID = 'role-family-kimi';
+
+function applySessionGoalAction(store, conversationId, input = {}) {
+  if (input.action !== 'set') {
+    return applySessionGoalActionRaw(store, conversationId, input);
+  }
+  return applySessionGoalActionRaw(store, conversationId, {
+    acceptanceCriteria: [{
+      id: 'criterion-1',
+      statement: input.objective || 'The DAG node result is observable',
+      verifyBy: 'DAG worker/verifier completion protocol',
+      status: 'pending',
+      risk: 'normal',
+      evidenceRefs: [],
+    }],
+    workItems: [],
+    evidence: [],
+    ...input,
+  });
+}
 
 test('platform recovery scribe is excluded from DAG worker and verifier candidates', () => {
   const participants = [
@@ -208,15 +227,46 @@ function createHarness(store, overrides = {}) {
   return { scheduler, spawns, resumes, broadcasts, prepareCalls, deliveries };
 }
 
-/** D27 completion protocol: the worker announces completion via a goal
- * complete proposal, then the scheduler event fires (as the bridge would). */
-function announceComplete(store, scheduler, childId, resultText, proposerAgentId = WORKER_ID) {
-  const result = proposeSessionGoalAction(
+/** Record criterion-linked proof before proposing completion. */
+function recordGoalAcceptance(store, conversationId, summary) {
+  const goal = getSessionGoal(store.getConversation(conversationId));
+  assert.ok(goal, `expected Goal for ${conversationId}`);
+  const evidenceId = `evidence-${goal.goalId}-${(goal.evidence || []).length + 1}`;
+  const criterionIds = (goal.acceptanceCriteria || [])
+    .filter((criterion) => criterion.status !== 'waived')
+    .map((criterion) => criterion.id);
+  applySessionGoalActionRaw(store, conversationId, {
+    action: 'update-delivery',
+    ...goal,
+    acceptanceCriteria: (goal.acceptanceCriteria || []).map((criterion) => criterion.status === 'waived'
+      ? criterion
+      : {
+          ...criterion,
+          status: 'passed',
+          evidenceRefs: Array.from(new Set([...(criterion.evidenceRefs || []), evidenceId])),
+        }),
+    workItems: (goal.workItems || []).map((item) => ({ ...item, status: 'done' })),
+    evidence: [
+      ...(goal.evidence || []),
+      { id: evidenceId, criterionIds, kind: 'test', summary },
+    ],
+  });
+}
+
+function proposeCompletion(store, conversationId, resultText, proposerAgentId = WORKER_ID) {
+  recordGoalAcceptance(store, conversationId, resultText);
+  return proposeSessionGoalAction(
     store,
-    childId,
+    conversationId,
     { action: 'complete', reason: resultText },
     { agentId: proposerAgentId, agentName: proposerAgentId },
   );
+}
+
+/** D27 completion protocol: the worker records evidence and then announces
+ * completion via a Goal proposal; the scheduler event follows. */
+function announceComplete(store, scheduler, childId, resultText, proposerAgentId = WORKER_ID) {
+  const result = proposeCompletion(store, childId, resultText, proposerAgentId);
   scheduler.handleEvent('conversation_goal_proposal_updated', {
     conversationId: childId,
     goal: result.goal,
@@ -446,12 +496,7 @@ test('post-bind settle: completion proposal announced before doing binding settl
         // (D27 race). The completion still goes through the D28 protocol:
         // worker proposal → (exempt) scheduler auto-accept → done.
         applySessionGoalAction(store, childId, { action: 'set', objective: 'instant race goal', checklist: [] });
-        proposeSessionGoalAction(
-          store,
-          childId,
-          { action: 'complete', reason: 'instant result' },
-          { agentId: WORKER_ID, agentName: WORKER_ID },
-        );
+        proposeCompletion(store, childId, 'instant result', WORKER_ID);
         spawns.push({ nodeId: input.node.id, conversationId: childId, bootstrapMessageId: messageId });
         return { conversationId: childId };
       },
@@ -486,7 +531,19 @@ test('D28: goal complete WITHOUT a persisted worker→verifier ruling fails clos
         // no ruling) — e.g. a UI race before the binding lands. D28: an
         // unverifiable completion must NOT settle done.
         applySessionGoalAction(store, childId, { action: 'set', objective: 'race goal', checklist: [] });
-        applySessionGoalAction(store, childId, { action: 'complete' });
+        const conversation = store.getConversationWithoutMessages(childId);
+        store.updateConversation(childId, {
+          metadata: {
+            ...(conversation.metadata || {}),
+            sessionGoal: {
+              ...getSessionGoal(conversation),
+              status: 'complete',
+              revision: getSessionGoal(conversation).revision + 1,
+              updatedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString(),
+            },
+          },
+        });
         return { conversationId: childId };
       },
     },
@@ -714,7 +771,7 @@ test('D25+D28: reconcile re-routes a pending completion proposal (idempotent)', 
     metadata: { kind: 'conversation_spawn_initial_message' },
   });
   applySessionGoalAction(store, 'child-n1', { action: 'set', objective: 'goal', checklist: [] });
-  proposeSessionGoalAction(store, 'child-n1', { action: 'complete', reason: '重启前宣布完工' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+  proposeCompletion(store, 'child-n1', '重启前宣布完工', WORKER_ID);
 
   const { scheduler, deliveries, resumes } = createHarness(store);
   await scheduler.reconcileOnStartup();
@@ -1438,12 +1495,7 @@ test('manual user block remains terminal even if the child later records an acce
     { actor: { type: 'user' } },
   );
 
-  proposeSessionGoalAction(
-    store,
-    'child-n1',
-    { action: 'complete', reason: '用户阻塞后迟到的摘要' },
-    { agentId: WORKER_ID, agentName: WORKER_ID },
-  );
+  proposeCompletion(store, 'child-n1', '用户阻塞后迟到的摘要', WORKER_ID);
   applySessionGoalAction(store, 'child-n1', {
     action: 'accept-proposal',
     reason: '迟到验收',
@@ -1469,12 +1521,7 @@ test('manual blocked→pending redispatch resets the reused child goal epoch bef
 
   harness.scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
   await flush(harness.scheduler);
-  proposeSessionGoalAction(
-    store,
-    'child-n1',
-    { action: 'complete', reason: '旧执行周期摘要' },
-    { agentId: WORKER_ID, agentName: WORKER_ID },
-  );
+  proposeCompletion(store, 'child-n1', '旧执行周期摘要', WORKER_ID);
   applySessionGoalAction(store, 'child-n1', {
     action: 'accept-proposal',
     ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
@@ -1507,12 +1554,7 @@ test('restart reconcile does not reuse an accepted ruling from before the latest
 
   harness.scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
   await flush(harness.scheduler);
-  proposeSessionGoalAction(
-    store,
-    'child-n1',
-    { action: 'complete', reason: '旧执行周期摘要' },
-    { agentId: WORKER_ID, agentName: WORKER_ID },
-  );
+  proposeCompletion(store, 'child-n1', '旧执行周期摘要', WORKER_ID);
   applySessionGoalAction(store, 'child-n1', {
     action: 'accept-proposal',
     ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
@@ -1562,12 +1604,7 @@ test('restart reconcile recovers a system-blocked node from its durable accepted
   });
   await flush(harness.scheduler);
 
-  proposeSessionGoalAction(
-    store,
-    'child-n1',
-    { action: 'complete', reason: '崩溃窗口中的完工摘要' },
-    { agentId: WORKER_ID, agentName: WORKER_ID },
-  );
+  proposeCompletion(store, 'child-n1', '崩溃窗口中的完工摘要', WORKER_ID);
   applySessionGoalAction(store, 'child-n1', {
     action: 'accept-proposal',
     reason: '验收通过',
@@ -1902,8 +1939,8 @@ test('session goal: proposal ids are strong-unique (randomUUID) and survive norm
   createRoot(store);
   applySessionGoalAction(store, ROOT_ID, { action: 'set', objective: 'id uniqueness goal', checklist: [] });
 
-  const first = proposeSessionGoalAction(store, ROOT_ID, { action: 'complete', reason: 'one' }, { agentId: WORKER_ID, agentName: WORKER_ID });
-  const second = proposeSessionGoalAction(store, ROOT_ID, { action: 'complete', reason: 'two' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+  const first = proposeCompletion(store, ROOT_ID, 'one', WORKER_ID);
+  const second = proposeCompletion(store, ROOT_ID, 'two', WORKER_ID);
 
   assert.ok(String(first.proposal.id).startsWith('prop_'));
   assert.ok(String(second.proposal.id).startsWith('prop_'));
@@ -1918,7 +1955,7 @@ test('session goal ruling: accept/dismiss persist a durable ruling atomically wi
   applySessionGoalAction(store, ROOT_ID, { action: 'set', objective: 'ruling goal', checklist: [] });
 
   // Accept: ruling record carries outcome/snapshot/ruledBy in one write.
-  proposeSessionGoalAction(store, ROOT_ID, { action: 'complete', reason: 'worker 摘要' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+  proposeCompletion(store, ROOT_ID, 'worker 摘要', WORKER_ID);
   const accepted = applySessionGoalAction(store, ROOT_ID, {
     action: 'accept-proposal',
     reason: '验收通过',
@@ -1951,7 +1988,7 @@ test('session goal ruling: accept/dismiss persist a durable ruling atomically wi
 
   // A checklist update during a pending round also preserves the proposal
   // and must not emit proposal-cleared response flags.
-  proposeSessionGoalAction(store, ROOT_ID, { action: 'complete', reason: '第二次完工' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+  proposeCompletion(store, ROOT_ID, '第二次完工', WORKER_ID);
   const pendingChecklistUpdated = applySessionGoalAction(store, ROOT_ID, {
     action: 'update-checklist',
     checklistText: '- [~] awaiting review',
@@ -1975,7 +2012,7 @@ test('session goal ruling: accept/dismiss persist a durable ruling atomically wi
 
   // Ruling without an explicit ruledBy is marked system (never silently
   // treated as user/verifier by the scheduler).
-  proposeSessionGoalAction(store, ROOT_ID, { action: 'complete', reason: '第三次' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+  proposeCompletion(store, ROOT_ID, '第三次', WORKER_ID);
   const unmarked = applySessionGoalAction(store, ROOT_ID, { action: 'accept-proposal' });
   assert.equal(getSessionGoalRuling(unmarked.conversation).ruledBy.kind, 'system');
 

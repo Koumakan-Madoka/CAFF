@@ -4,7 +4,6 @@ const { filterRoutableConversationAgents } = require('../../roles/system-actor-c
 const { formatConversationDigestsForPrompt } = require('../conversation-digest');
 const { formatConversationRetrievalTracesForPrompt } = require('../retrieval-trace');
 const { formatSessionGoalForPrompt } = require('../session-goal');
-const { buildTrellisPromptContext } = require('./trellis-context');
 
 export const AGENT_PROMPT_VERSION =
   String(process.env.CAFF_AGENT_PROMPT_VERSION || '2026-03-30').trim() || '2026-03-30';
@@ -446,9 +445,8 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
     `- Speak publicly: ${relativeCommandPrefix} send-public [--no-finalize] --content-stdin (--no-finalize posts an interim update and keeps the current run active).`,
     `- Delegation: ${relativeCommandPrefix} create-delegation --to "AgentId" --idempotency-key "stable-key" --content-stdin [--reference "commit-or-reference"] creates one durable in-room task; when you need to wait use ${relativeCommandPrefix} await-delegation --delegation-id "id". Delegations have no automatic deadline and remain pending until recipient completion or explicit cancellation. Await yields the current run and releases its model slot; do not poll read-context or use shell sleep.`,
     `- Context retrieval: ${relativeCommandPrefix} read-context for latest public context plus your private mailbox; the result includes a revision, hasChanges, pendingDelegations, and shortCircuited fields. Use await-delegation for pending work. ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 for older public messages (optional --speaker "AgentName" or --agent-id "agent-id").`,
-    `- Long-term recall: when the user explicitly asks about prior context ("上次", "之前", "还记得吗", "回忆一下"), call ${relativeCommandPrefix} search-memory --query "topic keywords" --limit 5 or --latest. Do not assume long-term memory is automatically injected; default excludes the current conversation, use --include-current or optional filters --current-task/--task/--conversation/--kind/--since/--until when needed.`,
-    `- Goal and participant governance: ${relativeCommandPrefix} list-participants refreshes visible participants; ${relativeCommandPrefix} suggest-goal --action complete|pause|set|accept|reject --reason "..." proposes user-confirmed goal changes (set also needs --objective "..." and may receive checklist lines through --checklist-stdin; accept/reject rule on a pending proposal raised by ANOTHER agent — you can never rule on your own proposal); ${relativeCommandPrefix} update-goal-checklist --content-stdin uses [ ] todo, [~] doing, [x] done lines and updates a pending set proposal before approval, otherwise the active goal.`,
-    `- Trellis writes default to preview: ${relativeCommandPrefix} trellis-init --task "my-task" [--confirm] [--force] creates a .trellis scaffold; ${relativeCommandPrefix} trellis-write --path ".trellis/tasks/my-task/prd.md" --content-stdin [--confirm] [--force] writes one .trellis file. Add --confirm to write; --force is dangerous.`,
+    `- Long-term recall: when the user explicitly asks about prior context ("上次", "之前", "还记得吗", "回忆一下"), call ${relativeCommandPrefix} search-memory --query "topic keywords" --limit 5 or --latest. Do not assume long-term memory is automatically injected; default excludes the current conversation, use --include-current or optional filters --task/--conversation/--kind/--since/--until when needed.`,
+    `- Goal and participant governance: ${relativeCommandPrefix} list-participants refreshes visible participants; ${relativeCommandPrefix} suggest-goal --action set|revise|pause|resume|complete|clear|accept|reject --reason "..." proposes a reviewed Goal change; set/revise accept a Goal JSON object through --content-stdin. ${relativeCommandPrefix} update-goal --content-stdin applies factual work-item, criterion-status, and evidence updates from a full Goal JSON object; it rejects structural changes and high-risk waivers. A proposer can never review their own proposal.`,
     '- Room workspace: use the model-visible `room_workspace_preview` tool with no arguments to inspect the server-derived branch/worktree. The preview creates a user authorization card; tell the user what will be created and wait for the card decision. Do not call `room_workspace_bind` for the normal UI flow after the user clicks the card; the server performs binding directly. For non-UI fallback only, call `room_workspace_bind` with `{ "confirm": true }` after explicit user confirmation. Never invent or pass conversation IDs, branches, paths, repositories, or base refs.',
   ].join('\n');
 }
@@ -581,8 +579,6 @@ export function buildAgentTurnPromptSections({
 }: any) {
   const normalizedProjectDir = String(projectDir || '').trim();
   const conversationType = String(conversation && conversation.type ? conversation.type : '').trim();
-  const trellisPromptContext =
-    normalizedProjectDir ? buildTrellisPromptContext({ startDir: normalizedProjectDir }) : '';
   const participants = filterRoutableConversationAgents(agents)
     .filter((item: any) => !isSamePromptAgent(item, agent))
     .map((item: any) => {
@@ -676,6 +672,7 @@ export function buildAgentTurnPromptSections({
     `- Worktree: ${String(normalizedWorkspaceContext.worktreePath || '[unbound]')}`,
     `- Current orchestration: ${normalizedOrchestrationMode}`,
     '- Mode is immutable Room configuration. Direct/Goal/DAG is a separate model-driven orchestration choice and may evolve through the existing Goal/DAG tools.',
+    '- Use Direct for atomic low-risk work that can finish and verify in the current turn; use Goal for long sequential delivery across turns; use DAG only for worthwhile independent slices with real dependency or merge edges.',
   ].join('\n');
 
   const sections = [
@@ -778,9 +775,6 @@ export function buildAgentTurnPromptSections({
       : null,
     participants
       ? promptSection('participants', 'Other Visible Participants', 'conversation/participants', ['Other visible participants:', participants].join('\n'), 'full')
-      : null,
-    trellisPromptContext
-      ? promptSection('trellis_context', 'Trellis Project Context', 'trellis/project', ['Trellis project context:', trellisPromptContext].join('\n'), 'full')
       : null,
     sessionGoalSection
       ? promptSection('session_goal', 'Session Goal', 'conversation/session-goal', ['Session goal:', sessionGoalSection].join('\n'), 'full', 'dynamic')

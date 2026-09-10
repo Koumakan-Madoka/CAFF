@@ -117,26 +117,6 @@ function normalizeBooleanFlag(value: any, defaultValue = false) {
   return defaultValue;
 }
 
-function resolveTaskNameFilter(options: any, explicitTaskName: any, useCurrentTask: any) {
-  const taskName = normalizeOptionalFilterText(explicitTaskName, 'taskName');
-
-  if (taskName || !useCurrentTask) {
-    return taskName;
-  }
-
-  if (typeof options.resolveCurrentTaskName !== 'function') {
-    throw createHttpError(400, 'Unable to resolve the current Trellis task for memory search');
-  }
-
-  const resolvedTaskName = normalizeOptionalFilterText(options.resolveCurrentTaskName(), 'taskName');
-
-  if (!resolvedTaskName) {
-    throw createHttpError(400, 'Unable to resolve the current Trellis task for memory search');
-  }
-
-  return resolvedTaskName;
-}
-
 export function createMemoryController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
 
@@ -171,8 +151,7 @@ export function createMemoryController(options: any = {}): RouteHandler<ApiConte
       const query = normalizeQuery(requestUrl.searchParams.get('q') || requestUrl.searchParams.get('query'), latest);
       const limit = normalizeLimit(requestUrl.searchParams.get('limit'));
       const excludeConversationId = normalizeOptionalConversationId(requestUrl.searchParams.get('excludeConversationId'));
-      const useCurrentTask = normalizeBooleanFlag(requestUrl.searchParams.get('useCurrentTask') || requestUrl.searchParams.get('currentTask'), false);
-      const taskName = resolveTaskNameFilter(options, requestUrl.searchParams.get('taskName') || requestUrl.searchParams.get('task'), useCurrentTask);
+      const taskName = normalizeOptionalFilterText(requestUrl.searchParams.get('taskName') || requestUrl.searchParams.get('task'), 'taskName');
       const sourceKind = normalizeOptionalSourceKind(requestUrl.searchParams.get('sourceKind') || requestUrl.searchParams.get('kind'));
       const conversationTitle = normalizeOptionalFilterText(requestUrl.searchParams.get('conversationTitle') || requestUrl.searchParams.get('title') || requestUrl.searchParams.get('conversation'), 'conversationTitle');
       const updatedAfter = normalizeOptionalDateBoundary(requestUrl.searchParams.get('updatedAfter') || requestUrl.searchParams.get('since') || requestUrl.searchParams.get('from') || requestUrl.searchParams.get('fromDate'), 'updatedAfter');
@@ -194,8 +173,7 @@ export function createMemoryController(options: any = {}): RouteHandler<ApiConte
       const query = normalizeQuery(body.query || body.q, latest);
       const limit = normalizeLimit(body.limit);
       const excludeConversationId = normalizeOptionalConversationId(body.excludeConversationId);
-      const useCurrentTask = normalizeBooleanFlag(body.useCurrentTask || body.currentTask, false);
-      const taskName = resolveTaskNameFilter(options, body.taskName || body.task, useCurrentTask);
+      const taskName = normalizeOptionalFilterText(body.taskName || body.task, 'taskName');
       const sourceKind = normalizeOptionalSourceKind(body.sourceKind || body.kind);
       const conversationTitle = normalizeOptionalFilterText(body.conversationTitle || body.title || body.conversation, 'conversationTitle');
       const updatedAfter = normalizeOptionalDateBoundary(body.updatedAfter || body.since || body.from || body.fromDate, 'updatedAfter');

@@ -1,7 +1,0 @@
-{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
-{"file": "server/domain/conversation/conversation-digest.ts", "reason": "Structured digest retry state machine and digest metadata normalization"}
-{"file": "server/domain/conversation/system-model-submission.ts", "reason": "Strict tool parsing and safe schema-shape diagnostics"}
-{"file": "server/domain/conversation/system-model-output.ts", "reason": "Bounded output attempt diagnostics and failure classification"}
-{"file": "tests/smoke/server-smoke.test.js", "reason": "Observable direct pi-ai retry, persistence, and fallback regression coverage"}
-{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Executable digest retry and persistence contract"}

@@ -3334,6 +3334,28 @@ textarea {
   color: #1d756a;
 }
 
+.session-goal-decisions-editor {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(34, 49, 63, 0.1);
+  border-radius: var(--radius-md);
+}
+
+.session-goal-decisions-editor summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.session-goal-decisions-editor[open] summary {
+  margin-bottom: 0.2rem;
+}
+
+.session-goal-decisions-editor label {
+  display: grid;
+  gap: 0.35rem;
+}
+
 .session-goal-proposal-card {
   border-color: rgba(196, 93, 59, 0.24);
   background: rgba(196, 93, 59, 0.08);
@@ -7252,7 +7274,7 @@ body.chat-app .new-msg-pill {
   }
 }
 
-/* ── DAG 规划图 panel（dag-planning POC, PRD D8） ── */
+/* DAG planning graph panel. */
 /* 规划 tab 激活时抽屉加宽（graph 需要更大可视面积） */
 body.chat-app .context-drawer:has(#plan-drawer:not([hidden])),
 body.chat-app .context-drawer:has(#agent-context-drawer:not([hidden])) {

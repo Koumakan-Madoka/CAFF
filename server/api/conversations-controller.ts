@@ -864,11 +864,9 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (conversationGoalMatch && (req.method === 'GET' || req.method === 'POST')) {
       const conversationId = decodeURIComponent(conversationGoalMatch[1]);
       const body = req.method === 'POST' ? await readRequestJson(req) : { action: 'get' };
-      // D28 fail-closed: while a DAG node is doing, the bound child
-      // conversation's goal may only be read, checklist-updated, or have its
-      // pending proposal ruled on (accept/dismiss = user manual
-      // verification). Direct complete/clear/set/pause/resume would bypass
-      // the worker→verifier completion protocol.
+      // While a DAG node is doing, the bound child Goal may only receive
+      // factual delivery updates or pending-proposal rulings. Direct lifecycle
+      // mutation would bypass the worker-to-verifier completion protocol.
       if (req.method === 'POST' && getDagNodeExecutionContext(store, conversationId)
         && !isDagBoundGoalMutationAllowed(body && body.action)) {
         throw createHttpError(403, '该会话正在执行 DAG 节点，目标仅支持验收裁决（接受/驳回提案），不能直接完成/清除/替换', {
@@ -917,6 +915,16 @@ export function createConversationsController(options: any = {}): RouteHandler<A
               outcome: goalAction.startsWith('accept') ? 'accepted' : 'rejected',
               ruledBy: { kind: 'user' },
             } : {}),
+            conversation: result.conversation,
+            summary,
+          });
+        }
+
+        if (result.changeNotice) {
+          broadcastEvent('conversation_goal_change_notice', {
+            conversationId,
+            notice: result.changeNotice,
+            goal: result.goal,
             conversation: result.conversation,
             summary,
           });

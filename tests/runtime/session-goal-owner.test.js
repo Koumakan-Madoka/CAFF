@@ -7,14 +7,46 @@ const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { withTempDir } = require('../helpers/temp-dir');
 
 const {
-  applySessionGoalAction,
+  applySessionGoalAction: applySessionGoalActionRaw,
   claimSessionGoalAutoContinue,
   formatSessionGoalForPrompt,
   getSessionGoal,
   getSessionGoalProposal,
   pauseSessionGoalForRemovedOwner,
-  proposeSessionGoalAction,
+  proposeSessionGoalAction: proposeSessionGoalActionRaw,
 } = require('../../build/server/domain/conversation/session-goal');
+
+function applySessionGoalAction(store, conversationId, input = {}) {
+  if (input.action !== 'set') return applySessionGoalActionRaw(store, conversationId, input);
+  return applySessionGoalActionRaw(store, conversationId, {
+    acceptanceCriteria: [{
+      id: 'criterion-1',
+      statement: input.objective || 'Goal result is observable',
+      verifyBy: 'runtime test assertion',
+      status: 'pending',
+      risk: 'normal',
+      evidenceRefs: [],
+    }],
+    ...input,
+  });
+}
+
+function proposeSessionGoalAction(store, conversationId, input = {}, proposer = {}) {
+  if (input.action !== 'set' && input.action !== 'revise') {
+    return proposeSessionGoalActionRaw(store, conversationId, input, proposer);
+  }
+  return proposeSessionGoalActionRaw(store, conversationId, {
+    acceptanceCriteria: [{
+      id: 'criterion-1',
+      statement: input.objective || 'Goal result is observable',
+      verifyBy: 'runtime test assertion',
+      status: 'pending',
+      risk: 'normal',
+      evidenceRefs: [],
+    }],
+    ...input,
+  }, proposer);
+}
 
 function createOwnerTestStore(overrides = {}) {
   const conversation = {
@@ -133,7 +165,7 @@ test('real SQLite preserves continuation iteration across checklist revision and
   assert.equal(secondClaim.runner.consecutiveModelFailureCount, 0);
 });
 
-test('Goal identity is immutable within a lifecycle and renewed by set or resume', () => {
+test('Goal identity stays stable across lifecycle revisions and changes only on replacement', () => {
   const { store, conversation } = createOwnerTestStore();
   const initial = applySessionGoalAction(store, conversation.id, {
     action: 'set',
@@ -147,8 +179,8 @@ test('Goal identity is immutable within a lifecycle and renewed by set or resume
   assert.equal(paused.revision, 2);
 
   const resumed = applySessionGoalAction(store, conversation.id, { action: 'resume' }).goal;
-  assert.notEqual(resumed.goalId, initial.goalId);
-  assert.equal(resumed.revision, 1);
+  assert.equal(resumed.goalId, initial.goalId);
+  assert.equal(resumed.revision, 3);
 
   const replaced = applySessionGoalAction(store, conversation.id, {
     action: 'set',
