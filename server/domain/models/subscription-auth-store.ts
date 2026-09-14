@@ -230,6 +230,10 @@ export function readSubscriptionCredential(agentDir: any, providerId: any) {
     if (!fs.existsSync(authPath)) {
       return undefined;
     }
+    // A status read must not leave OAuth credentials in a pre-existing wider
+    // auth.json either: tighten best-effort so the file cannot keep a mode the
+    // acceptance contract forbids just because nobody wrote through the lock.
+    tightenAuthFileMode(authPath);
     const parsed = JSON.parse(fs.readFileSync(authPath, 'utf-8').replace(/^\uFEFF/u, ''));
     if (!isPlainObject(parsed)) {
       return undefined;
