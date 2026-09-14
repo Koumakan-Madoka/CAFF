@@ -507,3 +507,72 @@ async function createSdkRuntimeForTest(sdk, calls) {
   assert.ok(calls.some((entry) => entry.type === 'create_agent_session_from_services'));
   return result;
 }
+
+test('SDK host restores the env-proxy global dispatcher after the SDK graph clobbers it', async () => {
+  const { spawn } = require('node:child_process');
+  const net = require('node:net');
+
+  const sdkEntryPath = path.resolve(
+    __dirname, '..', '..', 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js'
+  );
+  const hostPath = path.resolve(__dirname, '..', '..', 'lib', 'pi-sdk-host.mjs');
+
+  const proxy = net.createServer(() => {});
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyPort = proxy.address().port;
+  let proxyHits = 0;
+  proxy.on('connection', (socket) => {
+    proxyHits += 1;
+    socket.destroy();
+  });
+
+  const childScript = `
+    const { createRequire } = await import('node:module');
+    const req = createRequire(process.argv[1]);
+    req('undici'); // loads the SDK's undici copy, which replaces the legacy global dispatcher symbol
+    const legacy = Symbol.for('undici.globalDispatcher.1');
+    const report = (phase) => console.log(JSON.stringify({ phase, dispatcher: globalThis[legacy]?.constructor?.name }));
+    report('after-undici-load');
+    const host = await import(process.argv[2]);
+    if (typeof host.repairEnvProxyGlobalDispatcher !== 'function') {
+      console.log(JSON.stringify({ phase: 'error', message: 'repairEnvProxyGlobalDispatcher is not exported' }));
+      process.exit(3);
+    }
+    host.repairEnvProxyGlobalDispatcher();
+    report('after-repair');
+    await fetch('https://sdk-host-proxy-probe.example/', { redirect: 'manual' }).catch(() => {});
+    report('done');
+  `;
+
+  try {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', childScript, sdkEntryPath, pathToFileURL(hostPath).href], {
+      env: {
+        ...process.env,
+        NODE_USE_ENV_PROXY: '1',
+        HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`,
+        HTTP_PROXY: `http://127.0.0.1:${proxyPort}`,
+        NO_PROXY: 'localhost,127.0.0.1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+    child.stderr.on('data', () => {});
+    const exitCode = await new Promise((resolve) => {
+      child.on('exit', (code) => resolve(code));
+      const timer = setTimeout(() => child.kill(), 20000);
+      child.on('exit', () => clearTimeout(timer));
+    });
+
+    assert.equal(exitCode, 0, `child exited with ${exitCode}: ${stdout}`);
+    const phases = stdout.trim().split('\n').map((line) => JSON.parse(line));
+    const done = phases.find((entry) => entry.phase === 'done');
+    assert.ok(done, `child did not reach done phase: ${stdout}`);
+    assert.ok(
+      proxyHits > 0,
+      'expected the post-repair fetch to reach the proxy (env proxy dispatcher restored)'
+    );
+  } finally {
+    proxy.close();
+  }
+});
