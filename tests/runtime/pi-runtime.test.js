@@ -32,6 +32,26 @@ function createFakeSdkHostEchoPrompt(baseDir, usage = null) {
   ]);
 }
 
+function createFakeSdkHostSystemPromptReport(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    process.send({ type: 'system_prompt', phase: 'ready', systemPrompt: 'harness layer: tools and skills' });",
+    "    const message = {",
+    "      role: 'assistant',",
+    "      content: [{ type: 'text', text: 'terminal reply' }],",
+    "      stopReason: 'stop',",
+    "      timestamp: Date.now(),",
+    "    };",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "    process.send({ type: 'system_prompt', phase: 'turn', systemPrompt: 'harness layer after the turn' });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+  ]);
+}
+
 function createFakeSdkHostCompleteThenHang(baseDir) {
   return createFakeSdkHost(baseDir, [
     "process.on('message', (command) => {",
@@ -733,6 +753,54 @@ test('pi runtime allows callers to mark a run complete early', async (t) => {
   assert.equal(result.code, 0);
   assert.equal(result.signal, null);
   assert.equal(result.completionStopReason, null);
+});
+
+test('pi runtime forwards harness system prompt reports as run events', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-system-prompt-');
+  const sqlitePath = path.join(tempDir, 'pi-runtime-system-prompt.sqlite');
+  const fakeHostPath = createFakeSdkHostSystemPromptReport(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  const promptReports = [];
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'hello harness', {
+    agentDir: tempDir,
+    sqlitePath,
+    heartbeatIntervalMs: 50,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+
+  handle.on('system_prompt', (event) => {
+    promptReports.push({ systemPrompt: event.systemPrompt, phase: event.phase });
+  });
+
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      reject(new Error('Timed out waiting for harness system prompt completion'));
+    }, 2000);
+  });
+
+  await Promise.race([handle.resultPromise, timeoutPromise]);
+
+  assert.deepEqual(promptReports, [
+    { systemPrompt: 'harness layer: tools and skills', phase: 'ready' },
+    { systemPrompt: 'harness layer after the turn', phase: 'turn' },
+  ]);
 });
 
 test('pi runtime sends the full prompt through structured IPC so quoted history is preserved', async (t) => {

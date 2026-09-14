@@ -492,6 +492,145 @@ test('SDK host aborts a runtime created after shutdown starts without reporting 
   assert.equal(runtimeProcess.exitCode, 0);
 });
 
+test('SDK host reports the harness system prompt at ready and after the turn', async () => {
+  const { startProcessHost } = await loadHostModule();
+  const runtimeProcess = new EventEmitter();
+  const sent = [];
+  const stderr = [];
+
+  runtimeProcess.connected = true;
+  runtimeProcess.platform = process.platform;
+  runtimeProcess.versions = { node: process.versions.node };
+  runtimeProcess.stderr = {
+    write(message) {
+      stderr.push(String(message));
+    },
+  };
+  runtimeProcess.send = (message, callback) => {
+    sent.push(message);
+    callback?.(null);
+  };
+  runtimeProcess.disconnect = () => {
+    runtimeProcess.connected = false;
+  };
+
+  const harnessPrompt = 'harness layer: tools, skills, and project context';
+  const session = {
+    sessionFile: path.resolve('harness-session.jsonl'),
+    agent: {
+      state: {
+        get systemPrompt() {
+          return harnessPrompt;
+        },
+      },
+    },
+    async bindExtensions() {},
+    subscribe() {
+      return () => {};
+    },
+    async prompt() {},
+    async waitForIdle() {},
+    async abort() {},
+  };
+  const runtime = {
+    session,
+    setRebindSession() {},
+    async dispose() {},
+  };
+
+  startProcessHost({
+    runtimeProcess,
+    loadSdk: async () => ({}),
+    createRuntime: async () => ({ runtime }),
+  });
+
+  runtimeProcess.emit('message', {
+    type: 'start',
+    prompt: 'hello',
+    config: { heartbeatIntervalMs: 0 },
+  });
+
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (runtimeProcess.exitCode === 0) {
+      break;
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  const promptReports = sent.filter((message) => message.type === 'system_prompt');
+  assert.deepEqual(promptReports.map((message) => message.phase), ['ready', 'turn']);
+  for (const report of promptReports) {
+    assert.equal(report.systemPrompt, harnessPrompt);
+  }
+  assert.deepEqual(stderr, []);
+  assert.equal(runtimeProcess.exitCode, 0);
+});
+
+test('SDK host skips the system prompt report when the SDK exposes no prompt', async () => {
+  const { startProcessHost } = await loadHostModule();
+  const runtimeProcess = new EventEmitter();
+  const sent = [];
+  const stderr = [];
+
+  runtimeProcess.connected = true;
+  runtimeProcess.platform = process.platform;
+  runtimeProcess.versions = { node: process.versions.node };
+  runtimeProcess.stderr = {
+    write(message) {
+      stderr.push(String(message));
+    },
+  };
+  runtimeProcess.send = (message, callback) => {
+    sent.push(message);
+    callback?.(null);
+  };
+  runtimeProcess.disconnect = () => {
+    runtimeProcess.connected = false;
+  };
+
+  const session = {
+    sessionFile: path.resolve('harness-session.jsonl'),
+    agent: {
+      state: {},
+    },
+    async bindExtensions() {},
+    subscribe() {
+      return () => {};
+    },
+    async prompt() {},
+    async waitForIdle() {},
+    async abort() {},
+  };
+  const runtime = {
+    session,
+    setRebindSession() {},
+    async dispose() {},
+  };
+
+  startProcessHost({
+    runtimeProcess,
+    loadSdk: async () => ({}),
+    createRuntime: async () => ({ runtime }),
+  });
+
+  runtimeProcess.emit('message', {
+    type: 'start',
+    prompt: 'hello',
+    config: { heartbeatIntervalMs: 0 },
+  });
+
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (runtimeProcess.exitCode === 0) {
+      break;
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.ok(!sent.some((message) => message.type === 'system_prompt'));
+  assert.deepEqual(stderr, []);
+  assert.equal(runtimeProcess.exitCode, 0);
+});
+
 async function createSdkRuntimeForTest(sdk, calls) {
   const { createSdkRuntime } = await loadHostModule();
   const result = await createSdkRuntime(sdk, {

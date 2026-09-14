@@ -36,6 +36,7 @@ const SUMMARY_KEYWORDS = [
 
 const SECTION_VISIBILITY: Record<string, 'full' | 'summary' | 'presence'> = {
   workspace_header: 'full',
+  harness_prompt: 'full',
   public_persona: 'full',
   private_persona: 'full',
   persona_skills: 'full',
@@ -64,6 +65,7 @@ const SECTION_VISIBILITY: Record<string, 'full' | 'summary' | 'presence'> = {
 
 const SECTION_DISPLAY_TITLES: Record<string, string> = {
   workspace_header: '工作区身份',
+  harness_prompt: 'Harness 注入层（pi 最终系统提示词）',
   public_persona: '公开角色设定',
   private_persona: '私有角色指令',
   persona_skills: '角色专属技能',

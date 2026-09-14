@@ -1091,6 +1091,18 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         return;
       }
 
+      if (message.type === 'system_prompt') {
+        refreshHeartbeatTimeout();
+        const systemPrompt = typeof message.systemPrompt === 'string' ? message.systemPrompt : '';
+        const phase = String(message.phase || '').trim();
+
+        if (systemPrompt) {
+          emit('system_prompt', { systemPrompt, phase });
+        }
+
+        return;
+      }
+
       if (message.type === 'pi_event' && message.event && typeof message.event === 'object') {
         refreshHeartbeatTimeout();
         refreshProgressTimeout();
