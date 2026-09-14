@@ -68,6 +68,38 @@ test('subscription credential writes the pi AuthStorage byte format and preserve
   assert.equal(removedAgain, false);
 });
 
+test('subscription credential writes tighten permissions of a pre-existing wider auth.json', async (t) => {
+  const agentDir = withTempDir('caff-subscription-auth-store-mode-');
+  t.after(() => fs.rmSync(agentDir, { recursive: true, force: true }));
+
+  // Simulate a pre-existing auth.json with wider permissions. writeFileSync's
+  // mode option only applies on creation, so without an explicit chmod the
+  // store would keep writing OAuth credentials into the wider file.
+  const authPath = path.join(agentDir, 'auth.json');
+  fs.writeFileSync(authPath, JSON.stringify({ anthropic: oauthCredential() }, null, 2), { mode: 0o644 });
+  const isWindows = process.platform === 'win32';
+  if (!isWindows) {
+    assert.equal(fs.statSync(authPath).mode & 0o777, 0o644);
+  }
+
+  // Any locked store operation (even a read) must tighten the existing file.
+  const existing = await readSubscriptionCredential(agentDir, 'anthropic');
+  assert.equal(existing && existing.access, 'access-token-value');
+  if (!isWindows) {
+    assert.equal(fs.statSync(authPath).mode & 0o777, 0o600, 'read path must tighten a pre-existing wider auth.json to 0600');
+  }
+
+  // The write path keeps the tightened mode as well.
+  await writeSubscriptionCredential(agentDir, 'openai-codex', oauthCredential({ accountId: 'acct' }));
+  await removeSubscriptionCredential(agentDir, 'openai-codex');
+  if (!isWindows) {
+    assert.equal(fs.statSync(authPath).mode & 0o777, 0o600, 'write path must keep auth.json at 0600');
+  } else {
+    // Windows chmod only maps the read-only bit, so just assert the flow works.
+    assert.ok(fs.existsSync(authPath));
+  }
+});
+
 test('subscription credential writes reject malformed credentials and unsafe provider keys', async (t) => {
   const agentDir = withTempDir('caff-subscription-auth-store-invalid-');
   t.after(() => fs.rmSync(agentDir, { recursive: true, force: true }));

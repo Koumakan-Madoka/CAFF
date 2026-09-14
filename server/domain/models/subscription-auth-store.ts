@@ -37,6 +37,24 @@ function resolveAuthPath(agentDir: any) {
   return path.join(path.resolve(normalizedAgentDir), 'auth.json');
 }
 
+// writeFileSync's mode option only applies when the file is created, so an
+// existing auth.json keeps its original (possibly wider) permissions. The
+// pinned pi runtime deliberately preserves administrator-managed modes and
+// ACLs on its own agentDir, but CAFF writes OAuth credentials into the shared
+// auth.json and its acceptance contract requires the file to stay 0600,
+// matching the other secret writers in this codebase
+// (model-provider-persistence, models-dev-catalog-cache). A pre-existing
+// agentDir directory is left untouched for the same pi-alignment reason.
+function tightenAuthFileMode(authPath: string) {
+  try {
+    fs.chmodSync(authPath, 0o600);
+  } catch {
+    // Some filesystems (Windows network drives, FAT) reject chmod; the
+    // creation-mode path already covers the common case, so this stays
+    // best-effort and never blocks a login on an exotic filesystem.
+  }
+}
+
 function ensureAuthFile(authPath: string) {
   const directoryPath = path.dirname(authPath);
   if (!fs.existsSync(directoryPath)) {
@@ -45,6 +63,7 @@ function ensureAuthFile(authPath: string) {
   if (!fs.existsSync(authPath)) {
     fs.writeFileSync(authPath, '{}', AUTH_FILE_WRITE_OPTIONS);
   }
+  tightenAuthFileMode(authPath);
 }
 
 function parseAuthDocument(text: string | undefined, authPath: string) {
@@ -132,6 +151,7 @@ function serializeAuthDocument(document: Record<string, any>) {
 
 function writeAuthDocument(authPath: string, document: Record<string, any>) {
   fs.writeFileSync(authPath, serializeAuthDocument(document), AUTH_FILE_WRITE_OPTIONS);
+  tightenAuthFileMode(authPath);
 }
 
 export function validateOAuthCredential(credential: any, providerId: string) {
