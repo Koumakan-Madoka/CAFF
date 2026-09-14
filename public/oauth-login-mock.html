@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>官方渠道登录 · 交互原型 · CAFF</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="management-app" data-page="oauth-login-mock">
+    <div class="management-shell">
+      <nav class="rail" aria-label="主导航">
+        <a class="rail-link" href="/" title="聊天工作台" aria-label="聊天工作台"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-chat"></use></svg></a>
+        <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-users"></use></svg></a>
+        <span class="spacer"></span>
+        <button class="rail-button theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="切换为深色主题" title="切换为深色主题">
+          <svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-moon"></use></svg>
+        </button>
+      </nav>
+      <div class="management-main">
+        <header class="management-header">
+          <div class="management-title">
+            <p class="eyebrow">OAuth Login · Interaction Mock</p>
+            <h1>官方渠道登录（原型）</h1>
+            <p class="subtitle">静态交互原型：演示 Claude Pro/Max 与 ChatGPT Codex 订阅 OAuth 登录的前端形态。不连接后端、不发真实网络请求；正式实现将并入「人格管理 → 模型供应商」页。</p>
+          </div>
+          <button id="mock-reset" class="ghost-button" type="button">重置演示状态</button>
+        </header>
+        <main class="management-content">
+          <section id="provider-management-view" class="management-view" role="tabpanel">
+            <aside class="management-pane management-index" aria-label="模型供应商目录">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Configured Model Catalog</p>
+                  <h2>模型供应商</h2>
+                </div>
+                <div class="button-row"><button id="import-from-catalog" class="ghost-button" type="button">从目录导入（模拟）</button></div>
+              </div>
+              <div class="management-warning"><strong>原型说明</strong><p>本页为交互演示。左侧布局即正式版「模型供应商」视图的扩展：新增「官方渠道登录」分组，供应商列表与目录导入保持原有行为。</p></div>
+              <section class="management-group"><div class="management-group-title"><h3>官方渠道登录</h3><span id="channel-count">0 / 2 已登录</span></div><ul id="oauth-channel-list" class="management-list"></ul></section>
+              <section class="management-group"><div class="management-group-title"><h3>已配置供应商</h3><span id="provider-count">0 个连接</span></div><ul id="provider-list" class="management-list"></ul></section>
+              <p class="management-note"><strong>写入边界</strong><br />OAuth 凭证只写入共享 agentDir 的 auth.json；models.json 仅在 Codex 登录时注册 openai-codex provider。token 刷新由 pi 运行时自动完成，CAFF 不自建刷新逻辑。</p>
+            </aside>
+            <section class="management-pane management-detail" aria-live="polite"><div id="provider-detail"></div></section>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div id="oauth-flow-backdrop" class="new-conversation-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="oauth-flow-title">
+      <div class="new-conversation-dialog" id="oauth-flow-dialog"></div>
+    </div>
+    <div id="catalog-import-backdrop" class="new-conversation-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="catalog-import-title">
+      <div class="new-conversation-dialog" id="catalog-import-dialog"></div>
+    </div>
+    <div id="toast" class="toast hidden" role="status"></div>
+
+    <script src="/shared/theme.js"></script>
+    <script defer src="/shared/icons.js"></script>
+    <script defer src="/shared/toast.js"></script>
+    <script defer src="/oauth-login-mock.js"></script>
+  </body>
+</html>
