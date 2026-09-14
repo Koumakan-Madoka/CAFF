@@ -198,9 +198,29 @@ function defaultCheckPortAvailable(host: string, port: number) {
   });
 }
 
+// Keep the underlying network cause (ENOTFOUND / ETIMEDOUT / ECONNRESET / ...)
+// attached to the surfaced message; undici's bare "fetch failed" is not
+// actionable for users or logs.
+function describeErrorCauses(error: any) {
+  const parts: string[] = [];
+  let current = error && typeof error === 'object' ? error.cause : null;
+  for (let depth = 0; current && depth < 3; depth += 1) {
+    const code = current.code ? String(current.code) : '';
+    const detail = current.message ? String(current.message) : '';
+    const part = [code, detail].filter(Boolean).join(': ').replace(/\s+/gu, ' ').trim();
+    if (part && !parts.includes(part)) {
+      parts.push(part);
+    }
+    current = current.cause;
+  }
+  return parts.join(' <- ');
+}
+
 function sanitizeErrorMessage(error: any) {
   const message = error instanceof Error ? error.message : String(error || 'login failed');
-  const text = message.replace(/\s+/gu, ' ').trim();
+  const causes = describeErrorCauses(error);
+  const combined = causes ? `${message} [cause: ${causes}]` : message;
+  const text = combined.replace(/\s+/gu, ' ').trim();
   return text.slice(0, MAX_ERROR_MESSAGE_LENGTH) || 'login failed';
 }
 
@@ -226,6 +246,7 @@ export type LoginSessionSnapshot = {
   createdAt: number;
   updatedAt: number;
   providerRegistered: boolean;
+  failedStep: string | null;
 };
 
 type LoginSession = {
@@ -238,6 +259,7 @@ type LoginSession = {
   createdAt: number;
   updatedAt: number;
   providerRegistered: boolean;
+  failedStep: string | null;
   abort: AbortController | null;
 };
 
@@ -251,6 +273,7 @@ export function createSubscriptionLoginService(options: any = {}) {
   const now = typeof options.now === 'function' ? options.now : () => Date.now();
   const env = options.env || process.env;
   const onModelsCommitted = typeof options.onModelsCommitted === 'function' ? options.onModelsCommitted : () => {};
+  const logError = typeof options.logError === 'function' ? options.logError : null;
 
   const writeCredential = typeof options.writeCredential === 'function'
     ? options.writeCredential
@@ -283,6 +306,7 @@ export function createSubscriptionLoginService(options: any = {}) {
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       providerRegistered: session.providerRegistered,
+      failedStep: session.failedStep,
     };
   }
 
@@ -310,6 +334,11 @@ export function createSubscriptionLoginService(options: any = {}) {
   ) {
     if (!ACTIVE_LOGIN_STATES.has(session.state)) {
       return;
+    }
+    if (state === 'error') {
+      // Remember where the flow last reported progress so the UI can mark the
+      // failing step honestly instead of blaming the final step.
+      session.failedStep = session.state;
     }
     session.state = state;
     session.error = error;
@@ -439,6 +468,13 @@ export function createSubscriptionLoginService(options: any = {}) {
       });
     } catch (error) {
       const cancelled = looksCancelled(error, abort.signal);
+      if (!cancelled) {
+        logError && logError(
+          `[subscription-login] ${session.channel} login failed: ` +
+          `${error instanceof Error && error.stack ? error.stack : String(error)}` +
+          (describeErrorCauses(error) ? `\n[subscription-login] cause chain: ${describeErrorCauses(error)}` : '')
+        );
+      }
       finalizeSession(
         session,
         cancelled ? 'cancelled' : 'error',
@@ -461,6 +497,10 @@ export function createSubscriptionLoginService(options: any = {}) {
       }
       finalizeSession(session, 'success', null);
     } catch (error) {
+      logError && logError(
+        `[subscription-login] ${session.channel} post-login persistence failed: ` +
+        `${error instanceof Error && error.stack ? error.stack : String(error)}`
+      );
       finalizeSession(session, 'error', sanitizeErrorMessage(error));
     }
   }
@@ -518,6 +558,7 @@ export function createSubscriptionLoginService(options: any = {}) {
       createdAt: now(),
       updatedAt: now(),
       providerRegistered: false,
+      failedStep: null,
       abort: null,
     };
     sessions.set(session.id, session);

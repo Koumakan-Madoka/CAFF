@@ -276,6 +276,68 @@ test('codex login flow shows the registration step and codex-specific success co
   assert.match(doc.getElementById('oauth-flow-result').textContent, /搜索供应商永远覆盖不到此渠道/u);
 });
 
+test('a failed login marks only the truly completed steps and keeps the network cause', async () => {
+  const session = loadSubscriptionLoginModule();
+  let pollCount = 0;
+  const { controller } = createController(session, {
+    fetchImpl: async (url) => {
+      if (url === '/api/subscription-auth') return channelStatus();
+      if (url === '/api/subscription-auth/logins') {
+        return { session: { id: 'login-err', channel: 'openai-codex', state: 'starting' } };
+      }
+      if (url === '/api/subscription-auth/logins/login-err') {
+        pollCount += 1;
+        if (pollCount === 1) {
+          return {
+            session: {
+              id: 'login-err',
+              channel: 'openai-codex',
+              state: 'waiting_browser',
+              authUrl: 'https://auth.openai.com/oauth/authorize',
+            },
+          };
+        }
+        return {
+          session: {
+            id: 'login-err',
+            channel: 'openai-codex',
+            state: 'error',
+            error: 'fetch failed [cause: ECONNRESET: connect ECONNRESET 104.18.7.10:443]',
+            failedStep: 'waiting_browser',
+          },
+        };
+      }
+      throw new Error(`unexpected url ${url}`);
+    },
+  });
+
+  await controller.open();
+  session.dom.window.document.querySelector('[data-oauth-channel-login="openai-codex"]').click();
+  await settle();
+
+  const doc = session.dom.window.document;
+  await flushTimers(session, 2);
+
+  const markOf = (key) => {
+    const text = doc.querySelector(`[data-step="${key}"]`).textContent;
+    if (text.startsWith('✓ ')) return 'done';
+    if (text.startsWith('✗ ')) return 'error';
+    if (text.startsWith('⏳ ')) return 'active';
+    return 'pending';
+  };
+  assert.equal(markOf('pkce'), 'done', 'PKCE completed before the failure');
+  assert.equal(markOf('browser'), 'done', 'the authorize URL was issued');
+  assert.equal(markOf('callback'), 'error', 'the error mark lands on the last known stage');
+  assert.equal(markOf('exchange'), 'pending', 'steps after the failure are not shown as completed');
+  assert.equal(markOf('persist'), 'pending', 'persist is not claimed done');
+  assert.equal(markOf('register'), 'pending', 'register is not claimed done');
+  assert.match(
+    doc.getElementById('oauth-flow-result').textContent,
+    /登录失败：fetch failed \[cause: ECONNRESET/u,
+    'the network cause is visible to the user'
+  );
+});
+
 test('cancelling the login settles the session without writing credentials', async () => {
   const session = loadSubscriptionLoginModule();
   const calls = [];

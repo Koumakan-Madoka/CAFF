@@ -331,3 +331,29 @@ rendering the logged-in state (stale subscription block + external note)
 until a manual refresh. `subscription-login.js` now re-renders the detail
 pane from the reloaded providers after logout, so the editor falls back to
 the API key display immediately.
+
+## Post-acceptance fix: diagnosable OAuth failures (work-6 support)
+
+The first real ChatGPT Codex login attempt on the isolated preview instance
+failed with a bare `fetch failed` while the browser flow itself (authorize
+page + local callback) had succeeded. Post-mortem:
+
+- The failing call is the token exchange (`POST auth.openai.com/oauth/token`)
+  inside the pinned pi-ai flow; undici's `TypeError: fetch failed` carries the
+  real network cause in `error.cause`, which the sanitized session message
+  discarded, and nothing was written to the server log.
+- The web dialog made it worse: in the `error` state it marked every step
+  before the last one as done and pinned the ✗ on the final step, so the user
+  saw "✓ credentials written / ✗ provider registered" while in fact nothing
+  had been written.
+
+Fixes (committed on the room branch):
+
+- `subscription-login.ts` keeps the cause chain (up to three levels, codes
+  first) in the sanitized session error, records `failedStep` (the last
+  active stage) on error, and logs the full stack + cause chain through the
+  injectable `logError` hook (wired to `console.error` in `create-server.ts`).
+- `subscription-login.js` renders failures honestly: only steps before the
+  failed stage get ✓, the failed stage gets ✗, later steps stay pending.
+- Tests: service-level cause-chain/`failedStep` assertions plus a jsdom case
+  for the honest step marks and the visible `[cause: …]` message.

@@ -292,6 +292,28 @@ test('flow failures surface as sanitized error sessions without touching storage
   assert.equal(fs.existsSync(path.join(harness.agentDir, 'auth.json')), false);
 });
 
+test('flow failures keep the network cause chain and the failing stage for diagnosis', async (t) => {
+  const harness = createHarness(t);
+  harness.registerFlow('openai-codex', async (interaction) => {
+    interaction.notify({ type: 'auth_url', url: 'https://auth.openai.com/oauth/authorize' });
+    const cause = Object.assign(new Error('connect ECONNRESET 104.18.7.10:443'), { code: 'ECONNRESET' });
+    const error = new Error('fetch failed');
+    error.cause = cause;
+    throw error;
+  });
+
+  const session = await harness.service.startLogin('openai-codex');
+  const settled = await waitForSessionState(harness.service, session.id, ['success', 'error', 'cancelled']);
+  assert.equal(settled.state, 'error');
+  assert.equal(
+    settled.error,
+    'fetch failed [cause: ECONNRESET: connect ECONNRESET 104.18.7.10:443]',
+    'the undici cause chain is preserved in the surfaced message'
+  );
+  assert.equal(settled.failedStep, 'waiting_browser', 'the last active stage is recorded for honest UI marking');
+  assert.equal(fs.existsSync(path.join(harness.agentDir, 'auth.json')), false);
+});
+
 test('logout removes credentials and the codex provider registration together', async (t) => {
   const harness = createHarness(t);
   harness.registerFlow('openai-codex', async () => oauthCredential({ access: 'codex-access', accountId: 'acct' }));

@@ -126,6 +126,7 @@ export function createServerApp(options: any = {}) {
   const subscriptionLoginService = options.subscriptionLoginService || createSubscriptionLoginService({
     agentDir,
     onModelsCommitted: () => modelCatalog.invalidate(),
+    logError: (message: string) => console.error(message),
   });
   const sqlitePath = String(options.sqlitePath || '').trim() || resolveSetting('', process.env.PI_SQLITE_PATH, '');
   const initialProjectDir = path.resolve(String(options.projectDir || '').trim() || process.cwd());

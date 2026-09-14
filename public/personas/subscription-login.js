@@ -230,6 +230,18 @@
       }
     }
 
+    // Map the backend's last-known active state (recorded at failure time) to
+    // the step that should carry the error mark. Errors surface at or after
+    // this step; later steps must not be shown as completed.
+    function failedStepKey(session) {
+      switch (session.failedStep) {
+        case 'starting': return 'pkce';
+        case 'waiting_browser': return 'callback';
+        case 'exchanging': return 'exchange';
+        default: return '';
+      }
+    }
+
     function ensureFlowDialog() {
       let backdrop = document.getElementById('oauth-flow-backdrop');
       if (backdrop) return backdrop;
@@ -271,12 +283,25 @@
       const activeKey = activeStepKey(session);
       const settled = !ACTIVE_STATES.has(session.state);
       const activeIndex = steps.findIndex((step) => step.key === activeKey);
+      const errorKey = session.state === 'error'
+        ? (failedStepKey(session) || steps[steps.length - 1].key)
+        : '';
+      const errorIndex = errorKey ? steps.findIndex((step) => step.key === errorKey) : -1;
 
       steps.forEach((step, index) => {
         const item = dialog.querySelector(`[data-step="${step.key}"]`);
         if (!item) return;
-        if (session.state === 'error' && index === (activeIndex >= 0 ? activeIndex : steps.length - 1)) {
-          setStepMark(item, 'error');
+        if (session.state === 'error') {
+          // Honest failure display: only steps strictly before the last known
+          // progress are done, the failing step gets the error mark, and the
+          // remaining steps stay pending (unknown) instead of fake checkmarks.
+          if (errorIndex >= 0 && index < errorIndex) {
+            setStepMark(item, 'done');
+          } else if (index === errorIndex) {
+            setStepMark(item, 'error');
+          } else {
+            setStepMark(item, 'pending');
+          }
         } else if (settled || (activeIndex >= 0 && index < activeIndex)) {
           setStepMark(item, 'done');
         } else if (index === activeIndex) {
