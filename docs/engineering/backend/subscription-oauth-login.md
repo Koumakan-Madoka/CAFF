@@ -171,3 +171,70 @@ Fixed ports, **not** dynamically allocated:
   logout only removes the credential.
 - No OAuth secrets enter the CAFF database; auth.json remains the single
   credential store.
+
+## Implementation record (work-2 / work-3)
+
+Backend landed on the room branch with three modules and one controller:
+
+- `server/domain/models/subscription-auth-store.ts` — auth.json persistence.
+  Mirrors pi's `FileAuthStorageBackend` byte-for-byte: 2-space JSON without a
+  trailing newline, `writeFileSync` mode 0600 (parent dir 0700), and a
+  `proper-lockfile` lock (`realpath: false`, `retries: 0`, `stale: 30s`,
+  ELOCKED retry with pi's backoff curve) so CAFF writes serialize against
+  pi runtime token refreshes. `proper-lockfile@4.1.2` is now a direct CAFF
+  dependency (previously only a transitive pi-coding-agent dep). Credential
+  shape is validated before writing (`{type:"oauth", access, refresh,
+  expires[, accountId]}`); malformed existing auth.json fails closed.
+- `server/domain/models/subscription-login.ts` — login/logout orchestration.
+  - The pi-ai OAuth flow modules (`dist/auth/oauth/{anthropic,openai-codex}.js`)
+    are Node-only and **not** exposed through pi-ai's `package.json` exports;
+    they are loaded by file URL from the pinned dist tree (same precedent as
+    `lib/pi-model-config-validator.mjs` reaching into pi-coding-agent dist).
+    Dynamic import goes through `Function('specifier', 'return
+    import(specifier)')` so tsc's commonjs output cannot rewrite it to
+    `require()` (same pattern as `conversation-digest.ts`).
+  - Interaction adapter: `select` prompts (codex browser/device-code) are
+    answered `"browser"` directly; `manual_code` prompts stay pending and
+    reject on login-session abort (the deadlock pitfall above); `text` /
+    `secret` prompts are rejected as unsupported.
+  - Port pre-check binds-and-releases the channel's callback port on the
+    `PI_OAUTH_CALLBACK_HOST` (default 127.0.0.1) before `login()` starts;
+    failure maps to `callback_port_unavailable`. One active login per
+    channel; `login_in_progress` otherwise.
+  - Codex login success registers the `openai-codex` provider entry into
+    models.json via the existing `updateModelProviderDocument` write path
+    (CAFF schema + pinned pi schema validation, backups, write queue). The
+    model list comes from `OPENAI_CODEX_MODELS`
+    (`@earendil-works/pi-ai/providers/openai-codex.models`, a public export);
+    entries carry id/name/api/baseUrl/reasoning/input/contextWindow/maxTokens
+    and no apiKey. Logout removes the entry again; anthropic never touches
+    models.json.
+  - `dispose()` aborts in-flight logins; wired into `createServerApp.close()`.
+- `server/api/subscription-auth-controller.ts` — HTTP surface, loopback/Host/
+  Origin/CSRF guarded like the model-providers controller (`subscription_auth`
+  issue prefix):
+  - `GET /api/subscription-auth` → `{channels:[{channel,loggedIn,expiresAt,
+    accountId}], logins:[active sessions]}` (no credential payloads).
+  - `POST /api/subscription-auth/logins` `{channel}` → starts a session;
+    errors map to 400 `channel_unknown`, 409 `login_in_progress` /
+    `callback_port_unavailable`, 422 missing channel.
+  - `GET /api/subscription-auth/logins/:id` → session snapshot
+    (`starting|waiting_browser|exchanging|success|error|cancelled`, authUrl,
+    sanitized error, capped event log); 404 when pruned/unknown.
+  - `POST /api/subscription-auth/logins/:id/cancel` → aborts the flow and
+    settles the session as cancelled.
+  - `POST /api/subscription-auth/logout` `{channel}` → removes the auth.json
+    credential (and the codex models.json entry), returns
+    `{channel, credentialRemoved, modelsUpdated}`.
+
+Verified live against the real pi-ai anthropic flow on an isolated instance:
+login start bound port 53692 and produced the real `claude.ai/oauth/authorize`
+URL, duplicate start rejected 409, cancel released the port, and logout
+reported `credentialRemoved:false` when never logged in.
+
+Tests (added to `test:fast`): `tests/runtime/subscription-auth-store.test.js`
+(byte format, lock interop, fail-closed cases), `tests/runtime/
+subscription-login.test.js` (fake flows: success/cancel/error paths, prompt
+contract, port pre-check, concurrency, codex registration + logout cleanup),
+`tests/http/subscription-auth-controller.test.js` (guard gating, error
+mapping, secret-blind responses).
