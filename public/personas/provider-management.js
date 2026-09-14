@@ -13,6 +13,8 @@
     const editor = namespace.createProviderEditor({
       root: options.detail,
       isEnabled: options.isEnabled,
+      getSubscriptionInfo: (providerId) => subscriptionLogin.describeProvider(providerId),
+      onSubscriptionLogout: (channel) => subscriptionLoginLogout(channel),
       onSave: async (providerId, payload) => {
         if (!providerId) throw new Error('Provider ID 不能为空');
         await runMutation(async () => {
@@ -66,11 +68,32 @@
       },
     });
 
+    const subscriptionLogin = namespace.createSubscriptionLogin({
+      root: options.detail,
+      fetchJson: options.fetchJson,
+      showToast: options.showToast,
+      isEnabled: options.isEnabled,
+      getCsrfToken: options.getCsrfToken,
+      onChannelChanged: async () => {
+        await reloadProvidersList();
+      },
+      onClose: () => {
+        const selected = providers.find((provider) => provider.id === selectedProviderId) || null;
+        showDetailFor(selected);
+      },
+      selectProvider: (providerId) => selectProvider(providerId),
+    });
+
+    function subscriptionLoginLogout(channel) {
+      void subscriptionLogin.logout(channel);
+    }
+
     function setMutationPending(pending) {
       mutationPending = pending;
       options.addButton.disabled = pending || !options.isEnabled();
       options.importButton.disabled = pending || !options.isEnabled();
       options.refreshButton.disabled = pending || !options.isEnabled();
+      if (options.subscriptionButton) options.subscriptionButton.disabled = pending || !options.isEnabled();
       list.inert = pending;
       options.detail.inert = pending;
       if (pending) options.detail.setAttribute('aria-busy', 'true');
@@ -99,6 +122,8 @@
 
     function listRow(provider) {
       const draft = Boolean(provider.__draft);
+      const external = Boolean(provider.hasExternalAuth) && !draft;
+      const codexSubscription = external && provider.id === 'openai-codex';
       const { row: item, button } = shared.createManagementListItem({
         id: provider.id,
         active: provider.id === selectedProviderId,
@@ -107,11 +132,17 @@
       button.dataset.providerId = provider.id;
       const mark = document.createElement('span');
       mark.className = 'provider-mark';
-      mark.textContent = String(provider.name || provider.id || 'P').slice(0, 2).toUpperCase();
+      mark.textContent = codexSubscription ? 'CD' : String(provider.name || provider.id || 'P').slice(0, 2).toUpperCase();
       const copy = document.createElement('span');
       copy.className = 'management-list-copy';
       const name = document.createElement('strong');
       name.textContent = draft ? '新供应商' : provider.name || provider.id || '未命名供应商';
+      if (codexSubscription) {
+        const tag = document.createElement('span');
+        tag.className = 'subscription-tag';
+        tag.textContent = '订阅';
+        name.appendChild(tag);
+      }
       const meta = document.createElement('small');
       const validation = validationByProviderId.get(provider.id);
       const validationLabel = !validation
@@ -121,11 +152,13 @@
           : validation.status === 'error'
             ? '最近验证失败'
             : '最近验证已完成';
-      meta.textContent = draft ? '尚未保存' : `${provider.id} · ${(provider.models || []).length} 个模型 · ${validationLabel}`;
+      meta.textContent = draft
+        ? '尚未保存'
+        : `${provider.id} · ${codexSubscription ? '订阅登录注册 · ' : ''}${(provider.models || []).length} 个模型 · ${validationLabel}${external ? ' · OAuth external' : ''}`;
       copy.append(name, meta);
       const status = document.createElement('span');
-      status.className = `status-dot${validation && validation.status === 'ok' ? ' default' : ' warning'}`;
-      status.title = draft ? '未保存草稿' : validationLabel;
+      status.className = `status-dot${validation && validation.status === 'ok' ? ' default' : external ? ' default' : ' warning'}`;
+      status.title = draft ? '未保存草稿' : external ? 'auth.json 订阅凭证' : validationLabel;
       button.append(mark, copy, status);
       button.addEventListener('click', () => selectProvider(provider.id));
       return item;
@@ -137,14 +170,26 @@
       if (!providers.length) list.innerHTML = `<li class="empty-state">${options.isEnabled() ? '还没有配置供应商。' : 'Provider 配置仅允许本机 loopback local-admin 访问。'}</li>`;
       const configuredCount = providers.filter((provider) => !provider.__draft).length;
       const draftCount = providers.length - configuredCount;
-      options.count.textContent = `${configuredCount} 个连接${draftCount ? ` + ${draftCount} 个草稿` : ''}`;
+      const subscriptionCount = providers.filter((provider) => !provider.__draft && provider.hasExternalAuth).length;
+      options.count.textContent = `${configuredCount} 个连接${draftCount ? ` + ${draftCount} 个草稿` : ''}${subscriptionCount ? ` · 含 ${subscriptionCount} 个订阅条目` : ''}`;
+    }
+
+    function showDetailFor(provider) {
+      // The openai-codex entry is registered and removed by the subscription
+      // login itself (user-confirmed display rule); while its credential is
+      // live it gets the read-only subscription detail instead of the editor.
+      if (provider && !provider.__draft && provider.id === 'openai-codex' && provider.hasExternalAuth) {
+        void subscriptionLogin.renderCodexDetail();
+        return;
+      }
+      editor.show(provider, Boolean(provider && provider.__draft));
     }
 
     function selectProvider(providerId) {
       selectedProviderId = providerId;
       renderList();
       const provider = providers.find((item) => item.id === providerId) || null;
-      editor.show(provider, Boolean(provider && provider.__draft));
+      showDetailFor(provider);
     }
 
     function setProviders(nextProviders, preferredProviderId = '') {
@@ -156,7 +201,7 @@
           : providers[0] && providers[0].id || '';
       renderList();
       const selected = providers.find((provider) => provider.id === selectedProviderId) || null;
-      editor.show(selected, Boolean(selected && selected.__draft));
+      showDetailFor(selected);
     }
 
     options.addButton.addEventListener('click', () => {
@@ -192,8 +237,34 @@
     });
 
     async function refreshProviders(preferredProviderId = '') {
-      const result = await options.fetchJson('/api/model-providers');
+      const [result] = await Promise.all([
+        options.fetchJson('/api/model-providers'),
+        // Subscription markers come from the provider projection itself
+        // (hasExternalAuth); the status call only enriches the detail views.
+        subscriptionLogin.refreshStatus().catch(() => null),
+      ]);
       setProviders(result.providers, preferredProviderId || selectedProviderId);
+    }
+
+    async function reloadProvidersList() {
+      // Used after a subscription login/logout: refresh list data and the
+      // downstream consumers without replacing the active detail pane.
+      const [result] = await Promise.all([
+        options.fetchJson('/api/model-providers'),
+        subscriptionLogin.refreshStatus().catch(() => null),
+      ]);
+      providers = Array.isArray(result.providers) ? result.providers : [];
+      if (selectedProviderId && !providers.some((provider) => provider.id === selectedProviderId)) {
+        selectedProviderId = providers[0] && providers[0].id || '';
+      }
+      renderList();
+      await options.onProvidersChanged();
+    }
+
+    if (options.subscriptionButton) {
+      options.subscriptionButton.addEventListener('click', () => {
+        void subscriptionLogin.open();
+      });
     }
 
     return {

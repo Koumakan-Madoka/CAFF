@@ -238,3 +238,52 @@ subscription-login.test.js` (fake flows: success/cancel/error paths, prompt
 contract, port pre-check, concurrency, codex registration + logout cleanup),
 `tests/http/subscription-auth-controller.test.js` (guard gating, error
 mapping, secret-blind responses).
+
+## Frontend (work-4)
+
+`public/personas/subscription-login.js` replaces the confirmed mock
+(`public/personas/oauth-login-mock.js` and the v1 prototype pages were
+deleted; the entry button `#official-channel-login` is unchanged).
+
+- Channel view in the provider detail pane renders from
+  `GET /api/subscription-auth`: per-channel login state (accountId/expiry for
+  codex, expiry for anthropic), browser-login/logout actions, codex-only
+  "view provider" shortcut, and a resume path for in-flight sessions
+  (recovery after a page reload mid-login).
+- Login dialog drives the real session API: `POST …/logins` on open,
+  `GET …/logins/:id` polled at 1.2 s, step markers derived from session state
+  (`starting→pkce`, `waiting_browser→callback`, `exchanging→exchange`), the
+  real authorize URL displayed with an open-browser button (the page attempts
+  one `window.open` when the URL first appears — the server cannot open a
+  desktop browser from an HTTP handler), and cancel via `POST …/cancel`.
+  Closing the dialog (X / backdrop / Escape) cancels an in-flight session so
+  the callback port is released instead of lingering.
+- Display rules (user-confirmed) live in `provider-management.js` /
+  `provider-editor.js` and rely on the existing provider projection:
+  - Rows with `hasExternalAuth` append "OAuth external" and render the status
+    dot as configured; the openai-codex row additionally gets the 订阅 tag,
+    the "订阅登录注册" meta label, and the `CD` mark.
+  - The provider count appends "含 N 个订阅条目" only while external
+    credentials exist.
+  - anthropic detail (real editor) renders a subscription block (label,
+    account, expiry, logout button) fed by the status API; the generic
+    external-auth note now points to 通过订阅登录 when channel info exists.
+  - openai-codex detail is a read-only subscription view (registered and
+    removed by the login itself) with a real "validate connection" action.
+- After login/logout the provider list is refreshed in place
+  (`reloadProvidersList`) without stomping the active detail pane; downstream
+  consumers refresh through the existing `onProvidersChanged` hook.
+
+Evidence (isolated preview instance, port 3210, headless Edge):
+- Logged-out: list shows zero subscription artifacts; channel view renders
+  both channels; starting a real anthropic login from the UI produced the
+  real `claude.ai/oauth/authorize?…code_challenge=…` URL, the dialog showed
+  the waiting_browser step state, a concurrent second start was rejected
+  409, and cancel rendered "未写入任何凭证" (15/15 checks, one pre-existing
+  favicon 404 excluded).
+- Logged-in (fake credentials seeded into the isolated agentDir auth.json in
+  the exact stored shape): anthropic row/detail markers, codex row tag +
+  registration label + read-only detail with account id, count note, channel
+  view 2/2, anthropic logout removing only the marker/credential, codex
+  logout removing credential + models.json entry and restoring the clean
+  list (17/17 checks).

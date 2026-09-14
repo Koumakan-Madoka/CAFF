@@ -23,6 +23,7 @@
     let draft = null;
     let isDraft = false;
     let sourceId = '';
+    let subscription = null;
 
     const input = (id) => /** @type {HTMLInputElement} */ (document.getElementById(id));
     const select = (id) => /** @type {HTMLSelectElement} */ (document.getElementById(id));
@@ -87,6 +88,9 @@
       const providerId = String(draft.id || '').trim();
       const canSave = Boolean(providerId) && !locked && (!isDraft || !providerId.startsWith('__draft-'));
       const models = Array.isArray(draft.models) ? draft.models : [];
+      subscription = !isDraft && draft.hasExternalAuth && typeof options.getSubscriptionInfo === 'function'
+        ? options.getSubscriptionInfo(providerId)
+        : null;
       const writableAuthMode = draft.apiKeyMode === 'external' ? 'none' : draft.apiKeyMode || 'none';
       root.innerHTML = `
         <div class="management-detail-top">
@@ -107,12 +111,17 @@
             <label><span>Authorization Header</span><select id="provider-auth-header"><option value="false" ${draft.authHeader ? '' : 'selected'}>由协议处理</option><option value="true" ${draft.authHeader ? 'selected' : ''}>启用 Bearer</option></select></label>
             <label><span>models.json 认证模式</span><select id="provider-auth-mode">${['none', 'literal', 'env', 'command'].map((mode) => `<option value="${mode}" ${mode === writableAuthMode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label>
           </div>
-          ${draft.hasExternalAuth ? '<p id="provider-external-auth-note" class="management-note">auth.json / CLI 外部认证只读；本页不会写入、替换或清除它。</p>' : ''}
+          ${draft.hasExternalAuth ? `<p id="provider-external-auth-note" class="management-note">${subscription ? 'auth.json 订阅凭证由「通过订阅登录」管理；本页不直接写入或清除它。' : 'auth.json / CLI 外部认证只读；本页不会写入、替换或清除它。'}</p>` : ''}
         </section>
         <section class="management-card">
           <div class="management-card-title"><div><h3>API Key</h3><p>读取接口只返回状态与模式，输入框永远为空。</p></div><span class="status-badge ${draft.hasApiKey || draft.hasExternalAuth ? '' : 'warning'}">${authCopy()}</span></div>
           <label><span>输入新密钥</span><input id="provider-api-key" type="password" value="${utils.escapeHtml(draft.pendingApiKey || '')}" autocomplete="new-password" data-has-api-key="${Boolean(draft.hasApiKey)}" placeholder="留空以保留已保存密钥" /></label>
           <details class="advanced-auth" ${(draft.apiKeyMode === 'env' || draft.apiKeyMode === 'command') ? 'open' : ''}><summary>高级认证：环境变量 / 命令引用</summary><label><span>输入新引用</span><input id="provider-auth-reference" type="password" value="${utils.escapeHtml(draft.pendingAuthReference || '')}" autocomplete="new-password" placeholder="$PROVIDER_API_KEY 或 !credential-helper" /></label><p class="management-note">已有 reference 不回显；验证连接不会执行 command。</p></details>
+          ${subscription ? `
+          <div id="provider-subscription-block">
+            <p class="management-note"><strong>官方渠道订阅 · ${utils.escapeHtml(subscription.label)} 已登录</strong><br />${subscription.accountId ? `账号 ${utils.escapeHtml(subscription.accountId)} · ` : ''}access token 有效期至 ${utils.escapeHtml(subscription.expiresLabel)}。auth.json 存储凭证优先于上方的 API key 配置；退出订阅登录后自动回退。</p>
+            <div class="button-row"><button id="provider-subscription-logout" class="ghost-button danger" type="button" ${locked ? 'disabled' : ''}>退出订阅登录</button></div>
+          </div>` : ''}
           <button id="clear-provider-secret" class="ghost-button danger" type="button" aria-expanded="false" ${canClear ? '' : 'disabled'}>清除已保存密钥</button>
           <div id="clear-secret-confirmation" class="danger-confirmation hidden" role="alert"><p><strong>确认清除？</strong> 普通保存不会执行此操作。</p><div><button id="cancel-clear-secret" class="ghost-button" type="button">取消</button><button id="confirm-clear-secret" class="ghost-button danger" type="button">确认清除</button></div></div>
           <div id="command-reference-confirmation" class="danger-confirmation hidden" role="alert"><p><strong>确认设置命令引用？</strong> 命令只会在实际模型运行时由 Pi 解析执行。</p><div><button id="cancel-command-reference" class="ghost-button" type="button">取消</button><button id="confirm-command-reference" class="ghost-button danger" type="button">确认并保存</button></div></div>
@@ -202,6 +211,12 @@
     }
 
     function bindEvents() {
+      const subscriptionLogout = root.querySelector('#provider-subscription-logout');
+      if (subscriptionLogout) {
+        subscriptionLogout.addEventListener('click', () => {
+          if (subscription && typeof options.onSubscriptionLogout === 'function') options.onSubscriptionLogout(subscription.channel);
+        });
+      }
       if (isDraft) {
         input('provider-id').addEventListener('input', () => {
           draft.id = input('provider-id').value.trim();
