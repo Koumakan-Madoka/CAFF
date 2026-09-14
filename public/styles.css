@@ -5088,6 +5088,24 @@ body.management-app .management-icon-button.is-refreshing .app-icon {
   }
 }
 
+body.management-app .management-pane .provider-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 0.5rem;
+  width: 100%;
+  margin-top: 0.4rem;
+}
+
+body.management-app .management-pane .provider-actions button {
+  width: 100%;
+  margin: 0;
+  white-space: nowrap;
+}
+
+body.management-app .management-pane .provider-actions #add-provider {
+  grid-column: 1 / -1;
+}
+
 body.management-app .management-content {
   min-width: 0;
   min-height: 0;
