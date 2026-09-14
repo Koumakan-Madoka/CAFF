@@ -202,7 +202,12 @@
           setProviders([]);
           return;
         }
-        await refreshProviders(preferredProviderId);
+        options.refreshButton.classList.add('is-refreshing');
+        try {
+          await refreshProviders(preferredProviderId);
+        } finally {
+          options.refreshButton.classList.remove('is-refreshing');
+        }
       },
     };
   };

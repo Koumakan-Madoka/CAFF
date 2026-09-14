@@ -5073,6 +5073,21 @@ body.management-app .management-icon-button.management-icon-inline .app-icon {
   gap: 0.4rem;
 }
 
+@keyframes management-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
+body.management-app .management-icon-button.is-refreshing .app-icon {
+  animation: management-refresh-spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.management-app .management-icon-button.is-refreshing .app-icon {
+    animation: none;
+    opacity: 0.55;
+  }
+}
+
 body.management-app .management-content {
   min-width: 0;
   min-height: 0;

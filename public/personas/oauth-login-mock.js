@@ -239,7 +239,7 @@
           ${readonlyField('凭证格式', 'oauth · refresh + access（auth.json）')}
           ${readonlyField('access token 有效期至', channelState.expiresAt)}
         </div>
-        <p class="management-note">凭证在 auth.json；本 provider 由订阅登录注册进 models.json，目录导入覆盖不到。退出订阅登录后，本条目一并移除。</p>
+        <p class="management-note">凭证在 auth.json；本 provider 由订阅登录注册进 models.json，搜索供应商覆盖不到。退出订阅登录后，本条目一并移除。</p>
         <div class="button-row"><button id="oauth-mock-detail-logout" class="ghost-button danger" type="button">退出订阅登录</button></div>
       </section>
       <section class="management-card">
@@ -295,8 +295,8 @@
         ${channelRowMarkup(CHANNELS.codex)}
       </section>
       <section class="management-card">
-        <div class="management-card-title"><div><h3>与「从目录导入」的关系</h3><p>两条入口互补，不是一条链路。</p></div></div>
-        <p class="management-note">目录导入只产生 API key 形态的配置。anthropic 导入条目无需改动即可被订阅凭证驱动；openai-codex 不在 models.dev 目录中，只能通过订阅登录注册。未登录订阅时，供应商列表不出现任何订阅相关条目。</p>
+        <div class="management-card-title"><div><h3>与「搜索供应商」的关系</h3><p>两条入口互补，不是一条链路。</p></div></div>
+        <p class="management-note">「搜索供应商」（models.dev 目录）只产生 API key 形态的配置。anthropic 导入条目无需改动即可被订阅凭证驱动；openai-codex 不在目录中，只能通过订阅登录注册。未登录订阅时，供应商列表不出现任何订阅相关条目。</p>
       </section>
       <div class="management-actions"><button id="oauth-mock-reset" class="ghost-button danger" type="button">重置演示状态</button></div>`;
     detail.querySelector('#oauth-channel-back').addEventListener('click', backToProviders);
@@ -426,7 +426,7 @@
       result.classList.remove('hidden');
       result.querySelector('pre').textContent = `auth.json → "${channel.stateKey}": { "type": "oauth", "refresh": "eyJhbGci…", "access": "eyJhbGci…", "expires": … }`;
       result.querySelector('.management-note').textContent = channel.key === 'codex'
-        ? '凭证已写入，openai-codex provider 已注册进 models.json。目录导入永远不覆盖此渠道。'
+        ? '凭证已写入，openai-codex provider 已注册进 models.json。搜索供应商永远覆盖不到此渠道。'
         : '凭证已写入。已配置的 anthropic 供应商即刻起由订阅凭证驱动。';
       refreshAfterChannelChange(channel);
       showToast(`${channel.label} 登录成功`);

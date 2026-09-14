@@ -122,7 +122,7 @@
     function render() {
       root.innerHTML = `
         <div class="management-detail-top">
-          <div><p class="eyebrow">Catalog Import</p><h2>从目录导入</h2><p>目录元数据只读参考；显式确认后才写入 models.json。</p></div>
+          <div><p class="eyebrow">Provider Search</p><h2>搜索供应商</h2><p>搜索 models.dev 目录；目录元数据只读参考，显式确认后才写入 models.json。</p></div>
           <button id="catalog-import-close" class="ghost-button" type="button">返回供应商</button>
         </div>
         <section class="management-card">
@@ -224,14 +224,14 @@
           if (issue && issue.code === 'catalog_source_unavailable') {
             root.innerHTML = `
               <div class="management-detail-top">
-                <div><p class="eyebrow">Catalog Import</p><h2>从目录导入</h2></div>
+                <div><p class="eyebrow">Provider Search</p><h2>搜索供应商</h2></div>
                 <button id="catalog-import-close" class="ghost-button" type="button">返回供应商</button>
               </div>
               <div id="catalog-import-unavailable" class="empty-state">目录快照未就位：vendored 快照尚未提交到仓库，models.dev 目录暂不可用。你仍可以手工添加供应商。</div>`;
             document.getElementById('catalog-import-close').addEventListener('click', () => options.onClose());
             return;
           }
-          root.innerHTML = '<div class="management-detail-top"><div><p class="eyebrow">Catalog Import</p><h2>从目录导入</h2></div><button id="catalog-import-close" class="ghost-button" type="button">返回供应商</button></div><p id="catalog-import-error" class="management-error" role="alert"></p>';
+          root.innerHTML = '<div class="management-detail-top"><div><p class="eyebrow">Provider Search</p><h2>搜索供应商</h2></div><button id="catalog-import-close" class="ghost-button" type="button">返回供应商</button></div><p id="catalog-import-error" class="management-error" role="alert"></p>';
           document.getElementById('catalog-import-close').addEventListener('click', () => options.onClose());
           showError(error, '目录加载失败');
           return;
