@@ -52,7 +52,13 @@ function loadProviderManagement(provider) {
     },
   };
 
-  for (const file of ['public/shared/management-list.js', 'public/personas/provider-management.js']) {
+  for (const file of [
+    'public/shared/management-list.js',
+    'public/shared/model-options.js',
+    'public/personas/management-utils.js',
+    'public/personas/subscription-login.js',
+    'public/personas/provider-management.js',
+  ]) {
     const sourcePath = path.join(projectRoot, file);
     vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
   }
@@ -80,12 +86,13 @@ function loadProviderManagement(provider) {
 test('production management page loads focused modules before the entry and preserves the compatibility route', () => {
   const html = fs.readFileSync(path.join(projectRoot, 'public/personas.html'), 'utf8');
   const scripts = Array.from(html.matchAll(/<script defer src="([^"]+)"/gu), (match) => match[1]);
-  assert.deepEqual(scripts.slice(-8), [
+  assert.deepEqual(scripts.slice(-9), [
     '/personas/management-utils.js',
     '/personas/role-editor.js',
     '/personas/role-management.js',
     '/personas/provider-editor.js',
     '/personas/catalog-import.js',
+    '/personas/subscription-login.js',
     '/personas/provider-management.js',
     '/personas/recovery-scribe-management.js',
     '/personas.js',

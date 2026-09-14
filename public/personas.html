@@ -17,6 +17,7 @@
     <script defer src="/personas/role-management.js"></script>
     <script defer src="/personas/provider-editor.js"></script>
     <script defer src="/personas/catalog-import.js"></script>
+    <script defer src="/personas/subscription-login.js"></script>
     <script defer src="/personas/provider-management.js"></script>
     <script defer src="/personas/recovery-scribe-management.js"></script>
     <script defer src="/personas.js"></script>
@@ -75,10 +76,10 @@
                   <h2>模型供应商</h2>
                   <p>凭据只显示配置状态；已有密钥和 env/command reference 永不回传浏览器。</p>
                 </div>
-                <div class="button-row"><button id="refresh-providers" class="ghost-button" type="button">刷新状态</button><button id="import-from-catalog" class="ghost-button" type="button">从目录导入</button><button id="add-provider" type="button">添加供应商</button></div>
+                <div class="button-row provider-actions"><button id="official-channel-login" class="ghost-button" type="button">通过订阅登录</button><div class="provider-actions-pair"><button id="import-from-catalog" class="ghost-button" type="button">搜索供应商</button><button id="add-provider" type="button">添加供应商</button></div></div>
               </div>
               <div id="provider-local-admin-banner" class="management-warning hidden"><strong>当前部署只读</strong><p>Provider 管理首版只允许本机 loopback local-admin。聊天与角色目录仍可使用。</p></div>
-              <section class="management-group"><div class="management-group-title"><h3>已配置供应商</h3><span id="provider-count">0 个连接</span></div><ul id="provider-list" class="management-list"></ul></section>
+              <section class="management-group"><div class="management-group-title"><div class="management-group-heading"><h3>已配置供应商</h3><button id="refresh-providers" class="management-icon-button management-icon-inline" type="button" title="刷新供应商状态" aria-label="刷新供应商状态"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-refresh"></use></svg></button></div><span id="provider-count">0 个连接</span></div><ul id="provider-list" class="management-list"></ul></section>
               <p class="management-note"><strong>写入边界</strong><br />只修改 runtime 解析到的 agentDir/models.json；runtime registry 与环境默认保持只读。</p>
             </aside>
             <section class="management-pane management-detail" aria-live="polite"><div id="provider-detail"></div></section>

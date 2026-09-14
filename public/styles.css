@@ -5053,6 +5053,110 @@ body.management-app .management-icon-button:hover:not(:disabled) {
   border-color: var(--caff-accent);
 }
 
+body.management-app .management-icon-button.management-icon-inline {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  border-radius: 7px;
+  font-size: 15px;
+}
+
+body.management-app .management-icon-button.management-icon-inline .app-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.management-group-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+@keyframes management-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
+body.management-app .management-icon-button.is-refreshing .app-icon {
+  animation: management-refresh-spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.management-app .management-icon-button.is-refreshing .app-icon {
+    animation: none;
+    opacity: 0.55;
+  }
+}
+
+body.management-app .management-pane .provider-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+  width: 100%;
+  margin-top: 0.4rem;
+}
+
+body.management-app .management-pane .provider-actions > button {
+  width: 100%;
+  margin: 0;
+}
+
+body.management-app .management-pane .provider-actions-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+body.management-app .management-pane .provider-actions-pair button {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding-inline: 0.6rem;
+  white-space: nowrap;
+}
+
+body.management-app .subscription-channel-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.7rem 0;
+}
+
+body.management-app .subscription-channel-row + .subscription-channel-row {
+  border-top: 1px solid var(--caff-border);
+}
+
+body.management-app .subscription-channel-copy {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+body.management-app .subscription-channel-copy small {
+  color: var(--caff-text-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.management-app .subscription-channel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: flex-end;
+}
+
+body.management-app .subscription-tag {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  border: 1px dashed var(--caff-border);
+  border-radius: 6px;
+  font-size: 0.68rem;
+  color: var(--caff-text-soft);
+  vertical-align: middle;
+}
+
 body.management-app .management-content {
   min-width: 0;
   min-height: 0;
