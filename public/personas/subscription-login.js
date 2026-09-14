@@ -488,8 +488,12 @@
         options.showToast(channel === CODEX_PROVIDER_ID
           ? `${config.label} 已退出登录；openai-codex 供应商条目一并移除`
           : `${config.label} 已退出登录；anthropic 回退到 API key（如已配置）`);
-        if (view === 'channels') renderChannelView();
-        else if (view === 'codex') {
+        if (view === 'channels') {
+          renderChannelView();
+        } else {
+          // view === '' (editor detail) or 'codex': the providers were already
+          // reloaded by onChannelChanged, so re-render the detail pane from the
+          // fresh data instead of leaving a stale logged-in view behind.
           view = '';
           options.onClose();
         }

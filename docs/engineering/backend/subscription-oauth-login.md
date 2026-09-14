@@ -287,3 +287,47 @@ Evidence (isolated preview instance, port 3210, headless Edge):
   view 2/2, anthropic logout removing only the marker/credential, codex
   logout removing credential + models.json entry and restoring the clean
   list (17/17 checks).
+
+## Automated tests (work-5)
+
+Domain layer:
+- `tests/runtime/external-provider-auth.test.js` gained an integration case:
+  credentials written by `subscription-auth-store` (pi AuthStorage byte
+  format, anthropic + openai-codex with `accountId`) are detected by
+  `readExternalAuthProviderIds`, closing the store → detection loop that the
+  UI external markers depend on.
+- Logout semantics (credential + models.json entry removal together,
+  concurrent-login rejection, port pre-check, manual-code abort, lock-write
+  format/permissions) were already covered by
+  `subscription-auth-store.test.js` (5) / `subscription-login.test.js` (11) /
+  `subscription-auth-controller.test.js` (6) from work-2/3.
+
+Frontend (jsdom, `tests/runtime/subscription-login-ui.test.js`, 13 tests):
+- Channel view: zero-login state (browser login actions only, 0/2 counter),
+  logged-in state (account + expiry meta, logout actions, codex-only
+  查看供应商 routing), in-progress session resume entry.
+- Login flow dialog: real session API drive (POST start + poll) through
+  starting → waiting_browser (authorize URL displayed, `window.open` once,
+  manual open button wired) → success; codex flow adds the models.json
+  registration step and codex-specific success copy; explicit cancel
+  settles to "未写入任何凭证"; closing the dialog cancels the in-flight
+  session (callback port release).
+- Codex read-only detail: fully read-only fields, subscription account,
+  logout through the real API with list refresh + return-to-list semantics.
+- Provider-management wiring (real provider-editor + subscription-login
+  together): zero-subscription display when logged out; anthropic row
+  external mark + count + editor subscription block; **anthropic logout
+  from the editor detail now falls back to the API key display** (fix:
+  `logoutChannel` re-renders the detail pane via `onClose` after the
+  providers reload instead of leaving the stale logged-in view); codex
+  subscription row/mark/tag + read-only detail + disappearance after logout
+  with count restored.
+
+The suite is registered in `test:fast` next to `subscription-login.test.js`.
+
+Work-5 also fixed one defect found while writing the UI tests: logging out
+of anthropic from the editor's subscription block left the detail pane
+rendering the logged-in state (stale subscription block + external note)
+until a manual refresh. `subscription-login.js` now re-renders the detail
+pane from the reloaded providers after logout, so the editor falls back to
+the API key display immediately.

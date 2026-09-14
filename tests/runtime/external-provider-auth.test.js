@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { readExternalAuthProviderIds } = require('../../build/server/domain/models/external-provider-auth');
+const { writeSubscriptionCredential } = require('../../build/server/domain/models/subscription-auth-store');
 const { withTempDir } = require('../helpers/temp-dir');
 
 test('external provider auth reads only provider ids from the resolved agentDir auth.json', (t) => {
@@ -32,4 +33,24 @@ test('external provider auth fails closed for missing or malformed auth.json', (
   assert.deepEqual([...readExternalAuthProviderIds(tempDir)], []);
   fs.writeFileSync(path.join(tempDir, 'auth.json'), '{not json}', 'utf8');
   assert.deepEqual([...readExternalAuthProviderIds(tempDir)], []);
+});
+
+test('credentials written by the subscription store are detected as external auth', async (t) => {
+  const tempDir = withTempDir('caff-subscription-store-external-');
+  const agentDir = path.join(tempDir, 'agent');
+  fs.mkdirSync(agentDir, { recursive: true });
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  await writeSubscriptionCredential(agentDir, 'anthropic', {
+    type: 'oauth', access: 'access-token', refresh: 'refresh-token', expires: 1893456000000,
+  });
+  await writeSubscriptionCredential(agentDir, 'openai-codex', {
+    type: 'oauth', access: 'access-token', refresh: 'refresh-token', expires: 1893456000000, accountId: 'chatgpt-account',
+  });
+
+  assert.deepEqual(
+    [...readExternalAuthProviderIds(agentDir)].sort(),
+    ['anthropic', 'openai-codex'],
+    'pi AuthStorage-format OAuth credentials light up the external markers',
+  );
 });
