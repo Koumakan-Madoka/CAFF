@@ -5090,6 +5090,7 @@ body.management-app .management-icon-button.is-refreshing .app-icon {
 
 body.management-app .management-pane .provider-actions {
   display: grid;
+  grid-template-columns: 1fr;
   gap: 0.5rem;
   width: 100%;
   margin-top: 0.4rem;
