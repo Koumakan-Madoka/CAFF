@@ -1711,7 +1711,10 @@ export function createAgentExecutor(options: any = {}) {
       retainedSessionPrefix,
       sections: harnessSystemPrompt
         ? [
-            ...deliveredPromptSections,
+            // The harness (pi) system prompt is what the model receives as
+            // its system layer, before CAFF-authored sections are delivered
+            // as the turn prompt. Keep it first so the Inspector mirrors the
+            // model's actual input order.
             {
               sectionKey: 'harness_prompt',
               title: 'Harness 注入层（pi 最终系统提示词）',
@@ -1719,6 +1722,7 @@ export function createAgentExecutor(options: any = {}) {
               visibility: 'full',
               content: harnessSystemPrompt,
             },
+            ...deliveredPromptSections,
           ]
         : deliveredPromptSections,
     });

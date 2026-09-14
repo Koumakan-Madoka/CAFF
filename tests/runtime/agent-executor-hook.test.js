@@ -343,6 +343,11 @@ test('agent executor enriches the context snapshot with the reported harness sys
   assert.ok(Array.isArray(completedSnapshot.sections));
   const harnessSection = completedSnapshot.sections.find((section) => section.sectionKey === 'harness_prompt');
   assert.ok(harnessSection, 'completed snapshot should include the harness_prompt section');
+  assert.equal(
+    completedSnapshot.sections[0].sectionKey,
+    'harness_prompt',
+    'harness_prompt must be the first section: the pi system prompt precedes CAFF-authored turn sections in the model input'
+  );
   assert.equal(harnessSection.source, 'pi-sdk/system-prompt:ready');
   assert.equal(harnessSection.visibility, 'full');
   assert.equal(harnessSection.redacted, true);
