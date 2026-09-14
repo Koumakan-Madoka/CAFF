@@ -27,6 +27,8 @@ backend domain services.
 - Conversation tree DAG plan storage, lifecycle, and plan API (`dag-planning.md`)
 - Skill management and configuration (skills-controller.ts)
 - Local-admin model provider projection, patching, and token limit fields (`model-provider-config.md`)
+- Subscription OAuth login for anthropic / openai-codex, auth.json credential
+  contract, and callback port policy (`subscription-oauth-login.md`)
 
 ## Pre-Development Checklist
 
