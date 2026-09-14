@@ -1692,7 +1692,15 @@ export function createAgentExecutor(options: any = {}) {
       agentDir
     );
     const assistantMessageId = randomUUID();
-    const contextSnapshot = createAgentContextSnapshot({
+    // The harness (pi) assembles the final system prompt inside the SDK host
+    // process and reports it over IPC (phase "ready" once the runtime is up,
+    // phase "turn" after the prompt completes). The context snapshot is
+    // therefore rebuilt when the event arrives so the Inspector shows the
+    // exact prompt the model received, including pi-injected layers that
+    // CAFF-authored sections cannot represent.
+    let harnessSystemPrompt = '';
+    let harnessPromptSource = '';
+    const buildContextSnapshot = () => createAgentContextSnapshot({
       conversationId,
       turnId,
       messageId: assistantMessageId,
@@ -1701,10 +1709,21 @@ export function createAgentExecutor(options: any = {}) {
       promptVersion: AGENT_PROMPT_VERSION,
       deliveryMode: resumeSession ? 'resume' : 'fresh',
       retainedSessionPrefix,
-      sections: deliveredPromptSections,
+      sections: harnessSystemPrompt
+        ? [
+            ...deliveredPromptSections,
+            {
+              sectionKey: 'harness_prompt',
+              title: 'Harness 注入层（pi 最终系统提示词）',
+              source: harnessPromptSource,
+              visibility: 'full',
+              content: harnessSystemPrompt,
+            },
+          ]
+        : deliveredPromptSections,
     });
-
-    const contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
+    let contextSnapshot = buildContextSnapshot();
+    let contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
     const queuedMetadata = {
       provider,
       model,
@@ -2187,6 +2206,20 @@ export function createAgentExecutor(options: any = {}) {
         step,
         timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
       });
+    });
+
+    handle.on('system_prompt', (event: any) => {
+      const systemPrompt = String(event && event.systemPrompt || '').trim();
+
+      if (!systemPrompt) {
+        return;
+      }
+
+      const phase = String(event && event.phase || '').trim();
+      harnessSystemPrompt = systemPrompt;
+      harnessPromptSource = phase ? `pi-sdk/system-prompt:${phase}` : 'pi-sdk/system-prompt';
+      contextSnapshot = buildContextSnapshot();
+      contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
     });
 
     handle.on('assistant_message', (event: any) => {
