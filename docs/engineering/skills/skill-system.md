@@ -171,6 +171,16 @@ Contract:
 - project-scoped skills are the tracked/shared place for repo-owned helper skills that should not live only in ignored local sandbox state
 - prompt assembly, mode skill binding, and runtime resolution must use the same extra roots so a mode-bound skill id resolves identically in bootstrap, execution, and tests
 
+### Contract-Layer Skills
+
+`.agents/skills/` in the CAFF repository holds the contract layer: skills the CAFF process depends on (mandated by `AGENTS.md` / `caff-workflow`) plus their transitive dependencies. Current set:
+
+- `caff-workflow` — mandatory engineering workflow (references `grill-with-docs`)
+- `grill-with-docs`, `grilling`, `domain-modeling` — the grill/ADR clarification chain
+- `create-command`, `dag-planning` — skill authoring and DAG planning helpers
+
+When the active project is the CAFF repo itself, these resolve through the project-scoped external roots above and are exposed as read-only by the skill registry (edits go through git). Keep `.pi-sandbox/skills/` copies only until the corresponding git copies are released to production; remove the shadowing local copies afterwards so the tracked versions win.
+
 ## Builtin Mode Helper Skills
 
 Builtin conversation modes may require fixed helper skills in addition to user-selected or participant-bound skills.

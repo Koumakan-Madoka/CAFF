@@ -6,7 +6,8 @@ Use this index for changes involving skills, skill registry, and the skill loadi
 
 - `lib/skill-registry.ts`: skill discovery, loading, and management
 - `server/api/skills-controller.ts`: skill management and configuration API
-- `.pi-sandbox/skills/`: skill storage and SKILL.md files
+- `.pi-sandbox/skills/`: local (ignored) skill storage and SKILL.md files
+- `.agents/skills/`: tracked contract-layer skills shared via git (caff-workflow, create-command, dag-planning, grill-with-docs, grilling, domain-modeling)
 - `public/skills.html` + `public/skills.js`: skill management UI
 
 ## Pre-Development Checklist
