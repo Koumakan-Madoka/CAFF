@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
@@ -155,7 +156,6 @@ test('SDK host maps an explicit CAFF session path and extension list into an Age
     cwd,
     extensionPaths: [extensionPath],
   });
-
   assert.deepEqual(calls.find((entry) => entry.type === 'session_open'), {
     type: 'session_open',
     sessionPath,
@@ -190,6 +190,109 @@ test('SDK host build includes the exact stream read retry extension asset', () =
     'caff-stream-read-retry.mjs'
   );
   assert.equal(fs.existsSync(builtExtensionPath), true);
+});
+
+test('SDK host forwards contract skill paths and wires the user-scope retirement override', async () => {
+  const { createSdkRuntime } = await loadHostModule();
+  const calls = [];
+  const sdk = createFakeSdk(calls);
+  const agentDir = path.resolve('scoping-agent-dir');
+  const cwd = path.resolve('scoping-project');
+  const contractSkillPath = path.resolve('caff-root', '.agents', 'skills', 'caff-workflow');
+
+  await createSdkRuntime(sdk, {
+    provider: 'test-provider',
+    model: 'test-model',
+    agentDir,
+    sessionPath: path.join(agentDir, 'named-sessions', 'named.jsonl'),
+    cwd,
+    additionalSkillPaths: [contractSkillPath],
+    retireUserScopeSkills: true,
+  });
+
+  const servicesCall = calls.find((entry) => entry.type === 'create_agent_session_services');
+  assert.deepEqual(servicesCall.options.resourceLoaderOptions.additionalSkillPaths, [contractSkillPath]);
+  assert.equal(typeof servicesCall.options.resourceLoaderOptions.skillsOverride, 'function');
+
+  const noFlagCalls = [];
+  await createSdkRuntime(createFakeSdk(noFlagCalls), {
+    provider: 'test-provider',
+    model: 'test-model',
+    agentDir,
+    sessionPath: path.join(agentDir, 'named-sessions', 'named.jsonl'),
+    cwd,
+    additionalSkillPaths: [contractSkillPath],
+  });
+  const noFlagServicesCall = noFlagCalls.find((entry) => entry.type === 'create_agent_session_services');
+  assert.deepEqual(noFlagServicesCall.options.resourceLoaderOptions.additionalSkillPaths, [contractSkillPath]);
+  assert.equal(noFlagServicesCall.options.resourceLoaderOptions.skillsOverride, undefined);
+});
+
+test('SDK host retired user-scope skill filter removes only source-path matches', async () => {
+  const { createRetiredUserScopeSkillFilter } = await loadHostModule();
+  const agentDir = path.resolve('filter-agent-dir');
+  const filter = createRetiredUserScopeSkillFilter(agentDir);
+  const homeDir = os.homedir();
+  const sandboxSkill = { name: 'sandbox-skill', filePath: path.join(agentDir, 'skills', 'sandbox-skill', 'SKILL.md') };
+  const homeSkill = { name: 'home-skill', filePath: path.join(homeDir, '.agents', 'skills', 'home-skill', 'SKILL.md') };
+  const homePiSkill = { name: 'home-pi-skill', filePath: path.join(homeDir, '.pi', 'agent', 'skills', 'home-pi-skill', 'SKILL.md') };
+  const projectSkill = {
+    name: 'project-skill',
+    filePath: path.resolve('target-project', '.agents', 'skills', 'project-skill', 'SKILL.md'),
+  };
+  const contractSkill = {
+    name: 'caff-workflow',
+    filePath: path.resolve('caff-root', '.agents', 'skills', 'caff-workflow', 'SKILL.md'),
+  };
+  const diagnostic = { type: 'warning', message: 'kept' };
+
+  const filtered = filter({
+    skills: [sandboxSkill, homeSkill, homePiSkill, projectSkill, contractSkill],
+    diagnostics: [diagnostic],
+  });
+
+  assert.deepEqual(filtered.skills, [projectSkill, contractSkill]);
+  assert.deepEqual(filtered.diagnostics, [diagnostic]);
+
+  // A prefix-like sibling directory must not be caught by the root filter.
+  const sibling = { name: 'sandbox-skill-2', filePath: `${path.join(agentDir, 'skills')}-other/SKILL.md` };
+  const siblingFiltered = filter({ skills: [sibling], diagnostics: [] });
+  assert.deepEqual(siblingFiltered.skills, [sibling]);
+
+  // Nothing to drop: the original result object is returned untouched.
+  const untouched = { skills: [projectSkill], diagnostics: [] };
+  assert.equal(filter(untouched), untouched);
+});
+
+test('SDK host start command normalizes contract skill scoping fields', async () => {
+  const { normalizeStartCommand } = await loadHostModule();
+  const contractSkillPath = path.resolve('caff-root', '.agents', 'skills', 'caff-workflow');
+  const command = normalizeStartCommand({
+    type: 'start',
+    prompt: 'run',
+    config: {
+      provider: 'p',
+      model: 'm',
+      agentDir: 'agent-dir',
+      sessionPath: 'agent-dir/named-sessions/s.jsonl',
+      cwd: 'project-dir',
+      extensionPaths: [],
+      additionalSkillPaths: [contractSkillPath],
+      retireUserScopeSkills: true,
+    },
+  });
+
+  assert.equal(command.config.cwd, path.resolve('project-dir'));
+  assert.deepEqual(command.config.additionalSkillPaths, [contractSkillPath]);
+  assert.equal(command.config.retireUserScopeSkills, true);
+
+  const legacyCommand = normalizeStartCommand({
+    type: 'start',
+    prompt: 'run',
+    config: {},
+  });
+  assert.deepEqual(legacyCommand.config.additionalSkillPaths, []);
+  assert.equal(legacyCommand.config.retireUserScopeSkills, false);
 });
 
 test('SDK host maps resume and fresh runs to the pinned agent directory session tree', async () => {

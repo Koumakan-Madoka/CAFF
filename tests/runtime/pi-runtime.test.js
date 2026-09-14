@@ -1100,6 +1100,94 @@ test('pi runtime respects explicit cwd and forwards session, resume, and extensi
   assert.deepEqual(command.config.extensionPaths, [path.resolve(extraExtensionPath)]);
 });
 
+test('pi runtime forwards skill scoping fields through IPC with the session cwd', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-skill-scoping-');
+  const projectDir = path.join(tempDir, 'project-root');
+  const sqlitePath = path.join(tempDir, 'pi-runtime-skill-scoping.sqlite');
+  const capturePath = path.join(tempDir, 'capture.json');
+  const contractSkillPath = path.join(tempDir, 'caff-root', '.agents', 'skills', 'caff-workflow');
+  const duplicateContractSkillPath = path.join(tempDir, 'caff-root', '.agents', 'skills', 'caff-workflow');
+  const fakeHostPath = createFakeSdkHostCapturingInfo(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  fs.mkdirSync(projectDir, { recursive: true });
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'check skill scoping', {
+    agentDir: tempDir,
+    sqlitePath,
+    cwd: projectDir,
+    additionalSkillPaths: [contractSkillPath, duplicateContractSkillPath],
+    retireUserScopeSkills: true,
+    session: 'named-session',
+    heartbeatIntervalMs: 50,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+    extraEnv: {
+      TEST_CAPTURE_PATH: capturePath,
+    },
+  });
+
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      reject(new Error('Timed out waiting for skill scoping capture completion'));
+    }, 2000);
+  });
+
+  await Promise.race([handle.resultPromise, timeoutPromise]);
+
+  const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  const command = captured.command;
+
+  // Resume compatibility anchor: the explicit session path stays pinned to the
+  // agentDir tree and is not derived from the changed session cwd.
+  assert.equal(command.config.sessionPath, path.join(tempDir, 'named-sessions', 'named-session.jsonl'));
+  assert.equal(command.config.cwd, projectDir);
+  assert.deepEqual(command.config.additionalSkillPaths, [path.resolve(contractSkillPath)]);
+  assert.equal(command.config.retireUserScopeSkills, true);
+
+  const legacyCaptured = { command: null };
+  const legacyHandle = runtime.startRun('test-provider', 'test-model', 'legacy options', {
+    agentDir: tempDir,
+    sqlitePath,
+    session: 'legacy-session',
+    heartbeatIntervalMs: 50,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+    extraEnv: {
+      TEST_CAPTURE_PATH: capturePath,
+    },
+  });
+
+  await Promise.race([
+    legacyHandle.resultPromise,
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('Timed out waiting for legacy options capture completion'));
+      }, 2000);
+    }),
+  ]);
+
+  legacyCaptured.command = JSON.parse(fs.readFileSync(capturePath, 'utf8')).command;
+  assert.deepEqual(legacyCaptured.command.config.additionalSkillPaths, []);
+  assert.equal(legacyCaptured.command.config.retireUserScopeSkills, false);
+});
+
 test('pi runtime sends an IPC abort command before forcing process termination', async (t) => {
   if (!requireSpawn(t)) {
     return;

@@ -47,3 +47,21 @@ tsconfig.typecheck.tsbuildinfo
 
 # DAG execution per-node worktrees (D22)
 .worktrees/
+
+# Untracked project-layer skills (migrated from .pi-sandbox/skills per room
+# 000791c5 ruling: stay in the CAFF project, load via .agents/skills discovery,
+# but never enter git). See docs/engineering/skills/skill-scoping.md.
+/.agents/skills/bettergi-one-dragon/
+/.agents/skills/dataview-2.0.0/
+/.agents/skills/docx/
+/.agents/skills/glmocr/
+/.agents/skills/invoice-fraud-detection-fuzzy-match-0.1.0/
+/.agents/skills/invoice-fraud-detection-pdf-0.1.0/
+/.agents/skills/k3s-deploy-1.0.0/
+/.agents/skills/ppt-template-generate/
+/.agents/skills/pptx-craft/
+/.agents/skills/visual-automation-1.0.0/
+/.agents/skills/werewolf/
+/.agents/skills/who-is-undercover/
+/.agents/skills/wows-sub-analyzer/
+/.agents/skills/pdf-rw-toolkit-1.0.0/
