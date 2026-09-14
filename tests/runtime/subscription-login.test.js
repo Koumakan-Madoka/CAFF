@@ -427,3 +427,46 @@ test('buildCodexProviderEntry clamps inconsistent limits and keeps required fiel
     },
   ]);
 });
+
+test('buildCodexProviderEntry preserves cost, thinkingLevelMap and compat from pi-ai', () => {
+  const entry = buildCodexProviderEntry({
+    full: {
+      id: 'full',
+      name: 'Full Model',
+      contextWindow: 272000,
+      maxTokens: 128000,
+      reasoning: true,
+      cost: {
+        input: 5,
+        output: 30,
+        cacheRead: 0.5,
+        cacheWrite: 0,
+        tiers: [{ inputTokensAbove: 272000, input: 10, output: 45 }],
+      },
+      thinkingLevelMap: { xhigh: 'xhigh', minimal: 'low' },
+      compat: { supportsOpenAIGrammarTools: true, supportsToolSearch: true },
+    },
+    bare: {
+      id: 'bare',
+      name: 'Bare Model',
+      cost: 'not-an-object',
+      thinkingLevelMap: null,
+    },
+  });
+
+  const full = entry.models.find((model) => model.id === 'full');
+  assert.deepEqual(full.cost, {
+    input: 5,
+    output: 30,
+    cacheRead: 0.5,
+    cacheWrite: 0,
+    tiers: [{ inputTokensAbove: 272000, input: 10, output: 45 }],
+  });
+  assert.deepEqual(full.thinkingLevelMap, { xhigh: 'xhigh', minimal: 'low' });
+  assert.deepEqual(full.compat, { supportsOpenAIGrammarTools: true, supportsToolSearch: true });
+
+  const bare = entry.models.find((model) => model.id === 'bare');
+  assert.equal(Object.hasOwn(bare, 'cost'), false, 'non-object cost is dropped');
+  assert.equal(Object.hasOwn(bare, 'thinkingLevelMap'), false, 'null thinkingLevelMap is dropped');
+  assert.equal(Object.hasOwn(bare, 'compat'), false, 'missing compat is dropped');
+});

@@ -357,3 +357,33 @@ Fixes (committed on the room branch):
   failed stage get ✓, the failed stage gets ✗, later steps stay pending.
 - Tests: service-level cause-chain/`failedStep` assertions plus a jsdom case
   for the honest step marks and the visible `[cause: …]` message.
+
+## Post-acceptance fix 2: proxy egress + codex model registration parity
+
+Two more issues surfaced during the real Codex acceptance conversation:
+
+1. **Server egress must go through the VPN proxy.** The user's VPN only
+   covers the browser (Windows system proxy). Node's fetch does not read the
+   Windows system proxy, so the token exchange exited from a CN IP and OpenAI
+   answered `unsupported_country_region_territory` (403), and direct requests
+   to chatgpt.com are GFW-reset. The preview instance now runs with
+   `NODE_USE_ENV_PROXY=1`, `HTTPS_PROXY`/`HTTP_PROXY` pointing at the local
+   proxy (Clash on 127.0.0.1:17890), and `NO_PROXY=localhost,127.0.0.1`.
+   Login (token exchange) and the codex conversation then both work.
+   Note: Node's built-in WebSocket does not honor the env proxy, so the
+   codex WS transport fails fast on the first message of each conversation
+   and pi-ai falls back to SSE (which does honor the env proxy). This is
+   environment configuration, not code: any future instance needs the same
+   env when the network requires a proxy for OpenAI egress.
+2. **`buildCodexProviderEntry` dropped pi-ai model fields.** The registered
+   codex models lacked `cost` (and `thinkingLevelMap`/`compat`), so pi-ai's
+   `calculateCost()` crashed with `Cannot read properties of undefined
+   (reading 'tiers')` on the first successful response. Registration now
+   passes those fields through (object-shaped only). Both schemas (CAFF +
+   pinned pi) accept them; the already-registered entry was re-registered
+   in place on the isolated instance so no re-login was needed.
+
+Model availability on the user's ChatGPT account: gpt-5.5, gpt-5.6-luna,
+gpt-5.6-sol, gpt-5.6-terra work; gpt-5.3-codex-spark, gpt-5.4 and
+gpt-5.4-mini are rejected by OpenAI for ChatGPT-account Codex usage (kept
+registered for parity with pi's builtin list; the API error is clear).

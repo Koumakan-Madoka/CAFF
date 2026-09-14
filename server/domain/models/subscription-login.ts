@@ -146,6 +146,20 @@ export async function loadOpenAICodexModels() {
   return models;
 }
 
+// pi-ai publishes cost / thinkingLevelMap / compat alongside each Codex model.
+// They must survive registration: pi-ai's calculateCost() reads model.cost.tiers
+// at usage-accounting time and crashes on codex models registered without it.
+export function passthroughCodexModelExtras(model: any) {
+  const extras: Record<string, unknown> = {};
+  for (const field of ['cost', 'thinkingLevelMap', 'compat'] as const) {
+    const value = model && model[field];
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      extras[field] = structuredClone(value);
+    }
+  }
+  return extras;
+}
+
 export function buildCodexProviderEntry(codexModels: any) {
   const models = Object.values(codexModels || {})
     .filter((model: any): model is Record<string, any> => Boolean(model) && typeof model === 'object')
@@ -166,6 +180,7 @@ export function buildCodexProviderEntry(codexModels: any) {
         ...(Array.isArray(model.input) && model.input.length ? { input: [...model.input] } : {}),
         contextWindow,
         maxTokens: Math.min(maxTokens, contextWindow),
+        ...passthroughCodexModelExtras(model),
       };
     });
 
