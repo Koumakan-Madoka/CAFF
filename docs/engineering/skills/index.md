@@ -13,6 +13,7 @@ Use this index for changes involving skills, skill registry, and the skill loadi
 ## Pre-Development Checklist
 
 - [ ] Read `skill-system.md` for skill loading modes, registry structure, and descriptor format
+- [ ] Read `skill-scoping.md` when changing session project cwd, contract-layer allowlist injection, or sandbox global-scope retirement
 - [ ] Read `../runtime/index.md` when changing skill prompt injection or dynamic skill path-loading behavior
 - [ ] Read `../backend/controller-patterns.md` when modifying skill HTTP endpoints
 - [ ] Read `../guides/cross-layer-thinking-guide.md` when changes affect skills, runtime, and UI simultaneously
@@ -20,6 +21,7 @@ Use this index for changes involving skills, skill registry, and the skill loadi
 ## Documents
 
 - `skill-system.md`: skill loading modes (dynamic/full), registry structure, descriptor format, and dynamic skill path-loading flow
+- `skill-scoping.md`: two-layer skill scoping design (session cwd, contract allowlist, sandbox retirement, skill-creator re-pointing)
 
 ## Key Concepts
 
