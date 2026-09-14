@@ -64,3 +64,4 @@ tsconfig.typecheck.tsbuildinfo
 /.agents/skills/werewolf/
 /.agents/skills/who-is-undercover/
 /.agents/skills/wows-sub-analyzer/
+/.agents/skills/pdf-rw-toolkit-1.0.0/
