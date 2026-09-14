@@ -395,6 +395,13 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   const sessionPath = resolveSessionPath(options.session, agentDir);
   const cwd = path.resolve(String(options.cwd || process.cwd()).trim() || process.cwd());
   const extensionPaths = normalizeExtensionPaths(options.extensionPaths || options.extensions);
+  // Two-layer skill scoping (docs/engineering/skills/skill-scoping.md):
+  // additionalSkillPaths carries the CAFF contract layer; retireUserScopeSkills
+  // tells the SDK host to drop user-scope (agentDir/skills) skills from the
+  // harness injection so only the contract layer plus the session cwd project
+  // layer reach the model.
+  const additionalSkillPaths = normalizeExtensionPaths(options.additionalSkillPaths);
+  const retireUserScopeSkills = options.retireUserScopeSkills === true;
   const streamOutput = options.streamOutput !== false;
   const stdout = options.stdout || process.stdout;
   const stderr = options.stderr || process.stderr;
@@ -1091,6 +1098,18 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         return;
       }
 
+      if (message.type === 'system_prompt') {
+        refreshHeartbeatTimeout();
+        const systemPrompt = typeof message.systemPrompt === 'string' ? message.systemPrompt : '';
+        const phase = String(message.phase || '').trim();
+
+        if (systemPrompt) {
+          emit('system_prompt', { systemPrompt, phase });
+        }
+
+        return;
+      }
+
       if (message.type === 'pi_event' && message.event && typeof message.event === 'object') {
         refreshHeartbeatTimeout();
         refreshProgressTimeout();
@@ -1280,6 +1299,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
           cwd,
           heartbeatIntervalMs,
           extensionPaths,
+          additionalSkillPaths,
+          retireUserScopeSkills,
         },
       }, (error: any) => {
         if (!error) {

@@ -127,6 +127,49 @@ test('context snapshot displays current conversation digest as a distinct sectio
   assert.match(materialized.sections[0].displayContent, /Keep this room aligned/u);
 });
 
+test('context snapshot records the harness prompt section with full visibility and redaction', () => {
+  const snapshot = createAgentContextSnapshot({
+    conversationId: 'conv-harness',
+    turnId: 'turn-harness',
+    messageId: 'msg-harness',
+    agentId: 'agent-harness',
+    agentName: 'Harness Agent',
+    promptVersion: 'test',
+    sections: [
+      {
+        sectionKey: 'conversation_history',
+        title: 'Conversation History',
+        source: 'conversation/messages',
+        visibility: 'full',
+        content: 'User: hello',
+      },
+      {
+        sectionKey: 'harness_prompt',
+        title: 'Harness 注入层（pi 最终系统提示词）',
+        source: 'pi-sdk/system-prompt:ready',
+        visibility: 'full',
+        content: 'You are a coding agent.\nAvailable skills: read, bash\nAPI key: sk-1234567890abcdef',
+      },
+    ],
+  });
+
+  const materialized = materializeAgentContextSnapshot(snapshot);
+  const harness = materialized.sections.find((section) => section.sectionKey === 'harness_prompt');
+  assert.ok(harness, 'harness_prompt section should exist');
+  assert.equal(harness.visibility, 'full');
+  assert.equal(harness.source, 'pi-sdk/system-prompt:ready');
+  assert.match(harness.displayTitle, /Harness 注入层/u);
+  assert.match(harness.displayContent, /Available skills/u);
+  assert.equal(harness.redacted, true);
+  assert.doesNotMatch(harness.displayContent, /sk-1234567890abcdef/u);
+  assert.match(harness.displayContent, /\[REDACTED\]/u);
+
+  const markdown = exportAgentContextSnapshotMarkdown(snapshot);
+  assert.match(markdown, /Harness 注入层/u);
+  assert.match(markdown, /Available skills/u);
+  assert.doesNotMatch(markdown, /sk-1234567890abcdef/u);
+});
+
 test('context snapshots remain isolated by message metadata', () => {
   const first = createAgentContextSnapshot({
     conversationId: 'conv-1',
