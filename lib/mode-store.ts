@@ -44,7 +44,7 @@ function dedupSkillIds(items: any[]) {
 
 function normalizeSkillIds(value: any) {
   if (Array.isArray(value)) {
-    return dedupSkillIds(value);
+    return dedupSkillIds(migrateLegacySkillIds(value));
   }
 
   const parsed = parseJson(value);
@@ -53,7 +53,7 @@ function normalizeSkillIds(value: any) {
     return [];
   }
 
-  return dedupSkillIds(parsed);
+  return dedupSkillIds(migrateLegacySkillIds(parsed));
 }
 
 function mergeSkillIds(...groups: any[]) {
@@ -72,11 +72,27 @@ function normalizeModeName(value: any) {
 
 const LEGACY_FEISHU_CODING_MODE_ID = 'coding';
 const CODING_MODE_NAME = 'coding';
-export const SKILL_CREATOR_SKILL_ID = 'skill-creator';
-export const ALWAYS_DYNAMIC_MODE_SKILL_IDS = [SKILL_CREATOR_SKILL_ID];
+// DD-3 of docs/engineering/skills/skill-scoping.md: the mode helper contract
+// previously pointed at a `skill-creator` skill that never existed in the
+// repository. It is re-pointed to `create-command` (the skill-scaffolding
+// skill that replaced it); stored rows that still carry the legacy id are
+// migrated on read so old modes keep loading without a DB rewrite.
+const LEGACY_SKILL_CREATOR_SKILL_ID = 'skill-creator';
+export const MODE_HELPER_SKILL_ID = 'create-command';
+export const ALWAYS_DYNAMIC_MODE_SKILL_IDS = [MODE_HELPER_SKILL_ID];
 
-const REQUIRED_MODE_SKILL_IDS = [SKILL_CREATOR_SKILL_ID];
+const REQUIRED_MODE_SKILL_IDS = [MODE_HELPER_SKILL_ID];
 const REQUIRED_MODE_SKILL_ID_SET = new Set(REQUIRED_MODE_SKILL_IDS);
+const LEGACY_MODE_SKILL_ID_REPLACEMENTS: any = {
+  [LEGACY_SKILL_CREATOR_SKILL_ID]: MODE_HELPER_SKILL_ID,
+};
+
+function migrateLegacySkillIds(items: any[]) {
+  return items.map((item: any) => {
+    const skillId = String(item || '').trim();
+    return LEGACY_MODE_SKILL_ID_REPLACEMENTS[skillId] || skillId;
+  });
+}
 
 function withRequiredModeSkillIds(skillIds: any) {
   return mergeSkillIds(skillIds, REQUIRED_MODE_SKILL_IDS);

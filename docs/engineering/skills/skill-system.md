@@ -185,12 +185,13 @@ When the active project is the CAFF repo itself, these resolve through the proje
 
 Builtin conversation modes may require fixed helper skills in addition to user-selected or participant-bound skills.
 
-Global helper contract: `skill-creator`
+Global helper contract: `create-command`
 
-- the skill body lives at `.agents/skills/skill-creator/SKILL.md`
-- `lib/mode-store.ts` exports `SKILL_CREATOR_SKILL_ID` and includes it in every mode's effective `skillIds`
-- custom mode saves and built-in seed/repair paths re-add `skill-creator` so users cannot accidentally create a mode without the Skill authoring helper
-- `lib/mode-store.ts` exports `ALWAYS_DYNAMIC_MODE_SKILL_IDS = ["skill-creator"]`
+- the skill body lives at `.agents/skills/create-command/SKILL.md`
+- `lib/mode-store.ts` exports `MODE_HELPER_SKILL_ID = "create-command"` and includes it in every mode's effective `skillIds`
+- custom mode saves and built-in seed/repair paths re-add `create-command` so users cannot accidentally create a mode without the Skill authoring helper
+- `lib/mode-store.ts` exports `ALWAYS_DYNAMIC_MODE_SKILL_IDS = ["create-command"]`
+- legacy rows that still store the retired `skill-creator` id (the helper contract pointed at a skill that never existed in the repository; see `skill-scoping.md` DD-3) are migrated to `create-command` on read, so old modes keep loading without a DB rewrite
 - `server/domain/conversation/turn/agent-executor.ts` passes those ids to prompt assembly as `forceDynamicConversationSkillIds`
 - `server/domain/conversation/turn/agent-prompt.ts` must render those skills as descriptors even when the mode `loadingStrategy` is `full`; this prevents oversized helper skills from being injected into game/full modes while preserving full injection for other mode skills
 

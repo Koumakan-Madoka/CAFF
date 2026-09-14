@@ -657,7 +657,7 @@ test('conversations controller preserves string participant ids when mode skills
     modeStore: {
       get(modeId) {
         return modeId === 'standard'
-          ? { id: 'standard', skillIds: ['skill-creator'] }
+          ? { id: 'standard', skillIds: ['create-command'] }
           : null;
       },
     },
@@ -682,7 +682,7 @@ test('conversations controller preserves string participant ids when mode skills
 
   assert.equal(result.statusCode, 201);
   assert.deepEqual(result.json.conversation.agents.map((participant) => participant.id), [agent.id]);
-  assert.deepEqual(result.json.conversation.agents[0].conversationSkillIds, ['skill-creator']);
+  assert.deepEqual(result.json.conversation.agents[0].conversationSkillIds, ['create-command']);
 });
 
 test('operator project binding resolves a real project and rejects non-terminal delivery ambiguity', async (t) => {

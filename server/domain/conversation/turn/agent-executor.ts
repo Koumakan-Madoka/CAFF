@@ -20,6 +20,7 @@ const {
   getAgentById,
 } = require('../mention-routing');
 const { ALWAYS_DYNAMIC_MODE_SKILL_IDS } = require('../../../../lib/mode-store');
+const { resolveContractSkillPaths } = require('../../../../lib/contract-skills');
 const {
   buildLightweightContextSnapshotReference,
   buildLightweightModelUsageSummary,
@@ -606,6 +607,33 @@ export function resolveRelatedMemorySegments(store: any, conversationId: any, co
     console.warn(`[summary-memory] Retrieval failed for conversation ${conversationId}: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
     return [];
   }
+}
+
+// DD-1 decision 4 of docs/engineering/skills/skill-scoping.md: a bound
+// session project directory must be a real, accessible directory. An invalid
+// binding fails the turn fast instead of silently falling back to the CAFF
+// repository root (which would leak the wrong project layer into the run).
+function validateSessionProjectDir(resolvedProjectDir: any) {
+  const candidate = String(resolvedProjectDir || '').trim();
+
+  if (!candidate) {
+    return '';
+  }
+
+  const normalized = path.resolve(candidate);
+  let stats: any = null;
+
+  try {
+    stats = fs.statSync(normalized);
+  } catch {
+    throw new Error(`Session project directory is not accessible: ${normalized}`);
+  }
+
+  if (!stats.isDirectory()) {
+    throw new Error(`Session project directory is not a directory: ${normalized}`);
+  }
+
+  return normalized;
 }
 
 function resolveConversationAgentConfig(agent: any) {
@@ -1366,6 +1394,7 @@ export function createAgentExecutor(options: any = {}) {
         ? String(getProjectDir(conversation) || '').trim()
         : '';
     const resolvedProjectDir = projectDirCandidate ? path.resolve(projectDirCandidate) : '';
+    const sessionProjectDir = validateSessionProjectDir(resolvedProjectDir);
     const extraSkillDirs = resolvedProjectDir
       ? [path.join(resolvedProjectDir, '.agents', 'skills'), path.join(resolvedProjectDir, '.codex', 'skills')]
       : [];
@@ -1514,6 +1543,7 @@ export function createAgentExecutor(options: any = {}) {
       'timeoutMs'
     );
     const stageTaskId = createTaskId('agent-turn');
+    const contractSkillPaths = resolveContractSkillPaths();
     // ADR 0001 (docs/adr/0001-agent-session-reuse.md) conditionally supersedes
     // the previous "new session per turn" decision: when the reuse flag is on
     // and all preconditions hold (usage ratio, idle window, static hash, cursor
@@ -2011,6 +2041,13 @@ export function createAgentExecutor(options: any = {}) {
       images: invocationImages,
       extensionPaths: piCapabilityExtensionPath ? [piCapabilityExtensionPath] : [],
       agentDir,
+      // Two-layer skill scoping: cwd pins the session project layer (pi
+      // discovers the target project's AGENTS.md and .agents/skills from it);
+      // the contract layer rides along through additionalSkillPaths; the
+      // sandbox user-scope root is retired from harness injection.
+      ...(sessionProjectDir ? { cwd: sessionProjectDir } : {}),
+      additionalSkillPaths: contractSkillPaths,
+      retireUserScopeSkills: true,
       sqlitePath,
       heartbeatIntervalMs,
       heartbeatTimeoutMs,
@@ -2050,6 +2087,7 @@ export function createAgentExecutor(options: any = {}) {
         promptVersion: AGENT_PROMPT_VERSION,
         agentSandboxDir: agentSandbox.sandboxDir,
         agentPrivateDir: agentSandbox.privateDir,
+        sessionProjectDir: sessionProjectDir || '',
         modelProfileId: agentConfig.profileId,
         modelProfileName: agentConfig.profileName,
         skillIds: agentConfig.skillIds,

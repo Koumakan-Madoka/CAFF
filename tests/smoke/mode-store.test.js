@@ -45,6 +45,33 @@ test('ModeStore keeps builtin Mode undeletable but configurable', () => {
   } finally { db.close(); }
 });
 
+test('ModeStore binds the create-command helper contract and migrates the legacy skill-creator id on read', () => {
+  const { db, store } = createStore();
+  try {
+    const seeded = store.get('standard');
+    assert.ok(seeded.skillIds.includes('create-command'));
+    assert.ok(!seeded.skillIds.includes('skill-creator'));
+
+    // A row stored before the re-pointing still carries the legacy id.
+    const ts = new Date().toISOString();
+    db.prepare('INSERT INTO modes VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run('legacy-mode', 'Legacy Mode', '', 0, JSON.stringify(['skill-creator', 'review']), 'dynamic', ts, ts);
+
+    const legacy = store.get('legacy-mode');
+    assert.deepEqual(legacy.skillIds, ['create-command', 'review']);
+
+    // Saving through the store persists the re-pointed helper only.
+    const saved = store.save({ id: 'repointed', name: 'Repointed', skillIds: [] });
+    assert.deepEqual(saved.skillIds, ['create-command']);
+
+    // Participant skill binding lists migrate the stale id as well, so old
+    // conversation participants keep loading without a DB rewrite.
+    const { ALWAYS_DYNAMIC_MODE_SKILL_IDS, MODE_HELPER_SKILL_ID } = require('../../build/lib/mode-store');
+    assert.equal(MODE_HELPER_SKILL_ID, 'create-command');
+    assert.deepEqual(ALWAYS_DYNAMIC_MODE_SKILL_IDS, ['create-command']);
+  } finally { db.close(); }
+});
+
 test('ModeStore destructively removes legacy product Room subtrees, deliveries, and orphaned modes', () => {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
