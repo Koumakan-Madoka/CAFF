@@ -12,6 +12,31 @@ Related design: `skill-scoping.md` (DD-1..DD-4). Related evidence in the goal:
 `evidence-private-skill-inventory`, `evidence-migration-ruling-execution`,
 `evidence-migration-ruling-refinements`, `evidence-interim-collision-defect`.
 
+## The `_private` root (2026-09-14 restructure ruling)
+
+The untracked project layer lives under a single private root —
+`.agents/skills/_private/` — covered by exactly one repo-root `.gitignore`
+rule, instead of one ignore rule per skill directory. Semantics and
+constraints:
+
+- pi discovers skills recursively under `.agents/skills/` (verified against
+  pi `package-manager.js` `collectSkillEntries` and end-to-end on the
+  acceptance instance), and its ignore matcher only reads ignore files from
+  inside the scan tree — the repo-root `.gitignore` rule does not affect
+  discovery.
+- `_private` is a CAFF convention, not a pi keyword. It means: CAFF-project
+  private, git-ignored, never distributed via clone, never reviewed through
+  git. Document any placement decision here.
+- NEVER put a `.gitignore` (or other pi ignore file) inside
+  `.agents/skills/` or `.agents/skills/_private/` — pi's scanner would honor
+  it and silently hide skills from discovery.
+- The six contract-layer skills stay directly under `.agents/skills/<id>/`
+  and git-tracked. Do not move them into `_private/`.
+- Skill identity comes from the SKILL.md frontmatter `name`, not from the
+  directory name, so nesting under `_private/` changes nothing about names,
+  shadowing (`pdf-rw-toolkit` stays the shadowed dead duplicate of `pdf`), or
+  collision semantics with the contract layer.
+
 ## Authorization record
 
 - 2026-09-14 user ruling "授权 / B组直接删掉，其他的留在机制二中，接受gitignore改动":
@@ -25,6 +50,10 @@ Related design: `skill-scoping.md` (DD-1..DD-4). Related evidence in the goal:
   migration set (kept as the shadowed, inactive `pdf` duplicate — no rename,
   no activation); `wows-sub-analyzer` `.env` follows plan (b) below; the zip
   is relocated to secrets storage for the user to destroy after key rotation.
+- 2026-09-14 user restructure ruling: replace the 14 per-skill ignore rules
+  with a single `.agents/skills/_private/` root; all untracked project-layer
+  skills move to `.agents/skills/_private/<dir>/`. The contract-layer six
+  stay directly under `.agents/skills/` and git-tracked.
 - Review approvals: `d7f18fb` (early static), `0bcf39c`, `8c9f73e` (gitignore
   increments, GPT). These approvals do **not** cover execution of this
   runbook; the release-step execution still needs the user's go at cutover.
@@ -54,12 +83,12 @@ Related design: `skill-scoping.md` (DD-1..DD-4). Related evidence in the goal:
 ## Step 1 — Move 14 directories into the untracked project layer
 
 Move (not copy) each directory from `.pi-sandbox/skills/<dir>/` to
-`.agents/skills/<dir>/`. All targets are already covered by repo-root
-`.gitignore` (commits `0bcf39c` + `8c9f73e`), so they stay untracked and are
-never committed. Discovery works because pi scans `.agents/skills` from the
-scan tree itself and does not read the repo-root `.gitignore`.
+`.agents/skills/_private/<dir>/`. The whole `_private` root is covered by the
+single repo-root `.gitignore` rule, so the targets stay untracked and are
+never committed. Discovery works because pi scans `.agents/skills`
+recursively and does not read the repo-root `.gitignore` for that scan.
 
-| # | Source (`.pi-sandbox/skills/`) | Target (`.agents/skills/`) | Notes |
+| # | Source (`.pi-sandbox/skills/`) | Target (`.agents/skills/_private/`) | Notes |
 | --- | --- | --- | --- |
 | 1 | `bettergi-one-dragon` | same name | BetterGI ops skill |
 | 2 | `dataview-2.0.0` | same name | exposes skill name `DataView` |
@@ -90,7 +119,7 @@ The `wows-sub-analyzer` directory contains a real, non-empty `.env` with a
 `ZHIPU_API_KEY` (also present inside the zip, plus run caches). During the
 move:
 
-1. Do not copy `.env` into `.agents/skills/wows-sub-analyzer/`.
+1. Do not copy `.env` into `.agents/skills/_private/wows-sub-analyzer/`.
 2. Relocate the `.env` file to `.pi-sandbox/secrets/wows-sub-analyzer.env`
    (gitignored, user-controlled, not under any skill discovery root).
 3. Recommend the user rotate that key — it has lived in a zip and caches and
@@ -128,10 +157,11 @@ itself is optional and harmless.
    its `disable-model-invocation` flag) — closes criterion-2.
 2. With target project = caff: the 14 migrated skills appear in the project
    layer; with any other target project they do not.
-3. `grep -r "\.env" .agents/skills/wows-sub-analyzer/` (and a scan for other
+3. `grep -r "\.env" .agents/skills/_private/wows-sub-analyzer/` (and a scan for other
    key files across all 14 targets) returns nothing.
 4. `git status` in the main repo shows no untracked noise from the migration
-   targets (`git check-ignore` hits all 14).
+   targets (`git check-ignore` hits `.agents/skills/_private/<dir>` for all
+   14, and the contract-layer six are NOT ignored).
 5. Record the executed command list, file inventory, before/after directory
    listings, and verification outputs as criterion-4 evidence.
 
