@@ -95,14 +95,20 @@ per-turn dynamic `cwd` switching.
 2. Filtering MUST be by resolved source path / sourceInfo, never by skill
    name; it must not affect project-layer skills discovered from the session
    `cwd` chain, and it must not affect skills contributed through
-   `additionalSkillPaths` (those are injected after the override input is
-   assembled — verify with a targeted test).
+   `additionalSkillPaths`. Implementation correction: `additionalSkillPaths`
+   skills ARE part of the `skillsOverride` input (`resource-loader.js`
+   `updateSkillsFromPaths` merges them before the override filter runs), so
+   their safety comes from the path-based filter excluding only the
+   retirement roots — not from injection order. Covered by a targeted test
+   ("contract-layer paths are not filtered"). The original draft assumed
+   injection after override assembly; that assumption was wrong.
 3. Home-scope roots (`~/.agents/skills`, `~/.pi/agent/skills`) are currently
    empty; the same override may exclude them for defense in depth, but this
    is optional and must be documented if done.
 4. The empty-directory cleanup of `.pi-sandbox/skills` remains a separate,
    explicitly authorized operations step after the git contract layer has
-   been released to production (criterion-4 sequencing).
+   been released to production (criterion-4 sequencing). The concrete
+   post-release steps are recorded in `skill-migration-runbook.md`.
 
 ## DD-3: Contract-layer allowlist carrier and the skill-creator contract
 

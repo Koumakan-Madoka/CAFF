@@ -22,6 +22,7 @@ Use this index for changes involving skills, skill registry, and the skill loadi
 
 - `skill-system.md`: skill loading modes (dynamic/full), registry structure, descriptor format, and dynamic skill path-loading flow
 - `skill-scoping.md`: two-layer skill scoping design (session cwd, contract allowlist, sandbox retirement, skill-creator re-pointing)
+- `skill-migration-runbook.md`: post-merge release runbook for migrating private sandbox skills to the untracked project layer, contract-duplicate cleanup, and secret handling (execution requires the release-step go)
 
 ## Key Concepts
 
