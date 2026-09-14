@@ -6,12 +6,14 @@ Use this index for changes involving skills, skill registry, and the skill loadi
 
 - `lib/skill-registry.ts`: skill discovery, loading, and management
 - `server/api/skills-controller.ts`: skill management and configuration API
-- `.pi-sandbox/skills/`: skill storage and SKILL.md files
+- `.pi-sandbox/skills/`: local (ignored) skill storage and SKILL.md files
+- `.agents/skills/`: tracked contract-layer skills shared via git (caff-workflow, create-command, dag-planning, grill-with-docs, grilling, domain-modeling)
 - `public/skills.html` + `public/skills.js`: skill management UI
 
 ## Pre-Development Checklist
 
 - [ ] Read `skill-system.md` for skill loading modes, registry structure, and descriptor format
+- [ ] Read `skill-scoping.md` when changing session project cwd, contract-layer allowlist injection, or sandbox global-scope retirement
 - [ ] Read `../runtime/index.md` when changing skill prompt injection or dynamic skill path-loading behavior
 - [ ] Read `../backend/controller-patterns.md` when modifying skill HTTP endpoints
 - [ ] Read `../guides/cross-layer-thinking-guide.md` when changes affect skills, runtime, and UI simultaneously
@@ -19,6 +21,8 @@ Use this index for changes involving skills, skill registry, and the skill loadi
 ## Documents
 
 - `skill-system.md`: skill loading modes (dynamic/full), registry structure, descriptor format, and dynamic skill path-loading flow
+- `skill-scoping.md`: two-layer skill scoping design (session cwd, contract allowlist, sandbox retirement, skill-creator re-pointing)
+- `skill-migration-runbook.md`: post-merge release runbook for migrating private sandbox skills to the untracked project layer, contract-duplicate cleanup, and secret handling (execution requires the release-step go)
 
 ## Key Concepts
 

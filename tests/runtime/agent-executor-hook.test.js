@@ -91,6 +91,29 @@ function createRecoveryRunHandle(reply) {
   return handle;
 }
 
+function createHarnessPromptRunHandle(reply) {
+  const handle = new EventEmitter();
+  handle.runId = 'run-harness-prompt';
+  handle.sessionPath = '';
+  handle.resultPromise = new Promise((resolve) => {
+    setImmediate(() => {
+      handle.emit('system_prompt', {
+        systemPrompt: 'final harness prompt with sk-1234567890abcdef inside',
+        phase: 'ready',
+      });
+      setImmediate(() => resolve({
+        reply,
+        runId: handle.runId,
+        usage: null,
+        heartbeatCount: 0,
+        sessionPath: '',
+        assistantErrors: [],
+      }));
+    });
+  });
+  return handle;
+}
+
 function createFailedRunHandle(error) {
   const handle = new EventEmitter();
   handle.runId = 'run-structured-failure';
@@ -232,6 +255,113 @@ function createFakeAgentToolBridge() {
     unregisterInvocation() {},
   };
 }
+
+test('agent executor enriches the context snapshot with the reported harness system prompt', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-harness-prompt-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+
+  minimalPi.startRun = () => createHarnessPromptRunHandle('Harness reply.');
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-harness-prompt',
+    name: 'Harness Prompt',
+    description: 'Tests harness prompt snapshot enrichment.',
+    personaPrompt: 'Be brief.',
+  };
+  const conversation = {
+    id: 'conversation-harness-prompt',
+    title: 'Harness prompt',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+  const turnState = createTurnState(conversation, 'turn-harness-prompt');
+  const completedReplies = [];
+
+  await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-harness-prompt',
+    conversation,
+    promptMessages: [{ id: 'user-harness', role: 'user', content: 'Show me the harness prompt.' }],
+    promptUserMessage: { id: 'user-harness', role: 'user', content: 'Show me the harness prompt.' },
+    queueItem: { triggerType: 'user' },
+    agent,
+    turnState,
+    completedReplies,
+    failedReplies: [],
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 1,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  assert.equal(completedReplies.length, 1);
+
+  const queuedWrite = store.messageWrites.creates[0];
+  assert.ok(queuedWrite);
+  const queuedSnapshot = queuedWrite.contextSnapshot;
+  assert.ok(Array.isArray(queuedSnapshot.sections));
+  assert.equal(
+    queuedSnapshot.sections.some((section) => section.sectionKey === 'harness_prompt'),
+    false,
+    'queued snapshot is captured before the harness prompt is known'
+  );
+
+  const completedWrite = store.messageWrites.updates.find(({ patch }) => patch.status === 'completed');
+  assert.ok(completedWrite);
+  const completedSnapshot = completedWrite.patch.contextSnapshot;
+  assert.ok(Array.isArray(completedSnapshot.sections));
+  const harnessSection = completedSnapshot.sections.find((section) => section.sectionKey === 'harness_prompt');
+  assert.ok(harnessSection, 'completed snapshot should include the harness_prompt section');
+  assert.equal(
+    completedSnapshot.sections[0].sectionKey,
+    'harness_prompt',
+    'harness_prompt must be the first section: the pi system prompt precedes CAFF-authored turn sections in the model input'
+  );
+  assert.equal(harnessSection.source, 'pi-sdk/system-prompt:ready');
+  assert.equal(harnessSection.visibility, 'full');
+  assert.equal(harnessSection.redacted, true);
+  assert.match(harnessSection.displayContent, /final harness prompt/u);
+  assert.doesNotMatch(harnessSection.displayContent, /sk-1234567890abcdef/u);
+  assert.match(harnessSection.displayContent, /\[REDACTED\]/u);
+
+  const reference = completedWrite.patch.metadata.agentContextSnapshot;
+  assert.ok(reference);
+  assert.equal(reference.sectionCount, completedSnapshot.sections.length);
+  assert.equal(reference.snapshotId, completedSnapshot.snapshotId);
+  assert.equal(Object.hasOwn(reference, 'sections'), false);
+  assert.equal(JSON.stringify(completedWrite.patch.metadata).includes('sk-1234567890abcdef'), false);
+});
 
 test('agent executor persists structured provider failure metadata on failed replies', async (t) => {
   const tempDir = withTempDir('caff-agent-executor-structured-failure-');
@@ -782,6 +912,184 @@ test('agent executor sends the prevalidated runtime config without env fallback 
   assert.deepEqual(captured.options.extensionPaths, [piCapabilityExtensionPath]);
   assert.doesNotMatch(captured.prompt, /Contaminated family Persona|contaminated-family-skill/u);
   assert.match(captured.prompt, /This is a model-family identity, not a fictional persona\./u);
+});
+
+test('agent executor pins the session project cwd and rides the contract skill allowlist along', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-skill-scoping-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  let captured = null;
+
+  minimalPi.startRun = (provider, model, prompt, options) => {
+    captured = { provider, model, prompt, options };
+    return createRunHandle('Done.');
+  };
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const projectDir = path.join(tempDir, 'target-project');
+  fs.mkdirSync(projectDir, { recursive: true });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-skill-scoping',
+    name: 'Scoping Agent',
+    description: 'Exercises the two-layer skill scoping run options.',
+    skillIds: [],
+  };
+  const conversation = {
+    id: 'conversation-skill-scoping',
+    title: 'Skill Scoping',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+    piCapabilityExtensionPath: path.join(tempDir, 'caff-capabilities.mjs'),
+  });
+  const turnState = createTurnState(conversation, 'turn-skill-scoping');
+
+  await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-skill-scoping',
+    conversation,
+    promptMessages: [{ role: 'user', content: 'Use the two-layer skill scope.' }],
+    promptUserMessage: { id: 'user-message-skill-scoping', role: 'user', content: 'hello' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies: [],
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 0,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir,
+  });
+
+  const { CONTRACT_SKILL_IDS, resolveContractSkillPaths } = require('../../build/lib/contract-skills');
+  assert.equal(captured.options.cwd, projectDir);
+  assert.equal(captured.options.retireUserScopeSkills, true);
+  assert.deepEqual(captured.options.additionalSkillPaths, resolveContractSkillPaths());
+  assert.deepEqual(
+    captured.options.additionalSkillPaths.map((skillDir) => path.basename(skillDir)),
+    CONTRACT_SKILL_IDS
+  );
+  assert.equal(captured.options.metadata.sessionProjectDir, projectDir);
+});
+
+test('agent executor fails fast when the bound session project directory is invalid', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-invalid-project-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  let captured = null;
+
+  minimalPi.startRun = (provider, model, prompt, options) => {
+    captured = { provider, model, prompt, options };
+    return createRunHandle('Done.');
+  };
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const missingDir = path.join(tempDir, 'does-not-exist');
+  const filePath = path.join(tempDir, 'not-a-directory.txt');
+  fs.writeFileSync(filePath, 'file', 'utf8');
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-invalid-project',
+    name: 'Invalid Project Agent',
+    description: 'Exercises invalid session project bindings.',
+    skillIds: [],
+  };
+  const conversation = {
+    id: 'conversation-invalid-project',
+    title: 'Invalid Project',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+    piCapabilityExtensionPath: path.join(tempDir, 'caff-capabilities.mjs'),
+  });
+
+  const buildInput = (turnState, projectDir) => ({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: `root-task-${turnState.turnId}`,
+    conversation,
+    promptMessages: [{ role: 'user', content: 'Run against a broken project binding.' }],
+    promptUserMessage: { id: `user-message-${turnState.turnId}`, role: 'user', content: 'hello' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies: [],
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 0,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir,
+  });
+
+  await assert.rejects(
+    executor.executeConversationAgent(buildInput(createTurnState(conversation, 'turn-invalid-project-missing'), missingDir)),
+    /Session project directory is not accessible/
+  );
+
+  await assert.rejects(
+    executor.executeConversationAgent(buildInput(createTurnState(conversation, 'turn-invalid-project-file'), filePath)),
+    /Session project directory is not a directory/
+  );
+
+  // The turn must fail before any provider run starts: no silent fallback to
+  // the CAFF repository root.
+  assert.equal(captured, null);
 });
 
 test('agent executor completes the run after a successful public bridge post', async (t) => {

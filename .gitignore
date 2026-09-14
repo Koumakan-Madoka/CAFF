@@ -47,3 +47,12 @@ tsconfig.typecheck.tsbuildinfo
 
 # DAG execution per-node worktrees (D22)
 .worktrees/
+
+# Untracked project-layer skills (migrated from .pi-sandbox/skills per room
+# 000791c5 ruling: stay in the CAFF project, load via .agents/skills
+# discovery, but never enter git). They live under a single _private root so
+# one rule covers the whole private layer; pi discovers them recursively and
+# does not read the repo-root .gitignore for that scan. The contract-layer
+# skills stay directly under .agents/skills/ and remain git-tracked.
+# See docs/engineering/skills/skill-migration-runbook.md.
+/.agents/skills/_private/
