@@ -19,8 +19,8 @@ test('Pi catalog host projects exact pinned thinking capabilities without creden
   const snapshot = await host.createPinnedModelCatalogSnapshot({ agentDir });
 
   assert.deepEqual(snapshot.source, {
-    codingAgent: { name: '@earendil-works/pi-coding-agent', version: '0.84.3' },
-    piAi: { name: '@earendil-works/pi-ai', version: '0.84.3' },
+    codingAgent: { name: '@earendil-works/pi-coding-agent', version: '0.85.1' },
+    piAi: { name: '@earendil-works/pi-ai', version: '0.85.1' },
   });
 
   const byKey = new Map(snapshot.models.map((model) => [`${model.provider}\u001f${model.id}`, model]));

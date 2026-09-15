@@ -32,7 +32,7 @@ This document is the current UI contract for model-family roles and local provid
 
 - Thinking choices come from Pi `supportedThinkingLevels`; the visible canonical ordering is `off / minimal / low / medium / high / xhigh / max` filtered to values supported by the selected model.
 - Persisted unsupported thinking values fail validation; the UI is `不允许静默 clamp`.
-- Capability lookup is pinned to `@earendil-works/pi-coding-agent@0.84.3` and its `nested @earendil-works/pi-ai`, not a separately installed `global CLI`.
+- Capability lookup is pinned to `@earendil-works/pi-coding-agent@0.85.1` and its `nested @earendil-works/pi-ai`, not a separately installed `global CLI`.
 - Provider/model selection and thinking selection round-trip without silently changing model family, provider identity, custom API dialect, or historical extension values.
 
 ## Test Points

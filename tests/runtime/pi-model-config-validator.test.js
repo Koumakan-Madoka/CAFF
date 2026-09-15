@@ -11,8 +11,8 @@ const validatorUrl = pathToFileURL(
 test('package dependencies pin one canonical PI family without the deprecated package', () => {
   const packageJson = require('../../package.json');
 
-  assert.equal(packageJson.dependencies['@earendil-works/pi-coding-agent'], '0.84.3');
-  assert.equal(packageJson.dependencies['@earendil-works/pi-ai'], '0.84.3');
+  assert.equal(packageJson.dependencies['@earendil-works/pi-coding-agent'], '0.85.1');
+  assert.equal(packageJson.dependencies['@earendil-works/pi-ai'], '0.85.1');
   assert.equal(packageJson.dependencies.typebox, '1.3.7');
   assert.equal(Object.hasOwn(packageJson.dependencies, '@mariozechner/pi-ai'), false);
 
@@ -21,7 +21,7 @@ test('package dependencies pin one canonical PI family without the deprecated pa
     .filter(([packagePath]) => packagePath.endsWith('node_modules/@earendil-works/pi-ai'))
     .map(([, entry]) => entry.version);
   assert.ok(piAiVersions.length >= 1);
-  assert.deepEqual([...new Set(piAiVersions)], ['0.84.3']);
+  assert.deepEqual([...new Set(piAiVersions)], ['0.85.1']);
   assert.equal(Object.hasOwn(packageLock.packages, 'node_modules/@mariozechner/pi-ai'), false);
 
   const digestSource = fs.readFileSync(
@@ -51,11 +51,11 @@ test('Pi model config validation is pinned to the repo runtime package family an
 
   assert.deepEqual(source.codingAgent, {
     name: '@earendil-works/pi-coding-agent',
-    version: '0.84.3',
+    version: '0.85.1',
   });
   assert.deepEqual(source.piAi, {
     name: '@earendil-works/pi-ai',
-    version: '0.84.3',
+    version: '0.85.1',
   });
   assert.doesNotThrow(() => validator.assertPinnedPiModelConfigSource(source));
   assert.throws(

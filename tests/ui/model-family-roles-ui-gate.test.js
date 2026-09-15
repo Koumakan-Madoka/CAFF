@@ -497,7 +497,7 @@ async function main() {
     }
   }
   for (const contract of [
-    '@earendil-works/pi-coding-agent@0.84.3',
+    '@earendil-works/pi-coding-agent@0.85.1',
     'nested @earendil-works/pi-ai',
     'global CLI',
   ]) {
@@ -608,7 +608,7 @@ async function main() {
   };
   if (JSON.stringify(browser.roleRuntimeControls.capabilities) !== JSON.stringify(expectedCapabilitySnapshots)) {
     failures.push(
-      `Fixture capability snapshots must match the audited Pi 0.84.3 catalog values: ${JSON.stringify(browser.roleRuntimeControls.capabilities)}`
+      `Fixture capability snapshots must match the audited Pi 0.85.1 catalog values: ${JSON.stringify(browser.roleRuntimeControls.capabilities)}`
     );
   }
   if (JSON.stringify(authoritativeCapabilities) !== JSON.stringify(expectedCapabilitySnapshots)) {
