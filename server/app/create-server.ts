@@ -158,26 +158,6 @@ export function createServerApp(options: any = {}) {
   }
 
   const store = createChatAppStore({ agentDir, sqlitePath });
-
-  // Crash-recovery sweep: a busy session-reuse claim is only ever held by a
-  // live run inside this process, so any busy row visible at startup is
-  // orphaned by a previous crash/restart. Poison it before the turn
-  // orchestrator recovers persisted queues below; otherwise queued turns
-  // would see "busy" and lose session reuse for the whole busy-stale window.
-  try {
-    const orphanedClaimCount = store.sweepOrphanedAgentSessionReuseClaims(
-      'startup_orphan',
-      new Date().toISOString()
-    );
-    if (orphanedClaimCount > 0) {
-      console.warn(`[session-reuse] Startup sweep poisoned ${orphanedClaimCount} orphaned busy claim(s)`);
-    }
-  } catch (error) {
-    console.error(
-      `[session-reuse] Startup sweep failed: ${error && (error as any).stack ? (error as any).stack : error}`
-    );
-  }
-
   const uploadsDir = path.resolve(String(options.uploadsDir || '').trim() || path.join(ROOT_DIR, 'uploads'));
   const uploadService = createImageUploadService({ store, uploadsDir });
   const roleService = createRoleService({ store, modelCatalog });

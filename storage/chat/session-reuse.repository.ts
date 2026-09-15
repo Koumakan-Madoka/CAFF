@@ -63,7 +63,6 @@ export class ChatSessionReuseRepository {
   claimStatement: any;
   poisonStatement: any;
   markReusableStatement: any;
-  sweepOrphanedBusyStatement: any;
 
   constructor(db: any) {
     this.db = db;
@@ -153,13 +152,6 @@ export class ChatSessionReuseRepository {
               )
             )
         ) = @expectedCursorMaxUpdatedAt
-    `);
-    this.sweepOrphanedBusyStatement = db.prepare(`
-      UPDATE chat_agent_session_reuse
-      SET state = 'poisoned',
-          poison_reason = @poisonReason,
-          updated_at = @now
-      WHERE state = 'busy'
     `);
     this.poisonStatement = db.prepare(`
       UPDATE chat_agent_session_reuse
@@ -379,19 +371,6 @@ export class ChatSessionReuseRepository {
         now: normalizeId(payload.now, 'now'),
       })
     );
-  }
-
-  // A busy claim is only ever held by a live run inside this process, so any
-  // busy row visible at process startup is orphaned by a previous
-  // crash/restart. Poison it up front so the next turn builds a fresh session
-  // immediately instead of falling back for the whole busy-stale window.
-  // Returns the number of rows swept.
-  sweepOrphanedBusy(poisonReason: any, now: any) {
-    const result = this.sweepOrphanedBusyStatement.run({
-      poisonReason: normalizeId(poisonReason, 'poisonReason'),
-      now: normalizeId(now, 'now'),
-    });
-    return result && Number.isInteger(result.changes) ? result.changes : 0;
   }
 
   markPoisoned(conversationId: any, agentId: any, profileId: any, poisonReason: any, now: any) {
