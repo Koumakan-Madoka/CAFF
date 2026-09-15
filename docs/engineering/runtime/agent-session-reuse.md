@@ -78,6 +78,7 @@ busy 行超过 `PI_CHAT_SESSION_REUSE_BUSY_STALE_MS`（默认 2h）视为僵尸 
 - `reusable → busy`：`claimAgentSessionReuse` 单条 UPDATE 完成。调用必须携带 `expectedHash`、`expectedCursorMessageId`、`expectedCursorMessageCount`、`expectedCursorFirstMessageId`、`expectedCursorMaxUpdatedAt` 以及私聊边界 `(expectedPrivateCursorMessageId, expectedPrivateCursorMessageCreatedAt, expectedPrivateCursorInitialized)`；SQL 同时比较复用行快照并从 `chat_messages` 重算游标前缀。任一不一致返回 `null`，不得启动 `--resume`；executor 随后重读 reusable 行，若游标校验已变异则先 poison 并审计具体 cursor reason，否则记 `claim_conflict`。
 - `busy → reusable`：run 干净结束 `markAgentSessionReuseReusable`。executor 在 provider 启动前冻结本次公共和授权私聊边界；fresh 记录实际投递的 mailbox 边界，resume 只追加私聊游标之后的新可见消息并推进到本轮实际投递的最后一条。run 期间到达的消息保持在游标之后。upsert 可覆盖 poisoned 行以自愈，但不得用不同 `session_name` 覆盖 busy 行；只有持有该 session 的完成/恢复路径能执行 `busy → reusable`。
 - `busy → reusable`（未触网中止）：`restoreAgentSessionReuse` 写回 claim 前快照。
+- `busy → poisoned(startup_orphan)`：服务启动时 `sweepOrphanedAgentSessionReuseClaims` 无条件清扫全部 busy 行（`create-server.ts` 中紧跟 store 创建之后）。busy 只能由本进程存活 run 持有，启动瞬间不存在在途 run，故此时任何 busy 行必为上次崩溃/重启的残留；sweep 必须先于 turn orchestrator 的 `recoverPersistedQueueStates()`（构造期同步执行）与跨会话投递恢复，否则排队 turn 会撞上残留 busy 行并失去整个 busy-stale 窗口的复用。与 `recoverExpiredClaims` 只回收过期项不同，本清扫是无条件的，因此显式依赖单实例/单写者部署不变量；多实例共库前必须引入实例标识或租约。poison 后经正常 fresh 路径 `markReusable` 自愈。
 - `* → poisoned`：`markAgentSessionReusePoisoned`，保留 session_path 供审计；poisoned 永不复用。
 
 ## 关键结构

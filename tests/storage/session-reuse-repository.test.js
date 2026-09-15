@@ -280,6 +280,64 @@ test('session reuse repository: fresh completion cannot overwrite another run bu
   }
 });
 
+test('session reuse repository: startup sweep poisons orphaned busy rows only', () => {
+  const { store } = createStore();
+  try {
+    // Orphaned busy row: the run claimed it, then the process died.
+    store.markAgentSessionReuseReusable(reusablePayload());
+    store.claimAgentSessionReuse(claimPayload());
+    assert.equal(store.getAgentSessionReuse('conv-reuse', 'agent-1', 'default').state, 'busy');
+
+    // Healthy reusable row for another agent must survive the sweep.
+    store.markAgentSessionReuseReusable(reusablePayload({
+      agentId: 'agent-2',
+      sessionName: 'chat-conv-reuse-turn-1-agent-2',
+      sessionPath: '/tmp/named-sessions/chat-conv-reuse-turn-1-agent-2.jsonl',
+    }));
+
+    // Already-poisoned row must keep its original reason and timestamp.
+    store.markAgentSessionReuseReusable(reusablePayload({
+      agentId: 'agent-3',
+      sessionName: 'chat-conv-reuse-turn-1-agent-3',
+      sessionPath: '/tmp/named-sessions/chat-conv-reuse-turn-1-agent-3.jsonl',
+    }));
+    store.markAgentSessionReusePoisoned('conv-reuse', 'agent-3', 'default', 'run_failed: boom', '2026-09-02T10:09:00.000Z');
+
+    const swept = store.sweepOrphanedAgentSessionReuseClaims('startup_orphan', '2026-09-02T11:00:00.000Z');
+    assert.equal(swept, 1);
+
+    const orphaned = store.getAgentSessionReuse('conv-reuse', 'agent-1', 'default');
+    assert.equal(orphaned.state, 'poisoned');
+    assert.equal(orphaned.poisonReason, 'startup_orphan');
+    assert.equal(orphaned.updatedAt, '2026-09-02T11:00:00.000Z');
+    // Snapshot fields survive so the poisoned row stays auditable.
+    assert.equal(orphaned.sessionName, 'chat-conv-reuse-turn-1-agent-1');
+
+    const reusable = store.getAgentSessionReuse('conv-reuse', 'agent-2', 'default');
+    assert.equal(reusable.state, 'reusable');
+    assert.equal(reusable.poisonReason, null);
+
+    const alreadyPoisoned = store.getAgentSessionReuse('conv-reuse', 'agent-3', 'default');
+    assert.equal(alreadyPoisoned.state, 'poisoned');
+    assert.equal(alreadyPoisoned.poisonReason, 'run_failed: boom');
+    assert.equal(alreadyPoisoned.updatedAt, '2026-09-02T10:09:00.000Z');
+
+    // Idempotent: a second sweep with nothing busy is a no-op.
+    assert.equal(store.sweepOrphanedAgentSessionReuseClaims('startup_orphan', '2026-09-02T11:01:00.000Z'), 0);
+
+    // The swept row self-heals through the normal fresh-session path.
+    const recovered = store.markAgentSessionReuseReusable(reusablePayload({
+      sessionName: 'chat-conv-reuse-turn-2-agent-1',
+      sessionPath: '/tmp/named-sessions/chat-conv-reuse-turn-2-agent-1.jsonl',
+      now: '2026-09-02T11:02:00.000Z',
+    }));
+    assert.equal(recovered.state, 'reusable');
+    assert.equal(recovered.poisonReason, null);
+  } finally {
+    store.close();
+  }
+});
+
 test('session reuse repository: reusable rows reject incomplete snapshots at the schema level', () => {
   const { store } = createStore();
   try {
