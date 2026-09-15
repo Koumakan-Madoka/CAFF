@@ -203,7 +203,15 @@ export async function refreshModelsDevCatalog(options: any = {}): Promise<Catalo
     );
   }
 
-  const payload = await readBodyWithLimit(response, limits.maxPayloadBytes);
+  let payload: Buffer;
+  try {
+    payload = await readBodyWithLimit(response, limits.maxPayloadBytes);
+  } catch (error: any) {
+    // Body streaming happens after response headers arrive, so a mid-body
+    // timeout/reset must still surface as a typed catalog_refresh_* error
+    // instead of escaping as a raw AbortError (F1 from review of d539d89).
+    throw toRefreshError(error);
+  }
 
   let document: any;
   try {

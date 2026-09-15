@@ -210,6 +210,25 @@ test('models.dev online refresh maps network failures to typed errors without to
     (error) => error instanceof ModelCatalogError && error.code === 'catalog_refresh_source_failed'
   );
 
+  // F1 regression guard: a body stream aborted mid-read (headers already
+  // arrived, AbortSignal.timeout fires while streaming) must map to the same
+  // typed timeout error as a pre-header abort, not escape as a raw AbortError.
+  const midBodyTimeoutResponse = {
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: (async function* abortedStream() {
+      yield Buffer.from('{"openai":', 'utf8');
+      const aborted = new Error('The operation was aborted due to timeout');
+      aborted.name = 'AbortError';
+      throw aborted;
+    })(),
+  };
+  await assert.rejects(
+    refreshModelsDevCatalog({ agentDir, fetchImpl: async () => midBodyTimeoutResponse }),
+    (error) => error instanceof ModelCatalogError && error.code === 'catalog_refresh_timeout'
+  );
+
   assert.equal(fs.existsSync(path.join(agentDir, 'models-dev-catalog.json')), false);
 });
 
