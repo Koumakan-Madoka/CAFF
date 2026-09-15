@@ -159,7 +159,11 @@
         button.textContent = '刷新中…';
       }
       try {
-        const result = await options.fetchJson('/api/model-catalog/refresh', { method: 'POST', headers: adminHeaders() });
+        // 无 body 的管理变更也必须声明 application/json，否则 local admin guard 会拒 415 json_required
+        const result = await options.fetchJson('/api/model-catalog/refresh', {
+          method: 'POST',
+          headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+        });
         const message = result && result.status === 'not_modified'
           ? '目录已是最新：远端内容未变化（ETag 命中）'
           : `目录已更新：${result && result.providerCount} 家供应商`;

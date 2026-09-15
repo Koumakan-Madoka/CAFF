@@ -304,6 +304,11 @@ test('catalog import wizard refreshes the online catalog and reports the new sna
       if (url === '/api/model-catalog/refresh') {
         assert.equal(options.method, 'POST');
         assert.equal(options.headers['X-CAFF-CSRF-Token'], 'csrf-token');
+        assert.equal(
+          options.headers['Content-Type'],
+          'application/json',
+          'refresh is a bodyless admin mutation and must still declare application/json for the local admin guard'
+        );
         refreshed = true;
         return Promise.resolve({
           status: 'refreshed',
