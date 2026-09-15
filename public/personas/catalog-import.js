@@ -12,6 +12,7 @@
     let projection = null;
     let runtimeDefaults = { contextWindow: 128000, maxTokens: 16384 };
     let importPending = false;
+    let refreshPending = false;
 
     const input = (id) => /** @type {HTMLInputElement} */ (document.getElementById(id));
 
@@ -126,7 +127,7 @@
           <button id="catalog-import-close" class="ghost-button" type="button">返回供应商</button>
         </div>
         <section class="management-card">
-          <div class="management-card-title"><div><h3>models.dev 目录</h3><p>${utils.escapeHtml(provenanceSummary(index && index.provenance))}</p></div></div>
+          <div class="management-card-title"><div><h3>models.dev 目录</h3><p>${utils.escapeHtml(provenanceSummary(index && index.provenance))}</p></div><button id="catalog-import-refresh" class="ghost-button" type="button"${refreshPending ? ' disabled' : ''}>${refreshPending ? '刷新中…' : '刷新目录'}</button></div>
           <label><span>搜索供应商</span><input id="catalog-import-search" value="${utils.escapeHtml(filter)}" placeholder="按供应商名称或 ID 过滤" /></label>
           <div class="catalog-provider-list">${index.providers.map(providerRow).join('')}</div>
         </section>
@@ -147,6 +148,29 @@
       if (!target) return;
       target.textContent = utils.requestIssueMessage(error, fallback);
       target.classList.remove('hidden');
+    }
+
+    async function refreshCatalog() {
+      if (refreshPending) return;
+      refreshPending = true;
+      const button = /** @type {HTMLButtonElement} */ (document.getElementById('catalog-import-refresh'));
+      if (button) {
+        button.disabled = true;
+        button.textContent = '刷新中…';
+      }
+      try {
+        const result = await options.fetchJson('/api/model-catalog/refresh', { method: 'POST', headers: adminHeaders() });
+        const message = result && result.status === 'not_modified'
+          ? '目录已是最新：远端内容未变化（ETag 命中）'
+          : `目录已更新：${result && result.providerCount} 家供应商`;
+        refreshPending = false;
+        await openCatalog();
+        options.showToast(message);
+      } catch (error) {
+        refreshPending = false;
+        render();
+        showError(error, '目录刷新失败');
+      }
     }
 
     async function confirmImport() {
@@ -188,6 +212,8 @@
 
     function bindEvents() {
       document.getElementById('catalog-import-close').addEventListener('click', () => options.onClose());
+      const refreshButton = document.getElementById('catalog-import-refresh');
+      if (refreshButton) refreshButton.addEventListener('click', () => refreshCatalog());
       input('catalog-import-search').addEventListener('input', () => {
         const search = input('catalog-import-search');
         filter = search.value.trim().toLowerCase();
@@ -208,8 +234,7 @@
       if (confirm) confirm.addEventListener('click', () => confirmImport());
     }
 
-    return {
-      async open() {
+    async function openCatalog() {
         index = null;
         filter = '';
         selectedProviderId = '';
@@ -237,7 +262,10 @@
           return;
         }
         render();
-      },
+    }
+
+    return {
+      open: openCatalog,
     };
   };
 })();

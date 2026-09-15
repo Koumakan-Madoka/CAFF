@@ -15,6 +15,7 @@ import {
   validateModelsDevDocument,
 } from '../domain/models/models-dev-import';
 import { readCatalogCache } from '../domain/models/models-dev-catalog-cache';
+import { refreshModelsDevCatalog } from '../domain/models/models-dev-online-refresh';
 import {
   ModelProviderConfigError,
   PI_DEFAULT_CONTEXT_WINDOW,
@@ -34,6 +35,14 @@ type ApiContext = {
 };
 
 const CATALOG_ASSET_PATH = path.resolve(__dirname, '..', '..', 'assets', 'model-catalog.json');
+const CATALOG_REFRESH_ERROR_STATUS: Record<string, number> = {
+  catalog_refresh_timeout: 504,
+  catalog_refresh_source_failed: 502,
+  catalog_refresh_payload_invalid: 502,
+  catalog_refresh_payload_too_large: 502,
+  catalog_refresh_provider_count_exceeded: 502,
+  catalog_refresh_model_count_exceeded: 502,
+};
 const IMPORT_FIELDS = new Set([
   'providerId',
   'modelId',
@@ -51,6 +60,9 @@ function catalogErrorStatus(error: ModelCatalogError) {
   }
   if (error.code === 'catalog_source_unavailable') {
     return 503;
+  }
+  if (Object.hasOwn(CATALOG_REFRESH_ERROR_STATUS, error.code)) {
+    return CATALOG_REFRESH_ERROR_STATUS[error.code];
   }
   return 422;
 }
@@ -206,7 +218,9 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
 
   return async function handleModelCatalogRequest(context) {
     const { req, res, pathname, requestUrl } = context;
-    const isCatalogRoute = pathname === '/api/model-catalog' || pathname === '/api/model-catalog/import';
+    const isCatalogRoute = pathname === '/api/model-catalog'
+      || pathname === '/api/model-catalog/import'
+      || pathname === '/api/model-catalog/refresh';
     if (!isCatalogRoute) {
       return false;
     }
@@ -233,6 +247,19 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
             maxTokens: PI_DEFAULT_MAX_TOKENS,
           },
         });
+        return true;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/model-catalog/refresh') {
+        guard.assertMutation(req);
+        const result = await refreshModelsDevCatalog({
+          agentDir,
+          fetchImpl: options.fetchImpl,
+          now: options.now,
+          limits: options.refreshLimits,
+          verifyCommitSha: options.verifyCommitSha,
+        });
+        sendJson(res, 200, result);
         return true;
       }
 

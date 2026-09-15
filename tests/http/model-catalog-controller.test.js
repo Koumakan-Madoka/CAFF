@@ -371,3 +371,137 @@ test('catalog import preserves existing provider connection settings unless expl
   persisted = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
   assert.equal(persisted.providers.openai.baseUrl, 'https://override.example/v1');
 });
+
+function upstreamPayload() {
+  return `${JSON.stringify({
+    openai: {
+      name: 'OpenAI',
+      env: ['OPENAI_API_KEY'],
+      api: 'https://api.openai.com/v1',
+      npm: '@ai-sdk/openai',
+      models: {
+        'gpt-5-mini': { name: 'GPT-5 Mini', family: 'gpt' },
+      },
+    },
+  }, null, 2)}\n`;
+}
+
+function upstreamFetch({ status = 200, etag = '"etag-http-1"', commitSha = 'http-verified-sha' } = {}) {
+  return async function httpRefreshFetch(url) {
+    if (url === 'https://models.dev/api.json') {
+      const buffer = Buffer.from(upstreamPayload(), 'utf8');
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        headers: { get: (name) => (name === 'etag' ? etag : null) },
+        body: (async function* streamBody() {
+          yield buffer;
+        })(),
+      };
+    }
+    if (url === 'https://api.github.com/repos/anomalyco/models.dev/commits/dev') {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => ({ sha: commitSha }),
+      };
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+}
+
+function createRefreshHarness(t, options = {}) {
+  const agentDir = withTempDir('caff-model-catalog-refresh-http-');
+  t.after(() => fs.rmSync(agentDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(agentDir, 'models.json'), `${JSON.stringify({
+    providers: {
+      openai: {
+        apiKey: '$OPENAI_API_KEY',
+        models: [],
+      },
+    },
+  }, null, 2)}\n`, 'utf8');
+
+  const controller = createModelCatalogController({
+    agentDir,
+    host: '127.0.0.1',
+    port: 4313,
+    csrfToken: 'catalog-csrf-token',
+    fetchImpl: options.fetchImpl,
+    now: options.now,
+  });
+  return { agentDir, controller };
+}
+
+test('catalog refresh writes the online cache and the index serves it without touching models.json', async (t) => {
+  const { agentDir, controller } = createRefreshHarness(t, {
+    fetchImpl: upstreamFetch(),
+    now: () => new Date('2026-09-15T01:00:00.000Z'),
+  });
+  const modelsJsonBefore = fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8');
+
+  const refresh = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/model-catalog/refresh',
+    headers: mutationHeaders(),
+  });
+  assert.equal(refresh.handled, true);
+  assert.equal(refresh.statusCode, 200);
+  assert.equal(refresh.json.status, 'refreshed');
+  assert.equal(refresh.json.providerCount, 1);
+  assert.equal(refresh.json.provenance.kind, 'online');
+  assert.equal(refresh.json.provenance.etag, '"etag-http-1"');
+  assert.equal(refresh.json.provenance.commitSha, 'http-verified-sha');
+  assert.equal(fs.existsSync(path.join(agentDir, 'models-dev-catalog.json')), true);
+
+  const index = await invoke(controller);
+  assert.equal(index.statusCode, 200);
+  assert.equal(index.json.provenance.kind, 'online');
+  assert.equal(index.json.providers[0].models.some((model) => model.id === 'gpt-5-mini'), true);
+  assert.equal(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'), modelsJsonBefore);
+});
+
+test('catalog refresh requires the mutation guard and maps upstream failures to 5xx codes', async (t) => {
+  const { controller } = createRefreshHarness(t, { fetchImpl: upstreamFetch() });
+
+  await assert.rejects(
+    () => invoke(controller, {
+      method: 'POST',
+      pathname: '/api/model-catalog/refresh',
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        origin: 'http://127.0.0.1:4313',
+      },
+    }),
+    (error) => error && error.statusCode === 403
+  );
+
+  const timeoutHarness = createRefreshHarness(t, {
+    fetchImpl: async () => {
+      const error = new Error('The operation was aborted due to timeout');
+      error.name = 'AbortError';
+      throw error;
+    },
+  });
+  await assert.rejects(
+    () => invoke(timeoutHarness.controller, {
+      method: 'POST',
+      pathname: '/api/model-catalog/refresh',
+      headers: mutationHeaders(),
+    }),
+    (error) => error && error.statusCode === 504
+      && error.issues && error.issues[0].code === 'catalog_refresh_timeout'
+  );
+
+  const upstreamDown = createRefreshHarness(t, { fetchImpl: upstreamFetch({ status: 503 }) });
+  await assert.rejects(
+    () => invoke(upstreamDown.controller, {
+      method: 'POST',
+      pathname: '/api/model-catalog/refresh',
+      headers: mutationHeaders(),
+    }),
+    (error) => error && error.statusCode === 502
+      && error.issues && error.issues[0].code === 'catalog_refresh_source_failed'
+  );
+});

@@ -82,6 +82,7 @@ function setup({ fetchImpl }) {
   }
   const calls = [];
   const imported = [];
+  const toasts = [];
   let closed = 0;
   const wizard = context.window.CaffPersonas.createCatalogImport({
     root: dom.window.document.getElementById('root'),
@@ -91,7 +92,7 @@ function setup({ fetchImpl }) {
       return fetchImpl(url, options);
     },
     getCsrfToken: () => 'csrf-token',
-    showToast: () => {},
+    showToast: (message) => toasts.push(message),
     onImported: (providerId, modelId) => imported.push({ providerId, modelId }),
     onClose: () => { closed += 1; },
   });
@@ -99,6 +100,7 @@ function setup({ fetchImpl }) {
     wizard,
     calls,
     imported,
+    toasts,
     document: dom.window.document,
     isClosed: () => closed > 0,
     input(id) {
@@ -282,4 +284,103 @@ test('catalog source unavailable renders an honest empty state without import ac
   await session.wizard.open();
   assert.match(session.document.getElementById('catalog-import-unavailable').textContent, /目录快照未就位/u);
   assert.equal(session.document.querySelector('[data-catalog-provider]'), null);
+});
+
+const ONLINE_PROVENANCE = {
+  kind: 'online',
+  sourceUrl: 'https://models.dev/api.json',
+  payloadSha256: 'def456',
+  fetchedAt: '2026-09-15T00:00:00.000Z',
+  etag: '"etag-2"',
+  commitSha: 'online-sha',
+};
+
+test('catalog import wizard refreshes the online catalog and reports the new snapshot', async () => {
+  const refreshedIndex = structuredClone(INDEX);
+  refreshedIndex.provenance = ONLINE_PROVENANCE;
+  let refreshed = false;
+  const session = setup({
+    fetchImpl: (url, options) => {
+      if (url === '/api/model-catalog/refresh') {
+        assert.equal(options.method, 'POST');
+        assert.equal(options.headers['X-CAFF-CSRF-Token'], 'csrf-token');
+        refreshed = true;
+        return Promise.resolve({
+          status: 'refreshed',
+          providerCount: 182,
+          provenance: ONLINE_PROVENANCE,
+        });
+      }
+      if (url === '/api/model-catalog') {
+        return Promise.resolve(structuredClone(refreshed ? refreshedIndex : INDEX));
+      }
+      return indexFetch(url, options);
+    },
+  });
+  await session.wizard.open();
+
+  const refreshButton = session.document.getElementById('catalog-import-refresh');
+  assert.ok(refreshButton, 'refresh button is rendered next to the catalog provenance');
+  assert.match(refreshButton.textContent, /刷新目录/u);
+
+  refreshButton.click();
+  for (let index = 0; index < 5; index += 1) await flush();
+
+  assert.equal(refreshed, true, 'refresh posts to the admin route');
+  assert.match(
+    session.document.querySelector('.management-card-title p').textContent,
+    /online/u,
+    'index provenance reflects the online cache after refresh'
+  );
+  assert.deepEqual(session.toasts, ['目录已更新：182 家供应商']);
+});
+
+test('catalog import wizard reports an etag hit without changing the catalog', async () => {
+  let refreshed = false;
+  const session = setup({
+    fetchImpl: (url, options) => {
+      if (url === '/api/model-catalog/refresh') {
+        refreshed = true;
+        return Promise.resolve({ status: 'not_modified', provenance: PROVENANCE, providerCount: 3 });
+      }
+      return indexFetch(url, options);
+    },
+  });
+  await session.wizard.open();
+
+  session.document.getElementById('catalog-import-refresh').click();
+  for (let index = 0; index < 5; index += 1) await flush();
+
+  assert.equal(refreshed, true);
+  assert.equal(
+    Array.from(session.document.querySelectorAll('[data-catalog-provider]')).length,
+    3,
+    'catalog content stays the same on a not-modified response'
+  );
+  assert.deepEqual(session.toasts, ['目录已是最新：远端内容未变化（ETag 命中）']);
+});
+
+test('catalog import wizard surfaces refresh failures without losing the loaded catalog', async () => {
+  const session = setup({
+    fetchImpl: (url, options) => {
+      if (url === '/api/model-catalog/refresh') {
+        return Promise.reject(new Error('upstream unavailable'));
+      }
+      return indexFetch(url, options);
+    },
+  });
+  await session.wizard.open();
+
+  session.document.getElementById('catalog-import-refresh').click();
+  for (let index = 0; index < 5; index += 1) await flush();
+
+  const error = session.document.getElementById('catalog-import-error');
+  assert.ok(error, 'error element is present after a failed refresh');
+  assert.equal(error.classList.contains('hidden'), false, 'refresh failure is visible');
+  assert.equal(
+    Array.from(session.document.querySelectorAll('[data-catalog-provider]')).length,
+    3,
+    'the previously loaded catalog stays usable'
+  );
+  assert.equal(session.document.getElementById('catalog-import-refresh').disabled, false, 'the refresh button re-enables');
 });

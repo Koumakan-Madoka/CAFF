@@ -8,7 +8,7 @@ created: 2026-08-06
 
 # F004: models.dev Catalog and Runtime-Safe Provider Import
 
-> **Status**: in-progress (P1 merged across #57/#58; provider-only acceptance fix merged in #59; configured-provider identity fix merged in #60; catalog provider/model naming fix merged in #61; P2/P3 remain) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
+> **Status**: in-progress (P1 merged across #57/#58; provider-only acceptance fix merged in #59; configured-provider identity fix merged in #60; catalog provider/model naming fix merged in #61; **P2 online refresh implemented 2026-09-15**; P3 remains) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
 
 ## Why
 
@@ -37,9 +37,19 @@ Baseline: `origin/main@092938a` (2026-08-06).
 - Preserve provider and model display names as separate catalog fields: importing a model may set the provider title from the catalog provider name, while the reviewed model name applies only to the model entry.
 - In the UI, render catalog metadata and Pi runtime controls in separate sections; unsupported `reasoning_options`, cost, limits, or modalities must not be presented as executable CAFF controls.
 
-### Phase P2 — Optional online refresh
+### Phase P2 — Optional online refresh (implemented 2026-09-15)
 
 Add a fixed HTTPS source, timeout/size/count limits, strict schema validation, ETag, atomic replacement, and last-known-good retention. Online provenance records `etag`, `payloadSha256`, `fetchedAt`, and `sourceUrl`; it records `commitSha` only when independently verified.
+
+Implementation notes:
+
+- Fixed source `https://models.dev/api.json` (not configurable; matches the audited upstream in `assets/model-catalog.SOURCE.md`). `commitSha` is verified against `https://api.github.com/repos/anomalyco/models.dev/commits/dev` in the same retrieval window and omitted when verification fails.
+- Defaults: 15s request timeout, 10s commit-verification timeout, 32MB payload cap, 2000 providers, 5000 models per provider.
+- Trigger is an explicit operator action: `POST /api/model-catalog/refresh` (local-admin CSRF guard) plus a 刷新目录 button in the catalog import UI. No automatic or scheduled fetching.
+- On success the document is written through `atomicReplaceCatalogCache` (agent-dir `models-dev-catalog.json`); on any failure the last-known-good cache byte stays untouched; `304 Not Modified` keeps the cache and returns `status: "not_modified"`.
+- Refresh never writes `models.json`; precedence stays `models.json > explicit user import > online cache > vendored snapshot` (AC-5).
+- Upstream failures map to HTTP 502 (bad payload/source) or 504 (timeout) with `catalog_refresh_*` issue codes.
+- Network egress note: `models.dev` and `api.github.com` should be added to `PROXY_ONLY_HOSTS` when outbound traffic must go through the local proxy.
 
 ### Phase P3 — Usage metadata
 
@@ -146,6 +156,7 @@ Why: this extends the existing provider/configuration ownership cell and does no
 | 2026-08-08 | Acceptance follow-up merged (PR #59, squash `b9c5af0`): catalog search now matches provider id/name only and filters the loaded 180-provider DOM in place; focused 6/6, browser 13/13 (`catalogRequests=1->1`, `inputStable=true`), typecheck/test:fast, and cross-provider fallback review passed. |
 | 2026-08-08 | Configured-provider identity hotfix merged (PR #60, squash `09f51fb`): configured-provider cards now show the stable provider ID instead of the runtime API dialect; behavior-level regression, isolated Edge acceptance, full gate, CI, and cross-provider fallback review passed. |
 | 2026-08-08 | Catalog provider-display-name hotfix merged (PR #61, squash `9ca33d1`): catalog import now persists provider `Kimi For Coding` separately from model `Kimi K3-256K`; focused 19/19, full npm gate, CI, isolated acceptance, and cross-provider fallback review passed. |
+| 2026-09-15 | Phase P2 online refresh implemented: `refreshModelsDevCatalog` domain module, `POST /api/model-catalog/refresh` admin route, and 刷新目录 button in the catalog import UI; ETag conditional requests, size/count/timeout limits, strict schema validation, atomic last-known-good cache replacement, and independently-verified `commitSha` provenance. |
 
 ## Review Gate
 
