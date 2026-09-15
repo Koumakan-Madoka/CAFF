@@ -42,6 +42,7 @@
     idle_timeout: '会话闲置超时',
     usage_snapshot_missing: '用量快照缺失',
     private_cursor_missing: '私有游标缺失',
+    last_reply_timestamp_missing: '上次回复时间缺失',
   };
 
   function sessionReuseReasonLabel(reason) {

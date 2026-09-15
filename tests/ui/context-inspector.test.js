@@ -394,9 +394,7 @@ test('Trace Inspector automatically expands lifecycle diagnostics for failed run
   assert.match(diagnostics.textContent, /运行失败/u);
 });
 
-test('session reuse reason labeler maps the closed set of refusal codes', () => {
-  assert.match(MESSAGE_TIMELINE_SOURCE, /withSessionReuseReason\('新建 Session'/u);
-  assert.doesNotMatch(MESSAGE_TIMELINE_SOURCE, /=== '新建 Session'/u);
+function loadSessionReuseLabeler() {
   const page = new JSDOM('<div id="message-timeline"></div>', { runScripts: 'outside-only' });
   const { window } = page.window;
   window.CaffChat = {};
@@ -405,8 +403,13 @@ test('session reuse reason labeler maps the closed set of refusal codes', () => 
   window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/cross-conversation-ui.js'), 'utf8'));
   window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/message-images.js'), 'utf8'));
   window.eval(MESSAGE_TIMELINE_SOURCE);
+  return window.CaffChat.sessionReuseReasonLabel;
+}
 
-  const label = window.CaffChat.sessionReuseReasonLabel;
+test('session reuse reason labeler maps the closed set of refusal codes', () => {
+  assert.match(MESSAGE_TIMELINE_SOURCE, /withSessionReuseReason\('新建 Session'/u);
+  assert.doesNotMatch(MESSAGE_TIMELINE_SOURCE, /=== '新建 Session'/u);
+  const label = loadSessionReuseLabeler();
   assert.equal(typeof label, 'function');
   assert.equal(label('static_hash_mismatch'), '静态提示段变化');
   assert.equal(label('idle_timeout'), '会话闲置超时');
@@ -414,6 +417,37 @@ test('session reuse reason labeler maps the closed set of refusal codes', () => 
   assert.equal(label('reused'), '');
   assert.equal(label(''), '');
   assert.equal(label('some_future_code'), 'some_future_code');
+});
+
+test('every server-side session reuse reason code has a UI label', () => {
+  const label = loadSessionReuseLabeler();
+  assert.equal(typeof label, 'function');
+  const serverReasonCodes = new Set();
+  const decisionSource = fs.readFileSync(path.join(__dirname, '../../server/domain/conversation/turn/session-reuse.ts'), 'utf8');
+  for (const match of decisionSource.matchAll(/reason: '([a-z_]+)'/gu)) {
+    serverReasonCodes.add(match[1]);
+  }
+  const executorSource = fs.readFileSync(path.join(__dirname, '../../server/domain/conversation/turn/agent-executor.ts'), 'utf8');
+  const initStart = executorSource.indexOf('let sessionReuseDecision');
+  const initEnd = executorSource.indexOf('if (sessionReuseActive &&');
+  assert.ok(initStart >= 0 && initEnd > initStart, 'sessionReuseDecision init block should be discoverable');
+  for (const match of executorSource.slice(initStart, initEnd).matchAll(/'([a-z_]+)'/gu)) {
+    serverReasonCodes.add(match[1]);
+  }
+  for (const match of executorSource.matchAll(/sessionReuseDecision = \{[^}]*reason: '([a-z_]+)'/gu)) {
+    serverReasonCodes.add(match[1]);
+  }
+  // Anchors prove the extraction actually covers both sources' decision paths.
+  for (const anchor of ['disabled', 'agent_disabled', 'busy_stale', 'claim_conflict', 'static_hash_mismatch', 'last_reply_timestamp_missing']) {
+    assert.ok(serverReasonCodes.has(anchor), `extraction should capture '${anchor}'`);
+  }
+  assert.ok(serverReasonCodes.size >= 24, `expected the closed set of ${24}+ codes, got ${serverReasonCodes.size}`);
+  for (const code of serverReasonCodes) {
+    if (code === 'reused') continue;
+    const mapped = label(code);
+    assert.notEqual(mapped, code, `reason code '${code}' must have a UI label instead of falling back to the raw code`);
+    assert.ok(mapped.length > 0, `reason code '${code}' must map to a non-empty label`);
+  }
 });
 
 test('fresh-session snapshot surfaces the reuse refusal reason in the meta grid', () => {
@@ -460,4 +494,103 @@ test('fresh-session snapshot surfaces the reuse refusal reason in the meta grid'
   state.contextInspector.snapshot.deliveryMode = 'resume';
   loadContextInspectorRenderer(document, state, dom)();
   assert.equal(metaValues(document).has('未复用原因'), false);
+});
+
+test('context inspector shows the Chinese reason label when the timeline module is available', () => {
+  const labeler = loadSessionReuseLabeler();
+  assert.equal(typeof labeler, 'function');
+
+  const page = new JSDOM(`<!doctype html><body>
+    <p id="status"></p><button id="export"></button>
+    <div id="summary"></div><div id="sections"></div>
+  </body>`);
+  const { document } = page.window;
+  const state = {
+    contextInspector: {
+      open: true,
+      loading: false,
+      errorMessage: '',
+      conversationId: 'conversation-1',
+      messageId: 'assistant-fresh',
+      snapshot: {
+        agentName: 'GPT',
+        turnId: 'turn-fresh',
+        capturedAt: '2026-09-15T03:05:23.721Z',
+        deliveryMode: 'fresh',
+        totalApproxTokens: 12,
+        totalByteSize: 48,
+        sections: [],
+      },
+      runEvidence: { sessionReused: false, sessionReuseReason: 'static_hash_mismatch' },
+      view: 'context',
+      navigationStack: [],
+    },
+  };
+  const dom = {
+    agentContextStatus: document.getElementById('status'),
+    agentContextExportButton: document.getElementById('export'),
+    agentContextSummary: document.getElementById('summary'),
+    agentContextSectionList: document.getElementById('sections'),
+  };
+
+  const start = APP_SOURCE.indexOf('function formatInspectorNumber');
+  const end = APP_SOURCE.indexOf('async function openAgentContextInspector');
+  const render = vm.runInNewContext(
+    `${APP_SOURCE.slice(start, end)}\nrenderAgentContextInspector`,
+    { document, state, dom, window: { CaffChat: { sessionReuseReasonLabel: labeler } } },
+    { filename: 'public/app.js#context-inspector-with-labeler' }
+  );
+  render();
+
+  assert.equal(metaValues(document).get('未复用原因'), '静态提示段变化');
+});
+
+test('trace summary appends the refusal reason to the Session item', () => {
+  const labeler = loadSessionReuseLabeler();
+  assert.equal(typeof labeler, 'function');
+
+  const page = new JSDOM(`<!doctype html><body>
+    <div id="trace-summary"></div><div id="trace-events"></div>
+  </body>`);
+  const { document } = page.window;
+  const state = {
+    contextInspector: {
+      data: {
+        session: { label: '新建 Session', mode: 'fresh', reused: false, reason: 'static_hash_mismatch' },
+        runEvidence: { sessionReused: false, sessionReuseReason: 'static_hash_mismatch' },
+        trace: {
+          summary: { status: 'completed', modelCallCount: 1, toolExecutionCount: 0, providerMissCount: 0, totalDurationMs: 1000 },
+          events: [],
+        },
+      },
+    },
+  };
+  const dom = {
+    agentTraceSummary: document.getElementById('trace-summary'),
+    agentTraceEventList: document.getElementById('trace-events'),
+  };
+
+  const start = APP_SOURCE.indexOf('function formatInspectorNumber');
+  const end = APP_SOURCE.indexOf('async function openAgentContextInspector');
+  const api = vm.runInNewContext(
+    `${APP_SOURCE.slice(start, end)}\n({ renderAgentTrace, renderAgentContextInspector })`,
+    { document, state, dom, window: { CaffChat: { sessionReuseReasonLabel: labeler } } },
+    { filename: 'public/app.js#trace-summary' }
+  );
+  api.renderAgentTrace(state.contextInspector);
+
+  const cells = [...dom.agentTraceSummary.querySelectorAll('.agent-trace-summary-grid > div')]
+    .map((cell) => [cell.querySelector('span').textContent, cell.querySelector('strong').textContent]);
+  const sessionItem = cells.find(([labelText]) => labelText === 'Session');
+  assert.ok(sessionItem, 'trace summary should contain a Session item');
+  assert.equal(sessionItem[1], '新建 Session · 静态提示段变化');
+
+  state.contextInspector.data.session.reused = true;
+  state.contextInspector.data.session.reason = 'reused';
+  state.contextInspector.data.runEvidence = { sessionReused: true, sessionReuseReason: 'reused' };
+  api.renderAgentTrace(state.contextInspector);
+  const cellsAfter = [...dom.agentTraceSummary.querySelectorAll('.agent-trace-summary-grid > div')]
+    .map((cell) => [cell.querySelector('span').textContent, cell.querySelector('strong').textContent]);
+  const sessionItemAfter = cellsAfter.find(([labelText]) => labelText === 'Session');
+  assert.equal(sessionItemAfter[1], '新建 Session');
 });
