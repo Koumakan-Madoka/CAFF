@@ -3573,6 +3573,10 @@ export class ChatAppStore {
     return this.sessionReuseRepository.markPoisoned(conversationId, agentId, profileId, poisonReason, now);
   }
 
+  sweepOrphanedAgentSessionReuseClaims(poisonReason: any, now: any) {
+    return this.sessionReuseRepository.sweepOrphanedBusy(poisonReason, now);
+  }
+
   listConversationIdsWithPendingUserMessages() {
     return this.messageRepository.listConversationIdsWithPendingUserMessages();
   }
