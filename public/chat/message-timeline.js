@@ -15,6 +15,52 @@
     throw new Error('CaffChat.messageImages helper is required');
   }
 
+  // Session reuse refusal reasons form a closed set (server/domain/conversation/turn/
+  // session-reuse.ts evaluateSessionReuse + agent-executor.ts supplement paths). Map them
+  // to short labels for the observability timeline; unknown codes fall back to the raw code.
+  const SESSION_REUSE_REASON_LABELS = {
+    disabled: '复用已全局关闭',
+    agent_disabled: '该角色关闭复用',
+    no_prior_session: '首个会话',
+    no_delta_messages: '没有待发增量',
+    poisoned: '旧会话已失效',
+    busy: '旧会话占用中',
+    busy_stale: '旧会话占用超时',
+    unknown_state: '旧会话状态未知',
+    session_reference_missing: '旧会话引用缺失',
+    claim_conflict: '并发抢占冲突',
+    reuse_evaluation_error: '复用评估异常',
+    static_hash_mismatch: '静态提示段变化',
+    goal_identity_missing: 'Goal 标识缺失',
+    goal_identity_mismatch: 'Goal 不一致',
+    goal_revision_mismatch: 'Goal 版本变化',
+    cursor_message_missing: '游标消息缺失',
+    cursor_count_mismatch: '游标数量不一致',
+    cursor_first_message_mismatch: '游标起点不一致',
+    cursor_history_mutated: '历史被修改',
+    usage_ratio_above_threshold: '上下文用量超阈值',
+    idle_timeout: '会话闲置超时',
+    usage_snapshot_missing: '用量快照缺失',
+    private_cursor_missing: '私有游标缺失',
+  };
+
+  function sessionReuseReasonLabel(reason) {
+    const code = String(reason || '').trim();
+    if (!code || code === 'reused') {
+      return '';
+    }
+    return Object.prototype.hasOwnProperty.call(SESSION_REUSE_REASON_LABELS, code)
+      ? SESSION_REUSE_REASON_LABELS[code]
+      : code;
+  }
+
+  function withSessionReuseReason(baseLabel, reason) {
+    const suffix = sessionReuseReasonLabel(reason);
+    return suffix ? `${baseLabel} · ${suffix}` : baseLabel;
+  }
+
+  chat.sessionReuseReasonLabel = sessionReuseReasonLabel;
+
   chat.createMessageTimelineRenderer = function createMessageTimelineRenderer({ dom, helpers, showToast }) {
     const {
       agentById,
@@ -1576,7 +1622,9 @@
     function traceSessionActionLabel(trace) {
       const message = trace && trace.message && typeof trace.message === 'object' ? trace.message : null;
       if (!message || message.sessionReuseKnown !== true) return '首次模型调用';
-      return message.sessionReused === true ? '复用旧 Session' : '新建 Session';
+      return message.sessionReused === true
+        ? '复用旧 Session'
+        : withSessionReuseReason('新建 Session', message.sessionReuseReason);
     }
 
     function buildModelCallTraceStep(call, index, isLastStep, sessionActionLabel) {
@@ -1599,7 +1647,7 @@
       const tokenUsage = call && call.tokenUsage ? call.tokenUsage : {};
       const isFirstCall = sequence === 1 || Boolean(call && (call.coldStart || call.isColdStart));
       const providerStatusText = call && call.providerMiss ? 'provider miss' : normalizeTokenCount(tokenUsage.cacheReadTokens) > 0 ? '缓存命中' : '未读取缓存';
-      const tone = call && call.providerMiss ? 'failed' : isFirstCall && sessionActionLabel === '新建 Session' ? 'neutral' : 'success';
+      const tone = call && call.providerMiss ? 'failed' : isFirstCall && sessionActionLabel.indexOf('新建 Session') === 0 ? 'neutral' : 'success';
       const statusText = isFirstCall ? sessionActionLabel : providerStatusText;
       const stopReason = call && call.stopReason ? String(call.stopReason) : '';
       const bits = formatModelUsageCallBits(call);
@@ -2329,7 +2377,9 @@
         ? crossConversationBundle.delivery
         : null;
       const sessionActionLabel = metadata && Object.prototype.hasOwnProperty.call(metadata, 'sessionReused')
-        ? metadata.sessionReused === true ? '复用旧 Session' : '新建 Session'
+        ? metadata.sessionReused === true
+          ? '复用旧 Session'
+          : withSessionReuseReason('新建 Session', metadata.sessionReuseReason)
         : 'Session 首次调用';
       const tokenUsageLabel = formatTokenUsageLabel(tokenUsage);
       const recipients = privateRecipientNames(message);

@@ -393,3 +393,71 @@ test('Trace Inspector automatically expands lifecycle diagnostics for failed run
   assert.equal(diagnostics.open, true);
   assert.match(diagnostics.textContent, /运行失败/u);
 });
+
+test('session reuse reason labeler maps the closed set of refusal codes', () => {
+  assert.match(MESSAGE_TIMELINE_SOURCE, /withSessionReuseReason\('新建 Session'/u);
+  assert.doesNotMatch(MESSAGE_TIMELINE_SOURCE, /=== '新建 Session'/u);
+  const page = new JSDOM('<div id="message-timeline"></div>', { runScripts: 'outside-only' });
+  const { window } = page.window;
+  window.CaffChat = {};
+  window.CaffShared = {};
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/shared/conversation-digest.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/cross-conversation-ui.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/message-images.js'), 'utf8'));
+  window.eval(MESSAGE_TIMELINE_SOURCE);
+
+  const label = window.CaffChat.sessionReuseReasonLabel;
+  assert.equal(typeof label, 'function');
+  assert.equal(label('static_hash_mismatch'), '静态提示段变化');
+  assert.equal(label('idle_timeout'), '会话闲置超时');
+  assert.equal(label('poisoned'), '旧会话已失效');
+  assert.equal(label('reused'), '');
+  assert.equal(label(''), '');
+  assert.equal(label('some_future_code'), 'some_future_code');
+});
+
+test('fresh-session snapshot surfaces the reuse refusal reason in the meta grid', () => {
+  const page = new JSDOM(`<!doctype html><body>
+    <p id="status"></p><button id="export"></button>
+    <div id="summary"></div><div id="sections"></div>
+  </body>`);
+  const { document } = page.window;
+  const state = {
+    contextInspector: {
+      open: true,
+      loading: false,
+      errorMessage: '',
+      conversationId: 'conversation-1',
+      messageId: 'assistant-fresh',
+      snapshot: {
+        agentName: 'GPT',
+        turnId: 'turn-fresh',
+        capturedAt: '2026-09-15T03:05:23.721Z',
+        deliveryMode: 'fresh',
+        totalApproxTokens: 12,
+        totalByteSize: 48,
+        sections: [],
+      },
+      runEvidence: { sessionReused: false, sessionReuseReason: 'static_hash_mismatch' },
+      view: 'context',
+      navigationStack: [],
+    },
+  };
+  const dom = {
+    agentContextStatus: document.getElementById('status'),
+    agentContextExportButton: document.getElementById('export'),
+    agentContextSummary: document.getElementById('summary'),
+    agentContextSectionList: document.getElementById('sections'),
+  };
+
+  loadContextInspectorRenderer(document, state, dom)();
+
+  const values = metaValues(document);
+  assert.equal(values.get('投递方式'), '新建 Session（完整注入）');
+  assert.equal(values.get('未复用原因'), 'static_hash_mismatch');
+
+  state.contextInspector.runEvidence = { sessionReused: true, sessionReuseReason: 'reused' };
+  state.contextInspector.snapshot.deliveryMode = 'resume';
+  loadContextInspectorRenderer(document, state, dom)();
+  assert.equal(metaValues(document).has('未复用原因'), false);
+});
