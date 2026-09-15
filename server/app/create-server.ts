@@ -22,6 +22,7 @@ const { createMetricsController } = require('../api/metrics-controller');
 const { createMemoryController } = require('../api/memory-controller');
 const { createRuntimeObservabilityController } = require('../api/runtime-observability-controller');
 const { createModelProvidersController } = require('../api/model-providers-controller');
+const { createSubscriptionAuthController } = require('../api/subscription-auth-controller');
 const { createModelCatalogController } = require('../api/model-catalog-controller');
 const { createRecoveryScribeConfigController } = require('../api/recovery-scribe-config-controller');
 const { createProjectsController } = require('../api/projects-controller');
@@ -69,6 +70,7 @@ const {
 } = require('../domain/integrations/feishu/feishu-long-connection');
 const { createConfiguredModelCatalog } = require('../domain/models/configured-model-catalog');
 const { readExternalAuthProviderIds } = require('../domain/models/external-provider-auth');
+const { createSubscriptionLoginService } = require('../domain/models/subscription-login');
 const { createRoleService } = require('../domain/roles/role-service');
 const { createReadinessHealthStatus } = require('../domain/runtime/readiness-health');
 const { createRuntimeObservability } = require('../domain/runtime/runtime-observability');
@@ -121,6 +123,11 @@ export function createServerApp(options: any = {}) {
   const providerConfigLocalEnabled = isLoopbackAddress(host);
   const agentDir = String(options.agentDir || '').trim() || resolveSetting('', process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
   const modelCatalog = options.modelCatalog || createConfiguredModelCatalog({ agentDir });
+  const subscriptionLoginService = options.subscriptionLoginService || createSubscriptionLoginService({
+    agentDir,
+    onModelsCommitted: () => modelCatalog.invalidate(),
+    logError: (message: string) => console.error(message),
+  });
   const sqlitePath = String(options.sqlitePath || '').trim() || resolveSetting('', process.env.PI_SQLITE_PATH, '');
   const initialProjectDir = path.resolve(String(options.projectDir || '').trim() || process.cwd());
   const projectManager = createProjectManager({ agentDir, initialProjectDir });
@@ -1096,6 +1103,17 @@ export function createServerApp(options: any = {}) {
       onCommitted: () => modelCatalog.invalidate(),
       validateProvider: options.validateProvider,
     }),
+    createSubscriptionAuthController({
+      service: subscriptionLoginService,
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+    }),
     createModelCatalogController({
       agentDir,
       host,
@@ -1241,6 +1259,7 @@ export function createServerApp(options: any = {}) {
     deliveryRuntimeClosing = true;
     sseBus.closeAll();
     runtimeObservability.dispose();
+    subscriptionLoginService.dispose();
 
     if (deliveryMaintenanceTimer) {
       clearDeliveryMaintenanceInterval(deliveryMaintenanceTimer);

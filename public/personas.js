@@ -82,6 +82,7 @@ const providerManagement = personas.createProviderManagement({
   count: document.getElementById('provider-count'),
   addButton: document.getElementById('add-provider'),
   importButton: document.getElementById('import-from-catalog'),
+  subscriptionButton: document.getElementById('official-channel-login'),
   refreshButton: document.getElementById('refresh-providers'),
   fetchJson,
   showToast,
@@ -136,6 +137,7 @@ async function init() {
     systemServiceBanner.classList.toggle('hidden', adminState.systemServices.enabled);
     /** @type {HTMLButtonElement} */ (document.getElementById('add-provider')).disabled = !adminState.providers.enabled;
     /** @type {HTMLButtonElement} */ (document.getElementById('import-from-catalog')).disabled = !adminState.providers.enabled;
+    /** @type {HTMLButtonElement} */ (document.getElementById('official-channel-login')).disabled = !adminState.providers.enabled;
     /** @type {HTMLButtonElement} */ (document.getElementById('refresh-providers')).disabled = !adminState.providers.enabled;
     /** @type {HTMLButtonElement} */ (document.getElementById('refresh-system-services')).disabled = !adminState.systemServices.enabled;
     const initialView = location.hash === '#providers'
