@@ -387,3 +387,46 @@ Model availability on the user's ChatGPT account: gpt-5.5, gpt-5.6-luna,
 gpt-5.6-sol, gpt-5.6-terra work; gpt-5.3-codex-spark, gpt-5.4 and
 gpt-5.4-mini are rejected by OpenAI for ChatGPT-account Codex usage (kept
 registered for parity with pi's builtin list; the API error is clear).
+
+## Post-acceptance fix 3: whitelist-only proxy egress via PROXY_ONLY_HOSTS
+
+Full-tunnel env proxying (`NODE_USE_ENV_PROXY=1` + `NO_PROXY` exceptions,
+fix 2 above) routes *every* outbound request through the local proxy, so a
+down proxy breaks domestic providers too, and the domestic exception list
+keeps growing. The egress mechanism is now a whitelist routing dispatcher
+(`lib/proxy-routing.mjs`, shipped after fix 2):
+
+- `PROXY_ONLY_HOSTS` lists the hosts whose traffic goes through
+  `HTTP(S)_PROXY`; everything else — domestic providers, localhost —
+  connects directly and keeps working when the proxy is down. Parsing
+  matches undici `NO_PROXY` semantics: a bare domain covers itself and all
+  subdomains, `.foo.com`/`*.foo.com` equal `foo.com`, and an optional
+  `:port` suffix restricts an entry to that port.
+- Installation happens at server startup (`lib/app-server.ts`, covering the
+  OAuth token exchange) and in the SDK host child after `loadSdk()`
+  (covering model calls), using the SDK's bundled undici
+  `setGlobalDispatcher` (both `undici.globalDispatcher.1/.2` symbols).
+- `PROXY_ONLY_HOSTS` takes priority over the `NODE_USE_ENV_PROXY` repair in
+  `pi-sdk-host.mjs`: when the routing dispatcher installs successfully the
+  repair defers, and `NO_PROXY` is ignored (the whitelist alone decides).
+  When `PROXY_ONLY_HOSTS` is unset or empty, behavior is unchanged
+  (zero regression).
+- Configuration lives in runtime environment variables, and
+  `scripts/start-app.js` loads `.env.local` *before* requiring the server,
+  so placing `PROXY_ONLY_HOSTS` + `HTTP(S)_PROXY` in `.env.local` is
+  sufficient — unlike `NODE_USE_ENV_PROXY`, which must be present at
+  process birth and therefore cannot come from `.env.local` reliably.
+- WebSocket still ignores the env proxy; the codex WS transport keeps
+  failing fast on the first message with SSE fallback (unchanged).
+- A misconfigured proxy URL (`invalid_proxy_url`) or unavailable undici
+  (`undici_unavailable`) is reported to logs and leaves the process
+  direct-connecting (the old repair may still install the full env proxy
+  when `NODE_USE_ENV_PROXY=1` and the routing dispatcher failed to install).
+
+Recommended production configuration replacing fix 2's env set:
+
+```text
+PROXY_ONLY_HOSTS=auth.openai.com,chatgpt.com,api.openai.com,api.anthropic.com
+HTTP_PROXY=http://127.0.0.1:17890
+HTTPS_PROXY=http://127.0.0.1:17890
+```

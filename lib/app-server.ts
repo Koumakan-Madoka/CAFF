@@ -16,6 +16,10 @@ async function installProxyRouting() {
       process.stdout.write(`Proxy routing: enabled for [${hosts}]; all other hosts connect directly\n`);
     } else if (result.reason === 'no_proxy_url') {
       process.stderr.write('PROXY_ONLY_HOSTS is set but HTTP(S)_PROXY is not configured; outbound requests stay direct\n');
+    } else if (result.reason === 'invalid_proxy_url') {
+      process.stderr.write('PROXY_ONLY_HOSTS is set but HTTP(S)_PROXY is not a valid http(s) proxy URL; outbound requests stay direct\n');
+    } else if (result.reason === 'undici_unavailable') {
+      process.stderr.write('PROXY_ONLY_HOSTS is set but the SDK undici copy could not be resolved; whitelist proxy routing was not installed\n');
     }
   } catch (error) {
     process.stderr.write(`Proxy routing setup failed: ${error instanceof Error ? error.message : String(error)}\n`);

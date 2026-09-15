@@ -102,6 +102,9 @@ test('parseProxyOnlyHosts normalizes entries like undici NO_PROXY', async () => 
   assert.deepEqual(parseProxyOnlyHosts('*.foo.com'), [{ hostname: 'foo.com', port: 0 }]);
   // Port suffix is captured, casing is normalized.
   assert.deepEqual(parseProxyOnlyHosts('FOO.com:8443'), [{ hostname: 'foo.com', port: 8443 }]);
+  // A lone wildcard is meaningless for a whitelist and is dropped.
+  assert.deepEqual(parseProxyOnlyHosts('*'), []);
+  assert.deepEqual(parseProxyOnlyHosts('*,foo.com'), [{ hostname: 'foo.com', port: 0 }]);
 });
 
 test('matchesProxyOnlyHost covers self and subdomains only', async () => {
@@ -149,7 +152,7 @@ test('extractOriginHost keeps IPv6 brackets and resolves default ports', async (
 });
 
 test('installProxyOnlyRoutingDispatcher is inert when unconfigured or missing a proxy URL', async () => {
-  const { installProxyOnlyRoutingDispatcher } = await loadProxyRoutingModule();
+  const { installProxyOnlyRoutingDispatcher, isProxyOnlyRoutingDispatcherInstalled } = await loadProxyRoutingModule();
 
   // No PROXY_ONLY_HOSTS: fully disabled, no global mutation.
   const disabled = installProxyOnlyRoutingDispatcher({
@@ -171,6 +174,62 @@ test('installProxyOnlyRoutingDispatcher is inert when unconfigured or missing a 
   });
   assert.equal(blank.installed, false);
   assert.equal(blank.reason, 'disabled');
+
+  // Non-http(s) or malformed proxy URLs are rejected up front instead of
+  // throwing from ProxyAgent construction.
+  for (const badUrl of ['socks5://127.0.0.1:1080', 'not a url', 'ftp://127.0.0.1:21']) {
+    const invalid = installProxyOnlyRoutingDispatcher({
+      env: { PROXY_ONLY_HOSTS: 'foo.com', HTTPS_PROXY: badUrl },
+    });
+    assert.equal(invalid.installed, false, `expected rejection for ${badUrl}`);
+    assert.equal(invalid.reason, 'invalid_proxy_url');
+  }
+
+  // Failed installs must not mark the dispatcher as installed, so the
+  // NODE_USE_ENV_PROXY repair in pi-sdk-host still gets its chance.
+  assert.equal(isProxyOnlyRoutingDispatcherInstalled(), false);
+});
+
+test('routing agent lifecycle is idempotent and matches DispatcherBase callback semantics', async () => {
+  const { createProxyOnlyRoutingAgent, parseProxyOnlyHosts } = await loadProxyRoutingModule();
+
+  const calls = { directDispatch: 0, proxyDispatch: 0, directClose: 0, proxyClose: 0, directDestroy: 0, proxyDestroy: 0 };
+  const makeAgent = (label) => ({
+    dispatch(opts, handler) {
+      calls[`${label}Dispatch`] += 1;
+      return false;
+    },
+    close() { calls[`${label}Close`] += 1; return Promise.resolve(); },
+    destroy() { calls[`${label}Destroy`] += 1; return Promise.resolve(); },
+  });
+  const stubUndici = {
+    Dispatcher: class {},
+    Agent: class { constructor() { return makeAgent('direct'); } },
+    ProxyAgent: class { constructor() { return makeAgent('proxy'); } },
+  };
+
+  const agent = createProxyOnlyRoutingAgent(stubUndici, {
+    hosts: parseProxyOnlyHosts('proxied.example'),
+    httpProxy: 'http://127.0.0.1:1',
+  });
+
+  // Whitelisted host delegates to the proxy agent, everything else direct.
+  agent.dispatch({ origin: 'http://proxied.example/' }, {});
+  agent.dispatch({ origin: 'http://other.example/' }, {});
+  assert.equal(calls.proxyDispatch, 1);
+  assert.equal(calls.directDispatch, 1);
+
+  // Close with a callback returns undefined (DispatcherBase semantics) and
+  // repeated close/destroy calls stay no-ops.
+  const callbackResult = agent.close(() => {});
+  assert.equal(callbackResult, undefined);
+  await agent.close();
+  await agent.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(calls.directClose, 1);
+  assert.equal(calls.proxyClose, 1);
+  assert.equal(calls.directDestroy, 1);
+  assert.equal(calls.proxyDestroy, 1);
 });
 
 test('routing dispatcher sends whitelisted hosts to the proxy and everything else direct', async () => {
@@ -235,15 +294,17 @@ test('PROXY_ONLY_HOSTS defers the env-proxy repair in the SDK host', async () =>
     const req = createRequire(process.argv[1]);
     req('undici'); // SDK undici graph load clobbers the legacy global dispatcher symbol
 
-    const host = await import(process.argv[2]);
-    host.repairEnvProxyGlobalDispatcher();
-    // If the repair had installed an EnvHttpProxyAgent (full proxy routing),
-    // this probe would go through the proxy; deferred, it fails fast on
-    // direct DNS and never reaches the proxy.
-    await fetch('http://defer-probe.example/', { redirect: 'manual' }).catch(() => {});
-
+    // Same order as pi-sdk-host.start(): install the routing dispatcher
+    // first, then the env-proxy repair (which must defer on success).
     const module = await import(process.argv[3]);
     const result = module.installProxyOnlyRoutingDispatcher();
+    const host = await import(process.argv[2]);
+    host.repairEnvProxyGlobalDispatcher();
+    // Not whitelisted: if the repair had (wrongly) installed a full
+    // EnvHttpProxyAgent over the routing dispatcher, this probe would go
+    // through the proxy; deferred routing sends it direct (fast DNS failure).
+    await fetch('http://defer-probe.example/', { redirect: 'manual' }).catch(() => {});
+
     const proxied = await fetch('http://proxied.example/', { redirect: 'manual' }).catch(() => 'failed');
     const directResponse = await fetch('http://127.0.0.1:' + process.argv[4] + '/').catch(() => null);
     console.log(JSON.stringify({
@@ -279,8 +340,8 @@ test('PROXY_ONLY_HOSTS defers the env-proxy repair in the SDK host', async () =>
     const done = stdout.trim().split('\n').map((line) => JSON.parse(line)).find((entry) => entry.phase === 'done');
     assert.ok(done, `child did not reach done phase: ${stdout}`);
     assert.equal(done.installed, true);
-    // Exactly one proxy hit proves both the deferral (the pre-install probe
-    // stayed direct) and the whitelist routing (the post-install fetch went
+    // Exactly one proxy hit proves both the deferral (the non-whitelisted
+    // probe stayed direct) and the whitelist routing (the matched fetch went
     // through the proxy).
     assert.equal(proxy.hits.count, 1, `expected exactly one proxy hit, got ${proxy.hits.count}`);
     assert.equal(done.directStatus, 200);
@@ -288,6 +349,61 @@ test('PROXY_ONLY_HOSTS defers the env-proxy repair in the SDK host', async () =>
   } finally {
     proxy.proxy.close();
     direct.server.close();
+  }
+});
+
+test('env-proxy repair still runs when the routing dispatcher fails to install', async () => {
+  const proxy = await startHitCountingProxy();
+
+  const childScript = `
+    const { createRequire } = await import('node:module');
+    const req = createRequire(process.argv[1]);
+    req('undici'); // SDK undici graph load clobbers the legacy global dispatcher symbol
+
+    // Force an install failure (undici cannot be resolved) while keeping
+    // PROXY_ONLY_HOSTS configured; the repair must then still get its chance.
+    const module = await import(process.argv[2]);
+    const result = module.installProxyOnlyRoutingDispatcher({
+      env: process.env,
+      undici: {},
+    });
+    const host = await import(process.argv[3]);
+    host.repairEnvProxyGlobalDispatcher();
+    // Any host through a full EnvHttpProxyAgent reaches the proxy.
+    await fetch('http://fallback-probe.example/', { redirect: 'manual' }).catch(() => {});
+    console.log(JSON.stringify({
+      phase: 'done',
+      installReason: result.reason,
+      installed: module.isProxyOnlyRoutingDispatcherInstalled(),
+    }));
+  `;
+
+  try {
+    const { code, stdout, stderr } = await runChildScript(
+      childScript,
+      [
+        SDK_ENTRY_PATH,
+        pathToFileURL(PROXY_ROUTING_MODULE).href,
+        pathToFileURL(PI_SDK_HOST_MODULE).href,
+      ],
+      {
+        NODE_USE_ENV_PROXY: '1',
+        PROXY_ONLY_HOSTS: 'proxied.example',
+        HTTP_PROXY: `http://127.0.0.1:${proxy.port}`,
+        HTTPS_PROXY: `http://127.0.0.1:${proxy.port}`,
+      }
+    );
+
+    assert.equal(code, 0, `child exited with ${code}: ${stdout}\nstderr: ${stderr}`);
+    const done = stdout.trim().split('\n').map((line) => JSON.parse(line)).find((entry) => entry.phase === 'done');
+    assert.ok(done, `child did not reach done phase: ${stdout}`);
+    assert.equal(done.installReason, 'undici_unavailable');
+    assert.equal(done.installed, false);
+    // The repair installed the full env-proxy dispatcher, so the probe
+    // reached the proxy — proving the repair was not skipped.
+    assert.equal(proxy.hits.count, 1, `expected the fallback probe to reach the proxy, got ${proxy.hits.count}`);
+  } finally {
+    proxy.proxy.close();
   }
 });
 
