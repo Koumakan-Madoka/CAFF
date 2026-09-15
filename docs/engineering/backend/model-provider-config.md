@@ -22,6 +22,7 @@ Data flows:
 - `GET /api/model-providers`
 - `PUT /api/model-providers/:id`
 - `GET /api/model-catalog?providerId=<id>&modelId=<id>` returns `projection` plus `runtimeDefaults: { contextWindow, maxTokens }`
+- `POST /api/model-catalog/refresh` (local-admin CSRF guard) fetches `https://models.dev/api.json` with fixed limits (15s timeout, 32MB payload cap, 2000 providers, 5000 models/provider), validates the schema, and atomically replaces the agent-dir online cache `models-dev-catalog.json`. Responses are `{status: "refreshed", provenance, providerCount}` or `{status: "not_modified", provenance, providerCount}` on an ETag `304`; upstream failures return `502`/`504` with `catalog_refresh_*` issue codes and never touch the last-known-good cache or `models.json`. `commitSha` provenance is recorded only when independently verified via the GitHub API.
 - `projectModelProviderDocument(document, options)`
 - `patchModelProvider(document, providerId, patch)`
 
@@ -88,7 +89,8 @@ The consistency check uses effective values. For example, explicit `contextWindo
 - `tests/http/model-providers-controller.test.js`: GET projection, PUT disk round trip, and redacted `422` issue.
 - `tests/runtime/model-input-capability-ui.test.js`: input values/placeholders, source labels, numeric payload, clear payload, and client-side invalid-state blocking.
 - `tests/runtime/models-dev-import.test.js`: positive-integer mapping, partial mapping with Pi defaults, and invalid/inconsistent omission.
-- `tests/http/model-catalog-controller.test.js`: projection, trusted import persistence, tamper rejection, stale-value clearing, and custom-field preservation.
+- `tests/http/model-catalog-controller.test.js`: projection, trusted import persistence, tamper rejection, stale-value clearing, custom-field preservation, and online refresh (cache write, index serving, CSRF, 502/504 mapping).
+- `tests/runtime/models-dev-online-refresh.test.js`: ETag conditional requests, 304 last-known-good retention, invalid-payload/limit/timeout failures, and commitSha verification fallback.
 - `tests/runtime/catalog-import-ui.test.js`: read-only prefill, provenance copy, submitted numeric values, and missing-limit default copy.
 - `tests/ui/model-family-roles-production.test.js`: production browser interaction and responsive provider model grid.
 - Run `npm run check`, `npm run typecheck`, and `npm run build`.
