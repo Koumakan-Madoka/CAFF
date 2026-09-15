@@ -3500,8 +3500,14 @@ function renderAgentTrace(inspector) {
     const modelLabel = [inspector.data.session && inspector.data.session.provider, inspector.data.session && inspector.data.session.model]
       .filter(Boolean)
       .join(' / ') || '-';
+    const sessionData = inspector.data && inspector.data.session && typeof inspector.data.session === 'object'
+      ? inspector.data.session
+      : null;
+    const sessionReasonSuffix = sessionData && sessionData.reused !== true && String(sessionData.reason || '').trim()
+      ? ` · ${contextInspectorReuseReasonLabel(String(sessionData.reason).trim())}`
+      : '';
     const items = [
-      ['Session', inspector.data.session && inspector.data.session.label || '-'],
+      ['Session', `${(sessionData && sessionData.label) || '-'}${sessionReasonSuffix}`],
       ['模型', modelLabel],
       ['总耗时', summary.totalDurationMs === null || summary.totalDurationMs === undefined
         ? '-'
@@ -3594,6 +3600,13 @@ function syncAgentTraceView(inspector) {
   }
 }
 
+function contextInspectorReuseReasonLabel(code) {
+  if (typeof window !== 'undefined' && window.CaffChat && typeof window.CaffChat.sessionReuseReasonLabel === 'function') {
+    return window.CaffChat.sessionReuseReasonLabel(code) || code;
+  }
+  return code;
+}
+
 function renderAgentContextInspector() {
   const inspector = state.contextInspector;
   const snapshot = inspector.snapshot;
@@ -3662,6 +3675,12 @@ function renderAgentContextInspector() {
         [deltaScoped ? '本轮追加 tokens' : snapshot.deliveryMode === 'fresh' ? '本轮注入 tokens' : '快照 tokens', formatInspectorNumber(snapshot.totalApproxTokens)],
         [deltaScoped ? '本轮追加字节数' : snapshot.deliveryMode === 'fresh' ? '本轮注入字节数' : '快照字节数', formatInspectorNumber(snapshot.totalByteSize)],
       ];
+      if (!isResume && !isLegacyResume) {
+        const reuseReasonCode = String(runEvidence && runEvidence.sessionReuseReason || '').trim();
+        if (reuseReasonCode && reuseReasonCode !== 'reused') {
+          metaItems.push(['未复用原因', contextInspectorReuseReasonLabel(reuseReasonCode)]);
+        }
+      }
       if (retainedPrefix) {
         metaItems.push(
           ['保留前缀 Session', retainedPrefix.sessionName || '-'],

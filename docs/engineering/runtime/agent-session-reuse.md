@@ -12,7 +12,7 @@ ADR：`docs/adr/0001-agent-session-reuse.md`（推翻"每轮新建 session"的�
 | 该 agent 未关闭复用（`chat_agents.session_reuse_enabled`，默认 1） | `agent_disabled` |
 | 存在 reusable 行 | `no_prior_session` |
 | 距上次回复 < `PI_CHAT_SESSION_REUSE_MAX_IDLE_MS`（默认 1h） | `idle_timeout` |
-| 上次 assistant 调用 input tokens ÷ contextWindow < `PI_CHAT_SESSION_REUSE_MAX_USAGE_RATIO`（默认 0.5） | `usage_ratio_exceeded` |
+| 上次 assistant 调用 input tokens ÷ contextWindow < `PI_CHAT_SESSION_REUSE_MAX_USAGE_RATIO`（默认 0.5） | `usage_ratio_above_threshold` |
 
 contextWindow 的来源链路：`resolveSessionReuseContextWindow` 从 `modelCatalog.getOptions()` 匹配 provider+model 并读取 `contextWindow` 字段。该字段必须由装配层透传——`lib/pi-model-catalog-host.mjs` 从 runtime 模型注册表携带（正整数，否则 null），`configured-model-catalog.ts` 的 rebuild 在 models.json 分支与 runtime 默认分支都必须复制该字段（`normalizeContextWindow` 只接受正整数，非法值归一为 null，models.json 值优先、runtime 值兜底）。任一环节丢字段都会导致 usage ratio 解析为 null → `usage_snapshot_missing` → 永远 fresh，且单测用 fake catalog 时不会暴露（必须用真实 `createConfiguredModelCatalog` 覆盖）。
 | 静态段 hash 一致 | `static_hash_mismatch` |
@@ -95,7 +95,7 @@ busy 行超过 `PI_CHAT_SESSION_REUSE_BUSY_STALE_MS`（默认 2h）视为僵尸 
 
 - `PUT /api/agents/:id` 接受 `sessionReuseEnabled`（family 与 custom 角色的 `editableFields` 均含该字段）；请求体缺省时保留存量值。
 - `public/personas/role-editor.js` 渲染"复用上一次会话" toggle；`management-utils.js#buildRolePayload` 总是携带该字段（`role.sessionReuseEnabled !== false`）。
-- 可观测性文案必须把 Session 生命周期与 provider cache 分开：fresh 首次调用显示“新建 Session”，resume 首次调用显示“复用旧 Session”；`coldStartModelCallCount` 继续作为兼容字段，但不再作为用户可见 Session 文案。Trace Inspector 沿 resume 快照的 `retainedSessionPrefix.cursorMessageId` 提供最多 8 层元数据 lineage，绝不重渲染旧 prefix 内容。
+- 可观测性文案必须把 Session 生命周期与 provider cache 分开：fresh 首次调用显示“新建 Session · <理由短标签>”，resume 首次调用显示“复用旧 Session”；理由短标签由前端 `chat.sessionReuseReasonLabel`（`public/chat/message-timeline.js`）维护，映射服务端封闭集的 `sessionReuseReason` 码，未知码回落显示原始码，`reused` 不显示理由；`coldStartModelCallCount` 继续作为兼容字段，但不再作为用户可见 Session 文案。Trace Inspector 沿 resume 快照的 `retainedSessionPrefix.cursorMessageId` 提供最多 8 层元数据 lineage，绝不重渲染旧 prefix 内容。
 
 ## 验证矩阵（测试点）
 
