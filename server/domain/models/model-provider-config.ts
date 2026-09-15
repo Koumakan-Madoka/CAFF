@@ -14,8 +14,10 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const RESERVED_PROVIDER_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 const UNSAFE_PROVIDER_ID_PATTERN = /[\u0000-\u001f\u007f/\\]/u;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/u;
-// Keep aligned with the pinned Pi custom-provider fallbacks in
-// @earendil-works/pi-coding-agent/dist/core/provider-composer.js.
+// Mirror only the fallback constant values from the pinned Pi custom-provider
+// fallbacks in @earendil-works/pi-coding-agent/dist/core/provider-composer.js.
+// The default-model selection logic there (findModelDefaults: id -> api ->
+// openai-completions -> models[0]) is not mirrored and is not called by CAFF.
 export const PI_DEFAULT_CONTEXT_WINDOW = 128000;
 export const PI_DEFAULT_MAX_TOKENS = 16384;
 
