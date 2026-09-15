@@ -18,7 +18,7 @@
 
 - Trigger: changing `@earendil-works/pi-coding-agent`, its PI AI companion,
   SDK host construction, model-catalog validation, or a direct PI AI consumer.
-- The audited runtime baseline is coding-agent 0.84.3 plus PI AI 0.84.3.
+- The audited runtime baseline is coding-agent 0.85.1 plus PI AI 0.85.1.
   Dependency upgrades require a new release-note/API audit and updated exact
   version assertions; do not silently float either dependency.
 
@@ -76,14 +76,14 @@
 
 ### 5. Good / Base / Bad Cases
 
-- Good: coding-agent and direct PI AI are both exactly 0.84.3; the lockfile's
-  physical copies are all 0.84.3; Agent runtime objects and digest runtime
+- Good: coding-agent and direct PI AI are both exactly 0.85.1; the lockfile's
+  physical copies are all 0.85.1; Agent runtime objects and digest runtime
   objects remain isolated.
 - Base: a PI release changes built-in model capability metadata. Update audited
   model snapshots and UI fixtures without changing persisted user provider
   configuration.
 - Bad: keep an old root PI AI for digest or TypeBox while upgrading the nested
-  Agent runtime, then pass its model/schema/message instances into 0.84.3.
+  Agent runtime, then pass its model/schema/message instances into 0.85.1.
 - Bad: treat a JSON/RPC serialization breaking change as proof that native SDK
   events changed without testing the actual `AgentSession.subscribe()` path.
 
@@ -271,7 +271,7 @@ The guard is established before abort IPC, so only causally later assistant outp
   loading in `lib/pi-sdk-host.mjs`, retry-attempt accounting in
   `lib/pi-runtime.ts`, and final Agent message/task persistence in
   `server/domain/conversation/turn/agent-executor.ts`.
-- This is a removable compatibility shim for the audited PI 0.84.3 retry
+- This is a removable compatibility shim for the audited PI 0.85.1 retry
   classifier gap. It is not a CAFF turn retry, provider fork, or streaming-mode
   switch.
 

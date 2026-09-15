@@ -5,8 +5,8 @@ pi-ai's OAuth login flows for the `anthropic` (Claude Pro/Max) and
 `openai-codex` (ChatGPT Codex) providers and persists credentials into the
 shared agentDir `auth.json` consumed by the pi runtime.
 
-Research source: `@earendil-works/pi-ai@0.84.3` and
-`@earendil-works/pi-coding-agent@0.84.3` (the exact versions CAFF pins).
+Research source: `@earendil-works/pi-ai@0.85.1` and
+`@earendil-works/pi-coding-agent@0.85.1` (the exact versions CAFF pins).
 
 ## Login flow modules
 
