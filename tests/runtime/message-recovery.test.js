@@ -6,6 +6,9 @@ const path = require('node:path');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSqliteRunStore } = require('../../build/lib/sqlite-store');
 const { createMessageRecoveryService } = require('../../build/server/domain/conversation/message-recovery');
+const {
+  createConversationMutationCoordinator,
+} = require('../../build/server/domain/conversation/conversation-mutation-coordinator');
 const { withClearedRecoveryRuntimeEnvironment } = require('../helpers/recovery-runtime-env');
 const { withTempDir } = require('../helpers/temp-dir');
 
@@ -257,6 +260,10 @@ function createFixture(t, options = {}) {
     ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
     getConversationMutationState: () => mutationState,
     resolveAssistantMessageSessionPath: () => sessionPath,
+    ...(options.mutationCoordinator ? { mutationCoordinator: options.mutationCoordinator } : {}),
+    ...(options.onHistoryMutationSettled
+      ? { onHistoryMutationSettled: options.onHistoryMutationSettled }
+      : {}),
     modelRuntimeFactory: async () => runtime,
     scheduleBackground(work) {
       scheduled.push(work);
@@ -1110,6 +1117,35 @@ test('succeeded run without explicit assistant errors is rejected and projected 
       && error.code === 'conversation_recovery_source_run_not_failed'
   );
   assert.equal(fixture.scheduled.length, 0);
+});
+
+test('a merely scheduled digest no longer blocks recovery and re-evaluates digest after settle', async (t) => {
+  const mutationCoordinator = createConversationMutationCoordinator();
+  const settledConversations = [];
+  const fixture = createFixture(t, {
+    mutationCoordinator,
+    onHistoryMutationSettled(conversationId) {
+      settledConversations.push(conversationId);
+    },
+  });
+  mutationCoordinator.markDigestScheduled(fixture.conversation.id);
+
+  const [projected] = fixture.service.projectMessages([
+    fixture.store.getMessage(fixture.sourceMessage.id),
+  ]);
+  assert.equal(projected.recoveryCapability.reasonCode, '');
+  assert.equal(projected.recoveryCapability.eligible, true);
+
+  const request = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+  assert.equal(request.duplicate, false);
+  assert.equal(request.recovery.status, 'queued');
+  assert.equal(fixture.scheduled.length, 1);
+
+  await fixture.scheduled[0]();
+
+  const completed = fixture.store.getMessageRecovery(request.recovery.id);
+  assert.equal(completed.status, 'completed');
+  assert.deepEqual(settledConversations, [fixture.conversation.id]);
 });
 
 test('busy and missing-session sources project the same stable rejection used by POST', (t) => {

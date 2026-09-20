@@ -412,6 +412,9 @@ export function createMessageRecoveryService(options: any = {}) {
     defaults: recoveryConfig(options),
   });
   const mutationCoordinator = options.mutationCoordinator || null;
+  const onHistoryMutationSettled = typeof options.onHistoryMutationSettled === 'function'
+    ? options.onHistoryMutationSettled
+    : null;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   const getConversationMutationState = typeof options.getConversationMutationState === 'function'
     ? options.getConversationMutationState
@@ -425,6 +428,19 @@ export function createMessageRecoveryService(options: any = {}) {
       console.error(`[message-recovery] Background recovery failed: ${safeErrorText(error)}`);
     }));
   const inFlight = new Map<string, any>();
+
+  function notifyHistoryMutationSettled(conversationId: string) {
+    if (!onHistoryMutationSettled) {
+      return;
+    }
+    try {
+      onHistoryMutationSettled(conversationId);
+    } catch (error) {
+      console.warn(
+        `[message-recovery] Post-recovery digest re-evaluation failed for ${conversationId}: ${safeErrorText(error)}`
+      );
+    }
+  }
 
   function emitRecovery(recovery: any) {
     try {
@@ -490,7 +506,7 @@ export function createMessageRecoveryService(options: any = {}) {
         reason: '暂时无法确认会话是否空闲，请刷新后重试',
       };
     }
-    if (mutation.active || mutation.digestScheduled) {
+    if (mutation.active) {
       return {
         eligible: false,
         reasonCode: 'conversation_recovery_conversation_busy',
@@ -1018,6 +1034,7 @@ export function createMessageRecoveryService(options: any = {}) {
         } finally {
           inFlight.delete(created.recovery.id);
           lease.release();
+          notifyHistoryMutationSettled(conversation.id);
         }
       };
       inFlight.set(created.recovery.id, work);
@@ -1028,6 +1045,7 @@ export function createMessageRecoveryService(options: any = {}) {
     } finally {
       if (!keepLease) {
         lease.release();
+        notifyHistoryMutationSettled(conversation.id);
       }
     }
   }

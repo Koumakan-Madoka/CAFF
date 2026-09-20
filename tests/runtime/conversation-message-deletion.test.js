@@ -38,6 +38,7 @@ function createHarness(t, options = {}) {
   const events = [];
   const removedBatchIds = [];
   const queueReconciliations = [];
+  const settledCalls = [];
   const service = createConversationMessageDeletionService({
     store,
     mutationCoordinator,
@@ -54,6 +55,9 @@ function createHarness(t, options = {}) {
         removedBatchIds.push(...batchIds);
         return batchIds.length;
       },
+    },
+    onHistoryMutationSettled(conversationId) {
+      settledCalls.push(conversationId);
     },
     broadcastEvent(eventName, payload) {
       events.push({ eventName, payload });
@@ -76,6 +80,7 @@ function createHarness(t, options = {}) {
     events,
     removedBatchIds,
     queueReconciliations,
+    settledCalls,
   };
 }
 
@@ -190,7 +195,7 @@ test('active or queued runtime work rejects deletion before the database transac
   assert.ok(store.getMessage(message.id));
 });
 
-test('running or scheduled digest mutation rejects deletion without waiting', (t) => {
+test('a running digest mutation still rejects deletion without waiting', (t) => {
   const running = createHarness(t, { conversationId: 'digest-running-conversation' });
   const runningMessage = createMessage(running.store, running.conversation.id);
   const lease = running.mutationCoordinator.tryAcquire(running.conversation.id, 'manual_digest');
@@ -199,15 +204,41 @@ test('running or scheduled digest mutation rejects deletion without waiting', (t
     () => running.service.deleteMessages(running.conversation.id, { messageIds: [runningMessage.id] }),
     (error) => error && error.statusCode === 409 && error.code === 'conversation_digest_running'
   );
+  assert.equal(running.store.getMessage(runningMessage.id) != null, true);
+  assert.deepEqual(running.settledCalls, []);
   lease.release();
+});
 
+test('a merely scheduled digest no longer blocks deletion and re-evaluates digest after settle', (t) => {
   const scheduled = createHarness(t, { conversationId: 'digest-scheduled-conversation' });
   const scheduledMessage = createMessage(scheduled.store, scheduled.conversation.id);
   scheduled.mutationCoordinator.markDigestScheduled(scheduled.conversation.id);
-  assert.throws(
-    () => scheduled.service.deleteMessages(scheduled.conversation.id, { messageIds: [scheduledMessage.id] }),
-    (error) => error && error.statusCode === 409 && error.code === 'conversation_digest_scheduled'
+
+  const projection = scheduled.service.projectMessages(scheduled.conversation.id, [scheduledMessage]);
+  assert.equal(projection.deletionState.available, true);
+  assert.equal(projection.deletionState.blockedReasonCode, '');
+  assert.equal(projection.items[0].deletionEligibility.eligible, true);
+
+  const result = scheduled.service.deleteMessages(
+    scheduled.conversation.id,
+    { messageIds: [scheduledMessage.id] }
   );
+  assert.deepEqual(result.deletedMessageIds, [scheduledMessage.id]);
+  assert.equal(scheduled.store.getMessage(scheduledMessage.id), null);
+  assert.deepEqual(scheduled.settledCalls, [scheduled.conversation.id]);
+});
+
+test('a failed deletion under a scheduled digest still re-evaluates digest after settle', (t) => {
+  const scheduled = createHarness(t, { conversationId: 'digest-scheduled-failed-conversation' });
+  const untouched = createMessage(scheduled.store, scheduled.conversation.id);
+  scheduled.mutationCoordinator.markDigestScheduled(scheduled.conversation.id);
+
+  assert.throws(
+    () => scheduled.service.deleteMessages(scheduled.conversation.id, { messageIds: ['missing-message-id'] }),
+    (error) => error && error.statusCode === 409 && error.code === 'conversation_message_delete_rejected'
+  );
+  assert.deepEqual(scheduled.settledCalls, [scheduled.conversation.id]);
+  assert.equal(scheduled.store.getMessage(untouched.id) != null, true);
 });
 
 test('attachment cleanup failure is reported after the durable message deletion', (t) => {

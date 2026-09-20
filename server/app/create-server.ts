@@ -615,6 +615,16 @@ export function createServerApp(options: any = {}) {
     await runMaybeAutoCreateDigest(conversationId);
   }
 
+  function reevaluateAutoDigestAfterHistoryMutation(conversationId: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+
+    if (!normalizedConversationId) {
+      return;
+    }
+    clearScheduledAutoDigest(normalizedConversationId);
+    void runMaybeAutoCreateDigest(normalizedConversationId);
+  }
+
   const crossConversationDeliveryService =
     options.crossConversationDeliveryService
     || deliveryServiceFactory({
@@ -743,6 +753,7 @@ export function createServerApp(options: any = {}) {
       mutationCoordinator: conversationMutationCoordinator,
       uploadService,
       digestOptions,
+      onHistoryMutationSettled: reevaluateAutoDigestAfterHistoryMutation,
       broadcastEvent,
     });
   const rawRecoveryOptions = options.recoveryOptions || {};
@@ -755,6 +766,7 @@ export function createServerApp(options: any = {}) {
       sqlitePath,
       modelCatalog,
       mutationCoordinator: conversationMutationCoordinator,
+      onHistoryMutationSettled: reevaluateAutoDigestAfterHistoryMutation,
       broadcastEvent,
       provider: options.recoveryProvider !== undefined
         ? options.recoveryProvider
