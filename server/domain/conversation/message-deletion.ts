@@ -103,6 +103,9 @@ export function createConversationMessageDeletionService(options: any = {}) {
   const mutationCoordinator = options.mutationCoordinator;
   const uploadService = options.uploadService;
   const digestOptions = options.digestOptions || {};
+  const onHistoryMutationSettled = typeof options.onHistoryMutationSettled === 'function'
+    ? options.onHistoryMutationSettled
+    : null;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
 
   function requireConversation(conversationId: any) {
@@ -128,13 +131,11 @@ export function createConversationMessageDeletionService(options: any = {}) {
     const eligibility = staticEligibilityByMessageId(store, conversation, safeMessages);
     const runtime = runtimeMutationState(turnOrchestrator, conversation.id);
     const mutation = mutationState(conversation.id);
-    const blockedReasonCode = mutation.digestScheduled
-      ? 'conversation_digest_scheduled'
-      : mutation.active
-        ? 'conversation_digest_running'
-        : runtime.busy
-          ? 'conversation_message_delete_busy'
-          : '';
+    const blockedReasonCode = mutation.active
+      ? 'conversation_digest_running'
+      : runtime.busy
+        ? 'conversation_message_delete_busy'
+        : '';
 
     return {
       deletionState: {
@@ -189,11 +190,6 @@ export function createConversationMessageDeletionService(options: any = {}) {
     }
 
     const beforeMutation = mutationState(normalizedConversationId);
-    if (beforeMutation.digestScheduled) {
-      throw createHttpError(409, '会话摘要已排队，请等待摘要完成后再删除消息', {
-        code: 'conversation_digest_scheduled',
-      });
-    }
     if (beforeMutation.active) {
       throw createHttpError(409, '会话摘要或其它历史修改正在运行，请稍后重试', {
         code: 'conversation_digest_running',
@@ -316,6 +312,15 @@ export function createConversationMessageDeletionService(options: any = {}) {
       };
     } finally {
       lease.release();
+      if (onHistoryMutationSettled) {
+        try {
+          onHistoryMutationSettled(normalizedConversationId);
+        } catch (error) {
+          console.warn(
+            `[conversation-message-delete] Post-deletion digest re-evaluation failed for ${normalizedConversationId}: ${error && error.stack ? error.stack : error}`
+          );
+        }
+      }
     }
   }
 
