@@ -168,6 +168,10 @@ function createFakeSdkHostRecoveringTool(baseDir, capturePath, options = {}) {
   const completeAfterRecovery = options.completeAfterRecovery !== false;
   const recoveryDelayMs = Number.isFinite(options.recoveryDelayMs) ? options.recoveryDelayMs : 0;
   const stopHeartbeatOnRecovery = options.stopHeartbeatOnRecovery === true;
+  // Mirrors the real SDK host: session.abort() during tool recovery writes an
+  // aborted-invocation assistant error entry into the session before the
+  // recovery prompt is accepted and recovery_started is reported.
+  const recoveryAbortArtifact = options.recoveryAbortArtifact === true;
 
   return createFakeSdkHost(baseDir, [
     "import { writeFileSync } from 'node:fs';",
@@ -185,6 +189,9 @@ function createFakeSdkHostRecoveringTool(baseDir, capturePath, options = {}) {
     stopHeartbeatOnRecovery ? "    if (heartbeatTimer) clearInterval(heartbeatTimer);" : '',
     "    setTimeout(() => {",
     "      process.send({ type: 'pi_event', event: { type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'bash', isError: true } });",
+    recoveryAbortArtifact
+      ? "      process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', responseId: 'recovery-abort', content: [], stopReason: 'error', errorMessage: 'This operation was aborted', timestamp: Date.now() } } });"
+      : '',
     "      process.send({ type: 'recovery_started', reason: command.reason, attempt: command.attempt || 1, toolName: command.toolName || '' });",
     completeAfterRecovery
       ? "      process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'recovered reply' }], stopReason: 'stop', timestamp: Date.now() } } });"
@@ -1430,6 +1437,54 @@ test('pi runtime recovers one silent active tool in the same host run', async (t
   assert.equal(recoverCommand.attempt, 1);
   assert.equal(recoverCommand.toolName, 'bash');
   assert.equal(JSON.stringify(recoverCommand).includes('sensitive command'), false);
+});
+
+test('pi runtime drops the recovery abort artifact so a recovered run can succeed', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-recovery-abort-artifact-');
+  const capturePath = path.join(tempDir, 'recovery-abort-artifact.json');
+  const fakeHostPath = createFakeSdkHostRecoveringTool(tempDir, capturePath, { recoveryAbortArtifact: true });
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const sqlitePath = path.join(tempDir, 'recovery-abort-artifact.sqlite');
+  handle = runtime.startRun('test-provider', 'test-model', 'recover and post publicly', {
+    agentDir: tempDir,
+    sqlitePath,
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  const result = await handle.resultPromise;
+
+  assert.equal(result.reply, 'recovered reply');
+  assert.deepEqual(result.assistantErrors, []);
+
+  const db = new Database(sqlitePath, { readonly: true });
+  const run = db.prepare('SELECT status, assistant_errors_json, reply FROM runs WHERE id = ?').get(result.runId);
+  db.close();
+  assert.deepEqual(run, {
+    status: 'succeeded',
+    assistant_errors_json: '[]',
+    reply: 'recovered reply',
+  });
 });
 
 test('pi runtime keeps active-tool recovery disabled unless the caller opts in', async (t) => {

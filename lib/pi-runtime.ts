@@ -467,6 +467,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     let recoveryCount = 0;
     let recoveryReason: any = null;
     let recoveryToolName = '';
+    // Assistant errors recorded between the recovery request and recovery_started
+    // are artifacts of the recovery path itself (session.abort() writes an aborted
+    // invocation error entry). They must not fail a run that recovers and completes.
+    let recoveryPendingAssistantErrorFloor: number | null = null;
 
     function recordAssistantUsage(message: any) {
       const usage = extractAssistantUsage(message);
@@ -758,6 +762,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       recoveryCount = 1;
       recoveryReason = reason;
       recoveryToolName = getActiveRecoveryToolName();
+      recoveryPendingAssistantErrorFloor = state.pendingAssistantErrors.length;
       emit('run_recovering', {
         reason,
         attempt: recoveryCount,
@@ -1130,6 +1135,13 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         }
 
         recoveryRequested = false;
+        if (
+          recoveryPendingAssistantErrorFloor !== null
+          && state.pendingAssistantErrors.length > recoveryPendingAssistantErrorFloor
+        ) {
+          state.pendingAssistantErrors.length = recoveryPendingAssistantErrorFloor;
+        }
+        recoveryPendingAssistantErrorFloor = null;
         emit('run_recovery_started', {
           reason: recoveryReason,
           attempt: recoveryCount,
