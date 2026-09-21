@@ -541,6 +541,18 @@ test('SDK host reports only abort-produced assistant errors with recovery_starte
       await new Promise((resolve) => idleWaiters.push(resolve));
     },
     async abort() {
+      // A genuine provider error arriving inside the capture window must NOT
+      // be classified as an abort artifact.
+      emit({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          responseId: 'real-during-abort-window',
+          content: [],
+          stopReason: 'error',
+          errorMessage: 'upstream provider exploded mid-abort',
+        },
+      });
       emit({
         type: 'message_end',
         message: {
@@ -598,6 +610,134 @@ test('SDK host reports only abort-produced assistant errors with recovery_starte
     (recoveryStarted.abortedAssistantMessages || []).map((message) => message.responseId),
     ['recovery-abort']
   );
+});
+
+// A shared harness for the abort/waitForIdle failure paths: the recovery
+// abort itself rejects, so recovery must fail loudly (recovery_failed) and
+// the run must still settle instead of rejecting or hanging.
+async function runRecoveryAbortFailureCase(failMode) {
+  const { runAgentRuntime } = await loadHostModule();
+  const sent = [];
+  const calls = [];
+  let recoveryHandler;
+  const subscribers = new Set();
+  let streaming = false;
+  let initialPromptResolve;
+  const idleWaiters = [];
+  let waitForIdleShouldReject = false;
+
+  const settle = () => {
+    streaming = false;
+    initialPromptResolve?.();
+    initialPromptResolve = undefined;
+
+    while (idleWaiters.length > 0) {
+      idleWaiters.shift()();
+    }
+  };
+  const session = {
+    sessionFile: path.resolve(`recovery-${failMode}-session.jsonl`),
+    get isStreaming() {
+      return streaming;
+    },
+    async bindExtensions() {},
+    subscribe(listener) {
+      subscribers.add(listener);
+      return () => subscribers.delete(listener);
+    },
+    prompt(prompt) {
+      if (prompt === 'initial prompt') {
+        streaming = true;
+        return new Promise((resolve) => {
+          initialPromptResolve = resolve;
+        });
+      }
+
+      throw new Error('recovery prompt must not be reached when the abort fails');
+    },
+    async waitForIdle() {
+      calls.push('wait_for_idle');
+
+      if (waitForIdleShouldReject) {
+        waitForIdleShouldReject = false;
+        settle();
+        throw new Error('idle wait failed after abort');
+      }
+
+      if (!streaming) {
+        return;
+      }
+
+      await new Promise((resolve) => idleWaiters.push(resolve));
+    },
+    async abort() {
+      calls.push('abort');
+
+      if (failMode === 'abort-rejects') {
+        settle();
+        throw new Error('session abort failed');
+      }
+
+      waitForIdleShouldReject = true;
+    },
+  };
+  const runtime = {
+    session,
+    setRebindSession() {},
+  };
+
+  const runPromise = runAgentRuntime(runtime, 'initial prompt', (message) => sent.push(message), {
+    onRecoveryRequest(handler) {
+      if (typeof handler === 'function') {
+        recoveryHandler = handler;
+      }
+    },
+    async onRecoveryStarted(event) {
+      sent.push({ type: 'recovery_started', ...event });
+    },
+    async onRecoveryFailed(event) {
+      sent.push({ type: 'recovery_failed', ...event });
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(typeof recoveryHandler, 'function');
+  await recoveryHandler({
+    reason: { type: 'progress_timeout', message: 'tool stalled' },
+    attempt: 1,
+    toolName: 'bash',
+  });
+  await runPromise;
+
+  return { sent, subscribers };
+}
+
+test('SDK host reports recovery_failed when session.abort() rejects during recovery', async () => {
+  const { sent, subscribers } = await runRecoveryAbortFailureCase('abort-rejects');
+
+  assert.equal(
+    sent.some((message) => message.type === 'recovery_started'),
+    false,
+    'recovery must not start when session.abort() rejects'
+  );
+  const failure = sent.find((message) => message.type === 'recovery_failed');
+  assert.ok(failure, 'recovery_failed must be reported when session.abort() rejects');
+  assert.equal(failure.code, 'recovery_prompt_failed');
+  assert.equal(subscribers.size, 0, 'capture listener must be unsubscribed when abort fails');
+});
+
+test('SDK host reports recovery_failed when waitForIdle() rejects after the recovery abort', async () => {
+  const { sent, subscribers } = await runRecoveryAbortFailureCase('wait-for-idle-rejects');
+
+  assert.equal(
+    sent.some((message) => message.type === 'recovery_started'),
+    false,
+    'recovery must not start when waitForIdle() rejects after the abort'
+  );
+  const failure = sent.find((message) => message.type === 'recovery_failed');
+  assert.ok(failure, 'recovery_failed must be reported when waitForIdle() rejects after the abort');
+  assert.equal(failure.code, 'recovery_prompt_failed');
+  assert.equal(subscribers.size, 0, 'capture listener must be unsubscribed when waitForIdle fails');
 });
 
 test('SDK host rejects recovery after the original turn is idle without prompting again', async () => {
