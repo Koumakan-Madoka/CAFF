@@ -1325,7 +1325,7 @@ test('buildAgentTurnPrompt includes active session goal guidance', () => {
   assert.match(prompt, /Work items: 1\/2 complete/u);
   assert.match(prompt, /\[x\] Add API lifecycle/u);
   assert.match(prompt, /\[~\] Wire progress UI/u);
-  assert.match(prompt, /update-goal/u);
+  assert.match(prompt, /update-goal --content-stdin applies factual work-item, criterion-status, and evidence updates from a full Goal JSON object; it rejects structural changes and high-risk waivers\. Evidence is the current proof set, not a history log\. Replace superseded entries, keep summaries concise, and keep criterion references valid\./u);
   assert.match(prompt, /current completion target/u);
   assert.match(prompt, /If the goal appears finished or blocked, create a goal proposal/u);
 });

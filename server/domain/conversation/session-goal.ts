@@ -1587,7 +1587,7 @@ export function formatSessionGoalForPrompt(conversation: any) {
           goal.owner ? `Owner: ${goal.owner.agentName}` : '',
           formatGoalDeliveryForPrompt(goal),
           goal.status === 'active'
-            ? 'Keep work items, criterion statuses, and evidence current with update-goal. Structural changes require a revise proposal and independent review.'
+            ? 'Keep work items, criterion statuses, and evidence current with update-goal. Evidence is the current proof set, not a history log. Replace superseded entries, keep summaries concise, and keep criterion references valid. Structural changes require a revise proposal and independent review.'
             : '',
           guidance,
         ].filter(Boolean).join('\n');

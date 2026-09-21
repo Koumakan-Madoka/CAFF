@@ -73,6 +73,8 @@ checklist into `workItems`; normalization never invents acceptance criteria.
 - Goal creation requires at least one observable acceptance criterion.
 - Every criterion requires a non-empty `verifyBy` description.
 - Work-item completion reports progress only. It never proves acceptance.
+- Evidence is the current proof set, not a history log. Replace superseded entries,
+  keep summaries concise, and keep criterion references valid.
 - A passed criterion must reference evidence which links back to that criterion.
 - Evidence and criterion references must resolve, and IDs must be non-empty and
   unique within each collection.

@@ -103,6 +103,7 @@ test('session goal owner persists through normalization and renders in the goal 
 
   const prompt = formatSessionGoalForPrompt(conversation);
   assert.ok(prompt.includes('Owner: Bravo'), 'goal prompt should name the owner agent');
+  assert.ok(prompt.includes('Evidence is the current proof set, not a history log. Replace superseded entries, keep summaries concise, and keep criterion references valid.'));
 });
 
 test('a checklist update preserves the same Goal continuation epoch and advances its revision', () => {
