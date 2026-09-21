@@ -1130,6 +1130,23 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         }
 
         recoveryRequested = false;
+        // The SDK host reports the assistant error messages produced by its own
+        // recovery abort (session.abort() writes an aborted-invocation error
+        // entry). Remove exactly those artifacts from the pending failures so a
+        // recovered run can succeed; genuine provider errors recorded before or
+        // during the recovery window keep their identity and still fail the run.
+        const abortedAssistantMessageKeys = new Set(
+          (Array.isArray(message.abortedAssistantMessages) ? message.abortedAssistantMessages : [])
+            .map((entry: any) => getAssistantMessageKey(entry))
+            .filter(Boolean)
+        );
+
+        if (abortedAssistantMessageKeys.size > 0) {
+          state.pendingAssistantErrors = state.pendingAssistantErrors.filter(
+            (entry: any) => !abortedAssistantMessageKeys.has(entry.messageKey)
+          );
+        }
+
         emit('run_recovery_started', {
           reason: recoveryReason,
           attempt: recoveryCount,
