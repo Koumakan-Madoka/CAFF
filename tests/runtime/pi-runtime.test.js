@@ -190,9 +190,14 @@ function createFakeSdkHostRecoveringTool(baseDir, capturePath, options = {}) {
     "    setTimeout(() => {",
     "      process.send({ type: 'pi_event', event: { type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'bash', isError: true } });",
     recoveryAbortArtifact
-      ? "      process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', responseId: 'recovery-abort', content: [], stopReason: 'error', errorMessage: 'This operation was aborted', timestamp: Date.now() } } });"
+      ? "      const artifact = { role: 'assistant', responseId: 'recovery-abort', content: [], stopReason: 'error', errorMessage: 'This operation was aborted', timestamp: Date.now() };"
       : '',
-    "      process.send({ type: 'recovery_started', reason: command.reason, attempt: command.attempt || 1, toolName: command.toolName || '' });",
+    recoveryAbortArtifact
+      ? "      process.send({ type: 'pi_event', event: { type: 'message_end', message: artifact } });"
+      : '',
+    "      process.send({ type: 'recovery_started', reason: command.reason, attempt: command.attempt || 1, toolName: command.toolName || '',".concat(
+      recoveryAbortArtifact ? " abortedAssistantMessages: [artifact]" : '',
+      " });"),
     completeAfterRecovery
       ? "      process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'recovered reply' }], stopReason: 'stop', timestamp: Date.now() } } });"
       : "      process.send({ type: 'pi_event', event: { type: 'tool_execution_start', toolCallId: 'tool-2', toolName: 'bash' } });",
@@ -201,6 +206,37 @@ function createFakeSdkHostRecoveringTool(baseDir, capturePath, options = {}) {
     "  }",
     "  if (command?.type === 'abort') {",
     "    commands.push(command); persist();",
+    "    if (heartbeatTimer) clearInterval(heartbeatTimer);",
+    "    process.exit(0);",
+    "  }",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostRecoveryMixedErrors(baseDir) {
+  // Recovery window sequence: abort artifact -> auto_retry_start (runtime pops
+  // the artifact from pending) -> genuine provider error. Only the artifact is
+  // reported in abortedAssistantMessages; both genuine errors must survive.
+  return createFakeSdkHost(baseDir, [
+    "let heartbeatTimer = null;",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    heartbeatTimer = setInterval(() => process.send({ type: 'heartbeat', timestamp: Date.now() }), 10);",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', responseId: 'real-before-recovery', content: [], stopReason: 'error', errorMessage: 'real provider error before recovery', timestamp: Date.now() } } });",
+    "    process.send({ type: 'pi_event', event: { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'bash' } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'recover') {",
+    "    const artifact = { role: 'assistant', responseId: 'recovery-abort', content: [], stopReason: 'error', errorMessage: 'This operation was aborted', timestamp: Date.now() };",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message: artifact } });",
+    "    process.send({ type: 'pi_event', event: { type: 'auto_retry_start', attempt: 1 } });",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', responseId: 'real-during-window', content: [], stopReason: 'error', errorMessage: 'real provider error during recovery window', timestamp: Date.now() } } });",
+    "    process.send({ type: 'pi_event', event: { type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'bash', isError: true } });",
+    "    process.send({ type: 'recovery_started', reason: command.reason, attempt: command.attempt || 1, toolName: command.toolName || '', abortedAssistantMessages: [artifact] });",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'recovered reply' }], stopReason: 'stop', timestamp: Date.now() } } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') {",
     "    if (heartbeatTimer) clearInterval(heartbeatTimer);",
     "    process.exit(0);",
     "  }",
@@ -1484,6 +1520,61 @@ test('pi runtime drops the recovery abort artifact so a recovered run can succee
     status: 'succeeded',
     assistant_errors_json: '[]',
     reply: 'recovered reply',
+  });
+});
+
+test('pi runtime keeps genuine recovery-window provider errors after dropping the abort artifact', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-recovery-mixed-errors-');
+  const fakeHostPath = createFakeSdkHostRecoveryMixedErrors(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const sqlitePath = path.join(tempDir, 'recovery-mixed-errors.sqlite');
+  handle = runtime.startRun('test-provider', 'test-model', 'recover with mixed errors', {
+    agentDir: tempDir,
+    sqlitePath,
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.message, 'pi assistant reported a model invocation error');
+    // The auto-retry popped the abort artifact and the recovery_started payload
+    // removed nothing extra; both genuine provider errors must survive.
+    assert.deepEqual(error.assistantErrors, [
+      'real provider error before recovery',
+      'real provider error during recovery window',
+    ]);
+    return true;
+  });
+
+  const db = new Database(sqlitePath, { readonly: true });
+  const run = db.prepare('SELECT status, assistant_errors_json FROM runs WHERE id = ?').get(handle.runId);
+  db.close();
+  assert.deepEqual(run, {
+    status: 'failed',
+    assistant_errors_json: JSON.stringify([
+      'real provider error before recovery',
+      'real provider error during recovery window',
+    ]),
   });
 });
 

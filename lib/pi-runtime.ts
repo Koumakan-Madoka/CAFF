@@ -467,10 +467,6 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     let recoveryCount = 0;
     let recoveryReason: any = null;
     let recoveryToolName = '';
-    // Assistant errors recorded between the recovery request and recovery_started
-    // are artifacts of the recovery path itself (session.abort() writes an aborted
-    // invocation error entry). They must not fail a run that recovers and completes.
-    let recoveryPendingAssistantErrorFloor: number | null = null;
 
     function recordAssistantUsage(message: any) {
       const usage = extractAssistantUsage(message);
@@ -762,7 +758,6 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       recoveryCount = 1;
       recoveryReason = reason;
       recoveryToolName = getActiveRecoveryToolName();
-      recoveryPendingAssistantErrorFloor = state.pendingAssistantErrors.length;
       emit('run_recovering', {
         reason,
         attempt: recoveryCount,
@@ -1135,13 +1130,23 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         }
 
         recoveryRequested = false;
-        if (
-          recoveryPendingAssistantErrorFloor !== null
-          && state.pendingAssistantErrors.length > recoveryPendingAssistantErrorFloor
-        ) {
-          state.pendingAssistantErrors.length = recoveryPendingAssistantErrorFloor;
+        // The SDK host reports the assistant error messages produced by its own
+        // recovery abort (session.abort() writes an aborted-invocation error
+        // entry). Remove exactly those artifacts from the pending failures so a
+        // recovered run can succeed; genuine provider errors recorded before or
+        // during the recovery window keep their identity and still fail the run.
+        const abortedAssistantMessageKeys = new Set(
+          (Array.isArray(message.abortedAssistantMessages) ? message.abortedAssistantMessages : [])
+            .map((entry: any) => getAssistantMessageKey(entry))
+            .filter(Boolean)
+        );
+
+        if (abortedAssistantMessageKeys.size > 0) {
+          state.pendingAssistantErrors = state.pendingAssistantErrors.filter(
+            (entry: any) => !abortedAssistantMessageKeys.has(entry.messageKey)
+          );
         }
-        recoveryPendingAssistantErrorFloor = null;
+
         emit('run_recovery_started', {
           reason: recoveryReason,
           attempt: recoveryCount,

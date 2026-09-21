@@ -473,6 +473,133 @@ test('SDK host waits for an aborted turn to settle before prompting recovery', a
   assert.equal(sent.some((message) => message.type === 'recovery_failed'), false);
 });
 
+test('SDK host reports only abort-produced assistant errors with recovery_started', async () => {
+  const { runAgentRuntime } = await loadHostModule();
+  const sent = [];
+  let recoveryHandler;
+  const subscribers = new Set();
+  let streaming = false;
+  let initialPromptResolve;
+  const idleWaiters = [];
+
+  const settle = () => {
+    streaming = false;
+    initialPromptResolve?.();
+    initialPromptResolve = undefined;
+
+    while (idleWaiters.length > 0) {
+      idleWaiters.shift()();
+    }
+  };
+  const emit = (event) => {
+    for (const listener of subscribers) {
+      listener(event);
+    }
+  };
+  const session = {
+    sessionFile: path.resolve('recovery-capture-session.jsonl'),
+    get isStreaming() {
+      return streaming;
+    },
+    async bindExtensions() {},
+    subscribe(listener) {
+      subscribers.add(listener);
+      return () => subscribers.delete(listener);
+    },
+    prompt(prompt, options) {
+      if (prompt === 'initial prompt') {
+        streaming = true;
+        return new Promise((resolve) => {
+          initialPromptResolve = resolve;
+        });
+      }
+
+      options?.preflightResult?.(true);
+      streaming = true;
+      // A genuine provider error during the recovery prompt must NOT be
+      // captured as an abort artifact.
+      setImmediate(() => {
+        emit({
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            responseId: 'real-during-recovery-prompt',
+            content: [],
+            stopReason: 'error',
+            errorMessage: 'real provider error during recovery prompt',
+          },
+        });
+        settle();
+      });
+      return Promise.resolve();
+    },
+    async waitForIdle() {
+      if (!streaming) {
+        return;
+      }
+
+      await new Promise((resolve) => idleWaiters.push(resolve));
+    },
+    async abort() {
+      emit({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          responseId: 'recovery-abort',
+          content: [],
+          stopReason: 'error',
+          errorMessage: 'This operation was aborted',
+        },
+      });
+      // A non-error event during the abort window must be ignored.
+      emit({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          responseId: 'recovery-abort-text',
+          content: [{ type: 'text', text: 'partial output' }],
+          stopReason: 'aborted',
+        },
+      });
+      setImmediate(settle);
+    },
+  };
+  const runtime = {
+    session,
+    setRebindSession() {},
+  };
+
+  const runPromise = runAgentRuntime(runtime, 'initial prompt', (message) => sent.push(message), {
+    onRecoveryRequest(handler) {
+      if (typeof handler === 'function') {
+        recoveryHandler = handler;
+      }
+    },
+    async onRecoveryStarted(event) {
+      sent.push({ type: 'recovery_started', ...event });
+    },
+    async onRecoveryFailed(event) {
+      sent.push({ type: 'recovery_failed', ...event });
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(typeof recoveryHandler, 'function');
+  await recoveryHandler({
+    reason: { type: 'progress_timeout', message: 'tool stalled' },
+    attempt: 1,
+    toolName: 'bash',
+  });
+  await runPromise;
+
+  const recoveryStarted = sent.find((message) => message.type === 'recovery_started');
+  assert.ok(recoveryStarted, 'recovery_started must be reported');
+  assert.deepEqual(
+    (recoveryStarted.abortedAssistantMessages || []).map((message) => message.responseId),
+    ['recovery-abort']
+  );
+});
+
 test('SDK host rejects recovery after the original turn is idle without prompting again', async () => {
   const { runAgentRuntime } = await loadHostModule();
   const calls = [];
