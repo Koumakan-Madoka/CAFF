@@ -31,6 +31,7 @@ const {
   createConversationCapabilityDefinitions,
   createPiCapabilityBridge,
   createRoomWorkspaceCapabilityDefinitions,
+  createRoomDirectoryCapabilityDefinitions,
 } = require('./pi-capability-bridge');
 
 const MAX_HISTORY_MESSAGES = 24;
@@ -1395,6 +1396,8 @@ export function createAgentToolBridge(options: any = {}) {
             );
           },
         }),
+        ...createRoomDirectoryCapabilityDefinitions((input: any) =>
+          store.listRoomsForAgent(input.principal.sourceConversationId, input.arguments)),
         ...createRoomWorkspaceCapabilityDefinitions({
           preview(input: any) {
             return handleRoomWorkspaceCapability('preview', input);

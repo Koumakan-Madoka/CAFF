@@ -1,4 +1,5 @@
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+import { validateListRoomsArguments } from '../conversation/room-directory';
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const { createHttpError } = require('../../http/http-errors');
 
@@ -315,6 +316,23 @@ export function createConversationCapabilityDefinitions(handlers: unknown = {}):
       projectResult: projectConversationDeliveryResult,
     },
   ];
+}
+
+export function createRoomDirectoryCapabilityDefinitions(execute: PiCapabilityHandler): InternalPiCapabilityDefinition[] {
+  return [{
+    facade: 'list_rooms',
+    kind: 'internal',
+    validateArguments: validateListRoomsArguments,
+    execute,
+    projectResult(raw: unknown) {
+      if (!Array.isArray(raw)) throw new Error('Invalid room directory result');
+      return { rooms: raw.map((room: any) => ({
+        id: room.id, title: room.title, projectScopeId: room.projectScopeId,
+        lastPublicMessageAt: room.lastPublicMessageAt,
+        agents: room.agents.map((agent: any) => ({ id: agent.id, name: agent.name })),
+      })) };
+    },
+  }];
 }
 
 export function createRoomWorkspaceCapabilityDefinitions(handlers: unknown = {}): InternalPiCapabilityDefinition[] {

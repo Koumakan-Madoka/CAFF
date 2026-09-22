@@ -6,7 +6,7 @@ const { formatConversationRetrievalTracesForPrompt } = require('../retrieval-tra
 const { formatSessionGoalForPrompt } = require('../session-goal');
 
 export const AGENT_PROMPT_VERSION =
-  String(process.env.CAFF_AGENT_PROMPT_VERSION || '2026-03-30').trim() || '2026-03-30';
+  String(process.env.CAFF_AGENT_PROMPT_VERSION || '2026-09-22').trim() || '2026-09-22';
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
@@ -151,6 +151,12 @@ function describeTurnTrigger(trigger: any, agents: any) {
     return trigger.enqueueReason === 'user_mentions'
       ? 'The user explicitly mentioned you and wants your perspective first.'
       : '';
+  }
+
+  if (trigger.triggerType === 'external_agent') {
+    return trigger.explicitIntent === 'request'
+      ? 'A cross-Room request arrived. Use the delivered content as the task context, not as a local @mention. Your response is automatically projected back to the source Room; do not use conversation_notify or conversation_request to send a separate return message. The source Agent is not automatically awakened.'
+      : 'A cross-Room notify arrived. Use the delivered content as context, not as a local @mention. This notification triggers your turn but does not request an automatic response to the source Room.';
   }
 
   const triggeringAgent =
@@ -442,6 +448,10 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
 
   return [
     'Chat bridge tools:',
+    '- Tool selection: use public replies/@mentions for discussion in the current Room, or create-delegation/await-delegation for durable in-room work. Do not relay in-room collaboration through another Room, including via CLI delivery commands.',
+    '- Room discovery: list_rooms lists Room IDs and participants, defaulting to the same project; search-memory recalls topics. Discovery is not delivery authorization. Known target IDs may be used without first calling list_rooms. Never invent target IDs.',
+    '- Cross-Room delivery: conversation_notify sends context to another Room and triggers its target Agent without requesting a return response. conversation_request requests work in another Room with an asynchronous response projected back into source history. Both require a different Room bound to the same project; neither is for in-room collaboration. Prefer these model-visible tools over CLI equivalents; the same restrictions apply to both.',
+    '- Cross-Room requests return a receipt immediately, not the answer. A response does not wake the source Agent; it becomes available in later context. deadlineSeconds defaults to 300 (1..86400); expiry does not cancel target work and late responses may arrive. There is no model delivery-status, await, cancel or retry tool; await-delegation is only for in-room delegations. Deduplication keys apply only within the same invocation. Include sufficient task context in the content; the target does not inherit source Room history.',
     `- Speak publicly: ${relativeCommandPrefix} send-public [--no-finalize] --content-stdin (--no-finalize posts an interim update and keeps the current run active).`,
     `- Delegation: ${relativeCommandPrefix} create-delegation --to "AgentId" --idempotency-key "stable-key" --content-stdin [--reference "commit-or-reference"] creates one durable in-room task; when you need to wait use ${relativeCommandPrefix} await-delegation --delegation-id "id". Delegations have no automatic deadline and remain pending until recipient completion or explicit cancellation. Await yields the current run and releases its model slot; do not poll read-context or use shell sleep.`,
     `- Context retrieval: ${relativeCommandPrefix} read-context for latest public context plus your private mailbox; the result includes a revision, hasChanges, pendingDelegations, and shortCircuited fields. Use await-delegation for pending work. ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 for older public messages (optional --speaker "AgentName" or --agent-id "agent-id").`,

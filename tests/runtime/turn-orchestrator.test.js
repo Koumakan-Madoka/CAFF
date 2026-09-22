@@ -74,7 +74,8 @@ test('sanitizePromptMentions rewrites raw @mentions into safe placeholders', () 
   );
 });
 
-test('turn orchestrator dispatches a persisted cross-conversation message through the side lane only', { concurrency: false }, async (t) => {
+for (const deliveryKind of ['notify', 'request']) {
+test(`turn orchestrator dispatches a persisted cross-conversation ${deliveryKind} through the side lane only`, { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-cross-delivery-side-lane-');
   const sqlitePath = path.join(tempDir, 'cross-delivery-side-lane.sqlite');
   const targetMessage = {
@@ -162,7 +163,7 @@ test('turn orchestrator dispatches a persisted cross-conversation message throug
   const result = await orchestrator.dispatchCrossConversationDelivery({
     delivery: {
       id: 'cross-delivery-1',
-      kind: 'request',
+      kind: deliveryKind,
       sourceConversationId: 'cross-source-conversation',
       sourceAgentId: 'source-agent',
       sourceAgentName: 'Source Agent',
@@ -181,6 +182,26 @@ test('turn orchestrator dispatches a persisted cross-conversation message throug
   assert.equal(executions[0].allowHandoffs, false);
   assert.equal(executions[0].enqueueAgent, null);
   assert.equal(executions[0].queueItem.triggerType, 'external_agent');
+  assert.equal(executions[0].queueItem.explicitIntent, deliveryKind);
+  const promptSections = buildAgentTurnPromptSections({
+    conversation,
+    agent: conversation.agents[0],
+    agentConfig: { profileName: 'Default', personaPrompt: '' },
+    resolvedPersonaSkills: [], resolvedConversationSkills: [],
+    sandbox: { sandboxDir: tempDir, privateDir: tempDir },
+    agents: conversation.agents, messages: [targetMessage], privateMessages: [],
+    trigger: executions[0].queueItem,
+    remainingSlots: 0, routingMode: 'mention_queue', allowHandoffs: false,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+  const triggerText = promptSections.find(section => section.sectionKey === 'turn_trigger').content;
+  assert.match(triggerText, new RegExp(`cross-Room ${deliveryKind}`, 'iu'));
+  if (deliveryKind === 'request') {
+    assert.match(triggerText, /automatically/iu);
+    assert.doesNotMatch(triggerText, /does not request an automatic response/iu);
+  } else {
+    assert.match(triggerText, /does not request an automatic response/iu);
+  }
   assert.equal(executions[0].queueItem.crossConversationDeliveryId, 'cross-delivery-1');
   assert.equal(executions[0].queueItem.toolInvocationId, startedInput.invocationId);
   assert.equal(executions[0].promptUserMessage.id, targetMessage.id);
@@ -234,6 +255,8 @@ test('turn orchestrator dispatches a persisted cross-conversation message throug
   assert.equal(orchestrator.listTurnSummaries({ conversationId: conversation.id }).length, 0);
   assert.equal(orchestrator.listAgentSlotSummaries({ conversationId: conversation.id }).length, 0);
 });
+
+}
 
 test('buildAgentTurnPrompt avoids raw @mention tokens from room context', () => {
   const agent = {
@@ -349,6 +372,39 @@ test('model-family prompts omit Persona content and keep conversation skills', (
   assert.doesNotMatch(prompt, /Persona-Specific Skills/u);
   assert.doesNotMatch(prompt, /contaminated Persona/u);
   assert.doesNotMatch(prompt, /FORBIDDEN FAMILY PERSONA SKILL BODY/u);
+});
+
+test('cross-Room delivery prompts distinguish inbound delivery from in-room mentions', () => {
+  const agent = { id: 'receiver', name: 'Receiver', personaPrompt: '' };
+  for (const explicitIntent of ['notify', 'request']) {
+    for (const triggeredByAgentName of ['Remote Sender', undefined]) {
+      const sections = buildAgentTurnPromptSections({
+        conversation: { id: 'target-room', title: 'Target', type: 'standard', agents: [agent] },
+        agent,
+        agentConfig: { profileName: 'Default', personaPrompt: '' },
+        resolvedPersonaSkills: [], resolvedConversationSkills: [],
+        sandbox: { sandboxDir: '/synthetic/receiver', privateDir: '/synthetic/receiver/private' },
+        agents: [agent], messages: [], privateMessages: [],
+        trigger: { triggerType: 'external_agent', explicitIntent, triggeredByAgentName },
+        remainingSlots: 7, routingMode: 'mention_queue', allowHandoffs: true,
+        agentToolRelativePath: './lib/agent-chat-tools.js',
+      });
+      const trigger = sections.find(section => section.sectionKey === 'turn_trigger');
+      assert.ok(trigger);
+      assert.match(trigger.content, /cross-Room/iu);
+      assert.match(trigger.content, new RegExp(explicitIntent, 'iu'));
+      assert.doesNotMatch(trigger.content, /publicly mentioned|visible participant/iu);
+      if (explicitIntent === 'request') {
+        assert.match(trigger.content, /automatically/iu);
+        assert.match(trigger.content, /do not.*conversation_notify/iu);
+      }
+      const instructions = sections.find(section => section.sectionKey === 'tool_instructions').content;
+      assert.match(instructions, /list_rooms/u);
+      assert.match(instructions, /conversation_notify/u);
+      assert.match(instructions, /conversation_request/u);
+      assert.match(instructions, /do not.*(?:relay|route).*another Room/iu);
+    }
+  }
 });
 
 test('buildAgentTurnPrompt omits optional sections with no material content', () => {

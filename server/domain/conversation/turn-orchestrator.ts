@@ -1506,6 +1506,7 @@ export function createTurnOrchestrator(options: any = {}) {
           parentRunId: null,
           enqueueReason: entry.enqueueReason || 'user_mentions',
           privateOnly: Boolean(entry.acceptedMessage && entry.acceptedMessage.metadata && entry.acceptedMessage.metadata.privateOnly),
+          explicitIntent: entry.explicitIntent || '',
           crossConversationDeliveryId: entry.crossConversationDeliveryId || null,
           delegationId: entry.delegationId || null,
           toolInvocationId: entry.toolInvocationId || null,

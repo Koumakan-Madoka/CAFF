@@ -1,5 +1,6 @@
 export class ChatConversationRepository {
   listHeadersStatement: any;
+  listAgentDirectoryStatement: any;
   listTreeHeadersStatement: any;
   listDirectoryPageStatement: any;
   getStatement: any;
@@ -12,6 +13,30 @@ export class ChatConversationRepository {
   deleteStatement: any;
 
   constructor(db: any) {
+    // Deliberately independent from UI activity/preview projections.
+    this.listAgentDirectoryStatement = db.prepare(`
+      SELECT c.id, c.title, c.project_scope_id,
+        (SELECT m.created_at FROM chat_messages m
+         WHERE m.conversation_id = c.id
+           AND TRIM(m.content) <> ''
+           AND NOT (m.role = 'assistant' AND m.status <> 'completed' AND TRIM(m.content) = 'Thinking...')
+           AND CASE WHEN json_valid(m.metadata_json) = 0 THEN 0
+             WHEN json_type(m.metadata_json, '$.privateOnly') IS NULL THEN 0
+             WHEN json_type(m.metadata_json, '$.privateOnly') IN ('null', 'false') THEN 0
+             WHEN json_type(m.metadata_json, '$.privateOnly') IN ('integer', 'real')
+               THEN json_extract(m.metadata_json, '$.privateOnly') <> 0
+             WHEN json_type(m.metadata_json, '$.privateOnly') = 'text'
+               THEN LENGTH(json_extract(m.metadata_json, '$.privateOnly')) > 0
+             ELSE 1 END = 0
+           AND CASE WHEN json_valid(m.metadata_json) = 0 THEN 1
+             ELSE LOWER(TRIM(COALESCE(json_extract(m.metadata_json, '$.visibility'), ''))) <> 'private' END
+         ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_public_message_at
+      FROM chat_conversations c
+      WHERE c.id <> @sourceConversationId
+        AND (@allProjects = 1 OR c.project_scope_id = @projectScopeId)
+      ORDER BY last_public_message_at DESC, c.id DESC
+      LIMIT @limit
+    `);
     this.listHeadersStatement = db.prepare(`
       SELECT
         c.*,
@@ -193,6 +218,10 @@ export class ChatConversationRepository {
       WHERE id = ?
     `);
     this.deleteStatement = db.prepare('DELETE FROM chat_conversations WHERE id = ?');
+  }
+
+  listAgentDirectory(options: { sourceConversationId: string; projectScopeId: string; allProjects: number; limit: number }) {
+    return this.listAgentDirectoryStatement.all(options);
   }
 
   listHeaders() {
