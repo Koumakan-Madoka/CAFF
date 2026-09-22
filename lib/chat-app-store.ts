@@ -1,4 +1,7 @@
 const { randomUUID } = require('node:crypto');
+const { validateListRoomsArguments } = require('../server/domain/conversation/room-directory');
+const { createHttpError } = require('../server/http/http-errors');
+const { filterRoutableConversationAgents } = require('../server/domain/roles/system-actor-catalog');
 const {
   MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE,
 } = require('./conversation-message-deletion-contract');
@@ -2207,6 +2210,29 @@ export class ChatAppStore {
 
   retireRoleConfig(roleId: any, retiredReason = 'custom_role_deleted') {
     return this.retireRoleConfigTransaction(String(roleId || '').trim(), retiredReason);
+  }
+
+  listRoomsForAgent(sourceConversationId: string, input: unknown = {}) {
+    const { scope, limit } = validateListRoomsArguments(input);
+    // Read only the source identity fields, never hydrate message previews.
+    const source = this.db.prepare('SELECT project_scope_id FROM chat_conversations WHERE id = ?').get(sourceConversationId);
+    if (!source) {
+      throw createHttpError(404, 'Source Room not found', { code: 'room_directory_source_not_found' });
+    }
+    const projectScopeId = String(source.project_scope_id || '').trim();
+    if (scope === 'same_project' && !projectScopeId) {
+      throw createHttpError(409, 'Source Room has no project; explicitly use scope all_projects', { code: 'room_directory_source_unbound' });
+    }
+    return this.conversationRepository.listAgentDirectory({
+      sourceConversationId, projectScopeId, allProjects: scope === 'all_projects' ? 1 : 0, limit,
+    }).map((row: any) => ({
+      id: row.id,
+      title: row.title,
+      projectScopeId: row.project_scope_id || null,
+      lastPublicMessageAt: row.last_public_message_at || null,
+      agents: filterRoutableConversationAgents(this.listConversationAgents(row.id))
+        .map((agent: any) => ({ id: agent.id, name: agent.name })),
+    }));
   }
 
   listConversations() {

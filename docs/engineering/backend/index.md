@@ -51,6 +51,8 @@ backend domain services.
 
 ## Documents
 
+- `room-directory.md`: read-only `list_rooms` capability, local-instance scope, public activity ordering and minimal directory projection
+
 - `architecture.md`: backend module boundaries and ownership
 - `controller-patterns.md`: handler conventions, error flow, and response shape
 - `model-provider-config.md`: local-admin provider API, token-limit defaults,

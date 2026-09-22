@@ -129,12 +129,16 @@ test('Pi extension omits cross-conversation delivery facades from model-visible 
   });
 
   assert.deepEqual(tools.map((tool) => tool.name), [
+    'list_rooms',
     'room_workspace_preview',
     'room_workspace_bind',
   ]);
 
-  const preview = tools[0];
-  const bind = tools[1];
+  const preview = tools.find(tool => tool.name === 'room_workspace_preview');
+  const bind = tools.find(tool => tool.name === 'room_workspace_bind');
+  const rooms = tools.find(tool => tool.name === 'list_rooms');
+  assert.deepEqual(Object.keys(rooms.parameters.properties), ['scope', 'limit']);
+  assert.equal(rooms.parameters.additionalProperties, false);
   assert.deepEqual(Object.keys(preview.parameters.properties), []);
   assert.deepEqual(Object.keys(bind.parameters.properties), ['confirm']);
   assert.equal(preview.parameters.additionalProperties, false);
@@ -188,7 +192,7 @@ test('Pi extension injects invocation credentials into a fixed local facade rout
   });
 
   extension.default({ registerTool(tool) { tools.push(tool); } });
-  const result = await tools[0].execute(
+  const result = await tools.find(tool => tool.name === 'room_workspace_preview').execute(
     'tool-call-extension',
     {},
     undefined
@@ -416,6 +420,39 @@ test('agent bridge authenticates the invocation and injects project scope into P
     incomingDeliveryId: 'delivery-incoming',
   });
   assert.equal(received.input.arguments.content, 'hello');
+});
+
+test('list_rooms dispatch uses authenticated source, validates arguments and projects directory fields only', async () => {
+  const calls = [];
+  const bridge = createAgentToolBridge({ store: {
+    getConversation(id) { return { id, projectScopeId: 'server-project' }; },
+    listRoomsForAgent(source, args) {
+      calls.push({ source, args });
+      return [{ id: 'target', title: 'Target', projectScopeId: null, lastPublicMessageAt: null,
+        metadata: { secret: true }, lastMessagePreview: 'SECRET',
+        agents: [{ id: 'agent', name: 'Agent', credentials: 'SECRET' }] }];
+    },
+  } });
+  const context = bridge.registerInvocation(bridge.createInvocationContext({
+    invocationId: 'rooms-invocation', callbackToken: 'rooms-callback',
+    conversationId: 'source', agentId: 'agent', stage: { status: 'running' },
+  }));
+  const body = { invocationId: context.invocationId, callbackToken: context.callbackToken, arguments: {} };
+  await assert.rejects(bridge.handlePiCapability('list_rooms', { ...body, callbackToken: 'wrong' }));
+  assert.equal(calls.length, 0);
+  for (const args of [{ projectScopeId: 'spoof' }, { sourceConversationId: 'spoof' }, { scope: 'all' }, { limit: 31 }]) {
+    await assert.rejects(bridge.handlePiCapability('list_rooms', { ...body, arguments: args }));
+  }
+  assert.equal(calls.length, 0);
+  const result = await bridge.handlePiCapability('list_rooms', body);
+  assert.deepEqual(calls, [{ source: 'source', args: { scope: 'same_project', limit: 10 } }]);
+  assert.deepEqual(result, { rooms: [{ id: 'target', title: 'Target', projectScopeId: null,
+    lastPublicMessageAt: null, agents: [{ id: 'agent', name: 'Agent' }] }] });
+  await bridge.handlePiCapability('list_rooms', { ...body, arguments: { scope: 'all_projects', limit: 30 } });
+  assert.deepEqual(calls[1], { source: 'source', args: { scope: 'all_projects', limit: 30 } });
+  context.stage.status = 'completed';
+  await assert.rejects(bridge.handlePiCapability('list_rooms', body));
+  assert.equal(calls.length, 2);
 });
 
 test('default Agent bridge Pi facade enters the fixed Phase A delivery handler', async () => {
@@ -671,7 +708,7 @@ test('dogfood: Pi extension reaches the authenticated workspace facade over real
   const extension = await import(`${pathToFileURL(extensionPath).href}?dogfood=${Date.now()}`);
   const tools = [];
   extension.default({ registerTool(tool) { tools.push(tool); } });
-  const result = await tools[0].execute(
+  const result = await tools.find(tool => tool.name === 'room_workspace_preview').execute(
     'tool-call-dogfood',
     {},
     undefined
