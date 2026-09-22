@@ -1,302 +1,227 @@
 # CAFF
 
-**Conversational Agent Framework & Playground** — 一个本地多 Agent 聊天平台，集成多人协作、游戏模式、技能系统、评测面板，以及飞书与 CLI 自动化接入能力。
+**让不同模型的 Agent 在同一个本地工作台里协作，把讨论推进到可验证的交付。**
+
+CAFF（Conversational Agent Framework & Playground）是基于 **Pi SDK** 构建的多 Agent 工程协作工作台。你可以在 Room 中与不同模型交流、点名交接任务，将代码变更放进独立 Git 工作区，并用目标、验收证据和独立核验约束长流程执行。
+
+它关注的不只是“多个模型能不能一起聊天”，而是：**任务交给了谁、变更发生在哪里、目标有没有漂移、完成凭什么成立。**
 
 ![Node.js](https://img.shields.io/badge/Node.js-22.19+-green?logo=node.js)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
-![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
 
-## ✨ 当前能力概览
+## 为什么是 CAFF
 
-- **多 Agent 聊天工作台** — 在同一个房间里让多个 Agent 协作，支持 `@mention` 路由、串行/并行 handoff、停止当前 turn，以及公开 / 私有消息通道。
-- **人格管理** — 在 Web UI 中维护 Agent 的基础 persona、头像、默认模型，以及按模型拆分的 persona profile。
-- **Skill 与模式系统** — 统一管理 `.pi-sandbox/skills` 下的技能目录，并支持会话模式绑定、`dynamic` / `full` 两种注入策略。
-- **项目与交付工作流** — 绑定独立项目工作区，通过 `grill-with-docs` 澄清需求、ADR 留存长期决策、结构化 Goal 跟踪验收，并按 Direct / Goal / DAG 路由执行。
-- **后端主持游戏模式** — 内置“谁是卧底”和“狼人杀”两种玩法，由后端推进阶段、分配身份、处理结算。
-- **评测工具** — 提供 Agent 指标报表。
-- **飞书接入 MVP** — 支持通过 webhook 或 long connection 收发飞书私聊 / 群聊文本消息。
-- **CLI 自动化友好** — Agent 聊天桥接工具与 GitHub CLI (`gh`) 都能直接融入本地自动化流程。
+### 1. 多 Agent Room：让协作有明确的接力关系
 
-## 🏗 Architecture
+用户与不同模型的 Agent 共享同一个协作空间，不必在多个聊天窗口之间反复复制上下文。
 
-CAFF 目前是一个以本地 Web 工作台为入口、Node/TypeScript 后端为核心的分层应用：
+- **显式路由**：通过 `@mention` 点名参与者，支持串行、并行交接，而不是每条消息都让所有模型抢答。
+- **Room 内任务委派**：Agent 可以创建持久化委派，等待时释放执行槽位；接收方结束后，由运行时汇总结果并安排请求方继续。
+- **保留模型身份**：不同模型族以各自身份参与，可以选择模型配置与 Skills，不依赖虚构人格来组织工程分工。
+- **过程可查看、可干预**：消息流、工具调用、上下文快照与执行轨迹帮助你了解 Agent 做了什么，也可以停止当前执行。
 
-```text
-┌──────────────────────────────────────────────────────────┐
-│                        Browser UI                        │
-│ /  /personas.html  /skills.html  /projects.html         │
-│ /metrics.html                                            │
-└─────────────────────────────┬────────────────────────────┘
-                              │ HTTP / SSE
-┌─────────────────────────────▼────────────────────────────┐
-│                    server/api + server/http              │
-│ bootstrap / conversations / agents / skills / modes     │
-│ projects / metrics / feishu                              │
-└─────────────────────────────┬────────────────────────────┘
-                              │
-┌─────────────────────────────▼────────────────────────────┐
-│                       Domain Services                    │
-│ turn-orchestrator / mention-routing / agent-tool-bridge │
-│ skill-registry / project-manager / mode-store           │
-│ undercover / werewolf / feishu integration              │
-└─────────────────────────────┬────────────────────────────┘
-                              │
-┌─────────────────────────────▼────────────────────────────┐
-│                         Storage                          │
-│ chat repositories / run repositories / SQLite / modes   │
-└─────────────────────────────┬────────────────────────────┘
-                              │
-┌─────────────────────────────▼────────────────────────────┐
-│                    External Runtime & Tools              │
-│ pi coding agent / .pi-sandbox / Feishu / GitHub CLI     │
-└──────────────────────────────────────────────────────────┘
-```
+### 2. Room × Git：把讨论与代码变更放在同一个边界内
 
-**核心目录：**
+Room 不只是消息容器，也是任务工作区的组织单位。
 
-| Path | Description |
-|---|---|
-| `server/app/` | 服务启动、配置读取、依赖装配 |
-| `server/http/` | HTTP 路由、SSE 总线、请求响应工具 |
-| `server/api/` | 各资源控制器：会话、人格、技能、项目、评测、飞书等 |
-| `server/domain/` | 领域逻辑：turn 编排、运行时桥接、游戏服务、飞书集成 |
-| `storage/` | SQLite 仓储：聊天数据、运行记录、模式与外部事件 |
-| `lib/` | 共享运行时辅助、pi 集成、skill registry、project manager |
-| `public/` | 前端页面与共享 JS 模块 |
-| `tests/` | runtime、HTTP、storage、smoke 测试 |
-| `docs/engineering/` | 当前工程契约与开发规范 |
-| `docs/decisions/` | 已接受、跨任务有效的 ADR |
-| `.pi-sandbox/` | skills、agent sandboxes、本地 runtime 状态 |
+- 创建 Room 时明确 Project、Mode 和参与者；Project 与 Mode 创建后固定。
+- 开始修改前，先预览工作区，再由用户确认绑定。服务端从 Room 身份派生唯一的 `room/*` 分支和 worktree，普通 Room 以项目本地 `develop` 为基线。
+- 不同任务拥有独立文件状态，Agent 在绑定的工作目录中执行；提交、差异和审查都能对应到具体任务，便于追踪与回滚。
+- 验收记录绑定确切候选 SHA，不能用对旧版本的认可替代对新版本的验收。
 
-## 🚀 Quick Start
+> Git worktree 隔离的是文件状态，不是运行时安全沙箱。端口、数据库、日志、凭据和外部副作用仍需单独隔离；未绑定 Room 也没有服务端强制只读锁。
 
-### Prerequisites
+### 3. 跨 Room 投递：交接不只是一条聊天消息
 
-- [Node.js](https://nodejs.org/) 22.19+
-- npm 9+
-- 一个可用的 [pi coding agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) 或兼容 provider endpoint
+当工作需要交给另一个 Room，CAFF 提供带寻址、状态与回执的投递机制，而不是依赖 Agent “记得去通知”。
 
-### Install & Run
+- **精确寻址**：每条投递指定一个目标 Room 与其中一位 Agent；Agent 跨 Room 通信受同一非空 Project 作用域约束。
+- **先落库，后派发**：投递记录本身就是 durable outbox，幂等键在规定作用域内防止重复创建投递与目标消息。
+- **可恢复的生命周期**：重启后恢复持久化投递状态，尚未启动的任务可按策略重新入队；已启动但结果未知的执行不会自动重跑，避免重复副作用。
+- **迟到回复不触发重新执行**：迟到回复将响应状态标记为 `late` 并追加审计事件，不重新执行、不推翻已落库的派发（dispatch）结果。
+- **防循环保护**：检测重复链路并限制转发跳数；请求回复回源后默认不自动唤醒源 Agent，避免无限往返。
+
+这些机制提供可追踪的交接与恢复边界，不承诺任意外部操作的 exactly-once 执行。
+
+### 4. 规范 × Goal × DAG：让长任务不靠聊天记忆维持方向
+
+CAFF 将工程约束、交付目标与执行依赖分别保留下来，减少长流程中的意图漂移。
+
+| 层次 | 负责什么 |
+| --- | --- |
+| **持久工程规范** | `AGENTS.md`、项目 Skills、`docs/engineering/` 与已接受的 ADR 保存工程约束与长期决策 |
+| **Session Goal** | 保存目标、决策、非目标、待决问题、工作项、验收标准与证据；符合条件时由 Goal Runner 持续推进 |
+| **DAG** | 对复杂任务明确依赖、并行节点、分工与汇合，并通过 worker / verifier 协议核验节点结果 |
+
+**“工作项做完了”不等于“验收通过了”。** Goal 的通过项需要关联证据；完成前，验收标准必须全部通过或按规则获准豁免。
+
+Agent 提议的目标创建与结构变更需要审核，提议者不能自审；普通提案可由用户或另一参与 Agent 裁决，高风险豁免及变更已关联 ADR 的承诺决策必须由用户确认。DAG 子任务通常由不同于 worker 的 verifier 裁决完成提案，单 Agent 节点则走调度器的显式核验豁免。
+
+按任务复杂度选择 **Direct → Goal → DAG**：简单改动直接交付，长任务保留目标，有真实并行收益和依赖关系时再拆图。这是执行编排，不是切换 Room 的 Mode。
+
+### 5. Fresh Context First：先证明可以复用，再继续旧会话
+
+长对话不能无限堆进模型上下文，也不应在历史已变化时盲目续跑。
+
+CAFF 以新建 Session 作为安全回退路径：**当前版本默认开启复用检查，但只有校验通过才复用旧 Session**。
+
+- 检查静态提示段哈希、历史与私聊游标、空闲时间、上下文占用率等条件；证据缺失、历史变异或状态异常时回退新 Session。
+- Goal Runner 自动续跑额外核对 Goal 身份与版本，并要求上下文占用率严格低于 50%；普通复用阈值配置得更低时，采用更低阈值。
+- 复用时只追加可见的增量消息；上下文检查器区分本轮实际输入与已保留的 Session 前缀。
+- 对长对话生成摘要与五类结构化条目：**事实、决策、待解决问题、下一步、产物**，结合滚动汇总和保留预算，控制摘要进入提示词的体积。
+
+这里的 Fresh 指模型运行 Session，不是新建 Room。结构化摘要帮助延续关键结论，但不是无损压缩；重要要求与交付证据应进入 Goal 或工程文档，而不只留在聊天历史中。
+
+## 模型接入：从配置到协作
+
+**接入模型不只是填一个 API Key，还要让它能被正确配置、验证，并交给合适的 Agent 使用。** CAFF 将这些步骤集中在「角色与模型管理」中，让模型连接与协作身份各司其职。
+
+### 可视化管理，不必从手写配置开始
+
+在 Web 界面维护 Provider 的地址、API 协议、认证方式和模型列表，既可以手动添加，也可以从 **models.dev 目录**搜索并选择导入。
+
+目录支持在线刷新；导入前可查看来源与模型信息，确认后再写入本地配置。有效的上下文容量（`contextWindow`）和单次输出上限（`maxTokens`）随目录导入，后续也可调整，避免把两种限制混为一谈。
+
+> 目录信息是配置参考，不是运行能力保证。某个模型出现在目录里，不代表当前 Pi 运行时、协议或账号一定支持调用；实际能力与连接仍需验证。
+
+### API Key 与订阅登录，两条接入路径
+
+- **API 接入**：配置 Provider 凭据，也支持环境变量引用等高级认证方式，适合已有 API 服务或兼容端点。
+- **订阅登录**：提供已支持的 Claude（`anthropic`）与 OpenAI Codex（`openai-codex`）登录入口，由后端衔接授权流程，凭据保存在本地供 Pi 运行时使用。
+- **入口不混淆**：models.dev 导入走 API 配置路径；OpenAI Codex 订阅渠道通过订阅登录注册，不从该目录导入。
+
+订阅接入是否可用取决于账号资格、服务商政策与当前运行时支持，不意味着订阅能替代所有 API 权限或免除调用限制。
+
+### 按模型能力配置 Agent
+
+Provider 负责连接，Agent 配置负责选择实际使用的模型与推理强度。你可以为不同参与者配置不同模型，让它们在同一 Room 中讨论、实现和核验。
+
+Thinking 档位来自所选模型的运行时能力，而不是对所有模型展示同一套固定选项；不支持的值会被校验拒绝，不会静默改成另一个档位。系统模型族 Agent 的模型选择限定在同族内，切换连接配置不等于改变其公开身份。
+
+### 配置可验证，凭据不随读取回显
+
+- 提供**连接验证**，帮助检查所选 Provider；这会访问外部服务，但不会执行命令型凭据来源。
+- 配置读取不返回明文密钥；编辑时留空保留已有密钥，清除需要明确操作与确认。
+- 配置采用**原子替换与可恢复备份**，避免半写入破坏现有连接配置。
+
+这些保护减少配置误操作，不替代本机访问控制。更多细节见[模型 Provider 配置](docs/engineering/backend/model-provider-config.md)、[模型管理界面契约](docs/engineering/frontend/model-family-management.md)与[订阅登录说明](docs/engineering/backend/subscription-oauth-login.md)。
+
+## 一次协作可以怎样展开
+
+以“给项目增加一项功能”为例，下面是协作流程示意，不是自动执行脚本：
+
+1. **澄清**：创建项目 Room，选择模型参与者，让 Agent 明确目标、非目标和验收方式。
+2. **授权**：确认工作区预览，将改动绑定到专属分支和 worktree。
+3. **执行**：小任务直接修改；长任务建立 Goal；需要并行时，用 DAG 拆出有依赖关系的节点。
+4. **交接**：Room 内可委派实现或检查工作；跨 Room 可将明确的问题交给指定 Agent，并查看持久回执。
+5. **核验**：实现者提交变更与测试证据，由独立审查者检查；DAG 节点按 verifier 协议裁决。
+6. **验收**：用户对确切候选版本作出验收决定，再按项目流程集成或发布。
+
+**你掌握方向与授权，Agent 负责推进，证据负责说明结果。**
+
+## 快速开始
+
+### 环境要求
+
+- [Node.js](https://nodejs.org/) **22.19+** 与 npm
+- Git；使用 Room 工作区的项目需要本地 `develop` 分支
+- 可用的模型 Provider 与对应凭据或受支持的订阅登录
+
+Pi SDK 随项目依赖安装，无需另外安装全局 Pi CLI。
+
+### 安装与启动
 
 ```bash
 git clone https://github.com/Koumakan-Madoka/caff.git
 cd caff
-npm install
-cp .env.example .env.local  # Windows PowerShell: copy .env.example .env.local
+npm ci
+cp .env.example .env.local
 npm run start:dev
 ```
 
-只运行核心服务或飞书 webhook 时，可以跳过 long-connection SDK：
+Windows PowerShell 中，将复制命令替换为 `Copy-Item .env.example .env.local`。
+
+访问 **http://127.0.0.1:3100**。首次使用建议：
+
+1. 在 **角色与模型管理**（`/personas.html`）配置 Provider、认证和模型，并为参与 Agent 选择可用模型配置。
+2. 在 **项目管理**（`/projects.html`）登记本地项目；需要代码工作区时，确认项目是 Git 仓库且存在本地 `develop`。
+3. 回到聊天工作台，选择 Project、Mode（普通对话为 `standard`）和参与者，创建 Room。
+4. 先发起讨论；需要改文件时，再确认独立工作区授权。
+
+健康检查：
 
 ```bash
-npm ci --omit=optional
+curl http://127.0.0.1:3100/api/health
 ```
 
-启动后先运行 `curl http://127.0.0.1:3100/api/health`：`core.ready` 表示服务已启动，`chat.ready` 表示至少有一个默认聊天角色能从当前模型目录解析。该接口不联网探测 provider。然后打开浏览器访问 **http://127.0.0.1:3100**。
+`core.ready` 表示核心服务就绪，`chat.ready` 表示至少一个默认聊天角色能解析到可用模型配置；**健康接口不联网验证 Provider 凭据或模型调用是否成功**。
 
-### Environment Variables
+### 常用配置
 
-| Variable | Default | Description |
-|---|---|---|
-| `CHAT_APP_HOST` | `127.0.0.1` | 服务监听地址 |
-| `CHAT_APP_PORT` | `3100` | 服务端口 |
-| `CHAT_APP_ADVERTISE_URL` | — | 供 sandbox / 外部环境回连本机 CAFF 时使用的可达 base URL |
-| `CAFF_SKILL_DRAFT_GENERATION_MODE` | `rules` | Skill 草稿生成模式：`rules` 保守模板，`model` 强制模型 JSON，`auto` 在配置专用模型时使用模型 |
-| `CAFF_SKILL_DRAFT_PROVIDER` / `CAFF_SKILL_DRAFT_MODEL` | — | Skill 草稿模型配置；未设置时模型模式回退到 `PI_PROVIDER` / `PI_MODEL` |
-| `CAFF_SKILL_DRAFT_THINKING` | — | Skill 草稿模型 thinking / reasoning 配置 |
-| `CAFF_SKILL_DRAFT_MODEL_TIMEOUT_MS` | `90000` | Skill 草稿模型调用超时毫秒数 |
-| `PI_CODING_AGENT_DIR` | auto-detected | pi 运行目录（默认 `.pi-sandbox/`） |
-| `PI_SQLITE_PATH` | auto-detected | SQLite 数据文件路径 |
-| `PI_PROVIDER` | — | 默认模型提供商 |
-| `PI_MODEL` | — | 默认模型名 |
-| `PI_THINKING` | — | 默认 thinking / reasoning 配置 |
+启动脚本自动加载 `.env.local`，已有进程环境变量优先。
 
-CAFF 在 `npm run start` / `npm run start:dev` 时会自动读取 `./.env.local`。如果变量已经存在于当前进程环境中，则进程环境优先。
+| 变量 | 用途 |
+| --- | --- |
+| `CHAT_APP_HOST` / `CHAT_APP_PORT` | 监听地址与端口，默认 `127.0.0.1:3100` |
+| `PI_CODING_AGENT_DIR` | Pi 配置与本地运行状态目录，默认自动定位 `.pi-sandbox/` |
+| `PI_SQLITE_PATH` | SQLite 数据文件路径 |
+| `PI_PROVIDER` / `PI_MODEL` / `PI_THINKING` | 默认模型与推理配置 |
+| `PI_CHAT_SESSION_REUSE_ENABLED` | Session 复用总开关，设为 `0` 可关闭；未收录于 `.env.example`，可自行添加 |
 
-飞书的 webhook / long connection 变量、权限和验证步骤见 [`docs/feishu-integration.md`](docs/feishu-integration.md)。
+基础配置模板见 [`.env.example`](.env.example)，复用策略配置另见 [Session 复用契约](docs/engineering/runtime/agent-session-reuse.md)。凭据留在本地配置中，不要提交到仓库。CAFF 面向可信本地环境；不要未经访问控制与安全评估直接暴露到公网。运行多个实例时，请分别配置端口、数据库与运行目录，不要让多个实例共写同一数据库。
 
-如果你希望 Windows 登录后自动恢复整条本地链路（`WSL Debian` + `docker` + `CAFF`），仓库附带了 `scripts/windows/run-caff-stack.ps1` 和 `scripts/windows/register-caff-stack-task.ps1`。详细步骤见 `docs/windows-local-stack.md`。
+## 架构与扩展
 
-## 🧭 Web 工作台
-
-| Page | What it does |
-|---|---|
-| `/` | 聊天工作台：会话列表、消息流、参与人格、游戏主持台、发送 / 停止控制 |
-| `/personas.html` | 人格管理：基础 persona、模型 profile、头像、默认模型与常驻 skill |
-| `/skills.html` | Skill 与模式管理：维护 `SKILL.md`、额外文件、模式绑定与加载策略 |
-| `/projects.html` | 项目管理：维护项目列表、切换激活项目、管理工作区与额外技能目录 |
-| `/metrics.html` | Agent 指标报表：工具调用成功率、public/private 工具使用率、延迟分位数 |
-
-## 🎛 Built-in Modes
-
-当前内置 3 种会话模式：
-
-- `standard`：普通对话，不自动注入额外 skill。
-- `werewolf`：狼人杀，全自动后端主持，默认 `full` 注入。
-- `who_is_undercover`：谁是卧底，全自动后端主持，默认 `full` 注入。
-
-## 🔌 Automation & Integrations
-
-### Agent 聊天桥接 CLI
-
-CAFF 内置一个给 Agent 使用的本地聊天桥：运行时入口是 `build/lib/agent-chat-tools.js`（源码在 `lib/agent-chat-tools.ts`）。
-
-常见能力包括：
-
-- `send-public`：把内容发到公开聊天室
-- `send-private`：给自己或其他 Agent 发私有消息
-- `read-context`：读取最新公开 / 私有上下文
-- `list-participants`：读取当前房间参与者
-- `suggest-goal` / `update-goal`：提出 Goal 生命周期或结构变更，并写入带 revision 的事实进度与验收证据
-- `propose-plan`：提出或更新 DAG 纵向切片、依赖和汇合节点
-
-这套工具是多 Agent 本地协作、private mailbox、handoff 路由和工具埋点的基础。
-
-### 飞书接入
-
-CAFF 当前支持：
-
-- 入站模式：`POST /api/integrations/feishu/webhook` webhook，或 `FEISHU_CONNECTION_MODE=long-connection`
-- 传输层：long connection 模式下复用官方 `@larksuiteoapi/node-sdk` `WSClient`
-- 入站范围：文本消息
-- 会话映射：一个飞书 `chat_id` 映射到一个 CAFF conversation
-- 转发策略：私聊和普通群聊文本都会进入 CAFF；群内继续沿用房间中的 mention 路由语义
-- 出站范围：已完成的 assistant 文本回复
-- 当前限制：暂不支持加密 webhook payload
-
-Webhook 不依赖额外 SDK；long connection 需要可选的 `@larksuiteoapi/node-sdk`。完整配置、权限、验证与故障排查见 [`docs/feishu-integration.md`](docs/feishu-integration.md)。
-
-### GitHub CLI 自动化接入
-
-CAFF 的本地开发与 Agent 自动化推荐优先通过官方 GitHub CLI (`gh`) 接入 GitHub；复杂场景再按需落到 GitHub REST 或 GraphQL API。
-
-**安装示例：**
-
-```bash
-winget install --id GitHub.cli
-# or
-choco install gh
+```text
+浏览器工作台
+    │ HTTP / SSE
+    ▼
+Room · 显式路由 · Goal / DAG · 投递与回执
+    ├── Pi SDK Host → 模型 Provider / Agent 工具
+    ├── Git branch / worktree → 任务文件状态
+    └── SQLite → 消息、目标、执行与投递状态
 ```
 
-**本地登录验证：**
+- **Skills**：按项目与会话组织工作规范和专门能力。
+- **聊天桥与受控能力桥**：Agent 通过公开消息、上下文读取、委派、Goal 等工具参与协作；固定能力门面约束跨 Room 等调用的权限与参数。
+- **飞书**：可选的文本消息入口，支持 webhook 与官方 SDK long connection，见[接入说明](docs/feishu-integration.md)。
 
-```bash
-gh auth login
-gh auth status
-gh repo view
-```
+| 目录 | 内容 |
+| --- | --- |
+| `server/` | API、Room 与执行编排、领域服务 |
+| `lib/` | Pi 集成、聊天桥与共享模块 |
+| `storage/` | SQLite 仓储与迁移 |
+| `public/` | 本地 Web 工作台 |
+| `tests/` | runtime、HTTP、storage、UI、smoke 等测试 |
+| `.agents/` | 项目级工作流与规划 Skills |
+| `docs/engineering/` / `docs/decisions/` | 当前工程契约与已接受的长期决策 |
 
-**脚本与 Agent 常用命令：**
+## 深入了解
 
-- 输出结构化数据：`gh pr list --json number,title,url,state`
-- 调 REST API：`gh api repos/OWNER/REPO/issues`
-- 调 GraphQL：`gh api graphql -f query='query { viewer { login } }'`
-- 创建 PR：`gh pr create --fill`
-- 非交互认证优先使用 `GH_TOKEN`，GitHub Actions 内优先使用 `GITHUB_TOKEN`
-- 不要把 token 写进代码、日志、README 示例或共享配置
+- [工程文档入口](docs/engineering/index.md)
+- [Room 工作区与验收边界](docs/engineering/backend/room-context-workspace.md)
+- [Room 内 Agent 委派](docs/engineering/runtime/agent-delegation.md)
+- [跨 Room 投递、回执与能力桥](docs/features/F003-cross-conversation-delivery-pi-mcp-bridge.md)
+- [Session Goal](docs/engineering/backend/session-goal.md) · [DAG 执行](docs/engineering/backend/dag-execution.md)
+- [Session 复用策略](docs/engineering/runtime/agent-session-reuse.md) · [结构化摘要](docs/engineering/backend/conversation-digest.md)
+- [上下文与执行轨迹检查器](docs/engineering/runtime/agent-context-inspector.md)
+- [模型 Provider 配置](docs/engineering/backend/model-provider-config.md) · [订阅登录](docs/engineering/backend/subscription-oauth-login.md)
 
-## 🧪 Testing
+## 开发与贡献
 
-CAFF 使用三道测试门来保证基础健康：
+开始修改前，请阅读 [`AGENTS.md`](AGENTS.md) 与 [CAFF 工作流](.agents/skills/caff-workflow/SKILL.md)：先澄清范围，再绑定独立工作区，保留验证证据，并由非作者审查后集成。
 
-| Gate | Command | What it checks |
-|---|---|---|
-| **A — Syntax** | `npm run check` | 前端 JS 语法检查 |
-| **B — Types** | `npm run typecheck` | TypeScript `--noEmit` + `public/` 的 `checkJs` |
-| **C — Tests** | `npm run test:fast` | runtime、HTTP、storage、飞书、skill-loading 等快速测试 |
-
-常用命令：
+常用检查命令：
 
 ```bash
 npm run check
 npm run typecheck
-npm run test:fast
-npm run test:smoke
 npm test
 ```
 
-- `npm run test:smoke` 会构建并执行服务启动 smoke test。
-- `npm test` 会串联 `test:fast` 与 `test:smoke`。
-- 测试基于 Node.js 内置 `node:test` 与 `node:assert/strict`。
+`npm test` 串联快速测试与启动 smoke test；DAG 相关改动还应执行 `npm run test:dag-planning` 和 `npm run test:dag-execution`。具体变更按对应工程契约补充验证，不把测试脚本存在等同于当前版本已全部通过。
 
-## 📊 Evaluation
+## 许可证
 
-### 指标报表
-
-`/metrics.html` 会从本地 SQLite 中汇总：
-
-- 每个 Agent 的工具调用成功率
-- `send-public` / `send-private` 使用情况
-- public/private 工具调用的提示词回归指标
-- 工具延迟分位数（如 p50 / p95）
-
-## 🎮 Game Modes
-
-### Who is Undercover
-
-1. 创建 `who_is_undercover` 房间
-2. 选择参与 Agent 作为玩家
-3. 配置平民词、卧底词、卧底人数、白板人数等参数
-4. 点击开始后，由后端自动完成发言、投票、结算与揭晓
-
-### Werewolf
-
-1. 创建 `werewolf` 房间
-2. 配置狼人、预言家、女巫数量
-3. 选择参与 Agent 作为玩家
-4. 点击开始后，由后端自动推进夜晚、白天讨论、投票与胜负判定
-
-## 📁 Project Structure
-
-```text
-caff/
-├── server/
-│   ├── app/                # 启动、配置、依赖装配
-│   ├── http/               # Router、SSE、请求/响应工具
-│   ├── api/                # REST controllers
-│   └── domain/
-│       ├── conversation/   # Turn orchestration、mention routing、session export
-│       ├── runtime/        # Agent tool bridge、message tool trace
-│       ├── integrations/   # Feishu 集成
-│       ├── undercover/     # 谁是卧底服务
-│       ├── werewolf/       # 狼人杀服务
-│       └── metrics/        # Agent 评测报表
-├── storage/
-│   ├── chat/               # Conversations、messages、participants、channel bindings
-│   ├── run/                # Runs、sessions、tasks
-│   └── sqlite/             # 连接与迁移
-├── lib/                    # pi runtime、skill registry、project manager、CLI 工具
-├── public/                 # 聊天页、人格页、技能页、项目页、报表页、错题本
-├── tests/                  # runtime / http / storage / smoke
-├── docs/                   # 设计文档与迁移笔记
-├── scripts/                # 构建与实用脚本
-├── types/                  # TypeScript 类型声明
-├── docs/
-│   ├── engineering/         # 当前工程契约与开发规范
-│   └── decisions/           # 已接受的跨任务 ADR
-├── .agents/                 # 项目级工作流与规划 skills
-└── .pi-sandbox/             # skills、agent sandboxes、本地状态与配置
-```
-
-## 🤝 Contributing
-
-欢迎继续扩展 CAFF。提交前建议至少完成：
-
-- `npm run check`
-- `npm run typecheck`
-- `npm test`
-
-并遵循以下约定：
-
-- 新功能优先放到对应 domain module，不要把逻辑堆回 server 入口
-- 新页面优先复用 `public/shared/` 中的公共模块
-- 变更技能、运行时或跨层协议时，同步更新 `docs/engineering/` 中的当前契约；跨任务长期决策写入 `docs/decisions/`
-
-## 📜 License
-
-This project is licensed under the [MIT License](LICENSE).
-
----
-
-*CAFF — where agents chat, collaborate, play games, and regression-test each other.* 🐧
+[MIT](LICENSE)
