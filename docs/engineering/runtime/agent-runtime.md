@@ -943,12 +943,19 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 
 - Every conversation Agent run receives `lib/pi-extensions/caff-capabilities.mjs`
   through `startRun(..., { extensionPaths })`.
-- The extension registers exactly two model-visible tools:
+- The extension registers five model-visible tools:
+  - `list_rooms(scope?, limit?)`
+  - `conversation_notify(targetConversationId, targetAgentId, content, idempotencyKey)`
+  - `conversation_request(targetConversationId, targetAgentId, content, idempotencyKey, deadlineSeconds?)`
   - `room_workspace_preview()`
   - `room_workspace_bind(confirm)`
-- `conversation_notify` and `conversation_request` remain available in the
-  server-side facade registry for future restricted callers, but ordinary
-  conversation Agent runs must not register or expose either tool to the model.
+- Delivery identifiers and idempotency keys are nonblank strings up to 200
+  characters; content is nonblank text up to 12000 characters. Request deadlines
+  are integers 1–86400 seconds, default 300. Source identity remains server-derived.
+- Directory discovery is optional for known addresses and never grants delivery
+  authority. The server rejects self delivery, unbound/cross-project Rooms,
+  non-participants, disallowed system actors, forged/stale invocation credentials,
+  and invalid trace edges. No delivery permission is broadened by tool exposure.
 - All TypeBox object schemas set `additionalProperties: false`. They must not
   expose server IDs/URLs, MCP tool names, transports, commands, env, headers,
   credentials, raw arguments, or fallback actions.
@@ -985,14 +992,48 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - The official `@modelcontextprotocol/sdk` is a direct exact dependency. The
   F003 implementation is pinned to `1.30.0`.
 
+### Tool selection and asynchronous delivery
+
+- Use public replies/@mentions for in-room discussion, or
+  `create-delegation`/`await-delegation` for durable in-room tasks. Never relay
+  in-room collaboration through another Room. This intent rule is prompt guidance,
+  not a claim that the server can detect arbitrary semantic relays; server checks
+  enforce the concrete identity/project/self/trace boundaries above.
+- `list_rooms` discovers a directory; `search-memory` recalls topics. Notify sends
+  context and triggers the target Agent without requesting an automatic response.
+  Request triggers work and automatically projects a response into source history.
+  Neither tool waits for the answer or wakes the source Agent when it arrives.
+- A request deadline tracks response timeliness only: expiry does not cancel
+  dispatch or target execution. A later response is marked `late`. Models have no
+  delivery status/wait/cancel/retry tool; operator endpoints retain their existing
+  semantics. `await-delegation` is not a cross-Room wait mechanism.
+- Idempotency scope includes the source invocation and facade. Reusing the same
+  key in a later invocation does not provide global deduplication.
+- The target receives delivered text, not inherited source history. An
+  `external_agent` trigger is described as cross-Room notify/request, never a
+  local public mention. Request recipients must not manually send a second return
+  delivery: canonical response projection handles the return path.
+- CLI delivery commands remain available with the same restrictions; native
+  model tools are preferred. No new confirmation, frequency cap or secretary role
+  is introduced. Prompt version and static prompt hash invalidate cached prefixes
+  after the guidance changes.
+
 ### Required tests
 
-- `tests/runtime/pi-capability-bridge.test.js`: model-visible tool list omits
+- `tests/runtime/pi-capability-bridge.test.js`: model-visible tool list includes
   `conversation_notify` and `conversation_request`; server-side delivery handling
   remains covered alongside schema snapshots, forbidden fields,
   principal/project/trace injection, fixed internal handlers, real isolated stdio
   MCP transport, timeout, disconnect, malformed/secret result, no shell/HTTP
   fallback, build asset copy, and real local HTTP dogfood.
+- `tests/runtime/turn-orchestrator.test.js`: distinct inbound notify/request
+  trigger wording with or without a sender name, automatic return guidance and
+  four-way tool selection instructions.
+- `tests/runtime/cross-conversation-delivery.test.js`: permission negatives,
+  idempotency, dispatch, automatic response/late response, recovery and cancellation.
+- Real model acceptance uses a new synthetic database, isolated runtime resources
+  and disabled external messaging channels; record in-room vs cross-Room tool
+  choices and resulting notification/response projections in Goal evidence.
 - `tests/runtime/agent-executor-hook.test.js`: fixed extension path propagation.
 - `tests/runtime/pi-sdk-host.test.js`: Pi SDK host extension loading.
 

@@ -351,6 +351,39 @@ test('model-family prompts omit Persona content and keep conversation skills', (
   assert.doesNotMatch(prompt, /FORBIDDEN FAMILY PERSONA SKILL BODY/u);
 });
 
+test('cross-Room delivery prompts distinguish inbound delivery from in-room mentions', () => {
+  const agent = { id: 'receiver', name: 'Receiver', personaPrompt: '' };
+  for (const explicitIntent of ['notify', 'request']) {
+    for (const triggeredByAgentName of ['Remote Sender', undefined]) {
+      const sections = buildAgentTurnPromptSections({
+        conversation: { id: 'target-room', title: 'Target', type: 'standard', agents: [agent] },
+        agent,
+        agentConfig: { profileName: 'Default', personaPrompt: '' },
+        resolvedPersonaSkills: [], resolvedConversationSkills: [],
+        sandbox: { sandboxDir: '/synthetic/receiver', privateDir: '/synthetic/receiver/private' },
+        agents: [agent], messages: [], privateMessages: [],
+        trigger: { triggerType: 'external_agent', explicitIntent, triggeredByAgentName },
+        remainingSlots: 7, routingMode: 'mention_queue', allowHandoffs: true,
+        agentToolRelativePath: './lib/agent-chat-tools.js',
+      });
+      const trigger = sections.find(section => section.sectionKey === 'turn_trigger');
+      assert.ok(trigger);
+      assert.match(trigger.content, /cross-Room/iu);
+      assert.match(trigger.content, new RegExp(explicitIntent, 'iu'));
+      assert.doesNotMatch(trigger.content, /publicly mentioned|visible participant/iu);
+      if (explicitIntent === 'request') {
+        assert.match(trigger.content, /automatically/iu);
+        assert.match(trigger.content, /do not.*conversation_notify/iu);
+      }
+      const instructions = sections.find(section => section.sectionKey === 'tool_instructions').content;
+      assert.match(instructions, /list_rooms/u);
+      assert.match(instructions, /conversation_notify/u);
+      assert.match(instructions, /conversation_request/u);
+      assert.match(instructions, /do not.*(?:relay|route).*another Room/iu);
+    }
+  }
+});
+
 test('buildAgentTurnPrompt omits optional sections with no material content', () => {
   const agent = {
     id: 'agent-empty-sections',

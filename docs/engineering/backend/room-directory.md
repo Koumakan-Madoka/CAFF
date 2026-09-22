@@ -1,8 +1,8 @@
 # Agent Room directory
 
-`list_rooms` is a read-only Pi capability. It does not restore
-`conversation_notify` / `conversation_request` in the model-visible tool registry,
-and does not alter delivery authorization or require directory-derived addresses.
+`list_rooms` is a read-only Pi capability. The separate model-visible
+`conversation_notify` / `conversation_request` capabilities perform delivery.
+Discovery does not alter delivery authorization or require directory-derived addresses.
 Use `search-memory` for topic recall; there is no title/content search parameter.
 
 ## Input and identity
@@ -52,6 +52,6 @@ change is made. Global ordering still evaluates activity for candidate Rooms.
 - `node tests/storage/room-directory.test.js`: scoping, unbound/missing sources,
   ordering, private/placeholder exclusion, strict inputs, limit and field whitelist.
 - `node tests/runtime/pi-capability-bridge.test.js`: facade authentication,
-  server-derived source, result projection, model schema registration and retained
-  hidden delivery tools; existing workspace/MCP transport regressions.
+  server-derived source, result projection, model schema registration alongside
+  scoped delivery tools; existing workspace/MCP transport regressions.
 - `node tests/storage/chat-store.test.js`: existing store/UI directory behavior.
