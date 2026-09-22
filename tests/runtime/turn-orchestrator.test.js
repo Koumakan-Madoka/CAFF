@@ -74,7 +74,8 @@ test('sanitizePromptMentions rewrites raw @mentions into safe placeholders', () 
   );
 });
 
-test('turn orchestrator dispatches a persisted cross-conversation message through the side lane only', { concurrency: false }, async (t) => {
+for (const deliveryKind of ['notify', 'request']) {
+test(`turn orchestrator dispatches a persisted cross-conversation ${deliveryKind} through the side lane only`, { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-cross-delivery-side-lane-');
   const sqlitePath = path.join(tempDir, 'cross-delivery-side-lane.sqlite');
   const targetMessage = {
@@ -162,7 +163,7 @@ test('turn orchestrator dispatches a persisted cross-conversation message throug
   const result = await orchestrator.dispatchCrossConversationDelivery({
     delivery: {
       id: 'cross-delivery-1',
-      kind: 'request',
+      kind: deliveryKind,
       sourceConversationId: 'cross-source-conversation',
       sourceAgentId: 'source-agent',
       sourceAgentName: 'Source Agent',
@@ -181,6 +182,26 @@ test('turn orchestrator dispatches a persisted cross-conversation message throug
   assert.equal(executions[0].allowHandoffs, false);
   assert.equal(executions[0].enqueueAgent, null);
   assert.equal(executions[0].queueItem.triggerType, 'external_agent');
+  assert.equal(executions[0].queueItem.explicitIntent, deliveryKind);
+  const promptSections = buildAgentTurnPromptSections({
+    conversation,
+    agent: conversation.agents[0],
+    agentConfig: { profileName: 'Default', personaPrompt: '' },
+    resolvedPersonaSkills: [], resolvedConversationSkills: [],
+    sandbox: { sandboxDir: tempDir, privateDir: tempDir },
+    agents: conversation.agents, messages: [targetMessage], privateMessages: [],
+    trigger: executions[0].queueItem,
+    remainingSlots: 0, routingMode: 'mention_queue', allowHandoffs: false,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+  const triggerText = promptSections.find(section => section.sectionKey === 'turn_trigger').content;
+  assert.match(triggerText, new RegExp(`cross-Room ${deliveryKind}`, 'iu'));
+  if (deliveryKind === 'request') {
+    assert.match(triggerText, /automatically/iu);
+    assert.doesNotMatch(triggerText, /does not request an automatic response/iu);
+  } else {
+    assert.match(triggerText, /does not request an automatic response/iu);
+  }
   assert.equal(executions[0].queueItem.crossConversationDeliveryId, 'cross-delivery-1');
   assert.equal(executions[0].queueItem.toolInvocationId, startedInput.invocationId);
   assert.equal(executions[0].promptUserMessage.id, targetMessage.id);
@@ -234,6 +255,8 @@ test('turn orchestrator dispatches a persisted cross-conversation message throug
   assert.equal(orchestrator.listTurnSummaries({ conversationId: conversation.id }).length, 0);
   assert.equal(orchestrator.listAgentSlotSummaries({ conversationId: conversation.id }).length, 0);
 });
+
+}
 
 test('buildAgentTurnPrompt avoids raw @mention tokens from room context', () => {
   const agent = {
