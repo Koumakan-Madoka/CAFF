@@ -2436,17 +2436,19 @@ export function createAgentExecutor(options: any = {}) {
       // The chat-level reply can be empty even though the provider run itself
       // ended cleanly: the model produced a terminal assistant message
       // (completionStopReason set by the runtime, never by caller-driven
-      // complete()) and every tool execution had closed. That combination is
-      // proof the pi session persisted a complete, cursor-consistent turn, so
-      // the failure path below may keep the session reusable instead of
-      // orphaning it. Missing or contradictory evidence (caller-driven
-      // complete, timeout, crash, open tool calls) keeps the legacy
-      // poison/fresh protection.
+      // complete()), every tool execution had closed, and the runtime verified
+      // after child exit that the session file tail ends at exactly that
+      // terminal message (completionPersisted). That combination is proof the
+      // pi session persisted a complete, cursor-consistent turn, so the
+      // failure path below may keep the session reusable instead of orphaning
+      // it. Missing or contradictory evidence (caller-driven complete,
+      // timeout, crash, unverified or mismatched session tail, open tool
+      // calls) keeps the legacy poison/fresh protection.
       if (!decisionSource && !suppressRawPublicReply) {
         const completionStopReason = String(result && result.completionStopReason || '').trim();
         const openToolCallCount =
           result && Number.isInteger(result.openToolCallCount) ? Number(result.openToolCallCount) : null;
-        if (completionStopReason && openToolCallCount === 0) {
+        if (completionStopReason && openToolCallCount === 0 && result && result.completionPersisted === true) {
           emptyFinalReplyReuseEvidence = {
             completionStopReason,
             completionMessageKey: String(result && result.completionMessageKey || '').trim() || null,
@@ -2861,8 +2863,8 @@ export function createAgentExecutor(options: any = {}) {
       if (sessionReuseActive && emptyFinalReplyReuseEvidence && typeof store.markAgentSessionReuseReusable === 'function') {
         // Delivery failed with an empty reply, but the runtime proved the
         // provider session ended cleanly (terminal assistant message, no open
-        // tool calls), so its contents are complete and consistent with the
-        // frozen cursor. Register it for reuse instead of orphaning the whole
+        // tool calls, session file tail verified after child exit), so its
+        // contents are complete and consistent with the frozen cursor. Register it for reuse instead of orphaning the whole
         // turn's context. The chat message stays failed: no success
         // callbacks, no fabricated reply, no automatic retry. Registration
         // uses the same guarded upsert as the success path, so it can never
