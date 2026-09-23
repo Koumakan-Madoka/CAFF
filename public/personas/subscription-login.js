@@ -445,8 +445,9 @@
         flow.closed = true;
         stopPolling();
       });
-      dialog.querySelector('#oauth-open-browser').addEventListener('click', (event) => {
-        const url = event.currentTarget.dataset.authUrl;
+      const openBrowser = /** @type {HTMLButtonElement} */ (dialog.querySelector('#oauth-open-browser'));
+      openBrowser.addEventListener('click', () => {
+        const url = openBrowser.dataset.authUrl;
         if (url) window.open(url, '_blank', 'noopener');
       });
       dialog.querySelector('#oauth-cancel').addEventListener('click', () => cancelLogin());
@@ -469,7 +470,7 @@
           const result = dialog.querySelector('#oauth-flow-result');
           result.classList.remove('hidden');
           result.querySelector('.management-note').textContent = utils.requestIssueMessage(error, '登录发起失败');
-          const cancel = dialog.querySelector('#oauth-cancel');
+          const cancel = /** @type {HTMLButtonElement | null} */ (dialog.querySelector('#oauth-cancel'));
           if (cancel) cancel.disabled = true;
         });
     }

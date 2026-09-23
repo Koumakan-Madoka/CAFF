@@ -316,8 +316,11 @@ export function createConversationMessageDeletionService(options: any = {}) {
         try {
           onHistoryMutationSettled(normalizedConversationId);
         } catch (error) {
+          const stack = error && (typeof error === 'object' || typeof error === 'function') && 'stack' in error
+            ? error.stack
+            : undefined;
           console.warn(
-            `[conversation-message-delete] Post-deletion digest re-evaluation failed for ${normalizedConversationId}: ${error && error.stack ? error.stack : error}`
+            `[conversation-message-delete] Post-deletion digest re-evaluation failed for ${normalizedConversationId}: ${stack || error}`
           );
         }
       }

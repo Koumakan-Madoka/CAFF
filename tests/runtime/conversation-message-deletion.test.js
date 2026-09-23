@@ -58,6 +58,7 @@ function createHarness(t, options = {}) {
     },
     onHistoryMutationSettled(conversationId) {
       settledCalls.push(conversationId);
+      options.onHistoryMutationSettled?.(conversationId);
     },
     broadcastEvent(eventName, payload) {
       events.push({ eventName, payload });
@@ -119,6 +120,31 @@ function coverThrough(store, conversationId, messageId, timestamp = '2026-08-20T
     },
   });
 }
+
+test('post-deletion callback failures retain diagnostics without undoing deletion or retaining the lease', (t) => {
+  const failures = [new Error('callback failed'), { stack: 'custom callback stack' }, 'plain failure', null];
+  const warnings = [];
+  t.mock.method(console, 'warn', (message) => warnings.push(message));
+  let failure;
+  const { store, conversation, service, mutationCoordinator } = createHarness(t, {
+    onHistoryMutationSettled() { throw failure; },
+  });
+
+  for (failure of failures) {
+    const message = createMessage(store, conversation.id);
+    const result = service.deleteMessages(conversation.id, { messageIds: [message.id] });
+    assert.deepEqual(result.deletedMessageIds, [message.id]);
+    assert.ok(!store.getMessage(message.id));
+    const lease = mutationCoordinator.tryAcquire(conversation.id, 'message_delete');
+    assert.equal(lease.acquired, true, 'callback failure must not retain the mutation lease');
+    lease.release();
+  }
+  assert.equal(warnings.length, failures.length);
+  assert.ok(warnings[0].includes(failures[0].stack));
+  assert.ok(warnings[1].endsWith('custom callback stack'));
+  assert.ok(warnings[2].endsWith('plain failure'));
+  assert.ok(warnings[3].endsWith('null'));
+});
 
 test('deletion fails closed when runtime or mutation coordination is unavailable', (t) => {
   const { store, conversation } = createHarness(t);

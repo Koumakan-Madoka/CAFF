@@ -98,9 +98,8 @@ async function acquireAuthLock(authPath: string) {
   let retry = 0;
 
   for (;;) {
-    let release: (() => Promise<void>) | null = null;
     try {
-      release = await lockfile.lock(authPath, {
+      const release = await lockfile.lock(authPath, {
         realpath: false,
         retries: 0,
         stale: LOCK_STALE_MS,
@@ -122,7 +121,6 @@ async function acquireAuthLock(authPath: string) {
       const baseDelayMs = Math.min(LOCK_RETRY_BASE_DELAY_MS * 2 ** retry, LOCK_RETRY_MAX_DELAY_MS / 2);
       retry += 1;
       await sleep(Math.min(Math.round(baseDelayMs * (1 + Math.random())), remainingMs));
-      release = null;
     }
   }
 }
