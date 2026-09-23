@@ -333,9 +333,9 @@ test('terminal recovery state links the source card to the persisted result mess
   assert.equal(context.toasts.some((message) => /不在时间线/u.test(message)), true);
 });
 
-test('long failed error body is collapsed with an expand toggle', () => {
-  const longError = `stream_read_error ${'x'.repeat(600)}`;
-  const context = bootTimeline([{ ...failedMessage(), errorMessage: longError, content: `[错误] ${longError}` }]);
+test('long partial reply stays collapsible while failure explanation remains visible', () => {
+  const partialReply = `已完成部分调查 ${'x'.repeat(600)}`;
+  const context = bootTimeline([{ ...failedMessage(), content: partialReply }]);
   const card = context.document.querySelector('[data-message-id="failed-message"]');
   const body = card.querySelector('.message-body');
   const toggle = card.querySelector('.message-error-toggle');
@@ -359,6 +359,132 @@ test('short failed error body stays fully visible without a toggle', () => {
 
   assert.equal(card.querySelector('.message-body').classList.contains('collapsed-error'), false);
   assert.equal(card.querySelector('.message-error-toggle').hidden, true);
+});
+
+test('failed bubbles explain the observed failure instead of internal wrapper errors', () => {
+  const cases = [
+    [{ kind: 'timeout', code: 'progress_timeout' }, '等待进展超时', '可刷新进度'],
+    [{ kind: 'timeout', code: 'heartbeat_timeout' }, '运行心跳超时', '心跳'],
+    [{ kind: 'timeout', code: 'run_timeout' }, '运行总时限已到', '总时限'],
+    [{ kind: 'cancelled', code: 'stop_requested' }, '运行已停止', '停止请求'],
+    [{ kind: 'process_exit', code: 'SIGTERM' }, '运行进程异常退出', 'SIGTERM'],
+    [{ kind: 'provider', code: 'assistant_error', summary: '429 Too Many Requests' }, '模型调用失败', '限流'],
+    [{ kind: 'provider', code: 'assistant_error', summary: '401 Unauthorized' }, '模型调用失败', '认证失败'],
+    [{ kind: 'provider', code: 'econnreset' }, '模型调用失败', '连接被重置'],
+    [{ kind: 'provider', code: 'assistant_error', summary: 'connection error: stream_read_error' }, '模型调用失败', '响应流读取失败'],
+    [{ kind: 'provider', code: 'assistant_error', summary: 'insufficient balance' }, '模型调用失败', '余额或额度不足'],
+    [{ kind: 'provider', code: 'assistant_error', summary: 'HTTP 503 Service unavailable' }, '模型调用失败', '服务端错误'],
+    [{ kind: 'provider', code: 'assistant_error', summary: '403 Forbidden' }, '模型调用失败', '访问被拒绝'],
+    [{ kind: 'provider', code: 'assistant_error', summary: 'Unknown error: request body contains 401 and rate limit' }, '模型调用失败', '未提供可安全展示'],
+    [{ kind: 'timeout', code: 'unexpected' }, '运行超时', '未明确超时类型'],
+    [{ kind: 'provider', code: 'assistant_error' }, '模型调用失败', '未提供可安全展示的具体原因'],
+    [{ kind: 'unknown', code: 'unclassified_invocation_error' }, '回复失败', '无法确认具体原因'],
+  ];
+  for (const [failure, title, explanation] of cases) {
+    const context = bootTimeline([{
+      ...failedMessage(), errorMessage: failure.kind === 'unknown' ? 'local invocation failed' : 'pi assistant reported a model invocation error',
+      metadata: { invocationFailure: failure },
+    }]);
+    const panel = context.document.querySelector('.message-failure-panel');
+    assert.ok(panel, title);
+    assert.equal(panel.hidden, false);
+    assert.match(panel.textContent, new RegExp(title, 'u'));
+    assert.match(panel.textContent, new RegExp(explanation, 'u'));
+    assert.match(panel.querySelector('details').textContent, /run 42/u);
+    assert.doesNotMatch(panel.textContent, /pi assistant reported/u);
+    context.window.close();
+  }
+});
+
+test('empty reply is explained without claiming a timeout or a provider root cause', () => {
+  const context = bootTimeline([{ ...failedMessage(), errorMessage: 'Empty agent reply' }]);
+  const panel = context.document.querySelector('.message-failure-panel');
+  assert.ok(panel);
+  assert.match(panel.textContent, /未收到可展示的最终答复/u);
+  assert.doesNotMatch(panel.textContent, /挂死|超时|Empty agent reply/u);
+  context.window.close();
+});
+
+test('failure stays visible beside partial output and updates when only classification changes', () => {
+  const message = { ...failedMessage(), content: '已完成第一步。', metadata: { invocationFailure: { kind: 'timeout', code: 'progress_timeout' } } };
+  const context = bootTimeline([message]);
+  const card = context.document.querySelector('.message-card');
+  assert.match(card.querySelector('.message-body').textContent, /已完成第一步/u);
+  assert.match(card.querySelector('.message-failure-panel').textContent, /等待进展超时/u);
+  card.querySelector('.message-failure-panel details').open = true;
+  message.metadata.invocationFailure = { kind: 'cancelled', code: 'cancelled' };
+  context.renderer.render(context.conversation, null, []);
+  assert.match(card.querySelector('.message-failure-panel').textContent, /运行已停止/u);
+  assert.equal(card.querySelector('.message-failure-panel details').open, true);
+  message.status = 'completed';
+  context.renderer.render(context.conversation, null, []);
+  assert.equal(card.querySelector('.message-failure-panel').hidden, true);
+  assert.equal(card.querySelector('.message-failure-panel').textContent, '');
+  context.window.close();
+});
+
+test('failure presentation never renders arbitrary provider bodies, codes, credentials or markup', () => {
+  const sentinel = 'PRIVATE_SENTINEL';
+  const raw = `401 Unauthorized {"api_key":"${sentinel}","prompt":"${sentinel}"} https://user:${sentinel}@host/?token=${sentinel} <img src=x onerror=alert(1)>`;
+  const context = bootTimeline([{
+    ...failedMessage(), content: `[错误] ${raw}`, errorMessage: raw,
+    metadata: { invocationFailure: { kind: 'provider', code: sentinel, summary: raw } },
+  }]);
+  const card = context.document.querySelector('.message-card');
+  assert.doesNotMatch(card.outerHTML, /PRIVATE_SENTINEL|api_key|onerror|https:\/\//u);
+  assert.equal(card.querySelector('.message-failure-panel img'), null);
+  assert.match(card.querySelector('.message-failure-panel').textContent, /认证失败/u);
+  context.window.close();
+});
+
+test('runtime classification survives transport into the bubble without mutating recovery policy', () => {
+  const { classifyAgentInvocationFailure } = require('../../build/server/domain/conversation/turn/agent-executor');
+  const { projectMessageForTransport } = require('../../build/lib/message-detail-contract');
+  const failures = [
+    [{ message: 'pi assistant reported a model invocation error', assistantErrors: ['connection error: stream_read_error'] }, '响应流读取失败'],
+    [{ message: 'progress expired', terminationReason: { type: 'progress_timeout' } }, '等待进展超时'],
+    [new Error('Empty agent reply'), '未收到最终回复'],
+  ];
+  for (const [error, label] of failures) {
+    const classification = classifyAgentInvocationFailure(error);
+    const message = projectMessageForTransport({ ...failedMessage(), errorMessage: error.message, metadata: { invocationFailure: classification } });
+    const before = JSON.stringify(message);
+    Object.freeze(classification);
+    const context = bootTimeline([message]);
+    assert.match(context.document.querySelector('.message-failure-panel').textContent, new RegExp(label, 'u'));
+    assert.equal(JSON.stringify(message), before);
+    assert.equal(context.document.querySelector('.message-recovery-button').disabled, false);
+    context.window.close();
+  }
+});
+
+test('legacy wrappers, malformed metadata and non-failure messages degrade safely', () => {
+  const context = bootTimeline([]);
+  const project = context.window.CaffChat.messageFailurePresentation;
+  const message = { ...failedMessage(), errorMessage: 'pi assistant reported a model invocation error' };
+  assert.equal(project(message).title, '模型调用失败');
+  for (const metadata of [null, 'bad', { invocationFailure: null }, { invocationFailure: 'bad' }]) {
+    assert.equal(project({ ...message, metadata }).title, '模型调用失败');
+  }
+  assert.equal(project({ ...message, status: 'completed' }), null);
+  assert.equal(project({ ...message, role: 'user' }), null);
+  const untrusted = project({ ...message, runId: 'PRIVATE_SENTINEL', metadata: { invocationFailure: { kind: 'process_exit', code: 'PRIVATE_SENTINEL' } } });
+  assert.doesNotMatch(JSON.stringify(untrusted), /PRIVATE_SENTINEL/u);
+  context.window.close();
+});
+
+test('app display fallback uses safe failure text and preserves ordinary and private replies', () => {
+  const context = bootTimeline([]);
+  const source = readPublic('app.js');
+  const start = source.indexOf('function messageDisplayText(');
+  const end = source.indexOf('function conversationPreviewText(', start);
+  context.window.eval(source.slice(start, end));
+  const display = context.window.messageDisplayText;
+  assert.match(display({ ...failedMessage(), errorMessage: 'Empty agent reply' }), /未收到可展示的最终答复/u);
+  assert.doesNotMatch(display({ ...failedMessage(), errorMessage: 'secret=PRIVATE_SENTINEL' }), /PRIVATE_SENTINEL/u);
+  assert.equal(display({ status: 'completed', content: '正常答复' }), '正常答复');
+  assert.equal(display({ status: 'completed', content: '', metadata: { privateOnly: true } }), '[仅私密备注]');
+  context.window.close();
 });
 
 test('recovery controls have stable touch geometry and SSE refresh wiring', () => {

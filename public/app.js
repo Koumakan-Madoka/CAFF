@@ -3154,6 +3154,17 @@ function renderRuntime() {
 function messageDisplayText(message) {
   const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
 
+  if (message.role === 'assistant' && message.status === 'failed') {
+    const content = String(message.content || '').trim();
+    if (content && content !== 'Thinking...' && content !== `[错误] ${message.errorMessage}`
+      && content !== String(message.errorMessage || '').trim()) {
+      return normalizeEscapedMessageText(message.content);
+    }
+    const failure = window.CaffChat && typeof window.CaffChat.messageFailurePresentation === 'function'
+      ? window.CaffChat.messageFailurePresentation(message) : null;
+    return failure ? `${failure.title}：${failure.summary}` : '回复失败：现有记录无法确认具体原因。';
+  }
+
   if (!message.content) {
     if (metadata && metadata.privateOnly) {
       return '[仅私密备注]';
