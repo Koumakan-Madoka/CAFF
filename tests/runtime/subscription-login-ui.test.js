@@ -233,6 +233,9 @@ test('anthropic login flow drives the real session API through to success', asyn
   const openBrowser = doc.getElementById('oauth-open-browser');
   assert.equal(openBrowser.disabled, false);
   assert.equal(openBrowser.dataset.authUrl, AUTHORIZE_URL);
+  openBrowser.innerHTML = '<span>打开授权页</span>';
+  openBrowser.querySelector('span').click();
+  assert.deepEqual(session.openedUrls, [AUTHORIZE_URL, AUTHORIZE_URL], 'nested clicks use the button URL, not the event target');
   assert.match(doc.querySelector('[data-step="callback"]').textContent, /⏳/u, 'waiting_browser marks the callback step active');
 
   await flushTimers(session);
@@ -241,6 +244,27 @@ test('anthropic login flow drives the real session API through to success', asyn
   assert.equal(doc.getElementById('oauth-cancel').disabled, true, 'cancel is disabled once settled');
   assert.deepEqual(changed, ['changed'], 'channel change notification fires so the list refreshes');
   assert.match(toasts[0], /Claude Pro \/ Max 登录成功/u);
+});
+
+test('login start failure displays the error and disables cancellation', async () => {
+  const session = loadSubscriptionLoginModule();
+  const { controller } = createController(session, {
+    fetchImpl: async (url) => {
+      if (url === '/api/subscription-auth') return channelStatus();
+      throw new Error('login start unavailable');
+    },
+  });
+
+  await controller.open();
+  session.dom.window.document.querySelector('[data-oauth-channel-login="anthropic"]').click();
+  await settle();
+  await settle();
+
+  const doc = session.dom.window.document;
+  assert.equal(doc.getElementById('oauth-flow-result').classList.contains('hidden'), false);
+  assert.match(doc.getElementById('oauth-flow-result').textContent, /login start unavailable/u);
+  assert.equal(doc.getElementById('oauth-cancel').disabled, true);
+  assert.equal(session.timers.length, 0, 'a failed start does not schedule polling');
 });
 
 test('codex login flow shows the registration step and codex-specific success copy', async () => {

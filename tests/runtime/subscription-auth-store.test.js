@@ -130,6 +130,8 @@ test('subscription credential writes fail closed on an unparseable auth.json', a
     (error) => error instanceof SubscriptionAuthStoreError && error.code === 'auth_document_invalid'
   );
   assert.equal(fs.readFileSync(path.join(agentDir, 'auth.json'), 'utf8'), '{not-json', 'the broken file is left untouched');
+  const release = await require('proper-lockfile').lock(path.join(agentDir, 'auth.json'), { realpath: false, retries: 0 });
+  await release(); // The failed updater must still release its lock.
 });
 
 test('subscription credential reads are tolerant of missing or malformed auth.json', async (t) => {

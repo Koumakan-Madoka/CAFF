@@ -1330,6 +1330,7 @@ CREATE TABLE IF NOT EXISTS a2a_artifacts (
   ensureColumn(db, 'runs', 'task_kind', 'task_kind TEXT');
   ensureColumn(db, 'runs', 'task_role', 'task_role TEXT');
   ensureColumn(db, 'runs', 'run_metadata_json', 'run_metadata_json TEXT');
+  ensureColumn(db, 'runs', 'stream_diagnostics_json', 'stream_diagnostics_json TEXT');
 
   db.exec(`
 CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs (started_at DESC);

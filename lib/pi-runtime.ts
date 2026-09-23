@@ -3,6 +3,7 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { fork, spawn, spawnSync } = require('node:child_process');
 const { createSqliteRunStore } = require('./sqlite-store');
+const { StreamDiagnostics, DIAGNOSTIC_LIMITS } = require('./stream-diagnostics');
 
 const DEFAULT_PROVIDER = 'kimi-coding';
 const DEFAULT_MODEL = 'k2p5';
@@ -467,6 +468,22 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     let recoveryCount = 0;
     let recoveryReason: any = null;
     let recoveryToolName = '';
+    const diagnostics = new StreamDiagnostics(Date.now());
+    // Not a watchdog: this timer only replaces the latest bounded snapshot.
+    const diagnosticsIntervalMs = Math.max(DIAGNOSTIC_LIMITS.minIntervalMs, Math.min(DIAGNOSTIC_LIMITS.intervalMs,
+      Number.isFinite(options.diagnosticsIntervalMs) ? options.diagnosticsIntervalMs : DIAGNOSTIC_LIMITS.intervalMs));
+    let diagnosticsTimer: any = null;
+
+    function captureDiagnostics(capture: 'periodic' | 'terminating' | 'finished') {
+      const summary = { ...diagnostics.snapshot(Date.now()), capture,
+        watchdog: { progressTimeoutMs, heartbeatTimeoutMs, timeoutMs,
+          progressArmed: Boolean(progressTimeout), terminating } };
+      if (store && runRecord?.runId) {
+        try { store.saveRunDiagnostics(runRecord.runId, summary); }
+        catch { emit('diagnostics_warning', { code: 'snapshot_write_failed' }); }
+      }
+      emit('stream_diagnostics', { summary });
+    }
 
     function recordAssistantUsage(message: any) {
       const usage = extractAssistantUsage(message);
@@ -583,6 +600,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     }
 
     function cleanup() {
+      if (diagnosticsTimer) {
+        clearInterval(diagnosticsTimer);
+        diagnosticsTimer = null;
+      }
       if (heartbeatTimeout) {
         clearTimeout(heartbeatTimeout);
         heartbeatTimeout = null;
@@ -627,6 +648,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     }
 
     function persistRun(result: any) {
+      captureDiagnostics('finished');
       if (!store || !runRecord || !runRecord.runId) {
         return;
       }
@@ -649,6 +671,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       terminating = true;
       terminationReason = reason;
+      if (diagnosticsTimer) {
+        clearInterval(diagnosticsTimer);
+        diagnosticsTimer = null;
+      }
 
       if (heartbeatTimeout) {
         clearTimeout(heartbeatTimeout);
@@ -665,6 +691,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         runTimeout = null;
       }
 
+      captureDiagnostics('terminating');
       emit('run_terminating', { reason });
       let abortRequested = false;
 
@@ -784,7 +811,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
             });
           }
         });
-        refreshProgressTimeout();
+        refreshProgressTimeout('recovery_request');
       } catch {
         failProgressTimeoutAfterRecovery('pi progress watchdog could not deliver tool recovery', {
           recoveryFailureCode: 'ipc_delivery_failed',
@@ -815,7 +842,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       beginTermination(reason);
     }
 
-    function refreshProgressTimeout() {
+    function refreshProgressTimeout(reason: 'initial' | 'pi_event' | 'recovery_request' | 'recovery_started') {
       if (!progressTimeoutMs || settled || terminating) {
         return;
       }
@@ -825,6 +852,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       }
 
       progressTimeout = setTimeout(beginProgressTimeout, progressTimeoutMs);
+      diagnostics.refresh(reason, Date.now());
 
       if (typeof progressTimeout.unref === 'function') {
         progressTimeout.unref();
@@ -1065,8 +1093,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     });
     emit('run_started', { runId: runRecord ? runRecord.runId : null, pid: child.pid || null, sessionPath: sessionPath || null });
     refreshHeartbeatTimeout();
-    refreshProgressTimeout();
+    refreshProgressTimeout('initial');
     startRunTimeout();
+    diagnosticsTimer = setInterval(() => captureDiagnostics('periodic'), diagnosticsIntervalMs);
+    diagnosticsTimer.unref();
 
     addProcessHandler('SIGINT', () => beginTermination({ type: 'parent_signal', signal: 'SIGINT', message: 'Parent process received SIGINT' }));
     addProcessHandler('SIGTERM', () => beginTermination({ type: 'parent_signal', signal: 'SIGTERM', message: 'Parent process received SIGTERM' }));
@@ -1085,6 +1115,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       if (message.type === 'heartbeat') {
         state.heartbeatCount += 1;
+        diagnostics.heartbeat(Date.now());
         emit('heartbeat', {
           count: state.heartbeatCount,
           payload: { timestamp: message.timestamp ?? null },
@@ -1112,7 +1143,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       if (message.type === 'pi_event' && message.event && typeof message.event === 'object') {
         refreshHeartbeatTimeout();
-        refreshProgressTimeout();
+        refreshProgressTimeout('pi_event');
+        diagnostics.observe(message.event, Date.now());
         handlePiEvent(message.event);
         return;
       }
@@ -1153,7 +1185,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
           toolName: recoveryToolName || null,
         });
         refreshHeartbeatTimeout();
-        refreshProgressTimeout();
+        refreshProgressTimeout('recovery_started');
         return;
       }
 

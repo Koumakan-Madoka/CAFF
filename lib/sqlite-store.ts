@@ -4,6 +4,7 @@ const { migrateRunSchema } = require('../storage/sqlite/migrations');
 const { createRunSessionRepository } = require('../storage/run/session.repository');
 const { createRunRepository } = require('../storage/run/run.repository');
 const { createRunTaskRepository } = require('../storage/run/task.repository');
+const { DIAGNOSTIC_LIMITS } = require('./stream-diagnostics');
 
 function nowIso() {
   return new Date().toISOString();
@@ -100,6 +101,7 @@ function normalizeRunRow(row: any) {
   return {
     ...row,
     metadata: parseJson(row.run_metadata_json),
+    streamDiagnostics: parseJson(row.stream_diagnostics_json),
     assistantErrors: parseJson(row.assistant_errors_json) || [],
   };
 }
@@ -227,6 +229,13 @@ export class SqliteRunStore {
       return null;
     }
     return normalizeRunRow(this.runRepository.get(normalizedRunId));
+  }
+
+  saveRunDiagnostics(runId: number, summary: any) {
+    const json = JSON.stringify(summary);
+    // A final hard size guard independent of the collector's ring/counter limits.
+    if (Buffer.byteLength(json, 'utf8') > DIAGNOSTIC_LIMITS.snapshotBytes) throw new Error('Stream diagnostic size limit exceeded');
+    this.runRepository.saveDiagnostics(runId, json);
   }
 
   finishRun(runId: any, result: any) {
