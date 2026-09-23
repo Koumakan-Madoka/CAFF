@@ -564,6 +564,7 @@ test('pi runtime treats a terminal assistant message as successful completion ev
   assert.equal(result.code, 0);
   assert.equal(result.signal, null);
   assert.equal(result.completionStopReason, 'stop');
+  assert.equal(result.openToolCallCount, 0);
   assert.ok(terminatingReasons.some((reason) => reason && reason.type === 'expected_completion'));
 });
 

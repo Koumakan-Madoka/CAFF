@@ -19,6 +19,7 @@ const CONTEXT_WINDOW = 1000;
 const LAST_CALL_INPUT_TOKENS = 100; // usage ratio 0.1, below the 0.5 threshold
 
 function createRunHandle(reply, overrides = {}) {
+  const { rejectWith = null, ...resultOverrides } = overrides;
   const handle = new EventEmitter();
   handle.runId = Object.hasOwn(overrides, 'runId') ? overrides.runId : 'run-reuse-ab';
   handle.sessionPath = '/tmp/reuse-ab/session.jsonl';
@@ -29,16 +30,18 @@ function createRunHandle(reply, overrides = {}) {
     timestamp: 1,
     usage: { input: LAST_CALL_INPUT_TOKENS, output: 10, cacheRead: 0, totalTokens: LAST_CALL_INPUT_TOKENS + 10 },
   };
-  handle.resultPromise = Promise.resolve({
-    reply,
-    runId: handle.runId,
-    usage: usageCall.usage,
-    usageCalls: [usageCall],
-    heartbeatCount: 0,
-    sessionPath: handle.sessionPath,
-    assistantErrors: [],
-    ...overrides,
-  });
+  handle.resultPromise = rejectWith
+    ? Promise.reject(rejectWith)
+    : Promise.resolve({
+        reply,
+        runId: handle.runId,
+        usage: usageCall.usage,
+        usageCalls: [usageCall],
+        heartbeatCount: 0,
+        sessionPath: handle.sessionPath,
+        assistantErrors: [],
+        ...resultOverrides,
+      });
   return handle;
 }
 
@@ -329,14 +332,14 @@ function setupExecutorTest(t, { reuseEnabled }) {
   return {
     tempDir,
     captured,
-    createExecutor(store, { onStartRun, runId = 'run-reuse-ab' } = {}) {
+    createExecutor(store, { onStartRun, runId = 'run-reuse-ab', reply = 'Done.', resultOverrides = {} } = {}) {
       startRunImpl = (provider, model, prompt, options) => {
         const record = { provider, model, prompt, options };
         if (typeof onStartRun === 'function') {
           record.midRunReuseRow = onStartRun(record);
         }
         captured.push(record);
-        return createRunHandle('Done.', { runId });
+        return createRunHandle(reply, { runId, ...resultOverrides });
       };
       return createAgentExecutor({
         store,
@@ -1155,4 +1158,202 @@ test('edited history poisons the cached session and falls back to a fresh full-h
   assert.equal(healed.sessionName, fallbackRun.options.session);
   assert.equal(healed.cursorFirstMessageId, 'u1');
   assert.equal(healed.cursorMessageCount, 5, 'u1, u2, a1, u3, a2');
+});
+
+test('clean empty final reply on a fresh run still fails the message but registers the session for reuse', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'ALPHA-U1-CONTENT');
+  seedUserMessage(store, 'u2', 'BRAVO-U2-CONTENT');
+
+  // Leg 1: the provider run ends cleanly (terminal assistant message, no open
+  // tool calls) but the final reply is empty. The chat message must still
+  // fail, while the session contents stay reusable.
+  const executor1 = env.createExecutor(store, {
+    reply: '',
+    resultOverrides: {
+      completionStopReason: 'stop',
+      completionMessageKey: 'assistant-empty-1',
+      openToolCallCount: 0,
+    },
+  });
+  await runTurn({ executor: executor1, conversation, agent, store, turnId: 'turn-empty-fresh-1' });
+
+  const failedWrite = store.messageWrites.updates.find(({ patch }) => patch.status === 'failed');
+  assert.ok(failedWrite, 'empty reply must still fail the chat message');
+  assert.equal(failedWrite.patch.errorMessage, 'Empty agent reply');
+  assert.equal(failedWrite.patch.metadata.invocationFailure.kind, 'unknown');
+  assert.equal(failedWrite.patch.metadata.invocationFailure.eligible, false);
+
+  const callNames = store.reuseCalls.map(([name]) => name);
+  assert.deepEqual(callNames, ['get', 'markReusable'], 'clean empty reply must register the session instead of orphaning it');
+  const snapshot = store.reuseCalls[1][1];
+  const firstAssistantId = findAssistantCreate(store).id;
+  assert.equal(snapshot.lastAssistantMessageId, firstAssistantId);
+  assert.equal(snapshot.cursorMessageId, firstAssistantId);
+  assert.equal(snapshot.cursorMessageCount, 3, 'cursor covers u1, u2, and the failed assistant reply');
+  assert.equal(snapshot.usageInputTokens, LAST_CALL_INPUT_TOKENS);
+  assert.equal(store.peekReuseRow().state, 'reusable');
+
+  // Leg 2: the next turn must actually resume the same session with only the
+  // new delta, instead of building yet another fresh session.
+  seedUserMessage(store, 'u3', 'DELTA-U3-CONTENT');
+  const executor2 = env.createExecutor(store);
+  await runTurn({ executor: executor2, conversation, agent, store, turnId: 'turn-empty-fresh-2' });
+
+  assert.equal(env.captured.length, 2);
+  assert.equal(env.captured[1].options.resume, true);
+  assert.equal(env.captured[1].options.session, env.captured[0].options.session);
+  assert.match(env.captured[1].prompt, /DELTA-U3-CONTENT/u);
+  assert.equal(env.captured[1].prompt.includes('ALPHA-U1-CONTENT'), false);
+  const assistantCreates = store.messageWrites.creates.filter((input) => input.role === 'assistant');
+  assert.equal(assistantCreates[1].metadata.sessionReused, true);
+  assert.equal(assistantCreates[1].metadata.sessionReuseReason, 'reused');
+});
+
+test('clean empty final reply on a resumed run releases the claim back to reusable', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'ALPHA-U1-CONTENT');
+
+  // Leg 1: establish the reusable snapshot with a normal reply.
+  const executor1 = env.createExecutor(store);
+  await runTurn({ executor: executor1, conversation, agent, store, turnId: 'turn-empty-resume-1' });
+  const firstSessionName = env.captured[0].options.session;
+  assert.equal(store.peekReuseRow().state, 'reusable');
+
+  // Leg 2: resume, then end cleanly with an empty reply. The claim must
+  // settle back to reusable for the same session, never poisoned.
+  seedUserMessage(store, 'u2', 'DELTA-U2-CONTENT');
+  const executor2 = env.createExecutor(store, {
+    reply: '',
+    resultOverrides: {
+      completionStopReason: 'stop',
+      completionMessageKey: 'assistant-empty-2',
+      openToolCallCount: 0,
+    },
+  });
+  await runTurn({ executor: executor2, conversation, agent, store, turnId: 'turn-empty-resume-2' });
+
+  assert.equal(env.captured[1].options.resume, true);
+  const leg2CallNames = store.reuseCalls.slice(2).map(([name]) => name);
+  assert.deepEqual(leg2CallNames, ['get', 'claim', 'markReusable']);
+  const settledRow = store.peekReuseRow();
+  assert.equal(settledRow.state, 'reusable');
+  assert.equal(settledRow.sessionName, firstSessionName);
+  const assistantCreates = store.messageWrites.creates.filter((input) => input.role === 'assistant');
+  assert.equal(settledRow.cursorMessageId, assistantCreates[1].id);
+  assert.equal(settledRow.cursorMessageCount, 4, 'cursor covers u1, a1, u2, and the failed a2');
+  const failedWrite = store.messageWrites.updates.find(({ patch }) => patch.status === 'failed');
+  assert.equal(failedWrite.patch.errorMessage, 'Empty agent reply');
+
+  // Leg 3: the session survives the empty reply and resumes again.
+  seedUserMessage(store, 'u3', 'DELTA-U3-CONTENT');
+  const executor3 = env.createExecutor(store);
+  await runTurn({ executor: executor3, conversation, agent, store, turnId: 'turn-empty-resume-3' });
+
+  assert.equal(env.captured[2].options.resume, true);
+  assert.equal(env.captured[2].options.session, firstSessionName);
+  assert.match(env.captured[2].prompt, /DELTA-U3-CONTENT/u);
+});
+
+test('empty final reply without clean-completion evidence keeps the legacy protection', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'ALPHA-U1-CONTENT');
+
+  // Leg 1: establish the reusable snapshot with a normal reply.
+  const executor1 = env.createExecutor(store);
+  await runTurn({ executor: executor1, conversation, agent, store, turnId: 'turn-empty-ungated-1' });
+  assert.equal(store.peekReuseRow().state, 'reusable');
+
+  // Leg 2: resumed run resolves with an empty reply but no terminal-message
+  // evidence (no completionStopReason / openToolCallCount). The claim must be
+  // poisoned exactly like before.
+  seedUserMessage(store, 'u2', 'DELTA-U2-CONTENT');
+  const executor2 = env.createExecutor(store, { reply: '' });
+  await runTurn({ executor: executor2, conversation, agent, store, turnId: 'turn-empty-ungated-2' });
+
+  assert.equal(env.captured[1].options.resume, true);
+  const leg2CallNames = store.reuseCalls.slice(2).map(([name]) => name);
+  assert.deepEqual(leg2CallNames, ['get', 'claim', 'markPoisoned']);
+  assert.equal(store.peekReuseRow().state, 'poisoned');
+
+  // Leg 3 (fresh): an empty reply without evidence must not register a new
+  // session either; the poisoned row stays untouched.
+  seedUserMessage(store, 'u3', 'DELTA-U3-CONTENT');
+  const executor3 = env.createExecutor(store, { reply: '' });
+  await runTurn({ executor: executor3, conversation, agent, store, turnId: 'turn-empty-ungated-3' });
+
+  assert.equal(env.captured[2].options.resume, false);
+  const leg3CallNames = store.reuseCalls.slice(5).map(([name]) => name);
+  assert.deepEqual(leg3CallNames, ['get'], 'fresh empty reply without evidence must not touch the row');
+  assert.equal(store.peekReuseRow().state, 'poisoned');
+});
+
+test('contradictory tool evidence (open tool calls at terminal stop) blocks empty-reply registration', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'ALPHA-U1-CONTENT');
+
+  const executor1 = env.createExecutor(store, {
+    reply: '',
+    resultOverrides: {
+      completionStopReason: 'stop',
+      completionMessageKey: 'assistant-empty-tools-open',
+      openToolCallCount: 1,
+    },
+  });
+  await runTurn({ executor: executor1, conversation, agent, store, turnId: 'turn-empty-open-tools' });
+
+  const failedWrite = store.messageWrites.updates.find(({ patch }) => patch.status === 'failed');
+  assert.ok(failedWrite);
+  assert.equal(failedWrite.patch.errorMessage, 'Empty agent reply');
+  assert.deepEqual(
+    store.reuseCalls.map(([name]) => name),
+    ['get'],
+    'open tool calls at run end must keep the session unregistered'
+  );
+  assert.equal(store.peekReuseRow(), null);
+});
+
+test('timeout and interruption failures keep poisoning the claimed session', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'ALPHA-U1-CONTENT');
+
+  // Leg 1: establish the reusable snapshot with a normal reply.
+  const executor1 = env.createExecutor(store);
+  await runTurn({ executor: executor1, conversation, agent, store, turnId: 'turn-timeout-1' });
+  assert.equal(store.peekReuseRow().state, 'reusable');
+
+  // Leg 2: the resumed run rejects with a progress timeout. The claim must be
+  // poisoned; the new empty-reply path must not interfere.
+  const timeoutError = new Error('pi progress timeout: no events');
+  timeoutError.terminationReason = { type: 'progress_timeout', message: 'pi progress timeout: no events' };
+  seedUserMessage(store, 'u2', 'DELTA-U2-CONTENT');
+  const executor2 = env.createExecutor(store, { resultOverrides: { rejectWith: timeoutError } });
+  await runTurn({ executor: executor2, conversation, agent, store, turnId: 'turn-timeout-2' });
+
+  assert.equal(env.captured[1].options.resume, true);
+  const leg2CallNames = store.reuseCalls.slice(2).map(([name]) => name);
+  assert.deepEqual(leg2CallNames, ['get', 'claim', 'markPoisoned']);
+  assert.match(String(store.peekReuseRow().poisonReason), /^run_failed:/u);
+  const failedWrite = store.messageWrites.updates.find(({ patch }) => patch.status === 'failed');
+  assert.equal(failedWrite.patch.metadata.invocationFailure.kind, 'timeout');
 });

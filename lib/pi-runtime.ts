@@ -1274,6 +1274,11 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         heartbeatCount: state.heartbeatCount,
         usage: state.assistantUsage,
         usageCalls: assistantUsageCallsFromState(state),
+        // Snapshot of tool executions still open when the child exited. A
+        // model-driven terminal message implies 0 (tools finish before the
+        // next assistant message); callers must treat a non-zero count as
+        // contradictory evidence rather than infer closure from exit code.
+        openToolCallCount: state.activeToolCalls.size,
       };
 
       if (terminationReason && terminationReason.type === 'expected_completion') {
