@@ -94,7 +94,20 @@ export function createRecoveryScribeConfigManager(options: any = {}) {
       return [];
     }
     const value = modelCatalog.getOptions();
-    return Array.isArray(value) ? value : [];
+    return (Array.isArray(value) ? value : []).map((option) => {
+      if (typeof option?.runtimeResolvable === 'boolean') return option;
+      // Legacy injected catalogs may omit the flag. Absence is not proof of
+      // resolution: ask the authoritative resolver, never default to true.
+      const resolved = modelCatalog.getResolvedModel?.(option?.provider, option?.model);
+      const verified = resolved?.runtimeResolvable === true
+        && normalizeText(resolved.provider) === normalizeText(option?.provider)
+        && normalizeText(resolved.model) === normalizeText(option?.model);
+      return {
+        ...option,
+        ...(verified ? { supportedThinkingLevels: resolved.supportedThinkingLevels } : {}),
+        runtimeResolvable: verified,
+      };
+    });
   }
 
   function persisted() {

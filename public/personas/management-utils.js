@@ -51,7 +51,7 @@
       const element = document.createElement('option');
       element.value = option.key;
       element.textContent = modelOptionUtils.buildModelOptionLabel(option);
-      element.disabled = option.runtimeResolvable === false;
+      element.disabled = option.runtimeResolvable !== true;
       select.appendChild(element);
     }
     const selectedKey = model ? modelOptionKey(provider, model) : '';

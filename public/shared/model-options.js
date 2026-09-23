@@ -71,7 +71,9 @@
     const label = String(option.label || option.model || '').trim();
     const provider = String(option.provider || '').trim();
     const source = MODEL_SOURCE_LABELS[option.source] || String(option.sourceLabel || '').trim();
-    return [label, provider, source, option.runtimeResolvable === false ? '本地不可解析' : ''].filter(Boolean).join(' · ');
+    const resolution = option.runtimeResolvable === true ? ''
+      : option.runtimeResolvable === false ? '本地不可解析' : '本地未验证';
+    return [label, provider, source, resolution].filter(Boolean).join(' · ');
   }
 
   function fillModelSelect(select, modelOptions, currentProvider = '', currentModel = '') {
@@ -92,7 +94,7 @@
       const element = document.createElement('option');
       element.value = option.key;
       element.textContent = buildModelOptionLabel(option);
-      element.disabled = option.runtimeResolvable === false;
+      element.disabled = option.runtimeResolvable !== true;
       select.appendChild(element);
     });
 

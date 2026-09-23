@@ -71,6 +71,14 @@
       const thinking = /** @type {HTMLSelectElement | null} */ (document.getElementById('recovery-scribe-thinking'));
       const validSelection = model && thinkingLevels(model).includes(thinking?.value);
       if (button) button.disabled = !options.isEnabled() || saving || Boolean(enabled?.checked && !validSelection);
+      const disableUnchanged = !enabled?.checked && !validSelection;
+      const timeout = /** @type {HTMLInputElement | null} */ (document.getElementById('recovery-scribe-timeout'));
+      if (timeout) {
+        timeout.disabled = !options.isEnabled() || saving || disableUnchanged;
+        if (disableUnchanged) timeout.value = String(configuration.config.timeoutMs / 1000);
+      }
+      const disableNote = document.getElementById('recovery-scribe-disable-note');
+      if (disableNote) disableNote.classList.toggle('hidden', !disableUnchanged);
     }
 
     function render() {
@@ -108,6 +116,7 @@
           <label class="system-service-enabled-row"><input id="recovery-scribe-enabled" type="checkbox" ${config.enabled ? 'checked' : ''} /><span>在失败或手动停止的消息上提供现场整理</span></label>
           <p class="management-note">关闭后，相关消息上不再显示「整理失败现场」或「整理停止现场」按钮；会话摘要和标题功能不受影响。</p>
           ${modelFields}
+          <p id="recovery-scribe-disable-note" class="management-note hidden">模型配置未通过校验时，关闭仅保存启用状态，保留原模型、思考强度及超时；其他编辑值不会应用。请先修正模型配置，再修改这些设置。</p>
           <p id="recovery-scribe-config-error" class="management-error hidden" role="alert"></p>
         </section>
         <section class="management-card system-service-boundaries">
@@ -185,12 +194,12 @@
       const disableUnchanged = !enabled && !validSelection;
       const timeoutInput = /** @type {HTMLInputElement | null} */ (document.getElementById('recovery-scribe-timeout'));
       const thinking = disableUnchanged ? configuration.config.thinking : thinkingSelect?.value;
-      const timeoutSeconds = disableUnchanged ? configuration.config.timeoutMs / 1000 : Number(timeoutInput?.value);
+      const timeoutSeconds = Number(timeoutInput?.value);
       if (!validSelection && !disableUnchanged) {
         showError(null, '请选择当前可用模型及支持的思考强度');
         return;
       }
-      if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60) {
+      if (!disableUnchanged && (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60)) {
         showError(null, '超时必须是 1 到 60 秒的整数');
         return;
       }
@@ -199,7 +208,7 @@
         provider: disableUnchanged ? configuration.config.provider : model.provider,
         model: disableUnchanged ? configuration.config.model : model.model,
         thinking,
-        timeoutMs: timeoutSeconds * 1000,
+        timeoutMs: disableUnchanged ? configuration.config.timeoutMs : timeoutSeconds * 1000,
       };
       saving = true;
       updateSaveState();

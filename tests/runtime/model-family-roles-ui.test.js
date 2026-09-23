@@ -30,6 +30,7 @@ test('shared role selectors retain diagnostics but disable unresolvable and remo
   const options = [
     { key: 'p\u001fgood', provider: 'p', model: 'good', runtimeResolvable: true },
     { key: 'p\u001fbad', provider: 'p', model: 'bad', runtimeResolvable: false },
+    { key: 'p\u001funknown', provider: 'p', model: 'unknown' },
   ];
   for (const [id, helper] of [['shared', modelOptionUtils], ['management', managementUtils]]) {
     const select = document.getElementById(id);
@@ -37,6 +38,9 @@ test('shared role selectors retain diagnostics but disable unresolvable and remo
     assert.equal(select.value, 'p\u001fbad', 'existing selection remains diagnostic, never switches to first model');
     assert.equal(Array.from(select.options).find((option) => option.value === 'p\u001fbad').disabled, true);
     assert.equal(Array.from(select.options).find((option) => option.value === 'p\u001fgood').disabled, false);
+    const unknown = Array.from(select.options).find((option) => option.value === 'p\u001funknown');
+    assert.equal(unknown.disabled, true, 'missing resolution evidence is not a valid choice');
+    assert.match(unknown.textContent, /未验证/u);
     helper.fillModelSelect(select, options, 'p', 'removed');
     assert.equal(select.selectedOptions[0].disabled, true);
     assert.equal(select.value, 'p\u001fremoved');
@@ -175,8 +179,8 @@ test('role UI payload keeps family fields credential-free and preserves complete
 test('all model selectors identify provider and catalog source for same-name models', () => {
   const { managementUtils, modelOptionUtils, document } = loadManagementModules();
   const options = [
-    { key: 'moonshot\u001fkimi-code', provider: 'moonshot', model: 'kimi-code', label: 'Kimi Code', source: 'models_json', sourceLabel: 'models.json' },
-    { key: 'together\u001fkimi-code', provider: 'together', model: 'kimi-code', label: 'Kimi Code', source: 'runtime', sourceLabel: 'runtime default' },
+    { key: 'moonshot\u001fkimi-code', provider: 'moonshot', model: 'kimi-code', label: 'Kimi Code', runtimeResolvable: true, source: 'models_json', sourceLabel: 'models.json' },
+    { key: 'together\u001fkimi-code', provider: 'together', model: 'kimi-code', label: 'Kimi Code', runtimeResolvable: true, source: 'runtime', sourceLabel: 'runtime default' },
   ];
 
   const sharedSelect = document.getElementById('shared');

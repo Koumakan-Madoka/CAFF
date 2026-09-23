@@ -171,6 +171,47 @@ test('invalid stored model remains diagnostic, cannot be resaved, and can be dis
   assert.equal(session.requests[1].options.body.enabled, false);
 });
 
+for (const modelOptions of [MODEL_OPTIONS, []]) {
+  test(`disabling invalid config preserves 1500ms timeout (${modelOptions.length ? 'stale model' : 'empty catalog'})`, async () => {
+    const session = setup({
+      modelOptions,
+      config: { model: 'deleted-model', timeoutMs: 1500 },
+      readiness: { ready: false },
+    });
+    await session.management.refresh();
+    const { document, Event } = session.dom.window;
+    const timeout = document.getElementById('recovery-scribe-timeout');
+    if (timeout) timeout.value = '30';
+    const enabled = document.getElementById('recovery-scribe-enabled');
+    enabled.checked = false;
+    enabled.dispatchEvent(new Event('change'));
+    assert.equal(document.getElementById('save-recovery-scribe-config').disabled, false);
+    await session.management.save();
+    assert.equal(session.requests.length, 2, 'must send PUT despite fractional seconds');
+    assert.equal(session.requests[1].options.body.timeoutMs, 1500);
+    assert.equal(session.requests[1].options.body.enabled, false);
+    assert.equal(session.requests[1].options.body.model, 'deleted-model');
+    if (timeout) {
+      assert.equal(timeout.disabled, true);
+      assert.equal(timeout.value, '1.5');
+    }
+    const note = document.getElementById('recovery-scribe-disable-note');
+    assert.equal(note.classList.contains('hidden'), false);
+    assert.match(note.textContent, /保留原模型、思考强度及超时/u);
+    session.dom.window.close();
+  });
+}
+
+test('normal editing still rejects fractional seconds rather than bypassing timeout validation', async () => {
+  const session = setup();
+  await session.management.refresh();
+  session.dom.window.document.getElementById('recovery-scribe-timeout').value = '1.5';
+  await session.management.save();
+  assert.equal(session.requests.length, 1);
+  assert.match(session.dom.window.document.getElementById('recovery-scribe-config-error').textContent, /整数/u);
+  session.dom.window.close();
+});
+
 test('unsupported stored thinking is not silently replaced when disabling', async () => {
   const session = setup({ config: { thinking: 'max' }, readiness: { ready: false } });
   await session.management.refresh();
