@@ -51,6 +51,7 @@
       const element = document.createElement('option');
       element.value = option.key;
       element.textContent = modelOptionUtils.buildModelOptionLabel(option);
+      element.disabled = option.runtimeResolvable === false;
       select.appendChild(element);
     }
     const selectedKey = model ? modelOptionKey(provider, model) : '';
@@ -59,6 +60,7 @@
       stale.value = selectedKey;
       stale.textContent = `${provider ? `${provider} / ` : ''}${model} · 当前不可用`;
       stale.dataset.stale = 'true';
+      stale.disabled = true;
       select.appendChild(stale);
     }
     if (!select.options.length) {

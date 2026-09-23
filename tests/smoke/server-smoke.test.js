@@ -378,6 +378,7 @@ test('persisted system model selection hot-applies to the next digest over real 
         provider: 'moonshotai',
         model: 'kimi-k2.5',
         label: 'Kimi K2.5',
+        runtimeResolvable: true,
         source: 'test',
         supportedThinkingLevels: ['off', 'high'],
       }];

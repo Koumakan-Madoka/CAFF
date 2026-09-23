@@ -27,6 +27,7 @@ const MODEL_OPTIONS = [
     provider: 'deepseek',
     model: 'deepseek-v4-flash',
     label: 'DeepSeek V4 Flash',
+    runtimeResolvable: true,
     supportedThinkingLevels: ['off', 'low', 'high'],
   },
   {
@@ -34,6 +35,7 @@ const MODEL_OPTIONS = [
     provider: 'openai',
     model: 'gpt-5',
     label: 'GPT-5',
+    runtimeResolvable: true,
     supportedThinkingLevels: ['off', 'medium', 'high'],
   },
 ];
@@ -106,6 +108,82 @@ test('recovery scribe configuration rejects unknown fields, unavailable models, 
   }
 
   assert.equal(store.getSystemServiceConfig('recovery_scribe'), null);
+});
+
+test('unresolvable config is diagnosed, cannot be saved, but can be disabled unchanged and repaired live', (t) => {
+  const { store } = createFixture(t);
+  let resolvable = false;
+  const modelCatalog = { getOptions: () => MODEL_OPTIONS.map((option) => ({ ...option, runtimeResolvable: resolvable })) };
+  const manager = createRecoveryScribeConfigManager({ store, modelCatalog, defaults: DEFAULTS });
+  assert.throws(() => manager.updateConfiguration(DEFAULTS), (error) => error.code === 'recovery_config_model_unavailable');
+  assert.equal(store.getSystemServiceConfig('recovery_scribe'), null);
+  store.saveSystemServiceConfig('recovery_scribe', DEFAULTS);
+  const blocked = manager.getConfiguration();
+  assert.equal(blocked.config.enabled, true);
+  assert.equal(blocked.readiness.ready, false);
+  assert.equal(blocked.readiness.code, 'recovery_config_model_unavailable');
+  assert.deepEqual(blocked.config, DEFAULTS);
+  assert.throws(() => manager.updateConfiguration({ ...DEFAULTS, enabled: false, model: 'other-bad-model' }),
+    (error) => error.code === 'recovery_config_model_unavailable');
+  const disabled = manager.updateConfiguration({ ...DEFAULTS, enabled: false });
+  assert.equal(disabled.config.enabled, false);
+  assert.equal(disabled.readiness.ready, false);
+  assert.throws(() => manager.updateConfiguration(DEFAULTS), (error) => error.code === 'recovery_config_model_unavailable');
+  resolvable = true;
+  assert.equal(manager.getConfiguration().readiness.ready, true, 'no service restart required');
+  assert.equal(manager.updateConfiguration(DEFAULTS).readiness.ready, true);
+});
+
+test('missing persisted model never falls back to a valid default and catalog failure is diagnosable', (t) => {
+  const { store, modelCatalog } = createFixture(t);
+  const manager = createRecoveryScribeConfigManager({ store, modelCatalog, defaults: DEFAULTS });
+  store.saveSystemServiceConfig('recovery_scribe', { ...DEFAULTS, model: 'removed' });
+  assert.equal(manager.getConfiguration().config.model, 'removed');
+  assert.equal(manager.getConfiguration().readiness.ready, false);
+  modelCatalog.getOptions = () => { throw new Error('private catalog detail'); };
+  const state = manager.getConfiguration();
+  assert.equal(state.readiness.code, 'recovery_config_catalog_unavailable');
+  assert.equal(JSON.stringify(state).includes('private catalog detail'), false);
+  assert.equal(manager.updateConfiguration({ ...state.config, enabled: false }).config.enabled, false);
+});
+
+test('real catalog invalidation refreshes readiness and explicit resolvable defaults need not be picker defaults', (t) => {
+  const { createConfiguredModelCatalog } = require('../../build/server/domain/models/configured-model-catalog');
+  const { withClearedRecoveryRuntimeEnvironment } = require('../helpers/recovery-runtime-env');
+  const { store } = createFixture(t);
+  withClearedRecoveryRuntimeEnvironment(() => {
+    let runtimeModels = [];
+    const catalog = createConfiguredModelCatalog({
+      loadRuntimeModels: () => runtimeModels,
+      readProviderDocument: () => ({ providers: {} }),
+    });
+    const defaults = { ...DEFAULTS, model: 'deepseek/deepseek-v4-flash' };
+    const manager = createRecoveryScribeConfigManager({ store, modelCatalog: catalog, defaults });
+    assert.equal(manager.getConfiguration().readiness.ready, false);
+    runtimeModels = [{ provider: 'deepseek', id: 'deepseek-v4-flash', supportedThinkingLevels: ['off', 'low'] }];
+    assert.equal(manager.getConfiguration().readiness.ready, false, 'catalog cache is explicit');
+    catalog.invalidate();
+    const ready = manager.getConfiguration();
+    assert.equal(ready.readiness.ready, true);
+    assert.deepEqual(ready.config, defaults);
+    assert.equal(ready.modelOptions[0].model, defaults.model, 'preserve the explicitly selected provider-prefixed ID');
+    assert.equal(catalog.getOptions().length, 0, 'explicit Recovery model does not expand the shared picker');
+    assert.equal(manager.updateConfiguration(defaults).readiness.ready, true);
+    runtimeModels = [];
+    catalog.invalidate();
+    assert.equal(manager.getConfiguration().readiness.ready, false, 'removed explicit selection cannot fall back');
+    assert.equal(manager.getConfigSnapshot().model, defaults.model);
+  });
+});
+
+test('unsupported model thinking is consistently blocked and may only be disabled unchanged', (t) => {
+  const { store, modelCatalog } = createFixture(t);
+  const invalid = { ...DEFAULTS, thinking: 'max' };
+  store.saveSystemServiceConfig('recovery_scribe', invalid);
+  const manager = createRecoveryScribeConfigManager({ store, modelCatalog, defaults: DEFAULTS });
+  assert.equal(manager.getConfiguration().readiness.code, 'recovery_config_thinking_unsupported');
+  assert.throws(() => manager.updateConfiguration(invalid), (error) => error.code === 'recovery_config_thinking_unsupported');
+  assert.equal(manager.updateConfiguration({ ...invalid, enabled: false }).config.thinking, 'max');
 });
 
 test('persisted system model selection is shared by digests without sharing the recovery enable flag', async (t) => {

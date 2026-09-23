@@ -25,6 +25,26 @@ function loadManagementModules() {
   };
 }
 
+test('shared role selectors retain diagnostics but disable unresolvable and removed models', () => {
+  const { document, managementUtils, modelOptionUtils } = loadManagementModules();
+  const options = [
+    { key: 'p\u001fgood', provider: 'p', model: 'good', runtimeResolvable: true },
+    { key: 'p\u001fbad', provider: 'p', model: 'bad', runtimeResolvable: false },
+  ];
+  for (const [id, helper] of [['shared', modelOptionUtils], ['management', managementUtils]]) {
+    const select = document.getElementById(id);
+    helper.fillModelSelect(select, options, 'p', 'bad');
+    assert.equal(select.value, 'p\u001fbad', 'existing selection remains diagnostic, never switches to first model');
+    assert.equal(Array.from(select.options).find((option) => option.value === 'p\u001fbad').disabled, true);
+    assert.equal(Array.from(select.options).find((option) => option.value === 'p\u001fgood').disabled, false);
+    helper.fillModelSelect(select, options, 'p', 'removed');
+    assert.equal(select.selectedOptions[0].disabled, true);
+    assert.equal(select.value, 'p\u001fremoved');
+    helper.fillModelSelect(select, options, 'p', 'good');
+    assert.equal(select.value, 'p\u001fgood');
+  }
+});
+
 function loadManagementUtils() {
   return loadManagementModules().managementUtils;
 }

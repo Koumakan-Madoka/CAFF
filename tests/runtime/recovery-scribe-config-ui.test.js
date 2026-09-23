@@ -12,6 +12,7 @@ const MODEL_OPTIONS = [
     provider: 'deepseek',
     model: 'deepseek-v4-flash',
     label: 'DeepSeek V4 Flash',
+    runtimeResolvable: true,
     source: 'models_json',
     supportedThinkingLevels: ['off', 'low', 'high'],
   },
@@ -20,12 +21,13 @@ const MODEL_OPTIONS = [
     provider: 'openai',
     model: 'gpt-5',
     label: 'GPT-5',
+    runtimeResolvable: true,
     source: 'models_json',
     supportedThinkingLevels: ['off', 'medium', 'high'],
   },
 ];
 
-function setup({ modelOptions = MODEL_OPTIONS, enabled = true } = {}) {
+function setup({ modelOptions = MODEL_OPTIONS, enabled = true, config = {}, readiness = { ready: true } } = {}) {
   const dom = new JSDOM('<div id="root"></div>');
   const requests = [];
   const toasts = [];
@@ -37,7 +39,9 @@ function setup({ modelOptions = MODEL_OPTIONS, enabled = true } = {}) {
       model: 'deepseek-v4-flash',
       thinking: 'low',
       timeoutMs: 60_000,
+      ...config,
     },
+    readiness,
     source: 'runtime_defaults',
     updatedAt: null,
     modelOptions,
@@ -144,6 +148,70 @@ test('system scribe editor replaces an empty model select with a provider setup 
   assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
   document.getElementById('manage-providers-from-recovery-scribe').click();
   assert.equal(session.managedProviders(), 1);
+});
+
+test('invalid stored model remains diagnostic, cannot be resaved, and can be disabled without changing model settings', async () => {
+  const session = setup({
+    config: { model: 'deleted-model', thinking: 'high' },
+    readiness: { ready: false, code: 'recovery_config_model_unavailable' },
+  });
+  await session.management.refresh();
+  const { document, Event } = session.dom.window;
+  assert.match(document.getElementById('root').textContent, /需要配置/u);
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
+  await session.management.save();
+  assert.equal(session.requests.length, 1, 'must reject stale fallback option locally');
+  const enabled = document.getElementById('recovery-scribe-enabled');
+  enabled.checked = false;
+  enabled.dispatchEvent(new Event('change'));
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, false);
+  await session.management.save();
+  assert.equal(session.requests[1].options.body.model, 'deleted-model');
+  assert.equal(session.requests[1].options.body.thinking, 'high');
+  assert.equal(session.requests[1].options.body.enabled, false);
+});
+
+test('unsupported stored thinking is not silently replaced when disabling', async () => {
+  const session = setup({ config: { thinking: 'max' }, readiness: { ready: false } });
+  await session.management.refresh();
+  const { document, Event } = session.dom.window;
+  assert.equal(document.getElementById('recovery-scribe-thinking').value, 'max');
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
+  document.getElementById('recovery-scribe-enabled').checked = false;
+  document.getElementById('recovery-scribe-enabled').dispatchEvent(new Event('change'));
+  await session.management.save();
+  assert.equal(session.requests[1].options.body.thinking, 'max');
+  assert.equal(session.requests[1].options.body.enabled, false);
+});
+
+test('empty catalog still permits disabling existing configuration', async () => {
+  const session = setup({ modelOptions: [], readiness: { ready: false } });
+  await session.management.refresh();
+  const { document, Event } = session.dom.window;
+  const enabled = document.getElementById('recovery-scribe-enabled');
+  enabled.checked = false;
+  enabled.dispatchEvent(new Event('change'));
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, false);
+  await session.management.save();
+  assert.equal(session.requests[1].options.body.provider, 'deepseek');
+  assert.equal(session.requests[1].options.body.enabled, false);
+});
+
+test('unresolvable catalog entries are disabled; selecting a valid model repairs the form', async () => {
+  const session = setup({
+    modelOptions: MODEL_OPTIONS.map((option, index) => ({ ...option, runtimeResolvable: index !== 0 })),
+    readiness: { ready: false },
+  });
+  await session.management.refresh();
+  const { document, Event } = session.dom.window;
+  const select = document.getElementById('recovery-scribe-model');
+  assert.equal(select.options[0].disabled, true);
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
+  select.value = 'openai\u001fgpt-5';
+  select.dispatchEvent(new Event('change'));
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, false);
+  await session.management.save();
+  assert.equal(session.requests[1].options.body.model, 'gpt-5');
 });
 
 test('system scribe provider navigation remains available in a read-only deployment', async () => {

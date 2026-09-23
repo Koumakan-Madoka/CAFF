@@ -45,7 +45,7 @@ function validateDefaults(defaults: any) {
   return config;
 }
 
-function validateUpdate(payload: any, modelOptions: any[]) {
+function validateUpdate(payload: any) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new RecoveryScribeConfigError('recovery_config_body_invalid', 'body');
   }
@@ -81,20 +81,6 @@ function validateUpdate(payload: any, modelOptions: any[]) {
     throw new RecoveryScribeConfigError('recovery_config_timeout_invalid', 'body.timeoutMs');
   }
 
-  const option = modelOptions.find((candidate) => (
-    normalizeText(candidate && candidate.provider) === provider
-    && normalizeText(candidate && candidate.model) === model
-  ));
-  if (!option) {
-    throw new RecoveryScribeConfigError('recovery_config_model_unavailable', 'body.model');
-  }
-  const supportedThinkingLevels = Array.isArray(option.supportedThinkingLevels)
-    ? option.supportedThinkingLevels.map(normalizeText).filter(Boolean)
-    : ['off'];
-  if (!supportedThinkingLevels.includes(thinking)) {
-    throw new RecoveryScribeConfigError('recovery_config_thinking_unsupported', 'body.thinking');
-  }
-
   return { enabled: payload.enabled, provider, model, thinking, timeoutMs };
 }
 
@@ -123,13 +109,53 @@ export function createRecoveryScribeConfigManager(options: any = {}) {
     return row ? cloneConfig(row) : cloneConfig(defaults);
   }
 
+  function inspectConfiguration(config: any) {
+    let availableOptions: any[] = [];
+    let code = '';
+    let path = '';
+    try {
+      availableOptions = modelOptions();
+      const option = availableOptions.find((candidate) => (
+        normalizeText(candidate?.provider) === config.provider
+        && normalizeText(candidate?.model) === config.model
+      )) || modelCatalog?.getResolvedModel?.(config.provider, config.model);
+      if (option?.runtimeResolvable === true && !availableOptions.includes(option)) {
+        availableOptions = [...availableOptions, { ...option, sourceLabel: 'explicit setting' }];
+      }
+      if (!option || option.runtimeResolvable !== true) {
+        code = 'recovery_config_model_unavailable';
+        path = 'body.model';
+      } else if (!Array.isArray(option.supportedThinkingLevels)
+        || !option.supportedThinkingLevels.includes(config.thinking)) {
+        code = 'recovery_config_thinking_unsupported';
+        path = 'body.thinking';
+      }
+    } catch {
+      // A broken local catalog must not hide the stored configuration or block
+      // the escape hatch for disabling it. Never expose raw loader diagnostics.
+      code = 'recovery_config_catalog_unavailable';
+      path = 'body.model';
+    }
+    return {
+      modelOptions: structuredClone(availableOptions),
+      readiness: {
+        ready: !code,
+        status: code ? 'needs_configuration' : 'ready',
+        code,
+        path,
+        configurationUrl: '/personas.html#system-services',
+      },
+    };
+  }
+
   function getConfiguration() {
     const row = persisted();
+    const config = row ? cloneConfig(row) : cloneConfig(defaults);
     return {
-      config: row ? cloneConfig(row) : cloneConfig(defaults),
+      config,
       source: row ? 'persisted' : 'runtime_defaults',
       updatedAt: row ? row.updatedAt : null,
-      modelOptions: structuredClone(modelOptions()),
+      ...inspectConfiguration(config),
     };
   }
 
@@ -137,13 +163,20 @@ export function createRecoveryScribeConfigManager(options: any = {}) {
     if (!store || typeof store.saveSystemServiceConfig !== 'function') {
       throw new RecoveryScribeConfigError('recovery_config_store_unavailable', 'store');
     }
-    const config = validateUpdate(payload, modelOptions());
+    const config = validateUpdate(payload);
+    const current = getConfigSnapshot();
+    const disableUnchanged = !config.enabled && (['provider', 'model', 'thinking', 'timeoutMs'] as const)
+      .every((key) => config[key] === current[key]);
+    const inspection = inspectConfiguration(config);
+    if (!inspection.readiness.ready && !disableUnchanged) {
+      throw new RecoveryScribeConfigError(inspection.readiness.code, inspection.readiness.path);
+    }
     const saved = store.saveSystemServiceConfig(RECOVERY_SCRIBE_SYSTEM_ACTOR.type, config);
     return {
       config: cloneConfig(saved),
       source: 'persisted',
       updatedAt: saved.updatedAt,
-      modelOptions: structuredClone(modelOptions()),
+      ...inspection,
     };
   }
 

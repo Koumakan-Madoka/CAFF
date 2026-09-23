@@ -110,11 +110,19 @@ GET /api/conversations/:conversationId/messages
 }
 
 GET /api/system-services/recovery-scribe
-200 { config, source, updatedAt, modelOptions }
+200 { config, source, updatedAt, modelOptions, readiness }
 
 PUT /api/system-services/recovery-scribe
 body: { enabled, provider, model, thinking, timeoutMs }
-200 { config, source: 'persisted', updatedAt, modelOptions }
+200 { config, source: 'persisted', updatedAt, modelOptions, readiness }
+
+readiness: {
+  ready: boolean,
+  status: 'ready' | 'needs_configuration',
+  code: '' | 'recovery_config_model_unavailable' | 'recovery_config_thinking_unsupported' | 'recovery_config_catalog_unavailable',
+  path: string,
+  configurationUrl: '/personas.html#system-services'
+}
 
 conversation_recovery_updated {
   conversationId,
@@ -205,10 +213,13 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - A complete persisted `recovery_scribe` row is the shared model-selection source for both recovery and conversation digest consumers. Its `provider/model/thinking` apply to the next scribe, digest entry, digest rollup, or title-refinement invocation. `enabled` and `timeoutMs` remain scribe-only; disabling recovery does not disable summaries, and the 1..60 second scribe timeout does not replace digest/title budgets.
 - Digest requests cannot override the shared model with request body `provider/model/thinking`; those fields fail before invocation or history mutation. Each consumer snapshots the three shared fields before awaiting its model call, so a concurrent save affects only the next invocation.
 - A complete persisted `recovery_scribe` row overrides the startup default chain. This makes the local-admin panel authoritative after save; partial persisted overrides are not supported.
-- `PUT /api/system-services/recovery-scribe` is loopback local-admin and CSRF guarded. It accepts exactly the five fields, requires strict booleans/integers, requires provider/model to exist in the configured model catalog, and requires thinking to be supported by that model.
+- `PUT /api/system-services/recovery-scribe` is loopback local-admin and CSRF guarded. It accepts exactly the five fields, requires strict booleans/integers, requires local runtime model resolution, and requires thinking to be supported by that model. GET, PUT and new Recovery requests share this inspection. A failed local catalog load reports `recovery_config_catalog_unavailable` without exposing loader diagnostics.
+- `enabled` records user intent; `readiness.ready` independently reports local model/thinking configuration, not credential validity or upstream reachability. Startup options/env/defaults remain preferences until inspected. Missing explicit or persisted settings never fall back to another model. A blocked new POST returns 409 `conversation_recovery_model_unconfigured` with `configurationCode` and `configurationUrl` before any recovery/task/run/job or model call. Existing durable recovery rows remain idempotent when model readiness later changes.
+- Shared catalog options carry `runtimeResolvable`. Unresolvable synthetic env/hardcoded defaults are omitted; explicit models.json entries remain diagnostic but are disabled in shared selectors when `runtimeResolvable=false`. An explicit Recovery model may resolve against the local registry without expanding the shared picker; provider-prefixed model IDs retain the existing exact-then-unprefixed resolution behavior. Only the Recovery response includes that resolved selection for editing.
+- Invalid stored configuration is neither deleted nor rewritten on GET. PUT rejects new invalid configurations, even with `enabled=false`. The sole escape hatch is `enabled=false` with provider/model/thinking/timeout unchanged from the current full snapshot; this allows disabling a broken service without silently replacing its shared model. Re-enabling requires successful inspection. Provider configuration commits invalidate the catalog; the next inspection re-evaluates readiness without restarting CAFF. Direct out-of-band file edits are not a file-watching contract.
 - A Recovery POST reads one configuration snapshot at entry. The same snapshot owns enabled gating, child task/run audit fields, timeout, and `completeSimple`; a concurrent save affects the next accepted recovery and never changes in-flight work.
 - Message-page capability projection reads the current persisted setting. `system_service_config_updated` makes open chat clients refresh the current conversation after a save, so disabling synchronizes the button and POST gate.
-- The management UI lives under the platform-level `系统服务` tab, not the ordinary role editor. It first explains that the scribe creates a manual, read-only report for failed replies, then exposes one shared model/thinking selection for conversation summaries, rollups, title refinement, and failed-trace recovery, plus scribe-only enable/timeout controls. Model choices come from the configured model catalog maintained under `模型供应商`; selecting one never requires creating a role, and the panel links directly to provider management. With no configured model, it suppresses the empty selectors, shows a provider-setup action, and disables save. Fixed non-execution and mechanical-fallback boundaries are stated as user-visible outcomes rather than implementation jargon.
+- The management UI lives under the platform-level `系统服务` tab, not the ordinary role editor. It first explains that the scribe creates a manual, read-only report for failed replies, then exposes one shared model/thinking selection for conversation summaries, rollups, title refinement, and failed-trace recovery, plus scribe-only enable/timeout controls. Model choices come from the configured model catalog maintained under `模型供应商`; selecting one never requires creating a role, and the panel links directly to provider management. With no catalog entries, it suppresses the empty selectors and shows a provider-setup action. Unresolvable/stale selections and unsupported thinking remain visible but cannot be saved as valid configurations; disabling preserves their unchanged snapshot. The checkbox therefore still permits disabling when the catalog is empty or broken. The chat capability explains the configuration block and links to the system-service editor. Fixed non-execution and mechanical-fallback boundaries are stated as user-visible outcomes rather than implementation jargon.
 - A recovery-specific provider/model may differ from the source provider/model and should be preferred when explicitly configured.
 - Production invocation uses `ModelRuntime.completeSimple` directly with one fixed system instruction, one user Capsule message, and exactly one schema-only `submit_recovery_note` definition in `Context.tools`. `toolChoice='auto'` is portable across PI providers; the prompt requires the only offered tool.
 - The submission tool has no execute handler and is never registered with an Agent, extension, chat bridge, shell, filesystem, network, or task executor. A `toolCall` block is consumed as a provider-serialized return envelope only.
@@ -233,7 +244,10 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | persisted row has `enabled=false` | Recovery POST returns 503; digest/rollup/title still use persisted provider/model/thinking with their own timeout budgets |
 | digest request contains provider/model/thinking | 400 `conversation_digest_model_override_not_allowed`; no runner call or digest mutation |
 | config PUT has unknown/missing field or non-boolean enabled | 422 stable `recovery_config_*` issue; row unchanged |
-| config PUT model is absent from catalog or thinking unsupported | 422 `recovery_config_model_unavailable` / `recovery_config_thinking_unsupported`; row unchanged |
+| config PUT model is locally unresolvable or thinking unsupported | 422 `recovery_config_model_unavailable` / `recovery_config_thinking_unsupported`; row unchanged (except unchanged disable-only escape hatch) |
+| enabled but local configuration is blocked | GET readiness is false; new POST returns 409 `conversation_recovery_model_unconfigured`; no recovery/task/run/job/model call |
+| invalid stored config is disabled without changing model/thinking/timeout | persist only enabled=false; preserve diagnostic configuration |
+| provider model is repaired or removed through configuration API | catalog invalidation changes readiness on the next request; no process restart or silent fallback |
 | config PUT timeout is non-integer or outside 1s..60s | 422 `recovery_config_timeout_invalid`; row unchanged |
 | save races with an accepted recovery | accepted work keeps its entry snapshot; the next request sees the saved row |
 | invalid `CAFF_RECOVERY_ENABLED` | fail startup/config construction; do not silently enable |
@@ -283,7 +297,7 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - Good: a fully linked user Stop leaves message `failed + cancelled`, task `cancelled`, and run `failed + termination_type=cancelled`; the page shows `整理停止现场`, one user click runs the no-executable-tools scribe, and all three source rows remain unchanged.
 - Good: a progress timeout or provider error has no cancellation tuple, remains `sourceKind=failed`, and keeps the pre-existing manual failed-trace recovery behavior.
 - Good: with no Recovery/Digest/Pi thinking environment value, server composition and stale-restart recovery construction materialize Recovery Scribe `thinking=off` while the global Pi default remains empty.
-- Good: a non-empty supported startup thinking value such as `high` is preserved, while `bogus`, an unavailable persisted model, and an out-of-range timeout remain fail-closed.
+- Good: a non-empty supported startup thinking value such as `high` is preserved. Invalid startup enum/timeout values fail construction; an unavailable persisted model or model-unsupported thinking remains visible with blocked readiness and can be corrected or disabled unchanged.
 - Good: a successful `kubectl apply` toolResult is listed under completed while a later stream failure remains the failure location.
 - Good: a timed-out mutating command is listed under possibly effective and the recovery point tells the user to verify external state first.
 - Good: a later Agent sees `系统书记 [read-only recovery; source agent GPT; source run 10159]` even when the failed source is older than the raw-history window.
@@ -356,7 +370,8 @@ await saveConfig(nextConfig); // UI claims success, but requestRecovery still us
 ### Correct
 
 ```ts
-const config = configManager.getConfigSnapshot();
+const { config, readiness } = configManager.getConfiguration();
+// Require enabled and readiness before creating new work; preserve existing-row idempotency.
 const accepted = createDurableRecovery(source, config);
 schedule(() => processRecovery(source, accepted.id, config));
 ```
