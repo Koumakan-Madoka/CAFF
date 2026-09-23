@@ -204,6 +204,14 @@ CREATE TABLE runs (
     metadata: { source: 'test' },
   });
 
+  assert.equal(store.getRun(runRecord.runId).streamDiagnostics, null);
+  store.saveRunDiagnostics(runRecord.runId, { version: 1, eventCount: 1 });
+  store.saveRunDiagnostics(runRecord.runId, { version: 1, eventCount: 2 });
+  assert.deepEqual(store.getRun(runRecord.runId).streamDiagnostics, { version: 1, eventCount: 2 });
+  assert.deepEqual(store.getRun(runRecord.runId).metadata, { source: 'test' });
+  assert.throws(() => store.saveRunDiagnostics(runRecord.runId, { oversized: 'x'.repeat(32768) }), /size limit/);
+  assert.equal(store.getRun(runRecord.runId).streamDiagnostics.eventCount, 2);
+
   store.finishRun(runRecord.runId, {
     status: 'completed',
     exitCode: 0,
@@ -272,6 +280,7 @@ CREATE TABLE runs (
   assert.equal(runColumns.has('task_kind'), true);
   assert.equal(runColumns.has('task_role'), true);
   assert.equal(runColumns.has('run_metadata_json'), true);
+  assert.equal(runColumns.has('stream_diagnostics_json'), true);
   assert.equal(Boolean(taskTable), true);
   assert.equal(sessionRow.session_name, 'demo');
   assert.equal(sessionRow.last_run_id, runRecord.runId);

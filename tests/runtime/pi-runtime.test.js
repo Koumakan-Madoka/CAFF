@@ -1473,6 +1473,16 @@ test('pi runtime recovers one silent active tool in the same host run', async (t
   assert.equal(recoverCommand.attempt, 1);
   assert.equal(recoverCommand.toolName, 'bash');
   assert.equal(JSON.stringify(recoverCommand).includes('sensitive command'), false);
+  const db = new Database(handle.databasePath, { readonly: true });
+  try {
+    const summary = JSON.parse(db.prepare('SELECT stream_diagnostics_json FROM runs WHERE id = ?').get(handle.runId).stream_diagnostics_json);
+    assert.equal(summary.refreshCounts.initial, 1);
+    assert.equal(summary.refreshCounts.recovery_request, 1);
+    assert.equal(summary.refreshCounts.recovery_started, 1);
+    assert.equal(summary.refreshCounts.pi_event, 3);
+    assert.equal(JSON.stringify(summary).includes('sensitive command'), false);
+    assert.equal(JSON.stringify(summary).includes('bash'), false);
+  } finally { db.close(); }
 });
 
 test('pi runtime drops the recovery abort artifact so a recovered run can succeed', async (t) => {

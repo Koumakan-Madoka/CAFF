@@ -45,6 +45,8 @@ Use this index for Pi runtime, prompt, Agent tool, Goal, and DAG integration cha
   (ADR 0001)
 - `propose-plan.md`: `propose-plan` CLI/bridge contract for the shared DAG plan,
   self-repair error codes, and `agent_tool_call` event summaries
+- `stream-diagnostics.md`: content-free SDK event/delta statistics, bounded run
+  snapshots, phase inference limits, and unchanged watchdog behavior
 - `runtime-observability.md`: `createRuntimeObservability` counter providers,
   memory sampling/ring buffer, `getRuntimeStats()` probes on orchestrator/bridge/SSE,
   `GET /api/runtime/stats` 501 fail-closed, and lifecycle/overhead contracts

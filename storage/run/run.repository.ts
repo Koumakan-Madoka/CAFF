@@ -2,6 +2,7 @@ export class RunRepository {
   insertStatement: any;
   finishStatement: any;
   getStatement: any;
+  diagnosticsStatement: any;
 
   constructor(db: any) {
     this.insertStatement = db.prepare(`
@@ -36,6 +37,9 @@ export class RunRepository {
       FROM runs
       WHERE id = ?
       LIMIT 1
+    `);
+    this.diagnosticsStatement = db.prepare(`
+      UPDATE runs SET stream_diagnostics_json = ? WHERE id = ?
     `);
     this.finishStatement = db.prepare(`
       UPDATE runs
@@ -88,6 +92,10 @@ export class RunRepository {
 
   get(runId: number) {
     return this.getStatement.get(runId);
+  }
+
+  saveDiagnostics(runId: number, summaryJson: string) {
+    this.diagnosticsStatement.run(summaryJson, runId);
   }
 
   finish(runId: number, payload: any) {
