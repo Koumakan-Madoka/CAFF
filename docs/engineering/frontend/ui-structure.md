@@ -177,6 +177,23 @@ if (runner && runner.status === 'error_paused') {
 - Fail fast when a required page helper is missing. Prefer explicit
   missing-module errors in the page entry over silently skipping part of the UI.
 
+## Failed Assistant Bubble Explanation
+
+### Contract
+
+- Failed assistant cards show a separate, always-visible explanation above any partial reply. Empty/`Thinking...`/legacy error-wrapper bodies are suppressed; genuine partial replies remain available and keep the existing long-body disclosure.
+- `CaffChat.messageFailurePresentation(message)` is a display-only projection of persisted `metadata.invocationFailure`. It distinguishes progress/heartbeat/total-runtime timeouts, stop requests, process exits, provider failures and unknown failures. It must not change failure kind, eligibility, retry, Goal streak, watchdog or session-reuse policy.
+- Provider summaries are untrusted even when previously redacted. Only recognized leading error indicators (HTTP status, authentication, rate limit, quota and stream-read errors) map to fixed local explanations. Structured known network codes take precedence. Arbitrary response bodies, request text, URLs, credentials, error codes and markup are never echoed by this projection. Unrecognized reports get an honest generic explanation, not a guessed root cause.
+- The exact historical wrappers `Empty agent reply` and `pi assistant reported a model invocation error` have safe display fallbacks when richer classification is absent. Empty reply means no final answer was delivered; it does not establish normal provider completion, timeout, or the location of a fault.
+- Native `details` exposes a fixed display code and numeric run ID. This display code is not a new persisted runtime classification. All explanation nodes use `textContent`; the disclosure has a 44px touch target. Existing Trace and recovery capabilities remain independent.
+- `app.js` uses the same safe projection for empty failed-assistant display text. Completed/private/silent messages retain existing behavior. Classification-only updates invalidate the card render signature, and a subsequent completed status removes the explanation.
+- This is a rendering boundary, not retroactive sanitization of stored records or other Inspector/export surfaces. It does not reinterpret genuine assistant partial content as diagnostic text.
+
+### Verification
+
+- `tests/ui/message-recovery.test.js` exercises the real card renderer, error-kind matrix, historical wrappers, partial replies, classification-only refresh, completed/private compatibility, malformed metadata and credential/body/markup sentinels. The app display helper is executed from its actual source as well.
+- Existing recovery controls retain their server-owned eligibility tests; runtime auto-pause, session reuse and timeout tests remain unchanged.
+
 ## Failed And User-Stopped Message Recovery Eligibility UI
 
 ### Scope / Trigger

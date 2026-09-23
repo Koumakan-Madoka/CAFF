@@ -7295,6 +7295,28 @@ body.chat-app .message-card.recovery-result .message-body li + li {
   margin-top: 0.12rem;
 }
 
+body.chat-app .message-failure-panel {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.88rem;
+}
+
+body.chat-app .message-failure-panel[hidden] {
+  display: none;
+}
+
+body.chat-app .message-failure-panel p {
+  margin: 0.35rem 0;
+}
+
+body.chat-app .message-failure-panel summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  text-decoration: underline;
+}
+
 body.chat-app .message-body.collapsed-error {
   max-height: 8.5rem;
   overflow: hidden;

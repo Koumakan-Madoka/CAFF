@@ -62,6 +62,91 @@
 
   chat.sessionReuseReasonLabel = sessionReuseReasonLabel;
 
+  // Display-only projection: do not change recovery eligibility or session state.
+  // Provider summaries may contain response/request bodies even after redaction.
+  // Recognize a small set of reported reasons, but never echo arbitrary error text.
+  function messageFailurePresentation(message) {
+    if (!message || message.role !== 'assistant' || message.status !== 'failed') return null;
+    const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+    const failure = metadata.invocationFailure && typeof metadata.invocationFailure === 'object'
+      ? metadata.invocationFailure : {};
+    const kind = String(failure.kind || '');
+    const code = String(failure.code || '');
+    const reported = String(failure.summary || '').slice(0, 1024).trim()
+      .replace(/^(?:error:\s*)?(?:http(?: error)?\s*)?/iu, '');
+    let title = '回复失败';
+    let summary = '现有记录无法确认具体原因；可通过运行详情继续排查。';
+    let displayCode = 'unclassified_invocation_error';
+    if (kind === 'timeout') {
+      const timeouts = {
+        progress_timeout: ['等待进展超时', '规定时间内未收到可刷新进度的事件；不代表已确认模型挂死。'],
+        heartbeat_timeout: ['运行心跳超时', '规定时间内未收到运行进程的心跳；具体原因尚未确认。'],
+        run_timeout: ['运行总时限已到', '本次运行达到已配置的总时限，已停止。'],
+      };
+      if (Object.prototype.hasOwnProperty.call(timeouts, code)) {
+        [title, summary] = timeouts[code];
+        displayCode = code;
+      } else {
+        title = '运行超时';
+        summary = '运行被超时机制终止，现有记录未明确超时类型。';
+        displayCode = 'timeout';
+      }
+    } else if (kind === 'cancelled') {
+      title = '运行已停止';
+      summary = '本次运行收到停止请求；这不表示模型调用发生故障。';
+      displayCode = 'cancelled';
+    } else if (kind === 'process_exit') {
+      title = '运行进程异常退出';
+      summary = '执行进程未正常完成，具体原因需结合运行详情排查。';
+      displayCode = 'process_exit';
+      if (/^(?:SIG(?:TERM|KILL|INT|ABRT|SEGV|PIPE|HUP|QUIT)|\d{1,3})$/u.test(code)) {
+        summary += ` 退出码或信号：${code}。`;
+      }
+    } else if (kind === 'provider' || ((!kind || kind === 'unknown')
+      && String(message.errorMessage || '').trim() === 'pi assistant reported a model invocation error')) {
+      title = '模型调用失败';
+      summary = '调用链路报告错误，但未提供可安全展示的具体原因。';
+      displayCode = 'assistant_error';
+      const networkReasons = {
+        econnreset: '调用连接被重置。',
+        econnrefused: '调用连接被拒绝。',
+        etimedout: '调用连接超时。',
+        enotfound: '调用地址解析失败。',
+        eai_again: '调用地址暂时无法解析。',
+        und_err_connect_timeout: '调用连接超时。',
+        und_err_headers_timeout: '等待响应头超时。',
+        und_err_body_timeout: '等待响应数据超时。',
+        und_err_socket: '调用连接异常中断。',
+      };
+      if (Object.prototype.hasOwnProperty.call(networkReasons, code)) {
+        summary = networkReasons[code];
+        displayCode = code;
+      } else if (/^(?:429|rate[_ -]?limit(?:ed|ing|[_ -]exceeded)?|too many requests)\b/iu.test(reported)) {
+        summary = '调用服务报告限流，请检查调用额度或稍后重试。';
+      } else if (/^(?:401|unauthorized|invalid[_ -]?api[_ -]?key|authentication[_ -]?(?:failed|error))\b/iu.test(reported)) {
+        summary = '调用服务报告认证失败，请检查凭据配置。';
+      } else if (/^(?:403|forbidden|permission[_ -]?denied)\b/iu.test(reported)) {
+        summary = '调用服务报告访问被拒绝，请检查模型或账户权限。';
+      } else if (/^(?:500|502|503|504|service unavailable|internal server error)\b/iu.test(reported)) {
+        summary = '调用服务报告服务端错误；无法据此区分代理与模型服务故障。';
+      } else if (/^(?:connection error:\s*)?stream_read_error\b/iu.test(reported)) {
+        summary = '调用链路报告响应流读取失败；具体故障位置尚未确认。';
+      } else if (/^(?:insufficient[_ -](?:balance|quota)|quota[_ -]exceeded)\b/iu.test(reported)) {
+        summary = '调用服务报告余额或额度不足，请检查账户状态。';
+      }
+    } else if (String(message.errorMessage || '').trim() === 'Empty agent reply') {
+      title = '未收到最终回复';
+      summary = '本轮未收到可展示的最终答复；仅凭空回复无法确定原因。';
+      displayCode = 'empty_reply';
+    }
+    // Run IDs are numeric in the run store; do not echo arbitrary metadata.
+    const runId = String(message.runId ?? '');
+    const details = `错误码：${displayCode}${/^\d{1,20}$/u.test(runId) ? ` · run ${runId}` : ''}`;
+    return { title, summary, details };
+  }
+
+  chat.messageFailurePresentation = messageFailurePresentation;
+
   chat.createMessageTimelineRenderer = function createMessageTimelineRenderer({ dom, helpers, showToast }) {
     const {
       agentById,
@@ -2271,6 +2356,10 @@
       const body = document.createElement('div');
       const crossConversationPanel = document.createElement('div');
       const recoveryPanel = document.createElement('div');
+      const failurePanel = document.createElement('section');
+      failurePanel.className = 'message-failure-panel';
+      failurePanel.hidden = true;
+      failurePanel.setAttribute('aria-live', 'polite');
       const liveHint = document.createElement('div');
       const toolTrace = document.createElement('section');
       const imageGallery = document.createElement('div');
@@ -2346,7 +2435,7 @@
       deleteControls.append(selectLabel, deleteButton);
 
       meta.append(sender, time, deleteControls);
-      card.append(meta, crossConversationPanel, recoveryPanel, toolTrace, imageGallery, body, errorToggle, liveHint);
+      card.append(meta, failurePanel, crossConversationPanel, recoveryPanel, toolTrace, imageGallery, body, errorToggle, liveHint);
       syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots);
 
       return card;
@@ -2365,7 +2454,11 @@
         ? null
         : liveStageForMessage(conversationId || (message && message.conversationId) || '', activeTurn, activeAgentSlots, message.id);
       const liveLabel = isDigestStatusMessage ? '摘要整理中' : liveStageLabel(liveStage);
-      const bodyText = displayedMessageBody(message, liveStage);
+      const failureView = messageFailurePresentation(message);
+      const content = String(message.content || '').trim();
+      const errorOnly = failureView && (!content || content === 'Thinking...'
+        || content === `[错误] ${message.errorMessage}` || content === String(message.errorMessage || '').trim());
+      const bodyText = errorOnly ? '' : displayedMessageBody(message, liveStage);
       const sessionInfo = messageSessionInfo(message);
       const contextSnapshot = metadata && metadata.agentContextSnapshot && typeof metadata.agentContextSnapshot === 'object'
         ? metadata.agentContextSnapshot
@@ -2401,7 +2494,8 @@
         message.createdAt || '',
         message.status || '',
         bodyText,
-        message.errorMessage || '',
+        failureView ? '' : message.errorMessage || '',
+        failureView ? JSON.stringify(failureView) : '',
         agent && agent.accentColor ? agent.accentColor : '',
         agent && agent.avatarDataUrl ? agent.avatarDataUrl : '',
         liveLabel,
@@ -2456,6 +2550,24 @@
 
       card.dataset.messageId = message.id;
       card.dataset.renderSignature = signature;
+      const failurePanel = card.querySelector('.message-failure-panel');
+      const failureDetailsOpen = Boolean(failurePanel.querySelector('details[open]'));
+      failurePanel.replaceChildren();
+      failurePanel.hidden = !failureView;
+      if (failureView) {
+        const title = document.createElement('strong');
+        title.textContent = failureView.title;
+        const explanation = document.createElement('p');
+        explanation.textContent = failureView.summary;
+        const details = document.createElement('details');
+        details.open = failureDetailsOpen;
+        const label = document.createElement('summary');
+        label.textContent = '错误详情';
+        const references = document.createElement('p');
+        references.textContent = failureView.details;
+        details.append(label, references);
+        failurePanel.append(title, explanation, details);
+      }
       card.className = `message-card ${message.role}`;
       card.classList.toggle('failed', message.status === 'failed');
       card.classList.toggle('digest-status', isDigestStatusMessage);
