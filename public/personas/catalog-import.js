@@ -19,7 +19,15 @@
     // owns the pane); the handback — 完成, 返回供应商 — flushes it.
     let importedIds = null;
     let importCompletionTriggered = false;
+    // The in-flight confirmImport() promise, if any. Exiting the wizard while
+    // an import POST is pending must wait for it: a late response rendered
+    // after onClose would steal the pane back from the parent page.
+    let activeImport = null;
+    // Set when the tracked in-flight import ended in failure, so an exiting
+    // requestClose can keep the page open instead of closing silently.
+    let importFailed = false;
     let refreshPending = false;
+    let closing = false;
 
     const input = (id) => /** @type {HTMLInputElement} */ (document.getElementById(id));
 
@@ -343,6 +351,7 @@
       if (importPending || importAdvisory || !projection || projection.manualConfigurationRequired) return;
       const projectionAtStart = projection;
       importPending = true;
+      importFailed = false;
       /** @type {HTMLButtonElement} */ (document.getElementById('catalog-import-confirm')).disabled = true;
       const body = { providerId: projection.providerId, modelId: projection.modelId };
       const name = input('catalog-import-name').value.trim();
@@ -387,6 +396,7 @@
         render();
       } catch (error) {
         importPending = false;
+        importFailed = true;
         if (projection !== projectionAtStart) {
           options.showToast('目录导入失败');
           return;
@@ -411,13 +421,24 @@
         return;
       }
       importCompletionTriggered = true;
-      render();
+      // render() requires a loaded catalog index. On the error and
+      // unavailable pages there is no 完成 button — disable the close button
+      // instead so the handback cannot be double-triggered.
+      if (index) {
+        render();
+      } else {
+        const closeButton = /** @type {HTMLButtonElement} */ (document.getElementById('catalog-import-close'));
+        if (closeButton) closeButton.disabled = true;
+      }
       try {
         await options.onImported(pending.providerId, pending.modelId);
       } catch (error) {
         importCompletionTriggered = false;
-        render();
-        showError(error, '刷新供应商列表失败，请重试完成');
+        if (index) render();
+        const closeButton = /** @type {HTMLButtonElement} */ (document.getElementById('catalog-import-close'));
+        if (closeButton) closeButton.disabled = false;
+        showError(error, '刷新供应商列表失败，请重试');
+        options.showToast('刷新供应商列表失败，请重试完成');
         return;
       }
       importedIds = null;
@@ -431,12 +452,38 @@
       if (thenClose) options.onClose();
     }
 
-    function requestClose() {
-      if (importCompletionTriggered) return;
-      if (importAdvisory || importedIds) {
-        void completeImport(true);
-      } else {
-        options.onClose();
+    // Any exit from the wizard goes through here. If an import POST is still
+    // in flight, wait for it first: the import is about to be persisted, so
+    // the handback refresh must include it, and a late response must never
+    // re-render into the pane the parent already owns again. A failed import
+    // keeps the page open (failure visible, exit retryable).
+    async function requestClose() {
+      if (closing || importCompletionTriggered) return;
+      closing = true;
+      try {
+        if (activeImport) {
+          const closeButton = /** @type {HTMLButtonElement} */ (document.getElementById('catalog-import-close'));
+          if (closeButton) closeButton.disabled = true;
+          try {
+            await activeImport;
+          } catch (error) {
+            // confirmImport handles its own errors; this is a safety net.
+          }
+          activeImport = null;
+          if (importFailed) {
+            // confirmImport already surfaced the failure (error panel or
+            // toast); keep the page so the user can retry the import or exit.
+            if (closeButton) closeButton.disabled = false;
+            return;
+          }
+        }
+        if (importAdvisory || importedIds) {
+          await completeImport(true);
+        } else {
+          options.onClose();
+        }
+      } finally {
+        closing = false;
       }
     }
 
@@ -501,7 +548,8 @@
         if (importAdvisory) {
           void completeImport(false);
         } else {
-          confirmImport();
+          // Track the in-flight import so an exit can wait for it.
+          activeImport = confirmImport();
         }
       });
       const baseUrlInput = document.getElementById('catalog-import-base-url');

@@ -1303,3 +1303,165 @@ test('R4a: browsing another model after an import stays owned by the wizard desp
   assert.ok(document.getElementById('provider-base-url'), 'the provider editor owns the detail pane after leaving');
   assert.equal(document.getElementById('provider-base-url').value, 'https://api.kimi.com/coding', 'editor shows the imported URL');
 });
+
+// ---------------------------------------------------------------------------
+// R5: abnormal exits. Fifth-round CHANGES_REQUESTED findings: (1) after a
+// failed catalog reload the close button crashed on the null catalog index
+// (unhandled TypeError, callbacks never fired, completion flag locked);
+// (2) leaving while an import POST was in flight let the late response
+// re-render the advisory into the pane the parent already owned.
+// ---------------------------------------------------------------------------
+
+function openKimiModel(session) {
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  return flush();
+}
+
+test('R5a: a failed catalog reload still allows exiting with the pending handback', async () => {
+  let indexAvailable = true;
+  const session = setup({
+    fetchImpl: (url, requestOptions) => {
+      if (url === '/api/model-catalog') {
+        if (indexAvailable) return Promise.resolve(structuredClone(STALE_KIMI_INDEX));
+        return Promise.reject(new Error('catalog fetch failed'));
+      }
+      if (url === '/api/model-catalog/refresh') {
+        indexAvailable = false;
+        return Promise.resolve({ status: 'updated', providerCount: 1 });
+      }
+      return persistedKimiFetch()(url, requestOptions);
+    },
+  });
+  await session.wizard.open();
+  await openKimiModel(session);
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+  assert.ok(session.document.getElementById('catalog-import-post-import'), 'advisory shown');
+
+  // Reload the catalog; the index GET now fails and leaves an error page.
+  session.document.getElementById('catalog-import-refresh').click();
+  await flush();
+  await flush();
+  assert.ok(session.document.getElementById('catalog-import-error'), 'catalog error page rendered');
+  assert.equal(session.document.getElementById('catalog-import-error').classList.contains('hidden'), false);
+  assert.ok(session.document.getElementById('catalog-import-close'), 'the error page offers an exit');
+
+  // Exiting from the error page must flush the pending handback instead of
+  // crashing on the missing catalog index.
+  session.document.getElementById('catalog-import-close').click();
+  await flush();
+  await flush();
+  assert.deepEqual(session.imported, [{ providerId: 'kimi-for-coding', modelId: 'kimi-for-coding' }], 'the pending handback fires from the error page');
+  assert.ok(session.isClosed(), 'the pane is handed back');
+});
+
+test('R5b: the unavailable-snapshot page can also exit with a pending handback', async () => {
+  let indexAvailable = true;
+  const unavailableError = new Error('Model catalog operation failed');
+  unavailableError.issues = [{ code: 'catalog_source_unavailable', path: '/assets/model-catalog.json' }];
+  const session = setup({
+    fetchImpl: (url, requestOptions) => {
+      if (url === '/api/model-catalog') {
+        if (indexAvailable) return Promise.resolve(structuredClone(STALE_KIMI_INDEX));
+        return Promise.reject(unavailableError);
+      }
+      if (url === '/api/model-catalog/refresh') {
+        indexAvailable = false;
+        return Promise.resolve({ status: 'updated', providerCount: 1 });
+      }
+      return persistedKimiFetch()(url, requestOptions);
+    },
+  });
+  await session.wizard.open();
+  await openKimiModel(session);
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+
+  session.document.getElementById('catalog-import-refresh').click();
+  await flush();
+  await flush();
+  assert.ok(session.document.getElementById('catalog-import-unavailable'), 'unavailable page rendered');
+
+  session.document.getElementById('catalog-import-close').click();
+  await flush();
+  await flush();
+  assert.deepEqual(session.imported, [{ providerId: 'kimi-for-coding', modelId: 'kimi-for-coding' }], 'the pending handback fires from the unavailable page');
+  assert.ok(session.isClosed());
+});
+
+test('R5c: exiting during an in-flight import waits for it and hands back once', async () => {
+  let releaseImport = null;
+  const session = setup({
+    fetchImpl: (url, requestOptions) => {
+      if (url === '/api/model-catalog/import') {
+        return new Promise((resolve) => {
+          releaseImport = () => resolve(structuredClone(PERSISTED_KIMI_IMPORT_RESPONSE('https://api.kimi.com/coding')));
+        });
+      }
+      return persistedKimiFetch()(url, requestOptions);
+    },
+  });
+  await session.wizard.open();
+  await openKimiModel(session);
+  session.document.getElementById('catalog-import-confirm').click(); // POST in flight
+  await flush();
+
+  // Leave while the POST is pending: the wizard must not hand the pane back
+  // yet, or the late response would re-render into the parent's page.
+  session.document.getElementById('catalog-import-close').click();
+  await flush();
+  assert.equal(session.isClosed(), false, 'the wizard waits for the in-flight import before handing the pane back');
+  assert.equal(session.imported.length, 0);
+  const closeButton = /** @type {HTMLButtonElement} */ (session.document.getElementById('catalog-import-close'));
+  assert.equal(closeButton.disabled, true, 'the exit is visibly pending');
+
+  // The import lands: exactly one handback, and only after the import.
+  releaseImport();
+  await flush();
+  await flush();
+  await flush();
+  assert.deepEqual(session.imported, [{ providerId: 'kimi-for-coding', modelId: 'kimi-for-coding' }], 'the handback includes the just-persisted import');
+  assert.ok(session.isClosed(), 'the pane is handed back after the import settles');
+});
+
+test('R5d: a late import failure during exit keeps the page and allows retrying the exit', async () => {
+  let rejectImport = null;
+  const session = setup({
+    fetchImpl: (url, requestOptions) => {
+      if (url === '/api/model-catalog/import') {
+        return new Promise((_resolve, reject) => {
+          rejectImport = () => reject(new Error('import failed'));
+        });
+      }
+      return persistedKimiFetch()(url, requestOptions);
+    },
+  });
+  await session.wizard.open();
+  await openKimiModel(session);
+  session.document.getElementById('catalog-import-confirm').click(); // POST in flight
+  await flush();
+
+  session.document.getElementById('catalog-import-close').click();
+  await flush();
+  assert.equal(session.isClosed(), false, 'the wizard waits for the in-flight import');
+
+  // The import fails: the failure must stay visible and the exit retryable.
+  rejectImport();
+  await flush();
+  await flush();
+  assert.equal(session.isClosed(), false, 'a failed import does not close the wizard silently');
+  assert.equal(session.imported.length, 0, 'no handback without a persisted import');
+  const error = session.document.getElementById('catalog-import-error');
+  assert.ok(error, 'error element exists');
+  assert.equal(error.classList.contains('hidden'), false, 'the import failure is surfaced');
+  const closeButton = /** @type {HTMLButtonElement} */ (session.document.getElementById('catalog-import-close'));
+  assert.equal(closeButton.disabled, false, 'the exit is retryable after the failure');
+
+  // Retrying the exit now closes without a refresh (nothing was imported).
+  closeButton.click();
+  await flush();
+  await flush();
+  assert.ok(session.isClosed(), 'the retry exits the wizard');
+  assert.equal(session.imported.length, 0);
+});
