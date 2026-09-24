@@ -2131,6 +2131,7 @@ export function createAgentExecutor(options: any = {}) {
 
     const startedAt = nowIso();
     let rawReply = '';
+    let emptyFinalReplyReuseEvidence: any = null;
     let lastLiveSessionToolStepId = '';
     let lastLiveSessionToolSignature = '';
     const liveSessionAnonymousToolTracker = {
@@ -2445,6 +2446,31 @@ export function createAgentExecutor(options: any = {}) {
         toolInvocation.publicToolUsed && String(toolInvocation.lastPublicContent || '').trim()
           ? String(toolInvocation.lastPublicContent || '').trim()
           : finalRawReply;
+      // The chat-level reply can be empty even though the provider run itself
+      // ended cleanly: the model produced a terminal assistant message
+      // (completionStopReason set by the runtime, never by caller-driven
+      // complete()), every tool execution had closed, and the runtime verified
+      // after child exit that the session file tail ends at exactly that
+      // terminal message (completionPersisted). That combination is proof the
+      // pi session persisted a complete, cursor-consistent turn, so the
+      // failure path below may keep the session reusable instead of orphaning
+      // it. Missing or contradictory evidence (caller-driven complete,
+      // timeout, crash, unverified or mismatched session tail, open tool
+      // calls) keeps the legacy poison/fresh protection.
+      if (!decisionSource && !suppressRawPublicReply) {
+        const completionStopReason = String(result && result.completionStopReason || '').trim();
+        const openToolCallCount =
+          result && Number.isInteger(result.openToolCallCount) ? Number(result.openToolCallCount) : null;
+        if (completionStopReason && openToolCallCount === 0 && result && result.completionPersisted === true) {
+          emptyFinalReplyReuseEvidence = {
+            completionStopReason,
+            completionMessageKey: String(result && result.completionMessageKey || '').trim() || null,
+            runId: result.runId || handle.runId || null,
+            sessionPath: result.sessionPath || handle.sessionPath || '',
+            usageCalls: result.usageCalls,
+          };
+        }
+      }
       const decision = parseAgentTurnDecision(decisionSource, conversation.agents, {
         currentAgentId: agent.id,
         allowEmptyReply: suppressRawPublicReply,
@@ -2847,7 +2873,62 @@ export function createAgentExecutor(options: any = {}) {
       broadcastConversationSummary(conversationId);
       emitTurnProgress(turnState);
 
-      if (sessionReuseClaim && typeof store.markAgentSessionReusePoisoned === 'function') {
+      if (sessionReuseActive && emptyFinalReplyReuseEvidence && typeof store.markAgentSessionReuseReusable === 'function') {
+        // Delivery failed with an empty reply, but the runtime proved the
+        // provider session ended cleanly (terminal assistant message, no open
+        // tool calls, session file tail verified after child exit), so its
+        // contents are complete and consistent with the frozen cursor. Register it for reuse instead of orphaning the whole
+        // turn's context. The chat message stays failed: no success
+        // callbacks, no fabricated reply, no automatic retry. Registration
+        // uses the same guarded upsert as the success path, so it can never
+        // overwrite another run's busy claim.
+        try {
+          const cursorSnapshot = appendSessionReuseCursorMessage(
+            sessionReuseCursorBaseSnapshot,
+            assistantMessageFailed
+          );
+          const usageInputTokens = extractLastCallInputTokens(emptyFinalReplyReuseEvidence.usageCalls);
+          const usageContextWindow = resolveSessionReuseContextWindow(modelCatalog, provider, model);
+          const usageRatio =
+            usageInputTokens !== null && usageContextWindow ? Math.min(1, usageInputTokens / usageContextWindow) : null;
+          const completedSessionPath = emptyFinalReplyReuseEvidence.sessionPath || handle.sessionPath || '';
+          const deliveredGoalId = resumeSession
+            ? sessionReuseClaim && sessionReuseClaim.goalId
+            : goal && goal.goalId;
+          const deliveredGoalRevision = resumeSession
+            ? sessionReuseClaim && sessionReuseClaim.goalRevision
+            : goal && goal.revision;
+          if (cursorSnapshot && completedSessionPath) {
+            store.markAgentSessionReuseReusable({
+              conversationId,
+              agentId: agent.id,
+              profileId: reuseProfileId,
+              sessionName,
+              sessionPath: completedSessionPath,
+              staticSegmentHash,
+              ...cursorSnapshot,
+              lastRunId: emptyFinalReplyReuseEvidence.runId || handle.runId || null,
+              lastAssistantMessageId: assistantMessageFailed.id,
+              usageInputTokens,
+              usageContextWindow,
+              usageRatio,
+              privateCursorMessageId: privateCursorForRun.privateCursorMessageId,
+              privateCursorMessageCreatedAt: privateCursorForRun.privateCursorMessageCreatedAt,
+              privateCursorInitialized: true,
+              goalId: deliveredGoalId || null,
+              goalRevision: deliveredGoalRevision || null,
+              lastReplyAt: stage.endedAt || nowIso(),
+              now: nowIso(),
+            });
+          }
+        } catch (reuseError: any) {
+          console.error(
+            '[session-reuse] failed to mark session reusable after empty reply:',
+            reuseError && reuseError.message ? reuseError.message : reuseError
+          );
+        }
+        sessionReuseClaim = null;
+      } else if (sessionReuseClaim && typeof store.markAgentSessionReusePoisoned === 'function') {
         // The resumed session now contains a partial/interrupted run that can
         // never be reconciled with the room history, so it must never be reused.
         try {
