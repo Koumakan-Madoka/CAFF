@@ -14,6 +14,7 @@ const DEFAULT_PROGRESS_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_RUN_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const DEFAULT_TERMINATE_GRACE_MS = 5 * 1000;
 const MAX_STDERR_TAIL_LENGTH = 4000;
+const MAX_COMPLETION_VERIFY_BYTES = 1024 * 1024;
 const MAX_DEBUG_LINES = 10;
 const SDK_HOST_PATH = process.env.PI_SDK_HOST_OVERRIDE || path.resolve(__dirname, 'pi-sdk-host.mjs');
 const DEFAULT_AGENT_DIR = resolveDefaultAgentDir();
@@ -225,6 +226,81 @@ function isTerminalAssistantMessage(message: any) {
   }
 
   return !assistantMessageHasPendingToolUse(message);
+}
+
+// The SDK host emits message_end to subscribers BEFORE appendMessage persists
+// it, and the expected_completion close branch normalizes the real exit code
+// away, so neither event ordering nor process status can prove the session
+// file actually holds the completed turn. After the child exits (no writer is
+// left), verify the artifact directly: the LAST assistant message entry in
+// the session file tail must be exactly the terminal message that triggered
+// expected_completion — same assistant key and same stop reason. A missing or
+// empty file, a stale tail from a previous turn, a truncated final line
+// (killed mid-append), or any assistant entry appended after the terminal
+// message (e.g. abort residue) all fail closed. Anything unparsable at the
+// tail also fails closed instead of being skipped. Callers must treat false
+// as "persistence unproven", never as proof of loss.
+function verifyCompletionPersisted(sessionPath: any, expectedKey: any, expectedStopReason: any) {
+  if (!sessionPath || !expectedKey || !expectedStopReason) {
+    return false;
+  }
+
+  let tail = '';
+  let truncatedPrefix = false;
+
+  try {
+    const stats = fs.statSync(sessionPath);
+
+    if (!stats.isFile() || stats.size <= 0) {
+      return false;
+    }
+
+    const start = Math.max(0, stats.size - MAX_COMPLETION_VERIFY_BYTES);
+    truncatedPrefix = start > 0;
+    const fd = fs.openSync(sessionPath, 'r');
+
+    try {
+      const buffer = Buffer.alloc(stats.size - start);
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+      tail = buffer.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+
+  const lines = tail.split('\n');
+
+  if (truncatedPrefix) {
+    // The first retained line may be a fragment of an older entry.
+    lines.shift();
+  }
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const trimmed = lines[index].trim();
+
+    if (!trimmed) {
+      continue;
+    }
+
+    let entry = null;
+
+    try {
+      entry = JSON.parse(trimmed);
+    } catch {
+      return false;
+    }
+
+    if (!entry || entry.type !== 'message' || !entry.message || entry.message.role !== 'assistant') {
+      continue;
+    }
+
+    return getAssistantMessageKey(entry.message) === expectedKey
+      && normalizeStopReason(entry.message.stopReason) === normalizeStopReason(expectedStopReason);
+  }
+
+  return false;
 }
 
 function appendTailText(existing: any, chunk: any, limit: any) {
@@ -1274,6 +1350,11 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         heartbeatCount: state.heartbeatCount,
         usage: state.assistantUsage,
         usageCalls: assistantUsageCallsFromState(state),
+        // Snapshot of tool executions still open when the child exited. A
+        // model-driven terminal message implies 0 (tools finish before the
+        // next assistant message); callers must treat a non-zero count as
+        // contradictory evidence rather than infer closure from exit code.
+        openToolCallCount: state.activeToolCalls.size,
       };
 
       if (terminationReason && terminationReason.type === 'expected_completion') {
@@ -1287,6 +1368,13 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
           signal: null,
           completionStopReason: terminationReason.assistantStopReason || null,
           completionMessageKey: terminationReason.assistantMessageKey || null,
+          // Parent-verified persistence evidence: the child has exited, so the
+          // session file tail must end at exactly the terminal message above.
+          completionPersisted: verifyCompletionPersisted(
+            sessionPath,
+            terminationReason.assistantMessageKey || null,
+            terminationReason.assistantStopReason || null
+          ),
         });
         return;
       }

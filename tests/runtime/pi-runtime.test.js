@@ -71,6 +71,65 @@ function createFakeSdkHostCompleteThenHang(baseDir) {
   ]);
 }
 
+function createFakeSdkHostTerminalCrashNoPersist(baseDir) {
+  // Review counterexample: emit a terminal assistant message, never write the
+  // session file, then die with a non-zero exit code. expected_completion
+  // normalizes the exit code away, so persistence must be verified from the
+  // artifact itself, never inferred from process status.
+  return createFakeSdkHost(baseDir, [
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    const message = { role: 'assistant', responseId: 'completion-nopersist', content: [], stopReason: 'stop', timestamp: 7 };",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(7);",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostTerminalNoWrite(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    const message = { role: 'assistant', responseId: 'completion-not-persisted', content: [], stopReason: 'stop', timestamp: 11 };",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostTerminalPersisted(baseDir, options = {}) {
+  const abortLines = options.abortResidue
+    ? [
+      "  if (command?.type === 'abort') {",
+      "    const residue = { role: 'assistant', responseId: 'abort-residue', content: [], stopReason: 'aborted', timestamp: 12 };",
+      "    appendFileSync(savedSessionPath, JSON.stringify({ type: 'message', message: residue }) + '\\n');",
+      "    process.exit(0);",
+      "  }",
+    ]
+    : ["  if (command?.type === 'abort') process.exit(0);"];
+
+  return createFakeSdkHost(baseDir, [
+    "import { appendFileSync } from 'node:fs';",
+    "let savedSessionPath = '';",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    savedSessionPath = command.config.sessionPath;",
+    "    const message = { role: 'assistant', responseId: 'completion-persisted', content: [], stopReason: 'stop', timestamp: 9 };",
+    // Mirror real pi ordering: message_end is emitted to subscribers first,
+    // then appendMessage persists it synchronously.
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "    appendFileSync(savedSessionPath, JSON.stringify({ type: 'message', message }) + '\\n');",
+    "    return;",
+    "  }",
+    ...abortLines,
+    "});",
+  ]);
+}
+
 function createFakeSdkHostExternalCompletionAbortTail(baseDir, options = {}) {
   const initialError = String(options.initialError || '');
   return createFakeSdkHost(baseDir, [
@@ -564,7 +623,148 @@ test('pi runtime treats a terminal assistant message as successful completion ev
   assert.equal(result.code, 0);
   assert.equal(result.signal, null);
   assert.equal(result.completionStopReason, 'stop');
+  assert.equal(result.openToolCallCount, 0);
   assert.ok(terminatingReasons.some((reason) => reason && reason.type === 'expected_completion'));
+});
+
+async function runCompletionPersistenceScenario(t, { createHost, prewriteText = null }) {
+  const tempDir = withTempDir('caff-pi-runtime-persist-');
+  const sqlitePath = path.join(tempDir, 'pi-runtime-persist.sqlite');
+  const sessionName = 'verify-completion';
+  const fakeHostPath = createHost(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  if (prewriteText !== null) {
+    const sessionPath = path.join(tempDir, 'named-sessions', `${sessionName}.jsonl`);
+    fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+    fs.writeFileSync(sessionPath, prewriteText, 'utf8');
+  }
+
+  handle = runtime.startRun('test-provider', 'test-model', 'Say hello', {
+    agentDir: tempDir,
+    sqlitePath,
+    session: sessionName,
+    heartbeatIntervalMs: 50,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      reject(new Error('Timed out waiting for runtime completion'));
+    }, 5000);
+  });
+
+  return Promise.race([handle.resultPromise, timeoutPromise]);
+}
+
+test('pi runtime reports completionPersisted=false when the child dies without persisting the terminal message', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  // Review counterexample: terminal message + normalized exit code + zero open
+  // tool calls must not suffice when the session artifact was never written.
+  const result = await runCompletionPersistenceScenario(t, {
+    createHost: createFakeSdkHostTerminalCrashNoPersist,
+  });
+
+  assert.equal(result.code, 0, 'expected_completion still normalizes the real exit code away');
+  assert.equal(result.completionStopReason, 'stop');
+  assert.equal(result.openToolCallCount, 0);
+  assert.equal(result.completionPersisted, false);
+});
+
+test('pi runtime reports completionPersisted=true when the session tail holds the exact terminal message', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const result = await runCompletionPersistenceScenario(t, {
+    createHost: (dir) => createFakeSdkHostTerminalPersisted(dir),
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(result.completionStopReason, 'stop');
+  assert.equal(result.openToolCallCount, 0);
+  assert.equal(result.completionPersisted, true);
+});
+
+test('pi runtime reports completionPersisted=false when the session tail is a stale previous-turn message', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const previousTurnEntry = JSON.stringify({
+    type: 'message',
+    message: {
+      role: 'assistant',
+      responseId: 'previous-turn',
+      content: [{ type: 'text', text: 'old reply' }],
+      stopReason: 'stop',
+      timestamp: 1,
+    },
+  });
+  const result = await runCompletionPersistenceScenario(t, {
+    createHost: createFakeSdkHostTerminalNoWrite,
+    prewriteText: `${previousTurnEntry}\n`,
+  });
+
+  assert.equal(result.completionStopReason, 'stop');
+  assert.equal(result.completionPersisted, false, 'a tail from an earlier turn must not count as persisting this one');
+});
+
+test('pi runtime reports completionPersisted=false when the session tail ends mid-line', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const previousTurnEntry = JSON.stringify({
+    type: 'message',
+    message: {
+      role: 'assistant',
+      responseId: 'previous-turn',
+      content: [{ type: 'text', text: 'old reply' }],
+      stopReason: 'stop',
+      timestamp: 1,
+    },
+  });
+  // Killed mid-append: the last line is a truncated fragment of the terminal
+  // entry, so the artifact cannot prove the completed turn was persisted.
+  const truncatedFragment = '{"type":"message","message":{"role":"assistant","respons';
+  const result = await runCompletionPersistenceScenario(t, {
+    createHost: createFakeSdkHostTerminalNoWrite,
+    prewriteText: `${previousTurnEntry}\n${truncatedFragment}`,
+  });
+
+  assert.equal(result.completionStopReason, 'stop');
+  assert.equal(result.completionPersisted, false);
+});
+
+test('pi runtime reports completionPersisted=false when an assistant entry follows the terminal message', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  // Abort residue appended after the terminal message means the session
+  // continued past the completed turn; the tail no longer matches it.
+  const result = await runCompletionPersistenceScenario(t, {
+    createHost: (dir) => createFakeSdkHostTerminalPersisted(dir, { abortResidue: true }),
+  });
+
+  assert.equal(result.completionStopReason, 'stop');
+  assert.equal(result.completionPersisted, false);
 });
 
 test('pi runtime rejects a terminal assistant model error even when the SDK host exits zero', async (t) => {
@@ -796,6 +996,11 @@ test('pi runtime allows callers to mark a run complete early', async (t) => {
   assert.equal(result.code, 0);
   assert.equal(result.signal, null);
   assert.equal(result.completionStopReason, null);
+  assert.equal(
+    result.completionPersisted,
+    false,
+    'caller-driven complete() never produces a terminal message, so persistence must stay explicitly unverified'
+  );
 });
 
 test('pi runtime forwards harness system prompt reports as run events', async (t) => {
