@@ -4254,8 +4254,7 @@ test('turn orchestrator directly pauses an active Goal after three fast model in
     agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
     sessionGoalAutoContinueMaxTurns: 4,
     sessionGoalFailureThreshold: 3,
-    sessionGoalFastFailureMs: 60_000,
-    sessionGoalFailureWindowMs: 5 * 60_000,
+    sessionGoalTotalFailureThreshold: 5,
     broadcastEvent(eventName, payload) {
       broadcastEvents.push({ eventName, payload });
     },
@@ -4275,6 +4274,7 @@ test('turn orchestrator directly pauses an active Goal after three fast model in
             kind: 'provider',
             code: 'assistant_error',
             eligible: true,
+            mode: 'provider:quota',
             summary: failureSummary,
           },
         },
@@ -4294,7 +4294,8 @@ test('turn orchestrator directly pauses an active Goal after three fast model in
   assert.equal(executeCount, 3);
   assert.equal(conversation.metadata.sessionGoal.status, 'paused');
   assert.equal(conversation.metadata.sessionGoalRunner.status, 'error_paused');
-  assert.equal(conversation.metadata.sessionGoalRunner.consecutiveModelFailureCount, 3);
+  assert.equal(conversation.metadata.sessionGoalRunner.consecutiveSameModeFailureCount, 3);
+  assert.equal(conversation.metadata.sessionGoalRunner.consecutiveFailureCount, 3);
   assert.equal(conversation.metadata.sessionGoalProposal, undefined);
   const goalUpdate = broadcastEvents.find((event) => (
     event.eventName === 'conversation_goal_updated'

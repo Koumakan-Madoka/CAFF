@@ -450,6 +450,7 @@ test('agent executor persists structured provider failure metadata on failed rep
     kind: 'provider',
     code: 'assistant_error',
     eligible: true,
+    mode: 'provider:quota',
     terminationType: '',
     summary: 'insufficient balance',
   });
@@ -497,6 +498,7 @@ test('agent executor persists structured provider failure metadata on failed rep
     kind: 'provider',
     code: 'assistant_error',
     eligible: true,
+    mode: 'provider:other',
     terminationType: '',
     summary: '402: insufficient quota',
   });
@@ -596,6 +598,7 @@ test('agent executor persists the structured message and task evidence for a use
     kind: 'cancelled',
     code: 'cancelled',
     eligible: false,
+    mode: '',
     terminationType: 'cancelled',
     summary: 'Stopped by user',
   });

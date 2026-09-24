@@ -47,6 +47,14 @@
       0,
       Number.parseInt(String((runner && runner.consecutiveModelFailureCount) || '0'), 10) || 0
     );
+    const consecutiveFailureCount = Math.max(
+      0,
+      Number.parseInt(String((runner && runner.consecutiveFailureCount) || '0'), 10) || 0
+    );
+    const consecutiveSameModeFailureCount = Math.max(
+      0,
+      Number.parseInt(String((runner && runner.consecutiveSameModeFailureCount) || '0'), 10) || 0
+    );
 
     return runner
       ? {
@@ -54,6 +62,8 @@
           iteration,
           maxIterations,
           consecutiveModelFailureCount,
+          consecutiveFailureCount,
+          consecutiveSameModeFailureCount,
         }
       : null;
   }

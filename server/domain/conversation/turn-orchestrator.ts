@@ -109,19 +109,17 @@ export function createTurnOrchestrator(options: any = {}) {
       10
     ) || 3
   );
-  const sessionGoalFastFailureMs = Math.max(
-    1,
+  // Same-mode threshold is sessionGoalFailureThreshold; the total consecutive
+  // failure threshold defaults to 5 and is clamped to be at least the
+  // same-mode threshold. The old fast-failure/window settings
+  // (CAFF_SESSION_GOAL_FAST_FAILURE_MS / CAFF_SESSION_GOAL_FAILURE_WINDOW_MS)
+  // are retired: duration no longer participates in the pause decision.
+  const sessionGoalTotalFailureThreshold = Math.max(
+    sessionGoalFailureThreshold,
     Number.parseInt(
-      String(options.sessionGoalFastFailureMs || process.env.CAFF_SESSION_GOAL_FAST_FAILURE_MS || '60000'),
+      String(options.sessionGoalTotalFailureThreshold || process.env.CAFF_SESSION_GOAL_TOTAL_FAILURE_THRESHOLD || '5'),
       10
-    ) || 60_000
-  );
-  const sessionGoalFailureWindowMs = Math.max(
-    sessionGoalFastFailureMs,
-    Number.parseInt(
-      String(options.sessionGoalFailureWindowMs || process.env.CAFF_SESSION_GOAL_FAILURE_WINDOW_MS || '300000'),
-      10
-    ) || 5 * 60_000
+    ) || 5
   );
 
   const activeConversationIds = new Set();
@@ -1333,8 +1331,7 @@ export function createTurnOrchestrator(options: any = {}) {
               replies: turnResult && Array.isArray(turnResult.replies) ? turnResult.replies : [],
               failures: turnResult && Array.isArray(turnResult.failures) ? turnResult.failures : [],
               failureThreshold: sessionGoalFailureThreshold,
-              fastFailureMs: sessionGoalFastFailureMs,
-              failureWindowMs: sessionGoalFailureWindowMs,
+              totalFailureThreshold: sessionGoalTotalFailureThreshold,
             });
             broadcastGoalUpdateResult(normalizedConversationId, goalOutcome);
             batchSucceeded = true;

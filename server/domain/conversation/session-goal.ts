@@ -458,9 +458,22 @@ function normalizeSessionGoalRunner(value: any) {
     0,
     Number.parseInt(String(value.consecutiveModelFailureCount || value.consecutive_model_failure_count || '0'), 10) || 0
   );
+  const consecutiveFailureCount = Math.max(
+    0,
+    Number.parseInt(String(value.consecutiveFailureCount || value.consecutive_failure_count || '0'), 10) || 0
+  );
+  const consecutiveSameModeFailureCount = Math.max(
+    0,
+    Number.parseInt(String(value.consecutiveSameModeFailureCount || value.consecutive_same_mode_failure_count || '0'), 10) || 0
+  );
+  const lastFailureMode = clipText(value.lastFailureMode || value.last_failure_mode, 40);
   const failureThreshold = Math.max(
     2,
     Number.parseInt(String(value.failureThreshold || value.failure_threshold || '3'), 10) || 3
+  );
+  const totalFailureThreshold = Math.max(
+    2,
+    Number.parseInt(String(value.totalFailureThreshold || value.total_failure_threshold || '5'), 10) || 5
   );
   const failureStreakStartedAt = normalizeText(value.failureStreakStartedAt || value.failure_streak_started_at);
   const lastFailureAt = normalizeText(value.lastFailureAt || value.last_failure_at);
@@ -479,7 +492,11 @@ function normalizeSessionGoalRunner(value: any) {
     updatedAt,
     ...(lastContinuedAt ? { lastContinuedAt } : {}),
     consecutiveModelFailureCount,
+    consecutiveFailureCount,
+    consecutiveSameModeFailureCount,
     failureThreshold,
+    totalFailureThreshold,
+    ...(lastFailureMode ? { lastFailureMode } : {}),
     ...(failureStreakStartedAt ? { failureStreakStartedAt } : {}),
     ...(lastFailureAt ? { lastFailureAt } : {}),
     ...(lastFailureKind ? { lastFailureKind } : {}),
@@ -520,7 +537,12 @@ export function isSessionGoalModelFailurePaused(conversation: any) {
     && runner
     && runner.status === 'error_paused'
     && runner.goalUpdatedAt === goalRunnerKey(goal)
-    && runner.consecutiveModelFailureCount >= runner.failureThreshold
+    && (
+      // Legacy fast-failure pauses (pre dual-counter upgrade) stay recognized.
+      runner.consecutiveModelFailureCount >= runner.failureThreshold
+      || runner.consecutiveSameModeFailureCount >= runner.failureThreshold
+      || runner.consecutiveFailureCount >= runner.totalFailureThreshold
+    )
   );
 }
 
@@ -716,6 +738,9 @@ export function claimSessionGoalAutoContinue(store: any, conversationId: any, in
 function runnerWithoutFailureStreak(runner: any, timestamp: string) {
   const {
     consecutiveModelFailureCount: _failureCount,
+    consecutiveFailureCount: _totalFailureCount,
+    consecutiveSameModeFailureCount: _sameModeFailureCount,
+    lastFailureMode: _lastFailureMode,
     failureStreakStartedAt: _streakStartedAt,
     lastFailureAt: _lastFailureAt,
     lastFailureKind: _lastFailureKind,
@@ -730,6 +755,8 @@ function runnerWithoutFailureStreak(runner: any, timestamp: string) {
     ...remainingRunner,
     status: remainingRunner.status === 'error_paused' ? 'running' : remainingRunner.status || 'running',
     consecutiveModelFailureCount: 0,
+    consecutiveFailureCount: 0,
+    consecutiveSameModeFailureCount: 0,
     updatedAt: timestamp,
   };
 }
@@ -761,7 +788,13 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
   const currentRunner = getSessionGoalRunner(conversation);
   const key = goalRunnerKey(goal);
   const sameEpochRunner = currentRunner && currentRunner.goalUpdatedAt === key ? currentRunner : null;
-  const currentFailureCount = sameEpochRunner ? sameEpochRunner.consecutiveModelFailureCount : 0;
+  const currentFailureCount = sameEpochRunner
+    ? Math.max(
+      sameEpochRunner.consecutiveModelFailureCount,
+      sameEpochRunner.consecutiveFailureCount,
+      sameEpochRunner.consecutiveSameModeFailureCount
+    )
+    : 0;
   const occurredAt = normalizeText(turn.endedAt) || nowIso();
 
   function resetStreak(reason: string) {
@@ -788,12 +821,11 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
     return resetStreak('completed_reply');
   }
 
-  const startedAtMs = Date.parse(normalizeText(turn.startedAt));
-  const endedAtMs = Date.parse(occurredAt);
-  const fastFailureMs = Math.max(1, Number(input.fastFailureMs) || 60_000);
-  const failureWindowMs = Math.max(fastFailureMs, Number(input.failureWindowMs) || 5 * 60_000);
   const failureThreshold = Math.max(2, Number.parseInt(String(input.failureThreshold || '3'), 10) || 3);
-  const durationMs = endedAtMs - startedAtMs;
+  const totalFailureThreshold = Math.max(
+    failureThreshold,
+    Number.parseInt(String(input.totalFailureThreshold || '5'), 10) || 5
+  );
   const invocationFailures = failures
     .map((failure: any) => failure && isPlainObject(failure.invocationFailure) ? failure.invocationFailure : null)
     .filter(Boolean);
@@ -803,20 +835,28 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
       failure.eligible === true
       && SESSION_GOAL_MODEL_FAILURE_KINDS.has(normalizeText(failure.kind).toLowerCase())
     ));
-  const fastFailure = Number.isFinite(durationMs) && durationMs >= 0 && durationMs <= fastFailureMs;
 
-  if (!pureModelInvocationFailure || !fastFailure) {
-    return resetStreak(pureModelInvocationFailure ? 'slow_failure' : 'non_model_failure');
+  if (!pureModelInvocationFailure) {
+    return resetStreak('non_model_failure');
   }
 
-  const previousStartedAtMs = sameEpochRunner && sameEpochRunner.failureStreakStartedAt
-    ? Date.parse(sameEpochRunner.failureStreakStartedAt)
-    : Number.NaN;
-  const withinWindow = currentFailureCount > 0
-    && Number.isFinite(previousStartedAtMs)
-    && endedAtMs - previousStartedAtMs <= failureWindowMs;
-  const nextFailureCount = withinWindow ? currentFailureCount + 1 : 1;
-  const streakStartedAt = withinWindow && sameEpochRunner
+  // No duration or time-window gates: a deterministically slow failure (e.g.
+  // a blackholed request timing out after ~68s) is exactly the loop this
+  // guard exists to stop. Streak-eligible modes are bounded labels assigned at
+  // classification time; ':other' and mixed-mode turns only feed the total.
+  const failureModes = invocationFailures.map((failure: any) => normalizeText(failure.mode).toLowerCase());
+  const turnFailureMode = failureModes.length > 0
+    && failureModes.every((mode: string) => mode && mode === failureModes[0] && !mode.endsWith(':other'))
+    ? failureModes[0]
+    : '';
+  const currentTotalFailureCount = sameEpochRunner ? sameEpochRunner.consecutiveFailureCount : 0;
+  const currentSameModeCount = sameEpochRunner ? sameEpochRunner.consecutiveSameModeFailureCount : 0;
+  const previousMode = sameEpochRunner ? normalizeText(sameEpochRunner.lastFailureMode).toLowerCase() : '';
+  const nextFailureCount = currentTotalFailureCount + 1;
+  const nextSameModeCount = turnFailureMode
+    ? (turnFailureMode === previousMode ? currentSameModeCount + 1 : 1)
+    : 0;
+  const streakStartedAt = currentTotalFailureCount > 0 && sameEpochRunner && sameEpochRunner.failureStreakStartedAt
     ? sameEpochRunner.failureStreakStartedAt
     : occurredAt;
   const lastFailure = invocationFailures[0];
@@ -831,13 +871,20 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
     maxIterations: 0,
   };
 
-  if (nextFailureCount < failureThreshold) {
+  const sameModePaused = nextSameModeCount >= failureThreshold;
+  const totalPaused = nextFailureCount >= totalFailureThreshold;
+
+  if (!sameModePaused && !totalPaused) {
     const nextRunner = {
       ...baseRunner,
       status: 'running',
       goalUpdatedAt: key,
-      consecutiveModelFailureCount: nextFailureCount,
+      consecutiveModelFailureCount: 0,
+      consecutiveFailureCount: nextFailureCount,
+      consecutiveSameModeFailureCount: nextSameModeCount,
+      lastFailureMode: turnFailureMode,
       failureThreshold,
+      totalFailureThreshold,
       failureStreakStartedAt: streakStartedAt,
       lastFailureAt: occurredAt,
       lastFailureKind,
@@ -857,7 +904,9 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
   }
 
   const pauseReason = clipText(
-    `连续 ${nextFailureCount} 次快速模型调用失败，Goal 已自动暂停。最后原因：${lastFailureSummary}`,
+    sameModePaused
+      ? `连续 ${nextSameModeCount} 轮同模式模型调用失败（${turnFailureMode}），Goal 已自动暂停。最后原因：${lastFailureSummary}`
+      : `连续 ${nextFailureCount} 轮模型调用失败，Goal 已自动暂停。最后原因：${lastFailureSummary}`,
     MAX_SESSION_GOAL_FAILURE_REASON_LENGTH
   );
   const pausedGoal = {
@@ -870,8 +919,12 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
     ...baseRunner,
     status: 'error_paused',
     goalUpdatedAt: occurredAt,
-    consecutiveModelFailureCount: nextFailureCount,
+    consecutiveModelFailureCount: 0,
+    consecutiveFailureCount: nextFailureCount,
+    consecutiveSameModeFailureCount: nextSameModeCount,
+    lastFailureMode: turnFailureMode,
     failureThreshold,
+    totalFailureThreshold,
     failureStreakStartedAt: streakStartedAt,
     lastFailureAt: occurredAt,
     lastFailureKind,

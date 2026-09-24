@@ -108,10 +108,14 @@
       }
       if (runner && runner.status === 'error_paused') {
         appendDetail(dom.sessionGoalDetails, '续跑状态', '模型调用失败自动暂停');
+        // Legacy runners paused before the dual-counter upgrade only carry
+        // consecutiveModelFailureCount; fall back to it for display.
+        const totalCount = Number(runner.consecutiveFailureCount || 0) || Number(runner.consecutiveModelFailureCount || 0) || 0;
+        const sameModeCount = Number(runner.consecutiveSameModeFailureCount || 0) || 0;
         appendDetail(
           dom.sessionGoalDetails,
-          '失败 streak',
-          `${runner.consecutiveModelFailureCount || 0} 次连续快速失败`
+          '失败连击',
+          `连续失败 ${totalCount} 轮${sameModeCount > 0 ? `，同模式 ${sameModeCount} 轮` : ''}`
         );
         appendDetail(dom.sessionGoalDetails, '暂停原因', String(runner.pauseReason || '').trim());
         appendDetail(dom.sessionGoalDetails, '最后错误', String(runner.lastFailureSummary || '').trim());

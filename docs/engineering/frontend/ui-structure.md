@@ -50,7 +50,7 @@
 
 ### Contract
 
-- `public/shared/session-goal.js` preserves the runner payload and normalizes `iteration`, `maxIterations`, and `consecutiveModelFailureCount` as non-negative numbers.
+- `public/shared/session-goal.js` preserves the runner payload and normalizes `iteration`, `maxIterations`, `consecutiveModelFailureCount` (legacy), `consecutiveFailureCount`, and `consecutiveSameModeFailureCount` as non-negative numbers.
 - The Goal drawer badge says `模型失败自动暂停` instead of presenting this state as an unexplained manual pause.
 - Details show the automatic continuation position, `模型调用失败自动暂停`, consecutive count, bounded pause reason, and redacted last failure summary.
 - Existing Resume remains enabled for ordinary conversations and uses the normal Goal API; server-side Resume clears runner/streak metadata before scheduling another continuation.

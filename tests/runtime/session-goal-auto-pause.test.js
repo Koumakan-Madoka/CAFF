@@ -64,6 +64,21 @@ function createConversationStore(overrides = {}) {
   };
 }
 
+function providerFailure(summary, mode, code = 'assistant_error') {
+  return {
+    agentId: 'agent-a',
+    senderName: 'Alpha',
+    errorMessage: summary,
+    invocationFailure: {
+      kind: 'provider',
+      code,
+      eligible: true,
+      mode,
+      summary,
+    },
+  };
+}
+
 function goalRunnerOutcome({
   startedAt,
   endedAt,
@@ -71,19 +86,9 @@ function goalRunnerOutcome({
   failedCount = 1,
   stopRequested = false,
   terminationReason = 'parallel_responses_completed',
-  failures = [
-    {
-      agentId: 'agent-a',
-      senderName: 'Alpha',
-      errorMessage: 'Provider rejected the request',
-      invocationFailure: {
-        kind: 'provider',
-        code: 'assistant_error',
-        eligible: true,
-        summary: 'Provider rejected the request',
-      },
-    },
-  ],
+  failures = [providerFailure('fetch failed', 'provider:network')],
+  failureThreshold = 3,
+  totalFailureThreshold = 5,
 } = {}) {
   return {
     sourceMessages: [
@@ -104,13 +109,12 @@ function goalRunnerOutcome({
       terminationReason,
     },
     failures,
-    fastFailureMs: 60_000,
-    failureWindowMs: 5 * 60_000,
-    failureThreshold: 3,
+    failureThreshold,
+    totalFailureThreshold,
   };
 }
 
-test('agent invocation failures preserve structured provider, timeout, process, cancellation, and unknown kinds', () => {
+test('agent invocation failures preserve structured kinds and assign bounded modes', () => {
   assert.deepEqual(
     classifyAgentInvocationFailure({
       message: 'Request failed',
@@ -120,6 +124,7 @@ test('agent invocation failures preserve structured provider, timeout, process, 
       kind: 'provider',
       code: 'assistant_error',
       eligible: true,
+      mode: 'provider:quota',
       terminationType: '',
       summary: 'insufficient balance',
     }
@@ -133,13 +138,24 @@ test('agent invocation failures preserve structured provider, timeout, process, 
       kind: 'timeout',
       code: 'heartbeat_timeout',
       eligible: true,
+      mode: 'timeout:heartbeat',
       terminationType: 'heartbeat_timeout',
       summary: 'pi run exceeded 60000ms',
     }
   );
-  assert.equal(classifyAgentInvocationFailure({ message: 'pi exited with code 7', exitCode: 7 }).kind, 'process_exit');
-  assert.equal(classifyAgentInvocationFailure({ message: 'socket reset', code: 'ECONNRESET' }).kind, 'provider');
-  assert.equal(classifyAgentInvocationFailure({ message: 'cancelled' }, { stopRequested: true }).kind, 'cancelled');
+  assert.equal(classifyAgentInvocationFailure({ message: 'Request failed', assistantErrors: ['fetch failed'] }).mode, 'provider:network');
+  assert.equal(classifyAgentInvocationFailure({ message: 'Request failed', assistantErrors: ['429 too many requests'] }).mode, 'provider:rate_limited');
+  assert.equal(classifyAgentInvocationFailure({ message: 'Request failed', assistantErrors: ['401 unauthorized'] }).mode, 'provider:auth');
+  assert.equal(classifyAgentInvocationFailure({ message: 'Request failed', assistantErrors: ['403 forbidden'] }).mode, 'provider:forbidden');
+  assert.equal(classifyAgentInvocationFailure({ message: 'Request failed', assistantErrors: ['503 service unavailable'] }).mode, 'provider:server_error');
+  assert.equal(classifyAgentInvocationFailure({ message: 'Request failed', assistantErrors: ['connection error: stream_read_error'] }).mode, 'provider:stream_read');
+  assert.equal(classifyAgentInvocationFailure({ message: 'Request failed', assistantErrors: ['model refused the request'] }).mode, 'provider:other');
+  assert.equal(classifyAgentInvocationFailure({ message: 'socket reset', code: 'ECONNRESET' }).mode, 'provider:network');
+  assert.equal(classifyAgentInvocationFailure({ message: 'socket reset', code: 'UND_ERR_HEADERS_TIMEOUT' }).mode, 'provider:network');
+  assert.equal(classifyAgentInvocationFailure({ message: 'pi exited', signal: 'SIGTERM' }).mode, 'process_exit:signal');
+  assert.equal(classifyAgentInvocationFailure({ message: 'pi exited with code 7', exitCode: 7 }).mode, 'process_exit:other');
+  assert.equal(classifyAgentInvocationFailure({ message: 'cancelled' }, { stopRequested: true }).mode, '');
+  assert.equal(classifyAgentInvocationFailure(new Error('local projection failed')).mode, '');
   assert.equal(classifyAgentInvocationFailure(new Error('local projection failed')).eligible, false);
   assert.equal(
     classifyAgentInvocationFailure({
@@ -148,40 +164,38 @@ test('agent invocation failures preserve structured provider, timeout, process, 
     }).summary,
     'Authorization: Bearer [redacted]'
   );
+  // 哨兵：敏感内容不进 mode，mode 取自固定集合。
+  const sentinel = classifyAgentInvocationFailure({
+    message: 'Request failed',
+    assistantErrors: ['fetch failed api_key=sk-live-secret-value-123'],
+  });
+  assert.equal(sentinel.mode, 'provider:network');
+  assert.doesNotMatch(sentinel.mode, /sk-live/u);
 });
 
-test('three consecutive fast model failures pause the same Goal epoch and persist a redacted reason', () => {
+test('three consecutive same-mode failures pause the Goal regardless of turn duration', () => {
   const { store, conversation } = createConversationStore();
+  // 68.5 秒的"慢"失败（事故形状）：旧实现按 slow_failure 不计数。
   const first = recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
     startedAt: '2026-08-21T00:01:00.000Z',
-    endedAt: '2026-08-21T00:01:05.000Z',
+    endedAt: '2026-08-21T00:02:08.500Z',
   }));
   assert.equal(first.paused, false);
-  assert.equal(getSessionGoalRunner(conversation).consecutiveModelFailureCount, 1);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveSameModeFailureCount, 1);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveFailureCount, 1);
 
+  // 4 分钟慢失败也不影响计数。
   const second = recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
-    startedAt: '2026-08-21T00:02:00.000Z',
-    endedAt: '2026-08-21T00:02:05.000Z',
+    startedAt: '2026-08-21T00:03:00.000Z',
+    endedAt: '2026-08-21T00:07:00.000Z',
   }));
   assert.equal(second.paused, false);
-  assert.equal(getSessionGoalRunner(conversation).consecutiveModelFailureCount, 2);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveSameModeFailureCount, 2);
 
   const third = recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
-    startedAt: '2026-08-21T00:03:00.000Z',
-    endedAt: '2026-08-21T00:03:05.000Z',
-    failures: [
-      {
-        agentId: 'agent-a',
-        senderName: 'Alpha',
-        errorMessage: 'Authorization: Bearer test-bearer-value',
-        invocationFailure: {
-          kind: 'provider',
-          code: 'assistant_error',
-          eligible: true,
-          summary: 'Authorization: Bearer test-bearer-value',
-        },
-      },
-    ],
+    startedAt: '2026-08-21T00:08:00.000Z',
+    endedAt: '2026-08-21T00:09:08.500Z',
+    failures: [providerFailure('fetch failed api_key=sk-test-secret', 'provider:network')],
   }));
 
   const goal = getSessionGoal(conversation);
@@ -191,33 +205,102 @@ test('three consecutive fast model failures pause the same Goal epoch and persis
   assert.equal(goal.revision, 2);
   assert.equal(runner.status, 'error_paused');
   assert.equal(runner.goalUpdatedAt, goal.updatedAt);
-  assert.equal(runner.consecutiveModelFailureCount, 3);
+  assert.equal(runner.consecutiveSameModeFailureCount, 3);
+  assert.equal(runner.consecutiveFailureCount, 3);
+  assert.equal(runner.lastFailureMode, 'provider:network');
   assert.equal(runner.lastFailureKind, 'provider');
-  assert.match(runner.pauseReason, /连续 3 次/u);
-  assert.doesNotMatch(runner.pauseReason, /test-bearer-value/u);
+  assert.match(runner.pauseReason, /同模式/u);
+  assert.doesNotMatch(runner.pauseReason, /sk-test-secret/u);
   assert.match(runner.lastFailureSummary, /\[redacted\]/u);
-});
-
-test('a configured threshold is persisted and remains authoritative for paused-state consumers', () => {
-  const { store, conversation } = createConversationStore();
-  const first = goalRunnerOutcome({
-    startedAt: '2026-08-21T00:01:00.000Z',
-    endedAt: '2026-08-21T00:01:05.000Z',
-  });
-  first.failureThreshold = 2;
-  recordSessionGoalContinuationOutcome(store, conversation.id, first);
-  const second = goalRunnerOutcome({
-    startedAt: '2026-08-21T00:02:00.000Z',
-    endedAt: '2026-08-21T00:02:05.000Z',
-  });
-  second.failureThreshold = 2;
-  recordSessionGoalContinuationOutcome(store, conversation.id, second);
-
-  assert.equal(getSessionGoalRunner(conversation).failureThreshold, 2);
   assert.equal(isSessionGoalModelFailurePaused(conversation), true);
 });
 
-test('success and ordinary user turns reset the streak while cancellation is neutral', () => {
+test('alternating modes never trigger the same-mode guard but pause at the total threshold', () => {
+  const { store, conversation } = createConversationStore();
+  const modes = ['provider:network', 'provider:rate_limited', 'provider:auth', 'provider:server_error', 'provider:quota'];
+  const summaries = ['fetch failed', '429 too many requests', '401 unauthorized', '503 service unavailable', 'insufficient balance'];
+  let outcome = null;
+  for (let index = 0; index < 5; index += 1) {
+    outcome = recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+      startedAt: `2026-08-21T00:1${index}:00.000Z`,
+      endedAt: `2026-08-21T00:1${index}:05.000Z`,
+      failures: [providerFailure(summaries[index], modes[index])],
+    }));
+    if (index < 4) {
+      assert.equal(outcome.paused, false, `turn ${index + 1} must not pause`);
+      assert.equal(getSessionGoalRunner(conversation).consecutiveSameModeFailureCount, 1);
+      assert.equal(getSessionGoalRunner(conversation).consecutiveFailureCount, index + 1);
+    }
+  }
+  assert.equal(outcome.paused, true);
+  const runner = getSessionGoalRunner(conversation);
+  assert.equal(runner.consecutiveFailureCount, 5);
+  assert.match(runner.pauseReason, /连续 5 轮/u);
+  assert.equal(isSessionGoalModelFailurePaused(conversation), true);
+});
+
+test('unattributable provider:other failures count only toward the total and break the same-mode streak', () => {
+  const { store, conversation } = createConversationStore();
+  const at = (minute) => ({
+    startedAt: `2026-08-21T00:${String(minute).padStart(2, '0')}:00.000Z`,
+    endedAt: `2026-08-21T00:${String(minute).padStart(2, '0')}:05.000Z`,
+  });
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome(at(1)));
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome(at(2)));
+  assert.equal(getSessionGoalRunner(conversation).consecutiveSameModeFailureCount, 2);
+
+  // other 模式：只进总数，同模式连击断开。
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    ...at(3),
+    failures: [providerFailure('model refused the request', 'provider:other')],
+  }));
+  let runner = getSessionGoalRunner(conversation);
+  assert.equal(runner.consecutiveSameModeFailureCount, 0);
+  assert.equal(runner.lastFailureMode || '', '');
+  assert.equal(runner.consecutiveFailureCount, 3);
+
+  // 同模式重新开始计数，不因历史达到 2 而立即暂停。
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome(at(4)));
+  runner = getSessionGoalRunner(conversation);
+  assert.equal(runner.consecutiveSameModeFailureCount, 1);
+  assert.equal(runner.consecutiveFailureCount, 4);
+
+  const fifth = recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    ...at(5),
+    failures: [providerFailure('model refused the request', 'provider:other')],
+  }));
+  assert.equal(fifth.paused, true);
+  assert.match(getSessionGoalRunner(conversation).pauseReason, /连续 5 轮/u);
+});
+
+test('a mixed-mode multi-failure turn counts once toward the total and resets the same-mode streak', () => {
+  const { store, conversation } = createConversationStore();
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    startedAt: '2026-08-21T00:01:00.000Z',
+    endedAt: '2026-08-21T00:01:05.000Z',
+  }));
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    startedAt: '2026-08-21T00:02:00.000Z',
+    endedAt: '2026-08-21T00:02:05.000Z',
+  }));
+  assert.equal(getSessionGoalRunner(conversation).consecutiveSameModeFailureCount, 2);
+
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    startedAt: '2026-08-21T00:03:00.000Z',
+    endedAt: '2026-08-21T00:03:05.000Z',
+    failedCount: 2,
+    failures: [
+      providerFailure('fetch failed', 'provider:network'),
+      providerFailure('429 too many requests', 'provider:rate_limited'),
+    ],
+  }));
+  const runner = getSessionGoalRunner(conversation);
+  assert.equal(runner.consecutiveSameModeFailureCount, 0);
+  assert.equal(runner.consecutiveFailureCount, 3);
+  assert.equal(getSessionGoal(conversation).status, 'active');
+});
+
+test('success and ordinary user turns reset both counters while cancellation is neutral', () => {
   const { store, conversation } = createConversationStore();
   recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
     startedAt: '2026-08-21T00:01:00.000Z',
@@ -231,7 +314,8 @@ test('success and ordinary user turns reset the streak while cancellation is neu
     failedCount: 0,
     failures: [],
   }));
-  assert.equal(getSessionGoalRunner(conversation).consecutiveModelFailureCount, 0);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveFailureCount, 0);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveSameModeFailureCount, 0);
 
   recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
     startedAt: '2026-08-21T00:03:00.000Z',
@@ -245,7 +329,8 @@ test('success and ordinary user turns reset the streak while cancellation is neu
     terminationReason: 'stopped_by_user',
     failures: [],
   }));
-  assert.equal(getSessionGoalRunner(conversation).consecutiveModelFailureCount, 1);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveFailureCount, 1);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveSameModeFailureCount, 1);
 
   const ordinaryUserOutcome = goalRunnerOutcome({
     startedAt: '2026-08-21T00:05:00.000Z',
@@ -256,40 +341,75 @@ test('success and ordinary user turns reset the streak while cancellation is neu
   });
   ordinaryUserOutcome.sourceMessages = [{ id: 'user-message', metadata: {} }];
   recordSessionGoalContinuationOutcome(store, conversation.id, ordinaryUserOutcome);
-  assert.equal(getSessionGoalRunner(conversation).consecutiveModelFailureCount, 0);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveFailureCount, 0);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveSameModeFailureCount, 0);
 });
 
-test('slow or out-of-window failures cannot complete an existing fast-failure streak', () => {
+test('elapsed time between failures no longer matters: a 10-minute gap keeps the streak', () => {
   const { store, conversation } = createConversationStore();
   recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
     startedAt: '2026-08-21T00:00:00.000Z',
     endedAt: '2026-08-21T00:00:05.000Z',
   }));
   recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
-    startedAt: '2026-08-21T00:01:00.000Z',
-    endedAt: '2026-08-21T00:01:05.000Z',
-  }));
-  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
-    startedAt: '2026-08-21T00:02:00.000Z',
-    endedAt: '2026-08-21T00:03:01.000Z',
-  }));
-  assert.equal(getSessionGoalRunner(conversation).consecutiveModelFailureCount, 0);
-  assert.equal(getSessionGoal(conversation).status, 'active');
-
-  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
-    startedAt: '2026-08-21T00:04:00.000Z',
-    endedAt: '2026-08-21T00:04:05.000Z',
-  }));
-  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
-    startedAt: '2026-08-21T00:05:00.000Z',
-    endedAt: '2026-08-21T00:05:05.000Z',
-  }));
-  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
     startedAt: '2026-08-21T00:10:01.000Z',
     endedAt: '2026-08-21T00:10:06.000Z',
   }));
-  assert.equal(getSessionGoalRunner(conversation).consecutiveModelFailureCount, 1);
-  assert.equal(getSessionGoal(conversation).status, 'active');
+  assert.equal(getSessionGoalRunner(conversation).consecutiveSameModeFailureCount, 2);
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    startedAt: '2026-08-21T00:20:01.000Z',
+    endedAt: '2026-08-21T00:20:06.000Z',
+  }));
+  assert.equal(getSessionGoal(conversation).status, 'paused');
+});
+
+test('configured thresholds persist and remain authoritative for paused-state consumers', () => {
+  const { store, conversation } = createConversationStore();
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    startedAt: '2026-08-21T00:01:00.000Z',
+    endedAt: '2026-08-21T00:01:05.000Z',
+    failureThreshold: 2,
+    totalFailureThreshold: 4,
+  }));
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    startedAt: '2026-08-21T00:02:00.000Z',
+    endedAt: '2026-08-21T00:02:05.000Z',
+    failureThreshold: 2,
+    totalFailureThreshold: 4,
+  }));
+
+  const runner = getSessionGoalRunner(conversation);
+  assert.equal(runner.failureThreshold, 2);
+  assert.equal(runner.totalFailureThreshold, 4);
+  assert.equal(runner.status, 'error_paused');
+  assert.equal(isSessionGoalModelFailurePaused(conversation), true);
+});
+
+test('legacy error_paused runners recorded by the fast-failure rule stay recognized as paused', () => {
+  const { conversation } = createConversationStore({
+    sessionGoal: {
+      objective: 'Legacy pause state',
+      status: 'paused',
+      createdAt: '2026-08-21T00:00:00.000Z',
+      updatedAt: '2026-08-21T00:03:05.000Z',
+    },
+    sessionGoalRunner: {
+      status: 'error_paused',
+      goalUpdatedAt: '2026-08-21T00:03:05.000Z',
+      iteration: 3,
+      maxIterations: 20,
+      consecutiveModelFailureCount: 3,
+      failureThreshold: 3,
+      failureStreakStartedAt: '2026-08-21T00:01:05.000Z',
+      lastFailureAt: '2026-08-21T00:03:05.000Z',
+      lastFailureKind: 'provider',
+      lastFailureCode: 'assistant_error',
+      lastFailureSummary: 'fetch failed',
+      pauseReason: '连续 3 次快速模型调用失败，Goal 已自动暂停。',
+      errorPausedAt: '2026-08-21T00:03:05.000Z',
+    },
+  });
+  assert.equal(isSessionGoalModelFailurePaused(conversation), true);
 });
 
 test('a real SQLite close and reopen preserves the same-epoch streak for the third claim', (t) => {
@@ -324,7 +444,7 @@ test('a real SQLite close and reopen preserves the same-epoch streak for the thi
     startedAt: '2026-08-21T00:02:00.000Z',
     endedAt: '2026-08-21T00:02:05.000Z',
   }));
-  assert.equal(getSessionGoalRunner(store.getConversation(conversationId)).consecutiveModelFailureCount, 2);
+  assert.equal(getSessionGoalRunner(store.getConversation(conversationId)).consecutiveSameModeFailureCount, 2);
   store.close();
 
   store = createChatAppStore({ agentDir: tempDir, sqlitePath });
@@ -336,7 +456,7 @@ test('a real SQLite close and reopen preserves the same-epoch streak for the thi
 
   assert.equal(result.paused, true);
   assert.equal(getSessionGoal(store.getConversation(conversationId)).status, 'paused');
-  assert.equal(getSessionGoalRunner(store.getConversation(conversationId)).consecutiveModelFailureCount, 3);
+  assert.equal(getSessionGoalRunner(store.getConversation(conversationId)).consecutiveSameModeFailureCount, 3);
 });
 
 test('stale or malformed runner metadata starts a fresh streak and Goal set clears it', () => {
@@ -347,6 +467,9 @@ test('stale or malformed runner metadata starts a fresh streak and Goal set clea
       iteration: 'broken',
       maxIterations: -20,
       consecutiveModelFailureCount: 99,
+      consecutiveFailureCount: 99,
+      consecutiveSameModeFailureCount: 99,
+      lastFailureMode: 'forged-mode',
       failureStreakStartedAt: 'not-a-date',
       lastFailureKind: 'forged-kind',
     },
@@ -356,7 +479,8 @@ test('stale or malformed runner metadata starts a fresh streak and Goal set clea
     startedAt: '2026-08-21T00:01:00.000Z',
     endedAt: '2026-08-21T00:01:05.000Z',
   }));
-  assert.equal(getSessionGoalRunner(conversation).consecutiveModelFailureCount, 1);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveFailureCount, 1);
+  assert.equal(getSessionGoalRunner(conversation).consecutiveSameModeFailureCount, 1);
   assert.equal(getSessionGoal(conversation).status, 'active');
 
   applySessionGoalAction(store, conversation.id, {
@@ -387,4 +511,33 @@ test('persisted streak survives a fresh caller and resume clears the guard state
   applySessionGoalAction(store, conversation.id, { action: 'resume' });
   assert.equal(getSessionGoal(conversation).status, 'active');
   assert.equal(getSessionGoalRunner(conversation), null);
+});
+
+test('an owner change migrates the failure streak instead of resetting it', () => {
+  const { store, conversation } = createConversationStore();
+  conversation.agents = [
+    { id: 'role-family-gpt', name: 'GPT' },
+    { id: 'role-family-kimi', name: 'Kimi' },
+  ];
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    startedAt: '2026-08-21T00:01:00.000Z',
+    endedAt: '2026-08-21T00:01:05.000Z',
+  }));
+  recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    startedAt: '2026-08-21T00:02:00.000Z',
+    endedAt: '2026-08-21T00:02:05.000Z',
+  }));
+
+  applySessionGoalAction(store, conversation.id, { action: 'set-owner', ownerAgentId: 'role-family-kimi' });
+
+  const runner = getSessionGoalRunner(conversation);
+  assert.equal(runner.consecutiveSameModeFailureCount, 2);
+  assert.equal(runner.consecutiveFailureCount, 2);
+  assert.equal(runner.goalUpdatedAt, getSessionGoal(conversation).updatedAt);
+
+  const third = recordSessionGoalContinuationOutcome(store, conversation.id, goalRunnerOutcome({
+    startedAt: '2026-08-21T00:03:00.000Z',
+    endedAt: '2026-08-21T00:03:05.000Z',
+  }));
+  assert.equal(third.paused, true);
 });

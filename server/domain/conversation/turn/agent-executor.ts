@@ -192,6 +192,48 @@ function redactInvocationFailureSummary(value: any) {
   return clipText(text, 240);
 }
 
+const GOAL_FAILURE_SIGNAL_CODES = new Set(['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGSEGV', 'SIGPIPE', 'SIGHUP', 'SIGQUIT']);
+
+/**
+ * Bounded failure-mode label for the Goal auto-pause guard. Derived only from
+ * structured fields plus anchored leading indicators of the (already
+ * redacted-at-store-time) summary; the raw error text is never stored in the
+ * mode. Labels ending in `:other` are deliberately NOT streak-eligible: an
+ * unrecognized failure must only count toward the total, never prove that two
+ * turns share one failure mode.
+ */
+export function classifyGoalFailureMode({ kind, code, summary }: any) {
+  const normalizedKind = String(kind || '').trim().toLowerCase();
+  const normalizedCode = String(code || '').trim().toLowerCase();
+  if (normalizedKind === 'timeout') {
+    if (normalizedCode === 'heartbeat_timeout') return 'timeout:heartbeat';
+    if (normalizedCode === 'progress_timeout') return 'timeout:progress';
+    if (normalizedCode === 'run_timeout') return 'timeout:run';
+    return 'timeout:other';
+  }
+  if (normalizedKind === 'process_exit') {
+    return GOAL_FAILURE_SIGNAL_CODES.has(String(code || '').trim().toUpperCase())
+      ? 'process_exit:signal'
+      : 'process_exit:other';
+  }
+  if (normalizedKind !== 'provider') {
+    return '';
+  }
+  if (normalizedCode && normalizedCode !== 'assistant_error') {
+    // Structured network codes (ECONN*/UND_ERR_*) are all connection-layer.
+    return 'provider:network';
+  }
+  const reported = String(summary || '').trim();
+  if (/^fetch failed\b/iu.test(reported)) return 'provider:network';
+  if (/^(?:429|rate[_ -]?limit(?:ed|ing|[_ -]exceeded)?|too many requests)\b/iu.test(reported)) return 'provider:rate_limited';
+  if (/^(?:401|unauthorized|invalid[_ -]?api[_ -]?key|authentication[_ -]?(?:failed|error))\b/iu.test(reported)) return 'provider:auth';
+  if (/^(?:403|forbidden|permission[_ -]?denied)\b/iu.test(reported)) return 'provider:forbidden';
+  if (/^(?:500|502|503|504|service unavailable|internal server error)\b/iu.test(reported)) return 'provider:server_error';
+  if (/^(?:connection error:\s*)?stream_read_error\b/iu.test(reported)) return 'provider:stream_read';
+  if (/^(?:insufficient[_ -](?:balance|quota)|quota[_ -]exceeded)\b/iu.test(reported)) return 'provider:quota';
+  return 'provider:other';
+}
+
 export function classifyAgentInvocationFailure(error: any, options: any = {}) {
   const errorValue = error && typeof error === 'object' ? error : {};
   const stopRequested = Boolean(options.stopRequested);
@@ -208,6 +250,7 @@ export function classifyAgentInvocationFailure(error: any, options: any = {}) {
       kind: 'cancelled',
       code: terminationType || 'stop_requested',
       eligible: false,
+      mode: '',
       terminationType,
       summary: redactInvocationFailureSummary(message),
     };
@@ -218,6 +261,7 @@ export function classifyAgentInvocationFailure(error: any, options: any = {}) {
       kind: 'timeout',
       code: terminationType,
       eligible: true,
+      mode: classifyGoalFailureMode({ kind: 'timeout', code: terminationType }),
       terminationType,
       summary: redactInvocationFailureSummary(message),
     };
@@ -228,6 +272,7 @@ export function classifyAgentInvocationFailure(error: any, options: any = {}) {
       kind: 'provider',
       code: 'assistant_error',
       eligible: true,
+      mode: classifyGoalFailureMode({ kind: 'provider', code: 'assistant_error', summary: assistantErrors[0] }),
       terminationType,
       summary: redactInvocationFailureSummary(assistantErrors[0]),
     };
@@ -239,6 +284,7 @@ export function classifyAgentInvocationFailure(error: any, options: any = {}) {
       kind: 'provider',
       code: structuredErrorCode.toLowerCase(),
       eligible: true,
+      mode: 'provider:network',
       terminationType,
       summary: redactInvocationFailureSummary(message),
     };
@@ -249,10 +295,12 @@ export function classifyAgentInvocationFailure(error: any, options: any = {}) {
     || (errorValue.code !== undefined && errorValue.code !== null && Number.isFinite(Number(errorValue.code)))
     || String(errorValue.signal || '').trim()
   ) {
+    const exitCode = String(errorValue.signal || errorValue.exitCode || errorValue.code || 'process_exit').trim();
     return {
       kind: 'process_exit',
-      code: String(errorValue.signal || errorValue.exitCode || errorValue.code || 'process_exit').trim(),
+      code: exitCode,
       eligible: true,
+      mode: classifyGoalFailureMode({ kind: 'process_exit', code: exitCode }),
       terminationType,
       summary: redactInvocationFailureSummary(message),
     };
@@ -262,6 +310,7 @@ export function classifyAgentInvocationFailure(error: any, options: any = {}) {
     kind: 'unknown',
     code: 'unclassified_invocation_error',
     eligible: false,
+    mode: '',
     terminationType,
     summary: redactInvocationFailureSummary(message),
   };
