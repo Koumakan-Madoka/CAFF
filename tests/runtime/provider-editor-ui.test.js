@@ -138,18 +138,22 @@ test('manually fixing the URL clears the warning without applying the suggestion
   assert.equal(session.input('provider-base-url').value, 'https://api.kimi.com/coding');
 });
 
-test('custom gateways and unknown protocols never get a suggestion', async () => {
+test('custom OpenAI gateways get a neutral hint without a suggestion; unknown protocols stay silent', async () => {
   const session = setup();
   session.editor.show(providerDraft({
     api: 'openai-completions',
     baseUrl: 'https://gateway.internal.example.com/custom/v1',
   }));
   await flush();
-  assert.equal(session.document.getElementById('provider-endpoint-warning'), null);
+  const hint = session.document.getElementById('provider-endpoint-warning');
+  assert.ok(hint, 'unverified openai endpoints show a neutral verify hint on load');
+  assert.match(hint.textContent, /核对/u);
+  assert.equal(session.document.getElementById('provider-apply-endpoint-suggestion'), null, 'never a suggestion for unknown endpoints');
+  assert.equal(session.input('provider-base-url').value, 'https://gateway.internal.example.com/custom/v1', 'URL untouched');
 
   session.setSelect('provider-api-protocol', 'mistral-conversations');
   await flush();
-  assert.equal(session.document.getElementById('provider-endpoint-warning'), null);
+  assert.equal(session.document.getElementById('provider-endpoint-warning'), null, 'unknown protocols stay silent');
   assert.equal(session.input('provider-base-url').value, 'https://gateway.internal.example.com/custom/v1');
 });
 

@@ -20,11 +20,16 @@
 //        appends "/chat/completions" to the configured baseURL (mock-fetch
 //        pinned in the same test file).
 //
-// 2. Unverified hints. An anthropic-messages base URL ending in "/v1" on any
-//    other host yields only a verify-it-yourself hint that states the factual
-//    request path — SDK path appending says nothing about a gateway's routing
-//    rules, so unknown endpoints never receive a guessed suggestion. OpenAI
-//    dialects on unknown endpoints stay fully silent (no verifiable basis).
+// 2. Unverified hints. Two shapes, both without any suggestion:
+//      - anthropic-messages with a base URL ending in "/v1" on any other
+//        host: a verify-it-yourself hint stating the factual request path —
+//        SDK path appending says nothing about a gateway's routing rules, so
+//        unknown endpoints never receive a guessed suggestion.
+//      - openai-completions / openai-responses on any endpoint that is not a
+//        verified match: a neutral verify hint stating the pinned SDK path
+//        fact. Silence is reserved for verified matches; an unknown OpenAI
+//        endpoint may not read as "checked and fine".
+//    Unknown dialects (no pinned client behavior) stay fully silent.
 //
 // The browser mirror in public/shared/endpoint-diagnostics.js must produce
 // identical verdicts; the symmetry is pinned by the same test file.
@@ -86,19 +91,19 @@ const VERIFIED_ENDPOINTS: VerifiedEndpoint[] = [
 
 export interface EndpointDiagnostic {
   status: 'mismatch' | 'unverified';
-  code: 'verified_endpoint_protocol_mismatch' | 'anthropic_base_url_version_suffix';
+  code: 'verified_endpoint_protocol_mismatch' | 'anthropic_base_url_version_suffix' | 'endpoint_not_verified';
   suggestion?: string;
   basis: string;
   message: string;
 }
 
 /**
- * Inspect a (dialect, baseUrl) pair. Returns null for consistent, unknown, or
- * unverifiable combinations. Only a verified combination produces a `mismatch`
- * diagnostic carrying an explicit suggestion; the anthropic "/v1" pattern on
- * unknown endpoints produces an `unverified` hint without any suggestion.
- * Legal "/v1" paths for openai dialects and custom gateways are never
- * rewritten or rejected.
+ * Inspect a (dialect, baseUrl) pair. Returns null for verified matches,
+ * unknown dialects, and unverifiable inputs. Only a verified combination
+ * produces a `mismatch` diagnostic carrying an explicit suggestion; the
+ * anthropic "/v1" pattern on unknown endpoints and any unverified OpenAI
+ * endpoint produce an `unverified` hint without any suggestion. Legal "/v1"
+ * paths and custom gateways are never rewritten or rejected.
  */
 export function inspectDialectEndpoint(dialect: any, baseUrl: any): EndpointDiagnostic | null {
   const api = text(dialect);
@@ -153,6 +158,24 @@ export function inspectDialectEndpoint(dialect: any, baseUrl: any): EndpointDiag
       code: 'anthropic_base_url_version_suffix',
       basis: 'vendored-anthropic-sdk-appends-v1-messages',
       message: `Anthropic 协议客户端会自动在 Base URL 后追加 /v1/messages，当前地址实际会请求 ${bareUrl}/v1/messages。该端点不在已核实清单内，CAFF 不提供建议地址；请自行核对该网关是否接受此路径。`,
+    };
+  }
+
+  // Unknown OpenAI endpoints keep a neutral verify hint so that silence stays
+  // reserved for verified matches. The message only states pinned SDK path
+  // facts (mock-fetch tests in tests/runtime/endpoint-diagnostics.test.js);
+  // it never guesses an address and never rewrites or rejects the URL.
+  if (api === 'openai-completions' || api === 'openai-responses') {
+    const pathSuffix = api === 'openai-completions' ? '/chat/completions' : '/responses';
+    const basis = api === 'openai-completions'
+      ? 'vendored-openai-client-appends-chat-completions'
+      : 'vendored-openai-client-appends-responses';
+    const clientLabel = api === 'openai-completions' ? 'OpenAI 兼容客户端' : 'OpenAI Responses 客户端';
+    return {
+      status: 'unverified',
+      code: 'endpoint_not_verified',
+      basis,
+      message: `该端点不在 CAFF 已核实清单内；${clientLabel}会请求 ${bareUrl}${pathSuffix}。请自行核对网关路径；CAFF 不会自动修改该地址。`,
     };
   }
 

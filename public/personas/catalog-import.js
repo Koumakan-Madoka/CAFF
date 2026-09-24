@@ -12,6 +12,7 @@
     let projection = null;
     let runtimeDefaults = { contextWindow: 128000, maxTokens: 16384 };
     let importPending = false;
+    let importAdvisory = null;
     let refreshPending = false;
 
     const input = (id) => /** @type {HTMLInputElement} */ (document.getElementById(id));
@@ -84,6 +85,21 @@
       const conflict = projection && projection.dialectConflict;
       if (!conflict) return '';
       return `<p id="catalog-import-dialect-conflict" class="management-warning"><strong>协议以已保存配置为准</strong> 该供应商已在 models.json 中配置协议 ${utils.escapeHtml(conflict.storedApi)}；导入不会修改它，目录方言 ${utils.escapeHtml(conflict.catalogDialect)} 仅作参考。下方诊断按实际生效的 ${utils.escapeHtml(conflict.storedApi)} 计算。</p>`;
+    }
+
+    // Advisory panel shown after a successful import. The import response
+    // carries diagnostics computed against the *persisted* effective
+    // configuration (stored provider protocol + model-level overrides), so the
+    // user sees the true post-import state instead of a bare success toast.
+    function importAdvisoryMarkup() {
+      if (!importAdvisory) return '';
+      const entries = [];
+      if (importAdvisory.provider) entries.push(importAdvisory.provider);
+      if (importAdvisory.model) entries.push(importAdvisory.model);
+      if (!entries.length) {
+        return '<div id="catalog-import-post-import"><p class="management-note">已导入；落盘后的协议/地址组合未发现可诊断问题。</p></div>';
+      }
+      return `<div id="catalog-import-post-import">${entries.map((diagnostic) => `<p class="management-warning"><strong>落盘后诊断</strong> ${utils.escapeHtml(diagnostic.message)}</p>`).join('')}</div>`;
     }
 
     function updateEndpointDiagnostics() {
@@ -174,7 +190,8 @@
           ${dialectConflictMarkup()}
           <div id="catalog-import-endpoint-diagnostic"></div>
           ${projection.modelEndpointOverride ? '<p id="catalog-import-model-override" class="management-warning"></p>' : ''}
-          <div class="management-actions"><button id="catalog-import-confirm" type="button" ${manual || importPending || !options.isEnabled() ? 'disabled' : ''}>确认导入</button></div>
+          ${importAdvisoryMarkup()}
+          <div class="management-actions"><button id="catalog-import-confirm" type="button" ${manual || importPending || importAdvisory || !options.isEnabled() ? 'disabled' : ''}>${importAdvisory ? '已导入' : '确认导入'}</button></div>
         </section>`;
     }
 
@@ -249,9 +266,17 @@
       if (Number.isInteger(projection.contextWindow)) body.contextWindow = projection.contextWindow;
       if (Number.isInteger(projection.maxTokens)) body.maxTokens = projection.maxTokens;
       try {
-        await options.fetchJson('/api/model-catalog/import', { method: 'POST', body, headers: adminHeaders() });
+        const result = await options.fetchJson('/api/model-catalog/import', { method: 'POST', body, headers: adminHeaders() });
+        // Surface the persisted-effective diagnostics instead of discarding
+        // them: the response reflects what was actually written.
+        importAdvisory = {
+          provider: (result && result.endpointDiagnostic) || null,
+          model: (result && result.modelEndpointDiagnostic) || null,
+        };
+        importPending = false;
         options.showToast(`已导入 ${projection.providerId} / ${projection.modelId}；密钥请在供应商编辑中填写`);
         options.onImported(projection.providerId, projection.modelId);
+        render();
       } catch (error) {
         importPending = false;
         render();
@@ -263,6 +288,7 @@
       try {
         const result = await options.fetchJson(`/api/model-catalog?providerId=${encodeURIComponent(providerId)}&modelId=${encodeURIComponent(modelId)}`);
         projection = result.projection;
+        importAdvisory = null;
         if (result.runtimeDefaults && Number.isInteger(result.runtimeDefaults.contextWindow) && Number.isInteger(result.runtimeDefaults.maxTokens)) {
           runtimeDefaults = result.runtimeDefaults;
         }
@@ -306,6 +332,7 @@
         projection = null;
         runtimeDefaults = { contextWindow: 128000, maxTokens: 16384 };
         importPending = false;
+        importAdvisory = null;
         root.innerHTML = '<div class="empty-state">目录加载中…</div>';
         try {
           index = await options.fetchJson('/api/model-catalog');

@@ -60,7 +60,9 @@ test('verified consistent combinations stay silent', () => {
 
 // ---------------------------------------------------------------------------
 // Unknown endpoints: never a suggestion. The anthropic + trailing /v1 pattern
-// only earns a verify-it-yourself hint; openai dialects stay fully silent.
+// earns a path-specific verify hint; unknown OpenAI endpoints earn a neutral
+// verify hint (pinned SDK path fact, no guessed address) so that silence is
+// reserved for verified matches and cannot read as "checked and fine".
 // ---------------------------------------------------------------------------
 
 test('R1: anthropic-messages on a custom gateway with /v1 is an unverified hint without any suggestion', () => {
@@ -85,11 +87,34 @@ test('anthropic-messages on unknown hosts without a /v1 suffix stays silent', ()
   assert.equal(inspect('anthropic-messages', 'https://api.anthropic.com'), null);
 });
 
-test('openai dialects keep legal /v1 base URLs untouched (custom gateways stay silent)', () => {
-  assert.equal(inspect('openai-completions', 'https://gateway.example.com/custom/v1'), null);
-  assert.equal(inspect('openai-completions', 'https://gateway.example.com/custom'), null);
-  assert.equal(inspect('openai-responses', 'https://api.openai.com/v1'), null);
-  assert.equal(inspect('openai-responses', 'https://api.kimi.com/coding'), null, 'no verified basis for openai-responses');
+test('unknown OpenAI endpoints get a neutral verify hint, never a suggestion', () => {
+  // Contract: silence is reserved for verified matches. An unknown OpenAI
+  // endpoint may not read as "checked and fine", so it earns a neutral hint
+  // that states the pinned SDK path fact and asks the user to verify. It never
+  // guesses an address and never rewrites or rejects anything.
+  const gateway = inspect('openai-completions', 'https://gateway.example.com/custom/v1');
+  assert.ok(gateway, 'unknown openai endpoint must not be silent');
+  assert.equal(gateway.status, 'unverified');
+  assert.equal(gateway.code, 'endpoint_not_verified');
+  assert.equal(gateway.suggestion, undefined, 'unknown endpoints never receive a guessed address');
+  assert.match(gateway.message, /\/chat\/completions/u, 'hint states the factual request path');
+  assert.match(gateway.message, /核对/u);
+
+  const noVersion = inspect('openai-completions', 'https://gateway.example.com/custom');
+  assert.equal(noVersion.status, 'unverified');
+  assert.equal(noVersion.code, 'endpoint_not_verified');
+  assert.equal(noVersion.suggestion, undefined);
+
+  const responses = inspect('openai-responses', 'https://api.openai.com/v1');
+  assert.equal(responses.status, 'unverified');
+  assert.equal(responses.code, 'endpoint_not_verified');
+  assert.equal(responses.suggestion, undefined);
+  assert.match(responses.message, /\/responses/u, 'hint states the factual request path');
+
+  // A verified host with an uncovered dialect is still an unverified combination.
+  const kimiResponses = inspect('openai-responses', 'https://api.kimi.com/coding');
+  assert.equal(kimiResponses.code, 'endpoint_not_verified');
+  assert.equal(kimiResponses.suggestion, undefined, 'no verified basis for openai-responses');
 });
 
 test('unknown dialects and incomplete inputs never produce a diagnostic', () => {
@@ -167,6 +192,28 @@ test('vendored openai SDK appends /chat/completions to the configured baseURL', 
 
   assert.equal(await recordPath('https://api.kimi.com/coding/v1'), '/coding/v1/chat/completions');
   assert.equal(await recordPath('https://api.kimi.com/coding'), '/coding/chat/completions');
+});
+
+test('vendored openai SDK appends /responses for the responses API', async () => {
+  const OpenAI = require(path.resolve(__dirname, '..', '..', 'node_modules', '@earendil-works', 'pi-ai', 'node_modules', 'openai'));
+
+  const seen = [];
+  const client = new OpenAI({
+    apiKey: 'test-key',
+    baseURL: 'https://example.com/v1',
+    maxRetries: 0,
+    fetch: async (url) => {
+      seen.push(new URL(String(url)).pathname);
+      return new Response(JSON.stringify({
+        id: 'resp_test',
+        object: 'response',
+        status: 'completed',
+        output: [],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  await client.responses.create({ model: 'gpt-5', input: 'hi' });
+  assert.equal(seen[0], '/v1/responses');
 });
 
 test('pi vendored registry pins kimi-coding as anthropic-messages + https://api.kimi.com/coding', () => {

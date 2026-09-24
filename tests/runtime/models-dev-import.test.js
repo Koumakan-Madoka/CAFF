@@ -268,11 +268,14 @@ test('projection flags the stale Kimi For Coding dialect/baseUrl mismatch with a
   assert.equal(projected.modelEndpointOverride, null);
 });
 
-test('consistent catalog entries produce no endpoint diagnostic', () => {
+test('consistent catalog entries stay silent only when verified; unknown openai endpoints get the neutral hint', () => {
   const projected = projectCatalogModel(catalogFixture(), 'openai', 'gpt-5', {
     provenance: TEST_PROVENANCE,
   });
-  assert.equal(projected.endpointDiagnostic, null);
+  // openai-responses on an unverified endpoint: neutral hint, never a suggestion.
+  assert.equal(projected.endpointDiagnostic?.status, 'unverified');
+  assert.equal(projected.endpointDiagnostic?.code, 'endpoint_not_verified');
+  assert.equal(projected.endpointDiagnostic?.suggestion, undefined);
 
   const fixed = staleKimiCodingCatalog();
   fixed['kimi-for-coding'].npm = '@ai-sdk/openai-compatible';
@@ -280,7 +283,7 @@ test('consistent catalog entries produce no endpoint diagnostic', () => {
     provenance: TEST_PROVENANCE,
   });
   assert.equal(fixedProjection.dialect, 'openai-completions');
-  assert.equal(fixedProjection.endpointDiagnostic, null);
+  assert.equal(fixedProjection.endpointDiagnostic, null, 'the verified consistent pair stays silent');
 });
 
 test('model-level provider overrides feed the endpoint diagnostic', () => {

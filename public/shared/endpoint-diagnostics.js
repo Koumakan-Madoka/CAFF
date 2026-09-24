@@ -105,6 +105,23 @@
       };
     }
 
+    // Unknown OpenAI endpoints keep a neutral verify hint so that silence
+    // stays reserved for verified matches. Advisory only: no guessed address,
+    // no rewrite, no rejection.
+    if (api === 'openai-completions' || api === 'openai-responses') {
+      const pathSuffix = api === 'openai-completions' ? '/chat/completions' : '/responses';
+      const basis = api === 'openai-completions'
+        ? 'vendored-openai-client-appends-chat-completions'
+        : 'vendored-openai-client-appends-responses';
+      const clientLabel = api === 'openai-completions' ? 'OpenAI 兼容客户端' : 'OpenAI Responses 客户端';
+      return {
+        status: 'unverified',
+        code: 'endpoint_not_verified',
+        basis,
+        message: `该端点不在 CAFF 已核实清单内；${clientLabel}会请求 ${bareUrl}${pathSuffix}。请自行核对网关路径；CAFF 不会自动修改该地址。`,
+      };
+    }
+
     return null;
   }
 

@@ -480,7 +480,7 @@ test('catalog import carries the suggested URL only after an explicit apply clic
   assert.equal(importCall.options.body.baseUrl, 'https://api.kimi.com/coding');
 });
 
-test('catalog import renders no endpoint warning for consistent projections', async () => {
+test('unverified OpenAI endpoints get a neutral preview hint without a suggestion', async () => {
   const session = setup({ fetchImpl: indexFetch });
   await session.wizard.open();
 
@@ -488,8 +488,72 @@ test('catalog import renders no endpoint warning for consistent projections', as
   session.document.querySelector('[data-catalog-model="gpt-5"] button').click();
   await flush();
 
-  assert.equal(session.document.getElementById('catalog-import-endpoint-warning'), null);
-  assert.equal(session.document.getElementById('catalog-import-apply-endpoint-suggestion'), null);
+  const hint = session.document.getElementById('catalog-import-endpoint-warning');
+  assert.ok(hint, 'neutral verify hint shown for the unverified openai endpoint');
+  assert.match(hint.textContent, /核对/u);
+  assert.equal(session.document.getElementById('catalog-import-apply-endpoint-suggestion'), null, 'no suggestion button for unverified endpoints');
+});
+
+test('post-import advisory from the import response is displayed to the user', async () => {
+  const importResponse = {
+    providers: [],
+    write: { backupCreated: true },
+    endpointDiagnostic: {
+      status: 'mismatch',
+      code: 'verified_endpoint_protocol_mismatch',
+      suggestion: 'https://api.kimi.com/coding',
+      basis: 'pi-vendored-registry:kimi-coding',
+      message: '已核实的 Kimi For Coding 端点：落盘后协议与地址仍不匹配。',
+    },
+    modelEndpointDiagnostic: {
+      status: 'unverified',
+      code: 'endpoint_not_verified',
+      basis: 'vendored-openai-client-appends-chat-completions',
+      message: '模型级覆盖的端点未核实，请自行核对。',
+    },
+  };
+  const session = setup({
+    fetchImpl: (url) => {
+      if (url === '/api/model-catalog') return Promise.resolve(structuredClone(STALE_KIMI_INDEX));
+      if (url.startsWith('/api/model-catalog?')) {
+        return Promise.resolve({ projection: structuredClone(STALE_KIMI_PROJECTION), runtimeDefaults: { contextWindow: 128000, maxTokens: 16384 } });
+      }
+      if (url === '/api/model-catalog/import') return Promise.resolve(structuredClone(importResponse));
+      return Promise.reject(new Error(`unexpected url ${url}`));
+    },
+  });
+  await session.wizard.open();
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+
+  assert.equal(session.imported.length, 1, 'onImported fired once');
+  const advisory = session.document.getElementById('catalog-import-post-import');
+  assert.ok(advisory, 'post-import advisory panel exists');
+  assert.match(advisory.textContent, /落盘后协议与地址仍不匹配/u, 'provider-level advisory shown');
+  assert.match(advisory.textContent, /模型级覆盖/u, 'model-level advisory shown');
+  assert.ok(session.document.getElementById('catalog-import-confirm').disabled, 'confirm disabled after a successful import');
+});
+
+test('a clean import result reports no diagnosable problems', async () => {
+  const session = setup({ fetchImpl: staleKimiFetch });
+  await session.wizard.open();
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+
+  session.document.getElementById('catalog-import-apply-endpoint-suggestion').click();
+  await flush();
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+
+  const advisory = session.document.getElementById('catalog-import-post-import');
+  assert.ok(advisory, 'post-import advisory panel exists');
+  assert.match(advisory.textContent, /未发现/u, 'clean result is stated explicitly instead of silence');
+  assert.ok(session.document.getElementById('catalog-import-confirm').disabled);
 });
 
 test('R3: a stored provider protocol conflict is shown and no suggestion is offered against the catalog dialect', async () => {

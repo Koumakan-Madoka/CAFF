@@ -537,7 +537,8 @@ test('catalog projection endpoint surfaces the dialect/baseUrl endpoint diagnost
     pathname: '/api/model-catalog?providerId=openai&modelId=gpt-5/pro',
   });
   assert.equal(consistent.statusCode, 200);
-  assert.equal(consistent.json.projection.endpointDiagnostic, null);
+  assert.equal(consistent.json.projection.endpointDiagnostic?.code, 'endpoint_not_verified', 'unverified openai endpoint gets the neutral hint');
+  assert.equal(consistent.json.projection.endpointDiagnostic?.suggestion, undefined);
 });
 
 function staleKimiCatalogDocument() {
