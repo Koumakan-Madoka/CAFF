@@ -68,7 +68,7 @@ function projectionFor(providerId, modelId) {
   };
 }
 
-function setup({ fetchImpl }) {
+function setup({ fetchImpl, onImported, onClose }) {
   const dom = new JSDOM('<div id="root"></div>');
   const context = {
     document: dom.window.document,
@@ -94,8 +94,8 @@ function setup({ fetchImpl }) {
     },
     getCsrfToken: () => 'csrf-token',
     showToast: (message) => toasts.push(message),
-    onImported: (providerId, modelId) => imported.push({ providerId, modelId }),
-    onClose: () => { closed += 1; },
+    onImported: onImported || ((providerId, modelId) => imported.push({ providerId, modelId })),
+    onClose: onClose || (() => { closed += 1; }),
   });
   return {
     wizard,
@@ -923,5 +923,383 @@ test('R3a: the real management chain keeps the advisory visible until the user f
   assert.equal(providersChanged.length, 1, 'finishing refreshes downstream consumers');
   assert.equal(document.getElementById('catalog-import-post-import'), null, 'the wizard handed the pane back');
   assert.ok(document.getElementById('provider-base-url'), 'the provider editor now owns the detail pane');
+  assert.equal(document.getElementById('provider-base-url').value, 'https://api.kimi.com/coding', 'editor shows the imported URL');
+});
+
+// ---------------------------------------------------------------------------
+// R4: import lifecycle. Two CHANGES_REQUESTED findings from the a9630c8
+// review: (1) navigating to another model right after an import left the
+// target page disabled and then overwritten by the delayed provider refresh;
+// (2) the advisory state rebuilt the editable form from the stale projection,
+// so the shown URL could diverge from the persisted one while the main button
+// had already become a non-saving 完成 button.
+// ---------------------------------------------------------------------------
+
+const PERSISTED_KIMI_IMPORT_RESPONSE = (baseUrl) => ({
+  providers: [{
+    id: 'kimi-for-coding', name: 'Kimi For Coding', baseUrl, api: 'anthropic-messages',
+    authHeader: false, apiKeyMode: 'literal', hasApiKey: true, hasExternalAuth: false, hasCustomHeaders: false,
+    models: [{
+      id: 'kimi-for-coding', name: 'kimi-for-coding', api: '', baseUrl: '',
+      family: 'kimi', reasoning: false, input: ['text'], contextWindow: null, maxTokens: null, hasCustomHeaders: false,
+    }],
+  }],
+  endpointDiagnostic: null,
+  modelEndpointDiagnostic: null,
+  siblingEndpointDiagnostics: [],
+  write: { backupCreated: true },
+});
+
+function persistedKimiFetch(baseUrlByImport = () => 'https://api.kimi.com/coding') {
+  return (url) => {
+    if (url === '/api/model-catalog') return Promise.resolve(structuredClone(STALE_KIMI_INDEX));
+    if (url.startsWith('/api/model-catalog?')) {
+      return Promise.resolve({ projection: structuredClone(STALE_KIMI_PROJECTION), runtimeDefaults: { contextWindow: 128000, maxTokens: 16384 } });
+    }
+    if (url === '/api/model-catalog/import') return Promise.resolve(structuredClone(PERSISTED_KIMI_IMPORT_RESPONSE(baseUrlByImport())));
+    return Promise.reject(new Error(`unexpected url ${url}`));
+  };
+}
+
+test('R4b: the advisory state shows the persisted values read-only instead of a stale editable form', async () => {
+  const session = setup({ fetchImpl: persistedKimiFetch() });
+  await session.wizard.open();
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+
+  session.document.getElementById('catalog-import-apply-endpoint-suggestion').click();
+  await flush();
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+
+  // No editable import form may survive into the advisory state: the main
+  // button is now 完成 and would not save anything.
+  assert.equal(session.document.getElementById('catalog-import-base-url'), null, 'no editable base URL input after import');
+  assert.equal(session.document.getElementById('catalog-import-name'), null, 'no editable name input after import');
+  assert.equal(session.document.getElementById('catalog-import-apply-endpoint-suggestion'), null, 'no apply-suggestion button after import');
+  assert.equal(session.document.getElementById('catalog-import-endpoint-warning'), null, 'no pre-import warning re-rendered from the stale projection');
+
+  // The persisted combination (as returned by the import response) is shown
+  // read-only instead — the displayed URL must be the submitted /coding, not
+  // the catalog's /coding/v1.
+  const result = session.document.getElementById('catalog-import-result');
+  assert.ok(result, 'read-only import result card exists');
+  assert.equal(/** @type {HTMLInputElement} */ (session.document.getElementById('catalog-import-result-base-url')).value, 'https://api.kimi.com/coding');
+  assert.equal(/** @type {HTMLInputElement} */ (session.document.getElementById('catalog-import-result-base-url')).readOnly, true);
+  assert.equal(/** @type {HTMLInputElement} */ (session.document.getElementById('catalog-import-result-api')).value, 'anthropic-messages');
+  assert.equal(/** @type {HTMLInputElement} */ (session.document.getElementById('catalog-import-result-model')).value, 'kimi-for-coding');
+  assert.match(result.textContent, /只读/u, 'the card states it is read-only');
+  assert.ok(session.document.getElementById('catalog-import-post-import'), 'post-import advisory remains part of the result');
+  const confirmButton = /** @type {HTMLButtonElement} */ (session.document.getElementById('catalog-import-confirm'));
+  assert.match(confirmButton.textContent, /完成/u);
+  assert.equal(confirmButton.disabled, false);
+});
+
+test('R4b: a persisted model-level override is reported with its effective combination', async () => {
+  const session = setup({
+    fetchImpl: (url) => {
+      if (url === '/api/model-catalog/import') {
+        return Promise.resolve(structuredClone({
+          ...PERSISTED_KIMI_IMPORT_RESPONSE('https://api.kimi.com/coding'),
+          modelEndpointDiagnostic: {
+            status: 'mismatch',
+            code: 'verified_endpoint_protocol_mismatch',
+            suggestion: 'https://api.kimi.com/coding/v1',
+            basis: 'models.dev:kimi-code-plan-cn',
+            message: '已核实的 Kimi For Coding 端点：OpenAI 兼容协议应使用 https://api.kimi.com/coding/v1。',
+          },
+          providers: [{
+            id: 'kimi-for-coding', name: 'Kimi For Coding', baseUrl: 'https://api.kimi.com/coding', api: 'anthropic-messages',
+            authHeader: false, apiKeyMode: 'literal', hasApiKey: true, hasExternalAuth: false, hasCustomHeaders: false,
+            models: [{
+              id: 'kimi-for-coding', name: 'kimi-for-coding', api: 'openai-completions', baseUrl: '',
+              family: 'kimi', reasoning: false, input: ['text'], contextWindow: null, maxTokens: null, hasCustomHeaders: false,
+            }],
+          }],
+        }));
+      }
+      return persistedKimiFetch()(url);
+    },
+  });
+  await session.wizard.open();
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+
+  const result = session.document.getElementById('catalog-import-result');
+  assert.ok(result);
+  assert.match(result.textContent, /模型级覆盖/u, 'the persisted model override is stated');
+  assert.match(result.textContent, /openai-completions/u, 'the model override protocol is stated');
+  assert.match(result.textContent, /优先/u, 'the precedence over the provider config is stated');
+});
+
+test('R4c: a failed provider refresh on completion is retryable, not a dead end', async () => {
+  let attempts = 0;
+  let succeeded = 0;
+  const session = setup({
+    fetchImpl: persistedKimiFetch(),
+    onImported: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('provider refresh failed');
+      succeeded += 1;
+    },
+  });
+  await session.wizard.open();
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+
+  // First completion attempt fails: the wizard must stay usable and explicit
+  // about the failure instead of silently disabling the button forever.
+  session.document.getElementById('catalog-import-confirm').click(); // 完成 (1st)
+  await flush();
+  const confirmButton = /** @type {HTMLButtonElement} */ (session.document.getElementById('catalog-import-confirm'));
+  assert.equal(confirmButton.disabled, false, '完成 stays clickable after a failed refresh');
+  const error = session.document.getElementById('catalog-import-error');
+  assert.ok(error, 'error element exists');
+  assert.equal(error.classList.contains('hidden'), false, 'the refresh failure is surfaced');
+  assert.match(error.textContent, /provider refresh failed/u, 'the surfaced error carries the actual refresh failure');
+  assert.equal(attempts, 1);
+
+  // Retry succeeds and hands the page back.
+  confirmButton.click(); // 完成 (2nd)
+  await flush();
+  await flush();
+  assert.equal(attempts, 2, 'retry issued a second onImported');
+  assert.equal(succeeded, 1);
+});
+
+test('R4d: refreshing the catalog after an import keeps the handback pending until the user leaves', async () => {
+  const session = setup({
+    fetchImpl: (url, requestOptions) => {
+      if (url === '/api/model-catalog/refresh') return Promise.resolve({ status: 'updated', providerCount: 1 });
+      return persistedKimiFetch()(url, requestOptions);
+    },
+  });
+  await session.wizard.open();
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+  assert.ok(session.document.getElementById('catalog-import-post-import'));
+
+  // In-wizard navigation (catalog refresh/reopen) must not fire the completion
+  // callback or hand the pane to the editor behind the user's back.
+  session.document.getElementById('catalog-import-refresh').click();
+  await flush();
+  await flush();
+  assert.ok(session.document.querySelector('[data-catalog-provider="kimi-for-coding"]'), 'the catalog view is rendered again');
+  assert.equal(session.document.getElementById('catalog-import-post-import'), null, 'advisory is cleared on navigation');
+  assert.equal(session.imported.length, 0, 'onImported does not fire on in-wizard navigation');
+  assert.equal(session.isClosed(), false);
+
+  // Leaving the wizard afterwards still refreshes the provider list exactly once.
+  session.document.getElementById('catalog-import-close').click();
+  await flush();
+  await flush();
+  assert.deepEqual(session.imported, [{ providerId: 'kimi-for-coding', modelId: 'kimi-for-coding' }]);
+  assert.equal(session.isClosed(), true, 'the pane is handed back after the refresh');
+});
+
+test('R4e: consecutive imports navigate cleanly and finish with a single handback', async () => {
+  const twoModelIndex = {
+    provenance: PROVENANCE,
+    providers: [{
+      id: 'kimi-for-coding', name: 'Kimi For Coding', env: ['KIMI_API_KEY'],
+      models: [
+        { id: 'kimi-for-coding', name: 'kimi-for-coding', dialect: 'anthropic-messages', family: 'kimi', familyStatus: 'mapped', manualConfigurationRequired: false },
+        { id: 'kimi-for-coding-2', name: 'kimi-2', dialect: 'anthropic-messages', family: 'kimi', familyStatus: 'mapped', manualConfigurationRequired: false },
+      ],
+    }],
+  };
+  const importBodies = [];
+  const session = setup({
+    fetchImpl: (url, requestOptions) => {
+      if (url === '/api/model-catalog') return Promise.resolve(structuredClone(twoModelIndex));
+      if (url.startsWith('/api/model-catalog?')) {
+        const modelId = decodeURIComponent(/&modelId=(.+)$/u.exec(url)[1]);
+        return Promise.resolve({
+          projection: { ...structuredClone(STALE_KIMI_PROJECTION), modelId, name: modelId },
+          runtimeDefaults: { contextWindow: 128000, maxTokens: 16384 },
+        });
+      }
+      if (url === '/api/model-catalog/import') {
+        const body = typeof requestOptions.body === 'string' ? JSON.parse(requestOptions.body) : requestOptions.body;
+        importBodies.push(body);
+        return Promise.resolve(structuredClone(PERSISTED_KIMI_IMPORT_RESPONSE(body.baseUrl)));
+      }
+      return Promise.reject(new Error(`unexpected url ${url}`));
+    },
+  });
+  await session.wizard.open();
+
+  // Import the first model.
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+  assert.ok(session.document.getElementById('catalog-import-post-import'), 'first import advisory shown');
+
+  // Navigate straight to the second model: the page must be fully usable.
+  session.document.querySelector('[data-catalog-model="kimi-for-coding-2"] button').click();
+  await flush();
+  assert.equal(session.imported.length, 0, 'navigation does not fire the handback');
+  assert.equal(session.document.getElementById('catalog-import-post-import'), null, 'advisory cleared on navigation');
+  const confirmButton = /** @type {HTMLButtonElement} */ (session.document.getElementById('catalog-import-confirm'));
+  assert.equal(confirmButton.disabled, false, 'the second model import is not blocked by the first import');
+  assert.match(confirmButton.textContent, /确认导入/u, 'the second model gets a real import button');
+
+  // Import the second model and finish: exactly one handback for the latest import.
+  confirmButton.click();
+  await flush();
+  assert.ok(session.document.getElementById('catalog-import-post-import'), 'second import advisory shown');
+  session.document.getElementById('catalog-import-confirm').click(); // 完成
+  await flush();
+  await flush();
+  assert.equal(importBodies.length, 2, 'both imports were posted');
+  assert.deepEqual(session.imported, [{ providerId: 'kimi-for-coding', modelId: 'kimi-for-coding-2' }], 'a single handback fires for the latest import');
+});
+
+// Full management chain with a deferred provider fetch: the delayed refresh
+// from the first import must never disable or overwrite the second model's
+// page while the user keeps browsing the catalog.
+test('R4a: browsing another model after an import stays owned by the wizard despite the delayed refresh', async () => {
+  const dom = new JSDOM(`
+    <div id="provider-count"></div>
+    <ul id="provider-list"></ul>
+    <div id="provider-detail"></div>
+    <button id="add-provider"></button>
+    <button id="import-provider"></button>
+    <button id="refresh-providers"></button>
+  `);
+  const context = {
+    document: dom.window.document,
+    Event: dom.window.Event,
+    URL,
+    structuredClone,
+    window: { CaffPersonas: {}, CaffShared: {} },
+  };
+  for (const rel of [
+    'public/shared/management-list.js',
+    'public/shared/model-options.js',
+    'public/shared/endpoint-diagnostics.js',
+    'public/personas/management-utils.js',
+    'public/personas/provider-editor.js',
+    'public/personas/subscription-login.js',
+    'public/personas/catalog-import.js',
+    'public/personas/provider-management.js',
+  ]) {
+    const sourcePath = path.join(projectRoot, rel);
+    vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
+  }
+
+  let providerBaseUrl = 'https://api.kimi.com/coding/v1';
+  const providerList = () => ({
+    providers: [{
+      id: 'kimi-for-coding', name: 'Kimi For Coding', baseUrl: providerBaseUrl,
+      api: 'anthropic-messages', authHeader: false, apiKeyMode: 'literal', hasApiKey: true,
+      hasExternalAuth: false, hasCustomHeaders: false,
+      models: [
+        { id: 'kimi-for-coding', name: 'kimi-for-coding', family: 'kimi', reasoning: false, input: ['text'] },
+        { id: 'kimi-for-coding-2', name: 'kimi-2', family: 'kimi', reasoning: false, input: ['text'] },
+      ],
+    }],
+  });
+  const twoModelIndex = {
+    provenance: PROVENANCE,
+    providers: [{
+      id: 'kimi-for-coding', name: 'Kimi For Coding', env: ['KIMI_API_KEY'],
+      models: [
+        { id: 'kimi-for-coding', name: 'kimi-for-coding', dialect: 'anthropic-messages', family: 'kimi', familyStatus: 'mapped', manualConfigurationRequired: false },
+        { id: 'kimi-for-coding-2', name: 'kimi-2', dialect: 'anthropic-messages', family: 'kimi', familyStatus: 'mapped', manualConfigurationRequired: false },
+      ],
+    }],
+  };
+  const providersChanged = [];
+  let providerCalls = 0;
+  let pendingProviderResolvers = [];
+  const releasePendingProviderFetches = async () => {
+    const resolvers = pendingProviderResolvers.splice(0);
+    resolvers.forEach((resolve) => resolve());
+    await flush();
+    await flush();
+  };
+  const management = context.window.CaffPersonas.createProviderManagement({
+    list: dom.window.document.getElementById('provider-list'),
+    detail: dom.window.document.getElementById('provider-detail'),
+    addButton: dom.window.document.getElementById('add-provider'),
+    importButton: dom.window.document.getElementById('import-provider'),
+    refreshButton: dom.window.document.getElementById('refresh-providers'),
+    count: dom.window.document.getElementById('provider-count'),
+    subscriptionButton: null,
+    isEnabled: () => true,
+    getCsrfToken: () => 'csrf-token',
+    showToast() {},
+    onProvidersChanged: async () => { providersChanged.push('changed'); },
+    fetchJson: async (url, requestOptions) => {
+      if (url === '/api/model-providers') {
+        providerCalls += 1;
+        if (providerCalls > 1) await new Promise((resolve) => { pendingProviderResolvers.push(resolve); });
+        return providerList();
+      }
+      if (url === '/api/subscription-auth') return { channels: [], logins: [] };
+      if (url === '/api/model-catalog') return structuredClone(twoModelIndex);
+      if (url.startsWith('/api/model-catalog?')) {
+        const modelId = decodeURIComponent(/&modelId=(.+)$/u.exec(url)[1]);
+        return { projection: { ...structuredClone(STALE_KIMI_PROJECTION), modelId, name: modelId }, runtimeDefaults: { contextWindow: 128000, maxTokens: 16384 } };
+      }
+      if (url === '/api/model-catalog/import') {
+        const body = typeof requestOptions.body === 'string' ? JSON.parse(requestOptions.body) : requestOptions.body;
+        providerBaseUrl = body.baseUrl || providerBaseUrl;
+        return structuredClone(PERSISTED_KIMI_IMPORT_RESPONSE(providerBaseUrl));
+      }
+      throw new Error(`unexpected url ${url}`);
+    },
+  });
+  await management.refresh();
+  const document = dom.window.document;
+
+  document.getElementById('import-provider').click();
+  await flush();
+  document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+  document.getElementById('catalog-import-apply-endpoint-suggestion').click();
+  await flush();
+  document.getElementById('catalog-import-confirm').click();
+  await flush();
+  await flush();
+  assert.ok(document.getElementById('catalog-import-post-import'), 'advisory shown after the import');
+
+  // Browse straight to the second model without finishing.
+  document.querySelector('[data-catalog-model="kimi-for-coding-2"] button').click();
+  await flush();
+
+  const confirmButton = /** @type {HTMLButtonElement} */ (document.getElementById('catalog-import-confirm'));
+  assert.ok(document.getElementById('catalog-import-base-url'), 'the second model form is rendered');
+  assert.equal(confirmButton.disabled, false, 'the second model import is not disabled by the first import');
+  assert.match(confirmButton.textContent, /确认导入/u);
+  assert.equal(document.getElementById('catalog-import-post-import'), null, 'advisory cleared on navigation');
+
+  // The delayed provider refresh (if any was started) must not reclaim the
+  // pane or fire downstream consumers while the wizard is still browsing.
+  await releasePendingProviderFetches();
+  assert.ok(document.getElementById('catalog-import-base-url'), 'the wizard still owns the detail pane after any delayed refresh');
+  assert.equal(document.getElementById('provider-base-url'), null, 'the editor did not take over the wizard page');
+  assert.equal(providersChanged.length, 0, 'no downstream consumer fired during in-wizard navigation');
+
+  // Leaving the wizard hands the pane back with refreshed data.
+  document.getElementById('catalog-import-close').click();
+  await flush();
+  await releasePendingProviderFetches();
+  assert.equal(providersChanged.length, 1, 'leaving refreshes downstream consumers exactly once');
+  assert.ok(document.getElementById('provider-base-url'), 'the provider editor owns the detail pane after leaving');
   assert.equal(document.getElementById('provider-base-url').value, 'https://api.kimi.com/coding', 'editor shows the imported URL');
 });
