@@ -919,7 +919,7 @@ export function createDagScheduler(options: any = {}) {
       writeExecution(
         ownerConversationId,
         [{ nodeId, status: 'blocked' }],
-        `dag_goal_model_failure_paused: consecutive fast model invocation failures (${reasonPrefix})${detail}`
+        `dag_goal_model_failure_paused: consecutive model invocation failures (${reasonPrefix})${detail}`
       );
       return true;
     }

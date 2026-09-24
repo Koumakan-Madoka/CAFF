@@ -137,9 +137,47 @@ Agent.
 
 Runner state is stored in `sessionGoalRunner`. Same-revision factual updates
 migrate the runner epoch key in the same metadata write, preserving iteration
-and failure streak state. Three qualifying fast provider, timeout, or process
-failures pause the Goal atomically. User stop is neutral; successful replies and
-ordinary user turns reset the failure streak.
+and failure streak state.
+
+### Dual failure circuit breakers
+
+Each qualifying failure turn (a Goal auto-continuation whose reply failures are
+all `eligible` provider, timeout, or process-exit invocation failures) carries a
+bounded failure-mode label: structured network codes from an explicit whitelist
+(`ECONNRESET`/`ECONNREFUSED`/`ETIMEDOUT`/`ENOTFOUND`/`EAI_AGAIN` plus the
+connection-layer `UND_ERR_*` codes) and `fetch failed` map to
+`provider:network`; anchored leading indicators of the redacted summary (only
+the first 200 characters participate) map to rate-limited, auth, forbidden,
+server-error, stream-read, or quota modes; timeouts split by code; known
+termination signals group as `process_exit:signal`. Anything else maps to a
+`*:other` label, which is never streak-eligible. The raw error text is never
+stored in the mode, and `kind`/`code`/`eligible` semantics are unchanged.
+
+Two persistent counters guard auto-continuation, with no duration or
+time-window gates:
+
+- **Same-mode streak**: pauses the Goal after
+  `CAFF_SESSION_GOAL_FAILURE_THRESHOLD` (default 3, minimum 2) consecutive
+  same-mode failure turns. A turn counts toward the streak only when every
+  failure in it maps to one identical non-`:other` mode; a mode switch resets
+  only this streak. Unknown or mixed turns break the streak.
+- **Total streak**: pauses after `CAFF_SESSION_GOAL_TOTAL_FAILURE_THRESHOLD`
+  (default 5, clamped to at least the same-mode threshold) consecutive
+  qualifying failure turns regardless of mode, so alternating or
+  unattributable failures cannot bypass the guard.
+
+Successful replies and ordinary user turns reset both counters; user stop is
+neutral. Counters survive restart and owner change inside the same Goal epoch;
+an explicit resume starts a fresh cycle. Pausing only blocks the next
+auto-continuation: in-flight calls, timeouts, retries, session reuse, and the
+overall continuation budget are unaffected.
+
+Upgrade notes: legacy `consecutiveModelFailureCount` values are not migrated
+into the new counters, but runners already paused by the retired fast-failure
+rule remain recognized as `error_paused` by the UI and DAG scheduler and are
+not silently unpaused. `CAFF_SESSION_GOAL_FAST_FAILURE_MS` and
+`CAFF_SESSION_GOAL_FAILURE_WINDOW_MS` are retired and no longer read; failure
+duration never participates in the pause decision.
 
 ## DAG Binding
 

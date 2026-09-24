@@ -156,7 +156,7 @@
     settles immediately;
   - goal-runner budget pause proposal → `blocked`
     `dag_goal_budget_exhausted`;
-  - durable Goal `paused` + runner `error_paused`, with matching `goalUpdatedAt` and `consecutiveModelFailureCount >= failureThreshold` → `blocked` `dag_goal_model_failure_paused`; this is a system failure state, not a worker completion or verifier ruling;
+  - durable Goal `paused` + runner `error_paused`, with matching `goalUpdatedAt` and a satisfied pause condition (legacy `consecutiveModelFailureCount >= failureThreshold`, or `consecutiveSameModeFailureCount >= failureThreshold`, or `consecutiveFailureCount >= totalFailureThreshold`) → `blocked` `dag_goal_model_failure_paused`; this is a system failure state, not a worker completion or verifier ruling;
   - **ruling identity is machine-checked, not prompt-checked**: the bridge
     enforces worker-only completion and verifier-only rulings against the
     dispatch-time binding (403 pre-mutation); the scheduler re-verifies

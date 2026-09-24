@@ -363,6 +363,87 @@ test('error-paused goal update blocks a bound doing DAG node without a completio
   assert.equal(getNode(store, 'n1').result, undefined);
 });
 
+test('dual-guard error-paused goal update blocks a bound doing DAG node (same-mode and total pause states)', async () => {
+  const persistDualGuardPause = (store, conversationId, runnerOverrides) => {
+    const timestamp = '2026-09-24T00:03:05.000Z';
+    const conversation = store.getConversationWithoutMessages(conversationId);
+    const goal = getSessionGoal(conversation);
+    assert.ok(goal);
+    store.updateConversation(conversationId, {
+      metadata: {
+        ...(conversation.metadata || {}),
+        sessionGoal: {
+          ...goal,
+          status: 'paused',
+          updatedAt: timestamp,
+        },
+        sessionGoalRunner: {
+          status: 'error_paused',
+          goalUpdatedAt: timestamp,
+          iteration: 5,
+          maxIterations: 20,
+          updatedAt: timestamp,
+          consecutiveSameModeFailureCount: 3,
+          consecutiveFailureCount: 3,
+          failureThreshold: 3,
+          totalFailureThreshold: 5,
+          lastFailureMode: 'provider:network',
+          lastFailureAt: timestamp,
+          lastFailureKind: 'provider',
+          lastFailureCode: 'assistant_error',
+          lastFailureSummary: 'fetch failed',
+          pauseReason: '连续 3 次同模式模型调用失败，Goal 已自动暂停。',
+          errorPausedAt: timestamp,
+          ...runnerOverrides,
+        },
+      },
+    });
+  };
+
+  // 同模式 3 轮暂停（无旧 consecutiveModelFailureCount 字段）。
+  {
+    const store = createStore(test, 'caff-dag-goal-dual-guard-same-mode-');
+    createRoot(store);
+    const plan = createActivePlan(store, makeDoc([node('n1')]));
+    const { scheduler } = createHarness(store);
+
+    scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+    await flush(scheduler);
+    assert.equal(getNode(store, 'n1').status, 'doing');
+
+    persistDualGuardPause(store, 'child-n1', {});
+    scheduler.handleEvent('conversation_goal_updated', { conversationId: 'child-n1' });
+    await flush(scheduler);
+
+    assert.equal(getNode(store, 'n1').status, 'blocked');
+    assert.match(historyFor(store, 'n1').at(-1).reason, /dag_goal_model_failure_paused/u);
+  }
+
+  // 总失败 5 轮暂停（模式交替，同模式连击仅为 1）。
+  {
+    const store = createStore(test, 'caff-dag-goal-dual-guard-total-');
+    createRoot(store);
+    const plan = createActivePlan(store, makeDoc([node('n1')]));
+    const { scheduler } = createHarness(store);
+
+    scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+    await flush(scheduler);
+    assert.equal(getNode(store, 'n1').status, 'doing');
+
+    persistDualGuardPause(store, 'child-n1', {
+      consecutiveSameModeFailureCount: 1,
+      consecutiveFailureCount: 5,
+      lastFailureMode: 'provider:other',
+      pauseReason: '连续 5 次模型调用失败，Goal 已自动暂停。',
+    });
+    scheduler.handleEvent('conversation_goal_updated', { conversationId: 'child-n1' });
+    await flush(scheduler);
+
+    assert.equal(getNode(store, 'n1').status, 'blocked');
+    assert.match(historyFor(store, 'n1').at(-1).reason, /dag_goal_model_failure_paused/u);
+  }
+});
+
 test('startup reconcile blocks a bound DAG node whose Goal was error-paused before restart', async () => {
   const store = createStore(test, 'caff-dag-goal-error-pause-restart-');
   createRoot(store);
