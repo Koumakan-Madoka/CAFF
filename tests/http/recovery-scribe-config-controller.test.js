@@ -175,6 +175,7 @@ test('HTTP reports blocked configuration, rejects unresolvable saves and permits
   await assert.rejects(() => invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: defaults }),
     (error) => error.statusCode === 422 && error.issues[0].code === 'recovery_config_model_unavailable');
   assert.equal(row, null);
+  row = { ...defaults }; // Existing broken saved configuration, not startup preferences.
   const disabled = await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { ...defaults, enabled: false } });
   assert.equal(disabled.json.config.enabled, false);
   assert.equal(disabled.json.readiness.ready, false);

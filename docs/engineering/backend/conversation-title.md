@@ -113,7 +113,7 @@ title and source.
   first retained digest and therefore does not refine.
 - Before calling the model, the current source must be `default` or
   `auto_first_message`, `titleRefinedAt` must be absent, refinement must be
-  enabled, a title/digest model runner or model configuration must exist, and
+  enabled, a saved and locally resolvable shared system-scribe model must exist, and
   normalized source messages must be non-empty.
 - The title prompt contains at most the first 12 source messages, each clipped
   to 300 characters. It requests one 5-15 character, language-matched line.
@@ -145,13 +145,15 @@ digest `summaryMode`. An extractive digest may still make one title model call.
 | --- | --- |
 | Enablement | `options.autoTitleRefine` -> `CAFF_DIGEST_AUTO_TITLE_REFINE` -> `true` |
 | Runner | `options.titleModelRunner` -> `options.digestModelRunner` -> normal pi run |
-| Provider | `options.provider` -> `CAFF_DIGEST_PROVIDER` -> `PI_PROVIDER` -> digest default |
-| Model | `options.model` -> `CAFF_DIGEST_MODEL` -> `PI_MODEL` -> digest default |
-| Thinking | `options.thinking` -> `CAFF_DIGEST_THINKING` -> digest default |
+| Provider | Persisted `recovery_scribe.provider`; otherwise unconfigured |
+| Model | Persisted `recovery_scribe.model`; otherwise unconfigured |
+| Thinking | Persisted `recovery_scribe.thinking` |
 | Timeout | `options.titleRefineTimeoutMs` -> `CAFF_TITLE_REFINE_TIMEOUT_MS` -> 30000 ms |
 
-- The model-availability gate accepts either runner, explicit digest provider
-  or model config, or a configured `PI_PROVIDER` / `PI_MODEL`.
+- The model-availability gate requires the saved shared system-service selection
+  and positive local model/thinking resolution. Env and injected runners do not
+  establish a selection. When missing or invalid, retain the current title without
+  calling a model. PI continues to own provider registration and model resolution.
 - `resolveDigestModelConfig` remains the single provider/model/thinking
   resolver. Title refinement passes its timeout to the shared direct model
   completion, calls it with `purpose: 'title_refine'` plus the conversation id,
@@ -159,8 +161,8 @@ digest `summaryMode`. An extractive digest may still make one title model call.
   `digestModelRunner` fixtures receive `{ config, maxTokens, attempt }` and the
   same empty-output retry policy.
 - Do not infer title-model availability from `summaryMode: 'model'` alone. Mode
-  selects digest generation behavior; provider/model/runner settings provide
-  the executable model path.
+  selects digest generation behavior; the saved shared model and local validation
+  establish readiness, not the presence of a runner.
 
 ### 4. Validation & Error Matrix
 

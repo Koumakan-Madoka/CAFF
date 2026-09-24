@@ -273,10 +273,11 @@ test('feishu service processes long connection events without webhook token veri
     id: 'feishu-long-default-role',
     name: 'Feishu Long Default Role',
     personaPrompt: 'Handle long-connection messages.',
+    provider: 'test', model: 'test-model',
   });
   const roleService = createRoleService({
     store,
-    modelCatalog: { getOptions() { return []; } },
+    modelCatalog: { getOptions() { return [{ provider: 'test', model: 'test-model', runtimeResolvable: true, supportedThinkingLevels: ['off'] }]; } },
   });
   const calls = [];
   const client = {
@@ -376,10 +377,11 @@ test('feishu service uses the configured Trellis Coding mode for new chats', asy
     id: 'feishu-coding-default-role',
     name: 'Feishu Coding Default Role',
     personaPrompt: 'Handle Coding mode messages.',
+    provider: 'test', model: 'test-model',
   });
   const roleService = createRoleService({
     store,
-    modelCatalog: { getOptions() { return []; } },
+    modelCatalog: { getOptions() { return [{ provider: 'test', model: 'test-model', runtimeResolvable: true, supportedThinkingLevels: ['off'] }]; } },
   });
   const modeStore = new ModeStore(store.db);
   const codingMode = modeStore.save({

@@ -27,7 +27,7 @@ const MODEL_OPTIONS = [
   },
 ];
 
-function setup({ modelOptions = MODEL_OPTIONS, enabled = true, config = {}, readiness = { ready: true } } = {}) {
+function setup({ modelOptions = MODEL_OPTIONS, enabled = true, config = {}, readiness = { ready: true }, source = 'persisted' } = {}) {
   const dom = new JSDOM('<div id="root"></div>');
   const requests = [];
   const toasts = [];
@@ -42,7 +42,7 @@ function setup({ modelOptions = MODEL_OPTIONS, enabled = true, config = {}, read
       ...config,
     },
     readiness,
-    source: 'runtime_defaults',
+    source,
     updatedAt: null,
     modelOptions,
   };
@@ -78,6 +78,24 @@ function setup({ modelOptions = MODEL_OPTIONS, enabled = true, config = {}, read
   return { dom, management, requests, toasts, managedProviders: () => managedProviders };
 }
 
+test('unconfigured scribe UI does not select the first PI model and explains explicit save', async () => {
+  const session = setup({ config: { provider: '', model: '', thinking: 'off' }, readiness: { ready: false }, source: 'unconfigured' });
+  await session.management.refresh();
+  const { document, Event } = session.dom.window;
+  const select = document.getElementById('recovery-scribe-model');
+  assert.equal(select.value, '');
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
+  assert.match(document.getElementById('recovery-scribe-config-source').textContent, /尚未配置/u);
+  assert.match(document.getElementById('recovery-scribe-readiness').textContent, /目录中存在模型不会自动启用/u);
+  select.value = MODEL_OPTIONS[1].key;
+  select.dispatchEvent(new Event('change'));
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, false);
+  await session.management.save();
+  const put = session.requests.find((request) => request.options.method === 'PUT');
+  assert.equal(put.options.body.provider, MODEL_OPTIONS[1].provider);
+  assert.equal(put.options.body.model, MODEL_OPTIONS[1].model);
+});
+
 test('system scribe editor loads configured models and saves a full hot configuration snapshot', async () => {
   const session = setup();
   await session.management.refresh();
@@ -88,7 +106,7 @@ test('system scribe editor loads configured models and saves a full hot configur
   assert.equal(document.querySelector('#recovery-scribe-model option[value=""]'), null);
   assert.equal(document.getElementById('recovery-scribe-thinking').value, 'low');
   assert.equal(document.getElementById('recovery-scribe-timeout').value, '60');
-  assert.match(document.getElementById('recovery-scribe-config-source').textContent, /启动默认/u);
+  assert.match(document.getElementById('recovery-scribe-config-source').textContent, /已保存/u);
   assert.match(document.getElementById('root').textContent, /当 Agent 回复失败或被你手动停止后/u);
   assert.match(document.getElementById('root').textContent, /已完成的操作、可能已生效但未确认的改动、未完成的部分/u);
   assert.match(document.getElementById('root').textContent, /模型来自「模型供应商」中已配置的模型/u);

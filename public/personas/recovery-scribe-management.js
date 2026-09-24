@@ -61,7 +61,7 @@
       if (!configuration) return '';
       return configuration.source === 'persisted'
         ? `已保存${configuration.updatedAt ? ` · ${new Date(configuration.updatedAt).toLocaleString('zh-CN')}` : ''}`
-        : '启动默认';
+        : '尚未配置';
     }
 
     function updateSaveState() {
@@ -125,9 +125,11 @@
         <div class="management-actions"><button id="save-recovery-scribe-config" type="button" ${locked || !hasModels ? 'disabled' : ''}>保存并立即生效</button></div>`;
 
       const readinessNote = document.getElementById('recovery-scribe-readiness');
-      readinessNote.textContent = configuration.readiness?.ready === false
-        ? `需要配置：${config.provider} / ${config.model} 的本地模型配置未通过校验。请选择可解析模型及思考强度，或关闭现场整理。不会自动切换模型。`
-        : '就绪仅表示本地模型配置通过校验，不保证凭据或上游服务可用。';
+      readinessNote.textContent = !config.provider || !config.model
+        ? '尚未选择摘要与系统书记共用的模型。请从 PI 模型目录选择并保存；目录中存在模型不会自动启用模型摘要、标题精炼或现场整理。'
+        : configuration.readiness?.ready === false
+          ? `需要配置：${config.provider} / ${config.model} 的本地模型配置未通过校验。请选择可解析模型及思考强度，或关闭现场整理。不会自动切换模型。`
+          : '就绪仅表示本地模型配置通过校验，不保证凭据或上游服务可用。';
       document.getElementById('manage-providers-from-recovery-scribe').addEventListener('click', options.onManageProviders);
       document.getElementById('recovery-scribe-enabled').addEventListener('change', updateSaveState);
       if (hasModels) {
@@ -161,6 +163,7 @@
       if (!target) return;
       const issue = error && Array.isArray(error.issues) && error.issues[0];
       const messages = {
+        recovery_config_model_unconfigured: '请先选择并保存摘要与系统书记共用的模型',
         recovery_config_model_unavailable: '所选模型无法由当前运行时解析，请检查模型供应商配置',
         recovery_config_catalog_unavailable: '无法读取本地模型目录，请修正模型供应商配置，或关闭现场整理',
         recovery_config_thinking_unsupported: '所选模型不支持该思考强度',

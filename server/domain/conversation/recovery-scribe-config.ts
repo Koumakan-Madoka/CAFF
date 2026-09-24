@@ -1,4 +1,5 @@
 import { RECOVERY_SCRIBE_SYSTEM_ACTOR } from '../roles/system-actor-catalog';
+import { inspectModelConfiguration } from '../models/model-configuration';
 
 export const MIN_RECOVERY_TIMEOUT_MS = 1_000;
 export const MAX_RECOVERY_TIMEOUT_MS = 60_000;
@@ -34,7 +35,7 @@ function cloneConfig(config: any) {
 
 function validateDefaults(defaults: any) {
   const config = cloneConfig(defaults);
-  if (!config.provider || !config.model || !THINKING_LEVELS.has(config.thinking)) {
+  if (!THINKING_LEVELS.has(config.thinking)) {
     throw new Error('Recovery scribe runtime defaults are invalid');
   }
   if (!Number.isInteger(config.timeoutMs)
@@ -45,7 +46,7 @@ function validateDefaults(defaults: any) {
   return config;
 }
 
-function validateUpdate(payload: any) {
+function validateUpdate(payload: any, allowEmptySelection = false) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new RecoveryScribeConfigError('recovery_config_body_invalid', 'body');
   }
@@ -66,10 +67,10 @@ function validateUpdate(payload: any) {
   const model = normalizeText(payload.model);
   const thinking = normalizeText(payload.thinking);
   const timeoutMs = payload.timeoutMs;
-  if (!provider) {
+  if (!provider && !allowEmptySelection) {
     throw new RecoveryScribeConfigError('recovery_config_provider_required', 'body.provider');
   }
-  if (!model) {
+  if (!model && !allowEmptySelection) {
     throw new RecoveryScribeConfigError('recovery_config_model_required', 'body.model');
   }
   if (!THINKING_LEVELS.has(thinking)) {
@@ -89,25 +90,9 @@ export function createRecoveryScribeConfigManager(options: any = {}) {
   const modelCatalog = options.modelCatalog || null;
   const defaults = validateDefaults(options.defaults);
 
-  function modelOptions() {
-    if (!modelCatalog || typeof modelCatalog.getOptions !== 'function') {
-      return [];
-    }
-    const value = modelCatalog.getOptions();
-    return (Array.isArray(value) ? value : []).map((option) => {
-      if (typeof option?.runtimeResolvable === 'boolean') return option;
-      // Legacy injected catalogs may omit the flag. Absence is not proof of
-      // resolution: ask the authoritative resolver, never default to true.
-      const resolved = modelCatalog.getResolvedModel?.(option?.provider, option?.model);
-      const verified = resolved?.runtimeResolvable === true
-        && normalizeText(resolved.provider) === normalizeText(option?.provider)
-        && normalizeText(resolved.model) === normalizeText(option?.model);
-      return {
-        ...option,
-        ...(verified ? { supportedThinkingLevels: resolved.supportedThinkingLevels } : {}),
-        runtimeResolvable: verified,
-      };
-    });
+  function unconfigured() {
+    // Startup preferences are not a saved choice of the shared system model.
+    return { ...cloneConfig(defaults), provider: '', model: '', thinking: 'off' };
   }
 
   function persisted() {
@@ -119,38 +104,15 @@ export function createRecoveryScribeConfigManager(options: any = {}) {
 
   function getConfigSnapshot() {
     const row = persisted();
-    return row ? cloneConfig(row) : cloneConfig(defaults);
+    return row ? cloneConfig(row) : unconfigured();
   }
 
   function inspectConfiguration(config: any) {
-    let availableOptions: any[] = [];
-    let code = '';
-    let path = '';
-    try {
-      availableOptions = modelOptions();
-      const option = availableOptions.find((candidate) => (
-        normalizeText(candidate?.provider) === config.provider
-        && normalizeText(candidate?.model) === config.model
-      )) || modelCatalog?.getResolvedModel?.(config.provider, config.model);
-      if (option?.runtimeResolvable === true && !availableOptions.includes(option)) {
-        availableOptions = [...availableOptions, { ...option, sourceLabel: 'explicit setting' }];
-      }
-      if (!option || option.runtimeResolvable !== true) {
-        code = 'recovery_config_model_unavailable';
-        path = 'body.model';
-      } else if (!Array.isArray(option.supportedThinkingLevels)
-        || !option.supportedThinkingLevels.includes(config.thinking)) {
-        code = 'recovery_config_thinking_unsupported';
-        path = 'body.thinking';
-      }
-    } catch {
-      // A broken local catalog must not hide the stored configuration or block
-      // the escape hatch for disabling it. Never expose raw loader diagnostics.
-      code = 'recovery_config_catalog_unavailable';
-      path = 'body.model';
-    }
+    const inspection = inspectModelConfiguration(modelCatalog, config);
+    const code = inspection.code ? `recovery_config_${inspection.code}` : '';
+    const path = inspection.path;
     return {
-      modelOptions: structuredClone(availableOptions),
+      modelOptions: inspection.modelOptions,
       readiness: {
         ready: !code,
         status: code ? 'needs_configuration' : 'ready',
@@ -163,10 +125,10 @@ export function createRecoveryScribeConfigManager(options: any = {}) {
 
   function getConfiguration() {
     const row = persisted();
-    const config = row ? cloneConfig(row) : cloneConfig(defaults);
+    const config = row ? cloneConfig(row) : unconfigured();
     return {
       config,
-      source: row ? 'persisted' : 'runtime_defaults',
+      source: row ? 'persisted' : 'unconfigured',
       updatedAt: row ? row.updatedAt : null,
       ...inspectConfiguration(config),
     };
@@ -176,8 +138,10 @@ export function createRecoveryScribeConfigManager(options: any = {}) {
     if (!store || typeof store.saveSystemServiceConfig !== 'function') {
       throw new RecoveryScribeConfigError('recovery_config_store_unavailable', 'store');
     }
-    const config = validateUpdate(payload);
     const current = getConfigSnapshot();
+    const allowEmptySelection = payload?.enabled === false && !current.provider && !current.model
+      && payload.provider === '' && payload.model === '';
+    const config = validateUpdate(payload, allowEmptySelection);
     const disableUnchanged = !config.enabled && (['provider', 'model', 'thinking', 'timeoutMs'] as const)
       .every((key) => config[key] === current[key]);
     const inspection = inspectConfiguration(config);

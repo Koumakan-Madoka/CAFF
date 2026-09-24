@@ -256,6 +256,47 @@ function createFakeAgentToolBridge() {
   };
 }
 
+test('agent executor blocks an unresolved model before tasks, runs, sandbox or message writes', async (t) => {
+  const tempDir = withTempDir('caff-agent-model-preflight-');
+  const minimalPi = require('../../build/lib/minimal-pi');
+  const executorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const original = minimalPi.startRun;
+  let spawned = 0;
+  let tasks = 0;
+  minimalPi.startRun = () => { spawned++; return createRunHandle('Must not run'); };
+  delete require.cache[executorPath];
+  t.after(() => {
+    minimalPi.startRun = original;
+    delete require.cache[executorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+  const { createAgentExecutor } = require(executorPath);
+  const { createTurnState } = require('../../build/server/domain/conversation/turn/turn-state');
+  const agent = { id: 'unready-agent', name: 'Unready', provider: 'test-provider', model: 'removed-model' };
+  const conversation = { id: 'unready-conversation', title: 'Unready', type: 'standard', agents: [agent], metadata: {} };
+  const store = createFakeStore(conversation);
+  const executor = createAgentExecutor({
+    store, skillRegistry: { resolveSkills: () => [] }, modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(), agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'), modelCatalog: { getOptions: () => [] },
+    toolBaseUrl: 'http://127.0.0.1:3100', agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+  const turnState = createTurnState(conversation, 'unready-turn');
+  await assert.rejects(() => executor.executeConversationAgent({
+    runStore: { ...createFakeRunStore(), createTask() { tasks++; } },
+    conversationId: conversation.id, turnId: turnState.turnId, rootTaskId: 'existing-root', conversation,
+    promptMessages: [{ id: 'existing-user', role: 'user', content: 'Run' }],
+    promptUserMessage: { id: 'existing-user', role: 'user', content: 'Run' }, queueItem: { triggerType: 'user' },
+    agent, turnState, completedReplies: [], failedReplies: [], routingMode: 'mention_queue', hop: 1,
+    remainingSlots: 1, enqueueAgent() {}, allowHandoffs: true, finalStopsTurn: true, projectDir: tempDir,
+  }), (error) => error.statusCode === 409 && error.code === 'conversation_agent_model_unconfigured');
+  assert.equal(tasks, 0);
+  assert.equal(spawned, 0);
+  assert.equal(store.messageWrites.creates.length, 0);
+  assert.deepEqual(fs.readdirSync(tempDir), [], 'configuration block precedes sandbox creation');
+});
+
 test('agent executor enriches the context snapshot with the reported harness system prompt', async (t) => {
   const tempDir = withTempDir('caff-agent-executor-harness-prompt-');
   const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
@@ -877,6 +918,7 @@ test('agent executor sends the prevalidated runtime config without env fallback 
     agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
     agentToolRelativePath: './lib/agent-chat-tools.js',
     piCapabilityExtensionPath,
+    modelCatalog: { getOptions: () => [{ provider: 'openai-runtime', model: 'gpt-runtime', runtimeResolvable: true, supportedThinkingLevels: ['max'] }] },
   });
   const turnState = createTurnState(conversation, 'turn-runtime-config');
 
@@ -1592,7 +1634,7 @@ test('agent executor downgrades historical images for a non-vision invocation an
     agentToolRelativePath: './lib/agent-chat-tools.js',
     modelCatalog: {
       getOptions() {
-        return [{ provider: 'deepseek', model: 'deepseek-v3', input: ['text'] }];
+        return [{ provider: 'deepseek', model: 'deepseek-v3', input: ['text'], runtimeResolvable: true, supportedThinkingLevels: ['off'] }];
       },
     },
   });
@@ -1696,7 +1738,7 @@ test('agent executor passes projected images to startRun for a vision model', as
     agentToolRelativePath: './lib/agent-chat-tools.js',
     modelCatalog: {
       getOptions() {
-        return [{ provider: 'openai', model: 'gpt-5', input: ['text', 'image'] }];
+        return [{ provider: 'openai', model: 'gpt-5', input: ['text', 'image'], runtimeResolvable: true, supportedThinkingLevels: ['off'] }];
       },
     },
     uploadsDir,
@@ -1818,7 +1860,7 @@ test('agent executor blocks IMAGE_MIME_MISMATCH when registry persisted MIME con
     agentToolRelativePath: './lib/agent-chat-tools.js',
     modelCatalog: {
       getOptions() {
-        return [{ provider: 'openai', model: 'gpt-5', input: ['text', 'image'] }];
+        return [{ provider: 'openai', model: 'gpt-5', input: ['text', 'image'], runtimeResolvable: true, supportedThinkingLevels: ['off'] }];
       },
     },
     uploadsDir,
@@ -1916,7 +1958,7 @@ test('agent executor writes integrity_status=missing_file when attached image fi
     agentToolRelativePath: './lib/agent-chat-tools.js',
     modelCatalog: {
       getOptions() {
-        return [{ provider: 'openai', model: 'gpt-5', input: ['text', 'image'] }];
+        return [{ provider: 'openai', model: 'gpt-5', input: ['text', 'image'], runtimeResolvable: true, supportedThinkingLevels: ['off'] }];
       },
     },
     uploadsDir,

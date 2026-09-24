@@ -4,8 +4,6 @@ import path from 'node:path';
 
 import {
   DEFAULT_AGENT_DIR,
-  DEFAULT_MODEL,
-  DEFAULT_PROVIDER,
   DEFAULT_THINKING,
   resolveIntegerSetting,
   resolveSetting,
@@ -128,16 +126,9 @@ function recoveryConfig(options: any = {}) {
   const enabled = options.enabled === undefined
     ? normalizeBooleanSetting(process.env.CAFF_RECOVERY_ENABLED, true, 'recovery enabled')
     : normalizeBooleanSetting(options.enabled, true, 'recovery enabled');
-  const provider = resolveSetting(
-    options.provider,
-    process.env.CAFF_RECOVERY_PROVIDER || process.env.CAFF_DIGEST_PROVIDER || process.env.PI_PROVIDER,
-    DEFAULT_PROVIDER
-  );
-  const model = resolveSetting(
-    options.model,
-    process.env.CAFF_RECOVERY_MODEL || process.env.CAFF_DIGEST_MODEL || process.env.PI_MODEL,
-    DEFAULT_MODEL
-  );
+  // Model selection belongs exclusively to the persisted shared scribe setting.
+  const provider = '';
+  const model = '';
   const resolvedThinking = resolveThinkingSetting(
     provider,
     options.thinking,

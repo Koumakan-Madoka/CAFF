@@ -231,6 +231,10 @@ function createFixture(t, options = {}) {
   const mutationState = options.busy
     ? { active: true, dispatching: false, activeTurnCount: 1, activeAgentSlotCount: 0, queuedUserCount: 0, queuedAgentSlotCount: 0, busy: true }
     : { active: false, dispatching: false, activeTurnCount: 0, activeAgentSlotCount: 0, queuedUserCount: 0, queuedAgentSlotCount: 0, busy: false };
+  if (options.persistScribe !== false) store.saveSystemServiceConfig('recovery_scribe', {
+    enabled: options.enabled === undefined ? true : options.enabled,
+    provider: 'scribe-provider', model: 'scribe-model', thinking: options.thinking || 'low', timeoutMs: 60000,
+  });
   const service = createMessageRecoveryService({
     store,
     runStore,
@@ -295,6 +299,19 @@ function createFixture(t, options = {}) {
   };
 }
 
+test('resolvable startup options without a saved scribe cannot create recovery work', (t) => {
+  const fixture = createFixture(t, { persistScribe: false });
+  assert.equal(fixture.store.getSystemServiceConfig('recovery_scribe'), null);
+  const counts = () => ['runs', 'a2a_tasks', 'chat_message_recoveries'].map((table) =>
+    fixture.store.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count);
+  const before = counts();
+  assert.throws(() => fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id),
+    (error) => error.statusCode === 409 && error.code === 'conversation_recovery_model_unconfigured');
+  assert.deepEqual(counts(), before);
+  assert.equal(fixture.scheduled.length, 0);
+  assert.equal(fixture.modelCalls.length, 0);
+});
+
 test('configuration preflight blocks before durable work and becomes ready after model repair', async (t) => {
   const options = { runtimeResolvable: false };
   const fixture = createFixture(t, options);
@@ -321,8 +338,8 @@ test('configuration preflight blocks before durable work and becomes ready after
   assert.equal(fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id).duplicate, true);
 });
 
-test('no-environment hardcoded default is a preference, not a ready model or an automatic first-model choice', (t) => {
-  const fixture = createFixture(t);
+test('no-environment startup has no scribe model and never selects the first catalog entry', (t) => {
+  const fixture = createFixture(t, { persistScribe: false });
   const service = withClearedRecoveryRuntimeEnvironment(() => createMessageRecoveryService({
     store: fixture.store, runStore: fixture.runStore, agentDir: fixture.tempDir,
     modelCatalog: { getOptions: () => [{ provider: 'valid', model: 'other', runtimeResolvable: true, supportedThinkingLevels: ['off'] }] },
@@ -331,8 +348,8 @@ test('no-environment hardcoded default is a preference, not a ready model or an 
     modelRuntimeFactory() { assert.fail('blocked default must not initialize a model runtime'); },
   }));
   const state = service.getConfiguration();
-  assert.equal(state.config.provider, 'kimi-coding');
-  assert.equal(state.config.model, 'k2p5');
+  assert.equal(state.config.provider, '');
+  assert.equal(state.config.model, '');
   assert.equal(state.config.enabled, true);
   assert.equal(state.readiness.ready, false);
   assert.throws(() => service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id),
@@ -743,7 +760,7 @@ test('stale queued work is projected as interrupted without replaying it', (t) =
     agentDir: fixture.tempDir,
     getConversationMutationState: () => ({ busy: false }),
   }));
-  assert.equal(restartedService.getConfiguration().config.thinking, 'off');
+  assert.equal(restartedService.getConfiguration().config.thinking, 'low', 'persisted choice survives restart');
   const projected = restartedService.projectMessages([fixture.store.getMessage(fixture.sourceMessage.id)])[0];
 
   assert.equal(projected.recovery.status, 'failed');
@@ -861,7 +878,7 @@ test('user-stopped source remains an optional action after service restart and i
           key: 'scribe-provider\u001fscribe-model',
           provider: 'scribe-provider',
           model: 'scribe-model',
-          supportedThinkingLevels: ['off'],
+          supportedThinkingLevels: ['off', 'low'],
         }];
       },
     },

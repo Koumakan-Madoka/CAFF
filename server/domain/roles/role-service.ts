@@ -86,7 +86,7 @@ function buildCatalogIndex(modelOptions: any[]) {
   for (const option of Array.isArray(modelOptions) ? modelOptions : []) {
     const provider = normalize(option?.provider);
     const model = normalize(option?.model);
-    if (!model) {
+    if (!model || option?.runtimeResolvable !== true) {
       continue;
     }
     const key = normalize(option?.key) || buildConfiguredModelKey(provider, model);
@@ -374,6 +374,7 @@ function createRuntimeParticipantsError(issues: any[]) {
   const error: any = new Error('Conversation participants are not currently runnable');
   error.statusCode = 409;
   error.code = 'conversation_participants_unavailable';
+  error.configurationUrl = '/personas.html';
   error.issues = issues;
   return error;
 }
@@ -471,6 +472,14 @@ export function createRoleService(options: any = {}) {
       }
     }
 
+    // Availability of an editable role is not evidence that its inherited
+    // runtime default is configured. Validate before room/spawn persistence.
+    try {
+      resolveRuntimeParticipants(normalizedParticipants);
+    } catch (error) {
+      if ((error as any)?.code === 'conversation_participants_unavailable') (error as any).statusCode = 422;
+      throw error;
+    }
     return normalizedParticipants;
   }
 
@@ -527,7 +536,7 @@ export function createRoleService(options: any = {}) {
       let model = normalize(effectiveSource?.model);
       const thinking = normalize(effectiveSource?.thinking);
 
-      if (roleKind === 'custom' && !model) {
+      if (roleKind === 'custom' && !selectedProfile && !provider && !model) {
         provider = normalize(runtimeDefaults.provider);
         model = normalize(runtimeDefaults.model);
       }

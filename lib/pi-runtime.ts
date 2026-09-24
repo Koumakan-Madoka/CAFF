@@ -5,8 +5,9 @@ const { fork, spawn, spawnSync } = require('node:child_process');
 const { createSqliteRunStore } = require('./sqlite-store');
 const { StreamDiagnostics, DIAGNOSTIC_LIMITS } = require('./stream-diagnostics');
 
-const DEFAULT_PROVIDER = 'kimi-coding';
-const DEFAULT_MODEL = 'k2p5';
+// Retain the exported empty sentinels for API compatibility, never select a vendor.
+const DEFAULT_PROVIDER = '';
+const DEFAULT_MODEL = '';
 const DEFAULT_THINKING = '';
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 1000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 60 * 1000;
@@ -356,6 +357,14 @@ function assistantUsageCallsFromState(state: any) {
 function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   if (!prompt || !String(prompt).trim()) {
     throw new Error('Prompt is required');
+  }
+
+  provider = String(provider || '').trim();
+  model = String(model || '').trim();
+  if (!provider || !model) {
+    const error: any = new Error('Configure an explicit provider and model before invoking PI (--provider/--model or PI_PROVIDER/PI_MODEL).');
+    error.code = 'model_configuration_required';
+    throw error;
   }
 
   const emitter = new EventEmitter();

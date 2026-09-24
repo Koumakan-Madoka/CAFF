@@ -3,7 +3,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { createHttpError } from '../../http/http-errors';
-import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting, resolveThinkingSetting } from '../../../lib/minimal-pi';
+import { DEFAULT_AGENT_DIR, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting } from '../../../lib/minimal-pi';
+import { createConfiguredModelCatalog } from '../models/configured-model-catalog';
+import { inspectModelConfiguration } from '../models/model-configuration';
 import {
   CONVERSATION_DIGEST_SUBMISSION_ITEM_MAX_LENGTH,
   CONVERSATION_DIGEST_SUBMISSION_SECTION_MAX_ITEMS,
@@ -881,14 +883,21 @@ function resolveSystemModelConfigSnapshot(options: any = {}) {
 
 function hasExplicitDigestModelConfig(_input: any, options: any = {}) {
   const systemModelConfig = resolveSystemModelConfigSnapshot(options);
-  return Boolean(
-    normalizeText(systemModelConfig && systemModelConfig.provider)
-    || normalizeText(systemModelConfig && systemModelConfig.model)
-    || normalizeText(options.provider)
-    || normalizeText(options.model)
-    || normalizeText(process.env.CAFF_DIGEST_PROVIDER)
-    || normalizeText(process.env.CAFF_DIGEST_MODEL)
-  );
+  return Boolean(normalizeText(systemModelConfig?.provider) || normalizeText(systemModelConfig?.model));
+}
+
+function snapshotSystemModelOptions(store: any, options: any) {
+  return {
+    ...options,
+    // Each model invocation snapshots the live selection, including a title
+    // invocation following an awaited digest. No startup model fallback.
+    resolveSystemModelConfigSnapshot: typeof options.resolveSystemModelConfigSnapshot === 'function'
+      ? options.resolveSystemModelConfigSnapshot
+      : () => store.getSystemServiceConfig?.('recovery_scribe') || null,
+    modelCatalog: options.modelCatalog || createConfiguredModelCatalog({
+      agentDir: resolveSetting(options.agentDir, process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR),
+    }),
+  };
 }
 
 function shouldUseModelDigest(input: any, options: any = {}) {
@@ -911,22 +920,19 @@ function shouldUseModelDigest(input: any, options: any = {}) {
 
 function resolveDigestModelConfig(_input: any, options: any = {}) {
   const systemModelConfig = resolveSystemModelConfigSnapshot(options);
-  const provider = resolveSetting(
-    systemModelConfig && systemModelConfig.provider,
-    options.provider || process.env.CAFF_DIGEST_PROVIDER || process.env.PI_PROVIDER,
-    DEFAULT_PROVIDER
-  );
-  const model = resolveSetting(
-    systemModelConfig && systemModelConfig.model,
-    options.model || process.env.CAFF_DIGEST_MODEL || process.env.PI_MODEL,
-    DEFAULT_MODEL
-  );
-  const thinking = resolveThinkingSetting(
-    provider,
-    systemModelConfig && systemModelConfig.thinking,
-    options.thinking || process.env.CAFF_DIGEST_THINKING,
-    DEFAULT_THINKING
-  );
+  const provider = normalizeText(systemModelConfig?.provider);
+  const model = normalizeText(systemModelConfig?.model);
+  const thinking = normalizeText(systemModelConfig?.thinking) || DEFAULT_THINKING;
+  const inspection = provider && model
+    ? inspectModelConfiguration(options.modelCatalog, { provider, model, thinking })
+    : { ready: false, code: 'model_unconfigured' };
+  if (!inspection.ready) {
+    throw createHttpError(409, '请到系统服务选择并保存可解析的摘要与系统书记模型', {
+      code: 'conversation_digest_model_unconfigured',
+      configurationCode: inspection.code,
+      configurationUrl: '/personas.html#system-services',
+    });
+  }
   const heartbeatTimeoutMs = resolveIntegerSetting(
     options.heartbeatTimeoutMs,
     process.env.CAFF_DIGEST_MODEL_TIMEOUT_MS,
@@ -2190,6 +2196,7 @@ async function buildDigestFromMessages(messages: any[], input: any, timestamp: s
     });
   } catch (error) {
     const errorValue = error as any;
+    if (errorValue?.code === 'conversation_digest_model_unconfigured') throw error;
     console.warn(`[conversation-digest] Model digest failed, falling back to extractive digest: ${safeSystemModelErrorText(error)}`);
     const modelDiagnostics = normalizeDigestModelDiagnostics(errorValue && errorValue.digestModelDiagnostics, 'extractive');
     return modelDiagnostics
@@ -2281,6 +2288,7 @@ async function buildRollupDigest(sources: any[], timestamp: string, input: any =
     });
   } catch (error) {
     const errorValue = error as any;
+    if (errorValue?.code === 'conversation_digest_model_unconfigured') throw error;
     console.warn(`[conversation-digest] Model rollup failed, falling back to extractive rollup: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
     const modelDiagnostics = normalizeDigestModelDiagnostics(errorValue && errorValue.digestModelDiagnostics, 'extractive');
     return modelDiagnostics
@@ -2795,13 +2803,7 @@ function titleRefineEnabled(options: any = {}) {
 }
 
 function hasTitleRefineModelConfig(options: any = {}) {
-  return Boolean(
-    typeof options.titleModelRunner === 'function'
-      || typeof options.digestModelRunner === 'function'
-      || hasExplicitDigestModelConfig({}, options)
-      || normalizeText(process.env.PI_MODEL)
-      || normalizeText(process.env.PI_PROVIDER)
-  );
+  return hasExplicitDigestModelConfig({}, options);
 }
 
 function normalizeRefinedTitle(value: any) {
@@ -2949,6 +2951,7 @@ export function recomputeConversationDigestState(store: any, conversationId: any
 }
 
 export async function maybeAutoCreateConversationDigest(store: any, conversationId: any, options: any = {}) {
+  options = snapshotSystemModelOptions(store, options);
   const normalizedConversationId = normalizeText(conversationId);
   const conversation = store.getConversation(normalizedConversationId);
 
@@ -3088,6 +3091,7 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
 }
 
 export async function applyConversationDigestAction(store: any, conversationId: any, input: any = {}, options: any = {}) {
+  options = snapshotSystemModelOptions(store, options);
   const normalizedConversationId = normalizeText(conversationId);
   const conversation = store.getConversation(normalizedConversationId);
 

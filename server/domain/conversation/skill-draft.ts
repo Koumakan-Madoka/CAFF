@@ -3,6 +3,8 @@ import * as path from 'node:path';
 
 import { createHttpError } from '../../http/http-errors';
 import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, invoke, resolveIntegerSetting, resolveSetting, resolveThinkingSetting } from '../../../lib/minimal-pi';
+import { createConfiguredModelCatalog } from '../models/configured-model-catalog';
+import { inspectModelConfiguration } from '../models/model-configuration';
 import { buildSkillMarkdown, sanitizeSkillId } from '../../../lib/skill-registry';
 import { getConversationDigests } from './conversation-digest';
 
@@ -824,6 +826,16 @@ function buildMergedSkillBodyFromModelPayload(existingSkill: any, payload: any, 
 }
 
 async function runSkillDraftModelPrompt(prompt: string, config: any, options: any = {}, digest: any = null, existingSkills: any[] = []) {
+  const inspection = config.provider && config.model
+    ? inspectModelConfiguration(options.modelCatalog || createConfiguredModelCatalog({ agentDir: config.agentDir }), config)
+    : { ready: false, code: 'model_unconfigured' };
+  if (!inspection.ready) {
+    throw createHttpError(409, '请配置可解析的 Skill Draft 模型后再生成技能草稿', {
+      code: 'skill_draft_model_unconfigured',
+      configurationCode: inspection.code,
+      configurationUrl: '/personas.html#providers',
+    });
+  }
   const runner = typeof options.skillDraftModelRunner === 'function' ? options.skillDraftModelRunner : null;
 
   if (runner) {
@@ -892,6 +904,7 @@ async function buildSkillCandidateFromDigest(digest: any, input: any = {}, optio
       }
     } catch (error) {
       const errorValue = error as any;
+      if (errorValue?.code === 'skill_draft_model_unconfigured') throw error;
       console.warn(`[skill-draft] Model skill draft failed, falling back to rules: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
 
     }

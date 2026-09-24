@@ -51,12 +51,13 @@ function createFixture(t) {
   return { store, modelCatalog };
 }
 
-test('recovery scribe configuration uses runtime defaults until a persisted override is saved', (t) => {
+test('recovery scribe remains unconfigured until a shared selection is explicitly saved', (t) => {
   const { store, modelCatalog } = createFixture(t);
   const manager = createRecoveryScribeConfigManager({ store, modelCatalog, defaults: DEFAULTS });
 
-  assert.deepEqual(manager.getConfigSnapshot(), DEFAULTS);
-  assert.equal(manager.getConfiguration().source, 'runtime_defaults');
+  assert.deepEqual(manager.getConfigSnapshot(), { ...DEFAULTS, provider: '', model: '', thinking: 'off' });
+  assert.equal(manager.getConfiguration().source, 'unconfigured');
+  assert.equal(manager.getConfiguration().readiness.ready, false);
 
   const saved = manager.updateConfiguration({
     enabled: false,
@@ -136,6 +137,7 @@ test('unresolvable config is diagnosed, cannot be saved, but can be disabled unc
 
 test('legacy unmarked options require authoritative resolution and expose normalized readiness to the picker', (t) => {
   const { store } = createFixture(t);
+  store.saveSystemServiceConfig('recovery_scribe', DEFAULTS);
   const legacy = MODEL_OPTIONS.map(({ runtimeResolvable, ...option }) => option);
   let resolved = null;
   const calls = [];
@@ -151,7 +153,7 @@ test('legacy unmarked options require authoritative resolution and expose normal
   assert.equal(blocked.readiness.ready, false);
   assert.equal(blocked.modelOptions[0].runtimeResolvable, false);
   assert.throws(() => manager.updateConfiguration(DEFAULTS), (error) => error.code === 'recovery_config_model_unavailable');
-  assert.equal(store.getSystemServiceConfig('recovery_scribe'), null);
+  assert.equal(store.getSystemServiceConfig('recovery_scribe').model, DEFAULTS.model);
   resolved = { ...MODEL_OPTIONS[0], supportedThinkingLevels: ['off', 'low'] };
   const ready = manager.getConfiguration();
   assert.equal(ready.readiness.ready, true);
@@ -171,6 +173,7 @@ test('legacy unmarked options require authoritative resolution and expose normal
 
 test('authoritative resolution failure stays diagnosable and explicit false is never overridden', (t) => {
   const { store } = createFixture(t);
+  store.saveSystemServiceConfig('recovery_scribe', DEFAULTS);
   const modelCatalog = {
     getOptions: () => [{ ...MODEL_OPTIONS[0], runtimeResolvable: false }],
     getResolvedModel() { throw new Error('private resolver detail'); },
@@ -221,6 +224,7 @@ test('real catalog invalidation refreshes readiness and explicit resolvable defa
       readProviderDocument: () => ({ providers: {} }),
     });
     const defaults = { ...DEFAULTS, model: 'deepseek/deepseek-v4-flash' };
+    store.saveSystemServiceConfig('recovery_scribe', defaults);
     const manager = createRecoveryScribeConfigManager({ store, modelCatalog: catalog, defaults });
     assert.equal(manager.getConfiguration().readiness.ready, false);
     runtimeModels = [{ provider: 'deepseek', id: 'deepseek-v4-flash', supportedThinkingLevels: ['off', 'low'] }];
@@ -292,6 +296,7 @@ test('persisted system model selection is shared by digests without sharing the 
     summaryMode: 'model',
   }, {
     resolveSystemModelConfigSnapshot: manager.getConfigSnapshot,
+    modelCatalog,
     digestModelRunner: async (context) => {
       calls.push(structuredClone(context.config));
       firstCallStarted();
@@ -333,6 +338,7 @@ test('persisted system model selection is shared by digests without sharing the 
     summaryMode: 'model',
   }, {
     resolveSystemModelConfigSnapshot: manager.getConfigSnapshot,
+    modelCatalog,
     digestModelRunner: async (context) => {
       calls.push(structuredClone(context.config));
       return {
