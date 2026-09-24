@@ -12,6 +12,7 @@ const MODEL_OPTIONS = [
     provider: 'deepseek',
     model: 'deepseek-v4-flash',
     label: 'DeepSeek V4 Flash',
+    runtimeResolvable: true,
     source: 'models_json',
     supportedThinkingLevels: ['off', 'low', 'high'],
   },
@@ -20,12 +21,13 @@ const MODEL_OPTIONS = [
     provider: 'openai',
     model: 'gpt-5',
     label: 'GPT-5',
+    runtimeResolvable: true,
     source: 'models_json',
     supportedThinkingLevels: ['off', 'medium', 'high'],
   },
 ];
 
-function setup({ modelOptions = MODEL_OPTIONS, enabled = true } = {}) {
+function setup({ modelOptions = MODEL_OPTIONS, enabled = true, config = {}, readiness = { ready: true }, source = 'persisted' } = {}) {
   const dom = new JSDOM('<div id="root"></div>');
   const requests = [];
   const toasts = [];
@@ -37,8 +39,10 @@ function setup({ modelOptions = MODEL_OPTIONS, enabled = true } = {}) {
       model: 'deepseek-v4-flash',
       thinking: 'low',
       timeoutMs: 60_000,
+      ...config,
     },
-    source: 'runtime_defaults',
+    readiness,
+    source,
     updatedAt: null,
     modelOptions,
   };
@@ -74,6 +78,24 @@ function setup({ modelOptions = MODEL_OPTIONS, enabled = true } = {}) {
   return { dom, management, requests, toasts, managedProviders: () => managedProviders };
 }
 
+test('unconfigured scribe UI does not select the first PI model and explains explicit save', async () => {
+  const session = setup({ config: { provider: '', model: '', thinking: 'off' }, readiness: { ready: false }, source: 'unconfigured' });
+  await session.management.refresh();
+  const { document, Event } = session.dom.window;
+  const select = document.getElementById('recovery-scribe-model');
+  assert.equal(select.value, '');
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
+  assert.match(document.getElementById('recovery-scribe-config-source').textContent, /尚未配置/u);
+  assert.match(document.getElementById('recovery-scribe-readiness').textContent, /目录中存在模型不会自动启用/u);
+  select.value = MODEL_OPTIONS[1].key;
+  select.dispatchEvent(new Event('change'));
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, false);
+  await session.management.save();
+  const put = session.requests.find((request) => request.options.method === 'PUT');
+  assert.equal(put.options.body.provider, MODEL_OPTIONS[1].provider);
+  assert.equal(put.options.body.model, MODEL_OPTIONS[1].model);
+});
+
 test('system scribe editor loads configured models and saves a full hot configuration snapshot', async () => {
   const session = setup();
   await session.management.refresh();
@@ -84,7 +106,7 @@ test('system scribe editor loads configured models and saves a full hot configur
   assert.equal(document.querySelector('#recovery-scribe-model option[value=""]'), null);
   assert.equal(document.getElementById('recovery-scribe-thinking').value, 'low');
   assert.equal(document.getElementById('recovery-scribe-timeout').value, '60');
-  assert.match(document.getElementById('recovery-scribe-config-source').textContent, /启动默认/u);
+  assert.match(document.getElementById('recovery-scribe-config-source').textContent, /已保存/u);
   assert.match(document.getElementById('root').textContent, /当 Agent 回复失败或被你手动停止后/u);
   assert.match(document.getElementById('root').textContent, /已完成的操作、可能已生效但未确认的改动、未完成的部分/u);
   assert.match(document.getElementById('root').textContent, /模型来自「模型供应商」中已配置的模型/u);
@@ -144,6 +166,111 @@ test('system scribe editor replaces an empty model select with a provider setup 
   assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
   document.getElementById('manage-providers-from-recovery-scribe').click();
   assert.equal(session.managedProviders(), 1);
+});
+
+test('invalid stored model remains diagnostic, cannot be resaved, and can be disabled without changing model settings', async () => {
+  const session = setup({
+    config: { model: 'deleted-model', thinking: 'high' },
+    readiness: { ready: false, code: 'recovery_config_model_unavailable' },
+  });
+  await session.management.refresh();
+  const { document, Event } = session.dom.window;
+  assert.match(document.getElementById('root').textContent, /需要配置/u);
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
+  await session.management.save();
+  assert.equal(session.requests.length, 1, 'must reject stale fallback option locally');
+  const enabled = document.getElementById('recovery-scribe-enabled');
+  enabled.checked = false;
+  enabled.dispatchEvent(new Event('change'));
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, false);
+  await session.management.save();
+  assert.equal(session.requests[1].options.body.model, 'deleted-model');
+  assert.equal(session.requests[1].options.body.thinking, 'high');
+  assert.equal(session.requests[1].options.body.enabled, false);
+});
+
+for (const modelOptions of [MODEL_OPTIONS, []]) {
+  test(`disabling invalid config preserves 1500ms timeout (${modelOptions.length ? 'stale model' : 'empty catalog'})`, async () => {
+    const session = setup({
+      modelOptions,
+      config: { model: 'deleted-model', timeoutMs: 1500 },
+      readiness: { ready: false },
+    });
+    await session.management.refresh();
+    const { document, Event } = session.dom.window;
+    const timeout = document.getElementById('recovery-scribe-timeout');
+    if (timeout) timeout.value = '30';
+    const enabled = document.getElementById('recovery-scribe-enabled');
+    enabled.checked = false;
+    enabled.dispatchEvent(new Event('change'));
+    assert.equal(document.getElementById('save-recovery-scribe-config').disabled, false);
+    await session.management.save();
+    assert.equal(session.requests.length, 2, 'must send PUT despite fractional seconds');
+    assert.equal(session.requests[1].options.body.timeoutMs, 1500);
+    assert.equal(session.requests[1].options.body.enabled, false);
+    assert.equal(session.requests[1].options.body.model, 'deleted-model');
+    if (timeout) {
+      assert.equal(timeout.disabled, true);
+      assert.equal(timeout.value, '1.5');
+    }
+    const note = document.getElementById('recovery-scribe-disable-note');
+    assert.equal(note.classList.contains('hidden'), false);
+    assert.match(note.textContent, /保留原模型、思考强度及超时/u);
+    session.dom.window.close();
+  });
+}
+
+test('normal editing still rejects fractional seconds rather than bypassing timeout validation', async () => {
+  const session = setup();
+  await session.management.refresh();
+  session.dom.window.document.getElementById('recovery-scribe-timeout').value = '1.5';
+  await session.management.save();
+  assert.equal(session.requests.length, 1);
+  assert.match(session.dom.window.document.getElementById('recovery-scribe-config-error').textContent, /整数/u);
+  session.dom.window.close();
+});
+
+test('unsupported stored thinking is not silently replaced when disabling', async () => {
+  const session = setup({ config: { thinking: 'max' }, readiness: { ready: false } });
+  await session.management.refresh();
+  const { document, Event } = session.dom.window;
+  assert.equal(document.getElementById('recovery-scribe-thinking').value, 'max');
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
+  document.getElementById('recovery-scribe-enabled').checked = false;
+  document.getElementById('recovery-scribe-enabled').dispatchEvent(new Event('change'));
+  await session.management.save();
+  assert.equal(session.requests[1].options.body.thinking, 'max');
+  assert.equal(session.requests[1].options.body.enabled, false);
+});
+
+test('empty catalog still permits disabling existing configuration', async () => {
+  const session = setup({ modelOptions: [], readiness: { ready: false } });
+  await session.management.refresh();
+  const { document, Event } = session.dom.window;
+  const enabled = document.getElementById('recovery-scribe-enabled');
+  enabled.checked = false;
+  enabled.dispatchEvent(new Event('change'));
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, false);
+  await session.management.save();
+  assert.equal(session.requests[1].options.body.provider, 'deepseek');
+  assert.equal(session.requests[1].options.body.enabled, false);
+});
+
+test('unresolvable catalog entries are disabled; selecting a valid model repairs the form', async () => {
+  const session = setup({
+    modelOptions: MODEL_OPTIONS.map((option, index) => ({ ...option, runtimeResolvable: index !== 0 })),
+    readiness: { ready: false },
+  });
+  await session.management.refresh();
+  const { document, Event } = session.dom.window;
+  const select = document.getElementById('recovery-scribe-model');
+  assert.equal(select.options[0].disabled, true);
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
+  select.value = 'openai\u001fgpt-5';
+  select.dispatchEvent(new Event('change'));
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, false);
+  await session.management.save();
+  assert.equal(session.requests[1].options.body.model, 'gpt-5');
 });
 
 test('system scribe provider navigation remains available in a read-only deployment', async () => {

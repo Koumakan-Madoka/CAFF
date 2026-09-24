@@ -184,10 +184,12 @@ curl http://127.0.0.1:3100/api/health
 | `CHAT_APP_HOST` / `CHAT_APP_PORT` | 监听地址与端口，默认 `127.0.0.1:3100` |
 | `PI_CODING_AGENT_DIR` | Pi 配置与本地运行状态目录，默认自动定位 `.pi-sandbox/` |
 | `PI_SQLITE_PATH` | SQLite 数据文件路径 |
-| `PI_PROVIDER` / `PI_MODEL` / `PI_THINKING` | 默认模型与推理配置 |
+| `PI_PROVIDER` / `PI_MODEL` / `PI_THINKING` | 用户显式指定的运行模型与推理配置；无厂商默认兜底，不替代系统书记选择 |
 | `PI_CHAT_SESSION_REUSE_ENABLED` | Session 复用总开关，设为 `0` 可关闭；未收录于 `.env.example`，可自行添加 |
 
 基础配置模板见 [`.env.example`](.env.example)，复用策略配置另见 [Session 复用契约](docs/engineering/runtime/agent-session-reuse.md)。凭据留在本地配置中，不要提交到仓库。CAFF 面向可信本地环境；不要未经访问控制与安全评估直接暴露到公网。运行多个实例时，请分别配置端口、数据库与运行目录，不要让多个实例共写同一数据库。
+
+摘要、标题精炼与现场整理共用「系统服务 → 系统书记」中显式保存的模型选择，底层继续使用 PI 模型目录。升级后不会自动迁移旧的隐式默认；未配置时需先选择模型。详见 [模型选择与升级说明](docs/engineering/backend/model-selection.md)。
 
 ## 架构与扩展
 

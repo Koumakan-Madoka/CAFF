@@ -11,6 +11,7 @@ function modelOption(provider, model, family, supportedThinkingLevels = ['off', 
     model,
     label: `${provider} / ${model}`,
     source: 'models_json',
+    runtimeResolvable: true,
     sourceLabel: 'models.json',
     family,
     familySource: 'explicit',
@@ -54,6 +55,29 @@ function createService(roles, getOptions) {
     },
   });
 }
+
+test('unresolvable and unverified explicit role models are blocked before runtime resolution', () => {
+  const roles = [{ id: 'custom-unready', name: 'Unready', roleKind: 'custom', provider: 'test', model: 'model', thinking: 'off', modelProfiles: [] }];
+  for (const runtimeResolvable of [false, undefined]) {
+    const service = createService(roles, () => [{ ...modelOption('test', 'model', null), runtimeResolvable }]);
+    assert.notEqual(service.getDirectory().agents[0].availability.status, 'available');
+    assert.throws(() => service.resolveRuntimeParticipants([{ agentId: roles[0].id }]),
+      (error) => error.statusCode === 409 && error.code === 'conversation_participants_unavailable' && error.issues.length > 0);
+  }
+});
+
+test('participant validation rejects an unresolved custom default before a room spawn can persist', () => {
+  const service = createService([{ id: 'no-selection', name: 'No Selection', roleKind: 'custom', provider: '', model: '', thinking: '', modelProfiles: [] }], () => []);
+  assert.throws(() => service.validateConversationParticipants({ participants: [{ agentId: 'no-selection' }] }),
+    (error) => error.statusCode === 422 && error.issues.length > 0);
+});
+
+test('a partial explicit custom selection never falls back to a different runtime provider', () => {
+  const service = createService([{ id: 'partial-selection', name: 'Partial', roleKind: 'custom', provider: 'explicit-provider', model: '', thinking: '', modelProfiles: [] }],
+    () => [modelOption('runtime-provider', 'runtime-model', null)]);
+  assert.throws(() => service.resolveRuntimeParticipants([{ agentId: 'partial-selection' }]),
+    (error) => error.code === 'conversation_participants_unavailable');
+});
 
 test('registry-only models make existing roles explicitly unavailable instead of leaking into the directory', () => {
   const catalog = createConfiguredModelCatalog({

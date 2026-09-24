@@ -25,13 +25,14 @@ function createFeishuTestHarness(t, options = {}) {
     id: 'feishu-default-role',
     name: 'Feishu Default Role',
     personaPrompt: 'Handle explicitly configured Feishu conversations.',
+    provider: 'test', model: 'test-model',
   });
   const defaultRoleIds = Object.prototype.hasOwnProperty.call(options, 'defaultRoleIds')
     ? options.defaultRoleIds
     : [defaultRole.id];
   const roleService = createRoleService({
     store,
-    modelCatalog: { getOptions() { return []; } },
+    modelCatalog: { getOptions() { return [{ provider: 'test', model: 'test-model', runtimeResolvable: true, supportedThinkingLevels: ['off'] }]; } },
   });
   const sentMessages = [];
   const calls = [];

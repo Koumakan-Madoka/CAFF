@@ -240,12 +240,24 @@ test('server composition dispatches DAG scheduler deliveries directly and skips 
       return null;
     },
   };
+  const resolvableModelOption = {
+    key: 'test-provider\u001ftest-model',
+    provider: 'test-provider',
+    model: 'test-model',
+    label: 'Test Model',
+    source: 'models_json',
+    runtimeResolvable: true,
+    supportedThinkingLevels: ['off'],
+    input: ['text'],
+    contextWindow: null,
+  };
   const app = withClearedRecoveryRuntimeEnvironment(() => createServerApp({
     host: '127.0.0.1',
     port: 0,
     agentDir: tempDir,
     sqlitePath,
     projectDir: tempDir,
+    modelCatalog: { getOptions: () => [resolvableModelOption] },
     crossConversationDeliveryWorker: deliveryWorker,
     dagSchedulerFactory(options) {
       dagOptions = options;
@@ -277,11 +289,15 @@ test('server composition dispatches DAG scheduler deliveries directly and skips 
     id: 'dag-wiring-agent',
     name: 'DAG Wiring Agent',
     personaPrompt: 'Run node work.',
+    provider: 'test-provider',
+    model: 'test-model',
   });
   const selectedWorker = app.store.saveCustomRoleConfig({
     id: 'dag-selected-worker',
     name: 'Selected Worker',
     personaPrompt: 'Own the selected DAG node.',
+    provider: 'test-provider',
+    model: 'test-model',
   });
   app.store.createConversation({
     id: 'dag-wiring-owner',

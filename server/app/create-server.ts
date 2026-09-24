@@ -468,6 +468,7 @@ export function createServerApp(options: any = {}) {
 
   const digestOptions = {
     ...(options.digestOptions || {}),
+    modelCatalog,
     digestModelRunner: options.digestModelRunner,
     titleModelRunner: options.titleModelRunner,
     agentDir,
@@ -484,6 +485,7 @@ export function createServerApp(options: any = {}) {
   const rawSkillDraftOptions = options.skillDraftOptions || {};
   const skillDraftOptions = {
     ...rawSkillDraftOptions,
+    modelCatalog,
     skillDraftModelRunner: options.skillDraftModelRunner || rawSkillDraftOptions.skillDraftModelRunner,
     provider: options.skillDraftProvider !== undefined ? options.skillDraftProvider : rawSkillDraftOptions.provider,
     model: options.skillDraftModel !== undefined ? options.skillDraftModel : rawSkillDraftOptions.model,

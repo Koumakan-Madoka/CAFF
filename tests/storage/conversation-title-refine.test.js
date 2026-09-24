@@ -9,6 +9,9 @@ function createStore(t, prefix = 'caff-title-refine-') {
   const tempDir = withTempDir(prefix);
   const store = createChatAppStore({ dbPath: path.join(tempDir, 'chat.sqlite') });
   t.after(() => store.close());
+  store.saveSystemServiceConfig('recovery_scribe', {
+    enabled: true, provider: 'test', model: 'test-title-model', thinking: 'off', timeoutMs: 60000,
+  });
   return store;
 }
 
@@ -40,6 +43,11 @@ function digestOptions(runner, overrides = {}) {
     autoCreateIdleMs: 0,
     autoCreateCooldownMs: 0,
     summaryMode: 'extractive',
+    modelCatalog: { getOptions: () => [
+      { provider: 'test', model: 'test-title-model' },
+      { provider: 'moonshotai', model: 'kimi-k2.5' },
+      { provider: 'direct-provider', model: 'direct-title-model' },
+    ].map((model) => ({ ...model, runtimeResolvable: true, supportedThinkingLevels: ['off', 'low', 'high'] })) },
     digestModelRunner: runner,
     ...overrides,
   };

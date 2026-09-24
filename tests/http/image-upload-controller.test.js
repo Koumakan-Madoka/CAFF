@@ -65,7 +65,7 @@ function visionModelCatalog() {
   return {
     getOptions() {
       return [
-        { provider: 'openai', model: 'gpt-5', input: ['text', 'image'] },
+        { provider: 'openai', model: 'gpt-5', input: ['text', 'image'], runtimeResolvable: true, supportedThinkingLevels: ['off'] },
       ];
     },
   };

@@ -1,4 +1,5 @@
 import { RECOVERY_SCRIBE_SYSTEM_ACTOR } from '../roles/system-actor-catalog';
+import { inspectModelConfiguration } from '../models/model-configuration';
 
 export const MIN_RECOVERY_TIMEOUT_MS = 1_000;
 export const MAX_RECOVERY_TIMEOUT_MS = 60_000;
@@ -34,7 +35,7 @@ function cloneConfig(config: any) {
 
 function validateDefaults(defaults: any) {
   const config = cloneConfig(defaults);
-  if (!config.provider || !config.model || !THINKING_LEVELS.has(config.thinking)) {
+  if (!THINKING_LEVELS.has(config.thinking)) {
     throw new Error('Recovery scribe runtime defaults are invalid');
   }
   if (!Number.isInteger(config.timeoutMs)
@@ -45,7 +46,7 @@ function validateDefaults(defaults: any) {
   return config;
 }
 
-function validateUpdate(payload: any, modelOptions: any[]) {
+function validateUpdate(payload: any, allowEmptySelection = false) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new RecoveryScribeConfigError('recovery_config_body_invalid', 'body');
   }
@@ -66,10 +67,10 @@ function validateUpdate(payload: any, modelOptions: any[]) {
   const model = normalizeText(payload.model);
   const thinking = normalizeText(payload.thinking);
   const timeoutMs = payload.timeoutMs;
-  if (!provider) {
+  if (!provider && !allowEmptySelection) {
     throw new RecoveryScribeConfigError('recovery_config_provider_required', 'body.provider');
   }
-  if (!model) {
+  if (!model && !allowEmptySelection) {
     throw new RecoveryScribeConfigError('recovery_config_model_required', 'body.model');
   }
   if (!THINKING_LEVELS.has(thinking)) {
@@ -81,20 +82,6 @@ function validateUpdate(payload: any, modelOptions: any[]) {
     throw new RecoveryScribeConfigError('recovery_config_timeout_invalid', 'body.timeoutMs');
   }
 
-  const option = modelOptions.find((candidate) => (
-    normalizeText(candidate && candidate.provider) === provider
-    && normalizeText(candidate && candidate.model) === model
-  ));
-  if (!option) {
-    throw new RecoveryScribeConfigError('recovery_config_model_unavailable', 'body.model');
-  }
-  const supportedThinkingLevels = Array.isArray(option.supportedThinkingLevels)
-    ? option.supportedThinkingLevels.map(normalizeText).filter(Boolean)
-    : ['off'];
-  if (!supportedThinkingLevels.includes(thinking)) {
-    throw new RecoveryScribeConfigError('recovery_config_thinking_unsupported', 'body.thinking');
-  }
-
   return { enabled: payload.enabled, provider, model, thinking, timeoutMs };
 }
 
@@ -103,12 +90,9 @@ export function createRecoveryScribeConfigManager(options: any = {}) {
   const modelCatalog = options.modelCatalog || null;
   const defaults = validateDefaults(options.defaults);
 
-  function modelOptions() {
-    if (!modelCatalog || typeof modelCatalog.getOptions !== 'function') {
-      return [];
-    }
-    const value = modelCatalog.getOptions();
-    return Array.isArray(value) ? value : [];
+  function unconfigured() {
+    // Startup preferences are not a saved choice of the shared system model.
+    return { ...cloneConfig(defaults), provider: '', model: '', thinking: 'off' };
   }
 
   function persisted() {
@@ -120,16 +104,33 @@ export function createRecoveryScribeConfigManager(options: any = {}) {
 
   function getConfigSnapshot() {
     const row = persisted();
-    return row ? cloneConfig(row) : cloneConfig(defaults);
+    return row ? cloneConfig(row) : unconfigured();
+  }
+
+  function inspectConfiguration(config: any) {
+    const inspection = inspectModelConfiguration(modelCatalog, config);
+    const code = inspection.code ? `recovery_config_${inspection.code}` : '';
+    const path = inspection.path;
+    return {
+      modelOptions: inspection.modelOptions,
+      readiness: {
+        ready: !code,
+        status: code ? 'needs_configuration' : 'ready',
+        code,
+        path,
+        configurationUrl: '/personas.html#system-services',
+      },
+    };
   }
 
   function getConfiguration() {
     const row = persisted();
+    const config = row ? cloneConfig(row) : unconfigured();
     return {
-      config: row ? cloneConfig(row) : cloneConfig(defaults),
-      source: row ? 'persisted' : 'runtime_defaults',
+      config,
+      source: row ? 'persisted' : 'unconfigured',
       updatedAt: row ? row.updatedAt : null,
-      modelOptions: structuredClone(modelOptions()),
+      ...inspectConfiguration(config),
     };
   }
 
@@ -137,13 +138,22 @@ export function createRecoveryScribeConfigManager(options: any = {}) {
     if (!store || typeof store.saveSystemServiceConfig !== 'function') {
       throw new RecoveryScribeConfigError('recovery_config_store_unavailable', 'store');
     }
-    const config = validateUpdate(payload, modelOptions());
+    const current = getConfigSnapshot();
+    const allowEmptySelection = payload?.enabled === false && !current.provider && !current.model
+      && payload.provider === '' && payload.model === '';
+    const config = validateUpdate(payload, allowEmptySelection);
+    const disableUnchanged = !config.enabled && (['provider', 'model', 'thinking', 'timeoutMs'] as const)
+      .every((key) => config[key] === current[key]);
+    const inspection = inspectConfiguration(config);
+    if (!inspection.readiness.ready && !disableUnchanged) {
+      throw new RecoveryScribeConfigError(inspection.readiness.code, inspection.readiness.path);
+    }
     const saved = store.saveSystemServiceConfig(RECOVERY_SCRIBE_SYSTEM_ACTOR.type, config);
     return {
       config: cloneConfig(saved),
       source: 'persisted',
       updatedAt: saved.updatedAt,
-      modelOptions: structuredClone(modelOptions()),
+      ...inspection,
     };
   }
 

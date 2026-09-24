@@ -90,6 +90,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
         model: resolveSetting('', process.env.PI_MODEL, DEFAULT_MODEL),
       });
   let cachedOptions: any[] | null = null;
+  let resolvedModels = new Map<string, any>();
 
   function rebuild() {
     const runtimeByKey = new Map<string, any>();
@@ -131,6 +132,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
           label: normalize(modelConfig?.name) || current?.label || `${provider} / ${model}`,
           source: 'models_json' as CatalogSource,
           explicitFamily: normalize(modelConfig?.family),
+          runtimeResolvable: Boolean(current),
           supportedThinkingLevels: current?.supportedThinkingLevels || ['off'],
           input: normalizeModelInput(modelConfig?.input),
           contextWindow: normalizeContextWindow(modelConfig?.contextWindow) ?? current?.contextWindow ?? null,
@@ -143,8 +145,8 @@ export function createConfiguredModelCatalog(options: any = {}) {
     const defaultModel = normalize(runtimeDefault.model);
     if (defaultModel) {
       const key = buildConfiguredModelKey(defaultProvider, defaultModel);
-      if (!byKey.has(key)) {
-        const current = runtimeByKey.get(key);
+      const current = runtimeByKey.get(key);
+      if (current && !byKey.has(key)) {
         byKey.set(key, {
           key,
           provider: defaultProvider,
@@ -152,6 +154,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
           label: current?.label || (defaultProvider ? `${defaultProvider} / ${defaultModel}` : defaultModel),
           source: 'runtime' as CatalogSource,
           explicitFamily: '',
+          runtimeResolvable: true,
           supportedThinkingLevels: current?.supportedThinkingLevels || ['off'],
           input: current?.input || ['text'],
           contextWindow: current?.contextWindow ?? null,
@@ -172,6 +175,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
         label: entry.label,
         source: entry.source,
         sourceLabel: sourceLabel(entry.source),
+        runtimeResolvable: entry.runtimeResolvable,
         ...classification,
         supportedThinkingLevels: entry.supportedThinkingLevels,
         input: entry.input,
@@ -181,9 +185,27 @@ export function createConfiguredModelCatalog(options: any = {}) {
       const labelOrder = left.label.localeCompare(right.label, 'zh-CN');
       return labelOrder || left.key.localeCompare(right.key, 'en');
     });
+    resolvedModels = runtimeByKey;
   }
 
   return {
+    // Explicit Recovery settings may name a registry model outside the picker.
+    // Resolving them must not add the entire registry to user-facing options.
+    getResolvedModel(provider: string, model: string) {
+      if (!cachedOptions) rebuild();
+      const prefix = `${provider}/`;
+      const unprefixed = model.toLowerCase().startsWith(prefix.toLowerCase())
+        ? model.slice(prefix.length) : model;
+      const resolved = resolvedModels.get(buildConfiguredModelKey(provider, model))
+        || resolvedModels.get(buildConfiguredModelKey(provider, unprefixed));
+      return resolved ? {
+        ...structuredClone(resolved),
+        key: buildConfiguredModelKey(provider, model),
+        provider,
+        model,
+        runtimeResolvable: true,
+      } : null;
+    },
     getOptions() {
       if (!cachedOptions) {
         rebuild();

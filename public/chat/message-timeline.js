@@ -466,6 +466,12 @@
           || (recoveryCapability.enabled === false ? '系统书记已停用' : '当前失败现场无法整理');
         disabledStatus.title = recoveryCapability.reasonCode || disabledStatus.textContent;
         panel.appendChild(disabledStatus);
+        if (recoveryCapability.reasonCode === 'conversation_recovery_model_unconfigured') {
+          const configure = document.createElement('a');
+          configure.href = '/personas.html#system-services';
+          configure.textContent = '配置系统书记';
+          panel.appendChild(configure);
+        }
         return;
       }
 

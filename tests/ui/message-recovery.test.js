@@ -96,6 +96,20 @@ function bootTimeline(messages, options = {}) {
   return { dom, window, document, conversation, renderer, recoveryCalls, toasts };
 }
 
+test('configuration-blocked recovery provides a safe configuration entry instead of a command', () => {
+  const message = failedMessage();
+  message.recoveryCapability = {
+    enabled: true, eligible: false, sourceKind: null,
+    reasonCode: 'conversation_recovery_model_unconfigured', reason: '需要配置模型',
+    configurationUrl: 'javascript:alert(1)',
+  };
+  const { document, recoveryCalls } = bootTimeline([message]);
+  const link = document.querySelector('a[href="/personas.html#system-services"]');
+  assert.ok(link);
+  assert.match(link.textContent, /配置系统书记/u);
+  assert.equal(recoveryCalls.length, 0);
+});
+
 function failedMessage(recovery = null) {
   return {
     id: 'failed-message',

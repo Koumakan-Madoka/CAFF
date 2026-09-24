@@ -156,6 +156,34 @@ test('recovery scribe config PUT projects stable 422 issues from authoritative v
   );
 });
 
+test('HTTP reports blocked configuration, rejects unresolvable saves and permits disable then live repair', async () => {
+  let row = null;
+  let resolvable = false;
+  const defaults = { enabled: true, provider: 'custom', model: 'configured', thinking: 'off', timeoutMs: 60_000 };
+  const service = createRecoveryScribeConfigManager({
+    defaults,
+    store: {
+      getSystemServiceConfig: () => row,
+      saveSystemServiceConfig(_type, config) { row = { ...config, updatedAt: '2026-09-23T00:00:00Z' }; return row; },
+    },
+    modelCatalog: { getOptions: () => [{ provider: 'custom', model: 'configured', runtimeResolvable: resolvable, supportedThinkingLevels: ['off'] }] },
+  });
+  const controller = createRecoveryScribeConfigController({ service, host: '127.0.0.1', port: 4313, csrfToken: 'system-service-csrf' });
+  const get = await invoke(controller);
+  assert.equal(get.json.config.enabled, true);
+  assert.equal(get.json.readiness.ready, false);
+  await assert.rejects(() => invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: defaults }),
+    (error) => error.statusCode === 422 && error.issues[0].code === 'recovery_config_model_unavailable');
+  assert.equal(row, null);
+  row = { ...defaults }; // Existing broken saved configuration, not startup preferences.
+  const disabled = await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { ...defaults, enabled: false } });
+  assert.equal(disabled.json.config.enabled, false);
+  assert.equal(disabled.json.readiness.ready, false);
+  resolvable = true;
+  assert.equal((await invoke(controller)).json.readiness.ready, true);
+  assert.equal((await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: defaults })).json.readiness.ready, true);
+});
+
 test('recovery scribe config PUT saves one full snapshot and broadcasts immediate activation', async () => {
   const { controller, updates, broadcasts } = createHarness();
   const body = {

@@ -4,8 +4,6 @@ import path from 'node:path';
 
 import {
   DEFAULT_AGENT_DIR,
-  DEFAULT_MODEL,
-  DEFAULT_PROVIDER,
   DEFAULT_THINKING,
   resolveIntegerSetting,
   resolveSetting,
@@ -128,16 +126,9 @@ function recoveryConfig(options: any = {}) {
   const enabled = options.enabled === undefined
     ? normalizeBooleanSetting(process.env.CAFF_RECOVERY_ENABLED, true, 'recovery enabled')
     : normalizeBooleanSetting(options.enabled, true, 'recovery enabled');
-  const provider = resolveSetting(
-    options.provider,
-    process.env.CAFF_RECOVERY_PROVIDER || process.env.CAFF_DIGEST_PROVIDER || process.env.PI_PROVIDER,
-    DEFAULT_PROVIDER
-  );
-  const model = resolveSetting(
-    options.model,
-    process.env.CAFF_RECOVERY_MODEL || process.env.CAFF_DIGEST_MODEL || process.env.PI_MODEL,
-    DEFAULT_MODEL
-  );
+  // Model selection belongs exclusively to the persisted shared scribe setting.
+  const provider = '';
+  const model = '';
   const resolvedThinking = resolveThinkingSetting(
     provider,
     options.thinking,
@@ -992,7 +983,7 @@ export function createMessageRecoveryService(options: any = {}) {
   }
 
   function requestRecovery(conversationId: any, messageId: any) {
-    const config = configManager.getConfigSnapshot();
+    const { config, readiness } = configManager.getConfiguration();
     if (!config.enabled) {
       throw recoveryError(
         503,
@@ -1005,6 +996,15 @@ export function createMessageRecoveryService(options: any = {}) {
     const existing = store.getMessageRecoveryBySourceMessage(message.id);
     if (existing) {
       return { recovery: projectRecoveryRecord(existing, inFlight), duplicate: true };
+    }
+
+    if (!readiness.ready) {
+      throw recoveryError(
+        409,
+        'conversation_recovery_model_unconfigured',
+        '请到系统服务配置可解析的模型及思考强度后再整理现场',
+        { configurationCode: readiness.code, configurationUrl: readiness.configurationUrl }
+      );
     }
 
     requireIdle(conversation.id);
@@ -1052,7 +1052,8 @@ export function createMessageRecoveryService(options: any = {}) {
 
   function projectMessages(messages: any[] = []) {
     const safeMessages = Array.isArray(messages) ? messages : [];
-    const recoveryEnabled = configManager.getConfigSnapshot().enabled;
+    const { config, readiness } = configManager.getConfiguration();
+    const recoveryEnabled = config.enabled;
     const recoveries = store.listMessageRecoveriesBySourceMessageIds(
       safeMessages.map((message) => message && message.id)
     );
@@ -1083,6 +1084,16 @@ export function createMessageRecoveryService(options: any = {}) {
             eligible: false,
             reasonCode: 'conversation_recovery_disabled',
             reason: '系统书记已停用',
+            sourceKind: null,
+            ...baseCapability,
+          };
+        } else if (!readiness.ready) {
+          recoveryCapability = {
+            enabled: true,
+            eligible: false,
+            reasonCode: 'conversation_recovery_model_unconfigured',
+            reason: '请到「系统服务」配置可解析的模型及思考强度后再整理现场',
+            configurationUrl: readiness.configurationUrl,
             sourceKind: null,
             ...baseCapability,
           };

@@ -60,6 +60,7 @@ test('configured model catalog exposes configured models and the exact runtime d
     label: 'Configured GPT',
     source: 'models_json',
     sourceLabel: 'models.json',
+    runtimeResolvable: true,
     family: 'gpt',
     familySource: 'explicit',
     supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
@@ -73,6 +74,7 @@ test('configured model catalog exposes configured models and the exact runtime d
     label: 'Mystery Qwen',
     source: 'models_json',
     sourceLabel: 'models.json',
+    runtimeResolvable: false,
     family: 'qwen',
     familySource: 'explicit',
     supportedThinkingLevels: ['off'],
@@ -87,6 +89,7 @@ test('configured model catalog exposes configured models and the exact runtime d
     label: 'Claude Opus 4.7',
     source: 'runtime',
     sourceLabel: 'runtime default',
+    runtimeResolvable: true,
     family: 'claude',
     familySource: 'provider_alias',
     supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
@@ -170,6 +173,25 @@ test('configured model catalog carries contextWindow from models.json and runtim
     200000,
     'runtime default must inherit the runtime model contextWindow',
   );
+});
+
+test('unresolvable synthetic defaults are omitted, including ambient env preferences', () => {
+  const { withClearedRecoveryRuntimeEnvironment } = require('../helpers/recovery-runtime-env');
+  withClearedRecoveryRuntimeEnvironment(() => {
+    for (const preference of [null, { provider: 'missing-provider', model: 'missing-model' }]) {
+      if (preference) {
+        process.env.PI_PROVIDER = preference.provider;
+        process.env.PI_MODEL = preference.model;
+      }
+      const catalog = createConfiguredModelCatalog({
+        loadRuntimeModels: () => runtimeModels(),
+        readProviderDocument: () => providerDocument(),
+      });
+      assert.equal(catalog.getOptions().length, 2);
+      assert.equal(catalog.getOptions().some((option) => option.source === 'runtime'), false);
+      assert.equal(catalog.getOptions().find((option) => option.provider === 'custom').runtimeResolvable, false);
+    }
+  });
 });
 
 test('bootstrap model options cannot be expanded by stale Agent or Profile rows', () => {

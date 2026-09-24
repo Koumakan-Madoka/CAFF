@@ -231,6 +231,10 @@ function createFixture(t, options = {}) {
   const mutationState = options.busy
     ? { active: true, dispatching: false, activeTurnCount: 1, activeAgentSlotCount: 0, queuedUserCount: 0, queuedAgentSlotCount: 0, busy: true }
     : { active: false, dispatching: false, activeTurnCount: 0, activeAgentSlotCount: 0, queuedUserCount: 0, queuedAgentSlotCount: 0, busy: false };
+  if (options.persistScribe !== false) store.saveSystemServiceConfig('recovery_scribe', {
+    enabled: options.enabled === undefined ? true : options.enabled,
+    provider: 'scribe-provider', model: 'scribe-model', thinking: options.thinking || 'low', timeoutMs: 60000,
+  });
   const service = createMessageRecoveryService({
     store,
     runStore,
@@ -240,12 +244,14 @@ function createFixture(t, options = {}) {
       getOptions() {
         return [
           {
+            runtimeResolvable: options.runtimeResolvable !== false,
             key: 'scribe-provider\u001fscribe-model',
             provider: 'scribe-provider',
             model: 'scribe-model',
             supportedThinkingLevels: ['off', 'low', 'high'],
           },
           {
+            runtimeResolvable: true,
             key: 'hot-provider\u001fhot-model',
             provider: 'hot-provider',
             model: 'hot-model',
@@ -292,6 +298,76 @@ function createFixture(t, options = {}) {
     modelCalls,
   };
 }
+
+test('resolvable startup options without a saved scribe cannot create recovery work', (t) => {
+  const fixture = createFixture(t, { persistScribe: false });
+  assert.equal(fixture.store.getSystemServiceConfig('recovery_scribe'), null);
+  const counts = () => ['runs', 'a2a_tasks', 'chat_message_recoveries'].map((table) =>
+    fixture.store.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count);
+  const before = counts();
+  assert.throws(() => fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id),
+    (error) => error.statusCode === 409 && error.code === 'conversation_recovery_model_unconfigured');
+  assert.deepEqual(counts(), before);
+  assert.equal(fixture.scheduled.length, 0);
+  assert.equal(fixture.modelCalls.length, 0);
+});
+
+test('configuration preflight blocks before durable work and becomes ready after model repair', async (t) => {
+  const options = { runtimeResolvable: false };
+  const fixture = createFixture(t, options);
+  const counts = () => ['runs', 'a2a_tasks', 'chat_message_recoveries'].map((table) =>
+    fixture.store.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count);
+  const before = counts();
+  const state = fixture.service.getConfiguration();
+  assert.equal(state.config.enabled, true);
+  const capability = fixture.service.projectMessages([fixture.sourceMessage])[0].recoveryCapability;
+  assert.equal(capability.eligible, false);
+  assert.equal(capability.reasonCode, 'conversation_recovery_model_unconfigured');
+  assert.throws(() => fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id),
+    (error) => error.statusCode === 409 && error.code === capability.reasonCode);
+  assert.deepEqual(counts(), before);
+  assert.equal(fixture.scheduled.length, 0);
+  assert.equal(fixture.modelCalls.length, 0);
+  options.runtimeResolvable = true;
+  assert.equal(fixture.service.getConfiguration().readiness.ready, true);
+  const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+  await fixture.scheduled[0]();
+  assert.equal(fixture.store.getMessageRecovery(accepted.recovery.id).status, 'completed');
+  assert.equal(fixture.modelCalls.length, 1);
+  options.runtimeResolvable = false;
+  assert.equal(fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id).duplicate, true);
+});
+
+test('no-environment startup has no scribe model and never selects the first catalog entry', (t) => {
+  const fixture = createFixture(t, { persistScribe: false });
+  const service = withClearedRecoveryRuntimeEnvironment(() => createMessageRecoveryService({
+    store: fixture.store, runStore: fixture.runStore, agentDir: fixture.tempDir,
+    modelCatalog: { getOptions: () => [{ provider: 'valid', model: 'other', runtimeResolvable: true, supportedThinkingLevels: ['off'] }] },
+    getConversationMutationState: () => ({ busy: false }),
+    scheduleBackground() { assert.fail('blocked default must not schedule work'); },
+    modelRuntimeFactory() { assert.fail('blocked default must not initialize a model runtime'); },
+  }));
+  const state = service.getConfiguration();
+  assert.equal(state.config.provider, '');
+  assert.equal(state.config.model, '');
+  assert.equal(state.config.enabled, true);
+  assert.equal(state.readiness.ready, false);
+  assert.throws(() => service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id),
+    (error) => error.statusCode === 409 && error.code === 'conversation_recovery_model_unconfigured');
+  assert.equal(fixture.store.getMessageRecoveryBySourceMessage(fixture.sourceMessage.id), null);
+});
+
+test('persisted missing explicit model blocks without falling back to the valid startup model', (t) => {
+  const fixture = createFixture(t);
+  fixture.store.saveSystemServiceConfig('recovery_scribe', {
+    ...fixture.service.getConfiguration().config, model: 'deleted-explicit-model',
+  });
+  assert.throws(() => fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id),
+    (error) => error.statusCode === 409 && error.code === 'conversation_recovery_model_unconfigured');
+  assert.equal(fixture.scheduled.length, 0);
+  assert.equal(fixture.modelCalls.length, 0);
+  assert.equal(fixture.service.getConfiguration().config.model, 'deleted-explicit-model');
+});
 
 test('manual recovery is durable and idempotent before one non-Agent scribe job runs', async (t) => {
   const fixture = createFixture(t);
@@ -684,7 +760,7 @@ test('stale queued work is projected as interrupted without replaying it', (t) =
     agentDir: fixture.tempDir,
     getConversationMutationState: () => ({ busy: false }),
   }));
-  assert.equal(restartedService.getConfiguration().config.thinking, 'off');
+  assert.equal(restartedService.getConfiguration().config.thinking, 'low', 'persisted choice survives restart');
   const projected = restartedService.projectMessages([fixture.store.getMessage(fixture.sourceMessage.id)])[0];
 
   assert.equal(projected.recovery.status, 'failed');
@@ -798,10 +874,11 @@ test('user-stopped source remains an optional action after service restart and i
     modelCatalog: {
       getOptions() {
         return [{
+          runtimeResolvable: true,
           key: 'scribe-provider\u001fscribe-model',
           provider: 'scribe-provider',
           model: 'scribe-model',
-          supportedThinkingLevels: ['off'],
+          supportedThinkingLevels: ['off', 'low'],
         }];
       },
     },

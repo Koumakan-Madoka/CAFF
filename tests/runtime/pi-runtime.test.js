@@ -543,6 +543,25 @@ function loadRuntimeWithSdkHost(sdkHostPath) {
   };
 }
 
+test('pi runtime refuses an empty model before opening a run database or SDK host', async (t) => {
+  const tempDir = withTempDir('caff-runtime-no-model-');
+  const host = createFakeSdkHostEchoPrompt(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(host);
+  t.after(() => { restore(); fs.rmSync(tempDir, { recursive: true, force: true }); });
+  const sqlitePath = path.join(tempDir, 'must-not-exist.sqlite');
+  let rejection;
+  let handle;
+  try {
+    handle = runtime.startRun('', '', 'test prompt', {
+      agentDir: tempDir, sqlitePath, streamOutput: false, timeoutMs: 200, heartbeatTimeoutMs: 200,
+      terminateGraceMs: 50,
+    });
+  } catch (error) { rejection = error; }
+  if (handle) await handle.resultPromise.catch(() => {}); // Safe fake host only on the red baseline.
+  assert.equal(rejection?.code, 'model_configuration_required');
+  assert.equal(fs.existsSync(sqlitePath), false);
+});
+
 test('pi runtime resolves provider-specific default thinking without overriding explicit values', () => {
   const runtime = require('../../build/lib/pi-runtime');
 

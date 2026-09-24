@@ -1,4 +1,7 @@
 const { randomUUID } = require('node:crypto');
+const { createHttpError } = require('../../../http/http-errors');
+const { createConfiguredModelCatalog } = require('../../models/configured-model-catalog');
+const { inspectModelConfiguration } = require('../../models/model-configuration');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
@@ -1467,6 +1470,26 @@ export function createAgentExecutor(options: any = {}) {
       ...baseAgentConfig,
       conversationSkillIds: mergeSkillIds(baseAgentConfig.conversationSkillIds, modeSkillIds),
     };
+    const runtimeConfigResolved = Boolean(agent && agent.runtimeConfig && typeof agent.runtimeConfig === 'object');
+    const provider = runtimeConfigResolved
+      ? agentConfig.provider
+      : resolveSetting(agentConfig.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
+    const model = runtimeConfigResolved
+      ? agentConfig.model
+      : resolveSetting(agentConfig.model, process.env.PI_MODEL, DEFAULT_MODEL);
+    const thinking = runtimeConfigResolved
+      ? agentConfig.thinking
+      : resolveThinkingSetting(provider, agentConfig.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
+    const modelInspection = provider && model
+      ? inspectModelConfiguration(modelCatalog || createConfiguredModelCatalog({ agentDir }), { provider, model, thinking })
+      : { ready: false, code: 'model_unconfigured' };
+    if (!modelInspection.ready) {
+      throw createHttpError(409, '请先为此角色配置可解析的模型，再启动对话执行', {
+        code: 'conversation_agent_model_unconfigured',
+        configurationCode: modelInspection.code,
+        configurationUrl: '/personas.html',
+      });
+    }
     const agentSandbox = ensureAgentSandbox(agentDir, agent);
     const snapshotProvided = projectDir !== undefined;
     const projectDirCandidate = snapshotProvided
@@ -1600,16 +1623,6 @@ export function createAgentExecutor(options: any = {}) {
     const promptSections = buildAgentTurnPromptSections(promptInput);
     let deliveredPromptSections = promptSections;
     let prompt = formatAgentTurnPromptSections(deliveredPromptSections);
-    const runtimeConfigResolved = Boolean(agent && agent.runtimeConfig && typeof agent.runtimeConfig === 'object');
-    const provider = runtimeConfigResolved
-      ? agentConfig.provider
-      : resolveSetting(agentConfig.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
-    const model = runtimeConfigResolved
-      ? agentConfig.model
-      : resolveSetting(agentConfig.model, process.env.PI_MODEL, DEFAULT_MODEL);
-    const thinking = runtimeConfigResolved
-      ? agentConfig.thinking
-      : resolveThinkingSetting(provider, agentConfig.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
     const heartbeatIntervalMs = resolveIntegerSettingCandidates([process.env.PI_HEARTBEAT_INTERVAL_MS, 5000], 'heartbeatIntervalMs');
     const heartbeatTimeoutMs = resolveIntegerSettingCandidates(
       [process.env.PI_HEARTBEAT_TIMEOUT_MS, 60000],

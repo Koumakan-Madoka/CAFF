@@ -198,6 +198,10 @@ function createConversationsControllerHarness(t, options = {}) {
   const tempDir = withTempDir('caff-conversations-controller-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');
   const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const systemModelConfig = options.systemModelConfig || {
+    enabled: true, provider: 'cheap-provider', model: 'cheap-model', thinking: 'xhigh', timeoutMs: 60000,
+  };
+  store.saveSystemServiceConfig('recovery_scribe', systemModelConfig);
   const runtimePayload = options.runtimePayload || {
     activeConversationIds: [],
     dispatchingConversationIds: [],
@@ -228,15 +232,9 @@ function createConversationsControllerHarness(t, options = {}) {
     projectDir: options.projectDir,
     digestOptions: {
       summaryMode: 'extractive',
-      resolveSystemModelConfigSnapshot() {
-        return structuredClone(options.systemModelConfig || {
-          enabled: true,
-          provider: 'cheap-provider',
-          model: 'cheap-model',
-          thinking: 'xhigh',
-          timeoutMs: 60_000,
-        });
-      },
+      resolveSystemModelConfigSnapshot: () => store.getSystemServiceConfig('recovery_scribe'),
+      modelCatalog: { getOptions: () => [{ ...systemModelConfig, runtimeResolvable: true,
+        supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] }] },
       ...(options.digestOptions || {}),
     },
     digestModelRunner: options.digestModelRunner,
@@ -329,7 +327,7 @@ test('create server wires loopback model-provider administration with bootstrap 
   const recoveryConfigResponse = await fetch(`${baseUrl}/api/system-services/recovery-scribe`);
   assert.equal(recoveryConfigResponse.status, 200);
   const recoveryConfig = await recoveryConfigResponse.json();
-  assert.equal(recoveryConfig.source, 'runtime_defaults');
+  assert.equal(recoveryConfig.source, 'unconfigured');
   assert.ok(recoveryConfig.modelOptions.some((option) => option.key === 'moonshotai\u001fkimi-k2.5'));
 
   const updateRecoveryConfigResponse = await fetch(`${baseUrl}/api/system-services/recovery-scribe`, {
@@ -378,6 +376,7 @@ test('persisted system model selection hot-applies to the next digest over real 
         provider: 'moonshotai',
         model: 'kimi-k2.5',
         label: 'Kimi K2.5',
+        runtimeResolvable: true,
         source: 'test',
         supportedThinkingLevels: ['off', 'high'],
       }];
@@ -496,12 +495,24 @@ test('server smoke: Agent delivery, operator receipt lookup, cancellation, and p
   const sqlitePath = path.join(tempDir, 'chat.sqlite');
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
+  const resolvableModelOption = {
+    key: 'test-provider\u001ftest-model',
+    provider: 'test-provider',
+    model: 'test-model',
+    label: 'Test Model',
+    source: 'models_json',
+    runtimeResolvable: true,
+    supportedThinkingLevels: ['off'],
+    input: ['text'],
+    contextWindow: null,
+  };
   const app = createServerApp({
     host: '127.0.0.1',
     port,
     agentDir: tempDir,
     sqlitePath,
     projectDir: tempDir,
+    modelCatalog: { getOptions: () => [resolvableModelOption] },
     deliveryWorkerFactory(options) {
       return {
         recoverExpiredClaims() {
@@ -546,11 +557,15 @@ test('server smoke: Agent delivery, operator receipt lookup, cancellation, and p
     id: 'delivery-http-source-agent',
     name: 'Delivery HTTP Source',
     personaPrompt: 'Send one bounded delivery.',
+    provider: 'test-provider',
+    model: 'test-model',
   });
   const targetAgent = app.store.saveCustomRoleConfig({
     id: 'delivery-http-target-agent',
     name: 'Delivery HTTP Target',
     personaPrompt: 'Receive one bounded delivery.',
+    provider: 'test-provider',
+    model: 'test-model',
   });
   const sourceConversation = app.store.createConversation({
     id: 'delivery-http-source-conversation',
@@ -1456,6 +1471,9 @@ test('conversation digest auto-creates model summaries after the message budget'
   assert.equal(skippedResult.reason, 'below_budget');
   assert.equal(modelCalls.length, 0);
 
+  store.saveSystemServiceConfig('recovery_scribe', {
+    enabled: false, provider: 'model-provider', model: 'model-name', thinking: 'high', timeoutMs: 30000,
+  });
   appendPublicMessages(24, 1);
   const createResult = await maybeAutoCreateConversationDigest(store, conversation.id, {
     autoCreate: true,
@@ -1464,15 +1482,7 @@ test('conversation digest auto-creates model summaries after the message budget'
     autoCreateCooldownMs: 0,
     autoCreateHighValue: false,
     summaryMode: 'model',
-    resolveSystemModelConfigSnapshot() {
-      return {
-        enabled: false,
-        provider: 'model-provider',
-        model: 'model-name',
-        thinking: 'high',
-        timeoutMs: 30_000,
-      };
-    },
+    modelCatalog: { getOptions: () => [{ provider: 'model-provider', model: 'model-name', runtimeResolvable: true, supportedThinkingLevels: ['off', 'high'] }] },
     resolveSummaryMemoryTaskName: () => 'Auto Digest Memory Task',
     digestModelRunner: async (context) => {
       modelCalls.push(context);
@@ -1541,6 +1551,7 @@ test('create server auto-digest status exposes model progress trace', async (t) 
     agentDir: tempDir,
     sqlitePath,
     projectDir: tempDir,
+    modelCatalog: { getOptions: () => [{ provider: 'fake', model: 'digest-model', runtimeResolvable: true, supportedThinkingLevels: ['off', 'xhigh'] }] },
     digestOptions: {
       autoCreate: true,
       autoCreateMessageBudget: 1,
@@ -1589,6 +1600,9 @@ test('create server auto-digest status exposes model progress trace', async (t) 
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  app.store.saveSystemServiceConfig('recovery_scribe', {
+    enabled: true, provider: 'fake', model: 'digest-model', thinking: 'xhigh', timeoutMs: 60000,
+  });
   const conversation = createSmokeConversation(app.store, {
     id: 'auto-digest-model-progress-conversation',
     title: 'Auto Digest Model Progress Conversation',
@@ -4955,10 +4969,24 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   const port = await findFreePort();
   const tempDir = withTempDir('caff-m0-');
   const sqlitePath = path.join(tempDir, 'smoke.sqlite');
+  // Participant validation requires a locally resolvable model; register a
+  // vendored-registry pair and pin the child env so the test is hermetic.
+  fs.writeFileSync(path.join(tempDir, 'models.json'), JSON.stringify({
+    providers: {
+      deepseek: {
+        name: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com',
+        api: 'openai-completions',
+        models: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }],
+      },
+    },
+  }), 'utf8');
   const child = spawn(process.execPath, ['build/lib/app-server.js'], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,
+      PI_PROVIDER: 'deepseek',
+      PI_MODEL: 'deepseek-v4-flash',
       CHAT_APP_HOST: '127.0.0.1',
       CHAT_APP_PORT: String(port),
       PI_CODING_AGENT_DIR: tempDir,
@@ -5135,7 +5163,7 @@ test('role API protects model-family roles and shares one availability projectio
   ];
   const modelCatalog = {
     getOptions() {
-      return structuredClone(modelOptions);
+      return structuredClone(modelOptions).map((option) => ({ ...option, runtimeResolvable: true }));
     },
     invalidate() {},
   };
@@ -5718,7 +5746,7 @@ test('conversation create validates the explicit roster and only merges mode ski
   ];
   const modelCatalog = {
     getOptions() {
-      return structuredClone(modelOptions);
+      return structuredClone(modelOptions).map((option) => ({ ...option, runtimeResolvable: true }));
     },
   };
   const roleService = createRoleService({ store, modelCatalog });
