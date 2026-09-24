@@ -495,12 +495,24 @@ test('server smoke: Agent delivery, operator receipt lookup, cancellation, and p
   const sqlitePath = path.join(tempDir, 'chat.sqlite');
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
+  const resolvableModelOption = {
+    key: 'test-provider\u001ftest-model',
+    provider: 'test-provider',
+    model: 'test-model',
+    label: 'Test Model',
+    source: 'models_json',
+    runtimeResolvable: true,
+    supportedThinkingLevels: ['off'],
+    input: ['text'],
+    contextWindow: null,
+  };
   const app = createServerApp({
     host: '127.0.0.1',
     port,
     agentDir: tempDir,
     sqlitePath,
     projectDir: tempDir,
+    modelCatalog: { getOptions: () => [resolvableModelOption] },
     deliveryWorkerFactory(options) {
       return {
         recoverExpiredClaims() {
@@ -545,11 +557,15 @@ test('server smoke: Agent delivery, operator receipt lookup, cancellation, and p
     id: 'delivery-http-source-agent',
     name: 'Delivery HTTP Source',
     personaPrompt: 'Send one bounded delivery.',
+    provider: 'test-provider',
+    model: 'test-model',
   });
   const targetAgent = app.store.saveCustomRoleConfig({
     id: 'delivery-http-target-agent',
     name: 'Delivery HTTP Target',
     personaPrompt: 'Receive one bounded delivery.',
+    provider: 'test-provider',
+    model: 'test-model',
   });
   const sourceConversation = app.store.createConversation({
     id: 'delivery-http-source-conversation',
@@ -4953,10 +4969,24 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   const port = await findFreePort();
   const tempDir = withTempDir('caff-m0-');
   const sqlitePath = path.join(tempDir, 'smoke.sqlite');
+  // Participant validation requires a locally resolvable model; register a
+  // vendored-registry pair and pin the child env so the test is hermetic.
+  fs.writeFileSync(path.join(tempDir, 'models.json'), JSON.stringify({
+    providers: {
+      deepseek: {
+        name: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com',
+        api: 'openai-completions',
+        models: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }],
+      },
+    },
+  }), 'utf8');
   const child = spawn(process.execPath, ['build/lib/app-server.js'], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,
+      PI_PROVIDER: 'deepseek',
+      PI_MODEL: 'deepseek-v4-flash',
       CHAT_APP_HOST: '127.0.0.1',
       CHAT_APP_PORT: String(port),
       PI_CODING_AGENT_DIR: tempDir,

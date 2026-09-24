@@ -6,6 +6,13 @@ const test = require('node:test');
 
 const { withTempDir } = require('../helpers/temp-dir');
 
+// The executor preflight resolves env-fallback models through the real catalog
+// registry. Pin a vendored registry pair so these tests stay hermetic instead
+// of depending on whatever PI_* the ambient shell happens to export.
+process.env.PI_PROVIDER = 'deepseek';
+process.env.PI_MODEL = 'deepseek-v4-flash';
+delete process.env.PI_THINKING;
+
 function createRunHandle(reply, resultOverrides = {}) {
   const handle = new EventEmitter();
   handle.runId = 'run-hook-await';
