@@ -60,6 +60,7 @@ limit.output -> maxTokens
 - Catalog default placeholders come from the detail response's `runtimeDefaults`, which is sourced from `model-provider-config.ts`; browser literals are legacy-response fallbacks only.
 - Catalog import submits the accepted values for reviewability, then the server reloads the current catalog projection and requires exact equality before writing. A mismatch is `catalog_import_limit_mismatch`.
 - Re-import treats `contextWindow` and `maxTokens` as catalog-managed fields: current valid snapshot values replace old values; missing current values clear stale explicit fields. Other model fields such as `headers`, `compat`, and model-level proxy settings survive merge.
+- Endpoint diagnostics (`server/domain/models/endpoint-diagnostics.ts`) are advisory only. The single verified rule is protocol-level: the vendored `@anthropic-ai/sdk` appends a literal `/v1/messages` to the configured base URL, so an `anthropic-messages` base URL ending in `/v1` is flagged as `anthropic_base_url_version_suffix` with a deterministic strip-the-suffix suggestion. The catalog projection exposes it as `endpointDiagnostic`; the catalog import UI and the provider editor render a warning plus an explicit “apply suggestion” action. Raw catalog values and existing `models.json` entries are never rewritten silently, unknown dialect/URL combinations get no suggestion, legal `/v1` paths for openai dialects and custom gateways stay silent, and there is no migration for stored configurations.
 
 ## 4. Validation & Error Matrix
 
@@ -89,6 +90,8 @@ The consistency check uses effective values. For example, explicit `contextWindo
 - `tests/http/model-providers-controller.test.js`: GET projection, PUT disk round trip, and redacted `422` issue.
 - `tests/runtime/model-input-capability-ui.test.js`: input values/placeholders, source labels, numeric payload, clear payload, and client-side invalid-state blocking.
 - `tests/runtime/models-dev-import.test.js`: positive-integer mapping, partial mapping with Pi defaults, and invalid/inconsistent omission.
+- `tests/runtime/endpoint-diagnostics.test.js`: the anthropic `/v1` mismatch rule, its deterministic suggestion, negative cases for openai dialects and unknown inputs, and a mock-fetch pin of the vendored SDK's `/v1/messages` path append.
+- `tests/runtime/catalog-import-ui.test.js` and `tests/runtime/provider-editor-ui.test.js`: diagnostic rendering, explicit-apply behavior, stale-suggestion guards, and custom-gateway silence.
 - `tests/http/model-catalog-controller.test.js`: projection, trusted import persistence, tamper rejection, stale-value clearing, custom-field preservation, and online refresh (cache write, index serving, CSRF, 502/504 mapping).
 - `tests/runtime/models-dev-online-refresh.test.js`: ETag conditional requests, 304 last-known-good retention, invalid-payload/limit/timeout failures, and commitSha verification fallback.
 - `tests/runtime/catalog-import-ui.test.js`: read-only prefill, provenance copy, submitted numeric values, missing-limit default copy, and the explicit `Content-Type` header on the bodyless refresh mutation.

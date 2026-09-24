@@ -67,6 +67,12 @@
       }).join('');
     }
 
+    function endpointDiagnosticMarkup() {
+      const diagnostic = projection && projection.endpointDiagnostic;
+      if (!diagnostic) return '';
+      return `<p id="catalog-import-endpoint-warning" class="management-warning"><strong>协议与地址可能不匹配</strong> ${utils.escapeHtml(diagnostic.message)}</p>`;
+    }
+
     function metadataMarkup() {
       const meta = projection.catalogMetadata || {};
       const cost = meta.cost && (meta.cost.input != null || meta.cost.output != null)
@@ -91,6 +97,7 @@
           </div>
           <h4>环境变量（仅变量名）</h4>
           <ul>${envMarkup(projection.env)}</ul>
+          ${endpointDiagnosticMarkup()}
           ${cost}${limit}${modalities}${reasoning}
           <p class="management-note">来源：${utils.escapeHtml(provenanceSummary(projection.provenance))}</p>
         </section>`;
@@ -116,6 +123,7 @@
             <label class="provider-model-reasoning"><input id="catalog-import-input-image" type="checkbox" ${projection.input && projection.input.includes('image') ? 'checked' : ''} />支持图片输入</label>
           </div>
           <p id="catalog-import-limit-source" class="management-note">${limitSource}</p>
+          ${projection.endpointDiagnostic && projection.endpointDiagnostic.suggestion ? `<div class="button-row"><button id="catalog-import-apply-endpoint-suggestion" class="ghost-button" type="button">应用建议地址：${utils.escapeHtml(projection.endpointDiagnostic.suggestion)}</button></div>` : ''}
           <div class="management-actions"><button id="catalog-import-confirm" type="button" ${manual || importPending || !options.isEnabled() ? 'disabled' : ''}>确认导入</button></div>
         </section>`;
     }
@@ -236,6 +244,15 @@
       }));
       const confirm = document.getElementById('catalog-import-confirm');
       if (confirm) confirm.addEventListener('click', () => confirmImport());
+      const applySuggestion = document.getElementById('catalog-import-apply-endpoint-suggestion');
+      if (applySuggestion) {
+        applySuggestion.addEventListener('click', () => {
+          const suggestion = projection && projection.endpointDiagnostic && projection.endpointDiagnostic.suggestion;
+          if (suggestion) {
+            input('catalog-import-base-url').value = suggestion;
+          }
+        });
+      }
     }
 
     async function openCatalog() {

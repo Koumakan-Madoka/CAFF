@@ -389,3 +389,101 @@ test('catalog import wizard surfaces refresh failures without losing the loaded 
   );
   assert.equal(session.document.getElementById('catalog-import-refresh').disabled, false, 'the refresh button re-enables');
 });
+
+const STALE_KIMI_INDEX = {
+  provenance: PROVENANCE,
+  providers: [
+    {
+      id: 'kimi-for-coding', name: 'Kimi For Coding', env: ['KIMI_API_KEY'],
+      models: [{ id: 'kimi-for-coding', name: 'kimi-for-coding', dialect: 'anthropic-messages', family: 'kimi', familyStatus: 'mapped', manualConfigurationRequired: false }],
+    },
+  ],
+};
+
+const STALE_KIMI_PROJECTION = {
+  providerId: 'kimi-for-coding', modelId: 'kimi-for-coding', name: 'kimi-for-coding',
+  dialect: 'anthropic-messages', baseUrl: 'https://api.kimi.com/coding/v1',
+  family: 'kimi', familyStatus: 'mapped',
+  env: [{ name: 'KIMI_API_KEY', kind: 'key', required: true }],
+  manualConfigurationRequired: false,
+  input: ['text'],
+  endpointDiagnostic: {
+    status: 'mismatch',
+    code: 'anthropic_base_url_version_suffix',
+    suggestion: 'https://api.kimi.com/coding',
+    basis: 'vendored-anthropic-sdk-appends-v1-messages',
+    message: 'Base URL 以 /v1 结尾，但 Anthropic 协议客户端会自动在其后追加 /v1/messages，实际请求路径会变成 https://api.kimi.com/coding/v1/v1/messages。建议使用 https://api.kimi.com/coding（Anthropic 端点不含 /v1 前缀）。',
+  },
+  catalogMetadata: {},
+  provenance: PROVENANCE,
+};
+
+function staleKimiFetch(url) {
+  if (url === '/api/model-catalog') return Promise.resolve(structuredClone(STALE_KIMI_INDEX));
+  if (url.startsWith('/api/model-catalog?')) {
+    return Promise.resolve({
+      projection: structuredClone(STALE_KIMI_PROJECTION),
+      runtimeDefaults: { contextWindow: 128000, maxTokens: 16384 },
+    });
+  }
+  if (url === '/api/model-catalog/import') return Promise.resolve({ providers: [], write: { backupCreated: true } });
+  return Promise.reject(new Error(`unexpected url ${url}`));
+}
+
+test('catalog import surfaces the endpoint diagnostic and applies the suggestion only on explicit click', async () => {
+  const session = setup({ fetchImpl: staleKimiFetch });
+  await session.wizard.open();
+
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+
+  // The raw catalog URL stays in the readonly metadata and in the editable input.
+  const metadata = session.document.getElementById('catalog-import-metadata');
+  assert.match(metadata.textContent, /https:\/\/api\.kimi\.com\/coding\/v1/u);
+  assert.equal(session.input('catalog-import-base-url').value, 'https://api.kimi.com/coding/v1');
+
+  // Diagnostic warning with the suggestion is visible.
+  const warning = session.document.getElementById('catalog-import-endpoint-warning');
+  assert.ok(warning, 'endpoint warning exists');
+  assert.match(warning.textContent, /\/v1\/messages/u);
+  assert.match(warning.textContent, /https:\/\/api\.kimi\.com\/coding/u);
+  const apply = session.document.getElementById('catalog-import-apply-endpoint-suggestion');
+  assert.ok(apply, 'explicit apply button exists');
+
+  // Without clicking, import sends the original catalog URL untouched.
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+  const importCall = session.calls.find((call) => call.url === '/api/model-catalog/import');
+  assert.equal(importCall.options.body.baseUrl, 'https://api.kimi.com/coding/v1');
+});
+
+test('catalog import carries the suggested URL only after an explicit apply click', async () => {
+  const session = setup({ fetchImpl: staleKimiFetch });
+  await session.wizard.open();
+
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+
+  session.document.getElementById('catalog-import-apply-endpoint-suggestion').click();
+  await flush();
+  assert.equal(session.input('catalog-import-base-url').value, 'https://api.kimi.com/coding');
+
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+  const importCall = session.calls.find((call) => call.url === '/api/model-catalog/import');
+  assert.equal(importCall.options.body.baseUrl, 'https://api.kimi.com/coding');
+});
+
+test('catalog import renders no endpoint warning for consistent projections', async () => {
+  const session = setup({ fetchImpl: indexFetch });
+  await session.wizard.open();
+
+  session.document.querySelector('[data-catalog-provider="openai"] button').click();
+  session.document.querySelector('[data-catalog-model="gpt-5"] button').click();
+  await flush();
+
+  assert.equal(session.document.getElementById('catalog-import-endpoint-warning'), null);
+  assert.equal(session.document.getElementById('catalog-import-apply-endpoint-suggestion'), null);
+});

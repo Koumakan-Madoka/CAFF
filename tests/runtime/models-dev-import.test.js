@@ -220,3 +220,77 @@ test('catalog import leaves input capability absent when catalog declares no mod
 
   assert.equal(projected.input, undefined);
 });
+
+// Pinned snapshot of the stale models.dev entry that triggered the bug report:
+// npm=@ai-sdk/anthropic (→ anthropic-messages) but api= the OpenAI-compatible
+// /coding/v1 URL. The projection must surface a diagnostic instead of letting
+// the inconsistent pair silently through.
+function staleKimiCodingCatalog() {
+  return {
+    'kimi-for-coding': {
+      name: 'Kimi For Coding',
+      env: ['KIMI_API_KEY'],
+      npm: '@ai-sdk/anthropic',
+      api: 'https://api.kimi.com/coding/v1',
+      models: {
+        'kimi-for-coding': {
+          name: 'kimi-for-coding',
+          modalities: { input: ['text'], output: ['text'] },
+        },
+      },
+    },
+  };
+}
+
+const TEST_PROVENANCE = {
+  kind: 'vendored',
+  sourceUrl: 'https://models.dev/api.json',
+  payloadSha256: 'hash',
+  fetchedAt: '2026-09-15T10:01:17.367Z',
+};
+
+test('projection flags the stale Kimi For Coding dialect/baseUrl mismatch with a suggestion', () => {
+  const projected = projectCatalogModel(staleKimiCodingCatalog(), 'kimi-for-coding', 'kimi-for-coding', {
+    provenance: TEST_PROVENANCE,
+  });
+
+  assert.equal(projected.dialect, 'anthropic-messages');
+  assert.equal(projected.baseUrl, 'https://api.kimi.com/coding/v1');
+  assert.ok(projected.endpointDiagnostic);
+  assert.equal(projected.endpointDiagnostic.code, 'anthropic_base_url_version_suffix');
+  assert.equal(projected.endpointDiagnostic.suggestion, 'https://api.kimi.com/coding');
+  // The raw catalog values stay untouched — the diagnostic never rewrites them.
+  assert.equal(projected.baseUrl, 'https://api.kimi.com/coding/v1');
+});
+
+test('consistent catalog entries produce no endpoint diagnostic', () => {
+  const projected = projectCatalogModel(catalogFixture(), 'openai', 'gpt-5', {
+    provenance: TEST_PROVENANCE,
+  });
+  assert.equal(projected.endpointDiagnostic, null);
+
+  const fixed = staleKimiCodingCatalog();
+  fixed['kimi-for-coding'].npm = '@ai-sdk/openai-compatible';
+  const fixedProjection = projectCatalogModel(fixed, 'kimi-for-coding', 'kimi-for-coding', {
+    provenance: TEST_PROVENANCE,
+  });
+  assert.equal(fixedProjection.dialect, 'openai-completions');
+  assert.equal(fixedProjection.endpointDiagnostic, null);
+});
+
+test('model-level provider overrides feed the endpoint diagnostic', () => {
+  const raw = staleKimiCodingCatalog();
+  // Provider is consistent; the model-level override introduces the mismatch.
+  raw['kimi-for-coding'].npm = '@ai-sdk/openai-compatible';
+  raw['kimi-for-coding'].models['kimi-for-coding'].provider = {
+    npm: '@ai-sdk/anthropic',
+    baseUrl: 'https://api.kimi.com/coding/v1',
+  };
+
+  const projected = projectCatalogModel(raw, 'kimi-for-coding', 'kimi-for-coding', {
+    provenance: TEST_PROVENANCE,
+  });
+  assert.equal(projected.dialect, 'anthropic-messages');
+  assert.equal(projected.endpointDiagnostic?.code, 'anthropic_base_url_version_suffix');
+  assert.equal(projected.endpointDiagnostic?.suggestion, 'https://api.kimi.com/coding');
+});

@@ -2,6 +2,7 @@ import {
   PI_DEFAULT_CONTEXT_WINDOW,
   PI_DEFAULT_MAX_TOKENS,
 } from './model-provider-config';
+import { inspectDialectEndpoint } from './endpoint-diagnostics';
 
 type JsonObject = Record<string, any>;
 
@@ -281,6 +282,7 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
   const rawModalities = isPlainObject(merged.model.modalities) ? merged.model.modalities : undefined;
   const rawInput = Array.isArray(rawModalities?.input) ? rawModalities.input : undefined;
   const runtimeLimits = projectCatalogModelLimits(merged.model.limit);
+  const dialectBaseUrl = text(merged.provider.baseUrl);
 
   return {
     providerId: id,
@@ -288,7 +290,10 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
     modelId: text(modelId),
     name: text(merged.model.name) || text(modelId),
     dialect,
-    baseUrl: text(merged.provider.baseUrl),
+    baseUrl: dialectBaseUrl,
+    // Advisory only: raw catalog values are never rewritten; any suggestion
+    // lands in models.json only after explicit user confirmation.
+    endpointDiagnostic: inspectDialectEndpoint(dialect, dialectBaseUrl),
     family,
     familyStatus: family ? 'mapped' as const : 'unclassified' as const,
     env: envNames.map((name: string) => classifyCatalogEnv(id, name)),

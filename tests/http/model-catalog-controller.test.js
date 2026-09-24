@@ -505,3 +505,34 @@ test('catalog refresh requires the mutation guard and maps upstream failures to 
       && error.issues && error.issues[0].code === 'catalog_refresh_source_failed'
   );
 });
+
+test('catalog projection endpoint surfaces the dialect/baseUrl endpoint diagnostic', async (t) => {
+  const document = catalogDocument();
+  document.providers['kimi-for-coding'] = {
+    name: 'Kimi For Coding',
+    env: ['KIMI_API_KEY'],
+    npm: '@ai-sdk/anthropic',
+    api: 'https://api.kimi.com/coding/v1',
+    models: {
+      'kimi-for-coding': {
+        name: 'kimi-for-coding',
+        modalities: { input: ['text'], output: ['text'] },
+      },
+    },
+  };
+  const { controller } = createHarness(t, { catalogDocument: document });
+
+  const mismatch = await invoke(controller, {
+    pathname: '/api/model-catalog?providerId=kimi-for-coding&modelId=kimi-for-coding',
+  });
+  assert.equal(mismatch.statusCode, 200);
+  assert.equal(mismatch.json.projection.baseUrl, 'https://api.kimi.com/coding/v1');
+  assert.equal(mismatch.json.projection.endpointDiagnostic?.code, 'anthropic_base_url_version_suffix');
+  assert.equal(mismatch.json.projection.endpointDiagnostic?.suggestion, 'https://api.kimi.com/coding');
+
+  const consistent = await invoke(controller, {
+    pathname: '/api/model-catalog?providerId=openai&modelId=gpt-5/pro',
+  });
+  assert.equal(consistent.statusCode, 200);
+  assert.equal(consistent.json.projection.endpointDiagnostic, null);
+});
