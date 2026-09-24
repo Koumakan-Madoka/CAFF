@@ -28,34 +28,13 @@
     const input = (id) => /** @type {HTMLInputElement} */ (document.getElementById(id));
     const select = (id) => /** @type {HTMLSelectElement} */ (document.getElementById(id));
 
-    // Client mirror of server/domain/models/endpoint-diagnostics.ts: the
-    // vendored Anthropic SDK appends /v1/messages, so an anthropic-messages
-    // base URL must not itself end in /v1. Advisory only — nothing is applied
-    // without an explicit click.
+    // Endpoint diagnostics come from the shared browser mirror of
+    // server/domain/models/endpoint-diagnostics.ts. Advisory only — nothing
+    // is applied without an explicit click, and unknown endpoints never get a
+    // suggestion.
     function inspectEndpointDiagnostic(api, baseUrl) {
-      const protocol = String(api || '').trim();
-      const rawUrl = String(baseUrl || '').trim();
-      if (protocol !== 'anthropic-messages' || !rawUrl) return null;
-      let parsed;
-      try {
-        parsed = new URL(rawUrl);
-      } catch {
-        return null;
-      }
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-      let pathname = parsed.pathname;
-      if (pathname.length > 1 && pathname.endsWith('/')) pathname = pathname.slice(0, -1);
-      if (!pathname.toLowerCase().endsWith('/v1')) return null;
-      const stripped = pathname.slice(0, -3);
-      parsed.pathname = stripped || '/';
-      let suggestion = parsed.toString();
-      if (stripped && suggestion.endsWith('/') && !rawUrl.split(/[?#]/u)[0].endsWith('/v1/')) {
-        suggestion = suggestion.slice(0, -1);
-      }
-      return {
-        suggestion,
-        message: `Base URL 以 /v1 结尾，但 Anthropic 协议客户端会自动在其后追加 /v1/messages，实际请求路径会变成 ${rawUrl.replace(/\/+$/u, '')}/v1/messages。建议使用 ${suggestion}（Anthropic 端点不含 /v1 前缀）。`,
-      };
+      const diagnostics = window.CaffShared && window.CaffShared.endpointDiagnostics;
+      return diagnostics ? diagnostics.inspectDialectEndpoint(api, baseUrl) : null;
     }
 
     function updateEndpointDiagnostic() {
@@ -67,17 +46,20 @@
         return;
       }
       container.innerHTML = `
-        <p id="provider-endpoint-warning" class="management-warning"><strong>协议与地址可能不匹配</strong> ${utils.escapeHtml(diagnostic.message)}</p>
-        <div class="button-row"><button id="provider-apply-endpoint-suggestion" class="ghost-button" type="button">应用建议地址：${utils.escapeHtml(diagnostic.suggestion)}</button></div>`;
-      document.getElementById('provider-apply-endpoint-suggestion').addEventListener('click', () => {
-        // Recompute at click time so a suggestion from a stale protocol/URL
-        // pair can never be applied.
-        const current = inspectEndpointDiagnostic(select('provider-api-protocol').value, input('provider-base-url').value);
-        if (current) {
-          input('provider-base-url').value = current.suggestion;
-        }
-        updateEndpointDiagnostic();
-      });
+        <p id="provider-endpoint-warning" class="management-warning"><strong>${diagnostic.status === 'mismatch' ? '协议与地址不匹配' : '请核对协议与地址'}</strong> ${utils.escapeHtml(diagnostic.message)}</p>
+        ${diagnostic.suggestion ? `<div class="button-row"><button id="provider-apply-endpoint-suggestion" class="ghost-button" type="button">应用建议地址：${utils.escapeHtml(diagnostic.suggestion)}</button></div>` : ''}`;
+      const applyButton = document.getElementById('provider-apply-endpoint-suggestion');
+      if (applyButton) {
+        applyButton.addEventListener('click', () => {
+          // Recompute at click time so a suggestion from a stale protocol/URL
+          // pair can never be applied.
+          const current = inspectEndpointDiagnostic(select('provider-api-protocol').value, input('provider-base-url').value);
+          if (current && current.suggestion) {
+            input('provider-base-url').value = current.suggestion;
+          }
+          updateEndpointDiagnostic();
+        });
+      }
     }
 
     function familyOptions(selected) {

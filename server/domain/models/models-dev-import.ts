@@ -284,6 +284,26 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
   const runtimeLimits = projectCatalogModelLimits(merged.model.limit);
   const dialectBaseUrl = text(merged.provider.baseUrl);
 
+  // Advisory diagnostics are computed against the *effective* post-import
+  // configuration, not the raw catalog pair: a stored provider protocol wins
+  // over the catalog dialect, and stored model-level overrides keep
+  // precedence over the provider address. Raw values are never rewritten.
+  const existing = isPlainObject(options.existing) ? options.existing : {};
+  const storedProviderApi = text(existing.providerApi);
+  const storedModelApi = text(existing.modelApi);
+  const storedModelBaseUrl = text(existing.modelBaseUrl);
+  const effectiveDialect = storedProviderApi || dialect;
+  const dialectConflict = storedProviderApi && dialect && storedProviderApi !== dialect
+    ? { storedApi: storedProviderApi, catalogDialect: dialect }
+    : null;
+  const modelEndpointOverride = storedModelApi || storedModelBaseUrl
+    ? {
+        ...(storedModelApi ? { api: storedModelApi } : {}),
+        ...(storedModelBaseUrl ? { baseUrl: storedModelBaseUrl } : {}),
+        diagnostic: inspectDialectEndpoint(storedModelApi || effectiveDialect, storedModelBaseUrl || dialectBaseUrl),
+      }
+    : null;
+
   return {
     providerId: id,
     providerName: text(provider.name) || id,
@@ -293,7 +313,10 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
     baseUrl: dialectBaseUrl,
     // Advisory only: raw catalog values are never rewritten; any suggestion
     // lands in models.json only after explicit user confirmation.
-    endpointDiagnostic: inspectDialectEndpoint(dialect, dialectBaseUrl),
+    endpointDiagnostic: inspectDialectEndpoint(effectiveDialect, dialectBaseUrl),
+    effectiveDialect,
+    dialectConflict,
+    modelEndpointOverride,
     family,
     familyStatus: family ? 'mapped' as const : 'unclassified' as const,
     env: envNames.map((name: string) => classifyCatalogEnv(id, name)),

@@ -257,10 +257,15 @@ test('projection flags the stale Kimi For Coding dialect/baseUrl mismatch with a
   assert.equal(projected.dialect, 'anthropic-messages');
   assert.equal(projected.baseUrl, 'https://api.kimi.com/coding/v1');
   assert.ok(projected.endpointDiagnostic);
-  assert.equal(projected.endpointDiagnostic.code, 'anthropic_base_url_version_suffix');
+  assert.equal(projected.endpointDiagnostic.status, 'mismatch');
+  assert.equal(projected.endpointDiagnostic.code, 'verified_endpoint_protocol_mismatch');
   assert.equal(projected.endpointDiagnostic.suggestion, 'https://api.kimi.com/coding');
   // The raw catalog values stay untouched — the diagnostic never rewrites them.
   assert.equal(projected.baseUrl, 'https://api.kimi.com/coding/v1');
+  // Without an existing provider there is no conflict and no model override.
+  assert.equal(projected.effectiveDialect, 'anthropic-messages');
+  assert.equal(projected.dialectConflict, null);
+  assert.equal(projected.modelEndpointOverride, null);
 });
 
 test('consistent catalog entries produce no endpoint diagnostic', () => {
@@ -291,6 +296,73 @@ test('model-level provider overrides feed the endpoint diagnostic', () => {
     provenance: TEST_PROVENANCE,
   });
   assert.equal(projected.dialect, 'anthropic-messages');
-  assert.equal(projected.endpointDiagnostic?.code, 'anthropic_base_url_version_suffix');
+  assert.equal(projected.endpointDiagnostic?.code, 'verified_endpoint_protocol_mismatch');
   assert.equal(projected.endpointDiagnostic?.suggestion, 'https://api.kimi.com/coding');
+});
+
+// ---------------------------------------------------------------------------
+// R3: the preview diagnostic must reflect the *effective* post-import
+// configuration, not the raw catalog pair. The stored provider protocol wins
+// over the catalog dialect, and stored model-level overrides keep precedence.
+// ---------------------------------------------------------------------------
+
+test('existing provider protocol wins: no suggestion when the stored dialect makes the catalog URL consistent', () => {
+  const projected = projectCatalogModel(staleKimiCodingCatalog(), 'kimi-for-coding', 'kimi-for-coding', {
+    provenance: TEST_PROVENANCE,
+    existing: { providerApi: 'openai-completions', providerBaseUrl: 'https://api.kimi.com/coding/v1' },
+  });
+
+  assert.equal(projected.dialect, 'anthropic-messages', 'catalog dialect stays visible as catalog metadata');
+  assert.equal(projected.effectiveDialect, 'openai-completions', 'stored provider protocol is what the import keeps');
+  assert.deepEqual(projected.dialectConflict, {
+    storedApi: 'openai-completions',
+    catalogDialect: 'anthropic-messages',
+  });
+  assert.equal(projected.endpointDiagnostic, null, 'openai-completions + /coding/v1 is the verified consistent pair');
+});
+
+test('existing provider protocol can turn a consistent catalog pair into a verified mismatch', () => {
+  const raw = staleKimiCodingCatalog();
+  raw['kimi-for-coding'].api = 'https://api.kimi.com/coding';
+  const projected = projectCatalogModel(raw, 'kimi-for-coding', 'kimi-for-coding', {
+    provenance: TEST_PROVENANCE,
+    existing: { providerApi: 'openai-completions', providerBaseUrl: 'https://api.kimi.com/coding' },
+  });
+
+  assert.equal(projected.effectiveDialect, 'openai-completions');
+  assert.equal(projected.endpointDiagnostic?.status, 'mismatch');
+  assert.equal(projected.endpointDiagnostic?.suggestion, 'https://api.kimi.com/coding/v1', 'reverse suggestion targets the stored protocol');
+});
+
+test('stored model-level overrides are surfaced with their own diagnostic and never rewritten', () => {
+  const projected = projectCatalogModel(staleKimiCodingCatalog(), 'kimi-for-coding', 'kimi-for-coding', {
+    provenance: TEST_PROVENANCE,
+    existing: {
+      providerApi: 'anthropic-messages',
+      providerBaseUrl: 'https://api.kimi.com/coding/v1',
+      modelBaseUrl: 'https://api.kimi.com/coding/v1',
+    },
+  });
+
+  assert.equal(projected.endpointDiagnostic?.suggestion, 'https://api.kimi.com/coding', 'provider-level suggestion still offered');
+  assert.ok(projected.modelEndpointOverride, 'model-level override is surfaced');
+  assert.equal(projected.modelEndpointOverride.baseUrl, 'https://api.kimi.com/coding/v1');
+  assert.equal(projected.modelEndpointOverride.api, undefined);
+  assert.equal(projected.modelEndpointOverride.diagnostic?.status, 'mismatch', 'override keeps the model on the broken address even if the provider URL is fixed');
+});
+
+test('model-level api override participates in the override diagnostic', () => {
+  const projected = projectCatalogModel(staleKimiCodingCatalog(), 'kimi-for-coding', 'kimi-for-coding', {
+    provenance: TEST_PROVENANCE,
+    existing: {
+      providerApi: 'anthropic-messages',
+      providerBaseUrl: 'https://api.kimi.com/coding/v1',
+      modelApi: 'openai-completions',
+    },
+  });
+
+  assert.ok(projected.modelEndpointOverride);
+  assert.equal(projected.modelEndpointOverride.api, 'openai-completions');
+  assert.equal(projected.modelEndpointOverride.baseUrl, undefined);
+  assert.equal(projected.modelEndpointOverride.diagnostic, null, 'openai override + /coding/v1 is consistent');
 });

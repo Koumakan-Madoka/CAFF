@@ -67,10 +67,59 @@
       }).join('');
     }
 
-    function endpointDiagnosticMarkup() {
-      const diagnostic = projection && projection.endpointDiagnostic;
-      if (!diagnostic) return '';
-      return `<p id="catalog-import-endpoint-warning" class="management-warning"><strong>协议与地址可能不匹配</strong> ${utils.escapeHtml(diagnostic.message)}</p>`;
+    // Endpoint diagnostics come from the shared browser mirror of
+    // server/domain/models/endpoint-diagnostics.ts, recomputed against the
+    // *effective* dialect (a stored provider protocol wins over the catalog
+    // dialect) and the current URL input. Advisory only.
+    function effectiveDialect() {
+      return (projection && (projection.effectiveDialect || projection.dialect)) || '';
+    }
+
+    function inspectEndpointDiagnostic(api, baseUrl) {
+      const diagnostics = window.CaffShared && window.CaffShared.endpointDiagnostics;
+      return diagnostics ? diagnostics.inspectDialectEndpoint(api, baseUrl) : null;
+    }
+
+    function dialectConflictMarkup() {
+      const conflict = projection && projection.dialectConflict;
+      if (!conflict) return '';
+      return `<p id="catalog-import-dialect-conflict" class="management-warning"><strong>协议以已保存配置为准</strong> 该供应商已在 models.json 中配置协议 ${utils.escapeHtml(conflict.storedApi)}；导入不会修改它，目录方言 ${utils.escapeHtml(conflict.catalogDialect)} 仅作参考。下方诊断按实际生效的 ${utils.escapeHtml(conflict.storedApi)} 计算。</p>`;
+    }
+
+    function updateEndpointDiagnostics() {
+      const container = document.getElementById('catalog-import-endpoint-diagnostic');
+      if (!container || !projection) return;
+      const diagnostic = inspectEndpointDiagnostic(effectiveDialect(), input('catalog-import-base-url').value);
+      container.innerHTML = diagnostic
+        ? `<p id="catalog-import-endpoint-warning" class="management-warning"><strong>${diagnostic.status === 'mismatch' ? '协议与地址不匹配' : '请核对协议与地址'}</strong> ${utils.escapeHtml(diagnostic.message)}</p>
+           ${diagnostic.suggestion ? `<div class="button-row"><button id="catalog-import-apply-endpoint-suggestion" class="ghost-button" type="button">应用建议地址：${utils.escapeHtml(diagnostic.suggestion)}</button></div>` : ''}`
+        : '';
+      const applyButton = document.getElementById('catalog-import-apply-endpoint-suggestion');
+      if (applyButton) {
+        applyButton.addEventListener('click', () => {
+          // Recompute at click time so a stale suggestion can never apply.
+          const current = inspectEndpointDiagnostic(effectiveDialect(), input('catalog-import-base-url').value);
+          if (current && current.suggestion) {
+            input('catalog-import-base-url').value = current.suggestion;
+          }
+          updateEndpointDiagnostics();
+        });
+      }
+
+      const overrideElement = document.getElementById('catalog-import-model-override');
+      if (overrideElement) {
+        const override = projection.modelEndpointOverride || {};
+        const fields = [
+          override.api ? `api: ${override.api}` : '',
+          override.baseUrl ? `baseUrl: ${override.baseUrl}` : '',
+        ].filter(Boolean).join('，');
+        const overrideDiagnostic = inspectEndpointDiagnostic(
+          override.api || effectiveDialect(),
+          override.baseUrl || input('catalog-import-base-url').value
+        );
+        overrideElement.innerHTML = `<strong>模型级覆盖仍优先生效</strong> models.json 中该模型已有模型级覆盖（${utils.escapeHtml(fields)}），导入后保留并优先于供应商地址；此处修改供应商地址不会改变该模型的实际请求。如需调整，请手工编辑 models.json 中该模型的覆盖字段。`
+          + (overrideDiagnostic ? `<br />${utils.escapeHtml(overrideDiagnostic.message)}` : '');
+      }
     }
 
     function metadataMarkup() {
@@ -97,7 +146,6 @@
           </div>
           <h4>环境变量（仅变量名）</h4>
           <ul>${envMarkup(projection.env)}</ul>
-          ${endpointDiagnosticMarkup()}
           ${cost}${limit}${modalities}${reasoning}
           <p class="management-note">来源：${utils.escapeHtml(provenanceSummary(projection.provenance))}</p>
         </section>`;
@@ -123,7 +171,9 @@
             <label class="provider-model-reasoning"><input id="catalog-import-input-image" type="checkbox" ${projection.input && projection.input.includes('image') ? 'checked' : ''} />支持图片输入</label>
           </div>
           <p id="catalog-import-limit-source" class="management-note">${limitSource}</p>
-          ${projection.endpointDiagnostic && projection.endpointDiagnostic.suggestion ? `<div class="button-row"><button id="catalog-import-apply-endpoint-suggestion" class="ghost-button" type="button">应用建议地址：${utils.escapeHtml(projection.endpointDiagnostic.suggestion)}</button></div>` : ''}
+          ${dialectConflictMarkup()}
+          <div id="catalog-import-endpoint-diagnostic"></div>
+          ${projection.modelEndpointOverride ? '<p id="catalog-import-model-override" class="management-warning"></p>' : ''}
           <div class="management-actions"><button id="catalog-import-confirm" type="button" ${manual || importPending || !options.isEnabled() ? 'disabled' : ''}>确认导入</button></div>
         </section>`;
     }
@@ -244,15 +294,9 @@
       }));
       const confirm = document.getElementById('catalog-import-confirm');
       if (confirm) confirm.addEventListener('click', () => confirmImport());
-      const applySuggestion = document.getElementById('catalog-import-apply-endpoint-suggestion');
-      if (applySuggestion) {
-        applySuggestion.addEventListener('click', () => {
-          const suggestion = projection && projection.endpointDiagnostic && projection.endpointDiagnostic.suggestion;
-          if (suggestion) {
-            input('catalog-import-base-url').value = suggestion;
-          }
-        });
-      }
+      const baseUrlInput = document.getElementById('catalog-import-base-url');
+      if (baseUrlInput) baseUrlInput.addEventListener('input', () => updateEndpointDiagnostics());
+      updateEndpointDiagnostics();
     }
 
     async function openCatalog() {
