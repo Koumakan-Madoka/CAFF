@@ -4308,6 +4308,118 @@ test('turn orchestrator directly pauses an active Goal after three fast model in
   assert.doesNotMatch(JSON.stringify(goalUpdate.payload), /test-goal-runner-bearer-value/u);
 });
 
+test('turn orchestrator pauses an active Goal after five alternating or unknown model invocation failures', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-session-goal-total-failure-pause-');
+  const sqlitePath = path.join(tempDir, 'goal-total-failure-pause.sqlite');
+  const conversation = {
+    id: 'conversation-goal-total-failure-pause',
+    title: 'Goal total failure pause',
+    type: 'standard',
+    metadata: {
+      sessionGoal: {
+        objective: 'Stop retrying a provider that keeps failing differently',
+        status: 'active',
+        createdAt: '2026-08-21T00:00:00.000Z',
+        updatedAt: '2026-08-21T00:00:00.000Z',
+      },
+    },
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  let messageCounter = 0;
+  let executeCount = 0;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [];
+    },
+    updateConversation(conversationId, updates) {
+      assert.equal(conversationId, conversation.id);
+      conversation.metadata = updates && updates.metadata && typeof updates.metadata === 'object'
+        ? updates.metadata
+        : conversation.metadata;
+      return conversation;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `goal-total-failure-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        createdAt: new Date().toISOString(),
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  // 交替与未知模式：quota → other → quota → other → network，同模式连击永远到不了 3，
+  // 必须由总失败阈值在第 5 轮暂停，且不得再调度第 6 轮。
+  const failureModes = ['provider:quota', 'provider:other', 'provider:quota', 'provider:other', 'provider:network'];
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    sessionGoalAutoContinueMaxTurns: 8,
+    sessionGoalFailureThreshold: 3,
+    sessionGoalTotalFailureThreshold: 5,
+    broadcastEvent() {},
+    executeConversationAgent: async ({ failedReplies, agent }) => {
+      executeCount += 1;
+      const mode = failureModes[executeCount - 1] || 'provider:network';
+      failedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: '',
+        status: 'failed',
+        errorMessage: `failure ${executeCount}`,
+        metadata: {
+          invocationFailure: {
+            kind: 'provider',
+            code: 'assistant_error',
+            eligible: true,
+            mode,
+            summary: `failure ${executeCount}`,
+          },
+        },
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+  assert.equal(scheduled.scheduled, true);
+
+  await waitForCondition(() => (
+    conversation.metadata.sessionGoal.status === 'paused'
+    || conversation.metadata.sessionGoalProposal
+  ));
+
+  assert.equal(executeCount, 5);
+  assert.equal(conversation.metadata.sessionGoal.status, 'paused');
+  assert.equal(conversation.metadata.sessionGoalRunner.status, 'error_paused');
+  assert.equal(conversation.metadata.sessionGoalRunner.consecutiveFailureCount, 5);
+  assert.equal(conversation.metadata.sessionGoalRunner.consecutiveSameModeFailureCount, 1);
+  assert.equal(conversation.metadata.sessionGoalProposal, undefined);
+});
+
 function createGoalOwnerConversation({ goalOwner, agents, replies }) {
   const seededMessages = (Array.isArray(replies) ? replies : []).map((reply, index) => ({
     id: `seeded-reply-${index + 1}`,

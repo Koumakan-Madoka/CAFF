@@ -195,6 +195,27 @@ function redactInvocationFailureSummary(value: any) {
 const GOAL_FAILURE_SIGNAL_CODES = new Set(['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGSEGV', 'SIGPIPE', 'SIGHUP', 'SIGQUIT']);
 
 /**
+ * Explicit whitelist of structured provider codes that genuinely mean a
+ * connection-layer failure. Codes outside this set (e.g. UND_ERR_INVALID_ARG
+ * or UND_ERR_NOT_SUPPORTED, which are client-side programming errors) must
+ * never merge into the same network failure mode.
+ */
+const GOAL_FAILURE_NETWORK_CODES = new Set([
+  'econnreset',
+  'econnrefused',
+  'etimedout',
+  'enotfound',
+  'eai_again',
+  'und_err_connect_timeout',
+  'und_err_socket',
+  'und_err_headers_timeout',
+  'und_err_body_timeout',
+]);
+
+/** Only this many leading characters of a summary may take part in mode classification. */
+const GOAL_FAILURE_MODE_SUMMARY_WINDOW = 200;
+
+/**
  * Bounded failure-mode label for the Goal auto-pause guard. Derived only from
  * structured fields plus anchored leading indicators of the (already
  * redacted-at-store-time) summary; the raw error text is never stored in the
@@ -220,16 +241,20 @@ export function classifyGoalFailureMode({ kind, code, summary }: any) {
     return '';
   }
   if (normalizedCode && normalizedCode !== 'assistant_error') {
-    // Structured network codes (ECONN*/UND_ERR_*) are all connection-layer.
-    return 'provider:network';
+    // Structured codes classify only via the explicit network whitelist;
+    // unknown codes stay unattributable and never consult the free text.
+    return GOAL_FAILURE_NETWORK_CODES.has(normalizedCode) ? 'provider:network' : 'provider:other';
   }
-  const reported = String(summary || '').trim();
+  const reported = String(summary || '')
+    .slice(0, GOAL_FAILURE_MODE_SUMMARY_WINDOW)
+    .trim()
+    .replace(/\s+/gu, ' ');
   if (/^fetch failed\b/iu.test(reported)) return 'provider:network';
   if (/^(?:429|rate[_ -]?limit(?:ed|ing|[_ -]exceeded)?|too many requests)\b/iu.test(reported)) return 'provider:rate_limited';
   if (/^(?:401|unauthorized|invalid[_ -]?api[_ -]?key|authentication[_ -]?(?:failed|error))\b/iu.test(reported)) return 'provider:auth';
   if (/^(?:403|forbidden|permission[_ -]?denied)\b/iu.test(reported)) return 'provider:forbidden';
   if (/^(?:500|502|503|504|service unavailable|internal server error)\b/iu.test(reported)) return 'provider:server_error';
-  if (/^(?:connection error:\s*)?stream_read_error\b/iu.test(reported)) return 'provider:stream_read';
+  if (/^(?:connection error: )?stream_read_error\b/iu.test(reported)) return 'provider:stream_read';
   if (/^(?:insufficient[_ -](?:balance|quota)|quota[_ -]exceeded)\b/iu.test(reported)) return 'provider:quota';
   return 'provider:other';
 }
@@ -268,11 +293,17 @@ export function classifyAgentInvocationFailure(error: any, options: any = {}) {
   }
 
   if (assistantErrors.length > 0) {
+    // A known structured network code outranks the free-form assistant error
+    // text; otherwise the text drives the anchored-prefix classification.
+    const accompanyingCode = String(errorValue.code || '').trim().toLowerCase();
+    const mode = accompanyingCode && accompanyingCode !== 'assistant_error'
+      ? classifyGoalFailureMode({ kind: 'provider', code: accompanyingCode })
+      : classifyGoalFailureMode({ kind: 'provider', code: 'assistant_error', summary: assistantErrors[0] });
     return {
       kind: 'provider',
       code: 'assistant_error',
       eligible: true,
-      mode: classifyGoalFailureMode({ kind: 'provider', code: 'assistant_error', summary: assistantErrors[0] }),
+      mode,
       terminationType,
       summary: redactInvocationFailureSummary(assistantErrors[0]),
     };
@@ -280,11 +311,12 @@ export function classifyAgentInvocationFailure(error: any, options: any = {}) {
 
   const structuredErrorCode = String(errorValue.code || '').trim().toUpperCase();
   if (/^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR_[A-Z_]+)$/u.test(structuredErrorCode)) {
+    const normalizedStructuredCode = structuredErrorCode.toLowerCase();
     return {
       kind: 'provider',
-      code: structuredErrorCode.toLowerCase(),
+      code: normalizedStructuredCode,
       eligible: true,
-      mode: 'provider:network',
+      mode: classifyGoalFailureMode({ kind: 'provider', code: normalizedStructuredCode }),
       terminationType,
       summary: redactInvocationFailureSummary(message),
     };

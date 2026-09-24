@@ -173,6 +173,48 @@ test('agent invocation failures preserve structured kinds and assign bounded mod
   assert.doesNotMatch(sentinel.mode, /sk-live/u);
 });
 
+test('mode classification uses a structured network-code whitelist and a bounded summary window', () => {
+  // 非网络语义的 undici 码不得并入 provider:network；kind/code/eligible 逐字节不变。
+  assert.deepEqual(
+    classifyAgentInvocationFailure({ message: 'invalid argument', code: 'UND_ERR_INVALID_ARG' }),
+    {
+      kind: 'provider',
+      code: 'und_err_invalid_arg',
+      eligible: true,
+      mode: 'provider:other',
+      terminationType: '',
+      summary: 'invalid argument',
+    }
+  );
+  assert.equal(classifyAgentInvocationFailure({ message: 'operation not supported', code: 'UND_ERR_NOT_SUPPORTED' }).mode, 'provider:other');
+  assert.equal(classifyAgentInvocationFailure({ message: 'request body mismatch', code: 'UND_ERR_REQ_CONTENT_LENGTH_MISMATCH' }).mode, 'provider:other');
+  // 白名单内的连接层码仍归为网络模式。
+  assert.equal(classifyAgentInvocationFailure({ message: 'connect timeout', code: 'UND_ERR_CONNECT_TIMEOUT' }).mode, 'provider:network');
+  assert.equal(classifyAgentInvocationFailure({ message: 'socket error', code: 'UND_ERR_SOCKET' }).mode, 'provider:network');
+  assert.equal(classifyAgentInvocationFailure({ message: 'body timeout', code: 'UND_ERR_BODY_TIMEOUT' }).mode, 'provider:network');
+  // 已知结构化码优先于 assistantErrors 文本，不被无法归类的文本遮蔽。
+  assert.equal(
+    classifyAgentInvocationFailure({ message: 'Request failed', code: 'ECONNRESET', assistantErrors: ['unrecognized upstream failure'] }).mode,
+    'provider:network'
+  );
+  assert.equal(
+    classifyAgentInvocationFailure({ message: 'Request failed', code: 'ETIMEDOUT', assistantErrors: ['429 too many requests'] }).mode,
+    'provider:network'
+  );
+  // 参与分类的输入必须有界：锚定前缀与关键词之间的海量空白不得穿透窗口。
+  const padded = `connection error:${' '.repeat(1_000_000)}stream_read_error`;
+  assert.equal(classifyAgentInvocationFailure({ message: 'Request failed', assistantErrors: [padded] }).mode, 'provider:other');
+  // 无关正文即使包含模式关键词也不锚定归类。
+  const noise = `${'upstream failure detail '.repeat(40)} 429 too many requests`;
+  assert.equal(classifyAgentInvocationFailure({ message: 'Request failed', assistantErrors: [noise] }).mode, 'provider:other');
+  // 超长敏感哨兵：窗口外内容不影响分类，mode 永远取自固定集合。
+  const longSentinel = `unrecognized failure ${'x'.repeat(500)} api_key=sk-live-secret-value-123`;
+  const classified = classifyAgentInvocationFailure({ message: 'Request failed', assistantErrors: [longSentinel] });
+  assert.equal(classified.mode, 'provider:other');
+  assert.doesNotMatch(classified.mode, /sk-live/u);
+  assert.doesNotMatch(classified.summary, /sk-live-secret-value-123/u);
+});
+
 test('three consecutive same-mode failures pause the Goal regardless of turn duration', () => {
   const { store, conversation } = createConversationStore();
   // 68.5 秒的"慢"失败（事故形状）：旧实现按 slow_failure 不计数。
