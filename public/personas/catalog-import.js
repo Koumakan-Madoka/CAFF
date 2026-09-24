@@ -13,6 +13,7 @@
     let runtimeDefaults = { contextWindow: 128000, maxTokens: 16384 };
     let importPending = false;
     let importAdvisory = null;
+    let importCompletionTriggered = false;
     let refreshPending = false;
 
     const input = (id) => /** @type {HTMLInputElement} */ (document.getElementById(id));
@@ -91,21 +92,57 @@
     // carries diagnostics computed against the *persisted* effective
     // configuration (stored provider protocol + model-level overrides), so the
     // user sees the true post-import state instead of a bare success toast.
+    // Sibling conflicts (other models of the provider broken by the provider
+    // URL change) are reported explicitly — a broken sibling must never be
+    // silent.
     function importAdvisoryMarkup() {
       if (!importAdvisory) return '';
       const entries = [];
       if (importAdvisory.provider) entries.push(importAdvisory.provider);
       if (importAdvisory.model) entries.push(importAdvisory.model);
-      if (!entries.length) {
+      const siblingConflicts = (importAdvisory.siblings || []).filter((entry) => entry && entry.diagnostic && entry.diagnostic.status === 'mismatch');
+      if (!entries.length && !siblingConflicts.length) {
         return '<div id="catalog-import-post-import"><p class="management-note">已导入；落盘后的协议/地址组合未发现可诊断问题。</p></div>';
       }
-      return `<div id="catalog-import-post-import">${entries.map((diagnostic) => `<p class="management-warning"><strong>落盘后诊断</strong> ${utils.escapeHtml(diagnostic.message)}</p>`).join('')}</div>`;
+      const blocks = entries.map((diagnostic) => `<p class="management-warning"><strong>落盘后诊断</strong> ${utils.escapeHtml(diagnostic.message)}</p>`);
+      for (const sibling of siblingConflicts) {
+        blocks.push(`<p class="management-warning"><strong>受影响的模型 ${utils.escapeHtml(sibling.modelId || '')}</strong> 供应商地址变化使其有效组合变为不匹配：${utils.escapeHtml(sibling.diagnostic.message)}</p>`);
+      }
+      return `<div id="catalog-import-post-import">${blocks.join('')}</div>`;
+    }
+
+    // Provider-level impact preview. A provider base URL is provider-wide: a
+    // suggestion (or a manual edit) changes the effective request of every
+    // sibling model that overrides the protocol but not the address. The
+    // listing computes each affected sibling's effective combination under the
+    // candidate URL, so a one-click fix is never offered without its
+    // explanation.
+    function updateSiblingImpact(diagnostic, currentUrl) {
+      const impactElement = document.getElementById('catalog-import-sibling-impact');
+      if (!impactElement || !projection) return;
+      const siblings = Array.isArray(projection.siblingModelOverrides) ? projection.siblingModelOverrides : [];
+      const affected = siblings.filter((entry) => entry && entry.modelId && !entry.baseUrl);
+      const candidateUrl = diagnostic && diagnostic.suggestion ? diagnostic.suggestion : null;
+      const manualUrl = currentUrl !== (projection.baseUrl || '') ? currentUrl : null;
+      const impactUrl = candidateUrl || manualUrl;
+      if (!affected.length || !impactUrl) {
+        impactElement.innerHTML = '';
+        return;
+      }
+      const rows = affected.map((entry) => {
+        const api = entry.api || effectiveDialect();
+        const siblingDiagnostic = inspectEndpointDiagnostic(api, impactUrl);
+        const mismatched = siblingDiagnostic && siblingDiagnostic.status === 'mismatch';
+        return `<li>${utils.escapeHtml(entry.modelId)}：协议 ${utils.escapeHtml(api)} · 地址 ${utils.escapeHtml(impactUrl)}${mismatched ? ` —— <strong>应用后将不匹配</strong>（${utils.escapeHtml(siblingDiagnostic.message)}）` : ''}</li>`;
+      }).join('');
+      impactElement.innerHTML = `<div class="management-warning"><strong>${candidateUrl ? '应用建议会影响同供应商的其他模型' : '修改供应商地址会影响同供应商的其他模型'}</strong> 以下模型覆盖了协议但未覆盖地址，实际请求会随供应商地址变化：<ul>${rows}</ul>如需保留它们的当前行为，请先在 models.json 中为相关模型补充 baseUrl 覆盖。</div>`;
     }
 
     function updateEndpointDiagnostics() {
       const container = document.getElementById('catalog-import-endpoint-diagnostic');
       if (!container || !projection) return;
-      const diagnostic = inspectEndpointDiagnostic(effectiveDialect(), input('catalog-import-base-url').value);
+      const currentUrl = input('catalog-import-base-url').value;
+      const diagnostic = inspectEndpointDiagnostic(effectiveDialect(), currentUrl);
       container.innerHTML = diagnostic
         ? `<p id="catalog-import-endpoint-warning" class="management-warning"><strong>${diagnostic.status === 'mismatch' ? '协议与地址不匹配' : '请核对协议与地址'}</strong> ${utils.escapeHtml(diagnostic.message)}</p>
            ${diagnostic.suggestion ? `<div class="button-row"><button id="catalog-import-apply-endpoint-suggestion" class="ghost-button" type="button">应用建议地址：${utils.escapeHtml(diagnostic.suggestion)}</button></div>` : ''}`
@@ -121,6 +158,7 @@
           updateEndpointDiagnostics();
         });
       }
+      updateSiblingImpact(diagnostic, currentUrl);
 
       const overrideElement = document.getElementById('catalog-import-model-override');
       if (overrideElement) {
@@ -133,7 +171,10 @@
           override.api || effectiveDialect(),
           override.baseUrl || input('catalog-import-base-url').value
         );
-        overrideElement.innerHTML = `<strong>模型级覆盖仍优先生效</strong> models.json 中该模型已有模型级覆盖（${utils.escapeHtml(fields)}），导入后保留并优先于供应商地址；此处修改供应商地址不会改变该模型的实际请求。如需调整，请手工编辑 models.json 中该模型的覆盖字段。`
+        const note = override.baseUrl
+          ? `<strong>模型级覆盖仍优先生效</strong> models.json 中该模型已有模型级地址覆盖（${utils.escapeHtml(fields)}），导入后保留并优先于供应商地址；此处修改供应商地址不会改变该模型的实际请求。如需调整，请手工编辑 models.json 中该模型的覆盖字段。`
+          : `<strong>模型级协议覆盖</strong> models.json 中该模型覆盖了协议（${utils.escapeHtml(fields)}）但未覆盖地址，实际请求为「协议 ${utils.escapeHtml(override.api || effectiveDialect())} + 供应商地址」；此处修改供应商地址会改变该模型的实际请求。如需固定，请手工编辑 models.json 为该模型补充 baseUrl 覆盖。`;
+        overrideElement.innerHTML = note
           + (overrideDiagnostic ? `<br />${utils.escapeHtml(overrideDiagnostic.message)}` : '');
       }
     }
@@ -189,9 +230,10 @@
           <p id="catalog-import-limit-source" class="management-note">${limitSource}</p>
           ${dialectConflictMarkup()}
           <div id="catalog-import-endpoint-diagnostic"></div>
+          <div id="catalog-import-sibling-impact"></div>
           ${projection.modelEndpointOverride ? '<p id="catalog-import-model-override" class="management-warning"></p>' : ''}
           ${importAdvisoryMarkup()}
-          <div class="management-actions"><button id="catalog-import-confirm" type="button" ${manual || importPending || importAdvisory || !options.isEnabled() ? 'disabled' : ''}>${importAdvisory ? '已导入' : '确认导入'}</button></div>
+          <div class="management-actions"><button id="catalog-import-confirm" type="button" ${manual || importPending || importCompletionTriggered || !options.isEnabled() ? 'disabled' : ''}>${importAdvisory ? '完成' : '确认导入'}</button></div>
         </section>`;
     }
 
@@ -268,14 +310,18 @@
       try {
         const result = await options.fetchJson('/api/model-catalog/import', { method: 'POST', body, headers: adminHeaders() });
         // Surface the persisted-effective diagnostics instead of discarding
-        // them: the response reflects what was actually written.
+        // them: the response reflects what was actually written. The wizard
+        // keeps the page until the user finishes — firing onImported here
+        // would replace the detail pane (refresh → editor) and erase the
+        // advisory before anyone can read it.
         importAdvisory = {
           provider: (result && result.endpointDiagnostic) || null,
           model: (result && result.modelEndpointDiagnostic) || null,
+          siblings: (result && Array.isArray(result.siblingEndpointDiagnostics)) ? result.siblingEndpointDiagnostics : [],
         };
+        importCompletionTriggered = false;
         importPending = false;
         options.showToast(`已导入 ${projection.providerId} / ${projection.modelId}；密钥请在供应商编辑中填写`);
-        options.onImported(projection.providerId, projection.modelId);
         render();
       } catch (error) {
         importPending = false;
@@ -284,7 +330,26 @@
       }
     }
 
+    // Completion hands the detail pane back to the parent (refresh + editor).
+    // It fires only on an explicit user action — the 完成 button or the close
+    // button — so the advisory stays readable and the provider list is never
+    // left stale.
+    async function completeImport(thenClose = false) {
+      if (importCompletionTriggered || !importAdvisory) return;
+      importCompletionTriggered = true;
+      const providerId = projection ? projection.providerId : '';
+      const modelId = projection ? projection.modelId : '';
+      try {
+        await options.onImported(providerId, modelId);
+      } finally {
+        if (thenClose) options.onClose();
+      }
+    }
+
     async function openModel(providerId, modelId) {
+      // Leaving the advisory state via navigation must still refresh the
+      // provider list — the import already happened.
+      if (importAdvisory) void completeImport(false);
       try {
         const result = await options.fetchJson(`/api/model-catalog?providerId=${encodeURIComponent(providerId)}&modelId=${encodeURIComponent(modelId)}`);
         projection = result.projection;
@@ -299,7 +364,15 @@
     }
 
     function bindEvents() {
-      document.getElementById('catalog-import-close').addEventListener('click', () => options.onClose());
+      document.getElementById('catalog-import-close').addEventListener('click', () => {
+        // In the advisory state the close path refreshes first so the
+        // provider list never goes stale; otherwise it hands the pane back.
+        if (importAdvisory) {
+          void completeImport(true);
+        } else {
+          options.onClose();
+        }
+      });
       const refreshButton = document.getElementById('catalog-import-refresh');
       if (refreshButton) refreshButton.addEventListener('click', () => refreshCatalog());
       input('catalog-import-search').addEventListener('input', () => {
@@ -319,13 +392,22 @@
         openModel(providerId, button.dataset.catalogOpenModel);
       }));
       const confirm = document.getElementById('catalog-import-confirm');
-      if (confirm) confirm.addEventListener('click', () => confirmImport());
+      if (confirm) confirm.addEventListener('click', () => {
+        if (importAdvisory) {
+          void completeImport(false);
+        } else {
+          confirmImport();
+        }
+      });
       const baseUrlInput = document.getElementById('catalog-import-base-url');
       if (baseUrlInput) baseUrlInput.addEventListener('input', () => updateEndpointDiagnostics());
       updateEndpointDiagnostics();
     }
 
     async function openCatalog() {
+        // Reopening the catalog while an advisory is pending must still
+        // refresh the provider list — the import already happened.
+        if (importAdvisory) void completeImport(false);
         index = null;
         filter = '';
         selectedProviderId = '';
@@ -333,6 +415,7 @@
         runtimeDefaults = { contextWindow: 128000, maxTokens: 16384 };
         importPending = false;
         importAdvisory = null;
+        importCompletionTriggered = false;
         root.innerHTML = '<div class="empty-state">目录加载中…</div>';
         try {
           index = await options.fetchJson('/api/model-catalog');

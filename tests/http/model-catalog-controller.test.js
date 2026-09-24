@@ -669,3 +669,47 @@ test('catalog import reports the post-import effective diagnostic while preservi
   const unrelated = provider.models.find((model) => model.id === 'other-model');
   assert.deepEqual(unrelated, { id: 'other-model', name: 'Other', family: 'kimi', contextWindow: 64000 }, 'unrelated models untouched');
 });
+
+test('catalog import reports sibling models broken by a provider-level URL change', async (t) => {
+  // R3b probe: the sibling only overrides the protocol and was consistent
+  // with the stored provider URL. Applying the anthropic suggestion at the
+  // provider level silently breaks it — preview and response must say so.
+  const initialDocument = {
+    providers: {
+      'kimi-for-coding': {
+        name: 'Kimi For Coding',
+        api: 'anthropic-messages',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        apiKey: '$KIMI_API_KEY',
+        models: [
+          { id: 'kimi-for-coding', name: 'kimi-for-coding', family: 'kimi' },
+          { id: 'sibling-model', name: 'Sibling', family: 'kimi', api: 'openai-completions' },
+        ],
+      },
+    },
+  };
+  const { controller } = createHarness(t, {
+    catalogDocument: staleKimiCatalogDocument(),
+    initialDocument,
+  });
+
+  const preview = await invoke(controller, {
+    pathname: '/api/model-catalog?providerId=kimi-for-coding&modelId=kimi-for-coding',
+  });
+  assert.equal(preview.statusCode, 200);
+  assert.deepEqual(preview.json.projection.siblingModelOverrides, [
+    { modelId: 'sibling-model', api: 'openai-completions', baseUrl: '' },
+  ], 'the pre-import projection surfaces sibling overrides for impact preview');
+
+  const response = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/model-catalog/import',
+    headers: mutationHeaders(),
+    body: { providerId: 'kimi-for-coding', modelId: 'kimi-for-coding', baseUrl: 'https://api.kimi.com/coding' },
+  });
+  assert.equal(response.statusCode, 200);
+  const sibling = (response.json.siblingEndpointDiagnostics || []).find((entry) => entry.modelId === 'sibling-model');
+  assert.ok(sibling, 'the broken sibling is reported in the response');
+  assert.equal(sibling.diagnostic?.status, 'mismatch', 'sibling becomes a verified mismatch after the provider URL change');
+  assert.equal(sibling.diagnostic?.suggestion, 'https://api.kimi.com/coding/v1', 'sibling advice targets its own protocol');
+});

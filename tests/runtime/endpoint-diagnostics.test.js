@@ -59,10 +59,12 @@ test('verified consistent combinations stay silent', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Unknown endpoints: never a suggestion. The anthropic + trailing /v1 pattern
-// earns a path-specific verify hint; unknown OpenAI endpoints earn a neutral
-// verify hint (pinned SDK path fact, no guessed address) so that silence is
-// reserved for verified matches and cannot read as "checked and fine".
+// Unknown endpoints: never a suggestion, but never silent either. The
+// anthropic + trailing /v1 pattern earns a path-specific verify hint; other
+// anthropic/openai dialects earn a neutral hint with the pinned SDK path
+// fact; everything else (google, unknown dialects) earns a generic hint
+// without path claims. Silence is reserved for verified matches, so
+// "no diagnostic" can never read as "checked and fine".
 // ---------------------------------------------------------------------------
 
 test('R1: anthropic-messages on a custom gateway with /v1 is an unverified hint without any suggestion', () => {
@@ -82,16 +84,63 @@ test('R1: anthropic-messages with a root /v1 on an unknown host never suggests t
   assert.equal(result.suggestion, undefined);
 });
 
-test('anthropic-messages on unknown hosts without a /v1 suffix stays silent', () => {
-  assert.equal(inspect('anthropic-messages', 'https://gateway.example.com/tenant'), null);
-  assert.equal(inspect('anthropic-messages', 'https://api.anthropic.com'), null);
+test('anthropic-messages on unknown hosts without a /v1 suffix gets the generic unverified hint', () => {
+  const result = inspect('anthropic-messages', 'https://gateway.example.com/tenant');
+  assert.ok(result, 'silence is reserved for verified matches');
+  assert.equal(result.status, 'unverified');
+  assert.equal(result.code, 'endpoint_not_verified');
+  assert.equal(result.suggestion, undefined, 'never a guessed address');
+  assert.match(result.message, /核对/u);
+});
+
+test('R1: non-standard forms of a verified host never earn a suggestion', () => {
+  // The verified basis covers exactly the official endpoint form. A custom
+  // port, scheme, query, fragment, or credential is a different endpoint the
+  // evidence says nothing about: neutral hint only, never a replacement.
+  const customForms = [
+    'https://api.kimi.com:8443/coding/v1',
+    'http://api.kimi.com/coding/v1',
+    'https://api.kimi.com/coding/v1?tenant=fixture',
+    'https://api.kimi.com/coding/v1#frag',
+    'https://user:pass@api.kimi.com/coding/v1',
+  ];
+  for (const url of customForms) {
+    const result = inspect('anthropic-messages', url);
+    assert.ok(result, `hint expected for ${url}`);
+    assert.equal(result.suggestion, undefined, `no suggestion for ${url}`);
+    assert.notEqual(result.code, 'verified_endpoint_protocol_mismatch', `not a verified mismatch: ${url}`);
+  }
+  const openaiPort = inspect('openai-completions', 'https://api.kimi.com:8443/coding');
+  assert.equal(openaiPort.code, 'endpoint_not_verified');
+  assert.equal(openaiPort.suggestion, undefined, 'custom port never earns the reverse suggestion');
+  const openaiQuery = inspect('openai-completions', 'https://api.kimi.com/coding?tenant=x');
+  assert.equal(openaiQuery.suggestion, undefined);
+});
+
+test('unverified combinations across dialects get neutral hints; silence is reserved for verified matches', () => {
+  // Google and unknown dialects get the generic hint without path claims —
+  // CAFF does not guess client behavior it has not pinned.
+  const google = inspect('google-generative-ai', 'https://generativelanguage.googleapis.com/v1beta');
+  assert.ok(google, 'google dialect must not read as verified');
+  assert.equal(google.status, 'unverified');
+  assert.equal(google.code, 'endpoint_not_verified');
+  assert.equal(google.suggestion, undefined);
+  assert.doesNotMatch(google.message, /chat\/completions|\/responses|\/v1\/messages/u, 'no guessed path facts');
+  assert.match(google.message, /核对/u);
+
+  const mistral = inspect('mistral-conversations', 'https://api.mistral.example.com/v1');
+  assert.ok(mistral, 'unknown dialects must not read as verified');
+  assert.equal(mistral.status, 'unverified');
+  assert.equal(mistral.suggestion, undefined);
+
+  // Incomplete or unparseable inputs stay silent: nothing to diagnose.
+  assert.equal(inspect('', 'https://api.kimi.com/coding/v1'), null);
+  assert.equal(inspect('anthropic-messages', ''), null);
+  assert.equal(inspect('anthropic-messages', 'not a url'), null);
+  assert.equal(inspect(undefined, undefined), null);
 });
 
 test('unknown OpenAI endpoints get a neutral verify hint, never a suggestion', () => {
-  // Contract: silence is reserved for verified matches. An unknown OpenAI
-  // endpoint may not read as "checked and fine", so it earns a neutral hint
-  // that states the pinned SDK path fact and asks the user to verify. It never
-  // guesses an address and never rewrites or rejects anything.
   const gateway = inspect('openai-completions', 'https://gateway.example.com/custom/v1');
   assert.ok(gateway, 'unknown openai endpoint must not be silent');
   assert.equal(gateway.status, 'unverified');
@@ -117,14 +166,8 @@ test('unknown OpenAI endpoints get a neutral verify hint, never a suggestion', (
   assert.equal(kimiResponses.suggestion, undefined, 'no verified basis for openai-responses');
 });
 
-test('unknown dialects and incomplete inputs never produce a diagnostic', () => {
-  assert.equal(inspect('mistral-conversations', 'https://example.com/v1'), null);
-  assert.equal(inspect('mistral-conversations', 'https://api.kimi.com/coding/v1'), null);
-  assert.equal(inspect('', 'https://api.kimi.com/coding/v1'), null);
-  assert.equal(inspect('anthropic-messages', ''), null);
-  assert.equal(inspect('anthropic-messages', 'not a url'), null);
-  assert.equal(inspect(undefined, undefined), null);
-});
+// Incomplete/unparseable inputs stay silent (covered in the unified-semantics
+// test above); every well-formed unverified combination earns a hint.
 
 // ---------------------------------------------------------------------------
 // Verifiable basis pins. These fail if the underlying facts ever change.
@@ -250,10 +293,16 @@ test('browser mirror matches the server module across the decision matrix', () =
     ['anthropic-messages', 'https://gateway.example.com/tenant/v1'],
     ['anthropic-messages', 'https://gateway.example.com/v1'],
     ['anthropic-messages', 'https://gateway.example.com/tenant'],
+    ['anthropic-messages', 'https://api.kimi.com:8443/coding/v1'],
+    ['anthropic-messages', 'http://api.kimi.com/coding/v1'],
+    ['anthropic-messages', 'https://api.kimi.com/coding/v1?tenant=fixture'],
     ['openai-completions', 'https://gateway.example.com/custom/v1'],
+    ['openai-completions', 'https://api.kimi.com:8443/coding'],
     ['openai-responses', 'https://api.openai.com/v1'],
     ['openai-responses', 'https://api.kimi.com/coding'],
+    ['google-generative-ai', 'https://generativelanguage.googleapis.com/v1beta'],
     ['mistral-conversations', 'https://api.kimi.com/coding/v1'],
+    ['mistral-conversations', 'https://api.mistral.example.com/v1'],
     ['anthropic-messages', 'not a url'],
     ['', 'https://api.kimi.com/coding/v1'],
     ['anthropic-messages', ''],

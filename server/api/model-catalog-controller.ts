@@ -224,11 +224,18 @@ function readExistingEndpointContext(agentDir: string, providerId: string, model
     }
     const models = Array.isArray(provider.models) ? provider.models : [];
     const model = models.find((entry: any) => entry && typeof entry === 'object' && configText(entry.id) === modelId);
+    // Sibling overrides (api/baseUrl on other models of the same provider)
+    // drive the provider-level impact preview: a provider URL change affects
+    // every model without its own baseUrl override.
+    const siblingOverrides = models
+      .filter((entry: any) => entry && typeof entry === 'object' && configText(entry.id) && configText(entry.id) !== modelId && (configText(entry.api) || configText(entry.baseUrl)))
+      .map((entry: any) => ({ modelId: configText(entry.id), api: configText(entry.api), baseUrl: configText(entry.baseUrl) }));
     return {
       providerApi: configText(provider.api),
       providerBaseUrl: configText(provider.baseUrl),
       modelApi: model ? configText(model.api) : '',
       modelBaseUrl: model ? configText(model.baseUrl) : '',
+      siblingOverrides,
     };
   } catch {
     return undefined;
@@ -381,10 +388,21 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
               configText(persistedModel.api) || configText(persistedProvider.api),
               configText(persistedModel.baseUrl) || configText(persistedProvider.baseUrl))
           : null;
+        // Sibling models with overrides can diverge from the provider-level
+        // diagnostic when the provider URL changes; report their effective
+        // combinations honestly so a broken sibling is never silent.
+        const siblingEndpointDiagnostics = persistedModels
+          .filter((entry: any) => entry && typeof entry === 'object' && configText(entry.id) && configText(entry.id) !== modelId && (configText(entry.api) || configText(entry.baseUrl)))
+          .map((entry: any) => {
+            const api = configText(entry.api) || configText(persistedProvider.api);
+            const baseUrl = configText(entry.baseUrl) || configText(persistedProvider.baseUrl);
+            return { modelId: configText(entry.id), api, baseUrl, diagnostic: inspectDialectEndpoint(api, baseUrl) };
+          });
         sendJson(res, 200, {
           ...projectModelProviderDocument(result.document),
           endpointDiagnostic: providerDiagnostic,
           modelEndpointDiagnostic,
+          siblingEndpointDiagnostics,
           write: {
             backupCreated: Boolean(result.backupPath),
             durability: result.durability,

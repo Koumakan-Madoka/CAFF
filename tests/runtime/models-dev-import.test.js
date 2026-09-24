@@ -354,6 +354,29 @@ test('stored model-level overrides are surfaced with their own diagnostic and ne
   assert.equal(projected.modelEndpointOverride.diagnostic?.status, 'mismatch', 'override keeps the model on the broken address even if the provider URL is fixed');
 });
 
+test('sibling model overrides are surfaced for provider-level impact preview', () => {
+  const raw = staleKimiCodingCatalog();
+  const projected = projectCatalogModel(raw, 'kimi-for-coding', 'kimi-for-coding', {
+    provenance: TEST_PROVENANCE,
+    existing: {
+      providerApi: 'anthropic-messages',
+      providerBaseUrl: 'https://api.kimi.com/coding/v1',
+      modelApi: '',
+      modelBaseUrl: '',
+      siblingOverrides: [
+        { modelId: 'sibling-model', api: 'openai-completions', baseUrl: '' },
+      ],
+    },
+  });
+  assert.deepEqual(projected.siblingModelOverrides, [
+    { modelId: 'sibling-model', api: 'openai-completions', baseUrl: '' },
+  ]);
+
+  // No stored context → empty list, never undefined.
+  const fresh = projectCatalogModel(catalogFixture(), 'openai', 'gpt-5', { provenance: TEST_PROVENANCE });
+  assert.deepEqual(fresh.siblingModelOverrides, []);
+});
+
 test('model-level api override participates in the override diagnostic', () => {
   const projected = projectCatalogModel(staleKimiCodingCatalog(), 'kimi-for-coding', 'kimi-for-coding', {
     provenance: TEST_PROVENANCE,

@@ -303,6 +303,11 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
         diagnostic: inspectDialectEndpoint(storedModelApi || effectiveDialect, storedModelBaseUrl || dialectBaseUrl),
       }
     : null;
+  // Sibling overrides feed the provider-level impact preview: a provider URL
+  // change affects every model of the provider without its own baseUrl.
+  const siblingModelOverrides = (Array.isArray(existing.siblingOverrides) ? existing.siblingOverrides : [])
+    .filter((entry: any) => isPlainObject(entry) && text(entry.modelId))
+    .map((entry: any) => ({ modelId: text(entry.modelId), api: text(entry.api), baseUrl: text(entry.baseUrl) }));
 
   return {
     providerId: id,
@@ -317,6 +322,7 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
     effectiveDialect,
     dialectConflict,
     modelEndpointOverride,
+    siblingModelOverrides,
     family,
     familyStatus: family ? 'mapped' as const : 'unclassified' as const,
     env: envNames.map((name: string) => classifyCatalogEnv(id, name)),

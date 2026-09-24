@@ -46,7 +46,25 @@
     if (pathname.length > 1 && pathname.endsWith('/')) {
       pathname = pathname.slice(0, -1);
     }
-    return { host: url.hostname.toLowerCase(), path: pathname, rawUrl };
+    return { url, host: url.hostname.toLowerCase(), path: pathname, rawUrl };
+  }
+
+  // A verified basis covers exactly the official endpoint form: scheme, host,
+  // default port, no credentials/query/fragment, exact path.
+  function endpointMatchesShape(endpoint, shape) {
+    let verifiedUrl;
+    try {
+      verifiedUrl = new URL(shape.baseUrl);
+    } catch {
+      return false;
+    }
+    return endpoint.url.protocol === verifiedUrl.protocol
+      && endpoint.url.host === verifiedUrl.host
+      && !endpoint.url.search
+      && !endpoint.url.hash
+      && !endpoint.url.username
+      && !endpoint.url.password
+      && endpoint.path === shape.path;
   }
 
   function inspectDialectEndpoint(dialect, baseUrl) {
@@ -67,10 +85,10 @@
           continue;
         }
         if (api === 'anthropic-messages') {
-          if (endpoint.path === verified.anthropic.path) {
+          if (endpointMatchesShape(endpoint, verified.anthropic)) {
             return null;
           }
-          if (endpoint.path === verified.openaiCompletions.path) {
+          if (endpointMatchesShape(endpoint, verified.openaiCompletions)) {
             return {
               status: 'mismatch',
               code: 'verified_endpoint_protocol_mismatch',
@@ -80,10 +98,10 @@
             };
           }
         } else {
-          if (endpoint.path === verified.openaiCompletions.path) {
+          if (endpointMatchesShape(endpoint, verified.openaiCompletions)) {
             return null;
           }
-          if (endpoint.path === verified.anthropic.path) {
+          if (endpointMatchesShape(endpoint, verified.anthropic)) {
             return {
               status: 'mismatch',
               code: 'verified_endpoint_protocol_mismatch',
@@ -96,12 +114,20 @@
       }
     }
 
-    if (api === 'anthropic-messages' && /\/v1$/iu.test(endpoint.path)) {
+    if (api === 'anthropic-messages') {
+      if (/\/v1$/iu.test(endpoint.path)) {
+        return {
+          status: 'unverified',
+          code: 'anthropic_base_url_version_suffix',
+          basis: 'vendored-anthropic-sdk-appends-v1-messages',
+          message: `Anthropic 协议客户端会自动在 Base URL 后追加 /v1/messages，当前地址实际会请求 ${bareUrl}/v1/messages。该端点不在已核实清单内，CAFF 不提供建议地址；请自行核对该网关是否接受此路径。`,
+        };
+      }
       return {
         status: 'unverified',
-        code: 'anthropic_base_url_version_suffix',
+        code: 'endpoint_not_verified',
         basis: 'vendored-anthropic-sdk-appends-v1-messages',
-        message: `Anthropic 协议客户端会自动在 Base URL 后追加 /v1/messages，当前地址实际会请求 ${bareUrl}/v1/messages。该端点不在已核实清单内，CAFF 不提供建议地址；请自行核对该网关是否接受此路径。`,
+        message: `该端点不在 CAFF 已核实清单内；Anthropic 协议客户端会自动在 Base URL 后追加 /v1/messages，当前地址实际会请求 ${bareUrl}/v1/messages。请自行核对协议与地址是否匹配；CAFF 不会自动修改该地址。`,
       };
     }
 
@@ -122,7 +148,13 @@
       };
     }
 
-    return null;
+    // Every other dialect gets the generic hint without path claims.
+    return {
+      status: 'unverified',
+      code: 'endpoint_not_verified',
+      basis: 'unverified-endpoint',
+      message: '该端点不在 CAFF 已核实清单内，请自行核对协议与地址是否匹配；CAFF 不会自动修改该地址。',
+    };
   }
 
   shared.endpointDiagnostics = { inspectDialectEndpoint };

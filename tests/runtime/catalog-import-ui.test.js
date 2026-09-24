@@ -236,6 +236,10 @@ test('catalog import confirm posts only the allowed import fields and never env 
   });
   assert.equal(bodyText.includes('AZURE_API_KEY'), false, 'env names are not submitted');
   assert.equal(bodyText.includes('apiKey'), false, 'no apiKey field submitted');
+  // onImported only fires on explicit completion (完成), after the advisory.
+  assert.deepEqual(session.imported, []);
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
   assert.deepEqual(session.imported, [{ providerId: 'azure', modelId: 'gpt-5' }]);
 });
 
@@ -494,7 +498,7 @@ test('unverified OpenAI endpoints get a neutral preview hint without a suggestio
   assert.equal(session.document.getElementById('catalog-import-apply-endpoint-suggestion'), null, 'no suggestion button for unverified endpoints');
 });
 
-test('post-import advisory from the import response is displayed to the user', async () => {
+test('post-import advisory is displayed before any callback can replace the page', async () => {
   const importResponse = {
     providers: [],
     write: { backupCreated: true },
@@ -511,6 +515,20 @@ test('post-import advisory from the import response is displayed to the user', a
       basis: 'vendored-openai-client-appends-chat-completions',
       message: '模型级覆盖的端点未核实，请自行核对。',
     },
+    siblingEndpointDiagnostics: [
+      {
+        modelId: 'sibling-model',
+        api: 'openai-completions',
+        baseUrl: 'https://api.kimi.com/coding',
+        diagnostic: {
+          status: 'mismatch',
+          code: 'verified_endpoint_protocol_mismatch',
+          suggestion: 'https://api.kimi.com/coding/v1',
+          basis: 'models.dev:kimi-code-plan-cn',
+          message: '已核实的 Kimi For Coding 端点：OpenAI 兼容协议应使用 https://api.kimi.com/coding/v1。',
+        },
+      },
+    ],
   };
   const session = setup({
     fetchImpl: (url) => {
@@ -530,12 +548,41 @@ test('post-import advisory from the import response is displayed to the user', a
   session.document.getElementById('catalog-import-confirm').click();
   await flush();
 
-  assert.equal(session.imported.length, 1, 'onImported fired once');
+  // The advisory must be visible while the wizard still owns the page: the
+  // completion callback (which replaces the detail pane in the real chain)
+  // only fires when the user explicitly finishes.
+  assert.equal(session.imported.length, 0, 'onImported must not fire before the user dismisses the advisory');
   const advisory = session.document.getElementById('catalog-import-post-import');
   assert.ok(advisory, 'post-import advisory panel exists');
   assert.match(advisory.textContent, /落盘后协议与地址仍不匹配/u, 'provider-level advisory shown');
   assert.match(advisory.textContent, /模型级覆盖/u, 'model-level advisory shown');
-  assert.ok(session.document.getElementById('catalog-import-confirm').disabled, 'confirm disabled after a successful import');
+  assert.match(advisory.textContent, /sibling-model/u, 'sibling impact reported');
+
+  const confirmButton = /** @type {HTMLButtonElement} */ (session.document.getElementById('catalog-import-confirm'));
+  assert.match(confirmButton.textContent, /完成/u, 'confirm becomes the completion button');
+  assert.equal(confirmButton.disabled, false, 'completion button is clickable');
+  confirmButton.click();
+  await flush();
+  assert.equal(session.imported.length, 1, 'onImported fires on explicit completion');
+});
+
+test('closing the advisory state still refreshes providers before returning', async () => {
+  const session = setup({ fetchImpl: staleKimiFetch });
+  await session.wizard.open();
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+
+  session.document.getElementById('catalog-import-confirm').click();
+  await flush();
+  assert.ok(session.document.getElementById('catalog-import-post-import'));
+  assert.equal(session.imported.length, 0);
+
+  session.document.getElementById('catalog-import-close').click();
+  await flush();
+  await flush();
+  assert.equal(session.imported.length, 1, 'close path refreshes providers too, so the list is never stale');
+  assert.ok(session.isClosed(), 'onClose fired after the refresh');
 });
 
 test('a clean import result reports no diagnosable problems', async () => {
@@ -553,7 +600,78 @@ test('a clean import result reports no diagnosable problems', async () => {
   const advisory = session.document.getElementById('catalog-import-post-import');
   assert.ok(advisory, 'post-import advisory panel exists');
   assert.match(advisory.textContent, /未发现/u, 'clean result is stated explicitly instead of silence');
-  assert.ok(session.document.getElementById('catalog-import-confirm').disabled);
+  assert.equal(session.imported.length, 0, 'completion still waits for the user');
+});
+
+test('R3b: applying a provider-level suggestion lists the sibling impact before anything is applied', async () => {
+  const siblingProjection = {
+    ...structuredClone(STALE_KIMI_PROJECTION),
+    siblingModelOverrides: [
+      { modelId: 'sibling-model', api: 'openai-completions', baseUrl: '' },
+      { modelId: 'pinned-model', api: 'openai-completions', baseUrl: 'https://api.kimi.com/coding/v1' },
+    ],
+  };
+  const session = setup({
+    fetchImpl: (url) => {
+      if (url === '/api/model-catalog') return Promise.resolve(structuredClone(STALE_KIMI_INDEX));
+      if (url.startsWith('/api/model-catalog?')) {
+        return Promise.resolve({ projection: structuredClone(siblingProjection), runtimeDefaults: { contextWindow: 128000, maxTokens: 16384 } });
+      }
+      if (url === '/api/model-catalog/import') return Promise.resolve({ providers: [], write: { backupCreated: true } });
+      return Promise.reject(new Error(`unexpected url ${url}`));
+    },
+  });
+  await session.wizard.open();
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+
+  // The suggestion is offered together with its provider-level impact: the
+  // sibling without its own baseUrl would become a verified mismatch under
+  // the suggested URL; the sibling with its own baseUrl override is unaffected.
+  const impact = session.document.getElementById('catalog-import-sibling-impact');
+  assert.ok(impact, 'sibling impact block exists next to the suggestion');
+  assert.match(impact.textContent, /sibling-model/u);
+  assert.match(impact.textContent, /不匹配/u, 'the broken sibling is called out');
+  assert.match(impact.textContent, /https:\/\/api\.kimi\.com\/coding\/v1/u, 'sibling advice shown');
+  assert.doesNotMatch(impact.textContent, /pinned-model/u, 'siblings with their own baseUrl are unaffected and not listed');
+  assert.ok(session.document.getElementById('catalog-import-apply-endpoint-suggestion'), 'apply button present with its explanation');
+});
+
+test('R3b: an api-only model override no longer claims the provider URL is irrelevant', async () => {
+  const apiOnlyProjection = {
+    ...structuredClone(STALE_KIMI_PROJECTION),
+    modelEndpointOverride: {
+      api: 'openai-completions',
+      diagnostic: {
+        status: 'mismatch',
+        code: 'verified_endpoint_protocol_mismatch',
+        suggestion: 'https://api.kimi.com/coding/v1',
+        basis: 'models.dev:kimi-code-plan-cn',
+        message: '已核实的 Kimi For Coding 端点：OpenAI 兼容协议应使用 https://api.kimi.com/coding/v1。',
+      },
+    },
+  };
+  const session = setup({
+    fetchImpl: (url) => {
+      if (url === '/api/model-catalog') return Promise.resolve(structuredClone(STALE_KIMI_INDEX));
+      if (url.startsWith('/api/model-catalog?')) {
+        return Promise.resolve({ projection: structuredClone(apiOnlyProjection), runtimeDefaults: { contextWindow: 128000, maxTokens: 16384 } });
+      }
+      if (url === '/api/model-catalog/import') return Promise.resolve({ providers: [], write: { backupCreated: true } });
+      return Promise.reject(new Error(`unexpected url ${url}`));
+    },
+  });
+  await session.wizard.open();
+  session.document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  session.document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+
+  const overrideNote = session.document.getElementById('catalog-import-model-override');
+  assert.ok(overrideNote);
+  assert.match(overrideNote.textContent, /openai-completions/u, 'the effective protocol is stated');
+  assert.match(overrideNote.textContent, /会改变该模型的实际请求/u, 'the note admits the provider URL still drives this model');
+  assert.doesNotMatch(overrideNote.textContent, /不会改变该模型的实际请求/u, 'the old wrong claim is gone');
 });
 
 test('R3: a stored provider protocol conflict is shown and no suggestion is offered against the catalog dialect', async () => {
@@ -691,4 +809,119 @@ test('catalog import recomputes the diagnostic as the URL input changes', async 
   await flush();
   assert.ok(session.document.getElementById('catalog-import-endpoint-warning'), 'warning returns on the mismatching URL');
   assert.ok(session.document.getElementById('catalog-import-apply-endpoint-suggestion'));
+});
+
+// ---------------------------------------------------------------------------
+// R3a integration: the real provider-management chain. The wizard, the editor
+// and the management pane share one detail container; the post-import advisory
+// must survive until the user finishes, and finishing must hand the pane back
+// to the editor with refreshed data.
+// ---------------------------------------------------------------------------
+
+test('R3a: the real management chain keeps the advisory visible until the user finishes', async () => {
+  const dom = new JSDOM(`
+    <div id="provider-count"></div>
+    <ul id="provider-list"></ul>
+    <div id="provider-detail"></div>
+    <button id="add-provider"></button>
+    <button id="import-provider"></button>
+    <button id="refresh-providers"></button>
+  `);
+  const context = {
+    document: dom.window.document,
+    Event: dom.window.Event,
+    URL,
+    structuredClone,
+    window: { CaffPersonas: {}, CaffShared: {} },
+  };
+  for (const rel of [
+    'public/shared/management-list.js',
+    'public/shared/model-options.js',
+    'public/shared/endpoint-diagnostics.js',
+    'public/personas/management-utils.js',
+    'public/personas/provider-editor.js',
+    'public/personas/subscription-login.js',
+    'public/personas/catalog-import.js',
+    'public/personas/provider-management.js',
+  ]) {
+    const sourcePath = path.join(projectRoot, rel);
+    vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
+  }
+
+  let providerBaseUrl = 'https://api.kimi.com/coding/v1';
+  const providerList = () => ({
+    providers: [{
+      id: 'kimi-for-coding', name: 'Kimi For Coding', baseUrl: providerBaseUrl,
+      api: 'anthropic-messages', authHeader: false, apiKeyMode: 'literal', hasApiKey: true,
+      hasExternalAuth: false, hasCustomHeaders: false,
+      models: [{ id: 'kimi-for-coding', name: 'kimi-for-coding', family: 'kimi', reasoning: false, input: ['text'] }],
+    }],
+  });
+  const providersChanged = [];
+  const management = context.window.CaffPersonas.createProviderManagement({
+    list: dom.window.document.getElementById('provider-list'),
+    detail: dom.window.document.getElementById('provider-detail'),
+    addButton: dom.window.document.getElementById('add-provider'),
+    importButton: dom.window.document.getElementById('import-provider'),
+    refreshButton: dom.window.document.getElementById('refresh-providers'),
+    count: dom.window.document.getElementById('provider-count'),
+    subscriptionButton: null,
+    isEnabled: () => true,
+    getCsrfToken: () => 'csrf-token',
+    showToast() {},
+    onProvidersChanged: async () => { providersChanged.push('changed'); },
+    fetchJson: async (url, options) => {
+      if (url === '/api/model-providers') return providerList();
+      if (url === '/api/subscription-auth') return { channels: [], logins: [] };
+      if (url === '/api/model-catalog') return structuredClone(STALE_KIMI_INDEX);
+      if (url.startsWith('/api/model-catalog?')) {
+        return { projection: structuredClone(STALE_KIMI_PROJECTION), runtimeDefaults: { contextWindow: 128000, maxTokens: 16384 } };
+      }
+      if (url === '/api/model-catalog/import') {
+        const body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
+        providerBaseUrl = body.baseUrl || providerBaseUrl;
+        return {
+          providers: providerList().providers,
+          write: { backupCreated: true },
+          endpointDiagnostic: {
+            status: 'mismatch', code: 'verified_endpoint_protocol_mismatch',
+            suggestion: 'https://api.kimi.com/coding', basis: 'pi-vendored-registry:kimi-coding',
+            message: '已核实的 Kimi For Coding 端点：落盘后协议与地址仍不匹配。',
+          },
+          modelEndpointDiagnostic: null,
+        };
+      }
+      throw new Error(`unexpected url ${url}`);
+    },
+  });
+  await management.refresh();
+  const document = dom.window.document;
+
+  document.getElementById('import-provider').click();
+  await flush();
+  document.querySelector('[data-catalog-provider="kimi-for-coding"] button').click();
+  document.querySelector('[data-catalog-model="kimi-for-coding"] button').click();
+  await flush();
+  document.getElementById('catalog-import-apply-endpoint-suggestion').click();
+  await flush();
+  document.getElementById('catalog-import-confirm').click();
+  await flush();
+  await flush();
+
+  // R3a regression point: in the real chain onImported used to fire
+  // immediately and replace the detail pane, erasing the advisory.
+  const advisory = document.getElementById('catalog-import-post-import');
+  assert.ok(advisory, 'advisory is visible in the real management page');
+  assert.ok(document.getElementById('provider-detail').contains(advisory), 'the wizard still owns the detail pane');
+  assert.equal(providersChanged.length, 0, 'the pane is not replaced before the user finishes');
+
+  document.getElementById('catalog-import-confirm').click(); // 完成
+  await flush();
+  await flush();
+  await flush();
+
+  assert.equal(providersChanged.length, 1, 'finishing refreshes downstream consumers');
+  assert.equal(document.getElementById('catalog-import-post-import'), null, 'the wizard handed the pane back');
+  assert.ok(document.getElementById('provider-base-url'), 'the provider editor now owns the detail pane');
+  assert.equal(document.getElementById('provider-base-url').value, 'https://api.kimi.com/coding', 'editor shows the imported URL');
 });
