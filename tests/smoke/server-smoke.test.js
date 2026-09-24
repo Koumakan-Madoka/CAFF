@@ -238,7 +238,19 @@ function createConversationsControllerHarness(t, options = {}) {
       ...(options.digestOptions || {}),
     },
     digestModelRunner: options.digestModelRunner,
-    skillDraftOptions: { generationMode: 'rules', ...(options.skillDraftOptions || {}) },
+    skillDraftOptions: {
+      generationMode: 'rules',
+      // Hermetic model-mode fixture: an injected runner only reaches the model path when a
+      // locally resolvable model is configured, so pin an explicit resolvable pair instead of
+      // relying on ambient PI_*/CAFF_SKILL_DRAFT_* env (per-file process isolation keeps this safe).
+      ...(options.skillDraftModelRunner ? {
+        provider: 'cheap-provider',
+        model: 'cheap-model',
+        modelCatalog: { getOptions: () => [{ provider: 'cheap-provider', model: 'cheap-model', runtimeResolvable: true,
+          supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] }] },
+      } : {}),
+      ...(options.skillDraftOptions || {}),
+    },
     skillDraftModelRunner: options.skillDraftModelRunner,
   });
 
