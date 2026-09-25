@@ -387,11 +387,12 @@ function validateJevAskArguments(input: unknown): UnknownRecord {
     if (!normalizedId || normalizedId.length > JEV_MAX_QUESTION_ID_LENGTH) {
       throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'jev_ask question ids must be 1..80 characters');
     }
-    if (JEV_UNPROJECTABLE_KEY_PATTERN.test(normalizedId)) {
+    const reservedIdMatch = normalizedId.match(JEV_UNPROJECTABLE_KEY_PATTERN);
+    if (reservedIdMatch) {
       throw createCapabilityError(
         400,
         'pi_capability_invalid_arguments',
-        `jev_ask question id is not projectable: ${normalizedId}`
+        `jev_ask question id "${normalizedId}" contains the reserved word "${reservedIdMatch[0]}" and would fail the result projection safety layer; rename it (reserved substrings: secret, token, credential, password, authorization, cookie, header, command, transport, server, toolname, raw)`
       );
     }
     if (!isPlainObject(question) || !JEV_QUESTION_TYPES.has(String(question.type || '').trim().toLowerCase())) {
@@ -403,11 +404,12 @@ function validateJevAskArguments(input: unknown): UnknownRecord {
     }
     if (String(question.type).trim().toLowerCase() === 'choice' && isPlainObject(question.criteria)) {
       for (const option of Object.keys(question.criteria)) {
-        if (JEV_UNPROJECTABLE_KEY_PATTERN.test(option)) {
+        const reservedOptionMatch = String(option).match(JEV_UNPROJECTABLE_KEY_PATTERN);
+        if (reservedOptionMatch) {
           throw createCapabilityError(
             400,
             'pi_capability_invalid_arguments',
-            `jev_ask choice option is not projectable: ${option}`
+            `jev_ask choice option "${option}" contains the reserved word "${reservedOptionMatch[0]}" and would fail the result projection safety layer; rename it (reserved substrings: secret, token, credential, password, authorization, cookie, header, command, transport, server, toolname, raw)`
           );
         }
       }

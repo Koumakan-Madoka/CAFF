@@ -148,7 +148,7 @@ test('typesafe client maps 401 to an explicit auth failure', async () => {
   );
 });
 
-test('typesafe client sanitizes 422 field details without echoing input values', async () => {
+test('typesafe client sanitizes 422 field details into safe categories without echoing input values', async () => {
   const secretState = 'super-secret-state-content';
   const { client } = makeClient({
     fetch: async () => makeResponse(422, {
@@ -163,9 +163,29 @@ test('typesafe client sanitizes 422 field details without echoing input values',
       assert.equal(error.code, 'typesafe_unprocessable');
       assert.equal(error.fields.length, 1);
       assert.equal(error.fields[0].path, 'body.questions.q1.criteria');
-      // The reason text is truncated and the error must never echo the raw body
-      // or structured input values beyond a short plain-text reason.
-      assert.ok(!JSON.stringify(error.fields).includes('input'));
+      // Reasons are fixed safe categories, never upstream free text (decision d5).
+      assert.equal(error.fields[0].reason, 'value has an invalid type or format');
+      // The sentinel input value must appear NOWHERE in the error output.
+      const serialized = JSON.stringify({ message: error.message, fields: error.fields });
+      assert.ok(!serialized.includes(secretState));
+      return true;
+    }
+  );
+});
+
+test('typesafe client maps unknown 422 reasons to a fixed generic reason', async () => {
+  const sentinel = 'xyzzy-input-echo-sentinel';
+  const { client } = makeClient({
+    fetch: async () => makeResponse(422, {
+      detail: [{ loc: ['body', 'state'], msg: `frobnicate failed near ${sentinel}` }],
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => {
+      assert.equal(error.code, 'typesafe_unprocessable');
+      assert.equal(error.fields[0].reason, 'value rejected by the TypeSafe API validator');
+      assert.ok(!JSON.stringify({ message: error.message, fields: error.fields }).includes(sentinel));
       return true;
     }
   );
@@ -269,4 +289,172 @@ test('typesafe client opens the token circuit breaker after crossing the known-u
   );
   assert.equal(calls.length, 1);
   assert.equal(client.getBudgetStatus().tokensUsed, 128);
+});
+
+test('typesafe client enforces the request-count hard limit under concurrent asks', async () => {
+  const { client, calls } = makeClient({
+    maxRequests: 3,
+    fetch: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return makeResponse(200, okPayload(['q1']));
+    },
+  });
+  const results = await Promise.allSettled(
+    Array.from({ length: 8 }, () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }))
+  );
+  const fulfilled = results.filter((result) => result.status === 'fulfilled');
+  const budgetRejected = results.filter(
+    (result) => result.status === 'rejected' && result.reason && result.reason.code === 'typesafe_budget_exceeded'
+  );
+  assert.equal(fulfilled.length, 3);
+  assert.equal(budgetRejected.length, 5);
+  assert.equal(calls.length, 3);
+  assert.equal(client.getBudgetStatus().requestsUsed, 3);
+});
+
+test('typesafe client applies the overall timeout while reading a slow response body', async () => {
+  const { client } = makeClient({
+    timeoutMs: 40,
+    fetch: async () => ({
+      status: 200,
+      headers: { get: () => null },
+      text: () => new Promise(() => {}), // headers arrive, body never does
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => error.code === 'typesafe_timeout'
+  );
+});
+
+test('typesafe client rejects an answer whose type does not match the question', async () => {
+  const { client } = makeClient({
+    fetch: async () => makeResponse(200, {
+      model: 'jev-1.13.0',
+      answers: { q1: { type: 'choice', choice: 'a', probabilities: { a: 1 } } },
+      usage: { input_tokens: 5, output_tokens: 1 },
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => error.code === 'typesafe_invalid_response' && /type/u.test(error.message)
+  );
+});
+
+test('typesafe client rejects out-of-range noul probabilities', async () => {
+  const { client } = makeClient({
+    fetch: async () => makeResponse(200, {
+      model: 'jev-1.13.0',
+      answers: { q1: { type: 'noul', noul: 1.5 } },
+      usage: { input_tokens: 5, output_tokens: 1 },
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => error.code === 'typesafe_invalid_response'
+  );
+});
+
+test('typesafe client rejects a choice answer outside the declared options', async () => {
+  const { client } = makeClient({
+    fetch: async () => makeResponse(200, {
+      model: 'jev-1.13.0',
+      answers: { q1: { type: 'choice', choice: 'unlisted', probabilities: { unlisted: 0.9 } } },
+      usage: { input_tokens: 5, output_tokens: 1 },
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({
+      state: 'x',
+      questions: { q1: { type: 'choice', instructions: 'Pick one', criteria: { a: null, b: null } } },
+    }),
+    (error) => error.code === 'typesafe_invalid_response' && /declared options/u.test(error.message)
+  );
+});
+
+test('typesafe client rejects out-of-range probabilities in answer maps', async () => {
+  const { client } = makeClient({
+    fetch: async () => makeResponse(200, {
+      model: 'jev-1.13.0',
+      answers: { q1: { type: 'choice', choice: 'a', probabilities: { a: 1.7, b: -0.7 } } },
+      usage: { input_tokens: 5, output_tokens: 1 },
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({
+      state: 'x',
+      questions: { q1: { type: 'choice', instructions: 'Pick one', criteria: { a: null, b: null } } },
+    }),
+    (error) => error.code === 'typesafe_invalid_response' && /probability/u.test(error.message)
+  );
+});
+
+test('typesafe client projects answers through a whitelist and drops unverified extra fields', async () => {
+  const { client } = makeClient({
+    fetch: async () => makeResponse(200, {
+      model: 'jev-1.13.0',
+      answers: { q1: { type: 'noul', noul: 0.4, debug_trace: 'unverified-upstream-field', extra: { nested: true } } },
+      usage: { input_tokens: 5, output_tokens: 1 },
+    }),
+  });
+  const result = await client.ask({ state: 'x', questions: { q1: noulQuestion() } });
+  assert.deepEqual(result.answers.q1, { type: 'noul', noul: 0.4 });
+});
+
+test('typesafe client records known usage even when answer validation fails', async () => {
+  const { client } = makeClient({
+    fetch: async () => makeResponse(200, {
+      model: 'jev-1.13.0',
+      answers: {},
+      usage: { input_tokens: 128, output_tokens: 0 },
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => error.code === 'typesafe_invalid_response'
+  );
+  assert.equal(client.getBudgetStatus().tokensUsed, 128);
+});
+
+test('typesafe client token circuit breaker blocks a retry send after the threshold is crossed mid-backoff', async () => {
+  let client;
+  let attempt = 0;
+  const made = makeClient({
+    tokenBudget: 100,
+    maxRetries: 2,
+    maxRetryWaitMs: 50,
+    fetch: async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        return makeResponse(429, { detail: 'slow down' });
+      }
+      return makeResponse(200, okPayload(['q1'])); // 128 tokens, crosses the 100 threshold
+    },
+    sleep: async () => {
+      // While the first ask backs off, a sibling ask completes and crosses the
+      // token threshold on the same process-local counter.
+      await client.ask({ state: 'x', questions: { q1: noulQuestion() } });
+    },
+  });
+  client = made.client;
+  await assert.rejects(
+    () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => error.code === 'typesafe_budget_exceeded' && /token threshold/u.test(error.message)
+  );
+  // The retry was refused BEFORE sending: only the first 429 attempt and the
+  // sibling request ever hit the wire.
+  assert.equal(made.calls.length, 2);
+});
+
+test('typesafe client caps the full serialized request body before sending', async () => {
+  const { client, calls } = makeClient({ maxRequestChars: 200 });
+  await assert.rejects(
+    () => client.ask({
+      state: 'x',
+      questions: { q1: { type: 'noul', instructions: `rate this: ${'y'.repeat(1_000)}` } },
+    }),
+    (error) => error.code === 'typesafe_validation_failed' && error.fields[0].path === 'request'
+  );
+  assert.equal(calls.length, 0);
+  assert.equal(client.getBudgetStatus().requestsUsed, 0);
 });
