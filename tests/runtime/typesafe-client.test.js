@@ -549,9 +549,12 @@ test('typesafe client rejects non-number probability entries instead of coercing
   );
 });
 
-test('typesafe client rejects scores impossible under both 0-based and 1-based conventions', async () => {
+test('typesafe client rejects scores outside the confirmed 0-based range', async () => {
+  // Contract confirmed by a real API response (w4, 2026-09-25): 5 levels
+  // returned legend keys "0".."4" and score 3.89  0-based continuous [0, N-1].
+  // For 2 levels the valid range is exactly [0, 1]; 2 and 1.5 must now be rejected.
   const twoLevels = { type: 'score', instructions: 'Rate it', criteria: ['low', 'high'] };
-  for (const bad of [-1000000, 99999, 3, -0.5]) {
+  for (const bad of [-1000000, 99999, 3, 2, 1.5, 1.0001, -0.5]) {
     const { client } = makeClient({
       fetch: async () => makeResponse(200, {
         model: 'jev-1.13.0',
@@ -585,9 +588,9 @@ test('typesafe client rejects non-number score values instead of coercing them',
   }
 });
 
-test('typesafe client accepts scores inside the union of 0-based and 1-based conventions', async () => {
+test('typesafe client accepts scores inside the confirmed 0-based range', async () => {
   const twoLevels = { type: 'score', instructions: 'Rate it', criteria: ['low', 'high'] };
-  for (const good of [0, 1, 2, 1.5]) {
+  for (const good of [0, 1, 0.5, 0.89]) {
     const { client } = makeClient({
       fetch: async () => makeResponse(200, {
         model: 'jev-1.13.0',

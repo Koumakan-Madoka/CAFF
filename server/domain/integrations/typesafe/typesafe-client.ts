@@ -471,17 +471,15 @@ function sanitizeAnswers(payload: any, questions: any) {
     if (typeof score !== 'number' || !Number.isFinite(score)) {
       throw invalidResponse(`TypeSafe API answer for score question "${id}" is missing a numeric score`);
     }
-    // Whether scores are 0-based indexes or 1-based levels is unverified until
-    // a real response is captured (work item w4). Until then, accept only the
-    // UNION of both conventions ([0, levelCount]) and reject values that are
-    // impossible under either (negatives, or above the level count). Do not
-    // tighten to a single convention — or assume integer-only scores — without
-    // that evidence.
+    // Indexing convention confirmed by a real API response (w4, 2026-09-25):
+    // a 5-level question returned legend keys "0".."4" and score 3.89 — scores
+    // are 0-based and continuous (a probability-weighted expectation, not an
+    // integer index). Accept exactly [0, levelCount - 1]; reject anything else.
     const levelCount = Array.isArray(question.criteria) ? question.criteria.length : 0;
-    const upperBound = levelCount > 0 ? levelCount : SCORE_MAX_LEVELS;
+    const upperBound = levelCount > 0 ? levelCount - 1 : SCORE_MAX_LEVELS - 1;
     if (score < 0 || score > upperBound) {
       throw invalidResponse(
-        `TypeSafe API answer for score question "${id}" is ${score}, outside the [0, ${upperBound}] range possible under either indexing convention`
+        `TypeSafe API answer for score question "${id}" is ${score}, outside the confirmed 0-based range [0, ${upperBound}] for ${levelCount} levels`
       );
     }
     const sanitized: Record<string, any> = { type: 'score', score };
