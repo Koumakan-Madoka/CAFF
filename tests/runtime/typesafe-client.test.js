@@ -446,6 +446,160 @@ test('typesafe client token circuit breaker blocks a retry send after the thresh
   assert.equal(made.calls.length, 2);
 });
 
+test('typesafe client never echoes upstream-controlled 422 path segments (sentinel in loc)', async () => {
+  const locSentinel = 'SYNTHETIC_INPUT_SENTINEL_9281';
+  const { client } = makeClient({
+    fetch: async () => makeResponse(422, {
+      detail: [{ loc: ['body', 'state', locSentinel], msg: 'field is required' }],
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => {
+      assert.equal(error.code, 'typesafe_unprocessable');
+      // Trusted schema keys survive; the upstream-controlled segment is dropped.
+      assert.equal(error.fields[0].path, 'body.state');
+      const serialized = JSON.stringify({ message: error.message, fields: error.fields });
+      assert.ok(!serialized.includes(locSentinel));
+      return true;
+    }
+  );
+});
+
+test('typesafe client degrades a fully unrecognized 422 path to a fixed placeholder', async () => {
+  const locSentinel = 'LOC_SENTINEL_7717';
+  const { client } = makeClient({
+    fetch: async () => makeResponse(422, {
+      detail: [{ loc: [locSentinel], msg: 'something failed' }],
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => {
+      assert.equal(error.fields[0].path, '(redacted)');
+      assert.ok(!JSON.stringify({ message: error.message, fields: error.fields }).includes(locSentinel));
+      return true;
+    }
+  );
+});
+
+test('typesafe client keeps client-sent question ids in 422 paths but drops other dynamic segments', async () => {
+  const locSentinel = 'DYNAMIC_SEGMENT_SENTINEL_5519';
+  const { client } = makeClient({
+    fetch: async () => makeResponse(422, {
+      detail: [{ loc: ['body', 'questions', 'q1', 'criteria', locSentinel, 2], msg: 'value is required' }],
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => {
+      assert.equal(error.fields[0].path, 'body.questions.q1.criteria[2]');
+      assert.ok(!JSON.stringify({ message: error.message, fields: error.fields }).includes(locSentinel));
+      return true;
+    }
+  );
+});
+
+test('typesafe client rejects non-number noul values instead of coercing them', async () => {
+  for (const bad of [null, false, true, '', '0.5', [], {}, Number.NaN]) {
+    const { client, calls } = makeClient({
+      fetch: async () => makeResponse(200, {
+        model: 'jev-1.13.0',
+        answers: { q1: { type: 'noul', noul: bad } },
+        usage: { input_tokens: 5, output_tokens: 1 },
+      }),
+    });
+    await assert.rejects(
+      () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+      (error) => error.code === 'typesafe_invalid_response',
+      `noul=${JSON.stringify(bad)} must be rejected`
+    );
+    assert.equal(calls.length, 1);
+  }
+});
+
+test('typesafe client rejects non-number confidence instead of coercing it', async () => {
+  const { client } = makeClient({
+    fetch: async () => makeResponse(200, {
+      model: 'jev-1.13.0',
+      answers: { q1: { type: 'noul', noul: 0.5, confidence: '' } },
+      usage: { input_tokens: 5, output_tokens: 1 },
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => error.code === 'typesafe_invalid_response' && /confidence/u.test(error.message)
+  );
+});
+
+test('typesafe client rejects non-number probability entries instead of coercing them', async () => {
+  const { client } = makeClient({
+    fetch: async () => makeResponse(200, {
+      model: 'jev-1.13.0',
+      answers: { q1: { type: 'choice', choice: 'a', probabilities: { a: null, b: true } } },
+      usage: { input_tokens: 5, output_tokens: 1 },
+    }),
+  });
+  await assert.rejects(
+    () => client.ask({
+      state: 'x',
+      questions: { q1: { type: 'choice', instructions: 'Pick one', criteria: { a: null, b: null } } },
+    }),
+    (error) => error.code === 'typesafe_invalid_response' && /probability/u.test(error.message)
+  );
+});
+
+test('typesafe client rejects scores impossible under both 0-based and 1-based conventions', async () => {
+  const twoLevels = { type: 'score', instructions: 'Rate it', criteria: ['low', 'high'] };
+  for (const bad of [-1000000, 99999, 3, -0.5]) {
+    const { client } = makeClient({
+      fetch: async () => makeResponse(200, {
+        model: 'jev-1.13.0',
+        answers: { q1: { type: 'score', score: bad } },
+        usage: { input_tokens: 5, output_tokens: 1 },
+      }),
+    });
+    await assert.rejects(
+      () => client.ask({ state: 'x', questions: { q1: twoLevels } }),
+      (error) => error.code === 'typesafe_invalid_response',
+      `score=${bad} must be rejected for a 2-level question`
+    );
+  }
+});
+
+test('typesafe client rejects non-number score values instead of coercing them', async () => {
+  const twoLevels = { type: 'score', instructions: 'Rate it', criteria: ['low', 'high'] };
+  for (const bad of [null, '1', '', [], {}, false]) {
+    const { client } = makeClient({
+      fetch: async () => makeResponse(200, {
+        model: 'jev-1.13.0',
+        answers: { q1: { type: 'score', score: bad } },
+        usage: { input_tokens: 5, output_tokens: 1 },
+      }),
+    });
+    await assert.rejects(
+      () => client.ask({ state: 'x', questions: { q1: twoLevels } }),
+      (error) => error.code === 'typesafe_invalid_response',
+      `score=${JSON.stringify(bad)} must be rejected`
+    );
+  }
+});
+
+test('typesafe client accepts scores inside the union of 0-based and 1-based conventions', async () => {
+  const twoLevels = { type: 'score', instructions: 'Rate it', criteria: ['low', 'high'] };
+  for (const good of [0, 1, 2, 1.5]) {
+    const { client } = makeClient({
+      fetch: async () => makeResponse(200, {
+        model: 'jev-1.13.0',
+        answers: { q1: { type: 'score', score: good } },
+        usage: { input_tokens: 5, output_tokens: 1 },
+      }),
+    });
+    const result = await client.ask({ state: 'x', questions: { q1: twoLevels } });
+    assert.equal(result.answers.q1.score, good);
+  }
+});
+
 test('typesafe client caps the full serialized request body before sending', async () => {
   const { client, calls } = makeClient({ maxRequestChars: 200 });
   await assert.rejects(

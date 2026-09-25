@@ -15,9 +15,13 @@
  *   option names, rubric text), not just `state`. Characters are NOT a reliable
  *   token bound (chars/token varies), so every cap is deliberately conservative.
  * - Failures always throw; this module never fabricates a Choice/Score/Noul answer.
- * - 422 errors are sanitized (decision d5): field paths are character-filtered and
- *   reasons are mapped to a fixed set of safe categories. Upstream free-text
- *   messages, input content, and raw response bodies are NEVER echoed.
+ * - 422 errors are sanitized (decision d5): reasons are mapped to a fixed set
+ *   of safe categories and field paths are projected through a whitelist — only
+ *   static schema keys, numeric indexes, and question ids taken by EXACT equality
+ *   from the request we sent survive (upstream can select one of our ids but can
+ *   never invent path content); unrecognized paths degrade to a fixed placeholder.
+ *   Upstream free-text messages, input content, and raw response bodies are
+ *   NEVER echoed.
  * - 429/529 retries honor retry-after first, bounded by maxRetries, maxRetryWaitMs,
  *   and the overall timeoutMs. The overall deadline covers the whole attempt,
  *   INCLUDING reading the response body: a slow body cannot hang the client.
@@ -29,8 +33,9 @@
  *       crossed while a request backs off still blocks its retry. In-flight
  *       requests and responses without usage are NOT covered, so total token
  *       consumption can exceed the threshold.
- * - Answers are validated against the question that was asked (type match, required
- *   values, probability ranges, choice-option membership) and projected through a
+ * - Answers are validated against the question that was asked (type match, strict
+ *   numeric types — no Number() coercion of null/boolean/string values, probability
+ *   ranges, choice-option membership, score range) and projected through a
  *   whitelist: unverified extra fields never reach the caller. Known usage is
  *   recorded as soon as it parses, even if answer validation then fails, so billed
  *   consumption never goes uncounted.
@@ -116,10 +121,6 @@ function isPlainObject(value: any) {
   return prototype === Object.prototype || prototype === null;
 }
 
-function sanitizePathSegment(segment: any) {
-  return trimString(segment).replace(/[^a-zA-Z0-9_\-\[\]]/gu, '').slice(0, 40);
-}
-
 function sanitizeReason(value: any) {
   const text = trimString(value);
   if (!text) {
@@ -133,29 +134,57 @@ function sanitizeReason(value: any) {
   return DEFAULT_422_REASON;
 }
 
+// Static keys of the request schema that may appear verbatim in a 422 path.
+const STATIC_422_PATH_KEYS = new Set(['body', 'state', 'model', 'questions', 'type', 'instructions', 'criteria']);
+// Question ids are only echoed when they match this conservative pattern; ids
+// are client-generated structural keys, and exact equality against the request
+// we sent means upstream can select one of our ids but never invent content.
+const SAFE_422_ID_PATTERN = /^[a-zA-Z0-9_\-]{1,80}$/u;
+
+/**
+ * Projects an upstream 422 `loc` through a whitelist (decision d5). Surviving
+ * segments: static schema keys, non-negative integer indexes rendered as `[n]`,
+ * and question ids matched by EXACT equality against the ids we sent (so the
+ * echoed text is always our own request data, never upstream-invented content).
+ * Everything else is dropped; a fully unrecognized path degrades to a fixed
+ * placeholder. Character filtering alone is NOT treated as content safety.
+ */
+function sanitizeValidationPath(locValue: any, questionIds: Set<string>) {
+  const segments = Array.isArray(locValue) ? locValue : [locValue];
+  let path = '';
+  for (const segment of segments) {
+    if (typeof segment === 'number' && Number.isInteger(segment) && segment >= 0 && segment < 100_000) {
+      path += `[${segment}]`;
+      continue;
+    }
+    if (typeof segment !== 'string') {
+      continue;
+    }
+    if (STATIC_422_PATH_KEYS.has(segment) || (questionIds.has(segment) && SAFE_422_ID_PATTERN.test(segment))) {
+      path += path ? `.${segment}` : segment;
+    }
+    // Unrecognized segments (upstream-controlled) are dropped entirely.
+  }
+  return path.slice(0, MAX_422_PATH_LENGTH) || '(redacted)';
+}
+
 /**
  * Extracts sanitized field-level validation details from a 422 body.
  * Handles FastAPI-style `{ detail: [{ loc, msg }] }`, `{ detail: string }`,
  * and `{ errors: [{ field|path|loc, message|msg }] }` shapes.
- * Paths are character-filtered; reasons are fixed safe category strings.
- * Offending input values and raw response text are never included.
+ * Paths are whitelist-projected against the request schema; reasons are fixed
+ * safe category strings. Offending input values and raw response text are
+ * never included.
  */
-function extractValidationFields(payload: any) {
+function extractValidationFields(payload: any, questionIds: Set<string>) {
   const fields: Array<{ path: string; reason: string }> = [];
   const pushEntry = (locValue: any, reasonValue: any) => {
     if (fields.length >= MAX_422_FIELDS) {
       return;
     }
-    const segments = Array.isArray(locValue) ? locValue : [locValue];
-    const path = segments
-      .map(sanitizePathSegment)
-      .filter(Boolean)
-      .join('.')
-      .slice(0, MAX_422_PATH_LENGTH);
+    const path = sanitizeValidationPath(locValue, questionIds);
     const reason = sanitizeReason(reasonValue);
-    if (path || reason) {
-      fields.push({ path: path || '(unknown)', reason });
-    }
+    fields.push({ path, reason });
   };
 
   const detail = payload && typeof payload === 'object' ? payload.detail : null;
@@ -337,14 +366,14 @@ function sanitizeProbabilityMap(value: any, context: string) {
   }
   const result: Record<string, number> = {};
   for (const [key, entry] of Object.entries(value)) {
-    const probability = Number(entry);
-    if (!Number.isFinite(probability) || probability < 0 || probability > 1) {
-      throw invalidResponse(`TypeSafe API returned an out-of-range probability for ${context}`);
+    // Strict type check first: never coerce null/boolean/string into a number.
+    if (typeof entry !== 'number' || !Number.isFinite(entry) || entry < 0 || entry > 1) {
+      throw invalidResponse(`TypeSafe API returned a non-numeric or out-of-range probability for ${context}`);
     }
     // Unsafe keys are dropped (not echoed) so the projection layer cannot fail
     // after a billed success; the core judgment is preserved either way.
     if (isSafeAnswerKey(key)) {
-      result[key] = probability;
+      result[key] = entry;
     }
   }
   return result;
@@ -354,11 +383,10 @@ function sanitizeConfidence(value: any, context: string) {
   if (value === undefined || value === null) {
     return undefined;
   }
-  const confidence = Number(value);
-  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
-    throw invalidResponse(`TypeSafe API returned an out-of-range confidence for ${context}`);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw invalidResponse(`TypeSafe API returned a non-numeric or out-of-range confidence for ${context}`);
   }
-  return confidence;
+  return value;
 }
 
 function sanitizeScoreLegend(value: any, context: string) {
@@ -406,9 +434,9 @@ function sanitizeAnswers(payload: any, questions: any) {
     }
 
     if (expectedType === 'noul') {
-      const value = Number(answer.noul);
-      if (!Number.isFinite(value) || value < 0 || value > 1) {
-        throw invalidResponse(`TypeSafe API answer for noul question "${id}" is missing a probability in [0, 1]`);
+      const value = answer.noul;
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+        throw invalidResponse(`TypeSafe API answer for noul question "${id}" is missing a numeric probability in [0, 1]`);
       }
       const sanitized: Record<string, any> = { type: 'noul', noul: value };
       const confidence = sanitizeConfidence(answer.confidence, `question "${id}"`);
@@ -439,13 +467,23 @@ function sanitizeAnswers(payload: any, questions: any) {
     }
 
     // score
-    const score = Number(answer.score);
-    if (!Number.isFinite(score)) {
+    const score = answer.score;
+    if (typeof score !== 'number' || !Number.isFinite(score)) {
       throw invalidResponse(`TypeSafe API answer for score question "${id}" is missing a numeric score`);
     }
-    // NOTE: whether the score is a 0-based index or a 1-based level is
-    // unverified until a real response is captured (work item w4), so only
-    // finiteness is enforced here; do not tighten this without that evidence.
+    // Whether scores are 0-based indexes or 1-based levels is unverified until
+    // a real response is captured (work item w4). Until then, accept only the
+    // UNION of both conventions ([0, levelCount]) and reject values that are
+    // impossible under either (negatives, or above the level count). Do not
+    // tighten to a single convention — or assume integer-only scores — without
+    // that evidence.
+    const levelCount = Array.isArray(question.criteria) ? question.criteria.length : 0;
+    const upperBound = levelCount > 0 ? levelCount : SCORE_MAX_LEVELS;
+    if (score < 0 || score > upperBound) {
+      throw invalidResponse(
+        `TypeSafe API answer for score question "${id}" is ${score}, outside the [0, ${upperBound}] range possible under either indexing convention`
+      );
+    }
     const sanitized: Record<string, any> = { type: 'score', score };
     const legend = sanitizeScoreLegend(answer.legend, `question "${id}"`);
     if (legend !== undefined) {
@@ -679,7 +717,7 @@ export function createTypeSafeClient(options: any = {}) {
         }
 
         if (status === 422) {
-          const fields = extractValidationFields(payload);
+          const fields = extractValidationFields(payload, new Set(Object.keys(questions)));
           throw new TypeSafeClientError(
             'typesafe_unprocessable',
             fields.length
