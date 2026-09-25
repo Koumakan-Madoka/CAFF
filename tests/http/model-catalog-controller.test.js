@@ -505,3 +505,211 @@ test('catalog refresh requires the mutation guard and maps upstream failures to 
       && error.issues && error.issues[0].code === 'catalog_refresh_source_failed'
   );
 });
+
+test('catalog projection endpoint surfaces the dialect/baseUrl endpoint diagnostic', async (t) => {
+  const document = catalogDocument();
+  document.providers['kimi-for-coding'] = {
+    name: 'Kimi For Coding',
+    env: ['KIMI_API_KEY'],
+    npm: '@ai-sdk/anthropic',
+    api: 'https://api.kimi.com/coding/v1',
+    models: {
+      'kimi-for-coding': {
+        name: 'kimi-for-coding',
+        modalities: { input: ['text'], output: ['text'] },
+      },
+    },
+  };
+  const { controller } = createHarness(t, { catalogDocument: document });
+
+  const mismatch = await invoke(controller, {
+    pathname: '/api/model-catalog?providerId=kimi-for-coding&modelId=kimi-for-coding',
+  });
+  assert.equal(mismatch.statusCode, 200);
+  assert.equal(mismatch.json.projection.baseUrl, 'https://api.kimi.com/coding/v1');
+  assert.equal(mismatch.json.projection.endpointDiagnostic?.code, 'verified_endpoint_protocol_mismatch');
+  assert.equal(mismatch.json.projection.endpointDiagnostic?.suggestion, 'https://api.kimi.com/coding');
+  assert.equal(mismatch.json.projection.effectiveDialect, 'anthropic-messages');
+  assert.equal(mismatch.json.projection.dialectConflict, null);
+  assert.equal(mismatch.json.projection.modelEndpointOverride, null);
+
+  const consistent = await invoke(controller, {
+    pathname: '/api/model-catalog?providerId=openai&modelId=gpt-5/pro',
+  });
+  assert.equal(consistent.statusCode, 200);
+  assert.equal(consistent.json.projection.endpointDiagnostic?.code, 'endpoint_not_verified', 'unverified openai endpoint gets the neutral hint');
+  assert.equal(consistent.json.projection.endpointDiagnostic?.suggestion, undefined);
+});
+
+function staleKimiCatalogDocument() {
+  const document = catalogDocument();
+  document.providers['kimi-for-coding'] = {
+    name: 'Kimi For Coding',
+    env: ['KIMI_API_KEY'],
+    npm: '@ai-sdk/anthropic',
+    api: 'https://api.kimi.com/coding/v1',
+    models: {
+      'kimi-for-coding': {
+        name: 'kimi-for-coding',
+        modalities: { input: ['text'], output: ['text'] },
+      },
+    },
+  };
+  return document;
+}
+
+test('catalog projection computes the diagnostic against the stored provider protocol, not the catalog dialect', async (t) => {
+  // R3 probe (a): the stored provider already uses openai-completions. The
+  // stale catalog pairs anthropic-messages with /coding/v1, but the import
+  // keeps the stored protocol — so the preview must not offer the anthropic
+  // suggestion that would break the effective combination.
+  const { controller } = createHarness(t, {
+    catalogDocument: staleKimiCatalogDocument(),
+    initialDocument: {
+      providers: {
+        'kimi-for-coding': {
+          name: 'Kimi For Coding',
+          api: 'openai-completions',
+          baseUrl: 'https://api.kimi.com/coding/v1',
+          apiKey: '$KIMI_API_KEY',
+          models: [],
+        },
+      },
+    },
+  });
+
+  const response = await invoke(controller, {
+    pathname: '/api/model-catalog?providerId=kimi-for-coding&modelId=kimi-for-coding',
+  });
+  assert.equal(response.statusCode, 200);
+  const projection = response.json.projection;
+  assert.equal(projection.dialect, 'anthropic-messages');
+  assert.equal(projection.effectiveDialect, 'openai-completions');
+  assert.deepEqual(projection.dialectConflict, {
+    storedApi: 'openai-completions',
+    catalogDialect: 'anthropic-messages',
+  });
+  assert.equal(projection.endpointDiagnostic, null, 'no suggestion that would break the effective openai combination');
+});
+
+test('catalog projection surfaces stored model-level overrides with their own diagnostic', async (t) => {
+  // R3 probe (b): a model-level baseUrl override survives the import and keeps
+  // the model on the old address even if the provider URL is fixed.
+  const { controller } = createHarness(t, {
+    catalogDocument: staleKimiCatalogDocument(),
+    initialDocument: {
+      providers: {
+        'kimi-for-coding': {
+          name: 'Kimi For Coding',
+          api: 'anthropic-messages',
+          baseUrl: 'https://api.kimi.com/coding/v1',
+          apiKey: '$KIMI_API_KEY',
+          models: [
+            { id: 'kimi-for-coding', name: 'kimi-for-coding', family: 'kimi', baseUrl: 'https://api.kimi.com/coding/v1' },
+          ],
+        },
+      },
+    },
+  });
+
+  const response = await invoke(controller, {
+    pathname: '/api/model-catalog?providerId=kimi-for-coding&modelId=kimi-for-coding',
+  });
+  assert.equal(response.statusCode, 200);
+  const projection = response.json.projection;
+  assert.equal(projection.endpointDiagnostic?.suggestion, 'https://api.kimi.com/coding');
+  assert.ok(projection.modelEndpointOverride, 'model-level override is surfaced');
+  assert.equal(projection.modelEndpointOverride.baseUrl, 'https://api.kimi.com/coding/v1');
+  assert.equal(projection.modelEndpointOverride.diagnostic?.status, 'mismatch');
+  assert.equal(projection.modelEndpointOverride.diagnostic?.suggestion, 'https://api.kimi.com/coding');
+});
+
+test('catalog import reports the post-import effective diagnostic while preserving stored protocol and model overrides', async (t) => {
+  const { agentDir, controller } = createHarness(t, {
+    catalogDocument: staleKimiCatalogDocument(),
+    initialDocument: {
+      providers: {
+        'kimi-for-coding': {
+          name: 'Kimi For Coding',
+          api: 'openai-completions',
+          baseUrl: 'https://api.kimi.com/coding/v1',
+          apiKey: '$KIMI_API_KEY',
+          models: [
+            { id: 'kimi-for-coding', name: 'kimi-for-coding', family: 'kimi', api: 'anthropic-messages', baseUrl: 'https://api.kimi.com/coding/v1' },
+            { id: 'other-model', name: 'Other', family: 'kimi', contextWindow: 64000 },
+          ],
+        },
+      },
+    },
+  });
+
+  // A raw API client can still force the anthropic-flavored suggestion onto an
+  // openai provider: the import stays advisory-only (no rejection), but the
+  // response must honestly report the resulting verified mismatch.
+  const response = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/model-catalog/import',
+    headers: mutationHeaders(),
+    body: { providerId: 'kimi-for-coding', modelId: 'kimi-for-coding', baseUrl: 'https://api.kimi.com/coding' },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json.endpointDiagnostic?.status, 'mismatch');
+  assert.equal(response.json.endpointDiagnostic?.suggestion, 'https://api.kimi.com/coding/v1', 'effective openai protocol drives the advisory');
+  assert.equal(response.json.modelEndpointDiagnostic?.status, 'mismatch', 'model-level override still mismatched');
+  assert.equal(response.json.modelEndpointDiagnostic?.suggestion, 'https://api.kimi.com/coding', 'model override keeps its own anthropic dialect');
+
+  const persisted = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
+  const provider = persisted.providers['kimi-for-coding'];
+  assert.equal(provider.api, 'openai-completions', 'stored protocol is never rewritten by an import');
+  assert.equal(provider.baseUrl, 'https://api.kimi.com/coding', 'explicit baseUrl still applies');
+  const target = provider.models.find((model) => model.id === 'kimi-for-coding');
+  assert.equal(target.api, 'anthropic-messages', 'model-level api override is preserved');
+  assert.equal(target.baseUrl, 'https://api.kimi.com/coding/v1', 'model-level override is preserved');
+  const unrelated = provider.models.find((model) => model.id === 'other-model');
+  assert.deepEqual(unrelated, { id: 'other-model', name: 'Other', family: 'kimi', contextWindow: 64000 }, 'unrelated models untouched');
+});
+
+test('catalog import reports sibling models broken by a provider-level URL change', async (t) => {
+  // R3b probe: the sibling only overrides the protocol and was consistent
+  // with the stored provider URL. Applying the anthropic suggestion at the
+  // provider level silently breaks it — preview and response must say so.
+  const initialDocument = {
+    providers: {
+      'kimi-for-coding': {
+        name: 'Kimi For Coding',
+        api: 'anthropic-messages',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        apiKey: '$KIMI_API_KEY',
+        models: [
+          { id: 'kimi-for-coding', name: 'kimi-for-coding', family: 'kimi' },
+          { id: 'sibling-model', name: 'Sibling', family: 'kimi', api: 'openai-completions' },
+        ],
+      },
+    },
+  };
+  const { controller } = createHarness(t, {
+    catalogDocument: staleKimiCatalogDocument(),
+    initialDocument,
+  });
+
+  const preview = await invoke(controller, {
+    pathname: '/api/model-catalog?providerId=kimi-for-coding&modelId=kimi-for-coding',
+  });
+  assert.equal(preview.statusCode, 200);
+  assert.deepEqual(preview.json.projection.siblingModelOverrides, [
+    { modelId: 'sibling-model', api: 'openai-completions', baseUrl: '' },
+  ], 'the pre-import projection surfaces sibling overrides for impact preview');
+
+  const response = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/model-catalog/import',
+    headers: mutationHeaders(),
+    body: { providerId: 'kimi-for-coding', modelId: 'kimi-for-coding', baseUrl: 'https://api.kimi.com/coding' },
+  });
+  assert.equal(response.statusCode, 200);
+  const sibling = (response.json.siblingEndpointDiagnostics || []).find((entry) => entry.modelId === 'sibling-model');
+  assert.ok(sibling, 'the broken sibling is reported in the response');
+  assert.equal(sibling.diagnostic?.status, 'mismatch', 'sibling becomes a verified mismatch after the provider URL change');
+  assert.equal(sibling.diagnostic?.suggestion, 'https://api.kimi.com/coding/v1', 'sibling advice targets its own protocol');
+});

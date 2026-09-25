@@ -14,6 +14,7 @@ import {
   validateCatalogProvenance,
   validateModelsDevDocument,
 } from '../domain/models/models-dev-import';
+import { inspectDialectEndpoint } from '../domain/models/endpoint-diagnostics';
 import { readCatalogCache } from '../domain/models/models-dev-catalog-cache';
 import { refreshModelsDevCatalog } from '../domain/models/models-dev-online-refresh';
 import {
@@ -24,6 +25,7 @@ import {
   projectModelProviderDocument,
 } from '../domain/models/model-provider-config';
 import {
+  readModelProviderDocument,
   updateModelProviderDocument,
 } from '../domain/models/model-provider-persistence';
 
@@ -206,6 +208,40 @@ function assertTrustedCatalogLimits(body: any, projection: any) {
   }
 }
 
+function configText(value: any): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+// Non-secret stored connection context for advisory endpoint diagnostics. An
+// unreadable models.json must not break catalog browsing — the diagnostics
+// are advisory and simply fall back to catalog-only projection.
+function readExistingEndpointContext(agentDir: string, providerId: string, modelId: string) {
+  try {
+    const document = readModelProviderDocument(agentDir);
+    const provider = document.providers && document.providers[providerId];
+    if (!provider || typeof provider !== 'object' || Array.isArray(provider)) {
+      return undefined;
+    }
+    const models = Array.isArray(provider.models) ? provider.models : [];
+    const model = models.find((entry: any) => entry && typeof entry === 'object' && configText(entry.id) === modelId);
+    // Sibling overrides (api/baseUrl on other models of the same provider)
+    // drive the provider-level impact preview: a provider URL change affects
+    // every model without its own baseUrl override.
+    const siblingOverrides = models
+      .filter((entry: any) => entry && typeof entry === 'object' && configText(entry.id) && configText(entry.id) !== modelId && (configText(entry.api) || configText(entry.baseUrl)))
+      .map((entry: any) => ({ modelId: configText(entry.id), api: configText(entry.api), baseUrl: configText(entry.baseUrl) }));
+    return {
+      providerApi: configText(provider.api),
+      providerBaseUrl: configText(provider.baseUrl),
+      modelApi: model ? configText(model.api) : '',
+      modelBaseUrl: model ? configText(model.baseUrl) : '',
+      siblingOverrides,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export function createModelCatalogController(options: any = {}): RouteHandler<ApiContext> {
   const agentDir = options.agentDir;
   const guard = createLocalAdminGuard({
@@ -241,6 +277,7 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
         sendJson(res, 200, {
           projection: projectCatalogModel(document.providers, providerId, modelId, {
             provenance: document.provenance,
+            existing: readExistingEndpointContext(agentDir, providerId, modelId),
           }),
           runtimeDefaults: {
             contextWindow: PI_DEFAULT_CONTEXT_WINDOW,
@@ -337,8 +374,35 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
           return patchModelProvider(configured, providerId, patch);
         });
         onCommitted();
+        // Advisory post-import diagnostics against the *effective* persisted
+        // combination: the stored provider protocol wins over the catalog
+        // dialect, and a stored model-level override keeps precedence.
+        const persistedProvider = result.document.providers && result.document.providers[providerId];
+        const persistedModels = persistedProvider && Array.isArray(persistedProvider.models) ? persistedProvider.models : [];
+        const persistedModel = persistedModels.find((entry: any) => entry && typeof entry === 'object' && configText(entry.id) === modelId);
+        const providerDiagnostic = persistedProvider
+          ? inspectDialectEndpoint(configText(persistedProvider.api), configText(persistedProvider.baseUrl))
+          : null;
+        const modelEndpointDiagnostic = persistedModel && (configText(persistedModel.api) || configText(persistedModel.baseUrl))
+          ? inspectDialectEndpoint(
+              configText(persistedModel.api) || configText(persistedProvider.api),
+              configText(persistedModel.baseUrl) || configText(persistedProvider.baseUrl))
+          : null;
+        // Sibling models with overrides can diverge from the provider-level
+        // diagnostic when the provider URL changes; report their effective
+        // combinations honestly so a broken sibling is never silent.
+        const siblingEndpointDiagnostics = persistedModels
+          .filter((entry: any) => entry && typeof entry === 'object' && configText(entry.id) && configText(entry.id) !== modelId && (configText(entry.api) || configText(entry.baseUrl)))
+          .map((entry: any) => {
+            const api = configText(entry.api) || configText(persistedProvider.api);
+            const baseUrl = configText(entry.baseUrl) || configText(persistedProvider.baseUrl);
+            return { modelId: configText(entry.id), api, baseUrl, diagnostic: inspectDialectEndpoint(api, baseUrl) };
+          });
         sendJson(res, 200, {
           ...projectModelProviderDocument(result.document),
+          endpointDiagnostic: providerDiagnostic,
+          modelEndpointDiagnostic,
+          siblingEndpointDiagnostics,
           write: {
             backupCreated: Boolean(result.backupPath),
             durability: result.durability,

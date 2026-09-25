@@ -28,6 +28,40 @@
     const input = (id) => /** @type {HTMLInputElement} */ (document.getElementById(id));
     const select = (id) => /** @type {HTMLSelectElement} */ (document.getElementById(id));
 
+    // Endpoint diagnostics come from the shared browser mirror of
+    // server/domain/models/endpoint-diagnostics.ts. Advisory only — nothing
+    // is applied without an explicit click, and unknown endpoints never get a
+    // suggestion.
+    function inspectEndpointDiagnostic(api, baseUrl) {
+      const diagnostics = window.CaffShared && window.CaffShared.endpointDiagnostics;
+      return diagnostics ? diagnostics.inspectDialectEndpoint(api, baseUrl) : null;
+    }
+
+    function updateEndpointDiagnostic() {
+      const container = document.getElementById('provider-endpoint-diagnostic');
+      if (!container) return;
+      const diagnostic = inspectEndpointDiagnostic(select('provider-api-protocol').value, input('provider-base-url').value);
+      if (!diagnostic) {
+        container.innerHTML = '';
+        return;
+      }
+      container.innerHTML = `
+        <p id="provider-endpoint-warning" class="management-warning"><strong>${diagnostic.status === 'mismatch' ? '协议与地址不匹配' : '请核对协议与地址'}</strong> ${utils.escapeHtml(diagnostic.message)}</p>
+        ${diagnostic.suggestion ? `<div class="button-row"><button id="provider-apply-endpoint-suggestion" class="ghost-button" type="button">应用建议地址：${utils.escapeHtml(diagnostic.suggestion)}</button></div>` : ''}`;
+      const applyButton = document.getElementById('provider-apply-endpoint-suggestion');
+      if (applyButton) {
+        applyButton.addEventListener('click', () => {
+          // Recompute at click time so a suggestion from a stale protocol/URL
+          // pair can never be applied.
+          const current = inspectEndpointDiagnostic(select('provider-api-protocol').value, input('provider-base-url').value);
+          if (current && current.suggestion) {
+            input('provider-base-url').value = current.suggestion;
+          }
+          updateEndpointDiagnostic();
+        });
+      }
+    }
+
     function familyOptions(selected) {
       return ['', ...Object.keys(utils.FAMILY_LABELS)].map((family) => (
         `<option value="${family}" ${family === selected ? 'selected' : ''}>${family ? utils.familyLabel(family) : '未归类'}</option>`
@@ -111,6 +145,7 @@
             <label><span>Authorization Header</span><select id="provider-auth-header"><option value="false" ${draft.authHeader ? '' : 'selected'}>由协议处理</option><option value="true" ${draft.authHeader ? 'selected' : ''}>启用 Bearer</option></select></label>
             <label><span>models.json 认证模式</span><select id="provider-auth-mode">${['none', 'literal', 'env', 'command'].map((mode) => `<option value="${mode}" ${mode === writableAuthMode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label>
           </div>
+          <div id="provider-endpoint-diagnostic"></div>
           ${draft.hasExternalAuth ? `<p id="provider-external-auth-note" class="management-note">${subscription ? 'auth.json 订阅凭证由「通过订阅登录」管理；本页不直接写入或清除它。' : 'auth.json / CLI 外部认证只读；本页不会写入、替换或清除它。'}</p>` : ''}
         </section>
         <section class="management-card">
@@ -135,6 +170,7 @@
         <p id="provider-error" class="management-error hidden" role="alert"></p>`;
       if (locked) root.querySelectorAll('input, select, button').forEach((control) => { control.disabled = true; });
       bindEvents();
+      updateEndpointDiagnostic();
     }
 
     function updateSimpleFields() {
@@ -259,6 +295,8 @@
         const mode = select('provider-auth-mode');
         mode.value = normalizePlainSecretMode(mode.value, input('provider-api-key').value);
       });
+      select('provider-api-protocol').addEventListener('change', () => updateEndpointDiagnostic());
+      input('provider-base-url').addEventListener('input', () => updateEndpointDiagnostic());
       document.getElementById('save-provider').addEventListener('click', () => saveProvider());
       document.getElementById('validate-provider').addEventListener('click', async () => { try { await options.onValidate(draft.id); } catch (error) { showError(error, '连接验证失败'); } });
       document.getElementById('clear-provider-secret').addEventListener('click', () => { document.getElementById('clear-secret-confirmation').classList.remove('hidden'); document.getElementById('confirm-clear-secret').focus(); });

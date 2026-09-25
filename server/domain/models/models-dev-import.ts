@@ -2,6 +2,7 @@ import {
   PI_DEFAULT_CONTEXT_WINDOW,
   PI_DEFAULT_MAX_TOKENS,
 } from './model-provider-config';
+import { inspectDialectEndpoint } from './endpoint-diagnostics';
 
 type JsonObject = Record<string, any>;
 
@@ -281,6 +282,32 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
   const rawModalities = isPlainObject(merged.model.modalities) ? merged.model.modalities : undefined;
   const rawInput = Array.isArray(rawModalities?.input) ? rawModalities.input : undefined;
   const runtimeLimits = projectCatalogModelLimits(merged.model.limit);
+  const dialectBaseUrl = text(merged.provider.baseUrl);
+
+  // Advisory diagnostics are computed against the *effective* post-import
+  // configuration, not the raw catalog pair: a stored provider protocol wins
+  // over the catalog dialect, and stored model-level overrides keep
+  // precedence over the provider address. Raw values are never rewritten.
+  const existing = isPlainObject(options.existing) ? options.existing : {};
+  const storedProviderApi = text(existing.providerApi);
+  const storedModelApi = text(existing.modelApi);
+  const storedModelBaseUrl = text(existing.modelBaseUrl);
+  const effectiveDialect = storedProviderApi || dialect;
+  const dialectConflict = storedProviderApi && dialect && storedProviderApi !== dialect
+    ? { storedApi: storedProviderApi, catalogDialect: dialect }
+    : null;
+  const modelEndpointOverride = storedModelApi || storedModelBaseUrl
+    ? {
+        ...(storedModelApi ? { api: storedModelApi } : {}),
+        ...(storedModelBaseUrl ? { baseUrl: storedModelBaseUrl } : {}),
+        diagnostic: inspectDialectEndpoint(storedModelApi || effectiveDialect, storedModelBaseUrl || dialectBaseUrl),
+      }
+    : null;
+  // Sibling overrides feed the provider-level impact preview: a provider URL
+  // change affects every model of the provider without its own baseUrl.
+  const siblingModelOverrides = (Array.isArray(existing.siblingOverrides) ? existing.siblingOverrides : [])
+    .filter((entry: any) => isPlainObject(entry) && text(entry.modelId))
+    .map((entry: any) => ({ modelId: text(entry.modelId), api: text(entry.api), baseUrl: text(entry.baseUrl) }));
 
   return {
     providerId: id,
@@ -288,7 +315,14 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
     modelId: text(modelId),
     name: text(merged.model.name) || text(modelId),
     dialect,
-    baseUrl: text(merged.provider.baseUrl),
+    baseUrl: dialectBaseUrl,
+    // Advisory only: raw catalog values are never rewritten; any suggestion
+    // lands in models.json only after explicit user confirmation.
+    endpointDiagnostic: inspectDialectEndpoint(effectiveDialect, dialectBaseUrl),
+    effectiveDialect,
+    dialectConflict,
+    modelEndpointOverride,
+    siblingModelOverrides,
     family,
     familyStatus: family ? 'mapped' as const : 'unclassified' as const,
     env: envNames.map((name: string) => classifyCatalogEnv(id, name)),
