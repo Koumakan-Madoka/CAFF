@@ -1249,12 +1249,14 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
     const verifiedFailedDeliveryIds = [] as string[];
 
     // Phase 1: verify late outcomes for unknown-outcome dispatches (request
-    // and notify alike). A persisted terminal assistant message that matches
-    // BOTH the delivery id and the exact target invocation id is trusted
-    // evidence: a completed message verifies completion (and a request then
-    // projects its response), a failed message verifies the failure. The
-    // original unknown-outcome audit events are preserved; cancelled
-    // deliveries are never rewritten; the target is never re-run.
+    // and notify alike). A persisted terminal assistant message whose
+    // metadata matches BOTH the delivery id and the exact target invocation
+    // id is trusted evidence; the association is matched inside the
+    // evidence query itself, so earlier mismatched messages can never
+    // shadow the exact evidence. A completed message verifies completion
+    // (and a request then projects its response), a failed message verifies
+    // the failure. The original unknown-outcome audit events are preserved;
+    // cancelled deliveries are never rewritten; the target is never re-run.
     const unknownCandidates = store.listCrossConversationUnknownOutcomeDeliveries(
       recoveryScanPageSize,
       outcomeRecoveryCursor

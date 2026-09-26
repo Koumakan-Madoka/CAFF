@@ -62,7 +62,10 @@ or `dispatch_unknown_outcome` and a `targetInvocationId`) are matched against
 the invocation's persisted terminal assistant message (completed OR failed).
 The evidence is trusted only when its metadata matches BOTH
 `crossConversationDeliveryId` and `crossConversationInvocationId` (the
-delivery's `targetInvocationId`); missing or mismatched evidence keeps the
+delivery's `targetInvocationId`); both markers are matched inside the
+evidence query itself, so earlier messages that carry the delivery id with a
+missing or different invocation id are skipped and can never shadow the
+exact evidence arriving later. Missing or mismatched evidence keeps the
 outcome unknown and the newest message in the target room is never used as a
 guess.
 
@@ -101,9 +104,10 @@ re-run the target model.
   clock + delayed dispatcher covering multi-lease queue/run, stale-claim
   fencing, stale sweep snapshots, restart recovery with verified completion
   and verified failure for request and notify, wrong/missing invocation
-  evidence, fair bounded scanning past unrecoverable records, and heartbeat
+  evidence (including mismatched evidence arriving before the exact
+  evidence), fair bounded scanning past unrecoverable records, and heartbeat
   cleanup.
 - `tests/storage/cross-conversation-delivery-lease.test.js`: SQLite-level
   atomic conditions for claim tokens, renewal, stale-token transitions,
-  expiry re-verification, outcome-verification guards, and keyset
-  pagination.
+  expiry re-verification, outcome-verification guards, exact
+  delivery+invocation evidence selection, and keyset pagination.

@@ -978,6 +978,142 @@ test('restart recovery verifies late notify outcomes and rejects mismatched evid
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+test('restart recovery skips mismatched evidence and verifies the exact later invocation message', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-lease-evidence-selection-'));
+  const sqlitePath = path.join(tmpDir, 'chat.sqlite');
+  let currentTime = new Date(BASE_TIME);
+
+  const deliveryIds = { request: null, notify: null };
+  {
+    const fixture = createFixture({ agentDir: tmpDir, sqlitePath });
+    const service = createCrossConversationDeliveryService({
+      store: fixture.store,
+      now: () => currentTime,
+    });
+    const scheduler = createManualScheduler();
+    const entered = [];
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-evidence-selection',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      leaseRenewIntervalMs: 10_000,
+      setIntervalFn: scheduler.setInterval,
+      clearIntervalFn: scheduler.clearInterval,
+      async dispatchTarget(input) {
+        input.onInvocationStarting({ invocationId: `real-${input.delivery.id}` });
+        entered.push(input.delivery.id);
+        return createGate().promise;
+      },
+    });
+
+    try {
+      const request = submitRequest(service, fixture, { idempotencyKey: 'lease-evidence-selection-request' });
+      deliveryIds.request = request.delivery.id;
+      void worker.processNext();
+      while (entered.length < 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      currentTime = new Date(BASE_TIME + 31_000);
+      assert.deepEqual(worker.recoverExpiredClaims().failedUnknownDeliveryIds, [request.delivery.id]);
+      // Wrong evidence arrives FIRST: same delivery id, different invocation.
+      createReplyMessage(fixture, request.delivery, {
+        invocationId: 'some-other-invocation',
+        content: 'Evidence from a different invocation.',
+        createdAt: isoAt(40),
+      });
+      // The exact evidence arrives LATER.
+      createReplyMessage(fixture, request.delivery, {
+        invocationId: `real-${request.delivery.id}`,
+        content: 'Exact invocation evidence arriving late.',
+        createdAt: isoAt(45),
+      });
+
+      const notify = submitNotify(service, fixture, { idempotencyKey: 'lease-evidence-selection-notify' }, {
+        sourceInvocationId: 'source-evidence-selection-notify',
+      });
+      deliveryIds.notify = notify.delivery.id;
+      void worker.processNext();
+      while (entered.length < 2) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      currentTime = new Date(BASE_TIME + 62_000);
+      assert.deepEqual(worker.recoverExpiredClaims().failedUnknownDeliveryIds, [notify.delivery.id]);
+      // Wrong evidence FIRST: delivery id only, no invocation marker.
+      createReplyMessage(fixture, notify.delivery, {
+        status: 'failed',
+        content: '',
+        errorMessage: 'unattributed failure',
+        createdAt: isoAt(70),
+      });
+      // The exact failed outcome arrives LATER.
+      createReplyMessage(fixture, notify.delivery, {
+        invocationId: `real-${notify.delivery.id}`,
+        status: 'failed',
+        content: '',
+        errorMessage: 'exact notify failure arriving late',
+        createdAt: isoAt(75),
+      });
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  {
+    const fixture = reopenStore(tmpDir, sqlitePath);
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-evidence-selection-restarted',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      async dispatchTarget() {
+        throw new Error('must not replay');
+      },
+    });
+
+    try {
+      const recovered = worker.recoverPendingResponses();
+      assert.deepEqual(recovered.verifiedCompletedDeliveryIds, [deliveryIds.request],
+        'the exact later success evidence must verify the request outcome');
+      assert.deepEqual(recovered.projectedDeliveryIds, [deliveryIds.request],
+        'the exact later success evidence must be projected');
+      assert.deepEqual(recovered.verifiedFailedDeliveryIds, [deliveryIds.notify],
+        'the exact later failure evidence must verify the notify outcome');
+
+      const requestRow = fixture.store.getCrossConversationDelivery(deliveryIds.request);
+      assert.equal(requestRow.dispatchStatus, 'completed');
+      assert.equal(requestRow.lastErrorCode, null);
+      assert.equal(requestRow.responseStatus, 'late');
+      const projectedReplies = fixture.store.listMessages('lease-source-conversation')
+        .filter((message) => message.metadata && message.metadata.crossConversation
+          && message.metadata.crossConversation.replyToDeliveryId === deliveryIds.request);
+      assert.equal(projectedReplies.length, 1);
+      assert.equal(projectedReplies[0].content, 'Exact invocation evidence arriving late.',
+        'the projected reply must come from the exact invocation, not the earlier mismatch');
+
+      const notifyRow = fixture.store.getCrossConversationDelivery(deliveryIds.notify);
+      assert.equal(notifyRow.dispatchStatus, 'failed');
+      assert.equal(notifyRow.lastErrorCode, 'dispatch_failed_verified');
+      assert.match(String(notifyRow.lastErrorMessage), /exact notify failure arriving late/);
+
+      // Repeated scans stay idempotent: mismatched evidence is never
+      // reconsidered as truth, and the exact evidence is applied once.
+      for (let scan = 0; scan < 3; scan += 1) {
+        const again = worker.recoverPendingResponses();
+        assert.deepEqual(again.verifiedCompletedDeliveryIds, []);
+        assert.deepEqual(again.verifiedFailedDeliveryIds, []);
+        assert.deepEqual(again.projectedDeliveryIds, []);
+      }
+      assert.equal(countSourceReplies(fixture, deliveryIds.request), 1);
+      assert.equal(await worker.processNext(), null);
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
 test('outcome recovery scans fairly: unrecoverable records never block later candidates', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-lease-fair-outcome-'));
   const sqlitePath = path.join(tmpDir, 'chat.sqlite');

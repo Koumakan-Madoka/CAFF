@@ -467,6 +467,63 @@ test('verified failure keeps the failed dispatch state with a queryable verified
   }
 });
 
+test('outcome evidence lookup selects the exact invocation association, not the earliest delivery match', () => {
+  const fixture = createFixture();
+
+  try {
+    const submitted = submitNotify(fixture);
+    driveToUnknownOutcome(fixture, submitted.delivery.id, { invocationId: 'inv-exact-1' });
+    const delivery = fixture.store.getCrossConversationDelivery(submitted.delivery.id);
+
+    const createOutcomeMessage = (overrides) => fixture.store.createMessage({
+      id: overrides.id,
+      conversationId: fixture.targetConversation.id,
+      turnId: 'lease-store-evidence-turn',
+      role: 'assistant',
+      agentId: fixture.targetAgent.id,
+      senderName: fixture.targetAgent.name,
+      content: overrides.content || '',
+      status: overrides.status || 'completed',
+      errorMessage: overrides.errorMessage || '',
+      metadata: overrides.metadata,
+      createdAt: overrides.createdAt,
+    });
+
+    // Earliest: same delivery id, no invocation marker at all.
+    createOutcomeMessage({
+      id: 'evidence-missing-invocation',
+      createdAt: isoAt(39),
+      metadata: { crossConversationDeliveryId: delivery.id },
+    });
+    // Next: same delivery id, WRONG invocation id.
+    createOutcomeMessage({
+      id: 'evidence-wrong-invocation',
+      createdAt: isoAt(40),
+      metadata: {
+        crossConversationDeliveryId: delivery.id,
+        crossConversationInvocationId: 'inv-other',
+      },
+    });
+    // Latest: exact delivery id AND exact invocation id.
+    const exact = createOutcomeMessage({
+      id: 'evidence-exact-invocation',
+      createdAt: isoAt(45),
+      status: 'failed',
+      errorMessage: 'the exact late truth',
+      metadata: {
+        crossConversationDeliveryId: delivery.id,
+        crossConversationInvocationId: 'inv-exact-1',
+      },
+    });
+
+    const found = fixture.store.findCrossConversationOutcomeMessage(delivery);
+    assert.equal(found && found.id, exact.id,
+      'evidence selection must skip mismatched invocations instead of stopping at the earliest delivery match');
+  } finally {
+    fixture.store.close();
+  }
+});
+
 test('pending-response and unknown-outcome scans paginate by keyset cursor', () => {
   const fixture = createFixture();
 

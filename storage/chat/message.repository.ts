@@ -227,7 +227,9 @@ export class ChatMessageRepository {
       LIMIT 1
     `);
     // Outcome evidence for unknown-outcome recovery: the invocation's
-    // terminal assistant message, whether it completed or failed.
+    // terminal assistant message, whether it completed or failed. When an
+    // invocation id is given, the association is matched in SQL so earlier
+    // messages from a different invocation cannot shadow the exact evidence.
     this.findCrossConversationOutcomeStatement = db.prepare(`
       SELECT *
       FROM chat_messages
@@ -237,6 +239,7 @@ export class ChatMessageRepository {
         AND status IN ('completed', 'failed')
         AND (? = '' OR created_at >= ?)
         AND metadata_json LIKE ? ESCAPE '\\'
+        AND (? = '' OR metadata_json LIKE ? ESCAPE '\\')
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `);
@@ -307,6 +310,7 @@ export class ChatMessageRepository {
     const conversationId = String(payload && payload.conversationId || '').trim();
     const agentId = String(payload && payload.agentId || '').trim();
     const startedAt = String(payload && payload.startedAt || '').trim();
+    const invocationId = String(payload && payload.invocationId || '').trim();
 
     if (!deliveryId || !conversationId || !agentId) {
       return null;
@@ -317,7 +321,9 @@ export class ChatMessageRepository {
       agentId,
       startedAt,
       startedAt,
-      `%"crossConversationDeliveryId":"${escapeLikePattern(deliveryId)}"%`
+      `%"crossConversationDeliveryId":"${escapeLikePattern(deliveryId)}"%`,
+      invocationId,
+      invocationId ? `%"crossConversationInvocationId":"${escapeLikePattern(invocationId)}"%` : ''
     ) || null;
   }
 
