@@ -778,6 +778,7 @@ function normalizeCrossConversationDeliveryRow(row: any) {
     lastErrorMessage: row.last_error_message || null,
     claimOwner: row.claim_owner || null,
     claimExpiresAt: row.claim_expires_at || null,
+    claimToken: row.claim_token || null,
     nextAttemptAt: row.next_attempt_at || null,
     targetInvocationId: row.target_invocation_id || null,
     deliveredAt: row.delivered_at || null,
@@ -2516,6 +2517,12 @@ export class ChatAppStore {
   claimCrossConversationDeliveryById(deliveryId: any, payload: any) {
     return normalizeCrossConversationDeliveryRow(
       this.crossConversationDeliveryRepository.claimById(String(deliveryId || '').trim(), payload)
+    );
+  }
+
+  renewCrossConversationDeliveryClaim(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.renewClaim(String(deliveryId || '').trim(), payload)
     );
   }
 

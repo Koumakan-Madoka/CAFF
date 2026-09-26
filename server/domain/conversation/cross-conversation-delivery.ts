@@ -691,6 +691,11 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
   const now = typeof options.now === 'function' ? options.now : () => new Date();
   const workerId = String(options.workerId || `cross-delivery-worker-${randomUUID()}`).trim();
   const leaseMs = Number.isInteger(options.leaseMs) && options.leaseMs > 0 ? options.leaseMs : 30_000;
+  const leaseRenewIntervalMs = Number.isInteger(options.leaseRenewIntervalMs) && options.leaseRenewIntervalMs > 0
+    ? options.leaseRenewIntervalMs
+    : Math.max(250, Math.floor(leaseMs / 3));
+  const setIntervalFn = typeof options.setIntervalFn === 'function' ? options.setIntervalFn : setInterval;
+  const clearIntervalFn = typeof options.clearIntervalFn === 'function' ? options.clearIntervalFn : clearInterval;
   const retryDelayMs = Number.isInteger(options.retryDelayMs) && options.retryDelayMs >= 0
     ? options.retryDelayMs
     : 1_000;
@@ -779,6 +784,59 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
       owner: workerId,
       now: claimDate.toISOString(),
       claimExpiresAt: new Date(claimDate.getTime() + leaseMs).toISOString(),
+      // Unique fencing token per claim: a stale worker that loses its lease
+      // cannot write through claim-guarded transitions, even if the same
+      // worker id later reclaims the same delivery.
+      claimToken: randomUUID(),
+    };
+  }
+
+  function createClaimFencingError(message: string) {
+    const error: any = new Error(message);
+    error.code = 'cross_conversation_claim_stale';
+    return error;
+  }
+
+  function isClaimStale(claimed: any) {
+    const current = store.getCrossConversationDelivery(claimed.id);
+    return !current || current.claimToken !== claimed.claimToken;
+  }
+
+  function startClaimHeartbeat(claimed: any, flight: any) {
+    const renew = () => {
+      if (flight.settled || flight.claimLost) {
+        return;
+      }
+      try {
+        const renewedAt = currentDate();
+        const renewed = store.renewCrossConversationDeliveryClaim(claimed.id, {
+          claimOwner: workerId,
+          claimToken: claimed.claimToken,
+          renewedAt: renewedAt.toISOString(),
+          claimExpiresAt: new Date(renewedAt.getTime() + leaseMs).toISOString(),
+        });
+        if (!renewed) {
+          // The claim is gone (recovered, cancelled, or superseded): this
+          // flight must not write delivery state anymore.
+          flight.claimLost = true;
+        }
+      } catch (error) {
+        // Transient store failure: the next tick retries while the lease is
+        // still valid; the sweeper only wins after a full lease of silence.
+        console.error(
+          `[cross-conversation-delivery] Lease renewal failed for ${claimed.id}: ${
+            error && (error as any).stack ? (error as any).stack : error
+          }`
+        );
+      }
+    };
+    const handle = setIntervalFn(renew, leaseRenewIntervalMs);
+    return {
+      stop() {
+        try {
+          clearIntervalFn(handle);
+        } catch {}
+      },
     };
   }
 
@@ -812,6 +870,20 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
   }
 
   async function processClaimedDelivery(claimed: any, claimDate: any) {
+    const flight = { claimLost: false, settled: false };
+    // The lease heartbeat covers the whole flight: waiting for a target-room
+    // execution slot, the full target turn, and result projection. It is
+    // always cleared on the way out.
+    const heartbeat = startClaimHeartbeat(claimed, flight);
+    try {
+      return await processClaimedDeliveryInner(claimed, claimDate, flight);
+    } finally {
+      flight.settled = true;
+      heartbeat.stop();
+    }
+  }
+
+  async function processClaimedDeliveryInner(claimed: any, claimDate: any, flight: any) {
     appendEvent(claimed, 'claimed', {
       claimOwner: workerId,
       claimExpiresAt: claimed.claimExpiresAt,
@@ -822,6 +894,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
       const failedAt = currentDate().toISOString();
       const failed = store.failCrossConversationDeliveryBeforeStart(claimed.id, {
         claimOwner: workerId,
+        claimToken: claimed.claimToken,
         errorCode: 'target_message_missing',
         errorMessage: 'Persisted target message is missing',
         failedAt,
@@ -851,12 +924,18 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
           const startedAt = currentDate().toISOString();
           const started = store.markCrossConversationDispatchStarted(claimed.id, {
             claimOwner: workerId,
+            claimToken: claimed.claimToken,
             targetInvocationId: invocationId,
             startedAt,
             updatedAt: startedAt,
           });
 
           if (!started) {
+            if (isClaimStale(claimed)) {
+              throw createClaimFencingError(
+                'Cross-conversation dispatch claim is stale; start transition rejected'
+              );
+            }
             throw new Error('Cross-conversation dispatch start transition was rejected');
           }
 
@@ -878,6 +957,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
         const cancelledAt = currentDate().toISOString();
         const cancelled = store.markRunningCrossConversationDeliveryCancelled(claimed.id, {
           claimOwner: workerId,
+          claimToken: claimed.claimToken,
           reason: stateAfterDispatch.lastErrorMessage || 'Cancelled while running',
           cancelledAt,
         });
@@ -899,12 +979,18 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
       const completedAt = currentDate().toISOString();
       const completed = store.markCrossConversationDispatchCompleted(claimed.id, {
         claimOwner: workerId,
+        claimToken: claimed.claimToken,
         completedAt,
         terminalAt: completedAt,
         updatedAt: completedAt,
       });
 
       if (!completed) {
+        if (isClaimStale(claimed)) {
+          throw createClaimFencingError(
+            'Cross-conversation dispatch claim is stale; completion transition rejected'
+          );
+        }
         throw new Error('Cross-conversation dispatch completion transition was rejected');
       }
 
@@ -933,6 +1019,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
       if (current && current.dispatchStatus === 'cancel_requested') {
         const cancelled = store.markRunningCrossConversationDeliveryCancelled(claimed.id, {
           claimOwner: workerId,
+          claimToken: claimed.claimToken,
           reason: current.lastErrorMessage || errorMessage,
           cancelledAt: failedAt,
         });
@@ -943,9 +1030,23 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
         return { status: 'cancelled', delivery: cancelled || current };
       }
 
+      // A flight whose claim was recovered or superseded must not write any
+      // failure state over the new owner's claim; it only audits the loss.
+      const claimLost = flight.claimLost
+        || (error && (error as any).code === 'cross_conversation_claim_stale')
+        || !current
+        || current.claimToken !== claimed.claimToken;
+      if (claimLost) {
+        if (current) {
+          appendEvent(current, 'claim_lost_observed', { errorMessage }, failedAt);
+        }
+        return { status: 'claim_lost', delivery: current || claimed };
+      }
+
       if (invocationStarted || (current && current.startedAt)) {
         const failed = store.failCrossConversationDeliveryUnknownOutcome(claimed.id, {
           claimOwner: workerId,
+          claimToken: claimed.claimToken,
           errorCode: 'dispatch_unknown_outcome',
           errorMessage,
           failedAt,
@@ -963,6 +1064,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
         const nextAttemptAt = new Date(new Date(failedAt).getTime() + retryDelayMs).toISOString();
         const retry = store.releaseCrossConversationDeliveryForRetry(claimed.id, {
           claimOwner: workerId,
+          claimToken: claimed.claimToken,
           nextAttemptAt,
           errorCode: 'dispatch_pre_start_failed',
           errorMessage,
@@ -980,6 +1082,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
 
       const failed = store.failCrossConversationDeliveryBeforeStart(claimed.id, {
         claimOwner: workerId,
+        claimToken: claimed.claimToken,
         errorCode: 'dispatch_pre_start_exhausted',
         errorMessage,
         failedAt,
@@ -1001,12 +1104,17 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
     const failedUnknownDeliveryIds = [] as string[];
 
     for (const delivery of store.listExpiredCrossConversationDeliveryClaims(recoveredAt)) {
+      // Recovery transitions re-verify the claim identity (token) and that the
+      // lease is still expired at update time, so a heartbeat renewal that
+      // landed after this snapshot was read defeats the stale write.
       if (delivery.startedAt || delivery.targetInvocationId) {
         if (delivery.dispatchStatus === 'cancel_requested') {
           const cancelled = store.markRunningCrossConversationDeliveryCancelled(delivery.id, {
             claimOwner: delivery.claimOwner,
+            claimToken: delivery.claimToken,
             reason: delivery.lastErrorMessage || 'Recovered after cancellation request',
             cancelledAt: recoveredAt,
+            expiredAsOf: recoveredAt,
           });
           if (cancelled) {
             appendEvent(cancelled, 'cancelled', { recovered: true }, recoveredAt);
@@ -1017,9 +1125,11 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
 
         const failed = store.failCrossConversationDeliveryUnknownOutcome(delivery.id, {
           claimOwner: delivery.claimOwner,
+          claimToken: delivery.claimToken,
           errorCode: 'recovered_started_unknown_outcome',
           errorMessage: 'Worker lease expired after target invocation started; automatic replay is forbidden',
           failedAt: recoveredAt,
+          expiredAsOf: recoveredAt,
         });
         if (failed) {
           failedUnknownDeliveryIds.push(failed.id);
@@ -1034,10 +1144,12 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
       if (delivery.attemptCount < maxAttempts) {
         const requeued = store.releaseCrossConversationDeliveryForRetry(delivery.id, {
           claimOwner: delivery.claimOwner,
+          claimToken: delivery.claimToken,
           nextAttemptAt: recoveredAt,
           errorCode: 'recovered_unstarted_claim',
           errorMessage: 'Worker lease expired before target invocation started',
           updatedAt: recoveredAt,
+          expiredAsOf: recoveredAt,
         });
         if (requeued) {
           requeuedDeliveryIds.push(requeued.id);
@@ -1051,9 +1163,11 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
 
       const failed = store.failCrossConversationDeliveryBeforeStart(delivery.id, {
         claimOwner: delivery.claimOwner,
+        claimToken: delivery.claimToken,
         errorCode: 'recovered_pre_start_exhausted',
         errorMessage: 'Worker lease expired and the pre-start retry budget is exhausted',
         failedAt: recoveredAt,
+        expiredAsOf: recoveredAt,
       });
       if (failed) {
         appendEvent(failed, 'dispatch_failed', {
@@ -1066,12 +1180,31 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
     return { requeuedDeliveryIds, failedUnknownDeliveryIds };
   }
 
+  // Post-hoc recovery is untrusted: for a delivery whose dispatch failed with
+  // an unknown outcome, a late reply is only accepted when its persisted
+  // metadata matches BOTH the delivery id and the exact target invocation id.
+  // Missing or mismatched evidence keeps the outcome unknown; the latest
+  // message in the target room is never used as a guess.
+  function hasVerifiedInvocationEvidence(delivery: any, replyMessage: any) {
+    if (!delivery || delivery.dispatchStatus !== 'failed') {
+      return true;
+    }
+    const invocationId = String(delivery.targetInvocationId || '').trim();
+    if (!invocationId) {
+      return false;
+    }
+    const metadata = replyMessage && replyMessage.metadata && typeof replyMessage.metadata === 'object'
+      ? replyMessage.metadata
+      : {};
+    return String(metadata.crossConversationInvocationId || '').trim() === invocationId;
+  }
+
   function recoverPendingResponses() {
     const recoveredDeliveryIds = [] as string[];
 
     for (const delivery of store.listCrossConversationRequestsPendingResponse(100)) {
       const replyMessage = store.findCrossConversationReplyMessage(delivery);
-      if (!replyMessage) {
+      if (!replyMessage || !hasVerifiedInvocationEvidence(delivery, replyMessage)) {
         continue;
       }
 
