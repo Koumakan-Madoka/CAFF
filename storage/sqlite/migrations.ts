@@ -536,6 +536,7 @@ CREATE TABLE IF NOT EXISTS chat_cross_conversation_deliveries (
   last_error_message TEXT,
   claim_owner TEXT,
   claim_expires_at TEXT,
+  claim_token TEXT,
   next_attempt_at TEXT,
   target_invocation_id TEXT,
   delivered_at TEXT,
@@ -1182,6 +1183,10 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   ensureChatConversationLineageSchema(db);
   ensureChatPlanSchema(db);
   ensureCrossConversationDeliverySchema(db);
+  // Per-claim fencing token: unique per claim so a stale worker that lost its
+  // lease cannot write through the claim-guarded transitions, even when the
+  // same worker id later reclaims the same delivery.
+  ensureColumn(db, 'chat_cross_conversation_deliveries', 'claim_token', 'claim_token TEXT');
   ensureAgentDelegationSchema(db);
   ensureChatAgentSessionReuseSchema(db);
 

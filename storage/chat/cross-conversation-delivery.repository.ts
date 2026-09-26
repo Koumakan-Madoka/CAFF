@@ -10,12 +10,16 @@ export class CrossConversationDeliveryRepository {
   listExpiredClaimsStatement: any;
   listExpiredDeadlinesStatement: any;
   listPendingResponsesStatement: any;
+  listUnknownOutcomeStatement: any;
+  verifyOutcomeCompletedStatement: any;
+  verifyOutcomeFailedStatement: any;
   listLatestByTargetStatement: any;
   listLatestByTargetIdsStatement: any;
   insertStatement: any;
   markMessagesPersistedStatement: any;
   claimNextStatement: any;
   claimByIdStatement: any;
+  renewClaimStatement: any;
   markDispatchStartedStatement: any;
   markDispatchCompletedStatement: any;
   releaseForRetryStatement: any;
@@ -91,13 +95,78 @@ export class CrossConversationDeliveryRepository {
       WHERE request.kind = 'request'
         AND request.dispatch_status IN ('completed', 'failed', 'cancelled')
         AND request.response_status IN ('waiting', 'timed_out', 'cancelled')
+        AND (
+          request.last_error_code IS NULL
+          OR request.last_error_code NOT IN (
+            'recovered_started_unknown_outcome', 'dispatch_unknown_outcome'
+          )
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM chat_cross_conversation_deliveries response
           WHERE response.reply_to_delivery_id = request.id
         )
-      ORDER BY request.updated_at ASC, request.created_at ASC, request.id ASC
-      LIMIT ?
+        AND (
+          @afterUpdatedAt = ''
+          OR request.updated_at > @afterUpdatedAt
+          OR (request.updated_at = @afterUpdatedAt AND request.id > @afterId)
+        )
+      ORDER BY request.updated_at ASC, request.id ASC
+      LIMIT @limit
+    `);
+    // Unknown-outcome dispatches (started, then the worker lost contact) are
+    // scanned separately for trusted late outcome evidence. Keyset paging
+    // keeps permanently unrecoverable records from blocking later candidates.
+    this.listUnknownOutcomeStatement = db.prepare(`
+      SELECT *
+      FROM chat_cross_conversation_deliveries
+      WHERE dispatch_status = 'failed'
+        AND last_error_code IN ('recovered_started_unknown_outcome', 'dispatch_unknown_outcome')
+        AND target_invocation_id IS NOT NULL
+        AND (
+          @afterUpdatedAt = ''
+          OR updated_at > @afterUpdatedAt
+          OR (updated_at = @afterUpdatedAt AND id > @afterId)
+        )
+      ORDER BY updated_at ASC, id ASC
+      LIMIT @limit
+    `);
+    // Post-hoc outcome verification: trusted evidence (a persisted message
+    // whose metadata matches BOTH the delivery id and the exact target
+    // invocation id) upgrades an unknown outcome to its verified result.
+    // The guards make every verification idempotent and can never rewrite a
+    // cancelled delivery or a delivery that failed for another reason.
+    this.verifyOutcomeCompletedStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        dispatch_status = 'completed',
+        last_error_code = NULL,
+        last_error_message = NULL,
+        completed_at = @verifiedAt,
+        terminal_at = CASE
+          WHEN response_status <> 'waiting' THEN @verifiedAt
+          ELSE terminal_at
+        END,
+        updated_at = @verifiedAt
+      WHERE id = @deliveryId
+        AND dispatch_status = 'failed'
+        AND last_error_code IN ('recovered_started_unknown_outcome', 'dispatch_unknown_outcome')
+        AND target_invocation_id IS NOT NULL
+        AND target_invocation_id = @targetInvocationId
+      RETURNING *
+    `);
+    this.verifyOutcomeFailedStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        last_error_code = 'dispatch_failed_verified',
+        last_error_message = @errorMessage,
+        updated_at = @verifiedAt
+      WHERE id = @deliveryId
+        AND dispatch_status = 'failed'
+        AND last_error_code IN ('recovered_started_unknown_outcome', 'dispatch_unknown_outcome')
+        AND target_invocation_id IS NOT NULL
+        AND target_invocation_id = @targetInvocationId
+      RETURNING *
     `);
     this.listLatestByTargetStatement = db.prepare(`
       SELECT delivery.*
@@ -246,6 +315,7 @@ export class CrossConversationDeliveryRepository {
       SET
         claim_owner = @owner,
         claim_expires_at = @claimExpiresAt,
+        claim_token = @claimToken,
         attempt_count = attempt_count + 1,
         updated_at = @now
       WHERE id = (
@@ -271,6 +341,7 @@ export class CrossConversationDeliveryRepository {
       SET
         claim_owner = @owner,
         claim_expires_at = @claimExpiresAt,
+        claim_token = @claimToken,
         attempt_count = attempt_count + 1,
         updated_at = @now
       WHERE id = @deliveryId
@@ -280,6 +351,18 @@ export class CrossConversationDeliveryRepository {
         AND target_invocation_id IS NULL
         AND (next_attempt_at IS NULL OR next_attempt_at <= @now)
         AND (claim_owner IS NULL OR claim_expires_at <= @now)
+      RETURNING *
+    `);
+    this.renewClaimStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        claim_expires_at = @claimExpiresAt,
+        updated_at = @renewedAt
+      WHERE id = @deliveryId
+        AND claim_owner = @claimOwner
+        AND claim_token IS @claimToken
+        AND claim_expires_at IS NOT NULL
+        AND dispatch_status IN ('queued', 'running', 'cancel_requested')
       RETURNING *
     `);
     this.markDispatchStartedStatement = db.prepare(`
@@ -292,6 +375,7 @@ export class CrossConversationDeliveryRepository {
       WHERE id = @deliveryId
         AND dispatch_status = 'queued'
         AND claim_owner = @claimOwner
+        AND claim_token IS @claimToken
         AND target_invocation_id IS NULL
         AND started_at IS NULL
       RETURNING *
@@ -302,6 +386,7 @@ export class CrossConversationDeliveryRepository {
         dispatch_status = 'completed',
         claim_owner = NULL,
         claim_expires_at = NULL,
+        claim_token = NULL,
         completed_at = @completedAt,
         terminal_at = CASE
           WHEN response_status <> 'waiting' THEN COALESCE(@terminalAt, @completedAt)
@@ -311,6 +396,7 @@ export class CrossConversationDeliveryRepository {
       WHERE id = @deliveryId
         AND dispatch_status = 'running'
         AND claim_owner = @claimOwner
+        AND claim_token IS @claimToken
       RETURNING *
     `);
     this.releaseForRetryStatement = db.prepare(`
@@ -318,6 +404,7 @@ export class CrossConversationDeliveryRepository {
       SET
         claim_owner = NULL,
         claim_expires_at = NULL,
+        claim_token = NULL,
         next_attempt_at = @nextAttemptAt,
         last_error_code = @errorCode,
         last_error_message = @errorMessage,
@@ -325,8 +412,10 @@ export class CrossConversationDeliveryRepository {
       WHERE id = @deliveryId
         AND dispatch_status = 'queued'
         AND claim_owner = @claimOwner
+        AND claim_token IS @claimToken
         AND started_at IS NULL
         AND target_invocation_id IS NULL
+        AND (@expiredAsOf = '' OR claim_expires_at <= @expiredAsOf)
       RETURNING *
     `);
     this.markDispatchFailedBeforeStartStatement = db.prepare(`
@@ -336,6 +425,7 @@ export class CrossConversationDeliveryRepository {
         response_status = CASE WHEN response_status = 'waiting' THEN 'cancelled' ELSE response_status END,
         claim_owner = NULL,
         claim_expires_at = NULL,
+        claim_token = NULL,
         last_error_code = @errorCode,
         last_error_message = @errorMessage,
         completed_at = @failedAt,
@@ -344,8 +434,10 @@ export class CrossConversationDeliveryRepository {
       WHERE id = @deliveryId
         AND dispatch_status = 'queued'
         AND claim_owner = @claimOwner
+        AND claim_token IS @claimToken
         AND started_at IS NULL
         AND target_invocation_id IS NULL
+        AND (@expiredAsOf = '' OR claim_expires_at <= @expiredAsOf)
       RETURNING *
     `);
     this.markDispatchUnknownOutcomeStatement = db.prepare(`
@@ -355,6 +447,7 @@ export class CrossConversationDeliveryRepository {
         response_status = CASE WHEN response_status = 'waiting' THEN 'cancelled' ELSE response_status END,
         claim_owner = NULL,
         claim_expires_at = NULL,
+        claim_token = NULL,
         last_error_code = @errorCode,
         last_error_message = @errorMessage,
         completed_at = @failedAt,
@@ -363,8 +456,10 @@ export class CrossConversationDeliveryRepository {
       WHERE id = @deliveryId
         AND dispatch_status IN ('queued', 'running')
         AND claim_owner = @claimOwner
+        AND claim_token IS @claimToken
         AND started_at IS NOT NULL
         AND target_invocation_id IS NOT NULL
+        AND (@expiredAsOf = '' OR claim_expires_at <= @expiredAsOf)
       RETURNING *
     `);
     this.retryFailedBeforeStartStatement = db.prepare(`
@@ -378,6 +473,7 @@ export class CrossConversationDeliveryRepository {
         last_error_message = NULL,
         claim_owner = NULL,
         claim_expires_at = NULL,
+        claim_token = NULL,
         next_attempt_at = @retryAt,
         completed_at = NULL,
         responded_at = NULL,
@@ -398,6 +494,7 @@ export class CrossConversationDeliveryRepository {
         response_status = CASE WHEN response_status = 'waiting' THEN 'cancelled' ELSE response_status END,
         claim_owner = NULL,
         claim_expires_at = NULL,
+        claim_token = NULL,
         cancel_requested_at = @cancelledAt,
         last_error_code = 'cancelled_by_operator',
         last_error_message = @reason,
@@ -428,6 +525,7 @@ export class CrossConversationDeliveryRepository {
         response_status = CASE WHEN response_status = 'waiting' THEN 'cancelled' ELSE response_status END,
         claim_owner = NULL,
         claim_expires_at = NULL,
+        claim_token = NULL,
         last_error_code = 'cancelled_by_operator',
         last_error_message = COALESCE(last_error_message, @reason),
         completed_at = @cancelledAt,
@@ -436,6 +534,8 @@ export class CrossConversationDeliveryRepository {
       WHERE id = @deliveryId
         AND dispatch_status = 'cancel_requested'
         AND claim_owner = @claimOwner
+        AND claim_token IS @claimToken
+        AND (@expiredAsOf = '' OR claim_expires_at <= @expiredAsOf)
       RETURNING *
     `);
     this.markResponseMessagePersistedStatement = db.prepare(`
@@ -572,8 +672,37 @@ export class CrossConversationDeliveryRepository {
     return this.listExpiredDeadlinesStatement.all(now);
   }
 
-  listPendingResponses(limit = 100) {
-    return this.listPendingResponsesStatement.all(limit);
+  listPendingResponses(limit = 100, afterCursor: any = null) {
+    return this.listPendingResponsesStatement.all({
+      limit,
+      afterUpdatedAt: String(afterCursor && afterCursor.updatedAt || ''),
+      afterId: String(afterCursor && afterCursor.id || ''),
+    });
+  }
+
+  listUnknownOutcome(limit = 100, afterCursor: any = null) {
+    return this.listUnknownOutcomeStatement.all({
+      limit,
+      afterUpdatedAt: String(afterCursor && afterCursor.updatedAt || ''),
+      afterId: String(afterCursor && afterCursor.id || ''),
+    });
+  }
+
+  verifyOutcomeCompleted(deliveryId: string, payload: any) {
+    return this.verifyOutcomeCompletedStatement.get({
+      deliveryId,
+      targetInvocationId: String(payload && payload.targetInvocationId || ''),
+      verifiedAt: String(payload && payload.verifiedAt || ''),
+    }) || null;
+  }
+
+  verifyOutcomeFailed(deliveryId: string, payload: any) {
+    return this.verifyOutcomeFailedStatement.get({
+      deliveryId,
+      targetInvocationId: String(payload && payload.targetInvocationId || ''),
+      errorMessage: String(payload && payload.errorMessage || ''),
+      verifiedAt: String(payload && payload.verifiedAt || ''),
+    }) || null;
   }
 
   listLatestByTarget() {
@@ -650,6 +779,7 @@ export class CrossConversationDeliveryRepository {
       owner: payload.owner,
       now: payload.now,
       claimExpiresAt: payload.claimExpiresAt,
+      claimToken: payload.claimToken || null,
     }) || null;
   }
 
@@ -659,6 +789,17 @@ export class CrossConversationDeliveryRepository {
       owner: payload.owner,
       now: payload.now,
       claimExpiresAt: payload.claimExpiresAt,
+      claimToken: payload.claimToken || null,
+    }) || null;
+  }
+
+  renewClaim(deliveryId: string, payload: any) {
+    return this.renewClaimStatement.get({
+      deliveryId,
+      claimOwner: payload.claimOwner,
+      claimToken: payload.claimToken || null,
+      renewedAt: payload.renewedAt,
+      claimExpiresAt: payload.claimExpiresAt,
     }) || null;
   }
 
@@ -666,6 +807,7 @@ export class CrossConversationDeliveryRepository {
     return this.markDispatchStartedStatement.get({
       deliveryId,
       claimOwner: payload.claimOwner,
+      claimToken: payload.claimToken || null,
       targetInvocationId: payload.targetInvocationId,
       startedAt: payload.startedAt,
       updatedAt: payload.updatedAt,
@@ -676,6 +818,7 @@ export class CrossConversationDeliveryRepository {
     return this.markDispatchCompletedStatement.get({
       deliveryId,
       claimOwner: payload.claimOwner,
+      claimToken: payload.claimToken || null,
       completedAt: payload.completedAt,
       terminalAt: payload.terminalAt || null,
       updatedAt: payload.updatedAt,
@@ -686,10 +829,12 @@ export class CrossConversationDeliveryRepository {
     return this.releaseForRetryStatement.get({
       deliveryId,
       claimOwner: payload.claimOwner,
+      claimToken: payload.claimToken || null,
       nextAttemptAt: payload.nextAttemptAt,
       errorCode: payload.errorCode,
       errorMessage: payload.errorMessage,
       updatedAt: payload.updatedAt,
+      expiredAsOf: payload.expiredAsOf || '',
     }) || null;
   }
 
@@ -697,9 +842,11 @@ export class CrossConversationDeliveryRepository {
     return this.markDispatchFailedBeforeStartStatement.get({
       deliveryId,
       claimOwner: payload.claimOwner,
+      claimToken: payload.claimToken || null,
       errorCode: payload.errorCode,
       errorMessage: payload.errorMessage,
       failedAt: payload.failedAt,
+      expiredAsOf: payload.expiredAsOf || '',
     }) || null;
   }
 
@@ -707,9 +854,11 @@ export class CrossConversationDeliveryRepository {
     return this.markDispatchUnknownOutcomeStatement.get({
       deliveryId,
       claimOwner: payload.claimOwner,
+      claimToken: payload.claimToken || null,
       errorCode: payload.errorCode,
       errorMessage: payload.errorMessage,
       failedAt: payload.failedAt,
+      expiredAsOf: payload.expiredAsOf || '',
     }) || null;
   }
 
@@ -741,8 +890,10 @@ export class CrossConversationDeliveryRepository {
     return this.markRunningCancelledStatement.get({
       deliveryId,
       claimOwner: payload.claimOwner,
+      claimToken: payload.claimToken || null,
       reason: payload.reason,
       cancelledAt: payload.cancelledAt,
+      expiredAsOf: payload.expiredAsOf || '',
     }) || null;
   }
 

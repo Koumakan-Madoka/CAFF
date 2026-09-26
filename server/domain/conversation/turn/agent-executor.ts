@@ -1882,6 +1882,7 @@ export function createAgentExecutor(options: any = {}) {
       triggerType: queueItem.triggerType || 'user',
       delegationId: queueItem.delegationId || null,
       crossConversationDeliveryId: queueItem.crossConversationDeliveryId || null,
+      crossConversationInvocationId: queueItem.toolInvocationId || null,
       agentContextSnapshot: contextSnapshotReference,
     };
 
@@ -2606,6 +2607,8 @@ export function createAgentExecutor(options: any = {}) {
         triggeredByAgentName: queueItem.triggeredByAgentName || '',
         triggeredByMessageId: queueItem.triggeredByMessageId || null,
         triggerType: queueItem.triggerType || 'user',
+        crossConversationDeliveryId: queueItem.crossConversationDeliveryId || null,
+        crossConversationInvocationId: queueItem.toolInvocationId || null,
         usage: result.usage && typeof result.usage === 'object' && !Array.isArray(result.usage) ? result.usage : null,
         tokenUsage,
         modelUsage: buildLightweightModelUsageSummary(modelUsage),
@@ -2889,6 +2892,8 @@ export function createAgentExecutor(options: any = {}) {
           triggeredByAgentName: queueItem.triggeredByAgentName || '',
           triggeredByMessageId: queueItem.triggeredByMessageId || null,
           triggerType: queueItem.triggerType || 'user',
+          crossConversationDeliveryId: queueItem.crossConversationDeliveryId || null,
+          crossConversationInvocationId: queueItem.toolInvocationId || null,
           usage: errorUsage,
           tokenUsage: errorTokenUsage,
           modelUsage: buildLightweightModelUsageSummary(errorModelUsage),

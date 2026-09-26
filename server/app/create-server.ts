@@ -269,6 +269,9 @@ export function createServerApp(options: any = {}) {
       return;
     }
 
+    // claimToken is a server-internal fencing primitive; never broadcast it.
+    const { claimToken, ...publicDelivery } = delivery;
+
     const conversationIds = Array.from(new Set([
       String(delivery.sourceConversationId || '').trim(),
       String(delivery.targetConversationId || '').trim(),
@@ -277,7 +280,7 @@ export function createServerApp(options: any = {}) {
     for (const conversationId of conversationIds) {
       broadcastEvent('cross_conversation_delivery_updated', {
         conversationId,
-        delivery,
+        delivery: publicDelivery,
         reason: String(reason || '').trim() || null,
       });
       broadcastConversationSummary(conversationId);
