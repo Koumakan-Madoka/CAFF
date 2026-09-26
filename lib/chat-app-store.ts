@@ -2648,6 +2648,7 @@ export class ChatAppStore {
         conversationId: delivery.targetConversationId,
         agentId: delivery.targetAgentId,
         startedAt: delivery.startedAt,
+        invocationId: delivery.targetInvocationId,
       })
     );
   }

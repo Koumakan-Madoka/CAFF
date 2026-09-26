@@ -1183,18 +1183,20 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
     return { requeuedDeliveryIds, failedUnknownDeliveryIds };
   }
 
-  // Post-hoc recovery is untrusted: for a delivery whose dispatch failed with
-  // an unknown outcome, late evidence is only accepted when its persisted
-  // metadata matches BOTH the delivery id and the exact target invocation id.
-  // Missing or mismatched evidence keeps the outcome unknown; the latest
-  // message in the target room is never used as a guess.
+  // Post-hoc recovery is untrusted: late evidence is only accepted when its
+  // persisted metadata matches BOTH the delivery id and the exact target
+  // invocation id. The association is matched inside the evidence queries
+  // themselves; this check is defense in depth and applies to every dispatch
+  // that recorded an invocation, including verified-completed ones whose
+  // response projection is compensated later. Missing or mismatched evidence
+  // keeps the outcome unknown / the response pending; the latest message in
+  // the target room is never used as a guess.
   function hasVerifiedInvocationEvidence(delivery: any, replyMessage: any) {
-    if (!delivery || delivery.dispatchStatus !== 'failed') {
-      return true;
-    }
-    const invocationId = String(delivery.targetInvocationId || '').trim();
+    const invocationId = String(delivery && delivery.targetInvocationId || '').trim();
     if (!invocationId) {
-      return false;
+      // No invocation was ever recorded: a failed dispatch has no trusted
+      // association at all; other terminal states keep legacy matching.
+      return !(delivery && delivery.dispatchStatus === 'failed');
     }
     const metadata = replyMessage && replyMessage.metadata && typeof replyMessage.metadata === 'object'
       ? replyMessage.metadata

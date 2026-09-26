@@ -1294,3 +1294,235 @@ test('response projection recovery pages fairly past permanently unanswerable re
     fixture.store.close();
   }
 });
+
+test('projection compensation after a verified completion stays bound to the exact invocation', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-lease-projection-association-'));
+  const sqlitePath = path.join(tmpDir, 'chat.sqlite');
+  let currentTime = new Date(BASE_TIME);
+
+  let deliveryId = null;
+  {
+    const fixture = createFixture({ agentDir: tmpDir, sqlitePath });
+    const service = createCrossConversationDeliveryService({
+      store: fixture.store,
+      now: () => currentTime,
+    });
+    const request = submitRequest(service, fixture, { idempotencyKey: 'lease-projection-association' });
+    deliveryId = request.delivery.id;
+    const scheduler = createManualScheduler();
+    const dispatchEntered = createGate();
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-projection-association',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      leaseRenewIntervalMs: 10_000,
+      setIntervalFn: scheduler.setInterval,
+      clearIntervalFn: scheduler.clearInterval,
+      async dispatchTarget(input) {
+        input.onInvocationStarting({ invocationId: 'projection-association-invocation' });
+        dispatchEntered.resolve();
+        return createGate().promise; // worker "crashes": never resolves
+      },
+    });
+
+    try {
+      void worker.processNext();
+      await dispatchEntered.promise;
+      currentTime = new Date(BASE_TIME + 31_000);
+      assert.deepEqual(worker.recoverExpiredClaims().failedUnknownDeliveryIds, [deliveryId]);
+
+      // A DIFFERENT invocation's terminal message arrives FIRST ...
+      createReplyMessage(fixture, request.delivery, {
+        invocationId: 'some-other-invocation',
+        content: 'Reply from a different invocation.',
+        createdAt: isoAt(40),
+      });
+      // ... and the exact invocation's reply arrives LATER.
+      createReplyMessage(fixture, request.delivery, {
+        invocationId: 'projection-association-invocation',
+        content: 'Reply from the exact invocation.',
+        createdAt: isoAt(45),
+      });
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  // Restart. The exact evidence verifies the outcome, but the FIRST
+  // projection write fails; the same scan must compensate with the exact
+  // reply, never with the earlier mismatched message.
+  {
+    const fixture = reopenStore(tmpDir, sqlitePath);
+    const realPersist = fixture.store.persistCrossConversationResponse.bind(fixture.store);
+    let persistCalls = 0;
+    fixture.store.persistCrossConversationResponse = (payload) => {
+      persistCalls += 1;
+      if (persistCalls === 1) {
+        throw new Error('injected projection write failure');
+      }
+      return realPersist(payload);
+    };
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-projection-association-restarted',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      async dispatchTarget() {
+        throw new Error('started deliveries must never be replayed');
+      },
+    });
+
+    try {
+      const recovered = worker.recoverPendingResponses();
+      assert.deepEqual(recovered.verifiedCompletedDeliveryIds, [deliveryId]);
+      assert.deepEqual(recovered.projectedDeliveryIds, [deliveryId],
+        'the transient projection failure must be compensated within the same scan');
+      assert.equal(persistCalls >= 2, true, 'the projection write must be retried after the failure');
+
+      const projectedReplies = fixture.store.listMessages('lease-source-conversation')
+        .filter((message) => message.metadata && message.metadata.crossConversation
+          && message.metadata.crossConversation.replyToDeliveryId === deliveryId);
+      assert.equal(projectedReplies.length, 1);
+      assert.equal(projectedReplies[0].content, 'Reply from the exact invocation.',
+        'compensation must project the exact invocation reply, not the earlier mismatched message');
+      assert.equal(fixture.store.getCrossConversationDelivery(deliveryId).responseStatus, 'late');
+
+      // Repeated scans stay idempotent.
+      for (let scan = 0; scan < 3; scan += 1) {
+        const again = worker.recoverPendingResponses();
+        assert.deepEqual(again.projectedDeliveryIds, []);
+        assert.deepEqual(again.verifiedCompletedDeliveryIds, []);
+      }
+      assert.equal(countSourceReplies(fixture, deliveryId), 1);
+      assert.equal(await worker.processNext(), null);
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('projection compensation after a restart still projects the exact invocation reply', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-lease-projection-restart-'));
+  const sqlitePath = path.join(tmpDir, 'chat.sqlite');
+  let currentTime = new Date(BASE_TIME);
+
+  let deliveryId = null;
+  {
+    const fixture = createFixture({ agentDir: tmpDir, sqlitePath });
+    const service = createCrossConversationDeliveryService({
+      store: fixture.store,
+      now: () => currentTime,
+    });
+    const request = submitRequest(service, fixture, { idempotencyKey: 'lease-projection-restart' });
+    deliveryId = request.delivery.id;
+    const scheduler = createManualScheduler();
+    const dispatchEntered = createGate();
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-projection-restart',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      leaseRenewIntervalMs: 10_000,
+      setIntervalFn: scheduler.setInterval,
+      clearIntervalFn: scheduler.clearInterval,
+      async dispatchTarget(input) {
+        input.onInvocationStarting({ invocationId: 'projection-restart-invocation' });
+        dispatchEntered.resolve();
+        return createGate().promise; // worker "crashes": never resolves
+      },
+    });
+
+    try {
+      void worker.processNext();
+      await dispatchEntered.promise;
+      currentTime = new Date(BASE_TIME + 31_000);
+      assert.deepEqual(worker.recoverExpiredClaims().failedUnknownDeliveryIds, [deliveryId]);
+
+      createReplyMessage(fixture, request.delivery, {
+        invocationId: 'some-other-invocation',
+        content: 'Reply from a different invocation.',
+        createdAt: isoAt(40),
+      });
+      createReplyMessage(fixture, request.delivery, {
+        invocationId: 'projection-restart-invocation',
+        content: 'Reply from the exact invocation.',
+        createdAt: isoAt(45),
+      });
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  // Restart into a window where EVERY projection write fails: the outcome is
+  // verified, but the response stays pending and nothing is projected.
+  {
+    const fixture = reopenStore(tmpDir, sqlitePath);
+    fixture.store.persistCrossConversationResponse = () => {
+      throw new Error('injected persistent projection failure');
+    };
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-projection-restart-failing',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      async dispatchTarget() {
+        throw new Error('started deliveries must never be replayed');
+      },
+    });
+
+    try {
+      const recovered = worker.recoverPendingResponses();
+      assert.deepEqual(recovered.verifiedCompletedDeliveryIds, [deliveryId]);
+      assert.deepEqual(recovered.projectedDeliveryIds, []);
+      assert.equal(countSourceReplies(fixture, deliveryId), 0);
+      assert.equal(fixture.store.getCrossConversationDelivery(deliveryId).responseStatus, 'cancelled',
+        'the response slot stays open for compensation while no reply is projected');
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  // A later restart with a healthy store must compensate with the exact
+  // invocation reply, never the earlier mismatched message.
+  {
+    const fixture = reopenStore(tmpDir, sqlitePath);
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-projection-restart-healthy',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      async dispatchTarget() {
+        throw new Error('started deliveries must never be replayed');
+      },
+    });
+
+    try {
+      const recovered = worker.recoverPendingResponses();
+      assert.deepEqual(recovered.projectedDeliveryIds, [deliveryId]);
+      assert.deepEqual(recovered.verifiedCompletedDeliveryIds, [],
+        'the outcome was already verified before the restart');
+
+      const projectedReplies = fixture.store.listMessages('lease-source-conversation')
+        .filter((message) => message.metadata && message.metadata.crossConversation
+          && message.metadata.crossConversation.replyToDeliveryId === deliveryId);
+      assert.equal(projectedReplies.length, 1);
+      assert.equal(projectedReplies[0].content, 'Reply from the exact invocation.',
+        'compensation after restart must project the exact invocation reply');
+      assert.equal(fixture.store.getCrossConversationDelivery(deliveryId).responseStatus, 'late');
+
+      for (let scan = 0; scan < 3; scan += 1) {
+        const again = worker.recoverPendingResponses();
+        assert.deepEqual(again.projectedDeliveryIds, []);
+      }
+      assert.equal(countSourceReplies(fixture, deliveryId), 1);
+      assert.equal(await worker.processNext(), null);
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});

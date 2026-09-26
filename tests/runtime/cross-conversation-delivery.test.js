@@ -839,7 +839,12 @@ test('response projection recovers from a post-dispatch persistence failure with
           agentId: fixture.targetAgent.id,
           senderName: fixture.targetAgent.name,
           content: 'Durable target answer awaiting source projection.',
-          metadata: { crossConversationDeliveryId: request.delivery.id },
+          metadata: {
+            crossConversationDeliveryId: request.delivery.id,
+            // agent-executor stamps both markers onto the reply; recovery
+            // compensation matches the exact invocation association.
+            crossConversationInvocationId: 'response-recovery-invocation',
+          },
         }),
       };
     },

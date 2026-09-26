@@ -524,6 +524,56 @@ test('outcome evidence lookup selects the exact invocation association, not the 
   }
 });
 
+test('reply compensation lookup selects the exact invocation association, not the earliest delivery match', () => {
+  const fixture = createFixture();
+
+  try {
+    const submitted = submitNotify(fixture);
+    driveToUnknownOutcome(fixture, submitted.delivery.id, { invocationId: 'inv-reply-exact' });
+    const delivery = fixture.store.getCrossConversationDelivery(submitted.delivery.id);
+
+    const createReply = (overrides) => fixture.store.createMessage({
+      id: overrides.id,
+      conversationId: fixture.targetConversation.id,
+      turnId: 'lease-store-reply-turn',
+      role: 'assistant',
+      agentId: fixture.targetAgent.id,
+      senderName: fixture.targetAgent.name,
+      content: overrides.content || '',
+      status: 'completed',
+      metadata: overrides.metadata,
+      createdAt: overrides.createdAt,
+    });
+
+    // Earliest: same delivery id, WRONG invocation id.
+    createReply({
+      id: 'reply-wrong-invocation',
+      createdAt: isoAt(40),
+      content: 'reply from a different invocation',
+      metadata: {
+        crossConversationDeliveryId: delivery.id,
+        crossConversationInvocationId: 'inv-other',
+      },
+    });
+    // Latest: exact delivery id AND exact invocation id.
+    const exact = createReply({
+      id: 'reply-exact-invocation',
+      createdAt: isoAt(45),
+      content: 'reply from the exact invocation',
+      metadata: {
+        crossConversationDeliveryId: delivery.id,
+        crossConversationInvocationId: 'inv-reply-exact',
+      },
+    });
+
+    const found = fixture.store.findCrossConversationReplyMessage(delivery);
+    assert.equal(found && found.id, exact.id,
+      'reply compensation must skip mismatched invocations instead of projecting the earliest delivery match');
+  } finally {
+    fixture.store.close();
+  }
+});
+
 test('pending-response and unknown-outcome scans paginate by keyset cursor', () => {
   const fixture = createFixture();
 

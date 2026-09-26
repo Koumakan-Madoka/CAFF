@@ -87,8 +87,15 @@ guess.
 Requests whose outcome is not in doubt (completed, cancelled, timed out) but
 whose response has not been projected yet re-project from the persisted
 reply. Unknown-outcome dispatches are excluded from this phase; they are
-owned by phase 1 until verified. For completed dispatches the delivery-id
-evidence is sufficient: the worker attested the result in-band.
+owned by phase 1 until verified. Whenever the delivery recorded a
+`targetInvocationId` (every started dispatch, including ones verified
+completed by phase 1), the reply association is matched on BOTH markers
+inside the query itself: an earlier message that carries the delivery id
+with a missing or different invocation id can never be projected as the
+response, whether the compensation runs in the same scan as the
+verification or after a projection write failure and a restart. Only
+deliveries that never recorded an invocation (for example cancelled while
+still queued) fall back to delivery-id matching.
 
 `agent-executor` stamps `crossConversationDeliveryId` and
 `crossConversationInvocationId` (the dispatch's tool invocation id) onto the
@@ -105,9 +112,11 @@ re-run the target model.
   fencing, stale sweep snapshots, restart recovery with verified completion
   and verified failure for request and notify, wrong/missing invocation
   evidence (including mismatched evidence arriving before the exact
-  evidence), fair bounded scanning past unrecoverable records, and heartbeat
-  cleanup.
+  evidence), projection compensation bound to the exact invocation across
+  transient projection failures and restarts, fair bounded scanning past
+  unrecoverable records, and heartbeat cleanup.
 - `tests/storage/cross-conversation-delivery-lease.test.js`: SQLite-level
   atomic conditions for claim tokens, renewal, stale-token transitions,
   expiry re-verification, outcome-verification guards, exact
-  delivery+invocation evidence selection, and keyset pagination.
+  delivery+invocation evidence selection for both outcome verification and
+  reply compensation, and keyset pagination.
