@@ -156,7 +156,9 @@ function createReplyMessage(fixture, delivery, overrides = {}) {
     role: 'assistant',
     agentId: fixture.targetAgent.id,
     senderName: fixture.targetAgent.name,
-    content: overrides.content || 'Late but verified answer.',
+    content: overrides.content !== undefined ? overrides.content : 'Late but verified answer.',
+    status: overrides.status || 'completed',
+    errorMessage: overrides.errorMessage || '',
     metadata: {
       crossConversationDeliveryId: delivery.id,
       ...(overrides.invocationId
@@ -164,6 +166,17 @@ function createReplyMessage(fixture, delivery, overrides = {}) {
         : {}),
     },
     createdAt: overrides.createdAt,
+  });
+}
+
+function submitNotify(service, fixture, overrides = {}, principalOverrides = {}) {
+  return service.submitFromAgent(createPrincipal(fixture, principalOverrides), {
+    kind: 'notify',
+    targetConversationId: fixture.targetConversation.id,
+    targetAgentId: fixture.targetAgent.id,
+    content: 'Cross-conversation notify.',
+    idempotencyKey: `lease-${Math.random().toString(36).slice(2)}`,
+    ...overrides,
   });
 }
 
@@ -536,14 +549,25 @@ test('restart recovery projects an invocation-verified late reply exactly once a
 
     try {
       const recovered = worker.recoverPendingResponses();
-      assert.deepEqual(recovered, [deliveryId]);
+      assert.deepEqual(recovered.verifiedCompletedDeliveryIds, [deliveryId]);
+      assert.deepEqual(recovered.projectedDeliveryIds, [deliveryId]);
+      assert.deepEqual(recovered.verifiedFailedDeliveryIds, []);
       const delivered = fixture.store.getCrossConversationDelivery(deliveryId);
-      assert.equal(delivered.dispatchStatus, 'failed', 'recovery must not rewrite the unknown outcome to success');
+      assert.equal(delivered.dispatchStatus, 'completed',
+        'trusted invocation evidence upgrades the unknown outcome to completed');
+      assert.equal(delivered.lastErrorCode, null);
       assert.equal(delivered.responseStatus, 'late');
       assert.equal(countSourceReplies(fixture, deliveryId), 1);
+      const eventTypes = fixture.store.listCrossConversationDeliveryEvents(deliveryId)
+        .map((event) => event.eventType);
+      assert.equal(eventTypes.includes('recovered_unknown_outcome'), true,
+        'the original lease accident audit is preserved');
+      assert.equal(eventTypes.includes('outcome_verified_completed'), true);
 
       // Recovery is idempotent across repeated scans.
-      assert.deepEqual(worker.recoverPendingResponses(), []);
+      const again = worker.recoverPendingResponses();
+      assert.deepEqual(again.projectedDeliveryIds, []);
+      assert.deepEqual(again.verifiedCompletedDeliveryIds, []);
       assert.equal(countSourceReplies(fixture, deliveryId), 1);
 
       // The started delivery is never claimed again for replay.
@@ -634,10 +658,12 @@ test('restart recovery rejects replies without matching invocation evidence', as
 
     try {
       const recovered = worker.recoverPendingResponses();
-      assert.equal(recovered.includes(deliveryIds.wrongInvocation), false,
+      assert.equal(recovered.projectedDeliveryIds.includes(deliveryIds.wrongInvocation), false,
         'a reply from a different invocation must not be projected');
-      assert.equal(recovered.includes(deliveryIds.missingInvocation), false,
+      assert.equal(recovered.projectedDeliveryIds.includes(deliveryIds.missingInvocation), false,
         'a reply without invocation evidence must not be projected');
+      assert.equal(recovered.verifiedCompletedDeliveryIds.length, 0);
+      assert.equal(recovered.verifiedFailedDeliveryIds.length, 0);
       assert.equal(countSourceReplies(fixture, deliveryIds.wrongInvocation), 0);
       assert.equal(countSourceReplies(fixture, deliveryIds.missingInvocation), 0);
       for (const id of Object.values(deliveryIds)) {
@@ -718,6 +744,416 @@ test('heartbeat is cleared on pre-start failure and cancel paths', async () => {
     const outcome = await flight;
     assert.equal(outcome.status, 'cancelled');
     assert.equal(cancelScheduler.activeCount(), 0, 'cancel path must clear the heartbeat');
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('restart recovery verifies a late failed invocation outcome without projecting a response', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-lease-verify-failed-'));
+  const sqlitePath = path.join(tmpDir, 'chat.sqlite');
+  let currentTime = new Date(BASE_TIME);
+
+  let deliveryId = null;
+  {
+    const fixture = createFixture({ agentDir: tmpDir, sqlitePath });
+    const service = createCrossConversationDeliveryService({
+      store: fixture.store,
+      now: () => currentTime,
+    });
+    const request = submitRequest(service, fixture, { idempotencyKey: 'lease-verify-failed' });
+    deliveryId = request.delivery.id;
+    const scheduler = createManualScheduler();
+    const dispatchEntered = createGate();
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-verify-failed',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      leaseRenewIntervalMs: 10_000,
+      setIntervalFn: scheduler.setInterval,
+      clearIntervalFn: scheduler.clearInterval,
+      async dispatchTarget(input) {
+        input.onInvocationStarting({ invocationId: 'verify-failed-invocation' });
+        dispatchEntered.resolve();
+        return createGate().promise; // worker "crashes": never resolves
+      },
+    });
+
+    try {
+      void worker.processNext();
+      await dispatchEntered.promise;
+      currentTime = new Date(BASE_TIME + 31_000);
+      assert.deepEqual(worker.recoverExpiredClaims().failedUnknownDeliveryIds, [deliveryId]);
+
+      // The target invocation actually failed after the crash; the failed
+      // assistant message carries both the delivery id and invocation id.
+      currentTime = new Date(BASE_TIME + 40_000);
+      createReplyMessage(fixture, request.delivery, {
+        invocationId: 'verify-failed-invocation',
+        status: 'failed',
+        content: '',
+        errorMessage: 'target model exploded',
+        createdAt: currentTime.toISOString(),
+      });
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  {
+    const fixture = reopenStore(tmpDir, sqlitePath);
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-verify-failed-restarted',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      async dispatchTarget() {
+        throw new Error('started deliveries must never be replayed');
+      },
+    });
+
+    try {
+      const recovered = worker.recoverPendingResponses();
+      assert.deepEqual(recovered.verifiedFailedDeliveryIds, [deliveryId]);
+      assert.deepEqual(recovered.verifiedCompletedDeliveryIds, []);
+      assert.deepEqual(recovered.projectedDeliveryIds, []);
+
+      const delivered = fixture.store.getCrossConversationDelivery(deliveryId);
+      assert.equal(delivered.dispatchStatus, 'failed',
+        'a verified failure keeps the failed dispatch state');
+      assert.equal(delivered.lastErrorCode, 'dispatch_failed_verified',
+        'the verified failure replaces the unknown outcome with a queryable result');
+      assert.match(String(delivered.lastErrorMessage), /target model exploded/);
+      assert.equal(delivered.responseStatus, 'cancelled', 'no response is projected for a failed invocation');
+      assert.equal(countSourceReplies(fixture, deliveryId), 0);
+
+      const eventTypes = fixture.store.listCrossConversationDeliveryEvents(deliveryId)
+        .map((event) => event.eventType);
+      assert.equal(eventTypes.includes('recovered_unknown_outcome'), true,
+        'the original lease accident audit is preserved');
+      assert.equal(eventTypes.includes('outcome_verified_failed'), true);
+
+      // Idempotent: repeated scans record the verification exactly once.
+      const again = worker.recoverPendingResponses();
+      assert.deepEqual(again.verifiedFailedDeliveryIds, []);
+      const verifyEvents = fixture.store.listCrossConversationDeliveryEvents(deliveryId)
+        .filter((event) => event.eventType === 'outcome_verified_failed');
+      assert.equal(verifyEvents.length, 1);
+
+      // The started delivery is never claimed again for replay.
+      assert.equal(await worker.processNext(), null);
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('restart recovery verifies late notify outcomes and rejects mismatched evidence', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-lease-notify-outcome-'));
+  const sqlitePath = path.join(tmpDir, 'chat.sqlite');
+  let currentTime = new Date(BASE_TIME);
+
+  const deliveryIds = { completed: null, wrong: null, failed: null };
+  {
+    const fixture = createFixture({ agentDir: tmpDir, sqlitePath });
+    const service = createCrossConversationDeliveryService({
+      store: fixture.store,
+      now: () => currentTime,
+    });
+    const scheduler = createManualScheduler();
+    const entered = [];
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-notify-outcome',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      leaseRenewIntervalMs: 10_000,
+      setIntervalFn: scheduler.setInterval,
+      clearIntervalFn: scheduler.clearInterval,
+      async dispatchTarget(input) {
+        input.onInvocationStarting({ invocationId: `real-${input.delivery.id}` });
+        entered.push(input.delivery.id);
+        return createGate().promise;
+      },
+    });
+
+    try {
+      const completedNotify = submitNotify(service, fixture, { idempotencyKey: 'lease-notify-completed' });
+      deliveryIds.completed = completedNotify.delivery.id;
+      void worker.processNext();
+      while (entered.length < 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      currentTime = new Date(BASE_TIME + 31_000);
+      assert.deepEqual(worker.recoverExpiredClaims().failedUnknownDeliveryIds, [completedNotify.delivery.id]);
+      createReplyMessage(fixture, completedNotify.delivery, {
+        invocationId: `real-${completedNotify.delivery.id}`,
+        createdAt: isoAt(40),
+      });
+
+      const wrongNotify = submitNotify(service, fixture, { idempotencyKey: 'lease-notify-wrong' }, {
+        sourceInvocationId: 'source-notify-wrong',
+      });
+      deliveryIds.wrong = wrongNotify.delivery.id;
+      void worker.processNext();
+      while (entered.length < 2) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      currentTime = new Date(BASE_TIME + 62_000);
+      assert.deepEqual(worker.recoverExpiredClaims().failedUnknownDeliveryIds, [wrongNotify.delivery.id]);
+      createReplyMessage(fixture, wrongNotify.delivery, {
+        invocationId: 'some-other-invocation',
+        createdAt: isoAt(70),
+      });
+
+      const failedNotify = submitNotify(service, fixture, { idempotencyKey: 'lease-notify-failed' }, {
+        sourceInvocationId: 'source-notify-failed',
+      });
+      deliveryIds.failed = failedNotify.delivery.id;
+      void worker.processNext();
+      while (entered.length < 3) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      currentTime = new Date(BASE_TIME + 93_000);
+      assert.deepEqual(worker.recoverExpiredClaims().failedUnknownDeliveryIds, [failedNotify.delivery.id]);
+      createReplyMessage(fixture, failedNotify.delivery, {
+        invocationId: `real-${failedNotify.delivery.id}`,
+        status: 'failed',
+        content: '',
+        errorMessage: 'notify target crashed',
+        createdAt: isoAt(100),
+      });
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  {
+    const fixture = reopenStore(tmpDir, sqlitePath);
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-notify-outcome-restarted',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      async dispatchTarget() {
+        throw new Error('must not replay');
+      },
+    });
+
+    try {
+      const recovered = worker.recoverPendingResponses();
+      assert.deepEqual(recovered.verifiedCompletedDeliveryIds, [deliveryIds.completed]);
+      assert.deepEqual(recovered.verifiedFailedDeliveryIds, [deliveryIds.failed]);
+      assert.deepEqual(recovered.projectedDeliveryIds, [], 'notify deliveries never project responses');
+
+      const completedRow = fixture.store.getCrossConversationDelivery(deliveryIds.completed);
+      assert.equal(completedRow.dispatchStatus, 'completed');
+      assert.equal(completedRow.lastErrorCode, null);
+      assert.ok(completedRow.terminalAt, 'verified notify completion is terminal');
+      assert.equal(fixture.store.listCrossConversationDeliveryEvents(deliveryIds.completed)
+        .some((event) => event.eventType === 'outcome_verified_completed'), true);
+
+      const wrongRow = fixture.store.getCrossConversationDelivery(deliveryIds.wrong);
+      assert.equal(wrongRow.dispatchStatus, 'failed');
+      assert.equal(wrongRow.lastErrorCode, 'recovered_started_unknown_outcome',
+        'mismatched invocation evidence keeps the outcome unknown');
+
+      const failedRow = fixture.store.getCrossConversationDelivery(deliveryIds.failed);
+      assert.equal(failedRow.dispatchStatus, 'failed');
+      assert.equal(failedRow.lastErrorCode, 'dispatch_failed_verified');
+      assert.match(String(failedRow.lastErrorMessage), /notify target crashed/);
+
+      const again = worker.recoverPendingResponses();
+      assert.deepEqual(again.verifiedCompletedDeliveryIds, []);
+      assert.deepEqual(again.verifiedFailedDeliveryIds, []);
+      assert.equal(await worker.processNext(), null);
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('outcome recovery scans fairly: unrecoverable records never block later candidates', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-lease-fair-outcome-'));
+  const sqlitePath = path.join(tmpDir, 'chat.sqlite');
+  let currentTime = new Date(BASE_TIME);
+
+  const stuckIds = [];
+  let recoverableId = null;
+  {
+    const fixture = createFixture({ agentDir: tmpDir, sqlitePath });
+    const service = createCrossConversationDeliveryService({
+      store: fixture.store,
+      now: () => currentTime,
+    });
+    const scheduler = createManualScheduler();
+    const entered = [];
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-fair-outcome',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      leaseRenewIntervalMs: 10_000,
+      setIntervalFn: scheduler.setInterval,
+      clearIntervalFn: scheduler.clearInterval,
+      async dispatchTarget(input) {
+        input.onInvocationStarting({ invocationId: `real-${input.delivery.id}` });
+        entered.push(input.delivery.id);
+        return createGate().promise;
+      },
+    });
+
+    try {
+      // Four permanently unanswerable records (no reply ever persisted).
+      for (let index = 1; index <= 4; index += 1) {
+        const stuck = submitRequest(service, fixture, { idempotencyKey: `lease-fair-stuck-${index}` }, {
+          sourceInvocationId: `lease-fair-stuck-src-${index}`,
+        });
+        stuckIds.push(stuck.delivery.id);
+        void worker.processNext();
+        while (entered.length < index) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        currentTime = new Date(BASE_TIME + 31_000 * index);
+        assert.deepEqual(worker.recoverExpiredClaims().failedUnknownDeliveryIds, [stuck.delivery.id]);
+      }
+
+      // One recoverable record, updated LAST so it sorts behind the stuck rows.
+      const recoverable = submitRequest(service, fixture, { idempotencyKey: 'lease-fair-recoverable' }, {
+        sourceInvocationId: 'lease-fair-recoverable-src',
+      });
+      recoverableId = recoverable.delivery.id;
+      void worker.processNext();
+      while (entered.length < 5) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      currentTime = new Date(BASE_TIME + 31_000 * 5);
+      assert.deepEqual(worker.recoverExpiredClaims().failedUnknownDeliveryIds, [recoverableId]);
+      createReplyMessage(fixture, recoverable.delivery, {
+        invocationId: `real-${recoverableId}`,
+        createdAt: isoAt(31 * 5 + 5),
+      });
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  // Restart: the in-memory cursor resets, so the first scans re-walk the
+  // stuck pages; the recoverable record is still reached within one page
+  // turnover instead of being blocked forever.
+  {
+    const fixture = reopenStore(tmpDir, sqlitePath);
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'lease-worker-fair-outcome-restarted',
+      now: () => currentTime,
+      leaseMs: 30_000,
+      recoveryScanPageSize: 3,
+      async dispatchTarget() {
+        throw new Error('must not replay');
+      },
+    });
+
+    try {
+      const first = worker.recoverPendingResponses();
+      assert.deepEqual(first.verifiedCompletedDeliveryIds, []);
+      assert.deepEqual(first.projectedDeliveryIds, []);
+
+      const second = worker.recoverPendingResponses();
+      assert.deepEqual(second.verifiedCompletedDeliveryIds, [recoverableId]);
+      assert.deepEqual(second.projectedDeliveryIds, [recoverableId]);
+      assert.equal(countSourceReplies(fixture, recoverableId), 1);
+
+      // The scan wraps around and stays idempotent: no record is recovered
+      // twice and the stuck records remain untouched.
+      for (let scan = 0; scan < 4; scan += 1) {
+        const next = worker.recoverPendingResponses();
+        assert.deepEqual(next.verifiedCompletedDeliveryIds, []);
+        assert.deepEqual(next.projectedDeliveryIds, []);
+      }
+      assert.equal(countSourceReplies(fixture, recoverableId), 1);
+      assert.equal(fixture.store.listCrossConversationDeliveryEvents(recoverableId)
+        .filter((event) => event.eventType === 'outcome_verified_completed').length, 1);
+      for (const stuckId of stuckIds) {
+        assert.equal(fixture.store.getCrossConversationDelivery(stuckId).lastErrorCode,
+          'recovered_started_unknown_outcome');
+      }
+    } finally {
+      fixture.store.close();
+    }
+  }
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('response projection recovery pages fairly past permanently unanswerable records', async () => {
+  const fixture = createFixture();
+  let currentTime = new Date(BASE_TIME);
+  const service = createCrossConversationDeliveryService({
+    store: fixture.store,
+    now: () => currentTime,
+  });
+  const scheduler = createManualScheduler();
+  const worker = createCrossConversationDeliveryWorker({
+    store: fixture.store,
+    workerId: 'lease-worker-fair-projection',
+    now: () => currentTime,
+    leaseMs: 30_000,
+    leaseRenewIntervalMs: 10_000,
+    recoveryScanPageSize: 3,
+    setIntervalFn: scheduler.setInterval,
+    clearIntervalFn: scheduler.clearInterval,
+    async dispatchTarget(input) {
+      input.onInvocationStarting({ invocationId: 'late-projection-invocation' });
+      return { replyMessage: null };
+    },
+  });
+
+  try {
+    // Four cancelled requests sit in the pending-response set forever.
+    for (let index = 1; index <= 4; index += 1) {
+      currentTime = new Date(BASE_TIME + index * 1000);
+      const stuck = submitRequest(service, fixture, { idempotencyKey: `lease-fair-cancel-${index}` }, {
+        sourceInvocationId: `lease-fair-cancel-src-${index}`,
+      });
+      await worker.cancel(stuck.delivery.id, 'operator cancels');
+      assert.equal(fixture.store.getCrossConversationDelivery(stuck.delivery.id).dispatchStatus, 'cancelled');
+    }
+
+    // One request completes without a reply; the reply lands later and must
+    // be reached even though the cancelled records sort first.
+    currentTime = new Date(BASE_TIME + 40_000);
+    const target = submitRequest(service, fixture, { idempotencyKey: 'lease-fair-project' }, {
+      sourceInvocationId: 'lease-fair-project-src',
+    });
+    const outcome = await worker.processNext();
+    assert.equal(outcome.status, 'completed');
+    assert.equal(fixture.store.getCrossConversationDelivery(target.delivery.id).responseStatus, 'waiting');
+
+    currentTime = new Date(BASE_TIME + 50_000);
+    createReplyMessage(fixture, target.delivery, {
+      invocationId: 'late-projection-invocation',
+      createdAt: currentTime.toISOString(),
+    });
+
+    const first = worker.recoverPendingResponses();
+    assert.deepEqual(first.projectedDeliveryIds, []);
+
+    const second = worker.recoverPendingResponses();
+    assert.deepEqual(second.projectedDeliveryIds, [target.delivery.id]);
+    assert.equal(fixture.store.getCrossConversationDelivery(target.delivery.id).responseStatus, 'received');
+    assert.equal(countSourceReplies(fixture, target.delivery.id), 1);
+
+    // Wrap-around stays idempotent.
+    for (let scan = 0; scan < 4; scan += 1) {
+      assert.deepEqual(worker.recoverPendingResponses().projectedDeliveryIds, []);
+    }
+    assert.equal(countSourceReplies(fixture, target.delivery.id), 1);
   } finally {
     fixture.store.close();
   }

@@ -699,6 +699,9 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
   const retryDelayMs = Number.isInteger(options.retryDelayMs) && options.retryDelayMs >= 0
     ? options.retryDelayMs
     : 1_000;
+  const recoveryScanPageSize = Number.isInteger(options.recoveryScanPageSize) && options.recoveryScanPageSize > 0
+    ? Math.min(options.recoveryScanPageSize, 100)
+    : 100;
   const maxAttempts = Number.isInteger(options.maxAttempts) && options.maxAttempts > 0
     ? options.maxAttempts
     : 3;
@@ -1181,7 +1184,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
   }
 
   // Post-hoc recovery is untrusted: for a delivery whose dispatch failed with
-  // an unknown outcome, a late reply is only accepted when its persisted
+  // an unknown outcome, late evidence is only accepted when its persisted
   // metadata matches BOTH the delivery id and the exact target invocation id.
   // Missing or mismatched evidence keeps the outcome unknown; the latest
   // message in the target room is never used as a guess.
@@ -1199,34 +1202,127 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
     return String(metadata.crossConversationInvocationId || '').trim() === invocationId;
   }
 
-  function recoverPendingResponses() {
-    const recoveredDeliveryIds = [] as string[];
+  // Recovery scans page through their candidate sets with keyset cursors so
+  // permanently unrecoverable records (no trusted evidence) cannot block
+  // later candidates behind a fixed window. Cursors live in worker memory
+  // and wrap around at the end of the set; after a restart the scan simply
+  // re-walks from the beginning, one bounded page per call.
+  const outcomeRecoveryCursor = { updatedAt: '', id: '' };
+  const responseRecoveryCursor = { updatedAt: '', id: '' };
 
-    for (const delivery of store.listCrossConversationRequestsPendingResponse(100)) {
+  function advanceRecoveryCursor(cursor: any, rows: any[]) {
+    if (!Array.isArray(rows) || rows.length < recoveryScanPageSize) {
+      cursor.updatedAt = '';
+      cursor.id = '';
+      return;
+    }
+    const last = rows[rows.length - 1];
+    cursor.updatedAt = String(last && last.updatedAt || '');
+    cursor.id = String(last && last.id || '');
+  }
+
+  function projectLateResponse(delivery: any, replyMessage: any, projectedDeliveryIds: string[]) {
+    try {
+      const response = store.persistCrossConversationResponse({
+        requestDeliveryId: delivery.id,
+        assistantMessage: replyMessage,
+        createdAt: currentDate().toISOString(),
+      });
+      if (!response || response.duplicate) {
+        return;
+      }
+      projectedDeliveryIds.push(delivery.id);
+      publishDeliveryChanged(response.requestDelivery, 'response_persisted', {
+        response,
+        recovered: true,
+      });
+    } catch (error) {
+      appendEvent(delivery, 'response_projection_recovery_failed', {
+        errorMessage: clipDeliveryError(error),
+      }, currentDate().toISOString());
+    }
+  }
+
+  function recoverPendingResponses() {
+    const projectedDeliveryIds = [] as string[];
+    const verifiedCompletedDeliveryIds = [] as string[];
+    const verifiedFailedDeliveryIds = [] as string[];
+
+    // Phase 1: verify late outcomes for unknown-outcome dispatches (request
+    // and notify alike). A persisted terminal assistant message that matches
+    // BOTH the delivery id and the exact target invocation id is trusted
+    // evidence: a completed message verifies completion (and a request then
+    // projects its response), a failed message verifies the failure. The
+    // original unknown-outcome audit events are preserved; cancelled
+    // deliveries are never rewritten; the target is never re-run.
+    const unknownCandidates = store.listCrossConversationUnknownOutcomeDeliveries(
+      recoveryScanPageSize,
+      outcomeRecoveryCursor
+    );
+    for (const delivery of unknownCandidates) {
+      const outcomeMessage = store.findCrossConversationOutcomeMessage(delivery);
+      if (!outcomeMessage || !hasVerifiedInvocationEvidence(delivery, outcomeMessage)) {
+        continue;
+      }
+
+      const verifiedAt = currentDate().toISOString();
+      if (outcomeMessage.status === 'completed') {
+        const verified = store.verifyCrossConversationOutcomeCompleted(delivery.id, {
+          targetInvocationId: delivery.targetInvocationId,
+          verifiedAt,
+        });
+        if (!verified) {
+          continue;
+        }
+        verifiedCompletedDeliveryIds.push(verified.id);
+        appendEvent(verified, 'outcome_verified_completed', {
+          targetInvocationId: verified.targetInvocationId,
+          evidenceMessageId: outcomeMessage.id,
+        }, verifiedAt);
+        publishDeliveryChanged(verified, 'outcome_verified_completed');
+        if (verified.kind === 'request') {
+          projectLateResponse(verified, outcomeMessage, projectedDeliveryIds);
+        }
+        continue;
+      }
+
+      if (outcomeMessage.status === 'failed') {
+        const verified = store.verifyCrossConversationOutcomeFailed(delivery.id, {
+          targetInvocationId: delivery.targetInvocationId,
+          errorMessage: clipDeliveryError(outcomeMessage.errorMessage || 'Target invocation failed'),
+          verifiedAt,
+        });
+        if (!verified) {
+          continue;
+        }
+        verifiedFailedDeliveryIds.push(verified.id);
+        appendEvent(verified, 'outcome_verified_failed', {
+          targetInvocationId: verified.targetInvocationId,
+          evidenceMessageId: outcomeMessage.id,
+        }, verifiedAt);
+        publishDeliveryChanged(verified, 'outcome_verified_failed');
+      }
+    }
+    advanceRecoveryCursor(outcomeRecoveryCursor, unknownCandidates);
+
+    // Phase 2: project late responses for dispatches whose outcome is not in
+    // doubt (completed, cancelled, timed out) but whose response projection
+    // has not happened yet. Unknown-outcome dispatches are excluded here;
+    // they are owned by phase 1 until verified.
+    const pendingCandidates = store.listCrossConversationRequestsPendingResponse(
+      recoveryScanPageSize,
+      responseRecoveryCursor
+    );
+    for (const delivery of pendingCandidates) {
       const replyMessage = store.findCrossConversationReplyMessage(delivery);
       if (!replyMessage || !hasVerifiedInvocationEvidence(delivery, replyMessage)) {
         continue;
       }
-
-      try {
-        const response = store.persistCrossConversationResponse({
-          requestDeliveryId: delivery.id,
-          assistantMessage: replyMessage,
-          createdAt: currentDate().toISOString(),
-        });
-        recoveredDeliveryIds.push(delivery.id);
-        publishDeliveryChanged(response.requestDelivery, 'response_persisted', {
-          response,
-          recovered: true,
-        });
-      } catch (error) {
-        appendEvent(delivery, 'response_projection_recovery_failed', {
-          errorMessage: clipDeliveryError(error),
-        }, currentDate().toISOString());
-      }
+      projectLateResponse(delivery, replyMessage, projectedDeliveryIds);
     }
+    advanceRecoveryCursor(responseRecoveryCursor, pendingCandidates);
 
-    return recoveredDeliveryIds;
+    return { projectedDeliveryIds, verifiedCompletedDeliveryIds, verifiedFailedDeliveryIds };
   }
 
   function expireRequestDeadlines() {

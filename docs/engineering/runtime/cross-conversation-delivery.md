@@ -47,28 +47,63 @@ metadata stamped by `server/domain/conversation/turn/agent-executor.ts`.
 
 ## Late-Result Recovery
 
-- `recoverPendingResponses` re-projects replies for completed dispatches
-  whose projection failed (delivery-id evidence is sufficient: the worker
-  attested the result in-band) and for unknown-outcome dispatches.
-- For `failed` (unknown-outcome) dispatches the reply is accepted only when
-  its persisted metadata matches BOTH `crossConversationDeliveryId` and
-  `crossConversationInvocationId` (the delivery's `targetInvocationId`).
-  Missing or mismatched evidence keeps the outcome unknown; the newest
-  message in the target room is never used as a guess.
-- `agent-executor` stamps `crossConversationDeliveryId` and
-  `crossConversationInvocationId` (the dispatch's tool invocation id) onto
-  the queued/streaming/final/failed assistant message metadata, so a reply
-  that lands after a worker crash or a server restart remains verifiable.
-- Recovery is idempotent: the response delivery is keyed by
-  `reply_to_delivery_id`, so repeated scans project at most once and never
-  re-run the target model.
+`recoverPendingResponses` runs two strictly separated phases, each scanning
+its candidate set with a bounded keyset-paginated cursor
+(`recoveryScanPageSize`, default 100). Permanently unrecoverable records
+(unknown outcome, no trusted evidence) stay in their set but can never block
+later candidates behind a fixed window; cursors wrap around at the end of
+the set and reset on restart, so recovery converges within one page turnover
+per intervening record.
+
+### Phase 1: outcome verification (request and notify)
+
+Unknown-outcome dispatches (`failed` with `recovered_started_unknown_outcome`
+or `dispatch_unknown_outcome` and a `targetInvocationId`) are matched against
+the invocation's persisted terminal assistant message (completed OR failed).
+The evidence is trusted only when its metadata matches BOTH
+`crossConversationDeliveryId` and `crossConversationInvocationId` (the
+delivery's `targetInvocationId`); missing or mismatched evidence keeps the
+outcome unknown and the newest message in the target room is never used as a
+guess.
+
+- Completed evidence verifies completion: an atomic guarded transition moves
+  `dispatch_status` to `completed` and clears the unknown-outcome error
+  (`outcome_verified_completed` audit event; the original lease accident
+  events stay in the append-only log). A request then projects its response
+  idempotently in the same scan.
+- Failed evidence verifies the failure: `dispatch_status` stays `failed`,
+  `last_error_code` becomes the queryable `dispatch_failed_verified` with the
+  invocation's error message (`outcome_verified_failed` audit event), and no
+  response is projected.
+- Verification guards require the unknown-outcome state and the exact
+  invocation id, so verification is idempotent and can never rewrite a
+  cancelled delivery or a delivery that failed for another reason.
+
+### Phase 2: response projection (request)
+
+Requests whose outcome is not in doubt (completed, cancelled, timed out) but
+whose response has not been projected yet re-project from the persisted
+reply. Unknown-outcome dispatches are excluded from this phase; they are
+owned by phase 1 until verified. For completed dispatches the delivery-id
+evidence is sufficient: the worker attested the result in-band.
+
+`agent-executor` stamps `crossConversationDeliveryId` and
+`crossConversationInvocationId` (the dispatch's tool invocation id) onto the
+queued/streaming/final/failed assistant message metadata, so a reply or
+failure that lands after a worker crash or a server restart remains
+verifiable. Response projection is idempotent: the response delivery is keyed
+by `reply_to_delivery_id`, so repeated scans project at most once and never
+re-run the target model.
 
 ## Regression Anchors
 
 - `tests/runtime/cross-conversation-delivery-lease.test.js`: controllable
   clock + delayed dispatcher covering multi-lease queue/run, stale-claim
-  fencing, stale sweep snapshots, restart recovery with verified/wrong/
-  missing invocation evidence, and heartbeat cleanup.
+  fencing, stale sweep snapshots, restart recovery with verified completion
+  and verified failure for request and notify, wrong/missing invocation
+  evidence, fair bounded scanning past unrecoverable records, and heartbeat
+  cleanup.
 - `tests/storage/cross-conversation-delivery-lease.test.js`: SQLite-level
-  atomic conditions for claim tokens, renewal, stale-token transitions, and
-  expiry re-verification.
+  atomic conditions for claim tokens, renewal, stale-token transitions,
+  expiry re-verification, outcome-verification guards, and keyset
+  pagination.

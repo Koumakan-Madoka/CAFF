@@ -10,6 +10,9 @@ export class CrossConversationDeliveryRepository {
   listExpiredClaimsStatement: any;
   listExpiredDeadlinesStatement: any;
   listPendingResponsesStatement: any;
+  listUnknownOutcomeStatement: any;
+  verifyOutcomeCompletedStatement: any;
+  verifyOutcomeFailedStatement: any;
   listLatestByTargetStatement: any;
   listLatestByTargetIdsStatement: any;
   insertStatement: any;
@@ -92,13 +95,78 @@ export class CrossConversationDeliveryRepository {
       WHERE request.kind = 'request'
         AND request.dispatch_status IN ('completed', 'failed', 'cancelled')
         AND request.response_status IN ('waiting', 'timed_out', 'cancelled')
+        AND (
+          request.last_error_code IS NULL
+          OR request.last_error_code NOT IN (
+            'recovered_started_unknown_outcome', 'dispatch_unknown_outcome'
+          )
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM chat_cross_conversation_deliveries response
           WHERE response.reply_to_delivery_id = request.id
         )
-      ORDER BY request.updated_at ASC, request.created_at ASC, request.id ASC
-      LIMIT ?
+        AND (
+          @afterUpdatedAt = ''
+          OR request.updated_at > @afterUpdatedAt
+          OR (request.updated_at = @afterUpdatedAt AND request.id > @afterId)
+        )
+      ORDER BY request.updated_at ASC, request.id ASC
+      LIMIT @limit
+    `);
+    // Unknown-outcome dispatches (started, then the worker lost contact) are
+    // scanned separately for trusted late outcome evidence. Keyset paging
+    // keeps permanently unrecoverable records from blocking later candidates.
+    this.listUnknownOutcomeStatement = db.prepare(`
+      SELECT *
+      FROM chat_cross_conversation_deliveries
+      WHERE dispatch_status = 'failed'
+        AND last_error_code IN ('recovered_started_unknown_outcome', 'dispatch_unknown_outcome')
+        AND target_invocation_id IS NOT NULL
+        AND (
+          @afterUpdatedAt = ''
+          OR updated_at > @afterUpdatedAt
+          OR (updated_at = @afterUpdatedAt AND id > @afterId)
+        )
+      ORDER BY updated_at ASC, id ASC
+      LIMIT @limit
+    `);
+    // Post-hoc outcome verification: trusted evidence (a persisted message
+    // whose metadata matches BOTH the delivery id and the exact target
+    // invocation id) upgrades an unknown outcome to its verified result.
+    // The guards make every verification idempotent and can never rewrite a
+    // cancelled delivery or a delivery that failed for another reason.
+    this.verifyOutcomeCompletedStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        dispatch_status = 'completed',
+        last_error_code = NULL,
+        last_error_message = NULL,
+        completed_at = @verifiedAt,
+        terminal_at = CASE
+          WHEN response_status <> 'waiting' THEN @verifiedAt
+          ELSE terminal_at
+        END,
+        updated_at = @verifiedAt
+      WHERE id = @deliveryId
+        AND dispatch_status = 'failed'
+        AND last_error_code IN ('recovered_started_unknown_outcome', 'dispatch_unknown_outcome')
+        AND target_invocation_id IS NOT NULL
+        AND target_invocation_id = @targetInvocationId
+      RETURNING *
+    `);
+    this.verifyOutcomeFailedStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        last_error_code = 'dispatch_failed_verified',
+        last_error_message = @errorMessage,
+        updated_at = @verifiedAt
+      WHERE id = @deliveryId
+        AND dispatch_status = 'failed'
+        AND last_error_code IN ('recovered_started_unknown_outcome', 'dispatch_unknown_outcome')
+        AND target_invocation_id IS NOT NULL
+        AND target_invocation_id = @targetInvocationId
+      RETURNING *
     `);
     this.listLatestByTargetStatement = db.prepare(`
       SELECT delivery.*
@@ -604,8 +672,37 @@ export class CrossConversationDeliveryRepository {
     return this.listExpiredDeadlinesStatement.all(now);
   }
 
-  listPendingResponses(limit = 100) {
-    return this.listPendingResponsesStatement.all(limit);
+  listPendingResponses(limit = 100, afterCursor: any = null) {
+    return this.listPendingResponsesStatement.all({
+      limit,
+      afterUpdatedAt: String(afterCursor && afterCursor.updatedAt || ''),
+      afterId: String(afterCursor && afterCursor.id || ''),
+    });
+  }
+
+  listUnknownOutcome(limit = 100, afterCursor: any = null) {
+    return this.listUnknownOutcomeStatement.all({
+      limit,
+      afterUpdatedAt: String(afterCursor && afterCursor.updatedAt || ''),
+      afterId: String(afterCursor && afterCursor.id || ''),
+    });
+  }
+
+  verifyOutcomeCompleted(deliveryId: string, payload: any) {
+    return this.verifyOutcomeCompletedStatement.get({
+      deliveryId,
+      targetInvocationId: String(payload && payload.targetInvocationId || ''),
+      verifiedAt: String(payload && payload.verifiedAt || ''),
+    }) || null;
+  }
+
+  verifyOutcomeFailed(deliveryId: string, payload: any) {
+    return this.verifyOutcomeFailedStatement.get({
+      deliveryId,
+      targetInvocationId: String(payload && payload.targetInvocationId || ''),
+      errorMessage: String(payload && payload.errorMessage || ''),
+      verifiedAt: String(payload && payload.verifiedAt || ''),
+    }) || null;
   }
 
   listLatestByTarget() {

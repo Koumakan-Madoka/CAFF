@@ -136,6 +136,7 @@ export class ChatMessageRepository {
   updateStatement: any;
   appendTextStatement: any;
   findCompletedCrossConversationReplyStatement: any;
+  findCrossConversationOutcomeStatement: any;
   countByRoleStatement: any;
   searchLikeStatements: Map<number, any>;
   hasSearchTableCache: boolean | null;
@@ -225,6 +226,20 @@ export class ChatMessageRepository {
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `);
+    // Outcome evidence for unknown-outcome recovery: the invocation's
+    // terminal assistant message, whether it completed or failed.
+    this.findCrossConversationOutcomeStatement = db.prepare(`
+      SELECT *
+      FROM chat_messages
+      WHERE conversation_id = ?
+        AND agent_id = ?
+        AND role = 'assistant'
+        AND status IN ('completed', 'failed')
+        AND (? = '' OR created_at >= ?)
+        AND metadata_json LIKE ? ESCAPE '\\'
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    `);
     this.countByRoleStatement = db.prepare(`
       SELECT COUNT(*) AS message_count
       FROM chat_messages
@@ -279,6 +294,25 @@ export class ChatMessageRepository {
     }
 
     return this.findCompletedCrossConversationReplyStatement.get(
+      conversationId,
+      agentId,
+      startedAt,
+      startedAt,
+      `%"crossConversationDeliveryId":"${escapeLikePattern(deliveryId)}"%`
+    ) || null;
+  }
+
+  findCrossConversationOutcomeMessage(payload: any) {
+    const deliveryId = String(payload && payload.deliveryId || '').trim();
+    const conversationId = String(payload && payload.conversationId || '').trim();
+    const agentId = String(payload && payload.agentId || '').trim();
+    const startedAt = String(payload && payload.startedAt || '').trim();
+
+    if (!deliveryId || !conversationId || !agentId) {
+      return null;
+    }
+
+    return this.findCrossConversationOutcomeStatement.get(
       conversationId,
       agentId,
       startedAt,

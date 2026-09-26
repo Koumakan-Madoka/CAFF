@@ -2609,12 +2609,32 @@ export class ChatAppStore {
       .filter(Boolean);
   }
 
-  listCrossConversationRequestsPendingResponse(limit: any = 100) {
+  listCrossConversationRequestsPendingResponse(limit: any = 100, afterCursor: any = null) {
     const normalizedLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 100;
     return this.crossConversationDeliveryRepository
-      .listPendingResponses(normalizedLimit)
+      .listPendingResponses(normalizedLimit, afterCursor)
       .map(normalizeCrossConversationDeliveryRow)
       .filter(Boolean);
+  }
+
+  listCrossConversationUnknownOutcomeDeliveries(limit: any = 100, afterCursor: any = null) {
+    const normalizedLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 100;
+    return this.crossConversationDeliveryRepository
+      .listUnknownOutcome(normalizedLimit, afterCursor)
+      .map(normalizeCrossConversationDeliveryRow)
+      .filter(Boolean);
+  }
+
+  verifyCrossConversationOutcomeCompleted(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.verifyOutcomeCompleted(String(deliveryId || '').trim(), payload)
+    );
+  }
+
+  verifyCrossConversationOutcomeFailed(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.verifyOutcomeFailed(String(deliveryId || '').trim(), payload)
+    );
   }
 
   findCrossConversationReplyMessage(delivery: any) {
@@ -2624,6 +2644,21 @@ export class ChatAppStore {
 
     return normalizeMessageRow(
       this.messageRepository.findCompletedCrossConversationReply({
+        deliveryId: delivery.id,
+        conversationId: delivery.targetConversationId,
+        agentId: delivery.targetAgentId,
+        startedAt: delivery.startedAt,
+      })
+    );
+  }
+
+  findCrossConversationOutcomeMessage(delivery: any) {
+    if (!delivery) {
+      return null;
+    }
+
+    return normalizeMessageRow(
+      this.messageRepository.findCrossConversationOutcomeMessage({
         deliveryId: delivery.id,
         conversationId: delivery.targetConversationId,
         agentId: delivery.targetAgentId,
