@@ -35,6 +35,9 @@ Use this index for Pi runtime, prompt, Agent tool, Goal, and DAG integration cha
 - `agent-delegation.md`: durable in-room delegation state, requester identity,
   side-lane execution/cancellation, await/yield, deadlines, continuation, and
   read-context compatibility
+- `cross-conversation-delivery.md`: cross-room delivery lease renewal, claim
+  fencing tokens, stale-claim isolation, and invocation-verified late-result
+  recovery
 - `agent-context-inspector.md`: per-agent-turn prompt section snapshots,
   visibility policy, safe rendering, and Markdown export contracts
 - `skill-extraction.md`: manual digest-to-skill draft contract and active-project save guardrails

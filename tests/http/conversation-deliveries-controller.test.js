@@ -45,11 +45,13 @@ function createStoreFixture() {
     sourceReceiptMessageId: 'source-receipt',
     dispatchStatus: 'failed',
     responseStatus: 'cancelled',
+    claimToken: 'http-claim-token-secret',
   };
   const responseDelivery = {
     id: 'response-delivery',
     replyToDeliveryId: delivery.id,
     targetMessageId: 'response-message',
+    claimToken: 'http-response-claim-token',
   };
   const messages = new Map([
     ['target-message', { id: 'target-message', role: 'external_agent' }],
@@ -200,6 +202,9 @@ test('operator delivery GET returns the durable row, projections, response, and 
   assert.equal(response.json.sourceReceipt.id, 'source-receipt');
   assert.equal(response.json.responseDelivery.id, 'response-delivery');
   assert.equal(response.json.responseMessage.id, 'response-message');
+  assert.equal('claimToken' in response.json.delivery, false,
+    'the operator-facing payload must strip the claim fencing token');
+  assert.equal('claimToken' in response.json.responseDelivery, false);
   assert.deepEqual(response.json.events.map((event) => event.eventType), ['dispatch_failed']);
 
   await assert.rejects(

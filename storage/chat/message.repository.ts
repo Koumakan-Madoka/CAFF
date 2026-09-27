@@ -136,6 +136,7 @@ export class ChatMessageRepository {
   updateStatement: any;
   appendTextStatement: any;
   findCompletedCrossConversationReplyStatement: any;
+  findCrossConversationOutcomeStatement: any;
   countByRoleStatement: any;
   searchLikeStatements: Map<number, any>;
   hasSearchTableCache: boolean | null;
@@ -213,6 +214,10 @@ export class ChatMessageRepository {
         updated_at = ?
       WHERE id = ?
     `);
+    // Reply lookup for response projection compensation: the invocation's
+    // terminal successful reply. When an invocation id is given, the
+    // association is matched in SQL so an earlier message from a different
+    // invocation can never be projected as this request's response.
     this.findCompletedCrossConversationReplyStatement = db.prepare(`
       SELECT *
       FROM chat_messages
@@ -222,6 +227,24 @@ export class ChatMessageRepository {
         AND status = 'completed'
         AND (? = '' OR created_at >= ?)
         AND metadata_json LIKE ? ESCAPE '\\'
+        AND (? = '' OR metadata_json LIKE ? ESCAPE '\\')
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    `);
+    // Outcome evidence for unknown-outcome recovery: the invocation's
+    // terminal assistant message, whether it completed or failed. When an
+    // invocation id is given, the association is matched in SQL so earlier
+    // messages from a different invocation cannot shadow the exact evidence.
+    this.findCrossConversationOutcomeStatement = db.prepare(`
+      SELECT *
+      FROM chat_messages
+      WHERE conversation_id = ?
+        AND agent_id = ?
+        AND role = 'assistant'
+        AND status IN ('completed', 'failed')
+        AND (? = '' OR created_at >= ?)
+        AND metadata_json LIKE ? ESCAPE '\\'
+        AND (? = '' OR metadata_json LIKE ? ESCAPE '\\')
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `);
@@ -273,6 +296,7 @@ export class ChatMessageRepository {
     const conversationId = String(payload && payload.conversationId || '').trim();
     const agentId = String(payload && payload.agentId || '').trim();
     const startedAt = String(payload && payload.startedAt || '').trim();
+    const invocationId = String(payload && payload.invocationId || '').trim();
 
     if (!deliveryId || !conversationId || !agentId) {
       return null;
@@ -283,7 +307,31 @@ export class ChatMessageRepository {
       agentId,
       startedAt,
       startedAt,
-      `%"crossConversationDeliveryId":"${escapeLikePattern(deliveryId)}"%`
+      `%"crossConversationDeliveryId":"${escapeLikePattern(deliveryId)}"%`,
+      invocationId,
+      invocationId ? `%"crossConversationInvocationId":"${escapeLikePattern(invocationId)}"%` : ''
+    ) || null;
+  }
+
+  findCrossConversationOutcomeMessage(payload: any) {
+    const deliveryId = String(payload && payload.deliveryId || '').trim();
+    const conversationId = String(payload && payload.conversationId || '').trim();
+    const agentId = String(payload && payload.agentId || '').trim();
+    const startedAt = String(payload && payload.startedAt || '').trim();
+    const invocationId = String(payload && payload.invocationId || '').trim();
+
+    if (!deliveryId || !conversationId || !agentId) {
+      return null;
+    }
+
+    return this.findCrossConversationOutcomeStatement.get(
+      conversationId,
+      agentId,
+      startedAt,
+      startedAt,
+      `%"crossConversationDeliveryId":"${escapeLikePattern(deliveryId)}"%`,
+      invocationId,
+      invocationId ? `%"crossConversationInvocationId":"${escapeLikePattern(invocationId)}"%` : ''
     ) || null;
   }
 

@@ -203,6 +203,22 @@ test('server composition shares delivery service, wires worker adapters, mainten
   assert.equal(broadcasts.some((event) => event.eventName === 'conversation_message_created'
     && event.payload.message.id === responseMessage.id), true);
 
+  // The claim fencing token is server-internal: SSE broadcasts must strip it.
+  workerOptions.onDeliveryChanged({
+    delivery: {
+      ...canonicalResult.delivery,
+      dispatchStatus: 'running',
+      claimToken: 'sse-claim-token-secret',
+    },
+    reason: 'dispatch_started',
+  });
+  const deliveryBroadcasts = broadcasts.filter((event) => event.eventName === 'cross_conversation_delivery_updated');
+  assert.equal(deliveryBroadcasts.length > 0, true);
+  for (const event of deliveryBroadcasts) {
+    assert.equal('claimToken' in (event.payload.delivery || {}), false,
+      'SSE broadcasts must strip the claim fencing token');
+  }
+
   assert.equal(typeof maintenanceCallback, 'function');
   maintenanceCallback();
   await nextTurn();

@@ -57,11 +57,15 @@ export function createConversationDeliveriesController(options: any = {}): Route
     const responseDelivery = typeof store.getCrossConversationResponseDelivery === 'function'
       ? store.getCrossConversationResponseDelivery(delivery.id)
       : null;
+    // claimToken is a server-internal fencing primitive; strip it from the
+    // operator-facing payload.
+    const { claimToken, ...publicDelivery } = delivery;
+    const { claimToken: responseClaimToken, ...publicResponseDelivery } = responseDelivery || {};
     return {
-      delivery,
+      delivery: publicDelivery,
       targetMessage: delivery.targetMessageId ? store.getMessage(delivery.targetMessageId) : null,
       sourceReceipt: delivery.sourceReceiptMessageId ? store.getMessage(delivery.sourceReceiptMessageId) : null,
-      responseDelivery,
+      responseDelivery: responseDelivery ? publicResponseDelivery : null,
       responseMessage: responseDelivery && responseDelivery.targetMessageId
         ? store.getMessage(responseDelivery.targetMessageId)
         : null,

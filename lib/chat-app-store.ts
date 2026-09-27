@@ -778,6 +778,7 @@ function normalizeCrossConversationDeliveryRow(row: any) {
     lastErrorMessage: row.last_error_message || null,
     claimOwner: row.claim_owner || null,
     claimExpiresAt: row.claim_expires_at || null,
+    claimToken: row.claim_token || null,
     nextAttemptAt: row.next_attempt_at || null,
     targetInvocationId: row.target_invocation_id || null,
     deliveredAt: row.delivered_at || null,
@@ -2519,6 +2520,12 @@ export class ChatAppStore {
     );
   }
 
+  renewCrossConversationDeliveryClaim(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.renewClaim(String(deliveryId || '').trim(), payload)
+    );
+  }
+
   markCrossConversationDispatchStarted(deliveryId: any, payload: any) {
     return normalizeCrossConversationDeliveryRow(
       this.crossConversationDeliveryRepository.markDispatchStarted(String(deliveryId || '').trim(), payload)
@@ -2602,12 +2609,32 @@ export class ChatAppStore {
       .filter(Boolean);
   }
 
-  listCrossConversationRequestsPendingResponse(limit: any = 100) {
+  listCrossConversationRequestsPendingResponse(limit: any = 100, afterCursor: any = null) {
     const normalizedLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 100;
     return this.crossConversationDeliveryRepository
-      .listPendingResponses(normalizedLimit)
+      .listPendingResponses(normalizedLimit, afterCursor)
       .map(normalizeCrossConversationDeliveryRow)
       .filter(Boolean);
+  }
+
+  listCrossConversationUnknownOutcomeDeliveries(limit: any = 100, afterCursor: any = null) {
+    const normalizedLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 100;
+    return this.crossConversationDeliveryRepository
+      .listUnknownOutcome(normalizedLimit, afterCursor)
+      .map(normalizeCrossConversationDeliveryRow)
+      .filter(Boolean);
+  }
+
+  verifyCrossConversationOutcomeCompleted(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.verifyOutcomeCompleted(String(deliveryId || '').trim(), payload)
+    );
+  }
+
+  verifyCrossConversationOutcomeFailed(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.verifyOutcomeFailed(String(deliveryId || '').trim(), payload)
+    );
   }
 
   findCrossConversationReplyMessage(delivery: any) {
@@ -2621,6 +2648,23 @@ export class ChatAppStore {
         conversationId: delivery.targetConversationId,
         agentId: delivery.targetAgentId,
         startedAt: delivery.startedAt,
+        invocationId: delivery.targetInvocationId,
+      })
+    );
+  }
+
+  findCrossConversationOutcomeMessage(delivery: any) {
+    if (!delivery) {
+      return null;
+    }
+
+    return normalizeMessageRow(
+      this.messageRepository.findCrossConversationOutcomeMessage({
+        deliveryId: delivery.id,
+        conversationId: delivery.targetConversationId,
+        agentId: delivery.targetAgentId,
+        startedAt: delivery.startedAt,
+        invocationId: delivery.targetInvocationId,
       })
     );
   }

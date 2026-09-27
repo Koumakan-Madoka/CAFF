@@ -691,9 +691,17 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
   const now = typeof options.now === 'function' ? options.now : () => new Date();
   const workerId = String(options.workerId || `cross-delivery-worker-${randomUUID()}`).trim();
   const leaseMs = Number.isInteger(options.leaseMs) && options.leaseMs > 0 ? options.leaseMs : 30_000;
+  const leaseRenewIntervalMs = Number.isInteger(options.leaseRenewIntervalMs) && options.leaseRenewIntervalMs > 0
+    ? options.leaseRenewIntervalMs
+    : Math.max(250, Math.floor(leaseMs / 3));
+  const setIntervalFn = typeof options.setIntervalFn === 'function' ? options.setIntervalFn : setInterval;
+  const clearIntervalFn = typeof options.clearIntervalFn === 'function' ? options.clearIntervalFn : clearInterval;
   const retryDelayMs = Number.isInteger(options.retryDelayMs) && options.retryDelayMs >= 0
     ? options.retryDelayMs
     : 1_000;
+  const recoveryScanPageSize = Number.isInteger(options.recoveryScanPageSize) && options.recoveryScanPageSize > 0
+    ? Math.min(options.recoveryScanPageSize, 100)
+    : 100;
   const maxAttempts = Number.isInteger(options.maxAttempts) && options.maxAttempts > 0
     ? options.maxAttempts
     : 3;
@@ -779,6 +787,59 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
       owner: workerId,
       now: claimDate.toISOString(),
       claimExpiresAt: new Date(claimDate.getTime() + leaseMs).toISOString(),
+      // Unique fencing token per claim: a stale worker that loses its lease
+      // cannot write through claim-guarded transitions, even if the same
+      // worker id later reclaims the same delivery.
+      claimToken: randomUUID(),
+    };
+  }
+
+  function createClaimFencingError(message: string) {
+    const error: any = new Error(message);
+    error.code = 'cross_conversation_claim_stale';
+    return error;
+  }
+
+  function isClaimStale(claimed: any) {
+    const current = store.getCrossConversationDelivery(claimed.id);
+    return !current || current.claimToken !== claimed.claimToken;
+  }
+
+  function startClaimHeartbeat(claimed: any, flight: any) {
+    const renew = () => {
+      if (flight.settled || flight.claimLost) {
+        return;
+      }
+      try {
+        const renewedAt = currentDate();
+        const renewed = store.renewCrossConversationDeliveryClaim(claimed.id, {
+          claimOwner: workerId,
+          claimToken: claimed.claimToken,
+          renewedAt: renewedAt.toISOString(),
+          claimExpiresAt: new Date(renewedAt.getTime() + leaseMs).toISOString(),
+        });
+        if (!renewed) {
+          // The claim is gone (recovered, cancelled, or superseded): this
+          // flight must not write delivery state anymore.
+          flight.claimLost = true;
+        }
+      } catch (error) {
+        // Transient store failure: the next tick retries while the lease is
+        // still valid; the sweeper only wins after a full lease of silence.
+        console.error(
+          `[cross-conversation-delivery] Lease renewal failed for ${claimed.id}: ${
+            error && (error as any).stack ? (error as any).stack : error
+          }`
+        );
+      }
+    };
+    const handle = setIntervalFn(renew, leaseRenewIntervalMs);
+    return {
+      stop() {
+        try {
+          clearIntervalFn(handle);
+        } catch {}
+      },
     };
   }
 
@@ -812,6 +873,20 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
   }
 
   async function processClaimedDelivery(claimed: any, claimDate: any) {
+    const flight = { claimLost: false, settled: false };
+    // The lease heartbeat covers the whole flight: waiting for a target-room
+    // execution slot, the full target turn, and result projection. It is
+    // always cleared on the way out.
+    const heartbeat = startClaimHeartbeat(claimed, flight);
+    try {
+      return await processClaimedDeliveryInner(claimed, claimDate, flight);
+    } finally {
+      flight.settled = true;
+      heartbeat.stop();
+    }
+  }
+
+  async function processClaimedDeliveryInner(claimed: any, claimDate: any, flight: any) {
     appendEvent(claimed, 'claimed', {
       claimOwner: workerId,
       claimExpiresAt: claimed.claimExpiresAt,
@@ -822,6 +897,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
       const failedAt = currentDate().toISOString();
       const failed = store.failCrossConversationDeliveryBeforeStart(claimed.id, {
         claimOwner: workerId,
+        claimToken: claimed.claimToken,
         errorCode: 'target_message_missing',
         errorMessage: 'Persisted target message is missing',
         failedAt,
@@ -851,12 +927,18 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
           const startedAt = currentDate().toISOString();
           const started = store.markCrossConversationDispatchStarted(claimed.id, {
             claimOwner: workerId,
+            claimToken: claimed.claimToken,
             targetInvocationId: invocationId,
             startedAt,
             updatedAt: startedAt,
           });
 
           if (!started) {
+            if (isClaimStale(claimed)) {
+              throw createClaimFencingError(
+                'Cross-conversation dispatch claim is stale; start transition rejected'
+              );
+            }
             throw new Error('Cross-conversation dispatch start transition was rejected');
           }
 
@@ -878,6 +960,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
         const cancelledAt = currentDate().toISOString();
         const cancelled = store.markRunningCrossConversationDeliveryCancelled(claimed.id, {
           claimOwner: workerId,
+          claimToken: claimed.claimToken,
           reason: stateAfterDispatch.lastErrorMessage || 'Cancelled while running',
           cancelledAt,
         });
@@ -899,12 +982,18 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
       const completedAt = currentDate().toISOString();
       const completed = store.markCrossConversationDispatchCompleted(claimed.id, {
         claimOwner: workerId,
+        claimToken: claimed.claimToken,
         completedAt,
         terminalAt: completedAt,
         updatedAt: completedAt,
       });
 
       if (!completed) {
+        if (isClaimStale(claimed)) {
+          throw createClaimFencingError(
+            'Cross-conversation dispatch claim is stale; completion transition rejected'
+          );
+        }
         throw new Error('Cross-conversation dispatch completion transition was rejected');
       }
 
@@ -933,6 +1022,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
       if (current && current.dispatchStatus === 'cancel_requested') {
         const cancelled = store.markRunningCrossConversationDeliveryCancelled(claimed.id, {
           claimOwner: workerId,
+          claimToken: claimed.claimToken,
           reason: current.lastErrorMessage || errorMessage,
           cancelledAt: failedAt,
         });
@@ -943,9 +1033,23 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
         return { status: 'cancelled', delivery: cancelled || current };
       }
 
+      // A flight whose claim was recovered or superseded must not write any
+      // failure state over the new owner's claim; it only audits the loss.
+      const claimLost = flight.claimLost
+        || (error && (error as any).code === 'cross_conversation_claim_stale')
+        || !current
+        || current.claimToken !== claimed.claimToken;
+      if (claimLost) {
+        if (current) {
+          appendEvent(current, 'claim_lost_observed', { errorMessage }, failedAt);
+        }
+        return { status: 'claim_lost', delivery: current || claimed };
+      }
+
       if (invocationStarted || (current && current.startedAt)) {
         const failed = store.failCrossConversationDeliveryUnknownOutcome(claimed.id, {
           claimOwner: workerId,
+          claimToken: claimed.claimToken,
           errorCode: 'dispatch_unknown_outcome',
           errorMessage,
           failedAt,
@@ -963,6 +1067,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
         const nextAttemptAt = new Date(new Date(failedAt).getTime() + retryDelayMs).toISOString();
         const retry = store.releaseCrossConversationDeliveryForRetry(claimed.id, {
           claimOwner: workerId,
+          claimToken: claimed.claimToken,
           nextAttemptAt,
           errorCode: 'dispatch_pre_start_failed',
           errorMessage,
@@ -980,6 +1085,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
 
       const failed = store.failCrossConversationDeliveryBeforeStart(claimed.id, {
         claimOwner: workerId,
+        claimToken: claimed.claimToken,
         errorCode: 'dispatch_pre_start_exhausted',
         errorMessage,
         failedAt,
@@ -1001,12 +1107,17 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
     const failedUnknownDeliveryIds = [] as string[];
 
     for (const delivery of store.listExpiredCrossConversationDeliveryClaims(recoveredAt)) {
+      // Recovery transitions re-verify the claim identity (token) and that the
+      // lease is still expired at update time, so a heartbeat renewal that
+      // landed after this snapshot was read defeats the stale write.
       if (delivery.startedAt || delivery.targetInvocationId) {
         if (delivery.dispatchStatus === 'cancel_requested') {
           const cancelled = store.markRunningCrossConversationDeliveryCancelled(delivery.id, {
             claimOwner: delivery.claimOwner,
+            claimToken: delivery.claimToken,
             reason: delivery.lastErrorMessage || 'Recovered after cancellation request',
             cancelledAt: recoveredAt,
+            expiredAsOf: recoveredAt,
           });
           if (cancelled) {
             appendEvent(cancelled, 'cancelled', { recovered: true }, recoveredAt);
@@ -1017,9 +1128,11 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
 
         const failed = store.failCrossConversationDeliveryUnknownOutcome(delivery.id, {
           claimOwner: delivery.claimOwner,
+          claimToken: delivery.claimToken,
           errorCode: 'recovered_started_unknown_outcome',
           errorMessage: 'Worker lease expired after target invocation started; automatic replay is forbidden',
           failedAt: recoveredAt,
+          expiredAsOf: recoveredAt,
         });
         if (failed) {
           failedUnknownDeliveryIds.push(failed.id);
@@ -1034,10 +1147,12 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
       if (delivery.attemptCount < maxAttempts) {
         const requeued = store.releaseCrossConversationDeliveryForRetry(delivery.id, {
           claimOwner: delivery.claimOwner,
+          claimToken: delivery.claimToken,
           nextAttemptAt: recoveredAt,
           errorCode: 'recovered_unstarted_claim',
           errorMessage: 'Worker lease expired before target invocation started',
           updatedAt: recoveredAt,
+          expiredAsOf: recoveredAt,
         });
         if (requeued) {
           requeuedDeliveryIds.push(requeued.id);
@@ -1051,9 +1166,11 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
 
       const failed = store.failCrossConversationDeliveryBeforeStart(delivery.id, {
         claimOwner: delivery.claimOwner,
+        claimToken: delivery.claimToken,
         errorCode: 'recovered_pre_start_exhausted',
         errorMessage: 'Worker lease expired and the pre-start retry budget is exhausted',
         failedAt: recoveredAt,
+        expiredAsOf: recoveredAt,
       });
       if (failed) {
         appendEvent(failed, 'dispatch_failed', {
@@ -1066,34 +1183,150 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
     return { requeuedDeliveryIds, failedUnknownDeliveryIds };
   }
 
-  function recoverPendingResponses() {
-    const recoveredDeliveryIds = [] as string[];
+  // Post-hoc recovery is untrusted: late evidence is only accepted when its
+  // persisted metadata matches BOTH the delivery id and the exact target
+  // invocation id. The association is matched inside the evidence queries
+  // themselves; this check is defense in depth and applies to every dispatch
+  // that recorded an invocation, including verified-completed ones whose
+  // response projection is compensated later. Missing or mismatched evidence
+  // keeps the outcome unknown / the response pending; the latest message in
+  // the target room is never used as a guess.
+  function hasVerifiedInvocationEvidence(delivery: any, replyMessage: any) {
+    const invocationId = String(delivery && delivery.targetInvocationId || '').trim();
+    if (!invocationId) {
+      // No invocation was ever recorded: a failed dispatch has no trusted
+      // association at all; other terminal states keep legacy matching.
+      return !(delivery && delivery.dispatchStatus === 'failed');
+    }
+    const metadata = replyMessage && replyMessage.metadata && typeof replyMessage.metadata === 'object'
+      ? replyMessage.metadata
+      : {};
+    return String(metadata.crossConversationInvocationId || '').trim() === invocationId;
+  }
 
-    for (const delivery of store.listCrossConversationRequestsPendingResponse(100)) {
-      const replyMessage = store.findCrossConversationReplyMessage(delivery);
-      if (!replyMessage) {
+  // Recovery scans page through their candidate sets with keyset cursors so
+  // permanently unrecoverable records (no trusted evidence) cannot block
+  // later candidates behind a fixed window. Cursors live in worker memory
+  // and wrap around at the end of the set; after a restart the scan simply
+  // re-walks from the beginning, one bounded page per call.
+  const outcomeRecoveryCursor = { updatedAt: '', id: '' };
+  const responseRecoveryCursor = { updatedAt: '', id: '' };
+
+  function advanceRecoveryCursor(cursor: any, rows: any[]) {
+    if (!Array.isArray(rows) || rows.length < recoveryScanPageSize) {
+      cursor.updatedAt = '';
+      cursor.id = '';
+      return;
+    }
+    const last = rows[rows.length - 1];
+    cursor.updatedAt = String(last && last.updatedAt || '');
+    cursor.id = String(last && last.id || '');
+  }
+
+  function projectLateResponse(delivery: any, replyMessage: any, projectedDeliveryIds: string[]) {
+    try {
+      const response = store.persistCrossConversationResponse({
+        requestDeliveryId: delivery.id,
+        assistantMessage: replyMessage,
+        createdAt: currentDate().toISOString(),
+      });
+      if (!response || response.duplicate) {
+        return;
+      }
+      projectedDeliveryIds.push(delivery.id);
+      publishDeliveryChanged(response.requestDelivery, 'response_persisted', {
+        response,
+        recovered: true,
+      });
+    } catch (error) {
+      appendEvent(delivery, 'response_projection_recovery_failed', {
+        errorMessage: clipDeliveryError(error),
+      }, currentDate().toISOString());
+    }
+  }
+
+  function recoverPendingResponses() {
+    const projectedDeliveryIds = [] as string[];
+    const verifiedCompletedDeliveryIds = [] as string[];
+    const verifiedFailedDeliveryIds = [] as string[];
+
+    // Phase 1: verify late outcomes for unknown-outcome dispatches (request
+    // and notify alike). A persisted terminal assistant message whose
+    // metadata matches BOTH the delivery id and the exact target invocation
+    // id is trusted evidence; the association is matched inside the
+    // evidence query itself, so earlier mismatched messages can never
+    // shadow the exact evidence. A completed message verifies completion
+    // (and a request then projects its response), a failed message verifies
+    // the failure. The original unknown-outcome audit events are preserved;
+    // cancelled deliveries are never rewritten; the target is never re-run.
+    const unknownCandidates = store.listCrossConversationUnknownOutcomeDeliveries(
+      recoveryScanPageSize,
+      outcomeRecoveryCursor
+    );
+    for (const delivery of unknownCandidates) {
+      const outcomeMessage = store.findCrossConversationOutcomeMessage(delivery);
+      if (!outcomeMessage || !hasVerifiedInvocationEvidence(delivery, outcomeMessage)) {
         continue;
       }
 
-      try {
-        const response = store.persistCrossConversationResponse({
-          requestDeliveryId: delivery.id,
-          assistantMessage: replyMessage,
-          createdAt: currentDate().toISOString(),
+      const verifiedAt = currentDate().toISOString();
+      if (outcomeMessage.status === 'completed') {
+        const verified = store.verifyCrossConversationOutcomeCompleted(delivery.id, {
+          targetInvocationId: delivery.targetInvocationId,
+          verifiedAt,
         });
-        recoveredDeliveryIds.push(delivery.id);
-        publishDeliveryChanged(response.requestDelivery, 'response_persisted', {
-          response,
-          recovered: true,
+        if (!verified) {
+          continue;
+        }
+        verifiedCompletedDeliveryIds.push(verified.id);
+        appendEvent(verified, 'outcome_verified_completed', {
+          targetInvocationId: verified.targetInvocationId,
+          evidenceMessageId: outcomeMessage.id,
+        }, verifiedAt);
+        publishDeliveryChanged(verified, 'outcome_verified_completed');
+        if (verified.kind === 'request') {
+          projectLateResponse(verified, outcomeMessage, projectedDeliveryIds);
+        }
+        continue;
+      }
+
+      if (outcomeMessage.status === 'failed') {
+        const verified = store.verifyCrossConversationOutcomeFailed(delivery.id, {
+          targetInvocationId: delivery.targetInvocationId,
+          errorMessage: clipDeliveryError(outcomeMessage.errorMessage || 'Target invocation failed'),
+          verifiedAt,
         });
-      } catch (error) {
-        appendEvent(delivery, 'response_projection_recovery_failed', {
-          errorMessage: clipDeliveryError(error),
-        }, currentDate().toISOString());
+        if (!verified) {
+          continue;
+        }
+        verifiedFailedDeliveryIds.push(verified.id);
+        appendEvent(verified, 'outcome_verified_failed', {
+          targetInvocationId: verified.targetInvocationId,
+          evidenceMessageId: outcomeMessage.id,
+        }, verifiedAt);
+        publishDeliveryChanged(verified, 'outcome_verified_failed');
       }
     }
+    advanceRecoveryCursor(outcomeRecoveryCursor, unknownCandidates);
 
-    return recoveredDeliveryIds;
+    // Phase 2: project late responses for dispatches whose outcome is not in
+    // doubt (completed, cancelled, timed out) but whose response projection
+    // has not happened yet. Unknown-outcome dispatches are excluded here;
+    // they are owned by phase 1 until verified.
+    const pendingCandidates = store.listCrossConversationRequestsPendingResponse(
+      recoveryScanPageSize,
+      responseRecoveryCursor
+    );
+    for (const delivery of pendingCandidates) {
+      const replyMessage = store.findCrossConversationReplyMessage(delivery);
+      if (!replyMessage || !hasVerifiedInvocationEvidence(delivery, replyMessage)) {
+        continue;
+      }
+      projectLateResponse(delivery, replyMessage, projectedDeliveryIds);
+    }
+    advanceRecoveryCursor(responseRecoveryCursor, pendingCandidates);
+
+    return { projectedDeliveryIds, verifiedCompletedDeliveryIds, verifiedFailedDeliveryIds };
   }
 
   function expireRequestDeadlines() {
