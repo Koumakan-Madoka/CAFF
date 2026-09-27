@@ -7158,6 +7158,19 @@ body.chat-app .message-card.failed {
 
 body.chat-app .message-card.failed .message-meta {
   justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Keep long usage badges from pushing the actions outside the narrow failure card. */
+body.chat-app .message-card.failed .message-time {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+body.chat-app .message-card.failed .message-token-usage {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 body.chat-app .message-recovery-panel {

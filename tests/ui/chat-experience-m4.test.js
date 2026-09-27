@@ -210,6 +210,17 @@ test('M4: failed messages render as a centered narrow banner', () => {
   assert.match(failedBlock, /max-width:\s*(5[0-9]|6[0-9])%/, 'failed banner must be narrower than a bubble');
 });
 
+test('M4: failed message headers wrap without clipping their actions', () => {
+  assert.match(cssBlock('body.chat-app .message-card.failed .message-meta {'), /flex-wrap:\s*wrap/);
+  const time = cssBlock('body.chat-app .message-card.failed .message-time {');
+  assert.match(time, /flex:\s*0 1 auto/);
+  assert.match(time, /min-width:\s*0/);
+  assert.match(time, /max-width:\s*100%/);
+  const usage = cssBlock('body.chat-app .message-card.failed .message-token-usage {');
+  assert.match(usage, /white-space:\s*normal/);
+  assert.match(usage, /overflow-wrap:\s*anywhere/);
+});
+
 test('M4: mobile anchors the new-message pill bottom-right', () => {
   const mobileStart = M4_STYLES.indexOf('@media (max-width: 767px)');
   assert.notEqual(mobileStart, -1, 'mobile media query missing in M4 section');

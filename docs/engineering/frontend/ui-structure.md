@@ -179,6 +179,12 @@ if (runner && runner.status === 'error_paused') {
 
 ## Failed Assistant Bubble Explanation
 
+### Layout / Action Reachability
+
+- The centered failure card keeps its existing desktop/mobile width caps and overflow clipping. Its header wraps; the time/usage region may shrink and long usage text wraps rather than displacing the export/context buttons outside the card.
+- Export/context buttons remain visible when disabled; availability still comes from session/snapshot metadata, not layout or failed status. Normal message layout is unchanged.
+- `npm run test:ui:message-actions` runs the real renderer and stylesheet in a network-blocked browser without a CAFF server or database. It checks full button containment, hit-testing, mouse/keyboard reachability, enabled/disabled states, and streaming → failed → completed updates across desktop/narrow/mobile widths, with and without long usage. It is also part of `test:ui`; a missing browser fails rather than skipping. Default browser: installed Edge; `CAFF_UI_BROWSER_PATH` can select another installed Chromium executable.
+
 ### Contract
 
 - Failed assistant cards show a separate, always-visible explanation above any partial reply. Empty/`Thinking...`/legacy error-wrapper bodies are suppressed; genuine partial replies remain available and keep the existing long-body disclosure.
