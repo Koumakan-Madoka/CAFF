@@ -32,7 +32,18 @@ const {
   createPiCapabilityBridge,
   createRoomWorkspaceCapabilityDefinitions,
   createRoomDirectoryCapabilityDefinitions,
+  createTypeSafeCapabilityDefinitions,
 } = require('./pi-capability-bridge');
+const { createTypeSafeClient, TypeSafeClientError } = require('../integrations/typesafe/typesafe-client');
+const {
+  TYPESAFE_ENABLED,
+  TYPESAFE_API_KEY,
+  TYPESAFE_BASE_URL,
+  TYPESAFE_MODEL,
+  TYPESAFE_MAX_REQUESTS,
+  TYPESAFE_TOKEN_BUDGET,
+  TYPESAFE_TIMEOUT_MS,
+} = require('../../app/config');
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
@@ -366,6 +377,7 @@ export function createAgentToolBridge(options: any = {}) {
     || (store ? createCrossConversationDeliveryService({ store }) : null);
   const resolveProject = typeof options.resolveProject === 'function' ? options.resolveProject : () => null;
   let piCapabilityBridge = options.piCapabilityBridge || null;
+  let typeSafeClient = options.typeSafeClient || null;
   const activeInvocations = new Map();
   const workspaceAuthorizations = options.workspaceAuthorizations || new RoomWorkspaceAuthorizationStore();
 
@@ -1265,6 +1277,73 @@ export function createAgentToolBridge(options: any = {}) {
     return handleConversationDelivery('request', body);
   }
 
+  function resolveTypeSafeClient() {
+    // A single process-level client instance is required so the request-count
+    // hard limit and token threshold circuit breaker accumulate across calls.
+    if (!typeSafeClient) {
+      typeSafeClient = createTypeSafeClient({
+        apiKey: TYPESAFE_API_KEY,
+        baseUrl: TYPESAFE_BASE_URL || undefined,
+        model: TYPESAFE_MODEL || undefined,
+        maxRequests: TYPESAFE_MAX_REQUESTS,
+        tokenBudget: TYPESAFE_TOKEN_BUDGET,
+        timeoutMs: TYPESAFE_TIMEOUT_MS,
+      });
+    }
+    return typeSafeClient;
+  }
+
+  const JEV_ERROR_STATUS_BY_CODE = {
+    typesafe_not_configured: 503,
+    typesafe_validation_failed: 400,
+    typesafe_auth_failed: 502,
+    typesafe_unprocessable: 422,
+    typesafe_rate_limited: 503,
+    typesafe_overloaded: 503,
+    typesafe_timeout: 504,
+    typesafe_budget_exceeded: 429,
+    typesafe_network_error: 502,
+    typesafe_invalid_response: 502,
+    typesafe_unexpected_status: 502,
+  } as Record<string, number>;
+
+  async function handleJevAsk(args: any) {
+    if (!TYPESAFE_ENABLED) {
+      throw createHttpError(503, 'jev_ask is disabled. Set TYPESAFE_ENABLED=true in the server environment to enable it.', {
+        code: 'jev_disabled',
+      });
+    }
+    if (!TYPESAFE_API_KEY) {
+      throw createHttpError(503, 'jev_ask is not configured: TYPESAFE_API_KEY is missing from the server environment.', {
+        code: 'jev_not_configured',
+      });
+    }
+
+    const startedAt = Date.now();
+    try {
+      const result = await resolveTypeSafeClient().ask({
+        state: args.state,
+        questions: args.questions,
+        model: args.model,
+      });
+      return {
+        model: result.model,
+        answers: result.answers,
+        usage: result.usage,
+        latencyMs: Date.now() - startedAt,
+      };
+    } catch (error: any) {
+      if (error instanceof TypeSafeClientError || (error && /^typesafe_/u.test(String(error.code || '')))) {
+        const statusCode = JEV_ERROR_STATUS_BY_CODE[String(error.code)] || 502;
+        throw createHttpError(statusCode, String(error.message || 'jev_ask failed'), {
+          code: String(error.code || 'typesafe_failed'),
+          ...(Array.isArray(error.fields) ? { fields: error.fields } : {}),
+        });
+      }
+      throw error;
+    }
+  }
+
   function handleRoomWorkspaceCapability(kind: 'preview' | 'bind', input: any) {
     const principal = input && input.principal;
     const conversationId = String(principal && principal.sourceConversationId || '').trim();
@@ -1404,6 +1483,11 @@ export function createAgentToolBridge(options: any = {}) {
           },
           bind(input: any) {
             return handleRoomWorkspaceCapability('bind', input);
+          },
+        }),
+        ...createTypeSafeCapabilityDefinitions({
+          ask(input: any) {
+            return handleJevAsk(input.arguments);
           },
         }),
       ],

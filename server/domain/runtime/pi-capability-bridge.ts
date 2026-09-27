@@ -335,6 +335,128 @@ export function createRoomDirectoryCapabilityDefinitions(execute: PiCapabilityHa
   }];
 }
 
+const JEV_MAX_QUESTIONS_PER_CALL = 32;
+const JEV_MAX_STATE_LENGTH = 64_000;
+const JEV_MAX_QUESTION_ID_LENGTH = 80;
+const JEV_QUESTION_TYPES = new Set(['noul', 'choice', 'score']);
+const JEV_UNPROJECTABLE_KEY_PATTERN = /(?:secret|token|credential|password|authorization|cookie|headers?|command|transport|server(?:url|id)?|toolname|raw)/iu;
+
+function validateJevAskArguments(input: unknown): UnknownRecord {
+  rejectForbiddenProxyArguments(input);
+  if (!isPlainObject(input)) {
+    throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'jev_ask arguments must be an object');
+  }
+  const allowedFields = new Set(['state', 'questions', 'model']);
+  const unknownField = Object.keys(input).find((fieldName) => !allowedFields.has(fieldName));
+  if (unknownField) {
+    throw createCapabilityError(400, 'pi_capability_invalid_arguments', `Unknown jev_ask argument: ${unknownField}`);
+  }
+
+  const state = input.state;
+  if (state == null || (typeof state !== 'string' && !isPlainObject(state) && !Array.isArray(state))) {
+    throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'jev_ask state must be a string, object, or array');
+  }
+  let stateLength = 0;
+  try {
+    stateLength = typeof state === 'string' ? state.length : JSON.stringify(state).length;
+  } catch {
+    throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'jev_ask state must be JSON-serializable');
+  }
+  if (stateLength > JEV_MAX_STATE_LENGTH) {
+    throw createCapabilityError(
+      400,
+      'pi_capability_invalid_arguments',
+      `jev_ask state must serialize to at most ${JEV_MAX_STATE_LENGTH} characters`
+    );
+  }
+
+  const questions = input.questions;
+  if (!isPlainObject(questions)) {
+    throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'jev_ask questions must be an object');
+  }
+  const entries = Object.entries(questions);
+  if (entries.length < 1 || entries.length > JEV_MAX_QUESTIONS_PER_CALL) {
+    throw createCapabilityError(
+      400,
+      'pi_capability_invalid_arguments',
+      `jev_ask questions must contain between 1 and ${JEV_MAX_QUESTIONS_PER_CALL} entries`
+    );
+  }
+  for (const [id, question] of entries) {
+    const normalizedId = String(id || '').trim();
+    if (!normalizedId || normalizedId.length > JEV_MAX_QUESTION_ID_LENGTH) {
+      throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'jev_ask question ids must be 1..80 characters');
+    }
+    const reservedIdMatch = normalizedId.match(JEV_UNPROJECTABLE_KEY_PATTERN);
+    if (reservedIdMatch) {
+      throw createCapabilityError(
+        400,
+        'pi_capability_invalid_arguments',
+        `jev_ask question id "${normalizedId}" contains the reserved word "${reservedIdMatch[0]}" and would fail the result projection safety layer; rename it (reserved substrings: secret, token, credential, password, authorization, cookie, header, command, transport, server, toolname, raw)`
+      );
+    }
+    if (!isPlainObject(question) || !JEV_QUESTION_TYPES.has(String(question.type || '').trim().toLowerCase())) {
+      throw createCapabilityError(
+        400,
+        'pi_capability_invalid_arguments',
+        `jev_ask question ${normalizedId} must be an object with type noul, choice, or score`
+      );
+    }
+    if (String(question.type).trim().toLowerCase() === 'choice' && isPlainObject(question.criteria)) {
+      for (const option of Object.keys(question.criteria)) {
+        const reservedOptionMatch = String(option).match(JEV_UNPROJECTABLE_KEY_PATTERN);
+        if (reservedOptionMatch) {
+          throw createCapabilityError(
+            400,
+            'pi_capability_invalid_arguments',
+            `jev_ask choice option "${option}" contains the reserved word "${reservedOptionMatch[0]}" and would fail the result projection safety layer; rename it (reserved substrings: secret, token, credential, password, authorization, cookie, header, command, transport, server, toolname, raw)`
+          );
+        }
+      }
+    }
+  }
+
+  const normalized: UnknownRecord = { state, questions };
+  if (input.model !== undefined) {
+    normalized.model = normalizeRequiredText(input.model, 'model', 120);
+  }
+  return normalized;
+}
+
+function projectJevAskResult(raw: unknown): UnknownRecord {
+  if (!isPlainObject(raw) || !isPlainObject(raw.answers)) {
+    throw new Error('Invalid jev_ask result');
+  }
+  const usage = isPlainObject(raw.usage) ? raw.usage : {};
+  const inputTokens = Number(usage.input_tokens);
+  const outputTokens = Number(usage.output_tokens);
+  return {
+    model: String(raw.model || ''),
+    answers: raw.answers,
+    // Keys renamed: the projection safety layer rejects any key containing
+    // "token". Values still come straight from the API usage object.
+    usage: {
+      input: Number.isFinite(inputTokens) ? inputTokens : 0,
+      output: Number.isFinite(outputTokens) ? outputTokens : 0,
+    },
+    latencyMs: Number.isFinite(Number(raw.latencyMs)) ? Number(raw.latencyMs) : null,
+  };
+}
+
+export function createTypeSafeCapabilityDefinitions(handlers: unknown = {}): InternalPiCapabilityDefinition[] {
+  if (!isPlainObject(handlers) || typeof handlers.ask !== 'function') {
+    throw new Error('TypeSafe capability handlers are required');
+  }
+
+  return [{
+    facade: 'jev_ask',
+    kind: 'internal',
+    validateArguments: validateJevAskArguments,
+    execute: handlers.ask as PiCapabilityHandler,
+    projectResult: projectJevAskResult,
+  }];
+}
+
 export function createRoomWorkspaceCapabilityDefinitions(handlers: unknown = {}): InternalPiCapabilityDefinition[] {
   if (
     !isPlainObject(handlers)
