@@ -5,7 +5,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-import { normalizeCapturePolicy, isAuthorizedDir, matchesRelativePattern } from './capture-policy';
+import { normalizeCapturePolicy, isAuthorizedDir, matchesRelativePattern, pinAuthorizedDirs } from './capture-policy';
 import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
 import { restoreCheckpoint } from './restore';
@@ -38,8 +38,10 @@ export function createBadcaseCaptureService(options: any = {}) {
       return store.loadPolicy(projectId);
     },
 
+    // 保存策略即授权动作：此刻固定授权根身份（realpath pin），采集时根被替换即拒绝。
     savePolicy(projectId: any, policy: any) {
-      return store.savePolicy({ ...(policy && typeof policy === 'object' ? policy : {}), projectId });
+      const merged = { ...(policy && typeof policy === 'object' ? policy : {}), projectId };
+      return store.savePolicy(pinAuthorizedDirs(merged));
     },
 
     captureTurnCheckpoint(input: any) {

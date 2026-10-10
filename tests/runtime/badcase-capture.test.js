@@ -59,7 +59,11 @@ function captureArgs(projectDir, overrides = {}) {
     controlledValues: {},
     environment: { platform: process.platform },
     runConfig: { provider: 'test-provider', model: 'test-model', promptVersion: 'test-v1' },
-    harness: { serverVersion: 'test-server', skillSnapshots: [] },
+    harness: {
+      serverVersion: 'test-server',
+      configSnapshot: { agentPromptVersion: 'test-v1', toolBridgeEnabled: true },
+      skillSnapshots: [],
+    },
     ...overrides,
   };
 }

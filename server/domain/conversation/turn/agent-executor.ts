@@ -136,6 +136,25 @@ function buildCaptureSkillSnapshots(skillIds: any, resolvedSkills: any, seen: an
   }
   return snapshots;
 }
+
+// 被测 pi 运行时版本（harness 身份的一部分）。懒计算并缓存；不可得时返回空串，
+// 由采集器将 configSnapshot 与声明核对，不存在静默跳过。
+let cachedCapturePiVersion: string | null = null;
+function resolveCapturePiVersion() {
+  if (cachedCapturePiVersion !== null) {
+    return cachedCapturePiVersion;
+  }
+  let version = '';
+  try {
+    const pkgPath = require.resolve('@earendil-works/pi-coding-agent/package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    if (pkg && pkg.version) {
+      version = `pi:${String(pkg.version)}`;
+    }
+  } catch {}
+  cachedCapturePiVersion = version;
+  return version;
+}
 const MAX_PRIVATE_CONTEXT_MESSAGES = 8;
 const MAX_RELATED_MEMORY_SEGMENTS = 5;
 const MAX_RELATED_MEMORY_CANDIDATE_SEGMENTS = 15;
@@ -2314,6 +2333,15 @@ export function createAgentExecutor(options: any = {}) {
           },
           harness: {
             serverVersion: resolveCaptureServerVersion(),
+            // harness/tool 配置内容固定（GPT 复审 #3）：serverVersion 只是身份标识，
+            // 有效工具/sandbox/prompt 组装版本必须作为内容快照归档进 CAS。
+            configSnapshot: {
+              agentPromptVersion: AGENT_PROMPT_VERSION,
+              toolBridgeEnabled: true,
+              piVersion: resolveCapturePiVersion(),
+              agentName: String(agent.name || ''),
+              deliveryMode: resumeSession ? 'resume' : 'fresh',
+            },
             skillSnapshots: [
               ...buildCaptureSkillSnapshots(agentConfig.skillIds, resolvedPersonaSkills, new Set()),
               ...buildCaptureSkillSnapshots(

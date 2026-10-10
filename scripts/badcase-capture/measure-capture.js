@@ -52,7 +52,11 @@ function main() {
   };
 
   const runConfig = { provider: 'measure-provider', model: 'measure-model', promptVersion: 'measure-v1' };
-  const harness = { serverVersion: 'measure-script', skillSnapshots: [] };
+  const harness = {
+    serverVersion: 'measure-script',
+    configSnapshot: { agentPromptVersion: 'measure', toolBridgeEnabled: true },
+    skillSnapshots: [],
+  };
 
   // 1) 冷采集（无历史清单，全量 hash + 落盘）
   const cold = service.captureTurnCheckpoint({

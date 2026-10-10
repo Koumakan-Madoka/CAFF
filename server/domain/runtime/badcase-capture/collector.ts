@@ -29,7 +29,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-import { isAuthorizedDir, isPathWithinRoot, matchesRelativePattern, pathsEqual, realpathOrResolved } from './capture-policy';
+import { authorizeTargetDir, isPathWithinPinnedRoot, matchesRelativePattern, pathsEqual, realpathOrResolved } from './capture-policy';
 import { containsSecretSentinel, replaceControlledVariables } from './secrets';
 
 function sha256Buffer(content: any) {
@@ -42,6 +42,16 @@ function nowIso() {
 
 const MAX_CONSISTENCY_RETRIES = 2;
 const MANIFEST_ESTIMATE_RESERVE_BYTES = 4096;
+
+// v1 常驻的机器可读限制声明（写进每个检查点，不是文档级披露）：这些维度在 v1 无法
+// 固定或独立验证，strictEvalEligible 恒为 false 之外，回放/评测消费方必须能看到。
+const KNOWN_LIMITATIONS = [
+  'no_atomic_snapshot', // 采集非原子快照，双扫只是“未检测到变化”的检测记录
+  'no_independent_consistency_evidence', // 无独立源现场一致性依据，严格对照资格恒 false
+  'harness_config_caller_asserted', // harness/tool 配置快照由调用方声明，采集方不独立验证其来源
+  'environment_not_pinned', // 环境模板/镜像 digest 固定属后续工作项（W4）
+  'external_service_state_not_pinned', // 模型端点与外部服务状态不可固定
+];
 
 function isGitWorkTree(targetDir: any) {
   try {
@@ -157,10 +167,27 @@ function buildManifestHash(files: any, deletions: any) {
 
 // session 文件结构校验（契约 §2.4：存在 ≠ 完整，语法合法 ≠ 结构可信）。
 // 校验维度：非空；每行是合法 JSON 且为普通对象（拒绝 null/数组/标量）；首行必须是
-// session 头（type=session + 字符串 id）；后续条目必须有字符串 type，parentId 为 null
-// 或引用前面已出现的 id（历史链完整）；message 内容块只接受已识别的 text/thinking/
-// toolCall 类型，其他类型（如附件/图片引用）未验证 → 不完整。未通过校验的材料不归档。
+// session 头（type=session + 字符串 id）；后续条目 type 必须在 pi v3 已知类型白名单内
+// （未知类型可能携带未归档附件/外部路径引用，一律不完整）；每个条目必须有唯一字符串 id，
+// parentId 为 null 或引用前面已出现的 id（历史链完整）；message 必须是带 role 与 content
+// 数组的对象（message=null 等损坏形态不得放行），内容块只接受已识别的 text/thinking/
+// toolCall 类型；compaction 的 firstKeptEntryId 必须引用文件中存在的条目（压缩状态未验证
+// 不得冒充完整）；branch_summary 进入上下文时 fromId 必须可解析。未通过校验的材料不归档。
 const KNOWN_MESSAGE_CONTENT_TYPES = new Set(['text', 'thinking', 'toolCall']);
+// pi v3 session 条目类型（node_modules/@earendil-works/pi-coding-agent session-manager.js）。
+// 格式演进出现新类型时诚实降级为不完整，而不是静默放行。
+const KNOWN_SESSION_ENTRY_TYPES = new Set([
+  'session',
+  'message',
+  'model_change',
+  'compaction',
+  'custom',
+  'custom_message',
+  'label',
+  'branch_summary',
+  'session_info',
+  'thinking_level_change',
+]);
 
 function validateSessionStructure(text: any) {
   const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
@@ -168,6 +195,8 @@ function validateSessionStructure(text: any) {
     return { ok: false, reason: 'session_empty', lineCount: 0 };
   }
   const seenIds = new Set<string>();
+  const compactionRefs: any[] = [];
+  const branchRefs: any[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     let entry: any;
     try {
@@ -185,23 +214,78 @@ function validateSessionStructure(text: any) {
       seenIds.add(entry.id);
       continue;
     }
-    if (typeof entry.type !== 'string' || !entry.type) {
+    const entryType = entry.type;
+    if (typeof entryType !== 'string' || !entryType) {
       return { ok: false, reason: `session_entry_type_missing:line_${index + 1}`, lineCount: lines.length };
+    }
+    if (!KNOWN_SESSION_ENTRY_TYPES.has(entryType)) {
+      return { ok: false, reason: `session_unverified_entry_type:line_${index + 1}:${entryType}`, lineCount: lines.length };
+    }
+    if (typeof entry.id !== 'string' || !entry.id) {
+      return { ok: false, reason: `session_entry_id_missing:line_${index + 1}`, lineCount: lines.length };
+    }
+    if (seenIds.has(entry.id)) {
+      return { ok: false, reason: `session_duplicate_entry_id:line_${index + 1}`, lineCount: lines.length };
     }
     const parentId = entry.parentId === null || entry.parentId === undefined ? null : String(entry.parentId);
     if (parentId !== null && !seenIds.has(parentId)) {
       return { ok: false, reason: `session_chain_broken:line_${index + 1}`, lineCount: lines.length };
     }
-    if (typeof entry.id === 'string' && entry.id) {
-      seenIds.add(entry.id);
-    }
-    if (entry.type === 'message' && entry.message && Array.isArray(entry.message.content)) {
-      for (const block of entry.message.content) {
+    seenIds.add(entry.id);
+    if (entryType === 'message') {
+      const message = entry.message;
+      if (!message || typeof message !== 'object' || Array.isArray(message)
+        || typeof message.role !== 'string' || !message.role) {
+        return { ok: false, reason: `session_invalid_message:line_${index + 1}`, lineCount: lines.length };
+      }
+      if (message.content === null || message.content === undefined) {
+        // pi 对 null content 容忍为 []，但采集侧无法区分“旧格式”与“内容丢失”，诚实降级。
+        return { ok: false, reason: `session_message_content_null:line_${index + 1}`, lineCount: lines.length };
+      }
+      if (!Array.isArray(message.content)) {
+        return { ok: false, reason: `session_invalid_message:line_${index + 1}`, lineCount: lines.length };
+      }
+      for (const block of message.content) {
         const blockType = block && block.type;
         if (!KNOWN_MESSAGE_CONTENT_TYPES.has(blockType)) {
           return { ok: false, reason: `session_unverified_content:line_${index + 1}:${String(blockType)}`, lineCount: lines.length };
         }
       }
+    }
+    if (entryType === 'custom_message' && entry.content !== null && entry.content !== undefined) {
+      if (!Array.isArray(entry.content)) {
+        return { ok: false, reason: `session_invalid_custom_message:line_${index + 1}`, lineCount: lines.length };
+      }
+      for (const block of entry.content) {
+        const blockType = block && block.type;
+        if (!KNOWN_MESSAGE_CONTENT_TYPES.has(blockType)) {
+          return { ok: false, reason: `session_unverified_content:line_${index + 1}:${String(blockType)}`, lineCount: lines.length };
+        }
+      }
+    }
+    if (entryType === 'compaction') {
+      if (typeof entry.summary !== 'string' || !entry.summary) {
+        return { ok: false, reason: `session_compaction_incomplete:line_${index + 1}`, lineCount: lines.length };
+      }
+      if (typeof entry.firstKeptEntryId !== 'string' || !entry.firstKeptEntryId) {
+        return { ok: false, reason: `session_compaction_ref_missing:line_${index + 1}`, lineCount: lines.length };
+      }
+      compactionRefs.push({ line: index + 1, ref: entry.firstKeptEntryId });
+    }
+    if (entryType === 'branch_summary' && typeof entry.summary === 'string' && entry.summary) {
+      branchRefs.push({ line: index + 1, ref: entry.fromId === null || entry.fromId === undefined ? null : String(entry.fromId) });
+    }
+  }
+  // 压缩/分支摘要引用校验：firstKeptEntryId/fromId 必须指向文件中存在的条目，
+  // 否则压缩状态未验证，不得冒充完整历史（GPT 复审 #3）。
+  for (const check of compactionRefs) {
+    if (!seenIds.has(check.ref)) {
+      return { ok: false, reason: `session_compaction_ref_broken:line_${check.line}`, lineCount: lines.length };
+    }
+  }
+  for (const check of branchRefs) {
+    if (check.ref !== null && !seenIds.has(check.ref)) {
+      return { ok: false, reason: `session_branch_ref_broken:line_${check.line}`, lineCount: lines.length };
     }
   }
   return { ok: true, reason: '', lineCount: lines.length };
@@ -263,7 +347,8 @@ export function createCollector(options: any = {}) {
       }
       // 读取前的逐文件真实路径边界校验：git 在 core.symlinks=false 下会把 junction
       // 展开成普通文件候选；中间目录被替换成链接时 realpath 越出 pinnedRoot。越界一律不读取。
-      if (!isPathWithinRoot(pinnedRoot, absolutePath)) {
+      // 边界基准 pinnedRoot 是授权时固定的真实路径字符串，比较时不重新解析根（GPT 复审 #1）。
+      if (!isPathWithinPinnedRoot(pinnedRoot, absolutePath)) {
         stats.outOfBounds += 1;
         skipped.push({ path: relativePath, reason: 'path_escapes_target' });
         continue;
@@ -294,7 +379,7 @@ export function createCollector(options: any = {}) {
 
       const content = fs.readFileSync(absolutePath);
       // 读后复查：检查-读取之间目录被替换成链接时，已读内容必须丢弃。
-      if (!isPathWithinRoot(pinnedRoot, absolutePath)) {
+      if (!isPathWithinPinnedRoot(pinnedRoot, absolutePath)) {
         stats.outOfBounds += 1;
         skipped.push({ path: relativePath, reason: 'path_escapes_target' });
         continue;
@@ -339,11 +424,11 @@ export function createCollector(options: any = {}) {
         const link = resolveSymlink(pinnedRoot, relativePath, absolutePath);
         actual = link.escapes ? 'link:escapes' : `link:${link.linkTarget}`;
       } else if (stat.isFile()) {
-        if (!isPathWithinRoot(pinnedRoot, absolutePath)) {
+        if (!isPathWithinPinnedRoot(pinnedRoot, absolutePath)) {
           actual = 'out-of-bounds';
         } else {
           const content = fs.readFileSync(absolutePath);
-          const stillInBounds = isPathWithinRoot(pinnedRoot, absolutePath);
+          const stillInBounds = isPathWithinPinnedRoot(pinnedRoot, absolutePath);
           if (typeof options.onFileRead === 'function') {
             options.onFileRead(targetDir, relativePath, 'rescan', attempt);
           }
@@ -456,6 +541,22 @@ export function createCollector(options: any = {}) {
     if (!replayInput.harness.serverVersion) {
       markIncomplete('harness_config_unverified');
     }
+    // harness/tool 配置内容固定（GPT 复审 #3：serverVersion 非空不能替代未验证的
+    // harness/tool 完整性依据）。调用方必须提供有效工具/sandbox 配置快照对象；
+    // 快照经哨兵扫描后归档进 CAS，hash 记入清单。缺失 → harness_tool_config_unverified。
+    const configSnapshot = harnessInput.configSnapshot;
+    if (configSnapshot && typeof configSnapshot === 'object' && !Array.isArray(configSnapshot)) {
+      const configBuffer = Buffer.from(JSON.stringify(configSnapshot), 'utf8');
+      if (containsSecretSentinel(configBuffer)) {
+        markIncomplete('harness_config_contains_secret');
+      } else {
+        const configHash = sha256Buffer(configBuffer);
+        plans.push({ hash: configHash, content: configBuffer });
+        replayInput.harness.configSnapshotHash = configHash;
+      }
+    } else {
+      markIncomplete('harness_tool_config_unverified');
+    }
     const snapshots = Array.isArray(harnessInput.skillSnapshots) ? harnessInput.skillSnapshots : [];
     const snapshotsById = new Map<string, any>();
     for (const snap of snapshots) {
@@ -470,17 +571,20 @@ export function createCollector(options: any = {}) {
     ].map((id: any) => String(id || '').trim()).filter(Boolean));
     for (const id of declaredSkillIds) {
       const snap = snapshotsById.get(id);
-      if (!snap || !snap.sha256 || typeof snap.content !== 'string') {
+      // content 必须是字符串（空串也是合法内容，由 hash 校验判定）；缺快照/缺 hash → 不完整。
+      if (!snap || !String(snap.sha256 || '').trim() || typeof snap.content !== 'string') {
         markIncomplete(`skill_snapshot_missing:${id}`);
       }
     }
+    const archivedSkillIds = new Set<string>();
     for (const [id, snap] of snapshotsById) {
       const declaredSha = String(snap.sha256 || '').trim().toLowerCase();
-      const content = String(snap.content || '');
-      if (!declaredSha || !content) {
-        continue; // 缺内容/缺 hash 已在上方按声明清单标记
+      if (!declaredSha || typeof snap.content !== 'string') {
+        continue; // 缺 hash/缺内容已在上方按声明清单标记
       }
-      const contentBuffer = Buffer.from(content, 'utf8');
+      // 空内容不得跳过校验（GPT 复审 #3：content="" + 非空 sha 曾绕过检查）：
+      // 照常计算内容 hash 与声明值比对，不一致即拒绝归档。
+      const contentBuffer = Buffer.from(snap.content, 'utf8');
       const actualSha = sha256Buffer(contentBuffer);
       if (actualSha !== declaredSha) {
         markIncomplete(`skill_snapshot_hash_mismatch:${id}`);
@@ -497,6 +601,18 @@ export function createCollector(options: any = {}) {
         sha256: actualSha,
         blobHash: actualSha,
       });
+      archivedSkillIds.add(id);
+    }
+    // 声明集合与实际归档集合对账：声明的 skill 未归档且无更具体原因时，显式标记。
+    for (const id of declaredSkillIds) {
+      if (!archivedSkillIds.has(id)
+        && !replayInput.incompleteReasons.some((reason: string) => (
+          reason === `skill_snapshot_missing:${id}`
+          || reason === `skill_snapshot_hash_mismatch:${id}`
+          || reason === `skill_contains_secret:${id}`
+        ))) {
+        markIncomplete(`skill_snapshot_not_archived:${id}`);
+      }
     }
 
     return { replayInput, plans };
@@ -531,12 +647,15 @@ export function createCollector(options: any = {}) {
     if (policy.status !== 'enabled') {
       return fail('policy_not_enabled', { policyStatus: policy.status });
     }
-    if (!isAuthorizedDir(policy, targetDir)) {
-      return fail('dir_not_authorized');
+    // 授权判定基于保存策略时固定的根身份（authorizedDirPins）；授权后根被替换、
+    // 策略未经固定流程保存、目标经链接越界，分别显式拒绝，不跟随新目标（GPT 复审 #1）。
+    const authorization = authorizeTargetDir(policy, targetDir);
+    if (!authorization.ok) {
+      return fail(authorization.reason, authorization.dir ? { authorizedDir: authorization.dir } : {});
     }
-    // 授权根身份固定：后续所有边界校验都以 pinnedRoot 为基准，不再重新解析 targetDir。
-    // 采集窗口内根被替换成 junction/symlink（指向未授权目录）时，realpath 变化即失败，
-    // 绝不跟随新根继续采集（GPT 复审 #1）。
+    // 采集窗口内的根身份基准：pinnedRoot 是采集开始时解析的真实路径，后续所有
+    // 逐文件边界校验都以该字符串为基准，不再重新解析 targetDir（防止比较基准跟着
+    // junction 移动）。根身份在窗口内变化 → target_root_replaced 失败。
     const pinnedRoot = realpathOrResolved(targetDir);
     const rootIntact = () => pathsEqual(realpathOrResolved(targetDir), pinnedRoot);
     // 防止采集存储自身被纳入采集范围（递归/自引用）。
@@ -620,13 +739,13 @@ export function createCollector(options: any = {}) {
           continue;
         }
         const absolutePath = path.join(targetDir, relativePath);
-        if (!isPathWithinRoot(pinnedRoot, absolutePath)) {
+        if (!isPathWithinPinnedRoot(pinnedRoot, absolutePath)) {
           writeMismatches.push(relativePath);
           continue;
         }
         const content = fs.readFileSync(absolutePath);
         // 读后复查：检查-读取之间路径被替换出界时，已读内容必须丢弃，不得落盘。
-        if (!isPathWithinRoot(pinnedRoot, absolutePath)) {
+        if (!isPathWithinPinnedRoot(pinnedRoot, absolutePath)) {
           writeMismatches.push(relativePath);
           continue;
         }
@@ -760,6 +879,7 @@ export function createCollector(options: any = {}) {
       integrity: {
         algorithm: 'sha256',
         manifestHash: integrityManifestHash,
+        knownLimitations: KNOWN_LIMITATIONS.slice(),
       },
       consistency: { ...consistency, retries },
       replayInput,

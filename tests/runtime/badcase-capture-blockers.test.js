@@ -53,7 +53,11 @@ function captureArgs(projectDir, overrides = {}) {
     controlledValues: {},
     environment: { platform: process.platform },
     runConfig: { provider: 'test-provider', model: 'test-model', promptVersion: 'test-v1' },
-    harness: { serverVersion: 'test-server', skillSnapshots: [] },
+    harness: {
+      serverVersion: 'test-server',
+      configSnapshot: { agentPromptVersion: 'test-v1', toolBridgeEnabled: true },
+      skillSnapshots: [],
+    },
     ...overrides,
   };
 }
@@ -565,14 +569,18 @@ test('R12: harness/skill 配置未验证必须降级，不得宣称完整', () =
   assert.equal(result.checkpoint.replayInput.complete, false);
   assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('skill_snapshot_missing:demo-skill'));
 
-  // 4) 提供内容快照 → 快照归档进 CAS，输入完整（严格资格仍 false）
+  // 4) 提供内容快照 + harness 配置快照 → 快照归档进 CAS，输入完整（严格资格仍 false）
   const crypto = require('node:crypto');
   const skillContent = '# demo skill body\n';
   const skillHash = crypto.createHash('sha256').update(skillContent).digest('hex');
   result = service.captureTurnCheckpoint(captureArgs(projectDir, {
     turnId: 'turn-4',
     runConfig: { provider: 'p', model: 'm', promptVersion: 'v1', skillIds: ['demo-skill'] },
-    harness: { serverVersion: 'test-server', skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: skillHash, content: skillContent }] },
+    harness: {
+      serverVersion: 'test-server',
+      configSnapshot: { agentPromptVersion: 'v1', toolBridgeEnabled: true },
+      skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: skillHash, content: skillContent }],
+    },
   }));
   assert.equal(result.checkpoint.replayInput.complete, true, result.checkpoint.replayInput.incompleteReasons.join(','));
   assert.equal(result.checkpoint.replayInput.harness.skillSnapshots[0].blobHash, skillHash);
@@ -583,7 +591,11 @@ test('R12: harness/skill 配置未验证必须降级，不得宣称完整', () =
   result = service.captureTurnCheckpoint(captureArgs(projectDir, {
     turnId: 'turn-5',
     runConfig: { provider: 'p', model: 'm', promptVersion: 'v1', skillIds: ['demo-skill'] },
-    harness: { serverVersion: 'test-server', skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: '0'.repeat(64), content: skillContent }] },
+    harness: {
+      serverVersion: 'test-server',
+      configSnapshot: { agentPromptVersion: 'v1', toolBridgeEnabled: true },
+      skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: '0'.repeat(64), content: skillContent }],
+    },
   }));
   assert.equal(result.checkpoint.replayInput.complete, false);
   assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('skill_snapshot_hash_mismatch:demo-skill'));
@@ -593,9 +605,193 @@ test('R12: harness/skill 配置未验证必须降级，不得宣称完整', () =
   result = service.captureTurnCheckpoint(captureArgs(projectDir, {
     turnId: 'turn-6',
     runConfig: { provider: 'p', model: 'm', promptVersion: 'v1', skillIds: ['demo-skill'] },
-    harness: { serverVersion: 'test-server', skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: crypto.createHash('sha256').update(secretSkill).digest('hex'), content: secretSkill }] },
+    harness: {
+      serverVersion: 'test-server',
+      configSnapshot: { agentPromptVersion: 'v1', toolBridgeEnabled: true },
+      skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: crypto.createHash('sha256').update(secretSkill).digest('hex'), content: secretSkill }],
+    },
   }));
   assert.equal(result.checkpoint.replayInput.complete, false);
   assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('skill_contains_secret:demo-skill'));
   assertNoBlobContains(tempDir, SENTINEL);
+
+  // 7) 缺 harness 工具配置快照 → harness_tool_config_unverified（serverVersion 非空不够）
+  result = service.captureTurnCheckpoint(captureArgs(projectDir, {
+    turnId: 'turn-7',
+    harness: { serverVersion: 'test-server', skillSnapshots: [] },
+  }));
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('harness_tool_config_unverified'));
+});
+
+test('R13a: CAS 重读前替换授权根（写盘阶段竞态）→ 拒绝采集，外部内容零落盘', () => {
+  // GPT 复审 #1 探针复现：在写 CAS 重读 a.txt 之前，把根重命名并在原路径建立指向
+  // 未授权目录的 junction。修复前：isPathWithinRoot 重新解析根，比较基准跟着 junction
+  // 移动，外部内容被写入 CAS 后才由阶段末检查报 target_root_replaced。
+  // 修复后：逐文件边界校验以固定的 pinnedRoot 字符串为基准，外部内容在落盘前被拦截。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  const outsideDir = path.join(tempDir, 'outside');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.mkdirSync(outsideDir, { recursive: true });
+  const outsideContent = 'external-content-must-never-reach-cas';
+  fs.writeFileSync(path.join(outsideDir, 'a.txt'), outsideContent);
+  const aPath = path.join(projectDir, 'a.txt');
+  fs.writeFileSync(aPath, 'real');
+
+  const originalReadFileSync = fs.readFileSync;
+  let aReads = 0;
+  fs.readFileSync = function (p, ...args) {
+    const key = String(p);
+    if (key === aPath) {
+      aReads += 1;
+      if (aReads === 2) {
+        // 写 CAS 重读时替换根：原路径变成指向外部的链接。
+        fs.renameSync(projectDir, `${projectDir}-orig`);
+        fs.symlinkSync(outsideDir, projectDir, process.platform === 'win32' ? 'junction' : 'dir');
+      }
+    }
+    return originalReadFileSync.call(this, p, ...args);
+  };
+
+  try {
+    const service = makeService(tempDir);
+    service.savePolicy('project-1', enabledPolicy(projectDir));
+    const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+    assert.ok(aReads >= 2, '探针必须真的在写阶段重读过 a.txt');
+    assert.equal(result.captured, false, '根被替换必须拒绝采集');
+    assert.equal(result.reason, 'target_root_replaced');
+    assert.equal(service.store.listCheckpoints('project-1').length, 0, '失败不得留下检查点');
+    assertNoBlobContains(tempDir, outsideContent);
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+  }
+});
+
+test('R13b: 授权保存后、turn 开始前替换授权根 → 拒绝采集', () => {
+  // GPT 复审 #1 探针复现：策略保存时根是真实的；之后根被换成外部 junction，
+  // 授权检查若重新解析授权路径就会把外部目录当成已授权。
+  // 修复后：授权根身份在 savePolicy 时固定（authorizedDirPins），当前 realpath
+  // 与 pin 不符即 authorized_root_replaced。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  const outsideDir = path.join(tempDir, 'outside');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.mkdirSync(outsideDir, { recursive: true });
+  const outsideContent = 'post-authorization-swap-content';
+  fs.writeFileSync(path.join(outsideDir, 'external.txt'), outsideContent);
+  fs.writeFileSync(path.join(projectDir, 'real.txt'), 'real');
+
+  const service = makeService(tempDir);
+  service.savePolicy('project-1', enabledPolicy(projectDir));
+
+  // 对照：替换前采集成功，证明 pin 与根身份最初是满足的。
+  const before = service.captureTurnCheckpoint(captureArgs(projectDir));
+  assert.equal(before.captured, true);
+
+  fs.renameSync(projectDir, `${projectDir}-orig`);
+  fs.symlinkSync(outsideDir, projectDir, process.platform === 'win32' ? 'junction' : 'dir');
+
+  const after = service.captureTurnCheckpoint(captureArgs(projectDir, { turnId: 'turn-2' }));
+  assert.equal(after.captured, false, '授权后根被替换必须拒绝采集');
+  assert.ok(['authorized_root_replaced', 'dir_not_authorized'].includes(after.reason),
+    `实际原因 ${after.reason}`);
+  assertNoBlobContains(tempDir, outsideContent);
+});
+
+test('R14: session 未知/损坏维度一律降级——null message、未知条目、compaction 断引用、重复 id', () => {
+  // GPT 复审 #3 的四个探针：这些输入此前全部 complete=true 且被归档。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
+  const service = makeService(tempDir);
+  service.savePolicy('project-1', enabledPolicy(projectDir));
+
+  const HEADER = '{"type":"session","version":3,"id":"s1"}';
+  const MSG = (id, parent, text) =>
+    `{"type":"message","id":"${id}","parentId":"${parent}","message":{"role":"user","content":[{"type":"text","text":"${text}"}]}}`;
+  const cases = [
+    ['null-message.jsonl', `${HEADER}\n{"type":"message","id":"m1","parentId":"s1","message":null}\n`,
+      'session_invalid_message:line_2'],
+    ['unknown-type.jsonl', `${HEADER}\n{"type":"attachment_ref","id":"a1","parentId":"s1","path":"/tmp/secret.png"}\n`,
+      'session_unverified_entry_type:line_2:attachment_ref'],
+    ['compaction-broken.jsonl',
+      `${HEADER}\n${MSG('m1', 's1', 'hi')}\n{"type":"compaction","id":"c1","parentId":"m1","summary":"s","firstKeptEntryId":"nonexistent"}\n`,
+      'session_compaction_ref_broken:line_3'],
+    ['dup-id.jsonl', `${HEADER}\n${MSG('m1', 's1', 'a')}\n${MSG('m1', 'm1', 'b')}\n`,
+      'session_duplicate_entry_id:line_3'],
+  ];
+  let turn = 0;
+  for (const [name, text, reason] of cases) {
+    turn += 1;
+    const sessionPath = path.join(tempDir, name);
+    fs.writeFileSync(sessionPath, text);
+    const result = service.captureTurnCheckpoint(captureArgs(projectDir, {
+      turnId: `turn-r14-${turn}`,
+      deliveryMode: 'resume',
+      sessionPath,
+    }));
+    assert.equal(result.captured, true, name);
+    assert.equal(result.checkpoint.replayInput.complete, false, name);
+    assert.ok(result.checkpoint.replayInput.incompleteReasons.includes(reason),
+      `${name} 期望 ${reason}，实际 ${result.checkpoint.replayInput.incompleteReasons.join(',')}`);
+    assert.equal(result.checkpoint.replayInput.sessionBlobHash, '', `${name} 未验证材料不得归档`);
+    assert.equal(result.checkpoint.strictEvalEligible, false);
+  }
+
+  // 合法 compaction（firstKeptEntryId 指向存在的条目）可以归档。
+  const okPath = path.join(tempDir, 'ok-compaction.jsonl');
+  fs.writeFileSync(okPath,
+    `${HEADER}\n${MSG('m1', 's1', 'hi')}\n${MSG('m2', 'm1', 'keep me')}\n{"type":"compaction","id":"c1","parentId":"m2","summary":"summarized","firstKeptEntryId":"m2"}\n`);
+  const ok = service.captureTurnCheckpoint(captureArgs(projectDir, {
+    turnId: 'turn-r14-ok',
+    deliveryMode: 'resume',
+    sessionPath: okPath,
+  }));
+  assert.equal(ok.checkpoint.replayInput.complete, true, ok.checkpoint.replayInput.incompleteReasons.join(','));
+  assert.ok(ok.checkpoint.replayInput.sessionBlobHash);
+  assert.equal(ok.checkpoint.strictEvalEligible, false);
+});
+
+test('R15: skill 空内容不得绕过校验——声明集合与归档集合必须对账', () => {
+  // GPT 复审 #3：非空 sha256 + content="" 曾绕过缺失检查，complete=true 且归档数为 0。
+  const crypto = require('node:crypto');
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
+  const service = makeService(tempDir);
+  service.savePolicy('project-1', enabledPolicy(projectDir));
+
+  const runConfig = { provider: 'p', model: 'm', promptVersion: 'v1', skillIds: ['demo-skill'] };
+  const configSnapshot = { agentPromptVersion: 'v1', toolBridgeEnabled: true };
+
+  // 1) 空内容 + 非空内容hash → hash 不匹配，拒绝归档
+  let result = service.captureTurnCheckpoint(captureArgs(projectDir, {
+    runConfig,
+    harness: {
+      serverVersion: 'test-server',
+      configSnapshot,
+      skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: crypto.createHash('sha256').update('non-empty').digest('hex'), content: '' }],
+    },
+  }));
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('skill_snapshot_hash_mismatch:demo-skill'));
+  assert.equal(result.checkpoint.replayInput.harness.skillSnapshots.length, 0, '未通过校验的快照不得出现在归档清单');
+
+  // 2) 合法的空 skill（内容为空串且 hash 匹配）可以归档
+  const emptyHash = crypto.createHash('sha256').update('').digest('hex');
+  result = service.captureTurnCheckpoint(captureArgs(projectDir, {
+    turnId: 'turn-2',
+    runConfig,
+    harness: {
+      serverVersion: 'test-server',
+      configSnapshot,
+      skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: emptyHash, content: '' }],
+    },
+  }));
+  assert.equal(result.checkpoint.replayInput.complete, true, result.checkpoint.replayInput.incompleteReasons.join(','));
+  assert.equal(result.checkpoint.replayInput.harness.skillSnapshots[0].blobHash, emptyHash);
+  assert.equal(result.checkpoint.strictEvalEligible, false);
 });
