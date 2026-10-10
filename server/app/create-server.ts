@@ -41,6 +41,7 @@ const {
 const { resolveToolRelativePath } = require('../http/path-utils');
 const { HOST, PORT, ROOT_DIR } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
+const { createBadcaseCaptureService } = require('../domain/runtime/badcase-capture');
 const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
 const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
 const {
@@ -158,6 +159,10 @@ export function createServerApp(options: any = {}) {
   }
 
   const store = createChatAppStore({ agentDir, sqlitePath });
+
+  // Badcase 采集服务：默认落盘 <agentDir>/badcase-capture（运行时数据目录，
+  // gitignore）。未显式开启 CapturePolicy 的项目不会进行任何扫描。
+  const badcaseCapture = options.badcaseCapture || createBadcaseCaptureService({ agentDir });
 
   // Crash-recovery sweep: a busy session-reuse claim is only ever held by a
   // live run inside this process, so any busy row visible at startup is
@@ -738,6 +743,7 @@ export function createServerApp(options: any = {}) {
     modelCatalog,
     uploadsDir,
     delegationRuntime,
+    badcaseCapture,
     executeConversationAgent: options.executeConversationAgent,
     async onAssistantMessageCompleted(message: any) {
       await maybeAutoCreateDigestAfterAssistantMessage(message);

@@ -1422,6 +1422,10 @@ export function createAgentExecutor(options: any = {}) {
     typeof options.onAssistantMessageCompleted === 'function' ? options.onAssistantMessageCompleted : null;
   const enableAutomaticRelatedMemory = options.enableAutomaticRelatedMemory === true;
   const delegationRuntime = options.delegationRuntime || null;
+  // Badcase 采集服务（Goal: badcase capture/replay MVP）。缺省时完全不采集。
+  const badcaseCapture = options.badcaseCapture && typeof options.badcaseCapture.captureTurnCheckpoint === 'function'
+    ? options.badcaseCapture
+    : null;
 
   async function executeConversationAgent({
     runStore,
@@ -2195,6 +2199,49 @@ export function createAgentExecutor(options: any = {}) {
       },
     };
     let handle: any = null;
+    // Badcase 采集挂点：turn 执行前（startRun 之前），此刻 prompt、模型配置、
+    // fresh/resume 模式均已确定，agent 尚未触碰文件系统。采集失败不阻塞用户 turn，
+    // 但失败原因由采集服务诚实记录（不伪造成功检查点）。
+    let badcaseCheckpointId = '';
+    if (badcaseCapture) {
+      try {
+        const captureTargetDir = String(conversation.worktreePath || sessionProjectDir || resolvedProjectDir || '').trim();
+        const captureResult = badcaseCapture.captureTurnCheckpoint({
+          projectId: String(conversation.projectScopeId || conversation.projectId || '').trim(),
+          targetDir: captureTargetDir,
+          conversationId,
+          turnId,
+          agentId: agent.id,
+          deliveryMode: resumeSession ? 'resume' : 'fresh',
+          prompt,
+          controlledValues: {
+            CAFF_CHAT_API_URL: toolBaseUrl,
+            CAFF_CHAT_CALLBACK_TOKEN: toolInvocation.callbackToken,
+            CAFF_CHAT_INVOCATION_ID: toolInvocation.invocationId,
+            CAFF_CHAT_CONVERSATION_ID: conversationId,
+            CAFF_CHAT_TURN_ID: turnId,
+            CAFF_CHAT_TOOLS_PATH: toPortableShellPath(agentToolScriptPath),
+            CAFF_CHAT_TOOLS_RELATIVE_PATH: agentToolRelativePath,
+            PI_AGENT_SANDBOX_DIR: agentSandbox.sandboxDir,
+            PI_AGENT_PRIVATE_DIR: agentSandbox.privateDir,
+          },
+          sessionPath: resumeSession ? resolveSessionPath(sessionName, agentDir) : '',
+          environment: {
+            platform: process.platform,
+            arch: process.arch,
+            node: process.version,
+          },
+        });
+        if (captureResult && captureResult.captured === true && captureResult.checkpointId) {
+          badcaseCheckpointId = captureResult.checkpointId;
+        }
+      } catch (captureError: any) {
+        console.error(
+          '[badcase-capture] turn checkpoint failed:',
+          captureError && captureError.message ? captureError.message : captureError
+        );
+      }
+    }
     try {
       handle = startRun(provider, model, prompt, runOptions);
     } catch (startError) {
@@ -2228,6 +2275,7 @@ export function createAgentExecutor(options: any = {}) {
       sessionPath: handle.sessionPath || '',
       streaming: true,
       toolInvocationId: toolInvocation.invocationId,
+      badcaseCheckpointId,
     };
 
     stage.runId = handle.runId || null;

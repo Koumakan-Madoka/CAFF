@@ -39,12 +39,19 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 
 ### 2.3 一致性级别（不宣称原子快照）
 
-采集期间 worktree 可能被 room 外写入者（用户编辑器、后台进程）修改。slot 机制只串行化 room 内 agent turn，不能杜绝外部写入。因此：
+采集期间 worktree 可能被 room 外写入者（用户编辑器、后台进程）修改。slot 机制只串行化 room 内 agent turn，不能杜绝外部写入。必须区分两个不同性质的事实：
 
-1. 采集前扫描生成清单 M1（路径+size+mtime+hash 流式计算）；
-2. 采集后重扫生成 M2；
-3. M1==M2 → consistency=`verified`；不一致 → 有限次重试，仍不一致 → consistency=`best-effort` 并记录差异路径。
-- `best-effort` 包可保存、可标记，但**不得参与严格对照评测**（AC2/AC7）。
+- **完整性（integrity）**：清单与 blob 的 hash 校验通过，即“恢复出来的内容逐字节等于清单记录的内容”。这只证明包内自洽，不证明包等于源现场。
+- **源现场一致性（consistency evidence）**：有依据表明清单记录的是采集窗口内未检测到变化的现场。双扫相同是证据，不是同时性证明。
+
+采集流程：
+
+1. 采集前扫描生成清单 M1（路径+size+mtime+hash 流式计算）；写 CAS 时重读并重校 hash，检测扫描与读取之间的变化；
+2. 采集后重扫生成 M2（stat 级比对）；
+3. M1 与 M2 无差异且写时重校全部通过 → consistency.evidence=`double-scan-stable`；检测到差异 → 有限次重试，仍不一致 → consistency.evidence=`write-during-capture` 并记录差异路径。
+
+- **双扫相同不得自动等同“现场一致性已证明”**：`double-scan-stable` 只是当前可取得的一致性依据，`atomicityGuaranteed` 恒为 false。严格对照评测要求 `double-scan-stable` **且** 完整性校验通过 **且** 回放输入完整；任一缺失即阻断，禁止以“清单自洽”冒充“现场一致”。
+- `write-during-capture` 包可保存、可标记，但**不得参与严格对照评测**（AC2/AC7）。
 - 不用 git 脏状态 hash 作为一致性证据（漏 untracked/ignored，且无同时性保证）。
 
 ### 2.4 回放输入

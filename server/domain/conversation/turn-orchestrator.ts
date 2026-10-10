@@ -865,6 +865,7 @@ export function createTurnOrchestrator(options: any = {}) {
         modelCatalog,
         uploadsDir: options.uploadsDir,
         delegationRuntime,
+        badcaseCapture: options.badcaseCapture,
         onAssistantMessageCompleted: options.onAssistantMessageCompleted,
       });
   const baseExecuteConversationAgent = providedExecuteConversationAgent || agentExecutor.executeConversationAgent;
