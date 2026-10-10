@@ -56,25 +56,49 @@ export function pinKey(dir: any) {
 }
 
 function normalizeDirPins(value: any) {
-  const pins: Record<string, string> = {};
+  const pins: Record<string, any> = {};
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     for (const [key, pinned] of Object.entries(value)) {
       const normalizedKey = pinKey(key);
-      const pinnedValue = String(pinned || '').trim();
-      if (normalizedKey && pinnedValue) {
-        pins[normalizedKey] = pinnedValue;
+      if (!normalizedKey || !pinned) {
+        continue;
+      }
+      // pin 结构：{ realpath, identity? }。identity 是授权动作时 statx 得到的
+      // (devMajor, devMinor, ino, btimeSec, btimeNsec)（仅 Linux 可得）；
+      // 兼容早期纯字符串 realpath pin。
+      if (typeof pinned === 'string') {
+        const realpath = pinned.trim();
+        if (realpath) {
+          pins[normalizedKey] = { realpath };
+        }
+        continue;
+      }
+      if (typeof pinned === 'object' && !Array.isArray(pinned)) {
+        const realpath = String((pinned as any).realpath || '').trim();
+        if (!realpath) {
+          continue;
+        }
+        const identity = (pinned as any).identity;
+        pins[normalizedKey] = {
+          realpath,
+          ...(identity && typeof identity === 'object' ? { identity } : {}),
+        };
       }
     }
   }
   return pins;
 }
 
-// 保存（授权）策略时固定授权根身份：把每个授权目录解析为真实路径并持久化。
-// 解析失败（目录不存在等）记为空串——normalize 会丢弃空 pin，该根在采集时按
-// authorized_root_unpinned 拒绝（失败关闭，不回退为采集时现场解析）。
-export function pinAuthorizedDirs(policy: any) {
+// 授权动作（显式 savePolicy/authorize）：固定授权根身份。
+// - realpath：边界判定的字符串基准（授权后根路径被替换 → authorized_root_replaced）；
+// - identity：Linux 上由 statxFn（statx on dir fd）取得 (dev, ino, btime)，跨重启钉住
+//   目录对象本身；采集时打开根 fd 后先比对，不符即拒绝。statxFn 不可得时 identity 缺失，
+//   采集阶段的能力/身份校验会失败关闭（authorized_root_identity_missing）。
+// 解析失败（目录不存在等）记为空——normalize 丢弃空 pin，采集按 authorized_root_unpinned 拒绝。
+export function pinAuthorizedDirs(policy: any, options: any = {}) {
   const source = policy && typeof policy === 'object' ? policy : {};
-  const pins: Record<string, string> = {};
+  const statxFn = typeof options.statxFn === 'function' ? options.statxFn : null;
+  const pins: Record<string, any> = {};
   const dirs = Array.isArray(source.authorizedDirs) ? source.authorizedDirs : [];
   for (const dir of dirs) {
     const raw = String(dir || '').trim();
@@ -82,9 +106,17 @@ export function pinAuthorizedDirs(policy: any) {
       continue;
     }
     try {
-      pins[pinKey(raw)] = fs.realpathSync(path.resolve(raw));
+      const realpath = fs.realpathSync(path.resolve(raw));
+      const pin: any = { realpath };
+      if (statxFn) {
+        const identity = statxFn(realpath);
+        if (identity && typeof identity === 'object') {
+          pin.identity = identity;
+        }
+      }
+      pins[pinKey(raw)] = pin;
     } catch {
-      pins[pinKey(raw)] = '';
+      pins[pinKey(raw)] = { realpath: '' };
     }
   }
   return { ...source, authorizedDirPins: pins };
@@ -237,7 +269,8 @@ export function authorizeTargetDir(policy: any, targetDir: any) {
       continue;
     }
     const rawResolved = path.resolve(raw);
-    const pinned = String((pins as any)[pinKey(raw)] || '').trim();
+    const pin = (pins as any)[pinKey(raw)];
+    const pinned = String(pin && pin.realpath || '').trim();
     // 字符串包含（未解析）用于定位“目标名义上命中的授权根”，真实包含用于边界判定。
     const stringContained = isSameOrUnderPath(rawResolved, stringTarget);
     const baseline = pinned || realpathOrResolved(raw);
@@ -252,9 +285,9 @@ export function authorizeTargetDir(policy: any, targetDir: any) {
       return { ok: false, reason: 'authorized_root_replaced', dir: rawResolved };
     }
     if (realContained) {
-      // 返回本次验证过的目标真实路径：调用方必须直接把它作为 pinnedRoot 使用，
+      // 返回本次验证过的目标真实路径与命中的授权根 pin：调用方必须直接使用，
       // 不得二次 realpath（授权结论与使用之间的二次解析是 pin 竞态入口，GPT 复审 #1）。
-      return { ok: true, reason: '', resolvedTarget };
+      return { ok: true, reason: '', resolvedTarget, dir: rawResolved, pin };
     }
     // 字符串命中但真实路径越界（目标是根内的链接路径指向外部）：继续检查其余根，
     // 最终按 dir_not_authorized 拒绝。

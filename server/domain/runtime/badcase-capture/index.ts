@@ -9,6 +9,7 @@ import { normalizeCapturePolicy, isAuthorizedDir, matchesRelativePattern, pinAut
 import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
 import { restoreCheckpoint } from './restore';
+import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
 
 export function resolveCaptureRoot(options: any = {}) {
   const explicit = String(options.captureRoot || '').trim() || String(process.env.CAFF_BADCASE_CAPTURE_DIR || '').trim();
@@ -38,10 +39,19 @@ export function createBadcaseCaptureService(options: any = {}) {
       return store.loadPolicy(projectId);
     },
 
-    // 保存策略即授权动作：此刻固定授权根身份（realpath pin），采集时根被替换即拒绝。
+    // 保存策略即授权动作：此刻固定授权根身份（realpath + Linux statx 目录对象身份）。
+    // 采集时根被替换（realpath 变化或 dev/ino/btime 不符）即拒绝；能力不可用时
+    // identity 缺失，采集阶段按 authorized_root_identity_missing 失败关闭。
     savePolicy(projectId: any, policy: any) {
       const merged = { ...(policy && typeof policy === 'object' ? policy : {}), projectId };
-      return store.savePolicy(pinAuthorizedDirs(merged));
+      const capability = detectCaptureCapability({ captureRoot });
+      const statxFn = capability.ok
+        ? (dir: any) => {
+          const result = statxDirectoryIdentity(capability, dir);
+          return result.ok ? result.identity : null;
+        }
+        : null;
+      return store.savePolicy(pinAuthorizedDirs(merged, { statxFn }));
     },
 
     captureTurnCheckpoint(input: any) {

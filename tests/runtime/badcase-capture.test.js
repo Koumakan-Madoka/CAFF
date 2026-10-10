@@ -5,6 +5,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { withTempDir } = require('../helpers/temp-dir');
+const { capSkip } = require('../helpers/capture-capability');
 const {
   createBadcaseCaptureService,
 } = require('../../build/server/domain/runtime/badcase-capture/index');
@@ -85,7 +86,7 @@ test('policy 默认 disabled 且含默认期限/配额/排除清单', () => {
   assert.equal(enabled.status, 'enabled');
 });
 
-test('未开启策略或未授权目录时不做任何扫描', () => {
+test('未开启策略或未授权目录时不做任何扫描', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -110,7 +111,7 @@ test('未开启策略或未授权目录时不做任何扫描', () => {
   assert.ok(result.checkpointId);
 });
 
-test('首次采集写入 CAS；二次采集内容去重，未变化文件不重复占用', () => {
+test('首次采集写入 CAS；二次采集内容去重，未变化文件不重复占用', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -144,7 +145,7 @@ test('首次采集写入 CAS；二次采集内容去重，未变化文件不重�
   assert.equal(third.checkpoint.stats.reusedHashFiles, 1);
 });
 
-test('删除状态记录在检查点清单中', () => {
+test('删除状态记录在检查点清单中', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -160,7 +161,7 @@ test('删除状态记录在检查点清单中', () => {
   assert.deepEqual(second.checkpoint.deletions, ['gone.txt']);
 });
 
-test('采集期间并发写入被检测并降级，阻断严格对照资格', () => {
+test('采集期间并发写入被检测并降级，阻断严格对照资格', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -184,7 +185,7 @@ test('采集期间并发写入被检测并降级，阻断严格对照资格', ()
   assert.ok(result.checkpoint.consistency.retries >= 1);
 });
 
-test('越界符号链接不跟随；界内符号链接可恢复', (t) => {
+test('越界符号链接不跟随；界内符号链接可恢复', { skip: capSkip }, (t) => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   const outsideDir = path.join(tempDir, 'outside');
@@ -222,7 +223,7 @@ test('越界符号链接不跟随；界内符号链接可恢复', (t) => {
   assert.ok(restored.mismatches.some((m) => m.path === 'escape-link'));
 });
 
-test('秘密哨兵文件不进入 CAS；prompt 中的受控变量值被占位替换', () => {
+test('秘密哨兵文件不进入 CAS；prompt 中的受控变量值被占位替换', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -261,7 +262,7 @@ test('秘密哨兵文件不进入 CAS；prompt 中的受控变量值被占位替
   assert.equal(result.checkpoint.replayInput.controlledReplacements.length >= 2, true);
 });
 
-test('resume 缺 session 时标记不可完整回放，禁止静默降级 fresh', () => {
+test('resume 缺 session 时标记不可完整回放，禁止静默降级 fresh', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -280,7 +281,7 @@ test('resume 缺 session 时标记不可完整回放，禁止静默降级 fresh'
   assert.equal(result.checkpoint.strictEvalEligible, false);
 });
 
-test('resume session 归档进 CAS，受控变量值被替换', () => {
+test('resume session 归档进 CAS，受控变量值被替换', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -303,7 +304,7 @@ test('resume session 归档进 CAS，受控变量值被替换', () => {
   assert.equal(sessionBlob.includes('abc-callback-token-value'), false);
 });
 
-test('恢复两次清单一致；篡改 blob 导致校验失败', () => {
+test('恢复两次清单一致；篡改 blob 导致校验失败', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(path.join(projectDir, 'sub'), { recursive: true });
@@ -336,7 +337,7 @@ test('恢复两次清单一致；篡改 blob 导致校验失败', () => {
   assert.ok(resultC.mismatches.some((m) => m.reason === 'blob_hash_mismatch' && m.path === 'a.txt'));
 });
 
-test('git 仓库：tracked/dirty/untracked 纳入，ignored 默认排除、显式纳入可恢复', () => {
+test('git 仓库：tracked/dirty/untracked 纳入，ignored 默认排除、显式纳入可恢复', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -370,7 +371,7 @@ test('git 仓库：tracked/dirty/untracked 纳入，ignored 默认排除、显�
   assert.equal(fs.readFileSync(path.join(restoreDir, 'tracked.txt'), 'utf8'), 'tracked-dirty');
 });
 
-test('配额不足时策略挂起且采集失败，不伪造检查点', () => {
+test('配额不足时策略挂起且采集失败，不伪造检查点', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
