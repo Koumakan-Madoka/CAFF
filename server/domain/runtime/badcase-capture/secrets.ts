@@ -13,6 +13,10 @@ const SECRET_SENTINEL_PATTERNS: RegExp[] = [
   /\b(?:api[_-]?key|auth[_-]?token|access[_-]?token|secret|password|passwd)\s*[:=]\s*['"]?[^\s,'";]{6,}/iu,
 ];
 
+// 高置信子集：误报概率可忽略，可对二进制内容按 latin1 扫描。
+// 文本专属的键值型模式（password=... 等）不用于二进制，避免误伤。
+const HIGH_CONFIDENCE_SENTINEL_PATTERNS: RegExp[] = SECRET_SENTINEL_PATTERNS.slice(0, 5);
+
 // 采集中允许替换为占位符的运行时变量。清单之外的内容逐字节保留。
 const CONTROLLED_REPLAY_VARIABLES = [
   'CAFF_CHAT_API_URL',
@@ -41,12 +45,21 @@ function looksBinary(buffer: any) {
   return false;
 }
 
-// 返回命中的哨兵模式下标；未命中返回 -1。二进制内容跳过哨兵扫描（无法可靠匹配文本模式）。
+// 返回命中的哨兵模式下标；未命中返回 -1。
+// 扫描策略（契约 §2.5）：内容已整体读入内存，不设大小跳过上界——不存在"未检查"路径。
+// 文本内容用完整哨兵集；二进制内容（含 NUL）用高置信子集按 latin1 扫描，
+// 键值型文本模式不用于二进制以免误报。
 export function findSecretSentinel(content: any) {
   if (!Buffer.isBuffer(content)) {
     return findSecretSentinel(Buffer.from(String(content || ''), 'utf8'));
   }
   if (looksBinary(content)) {
+    const latin1 = content.toString('latin1');
+    for (let index = 0; index < HIGH_CONFIDENCE_SENTINEL_PATTERNS.length; index += 1) {
+      if (HIGH_CONFIDENCE_SENTINEL_PATTERNS[index].test(latin1)) {
+        return index;
+      }
+    }
     return -1;
   }
   const text = content.toString('utf8');

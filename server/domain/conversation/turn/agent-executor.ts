@@ -2231,6 +2231,15 @@ export function createAgentExecutor(options: any = {}) {
             arch: process.arch,
             node: process.version,
           },
+          runConfig: {
+            provider: String(provider || ''),
+            model: String(model || ''),
+            modelProfileId: String(agentConfig.profileId || ''),
+            modelProfileName: String(agentConfig.profileName || ''),
+            promptVersion: AGENT_PROMPT_VERSION,
+            skillIds: Array.isArray(agentConfig.skillIds) ? agentConfig.skillIds.slice() : [],
+            conversationSkillIds: Array.isArray(agentConfig.conversationSkillIds) ? agentConfig.conversationSkillIds.slice() : [],
+          },
         });
         if (captureResult && captureResult.captured === true && captureResult.checkpointId) {
           badcaseCheckpointId = captureResult.checkpointId;

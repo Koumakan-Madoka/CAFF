@@ -172,6 +172,26 @@ export function createCaptureStore(options: any = {}) {
       });
     },
 
+    // latest 指针当前落盘字节数（不存在为 0），用于采集自报新增字节的精确核算。
+    latestPointerSize(projectId: any, targetDir: any) {
+      try {
+        return fs.statSync(latestPath(projectId, targetDir)).size;
+      } catch {
+        return 0;
+      }
+    },
+
+    // latest 指针写入后的预期字节数。updatedAt 为定长 ISO 字符串，checkpointId 为定长
+    // UUID，因此对同一 (project, targetDir) 该值恒定，可在写入前精确预估。
+    latestPointerJsonSize(projectId: any, targetDir: any, checkpointId: any) {
+      const text = `${JSON.stringify({
+        targetDir: path.resolve(String(targetDir || '').trim()),
+        checkpointId: String(checkpointId || '').trim(),
+        updatedAt: nowIso(),
+      }, null, 2)}\n`;
+      return Buffer.byteLength(text, 'utf8');
+    },
+
     loadLatestCheckpoint(projectId: any, targetDir: any) {
       const pointer = safeReadJson(latestPath(projectId, targetDir), null);
       if (!pointer || !pointer.checkpointId) {
@@ -180,26 +200,30 @@ export function createCaptureStore(options: any = {}) {
       return this.loadCheckpoint(projectId, pointer.checkpointId);
     },
 
-    // 项目当前 CAS 占用（遍历统计；W3 配额/GC 会加缓存）。
+    // 项目当前采集占用：CAS blob + checkpoint 清单 + latest 指针（不含 policy.json 配置本身）。
+    // "零新增 CAS 字节"不等于"零新增总空间"：每次采集都新增清单元数据，必须计入配额。
     computeUsage(projectId: any) {
-      const dir = blobsDir(projectId);
       let totalBytes = 0;
       let blobCount = 0;
-      const walk = (current: any) => {
+      const walk = (current: any, countAsBlob: boolean) => {
         if (!fs.existsSync(current)) {
           return;
         }
         for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
           const entryPath = path.join(current, entry.name);
           if (entry.isDirectory()) {
-            walk(entryPath);
+            walk(entryPath, countAsBlob);
           } else if (entry.isFile() && !entry.name.includes('.tmp-')) {
-            blobCount += 1;
+            if (countAsBlob) {
+              blobCount += 1;
+            }
             totalBytes += fs.statSync(entryPath).size;
           }
         }
       };
-      walk(dir);
+      walk(blobsDir(projectId), true);
+      walk(checkpointsDir(projectId), false);
+      walk(path.join(projectDir(projectId), 'latest'), false);
       return { blobCount, totalBytes };
     },
   };

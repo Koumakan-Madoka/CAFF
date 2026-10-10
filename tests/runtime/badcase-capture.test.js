@@ -58,6 +58,7 @@ function captureArgs(projectDir, overrides = {}) {
     prompt: 'hello prompt',
     controlledValues: {},
     environment: { platform: process.platform },
+    runConfig: { provider: 'test-provider', model: 'test-model', promptVersion: 'test-v1' },
     ...overrides,
   };
 }
@@ -119,7 +120,10 @@ test('首次采集写入 CAS；二次采集内容去重，未变化文件不重�
   assert.equal(second.checkpoint.stats.reusedHashFiles, 2);
   assert.equal(second.checkpoint.stats.hashedFiles, 0);
   const usageAfterSecond = service.computeUsage('project-1');
-  assert.ok(usageAfterSecond.totalBytes - usageAfterFirst.totalBytes < 1024);
+  // 占用增长必须恰好等于检查点自报的新增总字节（blob + 清单元数据），
+  // "零新增 CAS 字节"不等于"零新增总空间"。
+  assert.equal(usageAfterSecond.totalBytes - usageAfterFirst.totalBytes, second.checkpoint.stats.totalNewBytes);
+  assert.ok(second.checkpoint.stats.newManifestBytes > 0, '清单字节必须计入新增空间');
 
   // 修改一个文件：只有该文件新增 blob
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa-modified');
@@ -398,3 +402,4 @@ test('受控变量替换仅作用于清单内变量', () => {
   assert.equal(containsSecretSentinel(Buffer.from(`key: ${SENTINEL}`)), true);
   assert.equal(containsSecretSentinel(Buffer.from('plain text')), false);
 });
+

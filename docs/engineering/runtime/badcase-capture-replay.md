@@ -10,7 +10,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 
 | 对象 | 标识 | 含义 | 关键状态 |
 |---|---|---|---|
-| CapturePolicy | projectId | 项目级采集授权：开关、授权目录清单、纳入的 ignored 模式、排除模式、暂存期限与配额 | disabled / enabled / suspended(空间不足或采集失败) |
+| CapturePolicy | projectId | 项目级采集授权：开关、授权目录清单、纳入的 ignored 模式、排除模式、秘密豁免模式（默认空）、暂存期限与配额 | disabled / enabled / suspended(空间不足或采集失败) |
 | Checkpoint | checkpointId | 某次 agent turn 执行前的现场：文件清单+内容引用、回放输入、环境指纹、一致性级别 | staged / sealed / expired / incomplete |
 | BadcaseFlag | flagId | 用户对某条消息/某次 run 的问题标记：实际问题、期望行为 | draft / confirmed |
 | SealedCase | caseId | 标记触发后长期封存的证据包：Checkpoint + 轨迹 + BadcaseFlag 关联 | captured / runnable / reproduced / evaluable（见 §8） |
@@ -46,18 +46,20 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 
 采集流程：
 
-1. 采集前扫描生成清单 M1（路径+size+mtime+hash 流式计算）；写 CAS 时重读并重校 hash，检测扫描与读取之间的变化；
-2. 采集后重扫生成 M2（stat 级比对）；
-3. M1 与 M2 无差异且写时重校全部通过 → consistency.evidence=`double-scan-stable`；检测到差异 → 有限次重试，仍不一致 → consistency.evidence=`write-during-capture` 并记录差异路径。
+1. 采集前扫描生成清单 M1（读前对每个文件做 realpath 边界校验；读取内容、秘密哨兵检测、hash 计算；可用上一检查点的 size+mtime+mode 快速路径复用 hash，仅加速本首扫）；写 CAS 时重读、重校 hash、重扫秘密，检测扫描与读取之间的变化；
+2. 采集后重扫 M2：**全量重新读取并重 hash**（不是 stat 级比对——stat 级无法发现“同长度改写 + 恢复 mtime”）；
+3. M1 与 M2 在内容 hash 级无差异且写时重校全部通过 → `content-verified`；检测到差异 → 有限次重试，重试后稳定 → `corrected-after-retry`，仍不一致 → `write-during-capture` 并记录差异路径。
 
-- **双扫相同不得自动等同“现场一致性已证明”**：`double-scan-stable` 只是当前可取得的一致性依据，`atomicityGuaranteed` 恒为 false。严格对照评测要求 `double-scan-stable` **且** 完整性校验通过 **且** 回放输入完整；任一缺失即阻断，禁止以“清单自洽”冒充“现场一致”。
-- `write-during-capture` 包可保存、可标记，但**不得参与严格对照评测**（AC2/AC7）。
+- **一致性证据三级**：`content-verified`（内容级双扫零异常）/ `corrected-after-retry`（检出异常后重试修正稳定）/ `write-during-capture`（重试耗尽仍不一致）。三者 `atomicityGuaranteed` 恒为 false——内容级双扫是当前可取得的一致性依据，不是同时性证明。
+- **严格对照评测要求 `content-verified` 且** 完整性校验通过 **且** 回放输入完整；`corrected-after-retry` 与 `write-during-capture` 的包可保存、可标记，但**不得参与严格对照评测**（AC2/AC7）。禁止以“清单自洽”或“双扫无差异”冒充“现场一致”。
+- mtime 快速路径只用于首扫加速；它对严格资格无影响，因为 M2 永远全量重 hash。
 - 不用 git 脏状态 hash 作为一致性证据（漏 untracked/ignored，且无同时性保证）。
 
 ### 2.4 回放输入
 
-- fresh：归档本轮完整 prompt 组装结果与工具/技能配置版本。
-- resume：**必须在检查点时刻归档 pi session 文件**（`resolveSessionPath` 指向的 JSONL，含全历史），并校验历史分支/压缩状态/附件/路径依赖完整。缺 session 或依赖缺失 → 标记"不可完整回放"，**禁止静默降级为 fresh**（deliveryMode 是实验条件，变更即换条件）。
+- fresh：归档本轮完整 prompt 组装结果；运行配置（provider/model/promptVersion/skill 清单）记入 `runConfig`，缺模型标识 → `model_config_missing`，不可完整回放。
+- resume：**必须在检查点时刻归档 pi session 文件**（`resolveSessionPath` 指向的 JSONL，含全历史）。session **存在 ≠ 完整**：归档前逐行校验 JSONL 结构（非空、每行合法 JSON），不通过 → `session_invalid_jsonl:line_N` / `session_empty`，未验证材料不归档。历史分支/压缩状态/附件与路径依赖的深度校验属后续工作，当前版本对未覆盖维度保持 incomplete 语义。缺 session 或依赖缺失 → 标记“不可完整回放”，**禁止静默降级为 fresh**（deliveryMode 是实验条件，变更即换条件）。
+- prompt 与 session 在**受控变量替换后的最终字节**上过秘密哨兵扫描；命中即拒绝归档该输入并记录 `prompt_contains_secret` / `session_contains_secret`（输入损失显式标记，不先写 CAS 再脱敏）。
 - 回放输入独立于 Inspector 投影存储。
 
 ### 2.5 凭据与受控变量替换
@@ -65,6 +67,9 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 - prompt 中嵌入的 `CAFF_CHAT_API_URL`、callback token 等运行时凭据：**不归档原值**，归档时替换为占位符并记录位置。
 - 回放时由评测服务重新签发并注入。允许替换的变量显式列清单：评测回调地址、运行凭据、工作目录映射、会话标识。清单之外 prompt 逐字节一致；基线与候选使用同一替换规则与归一化 hash。
 - 若脱敏/排除导致关键任务输入缺失 → 标记不可完整回放，不猜测填充。
+- **秘密扫描无“未检查”路径**：内容已整体读入内存，不设大小跳检上限；文本用完整哨兵模式集，二进制（含 NUL）用高置信子集（`sk-`/`ghp_`/`github_pat_`/`xox`/私钥头）按 latin1 扫描，键值型文本模式不用于二进制以免误报。写 CAS 前对最终字节重扫（TOCTOU 防线）。秘密命中文件不记录内容 hash（低熵秘密的 hash 可暴力反推），只记录排除事实。
+- **显式豁免**：`secretAllowlistPatterns`（默认空）可对已知假阳性路径（如测试夹具）豁免排除；豁免文件照常归档内容并在清单记录 `secretAllowlisted` 审计标记，配置方承担豁免风险。
+- 授权边界按 **realpath** 判定（穿透 junction/符号链接）；读文件前逐文件 realpath 校验，防止 git 在 `core.symlinks=false` 下展开 junction 导致越界读取。越界路径不读取、不进清单，且使包不完整、阻断严格对照。
 
 ## 3. 存储与生命周期契约
 
@@ -72,6 +77,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 - 暂存：默认未标记 Checkpoint 保留 7 天、每项目 10 GiB（可配置初值，P1）；超额可提前清理最旧的**未封存**数据。
 - 封存：BadcaseFlag 确认后，关联 Checkpoint 及其全部可达 blob 被 pin，不受期限/配额回收；封存占用对用户可见。运行中 ReplayRun 引用的对象同样受 pin 保护。
 - GC：仅回收无 pin、无运行引用、超期或超额挤出的对象；共享 blob 引用计数保护；空间不足/磁盘写失败/采集失败时 CapturePolicy 转 suspended 并显式报告，**不伪造采集成功**。
+- 配额核算：占用 = CAS blob + checkpoint 清单 + latest 指针（“零新增 CAS 字节”不等于“零新增总空间”）。每个重试 attempt 都做写前预检（文件 + prompt/session 计划字节 + 清单估值），落盘前按实际清单字节终检；终检超额不落清单，可能留下无引用孤儿 blob，由 GC 回收。检查点自报 `newBlobBytes` / `newManifestBytes` / `totalNewBytes`，必须与实际占用增长一致。
 - 测量：开启前展示授权目录容量预估；运行后展示每检查点新增字节、项目总占用、封存占用；区分文件/session/镜像成本（AC9）。
 
 ## 4. 环境与 Docker 隔离契约

@@ -25,6 +25,7 @@ export function createBadcaseCaptureService(options: any = {}) {
   const collector = createCollector({
     store,
     trustMtime: options.trustMtime,
+    afterScan: typeof options.afterScan === 'function' ? options.afterScan : null,
     afterFirstScan: typeof options.afterFirstScan === 'function' ? options.afterFirstScan : null,
   });
 
