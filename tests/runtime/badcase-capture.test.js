@@ -59,6 +59,7 @@ function captureArgs(projectDir, overrides = {}) {
     controlledValues: {},
     environment: { platform: process.platform },
     runConfig: { provider: 'test-provider', model: 'test-model', promptVersion: 'test-v1' },
+    harness: { serverVersion: 'test-server', skillSnapshots: [] },
     ...overrides,
   };
 }
@@ -275,7 +276,8 @@ test('resume session 归档进 CAS，受控变量值被替换', () => {
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const sessionPath = path.join(tempDir, 'session.jsonl');
-  fs.writeFileSync(sessionPath, '{"type":"message","text":"token abc-callback-token-value"}\n');
+  fs.writeFileSync(sessionPath,
+    '{"type":"session","version":3,"id":"s1"}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":[{"type":"text","text":"token abc-callback-token-value"}]}}\n');
 
   const service = makeService(tempDir);
   service.savePolicy('project-1', enabledPolicy(projectDir));
@@ -310,7 +312,8 @@ test('恢复两次清单一致；篡改 blob 导致校验失败', () => {
   assert.equal(resultA.ok, true, JSON.stringify(resultA.mismatches));
   assert.equal(resultB.ok, true, JSON.stringify(resultB.mismatches));
   assert.deepEqual(resultA.restoredFiles, resultB.restoredFiles);
-  assert.equal(resultA.strictEvalEligible, true);
+  // v1 无独立一致性依据，严格资格恒为 false；此处只断言两次恢复清单一致。
+  assert.equal(resultA.strictEvalEligible, false);
 
   // 篡改 blob：恢复必须报 hash 不一致，不得静默成功
   const entry = captured.checkpoint.files['a.txt'];

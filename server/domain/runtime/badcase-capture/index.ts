@@ -27,6 +27,7 @@ export function createBadcaseCaptureService(options: any = {}) {
     trustMtime: options.trustMtime,
     afterScan: typeof options.afterScan === 'function' ? options.afterScan : null,
     afterFirstScan: typeof options.afterFirstScan === 'function' ? options.afterFirstScan : null,
+    onFileRead: typeof options.onFileRead === 'function' ? options.onFileRead : null,
   });
 
   return {

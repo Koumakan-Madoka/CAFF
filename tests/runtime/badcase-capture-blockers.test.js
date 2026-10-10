@@ -53,6 +53,7 @@ function captureArgs(projectDir, overrides = {}) {
     controlledValues: {},
     environment: { platform: process.platform },
     runConfig: { provider: 'test-provider', model: 'test-model', promptVersion: 'test-v1' },
+    harness: { serverVersion: 'test-server', skillSnapshots: [] },
     ...overrides,
   };
 }
@@ -99,7 +100,8 @@ test('R1b: session 命中秘密哨兵时拒绝归档 session，禁止带秘密�
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const sessionPath = path.join(tempDir, 'session.jsonl');
-  fs.writeFileSync(sessionPath, `{"type":"message","text":"use ${SENTINEL} here"}\n`);
+  fs.writeFileSync(sessionPath,
+    `{"type":"session","version":3,"id":"s1"}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":[{"type":"text","text":"use ${SENTINEL} here"}]}}\n`);
 
   const service = makeService(tempDir);
   service.savePolicy('project-1', enabledPolicy(projectDir));
@@ -216,7 +218,8 @@ test('R3: 同长度改写并恢复 mtime 不得复用旧内容充当严格对照
   const first = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(first.captured, true);
   assert.equal(first.checkpoint.consistency.evidence, 'content-verified');
-  assert.equal(first.checkpoint.strictEvalEligible, true);
+  // v1 无独立一致性依据：即使内容级双扫零异常，严格资格也必须为 false（GPT 复审 #2）。
+  assert.equal(first.checkpoint.strictEvalEligible, false);
 
   // 同长度改写 + 恢复 mtime/mode：mtime 快速路径会被骗过，内容级二扫必须检出。
   // NTFS/utimes 的亚毫秒精度往返不稳定，直接把上一检查点中记录的 stat 签名
@@ -242,10 +245,10 @@ test('R3: 同长度改写并恢复 mtime 不得复用旧内容充当严格对照
   service.restoreCheckpoint({ projectId: 'project-1', checkpointId: second.checkpointId, targetDir: restoreDir });
   assert.equal(fs.readFileSync(path.join(restoreDir, 'a.txt'), 'utf8'), 'bbb');
 
-  // 第三次采集（无变化）：内容级双扫通过，恢复严格对照资格。
+  // 第三次采集（无变化）：内容级双扫仍未检测到变化，但双扫不等于现场一致——严格资格保持 false。
   const third = service.captureTurnCheckpoint(captureArgs(projectDir, { turnId: 'turn-3' }));
   assert.equal(third.checkpoint.consistency.evidence, 'content-verified');
-  assert.equal(third.checkpoint.strictEvalEligible, true);
+  assert.equal(third.checkpoint.strictEvalEligible, false);
 });
 
 test('R4a: 非法 JSONL 或空 session 标记不可完整回放，不归档未验证材料', () => {
@@ -255,7 +258,7 @@ test('R4a: 非法 JSONL 或空 session 标记不可完整回放，不归档未�
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
 
   const invalidSession = path.join(tempDir, 'invalid.jsonl');
-  fs.writeFileSync(invalidSession, '{"type":"message"}\n{not json}\n');
+  fs.writeFileSync(invalidSession, '{"type":"session","version":3,"id":"s1"}\n{not json}\n');
   const emptySession = path.join(tempDir, 'empty.jsonl');
   fs.writeFileSync(emptySession, '\n  \n');
 
@@ -294,7 +297,8 @@ test('R5a: 配额核算包含 session/prompt/清单：小配额 + 大 session �
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const sessionPath = path.join(tempDir, 'session.jsonl');
-  fs.writeFileSync(sessionPath, `{"type":"message","text":"${'x'.repeat(1000)}"}\n`);
+  fs.writeFileSync(sessionPath,
+    `{"type":"session","version":3,"id":"s1"}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":[{"type":"text","text":"${'x'.repeat(1000)}"}]}}\n`);
 
   const service = makeService(tempDir);
   service.savePolicy('project-1', enabledPolicy(projectDir, { stagingQuotaBytes: 100 }));
@@ -324,32 +328,274 @@ test('R5b: 占用统计计入清单等元数据，与检查点自报新增字节
   assert.equal(after.totalBytes - before.totalBytes, stats.totalNewBytes, '自报新增必须等于实际占用增长（含元数据）');
 });
 
-test('R6: 显式秘密豁免路径照常归档并留审计标记；默认策略无豁免', () => {
+test('R6: 秘密豁免机制已移除——policy 中的 secretAllowlistPatterns 被忽略，夹具哨兵照常排除', () => {
+  // GPT 复审 #6：目录级永久豁免会放行后续加入的真实凭据，本阶段移除该机制。
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(path.join(projectDir, 'fixtures'), { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'fixtures', 'fake-key.txt'), `fake ${SENTINEL} fixture`);
 
   const service = makeService(tempDir);
-  // 默认无豁免：豁免前命中即排除
-  service.savePolicy('project-1', enabledPolicy(projectDir));
-  let result = service.captureTurnCheckpoint(captureArgs(projectDir));
-  assert.equal(result.checkpoint.files['fixtures/fake-key.txt'].secretExcluded, true);
-  assert.equal(result.checkpoint.replayInput.complete, false);
-
-  // 显式豁免后：内容照常归档，清单留 secretAllowlisted 审计标记
   service.savePolicy('project-1', enabledPolicy(projectDir, { secretAllowlistPatterns: ['fixtures/**'] }));
-  result = service.captureTurnCheckpoint(captureArgs(projectDir, { turnId: 'turn-2' }));
-  const entry = result.checkpoint.files['fixtures/fake-key.txt'];
-  assert.equal(entry.secretExcluded, undefined);
-  assert.equal(entry.secretAllowlisted, true);
-  assert.ok(entry.hash, '豁免路径保留内容 hash');
-  assert.equal(result.checkpoint.stats.secretAllowlistedFiles, 1);
-  assert.equal(result.checkpoint.replayInput.complete, true);
-  assert.equal(result.checkpoint.strictEvalEligible, true);
+  const policy = service.loadPolicy('project-1');
+  assert.ok(!policy.secretAllowlistPatterns || policy.secretAllowlistPatterns.length === 0,
+    '豁免配置不得生效');
 
-  const restoreDir = path.join(tempDir, 'restore');
-  const restored = service.restoreCheckpoint({ projectId: 'project-1', checkpointId: result.checkpointId, targetDir: restoreDir });
-  assert.equal(restored.ok, true, JSON.stringify(restored.mismatches));
-  assert.ok(fs.readFileSync(path.join(restoreDir, 'fixtures', 'fake-key.txt'), 'utf8').includes(SENTINEL));
+  const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+  assert.equal(result.captured, true);
+  const entry = result.checkpoint.files['fixtures/fake-key.txt'];
+  assert.equal(entry.secretExcluded, true, '命中哨兵一律排除，无豁免路径');
+  assert.equal(entry.secretAllowlisted, undefined);
+  assert.equal(entry.hash, undefined, '秘密文件不记录内容 hash');
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assertNoBlobContains(tempDir, SENTINEL);
+});
+
+test('R7: 采集窗口内授权根被替换为外部 junction → 拒绝采集，外部内容不得落盘', () => {
+  // GPT 复审 #1：首扫后把授权根重命名、在原路径建立指向未授权目录的链接；
+  // 根身份必须在授权时固定，变化即失败，不能跟着新 realpath 继续采。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  const outsideDir = path.join(tempDir, 'outside');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.mkdirSync(outsideDir, { recursive: true });
+  const outsideContent = 'external-root-content-must-not-be-captured';
+  fs.writeFileSync(path.join(outsideDir, 'external.txt'), outsideContent);
+  fs.writeFileSync(path.join(projectDir, 'real.txt'), 'real');
+  gitInit(projectDir);
+  gitAddAll(projectDir);
+
+  const service = makeService(tempDir, {
+    afterScan: (dir, attempt) => {
+      if (attempt !== 0) {
+        return;
+      }
+      fs.renameSync(dir, `${dir}-orig`);
+      fs.symlinkSync(outsideDir, dir, process.platform === 'win32' ? 'junction' : 'dir');
+    },
+  });
+  service.savePolicy('project-1', enabledPolicy(projectDir));
+  const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+  assert.equal(result.captured, false, '根身份在采集窗口内变化必须拒绝采集');
+  assert.equal(result.reason, 'target_root_replaced');
+  assert.equal(service.store.listCheckpoints('project-1').length, 0, '失败不得留下检查点');
+  assertNoBlobContains(tempDir, outsideContent);
+});
+
+test('R8: 协调写入使双扫读到从未同时存在的状态——v1 严格资格恒为 false', () => {
+  // GPT 复审 #2：内容级双扫只能记录“未检测到变化”，不能证明现场一致。
+  // 编排：真实磁盘任何时刻两文件不同时为 '0'；采集器每次读取都被脚本化为 '0'，
+  // 双扫因此“无差异”。修复后：evidence 仍如实记录 content-verified（检测器无异常可报），
+  // 但 strictEvalEligible 必须恒为 false（无独立一致性依据）。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  const aPath = path.join(projectDir, 'a.txt');
+  const bPath = path.join(projectDir, 'b.txt');
+  fs.writeFileSync(aPath, '0');
+  fs.writeFileSync(bPath, '1');
+
+  const originalReadFileSync = fs.readFileSync;
+  const readReal = (p) => originalReadFileSync.call(fs, p, 'utf8');
+  const realStatesSeen = new Set();
+  const trackReal = () => realStatesSeen.add(`${readReal(aPath)}${readReal(bPath)}`);
+  fs.readFileSync = function (p, ...args) {
+    const key = String(p);
+    if (key === aPath || key === bPath) {
+      return Buffer.from('0');
+    }
+    return originalReadFileSync.call(this, p, ...args);
+  };
+
+  try {
+    trackReal(); // '01'
+    const service = makeService(tempDir, {
+      afterScan: () => {
+        fs.writeFileSync(aPath, '1'); // '11'
+        trackReal();
+        fs.writeFileSync(bPath, '0'); // '10'
+        trackReal();
+      },
+      afterFirstScan: () => {
+        fs.writeFileSync(bPath, '1'); // '11'
+        trackReal();
+        fs.writeFileSync(aPath, '0'); // '01'
+        trackReal();
+      },
+    });
+    service.savePolicy('project-1', enabledPolicy(projectDir));
+    const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+    assert.equal(result.captured, true);
+    assert.ok(!realStatesSeen.has('00'), `真实状态从未同时为 00，实际出现: ${[...realStatesSeen].join(',')}`);
+    assert.equal(result.checkpoint.consistency.evidence, 'content-verified',
+      '检测器如实报告“未检测到变化”——这正是双扫的能力上限');
+    assert.equal(result.checkpoint.strictEvalEligible, false,
+      '双扫无差异不得兑换严格对照资格');
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+  }
+});
+
+test('R9: session 结构校验——非对象行/缺头/断链/未识别内容类型一律不完整', () => {
+  // GPT 复审 #3：合法 JSONL 语法 ≠ 完整 session。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
+  const service = makeService(tempDir);
+  service.savePolicy('project-1', enabledPolicy(projectDir));
+
+  const writeSession = (name, text) => {
+    const p = path.join(tempDir, name);
+    fs.writeFileSync(p, text);
+    return p;
+  };
+  const HEADER = '{"type":"session","version":3,"id":"s1"}';
+
+  const cases = [
+    ['null-line.jsonl', 'null\n', 'session_non_object_entry:line_1'],
+    ['no-header.jsonl', '{"type":"message","id":"m1","parentId":null}\n', 'session_header_invalid'],
+    ['broken-chain.jsonl', `${HEADER}\n{"type":"message","id":"m1","parentId":"missing"}\n`, 'session_chain_broken:line_2'],
+    ['array-line.jsonl', `${HEADER}\n[1,2]\n`, 'session_non_object_entry:line_2'],
+    ['unknown-content.jsonl',
+      `${HEADER}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":[{"type":"image","url":"file:///x.png"}]}}\n`,
+      'session_unverified_content:line_2:image'],
+  ];
+  let turn = 0;
+  for (const [name, text, reason] of cases) {
+    turn += 1;
+    const result = service.captureTurnCheckpoint(captureArgs(projectDir, {
+      turnId: `turn-${turn}`,
+      deliveryMode: 'resume',
+      sessionPath: writeSession(name, text),
+    }));
+    assert.equal(result.captured, true);
+    assert.equal(result.checkpoint.replayInput.complete, false, name);
+    assert.ok(result.checkpoint.replayInput.incompleteReasons.includes(reason),
+      `${name} 期望 ${reason}，实际 ${result.checkpoint.replayInput.incompleteReasons.join(',')}`);
+    assert.equal(result.checkpoint.replayInput.sessionBlobHash, '', `${name} 未验证材料不得归档`);
+    assert.equal(result.checkpoint.strictEvalEligible, false);
+  }
+
+  // 合法最小 session（头 + model_change + message）可以归档，但严格资格仍为 false。
+  const okSession = writeSession('ok.jsonl',
+    `${HEADER}\n{"type":"model_change","id":"c1","parentId":null}\n{"type":"message","id":"m1","parentId":"c1","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}\n`);
+  const ok = service.captureTurnCheckpoint(captureArgs(projectDir, {
+    turnId: 'turn-ok',
+    deliveryMode: 'resume',
+    sessionPath: okSession,
+  }));
+  assert.equal(ok.checkpoint.replayInput.complete, true, ok.checkpoint.replayInput.incompleteReasons.join(','));
+  assert.ok(ok.checkpoint.replayInput.sessionBlobHash);
+  assert.equal(ok.checkpoint.strictEvalEligible, false);
+});
+
+test('R10: PEM 私钥头在行首/换行后/二进制前缀中必须命中哨兵', () => {
+  // GPT 复审 #4：\\b 在连字符前要求前置单词字符，行首/换行后的 PEM 头被漏检。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'head.pem'), '-----BEGIN PRIVATE KEY-----\nfake-body\n-----END PRIVATE KEY-----\n');
+  fs.writeFileSync(path.join(projectDir, 'mid.pem'), 'config line\n-----BEGIN RSA PRIVATE KEY-----\nfake\n');
+  fs.writeFileSync(path.join(projectDir, 'bin.pem'),
+    Buffer.concat([Buffer.from([0x00, 0x01, 0x02]), Buffer.from('-----BEGIN EC PRIVATE KEY-----'), Buffer.alloc(8, 0)]));
+
+  const service = makeService(tempDir);
+  service.savePolicy('project-1', enabledPolicy(projectDir));
+  const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+  assert.equal(result.captured, true);
+  for (const name of ['head.pem', 'mid.pem', 'bin.pem']) {
+    assert.equal(result.checkpoint.files[name].secretExcluded, true, `${name} 必须命中哨兵`);
+  }
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.equal(result.checkpoint.strictEvalEligible, false);
+  assertNoBlobContains(tempDir, 'PRIVATE KEY');
+});
+
+test('R11: 扫描后文件膨胀超限必须在落盘前阻断，CAS 不得先写入超限内容', () => {
+  // GPT 复审 #5：写时读到的实际字节必须在写盘前重新核算配额。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'a.txt'), 'x'.repeat(100));
+
+  const service = makeService(tempDir, {
+    afterScan: (dir, attempt) => {
+      if (attempt === 0) {
+        fs.writeFileSync(path.join(dir, 'a.txt'), 'y'.repeat(20000));
+      }
+    },
+  });
+  service.savePolicy('project-1', enabledPolicy(projectDir, { stagingQuotaBytes: 10000 }));
+  const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+  assert.equal(result.captured, false);
+  assert.equal(result.reason, 'quota_exceeded');
+  assert.equal(service.loadPolicy('project-1').status, 'suspended');
+  const usage = service.computeUsage('project-1');
+  assert.ok(usage.totalBytes <= 10000, `超限内容不得落盘，实际占用 ${usage.totalBytes}`);
+});
+
+test('R12: harness/skill 配置未验证必须降级，不得宣称完整', () => {
+  // GPT 复审 #3：runConfig 只有 model 必填不够，harness/tool/skill 内容版本未固定时必须降级。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
+  const service = makeService(tempDir);
+  service.savePolicy('project-1', enabledPolicy(projectDir));
+
+  // 1) 缺 harness → harness_config_unverified
+  let result = service.captureTurnCheckpoint(captureArgs(projectDir, { harness: undefined }));
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('harness_config_unverified'));
+
+  // 2) 缺 promptVersion → run_config_incomplete
+  result = service.captureTurnCheckpoint(captureArgs(projectDir, {
+    turnId: 'turn-2',
+    runConfig: { provider: 'test-provider', model: 'test-model' },
+  }));
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('run_config_incomplete'));
+
+  // 3) 声明 skill 但无内容快照 → skill_snapshot_missing
+  result = service.captureTurnCheckpoint(captureArgs(projectDir, {
+    turnId: 'turn-3',
+    runConfig: { provider: 'p', model: 'm', promptVersion: 'v1', skillIds: ['demo-skill'] },
+  }));
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('skill_snapshot_missing:demo-skill'));
+
+  // 4) 提供内容快照 → 快照归档进 CAS，输入完整（严格资格仍 false）
+  const crypto = require('node:crypto');
+  const skillContent = '# demo skill body\n';
+  const skillHash = crypto.createHash('sha256').update(skillContent).digest('hex');
+  result = service.captureTurnCheckpoint(captureArgs(projectDir, {
+    turnId: 'turn-4',
+    runConfig: { provider: 'p', model: 'm', promptVersion: 'v1', skillIds: ['demo-skill'] },
+    harness: { serverVersion: 'test-server', skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: skillHash, content: skillContent }] },
+  }));
+  assert.equal(result.checkpoint.replayInput.complete, true, result.checkpoint.replayInput.incompleteReasons.join(','));
+  assert.equal(result.checkpoint.replayInput.harness.skillSnapshots[0].blobHash, skillHash);
+  assert.ok(service.store.hasBlob('project-1', skillHash), 'skill 内容必须归档进 CAS');
+  assert.equal(result.checkpoint.strictEvalEligible, false);
+
+  // 5) 快照 hash 与内容不符 → 拒绝归档
+  result = service.captureTurnCheckpoint(captureArgs(projectDir, {
+    turnId: 'turn-5',
+    runConfig: { provider: 'p', model: 'm', promptVersion: 'v1', skillIds: ['demo-skill'] },
+    harness: { serverVersion: 'test-server', skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: '0'.repeat(64), content: skillContent }] },
+  }));
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('skill_snapshot_hash_mismatch:demo-skill'));
+
+  // 6) 快照内容命中哨兵 → 拒绝归档
+  const secretSkill = `use ${SENTINEL} now`;
+  result = service.captureTurnCheckpoint(captureArgs(projectDir, {
+    turnId: 'turn-6',
+    runConfig: { provider: 'p', model: 'm', promptVersion: 'v1', skillIds: ['demo-skill'] },
+    harness: { serverVersion: 'test-server', skillSnapshots: [{ id: 'demo-skill', source: 'project', sha256: crypto.createHash('sha256').update(secretSkill).digest('hex'), content: secretSkill }] },
+  }));
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('skill_contains_secret:demo-skill'));
+  assertNoBlobContains(tempDir, SENTINEL);
 });

@@ -10,7 +10,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 
 | 对象 | 标识 | 含义 | 关键状态 |
 |---|---|---|---|
-| CapturePolicy | projectId | 项目级采集授权：开关、授权目录清单、纳入的 ignored 模式、排除模式、秘密豁免模式（默认空）、暂存期限与配额 | disabled / enabled / suspended(空间不足或采集失败) |
+| CapturePolicy | projectId | 项目级采集授权：开关、授权目录清单、纳入的 ignored 模式、排除模式、暂存期限与配额 | disabled / enabled / suspended(空间不足或采集失败) |
 | Checkpoint | checkpointId | 某次 agent turn 执行前的现场：文件清单+内容引用、回放输入、环境指纹、一致性级别 | staged / sealed / expired / incomplete |
 | BadcaseFlag | flagId | 用户对某条消息/某次 run 的问题标记：实际问题、期望行为 | draft / confirmed |
 | SealedCase | caseId | 标记触发后长期封存的证据包：Checkpoint + 轨迹 + BadcaseFlag 关联 | captured / runnable / reproduced / evaluable（见 §8） |
@@ -42,23 +42,26 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 采集期间 worktree 可能被 room 外写入者（用户编辑器、后台进程）修改。slot 机制只串行化 room 内 agent turn，不能杜绝外部写入。必须区分两个不同性质的事实：
 
 - **完整性（integrity）**：清单与 blob 的 hash 校验通过，即“恢复出来的内容逐字节等于清单记录的内容”。这只证明包内自洽，不证明包等于源现场。
-- **源现场一致性（consistency evidence）**：有依据表明清单记录的是采集窗口内未检测到变化的现场。双扫相同是证据，不是同时性证明。
+- **源现场一致性（consistency evidence）**：有依据表明清单记录的是采集窗口内未检测到变化的现场。双扫相同是“未检测到变化”的检测记录，**不是同时性证明**——协调写入可以让两次扫描读到从未同时存在的状态，任意次数的内容比对都无法排除这种情况。
 
 采集流程：
 
-1. 采集前扫描生成清单 M1（读前对每个文件做 realpath 边界校验；读取内容、秘密哨兵检测、hash 计算；可用上一检查点的 size+mtime+mode 快速路径复用 hash，仅加速本首扫）；写 CAS 时重读、重校 hash、重扫秘密，检测扫描与读取之间的变化；
-2. 采集后重扫 M2：**全量重新读取并重 hash**（不是 stat 级比对——stat 级无法发现“同长度改写 + 恢复 mtime”）；
-3. M1 与 M2 在内容 hash 级无差异且写时重校全部通过 → `content-verified`；检测到差异 → 有限次重试，重试后稳定 → `corrected-after-retry`，仍不一致 → `write-during-capture` 并记录差异路径。
+1. 授权判定时**固定授权根身份**（pinnedRoot = 目标目录的 realpath）；采集窗口内根被替换成 junction/symlink（realpath 变化）→ 采集失败 `target_root_replaced`，绝不跟随新根；读文件前后各做一次 realpath 边界校验，缓解检查-读取竞态；
+2. 采集前扫描生成清单 M1（读取内容、秘密哨兵检测、hash 计算；可用上一检查点的 size+mtime+mode 快速路径复用 hash，仅加速本首扫）；写 CAS 时重读、重校 hash、重扫秘密，检测扫描与读取之间的变化；
+3. 采集后重扫 M2：**全量重新读取并重 hash**（不是 stat 级比对——stat 级无法发现“同长度改写 + 恢复 mtime”）；
+4. M1 与 M2 在内容 hash 级无差异且写时重校全部通过 → `content-verified`；检测到差异 → 有限次重试，重试后稳定 → `corrected-after-retry`，仍不一致 → `write-during-capture` 并记录差异路径。
 
-- **一致性证据三级**：`content-verified`（内容级双扫零异常）/ `corrected-after-retry`（检出异常后重试修正稳定）/ `write-during-capture`（重试耗尽仍不一致）。三者 `atomicityGuaranteed` 恒为 false——内容级双扫是当前可取得的一致性依据，不是同时性证明。
-- **严格对照评测要求 `content-verified` 且** 完整性校验通过 **且** 回放输入完整；`corrected-after-retry` 与 `write-during-capture` 的包可保存、可标记，但**不得参与严格对照评测**（AC2/AC7）。禁止以“清单自洽”或“双扫无差异”冒充“现场一致”。
-- mtime 快速路径只用于首扫加速；它对严格资格无影响，因为 M2 永远全量重 hash。
+- **一致性证据三级**：`content-verified` / `corrected-after-retry` / `write-during-capture`，三者 `atomicityGuaranteed` 恒为 false。三级都只是检测记录，级别只描述“检测到什么”，不构成严格对照资格。
+- **严格对照资格在 v1 恒不可用**（`strictEvalEligible=false`，原因 `no_independent_consistency_evidence`）：严格对照要求独立的源现场一致性依据（如文件系统快照/写屏障），v1 不具备。所有检查点可保存、可标记、可作 best-effort 回放并附一致性证据披露，但**不得参与严格对照评测**（AC2/AC7）。禁止以“清单自洽”“双扫无差异”或重命名状态冒充“现场一致”。
+- 对照评测的公平性由“baseline 与 candidate 从同一 Checkpoint 恢复”保证；checkpoint 对历史现场的保真度按 consistency evidence 如实披露。
+- mtime 快速路径只用于首扫加速；它对任何资格判定无影响，因为 M2 永远全量重 hash。
 - 不用 git 脏状态 hash 作为一致性证据（漏 untracked/ignored，且无同时性保证）。
 
 ### 2.4 回放输入
 
-- fresh：归档本轮完整 prompt 组装结果；运行配置（provider/model/promptVersion/skill 清单）记入 `runConfig`，缺模型标识 → `model_config_missing`，不可完整回放。
-- resume：**必须在检查点时刻归档 pi session 文件**（`resolveSessionPath` 指向的 JSONL，含全历史）。session **存在 ≠ 完整**：归档前逐行校验 JSONL 结构（非空、每行合法 JSON），不通过 → `session_invalid_jsonl:line_N` / `session_empty`，未验证材料不归档。历史分支/压缩状态/附件与路径依赖的深度校验属后续工作，当前版本对未覆盖维度保持 incomplete 语义。缺 session 或依赖缺失 → 标记“不可完整回放”，**禁止静默降级为 fresh**（deliveryMode 是实验条件，变更即换条件）。
+- fresh：归档本轮完整 prompt 组装结果；运行配置（provider/model/promptVersion/skill 清单）记入 `runConfig`，缺模型标识 → `model_config_missing`，缺 provider/promptVersion → `run_config_incomplete`，不可完整回放。
+- resume：**必须在检查点时刻归档 pi session 文件**（`resolveSessionPath` 指向的 JSONL，含全历史）。session **存在 ≠ 完整、语法合法 ≠ 结构可信**：归档前做结构校验——非空；每行合法 JSON 且为普通对象（拒绝 `null`/数组/标量）；首行必须是 session 头（`type=session` + 字符串 id）；后续条目必须有字符串 `type` 且 `parentId` 为 null 或引用前面已出现的 id（历史链完整）；message 内容块只接受已识别的 `text`/`thinking`/`toolCall` 类型，其他类型（附件/图片引用等）未验证。任一维度不通过 → `session_empty` / `session_invalid_jsonl:line_N` / `session_non_object_entry:line_N` / `session_header_invalid` / `session_chain_broken:line_N` / `session_unverified_content:line_N:type`，未验证材料不归档。历史压缩状态与路径依赖的深度校验属后续工作，对未覆盖维度保持 incomplete 语义。缺 session 或依赖缺失 → 标记“不可完整回放”，**禁止静默降级为 fresh**（deliveryMode 是实验条件，变更即换条件）。
+- **harness/skill 内容固定**：skill ID 列表不等于内容固定。调用方必须为每个声明的 skill 提供内容快照（id + 来源 + 内容 + sha256）与 serverVersion（git SHA 或包版本）；快照内容经 hash 校验与秘密哨兵扫描后归档进 CAS，使回放包自包含。缺 serverVersion → `harness_config_unverified`；声明的 skill 无快照 → `skill_snapshot_missing:<id>`；快照 hash 与内容不符 → `skill_snapshot_hash_mismatch:<id>`；快照含哨兵 → `skill_contains_secret:<id>`，均不可完整回放。
 - prompt 与 session 在**受控变量替换后的最终字节**上过秘密哨兵扫描；命中即拒绝归档该输入并记录 `prompt_contains_secret` / `session_contains_secret`（输入损失显式标记，不先写 CAS 再脱敏）。
 - 回放输入独立于 Inspector 投影存储。
 
@@ -67,9 +70,9 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 - prompt 中嵌入的 `CAFF_CHAT_API_URL`、callback token 等运行时凭据：**不归档原值**，归档时替换为占位符并记录位置。
 - 回放时由评测服务重新签发并注入。允许替换的变量显式列清单：评测回调地址、运行凭据、工作目录映射、会话标识。清单之外 prompt 逐字节一致；基线与候选使用同一替换规则与归一化 hash。
 - 若脱敏/排除导致关键任务输入缺失 → 标记不可完整回放，不猜测填充。
-- **秘密扫描无“未检查”路径**：内容已整体读入内存，不设大小跳检上限；文本用完整哨兵模式集，二进制（含 NUL）用高置信子集（`sk-`/`ghp_`/`github_pat_`/`xox`/私钥头）按 latin1 扫描，键值型文本模式不用于二进制以免误报。写 CAS 前对最终字节重扫（TOCTOU 防线）。秘密命中文件不记录内容 hash（低熵秘密的 hash 可暴力反推），只记录排除事实。
-- **显式豁免**：`secretAllowlistPatterns`（默认空）可对已知假阳性路径（如测试夹具）豁免排除；豁免文件照常归档内容并在清单记录 `secretAllowlisted` 审计标记，配置方承担豁免风险。
-- 授权边界按 **realpath** 判定（穿透 junction/符号链接）；读文件前逐文件 realpath 校验，防止 git 在 `core.symlinks=false` 下展开 junction 导致越界读取。越界路径不读取、不进清单，且使包不完整、阻断严格对照。
+- **秘密扫描无“未检查”路径**：内容已整体读入内存，不设大小跳检上限；文本用完整哨兵模式集，二进制（含 NUL）用高置信子集（`sk-`/`ghp_`/`github_pat_`/`xox`/私钥头）按 latin1 扫描，键值型文本模式不用于二进制以免误报。写 CAS 前对最终字节重扫（TOCTOU 防线）。秘密命中文件不记录内容 hash（低熵秘密的 hash 可暴力反推），只记录排除事实。私钥头模式的边界断言必须覆盖行首/换行后/二进制前缀（连字符前 `\b` 在这些位置不成立）。
+- **无豁免机制**：本阶段不提供 secretAllowlistPatterns 一类的秘密豁免（目录级永久豁免会放行后续加入的真实凭据）。已知假阳性路径只能用 excludedPatterns 整体排除，或经评审修订哨兵模式集。
+- 授权边界按 **realpath** 判定（穿透 junction/符号链接），授权时固定根身份；读文件前后逐文件 realpath 校验，防止 git 在 `core.symlinks=false` 下展开 junction 或采集窗口内根/中间目录被替换导致越界读取。越界路径不读取、不进清单，且使包不完整；根身份变化直接拒绝采集。
 
 ## 3. 存储与生命周期契约
 
@@ -77,7 +80,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 - 暂存：默认未标记 Checkpoint 保留 7 天、每项目 10 GiB（可配置初值，P1）；超额可提前清理最旧的**未封存**数据。
 - 封存：BadcaseFlag 确认后，关联 Checkpoint 及其全部可达 blob 被 pin，不受期限/配额回收；封存占用对用户可见。运行中 ReplayRun 引用的对象同样受 pin 保护。
 - GC：仅回收无 pin、无运行引用、超期或超额挤出的对象；共享 blob 引用计数保护；空间不足/磁盘写失败/采集失败时 CapturePolicy 转 suspended 并显式报告，**不伪造采集成功**。
-- 配额核算：占用 = CAS blob + checkpoint 清单 + latest 指针（“零新增 CAS 字节”不等于“零新增总空间”）。每个重试 attempt 都做写前预检（文件 + prompt/session 计划字节 + 清单估值），落盘前按实际清单字节终检；终检超额不落清单，可能留下无引用孤儿 blob，由 GC 回收。检查点自报 `newBlobBytes` / `newManifestBytes` / `totalNewBytes`，必须与实际占用增长一致。
+- 配额核算：占用 = CAS blob + checkpoint 清单 + latest 指针（“零新增 CAS 字节”不等于“零新增总空间”）。每个重试 attempt 都做写前预检（文件 + prompt/session/skill 计划字节 + 清单估值）；**预检是估计，写时实际字节是硬上限**——逐 blob 落盘前按写时读到的实际内容重新核算（扫描后文件膨胀不得先突破配额再失败）；落盘前按实际清单字节终检；终检超额不落清单，可能留下无引用孤儿 blob，由 GC 回收。检查点自报 `newBlobBytes` / `newManifestBytes` / `totalNewBytes`，必须与实际占用增长一致。
 - 测量：开启前展示授权目录容量预估；运行后展示每检查点新增字节、项目总占用、封存占用；区分文件/session/镜像成本（AC9）。
 
 ## 4. 环境与 Docker 隔离契约
@@ -103,7 +106,8 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 | 凭据/私钥进入 CAS 并随用例扩散 | 秘密泄露 | 授权目录+排除模式；归档前秘密扫描与占位替换；秘密哨兵测试（AC3） |
 | 容器内 agent 写宿主机/生产 | 真实仓库与生产状态损坏 | 整体进程入容器；独立副本挂载；禁 socket/privileged；网络默认拒绝；越界路径与符号链接负向测试（AC5） |
 | 回放回连生产 CAFF 回调 | 污染生产会话/计费 | 独立评测回调服务与数据库；生产回调访问拒绝测试（AC5） |
-| 快照期间并发写 | 起点失真，对照结论无效 | 双扫一致性检测；best-effort 降级且禁入严格对照（AC2） |
+| 快照期间并发写 | 起点失真，对照结论无效 | 双扫一致性检测；v1 严格资格恒不可用，包仅作 best-effort 回放并披露证据级别（AC2） |
+| 授权目录被 junction/symlink 替换 | 未授权内容进入 CAS | 授权时固定根身份；根替换即失败；读文件前后 realpath 双重校验（AC5） |
 | GC 误删封存/共享 blob | 证据丢失 | pin + 引用计数 + 并发 pin-GC 测试（AC6） |
 | 被测 agent 读取评分信息 | 评分失真 | 隔离卷不挂 wiki/参考答案/前次产物；manifest 审计（AC7） |
 | 预算失控 | 未授权付费 | 人工发起+预算门控，超限停止（AC7/AC8） |

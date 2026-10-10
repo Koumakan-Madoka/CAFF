@@ -9,7 +9,9 @@ const SECRET_SENTINEL_PATTERNS: RegExp[] = [
   /\bghp_[A-Za-z0-9_]{8,}\b/u,
   /\bgithub_pat_[A-Za-z0-9_]{12,}\b/u,
   /\bxox[baprs]-[A-Za-z0-9-]{8,}\b/u,
-  /\b-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/u,
+  // 私钥头：连字符是非单词字符，\b 在字符串/行首永不成立（GPT 复审 #4），
+  // 用否定后瞻明确“前面不是字母数字”，行首、换行后、二进制前缀均可命中。
+  /(?<![0-9A-Za-z])-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/u,
   /\b(?:api[_-]?key|auth[_-]?token|access[_-]?token|secret|password|passwd)\s*[:=]\s*['"]?[^\s,'";]{6,}/iu,
 ];
 

@@ -1,4 +1,5 @@
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const { createHttpError } = require('../../../http/http-errors');
 const { createConfiguredModelCatalog } = require('../../models/configured-model-catalog');
 const { inspectModelConfiguration } = require('../../models/model-configuration');
@@ -64,6 +65,77 @@ const { getSessionGoal } = require('../session-goal');
 
 const HEARTBEAT_EVENT_REASON_LIMIT = 200;
 const TURN_PREVIEW_LENGTH = 180;
+
+// Badcase 采集的 harness 身份（契约 §2.4/§5：回放必须固定 harness/skill 内容版本，
+// 未验证则降级为不完整）。serverVersion 优先取当前代码的 git SHA，不可得时回退
+// package.json 版本；懒计算并缓存，失败返回空串由采集器标记 harness_config_unverified。
+let cachedCaptureServerVersion: string | null = null;
+function resolveCaptureServerVersion() {
+  if (cachedCaptureServerVersion !== null) {
+    return cachedCaptureServerVersion;
+  }
+  let version = '';
+  try {
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      cwd: __dirname,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (sha) {
+      version = `git:${sha}`;
+    }
+  } catch {}
+  if (!version) {
+    try {
+      let dir = __dirname;
+      for (let depth = 0; depth < 6; depth += 1) {
+        const pkgPath = path.join(dir, 'package.json');
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+          if (pkg && pkg.version) {
+            version = `pkg:${String(pkg.version)}`;
+            break;
+          }
+        }
+        dir = path.dirname(dir);
+      }
+    } catch {}
+  }
+  cachedCaptureServerVersion = version;
+  return version;
+}
+
+// 为声明的 skillIds 生成内容快照（id + 来源 + 内容 + sha256），供采集器归档进 CAS，
+// 使回放包自包含、可审计；skill 无法解析时保留空 sha256，由采集器标记不完整。
+function buildCaptureSkillSnapshots(skillIds: any, resolvedSkills: any, seen: any) {
+  const snapshots: any[] = [];
+  const resolvedById = new Map();
+  for (const skill of Array.isArray(resolvedSkills) ? resolvedSkills : []) {
+    if (skill && skill.id && !resolvedById.has(skill.id)) {
+      resolvedById.set(skill.id, skill);
+    }
+  }
+  for (const rawId of Array.isArray(skillIds) ? skillIds : []) {
+    const id = String(rawId || '').trim();
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    const skill = resolvedById.get(id);
+    if (!skill) {
+      snapshots.push({ id, source: '', sha256: '', content: '' });
+      continue;
+    }
+    const content = `${String(skill.skillMarkdown || '')}\n${String(skill.openaiYaml || '')}`;
+    snapshots.push({
+      id,
+      source: String(skill.source || ''),
+      sha256: createHash('sha256').update(content, 'utf8').digest('hex'),
+      content,
+    });
+  }
+  return snapshots;
+}
 const MAX_PRIVATE_CONTEXT_MESSAGES = 8;
 const MAX_RELATED_MEMORY_SEGMENTS = 5;
 const MAX_RELATED_MEMORY_CANDIDATE_SEGMENTS = 15;
@@ -2239,6 +2311,17 @@ export function createAgentExecutor(options: any = {}) {
             promptVersion: AGENT_PROMPT_VERSION,
             skillIds: Array.isArray(agentConfig.skillIds) ? agentConfig.skillIds.slice() : [],
             conversationSkillIds: Array.isArray(agentConfig.conversationSkillIds) ? agentConfig.conversationSkillIds.slice() : [],
+          },
+          harness: {
+            serverVersion: resolveCaptureServerVersion(),
+            skillSnapshots: [
+              ...buildCaptureSkillSnapshots(agentConfig.skillIds, resolvedPersonaSkills, new Set()),
+              ...buildCaptureSkillSnapshots(
+                agentConfig.conversationSkillIds,
+                resolvedConversationSkills,
+                new Set(Array.isArray(agentConfig.skillIds) ? agentConfig.skillIds.map((id: any) => String(id || '').trim()) : [])
+              ),
+            ],
           },
         });
         if (captureResult && captureResult.captured === true && captureResult.checkpointId) {

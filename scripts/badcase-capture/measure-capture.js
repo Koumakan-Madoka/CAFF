@@ -51,6 +51,9 @@ function main() {
     },
   };
 
+  const runConfig = { provider: 'measure-provider', model: 'measure-model', promptVersion: 'measure-v1' };
+  const harness = { serverVersion: 'measure-script', skillSnapshots: [] };
+
   // 1) 冷采集（无历史清单，全量 hash + 落盘）
   const cold = service.captureTurnCheckpoint({
     projectId: 'measure',
@@ -61,6 +64,8 @@ function main() {
     deliveryMode: 'fresh',
     prompt: 'measurement prompt',
     controlledValues: {},
+    runConfig,
+    harness,
   });
   if (!cold.captured) {
     console.error(JSON.stringify({ error: cold.reason }, null, 2));
@@ -77,6 +82,10 @@ function main() {
     hashedFiles: cold.checkpoint.stats.hashedFiles,
     durationMs: cold.checkpoint.stats.durationMs,
     consistency: cold.checkpoint.consistency.evidence,
+    strictEvalEligible: cold.checkpoint.strictEvalEligible,
+    strictEvalBlockedReason: cold.checkpoint.strictEvalBlockedReason,
+    replayInputComplete: cold.checkpoint.replayInput.complete,
+    incompleteReasons: cold.checkpoint.replayInput.incompleteReasons,
   };
 
   // 2) 热采集（无变化）：mtime 快速路径，只写 prompt blob
@@ -84,6 +93,7 @@ function main() {
     projectId: 'measure', targetDir, conversationId: 'measure-conv',
     turnId: 'warm-unchanged', agentId: 'measure-agent',
     deliveryMode: 'fresh', prompt: 'measurement prompt', controlledValues: {},
+    runConfig, harness,
   });
   report.warmUnchanged = {
     newBlobBytes: warmUnchanged.checkpoint.stats.newBlobBytes,
@@ -101,6 +111,7 @@ function main() {
       projectId: 'measure', targetDir, conversationId: 'measure-conv',
       turnId: 'warm-changed', agentId: 'measure-agent',
       deliveryMode: 'fresh', prompt: 'measurement prompt v2', controlledValues: {},
+      runConfig, harness,
     });
     report.warmChanged = {
       newBlobBytes: warmChanged.checkpoint.stats.newBlobBytes,
@@ -122,6 +133,7 @@ function main() {
       turnId: 'resume-session', agentId: 'measure-agent',
       deliveryMode: 'resume', prompt: 'resume measurement', controlledValues: {},
       sessionPath,
+      runConfig, harness,
     });
     const after = service.computeUsage('measure');
     report.sessionArchive = {

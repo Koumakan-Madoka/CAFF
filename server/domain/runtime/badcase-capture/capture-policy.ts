@@ -55,7 +55,8 @@ export function defaultCapturePolicy(projectId: any) {
     status: 'disabled',
     authorizedDirs: [] as string[],
     includedIgnoredPatterns: [] as string[],
-    secretAllowlistPatterns: [] as string[],
+    // 注意：本阶段不提供秘密豁免机制（secretAllowlistPatterns 已移除）。命中哨兵一律排除；
+    // 已知假阳性路径只能用 excludedPatterns 整体排除，或经评审修订哨兵模式集。
     excludedPatterns: DEFAULT_EXCLUDED_PATTERNS.slice(),
     stagingRetentionDays: DEFAULT_STAGING_RETENTION_DAYS,
     stagingQuotaBytes: DEFAULT_STAGING_QUOTA_BYTES,
@@ -75,9 +76,7 @@ export function normalizeCapturePolicy(raw: any, projectId: any) {
     status,
     authorizedDirs: normalizeDirList(source.authorizedDirs),
     includedIgnoredPatterns: normalizePatternList(source.includedIgnoredPatterns, []),
-    // 已知假阳性路径的显式秘密豁免（默认空）。命中的文件照常归档内容并在清单中
-    // 记录 secretAllowlisted 审计标记；配置方自行承担豁免风险。
-    secretAllowlistPatterns: normalizePatternList(source.secretAllowlistPatterns, []),
+    // secretAllowlistPatterns 已移除：即使调用方传入也不保留、不生效（GPT 复审 #6）。
     excludedPatterns: normalizePatternList(source.excludedPatterns, DEFAULT_EXCLUDED_PATTERNS),
     stagingRetentionDays: normalizePositiveInteger(source.stagingRetentionDays, DEFAULT_STAGING_RETENTION_DAYS),
     stagingQuotaBytes: normalizePositiveInteger(source.stagingQuotaBytes, DEFAULT_STAGING_QUOTA_BYTES),
@@ -90,6 +89,11 @@ function isSamePath(left: any, right: any) {
   const a = path.resolve(String(left || '').trim());
   const b = path.resolve(String(right || '').trim());
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+// 导出的路径相等判定（Windows 不区分大小写），用于采集期间校验授权根身份未被替换。
+export function pathsEqual(left: any, right: any) {
+  return isSamePath(left, right);
 }
 
 // 解析真实路径（穿透 junction/symlink）；路径不存在时回退为字符串 resolve。
