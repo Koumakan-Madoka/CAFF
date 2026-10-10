@@ -52,11 +52,20 @@ function main() {
   };
 
   const runConfig = { provider: 'measure-provider', model: 'measure-model', promptVersion: 'measure-v1' };
-  const harness = {
+  // configSnapshot 必填键（piVersion/agentPromptVersion/toolBridgeEnabled/deliveryMode/agentName），
+  // 缺键或空对象会被采集器降级为 harness_tool_config_unverified。
+  const harnessFor = (mode) => ({
     serverVersion: 'measure-script',
-    configSnapshot: { agentPromptVersion: 'measure', toolBridgeEnabled: true },
+    configSnapshot: {
+      agentPromptVersion: 'measure',
+      toolBridgeEnabled: true,
+      piVersion: 'measure-pi',
+      deliveryMode: mode,
+      agentName: 'measure-agent',
+    },
     skillSnapshots: [],
-  };
+  });
+  const harness = harnessFor('fresh');
 
   // 1) 冷采集（无历史清单，全量 hash + 落盘）
   const cold = service.captureTurnCheckpoint({
@@ -137,7 +146,7 @@ function main() {
       turnId: 'resume-session', agentId: 'measure-agent',
       deliveryMode: 'resume', prompt: 'resume measurement', controlledValues: {},
       sessionPath,
-      runConfig, harness,
+      runConfig, harness: harnessFor('resume'),
     });
     const after = service.computeUsage('measure');
     report.sessionArchive = {

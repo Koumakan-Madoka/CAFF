@@ -209,6 +209,16 @@ export function isPathWithinPinnedRoot(pinnedRootRealPath: any, targetPath: any)
   return isSameOrUnderPath(root, realpathOrResolved(targetPath));
 }
 
+// 对已解析路径做纯字符串界内判定（fd 绑定读取协议用：realpath 只做一次，
+// 避免“检查一次、打开前再解析一次”的双解析窗口）。
+export function isSameOrUnderPathString(pinnedRootRealPath: any, resolvedTargetPath: any) {
+  const root = String(pinnedRootRealPath || '').trim();
+  if (!root) {
+    return false;
+  }
+  return isSameOrUnderPath(root, resolvedTargetPath);
+}
+
 // 授权判定 + 授权根身份校验（GPT 复审 #1）。
 // - 边界比较基于保存策略时固定的真实路径（authorizedDirPins），不重新跟随根；
 // - 授权后根被替换（realpath 与 pin 不符）→ authorized_root_replaced；
@@ -242,7 +252,9 @@ export function authorizeTargetDir(policy: any, targetDir: any) {
       return { ok: false, reason: 'authorized_root_replaced', dir: rawResolved };
     }
     if (realContained) {
-      return { ok: true, reason: '' };
+      // 返回本次验证过的目标真实路径：调用方必须直接把它作为 pinnedRoot 使用，
+      // 不得二次 realpath（授权结论与使用之间的二次解析是 pin 竞态入口，GPT 复审 #1）。
+      return { ok: true, reason: '', resolvedTarget };
     }
     // 字符串命中但真实路径越界（目标是根内的链接路径指向外部）：继续检查其余根，
     // 最终按 dir_not_authorized 拒绝。

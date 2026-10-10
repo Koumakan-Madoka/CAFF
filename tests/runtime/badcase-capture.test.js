@@ -61,7 +61,13 @@ function captureArgs(projectDir, overrides = {}) {
     runConfig: { provider: 'test-provider', model: 'test-model', promptVersion: 'test-v1' },
     harness: {
       serverVersion: 'test-server',
-      configSnapshot: { agentPromptVersion: 'test-v1', toolBridgeEnabled: true },
+      configSnapshot: {
+        agentPromptVersion: 'test-v1',
+        toolBridgeEnabled: true,
+        piVersion: '0.0.0-test',
+        deliveryMode: 'fresh',
+        agentName: 'test-agent',
+      },
       skillSnapshots: [],
     },
     ...overrides,

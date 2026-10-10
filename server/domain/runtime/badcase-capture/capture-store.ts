@@ -73,6 +73,11 @@ export function createCaptureStore(options: any = {}) {
     return path.join(projectDir(projectId), 'checkpoints');
   }
 
+  // attempt 暂存目录：位于 blobs/checkpoints 之外，computeUsage 不计入（未提交字节不算占用）。
+  function stagingDir(projectId: any, stagingId: any) {
+    return path.join(projectDir(projectId), 'staging', sanitizeIdComponent(stagingId));
+  }
+
   function checkpointPath(projectId: any, checkpointId: any) {
     return path.join(checkpointsDir(projectId), `${sanitizeIdComponent(checkpointId)}.json`);
   }
@@ -141,6 +146,63 @@ export function createCaptureStore(options: any = {}) {
         return null;
       }
       return fs.readFileSync(target);
+    },
+
+    // ---- 逐 attempt 暂存（GPT 复审 #1）----
+    // 采集 attempt 期间读到的 blob 先写入 staging，只有 attempt 通过根身份复检与一致性
+    // 定级后才原子 rename 提交进 CAS；重试/失败整体回滚。即使读取链路的残余竞态被赢下，
+    // 越权内容也只能到达 staging，绝不持久化进 CAS。
+
+    stageBlob(projectId: any, stagingId: any, hash: any, content: any) {
+      const dir = stagingDir(projectId, stagingId);
+      fs.mkdirSync(dir, { recursive: true });
+      const normalized = String(hash || '').trim().toLowerCase();
+      const target = path.join(dir, normalized);
+      if (fs.existsSync(target)) {
+        if (fs.statSync(target).size === content.length) {
+          return { written: false, path: target, bytes: 0 };
+        }
+        throw new Error(`staged blob hash collision at ${target}`);
+      }
+      const tmpPath = `${target}.tmp-${crypto.randomUUID()}`;
+      fs.writeFileSync(tmpPath, content);
+      fs.renameSync(tmpPath, target);
+      return { written: true, path: target, bytes: content.length };
+    },
+
+    // 提交：暂存 blob 原子 rename 进 CAS（同卷）；已存在同尺寸 blob 时按内容寻址去重跳过。
+    commitStaging(projectId: any, stagingId: any) {
+      const dir = stagingDir(projectId, stagingId);
+      if (!fs.existsSync(dir)) {
+        return;
+      }
+      for (const name of fs.readdirSync(dir)) {
+        if (name.includes('.tmp-')) {
+          continue;
+        }
+        const source = path.join(dir, name);
+        if (!fs.statSync(source).isFile()) {
+          continue;
+        }
+        const target = blobPath(projectId, name);
+        if (fs.existsSync(target)) {
+          if (fs.statSync(target).size !== fs.statSync(source).size) {
+            throw new Error(`blob hash collision or corruption at ${target}`);
+          }
+          continue; // 内容寻址去重：CAS 已有同 hash blob
+        }
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.renameSync(source, target);
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+      // 父目录空了就一并清掉，不留空壳。
+      try { fs.rmdirSync(path.dirname(dir)); } catch {}
+    },
+
+    rollbackStaging(projectId: any, stagingId: any) {
+      const dir = stagingDir(projectId, stagingId);
+      fs.rmSync(dir, { recursive: true, force: true });
+      try { fs.rmdirSync(path.dirname(dir)); } catch {}
     },
 
     saveCheckpoint(projectId: any, checkpoint: any) {

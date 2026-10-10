@@ -46,10 +46,14 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 
 采集流程：
 
-1. **授权根身份在保存（授权）策略时固定**：`savePolicy` 把每个授权目录解析为真实路径并持久化为 `authorizedDirPins`；采集时授权判定以固定值为边界基准（不重新跟随根），授权后根被替换（当前 realpath 与 pin 不符）→ `authorized_root_replaced` 拒绝，缺 pin 的策略 → `authorized_root_unpinned` 失败关闭。采集开始时再固定本次 pinnedRoot = 目标目录 realpath；采集窗口内根被替换成 junction/symlink → 采集失败 `target_root_replaced`，绝不跟随新根；读文件前后各做一次 realpath 边界校验，且校验以 pinnedRoot 字符串为基准（**不重新解析根**，防止比较基准跟着 junction 移动导致外部内容落盘后被阶段末检查才发现），缓解检查-读取竞态；
-2. 采集前扫描生成清单 M1（读取内容、秘密哨兵检测、hash 计算；可用上一检查点的 size+mtime+mode 快速路径复用 hash，仅加速本首扫）；写 CAS 时重读、重校 hash、重扫秘密，检测扫描与读取之间的变化；
-3. 采集后重扫 M2：**全量重新读取并重 hash**（不是 stat 级比对——stat 级无法发现“同长度改写 + 恢复 mtime”）；
-4. M1 与 M2 在内容 hash 级无差异且写时重校全部通过 → `content-verified`；检测到差异 → 有限次重试，重试后稳定 → `corrected-after-retry`，仍不一致 → `write-during-capture` 并记录差异路径。
+1. **授权根身份在保存（授权）策略时固定**：`savePolicy` 把每个授权目录解析为真实路径并持久化为 `authorizedDirPins`；采集时授权判定以固定值为边界基准（不重新跟随根），授权后根被替换（当前 realpath 与 pin 不符）→ `authorized_root_replaced` 拒绝，缺 pin 的策略 → `authorized_root_unpinned` 失败关闭。pinnedRoot **直接取授权判定验证过的 resolvedTarget，不做第二次 realpath**（授权结论与使用之间的二次解析是 pin 竞态入口）；采集窗口内根被替换成 junction/symlink → 采集失败 `target_root_replaced`，绝不跟随新根；
+2. **fd 绑定读取**：所有从目标树读内容的路径（首扫/写时重读/二扫）统一为：realpath 只做一次 → 与 pinnedRoot 做纯字符串界内校验（不重新解析根，无双解析窗口）→ `openSync` 后**只从 fd 读内容**（不再按路径名重读）→ 读到的字节数与 fstat size 不符（读期间增长/收缩）→ 拒绝 → 读后 `lstat` 与 fstat 比 **dev+ino**（路径名当前指向的对象必须是读过的对象；读期间换根、读后换回的 ABA 在这里被确定性拦截，因为换回后路径名的 ino 与 fd 的 ino 必然不等）。任一步失败即失败关闭：该文件不读取、不进清单，并作为一致性异常触发重试（不静默跳过冒充干净现场）；
+3. **逐 attempt 暂存提交**：采集 attempt 期间读到的 blob 只写入 `staging/<attemptId>/`，该 attempt 通过根身份复检且一致性定级后才**原子 rename 提交进 CAS**；重试/失败/配额超限整体回滚删除。即使读取链路的残余竞态被赢下，越权内容也只能到达 staging，绝不持久化进 CAS（“阶段末才报失败但外部 blob 已落盘”的结构不再存在）；
+4. 采集前扫描生成清单 M1（fd 绑定读取、秘密哨兵检测、hash 计算；可用上一检查点的 size+mtime+mode 快速路径复用 hash，仅加速本首扫）；写 staging 时 fd 绑定重读、重校 hash、重扫秘密，检测扫描与读取之间的变化；
+5. 采集后重扫 M2：**全量重新读取并重 hash**（不是 stat 级比对——stat 级无法发现“同长度改写 + 恢复 mtime”）；
+6. M1 与 M2 在内容 hash 级无差异且写时重校全部通过 → `content-verified`；检测到差异 → 有限次重试，重试后稳定 → `corrected-after-retry`，仍不一致 → `write-during-capture` 并记录差异路径。重试耗尽的降级包保留最后一轮读取的内容 blob（清单引用它们才能恢复），证据级别如实披露。
+
+- **读取链路的诚实残余**（`path_identity_race_residual`）：Node 在 win32 无法做 handle→path 反查，“换根恰好横跨单个 fd 读取、且在 attempt 结束前换回”的残余窗口无法从协议上完全消除；fd 身份校验 + hash 重校 + 暂存回滚三层拦截了全部已知编排（包括 ABA），但 v1 不宣称读取绑定是完备的。Linux 评测容器阶段竞态面更小（无可无特权创建的 junction）。
 
 - **一致性证据三级**：`content-verified` / `corrected-after-retry` / `write-during-capture`，三者 `atomicityGuaranteed` 恒为 false。三级都只是检测记录，级别只描述“检测到什么”，不构成严格对照资格。
 - **严格对照资格在 v1 恒不可用**（`strictEvalEligible=false`，原因 `no_independent_consistency_evidence`）：严格对照要求独立的源现场一致性依据（如文件系统快照/写屏障），v1 不具备。所有检查点可保存、可标记、可作 best-effort 回放并附一致性证据披露，但**不得参与严格对照评测**（AC2/AC7）。禁止以“清单自洽”“双扫无差异”或重命名状态冒充“现场一致”。
@@ -60,9 +64,9 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 ### 2.4 回放输入
 
 - fresh：归档本轮完整 prompt 组装结果；运行配置（provider/model/promptVersion/skill 清单）记入 `runConfig`，缺模型标识 → `model_config_missing`，缺 provider/promptVersion → `run_config_incomplete`，不可完整回放。
-- resume：**必须在检查点时刻归档 pi session 文件**（`resolveSessionPath` 指向的 JSONL，含全历史）。session **存在 ≠ 完整、语法合法 ≠ 结构可信**：归档前做结构校验——非空；每行合法 JSON 且为普通对象（拒绝 `null`/数组/标量）；首行必须是 session 头（`type=session` + 字符串 id）；后续条目 `type` 必须在 pi v3 已知类型白名单内（`message`/`model_change`/`compaction`/`custom`/`custom_message`/`label`/`branch_summary`/`session_info`/`thinking_level_change`；未知类型可能携带未归档附件或外部路径引用，一律降级 `session_unverified_entry_type`）；每个条目必须有唯一字符串 `id`（重复 → `session_duplicate_entry_id`）；`parentId` 为 null 或引用前面已出现的 id（历史链完整）；message 必须是带 `role` 与 `content` 数组的对象（`message=null` 等损坏形态 → `session_invalid_message`，content 为 null → `session_message_content_null`），内容块只接受已识别的 `text`/`thinking`/`toolCall` 类型；compaction 必须有非空 summary 且 `firstKeptEntryId` 引用文件中存在的条目（压缩状态未验证 → `session_compaction_ref_broken`）；branch_summary 进入上下文时 `fromId` 必须可解析。任一维度不通过即拒绝归档该 session 并记录具体原因，未验证材料不归档。缺 session 或依赖缺失 → 标记“不可完整回放”，**禁止静默降级为 fresh**（deliveryMode 是实验条件，变更即换条件）。
-- **harness/skill 内容固定**：skill ID 列表不等于内容固定，serverVersion 非空不等于 harness/tool 配置已固定。调用方必须提供：(a) serverVersion（git SHA 或包版本）；(b) 有效工具/sandbox 配置快照对象 `configSnapshot`，经哨兵扫描后归档进 CAS 并记录 hash（缺失 → `harness_tool_config_unverified`，命中哨兵 → `harness_config_contains_secret`）；(c) 每个声明 skill 的内容快照（id + 来源 + 内容 + sha256）。快照内容经 hash 校验与秘密哨兵扫描后归档进 CAS，使回放包自包含；**声明集合与实际归档集合对账**，空内容不得跳过校验（`content=""` 照常与声明 hash 比对）。缺 serverVersion → `harness_config_unverified`；声明的 skill 无快照 → `skill_snapshot_missing:<id>`；hash 不符 → `skill_snapshot_hash_mismatch:<id>`；含哨兵 → `skill_contains_secret:<id>`；未归档且无更具体原因 → `skill_snapshot_not_archived:<id>`，均不可完整回放。
-- 每个检查点携带机器可读的 `integrity.knownLimitations`（常驻限制声明，不是文档级披露）：`no_atomic_snapshot`、`no_independent_consistency_evidence`、`harness_config_caller_asserted`（配置快照由调用方声明，采集方不独立验证其来源）、`environment_not_pinned`（W4）、`external_service_state_not_pinned`。
+- resume：**必须在检查点时刻归档 pi session 文件**（`resolveSessionPath` 指向的 JSONL，含全历史）。session **存在 ≠ 完整、语法合法 ≠ 结构可信，默认拒绝未验证维度**：归档前做结构校验——非空；每行合法 JSON 且为普通对象（拒绝 `null`/数组/标量）；首行必须是 session 头且 **version 钉死 `SUPPORTED_SESSION_VERSION=3`**（pi `CURRENT_SESSION_VERSION`；缺版本 → `session_header_version_missing`，其他版本 → `session_unsupported_version`，版本演进一律诚实降级而不是按旧规则放行）；后续条目 `type` 必须在 pi v3 已知类型白名单内（`message`/`model_change`/`compaction`/`custom`/`custom_message`/`label`/`branch_summary`/`session_info`/`thinking_level_change`；未知类型可能携带未归档附件或外部路径引用，一律降级 `session_unverified_entry_type`）；每个条目必须有唯一字符串 `id`（重复 → `session_duplicate_entry_id`）；`parentId` 为 null 或引用前面已出现的 id（历史链完整）；message 的 `role` 必须在已知白名单内（`user`/`assistant`/`toolResult`/`custom`；未知 role → `session_unverified_message_role`）且**内容块逐字段校验**（`text` 必须有 `text` 字符串、`thinking` 必须有 `thinking`、`toolCall` 必须有 `id`/`name`/`arguments` 对象、`image` 必须有 `data`+`mimeType`；缺字段 → `session_invalid_content_block:<detail>`；`toolResult` 还要求 `toolCallId`/`toolName` → `session_invalid_toolresult:<field>`；字符串内容仅 user/custom 合法）；compaction 必须有非空 summary 且 `firstKeptEntryId` **引用该行之前出现的条目**（自引用/前向引用 → `session_compaction_ref_broken`）；branch_summary 必须有非空 summary（缺失 → `session_branch_summary_incomplete`，不得条件跳过）且 `fromId` 非 null 时同样必须是后向引用（→ `session_branch_ref_broken`）。任一维度不通过即拒绝归档该 session 并记录具体原因，未验证材料不归档。缺 session 或依赖缺失 → 标记“不可完整回放”，**禁止静默降级为 fresh**（deliveryMode 是实验条件，变更即换条件）。
+- **harness/skill 内容固定**：skill ID 列表不等于内容固定，serverVersion 非空不等于 harness/tool 配置已固定，**空对象不是有效配置快照**。调用方必须提供：(a) serverVersion（git SHA 或包版本）；(b) 含必填键的有效配置快照对象 `configSnapshot`——必填键及类型：`piVersion`/`agentPromptVersion` 非空字符串、`toolBridgeEnabled` 布尔、`deliveryMode` 枚举（fresh/resume）、`agentName` 字符串；空对象/缺键/类型错误 → `harness_tool_config_unverified`，命中哨兵 → `harness_config_contains_secret`；有效快照经哨兵扫描后归档进 CAS 并记录 hash；(c) 每个声明 skill 的内容快照（id + 来源 + 内容 + sha256）。快照内容经 hash 校验与秘密哨兵扫描后归档进 CAS，使回放包自包含；**声明集合与实际归档集合对账**，空内容不得跳过校验（`content=""` 照常与声明 hash 比对）。缺 serverVersion → `harness_config_unverified`；声明的 skill 无快照 → `skill_snapshot_missing:<id>`；hash 不符 → `skill_snapshot_hash_mismatch:<id>`；含哨兵 → `skill_contains_secret:<id>`；未归档且无更具体原因 → `skill_snapshot_not_archived:<id>`，均不可完整回放。
+- 每个检查点携带机器可读的 `integrity.knownLimitations`（常驻限制声明，不是文档级披露）：`no_atomic_snapshot`、`no_independent_consistency_evidence`、`path_identity_race_residual`、`harness_config_caller_asserted`（配置快照由调用方声明，采集方不独立验证其来源）、`environment_not_pinned`（W4）、`external_service_state_not_pinned`。
 - prompt 与 session 在**受控变量替换后的最终字节**上过秘密哨兵扫描；命中即拒绝归档该输入并记录 `prompt_contains_secret` / `session_contains_secret`（输入损失显式标记，不先写 CAS 再脱敏）。
 - 回放输入独立于 Inspector 投影存储。
 
@@ -73,7 +77,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 - 若脱敏/排除导致关键任务输入缺失 → 标记不可完整回放，不猜测填充。
 - **秘密扫描无“未检查”路径**：内容已整体读入内存，不设大小跳检上限；文本用完整哨兵模式集，二进制（含 NUL）用高置信子集（`sk-`/`ghp_`/`github_pat_`/`xox`/私钥头）按 latin1 扫描，键值型文本模式不用于二进制以免误报。写 CAS 前对最终字节重扫（TOCTOU 防线）。秘密命中文件不记录内容 hash（低熵秘密的 hash 可暴力反推），只记录排除事实。私钥头模式的边界断言必须覆盖行首/换行后/二进制前缀（连字符前 `\b` 在这些位置不成立）。
 - **无豁免机制**：本阶段不提供 secretAllowlistPatterns 一类的秘密豁免（目录级永久豁免会放行后续加入的真实凭据）。已知假阳性路径只能用 excludedPatterns 整体排除，或经评审修订哨兵模式集。
-- 授权边界按 **realpath** 判定（穿透 junction/符号链接），授权根身份在保存策略时固定（`authorizedDirPins`），采集时的逐文件 realpath 校验以固定根字符串为基准、不重新解析根；防止 git 在 `core.symlinks=false` 下展开 junction、授权后根被替换、或采集窗口内根/中间目录被替换导致越界读取。越界路径不读取、不进清单，且使包不完整；根身份变化直接拒绝采集。
+- 授权边界按 **realpath** 判定（穿透 junction/符号链接），授权根身份在保存策略时固定（`authorizedDirPins`），pinnedRoot 取授权判定验证过的 resolvedTarget 且不二次解析；采集时所有内容读取走 fd 绑定协议（realpath 一次 + 纯字符串界内校验 + fd 读取 + 读后 dev/ino 身份比对），blob 逐 attempt 暂存、定级后才提交进 CAS；防止 git 在 `core.symlinks=false` 下展开 junction、授权后根被替换、采集窗口内根/中间目录被替换、或读期间 ABA 换根导致越权内容落盘。越界路径不读取、不进清单，且使包不完整；根身份变化直接拒绝采集。
 
 ## 3. 存储与生命周期契约
 
@@ -108,7 +112,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 | 容器内 agent 写宿主机/生产 | 真实仓库与生产状态损坏 | 整体进程入容器；独立副本挂载；禁 socket/privileged；网络默认拒绝；越界路径与符号链接负向测试（AC5） |
 | 回放回连生产 CAFF 回调 | 污染生产会话/计费 | 独立评测回调服务与数据库；生产回调访问拒绝测试（AC5） |
 | 快照期间并发写 | 起点失真，对照结论无效 | 双扫一致性检测；v1 严格资格恒不可用，包仅作 best-effort 回放并披露证据级别（AC2） |
-| 授权目录被 junction/symlink 替换 | 未授权内容进入 CAS | 授权时固定根身份；根替换即失败；读文件前后 realpath 双重校验（AC5） |
+| 授权目录被 junction/symlink 替换 | 未授权内容进入 CAS | 授权时固定根身份；根替换即失败；fd 绑定读取（读后 dev/ino 身份比对拦截 ABA）+ 逐 attempt 暂存回滚（残余竞态赢下也不持久化）（AC5） |
 | GC 误删封存/共享 blob | 证据丢失 | pin + 引用计数 + 并发 pin-GC 测试（AC6） |
 | 被测 agent 读取评分信息 | 评分失真 | 隔离卷不挂 wiki/参考答案/前次产物；manifest 审计（AC7） |
 | 预算失控 | 未授权付费 | 人工发起+预算门控，超限停止（AC7/AC8） |
