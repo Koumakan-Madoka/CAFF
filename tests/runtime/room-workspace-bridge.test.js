@@ -1,0 +1,287 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const test = require('node:test');
+
+const { createAgentToolBridge } = require('../../build/server/domain/runtime/agent-tool-bridge');
+const { previewFingerprint } = require('../../build/server/domain/conversation/room-workspace-authorization');
+const { createChatAppStore } = require('../../build/lib/chat-app-store');
+
+function git(cwd, args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+// Exclusive outer directory per test: repo at <outer>/repo, worktrees at <outer>/worktrees.
+function initRepo() {
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-room-workspace-bridge-'));
+  const root = path.join(outer, 'repo');
+  fs.mkdirSync(root);
+  git(root, ['init']);
+  git(root, ['config', 'user.name', 'CAFF Test']);
+  git(root, ['config', 'user.email', 'caff-test@example.invalid']);
+  fs.writeFileSync(path.join(root, 'README.md'), 'base\n');
+  git(root, ['add', 'README.md']);
+  git(root, ['commit', '-m', 'base']);
+  git(root, ['branch', 'develop']);
+  return { outer, root };
+}
+
+function createHarness(t, suffix) {
+  const { outer, root: repoRoot } = initRepo();
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), `caff-bridge-store-${suffix}-`));
+  const store = createChatAppStore({ agentDir, sqlitePath: path.join(agentDir, 'bridge.sqlite') });
+  const broadcastEvents = [];
+  const bridge = createAgentToolBridge({
+    store,
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
+    resolveProject(projectScopeId) {
+      return projectScopeId === 'project-1' ? { id: 'project-1', path: repoRoot } : null;
+    },
+  });
+  const agent = store.saveCustomRoleConfig({
+    id: `bridge-ws-agent-${suffix}`,
+    name: `Bridge Workspace Agent ${suffix}`,
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: `bridge-ws-conversation-${suffix}`,
+    title: `Bridge Workspace ${suffix}`,
+    type: 'standard',
+    projectScopeId: 'project-1',
+    participants: [agent.id],
+  });
+  const turnId = `bridge-ws-turn-${suffix}`;
+  const assistantMessage = store.createMessage({
+    id: `bridge-ws-message-${suffix}`,
+    conversationId: conversation.id,
+    turnId,
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Thinking...',
+    status: 'streaming',
+  });
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: conversation.id,
+      turnId,
+      agentId: agent.id,
+      agentName: agent.name,
+      assistantMessageId: assistantMessage.id,
+      conversationAgents: [agent],
+      stage: { status: 'running', taskId: '' },
+      turnState: { conversationId: conversation.id, turnId, stopRequested: false },
+    })
+  );
+
+  t.after(() => {
+    try { store.close(); } catch {}
+    fs.rmSync(agentDir, { recursive: true, force: true });
+    fs.rmSync(outer, { recursive: true, force: true });
+  });
+
+  async function invoke(facade, args) {
+    return bridge.handlePiCapability(facade, {
+      invocationId: context.invocationId,
+      callbackToken: context.callbackToken,
+      arguments: args,
+    });
+  }
+
+  function pendingCard() {
+    const cards = bridge.listRoomWorkspaceAuthorizations(conversation.id);
+    return cards.find((card) => card.status === 'pending') || null;
+  }
+
+  function decide(card, decision = 'accepted', fingerprintOverride = null) {
+    return bridge.handleRoomWorkspaceAuthorization({
+      conversationId: conversation.id,
+      authorizationId: card.id,
+      token: card.token,
+      decision,
+      fingerprint: fingerprintOverride || card.fingerprint,
+    });
+  }
+
+  function boundConversation() {
+    return store.getConversationWithoutMessages(conversation.id);
+  }
+
+  return {
+    store,
+    bridge,
+    conversation,
+    assistantMessage,
+    context,
+    broadcastEvents,
+    repoRoot,
+    invoke,
+    pendingCard,
+    decide,
+    boundConversation,
+  };
+}
+
+test('custom branchName authorization card replays the exact approved plan through the bridge', async (t) => {
+  const harness = createHarness(t, 'custom-card');
+  const preview = await harness.invoke('room_workspace_preview', { branchName: 'feature/bridge-custom' });
+  assert.equal(preview.branch, 'feature/bridge-custom');
+  const key = harness.conversation.id.replace(/[^a-z0-9]/giu, '').toLowerCase().slice(0, 8);
+  assert.equal(path.basename(preview.worktreePath), key);
+
+  const card = harness.pendingCard();
+  assert.ok(card, 'preview must issue an authorization card');
+  assert.equal(card.branch, 'feature/bridge-custom');
+
+  const decision = await harness.decide(card);
+  assert.equal(decision.record.status, 'accepted');
+  const bound = harness.boundConversation();
+  assert.equal(bound.branch, 'feature/bridge-custom');
+  assert.equal(path.basename(bound.worktreePath), key);
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/bridge-custom');
+  assert.equal(git(bound.worktreePath, ['rev-parse', 'HEAD']), bound.workspaceBaseSha);
+});
+
+test('default authorization card keeps the automatic naming through the bridge', async (t) => {
+  const harness = createHarness(t, 'default-card');
+  const preview = await harness.invoke('room_workspace_preview', {});
+  const key = harness.conversation.id.replace(/[^a-z0-9]/giu, '').toLowerCase().slice(0, 8);
+  assert.equal(preview.branch, `room/${key}-bridge-workspace-default-card`);
+
+  const card = harness.pendingCard();
+  const decision = await harness.decide(card);
+  assert.equal(decision.record.status, 'accepted');
+  const bound = harness.boundConversation();
+  assert.equal(bound.branch, preview.branch);
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), preview.branch);
+});
+
+test('rename preview stays read-only during the caller\'s active turn and execution waits for idle', async (t) => {
+  const harness = createHarness(t, 'active-guard');
+  await harness.invoke('room_workspace_preview', {});
+  await harness.decide(harness.pendingCard());
+  const bound = harness.boundConversation();
+  assert.ok(bound.branch);
+
+  // The caller's own streaming message must not block the read-only rename preview.
+  const renamePreview = await harness.invoke('room_workspace_rename_preview', { branchName: 'feature/after-active' });
+  assert.equal(renamePreview.branch, bound.branch);
+  assert.equal(renamePreview.newBranch, 'feature/after-active');
+  const card = harness.pendingCard();
+  assert.ok(card, 'rename preview must issue a card even during an active turn');
+  assert.equal(card.kind, 'rename');
+
+  // Approving while the Room still has an active execution is blocked without side effects.
+  await assert.rejects(
+    harness.decide(card),
+    (error) => error && error.code === 'room_workspace_execution_active'
+  );
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), bound.branch);
+  assert.equal(harness.boundConversation().branch, bound.branch);
+
+  // The blocked card is terminal; the agent re-previews for a fresh card once the
+  // turn reaches a terminal state, and that card executes.
+  harness.store.updateMessage(harness.assistantMessage.id, { status: 'completed' });
+  await harness.invoke('room_workspace_rename_preview', { branchName: 'feature/after-active' });
+  const retryCard = harness.pendingCard();
+  assert.ok(retryCard);
+  assert.notEqual(retryCard.id, card.id);
+  const decision = await harness.decide(retryCard);
+  assert.equal(decision.record.status, 'accepted');
+  assert.equal(harness.boundConversation().branch, 'feature/after-active');
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/after-active');
+});
+
+test('rename_bind fallback excludes the caller\'s own turn but executes the rename', async (t) => {
+  const harness = createHarness(t, 'rename-fallback');
+  await harness.invoke('room_workspace_preview', {});
+  await harness.decide(harness.pendingCard());
+  const bound = harness.boundConversation();
+
+  // The fixture's streaming message belongs to the calling invocation's turn; the
+  // non-UI fallback must not be blocked by it.
+  const renamed = await harness.invoke('room_workspace_rename_bind', {
+    confirm: true,
+    branchName: 'feature/fallback-renamed',
+  });
+  assert.equal(renamed.renamed, true);
+  assert.equal(renamed.newBranch, 'feature/fallback-renamed');
+  assert.equal(harness.boundConversation().branch, 'feature/fallback-renamed');
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/fallback-renamed');
+});
+
+test('an interrupted rename resumes through the public preview-and-approve entry', async (t) => {
+  const harness = createHarness(t, 'resume-public');
+  await harness.invoke('room_workspace_preview', {});
+  await harness.decide(harness.pendingCard());
+  const bound = harness.boundConversation();
+  const oldBranch = bound.branch;
+
+  // Authorize a rename, then simulate a crash after the write-ahead record and the
+  // git rename but before the DB update.
+  const renamePreview = await harness.invoke('room_workspace_rename_preview', { branchName: 'feature/resumed' });
+  const card = harness.pendingCard();
+  assert.equal(card.kind, 'rename');
+  harness.store.createWorkspaceOperation({
+    conversationId: harness.conversation.id,
+    kind: 'rename',
+    oldBranch,
+    newBranch: 'feature/resumed',
+    fingerprint: card.fingerprint,
+  });
+  git(bound.worktreePath, ['branch', '-m', oldBranch, 'feature/resumed']);
+
+  // A mismatched fingerprint is rejected before any DB write.
+  const pendingBefore = harness.store.getPendingWorkspaceOperation(harness.conversation.id);
+  await assert.rejects(
+    harness.decide(card, 'accepted', 'definitely-stale'),
+    (error) => error && error.code === 'room_workspace_authorization_stale'
+  );
+  assert.equal(harness.boundConversation().branch, oldBranch);
+  assert.equal(harness.store.getPendingWorkspaceOperation(harness.conversation.id).id, pendingBefore.id);
+
+  // Public entry after the "restart": the read-only preview exposes the resumable
+  // plan. The plan is identical, so the same still-pending card is returned
+  // (idempotent issuance) and can be approved directly.
+  const resumePreview = await harness.invoke('room_workspace_rename_preview', { branchName: 'feature/resumed' });
+  assert.equal(resumePreview.resume, true);
+  assert.equal(resumePreview.branch, oldBranch);
+  assert.equal(resumePreview.newBranch, 'feature/resumed');
+  const resumeCard = harness.pendingCard();
+  assert.ok(resumeCard);
+  assert.equal(resumeCard.id, card.id);
+  assert.equal(resumeCard.fingerprint, card.fingerprint);
+
+  // Simulate the post-restart idle Room: the interrupted turn's message is terminal.
+  harness.store.updateMessage(harness.assistantMessage.id, { status: 'completed' });
+  const decision = await harness.decide(resumeCard);
+  assert.equal(decision.record.status, 'accepted');
+  assert.equal(harness.boundConversation().branch, 'feature/resumed');
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/resumed');
+  assert.equal(harness.store.getPendingWorkspaceOperation(harness.conversation.id), null);
+});
+
+test('a newer plan supersedes the pending card and the old card executes nothing', async (t) => {
+  const harness = createHarness(t, 'supersede');
+  await harness.invoke('room_workspace_preview', { branchName: 'feature/plan-a' });
+  const cardA = harness.pendingCard();
+  await harness.invoke('room_workspace_preview', { branchName: 'feature/plan-b' });
+  const cardB = harness.pendingCard();
+  assert.notEqual(cardA.id, cardB.id);
+
+  await assert.rejects(
+    harness.decide(cardA),
+    (error) => error && error.code === 'room_workspace_authorization_decided'
+  );
+  assert.equal(harness.boundConversation().branch, null);
+  const branches = git(harness.repoRoot, ['branch', '--format=%(refname:short)']).split(/\r?\n/u);
+  assert.ok(!branches.includes('feature/plan-a'));
+
+  const decision = await harness.decide(cardB);
+  assert.equal(decision.record.status, 'accepted');
+  assert.equal(harness.boundConversation().branch, 'feature/plan-b');
+});

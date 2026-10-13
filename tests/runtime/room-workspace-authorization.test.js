@@ -141,7 +141,43 @@ test('a bound Room cannot issue a bind card but can issue a rename card', () => 
   assert.equal(clientCard.newBranch, 'feature/after');
 });
 
-test('the authorization fingerprint binds the operation kind and target branch name', () => {
+test('a newer plan supersedes a still-pending card so the old card can never execute', async () => {
+  const store = new RoomWorkspaceAuthorizationStore({ ttlMs: 30_000 });
+  const conversation = { id: 'room-1234', projectScopeId: 'project-a' };
+  const planA = { ...preview, branch: 'room/1234-plan-a', worktreePath: 'E:/worktrees/room/1234-plan-a' };
+  const planB = { ...preview, branch: 'room/1234-plan-b', worktreePath: 'E:/worktrees/room/1234-plan-b' };
+  const cardA = store.issue({ conversation, preview: planA, now: 1_000 });
+  const clientA = store.clientRecord(store.records.get(cardA.id));
+  const cardB = store.issue({ conversation, preview: planB, now: 1_001 });
+  assert.ok(cardB);
+  assert.notEqual(cardA.id, cardB.id);
+
+  const listed = store.listForClient('room-1234', 1_002);
+  assert.equal(listed.find((card) => card.id === cardA.id).status, 'superseded');
+  assert.equal(listed.find((card) => card.id === cardB.id).status, 'pending');
+
+  // Approving the superseded card is rejected and executes nothing.
+  let executed = false;
+  await assert.rejects(
+    store.decide({
+      id: clientA.id,
+      token: clientA.token,
+      conversationId: 'room-1234',
+      decision: 'accepted',
+      fingerprint: clientA.fingerprint,
+      execute: () => { executed = true; },
+      now: 1_003,
+    }),
+    (error) => error && error.code === 'room_workspace_authorization_decided'
+  );
+  assert.equal(executed, false);
+
+  // Re-issuing the identical plan returns the same still-pending card instead of a new one.
+  const cardB2 = store.issue({ conversation, preview: planB, now: 1_004 });
+  assert.equal(cardB2.id, cardB.id);
+});
+
+test('the authorization fingerprint binds the operation kind and target branch name', async () => {
   const store = new RoomWorkspaceAuthorizationStore({ ttlMs: 30_000 });
   const conversation = { id: 'room-1234', projectScopeId: 'project-a' };
   assert.notEqual(previewFingerprint(preview), previewFingerprint(renamePreview));
@@ -150,24 +186,23 @@ test('the authorization fingerprint binds the operation kind and target branch n
     previewFingerprint({ ...renamePreview, newBranch: 'feature/different' })
   );
 
-  const first = store.issue({ conversation, preview: renamePreview, now: 1_000 });
-  const second = store.issue({ conversation, preview: { ...renamePreview, newBranch: 'feature/different' }, now: 1_001 });
-  assert.ok(first);
-  assert.ok(second);
-  assert.notEqual(first.id, second.id);
-  assert.notEqual(first.fingerprint, second.fingerprint);
-
-  const clientCard = store.clientRecord(store.records.get(first.id));
-  return assert.rejects(
+  const card = store.issue({ conversation, preview: renamePreview, now: 1_000 });
+  const clientCard = store.clientRecord(store.records.get(card.id));
+  // A fingerprint from a different plan does not match this card.
+  const foreignFingerprint = previewFingerprint({ ...renamePreview, newBranch: 'feature/different' });
+  let executed = false;
+  await assert.rejects(
     store.decide({
       id: clientCard.id,
       token: clientCard.token,
       conversationId: 'room-1234',
       decision: 'accepted',
-      fingerprint: second.fingerprint,
-      execute: () => ({ ok: true }),
-      now: 1_002,
+      fingerprint: foreignFingerprint,
+      execute: () => { executed = true; },
+      now: 1_001,
     }),
     (error) => error && error.code === 'room_workspace_authorization_stale'
   );
+  assert.equal(executed, false);
+  assert.equal(store.records.get(card.id).status, 'pending');
 });

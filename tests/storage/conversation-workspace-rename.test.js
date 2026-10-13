@@ -103,3 +103,68 @@ test('active execution detection follows non-terminal assistant messages', () =>
     if (typeof store.close === 'function') store.close();
   }
 });
+
+test('active execution detection can exclude the caller\'s own turn', () => {
+  const tempDir = withTempDir('caff-workspace-active-exclude-');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'exclude.sqlite') });
+  try {
+    const bound = createBoundRoom(store, 'exclude-turn-room');
+    store.createMessage({
+      conversationId: bound.id,
+      turnId: 'turn-caller',
+      role: 'assistant',
+      content: 'caller is working',
+      status: 'streaming',
+    });
+    assert.equal(store.hasActiveConversationTurn(bound.id), true);
+    assert.equal(store.hasActiveConversationTurn(bound.id, { excludeTurnId: 'turn-caller' }), false);
+
+    store.createMessage({
+      conversationId: bound.id,
+      turnId: 'turn-other',
+      role: 'assistant',
+      content: 'another turn is working',
+      status: 'running',
+    });
+    assert.equal(store.hasActiveConversationTurn(bound.id, { excludeTurnId: 'turn-caller' }), true);
+  } finally {
+    if (typeof store.close === 'function') store.close();
+  }
+});
+
+test('workspace operation records persist the authorized rename intent', () => {
+  const tempDir = withTempDir('caff-workspace-operations-');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'ops.sqlite') });
+  try {
+    const bound = createBoundRoom(store, 'operation-room');
+    assert.equal(store.getPendingWorkspaceOperation(bound.id), null);
+
+    const created = store.createWorkspaceOperation({
+      conversationId: bound.id,
+      kind: 'rename',
+      oldBranch: 'feature/before',
+      newBranch: 'feature/after',
+      fingerprint: 'f'.repeat(64),
+    });
+    assert.equal(created.status, 'pending');
+    assert.equal(created.oldBranch, 'feature/before');
+    assert.equal(created.newBranch, 'feature/after');
+    assert.equal(created.fingerprint, 'f'.repeat(64));
+    assert.equal(store.getPendingWorkspaceOperation(bound.id).id, created.id);
+
+    store.completeWorkspaceOperation(created.id);
+    assert.equal(store.getPendingWorkspaceOperation(bound.id), null);
+
+    const second = store.createWorkspaceOperation({
+      conversationId: bound.id,
+      kind: 'rename',
+      oldBranch: 'feature/after',
+      newBranch: 'feature/third',
+    });
+    assert.equal(second.fingerprint, null);
+    store.failWorkspaceOperation(second.id, 'room_workspace_test_failure');
+    assert.equal(store.getPendingWorkspaceOperation(bound.id), null);
+  } finally {
+    if (typeof store.close === 'function') store.close();
+  }
+});

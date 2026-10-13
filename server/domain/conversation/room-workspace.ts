@@ -146,17 +146,47 @@ function assertWorktreeRegistered(repoRoot: string, worktreePath: string) {
   }
 }
 
-function branchUpstream(repoRoot: string, branch: string) {
+function gitConfigValue(repoRoot: string, key: string) {
   try {
-    const upstream = execFileSync('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${branch}@{upstream}`], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
-    return upstream || null;
-  } catch {
-    return null;
+    return {
+      ok: true,
+      value: execFileSync('git', ['config', '--get', key], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim(),
+    };
+  } catch (cause: any) {
+    // `git config --get` exits 1 when the key is simply unset; anything else is a query failure.
+    if (cause && cause.status === 1) {
+      return { ok: true, value: '' };
+    }
+    return { ok: false, value: '' };
   }
+}
+
+// An upstream association exists whenever the branch config records one, even if the
+// corresponding remote-tracking ref is missing locally. Only a fully absent config
+// counts as "no upstream".
+function branchUpstream(repoRoot: string, branch: string) {
+  const merge = gitConfigValue(repoRoot, `branch.${branch}.merge`);
+  const remote = gitConfigValue(repoRoot, `branch.${branch}.remote`);
+  if (!merge.ok || !remote.ok) {
+    throw workspaceError(
+      'room_workspace_remote_state_unknown',
+      `Cannot read the upstream configuration of branch ${branch}; rename is blocked.`
+    );
+  }
+  if (merge.value && remote.value) {
+    return `${remote.value}/${merge.value.replace(/^refs\/heads\//u, '')}`;
+  }
+  if (merge.value || remote.value) {
+    throw workspaceError(
+      'room_workspace_remote_state_unknown',
+      `Branch ${branch} has a partial upstream configuration (remote=${remote.value || 'unset'}, merge=${merge.value || 'unset'}); rename is blocked.`
+    );
+  }
+  return null;
 }
 
 function remoteBranchRefs(repoRoot: string, branch: string) {
@@ -168,7 +198,10 @@ function remoteBranchRefs(repoRoot: string, branch: string) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch {
-    return [];
+    throw workspaceError(
+      'room_workspace_remote_state_unknown',
+      'Cannot enumerate remote-tracking refs; rename is blocked.'
+    );
   }
   const suffix = `/${branch}`;
   return listing
@@ -188,7 +221,10 @@ function listRemotes(repoRoot: string) {
       .map((remote) => remote.trim())
       .filter(Boolean);
   } catch {
-    return [];
+    throw workspaceError(
+      'room_workspace_remote_state_unknown',
+      'Cannot enumerate Git remotes; rename is blocked.'
+    );
   }
 }
 
@@ -284,6 +320,7 @@ export function previewRoomWorkspace({ conversation, project, branchName }: any)
       baseBranch: BASE_BRANCH,
       baseSha: conversation.workspaceBaseSha,
       branch: conversation.branch,
+      requestedBranchName: null,
       worktreePath: path.resolve(conversation.worktreePath),
       alreadyBound: true,
     };
@@ -293,6 +330,7 @@ export function previewRoomWorkspace({ conversation, project, branchName }: any)
     throw workspaceError('room_workspace_base_missing', `Local ${BASE_BRANCH} branch does not exist`);
   }
   const baseSha = git(repoRoot, ['rev-parse', BASE_BRANCH]);
+  const requested = branchName === null || branchName === undefined ? null : String(branchName).trim();
   return {
     kind: 'bind',
     conversationId: conversation.id,
@@ -301,12 +339,15 @@ export function previewRoomWorkspace({ conversation, project, branchName }: any)
     baseBranch: BASE_BRANCH,
     baseSha,
     branch,
+    requestedBranchName: requested || null,
     worktreePath,
     alreadyBound: false,
   };
 }
 
-export function previewRoomWorkspaceRename({ conversation, project, branchName, hasActiveExecution = false }: any) {
+// Read-only rename preview. Active executions never block a preview; the idle check
+// only happens at execution time inside renameAndPersistRoomWorkspace.
+export function previewRoomWorkspaceRename({ conversation, project, branchName, pendingOperation = null }: any) {
   if (!conversation || !String(conversation.projectScopeId || '').trim()) {
     throw workspaceError('room_workspace_project_required', 'Room must have an immutable Project before workspace rename', 400);
   }
@@ -330,17 +371,33 @@ export function previewRoomWorkspaceRename({ conversation, project, branchName, 
   assertWorktreeRegistered(repoRoot, worktreePath);
   const actualBranch = worktreeHeadBranch(worktreePath);
   if (actualBranch !== currentBranch) {
-    throw workspaceError(
-      'room_workspace_state_mismatch',
-      `Worktree is on Git branch ${actualBranch} but the Room binding records ${currentBranch}; ` +
-        'retry the rename so the binding can be reconciled, or restore consistency manually'
-    );
-  }
-  if (hasActiveExecution) {
-    throw workspaceError(
-      'room_workspace_execution_active',
-      'Room has an active execution; rename is blocked until the current execution finishes'
-    );
+    // An interrupted rename can only resume through the recorded, previously
+    // authorized operation; arbitrary external checkouts never auto-heal.
+    const resume = pendingOperation
+      && pendingOperation.kind === 'rename'
+      && String(pendingOperation.oldBranch || '') === currentBranch
+      && String(pendingOperation.newBranch || '') === actualBranch
+      && newBranch === actualBranch;
+    if (!resume) {
+      throw workspaceError(
+        'room_workspace_state_mismatch',
+        `Worktree is on Git branch ${actualBranch} but the Room binding records ${currentBranch}; ` +
+          'no matching recorded rename operation exists, so the state must be reconciled manually'
+      );
+    }
+    return {
+      kind: 'rename',
+      conversationId: conversation.id,
+      projectScopeId: conversation.projectScopeId,
+      repositoryPath: repoRoot,
+      baseBranch: BASE_BRANCH,
+      baseSha: conversation.workspaceBaseSha,
+      branch: currentBranch,
+      newBranch,
+      worktreePath,
+      alreadyBound: true,
+      resume: true,
+    };
   }
   if (gitRefExists(repoRoot, `refs/heads/${newBranch}`)) {
     throw workspaceError('room_workspace_branch_exists', `Branch ${newBranch} already exists`);
@@ -364,6 +421,7 @@ export function previewRoomWorkspaceRename({ conversation, project, branchName, 
     newBranch,
     worktreePath,
     alreadyBound: true,
+    resume: false,
   };
 }
 
@@ -431,42 +489,25 @@ export function bindAndPersistRoomWorkspace({ store, conversation, project, bran
   }
 }
 
-export function reconcileConversationWorkspaceBranch({ store, conversationId, project }: any) {
-  const conversation = store.getConversationWithoutMessages(conversationId);
-  if (!conversation || !conversation.branch || !conversation.worktreePath) {
-    return { conversation, recovered: false };
-  }
-  const repoRoot = repositoryRoot(project);
-  const worktreePath = path.resolve(String(conversation.worktreePath));
-  if (!fs.existsSync(worktreePath)) {
-    return { conversation, recovered: false };
-  }
-  let actualBranch = null;
-  try {
-    actualBranch = worktreeHeadBranch(worktreePath);
-  } catch {
-    return { conversation, recovered: false };
-  }
-  const recordedBranch = String(conversation.branch).trim();
-  if (!actualBranch || actualBranch === recordedBranch) {
-    return { conversation, recovered: false };
-  }
-  if (gitRefExists(repoRoot, `refs/heads/${recordedBranch}`)) {
+function loadPendingRenameOperation(store: any, conversationId: any) {
+  if (!store || typeof store.getPendingWorkspaceOperation !== 'function') {
     throw workspaceError(
-      'room_workspace_state_mismatch',
-      `Room binding records ${recordedBranch} but the worktree is on ${actualBranch}; ` +
-        'both branch refs exist, so the state cannot be reconciled automatically. Reconcile it manually.'
+      'room_workspace_operation_store_required',
+      'Workspace rename requires a store with durable operation records',
+      500
     );
   }
-  // A previous rename crashed between the Git rename and the database update: the
-  // recorded branch ref is gone and the worktree already sits on the actual branch.
-  // Heal the binding record with a conditional update so no half-finished state persists.
-  const recovered = store.renameConversationWorkspaceBranch(conversationId, {
-    oldBranch: recordedBranch,
-    newBranch: actualBranch,
-    updatedAt: new Date().toISOString(),
-  });
-  return { conversation: recovered, recovered: true };
+  const pending = store.getPendingWorkspaceOperation(conversationId);
+  return pending && pending.kind === 'rename' ? pending : null;
+}
+
+function assertIdleForRename(hasActiveExecution: boolean) {
+  if (hasActiveExecution) {
+    throw workspaceError(
+      'room_workspace_execution_active',
+      'Room has an active execution; rename is blocked until the current execution finishes'
+    );
+  }
 }
 
 export function renameAndPersistRoomWorkspace({
@@ -478,18 +519,108 @@ export function renameAndPersistRoomWorkspace({
   expectedFingerprint = null,
   fingerprintOf = null,
 }: any) {
-  const reconciled = reconcileConversationWorkspaceBranch({
-    store,
-    conversationId: conversation && conversation.id,
-    project,
-  });
-  const current = reconciled.conversation || conversation;
-  const preview = previewRoomWorkspaceRename({
-    conversation: current,
-    project,
-    branchName,
-    hasActiveExecution,
-  });
+  const conversationId = conversation && conversation.id;
+  const current = (store && typeof store.getConversationWithoutMessages === 'function'
+    ? store.getConversationWithoutMessages(conversationId)
+    : null) || conversation;
+  if (!current || !current.branch || !current.worktreePath) {
+    throw workspaceError('room_workspace_not_bound', 'Room has no workspace binding to rename', 409);
+  }
+  const repoRoot = repositoryRoot(project);
+  const worktreePath = path.resolve(String(current.worktreePath));
+  if (!fs.existsSync(worktreePath)) {
+    throw workspaceError('room_workspace_worktree_missing', `Worktree ${worktreePath} does not exist`);
+  }
+  // Ownership first: never interpret the state of a worktree that is not the
+  // registered binding of this Room.
+  assertWorktreeRegistered(repoRoot, worktreePath);
+  const actualBranch = worktreeHeadBranch(worktreePath);
+  const recordedBranch = String(current.branch).trim();
+  const requestedName = validateWorkspaceBranchName(repoRoot, branchName);
+  const pending = loadPendingRenameOperation(store, conversationId);
+
+  if (actualBranch !== recordedBranch) {
+    // Interrupted state. Only the recorded, previously authorized operation may
+    // resume, and authorization (fingerprint) is verified BEFORE any DB write.
+    if (
+      !pending
+      || String(pending.oldBranch || '') !== recordedBranch
+      || String(pending.newBranch || '') !== actualBranch
+    ) {
+      throw workspaceError(
+        'room_workspace_state_mismatch',
+        `Room binding records ${recordedBranch} but the worktree is on ${actualBranch}; ` +
+          'no matching recorded rename operation exists, so the state must be reconciled manually'
+      );
+    }
+    if (requestedName !== String(pending.newBranch)) {
+      throw workspaceError(
+        'room_workspace_operation_pending',
+        `A recorded rename to ${pending.newBranch} is still pending; retry with that exact branchName to complete it`,
+        409
+      );
+    }
+    if (expectedFingerprint) {
+      if (!pending.fingerprint || String(pending.fingerprint) !== String(expectedFingerprint)) {
+        throw workspaceError(
+          'room_workspace_authorization_stale',
+          'Workspace preview changed; request a new authorization card',
+          409
+        );
+      }
+    }
+    assertIdleForRename(Boolean(hasActiveExecution));
+    // The Git side of the recorded operation already happened; complete the DB side.
+    // A crash after the CAS but before the operation was closed is completed idempotently.
+    let updated = null;
+    try {
+      updated = store.renameConversationWorkspaceBranch(conversationId, {
+        oldBranch: recordedBranch,
+        newBranch: actualBranch,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      const reread = typeof store.getConversationWithoutMessages === 'function'
+        ? store.getConversationWithoutMessages(conversationId)
+        : null;
+      if (!reread || String(reread.branch || '') !== actualBranch) {
+        throw error;
+      }
+      updated = reread;
+    }
+    if (!updated || String(updated.branch || '') !== actualBranch) {
+      throw workspaceError('room_workspace_binding_conflict', 'Room workspace binding changed concurrently');
+    }
+    store.completeWorkspaceOperation(pending.id);
+    return {
+      conversation: updated,
+      workspace: {
+        kind: 'rename',
+        conversationId,
+        projectScopeId: current.projectScopeId,
+        repositoryPath: repoRoot,
+        baseBranch: BASE_BRANCH,
+        baseSha: current.workspaceBaseSha,
+        branch: recordedBranch,
+        newBranch: actualBranch,
+        worktreePath,
+        alreadyBound: true,
+        renamed: true,
+        resume: true,
+      },
+      recovered: true,
+    };
+  }
+
+  // Consistent state. A stale pending operation whose Git side never happened (or was
+  // compensated) is closed out before a new operation is recorded.
+  if (pending) {
+    store.failWorkspaceOperation(pending.id, 'superseded_by_consistent_state');
+  }
+  if (requestedName === recordedBranch) {
+    throw workspaceError('room_workspace_branch_name_unchanged', 'New branch name must differ from the current branch', 400);
+  }
+  const preview = previewRoomWorkspaceRename({ conversation: current, project, branchName: requestedName });
   if (expectedFingerprint) {
     if (typeof fingerprintOf !== 'function') {
       throw new Error('A fingerprint function is required to authorize a workspace rename');
@@ -502,27 +633,40 @@ export function renameAndPersistRoomWorkspace({
       );
     }
   }
-  // Rename the branch inside its own worktree: renaming a branch checked out in a
-  // linked worktree from that worktree is always allowed and keeps HEAD, files and
-  // the worktree directory untouched.
-  git(preview.repositoryPath, ['-C', preview.worktreePath, 'branch', '-m', preview.branch, preview.newBranch]);
+  assertIdleForRename(Boolean(hasActiveExecution));
+
+  // Write-ahead operation record: recovery can only resume an operation that was
+  // durably recorded (and, for the card flow, authorized by this exact fingerprint).
+  const operation = store.createWorkspaceOperation({
+    conversationId,
+    kind: 'rename',
+    oldBranch: preview.branch,
+    newBranch: preview.newBranch,
+    fingerprint: expectedFingerprint ? String(expectedFingerprint) : null,
+  });
   try {
-    const updated = store.renameConversationWorkspaceBranch(current.id, {
+    // Rename the branch inside its own worktree: renaming a branch checked out in a
+    // linked worktree from that worktree is always allowed and keeps HEAD, files and
+    // the worktree directory untouched.
+    git(preview.repositoryPath, ['-C', preview.worktreePath, 'branch', '-m', preview.branch, preview.newBranch]);
+    const updated = store.renameConversationWorkspaceBranch(conversationId, {
       oldBranch: preview.branch,
       newBranch: preview.newBranch,
       updatedAt: new Date().toISOString(),
     });
+    store.completeWorkspaceOperation(operation.id);
     return {
       conversation: updated,
       workspace: { ...preview, renamed: true },
-      recovered: reconciled.recovered === true,
+      recovered: false,
     };
-  } catch (error) {
+  } catch (error: any) {
     // Compensate the Git rename so a persistence failure never leaves a
     // half-finished Git/database state behind.
     try {
       git(preview.repositoryPath, ['-C', preview.worktreePath, 'branch', '-m', preview.newBranch, preview.branch]);
     } catch {}
+    store.failWorkspaceOperation(operation.id, error && error.code);
     throw error;
   }
 }

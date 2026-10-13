@@ -62,6 +62,15 @@ export class RoomWorkspaceAuthorizationStore {
       }
     }
 
+    // A new plan supersedes every still-pending card of this Room: an old card can
+    // never execute a plan the user has already replaced.
+    for (const record of this.records.values()) {
+      if (record.status === 'pending' && record.conversationId === conversationId) {
+        record.status = 'superseded';
+        record.decidedAt = new Date(now).toISOString();
+      }
+    }
+
     if (this.records.size >= MAX_PENDING) {
       this.expire(now, true);
     }

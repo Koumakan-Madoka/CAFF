@@ -4400,7 +4400,7 @@ function renderWorkspaceAuthorizationCards() {
     container.replaceChildren();
     const conversationId = state.selectedConversationId;
     const cards = conversationId ? state.workspaceAuthorizationCardsByConversation.get(conversationId) || [] : [];
-    cards.filter((item) => item && (item.status === 'pending' || item.status === 'accepted' || item.status === 'rejected' || item.status === 'expired' || item.status === 'failed')).forEach((authorization) => {
+    cards.filter((item) => item && (item.status === 'pending' || item.status === 'accepted' || item.status === 'rejected' || item.status === 'expired' || item.status === 'failed' || item.status === 'superseded')).forEach((authorization) => {
       const card = document.createElement('section');
       card.className = `workspace-authorization-card ${authorization.status}`;
       card.setAttribute('role', 'status');
@@ -4411,6 +4411,7 @@ function renderWorkspaceAuthorizationCards() {
         rejected: '已拒绝',
         expired: '已过期',
         failed: isRename ? '改名失败' : '绑定失败',
+        superseded: '已失效',
       };
       title.textContent = authorization.status === 'pending'
         ? (isRename ? 'Agent 请求重命名工作区分支' : 'Agent 请求绑定 Room 工作区')

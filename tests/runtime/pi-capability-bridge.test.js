@@ -479,6 +479,7 @@ test('agent bridge authenticates the invocation and injects project scope into P
     sourceConversationId: 'conversation-source',
     sourceAgentId: 'agent-source',
     sourceAgentName: 'Source Agent',
+    sourceTurnId: 'turn-agent-bridge',
     projectScopeId: 'project-f003',
     traceId: 'trace-parent-f003',
     incomingDeliveryId: 'delivery-incoming',

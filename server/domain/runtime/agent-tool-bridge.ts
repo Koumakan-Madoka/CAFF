@@ -1400,11 +1400,12 @@ export function createAgentToolBridge(options: any = {}) {
       return result.workspace;
     }
 
-    const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
-      ? store.hasActiveConversationTurn(conversationId)
-      : false;
     if (kind === 'rename_preview') {
-      const preview = previewRoomWorkspaceRename({ conversation, project, branchName, hasActiveExecution });
+      // Read-only: never blocked by an active execution; the idle check happens at execution time.
+      const pendingOperation = typeof store.getPendingWorkspaceOperation === 'function'
+        ? store.getPendingWorkspaceOperation(conversationId)
+        : null;
+      const preview = previewRoomWorkspaceRename({ conversation, project, branchName, pendingOperation });
       const authorization = workspaceAuthorizations.issue({
         conversation,
         preview,
@@ -1422,6 +1423,13 @@ export function createAgentToolBridge(options: any = {}) {
       return preview;
     }
 
+    // Non-UI fallback: the calling agent's own turn must not count as a blocking
+    // active execution, but any other active execution in the Room still blocks.
+    const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
+      ? store.hasActiveConversationTurn(conversationId, {
+          excludeTurnId: String(principal.sourceTurnId || '').trim() || undefined,
+        })
+      : false;
     const result = renameAndPersistRoomWorkspace({
       store,
       conversation,
@@ -1480,7 +1488,16 @@ export function createAgentToolBridge(options: any = {}) {
           });
           return result;
         }
-        const currentPreview = previewRoomWorkspace({ conversation: currentConversation, project });
+        // Replay the exact authorized naming plan: a custom branchName binds with the
+        // stable directory mode, a default card keeps the automatic naming.
+        const authorizedBranchName = authorizedPreview && authorizedPreview.requestedBranchName
+          ? String(authorizedPreview.requestedBranchName)
+          : undefined;
+        const currentPreview = previewRoomWorkspace({
+          conversation: currentConversation,
+          project,
+          branchName: authorizedBranchName,
+        });
         if (previewFingerprint(currentPreview) !== fingerprint) {
           throw createHttpError(409, 'Workspace preview changed; request a new authorization card', {
             code: 'room_workspace_authorization_stale',
@@ -1490,6 +1507,7 @@ export function createAgentToolBridge(options: any = {}) {
           store,
           conversation: currentConversation,
           project,
+          branchName: authorizedBranchName,
           workspaceBoundAt: nowIso(),
         });
         broadcastConversationSummary(conversationId);
@@ -1577,6 +1595,7 @@ export function createAgentToolBridge(options: any = {}) {
       sourceConversationId: context.conversationId,
       sourceAgentId: context.agentId,
       sourceAgentName: context.agentName,
+      sourceTurnId: String(context.turnId || '').trim() || null,
       projectScopeId: String(conversation && conversation.projectScopeId || '').trim(),
       traceId,
       incomingDeliveryId,

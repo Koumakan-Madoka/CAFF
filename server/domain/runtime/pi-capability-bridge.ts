@@ -333,6 +333,7 @@ function projectRoomWorkspaceRenameResult(result: unknown) {
     worktreePath: String(value.worktreePath || '').trim(),
     renamed: value.renamed === true,
     recovered: value.recovered === true,
+    resume: value.resume === true,
   };
 }
 function projectConversationDeliveryResult(result: unknown) {

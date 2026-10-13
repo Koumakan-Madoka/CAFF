@@ -19,8 +19,13 @@ function git(cwd, args, options = {}) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options }).trim();
 }
 
+// Each test gets an exclusive outer directory: the repository lives in <outer>/repo
+// and derived worktrees in <outer>/worktrees, so cleanup only ever removes the
+// test's own directory tree.
 function initRepo() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-room-workspace-rename-'));
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-room-workspace-rename-'));
+  const root = path.join(outer, 'repo');
+  fs.mkdirSync(root);
   git(root, ['init']);
   git(root, ['config', 'user.name', 'CAFF Test']);
   git(root, ['config', 'user.email', 'caff-test@example.invalid']);
@@ -28,15 +33,17 @@ function initRepo() {
   git(root, ['add', 'README.md']);
   git(root, ['commit', '-m', 'base']);
   git(root, ['branch', 'develop']);
-  return root;
+  return { outer, root };
 }
 
-function cleanupRepo(repoRoot, worktreePaths = []) {
-  for (const worktreePath of worktreePaths) {
-    try { git(repoRoot, ['worktree', 'remove', '--force', worktreePath]); } catch {}
-  }
-  try { fs.rmSync(path.join(path.dirname(repoRoot), 'worktrees'), { recursive: true, force: true }); } catch {}
-  fs.rmSync(repoRoot, { recursive: true, force: true });
+function cleanup(outer) {
+  fs.rmSync(outer, { recursive: true, force: true });
+}
+
+function initBareRemote() {
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-room-workspace-remote-'));
+  git(outer, ['init', '--bare']);
+  return outer;
 }
 
 function createConversation(overrides = {}) {
@@ -68,8 +75,36 @@ function createStubStore(conversation, overrides = {}) {
   return {
     conversation,
     calls: [],
+    operations: [],
     getConversationWithoutMessages() {
       return this.conversation;
+    },
+    createWorkspaceOperation(operation) {
+      const record = {
+        id: operation.id || randomUUID(),
+        conversationId: operation.conversationId,
+        kind: operation.kind,
+        oldBranch: operation.oldBranch,
+        newBranch: operation.newBranch,
+        fingerprint: operation.fingerprint || null,
+        status: 'pending',
+      };
+      this.operations.push(record);
+      return record;
+    },
+    getPendingWorkspaceOperation() {
+      return this.operations.filter((operation) => operation.status === 'pending').pop() || null;
+    },
+    completeWorkspaceOperation(id) {
+      const operation = this.operations.find((candidate) => candidate.id === id);
+      if (operation) operation.status = 'completed';
+    },
+    failWorkspaceOperation(id, errorCode) {
+      const operation = this.operations.find((candidate) => candidate.id === id);
+      if (operation) {
+        operation.status = 'failed';
+        operation.errorCode = errorCode || null;
+      }
     },
     renameConversationWorkspaceBranch(conversationId, { oldBranch, newBranch, updatedAt }) {
       this.calls.push({ conversationId, oldBranch, newBranch, updatedAt });
@@ -94,15 +129,15 @@ function assertWorkspaceError(error, code) {
 }
 
 test('custom full branch name is used verbatim and the directory uses the stable room key', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const conversation = createConversation();
   const project = { id: 'project-1', path: repoRoot };
-  let worktreePath = null;
   try {
     const beforeBranches = git(repoRoot, ['branch', '--format=%(refname:short)']);
     const preview = previewRoomWorkspace({ conversation, project, branchName: 'feature/custom-name' });
     assert.equal(preview.kind, 'bind');
     assert.equal(preview.branch, 'feature/custom-name');
+    assert.equal(preview.requestedBranchName, 'feature/custom-name');
     const stableSegment = conversation.id.replace(/[^a-z0-9]/giu, '').toLowerCase().slice(0, 8);
     assert.equal(path.basename(preview.worktreePath), stableSegment);
     assert.equal(preview.alreadyBound, false);
@@ -111,17 +146,16 @@ test('custom full branch name is used verbatim and the directory uses the stable
     assert.equal(fs.existsSync(preview.worktreePath), false);
 
     const created = bindRoomWorkspace({ conversation, project, branchName: 'feature/custom-name' });
-    worktreePath = created.worktreePath;
     assert.equal(created.branch, 'feature/custom-name');
-    assert.equal(git(worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/custom-name');
-    assert.equal(git(worktreePath, ['rev-parse', 'HEAD']), preview.baseSha);
+    assert.equal(git(created.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/custom-name');
+    assert.equal(git(created.worktreePath, ['rev-parse', 'HEAD']), preview.baseSha);
   } finally {
-    cleanupRepo(repoRoot, worktreePath ? [worktreePath] : []);
+    cleanup(outer);
   }
 });
 
-test('omitting branchName keeps the automatic naming and branch-suffix path', () => {
-  const repoRoot = initRepo();
+test('omitting branchName keeps the automatic naming, branch-suffix path and null requestedBranchName', () => {
+  const { outer, root: repoRoot } = initRepo();
   const conversation = createConversation({ title: 'Auto Name' });
   const project = { id: 'project-1', path: repoRoot };
   try {
@@ -129,16 +163,16 @@ test('omitting branchName keeps the automatic naming and branch-suffix path', ()
     const preview = previewRoomWorkspace({ conversation, project });
     assert.equal(preview.branch, `room/${key}-auto-name`);
     assert.equal(path.basename(preview.worktreePath), `${key}-auto-name`);
+    assert.equal(preview.requestedBranchName, null);
   } finally {
-    cleanupRepo(repoRoot);
+    cleanup(outer);
   }
 });
 
 test('invalid branch names and name conflicts fail without side effects', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const project = { id: 'project-1', path: repoRoot };
   const conversation = createConversation();
-  const createdPaths = [];
   try {
     for (const branchName of ['bad..name', 'name with space', '', '   ', '-leading-dash']) {
       assert.throws(
@@ -147,7 +181,7 @@ test('invalid branch names and name conflicts fail without side effects', () => 
           || assertWorkspaceError(error, 'room_workspace_branch_name_required')
       );
     }
-    assert.equal(fs.existsSync(path.join(path.dirname(repoRoot), 'worktrees')), false);
+    assert.equal(fs.existsSync(path.join(outer, 'worktrees')), false);
 
     git(repoRoot, ['branch', 'feature/taken', 'develop']);
     assert.throws(
@@ -163,12 +197,12 @@ test('invalid branch names and name conflicts fail without side effects', () => 
       (error) => assertWorkspaceError(error, 'room_workspace_branch_exists')
     );
   } finally {
-    cleanupRepo(repoRoot, createdPaths);
+    cleanup(outer);
   }
 });
 
 test('an already bound room rejects a different branchName on the bind preview', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot);
   try {
     assert.throws(
@@ -179,12 +213,12 @@ test('an already bound room rejects a different branchName on the bind preview',
     assert.equal(echo.alreadyBound, true);
     assert.equal(echo.branch, binding.branch);
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
 test('rename keeps worktree directory, HEAD, files and baseline while updating git and the store', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/before-rename');
   try {
     fs.writeFileSync(path.join(binding.worktreePath, 'notes.txt'), 'important\n');
@@ -199,6 +233,7 @@ test('rename keeps worktree directory, HEAD, files and baseline while updating g
     assert.equal(preview.branch, 'feature/before-rename');
     assert.equal(preview.newBranch, 'feature/after-rename');
     assert.equal(preview.worktreePath, binding.worktreePath);
+    assert.equal(preview.resume, false);
     // Preview is read-only.
     assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/before-rename');
 
@@ -218,13 +253,16 @@ test('rename keeps worktree directory, HEAD, files and baseline while updating g
     assert.equal(result.conversation.branch, 'feature/after-rename');
     assert.equal(result.conversation.worktreePath, conversation.worktreePath);
     assert.equal(result.conversation.workspaceBaseSha, conversation.workspaceBaseSha);
+    // The write-ahead operation record was closed.
+    assert.equal(store.operations.length, 1);
+    assert.equal(store.operations[0].status, 'completed');
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
 test('rename rejects unchanged names, existing targets and unbound rooms without side effects', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot);
   try {
     assert.throws(
@@ -243,35 +281,43 @@ test('rename rejects unchanged names, existing targets and unbound rooms without
     // No side effects from any of the failures.
     assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), conversation.branch);
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
-test('rename blocks an active execution', () => {
-  const repoRoot = initRepo();
+test('read-only rename preview is allowed during an active execution; execution is not', () => {
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot);
   try {
+    // The caller's own turn (or any other active execution) never blocks the read-only preview.
+    const preview = previewRoomWorkspaceRename({ conversation, project, branchName: 'feature/later' });
+    assert.equal(preview.newBranch, 'feature/later');
+
+    const store = createStubStore(conversation);
     assert.throws(
-      () => previewRoomWorkspaceRename({
+      () => renameAndPersistRoomWorkspace({
+        store,
         conversation,
         project,
-        branchName: 'feature/while-running',
+        branchName: 'feature/later',
         hasActiveExecution: true,
       }),
       (error) => assertWorkspaceError(error, 'room_workspace_execution_active')
     );
+    // Blocked before any Git or DB mutation, and no operation record was created.
     assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), conversation.branch);
+    assert.equal(store.calls.length, 0);
+    assert.equal(store.operations.length, 0);
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
 test('rename refuses a branch with an upstream', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/published-upstream');
-  const remoteRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-room-workspace-remote-'));
+  const remoteRoot = initBareRemote();
   try {
-    git(remoteRoot, ['init', '--bare']);
     git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
     git(repoRoot, ['push', '-u', 'origin', 'feature/published-upstream']);
     assert.throws(
@@ -280,34 +326,56 @@ test('rename refuses a branch with an upstream', () => {
     );
     assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/published-upstream');
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
-    fs.rmSync(remoteRoot, { recursive: true, force: true });
+    cleanup(outer);
+    cleanup(remoteRoot);
+  }
+});
+
+test('rename refuses a branch whose upstream is configured even when the tracking ref is missing', () => {
+  const { outer, root: repoRoot } = initRepo();
+  const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/configured-upstream');
+  const remoteRoot = initBareRemote();
+  try {
+    git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
+    // Upstream association exists in config, but no remote-tracking ref was ever fetched.
+    git(repoRoot, ['config', 'branch.feature/configured-upstream.remote', 'origin']);
+    git(repoRoot, ['config', 'branch.feature/configured-upstream.merge', 'refs/heads/feature/configured-upstream']);
+    assert.throws(
+      () => previewRoomWorkspaceRename({ conversation, project, branchName: 'feature/bypass' }),
+      (error) => assertWorkspaceError(error, 'room_workspace_branch_published')
+    );
+    assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/configured-upstream');
+
+    // A partial upstream configuration is treated as unknown and also blocks.
+    git(repoRoot, ['config', '--unset', 'branch.feature/configured-upstream.merge']);
+    assert.throws(
+      () => previewRoomWorkspaceRename({ conversation, project, branchName: 'feature/bypass' }),
+      (error) => assertWorkspaceError(error, 'room_workspace_remote_state_unknown')
+    );
+  } finally {
+    cleanup(outer);
+    cleanup(remoteRoot);
   }
 });
 
 test('rename refuses a branch with a remote-tracking ref even without an upstream', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/tracked');
   try {
     const sha = git(repoRoot, ['rev-parse', 'feature/tracked']);
     git(repoRoot, ['update-ref', 'refs/remotes/origin/feature/tracked', sha]);
-    // No upstream is configured for the branch.
-    assert.throws(
-      () => git(binding.worktreePath, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']),
-      /./u
-    );
     assert.throws(
       () => previewRoomWorkspaceRename({ conversation, project, branchName: 'feature/untracked-name' }),
       (error) => assertWorkspaceError(error, 'room_workspace_branch_published')
     );
     assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/tracked');
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
 test('rename blocks when the remote state cannot be verified and never modifies the remote', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/unverifiable');
   const missingRemote = path.join(os.tmpdir(), `caff-missing-remote-${randomUUID()}`);
   try {
@@ -318,16 +386,15 @@ test('rename blocks when the remote state cannot be verified and never modifies 
     );
     assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/unverifiable');
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
 test('rename allows a verifiably unpublished branch when a reachable remote lacks it', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/local-only');
-  const remoteRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-room-workspace-remote-'));
+  const remoteRoot = initBareRemote();
   try {
-    git(remoteRoot, ['init', '--bare']);
     git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
     git(repoRoot, ['push', 'origin', 'develop']);
     const store = createStubStore(conversation);
@@ -342,13 +409,13 @@ test('rename allows a verifiably unpublished branch when a reachable remote lack
     // The remote was not modified.
     assert.equal(git(remoteRoot, ['branch', '--format=%(refname:short)']), 'develop');
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
-    fs.rmSync(remoteRoot, { recursive: true, force: true });
+    cleanup(outer);
+    cleanup(remoteRoot);
   }
 });
 
-test('a persistence failure compensates the git rename so no half-finished state remains', () => {
-  const repoRoot = initRepo();
+test('a persistence failure compensates the git rename and fails the operation record', () => {
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/before-failure');
   try {
     const store = createStubStore(conversation, { failPersistence: true });
@@ -358,13 +425,15 @@ test('a persistence failure compensates the git rename so no half-finished state
     );
     assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/before-failure');
     assert.equal(store.conversation.branch, 'feature/before-failure');
+    assert.equal(store.operations.length, 1);
+    assert.equal(store.operations[0].status, 'failed');
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
 test('a lost compare-and-swap update compensates the git rename', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/cas-before');
   try {
     // Simulate a concurrent writer winning the conditional update after the git rename.
@@ -381,57 +450,142 @@ test('a lost compare-and-swap update compensates the git rename', () => {
     // The git rename was rolled back; no half-finished state remains.
     assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/cas-before');
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
-test('an interrupted rename is reconciled on the next rename attempt', () => {
-  const repoRoot = initRepo();
+test('an interrupted rename resumes only through its recorded operation', () => {
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/crash-before');
   try {
-    // Simulate a crash after the git rename but before the database update.
-    git(binding.worktreePath, ['branch', '-m', 'feature/crash-before', 'feature/crash-after']);
     const store = createStubStore(conversation);
+    const authorizedPreview = previewRoomWorkspaceRename({ conversation, project, branchName: 'feature/crash-after' });
+    const fingerprint = previewFingerprint(authorizedPreview);
+    // Simulate a crash after the write-ahead record and the git rename, before the DB update.
+    store.createWorkspaceOperation({
+      conversationId: conversation.id,
+      kind: 'rename',
+      oldBranch: 'feature/crash-before',
+      newBranch: 'feature/crash-after',
+      fingerprint,
+    });
+    git(binding.worktreePath, ['branch', '-m', 'feature/crash-before', 'feature/crash-after']);
+
+    // A stale fingerprint is rejected BEFORE any DB write.
+    assert.throws(
+      () => renameAndPersistRoomWorkspace({
+        store,
+        conversation,
+        project,
+        branchName: 'feature/crash-after',
+        expectedFingerprint: 'stale-fingerprint',
+        fingerprintOf: previewFingerprint,
+      }),
+      (error) => assertWorkspaceError(error, 'room_workspace_authorization_stale')
+    );
+    assert.equal(store.calls.length, 0);
+    assert.equal(store.conversation.branch, 'feature/crash-before');
+
+    // A different target name cannot hijack the recorded operation.
+    assert.throws(
+      () => renameAndPersistRoomWorkspace({
+        store,
+        conversation,
+        project,
+        branchName: 'feature/different-target',
+        expectedFingerprint: fingerprint,
+        fingerprintOf: previewFingerprint,
+      }),
+      (error) => assertWorkspaceError(error, 'room_workspace_operation_pending')
+    );
+    assert.equal(store.calls.length, 0);
+
+    // The authorized resume completes the DB side and closes the operation.
     const result = renameAndPersistRoomWorkspace({
       store,
       conversation,
       project,
-      branchName: 'feature/final-name',
+      branchName: 'feature/crash-after',
+      expectedFingerprint: fingerprint,
+      fingerprintOf: previewFingerprint,
     });
     assert.equal(result.recovered, true);
-    assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/final-name');
-    assert.equal(result.conversation.branch, 'feature/final-name');
-    assert.equal(result.conversation.worktreePath, conversation.worktreePath);
-    // The healing call adopted the actual branch before the requested rename.
-    assert.deepEqual(
-      store.calls.map((call) => [call.oldBranch, call.newBranch]),
-      [['feature/crash-before', 'feature/crash-after'], ['feature/crash-after', 'feature/final-name']]
-    );
+    assert.equal(result.conversation.branch, 'feature/crash-after');
+    assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/crash-after');
+    assert.equal(store.operations[0].status, 'completed');
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
-test('an ambiguous mismatch where both refs exist requires manual reconciliation', () => {
-  const repoRoot = initRepo();
-  const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/ambiguous-before');
+test('a consistent state closes a stale pending operation before validation', () => {
+  const { outer, root: repoRoot } = initRepo();
+  const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/idem-before');
   try {
-    git(binding.worktreePath, ['branch', '-m', 'feature/ambiguous-before', 'feature/ambiguous-after']);
-    git(repoRoot, ['branch', 'feature/ambiguous-before', 'develop']);
     const store = createStubStore(conversation);
+    store.createWorkspaceOperation({
+      conversationId: conversation.id,
+      kind: 'rename',
+      oldBranch: 'feature/idem-before',
+      newBranch: 'feature/idem-after',
+      fingerprint: null,
+    });
+    // Crash after the DB CAS but before the operation was closed.
+    git(binding.worktreePath, ['branch', '-m', 'feature/idem-before', 'feature/idem-after']);
+    store.conversation = { ...store.conversation, branch: 'feature/idem-after' };
+    // DB and git agree here, so this goes through the consistent-state path,
+    // which closes the stale pending operation before proceeding.
     assert.throws(
-      () => renameAndPersistRoomWorkspace({ store, conversation, project, branchName: 'feature/ambiguous-final' }),
+      () => renameAndPersistRoomWorkspace({ store, conversation, project, branchName: 'feature/idem-after' }),
+      (error) => assertWorkspaceError(error, 'room_workspace_branch_name_unchanged')
+    );
+    assert.equal(store.operations[0].status, 'failed');
+    assert.equal(store.operations[0].errorCode, 'superseded_by_consistent_state');
+  } finally {
+    cleanup(outer);
+  }
+});
+
+test('an external branch rename without a recorded operation requires manual reconciliation', () => {
+  const { outer, root: repoRoot } = initRepo();
+  const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/external-before');
+  try {
+    git(binding.worktreePath, ['branch', '-m', 'feature/external-before', 'feature/external-after']);
+    const store = createStubStore(conversation);
+    // No recorded operation: arbitrary external state never auto-heals.
+    assert.throws(
+      () => renameAndPersistRoomWorkspace({ store, conversation, project, branchName: 'feature/external-after' }),
       (error) => assertWorkspaceError(error, 'room_workspace_state_mismatch')
     );
-    assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/ambiguous-after');
-    assert.equal(store.conversation.branch, 'feature/ambiguous-before');
+    assert.equal(store.calls.length, 0);
+    assert.equal(store.conversation.branch, 'feature/external-before');
+    // The read-only preview reports the same mismatch without a pending operation.
+    assert.throws(
+      () => previewRoomWorkspaceRename({ conversation, project, branchName: 'feature/external-after' }),
+      (error) => assertWorkspaceError(error, 'room_workspace_state_mismatch')
+    );
+    // With the recorded operation, the read-only preview exposes the resumable plan.
+    const pending = {
+      kind: 'rename',
+      oldBranch: 'feature/external-before',
+      newBranch: 'feature/external-after',
+    };
+    const resume = previewRoomWorkspaceRename({
+      conversation,
+      project,
+      branchName: 'feature/external-after',
+      pendingOperation: pending,
+    });
+    assert.equal(resume.resume, true);
+    assert.equal(resume.branch, 'feature/external-before');
+    assert.equal(resume.newBranch, 'feature/external-after');
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
 test('an accepted authorization with a stale fingerprint changes nothing', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/fingerprint-before');
   try {
     const store = createStubStore(conversation);
@@ -448,6 +602,7 @@ test('an accepted authorization with a stale fingerprint changes nothing', () =>
     );
     assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/fingerprint-before');
     assert.equal(store.calls.length, 0);
+    assert.equal(store.operations.length, 0);
 
     const preview = previewRoomWorkspaceRename({ conversation, project, branchName: 'feature/fingerprint-after' });
     const result = renameAndPersistRoomWorkspace({
@@ -460,12 +615,12 @@ test('an accepted authorization with a stale fingerprint changes nothing', () =>
     });
     assert.equal(result.conversation.branch, 'feature/fingerprint-after');
   } finally {
-    cleanupRepo(repoRoot, [binding.worktreePath]);
+    cleanup(outer);
   }
 });
 
 test('bindAndPersistRoomWorkspace persists a custom branch name and rolls back on store failure', () => {
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const project = { id: 'project-1', path: repoRoot };
   const conversation = createConversation();
   const preview = previewRoomWorkspace({ conversation, project, branchName: 'feature/persist-custom' });
@@ -508,6 +663,6 @@ test('bindAndPersistRoomWorkspace persists a custom branch name and rolls back o
     assert.equal(result.conversation.branch, 'feature/persist-custom');
     assert.equal(git(result.workspace.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/persist-custom');
   } finally {
-    cleanupRepo(repoRoot, [preview.worktreePath]);
+    cleanup(outer);
   }
 });
