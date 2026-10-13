@@ -12,6 +12,7 @@ const { createChatAgentRepository } = require('../storage/chat/agent.repository'
 const { createChatRoleIdentityRepository } = require('../storage/chat/role-identity.repository');
 const { createChatConversationAgentHistoryRepository } = require('../storage/chat/conversation-agent-history.repository');
 const { createChatConversationRepository } = require('../storage/chat/conversation.repository');
+const { createChatWorkspaceOperationRepository } = require('../storage/chat/workspace-operation.repository');
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
@@ -969,6 +970,7 @@ export class ChatAppStore {
       this.agentRepository = createChatAgentRepository(this.db);
       this.conversationAgentHistoryRepository = createChatConversationAgentHistoryRepository(this.db);
       this.conversationRepository = createChatConversationRepository(this.db);
+      this.workspaceOperationRepository = createChatWorkspaceOperationRepository(this.db);
       this.participantRepository = createChatParticipantRepository(this.db);
       this.messageRepository = createChatMessageRepository(this.db);
       this.messageDetailRepository = createChatMessageDetailRepository(this.db);
@@ -1248,6 +1250,81 @@ export class ChatAppStore {
         }
         return this.getConversationWithoutMessages(conversationId);
       });
+
+      this.renameConversationWorkspaceBranchTransaction = this.db.transaction((conversationId: any, rename: any) => {
+        const existing = this.getConversationWithoutMessages(conversationId);
+        if (!existing) {
+          const error: any = new Error('Conversation not found');
+          error.code = 'conversation_not_found';
+          throw error;
+        }
+        if (String(existing.branch || '') !== String(rename.oldBranch || '')) {
+          const error: any = new Error('Room workspace binding changed concurrently');
+          error.code = 'room_workspace_binding_conflict';
+          throw error;
+        }
+        const renamed = this.conversationRepository.renameWorkspaceBranch(conversationId, {
+          oldBranch: rename.oldBranch,
+          newBranch: rename.newBranch,
+          updatedAt: rename.updatedAt || nowIso(),
+        });
+        if (!renamed) {
+          const error: any = new Error('Room workspace binding changed concurrently');
+          error.code = 'room_workspace_binding_conflict';
+          throw error;
+        }
+        return this.getConversationWithoutMessages(conversationId);
+      });
+
+      // The branch CAS and the write-ahead operation close-out commit in ONE SQLite
+      // transaction: the journal can never be left pending after the binding moved,
+      // and a failed close-out rolls the binding update back with it.
+      this.renameConversationWorkspaceBranchAndCompleteOperationTransaction = this.db.transaction(
+        (conversationId: any, rename: any, operationId: any) => {
+          const updated = this.renameConversationWorkspaceBranchTransaction(conversationId, rename);
+          const normalizedOperationId = String(operationId || '').trim();
+          if (normalizedOperationId) {
+            const operation = this.workspaceOperationRepository.getById(normalizedOperationId);
+            if (!operation || operation.conversationId !== String(conversationId || '').trim()) {
+              const error: any = new Error('Workspace operation record is missing for the rename close-out');
+              error.code = 'room_workspace_operation_conflict';
+              throw error;
+            }
+            if (operation.status === 'pending') {
+              this.workspaceOperationRepository.complete(normalizedOperationId, nowIso());
+            } else if (operation.status !== 'completed') {
+              const error: any = new Error(`Workspace operation ${normalizedOperationId} is ${operation.status} and cannot be completed`);
+              error.code = 'room_workspace_operation_conflict';
+              throw error;
+            }
+          }
+          return updated;
+        }
+      );
+
+      // A new write-ahead record atomically supersedes any still-pending records of
+      // the Room, so a stale journal row can never outlive the operation that
+      // replaces it.
+      this.replacePendingWorkspaceOperationTransaction = this.db.transaction((operation: any, supersedeErrorCode: any) => {
+        const conversationId = String(operation && operation.conversationId || '').trim();
+        if (conversationId) {
+          this.workspaceOperationRepository.failPendingForConversation(
+            conversationId,
+            String(supersedeErrorCode || 'superseded_by_consistent_state'),
+            nowIso()
+          );
+        }
+        return this.createWorkspaceOperation(operation);
+      });
+
+      this.countActiveConversationTurnsStatement = this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM chat_messages
+        WHERE conversation_id = @conversationId
+          AND role = 'assistant'
+          AND status IN ('queued', 'running', 'streaming')
+          AND (@excludeMessageId = '' OR id <> @excludeMessageId)
+      `);
 
       this.persistMessageDetails = (payload: any) => {
         if (String(payload.role || '').trim() !== 'assistant') {
@@ -3290,6 +3367,73 @@ export class ChatAppStore {
 
   bindConversationWorkspace(conversationId: any, workspace: any) {
     return this.bindConversationWorkspaceTransaction(conversationId, workspace);
+  }
+
+  renameConversationWorkspaceBranch(conversationId: any, rename: any) {
+    return this.renameConversationWorkspaceBranchTransaction(conversationId, rename);
+  }
+
+  renameConversationWorkspaceBranchAndCompleteOperation(conversationId: any, rename: any, operationId: any) {
+    return this.renameConversationWorkspaceBranchAndCompleteOperationTransaction(conversationId, rename, operationId);
+  }
+
+  replacePendingWorkspaceOperation(operation: any = {}, supersedeErrorCode: any = 'superseded_by_consistent_state') {
+    return this.replacePendingWorkspaceOperationTransaction(operation, supersedeErrorCode);
+  }
+
+  hasActiveConversationTurn(conversationId: any, options: any = {}) {
+    const normalized = String(conversationId || '').trim();
+    if (!normalized) {
+      return false;
+    }
+    const row = this.countActiveConversationTurnsStatement.get({
+      conversationId: normalized,
+      excludeMessageId: String(options.excludeMessageId || '').trim(),
+    });
+    return Boolean(row && Number(row.count) > 0);
+  }
+
+  createWorkspaceOperation(operation: any = {}) {
+    const now = nowIso();
+    return this.workspaceOperationRepository.create({
+      id: String(operation.id || randomUUID()).trim(),
+      conversationId: String(operation.conversationId || '').trim(),
+      kind: String(operation.kind || 'rename').trim(),
+      oldBranch: String(operation.oldBranch || '').trim(),
+      newBranch: String(operation.newBranch || '').trim(),
+      fingerprint: operation.fingerprint ? String(operation.fingerprint).trim() : null,
+      now,
+    });
+  }
+
+  getPendingWorkspaceOperation(conversationId: any) {
+    const normalized = String(conversationId || '').trim();
+    if (!normalized) {
+      return null;
+    }
+    return this.workspaceOperationRepository.getPendingForConversation(normalized);
+  }
+
+  getWorkspaceOperation(id: any) {
+    const normalized = String(id || '').trim();
+    if (!normalized) {
+      return null;
+    }
+    return this.workspaceOperationRepository.getById(normalized);
+  }
+
+  completeWorkspaceOperation(id: any) {
+    const normalized = String(id || '').trim();
+    if (normalized) {
+      this.workspaceOperationRepository.complete(normalized, nowIso());
+    }
+  }
+
+  failWorkspaceOperation(id: any, errorCode: any) {
+    const normalized = String(id || '').trim();
+    if (normalized) {
+      this.workspaceOperationRepository.fail(normalized, String(errorCode || ''), nowIso());
+    }
   }
 
   listAcceptanceRecords(conversationId: any) {

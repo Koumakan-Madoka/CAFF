@@ -22,6 +22,8 @@ const {
 const {
   bindAndPersistRoomWorkspace,
   previewRoomWorkspace,
+  previewRoomWorkspaceRename,
+  renameAndPersistRoomWorkspace,
 } = require('../conversation/room-workspace');
 const {
   RoomWorkspaceAuthorizationStore,
@@ -1344,8 +1346,10 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
-  function handleRoomWorkspaceCapability(kind: 'preview' | 'bind', input: any) {
+  function handleRoomWorkspaceCapability(kind: 'preview' | 'bind' | 'rename_preview' | 'rename_bind', input: any) {
     const principal = input && input.principal;
+    const capabilityArguments = (input && input.arguments) || {};
+    const branchName = String(capabilityArguments.branchName || '').trim() || undefined;
     const conversationId = String(principal && principal.sourceConversationId || '').trim();
     const projectScopeId = String(principal && principal.projectScopeId || '').trim();
     const conversation = store && typeof store.getConversationWithoutMessages === 'function'
@@ -1364,12 +1368,13 @@ export function createAgentToolBridge(options: any = {}) {
       throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
     }
     if (kind === 'preview') {
-      const preview = previewRoomWorkspace({ conversation, project });
+      const preview = previewRoomWorkspace({ conversation, project, branchName });
       if (!preview.alreadyBound) {
         const authorization = workspaceAuthorizations.issue({
           conversation,
           preview,
           invocationId: principal.invocationId,
+          sourceMessageId: principal.sourceMessageId,
         });
         if (authorization) {
           const clientAuthorization = workspaceAuthorizations.clientRecord(
@@ -1384,17 +1389,63 @@ export function createAgentToolBridge(options: any = {}) {
       return preview;
     }
 
-    const result = bindAndPersistRoomWorkspace({
+    if (kind === 'bind') {
+      const result = bindAndPersistRoomWorkspace({
+        store,
+        conversation,
+        project,
+        branchName,
+        workspaceBoundAt: nowIso(),
+      });
+      broadcastConversationSummary(conversationId);
+      return result.workspace;
+    }
+
+    if (kind === 'rename_preview') {
+      // Read-only: never blocked by an active execution; the idle check happens at execution time.
+      const pendingOperation = typeof store.getPendingWorkspaceOperation === 'function'
+        ? store.getPendingWorkspaceOperation(conversationId)
+        : null;
+      const preview = previewRoomWorkspaceRename({ conversation, project, branchName, pendingOperation });
+      const authorization = workspaceAuthorizations.issue({
+        conversation,
+        preview,
+        invocationId: principal.invocationId,
+        sourceMessageId: principal.sourceMessageId,
+      });
+      if (authorization) {
+        const clientAuthorization = workspaceAuthorizations.clientRecord(
+          workspaceAuthorizations.records.get(authorization.id)
+        );
+        broadcastEvent('room_workspace_authorization_updated', {
+          conversationId,
+          authorization: clientAuthorization,
+        });
+      }
+      return preview;
+    }
+
+    // Non-UI fallback: the calling invocation's own assistant message must not count
+    // as a blocking active execution, but any OTHER active execution in the Room —
+    // including another agent running in the same turn — still blocks. Exclusion is
+    // therefore per assistant message, never per turn.
+    const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
+      ? store.hasActiveConversationTurn(conversationId, {
+          excludeMessageId: String(principal.sourceMessageId || '').trim() || undefined,
+        })
+      : false;
+    const result = renameAndPersistRoomWorkspace({
       store,
       conversation,
       project,
-      workspaceBoundAt: nowIso(),
+      branchName,
+      hasActiveExecution,
     });
     broadcastConversationSummary(conversationId);
-    return result.workspace;
+    return { ...result.workspace, recovered: result.recovered === true };
   }
 
-  function handleRoomWorkspaceAuthorization(input: any = {}) {
+  async function handleRoomWorkspaceAuthorization(input: any = {}) {
     const conversationId = String(input.conversationId || '').trim();
     const authorizationId = String(input.authorizationId || '').trim();
     const token = String(input.token || '').trim();
@@ -1413,34 +1464,84 @@ export function createAgentToolBridge(options: any = {}) {
     if (!project) {
       throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
     }
-    return workspaceAuthorizations.decide({
-      id: authorizationId,
-      token,
-      conversationId,
-      decision,
-      fingerprint,
-      execute: async () => {
-        const currentConversation = store.getConversationWithoutMessages(conversationId) || conversation;
-        const currentPreview = previewRoomWorkspace({ conversation: currentConversation, project });
-        if (previewFingerprint(currentPreview) !== fingerprint) {
-          throw createHttpError(409, 'Workspace preview changed; request a new authorization card', {
-            code: 'room_workspace_authorization_stale',
+    let outcome;
+    try {
+      outcome = await workspaceAuthorizations.decide({
+        id: authorizationId,
+        token,
+        conversationId,
+        decision,
+        fingerprint,
+        execute: async (authorizedPreview: any, record: any) => {
+          const currentConversation = store.getConversationWithoutMessages(conversationId) || conversation;
+          if (authorizedPreview && String(authorizedPreview.kind || '') === 'rename') {
+            // The approval path checks EVERY active message, including the card
+            // issuer: after issuing the card the agent may still run tools on the
+            // workspace, so only a fully idle Room may rename. A transient block
+            // returns the card to pending, so the user retries the same card once
+            // the running execution finishes.
+            const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
+              ? store.hasActiveConversationTurn(conversationId)
+              : false;
+            const result = renameAndPersistRoomWorkspace({
+              store,
+              conversation: currentConversation,
+              project,
+              branchName: authorizedPreview.newBranch,
+              hasActiveExecution,
+              expectedFingerprint: fingerprint,
+              fingerprintOf: previewFingerprint,
+            });
+            broadcastConversationSummary(conversationId);
+            broadcastEvent('room_workspace_authorization_updated', {
+              conversationId,
+              authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+            });
+            return result;
+          }
+          // Replay the exact authorized naming plan: a custom branchName binds with the
+          // stable directory mode, a default card keeps the automatic naming.
+          const authorizedBranchName = authorizedPreview && authorizedPreview.requestedBranchName
+            ? String(authorizedPreview.requestedBranchName)
+            : undefined;
+          const currentPreview = previewRoomWorkspace({
+            conversation: currentConversation,
+            project,
+            branchName: authorizedBranchName,
           });
-        }
-        const result = bindAndPersistRoomWorkspace({
-          store,
-          conversation: currentConversation,
-          project,
-          workspaceBoundAt: nowIso(),
-        });
-        broadcastConversationSummary(conversationId);
+          if (previewFingerprint(currentPreview) !== fingerprint) {
+            throw createHttpError(409, 'Workspace preview changed; request a new authorization card', {
+              code: 'room_workspace_authorization_stale',
+            });
+          }
+          const result = bindAndPersistRoomWorkspace({
+            store,
+            conversation: currentConversation,
+            project,
+            branchName: authorizedBranchName,
+            workspaceBoundAt: nowIso(),
+          });
+          broadcastConversationSummary(conversationId);
+          broadcastEvent('room_workspace_authorization_updated', {
+            conversationId,
+            authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+          });
+          return result;
+        },
+      });
+    } catch (error: any) {
+      // A decided-but-failed (or retried-pending) card must reach the UI so it
+      // cannot linger on a stale state while the HTTP request itself errors.
+      const decidedRecord = error && error.authorizationRecord;
+      if (decidedRecord) {
         broadcastEvent('room_workspace_authorization_updated', {
           conversationId,
-          authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+          authorization: decidedRecord,
         });
-        return result;
-      },
-    });
+      }
+      throw error;
+    }
+    return outcome;
   }
   function listRoomWorkspaceAuthorizations(conversationId: any) {
     const conversation = store.getConversationWithoutMessages(String(conversationId || '').trim());
@@ -1484,6 +1585,12 @@ export function createAgentToolBridge(options: any = {}) {
           bind(input: any) {
             return handleRoomWorkspaceCapability('bind', input);
           },
+          renamePreview(input: any) {
+            return handleRoomWorkspaceCapability('rename_preview', input);
+          },
+          renameBind(input: any) {
+            return handleRoomWorkspaceCapability('rename_bind', input);
+          },
         }),
         ...createTypeSafeCapabilityDefinitions({
           ask(input: any) {
@@ -1512,6 +1619,8 @@ export function createAgentToolBridge(options: any = {}) {
       sourceConversationId: context.conversationId,
       sourceAgentId: context.agentId,
       sourceAgentName: context.agentName,
+      sourceTurnId: String(context.turnId || '').trim() || null,
+      sourceMessageId: String(context.assistantMessageId || '').trim() || null,
       projectScopeId: String(conversation && conversation.projectScopeId || '').trim(),
       traceId,
       incomingDeliveryId,

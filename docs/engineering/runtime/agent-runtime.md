@@ -943,12 +943,14 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 
 - Every conversation Agent run receives `lib/pi-extensions/caff-capabilities.mjs`
   through `startRun(..., { extensionPaths })`.
-- The extension registers five model-visible tools:
+- The extension registers seven model-visible tools:
   - `list_rooms(scope?, limit?)`
   - `conversation_notify(targetConversationId, targetAgentId, content, idempotencyKey)`
   - `conversation_request(targetConversationId, targetAgentId, content, idempotencyKey, deadlineSeconds?)`
-  - `room_workspace_preview()`
-  - `room_workspace_bind(confirm)`
+  - `room_workspace_preview(branchName?)`
+  - `room_workspace_bind(confirm, branchName?)`
+  - `room_workspace_rename_preview(branchName)`
+  - `room_workspace_rename_bind(confirm, branchName)`
 - Delivery identifiers and idempotency keys are nonblank strings up to 200
   characters; content is nonblank text up to 12000 characters. Request deadlines
   are integers 1–86400 seconds, default 300. Source identity remains server-derived.

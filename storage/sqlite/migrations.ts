@@ -801,6 +801,23 @@ CREATE TABLE IF NOT EXISTS chat_acceptance_records (
 CREATE INDEX IF NOT EXISTS idx_chat_acceptance_records_conversation
   ON chat_acceptance_records (conversation_id, created_at DESC, id DESC);
 
+CREATE TABLE IF NOT EXISTS chat_workspace_operations (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('rename')),
+  old_branch TEXT NOT NULL,
+  new_branch TEXT NOT NULL,
+  fingerprint TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed')),
+  error_code TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_workspace_operations_conversation
+  ON chat_workspace_operations (conversation_id, status, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS chat_conversation_agents (
   conversation_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
