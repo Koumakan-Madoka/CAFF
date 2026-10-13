@@ -125,6 +125,61 @@ test('estimate authorization: descendant and missing identity fail closed', { sk
   });
 });
 
+test('estimate authorization: mid-walk root swap keeps enumeration on the authorized held fd', { skip: capSkip }, () => {
+  const { service, target } = fixture();
+  fs.writeFileSync(path.join(target, 'root.txt'), 'fifteen bytes!!');
+  service.savePolicy('p', { status: 'disabled', authorizedDirs: [target] });
+  service.authorizeProject('p');
+  const policy = service.loadPolicy('p');
+  const originalOpen = safeRead.openConstrainedRoot;
+  const order = [];
+  let walked;
+  safeRead.openConstrainedRoot = (...args) => {
+    const root = originalOpen(...args);
+    assert.equal(root.ok, true, JSON.stringify(root));
+    return { ...root,
+      identityEquals(pin) {
+        const matches = root.identityEquals(pin);
+        assert.equal(matches, true);
+        order.push('identity');
+        return matches;
+      },
+      enumerationIntact() {
+        const intact = root.enumerationIntact();
+        assert.equal(intact, true);
+        order.push('intact');
+        return intact;
+      },
+      walk(...params) {
+        assert.deepEqual(order, ['identity', 'intact']);
+        order.push('swap');
+        // Swap AFTER both checks. Reopening by pathname here would enumerate
+        // the replacement; forwarding to the real held-fd walk must not.
+        fs.renameSync(target, target + '-original');
+        fs.mkdirSync(target);
+        fs.writeFileSync(path.join(target, 'outside.txt'), 'not authorized');
+        walked = root.walk(...params);
+        return walked;
+      },
+      close() { order.push('close'); root.close(); },
+    };
+  };
+  let result;
+  try { result = service.estimateDirectory('p', target); }
+  finally { safeRead.openConstrainedRoot = originalOpen; }
+  assert.deepEqual(order, ['identity', 'intact', 'swap', 'close']);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.fileCount, 2, 'must count the original tree, not the replacement');
+  assert.equal(result.totalBytes, 22);
+  assert.equal(walked.ok, true);
+  assert.deepEqual(walked.entries.filter((entry) => entry.type === 'file').map((entry) => entry.path).sort(),
+    ['root.txt', 'sub/file.txt']);
+  assert.deepEqual(service.loadPolicy('p'), policy, 'preview must not re-authorize the replacement');
+  assert.equal(service.store.listCheckpoints('p').length, 0);
+  // A later preview opens the replacement object and must reject its identity.
+  assertDenied(service.estimateDirectory('p', target), 'authorized_root_replaced');
+});
+
 test('estimate authorization: swap after path authorization cannot enumerate a different root fd', { skip: capSkip }, () => {
   const { service, target } = fixture();
   service.savePolicy('p', { status: 'disabled', authorizedDirs: [target] });
