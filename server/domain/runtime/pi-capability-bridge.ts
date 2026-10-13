@@ -237,20 +237,67 @@ function validatePrincipal(principal: unknown): PiCapabilityPrincipal {
   return principal as PiCapabilityPrincipal;
 }
 
+const MAX_WORKSPACE_BRANCH_NAME_LENGTH = 200;
+
+function normalizeWorkspaceBranchNameArgument(input: UnknownRecord, facade: string, { required = false }: { required?: boolean } = {}) {
+  const unknownField = Object.keys(input).find((fieldName) => fieldName !== 'branchName');
+  if (unknownField) {
+    throw createCapabilityError(400, 'pi_capability_invalid_arguments', `${facade} does not accept argument: ${unknownField}`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(input, 'branchName') || input.branchName === undefined || input.branchName === null) {
+    if (required) {
+      throw createCapabilityError(400, 'pi_capability_invalid_arguments', `${facade} requires branchName`);
+    }
+    return {};
+  }
+  const branchName = typeof input.branchName === 'string' ? input.branchName.trim() : '';
+  if (!branchName || branchName.length > MAX_WORKSPACE_BRANCH_NAME_LENGTH) {
+    throw createCapabilityError(
+      400,
+      'pi_capability_invalid_arguments',
+      `${facade} branchName must be a non-empty string of at most ${MAX_WORKSPACE_BRANCH_NAME_LENGTH} characters`
+    );
+  }
+  return { branchName };
+}
+
 function validateRoomWorkspacePreviewArguments(input: unknown): UnknownRecord {
   rejectForbiddenProxyArguments(input);
-  if (Object.keys(input).length > 0) {
-    throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'room_workspace_preview accepts no arguments');
-  }
-  return {};
+  return normalizeWorkspaceBranchNameArgument(input, 'room_workspace_preview');
 }
 
 function validateRoomWorkspaceBindArguments(input: unknown): UnknownRecord {
   rejectForbiddenProxyArguments(input);
-  if (Object.keys(input).length !== 1 || input.confirm !== true) {
-    throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'room_workspace_bind requires confirm=true');
+  const allowedFields = new Set(['confirm', 'branchName']);
+  const unknownField = Object.keys(input).find((fieldName) => !allowedFields.has(fieldName));
+  if (unknownField || input.confirm !== true) {
+    throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'room_workspace_bind requires confirm=true and optionally branchName');
   }
-  return { confirm: true };
+  const { branchName } = normalizeWorkspaceBranchNameArgument(
+    Object.prototype.hasOwnProperty.call(input, 'branchName') ? { branchName: input.branchName } : {},
+    'room_workspace_bind'
+  );
+  return branchName ? { confirm: true, branchName } : { confirm: true };
+}
+
+function validateRoomWorkspaceRenamePreviewArguments(input: unknown): UnknownRecord {
+  rejectForbiddenProxyArguments(input);
+  return normalizeWorkspaceBranchNameArgument(input, 'room_workspace_rename_preview', { required: true });
+}
+
+function validateRoomWorkspaceRenameBindArguments(input: unknown): UnknownRecord {
+  rejectForbiddenProxyArguments(input);
+  const allowedFields = new Set(['confirm', 'branchName']);
+  const unknownField = Object.keys(input).find((fieldName) => !allowedFields.has(fieldName));
+  if (unknownField || input.confirm !== true) {
+    throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'room_workspace_rename_bind requires confirm=true and branchName');
+  }
+  const { branchName } = normalizeWorkspaceBranchNameArgument(
+    { branchName: input.branchName },
+    'room_workspace_rename_bind',
+    { required: true }
+  );
+  return { confirm: true, branchName };
 }
 
 function projectRoomWorkspaceResult(result: unknown) {
@@ -268,6 +315,24 @@ function projectRoomWorkspaceResult(result: unknown) {
     worktreePath: String(value.worktreePath).trim(),
     alreadyBound: value.alreadyBound === true,
     reused: value.reused === true,
+  };
+}
+function projectRoomWorkspaceRenameResult(result: unknown) {
+  const value = isPlainObject(result) ? result : null;
+  if (!value || !String(value.branch || '').trim() || !String(value.newBranch || '').trim()) {
+    throw new Error('Room workspace rename result is missing its canonical binding');
+  }
+  return {
+    conversationId: String(value.conversationId || '').trim(),
+    projectScopeId: String(value.projectScopeId || '').trim(),
+    repositoryPath: String(value.repositoryPath || '').trim(),
+    baseBranch: String(value.baseBranch || '').trim(),
+    baseSha: String(value.baseSha || '').trim(),
+    branch: String(value.branch).trim(),
+    newBranch: String(value.newBranch).trim(),
+    worktreePath: String(value.worktreePath || '').trim(),
+    renamed: value.renamed === true,
+    recovered: value.recovered === true,
   };
 }
 function projectConversationDeliveryResult(result: unknown) {
@@ -466,7 +531,7 @@ export function createRoomWorkspaceCapabilityDefinitions(handlers: unknown = {})
     throw new Error('Room workspace capability handlers are required');
   }
 
-  return [
+  const definitions: InternalPiCapabilityDefinition[] = [
     {
       facade: 'room_workspace_preview',
       kind: 'internal',
@@ -482,6 +547,28 @@ export function createRoomWorkspaceCapabilityDefinitions(handlers: unknown = {})
       projectResult: projectRoomWorkspaceResult,
     },
   ];
+
+  // Rename capabilities are optional so existing wirings with only preview/bind keep working.
+  if (typeof handlers.renamePreview === 'function') {
+    definitions.push({
+      facade: 'room_workspace_rename_preview',
+      kind: 'internal',
+      validateArguments: validateRoomWorkspaceRenamePreviewArguments,
+      execute: handlers.renamePreview as PiCapabilityHandler,
+      projectResult: projectRoomWorkspaceRenameResult,
+    });
+  }
+  if (typeof handlers.renameBind === 'function') {
+    definitions.push({
+      facade: 'room_workspace_rename_bind',
+      kind: 'internal',
+      validateArguments: validateRoomWorkspaceRenameBindArguments,
+      execute: handlers.renameBind as PiCapabilityHandler,
+      projectResult: projectRoomWorkspaceRenameResult,
+    });
+  }
+
+  return definitions;
 }
 
 

@@ -113,3 +113,61 @@ test('workspace authorization rejects without executing Git mutation', async () 
   assert.equal(result.record.status, 'rejected');
   assert.equal(executed, false);
 });
+
+const renamePreview = {
+  kind: 'rename',
+  conversationId: 'room-1234',
+  projectScopeId: 'project-a',
+  repositoryPath: 'E:/repo',
+  baseBranch: 'develop',
+  baseSha: 'a'.repeat(40),
+  branch: 'feature/before',
+  newBranch: 'feature/after',
+  worktreePath: 'E:/worktrees/room/1234-demo',
+  alreadyBound: true,
+};
+
+test('a bound Room cannot issue a bind card but can issue a rename card', () => {
+  const store = new RoomWorkspaceAuthorizationStore({ ttlMs: 30_000 });
+  const conversation = { id: 'room-1234', projectScopeId: 'project-a' };
+  const boundBindPreview = { ...preview, alreadyBound: true };
+  assert.equal(store.issue({ conversation, preview: boundBindPreview, now: 1_000 }), null);
+
+  const card = store.issue({ conversation, preview: renamePreview, invocationId: 'inv-rename', now: 1_001 });
+  assert.ok(card);
+  const clientCard = store.clientRecord(store.records.get(card.id));
+  assert.equal(clientCard.kind, 'rename');
+  assert.equal(clientCard.branch, 'feature/before');
+  assert.equal(clientCard.newBranch, 'feature/after');
+});
+
+test('the authorization fingerprint binds the operation kind and target branch name', () => {
+  const store = new RoomWorkspaceAuthorizationStore({ ttlMs: 30_000 });
+  const conversation = { id: 'room-1234', projectScopeId: 'project-a' };
+  assert.notEqual(previewFingerprint(preview), previewFingerprint(renamePreview));
+  assert.notEqual(
+    previewFingerprint(renamePreview),
+    previewFingerprint({ ...renamePreview, newBranch: 'feature/different' })
+  );
+
+  const first = store.issue({ conversation, preview: renamePreview, now: 1_000 });
+  const second = store.issue({ conversation, preview: { ...renamePreview, newBranch: 'feature/different' }, now: 1_001 });
+  assert.ok(first);
+  assert.ok(second);
+  assert.notEqual(first.id, second.id);
+  assert.notEqual(first.fingerprint, second.fingerprint);
+
+  const clientCard = store.clientRecord(store.records.get(first.id));
+  return assert.rejects(
+    store.decide({
+      id: clientCard.id,
+      token: clientCard.token,
+      conversationId: 'room-1234',
+      decision: 'accepted',
+      fingerprint: second.fingerprint,
+      execute: () => ({ ok: true }),
+      now: 1_002,
+    }),
+    (error) => error && error.code === 'room_workspace_authorization_stale'
+  );
+});

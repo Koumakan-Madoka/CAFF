@@ -60,11 +60,15 @@ The public payload uses `modeId`. SQLite currently persists that identity in the
 - `GET /api/conversations/:conversationId/workspace/preview`
 - `POST /api/conversations/:conversationId/workspace` with exact confirmation intent `{ "confirm": true }`
 - Domain helpers:
-  - `deriveRoomWorkspaceIdentity(conversation, project)`
-  - `previewRoomWorkspace({ conversation, project })`
-  - `bindRoomWorkspace({ conversation, project })`
+  - `deriveRoomWorkspaceIdentity(conversation, project, { branchName })`
+  - `previewRoomWorkspace({ conversation, project, branchName })`
+  - `bindRoomWorkspace({ conversation, project, branchName })`
+  - `previewRoomWorkspaceRename({ conversation, project, branchName, hasActiveExecution })`
+  - `renameAndPersistRoomWorkspace({ store, conversation, project, branchName, hasActiveExecution, expectedFingerprint, fingerprintOf })`
+  - `reconcileConversationWorkspaceBranch({ store, conversationId, project })`
   - `rollbackCreatedRoomWorkspace(binding)`
-- Store CAS: `bindConversationWorkspace(conversationId, { branch, worktreePath, workspaceBaseSha, workspaceBoundAt })`
+- Store CAS: `bindConversationWorkspace(conversationId, { branch, worktreePath, workspaceBaseSha, workspaceBoundAt })` and `renameConversationWorkspaceBranch(conversationId, { oldBranch, newBranch, updatedAt })`
+- Active-execution probe: `hasActiveConversationTurn(conversationId)` counts non-terminal (`queued`/`running`/`streaming`) assistant messages.
 
 Persisted Conversation fields:
 
@@ -74,9 +78,11 @@ Persisted Conversation fields:
 - `workspace_bound_at TEXT NULL`
 
 - Model-visible Room workspace capability facades are defined in `server/domain/runtime/pi-capability-bridge.ts` and wired by `server/domain/runtime/agent-tool-bridge.ts`.
-- `room_workspace_preview` accepts `{}` and is read-only; when unbound it issues a short-lived authorization-card request. The UI lists pending requests at `GET /api/conversations/:conversationId/workspace/authorizations` and renders a system card; user decisions use a one-time token plus preview fingerprint at `POST /api/conversations/:conversationId/workspace/authorizations/:authorizationId/decision`. The normal UI path performs binding directly after user approval, so the model does not need a second bind turn.
-- `room_workspace_bind` remains a non-UI fallback and accepts `{ confirm: true }` only. Both capabilities derive Room identity from the authenticated invocation principal and never accept a conversation id, branch, path, repository, or base ref from the model.
-- Git creation and Conversation CAS persistence are shared through `bindAndPersistRoomWorkspace(...)`; persistence failure rolls back only artifacts created by that request.
+- `room_workspace_preview` accepts `{}` or `{ "branchName": "full/branch-name" }` and is read-only; when unbound it issues a short-lived authorization-card request. The UI lists pending requests at `GET /api/conversations/:conversationId/workspace/authorizations` and renders a system card; user decisions use a one-time token plus preview fingerprint at `POST /api/conversations/:conversationId/workspace/authorizations/:authorizationId/decision`. The normal UI path performs binding directly after user approval, so the model does not need a second bind turn.
+- `room_workspace_bind` remains a non-UI fallback and accepts `{ "confirm": true }` with an optional `branchName`.
+- `room_workspace_rename_preview` requires `{ "branchName": "new/full-name" }` and is read-only; on a bound Room it issues a rename authorization card showing `branch → newBranch`. `room_workspace_rename_bind` is the non-UI fallback and requires `{ "confirm": true, "branchName": "new/full-name" }`.
+- The authorization fingerprint binds the operation kind (`bind`/`rename`) and the exact branch name(s); a decided or stale card can never execute a changed plan. Both capabilities derive Room identity from the authenticated invocation principal and never accept a conversation id, path, repository, or base ref from the model.
+- Git creation and Conversation CAS persistence are shared through `bindAndPersistRoomWorkspace(...)`; persistence failure rolls back only artifacts created by that request. Rename executes `git branch -m` inside the bound worktree and then the branch CAS; a persistence failure compensates the Git rename, and a crash between the two is reconciled on the next rename attempt (the recorded ref is gone, so the binding is healed to the actual worktree branch with a conditional update).
 
 
 - `GET /api/conversations/:conversationId/acceptance-records`
@@ -119,13 +125,14 @@ Storage is `chat_acceptance_records`; records are Room-owned through `conversati
 #### Workspace identity and mutation
 
 - Baseline is the local `develop` branch. Current MVP intentionally has no project-level baseline configuration.
-- Generated branch: `room/<first-8-alphanumeric-conversation-id>-<ascii-title-slug>`.
-- Generated path: `<repository-parent>/worktrees/room/<branch-suffix>`.
+- Default generated branch: `room/<first-8-alphanumeric-conversation-id>-<ascii-title-slug>`; default generated path: `<repository-parent>/worktrees/room/<branch-suffix>`. Omitting `branchName` keeps this behavior exactly.
+- A custom `branchName` is a complete branch name (no enforced `room/` prefix) validated with `git check-ref-format --branch` (max 200 chars). Custom-name bindings use the stable directory `<repository-parent>/worktrees/room/<first-8-alphanumeric-conversation-id>` so the path never depends on the (changeable) branch name. Room ownership is recognized from the database binding plus actual worktree verification, never from a branch-name prefix.
 - Preview is deterministic and read-only: it resolves the Project Git root and `develop` SHA but creates no branch, directory, worktree, or database binding.
-- Confirmation accepts no arbitrary base, branch, repository, or path. All identity is server-derived.
-- Binding is one-time and idempotent. A complete existing binding is returned as reused; a partial binding fails closed.
-- Existing branch or occupied target path is a conflict, never an invitation to attach, reset, clean, or delete it.
+- Confirmation accepts no arbitrary base, repository, or path. The branch name is the only client-proposable identity and is always revalidated server-side.
+- Binding is one-time and idempotent. A complete existing binding is returned as reused; a partial binding fails closed. A bound Room previewed with a different `branchName` fails with `409 room_workspace_already_bound` and must use the rename flow.
+- Existing branch (including a matching remote-tracking ref) or occupied target path is a conflict, never an invitation to attach, reset, clean, or delete it.
 - Git worktree creation occurs before the storage CAS. If persistence fails, rollback removes only the worktree and branch created by that request. Pre-existing artifacts must never be removed.
+- Rename (`git branch -m`) never moves the worktree directory and never changes HEAD, file contents, or the baseline. It requires the Git worktree state to match the binding record, no active execution, a conflict-free target name, and a verifiably unpublished branch: an upstream, a matching remote-tracking ref, or an unverifiable remote each block the rename with a clear error. Remote state is probed read-only (`git ls-remote`); remotes are never modified.
 
 #### Runtime cwd and prompt
 
@@ -176,11 +183,23 @@ Model guidance may evolve Goal/DAG state through the existing governance tools, 
 | Project path missing/not Git | `409 room_workspace_repository_invalid` |
 | Local `develop` missing | `409 room_workspace_base_missing` |
 | Generated branch exists | `409 room_workspace_branch_exists`; do not attach/delete |
+| Custom branch name invalid/empty | `400 room_workspace_branch_name_invalid` / `400 room_workspace_branch_name_required`; no Git or DB mutation |
+| Bound Room previewed with a different branch name | `409 room_workspace_already_bound`; use rename |
 | Generated path exists | `409 room_workspace_path_occupied`; do not clean/delete |
 | Confirm body is not `{ confirm: true }` intent | `400 room_workspace_confirmation_required` |
 | Complete binding already exists | `200`, exact binding returned, no Git mutation |
 | Git creation fails | `409 room_workspace_create_failed`; no DB binding |
 | DB bind loses CAS/fails after Git creation | error surfaces; remove only request-created worktree/branch |
+| Rename on an unbound Room | `409 room_workspace_not_bound` |
+| Rename target unchanged/invalid | `400 room_workspace_branch_name_unchanged` / `400 room_workspace_branch_name_invalid` |
+| Rename target exists locally or as remote-tracking ref | `409 room_workspace_branch_exists` |
+| Worktree missing, unregistered, or on another branch | `409 room_workspace_worktree_missing` / `room_workspace_worktree_mismatch` / `room_workspace_state_mismatch` |
+| Rename during an active execution | `409 room_workspace_execution_active` |
+| Branch has upstream or remote-tracking ref | `409 room_workspace_branch_published`; remote untouched |
+| Remote state unverifiable | `409 room_workspace_remote_state_unknown`; remote untouched |
+| Rename authorization fingerprint stale | `409 room_workspace_authorization_stale`; no Git or DB mutation |
+| DB rename CAS fails after Git rename | error surfaces; Git rename compensated back to the old name |
+| Crash between Git rename and DB update | next rename attempt reconciles the binding to the actual branch, then proceeds |
 | Candidate SHA is not full Git SHA, or evidence arrays absent | `400 acceptance_record_invalid` |
 | Decision is neither accepted nor rejected | `400 acceptance_decision_invalid` |
 | Accepted SHA differs from candidate | `409 acceptance_sha_mismatch` |
@@ -192,7 +211,7 @@ Model guidance may evolve Goal/DAG state through the existing governance tools, 
 - **Good:** create with a registered Project and custom Skill-backed Mode; preview; explicitly confirm; execute in the generated worktree; append automated/manual evidence; accept the exact candidate SHA.
 - **Base:** create and clarify in the Project repository without binding a worktree. Prompt says the workspace is unbound and orchestration is direct until Goal/DAG state exists.
 - **Base:** repeat workspace confirmation or the same acceptance decision and receive the canonical existing result without duplicate mutation.
-- **Bad:** accept client-provided branch/path/base fields, infer a bound Room cwd from the global active Project, mutate `type` to switch Mode, reuse an existing worktree silently, or store acceptance only in replaceable Conversation metadata.
+- **Bad:** accept client-provided path/base fields, infer a bound Room cwd from the global active Project, mutate `type` to switch Mode, reuse an existing worktree silently, store acceptance only in replaceable Conversation metadata, recognize Room ownership from a branch-name prefix, move the worktree directory on rename, or rename a branch with an upstream/remote-tracking ref or an unverifiable remote.
 - **Bad:** delete a legacy parent Room before children/delivery records, or permanently remove the append-only guard merely to make migration pass.
 
 ### 6. Tests Required
@@ -202,6 +221,10 @@ Model guidance may evolve Goal/DAG state through the existing governance tools, 
 - `tests/runtime/turn-orchestrator.test.js`: prompt advertises preview-first and explicit-confirmation workspace flow.
 - `tests/ui/new-conversation-dialog.test.js` and `tests/runtime/new-conversation-dialog.test.js`: Room form requires/submits Project + Mode and has no legacy game selector.
 - `tests/runtime/room-workspace.test.js`: preview is read-only, confirmation uses `develop`, generated branch/path are deterministic, and existing-branch conflict fails closed.
+- `tests/runtime/room-workspace-rename.test.js`: custom full branch names bind verbatim with a stable directory; invalid names/conflicts have no side effects; rename keeps directory/HEAD/files/baseline while updating Git and the store; upstream, remote-tracking, and unverifiable-remote branches are blocked; persistence failure and lost CAS compensate the Git rename; interrupted renames reconcile on retry; stale fingerprints change nothing.
+- `tests/runtime/room-workspace-capability.test.js`: `branchName` validation on preview/bind/rename facades, rename result projection, and optional rename wiring.
+- `tests/runtime/room-workspace-authorization.test.js`: bound Rooms cannot issue bind cards but can issue rename cards; fingerprints bind kind and target branch name.
+- `tests/storage/conversation-workspace-rename.test.js`: branch rename CAS keeps the rest of the binding, stale writers lose, and active-execution detection follows non-terminal assistant messages.
 - `tests/storage/chat-store.test.js`: acceptance rows append, candidate-SHA equality is DB-enforced, and one-way decision CAS rejects a second mutation.
 - `tests/runtime/turn-orchestrator.test.js`: prompt separates fixed Mode from derived Direct/Goal/DAG and cwd precedence remains DAG > Room > Project.
 - `tests/smoke/mode-store.test.js`: destructive retirement covers multi-level lineage, orphan retired Rooms, cross-conversation delivery events/deliveries, healthy custom Rooms, and trigger recreation.

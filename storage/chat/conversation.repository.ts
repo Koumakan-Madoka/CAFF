@@ -8,6 +8,7 @@ export class ChatConversationRepository {
   updateStatement: any;
   bindProjectScopeStatement: any;
   bindWorkspaceStatement: any;
+  renameWorkspaceBranchStatement: any;
   touchStatement: any;
   recomputeLastMessageAtStatement: any;
   deleteStatement: any;
@@ -197,6 +198,14 @@ export class ChatConversationRepository {
         AND worktree_path IS NULL
       RETURNING *
     `);
+    this.renameWorkspaceBranchStatement = db.prepare(`
+      UPDATE chat_conversations
+      SET branch = @newBranch,
+          updated_at = @updatedAt
+      WHERE id = @conversationId
+        AND branch = @oldBranch
+      RETURNING *
+    `);
     this.touchStatement = db.prepare(`
       UPDATE chat_conversations
       SET
@@ -286,6 +295,15 @@ export class ChatConversationRepository {
     return this.bindProjectScopeStatement.get({
       conversationId,
       projectScopeId: payload.projectScopeId,
+      updatedAt: payload.updatedAt,
+    }) || null;
+  }
+
+  renameWorkspaceBranch(conversationId: string, payload: any) {
+    return this.renameWorkspaceBranchStatement.get({
+      conversationId,
+      oldBranch: payload.oldBranch,
+      newBranch: payload.newBranch,
       updatedAt: payload.updatedAt,
     }) || null;
   }

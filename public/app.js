@@ -4373,6 +4373,7 @@ async function decideWorkspaceAuthorization(authorizationId, decision) {
       method: 'POST',
       body: { token: authorization.token, fingerprint: authorization.fingerprint, decision },
     });
+    const isRename = authorization.kind === 'rename';
     applyWorkspaceAuthorizationEvent({ conversationId, authorization: result.authorization });
     if (state.selectedConversationId === conversationId && result.conversation) {
       // Workspace authorization returns a conversation header (without messages).
@@ -4382,7 +4383,9 @@ async function decideWorkspaceAuthorization(authorizationId, decision) {
       mergeConversationSummary(result.conversation);
       renderAll();
     }
-    showToast(decision === 'accepted' ? '工作区已绑定' : '已拒绝工作区绑定');
+    showToast(decision === 'accepted'
+      ? (isRename ? '分支已重命名' : '工作区已绑定')
+      : (isRename ? '已拒绝分支重命名' : '已拒绝工作区绑定'));
   } catch (error) {
     showToast(error && error.message ? error.message : '工作区授权失败');
   } finally {
@@ -4402,22 +4405,25 @@ function renderWorkspaceAuthorizationCards() {
       card.className = `workspace-authorization-card ${authorization.status}`;
       card.setAttribute('role', 'status');
       const title = document.createElement('strong');
+      const isRename = authorization.kind === 'rename';
       const statusLabels = {
-        accepted: '已绑定',
+        accepted: isRename ? '已改名' : '已绑定',
         rejected: '已拒绝',
         expired: '已过期',
-        failed: '绑定失败',
+        failed: isRename ? '改名失败' : '绑定失败',
       };
       title.textContent = authorization.status === 'pending'
-        ? 'Agent 请求绑定 Room 工作区'
+        ? (isRename ? 'Agent 请求重命名工作区分支' : 'Agent 请求绑定 Room 工作区')
         : `工作区授权：${statusLabels[authorization.status] || authorization.status}`;
       const details = document.createElement('p');
-      details.textContent = `${authorization.branch || '-'} · ${authorization.worktreePath || '-'} · 基线 ${authorization.baseSha || '-'}`;
+      details.textContent = isRename
+        ? `${authorization.branch || '-'} → ${authorization.newBranch || '-'} · ${authorization.worktreePath || '-'} · 基线 ${authorization.baseSha || '-'}`
+        : `${authorization.branch || '-'} · ${authorization.worktreePath || '-'} · 基线 ${authorization.baseSha || '-'}`;
       card.append(title, details);
       if (authorization.status === 'pending') {
         const actions = document.createElement('div');
         actions.className = 'button-row compact-button-row';
-        for (const [decision, label] of [['accepted', '授权绑定'], ['rejected', '拒绝']] ) {
+        for (const [decision, label] of [['accepted', isRename ? '授权改名' : '授权绑定'], ['rejected', '拒绝']] ) {
           const button = document.createElement('button');
           button.type = 'button';
           button.textContent = label;

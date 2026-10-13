@@ -22,6 +22,8 @@ const {
 const {
   bindAndPersistRoomWorkspace,
   previewRoomWorkspace,
+  previewRoomWorkspaceRename,
+  renameAndPersistRoomWorkspace,
 } = require('../conversation/room-workspace');
 const {
   RoomWorkspaceAuthorizationStore,
@@ -1344,8 +1346,10 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
-  function handleRoomWorkspaceCapability(kind: 'preview' | 'bind', input: any) {
+  function handleRoomWorkspaceCapability(kind: 'preview' | 'bind' | 'rename_preview' | 'rename_bind', input: any) {
     const principal = input && input.principal;
+    const capabilityArguments = (input && input.arguments) || {};
+    const branchName = String(capabilityArguments.branchName || '').trim() || undefined;
     const conversationId = String(principal && principal.sourceConversationId || '').trim();
     const projectScopeId = String(principal && principal.projectScopeId || '').trim();
     const conversation = store && typeof store.getConversationWithoutMessages === 'function'
@@ -1364,7 +1368,7 @@ export function createAgentToolBridge(options: any = {}) {
       throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
     }
     if (kind === 'preview') {
-      const preview = previewRoomWorkspace({ conversation, project });
+      const preview = previewRoomWorkspace({ conversation, project, branchName });
       if (!preview.alreadyBound) {
         const authorization = workspaceAuthorizations.issue({
           conversation,
@@ -1384,14 +1388,49 @@ export function createAgentToolBridge(options: any = {}) {
       return preview;
     }
 
-    const result = bindAndPersistRoomWorkspace({
+    if (kind === 'bind') {
+      const result = bindAndPersistRoomWorkspace({
+        store,
+        conversation,
+        project,
+        branchName,
+        workspaceBoundAt: nowIso(),
+      });
+      broadcastConversationSummary(conversationId);
+      return result.workspace;
+    }
+
+    const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
+      ? store.hasActiveConversationTurn(conversationId)
+      : false;
+    if (kind === 'rename_preview') {
+      const preview = previewRoomWorkspaceRename({ conversation, project, branchName, hasActiveExecution });
+      const authorization = workspaceAuthorizations.issue({
+        conversation,
+        preview,
+        invocationId: principal.invocationId,
+      });
+      if (authorization) {
+        const clientAuthorization = workspaceAuthorizations.clientRecord(
+          workspaceAuthorizations.records.get(authorization.id)
+        );
+        broadcastEvent('room_workspace_authorization_updated', {
+          conversationId,
+          authorization: clientAuthorization,
+        });
+      }
+      return preview;
+    }
+
+    const result = renameAndPersistRoomWorkspace({
       store,
       conversation,
       project,
-      workspaceBoundAt: nowIso(),
+      branchName,
+      hasActiveExecution,
     });
     broadcastConversationSummary(conversationId);
-    return result.workspace;
+    return { ...result.workspace, recovered: result.recovered === true };
   }
 
   function handleRoomWorkspaceAuthorization(input: any = {}) {
@@ -1419,8 +1458,28 @@ export function createAgentToolBridge(options: any = {}) {
       conversationId,
       decision,
       fingerprint,
-      execute: async () => {
+      execute: async (authorizedPreview: any) => {
         const currentConversation = store.getConversationWithoutMessages(conversationId) || conversation;
+        if (authorizedPreview && String(authorizedPreview.kind || '') === 'rename') {
+          const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
+            ? store.hasActiveConversationTurn(conversationId)
+            : false;
+          const result = renameAndPersistRoomWorkspace({
+            store,
+            conversation: currentConversation,
+            project,
+            branchName: authorizedPreview.newBranch,
+            hasActiveExecution,
+            expectedFingerprint: fingerprint,
+            fingerprintOf: previewFingerprint,
+          });
+          broadcastConversationSummary(conversationId);
+          broadcastEvent('room_workspace_authorization_updated', {
+            conversationId,
+            authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+          });
+          return result;
+        }
         const currentPreview = previewRoomWorkspace({ conversation: currentConversation, project });
         if (previewFingerprint(currentPreview) !== fingerprint) {
           throw createHttpError(409, 'Workspace preview changed; request a new authorization card', {
@@ -1483,6 +1542,12 @@ export function createAgentToolBridge(options: any = {}) {
           },
           bind(input: any) {
             return handleRoomWorkspaceCapability('bind', input);
+          },
+          renamePreview(input: any) {
+            return handleRoomWorkspaceCapability('rename_preview', input);
+          },
+          renameBind(input: any) {
+            return handleRoomWorkspaceCapability('rename_bind', input);
           },
         }),
         ...createTypeSafeCapabilityDefinitions({

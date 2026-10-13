@@ -135,6 +135,8 @@ test('Pi extension exposes scoped delivery facades with server-aligned schemas',
     'conversation_request',
     'room_workspace_preview',
     'room_workspace_bind',
+    'room_workspace_rename_preview',
+    'room_workspace_rename_bind',
   ]);
 
   const jevAsk = tools.find(tool => tool.name === 'jev_ask');
@@ -146,14 +148,24 @@ test('Pi extension exposes scoped delivery facades with server-aligned schemas',
 
   const preview = tools.find(tool => tool.name === 'room_workspace_preview');
   const bind = tools.find(tool => tool.name === 'room_workspace_bind');
+  const renamePreview = tools.find(tool => tool.name === 'room_workspace_rename_preview');
+  const renameBind = tools.find(tool => tool.name === 'room_workspace_rename_bind');
   const rooms = tools.find(tool => tool.name === 'list_rooms');
   assert.deepEqual(Object.keys(rooms.parameters.properties), ['scope', 'limit']);
   assert.equal(rooms.parameters.additionalProperties, false);
-  assert.deepEqual(Object.keys(preview.parameters.properties), []);
-  assert.deepEqual(Object.keys(bind.parameters.properties), ['confirm']);
+  assert.deepEqual(Object.keys(preview.parameters.properties), ['branchName']);
+  assert.deepEqual(Object.keys(bind.parameters.properties), ['confirm', 'branchName']);
+  assert.deepEqual(Object.keys(renamePreview.parameters.properties), ['branchName']);
+  assert.deepEqual(renamePreview.parameters.required, ['branchName']);
+  assert.deepEqual(Object.keys(renameBind.parameters.properties), ['confirm', 'branchName']);
+  assert.deepEqual(renameBind.parameters.required, ['confirm', 'branchName']);
   assert.equal(preview.parameters.additionalProperties, false);
   assert.equal(bind.parameters.additionalProperties, false);
+  assert.equal(renamePreview.parameters.additionalProperties, false);
+  assert.equal(renameBind.parameters.additionalProperties, false);
   assert.match(JSON.stringify(bind.parameters), /explicitly confirms/u);
+  assert.match(renamePreview.description, /unpublished local branches/u);
+  assert.match(renamePreview.description, /never modified|never touches/iu);
 
   for (const kind of ['notify', 'request']) {
     const delivery = tools.find(tool => tool.name === `conversation_${kind}`);

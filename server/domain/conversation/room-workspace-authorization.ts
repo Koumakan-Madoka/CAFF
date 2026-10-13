@@ -9,12 +9,14 @@ function text(value: unknown) {
 
 function previewFingerprint(preview: any) {
   const canonical = JSON.stringify({
+    kind: text(preview && preview.kind) || 'bind',
     conversationId: text(preview && preview.conversationId),
     projectScopeId: text(preview && preview.projectScopeId),
     repositoryPath: text(preview && preview.repositoryPath),
     baseBranch: text(preview && preview.baseBranch),
     baseSha: text(preview && preview.baseSha),
     branch: text(preview && preview.branch),
+    newBranch: text(preview && preview.newBranch),
     worktreePath: text(preview && preview.worktreePath),
   });
   return createHash('sha256').update(canonical).digest('hex');
@@ -41,7 +43,11 @@ export class RoomWorkspaceAuthorizationStore {
     this.expire(now);
     const conversationId = text(conversation && conversation.id) || text(preview && preview.conversationId);
     const projectScopeId = text(conversation && conversation.projectScopeId) || text(preview && preview.projectScopeId);
-    if (!conversationId || !projectScopeId || !preview || preview.alreadyBound) {
+    if (!conversationId || !projectScopeId || !preview) {
+      return null;
+    }
+    // A bound Room cannot issue another bind card, but it may issue a rename card.
+    if (preview.alreadyBound && text(preview.kind) !== 'rename') {
       return null;
     }
 
@@ -84,7 +90,9 @@ export class RoomWorkspaceAuthorizationStore {
       id: record.id,
       conversationId: record.conversationId,
       projectScopeId: record.projectScopeId,
+      kind: text(record.preview.kind) || 'bind',
       branch: record.preview.branch,
+      newBranch: record.preview.newBranch || null,
       worktreePath: record.preview.worktreePath,
       repositoryPath: record.preview.repositoryPath,
       baseBranch: record.preview.baseBranch,

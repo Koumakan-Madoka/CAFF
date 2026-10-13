@@ -1249,6 +1249,39 @@ export class ChatAppStore {
         return this.getConversationWithoutMessages(conversationId);
       });
 
+      this.renameConversationWorkspaceBranchTransaction = this.db.transaction((conversationId: any, rename: any) => {
+        const existing = this.getConversationWithoutMessages(conversationId);
+        if (!existing) {
+          const error: any = new Error('Conversation not found');
+          error.code = 'conversation_not_found';
+          throw error;
+        }
+        if (String(existing.branch || '') !== String(rename.oldBranch || '')) {
+          const error: any = new Error('Room workspace binding changed concurrently');
+          error.code = 'room_workspace_binding_conflict';
+          throw error;
+        }
+        const renamed = this.conversationRepository.renameWorkspaceBranch(conversationId, {
+          oldBranch: rename.oldBranch,
+          newBranch: rename.newBranch,
+          updatedAt: rename.updatedAt || nowIso(),
+        });
+        if (!renamed) {
+          const error: any = new Error('Room workspace binding changed concurrently');
+          error.code = 'room_workspace_binding_conflict';
+          throw error;
+        }
+        return this.getConversationWithoutMessages(conversationId);
+      });
+
+      this.countActiveConversationTurnsStatement = this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM chat_messages
+        WHERE conversation_id = ?
+          AND role = 'assistant'
+          AND status IN ('queued', 'running', 'streaming')
+      `);
+
       this.persistMessageDetails = (payload: any) => {
         if (String(payload.role || '').trim() !== 'assistant') {
           return;
@@ -3290,6 +3323,19 @@ export class ChatAppStore {
 
   bindConversationWorkspace(conversationId: any, workspace: any) {
     return this.bindConversationWorkspaceTransaction(conversationId, workspace);
+  }
+
+  renameConversationWorkspaceBranch(conversationId: any, rename: any) {
+    return this.renameConversationWorkspaceBranchTransaction(conversationId, rename);
+  }
+
+  hasActiveConversationTurn(conversationId: any) {
+    const normalized = String(conversationId || '').trim();
+    if (!normalized) {
+      return false;
+    }
+    const row = this.countActiveConversationTurnsStatement.get(normalized);
+    return Boolean(row && Number(row.count) > 0);
   }
 
   listAcceptanceRecords(conversationId: any) {

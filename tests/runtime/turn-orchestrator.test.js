@@ -1658,7 +1658,9 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.doesNotMatch(prompt, /write-experience/u);
   assert.match(prompt, /Room workspace: use the model-visible `room_workspace_preview` tool/u);
   assert.match(prompt, /`room_workspace_bind` with `\{ "confirm": true \}`/u);
-  assert.match(prompt, /Never invent or pass conversation IDs, branches, paths, repositories, or base refs/u);
+  assert.match(prompt, /`room_workspace_rename_preview\(\{ "branchName": "new\/full-name" \}\)`/u);
+  assert.match(prompt, /never moves the worktree directory, never changes HEAD\/files\/base, and never touches any remote/u);
+  assert.match(prompt, /Never invent or pass conversation IDs, paths, repositories, or base refs/u);
   assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
   assert.match(prompt, /successful send-public call completes the turn automatically unless you pass --no-finalize/u);
   assert.match(prompt, /send-public \[--no-finalize\] --content-stdin/u);
