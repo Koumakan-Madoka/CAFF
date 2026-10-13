@@ -5,6 +5,7 @@ const { createConfiguredModelCatalog } = require('../../models/configured-model-
 const { inspectModelConfiguration } = require('../../models/model-configuration');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
@@ -140,17 +141,24 @@ function buildCaptureSkillSnapshots(skillIds: any, resolvedSkills: any, seen: an
 // 被测 pi 运行时版本（harness 身份的一部分）。懒计算并缓存；不可得时返回空串，
 // 由采集器将 configSnapshot 与声明核对，不存在静默跳过。
 let cachedCapturePiVersion: string | null = null;
-function resolveCapturePiVersion() {
+// Preserve native ESM resolution under the CommonJS build. Use a distinct
+// Function source: Node/V8 may cache identical bodies across CJS modules,
+// changing the parent URL of another module's relative dynamic imports.
+const importCaptureMetadata = Function('captureMetadataUrl', 'return import(captureMetadataUrl)');
+async function resolveCapturePiVersion() {
   if (cachedCapturePiVersion !== null) {
     return cachedCapturePiVersion;
   }
   let version = '';
   try {
-    const pkgPath = require.resolve('@earendil-works/pi-coding-agent/package.json');
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    if (pkg && pkg.version) {
-      version = `pi:${String(pkg.version)}`;
-    }
+    // The SDK exports only an ESM import entry, not package.json or a require
+    // entry. Reuse the metadata-only resolver anchored beside pi-sdk-host;
+    // never load the SDK, guess the version from the lockfile, or bypass pins.
+    const moduleUrl = pathToFileURL(require.resolve('../../../../lib/pi-model-config-validator.mjs')).href;
+    const metadata = await importCaptureMetadata(moduleUrl);
+    const source = metadata.resolvePinnedPiModelConfigSource();
+    metadata.assertPinnedPiModelConfigSource(source);
+    version = `pi:${source.codingAgent.version}`;
   } catch {}
   cachedCapturePiVersion = version;
   return version;
@@ -2341,7 +2349,7 @@ export function createAgentExecutor(options: any = {}) {
             configSnapshot: {
               agentPromptVersion: AGENT_PROMPT_VERSION,
               toolBridgeEnabled: true,
-              piVersion: resolveCapturePiVersion(),
+              piVersion: await resolveCapturePiVersion(),
               agentName: String(agent.name || ''),
               deliveryMode: resumeSession ? 'resume' : 'fresh',
             },

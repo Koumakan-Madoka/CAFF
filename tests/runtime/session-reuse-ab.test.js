@@ -614,6 +614,8 @@ test('resume capture matches the invocation before start; synchronous failure re
       assert.equal(starts.length, 2);
       assert.equal(captures[0].input.deliveryMode, 'fresh');
       assert.equal(captures[0].input.sessionPath, '');
+      // Use the installed ESM package identity, not a fixture-supplied version.
+      assert.equal(captures[0].input.harness.configSnapshot.piVersion, 'pi:0.85.1');
       assert.equal(captures[0].input.prompt, starts[0].prompt);
       const input = captures[1].input;
       const run = starts[1];
@@ -660,6 +662,124 @@ test('resume capture matches the invocation before start; synchronous failure re
         // must survive, rather than advancing or poisoning an unstarted run.
         assert.deepEqual({ ...restored, updatedAt: saved.updatedAt }, saved);
       }
+    });
+  }
+});
+
+// Real collector/CAS/helper/restore, synthetic session and mock startRun/store.
+// This closes the wiring-to-archive gap, not real pi/DB replay acceptance.
+test('real capture service archives pre-start fresh/resume inputs and survives restart', { skip: require('../helpers/capture-capability').capSkip }, async (t) => {
+  const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
+  const { resolveSessionPath } = require('../../build/lib/minimal-pi');
+  const { createHash } = require('node:crypto');
+  const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  for (const mode of ['archived', 'missing-session', 'unauthorized-session']) {
+    await t.test(mode, async (t) => {
+      const env = setupExecutorTest(t, { reuseEnabled: true });
+      const projectId = 'project-real-capture';
+      const projectDir = path.join(env.tempDir, 'project');
+      const sessionDir = path.join(env.tempDir, 'named-sessions');
+      const captureRoot = path.join(env.tempDir, 'capture');
+      fs.mkdirSync(projectDir);
+      fs.mkdirSync(sessionDir);
+      fs.writeFileSync(path.join(projectDir, 'file.txt'), 'before fresh');
+      const agent = createAgent();
+      const conversation = createConversation(agent);
+      conversation.projectId = projectId;
+      conversation.worktreePath = projectDir;
+      const store = createFakeStore(conversation, { withReuse: true });
+      store.agentDir = projectDir;
+      seedUserMessage(store, 'u1', 'HISTORICAL-REAL-CAPTURE');
+      const sessionBytes = Buffer.from([
+        JSON.stringify({ type: 'session', version: 3, id: 'synthetic-session' }),
+        JSON.stringify({ type: 'message', id: 'm1', parentId: 'synthetic-session', message: {
+          role: 'user', content: [{ type: 'text', text: 'ARCHIVED-HISTORY-BEFORE-RESUME' }],
+        } }), '',
+      ].join('\n'));
+      let service = createBadcaseCaptureService({ captureRoot });
+      service.savePolicy(projectId, {
+        status: 'enabled', authorizedDirs: [projectDir], authorizedInputDirs: [sessionDir],
+      });
+      service.authorizeProject(projectId);
+      const observations = [];
+      let sessionPath;
+      const observeStart = (record) => {
+        // Observe persisted bytes before the mock runtime writes anything.
+        const checkpoint = service.store.loadLatestCheckpoint(projectId, projectDir);
+        observations.push({ checkpoint, record });
+        sessionPath = resolveSessionPath(record.options.session, record.options.agentDir);
+        if (!record.options.resume) fs.writeFileSync(sessionPath, sessionBytes);
+        else fs.appendFileSync(sessionPath, 'POST-START-NOT-ARCHIVED\n');
+        fs.writeFileSync(path.join(projectDir, 'file.txt'), record.options.resume ? 'after resume' : 'before resume');
+      };
+      await runTurn({ executor: env.createExecutor(store, { badcaseCapture: service, onStartRun: observeStart }),
+        conversation, agent, store, turnId: 'turn-real-fresh' });
+      assert.equal(observations.length, 1);
+      const fresh = observations[0].checkpoint;
+      assert.ok(fresh, 'real checkpoint must be on disk before startRun');
+      assert.equal(fresh.replayInput.deliveryMode, 'fresh');
+      assert.equal(fresh.replayInput.complete, true, JSON.stringify(fresh.replayInput.incompleteReasons));
+      assert.equal(fresh.replayInput.sessionBlobHash, '');
+      assert.match(service.store.readBlob(projectId, fresh.replayInput.promptBlobHash).toString('utf8'), /HISTORICAL-REAL-CAPTURE/u);
+      assert.equal(fresh.files['file.txt'].hash, digest('before fresh'));
+      const freshMessage = store.listMessages(conversation.id).filter((m) => m.role === 'assistant').at(-1);
+      assert.equal(freshMessage.status, 'completed');
+      assert.equal(freshMessage.metadata.badcaseCheckpointId, fresh.checkpointId);
+      const harness = JSON.parse(service.store.readBlob(projectId, fresh.replayInput.harness.configSnapshotHash));
+      assert.equal(harness.piVersion, 'pi:0.85.1');
+
+      // Recreate the service: policy/pins and prior manifest must come from disk.
+      service = createBadcaseCaptureService({ captureRoot });
+      if (mode === 'missing-session') fs.unlinkSync(sessionPath);
+      if (mode === 'unauthorized-session') {
+        service.savePolicy(projectId, { ...service.loadPolicy(projectId), authorizedInputDirs: [] });
+      }
+      seedUserMessage(store, 'u2', 'DELTA-REAL-CAPTURE');
+      await runTurn({ executor: env.createExecutor(store, { badcaseCapture: service, onStartRun: observeStart }),
+        conversation, agent, store, turnId: 'turn-real-resume' });
+      assert.equal(observations.length, 2);
+      const { checkpoint: resume, record } = observations[1];
+      assert.ok(resume);
+      assert.equal(record.options.resume, true, 'capture degradation must not change invocation mode');
+      assert.equal(resume.replayInput.deliveryMode, 'resume');
+      assert.equal(resume.replayInput.complete, mode === 'archived', JSON.stringify(resume.replayInput.incompleteReasons));
+      assert.equal(resume.files['file.txt'].hash, digest('before resume'));
+      assert.match(record.prompt, /DELTA-REAL-CAPTURE/u);
+      assert.equal(record.prompt.includes('HISTORICAL-REAL-CAPTURE'), false);
+      const archivedPrompt = service.store.readBlob(projectId, resume.replayInput.promptBlobHash).toString('utf8');
+      assert.match(archivedPrompt, /DELTA-REAL-CAPTURE/u);
+      assert.equal(archivedPrompt.includes('HISTORICAL-REAL-CAPTURE'), false);
+      const finalMessage = store.listMessages(conversation.id).filter((m) => m.role === 'assistant').at(-1);
+      assert.equal(finalMessage.status, 'completed');
+      assert.equal(finalMessage.metadata.badcaseCheckpointId, resume.checkpointId);
+      assert.equal(finalMessage.metadata.sessionReused, true);
+      assert.equal(resume.conversationId, conversation.id);
+      assert.equal(resume.turnId, 'turn-real-resume');
+      assert.equal(resume.agentId, agent.id);
+      if (mode === 'archived') {
+        assert.equal(resume.replayInput.sessionBlobHash, digest(sessionBytes));
+        assert.deepEqual(service.store.readBlob(projectId, resume.replayInput.sessionBlobHash), sessionBytes);
+      } else {
+        assert.equal(resume.replayInput.sessionBlobHash, '');
+        assert.ok(resume.replayInput.incompleteReasons.includes(mode === 'missing-session' ? 'session_missing' : 'session_not_authorized'));
+        assert.equal(service.store.hasBlob(projectId, digest(sessionBytes)), false);
+      }
+      // Post-start writes and service recreation cannot mutate archived bytes.
+      const restarted = createBadcaseCaptureService({ captureRoot });
+      assert.deepEqual(restarted.store.loadCheckpoint(projectId, resume.checkpointId), resume);
+      for (const checkpoint of [fresh, resume]) {
+        const restored = [1, 2].map((copy) => {
+          const targetDir = path.join(env.tempDir, `${checkpoint.checkpointId}-${copy}`);
+          const result = restarted.restoreCheckpoint({ projectId, checkpointId: checkpoint.checkpointId, targetDir });
+          assert.equal(result.ok, true);
+          assert.equal(result.replayInputComplete, checkpoint === fresh || mode === 'archived');
+          assert.equal(result.strictEvalEligible, false);
+          assert.equal(fs.readFileSync(path.join(targetDir, 'file.txt'), 'utf8'), checkpoint === fresh ? 'before fresh' : 'before resume');
+          return result.restoredFiles;
+        });
+        assert.deepEqual(restored[0], restored[1]);
+      }
+      if (mode === 'archived') assert.deepEqual(restarted.store.readBlob(projectId, resume.replayInput.sessionBlobHash), sessionBytes);
     });
   }
 });
