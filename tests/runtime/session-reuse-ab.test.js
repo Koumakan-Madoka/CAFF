@@ -205,7 +205,7 @@ function createFakeRunStore() {
   };
 }
 
-function createFakeAgentToolBridge() {
+function createFakeAgentToolBridge(releasedInvocations = []) {
   return {
     createInvocationContext(input) {
       return input;
@@ -222,7 +222,7 @@ function createFakeAgentToolBridge() {
         lastPublicContent: '',
       };
     },
-    unregisterInvocation() {},
+    unregisterInvocation(invocationId) { releasedInvocations.push(invocationId); },
   };
 }
 
@@ -278,8 +278,12 @@ function findAssistantCreate(store) {
 async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.', promptUserMessage = null }) {
   const { createTurnState } = require(require.resolve('../../build/server/domain/conversation/turn/turn-state'));
   const turnState = createTurnState(conversation, turnId);
-  await executor.executeConversationAgent({
-    runStore: createFakeRunStore(),
+  const events = [];
+  const failedReplies = [];
+  const runStore = createFakeRunStore();
+  runStore.appendTaskEvent = (...args) => events.push(args);
+  const outcome = await executor.executeConversationAgent({
+    runStore,
     conversationId: conversation.id,
     turnId: turnState.turnId,
     rootTaskId: `root-${turnId}`,
@@ -290,7 +294,7 @@ async function runTurn({ executor, conversation, agent, store, turnId, reply = '
     agent,
     turnState,
     completedReplies: [],
-    failedReplies: [],
+    failedReplies,
     routingMode: 'mention_queue',
     hop: 1,
     remainingSlots: 0,
@@ -299,6 +303,7 @@ async function runTurn({ executor, conversation, agent, store, turnId, reply = '
     finalStopsTurn: true,
     projectDir: store.agentDir,
   });
+  return { outcome, turnState, events, failedReplies };
 }
 
 function setupExecutorTest(t, { reuseEnabled }) {
@@ -309,6 +314,7 @@ function setupExecutorTest(t, { reuseEnabled }) {
   const originalStartRun = minimalPi.startRun;
   const previousFlag = process.env.PI_CHAT_SESSION_REUSE_ENABLED;
   const captured = [];
+  const releasedInvocations = [];
   // agent-executor destructures startRun at module load, so install a stable
   // dispatcher BEFORE requiring it; createExecutor then swaps the impl.
   let startRunImpl = null;
@@ -340,7 +346,8 @@ function setupExecutorTest(t, { reuseEnabled }) {
   return {
     tempDir,
     captured,
-    createExecutor(store, { onStartRun, runId = 'run-reuse-ab', reply = 'Done.', resultOverrides = {} } = {}) {
+    releasedInvocations,
+    createExecutor(store, { onStartRun, badcaseCapture, runId = 'run-reuse-ab', reply = 'Done.', resultOverrides = {} } = {}) {
       startRunImpl = (provider, model, prompt, options) => {
         const record = { provider, model, prompt, options };
         if (typeof onStartRun === 'function') {
@@ -353,13 +360,17 @@ function setupExecutorTest(t, { reuseEnabled }) {
         store,
         skillRegistry: { resolveSkills: () => [] },
         modeStore: { get: () => null },
-        agentToolBridge: createFakeAgentToolBridge(),
+        agentToolBridge: createFakeAgentToolBridge(releasedInvocations),
+        badcaseCapture,
         agentDir: tempDir,
         sqlitePath: path.join(tempDir, 'chat.sqlite'),
         toolBaseUrl: 'http://127.0.0.1:3100',
         agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
         agentToolRelativePath: './lib/agent-chat-tools.js',
-        modelCatalog: { getOptions: () => [{ provider: PROVIDER, model: MODEL, contextWindow: CONTEXT_WINDOW }] },
+        modelCatalog: { getOptions: () => [{
+          provider: PROVIDER, model: MODEL, contextWindow: CONTEXT_WINDOW,
+          runtimeResolvable: true, supportedThinkingLevels: ['low'],
+        }] },
       });
     },
   };
@@ -546,6 +557,111 @@ test('reused mode resumes the stored session with only the delta appended and ad
   assert.equal(env.captured[2].options.resume, true);
   assert.match(env.captured[2].prompt, /ARRIVED-DURING-RUN/u);
   assert.equal(env.captured[2].prompt.includes('DELTA-U3-CONTENT'), false);
+});
+
+// This is an executor wiring regression: capture and startRun are stubs. It
+// does not validate session JSONL, archive bytes, run pi, or prove replayability.
+test('resume capture matches the invocation before start; synchronous failure restores the claim and checkpoint link', async (t) => {
+  for (const mode of ['success', 'throw-no-id', 'throw-with-id']) {
+    await t.test(mode, async (t) => {
+      const env = setupExecutorTest(t, { reuseEnabled: true });
+      const { resolveSessionPath } = require('../../build/lib/minimal-pi');
+      const agent = createAgent();
+      const conversation = createConversation(agent);
+      const store = createFakeStore(conversation, { withReuse: true });
+      store.agentDir = env.tempDir;
+      seedUserMessage(store, 'u1', 'HISTORICAL-CAPTURE-CONTENT');
+      const captures = [];
+      const starts = [];
+      const order = [];
+      const badcaseCapture = {
+        captureTurnCheckpoint(input) {
+          order.push('capture');
+          captures.push({ input, reuseRow: store.peekReuseRow() });
+          return { captured: true, checkpointId: `checkpoint-${captures.length}` };
+        },
+      };
+      const executor1 = env.createExecutor(store, {
+        badcaseCapture,
+        onStartRun(record) { order.push('start'); starts.push(record); },
+      });
+      await runTurn({ executor: executor1, conversation, agent, store, turnId: 'turn-capture-fresh' });
+      const saved = store.peekReuseRow();
+      assert.equal(saved.state, 'reusable');
+      const freshMessage = store.listMessages(conversation.id).find((m) => m.role === 'assistant');
+      assert.equal(freshMessage.metadata.badcaseCheckpointId, 'checkpoint-1');
+
+      seedUserMessage(store, 'u2', 'DELTA-CAPTURE-CONTENT');
+      const reuseCallOffset = store.reuseCalls.length;
+      const startError = new Error(`resume synchronous failure: ${mode}`);
+      if (mode === 'throw-with-id') {
+        startError.runId = 'run-resume-start-error';
+        startError.sessionPath = resolveSessionPath(saved.sessionName, env.tempDir);
+      }
+      const executor2 = env.createExecutor(store, {
+        badcaseCapture,
+        onStartRun(record) {
+          order.push('start');
+          starts.push(record);
+          if (mode !== 'success') throw startError;
+        },
+      });
+      const result = await runTurn({ executor: executor2, conversation, agent, store, turnId: 'turn-capture-resume' });
+      // Assertions stay outside stubs: the executor catches capture/start errors.
+      // Throwing an assertion there could otherwise hide a failing observation.
+      assert.deepEqual(order, ['capture', 'start', 'capture', 'start']);
+      assert.equal(captures.length, 2);
+      assert.equal(starts.length, 2);
+      assert.equal(captures[0].input.deliveryMode, 'fresh');
+      assert.equal(captures[0].input.sessionPath, '');
+      assert.equal(captures[0].input.prompt, starts[0].prompt);
+      const input = captures[1].input;
+      const run = starts[1];
+      assert.equal(captures[1].reuseRow.state, 'busy');
+      assert.equal(run.options.resume, true);
+      assert.equal(run.options.session, saved.sessionName);
+      assert.equal(input.deliveryMode, 'resume');
+      assert.equal(input.harness.configSnapshot.deliveryMode, 'resume');
+      assert.equal(input.sessionPath, resolveSessionPath(run.options.session, run.options.agentDir));
+      assert.equal(input.prompt, run.prompt);
+      assert.match(input.prompt, /DELTA-CAPTURE-CONTENT/u);
+      assert.equal(input.prompt.includes('HISTORICAL-CAPTURE-CONTENT'), false);
+      assert.deepEqual(input.images, run.options.images);
+      assert.equal(input.runConfig.provider, run.provider);
+      assert.equal(input.runConfig.model, run.model);
+      assert.equal(input.conversationId, conversation.id);
+      assert.equal(input.turnId, 'turn-capture-resume');
+      assert.equal(input.agentId, agent.id);
+      const message = store.listMessages(conversation.id).filter((m) => m.role === 'assistant').at(-1);
+      assert.equal(message.metadata.badcaseCheckpointId, 'checkpoint-2');
+      assert.equal(message.metadata.sessionReused, true);
+      assert.equal(message.metadata.sessionName, saved.sessionName);
+      assert.deepEqual(env.releasedInvocations, ['invocation-reuse-ab', 'invocation-reuse-ab']);
+      assert.equal(result.turnState.runHandles.size, 0);
+      const eventNames = result.events.map(([, name]) => name);
+      const calls = store.reuseCalls.slice(reuseCallOffset).map(([name]) => name);
+      if (mode === 'success') {
+        assert.equal(message.status, 'completed');
+        assert.deepEqual(calls, ['get', 'claim', 'markReusable']);
+        assert.equal(result.failedReplies.length, 0);
+        assert.equal(eventNames.includes('agent_reply_started'), true);
+      } else {
+        assert.equal(message.status, 'failed');
+        assert.equal(message.errorMessage, startError.message);
+        assert.equal(message.runId, startError.runId || null);
+        assert.equal(message.metadata.sessionPath, startError.sessionPath || '');
+        assert.equal(result.failedReplies.length, 1);
+        assert.equal(result.failedReplies[0].id, message.id);
+        assert.equal(eventNames.includes('agent_reply_started'), false);
+        assert.equal(eventNames.includes('agent_reply_failed'), true);
+        assert.deepEqual(calls, ['get', 'claim', 'restore']);
+        const restored = store.peekReuseRow();
+        // Only restore time may change; the previous cursor/hash/session/usage
+        // must survive, rather than advancing or poisoning an unstarted run.
+        assert.deepEqual({ ...restored, updatedAt: saved.updatedAt }, saved);
+      }
+    });
+  }
 });
 
 test('Goal Runner reuse requires matching Goal identity, revision, and usage below 50%', async (t) => {
