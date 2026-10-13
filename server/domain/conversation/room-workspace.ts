@@ -89,8 +89,17 @@ export function validateWorkspaceBranchName(repoRoot: string, name: unknown) {
       400
     );
   }
+  // Validate the branch name LITERALLY. `git check-ref-format --branch` is not
+  // a pure validator: it expands `@{-n}` expressions to a previously checked-out
+  // branch, so the authorized name could silently differ from the created one.
+  // The full-ref check rejects `@{` sequences; the explicit rules mirror the
+  // branch-specific restrictions of `--branch` (no leading '-') plus Git's
+  // refusal of `HEAD` and a lone '@' as branch names.
+  if (branch.startsWith('-') || branch === '@' || branch === 'HEAD' || branch.includes('@{')) {
+    throw workspaceError('room_workspace_branch_name_invalid', `Branch name ${branch} is not a valid Git branch name`, 400);
+  }
   try {
-    execFileSync('git', ['check-ref-format', '--branch', branch], {
+    execFileSync('git', ['check-ref-format', `refs/heads/${branch}`], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

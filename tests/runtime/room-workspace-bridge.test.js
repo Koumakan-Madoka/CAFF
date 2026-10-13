@@ -474,3 +474,27 @@ test('a newer plan supersedes the pending card and the old card executes nothing
   assert.equal(decision.record.status, 'accepted');
   assert.equal(harness.boundConversation().branch, 'feature/plan-b');
 });
+
+test('a reflog expansion expression like @{-1} is rejected through the public bridge with zero side effects', async (t) => {
+  const harness = createHarness(t, 'reflog-literal');
+  // Reproduce the exact scenario: create a checkout history, then delete the
+  // branch, so @{-1} would expand to it if the validator ever interpreted it.
+  git(harness.repoRoot, ['checkout', '-b', 'feature/previous']);
+  git(harness.repoRoot, ['checkout', 'develop']);
+  git(harness.repoRoot, ['branch', '-D', 'feature/previous']);
+  assert.equal(
+    git(harness.repoRoot, ['check-ref-format', '--branch', '@{-1}']),
+    'feature/previous',
+    'sanity: git would expand @{-1}, which is exactly what the bridge must not accept'
+  );
+
+  await assert.rejects(
+    harness.invoke('room_workspace_preview', { branchName: '@{-1}' }),
+    (error) => error && error.code === 'room_workspace_branch_name_invalid'
+  );
+  assert.equal(harness.pendingCard(), null, 'no authorization card may be issued');
+  assert.equal(harness.boundConversation().branch, null, 'no binding may be persisted');
+  const branches = git(harness.repoRoot, ['branch', '--format=%(refname:short)']).split(/\r?\n/u);
+  assert.ok(!branches.includes('@{-1}') && !branches.includes('feature/previous'));
+  assert.equal(fs.existsSync(path.join(harness.repoRoot, '..', 'worktrees')), false, 'no worktree may be created');
+});

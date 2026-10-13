@@ -234,6 +234,54 @@ test('invalid branch names and name conflicts fail without side effects', () => 
   }
 });
 
+test('reflog expansion expressions and ambiguous names are rejected literally without side effects', () => {
+  const { outer, root: repoRoot } = initRepo();
+  const project = { id: 'project-1', path: repoRoot };
+  const conversation = createConversation();
+  try {
+    // Create a checkout history so @{-1} WOULD expand if it were ever interpreted
+    // as a reflog expression instead of a literal branch name.
+    git(repoRoot, ['checkout', '-b', 'feature/previous']);
+    git(repoRoot, ['checkout', 'develop']);
+    git(repoRoot, ['branch', '-D', 'feature/previous']);
+    assert.equal(git(repoRoot, ['check-ref-format', '--branch', '@{-1}']), 'feature/previous',
+      'sanity: git would expand @{-1}, which is exactly what the validator must not do');
+
+    for (const branchName of ['@{-1}', '@', 'HEAD']) {
+      assert.throws(
+        () => previewRoomWorkspace({ conversation, project, branchName }),
+        (error) => assertWorkspaceError(error, 'room_workspace_branch_name_invalid')
+      );
+    }
+    assert.equal(fs.existsSync(path.join(outer, 'worktrees')), false, 'no worktree may be created');
+    assert.equal(conversation.branch, null);
+
+    // The same literal validation applies to rename targets.
+    const bound = bindCustomConversation(repoRoot, 'feature/rename-source');
+    const store = createStubStore(bound.conversation);
+    for (const branchName of ['@{-1}', '@', 'HEAD']) {
+      assert.throws(
+        () => previewRoomWorkspaceRename({ conversation: bound.conversation, project: bound.project, branchName }),
+        (error) => assertWorkspaceError(error, 'room_workspace_branch_name_invalid')
+      );
+      assert.throws(
+        () => renameAndPersistRoomWorkspace({
+          store,
+          conversation: bound.conversation,
+          project: bound.project,
+          branchName,
+        }),
+        (error) => assertWorkspaceError(error, 'room_workspace_branch_name_invalid')
+      );
+    }
+    assert.deepEqual(store.calls, [], 'a rejected rename must not touch the store at all');
+    assert.deepEqual(store.operations, [], 'a rejected rename must not create a journal record');
+    assert.equal(git(bound.binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/rename-source');
+  } finally {
+    cleanup(outer);
+  }
+});
+
 test('an already bound room rejects a different branchName on the bind preview', () => {
   const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot);
