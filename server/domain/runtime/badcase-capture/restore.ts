@@ -97,8 +97,13 @@ export function restoreCheckpoint(options: any = {}) {
     mismatches,
     missingSecrets,
     restoredFiles: verification.restoredFiles,
-    replayInputComplete: checkpoint.replayInput ? checkpoint.replayInput.complete !== false : true,
-    strictEvalEligible: checkpoint.strictEvalEligible === true && mismatches.length === 0 && missingSecrets.length === 0,
+    uncapturedInScope: Array.isArray(checkpoint.uncaptured) ? checkpoint.uncaptured : [],
+    replayInputComplete: checkpoint.replayInput?.complete === true
+      && (!checkpoint.uncaptured || checkpoint.uncaptured.length === 0)
+      && mismatches.length === 0 && missingSecrets.length === 0,
+    strictEvalEligible: checkpoint.strictEvalEligible === true && checkpoint.replayInput?.complete === true
+      && (!checkpoint.uncaptured || checkpoint.uncaptured.length === 0)
+      && mismatches.length === 0 && missingSecrets.length === 0,
   };
 }
 

@@ -4,8 +4,8 @@
 // （pin 表 + 授权时固定的根身份；v1 目标必须恰为授权根本身）→ 打开受限根
 // （父进程持有根目录 fd，statx 身份与 pin 比对）→ 回放输入准备（受控替换 +
 // 最终字节秘密扫描 + session 维度校验 + harness/skill 快照校验）→ 采集循环
-// [ 枚举身份检查 → 首次扫描 M1（openat2 受限批量读取、扫描即秘密检测）→ 配额
-//   预检 → 写 staging（受限重读、重校 hash、重扫秘密、逐 blob 写前配额核算）
+// [ 枚举身份检查 → 首次扫描 M1（受限枚举 + openat2 受限批量读取、扫描即秘密检测）
+//   → 配额预检 → 写 staging（受限重读、重校 hash、重扫秘密、逐 blob 写前配额核算）
 //   → 二次扫描 M2（全量内容重 hash）→ 一致性定级 → staging 原子提交或回滚 ]
 // → 配额终检 → 落盘清单。
 //
@@ -19,6 +19,16 @@
 //   拒绝归档该输入并标记输入损失（complete=false）。无大小/二进制跳检，无豁免机制。
 // - 一致性证据三级都只是"未检测到变化"的检测记录，不是现场一致性证明；v1 无独立
 //   一致性依据，strictEvalEligible 恒为 false（契约 §2.3）。
+// - 采集路径不执行 git（GPT 复审 #1 第七轮）：命令行 -c 黑名单只能禁止 git 执行
+//   仓库指定程序，不能禁止 git 读取未授权内容（include.path / info/exclude 符号
+//   链接指向树外）。tracked/ignored 分类由 git-classify 内置解析器复现，.git/index、
+//   .git/config、.git/info/exclude、.gitignore 全部经受限根读取；树外元数据
+//   （gitfile 外置 gitdir、绝对 excludesFile）不自动获授权，须 authorizedInputDirs
+//   显式授权，否则降级多采并标记不完整。
+// - 纳入范围但无法采集的材料（权限拒绝、特殊文件、不可读目录、元数据缺陷）一律
+//   进入 uncaptured 缺口清单并使 complete=false；恢复侧如实上报缺口，不得宣称
+//   回放输入完整（GPT 复审 #2 第七轮）。用户显式排除（excludedPatterns/ignore
+//   规则）不属于缺口。
 // - session 维度清单制（session-validator.ts）：未验证维度默认 incomplete；
 //   结构损坏的材料不归档，禁止静默降级 fresh。
 // - 配额按实际新增去重内容 + 清单元数据核算，覆盖每个重试 attempt；超额 → 策略
@@ -27,11 +37,16 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
 import { authorizeTargetDir, matchesRelativePattern, pathsEqual, isSameOrUnderPathString } from './capture-policy';
 import { containsSecretSentinel, replaceControlledVariables } from './secrets';
 import { detectCaptureCapability, openConstrainedRoot, SAFE_READ_LIMITS } from './safe-read';
 import { validateSessionV2, PI_VERSION_PIN } from './session-validator';
+import {
+  parseGitIndex,
+  parseGitignoreRules,
+  classifyWalkEntries,
+  parseGitConfigSubset,
+} from './git-classify';
 
 function sha256Buffer(content: any) {
   return crypto.createHash('sha256').update(content).digest('hex');
@@ -49,7 +64,7 @@ const KNOWN_LIMITATIONS = [
   'no_atomic_snapshot', // 采集非原子快照，双扫只是“未检测到变化”的检测记录
   'no_independent_consistency_evidence', // 无独立源现场一致性依据，严格对照资格恒 false
   'linux_only_capture_v1', // 受限读取原语仅 Linux 实现；win32/darwin 失败关闭
-  'enumeration_metadata_only', // 枚举按路径名进行且 Git 以隔离配置执行（禁止仓库指定程序）；内容读取始终受限于已授权对象，枚举-读取窗口内换树最坏导致清单不一致 → 重试/降级，不构成越权
+  'enumeration_non_atomic', // 枚举与内容均使用受限根 fd，但整个多文件采集仍不是原子快照
   'inode_reuse_residual', // 跨重启根身份以 dev+ino+btime 三元组核对，收敛但非数学消除 inode 复用
   'helper_trusted_compute_base', // helper（python3 + 内嵌脚本，SHA-256 固定）与采集存储的不可写性是部署前提，记入 TCB
   'harness_config_caller_asserted', // harness/tool 配置快照由调用方声明，采集方不独立验证其来源
@@ -57,129 +72,342 @@ const KNOWN_LIMITATIONS = [
   'external_service_state_not_pinned', // 模型端点与外部服务状态不可固定
 ];
 
-// Git 枚举的隔离执行（GPT 复审 #1 第六轮）：仓库的 .git/config 不是可信输入。
-// - core.fsmonitor 等仓库指定程序必须被命令行 -c 覆盖（命令行配置优先级最高，
-//   include 展开的值同样被其覆盖），禁止采集过程执行仓库指定的任何程序；
-// - system/global/xdg 配置全部置空，环境里的 GIT_* 覆盖变量全部剥除；
-// - 枚举输出只是路径名清单（元数据），内容读取始终由受限根完成。
-const GIT_DEV_NULL = process.platform === 'win32' ? 'NUL' : '/dev/null';
-const GIT_SAFE_CONFIG_ARGS = [
-  '-c', 'core.fsmonitor=false',
-  '-c', 'core.untrackedCache=false',
-  '-c', `core.excludesFile=${GIT_DEV_NULL}`,
-  '-c', `core.hooksPath=${GIT_DEV_NULL}`,
-];
-
-function gitSafeEnv() {
-  const env: any = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (/^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG_PARAMETERS|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+)$/.test(key)) {
-      delete env[key];
-    }
-  }
-  env.GIT_CONFIG_NOSYSTEM = '1';
-  env.GIT_CONFIG_GLOBAL = GIT_DEV_NULL;
-  env.GIT_CONFIG_SYSTEM = GIT_DEV_NULL;
-  env.GIT_TERMINAL_PROMPT = '0';
-  env.GIT_OPTIONAL_LOCKS = '0';
-  return env;
-}
-
-function isGitWorkTree(targetDir: any) {
+// 外置 gitdir（gitfile/符号链接形态的 .git）的独立授权边界：与 session 输入同一
+// 语义——必须位于 authorizedInputPins 固定的目录内，身份比对通过后才打开受限根。
+// 不因“属于 git 元数据”自动获授权（GPT 复审 #1 第七轮）。
+function openGitdirBoundary(policy: any, capability: any, gitdirAbsolute: any) {
+  const pins = policy && policy.authorizedInputPins && typeof policy.authorizedInputPins === 'object'
+    ? policy.authorizedInputPins
+    : {};
+  let real = '';
   try {
-    const out = execFileSync('git', [...GIT_SAFE_CONFIG_ARGS, '-C', targetDir, 'rev-parse', '--is-inside-work-tree'], {
-      encoding: 'utf8',
-      env: gitSafeEnv(),
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return String(out || '').trim() === 'true';
+    real = fs.realpathSync(String(gitdirAbsolute || ''));
   } catch {
-    return false;
+    return { ok: false, reason: 'git_metadata_not_authorized' };
   }
+  for (const key of Object.keys(pins)) {
+    const pin = (pins as any)[key];
+    const pinReal = String(pin && pin.realpath || '').trim();
+    if (!pinReal || !isSameOrUnderPathString(pinReal, real)) {
+      continue;
+    }
+    if (!pin.identity || typeof pin.identity !== 'object') {
+      return { ok: false, reason: 'git_metadata_not_authorized' };
+    }
+    const handle: any = openConstrainedRoot(capability, pinReal);
+    if (!handle.ok) {
+      return { ok: false, reason: `git_metadata_unavailable:${handle.reason}` };
+    }
+    if (!handle.identityEquals(pin.identity)) {
+      handle.close();
+      return { ok: false, reason: 'git_metadata_root_replaced' };
+    }
+    const base = path.relative(pinReal, real).replace(/\\/g, '/');
+    return { ok: true, reason: '', handle, base };
+  }
+  return { ok: false, reason: 'git_metadata_not_authorized' };
 }
 
-function gitListFiles(targetDir: any, extraArgs: any) {
-  const out = execFileSync(
-    'git',
-    [...GIT_SAFE_CONFIG_ARGS, '-C', targetDir, 'ls-files', '-z', ...extraArgs],
-    { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024, env: gitSafeEnv(), stdio: ['ignore', 'pipe', 'ignore'] }
-  );
-  return Buffer.from(out)
-    .toString('utf8')
-    .split('\0')
-    .filter(Boolean);
-}
+// 读取分类元数据（.git/config、index、info/exclude、树内 .gitignore），全部经受限根。
+// 任何缺陷（include 指令、excludesFile 越界、index 损坏、exclude 不可读）只降级
+// 标记，不把降级结果宣称为完整分类，绝不跟随到授权边界之外。
+function readGitMetadata(targetDir: any, pinnedRoot: any, policy: any, rootHandle: any, capability: any, walkEntries: any, excluded: any) {
+  const result: any = {
+    status: 'absent',
+    tracked: null,
+    applyIgnore: false,
+    globalSources: [] as any[],
+    gitignoreByDir: new Map<string, any>(),
+    reasons: [] as string[],
+    helperFailure: '',
+  };
+  const addReason = (reason: string) => {
+    if (!result.reasons.includes(reason)) {
+      result.reasons.push(reason);
+    }
+  };
+  const dotGit = walkEntries.find((entry: any) => entry.path === '.git');
+  if (!dotGit) {
+    // 边界内无 .git：不读取父目录（越界）。无分类依据 → 全量采集（宁多采），
+    // 完整语义不受影响（没有任何材料因分类规则被丢弃）。
+    return result;
+  }
+  result.status = 'ok';
 
-// 候选文件清单：tracked + 未被 ignore 的 untracked；includedIgnoredPatterns 命中的
-// ignored 文件显式追加。非 git 目录回退为全量遍历（排除 excludedPatterns）。
-// 枚举按路径名进行（元数据）；所有内容读取由受限根完成，枚举层面的链接/换树
-// 不能导致越权读取，只会产生读取失败 → 重试/降级。
-export function listCandidatePaths(targetDir: any, policy: any) {
-  const excluded = policy && Array.isArray(policy.excludedPatterns) ? policy.excludedPatterns : [];
-  const includedIgnored = policy && Array.isArray(policy.includedIgnoredPatterns) ? policy.includedIgnoredPatterns : [];
-  let candidates: string[] = [];
+  // gitdir 读取边界：{ handle, base }，base 为相对 handle 根的路径前缀。
+  let boundary: any = null;
+  let ownedHandle: any = null;
+  if (dotGit.type === 'dir') {
+    boundary = { handle: rootHandle, base: '.git' };
+  } else if (dotGit.type === 'file') {
+    let gitdirRef = '';
+    {
+      const batch = rootHandle.readBatch(['.git']);
+      if (!batch.ok) {
+        result.helperFailure = batch.reason || 'helper_failed';
+        return result;
+      }
+      const res = batch.results.get('.git');
+      if (res && res.ok === true) {
+        const match = res.content.toString('utf8').match(/^gitdir:\s*(.+)$/m);
+        gitdirRef = match ? match[1].trim() : '';
+      }
+    }
+    if (!gitdirRef) {
+      addReason('git_metadata_unreadable');
+      result.status = 'degraded';
+      return result;
+    }
+    const opened = openGitdirBoundary(policy, capability, path.resolve(targetDir, gitdirRef));
+    if (!opened.ok) {
+      addReason(opened.reason === 'git_metadata_root_replaced' ? 'git_metadata_root_replaced' : 'git_metadata_not_authorized');
+      result.status = 'degraded';
+      return result;
+    }
+    boundary = { handle: opened.handle, base: opened.base };
+    ownedHandle = opened.handle;
+  } else {
+    addReason('git_metadata_unreadable');
+    result.status = 'degraded';
+    return result;
+  }
 
-  if (isGitWorkTree(targetDir)) {
-    candidates = gitListFiles(targetDir, ['-c', '-o', '--exclude-standard']);
-    if (includedIgnored.length > 0) {
-      try {
-        const ignored = gitListFiles(targetDir, ['-o', '-i', '--exclude-standard', '--', ...includedIgnored]);
-        const seen = new Set(candidates);
-        for (const entry of ignored) {
-          if (!seen.has(entry)) {
-            seen.add(entry);
-            candidates.push(entry);
+  try {
+    const rel = (name: string, base: any = boundary.base) => {
+      const prefix = typeof base === 'string' ? base : boundary.base;
+      return prefix ? `${prefix}/${name}` : name;
+    };
+    const firstBatch = boundary.handle.readBatch([
+      rel('config'), rel('index'), rel('commondir'), rel('info/exclude'),
+    ]);
+    if (!firstBatch.ok) {
+      result.helperFailure = firstBatch.reason || 'helper_failed';
+      return result;
+    }
+    const first = (name: string) => firstBatch.results.get(rel(name)) || { ok: false, code: 'helper_output_missing' };
+
+    // commondir（worktree 形态）：config 与 info/exclude 位于公共目录。引用必须仍在
+    // 同一授权边界内（相对 gitdir 解析后以 '..' 越界即拒绝，不读取）。
+    let commonBase: any = null;
+    const commondirResult = first('commondir');
+    if (commondirResult.ok === true) {
+      const ref = commondirResult.content.toString('utf8').trim().replace(/\\/g, '/');
+      const joined = path.posix.normalize(`${boundary.base ? `${boundary.base}/` : ''}${ref}`).replace(/\/+$/, '');
+      if (path.isAbsolute(ref) || joined === '..' || joined.startsWith('../')) {
+        addReason('git_metadata_not_authorized');
+        result.status = 'degraded';
+        return result;
+      }
+      commonBase = joined === '.' ? '' : joined;
+    } else if (commondirResult.code !== 'missing') {
+      addReason('git_metadata_unreadable');
+    }
+
+    let configResult = first('config');
+    let excludeResult = first('info/exclude');
+    if (commonBase !== null) {
+      const commonBatch = boundary.handle.readBatch([rel('config', commonBase), rel('info/exclude', commonBase)]);
+      if (!commonBatch.ok) {
+        result.helperFailure = commonBatch.reason || 'helper_failed';
+        return result;
+      }
+      const commonConfig = commonBatch.results.get(rel('config', commonBase));
+      const commonExclude = commonBatch.results.get(rel('info/exclude', commonBase));
+      if (commonConfig) configResult = commonConfig;
+      excludeResult = commonExclude && commonExclude.ok !== undefined ? commonExclude : excludeResult;
+      if (commonExclude && commonExclude.ok === false && commonExclude.code === 'missing') {
+        // commondir 无独立 exclude：正常（缺失不降级）。
+        excludeResult = commonExclude;
+      }
+    }
+
+    // config 子集：objectformat（index 哈希长度）、excludesFile、include 检测。
+    let hashLen = 20;
+    let configReadable = false;
+    if (configResult.ok === true) {
+      configReadable = true;
+      const subset = parseGitConfigSubset(configResult.content.toString('utf8'));
+      if (!subset.verified) addReason('git_config_unverified');
+      if (subset.hasInclude) {
+        // include 目标可能位于授权边界之外——绝不展开读取；配置完整性不可验证。
+        addReason('git_config_include_unverified');
+      }
+      if (subset.objectFormat === 'sha256') {
+        hashLen = 32;
+      } else if (subset.objectFormat && subset.objectFormat !== 'sha1') {
+        addReason('git_config_unverified');
+      }
+      if (subset.excludesFile) {
+        // 外置 exclude 文件：仅当位于已授权树内才经受限根读取；越界/不可读不跟随。
+        const rawExcludes = String(subset.excludesFile);
+        const excludesAbsolute = path.isAbsolute(rawExcludes)
+          ? rawExcludes
+          : (rawExcludes.startsWith('~') ? '' : path.resolve(targetDir, rawExcludes));
+        let excludesHandled = false;
+        if (excludesAbsolute && isSameOrUnderPathString(pinnedRoot, excludesAbsolute)) {
+          const relExcludes = path.relative(pinnedRoot, excludesAbsolute).replace(/\\/g, '/');
+          if (relExcludes && !relExcludes.startsWith('..')) {
+            const excludesBatch = rootHandle.readBatch([relExcludes]);
+            if (!excludesBatch.ok) {
+              result.helperFailure = excludesBatch.reason || 'helper_failed';
+              return result;
+            }
+            const excludesRead = excludesBatch.results.get(relExcludes);
+            if (excludesRead && excludesRead.ok === true) {
+              result.globalSources.push({ base: '', rules: parseGitignoreRules(excludesRead.content.toString('utf8')) });
+              excludesHandled = true;
+            }
           }
         }
-      } catch {
-        // 显式纳入清单匹配失败不阻断主清单；记录为空即可。
+        if (!excludesHandled) {
+          // 未读取的规则不生效 → 保守多采；配置指向的材料不可得，显式降级。
+          addReason('git_excludes_file_unverified');
+        }
+      }
+    } else if (configResult.code !== 'missing') {
+      addReason('git_config_unreadable');
+    }
+
+    // index：缺失 = 有效空仓库（tracked 为空集，ignore 规则仍生效）；
+    // 损坏/不可读 = tracked 未知 → 不应用 ignore 规则，全量多采并降级。
+    const indexResult = first('index');
+    if (indexResult.ok === true) {
+      let parsed = parseGitIndex(indexResult.content, hashLen);
+      if (!parsed.ok && !subset_hasExplicitFormat(configReadable, configResult)) {
+        // 配置未明示 objectformat 时尝试另一哈希长度（include 可能隐藏真实格式）。
+        const alternate = parseGitIndex(indexResult.content, hashLen === 20 ? 32 : 20);
+        if (alternate.ok) {
+          parsed = alternate;
+          addReason('git_config_include_unverified');
+        }
+      }
+      if (parsed.ok) {
+        result.tracked = new Set(parsed.entries.map((entry: any) => entry.path));
+      } else {
+        addReason('git_index_unreadable');
+      }
+    } else if (indexResult.code === 'missing') {
+      result.tracked = new Set();
+    } else {
+      addReason('git_index_unreadable');
+    }
+
+    // info/exclude：缺失正常；不可读（如符号链接被内核拒绝）→ 规则不生效 + 降级。
+    if (excludeResult && excludeResult.ok === true) {
+      result.globalSources.push({ base: '', rules: parseGitignoreRules(excludeResult.content.toString('utf8')) });
+    } else if (excludeResult && excludeResult.code && excludeResult.code !== 'missing') {
+      addReason('git_exclude_unreadable');
+    }
+
+    // 树内 .gitignore：经受限根批量读取；不可读 → 该目录规则缺失（多采）+ 降级。
+    if (result.tracked !== null) {
+      const gitignorePaths = walkEntries
+        .filter((entry: any) => entry.type !== 'dir'
+          && (entry.path === '.gitignore' || entry.path.endsWith('/.gitignore'))
+          && !matchesRelativePattern(entry.path, excluded))
+        .map((entry: any) => entry.path);
+      if (gitignorePaths.length > 0) {
+        const batch = rootHandle.readBatch(gitignorePaths);
+        if (!batch.ok) {
+          result.helperFailure = batch.reason || 'helper_failed';
+          return result;
+        }
+        for (const gitignorePath of gitignorePaths) {
+          const res = batch.results.get(gitignorePath);
+          if (res && res.ok === true) {
+            const dir = gitignorePath === '.gitignore' ? '' : gitignorePath.slice(0, gitignorePath.length - '/.gitignore'.length);
+            result.gitignoreByDir.set(dir, parseGitignoreRules(res.content.toString('utf8')));
+          } else {
+            addReason('git_exclude_unreadable');
+          }
+        }
       }
     }
-  } else {
-    const walk = (relativeDir: any) => {
-      const absoluteDir = relativeDir ? path.join(targetDir, relativeDir) : targetDir;
-      for (const entry of fs.readdirSync(absoluteDir, { withFileTypes: true })) {
-        const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
-        if (matchesRelativePattern(relativePath, excluded)) {
-          continue;
-        }
-        if (entry.isSymbolicLink()) {
-          // 链接本身作为清单条目，不展开跟随。
-          candidates.push(relativePath);
-        } else if (entry.isDirectory()) {
-          walk(relativePath);
-        } else {
-          candidates.push(relativePath);
-        }
-      }
-    };
-    walk('');
+  } finally {
+    if (ownedHandle) {
+      ownedHandle.close();
+    }
   }
 
-  return candidates
-    .map((entry: any) => String(entry || '').replace(/\\/g, '/'))
-    .filter((entry: any) => entry && !matchesRelativePattern(entry, excluded))
-    .sort();
+  const ruleSets = [...result.globalSources.map((source: any) => source.rules), ...result.gitignoreByDir.values()];
+  if (ruleSets.some((rules: any) => rules.verified === false)) addReason('git_ignore_unverified');
+  // Unknown metadata must not silently discard a potentially tracked file.
+  result.applyIgnore = result.tracked !== null && !result.reasons.some((reason: string) => ['git_ignore_unverified', 'git_config_unverified', 'git_index_unreadable', 'git_metadata_unreadable'].includes(reason));
+  if (result.reasons.length > 0) {
+    result.status = 'degraded';
+  }
+  return result;
 }
 
-function lstatEntry(targetDir: any, relativePath: any) {
-  const absolutePath = path.join(targetDir, relativePath);
-  try {
-    return { absolutePath, stat: fs.lstatSync(absolutePath) };
-  } catch {
-    return { absolutePath, stat: null };
+function subset_hasExplicitFormat(configReadable: any, configResult: any) {
+  if (!configReadable || !configResult || configResult.ok !== true) {
+    return false;
   }
+  return Boolean(parseGitConfigSubset(configResult.content.toString('utf8')).objectFormat);
+}
+
+// 受限枚举：遍历（路径名）+ 分类元数据（受限根读取）+ git 语义分类。
+// 返回候选路径与缺口清单；helper 进程级失败返回 helperFailure 由调用方失败关闭。
+function enumerateCaptureTree(targetDir: any, pinnedRoot: any, policy: any, rootHandle: any, capability: any) {
+  const excluded = policy && Array.isArray(policy.excludedPatterns) ? policy.excludedPatterns : [];
+  const includedIgnored = policy && Array.isArray(policy.includedIgnoredPatterns) ? policy.includedIgnoredPatterns : [];
+  const walk = rootHandle.walk(excluded);
+  if (!walk.ok) return { helperFailure: walk.reason || 'helper_walk_failed' };
+  const metadata = readGitMetadata(targetDir, pinnedRoot, policy, rootHandle, capability, walk.entries, excluded);
+  if (metadata.helperFailure) {
+    return { helperFailure: metadata.helperFailure };
+  }
+  const captureEntries = walk.entries.filter((entry: any) => entry.path !== '.git' && !entry.path.endsWith('/.git'));
+  const classified = classifyWalkEntries(captureEntries, {
+    tracked: metadata.tracked,
+    applyIgnore: metadata.applyIgnore,
+    gitignoreByDir: metadata.gitignoreByDir,
+    globalIgnoreSources: metadata.globalSources,
+    isIncludedIgnored: (entryPath: any) => matchesRelativePattern(entryPath, includedIgnored),
+  });
+  // 用户显式排除（excludedPatterns）不属于缺口；ignore 规则排除同理（git 也不会列出）。
+  const inScope = (entryPath: any) => !matchesRelativePattern(entryPath, excluded);
+  const candidatePaths = classified.candidates
+    .map((entry: any) => entry.path)
+    .filter(inScope);
+  const uncaptured: any[] = [];
+  const seenGaps = new Set<string>();
+  const pushGap = (gap: any) => {
+    const key = `${gap.reason}:${gap.path}`;
+    if (seenGaps.has(key) || !inScope(gap.path)) {
+      return;
+    }
+    seenGaps.add(key);
+    uncaptured.push(gap);
+  };
+  for (const gap of classified.uncaptured) {
+    pushGap(gap);
+  }
+  for (const gap of walk.unreadableDirs) {
+    pushGap(gap);
+  }
+  return {
+    helperFailure: '',
+    candidatePaths,
+    uncaptured,
+    gitMetadata: metadata.status,
+    gitReasons: metadata.reasons,
+    entriesByPath: new Map(walk.entries.map((entry: any) => [entry.path, entry])),
+  };
+}
+
+function entryStat(info: any) {
+  return info && {
+    ...info,
+    isFile: () => info.type === 'file',
+    isSymbolicLink: () => info.type === 'symlink',
+  };
 }
 
 // 符号链接：只记元数据（linkTarget 供恢复重建）；链接目标绝不跟随读取
 // （helper 的 RESOLVE_NO_SYMLINKS 在内核层强制，这里的字符串判定只用于清单记录）。
-function resolveSymlink(pinnedRoot: any, relativePath: any, linkAbsolutePath: any) {
-  let rawTarget = '';
-  try {
-    rawTarget = fs.readlinkSync(linkAbsolutePath);
-  } catch {
-    return { type: 'symlink', escapes: true, linkTarget: '' };
-  }
+function resolveSymlink(pinnedRoot: any, relativePath: any, linkAbsolutePath: any, rawTarget: string) {
+  if (!rawTarget) return { type: 'symlink', escapes: true, linkTarget: '' };
   const resolvedTarget = path.resolve(path.dirname(linkAbsolutePath), rawTarget);
   const relative = path.relative(pinnedRoot, resolvedTarget);
   const escapes = relative.startsWith('..') || path.isAbsolute(relative);
@@ -275,17 +503,28 @@ export function createCollector(options: any = {}) {
       hashed: 0, reusedHash: 0, secretExcluded: 0, symlinkEscapes: 0,
       outOfBounds: 0, missing: 0, readUnstable: 0, oversized: 0,
     };
-    const candidates = listCandidatePaths(targetDir, policy);
+    const enumeration: any = enumerateCaptureTree(targetDir, pinnedRoot, policy, rootHandle, getCapability());
+    const uncaptured: any[] = enumeration.uncaptured || [];
+    const finish = (helperFailure = '') => ({
+      helperFailure, files, skipped, stats, unstable, uncaptured,
+      gitMetadata: enumeration.gitMetadata, gitReasons: enumeration.gitReasons || [],
+    });
+    if (enumeration.helperFailure) return finish(enumeration.helperFailure);
+    const candidates = enumeration.candidatePaths;
     const needRead: string[] = [];
 
     for (const relativePath of candidates) {
-      const { absolutePath, stat } = lstatEntry(targetDir, relativePath);
+      const info: any = enumeration.entriesByPath.get(relativePath);
+      const absolutePath = path.join(targetDir, relativePath);
+      const stat = entryStat(info);
       if (!stat) {
         stats.missing += 1;
+        uncaptured.push({ path: relativePath, reason: 'missing' });
+        unstable.push({ path: relativePath, reason: 'missing' });
         continue;
       }
       if (stat.isSymbolicLink()) {
-        const link = resolveSymlink(pinnedRoot, relativePath, absolutePath);
+        const link = resolveSymlink(pinnedRoot, relativePath, absolutePath, info.linkTarget);
         if (link.escapes) {
           stats.symlinkEscapes += 1;
         }
@@ -300,7 +539,8 @@ export function createCollector(options: any = {}) {
         continue;
       }
       if (!stat.isFile()) {
-        skipped.push({ path: relativePath, reason: stat.isDirectory() ? 'directory-entry' : 'special-file' });
+        skipped.push({ path: relativePath, reason: 'special_file' });
+        uncaptured.push({ path: relativePath, reason: 'special_file' });
         continue;
       }
       const previous = previousFiles && previousFiles[relativePath];
@@ -329,16 +569,23 @@ export function createCollector(options: any = {}) {
 
     const { helperFailure, reads } = constrainedReadBatch(rootHandle, needRead, targetDir, 'scan', attempt);
     if (helperFailure) {
-      return { helperFailure, files, skipped, stats, unstable };
+      return finish(helperFailure);
     }
     for (const relativePath of needRead) {
       const result = reads.get(relativePath);
-      const { stat } = lstatEntry(targetDir, relativePath);
-      const meta = stat || { size: 0, mode: 0, mtimeMs: 0 };
+      const meta = result?.ok === true
+        ? { size: result.size, mode: result.mode | 0o100000, mtimeMs: result.mtimeNs / 1000000 }
+        : { size: 0, mode: 0, mtimeMs: 0 };
       if (!result || result.ok !== true) {
         const code = result && result.code ? String(result.code) : 'read_failed';
+        uncaptured.push({ path: relativePath, reason: code });
+        if (code === 'denied') {
+          skipped.push({ path: relativePath, reason: code });
+          continue;
+        }
         if (code === 'missing') {
           stats.missing += 1;
+          unstable.push({ path: relativePath, reason: code });
           continue;
         }
         if (code === 'symlink_rejected' || code === 'escapes_root_or_mount') {
@@ -374,22 +621,27 @@ export function createCollector(options: any = {}) {
       }
     }
 
-    return { helperFailure: '', files, skipped, stats, unstable };
+    return finish();
   }
 
   // 二扫：全量重新受限读取并重 hash，与 M1 逐项比对。
   // 即便 M1==M2 也只是"未检测到变化"——协调写入可让两扫读到从未同时存在的状态，
   // 双扫结果不得兑换严格对照资格（契约 §2.3）。
-  function rescanAndDiff(targetDir: any, pinnedRoot: any, policy: any, beforeFiles: any, attempt: any, rootHandle: any) {
+  function rescanAndDiff(targetDir: any, pinnedRoot: any, policy: any, beforeFiles: any, attempt: any, rootHandle: any, beforeGaps: any[]) {
     const differing: string[] = [];
     const seen = new Set<string>();
-    const candidates = listCandidatePaths(targetDir, policy);
+    const enumeration: any = enumerateCaptureTree(targetDir, pinnedRoot, policy, rootHandle, getCapability());
+    if (enumeration.helperFailure) return { helperFailure: enumeration.helperFailure, differing };
+    const candidates = enumeration.candidatePaths;
+    const uncaptured: any[] = enumeration.uncaptured;
     const regularPaths: string[] = [];
     const metaByPath = new Map<string, any>();
 
     for (const relativePath of candidates) {
       seen.add(relativePath);
-      const { absolutePath, stat } = lstatEntry(targetDir, relativePath);
+      const info: any = enumeration.entriesByPath.get(relativePath);
+      const absolutePath = path.join(targetDir, relativePath);
+      const stat = entryStat(info);
       if (!stat) {
         if (beforeFiles[relativePath]) {
           differing.push(relativePath);
@@ -397,7 +649,7 @@ export function createCollector(options: any = {}) {
         continue;
       }
       if (stat.isSymbolicLink()) {
-        const link = resolveSymlink(pinnedRoot, relativePath, absolutePath);
+        const link = resolveSymlink(pinnedRoot, relativePath, absolutePath, info.linkTarget);
         metaByPath.set(relativePath, link.escapes ? 'link:escapes' : `link:${link.linkTarget}`);
         continue;
       }
@@ -414,9 +666,15 @@ export function createCollector(options: any = {}) {
     }
     for (const relativePath of regularPaths) {
       const result = reads.get(relativePath);
-      metaByPath.set(relativePath, !result || result.ok !== true
-        ? `read-unstable:${result && result.code ? result.code : 'read_failed'}`
-        : (containsSecretSentinel(result.content) ? 'secret-excluded' : sha256Buffer(result.content)));
+      if (!result || result.ok !== true) {
+        const code = result && result.code ? result.code : 'read_failed';
+        uncaptured.push({ path: relativePath, reason: code });
+        // A stable refusal is still incomplete, but not a content change.
+        if (!beforeFiles[relativePath] && beforeGaps.some((gap: any) => gap.path === relativePath && gap.reason === code)) continue;
+        metaByPath.set(relativePath, `read-unstable:${code}`);
+      } else {
+        metaByPath.set(relativePath, containsSecretSentinel(result.content) ? 'secret-excluded' : sha256Buffer(result.content));
+      }
     }
 
     for (const relativePath of candidates) {
@@ -446,7 +704,7 @@ export function createCollector(options: any = {}) {
         differing.push(name);
       }
     }
-    return { helperFailure: '', differing: differing.sort() };
+    return { helperFailure: '', differing: differing.sort(), uncaptured, gitReasons: enumeration.gitReasons || [], gitMetadata: enumeration.gitMetadata };
   }
 
   // session 等树外回放输入的独立授权边界（GPT 复审 #1 第六轮）：
@@ -843,6 +1101,8 @@ export function createCollector(options: any = {}) {
           if (!result || result.ok !== true) {
             // 读取不稳定/越界：绝不落 staging，触发重试。
             writeMismatches.push(relativePath);
+            scanResult.uncaptured.push({ path: relativePath, reason: result?.code || 'read_failed' });
+            delete scanResult.files[relativePath];
             continue;
           }
           const content = result.content;
@@ -895,11 +1155,14 @@ export function createCollector(options: any = {}) {
           options.afterFirstScan(targetDir, attempt);
         }
 
-        const rescan = rescanAndDiff(targetDir, pinnedRoot, policy, scanResult.files, attempt, rootHandle);
+        const rescan = rescanAndDiff(targetDir, pinnedRoot, policy, scanResult.files, attempt, rootHandle, scanResult.uncaptured);
         if (rescan.helperFailure) {
           rollback();
           return fail(`capture_unavailable:${rescan.helperFailure}`, { phase: 'rescan', attempt });
         }
+        scanResult.uncaptured.push(...(rescan.uncaptured || []));
+        scanResult.gitReasons.push(...(rescan.gitReasons || []));
+        if (rescan.gitMetadata === 'degraded') scanResult.gitMetadata = 'degraded';
         const unstablePaths = Array.isArray(scanResult.unstable) ? scanResult.unstable.map((entry: any) => entry.path) : [];
         const changed = Array.from(new Set([...rescan.differing, ...writeMismatches, ...unstablePaths])).sort();
 
@@ -945,6 +1208,20 @@ export function createCollector(options: any = {}) {
           rollback();
         }
       }
+
+      // Stable exclusions by policy are not gaps; every in-scope failure is.
+      const uncaptured: any[] = Array.from(new Map<string, any>(scanResult.uncaptured.map((gap: any) => [`${gap.path}:${gap.reason}`, gap])).values());
+      for (const gap of uncaptured) {
+        const kind = gap.reason === 'special_file' ? 'special_file_not_captured'
+          : gap.reason === 'directory_unreadable' ? 'directory_unreadable' : 'file_unreadable';
+        replayInput.incompleteReasons.push(`${kind}:${gap.path}`);
+      }
+      replayInput.incompleteReasons.push(...scanResult.gitReasons);
+      replayInput.incompleteReasons = Array.from(new Set(replayInput.incompleteReasons));
+      if (replayInput.incompleteReasons.length > 0) replayInput.complete = false;
+      // An inaccessible path (including descendants of an inaccessible directory)
+      // is unknown, not a confirmed deletion.
+      deletions = deletions.filter((name) => !uncaptured.some((gap: any) => name === gap.path || name.startsWith(`${gap.path}/`) || gap.path === '.'));
 
       // 内容缺口一律标记回放输入不完整。
       const secretExcludedPaths = Object.keys(scanResult.files)
@@ -1014,6 +1291,8 @@ export function createCollector(options: any = {}) {
         files: scanResult.files,
         deletions,
         skipped: scanResult.skipped,
+        uncaptured,
+        gitMetadata: scanResult.gitMetadata,
         integrity: {
           algorithm: 'sha256',
           manifestHash: integrityManifestHash,
@@ -1039,6 +1318,7 @@ export function createCollector(options: any = {}) {
           outOfBoundsFiles: scanResult.stats.outOfBounds,
           readUnstableFiles: scanResult.stats.readUnstable,
           oversizedFiles: scanResult.stats.oversized,
+          unreadableFiles: uncaptured.filter((gap: any) => gap.reason !== 'special_file' && gap.reason !== 'directory_unreadable').length,
           durationMs: Date.now() - startedAt,
         },
       };
@@ -1099,5 +1379,15 @@ export function createCollector(options: any = {}) {
     }
   }
 
-  return { captureTurnCheckpoint, scanFiles, listCandidatePaths };
+  // Explicit pre-authorization preview: metadata only, on one constrained root.
+  // No Git/config/content reads and no checkpoint; ignored files may overestimate.
+  function estimateTree(targetDir: string, excludedPatterns: string[] = []) {
+    const capability = getCapability();
+    if (!capability.ok) return { ok: false, reason: `capture_unavailable:${capability.reason}` };
+    const root: any = openConstrainedRoot(capability, targetDir);
+    if (!root.ok) return root;
+    try { return root.walk(excludedPatterns); } finally { root.close(); }
+  }
+
+  return { captureTurnCheckpoint, scanFiles, estimateTree };
 }

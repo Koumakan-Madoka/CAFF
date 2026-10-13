@@ -569,33 +569,60 @@ test('R22: 根身份 statx 必须绑定已持有的同一 fd（禁止按路径�
   }
 });
 
-test('R23: Git 枚举不得执行仓库指定的程序（core.fsmonitor / include 注入）', { skip: linuxSkip }, () => {
-  // GPT 复审 #1 探针复现：仓库 .git/config 的 core.fsmonitor 指向外部脚本时，
-  // 旧实现的 git ls-files 真实执行了该脚本。修复后 Git 以隔离配置执行：
-  // 命令行 -c 覆盖 + system/global/xdg 配置置空 + GIT_* 环境剥除。
+test('R23: Git 元数据读取必须经受限根——外部 include/exclude 不被读取、规则不生效', { skip: linuxSkip }, () => {
+  // GPT 复审 #1 第七轮探针复现：命令行 -c 黑名单只能禁止 git **执行**仓库指定程序，
+  // 不能禁止 git **读取**未授权内容——旧构建的 git ls-files 真实读取了 include.path
+  // 指向的外部配置与 info/exclude 符号链接指向的外部规则文件（atime 从 2000 年被
+  // 更新），hidden.txt 还按外部规则从清单消失。修复后采集路径不执行 git：所有
+  // 元数据字节经受限根读取，树外目标不读取、规则不生效、显式降级 complete=false。
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'tracked-content');
+  fs.writeFileSync(path.join(projectDir, 'hidden.txt'), 'untracked-but-present');
+  fs.writeFileSync(path.join(projectDir, 'ignored.log'), 'ignored-by-in-tree-rule');
+  fs.writeFileSync(path.join(projectDir, '.gitignore'), 'ignored.log\n');
   execFileSync('git', ['init', '-q'], { cwd: projectDir });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: projectDir });
   execFileSync('git', ['config', 'user.name', 'test'], { cwd: projectDir });
+  execFileSync('git', ['add', 'a.txt'], { cwd: projectDir });
 
+  // 外部文件（授权树之外）：include 目标配置 + info/exclude 符号链接目标。
   const marker = path.join(tempDir, 'fsmonitor-executed.marker');
   const hookPath = path.join(tempDir, 'evil-fsmonitor.sh');
   fs.writeFileSync(hookPath, `#!/bin/sh\ntouch "${marker}"\nexit 0\n`, { mode: 0o755 });
-  // 直接注入 + include 链间接注入（include 展开的值同样必须被命令行 -c 覆盖）。
   const includeCfg = path.join(tempDir, 'external-include.cfg');
   fs.writeFileSync(includeCfg, `[core]\n\tfsmonitor = ${hookPath}\n`);
-  execFileSync('git', ['config', 'core.fsmonitor', hookPath], { cwd: projectDir });
+  const externalExcludes = path.join(tempDir, 'external-excludes.txt');
+  fs.writeFileSync(externalExcludes, 'hidden.txt\n');
   execFileSync('git', ['config', 'include.path', includeCfg], { cwd: projectDir });
+  fs.rmSync(path.join(projectDir, '.git', 'info', 'exclude'), { force: true });
+  fs.symlinkSync(externalExcludes, path.join(projectDir, '.git', 'info', 'exclude'));
+
+  // atime 探针：把外部文件的 atime/mtime 设到 2000 年，任何后续读取都会更新 atime。
+  const epoch = new Date('2000-01-01T00:00:00Z');
+  for (const probe of [includeCfg, externalExcludes]) {
+    fs.utimesSync(probe, epoch, epoch);
+  }
 
   const service = makeService(tempDir);
   authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
-  assert.equal(result.captured, true, `隔离配置下采集应正常完成：${result.reason}`);
-  assert.equal(fs.existsSync(marker), false, 'Git 枚举不得执行仓库指定的 fsmonitor 程序');
-  assert.ok(result.checkpoint.files['a.txt'], '正常文件清单不受影响');
+  assert.equal(result.captured, true, `采集应正常完成：${result.reason}`);
+  assert.equal(fs.existsSync(marker), false, '不得执行仓库指定的任何程序');
+  for (const probe of [includeCfg, externalExcludes]) {
+    assert.equal(fs.statSync(probe).atimeMs, epoch.getTime(), `${probe} 不得被读取（atime 不得变化）`);
+  }
+  assert.ok(result.checkpoint.files['a.txt'], 'tracked 文件正常采集');
+  assert.ok(result.checkpoint.files['.gitignore'], '树内 .gitignore 本身正常采集');
+  assert.ok(result.checkpoint.files['hidden.txt'], '外部 exclude 规则不得生效（hidden.txt 必须在清单中）');
+  assert.equal(result.checkpoint.files['ignored.log'], undefined, '树内 .gitignore 规则正常生效');
+  assert.equal(result.checkpoint.replayInput.complete, false, '元数据缺陷必须显式降级');
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('git_exclude_unreadable'),
+    `实际 ${result.checkpoint.replayInput.incompleteReasons.join(',')}`);
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('git_config_include_unverified'),
+    `实际 ${result.checkpoint.replayInput.incompleteReasons.join(',')}`);
+  assert.equal(result.checkpoint.strictEvalEligible, false);
 });
 
 test('R24: 普通 savePolicy 不得重新钉住被替换的根；显式 authorize 才可重新授权', { skip: linuxSkip }, () => {
@@ -873,4 +900,429 @@ test('S13: 普通 savePolicy 保留既有 pin、不钉新对象（全平台）',
   service.authorizeProject('project-1');
   const reauthorized = service.loadPolicy('project-1');
   assert.equal(authorizeTargetDir(reauthorized, otherDir).ok, true, '显式授权后新目录才可用');
+});
+
+// ---------- S14: git-classify 单元与差集测试（全平台；差集部分需 git 可用） ----------
+//
+// 采集路径不执行 git（R23），git index 与 gitignore 语义由内置解析器复现。
+// 本组用例：模式语法单元 + index 解析单元 + 与真实 git ls-files 的差集对照
+// （差集中 git 只运行在测试侧受信夹具上，不在采集路径上）。
+
+const {
+  parseGitIndex,
+  parseGitignoreRules,
+  matchIgnoreSources,
+  classifyWalkEntries,
+  parseGitConfigSubset,
+} = require('../../build/server/domain/runtime/badcase-capture/git-classify');
+// Unrestricted walk is test-only; production enumeration must use the root fd.
+function walkProjectTree(root, skipDirs) {
+  const entries = [];
+  const walk = (base) => {
+    for (const entry of fs.readdirSync(path.join(root, base), { withFileTypes: true })) {
+      if (skipDirs.includes(entry.name)) continue;
+      const name = base ? `${base}/${entry.name}` : entry.name;
+      entries.push({ path: name, type: entry.isDirectory() ? 'dir' : 'file' });
+      if (entry.isDirectory()) walk(name);
+    }
+  };
+  walk('');
+  return { entries };
+}
+
+test('S14a: gitignore 模式语法（注释/否定/目录限定/锚定/**/字符类/转义）', () => {
+  const match = (text, relPath, isDir = false) => {
+    const rules = parseGitignoreRules(text);
+    return matchIgnoreSources([{ base: '', rules }], relPath, isDir);
+  };
+  // 基础：非锚定匹配 basename
+  assert.equal(match('foo', 'foo'), true);
+  assert.equal(match('foo', 'a/b/foo'), true);
+  assert.equal(match('foo', 'foobar'), undefined);
+  // *.log 与否定
+  assert.equal(match('*.log', 'a/b.log'), true);
+  assert.equal(match('*.log\n!keep.log', 'keep.log'), false);
+  assert.equal(match('*.log\n!keep.log', 'sub/keep.log'), false);
+  assert.equal(match('*.log\n!keep.log', 'other.log'), true);
+  // 目录限定：只匹配目录
+  assert.equal(match('build/', 'build', true), true);
+  assert.equal(match('build/', 'build', false), undefined);
+  assert.equal(match('build/', 'src/build', true), true);
+  // 锚定：含 / 或前导 /
+  assert.equal(match('/rooted.txt', 'rooted.txt'), true);
+  assert.equal(match('/rooted.txt', 'sub/rooted.txt'), undefined);
+  assert.equal(match('doc/*.html', 'doc/a.html'), true);
+  assert.equal(match('doc/*.html', 'doc/sub/a.html'), undefined);
+  assert.equal(match('doc/*.html', 'x/doc/a.html'), undefined);
+  // ** 三种形态
+  assert.equal(match('**/tmp', 'a/b/tmp'), true);
+  assert.equal(match('**/tmp', 'tmp'), true);
+  assert.equal(match('a/**/b', 'a/b'), true);
+  assert.equal(match('a/**/b', 'a/x/y/b'), true);
+  assert.equal(match('a/**/b', 'a/x/c'), undefined);
+  assert.equal(match('abc/**', 'abc/x/y/z'), true);
+  assert.equal(match('abc/**', 'abc'), undefined);
+  // 字符类与 ?
+  assert.equal(match('[ab].txt', 'a.txt'), true);
+  assert.equal(match('[ab].txt', 'c.txt'), undefined);
+  assert.equal(match('[!ab].txt', 'c.txt'), true);
+  assert.equal(match('file?.txt', 'file1.txt'), true);
+  assert.equal(match('file?.txt', 'file/1.txt'), undefined);
+  // 注释、转义、行尾空格
+  assert.equal(match('# comment', '# comment'), undefined);
+  assert.equal(match('\\#file', '#file'), true);
+  assert.equal(match('\\!file', '!file'), true);
+  assert.equal(match('name   \n', 'name'), true);
+  assert.equal(match('name\\ ', 'name '), true);
+  // 未命中返回 undefined
+  assert.equal(match('*.log', 'a.txt'), undefined);
+});
+
+test('S14b: gitignore 优先级链——深层覆盖浅层、后命中覆盖先命中、已忽略目录不深入', () => {
+  const sources = [
+    { base: '', rules: parseGitignoreRules('*.log\nlogs/\n') },
+    { base: 'sub', rules: parseGitignoreRules('!keep.log\n') },
+  ];
+  assert.equal(matchIgnoreSources(sources, 'a.log', false), true);
+  assert.equal(matchIgnoreSources(sources, 'sub/keep.log', false), false, '深层否定覆盖浅层通配');
+  assert.equal(matchIgnoreSources(sources, 'sub/x.log', false), true, '深层未命中回落浅层');
+
+  // classify：已忽略目录内的 .gitignore 不生效（git 不深入）
+  const entries = [
+    { path: 'logs', type: 'dir' },
+    { path: 'logs/.gitignore', type: 'file' },
+    { path: 'logs/keep.txt', type: 'file' },
+    { path: 'src', type: 'dir' },
+    { path: 'src/app.js', type: 'file' },
+  ];
+  const gitignoreByDir = new Map([
+    ['', parseGitignoreRules('logs/\n')],
+    ['logs', parseGitignoreRules('!keep.txt\n')],
+  ]);
+  const classified = classifyWalkEntries(entries, {
+    tracked: new Set(),
+    applyIgnore: true,
+    gitignoreByDir,
+  });
+  const candidatePaths = classified.candidates.map((entry) => entry.path);
+  assert.deepEqual(candidatePaths, ['src/app.js'], '已忽略目录内全部排除（其 .gitignore 的否定不生效）');
+  assert.equal(classified.dirInfo.get('logs').ignored, true);
+});
+
+test('S14c: classify 的 tracked 语义与缺口路由', () => {
+  const entries = [
+    { path: 'tracked-ignored.txt', type: 'file' },
+    { path: 'untracked-ignored.txt', type: 'file' },
+    { path: 'free.txt', type: 'file' },
+    { path: 'pipe', type: 'other' },
+  ];
+  const gitignoreByDir = new Map([['', parseGitignoreRules('*-ignored.txt\n')]]);
+  // tracked 集合包含 tracked-ignored.txt：ignore 规则只作用于 untracked
+  const classified = classifyWalkEntries(entries, {
+    tracked: new Set(['tracked-ignored.txt']),
+    applyIgnore: true,
+    gitignoreByDir,
+    isIncludedIgnored: (p) => p === 'untracked-ignored.txt',
+  });
+  const candidatePaths = classified.candidates.map((entry) => entry.path);
+  assert.ok(candidatePaths.includes('tracked-ignored.txt'), 'tracked 文件即使命中 ignore 规则也必须采集');
+  assert.ok(candidatePaths.includes('untracked-ignored.txt'), 'includedIgnored 显式重纳入');
+  assert.ok(candidatePaths.includes('free.txt'));
+  assert.deepEqual(classified.uncaptured, [{ path: 'pipe', reason: 'special_file' }],
+    '未忽略的特殊文件必须进入 uncaptured 缺口清单');
+
+  // tracked=null（元数据不可用）→ 不应用任何 ignore 规则，全部成为候选（宁多采不漏采）
+  const degraded = classifyWalkEntries(entries, { tracked: null, applyIgnore: false });
+  assert.equal(degraded.candidates.length, 3, '降级模式采集全部普通文件/链接');
+  assert.deepEqual(degraded.uncaptured, [{ path: 'pipe', reason: 'special_file' }]);
+
+  // 被 ignore 的特殊文件不进 uncaptured（git 本来也不会列出它）
+  const ignoredSpecial = classifyWalkEntries(
+    [{ path: 'pipe', type: 'other' }],
+    { tracked: new Set(), applyIgnore: true, gitignoreByDir: new Map([['', parseGitignoreRules('pipe\n')]]) },
+  );
+  assert.deepEqual(ignoredSpecial.uncaptured, []);
+  assert.deepEqual(ignoredSpecial.candidates, []);
+});
+
+test('S14d: git index 解析——v2/v3/v4、sha256、损坏输入', () => {
+  const crypto = require('node:crypto');
+  const buildV2 = (paths, hashLen = 20) => {
+    const fixedLen = 40 + hashLen + 2;
+    const parts = [];
+    for (const p of paths) {
+      const name = Buffer.from(p, 'utf8');
+      const fixed = Buffer.alloc(fixedLen);
+      fixed.writeUInt32BE(0o100644, 24); // mode
+      fixed.writeUInt16BE(name.length, fixedLen - 2); // flags: nameLen
+      const unpadded = fixedLen + name.length;
+      const padded = Math.ceil((unpadded + 1) / 8) * 8;
+      const entry = Buffer.alloc(padded);
+      fixed.copy(entry, 0);
+      name.copy(entry, fixedLen);
+      parts.push(entry);
+    }
+    const header = Buffer.alloc(12);
+    header.write('DIRC', 0, 'latin1');
+    header.writeUInt32BE(2, 4);
+    header.writeUInt32BE(paths.length, 8);
+    const body = Buffer.concat([header, ...parts]);
+    return Buffer.concat([body, crypto.createHash(hashLen === 32 ? 'sha256' : 'sha1').update(body).digest()]);
+  };
+  const parsed = parseGitIndex(buildV2(['a.txt', 'sub/b.txt']), 20);
+  assert.equal(parsed.ok, true, parsed.reason);
+  assert.deepEqual(parsed.entries.map((entry) => entry.path), ['a.txt', 'sub/b.txt']);
+  assert.equal(parsed.entries[0].mode, 0o100644);
+
+  const parsed256 = parseGitIndex(buildV2(['x.txt'], 32), 32);
+  assert.equal(parsed256.ok, true, parsed256.reason);
+  assert.deepEqual(parsed256.entries.map((entry) => entry.path), ['x.txt']);
+
+  // v4 前缀压缩：每个条目都是 varint strip + NUL 结尾后缀。
+  // entry1: strip=0 + 'dir/a.txt'；entry2: strip=5 → 'dir/' + 'b.txt'
+  const buildV4 = () => {
+    const hashLen = 20;
+    const fixedLen = 40 + hashLen + 2;
+    const fixed1 = Buffer.alloc(fixedLen);
+    fixed1.writeUInt32BE(0o100644, 24);
+    fixed1.writeUInt16BE(9, fixedLen - 2);
+    const entry1 = Buffer.concat([fixed1, Buffer.from([0]), Buffer.from('dir/a.txt\0')]);
+    const fixed2 = Buffer.alloc(fixedLen);
+    fixed2.writeUInt32BE(0o100644, 24);
+    fixed2.writeUInt16BE(9, fixedLen - 2);
+    const entry2 = Buffer.concat([fixed2, Buffer.from([5]), Buffer.from('b.txt\0')]);
+    const header = Buffer.alloc(12);
+    header.write('DIRC', 0, 'latin1');
+    header.writeUInt32BE(4, 4);
+    header.writeUInt32BE(2, 8);
+    const body = Buffer.concat([header, entry1, entry2]);
+    return Buffer.concat([body, crypto.createHash('sha1').update(body).digest()]);
+  };
+  const parsedV4 = parseGitIndex(buildV4(), 20);
+  assert.equal(parsedV4.ok, true, parsedV4.reason);
+  assert.deepEqual(parsedV4.entries.map((entry) => entry.path), ['dir/a.txt', 'dir/b.txt']);
+
+  // 校验 hash 不只是占位长度；split/sparse-index 等必要扩展没有实现就拒绝。
+  const changed = buildV2(['a.txt']);
+  changed[12] ^= 1;
+  assert.equal(parseGitIndex(changed, 20).ok, false, 'checksum mismatch must fail');
+  const base = buildV2(['a.txt']).subarray(0, -20);
+  const extension = Buffer.alloc(8);
+  extension.write('link');
+  const withSplit = Buffer.concat([base, extension]);
+  assert.equal(parseGitIndex(Buffer.concat([withSplit, crypto.createHash('sha1').update(withSplit).digest()]), 20).ok,
+    false, 'unimplemented mandatory index extension must fail');
+
+  // 损坏输入
+  assert.equal(parseGitIndex(Buffer.from('nope'), 20).ok, false);
+  const badVersion = buildV2(['a.txt']);
+  badVersion.writeUInt32BE(5, 4);
+  assert.equal(parseGitIndex(badVersion, 20).ok, false);
+  assert.equal(parseGitIndex(buildV2(['a.txt']).slice(0, -5), 20).ok, false, '截断必须报错');
+  assert.equal(parseGitIndex(buildV2(['a.txt']), 32).ok, false, 'hash 长度错配必须报错（不静默猜测）');
+
+  // config 子集：objectformat / excludesFile / include 检测
+  const cfg = parseGitConfigSubset('[core]\n\texcludesFile = /x/ex\n[extensions]\n\tobjectformat = sha256\n[include]\n\tpath = /etc/evil\n');
+  assert.equal(cfg.objectFormat, 'sha256');
+  assert.equal(cfg.excludesFile, '/x/ex');
+  assert.equal(cfg.hasInclude, true);
+});
+
+test('S14e: 与真实 git ls-files 的差集对照（测试侧受信夹具）', (t) => {
+  // git 可用性探测：不可用时跳过差集（单元用例 S14a-d 不受影响）。
+  try {
+    execFileSync('git', ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    t.skip('git unavailable: differential test not run');
+    return;
+  }
+  const tempDir = withTempDir();
+  const repoDir = path.join(tempDir, 'repo');
+  fs.mkdirSync(path.join(repoDir, 'sub', 'deep'), { recursive: true });
+  fs.mkdirSync(path.join(repoDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(repoDir, 'doc'), { recursive: true });
+
+  fs.writeFileSync(path.join(repoDir, '.gitignore'), '*.log\n!keep.log\nlogs/\ndoc/*.html\n');
+  fs.writeFileSync(path.join(repoDir, 'sub', '.gitignore'), '!deep/local.log\n');
+  fs.writeFileSync(path.join(repoDir, 'tracked.txt'), 'tracked');
+  fs.writeFileSync(path.join(repoDir, 'keep.log'), 'negated-keep');
+  fs.writeFileSync(path.join(repoDir, 'drop.log'), 'dropped');
+  fs.writeFileSync(path.join(repoDir, 'sub', 'deep', 'local.log'), 're-included-by-sub-rule');
+  fs.writeFileSync(path.join(repoDir, 'sub', 'deep', 'other.log'), 'dropped-deep');
+  fs.writeFileSync(path.join(repoDir, 'logs', 'x.txt'), 'inside-ignored-dir');
+  fs.writeFileSync(path.join(repoDir, 'doc', 'a.html'), 'anchored-drop');
+  fs.writeFileSync(path.join(repoDir, 'doc', 'b.txt'), 'kept');
+  fs.writeFileSync(path.join(repoDir, 'free space.txt'), 'space-name');
+
+  execFileSync('git', ['init', '-q'], { cwd: repoDir });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoDir });
+  execFileSync('git', ['config', 'user.name', 'test'], { cwd: repoDir });
+  execFileSync('git', ['add', 'tracked.txt'], { cwd: repoDir });
+  // tracked 但命中 ignore 规则的文件（git add -f）：ignore 规则不得作用于它
+  fs.writeFileSync(path.join(repoDir, 'force.log'), 'tracked-despite-ignore');
+  execFileSync('git', ['add', '-f', 'force.log'], { cwd: repoDir });
+
+  // 测试侧以普通 fs 读取元数据（采集侧会经受限根，这里验证的是分类语义本身）。
+  const indexBuffer = fs.readFileSync(path.join(repoDir, '.git', 'index'));
+  const parsed = parseGitIndex(indexBuffer, 20);
+  assert.equal(parsed.ok, true, parsed.reason);
+  const tracked = new Set(parsed.entries.map((entry) => entry.path));
+  assert.ok(tracked.has('tracked.txt') && tracked.has('force.log'));
+
+  const { entries } = walkProjectTree(repoDir, ['.git', 'node_modules']);
+  const gitignoreByDir = new Map();
+  for (const entry of entries) {
+    if (entry.type === 'file' && (entry.path === '.gitignore' || entry.path.endsWith('/.gitignore'))) {
+      const dir = entry.path === '.gitignore' ? '' : entry.path.slice(0, entry.path.length - '.gitignore'.length - 1);
+      gitignoreByDir.set(dir, parseGitignoreRules(fs.readFileSync(path.join(repoDir, entry.path), 'utf8')));
+    }
+  }
+  const classified = classifyWalkEntries(entries, {
+    tracked,
+    applyIgnore: true,
+    gitignoreByDir,
+    isIncludedIgnored: () => false,
+  });
+  const ours = new Set(classified.candidates.map((entry) => entry.path));
+
+  const gitOut = execFileSync('git', ['-C', repoDir, 'ls-files', '-c', '-o', '--exclude-standard', '-z'], { encoding: 'buffer' });
+  const gitSet = new Set(Buffer.from(gitOut).toString('utf8').split('\0').filter(Boolean));
+
+  assert.deepEqual([...ours].sort(), [...gitSet].sort(),
+    `差集必须为空。ours-git=${[...ours].filter((p) => !gitSet.has(p))} git-ours=${[...gitSet].filter((p) => !ours.has(p))}`);
+  // 关键语义点抽查
+  assert.ok(ours.has('keep.log') && ours.has('sub/deep/local.log') && ours.has('force.log'));
+  assert.ok(!ours.has('drop.log') && !ours.has('logs/x.txt') && !ours.has('doc/a.html') && !ours.has('sub/deep/other.log'));
+});
+
+test('S18: malformed Git material downgrades capture and restore end to end', { skip: linuxSkip }, () => {
+  const tempDir = withTempDir();
+  const repo = path.join(tempDir, 'repo');
+  fs.mkdirSync(repo);
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), 'tracked');
+  fs.writeFileSync(path.join(repo, 'ignored.log'), 'not silently lost');
+  fs.writeFileSync(path.join(repo, '.gitignore'), '*.log\n');
+  execFileSync('git', ['init', '-q', repo]);
+  execFileSync('git', ['-C', repo, 'add', 'tracked.txt']);
+  const config = fs.readFileSync(path.join(repo, '.git/config'));
+  const index = fs.readFileSync(path.join(repo, '.git/index'));
+  const service = makeService(tempDir);
+  authorize(service, 'project-1', enabledPolicy(repo));
+  const mutations = [
+    ['git_index_unreadable', () => { const bad = Buffer.from(index); bad[12] ^= 1; fs.writeFileSync(path.join(repo, '.git/index'), bad); }],
+    ['git_config_unverified', () => fs.appendFileSync(path.join(repo, '.git/config'), '\n[core]\nworktree = /outside\n')],
+    ['git_ignore_unverified', () => fs.writeFileSync(path.join(repo, '.gitignore'), '*.log\na[!x/]b\n')],
+  ];
+  for (const [reason, mutate] of mutations) {
+    fs.writeFileSync(path.join(repo, '.git/config'), config);
+    fs.writeFileSync(path.join(repo, '.git/index'), index);
+    fs.writeFileSync(path.join(repo, '.gitignore'), '*.log\n');
+    mutate();
+    const result = service.captureTurnCheckpoint(captureArgs(repo, { turnId: reason }));
+    assert.equal(result.captured, true, result.reason);
+    assert.equal(result.checkpoint.replayInput.complete, false);
+    assert.ok(result.checkpoint.replayInput.incompleteReasons.includes(reason), result.checkpoint.replayInput.incompleteReasons.join(','));
+    assert.ok(result.checkpoint.files['ignored.log'], 'unverified rules must not discard files');
+    assert.ok(result.checkpoint.files['tracked.txt']);
+    const restored = service.restoreCheckpoint({ projectId: 'project-1', checkpointId: result.checkpointId, targetDir: path.join(tempDir, reason) });
+    assert.equal(restored.ok, true);
+    assert.equal(restored.replayInputComplete, false);
+  }
+});
+
+// Malformed bytes must not become a trusted tracked set, even with a valid hash.
+function indexFixture({ version = 2, name = 'a', mode = 0o100644, extended = null } = {}) {
+  const flags = Buffer.byteLength(name) | (extended === null ? 0 : 0x4000);
+  const fixed = Buffer.alloc(62 + (extended === null ? 0 : 2));
+  fixed.writeUInt32BE(mode, 24);
+  fixed.writeUInt16BE(flags, 60);
+  if (extended !== null) fixed.writeUInt16BE(extended, 62);
+  let entry = Buffer.concat([fixed, ...(version === 4 ? [Buffer.from([0])] : []), Buffer.from(`${name}\0`)]);
+  if (version !== 4) entry = Buffer.concat([entry, Buffer.alloc((8 - entry.length % 8) % 8)]);
+  const header = Buffer.alloc(12);
+  header.write('DIRC'); header.writeUInt32BE(version, 4); header.writeUInt32BE(1, 8);
+  return Buffer.concat([header, entry]);
+}
+function indexWithHash(body) {
+  return Buffer.concat([body, require('node:crypto').createHash('sha1').update(body).digest()]);
+}
+
+test('S15a: valid-checksum index rejects interior NUL and nonzero padding', () => {
+  const nul = indexFixture({ name: 'a\0b' });
+  assert.equal(parseGitIndex(indexWithHash(nul), 20).ok, false, 'interior NUL');
+  const padding = indexFixture({ name: 'ab' });
+  padding[padding.length - 1] = 1;
+  assert.equal(parseGitIndex(indexWithHash(padding), 20).ok, false, 'nonzero padding');
+});
+
+test('S15b: unverified index modes, extended flags and administrative paths fail closed', () => {
+  for (const fixture of [
+    { mode: 0 }, { mode: 0o040000 }, { mode: 0o160000 }, { name: '.git/config' }, { name: 'x/.git/y' },
+    { version: 3, extended: 1 }, { version: 3, extended: 0x4000 },
+  ]) assert.equal(parseGitIndex(indexWithHash(indexFixture(fixture)), 20).ok, false, JSON.stringify(fixture));
+  assert.equal(parseGitIndex(indexWithHash(indexFixture({ version: 3, extended: 0 })), 20).ok, true);
+});
+
+test('S15c: v4 name length and prefix overflow cannot be silently accepted', () => {
+  const wrongLength = indexFixture({ version: 4 });
+  wrongLength.writeUInt16BE(99, 12 + 60);
+  assert.equal(parseGitIndex(indexWithHash(wrongLength), 20).ok, false, 'v4 flags length mismatch');
+  const overflow = indexFixture({ version: 4 });
+  overflow[12 + 62] = 255;
+  assert.equal(parseGitIndex(indexWithHash(overflow), 20).ok, false, 'invalid prefix strip');
+});
+
+test('S15d: config unsupported quoting/sections are not verified', () => {
+  for (const text of [
+    '[include.path]\npath = /outside\n', '[core]\nexcludesFile = "unfinished\n',
+    '[core]\nexcludesFile = "a""b"\n', '[core]\nworktree = /outside\n',
+    '[core]\nrepositoryformatversion = 99\n', '[core]\nbare = true\n',
+    '[core "subsection"]\nexcludesFile = other\n',
+  ]) assert.equal(parseGitConfigSubset(text).verified, false, text);
+  const quoted = parseGitConfigSubset('[core]\nexcludesFile = "inside file" # comment\n');
+  assert.equal(quoted.verified, true);
+  assert.equal(quoted.excludesFile, 'inside file');
+  assert.equal(parseGitConfigSubset('[core]\nexcludesFile = inside#comment\n').excludesFile, 'inside');
+});
+
+test('S15e: unsupported wildmatch syntax is explicitly unverified', () => {
+  for (const rule of ['a[!x/]b', '[a/b]', 'tail' + String.fromCharCode(92), '\ufeff*.log', 'a\0b', 'a'.repeat(4097), 'a\n'.repeat(4097)]) {
+    assert.equal(parseGitignoreRules(rule).verified, false, JSON.stringify(rule));
+  }
+});
+
+test('S17: hostile wildcard repetition has bounded matching cost', () => {
+  const modulePath = path.resolve(__dirname, '../../build/server/domain/runtime/badcase-capture/git-classify');
+  const source = `const m = require(${JSON.stringify(modulePath)}); const rules = m.parseGitignoreRules('*a'.repeat(30) + 'b');
+    if (rules.verified) { if (m.matchIgnoreSources([{base:'', rules}], 'a'.repeat(200), false) !== undefined) process.exit(2); }`;
+  execFileSync(process.execPath, ['-e', source], { timeout: 2000, stdio: 'pipe' });
+});
+
+test('S16: supported ignore subset agrees with real Git across pattern/path matrix', () => {
+  const tempDir = withTempDir();
+  const repo = path.join(tempDir, 'repo');
+  fs.mkdirSync(repo);
+  const git = (...args) => execFileSync('git', ['-c', `core.excludesFile=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, '-C', repo, ...args], { encoding: 'utf8' });
+  git('init', '-q');
+  const paths = ['a.txt', 'b.txt', 'c.txt', 'keep.log', 'drop.log', '#file', '!file', 'a space',
+    'sub/a.txt', 'sub/b.log', 'sub/deep/a.txt', 'sub/deep/b.log', 'doc/a.html', 'doc/deep/a.html', 'abc/x/y/z',
+    'é.txt', '你.txt', 'sub/a/b/z'];
+  for (const name of paths) {
+    fs.mkdirSync(path.dirname(path.join(repo, name)), { recursive: true });
+    fs.writeFileSync(path.join(repo, name), name);
+  }
+  const patterns = ['*.log', '*.log\n!keep.log', '/a.txt', '[ab].txt', '[!ab].txt', '?.txt',
+    'sub/', 'sub/*', 'sub/**', '**/a.txt', 'sub/**/a.txt', 'doc/*.html', '**/*.html',
+    'abc/**', '**', '*\n!sub/\n!sub/**', 'sub/\n!sub/a.txt', 'a space   ', '\\#file', '\\!file',
+    'a**.txt', 's?b/**/?.txt', 'sub/**/deep/**', 'sub/**/**/a.txt', 'é.txt', '??.txt', 'sub/a[!x]b/z'];
+  const entries = walkProjectTree(repo, ['.git']).entries;
+  for (const pattern of patterns) {
+    fs.writeFileSync(path.join(repo, '.gitignore'), pattern + '\n');
+    const rules = parseGitignoreRules(pattern);
+    assert.equal(rules.verified, true, pattern);
+    const ours = classifyWalkEntries(entries, { tracked: new Set(), applyIgnore: true, gitignoreByDir: new Map([['', rules]]) })
+      .candidates.map((entry) => entry.path).sort();
+    const expected = git('ls-files', '-o', '--exclude-standard', '-z').split('\0').filter((name) => name && name !== '.gitignore').sort();
+    assert.deepEqual(ours, expected, JSON.stringify(pattern));
+  }
 });

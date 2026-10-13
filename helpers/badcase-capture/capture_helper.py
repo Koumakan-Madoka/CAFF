@@ -181,6 +181,59 @@ def read_constrained(rootfd, rel_path, max_bytes):
         os.close(fd)
 
 
+def walk_constrained(rootfd, excluded):
+    """Enumerate via directory fds. Never follow a symlink or cross a mount.
+
+    Each recursive open is resolved against the pinned root, not a previously
+    checked pathname. Failed enumeration is material loss, including at '.'.
+    """
+    entries = []
+    gaps = []
+    pending = ["."]
+    resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV
+    while pending:
+        rel = pending.pop()
+        fd, err = openat2(rootfd, os.fsencode(rel), os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, resolve)
+        if fd < 0:
+            gaps.append({"path": rel, "reason": "directory_unreadable", "code": ERRNO_CODES.get(err, "open_failed")})
+            continue
+        try:
+            try:
+                names = sorted(os.listdir(fd))
+            except OSError:
+                gaps.append({"path": rel, "reason": "directory_unreadable"})
+                continue
+            for name in names:
+                if len(entries) >= 100000:
+                    return {"ok": False, "code": "enumeration_limit"}
+                child = name if rel == "." else rel + "/" + name
+                # .git itself is needed for classification but never traversed.
+                if child != ".git" and any(child == prefix or child.startswith(prefix + "/") for prefix in excluded):
+                    continue
+                # The transport/path schema is UTF-8 and POSIX; do not silently
+                # reinterpret unrepresentable names as another file.
+                if "\\" in name or any(0xD800 <= ord(c) <= 0xDFFF for c in name):
+                    gaps.append({"path": rel, "reason": "directory_unreadable", "code": "unsupported_filename"})
+                    continue
+                try:
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    mode = info.st_mode
+                    kind = "dir" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else "symlink" if stat.S_ISLNK(mode) else "other"
+                    item = {"path": child, "type": kind, "mode": mode, "size": info.st_size, "mtimeMs": info.st_mtime_ns / 1000000}
+                    if kind == "symlink":
+                        item["linkTarget"] = os.readlink(name, dir_fd=fd)
+                    entries.append(item)
+                    # Git administrative data is read separately through the
+                    # same constrained-read channel, never recursively copied.
+                    if kind == "dir" and name != ".git":
+                        pending.append(child)
+                except OSError:
+                    gaps.append({"path": child, "reason": "missing"})
+        finally:
+            os.close(fd)
+    return {"ok": True, "entries": entries, "unreadableDirs": gaps}
+
+
 def main():
     if len(sys.argv) != 2:
         sys.stderr.write("usage: capture_helper.py <rootfd>\n")
@@ -214,6 +267,15 @@ def main():
             ok, info = statx_root(rootfd)
             payload = {"ok": ok, **info} if ok else {"ok": False, "code": "statx_failed", **info}
             raw_out.write(json.dumps(payload).encode("utf-8") + b"\n")
+            raw_out.flush()
+            continue
+        if op == "walk":
+            excluded = request.get("excluded", [])
+            if not isinstance(excluded, list) or any(not isinstance(item, str) for item in excluded):
+                raw_out.write(b'{"ok":false,"code":"bad_request"}\n')
+                raw_out.flush()
+                continue
+            raw_out.write(json.dumps(walk_constrained(rootfd, excluded)).encode("utf-8") + b"\n")
             raw_out.flush()
             continue
         if op == "read":

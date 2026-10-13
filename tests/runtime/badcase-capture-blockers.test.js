@@ -1125,3 +1125,234 @@ test('R21: configSnapshot 空对象或缺必填键一律 harness_tool_config_unv
   assert.equal(ok.checkpoint.replayInput.complete, true, ok.checkpoint.replayInput.incompleteReasons.join(','));
   assert.ok(ok.checkpoint.replayInput.harness.configSnapshotHash, '有效快照必须归档并记录 hash');
 });
+
+// ---------- 第七轮阻断项（GPT E3 rev19）：Git 读取边界 + 漏采完整性 ----------
+
+test('R33: 采集与容量预估不走目标路径 readdir（枚举也必须绑定受限根）', { skip: capSkip }, () => {
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(path.join(projectDir, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'sub', 'ok.txt'), 'safe');
+  const service = makeService(tempDir);
+  authorize(service, 'project-1', enabledPolicy(projectDir));
+  const original = fs.readdirSync;
+  fs.readdirSync = function (target, ...args) {
+    if (typeof target === 'string' && (target === projectDir || target.startsWith(projectDir + path.sep))) {
+      throw new Error('unconstrained_target_enumeration');
+    }
+    return original.call(this, target, ...args);
+  };
+  try {
+    const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+    assert.equal(result.captured, true, result.reason);
+    assert.ok(result.checkpoint.files['sub/ok.txt'], 'cannot silently turn enumeration failure into an empty snapshot');
+    const estimate = service.estimateDirectory('project-1', projectDir);
+    assert.equal(estimate.ok, true, estimate.reason);
+    assert.equal(estimate.fileCount, 1);
+  } finally { fs.readdirSync = original; }
+});
+
+// 权限拒绝是稳定状态的前提是 DAC 拒绝真的生效（root 带 CAP_DAC_OVERRIDE 时 chmod 000
+// 仍可读）。探测一次，不具备条件即明确跳过（缺证据），不冒充测试通过。
+function dacDeniedProbe(t) {
+  const tempDir = withTempDir();
+  const probe = path.join(tempDir, 'probe.txt');
+  fs.writeFileSync(probe, 'x');
+  fs.chmodSync(probe, 0o000);
+  try {
+    fs.readFileSync(probe);
+    t.skip('当前身份可读取 chmod 000 文件（DAC override），无法验证权限拒绝路径');
+    return false;
+  } catch {
+    return true;
+  } finally {
+    fs.chmodSync(probe, 0o644);
+  }
+}
+
+test('R28: 授权文件读取被拒（chmod 000）必须显式降级——清单留缺口、恢复不再宣称完整', { skip: capSkip }, (t) => {
+  // GPT 复审 #2 第七轮探针复现：denied.txt 三轮读取被拒后不进清单，却
+  // captured=true / complete=true / incompleteReasons=[]，恢复 ok=true 且
+  // replayInputComplete=true（实际只有 ok.txt）。修复后：缺口入清单、complete=false、
+  // 恢复侧如实上报；稳定拒绝不得触发重试风暴。
+  if (!dacDeniedProbe(t)) {
+    return;
+  }
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'ok.txt'), 'ok-content');
+  fs.writeFileSync(path.join(projectDir, 'denied.txt'), 'denied-content');
+  gitInit(projectDir);
+  execFileSync('git', ['add', 'ok.txt'], { cwd: projectDir }); // denied.txt 保持 untracked
+  fs.chmodSync(path.join(projectDir, 'denied.txt'), 0o000);
+
+  const service = makeService(tempDir);
+  authorize(service, 'project-1', enabledPolicy(projectDir));
+  const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+  try {
+    assert.equal(result.captured, true, `可读文件仍应采集：${result.reason}`);
+    assert.equal(result.checkpoint.replayInput.complete, false, '漏采材料不得宣称完整');
+    assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('file_unreadable:denied.txt'),
+      `实际 ${result.checkpoint.replayInput.incompleteReasons.join(',')}`);
+    const uncaptured = result.checkpoint.uncaptured || [];
+    assert.ok(uncaptured.some((entry) => entry.path === 'denied.txt' && entry.reason === 'denied'),
+      `uncaptured 清单必须包含 denied.txt：${JSON.stringify(uncaptured)}`);
+    assert.equal(result.checkpoint.stats.unreadableFiles, 1);
+    assert.equal(result.checkpoint.consistency.retries, 0, '稳定权限拒绝不得触发重试');
+    assert.equal(result.checkpoint.files['ok.txt'].type, 'file');
+    assert.equal(result.checkpoint.files['denied.txt'], undefined, '未采集文件不得携带内容 hash 进清单');
+
+    const restoreDir = path.join(tempDir, 'restore');
+    const restored = service.restoreCheckpoint({ projectId: 'project-1', checkpointId: result.checkpointId, targetDir: restoreDir });
+    assert.equal(restored.ok, true, '已采集内容的包内校验可成功');
+    assert.equal(restored.replayInputComplete, false, '恢复侧不得再上报输入完整');
+    assert.ok((restored.uncapturedInScope || []).some((entry) => entry.path === 'denied.txt'),
+      '恢复侧必须报告缺口清单');
+    assert.equal(fs.readFileSync(path.join(restoreDir, 'ok.txt'), 'utf8'), 'ok-content');
+  } finally {
+    fs.chmodSync(path.join(projectDir, 'denied.txt'), 0o644);
+  }
+});
+
+test('R29: FIFO 等特殊文件必须显式降级——special_file_not_captured', { skip: capSkip }, () => {
+  // GPT 复审 #2 第七轮：FIFO 被跳过却 complete=true。修复后：未忽略的特殊文件
+  // 进 uncaptured 缺口清单并使 complete=false。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
+  execFileSync('mkfifo', [path.join(projectDir, 'fifo1')]);
+
+  const service = makeService(tempDir);
+  authorize(service, 'project-1', enabledPolicy(projectDir));
+  const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+  assert.equal(result.captured, true, result.reason);
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('special_file_not_captured:fifo1'),
+    `实际 ${result.checkpoint.replayInput.incompleteReasons.join(',')}`);
+  assert.ok((result.checkpoint.uncaptured || []).some((entry) => entry.path === 'fifo1' && entry.reason === 'special_file'));
+  assert.equal(result.checkpoint.consistency.retries, 0, '特殊文件是稳定状态，不得触发重试');
+
+  const restoreDir = path.join(tempDir, 'restore');
+  const restored = service.restoreCheckpoint({ projectId: 'project-1', checkpointId: result.checkpointId, targetDir: restoreDir });
+  assert.equal(restored.replayInputComplete, false);
+  assert.ok((restored.uncapturedInScope || []).some((entry) => entry.path === 'fifo1'));
+});
+
+test('R30: 不可读子目录必须显式降级——directory_unreadable，不静默丢内容', { skip: capSkip }, (t) => {
+  if (!dacDeniedProbe(t)) {
+    return;
+  }
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(path.join(projectDir, 'sealed'), { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'sealed', 'inside.txt'), 'unreachable');
+  fs.writeFileSync(path.join(projectDir, 'ok.txt'), 'ok');
+  fs.chmodSync(path.join(projectDir, 'sealed'), 0o000);
+
+  const service = makeService(tempDir);
+  authorize(service, 'project-1', enabledPolicy(projectDir));
+  const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+  try {
+    assert.equal(result.captured, true, `可读部分仍应采集：${result.reason}`);
+    assert.equal(result.checkpoint.replayInput.complete, false);
+    assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('directory_unreadable:sealed'),
+      `实际 ${result.checkpoint.replayInput.incompleteReasons.join(',')}`);
+    assert.ok((result.checkpoint.uncaptured || []).some((entry) => entry.path === 'sealed' && entry.reason === 'directory_unreadable'));
+    assert.equal(result.checkpoint.files['ok.txt'].type, 'file');
+    assert.equal(result.checkpoint.files['sealed/inside.txt'], undefined, '不可读目录内容不得出现在清单');
+  } finally {
+    fs.chmodSync(path.join(projectDir, 'sealed'), 0o755);
+  }
+});
+
+test('R31: 采集路径不依赖 git 可执行文件——PATH 无 git 时分类仍正确', { skip: capSkip }, () => {
+  // 修复前：git 缺失时回退全量遍历，ignored.log 会被错误采集（分类丢失）。
+  // 修复后：index/gitignore 由内置解析器经受限读取处理，与 git 可执行文件无关。
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, 'tracked.txt'), 'tracked');
+  fs.writeFileSync(path.join(projectDir, 'ignored.log'), 'ignored');
+  fs.writeFileSync(path.join(projectDir, 'free.txt'), 'free');
+  fs.writeFileSync(path.join(projectDir, '.gitignore'), 'ignored.log\n');
+  gitInit(projectDir);
+  execFileSync('git', ['add', 'tracked.txt'], { cwd: projectDir });
+
+  // PATH 只保留 python3（helper 需要），不含 git。
+  const fakeBin = path.join(tempDir, 'fake-bin');
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const pythonPath = execFileSync('which', ['python3'], { encoding: 'utf8' }).trim();
+  fs.symlinkSync(pythonPath, path.join(fakeBin, 'python3'));
+
+  const service = makeService(tempDir);
+  authorize(service, 'project-1', enabledPolicy(projectDir));
+  const originalPath = process.env.PATH;
+  process.env.PATH = fakeBin;
+  let result;
+  try {
+    result = service.captureTurnCheckpoint(captureArgs(projectDir));
+  } finally {
+    process.env.PATH = originalPath;
+  }
+  assert.equal(result.captured, true, `无 git 可执行文件时采集应正常：${result.reason}`);
+  assert.ok(result.checkpoint.files['tracked.txt'], 'tracked 文件在清单');
+  assert.ok(result.checkpoint.files['free.txt'], 'untracked 未忽略文件在清单');
+  assert.equal(result.checkpoint.files['ignored.log'], undefined, '内置解析器必须正确应用 ignore 规则');
+  assert.equal(result.checkpoint.gitMetadata, 'ok', `git 元数据状态：${result.checkpoint.gitMetadata}`);
+  assert.equal(result.checkpoint.replayInput.complete, true,
+    `内部元数据完整可读时不应降级：${result.checkpoint.replayInput.incompleteReasons.join(',')}`);
+});
+
+test('R32: gitfile 外置元数据不自动获授权——须 authorizedInputDirs 显式授权', { skip: capSkip }, () => {
+  // git worktree 形态的 .git 是 gitfile，指向主仓库的外部 gitdir。
+  // 未授权：降级采集（全部按未知 tracked 状态多采）+ git_metadata_not_authorized；
+  // 显式授权主仓库 .git 后：分类正确（ignore 规则生效），不再降级。
+  const tempDir = withTempDir();
+  const mainRepo = path.join(tempDir, 'main');
+  fs.mkdirSync(mainRepo, { recursive: true });
+  fs.writeFileSync(path.join(mainRepo, 'tracked.txt'), 'tracked');
+  fs.writeFileSync(path.join(mainRepo, '.gitignore'), 'ignored.log\n');
+  gitInit(mainRepo);
+  execFileSync('git', ['add', '-A'], { cwd: mainRepo });
+  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: mainRepo });
+  const worktreeDir = path.join(tempDir, 'wt');
+  execFileSync('git', ['worktree', 'add', worktreeDir], { cwd: mainRepo });
+  fs.writeFileSync(path.join(worktreeDir, 'ignored.log'), 'ignored-in-worktree');
+  fs.writeFileSync(path.join(worktreeDir, 'dirty.txt'), 'dirty-untracked');
+
+  // 子情形 A：无输入授权 → 外置 gitdir 不读，降级多采。
+  const serviceA = makeService(tempDir, { captureRoot: path.join(tempDir, 'capture-root-a') });
+  serviceA.savePolicy('project-1', {
+    status: 'enabled',
+    authorizedDirs: [worktreeDir],
+    authorizedInputDirs: [],
+  });
+  serviceA.authorizeProject('project-1');
+  const unauth = serviceA.captureTurnCheckpoint(captureArgs(worktreeDir));
+  assert.equal(unauth.captured, true, `降级采集仍应完成：${unauth.reason}`);
+  assert.equal(unauth.checkpoint.replayInput.complete, false);
+  assert.ok(unauth.checkpoint.replayInput.incompleteReasons.includes('git_metadata_not_authorized'),
+    `实际 ${unauth.checkpoint.replayInput.incompleteReasons.join(',')}`);
+  assert.ok(unauth.checkpoint.files['tracked.txt'], 'tracked 文件仍采集');
+  assert.ok(unauth.checkpoint.files['ignored.log'], '无分类依据时宁多采（ignored.log 也在清单）');
+  assert.equal(unauth.checkpoint.gitMetadata, 'degraded');
+
+  // 子情形 B：显式授权主仓库 .git → 分类正确。
+  const serviceB = makeService(tempDir, { captureRoot: path.join(tempDir, 'capture-root-b') });
+  serviceB.savePolicy('project-1', {
+    status: 'enabled',
+    authorizedDirs: [worktreeDir],
+    authorizedInputDirs: [path.join(mainRepo, '.git')],
+  });
+  serviceB.authorizeProject('project-1');
+  const authed = serviceB.captureTurnCheckpoint(captureArgs(worktreeDir));
+  assert.equal(authed.captured, true, `授权后采集应正常：${authed.reason}`);
+  assert.ok(authed.checkpoint.files['tracked.txt']);
+  assert.ok(authed.checkpoint.files['dirty.txt']);
+  assert.equal(authed.checkpoint.files['ignored.log'], undefined, '授权后 ignore 规则正确生效');
+  assert.equal(authed.checkpoint.gitMetadata, 'ok', `实际 ${authed.checkpoint.gitMetadata}`);
+  assert.equal(authed.checkpoint.replayInput.complete, true,
+    `实际 ${authed.checkpoint.replayInput.incompleteReasons.join(',')}`);
+});

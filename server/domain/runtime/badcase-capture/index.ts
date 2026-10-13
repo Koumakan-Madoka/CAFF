@@ -107,25 +107,25 @@ export function createBadcaseCaptureService(options: any = {}) {
         // 预估按“假设已授权该目录”统计；未授权时仍返回结果并标注，便于开启前展示。
         authorized: isAuthorizedDir(policy, resolved),
       };
-      const candidates = collector.listCandidatePaths(resolved, effectivePolicy);
+      const tree: any = collector.estimateTree(resolved, effectivePolicy.excludedPatterns);
+      if (!tree.ok) return { ok: false, reason: tree.reason || 'enumeration_failed', fileCount: 0, totalBytes: 0, durationMs: Date.now() - startedAt };
       let totalBytes = 0;
       let fileCount = 0;
-      for (const relativePath of candidates) {
-        if (matchesRelativePattern(relativePath, effectivePolicy.excludedPatterns)) {
-          continue;
+      for (const entry of tree.entries) {
+        if (entry.path === '.git' || entry.path.endsWith('/.git') || matchesRelativePattern(entry.path, effectivePolicy.excludedPatterns)) continue;
+        if (entry.type === 'file') {
+          fileCount += 1;
+          totalBytes += entry.size;
         }
-        try {
-          const stat = fs.lstatSync(path.join(resolved, relativePath));
-          if (stat.isFile()) {
-            fileCount += 1;
-            totalBytes += stat.size;
-          }
-        } catch {}
       }
+      const gaps = tree.unreadableDirs.filter((gap: any) => !matchesRelativePattern(gap.path, effectivePolicy.excludedPatterns));
       return {
         ok: true,
         reason: '',
         authorized: effectivePolicy.authorized,
+        complete: gaps.length === 0,
+        uncaptured: gaps,
+        includesIgnored: true,
         fileCount,
         totalBytes,
         durationMs: Date.now() - startedAt,

@@ -411,6 +411,12 @@ test('容量预估不读取内容、不落盘，并标注授权状态', () => {
 
   const service = makeService(tempDir);
   const estimate = service.estimateDirectory('project-1', projectDir);
+  if (process.platform !== 'linux') {
+    assert.equal(estimate.ok, false, 'metadata preview also fails closed without constrained enumeration');
+    assert.match(estimate.reason, /capture_unavailable:safe_read_capability_missing/);
+    assert.equal(service.store.listCheckpoints('project-1').length, 0);
+    return;
+  }
   assert.equal(estimate.ok, true);
   assert.equal(estimate.fileCount, 2);
   assert.equal(estimate.totalBytes, 7);

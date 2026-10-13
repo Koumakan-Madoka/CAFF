@@ -404,6 +404,19 @@ export function openConstrainedRoot(capability: Capability, rootDir: any) {
     return { ok: true, results };
   }
 
+  function walk(patterns: string[] = []) {
+    // Same prefix-only policy grammar as matchesRelativePattern (not Git globs).
+    const excluded = patterns.map((p) => String(p).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').replace(/\/(\*\*|\*)$/g, '')).filter(Boolean);
+    const spawned = spawnHelper(python, helperPath, fd, [{ op: 'walk', excluded }], HELPER_TIMEOUT_MS);
+    if (spawned.error || spawned.status !== 0) return { ok: false, reason: 'helper_walk_failed' };
+    const parsed = parseHelperOutput(spawned.stdout, []);
+    const result = parsed.ok && parsed.results.length === 1 ? parsed.results[0] : null;
+    if (!result || result.ok !== true || !Array.isArray(result.entries) || !Array.isArray(result.unreadableDirs)) {
+      return { ok: false, reason: result?.code || 'helper_walk_invalid' };
+    }
+    return result;
+  }
+
   return {
     ok: true,
     rootDir: resolved,
@@ -411,6 +424,7 @@ export function openConstrainedRoot(capability: Capability, rootDir: any) {
     identityEquals: (other: any) => identityEquals(identity, other),
     enumerationIntact,
     readBatch,
+    walk,
     close,
   };
 }
