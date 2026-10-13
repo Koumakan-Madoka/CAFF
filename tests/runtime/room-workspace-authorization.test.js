@@ -221,6 +221,9 @@ test('a retryable execution-active failure keeps the card pending and re-decidab
     now: 1_002,
   });
   assert.equal(result.record.status, 'accepted');
+  // A successful retry clears the transient blocker from the record so an
+  // accepted card never carries a stale errorCode.
+  assert.equal(result.record.errorCode, null);
   assert.equal(calls, 2);
   assert.equal(result.result.issuedBy, 'msg-issuer');
 });

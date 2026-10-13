@@ -179,6 +179,7 @@ export class RoomWorkspaceAuthorizationStore {
     try {
       const result = await execute(record.preview, record);
       record.status = 'accepted';
+      record.errorCode = null;
       record.decidedAt = new Date().toISOString();
       return { record: this.publicRecord(record), result };
     } catch (error: any) {

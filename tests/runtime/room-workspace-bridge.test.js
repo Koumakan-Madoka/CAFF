@@ -160,30 +160,50 @@ test('default authorization card keeps the automatic naming through the bridge',
   assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), preview.branch);
 });
 
-test('rename approval excludes the card-issuing message and executes during the issuing turn', async (t) => {
-  const harness = createHarness(t, 'approve-own-turn');
+test('rename approval requires a fully idle Room; a blocked card stays pending and retries once idle', async (t) => {
+  const harness = createHarness(t, 'approve-idle');
   await harness.invoke('room_workspace_preview', {});
   await harness.decide(harness.pendingCard());
   const bound = harness.boundConversation();
   assert.ok(bound.branch);
 
   // The caller's own streaming message must not block the read-only rename preview.
-  const renamePreview = await harness.invoke('room_workspace_rename_preview', { branchName: 'feature/approved-mid-turn' });
+  const renamePreview = await harness.invoke('room_workspace_rename_preview', { branchName: 'feature/approved-after-idle' });
   assert.equal(renamePreview.branch, bound.branch);
-  assert.equal(renamePreview.newBranch, 'feature/approved-mid-turn');
+  assert.equal(renamePreview.newBranch, 'feature/approved-after-idle');
   const card = harness.pendingCard();
   assert.ok(card, 'rename preview must issue a card even during an active turn');
   assert.equal(card.kind, 'rename');
-  // The card remembers which assistant message issued it.
+  // The card remembers which assistant message issued it (traceability only).
   assert.equal(card.sourceMessageId, harness.assistantMessage.id);
 
-  // ...and it must not block the user's approval either: the idle check at
-  // execution time excludes only the card-issuing message, so the approved
-  // rename executes even while the issuing turn is still streaming.
+  // The approval path never excludes the issuing message: after issuing the card
+  // the agent may still run tools on the workspace, so the Room must be fully
+  // idle before the rename executes. The transient block does NOT burn the card.
+  await assert.rejects(
+    harness.decide(card),
+    (error) => error && error.code === 'room_workspace_execution_active'
+  );
+  assert.equal(harness.boundConversation().branch, bound.branch);
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), bound.branch);
+  assert.equal(harness.store.getPendingWorkspaceOperation(harness.conversation.id), null);
+  const blocked = harness.bridge
+    .listRoomWorkspaceAuthorizations(harness.conversation.id)
+    .find((item) => item.id === card.id);
+  assert.equal(blocked.status, 'pending');
+  assert.equal(blocked.decidedAt, null);
+  assert.ok(harness.broadcastEvents.some((event) =>
+    event.eventName === 'room_workspace_authorization_updated'
+    && event.payload.authorization
+    && event.payload.authorization.id === card.id));
+
+  // Once the issuing turn is terminal, approving the SAME card succeeds.
+  harness.store.updateMessage(harness.assistantMessage.id, { status: 'completed' });
   const decision = await harness.decide(card);
   assert.equal(decision.record.status, 'accepted');
-  assert.equal(harness.boundConversation().branch, 'feature/approved-mid-turn');
-  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/approved-mid-turn');
+  assert.equal(decision.record.errorCode, null);
+  assert.equal(harness.boundConversation().branch, 'feature/approved-after-idle');
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/approved-after-idle');
   assert.equal(git(bound.worktreePath, ['rev-parse', 'HEAD']), bound.workspaceBaseSha);
   assert.equal(path.basename(harness.boundConversation().worktreePath), path.basename(bound.worktreePath));
 });
@@ -237,8 +257,10 @@ test('a peer execution blocks rename approval but the card stays pending and ret
     && event.payload.authorization
     && event.payload.authorization.id === card.id));
 
-  // Once the peer finishes, approving the SAME card succeeds.
+  // Once the peer finishes AND the issuing turn is terminal (the approval path
+  // checks every active message), approving the SAME card succeeds.
   harness.store.updateMessage(otherMessage.id, { status: 'completed' });
+  harness.store.updateMessage(harness.assistantMessage.id, { status: 'completed' });
   const decision = await harness.decide(card);
   assert.equal(decision.record.status, 'accepted');
   assert.equal(harness.boundConversation().branch, 'feature/peer-waits');

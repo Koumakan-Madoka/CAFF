@@ -118,6 +118,9 @@ test('a failed workspace decision resyncs the authorization cards', () => {
   assert.ok(start >= 0 && end > start);
   const body = APP_JS.slice(start, end);
   assert.match(body, /catch \(error\) \{[\s\S]*showToast[\s\S]*await loadWorkspaceAuthorizationCards\(conversationId\);/u);
+  // A transient execution-active block keeps the card pending: the toast must
+  // tell the user to wait for the running execution and retry the SAME card.
+  assert.match(body, /error && error\.code === 'room_workspace_execution_active'[\s\S]*重试同一张/u);
 });
 
 test('Room workspace header preserves the chat title CSS rule', () => {

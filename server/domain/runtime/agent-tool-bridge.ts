@@ -1475,14 +1475,13 @@ export function createAgentToolBridge(options: any = {}) {
         execute: async (authorizedPreview: any, record: any) => {
           const currentConversation = store.getConversationWithoutMessages(conversationId) || conversation;
           if (authorizedPreview && String(authorizedPreview.kind || '') === 'rename') {
-            // The idle check excludes only the assistant message that issued this
-            // card (the agent turn the user is approving), never the whole turn:
-            // any OTHER active execution in the Room — including another agent in
-            // the same turn — still blocks the rename.
+            // The approval path checks EVERY active message, including the card
+            // issuer: after issuing the card the agent may still run tools on the
+            // workspace, so only a fully idle Room may rename. A transient block
+            // returns the card to pending, so the user retries the same card once
+            // the running execution finishes.
             const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
-              ? store.hasActiveConversationTurn(conversationId, {
-                  excludeMessageId: String(record && record.sourceMessageId || '').trim() || undefined,
-                })
+              ? store.hasActiveConversationTurn(conversationId)
               : false;
             const result = renameAndPersistRoomWorkspace({
               store,

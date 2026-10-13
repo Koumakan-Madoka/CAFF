@@ -4387,7 +4387,13 @@ async function decideWorkspaceAuthorization(authorizationId, decision) {
       ? (isRename ? '分支已重命名' : '工作区已绑定')
       : (isRename ? '已拒绝分支重命名' : '已拒绝工作区绑定'));
   } catch (error) {
-    showToast(error && error.message ? error.message : '工作区授权失败');
+    if (error && error.code === 'room_workspace_execution_active') {
+      // Transient block: the card stays pending, so the user only needs to wait
+      // for the running execution to finish and then retry the SAME card.
+      showToast('房间仍有执行进行中；请等待执行结束后重试同一张授权卡');
+    } else {
+      showToast(error && error.message ? error.message : '工作区授权失败');
+    }
     // A failed decision may have changed the card state (failed/superseded or a
     // retryable pending); resync so the UI never lingers on a stale card.
     await loadWorkspaceAuthorizationCards(conversationId);
