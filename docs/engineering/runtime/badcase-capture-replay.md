@@ -27,6 +27,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 
 - 挂点在 `server/domain/conversation/turn/agent-executor.ts`：上下文快照创建（`buildContextSnapshot`）之后、`startRun`（`lib/pi-runtime.ts`）之前。此时 turnId、worktree、fresh/resume、prompt 全文、模型配置均已确定，agent 尚未触碰文件系统。
 - 粒度：**每个 agent turn 开始前一次**。不在每次工具调用前采集。
+- 启动失败仍保留关联：检查点成功后若 `startRun` 同步抛错，消息和 stage/task 进入失败状态、保留原始错误与 `badcaseCheckpointId`，并释放工具调用注册；没有运行句柄或错误自带 runId 时记录 `runId=null`，不伪造已启动事件。同步启动异常与运行中异常共用终态处理；启动前已领取的可复用 session 仍按既有规则尝试恢复。检查点存在不证明 agent 已经运行。
 - **不复用** `context-snapshot.ts`：它是 Inspector 展示投影（受保护分区仅存 presence+hash、疑似密钥被 redact、preview 裁剪）。回放采集是独立通道，与之并行。
 - 仅在 CapturePolicy=enabled 的项目、且目标目录命中授权清单时采集；项目关闭后不主动采集。
 

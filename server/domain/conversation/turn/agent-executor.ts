@@ -2365,125 +2365,145 @@ export function createAgentExecutor(options: any = {}) {
         );
       }
     }
-    try {
-      handle = startRun(provider, model, prompt, runOptions);
-    } catch (startError) {
-      if (sessionReuseClaim && typeof store.restoreAgentSessionReuse === 'function') {
-        // The run never reached the provider session, so the claimed session is
-        // still clean; restore its reusable snapshot before propagating.
-        try {
-          store.restoreAgentSessionReuse(sessionReuseClaim, nowIso());
-        } catch {}
-        sessionReuseClaim = null;
-      }
-      throw startError;
-    }
-    activeRunHandle = handle;
-    registerTurnHandle(turnState, handle);
-
-    const startedAt = nowIso();
-    let rawReply = '';
     let emptyFinalReplyReuseEvidence: any = null;
-    let lastLiveSessionToolStepId = '';
-    let lastLiveSessionToolSignature = '';
-    const liveSessionAnonymousToolTracker = {
-      nextIndex: 0,
-      activeStepId: '',
-      activeFingerprint: '',
-      activeToolName: '',
-      activeToolKind: '',
-    };
-    const startedMetadata = {
-      ...queuedMetadata,
-      sessionPath: handle.sessionPath || '',
-      streaming: true,
-      toolInvocationId: toolInvocation.invocationId,
-      badcaseCheckpointId,
-    };
+    try {
+      try {
+        handle = startRun(provider, model, prompt, runOptions);
+      } catch (startError) {
+        if (sessionReuseClaim && typeof store.restoreAgentSessionReuse === 'function') {
+          // The run never reached the provider session, so the claimed session is
+          // still clean; restore its reusable snapshot before propagating.
+          try {
+            store.restoreAgentSessionReuse(sessionReuseClaim, nowIso());
+          } catch {}
+          sessionReuseClaim = null;
+        }
+        throw startError;
+      }
+      activeRunHandle = handle;
+      registerTurnHandle(turnState, handle);
 
-    stage.runId = handle.runId || null;
-    stage.status = 'running';
-    stage.startedAt = startedAt;
-    stage.endedAt = null;
-    stage.heartbeatCount = 0;
-    stage.replyLength = 0;
-    stage.preview = '';
-    stage.finalContent = '';
-    stage.errorMessage = '';
-    stage.lastTextDeltaAt = null;
-    applyStageCurrentTool(stage, null);
-    turnState.updatedAt = startedAt;
-    syncCurrentTurnAgent(turnState);
+      const startedAt = nowIso();
+      let rawReply = '';
+      let lastLiveSessionToolStepId = '';
+      let lastLiveSessionToolSignature = '';
+      const liveSessionAnonymousToolTracker = {
+        nextIndex: 0,
+        activeStepId: '',
+        activeFingerprint: '',
+        activeToolName: '',
+        activeToolKind: '',
+      };
+      const startedMetadata = {
+        ...queuedMetadata,
+        sessionPath: handle.sessionPath || '',
+        streaming: true,
+        toolInvocationId: toolInvocation.invocationId,
+        badcaseCheckpointId,
+      };
 
-    const startedMessage = store.updateMessage(assistantMessage.id, {
-      status: 'streaming',
-      taskId: stageTaskId,
-      runId: handle.runId || null,
-      metadata: startedMetadata,
-      contextSnapshot,
-    });
+      stage.runId = handle.runId || null;
+      stage.status = 'running';
+      stage.startedAt = startedAt;
+      stage.endedAt = null;
+      stage.heartbeatCount = 0;
+      stage.replyLength = 0;
+      stage.preview = '';
+      stage.finalContent = '';
+      stage.errorMessage = '';
+      stage.lastTextDeltaAt = null;
+      applyStageCurrentTool(stage, null);
+      turnState.updatedAt = startedAt;
+      syncCurrentTurnAgent(turnState);
 
-    runStore.updateTask(stageTaskId, {
-      status: 'running',
-      parentRunId: queueItem.parentRunId || null,
-      runId: handle.runId,
-      sessionPath: handle.sessionPath,
-      startedAt,
-    });
-    runStore.appendTaskEvent(stageTaskId, 'agent_reply_started', {
-      agentId: agent.id,
-      agentName: agent.name,
-      runId: handle.runId,
-      sessionPath: handle.sessionPath,
-      hop,
-      routingMode,
-    });
-
-    broadcastEvent('conversation_message_updated', { conversationId, message: startedMessage });
-    emitTurnProgress(turnState);
-
-    handle.on('pi_event', (event: any) => {
-      const liveTool = extractLiveSessionToolFromPiEvent(event && event.piEvent ? event.piEvent : null, {
-        agentDir,
-        createdAt: nowIso(),
-        currentToolName: stage.currentToolName,
-        currentToolKind: stage.currentToolKind,
-        currentToolStepId: stage.currentToolStepId,
-        anonymousTracker: liveSessionAnonymousToolTracker,
+      const startedMessage = store.updateMessage(assistantMessage.id, {
+        status: 'streaming',
+        taskId: stageTaskId,
+        runId: handle.runId || null,
+        metadata: startedMetadata,
+        contextSnapshot,
       });
 
-      if (!liveTool || !liveTool.currentTool) {
-        return;
-      }
+      runStore.updateTask(stageTaskId, {
+        status: 'running',
+        parentRunId: queueItem.parentRunId || null,
+        runId: handle.runId,
+        sessionPath: handle.sessionPath,
+        startedAt,
+      });
+      runStore.appendTaskEvent(stageTaskId, 'agent_reply_started', {
+        agentId: agent.id,
+        agentName: agent.name,
+        runId: handle.runId,
+        sessionPath: handle.sessionPath,
+        hop,
+        routingMode,
+      });
 
-      const rawStep = liveTool.step || null;
-      const step = rawStep
-        ? createToolObservabilityEvent(observabilityTimelineState, rawStep) || rawStep
-        : null;
-      const stepId = step && step.stepId ? String(step.stepId).trim() : '';
-      const stepSignature = liveSessionToolStepSignature(step);
-      const changed = updateStageCurrentTool(stage, turnState, emitTurnProgress, liveTool.currentTool);
-      const detailChanged = Boolean(
-        step &&
-          stepId &&
-          stepSignature &&
-          stepId === lastLiveSessionToolStepId &&
-          stepSignature !== lastLiveSessionToolSignature
-      );
+      broadcastEvent('conversation_message_updated', { conversationId, message: startedMessage });
+      emitTurnProgress(turnState);
 
-      if (stepId && stepSignature) {
-        lastLiveSessionToolStepId = stepId;
-        lastLiveSessionToolSignature = stepSignature;
-      } else if (changed) {
-        lastLiveSessionToolStepId = '';
-        lastLiveSessionToolSignature = '';
-      }
+      handle.on('pi_event', (event: any) => {
+        const liveTool = extractLiveSessionToolFromPiEvent(event && event.piEvent ? event.piEvent : null, {
+          agentDir,
+          createdAt: nowIso(),
+          currentToolName: stage.currentToolName,
+          currentToolKind: stage.currentToolKind,
+          currentToolStepId: stage.currentToolStepId,
+          anonymousTracker: liveSessionAnonymousToolTracker,
+        });
 
-      if (!step) {
-        return;
-      }
+        if (!liveTool || !liveTool.currentTool) {
+          return;
+        }
 
-      if (changed) {
+        const rawStep = liveTool.step || null;
+        const step = rawStep
+          ? createToolObservabilityEvent(observabilityTimelineState, rawStep) || rawStep
+          : null;
+        const stepId = step && step.stepId ? String(step.stepId).trim() : '';
+        const stepSignature = liveSessionToolStepSignature(step);
+        const changed = updateStageCurrentTool(stage, turnState, emitTurnProgress, liveTool.currentTool);
+        const detailChanged = Boolean(
+          step &&
+            stepId &&
+            stepSignature &&
+            stepId === lastLiveSessionToolStepId &&
+            stepSignature !== lastLiveSessionToolSignature
+        );
+
+        if (stepId && stepSignature) {
+          lastLiveSessionToolStepId = stepId;
+          lastLiveSessionToolSignature = stepSignature;
+        } else if (changed) {
+          lastLiveSessionToolStepId = '';
+          lastLiveSessionToolSignature = '';
+        }
+
+        if (!step) {
+          return;
+        }
+
+        if (changed) {
+          broadcastEvent('conversation_tool_event', {
+            conversationId,
+            turnId,
+            taskId: stageTaskId,
+            agentId: agent.id,
+            agentName: agent.name,
+            assistantMessageId: assistantMessage.id,
+            messageId: assistantMessage.id,
+            phase: 'started',
+            step,
+            timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
+          });
+          return;
+        }
+
+        if (!detailChanged) {
+          return;
+        }
+
         broadcastEvent('conversation_tool_event', {
           conversationId,
           turnId,
@@ -2492,147 +2512,127 @@ export function createAgentExecutor(options: any = {}) {
           agentName: agent.name,
           assistantMessageId: assistantMessage.id,
           messageId: assistantMessage.id,
-          phase: 'started',
+          phase: 'updated',
           step,
           timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
         });
-        return;
-      }
-
-      if (!detailChanged) {
-        return;
-      }
-
-      broadcastEvent('conversation_tool_event', {
-        conversationId,
-        turnId,
-        taskId: stageTaskId,
-        agentId: agent.id,
-        agentName: agent.name,
-        assistantMessageId: assistantMessage.id,
-        messageId: assistantMessage.id,
-        phase: 'updated',
-        step,
-        timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
       });
-    });
 
-    handle.on('system_prompt', (event: any) => {
-      const systemPrompt = String(event && event.systemPrompt || '').trim();
+      handle.on('system_prompt', (event: any) => {
+        const systemPrompt = String(event && event.systemPrompt || '').trim();
 
-      if (!systemPrompt) {
-        return;
-      }
+        if (!systemPrompt) {
+          return;
+        }
 
-      const phase = String(event && event.phase || '').trim();
-      harnessSystemPrompt = systemPrompt;
-      harnessPromptSource = phase ? `pi-sdk/system-prompt:${phase}` : 'pi-sdk/system-prompt';
-      contextSnapshot = buildContextSnapshot();
-      contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
-    });
-
-    handle.on('assistant_message', (event: any) => {
-      const message = event && event.message && typeof event.message === 'object' ? event.message : null;
-      const modelEvent = message
-        ? createModelCallObservabilityEvent(observabilityTimelineState, {
-            messageKey: event.messageKey,
-            responseId: message.responseId,
-            stopReason: message.stopReason,
-            timestamp: message.timestamp,
-            tokenUsage: summarizeTokenUsage(message.usage),
-          })
-        : null;
-      if (!modelEvent) {
-        return;
-      }
-      broadcastEvent('conversation_model_event', {
-        conversationId,
-        turnId,
-        taskId: stageTaskId,
-        agentId: agent.id,
-        agentName: agent.name,
-        assistantMessageId: assistantMessage.id,
-        messageId: assistantMessage.id,
-        event: modelEvent,
-        timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
+        const phase = String(event && event.phase || '').trim();
+        harnessSystemPrompt = systemPrompt;
+        harnessPromptSource = phase ? `pi-sdk/system-prompt:${phase}` : 'pi-sdk/system-prompt';
+        contextSnapshot = buildContextSnapshot();
+        contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
       });
-    });
 
-    handle.on('assistant_text_delta', (event: any) => {
-      rawReply += event.delta || '';
-      updateStageCurrentTool(stage, turnState, emitTurnProgress, null);
-
-      if (!toolInvocation.publicToolUsed) {
-        return;
-      }
-
-      const previewText = toolInvocation.lastPublicContent || extractStreamingPublicReplyPreview(rawReply) || '';
-      const deltaTimestamp = nowIso();
-      stage.status = 'running';
-      stage.replyLength = previewText.length;
-      stage.preview = clipText(previewText, TURN_PREVIEW_LENGTH);
-      stage.lastTextDeltaAt = deltaTimestamp;
-      turnState.updatedAt = deltaTimestamp;
-      syncCurrentTurnAgent(turnState);
-      emitTurnProgress(turnState);
-    });
-
-    handle.on('assistant_retry_discarded', (event: any) => {
-      rawReply = String(event && event.reply || '');
-    });
-
-    handle.on('heartbeat', (event: any) => {
-      stage.heartbeatCount = event.count || 0;
-      turnState.updatedAt = nowIso();
-      runStore.appendTaskEvent(stageTaskId, 'agent_reply_heartbeat', {
-        count: event.count,
-        reason: sanitizeReason(event.payload && event.payload.reason),
+      handle.on('assistant_message', (event: any) => {
+        const message = event && event.message && typeof event.message === 'object' ? event.message : null;
+        const modelEvent = message
+          ? createModelCallObservabilityEvent(observabilityTimelineState, {
+              messageKey: event.messageKey,
+              responseId: message.responseId,
+              stopReason: message.stopReason,
+              timestamp: message.timestamp,
+              tokenUsage: summarizeTokenUsage(message.usage),
+            })
+          : null;
+        if (!modelEvent) {
+          return;
+        }
+        broadcastEvent('conversation_model_event', {
+          conversationId,
+          turnId,
+          taskId: stageTaskId,
+          agentId: agent.id,
+          agentName: agent.name,
+          assistantMessageId: assistantMessage.id,
+          messageId: assistantMessage.id,
+          event: modelEvent,
+          timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
+        });
       });
-      emitTurnProgress(turnState);
-    });
 
-    handle.on('run_recovering', (event: any) => {
-      stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
-      applyStageCurrentTool(stage, null);
-      turnState.updatedAt = nowIso();
-      syncCurrentTurnAgent(turnState);
-      runStore.appendTaskEvent(stageTaskId, 'agent_reply_recovering', {
-        reason: {
-          type: String(event.reason && event.reason.type || '').trim(),
-          message: sanitizeReason(event.reason && event.reason.message),
-        },
-        attempt: Number(event.attempt) || 1,
-        toolName: String(event.toolName || '').trim().slice(0, 80),
+      handle.on('assistant_text_delta', (event: any) => {
+        rawReply += event.delta || '';
+        updateStageCurrentTool(stage, turnState, emitTurnProgress, null);
+
+        if (!toolInvocation.publicToolUsed) {
+          return;
+        }
+
+        const previewText = toolInvocation.lastPublicContent || extractStreamingPublicReplyPreview(rawReply) || '';
+        const deltaTimestamp = nowIso();
+        stage.status = 'running';
+        stage.replyLength = previewText.length;
+        stage.preview = clipText(previewText, TURN_PREVIEW_LENGTH);
+        stage.lastTextDeltaAt = deltaTimestamp;
+        turnState.updatedAt = deltaTimestamp;
+        syncCurrentTurnAgent(turnState);
+        emitTurnProgress(turnState);
       });
-      emitTurnProgress(turnState);
-    });
 
-    handle.on('run_recovery_started', (event: any) => {
-      stage.errorMessage = '';
-      turnState.updatedAt = nowIso();
-      syncCurrentTurnAgent(turnState);
-      runStore.appendTaskEvent(stageTaskId, 'agent_reply_recovery_started', {
-        reason: {
-          type: String(event.reason && event.reason.type || '').trim(),
-          message: sanitizeReason(event.reason && event.reason.message),
-        },
-        attempt: Number(event.attempt) || 1,
-        toolName: String(event.toolName || '').trim().slice(0, 80),
+      handle.on('assistant_retry_discarded', (event: any) => {
+        rawReply = String(event && event.reply || '');
       });
-      emitTurnProgress(turnState);
-    });
 
-    handle.on('run_terminating', (event: any) => {
-      stage.status = 'terminating';
-      stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
-      applyStageCurrentTool(stage, null);
-      turnState.updatedAt = nowIso();
-      syncCurrentTurnAgent(turnState);
-      runStore.appendTaskEvent(stageTaskId, 'agent_reply_terminating', event.reason || null);
-      emitTurnProgress(turnState);
-    });
+      handle.on('heartbeat', (event: any) => {
+        stage.heartbeatCount = event.count || 0;
+        turnState.updatedAt = nowIso();
+        runStore.appendTaskEvent(stageTaskId, 'agent_reply_heartbeat', {
+          count: event.count,
+          reason: sanitizeReason(event.payload && event.payload.reason),
+        });
+        emitTurnProgress(turnState);
+      });
 
-    try {
+      handle.on('run_recovering', (event: any) => {
+        stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
+        applyStageCurrentTool(stage, null);
+        turnState.updatedAt = nowIso();
+        syncCurrentTurnAgent(turnState);
+        runStore.appendTaskEvent(stageTaskId, 'agent_reply_recovering', {
+          reason: {
+            type: String(event.reason && event.reason.type || '').trim(),
+            message: sanitizeReason(event.reason && event.reason.message),
+          },
+          attempt: Number(event.attempt) || 1,
+          toolName: String(event.toolName || '').trim().slice(0, 80),
+        });
+        emitTurnProgress(turnState);
+      });
+
+      handle.on('run_recovery_started', (event: any) => {
+        stage.errorMessage = '';
+        turnState.updatedAt = nowIso();
+        syncCurrentTurnAgent(turnState);
+        runStore.appendTaskEvent(stageTaskId, 'agent_reply_recovery_started', {
+          reason: {
+            type: String(event.reason && event.reason.type || '').trim(),
+            message: sanitizeReason(event.reason && event.reason.message),
+          },
+          attempt: Number(event.attempt) || 1,
+          toolName: String(event.toolName || '').trim().slice(0, 80),
+        });
+        emitTurnProgress(turnState);
+      });
+
+      handle.on('run_terminating', (event: any) => {
+        stage.status = 'terminating';
+        stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
+        applyStageCurrentTool(stage, null);
+        turnState.updatedAt = nowIso();
+        syncCurrentTurnAgent(turnState);
+        runStore.appendTaskEvent(stageTaskId, 'agent_reply_terminating', event.reason || null);
+        emitTurnProgress(turnState);
+      });
+
       const result = await handle.resultPromise;
       const resolvedAssistantErrors = Array.isArray(result.assistantErrors)
         ? result.assistantErrors.map((value: any) => String(value || '').trim()).filter(Boolean)
@@ -3025,6 +3025,8 @@ export function createAgentExecutor(options: any = {}) {
       const errorValue = error as any;
       const errorMessage = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error');
       const stopRequested = Boolean(turnState.stopRequested);
+      const failedRunId = (errorValue && errorValue.runId) || (handle && handle.runId) || null;
+      const failedSessionPath = (errorValue && errorValue.sessionPath) || (handle && handle.sessionPath) || '';
       const errorUsage = errorValue && errorValue.usage && typeof errorValue.usage === 'object' && !Array.isArray(errorValue.usage) ? errorValue.usage : null;
       const errorTokenUsage = summarizeTokenUsage(errorUsage);
       const errorModelUsage = summarizeModelUsageCalls(errorValue && errorValue.usageCalls);
@@ -3035,7 +3037,7 @@ export function createAgentExecutor(options: any = {}) {
         content: existingMessage && existingMessage.content !== 'Thinking...' ? existingMessage.content : '',
         status: 'failed',
         taskId: stageTaskId,
-        runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
+        runId: failedRunId,
         errorMessage,
         metadata: {
           badcaseCheckpointId,
@@ -3048,7 +3050,7 @@ export function createAgentExecutor(options: any = {}) {
           goalAutoContinue: strictGoalReuse,
           goalId: goal && goal.goalId || null,
           goalRevision: goal && goal.revision || null,
-          sessionPath: errorValue && errorValue.sessionPath ? errorValue.sessionPath : handle.sessionPath || '',
+          sessionPath: failedSessionPath,
           agentSandboxDir: agentSandbox.sandboxDir,
           agentPrivateDir: agentSandbox.privateDir,
           failure: true,
@@ -3079,7 +3081,7 @@ export function createAgentExecutor(options: any = {}) {
       });
 
       stage.status = 'failed';
-      stage.runId = errorValue && errorValue.runId ? errorValue.runId : handle.runId || null;
+      stage.runId = failedRunId;
       stage.replyLength = assistantMessageFailed && assistantMessageFailed.content ? assistantMessageFailed.content.length : 0;
       stage.preview = clipText(
         assistantMessageFailed && assistantMessageFailed.content ? assistantMessageFailed.content : errorMessage,
@@ -3113,14 +3115,14 @@ export function createAgentExecutor(options: any = {}) {
 
       runStore.updateTask(stageTaskId, {
         status: stopRequested ? 'cancelled' : 'failed',
-        runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
+        runId: failedRunId,
         errorMessage,
         endedAt: stage.endedAt,
       });
       runStore.appendTaskEvent(stageTaskId, 'agent_reply_failed', {
         agentId: agent.id,
         agentName: agent.name,
-        runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
+        runId: failedRunId,
         errorMessage,
         invocationFailureKind: invocationFailure.kind,
         invocationFailureCode: invocationFailure.code,

@@ -264,7 +264,7 @@ function createFakeAgentToolBridge() {
 }
 
 test('pre-turn capture handles refusal/exception/disabled policy and preserves a checkpoint on run failure', async (t) => {
-  for (const mode of ['refusal', 'exception', 'disabled', 'run-failure']) {
+  for (const mode of ['refusal', 'exception', 'disabled', 'run-failure', 'start-throw', 'start-throw-identified']) {
     await t.test(mode, async (t) => {
       const tempDir = withTempDir('caff-capture-hook-');
       const projectDir = path.join(tempDir, 'project');
@@ -281,6 +281,11 @@ test('pre-turn capture handles refusal/exception/disabled policy and preserves a
       let targetReads = 0;
       minimalPi.startRun = (_provider, _model, prompt, options) => {
         order.push('startRun'); runPrompt = prompt; runOptions = options;
+        if (mode.startsWith('start-throw')) {
+          const error = new Error('synthetic synchronous start failure');
+          if (mode === 'start-throw-identified') Object.assign(error, { runId: 'start-error-run', sessionPath: '/synthetic/session.jsonl' });
+          throw error;
+        }
         return mode === 'run-failure' ? createFailedRunHandle(new Error('synthetic run failure')) : createRunHandle('Normal reply.');
       };
       delete require.cache[executorPath];
@@ -300,14 +305,15 @@ test('pre-turn capture handles refusal/exception/disabled policy and preserves a
       const conversation = { id: 'capture-hook-room', projectScopeId: 'project-hook', worktreePath: projectDir,
         title: 'Capture hook', type: 'standard', agents: [agent], metadata: {} };
       const store = createFakeStore(conversation);
+      const releasedInvocations = [];
       const executor = createAgentExecutor({
         store, skillRegistry: { resolveSkills: () => [] }, modeStore: { get: () => null },
-        agentToolBridge: createFakeAgentToolBridge(), agentDir: tempDir,
+        agentToolBridge: { ...createFakeAgentToolBridge(), unregisterInvocation(id) { releasedInvocations.push(id); } }, agentDir: tempDir,
         sqlitePath: path.join(tempDir, 'chat.sqlite'), toolBaseUrl: 'http://127.0.0.1:3100',
         agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'), agentToolRelativePath: './lib/agent-chat-tools.js',
         badcaseCapture: { captureTurnCheckpoint(args) {
           order.push('capture'); input = args;
-          if (mode === 'run-failure') return { captured: true, checkpointId: 'checkpoint-before-failure' };
+          if (mode === 'run-failure' || mode.startsWith('start-throw')) return { captured: true, checkpointId: 'checkpoint-before-failure' };
           if (mode === 'exception') throw new Error('synthetic capture failure');
           if (mode === 'refusal') return { captured: false, checkpointId: 'must-not-link', reason: 'synthetic_refusal' };
           captureResult = service.captureTurnCheckpoint(args);
@@ -316,29 +322,50 @@ test('pre-turn capture handles refusal/exception/disabled policy and preserves a
       });
       const turnState = createTurnState(conversation, 'capture-hook-turn');
       const completedReplies = [];
+      const failedReplies = [];
+      const taskUpdates = [];
+      const events = [];
+      const runStore = { ...createFakeRunStore(events), updateTask(taskId, patch) { taskUpdates.push({ taskId, ...patch }); } };
       const message = { id: 'user-hook', role: 'user', content: 'Hello.' };
       await executor.executeConversationAgent({
-        runStore: createFakeRunStore(), conversationId: conversation.id, turnId: turnState.turnId,
+        runStore, conversationId: conversation.id, turnId: turnState.turnId,
         rootTaskId: 'capture-hook-task', conversation, promptMessages: [message], promptUserMessage: message,
-        queueItem: { triggerType: 'user' }, agent, turnState, completedReplies, failedReplies: [],
+        queueItem: { triggerType: 'user' }, agent, turnState, completedReplies, failedReplies,
         routingMode: 'mention_queue', hop: 1, remainingSlots: 1, enqueueAgent() {},
         allowHandoffs: true, finalStopsTurn: true, projectDir,
       });
       assert.deepEqual(order, ['capture', 'startRun']);
+      assert.deepEqual(releasedInvocations, ['invocation-hook-await']);
+      assert.equal(turnState.runHandles?.size || 0, 0);
       assert.equal(input.prompt, runPrompt);
       assert.deepEqual(input.images, runOptions.images);
       assert.equal(input.deliveryMode, 'fresh');
       assert.equal(runOptions.resume, false);
       assert.equal(input.sessionPath, '');
       assert.equal(input.targetDir, projectDir);
-      assert.equal(completedReplies.length, mode === 'run-failure' ? 0 : 1);
+      const runFailed = mode === 'run-failure' || mode.startsWith('start-throw');
+      assert.equal(completedReplies.length, runFailed ? 0 : 1);
+      assert.equal(failedReplies.length, runFailed ? 1 : 0);
+      assert.equal(turnState.failedCount, runFailed ? 1 : 0);
       assert.equal(targetReads, 0);
       if (mode === 'disabled') assert.equal(captureResult.reason, 'policy_not_enabled');
-      if (mode === 'run-failure') {
+      if (runFailed) {
         const failed = store.messageWrites.updates.find(({ patch }) => patch.status === 'failed');
         assert.ok(failed);
         assert.equal(failed.patch.metadata.badcaseCheckpointId, 'checkpoint-before-failure');
-        assert.equal(failed.patch.runId, 'run-structured-failure');
+        const expectedRunId = mode === 'run-failure' ? 'run-structured-failure' : mode === 'start-throw-identified' ? 'start-error-run' : null;
+        assert.equal(failed.patch.runId, expectedRunId);
+        if (mode.startsWith('start-throw')) {
+          assert.equal(events.some(event => event.eventName === 'agent_reply_started'), false);
+          assert.equal(failed.patch.errorMessage, 'synthetic synchronous start failure');
+          assert.equal(failed.patch.metadata.sessionPath, mode === 'start-throw-identified' ? '/synthetic/session.jsonl' : '');
+          const failedTask = taskUpdates.find(task => task.status === 'failed');
+          assert.ok(failedTask);
+          assert.equal(failedTask.runId, expectedRunId);
+          const failedEvent = events.find(event => event.eventName === 'agent_reply_failed');
+          assert.ok(failedEvent);
+          assert.equal(failedEvent.payload.runId, expectedRunId);
+        }
       } else {
         assert.equal(store.messageWrites.updates.some(({ patch }) => patch.metadata?.badcaseCheckpointId), false);
       }
