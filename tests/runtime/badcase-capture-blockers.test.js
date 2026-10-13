@@ -34,10 +34,22 @@ function makeService(tempDir, serviceOptions = {}) {
   });
 }
 
+// 普通保存 + 显式授权（钉住根身份）。savePolicy 不再钉住新对象，
+// 授权是独立动作（GPT 复审 #1 第六轮）。
+function authorize(service, projectId, policy) {
+  service.savePolicy(projectId, policy);
+  // 旧构建无 authorizeProject（savePolicy 即授权）；新构建必须显式授权。
+  if (typeof service.authorizeProject === 'function') {
+    service.authorizeProject(projectId);
+  }
+}
+
 function enabledPolicy(projectDir, overrides = {}) {
   return {
     status: 'enabled',
     authorizedDirs: [projectDir],
+    // 树外回放输入（session 夹具）的独立授权边界：默认授权整个临时目录。
+    authorizedInputDirs: [path.dirname(projectDir)],
     ...overrides,
   };
 }
@@ -47,7 +59,7 @@ function validConfigSnapshot(overrides = {}) {
   return {
     agentPromptVersion: 'test-v1',
     toolBridgeEnabled: true,
-    piVersion: '0.0.0-test',
+    piVersion: '0.85.1',
     deliveryMode: 'fresh',
     agentName: 'test-agent',
     ...overrides,
@@ -55,6 +67,8 @@ function validConfigSnapshot(overrides = {}) {
 }
 
 function captureArgs(projectDir, overrides = {}) {
+  // configSnapshot.deliveryMode 必须与实际采集模式一致（harness 跨字段校验）。
+  const actualMode = overrides.deliveryMode === 'resume' ? 'resume' : 'fresh';
   return {
     projectId: 'project-1',
     targetDir: projectDir,
@@ -68,7 +82,7 @@ function captureArgs(projectDir, overrides = {}) {
     runConfig: { provider: 'test-provider', model: 'test-model', promptVersion: 'test-v1' },
     harness: {
       serverVersion: 'test-server',
-      configSnapshot: validConfigSnapshot(),
+      configSnapshot: validConfigSnapshot({ deliveryMode: actualMode }),
       skillSnapshots: [],
     },
     ...overrides,
@@ -99,7 +113,7 @@ test('R1a: prompt 命中未列入受控替换的秘密哨兵时拒绝归档 prom
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir, {
     prompt: `please use ${SENTINEL} to call the API`,
   }));
@@ -121,7 +135,7 @@ test('R1b: session 命中秘密哨兵时拒绝归档 session，禁止带秘密�
     `{"type":"session","version":3,"id":"s1"}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":[{"type":"text","text":"use ${SENTINEL} here"}]}}\n`);
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir, {
     deliveryMode: 'resume',
     sessionPath,
@@ -148,7 +162,7 @@ test('R1c: 扫描后、写 CAS 前注入秘密哨兵（TOCTOU），秘密不得�
       }
     },
   });
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
   assert.equal(result.checkpoint.files['clean.txt'].secretExcluded, true, '写时重扫必须检出哨兵并排除');
@@ -169,7 +183,7 @@ test('R1d: 二进制与超过 16 MiB 的文件不跳过秘密扫描', { skip: ca
   fs.writeFileSync(path.join(projectDir, 'big.log'), bigContent);
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
   assert.equal(result.checkpoint.files['blob.bin'].secretExcluded, true, '二进制文件须按高置信哨兵集扫描');
@@ -199,7 +213,7 @@ test('R2: junction/目录链接不能绕过授权目录边界', { skip: capSkip 
   gitAddAll(projectDir);
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   // 1) 从授权根采集：link-out 必须被识别为越界，外部内容不得进入清单或 CAS。
   //    两种形态都合法：链接本身作为 escapes 条目（lstat 识别），或 git 展开链接目录后
@@ -231,7 +245,7 @@ test('R3: 同长度改写并恢复 mtime 不得复用旧内容充当严格对照
   fs.writeFileSync(filePath, 'aaa');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const first = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(first.captured, true);
   assert.equal(first.checkpoint.consistency.evidence, 'content-verified');
@@ -280,7 +294,7 @@ test('R4a: 非法 JSONL 或空 session 标记不可完整回放，不归档未�
   fs.writeFileSync(emptySession, '\n  \n');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const invalid = service.captureTurnCheckpoint(captureArgs(projectDir, { deliveryMode: 'resume', sessionPath: invalidSession }));
   assert.equal(invalid.checkpoint.replayInput.complete, false);
@@ -301,7 +315,7 @@ test('R4b: 缺模型/harness 配置时标记不可完整回放', { skip: capSkip
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir, { runConfig: { provider: 'test-provider' } }));
   assert.equal(result.checkpoint.replayInput.complete, false);
   assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('model_config_missing'));
@@ -318,7 +332,7 @@ test('R5a: 配额核算包含 session/prompt/清单：小配额 + 大 session �
     `{"type":"session","version":3,"id":"s1"}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":[{"type":"text","text":"${'x'.repeat(1000)}"}]}}\n`);
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir, { stagingQuotaBytes: 100 }));
+  authorize(service, 'project-1', enabledPolicy(projectDir, { stagingQuotaBytes: 100 }));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir, { deliveryMode: 'resume', sessionPath }));
   assert.equal(result.captured, false, 'session 字节必须计入配额，不得超额成功');
   assert.equal(result.reason, 'quota_exceeded');
@@ -334,7 +348,7 @@ test('R5b: 占用统计计入清单等元数据，与检查点自报新增字节
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const before = service.computeUsage('project-1');
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
@@ -353,7 +367,7 @@ test('R6: 秘密豁免机制已移除——policy 中的 secretAllowlistPatterns
   fs.writeFileSync(path.join(projectDir, 'fixtures', 'fake-key.txt'), `fake ${SENTINEL} fixture`);
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir, { secretAllowlistPatterns: ['fixtures/**'] }));
+  authorize(service, 'project-1', enabledPolicy(projectDir, { secretAllowlistPatterns: ['fixtures/**'] }));
   const policy = service.loadPolicy('project-1');
   assert.ok(!policy.secretAllowlistPatterns || policy.secretAllowlistPatterns.length === 0,
     '豁免配置不得生效');
@@ -393,7 +407,7 @@ test('R7: 采集窗口内授权根路径被替换——fd 钉住原对象，外�
       fs.symlinkSync(outsideDir, dir, 'dir');
     },
   });
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   try {
     assert.equal(result.captured, true, `fd 钉住根对象，采集应以授权内容完成：${result.reason}`);
@@ -435,7 +449,7 @@ test('R8: 双扫无差异不得兑换严格资格——写入者全程搅动，�
   `, path.join(projectDir, 'a.txt'), path.join(projectDir, 'b.txt'), '400'], { stdio: 'ignore' });
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   return new Promise((resolve, reject) => {
     writer.on('exit', () => {
@@ -460,7 +474,7 @@ test('R9: session 结构校验——非对象行/缺头/断链/未识别内容�
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const writeSession = (name, text) => {
     const p = path.join(tempDir, name);
@@ -518,7 +532,7 @@ test('R10: PEM 私钥头在行首/换行后/二进制前缀中必须命中哨兵
     Buffer.concat([Buffer.from([0x00, 0x01, 0x02]), Buffer.from('-----BEGIN EC PRIVATE KEY-----'), Buffer.alloc(8, 0)]));
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
   for (const name of ['head.pem', 'mid.pem', 'bin.pem']) {
@@ -543,7 +557,7 @@ test('R11: 扫描后文件膨胀超限必须在落盘前阻断，CAS 不得先�
       }
     },
   });
-  service.savePolicy('project-1', enabledPolicy(projectDir, { stagingQuotaBytes: 10000 }));
+  authorize(service, 'project-1', enabledPolicy(projectDir, { stagingQuotaBytes: 10000 }));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, false);
   assert.equal(result.reason, 'quota_exceeded');
@@ -559,7 +573,7 @@ test('R12: harness/skill 配置未验证必须降级，不得宣称完整', { sk
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   // 1) 缺 harness → harness_config_unverified
   let result = service.captureTurnCheckpoint(captureArgs(projectDir, { harness: undefined }));
@@ -659,7 +673,7 @@ test('R13a: 首扫后替换授权根（写盘阶段竞态）——受限读取�
       }
     },
   });
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   try {
     assert.equal(result.captured, true, `受限读取不受路径替换影响：${result.reason}`);
@@ -690,7 +704,7 @@ test('R13b: 授权保存后、turn 开始前替换授权根 → 拒绝采集', {
   fs.writeFileSync(path.join(projectDir, 'real.txt'), 'real');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   // 对照：替换前采集成功，证明 pin 与根身份最初是满足的。
   const before = service.captureTurnCheckpoint(captureArgs(projectDir));
@@ -717,7 +731,7 @@ test('R14: session 未知/损坏维度一律降级——null message、未知条
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const HEADER = '{"type":"session","version":3,"id":"s1"}';
   const MSG = (id, parent, text) =>
@@ -773,7 +787,7 @@ test('R15: skill 空内容不得绕过校验——声明集合与归档集合必
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const runConfig = { provider: 'p', model: 'm', promptVersion: 'v1', skillIds: ['demo-skill'] };
   const configSnapshot = validConfigSnapshot({ agentPromptVersion: 'v1' });
@@ -837,7 +851,7 @@ test('R16a: ABA 竞态（首扫后换根、二扫前换回）——fd 钉住对�
       }
     },
   });
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   try {
     assert.equal(result.captured, true, `ABA 与受限读取结论无关：${result.reason}`);
@@ -881,7 +895,7 @@ test('R16b: 换根横跨整个写盘阶段、attempt 末换回——受限读取
       }
     },
   });
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   try {
     assert.equal(result.captured, true, `受限读取不受持续换根影响：${result.reason}`);
@@ -904,7 +918,7 @@ test('R17: session 版本未钉死——缺版本/不支持版本一律不完整
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const MSG = '{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}';
   const cases = [
@@ -936,7 +950,7 @@ test('R18: message role 白名单与内容块逐字段校验——未知 role/�
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const HEADER = '{"type":"session","version":3,"id":"s1"}';
   const cases = [
@@ -995,7 +1009,7 @@ test('R19: compaction firstKeptEntryId 自引用/前向引用一律拒绝', { sk
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const HEADER = '{"type":"session","version":3,"id":"s1"}';
   const MSG = (id, parent, text) =>
@@ -1032,7 +1046,7 @@ test('R20: branch_summary 缺 summary 或 fromId 悬空一律不完整；合法�
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const HEADER = '{"type":"session","version":3,"id":"s1"}';
   const MSG = (id, parent, text) =>
@@ -1083,7 +1097,7 @@ test('R21: configSnapshot 空对象或缺必填键一律 harness_tool_config_unv
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const cases = [
     ['empty object', {}],

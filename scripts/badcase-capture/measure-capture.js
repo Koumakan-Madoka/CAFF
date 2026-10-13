@@ -37,8 +37,12 @@ function main() {
   service.savePolicy('measure', {
     status: 'enabled',
     authorizedDirs: [targetDir],
+    // 树外回放输入（--session）的独立授权边界
+    authorizedInputDirs: args.session ? [path.dirname(path.resolve(args.session))] : [],
     // 测量真实仓库时把构建产物/依赖也排除，与默认策略一致
   });
+  // 显式授权动作：钉住根身份（普通 savePolicy 不钉新对象）
+  service.authorizeProject('measure');
 
   const report = {
     conditions: {
@@ -59,7 +63,7 @@ function main() {
     configSnapshot: {
       agentPromptVersion: 'measure',
       toolBridgeEnabled: true,
-      piVersion: 'measure-pi',
+      piVersion: '0.85.1',
       deliveryMode: mode,
       agentName: 'measure-agent',
     },

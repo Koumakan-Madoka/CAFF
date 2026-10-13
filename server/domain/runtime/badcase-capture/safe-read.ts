@@ -289,7 +289,32 @@ function identityEquals(left: any, right: any) {
     && Number(left.btimeNsec) === Number(right.btimeNsec);
 }
 
-// 查询任意目录的 statx 身份（授权动作钉 pin 用）。打开目录 fd → statx → 关闭。
+// 在已持有的目录 fd 上查询 statx 身份（不重新按路径打开）。
+// 身份查询与内容读取必须绑定同一个已打开对象（GPT 复审 #1 第六轮）：
+// 打开一次、按路径再开一次会给“两次打开之间换根”留下确定性窗口。
+function statxRootIdentityOnFd(capability: Capability, fd: any): { ok: boolean; identity?: RootIdentity; reason?: string } {
+  const result = spawnHelper(String(capability.python), String(capability.helperPath), fd, [{ op: 'statx_root' }], 30000);
+  if (result.status !== 0) {
+    return { ok: false, reason: 'statx_failed' };
+  }
+  const parsed = parseHelperOutput(result.stdout, []);
+  const statx = parsed.ok ? parsed.results[0] : null;
+  if (!statx || statx.ok !== true || statx.btimeSupported !== true) {
+    return { ok: false, reason: 'statx_failed' };
+  }
+  return {
+    ok: true,
+    identity: {
+      devMajor: statx.devMajor,
+      devMinor: statx.devMinor,
+      ino: statx.ino,
+      btimeSec: statx.btimeSec,
+      btimeNsec: statx.btimeNsec,
+    },
+  };
+}
+
+// 查询任意目录的 statx 身份（授权动作钉 pin 用）。打开目录 fd → 同一 fd 上 statx → 关闭。
 export function statxDirectoryIdentity(capability: Capability, dir: any): { ok: boolean; identity?: RootIdentity; reason?: string } {
   if (!capability.ok) {
     return { ok: false, reason: capability.reason || 'capability_unavailable' };
@@ -301,25 +326,7 @@ export function statxDirectoryIdentity(capability: Capability, dir: any): { ok: 
     return { ok: false, reason: 'open_failed' };
   }
   try {
-    const result = spawnHelper(String(capability.python), String(capability.helperPath), fd, [{ op: 'statx_root' }], 30000);
-    if (result.status !== 0) {
-      return { ok: false, reason: 'statx_failed' };
-    }
-    const parsed = parseHelperOutput(result.stdout, []);
-    const statx = parsed.ok ? parsed.results[0] : null;
-    if (!statx || statx.ok !== true || statx.btimeSupported !== true) {
-      return { ok: false, reason: 'statx_failed' };
-    }
-    return {
-      ok: true,
-      identity: {
-        devMajor: statx.devMajor,
-        devMinor: statx.devMinor,
-        ino: statx.ino,
-        btimeSec: statx.btimeSec,
-        btimeNsec: statx.btimeNsec,
-      },
-    };
+    return statxRootIdentityOnFd(capability, fd);
   } finally {
     try { fs.closeSync(fd); } catch {}
   }
@@ -338,7 +345,9 @@ export function openConstrainedRoot(capability: Capability, rootDir: any) {
   } catch {
     return { ok: false, reason: 'root_open_failed' };
   }
-  const identityResult = statxDirectoryIdentity(capability, resolved);
+  // statx 必须在已持有的同一个 fd 上完成：禁止按路径二次打开（GPT 复审 #1 第六轮
+  // 探针：第一次 open 持有外部根、第二次 open 取得授权根 → 身份比对被骗过）。
+  const identityResult = statxRootIdentityOnFd(capability, fd);
   if (!identityResult.ok) {
     try { fs.closeSync(fd); } catch {}
     return { ok: false, reason: identityResult.reason || 'statx_failed' };

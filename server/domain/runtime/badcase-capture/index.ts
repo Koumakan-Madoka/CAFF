@@ -5,7 +5,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-import { normalizeCapturePolicy, isAuthorizedDir, matchesRelativePattern, pinAuthorizedDirs } from './capture-policy';
+import { normalizeCapturePolicy, isAuthorizedDir, matchesRelativePattern, pinAuthorizedDirs, pinKey } from './capture-policy';
 import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
 import { restoreCheckpoint } from './restore';
@@ -18,6 +18,21 @@ export function resolveCaptureRoot(options: any = {}) {
   }
   const agentDir = String(options.agentDir || '').trim();
   return path.resolve(agentDir ? path.join(agentDir, 'badcase-capture') : path.join(process.cwd(), '.pi', 'badcase-capture'));
+}
+
+// 普通配置保存只保留仍列出目录的既有 pin，绝不创建新 pin（GPT 复审 #1 第六轮：
+// 普通设置保存不得意外变成扩大授权的动作）。
+function preserveExistingPins(existingPins: any, dirs: any) {
+  const preserved: Record<string, any> = {};
+  const source = existingPins && typeof existingPins === 'object' ? existingPins : {};
+  const list = Array.isArray(dirs) ? dirs : [];
+  for (const dir of list) {
+    const key = pinKey(dir);
+    if (key && (source as any)[key]) {
+      preserved[key] = (source as any)[key];
+    }
+  }
+  return preserved;
 }
 
 export function createBadcaseCaptureService(options: any = {}) {
@@ -39,11 +54,23 @@ export function createBadcaseCaptureService(options: any = {}) {
       return store.loadPolicy(projectId);
     },
 
-    // 保存策略即授权动作：此刻固定授权根身份（realpath + Linux statx 目录对象身份）。
-    // 采集时根被替换（realpath 变化或 dev/ino/btime 不符）即拒绝；能力不可用时
-    // identity 缺失，采集阶段按 authorized_root_identity_missing 失败关闭。
+    // 普通配置保存：不钉住任何新对象。保留仍在清单中的目录的既有 pin；
+    // 新增/变更的目录保持未钉住状态，采集按 authorized_root_unpinned 失败关闭，
+    // 直到用户通过 authorizeProject 显式授权（GPT 复审 #1 第六轮）。
     savePolicy(projectId: any, policy: any) {
       const merged = { ...(policy && typeof policy === 'object' ? policy : {}), projectId };
+      const existing = store.loadPolicy(projectId);
+      merged.authorizedDirPins = preserveExistingPins(existing.authorizedDirPins, merged.authorizedDirs);
+      merged.authorizedInputPins = preserveExistingPins(existing.authorizedInputPins, merged.authorizedInputDirs);
+      return store.savePolicy(merged);
+    },
+
+    // 显式授权动作（唯一允许钉住根身份的入口）：对当前策略中的 authorizedDirs 与
+    // authorizedInputDirs 固定 realpath + Linux statx 目录对象身份。采集时根被替换
+    // （realpath 变化或 dev/ino/btime 不符）即拒绝；能力不可用时 identity 缺失，
+    // 采集阶段按 authorized_root_identity_missing 失败关闭。
+    authorizeProject(projectId: any) {
+      const policy = store.loadPolicy(projectId);
       const capability = detectCaptureCapability({ captureRoot });
       const statxFn = capability.ok
         ? (dir: any) => {
@@ -51,7 +78,7 @@ export function createBadcaseCaptureService(options: any = {}) {
           return result.ok ? result.identity : null;
         }
         : null;
-      return store.savePolicy(pinAuthorizedDirs(merged, { statxFn }));
+      return store.savePolicy(pinAuthorizedDirs({ ...policy, projectId }, { statxFn }));
     },
 
     captureTurnCheckpoint(input: any) {

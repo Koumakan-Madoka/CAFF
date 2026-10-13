@@ -89,18 +89,18 @@ function normalizeDirPins(value: any) {
   return pins;
 }
 
-// 授权动作（显式 savePolicy/authorize）：固定授权根身份。
+// 授权动作（仅显式 authorizeProject；普通 savePolicy 不得调用）：固定授权根身份。
 // - realpath：边界判定的字符串基准（授权后根路径被替换 → authorized_root_replaced）；
 // - identity：Linux 上由 statxFn（statx on dir fd）取得 (dev, ino, btime)，跨重启钉住
 //   目录对象本身；采集时打开根 fd 后先比对，不符即拒绝。statxFn 不可得时 identity 缺失，
 //   采集阶段的能力/身份校验会失败关闭（authorized_root_identity_missing）。
 // 解析失败（目录不存在等）记为空——normalize 丢弃空 pin，采集按 authorized_root_unpinned 拒绝。
-export function pinAuthorizedDirs(policy: any, options: any = {}) {
-  const source = policy && typeof policy === 'object' ? policy : {};
-  const statxFn = typeof options.statxFn === 'function' ? options.statxFn : null;
+// authorizedDirs → authorizedDirPins；authorizedInputDirs（session 等树外回放输入的
+// 独立授权边界）→ authorizedInputPins。
+function pinDirList(dirs: any, statxFn: any) {
   const pins: Record<string, any> = {};
-  const dirs = Array.isArray(source.authorizedDirs) ? source.authorizedDirs : [];
-  for (const dir of dirs) {
+  const list = Array.isArray(dirs) ? dirs : [];
+  for (const dir of list) {
     const raw = String(dir || '').trim();
     if (!raw) {
       continue;
@@ -119,7 +119,17 @@ export function pinAuthorizedDirs(policy: any, options: any = {}) {
       pins[pinKey(raw)] = { realpath: '' };
     }
   }
-  return { ...source, authorizedDirPins: pins };
+  return pins;
+}
+
+export function pinAuthorizedDirs(policy: any, options: any = {}) {
+  const source = policy && typeof policy === 'object' ? policy : {};
+  const statxFn = typeof options.statxFn === 'function' ? options.statxFn : null;
+  return {
+    ...source,
+    authorizedDirPins: pinDirList(source.authorizedDirs, statxFn),
+    authorizedInputPins: pinDirList(source.authorizedInputDirs, statxFn),
+  };
 }
 
 export function defaultCapturePolicy(projectId: any) {
@@ -127,10 +137,15 @@ export function defaultCapturePolicy(projectId: any) {
     projectId: String(projectId || '').trim(),
     status: 'disabled',
     authorizedDirs: [] as string[],
-    // 授权根身份固定（GPT 复审 #1）：保存策略时把每个授权目录解析为真实路径并固定。
+    // 授权根身份固定（GPT 复审 #1）：仅显式授权动作把每个授权目录解析为真实路径并固定。
     // 采集时若当前 realpath 与固定值不符（根被替换成 junction/symlink），拒绝采集，
-    // 不得跟着新目标继续。map key 为 pinKey(dir)。
+    // 不得跟着新目标继续。map key 为 pinKey(dir)。普通 savePolicy 只保留原 pin，
+    // 绝不重新钉住新对象（GPT 复审 #1 第六轮）。
     authorizedDirPins: {} as Record<string, string>,
+    // 树外回放输入（session 文件等）的独立授权边界：只有位于这些已固定目录内的
+    // 输入才允许被读取归档；不因“属于回放材料”自动获授权（GPT 复审 #1 第六轮）。
+    authorizedInputDirs: [] as string[],
+    authorizedInputPins: {} as Record<string, string>,
     includedIgnoredPatterns: [] as string[],
     // 注意：本阶段不提供秘密豁免机制（secretAllowlistPatterns 已移除）。命中哨兵一律排除；
     // 已知假阳性路径只能用 excludedPatterns 整体排除，或经评审修订哨兵模式集。
@@ -153,6 +168,8 @@ export function normalizeCapturePolicy(raw: any, projectId: any) {
     status,
     authorizedDirs: normalizeDirList(source.authorizedDirs),
     authorizedDirPins: normalizeDirPins(source.authorizedDirPins),
+    authorizedInputDirs: normalizeDirList(source.authorizedInputDirs),
+    authorizedInputPins: normalizeDirPins(source.authorizedInputPins),
     includedIgnoredPatterns: normalizePatternList(source.includedIgnoredPatterns, []),
     // secretAllowlistPatterns 已移除：即使调用方传入也不保留、不生效（GPT 复审 #6）。
     excludedPatterns: normalizePatternList(source.excludedPatterns, DEFAULT_EXCLUDED_PATTERNS),

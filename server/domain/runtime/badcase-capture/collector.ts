@@ -28,10 +28,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-import { authorizeTargetDir, matchesRelativePattern, pathsEqual } from './capture-policy';
+import { authorizeTargetDir, matchesRelativePattern, pathsEqual, isSameOrUnderPathString } from './capture-policy';
 import { containsSecretSentinel, replaceControlledVariables } from './secrets';
 import { detectCaptureCapability, openConstrainedRoot, SAFE_READ_LIMITS } from './safe-read';
-import { validateSessionV2 } from './session-validator';
+import { validateSessionV2, PI_VERSION_PIN } from './session-validator';
 
 function sha256Buffer(content: any) {
   return crypto.createHash('sha256').update(content).digest('hex');
@@ -49,7 +49,7 @@ const KNOWN_LIMITATIONS = [
   'no_atomic_snapshot', // 采集非原子快照，双扫只是“未检测到变化”的检测记录
   'no_independent_consistency_evidence', // 无独立源现场一致性依据，严格对照资格恒 false
   'linux_only_capture_v1', // 受限读取原语仅 Linux 实现；win32/darwin 失败关闭
-  'enumeration_path_bound', // 枚举按路径名进行（读取始终受限于已授权对象）；枚举-读取窗口内换树最坏导致清单与对象树短暂不一致 → 重试/降级，不构成越权
+  'enumeration_metadata_only', // 枚举按路径名进行且 Git 以隔离配置执行（禁止仓库指定程序）；内容读取始终受限于已授权对象，枚举-读取窗口内换树最坏导致清单不一致 → 重试/降级，不构成越权
   'inode_reuse_residual', // 跨重启根身份以 dev+ino+btime 三元组核对，收敛但非数学消除 inode 复用
   'helper_trusted_compute_base', // helper（python3 + 内嵌脚本，SHA-256 固定）与采集存储的不可写性是部署前提，记入 TCB
   'harness_config_caller_asserted', // harness/tool 配置快照由调用方声明，采集方不独立验证其来源
@@ -57,10 +57,39 @@ const KNOWN_LIMITATIONS = [
   'external_service_state_not_pinned', // 模型端点与外部服务状态不可固定
 ];
 
+// Git 枚举的隔离执行（GPT 复审 #1 第六轮）：仓库的 .git/config 不是可信输入。
+// - core.fsmonitor 等仓库指定程序必须被命令行 -c 覆盖（命令行配置优先级最高，
+//   include 展开的值同样被其覆盖），禁止采集过程执行仓库指定的任何程序；
+// - system/global/xdg 配置全部置空，环境里的 GIT_* 覆盖变量全部剥除；
+// - 枚举输出只是路径名清单（元数据），内容读取始终由受限根完成。
+const GIT_DEV_NULL = process.platform === 'win32' ? 'NUL' : '/dev/null';
+const GIT_SAFE_CONFIG_ARGS = [
+  '-c', 'core.fsmonitor=false',
+  '-c', 'core.untrackedCache=false',
+  '-c', `core.excludesFile=${GIT_DEV_NULL}`,
+  '-c', `core.hooksPath=${GIT_DEV_NULL}`,
+];
+
+function gitSafeEnv() {
+  const env: any = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG_PARAMETERS|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+)$/.test(key)) {
+      delete env[key];
+    }
+  }
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = GIT_DEV_NULL;
+  env.GIT_CONFIG_SYSTEM = GIT_DEV_NULL;
+  env.GIT_TERMINAL_PROMPT = '0';
+  env.GIT_OPTIONAL_LOCKS = '0';
+  return env;
+}
+
 function isGitWorkTree(targetDir: any) {
   try {
-    const out = execFileSync('git', ['-C', targetDir, 'rev-parse', '--is-inside-work-tree'], {
+    const out = execFileSync('git', [...GIT_SAFE_CONFIG_ARGS, '-C', targetDir, 'rev-parse', '--is-inside-work-tree'], {
       encoding: 'utf8',
+      env: gitSafeEnv(),
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     return String(out || '').trim() === 'true';
@@ -72,8 +101,8 @@ function isGitWorkTree(targetDir: any) {
 function gitListFiles(targetDir: any, extraArgs: any) {
   const out = execFileSync(
     'git',
-    ['-C', targetDir, 'ls-files', '-z', ...extraArgs],
-    { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }
+    [...GIT_SAFE_CONFIG_ARGS, '-C', targetDir, 'ls-files', '-z', ...extraArgs],
+    { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024, env: gitSafeEnv(), stdio: ['ignore', 'pipe', 'ignore'] }
   );
   return Buffer.from(out)
     .toString('utf8')
@@ -420,9 +449,61 @@ export function createCollector(options: any = {}) {
     return { helperFailure: '', differing: differing.sort() };
   }
 
+  // session 等树外回放输入的独立授权边界（GPT 复审 #1 第六轮）：
+  // 输入文件必须位于策略 authorizedInputPins 固定的某个目录内，且经受限根读取——
+  // 不因“属于回放材料”自动获授权，符号链接/越界路径一律拒绝。
+  function readAuthorizedReplayInput(sessionAccess: any, inputPath: any) {
+    const policy = sessionAccess && sessionAccess.policy;
+    const capability = sessionAccess && sessionAccess.capability;
+    const pins = policy && policy.authorizedInputPins && typeof policy.authorizedInputPins === 'object'
+      ? policy.authorizedInputPins
+      : {};
+    let real = '';
+    try {
+      real = fs.realpathSync(String(inputPath || ''));
+    } catch {
+      return { ok: false, reason: 'session_missing' };
+    }
+    for (const key of Object.keys(pins)) {
+      const pin = (pins as any)[key];
+      const pinReal = String(pin && pin.realpath || '').trim();
+      if (!pinReal || !isSameOrUnderPathString(pinReal, real)) {
+        continue;
+      }
+      if (!pin.identity || typeof pin.identity !== 'object') {
+        return { ok: false, reason: 'session_input_root_unpinned' };
+      }
+      const handle: any = openConstrainedRoot(capability, pinReal);
+      if (!handle.ok) {
+        return { ok: false, reason: `session_input_unavailable:${handle.reason}` };
+      }
+      try {
+        if (!handle.identityEquals(pin.identity)) {
+          return { ok: false, reason: 'session_input_root_replaced' };
+        }
+        const relative = path.relative(pinReal, real).replace(/\\/g, '/');
+        if (!relative || relative.startsWith('..')) {
+          return { ok: false, reason: 'session_not_authorized' };
+        }
+        const batch = handle.readBatch([relative]);
+        if (!batch.ok) {
+          return { ok: false, reason: `session_input_unavailable:${batch.reason}` };
+        }
+        const result = batch.results.get(relative);
+        if (!result || result.ok !== true) {
+          return { ok: false, reason: `session_read_failed:${result && result.code ? result.code : 'read_failed'}` };
+        }
+        return { ok: true, reason: '', content: result.content };
+      } finally {
+        handle.close();
+      }
+    }
+    return { ok: false, reason: 'session_not_authorized' };
+  }
+
   // 回放输入准备（采集循环前一次性完成）：受控变量替换 → 最终字节秘密扫描 →
   // session 维度校验（未验证维度默认 incomplete）→ harness/skill 快照校验。
-  function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot: any) {
+  function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot: any, sessionAccess: any) {
     const replayInput: any = {
       deliveryMode,
       complete: true,
@@ -460,12 +541,17 @@ export function createCollector(options: any = {}) {
 
     if (deliveryMode === 'resume') {
       const sessionPath = String(input.sessionPath || '').trim();
-      if (!sessionPath || !fs.existsSync(sessionPath)) {
+      if (!sessionPath) {
         // 禁止静默降级 fresh：deliveryMode 保持 resume，标记不可完整回放。
         markIncomplete('session_missing');
       } else {
-        const sessionRaw = fs.readFileSync(sessionPath);
-        const sessionReplaced = replaceControlledVariables(sessionRaw.toString('utf8'), input.controlledValues);
+        const access = readAuthorizedReplayInput(sessionAccess, sessionPath);
+        if (!access.ok) {
+          // 未授权/不可受限读取的 session 不归档（缺失、越界、链接、根替换各有其原因）。
+          markIncomplete(access.reason);
+        } else {
+          const sessionRaw = access.content;
+          const sessionReplaced = replaceControlledVariables(sessionRaw.toString('utf8'), input.controlledValues);
         replayInput.controlledReplacements = replayInput.controlledReplacements.concat(sessionReplaced.replacements);
         const sessionBuffer = Buffer.from(sessionReplaced.text, 'utf8');
         const validation = validateSessionV2(sessionReplaced.text, { authorizedRoot });
@@ -487,6 +573,7 @@ export function createCollector(options: any = {}) {
         // 可归档但未验证的维度：complete=false（GPT 复审边界 2/3）。
         for (const dimension of validation.unverifiedDimensions) {
           markIncomplete(dimension);
+        }
         }
       }
     }
@@ -513,6 +600,17 @@ export function createCollector(options: any = {}) {
         const configHash = sha256Buffer(configBuffer);
         plans.push({ hash: configHash, content: configBuffer });
         replayInput.harness.configSnapshotHash = configHash;
+      }
+      // 跨字段一致性（GPT 复审 #3 第六轮）：非空字段 ≠ 已验证。
+      // - piVersion 必须等于本采集器钉住的 harness 版本（session 校验规则、上下文构建
+      //   语义都钉在该版本的真实实现上；agent-executor 以 "pi:<version>" 形式上报）。
+      // - 声明的 deliveryMode 必须与实际采集模式一致。
+      const declaredPiVersion = String((configSnapshot as any).piVersion || '').trim().replace(/^pi:/, '');
+      if (declaredPiVersion !== PI_VERSION_PIN) {
+        markIncomplete('harness_version_unverified');
+      }
+      if (String((configSnapshot as any).deliveryMode) !== deliveryMode) {
+        markIncomplete('harness_delivery_mode_mismatch');
       }
     } else {
       markIncomplete('harness_tool_config_unverified');
@@ -649,7 +747,7 @@ export function createCollector(options: any = {}) {
 
       const previous = store.loadLatestCheckpoint(projectId, targetDir);
       const previousFiles = previous && previous.files ? previous.files : null;
-      const { replayInput, plans } = prepareReplayInput(input, deliveryMode, pinnedRoot);
+      const { replayInput, plans } = prepareReplayInput(input, deliveryMode, pinnedRoot, { capability, policy });
 
       let consistency: any = null;
       let scanResult: any = null;

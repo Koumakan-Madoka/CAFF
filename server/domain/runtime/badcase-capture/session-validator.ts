@@ -46,6 +46,10 @@ const KNOWN_ENTRY_TYPES = new Set([
 
 const KNOWN_MESSAGE_ROLES = new Set(['user', 'assistant', 'toolResult', 'bashExecution', 'custom']);
 const PROJECTION_ONLY_ROLES = new Set(['branchSummary', 'compactionSummary']);
+// pi-ai ModelThinkingLevel（types.d.ts L24-25）：getSessionContextSettings 把
+// thinking_level_change.thinkingLevel 原样传给 buildSessionContext，因此固定版本的
+// 合法值域必须钉死——非字符串/未知值会被 pi 原样接受但不是合法输出（GPT 复审 #3 第六轮）。
+const KNOWN_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const IMAGE_MIME_WHITELIST = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 // 已知文件工具的 path 实参可分析；其余工具（含 bash）依赖不可静态分析。
 const KNOWN_FILE_TOOLS = new Set(['read', 'write', 'edit']);
@@ -441,6 +445,38 @@ export function validateSessionV2(text: any, options: any = {}) {
       }
       // CustomEntry.data 是扩展私有状态，无通用验证依据 → 诚实降级（GPT 复审边界 2）。
       pushUnverified(`extension_state_unverified:${entry.customType}`);
+    }
+
+    if (entryType === 'thinking_level_change') {
+      // ThinkingLevelChangeEntry.thinkingLevel 会被 getSessionContextSettings 原样采纳
+      // （session-manager.js L146-160）；固定 pi 版本只会写出 KNOWN_THINKING_LEVELS 内的
+      // 字符串。缺字段、对象值或未知值 = 手工编辑/损坏 → 拒绝归档。
+      if (typeof entry.thinkingLevel !== 'string' || !KNOWN_THINKING_LEVELS.has(entry.thinkingLevel)) {
+        return finish(false, `session_thinking_level_invalid:line_${lineNo}`, lines.length);
+      }
+      verified.add('thinking_level');
+    }
+
+    if (entryType === 'label') {
+      // appendLabelChange 对未知 targetId 直接 throw（session-manager.js L930），且
+      // _buildIndex 不收录 session 头——targetId 必须引用已见的非头条目。
+      if (typeof entry.targetId !== 'string' || !entry.targetId
+        || !seenIds.has(entry.targetId) || entry.targetId === headerId) {
+        return finish(false, `session_label_target_unknown:line_${lineNo}`, lines.length);
+      }
+      // label: string | undefined（空值表示清除标记）。
+      if (entry.label !== undefined && typeof entry.label !== 'string') {
+        return finish(false, `session_label_invalid:line_${lineNo}`, lines.length);
+      }
+      verified.add('label_chain');
+    }
+
+    if (entryType === 'session_info') {
+      // appendSessionInfo(name)：name 为可选字符串（sanitize 后写入）。
+      if (entry.name !== undefined && typeof entry.name !== 'string') {
+        return finish(false, `session_session_info_invalid:line_${lineNo}`, lines.length);
+      }
+      verified.add('session_info');
     }
 
     seenIds.add(entry.id);

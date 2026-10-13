@@ -40,15 +40,29 @@ function makeService(tempDir, serviceOptions = {}) {
   });
 }
 
+// 普通保存 + 显式授权（钉住根身份）。savePolicy 不再钉住新对象，
+// 授权是独立动作（GPT 复审 #1 第六轮）。
+function authorize(service, projectId, policy) {
+  service.savePolicy(projectId, policy);
+  // 旧构建无 authorizeProject（savePolicy 即授权）；新构建必须显式授权。
+  if (typeof service.authorizeProject === 'function') {
+    service.authorizeProject(projectId);
+  }
+}
+
 function enabledPolicy(projectDir, overrides = {}) {
   return {
     status: 'enabled',
     authorizedDirs: [projectDir],
+    // 树外回放输入（session 夹具）的独立授权边界：默认授权整个临时目录。
+    authorizedInputDirs: [path.dirname(projectDir)],
     ...overrides,
   };
 }
 
 function captureArgs(projectDir, overrides = {}) {
+  // configSnapshot.deliveryMode 必须与实际采集模式一致（harness 跨字段校验）。
+  const actualMode = overrides.deliveryMode === 'resume' ? 'resume' : 'fresh';
   return {
     projectId: 'project-1',
     targetDir: projectDir,
@@ -65,8 +79,8 @@ function captureArgs(projectDir, overrides = {}) {
       configSnapshot: {
         agentPromptVersion: 'test-v1',
         toolBridgeEnabled: true,
-        piVersion: '0.0.0-test',
-        deliveryMode: 'fresh',
+        piVersion: '0.85.1',
+        deliveryMode: actualMode,
         agentName: 'test-agent',
       },
       skillSnapshots: [],
@@ -99,13 +113,13 @@ test('未开启策略或未授权目录时不做任何扫描', { skip: capSkip }
   assert.equal(result.reason, 'policy_not_enabled');
 
   // enabled 但未授权该目录
-  service.savePolicy('project-1', enabledPolicy(path.join(tempDir, 'other')));
+  authorize(service, 'project-1', enabledPolicy(path.join(tempDir, 'other')));
   result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, false);
   assert.equal(result.reason, 'dir_not_authorized');
 
   // 授权后成功
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
   assert.ok(result.checkpointId);
@@ -119,7 +133,7 @@ test('首次采集写入 CAS；二次采集内容去重，未变化文件不重�
   fs.writeFileSync(path.join(projectDir, 'b.txt'), 'bbb');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const first = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(first.captured, true);
@@ -153,7 +167,7 @@ test('删除状态记录在检查点清单中', { skip: capSkip }, () => {
   fs.writeFileSync(path.join(projectDir, 'gone.txt'), 'g');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   service.captureTurnCheckpoint(captureArgs(projectDir));
 
   fs.unlinkSync(path.join(projectDir, 'gone.txt'));
@@ -175,7 +189,7 @@ test('采集期间并发写入被检测并降级，阻断严格对照资格', { 
       fs.writeFileSync(path.join(dir, 'f0.txt'), `mutated-${Date.now()}-${Math.random()}`);
     },
   });
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
 
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
@@ -204,7 +218,7 @@ test('越界符号链接不跟随；界内符号链接可恢复', { skip: capSki
   }
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
   assert.equal(result.checkpoint.files['escape-link'].escapes, true);
@@ -231,7 +245,7 @@ test('秘密哨兵文件不进入 CAS；prompt 中的受控变量值被占位替
   fs.writeFileSync(path.join(projectDir, 'leaky.env'), `API_KEY=${SENTINEL}`);
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir, {
     prompt: `callback ${SENTINEL} via https://callback.example/hook keep=keepme-value`,
     controlledValues: {
@@ -269,7 +283,7 @@ test('resume 缺 session 时标记不可完整回放，禁止静默降级 fresh'
   fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir, {
     deliveryMode: 'resume',
     sessionPath: path.join(tempDir, 'missing-session.jsonl'),
@@ -291,7 +305,7 @@ test('resume session 归档进 CAS，受控变量值被替换', { skip: capSkip 
     '{"type":"session","version":3,"id":"s1"}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":[{"type":"text","text":"token abc-callback-token-value"}]}}\n');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir, {
     deliveryMode: 'resume',
     sessionPath,
@@ -312,7 +326,7 @@ test('恢复两次清单一致；篡改 blob 导致校验失败', { skip: capSki
   fs.writeFileSync(path.join(projectDir, 'sub', 'b.txt'), 'bbb');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   const captured = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(captured.captured, true);
 
@@ -353,7 +367,7 @@ test('git 仓库：tracked/dirty/untracked 纳入，ignored 默认排除、显�
   fs.writeFileSync(path.join(projectDir, 'ignored-dir', 'fixture.txt'), 'ignored-fixture');
 
   const service = makeService(tempDir);
-  service.savePolicy('project-1', enabledPolicy(projectDir));
+  authorize(service, 'project-1', enabledPolicy(projectDir));
   let result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
   assert.ok(result.checkpoint.files['tracked.txt']);
@@ -361,7 +375,7 @@ test('git 仓库：tracked/dirty/untracked 纳入，ignored 默认排除、显�
   assert.equal(result.checkpoint.files['ignored-dir/fixture.txt'], undefined, 'ignored 文件默认不采集');
 
   // 显式纳入 ignored 模式后可采集并恢复
-  service.savePolicy('project-1', enabledPolicy(projectDir, { includedIgnoredPatterns: ['ignored-dir/**'] }));
+  authorize(service, 'project-1', enabledPolicy(projectDir, { includedIgnoredPatterns: ['ignored-dir/**'] }));
   result = service.captureTurnCheckpoint(captureArgs(projectDir, { turnId: 'turn-2' }));
   assert.ok(result.checkpoint.files['ignored-dir/fixture.txt']);
   const restoreDir = path.join(tempDir, 'restore');
@@ -379,7 +393,7 @@ test('配额不足时策略挂起且采集失败，不伪造检查点', { skip: 
 
   const service = makeService(tempDir);
   // 配额小于首个检查点的实际内容量 → 扫描后预检失败，不落任何 blob/清单
-  service.savePolicy('project-1', enabledPolicy(projectDir, { stagingQuotaBytes: 4 }));
+  authorize(service, 'project-1', enabledPolicy(projectDir, { stagingQuotaBytes: 4 }));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, false);
   assert.equal(result.reason, 'quota_exceeded');
