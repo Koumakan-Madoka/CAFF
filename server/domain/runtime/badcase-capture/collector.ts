@@ -1393,14 +1393,33 @@ export function createCollector(options: any = {}) {
     }
   }
 
-  // Explicit pre-authorization preview: metadata only, on one constrained root.
+  // Explicit pre-enable preview, NOT pre-authorization. Match capture's pinned
+  // root boundary even while disabled; metadata also requires directory consent.
   // No Git/config/content reads and no checkpoint; ignored files may overestimate.
-  function estimateTree(targetDir: string, excludedPatterns: string[] = []) {
+  function estimateTree(targetDir: string, policy: any) {
+    const authorization = authorizeTargetDir(policy, targetDir);
+    if (!authorization.ok) return { ok: false, reason: authorization.reason };
+    const pinnedRoot = String(authorization.resolvedTarget || '').trim();
+    if (!pinnedRoot) return { ok: false, reason: 'authorized_root_unresolved' };
+    const pinRealpath = String(authorization.pin && authorization.pin.realpath || '').trim();
+    if (!pinRealpath || !pathsEqual(pinRealpath, pinnedRoot)) {
+      return { ok: false, reason: 'target_must_be_authorized_root' };
+    }
     const capability = getCapability();
     if (!capability.ok) return { ok: false, reason: `capture_unavailable:${capability.reason}` };
     const root: any = openConstrainedRoot(capability, targetDir);
     if (!root.ok) return root;
-    try { return root.walk(excludedPatterns); } finally { root.close(); }
+    try {
+      const pinIdentity = authorization.pin && authorization.pin.identity;
+      if (!pinIdentity || typeof pinIdentity !== 'object') {
+        return { ok: false, reason: 'authorized_root_identity_missing' };
+      }
+      // Compare the identity from the SAME held fd used by walk. Checking just
+      // path/realpath (or another fd) would allow an authorization-to-open swap.
+      if (!root.identityEquals(pinIdentity)) return { ok: false, reason: 'authorized_root_replaced' };
+      if (!root.enumerationIntact()) return { ok: false, reason: 'target_root_replaced' };
+      return root.walk(policy.excludedPatterns);
+    } finally { root.close(); }
   }
 
   return { captureTurnCheckpoint, scanFiles, estimateTree };

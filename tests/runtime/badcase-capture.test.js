@@ -531,7 +531,7 @@ test('配额不足时策略挂起且采集失败，不伪造检查点', { skip: 
   assert.equal(service.computeUsage('project-1').totalBytes, 0, '配额失败不得写入任何 blob');
 });
 
-test('容量预估不读取内容、不落盘，并标注授权状态', () => {
+test('容量预估须先授权但不必开启，不读取内容、不写检查点或策略', () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -539,7 +539,12 @@ test('容量预估不读取内容、不落盘，并标注授权状态', () => {
   fs.writeFileSync(path.join(projectDir, 'b.txt'), 'bbbb');
 
   const service = makeService(tempDir);
+  authorize(service, 'project-1', enabledPolicy(projectDir, { status: 'disabled' }));
+  const policyBefore = service.loadPolicy('project-1');
   const estimate = service.estimateDirectory('project-1', projectDir);
+  assert.deepEqual(service.loadPolicy('project-1'), policyBefore);
+  assert.equal(service.store.listCheckpoints('project-1').length, 0);
+  assert.equal(service.computeUsage('project-1').totalBytes, 0);
   if (process.platform !== 'linux') {
     assert.equal(estimate.ok, false, 'metadata preview also fails closed without constrained enumeration');
     assert.match(estimate.reason, /capture_unavailable:safe_read_capability_missing/);
@@ -549,7 +554,7 @@ test('容量预估不读取内容、不落盘，并标注授权状态', () => {
   assert.equal(estimate.ok, true);
   assert.equal(estimate.fileCount, 2);
   assert.equal(estimate.totalBytes, 7);
-  assert.equal(estimate.authorized, false, '未授权时预估标注 authorized=false');
+  assert.equal(estimate.authorized, true, '预估必须经过显式授权及身份核验');
   assert.equal(fs.existsSync(path.join(tempDir, 'capture-root', 'projects', 'project-1', 'blobs')), false);
 });
 

@@ -3,9 +3,8 @@
 // 默认 captureRoot 解析顺序：options.captureRoot → CAFF_BADCASE_CAPTURE_DIR
 // → <agentDir>/badcase-capture。该目录必须在授权采集目录之外且被 gitignore。
 
-const fs = require('node:fs');
 const path = require('node:path');
-import { normalizeCapturePolicy, isAuthorizedDir, matchesRelativePattern, pinAuthorizedDirs, pinKey } from './capture-policy';
+import { normalizeCapturePolicy, matchesRelativePattern, pinAuthorizedDirs, pinKey } from './capture-policy';
 import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
 import { restoreCheckpoint } from './restore';
@@ -93,36 +92,32 @@ export function createBadcaseCaptureService(options: any = {}) {
       return store.computeUsage(projectId);
     },
 
-    // 开启采集前的容量预估（AC9）：stat-only 扫描，不读取内容、不落盘。
+    // 显式授权后、开启采集前的容量预估（AC9）：只读目标元数据，不写检查点。
+    // 授权与 enabled 独立；预估不能隐式授权/重新 pin 或开启主动采集。
     estimateDirectory(projectId: any, targetDir: any) {
       const startedAt = Date.now();
-      const policy = normalizeCapturePolicy(this.loadPolicy(projectId), projectId);
-      const resolved = path.resolve(String(targetDir || '').trim() || '.');
-      const emptyPolicy = { ...policy, includedIgnoredPatterns: [] };
-      if (!fs.existsSync(resolved)) {
-        return { ok: false, reason: 'target_dir_missing', fileCount: 0, totalBytes: 0, durationMs: Date.now() - startedAt };
-      }
-      const effectivePolicy = {
-        ...emptyPolicy,
-        // 预估按“假设已授权该目录”统计；未授权时仍返回结果并标注，便于开启前展示。
-        authorized: isAuthorizedDir(policy, resolved),
-      };
-      const tree: any = collector.estimateTree(resolved, effectivePolicy.excludedPatterns);
-      if (!tree.ok) return { ok: false, reason: tree.reason || 'enumeration_failed', fileCount: 0, totalBytes: 0, durationMs: Date.now() - startedAt };
+      const fail = (reason: string) => ({ ok: false, reason, fileCount: 0, totalBytes: 0, durationMs: Date.now() - startedAt });
+      const id = String(projectId || '').trim();
+      const target = String(targetDir || '').trim();
+      if (!id) return fail('project_id_missing');
+      if (!target) return fail('target_dir_missing');
+      const policy = normalizeCapturePolicy(store.loadPolicy(id), id);
+      const tree: any = collector.estimateTree(path.resolve(target), policy);
+      if (!tree.ok) return fail(tree.reason || 'enumeration_failed');
       let totalBytes = 0;
       let fileCount = 0;
       for (const entry of tree.entries) {
-        if (entry.path === '.git' || entry.path.endsWith('/.git') || matchesRelativePattern(entry.path, effectivePolicy.excludedPatterns)) continue;
+        if (entry.path === '.git' || entry.path.endsWith('/.git') || matchesRelativePattern(entry.path, policy.excludedPatterns)) continue;
         if (entry.type === 'file') {
           fileCount += 1;
           totalBytes += entry.size;
         }
       }
-      const gaps = tree.unreadableDirs.filter((gap: any) => !matchesRelativePattern(gap.path, effectivePolicy.excludedPatterns));
+      const gaps = tree.unreadableDirs.filter((gap: any) => !matchesRelativePattern(gap.path, policy.excludedPatterns));
       return {
         ok: true,
         reason: '',
-        authorized: effectivePolicy.authorized,
+        authorized: true,
         complete: gaps.length === 0,
         uncaptured: gaps,
         includesIgnored: true,
