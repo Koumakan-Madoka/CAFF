@@ -1374,6 +1374,7 @@ export function createAgentToolBridge(options: any = {}) {
           conversation,
           preview,
           invocationId: principal.invocationId,
+          sourceMessageId: principal.sourceMessageId,
         });
         if (authorization) {
           const clientAuthorization = workspaceAuthorizations.clientRecord(
@@ -1410,6 +1411,7 @@ export function createAgentToolBridge(options: any = {}) {
         conversation,
         preview,
         invocationId: principal.invocationId,
+        sourceMessageId: principal.sourceMessageId,
       });
       if (authorization) {
         const clientAuthorization = workspaceAuthorizations.clientRecord(
@@ -1443,7 +1445,7 @@ export function createAgentToolBridge(options: any = {}) {
     return { ...result.workspace, recovered: result.recovered === true };
   }
 
-  function handleRoomWorkspaceAuthorization(input: any = {}) {
+  async function handleRoomWorkspaceAuthorization(input: any = {}) {
     const conversationId = String(input.conversationId || '').trim();
     const authorizationId = String(input.authorizationId || '').trim();
     const token = String(input.token || '').trim();
@@ -1462,26 +1464,63 @@ export function createAgentToolBridge(options: any = {}) {
     if (!project) {
       throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
     }
-    return workspaceAuthorizations.decide({
-      id: authorizationId,
-      token,
-      conversationId,
-      decision,
-      fingerprint,
-      execute: async (authorizedPreview: any) => {
-        const currentConversation = store.getConversationWithoutMessages(conversationId) || conversation;
-        if (authorizedPreview && String(authorizedPreview.kind || '') === 'rename') {
-          const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
-            ? store.hasActiveConversationTurn(conversationId)
-            : false;
-          const result = renameAndPersistRoomWorkspace({
+    let outcome;
+    try {
+      outcome = await workspaceAuthorizations.decide({
+        id: authorizationId,
+        token,
+        conversationId,
+        decision,
+        fingerprint,
+        execute: async (authorizedPreview: any, record: any) => {
+          const currentConversation = store.getConversationWithoutMessages(conversationId) || conversation;
+          if (authorizedPreview && String(authorizedPreview.kind || '') === 'rename') {
+            // The idle check excludes only the assistant message that issued this
+            // card (the agent turn the user is approving), never the whole turn:
+            // any OTHER active execution in the Room — including another agent in
+            // the same turn — still blocks the rename.
+            const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
+              ? store.hasActiveConversationTurn(conversationId, {
+                  excludeMessageId: String(record && record.sourceMessageId || '').trim() || undefined,
+                })
+              : false;
+            const result = renameAndPersistRoomWorkspace({
+              store,
+              conversation: currentConversation,
+              project,
+              branchName: authorizedPreview.newBranch,
+              hasActiveExecution,
+              expectedFingerprint: fingerprint,
+              fingerprintOf: previewFingerprint,
+            });
+            broadcastConversationSummary(conversationId);
+            broadcastEvent('room_workspace_authorization_updated', {
+              conversationId,
+              authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+            });
+            return result;
+          }
+          // Replay the exact authorized naming plan: a custom branchName binds with the
+          // stable directory mode, a default card keeps the automatic naming.
+          const authorizedBranchName = authorizedPreview && authorizedPreview.requestedBranchName
+            ? String(authorizedPreview.requestedBranchName)
+            : undefined;
+          const currentPreview = previewRoomWorkspace({
+            conversation: currentConversation,
+            project,
+            branchName: authorizedBranchName,
+          });
+          if (previewFingerprint(currentPreview) !== fingerprint) {
+            throw createHttpError(409, 'Workspace preview changed; request a new authorization card', {
+              code: 'room_workspace_authorization_stale',
+            });
+          }
+          const result = bindAndPersistRoomWorkspace({
             store,
             conversation: currentConversation,
             project,
-            branchName: authorizedPreview.newBranch,
-            hasActiveExecution,
-            expectedFingerprint: fingerprint,
-            fingerprintOf: previewFingerprint,
+            branchName: authorizedBranchName,
+            workspaceBoundAt: nowIso(),
           });
           broadcastConversationSummary(conversationId);
           broadcastEvent('room_workspace_authorization_updated', {
@@ -1489,37 +1528,21 @@ export function createAgentToolBridge(options: any = {}) {
             authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
           });
           return result;
-        }
-        // Replay the exact authorized naming plan: a custom branchName binds with the
-        // stable directory mode, a default card keeps the automatic naming.
-        const authorizedBranchName = authorizedPreview && authorizedPreview.requestedBranchName
-          ? String(authorizedPreview.requestedBranchName)
-          : undefined;
-        const currentPreview = previewRoomWorkspace({
-          conversation: currentConversation,
-          project,
-          branchName: authorizedBranchName,
-        });
-        if (previewFingerprint(currentPreview) !== fingerprint) {
-          throw createHttpError(409, 'Workspace preview changed; request a new authorization card', {
-            code: 'room_workspace_authorization_stale',
-          });
-        }
-        const result = bindAndPersistRoomWorkspace({
-          store,
-          conversation: currentConversation,
-          project,
-          branchName: authorizedBranchName,
-          workspaceBoundAt: nowIso(),
-        });
-        broadcastConversationSummary(conversationId);
+        },
+      });
+    } catch (error: any) {
+      // A decided-but-failed (or retried-pending) card must reach the UI so it
+      // cannot linger on a stale state while the HTTP request itself errors.
+      const decidedRecord = error && error.authorizationRecord;
+      if (decidedRecord) {
         broadcastEvent('room_workspace_authorization_updated', {
           conversationId,
-          authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+          authorization: decidedRecord,
         });
-        return result;
-      },
-    });
+      }
+      throw error;
+    }
+    return outcome;
   }
   function listRoomWorkspaceAuthorizations(conversationId: any) {
     const conversation = store.getConversationWithoutMessages(String(conversationId || '').trim());

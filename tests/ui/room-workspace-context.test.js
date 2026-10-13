@@ -109,6 +109,17 @@ test('summary merge ignores an empty messages projection at runtime', () => {
   assert.equal(state.currentConversation.title, '新标题');
   assert.equal(Object.prototype.hasOwnProperty.call(state.conversations[0], 'messages'), false);
 });
+test('a failed workspace decision resyncs the authorization cards', () => {
+  // A failed decision may have changed the card state on the server (failed,
+  // superseded, or a retryable pending); the catch path must reload the cards so
+  // the UI cannot linger on a stale clickable state.
+  const start = APP_JS.indexOf('async function decideWorkspaceAuthorization(authorizationId, decision) {');
+  const end = APP_JS.indexOf('\nfunction renderWorkspaceAuthorizationCards()', start);
+  assert.ok(start >= 0 && end > start);
+  const body = APP_JS.slice(start, end);
+  assert.match(body, /catch \(error\) \{[\s\S]*showToast[\s\S]*await loadWorkspaceAuthorizationCards\(conversationId\);/u);
+});
+
 test('Room workspace header preserves the chat title CSS rule', () => {
   assert.match(STYLES_CSS, /body\.chat-app \.chat-header h2\s*\{[\s\S]*?margin:\s*0;/);
   assert.equal((STYLES_CSS.match(/body\.chat-app \.chat-header \.titles\s*\{/g) || []).length, 1);

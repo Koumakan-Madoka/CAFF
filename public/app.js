@@ -4388,6 +4388,9 @@ async function decideWorkspaceAuthorization(authorizationId, decision) {
       : (isRename ? '已拒绝分支重命名' : '已拒绝工作区绑定'));
   } catch (error) {
     showToast(error && error.message ? error.message : '工作区授权失败');
+    // A failed decision may have changed the card state (failed/superseded or a
+    // retryable pending); resync so the UI never lingers on a stale card.
+    await loadWorkspaceAuthorizationCards(conversationId);
   } finally {
     state.bindingWorkspaceAuthorizationIds.delete(requestKey);
     renderWorkspaceAuthorizationCards();

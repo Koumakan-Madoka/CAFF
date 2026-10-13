@@ -160,40 +160,89 @@ test('default authorization card keeps the automatic naming through the bridge',
   assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), preview.branch);
 });
 
-test('rename preview stays read-only during the caller\'s active turn and execution waits for idle', async (t) => {
-  const harness = createHarness(t, 'active-guard');
+test('rename approval excludes the card-issuing message and executes during the issuing turn', async (t) => {
+  const harness = createHarness(t, 'approve-own-turn');
   await harness.invoke('room_workspace_preview', {});
   await harness.decide(harness.pendingCard());
   const bound = harness.boundConversation();
   assert.ok(bound.branch);
 
   // The caller's own streaming message must not block the read-only rename preview.
-  const renamePreview = await harness.invoke('room_workspace_rename_preview', { branchName: 'feature/after-active' });
+  const renamePreview = await harness.invoke('room_workspace_rename_preview', { branchName: 'feature/approved-mid-turn' });
   assert.equal(renamePreview.branch, bound.branch);
-  assert.equal(renamePreview.newBranch, 'feature/after-active');
+  assert.equal(renamePreview.newBranch, 'feature/approved-mid-turn');
   const card = harness.pendingCard();
   assert.ok(card, 'rename preview must issue a card even during an active turn');
   assert.equal(card.kind, 'rename');
+  // The card remembers which assistant message issued it.
+  assert.equal(card.sourceMessageId, harness.assistantMessage.id);
 
-  // Approving while the Room still has an active execution is blocked without side effects.
+  // ...and it must not block the user's approval either: the idle check at
+  // execution time excludes only the card-issuing message, so the approved
+  // rename executes even while the issuing turn is still streaming.
+  const decision = await harness.decide(card);
+  assert.equal(decision.record.status, 'accepted');
+  assert.equal(harness.boundConversation().branch, 'feature/approved-mid-turn');
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/approved-mid-turn');
+  assert.equal(git(bound.worktreePath, ['rev-parse', 'HEAD']), bound.workspaceBaseSha);
+  assert.equal(path.basename(harness.boundConversation().worktreePath), path.basename(bound.worktreePath));
+});
+
+test('a peer execution blocks rename approval but the card stays pending and retries once idle', async (t) => {
+  const harness = createHarness(t, 'approve-peer-block');
+  await harness.invoke('room_workspace_preview', {});
+  await harness.decide(harness.pendingCard());
+  const bound = harness.boundConversation();
+
+  const renamePreview = await harness.invoke('room_workspace_rename_preview', { branchName: 'feature/peer-waits' });
+  assert.equal(renamePreview.newBranch, 'feature/peer-waits');
+  const card = harness.pendingCard();
+  assert.ok(card);
+
+  // Another agent's active message must block the approval.
+  const otherAgent = harness.store.saveCustomRoleConfig({
+    id: 'bridge-ws-agent-approve-peer-block-b',
+    name: 'Bridge Workspace Agent approve-peer-block B',
+    personaPrompt: 'Reply briefly.',
+  });
+  const otherMessage = harness.store.createMessage({
+    conversationId: harness.conversation.id,
+    turnId: 'bridge-ws-turn-approve-peer-block-other',
+    role: 'assistant',
+    agentId: otherAgent.id,
+    senderName: otherAgent.name,
+    content: 'Also working...',
+    status: 'streaming',
+  });
   await assert.rejects(
     harness.decide(card),
     (error) => error && error.code === 'room_workspace_execution_active'
   );
-  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), bound.branch);
-  assert.equal(harness.boundConversation().branch, bound.branch);
 
-  // The blocked card is terminal; the agent re-previews for a fresh card once the
-  // turn reaches a terminal state, and that card executes.
-  harness.store.updateMessage(harness.assistantMessage.id, { status: 'completed' });
-  await harness.invoke('room_workspace_rename_preview', { branchName: 'feature/after-active' });
-  const retryCard = harness.pendingCard();
-  assert.ok(retryCard);
-  assert.notEqual(retryCard.id, card.id);
-  const decision = await harness.decide(retryCard);
+  // Zero side effects, and the blocked card is NOT burned: a transient
+  // execution-active failure keeps it pending so the user can retry.
+  assert.equal(harness.boundConversation().branch, bound.branch);
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), bound.branch);
+  assert.equal(harness.store.getPendingWorkspaceOperation(harness.conversation.id), null);
+  const refreshed = harness.bridge
+    .listRoomWorkspaceAuthorizations(harness.conversation.id)
+    .find((item) => item.id === card.id);
+  assert.equal(refreshed.status, 'pending');
+  assert.equal(refreshed.decidedAt, null);
+
+  // The failed decision outcome is broadcast so the UI cannot linger on a
+  // stale card state.
+  assert.ok(harness.broadcastEvents.some((event) =>
+    event.eventName === 'room_workspace_authorization_updated'
+    && event.payload.authorization
+    && event.payload.authorization.id === card.id));
+
+  // Once the peer finishes, approving the SAME card succeeds.
+  harness.store.updateMessage(otherMessage.id, { status: 'completed' });
+  const decision = await harness.decide(card);
   assert.equal(decision.record.status, 'accepted');
-  assert.equal(harness.boundConversation().branch, 'feature/after-active');
-  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/after-active');
+  assert.equal(harness.boundConversation().branch, 'feature/peer-waits');
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/peer-waits');
 });
 
 test('rename_bind fallback excludes the caller\'s own turn but executes the rename', async (t) => {

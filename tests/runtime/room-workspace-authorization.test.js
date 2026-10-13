@@ -177,6 +177,94 @@ test('a newer plan supersedes a still-pending card so the old card can never exe
   assert.equal(cardB2.id, cardB.id);
 });
 
+test('a retryable execution-active failure keeps the card pending and re-decidable', async () => {
+  const store = new RoomWorkspaceAuthorizationStore({ ttlMs: 30_000 });
+  const conversation = { id: 'room-1234', projectScopeId: 'project-a' };
+  const card = store.issue({ conversation, preview: renamePreview, sourceMessageId: 'msg-issuer', now: 1_000 });
+  const clientCard = store.clientRecord(store.records.get(card.id));
+  assert.equal(clientCard.sourceMessageId, 'msg-issuer');
+
+  const activeError = Object.assign(new Error('Room has an active execution'), { code: 'room_workspace_execution_active' });
+  let calls = 0;
+  await assert.rejects(
+    store.decide({
+      id: clientCard.id,
+      token: clientCard.token,
+      conversationId: 'room-1234',
+      decision: 'accepted',
+      fingerprint: clientCard.fingerprint,
+      execute: () => {
+        calls += 1;
+        throw activeError;
+      },
+      now: 1_001,
+    }),
+    (error) => error && error.code === 'room_workspace_execution_active'
+      && error.authorizationRecord && error.authorizationRecord.id === card.id
+  );
+  // The transient failure did not burn the card: it is pending and never decided.
+  assert.equal(store.records.get(card.id).status, 'pending');
+  assert.equal(store.records.get(card.id).decidedAt, null);
+
+  // Retrying the same card once the Room is idle succeeds.
+  const result = await store.decide({
+    id: clientCard.id,
+    token: clientCard.token,
+    conversationId: 'room-1234',
+    decision: 'accepted',
+    fingerprint: clientCard.fingerprint,
+    execute: (authorizedPreview, record) => {
+      calls += 1;
+      assert.equal(authorizedPreview.newBranch, 'feature/after');
+      return { issuedBy: record.sourceMessageId };
+    },
+    now: 1_002,
+  });
+  assert.equal(result.record.status, 'accepted');
+  assert.equal(calls, 2);
+  assert.equal(result.result.issuedBy, 'msg-issuer');
+});
+
+test('a non-retryable execution failure burns the card and the decided error carries the cause', async () => {
+  const store = new RoomWorkspaceAuthorizationStore({ ttlMs: 30_000 });
+  const conversation = { id: 'room-1234', projectScopeId: 'project-a' };
+  const card = store.issue({ conversation, preview: renamePreview, now: 1_000 });
+  const clientCard = store.clientRecord(store.records.get(card.id));
+
+  const boom = Object.assign(new Error('Remote state unknown'), { code: 'room_workspace_remote_state_unknown' });
+  await assert.rejects(
+    store.decide({
+      id: clientCard.id,
+      token: clientCard.token,
+      conversationId: 'room-1234',
+      decision: 'accepted',
+      fingerprint: clientCard.fingerprint,
+      execute: () => { throw boom; },
+      now: 1_001,
+    }),
+    (error) => error && error.code === 'room_workspace_remote_state_unknown'
+      && error.authorizationRecord && error.authorizationRecord.status === 'failed'
+  );
+  assert.equal(store.records.get(card.id).status, 'failed');
+  assert.equal(store.records.get(card.id).errorCode, 'room_workspace_remote_state_unknown');
+
+  // Retrying the burned card reports the original cause and the remediation.
+  await assert.rejects(
+    store.decide({
+      id: clientCard.id,
+      token: clientCard.token,
+      conversationId: 'room-1234',
+      decision: 'accepted',
+      fingerprint: clientCard.fingerprint,
+      execute: () => { throw new Error('must not run'); },
+      now: 1_002,
+    }),
+    (error) => error && error.code === 'room_workspace_authorization_decided'
+      && /room_workspace_remote_state_unknown/u.test(error.message)
+      && /Agent/u.test(error.message)
+  );
+});
+
 test('the authorization fingerprint binds the operation kind and target branch name', async () => {
   const store = new RoomWorkspaceAuthorizationStore({ ttlMs: 30_000 });
   const conversation = { id: 'room-1234', projectScopeId: 'project-a' };

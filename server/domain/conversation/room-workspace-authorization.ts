@@ -3,6 +3,10 @@ import { createHash, randomUUID } from 'node:crypto';
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
 const MAX_PENDING = 1000;
 
+// Execution failures in this set are transient: no Git or DB mutation happened,
+// so the card returns to pending and the user can retry it once the blocker clears.
+const RETRYABLE_DECIDE_ERROR_CODES = new Set(['room_workspace_execution_active']);
+
 function text(value: unknown) {
   return String(value || '').trim();
 }
@@ -39,7 +43,7 @@ export class RoomWorkspaceAuthorizationStore {
     this.ttlMs = Number.isFinite(ttlMs) && ttlMs >= 30_000 ? Math.min(ttlMs, 60 * 60 * 1000) : DEFAULT_TTL_MS;
   }
 
-  issue({ conversation, preview, invocationId, now = Date.now() }: any) {
+  issue({ conversation, preview, invocationId, sourceMessageId, now = Date.now() }: any) {
     this.expire(now);
     const conversationId = text(conversation && conversation.id) || text(preview && preview.conversationId);
     const projectScopeId = text(conversation && conversation.projectScopeId) || text(preview && preview.projectScopeId);
@@ -81,6 +85,7 @@ export class RoomWorkspaceAuthorizationStore {
       conversationId,
       projectScopeId,
       invocationId: text(invocationId) || null,
+      sourceMessageId: text(sourceMessageId) || null,
       fingerprint,
       preview,
       status: 'pending',
@@ -108,6 +113,7 @@ export class RoomWorkspaceAuthorizationStore {
       baseSha: record.preview.baseSha,
       status: record.status,
       errorCode: record.errorCode,
+      sourceMessageId: record.sourceMessageId || null,
       createdAt: record.createdAt,
       expiresAt: record.expiresAt,
       fingerprint: record.fingerprint,
@@ -133,7 +139,14 @@ export class RoomWorkspaceAuthorizationStore {
     }
     this.expire(now);
     if (record.status !== 'pending') {
-      throw authorizationError(409, 'room_workspace_authorization_decided', 'Workspace authorization request is already decided');
+      const cause = record.status === 'failed' && record.errorCode
+        ? ` (previous attempt failed: ${record.errorCode})`
+        : '';
+      throw authorizationError(
+        409,
+        'room_workspace_authorization_decided',
+        `Workspace authorization request is already decided${cause}; ask the Agent to request a new authorization card`
+      );
     }
     return record;
   }
@@ -164,14 +177,28 @@ export class RoomWorkspaceAuthorizationStore {
     }
     record.status = 'consuming';
     try {
-      const result = await execute(record.preview);
+      const result = await execute(record.preview, record);
       record.status = 'accepted';
       record.decidedAt = new Date().toISOString();
       return { record: this.publicRecord(record), result };
     } catch (error: any) {
-      record.status = 'failed';
-      record.errorCode = text(error && error.code) || 'room_workspace_bind_failed';
-      record.decidedAt = new Date().toISOString();
+      // A transient failure (for example another execution active in the Room)
+      // happened before any Git or DB mutation, so the card stays pending and
+      // the user can retry the same card once the blocker clears.
+      const retryable = RETRYABLE_DECIDE_ERROR_CODES.has(String(error && error.code));
+      if (retryable) {
+        record.status = 'pending';
+        record.errorCode = text(error && error.code) || null;
+        record.decidedAt = null;
+      } else {
+        record.status = 'failed';
+        record.errorCode = text(error && error.code) || 'room_workspace_bind_failed';
+        record.decidedAt = new Date().toISOString();
+      }
+      // Surface the terminal record so callers can broadcast the new card state.
+      if (error && typeof error === 'object') {
+        error.authorizationRecord = this.publicRecord(record);
+      }
       throw error;
     }
   }
