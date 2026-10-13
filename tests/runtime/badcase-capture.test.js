@@ -175,6 +175,48 @@ test('删除状态记录在检查点清单中', { skip: capSkip }, () => {
   assert.deepEqual(second.checkpoint.deletions, ['gone.txt']);
 });
 
+test('首次检查点前已删除的 tracked 文件在重启后两次恢复均不复活', { skip: capSkip }, () => {
+  const tempDir = withTempDir();
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir);
+  gitInit(projectDir);
+  fs.writeFileSync(path.join(projectDir, 'keep.txt'), 'original');
+  fs.writeFileSync(path.join(projectDir, 'gone.txt'), 'deleted-before-first-checkpoint');
+  gitAddAll(projectDir);
+  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: projectDir });
+  const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projectDir }).toString();
+  const indexBefore = fs.readFileSync(path.join(projectDir, '.git', 'index'));
+  fs.unlinkSync(path.join(projectDir, 'gone.txt'));
+  fs.writeFileSync(path.join(projectDir, 'keep.txt'), 'dirty-current-content');
+
+  const service = makeService(tempDir);
+  authorize(service, 'project-1', enabledPolicy(projectDir));
+  const captured = service.captureTurnCheckpoint(captureArgs(projectDir));
+  assert.equal(captured.captured, true);
+  assert.equal(captured.checkpoint.replayInput.complete, true);
+  assert.equal(captured.checkpoint.files['gone.txt'], undefined);
+  // deletions is a checkpoint-to-checkpoint delta, not a Git-status export.
+  assert.deepEqual(captured.checkpoint.deletions, []);
+  assert.deepEqual(Object.keys(captured.checkpoint.files), ['keep.txt']);
+
+  const restartedService = makeService(tempDir);
+  const restored = ['restore-a', 'restore-b'].map((name) => {
+    const targetDir = path.join(tempDir, name);
+    const result = restartedService.restoreCheckpoint({
+      projectId: 'project-1', checkpointId: captured.checkpointId, targetDir,
+    });
+    assert.equal(result.ok, true, JSON.stringify(result.mismatches));
+    assert.equal(result.replayInputComplete, true);
+    assert.deepEqual(fs.readdirSync(targetDir), ['keep.txt']);
+    assert.equal(fs.existsSync(path.join(targetDir, 'gone.txt')), false);
+    assert.equal(fs.readFileSync(path.join(targetDir, 'keep.txt'), 'utf8'), 'dirty-current-content');
+    return result;
+  });
+  assert.deepEqual(restored[0].restoredFiles, restored[1].restoredFiles);
+  assert.deepEqual(fs.readFileSync(path.join(projectDir, '.git', 'index')), indexBefore);
+  assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projectDir }).toString(), headBefore);
+});
+
 test('采集期间并发写入被检测并降级，阻断严格对照资格', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
