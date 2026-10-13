@@ -573,8 +573,10 @@ export function createCollector(options: any = {}) {
     }
     for (const relativePath of needRead) {
       const result = reads.get(relativePath);
+      // Same Python-derived milliseconds as walk; ns decoded as a JS number
+      // has already lost precision, so dividing it again can differ by 1 ULP.
       const meta = result?.ok === true
-        ? { size: result.size, mode: result.mode | 0o100000, mtimeMs: result.mtimeNs / 1000000 }
+        ? { size: result.size, mode: result.mode | 0o100000, mtimeMs: result.mtimeMs }
         : { size: 0, mode: 0, mtimeMs: 0 };
       if (!result || result.ok !== true) {
         const code = result && result.code ? String(result.code) : 'read_failed';

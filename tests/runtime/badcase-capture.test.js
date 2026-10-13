@@ -159,6 +159,53 @@ test('首次采集写入 CAS；二次采集内容去重，未变化文件不重�
   assert.equal(third.checkpoint.stats.reusedHashFiles, 1);
 });
 
+test('mtime 固定纳秒相位：跨 Python/JS 舍入边界仍稳定复用，内容变化仍重 hash', { skip: capSkip }, async (t) => {
+  // Both signs of the double-rounding error, plus a matching control.
+  // Set integer ns through Python: JS utimes would round the fixture itself.
+  const phases = [
+    ['1791885509402778931', 1],
+    ['1791885509402780032', -1],
+    ['1791885509402778800', 0],
+  ];
+  for (const [ns, direction] of phases) {
+    await t.test(`ns=${ns}`, () => {
+      const tempDir = withTempDir();
+      const projectDir = path.join(tempDir, 'project');
+      fs.mkdirSync(projectDir);
+      const file = path.join(projectDir, 'a.txt');
+      fs.writeFileSync(file, 'aaa');
+      const setNs = (value) => JSON.parse(execFileSync('python3', ['-c',
+        'import os,sys,json; n=int(sys.argv[2]); os.utime(sys.argv[1],ns=(n,n)); s=os.stat(sys.argv[1]); print(json.dumps({"ns":str(s.st_mtime_ns),"ms":s.st_mtime_ns/1000000}))',
+        file, value], { encoding: 'utf8' }));
+      const actual = setNs(ns);
+      assert.equal(actual.ns, ns, 'fixture filesystem must preserve the exact nanoseconds');
+      assert.equal(Math.sign(actual.ms - Number(ns) / 1000000), direction);
+
+      let service = makeService(tempDir);
+      authorize(service, 'project-1', enabledPolicy(projectDir));
+      const first = service.captureTurnCheckpoint(captureArgs(projectDir));
+      assert.equal(first.captured, true);
+      const firstHash = first.checkpoint.files['a.txt'].hash;
+      for (let i = 0; i < 3; i += 1) {
+        service = makeService(tempDir); // persistent manifest, not an in-memory cache
+        const again = service.captureTurnCheckpoint(captureArgs(projectDir, { turnId: `hot-${i}` }));
+        assert.equal(again.captured, true);
+        assert.equal(again.checkpoint.stats.reusedHashFiles, 1);
+        assert.equal(again.checkpoint.stats.hashedFiles, 0);
+        assert.equal(again.checkpoint.files['a.txt'].hash, firstHash);
+        assert.equal(again.checkpoint.files['a.txt'].mtimeMs, actual.ms);
+      }
+      fs.writeFileSync(file, 'bbb'); // same size; mtime must invalidate the fast path
+      setNs((BigInt(ns) + 1000000n).toString());
+      const changed = service.captureTurnCheckpoint(captureArgs(projectDir, { turnId: 'changed' }));
+      assert.equal(changed.captured, true);
+      assert.equal(changed.checkpoint.stats.reusedHashFiles, 0);
+      assert.equal(changed.checkpoint.stats.hashedFiles, 1);
+      assert.notEqual(changed.checkpoint.files['a.txt'].hash, firstHash);
+    });
+  }
+});
+
 test('删除状态记录在检查点清单中', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');

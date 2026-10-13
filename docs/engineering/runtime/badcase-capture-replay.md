@@ -63,7 +63,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 - **一致性证据三级**：`content-verified` / `corrected-after-retry` / `write-during-capture`，三者 `atomicityGuaranteed` 恒为 false。三级都只是检测记录，级别只描述“检测到什么”，不构成严格对照资格。
 - **严格对照资格在 v1 恒不可用**（`strictEvalEligible=false`，原因 `no_independent_consistency_evidence`）：严格对照要求独立的源现场一致性依据（如文件系统快照/写屏障），v1 不具备。所有检查点可保存、可标记、可作 best-effort 回放并附一致性证据披露，但**不得参与严格对照评测**（AC2/AC7）。禁止以“清单自洽”“双扫无差异”或重命名状态冒充“现场一致”。
 - 对照评测的公平性由“baseline 与 candidate 从同一 Checkpoint 恢复”保证；checkpoint 对历史现场的保真度按 consistency evidence 如实披露。
-- mtime 快速路径只用于首扫加速；它对任何资格判定无影响，因为 M2 永远全量重 hash。
+- mtime 快速路径只用于首扫加速；它对任何资格判定无影响，因为 M2 永远全量重 hash。枚举与读取的 `mtimeMs` 统一由 helper 在 Python 侧从整数 `st_mtime_ns` 派生，禁止把 JSON 解码后已丢精度的 JS 纳秒 Number 再除以 10^6（双重舍入会使未变化文件无法稳定复用）。这仍是毫秒浮点缓存键，不宣称纳秒无损或提高一致性资格；旧清单无需迁移，舍入不匹配最多触发重新 hash，随后写入统一口径。
 - 不用 git 脏状态 hash 作为一致性证据（漏 untracked/ignored，且无同时性保证）。
 
 ### 2.4 回放输入

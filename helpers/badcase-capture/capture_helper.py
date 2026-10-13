@@ -26,7 +26,7 @@ stdout protocol:
   statx_root -> {"ok": true, "devMajor": n, "devMinor": n, "ino": n,
                  "btimeSec": n, "btimeNsec": n, "btimeSupported": bool}
   read ok    -> header line {"ok": true, "size": N, "mode": M, "mtimeNs": T,
-                 "sha256": "hex"} followed by exactly N raw bytes and "\n"
+                 "mtimeMs": F, "sha256": "hex"} followed by exactly N raw bytes and "\n"
   read fail  -> single line {"ok": false, "code": "...", "errno": N}
 
 Exit code 2 means the helper could not initialize (caller treats the whole
@@ -136,6 +136,12 @@ ERRNO_CODES = {
 }
 
 
+def mtime_ms(info):
+    # Derive from the integer in Python for BOTH read and walk. Converting ns
+    # to a JS number first loses low bits (>2**53), causing double rounding.
+    return info.st_mtime_ns / 1000000
+
+
 def read_constrained(rootfd, rel_path, max_bytes):
     flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK
     resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV
@@ -172,6 +178,7 @@ def read_constrained(rootfd, rel_path, max_bytes):
             "size": before.st_size,
             "mode": stat.S_IMODE(before.st_mode),
             "mtimeNs": before.st_mtime_ns,
+            "mtimeMs": mtime_ms(before),
             "sha256": hashlib.sha256(content).hexdigest(),
             "content": content,
         }
@@ -219,7 +226,7 @@ def walk_constrained(rootfd, excluded):
                     info = os.stat(name, dir_fd=fd, follow_symlinks=False)
                     mode = info.st_mode
                     kind = "dir" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else "symlink" if stat.S_ISLNK(mode) else "other"
-                    item = {"path": child, "type": kind, "mode": mode, "size": info.st_size, "mtimeMs": info.st_mtime_ns / 1000000}
+                    item = {"path": child, "type": kind, "mode": mode, "size": info.st_size, "mtimeMs": mtime_ms(info)}
                     if kind == "symlink":
                         item["linkTarget"] = os.readlink(name, dir_fd=fd)
                     entries.append(item)
