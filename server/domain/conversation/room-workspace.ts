@@ -510,6 +510,30 @@ function assertIdleForRename(hasActiveExecution: boolean) {
   }
 }
 
+// The branch CAS and the write-ahead close-out commit in one store transaction.
+// Stores without the combined method (test doubles) fall back to the sequential pair.
+function renameBranchAndCloseOperation(store: any, conversationId: any, rename: any, operationId: any) {
+  if (typeof store.renameConversationWorkspaceBranchAndCompleteOperation === 'function') {
+    return store.renameConversationWorkspaceBranchAndCompleteOperation(conversationId, rename, operationId);
+  }
+  const updated = store.renameConversationWorkspaceBranch(conversationId, rename);
+  store.completeWorkspaceOperation(operationId);
+  return updated;
+}
+
+// Recording a new write-ahead operation atomically supersedes any stale pending
+// records. This only runs AFTER every rejection condition has passed.
+function recordWorkspaceOperation(store: any, conversationId: any, operation: any) {
+  if (typeof store.replacePendingWorkspaceOperation === 'function') {
+    return store.replacePendingWorkspaceOperation({ conversationId, ...operation }, 'superseded_by_consistent_state');
+  }
+  const stale = store.getPendingWorkspaceOperation(conversationId);
+  if (stale) {
+    store.failWorkspaceOperation(stale.id, 'superseded_by_consistent_state');
+  }
+  return store.createWorkspaceOperation({ conversationId, ...operation });
+}
+
 export function renameAndPersistRoomWorkspace({
   store,
   conversation,
@@ -540,8 +564,9 @@ export function renameAndPersistRoomWorkspace({
   const pending = loadPendingRenameOperation(store, conversationId);
 
   if (actualBranch !== recordedBranch) {
-    // Interrupted state. Only the recorded, previously authorized operation may
-    // resume, and authorization (fingerprint) is verified BEFORE any DB write.
+    // Interrupted state (crash between the Git rename and the DB commit). Only the
+    // recorded, previously authorized operation may resume. Every rejection
+    // condition runs BEFORE any DB write.
     if (
       !pending
       || String(pending.oldBranch || '') !== recordedBranch
@@ -561,7 +586,24 @@ export function renameAndPersistRoomWorkspace({
       );
     }
     if (expectedFingerprint) {
-      if (!pending.fingerprint || String(pending.fingerprint) !== String(expectedFingerprint)) {
+      // Re-authorization protocol for recovery: the pending operation record
+      // proves the operation itself was authorized once; completing it through an
+      // authorization card additionally requires the card fingerprint to match a
+      // FRESH resume preview recomputed from the current state. This works for
+      // card-originated operations (the fingerprint is stable while the plan is
+      // unchanged) and for fallback-originated records whose stored fingerprint is
+      // null: the agent re-previews after the restart and the user approves the
+      // freshly issued resume card.
+      if (typeof fingerprintOf !== 'function') {
+        throw new Error('A fingerprint function is required to authorize a workspace rename');
+      }
+      const resumePreview = previewRoomWorkspaceRename({
+        conversation: current,
+        project,
+        branchName: requestedName,
+        pendingOperation: pending,
+      });
+      if (fingerprintOf(resumePreview) !== String(expectedFingerprint)) {
         throw workspaceError(
           'room_workspace_authorization_stale',
           'Workspace preview changed; request a new authorization card',
@@ -570,20 +612,27 @@ export function renameAndPersistRoomWorkspace({
       }
     }
     assertIdleForRename(Boolean(hasActiveExecution));
-    // The Git side of the recorded operation already happened; complete the DB side.
-    // A crash after the CAS but before the operation was closed is completed idempotently.
+    // The Git side of the recorded operation already happened; complete the DB
+    // side. The CAS and the operation close-out commit atomically.
     let updated = null;
     try {
-      updated = store.renameConversationWorkspaceBranch(conversationId, {
+      updated = renameBranchAndCloseOperation(store, conversationId, {
         oldBranch: recordedBranch,
         newBranch: actualBranch,
         updatedAt: new Date().toISOString(),
-      });
+      }, pending.id);
     } catch (error) {
       const reread = typeof store.getConversationWithoutMessages === 'function'
         ? store.getConversationWithoutMessages(conversationId)
         : null;
-      if (!reread || String(reread.branch || '') !== actualBranch) {
+      const operationAfter = typeof store.getWorkspaceOperation === 'function'
+        ? store.getWorkspaceOperation(pending.id)
+        : null;
+      if (
+        !reread
+        || String(reread.branch || '') !== actualBranch
+        || (operationAfter && operationAfter.status !== 'completed')
+      ) {
         throw error;
       }
       updated = reread;
@@ -591,7 +640,6 @@ export function renameAndPersistRoomWorkspace({
     if (!updated || String(updated.branch || '') !== actualBranch) {
       throw workspaceError('room_workspace_binding_conflict', 'Room workspace binding changed concurrently');
     }
-    store.completeWorkspaceOperation(pending.id);
     return {
       conversation: updated,
       workspace: {
@@ -612,11 +660,9 @@ export function renameAndPersistRoomWorkspace({
     };
   }
 
-  // Consistent state. A stale pending operation whose Git side never happened (or was
-  // compensated) is closed out before a new operation is recorded.
-  if (pending) {
-    store.failWorkspaceOperation(pending.id, 'superseded_by_consistent_state');
-  }
+  // Consistent state. ALL rejection conditions run before ANY state change: a
+  // stale pending record (write-ahead journal whose Git side never happened) must
+  // never be mutated by a rejected request.
   if (requestedName === recordedBranch) {
     throw workspaceError('room_workspace_branch_name_unchanged', 'New branch name must differ from the current branch', 400);
   }
@@ -636,9 +682,8 @@ export function renameAndPersistRoomWorkspace({
   assertIdleForRename(Boolean(hasActiveExecution));
 
   // Write-ahead operation record: recovery can only resume an operation that was
-  // durably recorded (and, for the card flow, authorized by this exact fingerprint).
-  const operation = store.createWorkspaceOperation({
-    conversationId,
+  // durably recorded. Recording supersedes any stale pending journal row.
+  const operation = recordWorkspaceOperation(store, conversationId, {
     kind: 'rename',
     oldBranch: preview.branch,
     newBranch: preview.newBranch,
@@ -649,24 +694,46 @@ export function renameAndPersistRoomWorkspace({
     // linked worktree from that worktree is always allowed and keeps HEAD, files and
     // the worktree directory untouched.
     git(preview.repositoryPath, ['-C', preview.worktreePath, 'branch', '-m', preview.branch, preview.newBranch]);
-    const updated = store.renameConversationWorkspaceBranch(conversationId, {
+    const updated = renameBranchAndCloseOperation(store, conversationId, {
       oldBranch: preview.branch,
       newBranch: preview.newBranch,
       updatedAt: new Date().toISOString(),
-    });
-    store.completeWorkspaceOperation(operation.id);
+    }, operation.id);
     return {
       conversation: updated,
       workspace: { ...preview, renamed: true },
       recovered: false,
     };
   } catch (error: any) {
-    // Compensate the Git rename so a persistence failure never leaves a
-    // half-finished Git/database state behind.
+    // Stage-aware compensation. The DB transaction is atomic, so any failure means
+    // the database was NOT updated; only the Git side may need a rollback.
+    let headAfter: string | null = null;
     try {
-      git(preview.repositoryPath, ['-C', preview.worktreePath, 'branch', '-m', preview.newBranch, preview.branch]);
-    } catch {}
-    store.failWorkspaceOperation(operation.id, error && error.code);
+      headAfter = worktreeHeadBranch(preview.worktreePath);
+    } catch {
+      headAfter = null;
+    }
+    if (headAfter === preview.newBranch) {
+      try {
+        git(preview.repositoryPath, ['-C', preview.worktreePath, 'branch', '-m', preview.newBranch, preview.branch]);
+        store.failWorkspaceOperation(operation.id, error && error.code);
+      } catch {
+        // The rollback itself failed: Git says the new name while the DB still
+        // records the old one. Keep the operation record PENDING — it is exactly
+        // the recovery handle the preview/authorization flow needs to finish the
+        // operation later. Never mark it failed and lose that handle.
+        throw workspaceError(
+          'room_workspace_compensation_failed',
+          `Rename to ${preview.newBranch} could not be persisted and the Git rollback also failed; ` +
+            'the recorded operation stays pending and can be resumed through a new rename preview',
+          500
+        );
+      }
+    } else if (headAfter === preview.branch) {
+      // The Git rename never took effect; close the write-ahead record as failed.
+      store.failWorkspaceOperation(operation.id, error && error.code);
+    }
+    // Unknown Git state: keep the record pending for recorded recovery/manual checks.
     throw error;
   }
 }

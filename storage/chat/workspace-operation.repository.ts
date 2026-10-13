@@ -19,8 +19,10 @@ function normalizeWorkspaceOperationRow(row: any) {
 export class ChatWorkspaceOperationRepository {
   insertStatement: any;
   pendingForConversationStatement: any;
+  getByIdStatement: any;
   completeStatement: any;
   failStatement: any;
+  failPendingForConversationStatement: any;
 
   constructor(db: any) {
     this.insertStatement = db.prepare(`
@@ -40,6 +42,12 @@ export class ChatWorkspaceOperationRepository {
       ORDER BY created_at DESC, id DESC
       LIMIT 1
     `);
+    this.getByIdStatement = db.prepare(`
+      SELECT *
+      FROM chat_workspace_operations
+      WHERE id = @id
+      LIMIT 1
+    `);
     this.completeStatement = db.prepare(`
       UPDATE chat_workspace_operations
       SET status = 'completed',
@@ -53,6 +61,14 @@ export class ChatWorkspaceOperationRepository {
           error_code = @errorCode,
           updated_at = @updatedAt
       WHERE id = @id
+        AND status = 'pending'
+    `);
+    this.failPendingForConversationStatement = db.prepare(`
+      UPDATE chat_workspace_operations
+      SET status = 'failed',
+          error_code = @errorCode,
+          updated_at = @updatedAt
+      WHERE conversation_id = @conversationId
         AND status = 'pending'
     `);
   }
@@ -76,12 +92,24 @@ export class ChatWorkspaceOperationRepository {
     );
   }
 
+  getById(id: string) {
+    return normalizeWorkspaceOperationRow(this.getByIdStatement.get({ id }));
+  }
+
   complete(id: string, updatedAt: string) {
-    this.completeStatement.run({ id, updatedAt });
+    return Number(this.completeStatement.run({ id, updatedAt }).changes || 0);
   }
 
   fail(id: string, errorCode: string, updatedAt: string) {
-    this.failStatement.run({ id, errorCode: String(errorCode || 'workspace_operation_failed').slice(0, 200), updatedAt });
+    return Number(this.failStatement.run({ id, errorCode: String(errorCode || 'workspace_operation_failed').slice(0, 200), updatedAt }).changes || 0);
+  }
+
+  failPendingForConversation(conversationId: string, errorCode: string, updatedAt: string) {
+    return Number(this.failPendingForConversationStatement.run({
+      conversationId,
+      errorCode: String(errorCode || 'workspace_operation_failed').slice(0, 200),
+      updatedAt,
+    }).changes || 0);
   }
 }
 

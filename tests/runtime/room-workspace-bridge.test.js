@@ -265,6 +265,195 @@ test('an interrupted rename resumes through the public preview-and-approve entry
   assert.equal(harness.store.getPendingWorkspaceOperation(harness.conversation.id), null);
 });
 
+test('rename_bind fallback is still blocked by another agent active in the SAME turn', async (t) => {
+  const harness = createHarness(t, 'same-turn-guard');
+  await harness.invoke('room_workspace_preview', {});
+  await harness.decide(harness.pendingCard());
+  const bound = harness.boundConversation();
+
+  // A second agent streaming in the caller's own turn must still block the rename:
+  // the fallback excludes only the caller's own assistant message, never the turn.
+  const otherAgent = harness.store.saveCustomRoleConfig({
+    id: 'bridge-ws-agent-same-turn-guard-b',
+    name: 'Bridge Workspace Agent same-turn-guard B',
+    personaPrompt: 'Reply briefly.',
+  });
+  const otherMessage = harness.store.createMessage({
+    conversationId: harness.conversation.id,
+    turnId: harness.assistantMessage.turnId,
+    role: 'assistant',
+    agentId: otherAgent.id,
+    senderName: otherAgent.name,
+    content: 'Also working...',
+    status: 'streaming',
+  });
+  await assert.rejects(
+    harness.invoke('room_workspace_rename_bind', { confirm: true, branchName: 'feature/blocked-by-peer' }),
+    (error) => error && error.code === 'room_workspace_execution_active'
+  );
+  assert.equal(harness.boundConversation().branch, bound.branch);
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), bound.branch);
+  assert.equal(harness.store.getPendingWorkspaceOperation(harness.conversation.id), null);
+
+  // Once the peer finishes, the same fallback call succeeds with the caller's own
+  // message still excluded.
+  harness.store.updateMessage(otherMessage.id, { status: 'completed' });
+  const renamed = await harness.invoke('room_workspace_rename_bind', {
+    confirm: true,
+    branchName: 'feature/blocked-by-peer',
+  });
+  assert.equal(renamed.newBranch, 'feature/blocked-by-peer');
+  assert.equal(harness.boundConversation().branch, 'feature/blocked-by-peer');
+});
+
+test('a fallback-originated interrupted rename recovers after a REAL store restart and bridge rebuild', async (t) => {
+  const { outer, root: repoRoot } = initRepo();
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-bridge-store-restart-'));
+  const sqlitePath = path.join(agentDir, 'bridge.sqlite');
+  const broadcastEvents = [];
+  const resolveProject = (projectScopeId) => (projectScopeId === 'project-1' ? { id: 'project-1', path: repoRoot } : null);
+  t.after(() => {
+    // Close whichever store generation is still open BEFORE removing the sqlite dir.
+    try { store.close(); } catch {}
+    fs.rmSync(agentDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(outer, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+
+  // --- Before the "crash": bind, then simulate a fallback rename interrupted
+  // after the write-ahead record and the git rename, before the DB commit.
+  let store = createChatAppStore({ agentDir, sqlitePath });
+  let bridge = createAgentToolBridge({
+    store,
+    broadcastEvent(eventName, payload) { broadcastEvents.push({ eventName, payload }); },
+    resolveProject,
+  });
+  const agent = store.saveCustomRoleConfig({
+    id: 'bridge-ws-agent-restart',
+    name: 'Bridge Workspace Agent restart',
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: 'bridge-ws-conversation-restart',
+    title: 'Bridge Workspace restart',
+    type: 'standard',
+    projectScopeId: 'project-1',
+    participants: [agent.id],
+  });
+  const crashedMessage = store.createMessage({
+    conversationId: conversation.id,
+    turnId: 'bridge-ws-turn-restart-1',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Thinking...',
+    status: 'streaming',
+  });
+  let context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: conversation.id,
+      turnId: 'bridge-ws-turn-restart-1',
+      agentId: agent.id,
+      agentName: agent.name,
+      assistantMessageId: crashedMessage.id,
+      conversationAgents: [agent],
+      stage: { status: 'running', taskId: '' },
+      turnState: { conversationId: conversation.id, turnId: 'bridge-ws-turn-restart-1', stopRequested: false },
+    })
+  );
+  await bridge.handlePiCapability('room_workspace_preview', {
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    arguments: {},
+  });
+  const bindCard = bridge.listRoomWorkspaceAuthorizations(conversation.id).find((card) => card.status === 'pending');
+  await bridge.handleRoomWorkspaceAuthorization({
+    conversationId: conversation.id,
+    authorizationId: bindCard.id,
+    token: bindCard.token,
+    decision: 'accepted',
+    fingerprint: bindCard.fingerprint,
+  });
+  const bound = store.getConversationWithoutMessages(conversation.id);
+  const oldBranch = bound.branch;
+
+  // Fallback-originated journal: NO card fingerprint was ever recorded.
+  store.createWorkspaceOperation({
+    conversationId: conversation.id,
+    kind: 'rename',
+    oldBranch,
+    newBranch: 'feature/restarted-resume',
+    fingerprint: null,
+  });
+  git(bound.worktreePath, ['branch', '-m', oldBranch, 'feature/restarted-resume']);
+  store.close();
+
+  // --- After the "restart": reopen the SAME SQLite file and rebuild the bridge
+  // (fresh in-memory authorization store, so no card from before can be replayed).
+  store = createChatAppStore({ agentDir, sqlitePath });
+  bridge = createAgentToolBridge({
+    store,
+    broadcastEvent(eventName, payload) { broadcastEvents.push({ eventName, payload }); },
+    resolveProject,
+  });
+  // Crash recovery finalized the interrupted turn's message.
+  store.updateMessage(crashedMessage.id, { status: 'failed' });
+
+  const pending = store.getPendingWorkspaceOperation(conversation.id);
+  assert.ok(pending, 'the write-ahead record must survive the restart');
+  assert.equal(pending.fingerprint, null);
+  assert.equal(store.getConversationWithoutMessages(conversation.id).branch, oldBranch);
+
+  const resumedMessage = store.createMessage({
+    conversationId: conversation.id,
+    turnId: 'bridge-ws-turn-restart-2',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Resuming...',
+    status: 'streaming',
+  });
+  context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: conversation.id,
+      turnId: 'bridge-ws-turn-restart-2',
+      agentId: agent.id,
+      agentName: agent.name,
+      assistantMessageId: resumedMessage.id,
+      conversationAgents: [agent],
+      stage: { status: 'running', taskId: '' },
+      turnState: { conversationId: conversation.id, turnId: 'bridge-ws-turn-restart-2', stopRequested: false },
+    })
+  );
+
+  // The public read-only preview exposes the recorded resumable plan and issues a
+  // FRESH authorization card for it (the in-memory store was empty after restart).
+  const resumePreview = await bridge.handlePiCapability('room_workspace_rename_preview', {
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    arguments: { branchName: 'feature/restarted-resume' },
+  });
+  assert.equal(resumePreview.resume, true);
+  assert.equal(resumePreview.branch, oldBranch);
+  assert.equal(resumePreview.newBranch, 'feature/restarted-resume');
+  const resumeCard = bridge.listRoomWorkspaceAuthorizations(conversation.id).find((card) => card.status === 'pending');
+  assert.ok(resumeCard, 'the resume preview must issue a fresh, executable card');
+
+  // The user approves after the Room is idle again.
+  store.updateMessage(resumedMessage.id, { status: 'completed' });
+  const decision = await bridge.handleRoomWorkspaceAuthorization({
+    conversationId: conversation.id,
+    authorizationId: resumeCard.id,
+    token: resumeCard.token,
+    decision: 'accepted',
+    fingerprint: resumeCard.fingerprint,
+  });
+  assert.equal(decision.record.status, 'accepted');
+  assert.equal(store.getConversationWithoutMessages(conversation.id).branch, 'feature/restarted-resume');
+  assert.equal(git(bound.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/restarted-resume');
+  assert.equal(store.getPendingWorkspaceOperation(conversation.id), null);
+  assert.equal(store.getWorkspaceOperation(pending.id).status, 'completed');
+});
+
 test('a newer plan supersedes the pending card and the old card executes nothing', async (t) => {
   const harness = createHarness(t, 'supersede');
   await harness.invoke('room_workspace_preview', { branchName: 'feature/plan-a' });

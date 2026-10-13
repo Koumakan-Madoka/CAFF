@@ -104,29 +104,34 @@ test('active execution detection follows non-terminal assistant messages', () =>
   }
 });
 
-test('active execution detection can exclude the caller\'s own turn', () => {
+test('active execution detection excludes only the caller\'s own message, never the whole turn', () => {
   const tempDir = withTempDir('caff-workspace-active-exclude-');
   const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'exclude.sqlite') });
   try {
     const bound = createBoundRoom(store, 'exclude-turn-room');
-    store.createMessage({
+    const caller = store.createMessage({
       conversationId: bound.id,
-      turnId: 'turn-caller',
+      turnId: 'turn-shared',
       role: 'assistant',
       content: 'caller is working',
       status: 'streaming',
     });
     assert.equal(store.hasActiveConversationTurn(bound.id), true);
-    assert.equal(store.hasActiveConversationTurn(bound.id, { excludeTurnId: 'turn-caller' }), false);
+    assert.equal(store.hasActiveConversationTurn(bound.id, { excludeMessageId: caller.id }), false);
 
-    store.createMessage({
+    // A second agent streaming in the SAME turn must still block the caller.
+    const other = store.createMessage({
       conversationId: bound.id,
-      turnId: 'turn-other',
+      turnId: 'turn-shared',
       role: 'assistant',
-      content: 'another turn is working',
+      content: 'another agent in the same turn is working',
       status: 'running',
     });
-    assert.equal(store.hasActiveConversationTurn(bound.id, { excludeTurnId: 'turn-caller' }), true);
+    assert.equal(store.hasActiveConversationTurn(bound.id, { excludeMessageId: caller.id }), true);
+    assert.equal(store.hasActiveConversationTurn(bound.id, { excludeMessageId: other.id }), true);
+
+    store.updateMessage(other.id, { status: 'completed' });
+    assert.equal(store.hasActiveConversationTurn(bound.id, { excludeMessageId: caller.id }), false);
   } finally {
     if (typeof store.close === 'function') store.close();
   }
@@ -154,6 +159,7 @@ test('workspace operation records persist the authorized rename intent', () => {
 
     store.completeWorkspaceOperation(created.id);
     assert.equal(store.getPendingWorkspaceOperation(bound.id), null);
+    assert.equal(store.getWorkspaceOperation(created.id).status, 'completed');
 
     const second = store.createWorkspaceOperation({
       conversationId: bound.id,
@@ -164,6 +170,79 @@ test('workspace operation records persist the authorized rename intent', () => {
     assert.equal(second.fingerprint, null);
     store.failWorkspaceOperation(second.id, 'room_workspace_test_failure');
     assert.equal(store.getPendingWorkspaceOperation(bound.id), null);
+    assert.equal(store.getWorkspaceOperation(second.id).errorCode, 'room_workspace_test_failure');
+  } finally {
+    if (typeof store.close === 'function') store.close();
+  }
+});
+
+test('branch rename and operation close-out commit atomically', () => {
+  const tempDir = withTempDir('caff-workspace-rename-atomic-');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'atomic.sqlite') });
+  try {
+    const bound = createBoundRoom(store, 'atomic-room');
+    const operation = store.createWorkspaceOperation({
+      conversationId: bound.id,
+      kind: 'rename',
+      oldBranch: 'feature/before',
+      newBranch: 'feature/after',
+    });
+
+    // Success: the binding moves and the journal closes in the same commit.
+    const renamed = store.renameConversationWorkspaceBranchAndCompleteOperation(bound.id, {
+      oldBranch: 'feature/before',
+      newBranch: 'feature/after',
+    }, operation.id);
+    assert.equal(renamed.branch, 'feature/after');
+    assert.equal(store.getWorkspaceOperation(operation.id).status, 'completed');
+    assert.equal(store.getPendingWorkspaceOperation(bound.id), null);
+
+    // A lost CAS fails the WHOLE transaction: the binding stays and a pending
+    // journal row survives as the recovery handle instead of being half-closed.
+    const second = store.createWorkspaceOperation({
+      conversationId: bound.id,
+      kind: 'rename',
+      oldBranch: 'feature/after',
+      newBranch: 'feature/third',
+    });
+    assert.throws(
+      () => store.renameConversationWorkspaceBranchAndCompleteOperation(bound.id, {
+        oldBranch: 'feature/stale-writer',
+        newBranch: 'feature/third',
+      }, second.id),
+      (error) => error && error.code === 'room_workspace_binding_conflict'
+    );
+    assert.equal(store.getConversationWithoutMessages(bound.id).branch, 'feature/after');
+    assert.equal(store.getWorkspaceOperation(second.id).status, 'pending');
+
+    // An unknown or foreign operation id also fails the whole transaction.
+    const third = store.createWorkspaceOperation({
+      conversationId: bound.id,
+      kind: 'rename',
+      oldBranch: 'feature/after',
+      newBranch: 'feature/fourth',
+    });
+    assert.throws(
+      () => store.renameConversationWorkspaceBranchAndCompleteOperation(bound.id, {
+        oldBranch: 'feature/after',
+        newBranch: 'feature/fourth',
+      }, 'missing-operation-id'),
+      (error) => error && error.code === 'room_workspace_operation_conflict'
+    );
+    assert.equal(store.getConversationWithoutMessages(bound.id).branch, 'feature/after');
+    assert.equal(store.getWorkspaceOperation(third.id).status, 'pending');
+
+    // The failed record stays pending, so a replacement supersedes it atomically.
+    const replacement = store.replacePendingWorkspaceOperation({
+      conversationId: bound.id,
+      kind: 'rename',
+      oldBranch: 'feature/after',
+      newBranch: 'feature/fourth',
+    });
+    assert.equal(store.getWorkspaceOperation(second.id).status, 'failed');
+    assert.equal(store.getWorkspaceOperation(second.id).errorCode, 'superseded_by_consistent_state');
+    assert.equal(store.getWorkspaceOperation(third.id).status, 'failed');
+    assert.equal(store.getPendingWorkspaceOperation(bound.id).id, replacement.id);
   } finally {
     if (typeof store.close === 'function') store.close();
   }

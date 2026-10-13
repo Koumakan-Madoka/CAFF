@@ -1276,13 +1276,54 @@ export class ChatAppStore {
         return this.getConversationWithoutMessages(conversationId);
       });
 
+      // The branch CAS and the write-ahead operation close-out commit in ONE SQLite
+      // transaction: the journal can never be left pending after the binding moved,
+      // and a failed close-out rolls the binding update back with it.
+      this.renameConversationWorkspaceBranchAndCompleteOperationTransaction = this.db.transaction(
+        (conversationId: any, rename: any, operationId: any) => {
+          const updated = this.renameConversationWorkspaceBranchTransaction(conversationId, rename);
+          const normalizedOperationId = String(operationId || '').trim();
+          if (normalizedOperationId) {
+            const operation = this.workspaceOperationRepository.getById(normalizedOperationId);
+            if (!operation || operation.conversationId !== String(conversationId || '').trim()) {
+              const error: any = new Error('Workspace operation record is missing for the rename close-out');
+              error.code = 'room_workspace_operation_conflict';
+              throw error;
+            }
+            if (operation.status === 'pending') {
+              this.workspaceOperationRepository.complete(normalizedOperationId, nowIso());
+            } else if (operation.status !== 'completed') {
+              const error: any = new Error(`Workspace operation ${normalizedOperationId} is ${operation.status} and cannot be completed`);
+              error.code = 'room_workspace_operation_conflict';
+              throw error;
+            }
+          }
+          return updated;
+        }
+      );
+
+      // A new write-ahead record atomically supersedes any still-pending records of
+      // the Room, so a stale journal row can never outlive the operation that
+      // replaces it.
+      this.replacePendingWorkspaceOperationTransaction = this.db.transaction((operation: any, supersedeErrorCode: any) => {
+        const conversationId = String(operation && operation.conversationId || '').trim();
+        if (conversationId) {
+          this.workspaceOperationRepository.failPendingForConversation(
+            conversationId,
+            String(supersedeErrorCode || 'superseded_by_consistent_state'),
+            nowIso()
+          );
+        }
+        return this.createWorkspaceOperation(operation);
+      });
+
       this.countActiveConversationTurnsStatement = this.db.prepare(`
         SELECT COUNT(*) AS count
         FROM chat_messages
         WHERE conversation_id = @conversationId
           AND role = 'assistant'
           AND status IN ('queued', 'running', 'streaming')
-          AND (@excludeTurnId = '' OR turn_id IS NULL OR turn_id <> @excludeTurnId)
+          AND (@excludeMessageId = '' OR id <> @excludeMessageId)
       `);
 
       this.persistMessageDetails = (payload: any) => {
@@ -3332,6 +3373,14 @@ export class ChatAppStore {
     return this.renameConversationWorkspaceBranchTransaction(conversationId, rename);
   }
 
+  renameConversationWorkspaceBranchAndCompleteOperation(conversationId: any, rename: any, operationId: any) {
+    return this.renameConversationWorkspaceBranchAndCompleteOperationTransaction(conversationId, rename, operationId);
+  }
+
+  replacePendingWorkspaceOperation(operation: any = {}, supersedeErrorCode: any = 'superseded_by_consistent_state') {
+    return this.replacePendingWorkspaceOperationTransaction(operation, supersedeErrorCode);
+  }
+
   hasActiveConversationTurn(conversationId: any, options: any = {}) {
     const normalized = String(conversationId || '').trim();
     if (!normalized) {
@@ -3339,7 +3388,7 @@ export class ChatAppStore {
     }
     const row = this.countActiveConversationTurnsStatement.get({
       conversationId: normalized,
-      excludeTurnId: String(options.excludeTurnId || '').trim(),
+      excludeMessageId: String(options.excludeMessageId || '').trim(),
     });
     return Boolean(row && Number(row.count) > 0);
   }
@@ -3363,6 +3412,14 @@ export class ChatAppStore {
       return null;
     }
     return this.workspaceOperationRepository.getPendingForConversation(normalized);
+  }
+
+  getWorkspaceOperation(id: any) {
+    const normalized = String(id || '').trim();
+    if (!normalized) {
+      return null;
+    }
+    return this.workspaceOperationRepository.getById(normalized);
   }
 
   completeWorkspaceOperation(id: any) {

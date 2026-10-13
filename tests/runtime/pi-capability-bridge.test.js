@@ -457,6 +457,7 @@ test('agent bridge authenticates the invocation and injects project scope into P
     turnId: 'turn-agent-bridge',
     agentId: 'agent-source',
     agentName: 'Source Agent',
+    assistantMessageId: 'message-agent-bridge',
     incomingDeliveryId: 'delivery-incoming',
     stage: { status: 'running' },
   }));
@@ -480,6 +481,7 @@ test('agent bridge authenticates the invocation and injects project scope into P
     sourceAgentId: 'agent-source',
     sourceAgentName: 'Source Agent',
     sourceTurnId: 'turn-agent-bridge',
+    sourceMessageId: 'message-agent-bridge',
     projectScopeId: 'project-f003',
     traceId: 'trace-parent-f003',
     incomingDeliveryId: 'delivery-incoming',

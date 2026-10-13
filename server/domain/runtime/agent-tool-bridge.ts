@@ -1423,11 +1423,13 @@ export function createAgentToolBridge(options: any = {}) {
       return preview;
     }
 
-    // Non-UI fallback: the calling agent's own turn must not count as a blocking
-    // active execution, but any other active execution in the Room still blocks.
+    // Non-UI fallback: the calling invocation's own assistant message must not count
+    // as a blocking active execution, but any OTHER active execution in the Room —
+    // including another agent running in the same turn — still blocks. Exclusion is
+    // therefore per assistant message, never per turn.
     const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
       ? store.hasActiveConversationTurn(conversationId, {
-          excludeTurnId: String(principal.sourceTurnId || '').trim() || undefined,
+          excludeMessageId: String(principal.sourceMessageId || '').trim() || undefined,
         })
       : false;
     const result = renameAndPersistRoomWorkspace({
@@ -1596,6 +1598,7 @@ export function createAgentToolBridge(options: any = {}) {
       sourceAgentId: context.agentId,
       sourceAgentName: context.agentName,
       sourceTurnId: String(context.turnId || '').trim() || null,
+      sourceMessageId: String(context.assistantMessageId || '').trim() || null,
       projectScopeId: String(conversation && conversation.projectScopeId || '').trim(),
       traceId,
       incomingDeliveryId,

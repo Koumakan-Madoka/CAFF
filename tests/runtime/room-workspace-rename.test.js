@@ -92,8 +92,20 @@ function createStubStore(conversation, overrides = {}) {
       this.operations.push(record);
       return record;
     },
+    replacePendingWorkspaceOperation(operation, supersedeErrorCode = 'superseded_by_consistent_state') {
+      for (const record of this.operations) {
+        if (record.conversationId === operation.conversationId && record.status === 'pending') {
+          record.status = 'failed';
+          record.errorCode = supersedeErrorCode;
+        }
+      }
+      return this.createWorkspaceOperation(operation);
+    },
     getPendingWorkspaceOperation() {
       return this.operations.filter((operation) => operation.status === 'pending').pop() || null;
+    },
+    getWorkspaceOperation(id) {
+      return this.operations.find((operation) => operation.id === id) || null;
     },
     completeWorkspaceOperation(id) {
       const operation = this.operations.find((candidate) => candidate.id === id);
@@ -120,6 +132,27 @@ function createStubStore(conversation, overrides = {}) {
       }
       this.conversation = { ...this.conversation, branch: newBranch, updatedAt };
       return this.conversation;
+    },
+    // Mirrors the real store contract: the branch CAS and the operation close-out
+    // behave like one atomic transaction (a close-out failure rolls the CAS back).
+    renameConversationWorkspaceBranchAndCompleteOperation(conversationId, rename, operationId) {
+      const snapshot = this.conversation;
+      const callsBefore = this.calls.length;
+      try {
+        const updated = this.renameConversationWorkspaceBranch(conversationId, rename);
+        if (overrides.failOperationClose) {
+          const error = new Error('operation close-out failed');
+          error.code = 'room_workspace_operation_close_failed';
+          throw error;
+        }
+        this.completeWorkspaceOperation(operationId);
+        return updated;
+      } catch (error) {
+        // Simulated transaction rollback.
+        this.conversation = snapshot;
+        this.calls.length = callsBefore;
+        throw error;
+      }
     },
   };
 }
@@ -438,7 +471,7 @@ test('a lost compare-and-swap update compensates the git rename', () => {
   try {
     // Simulate a concurrent writer winning the conditional update after the git rename.
     const store = createStubStore(conversation);
-    store.renameConversationWorkspaceBranch = function renameConflict() {
+    store.renameConversationWorkspaceBranchAndCompleteOperation = function renameConflict() {
       const error = new Error('Room workspace binding changed concurrently');
       error.code = 'room_workspace_binding_conflict';
       throw error;
@@ -449,6 +482,58 @@ test('a lost compare-and-swap update compensates the git rename', () => {
     );
     // The git rename was rolled back; no half-finished state remains.
     assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/cas-before');
+    assert.equal(store.operations.length, 1);
+    assert.equal(store.operations[0].status, 'failed');
+  } finally {
+    cleanup(outer);
+  }
+});
+
+test('an operation close-out failure rolls the branch CAS back with it and compensates git', () => {
+  const { outer, root: repoRoot } = initRepo();
+  const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/close-before');
+  try {
+    // Simulates the combined transaction failing at the journal close-out stage:
+    // the branch CAS must be rolled back atomically, so neither a git/db split nor
+    // a lost recovery handle is possible.
+    const store = createStubStore(conversation, { failOperationClose: true });
+    assert.throws(
+      () => renameAndPersistRoomWorkspace({ store, conversation, project, branchName: 'feature/close-after' }),
+      (error) => assertWorkspaceError(error, 'room_workspace_operation_close_failed')
+    );
+    assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/close-before');
+    assert.equal(store.conversation.branch, 'feature/close-before');
+    assert.equal(store.operations.length, 1);
+    assert.equal(store.operations[0].status, 'failed');
+  } finally {
+    cleanup(outer);
+  }
+});
+
+test('a failed git rollback keeps the operation record pending as the recovery handle', () => {
+  const { outer, root: repoRoot } = initRepo();
+  const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/comp-before');
+  try {
+    const store = createStubStore(conversation);
+    // Fault injection: the persistence stage fails AND the compensating git rename
+    // fails because a conflicting branch with the old name appeared in between.
+    store.renameConversationWorkspaceBranchAndCompleteOperation = function failAndBlockRollback() {
+      git(repoRoot, ['branch', 'feature/comp-before', 'develop']);
+      const error = new Error('database write failed');
+      error.code = 'room_workspace_persistence_failed';
+      throw error;
+    };
+    assert.throws(
+      () => renameAndPersistRoomWorkspace({ store, conversation, project, branchName: 'feature/comp-after' }),
+      (error) => assertWorkspaceError(error, 'room_workspace_compensation_failed')
+    );
+    // Git kept the new name, the DB kept the old name, and the pending record is
+    // preserved as the recovery handle instead of being marked failed.
+    assert.equal(git(repoRoot, ['branch', '--list', 'feature/comp-after', '--format=%(refname:short)']), 'feature/comp-after');
+    assert.equal(store.conversation.branch, 'feature/comp-before');
+    assert.equal(store.operations.length, 1);
+    assert.equal(store.operations[0].status, 'pending');
+    assert.equal(store.getPendingWorkspaceOperation().id, store.operations[0].id);
   } finally {
     cleanup(outer);
   }
@@ -518,29 +603,182 @@ test('an interrupted rename resumes only through its recorded operation', () => 
   }
 });
 
-test('a consistent state closes a stale pending operation before validation', () => {
+test('a stale pending record in a consistent state is never mutated by rejected requests', () => {
+  const { outer, root: repoRoot } = initRepo();
+  const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/journal-before');
+  try {
+    const store = createStubStore(conversation);
+    // Interruption point: the write-ahead journal exists but the git rename never ran.
+    const journaled = store.createWorkspaceOperation({
+      conversationId: conversation.id,
+      kind: 'rename',
+      oldBranch: 'feature/journal-before',
+      newBranch: 'feature/journal-after',
+      fingerprint: null,
+    });
+
+    const assertNoSideEffects = () => {
+      assert.equal(store.conversation.branch, 'feature/journal-before');
+      assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/journal-before');
+      assert.equal(store.calls.length, 0);
+      const record = store.getWorkspaceOperation(journaled.id);
+      assert.equal(record.status, 'pending');
+      assert.equal(record.errorCode || null, null);
+      assert.equal(store.operations.length, 1);
+    };
+
+    // A stale fingerprint is rejected without touching the journal.
+    assert.throws(
+      () => renameAndPersistRoomWorkspace({
+        store,
+        conversation,
+        project,
+        branchName: 'feature/journal-after',
+        expectedFingerprint: 'stale-fingerprint',
+        fingerprintOf: previewFingerprint,
+      }),
+      (error) => assertWorkspaceError(error, 'room_workspace_authorization_stale')
+    );
+    assertNoSideEffects();
+
+    // An active execution is rejected without touching the journal.
+    assert.throws(
+      () => renameAndPersistRoomWorkspace({
+        store,
+        conversation,
+        project,
+        branchName: 'feature/journal-after',
+        hasActiveExecution: true,
+      }),
+      (error) => assertWorkspaceError(error, 'room_workspace_execution_active')
+    );
+    assertNoSideEffects();
+
+    // A conflicting target is rejected without touching the journal.
+    git(repoRoot, ['branch', 'feature/journal-conflict', 'develop']);
+    assert.throws(
+      () => renameAndPersistRoomWorkspace({
+        store,
+        conversation,
+        project,
+        branchName: 'feature/journal-conflict',
+      }),
+      (error) => assertWorkspaceError(error, 'room_workspace_branch_exists')
+    );
+    assertNoSideEffects();
+
+    // The unchanged-name rejection also leaves the journal alone.
+    assert.throws(
+      () => renameAndPersistRoomWorkspace({ store, conversation, project, branchName: 'feature/journal-before' }),
+      (error) => assertWorkspaceError(error, 'room_workspace_branch_name_unchanged')
+    );
+    assertNoSideEffects();
+
+    // A validated retry of the journaled plan supersedes the stale record and runs.
+    const result = renameAndPersistRoomWorkspace({
+      store,
+      conversation,
+      project,
+      branchName: 'feature/journal-after',
+    });
+    assert.equal(result.conversation.branch, 'feature/journal-after');
+    assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/journal-after');
+    assert.equal(store.getWorkspaceOperation(journaled.id).status, 'failed');
+    assert.equal(store.getWorkspaceOperation(journaled.id).errorCode, 'superseded_by_consistent_state');
+    assert.equal(store.operations.length, 2);
+    assert.equal(store.operations[1].status, 'completed');
+  } finally {
+    cleanup(outer);
+  }
+});
+
+test('a crash after the db commit leaves no pending record because the close-out is atomic', () => {
   const { outer, root: repoRoot } = initRepo();
   const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/idem-before');
   try {
     const store = createStubStore(conversation);
-    store.createWorkspaceOperation({
+    // Legacy interruption state: git and the db agree, but a journal row was never
+    // closed (only possible for records written before the atomic close-out). A
+    // rejected request must not mutate it; the next validated rename closes it.
+    git(binding.worktreePath, ['branch', '-m', 'feature/idem-before', 'feature/idem-after']);
+    store.conversation = { ...store.conversation, branch: 'feature/idem-after' };
+    const stale = store.createWorkspaceOperation({
       conversationId: conversation.id,
       kind: 'rename',
       oldBranch: 'feature/idem-before',
       newBranch: 'feature/idem-after',
       fingerprint: null,
     });
-    // Crash after the DB CAS but before the operation was closed.
-    git(binding.worktreePath, ['branch', '-m', 'feature/idem-before', 'feature/idem-after']);
-    store.conversation = { ...store.conversation, branch: 'feature/idem-after' };
-    // DB and git agree here, so this goes through the consistent-state path,
-    // which closes the stale pending operation before proceeding.
+
     assert.throws(
       () => renameAndPersistRoomWorkspace({ store, conversation, project, branchName: 'feature/idem-after' }),
       (error) => assertWorkspaceError(error, 'room_workspace_branch_name_unchanged')
     );
-    assert.equal(store.operations[0].status, 'failed');
-    assert.equal(store.operations[0].errorCode, 'superseded_by_consistent_state');
+    assert.equal(store.getWorkspaceOperation(stale.id).status, 'pending');
+    assert.equal(store.calls.length, 0);
+
+    const result = renameAndPersistRoomWorkspace({ store, conversation, project, branchName: 'feature/idem-final' });
+    assert.equal(result.conversation.branch, 'feature/idem-final');
+    assert.equal(git(binding.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), 'feature/idem-final');
+    assert.equal(store.getWorkspaceOperation(stale.id).status, 'failed');
+    assert.equal(store.getWorkspaceOperation(stale.id).errorCode, 'superseded_by_consistent_state');
+  } finally {
+    cleanup(outer);
+  }
+});
+
+test('a fallback-originated interrupted operation re-authorizes through a fresh resume card fingerprint', () => {
+  const { outer, root: repoRoot } = initRepo();
+  const { project, conversation, binding } = bindCustomConversation(repoRoot, 'feature/fallback-crash');
+  try {
+    const store = createStubStore(conversation);
+    // The non-UI fallback records no card fingerprint; simulate the crash after
+    // the write-ahead record and the git rename, before the DB commit.
+    store.createWorkspaceOperation({
+      conversationId: conversation.id,
+      kind: 'rename',
+      oldBranch: 'feature/fallback-crash',
+      newBranch: 'feature/fallback-resumed',
+      fingerprint: null,
+    });
+    git(binding.worktreePath, ['branch', '-m', 'feature/fallback-crash', 'feature/fallback-resumed']);
+
+    // A wrong fingerprint is rejected before any DB write, even though the record
+    // has no stored fingerprint to compare against.
+    assert.throws(
+      () => renameAndPersistRoomWorkspace({
+        store,
+        conversation,
+        project,
+        branchName: 'feature/fallback-resumed',
+        expectedFingerprint: 'not-the-card-fingerprint',
+        fingerprintOf: previewFingerprint,
+      }),
+      (error) => assertWorkspaceError(error, 'room_workspace_authorization_stale')
+    );
+    assert.equal(store.calls.length, 0);
+    assert.equal(store.conversation.branch, 'feature/fallback-crash');
+
+    // The fresh resume preview defines the fingerprint a newly issued card carries.
+    const pending = store.getPendingWorkspaceOperation();
+    const resumePreview = previewRoomWorkspaceRename({
+      conversation: store.conversation,
+      project,
+      branchName: 'feature/fallback-resumed',
+      pendingOperation: pending,
+    });
+    assert.equal(resumePreview.resume, true);
+    const result = renameAndPersistRoomWorkspace({
+      store,
+      conversation,
+      project,
+      branchName: 'feature/fallback-resumed',
+      expectedFingerprint: previewFingerprint(resumePreview),
+      fingerprintOf: previewFingerprint,
+    });
+    assert.equal(result.recovered, true);
+    assert.equal(result.conversation.branch, 'feature/fallback-resumed');
+    assert.equal(store.operations[0].status, 'completed');
   } finally {
     cleanup(outer);
   }
