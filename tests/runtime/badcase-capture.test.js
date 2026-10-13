@@ -365,6 +365,46 @@ test('秘密哨兵文件不进入 CAS；prompt 中的受控变量值被占位替
   assert.equal(result.checkpoint.replayInput.controlledReplacements.length >= 2, true);
 });
 
+test('本轮图片未归档时 fresh/resume 均不可完整回放，恢复不得误报完整', { skip: capSkip }, async (t) => {
+  for (const deliveryMode of ['fresh', 'resume']) {
+    await t.test(deliveryMode, () => {
+      const tempDir = withTempDir();
+      t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+      const projectDir = path.join(tempDir, 'project');
+      fs.mkdirSync(projectDir);
+      fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
+      const sessionPath = path.join(tempDir, 'session.jsonl');
+      fs.writeFileSync(sessionPath, '{"type":"session","version":3,"id":"s1"}\n');
+      const service = makeService(tempDir);
+      authorize(service, 'project-1', enabledPolicy(projectDir));
+      const args = captureArgs(projectDir, { deliveryMode, sessionPath, images: [] });
+      const baseline = service.captureTurnCheckpoint(args);
+      assert.equal(baseline.checkpoint.replayInput.complete, true, 'text-only positive control');
+      const images = [{ type: 'image', mimeType: 'image/png', data: Buffer.from(SENTINEL).toString('base64') }];
+      const captured = service.captureTurnCheckpoint({ ...args, images });
+      assert.equal(captured.captured, true);
+      const replay = captured.checkpoint.replayInput;
+      assert.equal(replay.complete, false, 'current image bytes are not in the replay package');
+      assert.equal(replay.deliveryMode, deliveryMode);
+      assert.equal(replay.invocationImageCount, 1);
+      assert.ok(replay.incompleteReasons.includes('invocation_images_not_archived'));
+      assert.equal(JSON.stringify(captured.checkpoint).includes(images[0].data), false);
+      const imageHash = require('node:crypto').createHash('sha256').update(SENTINEL).digest('hex');
+      assert.equal(service.store.hasBlob('project-1', imageHash), false);
+      const restored = service.restoreCheckpoint({ projectId: 'project-1', checkpointId: captured.checkpointId, targetDir: path.join(tempDir, 'restore') });
+      assert.equal(restored.ok, true);
+      assert.equal(restored.replayInputComplete, false);
+      assert.equal(restored.strictEvalEligible, false);
+      for (const malformed of [null, {}, 'not-an-array']) {
+        const invalid = service.captureTurnCheckpoint({ ...args, images: malformed });
+        assert.equal(invalid.checkpoint.replayInput.complete, false);
+        assert.equal(invalid.checkpoint.replayInput.invocationImageCount, null);
+        assert.ok(invalid.checkpoint.replayInput.incompleteReasons.includes('invocation_images_invalid'));
+      }
+    });
+  }
+});
+
 test('resume 缺 session 时标记不可完整回放，禁止静默降级 fresh', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');

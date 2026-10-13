@@ -786,6 +786,18 @@ export function createCollector(options: any = {}) {
       }
     };
 
+    // Runtime images are distinct from both prompt text and the pre-turn
+    // resume session. Until authorized attachment archival is implemented,
+    // retain only their count and explicitly block complete replay. Never
+    // persist base64 bytes, paths, MIME metadata or hashes via this channel.
+    replayInput.invocationImageCount = Array.isArray(input.images) ? input.images.length : 0;
+    if (input.images !== undefined && !Array.isArray(input.images)) {
+      replayInput.invocationImageCount = null;
+      markIncomplete('invocation_images_invalid');
+    } else if (replayInput.invocationImageCount > 0) {
+      markIncomplete('invocation_images_not_archived');
+    }
+
     const promptText = String(input.prompt || '');
     const replaced = replaceControlledVariables(promptText, input.controlledValues);
     replayInput.controlledReplacements = replaced.replacements;

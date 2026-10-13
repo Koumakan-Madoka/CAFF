@@ -263,6 +263,90 @@ function createFakeAgentToolBridge() {
   };
 }
 
+test('pre-turn capture handles refusal/exception/disabled policy and preserves a checkpoint on run failure', async (t) => {
+  for (const mode of ['refusal', 'exception', 'disabled', 'run-failure']) {
+    await t.test(mode, async (t) => {
+      const tempDir = withTempDir('caff-capture-hook-');
+      const projectDir = path.join(tempDir, 'project');
+      fs.mkdirSync(projectDir);
+      fs.writeFileSync(path.join(projectDir, 'target.txt'), 'not for capture');
+      const minimalPi = require('../../build/lib/minimal-pi');
+      const executorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+      const original = minimalPi.startRun;
+      const order = [];
+      let input;
+      let runPrompt;
+      let runOptions;
+      let captureResult;
+      let targetReads = 0;
+      minimalPi.startRun = (_provider, _model, prompt, options) => {
+        order.push('startRun'); runPrompt = prompt; runOptions = options;
+        return mode === 'run-failure' ? createFailedRunHandle(new Error('synthetic run failure')) : createRunHandle('Normal reply.');
+      };
+      delete require.cache[executorPath];
+      t.after(() => {
+        minimalPi.startRun = original;
+        delete require.cache[executorPath];
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      });
+      const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
+      const service = createBadcaseCaptureService({ captureRoot: path.join(tempDir, 'capture'), onFileRead() { targetReads++; } });
+      // Persist enabled -> disabled without authorizing or ever collecting the fixture.
+      service.savePolicy('project-hook', { status: 'enabled', authorizedDirs: [projectDir] });
+      service.savePolicy('project-hook', { status: 'disabled', authorizedDirs: [projectDir] });
+      const { createAgentExecutor } = require(executorPath);
+      const { createTurnState } = require('../../build/server/domain/conversation/turn/turn-state');
+      const agent = { id: 'agent-hook', name: 'Hook', personaPrompt: 'Be brief.', sessionReuseEnabled: false };
+      const conversation = { id: 'capture-hook-room', projectScopeId: 'project-hook', worktreePath: projectDir,
+        title: 'Capture hook', type: 'standard', agents: [agent], metadata: {} };
+      const store = createFakeStore(conversation);
+      const executor = createAgentExecutor({
+        store, skillRegistry: { resolveSkills: () => [] }, modeStore: { get: () => null },
+        agentToolBridge: createFakeAgentToolBridge(), agentDir: tempDir,
+        sqlitePath: path.join(tempDir, 'chat.sqlite'), toolBaseUrl: 'http://127.0.0.1:3100',
+        agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'), agentToolRelativePath: './lib/agent-chat-tools.js',
+        badcaseCapture: { captureTurnCheckpoint(args) {
+          order.push('capture'); input = args;
+          if (mode === 'run-failure') return { captured: true, checkpointId: 'checkpoint-before-failure' };
+          if (mode === 'exception') throw new Error('synthetic capture failure');
+          if (mode === 'refusal') return { captured: false, checkpointId: 'must-not-link', reason: 'synthetic_refusal' };
+          captureResult = service.captureTurnCheckpoint(args);
+          return captureResult;
+        } },
+      });
+      const turnState = createTurnState(conversation, 'capture-hook-turn');
+      const completedReplies = [];
+      const message = { id: 'user-hook', role: 'user', content: 'Hello.' };
+      await executor.executeConversationAgent({
+        runStore: createFakeRunStore(), conversationId: conversation.id, turnId: turnState.turnId,
+        rootTaskId: 'capture-hook-task', conversation, promptMessages: [message], promptUserMessage: message,
+        queueItem: { triggerType: 'user' }, agent, turnState, completedReplies, failedReplies: [],
+        routingMode: 'mention_queue', hop: 1, remainingSlots: 1, enqueueAgent() {},
+        allowHandoffs: true, finalStopsTurn: true, projectDir,
+      });
+      assert.deepEqual(order, ['capture', 'startRun']);
+      assert.equal(input.prompt, runPrompt);
+      assert.deepEqual(input.images, runOptions.images);
+      assert.equal(input.deliveryMode, 'fresh');
+      assert.equal(runOptions.resume, false);
+      assert.equal(input.sessionPath, '');
+      assert.equal(input.targetDir, projectDir);
+      assert.equal(completedReplies.length, mode === 'run-failure' ? 0 : 1);
+      assert.equal(targetReads, 0);
+      if (mode === 'disabled') assert.equal(captureResult.reason, 'policy_not_enabled');
+      if (mode === 'run-failure') {
+        const failed = store.messageWrites.updates.find(({ patch }) => patch.status === 'failed');
+        assert.ok(failed);
+        assert.equal(failed.patch.metadata.badcaseCheckpointId, 'checkpoint-before-failure');
+        assert.equal(failed.patch.runId, 'run-structured-failure');
+      } else {
+        assert.equal(store.messageWrites.updates.some(({ patch }) => patch.metadata?.badcaseCheckpointId), false);
+      }
+      assert.equal(service.store.loadLatestCheckpoint('project-hook', projectDir), null);
+    });
+  }
+});
+
 test('agent executor blocks an unresolved model before tasks, runs, sandbox or message writes', async (t) => {
   const tempDir = withTempDir('caff-agent-model-preflight-');
   const minimalPi = require('../../build/lib/minimal-pi');
@@ -1599,6 +1683,7 @@ test('agent executor downgrades historical images for a non-vision invocation an
   let startRunCalled = false;
   let capturedPrompt = '';
   let capturedImages = null;
+  let checkpointImages = null;
 
   minimalPi.startRun = (_provider, _model, prompt, options) => {
     startRunCalled = true;
@@ -1647,6 +1732,10 @@ test('agent executor downgrades historical images for a non-vision invocation an
         return [{ provider: 'deepseek', model: 'deepseek-v3', input: ['text'], runtimeResolvable: true, supportedThinkingLevels: ['off'] }];
       },
     },
+    badcaseCapture: { captureTurnCheckpoint(input) {
+      checkpointImages = input.images;
+      return { captured: false, reason: 'synthetic_disabled' };
+    } },
   });
   const turnState = createTurnState(conversation, 'turn-image-block');
 
@@ -1684,12 +1773,13 @@ test('agent executor downgrades historical images for a non-vision invocation an
 
   assert.equal(startRunCalled, true, 'text-only history images should be projected, not block the invocation');
   assert.deepEqual(capturedImages, []);
+  assert.deepEqual(checkpointImages, [], 'history markers do not imply runtime image bytes');
   assert.match(capturedPrompt, /what is this image[\s\S]*\[一张图片，但是你没有读取图片的能力\]/u);
   assert.equal(result.stopTurn, true, 'a successful final reply completes the turn normally');
   assert.equal(failedReplies.length, 0);
 });
 
-test('agent executor passes projected images to startRun for a vision model', async (t) => {
+test('agent executor passes projected images to startRun and pre-turn capture for a vision model', async (t) => {
   const tempDir = withTempDir('caff-agent-executor-image-pass-');
   const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
   const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
@@ -1698,8 +1788,11 @@ test('agent executor passes projected images to startRun for a vision model', as
   const originalStartRun = minimalPi.startRun;
   let capturedImages = null;
   let capturedPrompt = null;
+  let checkpointInput = null;
+  const callOrder = [];
 
   minimalPi.startRun = (_provider, _model, prompt, options) => {
+    callOrder.push('startRun');
     capturedImages = options && options.images;
     capturedPrompt = prompt;
     return createRunHandle('Done.');
@@ -1723,6 +1816,7 @@ test('agent executor passes projected images to startRun for a vision model', as
   };
   const conversation = {
     id: 'conversation-image-pass',
+    projectScopeId: 'project-image-pass',
     title: 'Image Pass',
     type: 'standard',
     agents: [agent],
@@ -1752,6 +1846,13 @@ test('agent executor passes projected images to startRun for a vision model', as
       },
     },
     uploadsDir,
+    badcaseCapture: {
+      captureTurnCheckpoint(input) {
+        callOrder.push('capture');
+        checkpointInput = input;
+        return { captured: true, checkpointId: 'checkpoint-image-pass' };
+      },
+    },
   });
   const turnState = createTurnState(conversation, 'turn-image-pass');
 
@@ -1794,6 +1895,20 @@ test('agent executor passes projected images to startRun for a vision model', as
     projectDir: tempDir,
   });
 
+  assert.deepEqual(callOrder, ['capture', 'startRun']);
+  assert.equal(checkpointInput.prompt, capturedPrompt);
+  assert.deepEqual(checkpointInput.images, capturedImages, 'capture must see the actual projected runtime images');
+  assert.equal(checkpointInput.deliveryMode, 'fresh');
+  assert.equal(checkpointInput.projectId, 'project-image-pass');
+  assert.equal(checkpointInput.conversationId, conversation.id);
+  assert.equal(checkpointInput.turnId, turnState.turnId);
+  assert.equal(checkpointInput.agentId, agent.id);
+  const started = store.messageWrites.updates.find(({ patch }) => patch.metadata?.badcaseCheckpointId);
+  assert.ok(started, 'checkpoint reference must reach the reply message');
+  assert.equal(started.patch.metadata.badcaseCheckpointId, 'checkpoint-image-pass');
+  assert.equal(started.patch.runId, 'run-hook-await');
+  assert.equal(store.getMessage(started.messageId).metadata.badcaseCheckpointId, 'checkpoint-image-pass',
+    'completion must retain the checkpoint association');
   assert.equal(capturedImages.length, 1);
   assert.equal(capturedImages[0].type, 'image');
   assert.equal(capturedImages[0].mimeType, 'image/png');
@@ -1917,6 +2032,7 @@ test('agent executor blocks IMAGE_MIME_MISMATCH when registry persisted MIME con
 
 test('agent executor writes integrity_status=missing_file when attached image file is gone', async (t) => {
   const tempDir = withTempDir('caff-agent-executor-missing-image-');
+  let captureCalls = 0;
   const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
   const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
   const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
@@ -1972,6 +2088,10 @@ test('agent executor writes integrity_status=missing_file when attached image fi
       },
     },
     uploadsDir,
+    badcaseCapture: { captureTurnCheckpoint() {
+      captureCalls++;
+      return { captured: true, checkpointId: 'must-not-capture-missing-image' };
+    } },
   });
   const turnState = createTurnState(conversation, 'turn-missing-image');
 
@@ -2008,6 +2128,7 @@ test('agent executor writes integrity_status=missing_file when attached image fi
   });
 
   assert.equal(startRunCalled, false, 'startRun must not be called when the image file is missing');
+  assert.equal(captureCalls, 0, 'preflight failure must not produce a checkpoint for an unstarted run');
   assert.equal(store.integrityWrites.length, 1, 'integrity failure must be written back');
   assert.equal(store.integrityWrites[0].imageId, 'img-missing');
   assert.match(store.integrityWrites[0].integrityError, /missing/u);

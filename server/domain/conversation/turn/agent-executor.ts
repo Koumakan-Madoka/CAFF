@@ -2305,6 +2305,9 @@ export function createAgentExecutor(options: any = {}) {
           agentId: agent.id,
           deliveryMode: resumeSession ? 'resume' : 'fresh',
           prompt,
+          // Use the actual invocation projection, not history attachment markers:
+          // text-only models may intentionally receive no image bytes.
+          images: runOptions.images,
           controlledValues: {
             CAFF_CHAT_API_URL: toolBaseUrl,
             CAFF_CHAT_CALLBACK_TOKEN: toolInvocation.callbackToken,
@@ -2738,6 +2741,7 @@ export function createAgentExecutor(options: any = {}) {
       const tokenUsage = summarizeTokenUsage(result.usage);
       const modelUsage = summarizeModelUsageCalls(result.usageCalls);
       const finalMetadata = {
+        badcaseCheckpointId,
         provider,
         model,
         promptVersion: AGENT_PROMPT_VERSION,
@@ -3034,6 +3038,7 @@ export function createAgentExecutor(options: any = {}) {
         runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
         errorMessage,
         metadata: {
+          badcaseCheckpointId,
           provider,
           model,
           sessionName,
