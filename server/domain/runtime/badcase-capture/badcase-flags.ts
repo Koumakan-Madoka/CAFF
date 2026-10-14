@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
+import { validateTrajectoryRequest } from './trajectory';
 
 // Marker persistence only. This is NOT a sealing implementation: no files,
 // prompt, message content or trajectory are copied, and no replay status is
@@ -41,6 +42,18 @@ export function createBadcaseFlagService(options: any) {
     return message;
   }
 
+  // Freeze the complete identity at first mark, never reconstruct missing
+  // original keys from a later, mutable message. This is association evidence
+  // only: the trajectory reader and retention layer must still verify sources.
+  function sealAssociation(scope: any, message: any) {
+    try {
+      return validateTrajectoryRequest({ association: {
+        ...scope, turnId: message.turnId, agentId: message.agentId, taskId: message.taskId,
+        checkpointId: message.metadata?.badcaseCheckpointId, runId: message.runId,
+      } }).association;
+    } catch { return null; }
+  }
+
   function load(scope: any): any {
     let bytes: Buffer;
     try {
@@ -65,6 +78,14 @@ export function createBadcaseFlagService(options: any) {
         || typeof record.actual !== 'string' || typeof record.expected !== 'string'
         || record.sealState !== 'pending' || record.captured !== false || record.runnable !== false
         || record.reproduced !== false || record.evaluable !== false) throw error('flag_record_invalid');
+      // Optional schema-v1 extension: legacy records remain readable, but their
+      // missing association is never backfilled. Explicit null means the first
+      // mark did not have all required keys. A present malformed value is damage.
+      if (record.sealAssociation !== undefined && record.sealAssociation !== null) {
+        const frozen = validateTrajectoryRequest({ association: record.sealAssociation }).association;
+        if (['projectId', 'conversationId', 'messageId', 'checkpointId', 'runId']
+          .some(key => frozen[key] !== record[key])) throw error('flag_record_invalid');
+      }
       return record;
     } catch { throw error('flag_record_invalid'); }
   }
@@ -78,6 +99,20 @@ export function createBadcaseFlagService(options: any) {
       const scope = ids(input);
       source(scope);
       return load(scope);
+    },
+    // Internal read-only gate for future sealing; not an authorization to
+    // archive arbitrary tool text. HTTP/agent callers cannot supply identity.
+    resolveSealAssociation(input: any) {
+      const scope = ids(input);
+      const message = source(scope);
+      const record = load(scope);
+      if (!record) throw error('flag_not_found');
+      if (!record.sealAssociation) throw error('flag_seal_association_incomplete');
+      const current = sealAssociation(scope, message);
+      if (!current || Object.entries(record.sealAssociation).some(([key, value]) => current[key] !== value)) {
+        throw error('flag_seal_association_mismatch');
+      }
+      return { ...record.sealAssociation };
     },
     mark(input: any) {
       if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -114,6 +149,7 @@ export function createBadcaseFlagService(options: any) {
         schemaVersion: 1,
         flagId: `flag-${hash(`${scope.projectId}\0${scope.messageId}`)}`,
         ...scope, runId, checkpointId, checkpointState, actual, expected,
+        sealAssociation: sealAssociation(scope, message),
         createdAt: new Date().toISOString(),
         sealState: 'pending', captured: false, runnable: false, reproduced: false, evaluable: false,
         missingEvidence: ['checkpoint_not_sealed', 'trajectory_not_archived', ...(checkpointState === 'manifest_present_unverified' ? [] : ['checkpoint_unavailable'])],
