@@ -187,7 +187,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 ### 3.6 回放运行的持久保护引用（内部底座，未接 launcher）
 
-`createReplayRunReferenceStore` 提供 `protect/get/protectedObjects`，存储在 `projects/<projectId>/runReferences/<sha256(replayRunId)>.json`。不是运行任务账本或活跃进程检测器，没有 HTTP/agent 工具入口；尚未接入 Docker launcher，不代表实际启动/完成了回放。未来 launcher 必须先成功 protect，再创建运行；模块为同步文件操作，只能由可信文件 worker/离线工具调用，不能直接放到 HTTP 主事件循环。
+`createReplayRunReferenceStore` 提供 `protect/get/protectedObjects`，存储在 `projects/<projectId>/runReferences/<sha256(replayRunId)>.json`。不是运行任务账本或活跃进程检测器，没有 HTTP/agent 工具入口；已由 §4.2 内部文件恢复探针在创建 Docker 前调用，但尚未接入 pi 回放 launcher，不代表实际启动/完成了 agent 回放。未来 launcher 必须先成功 protect，再创建运行；模块为同步文件操作，只能由可信文件 worker/离线工具调用，不能直接放到 HTTP 主事件循环。
 
 - 输入为服务端派生的 `replayRunId`、已有 retention 的 `referenceId` 及项目/checkpoint/会话/turn/agent 五元组。只引用**已保留的不可变副本**：源引用缺失必须失败，不从当前 live checkpoint 补建；每次 protect（包括幂等重试）复验源关联、全部 blob hash 与秘密哨兵。ID 也做秘密哨兵检查；不写 prompt、轨迹或凭据。
 - 记录冻结上述关联、源 checkpoint JSON 的 SHA-256、去重闭包与创建时间。每项目每 replayRunId 一条，不允许改绑；基线和候选可使用不同 run ID 指向同一源副本，不复制 CAS 或整个清单。源保留清单变化、损坏或缺失必须拒绝，不静默读 live 清单。记录不含 runnable/running/reproduced/evaluable 声明。
@@ -209,16 +209,28 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 ### 4.1 断网 Docker 执行底座（内部实验入口，非 pi 回放 launcher）
 
-`docker-sandbox.ts` 的 `prepareOfflineTask/runOfflineDockerTask` 只接收可信调用方已准备好的合成文件包、`.cjs` 入口与人工指定的镜像身份。没有 HTTP、agent 工具、生产采集或模型入口，**尚未接 retention/runReferences、pi SDK、session、评测回调、预算门控和评分**。不允许用该入口自行加载真实 badcase 或绕过授权；当前用途仅断网隔离验证。`completed` 仅表示离线程序退出 0，不产生 runnable/reproduced/evaluable，strictEvalEligible 恒 false。
+`docker-sandbox.ts` 的 `prepareOfflineTask/runOfflineDockerTask` 只接收可信调用方已准备好的合成文件包、`.cjs` 入口与人工指定的镜像身份。没有 HTTP、agent 工具、生产采集或模型入口，**pi SDK、session、评测回调、预算门控和评分仍未接入**；§4.2 另提供已封存文件与保护引用的固定恢复探针。不允许用该入口自行加载真实 badcase 或绕过授权；当前用途仅断网隔离验证。`completed` 仅表示离线程序退出 0，不产生 runnable/reproduced/evaluable，strictEvalEligible 恒 false。
 
 - 调度器当前只支持 Linux 主机（可由操作者显式在 WSL Linux 内启动）；Windows/macOS 默认入口失败关闭，不自动换 shell、WSL 或宿主执行任务。宿主仅运行受信调度器和静态输入校验，被测文件程序及其 shell 子进程均在 Docker 内。Docker 使用 PATH 中的受信 CLI、固定 `default` context，仅接受本地 Unix socket；CLI 本身可访问宿主 Docker socket，但 socket **不进入被测容器**。CLI、daemon、本地镜像及同 OS 用户配置属于 TCB，不宣称抵御恶意 Docker daemon/镜像。单进程最多两个在途任务，直到清理完成/明确失败才释放名额。
 - 模板必须同时指定本地 image ID、repository digest、Linux 架构及准确 Node/Python 版本；预检要求本地 inspect 一致，实际 create 使用 image ID 和 `--pull never`。拒绝浮动 tag、缺镜像、架构/digest 不符、镜像声明 VOLUME/ONBUILD/活动 HEALTHCHECK。容器内在写任务文件及启动程序前校验 Node 与 `/usr/bin/python3 --version`，不符退出 78。RepoDigests 是本地 daemon 的声明，不是独立供应链来源证明；当前**未导出/归档镜像，未校验 pi/项目依赖安装**，不能算 AC4 完成。
-- 输入只接受精确字段集合、规范相对 ASCII 路径、普通文件、规范 base64 和逐文件 SHA-256；拒绝重复、父子文件冲突、绝对/越界/链接字段、秘密哨兵。至多4096文件、16MiB原始内容、32MiB传输JSON；不是任意规模历史检查点恢复器，亦未保留文件 mode。payload 经 stdin 传入，不经命令行/宿主临时目录/tar。恢复到本次全新 `/work` tmpfs，先全部写入再启动入口；不同运行拥有独立容器和副本。归一化 inputHash 包含镜像、文件包和入口，不含随机容器标识或超时；比较完整实验条件仍需未来对照 manifest，不能只凭此 hash 认定 AC7。
+- 输入只接受精确字段集合、规范相对 ASCII 路径、普通文件、规范 base64 和逐文件 SHA-256；拒绝重复、父子文件冲突、绝对/越界/链接字段、秘密哨兵。至多4096文件、16MiB原始内容、32MiB传输JSON；不是任意规模历史检查点恢复器，亦未保留文件 mode。payload 经 stdin 传入，不经命令行/宿主临时目录/tar。恢复到本次全新 `/work` tmpfs，先全部写入再启动入口；不同运行拥有独立容器和副本。归一化 inputHash 包含镜像、文件包和入口，不含随机容器标识或超时；比较完整实验条件仍需未来对照 manifest，不能只凭此 hash 认定 AC7；该 hash 不含调度器构建产物，不能证明调度器字节一致（例如嵌入 bootstrap 的 checkout 行尾差异）。
 - 固定 `--network none`、只读根、uid/gid 65534、cap-drop ALL、no-new-privileges、512MiB内存且禁额外swap、1CPU、64pids、private IPC，无端口发布/宿主挂载/设备/额外能力/宿主PID。仅 `/work` 64MiB 与 `/tmp` 16MiB tmpfs 可写；后者 noexec。固定入口 `/usr/bin/env -i` 清空镜像继承环境，再以最小 PATH/HOME/TMPDIR 启动 Node；不传宿主 CAFF/PI/provider/Node钩子或凭据。镜像本体必须为人工审核的无秘密环境；env清空不替代镜像审核。启动前及完成后复核 inspect 中镜像、入口、命令和隔离字段，错配阻断。
-- 运行超时由调用方显式给出，1–300000ms；stdout/stderr合计至多1MiB，超限/超时终止 attach CLI，然后强制删除本次容器以终止整个容器进程树。Docker控制操作单次15秒超时；总墙钟还包含预检/清理，不等于任务超时。日志驱动 none，输出仅在调用方内存返回，不自动持久保存；输出是不可信任务文本，后续展示/归档仍须审计，不能作为完整模型轨迹证据。内存/进程限制为容器级约束，不声称每种资源超限均有专用可识别原因码。
+- 运行超时由调用方显式给出，1–300000ms；stdout/stderr合计至多1MiB，超限/超时终止 attach CLI，然后强制删除本次容器以终止整个容器进程树。Docker控制操作的默认15秒是 kill 触发点，不是返回时间上界：仅杀直接 CLI 子进程，等待 close 才结算；若 CLI 后代持有输出管道，返回可能继续等待。总墙钟还包含预检/清理，不等于任务超时。日志驱动 none，输出仅在调用方内存返回，不自动持久保存；输出是不可信任务文本，后续展示/归档仍须审计，不能作为完整模型轨迹证据。内存/进程限制为容器级约束，不声称每种资源超限均有专用可识别原因码。
 - 用随机 name+owner label 标识本次容器。create结果不确定时按本次 name 查询，核验label后仅按完整ID删除；不删除外来容器、不全局prune。rm后用精确name查询确认不存在，失败抛 `offline_cleanup_failed` 并提供本次标识和固定原始码，不伪造cleaned=true。此保证依赖存活调度器；父进程崩溃、daemon中断后的孤儿恢复未交付。失败不会解除既有保护引用；当前入口也不创建保护引用。
 
 回归：`node --test tests/runtime/badcase-docker-sandbox.test.js` 为注入CLI的确定性故障测试，不当作Docker证据。真实验证：构建后在Linux运行 `node scripts/badcase-capture/verify-offline-docker.cjs --image-id <sha256:...> --repository-digest <repo@sha256:...> --architecture amd64 --node-version <vX.Y.Z> --python-version "Python X.Y.Z"`；镜像必须已由人工准备，本脚本不pull/build。验证相同输入两份独立恢复、容器内Node文件/shell读写、只读根/链接越界写拒绝、网络/宿主环境隔离、超时/超输出/内存压力、版本不符/缺镜像阻断及本次容器清理。不是pi工具测试、真实turn/模型或Docker回放验收；Linux SQLite门槛不变。
+
+### 4.2 已封存文件 → 保护引用 → Docker 恢复探针（内部、非 agent 回放）
+
+`retained-restore.ts` 的 `prepareRetainedRestoreProbe/runRetainedRestoreProbe` 仅供可信离线工具/文件 worker；没有 HTTP/agent 入口。请求只含 captureRoot、冻结八键关联、flagId、replayRunId、镜像与超时，不允许自定义程序/entrypoint/环境/挂载。当前真实验证仅使用合成封存包，不授权自动读取真实项目或调用模型。
+
+- 共享 writer lock 内先验证最终 case 与原 retention，再把普通文件 CAS 字节脱离到内存。缺 case/retention 不补建、不读 live checkpoint，不重新采集目标或打开 session 路径。路径使用既有 ASCII 子集，拒绝越界、父子文件冲突、秘密哨兵、symlink、secretExcluded、uncaptured 非空、size/hash 不符、非法/重复或与现有树冲突的 deletions；不做部分恢复后报成功。最多4094个现场文件（另占两个固定探针文件）、4096个删除项；整体仍受 §4.1 的16MiB/32MiB限制。目录替换、单 blob 读取内存边界沿用受信存储底座，不构成恶意同 OS 用户沙箱，不能在 HTTP 主线程调用。
+- 完整包校验通过后，**在任何 Docker 调用之前** protect 已有 retention 闭包（不仅文件，还包括已有 prompt/session/harness/skill blob）。缺/坏非文件 blob 也拒绝；配额、锁争用、引用冲突不启动容器。随后释放同步写锁，使用已脱离字节启动 Docker，保护引用持续存在。失败或成功都不 unpin，自动 GC 仍关闭。重试同 runId 可再次创建独立探针容器，但不新增引用；引用不是执行账本或 exactly-once 启动凭证。
+- 容器内固定 `restore-probe.cjs` 只对 `snapshot/` 做实际目录枚举、逐文件 size/hash 与删除缺席校验，然后改写本次副本用于隔离验证；不执行捕获的源代码、package hooks、prompt 或 session。固定程序与计划位于 snapshot 外，不把宿主绝对路径/原完整清单/输入正文发入容器。空树亦可验证。探针程序规范化自身行尾；不能由此推断整个调度器构建可复现。
+- `snapshotHash` 覆盖排序后的文件路径/大小/hash 与删除清单；`inputHash` 另覆盖固定程序、计划及镜像。保护记录绑定原 checkpoint checksum，二者含义不同。恢复到全新目录而非已有 checkout；不从 Git HEAD 复活缺席文件。当前仅内容恢复，mode/时间戳不保留，fileModePreserved=false；文件→目录转换等与 deletions 冲突的清单明确不支持，不猜测适配。
+- `filesVerified` 只有容器 completed、cleaned、inputHash 一致且 stdout 为精确固定回执、stderr 为空才为 true；异常回执拒绝，失败/终止为 false。回执不是对恶意镜像的远程证明，CLI/daemon/人工审核镜像仍属 TCB。fresh/resume 原模式仅作来源披露，`replayInputComplete/runnable/reproduced/evaluable/strictEvalEligible` 恒 false；resume 缺 session 的文件探针可成功，但**没有启动任何 session，更不代表降级 fresh 或完整回放**。原 case 状态不改写，探针输出暂不持久化，不构成逐次评分报告。
+
+回归：`node --test tests/runtime/badcase-retained-restore.test.js tests/runtime/badcase-docker-sandbox.test.js tests/runtime/badcase-docker-command.test.js`。CLI 套件仅 Linux 运行 PATH shim，覆盖真实 spawn/env/stdin/超时触发/合计输出上限，不把它当 Docker 证据；非 Linux 真实入口拒绝另有回归。真实 Docker：用 §4.1 相同镜像参数运行 `node scripts/badcase-capture/verify-retained-restore.cjs ...`，临时合成 case/retention、删除 live 清单、两份独立恢复及改写、CAS 不变、损坏阻断、清理与持久保护引用；脚本仅删除自己创建的合成临时存储。不是采集器真实 turn、pi/session、模型或 AC 完成证据。
 
 ## 5. 对照评测公平性契约
 

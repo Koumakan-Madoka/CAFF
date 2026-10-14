@@ -8,26 +8,7 @@ function task(source = 'console.log("ok")') {
   const bytes = Buffer.from(source);
   return { image, entrypoint: 'task.cjs', files: [{ path: 'task.cjs', base64: bytes.toString('base64'), sha256: crypto.createHash('sha256').update(bytes).digest('hex') }], timeoutMs: 1000 };
 }
-function fakeDocker(overrides = {}) {
-  const calls = [];
-  let name, owner, cmd, created = false;
-  const info = () => ({ Id: 'b'.repeat(64), Image: image.imageId, Config: { Labels: { 'caff.badcase.offline': owner }, User: '65534:65534', Entrypoint: ['/usr/bin/env'], WorkingDir: '/work', Cmd: cmd, Volumes: null }, Mounts: [], HostConfig: { LogConfig: { Type: 'none' }, RestartPolicy: { Name: 'no' }, AutoRemove: false, NetworkMode: 'none', ReadonlyRootfs: true, Privileged: false, CapDrop: ['ALL'], CapAdd: null, SecurityOpt: ['no-new-privileges'], Memory: 536870912, MemorySwap: 536870912, NanoCpus: 1000000000, PidsLimit: 64, Binds: null, PortBindings: {}, Devices: [], DeviceRequests: null, PidMode: '', IpcMode: 'private', Tmpfs: { '/work': 'rw,nosuid,nodev,size=64m,uid=65534,gid=65534,mode=0700', '/tmp': 'rw,nosuid,nodev,noexec,size=16m,uid=65534,gid=65534,mode=0700' } }, State: { Running: false, ExitCode: 0, OOMKilled: false } });
-  const run = async (args, options) => {
-    calls.push({ args, options });
-    const result = { code: 0, stdout: '', stderr: '' };
-    if (args[0] === 'context') result.stdout = JSON.stringify([{ Endpoints: { docker: { Host: 'unix:///var/run/docker.sock' } } }]);
-    else if (args[0] === 'image') result.stdout = JSON.stringify([{ Id: image.imageId, RepoDigests: [image.repositoryDigest], Architecture: image.architecture, Os: 'linux', Config: { Volumes: null, OnBuild: null } }]);
-    else if (args[0] === 'create') {
-      name = args[args.indexOf('--name') + 1]; owner = args[args.indexOf('--label') + 1].split('=')[1]; cmd = args.slice(args.indexOf(image.imageId) + 1); created = true; result.stdout = 'b'.repeat(64);
-    } else if (args[0] === 'inspect') result.stdout = JSON.stringify([info()]);
-    else if (args[0] === 'start') result.stdout = 'ok\n';
-    else if (args[0] === 'rm') created = false;
-    else if (args[0] === 'ps') result.stdout = created ? 'b'.repeat(64) + '\n' : '';
-    if (overrides.change) await overrides.change(args, result, { info, name, owner, created });
-    return result;
-  };
-  return { run, calls };
-}
+const fakeDocker = overrides => require('../helpers/badcase-fake-docker.cjs')(image, overrides);
 
 test('bundle is immutable, content addressed and independent of object key order', () => {
   const input = task(); const a = prepareOfflineTask(input); input.files[0].base64 = '';
@@ -58,17 +39,19 @@ test('local fixed image, explicit isolation, stdin bundle, no host environment i
   for (const option of ['--read-only', '--network', '--cap-drop', '--security-opt', '--memory', '--memory-swap', '--cpus', '--pids-limit', '--user', '--pull', '--entrypoint']) assert.ok(create.includes(option), option);
   assert.equal(create[create.indexOf('--network') + 1], 'none');
   assert.equal(create[create.indexOf('--pull') + 1], 'never');
+  for (const [key, value] of Object.entries({ '--user': '65534:65534', '--memory': '512m', '--memory-swap': '512m', '--cpus': '1', '--pids-limit': '64', '--cap-drop': 'ALL', '--security-opt': 'no-new-privileges', '--ipc': 'private', '--log-driver': 'none', '--workdir': '/work', '--entrypoint': '/usr/bin/env' })) assert.equal(create[create.indexOf(key) + 1], value, key);
   for (const forbidden of ['--volume', '-v', '--mount', '--privileged', '--env-file', '-e', '--publish']) assert.equal(create.slice(0, create.indexOf(image.imageId)).includes(forbidden), false, forbidden);
   assert.ok(f.calls.find(c => c.args[0] === 'start').options.input.includes('task.cjs'));
   assert.equal(f.calls.filter(c => c.args[0] === 'rm').length, 1);
   assert.equal(r.strictEvalEligible, false);
 });
 test('remote daemon and mismatched/missing image fail before container creation', async () => {
-  for (const which of ['remote', 'digest', 'arch', 'volumes', 'onbuild', 'healthcheck', 'missing']) {
+  for (const which of ['remote', 'digest', 'arch', 'os', 'volumes', 'onbuild', 'healthcheck', 'missing']) {
     const f = fakeDocker({ change(args, r) {
       if (which === 'remote' && args[0] === 'context') r.stdout = JSON.stringify([{ Endpoints: { docker: { Host: 'tcp://remote:2375' } } }]);
       if (args[0] === 'image') {
         const i = JSON.parse(r.stdout)[0];
+        if (which === 'os') i.Os = 'windows';
         if (which === 'digest') i.RepoDigests = []; if (which === 'arch') i.Architecture = 'arm64'; if (which === 'volumes') i.Config.Volumes = { '/data': {} }; if (which === 'onbuild') i.Config.OnBuild = ['RUN unexpected']; if (which === 'healthcheck') i.Config.Healthcheck = { Test: ['CMD-SHELL', 'unexpected'] }; if (which === 'missing') r.code = 1;
         r.stdout = JSON.stringify([i]);
       }
@@ -91,10 +74,11 @@ test('timeout/output excess/nonzero task exits never return completed and cleanu
   }
 });
 test('cleanup failure or ownership mismatch is explicit and never deletes foreign container', async () => {
-  for (const which of ['rm', 'owner']) {
+  for (const which of ['rm', 'owner', 'remaining']) {
     let inspections = 0;
     const f = fakeDocker({ change(args, r) {
       if (which === 'rm' && args[0] === 'rm') r.code = 1;
+      if (which === 'remaining' && args[0] === 'ps') r.stdout = 'b'.repeat(64);
       if (args[0] === 'inspect' && ++inspections >= 3 && which === 'owner') { const i = JSON.parse(r.stdout)[0]; i.Config.Labels = {}; r.stdout = JSON.stringify([i]); }
     } });
     await assert.rejects(runOfflineDockerTask(task(), { runDocker: f.run }), /offline_cleanup_failed/);
@@ -130,6 +114,15 @@ test('two in-flight runs hold slots through cleanup; third is rejected without D
   try { await assert.rejects(runOfflineDockerTask(task(), { runDocker: c.run }), /offline_busy/); assert.equal(c.calls.length, 0); }
   finally { unblock(); await Promise.all(pending); }
   assert.equal((await runOfflineDockerTask(task(), { runDocker: c.run })).state, 'completed');
+});
+test('noncanonical base64 and excess file count reject before transport', () => {
+  const t = task(); t.files[0].base64 += '\n';
+  assert.throws(() => prepareOfflineTask(t), /offline_input_invalid/);
+  const many = task(); many.files = Array.from({ length: 4097 }, (_, n) => ({ ...many.files[0], path: n === 0 ? 'task.cjs' : `file-${n}` }));
+  assert.throws(() => prepareOfflineTask(many), /offline_input_invalid/);
+});
+test('non-Linux real entry refuses without injected runner or host fallback', { skip: process.platform === 'linux' }, async () => {
+  await assert.rejects(runOfflineDockerTask(task()), /offline_host_unsupported/);
 });
 test('uncertain create failure still attempts owned-name lookup; no invented success', async () => {
   const f = fakeDocker({ change(args, r) { if (args[0] === 'create') { r.failure = 'timeout'; r.stdout = ''; } } });
