@@ -123,7 +123,13 @@ test('only structured writer contention is mapped; message lookalikes and other 
     await assert.rejects(() => invoke(h.controller, 'disable', {}), caught => caught === error);
   }
   h.service.savePolicy = () => { throw Object.assign(Error('private diagnostic must not escape'), { code: 'capture_writer_busy' }); };
-  await rejects(() => invoke(h.controller, 'disable', {}), 'capture_writer_busy', 409);
+  await assert.rejects(() => invoke(h.controller, 'disable', {}), error => {
+    assert.equal(error.statusCode, 409);
+    assert.equal(error.message, 'Badcase capture request was rejected');
+    assert.deepEqual(error.issues, [{ code: 'capture_writer_busy', path: 'body' }]);
+    assert.doesNotMatch(JSON.stringify(error), /private diagnostic/);
+    return true;
+  });
 });
 
 test('default GET and guard failures never scan or authorize', async t => {

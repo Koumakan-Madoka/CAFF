@@ -1,5 +1,6 @@
 // Trusted file-only worker. No SQLite, model, agent, shell or target-tree reads.
-import { saveSealedCase, sealFailureCodes } from './sealed-case';
+import { saveSealedCase, sealFailureCodes, validateSealRequest } from './sealed-case';
+import { withDelegatedProjectWriteLock } from './project-write-lock';
 let length = 0;
 const chunks: Buffer[] = [];
 process.stdin.on('data', (data: Buffer) => {
@@ -9,7 +10,13 @@ process.stdin.on('data', (data: Buffer) => {
 });
 process.stdin.on('end', () => {
   let response: any;
-  try { response = { ok: true, result: saveSealedCase(JSON.parse(Buffer.concat(chunks).toString('utf8'))) }; }
+  try {
+    const envelope = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const request = validateSealRequest(envelope.request);
+    const result = withDelegatedProjectWriteLock(request.captureRoot, request.association.projectId, envelope.lockOwner,
+      () => saveSealedCase({ ...request, trajectory: envelope.request.trajectory }));
+    response = { ok: true, result };
+  }
   catch (error: any) { response = { ok: false, code: sealFailureCodes.includes(error?.code) ? error.code : 'seal_write_failed' }; }
   process.stdout.write(JSON.stringify(response));
 });

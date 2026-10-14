@@ -3,7 +3,7 @@ import { trajectoryFailureCodes } from './trajectory';
 import { sealCheckpointAsync } from './sealing-process';
 import { readSealedCase, sealFailureCodes, trajectorySummary } from './sealed-case';
 const associationFailures = ['flag_seal_association_incomplete', 'flag_seal_association_mismatch', 'flag_not_found', 'flag_record_invalid', 'flag_message_not_found', 'flag_message_not_terminal'];
-const processFailures = ['seal_busy', 'seal_timeout', 'seal_process_failed', 'seal_output_limit', 'seal_output_invalid'];
+const processFailures = ['seal_busy', 'seal_timeout', 'seal_process_failed', 'seal_output_limit', 'seal_output_invalid', 'seal_lock_release_failed', 'capture_lock_invalid'];
 const failed = (state: string, reason: string) => ({ state, reason, checkpointSaved: false, complete: false,
   captured: false, runnable: false, reproduced: false, evaluable: false, strictEvalEligible: false });
 // POST owns the asynchronous operation. A disconnected client does not cancel
