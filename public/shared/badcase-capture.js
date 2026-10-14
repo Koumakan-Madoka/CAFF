@@ -88,7 +88,7 @@
         return;
       }
       const parts = result.usage.bytesByKind;
-      const labels = { blobs: 'CAS', checkpoints: '检查点', latest: 'latest', flags: '标记', retention: '保留清单' };
+      const labels = { blobs: 'CAS', checkpoints: '检查点', latest: 'latest', flags: '标记', retention: '保留清单', cases: '封存记录' };
       const breakdown = parts && Object.keys(labels).every(key => Number.isSafeInteger(parts[key]) && parts[key] >= 0)
         ? Object.entries(labels).map(([key, label]) => `${label}：${parts[key]} B`).join(' · ') : '分项未知';
       element('[data-capture-usage]').textContent = `已提交总占用：${result.usage.totalBytes} B · ${result.usage.blobCount} 个 blob · ${breakdown}`;

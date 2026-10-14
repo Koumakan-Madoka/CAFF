@@ -29,6 +29,7 @@ const { createProjectsController } = require('../api/projects-controller');
 const { createBadcaseCaptureController } = require('../api/badcase-capture-controller');
 const { createBadcaseFlagsController } = require('../api/badcase-flags-controller');
 const { createBadcaseFlagService } = require('../domain/runtime/badcase-capture/badcase-flags');
+const { createBadcaseSealingService } = require('../domain/runtime/badcase-capture/sealing-service');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createImageUploadController } = require('../api/image-upload-controller');
@@ -166,6 +167,8 @@ export function createServerApp(options: any = {}) {
   // Badcase 采集服务：默认落盘 <agentDir>/badcase-capture（运行时数据目录，
   // gitignore）。未显式开启 CapturePolicy 的项目不会进行任何扫描。
   const badcaseCapture = options.badcaseCapture || createBadcaseCaptureService({ agentDir });
+  const badcaseFlags = createBadcaseFlagService({ captureRoot: badcaseCapture.captureRoot, captureStore: badcaseCapture.store, chatStore: store });
+  const badcaseSealing = createBadcaseSealingService({ flags: badcaseFlags, captureStore: badcaseCapture.store, databasePath: store.databasePath });
 
   // Crash-recovery sweep: a busy session-reuse claim is only ever held by a
   // live run inside this process, so any busy row visible at startup is
@@ -1203,7 +1206,8 @@ export function createServerApp(options: any = {}) {
       },
     }),
     createBadcaseFlagsController({
-      service: createBadcaseFlagService({ captureRoot: badcaseCapture.captureRoot, captureStore: badcaseCapture.store, chatStore: store }),
+      service: badcaseFlags,
+      sealingService: badcaseSealing,
       projectManager,
       host,
       port,

@@ -49,10 +49,10 @@ test('opening and selecting a project is read-only; displays persisted limits, u
 test('usage shows committed storage categories and labels absent older breakdown as unknown', async t => {
   let withBreakdown = true;
   const h = setup(t, url => url.endsWith('/badcase-capture') ? { ...snapshot(), usage: { totalBytes: 321, blobCount: 2,
-    ...(withBreakdown ? { bytesByKind: { blobs: 100, checkpoints: 50, latest: 20, flags: 61, retention: 90 } } : {}) } } : undefined);
+    ...(withBreakdown ? { bytesByKind: { blobs: 100, checkpoints: 50, latest: 20, flags: 61, retention: 90, cases: 0 } } : {}) } } : undefined);
   await h.panel.select({ id: 'a' });
   let text = h.root.querySelector('[data-capture-usage]').textContent;
-  for (const expected of ['CAS：100 B', '检查点：50 B', 'latest：20 B', '标记：61 B', '保留清单：90 B']) assert.ok(text.includes(expected), text);
+  for (const expected of ['CAS：100 B', '检查点：50 B', 'latest：20 B', '标记：61 B', '保留清单：90 B', '封存记录：0 B']) assert.ok(text.includes(expected), text);
   assert.match(h.root.textContent, /逻辑字节/); assert.match(h.root.textContent, /不含.*staging/);
   withBreakdown = false; await h.click('refresh');
   text = h.root.querySelector('[data-capture-usage]').textContent;

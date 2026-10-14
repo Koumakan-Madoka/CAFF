@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
 import { validateTrajectoryRequest } from './trajectory';
+import { withProjectWriteLock } from './project-write-lock';
 
 // Marker persistence only. This is NOT a sealing implementation: no files,
 // prompt, message content or trajectory are copied, and no replay status is
@@ -100,7 +101,7 @@ export function createBadcaseFlagService(options: any) {
       source(scope);
       return load(scope);
     },
-    // Internal read-only gate for future sealing; not an authorization to
+    // Internal read-only gate for the sealing orchestrator; not an authorization to
     // archive arbitrary tool text. HTTP/agent callers cannot supply identity.
     resolveSealAssociation(input: any) {
       const scope = ids(input);
@@ -126,6 +127,11 @@ export function createBadcaseFlagService(options: any) {
       // Frozen at first mark: retries do not silently change run/checkpoint IDs
       // when messages or manifests subsequently change or become unavailable.
       if (existing) return sameAnnotation(existing, actual, expected);
+      return withProjectWriteLock(captureRoot, scope.projectId, () => {
+      // Immutable retries need no writer lock; new publication checks again
+      // after acquiring it so another process cannot change the first marker.
+      const winner = load(scope);
+      if (winner) return sameAnnotation(winner, actual, expected);
       const checkpointId = message.metadata?.badcaseCheckpointId ? identifier(message.metadata.badcaseCheckpointId) : null;
       const runId = message.runId ?? null;
       if (runId !== null && (typeof runId !== 'number' || !Number.isSafeInteger(runId) || runId <= 0)) throw error('flag_invalid_run_id');
@@ -176,6 +182,7 @@ export function createBadcaseFlagService(options: any) {
       if (!persisted) throw error('flag_write_failed');
       if (!created) return sameAnnotation(persisted, actual, expected);
       return { created: true, flag: persisted };
+      });
     },
   };
 }

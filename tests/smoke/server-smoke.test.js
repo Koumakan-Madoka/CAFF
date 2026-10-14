@@ -287,12 +287,13 @@ test('create server persists badcase annotations through real HTTP and restart w
   assert.equal(denied.status, 403);
   const bootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json();
   const headers = { 'Content-Type': 'application/json', Origin: baseUrl, 'X-CAFF-CSRF-Token': bootstrap.localAdmin.modelProviders.csrfToken };
-  assert.deepEqual(await (await fetch(baseUrl + route)).json(), { flag: null });
+  assert.deepEqual(await (await fetch(baseUrl + route)).json(), { flag: null, seal: null });
   const created = await fetch(baseUrl + route, { method: 'POST', headers, body });
   assert.equal(created.status, 201);
   const first = await created.json();
   assert.equal(first.flag.checkpointState, 'not_recorded'); assert.equal(first.flag.runId, 101);
   assert.equal(first.flag.sealState, 'pending'); assert.equal(first.flag.captured, false);
+  assert.equal(first.seal.state, 'unavailable'); assert.equal(first.seal.reason, 'flag_seal_association_incomplete');
   await new Promise(resolve => app.close(resolve)); running = false;
   app = createServerApp(options);
   await new Promise(resolve => app.start(resolve)); running = true;
@@ -305,7 +306,27 @@ test('create server persists badcase annotations through real HTTP and restart w
   const retry = await repeated.json(); assert.equal(retry.created, false); assert.deepEqual(retry.flag, first.flag);
   assert.equal((await (await fetch(`${baseUrl}/api/projects/${projectId}/badcase-capture`)).json()).policy.status, 'disabled');
   const { createCaptureStore } = require('../../build/server/domain/runtime/badcase-capture/capture-store');
-  assert.equal(createCaptureStore({ captureRoot: path.join(options.agentDir, 'badcase-capture') }).listCheckpoints(projectId).length, 0);
+  const captureStore = createCaptureStore({ captureRoot: path.join(options.agentDir, 'badcase-capture') });
+  assert.equal(captureStore.listCheckpoints(projectId).length, 0);
+  // Real create-server route, real SQLite reader and file worker; synthetic
+  // checkpoint only, never enable collection or start an agent/model.
+  app.store.createMessage({ id: 'seal-message', conversationId: 'flag-room', role: 'assistant', status: 'completed',
+    agentId: 'flag-agent', turnId: 'seal-turn', taskId: 'seal-task', runId: 102, content: 'synthetic', metadata: { badcaseCheckpointId: 'seal-cp' } });
+  app.store.db.prepare(`INSERT INTO runs (id, agent_dir, cwd, prompt, prompt_length, status, started_at, task_id, assistant_errors_json)
+    VALUES (102, '/not-read', '/not-read', 'not-read', 8, 'succeeded', '2026-01-01', 'seal-task', '[]')`).run();
+  app.store.db.prepare(`INSERT INTO a2a_tasks (id, run_id, kind, status, metadata_json, output_text, created_at, updated_at)
+    VALUES ('seal-task', 102, 'conversation_agent_reply', 'succeeded', ?, 'not-archived', '2026-01-01', '2026-01-01')`)
+    .run(JSON.stringify({ conversationId: 'flag-room', turnId: 'seal-turn', agentId: 'flag-agent' }));
+  captureStore.saveCheckpoint(projectId, { schemaVersion: 1, projectId, conversationId: 'flag-room', checkpointId: 'seal-cp',
+    turnId: 'seal-turn', agentId: 'flag-agent', files: {}, replayInput: { deliveryMode: 'fresh', complete: false, incompleteReasons: ['synthetic'], harness: { skillSnapshots: [] } } });
+  const sealRoute = route.replace('flag-message', 'seal-message');
+  const sealedResponse = await fetch(baseUrl + sealRoute, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: baseUrl,
+    'X-CAFF-CSRF-Token': nextBootstrap.localAdmin.modelProviders.csrfToken }, body });
+  assert.equal(sealedResponse.status, 201);
+  const sealed = await sealedResponse.json(); assert.equal(sealed.seal.state, 'saved_incomplete');
+  assert.equal(sealed.seal.trajectory.reason, 'trajectory_provenance_unverified');
+  assert.deepEqual((await (await fetch(baseUrl + sealRoute)).json()).seal, sealed.seal);
+  assert.ok(captureStore.computeUsage(projectId).bytesByKind.cases > 0);
   app.store.deleteConversationMessages('flag-room', ['flag-message']);
   const deleted = await fetch(baseUrl + route); assert.equal(deleted.status, 404);
   assert.equal((await deleted.json()).issues[0].code, 'flag_message_not_found');

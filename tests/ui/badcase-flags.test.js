@@ -34,6 +34,33 @@ function setup(t, handler) {
     fill: () => { field('actual').value = '实际问题'; field('expected').value = '期望行为'; },
     click: async action => { button(action).click(); await tick(); } };
 }
+test('automatic sealing has no second confirmation; failed seal retries original annotation without another prompt', async t => {
+  let attempts = 0;
+  const incomplete = { state: 'saved_incomplete', checkpointSaved: true, flagId: 'flag-one', association: scope(),
+    complete: false, captured: false, runnable: false, reproduced: false, evaluable: false, strictEvalEligible: false };
+  const h = setup(t, (url, options) => options.method === 'POST' ? { flag: flag(), seal: ++attempts === 1
+    ? { ...incomplete, state: 'failed', checkpointSaved: false, reason: 'seal_quota_exceeded' } : incomplete } : undefined);
+  await h.panel.open(scope()); h.fill(); await h.click('submit');
+  assert.equal(h.confirms.length, 1); assert.match(h.confirms[0], /自动保存已有现场/);
+  assert.match(h.root.textContent, /现场保存失败/); assert.equal(h.field('actual').readOnly, true);
+  assert.equal(h.button('submit').disabled, false); assert.match(h.button('submit').textContent, /重试/);
+  await h.click('submit'); assert.equal(h.confirms.length, 1); assert.equal(h.posts().length, 2);
+  assert.deepEqual(h.posts()[0].body, h.posts()[1].body);
+  assert.match(h.root.textContent, /现场已保存.*材料不完整/); assert.equal(h.button('submit').disabled, true);
+});
+test('missing association is displayed as unavailable, not eternally pending or complete', async t => {
+  const h = setup(t, url => url.endsWith('badcase-flag') ? { flag: flag(), seal: { state: 'unavailable', reason: 'flag_seal_association_incomplete', checkpointSaved: false,
+    complete: false, captured: false, runnable: false, reproduced: false, evaluable: false, strictEvalEligible: false } } : undefined);
+  await h.panel.open(scope()); assert.match(h.root.textContent, /无法封存/);
+  assert.doesNotMatch(h.root.textContent, /已标记.*待封存/); assert.equal(h.posts().length, 0);
+});
+test('a saved-case response for another marker or claiming completeness is rejected', async t => {
+  for (const override of [{ flagId: 'wrong' }, { complete: true }, { association: scope('wrong') }]) {
+    const h = setup(t, url => url.endsWith('badcase-flag') ? { flag: flag(), seal: { state: 'saved_incomplete', checkpointSaved: true, flagId: 'flag-one', association: scope(),
+      complete: false, captured: false, runnable: false, reproduced: false, evaluable: false, strictEvalEligible: false, ...override } } : undefined);
+    await h.panel.open(scope()); assert.match(h.root.textContent, /读取失败/); assert.doesNotMatch(h.root.textContent, /现场已保存/);
+  }
+});
 test('open is read-only; confirm cancel sends no POST; submit sends annotations only with CSRF', async t => {
   const h = setup(t); await h.panel.open(scope()); h.fill();
   assert.equal(h.posts().length, 0); assert.equal(h.root.open, true);

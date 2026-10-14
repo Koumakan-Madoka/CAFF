@@ -5,7 +5,8 @@ import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
 
 // Same-OS-user administration (Goal D10), not human authentication or an
-// agent tool. This endpoint records annotations only; it never enables capture.
+// agent tool. POST records annotations then seals existing evidence; it never
+// enables capture. GET remains read-only.
 export function createBadcaseFlagsController(options: any = {}): RouteHandler<any> {
   const guard = createLocalAdminGuard({ ...options, issuePrefix: 'badcase_flag', errorMessage: 'Badcase flag request was rejected' });
   const issue = (code: string, status = 422) => createHttpError(status, 'Badcase flag request was rejected', { issues: [{ code, path: 'badcaseFlag' }] });
@@ -14,7 +15,7 @@ export function createBadcaseFlagsController(options: any = {}): RouteHandler<an
     flag_invalid_identifier: 422, flag_invalid_annotation: 422, flag_contains_secret: 422,
     flag_unknown_field: 422, flag_invalid_run_id: 409, flag_checkpoint_mismatch: 409,
     flag_already_exists: 409, flag_record_invalid: 409, flag_record_too_large: 422,
-    flag_write_failed: 503,
+    flag_write_failed: 503, capture_writer_busy: 409,
   };
   return async function handleBadcaseFlags({ req, res, pathname }: any) {
     const match = pathname.match(/^\/api\/projects\/([^/]+)\/conversations\/([^/]+)\/messages\/([^/]+)\/badcase-flag$/);
@@ -42,7 +43,9 @@ export function createBadcaseFlagsController(options: any = {}): RouteHandler<an
     }
     let result;
     try {
-      result = req.method === 'GET' ? { flag: options.service.get(scope) } : options.service.mark(input);
+      result = req.method === 'GET'
+        ? (options.sealingService ? options.sealingService.get(scope) : { flag: options.service.get(scope) })
+        : await (options.sealingService || options.service).mark(input);
     } catch (failure: any) {
       // Only enumerated service codes leave this boundary, never filesystem
       // paths, raw exceptions or user-controlled strings from a dependency.

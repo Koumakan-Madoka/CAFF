@@ -139,6 +139,9 @@ export function createCheckpointRetentionStore(options: any) {
       // Verify every distinct referenced blob, not just existence or size. A
       // corrupt CAS hit must never become a successful new retained reference.
       verifyBlobs(input.projectId, blobHashes);
+      // Internal sealing writer holds the project lock and reserves both this
+      // reference and its final case record before either is published.
+      options.beforePublish?.(Buffer.byteLength(bytes));
       const target = filePath(input), temp = `${target}.tmp-${crypto.randomUUID()}`;
       let created = false;
       try {

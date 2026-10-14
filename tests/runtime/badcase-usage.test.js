@@ -13,7 +13,7 @@ function setup(t) {
   const put = (name, text) => { const target = path.join(project, name); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, text); return target; };
   return { root, store, project, put };
 }
-const empty = { blobs: 0, checkpoints: 0, latest: 0, flags: 0, retention: 0 };
+const empty = { blobs: 0, checkpoints: 0, latest: 0, flags: 0, retention: 0, cases: 0 };
 test('committed logical bytes include flags and retention without counting shared CAS twice', t => {
   const h = setup(t), body = Buffer.from('文件');
   h.store.writeBlob('p1', sha256Hex(body), body);
@@ -23,7 +23,7 @@ test('committed logical bytes include flags and retention without counting share
   // Corrupt metadata still occupies bytes; usage is not an integrity report.
   const usage = h.store.computeUsage('p1');
   assert.deepEqual(usage, { blobCount: 1, totalBytes: 24,
-    bytesByKind: { blobs: 6, checkpoints: 3, latest: 4, flags: 6, retention: 5 } });
+    bytesByKind: { blobs: 6, checkpoints: 3, latest: 4, flags: 6, retention: 5, cases: 0 } });
   assert.deepEqual(createCaptureStore({ captureRoot: h.root }).computeUsage('p1'), usage);
   assert.deepEqual(h.store.computeUsage('other'), { blobCount: 0, totalBytes: 0, bytesByKind: empty });
 });

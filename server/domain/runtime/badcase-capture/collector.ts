@@ -41,6 +41,7 @@ import { authorizeTargetDir, matchesRelativePattern, pathsEqual, isSameOrUnderPa
 import { containsSecretSentinel, replaceControlledVariables } from './secrets';
 import { detectCaptureCapability, openConstrainedRoot, SAFE_READ_LIMITS } from './safe-read';
 import { validateSessionV2, PI_VERSION_PIN } from './session-validator';
+import { withProjectWriteLock } from './project-write-lock';
 import {
   parseGitIndex,
   parseGitignoreRules,
@@ -1422,5 +1423,13 @@ export function createCollector(options: any = {}) {
     } finally { root.close(); }
   }
 
-  return { captureTurnCheckpoint, scanFiles, estimateTree };
+  return { captureTurnCheckpoint(input: any = {}) {
+    const projectId = String(input.projectId || '').trim();
+    if (!store?.captureRoot || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) return captureTurnCheckpoint(input);
+    try { return withProjectWriteLock(store.captureRoot, projectId, () => captureTurnCheckpoint(input)); }
+    catch (error: any) {
+      if (error?.code === 'capture_writer_busy') return { captured: false, checkpointId: '', reason: 'capture_writer_busy', durationMs: 0 };
+      throw error;
+    }
+  }, scanFiles, estimateTree };
 }

@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 import { defaultCapturePolicy, normalizeCapturePolicy } from './capture-policy';
+import { withProjectWriteLock } from './project-write-lock';
 
 function nowIso() {
   return new Date().toISOString();
@@ -107,8 +108,10 @@ export function createCaptureStore(options: any = {}) {
 
     savePolicy(policy: any) {
       const normalized = normalizeCapturePolicy(policy, policy && policy.projectId);
-      writeJsonAtomic(policyPath(normalized.projectId), { ...normalized, updatedAt: nowIso() });
-      return this.loadPolicy(normalized.projectId);
+      return withProjectWriteLock(captureRoot, normalized.projectId, () => {
+        writeJsonAtomic(policyPath(normalized.projectId), { ...normalized, updatedAt: nowIso() });
+        return this.loadPolicy(normalized.projectId);
+      });
     },
 
     hasBlob(projectId: any, hash: any) {
@@ -268,7 +271,7 @@ export function createCaptureStore(options: any = {}) {
     // This synchronous inventory is not an atomic snapshot, quota reservation
     // or GC authorization. Storage ancestors remain same-OS-user trusted TCB.
     computeUsage(projectId: any) {
-      const bytesByKind = { blobs: 0, checkpoints: 0, latest: 0, flags: 0, retention: 0 };
+      const bytesByKind = { blobs: 0, checkpoints: 0, latest: 0, flags: 0, retention: 0, cases: 0 };
       let blobCount = 0;
       const unavailable = () => Object.assign(new Error('capture_usage_unavailable'), { code: 'capture_usage_unavailable' });
       try {
