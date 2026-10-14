@@ -112,6 +112,25 @@ test('close and conversation switch invalidate in-flight work; reopen does not i
   assert.equal(h.field('actual').value, ''); assert.equal(h.button('submit').disabled, false);
   h.root.dispatchEvent(new h.window.Event('cancel', { cancelable: true })); assert.equal(h.root.open, false);
 });
+test('queued close from the previous dialog must not reset a reopened message', async t => {
+  const h = setup(t);
+  const queued = [];
+  // Model the browser task queue explicitly, without a timing/sleep race.
+  h.root.close = () => { h.root.open = false; queued.push(() => h.root.dispatchEvent(new h.window.Event('close'))); };
+  await h.panel.open(scope()); h.fill(); h.panel.close();
+  assert.equal(queued.length, 1);
+  await h.panel.open(scope('m2')); h.fill();
+  queued.shift()();
+  assert.equal(h.root.open, true); assert.match(h.root.textContent, /消息 m2/);
+  assert.equal(h.field('actual').value, '实际问题');
+  assert.equal(h.button('submit').disabled, false);
+  assert.equal(h.calls.length, 4); assert.equal(h.posts().length, 0);
+  // A genuinely closed dialog must still reset; ignoring all close events is
+  // not a valid implementation of the guard.
+  h.root.close(); queued.shift()();
+  assert.equal(h.root.open, false); assert.equal(h.field('actual').value, '');
+  assert.equal(h.button('submit').disabled, true);
+});
 test('response after close cannot repopulate the closed dialog or start another request', async t => {
   const post = deferred();
   const h = setup(t, (url, options) => options.method === 'POST' ? post.promise : undefined);
