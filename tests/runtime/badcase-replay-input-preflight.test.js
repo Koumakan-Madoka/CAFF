@@ -174,6 +174,30 @@ test('missing/future session versions and config JSON do not pass syntactic pref
   const h = fixture(t, 'fresh', ({ r, put }) => { r.harness.configSnapshotHash = put('not JSON'); });
   assert.throws(() => inspectRetainedReplayInputs(h.request), { code: 'replay_harness_invalid' });
 });
+test('declared skill without archived snapshot rejects independently of extra snapshot checks', t => {
+  const h = fixture(t, 'fresh', ({ r }) => { r.runConfig.skillIds.push('missing-snapshot'); });
+  assert.throws(() => inspectRetainedReplayInputs(h.request), { code: 'replay_skills_invalid' });
+});
+test('unapproved replacement name rejects even when its actual placeholder count agrees', t => {
+  const h = fixture(t, 'fresh', ({ r, put }) => {
+    r.promptBlobHash = r.normalizedPromptHash = put('{{UNAPPROVED}}');
+    r.controlledReplacements = [{ name: 'UNAPPROVED', count: 1 }];
+  });
+  assert.throws(() => inspectRetainedReplayInputs(h.request), { code: 'replay_replacements_invalid' });
+});
+test('empty server version is not sufficient harness identity', t => {
+  const h = fixture(t, 'fresh', ({ r }) => { r.harness.serverVersion = ' '; });
+  assert.throws(() => inspectRetainedReplayInputs(h.request), { code: 'replay_harness_missing' });
+});
+test('returned closure byte count and configuration hashes match independently read frozen bytes', t => {
+  const h = fixture(t, 'resume'), result = inspectRetainedReplayInputs(h.request);
+  const hashes = JSON.parse(fs.readFileSync(h.source)).record.blobHashes;
+  assert.equal(result.blobCount, hashes.length);
+  assert.equal(result.totalBlobBytes, hashes.reduce((n, digest) => n + fs.readFileSync(h.blobPath(digest)).length, 0));
+  assert.equal(result.runConfigHash, hash(JSON.stringify(h.r.runConfig)));
+  assert.equal(result.skillInventoryHash, hash(JSON.stringify(h.r.harness.skillSnapshots)));
+  assert.equal(result.configSnapshotHash, h.r.harness.configSnapshotHash);
+});
 test('unknown input options and mismatched scope fail closed', t => {
   const h = fixture(t);
   assert.throws(() => inspectRetainedReplayInputs({ ...h.request, sessionPath: '/not-authorized' }), { code: 'replay_input_invalid' });

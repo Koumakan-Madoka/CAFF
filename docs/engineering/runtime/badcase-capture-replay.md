@@ -244,6 +244,19 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 回归：构建后 `node --test tests/runtime/badcase-replay-input-preflight.test.js`，使用临时合成CAS，覆盖fresh/resume、删除live后仍可查、无写入、缺/坏blob、模式不降级、历史complete伪声明、版本/配置/skill/替换清单/UTF-8/秘密/大小负例。没有真实pi启动、Docker或模型证据，AC仍不能据此完成。
 
+### 4.4 固定 SDK 的容器内初始化实验（合成输入，尚非封存 launcher）
+
+`verify-pi-initialization.cjs` 是操作者显式执行的 Linux 验证脚本，不接 HTTP/agent 工具或真实 case。它补充 §4.1 的纯 Node 探针：**整个真实 pi 0.85.1 SDK 在 Docker 内加载**，分别初始化 fresh 与恢复一个固定的纯消息 resume 夹具，直接执行真实 SDK read/write/edit/bash 工具；不调用 `session.prompt`、不发送模型请求、不构成真实 agent turn。宿主只读取静态 npm 发布文件和生成合成包，不 import/执行 SDK。
+
+- 依赖不是从被捕获项目解析：`pi-probe-materials.cjs` 只从本 Room 已安装、同 OS 用户可信的 npm 发布目录复制明确清单（SDK 的 dist/bundle 与 theme、chord 的 dist/context、typebox/build 及包元数据）。拒绝链接/非普通文件、缺文件、版本不符、超过4096文件/16MiB；不用 npm install/build、网络下载、全量 node_modules、宿主认证/会话或未授权私有目录。目录祖先与安装包本身仍属 TCB，版本字符串和 hash 不证明独立供应链来源。pi-ai 实现包含在 SDK 发布 bundle 内，另记录同版本包元数据；不宣称已经独立验证其所有 provider/原生模块/图像功能或项目依赖。这里是受信运行时工件验证，**不改变采集秘密扫描，也不开放“把捕获内容当依赖绕过扫描”的入口**。
+- 宿主生成逐文件 size/hash、runtimeHash 与完整 inputHash。只把本次自建的普通文件暂存目录经 tar/stdin 传入全新 tmpfs，不接受外部 tar；容器内先逐文件验清单、核验 Node/Python/架构，再 import SDK。tar 在哈希校验之前解包，因此此传输仅适用于受信自产包，绝不能复用为不可信 case 解包接口。当前运行时文件约9.60MB，每次注入；未归档依赖包或镜像，不是已交付 EnvironmentTemplate 的镜像安装/离线重建保证。
+- 固定本地 image ID+RepoDigest+架构，不 pull/build/浮动 tag。容器隔离沿用断网、只读根、uid65534、cap-drop ALL、no-new-privileges、512MiB含swap上限/1CPU/64pids/private IPC、无挂载/端口/设备、清空环境；镜像要求无 VOLUME/ONBUILD/活动 HEALTHCHECK，前后 inspect 复核隔离。唯一名字+owner label 核验后删除本次容器并检查精确名字无残留；异常不伪报清理成功。CLI 控制超时仍是 kill 触发点而非返回上界；进程内 `timeout -k 2 25` 与外部30s attach截止共同限制本次实验。调度器死亡/daemon故障的恢复仍未交付。
+- resourceLoader 显式空扩展/skill/AGENTS/模板，settings 在内存，凭据路径只在容器 `/work/agent`；仓库内设置发现陷阱，初始化不得读取它。禁止模型网络刷新；network none 是实际网络边界，fetch/streamSimple 拒绝计数只作额外观测。固定模型目录条目只用于初始化，非模型付费授权。四个工具由测试程序直接调用，不冒充 LLM 自主工具执行。
+- resume 输入必须事先存在且与固定合成夹具逐字节一致，之后才调用 `SessionManager.open`；该 SDK API 对缺失文件可能自动创建 session，故不得裸调用它当作“resume成功”。保留原 session id/消息，显式 cwdOverride 到 `/work/snapshot`；对纯消息夹具验证源字节未变。这**不是**通用历史工具路径映射，也没有把真实缺失 session 改成 fresh。fresh 两个容器的 inputHash 一致，三个正例 runtimeHash 一致，容器相互独立。
+- 真实验证包含 fresh 两副本、resume，以及缺 SDK 入口、SDK/pi-ai 元数据错版、缺 session/损坏 session 五个负例；负例都必须失败且清理。回执只接受精确结构与固定字段，输出不保存原始任务文本。runnable/reproduced/evaluable/strictEvalEligible 全false，原 case/retention/runReference 完全不访问。**锁内重读校验/protect→真实输入启动尚未接通**，不能把本实验或 §4.3 摘要用作真实用例启动许可。上轮 skill/替换名/serverVersion/摘要四类覆盖已补，但预检语义未改变。
+
+静态回归：`node --test tests/runtime/badcase-pi-initialize-probe.test.js tests/runtime/badcase-replay-input-preflight.test.js`；普通回归不自动运行 Docker/SDK。真实复跑：在 Linux 本 Room 根、构建后运行 `node scripts/badcase-capture/verify-pi-initialization.cjs --image-id <sha256:...> --repository-digest <repo@sha256:...> --architecture amd64 --node-version <vX.Y.Z> --python-version "Python X.Y.Z"`。脚本只删除自己创建的临时目录/容器。不是 SQLite、完整 session/skill/工具桥、镜像归档、完整回放、预算/评分或任何 AC 完成证据。
+
 ## 5. 对照评测公平性契约
 
 - baseline 与 candidate 从**同一 Checkpoint** 各自独立恢复起点；只有声明的 prompt 变量（首版：单一 agent 角色指令）变化；模型配置、harness/tool/skill 配置、EvaluatorSpec 版本一致。
