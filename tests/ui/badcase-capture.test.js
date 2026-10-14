@@ -46,6 +46,19 @@ test('opening and selecting a project is read-only; displays persisted limits, u
   assert.match(h.root.textContent, /321/); assert.match(h.root.textContent, /同一 OS 用户/);
   assert.match(h.root.textContent, /Windows/); assert.equal(h.button('enable').disabled, true);
 });
+test('usage shows committed storage categories and labels absent older breakdown as unknown', async t => {
+  let withBreakdown = true;
+  const h = setup(t, url => url.endsWith('/badcase-capture') ? { ...snapshot(), usage: { totalBytes: 321, blobCount: 2,
+    ...(withBreakdown ? { bytesByKind: { blobs: 100, checkpoints: 50, latest: 20, flags: 61, retention: 90 } } : {}) } } : undefined);
+  await h.panel.select({ id: 'a' });
+  let text = h.root.querySelector('[data-capture-usage]').textContent;
+  for (const expected of ['CAS：100 B', '检查点：50 B', 'latest：20 B', '标记：61 B', '保留清单：90 B']) assert.ok(text.includes(expected), text);
+  assert.match(h.root.textContent, /逻辑字节/); assert.match(h.root.textContent, /不含.*staging/);
+  withBreakdown = false; await h.click('refresh');
+  text = h.root.querySelector('[data-capture-usage]').textContent;
+  assert.match(text, /分项未知/); assert.doesNotMatch(text, /标记：0 B/);
+  assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
+});
 test('authorization and enable require separate confirmation; cancel sends no mutation', async t => {
   const h = setup(t); await h.panel.select({ id: 'a', name: 'A' });
   h.accept(false); await h.click('authorize'); assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);

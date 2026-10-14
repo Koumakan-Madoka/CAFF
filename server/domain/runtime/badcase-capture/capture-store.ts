@@ -262,31 +262,46 @@ export function createCaptureStore(options: any = {}) {
       return this.loadCheckpoint(projectId, pointer.checkpointId);
     },
 
-    // 项目当前采集占用：CAS blob + checkpoint 清单 + latest 指针（不含 policy.json 配置本身）。
-    // "零新增 CAS 字节"不等于"零新增总空间"：每次采集都新增清单元数据，必须计入配额。
+    // Committed logical file bytes, NOT physical allocation/free space. CAS is
+    // counted once by stored object; copied reference metadata costs extra.
+    // Policy, staging and unpublished .tmp-* files remain outside this scope.
+    // This synchronous inventory is not an atomic snapshot, quota reservation
+    // or GC authorization. Storage ancestors remain same-OS-user trusted TCB.
     computeUsage(projectId: any) {
-      let totalBytes = 0;
+      const bytesByKind = { blobs: 0, checkpoints: 0, latest: 0, flags: 0, retention: 0 };
       let blobCount = 0;
-      const walk = (current: any, countAsBlob: boolean) => {
-        if (!fs.existsSync(current)) {
-          return;
-        }
-        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-          const entryPath = path.join(current, entry.name);
-          if (entry.isDirectory()) {
-            walk(entryPath, countAsBlob);
-          } else if (entry.isFile() && !entry.name.includes('.tmp-')) {
-            if (countAsBlob) {
-              blobCount += 1;
+      const unavailable = () => Object.assign(new Error('capture_usage_unavailable'), { code: 'capture_usage_unavailable' });
+      try {
+        for (const kind of Object.keys(bytesByKind) as (keyof typeof bytesByKind)[]) {
+          const directory = path.join(projectDir(projectId), kind);
+          let rootStat;
+          try { rootStat = fs.lstatSync(directory); }
+          catch (failure: any) { if (failure.code === 'ENOENT') continue; throw failure; }
+          // Reject static links and special files; not a same-user path-swap
+          // defense. Never follow a linked category into a different tree.
+          if (!rootStat.isDirectory()) throw unavailable();
+          const pending = [directory];
+          while (pending.length) {
+            const current = pending.pop()!;
+            if (!fs.lstatSync(current).isDirectory()) throw unavailable();
+            for (const name of fs.readdirSync(current)) {
+              if (name.includes('.tmp-')) continue;
+              const entryPath = path.join(current, name);
+              // An entry disappearing after enumeration is an incomplete
+              // inventory, not an empty directory or a zero-byte file.
+              const stat = fs.lstatSync(entryPath);
+              if (stat.isDirectory()) { pending.push(entryPath); continue; }
+              if (!stat.isFile() || !Number.isSafeInteger(stat.size) || stat.size < 0) throw unavailable();
+              bytesByKind[kind] += stat.size;
+              if (!Number.isSafeInteger(bytesByKind[kind])) throw unavailable();
+              if (kind === 'blobs') blobCount++;
             }
-            totalBytes += fs.statSync(entryPath).size;
           }
         }
-      };
-      walk(blobsDir(projectId), true);
-      walk(checkpointsDir(projectId), false);
-      walk(path.join(projectDir(projectId), 'latest'), false);
-      return { blobCount, totalBytes };
+        const totalBytes = Object.values(bytesByKind).reduce((sum, value) => sum + value, 0);
+        if (!Number.isSafeInteger(totalBytes)) throw unavailable();
+        return { blobCount, totalBytes, bytesByKind };
+      } catch { throw unavailable(); }
     },
   };
 }

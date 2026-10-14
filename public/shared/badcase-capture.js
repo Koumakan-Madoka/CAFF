@@ -38,7 +38,8 @@
       </div>
       <p data-capture-usage></p>
       <p class="muted">预估为文件元数据容量上界，可能包含 ignored 文件；重叠根可能重复计数。
-      未包含 session、图片、镜像和清单成本，不保证实际空间充足。总占用来自已提交 CAS/检查点；分项及新增占用尚未提供。</p>
+      预估未包含 session、图片、镜像和清单成本，不保证实际空间充足。页面总占用为已提交文件逻辑字节，含 CAS/检查点/latest/标记/保留清单；
+      不含 policy、staging、未发布临时文件或镜像，不是物理磁盘占用或可用空间。CAS 中的 session 未单独拆分；新增占用尚未提供。</p>
       <pre data-capture-estimate class="muted" style="white-space:pre-wrap;overflow-wrap:anywhere" aria-live="polite"></pre>
       <div class="button-row">
         <button type="button" data-capture-action="estimate">2. 预估已授权目录</button>
@@ -81,7 +82,11 @@
       savedDraft = draft();
       const status = { disabled: '已关闭', enabled: '已开启', suspended: '已暂停' }[policy.status] || String(policy.status);
       element('[data-capture-status]').textContent = `项目：${project.name || project.id} · 状态：${status}${policy.suspendReason ? ` · ${policy.suspendReason}` : ''}`;
-      element('[data-capture-usage]').textContent = `已提交总占用：${result.usage.totalBytes} B · ${result.usage.blobCount} 个 blob`;
+      const parts = result.usage.bytesByKind;
+      const labels = { blobs: 'CAS', checkpoints: '检查点', latest: 'latest', flags: '标记', retention: '保留清单' };
+      const breakdown = parts && Object.keys(labels).every(key => Number.isSafeInteger(parts[key]) && parts[key] >= 0)
+        ? Object.entries(labels).map(([key, label]) => `${label}：${parts[key]} B`).join(' · ') : '分项未知';
+      element('[data-capture-usage]').textContent = `已提交总占用：${result.usage.totalBytes} B · ${result.usage.blobCount} 个 blob · ${breakdown}`;
     }
     function showError(error) {
       const codes = Array.isArray(error?.issues) ? error.issues.map(issue => issue.code).filter(Boolean).join(', ') : '';

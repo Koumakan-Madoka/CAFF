@@ -43,8 +43,15 @@ test('distinct references share blobs without duplicating CAS, but same referenc
   const h = setup(t); h.retention.retain(h.input);
   const before = h.store.computeUsage('p1');
   h.retention.retain({ ...h.input, referenceId: 'flag-two' });
-  assert.deepEqual(h.store.computeUsage('p1'), before); // retention accounting is separately returned, not existing CAS accounting
+  const after = h.store.computeUsage('p1');
   const protectedSet = h.retention.protectedObjects('p1');
+  assert.equal(after.blobCount, before.blobCount);
+  assert.equal(after.bytesByKind.blobs, before.bytesByKind.blobs);
+  assert.equal(after.bytesByKind.retention, protectedSet.metadataBytes);
+  assert.ok(after.totalBytes > before.totalBytes);
+  assert.equal(after.totalBytes - before.totalBytes, after.bytesByKind.retention - before.bytesByKind.retention);
+  h.retention.retain({ ...h.input, referenceId: 'flag-two' });
+  assert.deepEqual(h.store.computeUsage('p1'), after);
   assert.equal(protectedSet.referenceCount, 2); assert.deepEqual(protectedSet.blobHashes, [...h.hashes].sort());
   assert.deepEqual(protectedSet.checkpointIds, ['cp1']); assert.ok(protectedSet.metadataBytes > 0);
   for (const field of ['checkpointId', 'conversationId', 'turnId', 'agentId']) {

@@ -514,6 +514,25 @@ test('git 仓库：tracked/dirty/untracked 纳入，ignored 默认排除、显�
   assert.equal(fs.readFileSync(path.join(restoreDir, 'tracked.txt'), 'utf8'), 'tracked-dirty');
 });
 
+test('标记与保留清单占用进入真实采集配额预检，不新增检查点或 blob', { skip: capSkip }, () => {
+  for (const kind of ['flags', 'retention']) {
+    const tempDir = withTempDir(), projectDir = path.join(tempDir, 'project');
+    fs.mkdirSync(projectDir); fs.writeFileSync(path.join(projectDir, 'a.txt'), 'aaa');
+    const service = makeService(tempDir);
+    authorize(service, 'project-1', enabledPolicy(projectDir, { stagingQuotaBytes: 1024 * 1024 }));
+    const initial = service.captureTurnCheckpoint(captureArgs(projectDir));
+    assert.equal(initial.captured, true, initial.reason);
+    const dir = path.join(service.captureRoot, 'projects/project-1', kind);
+    fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'large.json'), Buffer.alloc(1024 * 1024, 32));
+    const before = service.computeUsage('project-1');
+    const result = service.captureTurnCheckpoint(captureArgs(projectDir, { turnId: 'turn-2' }));
+    assert.equal(result.captured, false); assert.equal(result.reason, 'quota_exceeded');
+    assert.equal(service.loadPolicy('project-1').status, 'suspended');
+    assert.equal(service.store.listCheckpoints('project-1').length, 1);
+    assert.deepEqual(service.computeUsage('project-1'), before);
+  }
+});
+
 test('配额不足时策略挂起且采集失败，不伪造检查点', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
