@@ -26,6 +26,7 @@
     <script defer src="/chat/participant-pane.js"></script>
     <script defer src="/chat/message-history.js"></script>
     <script defer src="/chat/message-images.js"></script>
+    <script defer src="/chat/routing-preview.js"></script>
     <script defer src="/chat/message-timeline.js"></script>
     <script defer src="/chat/conversation-settings.js"></script>
     <script defer src="/chat/new-conversation-dialog.js"></script>
@@ -146,6 +147,7 @@
             <button id="stop-button" class="ghost-button danger" type="button">停止</button>
             <button id="send-button" class="send" type="submit">发送</button>
           </div>
+          <div id="composer-routing-preview" class="routing-preview hidden" role="status" aria-live="polite"></div>
           <div class="composer-footer">
             <span id="composer-attachment-status" class="muted" role="status" aria-live="polite"></span>
             <span id="composer-status" class="muted">就绪</span>

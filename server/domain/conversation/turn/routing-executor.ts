@@ -115,6 +115,15 @@ function resolveExistingBatchMessages(messages: any, batchMessageIds: any) {
     .filter((message: any) => message && message.role === 'user');
 }
 
+function routingMetadataFromResolution(resolution: any) {
+  return {
+    agentIds: Array.isArray(resolution && resolution.agentIds) ? resolution.agentIds.slice() : [],
+    strategy: resolution && resolution.strategy,
+    executionMode: resolution && resolution.executionMode,
+    explicitIntent: resolution && resolution.explicitIntent,
+  };
+}
+
 export function createRoutingExecutor(options: any = {}) {
   const store = options.store;
   const executeConversationAgent = options.executeConversationAgent;
@@ -208,6 +217,46 @@ export function createRoutingExecutor(options: any = {}) {
       return missingBoundedProjection('findLatestPublicCompletedAssistantReplyAgentId');
     }
     return conversation;
+  }
+
+  // Queued messages are accepted before the queue drains; the authoritative route is
+  // therefore the resolution computed when the batch actually starts executing. Persist
+  // that execution-time resolution back onto every consumed user message so post-send
+  // annotations can switch from the accept-time estimate to the actual dispatch without
+  // changing the routing rules themselves.
+  function persistExecutedRoutingMetadata(conversationId: any, messages: any, resolution: any, updateOptions: any = {}) {
+    const batchMessages = Array.isArray(messages) ? messages : [];
+    if (batchMessages.length === 0 || !store || typeof store.updateMessage !== 'function') {
+      return batchMessages;
+    }
+
+    const routing = routingMetadataFromResolution(resolution);
+    const dispatchedAt = nowIso();
+    const broadcastUpdates = updateOptions.broadcastUpdates !== false;
+
+    return batchMessages.map((message: any) => {
+      const existingMetadata = message && message.metadata && typeof message.metadata === 'object'
+        ? message.metadata
+        : {};
+      const nextMetadata = {
+        ...existingMetadata,
+        routing,
+        routingStatus: 'dispatched',
+        routingDispatchedAt: dispatchedAt,
+        ...(existingMetadata.acceptedRouting
+          ? { acceptedRouting: existingMetadata.acceptedRouting }
+          : existingMetadata.routingStatus === 'accepted' && existingMetadata.routing
+            ? { acceptedRouting: existingMetadata.routing }
+            : {}),
+      };
+      const updatedMessage = store.updateMessage(message.id, { metadata: nextMetadata });
+
+      if (updatedMessage && broadcastUpdates) {
+        broadcastEvent('conversation_message_updated', { conversationId, message: updatedMessage });
+      }
+
+      return updatedMessage || message;
+    });
   }
 
   async function runConversationTurn(conversationId: any, userContent: any) {
@@ -359,18 +408,41 @@ export function createRoutingExecutor(options: any = {}) {
       conversation
     );
 
-    if (hasImages && modelCatalog) {
-      const executionImageIds = usesExistingBatch
-        ? batchMessages
-            .flatMap((message: any) => messageImageBlocks(message))
-            .map((block: any) => String(block && (block.imageId || block.url) || '').trim())
-            .filter(Boolean)
-        : turnInput.imageIds;
-      assertImagePreflightForTargets(
-        { ...turnInput, imageIds: executionImageIds },
-        conversation,
-        { modelCatalog, targetResolution: initialQueue }
-      );
+    try {
+      // Image preflight must pass before the routing snapshot is marked as
+      // dispatched: a rejected preflight means nothing was dispatched, so the
+      // message keeps its accept-time estimate instead of a false "dispatched".
+      if (hasImages && modelCatalog) {
+        const executionImageIds = usesExistingBatch
+          ? batchMessages
+              .flatMap((message: any) => messageImageBlocks(message))
+              .map((block: any) => String(block && (block.imageId || block.url) || '').trim())
+              .filter(Boolean)
+          : turnInput.imageIds;
+        assertImagePreflightForTargets(
+          { ...turnInput, imageIds: executionImageIds },
+          conversation,
+          { modelCatalog, targetResolution: initialQueue }
+        );
+      }
+
+      // The main try/finally below has not been entered yet: a failing metadata
+      // snapshot (or the preflight above) must clean up the registered turn and
+      // run store itself, otherwise the conversation wedges behind a stale
+      // active marker and silently stops executing later submissions.
+      if (usesExistingBatch) {
+        batchMessages = persistExecutedRoutingMetadata(conversationId, batchMessages, initialQueue);
+        userMessage = batchMessages[batchMessages.length - 1] || userMessage;
+      } else {
+        const routedMessages = persistExecutedRoutingMetadata(conversationId, [userMessage], initialQueue, {
+          broadcastUpdates: false,
+        });
+        userMessage = routedMessages[0] || userMessage;
+      }
+    } catch (error) {
+      cleanupActiveTurn();
+      runStore.close();
+      throw error;
     }
 
     promptUserMessage = {

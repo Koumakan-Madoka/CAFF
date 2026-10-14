@@ -1344,6 +1344,39 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       return true;
     }
 
+    const routingPreviewMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/routing-preview$/);
+
+    if (routingPreviewMatch && req.method === 'POST') {
+      if (!turnOrchestrator || typeof turnOrchestrator.previewRouting !== 'function') {
+        throw createHttpError(501, 'Routing preview is unavailable');
+      }
+
+      const conversationId = decodeURIComponent(routingPreviewMatch[1]);
+      const body = await readRequestJson(req);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw createHttpError(400, 'Request body must be a JSON object', {
+          code: 'routing_preview_invalid_request',
+        });
+      }
+      const unknownField = Object.keys(body).find((fieldName) => fieldName !== 'content');
+      if (unknownField) {
+        throw createHttpError(400, `Unknown routing preview field: ${unknownField}`, {
+          code: 'routing_preview_invalid_request',
+        });
+      }
+      if (body.content !== undefined && typeof body.content !== 'string') {
+        throw createHttpError(400, 'Routing preview content must be a string', {
+          code: 'routing_preview_invalid_request',
+        });
+      }
+
+      const result = turnOrchestrator.previewRouting(conversationId, {
+        content: typeof body.content === 'string' ? body.content : '',
+      });
+      sendJson(res, 200, result);
+      return true;
+    }
+
     const messageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
 
     if (messageMatch && req.method === 'GET') {
