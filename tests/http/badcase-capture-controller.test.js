@@ -49,6 +49,72 @@ function fakeEstimates(h) {
   return calls;
 }
 
+// Real HTTP + real inventory failure (a category is a file, not a directory).
+// Only target estimates are synthetic; no real project is enabled.
+for (const action of ['', 'authorize', 'settings', 'disable', 'enable']) {
+  test(`unavailable inventory preserves HTTP policy observability for ${action || 'GET'}`, async t => {
+    const h = setup(t);
+    await invoke(h.controller, 'authorize', authorization(h.target));
+    fakeEstimates(h);
+    const receipt = (await invoke(h.controller, 'estimate', {})).body.estimateId;
+    if (action === 'disable') h.service.savePolicy('project-test', { ...h.service.loadPolicy('project-test'), status: 'enabled' });
+    const category = path.join(h.captureRoot, 'projects', 'project-test', 'flags');
+    fs.writeFileSync(category, 'invalid category');
+    assert.throws(() => h.service.computeUsage('project-test'), /capture_usage_unavailable/);
+    const before = h.service.loadPolicy('project-test');
+    let controller;
+    const server = http.createServer(async (req, res) => {
+      try { await controller({ req, res, pathname: req.url }); }
+      catch (error) { res.writeHead(error.statusCode || 500); res.end(JSON.stringify({ error: error.message })); }
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    const port = server.address().port;
+    controller = createBadcaseCaptureController({ ...h.options, port });
+    // Receipts are per controller; obtain one on the HTTP controller before enable.
+    const base = `http://127.0.0.1:${port}`;
+    const endpoint = `${base}/api/projects/project-test/badcase-capture`;
+    const post = (name, body) => fetch(`${endpoint}/${name}`, { method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-caff-csrf-token': 'test-csrf' }, body: JSON.stringify(body) });
+    const estimateId = action === 'enable' ? (await (await post('estimate', {})).json()).estimateId : receipt;
+    const body = action === 'authorize' ? authorization(h.target) : action === 'settings' ? { stagingQuotaBytes: 12345 }
+      : action === 'enable' ? { confirmed: true, estimateId } : {};
+    const response = action ? await post(action, body) : await fetch(endpoint);
+    const payload = await response.json();
+    // Check persistence even when the old implementation responds 500.
+    const persisted = createBadcaseCaptureService({ captureRoot: h.captureRoot }).loadPolicy('project-test');
+    assert.equal(persisted.status, action === 'enable' ? 'enabled' : 'disabled');
+    if (action === 'settings') assert.equal(persisted.stagingQuotaBytes, 12345);
+    if (!action) assert.deepEqual(persisted, before, 'GET must not mutate policy');
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload.policy, persisted);
+    assert.equal(payload.usage, null);
+    assert.equal(payload.usageError, 'capture_usage_unavailable');
+    assert.equal(payload.trustBoundary, 'same_os_user');
+    assert.equal(JSON.stringify(payload).includes(h.captureRoot), false);
+    assert.deepEqual(await (await fetch(endpoint)).json(), payload, 're-reading must remain available');
+    assert.throws(() => h.service.computeUsage('project-test'), /capture_usage_unavailable/, 'storage failures still fail closed');
+    fs.unlinkSync(category);
+    const recovered = await (await fetch(endpoint)).json();
+    assert.equal(recovered.usage.totalBytes, 0);
+    assert.equal(recovered.usageError, null);
+    assert.deepEqual(recovered.policy, persisted);
+    assert.equal(h.service.store.listCheckpoints('project-test').length, 0);
+  });
+}
+
+test('inventory degradation does not hide policy, save or unexpected service failures', async t => {
+  const h = setup(t);
+  h.service.computeUsage = () => { throw Error('capture_usage_unavailable'); };
+  h.service.loadPolicy = () => { throw Error('policy read failed'); };
+  await assert.rejects(() => invoke(h.controller), /policy read failed/);
+  h.service.loadPolicy = createBadcaseCaptureService({ captureRoot: h.captureRoot }).loadPolicy;
+  h.service.savePolicy = () => { throw Error('policy save failed'); };
+  await assert.rejects(() => invoke(h.controller, 'disable', {}), /policy save failed/);
+  h.service.computeUsage = () => { throw Error('unexpected service failure'); };
+  await assert.rejects(() => invoke(h.controller), /unexpected service failure/);
+});
+
 test('default GET and guard failures never scan or authorize', async t => {
   const h = setup(t);
   let touches = 0;

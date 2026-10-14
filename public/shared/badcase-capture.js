@@ -74,7 +74,8 @@
       root.setAttribute('aria-busy', pending ? 'true' : 'false');
     }
     function showState(result) {
-      if (!result?.policy || !result?.usage) throw new Error('badcase_capture_state_invalid');
+      const usageUnavailable = result?.usage === null && result?.usageError === 'capture_usage_unavailable';
+      if (!result?.policy || (!result?.usage && !usageUnavailable)) throw new Error('badcase_capture_state_invalid');
       current = result;
       const policy = result.policy;
       for (const name of scopeNames) field(name).value = (policy[name] || []).join('\n');
@@ -82,6 +83,10 @@
       savedDraft = draft();
       const status = { disabled: '已关闭', enabled: '已开启', suspended: '已暂停' }[policy.status] || String(policy.status);
       element('[data-capture-status]').textContent = `项目：${project.name || project.id} · 状态：${status}${policy.suspendReason ? ` · ${policy.suspendReason}` : ''}`;
+      if (usageUnavailable) {
+        element('[data-capture-usage]').textContent = '已提交占用未知：capture_usage_unavailable。策略状态仍可管理；容量读取失败不表示零占用或采集可用，请检查存储后重新读取。';
+        return;
+      }
       const parts = result.usage.bytesByKind;
       const labels = { blobs: 'CAS', checkpoints: '检查点', latest: 'latest', flags: '标记', retention: '保留清单' };
       const breakdown = parts && Object.keys(labels).every(key => Number.isSafeInteger(parts[key]) && parts[key] >= 0)

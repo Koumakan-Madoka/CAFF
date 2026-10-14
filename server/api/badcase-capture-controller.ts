@@ -66,7 +66,17 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
     return value;
   }
   function state(projectId: string) {
-    return { policy: service.loadPolicy(projectId), usage: service.computeUsage(projectId), trustBoundary: 'same_os_user' };
+    // Policy is independently observable even if the inventory is unreadable.
+    // Catch only the inventory's sanitized failure, never policy/save errors;
+    // a successful mutation must not look failed merely due to its usage view.
+    const policy = service.loadPolicy(projectId);
+    let usage;
+    try { usage = service.computeUsage(projectId); }
+    catch (error) {
+      if (!(error instanceof Error) || error.message !== 'capture_usage_unavailable') throw error;
+      return { policy, usage: null, usageError: 'capture_usage_unavailable', trustBoundary: 'same_os_user' };
+    }
+    return { policy, usage, usageError: null, trustBoundary: 'same_os_user' };
   }
   async function estimates(projectId: string, policy: any, operation: symbol) {
     if (!policy.authorizedDirs.length) throw issue('badcase_capture_not_authorized', 409);

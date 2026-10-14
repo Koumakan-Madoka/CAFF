@@ -59,6 +59,41 @@ test('usage shows committed storage categories and labels absent older breakdown
   assert.match(text, /分项未知/); assert.doesNotMatch(text, /标记：0 B/);
   assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
 });
+test('unavailable usage still shows persisted policy, permits disable and refresh, never shows zero or stale bytes', async t => {
+  let unavailable = false, status = 'enabled';
+  const h = setup(t, url => {
+    if (url === '/api/bootstrap') return;
+    if (url.endsWith('/disable')) status = 'disabled';
+    return { ...snapshot(status), ...(unavailable ? { usage: null, usageError: 'capture_usage_unavailable' } : { usageError: null }) };
+  });
+  await h.panel.select({ id: 'a' });
+  assert.match(h.root.querySelector('[data-capture-usage]').textContent, /321 B/);
+  unavailable = true; await h.click('refresh');
+  assert.match(h.root.querySelector('[data-capture-status]').textContent, /状态：已开启/);
+  assert.equal(h.field('authorizedDirs').value, '/repo');
+  assert.equal(h.button('disable').disabled, false);
+  const usageText = () => h.root.querySelector('[data-capture-usage]').textContent;
+  assert.match(usageText(), /占用未知/); assert.match(usageText(), /capture_usage_unavailable/);
+  assert.doesNotMatch(usageText(), /321|0 B|undefined|null/);
+  assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
+  await h.click('disable');
+  assert.match(h.root.querySelector('[data-capture-status]').textContent, /状态：已关闭/);
+  assert.match(usageText(), /占用未知/);
+  assert.doesNotMatch(h.root.querySelector('[data-capture-notice]').textContent, /操作失败/);
+  await h.click('refresh');
+  assert.match(h.root.querySelector('[data-capture-status]').textContent, /状态：已关闭/);
+  assert.match(usageText(), /占用未知/);
+  unavailable = false; await h.click('refresh');
+  assert.match(usageText(), /321 B/); assert.doesNotMatch(usageText(), /占用未知/);
+  assert.equal(h.calls.filter(c => c.method === 'POST').length, 1);
+});
+test('null usage without the explicit unavailable code is not a valid management state', async t => {
+  const h = setup(t, url => url.endsWith('/badcase-capture') ? { ...snapshot(), usage: null } : undefined);
+  await h.panel.select({ id: 'a' });
+  assert.match(h.root.textContent, /badcase_capture_state_invalid/);
+  assert.equal(h.button('disable').disabled, true);
+});
+
 test('authorization and enable require separate confirmation; cancel sends no mutation', async t => {
   const h = setup(t); await h.panel.select({ id: 'a', name: 'A' });
   h.accept(false); await h.click('authorize'); assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);

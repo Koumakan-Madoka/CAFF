@@ -106,7 +106,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 
 仅已登记 projectId 可访问 `/api/projects/:projectId/badcase-capture`：
 
-- `GET`：策略、CAS/清单/latest 占用与 `trustBoundary=same_os_user`；不扫描目标。占用尚不包含暂存 attempt、session/镜像分项或封存分项，不能充当完整容量报告。
+- `GET`：策略、五类已提交逻辑占用（见 §3.3）与 `trustBoundary=same_os_user`；不扫描目标。占用尚不包含暂存 attempt、session/镜像分项或封存分项，不能充当完整容量报告。策略与容量独立可观测：仅 `computeUsage` 抛出 `capture_usage_unavailable` 时，HTTP 200 返回真实策略、`usage:null`、`usageError=capture_usage_unavailable`；正常为 `usageError:null`。成功管理动作的状态响应采用相同语义，不因响应中的容量统计失败而冒充策略写入失败。策略读取/写入、授权 pin 或其他错误不被此降级吞掉；动作本身失败仍返回错误。UI 显示占用未知（不显示零或旧统计），仍可关闭和重新读取；enabled 仅表示策略允许，不保证采集可用。采集器仍直接使用失败关闭的统计，不将未知视为零或放宽配额。
 - `POST /authorize`：`confirmed=true`，完整提供 `authorizedDirs`、`authorizedInputDirs`、`includedIgnoredPatterns`、`excludedPatterns`；拒绝相对/空目录、CAS 与授权根互相包含（包括可解析别名）。先持久化 disabled 再 pin；pin 失败也不继续启用，但旧授权范围已被新范围替换，不自动回滚原 pin，需重新授权。平台不支持时 pin 可能没有 identity，授权动作不等于采集可用，后续预估必须明确失败。
 - `POST /settings`：仅接受正安全整数 `stagingRetentionDays` / `stagingQuotaBytes`，保留其余策略及原 pin；目录、排除/纳入模式只能重新显式授权修改，普通保存不能扩大授权。
 - `POST /estimate`：空对象，逐一预估已授权目标根；不开启、不写检查点。返回逐根 `ok/complete/reason`、文件容量合计和成本口径（未算输入 session、图片、镜像及清单）；重叠授权根可能重复统计。不完整或失败不给开启回执；`dir_not_authorized`、`authorized_root_unpinned`、`authorized_root_unresolved`、`authorized_root_identity_missing`、`authorized_root_replaced`、`target_must_be_authorized_root`、`target_root_replaced`、`root_open_failed`、`statx_failed`、`capture_unavailable:*` 等原因原样返回，UI 不应一律映射为“目录不存在”；未知 reason 保留原值，不推测成功或原因。
@@ -131,7 +131,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - HTTP：`GET/POST /api/projects/:projectId/conversations/:conversationId/messages/:messageId/badcase-flag`。POST 复用 local-admin guard 与 bootstrap CSRF（D10）；GET 仅校验 loopback/Host，不要求 CSRF token，同一 OS 用户的本地进程可读取标记描述；项目必须仍登记，scope 只从路径读取并由 ChatStore 核验。POST 仅接受 `confirmed=true/actual/expected`；不接受客户端 run/checkpoint/status，首次 201、幂等重试 200、不同文本 409。GET 返回 `{flag:null}` 或记录，不授权、不扫描、不创建标记；内部 get 只投影 scope，忽略额外字段，HTTP 不接受客户端 body 派生 scope。读取失败/磁盘失败分别 409/503；业务错误只返回白名单错误码，未知异常统一 `badcase_flag_unavailable`，不回显路径/用户文本。JSON/body 解析层的 400/413 由路由通用错误处理，不保证带 `issues` 数组，UI 必须兼容。没有新增 agent 工具，confirmed 参数不是人类身份认证。
 - `get/mark` 每次都重验源消息。源消息删除后 404、变非终态后 409，不再通过此消息入口暴露既有记录，但磁盘标记仍保留；项目取消登记后也不可通过 API 查询。尚无按项目列举或孤立 flagId 查询入口，不承诺删除后的检索。对仍存在的消息，服务/SQLite/HTTP 重启后记录可查询且关联固定。
 - 存储写路径（含 flags 目录）属于受信 TCB：必须是服务持有、未被不可信进程写入的本地专用存储，不纳入采集目标、也不挂载给回放 agent。当前按路径创建目录/发布，没有与目标读取同等的 openat2 限制，不能抵御同权限进程将存储子目录替换为符号链接；D10 信任同一 OS 用户不是技术沙箱。校验和和本地管理 guard 均不改变此限制。
-- `sealState=pending`，`captured/runnable/reproduced/evaluable` 均为 false，明确 `checkpoint_not_sealed` / `trajectory_not_archived` 等缺失。尚无封存 pin、运行引用、GC 或采集配额中的标记字节统计。后续必须在启用 GC 前建立封存/在用引用保护；不能把标记落盘视为封存验收。
+- `sealState=pending`，`captured/runnable/reproduced/evaluable` 均为 false，明确 `checkpoint_not_sealed` / `trajectory_not_archived` 等缺失。尚无封存 pin、运行引用或 GC；标记字节已纳入采集配额预检总量，但标记写入本身尚无配额预留/跨写者容量保护。后续必须在启用 GC 前建立封存/在用引用保护；不能把标记落盘视为封存验收。
 
 聊天 UI 在终态 assistant 卡片提供“标记问题”，包括没有 agent 配置或 checkpoint 的历史消息。弹窗按当前 Room 的项目归属查询，缺项目不发请求；打开只 GET，不扩大授权或开启采集。UI 从 bootstrap 获取管理能力/CSRF，缺失或查询失败禁用提交；既有标记只读。首次填写实际/期望后需显式确认不可修改及尚未封存；只 POST 三个允许字段，不提交 run/checkpoint/status。UTF-8 长度/非空/NUL 先在客户端检查，秘密哨兵及归属仍由服务端裁定。显示“已标记 · 待封存”，区分缺现场与“清单存在但未验证”，不显示已采集/可回放。未知业务错误用纯文本、无 issues 的解析错误显示 HTTP 状态；失败保留草稿，可能已落盘须重新查询或原文重试，不自动覆盖冲突。
 
@@ -145,14 +145,14 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 已存在的普通文件、prompt、session、harness config、skill 引用按 SHA-256 去重；全部 hash 语法先验，再逐 blob 读取、校验内容 hash 和秘密哨兵。缺失、损坏、不可读均拒绝新引用。该闭包只理解当前 schema-v1 引用字段，新增引用类型须同步升级读写契约；不证明附件、轨迹、环境或严格一致性已满足。
 - `wx` 临时文件 + 文件 fsync + 同目录 hardlink 原子禁止覆盖发布；同 reference/关联重试返回最初副本，并重验其 blob；不同关联冲突。发布竞争以完整的胜者记录为准，失败不覆盖、只尝试删除本次临时文件。源清单被覆盖/删除不影响副本；不改用户 Git、不复制 CAS blob。无 hardlink 能力失败关闭，不退回可覆盖 rename。文件权限 POSIX 0600；未承诺目录 fsync/掉电持久性。
 - `get` 与 `protectedObjects` 只读取/验证引用记录，不证明当前 blob 仍完好；后者返回去重 checkpoint/blob 集合、引用数和引用元数据字节。记录损坏、错配、闭包被删减、未知目录项不静默跳过；发现未完成临时文件返回 busy。引用自身无自动过期或删除入口，即使 blob 丢失也仍保留保护集合。
-- **尚不是 GC 安全事务**：无 writer/GC 共用锁、无在用 ReplayRun 租约、无崩溃恢复或容量预留；inventory 返回不能作为允许删除的证明（枚举与后续写入仍可竞争）。自动 GC 继续禁用。孤立引用/临时文件可能残留，不能自动清理。`computeUsage` 已将保留清单与标记元数据计入总量及 `bytesByKind` 分项，管理 API/UI 和采集器现有配额预检共用此总量；仍未接生产保留写入，后续封存接线必须实现容量预留与并发写者协调，统计不等于容量保护。
+- **尚不是 GC 安全事务**：无 writer/GC 共用锁、无在用 ReplayRun 租约、无崩溃恢复或容量预留；inventory 返回不能作为允许删除的证明（枚举与后续写入仍可竞争）。自动 GC 继续禁用。孤立引用/临时文件可能残留，不能自动清理。`computeUsage` 已将保留清单与标记元数据计入总量及 `bytesByKind` 分项，管理 API/UI 和采集器现有配额预检共用此总量；消息标记生产 API 已写入 flags，未接的是标记→保留/封存写入；后续封存接线必须实现容量预留与并发写者协调，统计不等于容量保护。
 - 延续 §3.2 同 OS 用户存储 TCB：静态引用文件链接/特殊文件拒绝，但目录路径不提供 openat2 防替换保证、checksum 不抵御同权限篡改。校验 blob 当前为同步路径，一次读一个 blob；尚无管理 HTTP 挂点，不得直接同步接入大包封存请求。封存事务、轨迹脱敏归档、UI 新状态和恢复入口仍待交付。
 
 #### 已提交容量口径
 
-`computeUsage(projectId)` 返回 `blobCount`、`totalBytes`、`bytesByKind: { blobs, checkpoints, latest, flags, retention }`。总量为五类目录中非 `.tmp-` 文件的 `stat.size` 之和（逻辑字节而非物理分配块），不解析元数据；损坏清单仍占容量。CAS 按实际存储对象计一次，不按引用数重复计数；多个保留清单各自的副本字节均计入。标记/保留的幂等重试不新增容量。
+`computeUsage(projectId)` 返回 `blobCount`、`totalBytes`、`bytesByKind: { blobs, checkpoints, latest, flags, retention }`。总量为五类目录中非 `.tmp-` 文件的 `stat.size` 之和（逻辑字节而非物理分配块），不解析元数据；损坏清单仍占容量。CAS 按实际存储对象计一次，不按引用数重复计数；各保留清单记录（含清单副本与引用元数据）字节分别计入，共享 CAS blob 仍只计一次。标记/保留的幂等重试不新增容量。
 
-不计 policy、staging、未发布临时文件、镜像和未知目录；不得称为整块磁盘总占用或 free-space 保证。目录或条目静态链接/特殊文件、元数据枚举/读取失败、枚举后条目消失及数值溢出返回净化的 `capture_usage_unavailable`，不返回零或部分成功。缺少某类别目录视为该类尚无数据。父路径仍属同 OS 用户可信存储；这不是抵御并发路径替换的安全遍历。统计同步且非原子，不提供跨写者预留、GC 锁或增长上限；采集与封存并发保护仍待交付。未开启任何 GC。
+不计 policy、staging、未发布临时文件、镜像和未知目录；不得称为整块磁盘总占用或 free-space 保证。目录或条目静态链接/特殊文件、元数据枚举/读取失败、枚举后条目消失及数值溢出抛出净化的 `capture_usage_unavailable`，不返回零或部分成功；管理 HTTP 仅在状态投影层转为显式容量未知，见 §3.1。缺少某类别目录视为该类尚无数据。父路径仍属同 OS 用户可信存储；这不是抵御并发路径替换的安全遍历。统计同步且非原子，不提供跨写者预留、GC 锁或增长上限；采集与封存并发保护仍待交付。未开启任何 GC。
 
 ### 3.4 独立数据库轨迹读取层（内部只读 API，尚未归档）
 
