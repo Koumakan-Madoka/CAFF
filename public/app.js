@@ -25,6 +25,7 @@ const state = {
   selectedAgentId: null,
   sending: false,
   stopRequestConversationIds: new Set(),
+  traceStopRequestKeys: new Set(),
   eventSource: null,
   mentionSuggestions: [],
   mentionSelectionIndex: 0,
@@ -963,6 +964,9 @@ function setupChatModules() {
             privateRecipientNames,
             recoverFailedMessage,
             renderMessageBody,
+            stopConversationTrace,
+            isTraceStopRequestInFlight,
+            queuedSideDispatchCountForMessage,
             timelineMessagesForConversation,
             toolTraceSignatureForMessage,
             toolTraceStateForMessage,
@@ -2909,6 +2913,89 @@ function removeActiveAgentSlot(slotId) {
   }
 
   state.runtime.activeAgentSlots = state.runtime.activeAgentSlots.filter((slot) => slot && slot.slotId !== slotId);
+}
+
+// Per-trace stop（每个正在进行的回答一个停止按钮）：target 形如
+// {kind:'stage', agentId}（主 turn 阶段）、{kind:'slot', slotId}（旁路执行）
+// 或 {kind:'queued-side', agentId|requestId}（排队中的旁路派发，点击取消排队）。
+function traceStopRequestKey(conversationId, target) {
+  const id = target && (target.slotId || target.agentId || target.requestId) || '';
+  return `${conversationId}:${target && target.kind || ''}:${id}`;
+}
+
+function isTraceStopRequestInFlight(conversationId, target) {
+  return state.traceStopRequestKeys.has(traceStopRequestKey(conversationId, target));
+}
+
+async function stopConversationTrace(conversationId, target) {
+  const normalizedConversationId = String(conversationId || '').trim();
+
+  if (!normalizedConversationId || !target || !target.kind) {
+    return;
+  }
+
+  const key = traceStopRequestKey(normalizedConversationId, target);
+
+  if (state.traceStopRequestKeys.has(key)) {
+    return;
+  }
+
+  state.traceStopRequestKeys.add(key);
+  renderConversationPane();
+
+  try {
+    const result = await fetchJson(`/api/conversations/${encodeURIComponent(normalizedConversationId)}/traces/stop`, {
+      method: 'POST',
+      body: target,
+    });
+
+    if (result.runtime) {
+      state.runtime = {
+        ...(state.runtime || {}),
+        ...result.runtime,
+      };
+    }
+
+    if (result.turn) {
+      upsertRuntimeTurn(result.turn);
+    }
+
+    if (result.agentSlot) {
+      upsertActiveAgentSlot(result.agentSlot);
+    }
+
+    showToast(target.kind === 'queued-side' ? '已取消该条排队派发' : '正在停止该条回复，其他执行不受影响…');
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.traceStopRequestKeys.delete(key);
+    renderRuntime();
+    renderConversationList();
+    renderConversationPane();
+  }
+}
+
+// 排队中的旁路派发（side dispatch）取消入口：源用户消息仍可按目标 Agent 取消。
+function queuedSideDispatchCountForMessage(message) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+
+  if (!metadata || metadata.dispatchLane !== 'side' || metadata.dispatchCancelled) {
+    return 0;
+  }
+
+  const queueDepths =
+    state.runtime && state.runtime.agentSlotQueueDepths && typeof state.runtime.agentSlotQueueDepths === 'object'
+      ? state.runtime.agentSlotQueueDepths
+      : null;
+  const perAgentDepths = queueDepths && message.conversationId && typeof queueDepths[message.conversationId] === 'object'
+    ? queueDepths[message.conversationId]
+    : null;
+
+  if (!perAgentDepths) {
+    return 0;
+  }
+
+  return Math.max(0, Number(perAgentDepths[String(metadata.dispatchTargetAgentId || '')] || 0));
 }
 
 function turnProgressSignature(turn) {
@@ -5494,6 +5581,9 @@ function bindEvents() {
     try {
       const result = await fetchJson(`/api/conversations/${conversationId}/stop`, {
         method: 'POST',
+        // 停止联动暂停 Goal（D5）：用户主动停止会话时，同步暂停运行中的
+        // Goal，阻断 goal-runner 下一轮自动续跑；旧调用方不传该字段行为不变。
+        body: { stopGoal: true },
       });
 
       if (result.runtime) {

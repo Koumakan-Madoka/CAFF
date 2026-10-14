@@ -1461,6 +1461,16 @@ export function createAgentExecutor(options: any = {}) {
       };
     }
 
+    // Per-trace stop: this stage was individually stopped (queued cancel or
+    // a stop requested while it waited for its slot). Skip only this stage;
+    // the rest of the turn continues.
+    if (stage.stopRequested) {
+      return {
+        stopTurn: false,
+        terminationReason: '',
+      };
+    }
+
     const baseAgentConfig = resolveConversationAgentConfig(agent);
     const conversationType = conversation && conversation.type ? String(conversation.type).trim() : 'standard';
     const modeForType = modeStore ? modeStore.get(conversationType) : null;
@@ -2209,7 +2219,18 @@ export function createAgentExecutor(options: any = {}) {
       throw startError;
     }
     activeRunHandle = handle;
+    // Tag the run handle with its stage so per-trace stop cancels only this
+    // stage's handle instead of every handle registered on the turn.
+    handle.turnStageAgentId = agent.id;
     registerTurnHandle(turnState, handle);
+
+    // Close the narrow window between the stage stop request and handle
+    // registration (registerTurnHandle only honors turn-level stops).
+    if (stage.stopRequested && typeof handle.cancel === 'function') {
+      try {
+        handle.cancel(stage.stopReason || 'Stopped by user');
+      } catch {}
+    }
 
     const startedAt = nowIso();
     let rawReply = '';
@@ -2852,7 +2873,7 @@ export function createAgentExecutor(options: any = {}) {
     } catch (error) {
       const errorValue = error as any;
       const errorMessage = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error');
-      const stopRequested = Boolean(turnState.stopRequested);
+      const stopRequested = Boolean(turnState.stopRequested || (stage && stage.stopRequested));
       const errorUsage = errorValue && errorValue.usage && typeof errorValue.usage === 'object' && !Array.isArray(errorValue.usage) ? errorValue.usage : null;
       const errorTokenUsage = summarizeTokenUsage(errorUsage);
       const errorModelUsage = summarizeModelUsageCalls(errorValue && errorValue.usageCalls);
@@ -3031,8 +3052,9 @@ export function createAgentExecutor(options: any = {}) {
 
       if (stopRequested) {
         return {
-          stopTurn: true,
-          terminationReason: 'stopped_by_user',
+          // A stage-level stop ends only this stage; the turn keeps routing.
+          stopTurn: Boolean(turnState.stopRequested),
+          terminationReason: turnState.stopRequested ? 'stopped_by_user' : '',
         };
       }
 

@@ -1409,11 +1409,33 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (conversationStopMatch && req.method === 'POST') {
       const conversationId = decodeURIComponent(conversationStopMatch[1]);
       const body = await readRequestJson(req);
-      const result = turnOrchestrator.requestStopConversationExecution(conversationId, body.reason);
+      const result = turnOrchestrator.requestStopConversationExecution(conversationId, body.reason, {
+        stopGoal: body && body.stopGoal === true,
+      });
       sendJson(res, 200, {
         conversationId,
         turn: result.turn,
         agentSlots: result.agentSlots,
+        goal: result.goal || null,
+        runtime: turnOrchestrator.buildRuntimePayload(),
+      });
+      return true;
+    }
+
+    const conversationTraceStopMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/traces\/stop$/);
+
+    if (conversationTraceStopMatch && req.method === 'POST') {
+      const conversationId = decodeURIComponent(conversationTraceStopMatch[1]);
+      const body = await readRequestJson(req);
+      const result = turnOrchestrator.requestStopConversationTrace(conversationId, {
+        kind: body && body.kind,
+        agentId: body && body.agentId,
+        slotId: body && body.slotId,
+        requestId: body && body.requestId,
+      }, body && body.reason);
+      sendJson(res, 200, {
+        conversationId,
+        ...result,
         runtime: turnOrchestrator.buildRuntimePayload(),
       });
       return true;

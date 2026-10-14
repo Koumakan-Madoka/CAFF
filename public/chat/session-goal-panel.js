@@ -119,6 +119,10 @@
         );
         appendDetail(dom.sessionGoalDetails, '暂停原因', String(runner.pauseReason || '').trim());
         appendDetail(dom.sessionGoalDetails, '最后错误', String(runner.lastFailureSummary || '').trim());
+      } else if (String(goal.status || '') === 'paused') {
+        // 手动暂停或停止联动暂停：恢复入口即下方“恢复”按钮，resume 后由
+        // 下一轮 drain 正常 claim。
+        appendDetail(dom.sessionGoalDetails, '续跑状态', '已暂停（手动或停止联动）；点击下方“恢复”继续目标续跑');
       }
       appendDetail(dom.sessionGoalDetails, '创建', formatDateTime(goal.createdAt));
       appendDetail(dom.sessionGoalDetails, '更新', formatDateTime(goal.updatedAt));
