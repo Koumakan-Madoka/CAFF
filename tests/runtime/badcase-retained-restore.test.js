@@ -143,6 +143,44 @@ test('fixed receipt is checked after cleanup; fake runtime success alone cannot 
     assert.ok(fake.calls.some(c => c.args[0] === 'rm')); assert.ok(fs.existsSync(h.runFile));
   }
 });
+test('completed execution still requires cleaned=true and matching input hash', async t => {
+  const sandbox = require('../../build/server/domain/runtime/badcase-capture/docker-sandbox');
+  const original = sandbox.runOfflineDockerTask;
+  t.after(() => { sandbox.runOfflineDockerTask = original; });
+  const h = fixture(t), p = prepareRetainedRestoreProbe(h.request);
+  for (const patch of [{ cleaned: false }, { inputHash: 'a'.repeat(64) }]) {
+    sandbox.runOfflineDockerTask = async () => ({ state: 'completed', cleaned: true, inputHash: p.inputHash,
+      stdout: JSON.stringify(p.expectedReceipt), stderr: '', ...patch });
+    await assert.rejects(runRetainedRestoreProbe(h.request), { code: 'restore_probe_output_invalid' });
+  }
+});
+test('4094 files fit the two-file probe overhead; 4095 reject before protection', t => {
+  for (const count of [4094, 4095]) {
+    const h = fixture(t, c => {
+      const entry = c.files['nested/data.txt'];
+      c.files = Object.fromEntries(Array.from({ length: count }, (_, i) => ['f' + i, { ...entry }]));
+    });
+    if (count === 4094) assert.equal(prepareRetainedRestoreProbe(h.request).task.files.length, 4096);
+    else { assert.throws(() => prepareRetainedRestoreProbe(h.request), { code: 'restore_manifest_unsupported' }); assert.equal(fs.existsSync(h.runDir), false); }
+  }
+});
+test('valid-hash secret blob cannot pass through retained restore', t => {
+  const h = fixture(t), content = Buffer.from('sk-' + 'SYNTHETIC_ONLY_123456'), digest = sha256Hex(content);
+  h.store.writeBlob('p1', digest, content);
+  rewriteSource(h, r => {
+    const file = r.checkpoint.files['nested/data.txt']; file.hash = digest; file.size = content.length;
+    r.blobHashes = [digest];
+  });
+  assert.throws(() => prepareRetainedRestoreProbe(h.request), { code: 'restore_contains_secret' });
+  assert.equal(fs.existsSync(h.runDir), false);
+});
+test('malformed retained delivery mode is rejected with a fixed code rather than TypeError', t => {
+  for (const change of [c => { delete c.replayInput; }, c => { c.replayInput.deliveryMode = 'unknown'; }]) {
+    const h = fixture(t); rewriteSource(h, r => change(r.checkpoint));
+    assert.throws(() => prepareRetainedRestoreProbe(h.request), { code: 'retention_record_invalid' });
+    assert.equal(fs.existsSync(h.runDir), false);
+  }
+});
 test('empty file tree is a valid content-only restore plan; mode stays resume and never becomes runnable', t => {
   const h = fixture(t, c => { c.files = {}; });
   const p = prepareRetainedRestoreProbe(h.request);

@@ -225,12 +225,24 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 `retained-restore.ts` 的 `prepareRetainedRestoreProbe/runRetainedRestoreProbe` 仅供可信离线工具/文件 worker；没有 HTTP/agent 入口。请求只含 captureRoot、冻结八键关联、flagId、replayRunId、镜像与超时，不允许自定义程序/entrypoint/环境/挂载。当前真实验证仅使用合成封存包，不授权自动读取真实项目或调用模型。
 
 - 共享 writer lock 内先验证最终 case 与原 retention，再把普通文件 CAS 字节脱离到内存。缺 case/retention 不补建、不读 live checkpoint，不重新采集目标或打开 session 路径。路径使用既有 ASCII 子集，拒绝越界、父子文件冲突、秘密哨兵、symlink、secretExcluded、uncaptured 非空、size/hash 不符、非法/重复或与现有树冲突的 deletions；不做部分恢复后报成功。最多4094个现场文件（另占两个固定探针文件）、4096个删除项；整体仍受 §4.1 的16MiB/32MiB限制。目录替换、单 blob 读取内存边界沿用受信存储底座，不构成恶意同 OS 用户沙箱，不能在 HTTP 主线程调用。
-- 完整包校验通过后，**在任何 Docker 调用之前** protect 已有 retention 闭包（不仅文件，还包括已有 prompt/session/harness/skill blob）。缺/坏非文件 blob 也拒绝；配额、锁争用、引用冲突不启动容器。随后释放同步写锁，使用已脱离字节启动 Docker，保护引用持续存在。失败或成功都不 unpin，自动 GC 仍关闭。重试同 runId 可再次创建独立探针容器，但不新增引用；引用不是执行账本或 exactly-once 启动凭证。
+- 完整包校验通过后，**在任何 Docker 调用之前** protect 已有 retention 闭包（不仅文件，还包括已有 prompt/session/harness/skill blob）。缺/坏非文件 blob 也拒绝；配额、锁争用、引用冲突不启动容器。随后释放同步写锁，使用已脱离字节启动 Docker，保护引用持续存在。失败或成功都不 unpin，自动 GC 仍关闭。重试同 runId 可再次创建独立探针容器，但不新增引用；换 runId 重试会累积永久保护引用，当前没有自动释放或 GC。引用不是执行账本或 exactly-once 启动凭证。同锁内 checkpointChecksum 的二次比较是冗余纵深防御，不宣称存在合作写者可插入的换源窗口。
 - 容器内固定 `restore-probe.cjs` 只对 `snapshot/` 做实际目录枚举、逐文件 size/hash 与删除缺席校验，然后改写本次副本用于隔离验证；不执行捕获的源代码、package hooks、prompt 或 session。固定程序与计划位于 snapshot 外，不把宿主绝对路径/原完整清单/输入正文发入容器。空树亦可验证。探针程序规范化自身行尾；不能由此推断整个调度器构建可复现。
 - `snapshotHash` 覆盖排序后的文件路径/大小/hash 与删除清单；`inputHash` 另覆盖固定程序、计划及镜像。保护记录绑定原 checkpoint checksum，二者含义不同。恢复到全新目录而非已有 checkout；不从 Git HEAD 复活缺席文件。当前仅内容恢复，mode/时间戳不保留，fileModePreserved=false；文件→目录转换等与 deletions 冲突的清单明确不支持，不猜测适配。
-- `filesVerified` 只有容器 completed、cleaned、inputHash 一致且 stdout 为精确固定回执、stderr 为空才为 true；异常回执拒绝，失败/终止为 false。回执不是对恶意镜像的远程证明，CLI/daemon/人工审核镜像仍属 TCB。fresh/resume 原模式仅作来源披露，`replayInputComplete/runnable/reproduced/evaluable/strictEvalEligible` 恒 false；resume 缺 session 的文件探针可成功，但**没有启动任何 session，更不代表降级 fresh 或完整回放**。原 case 状态不改写，探针输出暂不持久化，不构成逐次评分报告。
+- `filesVerified` 只有容器 completed、cleaned、inputHash 一致且 stdout 为精确固定回执、stderr 为空才为 true；异常回执拒绝，失败/终止为 false。回执不是对恶意镜像的远程证明，CLI/daemon/人工审核镜像仍属 TCB。fresh/resume 原模式仅作来源披露，`replayInputComplete/runnable/reproduced/evaluable/strictEvalEligible` 恒 false；resume 缺 session 的文件探针可成功，但**没有启动任何 session，更不代表降级 fresh 或完整回放**。原 case 状态不改写，探针输出暂不持久化，不构成逐次评分报告。返回的 execution.stdout/stderr 仍是不可信文本，调用方不得直接持久化或向用户回显，须先经过独立的输出审计/投影。畸形 replayInput/deliveryMode 由 retention.get 的 schema 校验以固定 retention_record_invalid 拒绝，不依赖后续属性读取的 TypeError。
 
 回归：`node --test tests/runtime/badcase-retained-restore.test.js tests/runtime/badcase-docker-sandbox.test.js tests/runtime/badcase-docker-command.test.js`。CLI 套件仅 Linux 运行 PATH shim，覆盖真实 spawn/env/stdin/超时触发/合计输出上限，不把它当 Docker 证据；非 Linux 真实入口拒绝另有回归。真实 Docker：用 §4.1 相同镜像参数运行 `node scripts/badcase-capture/verify-retained-restore.cjs ...`，临时合成 case/retention、删除 live 清单、两份独立恢复及改写、CAS 不变、损坏阻断、清理与持久保护引用；脚本仅删除自己创建的合成临时存储。不是采集器真实 turn、pi/session、模型或 AC 完成证据。
+
+### 4.3 封存回放输入的只读预检（不是启动许可）
+
+`replay-input-preflight.ts` 的 `inspectRetainedReplayInputs` 只接受 captureRoot、冻结八键关联、flagId，供可信离线/worker 使用；无 HTTP、SDK、Docker 或模型入口。读取已有 case→retention，不读 live checkpoint、不按宿主 session/skill 路径补材料，不创建锁、保护引用或写入记录。返回仅摘要/hash/计数/固定状态，不返回 prompt、session、skill 正文、路径或原始校验错误。检查针对本次内存中读到的副本；不是跨对象原子读取或将来的执行授权。
+
+- 不信任历史 complete=true：必须无缺口/秘密排除/未验证维度，图片计数明确为0；旧记录缺计数或必要维度字段失败关闭。复核整个已保留 CAS 闭包的 hash、秘密哨兵，合计上限16MiB；存储读取仍沿用同OS用户TCB、同步整blob读取，字节上限是读后逻辑限制而非RSS硬边界。
+- prompt hash 必须存在且匹配 normalizedPromptHash；harness JSON 的 piVersion 钉至既有0.85.1、deliveryMode/agentPromptVersion 与运行声明一致，必填类型正确。provider/model/promptVersion 非空；声明 skill 集合与归档集合严格对账、重复/多余/缺失均拒绝，逐份验证UTF-8与hash。不把配置声明、包版本字符串或完整材料当作已安装SDK/项目依赖证明。
+- resume 必须有原session字节，重新运行既有 session-validator，结构损坏/未知依赖拒绝；fresh 携带 session 同样拒绝，不更换模式。此预检尚未实现历史路径到容器路径的映射，故不给 session 校验器授权根：即使历史read/write/edit落在原授权根内，也保守报告 replay_session_dependencies_unverified。纯消息历史可通过；bash、扩展状态、图像等未验证维度不能因历史complete声明而放行。不修改原session、不开SDK、不迁移格式、不借宿主OS推断路径兼容性。
+- 受控替换清单只接受既有允许变量的name/count，允许采集器分开记录prompt/session后按name合计；与两份归档字节中的保留占位符逐项对账，未知名称/额外原值字段/计数不一致拒绝。不签发凭据、不替换值。碰巧存在的同名占位符使计数不一致时也保守拒绝，不能猜测其来源。
+- `inputMaterialsVerified=true` 只表示此静态输入子集校验通过；`launchAuthorized/runnable/reproduced/evaluable/strictEvalEligible` 全false，既有case状态不变。返回 checkpointChecksum、prompt/session/config及配置清单hash供后续对照，**摘要不构成可复用启动令牌**。未来launcher仍必须在共享锁内重新读验完整包并protect，应用审核过的路径/变量映射，在固定镜像内验证真实安装依赖后才允许启动；不能拿本次结果跳过这些步骤。文件恢复仍由§4.2独立验证；文件mode/环境/轨迹/附件及严格一致性没有因此补齐。
+
+回归：构建后 `node --test tests/runtime/badcase-replay-input-preflight.test.js`，使用临时合成CAS，覆盖fresh/resume、删除live后仍可查、无写入、缺/坏blob、模式不降级、历史complete伪声明、版本/配置/skill/替换清单/UTF-8/秘密/大小负例。没有真实pi启动、Docker或模型证据，AC仍不能据此完成。
 
 ## 5. 对照评测公平性契约
 
