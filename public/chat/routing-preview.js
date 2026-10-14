@@ -80,9 +80,11 @@
     return segments.join(' · ');
   }
 
-  // Sent-message annotation. The annotation reflects the accept-time routing that was
-  // persisted in metadata.routing; a side dispatch (busy conversation) overrides the
-  // displayed target because that is what actually ran.
+  // Sent-message annotation. Side dispatch is authoritative at accept time. Main-lane
+  // messages first carry an accept-time estimate (routingStatus: 'accepted') and are
+  // overwritten with the execution-time resolution (routingStatus: 'dispatched') when
+  // the queued batch actually starts; legacy rows without a status are treated as
+  // dispatched for backwards compatibility.
   function routingAnnotationForMessage(message, agentById) {
     const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
     const routing = metadata && metadata.routing && typeof metadata.routing === 'object' ? metadata.routing : null;
@@ -114,7 +116,10 @@
       return null;
     }
 
-    const segments = [`已路由 → ${agentIds.map(resolveName).join('、')}`];
+    const routingStatus = String(metadata.routingStatus || '').trim();
+    const segments = [
+      `${routingStatus === 'accepted' ? '预计路由' : '已路由'} → ${agentIds.map(resolveName).join('、')}`,
+    ];
     const reason = strategyLabel(routing.strategy);
 
     if (reason) {

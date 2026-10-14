@@ -895,7 +895,13 @@ function setupChatModules() {
 
   mentionMenuController =
     typeof chatModules.createMentionMenuController === 'function'
-      ? chatModules.createMentionMenuController({ state, dom })
+      ? chatModules.createMentionMenuController({
+          state,
+          dom,
+          onComposerChange() {
+            routingPreviewController.refreshNow();
+          },
+        })
       : noopMentionMenuController;
 
   routingPreviewController =

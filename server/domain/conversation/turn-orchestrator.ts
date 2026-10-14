@@ -2081,16 +2081,19 @@ export function createTurnOrchestrator(options: any = {}) {
 
     ensureQueueState(conversationId);
 
-    // Persist the accept-time routing resolution so the post-send annotation
-    // reflects what actually routed this message (previews may go stale, but
-    // this snapshot cannot). Side-dispatch messages additionally record the
-    // actual dispatch lane/target alongside the main-route resolution.
+    // Persist the accept-time routing resolution so queued messages can show an
+    // estimate immediately. The executor overwrites metadata.routing with the
+    // execution-time resolution when the batch actually starts (routingStatus
+    // becomes "dispatched"); side-dispatch targets are already authoritative at
+    // accept time.
     const routingMetadata = {
       agentIds: initialTargetResolution.agentIds,
       strategy: initialTargetResolution.strategy,
       executionMode: initialTargetResolution.executionMode,
       explicitIntent: initialTargetResolution.explicitIntent,
     };
+    const routingStatus = shouldSideDispatch ? 'dispatched' : 'accepted';
+    const routingRecordedAt = nowIso();
 
     let dispatchResult = null as any;
     const acceptedMessage = store.createMessage(
@@ -2099,10 +2102,13 @@ export function createTurnOrchestrator(options: any = {}) {
         metadata: {
           ...turnInput.metadata,
           routing: routingMetadata,
+          routingStatus,
+          routingRecordedAt,
           ...(shouldSideDispatch
             ? {
                 dispatchLane: 'side',
                 dispatchTargetAgentId: sideTarget ? sideTarget.targetAgentId : null,
+                routingDispatchedAt: routingRecordedAt,
               }
             : {}),
         },

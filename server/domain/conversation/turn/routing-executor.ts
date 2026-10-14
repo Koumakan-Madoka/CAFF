@@ -115,6 +115,15 @@ function resolveExistingBatchMessages(messages: any, batchMessageIds: any) {
     .filter((message: any) => message && message.role === 'user');
 }
 
+function routingMetadataFromResolution(resolution: any) {
+  return {
+    agentIds: Array.isArray(resolution && resolution.agentIds) ? resolution.agentIds.slice() : [],
+    strategy: resolution && resolution.strategy,
+    executionMode: resolution && resolution.executionMode,
+    explicitIntent: resolution && resolution.explicitIntent,
+  };
+}
+
 export function createRoutingExecutor(options: any = {}) {
   const store = options.store;
   const executeConversationAgent = options.executeConversationAgent;
@@ -208,6 +217,46 @@ export function createRoutingExecutor(options: any = {}) {
       return missingBoundedProjection('findLatestPublicCompletedAssistantReplyAgentId');
     }
     return conversation;
+  }
+
+  // Queued messages are accepted before the queue drains; the authoritative route is
+  // therefore the resolution computed when the batch actually starts executing. Persist
+  // that execution-time resolution back onto every consumed user message so post-send
+  // annotations can switch from the accept-time estimate to the actual dispatch without
+  // changing the routing rules themselves.
+  function persistExecutedRoutingMetadata(conversationId: any, messages: any, resolution: any, updateOptions: any = {}) {
+    const batchMessages = Array.isArray(messages) ? messages : [];
+    if (batchMessages.length === 0 || !store || typeof store.updateMessage !== 'function') {
+      return batchMessages;
+    }
+
+    const routing = routingMetadataFromResolution(resolution);
+    const dispatchedAt = nowIso();
+    const broadcastUpdates = updateOptions.broadcastUpdates !== false;
+
+    return batchMessages.map((message: any) => {
+      const existingMetadata = message && message.metadata && typeof message.metadata === 'object'
+        ? message.metadata
+        : {};
+      const nextMetadata = {
+        ...existingMetadata,
+        routing,
+        routingStatus: 'dispatched',
+        routingDispatchedAt: dispatchedAt,
+        ...(existingMetadata.acceptedRouting
+          ? { acceptedRouting: existingMetadata.acceptedRouting }
+          : existingMetadata.routingStatus === 'accepted' && existingMetadata.routing
+            ? { acceptedRouting: existingMetadata.routing }
+            : {}),
+      };
+      const updatedMessage = store.updateMessage(message.id, { metadata: nextMetadata });
+
+      if (updatedMessage && broadcastUpdates) {
+        broadcastEvent('conversation_message_updated', { conversationId, message: updatedMessage });
+      }
+
+      return updatedMessage || message;
+    });
   }
 
   async function runConversationTurn(conversationId: any, userContent: any) {
@@ -358,6 +407,16 @@ export function createRoutingExecutor(options: any = {}) {
       },
       conversation
     );
+
+    if (usesExistingBatch) {
+      batchMessages = persistExecutedRoutingMetadata(conversationId, batchMessages, initialQueue);
+      userMessage = batchMessages[batchMessages.length - 1] || userMessage;
+    } else {
+      const routedMessages = persistExecutedRoutingMetadata(conversationId, [userMessage], initialQueue, {
+        broadcastUpdates: false,
+      });
+      userMessage = routedMessages[0] || userMessage;
+    }
 
     if (hasImages && modelCatalog) {
       const executionImageIds = usesExistingBatch

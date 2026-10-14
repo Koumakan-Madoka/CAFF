@@ -93,6 +93,16 @@ function createHarness(t, options = {}) {
       conversation.messages.push(message);
       return message;
     },
+    updateMessage(messageId, updates) {
+      const message = conversation.messages.find((item) => item.id === messageId);
+      if (!message) {
+        return null;
+      }
+      if (updates.metadata !== undefined) {
+        message.metadata = updates.metadata;
+      }
+      return message;
+    },
     updateConversation(conversationId, updates) {
       assert.equal(conversationId, conversation.id);
       conversation.metadata = updates.metadata;
@@ -231,7 +241,8 @@ test('submitted user messages persist the accept-time routing resolution in meta
   });
 
   const result = orchestrator.submitConversationMessage(conversation.id, { content: '@Gamma please take this' });
-  const routing = result.acceptedMessage.metadata && result.acceptedMessage.metadata.routing;
+  const acceptedMetadata = JSON.parse(JSON.stringify(result.acceptedMessage.metadata || {}));
+  const routing = acceptedMetadata.routing;
 
   assert.deepEqual(routing, {
     agentIds: ['agent-c'],
@@ -239,9 +250,18 @@ test('submitted user messages persist the accept-time routing resolution in meta
     executionMode: 'serial',
     explicitIntent: '',
   });
-  assert.equal(result.acceptedMessage.metadata.dispatchLane, undefined);
+  // Immediate main-lane dispatch starts synchronously inside submit, so by the time
+  // submit returns the executor may already have flipped the status to dispatched.
+  assert.ok(acceptedMetadata.routingRecordedAt);
+  assert.ok(acceptedMetadata.routingStatus === 'accepted' || acceptedMetadata.routingStatus === 'dispatched');
+  assert.equal(acceptedMetadata.dispatchLane, undefined);
 
   await waitForCondition(() => orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0);
+
+  const persisted = conversation.messages.find((message) => message.id === result.acceptedMessage.id);
+  assert.equal(persisted.metadata.routingStatus, 'dispatched');
+  assert.deepEqual(persisted.metadata.routing, routing);
+  assert.deepEqual(persisted.metadata.acceptedRouting, routing);
 });
 
 test('side-dispatched messages persist metadata.routing alongside the actual dispatch lane and target', async (t) => {
@@ -283,10 +303,130 @@ test('side-dispatched messages persist metadata.routing alongside the actual dis
     executionMode: 'serial',
     explicitIntent: '',
   });
+  assert.equal(metadata.routingStatus, 'dispatched');
+  assert.ok(metadata.routingDispatchedAt);
 
   releaseFirstTurn();
   await waitForCondition(() => (
     orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0
     && orchestrator.listAgentSlotSummaries({ conversationId: conversation.id }).length === 0
   ));
+});
+
+test('queued default routing is re-persisted with the execution-time target when the latest replier changes', async (t) => {
+  let releaseBetaTurn = null;
+  const betaTurnGate = new Promise((resolve) => {
+    releaseBetaTurn = resolve;
+  });
+  let executionCount = 0;
+
+  const { conversation, orchestrator, store } = createHarness(t, {
+    executeConversationAgent: async ({ completedReplies, agent }) => {
+      executionCount += 1;
+      if (executionCount === 1) {
+        await betaTurnGate;
+      }
+      // Mirror production: agent-executor persists the public assistant reply to
+      // the store, which is what default_last_agent re-resolution reads at drain time.
+      completedReplies.push(store.createMessage({
+        conversationId: conversation.id,
+        role: 'assistant',
+        agentId: agent.id,
+        senderName: agent.name,
+        content: `${agent.name} completed`,
+        status: 'completed',
+        metadata: {},
+      }));
+      return { stopTurn: false };
+    },
+  });
+
+  const mentionResult = orchestrator.submitConversationMessage(conversation.id, { content: '@Beta hold the room' });
+  assert.equal(mentionResult.dispatch, 'started');
+
+  const queuedResult = orchestrator.submitConversationMessage(conversation.id, { content: 'unmentioned follow-up' });
+  assert.equal(queuedResult.dispatch, 'queued');
+  const acceptedMetadata = JSON.parse(JSON.stringify(queuedResult.acceptedMessage.metadata || {}));
+  assert.deepEqual(acceptedMetadata.routing, {
+    agentIds: ['agent-a'],
+    strategy: 'default_first_agent',
+    executionMode: 'serial',
+    explicitIntent: '',
+  });
+  assert.equal(acceptedMetadata.routingStatus, 'accepted');
+
+  releaseBetaTurn();
+  await waitForCondition(() => {
+    const persisted = conversation.messages.find((message) => message.id === queuedResult.acceptedMessage.id);
+    return persisted
+      && persisted.metadata
+      && persisted.metadata.routingStatus === 'dispatched'
+      && orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0;
+  });
+
+  const persisted = conversation.messages.find((message) => message.id === queuedResult.acceptedMessage.id);
+  assert.deepEqual(persisted.metadata.routing, {
+    agentIds: ['agent-b'],
+    strategy: 'default_last_agent',
+    executionMode: 'serial',
+    explicitIntent: '',
+  });
+  assert.deepEqual(persisted.metadata.acceptedRouting, acceptedMetadata.routing);
+});
+
+test('every user message in a merged queued batch receives the same execution-time routing metadata', async (t) => {
+  let releaseBetaTurn = null;
+  const betaTurnGate = new Promise((resolve) => {
+    releaseBetaTurn = resolve;
+  });
+  let executionCount = 0;
+
+  const { conversation, orchestrator, store } = createHarness(t, {
+    executeConversationAgent: async ({ completedReplies, agent }) => {
+      executionCount += 1;
+      if (executionCount === 1) {
+        await betaTurnGate;
+      }
+      completedReplies.push(store.createMessage({
+        conversationId: conversation.id,
+        role: 'assistant',
+        agentId: agent.id,
+        senderName: agent.name,
+        content: `${agent.name} completed`,
+        status: 'completed',
+        metadata: {},
+      }));
+      return { stopTurn: false };
+    },
+  });
+
+  orchestrator.submitConversationMessage(conversation.id, { content: '@Beta hold the room' });
+  const firstQueued = orchestrator.submitConversationMessage(conversation.id, { content: 'queued follow-up one' });
+  const secondQueued = orchestrator.submitConversationMessage(conversation.id, { content: 'queued follow-up two' });
+  assert.equal(firstQueued.dispatch, 'queued');
+  assert.equal(secondQueued.dispatch, 'queued');
+
+  releaseBetaTurn();
+  await waitForCondition(() => {
+    const queuedMessages = [firstQueued.acceptedMessage.id, secondQueued.acceptedMessage.id]
+      .map((messageId) => conversation.messages.find((message) => message.id === messageId));
+    return queuedMessages.every((message) => message && message.metadata && message.metadata.routingStatus === 'dispatched')
+      && orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0;
+  });
+
+  for (const messageId of [firstQueued.acceptedMessage.id, secondQueued.acceptedMessage.id]) {
+    const persisted = conversation.messages.find((message) => message.id === messageId);
+    assert.deepEqual(persisted.metadata.routing, {
+      agentIds: ['agent-b'],
+      strategy: 'default_last_agent',
+      executionMode: 'serial',
+      explicitIntent: '',
+    });
+    assert.deepEqual(persisted.metadata.acceptedRouting, {
+      agentIds: ['agent-a'],
+      strategy: 'default_first_agent',
+      executionMode: 'serial',
+      explicitIntent: '',
+    });
+  }
 });

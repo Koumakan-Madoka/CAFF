@@ -199,6 +199,86 @@ test('responses from a previous conversation are dropped', async () => {
   }
 });
 
+test('mention menu selection triggers an immediate preview refresh for the inserted mention', async () => {
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="bar" class="routing-preview hidden"></div><textarea id="input"></textarea><div id="menu" class="mention-menu hidden"></div></body></html>',
+    { url: 'http://localhost/', runScripts: 'outside-only' }
+  );
+  const { window } = dom;
+  window.CaffChat = {};
+  window.eval(readPublic('chat/routing-preview.js'));
+  window.eval(readPublic('chat/mention-menu.js'));
+
+  try {
+    const input = window.document.getElementById('input');
+    const bar = window.document.getElementById('bar');
+    const menu = window.document.getElementById('menu');
+    const agents = [
+      { id: 'agent-a', name: 'Alpha' },
+      { id: 'agent-b', name: 'Beta' },
+    ];
+    const state = {
+      currentConversation: { id: 'conv-1', agents },
+      mentionSuggestions: [],
+      mentionSelectionIndex: 0,
+      activeMentionContext: null,
+    };
+    const calls = [];
+    const previewFor = (content) => ({
+      conversationId: 'conv-1',
+      agentIds: [content.includes('@Beta') ? 'agent-b' : 'agent-a'],
+      agents: [content.includes('@Beta') ? agents[1] : agents[0]],
+      strategy: content.includes('@Beta') ? 'user_mentions' : 'default_first_agent',
+      executionMode: 'serial',
+      explicitIntent: '',
+    });
+
+    const previewController = window.CaffChat.createRoutingPreviewController({
+      dom: { composerInput: input, routingPreview: bar },
+      helpers: {
+        getConversationId: () => 'conv-1',
+        fetchPreview: async (conversationId, content) => {
+          calls.push({ conversationId, content });
+          return previewFor(content);
+        },
+        debounceMs: 5,
+      },
+    });
+    window.caffShell = {
+      setComposerValue(value) {
+        input.value = String(value ?? '');
+      },
+    };
+    const mentionController = window.CaffChat.createMentionMenuController({
+      state,
+      dom: { composerInput: input, composerMentionMenu: menu },
+      onComposerChange: () => previewController.refreshNow(),
+    });
+    previewController.bindEvents();
+    mentionController.bindEvents();
+
+    input.value = '@B';
+    input.setSelectionRange(2, 2);
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await delay(30);
+    assert.deepEqual(calls, [{ conversationId: 'conv-1', content: '@B' }]);
+    assert.equal(bar.textContent, '将唤醒 Alpha · 默认首位参与者 · 串行执行');
+    assert.equal(state.mentionSuggestions.length, 1);
+
+    input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    await delay(10);
+
+    assert.equal(input.value, '@Beta ');
+    assert.deepEqual(calls, [
+      { conversationId: 'conv-1', content: '@B' },
+      { conversationId: 'conv-1', content: '@Beta ' },
+    ]);
+    assert.equal(bar.textContent, '将唤醒 Beta · mention 命中 · 串行执行');
+  } finally {
+    dom.window.close();
+  }
+});
+
 test('multi-target drafts render all agents with parallel mode and explicit intent', async () => {
   const harness = createPreviewHarness({
     fetchPreview: async () => ({
@@ -272,6 +352,24 @@ test('routing annotation model reflects persisted accept-time routing', () => {
     assert.ok(annotation);
     assert.equal(annotation.lane, 'main');
     assert.equal(annotation.text, '已路由 → GPT · mention 命中 · 串行执行');
+
+    const pendingAnnotation = routingPreview.routingAnnotationForMessage(
+      {
+        role: 'user',
+        metadata: {
+          routingStatus: 'accepted',
+          routing: {
+            agentIds: ['role-family-gpt'],
+            strategy: 'default_first_agent',
+            executionMode: 'serial',
+            explicitIntent: '',
+          },
+        },
+      },
+      agentById
+    );
+    assert.ok(pendingAnnotation);
+    assert.equal(pendingAnnotation.text, '预计路由 → GPT · 默认首位参与者 · 串行执行');
 
     const side = routingPreview.routingAnnotationForMessage(
       {
