@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const { prepareOfflineTask, runDockerCommand } = require('../../build/server/domain/runtime/badcase-capture/docker-sandbox');
 const { prepareProbeFiles, manifestFor } = require('./pi-probe-materials.cjs');
+const { verifiedCleanupId } = require('./pi-probe-guards.cjs');
 const LABEL = 'caff.badcase.pi-initialization';
 const WORK = 'rw,nosuid,nodev,size=64m,uid=65534,gid=65534,mode=0700';
 const TMP = 'rw,nosuid,nodev,noexec,size=16m,uid=65534,gid=65534,mode=0700';
@@ -57,9 +58,8 @@ async function runProbe(image, files) {
       if (started) {
         const found = await runDockerCommand(['inspect', id || name]);
         if (good(found)) {
-          const c = one(found); assert.equal(c.Config.Labels?.[LABEL], owner, 'probe_cleanup_owner');
-          assert.match(c.Id, /^[a-f0-9]{64}$/); if (id) assert.equal(c.Id, id);
-          assert.ok(good(await runDockerCommand(['rm', '-f', c.Id])), 'probe_cleanup_failed');
+          const cleanupId = verifiedCleanupId(one(found), owner, id);
+          assert.ok(good(await runDockerCommand(['rm', '-f', cleanupId])), 'probe_cleanup_failed');
         } else assert.equal(id, '', 'probe_cleanup_unknown');
         const remaining = await runDockerCommand(['ps', '-a', '--no-trunc', '--filter', 'name=^/' + name + '$', '--format', '{{.ID}}']);
         assert.ok(good(remaining) && !remaining.stdout.trim(), 'probe_cleanup_failed');

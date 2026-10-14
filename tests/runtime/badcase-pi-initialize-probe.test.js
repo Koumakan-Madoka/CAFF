@@ -25,6 +25,8 @@ test('stages only declared distribution files, stable manifest, and explicit syn
   f.put(f.sdk + '/node_modules/@earendil-works/chord/private.txt', 'must not copy');
   const a = prepareProbeFiles(f.root, 'fresh'), b = prepareProbeFiles(f.root, 'resume');
   assert.equal(a.some(x => x.path.includes('auth.json') || x.path.includes('private.txt')), false);
+  assert.deepEqual(a.find(x => x.path === 'pi-probe-guards.cjs').bytes,
+    fs.readFileSync(path.resolve(__dirname, '../../scripts/badcase-capture/pi-probe-guards.cjs')));
   assert.equal(a.some(x => x.path === 'resume.jsonl'), false);
   assert.equal(b.some(x => x.path === 'resume.jsonl'), true);
   const ma = manifestFor(a), mb = manifestFor(b);

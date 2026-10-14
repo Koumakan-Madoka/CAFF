@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
+const { verifyMaterialBytes, verifyNoProbeSideEffects } = require('./pi-probe-guards.cjs');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 (async () => {
   if (process.platform !== 'linux' || process.getuid?.() !== 65534 || process.cwd() !== '/work'
@@ -17,7 +18,7 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
     assert.ok(st.isFile() && !st.isSymbolicLink());
     total += st.size; assert.ok(total <= 16 * 1024 * 1024);
     const bytes = fs.readFileSync('/work/' + f.path);
-    assert.equal(bytes.length, f.size); assert.equal(hash(bytes), f.sha256);
+    verifyMaterialBytes(bytes, f);
   }
   assert.equal(hash(JSON.stringify(manifest.files)), manifest.inputHash);
   assert.equal(hash(JSON.stringify(manifest.files.filter(f => f.path.startsWith('runtime/')))), manifest.runtimeHash);
@@ -78,7 +79,7 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
       assert.equal(session.messages[0].content, 'synthetic history only');
       assert.equal(hash(fs.readFileSync(sessionPath)), before);
     }
-    assert.ok(!session.agent.state.systemPrompt.includes('Unapproved discovery trap'));
+    verifyNoProbeSideEffects(session.agent.state.systemPrompt, modelCalls, networkCalls);
     const tools = new Map(session.agent.state.tools.map(t => [t.name, t]));
     assert.deepEqual([...tools.keys()].sort(), ['bash', 'edit', 'read', 'write']);
     await tools.get('write').execute('p1', { path: 'probe.txt', content: 'before' });
@@ -87,7 +88,7 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
     assert.equal(read.content[0].text, 'after');
     const shell = await tools.get('bash').execute('p4', { command: 'test "$(id -u)" = 65534 && test "$(pwd)" = /work/snapshot && test ! -e /var/run/docker.sock && printf container-shell', timeout: 5 });
     assert.equal(shell.content[0].text.trim(), 'container-shell');
-    assert.equal(networkCalls, 0); assert.equal(modelCalls, 0);
+    verifyNoProbeSideEffects(session.agent.state.systemPrompt, modelCalls, networkCalls);
     console.log(JSON.stringify({ kind: 'synthetic-pi-initialization', mode, piVersion: version,
       inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash, runtimeBytes: manifest.runtimeBytes,
       historyMessages: session.messages.length, sessionBytesUnchanged: mode === 'resume' ? true : null,

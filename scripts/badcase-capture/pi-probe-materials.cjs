@@ -63,6 +63,7 @@ function prepareProbeFiles(repoRoot, mode) {
   // pi-ai code is inside the shipped SDK bundle. Metadata is provenance, not a separate installation proof.
   metadata(root + '/node_modules/@earendil-works/pi-ai', 'runtime/bundled-pi-ai', '@earendil-works/pi-ai', '0.85.1');
   files.push({ path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'pi-initialize-probe.cjs')) });
+  files.push({ path: 'pi-probe-guards.cjs', bytes: fs.readFileSync(path.join(__dirname, 'pi-probe-guards.cjs')) });
   files.push({ path: 'mode.txt', bytes: Buffer.from(mode) });
   if (mode === 'resume') files.push({ path: 'resume.jsonl', bytes: Buffer.from(syntheticSession()) });
   manifestFor(files);

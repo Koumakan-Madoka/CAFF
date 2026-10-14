@@ -255,7 +255,9 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - resume 输入必须事先存在且与固定合成夹具逐字节一致，之后才调用 `SessionManager.open`；该 SDK API 对缺失文件可能自动创建 session，故不得裸调用它当作“resume成功”。保留原 session id/消息，显式 cwdOverride 到 `/work/snapshot`；对纯消息夹具验证源字节未变。这**不是**通用历史工具路径映射，也没有把真实缺失 session 改成 fresh。fresh 两个容器的 inputHash 一致，三个正例 runtimeHash 一致，容器相互独立。
 - 真实验证包含 fresh 两副本、resume，以及缺 SDK 入口、SDK/pi-ai 元数据错版、缺 session/损坏 session 五个负例；负例都必须失败且清理。回执只接受精确结构与固定字段，输出不保存原始任务文本。runnable/reproduced/evaluable/strictEvalEligible 全false，原 case/retention/runReference 完全不访问。**锁内重读校验/protect→真实输入启动尚未接通**，不能把本实验或 §4.3 摘要用作真实用例启动许可。上轮 skill/替换名/serverVersion/摘要四类覆盖已补，但预检语义未改变。
 
-静态回归：`node --test tests/runtime/badcase-pi-initialize-probe.test.js tests/runtime/badcase-replay-input-preflight.test.js`；普通回归不自动运行 Docker/SDK。真实复跑：在 Linux 本 Room 根、构建后运行 `node scripts/badcase-capture/verify-pi-initialization.cjs --image-id <sha256:...> --repository-digest <repo@sha256:...> --architecture amd64 --node-version <vX.Y.Z> --python-version "Python X.Y.Z"`。脚本只删除自己创建的临时目录/容器。不是 SQLite、完整 session/skill/工具桥、镜像归档、完整回放、预算/评分或任何 AC 完成证据。
+四类守卫的实际断言共用纯模块 `pi-probe-guards.cjs`：逐文件 size/hash、发现陷阱、model/network 零计数和清理 owner/完整 ID；模块随受信探针代码一起打包。它与入口脚本均是受信代码，在清单自校验前加载，不是对不可信代码的认证边界。`badcase-pi-probe-guards.test.js` 自动运行独立负例；文件 hash 接线另用 VM+文件系统桩验证在环境读取/SDK import 前阻断，清理接线用 Docker/tar 桩验证 foreign owner 时零 rm。纯断言测试不执行 SDK；计数/陷阱负例不代表真实 SDK 已触发这些异常，完整容器故障注入仍待补齐。
+
+静态回归：`node --test tests/runtime/badcase-pi-probe-guards.test.js tests/runtime/badcase-pi-initialize-probe.test.js tests/runtime/badcase-replay-input-preflight.test.js`；普通回归不自动运行 Docker/SDK。真实复跑：在 Linux 本 Room 根、构建后运行 `node scripts/badcase-capture/verify-pi-initialization.cjs --image-id <sha256:...> --repository-digest <repo@sha256:...> --architecture amd64 --node-version <vX.Y.Z> --python-version "Python X.Y.Z"`。脚本只删除自己创建的临时目录/容器。不是 SQLite、完整 session/skill/工具桥、镜像归档、完整回放、预算/评分或任何 AC 完成证据。
 
 ### 4.5 封存初始化输入准备（实现中，尚未接容器消费者）
 
@@ -267,7 +269,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 此步骤保存所有回放输入，不丢弃 skill/桥接配置或受控替换，但**不实现这些配置的执行语义**。没有调用 SDK/Docker，没有应用或发送 prompt，没有把 invocation prompt 当作角色/system prompt。launchAuthorized/runnable/reproduced/evaluable/strictEvalEligible 全false；原 case 完整性不升级。
 - 共享锁只协调守约写者；同 OS 用户存储 TCB、非原子原始采集、无掉电保证及旧锁保守阻断的限制不变。准备后的源变化不改变已返回字符串，下一次准备仍重新校验；保护引用不代表已启动或已结束的进程。
 
-定向回归：构建后 `node --test tests/runtime/badcase-retained-initialization.test.js`。使用临时合成 CAS，覆盖 fresh/resume、移除 live、不补缺源、坏材料、父 lease 争用、每次读取/发布都持锁、预检之后字节变化、重试引用保留、文件/删除冲突及编码后大小限制。容器消费者、真实封存输入初始化与 §4.4 的四类守卫变异覆盖仍待接线，不构成 Docker/SDK/模型验收。
+定向回归：构建后 `node --test tests/runtime/badcase-retained-initialization.test.js`。使用临时合成 CAS，覆盖 fresh/resume、移除 live、不补缺源、坏材料、父 lease 争用、每次读取/发布都持锁、预检之后字节变化、重试引用保留、文件/删除冲突及编码后大小限制。容器消费者与真实封存输入初始化仍待接线；§4.4 已有共享守卫的离线负例，但不替代真实容器异常路径证据，不构成 Docker/SDK/模型验收。
 
 ## 5. 对照评测公平性契约
 
