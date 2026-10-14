@@ -259,7 +259,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 静态回归：`node --test tests/runtime/badcase-pi-probe-guards.test.js tests/runtime/badcase-pi-initialize-probe.test.js tests/runtime/badcase-replay-input-preflight.test.js`；普通回归不自动运行 Docker/SDK。真实复跑：在 Linux 本 Room 根、构建后运行 `node scripts/badcase-capture/verify-pi-initialization.cjs --image-id <sha256:...> --repository-digest <repo@sha256:...> --architecture amd64 --node-version <vX.Y.Z> --python-version "Python X.Y.Z"`。脚本只删除自己创建的临时目录/容器。不是 SQLite、完整 session/skill/工具桥、镜像归档、完整回放、预算/评分或任何 AC 完成证据。
 
-### 4.5 封存初始化输入准备（实现中，尚未接容器消费者）
+### 4.5 封存初始化输入准备（已接数据恢复消费者，未接 SDK）
 
 `retained-initialization.ts` 的 `prepareRetainedInitializationCapsule` 仅供可信同步文件 worker/离线调用，不接 HTTP/agent 工具。接受 captureRoot、冻结关联、flagId、replayRunId；不接受既有预检摘要、宿主 session 路径或启动资格。整个读取、复验、序列化与 protect 在同一个项目 writer lock 内完成；使用已有 case/retention，缺源不从 live checkpoint 补建。重复调用重新校验材料，同 run 不重复保护；不自动释放引用，换 runId 仍会累积。
 
@@ -269,7 +269,19 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 此步骤保存所有回放输入，不丢弃 skill/桥接配置或受控替换，但**不实现这些配置的执行语义**。没有调用 SDK/Docker，没有应用或发送 prompt，没有把 invocation prompt 当作角色/system prompt。launchAuthorized/runnable/reproduced/evaluable/strictEvalEligible 全false；原 case 完整性不升级。
 - 共享锁只协调守约写者；同 OS 用户存储 TCB、非原子原始采集、无掉电保证及旧锁保守阻断的限制不变。准备后的源变化不改变已返回字符串，下一次准备仍重新校验；保护引用不代表已启动或已结束的进程。
 
-定向回归：构建后 `node --test tests/runtime/badcase-retained-initialization.test.js`。使用临时合成 CAS，覆盖 fresh/resume、移除 live、不补缺源、坏材料、父 lease 争用、每次读取/发布都持锁、预检之后字节变化、重试引用保留、文件/删除冲突及编码后大小限制。容器消费者与真实封存输入初始化仍待接线；§4.4 已有共享守卫的离线负例，但不替代真实容器异常路径证据，不构成 Docker/SDK/模型验收。
+定向回归：构建后 `node --test tests/runtime/badcase-retained-initialization.test.js`。使用临时合成 CAS，覆盖 fresh/resume、移除 live、不补缺源、坏材料、父 lease 争用、每次读取/发布都持锁、预检之后字节变化、重试引用保留、文件/删除冲突及编码后大小限制。§4.6 已接容器数据恢复消费者，但尚未接封存输入的 SDK 初始化；§4.4 已有共享守卫的离线负例，但不替代其真实容器异常路径证据，不构成 SDK/模型验收。
+
+### 4.6 受保护 capsule → 容器内材料恢复（内部探针，非 SDK 初始化）
+
+`retained-input-probe.cjs` 将 §4.5 的准备结果送给 §4.1 底座，固定运行 `capsule-materialization` 消费者。仅可信离线实验脚本，无 HTTP/agent 入口，真实验证只使用合成封存材料；不会开启项目采集或运行模型。整个 capsule 是固定名 `capsule.json` 的数据，**不使用 tar，不把捕获路径或代码拼进可信程序清单**。可信程序仅来自本 Room build，构建目录及同 OS 用户为 TCB；容器内固定入口复核 Linux/uid65534/工作目录，再执行材料恢复。
+
+- 在宿主准备链的同一 writer lock 内复读/校验并 protect，解锁后传输已脱离的字符串；完整闭包保护先于任何 Docker 调用，失败/成功不 unpin。消费者再次校验 capsule/checkpoint 摘要、schema、规范 base64、每 blob hash/秘密哨兵、闭包缺失/额外/重复、文件大小/路径/父子冲突与删除冲突。resume 缺 session 拒绝，fresh 不允许夹带 session；不改模式。所有结构和内容验证完成后才创建恢复目录。
+- 消费者只认 schema1 和现有闭包字段，不是完整 replay-input 语义验证器。它拒绝已知 incomplete/uncaptured，但不替代 §4.3 预检、session-validator、授权或来源证明；调用方提供的 hash 不是签名。完整 replay 语义、skill/桥接配置/凭据替换、角色指令与工具设置仍需将来的 SDK launcher 明确实现或拒绝。
+- 容器中仅创建全新的 `/work/restored`，已有目录/链接失败关闭，不覆盖或递归清理。`snapshot/` 保存文件副本，`materials/checkpoint.json` 保留完整清单，`materials/blobs/<hash>` 保留完整输入闭包，包括 invocation prompt、session、harness 和 skill；不把 invocation 当作角色/system prompt，不发现/加载 `.pi` 扩展、package hooks 或归档代码。文件内容有意在 snapshot 和材料 blob 间重复，不使用这些瞬时副本作为存储去重/容量成本证据。
+- 限制：编码 capsule 4MiB、最多8192 blobs/4094现场文件/4096删除项/4096 skill快照，总外层包仍受 §4.1 限制；全部同步内存处理，不是 RSS 硬边界。落盘逐文件 wx/0600 并读回核验，文件 mode/时间戳不保留。I/O 失败可留下本次新目录的部分内容，但不返回成功；容器由原底座终止/清理，宿主静态测试只清理自己临时目录。目的地祖先在可信边界内，不宣称恶意并发路径替换防护。
+- 回执 `materializedHash` 是排序后的预期恢复文件 path/size/hash 清单摘要，写后每文件读回相等才返回；不是原始采集一致性、远程证明或执行许可。wrapper 要求 completed/cleaned/inputHash 匹配、精确 stdout 回执和空 stderr，向调用方只返回固定投影，不返回原始 stdout/stderr。`piExecuted/fileModePreserved/runnable/reproduced/evaluable/strictEvalEligible` 全false，原 case 状态不升级；没有发送 prompt、SDK 初始化或评分。
+
+回归：`node --test tests/runtime/badcase-capsule-materialization.test.js tests/runtime/badcase-retained-initialization.test.js`。真实 Docker：Linux 本 Room 根构建后运行 `node scripts/badcase-capture/verify-retained-inputs.cjs` 并带 §4.4 相同的五个镜像参数。fresh/resume 各两份独立容器、移除 live 后材料一致、CAS 不变、持久引用保留；另对仅内存合成传输注入错误 capsule hash/坏 blob/越界路径/缺 session，要求容器内拒绝并清理。仍无镜像归档、真实 turn、SQLite、浏览器、模型、预算、评分或任何 AC 完成证据。§4.4 的 SDK 缺文件 open 行为、session夹具单源化及四守卫真实异常注入仍待补，不能用本段数据消费者故障替代。
 
 ## 5. 对照评测公平性契约
 
