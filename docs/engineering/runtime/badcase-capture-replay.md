@@ -150,11 +150,15 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。容量分项、�
 
 ### 3.4 独立数据库轨迹读取层（内部只读 API，尚未归档）
 
+异步入口 `readBadcaseTrajectoryAsync` 使用可信的一次性 Node 子进程，只读打开已存在的 SQLite，不执行 ChatStore 迁移、agent、shell 或 session 文件遍历。每 Node 父进程最多两个读者，不排队；每次最多 30 秒，stdout/stderr 合计最多 4 MiB + 1 KiB，Node heap 128 MiB（不是原生 SQLite 内存或 RSS 上限）。超时/超量强杀子 PID，等待 close 后释放名额；非零退出（含原生崩溃）即使已输出合法 JSON 也拒绝。不转发 stderr/未知错误，仅返回固定原因码；清除 Node 启动钩子及无关宿主环境变量。进程选项/测试观察器仅供内部可信调用，不得由 HTTP/DB 输入指定。
+
+当前 worker 不创建子孙进程，因此只终止其 PID；这不是通用进程树沙箱或 Docker 被测运行时。父进程崩溃后的孤儿治理未实现。父侧复验关联、大小与不完整状态，不把进程正常返回升级为完整封存；尚未接入标记/API/CAS，亦未解决已观测的特定 Linux Node24 原生模块崩溃。
+
 `readBadcaseTrajectory({db, association, limits})` 直接读取 SQLite，而不复用 `message-tool-trace` / Inspector 的首尾窗口、摘要或脱敏展示。当前只是封存编排的输入适配器，无 HTTP/agent 工具入口，不写 CAS、不改变 Flag，不构成 `SealedCase`。
 
 - 调用方必须先取得封存授权并从不可变关联派生 project/conversation/message/turn/agent/task/checkpoint/run；模块再检查项目归属、消息各关联、task metadata 的会话/turn/agent 以及 task↔run 双向关联。缺关联、已知错配、非终态或数据源异常均返回固定错误码，错误不携带数据库文本或路径。
-- 单 SQLite 只读事务内读取 task 输出/错误、run 的 assistant errors、**全部** `agent_tool_call` / `agent_reply_terminating` 事件，按 id 排序；保留原始 payload 内容而非截短展示。其他事件只计数并声明未归档。上限默认 10,000 个选中事件、返回 JSON 4 MiB，内部调用可调低不能调高；metadata 单份 64 KiB。UTF-8 数据字节在 SQL 中预检，最终 JSON 字节再检；超限整次拒绝，不悄悄截断。SQL 汇总仍可能遍历大量行，没有执行时间或数据库总大小保证；后续 HTTP 封存编排必须在受限 worker 中调用，不可直接同步接入主事件循环。
-- 不输出 message 正文、run prompt、task 原始 metadata、session 路径；不打开任何 session/附件文件，不读取祖先快照或擅自扩大授权目录。已知当前消息/task、直接触发消息的私有标记拒绝；直接触发消息缺失或跨会话也拒绝。更远私有祖先、任意工具文本的来源授权尚未证明，明确 `private_ancestry_not_verified`，调用成功不能当作落盘授权。
+- 单 SQLite 只读事务内读取 task 输出/错误、run 的 assistant errors、**全部** `agent_tool_call` / `agent_reply_terminating` 事件，按 id 排序；保留原始 payload 内容而非截短展示。其他事件只计数并声明未归档。上限默认 10,000 个选中事件、返回 JSON 4 MiB，内部调用可调低不能调高；metadata 单份 64 KiB。UTF-8 数据字节在 SQL 中预检（仅最终大小的下界，不是瞬时内存上限），最终 JSON 字节再检；超限整次拒绝，不悄悄截断。SQL 汇总仍可能遍历大量行，同步读取器没有执行时间或数据库总大小保证；后续 HTTP 封存编排必须使用异步进程入口，不可直接同步接入主事件循环。
+- 不额外读取 `chat_messages.content`，但 `task.output` 可包含与 assistant 消息相同的完整回复正文。不输出 run prompt、task 原始 metadata、session 路径；不打开任何 session/附件文件，不读取祖先快照或擅自扩大授权目录。已知当前消息/task、直接触发消息的私有标记拒绝；直接触发消息缺失或跨会话也拒绝。更远私有祖先、任意工具文本的来源授权尚未证明，明确 `private_ancestry_not_verified`，调用成功不能当作落盘授权。
 - 对返回的 task/run/事件内容做秘密哨兵、敏感 JSON 键（包括短值/嵌套 JSON 字符串）、Bearer/赋值文本与私有标记检查；命中整包拒绝，不先存再脱敏。已知 `send-private/read-context` 工具也拒绝。它是保守的已知模式过滤，会误报，**不能证明任意自由文本不含未知秘密或未授权内容**；不替代后续归档授权/来源检查与凭据受控替换。
 - 返回 `databaseConsistent=true` 仅指本次 DB 读事务；`complete=false`、`strictEvalEligible=false` 恒定。执行后 session、原始 context snapshot、usage、timeline、附件、私有祖先与跨文件一致性均明确未完成。turn 前 resume session 仍是独立检查点材料，不可拿这份 DB 证据替代。尚未接标记、持久归档、容量保护或状态 UI，GC 继续禁用。
 

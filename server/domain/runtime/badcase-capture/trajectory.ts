@@ -9,9 +9,10 @@ const object = (value: any) => value !== null && typeof value === 'object' && !A
 const terminalMessage = ['completed', 'failed', 'cancelled', 'interrupted'];
 const terminalExecution = ['succeeded', 'completed', 'failed', 'cancelled', 'interrupted', 'timed_out'];
 const eventTypes = "('agent_tool_call', 'agent_reply_terminating')";
-const knownCodes = new Set(['trajectory_invalid_input', 'trajectory_association_mismatch', 'trajectory_not_terminal',
+export const trajectoryFailureCodes = Object.freeze(['trajectory_invalid_input', 'trajectory_association_mismatch', 'trajectory_not_terminal',
   'trajectory_private_content', 'trajectory_sensitive_content', 'trajectory_invalid_source', 'trajectory_limit_exceeded',
   'trajectory_trigger_unverified', 'trajectory_unavailable']);
+const knownCodes = new Set(trajectoryFailureCodes);
 
 function parse(value: any) {
   if (typeof value !== 'string') throw fail('trajectory_invalid_source');
@@ -63,7 +64,8 @@ function checkContent(value: any, depth = 0): void {
   }
 }
 
-export function readBadcaseTrajectory(options: any) {
+// Shared with the process boundary so malformed requests never open a DB.
+export function validateTrajectoryRequest(options: any) {
   const input = options?.association;
   if (!object(input) || Object.keys(input).some(key => !keys.includes(key))
     || keys.some(key => key === 'runId' ? !Number.isSafeInteger(input[key]) || input[key] <= 0
@@ -74,6 +76,11 @@ export function readBadcaseTrajectory(options: any) {
   if (!object(limits) || Object.keys(limits).some(key => !['maxEvents', 'maxBytes'].includes(key))
     || !Number.isSafeInteger(maxEvents) || maxEvents < 1 || maxEvents > 10000
     || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 4 * 1024 * 1024) throw fail('trajectory_invalid_input');
+  return { association, limits: { maxEvents, maxBytes } };
+}
+
+export function readBadcaseTrajectory(options: any) {
+  const { association, limits: { maxEvents, maxBytes } } = validateTrajectoryRequest(options);
   const db = options?.db;
   try {
     // A single SQLite read transaction pins DB reads, not files, the running

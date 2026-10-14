@@ -42,9 +42,9 @@ test('reads full ordered raw bridge events beyond Inspector window, not clipped 
   assert.ok(result.events.every((row, index, rows) => index === 0 || row.id > rows[index - 1].id));
   assert.equal(result.totalTaskEventCount, 252); assert.equal(result.archivedEventCount, 251);
   assert.equal(result.complete, false); assert.equal(result.strictEvalEligible, false);
-  for (const reason of ['post_turn_session_not_archived', 'context_snapshot_not_archived', 'usage_not_archived', 'timeline_not_archived', 'attachments_not_archived', 'other_task_events_not_archived']) {
-    assert.ok(result.incompleteReasons.includes(reason), reason);
-  }
+  assert.deepEqual(result.incompleteReasons, ['post_turn_session_not_archived', 'context_snapshot_not_archived', 'usage_not_archived',
+    'timeline_not_archived', 'attachments_not_archived', 'private_ancestry_not_verified', 'no_independent_consistency_evidence',
+    'other_task_events_not_archived']);
   const text = JSON.stringify(result);
   for (const absent of ['message body not copied', 'private input not copied', '/not-archived', '/must-not-be-read']) assert.ok(!text.includes(absent));
   assert.deepEqual(h.read(), result, 'no mutable timestamps or database writes in reader');
@@ -95,6 +95,7 @@ test('rejects sensitive and private event payloads, including short values and n
     { result: 'sk-FAKE_SENTINEL_123456' }, { result: JSON.stringify({ apiKey: 'tiny' }) },
     { request: 'Authorization: Bearer anything' }, { request: 'TOKEN=small' },
     { result: 'nul\0hidden' }, { privateOnly: true }, { visibility: 'private' }, { tool: 'send-private' },
+    { result: JSON.stringify({ visibility: 'private' }) }, { result: JSON.stringify([{ role: 'private' }]) },
   ]) {
     const h = setup(t); h.append(payload);
     assert.throws(h.read, failure => ['trajectory_sensitive_content', 'trajectory_private_content'].includes(failure.code));
@@ -120,6 +121,29 @@ test('count and UTF-8 byte limits reject rather than exporting a silently trunca
   assert.equal(h.read().events.length, 2);
   const huge = setup(t); huge.db.prepare('UPDATE a2a_tasks SET metadata_json=?').run(' '.repeat(65537));
   assert.throws(huge.read, code('trajectory_limit_exceeded'));
+});
+
+test('role, task kind, metadata limits, nesting depth and final JSON limit have independent negative cases', t => {
+  for (const sql of ["UPDATE chat_messages SET role='user'", "UPDATE a2a_tasks SET kind='other'"]) {
+    const h = setup(t); h.db.exec(sql); assert.throws(h.read, code('trajectory_association_mismatch'));
+  }
+  const message = setup(t); message.db.prepare('UPDATE chat_messages SET metadata_json=?').run(' '.repeat(65537));
+  assert.throws(message.read, code('trajectory_limit_exceeded'));
+  const trigger = setup(t);
+  trigger.store.createMessage({ id: 'trigger', conversationId: 'room-a', role: 'user', content: 'not archived', metadata: { padding: ' '.repeat(65537) } });
+  trigger.db.prepare('UPDATE a2a_tasks SET metadata_json=?').run(JSON.stringify({ conversationId: 'room-a', turnId: 'turn-a', agentId: 'agent-a', triggeredByMessageId: 'trigger' }));
+  assert.throws(trigger.read, code('trajectory_trigger_unverified'));
+  const deep = setup(t); let nested = { text: 'safe' };
+  for (let i = 0; i < 70; i++) nested = { nested };
+  deep.append(nested); assert.throws(deep.read, code('trajectory_limit_exceeded'));
+  const final = setup(t); for (let i = 0; i < 100; i++) final.append({});
+  assert.throws(() => final.read({ maxBytes: 5000 }), code('trajectory_limit_exceeded'));
+});
+
+test('task output may equal message body; only the separate message-content column is omitted', t => {
+  const h = setup(t); h.db.prepare('UPDATE a2a_tasks SET output_text=?').run('message body not copied');
+  assert.equal(h.read().task.output, 'message body not copied');
+  assert.equal('message' in h.read(), false);
 });
 
 test('event attribution cannot contradict the frozen message association', t => {
