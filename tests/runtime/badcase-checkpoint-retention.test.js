@@ -129,6 +129,33 @@ test('checksum-valid but omitted closure or foreign association blocks protectio
     assert.throws(() => h.retention.protectedObjects('p1'), rejected('retention_record_invalid'));
   }
 });
+test('checksum-valid unknown record fields are rejected without rewriting the record', t => {
+  const h = setup(t); h.retention.retain(h.input);
+  const target = path.join(h.directory, h.records()[0]), envelope = JSON.parse(fs.readFileSync(target));
+  envelope.record.unrecognizedField = true;
+  envelope.checksum = sha256Hex(JSON.stringify(envelope.record));
+  const bytes = JSON.stringify(envelope); fs.writeFileSync(target, bytes);
+  for (const read of [() => h.retention.get(h.input), () => h.retention.retain(h.input), () => h.retention.protectedObjects('p1')]) {
+    assert.throws(read, rejected('retention_record_invalid'));
+    assert.equal(fs.readFileSync(target, 'utf8'), bytes);
+  }
+});
+test('static symlink to an otherwise valid record is rejected by get, retry and inventory', { skip: process.platform === 'win32' }, t => {
+  const h = setup(t), first = h.retention.retain(h.input);
+  const target = path.join(h.directory, h.records()[0]), outside = path.join(h.root, 'record-outside-retention.json');
+  fs.renameSync(target, outside);
+  const bytes = fs.readFileSync(outside);
+  fs.symlinkSync(outside, target);
+  assert.equal(fs.lstatSync(target).isSymbolicLink(), true);
+  for (const read of [() => h.retention.get(h.input), () => h.retention.retain(h.input), () => h.retention.protectedObjects('p1')]) {
+    assert.throws(read, rejected('retention_record_invalid'));
+    assert.deepEqual(fs.readFileSync(outside), bytes);
+    assert.equal(fs.lstatSync(target).isSymbolicLink(), true);
+  }
+  // Positive control: identical bytes at a regular path remain readable.
+  fs.unlinkSync(target); fs.renameSync(outside, target);
+  assert.deepEqual(h.retention.get(h.input), first.reference);
+});
 test('publication fails closed on disk/link error, cleans own temp and permits retry', t => {
   const h = setup(t), original = fs.linkSync;
   try { fs.linkSync = () => { throw Object.assign(new Error('synthetic ENOSPC'), { code: 'ENOSPC' }); };
@@ -148,6 +175,36 @@ test('interleaved same-reference publication converges without overwriting winne
     assert.equal(winner.created, true); assert.equal(loser.created, false); assert.deepEqual(loser.reference, winner.reference);
   } finally { fs.linkSync = original; }
   assert.equal(h.records().length, 1); assert.equal(fs.readdirSync(h.directory).length, 1);
+});
+test('losing publisher verifies the different winner closure after publication, then retry recovers', t => {
+  const h = setup(t), original = fs.linkSync;
+  const winnerBytes = Buffer.from('concurrent winner prompt'), winnerHash = h.blob(winnerBytes);
+  let winner, intercepted = 0;
+  try {
+    fs.linkSync = (...args) => {
+      intercepted++;
+      fs.linkSync = original;
+      // The outer publisher already verified its old prompt; a separate writer
+      // freezes a new prompt under the same association before it can publish.
+      h.checkpoint.replayInput.promptBlobHash = winnerHash; h.save();
+      winner = createCheckpointRetentionStore(h.options).retain(h.input);
+      fs.unlinkSync(h.blobPath(winnerHash));
+      return original(...args); // EEXIST: outer writer must verify the winner.
+    };
+    assert.throws(() => h.retention.retain(h.input), rejected('retention_blob_missing'));
+  } finally { fs.linkSync = original; }
+  assert.equal(fs.linkSync, original); assert.equal(intercepted, 1);
+  assert.equal(winner.created, true);
+  assert.ok(winner.reference.blobHashes.includes(winnerHash));
+  assert.equal(winner.reference.blobHashes.includes(h.hashes[1]), false);
+  assert.equal(h.records().length, 1); assert.equal(fs.readdirSync(h.directory).length, 1);
+  const target = path.join(h.directory, h.records()[0]), persistedBytes = fs.readFileSync(target);
+  assert.deepEqual(h.retention.get(h.input), winner.reference); // Metadata, not a blob integrity claim.
+  assert.throws(() => h.retention.retain(h.input), rejected('retention_blob_missing'));
+  h.store.writeBlob('p1', winnerHash, winnerBytes);
+  const retry = createCheckpointRetentionStore(h.options).retain(h.input);
+  assert.equal(retry.created, false); assert.deepEqual(retry.reference, winner.reference);
+  assert.deepEqual(fs.readFileSync(target), persistedBytes);
 });
 test('retry rechecks retained blob integrity without trusting a modified live checkpoint', t => {
   const h = setup(t); h.retention.retain(h.input);
