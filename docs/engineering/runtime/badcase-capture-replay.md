@@ -193,6 +193,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 记录冻结上述关联、源 checkpoint JSON 的 SHA-256、去重闭包与创建时间。每项目每 replayRunId 一条，不允许改绑；基线和候选可使用不同 run ID 指向同一源副本，不复制 CAS 或整个清单。源保留清单变化、损坏或缺失必须拒绝，不静默读 live 清单。记录不含 runnable/running/reproduced/evaluable 声明。
 - protect 在共享项目 writer lock 内完成源复验、**实际新引用字节**配额终检和发布；父 supervisor lease 不允许同父进程的 protect 重入。runReferences 纳入统一容量统计/API/UI 与采集预检，CAS 仍只计一次。超限、容量未知、磁盘错误显式拒绝；幂等重试不新增字节。不是磁盘空间预分配；底层非合作写者不受其保护。
 - 临时文件 wx/0600、文件 fsync、hardlink 禁止覆盖，正常异常只清理自己的临时文件。进程在发布后崩溃可留下已发布引用、临时文件和旧锁：已发布引用可只读查询；inventory 见临时文件返回 busy，写入仍被旧锁拒绝。**本模块没有解决旧锁恢复或孤儿治理**，不凭 PID/时间猜测清理，也不承诺目录 fsync 或掉电持久性。
+- 库存文件名正则作为冗余快速拒绝保留；记录校验仍独立要求文件名等于 replayRunId 的哈希名，不宣称单独正则有独立变异红灯。接口键集合回归限制为 get/protect/protectedObjects，不仅检查 release 名称。临时文件导致 inventory busy 是有意保守阻断，不会自行随时间恢复；源缺失/目录错误的两处兜底仍归一固定错误码，细分原因未交付。
 - get/inventory 校验记录、源副本及闭包绑定，但不重读每个 blob；即使 blob 当前缺失，已发布引用仍保护其 hash。未知/损坏/链接/特殊条目、丢失源引用或枚举失败不跳过。静态类别目录和文件链接拒绝，祖先路径仍属同 OS 用户可信存储；不是 openat2 沙箱。
 - 当前引用**无过期、完成或 release 删除入口**：任务失败/重启/结束都不会自动解除保护，这是有意过度保留而非完整运行生命周期。`protectedObjects` 恒带 `deletionAuthorized=false`，只读列表不授予 GC 删除权限；未来 GC 必须持同一写锁、合并封存/运行/仍保留检查点的闭包，并取得可信容器终止证据后才设计释放。自动 GC 仍关闭，AC6 尚未完成。
 
@@ -205,6 +206,19 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - CAFF server 与调度留在容器外；容器内仅回调**独立评测服务**（独立数据库、会话、凭据、端口、日志）。禁止：生产 DB/凭据、Docker socket、privileged、回连生产 CAFF。
 - 网络默认拒绝，按需放行受控模型出口与评测回调；限制 CPU/内存/运行时间；终止走容器 kill 兜底，资源超限可靠终止并安全清理。
 - 第一次真实 agent 重跑即在容器内；宿主机只允许"采集 → 临时目录恢复 → 清单校验"静态测试。
+
+### 4.1 断网 Docker 执行底座（内部实验入口，非 pi 回放 launcher）
+
+`docker-sandbox.ts` 的 `prepareOfflineTask/runOfflineDockerTask` 只接收可信调用方已准备好的合成文件包、`.cjs` 入口与人工指定的镜像身份。没有 HTTP、agent 工具、生产采集或模型入口，**尚未接 retention/runReferences、pi SDK、session、评测回调、预算门控和评分**。不允许用该入口自行加载真实 badcase 或绕过授权；当前用途仅断网隔离验证。`completed` 仅表示离线程序退出 0，不产生 runnable/reproduced/evaluable，strictEvalEligible 恒 false。
+
+- 调度器当前只支持 Linux 主机（可由操作者显式在 WSL Linux 内启动）；Windows/macOS 默认入口失败关闭，不自动换 shell、WSL 或宿主执行任务。宿主仅运行受信调度器和静态输入校验，被测文件程序及其 shell 子进程均在 Docker 内。Docker 使用 PATH 中的受信 CLI、固定 `default` context，仅接受本地 Unix socket；CLI 本身可访问宿主 Docker socket，但 socket **不进入被测容器**。CLI、daemon、本地镜像及同 OS 用户配置属于 TCB，不宣称抵御恶意 Docker daemon/镜像。单进程最多两个在途任务，直到清理完成/明确失败才释放名额。
+- 模板必须同时指定本地 image ID、repository digest、Linux 架构及准确 Node/Python 版本；预检要求本地 inspect 一致，实际 create 使用 image ID 和 `--pull never`。拒绝浮动 tag、缺镜像、架构/digest 不符、镜像声明 VOLUME/ONBUILD/活动 HEALTHCHECK。容器内在写任务文件及启动程序前校验 Node 与 `/usr/bin/python3 --version`，不符退出 78。RepoDigests 是本地 daemon 的声明，不是独立供应链来源证明；当前**未导出/归档镜像，未校验 pi/项目依赖安装**，不能算 AC4 完成。
+- 输入只接受精确字段集合、规范相对 ASCII 路径、普通文件、规范 base64 和逐文件 SHA-256；拒绝重复、父子文件冲突、绝对/越界/链接字段、秘密哨兵。至多4096文件、16MiB原始内容、32MiB传输JSON；不是任意规模历史检查点恢复器，亦未保留文件 mode。payload 经 stdin 传入，不经命令行/宿主临时目录/tar。恢复到本次全新 `/work` tmpfs，先全部写入再启动入口；不同运行拥有独立容器和副本。归一化 inputHash 包含镜像、文件包和入口，不含随机容器标识或超时；比较完整实验条件仍需未来对照 manifest，不能只凭此 hash 认定 AC7。
+- 固定 `--network none`、只读根、uid/gid 65534、cap-drop ALL、no-new-privileges、512MiB内存且禁额外swap、1CPU、64pids、private IPC，无端口发布/宿主挂载/设备/额外能力/宿主PID。仅 `/work` 64MiB 与 `/tmp` 16MiB tmpfs 可写；后者 noexec。固定入口 `/usr/bin/env -i` 清空镜像继承环境，再以最小 PATH/HOME/TMPDIR 启动 Node；不传宿主 CAFF/PI/provider/Node钩子或凭据。镜像本体必须为人工审核的无秘密环境；env清空不替代镜像审核。启动前及完成后复核 inspect 中镜像、入口、命令和隔离字段，错配阻断。
+- 运行超时由调用方显式给出，1–300000ms；stdout/stderr合计至多1MiB，超限/超时终止 attach CLI，然后强制删除本次容器以终止整个容器进程树。Docker控制操作单次15秒超时；总墙钟还包含预检/清理，不等于任务超时。日志驱动 none，输出仅在调用方内存返回，不自动持久保存；输出是不可信任务文本，后续展示/归档仍须审计，不能作为完整模型轨迹证据。内存/进程限制为容器级约束，不声称每种资源超限均有专用可识别原因码。
+- 用随机 name+owner label 标识本次容器。create结果不确定时按本次 name 查询，核验label后仅按完整ID删除；不删除外来容器、不全局prune。rm后用精确name查询确认不存在，失败抛 `offline_cleanup_failed` 并提供本次标识和固定原始码，不伪造cleaned=true。此保证依赖存活调度器；父进程崩溃、daemon中断后的孤儿恢复未交付。失败不会解除既有保护引用；当前入口也不创建保护引用。
+
+回归：`node --test tests/runtime/badcase-docker-sandbox.test.js` 为注入CLI的确定性故障测试，不当作Docker证据。真实验证：构建后在Linux运行 `node scripts/badcase-capture/verify-offline-docker.cjs --image-id <sha256:...> --repository-digest <repo@sha256:...> --architecture amd64 --node-version <vX.Y.Z> --python-version "Python X.Y.Z"`；镜像必须已由人工准备，本脚本不pull/build。验证相同输入两份独立恢复、容器内Node文件/shell读写、只读根/链接越界写拒绝、网络/宿主环境隔离、超时/超输出/内存压力、版本不符/缺镜像阻断及本次容器清理。不是pi工具测试、真实turn/模型或Docker回放验收；Linux SQLite门槛不变。
 
 ## 5. 对照评测公平性契约
 

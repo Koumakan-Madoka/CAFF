@@ -46,6 +46,7 @@ test('protects the retained snapshot, not the changed live checkpoint; restart a
   assert.deepEqual(rebuilt.protectedObjects('p1'), { checkpointIds: ['cp1'], blobHashes: [h.hash], referenceCount: 1, deletionAuthorized: false });
   assert.deepEqual(h.store.computeUsage('p1'), usage);
   assert.equal(typeof rebuilt.release, 'undefined', 'no completion/PID/TTL path may unpin materials yet');
+  assert.deepEqual(Object.keys(rebuilt).sort(), ['get', 'protect', 'protectedObjects'], 'no alternative unpin/expire/complete mutation entrypoint');
 });
 test('distinct baseline and candidate references share CAS; one run cannot be rebound', t => {
   const h = setup(t); h.runs.protect(h.input); const firstUsage = h.store.computeUsage('p1');
