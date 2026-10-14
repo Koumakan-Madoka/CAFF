@@ -271,7 +271,7 @@ export function createCaptureStore(options: any = {}) {
     // This synchronous inventory is not an atomic snapshot, quota reservation
     // or GC authorization. Storage ancestors remain same-OS-user trusted TCB.
     computeUsage(projectId: any) {
-      const bytesByKind = { blobs: 0, checkpoints: 0, latest: 0, flags: 0, retention: 0, cases: 0 };
+      const bytesByKind = { blobs: 0, checkpoints: 0, latest: 0, flags: 0, retention: 0, cases: 0, runReferences: 0 };
       let blobCount = 0;
       const unavailable = () => Object.assign(new Error('capture_usage_unavailable'), { code: 'capture_usage_unavailable' });
       try {

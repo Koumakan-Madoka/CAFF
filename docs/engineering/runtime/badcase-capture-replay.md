@@ -106,7 +106,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 
 仅已登记 projectId 可访问 `/api/projects/:projectId/badcase-capture`：
 
-- `GET`：策略、六类已提交逻辑占用（见 §3.3）与 `trustBoundary=same_os_user`；不扫描目标。占用包含 cases 记录字节，但尚不提供封存独占/共享 CAS 分摊、暂存 attempt 或 session/镜像分项，不能充当完整容量报告。策略与容量独立可观测：仅 `computeUsage` 抛出 `capture_usage_unavailable` 时，HTTP 200 返回真实策略、`usage:null`、`usageError=capture_usage_unavailable`；正常为 `usageError:null`。成功管理动作的状态响应采用相同语义，不因响应中的容量统计失败而冒充策略写入失败。策略读取/写入、授权 pin 或其他错误不被此降级吞掉；动作本身失败仍返回错误。UI 显示占用未知（不显示零或旧统计），仍可关闭和重新读取；enabled 仅表示策略允许，不保证采集可用。采集器仍直接使用失败关闭的统计，不将未知视为零或放宽配额。
+- `GET`：策略、七类已提交逻辑占用（见 §3.3）与 `trustBoundary=same_os_user`；不扫描目标。占用包含 cases 记录字节，但尚不提供封存独占/共享 CAS 分摊、暂存 attempt 或 session/镜像分项，不能充当完整容量报告。策略与容量独立可观测：仅 `computeUsage` 抛出 `capture_usage_unavailable` 时，HTTP 200 返回真实策略、`usage:null`、`usageError=capture_usage_unavailable`；正常为 `usageError:null`。成功管理动作的状态响应采用相同语义，不因响应中的容量统计失败而冒充策略写入失败。策略读取/写入、授权 pin 或其他错误不被此降级吞掉；动作本身失败仍返回错误。UI 显示占用未知（不显示零或旧统计），仍可关闭和重新读取；enabled 仅表示策略允许，不保证采集可用。采集器仍直接使用失败关闭的统计，不将未知视为零或放宽配额。
 - `POST /authorize`：`confirmed=true`，完整提供 `authorizedDirs`、`authorizedInputDirs`、`includedIgnoredPatterns`、`excludedPatterns`；拒绝相对/空目录、CAS 与授权根互相包含（包括可解析别名）。先持久化 disabled 再 pin；pin 失败也不继续启用，但旧授权范围已被新范围替换，不自动回滚原 pin，需重新授权。平台不支持时 pin 可能没有 identity，授权动作不等于采集可用，后续预估必须明确失败。
 - `POST /settings`：仅接受正安全整数 `stagingRetentionDays` / `stagingQuotaBytes`，保留其余策略及原 pin；目录、排除/纳入模式只能重新显式授权修改，普通保存不能扩大授权。
 - `POST /estimate`：空对象，逐一预估已授权目标根；不开启、不写检查点。返回逐根 `ok/complete/reason`、文件容量合计和成本口径（未算输入 session、图片、镜像及清单）；重叠授权根可能重复统计。不完整或失败不给开启回执；`dir_not_authorized`、`authorized_root_unpinned`、`authorized_root_unresolved`、`authorized_root_identity_missing`、`authorized_root_replaced`、`target_must_be_authorized_root`、`target_root_replaced`、`root_open_failed`、`statx_failed`、`capture_unavailable:*` 等原因原样返回，UI 不应一律映射为“目录不存在”；未知 reason 保留原值，不推测成功或原因。
@@ -118,7 +118,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 
 项目管理页提供采集管理面板，始终针对**选中项目**而非激活项目：读取状态不授权、不扫描目标、不开启；目录、输入根、ignored 纳入及排除模式从持久化策略载入，不自动填入项目路径。授权确认展示全部范围及“先关闭、失败仍替换旧范围”的风险；预估成功后需另行确认开启。普通保存只提交期限/配额，响应会恢复持久化范围并明确提示未保存的范围草稿已丢弃。编辑、失败、刷新、切换项目及本地过期均丢弃 UI 回执；服务端仍是授权/回执有效性的裁定者。未知错误码和逐根失败原因以纯文本保留。请求使用 bootstrap 的 `localAdmin.modelProviders` 本地管理能力与 CSRF（与控制器共用同一门禁），能力/令牌缺失时禁用管理，不自行绕过。
 
-UI 用 selection/action generation 丢弃过时响应（含 A→B→A），等待预估/开启时仍可点击关闭；切换项目不会撤销已发送的管理请求，重新读取才能确认持久化结果。关闭使服务端在途结果失效但不立即取消 worker；多客户端冲突以服务端为准。预估显示原始字节及口径，已提交总占用使用 `computeUsage` 的统一口径（blob/checkpoint/latest/flags/retention/cases），管理页显示这六项逻辑文件字节及总和；CAS 中 session 尚未独立分项，未宣称含所有暂存、镜像或单 turn 新增占用。
+UI 用 selection/action generation 丢弃过时响应（含 A→B→A），等待预估/开启时仍可点击关闭；切换项目不会撤销已发送的管理请求，重新读取才能确认持久化结果。关闭使服务端在途结果失效但不立即取消 worker；多客户端冲突以服务端为准。预估显示原始字节及口径，已提交总占用使用 `computeUsage` 的统一口径（blob/checkpoint/latest/flags/retention/cases/runReferences），管理页显示这七项逻辑文件字节及总和；CAS 中 session 尚未独立分项，未宣称含所有暂存、镜像或单 turn 新增占用。
 
 UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/镜像独立成本、单 turn 新增占用及封存/回收仍待交付；消息标记入口见 §3.2。控制器测试的正向开启部分使用合成预估；Linux 用真实 collector 的预估/换根负例单独验证，不将 API/UI 测试称为真实 agent turn 或严格评测证据。
 
@@ -152,7 +152,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 #### 已提交容量口径
 
-`computeUsage(projectId)` 返回 `blobCount`、`totalBytes`、`bytesByKind: { blobs, checkpoints, latest, flags, retention, cases }`。总量为六类目录中非 `.tmp-` 文件的 `stat.size` 之和（逻辑字节而非物理分配块），不解析元数据；损坏清单仍占容量。CAS 按实际存储对象计一次，不按引用数重复计数；各保留清单记录（含清单副本与引用元数据）字节分别计入，共享 CAS blob 仍只计一次。标记/保留的幂等重试不新增容量。
+`computeUsage(projectId)` 返回 `blobCount`、`totalBytes`、`bytesByKind: { blobs, checkpoints, latest, flags, retention, cases, runReferences }`。总量为七类目录中非 `.tmp-` 文件的 `stat.size` 之和（逻辑字节而非物理分配块），不解析元数据；损坏清单仍占容量。CAS 按实际存储对象计一次，不按引用数重复计数；各保留清单记录（含清单副本与引用元数据）字节分别计入，共享 CAS blob 仍只计一次。标记/保留的幂等重试不新增容量。
 
 不计 policy、staging、未发布临时文件、镜像和未知目录；不得称为整块磁盘总占用或 free-space 保证。目录或条目静态链接/特殊文件、元数据枚举/读取失败、枚举后条目消失及数值溢出抛出净化的 `capture_usage_unavailable`，不返回零或部分成功；管理 HTTP 仅在状态投影层转为显式容量未知，见 §3.1。缺少某类别目录视为该类尚无数据。父路径仍属同 OS 用户可信存储；这不是抵御并发路径替换的安全遍历。统计同步且非原子，本身不提供预留、GC 锁或增长上限；§3.5 封存写入在共享锁内基于此总量终检。未开启任何 GC。
 
@@ -176,7 +176,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 - 首次/重试从冻结八键关联派生请求。等待轨迹读取后再次核对当前消息，缺失/改变拒绝文件写入；同一服务同一 flag 的在途调用合并。不同文本仍冲突，客户端不能传 worker 路径、存储根、关联或归档内容。
 - 原始轨迹正文 **一律未归档**：现有读取器不能证明任意工具文本/远祖私有来源已授权。读取成功仅保存固定原因 `trajectory_provenance_unverified` 及事件总数/选中数；读取失败仅保存白名单原因码。task output/error、事件 payload、路径等均不进入 case 或 CAS；秘密/私有拒绝同样不保存正文。这里保存的是已授权采集器先前生成的检查点及其现有闭包，不重新扫描目标，不开启项目、不读取新的 session/附件。这不是目标中完整轨迹归档的完成证明。
-- SQLite 读取在既有只读子进程完成且必须干净退出，随后另启不加载 SQLite 的文件 worker，持锁校验并保留清单和每个现有 blob。文件 worker 每父进程最多两个、不排队，30 秒超时、stdout/stderr 合计 64 KiB+1 KiB、192 MiB Node heap，剔除宿主 preload/凭据环境；非零退出拒收成功。只从受信 CAS 读取，不启动 agent/shell。worker 输出仅承载 case 结果及协议包装，不返回最大 16 MiB 的 retention 清单；输出限制不能用作清单大小限制。强杀后仍占并发名额直到 close 回收，避免尚未退出的进程逃出并发上限。文件 worker 的锁改由父进程在 spawn 前取得，只委托给这一子进程执行同步写入；正常/异常/超时都等 close 后由父进程释放本次锁。强杀可能留下未发布临时文件，但存活父进程可释放本次锁、允许显式重试；不是扫描或回收历史锁。父进程自身崩溃、机器断电和孤儿治理仍未解决。
+- SQLite 读取在既有只读子进程完成且必须干净退出，随后另启不加载 SQLite 的文件 worker，持锁校验并保留清单和每个现有 blob。文件 worker 每父进程最多两个、不排队；达到上限先报 `seal_busy`，未达上限而同项目已有写者时报 `capture_writer_busy`，二者均不启动新的 worker。30 秒超时、stdout/stderr 合计 64 KiB+1 KiB、192 MiB Node heap，剔除宿主 preload/凭据环境；非零退出拒收成功。只从受信 CAS 读取，不启动 agent/shell。worker 输出仅承载 case 结果及协议包装，不返回最大 16 MiB 的 retention 清单；输出限制不能用作清单大小限制。强杀后仍占并发名额直到 close 回收，避免尚未退出的进程逃出并发上限。文件 worker 的锁改由父进程在 spawn 前取得，只委托给这一子进程执行同步写入；正常/异常/超时都等 close 后由父进程释放本次锁。强杀可能留下未发布临时文件，但存活父进程可释放本次锁、允许显式重试；不是扫描或回收历史锁。父进程自身崩溃、机器断电和孤儿治理仍未解决。
 - case 独立存于 `projects/<projectId>/cases/<sha256(messageId)>.json`，不改原 Flag；记录关联、固定状态、检查点引用 ID、来源缺失和计数，不含标记原文/清单副本（后者在 retention）。64 KiB 上限、校验和、精确字段/关联校验，文件 fsync+hardlink 禁止覆盖。相同关联重试验证原保留闭包而不重新绑定当前清单；损坏 case/引用/blob 拒绝，不覆盖为新成功。目录 fsync 与掉电保证未实现，路径祖先仍是同 OS 用户可信存储。
 - 独立 `seal.state`：`saving`（本进程在途）、`not_saved`（无最终记录）、`failed`（本次操作失败）、`unavailable`（冻结关联缺失/改变）或 `saved_incomplete`（最终记录已发布，检查点闭包曾校验保存）。只有最后一种显示“现场已保存·材料不完整”。`complete/captured/runnable/reproduced/evaluable/strictEvalEligible` 仍全 false；不认证 checkpoint 输入完整、环境或一致性。GET 的已保存状态是发布记录，不重新逐 blob 审计；显式 POST 重试才复验闭包。失败不覆盖/删除已有 case，因此失败 POST 与后续 GET 的历史发布记录可能不同，不能把 GET 解释为当前完整性审计。
 - 标记已成功、封存失败时 POST 仍返回原 201/200 与 `seal.state=failed`，不丢用户报告；未知错误只显示固定码。失败状态不是独立持久审计日志；重启后无最终记录显示 `not_saved`，UI 支持同文重试。文件写失败（如 ENOSPC）在正常栈退出后释放锁，可重试；引用已发布而 case 失败时保留孤立引用，重试收敛，不自动删除。文件 worker 强杀后仅在父进程仍存活且确认 close 时释放委托锁；父进程/机器崩溃后的锁恢复仍待交付，不能据此声称 AC6 已完成。释放失败返回固定 `seal_lock_release_failed`，保留失败关闭状态，不伪造成功或递归删锁。
@@ -184,6 +184,19 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 封存 worker 在锁内将**最终 case 字节与新 retention 的实际序列化字节**一起预检，再发布引用并终检 case；容量未知/不足拒绝新增封存，不按零计算。case 字节计入管理 API/UI 与采集预检总量；CAS 不重复复制。这里只限制受锁协调的封存计划，不预分配物理磁盘、不限制标记描述本身增长；空间耗尽仍可能写失败。未自动启动 GC、真实项目采集或模型。
 
 复跑入口：构建后 `node --test tests/runtime/badcase-sealing.test.js` 覆盖容量/损坏/关联拒绝、失败重试、同文幂等、独立 Node 进程只读查询、SQLite/服务重建及真实临时 HTTP。安装了 Playwright Chromium 的环境可运行 `node scripts/badcase-capture/verify-sealing-ui.cjs`，使用临时 SQLite/CAS、随机 loopback 端口和仅允许该端口的浏览器网络，验证取消零 POST、容量失败后同文重试无二次确认、重新打开仍显示材料不完整。后者是生产面板/控制器的合成页面，不是完整应用或真实 turn；不启动模型、不打开真实项目采集。`node --test tests/runtime/badcase-sealing-lifecycle.test.js` 另以真实文件 worker 在 retention 发布处注入阻塞，验证强杀/超时→close→释放本次父锁→显式重试，以及外来锁保护、委托验证、错误输出与并发名额；不删除中断留下的临时文件。它不证明父进程崩溃恢复、孤儿治理、掉电持久性或 Docker 回放；Linux SQLite 门槛仍单独保留。
+
+### 3.6 回放运行的持久保护引用（内部底座，未接 launcher）
+
+`createReplayRunReferenceStore` 提供 `protect/get/protectedObjects`，存储在 `projects/<projectId>/runReferences/<sha256(replayRunId)>.json`。不是运行任务账本或活跃进程检测器，没有 HTTP/agent 工具入口；尚未接入 Docker launcher，不代表实际启动/完成了回放。未来 launcher 必须先成功 protect，再创建运行；模块为同步文件操作，只能由可信文件 worker/离线工具调用，不能直接放到 HTTP 主事件循环。
+
+- 输入为服务端派生的 `replayRunId`、已有 retention 的 `referenceId` 及项目/checkpoint/会话/turn/agent 五元组。只引用**已保留的不可变副本**：源引用缺失必须失败，不从当前 live checkpoint 补建；每次 protect（包括幂等重试）复验源关联、全部 blob hash 与秘密哨兵。ID 也做秘密哨兵检查；不写 prompt、轨迹或凭据。
+- 记录冻结上述关联、源 checkpoint JSON 的 SHA-256、去重闭包与创建时间。每项目每 replayRunId 一条，不允许改绑；基线和候选可使用不同 run ID 指向同一源副本，不复制 CAS 或整个清单。源保留清单变化、损坏或缺失必须拒绝，不静默读 live 清单。记录不含 runnable/running/reproduced/evaluable 声明。
+- protect 在共享项目 writer lock 内完成源复验、**实际新引用字节**配额终检和发布；父 supervisor lease 不允许同父进程的 protect 重入。runReferences 纳入统一容量统计/API/UI 与采集预检，CAS 仍只计一次。超限、容量未知、磁盘错误显式拒绝；幂等重试不新增字节。不是磁盘空间预分配；底层非合作写者不受其保护。
+- 临时文件 wx/0600、文件 fsync、hardlink 禁止覆盖，正常异常只清理自己的临时文件。进程在发布后崩溃可留下已发布引用、临时文件和旧锁：已发布引用可只读查询；inventory 见临时文件返回 busy，写入仍被旧锁拒绝。**本模块没有解决旧锁恢复或孤儿治理**，不凭 PID/时间猜测清理，也不承诺目录 fsync 或掉电持久性。
+- get/inventory 校验记录、源副本及闭包绑定，但不重读每个 blob；即使 blob 当前缺失，已发布引用仍保护其 hash。未知/损坏/链接/特殊条目、丢失源引用或枚举失败不跳过。静态类别目录和文件链接拒绝，祖先路径仍属同 OS 用户可信存储；不是 openat2 沙箱。
+- 当前引用**无过期、完成或 release 删除入口**：任务失败/重启/结束都不会自动解除保护，这是有意过度保留而非完整运行生命周期。`protectedObjects` 恒带 `deletionAuthorized=false`，只读列表不授予 GC 删除权限；未来 GC 必须持同一写锁、合并封存/运行/仍保留检查点的闭包，并取得可信容器终止证据后才设计释放。自动 GC 仍关闭，AC6 尚未完成。
+
+复跑：构建后 `node --test tests/runtime/badcase-run-references.test.js tests/runtime/badcase-usage.test.js`。合成 CAS/子进程覆盖源副本不变、同起点独立引用、重启/幂等、配额边界、缺/坏 blob、磁盘错误、跨进程争用及发布后进程退出；不启动真实 agent/模型或 Docker 回放。
 
 ## 4. 环境与 Docker 隔离契约
 
