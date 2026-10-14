@@ -6,6 +6,7 @@
   const digestUtils = shared.conversationDigest;
   const crossConversationUi = chat.crossConversationUi;
   const messageImages = chat.messageImages;
+  const routingPreviewUtils = chat.routingPreview && typeof chat.routingPreview === 'object' ? chat.routingPreview : null;
 
   if (!crossConversationUi) {
     throw new Error('CaffChat.crossConversationUi helper is required');
@@ -2701,6 +2702,19 @@
       const timestampLabel = document.createElement('span');
       timestampLabel.textContent = formatDateTime(message.createdAt);
       time.appendChild(timestampLabel);
+
+      if (message.role === 'user' && routingPreviewUtils && typeof routingPreviewUtils.routingAnnotationForMessage === 'function') {
+        const routingAnnotation = routingPreviewUtils.routingAnnotationForMessage(message, agentById);
+
+        if (routingAnnotation) {
+          const routingBadge = document.createElement('span');
+          routingBadge.className = 'message-routing-annotation';
+          routingBadge.dataset.routingLane = routingAnnotation.lane;
+          routingBadge.textContent = routingAnnotation.text;
+          routingBadge.title = '发送时实际路由结果';
+          time.appendChild(routingBadge);
+        }
+      }
 
       if (tokenUsageLabel) {
         const tokenBadge = document.createElement('span');

@@ -1347,6 +1347,13 @@ textarea {
   opacity: 0.72;
 }
 
+.message-routing-annotation {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+
 .message-token-usage {
   display: inline-flex;
   align-items: center;
@@ -4676,6 +4683,20 @@ body.chat-app .composer:focus-within {
   border-color: var(--caff-line);
   background: var(--caff-surface);
   box-shadow: none;
+}
+
+body.chat-app .routing-preview {
+  max-width: 780px;
+  margin: 0 auto var(--caff-space-2);
+  font-size: 0.78rem;
+  color: var(--caff-muted, rgba(61, 64, 91, 0.65));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.chat-app .routing-preview.hidden {
+  display: none;
 }
 
 body.chat-app .composer-inner {

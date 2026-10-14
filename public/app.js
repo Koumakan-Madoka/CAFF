@@ -267,6 +267,7 @@ const dom = {
   composerAttachmentStrip: /** @type {HTMLDivElement | null} */ (document.getElementById('composer-attachment-strip')),
   composerAttachmentStatus: /** @type {HTMLElement | null} */ (document.getElementById('composer-attachment-status')),
   composerMentionMenu: /** @type {HTMLDivElement | null} */ (document.getElementById('composer-mention-menu')),
+  composerRoutingPreview: /** @type {HTMLDivElement | null} */ (document.getElementById('composer-routing-preview')),
   composerStatus: /** @type {HTMLElement | null} */ (document.getElementById('composer-status')),
   stopButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('stop-button')),
   sendButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('send-button')),
@@ -763,6 +764,13 @@ const noopMentionMenuController = {
   syncMenu() {},
 };
 
+const noopRoutingPreviewController = {
+  bindEvents() {},
+  refreshNow() {},
+  scheduleRefresh() {},
+  syncDraft() {},
+};
+
 const noopConversationSettingsController = {
   bindEvents() {},
   closeAllProfileMenus() {},
@@ -804,6 +812,7 @@ const noopImageComposerController = {
 };
 
 let mentionMenuController = noopMentionMenuController;
+let routingPreviewController = noopRoutingPreviewController;
 let conversationListRenderer = noopRenderer;
 let participantPaneRenderer = noopRenderer;
 let messageTimelineRenderer = noopRenderer;
@@ -888,6 +897,27 @@ function setupChatModules() {
     typeof chatModules.createMentionMenuController === 'function'
       ? chatModules.createMentionMenuController({ state, dom })
       : noopMentionMenuController;
+
+  routingPreviewController =
+    typeof chatModules.createRoutingPreviewController === 'function'
+      ? chatModules.createRoutingPreviewController({
+          dom: {
+            composerInput: dom.composerInput,
+            routingPreview: dom.composerRoutingPreview,
+          },
+          helpers: {
+            getConversationId() {
+              return state.currentConversation ? state.currentConversation.id : '';
+            },
+            fetchPreview(conversationId, content) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/routing-preview`, {
+                method: 'POST',
+                body: { content },
+              });
+            },
+          },
+        })
+      : noopRoutingPreviewController;
 
   conversationSettingsController =
     typeof chatModules.createConversationSettingsController === 'function'
@@ -4112,6 +4142,7 @@ async function loadConversation(conversationId) {
     messageHistory.reset(state.messageHistory, '');
     state.currentConversation = null;
     closeMentionMenu();
+    routingPreviewController.syncDraft();
     renderAll();
     return;
   }
@@ -4141,6 +4172,7 @@ async function loadConversation(conversationId) {
   await hydrateCrossConversationDeliveries(state.currentConversation);
   pruneOptimisticMessagesForConversation(normalizedConversationId, messages);
   closeMentionMenu();
+  routingPreviewController.scheduleRefresh();
   warmConversationToolTraces(state.currentConversation);
   syncToolTraceStatesWithConversation(state.currentConversation);
   renderAll();
@@ -4832,6 +4864,10 @@ function connectEventStream() {
     renderConversationList();
     renderRuntime();
     void refreshConversationFromEvent(payload.conversationId);
+
+    if (state.currentConversation && state.currentConversation.id === payload.conversationId) {
+      routingPreviewController.refreshNow();
+    }
   });
 
   source.addEventListener('agent_slot_progress', (event) => {
@@ -4884,6 +4920,10 @@ function connectEventStream() {
     renderConversationList();
     renderRuntime();
     void refreshConversationFromEvent(payload.conversationId);
+
+    if (state.currentConversation && state.currentConversation.id === payload.conversationId) {
+      routingPreviewController.refreshNow();
+    }
   });
 
   source.addEventListener('error', () => {
@@ -5346,6 +5386,7 @@ function bindEvents() {
         await submitGoalCommand(conversationId, goalCommand);
         setComposerValue('');
         closeMentionMenu();
+        routingPreviewController.syncDraft();
       } catch (error) {
         showToast(error.message);
         renderConversationPane();
@@ -5359,6 +5400,7 @@ function bindEvents() {
         await submitDigestCommand(conversationId, digestCommand);
         setComposerValue('');
         closeMentionMenu();
+        routingPreviewController.syncDraft();
       } catch (error) {
         showToast(error.message);
         renderConversationPane();
@@ -5372,6 +5414,7 @@ function bindEvents() {
         await submitSummaryMemoryCommand(summaryMemoryCommand);
         setComposerValue('');
         closeMentionMenu();
+        routingPreviewController.syncDraft();
       } catch (error) {
         showToast(error.message);
         renderConversationPane();
@@ -5390,6 +5433,7 @@ function bindEvents() {
     const shouldStickToBottom = isMessageListNearBottom();
     setComposerValue('');
     closeMentionMenu();
+    routingPreviewController.syncDraft();
     applyOptimisticUserMessage(conversationId, content, clientRequestId, optimisticContentBlocks);
     renderConversationPane();
 
@@ -5454,6 +5498,7 @@ function bindEvents() {
 
       if (state.selectedConversationId === conversationId && !dom.composerInput.value.trim()) {
         setComposerValue(content);
+        routingPreviewController.scheduleRefresh();
       }
 
       showToast(error.message);
@@ -5867,6 +5912,7 @@ async function init() {
   const imageConfigPromise = imageComposerController.loadConfig();
   newConversationDialogController.bindEvents();
   mentionMenuController.bindEvents();
+  routingPreviewController.bindEvents();
   conversationSettingsController.bindEvents();
   sessionGoalPanelController.bindEvents();
   planPanelController.bindEvents();

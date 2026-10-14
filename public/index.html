@@ -26,6 +26,7 @@
     <script defer src="/chat/participant-pane.js"></script>
     <script defer src="/chat/message-history.js"></script>
     <script defer src="/chat/message-images.js"></script>
+    <script defer src="/chat/routing-preview.js"></script>
     <script defer src="/chat/message-timeline.js"></script>
     <script defer src="/chat/conversation-settings.js"></script>
     <script defer src="/chat/new-conversation-dialog.js"></script>
@@ -123,6 +124,7 @@
 
         <form id="composer-form" class="composer">
           <div id="composer-attachment-strip" class="composer-attachment-strip hidden" aria-label="待发送图片"></div>
+          <div id="composer-routing-preview" class="routing-preview hidden" role="status" aria-live="polite"></div>
           <div class="composer-inner">
             <input
               id="composer-image-input"
