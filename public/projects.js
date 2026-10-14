@@ -31,6 +31,11 @@ const dom = {
 const toast =
   typeof shared.createToastController === 'function' ? shared.createToastController(dom.toast) : { show() {} };
 
+const capturePanel = shared.createBadcaseCapturePanel({
+  root: document.getElementById('badcase-capture-panel'),
+  fetchJson,
+});
+
 function showToast(message) {
   toast.show(message);
 }
@@ -124,6 +129,7 @@ function renderSelectedProject() {
   if (dom.deleteProjectButton) {
     dom.deleteProjectButton.disabled = !selected;
   }
+  void capturePanel.select(selected);
 }
 
 function renderAll() {
