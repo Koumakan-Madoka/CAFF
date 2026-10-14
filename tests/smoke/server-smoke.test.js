@@ -373,6 +373,66 @@ test('create server wires project capture administration without enabling collec
   assert.equal(service.store.listCheckpoints(projectId).length, 0);
 });
 
+// A real lock-directory fixture represents another writer holding the project.
+// Exercise the production router + policy store, not a copied error mapper.
+for (const action of ['settings', 'disable', 'authorize', 'enable']) {
+  test(`capture management ${action} reports writer contention without changing policy and can retry`, async t => {
+    const tempDir = withTempDir('caff-capture-busy-server-');
+    const projectDir = path.join(tempDir, 'project');
+    fs.mkdirSync(projectDir);
+    const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
+    const service = createBadcaseCaptureService({ captureRoot: path.join(tempDir, 'capture') });
+    // Positive estimates only are synthetic; no collector or model is started.
+    service.estimateDirectoryAsync = async () => ({ ok: true, complete: true, totalBytes: 0, fileCount: 0 });
+    const app = createServerApp({ host: '127.0.0.1', port: 0, agentDir: path.join(tempDir, 'agent'),
+      sqlitePath: path.join(tempDir, 'chat.sqlite'), projectDir, badcaseCapture: service });
+    t.after(async () => {
+      await new Promise(resolve => app.close(resolve));
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+    await new Promise(resolve => app.start(resolve));
+    const base = `http://127.0.0.1:${app.server.address().port}`;
+    const projectId = (await (await fetch(`${base}/api/projects`)).json()).activeProjectId;
+    const endpoint = `${base}/api/projects/${projectId}/badcase-capture`;
+    const bootstrap = await (await fetch(`${base}/api/bootstrap`)).json();
+    const headers = { 'Content-Type': 'application/json', Origin: base,
+      'X-CAFF-CSRF-Token': bootstrap.localAdmin.modelProviders.csrfToken };
+    const post = (name, body) => fetch(`${endpoint}/${name}`, { method: 'POST', headers, body: JSON.stringify(body) });
+    const authorization = { confirmed: true, authorizedDirs: [projectDir], authorizedInputDirs: [],
+      excludedPatterns: ['.git'], includedIgnoredPatterns: [] };
+    assert.equal((await post('authorize', authorization)).status, 200);
+    // Disable must preserve an enabled policy on conflict, not silently close it.
+    if (action === 'disable') service.savePolicy(projectId, { ...service.loadPolicy(projectId), status: 'enabled' });
+    const receipt = (await (await post('estimate', {})).json()).estimateId;
+    const body = action === 'settings' ? { stagingRetentionDays: 2 }
+      : action === 'authorize' ? { ...authorization, excludedPatterns: ['.git', '*.log'] }
+        : action === 'enable' ? { confirmed: true, estimateId: receipt } : {};
+    const policyPath = path.join(service.captureRoot, 'projects', projectId, 'policy.json');
+    const before = fs.readFileSync(policyPath);
+    const lock = path.join(service.captureRoot, 'projects', projectId, '.writer-lock');
+    fs.mkdirSync(lock);
+    const response = await post(action, body);
+    const payload = await response.json();
+    assert.deepEqual(fs.readFileSync(policyPath), before, 'conflicting write must leave exact policy bytes unchanged');
+    assert.equal(fs.existsSync(lock), true, 'request must not remove another writer lock');
+    assert.equal(response.status, 409);
+    assert.equal(payload.issues[0].code, 'capture_writer_busy');
+    assert.equal(JSON.stringify(payload).includes(tempDir), false);
+    assert.equal((await fetch(endpoint)).status, 200, 'read-only policy view remains available');
+    fs.rmdirSync(lock);
+    assert.equal((await post('enable', { confirmed: true, estimateId: receipt })).status, 409, 'conflict consumes old receipt');
+    if (action === 'enable') body.estimateId = (await (await post('estimate', {})).json()).estimateId;
+    const retry = await post(action, body);
+    assert.equal(retry.status, 200);
+    const persisted = createBadcaseCaptureService({ captureRoot: service.captureRoot }).loadPolicy(projectId);
+    assert.deepEqual((await retry.json()).policy, persisted);
+    assert.equal(persisted.status, action === 'enable' ? 'enabled' : 'disabled');
+    if (action === 'settings') assert.equal(persisted.stagingRetentionDays, 2);
+    if (action === 'authorize') assert.deepEqual(persisted.excludedPatterns, body.excludedPatterns);
+    assert.equal(service.store.listCheckpoints(projectId).length, 0);
+  });
+}
+
 test('create server wires loopback model-provider administration with bootstrap CSRF', async (t) => {
   const tempDir = withTempDir('caff-model-providers-server-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');

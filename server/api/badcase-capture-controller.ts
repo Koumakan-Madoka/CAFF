@@ -89,7 +89,7 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
     }
     return results;
   }
-  return async function handleBadcaseCapture(context: any) {
+  async function handleBadcaseCapture(context: any) {
     const { req, res, pathname } = context;
     const match = pathname.match(/^\/api\/projects\/([^/]+)\/badcase-capture(?:\/(authorize|estimate|enable|disable|settings))?$/);
     if (!match) return false;
@@ -164,5 +164,16 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
     }
     sendJson(res, 200, state(projectId));
     return true;
+  }
+  return async context => {
+    try { return await handleBadcaseCapture(context); }
+    catch (error) {
+      // A competing cooperative writer is retryable, not an internal error.
+      // Match only the structured lock code; preserve all other failures.
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'capture_writer_busy') {
+        throw issue('capture_writer_busy', 409);
+      }
+      throw error;
+    }
   };
 }

@@ -115,6 +115,17 @@ test('inventory degradation does not hide policy, save or unexpected service fai
   await assert.rejects(() => invoke(h.controller), /unexpected service failure/);
 });
 
+test('only structured writer contention is mapped; message lookalikes and other errors propagate', async t => {
+  const h = setup(t);
+  for (const error of [Error('capture_writer_busy'), Object.assign(Error('capture_writer_busy'), { code: 'EIO' }),
+    Object.assign(Error('disk failed'), { code: 'EIO' })]) {
+    h.service.savePolicy = () => { throw error; };
+    await assert.rejects(() => invoke(h.controller, 'disable', {}), caught => caught === error);
+  }
+  h.service.savePolicy = () => { throw Object.assign(Error('private diagnostic must not escape'), { code: 'capture_writer_busy' }); };
+  await rejects(() => invoke(h.controller, 'disable', {}), 'capture_writer_busy', 409);
+});
+
 test('default GET and guard failures never scan or authorize', async t => {
   const h = setup(t);
   let touches = 0;

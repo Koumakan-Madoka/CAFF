@@ -6,8 +6,10 @@ import { containsSecretSentinel } from './secrets';
 // Internal retention primitive, NOT a SealedCase or a GC transaction. Only a
 // trusted caller may provide the server-derived association. No HTTP/agent tool
 // exposes this API. It freezes a manifest and enumerates its schema-v1 CAS
-// closure; trajectory archival, capacity reservation and pin/GC locking remain
-// prerequisites before enabling automatic sealing/collection.
+// closure. Production sealing invokes this in a file worker under the shared
+// writer lock with capacity checks. Direct callers must supply those guards;
+// trajectory archival, running references and a writer/GC transaction remain
+// unimplemented. This primitive does not authorize automatic GC.
 const fail = (code: string) => Object.assign(new Error(code), { code });
 const hash = (value: string | Buffer) => crypto.createHash('sha256').update(value).digest('hex');
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;

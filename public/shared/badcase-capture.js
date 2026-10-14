@@ -95,6 +95,10 @@
     }
     function showError(error) {
       const codes = Array.isArray(error?.issues) ? error.issues.map(issue => issue.code).filter(Boolean).join(', ') : '';
+      if (Array.isArray(error?.issues) && error.issues.some(issue => issue.code === 'capture_writer_busy')) {
+        notice('存储正忙（capture_writer_busy），请稍后重新读取状态并重试；开启前需重新预估。');
+        return;
+      }
       // textContent, never HTML. Unknown reasons are retained, not translated
       // into misleading "directory missing" or a success indication.
       notice(`操作失败：${codes || error?.message || 'unknown_error'}。状态可能已改变，请重新读取；开启前需重新预估。`);

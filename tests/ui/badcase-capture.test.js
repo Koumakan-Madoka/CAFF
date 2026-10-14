@@ -94,6 +94,31 @@ test('null usage without the explicit unavailable code is not a valid management
   assert.equal(h.button('disable').disabled, true);
 });
 
+test('writer contention explains retry without claiming policy success or retrying automatically', async t => {
+  let busy = true;
+  const h = setup(t, url => {
+    if (url.endsWith('/disable') && busy) throw Object.assign(new Error('rejected'), {
+      issues: [{ code: 'capture_writer_busy' }] });
+    if (url.endsWith('/badcase-capture')) return snapshot('enabled');
+  });
+  await h.panel.select({ id: 'a' });
+  await h.click('estimate');
+  await h.click('disable');
+  const text = h.root.querySelector('[data-capture-notice]').textContent;
+  assert.match(text, /capture_writer_busy/);
+  assert.match(text, /存储正忙/);
+  assert.match(text, /稍后.*重试/);
+  assert.match(h.root.querySelector('[data-capture-status]').textContent, /已开启/);
+  assert.equal(h.button('enable').disabled, true);
+  assert.equal(h.button('disable').disabled, false);
+  assert.equal(h.button('refresh').disabled, false);
+  assert.equal(h.calls.filter(call => call.url.endsWith('/disable')).length, 1);
+  busy = false;
+  await h.click('disable');
+  assert.match(h.root.querySelector('[data-capture-status]').textContent, /已关闭/);
+  assert.equal(h.calls.filter(call => call.url.endsWith('/disable')).length, 2);
+});
+
 test('authorization and enable require separate confirmation; cancel sends no mutation', async t => {
   const h = setup(t); await h.panel.select({ id: 'a', name: 'A' });
   h.accept(false); await h.click('authorize'); assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
