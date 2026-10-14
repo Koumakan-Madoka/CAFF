@@ -8,6 +8,7 @@ import { normalizeCapturePolicy, matchesRelativePattern, pinAuthorizedDirs, pinK
 import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
 import { restoreCheckpoint } from './restore';
+import { runEstimateProcess } from './estimate-process';
 import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
 
 export function resolveCaptureRoot(options: any = {}) {
@@ -90,6 +91,12 @@ export function createBadcaseCaptureService(options: any = {}) {
 
     computeUsage(projectId: any) {
       return store.computeUsage(projectId);
+    },
+
+    // HTTP management must use this bounded asynchronous entry. The sync entry
+    // below remains for the child and existing offline capture tests only.
+    estimateDirectoryAsync(projectId: any, targetDir: any) {
+      return runEstimateProcess({ captureRoot, projectId: String(projectId || ''), targetDir: String(targetDir || '') });
     },
 
     // 显式授权后、开启采集前的容量预估（AC9）：只读目标元数据，不写检查点。

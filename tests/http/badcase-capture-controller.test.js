@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { PassThrough } = require('node:stream');
+const http = require('node:http');
 const { createBadcaseCaptureController } = require('../../build/server/api/badcase-capture-controller');
 const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
 
@@ -41,7 +42,7 @@ const authorization = target => ({ confirmed: true, authorizedDirs: [target], au
 // Real constrained enumeration is independently exercised by the Linux collector suites.
 function fakeEstimates(h) {
   const calls = [];
-  h.service.estimateDirectory = (id, dir) => {
+  h.service.estimateDirectoryAsync = (id, dir) => {
     calls.push({ id, dir });
     return { ok: true, complete: true, includesIgnored: true, totalBytes: 5, fileCount: 1, durationMs: 0, uncaptured: [] };
   };
@@ -51,7 +52,7 @@ function fakeEstimates(h) {
 test('default GET and guard failures never scan or authorize', async t => {
   const h = setup(t);
   let touches = 0;
-  h.service.estimateDirectory = h.service.authorizeProject = () => { touches++; throw Error('unexpected target access'); };
+  h.service.estimateDirectoryAsync = h.service.authorizeProject = () => { touches++; throw Error('unexpected target access'); };
   const state = await invoke(h.controller);
   assert.equal(state.body.policy.status, 'disabled');
   assert.equal(state.body.trustBoundary, 'same_os_user');
@@ -138,6 +139,68 @@ test('real collector estimate stays disabled and reports platform capability hon
   assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
 });
 
+test('real HTTP remains responsive during real constrained walk and disable invalidates its result', {
+  skip: process.platform !== 'linux', timeout: 15000,
+}, async t => {
+  const h = setup(t);
+  await invoke(h.controller, 'authorize', authorization(h.target));
+  // Delay only the real Python walk; probes/statx and every constrained read
+  // still execute the production helper with the inherited root fd 3.
+  const bin = path.join(h.root, 'bin');
+  fs.mkdirSync(bin);
+  const marker = path.join(h.root, 'walk-started');
+  fs.writeFileSync(path.join(bin, 'python3'), `#!/usr/bin/python3
+import os, sys, subprocess, time
+if '--version' in sys.argv:
+    os.execv('/usr/bin/python3', ['/usr/bin/python3'] + sys.argv[1:])
+data = sys.stdin.buffer.read()
+if b'"op":"walk"' in data:
+    open(${JSON.stringify(marker)}, 'w').close()
+    time.sleep(1.5)
+sys.exit(subprocess.run(['/usr/bin/python3'] + sys.argv[1:], input=data, pass_fds=(3,)).returncode)
+`, { mode: 0o755 });
+  let controller;
+  const server = http.createServer(async (req, res) => {
+    if (req.url === '/health') { res.end('healthy'); return; }
+    try { await controller({ req, res, pathname: req.url }); }
+    catch (error) { res.writeHead(error.statusCode || 500); res.end(JSON.stringify({ code: error.issues?.[0]?.code })); }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  controller = createBadcaseCaptureController({ ...h.options, port });
+  const base = `http://127.0.0.1:${port}`;
+  const post = action => fetch(`${base}/api/projects/project-test/badcase-capture/${action}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-caff-csrf-token': 'test-csrf' }, body: '{}',
+  });
+  const oldPath = process.env.PATH;
+  let watcher;
+  let deadline;
+  const started = new Promise((resolve, reject) => {
+    watcher = fs.watch(h.root, () => { if (fs.existsSync(marker)) resolve(); });
+    deadline = setTimeout(() => reject(Error('walk did not start')), 8000);
+  });
+  let pending;
+  try {
+    process.env.PATH = `${bin}:${oldPath}`;
+    let finished = false;
+    pending = post('estimate').then(response => { finished = true; return response; });
+    await started;
+    assert.equal(await (await fetch(`${base}/health`)).text(), 'healthy');
+    assert.equal(finished, false, 'health must finish before the real walk completes');
+    assert.equal((await post('disable')).status, 200);
+    const response = await pending;
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).code, 'badcase_capture_operation_stale');
+    assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
+    assert.equal(h.service.store.listCheckpoints('project-test').length, 0);
+  } finally {
+    process.env.PATH = oldPath;
+    watcher.close(); clearTimeout(deadline);
+    if (pending) await pending;
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test('pinning or persistence failure never reports successful enable or changes scope silently', async t => {
   const h = setup(t);
   await invoke(h.controller, 'authorize', authorization(h.target));
@@ -155,6 +218,59 @@ test('pinning or persistence failure never reports successful enable or changes 
   assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
 });
 
+// Regression for moving enumeration off the server thread: an estimate must
+// remain pending until the asynchronous service result arrives, and a local
+// management action during that wait must invalidate it even if the serialized
+// policy returns to the same value (disable while already disabled / re-pin).
+// No wall-clock latency assertion: the scan is held by an explicit test barrier.
+for (const phase of ['estimate', 'enable']) {
+  for (const mutation of ['disable', 'authorize', 'settings']) {
+    test(`pending ${phase} cannot survive concurrent ${mutation}`, async t => {
+      const h = setup(t);
+      await invoke(h.controller, 'authorize', authorization(h.target));
+      fakeEstimates(h);
+      const receipt = phase === 'enable'
+        ? (await invoke(h.controller, 'estimate', {})).body.estimateId : null;
+      let release;
+      let markStarted;
+      const started = new Promise(resolve => { markStarted = resolve; });
+      const scan = new Promise(resolve => { release = resolve; });
+      h.service.estimateDirectoryAsync = () => { markStarted(); return scan; };
+      let settled = false;
+      // Observe both outcomes immediately to avoid unhandled rejections while
+      // the test drives a second request through the controller.
+      const pending = invoke(h.controller, phase, phase === 'enable'
+        ? { confirmed: true, estimateId: receipt } : {}).then(
+        value => { settled = true; return { value }; },
+        error => { settled = true; return { error }; },
+      );
+      try {
+        await started;
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(settled, false, 'request must await the actual enumeration result');
+        const body = mutation === 'authorize' ? authorization(h.target)
+          : mutation === 'settings' ? { stagingRetentionDays: 2 } : {};
+        await invoke(h.controller, mutation, body);
+        const afterMutation = h.service.loadPolicy('project-test');
+        release({ ok: true, complete: true, totalBytes: 5, fileCount: 1, uncaptured: [] });
+        const outcome = await pending;
+        assert.equal(outcome.error?.statusCode, 409);
+        assert.equal(outcome.error?.issues?.[0]?.code, 'badcase_capture_operation_stale');
+        assert.deepEqual(h.service.loadPolicy('project-test'), afterMutation,
+          'late completion must not overwrite the newer policy or enable capture');
+        assert.equal(afterMutation.status, 'disabled');
+        await rejects(() => invoke(h.controller, 'enable', {
+          confirmed: true, estimateId: receipt || outcome.value?.body.estimateId,
+        }), 'badcase_capture_estimate_required', 409);
+        assert.equal(h.service.store.listCheckpoints('project-test').length, 0);
+      } finally {
+        release({ ok: false, reason: 'test_cleanup' });
+        await pending;
+      }
+    });
+  }
+}
+
 test('stale, expired, restarted and failed estimates cannot enable; reasons remain machine readable', async t => {
   const h = setup(t);
   await invoke(h.controller, 'authorize', authorization(h.target));
@@ -168,12 +284,12 @@ test('stale, expired, restarted and failed estimates cannot enable; reasons rema
   await rejects(() => enable(receipt), 'badcase_capture_estimate_required', 409);
   receipt = (await invoke(h.controller, 'estimate', {})).body.estimateId;
   await rejects(() => invoke(createBadcaseCaptureController(h.options), 'enable', { confirmed: true, estimateId: receipt }), 'badcase_capture_estimate_required', 409);
-  h.service.estimateDirectory = () => ({ ok: false, reason: 'authorized_root_replaced' });
+  h.service.estimateDirectoryAsync = () => ({ ok: false, reason: 'authorized_root_replaced' });
   await rejects(() => enable(receipt), 'authorized_root_replaced', 409);
   assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
   const failed = await invoke(h.controller, 'estimate', {});
   assert.equal(failed.body.estimateId, null);
   assert.equal(failed.body.estimates[0].reason, 'authorized_root_replaced');
-  h.service.estimateDirectory = () => ({ ok: true, complete: false, uncaptured: [{ reason: 'directory_unreadable' }] });
+  h.service.estimateDirectoryAsync = () => ({ ok: true, complete: false, uncaptured: [{ reason: 'directory_unreadable' }] });
   assert.equal((await invoke(h.controller, 'estimate', {})).body.estimateId, null);
 });

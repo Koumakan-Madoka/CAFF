@@ -207,8 +207,9 @@ export function detectCaptureCapability(options: any = {}): Capability {
   }
 
   // 隔离自检：探针目录位于采集存储内（gitignored、目标树之外），绝不写入用户项目。
-  const probeRoot = path.join(captureRoot, 'capability-probe');
-  fs.rmSync(probeRoot, { recursive: true, force: true });
+  // Async management children may probe concurrently with each other or a
+  // capture. Never delete another invocation's probe/fds out from under it.
+  const probeRoot = path.join(captureRoot, `capability-probe-${crypto.randomUUID()}`);
   try {
     mkdirpSafe(path.join(probeRoot, 'sub'));
     fs.writeFileSync(path.join(probeRoot, 'sub', 'known.txt'), 'badcase-capture-probe\n');

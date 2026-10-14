@@ -17,7 +17,21 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
   // A receipt records a successful estimate in THIS process, not an atomic
   // snapshot or a permission credential. Restart requires another estimate.
   const receipts = new Map<string, { id: string; fingerprint: string; expiresAt: number }>();
+  const operations = new Map<string, symbol>();
+  function invalidate(projectId: string) {
+    receipts.delete(projectId);
+    const operation = Symbol();
+    operations.set(projectId, operation);
+    return operation;
+  }
   const fingerprint = (policy: any) => crypto.createHash('sha256').update(JSON.stringify(policy)).digest('hex');
+  function assertCurrent(projectId: string, operation: symbol, policy: any) {
+    // A policy hash alone misses ABA changes (e.g. disable an already disabled
+    // project). The generation also invalidates in-flight work on each action.
+    if (operations.get(projectId) !== operation || fingerprint(service.loadPolicy(projectId)) !== fingerprint(policy)) {
+      throw issue('badcase_capture_operation_stale', 409);
+    }
+  }
   const issue = (code: string, status = 422, field = 'body') => createHttpError(status, 'Badcase capture request was rejected', {
     issues: [{ code, path: field }],
   });
@@ -54,9 +68,16 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
   function state(projectId: string) {
     return { policy: service.loadPolicy(projectId), usage: service.computeUsage(projectId), trustBoundary: 'same_os_user' };
   }
-  function estimates(projectId: string, policy: any) {
+  async function estimates(projectId: string, policy: any, operation: symbol) {
     if (!policy.authorizedDirs.length) throw issue('badcase_capture_not_authorized', 409);
-    return policy.authorizedDirs.map((targetDir: string) => ({ targetDir, ...service.estimateDirectory(projectId, targetDir) }));
+    const results = [];
+    for (const targetDir of policy.authorizedDirs) {
+      assertCurrent(projectId, operation, policy);
+      const result = await service.estimateDirectoryAsync(projectId, targetDir);
+      assertCurrent(projectId, operation, policy);
+      results.push({ targetDir, ...result });
+    }
+    return results;
   }
   return async function handleBadcaseCapture(context: any) {
     const { req, res, pathname } = context;
@@ -87,7 +108,7 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
         excludedPatterns: patterns(body.excludedPatterns),
         status: 'disabled', suspendReason: '',
       };
-      receipts.delete(projectId);
+      invalidate(projectId);
       // Disable first. Any failure while pinning leaves capture disabled, not
       // enabled with a partly changed authorization scope.
       service.savePolicy(projectId, next);
@@ -97,16 +118,17 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
       for (const value of Object.values(body)) {
         if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) throw issue('badcase_capture_invalid_limit');
       }
-      receipts.delete(projectId);
+      invalidate(projectId);
       service.savePolicy(projectId, { ...policy, ...body });
     } else if (action === 'disable') {
       fields(body, []);
-      receipts.delete(projectId);
+      invalidate(projectId);
       service.savePolicy(projectId, { ...policy, status: 'disabled', suspendReason: '' });
     } else if (action === 'estimate') {
       fields(body, []);
-      receipts.delete(projectId);
-      const results = estimates(projectId, policy);
+      const operation = invalidate(projectId);
+      const results = await estimates(projectId, policy, operation);
+      assertCurrent(projectId, operation, policy);
       const complete = results.every((result: any) => result.ok === true && result.complete === true);
       const receipt = complete ? { id: crypto.randomUUID(), fingerprint: fingerprint(policy), expiresAt: now() + 10 * 60 * 1000 } : null;
       if (receipt) receipts.set(projectId, receipt);
@@ -121,10 +143,12 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
       if (!receipt || receipt.id !== body.estimateId || receipt.expiresAt <= now() || receipt.fingerprint !== fingerprint(policy)) {
         throw issue('badcase_capture_estimate_required', 409);
       }
-      receipts.delete(projectId);
+      const operation = invalidate(projectId);
       // Recheck root identity and enumeration immediately before enabling.
       // This is not a quota guarantee or strict consistency proof.
-      const failed = estimates(projectId, policy).find((result: any) => result.ok !== true || result.complete !== true);
+      const failed = (await estimates(projectId, policy, operation)).find((result: any) => result.ok !== true || result.complete !== true);
+      assertCurrent(projectId, operation, policy);
+      if (receipt.expiresAt <= now()) throw issue('badcase_capture_estimate_required', 409);
       if (failed) throw issue(failed.reason || 'badcase_capture_estimate_incomplete', 409);
       service.savePolicy(projectId, { ...policy, status: 'enabled', suspendReason: '' });
     }

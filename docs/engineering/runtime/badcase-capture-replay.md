@@ -107,9 +107,11 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 仅已登记 projectId 可访问 `/api/projects/:projectId/badcase-capture`：
 
 - `GET`：策略、CAS/清单/latest 占用与 `trustBoundary=same_os_user`；不扫描目标。占用尚不包含暂存 attempt、session/镜像分项或封存分项，不能充当完整容量报告。
-- `POST /authorize`：`confirmed=true`，完整提供 `authorizedDirs`、`authorizedInputDirs`、`includedIgnoredPatterns`、`excludedPatterns`；拒绝相对/空目录、CAS 与授权根互相包含（包括可解析别名）。先持久化 disabled 再 pin；pin 失败也不继续启用。平台不支持时 pin 可能没有 identity，授权动作不等于采集可用，后续预估必须明确失败。
+- `POST /authorize`：`confirmed=true`，完整提供 `authorizedDirs`、`authorizedInputDirs`、`includedIgnoredPatterns`、`excludedPatterns`；拒绝相对/空目录、CAS 与授权根互相包含（包括可解析别名）。先持久化 disabled 再 pin；pin 失败也不继续启用，但旧授权范围已被新范围替换，不自动回滚原 pin，需重新授权。平台不支持时 pin 可能没有 identity，授权动作不等于采集可用，后续预估必须明确失败。
 - `POST /settings`：仅接受正安全整数 `stagingRetentionDays` / `stagingQuotaBytes`，保留其余策略及原 pin；目录、排除/纳入模式只能重新显式授权修改，普通保存不能扩大授权。
-- `POST /estimate`：空对象，逐一预估已授权目标根；不开启、不写检查点。返回逐根 `ok/complete/reason`、文件容量合计和成本口径（未算输入 session、图片、镜像及清单）；重叠授权根可能重复统计。不完整或失败不给开启回执；`dir_not_authorized`、`authorized_root_unpinned`、`root_open_failed`、`capture_unavailable:*` 等原因原样返回，UI 不应一律映射为“目录不存在”。
+- `POST /estimate`：空对象，逐一预估已授权目标根；不开启、不写检查点。返回逐根 `ok/complete/reason`、文件容量合计和成本口径（未算输入 session、图片、镜像及清单）；重叠授权根可能重复统计。不完整或失败不给开启回执；`dir_not_authorized`、`authorized_root_unpinned`、`authorized_root_unresolved`、`authorized_root_identity_missing`、`authorized_root_replaced`、`target_must_be_authorized_root`、`target_root_replaced`、`root_open_failed`、`statx_failed`、`capture_unavailable:*` 等原因原样返回，UI 不应一律映射为“目录不存在”；未知 reason 保留原值，不推测成功或原因。
+- **预估调度边界**：管理端 estimate/enable 使用 `estimateDirectoryAsync`，在独立 Linux 子进程中执行完整能力自检、根身份验证和受限 walk（保留同 fd 安全边界）。每根最多 30 秒、每服务进程最多 2 个并发子进程（不排队，超出返回 `estimate_busy`）；stdout/stderr 合计最多 4 MiB，子进程 Node heap 上限 128 MiB（不是整个进程树内存硬隔离）。超时/超输出杀死专用进程组，等待 close 后返回 `estimate_timeout`/`estimate_output_limit`；失败/损坏输出返回 `estimate_process_failed`/`estimate_output_invalid`，均不给回执。不是被测 agent 或 Docker 回放。Windows/darwin 仍失败关闭；同步入口只用于子进程/离线测试，不得从管理 HTTP 路径回退调用。多根顺序执行，30 秒是逐根上界，不是整个请求上界。
+- **并发管理**：每次 estimate/enable/authorize/settings/disable 都使旧操作失效；await 前后校验操作代次及策略指纹，覆盖同值 ABA；enable 完成时再次验证回执未过期。disable 等操作使待完成结果失效，但当前子进程可以继续到完成/30 秒超时，不据此重新开启。不同能力探针使用独立随机目录避免并发互删。强杀发生在自检期间可能留下仅含合成探针的目录；不自动删除无法证明属于本次调用的遗留目录。父进程崩溃后的孤儿治理未在此切片交付。授权 pin、策略/容量存储读写以及 turn 采集仍有同步路径，本切片不声称整个服务器已无阻塞操作。
 - `POST /enable`：`confirmed=true` + 成功预估的 `estimateId`。回执绑定项目及完整策略，仅本进程有效、10 分钟过期、使用后消耗；重新授权、普通保存或关闭使其失效。开启前再验证目标根身份和枚举，失败拒绝；这不是原子快照或空间保证。服务重启保留策略（含 enabled），但未使用的回执失效，需要重新预估。
 - `POST /disable`：空对象，关闭后不再主动采集；不扫描，不自动删除既有材料。
 
