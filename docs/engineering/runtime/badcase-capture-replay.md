@@ -257,6 +257,18 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 静态回归：`node --test tests/runtime/badcase-pi-initialize-probe.test.js tests/runtime/badcase-replay-input-preflight.test.js`；普通回归不自动运行 Docker/SDK。真实复跑：在 Linux 本 Room 根、构建后运行 `node scripts/badcase-capture/verify-pi-initialization.cjs --image-id <sha256:...> --repository-digest <repo@sha256:...> --architecture amd64 --node-version <vX.Y.Z> --python-version "Python X.Y.Z"`。脚本只删除自己创建的临时目录/容器。不是 SQLite、完整 session/skill/工具桥、镜像归档、完整回放、预算/评分或任何 AC 完成证据。
 
+### 4.5 封存初始化输入准备（实现中，尚未接容器消费者）
+
+`retained-initialization.ts` 的 `prepareRetainedInitializationCapsule` 仅供可信同步文件 worker/离线调用，不接 HTTP/agent 工具。接受 captureRoot、冻结关联、flagId、replayRunId；不接受既有预检摘要、宿主 session 路径或启动资格。整个读取、复验、序列化与 protect 在同一个项目 writer lock 内完成；使用已有 case/retention，缺源不从 live checkpoint 补建。重复调用重新校验材料，同 run 不重复保护；不自动释放引用，换 runId 仍会累积。
+
+- 锁内重新执行 §4.3 预检，复验全部 CAS 闭包；复制字节时再次检查 hash/秘密。文件路径、普通文件类型、size、父子冲突和删除冲突另行验证。所有输入通过才发布完整闭包保护引用，核对 checkpoint 摘要与 blob 集合；失败不取消既有保护。
+- 返回单个 JSON **字符串** `capsule`，包含原 checkpoint 和按 hash 排序的全量 blob base64，以及独立 capsuleHash/capsuleBytes。它是脱离存储的内存数据，不是 tar、可执行程序、路径映射或可复用授权；不得原样日志记录、HTTP 回显或交给通用解包器。后续容器消费者必须重新验证结构、hash/大小/路径，在独立 tmpfs 恢复，不能将捕获文件混进可信 SDK 文件清单或执行为扩展。
+- 编码后的 capsule 上限 **4MiB**（另有原始字节提前限制），现场最多4094文件/4096删除项。这是初始化实验的额外限制，为独立的可信运行时工件预留空间，不改变采集上限或承诺通用大项目支持；仍是同步整 blob 读取，不是 RSS 硬边界。运行时与 capsule 总包上限仍须由后续消费者验证。
+- 此步骤保存所有回放输入，不丢弃 skill/桥接配置或受控替换，但**不实现这些配置的执行语义**。没有调用 SDK/Docker，没有应用或发送 prompt，没有把 invocation prompt 当作角色/system prompt。launchAuthorized/runnable/reproduced/evaluable/strictEvalEligible 全false；原 case 完整性不升级。
+- 共享锁只协调守约写者；同 OS 用户存储 TCB、非原子原始采集、无掉电保证及旧锁保守阻断的限制不变。准备后的源变化不改变已返回字符串，下一次准备仍重新校验；保护引用不代表已启动或已结束的进程。
+
+定向回归：构建后 `node --test tests/runtime/badcase-retained-initialization.test.js`。使用临时合成 CAS，覆盖 fresh/resume、移除 live、不补缺源、坏材料、父 lease 争用、每次读取/发布都持锁、预检之后字节变化、重试引用保留、文件/删除冲突及编码后大小限制。容器消费者、真实封存输入初始化与 §4.4 的四类守卫变异覆盖仍待接线，不构成 Docker/SDK/模型验收。
+
 ## 5. 对照评测公平性契约
 
 - baseline 与 candidate 从**同一 Checkpoint** 各自独立恢复起点；只有声明的 prompt 变量（首版：单一 agent 角色指令）变化；模型配置、harness/tool/skill 配置、EvaluatorSpec 版本一致。
