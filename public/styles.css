@@ -4686,9 +4686,10 @@ body.chat-app .composer:focus-within {
 }
 
 body.chat-app .routing-preview {
-  max-width: 780px;
-  margin: 0 auto var(--caff-space-2);
+  max-width: 1080px;
+  margin: var(--caff-space-2) auto 0;
   font-size: 0.78rem;
+  text-align: left;
   color: var(--caff-muted, rgba(61, 64, 91, 0.65));
   white-space: nowrap;
   overflow: hidden;
