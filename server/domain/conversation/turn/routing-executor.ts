@@ -408,28 +408,41 @@ export function createRoutingExecutor(options: any = {}) {
       conversation
     );
 
-    if (usesExistingBatch) {
-      batchMessages = persistExecutedRoutingMetadata(conversationId, batchMessages, initialQueue);
-      userMessage = batchMessages[batchMessages.length - 1] || userMessage;
-    } else {
-      const routedMessages = persistExecutedRoutingMetadata(conversationId, [userMessage], initialQueue, {
-        broadcastUpdates: false,
-      });
-      userMessage = routedMessages[0] || userMessage;
-    }
+    try {
+      // Image preflight must pass before the routing snapshot is marked as
+      // dispatched: a rejected preflight means nothing was dispatched, so the
+      // message keeps its accept-time estimate instead of a false "dispatched".
+      if (hasImages && modelCatalog) {
+        const executionImageIds = usesExistingBatch
+          ? batchMessages
+              .flatMap((message: any) => messageImageBlocks(message))
+              .map((block: any) => String(block && (block.imageId || block.url) || '').trim())
+              .filter(Boolean)
+          : turnInput.imageIds;
+        assertImagePreflightForTargets(
+          { ...turnInput, imageIds: executionImageIds },
+          conversation,
+          { modelCatalog, targetResolution: initialQueue }
+        );
+      }
 
-    if (hasImages && modelCatalog) {
-      const executionImageIds = usesExistingBatch
-        ? batchMessages
-            .flatMap((message: any) => messageImageBlocks(message))
-            .map((block: any) => String(block && (block.imageId || block.url) || '').trim())
-            .filter(Boolean)
-        : turnInput.imageIds;
-      assertImagePreflightForTargets(
-        { ...turnInput, imageIds: executionImageIds },
-        conversation,
-        { modelCatalog, targetResolution: initialQueue }
-      );
+      // The main try/finally below has not been entered yet: a failing metadata
+      // snapshot (or the preflight above) must clean up the registered turn and
+      // run store itself, otherwise the conversation wedges behind a stale
+      // active marker and silently stops executing later submissions.
+      if (usesExistingBatch) {
+        batchMessages = persistExecutedRoutingMetadata(conversationId, batchMessages, initialQueue);
+        userMessage = batchMessages[batchMessages.length - 1] || userMessage;
+      } else {
+        const routedMessages = persistExecutedRoutingMetadata(conversationId, [userMessage], initialQueue, {
+          broadcastUpdates: false,
+        });
+        userMessage = routedMessages[0] || userMessage;
+      }
+    } catch (error) {
+      cleanupActiveTurn();
+      runStore.close();
+      throw error;
     }
 
     promptUserMessage = {

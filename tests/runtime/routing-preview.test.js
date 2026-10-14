@@ -121,6 +121,7 @@ function createHarness(t, options = {}) {
     sqlitePath,
     toolBaseUrl: 'http://127.0.0.1:0',
     agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    modelCatalog: options.modelCatalog,
     executeConversationAgent: options.executeConversationAgent || (async ({ completedReplies, agent }) => {
       completedReplies.push({
         agentId: agent.id,
@@ -429,4 +430,136 @@ test('every user message in a merged queued batch receives the same execution-ti
       explicitIntent: '',
     });
   }
+});
+
+test('a failing routing metadata snapshot cleans up the active turn and the conversation can retry', async (t) => {
+  let executionCount = 0;
+  const { conversation, orchestrator, store } = createHarness(t, {
+    executeConversationAgent: async ({ completedReplies, agent }) => {
+      executionCount += 1;
+      completedReplies.push(store.createMessage({
+        conversationId: conversation.id,
+        role: 'assistant',
+        agentId: agent.id,
+        senderName: agent.name,
+        content: `${agent.name} completed`,
+        status: 'completed',
+        metadata: {},
+      }));
+      return { stopTurn: false };
+    },
+  });
+
+  const originalUpdateMessage = store.updateMessage;
+  const originalConsoleError = console.error;
+  const consoleErrors = [];
+  t.after(() => {
+    store.updateMessage = originalUpdateMessage;
+    console.error = originalConsoleError;
+  });
+
+  store.updateMessage = () => {
+    throw new Error('synthetic routing snapshot failure');
+  };
+  console.error = (...args) => {
+    consoleErrors.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  const failed = orchestrator.submitConversationMessage(conversation.id, { content: 'first attempt' });
+  assert.equal(failed.dispatch, 'started');
+
+  await waitForCondition(() => consoleErrors.some((line) => line.includes('Failed to drain queued batch')));
+  assert.equal(
+    orchestrator.listTurnSummaries({ conversationId: conversation.id }).length,
+    0,
+    'a failed routing snapshot must not leak an active turn'
+  );
+  assert.equal(executionCount, 0, 'agent execution must not start when the snapshot write failed');
+
+  store.updateMessage = originalUpdateMessage;
+  const retry = orchestrator.submitConversationMessage(conversation.id, { content: 'second attempt' });
+  assert.equal(retry.dispatch, 'started');
+
+  await waitForCondition(() => (
+    executionCount === 1
+    && orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0
+  ));
+  const persisted = conversation.messages.find((message) => message.id === retry.acceptedMessage.id);
+  assert.equal(persisted.metadata.routingStatus, 'dispatched');
+  assert.deepEqual(persisted.metadata.routing, {
+    agentIds: ['agent-a'],
+    strategy: 'default_first_agent',
+    executionMode: 'serial',
+    explicitIntent: '',
+  });
+});
+
+test('image preflight rejection keeps the accept-time estimate instead of marking the message dispatched', async (t) => {
+  let releaseBetaTurn = null;
+  const betaTurnGate = new Promise((resolve) => {
+    releaseBetaTurn = resolve;
+  });
+  let executionCount = 0;
+  const originalConsoleError = console.error;
+  const consoleErrors = [];
+  t.after(() => {
+    console.error = originalConsoleError;
+  });
+  console.error = (...args) => {
+    consoleErrors.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  const { conversation, orchestrator, store } = createHarness(t, {
+    // Empty catalog: no target model supports image input, so the preflight
+    // must reject the queued image batch at drain time.
+    modelCatalog: { getOptions: () => [] },
+    executeConversationAgent: async ({ completedReplies, agent }) => {
+      executionCount += 1;
+      if (executionCount === 1) {
+        await betaTurnGate;
+      }
+      completedReplies.push(store.createMessage({
+        conversationId: conversation.id,
+        role: 'assistant',
+        agentId: agent.id,
+        senderName: agent.name,
+        content: `${agent.name} completed`,
+        status: 'completed',
+        metadata: {},
+      }));
+      return { stopTurn: false };
+    },
+  });
+
+  const mentionResult = orchestrator.submitConversationMessage(conversation.id, { content: '@Beta hold the room' });
+  assert.equal(mentionResult.dispatch, 'started');
+
+  const imageResult = orchestrator.submitConversationMessage(conversation.id, {
+    content: 'look at this screenshot',
+    metadata: { contentBlocks: [{ type: 'image', imageId: 'img-queued-1' }] },
+  });
+  assert.equal(imageResult.dispatch, 'queued');
+
+  releaseBetaTurn();
+  await waitForCondition(() => consoleErrors.some((line) => line.includes('Failed to drain queued batch')));
+
+  assert.equal(
+    orchestrator.listTurnSummaries({ conversationId: conversation.id }).length,
+    0,
+    'a rejected preflight must not leak an active turn'
+  );
+  assert.equal(executionCount, 1, 'the rejected image batch must not reach agent execution');
+
+  const persisted = conversation.messages.find((message) => message.id === imageResult.acceptedMessage.id);
+  assert.equal(
+    persisted.metadata.routingStatus,
+    'accepted',
+    'a preflight-rejected message keeps its accept-time estimate instead of a false dispatched marker'
+  );
+  assert.deepEqual(persisted.metadata.routing, {
+    agentIds: ['agent-a'],
+    strategy: 'default_first_agent',
+    executionMode: 'serial',
+    explicitIntent: '',
+  });
 });
