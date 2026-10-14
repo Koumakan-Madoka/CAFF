@@ -148,6 +148,16 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。容量分项、�
 - **尚不是 GC 安全事务**：无 writer/GC 共用锁、无在用 ReplayRun 租约、无崩溃恢复或容量预留；inventory 返回不能作为允许删除的证明（枚举与后续写入仍可竞争）。自动 GC 继续禁用。孤立引用/临时文件可能残留，不能自动清理。容量统计仍与管理页分离，原 CAS `computeUsage` 不包含此元数据；未接生产写入，后续接线前必须纳入配额/分项/容量保护。
 - 延续 §3.2 同 OS 用户存储 TCB：静态引用文件链接/特殊文件拒绝，但目录路径不提供 openat2 防替换保证、checksum 不抵御同权限篡改。校验 blob 当前为同步路径，一次读一个 blob；尚无管理 HTTP 挂点，不得直接同步接入大包封存请求。封存事务、轨迹脱敏归档、UI 新状态和恢复入口仍待交付。
 
+### 3.4 独立数据库轨迹读取层（内部只读 API，尚未归档）
+
+`readBadcaseTrajectory({db, association, limits})` 直接读取 SQLite，而不复用 `message-tool-trace` / Inspector 的首尾窗口、摘要或脱敏展示。当前只是封存编排的输入适配器，无 HTTP/agent 工具入口，不写 CAS、不改变 Flag，不构成 `SealedCase`。
+
+- 调用方必须先取得封存授权并从不可变关联派生 project/conversation/message/turn/agent/task/checkpoint/run；模块再检查项目归属、消息各关联、task metadata 的会话/turn/agent 以及 task↔run 双向关联。缺关联、已知错配、非终态或数据源异常均返回固定错误码，错误不携带数据库文本或路径。
+- 单 SQLite 只读事务内读取 task 输出/错误、run 的 assistant errors、**全部** `agent_tool_call` / `agent_reply_terminating` 事件，按 id 排序；保留原始 payload 内容而非截短展示。其他事件只计数并声明未归档。上限默认 10,000 个选中事件、返回 JSON 4 MiB，内部调用可调低不能调高；metadata 单份 64 KiB。UTF-8 数据字节在 SQL 中预检，最终 JSON 字节再检；超限整次拒绝，不悄悄截断。SQL 汇总仍可能遍历大量行，没有执行时间或数据库总大小保证；后续 HTTP 封存编排必须在受限 worker 中调用，不可直接同步接入主事件循环。
+- 不输出 message 正文、run prompt、task 原始 metadata、session 路径；不打开任何 session/附件文件，不读取祖先快照或擅自扩大授权目录。已知当前消息/task、直接触发消息的私有标记拒绝；直接触发消息缺失或跨会话也拒绝。更远私有祖先、任意工具文本的来源授权尚未证明，明确 `private_ancestry_not_verified`，调用成功不能当作落盘授权。
+- 对返回的 task/run/事件内容做秘密哨兵、敏感 JSON 键（包括短值/嵌套 JSON 字符串）、Bearer/赋值文本与私有标记检查；命中整包拒绝，不先存再脱敏。已知 `send-private/read-context` 工具也拒绝。它是保守的已知模式过滤，会误报，**不能证明任意自由文本不含未知秘密或未授权内容**；不替代后续归档授权/来源检查与凭据受控替换。
+- 返回 `databaseConsistent=true` 仅指本次 DB 读事务；`complete=false`、`strictEvalEligible=false` 恒定。执行后 session、原始 context snapshot、usage、timeline、附件、私有祖先与跨文件一致性均明确未完成。turn 前 resume session 仍是独立检查点材料，不可拿这份 DB 证据替代。尚未接标记、持久归档、容量保护或状态 UI，GC 继续禁用。
+
 ## 4. 环境与 Docker 隔离契约
 
 - EnvironmentTemplate 首版人工配置；首次成功重建后归档镜像并固定 **digest + 架构 + 运行时版本**。缺镜像/依赖 → preflight 显式阻断，禁止静默回退浮动 tag 或宿主执行。
