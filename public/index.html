@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/styles.css" />
     <script defer src="/shared/icons.js"></script>
     <script defer src="/shared/api-client.js"></script>
+    <script defer src="/shared/badcase-flags.js"></script>
     <script defer src="/shared/model-options.js"></script>
     <script defer src="/shared/avatar.js"></script>
     <script defer src="/shared/toast.js"></script>
@@ -39,6 +40,7 @@
     <script defer src="/app.js"></script>
   </head>
   <body class="chat-app" data-drawer="closed" data-sidebar="closed">
+    <dialog id="badcase-flag-dialog" aria-labelledby="badcase-flag-title"></dialog>
     <div class="app-shell" id="appShell">
       <nav class="rail" aria-label="主导航">
         <a class="rail-link" aria-current="page" href="/" title="聊天工作台" aria-label="聊天工作台"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-chat"></use></svg></a>

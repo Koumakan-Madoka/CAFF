@@ -2632,6 +2632,19 @@
         }
       }
 
+      // Historical terminal messages remain markable even when their agent
+      // profile or checkpoint is gone. The service validates project ownership.
+      if (message.role === 'assistant' && ['completed', 'failed', 'cancelled', 'interrupted'].includes(message.status)
+        && typeof helpers.openBadcaseFlag === 'function') {
+        const flagButton = document.createElement('button');
+        flagButton.type = 'button';
+        flagButton.className = 'message-badcase-button ghost-button';
+        flagButton.textContent = '标记问题';
+        flagButton.title = '记录实际问题和期望行为；不是现场已封存的保证';
+        flagButton.addEventListener('click', () => helpers.openBadcaseFlag(conversationId, message));
+        sender.appendChild(flagButton);
+      }
+
       const senderLabel = document.createElement('span');
       senderLabel.className = 'message-sender-label';
       senderLabel.textContent = delegationRoute

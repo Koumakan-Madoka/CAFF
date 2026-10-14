@@ -173,7 +173,7 @@
           notice(valid ? '预估成功；仍未自动开启。请另行确认开启。' : '无可用开启回执；请检查原因后重新预估。');
         } else {
           showState(result);
-          notice(action === 'authorize' ? '已授权但未开启，请先预估。' : action === 'disable' ? '已关闭；不删除已有现场。' : action === 'enable' ? '已开启；采集能力和材料完整性仍需逐次检查。' : '已保存期限/配额，授权范围未变。');
+          notice(action === 'authorize' ? '已授权但未开启，请先预估。' : action === 'disable' ? '已关闭；不删除已有现场。' : action === 'enable' ? '已开启；采集能力和材料完整性仍需逐次检查。' : '已保存期限/配额，授权范围未变；未保存的范围草稿已丢弃，显示当前持久化范围。');
         }
       } catch (error) {
         if (seq === generation) { clearReceipt(); showError(error); }

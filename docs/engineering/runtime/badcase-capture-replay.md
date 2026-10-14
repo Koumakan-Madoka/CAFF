@@ -115,23 +115,27 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 - `POST /enable`：`confirmed=true` + 成功预估的 `estimateId`。回执绑定项目及完整策略，仅本进程有效、10 分钟过期、使用后消耗；重新授权、普通保存或关闭使其失效。开启前再验证目标根身份和枚举，失败拒绝；这不是原子快照或空间保证。服务重启保留策略（含 enabled），但未使用的回执失效，需要重新预估。
 - `POST /disable`：空对象，关闭后不再主动采集；不扫描，不自动删除既有材料。
 
-项目管理页提供采集管理面板，始终针对**选中项目**而非激活项目：读取状态不授权、不扫描目标、不开启；目录、输入根、ignored 纳入及排除模式从持久化策略载入，不自动填入项目路径。授权确认展示全部范围及“先关闭、失败仍替换旧范围”的风险；预估成功后需另行确认开启。普通保存只提交期限/配额。编辑、失败、刷新、切换项目及本地过期均丢弃 UI 回执；服务端仍是授权/回执有效性的裁定者。未知错误码和逐根失败原因以纯文本保留。请求使用 bootstrap 的 `localAdmin.modelProviders` 本地管理能力与 CSRF（与控制器共用同一门禁），能力/令牌缺失时禁用管理，不自行绕过。
+项目管理页提供采集管理面板，始终针对**选中项目**而非激活项目：读取状态不授权、不扫描目标、不开启；目录、输入根、ignored 纳入及排除模式从持久化策略载入，不自动填入项目路径。授权确认展示全部范围及“先关闭、失败仍替换旧范围”的风险；预估成功后需另行确认开启。普通保存只提交期限/配额，响应会恢复持久化范围并明确提示未保存的范围草稿已丢弃。编辑、失败、刷新、切换项目及本地过期均丢弃 UI 回执；服务端仍是授权/回执有效性的裁定者。未知错误码和逐根失败原因以纯文本保留。请求使用 bootstrap 的 `localAdmin.modelProviders` 本地管理能力与 CSRF（与控制器共用同一门禁），能力/令牌缺失时禁用管理，不自行绕过。
 
 UI 用 selection/action generation 丢弃过时响应（含 A→B→A），等待预估/开启时仍可点击关闭；切换项目不会撤销已发送的管理请求，重新读取才能确认持久化结果。关闭使服务端在途结果失效但不立即取消 worker；多客户端冲突以服务端为准。预估显示原始字节及口径，已提交总占用只含现有 `computeUsage` 统计（blob/checkpoint/latest）；未宣称含所有暂存、session/镜像分项或单 turn 新增占用。
 
-UI jsdom/合成 HTTP 测试不等于真实用户采集证据。容量分项、用户标记/封存/回收仍待交付。控制器测试的正向开启部分使用合成预估；Linux 用真实 collector 的预估/换根负例单独验证，不将 API/UI 测试称为真实 agent turn 或严格评测证据。
+UI jsdom/合成 HTTP 测试不等于真实用户采集证据。容量分项、封存/回收仍待交付；消息标记入口见 §3.2。控制器测试的正向开启部分使用合成预估；Linux 用真实 collector 的预估/换根负例单独验证，不将 API/UI 测试称为真实 agent turn 或严格评测证据。
 
-### 3.2 消息标记持久化与 API（尚未接 UI 或封存）
+### 3.2 消息标记持久化、API 与 UI（尚未封存）
 
 `badcase-flags.ts` 提供 `mark/get` 服务，写入 `<captureRoot>/projects/<projectId>/flags/<messageId 的 SHA-256>.json`。当前只保存用户的实际问题/期望行为及服务端消息关联，不读取目标文件、不复制消息正文/轨迹、不授权或开启采集；不是 `SealedCase`，不能据此声明材料已长期保存。
 
 - 项目归属从 conversation 校验，消息须属于该 conversation 且为终态 assistant；runId 使用生产 ChatStore 的正整数或 null，不伪造运行 ID。checkpointId 只从消息元数据取；清单存在时核对 project/conversation/turn/agent/checkpoint ID。清单存在只表示 `manifest_present_unverified`，不证明 blob 完整；没有关联或清单不可读分别记录 `not_recorded` / `missing_or_unreadable`。关联错配拒绝，不静默改绑。缺失 captureStore 或 loadCheckpoint 抛错同样归为 `missing_or_unreadable`；历史消息缺 turnId/agentId 时保留用户标记和 checkpointId，但记为 `association_incomplete` / `checkpoint_unavailable`，不宣称已验证关联，已知字段错配仍拒绝。
 - 首版每项目每消息一条不可变标记；相同文本重试返回原标记且不重新绑定后续变化的 run/checkpoint。不同文本返回 `flag_already_exists`，不覆盖原始问题；编辑/多条标记工作流尚未提供。每个文本上限 8192 UTF-8 字节，空白、NUL 和现有秘密哨兵拒绝，错误不回显原文。哨兵仍非通用秘密识别证明。
 - 完整临时文件 fsync 后以同目录 hardlink 原子、禁止替换地发布；并发竞争只接受一个记录，相同请求收敛、不同文本冲突。无 hardlink 能力或磁盘失败显式报错，不退回覆盖 rename。校验和用于检测意外损坏，不认证同 OS 用户；损坏记录不得当作不存在而覆盖。未实现目录 fsync，不承诺突然断电后的持久性；进程崩溃可能残留 `.tmp-*`，本切片不自动清理。
-- HTTP：`GET/POST /api/projects/:projectId/conversations/:conversationId/messages/:messageId/badcase-flag`。复用 local-admin guard 与 bootstrap CSRF（D10）；项目必须仍登记，scope 只从路径读取并由 ChatStore 核验。POST 仅接受 `confirmed=true/actual/expected`；不接受客户端 run/checkpoint/status，首次 201、幂等重试 200、不同文本 409。GET 返回 `{flag:null}` 或记录，不授权、不扫描、不创建标记；内部 get 只投影 scope，忽略额外字段，HTTP 不接受客户端 body 派生 scope。读取失败/磁盘失败分别 409/503；只返回白名单错误码，未知异常统一 `badcase_flag_unavailable`，不回显路径/用户文本。没有新增 agent 工具，confirmed 参数不是人类身份认证；UI 确认尚未交付。
+- HTTP：`GET/POST /api/projects/:projectId/conversations/:conversationId/messages/:messageId/badcase-flag`。POST 复用 local-admin guard 与 bootstrap CSRF（D10）；GET 仅校验 loopback/Host，不要求 CSRF token，同一 OS 用户的本地进程可读取标记描述；项目必须仍登记，scope 只从路径读取并由 ChatStore 核验。POST 仅接受 `confirmed=true/actual/expected`；不接受客户端 run/checkpoint/status，首次 201、幂等重试 200、不同文本 409。GET 返回 `{flag:null}` 或记录，不授权、不扫描、不创建标记；内部 get 只投影 scope，忽略额外字段，HTTP 不接受客户端 body 派生 scope。读取失败/磁盘失败分别 409/503；业务错误只返回白名单错误码，未知异常统一 `badcase_flag_unavailable`，不回显路径/用户文本。JSON/body 解析层的 400/413 由路由通用错误处理，不保证带 `issues` 数组，UI 必须兼容。没有新增 agent 工具，confirmed 参数不是人类身份认证。
 - `get/mark` 每次都重验源消息。源消息删除后 404、变非终态后 409，不再通过此消息入口暴露既有记录，但磁盘标记仍保留；项目取消登记后也不可通过 API 查询。尚无按项目列举或孤立 flagId 查询入口，不承诺删除后的检索。对仍存在的消息，服务/SQLite/HTTP 重启后记录可查询且关联固定。
 - 存储写路径（含 flags 目录）属于受信 TCB：必须是服务持有、未被不可信进程写入的本地专用存储，不纳入采集目标、也不挂载给回放 agent。当前按路径创建目录/发布，没有与目标读取同等的 openat2 限制，不能抵御同权限进程将存储子目录替换为符号链接；D10 信任同一 OS 用户不是技术沙箱。校验和和本地管理 guard 均不改变此限制。
-- `sealState=pending`，`captured/runnable/reproduced/evaluable` 均为 false，明确 `checkpoint_not_sealed` / `trajectory_not_archived` 等缺失。尚无封存 pin、运行引用、GC、标记 UI 或采集配额中的标记字节统计。后续必须在启用 GC 前建立封存/在用引用保护；不能把标记落盘视为封存验收。
+- `sealState=pending`，`captured/runnable/reproduced/evaluable` 均为 false，明确 `checkpoint_not_sealed` / `trajectory_not_archived` 等缺失。尚无封存 pin、运行引用、GC 或采集配额中的标记字节统计。后续必须在启用 GC 前建立封存/在用引用保护；不能把标记落盘视为封存验收。
+
+聊天 UI 在终态 assistant 卡片提供“标记问题”，包括没有 agent 配置或 checkpoint 的历史消息。弹窗按当前 Room 的项目归属查询，缺项目不发请求；打开只 GET，不扩大授权或开启采集。UI 从 bootstrap 获取管理能力/CSRF，缺失或查询失败禁用提交；既有标记只读。首次填写实际/期望后需显式确认不可修改及尚未封存；只 POST 三个允许字段，不提交 run/checkpoint/status。UTF-8 长度/非空/NUL 先在客户端检查，秘密哨兵及归属仍由服务端裁定。显示“已标记 · 待封存”，区分缺现场与“清单存在但未验证”，不显示已采集/可回放。未知业务错误用纯文本、无 issues 的解析错误显示 HTTP 状态；失败保留草稿，可能已落盘须重新查询或原文重试，不自动覆盖冲突。
+
+消息切换、A→B→A、关闭或会话切换用 generation 丢弃旧响应。弹窗关闭清空本地草稿和 token，已发 POST 不会撤销；重开再次查询。保存中禁用重复提交，关闭始终可用。当前只实现 pending 状态展示；非预期状态/响应关联不匹配拒绝，不将未来封存字段误当作已验证。jsdom/合成浏览器证据不替代真实采集、封存或回放验收。
 
 ## 4. 环境与 Docker 隔离契约
 

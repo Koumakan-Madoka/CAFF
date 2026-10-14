@@ -80,7 +80,9 @@ test('expired receipt is rejected at click without issuing enable; server expiry
 test('draft scope disables estimate and consumes local receipt; settings only posts limits', async t => {
   const h = setup(t); await h.panel.select({ id: 'a' }); await h.click('estimate');
   h.edit('authorizedDirs', '/other'); assert.equal(h.button('estimate').disabled, true); assert.equal(h.button('enable').disabled, true);
-  h.edit('authorizedDirs', '/repo'); h.edit('stagingRetentionDays', '8'); await h.click('settings');
+  h.edit('stagingRetentionDays', '8'); await h.click('settings');
+  assert.equal(h.field('authorizedDirs').value, '/repo');
+  assert.match(h.root.textContent, /未保存的范围草稿已丢弃/);
   const settings = h.calls.find(c => c.url.endsWith('/settings'));
   assert.deepEqual(Object.keys(settings.body).sort(), ['stagingQuotaBytes', 'stagingRetentionDays']);
   assert.equal(settings.body.stagingRetentionDays, 8); assert.equal(h.button('enable').disabled, true);
