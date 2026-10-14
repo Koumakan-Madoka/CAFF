@@ -1985,6 +1985,57 @@ export function createTurnOrchestrator(options: any = {}) {
     }
   }
 
+  function previewRouting(conversationId: any, input: any = {}) {
+    const storedConversation = loadRoutingConversation(conversationId);
+
+    if (!storedConversation) {
+      throw createHttpError(404, 'Conversation not found');
+    }
+
+    if (!Array.isArray(storedConversation.agents) || storedConversation.agents.length === 0) {
+      throw createHttpError(400, 'Add at least one agent to the conversation first');
+    }
+
+    const conversation = {
+      ...storedConversation,
+      agents: resolveRuntimeParticipants(storedConversation.agents),
+    };
+    // Preview reuses the exact acceptance-path pipeline
+    // (normalizeConversationTurnInput -> resolveInitialTurnTargets) so the
+    // previewed routing always matches what a freshly submitted message with
+    // the same content would resolve to under the same conversation state.
+    // It is a read-only projection, not a dispatch promise: state changes or
+    // a side-dispatch decision at submit time may produce a different outcome,
+    // which is then authoritatively recorded in the message metadata.
+    const turnInput = normalizeConversationTurnInput(
+      { content: typeof (input && input.content) === 'string' ? input.content : '' },
+      storedConversation
+    );
+    const resolution = resolveInitialTurnTargets(turnInput, conversation);
+    const agentsById = new Map<string, any>(
+      (Array.isArray(conversation.agents) ? conversation.agents : [])
+        .map((agent: any) => [String(agent && agent.id || '').trim(), agent] as [string, any])
+        .filter(([agentId]: [string, any]) => Boolean(agentId))
+    );
+
+    return {
+      conversationId: String(conversationId || '').trim(),
+      agentIds: resolution.agentIds,
+      agents: (Array.isArray(resolution.agentIds) ? resolution.agentIds : []).map((agentId: any) => {
+        const normalizedAgentId = String(agentId || '').trim();
+        const agent = agentsById.get(normalizedAgentId) || null;
+        const name = String(agent && agent.name || '').trim();
+        return {
+          id: normalizedAgentId,
+          name: name || normalizedAgentId,
+        };
+      }),
+      strategy: resolution.strategy,
+      executionMode: resolution.executionMode,
+      explicitIntent: resolution.explicitIntent,
+    };
+  }
+
   function submitConversationMessage(conversationId: any, input: any) {
     const storedConversation = loadRoutingConversation(conversationId);
 
@@ -2030,17 +2081,31 @@ export function createTurnOrchestrator(options: any = {}) {
 
     ensureQueueState(conversationId);
 
+    // Persist the accept-time routing resolution so the post-send annotation
+    // reflects what actually routed this message (previews may go stale, but
+    // this snapshot cannot). Side-dispatch messages additionally record the
+    // actual dispatch lane/target alongside the main-route resolution.
+    const routingMetadata = {
+      agentIds: initialTargetResolution.agentIds,
+      strategy: initialTargetResolution.strategy,
+      executionMode: initialTargetResolution.executionMode,
+      explicitIntent: initialTargetResolution.explicitIntent,
+    };
+
     let dispatchResult = null as any;
     const acceptedMessage = store.createMessage(
       createAcceptedMessagePayload(conversationId, {
         ...turnInput,
-        metadata: shouldSideDispatch
-          ? {
-              ...turnInput.metadata,
-              dispatchLane: 'side',
-              dispatchTargetAgentId: sideTarget ? sideTarget.targetAgentId : null,
-            }
-          : turnInput.metadata,
+        metadata: {
+          ...turnInput.metadata,
+          routing: routingMetadata,
+          ...(shouldSideDispatch
+            ? {
+                dispatchLane: 'side',
+                dispatchTargetAgentId: sideTarget ? sideTarget.targetAgentId : null,
+              }
+            : {}),
+        },
       })
     );
 
@@ -2244,6 +2309,7 @@ export function createTurnOrchestrator(options: any = {}) {
     getRuntimeStats,
     listAgentSlotSummaries,
     listTurnSummaries,
+    previewRouting,
     reconcileConversationQueueAfterMessageDeletion,
     requestStopConversationExecution,
     requestStopAgentDelegation,
