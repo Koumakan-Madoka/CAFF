@@ -13,9 +13,12 @@ const {
   createSessionGoalBudgetProposal,
   getSessionGoal,
   getSessionGoalProposal,
+  isGoalRunnerSourceMessage,
   pauseSessionGoalForRemovedOwner,
+  pauseSessionGoalOnUserStop,
   recordSessionGoalContinuationOutcome,
 } = require('./session-goal');
+const { getDagNodeExecutionContext } = require('./dag-goal-binding');
 
 const { getAgentById, extractMentionedAgentIds, resolveTurnExecutionMode } = require('./mention-routing');
 const { buildAgentTurnPrompt, sanitizePromptMentions } = require('./turn/agent-prompt');
@@ -30,7 +33,9 @@ const { createTurnStopper, registerTurnHandle, unregisterTurnHandle } = require(
 const {
   clipText,
   createAgentSlotState,
+  getTurnStage,
   nowIso,
+  resetTurnStage,
   summarizeAgentSlotState,
   summarizeTurnState,
   syncCurrentTurnAgent,
@@ -878,6 +883,17 @@ export function createTurnOrchestrator(options: any = {}) {
       return baseExecuteConversationAgent(input);
     }
 
+    const stageForSlot = input.turnState ? getTurnStage(input.turnState, agentId) : null;
+
+    // Per-trace stop: a stage cancelled while queued never enters the slot
+    // wait at all; only this stage is skipped, the turn keeps routing.
+    if (stageForSlot && stageForSlot.stopRequested) {
+      return {
+        stopTurn: false,
+        terminationReason: '',
+      };
+    }
+
     const slotRequest = agentSlotRegistry.requestSlot({
       conversationId,
       agentId,
@@ -885,6 +901,7 @@ export function createTurnOrchestrator(options: any = {}) {
     });
     const waitHandle = slotRequest.queued
       ? {
+          turnStageAgentId: agentId,
           cancel(reason: any) {
             slotRequest.cancel(reason || 'Stopped by user');
           },
@@ -911,6 +928,19 @@ export function createTurnOrchestrator(options: any = {}) {
         };
       }
 
+      // Per-trace stop: the slot wait was cancelled for this stage only.
+      if (stageForSlot && stageForSlot.stopRequested) {
+        resetTurnStage(stageForSlot, 'idle');
+        stageForSlot.stopRequested = true;
+        input.turnState.updatedAt = nowIso();
+        syncCurrentTurnAgent(input.turnState);
+        emitTurnProgress(input.turnState);
+        return {
+          stopTurn: false,
+          terminationReason: '',
+        };
+      }
+
       throw error;
     }
 
@@ -923,6 +953,13 @@ export function createTurnOrchestrator(options: any = {}) {
         return {
           stopTurn: true,
           terminationReason: 'stopped_by_user',
+        };
+      }
+
+      if (stageForSlot && stageForSlot.stopRequested) {
+        return {
+          stopTurn: false,
+          terminationReason: '',
         };
       }
 
@@ -2083,7 +2120,256 @@ export function createTurnOrchestrator(options: any = {}) {
     };
   }
 
-  function requestStopConversationExecution(conversationId: any, reason: any = 'Stopped by user') {
+  function stopAgentSlotState(slotState: any, stopReason: any) {
+    if (!slotState.stopRequested) {
+      slotState.stopRequested = true;
+      slotState.stopReason = stopReason;
+      slotState.stopRequestedAt = nowIso();
+      slotState.status = 'stopping';
+    }
+
+    markSideDispatchCancelled(slotState.conversationId, slotState.sourceMessageId, stopReason);
+
+    const handles = slotState.runHandles instanceof Set ? (Array.from(slotState.runHandles) as any[]) : [];
+
+    for (const handle of handles) {
+      if (!handle || typeof handle.cancel !== 'function') {
+        continue;
+      }
+
+      try {
+        handle.cancel(stopReason);
+      } catch {}
+    }
+
+    slotState.updatedAt = nowIso();
+    syncCurrentTurnAgent(slotState);
+    emitTurnProgress(slotState);
+    return summarizeAgentSlotState(slotState);
+  }
+
+  // Stop-goal linkage (D3/D4): evaluated synchronously when the stop request
+  // is accepted, so the goal-runner can never claim the next iteration in
+  // between. Conversation-level stops link only when the caller passed
+  // stopGoal; per-trace stops link only when the stopped trace belongs to a
+  // goal-runner continuation turn AND (for turn stages) the stage is run by
+  // the persisted goal owner. DAG-bound goals are scheduler-owned and are
+  // never paused here.
+  function pauseSessionGoalForStoppedTrace(conversationId: any, linkage: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
+
+    if (!normalizedConversationId) {
+      return null;
+    }
+
+    if (getDagNodeExecutionContext(store, normalizedConversationId)) {
+      return null;
+    }
+
+    const conversation = getConversationHeader(normalizedConversationId);
+    const goal = conversation ? getSessionGoal(conversation) : null;
+
+    if (!goal || goal.status !== 'active') {
+      return null;
+    }
+
+    let linked = false;
+
+    if (linkage.scope === 'conversation') {
+      linked = true;
+    } else if (linkage.scope === 'slot') {
+      const slotState = linkage.slotState;
+      const sourceMessage = slotState && slotState.sourceMessageId && store && typeof store.getMessage === 'function'
+        ? store.getMessage(slotState.sourceMessageId)
+        : null;
+      linked = isGoalRunnerSourceMessage(sourceMessage);
+    } else if (linkage.scope === 'stage') {
+      const turnState = linkage.turnState;
+      const sourceMessages = listTurnSourceMessages(turnState);
+      const goalRunnerBatch = sourceMessages.length > 0 && sourceMessages.every(isGoalRunnerSourceMessage);
+      const ownerAgentId = String(goal.owner && goal.owner.agentId ? goal.owner.agentId : '').trim();
+      linked = goalRunnerBatch && (!ownerAgentId || ownerAgentId === String(linkage.agentId || '').trim());
+    }
+
+    if (!linked) {
+      return null;
+    }
+
+    const result = pauseSessionGoalOnUserStop(store, normalizedConversationId, { reason: 'stopped_by_user' });
+
+    if (result && result.changed) {
+      broadcastGoalUpdateResult(normalizedConversationId, result);
+    }
+
+    return result;
+  }
+
+  function listTurnSourceMessages(turnState: any) {
+    if (!turnState || !store || typeof store.getConversation !== 'function') {
+      return [];
+    }
+
+    const conversation = store.getConversation(turnState.conversationId);
+    const messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+    const startId = String(turnState.batchStartMessageId || turnState.userMessageId || '').trim();
+    const endId = String(turnState.batchEndMessageId || turnState.userMessageId || '').trim();
+
+    if (!startId) {
+      return [];
+    }
+
+    const startIndex = messages.findIndex((message: any) => message && message.id === startId);
+
+    if (startIndex < 0) {
+      return [];
+    }
+
+    let endIndex = endId ? messages.findIndex((message: any) => message && message.id === endId) : -1;
+
+    if (endIndex < startIndex) {
+      endIndex = startIndex;
+    }
+
+    return messages
+      .slice(startIndex, endIndex + 1)
+      .filter((message: any) => message && message.role === 'user');
+  }
+
+  function requestStopConversationTrace(conversationId: any, target: any = {}, reason: any = 'Stopped by user') {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const stopReason = String(reason || 'Stopped by user').trim() || 'Stopped by user';
+    const kind = String(target && target.kind || '').trim();
+
+    if (!normalizedConversationId) {
+      throw createHttpError(404, 'Conversation not found');
+    }
+
+    if (kind === 'slot') {
+      const slotId = String(target.slotId || '').trim();
+      const slotState = Array.from(activeAgentSlots.values()).find(
+        (candidate: any) => candidate && candidate.conversationId === normalizedConversationId && candidate.slotId === slotId
+      ) || null;
+
+      if (!slotState) {
+        throw createHttpError(404, 'This execution is no longer active');
+      }
+
+      const agentSlot = stopAgentSlotState(slotState, stopReason);
+      const goalResult = pauseSessionGoalForStoppedTrace(normalizedConversationId, { scope: 'slot', slotState });
+      broadcastRuntimeState();
+
+      return {
+        kind,
+        agentSlot,
+        goal: goalResult && goalResult.goal ? goalResult.goal : null,
+      };
+    }
+
+    if (kind === 'queued-side') {
+      const requestId = String(target.requestId || '').trim();
+      const targetAgentId = String(target.agentId || '').trim();
+      const queuedEntry = listQueuedSideDispatches(normalizedConversationId).find((entry: any) => {
+        if (!entry) return false;
+        if (requestId) return String(entry.requestId || '').trim() === requestId;
+        if (targetAgentId) return String(entry.targetAgentId || '').trim() === targetAgentId;
+        return false;
+      }) || null;
+
+      if (!queuedEntry) {
+        throw createHttpError(404, 'This queued dispatch is no longer pending');
+      }
+
+      let cancelled = false;
+
+      try {
+        cancelled = Boolean(queuedEntry.cancel(stopReason));
+      } catch {}
+
+      if (cancelled) {
+        markSideDispatchCancelled(normalizedConversationId, queuedEntry.sourceMessageId, stopReason);
+      }
+
+      untrackQueuedSideDispatch(normalizedConversationId, queuedEntry.requestId);
+      broadcastRuntimeState();
+
+      return {
+        kind,
+        cancelledQueuedSideDispatch: cancelled,
+        agentId: String(queuedEntry.targetAgentId || '').trim() || null,
+        sourceMessageId: queuedEntry.sourceMessageId || null,
+        goal: null,
+      };
+    }
+
+    if (kind === 'stage') {
+      const turnState = activeTurns.get(normalizedConversationId) || null;
+
+      if (!turnState) {
+        throw createHttpError(409, 'This conversation is not processing a turn');
+      }
+
+      const agentId = String(target.agentId || '').trim();
+      const stage = agentId ? getTurnStage(turnState, agentId) : null;
+
+      if (!stage) {
+        throw createHttpError(404, 'This stage is not part of the active turn');
+      }
+
+      if (stage.status === 'queued' && !stage.messageId) {
+        // Queued-stage cancel (no assistant message created yet): reset the
+        // stage and flag it so the router skips it when dequeued; the rest
+        // of the turn keeps routing.
+        resetTurnStage(stage, 'idle');
+        stage.stopRequested = true;
+        stage.stopReason = stopReason;
+        stage.stopRequestedAt = nowIso();
+        turnState.pendingAgentIds = (Array.isArray(turnState.pendingAgentIds) ? turnState.pendingAgentIds : [])
+          .filter((pendingAgentId: any) => String(pendingAgentId || '').trim() !== agentId);
+      } else if (stage.status === 'queued' || stage.status === 'running' || stage.status === 'terminating') {
+        if (!stage.stopRequested) {
+          stage.stopRequested = true;
+          stage.stopReason = stopReason;
+          stage.stopRequestedAt = nowIso();
+        }
+
+        const handles = turnState.runHandles instanceof Set ? (Array.from(turnState.runHandles) as any[]) : [];
+
+        for (const handle of handles) {
+          if (!handle || typeof handle.cancel !== 'function') {
+            continue;
+          }
+
+          // Only cancel handles attributed to this stage; handles without an
+          // agent tag (e.g. shared waiters) belong to the turn as a whole.
+          if (String(handle.turnStageAgentId || '').trim() !== agentId) {
+            continue;
+          }
+
+          try {
+            handle.cancel(stopReason);
+          } catch {}
+        }
+      } else {
+        throw createHttpError(409, 'This stage is not running');
+      }
+      turnState.updatedAt = nowIso();
+      syncCurrentTurnAgent(turnState);
+      broadcastRuntimeState();
+      emitTurnProgress(turnState);
+
+      const goalResult = pauseSessionGoalForStoppedTrace(normalizedConversationId, { scope: 'stage', turnState, agentId });
+
+      return {
+        kind,
+        turn: summarizeTurnState(turnState),
+        goal: goalResult && goalResult.goal ? goalResult.goal : null,
+      };
+    }
+
+    throw createHttpError(400, 'Unsupported stop target kind');
+  }
+
+  function requestStopConversationExecution(conversationId: any, reason: any = 'Stopped by user', options: any = {}) {
     const normalizedConversationId = String(conversationId || '').trim();
     const mainTurn = activeTurns.get(normalizedConversationId) || null;
     const slotStates = listConversationActiveAgentSlots(normalizedConversationId);
@@ -2113,41 +2399,22 @@ export function createTurnOrchestrator(options: any = {}) {
     }
 
     for (const slotState of slotStates) {
-      if (!slotState.stopRequested) {
-        slotState.stopRequested = true;
-        slotState.stopReason = stopReason;
-        slotState.stopRequestedAt = nowIso();
-        slotState.status = 'stopping';
-      }
-
-      markSideDispatchCancelled(normalizedConversationId, slotState.sourceMessageId, stopReason);
-
-      const handles = slotState.runHandles instanceof Set ? (Array.from(slotState.runHandles) as any[]) : [];
-
-      for (const handle of handles) {
-        if (!handle || typeof handle.cancel !== 'function') {
-          continue;
-        }
-
-        try {
-          handle.cancel(stopReason);
-        } catch {}
-      }
-
-      slotState.updatedAt = nowIso();
-      syncCurrentTurnAgent(slotState);
-      emitTurnProgress(slotState);
-      agentSlots.push(summarizeAgentSlotState(slotState));
+      agentSlots.push(stopAgentSlotState(slotState, stopReason));
     }
 
     if (slotStates.length > 0 || cancelledQueuedSideDispatchCount > 0) {
       broadcastRuntimeState();
     }
 
+    const goalResult = options && options.stopGoal === true
+      ? pauseSessionGoalForStoppedTrace(normalizedConversationId, { scope: 'conversation' })
+      : null;
+
     return {
       turn,
       agentSlots,
       cancelledQueuedSideDispatchCount,
+      goal: goalResult && goalResult.goal ? goalResult.goal : null,
     };
   }
 
@@ -2246,6 +2513,7 @@ export function createTurnOrchestrator(options: any = {}) {
     listTurnSummaries,
     reconcileConversationQueueAfterMessageDeletion,
     requestStopConversationExecution,
+    requestStopConversationTrace,
     requestStopAgentDelegation,
     requestStopCrossConversationDelivery,
     requestStopConversationTurn: requestStopMainTurn,

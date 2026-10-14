@@ -166,6 +166,9 @@
       privateRecipientNames,
       recoverFailedMessage,
       renderMessageBody,
+      stopConversationTrace = null,
+      isTraceStopRequestInFlight = () => false,
+      queuedSideDispatchCountForMessage = () => 0,
       timelineMessagesForConversation,
       toolTraceSignatureForMessage,
       toolTraceStateForMessage,
@@ -2493,6 +2496,27 @@
         : false;
       const traceSignature = toolTraceSignatureForMessage(message);
       const delegationRoute = delegationRouteForMessage(message, agents);
+      const liveStopTarget = liveStage && ['queued', 'running', 'terminating'].includes(liveStage.status)
+        ? liveStage.slotId
+          ? { kind: 'slot', slotId: liveStage.slotId }
+          : liveStage.agentId
+            ? { kind: 'stage', agentId: liveStage.agentId }
+            : null
+        : null;
+      const queuedSideCancelTarget = message && message.role === 'user' && queuedSideDispatchCountForMessage(message) > 0
+        ? {
+            kind: 'queued-side',
+            agentId: String((metadata && metadata.dispatchTargetAgentId) || '').trim(),
+          }
+        : null;
+      const liveStopInFlight = Boolean(
+        liveStopTarget && isTraceStopRequestInFlight(conversationId || (message && message.conversationId) || '', liveStopTarget)
+      );
+      const queuedSideCancelInFlight = Boolean(
+        queuedSideCancelTarget
+        && queuedSideCancelTarget.agentId
+        && isTraceStopRequestInFlight(conversationId || (message && message.conversationId) || '', queuedSideCancelTarget)
+      );
       const signature = [
         message.id,
         message.role,
@@ -2548,6 +2572,10 @@
         recoveryRequestMessageIds.has(message.id) ? 'recovery-requesting' : '',
         delegationRouteSignature(delegationRoute),
         traceSignature,
+        liveStage && liveStage.stopRequested ? 'live-stopping' : '',
+        liveStopInFlight ? 'live-stop-inflight' : '',
+        queuedSideCancelTarget ? 'queued-side-cancellable' : '',
+        queuedSideCancelInFlight ? 'queued-side-inflight' : '',
       ].join('\u001f');
 
       if (card.dataset.renderSignature === signature) {
@@ -2701,6 +2729,37 @@
       const timestampLabel = document.createElement('span');
       timestampLabel.textContent = formatDateTime(message.createdAt);
       time.appendChild(timestampLabel);
+
+      // Per-trace 停止按钮：运行中/排队中的主 turn 阶段或旁路 slot，仅停该执行。
+      if (liveStopTarget && typeof stopConversationTrace === 'function') {
+        const stopButton = document.createElement('button');
+        stopButton.type = 'button';
+        stopButton.className = 'message-trace-stop-button ghost-button';
+        const stopping = Boolean(liveStage.stopRequested) || liveStopInFlight;
+        stopButton.disabled = stopping;
+        stopButton.textContent = stopping ? '停止中…' : '停止';
+        stopButton.title = '仅停止这条回复，不影响会话中的其他执行';
+        stopButton.addEventListener('click', (event) => {
+          event.stopPropagation();
+          stopConversationTrace(conversationId || (message && message.conversationId) || '', liveStopTarget);
+        });
+        time.appendChild(stopButton);
+      }
+
+      // 排队中的旁路派发：源消息上提供取消排队入口。
+      if (queuedSideCancelTarget && queuedSideCancelTarget.agentId && typeof stopConversationTrace === 'function') {
+        const cancelButton = document.createElement('button');
+        cancelButton.type = 'button';
+        cancelButton.className = 'message-trace-stop-button ghost-button';
+        cancelButton.disabled = queuedSideCancelInFlight;
+        cancelButton.textContent = queuedSideCancelInFlight ? '取消中…' : '取消排队';
+        cancelButton.title = '该消息正排队等待目标 Agent，点击取消这次派发';
+        cancelButton.addEventListener('click', (event) => {
+          event.stopPropagation();
+          stopConversationTrace(conversationId || (message && message.conversationId) || '', queuedSideCancelTarget);
+        });
+        time.appendChild(cancelButton);
+      }
 
       if (tokenUsageLabel) {
         const tokenBadge = document.createElement('span');

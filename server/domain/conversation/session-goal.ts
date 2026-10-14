@@ -761,7 +761,7 @@ function runnerWithoutFailureStreak(runner: any, timestamp: string) {
   };
 }
 
-function isGoalRunnerSourceMessage(message: any) {
+export function isGoalRunnerSourceMessage(message: any) {
   const metadata = message && isPlainObject(message.metadata) ? message.metadata : {};
   return Boolean(metadata.goalAutoContinue) && normalizeText(metadata.source).toLowerCase() === 'goal-runner';
 }
@@ -1546,6 +1546,47 @@ export function pauseSessionGoalForRemovedOwner(store: any, conversationId: any,
     conversation: nextConversation,
     goal: getSessionGoal(nextConversation),
     runner: null,
+    proposal: getSessionGoalProposal(nextConversation),
+  };
+}
+
+/**
+ * User-stop linkage (停止联动暂停 Goal): when the user stops a conversation
+ * (with stopGoal) or stops the goal owner's goal-continuation trace, the
+ * active goal is paused synchronously in ONE metadata write so the
+ * goal-runner can never claim the next iteration after the stop is accepted.
+ * The pause is silent by design: no resume proposal is created and any
+ * pending proposal/ruling is preserved untouched. Resuming reuses the
+ * existing resume action.
+ */
+export function pauseSessionGoalOnUserStop(store: any, conversationId: any, input: any = {}) {
+  const normalizedConversationId = normalizeText(conversationId);
+  const conversation = getGoalConversation(store, normalizedConversationId);
+  const goal = conversation ? getSessionGoal(conversation) : null;
+
+  if (!conversation || !goal || goal.status !== 'active') {
+    return { changed: false, paused: false, conversation, goal, reason: 'inactive_goal' };
+  }
+
+  const timestamp = nowIso();
+  const pausedGoal = {
+    ...goal,
+    status: 'paused',
+    revision: goal.revision + 1,
+    updatedAt: timestamp,
+  };
+  const nextConversation = updateConversationMetadata(store, conversation, {
+    ...currentMetadata(conversation),
+    [SESSION_GOAL_METADATA_KEY]: pausedGoal,
+  });
+
+  return {
+    changed: true,
+    paused: true,
+    reason: normalizeText(input.reason) || 'stopped_by_user',
+    conversation: nextConversation,
+    goal: getSessionGoal(nextConversation),
+    runner: getSessionGoalRunner(nextConversation),
     proposal: getSessionGoalProposal(nextConversation),
   };
 }
