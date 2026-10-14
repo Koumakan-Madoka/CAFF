@@ -121,6 +121,15 @@ UI 用 selection/action generation 丢弃过时响应（含 A→B→A），等�
 
 UI jsdom/合成 HTTP 测试不等于真实用户采集证据。容量分项、用户标记/封存/回收仍待交付。控制器测试的正向开启部分使用合成预估；Linux 用真实 collector 的预估/换根负例单独验证，不将 API/UI 测试称为真实 agent turn 或严格评测证据。
 
+### 3.2 消息标记持久化基础（尚未接 API/UI 或封存）
+
+`badcase-flags.ts` 提供内部 `mark/get` 服务，写入 `<captureRoot>/projects/<projectId>/flags/<messageId 的 SHA-256>.json`。当前只保存用户的实际问题/期望行为及服务端消息关联，不读取目标文件、不复制消息正文/轨迹、不授权或开启采集；不是 `SealedCase`，不能据此声明材料已长期保存。
+
+- 项目归属从 conversation 校验，消息须属于该 conversation 且为终态 assistant；runId 使用生产 ChatStore 的正整数或 null，不伪造运行 ID。checkpointId 只从消息元数据取；清单存在时核对 project/conversation/turn/agent/checkpoint ID。清单存在只表示 `manifest_present_unverified`，不证明 blob 完整；没有关联或清单不可读分别记录 `not_recorded` / `missing_or_unreadable`。关联错配拒绝，不静默改绑。
+- 首版每项目每消息一条不可变标记；相同文本重试返回原标记且不重新绑定后续变化的 run/checkpoint。不同文本返回 `flag_already_exists`，不覆盖原始问题；编辑/多条标记工作流尚未提供。每个文本上限 8192 UTF-8 字节，空白、NUL 和现有秘密哨兵拒绝，错误不回显原文。哨兵仍非通用秘密识别证明。
+- 完整临时文件 fsync 后以同目录 hardlink 原子、禁止替换地发布；并发竞争只接受一个记录，相同请求收敛、不同文本冲突。无 hardlink 能力或磁盘失败显式报错，不退回覆盖 rename。校验和用于检测意外损坏，不认证同 OS 用户；损坏记录不得当作不存在而覆盖。未实现目录 fsync，不承诺突然断电后的持久性；进程崩溃可能残留 `.tmp-*`，本切片不自动清理。
+- `sealState=pending`，`captured/runnable/reproduced/evaluable` 均为 false，明确 `checkpoint_not_sealed` / `trajectory_not_archived` 等缺失。尚无封存 pin、运行引用、GC、标记 API/UI 或采集配额中的标记字节统计。后续必须在启用 GC 前建立封存/在用引用保护；不能把标记落盘视为封存验收。
+
 ## 4. 环境与 Docker 隔离契约
 
 - EnvironmentTemplate 首版人工配置；首次成功重建后归档镜像并固定 **digest + 架构 + 运行时版本**。缺镜像/依赖 → preflight 显式阻断，禁止静默回退浮动 tag 或宿主执行。
