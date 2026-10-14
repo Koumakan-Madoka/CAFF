@@ -27,6 +27,8 @@ const { createModelCatalogController } = require('../api/model-catalog-controlle
 const { createRecoveryScribeConfigController } = require('../api/recovery-scribe-config-controller');
 const { createProjectsController } = require('../api/projects-controller');
 const { createBadcaseCaptureController } = require('../api/badcase-capture-controller');
+const { createBadcaseFlagsController } = require('../api/badcase-flags-controller');
+const { createBadcaseFlagService } = require('../domain/runtime/badcase-capture/badcase-flags');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createImageUploadController } = require('../api/image-upload-controller');
@@ -1190,6 +1192,18 @@ export function createServerApp(options: any = {}) {
       : []),
     createBadcaseCaptureController({
       service: badcaseCapture,
+      projectManager,
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+    }),
+    createBadcaseFlagsController({
+      service: createBadcaseFlagService({ captureRoot: badcaseCapture.captureRoot, captureStore: badcaseCapture.store, chatStore: store }),
       projectManager,
       host,
       port,

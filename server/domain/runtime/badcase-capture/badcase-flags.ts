@@ -96,11 +96,19 @@ export function createBadcaseFlagService(options: any) {
       if (runId !== null && (typeof runId !== 'number' || !Number.isSafeInteger(runId) || runId <= 0)) throw error('flag_invalid_run_id');
       let checkpointState = 'not_recorded';
       if (checkpointId) {
-        const checkpoint = captureStore.loadCheckpoint(scope.projectId, checkpointId);
+        let checkpoint: any = null;
+        try { checkpoint = captureStore?.loadCheckpoint(scope.projectId, checkpointId); }
+        catch { /* Unreadable evidence must not prevent a user reporting a badcase. */ }
         checkpointState = checkpoint ? 'manifest_present_unverified' : 'missing_or_unreadable';
-        if (checkpoint && (checkpoint.checkpointId !== checkpointId || checkpoint.projectId !== scope.projectId
-          || checkpoint.conversationId !== scope.conversationId || !message.turnId || checkpoint.turnId !== message.turnId
-          || !message.agentId || checkpoint.agentId !== message.agentId)) throw error('flag_checkpoint_mismatch');
+        if (checkpoint) {
+          // Still reject mismatches in every known field; missing legacy turn/
+          // agent metadata is not proof of a match and must never permit sealing.
+          if (checkpoint.checkpointId !== checkpointId || checkpoint.projectId !== scope.projectId
+            || checkpoint.conversationId !== scope.conversationId
+            || (message.turnId && checkpoint.turnId !== message.turnId)
+            || (message.agentId && checkpoint.agentId !== message.agentId)) throw error('flag_checkpoint_mismatch');
+          if (!message.turnId || !message.agentId) checkpointState = 'association_incomplete';
+        }
       }
       const record = {
         schemaVersion: 1,
