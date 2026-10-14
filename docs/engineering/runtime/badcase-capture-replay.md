@@ -100,6 +100,21 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 - 配额核算：占用 = CAS blob + checkpoint 清单 + latest 指针（“零新增 CAS 字节”不等于“零新增总空间”）。每个重试 attempt 都做写前预检（文件 + prompt/session/skill 计划字节 + 清单估值）；**预检是估计，写时实际字节是硬上限**——逐 blob 落盘前按写时读到的实际内容重新核算（扫描后文件膨胀不得先突破配额再失败）；落盘前按实际清单字节终检；终检超额不落清单，可能留下无引用孤儿 blob，由 GC 回收。检查点自报 `newBlobBytes` / `newManifestBytes` / `totalNewBytes`，必须与实际占用增长一致。
 - 测量：开启前展示授权目录容量预估；运行后展示每检查点新增字节、项目总占用、封存占用；区分文件/session/镜像成本（AC9）。
 
+### 3.1 本地采集管理 API（Goal D10）
+
+首版信任同一 OS 用户的本地进程。管理请求复用 `local-admin-guard`（loopback、Host、Origin、bootstrap CSRF）；这些检查和 `confirmed=true` **不是人类身份认证**，不抵御同宿主 shell 模拟请求或同权限进程修改策略文件。不注册 agent 授权工具；UI 必须展示目录及风险并显式确认。此边界不豁免 Docker 回放隔离、秘密排除或模型预算审批。
+
+仅已登记 projectId 可访问 `/api/projects/:projectId/badcase-capture`：
+
+- `GET`：策略、CAS/清单/latest 占用与 `trustBoundary=same_os_user`；不扫描目标。占用尚不包含暂存 attempt、session/镜像分项或封存分项，不能充当完整容量报告。
+- `POST /authorize`：`confirmed=true`，完整提供 `authorizedDirs`、`authorizedInputDirs`、`includedIgnoredPatterns`、`excludedPatterns`；拒绝相对/空目录、CAS 与授权根互相包含（包括可解析别名）。先持久化 disabled 再 pin；pin 失败也不继续启用。平台不支持时 pin 可能没有 identity，授权动作不等于采集可用，后续预估必须明确失败。
+- `POST /settings`：仅接受正安全整数 `stagingRetentionDays` / `stagingQuotaBytes`，保留其余策略及原 pin；目录、排除/纳入模式只能重新显式授权修改，普通保存不能扩大授权。
+- `POST /estimate`：空对象，逐一预估已授权目标根；不开启、不写检查点。返回逐根 `ok/complete/reason`、文件容量合计和成本口径（未算输入 session、图片、镜像及清单）；重叠授权根可能重复统计。不完整或失败不给开启回执；`dir_not_authorized`、`authorized_root_unpinned`、`root_open_failed`、`capture_unavailable:*` 等原因原样返回，UI 不应一律映射为“目录不存在”。
+- `POST /enable`：`confirmed=true` + 成功预估的 `estimateId`。回执绑定项目及完整策略，仅本进程有效、10 分钟过期、使用后消耗；重新授权、普通保存或关闭使其失效。开启前再验证目标根身份和枚举，失败拒绝；这不是原子快照或空间保证。服务重启保留策略（含 enabled），但未使用的回执失效，需要重新预估。
+- `POST /disable`：空对象，关闭后不再主动采集；不扫描，不自动删除既有材料。
+
+目前只接 API；UI 显式确认、容量分项、用户标记/封存/回收仍待交付。控制器测试的正向开启部分使用合成预估；Linux 用真实 collector 的预估/换根负例单独验证，不将 API 测试称为真实 agent turn 或严格评测证据。
+
 ## 4. 环境与 Docker 隔离契约
 
 - EnvironmentTemplate 首版人工配置；首次成功重建后归档镜像并固定 **digest + 架构 + 运行时版本**。缺镜像/依赖 → preflight 显式阻断，禁止静默回退浮动 tag 或宿主执行。

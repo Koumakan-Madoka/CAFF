@@ -264,6 +264,47 @@ function createConversationsControllerHarness(t, options = {}) {
   return { handler, store, broadcastEvents };
 }
 
+test('create server wires project capture administration without enabling collection', async (t) => {
+  const tempDir = withTempDir('caff-capture-admin-server-');
+  const projectDir = path.join(tempDir, 'project');
+  const agentDir = path.join(tempDir, 'agent');
+  fs.mkdirSync(projectDir);
+  const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
+  const service = createBadcaseCaptureService({ captureRoot: path.join(tempDir, 'capture') });
+  const app = createServerApp({ host: '127.0.0.1', port: 0, agentDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'), projectDir, badcaseCapture: service });
+  t.after(async () => {
+    await new Promise(resolve => app.close(resolve));
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+  await new Promise(resolve => app.start(resolve));
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+  const projects = await (await fetch(`${baseUrl}/api/projects`)).json();
+  const projectId = projects.activeProjectId;
+  assert.ok(projectId);
+  const endpoint = `${baseUrl}/api/projects/${projectId}/badcase-capture`;
+  const get = await fetch(endpoint);
+  assert.equal(get.status, 200);
+  assert.equal((await get.json()).policy.status, 'disabled');
+  const denied = await fetch(`${endpoint}/authorize`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: baseUrl }, body: '{}' });
+  assert.equal(denied.status, 403);
+  assert.equal(service.loadPolicy(projectId).status, 'disabled');
+  const bootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json();
+  const adminHeaders = { 'Content-Type': 'application/json', Origin: baseUrl,
+    'X-CAFF-CSRF-Token': bootstrap.localAdmin.modelProviders.csrfToken };
+  const authorized = await fetch(`${endpoint}/authorize`, { method: 'POST', headers: adminHeaders,
+    body: JSON.stringify({ confirmed: true, authorizedDirs: [projectDir], authorizedInputDirs: [],
+      excludedPatterns: ['.git', 'node_modules'], includedIgnoredPatterns: [] }) });
+  assert.equal(authorized.status, 200);
+  assert.equal((await authorized.json()).policy.status, 'disabled');
+  const saved = await fetch(`${endpoint}/settings`, { method: 'POST', headers: adminHeaders,
+    body: JSON.stringify({ stagingRetentionDays: 2 }) });
+  assert.equal(saved.status, 200);
+  assert.equal(createBadcaseCaptureService({ captureRoot: service.captureRoot }).loadPolicy(projectId).stagingRetentionDays, 2);
+  assert.equal(service.store.listCheckpoints(projectId).length, 0);
+});
+
 test('create server wires loopback model-provider administration with bootstrap CSRF', async (t) => {
   const tempDir = withTempDir('caff-model-providers-server-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');

@@ -26,6 +26,7 @@ const { createSubscriptionAuthController } = require('../api/subscription-auth-c
 const { createModelCatalogController } = require('../api/model-catalog-controller');
 const { createRecoveryScribeConfigController } = require('../api/recovery-scribe-config-controller');
 const { createProjectsController } = require('../api/projects-controller');
+const { createBadcaseCaptureController } = require('../api/badcase-capture-controller');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createImageUploadController } = require('../api/image-upload-controller');
@@ -1187,6 +1188,18 @@ export function createServerApp(options: any = {}) {
           broadcastEvent,
         })]
       : []),
+    createBadcaseCaptureController({
+      service: badcaseCapture,
+      projectManager,
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+    }),
     createProjectsController({ projectManager, syncActiveProject }),
     createAgentToolsController({ agentToolBridge }),
     createConversationDeliveriesController({
