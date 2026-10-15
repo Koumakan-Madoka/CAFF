@@ -36,10 +36,12 @@ async function runProbe(image, files, options = {}) {
   // Internal trusted transport injection routes the ENTIRE lifecycle, including cleanup.
   // Ordinary diagnostics retain the strict default-daemon image preflight.
   const runDocker = options.runDocker || runDockerCommand;
+  const timeoutMs = Object.hasOwn(options, 'timeoutMs') ? options.timeoutMs : 25000;
+  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 25000, 'probe_timeout_invalid');
   const manifest = manifestFor(files);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-pi-init-'));
   const owner = crypto.randomUUID(), name = 'caff-pi-init-' + owner;
-  let id = '', started = false, result;
+  let id = '', started = false, result, deadlineExpired = false;
   try {
     for (const f of [...files, { path: 'manifest.json', bytes: Buffer.from(JSON.stringify(manifest)) }]) {
       const target = path.join(root, f.path); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, f.bytes, { flag: 'wx', mode: 0o600 });
@@ -54,10 +56,40 @@ async function runProbe(image, files, options = {}) {
     assert.ok(good(created), 'probe_create_failed'); id = created.stdout.trim(); assert.match(id, /^[a-f0-9]{64}$/);
     const pre = one(await runDocker(['inspect', id])); isolated(pre, image, owner); assert.equal(pre.State.Running, false);
     if (options.observeCreated) await options.observeCreated(id, owner);
-    result = await runDocker(['start', '-a', '-i', id], { input: archive, timeoutMs: 30000 });
+    // Wall-clock deadline begins before attach (includes stdin extraction). Unlike
+    // killing the attach CLI, Docker kill terminates the container process tree.
+    // Never kill by an unverified name, and join the watchdog before cleanup so
+    // a delayed observer cannot race rm or the next run. The 25s in-container
+    // timeout remains defense in depth, not a parent-crash recovery mechanism.
+    let stopping, stopError;
+    const startedAt = performance.now();
+    const expire = () => {
+      if (deadlineExpired) return;
+      deadlineExpired = true;
+      stopping = (async () => {
+        const c = one(await runDocker(['inspect', id]));
+        isolated(c, image, owner); verifiedCleanupId(c, owner, id);
+        assert.equal(typeof c.State.Running, 'boolean');
+        if (c.State.Running) assert.ok(good(await runDocker(['kill', id])), 'probe_stop_failed');
+      })().catch(e => { stopError = e; });
+    };
+    const timer = setTimeout(expire, timeoutMs);
+    try {
+      result = await runDocker(['start', '-a', '-i', id], { input: archive, timeoutMs: timeoutMs + 5000 });
+      // Timer delivery can be delayed by the event loop. A late result is never
+      // success merely because its promise resumed before the timer callback.
+      if (performance.now() - startedAt >= timeoutMs) expire();
+    } finally {
+      clearTimeout(timer);
+      if (stopping) await stopping;
+    }
+    if (stopError) throw stopError;
     const post = one(await runDocker(['inspect', id])); isolated(post, image, owner);
     assert.equal(post.State.Running, false); assert.equal(post.State.ExitCode, result.code); assert.equal(post.State.OOMKilled, false);
     if (options.observeCompleted) await options.observeCompleted(id, owner, result);
+    // Deadline is sticky even if a late successful exit races the kill. Preserve
+    // the observed exit code; do not turn stdout or exit 124 into timeout proof.
+    if (deadlineExpired) result = { code: result.code, stdout: '', stderr: '', failure: 'timeout' };
   } finally {
     try {
       if (started) {
@@ -73,7 +105,8 @@ async function runProbe(image, files, options = {}) {
     } catch { throw Object.assign(Error('probe_cleanup_failed'), { containerName: name }); }
     finally { fs.rmSync(root, { recursive: true, force: true }); } // only this invocation's synthetic stage
   }
-  return { result, manifest, containerId: id };
+  return { result, manifest, containerId: id,
+    ...(deadlineExpired ? { termination: { reason: 'deadline', timeoutMs, stopped: true, removed: true } } : {}) };
 }
 async function verifyProbeImage(image) {
   if (process.platform !== 'linux') throw Error('probe_linux_required');

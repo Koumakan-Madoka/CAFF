@@ -115,6 +115,72 @@ test('real probe orchestrator uses injected transport and observes before start;
   }
   assert.equal(defaultCalls, 0);
 });
+test('deadline stops only the owned container, waits for stop and cleanup, never accepts late success', { timeout: 5000 }, async () => {
+  const Module = require('node:module');
+  const filename = path.resolve(__dirname, '../../scripts/badcase-capture/verify-pi-initialization.cjs');
+  const m = new Module(filename, module); m.filename = filename; m.paths = Module._nodeModulePaths(path.dirname(filename));
+  const nativeRequire = m.require.bind(m);
+  m.require = name => name === 'node:child_process' ? { execFileSync: () => Buffer.from('inert tar') } : nativeRequire(name);
+  m._compile(fs.readFileSync(filename, 'utf8'), filename);
+  const image = { imageId: 'sha256:' + 'a'.repeat(64) };
+  for (const fault of ['', 'owner', 'kill', 'remove', 'late-success', 'starved', 'slow-kill']) {
+    let running = false, finish, fallback, deadlineInspect = false;
+    const events = [];
+    const fake = require('../helpers/badcase-fake-docker.cjs')(image, { async change(args, result, state) {
+      events.push(args[0]);
+      if (args[0] === 'start') {
+        running = true;
+        if (fault === 'starved') {
+          const until = performance.now() + 20; while (performance.now() < until) { /* block timer delivery */ }
+        } else await new Promise(resolve => { finish = resolve; fallback = setTimeout(resolve, 100); });
+        running = false; result.code = 137;
+      }
+      if (args[0] === 'inspect') {
+        const c = state.info(); c.Config.Labels = { 'caff.badcase.pi-initialization': state.owner };
+        c.State.Running = running; c.State.ExitCode = events.includes('start') ? 137 : 0;
+        if (running && !deadlineInspect) {
+          deadlineInspect = true;
+          if (fault === 'owner') c.Config.Labels = {};
+          if (fault === 'late-success') { running = false; c.State.Running = false; finish(); }
+        }
+        result.stdout = JSON.stringify([c]);
+      }
+      if (args[0] === 'kill') {
+        assert.deepEqual(args, ['kill', 'b'.repeat(64)]);
+        running = false; finish();
+        if (fault === 'slow-kill') await new Promise(resolve => setTimeout(resolve, 20));
+        events.push('kill-settled');
+        if (fault === 'kill') result.code = 1;
+      }
+      if (args[0] === 'rm') {
+        if (fault === 'remove') result.code = 1;
+        if (fault === 'slow-kill') assert.ok(events.includes('kill-settled'));
+      }
+    } });
+    try {
+      const promise = m.exports.runProbe(image, [{ path: 'probe.cjs', bytes: Buffer.from('// inert') }], {
+        timeoutMs: 10, runDocker: fake.run,
+        observeCompleted: async () => { assert.equal(running, false); events.push('completed'); },
+        observeRemoved: async () => { events.push('removed'); },
+      });
+      if (['owner', 'kill', 'remove'].includes(fault)) await assert.rejects(promise);
+      else {
+        const result = await promise;
+        assert.deepEqual(result.termination, { reason: 'deadline', timeoutMs: 10, stopped: true, removed: true });
+        assert.equal(result.result.failure, 'timeout');
+        assert.equal(events.at(-1), 'removed');
+      }
+      assert.equal(events.includes('kill'), !['owner', 'late-success', 'starved'].includes(fault));
+      assert.ok(events.includes('rm'));
+      assert.equal(fake.calls.find(c => c.args[0] === 'start').options.timeoutMs, 5010);
+    } finally { clearTimeout(fallback); }
+  }
+  for (const timeoutMs of [0, -1, 25001, 1.5, null, '25']) {
+    let calls = 0;
+    await assert.rejects(m.exports.runProbe(image, [], { timeoutMs, runDocker: async () => { calls++; } }), /probe_timeout_invalid/);
+    assert.equal(calls, 0);
+  }
+});
 test('container entry refuses host execution before importing SDK', () => {
   const { spawnSync } = require('node:child_process');
   const r = spawnSync(process.execPath, ['scripts/badcase-capture/pi-initialize-probe.cjs'], { encoding: 'utf8' });

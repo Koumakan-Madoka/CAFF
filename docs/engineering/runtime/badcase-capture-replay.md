@@ -385,7 +385,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 准备时锁内复验 capsule 并 protect，必须显式提供有效 runtime/harness 归档；计划由实际 capsule/checkpoint、镜像声明、暂存文件清单、两份角色字节及 host 评分规则派生摘要。角色文本限16KiB、有效UTF-8、无NUL并通过秘密哨兵扫描。容器 task harness 是**当前受信源码的内存钉住副本**，显式替换归档中的旧 diagnostic probe；`harnessHash` 绑定完整基础暂存清单（包含输入和runtime，非仅代码）。该任务 harness 尚未独立长期归档；宿主调度器和评分器代码仍属 TCB。
 - `execute` 只能接 §5.2 的精确 dispatch 字段，并逐键对账 plan/run/common/role/次数/25s超时/单位测试预算。每个 run 再锁内读取、复验并 protect 完整原材料闭包，与准备时 capsule 字节一致；不读 live，不 release。prepare 本身保留一个引用，成功两次运行另外各一个引用。来源声明、输入字节、角色和计划均脱离调用方副本；每个容器另建暂存副本，仅选中 role 与运行元数据不同。run ID 在 plan 内唯一；跨相同计划的不同批准需联合 approvalId 区分，不宣称全局唯一。
 - 显式注入专用恢复 transport，无默认 daemon fallback；容器前后隔离核验和创建/执行后/删除后三阶段独立目标观察沿 §4.11。宿主只复制/校验数据与可信发行文件，不 import SDK、不执行捕获代码。容器重新核对全部 manifest 文件、capsule/模式/history/invocation摘要、Node/Python/pi版本，关闭发现/扩展/compaction/retry/网络。
-- 容器真正调用 `session.prompt(invocation, {expandPromptTemplates:false})`，受信脚本流通过正常 SDK agent loop 发出 write→read→edit→bash 四次工具调用，再结束；不是直接调用工具 execute，也不是播放历史工具输出。脚本无语义推理、不根据 role 改变行为，因此 baseline/candidate 通常得到同一产物，**不能证明 prompt 有效或候选提分**。模型注册仅用公开 inert marker 满足 SDK 认证接口，不注入真实凭据，Docker network none；真实模型调用为0。初始化前、prompt前及每次脚本流调用复验批准期限；25s容器内 timeout/外部30s attach沿旧路径，仍非返回硬上界或付费费用硬限。
+- 容器真正调用 `session.prompt(invocation, {expandPromptTemplates:false})`，受信脚本流通过正常 SDK agent loop 发出 write→read→edit→bash 四次工具调用，再结束；不是直接调用工具 execute，也不是播放历史工具输出。脚本无语义推理、不根据 role 改变行为，因此 baseline/candidate 通常得到同一产物，**不能证明 prompt 有效或候选提分**。模型注册仅用公开 inert marker 满足 SDK 认证接口，不注入真实凭据，Docker network none；真实模型调用为0。初始化前、prompt前及每次脚本流调用复验批准期限；25s容器内 timeout 保留，逐 run 时限与宿主主动终止接线见 §5.9；仍非返回硬上界或付费费用硬限。
 - 被测容器不接收 host 评分规则/期望hash/wiki/前次产物。宿主固定非可执行的 `file-sha256-v1` 评分器仅比较本次固定产物字节摘要与预先绑定的 expectedHash/badcaseHash；容器回执不能自报分数。产物最多4096字节、规范base64，stdout最多16KiB，精确核对回执键/模式/各摘要/脚本5次/工具顺序/零网络。没有产物存储服务：原始产物与回执仅内存校验，持久记录只存其hash和二元评分；不落原始输出或异常正文。脚本及观测与 agent 同权限，不是抗恶意 agent 的证明，不能据此宣称一般评分防篡改完成。
 - 成功的脚本运行可确认费用为0；坏回执/容器错误/清理失败/过期按协调器保留 unresolved/未知费用/未结算预留，停止后续并拒绝重放，不伪造0费用或已执行状态。评分只描述合成产物，`executionVerified/strictEvalEligible` 仍false，不升级 SealedCase 的 runnable/reproduced/evaluable。
 - `verify-image-recovery.py --scripted-evaluation`（其余五个镜像参数同 §4.4）在专用 daemon 真跑 fresh/resume 各两份，读回逐次落盘结果、再次派发被拒、核对源 CAS 未变；另做容器内过期/移除prompt两项真实故障、已完成真实容器的回执篡改一项，均保留 unresolved。测试脚本自身生成的批准不是用户真实付费批准。实验记录/归档/容器均随专用生命周期清理，非长期交付用例；独立单测补编号间断、伪complete、幂等spec比对和目标daemon后置观察负例。
@@ -415,7 +415,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 准备后重读完整批准报告并复验期限，防止读材料耗时越过期限；内容变化/已有 claim 拒绝。协调器再从同一项目 root 加载并 wx 领取 claim、先写预算事件，逐 run 请求的 approvalId/planHash/expiresAt 再绑定原批准，随后由 adapter 逐 run 锁内复验并 protect。仍无跨文件原子事务，不抵御同 OS 用户恶意替换；已有引用/claim 不自动清除，失败不得自动重试。
 - 只通过原存储追加逐次结果，返回与管理 GET 相同的信封；管理服务重建后直接查询，不需旧预览票据。坏回执/transport 异常保留 unresolved/未知预留，不写异常正文/原始产物。重复调用在准备前拒绝；并发消费沿 §5.2 永久 claim。此内部路径只核验受限脚本诊断材料与批准声明一致，不升级一般忠实回放资格：`launchAvailable/paidAuthorization/materialVerified/executionVerified/strictEvalEligible` 继续 false。`materialVerified=false` 指管理信封不发布通用材料认证，不能据此声称本段未执行逐字节检查。
 - 真实实验：已授权 Linux root 下运行 `verify-image-recovery.py --approved-scripted-evaluation`，其余五参沿 §4.4；与 `--scripted-evaluation` 互斥。随机 loopback HTTP controller 的 preview/approve（模拟用户点击）→内部 runner→专用 daemon SDK 工具→重建服务后 GET。fresh/resume 各两个真实容器；另一个成功容器的回执篡改后 unresolved。每个场景验证换角色计划零 transport 且未消费、错项目 GET 拒绝、重复派发零新容器、源 CAS 不变。测试本身生成批准，**不代表真实人类批准**；无浏览器、完整 app shell、SQLite 或真实模型证据。临时记录与环境随实验删除，非长期留存。
-- 自动回归：`badcase-approved-scripted-evaluation.test.js` 覆盖完整计划绑定、缺/坏归档与 CAS、准备中到期/批准变化、非离线记录、异常未知预留、并发/重复消费；`badcase-evaluation-admin.test.js` 补持久化非离线记录 GET 拒绝（E43 P3）。新模块初始红灯仅模块缺失，非原实现 bug 修复。E42 容器侧变异电池与动态 timeout 仍待后续容器入口改动，本段未修改 SDK/harness 行为。
+- 自动回归：`badcase-approved-scripted-evaluation.test.js` 覆盖完整计划绑定、缺/坏归档与 CAS、准备中到期/批准变化、非离线记录、异常未知预留、并发/重复消费；`badcase-evaluation-admin.test.js` 补持久化非离线记录 GET 拒绝（E43 P3）。新模块初始红灯仅模块缺失，非原实现 bug 修复。本段未修改 SDK/harness 行为；动态 timeout 后续接线见 §5.9，完整容器侧变异电池仍未交付。
 
 生产项目页仍缺启动与实际材料配置生命周期；§5.6 补独立工作台。受控真实模型出口、用户真实 badcase 及付费参数批准、长期引用/配额/GC/崩溃恢复仍缺；全部 AC pending。不能将本链路的脚本固定产物评分称为 prompt 提分或真实 badcase 复现。
 
@@ -432,7 +432,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 独立页面 `badcase-workbench.js` 仅被专用server加载，生产projects页不加载。材料选择→角色/规则文本预览→保存确认→启动确认分离，取消零对应POST；修改材料/次数/ID使旧预览失效。报告/预览只textContent，项目切换丢弃迟到响应；启动失败或结果未知保留ID、禁再次启动、不自动POST重试；刷新查询不重新授权。
 - 验证两种口径明确分开：`node scripts/badcase-capture/verify-workbench.cjs --browser` 用真实Chromium+实际HTTP/归档材料/存储，但executor是合成替身（零Docker/模型）；`verify-image-recovery.py --workbench` 加§4.4五参用实际HTTP显式启动→专用daemon真实SDK工具→重建后GET，fresh/resume各两容器，无浏览器。两者不合称浏览器到Docker同次端到端；均非真实人类批准/真实模型/真实badcase。实验工件随自有生命周期清理，非长期记录。Windows/Linux链接回归覆盖read与runner在root/project两层指向同内容decoy仍拒绝、零transport/零decoy写入（E44 P3）。
 
-仍缺生产材料/环境注册及生命周期、完整回放和真实评分人审、受控模型出口/费用硬限、真实用户turn与模型重跑、长期引用/配额/GC/崩溃恢复。E42容器侧变异与动态timeout建议未动；Linux SQLite门槛和全部AC pending保持不变。
+仍缺生产材料/环境注册及生命周期、完整回放和真实评分人审、受控模型出口/费用硬限、真实用户turn与模型重跑、长期引用/配额/GC/崩溃恢复。动态timeout后续见§5.9，完整容器侧变异电池仍缺；Linux SQLite门槛和全部AC pending保持不变。
 
 ### 5.7 已确认人审投影的持久归档（专用工作台）
 
@@ -456,6 +456,17 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 浏览器等待任务结果至多120s；既有 Node 诊断300s超时、daemon退出/残留核查保持不变，不能把此等待上限宣称为容器任务硬时限或父进程崩溃恢复。失败只输出已知阶段码，不输出原始 assertion/路径/响应。脚本清理自身 daemon/容器/实验材料；外部操作者提供的浏览器、库、字体目录不自动删除。
 - 初次只有 `ldd`/版本与无选择框静态页通过仍不足：本环境 `<select>` 渲染因缺 Fontconfig 配置/字体触发 Skia FATAL/SIGTRAP。必须有实际工作台下拉选择和点击证据。实验额外从已验签 Debian 索引取得字体包、校验 hash 并仅解包，私有字体配置与缓存不修改系统；这不是项目镜像依赖归档。
 - 全程固定脚本 provider、合成封存输入、模拟确认，真实 SDK/tools 只在专用 Docker。不是人类实际批准、忠实原任务回放、真实模型或 badcase 复现；所有 AC 仍 pending。无生产代码/UI能力扩展，无真实采集、付费、合并或发布。
+
+### 5.9 离线逐 run 截止、主动停止与超时记录
+
+`scripted-evaluation.execute` 把已逐键核对的 `timeoutMs` 显式传给专用恢复器，再传给 `runProbe`。离线计划仍固定25000ms，不新增页面可调范围或付费能力；内部 probe 仅接受整数1–25000ms，省略时25000ms，显式null/越界拒绝。预检、归档/暂存、create及创建观察不在此任务计时内。
+
+- 在调用 `docker start -a -i` **之前**启动宿主单调时钟计时，包含 attach/stdin解包及SDK运行。到期经同一目标transport重新inspect，核验完整容器ID、镜像、owner和隔离配置，只对仍在运行的这个ID发 `docker kill`；已经退出也不撤销截止状态。await返回时另检查单调耗时，防事件循环延迟让晚到结果抢在timer回调前被接受。外部attach CLI kill触发点为timeoutMs+5000；原容器内`timeout -k 2 25`仍是纵深限制。
+- 停止观察与kill操作必须join后再进行完成观察/清理，不留异步watchdog与rm或下一run竞争。原本地inspect和恢复器独立目标侧完成观察均须确认Running=false、非OOM、真实StartedAt与attach退出码匹配；随后owner核验、rm和两侧残留检查全部通过才返回`termination={reason:deadline,timeoutMs,stopped:true,removed:true}`，并清空超时返回的stdout/stderr。不以退出码124、stdout、CLI已退出或UI等待超时推断停止成功。任务恰好在截止时正常结束亦按已到期处理，不给成功评分。
+- adapter先绑定容器ID/manifest，再严格核对termination完整字段、批准时限和`result.failure=timeout`，返回`timed_out`且cost/outputHash/score均null。原持久协调器记录此行，保留该次未知费用预留、stopReason=cost_unknown，不派发候选、不自动重试；重读仍为同一结果。`finished`仅表示本序列结束，不代表费用已结清。停止失败、观察失败、清理失败或畸形回执仍为`unresolved/dispatch_failed`，不伪造timed_out或零成本；不释放CAS引用。
+- **边界**：这是存活受信父进程的截止控制，不是实时硬上界。事件循环、Docker控制命令及close/清理可能延迟，总墙钟含准备和清理；daemon故障、父进程崩溃/重启恢复、孤儿治理及真实模型出站费用硬限仍缺。固定25s容器内限制不能替代完整崩溃恢复。transport及内部probe注入仍属TCB，不认证任意调用方提供的函数或回执；无新生产入口、真实采集或模型权限，通用资格保持false。
+- 回归覆盖时限传递/范围、owner错配、kill/rm失败、晚退出、事件循环阻塞、超时回执缺项/错时限/未清理，以及报告重读/无评分/未知费用。新增接口三红为功能缺口，计时器延迟晚结果另先红后修；不是把新模块缺失当行为红灯。E48补64位非hex与65位hex ID负例，属于既有验证器覆盖。
+- 真实验证沿用 `verify-image-recovery.py --scripted-evaluation` 和§4.4五参，共9容器：旧7场景加fresh/resume各一个故障任务。只在私有内存中替换受信task源码的固定bash步骤为忽略TERM的长循环（工具超时60s），**在计划/hash/批准之前**纳入清单，不改共享源码、不在执行后伪造manifest。真实SDK通过session.prompt进入bash工具；截止kill前在目标daemon `top`中观察固定子进程标记，kill后原三阶段观察及清理通过，逐次持久记录timed_out、无评分/费用未知、后续未派发、源CAS不变。该故障任务不是正常两角色效果比较；无真实模型、付费或用户badcase复现证据。完整容器侧守卫变异电池与全部AC验收仍未完成。
 
 ## 6. 威胁模型
 

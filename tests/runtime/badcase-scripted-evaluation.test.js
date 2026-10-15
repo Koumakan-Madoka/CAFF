@@ -35,7 +35,8 @@ async function dispatch(h, transport) {
 }
 test('offline adapter binds actual materials and roles, keeps rubric outside stage, persists scores for two independent runs', async t => {
   const h = setup(t), stages = [];
-  const report = await dispatch(h, async (img, files) => {
+  const report = await dispatch(h, async (img, files, options) => {
+    assert.deepEqual(options, { timeoutMs: 25000 });
     stages.push(files); assert.deepEqual(img, image);
     assert.equal(files.some(f => !f.path.startsWith('runtime/') && /scor|rubric|answer|rule/.test(f.path)), false);
     assert.equal(files.some(f => f.bytes.includes(h.rule.expectedHash)), false);
@@ -74,6 +75,27 @@ test('invalid output and receipts never fabricate settled score or zero cost', a
     const h = setup(t), report = await dispatch(h, async (_, files) => response(files, changes));
     assert.equal(report.dispatchState, 'unresolved'); assert.equal(report.reason, 'dispatch_failed');
     assert.equal(report.ledger.runs[0].score, null); assert.equal(report.ledger.runs[0].costMicroUsd, null);
+  }
+});
+test('verified deadline records timed_out without score or known cost; incomplete cleanup remains unresolved', async t => {
+  for (const invalid of [false, 'missing', 'duration', 'stopped', 'removed', 'extra', 'result']) {
+    const h = setup(t); let calls = 0;
+    const report = await dispatch(h, async (_, files) => {
+      calls++;
+      const r = response(files);
+      r.result.failure = 'timeout'; r.result.code = 137;
+      r.termination = { reason: 'deadline', timeoutMs: 25000, stopped: true, removed: true };
+      if (invalid === 'missing') delete r.termination;
+      if (invalid === 'duration') r.termination.timeoutMs = 1;
+      if (['stopped', 'removed'].includes(invalid)) r.termination[invalid] = false;
+      if (invalid === 'extra') r.termination.extra = true;
+      if (invalid === 'result') delete r.result.failure;
+      return r;
+    });
+    assert.equal(calls, 1); assert.equal(report.ledger.runs[0].score, null); assert.equal(report.ledger.runs[0].costMicroUsd, null);
+    assert.equal(report.ledger.runs[0].status, invalid ? 'reserved' : 'timed_out');
+    assert.deepEqual(readEvaluationRecord(h.root, h.approval.approvalId), report);
+    if (invalid) assert.equal(report.dispatchState, 'unresolved');
   }
 });
 test('host rubric independently records failure and reproduction rather than trusting a container score', async t => {

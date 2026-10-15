@@ -28,6 +28,11 @@ test('joint browser needs explicit executable/libraries and a different network 
 test('joint evidence rejects synthetic transport, missing/duplicate containers and missing browser', () => {
   const good = { synthetic: false, joint: true, browserVersion: '151.0', calls: ['r1', 'r2', 'r3', 'r4'], ids: ['a', 'b', 'c', 'd'].map(c => c.repeat(64)) };
   assert.doesNotThrow(() => assertExecutionEvidence(good));
+  // Separate exact-length non-hex from wrong-length hex; neither may pass even
+  // when count/uniqueness are correct (fixed-SHA review E48 coverage suggestion).
+  for (const id of ['g'.repeat(64), 'a'.repeat(65)]) {
+    assert.throws(() => assertExecutionEvidence({ ...good, ids: [id, ...good.ids.slice(1)] }));
+  }
   for (const patch of [{ synthetic: true }, { ids: [] }, { ids: Array(4).fill('a'.repeat(64)) }, { ids: ['invalid', ...good.ids.slice(1)] }, { browserVersion: null }, { calls: ['r1'] }, { calls: ['r1', 'r1', 'r3', 'r4'] }]) {
     assert.throws(() => assertExecutionEvidence({ ...good, ...patch }));
   }

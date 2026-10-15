@@ -63,9 +63,10 @@ async function main() {
       roles: { baseline: 'Synthetic baseline <b>literal text</b>.', candidate: 'Synthetic candidate.' }, rule: { expectedHash: hash('done\n'), badcaseHash: hash('draft\n') } }));
     const originalBlobs = fixtures.map(h => fs.readFileSync(h.blobPath(h.r.promptBlobHash)));
     for (const h of fixtures) fs.unlinkSync(path.join(h.root, 'projects/p1/checkpoints/cp1.json'));
-    const options = { root: path.join(root, 'approvals'), materials, runProbe: async (img, files) => {
+    const options = { root: path.join(root, 'approvals'), materials, runProbe: async (img, files, executionOptions) => {
+      assert.deepEqual(executionOptions, { timeoutMs: 25000 });
       calls.push(JSON.parse(files.find(f => f.path === 'task.json').bytes).runId);
-      const r = await transport(img, files); if (!synthetic) ids.push(r.containerId); return r;
+      const r = await transport(img, files, executionOptions); if (!synthetic) ids.push(r.containerId); return r;
     } };
     server = await startScriptedWorkbenchServer(options);
     async function api(action, body) {

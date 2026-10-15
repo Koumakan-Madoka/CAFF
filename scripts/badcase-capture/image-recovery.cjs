@@ -57,6 +57,8 @@ async function restoreImageArchive(reference, destination, options = {}) {
     observedRepositoryDigests: [...observed.RepoDigests], archiveHash: ref.archiveHash,
     architecture: image.architecture, os: 'linux', source: 'trusted-archive', runtimeVersionsVerified: false };
   return { identity, image, async runProbe(requestedImage, files, probeOptions = {}) {
+    const timeoutMs = Object.hasOwn(probeOptions, 'timeoutMs') ? probeOptions.timeoutMs : 25000;
+    assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 25000, 'probe_timeout_invalid');
     assert.deepEqual(requestedImage, image); await checkDaemon(); await inspect();
     let observedId = null, observedOwner = null, completed = false, removed = false;
     const observeCreated = async (id, owner) => {
@@ -92,7 +94,9 @@ async function restoreImageArchive(reference, destination, options = {}) {
       assert.ok(good(remaining) && remaining.stdout.trim() === '', 'image_recovery_probe_not_removed');
       removed = true;
     };
-    const result = await (probeOptions.probe || runProbe)(image, files, { runDocker: local, observeCreated, observeCompleted, observeRemoved });
+    const result = await (probeOptions.probe || runProbe)(image, files, {
+      timeoutMs,
+      runDocker: local, observeCreated, observeCompleted, observeRemoved });
     assert.ok(observedId && completed && removed, 'image_recovery_probe_unobserved');
     assert.equal(result?.containerId, observedId);
     await checkDaemon(); await inspect();

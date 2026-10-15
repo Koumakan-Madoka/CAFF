@@ -61,8 +61,9 @@ async function main() {
       await assert.rejects(dispatchApprovedScriptedEvaluation({ ...request, roles: { ...roles, candidate: 'Unapproved role.' } }, async () => { transportCalls++; }), /evaluation_material_mismatch/);
       assert.equal(transportCalls, 0);
       assert.equal((await api('records/' + p.approvalId)).body.report.consumed, false);
-      const result = await dispatchApprovedScriptedEvaluation(request, async (img, files) => {
-        const run = await restored.runProbe(img, files); ids.push(run.containerId); transportCalls++;
+      const result = await dispatchApprovedScriptedEvaluation(request, async (img, files, executionOptions) => {
+        assert.deepEqual(executionOptions, { timeoutMs: 25000 });
+        const run = await restored.runProbe(img, files, executionOptions); ids.push(run.containerId); transportCalls++;
         assert.equal(run.result.code, 0); assert.equal(run.result.stderr, '');
         if (scenario === 'bad-receipt') {
           const receipt = JSON.parse(run.result.stdout); receipt.scriptCalls = 0;

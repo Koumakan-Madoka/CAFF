@@ -64,9 +64,16 @@ function prepareScriptedEvaluation(requestValue, imageValue, sourcesValue, roles
     const stage = files.map(f => ({ path: f.path, bytes: Buffer.from(f.bytes) }));
     stage.push({ path: 'task.json', bytes: Buffer.from(JSON.stringify(task)) });
     const manifest = manifestFor(stage); gate(q.expiresAt);
-    const r = await runProbe(clone(image), stage);
+    const r = await runProbe(clone(image), stage, { timeoutMs: q.timeoutMs });
     assert.ok(r && /^[a-f0-9]{64}$/.test(r.containerId));
     assert.equal(r.manifest?.inputHash, manifest.inputHash); assert.equal(r.manifest?.runtimeHash, manifest.runtimeHash);
+    if (r.termination !== undefined || r.result?.failure === 'timeout') {
+      assert.deepEqual(r.termination, { reason: 'deadline', timeoutMs: q.timeoutMs, stopped: true, removed: true });
+      assert.equal(r.result?.failure, 'timeout'); assert.ok(Number.isInteger(r.result.code));
+      // Termination is confirmed by the trusted transport, not by task stdout.
+      // No completed artifact/score or zero cost inferred from a killed task.
+      return { runId: q.runId, status: 'timed_out', costMicroUsd: null, outputHash: null, score: null };
+    }
     assert.ok(r.result && r.result.code === 0 && !r.result.failure && r.result.stderr === '');
     assert.ok(typeof r.result.stdout === 'string' && Buffer.byteLength(r.result.stdout) <= 16384);
     const receipt = JSON.parse(r.result.stdout);

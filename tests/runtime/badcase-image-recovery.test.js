@@ -32,7 +32,8 @@ test('restores missing RepoDigest honestly and binds all subsequent commands to 
   const h = await fixture(t), r = await restoreImageArchive(h.ref, target, h.options);
   assert.deepEqual(r.identity, { imageId: image.imageId, declaredRepositoryDigest: image.repositoryDigest, observedRepositoryDigests: [], archiveHash: h.ref.archiveHash, architecture: 'amd64', os: 'linux', source: 'trusted-archive', runtimeVersionsVerified: false });
   let received;
-  const result = await r.runProbe(image, [], { probe: async (i, f, options) => {
+  const result = await r.runProbe(image, [], { timeoutMs: 1234, probe: async (i, f, options) => {
+    assert.equal(options.timeoutMs, 1234);
     received = options; await options.observeCreated('a'.repeat(64), 'probe-owner');
     h.state.finished = true; await options.observeCompleted('a'.repeat(64), 'probe-owner', { code: 0 });
     h.state.removed = true; await options.observeRemoved('a'.repeat(64));
@@ -43,6 +44,13 @@ test('restores missing RepoDigest honestly and binds all subsequent commands to 
   await received.runDocker(['info', '--format', '{{json .}}']);
   assert.equal(h.calls.at(-1).o.dockerHost, target.socket);
   assert.ok(h.calls.filter(c => c.a[0] !== 'info').every(c => c.o.dockerHost === target.socket));
+});
+test('invalid deadline is rejected before target inspection or probe', async t => {
+  const h = await fixture(t), r = await restoreImageArchive(h.ref, target, h.options), count = h.calls.length;
+  for (const timeoutMs of [null, 0, -1, 1.2, 25001, '1000']) {
+    await assert.rejects(r.runProbe(image, [], { timeoutMs, probe: () => assert.fail('must not run') }), /probe_timeout_invalid/);
+  }
+  assert.equal(h.calls.length, count);
 });
 test('probe without target-daemon observation or with mismatched result ID fails closed', async t => {
   const h = await fixture(t), r = await restoreImageArchive(h.ref, target, h.options);
