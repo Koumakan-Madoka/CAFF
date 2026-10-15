@@ -21,6 +21,8 @@ function imageIdentity(img, image) {
 async function restoreImageArchive(reference, destination, options = {}) {
   // Clone declarations before awaits; never accept a caller changing the target mid-load.
   const target = JSON.parse(JSON.stringify(destination));
+  const recoveryDirectory = options.recoveryDirectory;
+  if (Object.hasOwn(options, 'recoveryDirectory')) assert.ok(typeof recoveryDirectory === 'string' && path.isAbsolute(recoveryDirectory));
   assert.deepEqual(Object.keys(target).sort(), ['daemonId', 'dataRoot', 'socket']);
   assert.match(target.socket, /^unix:\/\/\/var\/tmp\/caff-image-recovery-[A-Za-z0-9_-]+\/docker\.sock$/);
   const directory = target.socket.slice('unix://'.length, -'/docker.sock'.length);
@@ -96,6 +98,7 @@ async function restoreImageArchive(reference, destination, options = {}) {
     };
     const result = await (probeOptions.probe || runProbe)(image, files, {
       timeoutMs,
+      ...(recoveryDirectory ? { recovery: { directory: recoveryDirectory, target: { ...target } } } : {}),
       runDocker: local, observeCreated, observeCompleted, observeRemoved });
     assert.ok(observedId && completed && removed, 'image_recovery_probe_unobserved');
     assert.equal(result?.containerId, observedId);

@@ -468,6 +468,19 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 回归覆盖时限传递/范围、owner错配、kill/rm失败、晚退出、事件循环阻塞、超时回执缺项/错时限/未清理，以及报告重读/无评分/未知费用。新增接口三红为功能缺口，计时器延迟晚结果另先红后修；不是把新模块缺失当行为红灯。E48补64位非hex与65位hex ID负例，属于既有验证器覆盖。
 - 真实验证沿用 `verify-image-recovery.py --scripted-evaluation` 和§4.4五参，共9容器：旧7场景加fresh/resume各一个故障任务。只在私有内存中替换受信task源码的固定bash步骤为忽略TERM的长循环（工具超时60s），**在计划/hash/批准之前**纳入清单，不改共享源码、不在执行后伪造manifest。真实SDK通过session.prompt进入bash工具；截止kill前在目标daemon `top`中观察固定子进程标记，kill后原三阶段观察及清理通过，逐次持久记录timed_out、无评分/费用未知、后续未派发、源CAS不变。该故障任务不是正常两角色效果比较；无真实模型、付费或用户badcase复现证据。完整容器侧守卫变异电池与全部AC验收仍未完成。
 
+### 5.10 专用 daemon 的显式崩溃清理（内部 opt-in，不结算评测）
+
+`probe-recovery.cjs` 提供 `saveProbeIntent` 与 `recoverProbeIntent`。`runProbe` 仅在受信调用方传入 `recovery={directory,target}` 时，于任何 Docker create **之前**写入意图；`restoreImageArchive` 的可选 `recoveryDirectory` 将已钉住的目标传给每次 probe。省略仍为旧诊断路径，不宣称已有恢复覆盖；没有新增 HTTP/agent 能力或后台扫描。
+
+- 意图记录版本、随机 UUID owner、固定 name、image ID、目标 socket/daemon ID/data-root；不含 prompt、session、凭据或原始输出。配置根必须是普通目录，文件以 `wx/0600` 独占写、fsync、读回复验；4KiB 上限、UTF-8/schema/hash、root与文件链接拒绝。重复/部分写不覆盖、不自动修复；意图发布失败零 Docker 调用。文件 fsync 不等于目录掉电持久性；hash 不是同 OS 用户来源认证，路径祖先仍属 TCB。
+- 恢复须显式传 `schedulerStopped:true`，由可信生命周期所有者先停止/隔离原调度器并确认退出；这只是受信调用方声明，**不实现租约、跨进程 fencing 或人类认证**，不得与仍可 create/start 的生产者并发调用。不按历史 PID、时间或批准过期猜测已停止；无法确认时不可恢复。
+- 每次调用从指定意图文件有界重读，绑定操作者提供的目标；共享 daemon 仅 info 读取，目标须 ID 不同、正确私有 socket/data-root/vfs，真实路径另验0700目录/socket归属。所有 inspect/list/kill/rm 经显式目标 socket；按随机 owner label 查询，零个视为未发现、多个拒绝。存在时核对完整64hex ID、精确name/image/owner及既有全套隔离配置；kill 前复验 daemon/容器，停止后再次确认 Running=false，才按完整 ID `rm`（不带 force）。移除后重新核验 daemon 与 owner 查询为空。错误/身份变化/停止失败/残留均拒绝，不做 prune 或按名字 kill。
+- 返回仅清理观测 `{containerId,stopped,removed,executionState:unknown,resultSettled:false}`。重复恢复已消失对象返回 null ID；只证明当前相同受信 daemon 内未发现该 owner，不证明从未执行或收费。原意图不删除、不写成已完成；不更新批准、预算、评测记录或 CAS 引用。未知结果仍 `reserved/unresolved`，永久claim仍拒绝重跑，绝不因清理成功伪造 score、timed_out 或零费用。
+- 复跑 `verify-image-recovery.py --probe-recovery` 加§4.4五参：同一专用 daemon 中运行四个真实子调度器，分别停在意图写后/create前、create后/start前、fresh及resume真实SDK bash阻塞中；监督者仅 SIGKILL 自己 spawn 的子进程并等待 exit。后两者先从目标 top 观察 `caff-deadline-child`，再强杀调度器，重读意图清理。三容器全部移除，运行中两例各一次kill；各批准保留一个未知预留、两保护引用，记录/CAS字节不变，重复恢复为空且重复派发拒绝。故障harness沿§5.9在计划前钉住，仅脚本模型、零真实模型；不是用户badcase复现。
+- 初始实验中只 await 永久 Promise 不足以保持 Node 存活（IPC 未 ref），导致预期 SIGKILL 前子调度器自然退出，验证器失败关闭；修复为保留 IPC listener 后复跑，不将前两次失败记作通过。验证器错误只输出固定阶段码。
+- **仍缺**：整个监督者/daemon/主机崩溃或掉电恢复、自动枚举与产品管理接线、恢复调度排他锁、意图/暂存目录配额与GC、cleanup回执长期归档，以及采集/封存历史锁的恢复。真实探针被强杀可能保留自身stage；本实验用独立TMPDIR纳入Python所有者最后清理，通用恢复函数不递归删除暂存路径。所有AC仍pending，不启用真实采集、付费、合并或发布。
+- E49两项覆盖补齐：正常完成断言无termination，超时fake start产生非空stdout/stderr并断言清空；这些是原行为回归，非新增产品漏洞修复。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

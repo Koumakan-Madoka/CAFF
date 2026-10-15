@@ -82,7 +82,9 @@ test('inspect guard rejects unsafe container configuration and command substitut
     c => { c.HostConfig.Tmpfs['/tmp'] = 'rw'; },
   ]) { const c = structuredClone(base); change(c); assert.throws(() => isolated(c, image, owner)); }
 });
-test('real probe orchestrator uses injected transport and observes before start; observer failure cleans without starting', async () => {
+test('real probe orchestrator uses injected transport and observes before start; observer failure cleans without starting', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-intent-wire-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   // Compile unchanged trusted orchestration with a DENY default transport and fake
   // tar. No Docker, shell, SDK or model runs on this unit-test path.
   const Module = require('node:module');
@@ -101,7 +103,13 @@ test('real probe orchestrator uses injected transport and observes before start;
       events.push(args[0]);
       if (args[0] === 'inspect') { const c = state.info(); c.Config.Labels = { 'caff.badcase.pi-initialization': state.owner }; result.stdout = JSON.stringify([c]); }
     } });
-    const options = { runDocker: fake.run, observeCreated: async (id, owner) => {
+    const options = { runDocker: fake.run,
+      recovery: { directory, target: { socket: 'unix:///var/tmp/caff-image-recovery-test/docker.sock', daemonId: 'dedicated', dataRoot: '/var/tmp/caff-image-recovery-test/data' } },
+      observeIntent: async ref => {
+        events.push('intent'); assert.equal(events.includes('create'), false);
+        const saved = JSON.parse(fs.readFileSync(path.join(directory, ref.owner + '.json')));
+        assert.equal(saved.intent.owner, ref.owner); assert.equal(saved.intent.imageId, image.imageId);
+      }, observeCreated: async (id, owner) => {
       events.push('observe'); assert.equal(id, 'b'.repeat(64)); assert.ok(owner);
       assert.equal(events.includes('start'), false);
       if (reject) throw Error('target_container_missing');
@@ -109,11 +117,31 @@ test('real probe orchestrator uses injected transport and observes before start;
       observeRemoved: async () => { events.push('observe-removed'); assert.equal(events.includes('rm'), true); } };
     const pending = m.exports.runProbe(image, [{ path: 'probe.cjs', bytes: Buffer.from('// inert') }], options);
     if (reject) { await assert.rejects(pending, /target_container_missing/); assert.equal(events.includes('start'), false); }
-    else { assert.equal((await pending).containerId, 'b'.repeat(64)); assert.ok(events.indexOf('observe') < events.indexOf('start')); }
+    else { const r = await pending; assert.equal(r.containerId, 'b'.repeat(64)); assert.equal(r.termination, undefined); assert.ok(events.indexOf('observe') < events.indexOf('start')); }
+    assert.equal(events[0], 'intent');
     assert.ok(events.includes('observe')); assert.ok(events.includes('rm')); assert.equal(events.at(-1), 'observe-removed');
     assert.equal(events.includes('observe-completed'), !reject);
   }
   assert.equal(defaultCalls, 0);
+});
+test('intent publication failure prevents every Docker call', async t => {
+  const Module = require('node:module');
+  const filename = path.resolve(__dirname, '../../scripts/badcase-capture/verify-pi-initialization.cjs');
+  const m = new Module(filename, module); m.filename = filename; m.paths = Module._nodeModulePaths(path.dirname(filename));
+  const nativeRequire = m.require.bind(m);
+  m.require = name => name === 'node:child_process' ? { execFileSync: () => Buffer.from('inert tar') } : nativeRequire(name);
+  m._compile(fs.readFileSync(filename, 'utf8'), filename);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-fsync-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const sync = fs.fsyncSync; let calls = 0;
+  try {
+    fs.fsyncSync = () => { throw Error('intent-not-durable'); };
+    await assert.rejects(m.exports.runProbe({ imageId: 'sha256:' + 'a'.repeat(64) }, [{ path: 'probe.cjs', bytes: Buffer.from('// inert') }], {
+      recovery: { directory, target: { socket: 'unix:///var/tmp/caff-image-recovery-test/docker.sock', daemonId: 'dedicated', dataRoot: '/var/tmp/caff-image-recovery-test/data' } },
+      runDocker: async () => { calls++; throw Error('unexpected-docker'); },
+    }), /intent-not-durable/);
+  } finally { fs.fsyncSync = sync; }
+  assert.equal(calls, 0); assert.equal(fs.readdirSync(directory).length, 1);
 });
 test('deadline stops only the owned container, waits for stop and cleanup, never accepts late success', { timeout: 5000 }, async () => {
   const Module = require('node:module');
@@ -133,7 +161,7 @@ test('deadline stops only the owned container, waits for stop and cleanup, never
         if (fault === 'starved') {
           const until = performance.now() + 20; while (performance.now() < until) { /* block timer delivery */ }
         } else await new Promise(resolve => { finish = resolve; fallback = setTimeout(resolve, 100); });
-        running = false; result.code = 137;
+        running = false; result.code = 137; result.stdout = 'late result must not escape'; result.stderr = 'late diagnostic must not escape';
       }
       if (args[0] === 'inspect') {
         const c = state.info(); c.Config.Labels = { 'caff.badcase.pi-initialization': state.owner };
@@ -168,6 +196,7 @@ test('deadline stops only the owned container, waits for stop and cleanup, never
         const result = await promise;
         assert.deepEqual(result.termination, { reason: 'deadline', timeoutMs: 10, stopped: true, removed: true });
         assert.equal(result.result.failure, 'timeout');
+        assert.equal(result.result.stdout, ''); assert.equal(result.result.stderr, '');
         assert.equal(events.at(-1), 'removed');
       }
       assert.equal(events.includes('kill'), !['owner', 'late-success', 'starved'].includes(fault));

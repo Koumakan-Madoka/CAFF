@@ -116,3 +116,4 @@ async function main() {
   } finally { for (const fn of cleanup.reverse()) fn(); }
 }
 if (require.main === module) main().catch(() => { console.error('scripted_evaluation_verification_failed'); process.exitCode = 1; });
+module.exports = { deadlinePreparation };

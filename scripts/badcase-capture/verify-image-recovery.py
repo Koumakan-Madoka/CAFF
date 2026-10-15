@@ -19,6 +19,7 @@ def main():
         parser.add_argument('--' + name, required=True)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--scripted-evaluation', action='store_true', help='offline SDK prompt/tool loop, scripted model only')
+    mode.add_argument('--probe-recovery', action='store_true', help='SIGKILL own offline scheduler and explicitly recover its owned container')
     mode.add_argument('--approved-scripted-evaluation', action='store_true', help='HTTP approval to offline runner and report; no paid model')
     mode.add_argument('--workbench', action='store_true', help='isolated material review and explicit HTTP start; no paid model')
     mode.add_argument('--browser-workbench', action='store_true', help='same-run Chromium review/start/query to dedicated Docker; scripted model only')
@@ -92,12 +93,13 @@ def main():
         for namespace in ['mnt', 'net']:
             if os.readlink('/proc/self/ns/' + namespace) == os.readlink('/proc/' + str(pid) + '/ns/' + namespace):
                 raise RuntimeError('daemon_namespace_failed')
-        script = ('verify-workbench.cjs' if args.workbench or args.browser_workbench else
+        script = ('verify-probe-recovery.cjs' if args.probe_recovery else
+                  'verify-workbench.cjs' if args.workbench or args.browser_workbench else
                   'verify-approved-scripted-evaluation.cjs' if args.approved_scripted_evaluation else
                   'verify-scripted-evaluation.cjs' if args.scripted_evaluation else 'verify-image-recovery.cjs')
         node_args = ['node', str(repo / 'scripts/badcase-capture' / script)]
         for key, value in vars(args).items():
-            if key not in ['scripted_evaluation', 'approved_scripted_evaluation', 'workbench', 'browser_workbench', 'browser_executable', 'browser_library_dir', 'browser_fontconfig']:
+            if key not in ['scripted_evaluation', 'probe_recovery', 'approved_scripted_evaluation', 'workbench', 'browser_workbench', 'browser_executable', 'browser_library_dir', 'browser_fontconfig']:
                 node_args.extend(['--' + key.replace('_', '-'), value])
         node_args.extend(['--socket', 'unix://' + str(base / 'docker.sock'), '--daemon-id', info['ID'], '--data-root', str(base / 'data')])
         if args.browser_workbench:
@@ -132,6 +134,9 @@ def main():
                       'browser-start', 'browser-report', 'rebuild', 'evidence']
             for stage in stages:
                 if exc.stderr.strip() == ('workbench_verification_failed:' + stage).encode():
+                    report['diagnosticFailureStage'] = stage
+            for stage in ['prepare', 'restore', 'before-create', 'before-start', 'running-fresh', 'running-resume', 'reserved', 'recover', 'evidence']:
+                if exc.stderr.strip() == ('probe_recovery_verification_failed:' + stage).encode():
                     report['diagnosticFailureStage'] = stage
     finally:
         if daemon is not None:

@@ -48,6 +48,11 @@ async function runProbe(image, files, options = {}) {
     }
     // Source is the allowlisted ordinary-file stage we just created, NOT user-supplied tar.
     const archive = execFileSync('tar', ['-C', root, '-cf', '-', '.'], { env: { PATH: process.env.PATH }, maxBuffer: 24 * 1024 * 1024, timeout: 15000 });
+    if (options.recovery) {
+      const { saveProbeIntent } = require('./probe-recovery.cjs');
+      const ref = saveProbeIntent(options.recovery.directory, { target: options.recovery.target, imageId: image.imageId, owner, name });
+      if (options.observeIntent) await options.observeIntent(ref);
+    }
     started = true; // create can succeed even if its CLI response is lost
     const created = await runDocker(['create', '--name', name, '--label', LABEL + '=' + owner, '--pull', 'never', '-i',
       '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '512m', '--memory-swap', '512m',

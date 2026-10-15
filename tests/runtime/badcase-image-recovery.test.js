@@ -29,11 +29,13 @@ async function fixture(t) {
   return { ref, state, calls, options: { runDocker }, root };
 }
 test('restores missing RepoDigest honestly and binds all subsequent commands to isolated daemon', async t => {
-  const h = await fixture(t), r = await restoreImageArchive(h.ref, target, h.options);
+  const h = await fixture(t), recoveryDirectory = path.join(h.root, 'recovery');
+  const r = await restoreImageArchive(h.ref, target, { ...h.options, recoveryDirectory });
   assert.deepEqual(r.identity, { imageId: image.imageId, declaredRepositoryDigest: image.repositoryDigest, observedRepositoryDigests: [], archiveHash: h.ref.archiveHash, architecture: 'amd64', os: 'linux', source: 'trusted-archive', runtimeVersionsVerified: false });
   let received;
   const result = await r.runProbe(image, [], { timeoutMs: 1234, probe: async (i, f, options) => {
     assert.equal(options.timeoutMs, 1234);
+    assert.deepEqual(options.recovery, { directory: recoveryDirectory, target });
     received = options; await options.observeCreated('a'.repeat(64), 'probe-owner');
     h.state.finished = true; await options.observeCompleted('a'.repeat(64), 'probe-owner', { code: 0 });
     h.state.removed = true; await options.observeRemoved('a'.repeat(64));
