@@ -40,7 +40,13 @@ function prepareScriptedEvaluation(requestValue, imageValue, sourcesValue, roles
     model: { provider: 'caff-offline-scripted', id: 'tool-loop-v1', settingsHash: hash('fixed-write-read-edit-bash-v1;thinking-off;no-network') },
     evaluator: { id: 'file-sha256-v1', versionHash: hash(JSON.stringify({ version: 1, ...rule })) },
     repetitions, timeoutMs: 25000, perRunLimitMicroUsd: 1, totalLimitMicroUsd: repetitions * 2 });
-  return { plan: clone(plan), async execute(value, runProbe) {
+  // Human review projection excludes host paths, captured prompt/session text and
+  // archive locations. Hashes describe prepared bytes, not registry provenance or
+  // a faithful replay; the fixed scripted task ignores the captured invocation.
+  const review = { schemaVersion: 1, planHash: plan.planHash, task: 'fixed-write-read-edit-bash-v1',
+    deliveryMode: input.mode, invocationHash: hash(input.invocation), historyHash: hash(JSON.stringify(input.messages)),
+    roles, rule, declaredImage: image, realModel: false, faithfulReplay: false };
+  return { plan: clone(plan), review: clone(review), async execute(value, runProbe) {
     const q = clone(value);
     assert.ok(exact(q, ['runId', 'planHash', 'variant', 'repetition', 'commonHash', 'roleHash', 'timeoutMs', 'perRunLimitMicroUsd', 'approvalId', 'expiresAt']));
     const row = plan.runs.find(r => r.runId === q.runId); assert.ok(row);

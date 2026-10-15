@@ -7,7 +7,7 @@ async function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-offline-http-'));
   let controller, authority;
   const options = { host: '127.0.0.1', getAuthority: () => authority, csrfToken: 'synthetic-only', projectManager: { listProjects: () => [{ id: 'p1' }, { id: 'p2' }] } };
-  const rebuild = service => { controller = createBadcaseEvaluationsController({ ...options, service: service || createEvaluationAdminService({ root }) }); };
+  const rebuild = (service, workbench) => { controller = createBadcaseEvaluationsController({ ...options, service: service || createEvaluationAdminService({ root }), workbench }); };
   const server = http.createServer(async (req, res) => {
     try { if (await controller({ req, res, pathname: new URL(req.url, 'http://test').pathname })) return; res.writeHead(404); res.end('{}'); }
     catch (e) { res.writeHead(e.statusCode || 500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ issues: e.issues || [] })); }
@@ -58,9 +58,33 @@ test('unknown exception text and attacker error codes never leave boundary', asy
   const r = await h.request('preview', { spec: spec() }); assert.equal(r.status, 503);
   assert.equal(r.body.issues[0].code, 'badcase_evaluation_unavailable'); assert.doesNotMatch(JSON.stringify(r), /PRIVATE-SENTINEL/);
 });
+test('optional workbench routes require explicit capability; guard precedes access and async errors are sanitized', async t => {
+  const h = await setup(t);
+  for (const action of ['materials', 'material-preview', 'material-approve', 'start']) {
+    assert.equal((await h.request(action, action === 'materials' ? undefined : {})).status, 404);
+  }
+  let calls = 0;
+  const workbench = {
+    materials(id) { calls++; return { id }; }, preview(id, body) { calls++; return { id, body }; },
+    approve(id, body) { calls++; return { id, body }; },
+    async start() { calls++; throw Object.assign(Error('PRIVATE-SENTINEL'), { code: 'evaluation_start_failed' }); },
+  };
+  h.rebuild(undefined, workbench);
+  for (const action of ['material-preview', 'material-approve', 'start']) {
+    assert.equal((await h.request(action, {}, { 'x-caff-csrf-token': '' })).status, 403);
+    assert.equal((await h.request(action, {}, {}, 'missing')).status, 404);
+  }
+  assert.equal((await h.request('materials', undefined, { host: 'other.invalid' })).status, 403);
+  assert.equal(calls, 0);
+  assert.deepEqual((await h.request('materials')).body, { id: 'p1' });
+  for (const action of ['material-preview', 'material-approve']) assert.deepEqual((await h.request(action, { value: 1 })).body, { id: 'p1', body: { value: 1 } });
+  const failed = await h.request('start', {}); assert.equal(failed.status, 409);
+  assert.equal(failed.body.issues[0].code, 'evaluation_start_failed'); assert.doesNotMatch(JSON.stringify(failed), /PRIVATE-SENTINEL/);
+  assert.equal(calls, 4);
+});
 test('production composition wires fixed agentDir storage, guard and controller, no adapter', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../../server/app/create-server.ts'), 'utf8');
   assert.match(source, /createEvaluationAdminService\(\{ root: path.join\(agentDir, 'badcase-offline-evaluations'\)/);
   assert.match(source, /createBadcaseEvaluationsController\(\{\s+service: badcaseEvaluations,/);
-  assert.doesNotMatch(source, /scripted-evaluation|dispatchRecordedEvaluation/);
+  assert.doesNotMatch(source, /scripted-evaluation|dispatchRecordedEvaluation|scripted-workbench|workbench\s*:/);
 });

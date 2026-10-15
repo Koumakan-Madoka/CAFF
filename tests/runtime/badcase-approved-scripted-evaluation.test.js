@@ -123,6 +123,25 @@ test('missing and non-offline persisted approvals refuse before preparation or t
   await assert.rejects(dispatchApprovedScriptedEvaluation(h.q, async () => { calls++; }), /evaluation_record_invalid/);
   assert.equal(calls, 0); assert.deepEqual(fs.readdirSync(h.runDir), pins); assert.deepEqual(fs.readdirSync(h.recordDir), ['approval.json']);
 });
+test('read and runner refuse redirected own storage levels even with identical approved records; no decoy writes', async t => {
+  for (const level of ['project', 'root']) {
+    const h = setup(t), scope = level === 'project' ? path.join(h.q.root, hash('p1')) : h.q.root;
+    const decoy = path.join(h.root, 'decoy-' + level);
+    fs.renameSync(scope, decoy);
+    try { fs.symlinkSync(decoy, scope, process.platform === 'win32' ? 'junction' : 'dir'); }
+    catch (e) {
+      fs.renameSync(decoy, scope);
+      if (['EPERM', 'EACCES'].includes(e.code)) { t.skip('link privilege unavailable'); return; } throw e;
+    }
+    const snapshot = dir => fs.readdirSync(dir, { recursive: true }).sort().map(n => {
+      const p = path.join(dir, n); return [n, fs.lstatSync(p).isFile() ? hash(fs.readFileSync(p)) : 'dir'];
+    });
+    const before = snapshot(decoy), pins = fs.readdirSync(h.runDir); let calls = 0;
+    assert.throws(() => h.service.read('p1', h.p.approvalId), /evaluation_record_invalid/);
+    await assert.rejects(dispatchApprovedScriptedEvaluation(h.q, async () => { calls++; }), /evaluation_record_invalid/);
+    assert.equal(calls, 0); assert.deepEqual(snapshot(decoy), before); assert.deepEqual(fs.readdirSync(h.runDir), pins);
+  }
+});
 test('transport failure leaves unknown reservation queryable with no raw exception and no replay', async t => {
   const h = setup(t); let calls = 0;
   const r = await dispatchApprovedScriptedEvaluation(h.q, async () => { calls++; throw Error('PRIVATE-RUNNER-SENTINEL'); });

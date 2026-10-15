@@ -400,10 +400,10 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 预览只存服务内存，不创建目录；服务生成随机 approvalId，将完整脱离副本的计划、projectId、创建/到期时间绑定。全服务最多 64 张未过期回执，满额返回 busy，不驱逐有效回执；到期在下次 preview 惰性清除。重启丢失未确认回执，不自动重建。
 - `POST .../approve` 只接收 `{confirmed:true, approvalId, planHash}`。须同项目、同摘要、回执未过期且时钟未倒退；不允许客户端改期限/预算/模型或追加字段。用户取消无 approve POST、无落盘。保存调用 §5.2；同回执未过期的重试幂等，网络失败不自动重试，已有 ID 可只读核对。保存瞬间内部 §5.2 也校验期限，磁盘失败不伪报成功；已写但回执丢失仍可能存在记录。
 - `GET .../records/:approvalId` 只读重建已确认记录；项目隔离存储，重启后无需预览回执。错项目、缺失、畸形/不完整记录拒绝，不返回空报告冒充未运行。逐次 run/角色摘要、费用、评分、汇总与批准配置原样显示为文本；`null` 费用明确是未知，`reserved/unresolved` 不证明进程仍活跃或已停止。未发起时 runs 为空，不生成合成评分。没有查询所有记录的列表，用户须保留 ID。
-- 管理复用 loopback/Host/Origin/JSON/bootstrap CSRF guard；没有 agent tool，且**没有任何 dispatch 路由**。同 OS 用户进程仍可模拟确认或改存储，confirmed 不是人类身份认证。此接口不接真实 provider、不触碰 Docker/SDK/采集开关，不授予任何付费许可；后续受控付费出口需单独门控。
+- 管理复用 loopback/Host/Origin/JSON/bootstrap CSRF guard；没有 agent tool，且**生产 composition 不提供任何 dispatch/start 能力**（§5.6 专用工作台显式注入时才开放材料/start 路由）。同 OS 用户进程仍可模拟确认或改存储，confirmed 不是人类身份认证。此接口不接真实 provider、不触碰 Docker/SDK/采集开关，不授予任何付费许可；后续受控付费出口需单独门控。
 - 数据固定在 `<agentDir>/badcase-offline-evaluations/<sha256(projectId)>/evaluations/<sha256(approvalId)>`；客户端不能选择 root。自有 root/project 目录拒绝符号链接，祖先与同 OS 用户仍为 TCB。构造与 GET 不创建目录；该存储独立于 capture CAS/配额统计，暂无配额/GC/删除/项目删除联动，不宣称容量保护完成。部分文件和旧 claim 不修复、不清理、不重试执行。
 - 页面切换项目会清空回执、ID、草稿和报告，忽略旧异步响应；不撤回已经提交的管理写入。修改 spec 立即使回执失效；确认时再次检查期限。完整 JSON 使用 textContent，不渲染调用方 HTML；错误不回显原异常正文。
-- 顶层固定 `mode=offline-scripted-declaration`、`launchAvailable=false`、`paidAuthorization=false`、`materialVerified=false`；底层 `executionVerified/strictEvalEligible=false` 不变。报告写入由受信离线协调器负责；§5.5 已接专用 daemon 的内部离线 runner 与此批准存储，但没有页面/HTTP 启动入口，仍不能在页面启动已批准的计划。
+- 顶层固定 `mode=offline-scripted-declaration`、`launchAvailable=false`、`paidAuthorization=false`、`materialVerified=false`；底层 `executionVerified/strictEvalEligible=false` 不变。报告写入由受信离线协调器负责；§5.5 已接专用 daemon 的内部离线 runner 与此批准存储；生产项目页仍没有启动入口。§5.6 的独立操作者工作台另提供显式材料启动能力；报告信封不因此升级通用 launch/material 资格。
 - 验证脚本 `node scripts/badcase-capture/verify-evaluation-admin-ui.cjs` 在随机 loopback 端口/临时目录运行实际面板、HTTP controller、持久化服务，浏览器仅允许本服务出口；验证取消零批准请求、显式确认、服务重建与逐次报告查询。两次评分由测试注入 executor 产生，**不是 Docker/模型/真实项目证据**；不覆盖完整 app shell 或 SQLite，全部验收资格不升级。
 
 ### 5.5 已保存项目批准 → 可信离线 runner → 同一管理报告
@@ -417,7 +417,22 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 真实实验：已授权 Linux root 下运行 `verify-image-recovery.py --approved-scripted-evaluation`，其余五参沿 §4.4；与 `--scripted-evaluation` 互斥。随机 loopback HTTP controller 的 preview/approve（模拟用户点击）→内部 runner→专用 daemon SDK 工具→重建服务后 GET。fresh/resume 各两个真实容器；另一个成功容器的回执篡改后 unresolved。每个场景验证换角色计划零 transport 且未消费、错项目 GET 拒绝、重复派发零新容器、源 CAS 不变。测试本身生成批准，**不代表真实人类批准**；无浏览器、完整 app shell、SQLite 或真实模型证据。临时记录与环境随实验删除，非长期留存。
 - 自动回归：`badcase-approved-scripted-evaluation.test.js` 覆盖完整计划绑定、缺/坏归档与 CAS、准备中到期/批准变化、非离线记录、异常未知预留、并发/重复消费；`badcase-evaluation-admin.test.js` 补持久化非离线记录 GET 拒绝（E43 P3）。新模块初始红灯仅模块缺失，非原实现 bug 修复。E42 容器侧变异电池与动态 timeout 仍待后续容器入口改动，本段未修改 SDK/harness 行为。
 
-仍缺页面启动、材料选择与人审评分展示、受控真实模型出口、用户真实 badcase 及付费参数批准、长期引用/配额/GC/崩溃恢复；全部 AC pending。不能将本链路的脚本固定产物评分称为 prompt 提分或真实 badcase 复现。
+生产项目页仍缺启动与实际材料配置生命周期；§5.6 补独立工作台。受控真实模型出口、用户真实 badcase 及付费参数批准、长期引用/配额/GC/崩溃恢复仍缺；全部 AC pending。不能将本链路的脚本固定产物评分称为 prompt 提分或真实 badcase 复现。
+
+### 5.6 专用离线材料工作台（显式启动、无生产接线）
+
+`scripted-workbench.cjs` + `workbench-server.cjs` 提供受信操作者编程接口 `startScriptedWorkbenchServer({root, materials, runProbe})`。没有自动 CLI、配置文件加载、生产 create-server 接线或 agent 工具。操作者须先准备专用归档恢复 daemon，再注入 §4.11 的 runProbe；服务本身不创建/终止 daemon，也不认证注入函数。材料列表是至多64项脱离副本的受信配置（ID/项目、封存请求、固定镜像、runtime/harness归档、两角色、固定hash评分规则）；浏览器不提交路径、socket、provider、执行器或捕获代码。镜像声明先复用纯 `prepareOfflineTask` 校验（合成空文件仅供结构校验，不执行），真实镜像身份仍到启动时由恢复器核验。
+
+- 独立 HTTP 仅绑定 `127.0.0.1:0`，使用独立管理 root、随机 CSRF、既有 local-admin guard，静态资源固定白名单、no-store/CSP、固定错误码，无生产 DB/凭据。GET检查loopback/Host，POST另检查Origin/JSON/CSRF；同OS用户仍可模拟管理请求。关闭服务等待在途请求结束，不代表取消容器；操作者不得先销毁仍在用的daemon。
+- 可选 controller 路由 `GET .../materials` 只列当前项目材料ID；`POST .../material-preview` 只接 `{materialId,repetitions}`（1–10）。生产没有workbench能力时这些路由和 `material-approve/start` 均404。ID选择不扩大采集授权，也不启用采集。
+- material-preview 从封存CAS、归档及角色/规则重建实际计划，**会产生/保留prepare保护引用**；取消或过期不unpin，不授权GC。与§5.4纯spec预览不同，不宣称无磁盘副作用。最多64张5分钟内存票据，满额在准备前拒绝；到期惰性移除，时钟倒退拒绝。
+- 人审投影展示两角色正文、固定task=`fixed-write-read-edit-bash-v1`、deliveryMode、输入/历史摘要、镜像声明、expectedHash/badcaseHash与完整计划/次数/超时/预留单位。它**不提交捕获的原始请求、不展示其正文、仍是脚本替身任务**；评分是容器产物SHA256与两个不同hash比较，不是用户自然语言评分器。规则/参考答案不进入被测容器。`reviewHash`绑定该投影及planHash；归档路径、capture root、session正文不出现在投影。review/角色正文/规则仍由操作者配置与内存保存，未新增长期归档/配额；持久报告保留既有plan中的摘要，不把reviewHash当人类身份或来源认证。
+- `POST .../material-approve` 和 `POST .../start` 均严格 `{confirmed:true,approvalId,planHash,reviewHash}`，检查项目、票据、期限、时钟和全部摘要。前者只保存现有批准声明，后者须另一次显式确认；start重读持久批准并绑定票据planHash/期限，再经§5.5复验材料和claim。包含有效但不同repetitions的新持久计划也拒绝（开发回归先红后修）；多阶段读取不是防同权限恶意竞争的原子事务。
+- 每个workbench一次在途启动，无排队；同票据第一次尝试即锁住，无论是否已claim，错误均不自动重试。其他票据busy时不消费。持久claim仍是跨实例最终一次性防线。浏览器断开不取消运行；启动请求同步等候runner返回，不承诺HTTP/kill硬上界。重启丢失票据，不恢复旧任务；已有批准与逐次报告可凭ID查询。资格信封沿旧管理层全部false，表示未取得通用回放/付费许可，不表示专用工作台没有执行能力。
+- 独立页面 `badcase-workbench.js` 仅被专用server加载，生产projects页不加载。材料选择→角色/规则文本预览→保存确认→启动确认分离，取消零对应POST；修改材料/次数/ID使旧预览失效。报告/预览只textContent，项目切换丢弃迟到响应；启动失败或结果未知保留ID、禁再次启动、不自动POST重试；刷新查询不重新授权。
+- 验证两种口径明确分开：`node scripts/badcase-capture/verify-workbench.cjs --browser` 用真实Chromium+实际HTTP/归档材料/存储，但executor是合成替身（零Docker/模型）；`verify-image-recovery.py --workbench` 加§4.4五参用实际HTTP显式启动→专用daemon真实SDK工具→重建后GET，fresh/resume各两容器，无浏览器。两者不合称浏览器到Docker同次端到端；均非真实人类批准/真实模型/真实badcase。实验工件随自有生命周期清理，非长期记录。Windows/Linux链接回归覆盖read与runner在root/project两层指向同内容decoy仍拒绝、零transport/零decoy写入（E44 P3）。
+
+仍缺生产材料/环境注册及生命周期、完整回放和真实评分人审、受控模型出口/费用硬限、真实用户turn与模型重跑、长期引用/配额/GC/崩溃恢复。E42容器侧变异与动态timeout建议未动；Linux SQLite门槛和全部AC pending保持不变。
 
 ## 6. 威胁模型
 

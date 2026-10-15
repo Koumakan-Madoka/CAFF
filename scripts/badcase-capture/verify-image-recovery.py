@@ -20,6 +20,7 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--scripted-evaluation', action='store_true', help='offline SDK prompt/tool loop, scripted model only')
     mode.add_argument('--approved-scripted-evaluation', action='store_true', help='HTTP approval to offline runner and report; no paid model')
+    mode.add_argument('--workbench', action='store_true', help='isolated material review and explicit HTTP start; no paid model')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise RuntimeError('explicit_root_environment_required')
@@ -76,11 +77,12 @@ def main():
         for namespace in ['mnt', 'net']:
             if os.readlink('/proc/self/ns/' + namespace) == os.readlink('/proc/' + str(pid) + '/ns/' + namespace):
                 raise RuntimeError('daemon_namespace_failed')
-        script = ('verify-approved-scripted-evaluation.cjs' if args.approved_scripted_evaluation else
+        script = ('verify-workbench.cjs' if args.workbench else
+                  'verify-approved-scripted-evaluation.cjs' if args.approved_scripted_evaluation else
                   'verify-scripted-evaluation.cjs' if args.scripted_evaluation else 'verify-image-recovery.cjs')
         node_args = ['node', str(repo / 'scripts/badcase-capture' / script)]
         for key, value in vars(args).items():
-            if key not in ['scripted_evaluation', 'approved_scripted_evaluation']:
+            if key not in ['scripted_evaluation', 'approved_scripted_evaluation', 'workbench']:
                 node_args.extend(['--' + key.replace('_', '-'), value])
         node_args.extend(['--socket', 'unix://' + str(base / 'docker.sock'), '--daemon-id', info['ID'], '--data-root', str(base / 'data')])
         # SDK never runs here: Node is only the trusted host scheduler. All SDK/tools
