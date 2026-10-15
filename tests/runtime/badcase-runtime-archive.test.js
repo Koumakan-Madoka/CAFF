@@ -70,6 +70,13 @@ test('missing, damaged or incorrectly pinned artifact fails closed', t => {
   fs.unlinkSync(file);
   assert.throws(() => readRuntimeArchive(a), { code: 'runtime_archive_invalid' });
 });
+test('runtime reference size upper bound rejects before any filesystem access', t => {
+  const f = fixture(t), a = archiveRuntime(f.source, f.destination), original = fs.lstatSync; let calls = 0;
+  fs.lstatSync = () => { calls++; throw Error('unexpected fs access'); };
+  try { assert.throws(() => readRuntimeArchive({ ...a, archiveBytes: 24 * 1024 * 1024 + 1 }), { code: 'runtime_archive_invalid' }); }
+  finally { fs.lstatSync = original; }
+  assert.equal(calls, 0);
+});
 test('even with a newly supplied outer hash, malformed inventories and per-file corruption are refused', t => {
   const changes = [d => { d.schemaVersion = 2; }, d => { d.extra = true; },
     d => { d.files[0].base64 = '***'; }, d => { d.files[0].base64 += '='; }, d => { d.files[0].base64 = Buffer.from('tampered').toString('base64'); },
@@ -137,12 +144,13 @@ test('archive-selected staging never reads installed packages, and a bad referen
   const original = fs.readFileSync;
   fs.readFileSync = (p, ...args) => { if (typeof p === 'string' && p.replaceAll('\\', '/').includes('/node_modules/')) throw Error('unexpected installed dependency read'); return original(p, ...args); };
   try {
-    const files = stageDiagnostic('{}', {}, {}, a);
+    const files = stageDiagnostic('{}', {}, {}, { runtimeArchive: a });
     assert.equal(manifestFor(files).runtimeHash, a.runtimeHash);
     assert.ok(files.some(x => x.path === 'capsule.json'));
-    assert.throws(() => stageDiagnostic('{}', {}, {}, { ...a, archiveHash: '0'.repeat(64) }), { code: 'runtime_archive_invalid' });
-    assert.throws(() => stageDiagnostic('{}', {}, {}, null), { code: 'runtime_archive_invalid' });
-    assert.throws(() => stageDiagnostic('{}', {}, {}, undefined), { code: 'runtime_archive_invalid' });
+    assert.ok(files.some(x => x.path === 'pi-probe-guards.cjs'));
+    assert.throws(() => stageDiagnostic('{}', {}, {}, { runtimeArchive: { ...a, archiveHash: '0'.repeat(64) } }), { code: 'runtime_archive_invalid' });
+    assert.throws(() => stageDiagnostic('{}', {}, {}, { runtimeArchive: null }), { code: 'runtime_archive_invalid' });
+    assert.throws(() => stageDiagnostic('{}', {}, {}, { runtimeArchive: undefined }), { code: 'runtime_archive_invalid' });
   } finally { fs.readFileSync = original; }
 });
 test('invalid archive stops wrapper before transport while retaining input protection', async t => {

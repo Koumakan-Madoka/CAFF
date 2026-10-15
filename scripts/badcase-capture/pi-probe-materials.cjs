@@ -31,8 +31,7 @@ function syntheticSession() {
     { type: 'message', id: 'e2', parentId: 'e1', timestamp: '2026-01-01T00:00:00.002Z', message: { role: 'user', content: 'synthetic history only', timestamp: 1 } },
   ].map(e => JSON.stringify(e)).join('\n') + '\n';
 }
-function prepareProbeFiles(repoRoot, mode) {
-  if (!['fresh', 'resume'].includes(mode)) throw Error('probe_mode_invalid');
+function prepareRuntimeFiles(repoRoot) {
   const root = path.join(repoRoot, 'node_modules/@earendil-works/pi-coding-agent');
   const files = []; let total = 0;
   function copy(source, dest) {
@@ -62,6 +61,11 @@ function prepareProbeFiles(repoRoot, mode) {
   copy(typebox + '/build', 'runtime/node_modules/typebox/build');
   // pi-ai code is inside the shipped SDK bundle. Metadata is provenance, not a separate installation proof.
   metadata(root + '/node_modules/@earendil-works/pi-ai', 'runtime/bundled-pi-ai', '@earendil-works/pi-ai', '0.85.1');
+  manifestFor(files); return files;
+}
+function prepareProbeFiles(repoRoot, mode) {
+  if (!['fresh', 'resume'].includes(mode)) throw Error('probe_mode_invalid');
+  const files = prepareRuntimeFiles(repoRoot);
   files.push({ path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'pi-initialize-probe.cjs')) });
   files.push({ path: 'pi-probe-guards.cjs', bytes: fs.readFileSync(path.join(__dirname, 'pi-probe-guards.cjs')) });
   files.push({ path: 'mode.txt', bytes: Buffer.from(mode) });
@@ -71,4 +75,4 @@ function prepareProbeFiles(repoRoot, mode) {
   manifestFor(files);
   return files;
 }
-module.exports = { prepareProbeFiles, manifestFor, syntheticSession };
+module.exports = { prepareProbeFiles, prepareRuntimeFiles, manifestFor, syntheticSession };

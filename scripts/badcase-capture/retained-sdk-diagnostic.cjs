@@ -1,24 +1,23 @@
 // Trusted offline SDK initialization diagnostic, NOT a replay/model launcher.
 // The host copies trusted build/npm files statically; captured content is capsule.json only.
-const fs = require('node:fs');
 const path = require('node:path');
 const { prepareRetainedInitializationCapsule } = require('../../build/server/domain/runtime/badcase-capture/retained-initialization');
 const { planRetainedSdkDiagnostic, diagnosticReceipt } = require('../../build/server/domain/runtime/badcase-capture/retained-sdk-diagnostic');
-const { prepareProbeFiles, manifestFor } = require('./pi-probe-materials.cjs');
+const { prepareRuntimeFiles, manifestFor } = require('./pi-probe-materials.cjs');
 const { readRuntimeArchive } = require('./runtime-archive.cjs');
+const { prepareHarnessFiles, readHarnessArchive } = require('./harness-archive.cjs');
 const { runProbe, verifyProbeImage } = require('./verify-pi-initialization.cjs');
-function stageDiagnostic(capsule, expected, image, runtimeArchive) {
+function stageDiagnostic(capsule, expected, image, sources = {}) {
   const repo = path.resolve(__dirname, '../..');
-  // Explicit archive selection (including null/undefined) MUST NOT fall back to installed packages.
-  // Omitting the fourth argument retains the older installed-distribution experiment only.
-  const files = arguments.length >= 4 ? readRuntimeArchive(runtimeArchive)
-    : prepareProbeFiles(repo, 'fresh').filter(f => f.path.startsWith('runtime/'));
-  const add = (name, bytes) => files.push({ path: name, bytes: Buffer.from(bytes) });
-  add('pi-probe-guards.cjs', fs.readFileSync(path.join(__dirname, 'pi-probe-guards.cjs')));
-  add('probe.cjs', fs.readFileSync(path.join(__dirname, 'retained-sdk-container.cjs')));
-  for (const name of ['retained-sdk-diagnostic', 'capsule-materialization', 'secrets']) {
-    add(name + '.js', fs.readFileSync(path.join(repo, 'build/server/domain/runtime/badcase-capture', name + '.js')));
+  if (!sources || typeof sources !== 'object' || Array.isArray(sources)
+    || Object.keys(sources).some(k => !['runtimeArchive', 'harnessArchive'].includes(k))) {
+    throw Object.assign(Error('diagnostic_sources_invalid'), { code: 'diagnostic_sources_invalid' });
   }
+  // Own properties select archives explicitly, including null/undefined (fail closed).
+  // Omitted properties retain current-install/build experiments, NOT archived replay.
+  const files = Object.hasOwn(sources, 'runtimeArchive') ? readRuntimeArchive(sources.runtimeArchive) : prepareRuntimeFiles(repo);
+  files.push(...(Object.hasOwn(sources, 'harnessArchive') ? readHarnessArchive(sources.harnessArchive) : prepareHarnessFiles(repo)));
+  const add = (name, bytes) => files.push({ path: name, bytes: Buffer.from(bytes) });
   add('capsule.json', capsule); add('expected.json', JSON.stringify(expected)); add('environment.json', JSON.stringify(image));
   manifestFor(files); return files;
 }
@@ -26,8 +25,8 @@ async function runRetainedSdkDiagnostic(request, image, options = {}) {
   const p = prepareRetainedInitializationCapsule(request);
   const expected = { capsuleHash: p.capsuleHash, checkpointChecksum: p.provenance.checkpointChecksum };
   const plan = planRetainedSdkDiagnostic(p.capsule, expected);
-  const files = Object.hasOwn(options, 'runtimeArchive')
-    ? stageDiagnostic(p.capsule, expected, image, options.runtimeArchive) : stageDiagnostic(p.capsule, expected, image);
+  const sources = Object.fromEntries(['runtimeArchive', 'harnessArchive'].filter(k => Object.hasOwn(options, k)).map(k => [k, options[k]]));
+  const files = stageDiagnostic(p.capsule, expected, image, sources);
   const manifest = manifestFor(files);
   // No pull, host fallback or floating tag. Injected transport is tests-only.
   const transport = options.runProbe || (async (i, f) => { await verifyProbeImage(i); return runProbe(i, f); });

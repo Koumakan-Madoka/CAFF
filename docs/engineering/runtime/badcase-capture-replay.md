@@ -303,10 +303,22 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 - 归档是有版本的 JSON 数据，逐文件含路径、大小、SHA-256、规范 base64；最多4096文件、解码内容16MiB、编码文件24MiB。固定引用五键：directory、archiveHash、archiveBytes、runtimeHash、runtimeBytes；调用方须在归档之外钉住引用。读取先检查引用形状与大小，再拒绝根目录/文件链接和非普通文件，以 fd 限量读至期望大小+1；外层 hash 校验后复验结构、路径白名单/冲突/重复、大小/base64/hash、必要包版本及汇总。不会解包外部 tar，也不在宿主执行归档代码。这个上限不是 RSS 限制。
 - 归档/引用/安装包及祖先路径仍是同 OS 用户 TCB。hash 是完整性而非来源认证；攻击者同时替换受信引用和包不是本模块声称防御的场景。它不是接收捕获代码绕过秘密扫描的接口，不替代完整 SDK/provider/项目依赖验证。
-- `stageDiagnostic` 的第4参数或 `runRetainedSdkDiagnostic` 的显式 `options.runtimeArchive` 选择归档路径，**传入 null/undefined/坏引用也直接拒绝，不回退安装源**。完全省略选项仍保留 §4.7 原来的 installed-distribution 实验；该旧实验不可被报告为归档回放。归档选择在输入保护之后、容器 transport 之前，失败仍保留保护引用。新的阶段只替换依赖字节来源，不改变 SDK 配置、session 语义或运行资格。
-- 本段**没有归档镜像、harness/build/探针、项目依赖或版本化 EnvironmentTemplate**，尚非完整环境恢复。诊断仍依赖当前受信 build/探针和人工已安装的固定镜像；不会 pull、load 或宿主 fallback。无生命周期/配额/API/UI/跨进程发布锁/GC，归档成本不计入项目 capture usage；调用方明确管理离线存放位置，原始工件不得提交 Git。§4.7 回执三个字段仍是期望值、非实测回执生成；观测派生改造与高价值负例仍待后续，不能以本段归档验证替代。
+- `stageDiagnostic` 第4参数现为显式来源对象 `{runtimeArchive?, harnessArchive?}`，与 `runRetainedSdkDiagnostic` 的同名 options 属性一致（不再接受旧的第4位裸引用）；显式自有属性 `runtimeArchive` 选择归档路径，**属性值为 null/undefined/坏引用也直接拒绝，不回退安装源**。完全省略选项仍保留 §4.7 原来的 installed-distribution 实验；该旧实验不可被报告为归档回放。归档选择在输入保护之后、容器 transport 之前，失败仍保留保护引用。新的阶段只替换依赖字节来源，不改变 SDK 配置、session 语义或运行资格。
+- 本段**没有归档镜像、harness/build/探针、项目依赖或版本化 EnvironmentTemplate**，容器内五文件 harness 的另行归档见 §4.9，仍非完整环境恢复。不选择 harness 归档时，诊断仍依赖当前受信 build/探针和人工已安装的固定镜像；不会 pull、load 或宿主 fallback。无生命周期/配额/API/UI/跨进程发布锁/GC，归档成本不计入项目 capture usage；调用方明确管理离线存放位置，原始工件不得提交 Git。§4.7 回执三个字段仍是期望值、非实测回执生成；观测派生改造与高价值负例仍待后续，不能以本段归档验证替代。
 
 回归：`node --test tests/runtime/badcase-runtime-archive.test.js`。真实验证：Linux 本 Room 根构建后运行 `node scripts/badcase-capture/verify-runtime-archive.cjs` 加 §4.4 五个镜像参数；先临时归档真实白名单依赖，再用 fs shim 拒绝宿主 node_modules 的 readFile/lstat/readdir（不删除共享安装），fresh/resume 各两容器使用归档，比较摘要、归档未改、零模型调用、保护引用和清理；坏引用在 transport 前拒绝。安装源真实删除仅在合成单测中验证；真实实验为 shim，不是卸载系统环境。报告区分编码归档字节、runtime 内容字节和归档耗时；实验只清理自身临时存储，结束不保留工件。仍不构成镜像归档、忠实回放或任何 AC 完成证据。
+
+### 4.9 容器内五文件 harness 归档（不含宿主调度器与镜像）
+
+`harness-archive.cjs` 是可信离线工件 API，不接 HTTP/agent 工具、捕获内容或任意可执行归档上传。`archiveHarness(repoRoot, absoluteNewDirectory)` 只读取固定五文件：guard、容器入口（归档名 `probe.cjs`）、编译后的 `retained-sdk-diagnostic.js`、`capsule-materialization.js`、`secrets.js`。它们是受信程序，不是 badcase 输入；模块不在宿主执行这些归档字节。祖先、build、引用及同 OS 用户仍属 TCB，hash 不是来源认证，也不证明这些文件来自同一次构建或某个 Git SHA。
+
+- 固定 `harness.json` 使用 schema1、固定 kind、精确五文件清单、逐文件 size/hash/规范 base64；总内容最多1MiB、编码归档最多2MiB，外部五键引用为 directory/archiveHash/archiveBytes/harnessHash/harnessBytes。先校验引用大小再访问文件系统；源文件及归档均拒绝静态链接/非普通文件，使用 fd 有界读取并核对对象及大小，读取多一字节检测增长。不保证同权限并发路径安全、原子源码快照或 RSS 硬限。
+- 验证全部源与编码数据后才独占创建新目录，以 wx/0600 写入、文件 fsync、读回完整校验后返回引用；失败保留部分工件、不覆盖/自动删除。wx 在独占 mkdir 之外为纵深防御，lstat 的显式链接判断在类型检查之外亦为纵深防御；无目录 fsync/掉电恢复保证。
+- `stageDiagnostic(..., {runtimeArchive, harnessArchive})` 明确选择两个独立来源；自有属性即使值为 null/undefined 也失败关闭，不回退当前源文件。来源对象未知键拒绝，旧裸 runtime 引用形状拒绝；完全省略某个属性仍是该部分的当前源码/安装实验，不能报告为双归档重跑。`prepareRuntimeFiles` 只读取 runtime，不再为了获取依赖顺带读取当前探针。输入仍先 protect，归档故障在 transport 前拒绝且不取消引用。
+- `runtimeHash` **只覆盖 runtime/**；`harnessHash` 仅覆盖上述五文件的 path/size/hash 清单，完整 `inputHash` 覆盖本次 runtime+harness+capsule/expected/environment 数据。三个 hash 都不是远程证明或宿主调度器身份。容器先加载受信 guard 后验证输入；归档引用必须由可信调用方另行钉住，不能用捕获代码伪装 harness 绕过边界。
+- 此处只归档**容器内 harness**，宿主 wrapper/规划器/transport/fixture、镜像、项目依赖与 EnvironmentTemplate 未归档，仍使用当前受信宿主调度器和已安装固定镜像。不接归档生命周期/配额/GC/UI/API；capture usage 不含这些离线工件。§4.7 三个名义回执字段的观测化及语义负例仍待补；不改变初始化诊断语义、不授予任何运行资格。
+
+回归：`node --test tests/runtime/badcase-harness-archive.test.js tests/runtime/badcase-runtime-archive.test.js`。真实实验：Linux 本 Room 根构建后，`node scripts/badcase-capture/verify-harness-archive.cjs` 加 §4.4 五个镜像参数。先临时归档 runtime 与五文件 harness，再以 fs shim 禁止当前安装源及五文件源的 readFile/lstat/readdir/open（不删除共享文件，不禁止此前已加载的宿主模块），fresh/resume 各两容器使用双归档，比较输入摘要、零模型调用、保护引用和清理；坏引用零 transport。合成测试才真实删除临时源。报告分别记录内容/归档字节与归档、读取校验耗时，单次缓存/挂载条件影响测量，非真实 turn 成本。实验结束只删除自身临时工件，不声称长期保存了环境；镜像不 pull/load/归档。普通回归不运行 Docker，全部 AC 仍须独立验收。
 
 ## 5. 对照评测公平性契约
 

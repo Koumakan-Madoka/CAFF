@@ -4,7 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { prepareProbeFiles, manifestFor } = require('./pi-probe-materials.cjs');
+const { prepareRuntimeFiles, manifestFor } = require('./pi-probe-materials.cjs');
 const MAX = 24 * 1024 * 1024;
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const digest = s => typeof s === 'string' && /^[a-f0-9]{64}$/.test(s);
@@ -21,6 +21,7 @@ const trees = ['runtime/dist/bundle/', 'runtime/dist/modes/interactive/theme/',
   'runtime/node_modules/@earendil-works/chord/dist/context/', 'runtime/node_modules/typebox/build/'];
 function verifyFiles(files) {
   const manifest = manifestFor(files); // path conflicts, duplicate names, 4096 files/16MiB
+  // Scope is defense in depth alongside manifest path validation and pinned runtimeHash.
   if (!files.length || files.some(f => !versions.some(v => f.path === v[0]) && !trees.some(p => f.path.startsWith(p)))) throw Error('scope');
   if (!files.some(f => f.path === 'runtime/dist/bundle/index.js') || trees.some(p => !files.some(f => f.path.startsWith(p)))) throw Error('missing');
   for (const [name, pkg, version] of versions) {
@@ -60,6 +61,7 @@ function readRuntimeArchive(reference) {
   let fd;
   try {
     validateReference(reference);
+    // lstat type checks already reject links; explicit link checks are defense in depth.
     const dir = fs.lstatSync(reference.directory);
     if (!dir.isDirectory() || dir.isSymbolicLink()) throw Error('directory');
     const file = path.join(reference.directory, 'runtime.json'), before = fs.lstatSync(file);
@@ -76,7 +78,7 @@ function readRuntimeArchive(reference) {
 }
 function archiveRuntime(repoRoot, destination) {
   // Source validation precedes any destination write. Never archives auth/session/case or probe files.
-  const files = prepareProbeFiles(repoRoot, 'fresh').filter(f => f.path.startsWith('runtime/'));
+  const files = prepareRuntimeFiles(repoRoot);
   const m = verifyFiles(files);
   const data = { schemaVersion: 1, kind: 'trusted-runtime-distribution', files: files.map(f => ({
     path: f.path, size: f.bytes.length, sha256: hash(f.bytes), base64: f.bytes.toString('base64'),
@@ -89,6 +91,7 @@ function archiveRuntime(repoRoot, destination) {
     validateReference(reference); decode(bytes, reference);
     // Exclusive new directory: never overwrite/reuse an old or partially written artifact.
     fs.mkdirSync(destination, { mode: 0o700 });
+    // wx is defense in depth; exclusive mkdir already rejects preexisting destinations.
     fd = fs.openSync(path.join(destination, 'runtime.json'), 'wx', 0o600);
     fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
     readRuntimeArchive(reference); // read-back validation before a reference can be published
