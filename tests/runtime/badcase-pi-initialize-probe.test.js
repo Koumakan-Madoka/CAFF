@@ -29,6 +29,8 @@ test('stages only declared distribution files, stable manifest, and explicit syn
     fs.readFileSync(path.resolve(__dirname, '../../scripts/badcase-capture/pi-probe-guards.cjs')));
   assert.equal(a.some(x => x.path === 'resume.jsonl'), false);
   assert.equal(b.some(x => x.path === 'resume.jsonl'), true);
+  assert.deepEqual(b.find(x => x.path === 'resume.jsonl').bytes, b.find(x => x.path === 'expected-session.jsonl').bytes);
+  assert.deepEqual(a.find(x => x.path === 'expected-session.jsonl').bytes, b.find(x => x.path === 'expected-session.jsonl').bytes);
   const ma = manifestFor(a), mb = manifestFor(b);
   assert.equal(ma.runtimeHash, mb.runtimeHash);
   assert.notEqual(ma.inputHash, mb.inputHash);

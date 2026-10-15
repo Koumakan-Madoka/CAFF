@@ -65,7 +65,9 @@ function prepareProbeFiles(repoRoot, mode) {
   files.push({ path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'pi-initialize-probe.cjs')) });
   files.push({ path: 'pi-probe-guards.cjs', bytes: fs.readFileSync(path.join(__dirname, 'pi-probe-guards.cjs')) });
   files.push({ path: 'mode.txt', bytes: Buffer.from(mode) });
-  if (mode === 'resume') files.push({ path: 'resume.jsonl', bytes: Buffer.from(syntheticSession()) });
+  const session = Buffer.from(syntheticSession()); // single fixture source, also checked inside the container
+  files.push({ path: 'expected-session.jsonl', bytes: session });
+  if (mode === 'resume') files.push({ path: 'resume.jsonl', bytes: Buffer.from(session) });
   manifestFor(files);
   return files;
 }

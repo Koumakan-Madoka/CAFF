@@ -87,6 +87,26 @@ test('missing resume or mixed fresh session never silently changes mode', t => {
     r.deliveryMode = 'fresh'; r.sessionBlobHash = r.promptBlobHash; });
   bad(t, d => { d.checkpoint.replayInput.deliveryMode = 'other'; });
 });
+test('direct capsule refuses invalid mode without session, secretExcluded and mismatching prompt digest independently', t => {
+  const h = fixture(t), p = prepareRetainedInitializationCapsule(h.request);
+  for (const change of [d => { d.checkpoint.replayInput.deliveryMode = 'other'; },
+    d => { d.checkpoint.files['source.txt'].secretExcluded = true; },
+    d => { d.checkpoint.replayInput.normalizedPromptHash = '0'.repeat(64); }]) {
+    const data = JSON.parse(p.capsule); change(data); const e = encoded(data), root = path.join(h.root, 'no-writes');
+    assert.throws(() => materializeInitializationCapsule(e.capsule, e.expected, root), { code: 'capsule_materials_invalid' });
+    assert.equal(fs.existsSync(root), false);
+  }
+});
+test('direct consumer accepts 4094 files but refuses 4095 with exact blob closure', t => {
+  const h = fixture(t), p = prepareRetainedInitializationCapsule(h.request), data = JSON.parse(p.capsule);
+  const original = data.checkpoint.files['source.txt']; data.checkpoint.files = {};
+  for (let i = 0; i < 4094; i++) data.checkpoint.files['f' + i] = original;
+  let e = encoded(data); assert.equal(decodeInitializationCapsule(e.capsule, e.expected).receipt.fileCount, 4094);
+  data.checkpoint.files.f4094 = original; e = encoded(data);
+  const root = path.join(h.root, 'too-many');
+  assert.throws(() => materializeInitializationCapsule(e.capsule, e.expected, root), { code: 'capsule_materials_invalid' });
+  assert.equal(fs.existsSync(root), false);
+});
 test('metadata and valid-hash blob secrets reject before restoring; protection survives', t => {
   bad(t, d => { d.checkpoint.targetDir = 'sk-' + 'x'.repeat(20); }, 'capsule_materials_secret');
   bad(t, d => {

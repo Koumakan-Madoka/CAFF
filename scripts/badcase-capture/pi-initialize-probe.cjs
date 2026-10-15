@@ -44,15 +44,12 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
   fs.mkdirSync(cwd + '/.pi/extensions', { recursive: true });
   fs.writeFileSync(cwd + '/.pi/extensions/trap.js', 'throw Error("discovery forbidden")');
   fs.writeFileSync(cwd + '/AGENTS.md', 'Unapproved discovery trap');
-  const entries = [
-    { type: 'session', version: 3, id: 'synthetic-session', timestamp: '2026-01-01T00:00:00.000Z', cwd: '/historical/not-mounted' },
-    { type: 'thinking_level_change', id: 'e1', parentId: null, timestamp: '2026-01-01T00:00:00.001Z', thinkingLevel: 'off' },
-    { type: 'message', id: 'e2', parentId: 'e1', timestamp: '2026-01-01T00:00:00.002Z', message: { role: 'user', content: 'synthetic history only', timestamp: 1 } },
-  ];
+  const expectedSession = fs.readFileSync('/work/expected-session.jsonl', 'utf8');
+  const entries = expectedSession.trim().split('\n').map(line => JSON.parse(line));
   const sessionPath = '/work/resume.jsonl';
   // Explicit existence and exact synthetic fixture check BEFORE SessionManager.open:
   // that SDK API otherwise creates a new session when the input path is absent.
-  if (mode === 'resume') assert.equal(fs.readFileSync(sessionPath, 'utf8'), entries.map(e => JSON.stringify(e)).join('\n') + '\n');
+  if (mode === 'resume') assert.equal(fs.readFileSync(sessionPath, 'utf8'), expectedSession);
   else assert.equal(fs.existsSync(sessionPath), false);
   const before = mode === 'resume' ? hash(fs.readFileSync(sessionPath)) : null;
   const manager = mode === 'resume' ? sdk.SessionManager.open(sessionPath, '/work/sessions', cwd) : sdk.SessionManager.create(cwd, '/work/sessions');
@@ -75,8 +72,8 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
     assert.equal(manager.getCwd(), cwd);
     assert.equal(session.messages.length, mode === 'resume' ? 1 : 0);
     if (mode === 'resume') {
-      assert.equal(manager.getSessionId(), 'synthetic-session');
-      assert.equal(session.messages[0].content, 'synthetic history only');
+      assert.equal(manager.getSessionId(), entries[0].id);
+      assert.deepEqual(session.messages, entries.filter(e => e.type === 'message').map(e => e.message));
       assert.equal(hash(fs.readFileSync(sessionPath)), before);
     }
     verifyNoProbeSideEffects(session.agent.state.systemPrompt, modelCalls, networkCalls);

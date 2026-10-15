@@ -36,6 +36,9 @@ export function prepareRetainedInitializationCapsule(input: any) {
     const retained = createCheckpointRetentionStore({ captureStore: store }).get(scope);
     if (!retained) throw fail('replay_source_missing');
     const cp = retained.checkpoint;
+    // Defensive recheck of the independent preflight read while under the same lock.
+    // Consumer enforces the same blob ceiling; fail here before publishing a reference.
+    if (retained.blobHashes.length > 8192) throw fail('initialization_capsule_limit');
     if (hash(JSON.stringify(cp)) !== inspected.checkpointChecksum) throw fail('initialization_source_changed');
     let total = 0;
     const bytesByHash = new Map<string, Buffer>();
@@ -43,6 +46,7 @@ export function prepareRetainedInitializationCapsule(input: any) {
       const bytes = store.readBlob(scope.projectId, sha256);
       if (!Buffer.isBuffer(bytes) || hash(bytes) !== sha256) throw fail('initialization_blob_changed');
       total += bytes.length;
+      // Early raw-byte bound; the encoded capsule limit below is stricter overall.
       if (total > LIMIT) throw fail('initialization_capsule_limit');
       if (containsSecretSentinel(bytes)) throw fail('replay_contains_secret');
       bytesByHash.set(sha256, bytes);
@@ -64,6 +68,7 @@ export function prepareRetainedInitializationCapsule(input: any) {
     const capsule = JSON.stringify({ schemaVersion: 1, kind: 'retained-initialization-inputs', checkpoint: cp, blobs });
     const capsuleBytes = Buffer.byteLength(capsule);
     if (capsuleBytes > LIMIT) throw fail('initialization_capsule_limit');
+    // Internal protect return-value check is defense in depth, not remote attestation.
     const protectedRun = createReplayRunReferenceStore({ captureStore: store }).protect({ ...scope, replayRunId });
     if (protectedRun.reference.checkpointChecksum !== inspected.checkpointChecksum
       || JSON.stringify(protectedRun.reference.blobHashes) !== JSON.stringify(retained.blobHashes)) throw fail('initialization_source_changed');

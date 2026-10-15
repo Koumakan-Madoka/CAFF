@@ -69,11 +69,8 @@ async function runProbe(image, files) {
   }
   return { result, manifest, containerId: id };
 }
-async function main() {
+async function verifyProbeImage(image) {
   if (process.platform !== 'linux') throw Error('probe_linux_required');
-  const args = process.argv.slice(2);
-  const arg = name => { const i = args.indexOf('--' + name); if (i < 0 || !args[i + 1]) throw Error('probe_arguments_required'); return args[i + 1]; };
-  const image = { imageId: arg('image-id'), repositoryDigest: arg('repository-digest'), architecture: arg('architecture'), nodeVersion: arg('node-version'), pythonVersion: arg('python-version') };
   prepareOfflineTask({ image, files: [{ path: 'x.cjs', base64: '', sha256: crypto.createHash('sha256').update('').digest('hex') }], entrypoint: 'x.cjs', timeoutMs: 30000 });
   const endpoint = one(await runDockerCommand(['context', 'inspect', 'default'])).Endpoints?.docker?.Host;
   assert.match(endpoint, /^unix:\/\/\/[^\s\0]+$/);
@@ -81,6 +78,12 @@ async function main() {
   assert.equal(img.Id, image.imageId); assert.ok(img.RepoDigests.includes(image.repositoryDigest)); assert.equal(img.Architecture, image.architecture); assert.equal(img.Os, 'linux');
   assert.equal(Object.keys(img.Config.Volumes || {}).length, 0); assert.equal((img.Config.OnBuild || []).length, 0);
   assert.ok(!img.Config.Healthcheck?.Test?.length || img.Config.Healthcheck.Test[0] === 'NONE');
+}
+async function main() {
+  const args = process.argv.slice(2);
+  const arg = name => { const i = args.indexOf('--' + name); if (i < 0 || !args[i + 1]) throw Error('probe_arguments_required'); return args[i + 1]; };
+  const image = { imageId: arg('image-id'), repositoryDigest: arg('repository-digest'), architecture: arg('architecture'), nodeVersion: arg('node-version'), pythonVersion: arg('python-version') };
+  await verifyProbeImage(image);
   const repo = path.resolve(__dirname, '../..');
   const reports = [], ids = [];
   for (const scenario of ['fresh', 'fresh-copy', 'resume', 'missing-dependency', 'wrong-sdk-version', 'wrong-ai-version', 'missing-session', 'broken-session']) {
@@ -117,4 +120,4 @@ async function main() {
     artifactSource: 'allowlisted-installed-npm-distribution', imageArchived: false, retainedCaseLaunched: false, acceptance: false }, null, 2));
 }
 if (require.main === module) main().catch(e => { console.error(JSON.stringify({ ok: false, code: 'pi_initialization_verification_failed', containerName: e.containerName || null })); process.exitCode = 1; });
-module.exports = { isolated, runProbe };
+module.exports = { isolated, runProbe, verifyProbeImage };

@@ -92,6 +92,18 @@ test('serialized capsule budget rejects before creating permanent protection', t
   assert.throws(() => prepareRetainedInitializationCapsule(h.request), { code: 'initialization_capsule_limit' });
   assert.equal(fs.existsSync(h.runDir), false);
 });
+test('consumer blob ceiling is enforced before publication (independent retention-read stub)', t => {
+  const h = fixture(t), retention = require('../../build/server/domain/runtime/badcase-capture/checkpoint-retention');
+  const original = retention.createCheckpointRetentionStore; let reads = 0;
+  retention.createCheckpointRetentionStore = options => {
+    const store = original(options), get = store.get;
+    store.get = input => { const r = get(input); if (++reads === 2) return { ...r, blobHashes: Array(8193).fill(r.blobHashes[0]) }; return r; };
+    return store;
+  };
+  try { assert.throws(() => prepareRetainedInitializationCapsule(h.request), { code: 'initialization_capsule_limit' }); }
+  finally { retention.createCheckpointRetentionStore = original; }
+  assert.equal(reads, 2); assert.equal(fs.existsSync(h.runDir), false);
+});
 test('every blob read and reference publication stays inside the shared lock', t => {
   const h = fixture(t, 'resume');
   const capture = require('../../build/server/domain/runtime/badcase-capture/capture-store');

@@ -84,6 +84,8 @@ export function materializeInitializationCapsule(capsule: any, expected: any, de
   for (const f of plan.files) {
     const target = path.join(destination, f.path);
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+    // wx and read-back are defense in depth beyond exclusive mkdir + validated
+    // unique paths. They do not promise atomicity against same-OS-user tampering.
     fs.writeFileSync(target, f.bytes, { flag: 'wx', mode: 0o600 });
     if (!fs.lstatSync(target).isFile() || !fs.readFileSync(target).equals(f.bytes)) throw fail('capsule_materials_write_failed');
   }
