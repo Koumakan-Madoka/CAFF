@@ -17,6 +17,7 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ['image-id', 'repository-digest', 'architecture', 'node-version', 'python-version']:
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--scripted-evaluation', action='store_true', help='offline SDK prompt/tool loop, scripted model only')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise RuntimeError('explicit_root_environment_required')
@@ -73,9 +74,11 @@ def main():
         for namespace in ['mnt', 'net']:
             if os.readlink('/proc/self/ns/' + namespace) == os.readlink('/proc/' + str(pid) + '/ns/' + namespace):
                 raise RuntimeError('daemon_namespace_failed')
-        node_args = ['node', str(repo / 'scripts/badcase-capture/verify-image-recovery.cjs')]
+        script = 'verify-scripted-evaluation.cjs' if args.scripted_evaluation else 'verify-image-recovery.cjs'
+        node_args = ['node', str(repo / 'scripts/badcase-capture' / script)]
         for key, value in vars(args).items():
-            node_args.extend(['--' + key.replace('_', '-'), value])
+            if key != 'scripted_evaluation':
+                node_args.extend(['--' + key.replace('_', '-'), value])
         node_args.extend(['--socket', 'unix://' + str(base / 'docker.sock'), '--daemon-id', info['ID'], '--data-root', str(base / 'data')])
         # SDK never runs here: Node is only the trusted host scheduler. All SDK/tools
         # run in unprivileged, network-none containers checked by the existing probe.

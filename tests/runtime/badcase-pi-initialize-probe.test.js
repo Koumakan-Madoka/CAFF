@@ -105,11 +105,13 @@ test('real probe orchestrator uses injected transport and observes before start;
       events.push('observe'); assert.equal(id, 'b'.repeat(64)); assert.ok(owner);
       assert.equal(events.includes('start'), false);
       if (reject) throw Error('target_container_missing');
-    } };
+    }, observeCompleted: async () => { events.push('observe-completed'); assert.equal(events.includes('start'), true); assert.equal(events.includes('rm'), false); },
+      observeRemoved: async () => { events.push('observe-removed'); assert.equal(events.includes('rm'), true); } };
     const pending = m.exports.runProbe(image, [{ path: 'probe.cjs', bytes: Buffer.from('// inert') }], options);
     if (reject) { await assert.rejects(pending, /target_container_missing/); assert.equal(events.includes('start'), false); }
     else { assert.equal((await pending).containerId, 'b'.repeat(64)); assert.ok(events.indexOf('observe') < events.indexOf('start')); }
-    assert.ok(events.includes('observe')); assert.ok(events.includes('rm')); assert.equal(events.at(-1), 'ps');
+    assert.ok(events.includes('observe')); assert.ok(events.includes('rm')); assert.equal(events.at(-1), 'observe-removed');
+    assert.equal(events.includes('observe-completed'), !reject);
   }
   assert.equal(defaultCalls, 0);
 });

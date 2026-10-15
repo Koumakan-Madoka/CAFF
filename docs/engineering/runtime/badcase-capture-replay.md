@@ -335,7 +335,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 用户 2026-10-15 裁决优先 MVP：归档导入后 RepoDigest 缺失不再阻断该恢复路径；不改变原有本地镜像模式的强校验，不伪造字段。`image-recovery.cjs` 的可信离线接口接受既有导出引用，导入前/后复验字节摘要；显式记录 `declaredRepositoryDigest` 与 `observedRepositoryDigests`。恢复的 image ID（config 内容摘要，包含层的未压缩摘要）、架构、OS、安全配置仍须匹配。该绑定不是 registry 来源认证；外部引用、本地 daemon、同 OS 用户与目录祖先仍属 TCB，不能接任意 tar 上传。
 
-- 仅专用 `/var/tmp/caff-image-recovery-*/docker.sock`，独立 data-root、vfs；校验 daemon ID 与共享 daemon 不同、开始时无镜像/容器。加载及整个 probe 创建/执行/inspect/清理均经显式 Unix socket，绝不回退 default daemon。恢复 transport 每次执行前后复验 daemon 和 image 身份；在 probe 创建容器后、start 前，另经恢复器持有的目标 transport inspect 该完整容器 ID、image ID、owner label 及未运行状态，结束核对回执 ID。没有观察或 ID 不符即拒绝，不以运行前后容器数相同代替存在性证据；观察失败仍由 probe 清理本次容器。此交叉核验针对受信代码误路由，非远程认证或抵御同权限恶意 probe。路径命名不等于隔离认证；生命周期管理器还必须核对命名空间和 PID。
+- 仅专用 `/var/tmp/caff-image-recovery-*/docker.sock`，独立 data-root、vfs；校验 daemon ID 与共享 daemon 不同、开始时无镜像/容器。加载及整个 probe 创建/执行/inspect/清理均经显式 Unix socket，绝不回退 default daemon。恢复 transport 每次执行前后复验 daemon 和 image 身份；在 probe 创建容器后、start 前，另经恢复器持有的目标 transport inspect 该完整容器 ID、image ID、owner label 及未运行状态；attach 返回后、rm 前再次独立 inspect，核对同一 ID/image/owner、非零 StartedAt、已停止、非 OOM 与退出码；rm 后另经目标 transport 按完整 ID 查询 ps，必须无残留。成功返回要求三个观察均完成，末尾还核对回执 ID。没有观察或 ID 不符即拒绝，不以运行前后容器数相同代替存在性证据；观察失败仍由 probe 清理本次容器。此交叉核验针对受信代码误路由，非远程认证或抵御同权限恶意 probe。路径命名不等于隔离认证；生命周期管理器还必须核对命名空间和 PID。
 - `verify-image-recovery.py` 须人工授权 Linux root 环境；不自动提权或安装组件。随机0700目录、独立配置/socket/data-root/exec-root/pid/log，在 private mount/network namespace 启动 dockerd，关闭 bridge/firewall/forwarding。被测容器不 privileged、无 Docker socket，仍沿 §4.4 隔离检查；调度器宿主运行，SDK与工具只在容器执行。
 - `verify-image-recovery.cjs` 真实 export→load→归档 runtime/harness→封存合成输入→fresh/resume各两副本 SDK 初始化。容器内实际核验 Node/Python 版本，未发送 invocation、零模型调用，仍非忠实回放/评分。归档身份对象的 `runtimeVersionsVerified:false` 仅表示 load 本身未执行版本检查；总报告另记容器版本验证结果。实验额外比较源与恢复的 Config/RootFS，及共享镜像与 daemon ID 前后未变。
 - 实验拒绝损坏归档（零 Docker 调用）、缺失/损坏 runtime；单测覆盖共享/非空/错根 daemon、load失败、错误镜像/架构/安全配置、执行前身份变化。默认模式仍拒绝缺 RepoDigest。无 HTTP/生产调度接线；runtime/harness来自本次归档，宿主调度器和项目依赖未归档。
@@ -367,16 +367,30 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 ### 5.2 批准声明持久化与一次性派发记录（可信内部协调器，非付费入口）
 
-`evaluation-record.ts` 将 §5.1 接为文件型执行记录，仍无 HTTP/agent 工具、批准 UI、SDK/模型或 Docker launcher。`recordEvaluationApproval` 只保存可信调用方提供的人工批准**声明**，不认证发起者、也不授权真实付费。实际入口必须在用户批准具体用例、评分规则、模型及预算后调用；不能把 `confirmed=true` 当作人类身份验证。`dispatchRecordedEvaluation` 的 executor 是受信注入函数；当前测试全部用离线替身，不可当真实任务提交/评分证据。
+`evaluation-record.ts` 将 §5.1 接为文件型执行记录，仍无 HTTP/agent 工具、批准 UI、SDK/模型或 Docker launcher。`recordEvaluationApproval` 只保存可信调用方提供的人工批准**声明**，不认证发起者、也不授权真实付费。实际入口必须在用户批准具体用例、评分规则、模型及预算后调用；不能把 `confirmed=true` 当作人类身份验证。`dispatchRecordedEvaluation` 的 executor 是受信注入函数；模块自身测试使用离线替身；§5.3 新增脚本化模型的真实容器 SDK 提交/评分接线，仍不可当真实模型或 badcase 复现证据。
 
 - 专用存储 `root/evaluations/<sha256(approvalId)>/`，不存原始任务、stdout/stderr、异常正文、参考答案或凭据；仅存严格 plan spec、批准声明、时间与结构化回执。approval ID 在该 root 内唯一；同 ID/相同内容重试只读，变更内容拒绝。不同 root/新 ID 不是全局去重，不能通过复制目录/删除文件重置批准来绕过预算。此存储必须在被测容器外、不进入 Git；未接 capture usage、配额、生命周期或 GC。
 - 先独占创建批准目录，再以 wx/0600 写 `approval.json`；派发以 wx 创建永久 `claim.json`，使同一个批准跨进程只能被一个执行序列消费。重复启动即使已完成也拒绝，不重放、不从未完成尾部继续。每次先将预算预留事件写入编号 JSON 并 fsync，成功后才调用 executor；结果验证成功后追加落盘，先前结果不可覆盖。单个批准最多200次运行，单记录目录最多404项，批准文件64KiB/事件4KiB读取上限。file fsync **不是目录持久化或掉电保证**，存储及祖先路径、同 OS 用户为 TCB，不抵御删改整个记录或恶意路径替换。
 - 派发使用模块自己的 `Date.now()`，不接受调用者提供时间；拒绝倒退。每次预留检查期限，并在磁盘写入结束后、调用 executor 前再次检查，request 携带精确 approvalId/planHash/expiresAt/单次费用与超时。时钟仍信任 OS；adapter 必须在真正异步启动/模型出口再次检查期限并执行超时、逐请求预算和容器终止，本模块没有这些硬限制。
 - 只读查询按批准时刻重建 ledger，再按编号重放 reserve/result/finish，验证字段、时序、状态转换、固定模式与文件类型；部分/缺失/过大/未知/乱序数据拒绝，不补建或重置。并发读取可能看到未完成写入并明确失败，不声称原子读快照。活跃 executor 与崩溃遗留均报告 `unresolved`，不根据 PID/年龄猜测外部执行已停止。
 - executor 抛错或回执非法：保留未结算预留，记固定原因 `dispatch_failed`/`invalid_result`，不伪造失败费用或评分；错误正文不落盘。记录写失败直接失败关闭，可能留部分工件；未知是否已执行时不得自动重试。进程退出后仍能查询已有合法记录，**没有自动修复、结算恢复、取消或后台重跑**。预算耗尽、过期、未知费用、超支及失败沿 §5.1 停止后续。
-- `finished` 仅表示协调序列已记录终止，不保证所有任务成功；每次评分仍是受信 executor 的声明，没有执行/认证评分器。`executionVerified=false/strictEvalEligible=false` 不变；claim/reservation 不是执行证明。无输出材料存储、真实模型门控或资格升级。Docker start/post-inspect/rm 的目标侧独立交叉核验仍随真实 launcher 接线补，不以本段文件测试替代。
+- `finished` 仅表示协调序列已记录终止，不保证所有任务成功；每次评分仍是受信 executor 的声明，没有执行/认证评分器。`executionVerified=false/strictEvalEligible=false` 不变；claim/reservation 不是执行证明。无输出材料存储、真实模型门控或资格升级。Docker 启动后/rm 后的目标侧独立交叉核验已在 §4.11/§5.3 接线，不以本段文件测试替代。
 
 回归：构建后 `node --test tests/runtime/badcase-evaluation-record.test.js tests/runtime/badcase-evaluation-plan.test.js`。隔离临时目录、独立 Node 子进程查询/竞争、dispatch 内进程退出23、fsync故障、写入期间期限越界、未知成本与坏回执；均为静态/离线协调逻辑，不在宿主运行真实 agent。初始化 Docker 证据沿 §4.11，本段不宣称新增容器/真实模型/SQLite/UI 或任何 AC 完成。
+
+### 5.3 持久派发 → 容器内 SDK prompt/真工具 → 容器外评分（脚本化模型诊断）
+
+`scripted-evaluation.cjs` 是可信内部离线 adapter，不是付费入口。显式使用 `caff-offline-scripted/tool-loop-v1` 替换捕获的 provider/model；这是**声明的测试替身，不是忠实回放**，不得冒充单一 role 变量的真实模型评测。不会从脚本模式自动切换真实 provider。保留 §4.7 的受限 fresh/resume 输入范围，拒绝 skill/bridge/复杂历史/缺材料，不静默 fresh。
+
+- 准备时锁内复验 capsule 并 protect，必须显式提供有效 runtime/harness 归档；计划由实际 capsule/checkpoint、镜像声明、暂存文件清单、两份角色字节及 host 评分规则派生摘要。角色文本限16KiB、有效UTF-8、无NUL并通过秘密哨兵扫描。容器 task harness 是**当前受信源码的内存钉住副本**，显式替换归档中的旧 diagnostic probe；`harnessHash` 绑定完整基础暂存清单（包含输入和runtime，非仅代码）。该任务 harness 尚未独立长期归档；宿主调度器和评分器代码仍属 TCB。
+- `execute` 只能接 §5.2 的精确 dispatch 字段，并逐键对账 plan/run/common/role/次数/25s超时/单位测试预算。每个 run 再锁内读取、复验并 protect 完整原材料闭包，与准备时 capsule 字节一致；不读 live，不 release。prepare 本身保留一个引用，成功两次运行另外各一个引用。来源声明、输入字节、角色和计划均脱离调用方副本；每个容器另建暂存副本，仅选中 role 与运行元数据不同。run ID 在 plan 内唯一；跨相同计划的不同批准需联合 approvalId 区分，不宣称全局唯一。
+- 显式注入专用恢复 transport，无默认 daemon fallback；容器前后隔离核验和创建/执行后/删除后三阶段独立目标观察沿 §4.11。宿主只复制/校验数据与可信发行文件，不 import SDK、不执行捕获代码。容器重新核对全部 manifest 文件、capsule/模式/history/invocation摘要、Node/Python/pi版本，关闭发现/扩展/compaction/retry/网络。
+- 容器真正调用 `session.prompt(invocation, {expandPromptTemplates:false})`，受信脚本流通过正常 SDK agent loop 发出 write→read→edit→bash 四次工具调用，再结束；不是直接调用工具 execute，也不是播放历史工具输出。脚本无语义推理、不根据 role 改变行为，因此 baseline/candidate 通常得到同一产物，**不能证明 prompt 有效或候选提分**。模型注册仅用公开 inert marker 满足 SDK 认证接口，不注入真实凭据，Docker network none；真实模型调用为0。初始化前、prompt前及每次脚本流调用复验批准期限；25s容器内 timeout/外部30s attach沿旧路径，仍非返回硬上界或付费费用硬限。
+- 被测容器不接收 host 评分规则/期望hash/wiki/前次产物。宿主固定非可执行的 `file-sha256-v1` 评分器仅比较本次固定产物字节摘要与预先绑定的 expectedHash/badcaseHash；容器回执不能自报分数。产物最多4096字节、规范base64，stdout最多16KiB，精确核对回执键/模式/各摘要/脚本5次/工具顺序/零网络。没有产物存储服务：原始产物与回执仅内存校验，持久记录只存其hash和二元评分；不落原始输出或异常正文。脚本及观测与 agent 同权限，不是抗恶意 agent 的证明，不能据此宣称一般评分防篡改完成。
+- 成功的脚本运行可确认费用为0；坏回执/容器错误/清理失败/过期按协调器保留 unresolved/未知费用/未结算预留，停止后续并拒绝重放，不伪造0费用或已执行状态。评分只描述合成产物，`executionVerified/strictEvalEligible` 仍false，不升级 SealedCase 的 runnable/reproduced/evaluable。
+- `verify-image-recovery.py --scripted-evaluation`（其余五个镜像参数同 §4.4）在专用 daemon 真跑 fresh/resume 各两份，读回逐次落盘结果、再次派发被拒、核对源 CAS 未变；另做容器内过期/移除prompt两项真实故障、已完成真实容器的回执篡改一项，均保留 unresolved。测试脚本自身生成的批准不是用户真实付费批准。实验记录/归档/容器均随专用生命周期清理，非长期交付用例；独立单测补编号间断、伪complete、幂等spec比对和目标daemon后置观察负例。
+
+仍缺：真实人工批准UI/API、受控付费模型出口与逐请求预算硬限、真实模型对照及用户认可评分器、轨迹正文/完整输入支持、环境长期引用/GC/崩溃恢复、真实采集容量/UI验收。无本段 SQLite/浏览器/用户真实 turn 证据；全部 AC pending，不以此离线诊断代替 AC8。
 
 ## 6. 威胁模型
 

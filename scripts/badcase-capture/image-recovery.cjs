@@ -58,7 +58,7 @@ async function restoreImageArchive(reference, destination, options = {}) {
     architecture: image.architecture, os: 'linux', source: 'trusted-archive', runtimeVersionsVerified: false };
   return { identity, image, async runProbe(requestedImage, files, probeOptions = {}) {
     assert.deepEqual(requestedImage, image); await checkDaemon(); await inspect();
-    let observedId = null;
+    let observedId = null, observedOwner = null, completed = false, removed = false;
     const observeCreated = async (id, owner) => {
       assert.equal(observedId, null); assert.match(id, /^[a-f0-9]{64}$/);
       assert.ok(typeof owner === 'string' && owner.length > 0);
@@ -70,10 +70,30 @@ async function restoreImageArchive(reference, destination, options = {}) {
       assert.equal(container.Id, id); assert.equal(container.Image, image.imageId);
       assert.equal(container.Config?.Labels?.['caff.badcase.pi-initialization'], owner);
       assert.equal(container.State?.Running, false);
-      observedId = id;
+      observedId = id; observedOwner = owner;
     };
-    const result = await (probeOptions.probe || runProbe)(image, files, { runDocker: local, observeCreated });
-    assert.ok(observedId, 'image_recovery_probe_unobserved');
+    const observeCompleted = async (id, owner, execution) => {
+      assert.equal(id, observedId); assert.equal(owner, observedOwner); assert.equal(completed, false);
+      const entries = json(await local(['inspect', id]));
+      assert.ok(Array.isArray(entries) && entries.length === 1);
+      const c = entries[0];
+      assert.equal(c.Id, id); assert.equal(c.Image, image.imageId);
+      assert.equal(c.Config?.Labels?.['caff.badcase.pi-initialization'], owner);
+      assert.equal(c.State?.Running, false); assert.equal(c.State?.OOMKilled, false);
+      assert.ok(typeof c.State?.StartedAt === 'string' && Date.parse(c.State.StartedAt) > 0, 'image_recovery_probe_not_started');
+      assert.ok(Number.isInteger(execution?.code)); assert.equal(c.State.ExitCode, execution.code);
+      completed = true;
+    };
+    const observeRemoved = async id => {
+      // Also runs during failure cleanup, including a rejected creation observer.
+      assert.match(id, /^[a-f0-9]{64}$/);
+      if (observedId) assert.equal(id, observedId);
+      const remaining = await local(['ps', '-a', '--no-trunc', '--filter', 'id=' + id, '--format', '{{.ID}}']);
+      assert.ok(good(remaining) && remaining.stdout.trim() === '', 'image_recovery_probe_not_removed');
+      removed = true;
+    };
+    const result = await (probeOptions.probe || runProbe)(image, files, { runDocker: local, observeCreated, observeCompleted, observeRemoved });
+    assert.ok(observedId && completed && removed, 'image_recovery_probe_unobserved');
     assert.equal(result?.containerId, observedId);
     await checkDaemon(); await inspect();
     return result;

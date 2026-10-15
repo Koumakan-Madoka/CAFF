@@ -182,6 +182,25 @@ test('partial, malformed, oversized and out-of-order files fail closed rather th
     await assert.rejects(run(f, () => assert.fail()), /evaluation_record_invalid/);
   }
 });
+test('valid event after a numbering gap and forged complete finish are rejected independently', t => {
+  for (const kind of ['gap', 'finish']) {
+    const f = setup(t), saved = save(f), at = saved.recordedAt;
+    fs.writeFileSync(path.join(f.dir, 'claim.json'), JSON.stringify({ planHash: f.approval.planHash, at }));
+    fs.writeFileSync(path.join(f.dir, '0001.json'), JSON.stringify({ kind: 'reserve', at }));
+    fs.writeFileSync(path.join(f.dir, kind === 'gap' ? '0003.json' : '0002.json'), JSON.stringify(kind === 'gap'
+      ? { kind: 'result', at, result: result(planEvaluation(f.spec).runs[0]) }
+      : { kind: 'finish', at, reason: 'complete' }));
+    assert.throws(() => read(f), /evaluation_record_invalid/);
+  }
+});
+test('same approval ID rejects changed spec with unchanged or newly matching approval', t => {
+  const f = setup(t); save(f);
+  const spec = { ...f.spec, candidateRoleHash: h(7) }, approval = { ...f.approval, planHash: planEvaluation(spec).planHash };
+  // First request keeps approval identical: only the spec comparison can reject
+  // this existing-record retry. Second request has a newly matching valid hash.
+  assert.throws(() => recordEvaluationApproval(f.root, spec, f.approval), /evaluation_approval_conflict/);
+  assert.throws(() => recordEvaluationApproval(f.root, spec, approval), /evaluation_approval_conflict/);
+});
 test('clock rollback after approval is refused without invoking executor', async t => {
   const f = setup(t), saved = save(f); const clock = Date.now;
   t.after(() => { Date.now = clock; }); Date.now = () => saved.recordedAt - 1;

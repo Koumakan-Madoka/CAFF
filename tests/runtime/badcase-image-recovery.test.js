@@ -14,14 +14,16 @@ async function fixture(t) {
   const img = { Id: image.imageId, RepoDigests: [image.repositoryDigest], Architecture: 'amd64', Os: 'linux', Config: {}, RootFS: { Type: 'layers', Layers: ['sha256:' + '3'.repeat(64)] } };
   const ref = await archiveImage(image, path.join(root, 'archive'), { runDocker: async a => ok(a[0] === 'context' ? [{ Endpoints: { docker: { Host: 'unix:///var/run/docker.sock' } } }] : [img]), save: async (_, fd) => fs.writeSync(fd, 'trusted opaque image fixture') });
   const calls = []; let loaded = false;
-  const state = { img: { ...img, RepoDigests: [] }, info: { ID: target.daemonId, DockerRootDir: target.dataRoot, Driver: 'vfs', Images: 0, Containers: 0 }, sharedId: 'shared-id', loadFails: false };
+  const state = { finished: false, removed: false, img: { ...img, RepoDigests: [] }, info: { ID: target.daemonId, DockerRootDir: target.dataRoot, Driver: 'vfs', Images: 0, Containers: 0 }, sharedId: 'shared-id', loadFails: false };
   const runDocker = async (a, o = {}) => {
     calls.push({ a, o });
     if (a[0] === 'info') return ok(o.dockerHost ? { ...state.info, Images: loaded ? 1 : state.info.Images } : { ID: state.sharedId });
     if (a[1] === 'load') { loaded = true; return state.loadFails ? { code: 1, stdout: '', stderr: 'not returned' } : ok({}); }
     if (a[1] === 'inspect') return ok([state.img]);
+    if (a[0] === 'ps') return { code: 0, stdout: state.removed ? '' : 'a'.repeat(64) + '\n', stderr: '' };
     if (a[0] === 'inspect') return ok([{ Id: 'a'.repeat(64), Image: image.imageId,
-      Config: { Labels: { 'caff.badcase.pi-initialization': 'probe-owner' } }, State: { Running: false } }]);
+      Config: { Labels: { 'caff.badcase.pi-initialization': 'probe-owner' } }, State: { Running: false,
+        StartedAt: state.finished ? '2026-01-01T00:00:00Z' : '0001-01-01T00:00:00Z', ExitCode: 0, OOMKilled: false } }]);
     throw Error('unexpected command');
   };
   return { ref, state, calls, options: { runDocker }, root };
@@ -32,6 +34,8 @@ test('restores missing RepoDigest honestly and binds all subsequent commands to 
   let received;
   const result = await r.runProbe(image, [], { probe: async (i, f, options) => {
     received = options; await options.observeCreated('a'.repeat(64), 'probe-owner');
+    h.state.finished = true; await options.observeCompleted('a'.repeat(64), 'probe-owner', { code: 0 });
+    h.state.removed = true; await options.observeRemoved('a'.repeat(64));
     return { containerId: 'a'.repeat(64) };
   } });
   assert.equal(result.containerId, 'a'.repeat(64));
@@ -56,6 +60,34 @@ test('observation independently rejects missing, wrong owner, wrong ID and runni
     const r = await restoreImageArchive(h.ref, target, h.options);
     await assert.rejects(r.runProbe(image, [], { probe: async (_, __, options) => {
       await options.observeCreated('a'.repeat(64), 'probe-owner'); return { containerId: 'a'.repeat(64) };
+    } }));
+  }
+});
+test('completion and removal observations independently reject omitted stages, never-started container and leftover ID', async t => {
+  for (const fault of ['omit-completed', 'omit-removed', 'not-started', 'not-removed']) {
+    const h = await fixture(t), restored = await restoreImageArchive(h.ref, target, h.options);
+    await assert.rejects(restored.runProbe(image, [], { probe: async (_, __, o) => {
+      await o.observeCreated('a'.repeat(64), 'probe-owner');
+      h.state.finished = fault !== 'not-started';
+      if (fault !== 'omit-completed') await o.observeCompleted('a'.repeat(64), 'probe-owner', { code: 0 });
+      h.state.removed = fault !== 'not-removed';
+      if (fault !== 'omit-removed') await o.observeRemoved('a'.repeat(64));
+      return { containerId: 'a'.repeat(64) };
+    } }));
+    assert.ok(h.calls.filter(c => c.a[0] === 'inspect' || c.a[0] === 'ps').every(c => c.o.dockerHost === target.socket));
+  }
+});
+test('completion rejects wrong exit status, wrong owner, wrong image and live or OOM container', async t => {
+  for (const change of [c => { c.Image = 'other'; }, c => { c.Config.Labels = {}; }, c => { c.State.ExitCode = 9; },
+    c => { c.State.Running = true; }, c => { c.State.OOMKilled = true; }]) {
+    const h = await fixture(t), run = h.options.runDocker;
+    h.options.runDocker = async (a, o) => { const r = await run(a, o);
+      if (a[0] === 'inspect' && h.state.finished) { const c = JSON.parse(r.stdout)[0]; change(c); return ok([c]); } return r; };
+    const restored = await restoreImageArchive(h.ref, target, h.options);
+    await assert.rejects(restored.runProbe(image, [], { probe: async (_, __, o) => {
+      await o.observeCreated('a'.repeat(64), 'probe-owner'); h.state.finished = true;
+      await o.observeCompleted('a'.repeat(64), 'probe-owner', { code: 0 });
+      h.state.removed = true; await o.observeRemoved('a'.repeat(64)); return { containerId: 'a'.repeat(64) };
     } }));
   }
 });

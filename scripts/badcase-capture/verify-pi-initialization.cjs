@@ -57,6 +57,7 @@ async function runProbe(image, files, options = {}) {
     result = await runDocker(['start', '-a', '-i', id], { input: archive, timeoutMs: 30000 });
     const post = one(await runDocker(['inspect', id])); isolated(post, image, owner);
     assert.equal(post.State.Running, false); assert.equal(post.State.ExitCode, result.code); assert.equal(post.State.OOMKilled, false);
+    if (options.observeCompleted) await options.observeCompleted(id, owner, result);
   } finally {
     try {
       if (started) {
@@ -67,6 +68,7 @@ async function runProbe(image, files, options = {}) {
         } else assert.equal(id, '', 'probe_cleanup_unknown');
         const remaining = await runDocker(['ps', '-a', '--no-trunc', '--filter', 'name=^/' + name + '$', '--format', '{{.ID}}']);
         assert.ok(good(remaining) && !remaining.stdout.trim(), 'probe_cleanup_failed');
+        if (id && options.observeRemoved) await options.observeRemoved(id);
       }
     } catch { throw Object.assign(Error('probe_cleanup_failed'), { containerName: name }); }
     finally { fs.rmSync(root, { recursive: true, force: true }); } // only this invocation's synthetic stage
