@@ -297,6 +297,17 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 回归：`node --test tests/runtime/badcase-retained-sdk-diagnostic.test.js tests/runtime/badcase-capsule-materialization.test.js tests/runtime/badcase-retained-initialization.test.js`。消费者补独立非法模式（无session）、secretExcluded、4094/4095文件、normalizedPromptHash不符负例；protect回执/再次hash、wx/写后读回是纵深防御，不宣称恶意同权限并发安全。真实 Docker：Linux 本 Room 根构建后 `node scripts/badcase-capture/verify-retained-sdk.cjs` 加 §4.4 五个镜像参数，fresh/resume各两副本，另错误capsule hash、缺session、桥接开启、目录缺模型、SDK版本不符五个容器负例；引用保留、源CAS不变、9容器清理。仍无真实用户turn/付费模型、SQLite/浏览器、完整轨迹、镜像归档、预算/评分或任何AC完成证据。
 
+### 4.8 可信运行依赖的独立字节归档（不含镜像与 harness）
+
+`runtime-archive.cjs` 仅供可信离线调用，无 HTTP/agent 管理入口。`archiveRuntime(repoRoot, absoluteNewDirectory)` 静态读取 §4.4 同一发布白名单，**仅保存 runtime/**，不保存 probe、session、case、认证配置或整个 node_modules。不 import SDK、不执行安装脚本、不联网。创建前验证四个包名/版本、必要入口和目录子集；创建全新目录后以 wx/0600 写入固定 `runtime.json`，fsync 文件并读回验证，成功才返回引用。失败保留部分目录、不覆盖/删除/自动重试；文件 fsync 不等于目录持久化或掉电保证。
+
+- 归档是有版本的 JSON 数据，逐文件含路径、大小、SHA-256、规范 base64；最多4096文件、解码内容16MiB、编码文件24MiB。固定引用五键：directory、archiveHash、archiveBytes、runtimeHash、runtimeBytes；调用方须在归档之外钉住引用。读取先检查引用形状与大小，再拒绝根目录/文件链接和非普通文件，以 fd 限量读至期望大小+1；外层 hash 校验后复验结构、路径白名单/冲突/重复、大小/base64/hash、必要包版本及汇总。不会解包外部 tar，也不在宿主执行归档代码。这个上限不是 RSS 限制。
+- 归档/引用/安装包及祖先路径仍是同 OS 用户 TCB。hash 是完整性而非来源认证；攻击者同时替换受信引用和包不是本模块声称防御的场景。它不是接收捕获代码绕过秘密扫描的接口，不替代完整 SDK/provider/项目依赖验证。
+- `stageDiagnostic` 的第4参数或 `runRetainedSdkDiagnostic` 的显式 `options.runtimeArchive` 选择归档路径，**传入 null/undefined/坏引用也直接拒绝，不回退安装源**。完全省略选项仍保留 §4.7 原来的 installed-distribution 实验；该旧实验不可被报告为归档回放。归档选择在输入保护之后、容器 transport 之前，失败仍保留保护引用。新的阶段只替换依赖字节来源，不改变 SDK 配置、session 语义或运行资格。
+- 本段**没有归档镜像、harness/build/探针、项目依赖或版本化 EnvironmentTemplate**，尚非完整环境恢复。诊断仍依赖当前受信 build/探针和人工已安装的固定镜像；不会 pull、load 或宿主 fallback。无生命周期/配额/API/UI/跨进程发布锁/GC，归档成本不计入项目 capture usage；调用方明确管理离线存放位置，原始工件不得提交 Git。§4.7 回执三个字段仍是期望值、非实测回执生成；观测派生改造与高价值负例仍待后续，不能以本段归档验证替代。
+
+回归：`node --test tests/runtime/badcase-runtime-archive.test.js`。真实验证：Linux 本 Room 根构建后运行 `node scripts/badcase-capture/verify-runtime-archive.cjs` 加 §4.4 五个镜像参数；先临时归档真实白名单依赖，再用 fs shim 拒绝宿主 node_modules 的 readFile/lstat/readdir（不删除共享安装），fresh/resume 各两容器使用归档，比较摘要、归档未改、零模型调用、保护引用和清理；坏引用在 transport 前拒绝。安装源真实删除仅在合成单测中验证；真实实验为 shim，不是卸载系统环境。报告区分编码归档字节、runtime 内容字节和归档耗时；实验只清理自身临时存储，结束不保留工件。仍不构成镜像归档、忠实回放或任何 AC 完成证据。
+
 ## 5. 对照评测公平性契约
 
 - baseline 与 candidate 从**同一 Checkpoint** 各自独立恢复起点；只有声明的 prompt 变量（首版：单一 agent 角色指令）变化；模型配置、harness/tool/skill 配置、EvaluatorSpec 版本一致。
