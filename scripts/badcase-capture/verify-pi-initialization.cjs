@@ -32,7 +32,10 @@ function isolated(c, image, owner) {
   assert.equal(h.LogConfig.Type, 'none'); assert.equal(h.AutoRemove, false); assert.ok(['no', ''].includes(h.RestartPolicy.Name));
   assert.deepEqual(h.Tmpfs, { '/work': WORK, '/tmp': TMP });
 }
-async function runProbe(image, files) {
+async function runProbe(image, files, options = {}) {
+  // Internal trusted transport injection routes the ENTIRE lifecycle, including cleanup.
+  // Ordinary diagnostics retain the strict default-daemon image preflight.
+  const runDocker = options.runDocker || runDockerCommand;
   const manifest = manifestFor(files);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-pi-init-'));
   const owner = crypto.randomUUID(), name = 'caff-pi-init-' + owner;
@@ -44,24 +47,24 @@ async function runProbe(image, files) {
     // Source is the allowlisted ordinary-file stage we just created, NOT user-supplied tar.
     const archive = execFileSync('tar', ['-C', root, '-cf', '-', '.'], { env: { PATH: process.env.PATH }, maxBuffer: 24 * 1024 * 1024, timeout: 15000 });
     started = true; // create can succeed even if its CLI response is lost
-    const created = await runDockerCommand(['create', '--name', name, '--label', LABEL + '=' + owner, '--pull', 'never', '-i',
+    const created = await runDocker(['create', '--name', name, '--label', LABEL + '=' + owner, '--pull', 'never', '-i',
       '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '512m', '--memory-swap', '512m',
       '--cpus', '1', '--pids-limit', '64', '--user', '65534:65534', '--ipc', 'private', '--workdir', '/work', '--log-driver', 'none',
       '--tmpfs', '/work:' + WORK, '--tmpfs', '/tmp:' + TMP, '--entrypoint', '/usr/bin/env', image.imageId, ...CMD]);
     assert.ok(good(created), 'probe_create_failed'); id = created.stdout.trim(); assert.match(id, /^[a-f0-9]{64}$/);
-    const pre = one(await runDockerCommand(['inspect', id])); isolated(pre, image, owner); assert.equal(pre.State.Running, false);
-    result = await runDockerCommand(['start', '-a', '-i', id], { input: archive, timeoutMs: 30000 });
-    const post = one(await runDockerCommand(['inspect', id])); isolated(post, image, owner);
+    const pre = one(await runDocker(['inspect', id])); isolated(pre, image, owner); assert.equal(pre.State.Running, false);
+    result = await runDocker(['start', '-a', '-i', id], { input: archive, timeoutMs: 30000 });
+    const post = one(await runDocker(['inspect', id])); isolated(post, image, owner);
     assert.equal(post.State.Running, false); assert.equal(post.State.ExitCode, result.code); assert.equal(post.State.OOMKilled, false);
   } finally {
     try {
       if (started) {
-        const found = await runDockerCommand(['inspect', id || name]);
+        const found = await runDocker(['inspect', id || name]);
         if (good(found)) {
           const cleanupId = verifiedCleanupId(one(found), owner, id);
-          assert.ok(good(await runDockerCommand(['rm', '-f', cleanupId])), 'probe_cleanup_failed');
+          assert.ok(good(await runDocker(['rm', '-f', cleanupId])), 'probe_cleanup_failed');
         } else assert.equal(id, '', 'probe_cleanup_unknown');
-        const remaining = await runDockerCommand(['ps', '-a', '--no-trunc', '--filter', 'name=^/' + name + '$', '--format', '{{.ID}}']);
+        const remaining = await runDocker(['ps', '-a', '--no-trunc', '--filter', 'name=^/' + name + '$', '--format', '{{.ID}}']);
         assert.ok(good(remaining) && !remaining.stdout.trim(), 'probe_cleanup_failed');
       }
     } catch { throw Object.assign(Error('probe_cleanup_failed'), { containerName: name }); }

@@ -26,6 +26,19 @@ test('real CLI transport filters environment and closes stdin with fixed context
   assert.deepEqual(out.args, ['--context', 'default', 'inspect', 'literal;not-a-shell']);
   assert.equal(out.keys.some(k => /^(CAFF_|PI_|DOCKER_|NODE_OPTIONS)/.test(k)), false);
 });
+test('explicit recovery socket replaces default context without inheriting DOCKER_HOST', linux, async t => {
+  shim(t, `process.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({args:process.argv.slice(2),keys:Object.keys(process.env)})));`);
+  const r = await runDockerCommand(['info'], { dockerHost: 'unix:///var/tmp/caff-image-recovery-test/docker.sock' });
+  assert.equal(r.code, 0);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out.args, ['--host', 'unix:///var/tmp/caff-image-recovery-test/docker.sock', 'info']);
+  assert.equal(out.keys.some(k => /^(CAFF_|PI_|DOCKER_|NODE_OPTIONS)/.test(k)), false);
+});
+test('explicit null, remote or malformed recovery endpoints are rejected', async () => {
+  for (const dockerHost of [null, undefined, '', 'tcp://localhost:2375', 'unix:///tmp/a\n.sock']) {
+    await assert.rejects(runDockerCommand(['info'], { dockerHost }), { code: 'offline_host_unsupported' });
+  }
+});
 test('real CLI transport kills on combined stdout/stderr overflow with bounded returned bytes', linux, async t => {
   shim(t, `process.stdout.write('a'.repeat(800000));process.stderr.write('b'.repeat(800000));setInterval(()=>{},1000);`);
   const r = await runDockerCommand(['start'], { timeoutMs: 5000 });

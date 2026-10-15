@@ -74,8 +74,12 @@ process.stdin.on('end',()=>{try{
 `;
 
 // Docker CLI receives only local discovery/system variables, never CAFF/provider/Node hooks.
-// No shell, no pull/build, no caller-controlled executable or Docker options.
+// No shell, no caller-controlled executable. dockerHost is internal offline-recovery
+// routing only (not HTTP/agent input); the recovery caller verifies dedicated ownership.
 export function runDockerCommand(args: string[], options: any = {}): Promise<any> {
+  const prefix = Object.hasOwn(options, 'dockerHost') ? ['--host', options.dockerHost] : ['--context', 'default'];
+  if (Object.hasOwn(options, 'dockerHost') && (typeof options.dockerHost !== 'string'
+      || !/^unix:\/\/\/[^\s\0]+$/.test(options.dockerHost))) return Promise.reject(failure('offline_host_unsupported'));
   const env: any = {};
   for (const key of ['PATH', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP']) {
     if (process.env[key]) env[key] = process.env[key];
@@ -85,7 +89,7 @@ export function runDockerCommand(args: string[], options: any = {}): Promise<any
     const output: any = { stdout: [], stderr: [] };
     let timer: any;
     const finish = (code: any) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, stdout: Buffer.concat(output.stdout).toString('utf8'), stderr: Buffer.concat(output.stderr).toString('utf8'), ...(reason ? { failure: reason } : {}) }); };
-    try { child = spawn('docker', ['--context', 'default', ...args], { env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }); }
+    try { child = spawn('docker', [...prefix, ...args], { env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }); }
     catch { reason = 'spawn'; finish(null); return; }
     const stop = (r: string) => { if (!reason) reason = r; child.kill('SIGKILL'); };
     timer = setTimeout(() => stop('timeout'), options.timeoutMs || 15000);

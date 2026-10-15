@@ -327,9 +327,21 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 使用独占新目录、固定 `image.tar`/`metadata.json`、wx/0600；save stdout 流式写入，归档最多4GiB，stderr只计数不保存/回显，超过64KiB拒绝。固定120s触发杀CLI，等待close后才关闭fd和释放进程内单并发名额；不是返回时间硬上界，也不证明 daemon 已停止内部只读导出。写入支持短写；非零退出、空流、超限、I/O/控制失败不返回引用。只导出指定完整image ID，不使用tag。注入runDocker/save/spawn与较小限额仅用于可信内部故障测试，非生产配置面。
 - 保存后有界分块读取计算整包hash，fsync镜像文件，写入元数据并fsync；最终读回两文件校验成功才返回外部五键引用 directory/archiveHash/archiveBytes/metadataHash/metadataBytes。失败保留部分工件；无自动覆盖/删除/重试、目录fsync、掉电恢复、生命周期配额或GC。4GiB是单工件限额，不是磁盘预留或全局配额；这些离线字节不计入capture usage。
 - `verifyImageArchive` 是只读、无Docker调用的**不透明字节完整性**检查：先验证外部引用形状/上界，再拒绝目录/文件静态链接与非普通文件，fd对象/大小核对、1MiB块hash及增长/截断检测；元数据最多64KiB，严格schema/kind/模板字段和与外部引用的hash/size对应。它不解析tar、不验证每层或导入可用性、不证明归档内config与声明image ID一致。外部引用、daemon、来源镜像、路径祖先与同OS用户仍是TCB；不抵御同时改写引用和字节，不承诺原子或恶意并发安全，不自动扫描整幅人工可信基础镜像的秘密。
-- 返回 `runtimeVersionsVerified/restored/runnable=false`，不授予任何用例资格。元数据的 RepoDigest 是**导出时daemon观察**，不是registry签名、供应链证明，也不是导入后仍存在的保证。缺本地镜像或digest依然拒绝；现有启动预检不修改。隔离daemon中的load与恢复运行、项目依赖和宿主调度器归档、长期环境引用仍未实现，不能以导出成功代替AC4。
+- 返回 `runtimeVersionsVerified/restored/runnable=false`，不授予任何用例资格。元数据的 RepoDigest 是**导出时daemon观察**，不是registry签名、供应链证明，也不是导入后仍存在的保证。缺本地镜像或digest依然拒绝；原有 default-daemon 启动预检不修改。隔离 daemon 恢复诊断见 §4.11；项目依赖和宿主调度器归档、长期环境引用仍未实现，不能以导出成功代替AC4。两次 Docker save 字节不保证一致，外部引用只钉住本次导出；已观察到相同大小而摘要不同，原因未定位。
 
 回归：`node --test tests/runtime/badcase-image-archive.test.js`，合成opaque字节、注入控制及真实Node CLI替身，不运行Docker。真实验证：Linux本Room根构建后，`node scripts/badcase-capture/verify-image-archive.cjs` 加 §4.4 五个镜像参数；真实save、流式读回、坏引用/翻转字节拒绝，Python只读自有可信tar头及至多1MiB config/manifest（最多16384成员、无提取），另核验config hash等于image ID、架构/OS及layer成员存在。此探针不属于通用验证器，也不验证layer内容或实际load。报告区分save+复验耗时和单次读取耗时；结束删除自身临时工件，不声称长期留存。导出manifest是否含RepoDigest单独报告，不将其缺失推断为已验证导入结果。本段无SDK/模型/容器/SQLite/UI/真实turn证据。
+
+### 4.11 归档恢复到专用 daemon 后的 SDK 初始化闭环
+
+用户 2026-10-15 裁决优先 MVP：归档导入后 RepoDigest 缺失不再阻断该恢复路径；不改变原有本地镜像模式的强校验，不伪造字段。`image-recovery.cjs` 的可信离线接口接受既有导出引用，导入前/后复验字节摘要；显式记录 `declaredRepositoryDigest` 与 `observedRepositoryDigests`。恢复的 image ID（config 内容摘要，包含层的未压缩摘要）、架构、OS、安全配置仍须匹配。该绑定不是 registry 来源认证；外部引用、本地 daemon、同 OS 用户与目录祖先仍属 TCB，不能接任意 tar 上传。
+
+- 仅专用 `/var/tmp/caff-image-recovery-*/docker.sock`，独立 data-root、vfs；校验 daemon ID 与共享 daemon 不同、开始时无镜像/容器。加载及整个 probe 创建/执行/inspect/清理均经显式 Unix socket，绝不回退 default daemon。恢复 transport 每次执行前后复验 daemon 和 image 身份。路径命名不等于隔离认证；生命周期管理器还必须核对命名空间和 PID。
+- `verify-image-recovery.py` 须人工授权 Linux root 环境；不自动提权或安装组件。随机0700目录、独立配置/socket/data-root/exec-root/pid/log，在 private mount/network namespace 启动 dockerd，关闭 bridge/firewall/forwarding。被测容器不 privileged、无 Docker socket，仍沿 §4.4 隔离检查；调度器宿主运行，SDK与工具只在容器执行。
+- `verify-image-recovery.cjs` 真实 export→load→归档 runtime/harness→封存合成输入→fresh/resume各两副本 SDK 初始化。容器内实际核验 Node/Python 版本，未发送 invocation、零模型调用，仍非忠实回放/评分。归档身份对象的 `runtimeVersionsVerified:false` 仅表示 load 本身未执行版本检查；总报告另记容器版本验证结果。实验额外比较源与恢复的 Config/RootFS，及共享镜像与 daemon ID 前后未变。
+- 实验拒绝损坏归档（零 Docker 调用）、缺失/损坏 runtime；单测覆盖共享/非空/错根 daemon、load失败、错误镜像/架构/安全配置、执行前身份变化。默认模式仍拒绝缺 RepoDigest。无 HTTP/生产调度接线；runtime/harness来自本次归档，宿主调度器和项目依赖未归档。
+- 最后终止自己启动的 daemon 进程组，核对本次进程/宿主挂载无残留后才删除自身目录。异常清理失败保留现场，不自动处理其他 daemon；父进程被强杀/宿主重启后的恢复未实现。120s load、30s attach 等截止仅触发 CLI 终止，不保证 daemon 工作即时终止；最终靠专用 daemon 生命周期收口。镜像、runtime/harness实验归档非长期留存，未接配额/GC/持久环境引用；全部 AC 仍 pending。
+
+复跑：先在本 Room 构建；Linux 已授权 root 下执行 `python3 scripts/badcase-capture/verify-image-recovery.py`，加 §4.4 五个镜像参数。需要已安装 dockerd/unshare/docker/Node/Python，无下载。定向自动回归：`node --test tests/runtime/badcase-image-recovery.test.js tests/runtime/badcase-docker-command.test.js`。
 
 §4.7 同步补充非法UTF-8位于合法off追加JSON字符串内的负例：文本解码后语义仍合法，只有字节往返校验拒绝，避免尾部非法字节被JSON结构守卫遮蔽。它是既有守卫的覆盖，不是父实现缺陷修复。
 
