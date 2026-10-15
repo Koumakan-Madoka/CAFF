@@ -212,6 +212,20 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 验证：`node --test tests/runtime/badcase-writer-recovery.test.js tests/runtime/badcase-sealing-lifecycle.test.js tests/runtime/badcase-run-references.test.js`。合成存储真实子进程覆盖 lease 持有者 SIGKILL 后等待退出、引用 hardlink 发布后 exit23（跳过 finally）、恢复 rename 后 exit23、跨进程恢复争用；既有封存 worker 强杀/超时回归不变。新恢复测试不声称已验证真实服务 supervisor 与其孤儿子进程的整棵进程树停止。无 Docker/模型/SQLite/UI 或用户真实 turn 证据，全部 AC pending。
 
+### 3.8 采集管理至消息封存的合成集成验证
+
+`tests/runtime/session-reuse-ab.test.js` 的 `authorized capture to message seal` 用例在 Linux 上把既有路径串联起来，无新增生产入口：随机 loopback HTTP → 实际 capture controller 授权/受限预估/独立开启 → 实际 agent-executor 的执行前 collector → SQLite 消息/run/task 关联 → 实际 flags controller 与 SQLite 只读子进程/封存文件 worker → 查询。项目、目录、数据库、CAS、会话及授权确认全部是测试自建夹具；`startRun`、工具桥与模型目录仍是替身，不执行真实 pi、模型或被测工具。
+
+- fresh/resume 各一次：在替身 startRun 入口观察已发布检查点，随后改变现场文件/会话；核对恢复内容为执行前字节、resume 原 session 字节不含执行后追加、message/run/task/checkpoint 八键关联正确。替身写入真实 run 表，executor 写实际 task/event/message 表；不以手工补造 checkpoint 或只用内存 ChatStore 代替。
+- 真实 HTTP 标记后要求 `saved_incomplete`、`checkpointSaved=true`，SQLite worker 必须完成直接关联核验（`trajectory_provenance_unverified` 且事件计数非零，不接受 `trajectory_unavailable` 作为正例）。原轨迹内容仍**未归档**，不升级 captured/runnable/complete/strictEvalEligible；该断言不是来源认证。
+- 同文重复 POST 不新增 case、retention 或逻辑字节；每模式关闭重开 SQLite 并重建全部服务/controller，另以独立 Node 进程只读查询原 case。不是完整应用进程重启，也不模拟掉电恢复。最终关闭采集后新合成 turn 无新 checkpoint/占用增长；缺历史现场的消息仍可标记但不制造 case。整个测试只清理自己的临时目录/监听器，不读取生产 DB/授权目录。
+- 每模式诊断输出实际 checkpoint 新增 blob/清单/总字节、collector 内部耗时、session 夹具字节、标记+封存新增字节与七类逻辑占用。它是小文件合成测量，非真实用户 turn、磁盘峰值、全环境成本或性能基准；镜像未参与。时间来自既有 collector `stats.durationMs`（清单最终发布前采样），不是完整 HTTP/turn 墙钟；随机 ID/路径/时间字段会使重复运行字节数略有变化。
+- 同段 `badcase-writer-recovery.test.js` 补单一 foreign 文件拒绝（禁止继续探测 owner）及 lstat→open 窗口同字节 owner 换 inode 故障，要求拒绝且不迁移锁/丢字节；只覆盖受信测试注入，不宣称防御任意同权限竞争。
+
+复跑：先构建，在具备 Linux openat2/statx、Python3 和匹配 Node ABI 的 `better-sqlite3` 环境执行 `node --test tests/runtime/session-reuse-ab.test.js tests/runtime/badcase-writer-recovery.test.js tests/runtime/badcase-sealing.test.js tests/runtime/badcase-trajectory-process.test.js tests/http/badcase-capture-controller.test.js tests/http/badcase-flags-controller.test.js`。新增集成用例非 Linux 显式 skip，不以 Windows 通过数代替真实采集验证。
+
+共享 Windows node_modules 不可直接作为 Linux SQLite 运行依赖：可在**独立测试副本**复制已安装 better-sqlite3 源码，移除该副本旧 build，再用本机已有且版本匹配的头文件执行 `node <npm自带node-gyp路径>/bin/node-gyp.js rebuild --nodedir=/usr --release -j 2`；不修改共享安装、不下载头文件或执行系统安装。其他依赖可只读链接；build/tests/public 复制到副本，使宿主及子进程解析同一 Linux SQLite。本次验证范围为 Node22.22.0/better-sqlite3 12.11.1，不能推断此前 Linux Node24 SIGABRT 已解决。无浏览器、Docker、真实模型或真实用户采集证据；所有最终 AC 仍待验收。
+
 ## 4. 环境与 Docker 隔离契约
 
 - EnvironmentTemplate 首版人工配置；首次成功重建后归档镜像并固定 **digest + 架构 + 运行时版本**。缺镜像/依赖 → preflight 显式阻断，禁止静默回退浮动 tag 或宿主执行。

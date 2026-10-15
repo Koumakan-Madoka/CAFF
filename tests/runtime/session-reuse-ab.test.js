@@ -275,13 +275,15 @@ function findAssistantCreate(store) {
   return create;
 }
 
-async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.', promptUserMessage = null }) {
+async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.', promptUserMessage = null, persistedRunStore = null }) {
   const { createTurnState } = require(require.resolve('../../build/server/domain/conversation/turn/turn-state'));
   const turnState = createTurnState(conversation, turnId);
   const events = [];
   const failedReplies = [];
-  const runStore = createFakeRunStore();
-  runStore.appendTaskEvent = (...args) => events.push(args);
+  const runStore = persistedRunStore || createFakeRunStore();
+  const appendTaskEvent = runStore.appendTaskEvent.bind(runStore);
+  runStore.appendTaskEvent = (...args) => { events.push(args); return appendTaskEvent(...args); };
+  if (persistedRunStore) runStore.createTask({ taskId: `root-${turnId}`, kind: 'conversation_turn', status: 'running' });
   const outcome = await executor.executeConversationAgent({
     runStore,
     conversationId: conversation.id,
@@ -781,6 +783,171 @@ test('real capture service archives pre-start fresh/resume inputs and survives r
       }
       if (mode === 'archived') assert.deepEqual(restarted.store.readBlob(projectId, resume.replayInput.sessionBlobHash), sessionBytes);
     });
+  }
+});
+
+// Same-process HTTP/controller + real Linux collector + real SQLite repositories
+// and both sealing workers. Only startRun/bridge/model catalog are synthetic.
+// This is not a real model invocation, browser test, or full app restart.
+test('authorized capture to message seal survives SQLite/service reconstruction with real executor wiring', {
+  skip: process.platform !== 'linux', timeout: 90000,
+}, async t => {
+  const http = require('node:http');
+  const { spawnSync } = require('node:child_process');
+  const { createHash } = require('node:crypto');
+  const load = file => require('../../build/' + file);
+  const { createChatAppStore } = load('lib/chat-app-store');
+  const { createSqliteRunStore } = load('lib/sqlite-store');
+  const { createBadcaseCaptureService } = load('server/domain/runtime/badcase-capture');
+  const { createBadcaseCaptureController } = load('server/api/badcase-capture-controller');
+  const { createBadcaseFlagsController } = load('server/api/badcase-flags-controller');
+  const { createBadcaseFlagService } = load('server/domain/runtime/badcase-capture/badcase-flags');
+  const { createBadcaseSealingService } = load('server/domain/runtime/badcase-capture/sealing-service');
+  const { resolveSessionPath } = load('lib/minimal-pi');
+  let chat, server;
+  // Close DB/listener before setupExecutorTest removes its disposable directory.
+  t.after(async () => { if (server?.listening) await new Promise(resolve => server.close(resolve)); chat?.close(); });
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const projectId = 'project-capture-chain', agent = createAgent();
+  const projectDir = path.join(env.tempDir, 'project'), captureRoot = path.join(env.tempDir, 'capture');
+  const sessionDir = path.join(env.tempDir, 'named-sessions');
+  fs.mkdirSync(projectDir); fs.mkdirSync(sessionDir);
+  const target = path.join(projectDir, 'file.txt'); fs.writeFileSync(target, 'before fresh');
+  const dbOptions = { agentDir: env.tempDir, sqlitePath: path.join(env.tempDir, 'chat.sqlite') };
+  chat = createChatAppStore(dbOptions);
+  let capture, captureController, flagsController, base;
+  chat.saveCustomRoleConfig(agent);
+  chat.createConversation({ id: 'conversation-reuse-ab', title: 'Synthetic capture chain', participants: [agent.id], projectScopeId: projectId });
+  const conversation = { ...chat.getConversation('conversation-reuse-ab'), agents: [agent], worktreePath: projectDir };
+  const rebuild = () => {
+    capture = createBadcaseCaptureService({ captureRoot });
+    const options = { projectManager: { listProjects: () => [{ id: projectId }] }, host: '127.0.0.1',
+      getAuthority: () => new URL(base).host, csrfToken: 'synthetic-capture-chain' };
+    captureController = createBadcaseCaptureController({ ...options, service: capture });
+    const flags = createBadcaseFlagService({ captureRoot, captureStore: capture.store, chatStore: chat });
+    flagsController = createBadcaseFlagsController({ ...options, service: flags,
+      sealingService: createBadcaseSealingService({ flags, captureStore: capture.store, databasePath: dbOptions.sqlitePath }) });
+  };
+  server = http.createServer(async (req, res) => {
+    try {
+      const args = { req, res, pathname: new URL(req.url, base).pathname };
+      if (await captureController(args) || await flagsController(args)) return;
+      res.writeHead(404); res.end();
+    } catch (e) { res.writeHead(e.statusCode || 500); res.end(JSON.stringify({ issues: e.issues || [] })); }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  base = `http://127.0.0.1:${server.address().port}`; rebuild();
+  const api = async (url, body, status = 200) => {
+    const response = await fetch(base + url, body === undefined ? {} : { method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-caff-csrf-token': 'synthetic-capture-chain' }, body: JSON.stringify(body) });
+    const result = await response.json(); assert.equal(response.status, status, JSON.stringify(result)); return result;
+  };
+  const endpoint = `/api/projects/${projectId}/badcase-capture`;
+  assert.equal((await api(endpoint)).policy.status, 'disabled');
+  await api(endpoint + '/authorize', { confirmed: true, authorizedDirs: [projectDir], authorizedInputDirs: [sessionDir],
+    includedIgnoredPatterns: [], excludedPatterns: ['.git', 'node_modules'] });
+  const estimate = await api(endpoint + '/estimate', {});
+  assert.equal(estimate.complete, true); assert.equal(estimate.totalBytes, Buffer.byteLength('before fresh'));
+  assert.equal(capture.loadPolicy(projectId).status, 'disabled');
+  assert.equal(capture.store.listCheckpoints(projectId).length, 0);
+  await api(endpoint + '/enable', { confirmed: true, estimateId: estimate.estimateId });
+  assert.equal(capture.loadPolicy(projectId).status, 'enabled');
+  const sessionBytes = Buffer.from(JSON.stringify({ type: 'session', version: 3, id: 'chain-session' }) + '\n'
+    + JSON.stringify({ type: 'message', id: 'prior-user', parentId: 'chain-session', message: { role: 'user', content: [{ type: 'text', text: 'synthetic prior input' }] } }) + '\n');
+  const observed = [], messages = [], seals = [];
+  for (const [index, mode] of ['fresh', 'resume'].entries()) {
+    const usageBefore = capture.computeUsage(projectId);
+    const user = chat.createMessage({ id: `u${index + 1}`, conversationId: conversation.id, role: 'user', status: 'completed', content: `synthetic input ${mode}` });
+    const runStore = createSqliteRunStore({ agentDir: env.tempDir, db: chat.db });
+    const executor = env.createExecutor(chat, { badcaseCapture: capture, runId: index + 1,
+      onStartRun(record) {
+        const checkpoint = capture.store.loadLatestCheckpoint(projectId, projectDir);
+        // Collect observations here; assert outside startRun's caught error boundary.
+        const sessionPath = resolveSessionPath(record.options.session, record.options.agentDir);
+        const run = runStore.startRun({ ...record.options, provider: record.provider, model: record.model,
+          prompt: record.prompt, cwd: projectDir, sessionPath, requestedSession: record.options.session, requestedResume: record.options.resume });
+        runStore.finishRun(run.runId, { status: 'succeeded', reply: 'synthetic result', assistantErrors: [] });
+        observed.push({ checkpoint, runId: run.runId, resume: record.options.resume, usage: capture.computeUsage(projectId) });
+        if (index === 0) fs.writeFileSync(sessionPath, sessionBytes);
+        else fs.appendFileSync(sessionPath, 'POST-START-NOT-ARCHIVED\n');
+        fs.writeFileSync(target, index === 0 ? 'before resume' : 'after resume');
+      } });
+    await runTurn({ executor, conversation, agent, store: chat, turnId: `chain-${mode}`, promptUserMessage: user, persistedRunStore: runStore });
+    assert.equal(observed.length, index + 1);
+    const observation = observed[index], cp = observation.checkpoint;
+    assert.ok(cp, 'checkpoint must already exist before synthetic startRun');
+    assert.equal(observation.runId, index + 1); assert.equal(observation.resume, index === 1,
+      JSON.stringify(chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1)?.metadata));
+    assert.equal(cp.replayInput.deliveryMode, mode); assert.equal(cp.replayInput.complete, true, JSON.stringify(cp.replayInput.incompleteReasons));
+    assert.equal(cp.files['file.txt'].hash, createHash('sha256').update(`before ${mode}`).digest('hex'));
+    if (index === 1) assert.deepEqual(capture.store.readBlob(projectId, cp.replayInput.sessionBlobHash), sessionBytes);
+    const message = chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+    assert.equal(message.status, 'completed'); assert.equal(message.runId, observation.runId);
+    assert.equal(message.metadata.badcaseCheckpointId, cp.checkpointId);
+    messages.push(message);
+    const url = `/api/projects/${projectId}/conversations/${conversation.id}/messages/${message.id}/badcase-flag`;
+    const body = { confirmed: true, actual: `synthetic ${mode} problem`, expected: 'synthetic expected behavior' };
+    assert.equal((await api(url)).flag, null);
+    const marked = await api(url, body, 201); seals.push(marked);
+    assert.deepEqual(marked.flag.sealAssociation, { projectId, conversationId: conversation.id, messageId: message.id,
+      turnId: message.turnId, agentId: agent.id, checkpointId: cp.checkpointId, taskId: message.taskId, runId: message.runId });
+    assert.equal(marked.seal.state, 'saved_incomplete'); assert.equal(marked.seal.checkpointSaved, true);
+    assert.equal(marked.seal.trajectory.reason, 'trajectory_provenance_unverified', 'real SQLite worker must validate direct associations, not fall back to unavailable');
+    assert.ok(marked.seal.trajectory.totalTaskEventCount > 0);
+    for (const key of ['captured', 'runnable', 'reproduced', 'evaluable', 'strictEvalEligible', 'complete']) assert.equal(marked.seal[key], false);
+    const usage = capture.computeUsage(projectId);
+    assert.equal(observation.usage.totalBytes - usageBefore.totalBytes, cp.stats.totalNewBytes);
+    t.diagnostic(JSON.stringify({ mode, captureNewBytes: cp.stats.totalNewBytes, newBlobBytes: cp.stats.newBlobBytes,
+      newManifestBytes: cp.stats.newManifestBytes, captureDurationMs: cp.stats.durationMs,
+      sessionBytes: mode === 'resume' ? sessionBytes.length : 0, sealAndFlagNewBytes: usage.totalBytes - observation.usage.totalBytes,
+      totalLogicalBytes: usage.totalBytes, synthetic: true, imageBytes: 0 }));
+    const duplicate = await api(url, body);
+    assert.equal(duplicate.created, false); assert.deepEqual(duplicate.seal, marked.seal);
+    assert.deepEqual(capture.computeUsage(projectId), usage);
+    // Close/reopen actual DB and recreate controllers, not in-memory mirrors.
+    chat.close(); chat = createChatAppStore(dbOptions); rebuild();
+    assert.deepEqual((await api(url)).seal, marked.seal);
+    assert.deepEqual(chat.getMessage(message.id), message);
+  }
+  const cases = path.join(captureRoot, 'projects', projectId, 'cases');
+  assert.equal(fs.readdirSync(cases).length, 2);
+  assert.equal(fs.readdirSync(path.join(captureRoot, 'projects', projectId, 'retention')).length, 2);
+  const usageBeforeReader = capture.computeUsage(projectId);
+  // A separate Node process proves reads do not depend on parent caches.
+  chat.close(); chat = null;
+  const child = spawnSync(process.execPath, ['-e', `
+    const {createChatAppStore}=require(${JSON.stringify(require.resolve('../../build/lib/chat-app-store'))});
+    const {createCaptureStore}=require(${JSON.stringify(require.resolve('../../build/server/domain/runtime/badcase-capture/capture-store'))});
+    const {createBadcaseFlagService}=require(${JSON.stringify(require.resolve('../../build/server/domain/runtime/badcase-capture/badcase-flags'))});
+    const {createBadcaseSealingService}=require(${JSON.stringify(require.resolve('../../build/server/domain/runtime/badcase-capture/sealing-service'))});
+    const chat=createChatAppStore(${JSON.stringify(dbOptions)}),captureStore=createCaptureStore({captureRoot:${JSON.stringify(captureRoot)}});
+    try { const flags=createBadcaseFlagService({captureRoot:captureStore.captureRoot,captureStore,chatStore:chat});
+      const service=createBadcaseSealingService({flags,captureStore,databasePath:${JSON.stringify(dbOptions.sqlitePath)}});
+      process.stdout.write(JSON.stringify(${JSON.stringify(messages.map(m => ({ projectId, conversationId: conversation.id, messageId: m.id })))}.map(scope=>service.get(scope))));
+    } finally { chat.close(); }
+  `], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), seals.map(({ flag, seal }) => ({ flag, seal })));
+  chat = createChatAppStore(dbOptions); rebuild();
+  assert.deepEqual(capture.computeUsage(projectId), usageBeforeReader);
+  await api(endpoint + '/disable', {});
+  const beforeDisabled = capture.computeUsage(projectId), count = capture.store.listCheckpoints(projectId).length;
+  const user = chat.createMessage({ id: 'u3', conversationId: conversation.id, role: 'user', status: 'completed', content: 'disabled synthetic turn' });
+  await runTurn({ executor: env.createExecutor(chat, { badcaseCapture: capture, runId: 3 }), conversation, agent, store: chat,
+    turnId: 'chain-disabled', promptUserMessage: user });
+  const disabledMessage = chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+  assert.equal(disabledMessage.metadata.badcaseCheckpointId, '');
+  assert.equal(capture.store.listCheckpoints(projectId).length, count);
+  assert.deepEqual(capture.computeUsage(projectId), beforeDisabled);
+  const historical = chat.createMessage({ conversationId: conversation.id, agentId: agent.id, role: 'assistant', status: 'completed', content: 'historical synthetic message' });
+  const historicalUrl = `/api/projects/${projectId}/conversations/${conversation.id}/messages/${historical.id}/badcase-flag`;
+  const missing = await api(historicalUrl, { confirmed: true, actual: 'no checkpoint', expected: 'report missing' }, 201);
+  assert.equal(missing.seal.state, 'unavailable'); assert.equal(missing.seal.checkpointSaved, false);
+  assert.equal(fs.readdirSync(cases).length, 2, 'historical marker must not fabricate a case');
+  for (const [index, cp] of observed.map(o => o.checkpoint).entries()) {
+    const restored = capture.restoreCheckpoint({ projectId, checkpointId: cp.checkpointId, targetDir: path.join(env.tempDir, `restore-${index}`) });
+    assert.equal(restored.ok, true);
+    assert.equal(fs.readFileSync(path.join(env.tempDir, `restore-${index}/file.txt`), 'utf8'), index === 0 ? 'before fresh' : 'before resume');
   }
 });
 

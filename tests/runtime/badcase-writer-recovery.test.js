@@ -77,6 +77,37 @@ test('changed owner, replaced directory, unknown contents and malformed owner re
     assert.deepEqual(tree(h.root), before); assert.equal(fs.existsSync(h.gate), false);
   }
 });
+test('single foreign entry refuses before attempting to inspect an owner and preserves all bytes', t => {
+  const h = setup(t); fs.mkdirSync(h.lock); fs.writeFileSync(path.join(h.lock, 'foreign'), 'f'.repeat(64));
+  const before = tree(h.root), original = fs.lstatSync; let ownerReads = 0;
+  try {
+    fs.lstatSync = (file, ...args) => { if (file === path.join(h.lock, 'owner')) ownerReads++; return original(file, ...args); };
+    assert.throws(() => inspectProjectWriteLock(h.root, 'p1'), code('capture_lock_invalid'));
+    assert.throws(() => recover(h, 'a'.repeat(64)), code('capture_lock_invalid'));
+  } finally { fs.lstatSync = original; }
+  assert.equal(ownerReads, 0); assert.deepEqual(tree(h.root), before);
+  assert.equal(fs.existsSync(h.gate), false);
+});
+test('same-byte owner replacement between lstat and open refuses by opened file identity', t => {
+  for (const operation of ['inspect', 'recover']) {
+    const h = setup(t), lease = acquireProjectWriteLease(h.root, 'p1');
+    const expected = inspectProjectWriteLock(h.root, 'p1');
+    const owner = path.join(h.lock, 'owner'), replacement = path.join(h.project, 'replacement'), retired = path.join(h.project, 'original-owner');
+    fs.writeFileSync(replacement, lease.owner);
+    const original = fs.openSync; let swapped = false;
+    try {
+      fs.openSync = (file, ...args) => {
+        if (file === owner && !swapped) { swapped = true; fs.renameSync(owner, retired); fs.renameSync(replacement, owner); }
+        return original(file, ...args);
+      };
+      assert.throws(() => operation === 'inspect' ? inspectProjectWriteLock(h.root, 'p1') : recover(h, expected), code('capture_lock_invalid'));
+    } finally { fs.openSync = original; }
+    assert.equal(swapped, true);
+    assert.equal(fs.readFileSync(owner, 'utf8'), lease.owner); assert.equal(fs.readFileSync(retired, 'utf8'), lease.owner);
+    assert.equal(fs.existsSync(h.gate), false);
+    assert.equal(fs.readdirSync(h.project).some(name => name.startsWith('.writer-lock-retired-')), false);
+  }
+});
 test('missing storage is never created and invalid project ids never traverse', t => {
   const h = setup(t), missing = path.join(h.root, 'missing');
   assert.throws(() => inspectProjectWriteLock(missing, 'p1'), code('capture_lock_invalid'));
