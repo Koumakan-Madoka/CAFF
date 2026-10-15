@@ -365,6 +365,19 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 本段是离线调度逻辑，不创建容器、不运行 SDK/模型/评分器、不调用生产资源；自动测试只使用合成回执，不能替代真实重跑证据。**生产接线仍必须实现**：可信人工批准入口、持久化并发一次性消费与先写后派发、锁内复验/protect、独立副本/评分器隔离、受控模型出口逐请求费用预留、超时终止和可恢复报告。未知或无法约束的计费不能启动付费运行。本纯状态机不宣称 AC7/AC8 或付费门控已交付。
 
+### 5.2 批准声明持久化与一次性派发记录（可信内部协调器，非付费入口）
+
+`evaluation-record.ts` 将 §5.1 接为文件型执行记录，仍无 HTTP/agent 工具、批准 UI、SDK/模型或 Docker launcher。`recordEvaluationApproval` 只保存可信调用方提供的人工批准**声明**，不认证发起者、也不授权真实付费。实际入口必须在用户批准具体用例、评分规则、模型及预算后调用；不能把 `confirmed=true` 当作人类身份验证。`dispatchRecordedEvaluation` 的 executor 是受信注入函数；当前测试全部用离线替身，不可当真实任务提交/评分证据。
+
+- 专用存储 `root/evaluations/<sha256(approvalId)>/`，不存原始任务、stdout/stderr、异常正文、参考答案或凭据；仅存严格 plan spec、批准声明、时间与结构化回执。approval ID 在该 root 内唯一；同 ID/相同内容重试只读，变更内容拒绝。不同 root/新 ID 不是全局去重，不能通过复制目录/删除文件重置批准来绕过预算。此存储必须在被测容器外、不进入 Git；未接 capture usage、配额、生命周期或 GC。
+- 先独占创建批准目录，再以 wx/0600 写 `approval.json`；派发以 wx 创建永久 `claim.json`，使同一个批准跨进程只能被一个执行序列消费。重复启动即使已完成也拒绝，不重放、不从未完成尾部继续。每次先将预算预留事件写入编号 JSON 并 fsync，成功后才调用 executor；结果验证成功后追加落盘，先前结果不可覆盖。单个批准最多200次运行，单记录目录最多404项，批准文件64KiB/事件4KiB读取上限。file fsync **不是目录持久化或掉电保证**，存储及祖先路径、同 OS 用户为 TCB，不抵御删改整个记录或恶意路径替换。
+- 派发使用模块自己的 `Date.now()`，不接受调用者提供时间；拒绝倒退。每次预留检查期限，并在磁盘写入结束后、调用 executor 前再次检查，request 携带精确 approvalId/planHash/expiresAt/单次费用与超时。时钟仍信任 OS；adapter 必须在真正异步启动/模型出口再次检查期限并执行超时、逐请求预算和容器终止，本模块没有这些硬限制。
+- 只读查询按批准时刻重建 ledger，再按编号重放 reserve/result/finish，验证字段、时序、状态转换、固定模式与文件类型；部分/缺失/过大/未知/乱序数据拒绝，不补建或重置。并发读取可能看到未完成写入并明确失败，不声称原子读快照。活跃 executor 与崩溃遗留均报告 `unresolved`，不根据 PID/年龄猜测外部执行已停止。
+- executor 抛错或回执非法：保留未结算预留，记固定原因 `dispatch_failed`/`invalid_result`，不伪造失败费用或评分；错误正文不落盘。记录写失败直接失败关闭，可能留部分工件；未知是否已执行时不得自动重试。进程退出后仍能查询已有合法记录，**没有自动修复、结算恢复、取消或后台重跑**。预算耗尽、过期、未知费用、超支及失败沿 §5.1 停止后续。
+- `finished` 仅表示协调序列已记录终止，不保证所有任务成功；每次评分仍是受信 executor 的声明，没有执行/认证评分器。`executionVerified=false/strictEvalEligible=false` 不变；claim/reservation 不是执行证明。无输出材料存储、真实模型门控或资格升级。Docker start/post-inspect/rm 的目标侧独立交叉核验仍随真实 launcher 接线补，不以本段文件测试替代。
+
+回归：构建后 `node --test tests/runtime/badcase-evaluation-record.test.js tests/runtime/badcase-evaluation-plan.test.js`。隔离临时目录、独立 Node 子进程查询/竞争、dispatch 内进程退出23、fsync故障、写入期间期限越界、未知成本与坏回执；均为静态/离线协调逻辑，不在宿主运行真实 agent。初始化 Docker 证据沿 §4.11，本段不宣称新增容器/真实模型/SQLite/UI 或任何 AC 完成。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
