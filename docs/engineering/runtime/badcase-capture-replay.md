@@ -335,7 +335,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 用户 2026-10-15 裁决优先 MVP：归档导入后 RepoDigest 缺失不再阻断该恢复路径；不改变原有本地镜像模式的强校验，不伪造字段。`image-recovery.cjs` 的可信离线接口接受既有导出引用，导入前/后复验字节摘要；显式记录 `declaredRepositoryDigest` 与 `observedRepositoryDigests`。恢复的 image ID（config 内容摘要，包含层的未压缩摘要）、架构、OS、安全配置仍须匹配。该绑定不是 registry 来源认证；外部引用、本地 daemon、同 OS 用户与目录祖先仍属 TCB，不能接任意 tar 上传。
 
-- 仅专用 `/var/tmp/caff-image-recovery-*/docker.sock`，独立 data-root、vfs；校验 daemon ID 与共享 daemon 不同、开始时无镜像/容器。加载及整个 probe 创建/执行/inspect/清理均经显式 Unix socket，绝不回退 default daemon。恢复 transport 每次执行前后复验 daemon 和 image 身份。路径命名不等于隔离认证；生命周期管理器还必须核对命名空间和 PID。
+- 仅专用 `/var/tmp/caff-image-recovery-*/docker.sock`，独立 data-root、vfs；校验 daemon ID 与共享 daemon 不同、开始时无镜像/容器。加载及整个 probe 创建/执行/inspect/清理均经显式 Unix socket，绝不回退 default daemon。恢复 transport 每次执行前后复验 daemon 和 image 身份；在 probe 创建容器后、start 前，另经恢复器持有的目标 transport inspect 该完整容器 ID、image ID、owner label 及未运行状态，结束核对回执 ID。没有观察或 ID 不符即拒绝，不以运行前后容器数相同代替存在性证据；观察失败仍由 probe 清理本次容器。此交叉核验针对受信代码误路由，非远程认证或抵御同权限恶意 probe。路径命名不等于隔离认证；生命周期管理器还必须核对命名空间和 PID。
 - `verify-image-recovery.py` 须人工授权 Linux root 环境；不自动提权或安装组件。随机0700目录、独立配置/socket/data-root/exec-root/pid/log，在 private mount/network namespace 启动 dockerd，关闭 bridge/firewall/forwarding。被测容器不 privileged、无 Docker socket，仍沿 §4.4 隔离检查；调度器宿主运行，SDK与工具只在容器执行。
 - `verify-image-recovery.cjs` 真实 export→load→归档 runtime/harness→封存合成输入→fresh/resume各两副本 SDK 初始化。容器内实际核验 Node/Python 版本，未发送 invocation、零模型调用，仍非忠实回放/评分。归档身份对象的 `runtimeVersionsVerified:false` 仅表示 load 本身未执行版本检查；总报告另记容器版本验证结果。实验额外比较源与恢复的 Config/RootFS，及共享镜像与 daemon ID 前后未变。
 - 实验拒绝损坏归档（零 Docker 调用）、缺失/损坏 runtime；单测覆盖共享/非空/错根 daemon、load失败、错误镜像/架构/安全配置、执行前身份变化。默认模式仍拒绝缺 RepoDigest。无 HTTP/生产调度接线；runtime/harness来自本次归档，宿主调度器和项目依赖未归档。
@@ -352,6 +352,18 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 被测 agent 不得读取 wiki、参考答案、评分秘密或前次运行产物。
 - 真实模型评测须人工发起并批准模型、重复次数、超时与预算上限；未批准预算不能启动；不后台自动付费。逐次记录结果（非仅平均分），披露模型随机性与不可固定外部依赖；不以"必然提分"作为基础设施验收标准。
 - 旧轨迹仅用于分析归因，不以播放历史工具输出替代真实工具执行。
+
+### 5.1 固定对照计划与预算记账（内部纯状态机，尚未接 launcher）
+
+`evaluation-plan.ts` 仅接收声明摘要：case/checkpoint/归一化输入/环境/harness、单一 role ID、baseline/candidate 角色内容摘要、provider/model/settings 摘要与评分器 ID/版本摘要。严格键集合拒绝额外字段；1–100 轮重复，逐轮 baseline→candidate，共同字段生成同一个 commonHash；完整计划（含两个角色摘要、次数、超时、单次/总预算）规范排序后生成 planHash。摘要不是归档字节验证或完整性资格，尚不自动从封存对象派生。模型随机性及固定执行顺序带来的时间偏差未消除。
+
+- 人工批准声明必须 `confirmed=true`、绑定完整 planHash、含 approvalId/未过期时间；任何配置变化须新批准。这里只校验调用方声明，**没有人类身份认证、批准 UI/API、持久化或一次性消费**，不得直接作为启动/付费许可。同一个批准可创建多个内存 ledger，不能用此模块防跨进程重复支出。
+- `reserve` 顺序领取每次运行、只允许一个未结算项；先按单次上限预留总预算，余额不足停止，不按平均/预测价格抢跑。单位为整数 micro-USD，每项上限 10^12，最多200项确保合计仍在安全整数内；非美元成本须外部先形成明确计费契约，不能擅自转换。时钟由受信调用方提供并要求不倒退，超时字段只是声明，**没有计时器、进程终止或实际出站费用硬限制**。
+- `settle` 精确关联当前 run ID；completed 必须有输出摘要和两项二元评分（预期行为达成、目标 badcase 复现），失败/超时/取消不得带成功评分。结果仍由可信调用方声明，未执行或认证评分器。只存摘要和结构化结果，不收 stdout、任务正文、参考答案或凭据。
+- 未知成本保留全部预留并停止，不能计作免费；实测超支如实记录、不钳制为上限并停止下一次。失败/超时/取消均停止；畸形回执保持预留，等待外部可信协调器确认终止和成本，不能释放后自动重试。正常成本确认后释放单次剩余额度。
+- 报告逐次保留 variant/repetition/共同输入摘要/角色摘要/状态/成本/评分，并分别报告 baseline/candidate 的 attempted、scored、reproduced、expectationMet；失败计入 attempted 但不伪造评分，未结算的 reservation 不算已执行。`state=complete` 只表示计划条目已按调用方回执结算，`executionVerified=false`、`strictEvalEligible=false` 恒定，不更新 SealedCase 资格。
+
+本段是离线调度逻辑，不创建容器、不运行 SDK/模型/评分器、不调用生产资源；自动测试只使用合成回执，不能替代真实重跑证据。**生产接线仍必须实现**：可信人工批准入口、持久化并发一次性消费与先写后派发、锁内复验/protect、独立副本/评分器隔离、受控模型出口逐请求费用预留、超时终止和可恢复报告。未知或无法约束的计费不能启动付费运行。本纯状态机不宣称 AC7/AC8 或付费门控已交付。
 
 ## 6. 威胁模型
 

@@ -53,6 +53,7 @@ async function runProbe(image, files, options = {}) {
       '--tmpfs', '/work:' + WORK, '--tmpfs', '/tmp:' + TMP, '--entrypoint', '/usr/bin/env', image.imageId, ...CMD]);
     assert.ok(good(created), 'probe_create_failed'); id = created.stdout.trim(); assert.match(id, /^[a-f0-9]{64}$/);
     const pre = one(await runDocker(['inspect', id])); isolated(pre, image, owner); assert.equal(pre.State.Running, false);
+    if (options.observeCreated) await options.observeCreated(id, owner);
     result = await runDocker(['start', '-a', '-i', id], { input: archive, timeoutMs: 30000 });
     const post = one(await runDocker(['inspect', id])); isolated(post, image, owner);
     assert.equal(post.State.Running, false); assert.equal(post.State.ExitCode, result.code); assert.equal(post.State.OOMKilled, false);

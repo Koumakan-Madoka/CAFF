@@ -58,7 +58,23 @@ async function restoreImageArchive(reference, destination, options = {}) {
     architecture: image.architecture, os: 'linux', source: 'trusted-archive', runtimeVersionsVerified: false };
   return { identity, image, async runProbe(requestedImage, files, probeOptions = {}) {
     assert.deepEqual(requestedImage, image); await checkDaemon(); await inspect();
-    const result = await (probeOptions.probe || runProbe)(image, files, { runDocker: local });
+    let observedId = null;
+    const observeCreated = async (id, owner) => {
+      assert.equal(observedId, null); assert.match(id, /^[a-f0-9]{64}$/);
+      assert.ok(typeof owner === 'string' && owner.length > 0);
+      // Independent target transport: do not trust the probe's own inspect result.
+      // Before execution/cleanup the exact ID must exist on THIS daemon.
+      const entries = json(await local(['inspect', id]));
+      assert.ok(Array.isArray(entries) && entries.length === 1);
+      const container = entries[0];
+      assert.equal(container.Id, id); assert.equal(container.Image, image.imageId);
+      assert.equal(container.Config?.Labels?.['caff.badcase.pi-initialization'], owner);
+      assert.equal(container.State?.Running, false);
+      observedId = id;
+    };
+    const result = await (probeOptions.probe || runProbe)(image, files, { runDocker: local, observeCreated });
+    assert.ok(observedId, 'image_recovery_probe_unobserved');
+    assert.equal(result?.containerId, observedId);
     await checkDaemon(); await inspect();
     return result;
   } };

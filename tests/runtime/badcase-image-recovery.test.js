@@ -20,6 +20,8 @@ async function fixture(t) {
     if (a[0] === 'info') return ok(o.dockerHost ? { ...state.info, Images: loaded ? 1 : state.info.Images } : { ID: state.sharedId });
     if (a[1] === 'load') { loaded = true; return state.loadFails ? { code: 1, stdout: '', stderr: 'not returned' } : ok({}); }
     if (a[1] === 'inspect') return ok([state.img]);
+    if (a[0] === 'inspect') return ok([{ Id: 'a'.repeat(64), Image: image.imageId,
+      Config: { Labels: { 'caff.badcase.pi-initialization': 'probe-owner' } }, State: { Running: false } }]);
     throw Error('unexpected command');
   };
   return { ref, state, calls, options: { runDocker }, root };
@@ -28,11 +30,34 @@ test('restores missing RepoDigest honestly and binds all subsequent commands to 
   const h = await fixture(t), r = await restoreImageArchive(h.ref, target, h.options);
   assert.deepEqual(r.identity, { imageId: image.imageId, declaredRepositoryDigest: image.repositoryDigest, observedRepositoryDigests: [], archiveHash: h.ref.archiveHash, architecture: 'amd64', os: 'linux', source: 'trusted-archive', runtimeVersionsVerified: false });
   let received;
-  const result = await r.runProbe(image, [], { probe: async (i, f, options) => { received = options; return 42; } });
-  assert.equal(result, 42);
+  const result = await r.runProbe(image, [], { probe: async (i, f, options) => {
+    received = options; await options.observeCreated('a'.repeat(64), 'probe-owner');
+    return { containerId: 'a'.repeat(64) };
+  } });
+  assert.equal(result.containerId, 'a'.repeat(64));
+  assert.ok(h.calls.some(c => c.a[0] === 'inspect' && c.a[1] === result.containerId && c.o.dockerHost === target.socket));
   await received.runDocker(['info', '--format', '{{json .}}']);
   assert.equal(h.calls.at(-1).o.dockerHost, target.socket);
   assert.ok(h.calls.filter(c => c.a[0] !== 'info').every(c => c.o.dockerHost === target.socket));
+});
+test('probe without target-daemon observation or with mismatched result ID fails closed', async t => {
+  const h = await fixture(t), r = await restoreImageArchive(h.ref, target, h.options);
+  await assert.rejects(r.runProbe(image, [], { probe: async () => ({ containerId: 'a'.repeat(64) }) }), /image_recovery_probe_unobserved/);
+  await assert.rejects(r.runProbe(image, [], { probe: async (_, __, options) => {
+    await options.observeCreated('a'.repeat(64), 'probe-owner'); return { containerId: 'b'.repeat(64) };
+  } }));
+});
+test('observation independently rejects missing, wrong owner, wrong ID and running target container', async t => {
+  for (const result of [{ code: 1, stdout: '', stderr: '' }, ok([{ Id: 'b'.repeat(64) }]),
+    ok([{ Id: 'a'.repeat(64), Image: image.imageId, Config: { Labels: { 'caff.badcase.pi-initialization': 'wrong' } }, State: { Running: false } }]),
+    ok([{ Id: 'a'.repeat(64), Image: image.imageId, Config: { Labels: { 'caff.badcase.pi-initialization': 'probe-owner' } }, State: { Running: true } }])]) {
+    const h = await fixture(t), run = h.options.runDocker;
+    h.options.runDocker = (args, options) => args[0] === 'inspect' ? result : run(args, options);
+    const r = await restoreImageArchive(h.ref, target, h.options);
+    await assert.rejects(r.runProbe(image, [], { probe: async (_, __, options) => {
+      await options.observeCreated('a'.repeat(64), 'probe-owner'); return { containerId: 'a'.repeat(64) };
+    } }));
+  }
 });
 test('bad archive rejected before any Docker command', async t => {
   const h = await fixture(t);

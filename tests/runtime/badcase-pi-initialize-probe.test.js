@@ -82,6 +82,37 @@ test('inspect guard rejects unsafe container configuration and command substitut
     c => { c.HostConfig.Tmpfs['/tmp'] = 'rw'; },
   ]) { const c = structuredClone(base); change(c); assert.throws(() => isolated(c, image, owner)); }
 });
+test('real probe orchestrator uses injected transport and observes before start; observer failure cleans without starting', async () => {
+  // Compile unchanged trusted orchestration with a DENY default transport and fake
+  // tar. No Docker, shell, SDK or model runs on this unit-test path.
+  const Module = require('node:module');
+  const filename = path.resolve(__dirname, '../../scripts/badcase-capture/verify-pi-initialization.cjs');
+  const m = new Module(filename, module); m.filename = filename; m.paths = Module._nodeModulePaths(path.dirname(filename));
+  const nativeRequire = m.require.bind(m);
+  let defaultCalls = 0;
+  m.require = name => name === 'node:child_process' ? { execFileSync: () => Buffer.from('synthetic tar') }
+    : name.endsWith('/badcase-capture/docker-sandbox') ? { runDockerCommand: async () => { defaultCalls++; throw Error('default_transport_forbidden'); } }
+    : nativeRequire(name);
+  m._compile(fs.readFileSync(filename, 'utf8'), filename);
+  const image = { imageId: 'sha256:' + 'a'.repeat(64) };
+  for (const reject of [false, true]) {
+    const events = [];
+    const fake = require('../helpers/badcase-fake-docker.cjs')(image, { change(args, result, state) {
+      events.push(args[0]);
+      if (args[0] === 'inspect') { const c = state.info(); c.Config.Labels = { 'caff.badcase.pi-initialization': state.owner }; result.stdout = JSON.stringify([c]); }
+    } });
+    const options = { runDocker: fake.run, observeCreated: async (id, owner) => {
+      events.push('observe'); assert.equal(id, 'b'.repeat(64)); assert.ok(owner);
+      assert.equal(events.includes('start'), false);
+      if (reject) throw Error('target_container_missing');
+    } };
+    const pending = m.exports.runProbe(image, [{ path: 'probe.cjs', bytes: Buffer.from('// inert') }], options);
+    if (reject) { await assert.rejects(pending, /target_container_missing/); assert.equal(events.includes('start'), false); }
+    else { assert.equal((await pending).containerId, 'b'.repeat(64)); assert.ok(events.indexOf('observe') < events.indexOf('start')); }
+    assert.ok(events.includes('observe')); assert.ok(events.includes('rm')); assert.equal(events.at(-1), 'ps');
+  }
+  assert.equal(defaultCalls, 0);
+});
 test('container entry refuses host execution before importing SDK', () => {
   const { spawnSync } = require('node:child_process');
   const r = spawnSync(process.execPath, ['scripts/badcase-capture/pi-initialize-probe.cjs'], { encoding: 'utf8' });
