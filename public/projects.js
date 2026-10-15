@@ -36,6 +36,11 @@ const capturePanel = shared.createBadcaseCapturePanel({
   fetchJson,
 });
 
+const evaluationPanel = shared.createBadcaseEvaluationPanel({
+  root: document.getElementById('badcase-evaluation-panel'),
+  fetchJson,
+});
+
 function showToast(message) {
   toast.show(message);
 }
@@ -130,6 +135,7 @@ function renderSelectedProject() {
     dom.deleteProjectButton.disabled = !selected;
   }
   void capturePanel.select(selected);
+  void evaluationPanel.select(selected);
 }
 
 function renderAll() {

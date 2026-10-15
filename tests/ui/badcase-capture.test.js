@@ -236,7 +236,7 @@ test('real project entry connects selection to panel, with no mutation during bo
       if (url === '/api/bootstrap') return { localAdmin: { modelProviders: { enabled: true, csrfToken: 'test' } } };
       return snapshot();
     } };
-  for (const file of ['shared/management-list.js', 'shared/badcase-capture.js', 'projects.js']) {
+  for (const file of ['shared/management-list.js', 'shared/badcase-capture.js', 'shared/badcase-evaluations.js', 'projects.js']) {
     dom.window.eval(fs.readFileSync(path.resolve(__dirname, '../../public', file), 'utf8'));
   }
   await tick();
@@ -246,6 +246,8 @@ test('real project entry connects selection to panel, with no mutation during bo
   assert.match(dom.window.document.querySelector('[data-capture-status]').textContent, /Project B/);
   assert.ok(calls.some(c => c.url === '/api/projects/b/badcase-capture'));
   assert.equal(calls.some(c => c.method === 'POST'), false);
+  assert.equal(dom.window.document.querySelector('[data-eval-approve]').disabled, true);
+  assert.match(dom.window.document.querySelector('[data-eval-status]').textContent, /尚未预览/);
 });
 test('project page loads panel module before entry and wires selected project, not active project', () => {
   const html = fs.readFileSync(path.resolve(__dirname, '../../public/projects.html'), 'utf8');

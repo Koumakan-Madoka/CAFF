@@ -28,6 +28,8 @@ const { createRecoveryScribeConfigController } = require('../api/recovery-scribe
 const { createProjectsController } = require('../api/projects-controller');
 const { createBadcaseCaptureController } = require('../api/badcase-capture-controller');
 const { createBadcaseFlagsController } = require('../api/badcase-flags-controller');
+const { createBadcaseEvaluationsController } = require('../api/badcase-evaluations-controller');
+const { createEvaluationAdminService } = require('../domain/runtime/badcase-capture/evaluation-admin');
 const { createBadcaseFlagService } = require('../domain/runtime/badcase-capture/badcase-flags');
 const { createBadcaseSealingService } = require('../domain/runtime/badcase-capture/sealing-service');
 const { createModesController } = require('../api/modes-controller');
@@ -167,6 +169,8 @@ export function createServerApp(options: any = {}) {
   // Badcase 采集服务：默认落盘 <agentDir>/badcase-capture（运行时数据目录，
   // gitignore）。未显式开启 CapturePolicy 的项目不会进行任何扫描。
   const badcaseCapture = options.badcaseCapture || createBadcaseCaptureService({ agentDir });
+  // Separate offline declarations: not capture quota, not paid launch permission.
+  const badcaseEvaluations = createEvaluationAdminService({ root: path.join(agentDir, 'badcase-offline-evaluations') });
   const badcaseFlags = createBadcaseFlagService({ captureRoot: badcaseCapture.captureRoot, captureStore: badcaseCapture.store, chatStore: store });
   const badcaseSealing = createBadcaseSealingService({ flags: badcaseFlags, captureStore: badcaseCapture.store, databasePath: store.databasePath });
 
@@ -1208,6 +1212,18 @@ export function createServerApp(options: any = {}) {
     createBadcaseFlagsController({
       service: badcaseFlags,
       sealingService: badcaseSealing,
+      projectManager,
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+    }),
+    createBadcaseEvaluationsController({
+      service: badcaseEvaluations,
       projectManager,
       host,
       port,

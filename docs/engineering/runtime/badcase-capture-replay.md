@@ -367,7 +367,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 ### 5.2 批准声明持久化与一次性派发记录（可信内部协调器，非付费入口）
 
-`evaluation-record.ts` 将 §5.1 接为文件型执行记录，仍无 HTTP/agent 工具、批准 UI、SDK/模型或 Docker launcher。`recordEvaluationApproval` 只保存可信调用方提供的人工批准**声明**，不认证发起者、也不授权真实付费。实际入口必须在用户批准具体用例、评分规则、模型及预算后调用；不能把 `confirmed=true` 当作人类身份验证。`dispatchRecordedEvaluation` 的 executor 是受信注入函数；模块自身测试使用离线替身；§5.3 新增脚本化模型的真实容器 SDK 提交/评分接线，仍不可当真实模型或 badcase 复现证据。
+`evaluation-record.ts` 将 §5.1 接为文件型执行记录，模块本身无 HTTP/agent 工具、批准 UI、SDK/模型或 Docker launcher；§5.4 通过本地管理入口保存仅限离线脚本计划的声明，尚未接启动。`recordEvaluationApproval` 只保存可信调用方提供的人工批准**声明**，不认证发起者、也不授权真实付费。实际入口必须在用户批准具体用例、评分规则、模型及预算后调用；不能把 `confirmed=true` 当作人类身份验证。`dispatchRecordedEvaluation` 的 executor 是受信注入函数；模块自身测试使用离线替身；§5.3 新增脚本化模型的真实容器 SDK 提交/评分接线，仍不可当真实模型或 badcase 复现证据。
 
 - 专用存储 `root/evaluations/<sha256(approvalId)>/`，不存原始任务、stdout/stderr、异常正文、参考答案或凭据；仅存严格 plan spec、批准声明、时间与结构化回执。approval ID 在该 root 内唯一；同 ID/相同内容重试只读，变更内容拒绝。不同 root/新 ID 不是全局去重，不能通过复制目录/删除文件重置批准来绕过预算。此存储必须在被测容器外、不进入 Git；未接 capture usage、配额、生命周期或 GC。
 - 先独占创建批准目录，再以 wx/0600 写 `approval.json`；派发以 wx 创建永久 `claim.json`，使同一个批准跨进程只能被一个执行序列消费。重复启动即使已完成也拒绝，不重放、不从未完成尾部继续。每次先将预算预留事件写入编号 JSON 并 fsync，成功后才调用 executor；结果验证成功后追加落盘，先前结果不可覆盖。单个批准最多200次运行，单记录目录最多404项，批准文件64KiB/事件4KiB读取上限。file fsync **不是目录持久化或掉电保证**，存储及祖先路径、同 OS 用户为 TCB，不抵御删改整个记录或恶意路径替换。
@@ -391,6 +391,20 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - `verify-image-recovery.py --scripted-evaluation`（其余五个镜像参数同 §4.4）在专用 daemon 真跑 fresh/resume 各两份，读回逐次落盘结果、再次派发被拒、核对源 CAS 未变；另做容器内过期/移除prompt两项真实故障、已完成真实容器的回执篡改一项，均保留 unresolved。测试脚本自身生成的批准不是用户真实付费批准。实验记录/归档/容器均随专用生命周期清理，非长期交付用例；独立单测补编号间断、伪complete、幂等spec比对和目标daemon后置观察负例。
 
 仍缺：真实人工批准UI/API、受控付费模型出口与逐请求预算硬限、真实模型对照及用户认可评分器、轨迹正文/完整输入支持、环境长期引用/GC/崩溃恢复、真实采集容量/UI验收。无本段 SQLite/浏览器/用户真实 turn 证据；全部 AC pending，不以此离线诊断代替 AC8。
+
+### 5.4 本地离线批准声明与逐次报告管理（无启动/付费入口）
+
+项目页新增 `badcase-evaluations` 面板，经生产 composition 接入 `evaluation-admin.ts` / `badcase-evaluations-controller.ts`。这是**摘要声明的人工确认入口**，不是可运行回放入口：目前操作者需复制受信离线计划的 `spec` JSON，界面显示完整 spec、planHash、逐次 run 清单及 5 分钟到期时间。尚未读取 case/归档/角色正文或评分规则，未核验这些摘要与实物一致；不证明用户认可了实际评分器或真实 badcase。不得用于满足真实模型运行批准条件。
+
+- `POST /api/projects/:projectId/badcase-evaluations/preview` 仅接收 `{spec}`。严格计划字段并限 `caff-offline-scripted/tool-loop-v1`、`offline-diagnostic-role`、`file-sha256-v1`、25s、每 run 1 micro-USD 预留/总额 repetitions×2（与脚本适配器一致；不是实际收费）。拒绝其他 provider、额外路径/凭据/执行器，执行既有秘密哨兵扫描；没有秘密识别完备性承诺。
+- 预览只存服务内存，不创建目录；服务生成随机 approvalId，将完整脱离副本的计划、projectId、创建/到期时间绑定。全服务最多 64 张未过期回执，满额返回 busy，不驱逐有效回执；到期在下次 preview 惰性清除。重启丢失未确认回执，不自动重建。
+- `POST .../approve` 只接收 `{confirmed:true, approvalId, planHash}`。须同项目、同摘要、回执未过期且时钟未倒退；不允许客户端改期限/预算/模型或追加字段。用户取消无 approve POST、无落盘。保存调用 §5.2；同回执未过期的重试幂等，网络失败不自动重试，已有 ID 可只读核对。保存瞬间内部 §5.2 也校验期限，磁盘失败不伪报成功；已写但回执丢失仍可能存在记录。
+- `GET .../records/:approvalId` 只读重建已确认记录；项目隔离存储，重启后无需预览回执。错项目、缺失、畸形/不完整记录拒绝，不返回空报告冒充未运行。逐次 run/角色摘要、费用、评分、汇总与批准配置原样显示为文本；`null` 费用明确是未知，`reserved/unresolved` 不证明进程仍活跃或已停止。未发起时 runs 为空，不生成合成评分。没有查询所有记录的列表，用户须保留 ID。
+- 管理复用 loopback/Host/Origin/JSON/bootstrap CSRF guard；没有 agent tool，且**没有任何 dispatch 路由**。同 OS 用户进程仍可模拟确认或改存储，confirmed 不是人类身份认证。此接口不接真实 provider、不触碰 Docker/SDK/采集开关，不授予任何付费许可；后续受控付费出口需单独门控。
+- 数据固定在 `<agentDir>/badcase-offline-evaluations/<sha256(projectId)>/evaluations/<sha256(approvalId)>`；客户端不能选择 root。自有 root/project 目录拒绝符号链接，祖先与同 OS 用户仍为 TCB。构造与 GET 不创建目录；该存储独立于 capture CAS/配额统计，暂无配额/GC/删除/项目删除联动，不宣称容量保护完成。部分文件和旧 claim 不修复、不清理、不重试执行。
+- 页面切换项目会清空回执、ID、草稿和报告，忽略旧异步响应；不撤回已经提交的管理写入。修改 spec 立即使回执失效；确认时再次检查期限。完整 JSON 使用 textContent，不渲染调用方 HTML；错误不回显原异常正文。
+- 顶层固定 `mode=offline-scripted-declaration`、`launchAvailable=false`、`paidAuthorization=false`、`materialVerified=false`；底层 `executionVerified/strictEvalEligible=false` 不变。报告写入仍由受信离线协调器负责；§5.3 专用 daemon runner 尚未接此批准存储，不能在页面启动已批准的计划。
+- 验证脚本 `node scripts/badcase-capture/verify-evaluation-admin-ui.cjs` 在随机 loopback 端口/临时目录运行实际面板、HTTP controller、持久化服务，浏览器仅允许本服务出口；验证取消零批准请求、显式确认、服务重建与逐次报告查询。两次评分由测试注入 executor 产生，**不是 Docker/模型/真实项目证据**；不覆盖完整 app shell 或 SQLite，全部验收资格不升级。
 
 ## 6. 威胁模型
 
