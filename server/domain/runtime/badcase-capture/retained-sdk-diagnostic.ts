@@ -76,16 +76,42 @@ export function verifyDiagnosticSessionCopy(plan: ReturnType<typeof planRetained
     || extra.type !== 'thinking_level_change' || extra.thinkingLevel !== 'off' || extra.parentId !== plan.leafId
     || !text(extra.id) || !text(extra.timestamp)) throw fail();
 }
-// Expected receipt only; NOT proof that an SDK was run. Wrapper must verify transport.
+// Expected receipt only; NOT proof that an SDK was run. Host validates transport
+// against this expectation; container MUST use observedDiagnosticReceipt instead.
 export function diagnosticReceipt(plan: ReturnType<typeof planRetainedSdkDiagnostic>) {
-  return { kind: 'retained-sdk-initialization-diagnostic', deliveryMode: plan.mode,
+  return receipt(plan, plan.mode === 'resume' ? true : null,
+    plan.mode === 'resume' ? !plan.hasThinkingOff : false, true);
+}
+// Observations are raw readings from the container after SDK initialization, NOT
+// booleans copied from the plan. This is validation, not independent attestation:
+// the archived container harness and host scheduler remain trusted code.
+export function observedDiagnosticReceipt(plan: ReturnType<typeof planRetainedSdkDiagnostic>, observations: any) {
+  if (!exact(observations, ['archivedSessionBytes', 'workingSessionBytes', 'missingSessionId', 'missingEntries', 'missingMessages'])
+    || !text(observations.missingSessionId) || !empty(observations.missingEntries) || !empty(observations.missingMessages)) throw fail();
+  let archivedUnchanged: boolean | null = null, appendedOff = false;
+  if (plan.mode === 'resume') {
+    if (!Buffer.isBuffer(observations.archivedSessionBytes) || !Buffer.isBuffer(observations.workingSessionBytes)
+      || plan.sessionText === null) throw fail();
+    archivedUnchanged = observations.archivedSessionBytes.equals(Buffer.from(plan.sessionText));
+    if (!archivedUnchanged) throw fail();
+    const workingText = observations.workingSessionBytes.toString('utf8');
+    if (!Buffer.from(workingText).equals(observations.workingSessionBytes)) throw fail();
+    verifyDiagnosticSessionCopy(plan, workingText);
+    appendedOff = !observations.workingSessionBytes.equals(observations.archivedSessionBytes);
+  } else if (observations.archivedSessionBytes !== null || observations.workingSessionBytes !== null) throw fail();
+  return receipt(plan, archivedUnchanged, appendedOff,
+    observations.missingEntries.length === 0 && observations.missingMessages.length === 0 && text(observations.missingSessionId));
+}
+function receipt(plan: ReturnType<typeof planRetainedSdkDiagnostic>, archivedUnchanged: boolean | null,
+  appendedOff: boolean, missingOpenEmpty: boolean) {
+  return { kind: 'retained-sdk-initialization-diagnostic', sessionObservationVersion: 1, deliveryMode: plan.mode,
     capsuleHash: plan.materialized.capsuleHash, checkpointChecksum: plan.materialized.checkpointChecksum,
     materializedHash: plan.materialized.materializedHash, invocationHash: hash(plan.invocation),
     historyHash: hash(JSON.stringify(plan.messages)), historyMessages: plan.messages.length,
-    archivedSessionBytesUnchanged: plan.mode === 'resume' ? true : null,
-    workingSessionAppendedThinkingOff: plan.mode === 'resume' ? !plan.hasThinkingOff : false,
+    archivedSessionBytesUnchanged: archivedUnchanged,
+    workingSessionAppendedThinkingOff: appendedOff,
     provider: plan.provider, model: plan.model,
-    sdkInitialized: true, diagnosticSystemPrompt: true, missingOpenCreatesEmptySession: true,
+    sdkInitialized: true, diagnosticSystemPrompt: true, missingOpenCreatesEmptySession: missingOpenEmpty,
     invocationSubmitted: false, modelCalls: 0, networkCalls: 0,
     runnable: false, reproduced: false, evaluable: false, strictEvalEligible: false };
 }

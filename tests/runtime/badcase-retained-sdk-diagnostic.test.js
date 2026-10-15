@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const fixture = require('../helpers/badcase-initialization-fixture.cjs');
 const { prepareRetainedInitializationCapsule } = require('../../build/server/domain/runtime/badcase-capture/retained-initialization');
-const { planRetainedSdkDiagnostic, diagnosticReceipt, verifyDiagnosticSessionCopy } = require('../../build/server/domain/runtime/badcase-capture/retained-sdk-diagnostic');
+const { planRetainedSdkDiagnostic, diagnosticReceipt, observedDiagnosticReceipt, verifyDiagnosticSessionCopy } = require('../../build/server/domain/runtime/badcase-capture/retained-sdk-diagnostic');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 function prepared(t, mode = 'fresh', change) {
   const h = fixture(t, mode, change), p = prepareRetainedInitializationCapsule(h.request);
@@ -28,6 +28,7 @@ test('diagnostic plan retains invocation separately, mode, pure history and mode
     assert.equal(a.sessionId, mode === 'resume' ? 'synthetic-session' : null);
     assert.equal(a.sessionText === null, mode === 'fresh');
     const r = diagnosticReceipt(a);
+    assert.equal(r.sessionObservationVersion, 1);
     assert.equal(r.invocationHash, hash(a.invocation));
     assert.equal(r.historyHash, hash(JSON.stringify(a.messages)));
     assert.equal(r.historyMessages, mode === 'resume' ? 1 : 0);
@@ -86,6 +87,47 @@ test('working resume may append only the explicit off setting; archived bytes an
   assert.equal(diagnosticReceipt(plan).archivedSessionBytesUnchanged, true);
   assert.equal(diagnosticReceipt(complete).workingSessionAppendedThinkingOff, false);
 });
+test('observed receipt requires measured archive, working copy and missing-open results', t => {
+  for (const mode of ['fresh', 'resume']) {
+    const { p, expected } = prepared(t, mode), plan = planRetainedSdkDiagnostic(p.capsule, expected);
+    const off = JSON.stringify({ type: 'thinking_level_change', id: 'new-id', parentId: 'm1', timestamp: '2026-01-01T00:00:01.000Z', thinkingLevel: 'off' }) + '\n';
+    const observations = { archivedSessionBytes: mode === 'resume' ? Buffer.from(plan.sessionText) : null,
+      workingSessionBytes: mode === 'resume' ? Buffer.from(plan.sessionText + off) : null,
+      missingSessionId: 'observed-new-id', missingEntries: [], missingMessages: [] };
+    assert.deepEqual(observedDiagnosticReceipt(plan, observations), diagnosticReceipt(plan));
+    if (mode === 'resume') {
+      const complete = { ...plan, sessionText: observations.workingSessionBytes.toString(), hasThinkingOff: true };
+      assert.equal(observedDiagnosticReceipt(complete, { ...observations, archivedSessionBytes: Buffer.from(complete.sessionText) }).workingSessionAppendedThinkingOff, false);
+      assert.throws(() => observedDiagnosticReceipt(plan, { ...observations, workingSessionBytes: Buffer.from(plan.sessionText) }), { code: 'sdk_diagnostic_unsupported' });
+      assert.throws(() => observedDiagnosticReceipt(plan, { ...observations, workingSessionBytes: Buffer.concat([observations.workingSessionBytes, Buffer.from([0xff])]) }), { code: 'sdk_diagnostic_unsupported' });
+    }
+    for (const mutate of [o => { delete o.missingEntries; }, o => { o.missingEntries = [{}]; },
+      o => { o.missingMessages = [{}]; }, o => { o.missingSessionId = ''; }, o => { o.missingSessionId = null; },
+      o => { o.archivedSessionBytes = Buffer.from('changed archive'); }, o => { o.workingSessionBytes = Buffer.from('changed working copy'); },
+      o => { o.unexpected = true; }]) {
+      const changed = { ...observations }; mutate(changed);
+      assert.throws(() => observedDiagnosticReceipt(plan, changed), { code: 'sdk_diagnostic_unsupported' });
+    }
+    for (const missing of [undefined, null, {}]) assert.throws(() => observedDiagnosticReceipt(plan, missing), { code: 'sdk_diagnostic_unsupported' });
+  }
+});
+test('independent semantic boundaries reject unknown entries, mismatched delivery and missing newline', t => {
+  const { p } = prepared(t, 'resume');
+  const d = JSON.parse(p.capsule), r = d.checkpoint.replayInput;
+  const read = h => Buffer.from(d.blobs.find(b => b.sha256 === h).base64, 'base64').toString();
+  const session = read(r.sessionBlobHash), config = JSON.parse(read(r.harness.configSnapshotHash));
+  const entries = session.trim().split('\n').map(JSON.parse);
+  const unknown = structuredClone(entries); unknown[1] = { type: 'unknown', id: 'm1', parentId: null, timestamp: entries[1].timestamp };
+  const changes = [
+    (r, replace) => { r.sessionBlobHash = replace(r.sessionBlobHash, unknown.map(e => JSON.stringify(e)).join('\n') + '\n'); },
+    (r, replace) => { r.harness.configSnapshotHash = replace(r.harness.configSnapshotHash, JSON.stringify({ ...config, deliveryMode: 'fresh' })); },
+    (r, replace) => { r.sessionBlobHash = replace(r.sessionBlobHash, session.slice(0, -1)); },
+  ];
+  for (const change of changes) {
+    const m = modify(p, change);
+    assert.throws(() => planRetainedSdkDiagnostic(m.capsule, m.expected), { code: 'sdk_diagnostic_unsupported' });
+  }
+});
 test('unsupported bridge stops before transport but keeps newly protected reference', async t => {
   const { runRetainedSdkDiagnostic } = require('../../scripts/badcase-capture/retained-sdk-diagnostic.cjs');
   const h = fixture(t, 'fresh', ({ r, config, put }) => { config.toolBridgeEnabled = true; r.harness.configSnapshotHash = put(JSON.stringify(config)); });
@@ -118,7 +160,8 @@ test('host wrapper protects before transport and returns only exact validated re
   assert.equal(Object.hasOwn(a, 'stdout'), false); assert.equal(Object.hasOwn(a, 'stderr'), false);
   for (const mutate of [r => { r.result.code = 1; }, r => { r.result.failure = 'timeout'; }, r => { r.result.stdout += 'extra'; },
     r => { r.result.stderr = 'private'; }, r => { r.manifest.inputHash = 'bad'; }, r => { r.containerId = 'short'; },
-    r => { const v = JSON.parse(r.result.stdout); v.runnable = true; r.result.stdout = JSON.stringify(v) + '\n'; }]) {
+    r => { const v = JSON.parse(r.result.stdout); v.runnable = true; r.result.stdout = JSON.stringify(v) + '\n'; },
+    r => { const v = JSON.parse(r.result.stdout); delete v.sessionObservationVersion; r.result.stdout = JSON.stringify(v) + '\n'; }]) {
     await assert.rejects(runRetainedSdkDiagnostic(h.request, image, { runProbe: (i, f) => transport(i, f, mutate) }), { code: 'sdk_diagnostic_failed' });
     assert.equal(fs.readdirSync(h.runDir).length, 1);
   }

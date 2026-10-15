@@ -107,6 +107,24 @@ test('direct consumer accepts 4094 files but refuses 4095 with exact blob closur
   assert.throws(() => materializeInitializationCapsule(e.capsule, e.expected, root), { code: 'capsule_materials_invalid' });
   assert.equal(fs.existsSync(root), false);
 });
+test('direct consumer enforces 8192 blobs with otherwise valid exact closure below byte limits', t => {
+  const h = fixture(t, 'resume'), p = prepareRetainedInitializationCapsule(h.request), data = JSON.parse(p.capsule);
+  const r = data.checkpoint.replayInput;
+  data.blobs = data.blobs.filter(b => [r.promptBlobHash, r.harness.configSnapshotHash, r.sessionBlobHash].includes(b.sha256));
+  data.checkpoint.files = {}; data.checkpoint.deletions = []; r.harness.skillSnapshots = [];
+  function add(text) { const sha256 = hash(text); data.blobs.push({ sha256, base64: Buffer.from(text).toString('base64') }); return sha256; }
+  for (let i = 0; i < 4094; i++) { const text = 'file-' + i; data.checkpoint.files['f' + i] = { type: 'file', size: Buffer.byteLength(text), hash: add(text) }; }
+  for (let i = 0; i < 4095; i++) { const h = add('skill-' + i); r.harness.skillSnapshots.push({ sha256: h, blobHash: h }); }
+  assert.equal(data.blobs.length, 8192);
+  let e = encoded(data); assert.ok(Buffer.byteLength(e.capsule) < 4 * 1024 * 1024);
+  assert.equal(decodeInitializationCapsule(e.capsule, e.expected).receipt.blobCount, 8192);
+  const extra = add('last-skill'); r.harness.skillSnapshots.push({ sha256: extra, blobHash: extra });
+  assert.equal(data.blobs.length, 8193); assert.equal(r.harness.skillSnapshots.length, 4096);
+  e = encoded(data); assert.ok(Buffer.byteLength(e.capsule) < 4 * 1024 * 1024);
+  const root = path.join(h.root, 'too-many-blobs');
+  assert.throws(() => materializeInitializationCapsule(e.capsule, e.expected, root), { code: 'capsule_materials_invalid' });
+  assert.equal(fs.existsSync(root), false);
+});
 test('metadata and valid-hash blob secrets reject before restoring; protection survives', t => {
   bad(t, d => { d.checkpoint.targetDir = 'sk-' + 'x'.repeat(20); }, 'capsule_materials_secret');
   bad(t, d => {

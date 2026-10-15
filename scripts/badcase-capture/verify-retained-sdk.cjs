@@ -36,7 +36,8 @@ async function main() {
       const p = prepareRetainedInitializationCapsule(h.request);
       for (const blob of JSON.parse(p.capsule).blobs) assert.equal(hash(h.store.readBlob('p1', blob.sha256)), blob.sha256);
       if (mode !== 'resume') continue;
-      for (const scenario of ['wrong-capsule-hash', 'missing-session', 'bridge-required', 'unknown-model', 'wrong-sdk-version']) {
+      for (const scenario of ['wrong-capsule-hash', 'missing-session', 'bridge-required', 'unknown-model', 'wrong-sdk-version',
+        'observation-archive', 'observation-working', 'observation-missing-entries', 'observation-missing-context', 'observation-missing-id']) {
         const data = JSON.parse(p.capsule), r = data.checkpoint.replayInput;
         if (scenario === 'missing-session') r.sessionBlobHash = '';
         if (scenario === 'unknown-model') r.runConfig.model = 'synthetic-model-not-in-catalog';
@@ -52,6 +53,21 @@ async function main() {
         if (scenario === 'wrong-sdk-version') {
           const file = files.find(f => f.path === 'runtime/package.json'); const pkg = JSON.parse(file.bytes); pkg.version = '999.0.0'; file.bytes = Buffer.from(JSON.stringify(pkg));
         }
+        if (scenario.startsWith('observation-')) {
+          // Synthetic fault injection into a trusted staged harness AFTER real SDK
+          // initialization, never a production override or captured code entry point.
+          const inject = {
+            'observation-archive': "observations.archivedSessionBytes = Buffer.from('changed archive');",
+            'observation-working': "observations.workingSessionBytes = Buffer.from(plan.sessionText);",
+            'observation-missing-entries': 'observations.missingEntries = [{}];',
+            'observation-missing-context': 'observations.missingMessages = [{}];',
+            'observation-missing-id': "observations.missingSessionId = '';",
+          }[scenario];
+          const probe = files.find(f => f.path === 'probe.cjs'), source = probe.bytes.toString();
+          const anchor = 'const receipt = observedDiagnosticReceipt(plan, observations);';
+          assert.equal(source.split(anchor).length, 2, 'fault hook must match exactly once');
+          probe.bytes = Buffer.from(source.replace(anchor, inject + '\n    ' + anchor));
+        }
         const run = await runProbe(image, files);
         assert.equal(run.result.code, 1); assert.equal(run.result.failure, undefined);
         assert.equal(run.result.stdout, ''); assert.equal(run.result.stderr, 'retained_sdk_diagnostic_failed\n');
@@ -60,7 +76,7 @@ async function main() {
       }
       for (const blob of JSON.parse(p.capsule).blobs) assert.equal(hash(h.store.readBlob('p1', blob.sha256)), blob.sha256);
     }
-    assert.equal(new Set(ids).size, 9);
+    assert.equal(new Set(ids).size, 14);
     console.log(JSON.stringify({ ok: true, image, reports, cleanedContainerIds: ids, modelInvocations: 0,
       diagnosticSystemPrompt: true, invocationSubmitted: false, imageArchived: false, acceptance: false }, null, 2));
   } finally { for (const fn of cleanup.reverse()) fn(); }

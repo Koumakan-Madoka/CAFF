@@ -23,7 +23,7 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
   assert.equal(require('node:child_process').execFileSync('/usr/bin/python3', ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(), environment.pythonVersion);
   assert.equal(process.arch, environment.architecture === 'amd64' ? 'x64' : 'arm64');
   assert.equal(Object.keys(process.env).some(k => /^(CAFF_|PI_|OPENAI_|ANTHROPIC_|AWS_|NODE_OPTIONS$)/.test(k)), false);
-  const { planRetainedSdkDiagnostic, diagnosticReceipt, verifyDiagnosticSessionCopy } = require('./retained-sdk-diagnostic.js');
+  const { planRetainedSdkDiagnostic, observedDiagnosticReceipt } = require('./retained-sdk-diagnostic.js');
   const { materializeInitializationCapsule, decodeInitializationCapsule } = require('./capsule-materialization.js');
   const capsule = fs.readFileSync('/work/capsule.json', 'utf8'), expected = JSON.parse(fs.readFileSync('/work/expected.json'));
   const plan = planRetainedSdkDiagnostic(capsule, expected); // before restoration or SDK import
@@ -44,8 +44,8 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
   // Separate behavior experiment, not a fallback for the real input above.
   const absent = '/work/absent-session.jsonl'; assert.equal(fs.existsSync(absent), false);
   const missing = sdk.SessionManager.open(absent, '/work/missing-sessions', cwd);
-  assert.equal(missing.getEntries().length, 0); assert.ok(missing.getSessionId());
-  assert.equal(missing.buildSessionContext().messages.length, 0);
+  const missingObservation = { missingSessionId: missing.getSessionId(), missingEntries: missing.getEntries(),
+    missingMessages: missing.buildSessionContext().messages };
   const modelRuntime = await sdk.ModelRuntime.create({ authPath: '/work/agent/auth.json', modelsPath: '/work/agent/models.json', modelsStorePath: '/work/agent/models-store.json', allowModelNetwork: false });
   modelRuntime.streamSimple = () => { modelCalls++; throw Error('model_forbidden'); };
   const model = modelRuntime.getModel(plan.provider, plan.model); assert.ok(model, 'model_unavailable');
@@ -67,11 +67,15 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
     assert.ok(session.agent.state.systemPrompt.includes(diagnosticPrompt));
     verifyNoProbeSideEffects(session.agent.state.systemPrompt, modelCalls, networkCalls);
     assert.deepEqual(session.agent.state.tools.map(t => t.name).sort(), ['bash', 'edit', 'read', 'write']);
-    if (plan.mode === 'resume') {
-      assert.equal(manager.getSessionId(), plan.sessionId); verifyDiagnosticSessionCopy(plan, fs.readFileSync(sessionPath, 'utf8'));
-    }
+    if (plan.mode === 'resume') assert.equal(manager.getSessionId(), plan.sessionId);
     // SDK initialization must not rewrite restored source bytes (including traps).
     for (const f of decodeInitializationCapsule(capsule, expected).files) assert.deepEqual(fs.readFileSync('/work/restored/' + f.path), f.bytes);
-    console.log(JSON.stringify({ ...diagnosticReceipt(plan), inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash }));
+    // Read the restored archive and the SDK working copy separately. Never use
+    // plan.sessionText as an observation, and never generate an expected receipt here.
+    const observations = { ...missingObservation,
+      archivedSessionBytes: plan.mode === 'resume' ? fs.readFileSync('/work/restored/materials/blobs/' + hash(plan.sessionText)) : null,
+      workingSessionBytes: plan.mode === 'resume' ? fs.readFileSync(sessionPath) : null };
+    const receipt = observedDiagnosticReceipt(plan, observations);
+    console.log(JSON.stringify({ ...receipt, inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash }));
   } finally { session.dispose(); }
 })().catch(() => { process.stderr.write('retained_sdk_diagnostic_failed\n'); process.exitCode = 1; });
