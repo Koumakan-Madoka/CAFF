@@ -199,6 +199,19 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 复跑：构建后 `node --test tests/runtime/badcase-run-references.test.js tests/runtime/badcase-usage.test.js`。合成 CAS/子进程覆盖源副本不变、同起点独立引用、重启/幂等、配额边界、缺/坏 blob、磁盘错误、跨进程争用及发布后进程退出；不启动真实 agent/模型或 Docker 回放。
 
+### 3.7 停写后的显式 writer lock 恢复（内部操作入口）
+
+`project-write-lock.ts` 新增 `inspectProjectWriteLock(root, projectId)` 和 `recoverProjectWriteLock(root, projectId, {writersStopped: true, expected})`。仅受信离线操作者调用，不导出为 HTTP/agent 工具、不在启动时扫描或自动执行；本段未授权任何真实项目恢复。§3.5/§3.6 的普通写入仍不回收遗留锁。
+
+- **前置停写是硬性操作要求**：必须停止该项目全部生产者及其委托子进程，确认退出后才 inspect/recover。`writersStopped` 只是调用方声明，不认证操作者、不检测 PID、更不是强制 fencing；父进程死不代表文件 worker 已死。不得与仍在旧写栈内的进程并发恢复。恢复函数拒绝同 JS 栈的 `held` 锁，但不能识别其他进程或未结束的 supervisor lease。
+- inspect 只读，拒绝缺存储、root/projects/project/锁目录静态链接、特殊文件、未知锁内条目、坏 owner；仅接受空旧锁或唯一 64 字节小写 hex owner。owner 有界 fd 读取并复验文件身份。返回 hash 绑定规范绝对锁路径、目录 dev/ino/birthtime/mtime/ctime 及 owner；这是本地身份变化检测，不是来源认证或死亡证明。同 OS 用户与存储根以上祖先仍属 TCB，不宣称 openat2 防路径替换。
+- recover 以项目 `.writer-recovery` 独占 mkdir 串行化恢复调用，门内重新核对 expected；改变的锁/错误身份不移动。先创建独占 `.writer-lock-retired-<随机六字符>` 目录，再把旧锁原样 rename 到其 `lock` 子目录（不覆盖目的地）；核验迁移后目录身份与 owner，最后移除本次空 gate。回执只有 recovered、quarantineName、materialsChanged=false、executionState=unknown；不会把未知任务改为成功或升级 case 资格。
+- 合作写者在 acquire 前后检查 gate，委托借用及同步重入入口也检查；gate 存在（包括链接/损坏/恢复者崩溃遗留）即 busy。两次检查关闭 precheck→mkdir 窗口，但不能撤销已执行的写栈；仍须前述停写。普通写者仅在自己刚取得的空锁上执行失败清理。旧 supervisor release 会再次核验 owner，不能删除新 owner 的锁。
+- 不读取/改写 CAS、checkpoint、case、retention、runReferences、批准或预算；不释放引用，不删除临时材料，不自动重派发。恢复只允许后续显式重试原操作：重试仍按原路径复验闭包；临时文件导致 inventory busy 的状态保持，不因锁恢复变为 GC 授权。自动 GC 仍禁用。
+- 失败只给固定码。rename 前错误释放本次 gate、原锁仍在；隔离目录若已创建则保留。rename 后身份复验失败保留 gate；gate 移除失败报错不伪造成功。恢复进程自身崩溃可留下 gate（包括 rename 已完成窗口），普通写入及再次恢复继续拒绝；**本入口不递归恢复该 gate、不回滚迁移**，需后续专项处置。无目录 fsync/掉电持久性保证、无后台排他调度或隔离工件列表/配额/GC；隔离目录不计入既有七类逻辑容量。
+
+验证：`node --test tests/runtime/badcase-writer-recovery.test.js tests/runtime/badcase-sealing-lifecycle.test.js tests/runtime/badcase-run-references.test.js`。合成存储真实子进程覆盖 lease 持有者 SIGKILL 后等待退出、引用 hardlink 发布后 exit23（跳过 finally）、恢复 rename 后 exit23、跨进程恢复争用；既有封存 worker 强杀/超时回归不变。新恢复测试不声称已验证真实服务 supervisor 与其孤儿子进程的整棵进程树停止。无 Docker/模型/SQLite/UI 或用户真实 turn 证据，全部 AC pending。
+
 ## 4. 环境与 Docker 隔离契约
 
 - EnvironmentTemplate 首版人工配置；首次成功重建后归档镜像并固定 **digest + 架构 + 运行时版本**。缺镜像/依赖 → preflight 显式阻断，禁止静默回退浮动 tag 或宿主执行。

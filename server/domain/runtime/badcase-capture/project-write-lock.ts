@@ -3,17 +3,29 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 // Synchronous trusted writers are reentrant only within one JS stack. A file
 // worker may instead borrow a supervisor-owned lease. No age/PID-based reclaim:
-// supervisor death, legacy locks and unknown owners still fail closed. No GC.
+// supervisor death and legacy locks still fail closed on ordinary writes. Only
+// explicit offline recovery below may retire a verified lock. No automatic GC.
 const held = new Set<string>();
 const fail = (code: string) => Object.assign(Error(code), { code });
 function location(root: string, projectId: string) {
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) throw fail('capture_lock_invalid');
+  if (typeof projectId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) throw fail('capture_lock_invalid');
   return path.join(path.resolve(root), 'projects', projectId, '.writer-lock');
+}
+const recoveryGate = (lock: string) => path.join(path.dirname(lock), '.writer-recovery');
+function assertNoRecovery(lock: string) {
+  try { fs.lstatSync(recoveryGate(lock)); }
+  catch (e: any) { if (e.code === 'ENOENT') return; throw fail('capture_writer_busy'); }
+  throw fail('capture_writer_busy'); // Includes dangling links and crash-left gates.
 }
 function acquire(lock: string) {
   fs.mkdirSync(path.dirname(lock), { recursive: true });
+  assertNoRecovery(lock);
   try { fs.mkdirSync(lock); }
   catch { throw fail('capture_writer_busy'); }
+  // Close the gate-precheck/mkdir window for cooperating new writers. This is
+  // not fencing for an already running writer: recovery still requires quiescence.
+  try { assertNoRecovery(lock); }
+  catch (e) { try { fs.rmdirSync(lock); } catch {} throw e; }
 }
 function verifyOwner(lock: string, owner: string) {
   if (typeof owner !== 'string' || !/^[a-f0-9]{64}$/.test(owner)) throw fail('capture_lock_invalid');
@@ -55,6 +67,7 @@ export function acquireProjectWriteLease(root: string, projectId: string) {
 // sanitized seal request. Does not create/release a lock or authorize a caller.
 export function withDelegatedProjectWriteLock<T>(root: string, projectId: string, owner: string, action: () => T): T {
   const lock = location(root, projectId);
+  assertNoRecovery(lock);
   verifyOwner(lock, owner);
   if (held.has(lock)) throw fail('capture_lock_invalid');
   held.add(lock);
@@ -62,9 +75,90 @@ export function withDelegatedProjectWriteLock<T>(root: string, projectId: string
 }
 export function withProjectWriteLock<T>(root: string, projectId: string, action: () => T): T {
   const lock = location(root, projectId);
+  assertNoRecovery(lock);
   if (held.has(lock)) return action();
   acquire(lock);
   held.add(lock);
   try { return action(); }
   finally { held.delete(lock); fs.rmdirSync(lock); }
+}
+
+// Internal operator API, never an HTTP/agent capability. Root ancestors and the
+// same OS user remain TCB. Identity is a change detector, not proof of dead owners.
+function checkedProject(root: string, projectId: string) {
+  if (typeof root !== 'string' || !path.isAbsolute(root)) throw fail('capture_lock_invalid');
+  const lock = location(root, projectId), project = path.dirname(lock);
+  try {
+    for (const directory of [path.resolve(root), path.join(path.resolve(root), 'projects'), project]) {
+      if (!fs.lstatSync(directory).isDirectory()) throw Error();
+    }
+  } catch { throw fail('capture_lock_invalid'); }
+  return { lock, project };
+}
+function lockSnapshot(lock: string) {
+  try {
+    const stat = fs.lstatSync(lock, { bigint: true });
+    if (!stat.isDirectory()) throw Error();
+    const names = fs.readdirSync(lock);
+    if (names.length > 1 || (names.length === 1 && names[0] !== 'owner')) throw Error();
+    let owner: string | null = null;
+    if (names.length) {
+      const file = path.join(lock, 'owner'), entry = fs.lstatSync(file);
+      if (!entry.isFile() || entry.size !== 64) throw Error();
+      const fd = fs.openSync(file, 'r');
+      try {
+        const opened = fs.fstatSync(fd);
+        if (!opened.isFile() || opened.dev !== entry.dev || opened.ino !== entry.ino || opened.size !== 64) throw Error();
+        const bytes = Buffer.alloc(65);
+        if (fs.readSync(fd, bytes, 0, 65, 0) !== 64) throw Error();
+        owner = bytes.subarray(0, 64).toString('utf8');
+        if (!/^[a-f0-9]{64}$/.test(owner)) throw Error();
+      } finally { fs.closeSync(fd); }
+    }
+    return { dev: String(stat.dev), ino: String(stat.ino), birthtimeNs: String(stat.birthtimeNs),
+      mtimeNs: String(stat.mtimeNs), ctimeNs: String(stat.ctimeNs), owner };
+  } catch { throw fail('capture_lock_invalid'); }
+}
+function snapshotHash(lock: string, snapshot: ReturnType<typeof lockSnapshot>) {
+  return crypto.createHash('sha256').update(JSON.stringify({ lock, ...snapshot })).digest('hex');
+}
+export function inspectProjectWriteLock(root: string, projectId: string): string {
+  const { lock } = checkedProject(root, projectId);
+  return snapshotHash(lock, lockSnapshot(lock));
+}
+export function recoverProjectWriteLock(root: string, projectId: string, options: any) {
+  if (!options || Object.keys(options).sort().join(',') !== 'expected,writersStopped'
+    || options.writersStopped !== true || typeof options.expected !== 'string'
+    || !/^[a-f0-9]{64}$/.test(options.expected)) throw fail('capture_lock_invalid');
+  const { lock, project } = checkedProject(root, projectId);
+  if (held.has(lock)) throw fail('capture_writer_busy');
+  const gate = recoveryGate(lock);
+  try { fs.mkdirSync(gate, { mode: 0o700 }); }
+  catch { throw fail('capture_writer_busy'); }
+  let safeToOpen = true;
+  try {
+    const before = lockSnapshot(lock);
+    if (snapshotHash(lock, before) !== options.expected) throw fail('capture_lock_invalid');
+    // Exclusive parent guarantees a fresh destination without rename overwrites.
+    // Keep all retired artifacts; never recursively delete a lock or any data.
+    const quarantine = fs.mkdtempSync(path.join(project, '.writer-lock-retired-'));
+    const retired = path.join(quarantine, 'lock');
+    fs.renameSync(lock, retired);
+    safeToOpen = false;
+    const after = lockSnapshot(retired);
+    if (after.dev !== before.dev || after.ino !== before.ino || after.owner !== before.owner
+      || after.birthtimeNs !== before.birthtimeNs) throw fail('capture_lock_recovery_failed');
+    safeToOpen = true;
+    return { recovered: true, quarantineName: path.basename(quarantine), materialsChanged: false, executionState: 'unknown' };
+  } catch (e: any) {
+    if (e.code === 'capture_lock_invalid') throw e;
+    throw fail('capture_lock_recovery_failed');
+  } finally {
+    // A crash leaves the gate closed. No age/PID-based recovery of this second
+    // gate is provided. Quiescence MUST include all delegated children, not only
+    // the supervisor; the gate does not revoke code already inside a write stack.
+    if (safeToOpen) {
+      try { fs.rmdirSync(gate); } catch { throw fail('capture_lock_recovery_failed'); }
+    }
+  }
 }
