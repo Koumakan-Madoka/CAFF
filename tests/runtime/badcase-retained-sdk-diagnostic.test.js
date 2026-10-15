@@ -111,6 +111,16 @@ test('observed receipt requires measured archive, working copy and missing-open 
     for (const missing of [undefined, null, {}]) assert.throws(() => observedDiagnosticReceipt(plan, missing), { code: 'sdk_diagnostic_unsupported' });
   }
 });
+test('invalid UTF-8 inside otherwise valid appended off JSON is rejected before decoding loss', t => {
+  const { p, expected } = prepared(t, 'resume'), plan = planRetainedSdkDiagnostic(p.capsule, expected);
+  const off = JSON.stringify({ type: 'thinking_level_change', id: 'new-X-id', parentId: 'm1', timestamp: '2026-01-01T00:00:01.000Z', thinkingLevel: 'off' }) + '\n';
+  const working = Buffer.from(plan.sessionText + off);
+  const at = working.indexOf(Buffer.from('new-X-id')) + 4; assert.ok(at > 4); working[at] = 0xff;
+  // Decoding alone loses the illegal byte; the text-level semantics still accept U+FFFD.
+  assert.doesNotThrow(() => verifyDiagnosticSessionCopy(plan, working.toString('utf8')));
+  assert.throws(() => observedDiagnosticReceipt(plan, { archivedSessionBytes: Buffer.from(plan.sessionText), workingSessionBytes: working,
+    missingSessionId: 'new-id', missingEntries: [], missingMessages: [] }), { code: 'sdk_diagnostic_unsupported' });
+});
 test('independent semantic boundaries reject unknown entries, mismatched delivery and missing newline', t => {
   const { p } = prepared(t, 'resume');
   const d = JSON.parse(p.capsule), r = d.checkpoint.replayInput;

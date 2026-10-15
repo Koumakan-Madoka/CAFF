@@ -97,6 +97,8 @@ export function observedDiagnosticReceipt(plan: ReturnType<typeof planRetainedSd
     const workingText = observations.workingSessionBytes.toString('utf8');
     if (!Buffer.from(workingText).equals(observations.workingSessionBytes)) throw fail();
     verifyDiagnosticSessionCopy(plan, workingText);
+    // Preceding archive/copy checks already determine this value. The observation
+    // makes the derivation explicit; it is NOT an independent integrity guarantee.
     appendedOff = !observations.workingSessionBytes.equals(observations.archivedSessionBytes);
   } else if (observations.archivedSessionBytes !== null || observations.workingSessionBytes !== null) throw fail();
   return receipt(plan, archivedUnchanged, appendedOff,
