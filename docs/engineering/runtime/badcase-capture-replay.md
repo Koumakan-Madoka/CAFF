@@ -446,6 +446,17 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 验证：工作台/HTTP/UI套件覆盖确认前不写、重试、重启且注册表改变仍读旧值、语义改写后重算hash、超限/非法UTF-8、秘密哨兵、链接、部分写/fsync/写后过期、启动前缺失与替换拒绝；单在途回归加5s per-test超时，防守卫缺失导致无限挂起。`verify-workbench.cjs --browser`用Chromium+合成executor查重启后的持久正文；`verify-image-recovery.py --workbench`仍是另一次HTTP→专用Docker工具诊断，增加重启投影一致检查。两类证据不合称同次浏览器→Docker，临时实验记录清理不等于真实项目长期留存；无真实采集/模型、全部AC pending。
 
 
+### 5.8 同次浏览器 → 专用 Docker 验证（合成材料、脚本模型）
+
+`verify-image-recovery.py --browser-workbench` 加 §4.4 五个镜像参数，以及显式 `--browser-executable <绝对路径>`、`--browser-library-dir <绝对路径>`；需要独立字体配置时再传 `--browser-fontconfig <绝对路径>`。这些路径仅由可信操作者提供，不接 HTTP，也不自动安装、下载或探测宿主浏览器。缺路径/模式混用在启动 daemon 前拒绝。
+
+- Python 保持原专用 daemon 生命周期，另以 `unshare --net` 启动 Node 调度器和浏览器，只在新命名空间启用 loopback；Node 检查自身 net namespace 不同于父进程。HTTP 仍绑定随机 `127.0.0.1:0`；Docker CLI 使用显式 unix socket，任务容器仍 `network=none`。浏览器请求路由仅允许该工作台 origin。浏览器环境只传固定 PATH/LANG、自有 HOME/TMPDIR、显式库目录及可选字体配置，不传生产凭据。root Chromium 使用 Playwright 默认 no-sandbox，**不宣称浏览器 OS 沙箱**；仅允许可信合成页面，不用于不可信网页或真实用户内容。
+- `--browser` 仍为真实浏览器+合成 executor；新增内部 `--browser-docker` 明确选择真实归档恢复 transport，二者不可混用，不因浏览器启用而退回合成 transport。第三种旧 `--workbench` 仍是无浏览器 HTTP→Docker。前两种既有分离证据不被追溯改写为同次证据。
+- 同一脚本在 fresh/resume 两材料上由浏览器取消/确认批准、取消/确认启动，验证取消零 POST、确认各两次 POST；真实运行四个 SDK 工具任务。页面读出的逐次 runId 与实际 transport 调用顺序相等，四个容器 ID 必须有效且唯一。服务重建且当前角色改变后，浏览器重新查询 report/review，逐字比较原记录，旧授权不复活；源 CAS 不变，每模式三保护引用。`sameRunBrowserDocker` 只表达此诊断证据，不升级通用 executionVerified/strictEvalEligible。观察基于受信验证器与已有目标 daemon 三阶段检查，不是第三方认证。
+- 浏览器等待任务结果至多120s；既有 Node 诊断300s超时、daemon退出/残留核查保持不变，不能把此等待上限宣称为容器任务硬时限或父进程崩溃恢复。失败只输出已知阶段码，不输出原始 assertion/路径/响应。脚本清理自身 daemon/容器/实验材料；外部操作者提供的浏览器、库、字体目录不自动删除。
+- 初次只有 `ldd`/版本与无选择框静态页通过仍不足：本环境 `<select>` 渲染因缺 Fontconfig 配置/字体触发 Skia FATAL/SIGTRAP。必须有实际工作台下拉选择和点击证据。实验额外从已验签 Debian 索引取得字体包、校验 hash 并仅解包，私有字体配置与缓存不修改系统；这不是项目镜像依赖归档。
+- 全程固定脚本 provider、合成封存输入、模拟确认，真实 SDK/tools 只在专用 Docker。不是人类实际批准、忠实原任务回放、真实模型或 badcase 复现；所有 AC 仍 pending。无生产代码/UI能力扩展，无真实采集、付费、合并或发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

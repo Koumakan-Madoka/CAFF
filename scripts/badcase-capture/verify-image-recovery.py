@@ -21,7 +21,22 @@ def main():
     mode.add_argument('--scripted-evaluation', action='store_true', help='offline SDK prompt/tool loop, scripted model only')
     mode.add_argument('--approved-scripted-evaluation', action='store_true', help='HTTP approval to offline runner and report; no paid model')
     mode.add_argument('--workbench', action='store_true', help='isolated material review and explicit HTTP start; no paid model')
+    mode.add_argument('--browser-workbench', action='store_true', help='same-run Chromium review/start/query to dedicated Docker; scripted model only')
+    parser.add_argument('--browser-executable')
+    parser.add_argument('--browser-library-dir')
+    parser.add_argument('--browser-fontconfig')
     args = parser.parse_args()
+    if args.browser_workbench:
+        if not (args.browser_executable and args.browser_library_dir):
+            parser.error('browser-workbench requires explicit browser executable and library directory')
+        if not Path(args.browser_executable).is_absolute() or not Path(args.browser_executable).is_file():
+            parser.error('browser executable must be an existing absolute file')
+        if not Path(args.browser_library_dir).is_absolute() or not Path(args.browser_library_dir).is_dir():
+            parser.error('browser library directory must be an existing absolute directory')
+        if args.browser_fontconfig and (not Path(args.browser_fontconfig).is_absolute() or not Path(args.browser_fontconfig).is_file()):
+            parser.error('browser fontconfig must be an existing absolute file')
+    elif args.browser_executable or args.browser_library_dir or args.browser_fontconfig:
+        parser.error('browser paths require browser-workbench')
     if os.geteuid() != 0:
         raise RuntimeError('explicit_root_environment_required')
     repo = Path(__file__).resolve().parents[2]
@@ -77,14 +92,24 @@ def main():
         for namespace in ['mnt', 'net']:
             if os.readlink('/proc/self/ns/' + namespace) == os.readlink('/proc/' + str(pid) + '/ns/' + namespace):
                 raise RuntimeError('daemon_namespace_failed')
-        script = ('verify-workbench.cjs' if args.workbench else
+        script = ('verify-workbench.cjs' if args.workbench or args.browser_workbench else
                   'verify-approved-scripted-evaluation.cjs' if args.approved_scripted_evaluation else
                   'verify-scripted-evaluation.cjs' if args.scripted_evaluation else 'verify-image-recovery.cjs')
         node_args = ['node', str(repo / 'scripts/badcase-capture' / script)]
         for key, value in vars(args).items():
-            if key not in ['scripted_evaluation', 'approved_scripted_evaluation', 'workbench']:
+            if key not in ['scripted_evaluation', 'approved_scripted_evaluation', 'workbench', 'browser_workbench', 'browser_executable', 'browser_library_dir', 'browser_fontconfig']:
                 node_args.extend(['--' + key.replace('_', '-'), value])
         node_args.extend(['--socket', 'unix://' + str(base / 'docker.sock'), '--daemon-id', info['ID'], '--data-root', str(base / 'data')])
+        if args.browser_workbench:
+            node_args.extend(['--browser-docker', '--browser-executable', args.browser_executable,
+                              '--browser-library-dir', args.browser_library_dir,
+                              '--parent-netns', os.readlink('/proc/self/ns/net')])
+            if args.browser_fontconfig:
+                node_args.extend(['--browser-fontconfig', args.browser_fontconfig])
+            # Browser and HTTP server share only a fresh namespace's loopback.
+            # Docker CLI uses unix sockets; task containers retain network=none.
+            node_args = ['unshare', '--net', '--', 'sh', '-c',
+                         'ip link set lo up && exec "$@"', 'caff-browser-workbench', *node_args]
         # SDK never runs here: Node is only the trusted host scheduler. All SDK/tools
         # run in unprivileged, network-none containers checked by the existing probe.
         report['diagnostic'] = json.loads(output(node_args, timeout=300))
@@ -101,6 +126,13 @@ def main():
     except Exception as exc:
         # No raw daemon/stdout content or credentials in public reports.
         report.update({'ok': False, 'error': type(exc).__name__})
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            # Only known verifier stage codes, never raw stderr/assertion data.
+            stages = ['prepare', 'browser-launch', 'browser-preview', 'browser-approve',
+                      'browser-start', 'browser-report', 'rebuild', 'evidence']
+            for stage in stages:
+                if exc.stderr.strip() == ('workbench_verification_failed:' + stage).encode():
+                    report['diagnosticFailureStage'] = stage
     finally:
         if daemon is not None:
             try:
