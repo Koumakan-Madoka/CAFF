@@ -15,6 +15,8 @@
       <button data-work-start type="button">3. 显式启动专用 Docker</button>
       <label>批准 ID（自行保留）<input data-work-id autocomplete="off"></label>
       <button data-work-read type="button">查询持久报告</button>
+      <button data-work-archive type="button">查询已保存人审材料</button>
+      <p>确认时另存角色正文、评分规则与摘要；查询不依赖当前材料注册，也不恢复启动权限。旧批准可能缺少人审归档；查询失败不代表原报告丢失。</p>
       <pre data-work-report style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
       <p data-work-status role="status" aria-live="polite"></p>
       <p>5分钟内完成确认和启动。断开页面不取消任务，失败/结果未知不自动重试，请凭 ID 查询。重启丢失启动票据但保留报告，不恢复旧任务。null 费用是未知，不是零；reserved 不证明进程已停止。所有完整回放资格仍为 false。本机同 OS 用户可模拟请求。</p>`;
@@ -22,7 +24,7 @@
     const notice = value => { el('status').textContent = value; };
     function controls() {
       const disabled = !project || !csrf || pending;
-      for (const n of ['material', 'repetitions', 'id', 'read']) el(n).disabled = disabled;
+      for (const n of ['material', 'repetitions', 'id', 'read', 'archive']) el(n).disabled = disabled;
       el('preview').disabled = disabled || !el('material').value;
       el('approve').disabled = disabled || !preview;
       el('start').disabled = disabled || !preview || !approved || attempted;
@@ -65,9 +67,10 @@
       try {
         if (action === 'preview') {
           clear(); body = { materialId: el('material').value, repetitions: Number(el('repetitions').value) }; url = base + '/material-preview';
-        } else if (action === 'read') {
+        } else if (action === 'read' || action === 'archive') {
+          if (action === 'archive') clear();
           approvalId = el('id').value.trim(); if (!/^[a-f0-9-]{36}$/.test(approvalId)) throw Error('invalid_id');
-          url = base + '/records/' + encodeURIComponent(approvalId);
+          url = base + (action === 'archive' ? '/reviews/' : '/records/') + encodeURIComponent(approvalId);
         } else {
           if (!preview || Date.now() >= preview.expiresAt) { clear(); notice('预览已过期，请重新预览。'); controls(); return; }
           const p = preview;
@@ -79,7 +82,7 @@
           if (action === 'start') attempted = true;
         }
         pending = true; el('report').textContent = ''; notice('处理中；关闭页面不取消运行…'); controls();
-        const r = await fetchJson(url, action === 'read' ? undefined : { method: 'POST', body, headers: { 'X-CAFF-CSRF-Token': csrf } });
+        const r = await fetchJson(url, (action === 'read' || action === 'archive') ? undefined : { method: 'POST', body, headers: { 'X-CAFF-CSRF-Token': csrf } });
         if (seq !== generation) return;
         envelope(r, id);
         if (action === 'preview') {
@@ -93,6 +96,13 @@
           notice('材料预览完成，未保存、未启动。');
         } else {
           report(r, id, approvalId, planHash);
+          if (action === 'archive') {
+            const a = r.reviewArchive;
+            if (!a || a.schemaVersion !== 1 || a.projectId !== id || a.approvalId !== approvalId
+              || a.review?.planHash !== r.report.approval.planHash || a.expiresAt !== r.report.approval.expiresAt
+              || !/^[a-f0-9]{64}$/.test(a.reviewHash) || a.review.realModel !== false || a.review.faithfulReplay !== false) throw Error('invalid_archive');
+            clear(); el('review').textContent = JSON.stringify(a, null, 2);
+          }
           if (action === 'approve') approved = r.report.consumed === false;
           notice(action === 'approve' ? '声明已保存，未启动。' : action === 'start' ? '启动请求已返回，请核对逐次报告；不代表真实复现。' : '只读查询完成。');
         }
@@ -101,7 +111,7 @@
       } finally { if (seq === generation) { pending = false; controls(); } }
     }
     for (const n of ['material', 'repetitions', 'id']) el(n).addEventListener(n === 'material' ? 'change' : 'input', () => { clear(); controls(); });
-    for (const n of ['preview', 'approve', 'start', 'read']) el(n).addEventListener('click', () => { void act(n); });
+    for (const n of ['preview', 'approve', 'start', 'read', 'archive']) el(n).addEventListener('click', () => { void act(n); });
     controls(); return { select };
   };
 })();

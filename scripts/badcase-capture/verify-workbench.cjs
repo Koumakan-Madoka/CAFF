@@ -71,7 +71,9 @@ async function main() {
         page.once('dialog', d => { void d.accept(); }); await el('start').click(); await status('启动请求已返回');
         const approvalId = await el('id').inputValue(), report = JSON.parse(await el('report').textContent());
         assert.equal(report.reason, 'complete'); assert.equal(await el('start').isDisabled(), true);
-        reports.push({ approvalId, report });
+        const savedReview = await api('reviews/' + approvalId); assert.equal(savedReview.status, 200);
+        assert.deepEqual(savedReview.body.reviewArchive.review.roles, m.roles);
+        reports.push({ approvalId, report, reviewArchive: savedReview.body.reviewArchive });
       }
       assert.equal(posts.filter(u => u.endsWith('/material-preview')).length, 2);
       assert.equal(posts.filter(u => u.endsWith('/material-approve')).length, 2);
@@ -90,12 +92,19 @@ async function main() {
         const r = await api('start', c); assert.equal(r.status, 200); assert.equal(r.body.report.reason, 'complete');
         assert.equal((await api('start', c)).status, 409);
         assert.deepEqual((await api('records/' + c.approvalId)).body, r.body);
-        reports.push({ approvalId: c.approvalId, report: r.body.report });
+        const savedReview = await api('reviews/' + c.approvalId); assert.equal(savedReview.status, 200);
+        assert.deepEqual(savedReview.body.reviewArchive.review, p.body.review);
+        assert.equal(savedReview.body.reviewArchive.reviewHash, c.reviewHash);
+        reports.push({ approvalId: c.approvalId, report: r.body.report, reviewArchive: savedReview.body.reviewArchive });
       }
     }
-    await server.close(); server = await startScriptedWorkbenchServer(options);
+    await server.close();
+    // Registry changes do not rewrite or reconstruct historical review text.
+    const changed = materials.map(m => ({ ...m, roles: { baseline: 'Later baseline', candidate: 'Later candidate' } }));
+    server = await startScriptedWorkbenchServer({ ...options, materials: changed });
     for (const r of reports) {
       assert.deepEqual((await api('records/' + r.approvalId)).body.report, r.report);
+      assert.deepEqual((await api('reviews/' + r.approvalId)).body.reviewArchive, r.reviewArchive);
       assert.equal((await api('start', { confirmed: true, approvalId: r.approvalId, planHash: r.report.approval.planHash, reviewHash: '0'.repeat(64) })).status, 409);
       assert.equal(r.report.ledger.strictEvalEligible, false);
       assert.equal(r.report.ledger.summary.baseline.expectationMet, 1); assert.equal(r.report.ledger.summary.candidate.expectationMet, 1);
@@ -110,7 +119,14 @@ async function main() {
         await page.locator('[data-work-id]').fill(r.approvalId); await page.locator('[data-work-read]').click();
         await page.waitForFunction(() => document.querySelector('[data-work-status]').textContent.includes('只读查询完成'));
         assert.deepEqual(JSON.parse(await page.locator('[data-work-report]').textContent()), r.report);
+        await page.locator('[data-work-archive]').click();
+        await page.waitForFunction(id => {
+          try { return JSON.parse(document.querySelector('[data-work-review]').textContent).approvalId === id; } catch { return false; }
+        }, r.approvalId);
+        assert.deepEqual(JSON.parse(await page.locator('[data-work-review]').textContent()), r.reviewArchive);
+        assert.equal(await page.locator('#panel b').count(), 0);
         assert.equal(await page.locator('[data-work-start]').isDisabled(), true);
+        assert.equal(await page.locator('[data-work-approve]').isDisabled(), true);
       }
       await context.close();
     }
@@ -119,7 +135,7 @@ async function main() {
     console.log(JSON.stringify({ ok: true, kind: 'offline-scripted-workbench', browser: browserVersion, browserExecutorSynthetic: browserMode,
       realModelInvocations: 0, humanApproval: false, acceptance: false, productionLaunchAvailable: false,
       browserCancelApprovePosts: browserMode ? canceledPosts.approve : null, browserCancelStartPosts: browserMode ? canceledPosts.start : null,
-      identity, archiveBytes, cleanedContainerIds: ids, reportReadAfterRebuild: true, sourceBlobsUnchanged: true,
+      identity, archiveBytes, cleanedContainerIds: ids, reportReadAfterRebuild: true, reviewReadAfterRebuild: true, changedRegistryIgnored: true, sourceBlobsUnchanged: true,
       reports: reports.map(r => ({ approvalId: r.approvalId, reason: r.report.reason, summary: r.report.ledger.summary })) }));
   } finally {
     if (browser) await browser.close(); if (server) await server.close();

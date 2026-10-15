@@ -6,6 +6,7 @@ const { createEvaluationAdminService } = require('../../build/server/domain/runt
 const { prepareScriptedEvaluation } = require('./scripted-evaluation.cjs');
 const { dispatchApprovedScriptedEvaluation } = require('./approved-scripted-evaluation.cjs');
 const { prepareOfflineTask } = require('../../build/server/domain/runtime/badcase-capture/docker-sandbox');
+const { saveReviewArchive, readReviewArchive } = require('./review-archive.cjs');
 const copy = v => JSON.parse(JSON.stringify(v));
 const exact = (v, keys) => v !== null && typeof v === 'object' && !Array.isArray(v)
   && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
@@ -59,12 +60,22 @@ function createScriptedWorkbench({ root, materials, runProbe }) {
       const p = admin.preview(projectId, { spec: prepared.plan.spec }), review = prepared.review;
       const reviewHash = hash(JSON.stringify(review));
       tickets.set(p.approvalId, { projectId, material: m, planHash: p.plan.planHash, reviewHash,
-        createdAt: p.createdAt, expiresAt: p.expiresAt, attempted: false });
+        createdAt: p.createdAt, expiresAt: p.expiresAt, attempted: false, review: copy(review), spec: copy(p.plan.spec) });
       return copy({ ...p, materialId: m.id, review, reviewHash });
     },
     approve(projectId, body) {
-      ticket(projectId, body);
+      const t = ticket(projectId, body);
+      // Save projection BEFORE acknowledging approval. A crash/expiry may leave
+      // an orphan projection, never an automatic approval or launch. Exact retry
+      // may reuse a complete file; partial/conflicting files are not repaired.
+      saveReviewArchive(root, { schemaVersion: 1, projectId, approvalId: body.approvalId,
+        materialId: t.material.id, createdAt: t.createdAt, expiresAt: t.expiresAt,
+        reviewHash: t.reviewHash, review: t.review }, t.spec);
       return admin.approve(projectId, { confirmed: true, approvalId: body.approvalId, planHash: body.planHash });
+    },
+    readReview(projectId, approvalId) {
+      const envelope = admin.read(projectId, approvalId);
+      return { ...envelope, reviewArchive: readReviewArchive(root, projectId, approvalId, envelope.report) };
     },
     async start(projectId, body) {
       const t = ticket(projectId, body);
@@ -77,6 +88,9 @@ function createScriptedWorkbench({ root, materials, runProbe }) {
       try {
         const m = t.material, saved = admin.read(projectId, body.approvalId).report;
         if (saved.approval.planHash !== t.planHash || saved.approval.expiresAt !== t.expiresAt) fail('evaluation_review_stale');
+        const archived = readReviewArchive(root, projectId, body.approvalId, saved);
+        if (archived.reviewHash !== t.reviewHash || archived.materialId !== m.id
+          || JSON.stringify(archived.review) !== JSON.stringify(t.review)) fail('evaluation_review_stale');
         // Runner re-reads and revalidates materials as well. This extra binding
         // pins the UI's reviewed count/plan, not just the stored plan. Same-user
         // edits in between these checks remain outside the atomicity guarantee.

@@ -64,6 +64,26 @@ test('wrong review binding, scope, qualifications or saved report cannot enable 
   await h.panel.select({ id: 'p1' }); await h.click('preview'); await h.click('approve');
   assert.equal(h.el('start').disabled, true); assert.equal(h.el('report').textContent, '');
 });
+test('durable review GET renders literal text without restoring start authority; mismatched archive is rejected', async t => {
+  let response;
+  const h = setup(t, url => url.includes('/reviews/') ? structuredClone(response) : undefined);
+  await h.panel.select({ id: 'p1' }); await h.click('preview'); await h.click('approve');
+  response = { ...h.result, reviewArchive: { schemaVersion: 1, projectId: 'p1', approvalId: h.p.approvalId,
+    expiresAt: h.result.report.approval.expiresAt, reviewHash: h.p.reviewHash, review: h.p.review } };
+  await h.click('archive'); assert.equal(h.calls.at(-1).method, undefined);
+  assert.match(h.el('review').textContent, /onerror/); assert.equal(h.root.querySelector('img'), null);
+  assert.equal(h.el('start').disabled, true); assert.equal(h.el('approve').disabled, true);
+  response.reviewArchive.projectId = 'p2'; await h.click('archive');
+  assert.equal(h.el('review').textContent, ''); assert.match(h.el('status').textContent, /失败/);
+  assert.equal(h.el('start').disabled, true);
+});
+test('late archive response cannot cross project switch', async t => {
+  let release;
+  const h = setup(t, url => url.includes('/reviews/') ? new Promise(r => { release = r; }) : undefined);
+  await h.panel.select({ id: 'p1' }); h.el('id').value = h.p.approvalId; await h.click('archive');
+  await h.panel.select(null); release(h.result); await tick();
+  assert.equal(h.el('review').textContent, ''); assert.equal(h.el('start').disabled, true);
+});
 test('production projects page does not load workbench or offer a launch capability', () => {
   assert.doesNotMatch(fs.readFileSync(require.resolve('../../public/projects.html'), 'utf8'), /badcase-workbench/);
   assert.doesNotMatch(fs.readFileSync(require.resolve('../../server/app/create-server.ts'), 'utf8'), /workbench\s*:/);

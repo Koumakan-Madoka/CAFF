@@ -82,6 +82,19 @@ test('optional workbench routes require explicit capability; guard precedes acce
   assert.equal(failed.body.issues[0].code, 'evaluation_start_failed'); assert.doesNotMatch(JSON.stringify(failed), /PRIVATE-SENTINEL/);
   assert.equal(calls, 4);
 });
+test('review archive GET is opt-in, guarded, correctly bound and fixed-code only', async t => {
+  const h = await setup(t), id = '00000000-0000-0000-0000-000000000001';
+  assert.equal((await h.request('reviews/' + id)).status, 404);
+  let calls = 0, error;
+  h.rebuild(undefined, { readReview(projectId, approvalId) { calls++; if (error) throw error; return { projectId, approvalId }; } });
+  assert.equal((await h.request('reviews/' + id, undefined, { host: 'foreign.invalid' })).status, 403);
+  assert.equal((await h.request('reviews/' + id, undefined, {}, 'missing')).status, 404);
+  assert.equal((await h.request('reviews/' + id, {})).status, 404); assert.equal(calls, 0);
+  assert.deepEqual((await h.request('reviews/' + id)).body, { projectId: 'p1', approvalId: id });
+  error = Object.assign(Error('PRIVATE-SENTINEL'), { code: 'evaluation_review_invalid' });
+  const rejected = await h.request('reviews/' + id); assert.equal(rejected.status, 409);
+  assert.equal(rejected.body.issues[0].code, 'evaluation_review_invalid'); assert.doesNotMatch(JSON.stringify(rejected), /PRIVATE-SENTINEL/);
+});
 test('production composition wires fixed agentDir storage, guard and controller, no adapter', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../../server/app/create-server.ts'), 'utf8');
   assert.match(source, /createEvaluationAdminService\(\{ root: path.join\(agentDir, 'badcase-offline-evaluations'\)/);

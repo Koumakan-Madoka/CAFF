@@ -426,13 +426,25 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 独立 HTTP 仅绑定 `127.0.0.1:0`，使用独立管理 root、随机 CSRF、既有 local-admin guard，静态资源固定白名单、no-store/CSP、固定错误码，无生产 DB/凭据。GET检查loopback/Host，POST另检查Origin/JSON/CSRF；同OS用户仍可模拟管理请求。关闭服务等待在途请求结束，不代表取消容器；操作者不得先销毁仍在用的daemon。
 - 可选 controller 路由 `GET .../materials` 只列当前项目材料ID；`POST .../material-preview` 只接 `{materialId,repetitions}`（1–10）。生产没有workbench能力时这些路由和 `material-approve/start` 均404。ID选择不扩大采集授权，也不启用采集。
 - material-preview 从封存CAS、归档及角色/规则重建实际计划，**会产生/保留prepare保护引用**；取消或过期不unpin，不授权GC。与§5.4纯spec预览不同，不宣称无磁盘副作用。最多64张5分钟内存票据，满额在准备前拒绝；到期惰性移除，时钟倒退拒绝。
-- 人审投影展示两角色正文、固定task=`fixed-write-read-edit-bash-v1`、deliveryMode、输入/历史摘要、镜像声明、expectedHash/badcaseHash与完整计划/次数/超时/预留单位。它**不提交捕获的原始请求、不展示其正文、仍是脚本替身任务**；评分是容器产物SHA256与两个不同hash比较，不是用户自然语言评分器。规则/参考答案不进入被测容器。`reviewHash`绑定该投影及planHash；归档路径、capture root、session正文不出现在投影。review/角色正文/规则仍由操作者配置与内存保存，未新增长期归档/配额；持久报告保留既有plan中的摘要，不把reviewHash当人类身份或来源认证。
+- 人审投影展示两角色正文、固定task=`fixed-write-read-edit-bash-v1`、deliveryMode、输入/历史摘要、镜像声明、expectedHash/badcaseHash与完整计划/次数/超时/预留单位。它**不提交捕获的原始请求、不展示其正文、仍是脚本替身任务**；评分是容器产物SHA256与两个不同hash比较，不是用户自然语言评分器。规则/参考答案不进入被测容器。`reviewHash`绑定该投影及planHash；归档路径、capture root、session正文不出现在投影。确认前review/角色正文/规则仍在内存；§5.7增加确认时的本地持久归档（无配额/GC）。持久报告仍保留既有plan摘要，人审正文另查；不把reviewHash当人类身份或来源认证。
 - `POST .../material-approve` 和 `POST .../start` 均严格 `{confirmed:true,approvalId,planHash,reviewHash}`，检查项目、票据、期限、时钟和全部摘要。前者只保存现有批准声明，后者须另一次显式确认；start重读持久批准并绑定票据planHash/期限，再经§5.5复验材料和claim。包含有效但不同repetitions的新持久计划也拒绝（开发回归先红后修）；多阶段读取不是防同权限恶意竞争的原子事务。
 - 每个workbench一次在途启动，无排队；同票据第一次尝试即锁住，无论是否已claim，错误均不自动重试。其他票据busy时不消费。持久claim仍是跨实例最终一次性防线。浏览器断开不取消运行；启动请求同步等候runner返回，不承诺HTTP/kill硬上界。重启丢失票据，不恢复旧任务；已有批准与逐次报告可凭ID查询。资格信封沿旧管理层全部false，表示未取得通用回放/付费许可，不表示专用工作台没有执行能力。
 - 独立页面 `badcase-workbench.js` 仅被专用server加载，生产projects页不加载。材料选择→角色/规则文本预览→保存确认→启动确认分离，取消零对应POST；修改材料/次数/ID使旧预览失效。报告/预览只textContent，项目切换丢弃迟到响应；启动失败或结果未知保留ID、禁再次启动、不自动POST重试；刷新查询不重新授权。
 - 验证两种口径明确分开：`node scripts/badcase-capture/verify-workbench.cjs --browser` 用真实Chromium+实际HTTP/归档材料/存储，但executor是合成替身（零Docker/模型）；`verify-image-recovery.py --workbench` 加§4.4五参用实际HTTP显式启动→专用daemon真实SDK工具→重建后GET，fresh/resume各两容器，无浏览器。两者不合称浏览器到Docker同次端到端；均非真实人类批准/真实模型/真实badcase。实验工件随自有生命周期清理，非长期记录。Windows/Linux链接回归覆盖read与runner在root/project两层指向同内容decoy仍拒绝、零transport/零decoy写入（E44 P3）。
 
 仍缺生产材料/环境注册及生命周期、完整回放和真实评分人审、受控模型出口/费用硬限、真实用户turn与模型重跑、长期引用/配额/GC/崩溃恢复。E42容器侧变异与动态timeout建议未动；Linux SQLite门槛和全部AC pending保持不变。
+
+### 5.7 已确认人审投影的持久归档（专用工作台）
+
+`review-archive.cjs`只保存§5.6已经展示的角色正文、固定hash规则、镜像声明、模式与摘要，以及项目/材料/批准ID、创建/到期时间、reviewHash；完整计划仍在原批准记录。它不是环境包、原始请求/会话归档、材料注册表或真实模型批准。不增加生产能力，也不把投影重新送进容器。
+
+- preview不写review文件；material-approve在原批准落盘之前以`wx/0600`独占创建`<adminRoot>/<sha256(projectId)>/reviews/<sha256(approvalId)>.json`，fsync并有界读回复验。调用方返回副本与票内投影分离；完整旧文件仅允许精确幂等，不覆盖冲突/部分文件。写入或fsync失败不确认成功，不删除工件；完整但未确认fsync的文件可被精确重试重新使用，不声称掉电持久性。目录未fsync，双文件不是原子事务；过期/崩溃可能留下无批准的孤立投影，GET必须先读有效批准，不自动补批准或修复。
+- 编码文件上限256KiB；有界fd读取，lstat/fstat身份与大小、UTF-8、schema、逐角色16KiB/UTF-8/NUL、秘密哨兵、reviewHash、planHash、角色hash、评分器版本hash及镜像schema/环境hash复验。拒绝额外字段/路径；自有root/project/reviews层及文件拒绝链接。祖先路径及同OS用户仍属TCB，多次读取不是抗恶意竞争的原子快照，摘要不是认证；未知秘密不能保证全识别。invocation/history摘要只做格式与reviewHash绑定，离线查询不读取CAS证明其真实性；start仍经原runner复验实际材料。
+- 专用controller可选`GET .../reviews/:approvalId`：先读同项目有效离线批准，再绑定投影的ID、plan、批准到期时间和recordedAt。返回原全false信封加`reviewArchive`；不要求当前注册表、材料实物或未过期票据，不新建目录/补缺文件。旧批准可继续查`records`；缺失/损坏投影报`evaluation_review_invalid`，不宣称人审材料已保存。生产未注入workbench时新GET仍404。
+- start在claim之前读持久投影，并将其reviewHash、完整review及materialId重绑内存票据；缺失、替换、损坏拒绝且不消费claim。查询不签发票据、不复活启动权限；重启仍只能查旧记录。通用内部§5.5 runner未变，不把这层投影要求声称为所有受信内部调用者的强制约束。
+- 独立UI增加“查询已保存人审材料”，按批准ID只读、textContent展示；先清空旧预览授权，检查项目/批准/计划/到期绑定，迟到响应隔离。角色正文不会进入原生产报告页面。新文件保留至操作者另行授权处理，尚无配额/列表/删除/GC/环境引用，不计入capture占用；不能以本段称已完成材料生命周期。
+- 验证：工作台/HTTP/UI套件覆盖确认前不写、重试、重启且注册表改变仍读旧值、语义改写后重算hash、超限/非法UTF-8、秘密哨兵、链接、部分写/fsync/写后过期、启动前缺失与替换拒绝；单在途回归加5s per-test超时，防守卫缺失导致无限挂起。`verify-workbench.cjs --browser`用Chromium+合成executor查重启后的持久正文；`verify-image-recovery.py --workbench`仍是另一次HTTP→专用Docker工具诊断，增加重启投影一致检查。两类证据不合称同次浏览器→Docker，临时实验记录清理不等于真实项目长期留存；无真实采集/模型、全部AC pending。
+
 
 ## 6. 威胁模型
 

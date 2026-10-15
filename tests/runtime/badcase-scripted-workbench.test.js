@@ -120,7 +120,7 @@ test('saved approval replaced with another valid plan cannot exceed the human-re
   await assert.rejects(h.service.start('p1', c), /evaluation_start_failed/);
   assert.equal(h.calls(), 0); assert.equal(h.service.admin.read('p1', p.approvalId).report.consumed, false);
 });
-test('one active start per workbench, no queue; duplicate requests never dispatch twice', async t => {
+test('one active start per workbench, no queue; duplicate requests never dispatch twice', { timeout: 5000 }, async t => {
   const h = setup(t); let release, calls = 0;
   h.transport(async () => { calls++; await new Promise(r => { release = r; }); throw Error('PRIVATE-SENTINEL'); });
   const p = h.service.preview('p1', { materialId: 'sample', repetitions: 1 }), c = confirmation(p);
@@ -132,6 +132,121 @@ test('one active start per workbench, no queue; duplicate requests never dispatc
   release(); const result = await first;
   assert.equal(calls, 1); assert.equal(result.report.dispatchState, 'unresolved');
   assert.equal(result.report.ledger.runs[0].costMicroUsd, null); assert.doesNotMatch(JSON.stringify(result), /PRIVATE-SENTINEL/);
+});
+test('confirmed review survives restart without live materials; exact retry preserves bytes, detached preview cannot alter it', t => {
+  const h = setup(t), p = h.service.preview('p1', { materialId: 'sample', repetitions: 1 }), c = confirmation(p);
+  const expected = JSON.parse(JSON.stringify(p.review));
+  assert.equal(fs.existsSync(h.root), false);
+  p.review.roles.candidate = 'caller mutation';
+  h.service.approve('p1', c);
+  const file = path.join(h.root, hash('p1'), 'reviews', hash(p.approvalId) + '.json');
+  const bytes = fs.readFileSync(file);
+  h.service.approve('p1', c); assert.deepEqual(fs.readFileSync(file), bytes);
+  const restarted = createScriptedWorkbench({ ...h.options, materials: [] });
+  const r = restarted.readReview('p1', p.approvalId);
+  assert.deepEqual(r.reviewArchive.review, expected); assert.equal(r.reviewArchive.reviewHash, p.reviewHash);
+  assert.equal(r.reviewArchive.approvalId, p.approvalId); assert.equal(r.report.consumed, false);
+  assert.throws(() => restarted.readReview('p2', p.approvalId));
+  assert.equal(h.calls(), 0);
+});
+test('missing durable review blocks start before claim, old approval report remains readable', async t => {
+  const h = setup(t), p = h.service.preview('p1', { materialId: 'sample', repetitions: 1 }), c = confirmation(p);
+  h.service.approve('p1', c);
+  const file = path.join(h.root, hash('p1'), 'reviews', hash(p.approvalId) + '.json');
+  fs.unlinkSync(file);
+  assert.throws(() => h.service.readReview('p1', p.approvalId));
+  await assert.rejects(h.service.start('p1', c), /evaluation_start_failed/);
+  assert.equal(h.calls(), 0); assert.equal(h.service.admin.read('p1', p.approvalId).report.consumed, false);
+});
+test('review fsync failure cannot acknowledge approval or expose an orphan as a saved review', t => {
+  const h = setup(t), p = h.service.preview('p1', { materialId: 'sample', repetitions: 1 }), c = confirmation(p);
+  const sync = fs.fsyncSync;
+  fs.fsyncSync = () => { throw Error('PRIVATE-SENTINEL'); };
+  try { assert.throws(() => h.service.approve('p1', c), /evaluation_review_write_failed/); }
+  finally { fs.fsyncSync = sync; }
+  assert.throws(() => h.service.admin.read('p1', p.approvalId));
+  assert.equal(h.calls(), 0);
+});
+test('review archive refuses semantic tampering even with recomputed reviewHash; read stays non-mutating', t => {
+  const h = setup(t), p = h.service.preview('p1', { materialId: 'sample', repetitions: 1 });
+  h.service.approve('p1', confirmation(p));
+  const file = path.join(h.root, hash('p1'), 'reviews', hash(p.approvalId) + '.json'), original = fs.readFileSync(file);
+  const mutations = [v => { v.projectId = 'p2'; }, v => { v.approvalId = '00000000-0000-0000-0000-000000000001'; },
+    v => { v.expiresAt++; }, v => { v.createdAt--; v.expiresAt--; }, v => { v.extra = true; }, v => { v.review.roles.candidate += '!'; },
+    v => { v.review.rule.expectedHash = hash('changed'); }, v => { v.review.declaredImage.nodeVersion = 'v1.2.3'; },
+    v => { v.review.declaredImage.hostPath = '/private'; }, v => { v.review.deliveryMode = 'silent-fresh'; },
+    v => { v.review.realModel = true; }, v => { v.review.invocationHash = 'bad'; },
+    v => { v.review.planHash = hash('other'); }, v => { v.reviewHash = hash('wrong'); }];
+  for (const change of mutations) {
+    const v = JSON.parse(original); change(v);
+    if (v.reviewHash === p.reviewHash) v.reviewHash = hash(JSON.stringify(v.review));
+    const bytes = Buffer.from(JSON.stringify(v)); fs.writeFileSync(file, bytes);
+    assert.throws(() => h.service.readReview('p1', p.approvalId), /evaluation_review_invalid/);
+    assert.deepEqual(fs.readFileSync(file), bytes);
+  }
+  for (const bytes of [Buffer.from('{'), Buffer.concat([original, Buffer.from([0xff])]), Buffer.alloc(256 * 1024 + 1, 32)]) {
+    fs.writeFileSync(file, bytes); assert.throws(() => h.service.readReview('p1', p.approvalId), /evaluation_review_invalid/);
+    assert.deepEqual(fs.readFileSync(file), bytes);
+  }
+  fs.writeFileSync(file, original); assert.equal(h.service.readReview('p1', p.approvalId).reviewArchive.reviewHash, p.reviewHash);
+});
+test('independently valid archive replacement cannot replace the confirmed ticket at start or on approve retry', async t => {
+  const h = setup(t), p = h.service.preview('p1', { materialId: 'sample', repetitions: 1 }), c = confirmation(p);
+  h.service.approve('p1', c);
+  const file = path.join(h.root, hash('p1'), 'reviews', hash(p.approvalId) + '.json'), v = JSON.parse(fs.readFileSync(file));
+  v.review.invocationHash = hash('different-observation'); v.reviewHash = hash(JSON.stringify(v.review));
+  fs.writeFileSync(file, JSON.stringify(v));
+  assert.throws(() => h.service.approve('p1', c), /evaluation_review_write_failed/);
+  await assert.rejects(h.service.start('p1', c), /evaluation_start_failed/);
+  assert.equal(h.calls(), 0); assert.equal(h.service.admin.read('p1', p.approvalId).report.consumed, false);
+});
+test('partial review write is retained, never repaired by retry and never creates approval', t => {
+  const h = setup(t), p = h.service.preview('p1', { materialId: 'sample', repetitions: 1 }), c = confirmation(p), write = fs.writeFileSync;
+  fs.writeFileSync = function(fd, ...args) { if (typeof fd === 'number') { write(fd, '{'); throw Error('PRIVATE-SENTINEL'); } return write(fd, ...args); };
+  try { assert.throws(() => h.service.approve('p1', c), /evaluation_review_write_failed/); }
+  finally { fs.writeFileSync = write; }
+  const file = path.join(h.root, hash('p1'), 'reviews', hash(p.approvalId) + '.json');
+  assert.equal(fs.readFileSync(file, 'utf8'), '{');
+  assert.throws(() => h.service.approve('p1', c), /evaluation_review_write_failed/);
+  assert.throws(() => h.service.admin.read('p1', p.approvalId)); assert.equal(fs.readFileSync(file, 'utf8'), '{');
+});
+test('archive validation rejects secret-bearing and invalid role bytes before any directory write', t => {
+  const h = setup(t), p = h.service.preview('p1', { materialId: 'sample', repetitions: 1 });
+  const { saveReviewArchive } = require('../../scripts/badcase-capture/review-archive.cjs');
+  const { planEvaluation } = require('../../build/server/domain/runtime/badcase-capture/evaluation-plan');
+  for (const role of ['sk-synthetic-test-only-123456', 'password=\nsynthetic-only-value', '\ud800', 'x'.repeat(16385), '\0x']) {
+    const review = structuredClone(p.review), spec = structuredClone(p.plan.spec);
+    review.roles.candidate = role; spec.candidateRoleHash = hash(role); review.planHash = planEvaluation(spec).planHash;
+    const v = { schemaVersion: 1, projectId: 'p1', approvalId: p.approvalId, materialId: 'sample', createdAt: p.createdAt,
+      expiresAt: p.expiresAt, reviewHash: hash(JSON.stringify(review)), review };
+    assert.throws(() => saveReviewArchive(h.root, v, spec), /evaluation_review_invalid/);
+    assert.equal(fs.existsSync(h.root), false);
+  }
+});
+test('expiry during review fsync leaves an unapproved orphan; GET never promotes it', t => {
+  const h = setup(t), p = h.service.preview('p1', { materialId: 'sample', repetitions: 1 }), c = confirmation(p), sync = fs.fsyncSync, now = Date.now;
+  fs.fsyncSync = fd => { sync(fd); Date.now = () => p.expiresAt; };
+  try { assert.throws(() => h.service.approve('p1', c), /evaluation_preview_stale/); }
+  finally { fs.fsyncSync = sync; Date.now = now; }
+  assert.throws(() => h.service.readReview('p1', p.approvalId)); assert.equal(h.calls(), 0);
+});
+test('review own directories and file refuse symlinks without decoy writes', async t => {
+  const h = setup(t), p = h.service.preview('p1', { materialId: 'sample', repetitions: 1 }), c = confirmation(p);
+  h.service.approve('p1', c);
+  const dir = path.join(h.root, hash('p1'), 'reviews'), file = path.join(dir, hash(p.approvalId) + '.json');
+  const bytes = fs.readFileSync(file), decoy = path.join(path.dirname(h.root), 'review-decoy'); fs.mkdirSync(decoy);
+  fs.writeFileSync(path.join(decoy, path.basename(file)), bytes);
+  fs.renameSync(dir, dir + '-saved'); fs.symlinkSync(decoy, dir, 'junction');
+  assert.throws(() => h.service.readReview('p1', p.approvalId), /evaluation_review_invalid/);
+  assert.throws(() => h.service.approve('p1', c), /evaluation_review_write_failed/);
+  fs.unlinkSync(dir); fs.renameSync(dir + '-saved', dir);
+  fs.unlinkSync(file);
+  try { fs.symlinkSync(path.join(decoy, path.basename(file)), file, 'file'); }
+  catch (e) { if (e.code === 'EPERM') { t.diagnostic('file symlink unavailable; directory junction assertions executed'); return; } throw e; }
+  assert.throws(() => h.service.readReview('p1', p.approvalId), /evaluation_review_invalid/);
+  assert.throws(() => h.service.approve('p1', c), /evaluation_review_write_failed/);
+  await assert.rejects(h.service.start('p1', c), /evaluation_start_failed/);
+  assert.equal(h.calls(), 0); assert.deepEqual(fs.readFileSync(path.join(decoy, path.basename(file))), bytes);
 });
 test('bounded review tickets refuse further preparation, restart drops tickets, no implicit approval', t => {
   const h = setup(t), first = h.service.preview('p1', { materialId: 'sample', repetitions: 1 });
