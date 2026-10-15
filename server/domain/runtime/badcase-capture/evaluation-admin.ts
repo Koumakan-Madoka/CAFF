@@ -22,18 +22,26 @@ function offline(spec: unknown) {
     || containsSecretSentinel(JSON.stringify(s))) fail('evaluation_offline_only');
   return plan;
 }
+/** Trusted offline runner storage lookup; read-only, never creates a scope. */
+export function evaluationAdminRecordRoot(root: string, projectId: string) {
+  if (typeof root !== 'string' || !path.isAbsolute(root)) fail('evaluation_admin_invalid');
+  const dir = path.join(root, project(projectId));
+  for (const d of [root, dir]) if (!fs.lstatSync(d).isDirectory()) fail('evaluation_record_invalid');
+  return dir;
+}
 export function createEvaluationAdminService({ root }: { root: string }) {
   if (typeof root !== 'string' || !path.isAbsolute(root)) fail('evaluation_admin_invalid');
   type Preview = { projectId: string; approvalId: string; createdAt: number; expiresAt: number; plan: ReturnType<typeof planEvaluation> };
   const previews = new Map<string, Preview>();
   function recordRoot(projectId: string, create = false) {
     const dir = path.join(root, project(projectId));
-    // Storage ancestors remain same-user TCB. Refuse links in our own two levels.
-    for (const d of [root, dir]) {
-      if (create) fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+    // Storage ancestors remain same-user TCB. Refuse links in our own two levels
+    // before creating their children; runner and GET share the read-only lookup.
+    if (create) for (const d of [root, dir]) {
+      fs.mkdirSync(d, { recursive: true, mode: 0o700 });
       if (!fs.lstatSync(d).isDirectory()) fail('evaluation_record_invalid');
     }
-    return dir;
+    return evaluationAdminRecordRoot(root, projectId);
   }
   const envelope = (projectId: string, report: ReturnType<typeof readEvaluationRecord>) => ({
     schemaVersion: 1, projectId, mode: 'offline-scripted-declaration', launchAvailable: false,

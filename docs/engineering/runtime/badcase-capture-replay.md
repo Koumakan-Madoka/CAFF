@@ -403,8 +403,21 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 管理复用 loopback/Host/Origin/JSON/bootstrap CSRF guard；没有 agent tool，且**没有任何 dispatch 路由**。同 OS 用户进程仍可模拟确认或改存储，confirmed 不是人类身份认证。此接口不接真实 provider、不触碰 Docker/SDK/采集开关，不授予任何付费许可；后续受控付费出口需单独门控。
 - 数据固定在 `<agentDir>/badcase-offline-evaluations/<sha256(projectId)>/evaluations/<sha256(approvalId)>`；客户端不能选择 root。自有 root/project 目录拒绝符号链接，祖先与同 OS 用户仍为 TCB。构造与 GET 不创建目录；该存储独立于 capture CAS/配额统计，暂无配额/GC/删除/项目删除联动，不宣称容量保护完成。部分文件和旧 claim 不修复、不清理、不重试执行。
 - 页面切换项目会清空回执、ID、草稿和报告，忽略旧异步响应；不撤回已经提交的管理写入。修改 spec 立即使回执失效；确认时再次检查期限。完整 JSON 使用 textContent，不渲染调用方 HTML；错误不回显原异常正文。
-- 顶层固定 `mode=offline-scripted-declaration`、`launchAvailable=false`、`paidAuthorization=false`、`materialVerified=false`；底层 `executionVerified/strictEvalEligible=false` 不变。报告写入仍由受信离线协调器负责；§5.3 专用 daemon runner 尚未接此批准存储，不能在页面启动已批准的计划。
+- 顶层固定 `mode=offline-scripted-declaration`、`launchAvailable=false`、`paidAuthorization=false`、`materialVerified=false`；底层 `executionVerified/strictEvalEligible=false` 不变。报告写入由受信离线协调器负责；§5.5 已接专用 daemon 的内部离线 runner 与此批准存储，但没有页面/HTTP 启动入口，仍不能在页面启动已批准的计划。
 - 验证脚本 `node scripts/badcase-capture/verify-evaluation-admin-ui.cjs` 在随机 loopback 端口/临时目录运行实际面板、HTTP controller、持久化服务，浏览器仅允许本服务出口；验证取消零批准请求、显式确认、服务重建与逐次报告查询。两次评分由测试注入 executor 产生，**不是 Docker/模型/真实项目证据**；不覆盖完整 app shell 或 SQLite，全部验收资格不升级。
+
+### 5.5 已保存项目批准 → 可信离线 runner → 同一管理报告
+
+`approved-scripted-evaluation.cjs` 导出可信内部 `dispatchApprovedScriptedEvaluation`。不是 HTTP 路由/agent 工具，也没有任意 JSON 上传执行或自动启动 CLI。操作者提供专用管理 root、projectId/approvalId、封存关联与归档引用、角色正文/评分规则，以及 §4.11 恢复器的 `runProbe` 能力；该函数自身不启动 daemon、不签发批准、不从材料变化生成新批准。注入函数属于 TCB，不是 Docker 能力认证；真实验证必须使用恢复器，单测替身不得冒充 Docker。
+
+- 通过与管理 GET 相同的 `read()` 读取离线批准；缺失、非离线、已消费、过期、倒退时钟均在材料准备前拒绝。不建缺失记录/目录。`evaluationAdminRecordRoot` 统一只读存储路径和自有 root/project 目录检查，禁止链接重定向；同权限进程与祖先路径仍属 TCB。
+- 精确核对 request 关联的 projectId 和 flagId；从实际封存 capsule、角色、归档材料重新生成 §5.3 完整 spec，次数取已批准 spec。要求完整 spec 与 planHash 同时相等，不只核对 case 或 role 摘要。无批准材料差异、缺归档、损坏 CAS 不创建 claim、不调用 transport；材料准备可能已经留下保护引用，不撤销或授予 GC。镜像真实身份仍由恢复 transport 校验，不把镜像声明 hash 当 load/来源证明。
+- 准备后重读完整批准报告并复验期限，防止读材料耗时越过期限；内容变化/已有 claim 拒绝。协调器再从同一项目 root 加载并 wx 领取 claim、先写预算事件，逐 run 请求的 approvalId/planHash/expiresAt 再绑定原批准，随后由 adapter 逐 run 锁内复验并 protect。仍无跨文件原子事务，不抵御同 OS 用户恶意替换；已有引用/claim 不自动清除，失败不得自动重试。
+- 只通过原存储追加逐次结果，返回与管理 GET 相同的信封；管理服务重建后直接查询，不需旧预览票据。坏回执/transport 异常保留 unresolved/未知预留，不写异常正文/原始产物。重复调用在准备前拒绝；并发消费沿 §5.2 永久 claim。此内部路径只核验受限脚本诊断材料与批准声明一致，不升级一般忠实回放资格：`launchAvailable/paidAuthorization/materialVerified/executionVerified/strictEvalEligible` 继续 false。`materialVerified=false` 指管理信封不发布通用材料认证，不能据此声称本段未执行逐字节检查。
+- 真实实验：已授权 Linux root 下运行 `verify-image-recovery.py --approved-scripted-evaluation`，其余五参沿 §4.4；与 `--scripted-evaluation` 互斥。随机 loopback HTTP controller 的 preview/approve（模拟用户点击）→内部 runner→专用 daemon SDK 工具→重建服务后 GET。fresh/resume 各两个真实容器；另一个成功容器的回执篡改后 unresolved。每个场景验证换角色计划零 transport 且未消费、错项目 GET 拒绝、重复派发零新容器、源 CAS 不变。测试本身生成批准，**不代表真实人类批准**；无浏览器、完整 app shell、SQLite 或真实模型证据。临时记录与环境随实验删除，非长期留存。
+- 自动回归：`badcase-approved-scripted-evaluation.test.js` 覆盖完整计划绑定、缺/坏归档与 CAS、准备中到期/批准变化、非离线记录、异常未知预留、并发/重复消费；`badcase-evaluation-admin.test.js` 补持久化非离线记录 GET 拒绝（E43 P3）。新模块初始红灯仅模块缺失，非原实现 bug 修复。E42 容器侧变异电池与动态 timeout 仍待后续容器入口改动，本段未修改 SDK/harness 行为。
+
+仍缺页面启动、材料选择与人审评分展示、受控真实模型出口、用户真实 badcase 及付费参数批准、长期引用/配额/GC/崩溃恢复；全部 AC pending。不能将本链路的脚本固定产物评分称为 prompt 提分或真实 badcase 复现。
 
 ## 6. 威胁模型
 

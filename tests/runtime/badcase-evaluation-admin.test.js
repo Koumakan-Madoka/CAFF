@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { createEvaluationAdminService } = require('../../build/server/domain/runtime/badcase-capture/evaluation-admin');
-const { dispatchRecordedEvaluation } = require('../../build/server/domain/runtime/badcase-capture/evaluation-record');
+const { dispatchRecordedEvaluation, recordEvaluationApproval } = require('../../build/server/domain/runtime/badcase-capture/evaluation-record');
 const { spec, hash } = require('../helpers/badcase-offline-spec.cjs');
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-evaluation-admin-'));
@@ -85,6 +85,15 @@ test('own project directory symlinks cannot redirect approvals into another scop
   catch (e) { if (['EPERM', 'EACCES'].includes(e.code)) { t.skip('link privilege unavailable'); return; } throw e; }
   assert.throws(() => service.approve('p1', approve(p)), /evaluation_record_invalid/);
   assert.deepEqual(fs.readdirSync(target), []);
+});
+test('persisted non-offline record cannot be projected as an offline declaration', t => {
+  const { root, service } = setup(t), approvalId = '11111111-1111-4111-8111-111111111111';
+  const s = { ...spec(), model: { ...spec().model, provider: 'paid-provider' } };
+  const { planEvaluation } = require('../../build/server/domain/runtime/badcase-capture/evaluation-plan');
+  const plan = planEvaluation(s);
+  recordEvaluationApproval(path.join(root, hash('p1')), s, { confirmed: true, approvalId,
+    planHash: plan.planHash, expiresAt: Date.now() + 120000 });
+  assert.throws(() => service.read('p1', approvalId), /evaluation_record_invalid/);
 });
 test('report shows injected internal results and unknown reservations, not zero-cost success', async t => {
   const { root, service } = setup(t), p = service.preview('p1', { spec: spec() });

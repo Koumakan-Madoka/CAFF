@@ -1,6 +1,6 @@
 """Opt-in Linux/root offline experiment. Never install components or alter shared daemon.
 Start a disposable dockerd in private mount/network namespaces, then run archived SDK
-initialization through it. No captured code, model, credentials or production DB.
+initialization or scripted offline tools through it. No real model, credentials or production DB.
 """
 import argparse
 import json
@@ -17,7 +17,9 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ['image-id', 'repository-digest', 'architecture', 'node-version', 'python-version']:
         parser.add_argument('--' + name, required=True)
-    parser.add_argument('--scripted-evaluation', action='store_true', help='offline SDK prompt/tool loop, scripted model only')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--scripted-evaluation', action='store_true', help='offline SDK prompt/tool loop, scripted model only')
+    mode.add_argument('--approved-scripted-evaluation', action='store_true', help='HTTP approval to offline runner and report; no paid model')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise RuntimeError('explicit_root_environment_required')
@@ -74,10 +76,11 @@ def main():
         for namespace in ['mnt', 'net']:
             if os.readlink('/proc/self/ns/' + namespace) == os.readlink('/proc/' + str(pid) + '/ns/' + namespace):
                 raise RuntimeError('daemon_namespace_failed')
-        script = 'verify-scripted-evaluation.cjs' if args.scripted_evaluation else 'verify-image-recovery.cjs'
+        script = ('verify-approved-scripted-evaluation.cjs' if args.approved_scripted_evaluation else
+                  'verify-scripted-evaluation.cjs' if args.scripted_evaluation else 'verify-image-recovery.cjs')
         node_args = ['node', str(repo / 'scripts/badcase-capture' / script)]
         for key, value in vars(args).items():
-            if key != 'scripted_evaluation':
+            if key not in ['scripted_evaluation', 'approved_scripted_evaluation']:
                 node_args.extend(['--' + key.replace('_', '-'), value])
         node_args.extend(['--socket', 'unix://' + str(base / 'docker.sock'), '--daemon-id', info['ID'], '--data-root', str(base / 'data')])
         # SDK never runs here: Node is only the trusted host scheduler. All SDK/tools
