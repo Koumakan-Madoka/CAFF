@@ -33,7 +33,8 @@ export function modelBinding(value: unknown) {
     const toolProfile = withTools ? toolChatCompletionsSettings({ settings: v.settings, tools: v.tools }) : undefined;
     const s = toolProfile || chatCompletionsSettings(v.settings), e = httpsExchangeEndpoint(v.endpoint);
     if (s.settings.maxRequestBytes !== e.endpoint.maxRequestBytes || s.settings.maxResponseBytes !== e.endpoint.maxResponseBytes
-      || (e.endpoint.clientProfile !== undefined && s.settings.provider !== 'opencode-go')) fail('invalid');
+      || (e.endpoint.clientProfile !== undefined && s.settings.provider !== 'opencode-go')
+      || (s.settings.compatibilityProfile !== undefined && e.endpoint.clientProfile !== 'opencode-go-v1')) fail('invalid');
     const { protocol: _s, ...settings } = s.settings, { protocol: _e, ...endpoint } = e.endpoint;
     // No tools property is added to legacy configurations: their canonical bytes
     // and historical hashes are unchanged. Tools always require a new plan.

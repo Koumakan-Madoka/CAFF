@@ -19,6 +19,7 @@ export interface ChatCompletionsSettings {
   provider: string; model: string; contextWindowTokens: number; maxOutputTokens: number; temperature: number;
   inputMicroUsdPerMillionTokens: number; outputMicroUsdPerMillionTokens: number;
   maxRequestBytes: number; maxResponseBytes: number;
+  compatibilityProfile?: 'opencode-go-deepseek-nonthinking-v1';
 }
 // Round each component UP in integer arithmetic, never underreserve by rounding.
 function tariff(s: ChatCompletionsSettings, input: number, output: number) {
@@ -29,8 +30,10 @@ function tariff(s: ChatCompletionsSettings, input: number, output: number) {
 export function chatCompletionsSettings(value: unknown) {
   try {
     const v = value as ChatCompletionsSettings;
+    const profiled = object(v) && Object.hasOwn(v, 'compatibilityProfile');
     if (!keys(v, ['provider', 'model', 'contextWindowTokens', 'maxOutputTokens', 'temperature',
-      'inputMicroUsdPerMillionTokens', 'outputMicroUsdPerMillionTokens', 'maxRequestBytes', 'maxResponseBytes'])
+      'inputMicroUsdPerMillionTokens', 'outputMicroUsdPerMillionTokens', 'maxRequestBytes', 'maxResponseBytes'], ['compatibilityProfile'])
+      || (profiled && (v.compatibilityProfile !== 'opencode-go-deepseek-nonthinking-v1' || v.provider !== 'opencode-go' || v.model !== 'deepseek-v4.1-flash'))
       || !id(v.provider) || !modelIdentifier(v.model) || !integer(v.contextWindowTokens, 1, 10000000)
       || !integer(v.maxOutputTokens, 1, v.contextWindowTokens)
       || !Number.isFinite(v.temperature) || v.temperature < 0 || v.temperature > 2
@@ -40,7 +43,8 @@ export function chatCompletionsSettings(value: unknown) {
     const settings = { protocol: 'chat-completions-text-v1' as const,
       provider: v.provider, model: v.model, contextWindowTokens: v.contextWindowTokens, maxOutputTokens: v.maxOutputTokens,
       temperature: v.temperature, inputMicroUsdPerMillionTokens: v.inputMicroUsdPerMillionTokens,
-      outputMicroUsdPerMillionTokens: v.outputMicroUsdPerMillionTokens, maxRequestBytes: v.maxRequestBytes, maxResponseBytes: v.maxResponseBytes };
+      outputMicroUsdPerMillionTokens: v.outputMicroUsdPerMillionTokens, maxRequestBytes: v.maxRequestBytes, maxResponseBytes: v.maxResponseBytes,
+      ...(profiled ? { compatibilityProfile: v.compatibilityProfile! } : {}) };
     // Reserve the ENTIRE declared input context, plus the output cap. No byte-to-
     // token guess or undocumented tokenizer. Overlong input can still be refused
     // by the provider; context metadata/tariffs must be reviewed before real use.
@@ -114,7 +118,8 @@ export function encodeToolChatCompletionsRequest(input: unknown, messages: unkno
     const s = toolChatCompletionsSettings(input); validateToolMessages(messages, s.tools);
     const body = Buffer.from(JSON.stringify({ model: s.settings.model, messages, temperature: s.settings.temperature,
       max_completion_tokens: s.settings.maxOutputTokens, n: 1, stream: false, store: false,
-      tools: s.tools, tool_choice: 'auto', parallel_tool_calls: false }));
+      tools: s.tools, tool_choice: 'auto', parallel_tool_calls: false,
+      ...(s.settings.compatibilityProfile ? { thinking: { type: 'disabled' } } : {}) }));
     if (body.length > s.settings.maxRequestBytes || containsSecretSentinel(body)) fail();
     return body;
   } catch { fail(); }
@@ -127,7 +132,8 @@ export function encodeChatCompletionsRequest(input: unknown, messages: unknown):
   try {
     const { settings: s } = chatCompletionsSettings(input); validateMessages(messages);
     const body = Buffer.from(JSON.stringify({ model: s.model, messages, temperature: s.temperature,
-      max_completion_tokens: s.maxOutputTokens, n: 1, stream: false, store: false }));
+      max_completion_tokens: s.maxOutputTokens, n: 1, stream: false, store: false,
+      ...(s.compatibilityProfile ? { thinking: { type: 'disabled' } } : {}) }));
     if (body.length > s.maxRequestBytes || containsSecretSentinel(body)) fail();
     return body;
   } catch { fail(); }
@@ -147,7 +153,8 @@ function validateRequest(r: ModelEgressRequest, s: { settings: ChatCompletionsSe
     || r.body.length < 1 || r.body.length > s.settings.maxRequestBytes) fail();
   const v = parse(r.body, true);
   if (!keys(v, ['model', 'messages', 'temperature', 'max_completion_tokens', 'n', 'stream', 'store',
-    ...(tools ? ['tools', 'tool_choice', 'parallel_tool_calls'] : [])])
+    ...(tools ? ['tools', 'tool_choice', 'parallel_tool_calls'] : []), ...(s.settings.compatibilityProfile ? ['thinking'] : [])])
+    || (s.settings.compatibilityProfile && (!keys(v.thinking, ['type']) || v.thinking.type !== 'disabled'))
     || v.model !== s.settings.model || v.temperature !== s.settings.temperature || v.max_completion_tokens !== s.settings.maxOutputTokens
     || v.n !== 1 || v.stream !== false || v.store !== false) fail();
   if (tools) {
@@ -177,14 +184,14 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
   if (!Array.isArray(v.choices) || v.choices.length !== 1) responseFailure('protocol_response_envelope_choices');
   const c = v.choices[0];
   const calling = !!tools && c?.finish_reason === 'tool_calls';
-  // Preserve the old choice guard's predicate order and accepted set. Known
-  // truncation/reasoning shapes get fixed rejection labels, NOT compatibility.
+  // Preserve legacy choice order and acceptance. The explicit nonthinking
+  // profile below only permits empty reasoning metadata; truncation still fails.
   if (!keys(c, ['index', 'message', 'finish_reason'], ['logprobs'])) responseFailure('protocol_response_choice_keys');
   if (c.index !== 0) responseFailure('protocol_response_choice_index');
   if (!calling && c.finish_reason !== 'stop')
     responseFailure(c.finish_reason === 'length' ? 'protocol_response_choice_truncated' : 'protocol_response_choice_finish');
   if (Object.hasOwn(c, 'logprobs') && c.logprobs !== null) responseFailure('protocol_response_choice_logprobs');
-  if (!keys(c.message, ['role', 'content', ...(calling ? ['tool_calls'] : [])], ['refusal', 'annotations'])) {
+  if (!keys(c.message, ['role', 'content', ...(calling ? ['tool_calls'] : [])], ['refusal', 'annotations', ...(s.compatibilityProfile ? ['reasoning_content'] : [])])) {
     // Only the sole recognized extra key is classified; other unknown keys
     // remain generic. Never retain its content, type, size or any raw key name.
     const reasoningOnly = keys(c.message, ['role', 'content', ...(calling ? ['tool_calls'] : []), 'reasoning_content'], ['refusal', 'annotations']);
@@ -195,6 +202,10 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
   if (Object.hasOwn(c.message, 'refusal') && c.message.refusal !== null) responseFailure('protocol_response_choice_refusal');
   if (Object.hasOwn(c.message, 'annotations') && (!Array.isArray(c.message.annotations) || c.message.annotations.length !== 0))
     responseFailure('protocol_response_choice_annotations');
+  // Explicit nonthinking mode only: empty metadata is not lost model content.
+  // Never erase real reasoning, including whitespace or an unexpected type.
+  if (s.compatibilityProfile && Object.hasOwn(c.message, 'reasoning_content') && c.message.reasoning_content !== null && c.message.reasoning_content !== '')
+    responseFailure('protocol_response_choice_reasoning_invalid');
   if (calling) {
     if (!Array.isArray(c.message.tool_calls) || c.message.tool_calls.length !== 1) fail();
     toolCall(c.message.tool_calls[0], tools!, seen);

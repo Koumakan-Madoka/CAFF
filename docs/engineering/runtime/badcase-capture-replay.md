@@ -732,6 +732,19 @@ E72 在 `cc6c39c8` 固定 SHA 审查通过、恢复提案获批后执行：98 �
 
 作者验证：新增choice用例先红（旧粗标签）后绿；Windows六套155例＝153通过/2跳过（链接权限），Linux Node22.22六套155/155；11个标签退化、reasoning过宽分类、首败重排、旧粗标签删除共14个私有副本单点变异全红，逐字节恢复后155/155并清理副本；fast1899通过/41跳过、smoke101、build/check与双typecheck通过。本段代码验证零新增Key读取/供应商/Docker/UI操作；E72的那1请求单独记账，不混作离线测试。hostCode未摘要编译模块缺口不变，全部AC pending、不合并发布。
 
+### 5.24 显式 DeepSeek 非 thinking 兼容配置
+
+E74 为本有界批次第2个真实请求：审查通过的 `e6f21d8f`、98文件副本字节核验与155/155预检、新计划/批准、原端点+客户端profile，HTTP200 后固定标签 `protocol_response_choice_message_reasoning`。**本次已确认拒绝点是message仅多reasoning_content键，但值是否为空/非空未知**，不展示/保存该值、不把E72/E70倒推为同因。仍无评分、候选未启动，2容器/专用daemon清理、源镜像未改；新增$0.25，累计$1.50未结算预留（非账单）。
+
+2026-10-16只读核对 [DeepSeek官方thinking文档](https://api-docs.deepseek.com/guides/thinking_mode)：默认开启thinking，可用请求 `thinking:{type:"disabled"}` 关闭；开启thinking时工具历史需保留reasoning_content。原容器SDK已设置thinkingLevel=off、模型reasoning=false，但出口未显式发送关闭参数。因此新增**独立显式配置**而非丢弃真实reasoning或自动放宽旧协议：
+
+- settings可选 `compatibilityProfile:"opencode-go-deepseek-nonthinking-v1"`；仅接受精确provider=`opencode-go`、model=`deepseek-v4.1-flash`，并在modelBinding中要求endpoint已显式启用`opencode-go-v1`。未知值/undefined/null/其他provider或model均拒绝。新字段进入settingsHash、复合bindingHash、审核投影与计划，必须新批准；不改变源认证路径/端点，不自动选择或迁移旧配置。
+- 主机文本/工具编码器及容器adapter都发送固定 `thinking:{type:"disabled"}`。主机在预算派发/取凭据前严格复验thinking对象唯一type键且精确disabled；缺失、enabled、自定义键、额外字段均拒绝。无profile的旧settings/请求字节/hash及响应接受集合不变。
+- 仅显式profile的响应message允许省略reasoning_content，或值为null/空字符串。空格、非空文本、数字、布尔、对象、数组均以固定`protocol_response_choice_reasoning_invalid`失败关闭；不截断/提取/擦除真实reasoning，不允许reasoning历史字段。容器adapter另设同样的独立拒绝边界，不能绕过主机后静默丢弃。非零reasoning_tokens、未知usage、截断、额外未知字段等旧限制仍保持；不保证网关支持或实际遵守请求参数，真实验证仍在后续批准运行中。
+- 基线/候选必须使用同一新profile及其他参数，从同一起点对照，不能与旧失败计划混作只变role的对照。容器adapter和model-profile.json真实字节纳入现有manifest/harnessHash；hostCode未摘要其他编译模块的既有缺口不因此关闭。响应验证失败仍费用未知/预留不退款/停止后续请求/不评分，未发生新的供应商运行即不得宣称修复已验证。
+
+离线验证：新增4项先红后绿；Windows七套170＝168通过/2链接权限跳过，Linux Node22.22七套170/170。25个私有副本单点变异全部红（17个profile/编码器/请求复验/双边reasoning拒绝/闭集守卫，8个全部相邻旧choice谓词重排）；逐字节恢复后170/170并清理副本。E73多故障排序P3已纳入本次回归，不另拆补丁。fast1909通过/41跳过、smoke101、build/check及双typecheck通过；本段代码测试零新增Key/供应商/Docker/UI，E74的1请求独立记账，全部AC pending、不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

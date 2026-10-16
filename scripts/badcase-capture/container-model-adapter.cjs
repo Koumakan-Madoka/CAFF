@@ -29,9 +29,17 @@ function sdkMessages(context) {
       function: { name: c.name, arguments: JSON.stringify(c.arguments) } })) } : { role: 'assistant', content: text };
   })];
 }
+function nonThinking(s) {
+  if (!Object.hasOwn(s, 'compatibilityProfile')) return false;
+  assert.equal(s.compatibilityProfile, 'opencode-go-deepseek-nonthinking-v1');
+  assert.equal(s.provider, 'opencode-go'); assert.equal(s.model, 'deepseek-v4.1-flash'); return true;
+}
 function assistantMessage(raw, profile) {
-  const s = profile.settings; assert.equal(raw.model, s.model); assert.equal(raw.choices.length, 1);
+  const s = profile.settings, off = nonThinking(s); assert.equal(raw.model, s.model); assert.equal(raw.choices.length, 1);
   const c = raw.choices[0], content = [];
+  // Host validation comes first; this second boundary must not silently erase
+  // reasoning if invoked directly or if a future host path bypasses that guard.
+  assert.ok(!Object.hasOwn(c.message, 'reasoning_content') || (off && (c.message.reasoning_content === null || c.message.reasoning_content === '')));
   assert.ok(['stop', 'tool_calls'].includes(c.finish_reason));
   if (c.message.content !== null) { assert.equal(typeof c.message.content, 'string'); content.push({ type: 'text', text: c.message.content }); }
   if (c.finish_reason === 'tool_calls') {
@@ -82,7 +90,8 @@ function modelStream(profile, exchange, gate) {
       gate(); assert.ok(!options?.signal?.aborted); assert.equal(selected.provider, profile.settings.provider); assert.equal(selected.id, profile.settings.model);
       const tools = sdkTools(context.tools, profile), s = profile.settings;
       const body = Buffer.from(JSON.stringify({ model: s.model, messages: sdkMessages(context), temperature: s.temperature,
-        max_completion_tokens: s.maxOutputTokens, n: 1, stream: false, store: false, tools, tool_choice: 'auto', parallel_tool_calls: false }));
+        max_completion_tokens: s.maxOutputTokens, n: 1, stream: false, store: false, tools, tool_choice: 'auto', parallel_tool_calls: false,
+        ...(nonThinking(s) ? { thinking: { type: 'disabled' } } : {}) }));
       const response = await exchange(body); gate(); assert.ok(!options?.signal?.aborted);
       return assistantMessage(JSON.parse(response), profile);
     })();

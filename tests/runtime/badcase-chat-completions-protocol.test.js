@@ -282,6 +282,12 @@ test('choice check labels persist without payload, preserve first failure and ke
     ['content', v => v.choices[0].message.content = null],
     ['refusal', v => v.choices[0].message.refusal = 'PRIVATE-REFUSAL'],
     ['annotations', v => v.choices[0].message.annotations = [{}]],
+    ['finish', v => { v.choices[0].finish_reason = 'PRIVATE-FINISH'; v.choices[0].logprobs = {}; }],
+    ['logprobs', v => { v.choices[0].logprobs = {}; v.choices[0].message['PRIVATE-EXTRA'] = true; }],
+    ['message_keys', v => { v.choices[0].message['PRIVATE-EXTRA'] = true; v.choices[0].message.role = 'PRIVATE-ROLE'; }],
+    ['role', v => { v.choices[0].message.role = 'PRIVATE-ROLE'; v.choices[0].message.content = null; }],
+    ['content', v => { v.choices[0].message.content = null; v.choices[0].message.refusal = 'PRIVATE-REFUSAL'; }],
+    ['refusal', v => { v.choices[0].message.refusal = 'PRIVATE-REFUSAL'; v.choices[0].message.annotations = [{}]; }],
   ];
   for (const [check, change] of cases) await t.test(check, async t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-choice-check-'));
@@ -313,6 +319,38 @@ test('choice check labels persist without payload, preserve first failure and ke
     const first = response(); first.model = 'PRIVATE-WRONG-MODEL'; change(first);
     await assert.rejects(createChatCompletionsTransport(s, exchange(first))(request()), e => modelFailureStage(e) === 'protocol_response_envelope_model');
   });
+});
+
+test('explicit nonthinking compatibility fixes request mode, binds settings and accepts only empty reasoning metadata', async () => {
+  const s = { ...spec(), provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: 'opencode-go-deepseek-nonthinking-v1' };
+  const p = chatCompletionsSettings(s), legacy = { ...s }; delete legacy.compatibilityProfile;
+  assert.notEqual(p.settingsHash, chatCompletionsSettings(legacy).settingsHash);
+  assert.equal(Object.hasOwn(chatCompletionsSettings(legacy).settings, 'compatibilityProfile'), false);
+  assert.deepEqual(JSON.parse(encodeChatCompletionsRequest(s, messages())).thinking, { type: 'disabled' });
+  assert.equal(Object.hasOwn(JSON.parse(encodeChatCompletionsRequest(legacy, messages())), 'thinking'), false);
+  for (const patch of [{ compatibilityProfile: 'other' }, { compatibilityProfile: undefined }, { compatibilityProfile: null }, { provider: 'other' }, { model: 'deepseek-v4-pro' }])
+    assert.throws(() => chatCompletionsSettings({ ...s, ...patch }), invalid);
+  for (const metadata of [undefined, null, '']) {
+    const v = response(); v.model = s.model; if (metadata !== undefined) v.choices[0].message.reasoning_content = metadata;
+    assert.equal((await createChatCompletionsTransport(s, exchange(v))(request(s))).costMicroUsd, 40);
+    if (metadata !== undefined) await assert.rejects(createChatCompletionsTransport(legacy, exchange(v))(request(legacy)), e => modelFailureStage(e) === 'protocol_response_choice_message_reasoning');
+  }
+  for (const metadata of ['PRIVATE-REASONING', ' ', 0, false, [], {}]) {
+    const v = response(); v.model = s.model; v.choices[0].message.reasoning_content = metadata;
+    await assert.rejects(createChatCompletionsTransport(s, exchange(v))(request(s)), e => {
+      assert.equal(modelFailureStage(e), 'protocol_response_choice_reasoning_invalid'); assert.deepEqual(Object.keys(e), ['code']); return invalid(e);
+    });
+  }
+  let calls = 0;
+  const send = createChatCompletionsTransport(s, async () => { calls++; return exchange()(); });
+  for (const thinking of [undefined, null, {}, { type: 'enabled' }, { type: 'disabled', extra: true }]) {
+    const r = request(s), value = JSON.parse(r.body); if (thinking === undefined) delete value.thinking; else value.thinking = thinking;
+    r.body = Buffer.from(JSON.stringify(value)); await assert.rejects(send(r), invalid);
+  }
+  assert.equal(calls, 0);
+  const v = response(); v.model = s.model; v.choices[0].message.reasoning_content = null;
+  v.usage.completion_tokens_details = { reasoning_tokens: 1 };
+  await assert.rejects(createChatCompletionsTransport(s, exchange(v))(request(s)), e => modelFailureStage(e) === 'protocol_response_usage');
 });
 
 test('settings and request bytes snapshotted before asynchronous exchange', async () => {

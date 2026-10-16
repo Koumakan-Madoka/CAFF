@@ -138,6 +138,21 @@ test('tools-v1 uses fixed choice checks without accepting reasoning extensions o
   assert.equal((await api.createToolChatCompletionsTransport(config(), exchange(response(false)))(request(config(), history()))).costMicroUsd, 40);
 });
 
+test('explicit nonthinking tools preserve call history without silently dropping reasoning', async () => {
+  const c = config(); Object.assign(c.settings, { provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: 'opencode-go-deepseek-nonthinking-v1' });
+  const body = api.encodeToolChatCompletionsRequest(c, history()); assert.deepEqual(JSON.parse(body).thinking, { type: 'disabled' });
+  const v = response(); v.model = c.settings.model; v.choices[0].message.reasoning_content = null;
+  assert.equal((await api.createToolChatCompletionsTransport(c, exchange(v))(request(c))).costMicroUsd, 40);
+  v.choices[0].message.reasoning_content = 'PRIVATE-REASONING';
+  await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(v))(request(c)), e => modelFailureStage(e) === 'protocol_response_choice_reasoning_invalid');
+  let calls = 0;
+  const send = api.createToolChatCompletionsTransport(c, async () => { calls++; return exchange()(); });
+  const r = request(c), changed = JSON.parse(r.body); changed.thinking.type = 'enabled'; r.body = Buffer.from(JSON.stringify(changed));
+  await assert.rejects(send(r), invalid); assert.equal(calls, 0);
+  const inherited = history(); inherited[2].reasoning_content = 'PRIVATE-HISTORY';
+  assert.throws(() => api.encodeToolChatCompletionsRequest(c, inherited), invalid);
+});
+
 test('argument byte bound is independent of outer response limit', async () => {
   const c = config(); c.settings.maxResponseBytes = 131072;
   for (const delta of [0, 1]) {

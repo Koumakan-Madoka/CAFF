@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { sdkMessages, sdkTools, assistantMessage } = require('../../scripts/badcase-capture/container-model-adapter.cjs');
+const { sdkMessages, sdkTools, assistantMessage, modelStream } = require('../../scripts/badcase-capture/container-model-adapter.cjs');
 const { relayDockerTransport } = require('../../scripts/badcase-capture/container-model-relay.cjs');
 const profile = { settings: { provider: 'synthetic', model: 'fixture', temperature: 0, maxOutputTokens: 100, inputMicroUsdPerMillionTokens: 0, outputMicroUsdPerMillionTokens: 0, maxRequestBytes: 4096, maxResponseBytes: 4096 }, tools: [{ type: 'function', function: { name: 'read', description: 'Read', parameters: { type: 'object', properties: { path: { type: 'string' } } } } }] };
 test('SDK text and tool history is preserved; unsupported content is never silently dropped', () => {
@@ -30,6 +30,32 @@ test('model response becomes toolUse and usage, not a locally scripted action', 
   assert.equal(m.usage.totalTokens, 12);
   assert.throws(() => assistantMessage({ ...raw, model: 'other' }, profile));
 });
+test('container adapter sends explicit nonthinking mode and refuses to erase nonempty reasoning', async () => {
+  const p = structuredClone(profile); Object.assign(p.settings, { provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: 'opencode-go-deepseek-nonthinking-v1' });
+  const raw = { model: p.settings.model, choices: [{ finish_reason: 'stop', message: { content: 'answer', reasoning_content: null } }], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } };
+  const context = { systemPrompt: 'role', messages: [{ role: 'user', content: 'input' }], tools: p.tools.map(t => ({ ...t.function })) };
+  let captured;
+  const stream = modelStream(p, async body => { captured = JSON.parse(body); return Buffer.from(JSON.stringify(raw)); }, () => {});
+  const selected = { provider: p.settings.provider, id: p.settings.model };
+  assert.equal((await stream(selected, context).result()).content[0].text, 'answer');
+  assert.deepEqual(captured.thinking, { type: 'disabled' }); assert.deepEqual(captured.messages, sdkMessages(context));
+  for (const value of ['PRIVATE-REASONING', ' ', 0, false, [], {}]) {
+    raw.choices[0].message.reasoning_content = value;
+    await assert.rejects(stream(selected, context).result());
+  }
+  raw.choices[0].message.reasoning_content = '';
+  assert.equal((await stream(selected, context).result()).content[0].text, 'answer');
+  raw.model = profile.settings.model;
+  assert.throws(() => assistantMessage(raw, profile));
+  delete raw.choices[0].message.reasoning_content;
+  assert.equal(assistantMessage(raw, profile).content[0].text, 'answer');
+  for (const patch of [{ compatibilityProfile: 'unknown' }, { provider: 'other' }, { model: 'other' }]) {
+    const bad = structuredClone(p); Object.assign(bad.settings, patch); let exchanges = 0;
+    await assert.rejects(modelStream(bad, async () => { exchanges++; return Buffer.from(JSON.stringify(raw)); }, () => {})({ provider: bad.settings.provider, id: bad.settings.model }, context).result());
+    assert.equal(exchanges, 0);
+  }
+});
+
 test('relay uses only pinned container ID; duplicate mailbox sequence sends once and joins before returning', async () => {
   const id = 'a'.repeat(64); let finish, delivered = 0, sent = 0, reads = 0;
   const run = async (args, options) => {

@@ -83,6 +83,33 @@ test('OpenCode profile is approval-bound and propagates stable per-run sessions 
   assert.throws(() => readBoundModelApproval(f.root, f.approval.approvalId), rejected);
 });
 
+test('nonthinking compatibility binds mode and OpenCode endpoint, including durable rejection of real reasoning', async t => {
+  const c = config(); Object.assign(c.settings, { provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: 'opencode-go-deepseek-nonthinking-v1' });
+  Object.assign(c.endpoint, { hostname: 'opencode.ai', path: '/zen/go/v1/chat/completions', clientProfile: 'opencode-go-v1' });
+  const legacy = structuredClone(c); delete legacy.settings.compatibilityProfile;
+  assert.notEqual(modelBinding(c).bindingHash, modelBinding(legacy).bindingHash);
+  const missing = structuredClone(c); delete missing.endpoint.clientProfile; assert.throws(() => modelBinding(missing), rejected);
+  let reasoning = null;
+  const calls = fakeNetwork(t, () => ({ id: 'synthetic', object: 'chat.completion', created: 1, model: c.settings.model,
+    choices: [{ index: 0, message: { role: 'assistant', content: 'synthetic answer', reasoning_content: reasoning }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } }));
+  const f = fixture(t, c); approve(f);
+  const final = await dispatchBoundModelEvaluation(f.root, f.approval.approvalId, async (run, send) => { await send(body(f)); return result(run); }, lease);
+  assert.equal(final.dispatchState, 'finished'); assert.equal(calls.length, 2);
+  assert.ok(calls.every(c => JSON.parse(c.body).thinking.type === 'disabled'));
+  assert.equal(readBoundModelApproval(f.root, f.approval.approvalId).binding.config.settings.compatibilityProfile, c.settings.compatibilityProfile);
+  mutate(f.archive, v => { delete v.binding.config.settings.compatibilityProfile; });
+  assert.throws(() => readBoundModelApproval(f.root, f.approval.approvalId), rejected);
+  reasoning = 'PRIVATE-REASONING'; const bad = fixture(t, c); approve(bad);
+  const failed = await dispatchBoundModelEvaluation(bad.root, bad.approval.approvalId, async (run, send) => { await send(body(bad)); return result(run); }, lease);
+  assert.equal(failed.dispatchState, 'unresolved'); assert.equal(failed.ledger.runs.length, 1); assert.equal(failed.ledger.runs[0].score, null);
+  const egress = readModelEgress(bad.root, failed.ledger.runs[0].runId);
+  assert.equal(egress.requests[0].failureStage, 'protocol_response_choice_reasoning_invalid'); assert.equal(egress.unknownCostRequests, 1);
+  assert.equal(egress.committedMicroUsd, 1200); assert.equal(egress.requests[0].responseHash, null);
+  const dir = path.join(bad.root, 'model-egress', failed.ledger.runs[0].runId);
+  assert.ok(!fs.readdirSync(dir).map(n => fs.readFileSync(path.join(dir, n), 'utf8')).join('').includes('PRIVATE-'));
+});
+
 test('archive precedes approval, immutable exact retry and read after reconstruction', t => {
   const f = fixture(t), original = fs.openSync; let observed = false;
   fs.openSync = function(file, flags, ...rest) {
