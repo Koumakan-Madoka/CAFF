@@ -38,6 +38,7 @@ function scan(q: ReturnType<typeof request>) {
     let entries = 0, metadataBytes = 0;
     const snapshot: any[] = [], required = new Set<string>(), conservative = new Set<string>(), checkpointIds = new Set<string>();
     const blobs = new Map<string, { hash: string; bytes: number; identity: number[] }>();
+    const records = new Map<string, { value: any; identity: number[] }>();
     function names(dir: string) {
       if (!fs.lstatSync(dir).isDirectory()) throw Error();
       const found = fs.readdirSync(dir).sort(); entries += found.length;
@@ -56,8 +57,11 @@ function scan(q: ReturnType<typeof request>) {
         if (offset !== before.size || JSON.stringify(identity(fs.fstatSync(fd))) !== JSON.stringify(stamp)) throw Error();
         const value = bytes.subarray(0, offset), text = value.toString('utf8');
         if (!Buffer.from(text).equals(value)) throw Error();
-        snapshot.push([path.relative(q.project, file), stamp, digest(value)]);
-        return JSON.parse(text);
+        const relative = path.relative(q.project, file);
+        snapshot.push([relative, stamp, digest(value)]);
+        const parsedValue = JSON.parse(text);
+        records.set(relative, { value: parsedValue, identity: stamp });
+        return parsedValue;
       } finally { fs.closeSync(fd); }
     }
     // Unknown hash-valued fields overprotect existing CAS objects. They do not
@@ -144,7 +148,8 @@ function scan(q: ReturnType<typeof request>) {
     const candidates = [...blobs.values()].filter(b => !required.has(b.hash) && !conservative.has(b.hash)).sort((a, b) => a.hash.localeCompare(b.hash));
     const candidateBytes = candidates.reduce((n, b) => n + b.bytes, 0);
     if (!Number.isSafeInteger(candidateBytes)) throw Error();
-    return { candidates, plan: { schemaVersion: 1, projectId: q.projectId,
+    return { candidates, records, blobs, parsed, pinnedCheckpointIds: [...retained.checkpointIds, ...runs.checkpointIds],
+      plan: { schemaVersion: 1, projectId: q.projectId,
       planHash: digest(JSON.stringify({ root: q.captureRoot, projectId: q.projectId, snapshot })),
       candidates: candidates.map(({ hash, bytes }) => ({ hash, bytes })), candidateBytes,
       protectedBlobCount: blobs.size - candidates.length, deletionAuthorized: false } };
@@ -174,5 +179,108 @@ export function collectOrphanBlobs(value: any, options: any) {
   } finally {
     try { lease.release(); }
     catch { throw fail('orphan_gc_lock_release_failed', { deletedBlobCount, reclaimedBytes }); }
+  }
+}
+
+// Offline two-phase retirement: remove eligible live manifests only. CAS deletion
+// remains a separate §3.9 preview/confirmation. No latest rewrites, pin release,
+// quota admission, automatic timer or claim of detecting stopped processes.
+const checkpointKeys = new Set(['schemaVersion', 'checkpointId', 'projectId', 'conversationId', 'turnId', 'agentId',
+  'createdAt', 'targetDir', 'status', 'files', 'deletions', 'skipped', 'uncaptured', 'gitMetadata', 'integrity',
+  'consistency', 'replayInput', 'environment', 'strictEvalEligible', 'strictEvalBlockedReason', 'stats']);
+function expiryRules(value: any) {
+  if (!exact(value, ['asOf', 'retentionDays', 'quotaBytes']) || typeof value.asOf !== 'string'
+    || !Number.isFinite(Date.parse(value.asOf)) || new Date(value.asOf).toISOString() !== value.asOf
+    || Date.parse(value.asOf) > Date.now() || !Number.isSafeInteger(value.retentionDays) || value.retentionDays < 1
+    || value.retentionDays > 36500 || !Number.isSafeInteger(value.quotaBytes) || value.quotaBytes < 1) throw fail('checkpoint_expiry_invalid');
+  return { asOf: value.asOf as string, retentionDays: value.retentionDays as number, quotaBytes: value.quotaBytes as number };
+}
+function expiryPlan(q: ReturnType<typeof request>, rules: ReturnType<typeof expiryRules>) {
+  const inventory = scan(q); // Same bounded, fail-closed inventory as orphan GC.
+  try {
+    const protectedIds = new Set(inventory.pinnedCheckpointIds);
+    const allIds = new Set(inventory.parsed.checkpoints.map(r => r.value.checkpointId as string));
+    const counts = new Map<string, number>(), byCheckpoint = new Map<string, Set<string>>();
+    let usageBytes = 0;
+    // Scan already bounded depth/size; retain even unknown hash-valued fields.
+    // Any cross-record literal checkpoint ID conservatively protects its target.
+    function literals(v: any, out: Set<string>, self?: string, depth = 0) {
+      if (depth > 64) throw Error();
+      if (typeof v === 'string') {
+        if (hex(v)) out.add(v);
+        if (v !== self && allIds.has(v)) protectedIds.add(v);
+      } else if (v && typeof v === 'object') for (const child of Object.values(v)) literals(child, out, self, depth + 1);
+    }
+    for (const [relative, entry] of inventory.records) {
+      if (relative === 'policy.json') continue; // Same logical usage scope as computeUsage.
+      usageBytes += entry.identity[2];
+      const self = path.dirname(relative) === 'checkpoints' ? entry.value.checkpointId : undefined;
+      const hashes = new Set<string>(); literals(entry.value, hashes, self);
+      if (self) byCheckpoint.set(self, hashes);
+      for (const hash of hashes) counts.set(hash, (counts.get(hash) || 0) + 1);
+    }
+    let projectedOrphanBytes = 0;
+    for (const blob of inventory.blobs.values()) {
+      usageBytes += blob.bytes;
+      if (!counts.has(blob.hash)) projectedOrphanBytes += blob.bytes;
+    }
+    if (!Number.isSafeInteger(usageBytes)) throw Error();
+    let projectedUsageAfterGc = usageBytes - projectedOrphanBytes;
+    const asOf = Date.parse(rules.asOf), cutoff = asOf - rules.retentionDays * 86400000;
+    const eligible: { checkpointId: string; createdAt: string; bytes: number; identity: number[] }[] = [];
+    for (const { name, value } of inventory.parsed.checkpoints) {
+      if (typeof value.createdAt !== 'string' || !Number.isFinite(Date.parse(value.createdAt))
+        || new Date(value.createdAt).toISOString() !== value.createdAt || Date.parse(value.createdAt) > asOf) throw Error();
+      if (value.status !== 'staged' || Object.keys(value).some(k => !checkpointKeys.has(k))) protectedIds.add(value.checkpointId);
+      if (!protectedIds.has(value.checkpointId)) {
+        const stamp = inventory.records.get(path.join('checkpoints', name))!.identity;
+        eligible.push({ checkpointId: value.checkpointId, createdAt: value.createdAt, bytes: stamp[2], identity: stamp });
+      }
+    }
+    eligible.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.checkpointId.localeCompare(b.checkpointId));
+    const candidates: (typeof eligible[number] & { reason: string })[] = [];
+    for (const entry of eligible) {
+      const expired = Date.parse(entry.createdAt) <= cutoff;
+      if (!expired && projectedUsageAfterGc <= rules.quotaBytes) continue;
+      candidates.push({ ...entry, reason: expired ? 'expired' : 'quota' });
+      projectedUsageAfterGc -= entry.bytes;
+      for (const hash of byCheckpoint.get(entry.checkpointId)!) {
+        const remaining = counts.get(hash)! - 1; counts.set(hash, remaining);
+        if (!remaining && inventory.blobs.has(hash)) {
+          const size = inventory.blobs.get(hash)!.bytes; projectedUsageAfterGc -= size; projectedOrphanBytes += size;
+        }
+      }
+    }
+    const publicCandidates = candidates.map(({ identity: _identity, ...candidate }) => candidate);
+    const result = { schemaVersion: 1, projectId: q.projectId, rules, candidates: publicCandidates,
+      usageBytes, projectedOrphanBytes, projectedUsageAfterGc, quotaSatisfiedAfterGc: projectedUsageAfterGc <= rules.quotaBytes,
+      protectedCheckpointCount: [...allIds].filter(id => protectedIds.has(id)).length,
+      deletionAuthorized: false, blobsDeleted: false };
+    return { candidates, plan: { ...result, planHash: digest(JSON.stringify({ inventoryHash: inventory.plan.planHash, ...result })) } };
+  } catch { throw fail('checkpoint_expiry_inventory_invalid'); }
+}
+export function inspectCheckpointExpiry(value: any, options: any) {
+  const rules = expiryRules(options), q = request(value), lease = acquireProjectWriteLease(q.captureRoot, q.projectId);
+  try { return expiryPlan(q, rules).plan; } finally { lease.release(); }
+}
+export function expireCheckpoints(value: any, ruleValue: any, options: any) {
+  if (!exact(options, ['confirmed', 'writersStopped', 'expected']) || options.confirmed !== true
+    || options.writersStopped !== true || !hex(options.expected)) throw fail('checkpoint_expiry_invalid');
+  const rules = expiryRules(ruleValue), q = request(value), lease = acquireProjectWriteLease(q.captureRoot, q.projectId);
+  let deletedCheckpointCount = 0, reclaimedManifestBytes = 0;
+  try {
+    const current = expiryPlan(q, rules);
+    if (current.plan.planHash !== options.expected) throw fail('checkpoint_expiry_plan_changed');
+    try {
+      for (const cp of current.candidates) {
+        const file = path.join(q.project, 'checkpoints', cp.checkpointId + '.json');
+        if (JSON.stringify(identity(fs.lstatSync(file))) !== JSON.stringify(cp.identity)) throw Error();
+        fs.unlinkSync(file); deletedCheckpointCount++; reclaimedManifestBytes += cp.bytes;
+      }
+    } catch { throw fail('checkpoint_expiry_delete_failed', { deletedCheckpointCount, reclaimedManifestBytes }); }
+    return { planHash: current.plan.planHash, deletedCheckpointCount, reclaimedManifestBytes, blobsDeleted: false };
+  } finally {
+    try { lease.release(); }
+    catch { throw fail('checkpoint_expiry_lock_release_failed', { deletedCheckpointCount, reclaimedManifestBytes }); }
   }
 }

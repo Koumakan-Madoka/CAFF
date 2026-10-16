@@ -246,6 +246,25 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 验证：构建后 `node --test tests/runtime/badcase-orphan-gc.test.js tests/runtime/badcase-run-references.test.js tests/runtime/badcase-checkpoint-retention.test.js tests/runtime/badcase-usage.test.js tests/runtime/badcase-cli-verification.test.js`。自有合成目录覆盖CLI子进程、真实封存case、共享闭包、预览后新增pin/换文件、跨进程锁争用、部分unlink失败及GC子进程中途exit23。Linux另经真实collector生成小样本→永久引用→孤儿回收→两次恢复逐字一致；不含SQLite/浏览器/Docker/真实用户turn/模型。E54 owner+name成对一致替换负例随同收编。全部 AC pending；不因本入口宣称期限/配额回收、长期环境生命周期或AC6已完成。
 
+### 3.10 停写后的显式检查点期限／配额退役（两阶段）
+
+`inspectCheckpointExpiry/expireCheckpoints` 复用 `orphan-gc.ts` 的有界、失败关闭 inventory 与独占 lease；操作者入口为 `scripts/badcase-capture/expire-checkpoints.cjs`。仅退役未保护的 live checkpoint 清单，**不在同一调用删除 CAS**，不接后台/HTTP/agent，不释放任何永久引用。仅自建合成目录获得测试证据，未授权对真实存储运行。
+
+1. 先停止该项目采集、所有 turn、封存和回放写者。关闭采集开关不能证明已启动的 turn 已结束；`writersStopped=true` / `--writers-stopped` 是受信操作者声明，不是存活检测或 fencing。lease 只能互斥合作的发布者，无法发现尚未发布引用的使用者，因此不能在活动系统里仅凭过期时间执行。
+2. 构建后预览：`node scripts/badcase-capture/expire-checkpoints.cjs --capture-root <绝对路径> --project <项目ID> --as-of <UTC毫秒ISO时刻> --retention-days 7 --quota-bytes 10737418240`。参数顺序固定；期限/配额均须显式指定（按项目已配置值填写，不自动读取、修改或重启策略），预览正文完整返回本次规则。`asOf` 不可晚于当前宿主时间；确认必须复用同一时刻和规则，新的时刻需重新预览。时钟信任本机 OS；旧 cutoff 更保守，不代表实际保留了七天流量。
+3. 检查 `candidates`（ID/createdAt/清单字节/reason）、`usageBytes`、`projectedOrphanBytes`、`projectedUsageAfterGc`、`quotaSatisfiedAfterGc` 和 `planHash`，再在原命令后追加 `--expire <planHash> --confirm --writers-stopped`。预览也暂持写 lease，不是零写入查询。确认在新 lease 内重扫，绑定 inventory、规则、保护集合及候选；任何变化拒绝并要求重预览。
+4. 退役仅逐一 unlink 未保护清单，返回 `deletedCheckpointCount/reclaimedManifestBytes`，`blobsDeleted=false`。随后必须用§3.9**新的**预览与确认独立回收孤儿 CAS；不可把本阶段配额预测当作实际释放字节或删除授权。
+
+选择及保护语义：
+
+- 只选 schema-v1、`status=staged`、已知顶层键的清单；未知状态/未知顶层字段保守保留，不猜测其引用或生命周期。日期缺失、非规范 ISO 或晚于 cutoff 时刻（`asOf`）使整批失败关闭；未来 schema、损坏/缺失引用、未知目录/staging/链接等继续沿§3.9拒绝。
+- latest、flags、retention、cases、runReferences 指向的检查点全部保留，不按成功/失败/超时/容器已清理释放。所有其他记录中出现的 live checkpoint ID 字面量也保守保护目标（checkpoint 自身 ID 不自保护）；独立永久 pin 集合仍作纵深防御。最新检查点永不通过本入口退役，不改写/删除 latest 指针；因此最后一份可能长期保留。
+- 先按 createdAt、再按 checkpointId 稳定排序。`createdAt <= asOf - days×86400000` 为到期（含边界）；到期者无论配额是否满足均选中。其他可退役项仅在预测逻辑占用仍高于配额时按旧到新加入，达到配额即停止。保护材料即使自身超配额也不删除，此时明确 `quotaSatisfiedAfterGc=false`，不假称清理完成配额目标。
+- 预测使用 committed 逻辑字节（与 computeUsage 同口径，排除policy/staging），共享 blob 只计一次；逐条元数据的保守 hash 集计数，只有移除全部引用才成为预测孤儿。已有孤儿也纳入未来§3.9回收预测，可能无需退役任何近期清单即可满足配额。不会读取 blob 正文证明完整性，文件系统物理占用和镜像/评测记录成本不在此数内。
+- 逐文件删除前复查 identity；锁覆盖计划复算至删除结束，发布新 pin 必须等待。部分 unlink 失败返回固定码及准确已删除清单数量/字节，保留全部 CAS；剩余清单/引用始终不悬空。进程 exit 留失败关闭锁、无自动续跑，按§3.7停写恢复后必须重新预览。释放锁失败仍报失败并携带进度；无原子批量、目录掉电保证或持久退役回执。源码扫描沿用§3.9限额与同OS用户/祖先路径TCB，不防恶意并发。
+
+验证：`node --test tests/runtime/badcase-checkpoint-expiry.test.js tests/runtime/badcase-orphan-gc.test.js tests/runtime/badcase-run-references.test.js tests/runtime/badcase-checkpoint-retention.test.js tests/runtime/badcase-usage.test.js`。合成存储覆盖期限边界、配额精确停点、共享/已有孤儿、latest/标记/pin/未知状态保护、换计划、CLI、真实子进程锁争用/exit23、I/O部分失败/身份替换/链接拒绝。Linux另以真实 collector 生成三份小样本后**人工改时间模拟老化**，退役未标记旧项、保留 retention 与 latest，单独GC后两次恢复二者文件一致；非真实用户turn或实际七天留存测量。没有生产定时驱逐/容量预留、完整环境生命周期、SQLite/浏览器/Docker/模型证据，全部AC仍pending。
+
 ## 4. 环境与 Docker 隔离契约
 
 - EnvironmentTemplate 首版人工配置；首次成功重建后归档镜像并固定 **digest + 架构 + 运行时版本**。缺镜像/依赖 → preflight 显式阻断，禁止静默回退浮动 tag 或宿主执行。
