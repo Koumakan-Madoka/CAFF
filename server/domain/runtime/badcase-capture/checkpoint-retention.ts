@@ -28,7 +28,7 @@ function scope(input: any) {
 // A future schema carrying new reference types must extend this reader before
 // it can be retained. Missing input material is preserved as missing, not
 // synthesized and not silently changed from resume to fresh.
-function closure(checkpoint: any): string[] {
+export function checkpointBlobHashes(checkpoint: any): string[] {
   const invalid = () => { throw fail('retention_manifest_invalid'); };
   if (!object(checkpoint) || checkpoint.schemaVersion !== 1 || !object(checkpoint.files)
     || !object(checkpoint.replayInput)) invalid();
@@ -73,7 +73,7 @@ export function createCheckpointRetentionStore(options: any) {
       || record.projectId !== projectId || typeof record.createdAt !== 'string' || !Number.isFinite(Date.parse(record.createdAt))) throw fail('retention_record_invalid');
     for (const key of inputKeys) id(record[key]);
     if (filename(record.referenceId) !== name || associationKeys.some(key => record.checkpoint?.[key] !== record[key])
-      || JSON.stringify(closure(record.checkpoint)) !== JSON.stringify(record.blobHashes)) throw fail('retention_record_invalid');
+      || JSON.stringify(checkpointBlobHashes(record.checkpoint)) !== JSON.stringify(record.blobHashes)) throw fail('retention_record_invalid');
     return record;
   }
   function read(projectId: string, name: string): { record: any; bytes: number } | null {
@@ -131,7 +131,7 @@ export function createCheckpointRetentionStore(options: any) {
       // alter the retained copy, including deletion state and incomplete reasons.
       checkpoint = JSON.parse(JSON.stringify(checkpoint));
       if (associationKeys.some(key => checkpoint[key] !== input[key])) throw fail('retention_checkpoint_mismatch');
-      const blobHashes = closure(checkpoint);
+      const blobHashes = checkpointBlobHashes(checkpoint);
       const record = { schemaVersion: 1, kind: 'checkpoint-retention', ...input,
         createdAt: new Date().toISOString(), checkpoint, blobHashes };
       const serialized = JSON.stringify(record);

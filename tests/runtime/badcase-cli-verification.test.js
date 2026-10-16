@@ -50,7 +50,8 @@ test('independent target-daemon history requires complete, ordered, unique succe
     e => { e[0].Actor.Attributes.image = 'other'; }, e => { delete e[0].Actor.Attributes['caff.badcase.pi-initialization']; },
     e => { e[2].Actor.Attributes.exitCode = '1'; }, e => { e[3].timeNano = 1; },
     e => { e[3].Action = 'kill'; }, e => { e[0].Actor.Attributes.name = 'other'; },
-    e => { e[1].Actor.Attributes['caff.badcase.pi-initialization'] = 'other'; }]) {
+    e => { e[1].Actor.Attributes['caff.badcase.pi-initialization'] = 'other'; },
+    e => { e[1].Actor.Attributes['caff.badcase.pi-initialization'] = 'intruder'; e[1].Actor.Attributes.name = 'caff-pi-init-intruder'; }]) {
     const bad = structuredClone(good); mutate(bad);
     assert.throws(() => containerLifecycleEvidence(bad, imageId, 2));
   }

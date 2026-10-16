@@ -226,6 +226,26 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 共享 Windows node_modules 不可直接作为 Linux SQLite 运行依赖：可在**独立测试副本**复制已安装 better-sqlite3 源码，移除该副本旧 build，再用本机已有且版本匹配的头文件执行 `node <npm自带node-gyp路径>/bin/node-gyp.js rebuild --nodedir=/usr --release -j 2`；不修改共享安装、不下载头文件或执行系统安装。其他依赖可只读链接；build/tests/public 复制到副本，使宿主及子进程解析同一 Linux SQLite；非 Git 副本还须复制 package.json，供 serverVersion 的包版本回退使用（否则可能报 harness_config_unverified）。本次验证范围为 Node22.22.0/better-sqlite3 12.11.1，不能推断此前 Linux Node24 SIGABRT 已解决。无浏览器、Docker、真实模型或真实用户采集证据；所有最终 AC 仍待验收。
 
+### 3.9 显式离线 CAS 孤儿回收（不释放永久引用）
+
+`orphan-gc.ts` / `scripts/badcase-capture/collect-orphan-blobs.cjs` 提供可信本机操作者入口；不接生产 HTTP、agent 工具或定时任务。此处补的是失败采集后**无任何现存引用的 CAS blob**回收，不是 7 天/配额驱逐或完整生命周期。前文“自动 GC 关闭”仍成立；§3.3/§3.6 的 inventory 本身仍不能直接驱动删除，只有本入口持独占写者 lease 后重新完整扫描才允许本次显式操作。
+
+操作（仅针对操作者已获授权管理的存储；本轮只在自建合成目录验证）：
+
+1. 构建后执行 `node scripts/badcase-capture/collect-orphan-blobs.cjs --capture-root <绝对路径> --project <项目ID>`，返回 `planHash`、候选 hash/逻辑字节、保护对象数；`deletionAuthorized=false`。预览会短暂创建/释放 `.writer-lock` lease，**不是零写入查询**，但不改材料。
+2. 核对候选后，原命令追加 `--collect <planHash> --confirm`。调用方只提交摘要，不提交删除路径/候选数组。CLI 是同 OS 用户受信管理操作，不认证人类身份；不存在后台批准/自动执行。
+3. 在新的独占 lease 中重算整个清单及摘要；任何相关清单、引用、目录内容或 blob 身份变化均要求重新预览。不沿用旧候选；锁覆盖重扫、逐文件身份复查、unlink 全过程。普通合作 collector/封存/run publisher 无法并发入锁，同步重入也不借用此 supervisor lease。底层直接 CAS/retention API 调用方仍有持锁义务，非合作写者/同权限恶意竞态在 TCB 外。
+
+保护及失败边界：
+
+- 永久保护**全部** live checkpoint（不限最新/时间/状态）及 retention/runReferences 闭包，含 file/prompt/session/config/skill。复用 `checkpointBlobHashes`，仅导出原闭包函数、未更改原 retention 语义；未知 hash 字段对现存 CAS 保守额外保护，不作为未来 schema 支持证明。未读取 blob 正文/hash，保护集合不是内容完整性证书。
+- case 复验原 schema/关联及 retention 存在；flags 核对 envelope checksum/schema/项目/消息及冻结关联，已有 checkpointId 必须可由 live 或永久引用定位。latest 同样不得悬空。缺引用对象、损坏清单、未知 schema/条目、未发布临时文件、非空 staging、遗留恢复隔离目录均整体拒绝；不跳过、不修复、不自动删锁或工件。
+- 自有 root/projects/project、类别/前缀/文件拒静态链接和特殊文件；元数据单文件最多16MiB、累计64MiB、目录枚举累计10000项、JSON遍历64层，fd有界读取并比较打开前后身份及UTF8。祖先与同OS用户仍属TCB；上限不是RSS硬限制，`readdir`/JSON解析仍有分配成本。存储超过限制显式失败，不悄悄截断。
+- 不删 checkpoint/latest/flag/case/retention/runReference，不碰 staging、镜像、runtime/harness归档、批准/预算/评分。成功/失败/超时/未知结果或容器清理成功**均不释放运行引用**；旧 prepare/run 引用仍可长期累积，保护占用不能借此回收。不会根据 PID/TTL 推断运行结束。
+- 仅按锁内验证的 CAS hash 路径逐个 unlink，不递归删目录。中途 I/O/身份失败返回固定 `orphan_gc_delete_failed` 及已删除数量/逻辑字节，不伪造整批成功，也不回滚已删孤儿；显式重新预览才可继续。lease 释放失败为独立错误并保留进度。跨进程崩溃留下失败关闭锁，无持久 GC 完成回执/自动恢复/掉电或原子批量保证；沿§3.7停写后处理锁，不把异常退出当已完成回收。`reclaimedBytes` 仅是被 unlink 文件的逻辑大小，硬链接/打开fd/文件系统可能使物理空间未释放。
+
+验证：构建后 `node --test tests/runtime/badcase-orphan-gc.test.js tests/runtime/badcase-run-references.test.js tests/runtime/badcase-checkpoint-retention.test.js tests/runtime/badcase-usage.test.js tests/runtime/badcase-cli-verification.test.js`。自有合成目录覆盖CLI子进程、真实封存case、共享闭包、预览后新增pin/换文件、跨进程锁争用、部分unlink失败及GC子进程中途exit23。Linux另经真实collector生成小样本→永久引用→孤儿回收→两次恢复逐字一致；不含SQLite/浏览器/Docker/真实用户turn/模型。E54 owner+name成对一致替换负例随同收编。全部 AC pending；不因本入口宣称期限/配额回收、长期环境生命周期或AC6已完成。
+
 ## 4. 环境与 Docker 隔离契约
 
 - EnvironmentTemplate 首版人工配置；首次成功重建后归档镜像并固定 **digest + 架构 + 运行时版本**。缺镜像/依赖 → preflight 显式阻断，禁止静默回退浮动 tag 或宿主执行。
