@@ -46,15 +46,16 @@ function directory(p: string) {
   fail('record_invalid');
 }
 function read(p: string): any {
-  const st = fs.lstatSync(p);
-  if (!st.isFile() || st.size < 2 || st.size > 4096) fail('record_invalid');
+  const st = fs.lstatSync(p, { bigint: true });
+  if (!st.isFile() || st.size < 2n || st.size > 4096n) fail('record_invalid');
   const fd = fs.openSync(p, 'r');
   try {
-    const s = fs.fstatSync(fd);
+    const s = fs.fstatSync(fd, { bigint: true });
     if (!s.isFile() || s.dev !== st.dev || s.ino !== st.ino || s.size !== st.size) fail('record_invalid');
-    const b = Buffer.alloc(st.size + 1); let n = 0;
+    const size = Number(st.size); // size bounded above, identity retained as bigint
+    const b = Buffer.alloc(size + 1); let n = 0;
     while (n < b.length) { const got = fs.readSync(fd, b, n, b.length - n, n); if (!got) break; n += got; }
-    if (n !== st.size) fail('record_invalid');
+    if (n !== size) fail('record_invalid');
     const bytes = b.subarray(0, n), text = bytes.toString('utf8');
     if (!Buffer.from(text).equals(bytes)) fail('record_invalid');
     return JSON.parse(text);

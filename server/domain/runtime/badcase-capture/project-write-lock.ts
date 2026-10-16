@@ -103,12 +103,12 @@ function lockSnapshot(lock: string) {
     if (names.length > 1 || (names.length === 1 && names[0] !== 'owner')) throw Error();
     let owner: string | null = null;
     if (names.length) {
-      const file = path.join(lock, 'owner'), entry = fs.lstatSync(file);
-      if (!entry.isFile() || entry.size !== 64) throw Error();
+      const file = path.join(lock, 'owner'), entry = fs.lstatSync(file, { bigint: true });
+      if (!entry.isFile() || entry.size !== 64n) throw Error();
       const fd = fs.openSync(file, 'r');
       try {
-        const opened = fs.fstatSync(fd);
-        if (!opened.isFile() || opened.dev !== entry.dev || opened.ino !== entry.ino || opened.size !== 64) throw Error();
+        const opened = fs.fstatSync(fd, { bigint: true });
+        if (!opened.isFile() || opened.dev !== entry.dev || opened.ino !== entry.ino || opened.size !== 64n) throw Error();
         const bytes = Buffer.alloc(65);
         if (fs.readSync(fd, bytes, 0, 65, 0) !== 64) throw Error();
         owner = bytes.subarray(0, 64).toString('utf8');

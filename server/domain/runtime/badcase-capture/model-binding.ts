@@ -53,16 +53,17 @@ function location(root: string, id: string) {
   return path.join(root, 'model-bindings', hash(id) + '.json');
 }
 function read(file: string) {
-  const before = fs.lstatSync(file);
-  if (!before.isFile() || !integer(before.size, 2, LIMIT)) fail('record_invalid');
+  const before = fs.lstatSync(file, { bigint: true });
+  if (!before.isFile() || before.size < 2n || before.size > BigInt(LIMIT)) fail('record_invalid');
   const fd = fs.openSync(file, 'r');
   try {
-    const st = fs.fstatSync(fd);
+    const st = fs.fstatSync(fd, { bigint: true });
     if (!st.isFile() || st.dev !== before.dev || st.ino !== before.ino || st.size !== before.size) fail('record_invalid');
-    const buffer = Buffer.alloc(st.size + 1); let n = 0;
+    const size = Number(st.size); // bounded above before conversion; identity stays bigint
+    const buffer = Buffer.alloc(size + 1); let n = 0;
     while (n < buffer.length) { const got = fs.readSync(fd, buffer, n, buffer.length - n, n); if (!got) break; n += got; }
     const bytes = buffer.subarray(0, n), text = bytes.toString('utf8');
-    if (n !== st.size || !Buffer.from(text).equals(bytes)) fail('record_invalid');
+    if (n !== size || !Buffer.from(text).equals(bytes)) fail('record_invalid');
     return JSON.parse(text);
   } finally { fs.closeSync(fd); }
 }

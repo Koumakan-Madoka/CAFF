@@ -619,7 +619,7 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 
 ### 5.16 出口／设置／费率正文绑定批准与双层预留（内部协调器）
 
-`model-binding.ts` 将 §5.2 持久批准/逐 run 预留与 §5.13–5.15 逐请求账本/协议/HTTPS 连接起来。**不是人工认证、付费许可、生产路由、SDK provider 或 Docker launcher**。没有新 HTTP/CLI/UI/agent 接口，原离线管理面仍严格只接受 scripted 模型。所有调用方、executor/scorer、凭据回调仍受信；测试只用合成批准与本地合成服务，未开启真实采集或真实模型。
+`model-binding.ts` 将 §5.2 持久批准/逐 run 预留与 §5.13–5.15 逐请求账本/协议/HTTPS 连接起来。**不是人工认证、付费许可、生产路由、SDK provider 或 Docker launcher**。本协调器不直接提供 HTTP/CLI/UI/agent 接口；§5.17 另提供隔离的仅审阅声明入口，不接派发。原离线管理面仍严格只接受 scripted 模型。所有调用方、executor/scorer、凭据回调仍受信；测试只用合成批准与本地合成服务，未开启真实采集或真实模型。
 
 - `modelBinding({settings,endpoint,maxRequests})` 固定协议/客户端版本、完整九键设置（含定价）、六键出口、每 run 请求上限，生成 `bindingHash`。双向字节上限必须相同；maxRequests 1–1000。新计划的 `model.settingsHash` **必须等于复合 bindingHash**，不是协议单独的 settingsHash；逐请求 policy.settingsHash 仍使用协议摘要，两个语义显式区分。provider/model 精确对账、每请求预留≤run 预算、请求 timeout≤run timeout。所有字段及完整 planHash 经原批准绑定，因此换 IP/目的地/费率/请求数必须另审新计划；不自动改写旧记录或旧 hash。
 - `recordBoundModelApproval(root,spec,config,approval)` 只接受已建立的专用绝对 root。校验 plan/批准声明/秘密哨兵后，先将完整 binding 与 approval 写 `model-bindings/<sha256(approvalId)>.json`（wx/0600、fsync、读回复验），再调用原 recordEvaluationApproval。没有数据库事务：前一步成功后后一步失败可能遗留孤立 binding；read 不认可孤立项、不自动补批准。显式精确重试只接受相同正文，不覆盖部分/冲突数据。fsync 未确认的首次调用不写批准；后续明确重试可复用完整相同文件，但不能据此证明先前 fsync 已确认。文件 fsync 非目录掉电保证，无自动修复/GC/配额。
@@ -629,7 +629,20 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 - 本段只接受至少一次模型请求、请求账本完整 finished/completed、零未知费用，且 executor 回执的 cost 精确等于请求账本 knownCost。原外层 ledger 继续核验 runId/status/outputHash/score schema。零请求、协议失败被 driver 捕获、费用少报/多报、坏评分等保持外层 reserved/unresolved 并停止候选，不自动造失败分数或结算未知费用。成功输出/评分依然是受信 executor 声明，不证明原始 inputHash 被忠实使用、工具循环、评分有效或 Docker 执行；所有资格 false。
 - 永久 outer claim 与 egress claim 防跨进程/重启重派发。子进程在 run 预留和 egress policy 落盘后 exit23 的合成验证保持 unresolved，重启只读不恢复执行。不同 root 的存储隔离不是全局一次性保证；调度方必须固定专用 root。run 结束/失败不释放任何材料引用，本段不操作 CAS。
 
-验证：`npm run build && npm run test:badcase-budget` 新增绑定套件覆盖先归档后批准、精确重试/冲突、摘要/费用/时限绑定、16KiB/UTF8/链接/换 inode 拒绝、写/fsync 故障、双层预留顺序、逐请求复验、回调中篡改/过期、费用对账、并发 claim、exit23、重读。真实本地 TLS 合成服务验证批准→run→请求→TLS→结果及历史正文重读；测试专用 loopback/CA/peer 包装与 §5.15 相同限制，非供应商/公网/容器证据。E59 endpoint 秘密哨兵、data 及时但 end 晚到的两条负例同步收编。仍缺人工认证的完整配置审核入口、专用凭据签发、容器出口、原始输入/工具协议与真实 badcase/模型预算证据；全部 AC pending。
+验证：`npm run build && npm run test:badcase-budget` 新增绑定套件覆盖先归档后批准、精确重试/冲突、摘要/费用/时限绑定、16KiB/UTF8/链接/换 inode 拒绝、写/fsync 故障、双层预留顺序、逐请求复验、回调中篡改/过期、费用对账、并发 claim、exit23、重读。真实本地 TLS 合成服务验证批准→run→请求→TLS→结果及历史正文重读；测试专用 loopback/CA/peer 包装与 §5.15 相同限制，非供应商/公网/容器证据。E59 endpoint 秘密哨兵、data 及时但 end 晚到的两条负例同步收编。§5.17 补充本机完整配置确认声明入口；仍缺付费启动许可、专用凭据签发、容器出口、原始输入/工具协议与真实 badcase/模型预算证据；全部 AC pending。
+
+### 5.17 独立本机模型配置审核页面（仅保存，不运行）
+
+`model-review.ts` 与 `scripts/badcase-capture/model-review-server.cjs` 提供独立 loopback 操作者页面。**不是付费启动入口**：没有 executor、凭据源、dispatch/start 路由或 agent 工具；不载入生产页面或服务，不改变旧 scripted-only 管理面的能力。沿用户选择的同 OS 用户信任边界，复用 local-admin 的 remoteAddress/Host/Origin/JSON/CSRF 校验；这不是抵御本机 shell 模拟点击的认证，也不证明操作者真实读完配置。所有 launchAvailable/paidAuthorization/materialVerified/executionVerified/strictEvalEligible 恒 false。
+
+- 受信操作者注册 `[{projectId,id,spec,config}]`，至多64项；`spec` 为 §5.1 完整 EvaluationSpec，`config={settings,endpoint,maxRequests}` 为 §5.16 正文。必须预先以 `modelBinding(config).bindingHash` 填 `spec.model.settingsHash`，不自动重写计划。注册时验证完整设置/绑定、provider/model、预算/时限与秘密哨兵，复制成不可变内存快照；重复ID或失配在监听/写盘前拒绝。浏览器只提交条目ID，不接受配置、存储路径或凭据。不是从真实 case 材料生成计划，摘要均为声明；不验证角色正文、评分规则、实际归档、供应商费率或 IP 非生产属性。
+- 页面完整展示计划（含两角色各 repetitions、逐次与总预算/时限、材料/角色/评分器摘要）及绑定（模型参数、上下文/输出/双向字节限额、费率、目的地、每 run 请求数、逐请求预留）。金额为整数 micro-USD，1 USD=1000000 micro-USD；总预算不足全部计划 run 时原 ledger 仍会停止，审核页不替操作者提高预算。窗口 confirm 再核对项目/批准ID/双摘要；取消零批准POST。所有动态正文用 textContent，页面 CSP 禁外部加载/嵌入；不提供普通“保存配置即可启动”的路径。
+- preview 只读注册表、零文件创建，生成随机UUID票据，最多64张/5分钟。确认仅接 confirmed=true、approvalId、planHash、bindingHash；项目/双摘要/期限/进程观察时钟回拨失配拒绝。新配置须另行注册/预览/确认。请求体按实际字节≤2048、UTF8往返/JSON校验；CLI注册文件≤256KiB、lstat/open/fstat身份/UTF8校验，拒文件链接；同用户/祖先路径仍TCB。
+- 本轮全量回归在 Windows 发现父版本锁 owner 的 inode Number 舍入碰撞，真实临时文件探针确认不同64位 inode 被舍入成同值。新回归用 `9007199254740992n/9007199254740993n` 确定性模拟，先红后修：锁恢复 owner、批准记录、模型绑定、逐请求账本与本页注册文件均改用 bigint lstat/fstat 身份比较；只有通过上限检查的 size 转 Number 用于缓冲区，不改变持久 schema。修复不是原子快照或同用户恶意竞争防护。**未全面修复**其他旧路径的 Number 身份戳：`orphan-gc.ts` 及 `scripts/badcase-capture/{probe-recovery,harness-archive,runtime-archive,image-archive,serve-sealed-workbench,sealed-workbench,review-archive}.cjs` 仍保留同类数值比较，存在高 inode 精度风险（尚未对各路径逐一构造行为复现）；不得据本段宣称跨平台身份校验已全覆盖。
+- 持久范围是 `root/<sha256(projectId)>`，自有 root/项目层拒链接。先原 binding 正文落盘，后原批准记录；沿 §5.16 wx/0600/fsync/复验、精确重试不覆盖、部分失败不修复、非掉电事务。没有另存“已读证明”、页面/配置条目ID或操作人身份，也不把记录当付款授权。重启丢票不丢记录；GET允许显式项目ID查询旧批准，不依赖当前注册表或其存在，不创建目录、不恢复票据/消费权限。历史正文/报告始终来自磁盘，不由新注册表重建。存储独立于capture配额，暂无列表/删除/GC。
+- 人工入口（先 build）：`node scripts/badcase-capture/model-review-server.cjs --root <专用绝对存储目录> --registry <操作者JSON文件绝对路径>`。JSON仅包含上述注册数组，不包含凭据；不要使用生产存储或把 root 交给被测容器。stdout仅打印随机 loopback URL 与不可启动标记，终端 Ctrl-C 停止自有服务，不清除已保存记录。程序式 `startModelReviewServer({root,entries})` 返回 url/close，测试使用随机端口/隔离临时目录；未经批准不得将本脚本指向真实材料/开启采集。注册文件/源配置是操作者责任，暂不提供材料选择器与模板生成器。
+
+验证：`npm run test:badcase-budget` 包含服务/真实HTTP/DOM负例；`node scripts/badcase-capture/verify-model-review-ui.cjs` 使用本地已有Playwright Chromium，真实页面预览→取消零POST→确认→关闭并重建服务/清空注册表→历史完整正文查询，临时profile/服务/目录均清理。E60两项负例补“最后请求完成后篡改绑定”和“未await send即返回匹配费用”，守卫未改。新段无 Docker/SDK/真实采集/模型调用；旧本地合成TLS回归不算容器或供应商证据。仍缺材料真实性人审、付费启动、凭据重签发、容器出口/工具循环与用户批准的真实badcase评测；全部 AC pending。
 
 ## 6. 威胁模型
 

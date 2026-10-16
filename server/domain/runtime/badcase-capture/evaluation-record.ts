@@ -30,19 +30,20 @@ function directory(dir: string) {
   if (!fs.lstatSync(dir).isDirectory()) fail('evaluation_record_invalid');
 }
 function readJson(file: string, limit = 65536): any {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.size < 2 || stat.size > limit) fail('evaluation_record_invalid');
+  const stat = fs.lstatSync(file, { bigint: true });
+  if (!stat.isFile() || stat.size < 2n || stat.size > BigInt(limit)) fail('evaluation_record_invalid');
   const fd = fs.openSync(file, 'r');
   try {
-    const actual = fs.fstatSync(fd);
+    const actual = fs.fstatSync(fd, { bigint: true });
     if (!actual.isFile() || actual.size !== stat.size || actual.ino !== stat.ino || actual.dev !== stat.dev) fail('evaluation_record_invalid');
-    const bytes = Buffer.alloc(stat.size + 1); let length = 0;
+    const size = Number(stat.size); // bounded size only, never round device/inode identity
+    const bytes = Buffer.alloc(size + 1); let length = 0;
     while (length < bytes.length) {
       const n = fs.readSync(fd, bytes, length, bytes.length - length, length);
       if (!n) break;
       length += n;
     }
-    if (length !== stat.size) fail('evaluation_record_invalid');
+    if (length !== size) fail('evaluation_record_invalid');
     const data = bytes.subarray(0, length), text = data.toString('utf8');
     if (!Buffer.from(text, 'utf8').equals(data)) fail('evaluation_record_invalid');
     return JSON.parse(text);

@@ -144,6 +144,28 @@ test('archive tamper after run reservation stops before credentials, keeps unkno
   assert.equal(final.ledger.runs[0].status, 'reserved'); assert.equal(readModelEgress(f.root, f.plan.runs[0].runId).unknownCostRequests, 1);
 });
 
+test('archive changed AFTER last request but before score cannot settle the reserved run', async t => {
+  const f = fixture(t); approve(f); const calls = fakeNetwork(t);
+  const final = await dispatchBoundModelEvaluation(f.root, f.approval.approvalId, async (run, send) => {
+    await send(body(f)); mutate(f.archive, v => { v.binding.config.settings.temperature = 1; }); return result(run);
+  }, lease);
+  assert.equal(calls.length, 1); assert.equal(final.dispatchState, 'unresolved');
+  assert.equal(final.ledger.runs.length, 1); assert.equal(final.ledger.runs[0].status, 'reserved');
+  const egress = readModelEgress(f.root, f.plan.runs[0].runId);
+  assert.equal(egress.reason, 'completed'); assert.equal(egress.knownCostMicroUsd, 40);
+});
+
+test('driver detached from send cannot settle even when request succeeds and score cost matches', { timeout: 5000 }, async t => {
+  const f = fixture(t); approve(f); const calls = fakeNetwork(t);
+  const final = await dispatchBoundModelEvaluation(f.root, f.approval.approvalId, async (run, send) => {
+    void send(body(f)); return result(run);
+  }, lease);
+  assert.equal(calls.length, 1); assert.equal(final.dispatchState, 'unresolved');
+  assert.equal(final.ledger.runs.length, 1); assert.equal(final.ledger.runs[0].status, 'reserved');
+  const egress = readModelEgress(f.root, f.plan.runs[0].runId);
+  assert.equal(egress.reason, 'driver_detached'); assert.equal(egress.knownCostMicroUsd, 40);
+});
+
 test('credential callback changing durable reservation is rejected after callback and before network', async t => {
   const f = fixture(t); approve(f); const calls = fakeNetwork(t);
   await assert.rejects(dispatchBoundModelEvaluation(f.root, f.approval.approvalId, async (run, send) => {
