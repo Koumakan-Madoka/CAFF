@@ -36,6 +36,8 @@ function assertExecutionEvidence({ synthetic, joint, browserVersion, calls, ids 
 let verificationStage = 'prepare';
 async function main() {
   const args = process.argv.slice(2), { browserMode, synthetic, joint } = verificationMode(args);
+  const captured = args.includes('--captured');
+  assert.ok(!captured || (!synthetic && process.platform === 'linux'));
   const arg = name => { const i = args.indexOf('--' + name); assert.ok(i >= 0 && args[i + 1]); return args[i + 1]; };
   const root = synthetic ? fs.mkdtempSync(path.join(os.tmpdir(), 'caff-workbench-ui-')) : path.join(arg('data-root'), '..', 'artifacts');
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -58,11 +60,15 @@ async function main() {
     };
     const repo = path.resolve(__dirname, '../..');
     const sources = { runtimeArchive: archiveRuntime(repo, path.join(root, 'runtime')), harnessArchive: archiveHarness(repo, path.join(root, 'harness')) };
-    const fixtures = ['fresh', 'resume'].map(mode => fixture({ after: f => cleanup.push(f) }, mode));
-    const materials = fixtures.map((h, i) => ({ id: i ? 'resume' : 'fresh', projectId: 'p1', request: h.request, image, sources,
-      roles: { baseline: 'Synthetic baseline <b>literal text</b>.', candidate: 'Synthetic candidate.' }, rule: { expectedHash: hash('done\n'), badcaseHash: hash('draft\n') } }));
+    const fixtures = [];
+    for (const mode of ['fresh', 'resume']) fixtures.push(await (captured ? require('./captured-workbench-fixture.cjs') : fixture)({ after: f => cleanup.push(f) }, mode));
+    const roles = { baseline: 'Synthetic baseline <b>literal text</b>.', candidate: 'Synthetic candidate.' };
+    const rule = { expectedHash: hash('done\n'), badcaseHash: hash('draft\n') };
+    const materials = fixtures.map((h, i) => captured
+      ? require('./sealed-workbench.cjs').selectSealedMaterials({ captureRoot: h.root, selections: [h.selection], image, sources, roles, rule })[0]
+      : { id: i ? 'resume' : 'fresh', projectId: 'p1', request: h.request, image, sources, roles, rule });
     const originalBlobs = fixtures.map(h => fs.readFileSync(h.blobPath(h.r.promptBlobHash)));
-    for (const h of fixtures) fs.unlinkSync(path.join(h.root, 'projects/p1/checkpoints/cp1.json'));
+    for (const h of fixtures) fs.unlinkSync(path.join(h.root, 'projects/p1/checkpoints', h.cp.checkpointId + '.json'));
     const options = { root: path.join(root, 'approvals'), materials, runProbe: async (img, files, executionOptions) => {
       assert.deepEqual(executionOptions, { timeoutMs: 25000 });
       calls.push(JSON.parse(files.find(f => f.path === 'task.json').bytes).runId);
@@ -173,6 +179,7 @@ async function main() {
     assert.deepEqual(reports.flatMap(r => r.report.ledger.runs.map(run => run.runId)), calls);
     console.log(JSON.stringify({ ok: true, kind: 'offline-scripted-workbench', browser: browserVersion, browserExecutorSynthetic: synthetic,
       sameRunBrowserDocker: joint, isolatedBrowserNetwork: joint, observedRunIds: calls,
+      capturedSealedSelection: captured, captureEvidence: captured ? fixtures.map(h => h.evidence) : null,
       realModelInvocations: 0, humanApproval: false, acceptance: false, productionLaunchAvailable: false,
       browserCancelApprovePosts: browserMode ? canceledPosts.approve : null, browserCancelStartPosts: browserMode ? canceledPosts.start : null,
       identity, archiveBytes, cleanedContainerIds: ids, reportReadAfterRebuild: true, reviewReadAfterRebuild: true, changedRegistryIgnored: true, sourceBlobsUnchanged: true,

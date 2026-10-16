@@ -23,10 +23,13 @@ def main():
     mode.add_argument('--approved-scripted-evaluation', action='store_true', help='HTTP approval to offline runner and report; no paid model')
     mode.add_argument('--workbench', action='store_true', help='isolated material review and explicit HTTP start; no paid model')
     mode.add_argument('--browser-workbench', action='store_true', help='same-run Chromium review/start/query to dedicated Docker; scripted model only')
+    parser.add_argument('--captured', action='store_true', help='real synthetic collector + SQLite/HTTP seal selected into workbench; only with workbench modes')
     parser.add_argument('--browser-executable')
     parser.add_argument('--browser-library-dir')
     parser.add_argument('--browser-fontconfig')
     args = parser.parse_args()
+    if args.captured and not (args.workbench or args.browser_workbench):
+        parser.error('captured requires workbench or browser-workbench')
     if args.browser_workbench:
         if not (args.browser_executable and args.browser_library_dir):
             parser.error('browser-workbench requires explicit browser executable and library directory')
@@ -99,9 +102,11 @@ def main():
                   'verify-scripted-evaluation.cjs' if args.scripted_evaluation else 'verify-image-recovery.cjs')
         node_args = ['node', str(repo / 'scripts/badcase-capture' / script)]
         for key, value in vars(args).items():
-            if key not in ['scripted_evaluation', 'probe_recovery', 'approved_scripted_evaluation', 'workbench', 'browser_workbench', 'browser_executable', 'browser_library_dir', 'browser_fontconfig']:
+            if key not in ['scripted_evaluation', 'probe_recovery', 'approved_scripted_evaluation', 'workbench', 'browser_workbench', 'browser_executable', 'browser_library_dir', 'browser_fontconfig', 'captured']:
                 node_args.extend(['--' + key.replace('_', '-'), value])
         node_args.extend(['--socket', 'unix://' + str(base / 'docker.sock'), '--daemon-id', info['ID'], '--data-root', str(base / 'data')])
+        if args.captured:
+            node_args.append('--captured')
         if args.browser_workbench:
             node_args.extend(['--browser-docker', '--browser-executable', args.browser_executable,
                               '--browser-library-dir', args.browser_library_dir,

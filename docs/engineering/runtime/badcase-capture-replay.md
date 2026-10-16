@@ -13,7 +13,7 @@ Scope: CAFF 用户 badcase 的执行前检查点采集、用户标记封存、Do
 | CapturePolicy | projectId | 项目级采集授权：开关、授权目录清单、纳入的 ignored 模式、排除模式、暂存期限与配额 | disabled / enabled / suspended(空间不足或采集失败) |
 | Checkpoint | checkpointId | 某次 agent turn 执行前的现场：文件清单+内容引用、回放输入、环境指纹、一致性级别 | staged / sealed / expired / incomplete |
 | BadcaseFlag | flagId | 用户提交后持久化的问题标记：实际问题、期望行为 | 当前不可变记录；sealState=pending（不是封存状态已完成） |
-| SealedCase | caseId | 标记触发后长期封存的证据包：Checkpoint + 轨迹 + BadcaseFlag 关联 | captured / runnable / reproduced / evaluable（见 §8） |
+| SealedCase | caseId | 标记触发后长期封存的证据包：Checkpoint + 轨迹计数/关联（MVP 暂无正文）+ BadcaseFlag 关联 | captured / runnable / reproduced / evaluable（见 §8） |
 | EnvironmentTemplate | templateId | 人工配置的环境模板；首次成功重建后归档镜像 | pending / archived(digest+arch 固定) / broken |
 | ReplayRun | replayRunId | 从某 Checkpoint 恢复起点的一次容器内执行（baseline 或 candidate） | prepared / running / completed / failed / killed |
 | EvaluatorSpec | evaluatorId | 经人审核的验收规则与评分器，含版本 | draft / approved / frozen |
@@ -175,7 +175,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 用户选择点“标记问题”即直接封存，不增加第二次确认。生产 `create-server` 注入 `createBadcaseSealingService`：POST 先通过原有标记校验并持久化不可变 Flag，再执行异步读取/文件保存；HTTP 请求等待结果，不是持久后台任务队列。断开客户端不主动取消；GET 只读、不补归档。旧标记仅在显式同文 POST 重试时尝试封存，启动/查询不批量补写。
 
 - 首次/重试从冻结八键关联派生请求。等待轨迹读取后再次核对当前消息，缺失/改变拒绝文件写入；同一服务同一 flag 的在途调用合并。不同文本仍冲突，客户端不能传 worker 路径、存储根、关联或归档内容。
-- 原始轨迹正文 **一律未归档**：现有读取器不能证明任意工具文本/远祖私有来源已授权。读取成功仅保存固定原因 `trajectory_provenance_unverified` 及事件总数/选中数；读取失败仅保存白名单原因码。task output/error、事件 payload、路径等均不进入 case 或 CAS；秘密/私有拒绝同样不保存正文。这里保存的是已授权采集器先前生成的检查点及其现有闭包，不重新扫描目标，不开启项目、不读取新的 session/附件。这不是目标中完整轨迹归档的完成证明。
+- 原始轨迹正文 **一律未归档**：现有读取器不能证明任意工具文本/远祖私有来源已授权。读取成功仅保存固定原因 `trajectory_provenance_unverified` 及事件总数/选中数；读取失败仅保存白名单原因码。task output/error、事件 payload、路径等均不进入 case 或 CAS；秘密/私有拒绝同样不保存正文。这里保存的是已授权采集器先前生成的检查点及其现有闭包，不重新扫描目标，不开启项目、不读取新的 session/附件。这不是目标中完整轨迹归档的完成证明。用户 2026-10-16 裁决优先 MVP：不新增逐包正文预览/批准流程，正文扩展后置，不阻塞其余链路；页面继续显示“材料不完整（轨迹正文未归档）”。不因此扩大采集授权或降低最终验收标准。
 - SQLite 读取在既有只读子进程完成且必须干净退出，随后另启不加载 SQLite 的文件 worker，持锁校验并保留清单和每个现有 blob。文件 worker 每父进程最多两个、不排队；达到上限先报 `seal_busy`，未达上限而同项目已有写者时报 `capture_writer_busy`，二者均不启动新的 worker。30 秒超时、stdout/stderr 合计 64 KiB+1 KiB、192 MiB Node heap，剔除宿主 preload/凭据环境；非零退出拒收成功。只从受信 CAS 读取，不启动 agent/shell。worker 输出仅承载 case 结果及协议包装，不返回最大 16 MiB 的 retention 清单；输出限制不能用作清单大小限制。强杀后仍占并发名额直到 close 回收，避免尚未退出的进程逃出并发上限。文件 worker 的锁改由父进程在 spawn 前取得，只委托给这一子进程执行同步写入；正常/异常/超时都等 close 后由父进程释放本次锁。强杀可能留下未发布临时文件，但存活父进程可释放本次锁、允许显式重试；不是扫描或回收历史锁。父进程自身崩溃、机器断电和孤儿治理仍未解决。
 - case 独立存于 `projects/<projectId>/cases/<sha256(messageId)>.json`，不改原 Flag；记录关联、固定状态、检查点引用 ID、来源缺失和计数，不含标记原文/清单副本（后者在 retention）。64 KiB 上限、校验和、精确字段/关联校验，文件 fsync+hardlink 禁止覆盖。相同关联重试验证原保留闭包而不重新绑定当前清单；损坏 case/引用/blob 拒绝，不覆盖为新成功。目录 fsync 与掉电保证未实现，路径祖先仍是同 OS 用户可信存储。
 - 独立 `seal.state`：`saving`（本进程在途）、`not_saved`（无最终记录）、`failed`（本次操作失败）、`unavailable`（冻结关联缺失/改变）或 `saved_incomplete`（最终记录已发布，检查点闭包曾校验保存）。只有最后一种显示“现场已保存·材料不完整”。`complete/captured/runnable/reproduced/evaluable/strictEvalEligible` 仍全 false；不认证 checkpoint 输入完整、环境或一致性。GET 的已保存状态是发布记录，不重新逐 blob 审计；显式 POST 重试才复验闭包。失败不覆盖/删除已有 case，因此失败 POST 与后续 GET 的历史发布记录可能不同，不能把 GET 解释为当前完整性审计。
@@ -224,7 +224,7 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 
 复跑：先构建，在具备 Linux openat2/statx、Python3 和匹配 Node ABI 的 `better-sqlite3` 环境执行 `node --test tests/runtime/session-reuse-ab.test.js tests/runtime/badcase-writer-recovery.test.js tests/runtime/badcase-sealing.test.js tests/runtime/badcase-trajectory-process.test.js tests/http/badcase-capture-controller.test.js tests/http/badcase-flags-controller.test.js`。新增集成用例非 Linux 显式 skip，不以 Windows 通过数代替真实采集验证。
 
-共享 Windows node_modules 不可直接作为 Linux SQLite 运行依赖：可在**独立测试副本**复制已安装 better-sqlite3 源码，移除该副本旧 build，再用本机已有且版本匹配的头文件执行 `node <npm自带node-gyp路径>/bin/node-gyp.js rebuild --nodedir=/usr --release -j 2`；不修改共享安装、不下载头文件或执行系统安装。其他依赖可只读链接；build/tests/public 复制到副本，使宿主及子进程解析同一 Linux SQLite。本次验证范围为 Node22.22.0/better-sqlite3 12.11.1，不能推断此前 Linux Node24 SIGABRT 已解决。无浏览器、Docker、真实模型或真实用户采集证据；所有最终 AC 仍待验收。
+共享 Windows node_modules 不可直接作为 Linux SQLite 运行依赖：可在**独立测试副本**复制已安装 better-sqlite3 源码，移除该副本旧 build，再用本机已有且版本匹配的头文件执行 `node <npm自带node-gyp路径>/bin/node-gyp.js rebuild --nodedir=/usr --release -j 2`；不修改共享安装、不下载头文件或执行系统安装。其他依赖可只读链接；build/tests/public 复制到副本，使宿主及子进程解析同一 Linux SQLite；非 Git 副本还须复制 package.json，供 serverVersion 的包版本回退使用（否则可能报 harness_config_unverified）。本次验证范围为 Node22.22.0/better-sqlite3 12.11.1，不能推断此前 Linux Node24 SIGABRT 已解决。无浏览器、Docker、真实模型或真实用户采集证据；所有最终 AC 仍待验收。
 
 ## 4. 环境与 Docker 隔离契约
 
@@ -507,6 +507,28 @@ UI jsdom/合成 HTTP 测试不等于真实用户采集证据。文件/session/�
 - 初始实验中只 await 永久 Promise 不足以保持 Node 存活（IPC 未 ref），导致预期 SIGKILL 前子调度器自然退出，验证器失败关闭；修复为保留 IPC listener 后复跑，不将前两次失败记作通过。验证器错误只输出固定阶段码。
 - **仍缺**：整个监督者/daemon/主机崩溃或掉电恢复、自动枚举与产品管理接线、恢复调度排他锁、意图/暂存目录配额与GC、cleanup回执长期归档，以及采集/封存历史锁的恢复。真实探针被强杀可能保留自身stage；本实验用独立TMPDIR纳入Python所有者最后清理，通用恢复函数不递归删除暂存路径。所有AC仍pending，不启用真实采集、付费、合并或发布。
 - E49两项覆盖补齐：正常完成断言无termination，超时fake start产生非空stdout/stderr并断言清空；这些是原行为回归，非新增产品漏洞修复。
+
+### 5.11 已封存消息选择与操作者启动入口（离线脚本模型 MVP 接线）
+
+`sealed-workbench.cjs` 将已存在的封存消息接入 §5.6 工作台：操作者只提供 `captureRoot` 与 `selections: [{id, projectId, conversationId, messageId}]`，无需手填八键关联或重造检查点。每次构建注册表只读对应 case 文件，校验本层 root/projects/project/cases 与文件不是链接、64KiB 有界 fd/UTF8/checksum、选择范围与既有 case 精确 schema，然后复验 retention 闭包和输入 blob；任一缺失/损坏整批拒绝。不扫描授权目标/消息库、不开采集、不复制轨迹正文、不从 live checkpoint 补建、不在选择阶段 protect。preview 与每次 run 仍按原机制锁内重验/protect。目录祖先与同 OS 用户仍属 TCB，非恶意同权限竞争或来源认证。
+
+**可操作入口**：`node scripts/badcase-capture/serve-sealed-workbench.cjs --config <绝对路径/operator.json>`。配置是操作者本地文件，不是浏览器上传或 agent tool；不进 Git。启动输出随机 loopback URL；打开后依次“选材料 → 预览 → 保存确认 → 显式启动 → 查询逐次报告/人审归档”。生产项目页仍只负责授权/预估/开启、消息标记和查询；不在生产服务里注入 Docker 启动能力。
+
+配置精确八键（不接受其他字段）：
+- `root`：独立评测记录目录；与 `captureRoot` 互不包含。两个绝对路径须由操作者确认隔离，祖先别名属 TCB。
+- `captureRoot`、`selections`：已经授权采集并通过标记产生的存储与消息身份；选择器不要求原 live checkpoint 仍存在。未封存消息不能启动。
+- `sources: {runtimeArchive, harnessArchive}`：§4 归档函数返回的完整引用，不是目录字符串；必须是受信本地归档。
+- `roles: {baseline, candidate}`：单角色指令两个文本；`rule: {expectedHash, badcaseHash}` 为两个不同的 SHA256。
+- `imageArchive`：`archiveImage` 返回的完整可信镜像归档引用（不是浮动 tag 或任意外部 tar）。
+- `destination: {socket, daemonId, dataRoot}`：按 §4.11 管理的专用、初始空 daemon；socket 必须为 `/var/tmp/caff-image-recovery-*/docker.sock` 的 unix URL，独立 data-root/vfs、不同于共享 daemon。操作者负责其独立 mount/net namespace 与整个生命周期，CLI **不创建或停止 daemon**。
+
+CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨兵；先核验镜像归档、消息材料与注册表，再在专用空 daemon 恢复归档，最后监听。失败只输出固定错误，不回显路径/内容。SIGINT/SIGTERM 停止监听并等在途请求完成，不是取消任务；不得先停 daemon。保留报告、归档和引用，不自动 GC。中断重启后票据丢失，仅能查旧报告；原 daemon 已非空时不能重新调用此 CLI 恢复，须由操作者准备新的专用空 daemon，旧报告目录可复用。不支持生产 DB/凭据、付费模型或隐式 fallback。
+
+**支持范围不能混淆**：这仍是 `fixed-write-read-edit-bash-v1` 脚本模型验证，不提交捕获的原始请求。已有 SDK 诊断限制不放宽：工具桥关闭、无 skill/受控变量替换、resume 仅支持规定的线性 user 文本历史；普通 CAFF 复杂 turn 可能被 preview 拒绝，不会降级 fresh。`realModel/faithfulReplay/strictEvalEligible` 等仍 false；轨迹正文未封存。CLI 是已有材料的操作者入口，不是最终真实 badcase MVP 验收通过或付费许可。
+
+验证：`node --test tests/runtime/badcase-sealed-workbench.test.js`（Linux 需匹配 ABI 的 SQLite；Windows 显式跳过真实 collector 用例）。`verify-image-recovery.py --browser-workbench --captured` 加 §4.4 五个镜像参数及 §5.8 浏览器参数，使用真实 collector + HTTP 授权/预估/开启、SQLite 消息/run/task、HTTP 标记/worker 封存、重复幂等/重建查询、关闭采集；随后按消息选择并删除 live checkpoint，Chromium 预览/批准/启动 → 专用 Docker 真实 SDK 工具 → 逐次评分及重建页面查询。fresh/resume 各两容器，归档及 CAS 不变、各三保护引用。该模式需将 scripts 一并复制到 §3.8 的 Linux 私有副本；不修改共享 Windows SQLite。
+
+验证材料与 turn/模型/确认均合成：collector 在模拟现场变更前调用，不等于真实 executor/模型 turn（既有 executor 挂点证据见 §3.8）；采集和标记走真实 HTTP 但非浏览器点击，浏览器只覆盖后半工作台。轨迹只验证直接关联与计数，正文不保存。CLI 配置读取/编排有离线测试，联合 Docker 验证复用其选择器及相同工作台/恢复器，并非从 CLI 子进程开始的整条操作录像。用户真实采集、模型预算、忠实回放与全部 AC 仍待交付/验收。
 
 ## 6. 威胁模型
 
