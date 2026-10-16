@@ -8,20 +8,24 @@ const validatorUrl = pathToFileURL(
   path.resolve(__dirname, '..', '..', 'lib', 'pi-model-config-validator.mjs')
 ).href;
 
-test('package dependencies pin one canonical PI family without the deprecated package', () => {
+test('PI runtime family stays pinned at 0.85.1 while the top-level pi-ai serves the subscription-login catalog', () => {
   const packageJson = require('../../package.json');
 
   assert.equal(packageJson.dependencies['@earendil-works/pi-coding-agent'], '0.85.1');
-  assert.equal(packageJson.dependencies['@earendil-works/pi-ai'], '0.85.1');
+  assert.equal(packageJson.dependencies['@earendil-works/pi-ai'], '^1.3.0');
   assert.equal(packageJson.dependencies.typebox, '1.3.7');
   assert.equal(Object.hasOwn(packageJson.dependencies, '@mariozechner/pi-ai'), false);
 
   const packageLock = require('../../package-lock.json');
-  const piAiVersions = Object.entries(packageLock.packages)
-    .filter(([packagePath]) => packagePath.endsWith('node_modules/@earendil-works/pi-ai'))
-    .map(([, entry]) => entry.version);
-  assert.ok(piAiVersions.length >= 1);
-  assert.deepEqual([...new Set(piAiVersions)], ['0.85.1']);
+  const TOP_LEVEL_PI_AI = 'node_modules/@earendil-works/pi-ai';
+  const piAiEntries = Object.entries(packageLock.packages)
+    .filter(([packagePath]) => packagePath.endsWith('node_modules/@earendil-works/pi-ai'));
+  const topLevel = piAiEntries.find(([packagePath]) => packagePath === TOP_LEVEL_PI_AI);
+  assert.ok(topLevel, 'top-level pi-ai must be installed');
+  assert.match(topLevel[1].version, /^1\.3\./u);
+  const nested = piAiEntries.filter(([packagePath]) => packagePath !== TOP_LEVEL_PI_AI);
+  assert.ok(nested.length >= 1);
+  assert.deepEqual([...new Set(nested.map(([, entry]) => entry.version))], ['0.85.1']);
   assert.equal(Object.hasOwn(packageLock.packages, 'node_modules/@mariozechner/pi-ai'), false);
 
   const digestSource = fs.readFileSync(
