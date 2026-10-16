@@ -579,6 +579,18 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 
 自动测试：`node --test tests/runtime/badcase-cli-verification.test.js tests/runtime/badcase-sealed-workbench.test.js tests/runtime/badcase-workbench-verification.test.js tests/runtime/badcase-scripted-workbench.test.js`；Windows 不支持 POSIX graceful SIGTERM，明确跳过对应监督者测试；真实 collector 的 Linux SQLite 前置沿 §3.8。注册表提前拒绝负例钉住的是 image schema（并非 role 正文；role 仍由 preview 校验）；相对 captureRoot 负例要求任何文件读取前拒绝。所有数据、确认与模型仍合成，浏览器仅覆盖后半，不扩大轨迹正文权限，不升级忠实回放/真实模型/任何 AC。
 
+### 5.13 单 run 内逐模型请求的持久门控（内部前置件，无网络）
+
+`model-egress.ts` 提供 `dispatchModelEgress(root, policy, drive, transport)` 与只读 `readModelEgress(root, runId)`。**没有生产/HTTP/agent/SDK 接线，没有网络客户端、凭据或真实付费许可**；§5.3–5.12 的断网脚本路径不变。本层补充 §5.2 的每 run 预留：同一个 agent turn 内的多次模型请求也必须先持久预留，再交给受信 transport。root 必须为预先建立的专用绝对目录；自有 root/model-egress/runId 层及文件拒绝静态链接，祖先路径与同 OS 用户仍属 TCB。
+
+- policy 固定 approvalId/planHash/runId、provider/model/settingsHash、期限、请求数量（1–1000）、双向字节上限（各≤4MiB）、单请求时限（≤300s）、每请求预留及 run 总额（整数 micro-USD）。这些仍是**可信调用方声明**，尚未与原 EvaluationDispatch/人工批准存储自动对账；settingsHash 不代替设置正文或模型协议校验。provider/model 为本模块内部简单标识符，不支持任意现有 provider ID。transport 收到固定模型标识与请求 bytes，但本层不解析模型协议、也不阻止 bytes 中包含其他模型字段；将来协议 adapter 必须拒绝覆盖、校验 token 上限及经人工确认的定价/最坏费用。不能凭任意声明启动真实付费。
+- 独占 mkdir 永久 claim 同 root 下的 runId（不同进程也互斥），先独占写 policy，再对每请求按连续编号 wx/0600 写 reserve、fsync、读回复验，写后再检查期限，才调用 transport。同一时刻只有一个请求；重复整个 run、并发请求、已结束 sender 均拒绝。不重试、不续跑、不退款：每发起一次始终消耗整份预留，即使实际费用更低；预算不足或请求数耗尽停止。实际费用超过声明上界会如实报告并停止，**这不是供应商计费硬限保证**。
+- 输入仅有界 Buffer，复制后 hash；已知秘密哨兵拒绝。transport 回执严格两键 body/costMicroUsd，属性读取异常也算坏回执；有界响应复制后只持久 hash/字节数/费用，不存请求正文、输出正文、异常正文或凭据。只有 result 的 fsync+读回复验成功后才返回响应。未知费用、超预留、坏回执、transport 抛错均停止且不释放输出；未知结果保留完整预留。秘密扫描不证明内容来源获授权，响应不在本层归档。响应大小检查发生在 transport 返回后，不限制其流式接收时的内存；真实 adapter 必须另外实施流式上限。
+- 到期发 AbortSignal；单调耗时复查防事件循环延迟，超时粘性使晚到成功转为 timeout，费用未知。不强行返回：必须等 transport settle，即使其忽略 abort；driver 提早返回也 join 在途请求并记 driver_detached。**没有进程/网络强制终止或墙钟硬上界**，将来必须由受控出口及 Docker launcher 兑现。OS 时钟倒退拒绝；倒退终止记录使用最后已观测时间，不伪造当前时刻。
+- 读回按 schema、编号、请求派生 ID、日期、预留额度及结果状态复验；已结束结果与未结算 reservation 区分。活跃与崩溃遗留均 unresolved，无法推断 transport 已停止。fsync/写/读回复验失败留原文件，不修复、不移除 claim；部分文件可导致只读查询显式 record_invalid，不能因此重派发。文件 fsync 不保证目录掉电事务；无存储 GC、删除、自动重结算或供应商账单认证。
+
+验证：构建后 `node --test tests/runtime/badcase-model-egress.test.js tests/runtime/badcase-evaluation-record.test.js tests/runtime/badcase-evaluation-plan.test.js`。全部使用隔离临时目录与内存 transport，含独立 Node 进程竞争/exit23、写失败、超时/晚成功、预算边界、只读篡改拒绝；不在宿主执行 agent，不调用网络/模型，也不替代 Docker/真实模型/任何 AC 证据。真实协议适配、受控出口、运行时凭据重签发、原始角色与完整输入回放、人审批准绑定仍未接线。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
