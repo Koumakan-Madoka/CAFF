@@ -85,3 +85,15 @@ test('changing trusted registry requires new plan; saved config not rebuilt from
   assert.notEqual(q.plan.planHash, p.plan.planHash); assert.notEqual(q.binding.bindingHash, p.binding.bindingHash);
   assert.deepEqual(next.read(e.projectId, p.approvalId), saved);
 });
+test('opt-in tool definitions are reviewed, persisted and read without registry; old text plan cannot authorize tools', t => {
+  const f = fixture(t), e = entry();
+  e.config.tools = [{ type: 'function', function: { name: 'read', description: 'synthetic read', parameters: { type: 'object', properties: { path: { type: 'string' } } } } }];
+  assert.throws(() => createModelReviewService({ root: f.root, entries: [e] })); assert.equal(fs.existsSync(f.root), false);
+  e.spec.model.settingsHash = modelBinding(e.config).bindingHash;
+  const service = createModelReviewService({ root: f.root, entries: [e] }), p = service.preview(e.projectId, { entryId: e.id });
+  assert.deepEqual(p.binding.config.tools, modelBinding(e.config).config.tools);
+  const saved = service.approve(e.projectId, confirm(p));
+  e.config.tools[0].function.description = 'changed after review';
+  assert.deepEqual(createModelReviewService({ root: f.root, entries: [] }).read(e.projectId, p.approvalId), saved);
+  assert.equal(saved.launchAvailable, false); assert.equal(saved.paidAuthorization, false); assert.equal(saved.report.consumed, false);
+});

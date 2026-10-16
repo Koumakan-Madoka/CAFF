@@ -37,7 +37,7 @@ function fakeNetwork(t, reply) {
     Object.assign(socket, { encrypted: true, authorized: true, remoteAddress: options.hostname });
     Object.assign(res, { headers: { 'content-type': 'application/json' }, statusCode: 200, complete: true });
     req.destroy = () => res.destroy();
-    req.end = body => { calls.push({ options, body }); queueMicrotask(() => { req.emit('response', res); res.end(JSON.stringify(reply || {
+    req.end = body => { calls.push({ options, body }); queueMicrotask(() => { req.emit('response', res); res.end(JSON.stringify((typeof reply === 'function' ? reply(body) : reply) || {
       id: 'synthetic', object: 'chat.completion', created: 1, model: 'fixed-model', choices: [{ index: 0, message: { role: 'assistant', content: 'synthetic-reply' }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } })); }); };
     queueMicrotask(() => { req.emit('socket', socket); socket.emit('secureConnect'); }); return req;
@@ -49,6 +49,10 @@ const lease = () => ({ value: 'synthetic-lease', expiresAt: Date.now() + 60000 }
 
 test('binding hash commits all endpoint/settings/rate/cap fields, stable order, no implicit defaults', () => {
   const c = config(), b = modelBinding(c);
+  // Independently evaluated from parent 223c64b: opt-in tools must not migrate old hashes.
+  assert.equal(b.bindingHash, '33fe531fafd101c32d4dd26dc67a8ac786c6e5d7a26a8cd479722de8811067c6');
+  assert.equal(b.settingsHash, '90b9cdd51931e1528d509fbb33ee3273e0ffa517e42dd05c0ad9017f3edc80ad');
+  assert.equal(Object.hasOwn(b.config, 'tools'), false);
   assert.equal(modelBinding({ maxRequests: 2, endpoint: { ...c.endpoint }, settings: Object.fromEntries(Object.entries(c.settings).reverse()) }).bindingHash, b.bindingHash);
   for (const [section, key, value] of [['endpoint', 'address', '8.8.8.8'], ['endpoint', 'path', '/different'], ['endpoint', 'timeoutMs', 999],
     ['settings', 'temperature', 1], ['settings', 'inputMicroUsdPerMillionTokens', 1000001], ['settings', 'maxOutputTokens', 99]]) {
@@ -256,4 +260,46 @@ test('concurrent dispatches consume approval once; no second driver or credentia
   const first = dispatchBoundModelEvaluation(f.root, f.approval.approvalId, async (run, send) => { entered(); await gate; await send(body(f)); return result(run); }, lease);
   await ready; await assert.rejects(dispatchBoundModelEvaluation(f.root, f.approval.approvalId, () => { assert.fail('second driver'); }, lease));
   resume(); assert.equal((await first).ledger.state, 'complete'); assert.equal(calls.length, 2);
+});
+
+const tools = () => [{ type: 'function', function: { name: 'read', description: 'synthetic read',
+  parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } }];
+function enableTools(f) {
+  f.c.tools = tools(); f.spec.model.settingsHash = modelBinding(f.c).bindingHash;
+  f.plan = planEvaluation(f.spec); f.approval.planHash = f.plan.planHash;
+}
+test('tools require new binding and approval, archive definition snapshot and reject old hash or swapped definitions', t => {
+  const f = fixture(t), old = modelBinding(f.c), oldSpec = structuredClone(f.spec), oldApproval = { ...f.approval };
+  enableTools(f);
+  const fresh = modelBinding(f.c); assert.notEqual(fresh.bindingHash, old.bindingHash); assert.notEqual(fresh.settingsHash, old.settingsHash);
+  assert.throws(() => recordBoundModelApproval(f.root, oldSpec, f.c, oldApproval), rejected); assert.deepEqual(fs.readdirSync(f.root), []);
+  const saved = approve(f); assert.deepEqual(saved.binding.config.tools, fresh.config.tools);
+  mutate(f.archive, v => { v.binding.config.tools[0].function.description += ' changed'; });
+  assert.throws(() => readBoundModelApproval(f.root, f.approval.approvalId), rejected);
+});
+
+test('bound tool approval drives two protocol rounds per variant through both ledgers; no tool executed', async t => {
+  const { encodeToolChatCompletionsRequest } = require('../../build/server/domain/runtime/badcase-capture/chat-completions-protocol');
+  const f = fixture(t); enableTools(f); approve(f);
+  const calls = fakeNetwork(t, bytes => {
+    const req = JSON.parse(bytes), last = req.messages.at(-1), calling = last.role !== 'tool';
+    assert.deepEqual(req.tools, modelBinding(f.c).config.tools); assert.equal(req.parallel_tool_calls, false);
+    return { id: 'synthetic', object: 'chat.completion', created: 1, model: 'fixed-model', choices: [{ index: 0,
+      message: calling ? { role: 'assistant', content: null, tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read', arguments: '{"path":"synthetic.txt"}' } }] }
+        : { role: 'assistant', content: 'synthetic answer' }, finish_reason: calling ? 'tool_calls' : 'stop' }],
+      usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } };
+  });
+  let issued = 0;
+  const final = await dispatchBoundModelEvaluation(f.root, f.approval.approvalId, async (run, send) => {
+    const c = { settings: f.c.settings, tools: f.c.tools }, history = [{ role: 'user', content: 'synthetic task' }];
+    const first = JSON.parse(await send(encodeToolChatCompletionsRequest(c, history)));
+    history.push(first.choices[0].message, { role: 'tool', tool_call_id: 'call-1', content: 'synthetic result, not tool execution' });
+    await send(encodeToolChatCompletionsRequest(c, history)); return result(run, 80);
+  }, () => {
+    issued++; const outer = readEvaluationRecord(f.root, f.approval.approvalId), run = outer.ledger.runs.at(-1);
+    assert.equal(readModelEgress(f.root, run.runId).requests.at(-1).status, 'reserved'); return lease();
+  });
+  assert.equal(final.ledger.state, 'complete'); assert.equal(final.ledger.knownCostMicroUsd, 160); assert.equal(calls.length, 4); assert.equal(issued, 4);
+  assert.deepEqual(readBoundModelApproval(f.root, f.approval.approvalId).report, final);
+  assert.ok(final.ledger.runs.every(r => readModelEgress(f.root, r.runId).requests.length === 2));
 });

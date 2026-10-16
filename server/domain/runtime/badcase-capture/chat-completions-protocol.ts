@@ -1,4 +1,4 @@
-// Text-only Chat Completions protocol, NO network/credentials/SDK or paid approval.
+// Explicit text-v1 and tools-v1 protocols, NO network/credentials/SDK or paid approval.
 // Pricing and context size are trusted operator declarations, NOT provider proof.
 import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
@@ -48,6 +48,76 @@ export function chatCompletionsSettings(value: unknown) {
     return { settings, settingsHash: hash(JSON.stringify(settings)), perRequestReserveMicroUsd };
   } catch { fail(); }
 }
+// Tool schemas are bounded, opaque declarations, not a local schema evaluator.
+// No reference resolution or tool execution occurs in this protocol module.
+function stableJson(v: any, depth = 0, budget = { nodes: 0 }): any {
+  if (++budget.nodes > 2048 || depth > 16) fail();
+  if (v === null || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))) return v;
+  if (typeof v === 'string') { if (!text(v)) fail(); return v; }
+  if (Array.isArray(v)) return v.map(x => stableJson(x, depth + 1, budget));
+  if (!object(v) || Object.getPrototypeOf(v) !== Object.prototype) fail();
+  const result: any = {};
+  for (const k of Object.keys(v).sort()) {
+    if (!text(k) || ['$ref', '$dynamicRef', '__proto__', 'constructor', 'prototype'].includes(k)) fail();
+    result[k] = stableJson(v[k], depth + 1, budget);
+  }
+  return result;
+}
+export function toolChatCompletionsSettings(input: unknown) {
+  try {
+    const v = input as any;
+    if (!keys(v, ['settings', 'tools']) || !Array.isArray(v.tools) || v.tools.length < 1 || v.tools.length > 16) fail();
+    const s = chatCompletionsSettings(v.settings), seen = new Set<string>();
+    const tools = stableJson(v.tools);
+    if (Buffer.byteLength(JSON.stringify(tools)) > 8192 || containsSecretSentinel(JSON.stringify(tools))) fail();
+    for (const t of tools) {
+      const f = t?.function;
+      if (!keys(t, ['type', 'function']) || t.type !== 'function' || !keys(f, ['name', 'description', 'parameters'])
+        || typeof f.name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(f.name) || seen.has(f.name)
+        || !text(f.description) || !object(f.parameters) || f.parameters.type !== 'object') fail();
+      seen.add(f.name);
+    }
+    const settings = { ...s.settings, protocol: 'chat-completions-tools-v1' as const };
+    return { settings, tools, settingsHash: hash(JSON.stringify({ settings, tools })), perRequestReserveMicroUsd: s.perRequestReserveMicroUsd };
+  } catch { fail(); }
+}
+function toolCall(value: any, tools: any[], seen: Set<string>): string {
+  const f = value?.function;
+  if (!keys(value, ['id', 'type', 'function']) || !id(value.id) || seen.has(value.id) || value.type !== 'function'
+    || !keys(f, ['name', 'arguments']) || !tools.some(t => t.function.name === f.name) || !text(f.arguments)
+    || Buffer.byteLength(f.arguments) > 65536) fail();
+  // Preserve provider argument bytes. Syntax/object/depth only: the container's
+  // pinned tool validator must still validate arguments against the approved schema.
+  const args = JSON.parse(f.arguments); if (!object(args)) fail(); stableJson(args);
+  if (containsSecretSentinel(f.arguments) || containsSecretSentinel(JSON.stringify(args))) fail();
+  seen.add(value.id); return value.id;
+}
+function validateToolMessages(value: any, tools: any[]) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 256) fail();
+  const seen = new Set<string>(); let pending: string | undefined;
+  for (const m of value) {
+    if (pending !== undefined) {
+      if (!keys(m, ['role', 'content', 'tool_call_id']) || m.role !== 'tool' || m.tool_call_id !== pending || !text(m.content)) fail();
+      pending = undefined;
+    } else if (m?.role === 'assistant' && Object.hasOwn(m, 'tool_calls')) {
+      if (!keys(m, ['role', 'content', 'tool_calls']) || (m.content !== null && !text(m.content))
+        || !Array.isArray(m.tool_calls) || m.tool_calls.length !== 1) fail();
+      pending = toolCall(m.tool_calls[0], tools, seen);
+    } else validateMessages([m]);
+  }
+  if (pending !== undefined) fail(); // never send a request with a dangling call
+  return seen;
+}
+export function encodeToolChatCompletionsRequest(input: unknown, messages: unknown): Buffer {
+  try {
+    const s = toolChatCompletionsSettings(input); validateToolMessages(messages, s.tools);
+    const body = Buffer.from(JSON.stringify({ model: s.settings.model, messages, temperature: s.settings.temperature,
+      max_completion_tokens: s.settings.maxOutputTokens, n: 1, stream: false, store: false,
+      tools: s.tools, tool_choice: 'auto', parallel_tool_calls: false }));
+    if (body.length > s.settings.maxRequestBytes || containsSecretSentinel(body)) fail();
+    return body;
+  } catch { fail(); }
+}
 function validateMessages(value: any) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 256 || value.some(m =>
     !keys(m, ['role', 'content']) || !['system', 'user', 'assistant'].includes(m.role) || !text(m.content))) fail();
@@ -70,31 +140,42 @@ function parse(bytes: Buffer, canonical = false): any {
   if ((canonical && JSON.stringify(v) !== decoded) || containsSecretSentinel(JSON.stringify(v))) fail();
   return v;
 }
-function validateRequest(r: ModelEgressRequest, s: ReturnType<typeof chatCompletionsSettings>) {
+function validateRequest(r: ModelEgressRequest, s: { settings: ChatCompletionsSettings; settingsHash: string }, tools?: any[]) {
   if (!digest(r.requestId) || r.provider !== s.settings.provider || r.model !== s.settings.model || r.settingsHash !== s.settingsHash
     || !(r.signal instanceof AbortSignal) || r.signal.aborted || !Buffer.isBuffer(r.body)
     || r.body.length < 1 || r.body.length > s.settings.maxRequestBytes) fail();
   const v = parse(r.body, true);
-  if (!keys(v, ['model', 'messages', 'temperature', 'max_completion_tokens', 'n', 'stream', 'store'])
+  if (!keys(v, ['model', 'messages', 'temperature', 'max_completion_tokens', 'n', 'stream', 'store',
+    ...(tools ? ['tools', 'tool_choice', 'parallel_tool_calls'] : [])])
     || v.model !== s.settings.model || v.temperature !== s.settings.temperature || v.max_completion_tokens !== s.settings.maxOutputTokens
     || v.n !== 1 || v.stream !== false || v.store !== false) fail();
-  validateMessages(v.messages);
+  if (tools) {
+    if (v.tool_choice !== 'auto' || v.parallel_tool_calls !== false || JSON.stringify(v.tools) !== JSON.stringify(tools)) fail();
+    return validateToolMessages(v.messages, tools);
+  }
+  validateMessages(v.messages); return new Set<string>();
 }
 function zeroDetails(v: any, allowed: string[]) {
   return keys(v, [], allowed) && Object.values(v).every(n => n === 0);
 }
-function validateResponse(v: any, s: ChatCompletionsSettings) {
+function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], seen = new Set<string>()) {
   if (!keys(v, ['id', 'object', 'created', 'model', 'choices', 'usage'], ['system_fingerprint', 'service_tier'])
     || !id(v.id) || v.object !== 'chat.completion' || !integer(v.created, 0, Number.MAX_SAFE_INTEGER) || v.model !== s.model
     || (Object.hasOwn(v, 'system_fingerprint') && v.system_fingerprint !== null && !id(v.system_fingerprint))
     || (Object.hasOwn(v, 'service_tier') && v.service_tier !== 'default')
     || !Array.isArray(v.choices) || v.choices.length !== 1) fail();
   const c = v.choices[0];
-  if (!keys(c, ['index', 'message', 'finish_reason'], ['logprobs']) || c.index !== 0 || c.finish_reason !== 'stop'
+  const calling = !!tools && c?.finish_reason === 'tool_calls';
+  if (!keys(c, ['index', 'message', 'finish_reason'], ['logprobs']) || c.index !== 0 || (!calling && c.finish_reason !== 'stop')
     || (Object.hasOwn(c, 'logprobs') && c.logprobs !== null)
-    || !keys(c.message, ['role', 'content'], ['refusal', 'annotations']) || c.message.role !== 'assistant' || !text(c.message.content)
+    || !keys(c.message, ['role', 'content', ...(calling ? ['tool_calls'] : [])], ['refusal', 'annotations']) || c.message.role !== 'assistant'
+    || (!(calling && c.message.content === null) && !text(c.message.content))
     || (Object.hasOwn(c.message, 'refusal') && c.message.refusal !== null)
     || (Object.hasOwn(c.message, 'annotations') && (!Array.isArray(c.message.annotations) || c.message.annotations.length !== 0))) fail();
+  if (calling) {
+    if (!Array.isArray(c.message.tool_calls) || c.message.tool_calls.length !== 1) fail();
+    toolCall(c.message.tool_calls[0], tools!, seen);
+  }
   const u = v.usage;
   if (!keys(u, ['prompt_tokens', 'completion_tokens', 'total_tokens'], ['prompt_tokens_details', 'completion_tokens_details'])
     || !integer(u.prompt_tokens, 1, s.contextWindowTokens) || !integer(u.completion_tokens, 0, s.maxOutputTokens)
@@ -114,13 +195,19 @@ export type ChatCompletionsExchange = (request: ChatCompletionsExchangeRequest) 
  * Awaiting a stuck next()/return() remains unbounded, like the parent coordinator.
  */
 export function createChatCompletionsTransport(input: unknown, exchange: ChatCompletionsExchange) {
-  const s = chatCompletionsSettings(input);
+  return createTransport(chatCompletionsSettings(input), exchange);
+}
+export function createToolChatCompletionsTransport(input: unknown, exchange: ChatCompletionsExchange) {
+  const s = toolChatCompletionsSettings(input);
+  return createTransport(s, exchange, s.tools);
+}
+function createTransport(s: { settings: ChatCompletionsSettings; settingsHash: string }, exchange: ChatCompletionsExchange, tools?: any[]) {
   if (typeof exchange !== 'function') fail();
   return async (request: ModelEgressRequest) => {
     let controller: AbortController | undefined, signal: AbortSignal | undefined;
     const abort = () => controller?.abort();
     try {
-      validateRequest(request, s);
+      const seen = validateRequest(request, s, tools);
       const body = Buffer.from(request.body); controller = new AbortController(); signal = request.signal;
       signal.addEventListener('abort', abort, { once: true });
       if (signal.aborted) fail();
@@ -135,7 +222,7 @@ export function createChatCompletionsTransport(input: unknown, exchange: ChatCom
       }
       if (controller.signal.aborted || bytes === 0) fail();
       const response = Buffer.concat(pieces, bytes), parsed = parse(response);
-      const costMicroUsd = validateResponse(parsed, s.settings);
+      const costMicroUsd = validateResponse(parsed, s.settings, tools, seen);
       return { body: response, costMicroUsd };
     } catch { fail(); }
     finally {
@@ -155,4 +242,13 @@ export async function dispatchChatCompletions(root: string, policy: ModelEgressP
     || policy.maxResponseBytes !== s.settings.maxResponseBytes || policy.perRequestReserveMicroUsd !== s.perRequestReserveMicroUsd) fail();
   const transport = createChatCompletionsTransport(input, exchange);
   return dispatchModelEgress(root, policy, drive, transport);
+}
+/** Explicit opt-in only: never reinterpret a text-v1 policy or old approval. */
+export async function dispatchToolChatCompletions(root: string, policy: ModelEgressPolicy, input: unknown,
+  drive: (send: (body: Buffer) => Promise<Buffer>) => Promise<unknown>, exchange: ChatCompletionsExchange) {
+  const s = toolChatCompletionsSettings(input);
+  if (!policy || policy.provider !== s.settings.provider || policy.model !== s.settings.model
+    || policy.settingsHash !== s.settingsHash || policy.maxRequestBytes !== s.settings.maxRequestBytes
+    || policy.maxResponseBytes !== s.settings.maxResponseBytes || policy.perRequestReserveMicroUsd !== s.perRequestReserveMicroUsd) fail();
+  return dispatchModelEgress(root, policy, drive, createToolChatCompletionsTransport(input, exchange));
 }

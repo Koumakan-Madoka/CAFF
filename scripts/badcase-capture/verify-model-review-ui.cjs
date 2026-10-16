@@ -7,6 +7,13 @@ const { entry } = require('../../tests/helpers/badcase-model-review.cjs');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-review-browser-')), root = path.join(temp, 'store'), e = entry();
   let server, browser;
   try {
+    assert.ok(process.argv.length === 2 || (process.argv.length === 3 && process.argv[2] === '--tools'));
+    const toolsMode = process.argv[2] === '--tools';
+    if (toolsMode) {
+      e.config.tools = [{ type: 'function', function: { name: 'read', description: 'synthetic read <not-html>',
+        parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } }];
+      e.spec.model.settingsHash = require('../../build/server/domain/runtime/badcase-capture/model-binding').modelBinding(e.config).bindingHash;
+    }
     server = await startModelReviewServer({ root, entries: [e] });
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext(); let allowed = new URL(server.url).host;
@@ -19,6 +26,11 @@ const { entry } = require('../../tests/helpers/badcase-model-review.cjs');
     await page.goto(server.url); await status('尚未预览');
     await el('preview').click(); await status('仅预览'); assert.equal(fs.existsSync(root), false);
     assert.match(await el('review').textContent(), /inputMicroUsdPerMillionTokens/);
+    if (toolsMode) {
+      const preview = JSON.parse(await el('review').textContent());
+      assert.deepEqual(preview.binding.config.tools, e.config.tools);
+      assert.equal(await page.locator('not-html').count(), 0);
+    }
     page.once('dialog', d => { void d.dismiss(); }); await el('approve').click();
     assert.equal(calls.filter(p => p.endsWith('/approve')).length, 0); assert.equal(fs.existsSync(root), false);
     const approvalId = await el('id').inputValue();
@@ -32,7 +44,7 @@ const { entry } = require('../../tests/helpers/badcase-model-review.cjs');
     assert.equal(await el('approve').isDisabled(), true); assert.deepEqual(errors, []);
     assert.equal(calls.length, 2);
     console.log(JSON.stringify({ ok: true, browser: await browser.version(), previewPosts: 1, approvalPosts: 1, cancelPosts: 0,
-      readAfterServerRestart: true, registryRemoved: true, launchAvailable: false, paidAuthorization: false, realModelInvocations: 0, dockerRuns: 0 }));
+      readAfterServerRestart: true, registryRemoved: true, toolsMode, launchAvailable: false, paidAuthorization: false, realModelInvocations: 0, dockerRuns: 0 }));
   } finally {
     if (browser) await browser.close(); if (server) await server.close(); fs.rmSync(temp, { recursive: true, force: true });
   }

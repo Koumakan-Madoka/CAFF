@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { planEvaluation, createEvaluationLedger } from './evaluation-plan';
 import { recordEvaluationApproval, readEvaluationRecord, dispatchRecordedEvaluation, EvaluationDispatch } from './evaluation-record';
-import { chatCompletionsSettings, dispatchChatCompletions } from './chat-completions-protocol';
+import { chatCompletionsSettings, dispatchChatCompletions, toolChatCompletionsSettings, dispatchToolChatCompletions } from './chat-completions-protocol';
 import { httpsExchangeEndpoint, createHttpsExchange, HttpsCredentialLease } from './https-exchange';
 import { containsSecretSentinel } from './secrets';
 
@@ -28,12 +28,16 @@ const LIMIT = 16384;
 export function modelBinding(value: unknown) {
   try {
     const v = value as any;
-    if (!exact(v, ['settings', 'endpoint', 'maxRequests']) || !integer(v.maxRequests, 1, 1000)) fail('invalid');
-    const s = chatCompletionsSettings(v.settings), e = httpsExchangeEndpoint(v.endpoint);
+    const withTools = v !== null && typeof v === 'object' && Object.hasOwn(v, 'tools');
+    if (!exact(v, ['settings', 'endpoint', 'maxRequests', ...(withTools ? ['tools'] : [])]) || !integer(v.maxRequests, 1, 1000)) fail('invalid');
+    const toolProfile = withTools ? toolChatCompletionsSettings({ settings: v.settings, tools: v.tools }) : undefined;
+    const s = toolProfile || chatCompletionsSettings(v.settings), e = httpsExchangeEndpoint(v.endpoint);
     if (s.settings.maxRequestBytes !== e.endpoint.maxRequestBytes || s.settings.maxResponseBytes !== e.endpoint.maxResponseBytes) fail('invalid');
     const { protocol: _s, ...settings } = s.settings, { protocol: _e, ...endpoint } = e.endpoint;
-    const config = { settings, endpoint, maxRequests: v.maxRequests };
-    const binding = { schemaVersion: 1 as const, kind: 'evaluation-model-binding-v1' as const, config,
+    // No tools property is added to legacy configurations: their canonical bytes
+    // and historical hashes are unchanged. Tools always require a new plan.
+    const config = { settings, endpoint, maxRequests: v.maxRequests, ...(toolProfile ? { tools: toolProfile.tools } : {}) };
+    const binding = { schemaVersion: 1 as const, kind: toolProfile ? 'evaluation-tool-model-binding-v1' as const : 'evaluation-model-binding-v1' as const, config,
       settingsHash: s.settingsHash, endpointHash: e.endpointHash, perRequestReserveMicroUsd: s.perRequestReserveMicroUsd };
     return { ...binding, bindingHash: hash(canonical(binding)) };
   } catch { fail('invalid'); }
@@ -154,12 +158,14 @@ export async function dispatchBoundModelEvaluation(root: string, approvalId: str
       return { value, expiresAt: Math.min(until, expiresAt) };
     });
     let result: any;
-    const egress = await dispatchChatCompletions(root, {
+    const dispatch = Object.hasOwn(c, 'tools') ? dispatchToolChatCompletions : dispatchChatCompletions;
+    const profile = Object.hasOwn(c, 'tools') ? { settings: c.settings, tools: c.tools } : c.settings;
+    const egress = await dispatch(root, {
       approvalId, planHash: run.planHash, runId: run.runId, provider: c.settings.provider, model: c.settings.model,
       settingsHash: b.settingsHash, expiresAt, maxRequests: c.maxRequests,
       maxRequestBytes: c.settings.maxRequestBytes, maxResponseBytes: c.settings.maxResponseBytes,
       timeoutMs: c.endpoint.timeoutMs, perRequestReserveMicroUsd: b.perRequestReserveMicroUsd, runLimitMicroUsd: run.perRunLimitMicroUsd,
-    }, c.settings, async send => { result = await execute(copy(run), send); }, exchange);
+    }, profile, async send => { result = await execute(copy(run), send); }, exchange);
     guard();
     // Do not let a trusted scorer underreport the request ledger or turn unknown
     // costs/failed requests/zero model calls into a completed scored evaluation.

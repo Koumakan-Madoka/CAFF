@@ -30,7 +30,7 @@ test('real loopback review HTTP: CSRF/origin/host, dual confirmation, query afte
   assert.equal((await request(server.url, base + '/preview', { method: 'POST', body: {}, headers: { ...headers, 'Content-Type': 'text/plain' } })).status, 415);
   assert.equal((await request(server.url, base + '/preview', { method: 'POST', body: 'x'.repeat(2049), headers })).status, 413);
   assert.equal((await request(server.url, base + '/preview', { method: 'POST', body: '{', headers })).status, 400);
-  assert.equal((await request(server.url, base + '/preview', { method: 'POST', body: Buffer.from([0xff]), headers })).status, 400);
+  assert.equal((await request(server.url, base + '/preview', { method: 'POST', body: Buffer.from([0x22, 0xff, 0x22]), headers })).status, 400);
   assert.equal((await request(server.url, '/', { headers: { Host: 'external.example' } })).status, 403);
   assert.equal((await request(server.url, base + '/entries')).json.entries[0].id, f.e.id);
   const p = (await request(server.url, base + '/preview', { method: 'POST', body: { entryId: f.e.id }, headers })).json;

@@ -593,7 +593,7 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 
 ### 5.14 有界 Chat Completions 文本协议（内部前置件，无网络）
 
-`chat-completions-protocol.ts` 是 §5.13 的可选内部适配层，**不是网络客户端、完整 pi provider、真实模型运行入口或付费许可**。无生产/HTTP/SDK/Docker 接线，不改变既有断网容器。只接受纯文本 system/user/assistant 消息（1–256 条）；工具调用/结果、图片、developer、推理扩展、预测、缓存计费暂不支持，遇到即拒绝，绝不删字段或降级。因此不能宣称已有完整 agent 工具循环或原始 badcase 忠实回放。
+`chat-completions-protocol.ts` 是 §5.13 的可选内部适配层，**不是网络客户端、完整 pi provider、真实模型运行入口或付费许可**。无生产/HTTP/SDK/Docker 接线，不改变既有断网容器。本节 text-v1 入口只接受纯文本 system/user/assistant 消息（1–256 条）；工具调用/结果、图片、developer、推理扩展、预测、缓存计费均拒绝，绝不删字段或降级。§5.18 增加独立 opt-in tools-v1 入口，不改变 text-v1 或其旧批准。因此不能宣称已有完整 agent 工具循环或原始 badcase 忠实回放。
 
 - `chatCompletionsSettings(spec)` 规范化固定版本 `chat-completions-text-v1`、provider/model、上下文/输出上限、temperature、双向字节上限及输入/输出定价（整数 micro-USD/百万 token），生成 settingsHash 和每请求最坏预留。声明仍由可信操作者提供，未查供应商目录或批准库；model 必须精确匹配响应，不接受浮动别名自动映射。
 - 预留 = 向上取整的「整个声明上下文 × 输入价」+「输出上限 × 输出价」，各分量用 BigInt 运算，至少预留 1 micro-USD，总额≤10^12。故意保守，不用字节数猜 token，不宣称精确 tokenizer 或提交前 input-token 硬限；过长输入仍可能被供应商拒绝。若声明上下文/定价不真实，无法保证费用上界。`dispatchChatCompletions` 在创建 claim 前，将 policy 的 provider/model/settingsHash/双向字节上限/每请求预留与该 spec 精确绑定，再调用原持久协调器；批准 ID 仍是受信声明，不等于已获人工付费许可。
@@ -643,6 +643,18 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 - 人工入口（先 build）：`node scripts/badcase-capture/model-review-server.cjs --root <专用绝对存储目录> --registry <操作者JSON文件绝对路径>`。JSON仅包含上述注册数组，不包含凭据；不要使用生产存储或把 root 交给被测容器。stdout仅打印随机 loopback URL 与不可启动标记，终端 Ctrl-C 停止自有服务，不清除已保存记录。程序式 `startModelReviewServer({root,entries})` 返回 url/close，测试使用随机端口/隔离临时目录；未经批准不得将本脚本指向真实材料/开启采集。注册文件/源配置是操作者责任，暂不提供材料选择器与模板生成器。
 
 验证：`npm run test:badcase-budget` 包含服务/真实HTTP/DOM负例；`node scripts/badcase-capture/verify-model-review-ui.cjs` 使用本地已有Playwright Chromium，真实页面预览→取消零POST→确认→关闭并重建服务/清空注册表→历史完整正文查询，临时profile/服务/目录均清理。E60两项负例补“最后请求完成后篡改绑定”和“未await send即返回匹配费用”，守卫未改。新段无 Docker/SDK/真实采集/模型调用；旧本地合成TLS回归不算容器或供应商证据。仍缺材料真实性人审、付费启动、凭据重签发、容器出口/工具循环与用户批准的真实badcase评测；全部 AC pending。
+
+### 5.18 显式工具协议与审核绑定（无 SDK／容器执行）
+
+§5.14 的同一模块增加 `toolChatCompletionsSettings({settings,tools})`、`encodeToolChatCompletionsRequest`、`createToolChatCompletionsTransport`、`dispatchToolChatCompletions`。**只扩展 wire 协议，不执行工具、不是 SDK provider 或容器出口服务**；旧 text-v1 函数仍拒绝 tools/tool_calls/tool 消息。未来真实工具执行必须留在已批准的 Docker 内，不能把本节合成工具结果当作实际执行。
+
+- tools-v1 配置显式包含原九键 settings 与1–16个 function 定义。定义精确 type/function，function 精确 name/description/parameters；name≤64字符且唯一，parameters 是 type=object 的 JSON 对象。定义规范化排序对象键，数组保留顺序；整个定义树≤2048节点、深度≤16、UTF8 JSON≤8192字节，拒秘密哨兵、`$ref/$dynamicRef` 及原型危险键。参数 schema 是**有界不透明声明**，不在宿主运行解释器或解引用；不保证供应商支持任意 schema 关键词，也不验证调用参数符合 schema。固定容器工具验证器仍必须做参数校验，执行权限/工具路径安全由容器和 harness 保证。
+- `chat-completions-tools-v1` 版本、完整 settings/费率和规范化定义共同生成协议 settingsHash，必然不同于 text-v1。`modelBinding` 显式允许 `{settings,endpoint,maxRequests,tools}`，产生 kind=`evaluation-tool-model-binding-v1`，完整工具定义也进入复合 bindingHash；**旧三键配置及其规范字节/hash 不变**。旧计划加 tools、改变工具正文但不换计划/批准均失败。§5.17 注册表/预览展示/确认保存/历史读取沿用原流程，显示全部定义；确认仍不授予付费权限。16KiB 归档上限不变，定义过大或归档超限拒绝，不截断。
+- 工具请求固定已审 tools、tool_choice=auto、parallel_tool_calls=false，加上原固定 model/temperature/输出上限/n=1/stream=false/store=false。不接受请求覆盖任何定义或设置；请求规范字节、UTF8/秘密哨兵、双向字节限制沿 §5.14。历史总条数1–256；串行 assistant 调用必须恰好一个合法 function call，随后紧邻一个同 ID 的 tool 文本结果；拒孤立/重复/错序/缺结果、重复 call ID、未知工具、并行调用及图片等不支持内容。调用参数保留原始 JSON 字符串（包括正常格式空白），要求≤64KiB JSON 对象且满足树深/节点/危险键限制；不做 schema 语义或重复 JSON 键认证。
+- 响应只允许原 stop 文本或 tool_calls 的单一已审 function；可空 content 仅用于工具调用。响应 call ID 不得与本次请求历史重复；arguments 同上限；拒 length/拒答/未知工具/多个调用/额外字段。共享 §5.14 的有界分块/复制/abort、model/usage/费用复验后才释放**原始响应字节**。费用来自完整已验证 usage，包含模型为工具调用生成的 token，仍是声明费率成本、不是供应商账单。预留仍以整个声明上下文和输出上限计算，不按工具字符串猜 token。
+- 绑定器只从持久正文选择 text 或 tools 派发器，继承 outer claim→run预留→请求预留→取凭据前后复验→HTTPS→双账本对账。坏工具响应/坏用量停止、不重试、不退预留，不能结算完成评分；旧文本批准不能借工具请求扩权。协议仅核验**本次提交的完整历史内部关联**，不证明它是上次响应/实际工具执行的忠实延续；可信 supervisor 仍须绑定真实 SDK 轨迹、原始输入、固定工具定义与 harnessHash。无容器通道、凭据签发、生产/付费启动接线；所有资格仍 false。
+
+验证：`npm run build && npm run test:badcase-budget` 包含两轮合成 call/result、真实请求账本及批准库整合（baseline/candidate 各两请求，费用160 micro-USD为合成声明）、定义/hash/串行关联/用量/字节/未知费用停止负例。工具结果由测试构造，HTTPS 在新工具整合中为替身；旧文本回归保留真实本地 TLS 用例。`node scripts/badcase-capture/verify-model-review-ui.cjs --tools` 验证真实 Chromium 完整工具预览、取消零批准POST、确认保存、关闭重建且空注册表历史逐字相同；不执行模型或工具。不带参数仍验证原文本审核。E61 HTTP UTF8 负例改成 `[0x22,0xff,0x22]`，独立于 JSON 语法拒绝。无 Docker/SDK/SQLite/真实采集/模型证据，不能据此宣称完整工具循环、忠实回放或任何 AC 通过。
 
 ## 6. 威胁模型
 

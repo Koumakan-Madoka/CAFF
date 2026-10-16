@@ -43,7 +43,7 @@
           url = base + '/records/' + encodeURIComponent(value);
         } else {
           if (!ticket || Date.now() >= ticket.expiresAt || ticket.projectId !== p) { clear(); throw Error('stale'); }
-          if (!confirm(`仅保存配置声明，不启动或授权付费。\n项目 ${p}\n批准 ${ticket.approvalId}\n计划 ${ticket.plan.planHash}\n配置 ${ticket.binding.bindingHash}\n已核对完整设置、费率、次数、预算和目的地？`)) return;
+          if (!confirm(`仅保存配置声明，不启动或授权付费。\n项目 ${p}\n批准 ${ticket.approvalId}\n计划 ${ticket.plan.planHash}\n配置 ${ticket.binding.bindingHash}\n已核对完整设置、工具定义（如有）、费率、次数、预算和目的地？`)) return;
           body = { confirmed: true, approvalId: ticket.approvalId, planHash: ticket.plan.planHash, bindingHash: ticket.binding.bindingHash };
           url = base + '/approve';
         }
