@@ -170,6 +170,34 @@ test('closed HTTPS labels survive protocol and durable ledger without response o
   });
 });
 
+test('early deadline timer wakeup rearms without failing or mislabelling an in-flight request', async t => {
+ for (const mode of ['abort', 'deadline']) await t.test(mode, async t => {
+  const calls = network(t, { hang: true }), timers = [], cleared = [];
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
+  const originalSet = global.setTimeout, originalClear = global.clearTimeout;
+  global.setTimeout = (fn, delay) => { const timer = { fn, delay }; timers.push(timer); return timer; };
+  global.clearTimeout = timer => { cleared.push(timer); };
+  t.after(() => { global.setTimeout = originalSet; global.clearTimeout = originalClear; });
+  const controller = new AbortController();
+  const pending = createHttpsExchange(endpoint(), lease)({ ...request(), signal: controller.signal });
+  const rejected = assert.rejects(pending, e => failed(e)
+    && require('../../build/server/domain/runtime/badcase-capture/model-egress.js').modelFailureStage(e) === 'https_cancelled');
+  void rejected.catch(() => {}); // keep a failing early assertion from producing unhandled activity
+  await Promise.resolve(); // verified TLS, body sent; transport deliberately hangs
+  assert.equal(timers.length, 1); assert.ok(calls[0].body);
+  timers[0].fn(); // force a scheduler wakeup before either monotonic deadline
+  assert.equal(calls[0].req.destroyed, false);
+  assert.equal(timers.length, 2); assert.ok(timers[1].delay >= 1 && timers[1].delay <= 1000);
+  if (mode === 'abort') controller.abort();
+  else { now += 60000; timers[1].fn(); }
+  await rejected;
+  assert.equal(calls[0].req.destroyed, true); assert.ok(cleared.includes(timers[1]));
+  timers[1].fn(); // a queued late callback cannot rearm after completion
+  assert.equal(timers.length, 2);
+  assert.equal(calls.length, 1); // rearming is not a second upstream request
+ });
+});
+
 test('abort, absolute timeout, credential expiry and single in-flight rejection terminate own request', { timeout: 5000 }, async t => {
   for (const mode of ['abort', 'timeout', 'expiry']) {
     await t.test(mode, async t => {

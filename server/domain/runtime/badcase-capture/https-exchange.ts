@@ -92,7 +92,14 @@ export function createHttpsExchange(input: unknown, credential: (endpointHash: s
         };
         const abort = () => finish();
         signal.addEventListener('abort', abort, { once: true });
-        timer = setTimeout(abort, Math.max(1, deadline - performance.now()));
+        // Node may truncate a fractional delay and wake before the monotonic
+        // deadline. Such a wakeup is not a transport failure or cancellation.
+        const deadlineWakeup = () => {
+          if (done) return;
+          if (expired()) finish();
+          else timer = setTimeout(deadlineWakeup, Math.max(1, deadline - performance.now()));
+        };
+        timer = setTimeout(deadlineWakeup, Math.max(1, deadline - performance.now()));
         try {
           if (expired()) { finish(); return; }
           req = https.request({ hostname: s.address, port: 443, path: s.path, method: 'POST', agent: false,
