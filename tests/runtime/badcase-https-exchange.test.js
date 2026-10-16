@@ -66,6 +66,45 @@ test('endpoint snapshot/hash and strict public IPv4, hostname, path and cap vali
   }
 });
 
+test('OpenCode client profile is explicit, destination-bound and changes endpoint hash without migrating legacy bytes', () => {
+  const legacy = { ...endpoint(), hostname: 'opencode.ai', path: '/zen/go/v1/chat/completions' };
+  const p = { ...legacy, clientProfile: 'opencode-go-v1' };
+  assert.equal(httpsExchangeEndpoint(p).endpoint.clientProfile, 'opencode-go-v1');
+  assert.notEqual(httpsExchangeEndpoint(p).endpointHash, httpsExchangeEndpoint(legacy).endpointHash);
+  assert.equal(Object.hasOwn(httpsExchangeEndpoint(legacy).endpoint, 'clientProfile'), false);
+  assert.equal(httpsExchangeEndpoint({ ...p, path: '/inference/go/openai/v1/chat/completions' }).endpoint.clientProfile, p.clientProfile);
+  for (const patch of [{ clientProfile: 'other' }, { clientProfile: undefined }, { clientProfile: null },
+    { hostname: 'other.example' }, { hostname: 'sub.opencode.ai' }, { path: '/inference/openai/v1/chat/completions' },
+    { path: '/zen/v1/chat/completions' }, { headers: { 'User-Agent': 'OpenCode' } }])
+    assert.throws(() => httpsExchangeEndpoint({ ...p, ...patch }), invalid);
+});
+
+test('OpenCode profile sends honest fixed identity and immutable per-run session, never arbitrary headers', async t => {
+  const calls = network(t), e = { ...endpoint(), hostname: 'opencode.ai', path: '/zen/go/v1/chat/completions', clientProfile: 'opencode-go-v1' };
+  const sessionId = hash('approved-run'), context = { sessionId };
+  const exchange = createHttpsExchange(e, lease, context); context.sessionId = hash('changed');
+  await exchange(request()); await exchange(request());
+  assert.deepEqual(calls.map(c => c.options.headers['x-opencode-session']), [sessionId, sessionId]);
+  assert.ok(calls.every(c => c.options.headers['User-Agent'] === 'caff-badcase-evaluator/1.0'));
+  await createHttpsExchange(e, lease, { sessionId: hash('independent-run') })(request());
+  assert.notEqual(calls[2].options.headers['x-opencode-session'], sessionId);
+  for (const context of [undefined, null, {}, { sessionId: 'raw-conversation' }, { sessionId: 'a'.repeat(63) },
+    { sessionId: 'A'.repeat(64) }, { sessionId, extra: true }, { sessionId: 'x\r\ny' }])
+    assert.throws(() => createHttpsExchange(e, lease, context), invalid);
+  assert.throws(() => createHttpsExchange(endpoint(), lease, { sessionId }), invalid);
+  const getter = Object.defineProperty({}, 'sessionId', { enumerable: true, get() { throw Error('PRIVATE-CONTEXT'); } });
+  assert.throws(() => createHttpsExchange(e, lease, getter), invalid);
+  let reads = 0;
+  const once = Object.defineProperty({}, 'sessionId', { enumerable: true, get() { reads++; return reads === 1 ? sessionId : 'INVALID'; } });
+  const snapshotted = createHttpsExchange(e, lease, once); assert.equal(reads, 1);
+  await snapshotted(request()); assert.equal(reads, 1);
+  assert.equal(calls[3].options.headers['x-opencode-session'], sessionId);
+  await createHttpsExchange(endpoint(), lease)(request());
+  assert.equal(Object.hasOwn(calls[4].options.headers, 'x-opencode-session'), false);
+  assert.equal(Object.hasOwn(calls[4].options.headers, 'User-Agent'), false);
+  assert.equal(calls.length, 5);
+});
+
 test('fixed TLS/address/Host/POST, no proxy/agent reuse, credential scope and no send before verified TLS', async t => {
   const calls = network(t); let scopes = [];
   const e = endpoint(), x = createHttpsExchange(e, scope => { scopes.push(scope); return lease(); }); e.hostname = 'changed.example';

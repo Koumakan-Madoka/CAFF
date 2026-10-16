@@ -54,6 +54,19 @@ test('explicit nonproduction source is lazy, endpoint-bound and never exposes th
   const lease = source.credential(f.endpointHash); assert.equal(lease.value, f.key); assert.ok(lease.expiresAt > Date.now());
   assert.equal(fs.readFileSync(f.file, 'utf8'), JSON.stringify({ providers: { 'Huawei-Huoshan': f.provider, unrelated: { apiKey: 'DO-NOT-SELECT' } } }));
 });
+test('explicit OpenCode client profile retains original source path binding and refuses an unapproved endpoint scope', t => {
+  const f = fixture(t), e = { ...endpoint(), hostname: 'opencode.ai', path: '/zen/go/v1/chat/completions', clientProfile: 'opencode-go-v1' };
+  fs.writeFileSync(f.file, JSON.stringify({ providers: { 'opencode-go': { ...f.provider, baseUrl: 'https://opencode.ai/zen/go/v1', models: [{ id: 'deepseek-v4.1-flash' }] } } }));
+  const source = f.create({ ...f.options, provider: 'opencode-go', model: 'deepseek-v4.1-flash', endpoint: e });
+  const approved = httpsExchangeEndpoint(e).endpointHash, legacy = { ...e }; delete legacy.clientProfile;
+  assert.equal(source.declaration.endpointHash, approved);
+  assert.throws(() => source.credential(httpsExchangeEndpoint(legacy).endpointHash), /^Error: model_auth_reuse_failed$/);
+  assert.equal(source.credential(approved).value, f.key);
+  const otherPath = { ...e, path: '/inference/go/openai/v1/chat/completions' };
+  const migrated = f.create({ ...f.options, provider: 'opencode-go', model: 'deepseek-v4.1-flash', endpoint: otherPath });
+  assert.throws(() => migrated.credential(httpsExchangeEndpoint(otherPath).endpointHash), /^Error: model_auth_reuse_failed$/);
+});
+
 test('reuse is opt-in, never consults default CAFF source or generic environment, and fails with fixed errors', t => {
   const f = fixture(t);
   for (const patch of [{ confirmedNonProduction: false }, { confirmedNonProduction: undefined }, { file: 'relative.json' }, { extra: true }])

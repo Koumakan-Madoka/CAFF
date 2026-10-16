@@ -32,7 +32,8 @@ export function modelBinding(value: unknown) {
     if (!exact(v, ['settings', 'endpoint', 'maxRequests', ...(withTools ? ['tools'] : [])]) || !integer(v.maxRequests, 1, 1000)) fail('invalid');
     const toolProfile = withTools ? toolChatCompletionsSettings({ settings: v.settings, tools: v.tools }) : undefined;
     const s = toolProfile || chatCompletionsSettings(v.settings), e = httpsExchangeEndpoint(v.endpoint);
-    if (s.settings.maxRequestBytes !== e.endpoint.maxRequestBytes || s.settings.maxResponseBytes !== e.endpoint.maxResponseBytes) fail('invalid');
+    if (s.settings.maxRequestBytes !== e.endpoint.maxRequestBytes || s.settings.maxResponseBytes !== e.endpoint.maxResponseBytes
+      || (e.endpoint.clientProfile !== undefined && s.settings.provider !== 'opencode-go')) fail('invalid');
     const { protocol: _s, ...settings } = s.settings, { protocol: _e, ...endpoint } = e.endpoint;
     // No tools property is added to legacy configurations: their canonical bytes
     // and historical hashes are unchanged. Tools always require a new plan.
@@ -156,7 +157,7 @@ export async function dispatchBoundModelEvaluation(root: string, approvalId: str
       guard(); // callback may take time or alter storage; revalidate before dial
       if (!integer(until, 1)) fail('invalid');
       return { value, expiresAt: Math.min(until, expiresAt) };
-    });
+    }, c.endpoint.clientProfile === undefined ? undefined : { sessionId: run.runId });
     let result: any;
     const dispatch = Object.hasOwn(c, 'tools') ? dispatchToolChatCompletions : dispatchChatCompletions;
     const profile = Object.hasOwn(c, 'tools') ? { settings: c.settings, tools: c.tools } : c.settings;

@@ -29,11 +29,15 @@ function publicAddress(v: any) {
 export interface HttpsExchangeEndpoint {
   hostname: string; address: string; path: string;
   maxRequestBytes: number; maxResponseBytes: number; timeoutMs: number;
+  clientProfile?: 'opencode-go-v1';
 }
 export function httpsExchangeEndpoint(value: unknown) {
   try {
     const v = value as HttpsExchangeEndpoint;
-    if (!exact(v, ['hostname', 'address', 'path', 'maxRequestBytes', 'maxResponseBytes', 'timeoutMs'])
+    const profiled = v !== null && typeof v === 'object' && Object.hasOwn(v, 'clientProfile');
+    if (!exact(v, ['hostname', 'address', 'path', 'maxRequestBytes', 'maxResponseBytes', 'timeoutMs', ...(profiled ? ['clientProfile'] : [])])
+      || (profiled && (v.clientProfile !== 'opencode-go-v1' || v.hostname !== 'opencode.ai'
+        || !['/zen/go/v1/chat/completions', '/inference/go/openai/v1/chat/completions'].includes(v.path)))
       || typeof v.hostname !== 'string' || v.hostname.length > 253 || net.isIP(v.hostname)
       || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(v.hostname)
       || /\.(?:localhost|local|internal)$/.test(v.hostname) || !publicAddress(v.address)
@@ -41,7 +45,8 @@ export function httpsExchangeEndpoint(value: unknown) {
       || !integer(v.maxRequestBytes, 4194304) || !integer(v.maxResponseBytes, 4194304) || !integer(v.timeoutMs, 300000)
       || containsSecretSentinel(JSON.stringify(v))) throw error('invalid');
     const endpoint = { protocol: 'pinned-https-v1' as const, hostname: v.hostname, address: v.address, path: v.path,
-      maxRequestBytes: v.maxRequestBytes, maxResponseBytes: v.maxResponseBytes, timeoutMs: v.timeoutMs };
+      maxRequestBytes: v.maxRequestBytes, maxResponseBytes: v.maxResponseBytes, timeoutMs: v.timeoutMs,
+      ...(profiled ? { clientProfile: v.clientProfile! } : {}) };
     return { endpoint, endpointHash: crypto.createHash('sha256').update(JSON.stringify(endpoint)).digest('hex') };
   } catch { throw error('invalid'); }
 }
@@ -50,9 +55,21 @@ export interface HttpsCredentialLease { value: string; expiresAt: number }
  * endpoint hash, after request validation. This is NOT a credential issuer or
  * authorization check. Never read production credentials or process.env here.
  */
-export function createHttpsExchange(input: unknown, credential: (endpointHash: string) => HttpsCredentialLease): ChatCompletionsExchange {
+export function createHttpsExchange(input: unknown, credential: (endpointHash: string) => HttpsCredentialLease,
+  context?: { sessionId: string }): ChatCompletionsExchange {
   const { endpoint: s, endpointHash } = httpsExchangeEndpoint(input);
   if (typeof credential !== 'function') throw error('invalid');
+  // Explicit profile only: no arbitrary headers, SDK impersonation or live-room ID.
+  // Snapshot the approved run ID once; all requests in that run reuse it.
+  let sessionId: string | undefined;
+  try {
+    if (s.clientProfile) {
+      if (!exact(context, ['sessionId'])) throw error('invalid');
+      const id = context!.sessionId;
+      if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw error('invalid');
+      sessionId = id;
+    } else if (context !== undefined) throw error('invalid');
+  } catch { throw error('invalid'); }
   let busy = false;
   return async (request: ChatCompletionsExchangeRequest) => {
     let body: Buffer, signal: AbortSignal;
@@ -106,7 +123,8 @@ export function createHttpsExchange(input: unknown, credential: (endpointHash: s
             servername: s.hostname, rejectUnauthorized: true, minVersion: 'TLSv1.2', ca: [...tls.rootCertificates],
             checkServerIdentity: (_hostname, cert) => tls.checkServerIdentity(s.hostname, cert), maxHeaderSize: 16384,
             headers: { Host: s.hostname, Authorization: 'Bearer ' + value, 'Content-Type': 'application/json',
-              Accept: 'application/json', 'Accept-Encoding': 'identity', 'Content-Length': body.length, Connection: 'close' } });
+              Accept: 'application/json', 'Accept-Encoding': 'identity', 'Content-Length': body.length, Connection: 'close',
+              ...(s.clientProfile ? { 'User-Agent': 'caff-badcase-evaluator/1.0', 'x-opencode-session': sessionId! } : {}) } });
           req.on('error', abort);
           req.on('socket', socket => {
             socket.once('secureConnect', () => {

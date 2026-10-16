@@ -17,11 +17,11 @@ const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const config = () => ({ settings: { provider: 'synthetic', model: 'fixed-model', contextWindowTokens: 1000, maxOutputTokens: 100,
   temperature: 0, inputMicroUsdPerMillionTokens: 1000000, outputMicroUsdPerMillionTokens: 2000000, maxRequestBytes: 4096, maxResponseBytes: 4096 },
   endpoint: { hostname: 'api.caff-test.example', address: '93.184.216.34', path: '/v1/chat/completions', maxRequestBytes: 4096, maxResponseBytes: 4096, timeoutMs: 1000 }, maxRequests: 2 });
-function fixture(t) {
+function fixture(t, c = config()) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-binding-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const c = config(), binding = modelBinding(c);
+  const binding = modelBinding(c);
   const spec = { caseId: 'synthetic-case', checkpointHash: hash('checkpoint'), inputHash: hash('input'), environmentHash: hash('env'), harnessHash: hash('harness'),
-    roleId: 'role', baselineRoleHash: hash('base'), candidateRoleHash: hash('candidate'), model: { provider: 'synthetic', id: 'fixed-model', settingsHash: binding.bindingHash },
+    roleId: 'role', baselineRoleHash: hash('base'), candidateRoleHash: hash('candidate'), model: { provider: c.settings.provider, id: c.settings.model, settingsHash: binding.bindingHash },
     evaluator: { id: 'synthetic-score', versionHash: hash('scorer') }, repetitions: 1, timeoutMs: 5000, perRunLimitMicroUsd: 2400, totalLimitMicroUsd: 4800 };
   const plan = planEvaluation(spec), approval = { confirmed: true, approvalId: 'synthetic-approval', planHash: plan.planHash, expiresAt: Date.now() + 60000 };
   return { root, c, spec, plan, approval, archive: path.join(root, 'model-bindings', hash(approval.approvalId) + '.json'),
@@ -60,6 +60,27 @@ test('binding hash commits all endpoint/settings/rate/cap fields, stable order, 
   }
   assert.notEqual(modelBinding({ ...c, maxRequests: 1 }).bindingHash, b.bindingHash);
   for (const other of [{ ...c, extra: 1 }, { ...c, maxRequests: 0 }, { ...c, maxRequests: 1001 }, { ...c, endpoint: { ...c.endpoint, maxRequestBytes: 4095 } }]) assert.throws(() => modelBinding(other), rejected);
+});
+
+test('OpenCode profile is approval-bound and propagates stable per-run sessions through both budget ledgers', async t => {
+  const c = config(); c.settings.provider = 'opencode-go';
+  Object.assign(c.endpoint, { hostname: 'opencode.ai', path: '/zen/go/v1/chat/completions', clientProfile: 'opencode-go-v1' });
+  const profiled = modelBinding(c), legacy = structuredClone(c); delete legacy.endpoint.clientProfile;
+  assert.notEqual(profiled.bindingHash, modelBinding(legacy).bindingHash);
+  assert.notEqual(profiled.endpointHash, modelBinding(legacy).endpointHash);
+  assert.throws(() => modelBinding({ ...c, settings: { ...c.settings, provider: 'synthetic' } }), rejected);
+  const f = fixture(t, c); approve(f); const calls = fakeNetwork(t); let issued = 0;
+  const final = await dispatchBoundModelEvaluation(f.root, f.approval.approvalId, async (run, send) => {
+    await send(body(f)); await send(body(f)); return result(run, 80);
+  }, scope => { issued++; assert.equal(scope, profiled.endpointHash); return lease(); });
+  assert.equal(final.dispatchState, 'finished'); assert.equal(final.ledger.runs.length, 2);
+  assert.equal(issued, 4); assert.equal(calls.length, 4);
+  assert.deepEqual(calls.map(v => v.options.headers['x-opencode-session']), final.ledger.runs.flatMap(r => [r.runId, r.runId]));
+  assert.ok(calls.every(v => v.options.headers['User-Agent'] === 'caff-badcase-evaluator/1.0'));
+  assert.notEqual(calls[0].options.headers['x-opencode-session'], calls[2].options.headers['x-opencode-session']);
+  assert.equal(readBoundModelApproval(f.root, f.approval.approvalId).binding.config.endpoint.clientProfile, 'opencode-go-v1');
+  mutate(f.archive, v => { delete v.binding.config.endpoint.clientProfile; });
+  assert.throws(() => readBoundModelApproval(f.root, f.approval.approvalId), rejected);
 });
 
 test('archive precedes approval, immutable exact retry and read after reconstruction', t => {

@@ -707,6 +707,18 @@ E68 的第二批真实尝试仅定位到 `protocol_response_envelope`，不能�
 
 Linux 真实调用前预检两次暴露 HTTPS 定时器过早唤醒：Node 对小数延时取整时，回调可能早于单调截止，旧实现立即销毁请求并误记 `https_body`。截止回调现先复验期限，尚未到期则仅重新挂计时器（不重新发送请求）；实际到期或外部 abort 仍销毁请求，完成后的迟到回调无动作。受控早唤醒测试分别验证随后 abort/期限失效、计时器清理和零重发。此处是新发现的本地时序故障，不解释 E65 的 HTTP 200 失败；修复本身没有读取密钥或调用供应商。
 
+### 5.22 OpenCode Go 显式客户端身份／会话配置
+
+用户 2026-10-16 改选 `opencode-go/deepseek-v4.1-flash`，确认非生产认证复用与费率未知风险，并进一步声明该模型预算无金额上限。此授权不等于后台无限循环：作者先采用最多6次供应商请求、每次25秒的有界诊断批次，保留逐次批准、预算预留及审计，不自动重放已消费批准。E70 的单次真实请求返回 HTTP400/`https_status`，没有保留错误正文，**具体拒绝原因仍未知**；下述兼容支持不能倒推该次失败根因。
+
+2026-10-16 只读核对 [OpenCode Go 官方文档](https://opencode.ai/docs/go/)：第三方编码 agent 应使用自身 User-Agent，并为每会话发送稳定的 `x-opencode-session`。原评测 HTTPS 出口两者均未发送。官方列出的当前 DeepSeek V4.1 Flash 路径为 `/inference/go/openai/v1/chat/completions`，本地授权来源仍声明 `/zen/go/v1/chat/completions`；这是另一项已观察差异，**不自动迁移来源或批准目的地、不声称旧路径已失效**。不冒充 OpenCode 或其他已验证客户端。
+
+- 操作者可以在原六键 endpoint 上显式加入 `clientProfile:"opencode-go-v1"`。仅允许精确 `opencode.ai` 和上述两条路径，绑定配置的 provider 必须精确为 `opencode-go`；未知 profile、其他 host/path、自定义 headers 均拒绝。完整 profile 进入 endpointHash 及复合 bindingHash，必须重新审核计划；未配置 profile 的旧规范字节、hash 和请求头保持不变，不做隐式 opt-in。
+- 仅该 profile 的 HTTPS 出口增加固定且真实的 `User-Agent:caff-badcase-evaluator/1.0` 与 `x-opencode-session:<runId>`。绑定器从已批准 run 提供64位小写十六进制 runId；每 run 所有请求稳定一致，baseline/candidate 使用各自独立 runId。不是 live Room/session ID，不含用户数据或凭据，不加入 prompt；它是受控协议元数据差异，不是第二个角色变量。工厂单次复制并校验 sessionId；缺失/非法/多余上下文在取凭据、联网前拒绝，未配置 profile 时也拒绝传入上下文。没有任意客户端名称、header 或会话值注入入口。
+- 原认证来源的完整 HTTPS 路径、provider/model、预算后读取、来源字节钉住规则不变。profile 作用域与 legacy 不同，旧 endpointHash 不能取到新 profile 的凭据；仅改变请求目标为新路径但不改变来源声明仍失败关闭。TLS/地址/Host、截止/abort、禁止重定向和重试、正文/usage/模型精确验证、未知费用/预留保留、不评分语义均不变。
+
+验证包括：原实现新增四例先红（未知 profile）后绿；profile/host/path/上下文负例、单次 session 属性复制和固定异常、连续请求会话稳定/跨 run 独立、持久批准与双账本贯穿、profile 删除篡改拒绝、原认证来源路径及新旧作用域隔离；既有 legacy hash 钉住测试保留。作者 Windows 五套117例＝116通过/1跳过，Linux Node22.22六套139/139；Linux私有副本8个单点变异（host/path、真实客户端名、会话快照、provider、批准runId、profile快照、session格式）全红，逐字节恢复后139/139并清理副本。`test:fast` 1883通过/41跳过、`test:smoke` 101/101、build/check及双typecheck通过。不包含新增真实供应商/Docker/UI运行，不声称已解决E70/完成对照；后续真实运行仍须固定SHA独立审查和新计划/批准。hostCode 未摘要编译模块的既有缺口保留，不能宣称本段修改自动改变 harnessHash；本 profile 自身确实改变 endpointHash/bindingHash。全部AC仍pending。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
