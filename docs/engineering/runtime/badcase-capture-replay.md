@@ -745,6 +745,16 @@ E74 为本有界批次第2个真实请求：审查通过的 `e6f21d8f`、98文�
 
 离线验证：新增4项先红后绿；Windows七套170＝168通过/2链接权限跳过，Linux Node22.22七套170/170。25个私有副本单点变异全部红（17个profile/编码器/请求复验/双边reasoning拒绝/闭集守卫，8个全部相邻旧choice谓词重排）；逐字节恢复后170/170并清理副本。E73多故障排序P3已纳入本次回归，不另拆补丁。fast1909通过/41跳过、smoke101、build/check及双typecheck通过；本段代码测试零新增Key/供应商/Docker/UI，E74的1请求独立记账，全部AC pending、不合并发布。
 
+### 5.25 usage 详情拒绝分类（接受集合不变）
+
+E76 在已审 `a01b14b8` 与新非thinking计划下实跑：99文件副本逐字节核验、七套170/170；共享任务提示要求一次bash修复/保存输出后最终回答，双variant各最多2请求/25秒。实际基线发2请求均HTTP200，第1通过协议校验并交容器SDK，第2 `protocol_response_usage` 失败；声明费率下首请求计量14030微美元并非供应商账单。外层unresolved/无评分、候选未启动，2容器/专用daemon清理、源镜像不变；本批已用4/6请求，新增外层实际预留$0.50、累计$2未结算，不与内层重复相加。不宣称输出修复或对照已完成，也不以首次成功推断第二次usage具体失败项。
+
+保留原usage键集、计数上限、总和算术、prompt/completion两个zeroDetails谓词与短路顺序；只将后两个拒绝点细分，**非零缓存/推理计数仍拒绝**。固定前缀`protocol_response_usage_`下：prompt详情非法为`prompt_details`；仅已知cached_tokens为正整数且≤prompt_tokens、其他已知audio计数缺省或零、无未知键时拒绝标签为`cached_tokens`。completion详情非法为`completion_details`；仅已知reasoning_tokens为正整数且≤completion_tokens、其他已知详情计数缺省或零、无未知键时拒绝标签为`reasoning_tokens`。不保存计数、动态键名、异常文本或响应正文；所有标签都是失败分类，不构成缓存费率支持/供应商计费证明。
+
+旧粗粒度`protocol_response_usage`继续用于前置键集/计数/算术拒绝并兼容旧记录，不回溯重分类。四标签闭集同现有schema-v1可选诊断规则，仅transport_failed可带；未知后缀读写两侧拒绝，文本/tools-v1共享检查；未知费用、预留不退款、停止后续请求、不评分语义不变。E76具体项仍未知，下次真实诊断使用新计划/批准，不重复消费旧批准；hostCode编译模块缺口不变。
+
+作者验证：新增16个用例旧实现先红后绿；Windows七套186＝184通过/2链接权限跳过，Linux Node22.22 186/186；10个私有副本诊断变异（四标签退化、cache/reasoning分类上界、未知键/其他计数限制、详情顺序、旧粗标签保留）全部红，逐字节恢复后186/186并清理副本。fast1925通过/41跳过、smoke101、build/check及双typecheck通过。此代码验证零新增Key/供应商/Docker/UI；真实E76单独记账，全部AC pending、不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

@@ -211,12 +211,24 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
     toolCall(c.message.tool_calls[0], tools!, seen);
   }
   const u = v.usage;
+  // Keep usage bounds/arithmetic and both zero-details checks unchanged. These
+  // are rejection classifications only; never save counts or relax billing.
   if (!keys(u, ['prompt_tokens', 'completion_tokens', 'total_tokens'], ['prompt_tokens_details', 'completion_tokens_details'])
     || !integer(u.prompt_tokens, 1, s.contextWindowTokens) || !integer(u.completion_tokens, 0, s.maxOutputTokens)
-    || !integer(u.total_tokens, 1, s.contextWindowTokens) || u.total_tokens !== u.prompt_tokens + u.completion_tokens
-    || (Object.hasOwn(u, 'prompt_tokens_details') && !zeroDetails(u.prompt_tokens_details, ['cached_tokens', 'audio_tokens']))
-    || (Object.hasOwn(u, 'completion_tokens_details') && !zeroDetails(u.completion_tokens_details,
-      ['reasoning_tokens', 'audio_tokens', 'accepted_prediction_tokens', 'rejected_prediction_tokens']))) responseFailure('protocol_response_usage');
+    || !integer(u.total_tokens, 1, s.contextWindowTokens) || u.total_tokens !== u.prompt_tokens + u.completion_tokens) responseFailure('protocol_response_usage');
+  if (Object.hasOwn(u, 'prompt_tokens_details') && !zeroDetails(u.prompt_tokens_details, ['cached_tokens', 'audio_tokens'])) {
+    const d = u.prompt_tokens_details;
+    const cached = keys(d, [], ['cached_tokens', 'audio_tokens']) && integer(d.cached_tokens, 1, u.prompt_tokens)
+      && (!Object.hasOwn(d, 'audio_tokens') || d.audio_tokens === 0);
+    responseFailure(cached ? 'protocol_response_usage_cached_tokens' : 'protocol_response_usage_prompt_details');
+  }
+  const completionDetails = ['reasoning_tokens', 'audio_tokens', 'accepted_prediction_tokens', 'rejected_prediction_tokens'];
+  if (Object.hasOwn(u, 'completion_tokens_details') && !zeroDetails(u.completion_tokens_details, completionDetails)) {
+    const d = u.completion_tokens_details;
+    const reasoning = keys(d, [], completionDetails) && integer(d.reasoning_tokens, 1, u.completion_tokens)
+      && completionDetails.slice(1).every(k => !Object.hasOwn(d, k) || d[k] === 0);
+    responseFailure(reasoning ? 'protocol_response_usage_reasoning_tokens' : 'protocol_response_usage_completion_details');
+  }
   return tariff(s, u.prompt_tokens, u.completion_tokens);
 }
 export interface ChatCompletionsExchangeRequest { body: Buffer; signal: AbortSignal }

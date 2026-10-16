@@ -153,6 +153,20 @@ test('explicit nonthinking tools preserve call history without silently dropping
   assert.throws(() => api.encodeToolChatCompletionsRequest(c, inherited), invalid);
 });
 
+test('tools-v1 uses the same usage detail rejection labels before returning a tool call', async () => {
+  for (const [check, change] of [
+    ['prompt_details', v => v.usage.prompt_tokens_details = { cached_tokens: 21 }],
+    ['cached_tokens', v => v.usage.prompt_tokens_details = { cached_tokens: 1 }],
+    ['completion_details', v => v.usage.completion_tokens_details = { audio_tokens: 1 }],
+    ['reasoning_tokens', v => v.usage.completion_tokens_details = { reasoning_tokens: 1 }],
+  ]) {
+    const v = response(); change(v);
+    await assert.rejects(api.createToolChatCompletionsTransport(config(), exchange(v))(request()), e => {
+      assert.equal(modelFailureStage(e), 'protocol_response_usage_' + check); return invalid(e);
+    });
+  }
+});
+
 test('argument byte bound is independent of outer response limit', async () => {
   const c = config(); c.settings.maxResponseBytes = 131072;
   for (const delta of [0, 1]) {

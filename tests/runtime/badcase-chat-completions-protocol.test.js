@@ -350,7 +350,52 @@ test('explicit nonthinking compatibility fixes request mode, binds settings and 
   assert.equal(calls, 0);
   const v = response(); v.model = s.model; v.choices[0].message.reasoning_content = null;
   v.usage.completion_tokens_details = { reasoning_tokens: 1 };
-  await assert.rejects(createChatCompletionsTransport(s, exchange(v))(request(s)), e => modelFailureStage(e) === 'protocol_response_usage');
+  await assert.rejects(createChatCompletionsTransport(s, exchange(v))(request(s)), e => modelFailureStage(e) === 'protocol_response_usage_reasoning_tokens');
+});
+
+test('usage detail labels distinguish bounded nonzero cache/reasoning from malformed metadata without accepting either', async t => {
+  const cases = [
+    ['prompt_details', v => v.usage.prompt_tokens_details = []],
+    ['prompt_details', v => v.usage.prompt_tokens_details = { cached_tokens: 21 }],
+    ['prompt_details', v => v.usage.prompt_tokens_details = { cached_tokens: 1.5 }],
+    ['prompt_details', v => v.usage.prompt_tokens_details = { cached_tokens: 1, audio_tokens: 1 }],
+    ['prompt_details', v => v.usage.prompt_tokens_details = { cached_tokens: 1, 'PRIVATE-UNKNOWN': 0 }],
+    ['cached_tokens', v => v.usage.prompt_tokens_details = { cached_tokens: 1 }],
+    ['cached_tokens', v => v.usage.prompt_tokens_details = { cached_tokens: 20, audio_tokens: 0 }],
+    ['completion_details', v => v.usage.completion_tokens_details = { reasoning_tokens: 11 }],
+    ['completion_details', v => v.usage.completion_tokens_details = { reasoning_tokens: 1, audio_tokens: 1 }],
+    ['completion_details', v => v.usage.completion_tokens_details = { accepted_prediction_tokens: 1 }],
+    ['completion_details', v => v.usage.completion_tokens_details = { rejected_prediction_tokens: 1 }],
+    ['completion_details', v => v.usage.completion_tokens_details = { reasoning_tokens: 1, 'PRIVATE-UNKNOWN': 0 }],
+    ['reasoning_tokens', v => v.usage.completion_tokens_details = { reasoning_tokens: 1, audio_tokens: 0, accepted_prediction_tokens: 0, rejected_prediction_tokens: 0 }],
+    ['cached_tokens', v => { v.usage.prompt_tokens_details = { cached_tokens: 1 }; v.usage.completion_tokens_details = { reasoning_tokens: 1 }; }],
+  ];
+  for (const [check, change] of cases) await t.test(check, async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-usage-detail-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const s = spec(), p = chatCompletionsSettings(s), stage = 'protocol_response_usage_' + check, runId = hash(stage);
+    const policy = { approvalId: 'offline-test', planHash: hash('plan'), runId, provider: s.provider, model: s.model, settingsHash: p.settingsHash,
+      expiresAt: Date.now() + 60000, maxRequests: 2, maxRequestBytes: 4096, maxResponseBytes: 4096, timeoutMs: 1000, perRequestReserveMicroUsd: 1200, runLimitMicroUsd: 2400 };
+    const value = response(); value.choices[0].message.content = 'PRIVATE-RESPONSE'; change(value);
+    await assert.rejects(createChatCompletionsTransport(s, exchange(value))(request()), e => {
+      assert.equal(modelFailureStage(e), stage); assert.deepEqual(Object.keys(e), ['code']); assert.equal(e.cause, undefined); return invalid(e);
+    });
+    let calls = 0;
+    const report = await dispatchChatCompletions(root, policy, s, async send => {
+      await assert.rejects(send(encodeChatCompletionsRequest(s, messages())), /model_egress_transport_failed/);
+      await assert.rejects(send(encodeChatCompletionsRequest(s, messages())), /model_egress_stopped/);
+    }, async () => { calls++; return exchange(value)(); });
+    assert.equal(calls, 1); assert.equal(report.reason, 'transport_failed'); assert.equal(report.unknownCostRequests, 1);
+    assert.equal(report.committedMicroUsd, 1200); assert.equal(report.requests[0].failureStage, stage);
+    assert.equal(report.requests[0].costMicroUsd, null); assert.equal(report.requests[0].responseHash, null); assert.equal(report.requests[0].responseBytes, null);
+    const dir = path.join(root, 'model-egress', runId), file = path.join(dir, '0001.result.json'), original = fs.readFileSync(file, 'utf8');
+    assert.ok(!fs.readdirSync(dir).map(n => fs.readFileSync(path.join(dir, n), 'utf8')).join('').includes('PRIVATE-'));
+    assert.deepEqual(readModelEgress(root, runId), report);
+    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(original), failureStage: stage + '_PRIVATE' }));
+    assert.throws(() => readModelEgress(root, runId), /model_egress_record_invalid/);
+    fs.writeFileSync(file, original); assert.deepEqual(readModelEgress(root, runId), report);
+    value.usage.total_tokens = 99;
+    await assert.rejects(createChatCompletionsTransport(s, exchange(value))(request()), e => modelFailureStage(e) === 'protocol_response_usage');
+  });
 });
 
 test('settings and request bytes snapshotted before asynchronous exchange', async () => {
