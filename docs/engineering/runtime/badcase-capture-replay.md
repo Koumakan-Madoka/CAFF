@@ -670,11 +670,27 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 
 1. 准备一个不入 Git 的绝对路径 JSON 配置，精确顶层键为 `root,captureRoot,selection,image,imageArchive,sources,roles,rule,model,limits,target,productionResourcesExcluded`。root 为独立评测账本目录；captureRoot 为获授权封存存储；selection 为 `{id,projectId,conversationId,messageId}`；image/imageArchive/sources/target 沿 §4.4–4.11 的固定镜像、可信归档、专用**空** daemon 声明；roles 为 `{baseline,candidate}`；rule 为 `{expectedHash,badcaseHash}`；model 为 §5.18 `{settings,endpoint,maxRequests,tools}`；limits 为 `{repetitions,timeoutMs,perRunLimitMicroUsd,totalLimitMicroUsd}`。`productionResourcesExcluded:true` 是操作者对专用路径、非生产目的地／资源的声明，不是软件认证。角色全文与规则须在该操作者配置中人审；审核页面展示其摘要及完整模型配置，不额外声称正文已读证明。实际工具定义可在归档 SDK 的隔离容器中导出，验证器给出该流程；运行时必须再次精确匹配。
 2. `node scripts/badcase-capture/model-evaluation-operator.cjs --config <绝对JSON> --review` 从真实材料生成注册表并打开原仅审核 loopback 页面。预览／确认绑定完整计划与配置，5分钟内有效；取消不启动。关闭页面服务不会删除批准。规划会保留现有材料引用，不做引用释放。
-3. **只有用户批准具体案例、评分规则、模型、次数、时限及预算后**，操作者为该进程单独注入 `CAFF_EVALUATION_MODEL_KEY`（不可贴入 Room、配置文件、命令参数或日志），再显式执行 `node scripts/badcase-capture/model-evaluation-operator.cjs --config <绝对JSON> --run <approvalId> --confirm-paid`。不读取通用 OPENAI/ANTHROPIC 环境变量、生产 auth.json 或 CAFF provider store。专用变量在入口取入内存后从环境删除，不传 Docker；每请求给受控回调短期限 lease，再由原协调器截到批准/run截止。**这是进程内使用租期，不是供应商凭据签发或轮换实现**；专用临时密钥的发行、权限／真实失效由操作者负责。没有这些材料则不得真实启动。
+3. **只有用户批准具体案例、评分规则、模型、次数、时限及预算后**，操作者为该进程单独注入 `CAFF_EVALUATION_MODEL_KEY`（不可贴入 Room、配置文件、命令参数或日志），再显式执行 `node scripts/badcase-capture/model-evaluation-operator.cjs --config <绝对JSON> --run <approvalId> --confirm-paid`。默认不读取通用 OPENAI/ANTHROPIC 环境变量、生产 auth.json 或 CAFF provider store；用户明确授权的非生产模型 Key 复用例外见 §5.20。专用变量在入口取入内存后从环境删除，不传 Docker；每请求给受控回调短期限 lease，再由原协调器截到批准/run截止。**这是进程内使用租期，不是供应商凭据签发或轮换实现**；专用临时密钥的发行、权限／真实失效由操作者负责。没有这些材料则不得真实启动。
 4. 执行先重建材料计划和 binding，与持久批准双对账；确认未消费后，先 wx/0600/fsync/读回写独立 `launch-<approvalIdHash>.json`（仅 ID／摘要／时间），再恢复专用空 daemon 的可信镜像，恢复后重验批准期限，进入原永久 claim。没有隐式重试、恢复部分 run 或回退宿主。启动声明写入后即使 load 失败也不自动删除该声明；需查明原因并重新人审取得新批准。它不提供掉电事务或抵御同 OS 用户模拟确认。
 5. `node scripts/badcase-capture/model-evaluation-operator.cjs --config <绝对JSON> --report <approvalId>` 只读重建历史报告，不读取当前材料／归档／daemon、不恢复启动权限。配置中 root/project 必须保持一致。所有原始包、批准、日志和临时凭据不入 Git；无自动合并发布。
 
 作者验证入口：`python3 scripts/badcase-capture/verify-image-recovery.py --model-relay --captured <§4.4 五镜像参数>`。在显式授权的自有 Linux 环境，真实 collector+SQLite+HTTP 标记／重启查询→封存选择→模型审核 HTTP 预览/批准→同一个操作者 run 函数→专用 Docker SDK 工具→独立 host 评分／报告重读。两种模式各 baseline/candidate，从归一化相同起点发出16次合成模型请求；另加坏响应／模型超时各一次，拒绝评分且容器清理。模型是仅 loopback 的合成 TLS 服务，沿 §5.15 测试专用 CA/路由/peer 替换；不连接供应商，费用是合成声明。不是浏览器点击→真实 CLI 子进程的同次证据（本段实际调用 CLI 导出的同一操作者函数），也不是用户真实 badcase。普通 `test:badcase-budget` 只跑静态/替身测试，不自动启动 Docker 或供应商。
+
+### 5.20 显式非生产模型认证复用（宿主侧，非自动发现）
+
+用户本 Room 2026-10-16 授权先尝试复用 CAFF 的 GLM 模型认证、由 GPT 选择简单问题。当前 GLM 公开运行标识为 `Huawei-Huoshan / zhipu/glm-5.3`。这不授权生产凭据、内部身份令牌、认证文件进入容器或模型读取其他 provider。既有 Goal/Docker/秘密排除门控不变。
+
+在 §5.19 已审核配置的付费启动命令后**同时**追加 `--reuse-models <明确授权的非生产models.json绝对路径> --confirm-nonproduction`。原 `--confirm-paid`、持久批准、双摘要对账、一次性 launch 与双层预算仍不可省略。默认 Key 模式不变；review/report 不读取此来源；不从环境发现 CAFF provider store，不读取 auth.json、生产数据库或其他 agent 的私有存储。复用模式也删除继承的专用 Key 环境项，避免传给子进程。
+
+`authorized-model-auth.cjs` 仅构造受信同步回调；首次**预算预留后的凭据请求**才只读所指定文件，逐次重读。最多1MiB、精确 bigint fd/路径身份与大小/时间前后复验、普通单链接文件、拒 symlink/无效UTF-8；目录祖先和同 OS 用户仍为 TCB，不声称抵御同权限对手。只选择批准的 provider 与唯一精确 model，要求 openai-completions、无自定义 header、HTTPS hostname 和完整 chat/completions 路径等于批准目的地，拒 URL 用户信息/query/hash/非默认端口。首版仅支持 literal API Key；拒命令、环境展开、OAuth/内部登录令牌和隐式回退。首次成功读取的源文件字节摘要仅在内存钉住，后续任何改动失败关闭；不修改原文件，不执行源文件中的配置命令。
+
+launch 声明只增加 `credentialSource`：类型、provider/model、endpointHash、sourcePathHash 和用途确认，不保存 Key、Key hash、源文件内容/hash 或明文来源路径。该声明必须与持久批准的 provider/model/endpoint 精确相等，且先于 daemon 恢复落盘。认证回调仅在宿主受信 HTTPS 出口使用，容器仍只获 settings/tools/maxRequests；来源代码及操作者入口加入 harness 的 hostCode 摘要，变更须重建计划。lease 仍只是进程内使用期限，不是供应商重新签发或真实吊销。
+
+`--confirm-nonproduction` 是操作者对用途/来源的责任声明，**不是软件认证凭据非生产**，也不能把已知生产 Key 改名合法化；用途不明或已知为生产的来源不得实际启动。能成功读到 Key 不证明供应商认可该用途、路由可用或存在付费许可。人工授权可委托选择小题与保守运行参数，但不能冒称人已逐字审核尚未展示的规则。
+
+兼容修复：protocol 与 request ledger 的模型名保留旧语法，额外接受一个 `vendor/model`（总长≤128）；provider/approval/call ID 语法不变。不接受 URL、空段、路径遍历、多级斜杠；wire model 与供应商响应仍须逐字匹配，绝不删掉 `zhipu/` 或改用别的模型。旧无斜杠配置的规范字节/hash不变。
+
+首轮选择为新建 CSV 编号前导零受控样本，不读取用户真实项目；baseline/candidate各一次、25秒/run、作者自限总预留1美元。这是首次真实出口验证的计划，不是完成证据；本节交付与离线读取成功均不等于已运行真实模型、不代表历史 badcase 复现或任何AC通过。网关配置未声明费率，不把任意假设价冒充供应商账单。
 
 ## 6. 威胁模型
 

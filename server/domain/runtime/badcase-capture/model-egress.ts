@@ -7,6 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { containsSecretSentinel } from './secrets';
+import { modelIdentifier } from './model-identifier';
 const digest = (v: any) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const id = (v: any) => typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(v);
 const integer = (v: any, min: number, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(v) && v >= min && v <= max;
@@ -24,7 +25,7 @@ export interface ModelEgressPolicy {
 function policy(value: any): ModelEgressPolicy {
   if (!exact(value, ['approvalId', 'planHash', 'runId', 'provider', 'model', 'settingsHash', 'expiresAt',
     'maxRequests', 'maxRequestBytes', 'maxResponseBytes', 'timeoutMs', 'perRequestReserveMicroUsd', 'runLimitMicroUsd'])
-    || ![value.approvalId, value.provider, value.model].every(id)
+    || ![value.approvalId, value.provider].every(id) || !modelIdentifier(value.model)
     || ![value.planHash, value.runId, value.settingsHash].every(digest)
     || !integer(value.expiresAt, 1) || !integer(value.maxRequests, 1, 1000)
     || !integer(value.maxRequestBytes, 1, 4 * 1024 * 1024) || !integer(value.maxResponseBytes, 1, 4 * 1024 * 1024)

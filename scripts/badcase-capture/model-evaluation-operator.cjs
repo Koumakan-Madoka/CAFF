@@ -1,6 +1,7 @@
 // Explicit local operator entry. No production/agent/HTTP start route.
 // Review does not start a model. Run requires a separate --confirm-paid action,
-// an unexpired reviewed plan and a dedicated key supplied in the named variable.
+// an unexpired reviewed plan and a dedicated key, or an explicitly authorized
+// nonproduction models.json source. Neither mode is an implicit CAFF fallback.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -9,6 +10,7 @@ const { readRegistry, startModelReviewServer } = require('./model-review-server.
 const { selectSealedMaterials } = require('./sealed-workbench.cjs');
 const { prepareModelEvaluation } = require('./model-evaluation.cjs');
 const { restoreImageArchive } = require('./image-recovery.cjs');
+const { createAuthorizedModelCredential } = require('./authorized-model-auth.cjs');
 const { createModelReviewService } = require('../../build/server/domain/runtime/badcase-capture/model-review');
 const { readBoundModelApproval, dispatchBoundModelEvaluation } = require('../../build/server/domain/runtime/badcase-capture/model-binding');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
@@ -31,19 +33,30 @@ function prepareOperator(c) {
 function readOperatorReport(c, approvalId) {
   return createModelReviewService({ root: c.root, entries: [] }).read(c.selection.projectId, approvalId);
 }
-async function runOperator(c, approvalId, confirmed, credential) {
+async function runOperator(c, approvalId, confirmed, credential, sourceDeclaration) {
   assert.equal(confirmed, true); assert.equal(typeof credential, 'function');
   const { prepared } = prepareOperator(c), saved = readOperatorReport(c, approvalId);
   assert.equal(saved.report.ledger.planHash, prepared.plan.planHash);
   assert.deepEqual(saved.binding, prepared.review.binding);
   assert.ok(Date.now() < saved.report.approval.expiresAt);
   assert.equal(saved.report.dispatchState, 'approved');
+  if (sourceDeclaration !== undefined) {
+    assert.ok(exact(sourceDeclaration, ['kind', 'provider', 'model', 'endpointHash', 'sourcePathHash', 'confirmedNonProduction']));
+    assert.equal(sourceDeclaration.kind, 'explicit-nonproduction-model-auth-reuse-v1');
+    assert.equal(sourceDeclaration.confirmedNonProduction, true);
+    assert.equal(sourceDeclaration.provider, saved.binding.config.settings.provider);
+    assert.equal(sourceDeclaration.model, saved.binding.config.settings.model);
+    assert.equal(sourceDeclaration.endpointHash, saved.binding.endpointHash);
+    assert.match(sourceDeclaration.sourcePathHash, /^[a-f0-9]{64}$/);
+    sourceDeclaration = JSON.parse(JSON.stringify(sourceDeclaration));
+  }
   const scope = path.join(c.root, hash(c.selection.projectId));
   // Separate launch attestation, not a reinterpretation of the review-only UI.
   // No credentials or raw task text are written here. Original claim remains the
   // once-only execution authority and rejects retries after partial execution.
   const intent = { kind: 'explicit-local-paid-launch-v1', approvalId, planHash: prepared.plan.planHash,
-    bindingHash: saved.binding.bindingHash, confirmed: true, at: Date.now(), expiresAt: saved.report.approval.expiresAt };
+    bindingHash: saved.binding.bindingHash, confirmed: true, at: Date.now(), expiresAt: saved.report.approval.expiresAt,
+    ...(sourceDeclaration === undefined ? {} : { credentialSource: sourceDeclaration }) };
   const file = path.join(scope, 'launch-' + hash(approvalId) + '.json');
   const fd = fs.openSync(file, 'wx', 0o600);
   try { fs.writeFileSync(fd, JSON.stringify(intent)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
@@ -69,14 +82,23 @@ async function main(args) {
     process.once('SIGTERM', close); process.once('SIGINT', close); return;
   }
   if (args.length === 4 && args[2] === '--report') { console.log(JSON.stringify(readOperatorReport(c, args[3]))); return; }
-  assert.ok(args.length === 5 && args[2] === '--run' && args[4] === '--confirm-paid');
-  // Dedicated opt-in only. Never read OPENAI_API_KEY, auth.json, production DB or
-  // CAFF's provider store. Operator provisions this evaluation-only credential.
-  const key = process.env.CAFF_EVALUATION_MODEL_KEY;
-  assert.ok(typeof key === 'string' && /^[A-Za-z0-9._~+\/-]{1,4096}={0,2}$/.test(key));
+  assert.ok(args[2] === '--run' && args[4] === '--confirm-paid');
+  assert.ok(args.length === 5 || (args.length === 8 && args[5] === '--reuse-models' && args[7] === '--confirm-nonproduction'));
+  let credential, declaration;
+  if (args.length === 8) {
+    // Only an explicit absolute source and purpose declaration. Never discover
+    // CAFF's store from the environment or pass its document into Docker.
+    const source = createAuthorizedModelCredential({ file: args[6], provider: c.model.settings.provider,
+      model: c.model.settings.model, endpoint: c.model.endpoint, confirmedNonProduction: true });
+    credential = source.credential; declaration = source.declaration;
+  } else {
+    const key = process.env.CAFF_EVALUATION_MODEL_KEY;
+    assert.ok(typeof key === 'string' && /^[A-Za-z0-9._~+\/-]{1,4096}={0,2}$/.test(key));
+    credential = () => ({ value: key, expiresAt: Date.now() + 30000 });
+  }
   delete process.env.CAFF_EVALUATION_MODEL_KEY;
-  const report = await runOperator(c, args[3], true, () => ({ value: key, expiresAt: Date.now() + 30000 }));
+  const report = await runOperator(c, args[3], true, credential, declaration);
   console.log(JSON.stringify(report));
 }
 if (require.main === module) main(process.argv.slice(2)).catch(() => { console.error('model_evaluation_operator_failed'); process.exitCode = 1; });
-module.exports = { loadOperatorConfig, prepareOperator, readOperatorReport, runOperator };
+module.exports = { loadOperatorConfig, prepareOperator, readOperatorReport, runOperator, main };

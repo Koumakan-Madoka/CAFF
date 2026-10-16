@@ -39,7 +39,8 @@ function prepareModelEvaluation(requestValue, imageValue, sourcesValue, rolesVal
   files.push({ path: 'container-model-adapter.cjs', bytes: fs.readFileSync(path.join(__dirname, 'container-model-adapter.cjs')) },
     { path: 'model-profile.json', bytes: Buffer.from(JSON.stringify({ settings: config.settings, tools: config.tools, maxRequests: config.maxRequests })) });
   const inventory = manifestFor(files);
-  const hostCode = Object.fromEntries(['model-evaluation.cjs', 'container-model-relay.cjs', 'verify-pi-initialization.cjs', 'image-recovery.cjs']
+  const hostCode = Object.fromEntries(['model-evaluation.cjs', 'container-model-relay.cjs', 'verify-pi-initialization.cjs', 'image-recovery.cjs',
+    'model-evaluation-operator.cjs', 'authorized-model-auth.cjs']
     .map(name => [name, hash(fs.readFileSync(path.join(__dirname, name)))]));
   const plan = planEvaluation({ caseId: request.flagId, checkpointHash: expected.checkpointChecksum,
     inputHash: prepared.capsuleHash, environmentHash: hash(JSON.stringify(image)), harnessHash: hash(JSON.stringify({ files: inventory.files, hostCode })),

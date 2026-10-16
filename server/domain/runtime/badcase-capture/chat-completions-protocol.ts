@@ -2,6 +2,7 @@
 // Pricing and context size are trusted operator declarations, NOT provider proof.
 import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
+import { modelIdentifier } from './model-identifier';
 import { dispatchModelEgress, ModelEgressPolicy, ModelEgressRequest } from './model-egress';
 
 function fail(): never { throw Object.assign(Error('chat_completions_invalid'), { code: 'chat_completions_invalid' }); }
@@ -30,7 +31,7 @@ export function chatCompletionsSettings(value: unknown) {
     const v = value as ChatCompletionsSettings;
     if (!keys(v, ['provider', 'model', 'contextWindowTokens', 'maxOutputTokens', 'temperature',
       'inputMicroUsdPerMillionTokens', 'outputMicroUsdPerMillionTokens', 'maxRequestBytes', 'maxResponseBytes'])
-      || !id(v.provider) || !id(v.model) || !integer(v.contextWindowTokens, 1, 10000000)
+      || !id(v.provider) || !modelIdentifier(v.model) || !integer(v.contextWindowTokens, 1, 10000000)
       || !integer(v.maxOutputTokens, 1, v.contextWindowTokens)
       || !Number.isFinite(v.temperature) || v.temperature < 0 || v.temperature > 2
       || !integer(v.inputMicroUsdPerMillionTokens, 0, 1e12) || !integer(v.outputMicroUsdPerMillionTokens, 0, 1e12)
