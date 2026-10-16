@@ -163,11 +163,18 @@ function responseFailure(stage: ModelFailureStage): never {
   throw labelModelFailure(Object.assign(Error('chat_completions_invalid'), { code: 'chat_completions_invalid' }), stage);
 }
 function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], seen = new Set<string>()) {
-  if (!keys(v, ['id', 'object', 'created', 'model', 'choices', 'usage'], ['system_fingerprint', 'service_tier'])
-    || !id(v.id) || v.object !== 'chat.completion' || !integer(v.created, 0, Number.MAX_SAFE_INTEGER) || v.model !== s.model
-    || (Object.hasOwn(v, 'system_fingerprint') && v.system_fingerprint !== null && !id(v.system_fingerprint))
-    || (Object.hasOwn(v, 'service_tier') && v.service_tier !== 'default')
-    || !Array.isArray(v.choices) || v.choices.length !== 1) responseFailure('protocol_response_envelope');
+  // Same ordered predicates and acceptance set as the original compound guard.
+  // Only emit the FIRST failed check's fixed label, never raw keys or values.
+  if (!keys(v, ['id', 'object', 'created', 'model', 'choices', 'usage'], ['system_fingerprint', 'service_tier']))
+    responseFailure('protocol_response_envelope_keys');
+  if (!id(v.id)) responseFailure('protocol_response_envelope_id');
+  if (v.object !== 'chat.completion') responseFailure('protocol_response_envelope_object');
+  if (!integer(v.created, 0, Number.MAX_SAFE_INTEGER)) responseFailure('protocol_response_envelope_created');
+  if (v.model !== s.model) responseFailure('protocol_response_envelope_model');
+  if (Object.hasOwn(v, 'system_fingerprint') && v.system_fingerprint !== null && !id(v.system_fingerprint))
+    responseFailure('protocol_response_envelope_fingerprint');
+  if (Object.hasOwn(v, 'service_tier') && v.service_tier !== 'default') responseFailure('protocol_response_envelope_service_tier');
+  if (!Array.isArray(v.choices) || v.choices.length !== 1) responseFailure('protocol_response_envelope_choices');
   const c = v.choices[0];
   const calling = !!tools && c?.finish_reason === 'tool_calls';
   if (!keys(c, ['index', 'message', 'finish_reason'], ['logprobs']) || c.index !== 0 || (!calling && c.finish_reason !== 'stop')

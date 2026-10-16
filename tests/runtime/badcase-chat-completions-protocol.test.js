@@ -197,7 +197,7 @@ test('failure stage is fixed, distinguishes exchange/collection/decode/schema, a
     ['protocol_exchange', async () => { throw Error('PRIVATE-UPSTREAM'); }],
     ['protocol_collect', async () => ({ status: 200, chunks: (async function* () { throw Error('PRIVATE-STREAM'); })() })],
     ['protocol_decode', async () => ({ status: 200, chunks: (async function* () { yield Buffer.from('PRIVATE-NOT-JSON'); })() })],
-    ['protocol_response_envelope', exchange({ ...response(), model: 'wrong-model' })],
+    ['protocol_response_envelope_model', exchange({ ...response(), model: 'wrong-model' })],
     ['protocol_response_choice', exchange({ ...response(), choices: [{ ...response().choices[0], finish_reason: 'length' }] })],
     ['protocol_response_usage', exchange({ ...response(), usage: { ...response().usage, total_tokens: 99 } })],
   ];
@@ -218,6 +218,52 @@ test('failure stage is fixed, distinguishes exchange/collection/decode/schema, a
     const disk = fs.readdirSync(path.join(root, 'model-egress', runId)).map(n => fs.readFileSync(path.join(root, 'model-egress', runId, n), 'utf8')).join('');
     assert.ok(!disk.includes('PRIVATE-') && !disk.includes('synthetic'));
   }
+});
+
+test('envelope check labels reach durable ledger without raw keys/values, and still stop after one exchange', async t => {
+  const cases = [
+    ['keys', [() => null, () => [], v => { delete v.usage; return v; },
+      v => ({ ...v, 'PRIVATE-UNKNOWN-FIELD': 'PRIVATE-EXTRA', model: 'PRIVATE-WRONG-MODEL' })]],
+    ['id', [v => ({ ...v, id: 'PRIVATE-ID/' })]],
+    ['object', [v => ({ ...v, object: 'PRIVATE-OBJECT' })]],
+    ['created', [v => ({ ...v, created: 'PRIVATE-CREATED' }), v => ({ ...v, created: -1 }),
+      v => ({ ...v, created: 1.5 })]],
+    ['model', [v => ({ ...v, model: 'PRIVATE-MODEL' }), v => ({ ...v, model: 'vendor/fixed-model-v1' })]],
+    ['fingerprint', [v => ({ ...v, system_fingerprint: 'PRIVATE-FINGERPRINT/' })]],
+    ['service_tier', [v => ({ ...v, service_tier: 'PRIVATE-TIER' }), v => ({ ...v, service_tier: null })]],
+    ['choices', [v => ({ ...v, choices: null }), v => ({ ...v, choices: [] }),
+      v => ({ ...v, choices: [v.choices[0], v.choices[0]] })]],
+  ];
+  for (const [check, mutations] of cases) await t.test(check, async t => {
+    for (const mutate of mutations) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-envelope-check-'));
+      t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+      const s = spec(), p = chatCompletionsSettings(s), stage = 'protocol_response_envelope_' + check, runId = hash(stage);
+      const policy = { approvalId: 'offline-test', planHash: hash('plan'), runId, provider: s.provider, model: s.model,
+        settingsHash: p.settingsHash, expiresAt: Date.now() + 60000, maxRequests: 2, maxRequestBytes: 4096,
+        maxResponseBytes: 4096, timeoutMs: 1000, perRequestReserveMicroUsd: p.perRequestReserveMicroUsd, runLimitMicroUsd: 2400 };
+      const value = mutate(response());
+      if (value?.choices?.[0]) value.choices[0].message.content = 'PRIVATE-RESPONSE-CONTENT';
+      let calls = 0;
+      const report = await dispatchChatCompletions(root, policy, s, async send => {
+        await assert.rejects(send(encodeChatCompletionsRequest(s, messages())), /model_egress_transport_failed/);
+        await assert.rejects(send(encodeChatCompletionsRequest(s, messages())), /model_egress_stopped/);
+      }, async () => { calls++; return exchange(value)(); });
+      assert.equal(calls, 1); assert.equal(report.reason, 'transport_failed');
+      assert.equal(report.unknownCostRequests, 1); assert.equal(report.committedMicroUsd, 1200);
+      assert.equal(report.requests[0].failureStage, stage);
+      assert.equal(report.requests[0].responseHash, null); assert.equal(report.requests[0].responseBytes, null);
+      assert.equal(report.requests[0].costMicroUsd, null); assert.deepEqual(readModelEgress(root, runId), report);
+      const dir = path.join(root, 'model-egress', runId), file = path.join(dir, '0001.result.json');
+      const disk = fs.readdirSync(dir).map(n => fs.readFileSync(path.join(dir, n), 'utf8')).join('');
+      assert.ok(!disk.includes('PRIVATE-') && !disk.includes('synthetic'));
+      const original = fs.readFileSync(file, 'utf8');
+      // Prefix lookalikes are not permitted extension points for untrusted data.
+      fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(original), failureStage: stage + '_PRIVATE' }));
+      assert.throws(() => readModelEgress(root, runId), /model_egress_record_invalid/);
+      fs.writeFileSync(file, original); assert.deepEqual(readModelEgress(root, runId), report);
+    }
+  });
 });
 
 test('settings and request bytes snapshotted before asynchronous exchange', async () => {

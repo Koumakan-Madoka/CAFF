@@ -701,7 +701,9 @@ launch 声明只增加 `credentialSource`：类型、provider/model、endpointHa
 - 操作者可离线调用已存在的 `readModelEgress(scope, runId)` 查询 `requests[].failureStage`：scope 是 `<评测root>/<sha256(projectId)>`，runId 来自原 `--report` 的 ledger。查询无网络、凭据、daemon 或当前材料依赖；尚未派发或账本缺失不补造诊断。该字段目前不投影到审核页面或外层 CLI 报告，须读取请求账本；不宣称 UI 已展示。
 - 阶段只是**校验边界**，不是供应商根因或 prompt 归因。例如 `protocol_response_envelope` 可能是模型名/字段/形状不匹配，`protocol_response_usage` 可能是用量形状、总和或范围错误；不记录实际字段值。任何失败仍保留费用未知及预留、不退款/重试、不评分、不启动候选；标签不能提升任何 AC 或完整回放资格。后续真实运行按新审核 SHA 重新生成计划和批准；现有 hostCode 只摘要列举的操作者脚本，不包含本次三个编译模块，不能声称本次变动会自动改变 harnessHash。旧已消费批准仍不可重用。
 
-验证：合成服务覆盖 HTTPS 各阶段经过真实协议及持久请求账本的传递；协议覆盖收集、UTF-8/JSON、envelope/choice/usage 与文本/工具两模式；负例覆盖恶意异常 getter/proxy、伪造属性、未知落盘标签、成功结果夹带标签及超时后标签抑制。真实供应商故障根因仍未知，未以合成响应冒充 E65 原始响应。
+E68 的第二批真实尝试仅定位到 `protocol_response_envelope`，不能由此推断具体字段。为避免再次只得到同一粗粒度标签，新响应包络失败现按原判定顺序细分为 `protocol_response_envelope_` 加下列**八个固定后缀**：`keys`（非对象、缺必需键或存在未知键）、`id`、`object`、`created`、`model`、`fingerprint`（system_fingerprint）、`service_tier`、`choices`（非单 choice 数组）。只记第一个失败检查，不输出原始键名/值、字段数量、响应内容或例外文本；keys 失败不继续解释缺哪个键或多哪个键。所有谓词和先后顺序与旧 compound guard 相同；特别是未知字段、精确模型名、服务等级与单 choice 限制没有放宽。旧 `protocol_response_envelope` 账本保持可读，不迁移或补造新标签。新闭集不接受带任意后缀的伪造标签；工具与文本协议共享此检查。它仍不是供应商根因证明，不凭标签自动删字段、改模型或重试；E65/E68 的具体不兼容项仍未知。
+
+验证：合成服务覆盖 HTTPS 各阶段经过真实协议及持久请求账本的传递；协议覆盖收集、UTF-8/JSON、envelope/choice/usage 与文本/工具两模式；包络八个检查覆盖逐项坏响应→请求账本落盘/重读、停止第二请求、保留预留与未知费用、无响应hash/字节数及内容，未知后缀拒绝、旧包络标签兼容；keys 与 model 同时错误只标 keys。负例还覆盖恶意异常 getter/proxy、伪造属性、未知落盘标签、成功结果夹带标签及超时后标签抑制。真实供应商故障根因仍未知，未以合成响应冒充 E65/E68 原始响应；本细分实现不读取 Key、不调用供应商、不新增 Docker/UI 证据，也不修复已证实的供应商兼容性问题。
 
 Linux 真实调用前预检两次暴露 HTTPS 定时器过早唤醒：Node 对小数延时取整时，回调可能早于单调截止，旧实现立即销毁请求并误记 `https_body`。截止回调现先复验期限，尚未到期则仅重新挂计时器（不重新发送请求）；实际到期或外部 abort 仍销毁请求，完成后的迟到回调无动作。受控早唤醒测试分别验证随后 abort/期限失效、计时器清理和零重发。此处是新发现的本地时序故障，不解释 E65 的 HTTP 200 失败；修复本身没有读取密钥或调用供应商。
 

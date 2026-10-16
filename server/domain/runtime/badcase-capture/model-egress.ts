@@ -76,7 +76,11 @@ const name = (n: number, kind: string) => String(n).padStart(4, '0') + '.' + kin
 // authority to retry/score/refund. WeakMap avoids reading untrusted getters.
 const failureStages = ['https_credential', 'https_connect', 'https_peer', 'https_status', 'https_headers', 'https_body',
   'https_cancelled', 'protocol_request', 'protocol_exchange', 'protocol_collect', 'protocol_decode', 'protocol_response',
-  'protocol_response_envelope', 'protocol_response_choice', 'protocol_response_usage'] as const;
+  'protocol_response_envelope', // retain legacy records; no retroactive reclassification
+  'protocol_response_envelope_keys', 'protocol_response_envelope_id', 'protocol_response_envelope_object',
+  'protocol_response_envelope_created', 'protocol_response_envelope_model', 'protocol_response_envelope_fingerprint',
+  'protocol_response_envelope_service_tier', 'protocol_response_envelope_choices',
+  'protocol_response_choice', 'protocol_response_usage'] as const;
 export type ModelFailureStage = typeof failureStages[number];
 const failureLabels = new WeakMap<object, ModelFailureStage>();
 export function labelModelFailure(error: Error, stage: ModelFailureStage): Error {

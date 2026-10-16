@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const api = require('../../build/server/domain/runtime/badcase-capture/chat-completions-protocol.js');
-const { readModelEgress } = require('../../build/server/domain/runtime/badcase-capture/model-egress.js');
+const { readModelEgress, modelFailureStage } = require('../../build/server/domain/runtime/badcase-capture/model-egress.js');
 const hash = s => crypto.createHash('sha256').update(s).digest('hex');
 const config = () => ({ settings: { provider: 'synthetic', model: 'fixed-model', contextWindowTokens: 1000, maxOutputTokens: 100,
   temperature: 0, inputMicroUsdPerMillionTokens: 1000000, outputMicroUsdPerMillionTokens: 2000000, maxRequestBytes: 8192, maxResponseBytes: 8192 },
@@ -101,6 +101,23 @@ test('response rejects unknown/reused/multiple calls, invalid arguments, truncat
   await assert.rejects(api.createToolChatCompletionsTransport(config(), exchange(response()))(request(config(), history())), invalid);
 });
 
+test('tools-v1 uses the same fixed envelope checks before releasing any tool call', async () => {
+  for (const [check, change] of [
+    ['keys', v => v['PRIVATE-UNKNOWN-FIELD'] = 'PRIVATE-EXTRA'],
+    ['id', v => v.id = 'PRIVATE-ID/'], ['object', v => v.object = 'PRIVATE-OBJECT'],
+    ['created', v => v.created = 'PRIVATE-CREATED'], ['model', v => v.model = 'PRIVATE-MODEL'],
+    ['fingerprint', v => v.system_fingerprint = 'PRIVATE-FINGERPRINT/'],
+    ['service_tier', v => v.service_tier = 'PRIVATE-TIER'], ['choices', v => v.choices = []],
+  ]) {
+    const v = response(); change(v);
+    await assert.rejects(api.createToolChatCompletionsTransport(config(), exchange(v))(request()), e => {
+      assert.equal(modelFailureStage(e), 'protocol_response_envelope_' + check);
+      assert.deepEqual(Object.keys(e), ['code']); assert.equal(e.cause, undefined);
+      return invalid(e);
+    });
+  }
+});
+
 test('argument byte bound is independent of outer response limit', async () => {
   const c = config(); c.settings.maxResponseBytes = 131072;
   for (const delta of [0, 1]) {
@@ -150,7 +167,7 @@ test('real request ledger covers two synthetic tool rounds, immutable hashes, ba
       const v = response(calls === 1); if (bad && calls === 2) delete v.usage; return exchange(v)();
     });
     assert.equal(calls, 2); assert.equal(report.reason, bad ? 'transport_failed' : 'completed');
-    assert.equal(report.requests[1].failureStage, bad ? 'protocol_response_envelope' : undefined);
+    assert.equal(report.requests[1].failureStage, bad ? 'protocol_response_envelope_keys' : undefined);
     assert.equal(Object.hasOwn(report.requests[0], 'failureStage'), false);
     assert.equal(report.knownCostMicroUsd, bad ? 40 : 80); assert.equal(report.unknownCostRequests, bad ? 1 : 0);
     assert.equal(report.committedMicroUsd, 2400); assert.deepEqual(readModelEgress(root, policy.runId), report);
