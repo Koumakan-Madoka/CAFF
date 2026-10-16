@@ -188,6 +188,7 @@ test('read rejects gaps, altered policy binding, extra files and forged completi
     dir => fs.renameSync(path.join(dir, '0001.reserve.json'), path.join(dir, '0002.reserve.json')),
     dir => { const p = path.join(dir, 'policy.json'), v = JSON.parse(fs.readFileSync(p)); v.policy.runId = hash('other'); fs.writeFileSync(p, JSON.stringify(v)); },
     dir => fs.writeFileSync(path.join(dir, 'unknown.json'), '{}'),
+    dir => { const p = path.join(dir, '0001.reserve.json'), v = JSON.parse(fs.readFileSync(p)); v.requestId = hash('other-request'); fs.writeFileSync(p, JSON.stringify(v)); },
     dir => { const p = path.join(dir, '0001.result.json'), v = JSON.parse(fs.readFileSync(p)); v.costMicroUsd = 11; fs.writeFileSync(p, JSON.stringify(v)); },
     dir => fs.unlinkSync(path.join(dir, '0001.result.json')),
     dir => {
@@ -206,7 +207,8 @@ test('read rejects gaps, altered policy binding, extra files and forged completi
 test('policy and root validation happen before driver or transport, read never creates', async t => {
   const { root, policy } = fixture(t);
   for (const patch of [{ extra: true }, { maxRequests: 0 }, { timeoutMs: 0 }, { expiresAt: 0 },
-    { maxRequestBytes: 4194305 }, { perRequestReserveMicroUsd: 21 }, { provider: 'https://host' }]) {
+    { maxRequestBytes: 4194305 }, { perRequestReserveMicroUsd: 21 }, { provider: 'https://host' },
+    { provider: 'sk-' + 'a'.repeat(32) }]) {
     await assert.rejects(dispatchModelEgress(root, { ...policy, ...patch }, async () => assert.fail(), async () => assert.fail()));
     assert.deepEqual(fs.readdirSync(root), []);
   }

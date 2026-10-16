@@ -589,7 +589,20 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 - 到期发 AbortSignal；单调耗时复查防事件循环延迟，超时粘性使晚到成功转为 timeout，费用未知。不强行返回：必须等 transport settle，即使其忽略 abort；driver 提早返回也 join 在途请求并记 driver_detached。**没有进程/网络强制终止或墙钟硬上界**，将来必须由受控出口及 Docker launcher 兑现。OS 时钟倒退拒绝；倒退终止记录使用最后已观测时间，不伪造当前时刻。
 - 读回按 schema、编号、请求派生 ID、日期、预留额度及结果状态复验；已结束结果与未结算 reservation 区分。活跃与崩溃遗留均 unresolved，无法推断 transport 已停止。fsync/写/读回复验失败留原文件，不修复、不移除 claim；部分文件可导致只读查询显式 record_invalid，不能因此重派发。文件 fsync 不保证目录掉电事务；无存储 GC、删除、自动重结算或供应商账单认证。
 
-验证：构建后 `node --test tests/runtime/badcase-model-egress.test.js tests/runtime/badcase-evaluation-record.test.js tests/runtime/badcase-evaluation-plan.test.js`。全部使用隔离临时目录与内存 transport，含独立 Node 进程竞争/exit23、写失败、超时/晚成功、预算边界、只读篡改拒绝；不在宿主执行 agent，不调用网络/模型，也不替代 Docker/真实模型/任何 AC 证据。真实协议适配、受控出口、运行时凭据重签发、原始角色与完整输入回放、人审批准绑定仍未接线。
+验证：构建后 `node --test tests/runtime/badcase-model-egress.test.js tests/runtime/badcase-evaluation-record.test.js tests/runtime/badcase-evaluation-plan.test.js`。全部使用隔离临时目录与内存 transport，含独立 Node 进程竞争/exit23、写失败、超时/晚成功、预算边界、只读篡改拒绝；不在宿主执行 agent，不调用网络/模型，也不替代 Docker/真实模型/任何 AC 证据。文本协议适配前置件见 §5.14；受控出口、运行时凭据重签发、原始角色与完整输入回放、人审批准绑定仍未接线。
+
+### 5.14 有界 Chat Completions 文本协议（内部前置件，无网络）
+
+`chat-completions-protocol.ts` 是 §5.13 的可选内部适配层，**不是网络客户端、完整 pi provider、真实模型运行入口或付费许可**。无生产/HTTP/SDK/Docker 接线，不改变既有断网容器。只接受纯文本 system/user/assistant 消息（1–256 条）；工具调用/结果、图片、developer、推理扩展、预测、缓存计费暂不支持，遇到即拒绝，绝不删字段或降级。因此不能宣称已有完整 agent 工具循环或原始 badcase 忠实回放。
+
+- `chatCompletionsSettings(spec)` 规范化固定版本 `chat-completions-text-v1`、provider/model、上下文/输出上限、temperature、双向字节上限及输入/输出定价（整数 micro-USD/百万 token），生成 settingsHash 和每请求最坏预留。声明仍由可信操作者提供，未查供应商目录或批准库；model 必须精确匹配响应，不接受浮动别名自动映射。
+- 预留 = 向上取整的「整个声明上下文 × 输入价」+「输出上限 × 输出价」，各分量用 BigInt 运算，至少预留 1 micro-USD，总额≤10^12。故意保守，不用字节数猜 token，不宣称精确 tokenizer 或提交前 input-token 硬限；过长输入仍可能被供应商拒绝。若声明上下文/定价不真实，无法保证费用上界。`dispatchChatCompletions` 在创建 claim 前，将 policy 的 provider/model/settingsHash/双向字节上限/每请求预留与该 spec 精确绑定，再调用原持久协调器；批准 ID 仍是受信声明，不等于已获人工付费许可。
+- `encodeChatCompletionsRequest(spec,messages)` 输出固定 model/temperature/max_completion_tokens、n=1、stream=false、store=false 的 JSON。适配 transport 在任何 exchange 前复验字节和设置，精确字段集拒绝额外 tools/seed/max_tokens/endpoint 等覆盖。请求要求 JSON.stringify 的规范字节（允许属性不同顺序，但不接受重复键、空白、替代转义）；UTF8、Unicode 文本与已知秘密哨兵复验。消息内容原样保留，拒绝不支持的类型；不证明数据来源获授权。协议坏请求在协调器中已经预留，只是 exchange 零调用，仍保守停止、不退还预留。
+- 注入的受信 `exchange({body,signal})` 只返回 status 和异步字节迭代器；没有 URL/凭据参数，不读取环境。exchange 实现者将来必须独立固定 HTTPS 目的地、禁止重定向/重试、限制底层分配并在 abort 时释放资源；本模块不认证这些性质。仅 status=200；非 200 不读取错误正文。按块累计≤声明上限（≤4MiB），至多8192块，立即复制每块，不保留可变视图；溢出先 abort，再等待迭代器关闭。成功/失败均关闭 signal 作用域。此处读取的是非 SSE JSON 的传输分块，不是模型流式协议。仅限制本层持有的字节，不限制 exchange 内部或单块已分配内存；忽略 abort 或卡在 next/return 的 exchange 仍可能无限等待，不宣称墙钟硬限。
+- 响应允许正常 JSON 格式；按 JSON.parse 语义复验字段，单 choice/index=0、assistant 文本、finish_reason=stop、精确 model 与完整 usage。截断、拒答、额外工具/未知字段、非零缓存/音频/推理/预测用量、未知 service_tier 均拒绝。prompt/completion/total 须整数、总数相符且不超过上下文/输出声明；零值的已知 usage details 可接受。费用由已验证 usage 和固定声明单价向上计算，**是声明费率下的 token 成本，不是已认证供应商账单**；既有 knownCostMicroUsd 只表示该算法得到了数值，不能拿来声称实际扣款已核验。不支持的用量/坏响应/交换异常经协调器记 transport_failed、费用未知，停止且不重试，不释放输出。
+- 请求/响应只在内存流经受信 exchange；持久层仍仅保存 hash/字节数/费用。spec 正文尚未接人审长期归档，settingsHash 不能单独恢复定价；无重新结算、网络/预算硬限、凭据重签发或权限提升。成功报告的 paidAuthorization/executionVerified/strictEvalEligible 仍 false。
+
+验证：`npm run build && npm run test:badcase-budget` 包含协议负例与真实持久协调器整合；合成分块 JSON、hash-only 落盘/重读、坏用量后续零交换、设置/额度不一致在 claim 前零写入，以及 §5.13 policy 秘密哨兵/requestId 篡改两项回归。仅离线夹具；没有供应商兼容性实测、网络、模型、Docker、浏览器、SQLite 或真实采集证据。后续仍须工具/完整输入协议、容器出口及人审批准绑定，才能请求真实模型预算。
 
 ## 6. 威胁模型
 
