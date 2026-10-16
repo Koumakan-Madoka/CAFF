@@ -656,6 +656,26 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 
 验证：`npm run build && npm run test:badcase-budget` 包含两轮合成 call/result、真实请求账本及批准库整合（baseline/candidate 各两请求，费用160 micro-USD为合成声明）、定义/hash/串行关联/用量/字节/未知费用停止负例。工具结果由测试构造，HTTPS 在新工具整合中为替身；旧文本回归保留真实本地 TLS 用例。`node scripts/badcase-capture/verify-model-review-ui.cjs --tools` 验证真实 Chromium 完整工具预览、取消零批准POST、确认保存、关闭重建且空注册表历史逐字相同；不执行模型或工具。不带参数仍验证原文本审核。E61 HTTP UTF8 负例改成 `[0x22,0xff,0x22]`，独立于 JSON 语法拒绝。无 Docker/SDK/SQLite/真实采集/模型证据，不能据此宣称完整工具循环、忠实回放或任何 AC 通过。
 
+### 5.19 最窄模型回放入口：封存消息→人审→断网 Docker 工具循环→报告
+
+本节是 §5.13–5.18 前置件的集中接线，不另造预算／采集存储。`model-evaluation-operator.cjs` 提供独立操作者 CLI；**没有生产页面启动入口、后台付费或 agent 授权工具**。原 `model-review-server` 保持仅保存声明；新 CLI 必须另行显式 `--run <approvalId> --confirm-paid`，不能凭页面保存自动开跑。代码具备实际 HTTPS 出口能力，但截至本段作者验证只运行合成模型服务；尚无用户真实案例／供应商兼容性／实际费用证据，不能宣称 MVP 或任何 AC 验收完成。
+
+- `prepareOperator` 从已封存的 project/conversation/message 选择材料，经原完整性预检生成实际计划，而非操作者手填输入摘要。`prepareModelEvaluation` 固定镜像、runtime/harness 归档、原始 invocation 和有限 fresh/resume 历史、两角色正文、工具定义、模型／费率／出口／请求数、重复次数和预算。每 run 在原锁内重新验证并保护原 CAS 闭包；不读 live 源、不自动 fresh。harnessHash 还包括容器文件及本次 host preparer/relay/probe/recovery 代码摘要；评分器摘要包括 host scorer 代码及规则。执行前重新检查 host 文件摘要，变动须重建计划／批准。
+- 被测进程与 read/write/edit/bash 全在现有专用 Docker 内，继续 network=none、无宿主 bind/socket、只读根、65534、cap-drop ALL、no-new-privileges、512MiB/1CPU/64pids。不开放容器网络。`container-model-relay.cjs` 只通过**固定容器 ID 上的固定 Docker exec 程序**搬运 `/work/model-relay` 有界请求／响应；容器不能选择宿主路径、命令、出口、CA、header 或凭据。宿主只调用原 send 闭包，经过原 run/request 预留、协议验证、批准复验、HTTPS 后返回模型字节；不执行被测代码或 SDK。poll/exec 有性能开销，是 MVP 取舍，不宣称低延迟。
+- 邮箱序号从1连续、单在途、同号同正文重复不重发；跳号／篡改／超限失败停止。读程序仅在容器内运行，普通文件/O_NOFOLLOW/bigint fd 身份和有界读取，写响应临时文件后 rename。请求／响应正文不落宿主持久账本；容器 tmpfs 随容器清理。relay 发生错误按已验证且不可变 ID 停止进程，等 attach 和在途 send 结束后才交回外层清理；原 supervisor 的逐 run deadline/身份复验/清理仍在。网络 abort 不证明供应商停止收费，等待在途请求结束不是严格返回墙钟上界；父／daemon／主机崩溃保证不因此增加。
+- `container-model-adapter.cjs` 对实际 SDK tools 定义与批准定义逐字结构对账；SDK 当前上下文转为 tools-v1 文本／串行调用，不丢弃图片、thinking、自定义消息等未知内容，而是拒绝。模型响应驱动真实 SDK 工具循环，容器不再内置固定工具步骤。仍限无扩展／无 skill、thinking off、无 compaction/retry、Linux、支持的有限历史；不是任意原始 harness 的忠实回放。供应商必须支持精确 tools-v1 和 usage 形状，否则显式失败不降级。
+- 为收窄 MVP，整个 run 1–25000ms（含恢复及 SDK 启动），只评分固定文件 `evaluation-result.txt`（普通文件、≤4096字节）。host 固定 SHA256 评分器将输出与人审 expectedHash/badcaseHash 比较；规则、参考摘要与前次产物不进入容器。容器报告的调用次数须与真实请求账本一致，费用从账本读取而非信任容器。失败／超时／缺输出／坏回执保持 reserved/unresolved、无评分和未知费用，不伪造失败分数；后续候选停止。报告仍保留 executionVerified/strictEvalEligible=false，成功不自动提升用例复现资格。
+
+操作者流程（需要先 `npm run build`，Linux 专用环境；以下是接口说明，不是当前真实采集或付费授权）：
+
+1. 准备一个不入 Git 的绝对路径 JSON 配置，精确顶层键为 `root,captureRoot,selection,image,imageArchive,sources,roles,rule,model,limits,target,productionResourcesExcluded`。root 为独立评测账本目录；captureRoot 为获授权封存存储；selection 为 `{id,projectId,conversationId,messageId}`；image/imageArchive/sources/target 沿 §4.4–4.11 的固定镜像、可信归档、专用**空** daemon 声明；roles 为 `{baseline,candidate}`；rule 为 `{expectedHash,badcaseHash}`；model 为 §5.18 `{settings,endpoint,maxRequests,tools}`；limits 为 `{repetitions,timeoutMs,perRunLimitMicroUsd,totalLimitMicroUsd}`。`productionResourcesExcluded:true` 是操作者对专用路径、非生产目的地／资源的声明，不是软件认证。角色全文与规则须在该操作者配置中人审；审核页面展示其摘要及完整模型配置，不额外声称正文已读证明。实际工具定义可在归档 SDK 的隔离容器中导出，验证器给出该流程；运行时必须再次精确匹配。
+2. `node scripts/badcase-capture/model-evaluation-operator.cjs --config <绝对JSON> --review` 从真实材料生成注册表并打开原仅审核 loopback 页面。预览／确认绑定完整计划与配置，5分钟内有效；取消不启动。关闭页面服务不会删除批准。规划会保留现有材料引用，不做引用释放。
+3. **只有用户批准具体案例、评分规则、模型、次数、时限及预算后**，操作者为该进程单独注入 `CAFF_EVALUATION_MODEL_KEY`（不可贴入 Room、配置文件、命令参数或日志），再显式执行 `node scripts/badcase-capture/model-evaluation-operator.cjs --config <绝对JSON> --run <approvalId> --confirm-paid`。不读取通用 OPENAI/ANTHROPIC 环境变量、生产 auth.json 或 CAFF provider store。专用变量在入口取入内存后从环境删除，不传 Docker；每请求给受控回调短期限 lease，再由原协调器截到批准/run截止。**这是进程内使用租期，不是供应商凭据签发或轮换实现**；专用临时密钥的发行、权限／真实失效由操作者负责。没有这些材料则不得真实启动。
+4. 执行先重建材料计划和 binding，与持久批准双对账；确认未消费后，先 wx/0600/fsync/读回写独立 `launch-<approvalIdHash>.json`（仅 ID／摘要／时间），再恢复专用空 daemon 的可信镜像，恢复后重验批准期限，进入原永久 claim。没有隐式重试、恢复部分 run 或回退宿主。启动声明写入后即使 load 失败也不自动删除该声明；需查明原因并重新人审取得新批准。它不提供掉电事务或抵御同 OS 用户模拟确认。
+5. `node scripts/badcase-capture/model-evaluation-operator.cjs --config <绝对JSON> --report <approvalId>` 只读重建历史报告，不读取当前材料／归档／daemon、不恢复启动权限。配置中 root/project 必须保持一致。所有原始包、批准、日志和临时凭据不入 Git；无自动合并发布。
+
+作者验证入口：`python3 scripts/badcase-capture/verify-image-recovery.py --model-relay --captured <§4.4 五镜像参数>`。在显式授权的自有 Linux 环境，真实 collector+SQLite+HTTP 标记／重启查询→封存选择→模型审核 HTTP 预览/批准→同一个操作者 run 函数→专用 Docker SDK 工具→独立 host 评分／报告重读。两种模式各 baseline/candidate，从归一化相同起点发出16次合成模型请求；另加坏响应／模型超时各一次，拒绝评分且容器清理。模型是仅 loopback 的合成 TLS 服务，沿 §5.15 测试专用 CA/路由/peer 替换；不连接供应商，费用是合成声明。不是浏览器点击→真实 CLI 子进程的同次证据（本段实际调用 CLI 导出的同一操作者函数），也不是用户真实 badcase。普通 `test:badcase-budget` 只跑静态/替身测试，不自动启动 Docker 或供应商。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
