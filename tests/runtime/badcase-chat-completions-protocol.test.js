@@ -80,12 +80,16 @@ test('fragmented UTF8 JSON response preserves bytes, verifies model/usage and co
   assert.equal(received.signal.aborted, true); // transport scope closed after response
 });
 
-test('bounded collection closes iterable on byte overflow, invalid chunk and chunk flood', async () => {
+test('bounded collection closes iterable on byte overflow, invalid chunk and chunk flood', { timeout: 3000 }, async () => {
   for (const mode of ['overflow', 'type', 'flood']) {
     let closed = false, pulls = 0;
     const send = createChatCompletionsTransport(spec(), async () => ({ status: 200, chunks: (async function* () {
-      try { while (true) { pulls++; yield mode === 'overflow' ? Buffer.alloc(4097) : mode === 'type' ? 'text' : Buffer.alloc(0); } }
-      finally { closed = true; }
+      try {
+        // Finite flood: removing the count guard must fail quickly, not starve
+        // timers forever in an infinite microtask loop.
+        while (pulls < 8194) { pulls++; yield mode === 'overflow' ? Buffer.alloc(4097) : mode === 'type' ? 'text' : Buffer.alloc(0); }
+        yield Buffer.from(JSON.stringify(response()));
+      } finally { closed = true; }
     })() }));
     await assert.rejects(send(request()), invalid);
     assert.equal(closed, true); assert.equal(pulls, mode === 'flood' ? 8193 : 1);
@@ -134,7 +138,9 @@ test('malformed, mismatched, truncated, unsupported and unaccounted responses fa
     v => v.choices[0].index = 1, v => v.choices[0].finish_reason = 'length',
     v => v.choices[0].message.tool_calls = [], v => v.choices[0].message.content = null,
     v => v.choices[0].message.content = 'sk-' + 'a'.repeat(32), v => v.choices[0].message.refusal = 'refused',
-    v => delete v.usage, v => v.usage.completion_tokens = 101, v => v.usage.prompt_tokens = 1001,
+    v => delete v.usage, v => v.usage.completion_tokens = 101,
+    v => v.usage = { prompt_tokens: 20, completion_tokens: 101, total_tokens: 121 }, // sum valid; output cap independently violated
+    v => v.usage.prompt_tokens = 1001,
     v => v.usage.total_tokens++, v => v.usage.prompt_tokens = -1, v => v.usage.total_tokens = 1.5,
     v => v.usage.prompt_tokens_details = { cached_tokens: 1 },
     v => v.usage.completion_tokens_details = { reasoning_tokens: 1 }, v => v.unrecognized = true];
