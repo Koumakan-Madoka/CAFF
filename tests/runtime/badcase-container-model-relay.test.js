@@ -56,6 +56,33 @@ test('container adapter sends explicit nonthinking mode and refuses to erase non
   }
 });
 
+test('cached adapter separates input/cacheRead without adding tokens or inventing a discount', async () => {
+  const p = structuredClone(profile); Object.assign(p.settings, { provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: 'opencode-go-deepseek-nonthinking-cached-v1', inputMicroUsdPerMillionTokens: 1000000, outputMicroUsdPerMillionTokens: 2000000 });
+  const raw = { model: p.settings.model, choices: [{ finish_reason: 'stop', message: { content: 'answer', reasoning_content: null } }],
+    usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, prompt_tokens_details: { cached_tokens: 7 } } };
+  const context = { systemPrompt: 'role', messages: [{ role: 'user', content: 'input' }], tools: p.tools.map(t => ({ ...t.function })) };
+  let captured;
+  const message = await modelStream(p, async body => { captured = JSON.parse(body); return Buffer.from(JSON.stringify(raw)); }, () => {})({ provider: p.settings.provider, id: p.settings.model }, context).result();
+  assert.deepEqual(captured.thinking, { type: 'disabled' }); assert.equal(message.usage.input, 3); assert.equal(message.usage.cacheRead, 7);
+  assert.equal(message.usage.output, 2); assert.equal(message.usage.totalTokens, 12);
+  assert.ok(Math.abs(message.usage.cost.total - 0.000014) < 1e-12);
+  assert.ok(Math.abs(message.usage.cost.cacheRead - 0.000007) < 1e-12);
+  for (const count of [0, 10]) {
+    raw.usage.prompt_tokens_details = { cached_tokens: count, audio_tokens: 0 };
+    const m = assistantMessage(raw, p); assert.equal(m.usage.input + m.usage.cacheRead, 10); assert.equal(m.usage.input, 10 - count);
+    assert.ok(Math.abs(m.usage.cost.total - 0.000014) < 1e-12);
+  }
+  for (const details of [{ cached_tokens: -1 }, { cached_tokens: 11 }, { cached_tokens: 1.5 }, { cached_tokens: '7' }, { cached_tokens: null },
+    { cached_tokens: 7, audio_tokens: 1 }, { cached_tokens: 7, extra: 0 }, [], null]) {
+    raw.usage.prompt_tokens_details = details; assert.throws(() => assistantMessage(raw, p));
+  }
+  raw.usage.prompt_tokens_details = { cached_tokens: 7 }; delete raw.choices[0].message.reasoning_content;
+  const strict = structuredClone(p); strict.settings.compatibilityProfile = 'opencode-go-deepseek-nonthinking-v1';
+  assert.throws(() => assistantMessage(raw, strict)); delete strict.settings.compatibilityProfile;
+  assert.throws(() => assistantMessage(raw, strict));
+  delete raw.usage.prompt_tokens_details; assert.equal(assistantMessage(raw, p).usage.cacheRead, 0);
+});
+
 test('relay uses only pinned container ID; duplicate mailbox sequence sends once and joins before returning', async () => {
   const id = 'a'.repeat(64); let finish, delivered = 0, sent = 0, reads = 0;
   const run = async (args, options) => {

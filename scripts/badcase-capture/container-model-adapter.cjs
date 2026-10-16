@@ -31,8 +31,18 @@ function sdkMessages(context) {
 }
 function nonThinking(s) {
   if (!Object.hasOwn(s, 'compatibilityProfile')) return false;
-  assert.equal(s.compatibilityProfile, 'opencode-go-deepseek-nonthinking-v1');
+  assert.ok(['opencode-go-deepseek-nonthinking-v1', 'opencode-go-deepseek-nonthinking-cached-v1'].includes(s.compatibilityProfile));
   assert.equal(s.provider, 'opencode-go'); assert.equal(s.model, 'deepseek-v4.1-flash'); return true;
+}
+function promptCacheTokens(u, s) {
+  if (!Object.hasOwn(u, 'prompt_tokens_details')) return 0;
+  const d = u.prompt_tokens_details;
+  assert.ok(d && typeof d === 'object' && !Array.isArray(d) && Object.keys(d).every(k => ['cached_tokens', 'audio_tokens'].includes(k)));
+  const cached = Object.hasOwn(d, 'cached_tokens') ? d.cached_tokens : 0;
+  assert.ok(Number.isSafeInteger(u.prompt_tokens) && u.prompt_tokens >= 1 && Number.isSafeInteger(cached) && cached >= 0 && cached <= u.prompt_tokens);
+  assert.ok(!Object.hasOwn(d, 'audio_tokens') || d.audio_tokens === 0);
+  if (s.compatibilityProfile !== 'opencode-go-deepseek-nonthinking-cached-v1') assert.equal(cached, 0);
+  return cached;
 }
 function assistantMessage(raw, profile) {
   const s = profile.settings, off = nonThinking(s); assert.equal(raw.model, s.model); assert.equal(raw.choices.length, 1);
@@ -49,12 +59,15 @@ function assistantMessage(raw, profile) {
       content.push({ type: 'toolCall', id: t.id, name: t.function.name, arguments: JSON.parse(t.function.arguments) });
     }
   }
-  const u = raw.usage;
-  const input = u.prompt_tokens * s.inputMicroUsdPerMillionTokens / 1e12;
+  const u = raw.usage, cached = promptCacheTokens(u, s), uncached = u.prompt_tokens - cached;
+  // SDK counters partition the prompt. Both partitions use the SAME declared
+  // full input rate; there is no invented provider discount or extra cache charge.
+  const input = uncached * s.inputMicroUsdPerMillionTokens / 1e12;
+  const cacheRead = cached * s.inputMicroUsdPerMillionTokens / 1e12;
   const output = u.completion_tokens * s.outputMicroUsdPerMillionTokens / 1e12;
   return { role: 'assistant', content, api: 'openai-completions', provider: s.provider, model: s.model,
-    usage: { input: u.prompt_tokens, output: u.completion_tokens, cacheRead: 0, cacheWrite: 0, totalTokens: u.total_tokens,
-      cost: { input, output, cacheRead: 0, cacheWrite: 0, total: input + output } },
+    usage: { input: uncached, output: u.completion_tokens, cacheRead: cached, cacheWrite: 0, totalTokens: u.total_tokens,
+      cost: { input, output, cacheRead, cacheWrite: 0, total: input + cacheRead + output } },
     stopReason: c.finish_reason === 'tool_calls' ? 'toolUse' : 'stop', timestamp: Date.now() };
 }
 function createMailbox(profile, gate) {

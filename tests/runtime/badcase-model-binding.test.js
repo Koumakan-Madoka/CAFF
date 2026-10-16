@@ -110,6 +110,25 @@ test('nonthinking compatibility binds mode and OpenCode endpoint, including dura
   assert.ok(!fs.readdirSync(dir).map(n => fs.readFileSync(path.join(dir, n), 'utf8')).join('').includes('PRIVATE-'));
 });
 
+test('cached compatibility requires a distinct approval and preserves full-rate cost through both ledgers', async t => {
+  const c = config(); Object.assign(c.settings, { provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: 'opencode-go-deepseek-nonthinking-cached-v1' });
+  Object.assign(c.endpoint, { hostname: 'opencode.ai', path: '/zen/go/v1/chat/completions', clientProfile: 'opencode-go-v1' });
+  const strict = structuredClone(c); strict.settings.compatibilityProfile = 'opencode-go-deepseek-nonthinking-v1';
+  assert.notEqual(modelBinding(c).bindingHash, modelBinding(strict).bindingHash);
+  const f = fixture(t, c); approve(f);
+  const calls = fakeNetwork(t, { id: 'synthetic', object: 'chat.completion', created: 1, model: c.settings.model,
+    choices: [{ index: 0, message: { role: 'assistant', content: 'answer', reasoning_content: null }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30, prompt_tokens_details: { cached_tokens: 19 } } });
+  const final = await dispatchBoundModelEvaluation(f.root, f.approval.approvalId, async (run, send) => { await send(body(f)); return result(run); }, lease);
+  assert.equal(final.dispatchState, 'finished'); assert.equal(calls.length, 2); assert.equal(final.ledger.knownCostMicroUsd, 80);
+  for (const run of final.ledger.runs) {
+    assert.equal(run.score.expectationMet, true); const e = readModelEgress(f.root, run.runId);
+    assert.equal(e.knownCostMicroUsd, 40); assert.equal(e.unknownCostRequests, 0); assert.equal(e.requests[0].status, 'completed');
+  }
+  mutate(f.archive, v => v.binding.config.settings.compatibilityProfile = strict.settings.compatibilityProfile);
+  assert.throws(() => readBoundModelApproval(f.root, f.approval.approvalId), rejected);
+});
+
 test('archive precedes approval, immutable exact retry and read after reconstruction', t => {
   const f = fixture(t), original = fs.openSync; let observed = false;
   fs.openSync = function(file, flags, ...rest) {

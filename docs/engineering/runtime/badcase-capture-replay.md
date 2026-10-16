@@ -755,6 +755,19 @@ E76 在已审 `a01b14b8` 与新非thinking计划下实跑：99文件副本逐字
 
 作者验证：新增16个用例旧实现先红后绿；Windows七套186＝184通过/2链接权限跳过，Linux Node22.22 186/186；10个私有副本诊断变异（四标签退化、cache/reasoning分类上界、未知键/其他计数限制、详情顺序、旧粗标签保留）全部红，逐字节恢复后186/186并清理副本。fast1925通过/41跳过、smoke101、build/check及双typecheck通过。此代码验证零新增Key/供应商/Docker/UI；真实E76单独记账，全部AC pending、不合并发布。
 
+### 5.26 显式允许有界缓存计数的新版本 profile
+
+E78 在已审 `8a46d342`、99文件逐字节核验及186/186预检后，用新批准执行基线诊断。实际仅1请求HTTP200后落 `protocol_response_usage_cached_tokens`：**本次已确认是键集合法、audio缺省/零、正整数且不超过prompt_tokens的缓存计数，被旧零计数限制拒绝**；具体计数不保存，不回溯E76同因。仍无评分/候选，2容器及专用daemon清理、源镜像不变；本批5/6请求，作者拿到定位后停止付费。新增外层$0.50、累计$2.50未结算预留（非账单、不与内层重复相加）。本批长期保留批准/双账本/无正文摘要，临时生成CSV材料不是用户真实现场封存证据，不能充当历史badcase恢复验收。
+
+按 [OpenAI官方SDK CompletionUsage定义](https://raw.githubusercontent.com/openai/openai-node/master/src/resources/completions.ts) 的“cached_tokens present in the prompt”及prompt+completion总数语义，新增独立 `compatibilityProfile:"opencode-go-deepseek-nonthinking-cached-v1"`，不是改写旧profile：
+
+- 同样精确钉住opencode-go/deepseek-v4.1-flash及已显式启用的OpenCode端点profile；新值进入settingsHash/bindingHash、审核/计划、容器model-profile.json和harnessHash，须新批准。旧无profile及`opencode-go-deepseek-nonthinking-v1`依旧拒绝任何非零缓存计数；不自动按供应商响应换模式或重用旧批准。
+- 仅新版本允许prompt_tokens_details.cached_tokens为0..prompt_tokens的安全整数，其他已知audio计数缺省或0，无未知键；primary计数/总和/字节/窗口上限仍按完整prompt验证，非零reasoning/audio/prediction、非空reasoning内容、未知详情等继续拒绝。thinking请求仍固定disabled。
+- 预算预留与主机逐请求BigInt向上取整计量仍对**完整prompt_tokens收费一次**，不减去缓存、不另加缓存、不拆分后重复取整、不杜撰折扣。费率是操作者声明而非供应商账单或真实费用上界，旧未知费用/未结算预留不因此结算。SDK展示计数分为input=prompt-cached、cacheRead=cached、output=completion，totalTokens仍prompt+completion；两输入分区同用声明的完整输入单价，cost.total仍完整prompt+output。SDK浮点展示不参与主机预算裁决。
+- adapter独立复验缓存键集、类型/边界/audio以及模式门控，旧模式不能绕过主机后静默丢失非零缓存；新模式不重复计数或丢失缓存分类。实际adapter字节纳入manifest/harnessHash，其余hostCode编译模块缺口不变。
+
+作者验证：新增4例旧实现先红后绿；Windows七套190＝188通过/2链接权限跳过，Linux Node22.22 190/190；15个私有副本变异全红（旧模式门控、类型/边界/未知键/audio、模式hash绑定、主机减缓存/加缓存、SDK折扣/重复计数/丢计数等），逐字节恢复复绿并清理。fast1929通过/41跳过、smoke101、build/check及双typecheck通过；本段代码验证零新增Key/供应商/Docker/UI，尚未以新版本调用供应商，不宣称已跑通对照。全部AC pending、不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

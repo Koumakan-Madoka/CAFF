@@ -398,6 +398,33 @@ test('usage detail labels distinguish bounded nonzero cache/reasoning from malfo
   });
 });
 
+test('explicit cached nonthinking profile counts cached tokens inside prompt without discounts or double charging', async () => {
+  const s = { ...spec(), provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: 'opencode-go-deepseek-nonthinking-cached-v1' };
+  const strict = { ...s, compatibilityProfile: 'opencode-go-deepseek-nonthinking-v1' };
+  assert.notEqual(chatCompletionsSettings(s).settingsHash, chatCompletionsSettings(strict).settingsHash);
+  assert.deepEqual(JSON.parse(encodeChatCompletionsRequest(s, messages())).thinking, { type: 'disabled' });
+  for (const cached of [0, 1, 20]) {
+    const v = response(); v.model = s.model; v.choices[0].message.reasoning_content = null; v.usage.prompt_tokens_details = { cached_tokens: cached, audio_tokens: 0 };
+    const result = await createChatCompletionsTransport(s, exchange(v))(request(s)); assert.equal(result.costMicroUsd, 40);
+    assert.deepEqual(JSON.parse(result.body).usage, v.usage);
+    const tiny = { ...s, inputMicroUsdPerMillionTokens: 1, outputMicroUsdPerMillionTokens: 1 };
+    assert.equal((await createChatCompletionsTransport(tiny, exchange(v))(request(tiny))).costMicroUsd, 2);
+    if (cached) await assert.rejects(createChatCompletionsTransport(strict, exchange(v))(request(strict)), e => modelFailureStage(e) === 'protocol_response_usage_cached_tokens');
+  }
+  for (const details of [{ cached_tokens: -1 }, { cached_tokens: 21 }, { cached_tokens: 1.5 }, { cached_tokens: '1' }, { cached_tokens: 1, audio_tokens: 1 },
+    { cached_tokens: 1, extra: 0 }, { cached_tokens: null }, [], null]) {
+    const v = response(); v.model = s.model; v.usage.prompt_tokens_details = details;
+    await assert.rejects(createChatCompletionsTransport(s, exchange(v))(request(s)), e => modelFailureStage(e) === 'protocol_response_usage_prompt_details');
+  }
+  const v = response(); v.model = s.model; v.usage.prompt_tokens_details = { cached_tokens: 1 };
+  v.usage.completion_tokens_details = { reasoning_tokens: 1 };
+  await assert.rejects(createChatCompletionsTransport(s, exchange(v))(request(s)), e => modelFailureStage(e) === 'protocol_response_usage_reasoning_tokens');
+  delete v.usage.completion_tokens_details; v.usage.total_tokens = 31;
+  await assert.rejects(createChatCompletionsTransport(s, exchange(v))(request(s)), e => modelFailureStage(e) === 'protocol_response_usage');
+  v.usage.total_tokens = 30; v.choices[0].message.reasoning_content = 'PRIVATE-REASONING';
+  await assert.rejects(createChatCompletionsTransport(s, exchange(v))(request(s)), e => modelFailureStage(e) === 'protocol_response_choice_reasoning_invalid');
+});
+
 test('settings and request bytes snapshotted before asynchronous exchange', async () => {
   const s = spec(), r = request(s), original = Buffer.from(r.body);
   const send = createChatCompletionsTransport(s, async value => {

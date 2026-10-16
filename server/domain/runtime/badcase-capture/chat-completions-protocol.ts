@@ -19,7 +19,7 @@ export interface ChatCompletionsSettings {
   provider: string; model: string; contextWindowTokens: number; maxOutputTokens: number; temperature: number;
   inputMicroUsdPerMillionTokens: number; outputMicroUsdPerMillionTokens: number;
   maxRequestBytes: number; maxResponseBytes: number;
-  compatibilityProfile?: 'opencode-go-deepseek-nonthinking-v1';
+  compatibilityProfile?: 'opencode-go-deepseek-nonthinking-v1' | 'opencode-go-deepseek-nonthinking-cached-v1';
 }
 // Round each component UP in integer arithmetic, never underreserve by rounding.
 function tariff(s: ChatCompletionsSettings, input: number, output: number) {
@@ -33,7 +33,7 @@ export function chatCompletionsSettings(value: unknown) {
     const profiled = object(v) && Object.hasOwn(v, 'compatibilityProfile');
     if (!keys(v, ['provider', 'model', 'contextWindowTokens', 'maxOutputTokens', 'temperature',
       'inputMicroUsdPerMillionTokens', 'outputMicroUsdPerMillionTokens', 'maxRequestBytes', 'maxResponseBytes'], ['compatibilityProfile'])
-      || (profiled && (v.compatibilityProfile !== 'opencode-go-deepseek-nonthinking-v1' || v.provider !== 'opencode-go' || v.model !== 'deepseek-v4.1-flash'))
+      || (profiled && (!['opencode-go-deepseek-nonthinking-v1', 'opencode-go-deepseek-nonthinking-cached-v1'].includes(v.compatibilityProfile!) || v.provider !== 'opencode-go' || v.model !== 'deepseek-v4.1-flash'))
       || !id(v.provider) || !modelIdentifier(v.model) || !integer(v.contextWindowTokens, 1, 10000000)
       || !integer(v.maxOutputTokens, 1, v.contextWindowTokens)
       || !Number.isFinite(v.temperature) || v.temperature < 0 || v.temperature > 2
@@ -211,8 +211,9 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
     toolCall(c.message.tool_calls[0], tools!, seen);
   }
   const u = v.usage;
-  // Keep usage bounds/arithmetic and both zero-details checks unchanged. These
-  // are rejection classifications only; never save counts or relax billing.
+  // Keep primary bounds/arithmetic and legacy zero-details behavior. Only the
+  // versioned cached profile admits a bounded subset already inside prompt_tokens.
+  // Tariff still charges the FULL prompt once at the declared input rate.
   if (!keys(u, ['prompt_tokens', 'completion_tokens', 'total_tokens'], ['prompt_tokens_details', 'completion_tokens_details'])
     || !integer(u.prompt_tokens, 1, s.contextWindowTokens) || !integer(u.completion_tokens, 0, s.maxOutputTokens)
     || !integer(u.total_tokens, 1, s.contextWindowTokens) || u.total_tokens !== u.prompt_tokens + u.completion_tokens) responseFailure('protocol_response_usage');
@@ -220,7 +221,8 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
     const d = u.prompt_tokens_details;
     const cached = keys(d, [], ['cached_tokens', 'audio_tokens']) && integer(d.cached_tokens, 1, u.prompt_tokens)
       && (!Object.hasOwn(d, 'audio_tokens') || d.audio_tokens === 0);
-    responseFailure(cached ? 'protocol_response_usage_cached_tokens' : 'protocol_response_usage_prompt_details');
+    if (s.compatibilityProfile !== 'opencode-go-deepseek-nonthinking-cached-v1' || !cached)
+      responseFailure(cached ? 'protocol_response_usage_cached_tokens' : 'protocol_response_usage_prompt_details');
   }
   const completionDetails = ['reasoning_tokens', 'audio_tokens', 'accepted_prediction_tokens', 'rejected_prediction_tokens'];
   if (Object.hasOwn(u, 'completion_tokens_details') && !zeroDetails(u.completion_tokens_details, completionDetails)) {

@@ -167,6 +167,17 @@ test('tools-v1 uses the same usage detail rejection labels before returning a to
   }
 });
 
+test('explicit cached nonthinking tools retain full prompt accounting and validated call bytes', async () => {
+  const c = config(); Object.assign(c.settings, { provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: 'opencode-go-deepseek-nonthinking-cached-v1' });
+  const v = response(); v.model = c.settings.model; v.choices[0].message.reasoning_content = '';
+  v.usage.prompt_tokens_details = { cached_tokens: 7 };
+  const result = await api.createToolChatCompletionsTransport(c, exchange(v))(request(c)); assert.equal(result.costMicroUsd, 40);
+  assert.deepEqual(JSON.parse(result.body).choices[0].message.tool_calls, v.choices[0].message.tool_calls);
+  assert.deepEqual(JSON.parse(api.encodeToolChatCompletionsRequest(c, history())).thinking, { type: 'disabled' });
+  v.usage.completion_tokens_details = { reasoning_tokens: 1 };
+  await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(v))(request(c)), e => modelFailureStage(e) === 'protocol_response_usage_reasoning_tokens');
+});
+
 test('argument byte bound is independent of outer response limit', async () => {
   const c = config(); c.settings.maxResponseBytes = 131072;
   for (const delta of [0, 1]) {
