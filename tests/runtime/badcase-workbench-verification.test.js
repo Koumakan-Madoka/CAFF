@@ -1,13 +1,27 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { verificationMode, isolatedBrowserOptions, assertExecutionEvidence } = require('../../scripts/badcase-capture/verify-workbench.cjs');
+const { verificationMode, isolatedBrowserOptions, assertExecutionEvidence, createVerificationFixture } = require('../../scripts/badcase-capture/verify-workbench.cjs');
+
+test('legacy synthetic fixture preserves its callback API in both delivery modes', async t => {
+  for (const mode of ['fresh', 'resume']) {
+    const h = await createVerificationFixture(t, mode, { captured: false, cli: false, root: path.resolve('unused') });
+    assert.equal(h.r.deliveryMode, mode); assert.equal(h.cp.checkpointId, 'cp1');
+  }
+});
 
 test('browser-only remains synthetic; joint browser mode requires real Docker', () => {
   assert.deepEqual(verificationMode(['--browser']), { browserMode: true, synthetic: true, joint: false });
   assert.deepEqual(verificationMode(['--browser-docker']), { browserMode: true, synthetic: false, joint: true });
   assert.deepEqual(verificationMode([]), { browserMode: false, synthetic: false, joint: false });
   assert.throws(() => verificationMode(['--browser', '--browser-docker']));
+});
+
+test('real CLI mode cannot silently fall back to synthetic execution or manually built cases', () => {
+  assert.deepEqual(verificationMode(['--browser-docker', '--captured', '--operator-cli']), { browserMode: true, synthetic: false, joint: true });
+  for (const args of [['--operator-cli'], ['--browser', '--captured', '--operator-cli'], ['--browser-docker', '--operator-cli']]) {
+    assert.throws(() => verificationMode(args));
+  }
 });
 
 test('joint browser needs explicit executable/libraries and a different network namespace', () => {

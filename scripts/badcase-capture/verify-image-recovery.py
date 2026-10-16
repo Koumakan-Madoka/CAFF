@@ -24,10 +24,13 @@ def main():
     mode.add_argument('--workbench', action='store_true', help='isolated material review and explicit HTTP start; no paid model')
     mode.add_argument('--browser-workbench', action='store_true', help='same-run Chromium review/start/query to dedicated Docker; scripted model only')
     parser.add_argument('--captured', action='store_true', help='real synthetic collector + SQLite/HTTP seal selected into workbench; only with workbench modes')
+    parser.add_argument('--operator-cli', action='store_true', help='launch the real operator CLI child; requires browser-workbench and captured')
     parser.add_argument('--browser-executable')
     parser.add_argument('--browser-library-dir')
     parser.add_argument('--browser-fontconfig')
     args = parser.parse_args()
+    if args.operator_cli and not (args.browser_workbench and args.captured):
+        parser.error('operator-cli requires browser-workbench and captured')
     if args.captured and not (args.workbench or args.browser_workbench):
         parser.error('captured requires workbench or browser-workbench')
     if args.browser_workbench:
@@ -102,11 +105,13 @@ def main():
                   'verify-scripted-evaluation.cjs' if args.scripted_evaluation else 'verify-image-recovery.cjs')
         node_args = ['node', str(repo / 'scripts/badcase-capture' / script)]
         for key, value in vars(args).items():
-            if key not in ['scripted_evaluation', 'probe_recovery', 'approved_scripted_evaluation', 'workbench', 'browser_workbench', 'browser_executable', 'browser_library_dir', 'browser_fontconfig', 'captured']:
+            if key not in ['scripted_evaluation', 'probe_recovery', 'approved_scripted_evaluation', 'workbench', 'browser_workbench', 'browser_executable', 'browser_library_dir', 'browser_fontconfig', 'captured', 'operator_cli']:
                 node_args.extend(['--' + key.replace('_', '-'), value])
         node_args.extend(['--socket', 'unix://' + str(base / 'docker.sock'), '--daemon-id', info['ID'], '--data-root', str(base / 'data')])
         if args.captured:
             node_args.append('--captured')
+        if args.operator_cli:
+            node_args.append('--operator-cli')
         if args.browser_workbench:
             node_args.extend(['--browser-docker', '--browser-executable', args.browser_executable,
                               '--browser-library-dir', args.browser_library_dir,
@@ -129,13 +134,14 @@ def main():
             if loaded[key] != original[key]:
                 raise RuntimeError('recovered_image_changed')
         report.update({'ok': True, 'sharedImageUnchanged': True, 'separateNetworkAndMountNamespaces': True,
-                       'remainingContainers': 0, 'loadedConfigAndLayersMatch': True})
+                       'remainingContainers': 0, 'loadedConfigAndLayersMatch': True,
+                       'observedRepositoryDigests': loaded.get('RepoDigests')})
     except Exception as exc:
         # No raw daemon/stdout content or credentials in public reports.
         report.update({'ok': False, 'error': type(exc).__name__})
         if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
             # Only known verifier stage codes, never raw stderr/assertion data.
-            stages = ['prepare', 'browser-launch', 'browser-preview', 'browser-approve',
+            stages = ['prepare', 'cli-start', 'browser-launch', 'browser-preview', 'browser-approve',
                       'browser-start', 'browser-report', 'rebuild', 'evidence']
             for stage in stages:
                 if exc.stderr.strip() == ('workbench_verification_failed:' + stage).encode():

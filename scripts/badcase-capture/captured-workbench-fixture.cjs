@@ -4,11 +4,14 @@
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), http = require('node:http');
 const assert = require('node:assert/strict');
 const load = name => require('../../build/' + name);
-module.exports = async function capturedFixture(t, mode) {
+module.exports = async function capturedFixture(t, mode, options = {}) {
   assert.equal(process.platform, 'linux'); assert.ok(['fresh', 'resume'].includes(mode));
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-captured-workbench-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-  const root = path.join(base, 'capture'), target = path.join(base, 'target'), inputs = path.join(base, 'inputs');
+  // Optional shared disposable CAS lets the real operator CLI select both modes
+  // from its single captureRoot. Each synthetic DB/message stays independent.
+  const root = options.captureRoot || path.join(base, 'capture'), messageId = options.messageId || 'msg1';
+  const target = path.join(base, 'target'), inputs = path.join(base, 'inputs');
   fs.mkdirSync(target); fs.mkdirSync(inputs); fs.writeFileSync(path.join(target, 'source.txt'), 'retained bytes');
   const session = [
     { type: 'session', version: 3, id: 'synthetic-session', timestamp: '2026-01-01T00:00:00.000Z', cwd: target },
@@ -58,7 +61,7 @@ module.exports = async function capturedFixture(t, mode) {
     fs.writeFileSync(path.join(target, 'source.txt'), 'after simulated turn'); fs.appendFileSync(sessionPath, 'POST-START\n');
     chat.saveCustomRoleConfig({ id: 'a1', name: 'Synthetic', personaPrompt: 'not executed' });
     chat.createConversation({ id: 'c1', title: 'Synthetic', participants: ['a1'], projectScopeId: 'p1' });
-    chat.createMessage({ id: 'msg1', conversationId: 'c1', role: 'assistant', status: 'completed', agentId: 'a1', turnId: 't1',
+    chat.createMessage({ id: messageId, conversationId: 'c1', role: 'assistant', status: 'completed', agentId: 'a1', turnId: 't1',
       taskId: 'task1', runId: 1, content: 'not archived', metadata: { badcaseCheckpointId: cp.checkpointId } });
     load('lib/sqlite-store').createSqliteRunStore({ agentDir: base, db: chat.db });
     chat.db.prepare(`INSERT INTO runs (id, agent_dir, cwd, prompt, prompt_length, status, started_at, task_id, assistant_errors_json)
@@ -66,7 +69,7 @@ module.exports = async function capturedFixture(t, mode) {
     chat.db.prepare(`INSERT INTO a2a_tasks (id, run_id, kind, status, metadata_json, output_text, created_at, updated_at)
       VALUES ('task1', 1, 'conversation_agent_reply', 'succeeded', ?, 'RAW-NOT-ARCHIVED', '2026-01-01', '2026-01-01')`)
       .run(JSON.stringify({ conversationId: 'c1', turnId: 't1', agentId: 'a1' }));
-    const flagRoute = '/api/projects/p1/conversations/c1/messages/msg1/badcase-flag';
+    const flagRoute = '/api/projects/p1/conversations/c1/messages/' + messageId + '/badcase-flag';
     const body = { confirmed: true, actual: 'Synthetic incorrect draft', expected: 'Synthetic done output' };
     const marked = await api(flagRoute, body, 201); assert.equal(marked.seal.state, 'saved_incomplete');
     assert.equal(marked.seal.trajectory.reason, 'trajectory_provenance_unverified');
@@ -79,10 +82,10 @@ module.exports = async function capturedFixture(t, mode) {
     const blobPath = h => path.join(root, 'projects/p1/blobs', h.slice(0, 2), h);
     assert.equal(fs.readFileSync(blobPath(cp.files['source.txt'].hash), 'utf8'), 'retained bytes');
     if (mode === 'resume') assert.equal(fs.readFileSync(blobPath(r.sessionBlobHash), 'utf8'), session);
-    const caseText = fs.readFileSync(path.join(root, 'projects/p1/cases', require('node:crypto').createHash('sha256').update('msg1').digest('hex') + '.json'), 'utf8');
+    const caseText = fs.readFileSync(path.join(root, 'projects/p1/cases', require('node:crypto').createHash('sha256').update(messageId).digest('hex') + '.json'), 'utf8');
     assert.doesNotMatch(caseText, /RAW-NOT-ARCHIVED/);
     return { root, store: service.store, cp, r, blobPath, runDir: path.join(root, 'projects/p1/runReferences'),
-      selection: { id: mode, projectId: 'p1', conversationId: 'c1', messageId: 'msg1' },
+      selection: { id: mode, projectId: 'p1', conversationId: 'c1', messageId },
       evidence: { collector: true, managementHttp: true, sqlite: true, flagHttp: true, rebuiltQuery: true,
         simulatedTurn: true, trajectoryArchived: false, usageBytes: usage.totalBytes } };
   } finally {

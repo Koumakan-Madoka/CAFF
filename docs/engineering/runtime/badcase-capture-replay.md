@@ -528,7 +528,17 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 
 验证：`node --test tests/runtime/badcase-sealed-workbench.test.js`（Linux 需匹配 ABI 的 SQLite；Windows 显式跳过真实 collector 用例）。`verify-image-recovery.py --browser-workbench --captured` 加 §4.4 五个镜像参数及 §5.8 浏览器参数，使用真实 collector + HTTP 授权/预估/开启、SQLite 消息/run/task、HTTP 标记/worker 封存、重复幂等/重建查询、关闭采集；随后按消息选择并删除 live checkpoint，Chromium 预览/批准/启动 → 专用 Docker 真实 SDK 工具 → 逐次评分及重建页面查询。fresh/resume 各两容器，归档及 CAS 不变、各三保护引用。该模式需将 scripts 一并复制到 §3.8 的 Linux 私有副本；不修改共享 Windows SQLite。
 
-验证材料与 turn/模型/确认均合成：collector 在模拟现场变更前调用，不等于真实 executor/模型 turn（既有 executor 挂点证据见 §3.8）；采集和标记走真实 HTTP 但非浏览器点击，浏览器只覆盖后半工作台。轨迹只验证直接关联与计数，正文不保存。CLI 配置读取/编排有离线测试，联合 Docker 验证复用其选择器及相同工作台/恢复器，并非从 CLI 子进程开始的整条操作录像。用户真实采集、模型预算、忠实回放与全部 AC 仍待交付/验收。
+验证材料与 turn/模型/确认均合成：collector 在模拟现场变更前调用，不等于真实 executor/模型 turn（既有 executor 挂点证据见 §3.8）；采集和标记走真实 HTTP 但非浏览器点击，浏览器只覆盖后半工作台。轨迹只验证直接关联与计数，正文不保存。原 `--captured` 联合 Docker 验证复用选择器及相同工作台/恢复器，不从 CLI 子进程开始；实际 CLI 子进程验证见 §5.12。用户真实采集、模型预算、忠实回放与全部 AC 仍待交付/验收。
+
+### 5.12 操作者 CLI 子进程至浏览器/Docker 的同次验证
+
+在 §5.11 的 `verify-image-recovery.py --browser-workbench --captured` 命令追加 `--operator-cli`（仍需五个镜像参数及三个显式浏览器路径）。这只是验证器选项，不是新的生产入口。Python 管理同样的临时空 daemon/net+mount namespace；Node 验证器保存自有合成配置，再用 `process.execPath serve-sealed-workbench.cjs --config <绝对路径>` 启动**未替换模块或 transport 的真实 CLI 子进程**。子进程仅继承 PATH 与专用运行所需 HOME/TMPDIR/LANG，不继承 PI/模型凭据；就绪 JSON 有界 4KiB、必须是 loopback URL 与离线标记，失败只出固定验证错误。实验监督者仅终止自己 spawn 的子进程，等待退出；启动失败/超时不升级成功，daemon 清理由 Python 所有者负责。
+
+两次真实 collector/HTTP/SQLite 封存使用同一自有 CAS、不同 messageId，fresh/resume 共同选择进入一个 CLI 注册表。浏览器预览/取消/确认/启动、实际容器 SDK 工具与评分沿原产品路径；先删除 live checkpoint，证明选择依赖封存材料。两次启动请求返回后，验证器从**显式目标 socket**读取有界 Docker 历史事件（daemon 仅保留有限历史，缺事件即失败），独立核对每个容器完整 64hex ID、固定 image ID、owner/name、按序 create/start/die(0)/destroy，且累计恰为 2/4 个，最终目标容器为空。无注入 transport 包装。报告 runId 来自持久报告，事件容器 ID 来自 daemon；仅声明**每次串行请求对应两容器的批次关联**，不声称逐 runId 与容器 ID 有独立双向绑定或密码学认证。CLI 路径的 `identity` 字段为 null（未截获内部恢复回执），Python 单独核对实际镜像 Config/RootFS/ID/架构并报告实际 RepoDigests，不补造回执。
+
+完成后向 CLI 发 SIGTERM 并等 exit=0/signal=null，再由不同的父验证进程重建原工作台 HTTP 服务，变更内存注册表文本，浏览器查询旧报告/人审归档逐字一致，旧启动票据拒绝。读回 transport 明确抛错，禁止再次执行；**不是重启 CLI**（同一 daemon 已非空，不能绕过其恢复守卫）、不是新空 daemon 上的二次 CLI 启动验证，也不是完整生产服务重启/掉电。公共 CAS 的六个保护引用与源 blob 保持，不自动释放或 GC。usageBytes 为两次阶段的累计逻辑占用，不是各模式独占增量。
+
+自动测试：`node --test tests/runtime/badcase-cli-verification.test.js tests/runtime/badcase-sealed-workbench.test.js tests/runtime/badcase-workbench-verification.test.js tests/runtime/badcase-scripted-workbench.test.js`；Windows 不支持 POSIX graceful SIGTERM，明确跳过对应监督者测试；真实 collector 的 Linux SQLite 前置沿 §3.8。注册表提前拒绝负例钉住的是 image schema（并非 role 正文；role 仍由 preview 校验）；相对 captureRoot 负例要求任何文件读取前拒绝。所有数据、确认与模型仍合成，浏览器仅覆盖后半，不扩大轨迹正文权限，不升级忠实回放/真实模型/任何 AC。
 
 ## 6. 威胁模型
 

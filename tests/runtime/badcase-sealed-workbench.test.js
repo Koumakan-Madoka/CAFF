@@ -38,6 +38,14 @@ test('invalid scope, duplicate ID, injected association/path and absent case ref
   assert.throws(() => selectSealedMaterials({ ...h.options, captureRoot: path.join(h.root, 'absent') }), /sealed_material_invalid/);
   assert.equal(fs.existsSync(path.join(h.root, 'absent')), false); assert.equal(fs.existsSync(h.runDir), false);
 });
+test('relative captureRoot is rejected before any filesystem access', t => {
+  const h = setup(t), stat = fs.lstatSync; let reads = 0;
+  fs.lstatSync = (...args) => { reads++; return stat(...args); };
+  try {
+    assert.throws(() => selectSealedMaterials({ ...h.options, captureRoot: 'relative-capture-root' }), /sealed_material_invalid/);
+    assert.equal(reads, 0);
+  } finally { fs.lstatSync = stat; }
+});
 test('tampered, oversized, non-UTF8 and invalid case cannot become registry material', t => {
   for (const kind of ['checksum', 'oversized', 'utf8', 'state', 'scope', 'extra']) {
     const h = setup(t);
@@ -130,6 +138,11 @@ test('operator startup validates selection before restore and routes only restor
   try {
     delete require.cache[filename]; const { serve } = require(filename);
     assert.equal(await serve(config), result); assert.deepEqual(events, ['verify', 'restore', 'server']);
+    // Registry prevalidation checks image schema, not role content (preview does
+    // the latter). A valid selected case must not reach restore with a bad image.
+    events.length = 0; image.extra = 'not-an-image-field';
+    await assert.rejects(serve(config), /evaluation_workbench_invalid/); assert.deepEqual(events, ['verify']);
+    delete image.extra;
     events.length = 0; fs.unlinkSync(h.file);
     await assert.rejects(serve(config), /sealed_material_invalid/); assert.deepEqual(events, ['verify']);
   } finally {

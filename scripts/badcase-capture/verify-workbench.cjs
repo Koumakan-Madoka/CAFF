@@ -13,6 +13,7 @@ const { startScriptedWorkbenchServer } = require('./workbench-server.cjs');
 function verificationMode(args) {
   const synthetic = args.includes('--browser'), joint = args.includes('--browser-docker');
   assert.ok(!(synthetic && joint));
+  assert.ok(!args.includes('--operator-cli') || (args.includes('--captured') && joint && !synthetic));
   return { browserMode: synthetic || joint, synthetic, joint };
 }
 function isolatedBrowserOptions(root, executable, libraries, ownNamespace, parentNamespace, fontconfig) {
@@ -33,25 +34,36 @@ function assertExecutionEvidence({ synthetic, joint, browserVersion, calls, ids 
     assert.ok(ids.every(id => /^[a-f0-9]{64}$/.test(id)));
   }
 }
+function createVerificationFixture(t, mode, { captured, cli, root }) {
+  // Legacy fixture's third argument is a mutation callback, NOT options.
+  if (!captured) return fixture(t, mode);
+  return require('./captured-workbench-fixture.cjs')(t, mode,
+    cli ? { captureRoot: path.join(root, 'capture'), messageId: 'msg-' + mode } : {});
+}
 let verificationStage = 'prepare';
 async function main() {
   const args = process.argv.slice(2), { browserMode, synthetic, joint } = verificationMode(args);
-  const captured = args.includes('--captured');
+  const captured = args.includes('--captured'), cli = args.includes('--operator-cli');
   assert.ok(!captured || (!synthetic && process.platform === 'linux'));
   const arg = name => { const i = args.indexOf('--' + name); assert.ok(i >= 0 && args[i + 1]); return args[i + 1]; };
   const root = synthetic ? fs.mkdtempSync(path.join(os.tmpdir(), 'caff-workbench-ui-')) : path.join(arg('data-root'), '..', 'artifacts');
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const cleanup = [], ids = [], reports = [], calls = [];
-  let server, browser, identity = null, archiveBytes = null;
+  let server, browser, operator, identity = null, archiveBytes = null, imageArchive;
+  const cliBatches = [], eventSince = Math.floor(Date.now() / 1000);
   try {
     const image = synthetic ? { imageId: 'sha256:' + '1'.repeat(64), repositoryDigest: 'node@sha256:' + '2'.repeat(64), architecture: 'amd64', nodeVersion: 'v24.21.0', pythonVersion: 'Python 3.11.2' }
       : { imageId: arg('image-id'), repositoryDigest: arg('repository-digest'), architecture: arg('architecture'), nodeVersion: arg('node-version'), pythonVersion: arg('python-version') };
     let transport;
     if (!synthetic) {
       const { archiveImage } = require('./image-archive.cjs'), { restoreImageArchive } = require('./image-recovery.cjs');
-      const ref = await archiveImage(image, path.join(root, 'image'));
-      const restored = await restoreImageArchive(ref, { socket: arg('socket'), daemonId: arg('daemon-id'), dataRoot: arg('data-root') });
-      identity = restored.identity; archiveBytes = ref.archiveBytes; transport = restored.runProbe;
+      const ref = imageArchive = await archiveImage(image, path.join(root, 'image'));
+      archiveBytes = ref.archiveBytes;
+      // The actual CLI child, not this verifier, must restore its empty daemon.
+      if (!cli) {
+        const restored = await restoreImageArchive(ref, { socket: arg('socket'), daemonId: arg('daemon-id'), dataRoot: arg('data-root') });
+        identity = restored.identity; transport = restored.runProbe;
+      }
     } else transport = async (_, files) => {
       const manifest = manifestFor(files), q = JSON.parse(files.find(f => f.path === 'task.json').bytes);
       return { containerId: 'a'.repeat(64), manifest, result: { code: 0, stderr: '', stdout: JSON.stringify({ kind: 'scripted-sdk-task-v1', runId: q.runId, roleHash: hash(q.role),
@@ -61,7 +73,8 @@ async function main() {
     const repo = path.resolve(__dirname, '../..');
     const sources = { runtimeArchive: archiveRuntime(repo, path.join(root, 'runtime')), harnessArchive: archiveHarness(repo, path.join(root, 'harness')) };
     const fixtures = [];
-    for (const mode of ['fresh', 'resume']) fixtures.push(await (captured ? require('./captured-workbench-fixture.cjs') : fixture)({ after: f => cleanup.push(f) }, mode));
+    for (const mode of ['fresh', 'resume']) fixtures.push(await createVerificationFixture(
+      { after: f => cleanup.push(f) }, mode, { captured, cli, root }));
     const roles = { baseline: 'Synthetic baseline <b>literal text</b>.', candidate: 'Synthetic candidate.' };
     const rule = { expectedHash: hash('done\n'), badcaseHash: hash('draft\n') };
     const materials = fixtures.map((h, i) => captured
@@ -74,7 +87,30 @@ async function main() {
       calls.push(JSON.parse(files.find(f => f.path === 'task.json').bytes).runId);
       const r = await transport(img, files, executionOptions); if (!synthetic) ids.push(r.containerId); return r;
     } };
-    server = await startScriptedWorkbenchServer(options);
+    if (cli) {
+      verificationStage = 'cli-start';
+      const config = path.join(root, 'operator.json');
+      fs.writeFileSync(config, JSON.stringify({ root: options.root, captureRoot: fixtures[0].root,
+        selections: fixtures.map(h => h.selection), sources, roles, rule, imageArchive,
+        destination: { socket: arg('socket'), daemonId: arg('daemon-id'), dataRoot: arg('data-root') } }), { flag: 'wx', mode: 0o600 });
+      operator = await require('./cli-verification.cjs').startOperatorCli(config); server = operator;
+    } else server = await startScriptedWorkbenchServer(options);
+    async function observeCliReport(report) {
+      if (!cli) return;
+      const { runDockerCommand } = require('../../build/server/domain/runtime/badcase-capture/docker-sandbox');
+      const result = await runDockerCommand(['events', '--since', String(eventSince), '--until', String(Math.ceil(Date.now() / 1000)),
+        '--filter', 'type=container', '--filter', 'label=caff.badcase.pi-initialization', '--format', '{{json .}}'],
+      { dockerHost: arg('socket'), timeoutMs: 5000 });
+      assert.equal(result.code, 0); assert.ok(!result.failure);
+      const events = result.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const observed = require('./cli-verification.cjs').containerLifecycleEvidence(events, image.imageId, ids.length + 2);
+      assert.deepEqual(observed.slice(0, ids.length), ids);
+      const batch = observed.slice(ids.length); ids.push(...batch);
+      const runIds = report.ledger.runs.map(run => run.runId); assert.equal(runIds.length, 2); calls.push(...runIds);
+      // Sequential request-level correlation, NOT an independent per-run-ID ->
+      // container mapping: run IDs come from the persisted report, IDs from daemon.
+      cliBatches.push({ runIds, containerIds: batch });
+    }
     async function api(action, body) {
       const bootstrap = await (await fetch(server.url + '/api/bootstrap')).json();
       const response = await fetch(server.url + '/api/projects/p1/badcase-evaluations/' + action, { method: body ? 'POST' : 'GET',
@@ -113,6 +149,7 @@ async function main() {
         verificationStage = 'browser-report';
         const approvalId = await el('id').inputValue(), report = JSON.parse(await el('report').textContent());
         assert.equal(report.reason, 'complete'); assert.equal(await el('start').isDisabled(), true);
+        await observeCliReport(report);
         const savedReview = await api('reviews/' + approvalId); assert.equal(savedReview.status, 200);
         assert.deepEqual(savedReview.body.reviewArchive.review.roles, m.roles);
         reports.push({ approvalId, report, reviewArchive: savedReview.body.reviewArchive });
@@ -144,7 +181,9 @@ async function main() {
     await server.close();
     // Registry changes do not rewrite or reconstruct historical review text.
     const changed = materials.map(m => ({ ...m, roles: { baseline: 'Later baseline', candidate: 'Later candidate' } }));
-    server = await startScriptedWorkbenchServer({ ...options, materials: changed });
+    if (cli) { assert.equal(operator.exitCode, 0); assert.equal(operator.exitSignal, null); }
+    server = await startScriptedWorkbenchServer({ ...options, materials: changed,
+      ...(cli ? { runProbe: async () => { throw Error('readback_must_not_execute'); } } : {}) });
     for (const r of reports) {
       assert.deepEqual((await api('records/' + r.approvalId)).body.report, r.report);
       assert.deepEqual((await api('reviews/' + r.approvalId)).body.reviewArchive, r.reviewArchive);
@@ -173,22 +212,32 @@ async function main() {
       }
       await context.close();
     }
-    fixtures.forEach((h, i) => { assert.deepEqual(fs.readFileSync(h.blobPath(h.r.promptBlobHash)), originalBlobs[i]); assert.equal(fs.readdirSync(h.runDir).length, 3); });
+    fixtures.forEach((h, i) => { assert.deepEqual(fs.readFileSync(h.blobPath(h.r.promptBlobHash)), originalBlobs[i]); assert.equal(fs.readdirSync(h.runDir).length, cli ? 6 : 3); });
     verificationStage = 'evidence';
     assertExecutionEvidence({ synthetic, joint, browserVersion, calls, ids });
     assert.deepEqual(reports.flatMap(r => r.report.ledger.runs.map(run => run.runId)), calls);
     console.log(JSON.stringify({ ok: true, kind: 'offline-scripted-workbench', browser: browserVersion, browserExecutorSynthetic: synthetic,
       sameRunBrowserDocker: joint, isolatedBrowserNetwork: joint, observedRunIds: calls,
       capturedSealedSelection: captured, captureEvidence: captured ? fixtures.map(h => h.evidence) : null,
+      operatorCli: cli ? { realChild: true, pid: operator.pid, exitCode: operator.exitCode, exitSignal: operator.exitSignal,
+        minimalEnvironment: true, independentDaemonLifecycle: true, reportRunIdsNotTransportObserved: true,
+        readbackInDifferentProcess: true, cliRestarted: false, batches: cliBatches } : null,
       realModelInvocations: 0, humanApproval: false, acceptance: false, productionLaunchAvailable: false,
       browserCancelApprovePosts: browserMode ? canceledPosts.approve : null, browserCancelStartPosts: browserMode ? canceledPosts.start : null,
       identity, archiveBytes, cleanedContainerIds: ids, reportReadAfterRebuild: true, reviewReadAfterRebuild: true, changedRegistryIgnored: true, sourceBlobsUnchanged: true,
       reports: reports.map(r => ({ approvalId: r.approvalId, reason: r.report.reason, summary: r.report.ledger.summary })) }));
   } finally {
-    if (browser) await browser.close(); if (server) await server.close();
-    for (const fn of cleanup.reverse()) fn();
-    if (synthetic) fs.rmSync(root, { recursive: true, force: true });
+    try {
+      try { if (browser) await browser.close(); }
+      finally {
+        try { if (server && server !== operator) await server.close(); }
+        finally { if (operator) await operator.close(); }
+      }
+    } finally {
+      for (const fn of cleanup.reverse()) fn();
+      if (synthetic) fs.rmSync(root, { recursive: true, force: true });
+    }
   }
 }
-module.exports = { verificationMode, isolatedBrowserOptions, assertExecutionEvidence };
+module.exports = { verificationMode, isolatedBrowserOptions, assertExecutionEvidence, createVerificationFixture };
 if (require.main === module) main().catch(() => { console.error('workbench_verification_failed:' + verificationStage); process.exitCode = 1; });
