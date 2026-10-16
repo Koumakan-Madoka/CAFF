@@ -3,6 +3,42 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createRequire } = require('node:module');
+
+// Runtime model calls go through pi-coding-agent's pinned nested pi-ai (0.85.1);
+// the top-level pi-ai only serves the subscription-login Codex catalog. Resolve
+// vendored SDK facts (openai client, provider registries) from the runtime copy
+// in a hoisting-agnostic way.
+function resolveRuntimePiAiRoot() {
+  const codingAgentRoot = path.dirname(path.resolve(
+    __dirname, '..', '..', 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json'
+  ));
+  // The runtime pi-ai is a declared dependency of pi-coding-agent; npm may keep
+  // it nested or hoist it, so check the nested location first, then fall back
+  // to Node resolution from the SDK's perspective.
+  const candidates = [path.join(codingAgentRoot, 'node_modules', '@earendil-works', 'pi-ai')];
+  try {
+    candidates.push(path.dirname(createRequire(path.join(codingAgentRoot, 'package.json')).resolve('@earendil-works/pi-ai')));
+  } catch {}
+  for (const start of candidates) {
+    let dir = start;
+    for (;;) {
+      const manifestPath = path.join(dir, 'package.json');
+      if (fs.existsSync(manifestPath)) {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        if (manifest.name === '@earendil-works/pi-ai') return dir;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  throw new Error('runtime pi-ai package root not found');
+}
+
+function requireRuntimeVendoredOpenAI() {
+  return createRequire(path.join(resolveRuntimePiAiRoot(), 'package.json'))('openai');
+}
 
 // Lazy load: the module may not match the new contract before the fix lands,
 // and the SDK fact-pinning tests below must still run in that red state.
@@ -208,8 +244,8 @@ test('vendored anthropic SDK appends /v1/messages to the configured baseURL', as
 });
 
 test('vendored openai SDK appends /chat/completions to the configured baseURL', async () => {
-  // pi-ai bundles the official openai client; resolve its nested copy.
-  const OpenAI = require(path.resolve(__dirname, '..', '..', 'node_modules', '@earendil-works', 'pi-ai', 'node_modules', 'openai'));
+  // pi-ai bundles the official openai client; resolve the copy the runtime pi-ai loads.
+  const OpenAI = requireRuntimeVendoredOpenAI();
 
   async function recordPath(baseURL) {
     const seen = [];
@@ -238,7 +274,7 @@ test('vendored openai SDK appends /chat/completions to the configured baseURL', 
 });
 
 test('vendored openai SDK appends /responses for the responses API', async () => {
-  const OpenAI = require(path.resolve(__dirname, '..', '..', 'node_modules', '@earendil-works', 'pi-ai', 'node_modules', 'openai'));
+  const OpenAI = requireRuntimeVendoredOpenAI();
 
   const seen = [];
   const client = new OpenAI({
@@ -260,7 +296,7 @@ test('vendored openai SDK appends /responses for the responses API', async () =>
 });
 
 test('pi vendored registry pins kimi-coding as anthropic-messages + https://api.kimi.com/coding', () => {
-  const registryPath = path.resolve(__dirname, '..', '..', 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers', 'data', 'kimi-coding.json');
+  const registryPath = path.join(resolveRuntimePiAiRoot(), 'dist', 'providers', 'data', 'kimi-coding.json');
   const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
   const dialects = Object.keys(registry);
   assert.deepEqual(dialects, ['anthropic-messages'], 'kimi-coding registry only ships the anthropic-messages dialect');
