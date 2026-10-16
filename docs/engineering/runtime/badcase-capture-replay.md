@@ -583,7 +583,7 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 
 `model-egress.ts` 提供 `dispatchModelEgress(root, policy, drive, transport)` 与只读 `readModelEgress(root, runId)`。**没有生产/HTTP/agent/SDK 接线，没有网络客户端、凭据或真实付费许可**；§5.3–5.12 的断网脚本路径不变。本层补充 §5.2 的每 run 预留：同一个 agent turn 内的多次模型请求也必须先持久预留，再交给受信 transport。root 必须为预先建立的专用绝对目录；自有 root/model-egress/runId 层及文件拒绝静态链接，祖先路径与同 OS 用户仍属 TCB。
 
-- policy 固定 approvalId/planHash/runId、provider/model/settingsHash、期限、请求数量（1–1000）、双向字节上限（各≤4MiB）、单请求时限（≤300s）、每请求预留及 run 总额（整数 micro-USD）。这些仍是**可信调用方声明**，尚未与原 EvaluationDispatch/人工批准存储自动对账；settingsHash 不代替设置正文或模型协议校验。provider/model 为本模块内部简单标识符，不支持任意现有 provider ID。transport 收到固定模型标识与请求 bytes，但本层不解析模型协议、也不阻止 bytes 中包含其他模型字段；将来协议 adapter 必须拒绝覆盖、校验 token 上限及经人工确认的定价/最坏费用。不能凭任意声明启动真实付费。
+- policy 固定 approvalId/planHash/runId、provider/model/settingsHash、期限、请求数量（1–1000）、双向字节上限（各≤4MiB）、单请求时限（≤300s）、每请求预留及 run 总额（整数 micro-USD）。直接调用本层时这些仍是**可信调用方声明**；可选 §5.16 内部绑定器已与原 EvaluationDispatch/批准记录对账，但没有人工认证启动入口；settingsHash 不代替设置正文或模型协议校验。provider/model 为本模块内部简单标识符，不支持任意现有 provider ID。transport 收到固定模型标识与请求 bytes，但本层不解析模型协议、也不阻止 bytes 中包含其他模型字段；将来协议 adapter 必须拒绝覆盖、校验 token 上限及经人工确认的定价/最坏费用。不能凭任意声明启动真实付费。
 - 独占 mkdir 永久 claim 同 root 下的 runId（不同进程也互斥），先独占写 policy，再对每请求按连续编号 wx/0600 写 reserve、fsync、读回复验，写后再检查期限，才调用 transport。同一时刻只有一个请求；重复整个 run、并发请求、已结束 sender 均拒绝。不重试、不续跑、不退款：每发起一次始终消耗整份预留，即使实际费用更低；预算不足或请求数耗尽停止。实际费用超过声明上界会如实报告并停止，**这不是供应商计费硬限保证**。
 - 输入仅有界 Buffer，复制后 hash；已知秘密哨兵拒绝。transport 回执严格两键 body/costMicroUsd，属性读取异常也算坏回执；有界响应复制后只持久 hash/字节数/费用，不存请求正文、输出正文、异常正文或凭据。只有 result 的 fsync+读回复验成功后才返回响应。未知费用、超预留、坏回执、transport 抛错均停止且不释放输出；未知结果保留完整预留。秘密扫描不证明内容来源获授权，响应不在本层归档。响应大小检查发生在 transport 返回后，不限制其流式接收时的内存；真实 adapter 必须另外实施流式上限。
 - 到期发 AbortSignal；单调耗时复查防事件循环延迟，超时粘性使晚到成功转为 timeout，费用未知。不强行返回：必须等 transport settle，即使其忽略 abort；driver 提早返回也 join 在途请求并记 driver_detached。**没有进程/网络强制终止或墙钟硬上界**，将来必须由受控出口及 Docker launcher 兑现。OS 时钟倒退拒绝；倒退终止记录使用最后已观测时间，不伪造当前时刻。
@@ -600,22 +600,36 @@ CLI 有界读取 256KiB 配置、拒绝文件链接/非法 UTF8/已知秘密哨�
 - `encodeChatCompletionsRequest(spec,messages)` 输出固定 model/temperature/max_completion_tokens、n=1、stream=false、store=false 的 JSON。适配 transport 在任何 exchange 前复验字节和设置，精确字段集拒绝额外 tools/seed/max_tokens/endpoint 等覆盖。请求要求 JSON.stringify 的规范字节（允许属性不同顺序，但不接受重复键、空白、替代转义）；UTF8、Unicode 文本与已知秘密哨兵复验。消息内容原样保留，拒绝不支持的类型；不证明数据来源获授权。协议坏请求在协调器中已经预留，只是 exchange 零调用，仍保守停止、不退还预留。
 - 注入的受信 `exchange({body,signal})` 只返回 status 和异步字节迭代器；没有 URL/凭据参数，不读取环境。exchange 实现者必须独立固定 HTTPS 目的地、禁止重定向/重试、限制底层分配并在 abort 时释放资源；本模块不认证这些性质。可选内部 HTTPS 客户端见 §5.15，其测试接线不构成生产批准。仅 status=200；非 200 不读取错误正文。按块累计≤声明上限（≤4MiB），至多8192块，立即复制每块，不保留可变视图；溢出先 abort，再等待迭代器关闭。成功/失败均关闭 signal 作用域。此处读取的是非 SSE JSON 的传输分块，不是模型流式协议。仅限制本层持有的字节，不限制 exchange 内部或单块已分配内存；忽略 abort 或卡在 next/return 的 exchange 仍可能无限等待，不宣称墙钟硬限。
 - 响应允许正常 JSON 格式；按 JSON.parse 语义复验字段，单 choice/index=0、assistant 文本、finish_reason=stop、精确 model 与完整 usage。截断、拒答、额外工具/未知字段、非零缓存/音频/推理/预测用量、未知 service_tier 均拒绝。prompt/completion/total 须整数、总数相符且不超过上下文/输出声明；零值的已知 usage details 可接受。费用由已验证 usage 和固定声明单价向上计算，**是声明费率下的 token 成本，不是已认证供应商账单**；既有 knownCostMicroUsd 只表示该算法得到了数值，不能拿来声称实际扣款已核验。不支持的用量/坏响应/交换异常经协调器记 transport_failed、费用未知，停止且不重试，不释放输出。
-- 请求/响应只在内存流经受信 exchange；持久层仍仅保存 hash/字节数/费用。spec 正文尚未接人审长期归档，settingsHash 不能单独恢复定价；无重新结算、网络/预算硬限、凭据重签发或权限提升。成功报告的 paidAuthorization/executionVerified/strictEvalEligible 仍 false。
+- 请求/响应只在内存流经受信 exchange；持久层仍仅保存 hash/字节数/费用。直接调用本层不归档 spec 正文，settingsHash 不能单独恢复定价；§5.16 可选绑定器另存完整设置/费率声明，但不是人工认证流程；无重新结算、网络/预算硬限、凭据重签发或权限提升。成功报告的 paidAuthorization/executionVerified/strictEvalEligible 仍 false。
 
 验证：`npm run build && npm run test:badcase-budget` 包含协议负例与真实持久协调器整合；合成分块 JSON、hash-only 落盘/重读、坏用量后续零交换、设置/额度不一致在 claim 前零写入，以及 §5.13 policy 秘密哨兵/requestId 篡改两项回归。本节协议测试仅离线夹具；新增 §5.15 套件另有本地合成 TLS 接线，不是供应商兼容性实测、模型、Docker、浏览器、SQLite 或真实采集证据。后续仍须工具/完整输入协议、容器出口及人审批准绑定，才能请求真实模型预算。
 
 ### 5.15 固定目的地 HTTPS 交换器（内部客户端，无批准／容器接线）
 
-`https-exchange.ts` 提供 `httpsExchangeEndpoint(spec)` 与 `createHttpsExchange(spec, credential)`，可作为 §5.14 的受信 exchange。**这不是付费入口、凭据签发器、网络代理服务或容器出口规则**；无生产/HTTP 路由/SDK/Docker 接线，既有断网脚本路径不变。测试只接本地合成 TLS 服务，不调用供应商或宿主 agent。调用方仍须先与人工批准库绑定 endpoint／协议设置／费率／材料／预算，再经过持久预留；当前没有完成该绑定，不能凭此客户端开启真实模型。
+`https-exchange.ts` 提供 `httpsExchangeEndpoint(spec)` 与 `createHttpsExchange(spec, credential)`，可作为 §5.14 的受信 exchange。**这不是付费入口、凭据签发器、网络代理服务或容器出口规则**；无生产/HTTP 路由/SDK/Docker 接线，既有断网脚本路径不变。测试只接本地合成 TLS 服务，不调用供应商或宿主 agent。调用方仍须先与人工批准库绑定 endpoint／协议设置／费率／材料／预算，再经过持久预留；§5.16 提供可选的内部记录绑定，但仍没有人工认证启动入口，不能凭此客户端开启真实模型。
 
 - endpoint 精确六键：小写 ASCII hostname、单个规范公网 IPv4、无 query/fragment/转义/点段的 path、双向字节上限（各≤4MiB）、timeoutMs（1–300000）。规范化版本及全部字段生成 endpointHash；拒 IPv6/mapped、私网、loopback、link-local/metadata、CGNAT、文档／基准／多播等保守禁用段。192.0/16 整段保守排除，不宣称穷尽全球路由分类或验证地址归属。主机/IP 由受信操作者声明，**不是供应商来源认证、动态 DNS 发现或人审白名单**；公开生产地址仍必须由批准层排除。初次选择和任何 IP 轮换都须重新审核，不自动回退 DNS／其他地址。
 - 直接 HTTPS 连接固定 IP:443，不做 DNS；SNI/Host 与证书 hostname 检查固定为声明主机。强制 rejectUnauthorized、TLS≥1.2、Node 内建 rootCertificates（不继承额外 CA）、16KiB 响应头上限；agent=false，不用全局代理／连接池，不接收自定义 URL/port/CA/proxy/headers。TLS secureConnect 后还核对 encrypted/authorized/remoteAddress，才 end(body)，不提前发送含凭据的 HTTP 字节。单在途；POST 一次，非200均销毁请求，不重定向、不自动重试、不解压。仅接受 application/json（可带 charset=utf-8）与 identity 编码。
 - credential 为**同步受信回调**，每次有效交换调用一次，参数只有 endpointHash，返回精确 value/expiresAt。既不读取环境凭据，也不替操作者签发或证明凭据已轮换；回调必须提供专用临时凭据，禁止生产密钥。拒空值、控制字符、超长和过期值；原生 Promise 返回不支持并排空 rejection。凭据仅构造 Authorization，不写磁盘、日志、错误或返回值；不声称 JS 内存可可靠清零。同进程代码、Node TLS 根与 OS 网络栈仍属 TCB。
 - 交换器限制自身接收累计字节及8192块，逐块复制，Content-Length 超限提前拒绝、结束核对实际长度及 complete。内核/Node/TLS 内部分配不是此上限的证明，最终 concat／协议复验会有多份有界副本。只在完整接收后向协议层交付一个内存分块，不是真正模型流式输出。响应内容与费用仍由 §5.14 复验。
 - 从凭据回调前开始单调计时；时限与凭据剩余寿命取最短、钉住单调截止，同时检查绝对 expiresAt。abort/到期/错误/成功均 destroy 自有 request/response，移除监听及 timer；成功前重查截止，避免事件循环阻塞或 OS 回拨把晚结果当成功。destroy 是请求停止动作，不等待 socket close 事件，不证明供应商停止生成/停止收费；不是进程级或墙钟硬上界。同步受信回调阻塞也无法抢占，但返回超时后零请求。网络失败统一固定错误码，协议门控记未知费用并停止，不退预留。
-- endpointHash 尚未持久绑定批准；settings／费率正文仍未长期归档。直接调用交换器不自行查账本，可信协调者有义务只在预留后调用。测试验证 §5.13→§5.14→本客户端顺序，但没有给未来生产调用方自动建立该保证。无真实模型权限或资格提升。
+- 直接调用本客户端不持久绑定 endpointHash／批准或归档 settings／费率正文；这些由可选 §5.16 绑定器提供。直接调用交换器不自行查账本，可信协调者有义务只在预留后调用。测试验证 §5.13→§5.14→本客户端顺序，但没有给未来生产调用方自动建立该保证。无真实模型权限或资格提升。
 
 验证：`npm run build && npm run test:badcase-budget`。HTTPS 套件在自有临时目录用 OpenSSL 生成仅测试证书／私钥，127.0.0.1:随机端口启动合成服务；没有 OpenSSL 则明确 skip 实网用例，不能将其记作通过。**测试专用 https.request 包装改到 loopback、注入合成 CA 并替代 remoteAddress 观测**；原始目的地／TLS／代理选项由独立替身断言钉住。真实 TLS 检查成功、错 hostname、未信任证书、重定向拒绝、慢响应停止、超大响应头，以及预留先于凭据回调、文本协议、hash-only 落盘重读；这不证明真实公网路由、供应商兼容性、容器隔离或计费。测试结束关闭自有服务并删临时证书，无秘密提交。E58 输出超限但总和一致负例与有限8194块洪泛夹具同时纳入；移除块数守卫会快速断言失败，不再靠无限循环挂起检出。全部 AC 仍 pending。
+
+### 5.16 出口／设置／费率正文绑定批准与双层预留（内部协调器）
+
+`model-binding.ts` 将 §5.2 持久批准/逐 run 预留与 §5.13–5.15 逐请求账本/协议/HTTPS 连接起来。**不是人工认证、付费许可、生产路由、SDK provider 或 Docker launcher**。没有新 HTTP/CLI/UI/agent 接口，原离线管理面仍严格只接受 scripted 模型。所有调用方、executor/scorer、凭据回调仍受信；测试只用合成批准与本地合成服务，未开启真实采集或真实模型。
+
+- `modelBinding({settings,endpoint,maxRequests})` 固定协议/客户端版本、完整九键设置（含定价）、六键出口、每 run 请求上限，生成 `bindingHash`。双向字节上限必须相同；maxRequests 1–1000。新计划的 `model.settingsHash` **必须等于复合 bindingHash**，不是协议单独的 settingsHash；逐请求 policy.settingsHash 仍使用协议摘要，两个语义显式区分。provider/model 精确对账、每请求预留≤run 预算、请求 timeout≤run timeout。所有字段及完整 planHash 经原批准绑定，因此换 IP/目的地/费率/请求数必须另审新计划；不自动改写旧记录或旧 hash。
+- `recordBoundModelApproval(root,spec,config,approval)` 只接受已建立的专用绝对 root。校验 plan/批准声明/秘密哨兵后，先将完整 binding 与 approval 写 `model-bindings/<sha256(approvalId)>.json`（wx/0600、fsync、读回复验），再调用原 recordEvaluationApproval。没有数据库事务：前一步成功后后一步失败可能遗留孤立 binding；read 不认可孤立项、不自动补批准。显式精确重试只接受相同正文，不覆盖部分/冲突数据。fsync 未确认的首次调用不写批准；后续明确重试可复用完整相同文件，但不能据此证明先前 fsync 已确认。文件 fsync 非目录掉电保证，无自动修复/GC/配额。
+- `readBoundModelApproval` 有界 16KiB、UTF8/schema/摘要/完整批准对账；自有 root/model-bindings/evaluations/批准目录及归档文件拒静态链接，lstat→open 身份复验。可重读已过期/已消费历史声明；不能从其生成新的执行权限。祖先路径/同 OS 用户为 TCB，不防同权限进程全面重写存储。完整正文是受信声明，不认证供应商费率、IP 归属或公开地址非生产；秘密哨兵不代替输入授权审查。
+- `dispatchBoundModelEvaluation(root,approvalId,execute,credential)` 只从磁盘读配置，不接受新的 endpoint/settings 覆盖。检查期限后由原 dispatchRecordedEvaluation 独占一次性 claim，逐 run 预留后才进入私有 adapter；不暴露接受任意旧 unresolved run 的入口。adapter 将完整 EvaluationDispatch 字段、复合 binding、批准及**当前最后一条 reserved run、unfinished 状态**重新对账；每次请求已持久预留后，取凭据前及同步凭据回调返回后再次读回复验。scope 仅 endpointHash，凭据期限截到批准/run 截止。缺失/篡改/过期/提前结束均不拨号；回调阻塞不可抢占，返回后重新检查。根目录和 trusted executor 不得交给被测代码。
+- 逐请求期限取批准期限与本 run 起始+timeout 的最小值，同时在 guard 检查单调累计耗时；请求仍由原时限/HTTPS 计时器负责 abort。driver 在无请求时挂起不能被此模块强制终止，仍等待其返回，**不是整个 agent 进程或墙钟硬上界**。executor 必须由后续 Docker supervisor 提供停止与隔离，不能用此接口在宿主运行真实 agent。
+- 本段只接受至少一次模型请求、请求账本完整 finished/completed、零未知费用，且 executor 回执的 cost 精确等于请求账本 knownCost。原外层 ledger 继续核验 runId/status/outputHash/score schema。零请求、协议失败被 driver 捕获、费用少报/多报、坏评分等保持外层 reserved/unresolved 并停止候选，不自动造失败分数或结算未知费用。成功输出/评分依然是受信 executor 声明，不证明原始 inputHash 被忠实使用、工具循环、评分有效或 Docker 执行；所有资格 false。
+- 永久 outer claim 与 egress claim 防跨进程/重启重派发。子进程在 run 预留和 egress policy 落盘后 exit23 的合成验证保持 unresolved，重启只读不恢复执行。不同 root 的存储隔离不是全局一次性保证；调度方必须固定专用 root。run 结束/失败不释放任何材料引用，本段不操作 CAS。
+
+验证：`npm run build && npm run test:badcase-budget` 新增绑定套件覆盖先归档后批准、精确重试/冲突、摘要/费用/时限绑定、16KiB/UTF8/链接/换 inode 拒绝、写/fsync 故障、双层预留顺序、逐请求复验、回调中篡改/过期、费用对账、并发 claim、exit23、重读。真实本地 TLS 合成服务验证批准→run→请求→TLS→结果及历史正文重读；测试专用 loopback/CA/peer 包装与 §5.15 相同限制，非供应商/公网/容器证据。E59 endpoint 秘密哨兵、data 及时但 end 晚到的两条负例同步收编。仍缺人工认证的完整配置审核入口、专用凭据签发、容器出口、原始输入/工具协议与真实 badcase/模型预算证据；全部 AC pending。
 
 ## 6. 威胁模型
 

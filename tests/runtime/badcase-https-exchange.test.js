@@ -56,6 +56,7 @@ test('endpoint snapshot/hash and strict public IPv4, hostname, path and cap vali
     { address: '224.0.0.1' }, { address: '255.255.255.255' }, { address: '::1' }, { address: '0177.0.0.1' },
     { hostname: 'localhost' }, { hostname: 'api.local' }, { hostname: 'api.internal' }, { hostname: '127.0.0.1' },
     { hostname: 'api.example.' }, { hostname: 'API.example' }, { hostname: 'user@api.example' },
+    { hostname: 'sk-' + 'a'.repeat(30) + '.example' },
     { path: '//elsewhere' }, { path: '/v1/../admin' }, { path: '/v1/a?key=x' }, { path: '/v1/%2e' },
     { port: 80 }, { proxy: 'anything' }, { timeoutMs: 0 }, { timeoutMs: 300001 }, { maxResponseBytes: 4194305 }])
     assert.throws(() => httpsExchangeEndpoint({ ...e, ...patch }), invalid, JSON.stringify(patch));
@@ -194,6 +195,17 @@ test('deadline monotonic recheck rejects late success even before timer callback
   const calls = network(t, { onEnd() { const start = performance.now(); while (performance.now() - start < 20) { /* simulate blocked loop */ } } });
   await assert.rejects(createHttpsExchange({ ...endpoint(), timeoutMs: 5 }, lease)(request()), failed);
   assert.equal(calls.length, 1);
+});
+
+test('in-time data followed by late synchronous end is rejected at resolve, before delayed timer', { timeout: 3000 }, async t => {
+  let dataAccepted = false;
+  const calls = network(t, { stream(res) {
+    res.emit('data', Buffer.from('{}')); dataAccepted = !res.destroyed;
+    const start = performance.now(); while (performance.now() - start < 150) { /* timer cannot fire */ }
+    res.emit('end');
+  } });
+  await assert.rejects(createHttpsExchange({ ...endpoint(), timeoutMs: 100 }, lease)(request()), failed);
+  assert.equal(dataAccepted, true); assert.equal(calls[0].req.destroyed, true);
 });
 
 test('local real TLS: synthetic CA routing only in test; verify success, hostname mismatch and untrusted certificate', { timeout: 15000 }, async t => {
