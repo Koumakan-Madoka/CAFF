@@ -72,10 +72,24 @@ function write(p: string, value: any) {
   finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already failed closed */ } } }
 }
 const name = (n: number, kind: string) => String(n).padStart(4, '0') + '.' + kind + '.json';
+// Diagnostic labels only, never exception text/properties, response data or an
+// authority to retry/score/refund. WeakMap avoids reading untrusted getters.
+const failureStages = ['https_credential', 'https_connect', 'https_peer', 'https_status', 'https_headers', 'https_body',
+  'https_cancelled', 'protocol_request', 'protocol_exchange', 'protocol_collect', 'protocol_decode', 'protocol_response',
+  'protocol_response_envelope', 'protocol_response_choice', 'protocol_response_usage'] as const;
+export type ModelFailureStage = typeof failureStages[number];
+const failureLabels = new WeakMap<object, ModelFailureStage>();
+export function labelModelFailure(error: Error, stage: ModelFailureStage): Error {
+  if (failureStages.includes(stage)) failureLabels.set(error, stage);
+  return error;
+}
+export function modelFailureStage(error: unknown): ModelFailureStage | undefined {
+  return ((typeof error === 'object' && error !== null) || typeof error === 'function') ? failureLabels.get(error) : undefined;
+}
 const statuses = ['completed', 'transport_failed', 'invalid_response', 'cost_unknown', 'cost_limit_exceeded', 'timeout'] as const;
 type Status = typeof statuses[number];
 interface Reservation { sequence: number; requestId: string; at: number; requestHash: string; requestBytes: number }
-interface Result { sequence: number; at: number; status: Status; costMicroUsd: number | null; responseHash: string | null; responseBytes: number | null }
+interface Result { sequence: number; at: number; status: Status; costMicroUsd: number | null; responseHash: string | null; responseBytes: number | null; failureStage?: ModelFailureStage }
 const reasons = [...statuses.filter(s => s !== 'completed'), 'completed', 'driver_failed', 'driver_detached', 'budget_exhausted',
   'request_limit', 'approval_expired', 'clock_invalid'];
 function requestId(p: ModelEgressPolicy, n: number) { return hash(JSON.stringify({ policy: p, sequence: n })); }
@@ -90,7 +104,7 @@ export function readModelEgress(root: string, runId: string) {
     const names = fs.readdirSync(dir).sort();
     if (names.length > 2002 || names.some(n => !['policy.json', 'finish.json'].includes(n) && !/^\d{4}\.(reserve|result)\.json$/.test(n))) fail('record_invalid');
     const reserves = names.filter(n => n.endsWith('.reserve.json'));
-    const rows: (Reservation & { status: 'reserved' | Status; costMicroUsd: number | null; responseHash: string | null; responseBytes: number | null })[] = [];
+    const rows: (Reservation & { status: 'reserved' | Status; costMicroUsd: number | null; responseHash: string | null; responseBytes: number | null; failureStage?: ModelFailureStage })[] = [];
     let at = initial.recordedAt, stopped: string | null = null;
     for (let i = 0; i < reserves.length; i++) {
       if (stopped || reserves[i] !== name(i + 1, 'reserve') || i >= p.maxRequests
@@ -103,7 +117,8 @@ export function readModelEgress(root: string, runId: string) {
       const row: typeof rows[number] = { ...r, status: 'reserved', costMicroUsd: null, responseHash: null, responseBytes: null };
       if (names.includes(name(i + 1, 'result'))) {
         const s = read(path.join(dir, name(i + 1, 'result'))) as Result;
-        if (!exact(s, ['sequence', 'at', 'status', 'costMicroUsd', 'responseHash', 'responseBytes']) || s.sequence !== i + 1
+        if (!exact(s, ['sequence', 'at', 'status', 'costMicroUsd', 'responseHash', 'responseBytes', ...(Object.hasOwn(s, 'failureStage') ? ['failureStage'] : [])])
+          || (Object.hasOwn(s, 'failureStage') && (s.status !== 'transport_failed' || !failureStages.includes(s.failureStage!))) || s.sequence !== i + 1
           || !integer(s.at, at) || !statuses.includes(s.status)
           || (s.status !== 'timeout' && s.at >= p.expiresAt)) fail('record_invalid');
         at = s.at;
@@ -116,7 +131,8 @@ export function readModelEgress(root: string, runId: string) {
           else if (s.costMicroUsd !== null) fail('record_invalid');
           stopped = s.status;
         }
-        Object.assign(row, { status: s.status, costMicroUsd: s.costMicroUsd, responseHash: s.responseHash, responseBytes: s.responseBytes });
+        Object.assign(row, { status: s.status, costMicroUsd: s.costMicroUsd, responseHash: s.responseHash, responseBytes: s.responseBytes,
+          ...(s.failureStage === undefined ? {} : { failureStage: s.failureStage }) });
       } else if (i !== reserves.length - 1) fail('record_invalid');
       rows.push(row);
     }
@@ -182,12 +198,12 @@ export async function dispatchModelEgress(root: string, input: unknown,
     const reservation: Reservation = { sequence, requestId: requestId(p, sequence), at, requestHash: hash(body), requestBytes: body.length };
     persist(name(sequence, 'reserve'), reservation); clock(); // IO can cross expiry; no dispatch then.
     const controller = new AbortController(), started = performance.now();
-    let expired = false, result: any, transportFailed = false;
+    let expired = false, result: any, transportFailed = false, failureStage: ModelFailureStage | undefined;
     const timeout = Math.min(p.timeoutMs, p.expiresAt - lastAt);
     const timer = setTimeout(() => { expired = true; controller.abort(); }, timeout);
     try { result = await transport({ requestId: reservation.requestId, provider: p.provider, model: p.model,
       settingsHash: p.settingsHash, body, signal: controller.signal }); }
-    catch { transportFailed = true; }
+    catch (e) { transportFailed = true; failureStage = modelFailureStage(e); }
     finally { clearTimeout(timer); }
     // Timers can be delayed by sync work. Never accept a late success. Do not
     // persist transport exceptions or result bodies (even when malformed).
@@ -212,7 +228,8 @@ export async function dispatchModelEgress(root: string, input: unknown,
     }
     if (status !== 'completed') reason = status;
     const receipt: Result = { sequence, at: now, status, costMicroUsd: cost,
-      responseHash: response === null ? null : hash(response), responseBytes: response?.length ?? null };
+      responseHash: response === null ? null : hash(response), responseBytes: response?.length ?? null,
+      ...(status === 'transport_failed' && failureStage !== undefined ? { failureStage } : {}) };
     persist(name(sequence, 'result'), receipt);
     if (status !== 'completed') fail(status);
     return response!;

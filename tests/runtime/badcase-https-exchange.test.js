@@ -133,6 +133,43 @@ test('response aggregate bound, truncated framing and network errors fail withou
   }
 });
 
+test('closed HTTPS labels survive protocol and durable ledger without response or credential details', async t => {
+  for (const [stage, behavior] of [
+    ['https_status', { response: { statusCode: 429 } }],
+    ['https_headers', { response: { headers: { 'content-type': 'text/PRIVATE-CONTENT-TYPE' } } }],
+    ['https_body', { response: { complete: false } }],
+    ['https_peer', { socket: { authorized: false } }],
+    ['https_connect', { dial: true }],
+    ['https_credential', { credential: true }],
+    ['https_cancelled', { hang: true }],
+  ]) await t.test(stage, async t => {
+    const calls = network(t, behavior);
+    if (behavior.dial) https.request = () => { throw Error('PRIVATE-DIAL'); };
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-https-stage-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const s = { provider: 'synthetic', model: 'fixed-model', contextWindowTokens: 1000, maxOutputTokens: 100,
+      temperature: 0, inputMicroUsdPerMillionTokens: 1, outputMicroUsdPerMillionTokens: 1,
+      maxRequestBytes: 4096, maxResponseBytes: 4096 };
+    const p = chatCompletionsSettings(s), runId = hash(stage), policy = { approvalId: 'synthetic', planHash: hash('plan'), runId,
+      provider: s.provider, model: s.model, settingsHash: p.settingsHash, expiresAt: Date.now() + 60000,
+      maxRequests: 2, maxRequestBytes: 4096, maxResponseBytes: 4096, timeoutMs: 1000,
+      perRequestReserveMicroUsd: p.perRequestReserveMicroUsd, runLimitMicroUsd: p.perRequestReserveMicroUsd * 2 };
+    const x = createHttpsExchange({ ...endpoint(), timeoutMs: behavior.hang ? 15 : 1000 }, () => {
+      if (behavior.credential) throw Error('PRIVATE-CREDENTIAL'); return lease();
+    });
+    const body = encodeChatCompletionsRequest(s, [{ role: 'user', content: 'PRIVATE-PROMPT' }]);
+    const report = await dispatchChatCompletions(root, policy, s, async send => {
+      await assert.rejects(send(body)); await assert.rejects(send(body), /model_egress_stopped/);
+    }, x);
+    assert.equal(report.requests[0].failureStage, stage); assert.equal(report.reason, 'transport_failed');
+    assert.equal(report.unknownCostRequests, 1); assert.equal(report.knownCostMicroUsd, 0);
+    assert.deepEqual(readModelEgress(root, runId), report);
+    assert.equal(calls.length, behavior.dial || behavior.credential ? 0 : 1);
+    const dir = path.join(root, 'model-egress', runId), disk = fs.readdirSync(dir).map(n => fs.readFileSync(path.join(dir, n), 'utf8')).join('');
+    assert.ok(!disk.includes('PRIVATE-') && !disk.includes('synthetic-local-only'));
+  });
+});
+
 test('abort, absolute timeout, credential expiry and single in-flight rejection terminate own request', { timeout: 5000 }, async t => {
   for (const mode of ['abort', 'timeout', 'expiry']) {
     await t.test(mode, async t => {

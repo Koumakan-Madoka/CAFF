@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
 import { modelIdentifier } from './model-identifier';
-import { dispatchModelEgress, ModelEgressPolicy, ModelEgressRequest } from './model-egress';
+import { dispatchModelEgress, ModelEgressPolicy, ModelEgressRequest, labelModelFailure, modelFailureStage, ModelFailureStage } from './model-egress';
 
 function fail(): never { throw Object.assign(Error('chat_completions_invalid'), { code: 'chat_completions_invalid' }); }
 const integer = (v: any, min: number, max: number) => Number.isSafeInteger(v) && v >= min && v <= max;
@@ -159,12 +159,15 @@ function validateRequest(r: ModelEgressRequest, s: { settings: ChatCompletionsSe
 function zeroDetails(v: any, allowed: string[]) {
   return keys(v, [], allowed) && Object.values(v).every(n => n === 0);
 }
+function responseFailure(stage: ModelFailureStage): never {
+  throw labelModelFailure(Object.assign(Error('chat_completions_invalid'), { code: 'chat_completions_invalid' }), stage);
+}
 function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], seen = new Set<string>()) {
   if (!keys(v, ['id', 'object', 'created', 'model', 'choices', 'usage'], ['system_fingerprint', 'service_tier'])
     || !id(v.id) || v.object !== 'chat.completion' || !integer(v.created, 0, Number.MAX_SAFE_INTEGER) || v.model !== s.model
     || (Object.hasOwn(v, 'system_fingerprint') && v.system_fingerprint !== null && !id(v.system_fingerprint))
     || (Object.hasOwn(v, 'service_tier') && v.service_tier !== 'default')
-    || !Array.isArray(v.choices) || v.choices.length !== 1) fail();
+    || !Array.isArray(v.choices) || v.choices.length !== 1) responseFailure('protocol_response_envelope');
   const c = v.choices[0];
   const calling = !!tools && c?.finish_reason === 'tool_calls';
   if (!keys(c, ['index', 'message', 'finish_reason'], ['logprobs']) || c.index !== 0 || (!calling && c.finish_reason !== 'stop')
@@ -172,7 +175,7 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
     || !keys(c.message, ['role', 'content', ...(calling ? ['tool_calls'] : [])], ['refusal', 'annotations']) || c.message.role !== 'assistant'
     || (!(calling && c.message.content === null) && !text(c.message.content))
     || (Object.hasOwn(c.message, 'refusal') && c.message.refusal !== null)
-    || (Object.hasOwn(c.message, 'annotations') && (!Array.isArray(c.message.annotations) || c.message.annotations.length !== 0))) fail();
+    || (Object.hasOwn(c.message, 'annotations') && (!Array.isArray(c.message.annotations) || c.message.annotations.length !== 0))) responseFailure('protocol_response_choice');
   if (calling) {
     if (!Array.isArray(c.message.tool_calls) || c.message.tool_calls.length !== 1) fail();
     toolCall(c.message.tool_calls[0], tools!, seen);
@@ -183,7 +186,7 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
     || !integer(u.total_tokens, 1, s.contextWindowTokens) || u.total_tokens !== u.prompt_tokens + u.completion_tokens
     || (Object.hasOwn(u, 'prompt_tokens_details') && !zeroDetails(u.prompt_tokens_details, ['cached_tokens', 'audio_tokens']))
     || (Object.hasOwn(u, 'completion_tokens_details') && !zeroDetails(u.completion_tokens_details,
-      ['reasoning_tokens', 'audio_tokens', 'accepted_prediction_tokens', 'rejected_prediction_tokens']))) fail();
+      ['reasoning_tokens', 'audio_tokens', 'accepted_prediction_tokens', 'rejected_prediction_tokens']))) responseFailure('protocol_response_usage');
   return tariff(s, u.prompt_tokens, u.completion_tokens);
 }
 export interface ChatCompletionsExchangeRequest { body: Buffer; signal: AbortSignal }
@@ -207,12 +210,15 @@ function createTransport(s: { settings: ChatCompletionsSettings; settingsHash: s
   return async (request: ModelEgressRequest) => {
     let controller: AbortController | undefined, signal: AbortSignal | undefined;
     const abort = () => controller?.abort();
+    let stage: ModelFailureStage = 'protocol_request';
     try {
       const seen = validateRequest(request, s, tools);
       const body = Buffer.from(request.body); controller = new AbortController(); signal = request.signal;
       signal.addEventListener('abort', abort, { once: true });
       if (signal.aborted) fail();
+      stage = 'protocol_exchange';
       const result = await exchange({ body, signal: controller.signal });
+      stage = 'protocol_collect';
       if (controller.signal.aborted || !keys(result, ['status', 'chunks']) || result.status !== 200
         || !result.chunks || typeof result.chunks[Symbol.asyncIterator] !== 'function') fail();
       const pieces: Buffer[] = []; let bytes = 0, count = 0;
@@ -222,10 +228,16 @@ function createTransport(s: { settings: ChatCompletionsSettings; settingsHash: s
         const copy = Buffer.from(chunk); bytes += copy.length; pieces.push(copy);
       }
       if (controller.signal.aborted || bytes === 0) fail();
+      stage = 'protocol_decode';
       const response = Buffer.concat(pieces, bytes), parsed = parse(response);
+      stage = 'protocol_response';
       const costMicroUsd = validateResponse(parsed, s.settings, tools, seen);
       return { body: response, costMicroUsd };
-    } catch { fail(); }
+    } catch (e) {
+      // Preserve only a trusted boundary's closed label, never its exception.
+      const upstream = modelFailureStage(e);
+      throw labelModelFailure(Object.assign(Error('chat_completions_invalid'), { code: 'chat_completions_invalid' }), upstream ?? stage);
+    }
     finally {
       signal?.removeEventListener('abort', abort);
       controller?.abort(); // close scope; exchange must release its resources

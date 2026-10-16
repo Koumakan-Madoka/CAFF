@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { chatCompletionsSettings, encodeChatCompletionsRequest, createChatCompletionsTransport, dispatchChatCompletions } = require('../../build/server/domain/runtime/badcase-capture/chat-completions-protocol.js');
-const { readModelEgress } = require('../../build/server/domain/runtime/badcase-capture/model-egress.js');
+const { readModelEgress, modelFailureStage } = require('../../build/server/domain/runtime/badcase-capture/model-egress.js');
 const hash = x => crypto.createHash('sha256').update(x).digest('hex');
 const spec = () => ({ provider: 'offline-compatible', model: 'fixed-model-v1', contextWindowTokens: 1000,
   maxOutputTokens: 100, temperature: 0, inputMicroUsdPerMillionTokens: 1000000,
@@ -57,7 +57,7 @@ test('request validation blocks setting overrides and unsupported wire keys befo
     { stream: true }, { store: true }, { tools: [] }, { max_tokens: 100 }, { seed: 1 },
     { messages: [{ role: 'developer', content: 'unsupported' }] }]) {
     const r = request(); r.body = Buffer.from(JSON.stringify({ ...JSON.parse(r.body), ...patch }));
-    await assert.rejects(send(r), invalid);
+    await assert.rejects(send(r), e => invalid(e) && modelFailureStage(e) === 'protocol_request');
   }
   for (const patch of [{ provider: 'other' }, { model: 'other' }, { settingsHash: hash('other') }, { requestId: 'bad' }])
     await assert.rejects(send({ ...request(), ...patch }), invalid);
@@ -190,6 +190,34 @@ test('exceptions and invalid UTF8 become fixed errors without body or provider d
   for (const x of [async () => { throw Error('PRIVATE-PROVIDER'); }, async () => ({ status: 200, chunks: (async function* () {
     throw Error('PRIVATE-STREAM'); })() }), async () => ({ status: 200, chunks: (async function* () { yield Buffer.from([255]); })() })])
     await assert.rejects(createChatCompletionsTransport(spec(), x)(request()), invalid);
+});
+
+test('failure stage is fixed, distinguishes exchange/collection/decode/schema, and persists without payload', async t => {
+  const cases = [
+    ['protocol_exchange', async () => { throw Error('PRIVATE-UPSTREAM'); }],
+    ['protocol_collect', async () => ({ status: 200, chunks: (async function* () { throw Error('PRIVATE-STREAM'); })() })],
+    ['protocol_decode', async () => ({ status: 200, chunks: (async function* () { yield Buffer.from('PRIVATE-NOT-JSON'); })() })],
+    ['protocol_response_envelope', exchange({ ...response(), model: 'wrong-model' })],
+    ['protocol_response_choice', exchange({ ...response(), choices: [{ ...response().choices[0], finish_reason: 'length' }] })],
+    ['protocol_response_usage', exchange({ ...response(), usage: { ...response().usage, total_tokens: 99 } })],
+  ];
+  for (const [stage, x] of cases) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-protocol-stage-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const s = spec(), p = chatCompletionsSettings(s), runId = hash(stage);
+    const policy = { approvalId: 'offline-test', planHash: hash('plan'), runId, provider: s.provider, model: s.model,
+      settingsHash: p.settingsHash, expiresAt: Date.now() + 60000, maxRequests: 2, maxRequestBytes: 4096,
+      maxResponseBytes: 4096, timeoutMs: 1000, perRequestReserveMicroUsd: p.perRequestReserveMicroUsd, runLimitMicroUsd: 2400 };
+    const report = await dispatchChatCompletions(root, policy, s, async send => {
+      await assert.rejects(send(encodeChatCompletionsRequest(s, messages())));
+      await assert.rejects(send(encodeChatCompletionsRequest(s, messages())), /model_egress_stopped/);
+    }, x);
+    assert.equal(report.requests[0].failureStage, stage);
+    assert.equal(report.reason, 'transport_failed'); assert.equal(report.unknownCostRequests, 1);
+    assert.deepEqual(readModelEgress(root, runId), report);
+    const disk = fs.readdirSync(path.join(root, 'model-egress', runId)).map(n => fs.readFileSync(path.join(root, 'model-egress', runId, n), 'utf8')).join('');
+    assert.ok(!disk.includes('PRIVATE-') && !disk.includes('synthetic'));
+  }
 });
 
 test('settings and request bytes snapshotted before asynchronous exchange', async () => {

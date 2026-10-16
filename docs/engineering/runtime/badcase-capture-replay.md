@@ -692,6 +692,17 @@ launch 声明只增加 `credentialSource`：类型、provider/model、endpointHa
 
 首轮选择为新建 CSV 编号前导零受控样本，不读取用户真实项目；baseline/candidate各一次、25秒/run、作者自限总预留1美元。这是首次真实出口验证的计划，不是完成证据；本节交付与离线读取成功均不等于已运行真实模型、不代表历史 badcase 复现或任何AC通过。网关配置未声明费率，不把任意假设价冒充供应商账单。
 
+### 5.21 失败阶段诊断（无正文，不改变放行条件）
+
+首轮真实 GLM 尝试（Goal E65）只留下 HTTP 200 和 `transport_failed` 汇总；原始响应及临时账本未保留，无法事后确认认证语义、响应格式或哪条校验失败。**HTTP 200 不证明模型任务成功；不得为旧运行补造具体根因。** 本增量只补离线可验证的诊断缺口，不自动重试供应商，也不放宽 tools-v1、模型精确匹配、usage、预算或容器校验。
+
+- 内部异常用 WeakMap 绑定闭集标签，不读抛出值的 message、code、stack、任意属性/getter。HTTPS 边界只输出 credential/connect/peer/status/headers/body/cancelled 阶段；协议边界只输出 request/exchange/collect/decode/response 及 response_envelope/choice/usage 子阶段。落盘值带 `https_` 或 `protocol_` 前缀。标签不包含实际状态码、header、主机、模型返回值、源路径、凭据或正文；不会保留异常 cause。`https_cancelled` 包含 abort/期限失效，不断言供应商取消计费。
+- 仅已完成请求账本的 `status=transport_failed` 结果可追加可选 `failureStage`，读侧精确校验闭集。旧 schema-v1 无该字段仍按原字节读取；success/reserved/timeout 等不加字段。外层 timeout 优先且粘性，不把晚到阶段误报为最终原因。不识别的第三方异常不加标签，而非保存其文本。
+- 操作者可离线调用已存在的 `readModelEgress(scope, runId)` 查询 `requests[].failureStage`：scope 是 `<评测root>/<sha256(projectId)>`，runId 来自原 `--report` 的 ledger。查询无网络、凭据、daemon 或当前材料依赖；尚未派发或账本缺失不补造诊断。该字段目前不投影到审核页面或外层 CLI 报告，须读取请求账本；不宣称 UI 已展示。
+- 阶段只是**校验边界**，不是供应商根因或 prompt 归因。例如 `protocol_response_envelope` 可能是模型名/字段/形状不匹配，`protocol_response_usage` 可能是用量形状、总和或范围错误；不记录实际字段值。任何失败仍保留费用未知及预留、不退款/重试、不评分、不启动候选；标签不能提升任何 AC 或完整回放资格。后续真实运行按新审核 SHA 重新生成计划和批准；现有 hostCode 只摘要列举的操作者脚本，不包含本次三个编译模块，不能声称本次变动会自动改变 harnessHash。旧已消费批准仍不可重用。
+
+验证：合成服务覆盖 HTTPS 各阶段经过真实协议及持久请求账本的传递；协议覆盖收集、UTF-8/JSON、envelope/choice/usage 与文本/工具两模式；负例覆盖恶意异常 getter/proxy、伪造属性、未知落盘标签、成功结果夹带标签及超时后标签抑制。真实供应商故障根因仍未知，未以合成响应冒充 E65 原始响应。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

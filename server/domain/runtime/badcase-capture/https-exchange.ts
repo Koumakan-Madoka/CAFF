@@ -8,6 +8,7 @@ import { performance } from 'node:perf_hooks';
 import type { IncomingMessage, ClientRequest } from 'node:http';
 import type { ChatCompletionsExchange, ChatCompletionsExchangeRequest } from './chat-completions-protocol';
 import { containsSecretSentinel } from './secrets';
+import { labelModelFailure, modelFailureStage, ModelFailureStage } from './model-egress';
 
 const exact = (v: any, names: string[]) => v !== null && typeof v === 'object' && !Array.isArray(v)
   && Object.keys(v).sort().join('|') === [...names].sort().join('|');
@@ -62,6 +63,7 @@ export function createHttpsExchange(input: unknown, credential: (endpointHash: s
     } catch { throw error('invalid'); }
     busy = true;
     const started = performance.now();
+    let stage: ModelFailureStage = 'https_credential';
     try {
       const lease = credential(endpointHash);
       // Async issuance is deliberately not supported; drain native rejected
@@ -76,6 +78,7 @@ export function createHttpsExchange(input: unknown, credential: (endpointHash: s
       const deadline = Math.min(started + s.timeoutMs, performance.now() + (expiresAt - Date.now()));
       const expired = () => signal.aborted || performance.now() >= deadline || Date.now() >= expiresAt;
       if (expired()) throw error('failed');
+      stage = 'https_connect';
       const response = await new Promise<Buffer>((resolve, reject) => {
         let req: ClientRequest | undefined, res: IncomingMessage | undefined, done = false, timer: NodeJS.Timeout | undefined;
         const finish = (bytes?: Buffer) => {
@@ -84,7 +87,8 @@ export function createHttpsExchange(input: unknown, credential: (endpointHash: s
           // Own request/socket only. Destroy on BOTH success and failure; no
           // pooled socket, redirect, retry, decompression, or credential reuse.
           res?.destroy(); req?.destroy();
-          if (bytes !== undefined && !expired()) resolve(bytes); else reject(error('failed'));
+          if (bytes !== undefined && !expired()) resolve(bytes);
+          else reject(labelModelFailure(error('failed'), expired() ? 'https_cancelled' : stage));
         };
         const abort = () => finish();
         signal.addEventListener('abort', abort, { once: true });
@@ -101,7 +105,8 @@ export function createHttpsExchange(input: unknown, credential: (endpointHash: s
             socket.once('secureConnect', () => {
               const peer = socket as tls.TLSSocket;
               if (done) return;
-              if (expired() || !peer.encrypted || !peer.authorized || peer.remoteAddress !== s.address) { finish(); return; }
+              if (expired() || !peer.encrypted || !peer.authorized || peer.remoteAddress !== s.address) { stage = 'https_peer'; finish(); return; }
+              stage = 'https_body';
               req!.end(body); // never queue credential-bearing HTTP bytes before TLS checks
             });
           });
@@ -110,10 +115,11 @@ export function createHttpsExchange(input: unknown, credential: (endpointHash: s
             res.on('error', abort); res.on('aborted', abort);
             if (done) { res.destroy(); return; }
             const h = res.headers, length = h['content-length'];
-            if (expired() || res.statusCode !== 200 || typeof h['content-type'] !== 'string'
+            if (expired() || res.statusCode !== 200) { stage = 'https_status'; finish(); return; }
+            if (typeof h['content-type'] !== 'string'
               || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(h['content-type'])
               || (h['content-encoding'] !== undefined && h['content-encoding'] !== 'identity')
-              || (length !== undefined && (!/^(0|[1-9]\d*)$/.test(length) || Number(length) > s.maxResponseBytes))) { finish(); return; }
+              || (length !== undefined && (!/^(0|[1-9]\d*)$/.test(length) || Number(length) > s.maxResponseBytes))) { stage = 'https_headers'; finish(); return; }
             const pieces: Buffer[] = []; let size = 0, count = 0;
             res.on('data', (chunk: Buffer) => {
               if (done) return;
@@ -129,7 +135,7 @@ export function createHttpsExchange(input: unknown, credential: (endpointHash: s
         } catch { finish(); }
       });
       return { status: 200, chunks: (async function* () { yield response; })() };
-    } catch { throw error('failed'); }
+    } catch (e) { throw labelModelFailure(error('failed'), modelFailureStage(e) ?? stage); }
     finally { busy = false; }
   };
 }

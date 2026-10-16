@@ -150,6 +150,8 @@ test('real request ledger covers two synthetic tool rounds, immutable hashes, ba
       const v = response(calls === 1); if (bad && calls === 2) delete v.usage; return exchange(v)();
     });
     assert.equal(calls, 2); assert.equal(report.reason, bad ? 'transport_failed' : 'completed');
+    assert.equal(report.requests[1].failureStage, bad ? 'protocol_response_envelope' : undefined);
+    assert.equal(Object.hasOwn(report.requests[0], 'failureStage'), false);
     assert.equal(report.knownCostMicroUsd, bad ? 40 : 80); assert.equal(report.unknownCostRequests, bad ? 1 : 0);
     assert.equal(report.committedMicroUsd, 2400); assert.deepEqual(readModelEgress(root, policy.runId), report);
     const dir = path.join(root, 'model-egress', policy.runId), text = fs.readdirSync(dir).map(n => fs.readFileSync(path.join(dir, n), 'utf8')).join('');
