@@ -198,7 +198,7 @@ test('failure stage is fixed, distinguishes exchange/collection/decode/schema, a
     ['protocol_collect', async () => ({ status: 200, chunks: (async function* () { throw Error('PRIVATE-STREAM'); })() })],
     ['protocol_decode', async () => ({ status: 200, chunks: (async function* () { yield Buffer.from('PRIVATE-NOT-JSON'); })() })],
     ['protocol_response_envelope_model', exchange({ ...response(), model: 'wrong-model' })],
-    ['protocol_response_choice', exchange({ ...response(), choices: [{ ...response().choices[0], finish_reason: 'length' }] })],
+    ['protocol_response_choice_truncated', exchange({ ...response(), choices: [{ ...response().choices[0], finish_reason: 'length' }] })],
     ['protocol_response_usage', exchange({ ...response(), usage: { ...response().usage, total_tokens: 99 } })],
   ];
   for (const [stage, x] of cases) {
@@ -263,6 +263,55 @@ test('envelope check labels reach durable ledger without raw keys/values, and st
       assert.throws(() => readModelEgress(root, runId), /model_egress_record_invalid/);
       fs.writeFileSync(file, original); assert.deepEqual(readModelEgress(root, runId), report);
     }
+  });
+});
+
+test('choice check labels persist without payload, preserve first failure and keep invalid replies unscored', async t => {
+  const cases = [
+    ['keys', v => v.choices[0] = null],
+    ['keys', v => { v.choices[0]['PRIVATE-EXTRA'] = 'PRIVATE-VALUE'; v.choices[0].index = 1; }],
+    ['index', v => { v.choices[0].index = 1; v.choices[0].finish_reason = 'length'; }],
+    ['finish', v => v.choices[0].finish_reason = 'PRIVATE-FINISH'],
+    ['truncated', v => v.choices[0].finish_reason = 'length'],
+    ['logprobs', v => v.choices[0].logprobs = {}],
+    ['message_keys', v => v.choices[0].message = null],
+    ['message_keys', v => { v.choices[0].message['PRIVATE-EXTRA'] = true; v.choices[0].message.reasoning_content = 'PRIVATE-REASONING'; }],
+    ['message_reasoning', v => v.choices[0].message.reasoning_content = 'PRIVATE-REASONING'],
+    ['message_reasoning', v => v.choices[0].message.reasoning_content = null],
+    ['role', v => v.choices[0].message.role = 'PRIVATE-ROLE'],
+    ['content', v => v.choices[0].message.content = null],
+    ['refusal', v => v.choices[0].message.refusal = 'PRIVATE-REFUSAL'],
+    ['annotations', v => v.choices[0].message.annotations = [{}]],
+  ];
+  for (const [check, change] of cases) await t.test(check, async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-choice-check-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const s = spec(), p = chatCompletionsSettings(s), stage = 'protocol_response_choice_' + check, runId = hash(stage);
+    const policy = { approvalId: 'offline-test', planHash: hash('plan'), runId, provider: s.provider, model: s.model,
+      settingsHash: p.settingsHash, expiresAt: Date.now() + 60000, maxRequests: 2, maxRequestBytes: 4096,
+      maxResponseBytes: 4096, timeoutMs: 1000, perRequestReserveMicroUsd: 1200, runLimitMicroUsd: 2400 };
+    const value = response(); value.choices[0].message.content = 'PRIVATE-CONTENT'; change(value);
+    await assert.rejects(createChatCompletionsTransport(s, exchange(value))(request()), e => {
+      assert.equal(modelFailureStage(e), stage); assert.deepEqual(Object.keys(e), ['code']); assert.equal(e.cause, undefined); return invalid(e);
+    });
+    let calls = 0;
+    const report = await dispatchChatCompletions(root, policy, s, async send => {
+      await assert.rejects(send(encodeChatCompletionsRequest(s, messages())), /model_egress_transport_failed/);
+      await assert.rejects(send(encodeChatCompletionsRequest(s, messages())), /model_egress_stopped/);
+    }, async () => { calls++; return exchange(value)(); });
+    assert.equal(calls, 1); assert.equal(report.reason, 'transport_failed');
+    assert.equal(report.unknownCostRequests, 1); assert.equal(report.committedMicroUsd, 1200);
+    assert.equal(report.requests[0].failureStage, stage); assert.equal(report.requests[0].costMicroUsd, null);
+    assert.equal(report.requests[0].responseHash, null); assert.equal(report.requests[0].responseBytes, null);
+    assert.deepEqual(readModelEgress(root, runId), report);
+    const dir = path.join(root, 'model-egress', runId), file = path.join(dir, '0001.result.json'), original = fs.readFileSync(file, 'utf8');
+    const disk = fs.readdirSync(dir).map(n => fs.readFileSync(path.join(dir, n), 'utf8')).join('');
+    assert.ok(!disk.includes('PRIVATE-') && !disk.includes('synthetic'));
+    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(original), failureStage: stage + '_PRIVATE' }));
+    assert.throws(() => readModelEgress(root, runId), /model_egress_record_invalid/);
+    fs.writeFileSync(file, original); assert.deepEqual(readModelEgress(root, runId), report);
+    const first = response(); first.model = 'PRIVATE-WRONG-MODEL'; change(first);
+    await assert.rejects(createChatCompletionsTransport(s, exchange(first))(request()), e => modelFailureStage(e) === 'protocol_response_envelope_model');
   });
 });
 

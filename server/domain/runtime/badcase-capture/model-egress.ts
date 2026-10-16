@@ -80,7 +80,11 @@ const failureStages = ['https_credential', 'https_connect', 'https_peer', 'https
   'protocol_response_envelope_keys', 'protocol_response_envelope_id', 'protocol_response_envelope_object',
   'protocol_response_envelope_created', 'protocol_response_envelope_model', 'protocol_response_envelope_fingerprint',
   'protocol_response_envelope_service_tier', 'protocol_response_envelope_choices',
-  'protocol_response_choice', 'protocol_response_usage'] as const;
+  'protocol_response_choice', // retain old coarse choice records unchanged
+  'protocol_response_choice_keys', 'protocol_response_choice_index', 'protocol_response_choice_finish',
+  'protocol_response_choice_truncated', 'protocol_response_choice_logprobs', 'protocol_response_choice_message_keys',
+  'protocol_response_choice_message_reasoning', 'protocol_response_choice_role', 'protocol_response_choice_content',
+  'protocol_response_choice_refusal', 'protocol_response_choice_annotations', 'protocol_response_usage'] as const;
 export type ModelFailureStage = typeof failureStages[number];
 const failureLabels = new WeakMap<object, ModelFailureStage>();
 export function labelModelFailure(error: Error, stage: ModelFailureStage): Error {

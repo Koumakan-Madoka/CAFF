@@ -287,22 +287,24 @@ test('policy copied before asynchronous driver and post-transport clock rollback
 
 test('diagnostic metadata is allowlisted, optional for old records, forbidden on success and never reads thrown getters', async t => {
   const { labelModelFailure } = require('../../build/server/domain/runtime/badcase-capture/model-egress.js');
-  for (const mode of ['legacy', 'label', 'envelope-legacy', 'spoof', 'getter', 'proxy', 'invalid-label']) {
+  for (const mode of ['legacy', 'label', 'envelope-legacy', 'choice-legacy', 'spoof', 'getter', 'proxy', 'invalid-label', 'invalid-choice']) {
     const { root, policy, dir } = fixture(t); let touched = false;
     const report = await dispatchModelEgress(root, policy, async send => {
       await assert.rejects(send(Buffer.from('ok')));
     }, async () => {
       if (mode === 'label') throw labelModelFailure(Error('PRIVATE-ERROR'), 'protocol_response');
       if (mode === 'envelope-legacy') throw labelModelFailure(Error('PRIVATE-ERROR'), 'protocol_response_envelope');
+      if (mode === 'choice-legacy') throw labelModelFailure(Error('PRIVATE-ERROR'), 'protocol_response_choice');
       if (mode === 'invalid-label') throw labelModelFailure(Error('PRIVATE-ERROR'), 'PRIVATE-FAKE-STAGE');
+      if (mode === 'invalid-choice') throw labelModelFailure(Error('PRIVATE-ERROR'), 'protocol_response_choice_PRIVATE');
       if (mode === 'proxy') throw new Proxy({}, { get() { touched = true; throw Error('PRIVATE-PROXY'); } });
       if (mode === 'getter') throw { get failureStage() { touched = true; throw Error('PRIVATE-GETTER'); } };
       throw Object.assign(Error('PRIVATE-ERROR'), mode === 'spoof' ? { failureStage: 'protocol_response' } : {});
     });
     assert.equal(touched, false); assert.equal(report.reason, 'transport_failed');
     assert.equal(report.requests[0].failureStage, mode === 'label' ? 'protocol_response'
-      : mode === 'envelope-legacy' ? 'protocol_response_envelope' : undefined);
-    assert.equal(Object.hasOwn(report.requests[0], 'failureStage'), ['label', 'envelope-legacy'].includes(mode));
+      : mode === 'envelope-legacy' ? 'protocol_response_envelope' : mode === 'choice-legacy' ? 'protocol_response_choice' : undefined);
+    assert.equal(Object.hasOwn(report.requests[0], 'failureStage'), ['label', 'envelope-legacy', 'choice-legacy'].includes(mode));
     const file = path.join(dir, '0001.result.json'), original = fs.readFileSync(file, 'utf8');
     assert.ok(!original.includes('PRIVATE-'));
     for (const stage of ['PRIVATE-BAD-LABEL', null, 0, {}, ['protocol_response']]) {

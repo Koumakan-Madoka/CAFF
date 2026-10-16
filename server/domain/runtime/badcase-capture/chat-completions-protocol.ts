@@ -177,12 +177,24 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
   if (!Array.isArray(v.choices) || v.choices.length !== 1) responseFailure('protocol_response_envelope_choices');
   const c = v.choices[0];
   const calling = !!tools && c?.finish_reason === 'tool_calls';
-  if (!keys(c, ['index', 'message', 'finish_reason'], ['logprobs']) || c.index !== 0 || (!calling && c.finish_reason !== 'stop')
-    || (Object.hasOwn(c, 'logprobs') && c.logprobs !== null)
-    || !keys(c.message, ['role', 'content', ...(calling ? ['tool_calls'] : [])], ['refusal', 'annotations']) || c.message.role !== 'assistant'
-    || (!(calling && c.message.content === null) && !text(c.message.content))
-    || (Object.hasOwn(c.message, 'refusal') && c.message.refusal !== null)
-    || (Object.hasOwn(c.message, 'annotations') && (!Array.isArray(c.message.annotations) || c.message.annotations.length !== 0))) responseFailure('protocol_response_choice');
+  // Preserve the old choice guard's predicate order and accepted set. Known
+  // truncation/reasoning shapes get fixed rejection labels, NOT compatibility.
+  if (!keys(c, ['index', 'message', 'finish_reason'], ['logprobs'])) responseFailure('protocol_response_choice_keys');
+  if (c.index !== 0) responseFailure('protocol_response_choice_index');
+  if (!calling && c.finish_reason !== 'stop')
+    responseFailure(c.finish_reason === 'length' ? 'protocol_response_choice_truncated' : 'protocol_response_choice_finish');
+  if (Object.hasOwn(c, 'logprobs') && c.logprobs !== null) responseFailure('protocol_response_choice_logprobs');
+  if (!keys(c.message, ['role', 'content', ...(calling ? ['tool_calls'] : [])], ['refusal', 'annotations'])) {
+    // Only the sole recognized extra key is classified; other unknown keys
+    // remain generic. Never retain its content, type, size or any raw key name.
+    const reasoningOnly = keys(c.message, ['role', 'content', ...(calling ? ['tool_calls'] : []), 'reasoning_content'], ['refusal', 'annotations']);
+    responseFailure(reasoningOnly ? 'protocol_response_choice_message_reasoning' : 'protocol_response_choice_message_keys');
+  }
+  if (c.message.role !== 'assistant') responseFailure('protocol_response_choice_role');
+  if (!(calling && c.message.content === null) && !text(c.message.content)) responseFailure('protocol_response_choice_content');
+  if (Object.hasOwn(c.message, 'refusal') && c.message.refusal !== null) responseFailure('protocol_response_choice_refusal');
+  if (Object.hasOwn(c.message, 'annotations') && (!Array.isArray(c.message.annotations) || c.message.annotations.length !== 0))
+    responseFailure('protocol_response_choice_annotations');
   if (calling) {
     if (!Array.isArray(c.message.tool_calls) || c.message.tool_calls.length !== 1) fail();
     toolCall(c.message.tool_calls[0], tools!, seen);

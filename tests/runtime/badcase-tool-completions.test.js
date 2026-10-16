@@ -118,6 +118,26 @@ test('tools-v1 uses the same fixed envelope checks before releasing any tool cal
   }
 });
 
+test('tools-v1 uses fixed choice checks without accepting reasoning extensions or truncation', async () => {
+  for (const [check, change] of [
+    ['keys', v => v.choices[0] = null], ['index', v => v.choices[0].index = 1],
+    ['finish', v => v.choices[0].finish_reason = 'PRIVATE-FINISH'], ['truncated', v => v.choices[0].finish_reason = 'length'],
+    ['logprobs', v => v.choices[0].logprobs = {}], ['message_keys', v => v.choices[0].message['PRIVATE-EXTRA'] = 'PRIVATE-VALUE'],
+    ['message_reasoning', v => v.choices[0].message.reasoning_content = 'PRIVATE-REASONING'],
+    ['role', v => v.choices[0].message.role = 'PRIVATE-ROLE'], ['content', v => v.choices[0].message.content = []],
+    ['refusal', v => v.choices[0].message.refusal = 'PRIVATE-REFUSAL'], ['annotations', v => v.choices[0].message.annotations = [{}]],
+  ]) {
+    const v = response(); change(v);
+    await assert.rejects(api.createToolChatCompletionsTransport(config(), exchange(v))(request()), e => {
+      assert.equal(modelFailureStage(e), 'protocol_response_choice_' + check);
+      assert.deepEqual(Object.keys(e), ['code']); assert.equal(e.cause, undefined); return invalid(e);
+    });
+  }
+  // Both previously valid null-content tool calls and plain final responses stay valid.
+  assert.equal((await api.createToolChatCompletionsTransport(config(), exchange(response()))(request())).costMicroUsd, 40);
+  assert.equal((await api.createToolChatCompletionsTransport(config(), exchange(response(false)))(request(config(), history()))).costMicroUsd, 40);
+});
+
 test('argument byte bound is independent of outer response limit', async () => {
   const c = config(); c.settings.maxResponseBytes = 131072;
   for (const delta of [0, 1]) {

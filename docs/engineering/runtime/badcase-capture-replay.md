@@ -719,6 +719,19 @@ Linux 真实调用前预检两次暴露 HTTPS 定时器过早唤醒：Node 对�
 
 验证包括：原实现新增四例先红（未知 profile）后绿；profile/host/path/上下文负例、单次 session 属性复制和固定异常、连续请求会话稳定/跨 run 独立、持久批准与双账本贯穿、profile 删除篡改拒绝、原认证来源路径及新旧作用域隔离；既有 legacy hash 钉住测试保留。作者 Windows 五套117例＝116通过/1跳过，Linux Node22.22六套139/139；Linux私有副本8个单点变异（host/path、真实客户端名、会话快照、provider、批准runId、profile快照、session格式）全红，逐字节恢复后139/139并清理副本。`test:fast` 1883通过/41跳过、`test:smoke` 101/101、build/check及双typecheck通过。不包含新增真实供应商/Docker/UI运行，不声称已解决E70/完成对照；后续真实运行仍须固定SHA独立审查和新计划/批准。hostCode 未摘要编译模块的既有缺口保留，不能宣称本段修改自动改变 harnessHash；本 profile 自身确实改变 endpointHash/bindingHash。全部AC仍pending。
 
+### 5.23 choice 失败细分（不改变响应接受集合）
+
+E72 在 `cc6c39c8` 固定 SHA 审查通过、恢复提案获批后执行：98 个文件私有 Linux 副本逐字节预检，六套139/139；新计划/批准、原授权旧端点、显式客户端 profile、断网 Docker 内真实 SDK 基线仅发1请求，收到 HTTP200 后 `protocol_response_choice`，仍 `transport_failed/unresolved`、无评分、候选未启动。材料/双账本长期保留，2容器与专用daemon清理、源镜像不变。新增$0.25、累计$1.25未结算预留（不是实际账单）。HTTP200 不能证明哪个头消除了E70的400，也不能确认choice内具体失败项。本批最多6请求的授权尚不等于全部执行；诊断代码变更后仍先固定SHA独立审查，不自动重试旧批准。
+
+将原 choice 复合守卫按原短路顺序拆为固定失败分类：`keys`、`index`、`finish`、`logprobs`、`message_keys`、`role`、`content`、`refusal`、`annotations`，每项标签前缀均为 `protocol_response_choice_`。只抛首项、不保存原始键名/值/响应正文。在两个原有拒绝点进一步区分已知形状，**均仍拒绝，不是兼容放行**：
+
+- finish_reason 精确为已知 `length` 时使用 `truncated` 固定标签，其他不支持的结束原因仍 `finish`；不保存动态枚举、不把截断当成功。
+- message 键集仅比原要求多 `reasoning_content`（可含原已准许的refusal/annotations）时使用 `message_reasoning`，与该值的类型/长度/内容无关；还有其他未知键或缺少必填键仍为 `message_keys`。不提取、不丢弃或接受reasoning字段，不把该合成分类声称为E72已确认事实。
+
+旧粗粒度 `protocol_response_choice` 记录保留且不回溯重分类；11个新标签闭集加入现有schema-v1可选诊断，仅允许transport_failed，未知后缀读写两侧拒绝。文本/tools-v1共享校验，原null-content工具调用和正常结束保持可用；工具参数、usage、计费、超时粘性、失败停止后续请求/不退款/不评分语义不变。
+
+作者验证：新增choice用例先红（旧粗标签）后绿；Windows六套155例＝153通过/2跳过（链接权限），Linux Node22.22六套155/155；11个标签退化、reasoning过宽分类、首败重排、旧粗标签删除共14个私有副本单点变异全红，逐字节恢复后155/155并清理副本；fast1899通过/41跳过、smoke101、build/check与双typecheck通过。本段代码验证零新增Key读取/供应商/Docker/UI操作；E72的那1请求单独记账，不混作离线测试。hostCode未摘要编译模块缺口不变，全部AC pending、不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
