@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { prepareRetainedInitializationCapsule } = require('../../build/server/domain/runtime/badcase-capture/retained-initialization');
-const { decodeInitializationCapsule } = require('../../build/server/domain/runtime/badcase-capture/capsule-materialization');
+const { decodeInitializationCapsule, planModePreservingReplayCapsule } = require('../../build/server/domain/runtime/badcase-capture/capsule-materialization');
 const { prepareOfflineTask, runOfflineDockerTask } = require('../../build/server/domain/runtime/badcase-capture/docker-sandbox');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const entry = `
@@ -17,11 +17,16 @@ try {
 } catch { process.stderr.write('capsule_materialization_failed\\n'); process.exitCode=1; }
 `;
 function file(name, bytes) { bytes = Buffer.from(bytes); return { path: name, base64: bytes.toString('base64'), sha256: hash(bytes) }; }
-function taskFor(capsule, expected, image) {
+// A separate strict static probe. Legacy content-only probe/SDK launchers keep
+// their old contract; this does not silently migrate or authorize any agent run.
+const modeEntry = entry.replaceAll('materializeInitializationCapsule', 'materializeModePreservingReplayCapsule');
+function taskFor(capsule, expected, image) { return buildTask(capsule, expected, image, entry); }
+function modeTaskFor(capsule, expected, image) { return buildTask(capsule, expected, image, modeEntry); }
+function buildTask(capsule, expected, image, program) {
   // Trusted local build is part of the TCB, separate from every captured path/blob.
   const build = path.resolve(__dirname, '../../build/server/domain/runtime/badcase-capture');
   const task = { image, timeoutMs: 15000, entrypoint: 'probe.cjs', files: [
-    file('probe.cjs', entry), file('capsule-materialization.js', fs.readFileSync(path.join(build, 'capsule-materialization.js'))),
+    file('probe.cjs', program), file('capsule-materialization.js', fs.readFileSync(path.join(build, 'capsule-materialization.js'))),
     file('secrets.js', fs.readFileSync(path.join(build, 'secrets.js'))),
     file('capsule.json', capsule), file('expected.json', JSON.stringify(expected)),
   ] };
@@ -38,4 +43,14 @@ async function runRetainedInputProbe(request, image, options = {}) {
   // Do not expose untrusted stdout/stderr or archived texts to downstream callers.
   return { ...plan.receipt, containerId: r.containerId, cleaned: true, inputHash: r.inputHash, provenance: p.provenance };
 }
-module.exports = { runRetainedInputProbe, taskFor };
+async function runRetainedModeProbe(request, image, options = {}) {
+  const p = prepareRetainedInitializationCapsule(request);
+  const expected = { capsuleHash: p.capsuleHash, checkpointChecksum: p.provenance.checkpointChecksum };
+  const plan = planModePreservingReplayCapsule(p.capsule, expected);
+  const task = modeTaskFor(p.capsule, expected, image), prepared = prepareOfflineTask(task);
+  const r = await (options.runTask || runOfflineDockerTask)(task);
+  if (r.state !== 'completed' || r.cleaned !== true || r.inputHash !== prepared.inputHash
+    || r.stderr !== '' || r.stdout !== JSON.stringify(plan.expectedReceipt) + '\n') throw Object.assign(Error('capsule_probe_failed'), { code: 'capsule_probe_failed' });
+  return { ...plan.expectedReceipt, containerId: r.containerId, cleaned: true, inputHash: r.inputHash, provenance: p.provenance };
+}
+module.exports = { runRetainedInputProbe, taskFor, runRetainedModeProbe, modeTaskFor };

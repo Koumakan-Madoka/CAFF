@@ -1126,6 +1126,20 @@ Windows collector 在既有跨 await 项目租约内读取同 target 的 latest�
 
 验证包括父构建失败回归、边界/保护根/大小写/类型/Unicode/元数据漂移用例，本地 NTFS 首次 preMissing、独立外置 linked-worktree 的 deleted 文件，fresh/resume 服务→真实 publisher→重开→两恢复一致，历史合并/秘密路径/范围变化负例。仅自建临时夹具，raw writer enabled 不是管理开启或真实项目 turn；准确命令、计数、独立审查以 Goal E115 为准。零 Key/模型/供应商/真实 Docker/浏览器/生产操作，历史6美元未结算非账单与全部 AC pending、不合并发布保持。
 
+### 5.55 显式 Linux 普通文件 rwx 恢复前提（非普通 turn 回放完成）
+
+§4.6 的旧 `decode/materializeInitializationCapsule` 和 SDK/模型执行入口保持原内容恢复契约：0600 写入、`fileModePreserved=false`，不因本节自动迁移。新增内部 `planModePreservingReplayCapsule` / `materializeModePreservingReplayCapsule`，供后续普通 Docker 回放接入；只恢复数据和普通文件 rwx 权限，不执行捕获脚本、不初始化 SDK、不申请模型或授权采集。
+
+严格分支重新验证完整 capsule/闭包/路径/秘密边界，然后在首次 mkdir 前验证每个文件的 mode：须是安全整数，完整 regular-file mode 位于 `0100000..0100777`。缺失 mode、仅有 0755、非普通文件、字符串/小数/截断大整数、setuid/setgid/sticky 等均 `capsule_file_mode_invalid`；不猜默认值、不静默剥特殊位。规划在宿主平台无关、无写入，返回 `expectedReceipt` **仅为预期，不是落盘或容器观测证据**。
+
+实际严格恢复仅 Linux；其他平台在写入前 `capsule_mode_platform_unsupported`，无宿主平台回退。复用全新目录/排他写入/全量内容读回复验后，逐文件以 `O_RDONLY|O_NOFOLLOW` 打开既有 0600 文件，在同一 fd 上 `fchmod`，再核验 regular-file、精确 rwx 且无特殊位，并通过该 fd 重读内容；mode 000 不需临时放宽权限。每次 finally close，chmod/读取/关闭失败无成功回执，可能留下本次新建的部分目录，不回滚、不清理、不解除引用保护。祖先/同 OS 用户仍为 TCB，不宣称抵抗同权限并发篡改。
+
+新回执 `kind=linux-rwx-mode-restoration-v1` 的 `fileModePreserved=true` **仅指已核验的普通文件 rwx**；不包含目录 mode、属主、时间戳、ACL、xattr、挂载 noexec 或 Windows ACL 语义。新增 `modeInventoryHash` 绑定排序后的 snapshot/path/mode 表；旧 `materializedHash` 继续覆盖全部恢复文件的 path/size/hash（含 checkpoint.json），不改变旧摘要含义。`piExecuted/runnable/reproduced/evaluable/strictEvalEligible` 恒 false。
+
+`retained-input-probe.cjs` 新增独立显式 `runRetainedModeProbe/modeTaskFor`，只将固定严格静态恢复入口放进原隔离 Docker 底座；缺 mode 在运行前拒绝，精确比对 completed/cleaned/inputHash/空 stderr/回执，绝不暴露原始输出。旧 probe、真实模型 launcher、管理门和 UI 未改。本轮测试使用自建材料及 WSL Linux 静态落盘，不把 fake transport 或 WSL 当成真实 Docker 证据；普通配置/tool bridge/回调/路径替换及真实 fresh/resume agent 回放仍缺。
+
+回归 `tests/runtime/badcase-capsule-file-modes.test.js` 纳入 fast：fresh/resume 两恢复、严格 umask 下 0644/0755、000 同 fd 内容验证、特殊位/坏 mode 前置拒绝、非 Linux 零写、chmod/no-op/观测内容/close 故障及严格 wrapper。§5.54 的 E115 P3 补齐磁盘 `X.LOG` / 索引 `x.log` 反向 case-only（mock 与真实 NTFS 两步 rename、两种 ignorecase），删除 present 小写变异必须断言红。准确命令、计数及独立审查以 Goal E116 为准；非 AC 通过。零真实项目采集/Key/供应商/真实 Docker/浏览器/生产操作，全部 AC pending、历史6美元未结算非账单、不合并发布不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

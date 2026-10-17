@@ -204,6 +204,16 @@ test('verified index records first-checkpoint visible ASCII absences, never case
   assert.equal(changed.ok, false); assert.equal(Object.hasOwn(changed, 'indexDeletions'), false);
 });
 
+test('indexed absence preserves uppercase disk names for lowercase index names in both Git case modes', () => {
+  for (const ignoreCase of [false, true]) {
+    const r = missingCandidate(['x.log'], { ignoreCase, extra: [entry('X.LOG')] });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.indexDeletionsVerified, true);
+    assert.deepEqual([...r.indexDeletions], []);
+    assert.ok(r.observation.presentPaths.includes('X.LOG'));
+  }
+});
+
 test('indexed absence excludes native deny names, explicit/protected prefixes and short-name uncertainty', () => {
   // Keep the host conservative visibility predicate synchronized with the fixed
   // native pruning policy; source drift must fail before another release.
@@ -505,6 +515,20 @@ test('native local Git subset selects dirty/tracked/untracked/explicit ignored, 
   assert.equal(value.files['tracked.log'].hash, hash('dirty')); assert.equal(value.blobs.has(hash('IGNORED_NOT_AUTHORIZED')), false);
   assert.equal(value.files.untracked.hash, hash('new')); assert.equal(value.files['included.log'].hash, hash('included'));
   assert.equal(service.store.listCheckpoints('p').length, 0); assert.equal(service.loadPolicy('p').status, 'disabled');
+  // E115 P3: pin the reverse case-only direction using real NTFS spelling.
+  fs.writeFileSync(path.join(root, 'x.log'), 'case-only'); git('add', '-f', 'x.log');
+  fs.renameSync(path.join(root, 'x.log'), path.join(root, 'case-temp'));
+  fs.renameSync(path.join(root, 'case-temp'), path.join(root, 'X.LOG'));
+  assert.ok(fs.readdirSync(root).includes('X.LOG'));
+  for (const ignoreCase of ['false', 'true']) {
+    git('config', 'core.ignorecase', ignoreCase);
+    const caseOnly = await readWindowsGitFileCandidateAsync(options());
+    assert.equal(caseOnly.ok, true, caseOnly.reason);
+    assert.equal(caseOnly.indexDeletionsVerified, true);
+    assert.equal(caseOnly.indexDeletions.includes('x.log'), false);
+    assert.equal(caseOnly.files['X.LOG'].hash, hash('case-only'));
+  }
+  git('config', 'core.ignorecase', 'false');
   // Default exclusion of .git is not overridden merely to make classification work.
   service.savePolicy('p', { ...service.loadPolicy('p'), excludedPatterns: ['.git'] });
   assert.equal(readWindowsGitFileCandidate(options()).ok, false);

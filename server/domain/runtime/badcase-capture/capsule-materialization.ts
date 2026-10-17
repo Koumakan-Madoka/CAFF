@@ -77,6 +77,49 @@ export function decodeInitializationCapsule(capsule: any, expected: any) {
     fileModePreserved: false, piExecuted: false, runnable: false, reproduced: false, evaluable: false, strictEvalEligible: false } };
 }
 
+// Additive strict replay preparation. Legacy data-only diagnostics deliberately
+// retain their old receipt and 0600 writes. This planner's expectedReceipt is an
+// expectation, NOT evidence that a filesystem or a container has been observed.
+export function planModePreservingReplayCapsule(capsule: any, expected: any) {
+  const decoded = decodeInitializationCapsule(capsule, expected);
+  const cp = JSON.parse(decoded.files.find(f => f.path === 'materials/checkpoint.json')!.bytes.toString('utf8'));
+  const modes = Object.keys(cp.files).map(name => {
+    const mode = cp.files[name].mode;
+    // A full regular-file mode from the capture is required. Never synthesize
+    // a default, strip special bits, coerce strings or bitwise-truncate numbers.
+    if (!Number.isSafeInteger(mode) || mode < 0o100000 || mode > 0o100777) throw fail('capsule_file_mode_invalid');
+    return { path: 'snapshot/' + name, mode: mode & 0o777 };
+  }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  return { files: decoded.files, modes, expectedReceipt: { ...decoded.receipt,
+    kind: 'linux-rwx-mode-restoration-v1', modeInventoryHash: hash(JSON.stringify(modes)), fileModePreserved: true } };
+}
+
+// Static data restoration only, including ordinary rwx bits. Never executes an
+// archived file. Ownership, timestamps, ACLs, xattrs and directory modes are NOT
+// preserved. Only Linux is supported; Windows/other platforms fail before mkdir.
+export function materializeModePreservingReplayCapsule(capsule: any, expected: any, destination: string) {
+  const plan = planModePreservingReplayCapsule(capsule, expected); // ALL modes before ANY writes
+  if (process.platform !== 'linux') throw fail('capsule_mode_platform_unsupported');
+  materializeInitializationCapsule(capsule, expected, destination);
+  for (const item of plan.modes) {
+    const target = path.join(destination, item.path);
+    // Open while 0600, then chmod+read back on the SAME descriptor. This also
+    // supports mode 000 without weakening permissions to verify content later.
+    const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      if (!fs.fstatSync(fd).isFile()) throw fail('capsule_file_mode_mismatch');
+      fs.fchmodSync(fd, item.mode);
+      const observed = fs.fstatSync(fd);
+      if (!observed.isFile() || (observed.mode & 0o7777) !== item.mode) throw fail('capsule_file_mode_mismatch');
+      const file = plan.files.find(f => f.path === item.path)!;
+      if (!fs.readFileSync(fd).equals(file.bytes)) throw fail('capsule_materials_write_failed');
+    } finally { fs.closeSync(fd); }
+  }
+  // Any chmod/read/close failure leaves only the new partial copy, never a
+  // success receipt. No unpin, rollback, cleanup or launch permission is implied.
+  return plan.expectedReceipt;
+}
+
 export function materializeInitializationCapsule(capsule: any, expected: any, destination: string) {
   const plan = decodeInitializationCapsule(capsule, expected); // validate ALL before first write
   fs.mkdirSync(destination, { mode: 0o700 }); // exclusive: existing directory/link always fails
