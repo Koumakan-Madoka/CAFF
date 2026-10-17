@@ -981,6 +981,18 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 私有 preloader 仅在独立测试进程内替换编译模块字节，3个非等价变异（删 await、删 stop 守卫、丢 checkpointId 赋值）均断言红；仓库源码/build未变异，SHA核对原编译文件不变，preloader临时目录已清理。`test:fast`2069通过/43跳过（含check/build），smoke101、双typecheck/diff-check通过。没有 Linux 独立复现或真实异步 collector 落盘证据；mock startRun 不执行 SDK/供应商，不冒充 Docker/UI/真实 turn 验收。本段零真实项目采集/Key/供应商/真实Docker/浏览器/生产操作；历史6美元未结算非账单、全部AC pending、不合并发布不变。
 
+### 5.43 异步采集项目租约与显式同步提交（开启门仍关闭）
+
+新增内部 `withAsyncProjectWriteLease(root, projectId, action)`，为后续 Windows 异步 collector 的读→分类→持久化提供互斥边界。**旧 `withProjectWriteLock` / `withDelegatedProjectWriteLock` 仍只允许同步调用栈，不能传异步 action**：其 `finally` 会在返回 Promise 时释放文件锁/重入标志。作者独立临时目录探针确认：旧同步 wrapper 中 action 尚在等待时锁已不存在，另一个同步 writer 已能执行；这是未来异步接线的兼容性危险，不声称当前生产同步 collector 已发生该竞态。
+
+- 新 wrapper 在调用 action 前取得既有 owner 租约，整个 action（含所有 await）持有 `.writer-lock`，但**不把跨 await 的占用加入 `held`**。普通策略写入、封存、回收及其他进程仍失败 `capture_writer_busy`，不排队、不重试。不同项目可独立进行；嵌套 async wrapper 不隐式借用原租约。
+- action 得到的 `writeSync(work)` 只在明确的同步调用栈中借用原 owner，允许既有同步 writer 重入；每次均复验 owner 与 recovery gate。同步提交内安排的异步回调不继承重入资格。action settle 后，在任何 cleanup await 前吊销该 closure，完成后或清理中调用均拒绝。
+- `writeSync` 返回 thenable 为编程错误：固定 `capture_lock_async_commit`，立即观察返回任务的 rejection，等待该任务 settle 后才释放租约；即使 action 吞掉这个错误，也不得报告成功。此等待期间 closure 已吊销、普通 writer 仍 busy。**不是异步提交支持**，不能发现或终止未返回的 detached 任务；可信调用者必须在 action settle 前 await 自己启动的所有 helper 至真实 close，不能用 Promise.race 假装取消。没有硬超时、通用进程树隔离、任意闭包沙箱或有界未返回任务的承诺。
+- 新 wrapper 的本进程 live 标志使离线 recovery 即使收到 `writersStopped:true` 也不能退休尚未 settle/drain 的该 action；这不是跨进程 fencing，其他进程的恢复仍依赖人工确认所有 writer/子进程停写。owner 不匹配/释放失败时保留 fail-closed 锁；wrapper 结束后，既有显式离线检查/恢复路径可用，不自动删锁、按年龄/PID回收或递归清理。
+- **无生产 collector/管理开启接线**，既有同步 writer 与 supervisor lease 行为保持，Windows 能力门继续关闭。此 API 不授权目录、开启采集或豁免配额/秘密扫描；只协调遵循租约的内部 writer，底层 store 写入原语仍要求可信调用者提供锁与容量门控。外置 Git、session、真实 turn checkpoint、完整配额发布事务、容器映射均未完成，不构成 AC 通过。
+
+作者测试使用独立临时目录与有界子进程：新 API 初始12例在旧模块缺导出先红；新增原生 Windows 连接例为自建 NTFS Git 子集（测试侧 Git 禁全局配置、ignorecase=false），在异步租约内调用 §5.41 真实 Python 链，显式同步测试 writer 提交 CAS/checkpoint，恢复两次清单相同。文件脏改/untracked 可恢复、秘密不恢复、策略保持 disabled、完整性/严格资格仍 false。该 writer 不是真实执行器采集、不开任何真实项目；配置保存/封存/GC被阻断的探针只验证互斥，不代表这些产品链路已验收。`test:badcase-locks` 纳入 fast，避免扩长 Windows 主命令。最终 Windows10 build19045/x64、Python3.13.5、Node24.13.1：新套15/15，writer-recovery/async-writer/GC/expiry/sealing-lifecycle/run-references六套92=86通过/6跳过；fast2084通过/43跳过（含check/build），smoke101、双typecheck及diff-check通过。WSL Debian Node22.22私有35文件逐字节核验、同六套92=91通过/1 Windows原生跳过，测试后字节不变且副本清理；首次WSL路径被Git Bash转换而未执行，改禁路径转换；第一次Linux副本漏两CLI导致2失败，补齐后最终全套重跑，不计初次通过。10个进程内preload非等价变异（提前释放、跨await放held、不drain、不吊销、吞误用、删live recovery守卫、不释放、删thenable检查、删owner复验、漏function thenable）全部断言红，均无超时/取消/语法或补丁失败；未修改仓库源码/build，编译文件SHA核对不变，最终干净新进程复绿。日志及可复验变异脚本仅在忽略临时目录，不作为新用例现场或实际turn性能证据。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

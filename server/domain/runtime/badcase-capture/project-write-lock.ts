@@ -6,6 +6,9 @@ import crypto from 'node:crypto';
 // supervisor death and legacy locks still fail closed on ordinary writes. Only
 // explicit offline recovery below may retire a verified lock. No automatic GC.
 const held = new Set<string>();
+// Unlike held, these entries span awaits and NEVER confer reentrant write
+// permission. Also stop this process from "recovering" its own live action.
+const activeAsyncLeases = new Set<string>();
 const fail = (code: string) => Object.assign(Error(code), { code });
 function location(root: string, projectId: string) {
   if (typeof projectId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) throw fail('capture_lock_invalid');
@@ -83,6 +86,49 @@ export function withProjectWriteLock<T>(root: string, projectId: string, action:
   finally { held.delete(lock); fs.rmdirSync(lock); }
 }
 
+// Internal async collector orchestration. Own the on-disk lease across ALL
+// awaited work; grant reentrancy ONLY on an explicitly invoked synchronous
+// commit stack. No AsyncLocalStorage or shared held entry across awaits: other
+// requests (including callbacks scheduled inside a commit) must still be busy.
+// Trusted callers must await their helpers through close before settling action.
+// This is not cancellation, a hard timeout, or an untrusted-closure sandbox.
+export async function withAsyncProjectWriteLease<T>(root: string, projectId: string,
+  action: (writeSync: <R>(work: () => R) => R) => T | PromiseLike<T>): Promise<T> {
+  if (typeof action !== 'function') throw fail('capture_lock_invalid');
+  const lock = location(root, projectId), lease = acquireProjectWriteLease(root, projectId);
+  activeAsyncLeases.add(lock);
+  let open = true, asyncCommit = false;
+  const pending: Promise<void>[] = [];
+  const writeSync = <R>(work: () => R): R => {
+    if (!open || typeof work !== 'function') throw fail('capture_lock_invalid');
+    return withDelegatedProjectWriteLock(root, projectId, lease.owner, () => {
+      const value = work();
+      if (value !== null && (typeof value === 'object' || typeof value === 'function')
+        && typeof (value as any).then === 'function') {
+        // Programming error, not supported async reentrancy. Observe rejection
+        // immediately and drain the returned task before releasing the lease,
+        // even if action catches this error. Detached tasks cannot be discovered.
+        asyncCommit = true;
+        pending.push(Promise.resolve(value).then(() => {}, () => {}));
+        throw fail('capture_lock_async_commit');
+      }
+      return value;
+    });
+  };
+  try {
+    const value = await action(writeSync);
+    if (asyncCommit) throw fail('capture_lock_async_commit');
+    return value;
+  } finally {
+    open = false; // Revoke leaked commit closures before any cleanup await.
+    try { await Promise.all(pending); }
+    finally {
+      try { lease.release(); }
+      finally { activeAsyncLeases.delete(lock); }
+    }
+  }
+}
+
 // Internal operator API, never an HTTP/agent capability. Root ancestors and the
 // same OS user remain TCB. Identity is a change detector, not proof of dead owners.
 function checkedProject(root: string, projectId: string) {
@@ -131,7 +177,7 @@ export function recoverProjectWriteLock(root: string, projectId: string, options
     || options.writersStopped !== true || typeof options.expected !== 'string'
     || !/^[a-f0-9]{64}$/.test(options.expected)) throw fail('capture_lock_invalid');
   const { lock, project } = checkedProject(root, projectId);
-  if (held.has(lock)) throw fail('capture_writer_busy');
+  if (held.has(lock) || activeAsyncLeases.has(lock)) throw fail('capture_writer_busy');
   const gate = recoveryGate(lock);
   try { fs.mkdirSync(gate, { mode: 0o700 }); }
   catch { throw fail('capture_writer_busy'); }
