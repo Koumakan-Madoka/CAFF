@@ -31,7 +31,7 @@ function sdkMessages(context) {
 }
 function nonThinking(s) {
   if (!Object.hasOwn(s, 'compatibilityProfile')) return false;
-  assert.ok(['opencode-go-deepseek-nonthinking-v1', 'opencode-go-deepseek-nonthinking-cached-v1'].includes(s.compatibilityProfile));
+  assert.ok(['opencode-go-deepseek-nonthinking-v1', 'opencode-go-deepseek-nonthinking-cached-v1', 'opencode-go-deepseek-nonthinking-cached-index0-v1'].includes(s.compatibilityProfile));
   assert.equal(s.provider, 'opencode-go'); assert.equal(s.model, 'deepseek-v4.1-flash'); return true;
 }
 function promptCacheTokens(u, s) {
@@ -41,7 +41,7 @@ function promptCacheTokens(u, s) {
   const cached = Object.hasOwn(d, 'cached_tokens') ? d.cached_tokens : 0;
   assert.ok(Number.isSafeInteger(u.prompt_tokens) && u.prompt_tokens >= 1 && Number.isSafeInteger(cached) && cached >= 0 && cached <= u.prompt_tokens);
   assert.ok(!Object.hasOwn(d, 'audio_tokens') || d.audio_tokens === 0);
-  if (s.compatibilityProfile !== 'opencode-go-deepseek-nonthinking-cached-v1') assert.equal(cached, 0);
+  if (!['opencode-go-deepseek-nonthinking-cached-v1', 'opencode-go-deepseek-nonthinking-cached-index0-v1'].includes(s.compatibilityProfile)) assert.equal(cached, 0);
   return cached;
 }
 function assistantMessage(raw, profile) {
@@ -55,6 +55,14 @@ function assistantMessage(raw, profile) {
   if (c.finish_reason === 'tool_calls') {
     assert.equal(c.message.tool_calls.length, 1);
     for (const t of c.message.tool_calls) {
+      // Independent metadata guard: never silently discard an unapproved index
+      // or unknown field even when the host boundary is bypassed by a caller.
+      const indexed = s.compatibilityProfile === 'opencode-go-deepseek-nonthinking-cached-index0-v1';
+      assert.ok(t && typeof t === 'object' && !Array.isArray(t)
+        && ['id', 'type', 'function'].every(k => Object.hasOwn(t, k))
+        && Object.keys(t).every(k => ['id', 'type', 'function', ...(indexed ? ['index'] : [])].includes(k)));
+      if (Object.hasOwn(t, 'index')) assert.ok(t.index === 0);
+      assert.equal(t.type, 'function');
       assert.ok(profile.tools.some(x => x.function.name === t.function.name));
       content.push({ type: 'toolCall', id: t.id, name: t.function.name, arguments: JSON.parse(t.function.arguments) });
     }

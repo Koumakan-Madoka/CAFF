@@ -178,6 +178,69 @@ test('explicit cached nonthinking tools retain full prompt accounting and valida
   await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(v))(request(c)), e => modelFailureStage(e) === 'protocol_response_usage_reasoning_tokens');
 });
 
+const indexProfile = 'opencode-go-deepseek-nonthinking-cached-index0-v1';
+function indexedConfig() {
+  const c = config(); Object.assign(c.settings, { provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: indexProfile }); return c;
+}
+test('index0 compatibility preserves response bytes and accepts only optional zero on one complete response call', async () => {
+  const c = indexedConfig(), v = response(); v.model = c.settings.model;
+  for (const patch of [{ provider: 'other' }, { model: 'other' }, { compatibilityProfile: 'unknown' }]) {
+    assert.throws(() => api.toolChatCompletionsSettings({ ...c, settings: { ...c.settings, ...patch } }), invalid);
+  }
+  v.choices[0].message.reasoning_content = ''; v.usage.prompt_tokens_details = { cached_tokens: 7 };
+  for (const indexed of [false, true]) {
+    const t = v.choices[0].message.tool_calls[0]; if (indexed) t.index = 0;
+    const result = await api.createToolChatCompletionsTransport(c, exchange(v))(request(c));
+    assert.deepEqual(result.body, Buffer.from(JSON.stringify(v))); assert.equal(result.costMicroUsd, 40);
+    assert.equal(t.function.arguments, '{ "path": "synthetic.txt" }');
+  }
+  for (const compatibilityProfile of [undefined, 'opencode-go-deepseek-nonthinking-v1', 'opencode-go-deepseek-nonthinking-cached-v1']) {
+    const old = structuredClone(c); if (compatibilityProfile) old.settings.compatibilityProfile = compatibilityProfile; else delete old.settings.compatibilityProfile;
+    delete v.choices[0].message.reasoning_content;
+    await assert.rejects(api.createToolChatCompletionsTransport(old, exchange(v))(request(old)), e => modelFailureStage(e) === 'protocol_response_tool_keys_index');
+  }
+});
+test('index0 compatibility refuses malformed values, missing/unknown fields and never accepts index in request history', async () => {
+  const c = indexedConfig(); let calls = 0;
+  for (const index of [null, 1, -1, 0.5, '0', false, {}, [], Number.MAX_SAFE_INTEGER]) {
+    const v = response(); v.model = c.settings.model; v.choices[0].message.tool_calls[0].index = index;
+    await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(v))(request(c)), e => modelFailureStage(e) === 'protocol_response_tool_keys_index');
+  }
+  for (const [check, change] of toolFailureCases()) {
+    if (['keys_index', 'reused'].includes(check)) continue;
+    const v = response(); v.model = c.settings.model; v.choices[0].message.tool_calls[0].index = 0;
+    change(v, v.choices[0].message.tool_calls[0]);
+    await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(v))(request(c)), invalid);
+  }
+  const h = history(); h[2].tool_calls[0].index = 0;
+  assert.throws(() => api.encodeToolChatCompletionsRequest(c, h), invalid);
+  const r = request(c), b = JSON.parse(r.body); b.messages = h; r.body = Buffer.from(JSON.stringify(b));
+  await assert.rejects(api.createToolChatCompletionsTransport(c, async () => { calls++; return exchange(response())(); })(r), e => modelFailureStage(e) === 'protocol_request');
+  assert.equal(calls, 0);
+  const reused = response(); reused.model = c.settings.model; reused.choices[0].message.tool_calls[0].index = 0;
+  await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(reused))(request(c, history())), e => modelFailureStage(e) === 'protocol_response_tool_reused');
+  for (const [stage, change] of [
+    ['choice_reasoning_invalid', v => v.choices[0].message.reasoning_content = 'PRIVATE-REASONING'],
+    ['choice_truncated', v => v.choices[0].finish_reason = 'length'],
+    ['usage_prompt_details', v => v.usage.prompt_tokens_details = { cached_tokens: 21 }],
+    ['usage_completion_details', v => v.usage.completion_tokens_details = { audio_tokens: 1 }],
+    ['usage_reasoning_tokens', v => v.usage.completion_tokens_details = { reasoning_tokens: 1 }],
+    ['usage', v => v.usage.total_tokens++],
+  ]) {
+    const v = response(); v.model = c.settings.model; v.choices[0].message.tool_calls[0].index = 0; change(v);
+    await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(v))(request(c)), e => modelFailureStage(e) === 'protocol_response_' + stage);
+  }
+  for (const thinking of [undefined, { type: 'enabled' }, { type: 'disabled', extra: true }]) {
+    const r = request(c), b = JSON.parse(r.body); if (thinking) b.thinking = thinking; else delete b.thinking;
+    r.body = Buffer.from(JSON.stringify(b));
+    await assert.rejects(api.createToolChatCompletionsTransport(c, async () => { calls++; return exchange(response())(); })(r), e => modelFailureStage(e) === 'protocol_request');
+  }
+  assert.equal(calls, 0);
+  // Invalid index must fail before an invalid id, not hide a malformed index.
+  const v = response(); v.model = c.settings.model; Object.assign(v.choices[0].message.tool_calls[0], { index: 1, id: 'PRIVATE/' });
+  await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(v))(request(c)), e => modelFailureStage(e) === 'protocol_response_tool_keys_index');
+});
+
 const toolFailureCases = () => [
   ['calls', v => v.choices[0].message.tool_calls = null],
   ['calls', v => v.choices[0].message.tool_calls = []],

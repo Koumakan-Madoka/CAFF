@@ -19,7 +19,7 @@ export interface ChatCompletionsSettings {
   provider: string; model: string; contextWindowTokens: number; maxOutputTokens: number; temperature: number;
   inputMicroUsdPerMillionTokens: number; outputMicroUsdPerMillionTokens: number;
   maxRequestBytes: number; maxResponseBytes: number;
-  compatibilityProfile?: 'opencode-go-deepseek-nonthinking-v1' | 'opencode-go-deepseek-nonthinking-cached-v1';
+  compatibilityProfile?: 'opencode-go-deepseek-nonthinking-v1' | 'opencode-go-deepseek-nonthinking-cached-v1' | 'opencode-go-deepseek-nonthinking-cached-index0-v1';
 }
 // Round each component UP in integer arithmetic, never underreserve by rounding.
 function tariff(s: ChatCompletionsSettings, input: number, output: number) {
@@ -33,7 +33,7 @@ export function chatCompletionsSettings(value: unknown) {
     const profiled = object(v) && Object.hasOwn(v, 'compatibilityProfile');
     if (!keys(v, ['provider', 'model', 'contextWindowTokens', 'maxOutputTokens', 'temperature',
       'inputMicroUsdPerMillionTokens', 'outputMicroUsdPerMillionTokens', 'maxRequestBytes', 'maxResponseBytes'], ['compatibilityProfile'])
-      || (profiled && (!['opencode-go-deepseek-nonthinking-v1', 'opencode-go-deepseek-nonthinking-cached-v1'].includes(v.compatibilityProfile!) || v.provider !== 'opencode-go' || v.model !== 'deepseek-v4.1-flash'))
+      || (profiled && (!['opencode-go-deepseek-nonthinking-v1', 'opencode-go-deepseek-nonthinking-cached-v1', 'opencode-go-deepseek-nonthinking-cached-index0-v1'].includes(v.compatibilityProfile!) || v.provider !== 'opencode-go' || v.model !== 'deepseek-v4.1-flash'))
       || !id(v.provider) || !modelIdentifier(v.model) || !integer(v.contextWindowTokens, 1, 10000000)
       || !integer(v.maxOutputTokens, 1, v.contextWindowTokens)
       || !Number.isFinite(v.temperature) || v.temperature < 0 || v.temperature > 2
@@ -86,12 +86,15 @@ export function toolChatCompletionsSettings(input: unknown) {
     return { settings, tools, settingsHash: hash(JSON.stringify({ settings, tools })), perRequestReserveMicroUsd: s.perRequestReserveMicroUsd };
   } catch { fail(); }
 }
-function toolCall(value: any, tools: any[], seen: Set<string>, response = false): string {
+function toolCall(value: any, tools: any[], seen: Set<string>, response = false, index0 = false): string {
   // The same ordered predicates serve requests and responses. Request failures
   // remain generic; only response failures receive closed, value-free labels.
   const reject = (stage: ModelFailureStage): never => { if (response) responseFailure(stage); fail(); };
   const f = value?.function;
-  if (!keys(value, ['id', 'type', 'function'])) {
+  // Only an explicitly approved response profile may carry this metadata.
+  // The protocol still admits exactly ONE complete call, so only numeric 0 fits.
+  const indexed = response && index0;
+  if (!keys(value, ['id', 'type', 'function'], indexed ? ['index'] : [])) {
     // Classify only the original rejected branch. Never retain dynamic key
     // names/values; index denotes the one fixed, known extra key, not its value.
     // Request history keeps its original generic failure and does not classify.
@@ -104,6 +107,7 @@ function toolCall(value: any, tools: any[], seen: Set<string>, response = false)
     if (extra.length === 1 && extra[0] === 'index') reject('protocol_response_tool_keys_index');
     reject('protocol_response_tool_keys_extra');
   }
+  if (indexed && Object.hasOwn(value, 'index') && value.index !== 0) reject('protocol_response_tool_keys_index');
   if (!id(value.id)) reject('protocol_response_tool_id');
   if (seen.has(value.id)) reject('protocol_response_tool_reused');
   if (value.type !== 'function') reject('protocol_response_tool_type');
@@ -233,7 +237,7 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
     responseFailure('protocol_response_choice_reasoning_invalid');
   if (calling) {
     if (!Array.isArray(c.message.tool_calls) || c.message.tool_calls.length !== 1) responseFailure('protocol_response_tool_calls');
-    toolCall(c.message.tool_calls[0], tools!, seen, true);
+    toolCall(c.message.tool_calls[0], tools!, seen, true, s.compatibilityProfile === 'opencode-go-deepseek-nonthinking-cached-index0-v1');
   }
   const u = v.usage;
   // Keep primary bounds/arithmetic and legacy zero-details behavior. Only the
@@ -246,7 +250,7 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
     const d = u.prompt_tokens_details;
     const cached = keys(d, [], ['cached_tokens', 'audio_tokens']) && integer(d.cached_tokens, 1, u.prompt_tokens)
       && (!Object.hasOwn(d, 'audio_tokens') || d.audio_tokens === 0);
-    if (s.compatibilityProfile !== 'opencode-go-deepseek-nonthinking-cached-v1' || !cached)
+    if (!['opencode-go-deepseek-nonthinking-cached-v1', 'opencode-go-deepseek-nonthinking-cached-index0-v1'].includes(s.compatibilityProfile!) || !cached)
       responseFailure(cached ? 'protocol_response_usage_cached_tokens' : 'protocol_response_usage_prompt_details');
   }
   const completionDetails = ['reasoning_tokens', 'audio_tokens', 'accepted_prediction_tokens', 'rejected_prediction_tokens'];

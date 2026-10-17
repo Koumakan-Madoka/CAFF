@@ -24,7 +24,7 @@ test('actual SDK tool definitions must match reviewed definitions', () => {
   assert.throws(() => sdkTools([...tools, tools[0]], profile));
 });
 test('model response becomes toolUse and usage, not a locally scripted action', () => {
-  const raw = { model: 'fixture', choices: [{ finish_reason: 'tool_calls', message: { content: null, tool_calls: [{ id: 'one', function: { name: 'read', arguments: '{"path":"x"}' } }] } }], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } };
+  const raw = { model: 'fixture', choices: [{ finish_reason: 'tool_calls', message: { content: null, tool_calls: [{ id: 'one', type: 'function', function: { name: 'read', arguments: '{"path":"x"}' } }] } }], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } };
   const m = assistantMessage(raw, profile);
   assert.equal(m.stopReason, 'toolUse'); assert.deepEqual(m.content, [{ type: 'toolCall', id: 'one', name: 'read', arguments: { path: 'x' } }]);
   assert.equal(m.usage.totalTokens, 12);
@@ -81,6 +81,37 @@ test('cached adapter separates input/cacheRead without adding tokens or inventin
   assert.throws(() => assistantMessage(raw, strict)); delete strict.settings.compatibilityProfile;
   assert.throws(() => assistantMessage(raw, strict));
   delete raw.usage.prompt_tokens_details; assert.equal(assistantMessage(raw, p).usage.cacheRead, 0);
+});
+
+test('index0 adapter independently gates metadata and emits index-free SDK history with unchanged call identity', async () => {
+  const p = structuredClone(profile); Object.assign(p.settings, { provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: 'opencode-go-deepseek-nonthinking-cached-index0-v1' });
+  const raw = { model: p.settings.model, choices: [{ finish_reason: 'tool_calls', message: { content: null, reasoning_content: '', tool_calls: [
+    { id: 'one', type: 'function', index: 0, function: { name: 'read', arguments: '{ "path": "x" }' } }] } }],
+    usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, prompt_tokens_details: { cached_tokens: 7 } } };
+  const message = assistantMessage(raw, p);
+  assert.deepEqual(message.content, [{ type: 'toolCall', id: 'one', name: 'read', arguments: { path: 'x' } }]);
+  assert.equal(message.usage.input, 3); assert.equal(message.usage.cacheRead, 7);
+  const context = { systemPrompt: 'role', tools: p.tools.map(t => ({ ...t.function })), messages: [message, { role: 'toolResult', toolCallId: 'one', content: 'result' }] };
+  const wire = sdkMessages(context); assert.deepEqual(wire[1].tool_calls, [{ id: 'one', type: 'function', function: { name: 'read', arguments: '{"path":"x"}' } }]);
+  let captured;
+  const stream = modelStream(p, async body => { captured = JSON.parse(body); return Buffer.from(JSON.stringify(raw)); }, () => {});
+  await stream({ provider: p.settings.provider, id: p.settings.model }, context).result();
+  assert.deepEqual(captured.thinking, { type: 'disabled' }); assert.deepEqual(captured.messages, wire);
+  for (const value of [null, 1, -1, 0.5, '0', false, {}, [], Number.MAX_SAFE_INTEGER]) {
+    const v = structuredClone(raw); v.choices[0].message.tool_calls[0].index = value;
+    assert.throws(() => assistantMessage(v, p));
+  }
+  for (const compatibilityProfile of [undefined, 'opencode-go-deepseek-nonthinking-v1', 'opencode-go-deepseek-nonthinking-cached-v1']) {
+    const old = structuredClone(p); if (compatibilityProfile) old.settings.compatibilityProfile = compatibilityProfile; else delete old.settings.compatibilityProfile;
+    const v = structuredClone(raw); delete v.choices[0].message.reasoning_content; delete v.usage.prompt_tokens_details;
+    assert.throws(() => assistantMessage(v, old));
+  }
+  for (const change of [t => t.extra = 0, t => delete t.id, t => delete t.type, t => delete t.function]) {
+    const v = structuredClone(raw); change(v.choices[0].message.tool_calls[0]); assert.throws(() => assistantMessage(v, p));
+  }
+  const multiple = structuredClone(raw); multiple.choices[0].message.tool_calls.push(multiple.choices[0].message.tool_calls[0]);
+  assert.throws(() => assistantMessage(multiple, p));
+  delete raw.choices[0].message.tool_calls[0].index; assert.deepEqual(assistantMessage(raw, p).content, message.content);
 });
 
 test('relay uses only pinned container ID; duplicate mailbox sequence sends once and joins before returning', async () => {

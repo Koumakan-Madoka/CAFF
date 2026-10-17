@@ -811,6 +811,19 @@ E85仅确认`protocol_response_tool_keys`拒绝，未保留响应正文，无法
 
 新编译字节由§5.29纳入harnessHash，须新计划/新批准后才能真实调用；本节离线验证不读取Key、不发供应商请求或启动真实Docker/UI。不倒推E85原因、不升级回放资格，累计$4.50未结算预留非账单，全部AC pending、不合并发布。
 
+### 5.31 显式单工具 index0 元数据兼容配置
+
+E89在已审`feeeddf1`下按新计划/批准运行：实际仅1请求HTTP200后`protocol_response_tool_keys_index`，确认必需键齐全且唯一额外键为`index`，**值未读取/保存，不能断言为0或合法**；不能倒推E85/E83同因。失败即停、候选未启动、无评分；累计$5.50为未结算预留非账单，实际费用未知。E88超时与E89显式选择另一已严格TLS验证地址的差异不证明历史网络根因。
+
+[OpenAI官方SDK类型](https://github.com/openai/openai-node/blob/master/src/resources/chat/completions/completions.ts)将`index:number`定义于流式`ChatCompletionChunk.Choice.Delta.ToolCall`，非流式`ChatCompletionMessageFunctionToolCall`只有id/type/function。因此本实现不宣称该网关非流式扩展是OpenAI标准，不擅自将非流式响应解释成流式增量，也不自动删除未知字段：
+
+- 新增独立`compatibilityProfile:"opencode-go-deepseek-nonthinking-cached-index0-v1"`，仍限定精确opencode-go/deepseek-v4.1-flash及显式OpenCode端点clientProfile。settingsHash/bindingHash、review/manifest、harnessHash/plan与批准绑定该值；须新批准，不迁移旧记录或自动探测。旧无profile、nonthinking-v1、cached-v1继续拒绝任何index（包括0），既有规范请求字节/hash不变。
+- **只在新profile的响应路径**，且原`tool_calls`仍恰好1个、完整id/type/function均在且无其他未知键时，接受可选数值0的index。不是必需字段；null/字符串/布尔/负数/非零/小数/对象/数组全部拒绝。键集缺失或额外未知键仍按既有分类先拒；结构合格但index非0使用既有固定`protocol_response_tool_keys_index`失败标签，不保存值（旧profile中该标签仍只表示唯一额外index键，不能回溯其值）。index校验先于id，后续复用ID/type/function/name/参数/usage守卫不变。
+- 请求历史不接受index，仍generic/protocol_request且零exchange；不改变串行工具模式、不放行多个工具、流式响应或增量字段。宿主不修改原响应字节，原参数字节保持；容器独立复验调用键集及index的新模式/0边界后，仅映射工具ID、名称与解析的参数到SDK。SDK历史按原行为JSON.stringify参数且不带index；该元数据不是工具身份或参数，不被偷偷转成另一个工具。容器旧profile同步拒绝index，未知键/缺必需键也不再被adapter直接调用者静默擦除；原宿主已拒这些输入。
+- 新模式继承显式thinking.disabled、仅null/空reasoning、完整prompt一次计费和有界缓存分区；不放宽非零reasoning、缓存上界、未知usage/费用、截断、stderr/回执、预留保留、失败停止和不评分规则。两variant须同模式/同起点，不能与旧失败计划混作只变角色的对照。
+
+离线回归先红后绿，覆盖可选index/0/非法值、旧模式拒绝、缺键/未知键/多调用/复用ID、请求历史零exchange、容器独立拒绝与SDK历史投影、settings/endpoint及持久批准绑定、双账本费用/未知费/停止候选。仅合成HTTP/SDK映射fixture，不等于真实SDK或Docker/供应商执行。作者验证：4个新用例旧码先红；Windows九套265＝262通过/3链接权限跳过，Linux Node22.22私有1658文件逐字节核验后265/265，17单点变异全红（宿主/adapter模式与0边界、强制转换、缺键/未知键、请求门控、thinking/缓存上界、provider/model/端点绑定等），逐字节恢复265/265并清理。fast1998通过/42跳过、smoke101、check/build、双typecheck及diff-check通过。本代码增量零Key/供应商/真实Docker/UI操作；真实验证须固定SHA独立审查后新计划/新批准，不能称E89值合法或兼容已实证。外部observer仍不自动入hostCode证明，faithfulReplay/strict资格false，全部AC pending、不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

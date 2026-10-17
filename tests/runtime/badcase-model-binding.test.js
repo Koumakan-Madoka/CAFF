@@ -129,6 +129,39 @@ test('cached compatibility requires a distinct approval and preserves full-rate 
   assert.throws(() => readBoundModelApproval(f.root, f.approval.approvalId), rejected);
 });
 
+test('index0 profile requires a new endpoint-bound approval and malformed index stops both ledgers', async t => {
+  const c = config(); Object.assign(c.settings, { provider: 'opencode-go', model: 'deepseek-v4.1-flash', compatibilityProfile: 'opencode-go-deepseek-nonthinking-cached-index0-v1' });
+  Object.assign(c.endpoint, { hostname: 'opencode.ai', path: '/zen/go/v1/chat/completions', clientProfile: 'opencode-go-v1' });
+  c.tools = [{ type: 'function', function: { name: 'read', description: 'Read', parameters: { type: 'object', properties: {} } } }];
+  const b = modelBinding(c);
+  for (const value of [undefined, 'opencode-go-deepseek-nonthinking-v1', 'opencode-go-deepseek-nonthinking-cached-v1']) {
+    const old = structuredClone(c); if (value) old.settings.compatibilityProfile = value; else delete old.settings.compatibilityProfile;
+    const prev = modelBinding(old); assert.notEqual(b.settingsHash, prev.settingsHash); assert.notEqual(b.bindingHash, prev.bindingHash);
+  }
+  for (const patch of [{ provider: 'other' }, { model: 'other' }, { compatibilityProfile: 'unknown' }]) {
+    assert.throws(() => modelBinding({ ...c, settings: { ...c.settings, ...patch } }), rejected);
+  }
+  const missing = structuredClone(c); delete missing.endpoint.clientProfile; assert.throws(() => modelBinding(missing), rejected);
+  let index = 0;
+  const calls = fakeNetwork(t, () => ({ id: 'synthetic', object: 'chat.completion', created: 1, model: c.settings.model,
+    choices: [{ index: 0, message: { role: 'assistant', content: null, reasoning_content: '', tool_calls: [
+      { id: 'call-one', type: 'function', index, function: { name: 'read', arguments: '{}' } }] }, finish_reason: 'tool_calls' }],
+    usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30, prompt_tokens_details: { cached_tokens: 7 } } }));
+  const api = require('../../build/server/domain/runtime/badcase-capture/chat-completions-protocol.js');
+  const payload = () => api.encodeToolChatCompletionsRequest({ settings: c.settings, tools: c.tools }, [{ role: 'user', content: 'task' }]);
+  const f = fixture(t, c); approve(f);
+  const final = await dispatchBoundModelEvaluation(f.root, f.approval.approvalId, async (run, send) => { await send(payload()); return result(run); }, lease);
+  assert.equal(final.dispatchState, 'finished'); assert.equal(final.ledger.knownCostMicroUsd, 80); assert.equal(calls.length, 2);
+  mutate(f.archive, v => v.binding.config.settings.compatibilityProfile = 'opencode-go-deepseek-nonthinking-cached-v1');
+  assert.throws(() => readBoundModelApproval(f.root, f.approval.approvalId), rejected);
+  index = 1; const bad = fixture(t, c); approve(bad);
+  const failed = await dispatchBoundModelEvaluation(bad.root, bad.approval.approvalId, async (run, send) => { await send(payload()); return result(run); }, lease);
+  assert.equal(calls.length, 3); assert.equal(failed.dispatchState, 'unresolved'); assert.equal(failed.ledger.runs.length, 1); assert.equal(failed.ledger.runs[0].score, null);
+  const e = readModelEgress(bad.root, failed.ledger.runs[0].runId);
+  assert.equal(e.requests[0].failureStage, 'protocol_response_tool_keys_index'); assert.equal(e.unknownCostRequests, 1);
+  assert.equal(e.knownCostMicroUsd, 0); assert.equal(e.committedMicroUsd, 1200); assert.equal(e.requests[0].responseHash, null);
+});
+
 test('archive precedes approval, immutable exact retry and read after reconstruction', t => {
   const f = fixture(t), original = fs.openSync; let observed = false;
   fs.openSync = function(file, flags, ...rest) {
