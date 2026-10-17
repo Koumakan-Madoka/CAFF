@@ -1,5 +1,6 @@
 // Windows management authorization only. This is NOT a capture capability:
-// collector/estimate remain fail-closed until their policy/restore integration.
+// collector remains fail-closed. Separately bounded metadata preview is not
+// permission to enable capture or to read file bodies.
 // Storage, PATH-selected interpreter and same-OS-user processes remain TCB.
 const fs = require('node:fs');
 const path = require('node:path');

@@ -23,7 +23,7 @@ test('async estimation is explicit and does not fall back to synchronous scannin
   service.estimateDirectory = () => { throw Error('sync fallback'); };
   const result = await service.estimateDirectoryAsync('p', path.join(root, 'target'));
   assert.equal(result.ok, false);
-  assert.equal(result.reason, process.platform === 'linux' ? 'dir_not_authorized' : `capture_unavailable:safe_read_capability_missing:${process.platform}`);
+  assert.equal(result.reason, ['linux', 'win32'].includes(process.platform) ? 'dir_not_authorized' : `capture_unavailable:safe_read_capability_missing:${process.platform}`);
   assert.equal(service.store.listCheckpoints('p').length, 0);
 });
 

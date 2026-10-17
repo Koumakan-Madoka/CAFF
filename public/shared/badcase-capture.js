@@ -24,7 +24,7 @@
     root.innerHTML = `
       <h3>问题现场采集（预览）</h3>
       <p class="muted">仅信任同一 OS 用户的本地进程；不抵御本机 shell 模拟授权。不会自动授权项目路径。
-      当前 Windows/darwin 采集不可用；授权不代表可回放或可严格评测。请勿授权凭据或未获准的私有目录。</p>
+      Windows 可在授权后预估文件容量，但 Windows/darwin 文件采集仍不可用；授权不代表可回放或可严格评测。请勿授权凭据或未获准的私有目录。</p>
       <p data-capture-status role="status" aria-live="polite">未选择项目</p>
       <div class="settings-form compact-settings-form">
         <label>文件采集根（绝对路径，每行一个）<textarea name="authorizedDirs" rows="3" spellcheck="false"></textarea></label>
@@ -167,13 +167,14 @@
         });
         if (seq !== generation) return;
         if (action === 'estimate') {
-          const valid = result.complete === true && typeof result.estimateId === 'string' && result.estimateId.length > 0
+          const valid = result.captureAvailable !== false && result.complete === true && typeof result.estimateId === 'string' && result.estimateId.length > 0
             && Number.isFinite(result.expiresAt) && result.expiresAt > now()
             && Number.isFinite(result.totalBytes) && result.totalBytes >= 0
             && Array.isArray(result.estimates) && result.estimates.length > 0
-            && result.estimates.every(item => item.ok === true && item.complete === true);
+            && result.estimates.every(item => item.ok === true && item.complete === true && item.captureAvailable !== false);
+          const previewOnly = result.complete === true && result.captureAvailable === false;
           element('[data-capture-estimate]').textContent = [
-            `文件预估合计：${result.totalBytes ?? '未知'} B · ${valid ? '完整预估（非完整回放）' : '预估失败或不完整'}`,
+            `文件预估合计：${result.totalBytes ?? '未知'} B · ${previewOnly ? '元数据预估完成；采集尚不可用' : valid ? '完整预估（非完整回放）' : '预估失败或不完整'}`,
             ...(Array.isArray(result.estimates) ? result.estimates.map(item =>
               `${item.targetDir}: ${item.totalBytes ?? '未知'} B / ${item.fileCount ?? '未知'} 文件 · ${item.reason || (item.ok && item.complete ? '预估完成' : '不完整')}`) : []),
           ].join('\n');
@@ -184,7 +185,8 @@
               clearReceipt(); notice('预估回执已过期，请重新预估。'); updateControls();
             }, Math.min(2147483647, result.expiresAt - now()));
           }
-          notice(valid ? '预估成功；仍未自动开启。请另行确认开启。' : '无可用开启回执；请检查原因后重新预估。');
+          notice(previewOnly ? '容量预估可用，但 Windows 文件采集尚未接通；不能开启。预估包括 ignored 文件，不含 session、镜像和清单成本；已知凭据/私有名称强制排除，未扫描内容。'
+            : valid ? '预估成功；仍未自动开启。请另行确认开启。' : '无可用开启回执；请检查原因后重新预估。');
         } else {
           showState(result);
           notice(action === 'authorize' ? '已授权但未开启，请先预估。' : action === 'disable' ? '已关闭；不删除已有现场。' : action === 'enable' ? '已开启；采集能力和材料完整性仍需逐次检查。' : '已保存期限/配额，授权范围未变；未保存的范围草稿已丢弃，显示当前持久化范围。');

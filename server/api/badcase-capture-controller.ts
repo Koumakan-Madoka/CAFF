@@ -140,10 +140,11 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
       const results = await estimates(projectId, policy, operation);
       assertCurrent(projectId, operation, policy);
       const complete = results.every((result: any) => result.ok === true && result.complete === true);
-      const receipt = complete ? { id: crypto.randomUUID(), fingerprint: fingerprint(policy), expiresAt: now() + 10 * 60 * 1000 } : null;
+      const captureAvailable = results.every((result: any) => result.captureAvailable !== false);
+      const receipt = complete && captureAvailable ? { id: crypto.randomUUID(), fingerprint: fingerprint(policy), expiresAt: now() + 10 * 60 * 1000 } : null;
       if (receipt) receipts.set(projectId, receipt);
       sendJson(res, 200, { estimates: results, estimateId: receipt?.id || null, expiresAt: receipt?.expiresAt || null,
-        totalBytes: results.reduce((sum: number, result: any) => sum + (result.totalBytes || 0), 0), complete,
+        totalBytes: results.reduce((sum: number, result: any) => sum + (result.totalBytes || 0), 0), complete, captureAvailable,
         costScope: 'file_metadata_upper_estimate_excludes_session_image_and_manifest_costs' });
       return true;
     } else if (action === 'enable') {
@@ -156,10 +157,11 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
       const operation = invalidate(projectId);
       // Recheck root identity and enumeration immediately before enabling.
       // This is not a quota guarantee or strict consistency proof.
-      const failed = (await estimates(projectId, policy, operation)).find((result: any) => result.ok !== true || result.complete !== true);
+      const failed = (await estimates(projectId, policy, operation)).find((result: any) => result.ok !== true || result.complete !== true || result.captureAvailable === false);
       assertCurrent(projectId, operation, policy);
       if (receipt.expiresAt <= now()) throw issue('badcase_capture_estimate_required', 409);
-      if (failed) throw issue(failed.reason || 'badcase_capture_estimate_incomplete', 409);
+      if (failed) throw issue(failed.captureAvailable === false ? 'badcase_capture_collector_unavailable'
+        : failed.reason || 'badcase_capture_estimate_incomplete', 409);
       service.savePolicy(projectId, { ...policy, status: 'enabled', suspendReason: '' });
     }
     sendJson(res, 200, state(projectId));

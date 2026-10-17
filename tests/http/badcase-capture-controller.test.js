@@ -151,6 +151,34 @@ test('default GET and guard failures never scan or authorize', async t => {
   assert.equal(touches, 0);
 });
 
+test('Windows real HTTP native capacity preview has exact bytes but no enable receipt while collector is unavailable', { skip: process.platform !== 'win32' }, async t => {
+  const h = setup(t);
+  let controller;
+  const server = http.createServer(async (req, res) => {
+    try { await controller({ req, res, pathname: req.url }); }
+    catch (error) { res.writeHead(error.statusCode || 500); res.end(JSON.stringify({ error: error.message })); }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const port = server.address().port;
+  controller = createBadcaseCaptureController({ ...h.options, port });
+  const base = `http://127.0.0.1:${port}`;
+  const post = (action, body) => fetch(`${base}/api/projects/project-test/badcase-capture/${action}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-caff-csrf-token': 'test-csrf' }, body: JSON.stringify(body),
+  });
+  assert.equal((await post('authorize', authorization(h.target))).status, 200);
+  const response = await post('estimate', {});
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.complete, true); assert.equal(result.totalBytes, 5);
+  assert.equal(result.estimates[0].fileCount, 1);
+  assert.equal(result.estimates[0].exclusionPolicy, 'windows-metadata-v1');
+  assert.equal(result.captureAvailable, false); assert.equal(result.estimateId, null);
+  assert.equal((await post('enable', { confirmed: true, estimateId: 'forged' })).status, 409);
+  assert.equal(createBadcaseCaptureService({ captureRoot: h.captureRoot }).loadPolicy('project-test').status, 'disabled');
+  assert.equal(h.service.store.listCheckpoints('project-test').length, 0);
+});
+
 test('Windows native authorization failures return sanitized errors and stay disabled', { skip: process.platform !== 'win32' }, async t => {
   const h = setup(t);
   const alias = path.join(h.root, 'alias');
@@ -218,6 +246,18 @@ test('estimate receipt gates enable; enable revalidates and disable persists wit
   await rejects(() => invoke(h.controller, 'enable', { confirmed: true, estimateId: estimate.body.estimateId }), 'badcase_capture_estimate_required', 409);
 });
 
+test('enable rechecks collector availability even if an older estimate issued a receipt', async t => {
+  const h = setup(t);
+  await invoke(h.controller, 'authorize', authorization(h.target));
+  fakeEstimates(h);
+  const result = (await invoke(h.controller, 'estimate', {})).body;
+  assert.ok(result.estimateId);
+  h.service.estimateDirectoryAsync = () => ({ ok: true, complete: true, captureAvailable: false,
+    fileCount: 1, totalBytes: 5, reason: '' });
+  await rejects(() => invoke(h.controller, 'enable', { confirmed: true, estimateId: result.estimateId }), 'badcase_capture_collector_unavailable', 409);
+  assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
+});
+
 test('real collector estimate stays disabled and reports platform capability honestly', async t => {
   const h = setup(t);
   await invoke(h.controller, 'authorize', authorization(h.target));
@@ -232,6 +272,11 @@ test('real collector estimate stays disabled and reports platform capability hon
     fs.renameSync(h.target, h.target + '-original');
     fs.mkdirSync(h.target);
     await rejects(() => invoke(h.controller, 'enable', { confirmed: true, estimateId: result.estimateId }), 'authorized_root_replaced', 409);
+  } else if (process.platform === 'win32') {
+    assert.equal(result.complete, true);
+    assert.equal(result.totalBytes, 5);
+    assert.equal(result.captureAvailable, false);
+    assert.equal(result.estimateId, null);
   } else {
     assert.equal(result.complete, false);
     assert.equal(result.estimateId, null);

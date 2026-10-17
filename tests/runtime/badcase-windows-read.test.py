@@ -33,6 +33,39 @@ class WindowsRead(unittest.TestCase):
         self.outside.mkdir()
         (self.outside / 'sample.bin').write_bytes(b'OUTSIDE_SENTINEL')
 
+    def test_estimate_protocol_never_reads_and_prunes_before_open(self):
+        names = ['.PI', '.Pi-Sandbox', '.SSH', '.aws', '.azure', '.gnupg', '.git',
+                 '.env', '.ENV.local', 'auth.json', 'credentials.json']
+        for parent in [self.root, self.root / 'sub']:
+            for name in names:
+                (parent / name).mkdir()
+                (parent / name / 'private').write_bytes(b'PRIVATE_SENTINEL')
+        with w.Root(str(self.root)) as root:
+            pin = root.identity
+        request = {'version': 1, 'op': 'estimate', 'root': str(self.root), 'expected': pin, 'excluded': []}
+        original = w._relative
+        opened = []
+        def observe(stack, handle, name, directory):
+            opened.append(name)
+            return original(stack, handle, name, directory)
+        with patch.object(w.Root, 'read', side_effect=AssertionError('must not read')), patch.object(w, '_relative', observe):
+            output = io.BytesIO()
+            w.serve(io.BytesIO(json.dumps(request).encode()), output)
+        header = json.loads(output.getvalue())
+        self.assertTrue(header['ok'], header)
+        self.assertEqual(header['files'], [])
+        self.assertEqual([e['path'] for e in header['entries']], ['sub', 'sub/sample.bin'])
+        self.assertFalse(set(names) & set(opened), 'pruning precedes child open')
+        with patch.object(w, 'Root', side_effect=AssertionError('must not open target')) as unopened:
+            for changed in [{**request, 'paths': []}, {**request, 'expected': None}]:
+                output = io.BytesIO()
+                w.serve(io.BytesIO(json.dumps(changed).encode()), output)
+                self.assertFalse(json.loads(output.getvalue())['ok'])
+            private = {**request, 'root': str(self.root / '.SSH')}
+            output = io.BytesIO(); w.serve(io.BytesIO(json.dumps(private).encode()), output)
+            self.assertEqual(json.loads(output.getvalue())['code'], 'estimate_scope_rejected')
+            self.assertEqual(unopened.call_count, 0, 'observe outside production catch')
+
     def test_exact_bytes_and_identity_roundtrip(self):
         (self.root / 'empty').touch()
         (self.root / '中文😀').write_bytes(b'unicode')

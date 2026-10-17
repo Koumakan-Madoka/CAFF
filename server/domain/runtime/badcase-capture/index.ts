@@ -12,6 +12,7 @@ import { runEstimateProcess } from './estimate-process';
 import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
 import { prepareWindowsAuthorization } from './windows-authorization';
 import { invokeWindowsHelper } from './windows-helper';
+import { estimateWindowsDirectory, estimateWindowsDirectoryAsync } from './windows-estimate';
 
 export function resolveCaptureRoot(options: any = {}) {
   const explicit = String(options.captureRoot || '').trim() || String(process.env.CAFF_BADCASE_CAPTURE_DIR || '').trim();
@@ -70,8 +71,8 @@ export function createBadcaseCaptureService(options: any = {}) {
     // 显式授权动作（唯一允许钉住根身份的入口）：对当前策略中的 authorizedDirs 与
     // authorizedInputDirs 固定目录对象身份。Linux: realpath + statx；Windows:
     // literal path + native NT identity (no junction resolution/fallback).
-    // Windows authorization always leaves capture disabled; estimate/collector
-    // capability remains unavailable until their separate integration is ready.
+    // Windows authorization always leaves capture disabled. Its separate
+    // metadata preview cannot issue an enable receipt; collector stays closed.
     authorizeProject(projectId: any) {
       const policy = store.loadPolicy(projectId);
       if (process.platform === 'win32') {
@@ -114,9 +115,20 @@ export function createBadcaseCaptureService(options: any = {}) {
       return store.computeUsage(projectId);
     },
 
-    // HTTP management must use this bounded asynchronous entry. The sync entry
-    // below remains for the child and existing offline capture tests only.
-    estimateDirectoryAsync(projectId: any, targetDir: any) {
+    // HTTP management must use this bounded asynchronous entry. Windows starts
+    // one audited, no-descendant Python metadata helper directly (no Linux
+    // process-group approximation); Linux retains its isolated estimate worker.
+    // The sync entry below is for workers/offline capture tests only.
+    async estimateDirectoryAsync(projectId: any, targetDir: any) {
+      if (process.platform === 'win32') {
+        const start = Date.now();
+        const id = String(projectId || '').trim(), target = String(targetDir || '').trim();
+        if (!id || !target) return { ok: false, reason: !id ? 'project_id_missing' : 'target_dir_missing',
+          fileCount: 0, totalBytes: 0, durationMs: Date.now() - start };
+        const result = await estimateWindowsDirectoryAsync({ captureRoot, agentDir: options.agentDir,
+          targetDir: target, policy: store.loadPolicy(id) });
+        return { ...result, durationMs: Date.now() - start };
+      }
       return runEstimateProcess({ captureRoot, projectId: String(projectId || ''), targetDir: String(targetDir || '') });
     },
 
@@ -130,6 +142,10 @@ export function createBadcaseCaptureService(options: any = {}) {
       if (!id) return fail('project_id_missing');
       if (!target) return fail('target_dir_missing');
       const policy = normalizeCapturePolicy(store.loadPolicy(id), id);
+      if (process.platform === 'win32') {
+        return { ...estimateWindowsDirectory({ captureRoot, agentDir: options.agentDir, targetDir: target, policy }),
+          durationMs: Date.now() - startedAt };
+      }
       const tree: any = collector.estimateTree(path.resolve(target), policy);
       if (!tree.ok) return fail(tree.reason || 'enumeration_failed');
       let totalBytes = 0;

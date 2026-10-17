@@ -119,6 +119,19 @@ test('writer contention explains retry without claiming policy success or retryi
   assert.equal(h.calls.filter(call => call.url.endsWith('/disable')).length, 2);
 });
 
+test('metadata-only Windows preview shows bytes and limitations, never enables even with a stray receipt', async t => {
+  const h = setup(t, url => url.endsWith('/estimate') ? estimate({ captureAvailable: false,
+    estimates: [{ targetDir: '/repo', ok: true, complete: true, fileCount: 2, totalBytes: 123, captureAvailable: false }] }) : undefined);
+  await h.panel.select({ id: 'a' }); await h.click('estimate');
+  assert.match(h.root.textContent, /123 B/);
+  assert.match(h.root.textContent, /元数据预估完成.*采集尚不可用/);
+  assert.match(h.root.textContent, /ignored/);
+  assert.match(h.root.textContent, /未扫描内容/);
+  assert.equal(h.button('enable').disabled, true);
+  await h.click('enable');
+  assert.equal(h.calls.some(c => c.url.endsWith('/enable')), false);
+});
+
 test('authorization and enable require separate confirmation; cancel sends no mutation', async t => {
   const h = setup(t); await h.panel.select({ id: 'a', name: 'A' });
   h.accept(false); await h.click('authorize'); assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);

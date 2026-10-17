@@ -235,6 +235,17 @@ def _excluded_path(relative, prefixes):
                for prefix in prefixes)
 
 
+# Metadata preview's conservative, versioned deny names. Not a universal secret
+# detector. Prune before opening a child; names in its parent remain observable.
+METADATA_DENY_NAMES = ('.git', '.pi', '.pi-sandbox', '.ssh', '.aws', '.azure', '.gnupg',
+                       '.env', 'auth.json', 'credentials.json')
+
+
+def _metadata_denied(name):
+    return (any(_nt_equal(name, forbidden) for forbidden in METADATA_DENY_NAMES)
+            or (len(name) > 5 and _nt_equal(name[:5], '.env.')))
+
+
 class Root:
     """Owns all ancestor handles. Use only as a context manager."""
     def __init__(self, absolute, expected=None):
@@ -284,7 +295,7 @@ class Root:
             self.stack.close()
         self.stack = self.handle = None
 
-    def walk(self, max_entries=100000, max_depth=64, _after_list=None, excluded=()):
+    def walk(self, max_entries=100000, max_depth=64, _after_list=None, excluded=(), _metadata_only=False):
         """Metadata-only tree enumeration. Not a coherent multi-file snapshot.
 
         Parent handles are held until their subtree completes. Each child is
@@ -308,7 +319,7 @@ class Root:
                 relative = prefix + '/' + name if prefix else name
                 # Never open/stat/recurse an excluded child, including reparses.
                 # Parent-directory names are necessarily read to prune children.
-                if _excluded_path(relative, prefixes):
+                if _excluded_path(relative, prefixes) or (_metadata_only and _metadata_denied(name)):
                     continue
                 if depth + 1 > max_depth:
                     raise Refused("depth_limit")
@@ -385,7 +396,7 @@ PUBLIC_REASONS = frozenset([
     'file_identity_mismatch', 'enumeration_failed', 'enumeration_invalid',
     'directory_changed', 'entry_limit', 'depth_limit', 'limit_invalid',
     'path_not_in_manifest', 'too_large', 'read_failed', 'short_read',
-    'changed_during_read', 'output_limit',
+    'changed_during_read', 'output_limit', 'estimate_scope_rejected',
 ])
 
 
@@ -424,8 +435,10 @@ def _request(stream):
             raise Refused('request_invalid')
         op = value.get('op')
         keys = {'version', 'op', 'root'}
-        if op == 'capture':
-            keys |= {'expected', 'excluded', 'paths'}
+        if op in ('capture', 'estimate'):
+            keys |= {'expected', 'excluded'}
+            if op == 'capture':
+                keys.add('paths')
         elif op != 'identity':
             raise Refused('request_invalid')
         if set(value) != keys or not isinstance(value['root'], str):
@@ -436,11 +449,11 @@ def _request(stream):
         suffix = match[2].replace('\\', '/')
         if suffix:
             components(suffix)
-        if op == 'capture':
+        if op in ('capture', 'estimate'):
             if not _valid_identity(value['expected']):
                 raise Refused('request_invalid')
             _excluded_prefixes(value['excluded'])
-            paths = value['paths']
+            paths = value.get('paths', [])
             if (type(paths) is not list or len(paths) > 2048
                     or any(not isinstance(p, str) for p in paths) or len(set(paths)) != len(paths)):
                 raise Refused('request_invalid')
@@ -457,17 +470,19 @@ def serve(input_stream, output_stream):
     try:
         request = _request(input_stream)  # all syntax validated before target open
         bodies = []
+        if request['op'] == 'estimate' and any(_metadata_denied(p) for p in request['root'][3:].replace('\\', '/').split('/') if p):
+            raise Refused('estimate_scope_rejected')
         with Root(request['root'], request.get('expected')) as root:
             header = {'version': 1, 'ok': True, 'identity': root.identity}
-            if request['op'] == 'capture':
-                entries = root.walk(excluded=request['excluded'])
+            if request['op'] in ('capture', 'estimate'):
+                entries = root.walk(excluded=request['excluded'], _metadata_only=request['op'] == 'estimate')
                 manifest = {e['path']: e for e in entries if e['type'] == 'file'}
                 # Exact canonical membership prevents case and 8.3 aliases from
                 # opening paths omitted by policy. Preflight ALL before reading.
-                if any(p not in manifest for p in request['paths']):
+                if any(p not in manifest for p in request.get('paths', [])):
                     raise Refused('path_not_in_manifest')
                 files, remaining = [], BODY_LIMIT
-                for relative in request['paths']:
+                for relative in request.get('paths', []):
                     entry = manifest[relative]
                     value = root.read(relative, min(FILE_LIMIT, remaining),
                                       expected_identity=entry['identity'])

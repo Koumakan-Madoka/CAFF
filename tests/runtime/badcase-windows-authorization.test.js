@@ -40,7 +40,9 @@ test('Windows explicit authorization persists exact native pins across service r
   assert.deepEqual(restarted.loadPolicy('p'), policy);
   assert.deepEqual(fs.readdirSync(root), [], 'authorization never writes into worktree');
   assert.deepEqual(fs.readdirSync(inputs), []);
-  assert.equal(restarted.estimateDirectory('p', root).ok, false, 'collector/estimate capability remains closed');
+  const preview = restarted.estimateDirectory('p', root);
+  assert.equal(preview.ok, true, 'native metadata preview is now available');
+  assert.equal(preview.captureAvailable, false, 'collector remains closed');
   restarted.savePolicy('p', { ...policy, status: 'enabled' });
   assert.match(restarted.captureTurnCheckpoint({ projectId: 'p', targetDir: root }).reason, /^capture_unavailable:/);
 });
@@ -132,14 +134,19 @@ function isolatedRuntime({ platform = 'win32', helper, child, disk } = {}) {
 }
 
 test('Windows authorization runtime fails before I/O on other platforms or invalid storage roots', t => {
-  const disk = new Proxy({}, { get() { assert.fail('unexpected filesystem access'); } });
-  const child = { spawnSync() { assert.fail('unexpected process'); } };
+  // Observe OUTSIDE the production catch. Throwing assertions here used to be
+  // swallowed as an ordinary refusal and could not prove 'before I/O' (E98 P3).
+  let diskTouches = 0, childTouches = 0;
+  const disk = new Proxy({}, { get() { diskTouches++; throw Error('unexpected filesystem access'); } });
+  const child = { spawnSync() { childTouches++; throw Error('unexpected process'); } };
   for (const platform of ['linux', 'darwin']) {
     assert.equal(isolatedRuntime({ platform, disk, child }).prepareWindowsAuthorization({ captureRoot: '/absolute' }).ok, false);
   }
   for (const captureRoot of ['', 'relative', null, 42]) {
     assert.equal(isolatedRuntime({ disk, child }).prepareWindowsAuthorization({ captureRoot }).ok, false);
   }
+  assert.equal(diskTouches, 0);
+  assert.equal(childTouches, 0);
 });
 
 test('Windows authorization self-test rejects unstable identity, accepted junctions and failed startup; cleans only own probe', t => {

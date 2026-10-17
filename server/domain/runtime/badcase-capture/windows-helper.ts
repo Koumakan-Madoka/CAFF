@@ -1,9 +1,11 @@
 // Audited low-level transport. Explicit Windows management authorization uses
-// identity queries; capture capability, estimate and collector remain unconnected.
+// identity queries; metadata preview uses a distinct no-body estimate operation.
+// Capture capability and collector remain unconnected.
 // A valid response is not proof of a coherent snapshot or a replayable turn.
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const { spawnSync } = require('node:child_process');
+const { spawnSync, spawn } = require('node:child_process');
+const { performance } = require('node:perf_hooks');
 const { TextDecoder } = require('node:util');
 import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
 
@@ -11,6 +13,7 @@ export const WINDOWS_HELPER_LIMITS = Object.freeze({
   requestBytes: 1024 * 1024, headerBytes: 32 * 1024 * 1024,
   bodyBytes: 128 * 1024 * 1024, fileBytes: 64 * 1024 * 1024,
   entries: 100000, paths: 2048, exclusions: 256, timeoutMs: 10 * 60 * 1000, identityTimeoutMs: 10000,
+  estimateTimeoutMs: 25000,
 });
 const REASONS = new Set([
   'request_invalid', 'helper_failed', 'windows_required', 'root_path_invalid',
@@ -20,7 +23,7 @@ const REASONS = new Set([
   'file_identity_mismatch', 'enumeration_failed', 'enumeration_invalid',
   'directory_changed', 'entry_limit', 'depth_limit', 'limit_invalid',
   'path_not_in_manifest', 'too_large', 'read_failed', 'short_read',
-  'changed_during_read', 'output_limit',
+  'changed_during_read', 'output_limit', 'estimate_scope_rejected',
 ]);
 function exact(value: any, keys: string[]) {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -50,9 +53,10 @@ function validRelative(value: any) {
       && !/^(?:CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])(?:\..*)?$/i.test(part));
 }
 function validRequest(request: any) {
-  if (!request || request.version !== 1 || !['identity', 'capture'].includes(request.op)
+  if (!request || request.version !== 1 || !['identity', 'capture', 'estimate'].includes(request.op)
       || !exact(request, request.op === 'identity' ? ['version', 'op', 'root']
-        : ['version', 'op', 'root', 'expected', 'excluded', 'paths'])
+        : request.op === 'estimate' ? ['version', 'op', 'root', 'expected', 'excluded']
+          : ['version', 'op', 'root', 'expected', 'excluded', 'paths'])
       || typeof request.root !== 'string' || Buffer.byteLength(request.root) > 32768) return false;
   const match = request.root.match(/^[a-z]:[\\/](.*)$/i);
   if (!match || (match[1] && !validRelative(match[1].replace(/\\/g, '/')))) return false;
@@ -60,8 +64,8 @@ function validRequest(request: any) {
   return validIdentity(request.expected)
     && Array.isArray(request.excluded) && request.excluded.length <= WINDOWS_HELPER_LIMITS.exclusions
     && request.excluded.every(validRelative)
-    && Array.isArray(request.paths) && request.paths.length <= WINDOWS_HELPER_LIMITS.paths
-    && request.paths.every(validRelative) && new Set(request.paths).size === request.paths.length;
+    && (request.op === 'estimate' || (Array.isArray(request.paths) && request.paths.length <= WINDOWS_HELPER_LIMITS.paths
+      && request.paths.every(validRelative) && new Set(request.paths).size === request.paths.length));
 }
 export function encodeWindowsHelperRequest(request: any) {
   try {
@@ -93,10 +97,11 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
       return exact(header, ['version', 'ok', 'identity']) && offset === stdout.length
         ? { ok: true, identity: header.identity } : bad();
     }
+    const paths = request.op === 'estimate' ? [] : request.paths;
     if (!exact(header, ['version', 'ok', 'identity', 'entries', 'files'])
         || !sameIdentity(header.identity, request.expected)
         || !Array.isArray(header.entries) || header.entries.length > WINDOWS_HELPER_LIMITS.entries
-        || !Array.isArray(header.files) || header.files.length !== request.paths.length) return bad();
+        || !Array.isArray(header.files) || header.files.length !== paths.length) return bad();
     const entries = new Map<string, any>();
     let previous: any = null;
     for (const entry of header.entries) {
@@ -116,8 +121,8 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
     const files: any[] = [];
     let total = 0;
     for (let i = 0; i < header.files.length; i++) {
-      const file = header.files[i], entry = entries.get(request.paths[i]);
-      if (!exact(file, ['path', 'size', 'sha256', 'identity']) || file.path !== request.paths[i]
+      const file = header.files[i], entry = entries.get(paths[i]);
+      if (!exact(file, ['path', 'size', 'sha256', 'identity']) || file.path !== paths[i]
           || !entry || entry.type !== 'file' || !validIdentity(file.identity)
           || !sameIdentity(file.identity, entry.identity) || file.size !== entry.size
           || !decimal(file.size, 0n, BigInt(WINDOWS_HELPER_LIMITS.fileBytes))
@@ -147,7 +152,8 @@ export function invokeWindowsHelper(python: string, helperPath: string, request:
     }
     const result = spawnSync(python, ['-I', '-B', helperPath], {
       input, encoding: 'buffer', windowsHide: true,
-      timeout: request.op === 'identity' ? WINDOWS_HELPER_LIMITS.identityTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
+      timeout: request.op === 'identity' ? WINDOWS_HELPER_LIMITS.identityTimeoutMs
+        : request.op === 'estimate' ? WINDOWS_HELPER_LIMITS.estimateTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
       maxBuffer: WINDOWS_HELPER_LIMITS.headerBytes + WINDOWS_HELPER_LIMITS.bodyBytes + 1,
     });
     if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stderr) || result.stderr.length !== 0) {
@@ -155,4 +161,60 @@ export function invokeWindowsHelper(python: string, helperPath: string, request:
     }
     return parseWindowsHelperResponse(result.stdout, request);
   } catch { return { ok: false, reason: 'helper_process_failed' }; }
+}
+
+// HTTP metadata preview only: one audited Python child, no shell/descendants.
+// Windows termination targets Node's child process handle, not a recycled PID
+// or taskkill /T. Do not reuse this for helpers which can launch descendants.
+let activeEstimates = 0;
+export async function invokeWindowsEstimateHelper(python: string, helperPath: string, request: any): Promise<any> {
+  const fail = (reason: string) => ({ ok: false, reason });
+  if (process.platform !== 'win32') return fail('windows_required');
+  const input = encodeWindowsHelperRequest(request);
+  if (!input || request.op !== 'estimate') return fail('request_invalid');
+  if (activeEstimates >= 2) return fail('estimate_busy');
+  activeEstimates++;
+  try {
+    if (fs.statSync(helperPath).size > 1024 * 1024
+        || crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') !== WINDOWS_HELPER_SOURCE_SHA256) {
+      return fail('helper_integrity_failed');
+    }
+    return await new Promise(resolve => {
+      const start = performance.now();
+      const timeout = WINDOWS_HELPER_LIMITS.estimateTimeoutMs;
+      const maxOutput = WINDOWS_HELPER_LIMITS.headerBytes + 1; // NO body for estimate
+      let child: any;
+      try {
+        child = spawn(python, ['-I', '-B', helperPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      } catch { resolve(fail('helper_process_failed')); return; }
+      let reason = '', bytes = 0;
+      const chunks: any[] = [];
+      const stop = (why: string) => {
+        if (!reason) reason = why;
+        chunks.length = 0;
+        // Keep draining/wait for close. No partial output, no success before
+        // the process AND both inherited output pipes have closed.
+        try { child.kill('SIGKILL'); } catch { reason = 'estimate_cleanup_failed'; }
+      };
+      const timer = setTimeout(() => stop('estimate_timeout'), timeout);
+      child.on('error', () => stop('helper_process_failed'));
+      child.stdin.on('error', () => { /* checked on close; never log */ });
+      child.stdout.on('data', (chunk: any) => {
+        if (reason) return;
+        bytes += chunk.length;
+        if (bytes > maxOutput) { stop('estimate_output_limit'); return; }
+        chunks.push(chunk);
+      });
+      child.stderr.on('data', () => stop('helper_process_failed'));
+      child.on('close', (code: any) => {
+        clearTimeout(timer);
+        if (reason) { resolve(fail(reason)); return; }
+        if (performance.now() - start >= timeout) { resolve(fail('estimate_timeout')); return; }
+        if (code !== 0) { resolve(fail('helper_process_failed')); return; }
+        resolve(parseWindowsHelperResponse(Buffer.concat(chunks), request));
+      });
+      try { child.stdin.end(input); } catch { stop('request_invalid'); }
+    });
+  } catch { return fail('helper_process_failed'); }
+  finally { activeEstimates--; }
 }
