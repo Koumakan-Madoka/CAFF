@@ -264,6 +264,22 @@ test('tool labels preserve first-failure order and do not label request history 
   }
 });
 
+test('transport rejects malformed tool request history with protocol_request, never a response label or exchange', async () => {
+  let calls = 0;
+  for (const [check, change, reused] of toolFailureCases()) {
+    if (reused) continue;
+    const c = config(); c.settings.maxRequestBytes = 131072;
+    const r = request(c), body = JSON.parse(r.body), v = response();
+    change(v, v.choices[0].message.tool_calls[0]);
+    body.messages = [...messages(), v.choices[0].message, { role: 'tool', tool_call_id: 'call-1', content: 'result' }];
+    r.body = Buffer.from(JSON.stringify(body));
+    await assert.rejects(api.createToolChatCompletionsTransport(c, async () => { calls++; return exchange(response())(); })(r), e => {
+      assert.equal(modelFailureStage(e), 'protocol_request', check); return invalid(e);
+    });
+  }
+  assert.equal(calls, 0);
+});
+
 test('argument byte bound is independent of outer response limit', async () => {
   const c = config(); c.settings.maxResponseBytes = 131072;
   for (const delta of [0, 1]) {

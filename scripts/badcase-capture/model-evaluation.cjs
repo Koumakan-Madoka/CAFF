@@ -1,6 +1,10 @@
 // Internal retained-case -> dedicated Docker -> approved model send -> host score.
 // No HTTP route or implicit paid authorization. The caller must use the immutable
 // reviewed plan and dispatchBoundModelEvaluation; no SDK ever executes on host.
+const { captureHostCode } = require('./model-host-code.cjs');
+// Snapshot before loading this entry's dependencies. Use a fresh trusted process
+// after a code update; disk inventory is not attestation of require.cache/VM code.
+const hostSnapshot = captureHostCode();
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -19,6 +23,7 @@ const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const clone = v => JSON.parse(JSON.stringify(v));
 const exact = (v, ks) => v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).sort().join('|') === [...ks].sort().join('|');
 function prepareModelEvaluation(requestValue, imageValue, sourcesValue, rolesValue, ruleValue, configValue, limitsValue) {
+  hostSnapshot.verify();
   const request = clone(requestValue), image = clone(imageValue), sources = clone(sourcesValue), roles = clone(rolesValue), rule = clone(ruleValue);
   const binding = modelBinding(configValue), config = binding.config, limits = clone(limitsValue);
   assert.ok(Object.hasOwn(config, 'tools'), 'reviewed_tools_required');
@@ -39,17 +44,15 @@ function prepareModelEvaluation(requestValue, imageValue, sourcesValue, rolesVal
   files.push({ path: 'container-model-adapter.cjs', bytes: fs.readFileSync(path.join(__dirname, 'container-model-adapter.cjs')) },
     { path: 'model-profile.json', bytes: Buffer.from(JSON.stringify({ settings: config.settings, tools: config.tools, maxRequests: config.maxRequests })) });
   const inventory = manifestFor(files);
-  const hostCode = Object.fromEntries(['model-evaluation.cjs', 'container-model-relay.cjs', 'verify-pi-initialization.cjs', 'image-recovery.cjs',
-    'model-evaluation-operator.cjs', 'authorized-model-auth.cjs']
-    .map(name => [name, hash(fs.readFileSync(path.join(__dirname, name)))]));
+  const hostCode = hostSnapshot.files;
   const plan = planEvaluation({ caseId: request.flagId, checkpointHash: expected.checkpointChecksum,
     inputHash: prepared.capsuleHash, environmentHash: hash(JSON.stringify(image)), harnessHash: hash(JSON.stringify({ files: inventory.files, hostCode })),
     roleId: 'bounded-container-role', baselineRoleHash: hash(roles.baseline), candidateRoleHash: hash(roles.candidate),
     model: { provider: config.settings.provider, id: config.settings.model, settingsHash: binding.bindingHash },
-    evaluator: { id: 'file-sha256-v1', versionHash: hash(JSON.stringify({ version: 1, codeHash: hostCode['model-evaluation.cjs'], ...rule })) }, ...limits });
+    evaluator: { id: 'file-sha256-v1', versionHash: hash(JSON.stringify({ version: 1, codeHash: hostCode['scripts/badcase-capture/model-evaluation.cjs'], ...rule })) }, ...limits });
   const review = { schemaVersion: 1, planHash: plan.planHash, deliveryMode: input.mode, invocationHash: hash(input.invocation),
     historyHash: hash(JSON.stringify(input.messages)), roles, rule, declaredImage: image, binding,
-    artifact: 'evaluation-result.txt', faithfulReplay: false, paidAuthorization: false };
+    hostCode, artifact: 'evaluation-result.txt', faithfulReplay: false, paidAuthorization: false };
   return { plan: clone(plan), review: clone(review), async execute(root, value, send, dedicatedProbe) {
     const q = clone(value), row = plan.runs.find(r => r.runId === q.runId); assert.ok(row);
     assert.ok(exact(q, [...Object.keys(row), 'planHash', 'timeoutMs', 'perRunLimitMicroUsd', 'approvalId', 'expiresAt']));
@@ -57,7 +60,7 @@ function prepareModelEvaluation(requestValue, imageValue, sourcesValue, rolesVal
     assert.equal(q.planHash, plan.planHash); assert.equal(q.timeoutMs, limits.timeoutMs); assert.equal(q.perRunLimitMicroUsd, limits.perRunLimitMicroUsd);
     assert.ok(Number.isSafeInteger(q.expiresAt) && Date.now() < q.expiresAt);
     assert.equal(typeof send, 'function'); assert.equal(typeof dedicatedProbe, 'function');
-    for (const [name, digest] of Object.entries(hostCode)) assert.equal(hash(fs.readFileSync(path.join(__dirname, name))), digest);
+    hostSnapshot.verify();
     // The original outer/request ledger must exist before container creation.
     const before = readModelEgress(root, q.runId);
     assert.equal(before.policy.approvalId, q.approvalId); assert.equal(before.policy.planHash, plan.planHash);
@@ -68,9 +71,16 @@ function prepareModelEvaluation(requestValue, imageValue, sourcesValue, rolesVal
       deliveryMode: input.mode, invocationHash: hash(input.invocation), historyHash: hash(JSON.stringify(input.messages)) };
     const stage = files.map(f => ({ path: f.path, bytes: Buffer.from(f.bytes) })); stage.push({ path: 'task.json', bytes: Buffer.from(JSON.stringify(task)) });
     const manifest = manifestFor(stage);
+    const checkedSend = async body => {
+      hostSnapshot.verify();
+      const response = await send(body);
+      hostSnapshot.verify();
+      return response;
+    };
     const r = await dedicatedProbe(clone(image), stage, { timeoutMs: q.timeoutMs,
-      probe: (i, f, options) => runProbe(i, f, { ...options, runDocker: relayDockerTransport(options.runDocker, send,
+      probe: (i, f, options) => runProbe(i, f, { ...options, runDocker: relayDockerTransport(options.runDocker, checkedSend,
         { maxRequests: config.maxRequests, maxRequestBytes: config.settings.maxRequestBytes, maxResponseBytes: config.settings.maxResponseBytes }) }) });
+    hostSnapshot.verify();
     assert.ok(r && /^[a-f0-9]{64}$/.test(r.containerId));
     assert.equal(r.manifest?.inputHash, manifest.inputHash); assert.equal(r.manifest?.runtimeHash, manifest.runtimeHash);
     assert.equal(r.termination, undefined); assert.ok(r.result && r.result.code === 0 && !r.result.failure && r.result.stderr === '');

@@ -13,7 +13,7 @@ const { recordBoundModelApproval, dispatchBoundModelEvaluation } = require('../.
 const { encodeToolChatCompletionsRequest } = require('../../build/server/domain/runtime/badcase-capture/chat-completions-protocol');
 const hash = x => crypto.createHash('sha256').update(x).digest('hex');
 const image = { imageId: 'sha256:' + '1'.repeat(64), repositoryDigest: 'node@sha256:' + '2'.repeat(64), architecture: 'amd64', nodeVersion: 'v24.21.0', pythonVersion: 'Python 3.11.2' };
-function setup(t) {
+function setup(t, prepare = prepareModelEvaluation) {
   const h = fixture(t), repo = path.resolve(__dirname, '../..');
   const sources = { runtimeArchive: archiveRuntime(repo, path.join(h.root, 'runtime')), harnessArchive: archiveHarness(repo, path.join(h.root, 'harness')) };
   const config = { settings: { provider: 'synthetic', model: 'fixture', contextWindowTokens: 1000, maxOutputTokens: 100, temperature: 0,
@@ -22,34 +22,58 @@ function setup(t) {
     tools: [{ type: 'function', function: { name: 'read', description: 'synthetic', parameters: { type: 'object' } } }] };
   const roles = { baseline: 'base', candidate: 'candidate' }, rule = { expectedHash: hash('done\n'), badcaseHash: hash('draft\n') };
   const limits = { repetitions: 1, timeoutMs: 25000, perRunLimitMicroUsd: 2200, totalLimitMicroUsd: 4400 };
-  const prepared = prepareModelEvaluation(h.request, image, sources, roles, rule, config, limits);
+  const prepared = prepare(h.request, image, sources, roles, rule, config, limits);
   const approval = { confirmed: true, planHash: prepared.plan.planHash, approvalId: 'test', expiresAt: Date.now() + 60000 };
   recordBoundModelApproval(h.root, prepared.plan.spec, config, approval);
   return { ...h, config, prepared, approval, sources, roles, rule, limits };
 }
-function network(t) {
+function network(t, onRequest = () => {}) {
   const original = https.request; t.after(() => { https.request = original; }); let count = 0;
   https.request = opts => {
     const req = new EventEmitter(), socket = new EventEmitter(), res = new PassThrough();
     Object.assign(socket, { encrypted: true, authorized: true, remoteAddress: opts.hostname });
     Object.assign(res, { headers: { 'content-type': 'application/json' }, statusCode: 200, complete: true });
     req.destroy = () => res.destroy();
-    req.end = () => { count++; queueMicrotask(() => { req.emit('response', res); res.end(JSON.stringify({ id: 'reply', object: 'chat.completion', created: 1, model: 'fixture',
+    req.end = () => { count++; onRequest(); queueMicrotask(() => { req.emit('response', res); res.end(JSON.stringify({ id: 'reply', object: 'chat.completion', created: 1, model: 'fixture',
       choices: [{ index: 0, message: { role: 'assistant', content: 'answer' }, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } })); }); };
     queueMicrotask(() => { req.emit('socket', socket); socket.emit('secureConnect'); }); return req;
   }; return () => count;
 }
-async function execute(h, mutate = () => {}, before = () => {}, resultPatch = {}) {
+async function execute(h, mutate = () => {}, before = () => {}, resultPatch = {}, viaRelay = false) {
   return dispatchBoundModelEvaluation(h.root, h.approval.approvalId, (run, send) => h.prepared.execute(h.root, run, send, async (i, files, options) => {
     before(files); assert.deepEqual(i, image); assert.equal(options.timeoutMs, 25000); assert.equal(typeof options.probe, 'function');
     assert.equal(files.some(f => f.bytes.includes(h.rule.expectedHash)), false);
     const profile = JSON.parse(files.find(f => f.path === 'model-profile.json').bytes);
     assert.equal(Object.hasOwn(profile, 'endpoint'), false); assert.equal(Object.hasOwn(profile, 'credential'), false);
-    await send(encodeToolChatCompletionsRequest({ settings: h.config.settings, tools: h.config.tools }, [{ role: 'user', content: 'synthetic' }]));
+    const body = encodeToolChatCompletionsRequest({ settings: h.config.settings, tools: h.config.tools }, [{ role: 'user', content: 'synthetic' }]);
+    if (!viaRelay) await send(body);
     const manifest = manifestFor(files), q = JSON.parse(files.find(f => f.path === 'task.json').bytes);
     const receipt = { kind: 'model-sdk-task-v1', runId: run.runId, roleHash: run.roleHash, capsuleHash: q.capsuleHash,
       inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash, deliveryMode: q.deliveryMode, invocationHash: q.invocationHash, historyHash: q.historyHash,
       networkCalls: 0, modelCalls: 1, toolNames: [], artifactBase64: Buffer.from('done\n').toString('base64') };
+    if (viaRelay) {
+      // Exercise the actual runProbe -> relay -> checkedSend composition, using
+      // a deterministic Docker protocol fixture (not a real SDK/container).
+      let running = false, finish;
+      const fake = require('../helpers/badcase-fake-docker.cjs')(i, { async change(args, result, state) {
+        if (args[0] === 'start') {
+          running = true;
+          Object.assign(result, await new Promise(resolve => { finish = resolve; }));
+        } else if (args[0] === 'inspect') {
+          const info = state.info(); info.Config.Labels = { 'caff.badcase.pi-initialization': state.owner };
+          info.State.Running = running; result.stdout = JSON.stringify([info]);
+        } else if (args[0] === 'exec') {
+          if (state.options?.input) {
+            if (typeof viaRelay === 'object') viaRelay.delivered++;
+            mutate(receipt); running = false;
+            finish({ code: 0, stdout: JSON.stringify(receipt), stderr: '', ...resultPatch });
+          } else result.stdout = JSON.stringify({ sequence: 1, body: body.toString('base64') });
+        } else if (args[0] === 'kill') {
+          running = false; finish({ code: 0, stdout: '', stderr: 'synthetic failure' });
+        }
+      } });
+      return options.probe(i, files, { runDocker: fake.run });
+    }
     mutate(receipt);
     return { containerId: 'a'.repeat(64), manifest, result: { code: 0, stdout: JSON.stringify(receipt), stderr: '', ...resultPatch } };
   }), () => ({ value: 'synthetic-inert', expiresAt: Date.now() + 5000 }));
@@ -84,6 +108,70 @@ test('legacy text-only profile and out-of-supervisor time limits fail before any
   const h = setup(t), { tools, ...textOnly } = h.config;
   assert.throws(() => prepareModelEvaluation(h.request, image, h.sources, h.roles, h.rule, textOnly, h.limits));
   assert.throws(() => prepareModelEvaluation(h.request, image, h.sources, h.roles, h.rule, h.config, { ...h.limits, timeoutMs: 25001 }));
+});
+// Copies contain executable sources only; never copy credentials, user inputs or
+// node_modules. Tampering is confined to each test's temporary host-code tree.
+function copyHost(t, change = () => {}) {
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'caff-host-code-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const name of ['scripts/badcase-capture', 'build/server']) fs.cpSync(path.resolve(__dirname, '../..', name), path.join(root, name), { recursive: true });
+  change(root);
+  return { root, prepare: require(path.join(root, 'scripts/badcase-capture/model-evaluation.cjs')).prepareModelEvaluation };
+}
+const compiledHostFiles = ['chat-completions-protocol', 'https-exchange', 'model-binding', 'model-egress', 'evaluation-plan', 'secrets']
+  .map(name => 'build/server/domain/runtime/badcase-capture/' + name + '.js');
+test('compiled host dependencies and transitive helpers change harness/plan identity and invalidate old approval', async t => {
+  const count = network(t);
+  for (const name of [...compiledHostFiles, 'scripts/badcase-capture/pi-probe-guards.cjs', 'build/server/domain/models/model-provider-config.js']) {
+    const h = setup(t), changed = copyHost(t, root => fs.appendFileSync(path.join(root, name), '\n// synthetic code revision\n'));
+    const p = changed.prepare(h.request, image, h.sources, h.roles, h.rule, h.config, h.limits);
+    assert.notEqual(p.plan.spec.harnessHash, h.prepared.plan.spec.harnessHash, name);
+    assert.notEqual(p.plan.planHash, h.prepared.plan.planHash, name);
+    assert.equal(p.plan.spec.inputHash, h.prepared.plan.spec.inputHash);
+    let launches = 0;
+    const report = await execute({ ...h, prepared: p }, undefined, () => { launches++; });
+    assert.equal(launches, 0); assert.equal(report.dispatchState, 'unresolved');
+  }
+  assert.equal(count(), 0);
+});
+test('loaded preparer refuses on-disk code drift before a new plan is created', t => {
+  const host = copyHost(t);
+  fs.appendFileSync(path.join(host.root, compiledHostFiles[0]), '\n// synthetic drift before prepare\n');
+  assert.throws(() => setup(t, host.prepare), /^Error: model_host_code_invalid$/);
+});
+test('changed or missing host code after planning blocks launch and model requests', async t => {
+  const count = network(t);
+  for (const name of [...compiledHostFiles, 'scripts/badcase-capture/pi-probe-guards.cjs']) {
+    const host = copyHost(t), h = setup(t, host.prepare);
+    fs.appendFileSync(path.join(host.root, name), '\n// synthetic late revision\n');
+    let launches = 0;
+    const report = await execute(h, undefined, () => { launches++; });
+    assert.equal(launches, 0, name); assert.equal(report.dispatchState, 'unresolved'); assert.equal(report.ledger.runs[0].score, null);
+  }
+  const host = copyHost(t), h = setup(t, host.prepare);
+  fs.unlinkSync(path.join(host.root, compiledHostFiles[0]));
+  let launches = 0;
+  const report = await execute(h, undefined, () => { launches++; });
+  assert.equal(launches, 0); assert.equal(report.dispatchState, 'unresolved'); assert.equal(count(), 0);
+});
+test('host code is reverified at each model send and before accepting a receipt', async t => {
+  const count = network(t);
+  for (const phase of ['send', 'receipt']) {
+    const host = copyHost(t), h = setup(t, host.prepare);
+    const tamper = () => fs.appendFileSync(path.join(host.root, compiledHostFiles[0]), '\n// synthetic mid-run revision\n');
+    const report = await execute(h, phase === 'receipt' ? tamper : undefined, phase === 'send' ? tamper : undefined, {}, true);
+    assert.equal(report.dispatchState, 'unresolved'); assert.equal(report.ledger.runs.length, 1);
+    assert.equal(report.ledger.runs[0].score, null); assert.equal(report.ledger.runs[0].costMicroUsd, null);
+  }
+  assert.equal(count(), 1); // Only the receipt case sends; neither starts a candidate.
+});
+test('in-flight host drift stops relay delivery even after the request has settled', async t => {
+  const host = copyHost(t), h = setup(t, host.prepare), relay = { delivered: 0 };
+  const count = network(t, () => fs.appendFileSync(path.join(host.root, compiledHostFiles[0]), '\n// synthetic in-flight drift\n'));
+  const report = await execute(h, undefined, undefined, {}, relay);
+  assert.equal(count(), 1); assert.equal(relay.delivered, 0);
+  assert.equal(report.dispatchState, 'unresolved'); assert.equal(report.ledger.runs.length, 1);
+  assert.equal(report.ledger.runs[0].score, null); assert.equal(report.ledger.runs[0].costMicroUsd, null);
 });
 test('new task harness refuses host execution before SDK import', () => {
   const r = require('node:child_process').spawnSync(process.execPath, ['scripts/badcase-capture/model-task-container.cjs'], { encoding: 'utf8' });

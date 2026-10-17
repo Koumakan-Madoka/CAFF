@@ -789,6 +789,18 @@ E83 在已审 `89dc41ac` 下以新计划运行，基线仅1请求收到HTTP200�
 
 离线负例先在旧实现失败，新增覆盖12项标签、持久读写、未知后缀、正文不落盘、旧记录兼容、未知费用/停止请求、请求历史仍无响应标签，以及可达的相邻双故障顺序。无效ID不可能同时是历史复用ID（纳入历史前已验证ID），该相邻交换无可达双故障，未宣称此等价变异被测试杀死。Windows七套212＝210通过/2链接权限跳过，Linux Node22.22七套212/212；50文件私有副本字节核验，41个非等价单点变异全部红（12标签退化、11守卫、6可达相邻交换、12闭集删除），逐字节恢复212/212并清理副本。build/check、双typecheck、fast1954通过/41跳过、smoke101及diff-check通过。本增量零Key/供应商/Docker/UI操作，E83具体原因仍未知，累计$4未结算预留非账单；全部AC pending、不合并发布。
 
+### 5.29 宿主执行源码的计划绑定与派发复验
+
+E85确认编译模块变动后计划仍与E83相同：旧hostCode仅列6个脚本，没有覆盖实际协议/出口/账本等编译依赖。此后不得以旧计划代表新执行代码，也不得重用已消费批准。本节收编该**磁盘源码摘要覆盖缺口**，不改变协议接受集合，不定位或放宽E85的tool keys拒绝。
+
+- `model-host-code.cjs` 从仓库根下的model-evaluation与operator入口保守遍历字面量relative CommonJS require，包含传递依赖、函数内lazy依赖及inventory自身；Node内建模块不作为仓库文件。首次实现覆盖51个文件，包括协议、HTTPS出口、model-binding/egress、evaluation-plan/record、秘密排除、认证模式、输入材料、Docker/恢复/清理及审核辅助代码。清单按仓库相对POSIX路径排序，仅含路径与实际文件字节SHA256，不含绝对安装位置、源码、认证文件或Key。
+- 缺文件、非普通文件、realpath别名/符号链接、越出仓库的依赖、非js/cjs、动态require/import、非Node外部包以及清单/单文件超限均阻断，不静默省略。遍历不require这些依赖，不执行operator、SDK或被测代码。扫描是适用于当前受审源码的保守约束，**不是完整JS语义分析器或抵御恶意代码作者的边界**；新依赖写法须独立审查后显式扩展，不能声称覆盖任意eval/别名加载。
+- preparer加载依赖前保留清单，每次prepare复验，真实磁盘清单纳入harnessHash和返回的review；scorer版本引用完整相对路径的自身摘要。新源码必须重建计划/批准，旧批准不能用于新plan；无自动迁移或hash回退。每次execute在容器创建前复验；relay使用受检send，在每次受信send前后及接受回执/评分前再次复验。漂移/缺失仍走失败停止、unresolved/不评分，不退款或自动重试，不启动候选。原回执、stderr、usage、计费和双账本判定不变。
+- 此清单证明的是**受信磁盘源码身份**，不是内存中函数/require.cache、VM替换、外部注入dedicatedProbe/observer或Node内建运行时的完整证明。代码更新须使用新启动的受信进程；启动前已加载的模块及同OS用户/路径祖先仍为TCB。不提供原子文件系统快照，检查间篡改再恢复不能据此被排除。E82/E85额外observer不因本节自动成为已绑定代码；既有faithfulReplay/strict资格仍false，不据此关闭任何AC。
+- E84 P3补充transport路径负例：直接构造非法请求历史，经请求验证须固定`protocol_request`且exchange零调用；不再仅依赖encode外层catch的无标签断言。删除response门控必须被该路径测试杀死。此为回归覆盖，无协议行为变更。
+
+离线验证用独立临时源码副本修改编译模块/传递辅助文件，比较harness与plan hash、阻断旧批准与派发、删除文件、发送前和回执前漂移；清单单测验证路径无关/排序/lazy依赖/新增边及不执行源码、越界/动态/外部依赖拒绝。实际runProbe→relay→send组合使用合成Docker协议fixture，**不是Docker/SDK运行或E85复现证据**。不读取真实Key、不新增供应商/真实Docker/UI操作。累计$4.50仍为未结算预留非账单，全部AC pending，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
