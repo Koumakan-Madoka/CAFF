@@ -7,7 +7,7 @@ const { withProjectWriteLock } = require(base + 'project-write-lock');
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const latch = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const file = Buffer.from('before turn'), prompt = Buffer.from('question');
-function candidate() { return { ok: true, files: { file: { type: 'file', size: file.length, hash: sha(file), mode: 0o100644 },
+function candidate() { return { ok: true, observation: { scopeHash: sha('native-scope'), presentPaths: ['file', 'secret', 'ignored', 'now-dir', 'oldcase'] }, files: { file: { type: 'file', size: file.length, hash: sha(file), mode: 0o100644 },
   secret: { type: 'file', size: 20, secretExcluded: true, mode: 0o100644 } }, blobs: new Map([[sha(file), file]]),
   complete: false, strictEvalEligible: false, captureAvailable: false, classification: 'bounded_local_git_subset_v1',
   limitations: ['no_atomic_snapshot', 'windows_turn_collector_not_connected', 'session_and_invocation_not_collected', 'deletion_history_not_collected'] }; }
@@ -131,6 +131,68 @@ test('invalid platform/mode/target/project fails before filesystem lock or reade
   }
 });
 
+test('deletions require a comparable native observation and actual absence, not selection absence', async t => {
+  const h = setup(t);
+  const previous = { schemaVersion: 1, checkpointId: 'previous', projectId: 'p', targetDir: 'C:\\worktree',
+    integrity: { platform: 'win32', windowsObservationScopeHash: sha('native-scope') },
+    files: Object.fromEntries(['gone', 'dir/lost', 'ignored', 'now-dir', 'OldCase', 'old-secret'].map(p => [p,
+      { type: 'file', hash: sha('old'), size: 3, secretExcluded: p === 'old-secret' }])) };
+  let calls = 0;
+  h.store.loadLatestCheckpoint = (projectId, targetDir) => {
+    calls++; assert.equal(projectId, 'p'); assert.equal(targetDir, 'C:\\worktree');
+    assert.throws(() => withProjectWriteLock(h.root, 'p', () => {}), /capture_writer_busy/);
+    return previous;
+  };
+  const result = await collect(h), cp = result.checkpoint;
+  assert.equal(result.captured, true); assert.equal(calls, 1);
+  assert.deepEqual([...cp.deletions], ['dir/lost', 'gone']);
+  assert.equal(cp.integrity.windowsObservationScopeHash, sha('native-scope'));
+  assert.equal(cp.integrity.deletionHistoryBaselineId, 'previous');
+  assert.equal(cp.integrity.knownLimitations.includes('deletion_history_not_collected'), false);
+  assert.ok(cp.integrity.knownLimitations.includes('deletions_only_from_comparable_previous_checkpoint'));
+  const files = cp.files, deletions = ['dir/lost', 'gone'];
+  assert.equal(cp.integrity.manifestHash, sha(JSON.stringify({ files: Object.keys(files).sort().map(p =>
+    [p, files[p].hash || '', files[p].size || 0, files[p].secretExcluded === true]), deletions })));
+  assert.equal(cp.strictEvalEligible, false); assert.equal(cp.replayInput.complete, false); noLock(h);
+});
+
+test('missing/mismatched/foreign/legacy history never fabricates deletions or a baseline association', async t => {
+  for (const patch of [null, { integrity: {} }, { files: null }, { files: [] }, { files: { 'caf\u00e9': { type: 'file' } } },
+    { schemaVersion: 2 }, { projectId: 'other' }, { targetDir: 'C:\\other' },
+    { checkpointId: '../bad' }, { integrity: { platform: 'linux', windowsObservationScopeHash: sha('native-scope') } },
+    { integrity: { platform: 'win32', windowsObservationScopeHash: sha('changed-scope') } }]) {
+    const h = setup(t);
+    h.store.loadLatestCheckpoint = () => patch === null ? null : ({ schemaVersion: 1, checkpointId: 'previous',
+      projectId: 'p', targetDir: 'C:\\worktree', files: { gone: { type: 'file', hash: sha('old') } },
+      integrity: { platform: 'win32', windowsObservationScopeHash: sha('native-scope') }, ...patch });
+    const cp = (await collect(h)).checkpoint;
+    assert.deepEqual([...cp.deletions], []); assert.equal(cp.integrity.deletionHistoryBaselineId, '');
+    assert.ok(cp.integrity.knownLimitations.includes('deletion_history_baseline_unavailable')); noLock(h);
+  }
+});
+
+test('missing or malformed observation cannot borrow a historical scope proof', async t => {
+  for (const observation of [undefined, { scopeHash: '' }, { scopeHash: sha('native-scope'), presentPaths: null },
+    { scopeHash: sha('native-scope'), presentPaths: [null] }, { scopeHash: 'not-a-hash', presentPaths: [] }]) {
+    const h = setup(t, { deps: { './windows-git-candidate': { readWindowsGitFileCandidateAsync: async () => ({ ...candidate(), observation }) } } });
+    h.store.loadLatestCheckpoint = () => ({ schemaVersion: 1, checkpointId: 'previous', projectId: 'p', targetDir: 'C:\\worktree',
+      integrity: { platform: 'win32', windowsObservationScopeHash: observation?.scopeHash || sha('native-scope') }, files: { gone: { type: 'file' } } });
+    const result = await collect(h); assert.equal(result.captured, true);
+    assert.deepEqual([...result.checkpoint.deletions], []); assert.equal(result.checkpoint.integrity.deletionHistoryBaselineId, '');
+  }
+});
+
+test('Unicode observation does not guess native Unicode case equivalence for deletion history', async t => {
+  const h = setup(t, { deps: { './windows-git-candidate': { readWindowsGitFileCandidateAsync: async () => {
+    const c = candidate(); c.observation.presentPaths.push('caf\u00e9'); return c;
+  } } } });
+  h.store.loadLatestCheckpoint = () => ({ schemaVersion: 1, checkpointId: 'previous', projectId: 'p', targetDir: 'C:\\worktree',
+    integrity: { platform: 'win32', windowsObservationScopeHash: sha('native-scope') }, files: { gone: { type: 'file' } } });
+  const cp = (await collect(h)).checkpoint;
+  assert.deepEqual([...cp.deletions], []); assert.equal(cp.integrity.deletionHistoryBaselineId, '');
+  assert.ok(cp.integrity.knownLimitations.includes('deletion_history_baseline_unavailable'));
+});
+
 test('native Windows files and independently authorized resume enter real publisher, reopen and restore twice (self-built fixture)',
   { skip: process.platform !== 'win32' }, async t => {
   const { createWindowsTurnCollector } = require(base + 'windows-turn-collector');
@@ -143,8 +205,11 @@ test('native Windows files and independently authorized resume enter real publis
   const git = (...args) => execFileSync('git', ['-C', target, ...args], { windowsHide: true,
     env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(root, 'absent-global'), GIT_TEMPLATE_DIR: '' } });
   git('init', '-q'); git('config', 'core.ignorecase', 'false'); fs.writeFileSync(path.join(target, 'tracked'), 'original'); git('add', 'tracked');
+  fs.writeFileSync(path.join(target, 'preMissing'), 'already gone'); git('add', 'preMissing'); fs.unlinkSync(path.join(target, 'preMissing'));
   fs.writeFileSync(path.join(target, 'tracked'), 'dirty'); fs.writeFileSync(path.join(target, 'untracked'), 'new');
   fs.writeFileSync(path.join(target, 'secret'), 'sk-SENTINELabcdefghijk');
+  for (const p of ['gone', 'becomesDir', 'CaseBefore']) fs.writeFileSync(path.join(target, p), 'before');
+  fs.writeFileSync(path.join(target, '.gitignore'), '');
   const bytes = Buffer.from([ { type: 'session', version: 3, id: 's', cwd: target },
     { type: 'message', id: 'u', parentId: null, message: { role: 'user', content: 'hello', timestamp: 1 } } ].map(x => JSON.stringify(x)).join('\r\n') + '\r\n');
   const sessionPath = path.join(sessions, 'turn.jsonl'); fs.writeFileSync(sessionPath, bytes);
@@ -172,4 +237,41 @@ test('native Windows files and independently authorized resume enter real publis
   }
   assert.deepEqual(lists[0], lists[1]);
   assert.equal(reopened.computeUsage('p').totalBytes, cp.stats.totalNewBytes); assert.equal(fs.existsSync(path.join(captureRoot, 'projects/p/.writer-lock')), false);
+  assert.equal(cp.integrity.deletionHistoryBaselineId, '');
+  assert.ok(cp.integrity.knownLimitations.includes('deletion_history_baseline_unavailable'));
+
+  // Real content disappears vs selection-only change, ASCII case-only rename,
+  // file->directory replacement, and previous secret omission are distinct.
+  for (const p of ['gone', 'tracked', 'secret', 'becomesDir']) fs.unlinkSync(path.join(target, p));
+  fs.mkdirSync(path.join(target, 'becomesDir')); fs.writeFileSync(path.join(target, 'becomesDir/child'), 'new child');
+  fs.renameSync(path.join(target, 'CaseBefore'), path.join(target, 'tmp-case'));
+  fs.renameSync(path.join(target, 'tmp-case'), path.join(target, 'casebefore'));
+  fs.writeFileSync(path.join(target, '.gitignore'), 'untracked\n');
+  const next = await collector.captureTurnCheckpoint({ ...input, turnId: 'next' });
+  assert.equal(next.captured, true, next.reason);
+  const cp2 = createCaptureStore({ captureRoot }).loadCheckpoint('p', next.checkpointId);
+  assert.deepEqual(cp2.deletions, ['gone', 'tracked']);
+  assert.equal(cp2.integrity.deletionHistoryBaselineId, cp.checkpointId);
+  assert.equal(cp2.integrity.windowsObservationScopeHash, cp.integrity.windowsObservationScopeHash);
+  assert.equal(cp2.files.untracked, undefined); assert.equal(fs.existsSync(path.join(target, 'untracked')), true);
+  assert.equal(cp2.strictEvalEligible, false); assert.equal(cp2.replayInput.complete, false);
+  const secondLists = [];
+  for (const n of [1, 2]) {
+    const dest = path.join(root, `next-restored-${n}`);
+    const restored = restoreCheckpoint({ store: reopened, projectId: 'p', checkpointId: cp2.checkpointId, targetDir: dest });
+    assert.equal(restored.ok, true, restored.reason);
+    assert.equal(fs.existsSync(path.join(dest, 'gone')), false); assert.equal(fs.existsSync(path.join(dest, 'tracked')), false);
+    assert.equal(fs.readFileSync(path.join(dest, 'casebefore'), 'utf8'), 'before');
+    assert.equal(fs.readFileSync(path.join(dest, 'becomesDir/child'), 'utf8'), 'new child');
+    secondLists.push(restored.restoredFiles);
+  }
+  assert.deepEqual(secondLists[0], secondLists[1]);
+
+  // Same identity but changed compiled exclusions has no comparable baseline.
+  service.store.savePolicy({ ...service.store.loadPolicy('p'), excludedPatterns: ['excludedLater'] });
+  fs.unlinkSync(path.join(target, 'casebefore'));
+  const changed = await collector.captureTurnCheckpoint({ ...input, turnId: 'scope-changed' });
+  assert.equal(changed.captured, true, changed.reason); assert.deepEqual(changed.checkpoint.deletions, []);
+  assert.notEqual(changed.checkpoint.integrity.windowsObservationScopeHash, cp2.integrity.windowsObservationScopeHash);
+  assert.equal(changed.checkpoint.integrity.deletionHistoryBaselineId, '');
 });

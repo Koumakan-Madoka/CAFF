@@ -1,7 +1,8 @@
 // Windows service collector. Management enable remains closed: metadata-only
 // estimate issues no receipt. Tests may explicitly set their own fixture enabled.
-// Bounded local/external Git limitations remain: no ambient global Git,
-// deletion history or independent consistency proof. Never advertise complete.
+// Bounded local/external Git limitations remain: no ambient global Git or
+// independent consistency proof; deletion history requires a comparable prior
+// checkpoint and ASCII namespace. Never advertise complete.
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -53,19 +54,41 @@ export function createWindowsTurnCollector(options: any = {}): any {
         if (secretExcludedPaths.length) replayInput.secretExcludedPaths = secretExcludedPaths;
         const blobs = new Map(files.blobs);
         for (const plan of prepared.plans) blobs.set(plan.hash, plan.content);
-        const deletions: string[] = []; // No inference from changed exclusions/unknown history.
+        // Compare only same-scope native observations under this project lease.
+        // A file omitted by Git rules/secret scanning is NOT necessarily absent.
+        // Windows Unicode case equivalence is not JS casefold: infer nothing
+        // unless the entire current namespace and prior filenames are ASCII.
+        const observation = files.observation;
+        const scopeHash = typeof observation?.scopeHash === 'string' && /^[a-f0-9]{64}$/.test(observation.scopeHash)
+          ? observation.scopeHash : '';
+        const previous = store.loadLatestCheckpoint(projectId, targetDir);
+        const priorFiles = previous?.files;
+        const ascii = (p: any) => typeof p === 'string' && p.length > 0 && !/[^\x20-\x7e]/.test(p);
+        const comparable = !!scopeHash && Array.isArray(observation?.presentPaths) && observation.presentPaths.every(ascii)
+          && previous?.schemaVersion === 1 && previous.projectId === projectId
+          && typeof previous.targetDir === 'string' && path.win32.resolve(previous.targetDir) === targetDir
+          && typeof previous.checkpointId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(previous.checkpointId)
+          && previous.integrity?.platform === 'win32' && previous.integrity.windowsObservationScopeHash === scopeHash
+          && priorFiles && typeof priorFiles === 'object' && !Array.isArray(priorFiles) && Object.keys(priorFiles).every(ascii);
+        const present = new Set<string>(comparable ? observation.presentPaths.map((p: string) => p.toLowerCase()) : []);
+        const deletions: string[] = comparable ? Object.keys(priorFiles).filter(p => priorFiles[p]?.type === 'file'
+          && priorFiles[p].secretExcluded !== true && !present.has(p.toLowerCase()))
+          .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))) : [];
         const manifestHash = crypto.createHash('sha256').update(JSON.stringify({
           files: Object.keys(files.files).sort().map(p => [p, files.files[p].hash || '', files.files[p].size || 0,
             files.files[p].secretExcluded === true]), deletions,
         })).digest('hex');
         const limitations = files.limitations.filter((s: string) => !['windows_turn_collector_not_connected',
-          'session_and_invocation_not_collected'].includes(s));
+          'session_and_invocation_not_collected', 'deletion_history_not_collected'].includes(s));
+        limitations.push('deletions_only_from_comparable_previous_checkpoint', 'tracked_deletions_before_first_checkpoint_not_inferred',
+          'secret_and_type_replacements_not_inferred', ...(comparable ? [] : ['deletion_history_baseline_unavailable']));
         const checkpoint = {
           schemaVersion: 1, checkpointId: crypto.randomUUID(), projectId, targetDir,
           conversationId: String(input.conversationId || ''), turnId: String(input.turnId || ''), agentId: String(input.agentId || ''),
           createdAt: new Date().toISOString(), status: 'staged', files: files.files, deletions, skipped: [], uncaptured: [],
           gitMetadata: files.classification,
           integrity: { algorithm: 'sha256', manifestHash, helperSha256: WINDOWS_HELPER_SOURCE_SHA256, platform: 'win32',
+            windowsObservationScopeHash: scopeHash, deletionHistoryBaselineId: comparable ? previous.checkpointId : '',
             knownLimitations: [...new Set([...limitations, 'windows_management_enable_not_connected'])] },
           consistency: { evidence: 'content-verified', atomicityGuaranteed: false, secondScanMode: 'full-hash', retries: 0, differingPaths: [] },
           replayInput, environment: input.environment || {}, strictEvalEligible: false,

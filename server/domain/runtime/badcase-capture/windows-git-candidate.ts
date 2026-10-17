@@ -13,6 +13,7 @@ const { performance } = require('node:perf_hooks');
 import { parseGitIndex, parseGitConfigSubset, parseGitignoreRules, classifyWalkEntries } from './git-classify';
 import { matchesRelativePattern } from './capture-policy';
 import { containsSecretSentinel } from './secrets';
+import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
 const { TextDecoder } = require('node:util');
 const crypto = require('node:crypto');
 const fail = (reason: string) => ({ ok: false, reason });
@@ -215,7 +216,16 @@ function* candidateSteps(options: any): Generator<any, any, any> {
         }
       }
     }
-    return { ok: true, reason: '', files, blobs, classification: external ? 'bounded_external_git_subset_v1' : 'bounded_local_git_subset_v1',
+    // Ephemeral FULL observed namespace (including ignored/secret files and
+    // directories), never the content selection. The scope binds the original
+    // root identity, literal target, compiled exclusions and native prune code.
+    // Emit only after every revalidation; no new atomic/ABA claim is implied.
+    const observation = {
+      scopeHash: crypto.createHash('sha256').update(JSON.stringify({ request: plan.request,
+        helperSha256: WINDOWS_HELPER_SOURCE_SHA256 })).digest('hex'),
+      presentPaths: before.entries.filter((e: any) => !isGit(e.path)).map((e: any) => e.path),
+    };
+    return { ok: true, reason: '', files, blobs, observation, classification: external ? 'bounded_external_git_subset_v1' : 'bounded_local_git_subset_v1',
       complete: false, strictEvalEligible: false, captureAvailable: false,
       limitations: ['no_atomic_snapshot', 'no_independent_consistency_evidence', 'metadata_aba_residual',
         'known_sensitive_names_excluded', 'ambient_global_git_excludes_not_read',

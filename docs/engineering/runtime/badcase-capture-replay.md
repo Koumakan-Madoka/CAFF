@@ -1102,6 +1102,18 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 回归先红：真实 NTFS 同步/异步服务各把应排除的 5B 计入（8B≠3B），真实 HTTP 把私有 16B 计入（21B≠5B）；VM 服务级测试定位遗漏及借用可变配置。修复后验证外部私有别名、树内私有 junction/目录、私有祖先拒绝，配置等待期间锁存及 Linux 不访问 privateDirs getter，均不修改原 pin/策略/检查点。7 语义变异最终全断言红，编译磁盘字节不改。首 HTTP red-first 断言失败后的 keepalive 清理挂起被工具超时终止（未计通过）；加 closeAllConnections 后重跑取得正常 exit1 断言红。首 Linux 私有闭包遗漏动态 estimate-worker，补齐后完整重跑；首 Linux 分支变异以原始 getter 异常失败，改为显式 doesNotThrow 断言后全部重跑，均不冒充通过。准确环境/命令/计数见 Goal E113。此修复不是管理开启或真实 turn 验收；全局 Git/worktreeConfig/删除历史/附件/容器映射及全部AC仍待完成，零真实项目采集/Key/模型/供应商/真实Docker/浏览器/生产；历史6美元未结算非账单不变，不合并发布。
 
+### 5.53 Windows 同范围上一检查点的保守删除历史（管理开启仍关）
+
+Windows Git 候选只在所有原生元数据/全树/内容/外置源复验成功后，返回临时 `observation`：完整非 Git 枚举的 `presentPaths`（含未选中的 ignored、秘密文件、目录），以及 SHA-256 `scopeHash`。摘要覆盖原始元数据请求的 literal 根、原 pin 身份、编译后的排除前缀和固定 Python 源码 SHA；不覆盖动态文件内容。完整路径表不写入检查点或 CAS，只有 scopeHash 持久化到 `integrity.windowsObservationScopeHash`。它是比较范围标记，不是不可篡改证明、原子快照或新的授权。
+
+Windows collector 在既有跨 await 项目租约内读取同 target 的 latest。仅 schema-v1、同 project/精确 target、合法 checkpoint ID、Windows 标记、同 scopeHash、有效文件表且两边名称均为 ASCII 时可作历史基线；当前整个可见命名空间含非 ASCII，或旧清单含非 ASCII 时均不猜 NT Unicode 大小写语义。ASCII 比较忽略大小写，保留上次文件名作为删除条目。只报告上一清单普通非秘密文件在本次**完整枚举**中缺席的路径；Git ignore/显式 ignored 纳入变化造成的未选读、秘密剔除、case-only 改名、原路径改为目录不冒充删除。目录删除可使其原有文件路径被报告；不独立恢复空目录。
+
+成功发布的新清单记录 `integrity.deletionHistoryBaselineId`；无可比基线为空字符串、`deletions=[]` 并保留 `deletion_history_baseline_unavailable`。scope 改变（包括原根身份、排除前缀或 helper 源码版本改变）不沿用旧历史，当前成功检查点可成为以后同范围采集的基线。删除列表纳入现有 manifestHash、配额预检和 CAS→清单→latest 发布流程，发布/租约失败仍不关联 turn。
+
+限制：这是 `deletions_only_from_comparable_previous_checkpoint`，不是 Git HEAD/index 删除全集；首检查点前已删的 tracked 文件、未曾入选的文件、秘密文件、类型替换不据此推断。缺 latest/旧版本/坏范围标记仅说明历史不足，不能事后扫描补原现场。仍有同 OS 用户/存储 TCB、非原子/ABA 和同步解析不可抢占残余；scope 摘要不证明被测包完整。`complete=false`、`strictEvalEligible=false`、管理 estimate `captureAvailable=false`/无回执/开启拒绝不变。未开放真实项目采集，Docker 映射与普通 CAFF 回放、全局 Git/worktreeConfig、附件归档等义务不豁免。
+
+验证：两组接口/范围测试和 collector 历史组合测试在父构建先失败；Windows 自建 NTFS Git/session 夹具连续采集、重开存储，验证真实删除与 ignore/case-only/类型替换/秘密的差别，两次恢复后清单一致；改变排除范围后不沿用历史。原始 first/resume 字节及严格资格保持；这不是日常真实 worktree 或管理开启验收。具体命令/结果以 Goal 证据记录为准。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

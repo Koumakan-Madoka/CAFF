@@ -151,6 +151,11 @@ test('classified selection precedes reads, preserves tracked mode, rescans metad
   }
   const value = api().readWindowsGitFileCandidate({ policy: { includedIgnoredPatterns: [] } });
   assert.equal(value.ok, true, value.reason); assert.deepEqual(ops, ['gitMetadata', 'selectedSnapshot', 'gitMetadata']);
+  // Cover the ENTIRE observed non-Git tree, not just selected content.
+  const { WINDOWS_HELPER_SOURCE_SHA256 } = require('../../build/server/domain/runtime/badcase-capture/windows-helper-source');
+  assert.equal(value.observation.scopeHash, hash(JSON.stringify({ request: scope().request, helperSha256: WINDOWS_HELPER_SOURCE_SHA256 })));
+  assert.deepEqual([...value.observation.presentPaths], first.entries.filter(e => e.path !== '.git' && !e.path.startsWith('.git/')).map(e => e.path));
+  assert.ok(value.observation.presentPaths.includes('ignored.log'));
   assert.equal(value.files['tracked.log'].mode, 0o100755);
   assert.equal(value.files.untracked.secretExcluded, true); assert.equal(value.blobs.has(hash(secret)), false);
   assert.equal(value.blobs.get(hash(safe)).buffer.byteLength, 1);
@@ -158,6 +163,7 @@ test('classified selection precedes reads, preserves tracked mode, rescans metad
   for (const name of ['complete', 'strictEvalEligible', 'captureAvailable']) assert.equal(value[name], false);
   const rejected = api(true).readWindowsGitFileCandidate({ policy: { includedIgnoredPatterns: [] } });
   assert.equal(rejected.reason, 'git_metadata_changed'); assert.equal(Object.hasOwn(rejected, 'files'), false);
+  assert.equal(Object.hasOwn(rejected, 'observation'), false, 'a changed tree cannot emit absence evidence');
   let metaCount = 0;
   const hashChange = isolated(scope, (_, __, req) => {
     if (req.op !== 'gitMetadata') return response;
@@ -166,6 +172,21 @@ test('classified selection precedes reads, preserves tracked mode, rescans metad
   assert.equal(hashChange.readWindowsGitFileCandidate({ policy: { includedIgnoredPatterns: [] } }).reason, 'git_metadata_changed');
   const mismatch = isolated(scope, (_, __, req) => req.op === 'gitMetadata' ? first : { ...response, entries: [] });
   assert.equal(mismatch.readWindowsGitFileCandidate({ policy: { includedIgnoredPatterns: [] } }).reason, 'git_metadata_changed');
+});
+
+test('observation scope binds native root identity, literal root, exclusions and fixed helper source', () => {
+  const first = metadata();
+  function read(request) {
+    return isolated(() => ({ ...scope(), request }), (_, __, req) => req.op === 'gitMetadata' ? first
+      : { ok: true, entries: first.entries.filter(e => e.path !== '.git' && !e.path.startsWith('.git/')), files: [] })
+      .readWindowsGitFileCandidate({ policy: { includedIgnoredPatterns: [] } });
+  }
+  const initial = read(scope().request);
+  assert.equal(initial.ok, true); assert.match(initial.observation.scopeHash, /^[a-f0-9]{64}$/);
+  for (const change of [{ root: 'C:/other' }, { expected: { ...identity, fileId: 'b'.repeat(32) } }, { excluded: ['private'] }]) {
+    const changed = read({ ...scope().request, ...change });
+    assert.equal(changed.ok, true); assert.notEqual(changed.observation.scopeHash, initial.observation.scopeHash);
+  }
 });
 
 test('async Git candidate shares one 25s deadline across classification, selection and revalidation; no sync fallback', async () => {
