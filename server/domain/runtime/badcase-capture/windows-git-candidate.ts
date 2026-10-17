@@ -1,4 +1,5 @@
-// Internal bounded Git subset prototype, NOT a turn collector/enable capability.
+// Bounded Git file-candidate used by the Windows service collector. Management
+// enable stays closed; this is not a complete capture capability.
 // No Git execution, implicit global config reads or pointer-derived authorization,
 // install/re-pin, persistence or fallback to the unclassified all-file reader.
 // Requires visible canonical .git metadata and verified config/index grammar.
@@ -23,6 +24,27 @@ const signature = (result: any) => crypto.createHash('sha256').update(JSON.strin
 })).digest('hex');
 const tree = (result: any) => JSON.stringify(result.entries.filter((e: any) => !isGit(e.path)));
 
+// Git's ASCII case folding is byte-wise, NOT JS/NT Unicode case folding. In
+// ignorecase mode reject non-ASCII paths/patterns and ambiguous component casing
+// (including two index parent spellings). This projection is classification
+// only: exact native selectors and persisted paths always retain disk spelling.
+function asciiPathSet(paths: string[]): boolean {
+  if (paths.length > 100000) return false;
+  const spellings = new Map<string, string>(), full = new Set<string>();
+  for (const p of paths) {
+    if (Buffer.byteLength(p) > 32768 || /[^\x00-\x7f]/.test(p) || full.has(p.toLowerCase())) return false;
+    full.add(p.toLowerCase());
+    const parts = p.split('/');
+    if (parts.length > 64) return false;
+    for (let i = 1; i <= parts.length; i++) {
+      const prefix = parts.slice(0, i).join('/'), key = prefix.toLowerCase();
+      if (spellings.has(key) && spellings.get(key) !== prefix) return false;
+      spellings.set(key, prefix);
+    }
+  }
+  return true;
+}
+
 function classify(metadata: any, included: string[]): any {
   const entries = new Map<string, any>(metadata.entries.map((e: any) => [e.path, e]));
   if (entries.get('.git')?.type !== 'directory' || entries.has('.git/commondir')) return fail('git_metadata_unsupported');
@@ -33,35 +55,46 @@ function classify(metadata: any, included: string[]): any {
   // never return their hashes, identities, content or interpreter error text.
   if (metadata.files.some((f: any) => containsSecretSentinel(f.content))) return fail('git_metadata_secret_excluded');
   const text = (f: any) => new TextDecoder('utf-8', { fatal: true }).decode(f.content);
-  const subset = parseGitConfigSubset(text(config));
+  const subset = parseGitConfigSubset(text(config), { allowIgnoreCase: true });
   if (!subset.verified || subset.hasInclude || subset.excludesFile
       || (subset.objectFormat && !['sha1', 'sha256'].includes(subset.objectFormat))) return fail('git_metadata_unsupported');
   const parsed = parseGitIndex(index.content, subset.objectFormat === 'sha256' ? 32 : 20, { stageZero: true });
   if (!parsed.ok) return fail('git_index_invalid');
+  const ignoreCase = subset.ignoreCase === true;
+  if (ignoreCase && (!asciiPathSet(metadata.entries.map((e: any) => e.path))
+    || !asciiPathSet(parsed.entries.map((e: any) => e.path))
+    || metadata.entries.some((e: any) => e.path.split('/').at(-1).toLowerCase() === '.gitignore'
+      && e.path.split('/').at(-1) !== '.gitignore'))) return fail('git_ignorecase_unverified');
+  const key = (p: string) => ignoreCase ? p.toLowerCase() : p;
+  const canonicalPaths = new Map<string, string>(metadata.entries.map((e: any) => [key(e.path), e.path]));
   const modes = new Map<string, number>();
   for (const e of parsed.entries) {
-    // Reject stages/duplicate or nonportable paths; no case folding/8.3 guess.
+    // Reject stages/duplicate or nonportable paths; no native alias/8.3 guess.
     // Symlink checkout semantics are not supported by this Windows candidate.
-    if (![0o100644, 0o100755].includes(e.mode) || modes.has(e.path)
+    if (![0o100644, 0o100755].includes(e.mode) || modes.has(key(e.path))
         || !encodeWindowsHelperRequest({ version: 1, op: 'selectedSnapshot', root: 'C:/validation',
           expected: metadata.identity, excluded: [], paths: [e.path] })) return fail('git_index_invalid');
-    modes.set(e.path, e.mode);
+    modes.set(key(e.path), e.mode);
   }
   const gitignoreByDir = new Map<string, any>(), globalIgnoreSources: any[] = [];
   for (const file of metadata.files) {
     if (file.path === '.git/info/exclude' || (!isGit(file.path) && file.path.split('/').at(-1) === '.gitignore')) {
-      const rules = parseGitignoreRules(text(file));
+      const sourceText = text(file);
+      // Character-class range endpoints need Git's casefold wildmatch rules;
+      // lowercasing e.g. [A-z] is NOT equivalent. Reject rather than overclaim.
+      if (ignoreCase && (/[^\x00-\x7f]/.test(sourceText) || sourceText.includes('['))) return fail('git_ignorecase_unverified');
+      const rules = parseGitignoreRules(ignoreCase ? sourceText.toLowerCase() : sourceText);
       if (!(rules as any).verified) return fail('git_ignore_unverified');
       if (file.path === '.git/info/exclude') globalIgnoreSources.push({ base: '', rules });
-      else gitignoreByDir.set(file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : '', rules);
+      else gitignoreByDir.set(file.path.includes('/') ? key(file.path.slice(0, file.path.lastIndexOf('/'))) : '', rules);
     }
   }
   const classification = classifyWalkEntries(metadata.entries.filter((e: any) => !isGit(e.path)).map((e: any) => ({
-    path: e.path, type: e.type === 'directory' ? 'dir' : 'file',
+    path: key(e.path), type: e.type === 'directory' ? 'dir' : 'file',
   })), { tracked: new Set(modes.keys()), applyIgnore: true, gitignoreByDir, globalIgnoreSources,
-    isIncludedIgnored: (p: string) => matchesRelativePattern(p, included) });
-  const paths = classification.candidates.map((e: any) => e.path).sort((a: string, b: string) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
-  return { ok: true, paths, modes };
+    isIncludedIgnored: (p: string) => matchesRelativePattern(canonicalPaths.get(p), included) });
+  const paths = classification.candidates.map((e: any) => canonicalPaths.get(e.path)!).sort((a: string, b: string) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  return { ok: true, paths, ignoreCase, modes: new Map(paths.map((p: string) => [p, modes.get(key(p)) || 0o100644])) };
 }
 
 const rootKey = (p: string) => path.win32.resolve(p).replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
@@ -186,6 +219,7 @@ function* candidateSteps(options: any): Generator<any, any, any> {
       complete: false, strictEvalEligible: false, captureAvailable: false,
       limitations: ['no_atomic_snapshot', 'no_independent_consistency_evidence', 'metadata_aba_residual',
         'known_sensitive_names_excluded', 'ambient_global_git_excludes_not_read',
+        ...(selected.ignoreCase ? ['windows_ignorecase_ascii_projection'] : []),
         ...(external ? ['external_roots_explicitly_selected_and_pinned', 'external_info_exclude_required', 'external_cross_read_identity_aba_residual']
           : ['external_gitdir_and_unverified_config_blocked']), 'excluded_git_metadata_not_overridden',
         'untracked_windows_mode_synthesized_0644', 'deletion_history_not_collected', 'empty_directories_not_restored',
@@ -193,7 +227,7 @@ function* candidateSteps(options: any): Generator<any, any, any> {
 }
 
 // Legacy internal synchronous entry retains its per-child 25s limits. Not used
-// as a fallback by async; neither entry is connected to turn/API/enable paths.
+// as a fallback by async; only async is used by the Windows service collector.
 export function readWindowsGitFileCandidate(options: any): any {
   try {
     if (options.externalGit !== undefined) return fail('git_external_async_required');

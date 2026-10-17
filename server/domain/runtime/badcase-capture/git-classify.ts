@@ -328,7 +328,11 @@ export function classifyWalkEntries(entries: any, options: any = {}) {
 
 // 只提取采集分类所需的三件事：objectformat（index 哈希长度）、core.excludesFile、
 // include 检测（include 目标绝不读取，仅作降级标记）。
-export function parseGitConfigSubset(text: any) {
+export function parseGitConfigSubset(text: any, options: any = {}) {
+  // Opt-in only: Windows caller supplies its own bounded ASCII projection.
+  // Default Linux callers retain their original accepted set and result shape.
+  const allowIgnoreCase = options.allowIgnoreCase === true;
+  let ignoreCase = false;
   let section = '';
   let objectFormat = '';
   let excludesFile = '';
@@ -357,7 +361,8 @@ export function parseGitConfigSubset(text: any) {
     const key = kv[1].toLowerCase();
     let value = kv[2].trim();
     if (value.includes('\\') || (section === 'extensions' && key !== 'objectformat')
-      || (section === 'core' && ['ignorecase', 'sparsecheckout', 'sparsecheckoutcone'].includes(key) && !/^(false|0|no)$/i.test(value))) verified = false;
+      || (section === 'core' && ['ignorecase', 'sparsecheckout', 'sparsecheckoutcone'].includes(key)
+        && !(key === 'ignorecase' && allowIgnoreCase) && !/^(false|0|no)$/i.test(value))) verified = false;
     if (value.startsWith('"')) {
       const quoted = value.match(/^"([^"\\\0]*)"\s*(?:[#;].*)?$/);
       if (!quoted) { verified = false; continue; }
@@ -365,6 +370,10 @@ export function parseGitConfigSubset(text: any) {
     } else {
       value = value.replace(/[#;].*$/, '').trim();
       if (/["\0]/.test(value)) { verified = false; continue; }
+    }
+    if (allowIgnoreCase && section === 'core' && key === 'ignorecase') {
+      if (!/^(true|false|yes|no|on|off|1|0)$/i.test(value)) verified = false;
+      else ignoreCase = /^(true|yes|on|1)$/i.test(value);
     }
     if (!section || (section === 'core' && (
       key === 'worktree'
@@ -384,7 +393,7 @@ export function parseGitConfigSubset(text: any) {
       hasInclude = true;
     }
   }
-  return { objectFormat, excludesFile, hasInclude, verified };
+  return { objectFormat, excludesFile, hasInclude, verified, ...(allowIgnoreCase ? { ignoreCase } : {}) };
 }
 
 // ---------------- .git/index 解析 ----------------

@@ -83,7 +83,7 @@ const scope = () => ({ ok: true, helperPath: 'fixed.py', request: { ...baseReque
 test('local Git metadata rejects missing/bad/unsupported sources before ordinary content, no fallback to raw snapshot', () => {
   const bad = [metadata({ entries: [] }), metadata({ entries: [entry('.git')] }),
     metadata({ files: [] }), metadata({ entries: [...metadata().entries, entry('.git/commondir')] })];
-  for (const text of ['[include]\npath = ../private\n', '[core]\nignorecase = true\n', '[core]\nexcludesfile = ../private\n']) {
+  for (const text of ['[include]\npath = ../private\n', '[core]\nignorecase = unknown\n', '[core]\nexcludesfile = ../private\n']) {
     const value = metadata(); value.files.find(f => f.path === '.git/config').content = Buffer.from(text); bad.push(value);
   }
   for (const change of ['stage', 'symlink', 'duplicate', 'utf8']) {

@@ -39,6 +39,18 @@ test('external selections are bounded, exact-scope and per-worktree; no implicit
   }
 });
 
+test('32 distinct exact-authorized selections succeed; the 33rd is rejected by the independent limit', () => {
+  const { normalizeWindowsExternalGitSelection: normalize } = api();
+  const entries = Array.from({ length: 33 }, (_, i) => ({ worktree: `C:/work-${i}`,
+    metadataRoot: `C:/main/.git/worktrees/work-${i}`, commonRoot: 'C:/main/.git' }));
+  const grants = { authorizedDirs: entries.map(e => e.worktree),
+    authorizedInputDirs: [...entries.map(e => e.metadataRoot), entries[0].commonRoot] };
+  assert.equal(new Set(entries.map(e => e.worktree)).size, 33);
+  assert.equal(normalize(entries.slice(0, 32), grants).length, 32);
+  assert.equal(normalize([entries[32]], grants).length, 1, 'last entry individually valid and authorized');
+  assert.throws(() => normalize(entries, grants), e => e.code === 'capture_external_git_selection_invalid');
+});
+
 test('Windows facade persists explicit selection, retains original pins, disables on change, survives restart', { skip: process.platform !== 'win32' }, t => {
   const { createBadcaseCaptureService } = require(base);
   const { pinKey } = require(base + 'capture-policy');

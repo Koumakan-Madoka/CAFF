@@ -160,7 +160,7 @@ test('external source failures, missing exclude, corrupt index or unsupported co
     const r = await h.run(); assert.equal(r.reason, 'git_external_input_unavailable'); assert.ok(!h.ops.includes('selectedSnapshot'));
     assert.doesNotMatch(JSON.stringify(r), /PRIVATE_SENTINEL/);
   }
-  for (const [p, value] of [['config', '[include]\npath = ../private\n'], ['config', '[core]\nignorecase = true\n'],
+  for (const [p, value] of [['config', '[include]\npath = ../private\n'], ['config', '[core]\nignorecase = unknown\n'],
     ['config', '[extensions]\nworktreeconfig = true\n'], ['config', '[core]\nexcludesfile = ../secret\n'],
     ['index', 'broken'], ['info/exclude', '[[:alpha:]]'], ['config', 'sk-SENTINELabcdefghijk']]) {
     const f = fixture(); f.sources.set(p, Buffer.from(value)); const h = harness(f), r = await h.run();
@@ -228,7 +228,7 @@ test('native linked-worktree classifies independently pinned external inputs, re
   const main = path.join(base, 'main'), work = path.join(base, 'work'), captureRoot = path.join(base, 'storage'); fs.mkdirSync(main);
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(base, 'no-global'), GIT_TEMPLATE_DIR: '' };
   const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { env, encoding: 'utf8', windowsHide: true });
-  git(main, 'init', '-q'); git(main, 'config', 'core.ignorecase', 'false'); git(main, 'config', 'user.name', 'fixture'); git(main, 'config', 'user.email', 'fixture@example.invalid');
+  git(main, 'init', '-q'); git(main, 'config', 'core.ignorecase', 'true'); git(main, 'config', 'user.name', 'fixture'); git(main, 'config', 'user.email', 'fixture@example.invalid');
   fs.writeFileSync(path.join(main, '.gitignore'), '*.log\n'); fs.writeFileSync(path.join(main, 'tracked.log'), 'original'); fs.writeFileSync(path.join(main, 'deleted'), 'gone');
   git(main, 'add', '-f', '.gitignore', 'tracked.log', 'deleted'); git(main, 'commit', '-qm', 'fixture'); git(main, 'worktree', 'add', '-qb', 'fixture-work', work);
   fs.writeFileSync(path.join(work, 'tracked.log'), 'dirty'); fs.rmSync(path.join(work, 'deleted'));
@@ -248,6 +248,7 @@ test('native linked-worktree classifies independently pinned external inputs, re
   const candidateDurationMs = Math.round(performance.now() - started);
   const oracle = git(work, 'ls-files', '-c', '-o', '--exclude-standard', '-z').split('\0').filter(p => p && p !== 'deleted').concat('included.log').sort();
   assert.deepEqual(Object.keys(r.files).sort(), oracle); assert.equal(r.files['tracked.log'].hash, hash('dirty'));
+  assert.ok(r.limitations.includes('windows_ignorecase_ascii_projection'));
   const { restoreCheckpoint } = require('../../build/server/domain/runtime/badcase-capture/restore');
   // Test-only CAS writer, NOT enable or a real turn. Manifest shape matches the file restore contract.
   for (const [digest, bytes] of r.blobs) service.store.stageBlob('p', 'fixture', digest, bytes);
@@ -292,6 +293,7 @@ test('native linked-worktree classifies independently pinned external inputs, re
     assert.equal(cp.gitMetadata, 'bounded_external_git_subset_v1'); assert.equal(cp.replayInput.deliveryMode, deliveryMode);
     assert.equal(cp.replayInput.complete, false); assert.equal(cp.strictEvalEligible, false);
     assert.equal(cp.files['tracked.log'].hash, hash('dirty')); assert.equal(cp.files.secret.secretExcluded, true);
+    assert.ok(cp.integrity.knownLimitations.includes('windows_ignorecase_ascii_projection'));
     if (deliveryMode === 'resume') assert.deepEqual(reopenedService.store.readBlob('p', cp.replayInput.sessionBlobHash), sessionBytes);
     const restoredLists = [];
     for (const n of [1, 2]) {

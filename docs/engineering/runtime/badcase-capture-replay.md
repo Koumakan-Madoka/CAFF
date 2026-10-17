@@ -1081,6 +1081,17 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 作者验证（Windows10 build19045/x64、Python3.13.5、Node24.13.1）：新选择接口/collector/服务与管理 UI/API先在父构建失败，最终Windows十二套112=111通过/1 Linux跳过；HTTP/UI两套45=44通过/1 Linux跳过。自建 linked-worktree 经真实管理pin→保存选择→重建服务→fresh/resume 原生异步文件与session采集→真实publisher→两次恢复一致；保留CRLF/mode/秘密剔除、无外置元数据恢复、wrong-root失败不新增检查点，管理预估不给回执。一次诊断两模式合计1707ms/提交占用7864B，仅小夹具，不是实际turn容量或UI浏览器证据。兼容七套195=125通过/70平台能力跳过。WSL Debian Node22.22私有47文件字节核验十三套227=211通过/16平台跳过，测试后字节不变并清理。15语义变异最终断言红；单删pointer trim在现有夹具存活（规范化根比较仍拒绝），明确不计红；nested首轮被缺输入授权遮蔽，补精确授权后检出再完整重跑。编译/UI磁盘字节不变，干净基线复绿。fast2182通过/44跳过、smoke101、双typecheck/build/check/diff-check通过。初次fast仅旧同步测试观察Promise的reason失败，改为await断言后完整重跑；管理负例误含采集存储祖先先被旧目录守卫拒绝，修正夹具后完整重跑。额外兼容套检出旧测试仍假设所有非Linux预估失败（与§5.38既有Windows元数据预估矛盾，estimate生产代码本轮零改动），改为Windows明确断言captureAvailable=false并核对2文件7B后复绿；S1改为明确测试不支持的Linux同步collector而非已改为async的服务。零真实项目采集/Key/供应商/真实Docker/浏览器/生产，历史6美元未结算非账单，全部AC pending，不合并发布。
 
+### 5.51 Windows `core.ignorecase=true` 的保守 ASCII 分类投影（管理开启仍关）
+
+§5.40/5.49/5.50 对 `core.ignorecase=true` 的拒绝在此**仅为 Windows 候选**收窄为有界支持；不是全局 Git/完整 Windows Git 支持。`parseGitConfigSubset` 增加可信调用方 opt-in `allowIgnoreCase:true`，才解析显式 true/false/yes/no/on/off/1/0（含语法合法的引号/行尾注释），返回最后合法项的 `ignoreCase`。非法值、bare boolean、反斜杠等仍使 verified=false。默认调用的接受集合与返回对象形状不变，Linux collector 不传 opt-in、不增加文件访问。
+
+- ignoreCase=true 时，索引及原生 manifest 的**所有相对路径**必须纯 ASCII；分别检查完整路径和逐组件拼写；每组最多100000路径、每路径32768字节/64组件，深度在前缀循环前拒绝，避免不受限的二次前缀展开；上述上限不等于内存/硬时限保证。无论完整文件名冲突还是 `A/x`、`a/y` 这种父目录歧义都失败关闭。允许索引与磁盘之间无歧义的 case-only 差异：只在分类视图中以 ASCII 小写匹配 tracked 集合及 mode；文件内容不折叠。`ignoreCase=false` 保留此前区分大小写与 Unicode 路径行为。
+- `.gitignore`、info/exclude 的分类文本必须纯 ASCII，且不含 `[`（包含注释/转义中的该字符也保守拒绝），不把 `[A-z]` 等范围端点直接小写误称 Git 的 casefold wildmatch。其余已验证语法在分类视图中小写，继续经过既有有界 parser；ignore 源目录、walk entry 与 tracked key 一同投影，保留深层优先级、否定、目录不深入及 tracked 例外。原生只精确读取 `.gitignore`，遇到不同大小写的 `.GITIGNORE` 等 manifest 名称也拒绝，不因新配置静默漏用来源。以上不支持项固定 `git_ignorecase_unverified`，在 ordinary selectedSnapshot 前停止，无部分 blob 计划。
+- **不把投影用于路径访问或授权**：最终 selectedSnapshot selector、CAS清单路径及恢复文件名均映回原生 manifest 的精确磁盘拼写；策略 includedIgnoredPatterns 仍匹配该原拼写，不借配置改变授权/排除语义。tracked mode 从索引投影取回；untracked 仍合成0644。根 pin、私有根/秘密保护、gitfile 双根选择与指针绑定、前后复验、25秒观察期限、两 helper 名额、单项目租约及配额发布步骤均不放宽。
+- 本地与显式外置 Git 复用此分类步骤，成功记录 `windows_ignorecase_ascii_projection`；complete/strict/captureAvailable 仍 false。全局 config/excludes、worktreeConfig、删除历史、附件归档、容器映射与独立一致性证据仍缺。Windows管理开启保持关闭，estimate无enable回执；不为实际项目授权或开启采集。
+
+验证：opt-in 与默认 parser 正反例；case-only tracked mode/精确 selector/策略原拼写；索引与树的完整名及父组件冲突、Unicode路径/规则、字符类与误拼写 ignore 来源均拒绝；64/65组件边界、项数/字节小限额注入正反例（不冒充真实大输入）覆盖前缀展开的边界；八组 ASCII wildcard/否定/目录/深层规则对照真实 Git `ls-files`。自建 NTFS 本地 Git 树以两步 rename 确认磁盘 case-only 改名，再经真实 service fresh/resume→publisher→重开store→两次恢复一致，CRLF session与秘密排除保持；自建 linked-worktree 服务链改为真实 ignorecase=true 并核验限制标签。临时 Git 只用于夹具/oracle，采集路径不执行 Git；raw test writer enabled不是管理开启或用户真实turn。E111 P3补32个互异且精确授权条目通过、33个拒绝、最后一条单独通过的独立上限用例。初新接口测试在父构建两项断言红，负例原先被整体不支持阻断，随后加强固定原因与针对性变异；误拼写 ignore 来源的初始变异被重复名守卫遮蔽，改为替换而不是新增来源后完整重跑检出。原生新夹具首次仅缺自建 info 目录，修正后完整重跑。详细命令、计数、变异及独立审查见Goal E112。全部AC pending；零真实项目采集/Key/模型/供应商/真实Docker/浏览器/生产；历史6美元未结算非账单不变，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
