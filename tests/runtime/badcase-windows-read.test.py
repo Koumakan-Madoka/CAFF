@@ -137,6 +137,159 @@ class WindowsRead(unittest.TestCase):
             with self.assertRaisesRegex(w.Refused, '^changed_during_read$'):
                 root.read('sub/sample.bin', _after_open=mutate)
 
+    def test_walk_exact_tree_without_pathname_enumeration(self):
+        (self.root / 'empty-dir').mkdir()
+        (self.root / '中文😀').write_bytes(b'unicode')
+        (self.root / 'sub' / 'empty').touch()
+        with w.Root(str(self.root)) as root:
+            # No pathname enumeration fallback, even for an ordinary directory.
+            with patch.object(os, 'scandir', side_effect=AssertionError('pathname scan')):
+                entries = root.walk()
+            self.assertEqual([e['path'] for e in entries],
+                             ['empty-dir', 'sub', 'sub/empty', 'sub/sample.bin', '中文😀'])
+            self.assertEqual([e['type'] for e in entries], ['directory', 'directory', 'file', 'file', 'file'])
+            self.assertEqual(entries[3]['size'], len(self.bytes))
+            self.assertEqual(entries[2]['size'], 0)
+            self.assertTrue(all(set(e) == {'path', 'type', 'size', 'identity', 'lastWriteTime', 'changeTime'} for e in entries))
+            self.assertTrue(all(isinstance(e['lastWriteTime'], str) and isinstance(e['changeTime'], str) for e in entries))
+            self.assertEqual(root.walk(), entries)  # restart enumeration, not stale handle cursor
+        with self.assertRaisesRegex(w.Refused, '^root_closed$'):
+            root.walk()
+        with w.Root(str(self.outside)) as root:
+            self.assertEqual([e['path'] for e in root.walk()], ['sample.bin'])
+
+    def test_walk_entry_depth_and_argument_bounds(self):
+        (self.root / 'sub' / 'nested').mkdir()
+        (self.root / 'sub' / 'nested' / 'leaf').touch()
+        with w.Root(str(self.root)) as root:
+            self.assertEqual(len(root.walk(max_entries=4, max_depth=3)), 4)
+            for args, reason in [({'max_entries': 3}, 'entry_limit'), ({'max_depth': 2}, 'depth_limit'),
+                                 ({'max_entries': True}, 'limit_invalid'), ({'max_entries': 0}, 'limit_invalid'),
+                                 ({'max_entries': 100001}, 'limit_invalid'), ({'max_depth': 0}, 'limit_invalid'),
+                                 ({'max_depth': 65}, 'limit_invalid'), ({'max_depth': 1.5}, 'limit_invalid')]:
+                with self.subTest(args=args), self.assertRaisesRegex(w.Refused, '^' + reason + '$'):
+                    root.walk(**args)
+        with w.Root(str(self.base)) as root:
+            with self.assertRaisesRegex(w.Refused, '^entry_limit$'):
+                root.walk(max_entries=1)
+
+    def test_walk_multiple_native_buffers_and_empty_root(self):
+        empty = self.base / 'empty'
+        empty.mkdir()
+        with w.Root(str(empty)) as root:
+            self.assertEqual(root.walk(), [])
+        # Long names force >64 KiB of FILE_NAMES_INFORMATION, exercising native
+        # continuation, final STATUS_NO_MORE_FILES, and restart across two walks.
+        for i in range(400):
+            (empty / (str(i).zfill(4) + 'x' * 170)).touch()
+        with w.Root(str(empty)) as root:
+            entries = root.walk(max_entries=400, max_depth=1)
+            self.assertEqual(len(entries), 400)
+            self.assertEqual(root.walk(max_entries=400, max_depth=1), entries)
+            with self.assertRaisesRegex(w.Refused, '^entry_limit$'):
+                root.walk(max_entries=399)
+            with self.assertRaisesRegex(w.Refused, '^entry_limit$'):
+                w._directory_names(root.handle, 399)  # native-buffer cap independent of walk cap
+
+    def test_walk_reparse_refused_without_outside_enumeration(self):
+        link = self.root / 'junction'
+        p = subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(link), str(self.outside)],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        self.assertEqual(p.returncode, 0, 'temporary junction creation failed')
+        try:
+            with w.Root(str(self.outside)) as outside:
+                outside_id = outside.identity.copy()
+            seen = []
+            original_names = w._directory_names
+            def observe(handle, limit):
+                ident = w.identity(handle)
+                self.assertNotEqual(ident, outside_id, 'enumerated outside object')
+                seen.append(ident)
+                return original_names(handle, limit)
+            with w.Root(str(self.root)) as root, patch.object(w, '_directory_names', side_effect=observe):
+                with self.assertRaises(w.Refused):
+                    root.walk()
+            self.assertTrue(seen)
+        finally:
+            os.rmdir(link)
+        self.assertEqual((self.outside / 'sample.bin').read_bytes(), b'OUTSIDE_SENTINEL')
+
+    def test_walk_mutation_and_handles_on_failure(self):
+        with w.Root(str(self.root)) as root:
+            def mutate(relative):
+                if relative == 'sub':
+                    with self.assertRaises(PermissionError):
+                        (self.root / 'sub').rename(self.root / 'old-sub')
+                    (self.root / 'sub' / 'new').touch()
+                    os.utime(self.root / 'sub', ns=(1700000000000000000, 1700000000000000000))
+            with self.assertRaisesRegex(w.Refused, '^directory_changed$'):
+                root.walk(_after_list=mutate)
+            def fail_below_root(relative):
+                if relative == 'sub':
+                    raise RuntimeError('walk-test')
+            for _ in range(20):
+                with self.assertRaisesRegex(RuntimeError, '^walk-test$'):
+                    root.walk(_after_list=fail_below_root)
+                (self.root / 'sub').rename(self.root / 'released-sub')
+                (self.root / 'released-sub').rename(self.root / 'sub')
+        # Held directory handles on all exceptional paths have been returned.
+        (self.root / 'sub').rename(self.root / 'released-sub')
+        self.root.rename(self.base / 'released-root')
+
+    def test_case_sensitive_directories_fail_closed(self):
+        # Environment rejection is API injection, not a claim of creating a
+        # real case-sensitive directory (which may require elevated rights).
+        original_query = w._query
+        def query(handle, info_type, struct_type):
+            if info_type == 23:
+                value = struct_type()
+                value.Flags = 1
+                return value
+            return original_query(handle, info_type, struct_type)
+        with patch.object(w, '_query', side_effect=query):
+            with self.assertRaisesRegex(w.Refused, '^case_sensitive_unsupported$'):
+                with w.Root(str(self.root)):
+                    self.fail('case-sensitive directory accepted')
+        with w.Root(str(self.root)) as root, patch.object(w, '_query', side_effect=query):
+            with self.assertRaisesRegex(w.Refused, '^case_sensitive_unsupported$'):
+                root.walk()
+            with self.assertRaisesRegex(w.Refused, '^case_sensitive_unsupported$'):
+                root.read('sub/sample.bin')
+        def unavailable(handle, info_type, struct_type):
+            if info_type == 23:
+                raise w.Refused('metadata_unavailable')
+            return original_query(handle, info_type, struct_type)
+        with patch.object(w, '_query', side_effect=unavailable):
+            with self.assertRaisesRegex(w.Refused, '^metadata_unavailable$'):
+                with w.Root(str(self.root)):
+                    self.fail('unverified case semantics accepted')
+
+    def test_directory_buffer_parser_rejects_malformed_records(self):
+        import struct
+        def record(name, next_offset=0):
+            text = name.encode('utf-16-le')
+            return struct.pack('<III', next_offset, 0, len(text)) + text
+        self.assertEqual(w._parse_names(record('中文😀')), ['中文😀'])
+        self.assertEqual(w._parse_names(record('.', 16) + b'\x00\x00' + record('..')), [])
+        for value in [b'', b'x' * 11, struct.pack('<III', 0, 0, 1) + b'x',
+                      struct.pack('<III', 0, 0, 100) + b'x' * 2,
+                      struct.pack('<III', 0, 0, 2) + b'\x00\xd8', record('../escape'),
+                      record('a', 4), record('a', 15), record('a', 15) + b'\x00' + record('b'),
+                      record('a', 4096), record('')]:
+            with self.subTest(value=value), self.assertRaises(w.Refused):
+                w._parse_names(value)
+        with w.Root(str(self.root)) as root:
+            for status in [-1, 259, -2147483643]:  # failure, pending, buffer overflow
+                with patch.object(w.nt, 'NtQueryDirectoryFile', return_value=status):
+                    with self.assertRaisesRegex(w.Refused, '^enumeration_failed$'):
+                        root.walk()
+            with patch.object(w.nt, 'NtQueryDirectoryFile', return_value=0):
+                with self.assertRaisesRegex(w.Refused, '^enumeration_invalid$'):
+                    root.walk()  # successful status without valid IO bytes is not empty
+            with patch.object(w, '_parse_names', return_value=['duplicate', 'duplicate']):
+                with self.assertRaisesRegex(w.Refused, '^directory_changed$'):
+                    root.walk()
+
     def test_exception_paths_release_handles(self):
         # Unsupported environment errors are injected (no access to a real
         # network/removable volume). Ordinary positive opens above are native.

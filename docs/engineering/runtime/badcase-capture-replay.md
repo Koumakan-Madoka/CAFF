@@ -852,10 +852,24 @@ E89在已审`feeeddf1`下按新计划/批准运行：实际仅1请求HTTP200后`
 - 只接受固定本地驱动器上的 NTFS 目录，拒 UNC、网络/可移动驱动器、设备/extended namespace 输入及不支持的文件系统。先打开驱动器根，再将每个经过保守语法检查的路径组件交给 `NtCreateFile(RootDirectory=已持有父句柄)`；所有祖先句柄保持至根上下文或单次读取结束。禁止 `..`、绝对路径、反斜杠形式的相对路径、ADS、空组件、尾空格/点、设备别名和非法 UTF-16。路径规范化不是授权证明。
 - 每级设 `OBJ_DONT_REPARSE`、`FILE_OPEN_REPARSE_POINT`并核对句柄属性，拒绝 junction/symlink/其他重解析对象，不跟随挂载点；只有磁盘普通文件可读。祖先与文件打开均不分享删除权限，持有期间 Windows 拒绝重命名/删除；仍分享读写，不锁住普通写入，不承诺原子快照。打开不兼容或被拒绝时不回退其他路径/API。
 - 根身份由同一个句柄查询 `FileIdInfo` 的卷序列号/128 位文件 ID 和 `FileBasicInfo` 的创建时间，全部为十进制/十六进制字符串。传入 expected 身份时，先核对再打开子文件；错误身份或路径被新目录替代时拒绝。文件读取前后核对同句柄 ID、长度、写入/变更时间及属性，有变化不返回成功内容。身份复用、元数据 ABA 和文件间非原子性仍属残余限制，不提升 strict 资格。
-- `Root`只作为上下文管理器使用，异常路径关闭所有已开句柄；测试内 `_after_open` 是受信进程内故障注入，不提供 CLI 或 agent 工具。尚无枚举、helper 协议/源码嵌入、管理授权 pin 集成、跨进程绑定、CAS/恢复或 Linux 容器路径映射；后续不能直接以 Node pathname 递归遍历补齐枚举，也不能重新打开未核对身份的根。外置 Git 元数据/session/附件仍需各自授权，不由此获得权限。
-- 原生测试仅操作自建临时 NTFS 目录：二进制/空文件/Unicode 字节与 hash、字符串身份持久重开、身份错误与根替换、越界/别名、真实 junction（不要求管理员）、祖先/文件重命名拒绝、并发写检测、大小边界、缺文件/目录/异常后句柄计数恢复。`test:fast`纳入 Node wrapper，在 Windows 必须实际运行七个 Python 测试（缺 Python 或文件系统不支持即失败），非 Windows 显式跳过，不能冒充 Windows 证据。未触及真实项目采集或付费模型。驱动器/文件系统不支持的负例仅注入 API 结果，未访问真实网络/可移动卷；真实 junction 负例不能替代所有重解析类型的逐类实测。
+- `Root`只作为上下文管理器使用，异常路径关闭所有已开句柄；测试内 `_after_open` 是受信进程内故障注入，不提供 CLI 或 agent 工具。本节首次提交尚无枚举（后续原语见§5.35）；helper 协议/源码嵌入、管理授权 pin 集成、跨进程绑定、CAS/恢复或 Linux 容器路径映射仍未接通；后续不能直接以 Node pathname 递归遍历补齐枚举，也不能重新打开未核对身份的根。外置 Git 元数据/session/附件仍需各自授权，不由此获得权限。
+- 原生测试仅操作自建临时 NTFS 目录：二进制/空文件/Unicode 字节与 hash、字符串身份持久重开、身份错误与根替换、越界/别名、真实 junction（不要求管理员）、祖先/文件重命名拒绝、并发写检测、大小边界、缺文件/目录/异常后句柄计数恢复。本节首次提交将 Node wrapper 纳入 `test:fast`，在 Windows 要求实际运行七个 Python 测试（后续§5.35增至14项；缺 Python 或文件系统不支持即失败），非 Windows 显式跳过，不能冒充 Windows 证据。未触及真实项目采集或付费模型。驱动器/文件系统不支持的负例仅注入 API 结果，未访问真实网络/可移动卷；真实 junction 负例不能替代所有重解析类型的逐类实测。
 
 API依据：[NtCreateFile](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile)、[OBJECT_ATTRIBUTES](https://learn.microsoft.com/en-us/windows/win32/api/ntdef/ns-ntdef-_object_attributes)、[CreateFileW sharing/reparse flags](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[FileIdInfo](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)、[GetFileInformationByHandleEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileinformationbyhandleex)。Python解释器/ctypes/原生Windows、同OS用户及受信helper部署仍属TCB。正式接通采集前须补完整管理→采集→恢复与拒绝边界证据，再以固定新SHA独立审查；全部AC pending，不合并发布。
+
+### 5.35 Windows 句柄相对目录枚举（尚未接通采集）
+
+在§5.34底座上新增 `Root.walk()`，只返回目录树元数据，不读取文件内容，也不执行 Git 或扫描树外 Git 元数据。**Windows 管理授权/预估/collector 仍未接通，原平台能力检查继续在扫描真实目标前拒绝**。本轮仅在自建临时 NTFS 目录验证原语，不是整个实际 worktree 的采集恢复证据，不升级 AC2 或 strict 资格。
+
+- 每个目录通过同步 `NtQueryDirectoryFile(FileNamesInformation=12)` 在已持有句柄上枚举，以64KiB缓冲区续读，第一次显式 RestartScan，直到 `STATUS_NO_MORE_FILES`；不使用 `os.scandir`、Node pathname 递归、realpath、WSL 或备用 API。其他状态（包括 pending/buffer overflow）、无有效IO字节或格式错误即固定原因拒绝，不把局部结果当成功。解析 `FILE_NAMES_INFORMATION` 的有界链、UTF-16字节长度和4字节 next 对齐；只跳过精确 `.`/`..`，其余名称仍经组件检查，拒绝斜杠、非法UTF-16与路径别名。
+- 每个子对象继续经 `NtCreateFile(RootDirectory=父句柄)` 相对打开。枚举阶段不按目录项声称的类型直接递归，而以已打开句柄的 `FileStandardInfo` 判定目录/普通文件；重解析对象仍由既有多层防御拒绝。另查询目录 `FileCaseSensitiveInfo=23`，非零Flags或能力无法核验即拒绝（根、walk和read均生效），避免已有 `OBJ_CASE_INSENSITIVE` 打开使区分大小写目录内A/a条目别名；当前原语不声称支持这种目录。遇到拒绝中止整个原语，不静默漏项；后续 collector 需要按既有策略将此原因映射为不完整包，而不是宣称完整快照。
+- 全树默认及最大100000项/64层，可传更小的正整数界限；达到上限允许，超出拒绝。目录续读内部也限制剩余项数，并拒绝重复名称。返回按相对路径排序的 path/type/size/identity/写入与变更时间，身份与时间为字符串；不包括根自身，目录 size 规范为0。Python内 size 仍是精确整数，未来跨进程协议须另行有界验证，不能直接假设JS无精度损失。
+- 保留父句柄至其子树结束，不分享DELETE；每个目录子树遍历前后核对同句柄身份/写入与变更时间/属性，变化则 `directory_changed`。此检测不是全树一致性证明：普通文件写入不必改变父目录时间；先前子树完成并释放后仍可能变化，元数据ABA亦可能漏检。后续采集必须继续原有双扫/同句柄内容变化检测与不完整资格，不能凭本列表赋予 strict 资格。
+- `_after_list` 只用于受信进程内测试，不暴露CLI/agent入口。当前原语尚无秘密/ignored路径策略，不能直接拿它遍历真实项目；正式接线须在授权与排除策略下使用，不扩大凭据、私有目录、采集存储或树外session/附件权限。
+
+验证：原生 Python 用例由7增至14；枚举六项在旧码因缺失接口先红，另加大小写语义能力拒绝用例。真实NTFS覆盖空根、Unicode/二进制元数据、两次同句柄重扫、400个长名称跨64KiB续读、项数/深度与参数边界、真实junction不枚举外部对象、目录变化/持有期间rename拒绝、子树异常释放、原生失败状态与损坏记录。部分协议/格式异常为进程内注入，不冒充内核真实返回；API状态注入不等于真实坏卷验证。大小写语义不支持/未知的负例为API注入，未创建真实大小写敏感目录，不宣称逐类实测。wrapper在Windows要求14项实际运行，非Windows仍显式跳过。作者私有副本13个单点变异全红（目录变化、原生项限、深度、重扫、单页截断、漏目录、pending/空成功、size、重复名称、UTF16替换解码、next对齐、大小写语义守卫），逐字节恢复后连续三次14/14并清理。未触及真实项目采集、模型/Key、Docker或UI；管理pin/helper协议/源码嵌入/CAS恢复/容器映射仍待后续实现，全部AC pending，不合并发布。
+
+API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntquerydirectoryfile)、[FILE_NAMES_INFORMATION](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_names_information)。原生Windows、Python/ctypes、同OS用户与受信部署仍属于TCB。
 
 ## 6. 威胁模型
 
