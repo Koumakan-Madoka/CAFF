@@ -1,6 +1,8 @@
 """Real Windows/NTFS primitive tests; exclusively self-created temporary trees."""
 import hashlib
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -289,6 +291,169 @@ class WindowsRead(unittest.TestCase):
             with patch.object(w, '_parse_names', return_value=['duplicate', 'duplicate']):
                 with self.assertRaisesRegex(w.Refused, '^directory_changed$'):
                     root.walk()
+
+    def test_exclusions_prune_before_open_and_sort_interleaved_names(self):
+        (self.root / 'a').mkdir()
+        (self.root / 'a' / 'z').touch()
+        (self.root / 'a.b').touch()
+        (self.root / 'Private').mkdir()
+        (self.root / 'Private' / 'secret').write_bytes(b'PRIVATE_SENTINEL')
+        (self.root / 'Private-other').touch()
+        (self.root / 'sub' / 'nested').mkdir()
+        (self.root / 'sub' / 'nested' / 'hidden').touch()
+        link = self.root / 'SkipLink'
+        p = subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(link), str(self.outside)],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        self.assertEqual(p.returncode, 0)
+        original = w._relative
+        def observe(stack, parent, name, directory):
+            self.assertNotIn(name, ['Private', 'SkipLink', 'nested'], 'opened excluded object')
+            return original(stack, parent, name, directory)
+        try:
+            with w.Root(str(self.root)) as root, patch.object(w, '_relative', side_effect=observe):
+                entries = root.walk(excluded=['private', 'skiplink', 'SUB/nested'])
+            self.assertEqual([e['path'] for e in entries],
+                             ['Private-other', 'a', 'a.b', 'a/z', 'sub', 'sub/sample.bin'])
+            with w.Root(str(self.root)) as root:
+                for value in ['private', [True], ['../private'], ['private/**'], ['x'] * 257]:
+                    with self.subTest(value=value), self.assertRaises(w.Refused):
+                        root.walk(excluded=value)
+        finally:
+            os.rmdir(link)
+
+    def wire_request(self, value):
+        return json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode('utf-8')
+
+    def run_wire(self, data):
+        run = subprocess.run([sys.executable, '-I', '-B', str(source)], input=data,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(run.stderr, b'')
+        self.assertIn(b'\n', run.stdout)
+        head, content = run.stdout.split(b'\n', 1)
+        return json.loads(head), content
+
+    def test_wire_native_roundtrip_and_identity_mismatch(self):
+        request = {'version': 1, 'op': 'identity', 'root': str(self.root)}
+        pin_response, body = self.run_wire(self.wire_request(request))
+        self.assertEqual(set(pin_response), {'version', 'ok', 'identity'})
+        self.assertTrue(pin_response['ok'])
+        self.assertEqual(body, b'')
+        pin = pin_response['identity']
+        (self.root / 'empty').touch()
+        request = {'version': 1, 'op': 'capture', 'root': str(self.root), 'expected': pin,
+                   'excluded': [], 'paths': ['sub/sample.bin', 'empty']}
+        response, body = self.run_wire(self.wire_request(request))
+        self.assertEqual(set(response), {'version', 'ok', 'identity', 'entries', 'files'})
+        self.assertTrue(response['ok'])
+        self.assertEqual(response['identity'], pin)
+        self.assertEqual([e['path'] for e in response['entries']], ['empty', 'sub', 'sub/sample.bin'])
+        self.assertEqual([e['size'] for e in response['entries']], ['0', '0', str(len(self.bytes))])
+        self.assertEqual([e['path'] for e in response['files']], request['paths'])
+        self.assertEqual(body, self.bytes)
+        self.assertEqual(response['files'][0]['sha256'], hashlib.sha256(self.bytes).hexdigest())
+        for key in pin:
+            wrong = {**pin, key: ('1' if key != 'fileId' else '1' * 32)}
+            if wrong[key] == pin[key]:
+                wrong[key] = '2' if key != 'fileId' else '2' * 32
+            bad, content = self.run_wire(self.wire_request({**request, 'expected': wrong}))
+            self.assertEqual(bad, {'version': 1, 'ok': False, 'code': 'root_identity_mismatch'})
+            self.assertEqual(content, b'')
+        self.root.rename(self.base / 'old')
+        self.root.mkdir()
+        bad, body = self.run_wire(self.wire_request(request))
+        self.assertEqual(bad['code'], 'root_identity_mismatch')
+        self.assertEqual(body, b'')
+
+    def test_wire_exclusions_and_canonical_manifest_gate_all_content(self):
+        with w.Root(str(self.root)) as root:
+            pin = root.identity.copy()
+        (self.root / 'Private').mkdir()
+        (self.root / 'Private' / 'secret').write_bytes(b'PRIVATE_SENTINEL')
+        request = {'version': 1, 'op': 'capture', 'root': str(self.root), 'expected': pin,
+                   'excluded': ['private'], 'paths': []}
+        good, body = self.run_wire(self.wire_request(request))
+        self.assertTrue(good['ok'])
+        self.assertEqual([e['path'] for e in good['entries']], ['sub', 'sub/sample.bin'])
+        self.assertEqual(body, b'')
+        for name in ['Private/secret', 'PRIVATE/secret', 'sub/SAMPLE.bin', 'SUB/sample.bin', 'sub']:
+            bad, body = self.run_wire(self.wire_request({**request, 'paths': ['sub/sample.bin', name]}))
+            self.assertEqual(bad, {'version': 1, 'ok': False, 'code': 'path_not_in_manifest'})
+            self.assertEqual(body, b'', 'must not leak a successful partial read')
+        # NTFS short-name aliases cannot pass membership even if this volume
+        # happens to enable 8.3 generation. No guessed alias is opened at all.
+        with patch.object(w.Root, 'read', side_effect=AssertionError('content opened')):
+            out = io.BytesIO()
+            w.serve(io.BytesIO(self.wire_request({**request, 'paths': ['PRIVAT~1/secret']})), out)
+            self.assertEqual(json.loads(out.getvalue())['code'], 'path_not_in_manifest')
+        # Budget arithmetic exercised with small injected limits, not 128 MiB
+        # real files. Per-file native size enforcement remains the same code.
+        (self.root / 'sub' / 'second').write_bytes(self.bytes)
+        budget_request = {**request, 'paths': ['sub/sample.bin', 'sub/second']}
+        with patch.object(w, 'BODY_LIMIT', len(self.bytes) * 2):
+            out = io.BytesIO()
+            w.serve(io.BytesIO(self.wire_request(budget_request)), out)
+            self.assertTrue(json.loads(out.getvalue().split(b'\n', 1)[0])['ok'])
+        with patch.object(w, 'BODY_LIMIT', len(self.bytes) * 2 - 1):
+            out = io.BytesIO()
+            w.serve(io.BytesIO(self.wire_request(budget_request)), out)
+            self.assertEqual(json.loads(out.getvalue())['code'], 'too_large')
+        with patch.object(w, 'HEADER_LIMIT', 1):
+            out = io.BytesIO()
+            w.serve(io.BytesIO(self.wire_request(request)), out)
+            self.assertEqual(json.loads(out.getvalue())['code'], 'output_limit')
+        original_read = w.Root.read
+        def change_after_walk(open_root, relative, *args, **kwargs):
+            (self.root / 'sub' / 'sample.bin').write_bytes(self.bytes + b'!')
+            return original_read(open_root, relative, *args, **kwargs)
+        try:
+            with patch.object(w.Root, 'read', autospec=True, side_effect=change_after_walk):
+                out = io.BytesIO()
+                w.serve(io.BytesIO(self.wire_request({**request, 'paths': ['sub/sample.bin']})), out)
+                self.assertEqual(json.loads(out.getvalue())['code'], 'changed_during_read')
+        finally:
+            (self.root / 'sub' / 'sample.bin').write_bytes(self.bytes)
+        with w.Root(str(self.root)) as root:
+            entry = root.walk()[2]  # sub directory; explicit wrong file pin below
+            self.assertEqual(entry['path'], 'sub')
+            with self.assertRaisesRegex(w.Refused, '^file_identity_mismatch$'):
+                root.read('sub/sample.bin', expected_identity=pin)
+
+    def test_wire_invalid_input_rejected_before_root_open(self):
+        pin = {'volumeSerial': '1', 'fileId': '0' * 32, 'creationTime': '1'}
+        request = {'version': 1, 'op': 'capture', 'root': str(self.root), 'expected': pin,
+                   'excluded': [], 'paths': []}
+        duplicate = self.wire_request(request)[:-1] + b',"version":1}'
+        over_limit = self.wire_request(request).ljust(1024 * 1024 + 1, b' ')
+        invalid = [b'', b'\xff', b'{} {}', duplicate, b'{"x":NaN}',
+                   over_limit, self.wire_request({**request, 'extra': True})]
+        for changes in [{'version': True}, {'op': 'read'}, {'expected': None},
+                        {'expected': {**pin, 'volumeSerial': '18446744073709551616'}},
+                        {'expected': {**pin, 'creationTime': '9223372036854775808'}},
+                        {'expected': {**pin, 'fileId': 'F' * 32}},
+                        {'expected': {**pin, 'volumeSerial': '01'}},
+                        {'excluded': 'private'}, {'excluded': ['../private']},
+                        {'excluded': ['private/**']}, {'paths': ['sub//x']},
+                        {'paths': ['same', 'same']}, {'paths': ['x'] * 2049},
+                        {'_after_open': 'untrusted'}, {'root': r'\\server\share'}]:
+            invalid.append(self.wire_request({**request, **changes}))
+        with patch.object(w, 'Root', side_effect=AssertionError('opened target')):
+            for data in invalid:
+                out = io.BytesIO()
+                w.serve(io.BytesIO(data), out)
+                self.assertEqual(json.loads(out.getvalue()),
+                                 {'version': 1, 'ok': False, 'code': 'request_invalid'})
+        # Exact request limit is accepted, one byte above was rejected above.
+        exact = self.wire_request({'version': 1, 'op': 'identity', 'root': str(self.root)}).ljust(1024 * 1024, b' ')
+        result, body = self.run_wire(exact)
+        self.assertTrue(result['ok'])
+        self.assertEqual(body, b'')
+        # Internal exception text is never serialized or printed.
+        with patch.object(w, 'Root', side_effect=RuntimeError('PRIVATE_SENTINEL')):
+            out = io.BytesIO()
+            w.serve(io.BytesIO(self.wire_request(request)), out)
+            self.assertEqual(json.loads(out.getvalue()),
+                             {'version': 1, 'ok': False, 'code': 'helper_failed'})
 
     def test_exception_paths_release_handles(self):
         # Unsupported environment errors are injected (no access to a real

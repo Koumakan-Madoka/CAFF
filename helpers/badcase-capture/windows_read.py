@@ -14,9 +14,11 @@ time narrows but does not mathematically eliminate that residual.
 import contextlib
 import ctypes as C
 import hashlib
+import json
 import os
 import re
 import struct
+import sys
 
 
 class Refused(Exception):
@@ -76,6 +78,8 @@ if os.name == "nt":
                                         C.POINTER(IoStatus), C.c_void_p, U32, C.c_int,
                                         C.c_ubyte, C.POINTER(UnicodeString), C.c_ubyte]
     nt.NtQueryDirectoryFile.restype = C.c_int32
+    nt.RtlEqualUnicodeString.argtypes = [C.POINTER(UnicodeString), C.POINTER(UnicodeString), C.c_ubyte]
+    nt.RtlEqualUnicodeString.restype = C.c_ubyte
 
 
 def components(value):
@@ -207,6 +211,30 @@ def _directory_stamp(handle):
     return (identity(handle), basic.LastWriteTime, basic.ChangeTime, basic.FileAttributes)
 
 
+def _excluded_prefixes(excluded):
+    # Literal relative prefixes, not globs. The management layer must compile
+    # its policy grammar explicitly before calling this primitive.
+    if not isinstance(excluded, (list, tuple)) or len(excluded) > 256:
+        raise Refused('exclusions_invalid')
+    return [components(value) for value in excluded]
+
+
+def _nt_equal(left, right):
+    # Use the same NT case-insensitive comparison as object-name opens, not
+    # Python/JS locale folding (nor a guessed NTFS uppercase table).
+    a, b = C.create_unicode_buffer(left), C.create_unicode_buffer(right)
+    al, bl = len(left.encode('utf-16-le')), len(right.encode('utf-16-le'))
+    au = UnicodeString(al, al + 2, C.cast(a, C.c_void_p))
+    bu = UnicodeString(bl, bl + 2, C.cast(b, C.c_void_p))
+    return bool(nt.RtlEqualUnicodeString(C.byref(au), C.byref(bu), 1))
+
+
+def _excluded_path(relative, prefixes):
+    parts = relative.split('/')
+    return any(len(prefix) <= len(parts) and all(_nt_equal(a, b) for a, b in zip(prefix, parts))
+               for prefix in prefixes)
+
+
 class Root:
     """Owns all ancestor handles. Use only as a context manager."""
     def __init__(self, absolute, expected=None):
@@ -256,7 +284,7 @@ class Root:
             self.stack.close()
         self.stack = self.handle = None
 
-    def walk(self, max_entries=100000, max_depth=64, _after_list=None):
+    def walk(self, max_entries=100000, max_depth=64, _after_list=None, excluded=()):
         """Metadata-only tree enumeration. Not a coherent multi-file snapshot.
 
         Parent handles are held until their subtree completes. Each child is
@@ -268,6 +296,7 @@ class Root:
         if (type(max_entries) is not int or not 1 <= max_entries <= 100000
                 or type(max_depth) is not int or not 1 <= max_depth <= 64):
             raise Refused("limit_invalid")
+        prefixes = _excluded_prefixes(excluded)
         entries = []
 
         def visit(handle, prefix, depth):
@@ -276,11 +305,15 @@ class Root:
             if _after_list is not None:
                 _after_list(prefix)
             for name in sorted(names):
+                relative = prefix + '/' + name if prefix else name
+                # Never open/stat/recurse an excluded child, including reparses.
+                # Parent-directory names are necessarily read to prune children.
+                if _excluded_path(relative, prefixes):
+                    continue
                 if depth + 1 > max_depth:
                     raise Refused("depth_limit")
                 if len(entries) >= max_entries:
                     raise Refused("entry_limit")
-                relative = prefix + '/' + name if prefix else name
                 with contextlib.ExitStack() as stack:
                     child = _relative(stack, handle, name, None)
                     basic, standard = _check(child, None)
@@ -298,7 +331,7 @@ class Root:
         visit(self.handle, '', 0)
         return sorted(entries, key=lambda entry: entry['path'])
 
-    def read(self, relative, max_bytes=64 * 1024 * 1024, _after_open=None):
+    def read(self, relative, max_bytes=64 * 1024 * 1024, _after_open=None, expected_identity=None):
         if self.handle is None:
             raise Refused("root_closed")
         if type(max_bytes) is not int or not 0 <= max_bytes <= 64 * 1024 * 1024:
@@ -310,6 +343,8 @@ class Root:
                 handle = _relative(stack, handle, part, i < len(parts) - 1)
             before, standard = _check(handle, False)
             original_id = identity(handle)
+            if expected_identity is not None and original_id != expected_identity:
+                raise Refused('file_identity_mismatch')
             size = standard.EndOfFile
             if size < 0 or size > max_bytes:
                 raise Refused("too_large")
@@ -334,3 +369,135 @@ class Root:
             content = b"".join(chunks)
             return {"content": content, "sha256": hashlib.sha256(content).hexdigest(),
                     "size": size, "identity": original_id}
+
+
+# Standalone protocol: one bounded JSON request on stdin, one JSON header plus
+# concatenated exact-size file bodies on stdout. No partial success on refusal.
+REQUEST_LIMIT = 1024 * 1024
+HEADER_LIMIT = 32 * 1024 * 1024
+BODY_LIMIT = 128 * 1024 * 1024
+FILE_LIMIT = 64 * 1024 * 1024
+PUBLIC_REASONS = frozenset([
+    'request_invalid', 'helper_failed', 'windows_required', 'root_path_invalid',
+    'path_invalid', 'root_open_rejected', 'drive_unsupported', 'filesystem_unsupported',
+    'metadata_unavailable', 'not_disk_file', 'reparse_rejected', 'type_rejected',
+    'case_sensitive_unsupported', 'relative_open_rejected', 'root_identity_mismatch',
+    'file_identity_mismatch', 'enumeration_failed', 'enumeration_invalid',
+    'directory_changed', 'entry_limit', 'depth_limit', 'limit_invalid',
+    'path_not_in_manifest', 'too_large', 'read_failed', 'short_read',
+    'changed_during_read', 'output_limit',
+])
+
+
+def _decimal(value, low, high):
+    if not isinstance(value, str) or not re.fullmatch(r'0|-?[1-9][0-9]{0,19}', value):
+        return False
+    return low <= int(value) <= high
+
+
+def _valid_identity(value):
+    return (type(value) is dict and set(value) == {'volumeSerial', 'fileId', 'creationTime'}
+            and _decimal(value['volumeSerial'], 0, (1 << 64) - 1)
+            and isinstance(value['fileId'], str) and re.fullmatch('[0-9a-f]{32}', value['fileId'])
+            and _decimal(value['creationTime'], -(1 << 63), (1 << 63) - 1))
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise Refused('request_invalid')
+        result[key] = value
+    return result
+
+
+def _request(stream):
+    try:
+        data = stream.read(REQUEST_LIMIT + 1)
+        if len(data) > REQUEST_LIMIT:
+            raise Refused('request_invalid')
+        def invalid_constant(_):
+            raise Refused('request_invalid')
+        value = json.loads(data.decode('utf-8', errors='strict'), object_pairs_hook=_unique_object,
+                           parse_constant=invalid_constant)
+        if type(value) is not dict or type(value.get('version')) is not int or value['version'] != 1:
+            raise Refused('request_invalid')
+        op = value.get('op')
+        keys = {'version', 'op', 'root'}
+        if op == 'capture':
+            keys |= {'expected', 'excluded', 'paths'}
+        elif op != 'identity':
+            raise Refused('request_invalid')
+        if set(value) != keys or not isinstance(value['root'], str):
+            raise Refused('request_invalid')
+        match = re.fullmatch(r'([A-Za-z]):[\\/](.*)', value['root'])
+        if not match or len(value['root'].encode('utf-8')) > 32768:
+            raise Refused('request_invalid')
+        suffix = match[2].replace('\\', '/')
+        if suffix:
+            components(suffix)
+        if op == 'capture':
+            if not _valid_identity(value['expected']):
+                raise Refused('request_invalid')
+            _excluded_prefixes(value['excluded'])
+            paths = value['paths']
+            if (type(paths) is not list or len(paths) > 2048
+                    or any(not isinstance(p, str) for p in paths) or len(set(paths)) != len(paths)):
+                raise Refused('request_invalid')
+            for relative in paths:
+                components(relative)
+                if len(relative.encode('utf-8')) > 32768:
+                    raise Refused('request_invalid')
+        return value
+    except Exception:
+        raise Refused('request_invalid') from None
+
+
+def serve(input_stream, output_stream):
+    try:
+        request = _request(input_stream)  # all syntax validated before target open
+        bodies = []
+        with Root(request['root'], request.get('expected')) as root:
+            header = {'version': 1, 'ok': True, 'identity': root.identity}
+            if request['op'] == 'capture':
+                entries = root.walk(excluded=request['excluded'])
+                manifest = {e['path']: e for e in entries if e['type'] == 'file'}
+                # Exact canonical membership prevents case and 8.3 aliases from
+                # opening paths omitted by policy. Preflight ALL before reading.
+                if any(p not in manifest for p in request['paths']):
+                    raise Refused('path_not_in_manifest')
+                files, remaining = [], BODY_LIMIT
+                for relative in request['paths']:
+                    entry = manifest[relative]
+                    value = root.read(relative, min(FILE_LIMIT, remaining),
+                                      expected_identity=entry['identity'])
+                    if value['size'] != entry['size']:
+                        raise Refused('changed_during_read')
+                    bodies.append(value['content'])
+                    remaining -= value['size']
+                    files.append({'path': relative, 'size': str(value['size']),
+                                  'sha256': value['sha256'], 'identity': value['identity']})
+                # Every 64-bit native quantity crosses JSON as an exact string.
+                header['entries'] = [{**e, 'size': str(e['size'])} for e in entries]
+                header['files'] = files
+            encoded = json.dumps(header, ensure_ascii=True, separators=(',', ':')).encode('ascii')
+            if len(encoded) > HEADER_LIMIT:
+                raise Refused('output_limit')
+        # No target handle is left open while the response pipe is drained.
+    except BaseException as error:
+        reason = error.args[0] if type(error) is Refused and len(error.args) == 1 else 'helper_failed'
+        if not isinstance(reason, str) or reason not in PUBLIC_REASONS:
+            reason = 'helper_failed'
+        encoded = json.dumps({'version': 1, 'ok': False, 'code': reason}, separators=(',', ':')).encode('ascii')
+        bodies = []
+    output_stream.write(encoded + b'\n')
+    for content in bodies:
+        output_stream.write(content)
+
+
+if __name__ == '__main__':
+    # -I -B is required by the host adapter. No hooks or target paths in argv.
+    if len(sys.argv) != 1:
+        sys.stdout.buffer.write(b'{"version":1,"ok":false,"code":"request_invalid"}\n')
+    else:
+        serve(sys.stdin.buffer, sys.stdout.buffer)

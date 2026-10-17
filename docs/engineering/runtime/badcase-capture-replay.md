@@ -871,6 +871,24 @@ API依据：[NtCreateFile](https://learn.microsoft.com/en-us/windows/win32/api/w
 
 API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntquerydirectoryfile)、[FILE_NAMES_INFORMATION](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_names_information)。原生Windows、Python/ctypes、同OS用户与受信部署仍属于TCB。
 
+### 5.36 Windows helper 跨进程协议、枚举前排除与受限传输（未接通管理/collector）
+
+在§5.34–5.35原语上增加单请求协议与 `windows-helper.ts` 受信宿主适配器，生成 `windows-helper-source.ts`（与Linux源共同由 `embed-helper.js` 生成；Linux内嵌源码/协议不变）。**Windows `detectCaptureCapability`、管理授权/容量预估、collector仍失败关闭，未直接或间接调用本适配器。** 本节只是后续采集接线可复用的跨进程边界，不是实际worktree采集/CAS恢复或AC2证据，不得据此开启真实采集。
+
+协议与限制：
+- 宿主使用显式选择的Python执行 `-I -B <受信helper>`，绝对根/身份/policy只经stdin传递，不放入argv；`-I`隔离Python用户路径/环境注入，原生Windows/Python解释器/stdlib与同OS用户仍属TCB。调用前核对磁盘helper的实际字节SHA-256等于内嵌摘要；此校验不是不可变执行体或进程证明，不声称抵御同权限进程在校验后改文件/解释器。安装部署由后续接线负责，本适配器不自动落盘安装。
+- 单个UTF-8 JSON请求，version固定1、闭集字段；Python拒绝重复JSON键、非法UTF-8、非有限数、未知字段、超长输入与非法路径，**所有语法验证先于目标根打开**。`identity`只接受version/op/root、只查询根对象身份，不枚举子树；`capture`必须额外带expected/excluded/paths，expected为完整规范身份，不能缺失/降级成identity操作。内容操作打开根后先核对expected，替根或错误身份即拒绝，无自动重新pin。这是传入pin的跨进程核对，**不是管理授权或pin持久化实现**，调用权仍不得暴露为agent授权工具。
+- `walk(excluded=…)`接收最多256条**字面相对组件前缀**，不是Git glob，`*`/`**`等非法；管理层未来须显式编译其已有策略语法。组件比较使用NT `RtlEqualUnicodeString(IgnoreCase=1)`，不以Python/JS locale折叠猜测NT大小写规则。枚举父目录名称后，在 `_relative` 打开子对象**之前**按完整组件边界跳过匹配项；不打开/stat/递归被排除的私有目录/文件/junction，类似`Private-other`不被`private`误排除。父目录名称必须先读取才能排除其子项；原生项数限额保守计入这些名称，可能提前拒绝，不静默截断。
+- 内容请求先在同一已核对根上完成策略约束的原生walk，全部paths必须精确命中本次manifest的普通文件，然后才读取任何内容。大小写别名、未出现在manifest的8.3短名、被排除路径、目录或缺失项一律 `path_not_in_manifest`；不按alias另行尝试。每次读取在内容前还核对叶文件身份，内容前后原有句柄一致性检查不变；读后长度与walk记录不符也拒绝。底层 `Root.read` 仍是受信原语，不自身接收完整排除policy，**不得绕过此manifest门控直接暴露给不受信请求或作为collector捷径**。
+- 响应为一个JSON头加换行，随后按files顺序连接精确长度二进制body（无base64、无额外分隔符），不把内容当JSON/文本重新编码。身份（U64卷序列、128位小写hex文件ID、I64创建时间）、所有I64大小/时间均为规范字符串。宿主校验键集/类型/范围、根pin、目录父项/深度、路径唯一与Unicode标量排序、文件与manifest的路径/身份/长度、body长度与SHA-256以及无尾随字节；只将≤64MiB的body长度转换为Number，原始身份/枚举大小不转浮点数。低级响应不携带complete/strict/可运行等资格。
+- 固定上限：请求1MiB、最多2048条互异内容路径，枚举100000项/64层，单文件64MiB、累计body128MiB、JSON头32MiB；宿主进程stdout限160MiB+1字节、超时10分钟。原生端在剩余body额度下读取，不预读超额文件；超头限/任一读取失败时丢弃整个成功响应及所有已读body，仅返回闭集固定原因，不输出部分成功。宿主要求exit=0且stderr为空，否则不透传或保存异常正文。损坏/截断管道也只能失败，不提取部分文件。超时/退出/异常测试中不保留秘密哨兵。
+
+诚实性与后续义务：本协议只实施**传入的字面排除策略**，不自动提供秘密扫描、ignored/Git分类、私有目录发现、采集库排除或CAS封存；fixture空排除列表不授权真实采集。管理接线必须从持久policy编译强制排除，保持逐worktree独立授权与普通save不重新pin；树外Git/session/附件仍独立授权。本次walk再read仍非全树一致快照：同尺寸内容可在两个阶段之间变化，已经释放的子树可变化，身份复用/元数据ABA残余仍在；宿主字段校验不证明输入现场全树一致。后续collector双扫/不完整状态、CAS与恢复、容器路径映射和真实UI证据尚未补齐，strict及全部AC仍pending。
+
+作者验证：Windows10 build19045/x64、Python3.13.5、Node24.13.1，自建临时NTFS树；原生由14增至18项，四项在旧码缺接口/协议时先红。覆盖原生跨进程pin→walk/二进制与空文件读取→替根拒绝、混合大小写/嵌套前缀在打开前排除（含真实junction）、别名/manifest门控、全批拒绝无部分body、重复键/UTF8/字段与输入限额、叶身份拒绝及walk后长度变化；另补`a.b`与`a/z`交错命名的全局排序断言。Node九项验证源嵌入一致、完整字段/64位边界/二进制帧/hash/父项/排序/拒绝闭集，并真实执行内嵌副本传输；加原生wrapper共十项、零跳过。累计body/头/文件限额算术使用受信进程内常量或测试VM缩小限额，**不是实写128MiB或真实耗尽磁盘验证**；过程超时/坏stderr/exit与源码错误用VM替身，不冒充真实挂死内核/解释器终止。所有测试故障接缝均不进入协议。
+
+私有副本21个非等价单点变异全红：12个原生点（排除提前prune、NT大小写、根pin、叶pin、重复键、请求限额、身份schema、canonical manifest、body额度、头限额、walk/read长度、全局排序），9个Node点（枚举size字符串、卷约束、响应根pin、文件身份、body额度、文件hash、响应闭集、stderr拒绝、进程error拒绝）；各恢复逐字节一致后原生18/18、Node9/9，副本清理。零真实项目采集/模型Key/供应商/Docker/UI；历史6美元未结算预留非账单口径不变，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
