@@ -954,6 +954,21 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 本段无真实项目采集/Key/供应商/真实Docker/UI/生产操作；历史6美元未结算预留非账单、全部AC pending及不合并发布不变。
 
+### 5.41 Windows 分类读取异步链与共享期限（仍非 turn collector）
+
+新增内部 `readWindowsGitFileCandidateAsync`，与 §5.40 同步入口共用一个生成器状态机，分类/选择/复验/秘密扫描及 blob 字节规则不分叉。异步入口**不重试、不回退同步调用**；旧同步入口保留兼容，其3×25秒上限不变，不能把它当作新的异步路径。没有新增管理/API/turn/开启接线。
+
+- 异步链在 scope 编译之前固定 `performance.now()+25000`，三个 helper 始终接收同一个绝对单调期限；scope 后、每个响应消费前、每次状态机推进后（含同步分类及最终安全 blob 复制）检查期限。超时只返回 `git_capture_timeout`，没有部分 files/blobs，迟到响应不再做分类/秘密扫描。**同步文件系统调用、编码、hash 与解析不能被定时器抢占**：这是观察到逾期就拒绝的期限，不是保证25秒内响应的 CPU/系统调用硬中止。
+- 新内部 `invokeWindowsGitHelper` 只接受 `gitMetadata/selectedSnapshot`；期限必须有限、在未来且不超过当前25秒。执行前仍验证已安装 helper 大小≤1MiB与完整 SHA，不安装/re-pin。每个进程本模块最多2个此类活跃 helper（独立于 metadata estimate 的名额，并非跨服务全局 semaphore）；单次输出仍≤32MiB头+128MiB body+换行，经原闭集 wire 解析及完整性校验，校验后再查期限。
+- 使用异步 spawn、`python -I -B`、stdin 请求及管道；stderr/非零退出/进程错误/超输出/期限拒绝，不保存正文。按 Node 子句柄 SIGKILL，丢弃累计输出，**等 close 才释放名额和返回**。kill 返回 false/抛错保留固定 cleanup_failed；若操作系统始终不能关闭子进程，等待及名额会保持，不能宣称可靠的25秒硬清理或提供 taskkill/宿主执行回退。此 helper 不产生子孙，不是通用 Windows 进程树隔离。
+- NT Python 代码及 Linux 生成源均未更改；仍 `bounded_local_git_subset_v1`，原 pin、默认排除/保护根、Git 缺/未知/外置引用阻断、普通文件秘密先于计划/独立 backing、complete/strictEvalEligible/captureAvailable 恒 false 等不变。异步成功额外列出 `async_git_chain_25s_observed_deadline`。Git 全局配置/外置元数据、session/实际 invocation、配额引用事务/删除历史/容器映射仍未接齐，不构成真实 worktree/执行前采集或 AC 通过。
+
+作者验证（Windows10 build19045/x64、Python3.13.5、Node24.13.1）：新增异步 API 的测试在旧实现缺接口先红；原生24/24，新增嵌套 `sub/.git`/顶层 `.GIT` 各文件/目录负例，固定 `git_metadata_unsupported` 且生产 catch 外统计 Root.read 为0，收编 E101 P3。11套 Node136=106通过/30跳过，包含自建临时 NTFS Git 树 sync/async 文件、mode、blob 字节一致及秘密剔除；实际 sleeper 子进程期间隔离 `127.0.0.1:0` HTTP 健康请求先完成，1500ms测试期限后收到真实 close 才返回。sleeper 仅测试 VM 指定的 Node 子进程及缩短期限，不冒充 Python 真实挂死/生产UI证据。
+
+虚拟时钟/子进程测试覆盖共享期限、scope/分类/最终复制耗时、迟到响应不消费、parse 后逾期、timer 未执行的迟到成功、timeout锁存、限额/2并发及等待close、源码同名篡改/1MiB界、spawn/kill异常、失败停止与无部分结果。私有副本10个非等价单点变异全部断言红（逐阶段重开25秒、链前/后期限、op闭集、25秒上界、并发、kill、输出上界、parse后期限、E101嵌套Git守卫）；逐字节恢复后基线复绿并清理。初始筛选下 kill 变异出现运行超时，未确证挂起根因、不计断言红；改成显式正向筛选+skip并补 synthetic 清理后完整重跑10红，原始仓库未变异。最初 Node wrapper 仍断言23个原生测试而失败，更新为24后完整重跑。
+
+`test:fast`2056通过/43跳过（含check/build）、smoke101、双typecheck/diff-check通过。WSL Debian Node22.22，私有63文件逐字节核验，九套94=76通过/18平台或挂载权限跳过，副本清理；初始 WSL 命令转义/路径转换失败没有执行测试，修成独立脚本与禁MSYS转换后全量通过，仅清掉本轮自有空目录。无真实项目采集/Key/供应商/真实Docker/浏览器/生产操作；历史6美元未结算预留非账单、全部AC pending、不合并发布不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

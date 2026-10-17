@@ -109,6 +109,35 @@ class WindowsRead(unittest.TestCase):
         self.assertNotIn('unauthorized', opened)
         self.assertNotIn('sub/sample.bin', reads)
 
+    def test_git_metadata_rejects_nested_and_case_git_before_any_content_read(self):
+        # E101 P3: real guard reachable before serve's first content read.
+        # Count outside production catch: an assertion thrown inside Root.read
+        # could otherwise be swallowed as helper_failed and fake this evidence.
+        import shutil
+        for relative in ['sub/.git', '.GIT']:
+            for kind in ['file', 'directory']:
+                target = self.root / relative
+                if kind == 'directory':
+                    target.mkdir()
+                    (target / 'config').write_bytes(b'PRIVATE_SENTINEL')
+                else:
+                    target.write_bytes(b'gitdir: OUTSIDE_SENTINEL')
+                reads = []
+                original = w.Root.read
+                def observe(root, name, *args, **kwargs):
+                    reads.append(name)
+                    return original(root, name, *args, **kwargs)
+                with patch.object(w.Root, 'read', observe):
+                    out = io.BytesIO()
+                    w.serve(io.BytesIO(self.wire_request({**self.snapshot_request(), 'op': 'gitMetadata'})), out)
+                self.assertEqual(json.loads(out.getvalue()),
+                                 {'version': 1, 'ok': False, 'code': 'git_metadata_unsupported'})
+                self.assertEqual(reads, [], 'nested/case Git fails before all metadata/content reads')
+                if kind == 'directory':
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+
     def test_selected_snapshot_preflights_all_paths_and_never_reads_unselected_ignored_content(self):
         (self.root / 'ignored').write_bytes(b'PRIVATE_SENTINEL')
         request = {**self.snapshot_request(), 'op': 'selectedSnapshot', 'paths': ['sub/sample.bin']}

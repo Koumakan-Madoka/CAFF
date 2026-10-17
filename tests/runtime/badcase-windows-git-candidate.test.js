@@ -6,7 +6,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
-const { readWindowsGitFileCandidate } = require('../../build/server/domain/runtime/badcase-capture/windows-git-candidate');
+const { readWindowsGitFileCandidate, readWindowsGitFileCandidateAsync } = require('../../build/server/domain/runtime/badcase-capture/windows-git-candidate');
 const { encodeWindowsHelperRequest: encode, parseWindowsHelperResponse: parse } = require('../../build/server/domain/runtime/badcase-capture/windows-helper');
 const native = { skip: process.platform !== 'win32' ? 'real Windows NTFS required' : false };
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -36,12 +36,13 @@ test('selected snapshot and git metadata have independent closed request/respons
   assert.equal(parse(wire(bad, []), meta).ok, false);
 });
 
-function isolated(scope, helper) {
+function isolated(scope, helper, clock = require('node:perf_hooks').performance) {
   const filename = path.join(__dirname, '../../build/server/domain/runtime/badcase-capture/windows-git-candidate.js');
   const local = require('node:module').createRequire(filename), exports = {};
   require('node:vm').runInNewContext(fs.readFileSync(filename, 'utf8'), { exports, module: { exports }, Buffer, Map, Set,
     require: name => name === './windows-estimate' ? { prepareWindowsMetadataScope: scope }
-      : name === './windows-helper' ? { invokeWindowsHelper: helper, encodeWindowsHelperRequest: encode } : local(name) }, { filename });
+      : name === './windows-helper' ? { invokeWindowsHelper: helper, invokeWindowsGitHelper: helper, encodeWindowsHelperRequest: encode }
+        : name === 'node:perf_hooks' ? { performance: clock } : local(name) }, { filename });
   return exports;
 }
 function gitIndex(names) {
@@ -150,7 +151,220 @@ test('classified selection precedes reads, preserves tracked mode, rescans metad
   assert.equal(mismatch.readWindowsGitFileCandidate({ policy: { includedIgnoredPatterns: [] } }).reason, 'git_metadata_changed');
 });
 
-test('native local Git subset selects dirty/tracked/untracked/explicit ignored, blocks external Git metadata', native, t => {
+test('async Git candidate shares one 25s deadline across classification, selection and revalidation; no sync fallback', async () => {
+  let time = 50, calls = 0;
+  const first = metadata(), deadlines = [], ops = [];
+  const api = isolated(scope, async (_, __, req, deadline) => {
+    calls++; deadlines.push(deadline); ops.push(req.op);
+    time += 100;
+    return req.op === 'gitMetadata' ? first : { ok: true, entries: first.entries.filter(e => e.path !== '.git' && !e.path.startsWith('.git/')),
+      files: req.paths.map(p => ({ path: p, size: '1', sha256: hash('x'), content: Buffer.from('x') })) };
+  }, { now: () => time });
+  const value = await api.readWindowsGitFileCandidateAsync({ policy: { includedIgnoredPatterns: [] } });
+  assert.equal(value.ok, true, value.reason);
+  assert.deepEqual(ops, ['gitMetadata', 'selectedSnapshot', 'gitMetadata']);
+  assert.deepEqual(deadlines, [25050, 25050, 25050]);
+  assert.equal(value.files['tracked.log'].mode, 0o100755);
+  for (const key of ['complete', 'strictEvalEligible', 'captureAvailable']) assert.equal(value[key], false);
+  assert.ok(value.limitations.includes('async_git_chain_25s_observed_deadline'));
+  assert.equal(calls, 3);
+  // Every terminal failure stops the chain and exposes neither files nor blobs.
+  for (const failAt of [1, 2, 3]) {
+    let n = 0;
+    const refused = isolated(scope, async (_, __, req) => {
+      if (++n === failAt) return { ok: false, reason: 'snapshot_changed' };
+      return req.op === 'gitMetadata' ? first : { ok: true, entries: first.entries.filter(e => !e.path.startsWith('.git/') && e.path !== '.git'), files: [] };
+    }, { now: () => 0 });
+    const result = await refused.readWindowsGitFileCandidateAsync({ policy: { includedIgnoredPatterns: [] } });
+    assert.equal(result.reason, 'snapshot_changed'); assert.equal(n, failAt);
+    assert.equal(Object.hasOwn(result, 'files'), false); assert.equal(Object.hasOwn(result, 'blobs'), false);
+  }
+});
+
+test('async Git candidate checks elapsed scope/parsing time and late helper success without extending budget', async () => {
+  const first = metadata();
+  for (const expiresAt of ['scope', 1, 2, 3, 'blobs']) {
+    let time = 0, calls = 0;
+    const api = isolated(() => { if (expiresAt === 'scope') time = 25000; return scope(); }, async (_, __, req) => {
+      if (++calls === expiresAt) time = 25000;
+      const files = req.op === 'gitMetadata' ? first.files : [{ path: 'tracked.log', size: '1', sha256: hash('x'),
+        get content() { if (expiresAt === 'blobs') time = 25000; return Buffer.from('x'); } }];
+      return { ...first, entries: req.op === 'gitMetadata' ? first.entries : first.entries.filter(e => !e.path.startsWith('.git/') && e.path !== '.git'), files };
+    }, { now: () => time });
+    const result = await api.readWindowsGitFileCandidateAsync({ policy: { includedIgnoredPatterns: [] } });
+    assert.equal(result.reason, 'git_capture_timeout', String(expiresAt));
+    assert.equal(calls, expiresAt === 'scope' ? 0 : expiresAt === 'blobs' ? 3 : expiresAt);
+    assert.equal(Object.hasOwn(result, 'files'), false); assert.equal(Object.hasOwn(result, 'blobs'), false);
+  }
+  let lateTime = 0, lateReads = 0;
+  const lateMetadata = metadata();
+  const lateConfig = lateMetadata.files.find(f => f.path === '.git/config');
+  Object.defineProperty(lateConfig, 'content', { get() { lateReads++; return Buffer.from('[core]\nignorecase = false\n'); } });
+  const late = isolated(scope, async () => { lateTime = 25000; return lateMetadata; }, { now: () => lateTime });
+  assert.equal((await late.readWindowsGitFileCandidateAsync({ policy: { includedIgnoredPatterns: [] } })).reason, 'git_capture_timeout');
+  assert.equal(lateReads, 0, 'a late response is discarded before classification/content scanning');
+  let parseTime = 0, parseCalls = 0;
+  const slowMetadata = metadata();
+  const config = slowMetadata.files.find(f => f.path === '.git/config');
+  Object.defineProperty(config, 'content', { get() { parseTime = 25000; return Buffer.from('[core]\nignorecase = false\n'); } });
+  const parsing = isolated(scope, async () => { parseCalls++; return slowMetadata; }, { now: () => parseTime });
+  assert.equal((await parsing.readWindowsGitFileCandidateAsync({ policy: { includedIgnoredPatterns: [] } })).reason, 'git_capture_timeout');
+  assert.equal(parseCalls, 1, 'expired synchronous classification cannot start selection');
+  let calls = 0;
+  const bad = isolated(() => ({ ok: false, reason: 'unpinned' }), async () => { calls++; });
+  assert.equal((await bad.readWindowsGitFileCandidateAsync({})).reason, 'unpinned'); assert.equal(calls, 0);
+  const unsupported = isolated(scope, async () => { calls++; return metadata({ files: [] }); });
+  assert.equal((await unsupported.readWindowsGitFileCandidateAsync({ policy: { includedIgnoredPatterns: [] } })).reason, 'git_metadata_missing');
+  assert.equal(calls, 1);
+});
+
+function transport({ behavior, clock, timers, spawnOverride, replace = s => s } = {}) {
+  const file = path.join(__dirname, '../../build/server/domain/runtime/badcase-capture/windows-helper.js');
+  const local = require('node:module').createRequire(file), exports = {}, children = [];
+  const { EventEmitter } = require('node:events'), { PassThrough } = require('node:stream');
+  require('node:vm').runInNewContext(replace(fs.readFileSync(file, 'utf8')), { exports, module: { exports }, Buffer,
+    process: { platform: 'win32' }, setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout,
+    require: name => name === 'node:child_process' ? { spawn(python, args, options) {
+      if (spawnOverride) { const c = spawnOverride(python, args, options); children.push(c); return c; }
+      const c = new EventEmitter(); c.stdin = new PassThrough(); c.stdout = new PassThrough(); c.stderr = new PassThrough(); c.kills = 0;
+      c.kill = signal => { assert.equal(signal, 'SIGKILL'); c.kills++; return true; };
+      c.stdin.on('finish', () => behavior(c, { python, args, options })); children.push(c); return c;
+    } } : name === 'node:perf_hooks' && clock ? { performance: clock } : local(name),
+  }, { filename: file });
+  return { api: exports, children };
+}
+
+function helperFile(t) {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-wingit-async-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const file = path.join(base, 'helper.py');
+  fs.writeFileSync(file, require('../../build/server/domain/runtime/badcase-capture/windows-helper-source').WINDOWS_HELPER_SOURCE);
+  return file;
+}
+const empty = () => wire([], []);
+
+test('async Git transport closed ops, bound output, integrity before spawn and admission held until close', async t => {
+  const file = helperFile(t), req = { ...baseRequest, op: 'gitMetadata' };
+  let behavior = c => { c.stdout.emit('data', empty()); c.emit('close', 0); };
+  const { api, children } = transport({ behavior: (...args) => behavior(...args), clock: { now: () => 0 },
+    replace: s => s.replace('headerBytes: 32 * 1024 * 1024', 'headerBytes: 512').replace('bodyBytes: 128 * 1024 * 1024', 'bodyBytes: 8') });
+  t.after(() => { for (const c of children) c.emit('close', 1); });
+  const run = (request = req, deadline = 25000) => api.invokeWindowsGitHelper('python', file, request, deadline);
+  for (const op of ['identity', 'capture', 'estimate', 'snapshot']) assert.equal((await run({ ...baseRequest, op })).reason, 'request_invalid');
+  for (const deadline of [0, -1, 25001, Infinity, NaN, '25000']) assert.equal((await run(req, deadline)).reason, 'git_capture_timeout');
+  assert.equal(children.length, 0);
+  const original = fs.readFileSync(file);
+  for (const bytes of [Buffer.from('# modified'), Buffer.alloc(1024 * 1024 + 1)]) {
+    fs.writeFileSync(file, bytes);
+    assert.equal((await run()).reason, 'helper_integrity_failed');
+  }
+  assert.equal(children.length, 0); fs.writeFileSync(file, original);
+  assert.equal((await run()).ok, true);
+  for (const [act, why] of [
+    [c => { c.stderr.emit('data', Buffer.from('PRIVATE_SENTINEL')); c.emit('close', 0); }, 'helper_process_failed'],
+    [c => { c.stdout.emit('data', Buffer.alloc(522)); c.emit('close', 0); }, 'git_capture_output_limit'],
+    [c => { c.emit('error', Error('PRIVATE_SENTINEL')); c.emit('close', 0); }, 'helper_process_failed'],
+    [c => c.emit('close', 1), 'helper_process_failed'],
+    [c => { c.kill = () => false; c.stderr.emit('data', Buffer.from('PRIVATE_SENTINEL')); c.emit('close', 0); }, 'git_capture_cleanup_failed'],
+    [c => { c.kill = () => { throw Error('PRIVATE_SENTINEL'); }; c.stderr.emit('data', Buffer.from('x')); c.emit('close', 0); }, 'git_capture_cleanup_failed'],
+    [c => { c.stdout.emit('data', Buffer.from('invalid')); c.emit('close', 0); }, 'helper_output_invalid'],
+  ]) {
+    behavior = act; const result = await run(); assert.equal(result.reason, why);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SENTINEL/);
+  }
+  let pendingCount = 0;
+  behavior = c => { if (++pendingCount > 2) { c.stdout.emit('data', empty()); c.emit('close', 0); } };
+  const a = run(), b = run(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await run()).reason, 'git_capture_busy');
+  const [one, two] = children.slice(-2);
+  one.stderr.emit('data', Buffer.from('PRIVATE_SENTINEL'));
+  assert.equal(one.kills, 1);
+  assert.equal((await run()).reason, 'git_capture_busy', 'kill is not close; permit must remain held');
+  one.emit('close', 0); two.stdout.emit('data', empty()); two.emit('close', 0);
+  assert.equal((await a).reason, 'helper_process_failed'); assert.equal((await b).ok, true);
+  behavior = (c, info) => {
+    assert.equal(info.python, 'python'); assert.deepEqual([...info.args], ['-I', '-B', file]);
+    assert.deepEqual([...info.options.stdio], ['pipe', 'pipe', 'pipe']);
+    c.stdout.emit('data', empty()); c.emit('close', 0);
+  };
+  assert.equal((await run()).ok, true);
+});
+
+test('async Git transport timer uses remaining shared deadline and late output cannot become success', async t => {
+  const file = helperFile(t), req = { ...baseRequest, op: 'selectedSnapshot', paths: [] };
+  for (const mode of ['timely', 'late', 'timer']) {
+    let time = 20000, callback, clears = 0;
+    const { api, children } = transport({ clock: { now: () => time },
+      timers: { setTimeout(fn, ms) { assert.equal(ms, 5000); callback = fn; return 'owned'; },
+        clearTimeout(id) { assert.equal(id, 'owned'); clears++; } },
+      behavior(c) {
+        if (mode === 'timer') callback();
+        time = mode === 'late' ? 25000 : 20001;
+        c.stdout.emit('data', empty()); c.emit('close', 0);
+      } });
+    const result = await api.invokeWindowsGitHelper('python', file, req, 25000);
+    assert.equal(result.ok, mode === 'timely');
+    if (mode !== 'timely') assert.equal(result.reason, 'git_capture_timeout');
+    assert.equal(clears, 1); assert.equal(children[0].kills, mode === 'timer' ? 1 : 0);
+  }
+});
+
+test('async Git transport refuses expiry during integrity check and spawn throw without leaking capacity', async t => {
+  const file = helperFile(t), req = { ...baseRequest, op: 'gitMetadata' };
+  const ticks = [0, 25000];
+  const expired = transport({ clock: { now: () => ticks.shift() ?? 25000 }, behavior() {} });
+  assert.equal((await expired.api.invokeWindowsGitHelper('python', file, req, 25000)).reason, 'git_capture_timeout');
+  assert.equal(expired.children.length, 0);
+  let throws = true, spawns = 0;
+  const instance = transport({ clock: { now: () => 0 }, spawnOverride() {
+    spawns++;
+    if (throws) throw Error('PRIVATE_SENTINEL');
+    const { EventEmitter } = require('node:events'), { PassThrough } = require('node:stream');
+    const c = new EventEmitter(); c.stdin = new PassThrough(); c.stdout = new PassThrough(); c.stderr = new PassThrough();
+    c.stdin.on('finish', () => { c.stdout.emit('data', empty()); c.emit('close', 0); }); return c;
+  } });
+  for (let n = 0; n < 3; n++) {
+    const result = await instance.api.invokeWindowsGitHelper('python', file, req, 25000);
+    assert.equal(result.reason, 'helper_process_failed'); assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SENTINEL/);
+  }
+  throws = false;
+  assert.equal((await instance.api.invokeWindowsGitHelper('python', file, req, 25000)).ok, true); assert.equal(spawns, 4);
+});
+
+test('async Git transport rejects success whose wire validation consumes remaining budget', async t => {
+  const file = helperFile(t), ticks = [0, 0, 0, 24999, 25000];
+  const { api } = transport({ clock: { now: () => ticks.shift() ?? 25000 },
+    timers: { setTimeout() { return 1; }, clearTimeout() {} },
+    behavior(c) { c.stdout.emit('data', empty()); c.emit('close', 0); } });
+  const result = await api.invokeWindowsGitHelper('python', file, { ...baseRequest, op: 'gitMetadata' }, 25000);
+  assert.equal(result.reason, 'git_capture_timeout');
+});
+
+test('async Git transport real sleeper does not block loop, terminates and waits for actual close', native, async t => {
+  const file = helperFile(t), http = require('node:http');
+  const server = http.createServer((_, response) => response.end('isolated-ok'));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  let closed = false, child;
+  const { api } = transport({ spawnOverride() {
+    // Test-only chosen child/short deadline. This proves transport termination,
+    // not that the audited Python helper really hung or a process-tree sandbox.
+    child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'],
+      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    child.on('close', () => { closed = true; });
+    return child;
+  } });
+  t.after(() => { if (child && !closed) child.kill('SIGKILL'); });
+  const pending = api.invokeWindowsGitHelper('python', file, { ...baseRequest, op: 'gitMetadata' },
+    require('node:perf_hooks').performance.now() + 1500);
+  const healthy = await new Promise((resolve, reject) => http.get(`http://127.0.0.1:${server.address().port}`, response => {
+    let body = ''; response.on('data', b => { body += b; }); response.on('end', () => resolve(body));
+  }).on('error', reject));
+  assert.equal(healthy, 'isolated-ok'); assert.equal(closed, false, 'health completes while child is still alive');
+  assert.equal((await pending).reason, 'git_capture_timeout'); assert.equal(closed, true, 'not returned before actual child close');
+});
+
+test('native local Git subset selects dirty/tracked/untracked/explicit ignored, blocks external Git metadata', native, async t => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-wingit-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const root = path.join(base, 'worktree'), captureRoot = path.join(base, 'storage'); fs.mkdirSync(root);
@@ -163,6 +377,7 @@ test('native local Git subset selects dirty/tracked/untracked/explicit ignored, 
   fs.writeFileSync(path.join(root, 'ignored.log'), 'IGNORED_NOT_AUTHORIZED');
   fs.writeFileSync(path.join(root, 'included.log'), 'included');
   fs.writeFileSync(path.join(root, 'untracked'), 'new');
+  fs.writeFileSync(path.join(root, 'secret-sentinel'), 'sk-SENTINELabcdefghijk');
   fs.mkdirSync(path.join(root, '.git', 'info'), { recursive: true });
   fs.writeFileSync(path.join(root, '.git', 'info', 'exclude'), '*.tmp\n');
   fs.writeFileSync(path.join(root, 'private.tmp'), 'info-excluded');
@@ -176,6 +391,11 @@ test('native local Git subset selects dirty/tracked/untracked/explicit ignored, 
   service.authorizeProject('p');
   const options = () => ({ policy: service.loadPolicy('p'), targetDir: root, captureRoot });
   const value = readWindowsGitFileCandidate(options()); assert.equal(value.ok, true, value.reason);
+  const asyncValue = await readWindowsGitFileCandidateAsync(options()); assert.equal(asyncValue.ok, true, asyncValue.reason);
+  assert.deepEqual(asyncValue.files, value.files); assert.deepEqual(asyncValue.blobs, value.blobs);
+  assert.ok(asyncValue.limitations.includes('async_git_chain_25s_observed_deadline'));
+  assert.equal(asyncValue.files['secret-sentinel'].secretExcluded, true);
+  assert.equal(asyncValue.blobs.has(hash('sk-SENTINELabcdefghijk')), false);
   const oracle = git('ls-files', '-c', '-o', '--exclude-standard', '-z').split('\0').filter(Boolean).concat('included.log').sort();
   assert.deepEqual(Object.keys(value.files).sort(), oracle);
   assert.equal(value.files['tracked.log'].hash, hash('dirty')); assert.equal(value.blobs.has(hash('IGNORED_NOT_AUTHORIZED')), false);

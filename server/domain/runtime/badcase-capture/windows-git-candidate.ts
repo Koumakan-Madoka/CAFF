@@ -4,7 +4,8 @@
 // Requires visible canonical .git directory/config/index and verified local
 // grammar. Missing/unsupported classification blocks ordinary content reads.
 import { prepareWindowsMetadataScope } from './windows-estimate';
-import { invokeWindowsHelper, encodeWindowsHelperRequest } from './windows-helper';
+import { invokeWindowsHelper, invokeWindowsGitHelper, encodeWindowsHelperRequest } from './windows-helper';
+const { performance } = require('node:perf_hooks');
 import { parseGitIndex, parseGitConfigSubset, parseGitignoreRules, classifyWalkEntries } from './git-classify';
 import { matchesRelativePattern } from './capture-policy';
 import { containsSecretSentinel } from './secrets';
@@ -60,8 +61,9 @@ function classify(metadata: any, included: string[]): any {
   return { ok: true, paths, modes };
 }
 
-export function readWindowsGitFileCandidate(options: any): any {
-  try {
+// One shared state machine: async may not relax classification or bypass a
+// failed phase by retrying through the legacy synchronous transport.
+function* candidateSteps(options: any): Generator<any, any, any> {
     const plan = prepareWindowsMetadataScope(options);
     if (!plan.ok) return fail(plan.reason);
     const included = options.policy?.includedIgnoredPatterns;
@@ -69,18 +71,18 @@ export function readWindowsGitFileCandidate(options: any): any {
         || !encodeWindowsHelperRequest({ ...plan.request, op: 'selectedSnapshot',
           paths: [p.replace(/\\/g, '/').replace(/\/(\*\*|\*)$/, '')] }))) return fail('git_policy_invalid');
     const request = { ...plan.request, op: 'gitMetadata' };
-    const before = invokeWindowsHelper('python', plan.helperPath, request);
+    const before = yield { helperPath: plan.helperPath, request };
     if (!before.ok) return fail(before.reason);
     const selected = classify(before, included);
     if (!selected.ok) return selected;
     const selection = { ...plan.request, op: 'selectedSnapshot', paths: selected.paths };
     if (!encodeWindowsHelperRequest(selection)) return fail('git_selection_limit');
-    const snapshot = invokeWindowsHelper('python', plan.helperPath, selection);
+    const snapshot = yield { helperPath: plan.helperPath, request: selection };
     if (!snapshot.ok) return fail(snapshot.reason);
     // Compare full non-Git manifests, not just selected files. No CAS plans
     // survive an add/delete/identity/metadata change across classification.
     if (tree(before) !== tree(snapshot)) return fail('git_metadata_changed');
-    const after = invokeWindowsHelper('python', plan.helperPath, request);
+    const after = yield { helperPath: plan.helperPath, request };
     if (!after.ok) return fail(after.reason);
     if (signature(before) !== signature(after)) return fail('git_metadata_changed');
     const files: any = Object.create(null), blobs = new Map<string, any>();
@@ -101,5 +103,38 @@ export function readWindowsGitFileCandidate(options: any): any {
         'external_gitdir_and_unverified_config_blocked', 'excluded_git_metadata_not_overridden',
         'untracked_windows_mode_synthesized_0644', 'deletion_history_not_collected', 'empty_directories_not_restored',
         'session_and_invocation_not_collected', 'windows_turn_collector_not_connected'] };
+}
+
+// Legacy internal synchronous entry retains its per-child 25s limits. Not used
+// as a fallback by async; neither entry is connected to turn/API/enable paths.
+export function readWindowsGitFileCandidate(options: any): any {
+  try {
+    const steps = candidateSteps(options);
+    let state = steps.next();
+    while (!state.done) {
+      state = steps.next(invokeWindowsHelper('python', state.value.helperPath, state.value.request));
+    }
+    return state.value;
+  } catch { return fail('windows_git_candidate_unavailable'); }
+}
+
+export async function readWindowsGitFileCandidateAsync(options: any): Promise<any> {
+  // Observed monotonic deadline includes scope compilation, wire validation,
+  // classification and owned-blob construction, not three fresh child budgets.
+  // Synchronous fs/parsing cannot be preempted; late completion is rejected.
+  const deadline = performance.now() + 25000;
+  try {
+    const steps = candidateSteps(options);
+    let state = steps.next();
+    while (true) {
+      if (performance.now() >= deadline) return fail('git_capture_timeout');
+      if (state.done) {
+        if (state.value.ok) state.value.limitations.push('async_git_chain_25s_observed_deadline');
+        return state.value;
+      }
+      const result = await invokeWindowsGitHelper('python', state.value.helperPath, state.value.request, deadline);
+      if (performance.now() >= deadline) return fail('git_capture_timeout');
+      state = steps.next(result);
+    }
   } catch { return fail('windows_git_candidate_unavailable'); }
 }

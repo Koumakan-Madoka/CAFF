@@ -176,6 +176,71 @@ export function invokeWindowsHelper(python: string, helperPath: string, request:
   } catch { return { ok: false, reason: 'helper_process_failed' }; }
 }
 
+// Internal classified-content transport; no HTTP/agent/collector wiring.
+// Each phase consumes the SAME caller's monotonic deadline. It cannot grant a
+// new 25s budget or run any other protocol operation. Audited helper has no
+// subprocess descendants; child-handle termination is not a general process
+// tree sandbox. Permits are kept until close, including termination failures.
+let activeGitHelpers = 0;
+export async function invokeWindowsGitHelper(python: string, helperPath: string, request: any, deadline: number): Promise<any> {
+  const fail = (reason: string) => ({ ok: false, reason });
+  if (process.platform !== 'win32') return fail('windows_required');
+  const input = encodeWindowsHelperRequest(request);
+  if (!input || !['gitMetadata', 'selectedSnapshot'].includes(request.op)) return fail('request_invalid');
+  const start = performance.now();
+  if (typeof deadline !== 'number' || !Number.isFinite(deadline) || deadline <= start || deadline - start > 25000) {
+    return fail('git_capture_timeout');
+  }
+  if (activeGitHelpers >= 2) return fail('git_capture_busy');
+  activeGitHelpers++;
+  try {
+    if (fs.statSync(helperPath).size > 1024 * 1024
+        || crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') !== WINDOWS_HELPER_SOURCE_SHA256) {
+      return fail('helper_integrity_failed');
+    }
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) return fail('git_capture_timeout');
+    return await new Promise(resolve => {
+      let child: any;
+      try {
+        child = spawn(python, ['-I', '-B', helperPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      } catch { resolve(fail('helper_process_failed')); return; }
+      let reason = '', bytes = 0;
+      const chunks: any[] = [];
+      const stop = (why: string) => {
+        if (reason) return;
+        reason = why;
+        chunks.length = 0;
+        try { if (!child.kill('SIGKILL')) reason = 'git_capture_cleanup_failed'; }
+        catch { reason = 'git_capture_cleanup_failed'; }
+      };
+      const timer = setTimeout(() => stop('git_capture_timeout'), Math.max(0, deadline - performance.now()));
+      child.on('error', () => stop('helper_process_failed'));
+      child.stdin.on('error', () => { /* close/exit determines outcome; never log */ });
+      child.stdout.on('data', (chunk: any) => {
+        if (reason) return;
+        bytes += chunk.length;
+        if (bytes > WINDOWS_HELPER_LIMITS.headerBytes + WINDOWS_HELPER_LIMITS.bodyBytes + 1) {
+          stop('git_capture_output_limit'); return;
+        }
+        chunks.push(chunk);
+      });
+      child.stderr.on('data', () => stop('helper_process_failed'));
+      child.on('close', (code: any) => {
+        clearTimeout(timer);
+        if (reason) { resolve(fail(reason)); return; }
+        if (performance.now() >= deadline) { resolve(fail('git_capture_timeout')); return; }
+        if (code !== 0) { resolve(fail('helper_process_failed')); return; }
+        const result = parseWindowsHelperResponse(Buffer.concat(chunks), request);
+        chunks.length = 0;
+        resolve(performance.now() >= deadline ? fail('git_capture_timeout') : result);
+      });
+      try { child.stdin.end(input); } catch { stop('request_invalid'); }
+    });
+  } catch { return fail('helper_process_failed'); }
+  finally { activeGitHelpers--; }
+}
+
 // HTTP metadata preview only: one audited Python child, no shell/descendants.
 // Windows termination targets Node's child process handle, not a recycled PID
 // or taskkill /T. Do not reuse this for helpers which can launch descendants.
