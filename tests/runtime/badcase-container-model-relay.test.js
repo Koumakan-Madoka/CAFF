@@ -106,7 +106,8 @@ test('index0 adapter independently gates metadata and emits index-free SDK histo
     const v = structuredClone(raw); delete v.choices[0].message.reasoning_content; delete v.usage.prompt_tokens_details;
     assert.throws(() => assistantMessage(v, old));
   }
-  for (const change of [t => t.extra = 0, t => delete t.id, t => delete t.type, t => delete t.function]) {
+  for (const change of [t => t.extra = 0, t => delete t.id, t => delete t.type, t => delete t.function,
+    t => t.type = 'other', t => t.type = null, t => t.type = 0]) {
     const v = structuredClone(raw); change(v.choices[0].message.tool_calls[0]); assert.throws(() => assistantMessage(v, p));
   }
   const multiple = structuredClone(raw); multiple.choices[0].message.tool_calls.push(multiple.choices[0].message.tool_calls[0]);

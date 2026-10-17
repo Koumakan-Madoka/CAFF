@@ -209,6 +209,77 @@ test('closed HTTPS labels survive protocol and durable ledger without response o
   });
 });
 
+test('composed request, HTTPS, lease and approval deadlines stay independent with sticky accounting', async t => {
+  const cases = [
+    { name: 'request', requestMs: 18000, httpsMs: 24000, leaseMs: 60000, approvalMs: 60000, at: 18000, fire: 0, status: 'timeout' },
+    { name: 'https', requestMs: 24000, httpsMs: 18000, leaseMs: 60000, approvalMs: 60000, at: 18000, fire: 1, status: 'transport_failed' },
+    { name: 'lease', requestMs: 24000, httpsMs: 23000, leaseMs: 9000, approvalMs: 60000, at: 9000, fire: 1, status: 'transport_failed' },
+    { name: 'approval', requestMs: 24000, httpsMs: 23000, leaseMs: 60000, approvalMs: 12000, at: 12000, fire: 0, status: 'timeout' },
+    { name: 'tie-https-first', requestMs: 18000, httpsMs: 18000, leaseMs: 60000, approvalMs: 60000, at: 18000, fire: 1, status: 'timeout' },
+    { name: 'late-success-before-timer', requestMs: 18000, httpsMs: 24000, leaseMs: 60000, approvalMs: 60000, at: 18001, status: 'timeout' },
+    { name: 'in-time-success', requestMs: 18000, httpsMs: 24000, leaseMs: 60000, approvalMs: 60000, at: 17000, status: 'completed' },
+  ];
+  for (const c of cases) await t.test(c.name, async t => {
+    const calls = network(t, { hang: true }), timers = [], cleared = new Set();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-composed-deadline-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const wall = Date.now(); let elapsed = 0;
+    t.mock.method(Date, 'now', () => wall + elapsed);
+    t.mock.method(require('node:perf_hooks').performance, 'now', () => elapsed);
+    t.mock.method(global, 'setTimeout', (fn, delay) => { const timer = { fn, delay }; timers.push(timer); return timer; });
+    t.mock.method(global, 'clearTimeout', timer => { cleared.add(timer); });
+    const s = { provider: 'synthetic', model: 'fixed-model', contextWindowTokens: 1000, maxOutputTokens: 100,
+      temperature: 0, inputMicroUsdPerMillionTokens: 1000000, outputMicroUsdPerMillionTokens: 2000000,
+      maxRequestBytes: 4096, maxResponseBytes: 4096 };
+    const p = chatCompletionsSettings(s), runId = hash(c.name), policy = { approvalId: 'synthetic', planHash: hash('plan'), runId,
+      provider: s.provider, model: s.model, settingsHash: p.settingsHash, expiresAt: wall + c.approvalMs,
+      maxRequests: 2, maxRequestBytes: 4096, maxResponseBytes: 4096, timeoutMs: c.requestMs,
+      perRequestReserveMicroUsd: p.perRequestReserveMicroUsd, runLimitMicroUsd: p.perRequestReserveMicroUsd * 2 };
+    const body = encodeChatCompletionsRequest(s, [{ role: 'user', content: 'PRIVATE-PROMPT' }]);
+    const x = createHttpsExchange({ ...endpoint(), timeoutMs: c.httpsMs }, () => ({ ...lease(), expiresAt: wall + c.leaseMs }));
+    let sender;
+    const pending = dispatchChatCompletions(root, policy, s, async send => {
+      sender = send;
+      if (c.status === 'completed') await send(body);
+      else { await assert.rejects(send(body)); await assert.rejects(send(body), /model_egress_stopped/); }
+    }, x);
+    void pending.catch(() => {}); // a failed fixture assertion must not leave an unobserved rejection
+    // Drain the bounded Promise/microtask setup, not wall time or any network.
+    for (let n = 0; n < 12; n++) await Promise.resolve();
+    assert.equal(timers.length, 2); assert.equal(calls.length, 1); assert.ok(calls[0].body);
+    assert.equal(timers[0].delay, Math.min(c.requestMs, c.approvalMs));
+    assert.equal(timers[1].delay, Math.min(c.httpsMs, c.leaseMs));
+    const reserved = readModelEgress(root, runId);
+    assert.equal(reserved.requests[0].status, 'reserved');
+    elapsed = c.at;
+    const response = Buffer.from(JSON.stringify({ id: 'synthetic', object: 'chat.completion', created: 1, model: s.model,
+      choices: [{ index: 0, message: { role: 'assistant', content: 'PRIVATE-ANSWER' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } }));
+    if (c.fire !== undefined) {
+      timers[c.fire].fn();
+      assert.equal(calls[0].req.destroyed, true, 'deadline must synchronously cancel its own request');
+    } else { calls[0].req.emit('response', calls[0].res); calls[0].res.end(response); }
+    const report = await pending;
+    assert.equal(report.reason, c.status); assert.equal(report.requests[0].status, c.status);
+    assert.equal(report.requests.length, 1); assert.equal(report.committedMicroUsd, p.perRequestReserveMicroUsd);
+    assert.equal(report.unknownCostRequests, c.status === 'completed' ? 0 : 1);
+    assert.equal(report.knownCostMicroUsd, c.status === 'completed' ? 40 : 0);
+    assert.equal(report.requests[0].responseHash, c.status === 'completed' ? hash(response) : null);
+    assert.equal(report.requests[0].failureStage, c.status === 'transport_failed' ? 'https_cancelled' : undefined);
+    assert.equal(report.strictEvalEligible, false); assert.equal(report.executionVerified, false);
+    assert.equal(calls[0].req.destroyed, true); assert.equal(calls[0].res.destroyed, true);
+    assert.ok(timers.every(timer => cleared.has(timer)));
+    assert.deepEqual(readModelEgress(root, runId), report);
+    // Late callbacks/events cannot reopen the claim, release an answer or refund.
+    elapsed += 60000; timers[1].fn(); calls[0].req.emit('response', calls[0].res);
+    await assert.rejects(sender(body), /model_egress_stopped/);
+    assert.equal(timers.length, 2); assert.equal(calls.length, 1);
+    assert.deepEqual(readModelEgress(root, runId), report);
+    const dir = path.join(root, 'model-egress', runId), disk = fs.readdirSync(dir).map(n => fs.readFileSync(path.join(dir, n), 'utf8')).join('');
+    for (const text of ['PRIVATE-', 'synthetic-local-only']) assert.ok(!disk.includes(text));
+  });
+});
+
 test('early deadline timer wakeup rearms without failing or mislabelling an in-flight request', async t => {
  for (const mode of ['abort', 'deadline']) await t.test(mode, async t => {
   const calls = network(t, { hang: true }), timers = [], cleared = [];
