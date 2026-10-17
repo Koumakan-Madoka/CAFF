@@ -351,7 +351,7 @@ class Root:
         visit(self.handle, '', 0)
         return sorted(entries, key=lambda entry: entry['path'])
 
-    def read(self, relative, max_bytes=64 * 1024 * 1024, _after_open=None, expected_identity=None):
+    def read(self, relative, max_bytes=64 * 1024 * 1024, _after_open=None, expected_identity=None, _canonical=False):
         if self.handle is None:
             raise Refused("root_closed")
         if type(max_bytes) is not int or not 0 <= max_bytes <= 64 * 1024 * 1024:
@@ -360,6 +360,12 @@ class Root:
         with contextlib.ExitStack() as stack:
             handle = self.handle
             for i, part in enumerate(parts):
+                # Session inputs are independently authorized exact files, not
+                # whole-tree snapshots. Inspect only each held parent naming
+                # table, never descend into unrelated children. Exact canonical
+                # membership rejects case/8.3 aliases before opening that child.
+                if _canonical and part not in _directory_names(handle, 100000):
+                    raise Refused('path_not_in_manifest')
                 handle = _relative(stack, handle, part, i < len(parts) - 1)
             before, standard = _check(handle, False)
             original_id = identity(handle)
@@ -458,6 +464,8 @@ def _request(stream):
             keys |= {'expected', 'excluded'}
             if op in ('capture', 'selectedSnapshot'):
                 keys.add('paths')
+        elif op == 'sessionInput':
+            keys |= {'expected', 'path'}
         elif op != 'identity':
             raise Refused('request_invalid')
         if set(value) != keys or not isinstance(value['root'], str):
@@ -468,6 +476,11 @@ def _request(stream):
         suffix = match[2].replace('\\', '/')
         if suffix:
             components(suffix)
+        if op == 'sessionInput':
+            if (not _valid_identity(value['expected']) or not isinstance(value['path'], str)
+                    or not value['path'].endswith('.jsonl') or len(value['path'].encode('utf-8')) > 32768
+                    or len(components(value['path'])) > 64):
+                raise Refused('request_invalid')
         if op in ('capture', 'estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot'):
             if not _valid_identity(value['expected']):
                 raise Refused('request_invalid')
@@ -538,7 +551,18 @@ def serve(input_stream, output_stream):
             raise Refused('estimate_scope_rejected')
         with Root(request['root'], request.get('expected')) as root:
             header = {'version': 1, 'ok': True, 'identity': root.identity}
-            if request['op'] in ('snapshot', 'gitMetadata', 'selectedSnapshot'):
+            if request['op'] == 'sessionInput':
+                # No walk, Git discovery, directory expansion or caller hooks.
+                # Two reads bind the returned bytes to one identity/hash; this
+                # is change detection, not an atomic or ABA-proof snapshot.
+                first = root.read(request['path'], FILE_LIMIT, _canonical=True)
+                second = root.read(request['path'], FILE_LIMIT, _canonical=True)
+                if any(first[k] != second[k] for k in ('identity', 'size', 'sha256')):
+                    raise Refused('snapshot_changed')
+                header['file'] = {'path': request['path'], 'size': str(first['size']),
+                                  'sha256': first['sha256'], 'identity': first['identity']}
+                bodies = [first['content']]
+            elif request['op'] in ('snapshot', 'gitMetadata', 'selectedSnapshot'):
                 entries, files, bodies = _snapshot(root, request['excluded'],
                                                   request.get('paths'), request['op'] == 'gitMetadata')
                 header['entries'] = [{**e, 'size': str(e['size'])} for e in entries]

@@ -33,6 +33,97 @@ class WindowsRead(unittest.TestCase):
         self.outside.mkdir()
         (self.outside / 'sample.bin').write_bytes(b'OUTSIDE_SENTINEL')
 
+    def session_request(self, relative='sub/turn.jsonl'):
+        return {**{k: v for k, v in self.snapshot_request().items() if k != 'excluded'},
+                'op': 'sessionInput', 'path': relative}
+
+    def test_session_input_reads_only_exact_file_without_tree_walk(self):
+        data = b'{"type":"session","version":3}\n'
+        (self.root / 'sub' / 'turn.jsonl').write_bytes(data)
+        # Unrelated malformed/reparse subtrees must never be traversed.
+        unrelated = self.root / 'unrelated'
+        subprocess.run(['cmd', '/d', '/c', 'mklink', '/J', str(unrelated), str(self.outside)], check=True, capture_output=True)
+        self.addCleanup(lambda: unrelated.rmdir() if unrelated.exists() else None)
+        request = self.session_request()
+        listed, opened = [], []
+        listing, opening = w._directory_names, w._relative
+        def observe_list(handle, limit):
+            listed.append(handle)
+            return listing(handle, limit)
+        def observe_open(stack, handle, name, directory):
+            opened.append(name)
+            return opening(stack, handle, name, directory)
+        with patch.object(w.Root, 'walk', side_effect=AssertionError('no tree walk')), \
+                patch.object(w, '_directory_names', observe_list), patch.object(w, '_relative', observe_open):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+        header, body = out.getvalue().split(b'\n', 1)
+        value = json.loads(header)
+        self.assertTrue(value['ok'], value)
+        self.assertEqual(set(value), {'version', 'ok', 'identity', 'file'})
+        self.assertEqual(value['file']['path'], 'sub/turn.jsonl')
+        self.assertEqual(value['file']['sha256'], hashlib.sha256(data).hexdigest())
+        self.assertEqual(body, data)
+        self.assertEqual(opened, list(self.root.parts[1:]) + ['sub', 'turn.jsonl'] * 2)
+        self.assertEqual(len(listed), 4, 'only each path ancestor, twice')
+        (self.root / 'sub' / 'empty.jsonl').write_bytes(b'')
+        out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(self.session_request('sub/empty.jsonl'))), out)
+        self.assertTrue(json.loads(out.getvalue().split(b'\n', 1)[0])['ok'])
+        self.assertEqual(out.getvalue().split(b'\n', 1)[1], b'')
+
+    def test_session_input_schema_pin_and_canonical_names_fail_before_reads(self):
+        (self.root / 'sub' / 'turn.jsonl').write_bytes(b'{}\n')
+        request = self.session_request()
+        for delta in [{'path': '../outside.jsonl'}, {'path': 'sub/turn.txt'}, {'path': 'sub//turn.jsonl'},
+                      {'paths': ['sub/turn.jsonl']}, {'excluded': []}, {'_canonical': False}]:
+            with self.subTest(delta=delta), patch.object(w, 'Root') as unopened:
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, **delta})), out)
+                self.assertEqual(json.loads(out.getvalue()), {'version': 1, 'ok': False, 'code': 'request_invalid'})
+            self.assertEqual(unopened.call_count, 0, 'syntax rejection before root open')
+        for relative in ['SUB/turn.jsonl', 'sub/TURN.jsonl', 'sub/missing.jsonl']:
+            with self.subTest(relative=relative), patch.object(w.kernel, 'ReadFile', wraps=w.kernel.ReadFile) as reads:
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(self.session_request(relative))), out)
+                self.assertEqual(json.loads(out.getvalue().split(b'\n', 1)[0]),
+                                 {'version': 1, 'ok': False, 'code': 'path_not_in_manifest'})
+            self.assertEqual(reads.call_count, 0, 'canonical preflight before ReadFile')
+        bad_pin = {**request['expected'], 'fileId': '0' * 32}
+        with patch.object(w, '_relative', wraps=w._relative) as opens:
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'expected': bad_pin})), out)
+            self.assertEqual(json.loads(out.getvalue().split(b'\n', 1)[0]),
+                             {'version': 1, 'ok': False, 'code': 'root_identity_mismatch'})
+        self.assertEqual([call.args[2] for call in opens.call_args_list], list(self.root.parts[1:]),
+                         'only root ancestors opened; no session descendant')
+
+    def test_session_input_junction_drift_and_bounds_never_return_partial_body(self):
+        (self.root / 'sub' / 'turn.jsonl').write_bytes(b'FIRST')
+        linked = self.root / 'linked'
+        subprocess.run(['cmd', '/d', '/c', 'mklink', '/J', str(linked), str(self.outside)], check=True, capture_output=True)
+        self.addCleanup(lambda: linked.rmdir() if linked.exists() else None)
+        (self.outside / 'turn.jsonl').write_bytes(b'OUTSIDE_SENTINEL')
+        out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(self.session_request('linked/turn.jsonl'))), out)
+        self.assertFalse(json.loads(out.getvalue())['ok']); self.assertNotIn(b'OUTSIDE_SENTINEL', out.getvalue())
+        original = w.Root.read
+        for kind in ['bytes', 'identity']:
+            count = 0
+            def changed(root, relative, *args, **kwargs):
+                nonlocal count
+                value = original(root, relative, *args, **kwargs); count += 1
+                if count == 2:
+                    if kind == 'bytes':
+                        value = {**value, 'content': b'OTHER', 'sha256': hashlib.sha256(b'OTHER').hexdigest()}
+                    else: value = {**value, 'identity': {**value['identity'], 'fileId': '0' * 32}}
+                return value
+            with self.subTest(kind=kind), patch.object(w.Root, 'read', changed):
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(self.session_request())), out)
+                header, body = out.getvalue().split(b'\n', 1)
+                self.assertEqual(json.loads(header), {'version': 1, 'ok': False, 'code': 'snapshot_changed'})
+                self.assertEqual(body, b'')
+                self.assertEqual(count, 2)
+        with patch.object(w, 'FILE_LIMIT', 4):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(self.session_request())), out)
+            header, body = out.getvalue().split(b'\n', 1)
+            self.assertEqual(json.loads(header), {'version': 1, 'ok': False, 'code': 'too_large'})
+            self.assertEqual(body, b'')
+
     def test_estimate_protocol_never_reads_and_prunes_before_open(self):
         names = ['.PI', '.Pi-Sandbox', '.SSH', '.aws', '.azure', '.gnupg', '.git',
                  '.env', '.ENV.local', 'auth.json', 'credentials.json']

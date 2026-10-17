@@ -1007,6 +1007,21 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 七套 publication/async-writer/writer-recovery/orphan-gc/checkpoint-expiry/sealing-lifecycle/run-references：Windows121=115通过/6跳过；WSL Debian Node22.22私有37文件逐字节核验同七套121=119通过/2 Windows原生跳过，测试后字节不变、副本清理。14个进程内 preload 非等价变异最终全部断言红（锁、额外计划、新/旧hash、清单秘密、size、strict、policy、冲突、配额边界/末检/缩短峰值、cleanup、末次hash），仓库源码/build未变异、编译SHA不变、干净进程复绿。初轮新计划hash变异被不同长度测试数据的size检查遮蔽，改为同尺寸坏字节后杀死；冲突变异第一次匹配编译标识符的子串导致语法错误，不计红，修正完整标识符后完整重跑14点。最终 fast2113通过/43跳过（含check/build）、smoke101、双typecheck/diff-check通过。零真实项目采集/Key/供应商/真实Docker/浏览器/生产操作；外置Git、session原生读取、实际turn接线、容器映射等仍待完成，历史6美元未结算非账单及全部AC pending不变，不合并发布。
 
+### 5.45 Windows 独立授权的精确 session 文件读取（内部连接段）
+
+新增 `windows-session-input.ts` 的 `readWindowsSessionInput`，**尚无 collector/服务/HTTP/agent/开启接线**。这只补 resume 输入的安全字节读取；不代表 session 格式/历史/附件/配置依赖已经验证、归档或可回放，也不改变 deliveryMode、complete 或严格资格。生产 Windows 门继续关闭，现有 Linux 输入路径不改。
+
+- 仅查当前 `authorizedInputDirs` 仍列出的 `authorizedInputPins`；worktree 授权或孤立 pin 不算独立输入授权。不安装 helper、不新建 pin、不以当前身份替换原 pin。目标为本地盘符绝对路径、根内单个小写 `.jsonl` 后缀文件（最多64层）；无 glob、目录展开、批量 paths 或树外跳转。重叠输入根按列表首次匹配，缺/坏 pin 拒绝，不搜索其他根以绕过失败。
+- 宿主 realpath 仅做元数据名称/保护根拒绝，不替换 literal helper 目标；存储及显式 privateDirs、当前进程 PI_AGENT_SANDBOX_DIR/PI_AGENT_PRIVATE_DIR 的 literal+canonical 路径禁止作为输入。非本地路径或非 ENOENT 的保护根解析错误失败关闭，尚不存在的保护根仍按 literal 禁止；不宣称自动发现所有 agent 私有目录。session 可位于独立授权的普通 agent 会话目录，所以不以整个 agentDir 为私有边界。调用方须提供其他已知私有目录；凭据秘密排除仍是既有哨兵策略，不是万能探测器。
+- 原生新增闭集 `sessionInput:{version,op,root,expected,path}`，语法在根打开前验证；原根身份先于任何 session 子对象。每个相对组件只查询已持有父目录的名称表，精确命中磁盘名后才相对句柄打开，拒大小写/8.3 别名，不走 Root.walk 或打开无关子树。每层名称表最多100000项，可能观察同层其他名称，但不会返回这些名称、打开它们或枚举其子树。真实无关 junction 不妨碍选定文件读取；被选路径的 junction 仍拒。`_canonical` 仅进程内参数，wire 带该字段拒绝。
+- 同一原根句柄两次精确内容读，比较叶身份、长度、hash；每次保留既有同句柄变化检测/不分享 DELETE/重解析拒绝/NTFS 与大小写语义检查。单文件64MiB，任何失败只给固定错误头、零 body；成功响应只含原根身份及一个 file，不含全树 entries。宿主复验闭集、根 pin、同卷叶身份、路径、长度、hash、精确收尾。不是原子快照：跨读 ABA、身份复用/元数据窗口残余不消失，不能升级 strict。
+- `invokeWindowsSessionHelper` 与 Git transport 使用同一个私有受限实现和每模块2活跃子进程名额，但**各自 op 接受集合互斥**；Git 不接受 sessionInput、session 不接受 Git/其他 op。继续固定源码 SHA、`python -I -B`/stdin、输出界限、25秒绝对单调观察期限、按子句柄 kill 并等 close 才归还名额；保留历史 `git_capture_*` 低层固定标签，适配器只给固定 session 原因，无异常正文。共享的是名额与终止，不是全服务全局限额或进程树沙箱。同步 transport 为新 op 同样限25秒，但适配器不调用它，不重试/同步回退。
+- 适配器在 scope、helper 返回后及最终复制后复查同一期限；晚到结果不读 body。秘密命中或非法 UTF-8 不返回字节/hash/身份；成功仅给独立非池化 Buffer 的**原始字节**（UTF-8 解码只验证，不损失 BOM/CRLF），不归档、写 CAS 或解析 session。同步 fs/解码不可抢占，OS 不 close 仍等候占额，不承诺硬25秒/立即取消、不可变执行证明或安全擦除内存；解释器、同 OS 用户及存储仍是 TCB。
+
+作者验证（Windows10 build19045/x64、Python3.13.5、Node24.13.1）：三项原生新测在旧实现均因拒绝未知 op 先红；最终原生27/27。Node新套9/9：闭集/坏 body、根/叶字段、互斥 op/共享名额/kill非close/迟到、独立输入授权/路径与保护根别名/秘密/非法UTF8/非池化 backing/三阶段期限。真实自建 NTFS session 通过管理授权持久原 pin→新 async helper→原字节，替根/junction/秘密拒绝；policy保持disabled，零 CAS；不是合法 resume session 完整性或真实 turn 证据。Windows十二套145=115通过/30跳过；WSL Debian Node22.22私有28文件逐字节核验七套55=38通过/17原生Windows跳过，测试后字节不变，宿主私有源与Linux副本清理。
+
+7原生+11Node非等价变异最终18点全部断言红（canonical、第二读、hash/叶身份、大小、根pin、JSONL限定；独立授权表、pin路径、保护根、秘密、UTF8严格、backing、三期限、wire根pin/hash）；原生私有副本逐字节恢复27/27并清理，Node仅进程内拦截编译模块读取、磁盘SHA不变，干净进程复绿。流程披露：最初 native 观察器把根祖先打开也计作 session 子项，修正为明确祖先清单后通过；真实 Node 测试误用不存在的 usage.blobBytes，改核 bytesByKind.blobs。初轮部分 native 变异返回成功 body 导致测试 JSONDecodeError，只作诊断不算断言击杀，改拆 header/body 对象断言后重跑全7红；Node wire-hash 补丁首轮匹配旧/新两处而拒绝，加入 session 分支上下文后重跑全11红。首次 WSL命令被MSYS路径转换导致未执行，以禁转换完整重跑。最终fast2122通过/43跳过（含check/build）、smoke101、双typecheck/diff-check通过。零真实项目采集/Key/供应商/真实Docker/浏览器/生产；外置Git、共享输入准备/依赖验证、实际turn落盘接线与容器映射仍待完成。历史6美元未结算非账单与全部AC pending不变，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
