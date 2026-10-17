@@ -993,6 +993,20 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 作者测试使用独立临时目录与有界子进程：新 API 初始12例在旧模块缺导出先红；新增原生 Windows 连接例为自建 NTFS Git 子集（测试侧 Git 禁全局配置、ignorecase=false），在异步租约内调用 §5.41 真实 Python 链，显式同步测试 writer 提交 CAS/checkpoint，恢复两次清单相同。文件脏改/untracked 可恢复、秘密不恢复、策略保持 disabled、完整性/严格资格仍 false。该 writer 不是真实执行器采集、不开任何真实项目；配置保存/封存/GC被阻断的探针只验证互斥，不代表这些产品链路已验收。`test:badcase-locks` 纳入 fast，避免扩长 Windows 主命令。最终 Windows10 build19045/x64、Python3.13.5、Node24.13.1：新套15/15，writer-recovery/async-writer/GC/expiry/sealing-lifecycle/run-references六套92=86通过/6跳过；fast2084通过/43跳过（含check/build），smoke101、双typecheck及diff-check通过。WSL Debian Node22.22私有35文件逐字节核验、同六套92=91通过/1 Windows原生跳过，测试后字节不变且副本清理；首次WSL路径被Git Bash转换而未执行，改禁路径转换；第一次Linux副本漏两CLI导致2失败，补齐后最终全套重跑，不计初次通过。10个进程内preload非等价变异（提前释放、跨await放held、不drain、不吊销、吞误用、删live recovery守卫、不释放、删thenable检查、删owner复验、漏function thenable）全部断言红，均无超时/取消/语法或补丁失败；未修改仓库源码/build，编译文件SHA核对不变，最终干净新进程复绿。日志及可复验变异脚本仅在忽略临时目录，不作为新用例现场或实际turn性能证据。
 
+### 5.44 预备检查点的配额发布步骤（内部连接，非开启采集）
+
+新增内部同步 `publishPreparedCheckpoint({store, checkpoint, blobs})`，供异步 collector 在 §5.43 的 `writeSync` 内调用。它不读取目标树、不生成回放输入、不授权目录、不安装或重新 pin，也没有服务/HTTP/agent 接线；**生产 collector 与 Windows 开启门保持不变**。可信调用方仍负责根授权、候选分类、执行前时序及完整 fresh/resume 材料准备，并须 await 所有 helper 至真实 close；不能用本接口绕过这些义务。它不是任意调用方的 manifest 安全沙箱、异步任务取消器或完整 Windows collector。
+
+- 发布全程沿用项目同步 writer 锁；若外层持有 async lease，只有显式 `writeSync` 栈可借用。等待中的其他保存/发布/GC仍 busy。锁内重读当前 policy，非 enabled 拒绝，不依据调用方旧策略启用。只接受 staged、schema-v1 引用闭包及 `strictEvalEligible:false`；true 拒绝而非静默降级。模式、缺失 session、限制说明与 complete 状态按可信预备清单原样保留，不补造材料或升格资格。
+- 脱离调用方清单，按 `checkpointBlobHashes` 枚举文件/prompt/session/config/skill 共享 CAS 闭包；不接收无引用 blob 计划。所有新计划先复制、核 hash/秘密；所有既存 CAS hit 也校验实际字节 hash/秘密，而非只比尺寸。文件 size 必须匹配，清单本身也过秘密哨兵。材料无效时零 staging/manifest 写入。验证器沿用 schema-v1 已知引用，不构成全字段语义来源证明。
+- 去重后的缺失 blob + 最终 JSON + latest 增量计量；自报 stats 用有限定点迭代，收敛后才允许 staging。latest 缩短时 stats 使用有符号实际增量，但配额仍预留 manifest 已写、latest 尚未缩短时的逻辑峰值。预检、逐 stage（显式计入尚未提交字节）及 CAS 提交后复检均保留；等于上限可写，多一字节拒绝。口径仍是 `computeUsage` 的已提交逻辑字节，不是物理可用空间：policy/staging/临时文件不在其清单内；预留 staging 字节不等于操作系统磁盘空间预留。
+- CAS 提交后再次校验闭包，再保存 checkpoint，**最后**保存 latest，全部成功且 staging 清理成功才返回 captured/checkpointId。同 ID 已有文件即冲突，包含损坏 JSON，不覆盖旧证据。配额/写入/清理失败返回固定原因、空关联 ID，并尝试 suspended；若磁盘已不能保存 policy，无法保证 suspended 持久化，但仍不得报成功或透传异常正文。
+- 多对象发布不是全局原子事务或掉电持久化保证（沿用 store 的逐文件临时写+rename，没有增加 fsync/journal）。失败前已提交的 CAS 不盲删，可由既有显式 GC 发现未引用对象；若 checkpoint 已落盘而 latest 失败，保留其 staged 清单保护引用，不给 turn 伪造成功关联。清理失败即使发生在 latest 成功后也撤销本次返回成功，已有引用不删除。进程崩溃锁/临时残留仍走既有人工离线处置，不自动恢复或清除。存储/同 OS 用户为 TCB，锁不是对任意 raw store 写入者的 fencing。
+
+作者验证：Windows10 build19045/x64、Python3.13.5、Node24.13.1。初始21例对未实现 stub 全断言红；最终新套29/29，覆盖去重与已有 CAS、精确字节及额度边界、signed latest 增量/缩短前峰值、坏材料/秘密/严格资格/策略/ID冲突、同尺寸 CAS 损坏、stage/commit/manifest/latest/usage I/O 注入、已落盘后异常、末次配额与清理失败，以及 async lease 等待到发布的 GC 竞争。真实 Windows 自建 NTFS Git 树经 §5.41 异步 Python 候选→该发布步骤→两恢复；dirty/untracked 可恢复、秘密不入 CAS，resume 缺 session/complete=false/strict=false 原样保留。仅该临时夹具直接设测试策略 enabled；没有管理开启/真实项目授权、真实 turn/SDK/浏览器证据，不升级 AC2/AC9。
+
+七套 publication/async-writer/writer-recovery/orphan-gc/checkpoint-expiry/sealing-lifecycle/run-references：Windows121=115通过/6跳过；WSL Debian Node22.22私有37文件逐字节核验同七套121=119通过/2 Windows原生跳过，测试后字节不变、副本清理。14个进程内 preload 非等价变异最终全部断言红（锁、额外计划、新/旧hash、清单秘密、size、strict、policy、冲突、配额边界/末检/缩短峰值、cleanup、末次hash），仓库源码/build未变异、编译SHA不变、干净进程复绿。初轮新计划hash变异被不同长度测试数据的size检查遮蔽，改为同尺寸坏字节后杀死；冲突变异第一次匹配编译标识符的子串导致语法错误，不计红，修正完整标识符后完整重跑14点。最终 fast2113通过/43跳过（含check/build）、smoke101、双typecheck/diff-check通过。零真实项目采集/Key/供应商/真实Docker/浏览器/生产操作；外置Git、session原生读取、实际turn接线、容器映射等仍待完成，历史6美元未结算非账单及全部AC pending不变，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
