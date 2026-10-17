@@ -969,6 +969,18 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 `test:fast`2056通过/43跳过（含check/build）、smoke101、双typecheck/diff-check通过。WSL Debian Node22.22，私有63文件逐字节核验，九套94=76通过/18平台或挂载权限跳过，副本清理；初始 WSL 命令转义/路径转换失败没有执行测试，修成独立脚本与禁MSYS转换后全量通过，仅清掉本轮自有空目录。无真实项目采集/Key/供应商/真实Docker/浏览器/生产操作；历史6美元未结算预留非账单、全部AC pending、不合并发布不变。
 
+### 5.42 实际 turn 执行器等待异步采集（不开放 Windows 采集）
+
+实际 `agent-executor` 的执行前挂点改为 `await captureTurnCheckpoint(...)`，兼容现有同步结果。根因是旧挂点把 Promise 当作普通结果：异步采集尚未结束就 `startRun`，且无法取得完成后的 checkpointId；不能直接把 §5.41 异步链接到旧挂点。新挂点等待采集结果或拒绝后才继续：成功仅接受 `captured===true` 且有 checkpointId，拒绝/空结果/异常继续用户 turn 但不伪造关联。复用原有实际 worktree、完整 prompt/投影 images、fresh/resume 及原 session 输入，不重扫、不改 fresh。
+
+- 等待期间的用户停止在 `startRun` 前重新检查。停止走既有“未启动”异常清理：不创建 provider run，恢复已 claim 的 resume 行（不推进 cursor、不 poison），保留已完成 checkpoint 的关联，注销工具回调；消息沿用既有 failed+cancelled 证据，task 为 cancelled，不增加 failedReplies/failedCount。
+- 不增加 `Promise.race` 或等待超时回退：放弃等待而允许仍运行的 collector 在后台落盘，会破坏执行前时序/引用清理。异步 collector 必须自行实现受限期限和关闭完成；本段不提供无法终止 collector 的硬超时或立即取消。等待期间 turn 可能持续停留在准备阶段，用户停止须等采集 settle 才完成清理。
+- **生产服务仍返回原同步 collector，Windows 能力门继续关闭**；这里只修正实际执行器与异步采集服务的接口契约，未连接 §5.41 候选到生产服务。外置 Git/全局忽略/session 原生读取/配额引用事务/容器映射仍待完成，不能将本段宣称为 Windows 日常采集或 AC 通过。
+
+作者验证：Windows10 build19045/x64、Node24.13.1；在真实执行器测试中注入 deferred collector、mock startRun/store。fresh/resume × 成功/拒绝/异步异常/空结果/等待中停止/停止后异步异常，共12种，旧挂点全部先在“采集未 settle 已启动 run”断言失败；修正后两套 `session-reuse-ab`/`agent-executor-hook` 合计63=61通过/2 Linux能力或SQLite场景跳过。断言在生产 catch 外，通过 entered latch 和 setImmediate 观察顺序（不依赖 sleep 毫秒猜测）；检查实际 worktree、模式/prompt/session一致、checkpoint→message 关联、回调释放、未启动无 runId、resume claim 精确恢复及取消不增加失败数。首轮新断言曾错误把用户停止计入 failedReplies，按既有取消语义修正测试后完整重跑，未改变生产计数规则。
+
+私有 preloader 仅在独立测试进程内替换编译模块字节，3个非等价变异（删 await、删 stop 守卫、丢 checkpointId 赋值）均断言红；仓库源码/build未变异，SHA核对原编译文件不变，preloader临时目录已清理。`test:fast`2069通过/43跳过（含check/build），smoke101、双typecheck/diff-check通过。没有 Linux 独立复现或真实异步 collector 落盘证据；mock startRun 不执行 SDK/供应商，不冒充 Docker/UI/真实 turn 验收。本段零真实项目采集/Key/供应商/真实Docker/浏览器/生产操作；历史6美元未结算非账单、全部AC pending、不合并发布不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

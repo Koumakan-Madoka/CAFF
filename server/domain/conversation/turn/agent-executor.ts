@@ -2305,7 +2305,9 @@ export function createAgentExecutor(options: any = {}) {
     if (badcaseCapture) {
       try {
         const captureTargetDir = String(conversation.worktreePath || sessionProjectDir || resolvedProjectDir || '').trim();
-        const captureResult = badcaseCapture.captureTurnCheckpoint({
+        // Accept synchronous collectors and future asynchronous collectors, but
+        // never cross startRun while a pre-turn capture is still in flight.
+        const captureResult = await badcaseCapture.captureTurnCheckpoint({
           projectId: String(conversation.projectScopeId || conversation.projectId || '').trim(),
           targetDir: captureTargetDir,
           conversationId,
@@ -2376,6 +2378,10 @@ export function createAgentExecutor(options: any = {}) {
     let emptyFinalReplyReuseEvidence: any = null;
     try {
       try {
+        // A user may stop the turn while capture (or its version preflight)
+        // yields. No provider session was touched: use the existing unstarted
+        // failure path to restore a claimed resume row and clean up callbacks.
+        if (turnState.stopRequested) throw new Error('Stopped before agent run started');
         handle = startRun(provider, model, prompt, runOptions);
       } catch (startError) {
         if (sessionReuseClaim && typeof store.restoreAgentSessionReuse === 'function') {

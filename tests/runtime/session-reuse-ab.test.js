@@ -275,9 +275,10 @@ function findAssistantCreate(store) {
   return create;
 }
 
-async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.', promptUserMessage = null, persistedRunStore = null }) {
+async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.', promptUserMessage = null, persistedRunStore = null, onTurnState = null }) {
   const { createTurnState } = require(require.resolve('../../build/server/domain/conversation/turn/turn-state'));
   const turnState = createTurnState(conversation, turnId);
+  if (onTurnState) onTurnState(turnState);
   const events = [];
   const failedReplies = [];
   const runStore = persistedRunStore || createFakeRunStore();
@@ -665,6 +666,93 @@ test('resume capture matches the invocation before start; synchronous failure re
         assert.deepEqual({ ...restored, updatedAt: saved.updatedAt }, saved);
       }
     });
+  }
+});
+
+test('pre-turn asynchronous capture settles before startRun and preserves fresh/resume, including stop while waiting', async (t) => {
+  for (const delivery of ['fresh', 'resume']) {
+    for (const mode of ['success', 'refusal', 'exception', 'empty', 'stop', 'stop-exception']) {
+      await t.test(`${delivery}/${mode}`, async (t) => {
+        const env = setupExecutorTest(t, { reuseEnabled: true });
+        const agent = createAgent(), conversation = createConversation(agent);
+        const worktree = path.join(env.tempDir, 'actual-worktree');
+        fs.mkdirSync(worktree);
+        conversation.worktreePath = worktree;
+        const store = createFakeStore(conversation, { withReuse: true });
+        store.agentDir = env.tempDir;
+        seedUserMessage(store, 'u1', 'BEFORE-ASYNC-CAPTURE');
+        let saved;
+        if (delivery === 'resume') {
+          await runTurn({ executor: env.createExecutor(store), conversation, agent, store, turnId: 'seed-async' });
+          saved = store.peekReuseRow();
+          seedUserMessage(store, 'u2', 'ASYNC-RESUME-DELTA');
+        }
+        const startCount = env.captured.length, releases = env.releasedInvocations.length;
+        const reuseOffset = store.reuseCalls.length, order = [], observations = [];
+        let enter, resolveCapture, rejectCapture, turnState;
+        const entered = new Promise(resolve => { enter = resolve; });
+        const pending = new Promise((resolve, reject) => { resolveCapture = resolve; rejectCapture = reject; });
+        // Keep red-first runs from creating an unhandled rejection when the old
+        // executor ignores this promise. The tested promise itself is unchanged.
+        pending.catch(() => {});
+        const executor = env.createExecutor(store, {
+          badcaseCapture: { captureTurnCheckpoint(input) {
+            observations.push(input); order.push('capture-enter'); enter(); return pending;
+          } },
+          onStartRun() { order.push('startRun'); },
+        });
+        const running = runTurn({ executor, conversation, agent, store, turnId: 'turn-async-capture',
+          onTurnState(state) { turnState = state; } });
+        let result;
+        try {
+          await entered;
+          // Advance one event-loop turn, not a wall-clock timing assumption.
+          await new Promise(resolve => setImmediate(resolve));
+          assert.equal(env.captured.length, startCount, 'no provider run before capture settles');
+          assert.deepEqual(order, ['capture-enter']);
+          assert.equal(env.releasedInvocations.length, releases, 'callback remains registered while waiting');
+          assert.equal(observations[0].targetDir, worktree, 'actual worktree, not application/session dir');
+          assert.equal(observations[0].deliveryMode, delivery);
+          if (delivery === 'resume') assert.equal(store.peekReuseRow().state, 'busy');
+        } finally {
+          if (mode.startsWith('stop')) { turnState.stopRequested = true; turnState.stopReason = 'test stop while capturing'; }
+          order.push('capture-settle');
+          if (mode.endsWith('exception')) rejectCapture(new Error('synthetic asynchronous capture failure'));
+          else resolveCapture(mode === 'empty' ? undefined : mode === 'refusal'
+            ? { captured: false, checkpointId: 'must-not-associate', reason: 'synthetic_refusal' }
+            : { captured: true, checkpointId: 'checkpoint-async' });
+          result = await running;
+        }
+        const stopped = mode.startsWith('stop');
+        assert.equal(env.captured.length, startCount + (stopped ? 0 : 1));
+        assert.deepEqual(order, stopped ? ['capture-enter', 'capture-settle'] : ['capture-enter', 'capture-settle', 'startRun']);
+        const message = store.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+        const hasCheckpoint = mode === 'success' || mode === 'stop';
+        assert.equal(message.metadata.badcaseCheckpointId || '', hasCheckpoint ? 'checkpoint-async' : '');
+        assert.equal(message.status, stopped ? 'failed' : 'completed');
+        assert.equal(result.failedReplies.length, 0, 'user stop is cancellation, not a failed agent reply');
+        assert.equal(result.turnState.failedCount, 0);
+        assert.equal(result.turnState.runHandles.size, 0);
+        assert.equal(env.releasedInvocations.length, releases + 1);
+        assert.equal(result.events.some(([, name]) => name === 'agent_reply_started'), !stopped);
+        if (stopped) {
+          assert.equal(message.runId, null);
+          assert.equal(message.errorMessage, 'Stopped before agent run started');
+          assert.equal(result.outcome.terminationReason, 'stopped_by_user');
+          if (delivery === 'resume') {
+            assert.deepEqual(store.reuseCalls.slice(reuseOffset).map(([name]) => name), ['get', 'claim', 'restore']);
+            assert.deepEqual({ ...store.peekReuseRow(), updatedAt: saved.updatedAt }, saved,
+              'an unstarted resumed session is restored, not advanced or poisoned');
+          }
+        } else {
+          const run = env.captured.at(-1);
+          assert.equal(run.options.resume, delivery === 'resume');
+          assert.equal(run.prompt, observations[0].prompt);
+          assert.equal(observations[0].harness.configSnapshot.deliveryMode, delivery);
+          if (delivery === 'resume') assert.equal(run.options.session, saved.sessionName);
+        }
+      });
+    }
   }
 });
 
