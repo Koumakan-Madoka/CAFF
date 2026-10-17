@@ -133,6 +133,94 @@ test('text spans require path boundaries, preventing root-only traversal and emb
   }
 });
 
+test('text mappings accept only string edges or explicit ASCII space/tab/CR/LF delimiters', t => {
+  for (const platform of ['linux', 'win32']) {
+    const v = inputs(t, 'fresh', platform), root = v.declaration.sourceRoot;
+    for (const before of ['', ' ', '\t', '\r', '\n']) for (const after of ['', ' ', '\t', '\r', '\n']) {
+      const data = structuredClone(v.data); changeBlob(data, 'promptBlobHash', before + root + after);
+      const d = { ...v.declaration, mappings: [{ input: 'prompt', start: before.length, end: before.length + root.length, sourcePath: root }] };
+      let p;
+      assert.doesNotThrow(() => { p = plan({ ...encoded(data), declaration: d }); }, 'supported delimiters must remain accepted');
+      assert.equal(p.invocation, before + DEST + after);
+    }
+  }
+});
+
+test('every adjacent printable non-space character and non-ASCII/control separator rejects prompt partial rewrites', t => {
+  const chars = [...Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)), '\0', '\v', '\f', '\u007f', '\u00a0', '\u200b', '\u2028', '\ufeff'];
+  for (const platform of ['linux', 'win32']) {
+    const v = inputs(t, 'fresh', platform), root = v.declaration.sourceRoot;
+    for (const char of chars) for (const side of ['before', 'after']) {
+      // Include a non-root tail: replacing only root in root$other/file is not a full path mapping.
+      const text = side === 'before' ? char + root : root + char + 'other';
+      const start = side === 'before' ? char.length : 0;
+      const data = structuredClone(v.data); changeBlob(data, 'promptBlobHash', text);
+      const d = { ...v.declaration, mappings: [{ input: 'prompt', start, end: start + root.length, sourcePath: root }] };
+      assert.throws(() => plan({ ...encoded(data), declaration: d }), { code: 'replay_worktree_mapping_invalid' }, platform + ':' + side + ':' + JSON.stringify(char));
+    }
+  }
+});
+
+test('session user strings and user/assistant text blocks reject punctuation-adjacent partial paths too', t => {
+  for (const platform of ['linux', 'win32']) {
+    const v = inputs(t, 'resume', platform), root = v.declaration.sourceRoot;
+    for (const role of ['user', 'assistant']) for (const char of ['$','!','#','&','=',',',';',':',"'",'"','(',')','[',']','{','}','`','\u00a0']) for (const side of ['before', 'after']) {
+      const text = side === 'before' ? char + root : root + char + 'other';
+      for (const stringContent of role === 'user' ? [true, false] : [false]) {
+        const data = structuredClone(v.data);
+        const entries = blob(data, data.checkpoint.replayInput.sessionBlobHash).trim().split('\r\n').map(JSON.parse);
+        entries[1].message = { role, content: stringContent ? text : [{ type: 'text', text }] };
+        changeBlob(data, 'sessionBlobHash', entries.map(JSON.stringify).join('\r\n') + '\r\n');
+        const start = side === 'before' ? char.length : 0;
+        const d = structuredClone(v.declaration);
+        d.mappings.push({ input: 'session', line: 1, pointer: stringContent ? '/message/content' : '/message/content/0/text', start, end: start + root.length, sourcePath: root });
+        assert.throws(() => plan({ ...encoded(data), declaration: d }), { code: 'replay_worktree_mapping_invalid' });
+      }
+    }
+  }
+});
+
+test('read/write/edit path mapping requires the whole field even when partial spans have allowed whitespace boundaries', t => {
+  for (const platform of ['linux', 'win32']) {
+    const v = inputs(t, 'resume', platform), root = v.declaration.sourceRoot;
+    const source = root + (platform === 'win32' ? '\\source.txt' : '/source.txt');
+    for (const name of ['read', 'write', 'edit']) {
+      const data = structuredClone(v.data);
+      const entries = blob(data, data.checkpoint.replayInput.sessionBlobHash).trim().split('\r\n').map(JSON.parse);
+      entries.push({ type: 'message', id: 'a1', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call1', name, arguments: { path: source + ' backup' } }] } });
+      changeBlob(data, 'sessionBlobHash', entries.map(JSON.stringify).join('\n') + '\n');
+      const d = structuredClone(v.declaration);
+      d.mappings.push({ input: 'session', line: 2, pointer: '/message/content/0/arguments/path', start: 0, end: source.length, sourcePath: source });
+      assert.throws(() => plan({ ...encoded(data), declaration: d }), { code: 'replay_worktree_mapping_invalid' }, name + ': partial path with space suffix');
+      d.mappings[2].end += 7; d.mappings[2].sourcePath += ' backup';
+      const p = plan({ ...encoded(data), declaration: d });
+      assert.equal(JSON.parse(p.sessionText.trim().split('\n')[2]).message.content[0].arguments.path, DEST + '/source.txt backup', 'spaces inside full paths still supported');
+    }
+  }
+});
+
+test('unterminated resume last line cannot escape mapping or residual source-root validation', t => {
+  for (const platform of ['linux', 'win32']) for (const newline of ['\n', '\r\n']) {
+    const v = inputs(t, 'resume', platform), data = structuredClone(v.data), root = v.declaration.sourceRoot;
+    const entries = blob(data, data.checkpoint.replayInput.sessionBlobHash).trim().split('\r\n').map(JSON.parse);
+    entries.push({ type: 'message', id: 'last', message: { role: 'user', content: 'Unmapped ' + root } });
+    changeBlob(data, 'sessionBlobHash', entries.map(JSON.stringify).join(newline));
+    assert.throws(() => plan({ ...encoded(data), declaration: v.declaration }), { code: 'replay_worktree_mapping_invalid' });
+  }
+});
+
+test('non-whitelisted tools cannot gain path mapping through a path-shaped argument', t => {
+  for (const name of ['bash', 'custom-read', 'READ', '', 'constructor']) {
+    const v = inputs(t, 'resume'), data = structuredClone(v.data), source = v.declaration.sourceRoot + '/source.txt';
+    const entries = blob(data, data.checkpoint.replayInput.sessionBlobHash).trim().split('\r\n').map(JSON.parse);
+    entries.push({ type: 'message', id: 'a1', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call1', name, arguments: { path: source } }] } });
+    changeBlob(data, 'sessionBlobHash', entries.map(JSON.stringify).join('\n') + '\n');
+    const d = structuredClone(v.declaration);
+    d.mappings.push({ input: 'session', line: 2, pointer: '/message/content/0/arguments/path', start: 0, end: source.length, sourcePath: source });
+    assert.throws(() => plan({ ...encoded(data), declaration: d }), { code: 'replay_worktree_mapping_invalid' }, name);
+  }
+});
+
 test('resume never becomes fresh: mandatory header cwd mapping, absent/bad history and extra fresh session declarations reject', t => {
   const v = inputs(t, 'resume');
   const d = structuredClone(v.declaration); d.mappings.pop();

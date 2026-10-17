@@ -133,11 +133,13 @@ export function prepareWorktreeReplayInputs(capsule: any, expected: any, declara
     if (typeof value !== 'string' || !Number.isSafeInteger(item.start) || !Number.isSafeInteger(item.end)
       || item.start < 0 || item.end <= item.start || item.end > value.length
       || value.slice(item.start, item.end) !== item.sourcePath || (whole && (item.start !== 0 || item.end !== value.length))) throw fail();
-    // A text span must cover the complete lexical path, not a prefix embedded
-    // in a sibling name or a path whose undeclared suffix can escape the root.
-    const adjoiningPath = /[A-Za-z0-9_.@%+~:\\/\\-]/;
-    if (!whole && ((item.start > 0 && adjoiningPath.test(value[item.start - 1]))
-      || (item.end < value.length && adjoiningPath.test(value[item.end])))) throw fail();
+    // Text spans need explicit ASCII whitespace or string edges on BOTH sides.
+    // A denylist of path characters missed punctuation (e.g. root$other), so
+    // unknown delimiters, quotes and Unicode whitespace fail rather than guess.
+    // This is not shell/prose parsing; spaces INSIDE a declared path stay intact.
+    const delimiter = /^[ \t\r\n]$/;
+    if (!whole && ((item.start > 0 && !delimiter.test(value[item.start - 1]))
+      || (item.end < value.length && !delimiter.test(value[item.end])))) throw fail();
     const source = canonicalPath(item.sourcePath, platform);
     if (source !== root && !source.startsWith(root + separator)) throw fail();
     const suffix = source.slice(root.length).split(separator).join('/');
