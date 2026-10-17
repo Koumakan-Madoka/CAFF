@@ -1140,6 +1140,18 @@ Windows collector 在既有跨 await 项目租约内读取同 target 的 latest�
 
 回归 `tests/runtime/badcase-capsule-file-modes.test.js` 纳入 fast：fresh/resume 两恢复、严格 umask 下 0644/0755、000 同 fd 内容验证、特殊位/坏 mode 前置拒绝、非 Linux 零写、chmod/no-op/观测内容/close 故障及严格 wrapper。§5.54 的 E115 P3 补齐磁盘 `X.LOG` / 索引 `x.log` 反向 case-only（mock 与真实 NTFS 两步 rename、两种 ignorecase），删除 present 小写变异必须断言红。准确命令、计数及独立审查以 Goal E116 为准；非 AC 通过。零真实项目采集/Key/供应商/真实 Docker/浏览器/生产操作，全部 AC pending、历史6美元未结算非账单、不合并发布不变。
 
+### 5.56 显式 worktree 输入路径映射准备（非回放执行器）
+
+新增内部纯函数 `prepareWorktreeReplayInputs(capsule, expected, declaration)`，供后续普通 turn 容器入口消费；不接现有诊断/付费 launcher、SDK、管理/UI 或真实采集门。先完整复验 capsule 和 §5.55 的普通文件 mode，再处理声明；不访问任何源路径、不写工作副本、不执行归档脚本。`sourceRoot` 必须逐字等于 checkpoint.targetDir，`sourcePlatform` 显式 linux/win32，若 integrity.platform 存在还须一致；不能借宿主 OS 的 resolve/realpath 推断历史路径或扩大授权。声明不是 pin、授权或环境来源证明。
+
+声明闭集 `{schemaVersion:1, sourcePlatform, sourceRoot, mappings}`，最多256项。每项是 `{input:'prompt', start, end, sourcePath}` 或 `{input:'session', line, pointer, start, end, sourcePath}`；start/end 是**解码字符串的 UTF-16 code-unit 半开区间**，line 从0起，pointer 是本节允许的固定 JSON 字段选择器，不是任意 JSON Patch。每一处原文必须精确等于 sourcePath，范围不重叠、不越界，文字位置有保守词法路径边界，不能用只声明根/路径前缀来隐藏紧邻的未声明 `../` 后缀；这不是 shell/自然语言解析器或任意字符串安全证明。路径为保守可打印 ASCII 子集，拒绝点段/空段、UNC/device/drive-relative、混合 Windows 分隔符、~短名；根不得为盘根或 `/`。Windows 对已归档文件/删除表的完整名和各父组件建立大小写拼写表（64层/100000项），有歧义则拒；sourcePath 与任何已知组件大小写不一致也拒，不能把原NT上可用的大小写别名静默变成Linux上的不同文件。不自动改写大小写，也不把未知新路径当成已存在依赖。源路径须精确位于已声明 worktree，**目的地不可由调用方选择**，固定 `/work/restored/snapshot` 加逐组件相对后缀，Windows分隔符在该后缀内转为 `/`，不做权限比较大小写折叠。
+
+仅可改变 invocation 文字、resume 第0行 cwd、user 字符串 content、user/assistant text block，以及 assistant read/write/edit toolCall 的 `arguments.path`。cwd/工具path必须整字段映射；不改消息/调用ID、角色、工具名/输出、bash命令或任意扩展状态。resume 必须原有非空、换行终止的 JSONL v3 header，cwd 等于 sourceRoot 且显式映射；缺失/坏格式/未映射不降 fresh。JSONL 不整体重序列化：每个变更字段的规范 JSON 字符串 token 须在原行唯一，否则拒绝而非猜位置；仅替换该 token，CRLF/空白及其余字节不变。未声明位置残留同一源根（Windows包含大小写/分隔符变体）拒绝；遍历最多100000节点，数组不使用无界 spread。映射失败为固定 `replay_worktree_mapping_invalid`；底层 capsule/mode 错误保留原固定码。
+
+返回独立 working invocation/sessionText、原 deliveryMode、完整未剥除的 runConfig/harness、skillSnapshots 和 controlledReplacements；原 capsule、归档 prompt/session/config 哈希不变。声明原序 JSON 哈希和映射后 invocation/session 哈希分别记录，另绑定原 materializedHash/modeInventoryHash，**这些是规划摘要，不是执行/落盘/独立观测回执**。未验证维度、缺关键输入、未归档图片不提升为支持。已有 runtime 占位符不在此换入凭据；不修改技能/配置内容、源文件正文或任意其他绝对路径，不探测全机路径，不验证复杂 session SDK 语义/工具依赖是否齐全，也不证明文件一致性。即使映射成功，piExecuted/launchAuthorized/runnable/reproduced/evaluable/strictEvalEligible 全false。未来执行器仍须独立核验完整配置/技能映射、历史依赖、隔离工具桥/回调和受控凭据替换，并使用同一声明处理两variant，不能以本函数成功绕过它们。
+
+新回归 `badcase-worktree-replay-inputs.test.js` 纳入 fast，覆盖两种历史平台×fresh/resume、CRLF字节保留、复杂历史显式路径变更但不剥工具结果/配置、技能与凭据占位清单不变、跨worktree/别名/点段/重叠/部分路径/缺映射/歧义token/错误字段/容量边界负例。自建材料只作纯准备测试，不充当真实NTFS采集、WSL恢复或真实Docker/模型证据。普通 turn 执行桥尚未接通，Windows管理开启仍关闭，全部AC pending；历史6美元未结算非账单、不合并发布不变。首次直接追加 fast 命令触发 Windows cmd 长度限制、未执行测试；按原顺序将四套材料测试提取为 `test:badcase-replay-materials` 子命令，fast 引用它，未删减/并行化原测试。准确命令、计数和固定SHA独立审查以Goal E117为准。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
