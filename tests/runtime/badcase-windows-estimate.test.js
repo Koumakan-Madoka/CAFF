@@ -168,6 +168,29 @@ test('Windows estimate compiles persisted exclusions and private boundaries befo
   assert.equal(calls, 1);
 });
 
+test('Windows async estimate rejects same-name tampered helper before spawn and restores capacity', async t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-winasync-integrity-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const source = require('../../build/server/domain/runtime/badcase-capture/windows-helper-source').WINDOWS_HELPER_SOURCE;
+  const file = path.join(base, 'helper.py');
+  let spawns = 0;
+  const api = isolated('windows-helper', { child: { spawn() {
+    spawns++;
+    return syntheticChild(c => { c.stdout.emit('data', emptyWire); c.emit('close', 0); });
+  } } });
+  for (const content of [source.replace('import contextlib', 'import contextliX'), Buffer.alloc(1024 * 1024 + 1)]) {
+    fs.writeFileSync(file, content);
+    for (let i = 0; i < 3; i++) {
+      const result = await api.invokeWindowsEstimateHelper('python', file, request);
+      assert.equal(result.reason, 'helper_integrity_failed');
+    }
+  }
+  assert.equal(spawns, 0, 'I/O observation outside production catch; no corrupted helper executes');
+  fs.writeFileSync(file, source);
+  assert.equal((await api.invokeWindowsEstimateHelper('python', file, request)).ok, true);
+  assert.equal(spawns, 1, 'failed integrity checks release concurrency permits');
+});
+
 function syntheticChild(behavior) {
   const { EventEmitter } = require('node:events');
   const { PassThrough } = require('node:stream');

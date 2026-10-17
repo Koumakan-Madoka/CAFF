@@ -66,6 +66,85 @@ class WindowsRead(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())['code'], 'estimate_scope_rejected')
             self.assertEqual(unopened.call_count, 0, 'observe outside production catch')
 
+    def snapshot_request(self):
+        with w.Root(str(self.root)) as root:
+            pin = root.identity.copy()
+        return {'version': 1, 'op': 'snapshot', 'root': str(self.root), 'expected': pin, 'excluded': []}
+
+    def test_snapshot_two_full_reads_pruning_and_exact_body(self):
+        (self.root / 'empty').touch()
+        (self.root / '中文😀').write_bytes(b'unicode')
+        (self.root / '.env').mkdir()
+        (self.root / '.env' / 'never-read').write_bytes(b'PRIVATE_SENTINEL')
+        request = self.snapshot_request()
+        private = {**request, 'root': str(self.root / '.env')}
+        out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(private)), out)
+        self.assertEqual(json.loads(out.getvalue())['code'], 'estimate_scope_rejected')
+        reads, opened = [], []
+        original_read, original_relative = w.Root.read, w._relative
+        def observe_read(root, relative, *args, **kwargs):
+            reads.append(relative)
+            return original_read(root, relative, *args, **kwargs)
+        def observe_open(stack, handle, name, directory):
+            opened.append(name)
+            return original_relative(stack, handle, name, directory)
+        with patch.object(w.Root, 'read', observe_read), patch.object(w, '_relative', observe_open):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+        header, body = out.getvalue().split(b'\n', 1)
+        header = json.loads(header)
+        self.assertTrue(header['ok'], header)
+        self.assertEqual([e['path'] for e in header['files']], ['empty', 'sub/sample.bin', '中文😀'])
+        self.assertEqual(body, self.bytes + b'unicode')
+        self.assertEqual(reads, ['empty', 'sub/sample.bin', '中文😀'] * 2)
+        self.assertNotIn('.env', opened, 'sensitive subtree never opened')
+        self.assertNotIn(b'PRIVATE_SENTINEL', out.getvalue())
+        with patch.object(w, 'BODY_LIMIT', len(body) - 1):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+            self.assertEqual(json.loads(out.getvalue())['code'], 'too_large')
+        # Request does not expose a path selector, hook, or budget override.
+        with patch.object(w, 'Root', side_effect=AssertionError('opened')) as unopened:
+            for delta in [{'paths': []}, {'expected': None}, {'_after_scan': True}]:
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, **delta})), out)
+                self.assertEqual(json.loads(out.getvalue())['code'], 'request_invalid')
+            self.assertEqual(unopened.call_count, 0)
+
+    def test_snapshot_detects_hash_manifest_and_identity_changes_without_partial_body(self):
+        request = self.snapshot_request()
+        original_read = w.Root.read
+        for mode in ['hash', 'added', 'deleted', 'replaced', 'late_metadata']:
+            with self.subTest(mode=mode):
+                calls = 0
+                def read(root, relative, *args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    result = original_read(root, relative, *args, **kwargs)
+                    if mode == 'hash' and calls == 2:
+                        # Simulate a between-read same-size ABA hidden from
+                        # metadata: MUST compare the independently read hash.
+                        return {**result, 'sha256': '0' * 64}
+                    if calls == 1 and mode in ['added', 'deleted', 'replaced']:
+                        if mode == 'added': (self.root / 'new').write_bytes(b'new')
+                        elif mode == 'deleted': (self.root / 'sub' / 'sample.bin').unlink()
+                        else:
+                            old = self.root / 'sub' / 'sample.bin'
+                            old.unlink(); old.write_bytes(self.bytes)
+                    if calls == 2 and mode == 'late_metadata':
+                        (self.root / 'sub' / 'sample.bin').write_bytes(self.bytes + b'!')
+                    return result
+                try:
+                    with patch.object(w.Root, 'read', read):
+                        out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+                    self.assertEqual(json.loads(out.getvalue()),
+                                     {'version': 1, 'ok': False, 'code': 'snapshot_changed'})
+                finally:
+                    (self.root / 'sub' / 'sample.bin').write_bytes(self.bytes)
+                    if (self.root / 'new').exists(): (self.root / 'new').unlink()
+        # Full file count checked before any content read (small injected cap).
+        with patch.object(w, 'SNAPSHOT_FILE_LIMIT', 0), patch.object(w.Root, 'read', wraps=original_read) as unread:
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+            self.assertEqual(json.loads(out.getvalue())['code'], 'entry_limit')
+            self.assertEqual(unread.call_count, 0)
+
     def test_exact_bytes_and_identity_roundtrip(self):
         (self.root / 'empty').touch()
         (self.root / '中文😀').write_bytes(b'unicode')

@@ -13,7 +13,10 @@ const fail = (reason: string) => ({ ok: false, reason, fileCount: 0, totalBytes:
 const normalized = (p: string) => path.win32.resolve(p).replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
 const under = (root: string, target: string) => target === root || target.startsWith(`${root}/`);
 
-function prepare(options: any): any {
+// Internal scope compiler shared with the unconnected file-candidate adapter.
+// It always creates an estimate request; a caller cannot change the operation
+// or inject a path selector through options. Native identity is never re-pinned.
+export function prepareWindowsMetadataScope(options: any): any {
   if (process.platform !== 'win32') return fail('windows_required');
   const policy = options.policy;
   const target = options.targetDir;
@@ -87,7 +90,7 @@ function summarize(result: any): any {
 
 export function estimateWindowsDirectory(options: any): any {
   try {
-    const plan = prepare(options);
+    const plan = prepareWindowsMetadataScope(options);
     if (!plan.ok) return plan;
     // Explicit authorization installed this exact source. Preview may NOT
     // install/repair/re-authorize it. Fixed PATH python is trusted host TCB;
@@ -98,7 +101,7 @@ export function estimateWindowsDirectory(options: any): any {
 
 export async function estimateWindowsDirectoryAsync(options: any): Promise<any> {
   try {
-    const plan = prepare(options);
+    const plan = prepareWindowsMetadataScope(options);
     if (!plan.ok) return plan;
     return summarize(await invokeWindowsEstimateHelper('python', plan.helperPath, plan.request));
   } catch { return fail('windows_estimate_unavailable'); }

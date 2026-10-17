@@ -388,6 +388,7 @@ REQUEST_LIMIT = 1024 * 1024
 HEADER_LIMIT = 32 * 1024 * 1024
 BODY_LIMIT = 128 * 1024 * 1024
 FILE_LIMIT = 64 * 1024 * 1024
+SNAPSHOT_FILE_LIMIT = 2048
 PUBLIC_REASONS = frozenset([
     'request_invalid', 'helper_failed', 'windows_required', 'root_path_invalid',
     'path_invalid', 'root_open_rejected', 'drive_unsupported', 'filesystem_unsupported',
@@ -396,7 +397,7 @@ PUBLIC_REASONS = frozenset([
     'file_identity_mismatch', 'enumeration_failed', 'enumeration_invalid',
     'directory_changed', 'entry_limit', 'depth_limit', 'limit_invalid',
     'path_not_in_manifest', 'too_large', 'read_failed', 'short_read',
-    'changed_during_read', 'output_limit', 'estimate_scope_rejected',
+    'changed_during_read', 'output_limit', 'estimate_scope_rejected', 'snapshot_changed',
 ])
 
 
@@ -435,7 +436,7 @@ def _request(stream):
             raise Refused('request_invalid')
         op = value.get('op')
         keys = {'version', 'op', 'root'}
-        if op in ('capture', 'estimate'):
+        if op in ('capture', 'estimate', 'snapshot'):
             keys |= {'expected', 'excluded'}
             if op == 'capture':
                 keys.add('paths')
@@ -449,7 +450,7 @@ def _request(stream):
         suffix = match[2].replace('\\', '/')
         if suffix:
             components(suffix)
-        if op in ('capture', 'estimate'):
+        if op in ('capture', 'estimate', 'snapshot'):
             if not _valid_identity(value['expected']):
                 raise Refused('request_invalid')
             _excluded_prefixes(value['excluded'])
@@ -466,15 +467,53 @@ def _request(stream):
         raise Refused('request_invalid') from None
 
 
+def _snapshot(root, excluded):
+    """Bounded two-content-read candidate, NOT an atomic snapshot.
+
+    Hold the authorized root for all passes. Three metadata walks bracket the
+    two full reads. Fail the entire response on drift; never return partial
+    bytes. Secret detection belongs to the trusted host BEFORE CAS/staging.
+    Git/ignored classification is deliberately NOT implemented by this helper.
+    """
+    entries = root.walk(excluded=excluded, _metadata_only=True)
+    selected = [e for e in entries if e['type'] == 'file']
+    if len(selected) > SNAPSHOT_FILE_LIMIT:
+        raise Refused('entry_limit')
+    if any(e['size'] > FILE_LIMIT for e in selected) or sum(e['size'] for e in selected) > BODY_LIMIT:
+        raise Refused('too_large')
+    files, bodies = [], []
+    for entry in selected:
+        value = root.read(entry['path'], FILE_LIMIT, expected_identity=entry['identity'])
+        if value['size'] != entry['size']:
+            raise Refused('snapshot_changed')
+        bodies.append(value['content'])
+        files.append({'path': entry['path'], 'size': str(value['size']),
+                      'sha256': value['sha256'], 'identity': value['identity']})
+    if root.walk(excluded=excluded, _metadata_only=True) != entries:
+        raise Refused('snapshot_changed')
+    for entry, first in zip(selected, files):
+        value = root.read(entry['path'], FILE_LIMIT, expected_identity=entry['identity'])
+        if (value['size'] != entry['size'] or value['sha256'] != first['sha256']
+                or value['identity'] != first['identity']):
+            raise Refused('snapshot_changed')
+    if root.walk(excluded=excluded, _metadata_only=True) != entries:
+        raise Refused('snapshot_changed')
+    return entries, files, bodies
+
+
 def serve(input_stream, output_stream):
     try:
         request = _request(input_stream)  # all syntax validated before target open
         bodies = []
-        if request['op'] == 'estimate' and any(_metadata_denied(p) for p in request['root'][3:].replace('\\', '/').split('/') if p):
+        if request['op'] in ('estimate', 'snapshot') and any(_metadata_denied(p) for p in request['root'][3:].replace('\\', '/').split('/') if p):
             raise Refused('estimate_scope_rejected')
         with Root(request['root'], request.get('expected')) as root:
             header = {'version': 1, 'ok': True, 'identity': root.identity}
-            if request['op'] in ('capture', 'estimate'):
+            if request['op'] == 'snapshot':
+                entries, files, bodies = _snapshot(root, request['excluded'])
+                header['entries'] = [{**e, 'size': str(e['size'])} for e in entries]
+                header['files'] = files
+            elif request['op'] in ('capture', 'estimate'):
                 entries = root.walk(excluded=request['excluded'], _metadata_only=request['op'] == 'estimate')
                 manifest = {e['path']: e for e in entries if e['type'] == 'file'}
                 # Exact canonical membership prevents case and 8.3 aliases from

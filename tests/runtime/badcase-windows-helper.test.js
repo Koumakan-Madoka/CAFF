@@ -202,6 +202,20 @@ test('Windows identity operations have a separate bounded management timeout', (
   assert.equal(api.invokeWindowsHelper('python', 'helper', request).ok, true);
 });
 
+test('Windows snapshot operations use a bounded 25-second synchronous timeout without path selectors', () => {
+  let timeout, sent;
+  const request = { version: 1, op: 'snapshot', root: 'C:/authorized', expected: identity, excluded: [] };
+  const api = isolatedTransport({
+    disk: { statSync: () => ({ size: Buffer.byteLength(WINDOWS_HELPER_SOURCE) }), readFileSync: () => Buffer.from(WINDOWS_HELPER_SOURCE) },
+    child: { spawnSync(python, args, options) {
+      timeout = options.timeout; sent = JSON.parse(options.input);
+      return { status: 0, stdout: wire({ version: 1, ok: true, identity, entries: [], files: [] }, Buffer.alloc(0)), stderr: Buffer.alloc(0) };
+    } },
+  });
+  assert.equal(api.invokeWindowsHelper('python', 'helper', request).ok, true);
+  assert.equal(timeout, 25000); assert.deepEqual(sent, request);
+});
+
 test('Windows helper refusals use fixed closed reason strings and never bodies', () => {
   const { request } = fixture();
   for (const code of ['root_identity_mismatch', 'path_not_in_manifest', 'helper_failed', 'changed_during_read']) {

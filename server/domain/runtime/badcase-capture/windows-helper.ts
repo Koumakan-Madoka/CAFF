@@ -13,7 +13,7 @@ export const WINDOWS_HELPER_LIMITS = Object.freeze({
   requestBytes: 1024 * 1024, headerBytes: 32 * 1024 * 1024,
   bodyBytes: 128 * 1024 * 1024, fileBytes: 64 * 1024 * 1024,
   entries: 100000, paths: 2048, exclusions: 256, timeoutMs: 10 * 60 * 1000, identityTimeoutMs: 10000,
-  estimateTimeoutMs: 25000,
+  estimateTimeoutMs: 25000, snapshotTimeoutMs: 25000,
 });
 const REASONS = new Set([
   'request_invalid', 'helper_failed', 'windows_required', 'root_path_invalid',
@@ -23,7 +23,7 @@ const REASONS = new Set([
   'file_identity_mismatch', 'enumeration_failed', 'enumeration_invalid',
   'directory_changed', 'entry_limit', 'depth_limit', 'limit_invalid',
   'path_not_in_manifest', 'too_large', 'read_failed', 'short_read',
-  'changed_during_read', 'output_limit', 'estimate_scope_rejected',
+  'changed_during_read', 'output_limit', 'estimate_scope_rejected', 'snapshot_changed',
 ]);
 function exact(value: any, keys: string[]) {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -53,9 +53,9 @@ function validRelative(value: any) {
       && !/^(?:CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])(?:\..*)?$/i.test(part));
 }
 function validRequest(request: any) {
-  if (!request || request.version !== 1 || !['identity', 'capture', 'estimate'].includes(request.op)
+  if (!request || request.version !== 1 || !['identity', 'capture', 'estimate', 'snapshot'].includes(request.op)
       || !exact(request, request.op === 'identity' ? ['version', 'op', 'root']
-        : request.op === 'estimate' ? ['version', 'op', 'root', 'expected', 'excluded']
+        : ['estimate', 'snapshot'].includes(request.op) ? ['version', 'op', 'root', 'expected', 'excluded']
           : ['version', 'op', 'root', 'expected', 'excluded', 'paths'])
       || typeof request.root !== 'string' || Buffer.byteLength(request.root) > 32768) return false;
   const match = request.root.match(/^[a-z]:[\\/](.*)$/i);
@@ -64,7 +64,7 @@ function validRequest(request: any) {
   return validIdentity(request.expected)
     && Array.isArray(request.excluded) && request.excluded.length <= WINDOWS_HELPER_LIMITS.exclusions
     && request.excluded.every(validRelative)
-    && (request.op === 'estimate' || (Array.isArray(request.paths) && request.paths.length <= WINDOWS_HELPER_LIMITS.paths
+    && (['estimate', 'snapshot'].includes(request.op) || (Array.isArray(request.paths) && request.paths.length <= WINDOWS_HELPER_LIMITS.paths
       && request.paths.every(validRelative) && new Set(request.paths).size === request.paths.length));
 }
 export function encodeWindowsHelperRequest(request: any) {
@@ -97,7 +97,12 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
       return exact(header, ['version', 'ok', 'identity']) && offset === stdout.length
         ? { ok: true, identity: header.identity } : bad();
     }
-    const paths = request.op === 'estimate' ? [] : request.paths;
+    // snapshot returns ALL regular files in canonical entry order, not a
+    // caller-supplied selection. Bound and validate the entire manifest below.
+    const paths = request.op === 'estimate' ? [] : request.op === 'snapshot'
+      ? (Array.isArray(header.entries) ? header.entries.filter((e: any) => e?.type === 'file').map((e: any) => e.path) : [])
+      : request.paths;
+    if (request.op === 'snapshot' && paths.length > WINDOWS_HELPER_LIMITS.paths) return bad();
     if (!exact(header, ['version', 'ok', 'identity', 'entries', 'files'])
         || !sameIdentity(header.identity, request.expected)
         || !Array.isArray(header.entries) || header.entries.length > WINDOWS_HELPER_LIMITS.entries
@@ -153,7 +158,8 @@ export function invokeWindowsHelper(python: string, helperPath: string, request:
     const result = spawnSync(python, ['-I', '-B', helperPath], {
       input, encoding: 'buffer', windowsHide: true,
       timeout: request.op === 'identity' ? WINDOWS_HELPER_LIMITS.identityTimeoutMs
-        : request.op === 'estimate' ? WINDOWS_HELPER_LIMITS.estimateTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
+        : request.op === 'estimate' ? WINDOWS_HELPER_LIMITS.estimateTimeoutMs
+          : request.op === 'snapshot' ? WINDOWS_HELPER_LIMITS.snapshotTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
       maxBuffer: WINDOWS_HELPER_LIMITS.headerBytes + WINDOWS_HELPER_LIMITS.bodyBytes + 1,
     });
     if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stderr) || result.stderr.length !== 0) {

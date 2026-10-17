@@ -919,6 +919,24 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 本段未开启任何真实项目采集，未操作供应商/真实Docker/生产实例；历史6美元未结算预留非账单不变，全部AC pending，不合并发布。下一连接段仍是Windows文件采集策略、collector双扫及CAS恢复，再提供实际worktree证据，不能以本段元数据或测试数替代。
 
+### 5.39 Windows 受限文件候选双扫与 CAS 恢复连接（未开放 turn collector）
+
+本段新增内部 `readWindowsFileCandidate` 连接原生内容→宿主秘密扫描→可供受信 CAS writer 使用的内存计划；**没有管理/API/agent 工具入口，不写 policy/checkpoint/blob、不发开启回执，Windows turn collector 能力门不变**。仅使用自建临时 NTFS 树验证候选→既有 CAS→两次恢复，不能称实际 worktree、真实执行前 turn 检查点或 AC2/AC9 已通过。
+
+- 新增独立 `op:snapshot`，请求闭集与 estimate 相同（必须原 pin/excluded，不接受 paths、钩子、预算覆盖）；不改旧 capture/estimate/identity 接受集合。复用持久根/保护根/排除编译 `prepareWindowsMetadataScope`，不安装、不重新 pin、不跨入树外输入或 Git 元数据。每次部署新 helper SHA 仍需显式授权安装；旧安装不自动迁移。固定 PATH python、源码磁盘摘要与原生/解释器/同 OS 用户/存储 TCB 限制不变。
+- 原生单次调用持有同一授权根，三次全量原生元数据 walk 分别在第一次内容读前、两次内容读之间、第二次内容读后；两次独立全内容读均核对叶身份/大小/同句柄漂移，比较第二次 hash，两个后继 manifest 与首份逐字段相等。变化整批拒绝、不重试、不输出部分 body。三次 walk 都在打开子对象前强制 `windows-metadata-v1` 名称排除，敏感祖先/根亦拒；用户字面排除照旧生效。元数据 ABA、身份复用、各文件间非原子性仍可漏检，绝不升级 strict 资格。
+- 首次读前预检最多2048个普通文件、每文件64MiB、总内容128MiB；枚举100000项/64层、头32MiB、请求1MiB不变。超限整批拒绝，不静默截断。保留首遍 body，只将第二遍作 hash/身份复验；响应格式沿用头+精确二进制。宿主要求 files 恰好等于 manifest 所有普通文件的 canonical 顺序，不能缺/多/换文件、hash/长度/身份异常或尾随字节；不再信任调用方的路径选择。此同步内部原型另设25秒上限，不接 HTTP/turn 以阻塞业务；不是异步 collector、内存硬隔离或进程树沙箱。
+- 宿主在返回任何 CAS 计划前使用既有完整字节秘密哨兵。命中只留 `secretExcluded`/大小/类型，不返回其 hash、身份或内容；安全内容按 hash 内存去重，复制到独立非池化 `Buffer.alloc`，**不返回 wire subarray 或 pooled copy**（其 ArrayBuffer 可能仍包含同响应的排除秘密）。不宣称内存安全擦除。全部结果 `complete/strictEvalEligible/captureAvailable=false`；mode 显式合成为0644，不伪造 Windows→POSIX 权限恢复。
+- **不能直接生产接线**：本原型沿用 metadata 范围，尚未解析 Git/ignored（普通 ignored 也会读），不是完整 collector policy；Git 元数据/session/附件不读取，未实现真实 invocation 配置、quota/引用/持久事务、空目录恢复、容器路径映射。后续必须补齐这些策略与 collector 集成，不得因为有双扫和CAS测试而绕过原 Windows 开启门。候选读取本身无自动落盘，测试用 writer 显式使用既有 stage/commit/checkpoint/restore，不是隐藏产品入口。
+- 验证仅自建临时 NTFS：二进制/空/Unicode/重复内容经真实原生 helper→候选→CAS落盘、两次恢复清单一致；秘密内容和 hash 不进项目存储；改文件/新文件/删除的 fixture 差异可检测，但不冒充已解析 tracked/dirty/untracked 分类。替根、未 pin/换根、junction、源码篡改拒绝。两项原生新测试在旧实现因缺 snapshot 协议先红；另对初版返回 wire backing 的缺陷先红，再改为独立分配。变化故障通过进程内钩子在真实自建文件上操作；仅 hash ABA/低限额为注入，不冒充真实协调攻击或128MiB实写。
+- 收编 E99 P3：异步 estimate 同名源码篡改和1MiB+1字节分别返回 `helper_integrity_failed`，每类连跑三次，catch 外 spawn 计数为零；恢复源码后可用、名额已归还。删除异步完整性检查后回归红，原生产守卫不变。
+
+作者验证：Windows10 build19045/x64、Python3.13.5、Node24.13.1，原生21/21；十套 Node124=94通过/30平台跳过（含wrapper执行21原生）；fixture首份5个文件记录、3个唯一安全blob共8B，读取/落盘/两次恢复/第二份差异的组合159ms，仅该次小夹具总耗时，不是整个worktree或真实turn性能。`test:fast`2044通过/43跳过（含check/build）、smoke101、双typecheck与diff-check通过。WSL Debian Node22.22私有61文件逐字节核验，八套82=66通过/16平台或挂载权限跳过，自有副本清理；初次60文件副本漏拷Linux审计helper导致源码一致性测试ENOENT，未算通过，补齐后完整重跑，未改生产。
+
+私有副本14非等价单点变异全部红并逐字节恢复后原生21/21、Node三套25/25再绿，副本清理：7原生（中间manifest、末尾manifest、独立hash、文件数、body预检、snapshot敏感根、第二遍读取），7 Node（完整files集合、2048项、25秒上限、E99异步SHA、秘密扫描、strict恒false、wire backing隔离）。其中wire backing负例在初版已先红；普通Node新套在build前因缺编译模块先红，不将此装载失败当语义回归证据。其余边界/异常口径如上，不冒充真实历史badcase。
+
+本段无真实项目采集、Key/供应商、真实Docker/UI或生产操作；历史6美元未结算预留非账单及全部 AC pending 不变，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
