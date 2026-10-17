@@ -141,6 +141,16 @@ test('Linux two independent fresh/resume working copies preserve full archive an
   }
 });
 
+test('Linux all archive, snapshot and working directories remain 0700 under umask zero (E119 P3)', linux, t => {
+  const v = inputs(t, 'resume'), destination = path.join(v.h.root, 'umask-zero');
+  const old = process.umask(0);
+  try { assert.deepEqual(api().materializeWorktreeReplayInputs(v.p.capsule, v.expected, v.declaration, destination), plan(v).expectedReceipt); }
+  finally { process.umask(old); }
+  for (const name of ['', 'snapshot', 'snapshot/bin', 'materials', 'materials/blobs', 'working-inputs']) {
+    assert.equal(fs.statSync(path.join(destination, name)).mode & 0o7777, 0o700, name || 'destination');
+  }
+});
+
 test('Linux working-input write/read/mode/close errors close opened fd and never return receipt', linux, t => {
   const v = inputs(t);
   for (const fault of ['open', 'write', 'read', 'mode', 'close']) {

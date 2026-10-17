@@ -1174,6 +1174,20 @@ working-inputs 固定包含排序后的 `prompt.txt`、`run-config.json`、`harn
 
 `retained-input-probe.cjs` 新增独立 `worktreeTaskFor/runRetainedWorktreeProbe`：固定静态容器入口消费 capsule/expected/declaration，使用既有隔离 Docker 底座；宿主先规划，容器再完整复验。wrapper 须精确比对 completed/cleaned/inputHash/64hex containerId/空stderr/完整stdout回执，不暴露原始输出。旧内容probe、mode probe、SDK/模型 launcher、采集服务/管理门与UI保持原接线。新自动测试纳入材料组/fast；WSL 静态恢复与 fake transport 不作真实 Docker 证明。真实工具桥/隔离回调/受控凭据替换、普通 fresh/resume SDK 执行仍未完成，Windows管理开启仍关闭，全部AC pending。准确命令、计数及新固定SHA独立审查以Goal E119为准；历史6美元未结算非账单、不合并发布不变。
 
+### 5.59 单 invocation 独立评测回调内核（未接 Docker / trace 导入）
+
+新增内部 `startEvaluationCallback({directory, seed, lifetimeMs})`，复用现有 `createChatAppStore` 和 `createAgentToolBridge` 的真实 context/participants/public post 语义，但**不启动应用服务器、不读取生产 DB/Room、不接调度器、模型、项目解析器或任意调用方路由**。directory 必须是受信调用方专用已存在父目录下的全新绝对路径；父目录拒 symlink/canonical 别名，排他 mkdir 0700，不递归创建、不重新打开已有目录。SQLite 固定为该目录的 `callback.sqlite`，显式传入 store，忽略 PI_SQLITE_PATH 等环境配置；Linux DB 文件另设0600。启动失败可保留本次部分目录，无自动删除或恢复；祖先/同 OS 用户及存储继续属于 TCB，目录检查不是抵御同权限竞态的沙箱。
+
+当前 seed 闭集为 conversationId/turnId/agent{id,name}/userMessage{id,content}/assistantMessageId，仅支持一个已授权的纯文本用户种子和独立自定义角色 ID（内置 role-family-* 明确拒绝），在首个 await 前复制并经秘密哨兵及大小校验。这是**合成输入协议内核，不是完整历史 trace 导入器**；角色 prompt 只是回调身份占位，未执行/替换被测角色指令。不能剥原 trace 的其他参与者、私信、历史、复杂角色配置来套此接口并宣称 faithful replay；真正导入这些材料及显式 ID 映射仍待实现。
+
+只绑定 `127.0.0.1:0`（随机端口），不允许自选 host/port/DB；未来可在专用容器的同一 network namespace 内与 pi 通信，**本提交尚未将它放入容器或接入任何 launcher**。固定路由白名单：GET `/api/agent-tools/context`、GET `/api/agent-tools/participants`、POST `/api/agent-tools/post-message`（仅 public，replace/append，noFinalize）。其他方法、私信、capabilities、跨Room、workspace/goal/delegation、memory、管理端点均显式拒绝，不 mock 成功或连生产补齐。支持现有 agent-chat-tools CLI，不新造模型工具协议；未覆盖的普通 CAFF 配置仍须阻断回放。
+
+调用身份为每实例新生成的 UUID 和256-bit callback token，仅返回给受信调用方内存；不接收旧凭据、不从环境读取身份、不提供 HTTP 获取接口、不写入 DB/日志。复用 bridge 身份校验并额外定长 timingSafeEqual；实例间同 seed 不共享凭据、数据库或端口。GET 查询/POST body 闭集，拒重复查询、Origin、错误 Host、非 JSON、非法 UTF8、超过64KiB请求；每请求及累计输出最多32KiB，context limit最多24。最多128个通过外层请求门的请求、8个并行处理、16个连接及有限HTTP header/body超时；这不是完备抗DoS能力。仅允许已授权非秘密材料，采用现有秘密哨兵（**非万能秘密检测**）；公开输出也拒完整调用身份及已知哨兵，append后拼接再次检查，避免分片带回完整凭据。错误为固定码，不回显底层SQL/路径/输入/凭据，无访问日志。Node默认HTTP解析层错误不归为应用成功。
+
+1..300000ms 单调 lifetime，过期主动 stop；显式 stop 先吊销身份，关闭且只关闭自有 listener/连接，等待活动 handler settle 后关闭 DB，重复 stop 返回同一 promise。异步请求读完后再次检查 live，不能在 stop 后碰已关闭SQLite。send-public默认沿既有 bridge 异步finalize路径使 invocation inactive，noFinalize可继续追加；没有自动启动其他 agent。数据库保留供受信验收器后续读取，不自动解除 run 引用；回调成功不授予 launch/runnable/reproduced/evaluable/strictEvalEligible。
+
+本轮证据为自建种子：真实本地 HTTP + 现有 CLI读写、重开SQLite查询、双实例隔离、错误身份/路由/私信/超额/超时/半包stop及secret-split负例；不是捕获代码宿主回放、真实Docker/SDK/model执行或真实项目采集。§5.58 补 umask 0 下全部恢复目录0700断言，删除working mkdir及底层mkdir mode的独立变异须红，以闭环E119 P3。Windows管理门仍关闭，完整trace导入、Docker内服务接线、能力工具、普通fresh/resume执行、受控变量实际替换等未完成。准确命令、分套计数及固定SHA审查以Goal E120为准，全部AC pending；零真实采集/Key/模型/供应商/真实Docker/浏览器/生产，历史6美元未结算非账单、不合并发布不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
