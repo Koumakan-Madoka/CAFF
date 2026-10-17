@@ -38,9 +38,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 import { authorizeTargetDir, matchesRelativePattern, pathsEqual, isSameOrUnderPathString } from './capture-policy';
-import { containsSecretSentinel, replaceControlledVariables } from './secrets';
+import { containsSecretSentinel } from './secrets';
 import { detectCaptureCapability, openConstrainedRoot, SAFE_READ_LIMITS } from './safe-read';
-import { validateSessionV2, PI_VERSION_PIN } from './session-validator';
+import { prepareReplayInput } from './replay-input-preparation';
 import { withProjectWriteLock } from './project-write-lock';
 import {
   parseGitIndex,
@@ -427,41 +427,6 @@ function buildManifestHash(files: any, deletions: any) {
   return crypto.createHash('sha256').update(canonical).digest('hex');
 }
 
-// 只挑选白名单字段，避免把调用方对象里的任意内容归档进检查点。
-function sanitizeRunConfig(raw: any) {
-  const source = raw && typeof raw === 'object' ? raw : {};
-  const pick = (value: any) => String(value || '').trim();
-  return {
-    provider: pick(source.provider),
-    model: pick(source.model),
-    modelProfileId: pick(source.modelProfileId),
-    modelProfileName: pick(source.modelProfileName),
-    promptVersion: pick(source.promptVersion),
-    skillIds: Array.isArray(source.skillIds) ? source.skillIds.map(String) : [],
-    conversationSkillIds: Array.isArray(source.conversationSkillIds) ? source.conversationSkillIds : [],
-  };
-}
-
-// configSnapshot 必填键与类型。只有具体验证依据的维度才可升级；
-// 缺键/空串/类型错误一律 harness_tool_config_unverified。
-const CONFIG_SNAPSHOT_REQUIRED_KEYS = [
-  ['piVersion', (value: any) => typeof value === 'string' && value.trim().length > 0],
-  ['agentPromptVersion', (value: any) => typeof value === 'string' && value.trim().length > 0],
-  ['toolBridgeEnabled', (value: any) => typeof value === 'boolean'],
-  ['deliveryMode', (value: any) => value === 'fresh' || value === 'resume'],
-  ['agentName', (value: any) => typeof value === 'string'],
-];
-
-function isValidConfigSnapshot(value: any) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return false;
-  }
-  if (Object.keys(value).length === 0) {
-    return false;
-  }
-  return CONFIG_SNAPSHOT_REQUIRED_KEYS.every(([key, check]: any) => check(value[key]));
-}
-
 export function createCollector(options: any = {}) {
   const store = options.store;
   const trustMtime = options.trustMtime !== false;
@@ -762,189 +727,6 @@ export function createCollector(options: any = {}) {
     return { ok: false, reason: 'session_not_authorized' };
   }
 
-  // 回放输入准备（采集循环前一次性完成）：受控变量替换 → 最终字节秘密扫描 →
-  // session 维度校验（未验证维度默认 incomplete）→ harness/skill 快照校验。
-  function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot: any, sessionAccess: any) {
-    const replayInput: any = {
-      deliveryMode,
-      complete: true,
-      incompleteReasons: [] as string[],
-      verifiedDimensions: [] as string[],
-      unverifiedDimensions: [] as string[],
-      controlledReplacements: [] as any[],
-      promptBlobHash: '',
-      normalizedPromptHash: '',
-      sessionBlobHash: '',
-      sessionLineCount: 0,
-      runConfig: sanitizeRunConfig(input.runConfig),
-      harness: { serverVersion: '', skillSnapshots: [] as any[] },
-    };
-    const plans: any[] = [];
-    const markIncomplete = (reason: string) => {
-      replayInput.complete = false;
-      if (!replayInput.incompleteReasons.includes(reason)) {
-        replayInput.incompleteReasons.push(reason);
-      }
-    };
-
-    // Runtime images are distinct from both prompt text and the pre-turn
-    // resume session. Until authorized attachment archival is implemented,
-    // retain only their count and explicitly block complete replay. Never
-    // persist base64 bytes, paths, MIME metadata or hashes via this channel.
-    replayInput.invocationImageCount = Array.isArray(input.images) ? input.images.length : 0;
-    if (input.images !== undefined && !Array.isArray(input.images)) {
-      replayInput.invocationImageCount = null;
-      markIncomplete('invocation_images_invalid');
-    } else if (replayInput.invocationImageCount > 0) {
-      markIncomplete('invocation_images_not_archived');
-    }
-
-    const promptText = String(input.prompt || '');
-    const replaced = replaceControlledVariables(promptText, input.controlledValues);
-    replayInput.controlledReplacements = replaced.replacements;
-    const promptBuffer = Buffer.from(replaced.text, 'utf8');
-    if (containsSecretSentinel(promptBuffer)) {
-      markIncomplete('prompt_contains_secret');
-    } else {
-      const promptHash = sha256Buffer(promptBuffer);
-      plans.push({ hash: promptHash, content: promptBuffer });
-      replayInput.promptBlobHash = promptHash;
-      replayInput.normalizedPromptHash = promptHash;
-    }
-
-    if (deliveryMode === 'resume') {
-      const sessionPath = String(input.sessionPath || '').trim();
-      if (!sessionPath) {
-        // 禁止静默降级 fresh：deliveryMode 保持 resume，标记不可完整回放。
-        markIncomplete('session_missing');
-      } else {
-        const access = readAuthorizedReplayInput(sessionAccess, sessionPath);
-        if (!access.ok) {
-          // 未授权/不可受限读取的 session 不归档（缺失、越界、链接、根替换各有其原因）。
-          markIncomplete(access.reason);
-        } else {
-          const sessionRaw = access.content;
-          const sessionReplaced = replaceControlledVariables(sessionRaw.toString('utf8'), input.controlledValues);
-        replayInput.controlledReplacements = replayInput.controlledReplacements.concat(sessionReplaced.replacements);
-        const sessionBuffer = Buffer.from(sessionReplaced.text, 'utf8');
-        const validation = validateSessionV2(sessionReplaced.text, { authorizedRoot });
-        replayInput.sessionLineCount = validation.lineCount;
-        replayInput.verifiedDimensions = validation.verifiedDimensions;
-        replayInput.unverifiedDimensions = validation.unverifiedDimensions;
-        if (!validation.ok) {
-          // 结构损坏/未验证格式的材料不归档（禁止以未验证材料充当回放输入）。
-          markIncomplete(validation.reason);
-        }
-        if (containsSecretSentinel(sessionBuffer)) {
-          markIncomplete('session_contains_secret');
-        }
-        if (validation.ok && !replayInput.incompleteReasons.includes('session_contains_secret')) {
-          const sessionHash = sha256Buffer(sessionBuffer);
-          plans.push({ hash: sessionHash, content: sessionBuffer });
-          replayInput.sessionBlobHash = sessionHash;
-        }
-        // 可归档但未验证的维度：complete=false（GPT 复审边界 2/3）。
-        for (const dimension of validation.unverifiedDimensions) {
-          markIncomplete(dimension);
-        }
-        }
-      }
-    }
-
-    if (!replayInput.runConfig.model) {
-      markIncomplete('model_config_missing');
-    }
-    if (!replayInput.runConfig.provider || !replayInput.runConfig.promptVersion) {
-      markIncomplete('run_config_incomplete');
-    }
-
-    // harness/skill 内容固定（契约 §2.4/§5：skill ID 列表不等于内容固定）。
-    const harnessInput = input.harness && typeof input.harness === 'object' ? input.harness : {};
-    replayInput.harness.serverVersion = String(harnessInput.serverVersion || '').trim();
-    if (!replayInput.harness.serverVersion) {
-      markIncomplete('harness_config_unverified');
-    }
-    const configSnapshot = harnessInput.configSnapshot;
-    if (isValidConfigSnapshot(configSnapshot)) {
-      const configBuffer = Buffer.from(JSON.stringify(configSnapshot), 'utf8');
-      if (containsSecretSentinel(configBuffer)) {
-        markIncomplete('harness_config_contains_secret');
-      } else {
-        const configHash = sha256Buffer(configBuffer);
-        plans.push({ hash: configHash, content: configBuffer });
-        replayInput.harness.configSnapshotHash = configHash;
-      }
-      // 跨字段一致性（GPT 复审 #3 第六轮）：非空字段 ≠ 已验证。
-      // - piVersion 必须等于本采集器钉住的 harness 版本（session 校验规则、上下文构建
-      //   语义都钉在该版本的真实实现上；agent-executor 以 "pi:<version>" 形式上报）。
-      // - 声明的 deliveryMode 必须与实际采集模式一致。
-      const declaredPiVersion = String((configSnapshot as any).piVersion || '').trim().replace(/^pi:/, '');
-      if (declaredPiVersion !== PI_VERSION_PIN) {
-        markIncomplete('harness_version_unverified');
-      }
-      if (String((configSnapshot as any).deliveryMode) !== deliveryMode) {
-        markIncomplete('harness_delivery_mode_mismatch');
-      }
-    } else {
-      markIncomplete('harness_tool_config_unverified');
-    }
-    const snapshots = Array.isArray(harnessInput.skillSnapshots) ? harnessInput.skillSnapshots : [];
-    const snapshotsById = new Map<string, any>();
-    for (const snap of snapshots) {
-      const id = String(snap && snap.id || '').trim();
-      if (id && !snapshotsById.has(id)) {
-        snapshotsById.set(id, snap);
-      }
-    }
-    const declaredSkillIds = new Set<string>([
-      ...replayInput.runConfig.skillIds,
-      ...replayInput.runConfig.conversationSkillIds,
-    ].map((id: any) => String(id || '').trim()).filter(Boolean));
-    for (const id of declaredSkillIds) {
-      const snap = snapshotsById.get(id);
-      if (!snap || !String(snap.sha256 || '').trim() || typeof snap.content !== 'string') {
-        markIncomplete(`skill_snapshot_missing:${id}`);
-      }
-    }
-    const archivedSkillIds = new Set<string>();
-    for (const [id, snap] of snapshotsById) {
-      const declaredSha = String(snap.sha256 || '').trim().toLowerCase();
-      if (!declaredSha || typeof snap.content !== 'string') {
-        continue;
-      }
-      const contentBuffer = Buffer.from(snap.content, 'utf8');
-      const actualSha = sha256Buffer(contentBuffer);
-      if (actualSha !== declaredSha) {
-        markIncomplete(`skill_snapshot_hash_mismatch:${id}`);
-        continue;
-      }
-      if (containsSecretSentinel(contentBuffer)) {
-        markIncomplete(`skill_contains_secret:${id}`);
-        continue;
-      }
-      plans.push({ hash: actualSha, content: contentBuffer });
-      replayInput.harness.skillSnapshots.push({
-        id,
-        source: String(snap.source || '').trim(),
-        sha256: actualSha,
-        blobHash: actualSha,
-      });
-      archivedSkillIds.add(id);
-    }
-    for (const id of declaredSkillIds) {
-      if (!archivedSkillIds.has(id)
-        && !replayInput.incompleteReasons.some((reason: string) => (
-          reason === `skill_snapshot_missing:${id}`
-          || reason === `skill_snapshot_hash_mismatch:${id}`
-          || reason === `skill_contains_secret:${id}`
-        ))) {
-        markIncomplete(`skill_snapshot_not_archived:${id}`);
-      }
-    }
-
-    return { replayInput, plans };
-  }
-
   function captureTurnCheckpoint(input: any = {}) {
     const startedAt = Date.now();
     const projectId = String(input.projectId || '').trim();
@@ -1020,7 +802,8 @@ export function createCollector(options: any = {}) {
 
       const previous = store.loadLatestCheckpoint(projectId, targetDir);
       const previousFiles = previous && previous.files ? previous.files : null;
-      const { replayInput, plans } = prepareReplayInput(input, deliveryMode, pinnedRoot, { capability, policy });
+      const { replayInput, plans } = prepareReplayInput(input, deliveryMode, pinnedRoot,
+        inputPath => readAuthorizedReplayInput({ capability, policy }, inputPath));
 
       let consistency: any = null;
       let scanResult: any = null;

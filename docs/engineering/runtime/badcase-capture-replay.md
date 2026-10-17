@@ -1022,6 +1022,17 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 7原生+11Node非等价变异最终18点全部断言红（canonical、第二读、hash/叶身份、大小、根pin、JSONL限定；独立授权表、pin路径、保护根、秘密、UTF8严格、backing、三期限、wire根pin/hash）；原生私有副本逐字节恢复27/27并清理，Node仅进程内拦截编译模块读取、磁盘SHA不变，干净进程复绿。流程披露：最初 native 观察器把根祖先打开也计作 session 子项，修正为明确祖先清单后通过；真实 Node 测试误用不存在的 usage.blobBytes，改核 bytesByKind.blobs。初轮部分 native 变异返回成功 body 导致测试 JSONDecodeError，只作诊断不算断言击杀，改拆 header/body 对象断言后重跑全7红；Node wire-hash 补丁首轮匹配旧/新两处而拒绝，加入 session 分支上下文后重跑全11红。首次 WSL命令被MSYS路径转换导致未执行，以禁转换完整重跑。最终fast2122通过/43跳过（含check/build）、smoke101、双typecheck/diff-check通过。零真实项目采集/Key/供应商/真实Docker/浏览器/生产；外置Git、共享输入准备/依赖验证、实际turn落盘接线与容器映射仍待完成。历史6美元未结算非账单与全部AC pending不变，不合并发布。
 
+### 5.46 共享回放输入准备与 Windows session→发布连接（内部连接段）
+
+- `replay-input-preparation.ts` 从 Linux collector 抽出既有 prompt/受控替换、session-validator、runConfig、harness 与 skill 准备规则；同步 collector 仍经原受限读取边界传入 reader，不改工作根授权、采集时序、文件扫描或能力门。新共享函数不读取路径、不授权、不发布，reader 是可信内部接口，不能当作 agent 授权入口。
+- `windows-replay-input.ts` 只作内部异步准备：进入时 structuredClone 固定调用材料并锁存 authorizedRoot，resume 且 sessionPath 非空时恰调用一次 §5.45 的独立授权 reader，fresh/缺路径不调用；前后复查同一单调 25 秒观察期限，迟到材料不消费、复制/同步校验后超时不给计划。reader 异常固定为 session_input_unavailable，不重试、不同步回退、不降 fresh。同步 clone/解析/hash 不可抢占，原生 helper 的 kill→close 语义不变，不宣称硬 25 秒清理。
+- 历史断链/坏附件/未知结构拒归档；格式合法但图像、扩展状态、bash 或树外工具依赖未验证时可以归档原材料，但 complete=false，维度原样保留，不推定依赖已保存。调用级 images 仍只记数量、不归档。保留 toolBridgeEnabled 等完整配置，不剥配置伪装可支持。
+- 共享层新增严格 UTF-8：旧 collector 的 toString('utf8') 会把 JSON 字符串中的坏字节替成 U+FFFD 后归档；现在 session_utf8_invalid、无 session hash/计划、仍为 resume。私有探针从父 SHA 提取并转译原函数，18 个合法 UTF-8 用例的清单/计划逐字节一致；同一坏字节用例证实旧实现 complete=true 且归档，新实现拒绝。所有返回计划均 Buffer.alloc 独立 backing，避免继续持有可能含被排除材料的共享池；不宣称安全擦除。
+- Windows reader 仍先拒原始秘密与坏 UTF-8，因此已含真实秘密的 session 不会为了受控替换而放行；共享替换不是秘密扫描豁免。输入/harness 来源仍属调用方声明，authorizedRoot 参数不代表本函数已授予文件树采集权限；输入维度 complete=true 也不升级 checkpoint 的 strictEvalEligible。
+- 验证：新接口旧构建缺模块时初始 14 例全红（接口红，不冒充历史语义回归）；最终新套 17 例，Windows 16 通过/1 Linux 跳过。自建 NTFS 临时 session 经独立管理 pin→原生读取→共用校验→测试 writer 租约/配额 publisher→重开 store，resume、CRLF 原始字节及 hash 保留；源 session 改坏后新准备不完整、旧 CAS 不变。测试直接设置 writer enabled，不是管理开启，也不是实际 turn。Linux 另经真实 collector 检查坏 UTF-8 不归档；WSL Debian Node22.22 私有 36 文件哈希核验，五套 133=129 通过/4 平台或权限跳过，测试后字节不变并清理。
+- 私有进程内 10 单点变异全断言红：有损解码、秘密守卫、未验证维度、共享池 backing、结构归档门、受控替换、模式、await 前 clone、await 后期限与最终期限；源码/build 磁盘字节不变，干净进程复绿。Python/helper/内嵌源码均未改；Windows 原生 27/27，Windows 输入相关八套 72=71 通过/1 Linux 跳过。完整 fast/typecheck/build/smoke 结果记 Goal，不以测试数替代功能证据。
+- **仍无 Windows turn collector/服务/管理开启接线**；外置 Git、全局忽略、core.ignorecase=true、输入依赖与附件真正归档、删除历史、真实工作树采集、Docker 路径替换/工具桥仍待完成。Windows 采集门保持关闭，全部 AC pending。零真实项目采集/Key/供应商/Docker/浏览器/生产，不合并发布；历史 6 美元未结算预留非账单保持。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
