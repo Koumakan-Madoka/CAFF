@@ -835,6 +835,16 @@ E89在已审`feeeddf1`下按新计划/批准运行：实际仅1请求HTTP200后`
 
 本节仅补测试和期限说明，不修改生产执行代码或成功接受集合。E91仍无评分、候选未启动，累计$6未结算预留非账单；index0真实兼容与历史超时根因仍未知，全部AC pending、不合并发布。
 
+### 5.33 已封存材料进入模型协调器的离线集成边界
+
+本节只补集成测试，不改变采集器、模型launcher、配置或任何接受集合；也不把E93生成CSV样例升级为用户历史badcase证据。
+
+- `badcase-model-evaluation.test.js`新增Linux用例，沿实际授权/容量预估/独立开启HTTP、collector、SQLite、标记/封存worker、DB重建读取，再以`selectSealedMaterials`选入现有`prepareModelEvaluation`和持久批准/双账本。fresh/resume各两variant，核对stage中完整checkpoint结构及原文件、prompt与resume session字节；同起点摘要相同且mode保留，实时文件/执行后session变更不能替换归档字节。Docker协议与HTTPS响应均为替身，回执和产物人为构造，**未执行SDK、真实Docker或模型**，不能当作指令实际被提交或工具实际被执行的证据。
+- 逐次报告与批准持久重读一致，原case字节及全部不完整资格不变。删除必需prompt/session blob后选材明确拒绝，不退回live目录或静默改fresh；测试只在自己的临时CAS内删除并恢复合成blob。
+- `session-reuse-ab.test.js`现有真实executor挂点→collector→SQLite→封存HTTP用例追加操作者预检负例：实际归档含`toolBridgeEnabled=true`等配置，被受限launcher以`sdk_diagnostic_unsupported`拒绝，fresh/resume均不篡改checkpoint、harness blob或封存状态，不创建批准/派发目录。完整配置有多个受限维度，本集成不把桥标志断言为唯一/首个拒绝原因；桥守卫的独立覆盖沿用§4.7语义测试。这里的`startRun`与工具桥仍是替身；合成prompt未嵌入回调值，受控替换清单可以为空，**不能声称这次集成已覆盖非空替换的真实执行**。非空替换拒绝由§4.7原有独立语义负例覆盖。操作者prepare会在语义能力检查前调用capsule的protect，故拒绝也可能留下永久保护引用；不能把“未创建批准/未派发”说成零写入或引用已释放，仍沿用过度保留规则。
+- 因而“采集输入完整”不等于“现有模型入口支持该输入”。普通CAFF turn通常带工具桥、受控路径/回调替换或复杂resume历史；这些语义尚未实现时必须明确阻断，不得为了对照成功剥去它们。当前可运行闭环仍是显式关闭工具桥、无skill/替换且历史满足线性纯user文本限制的材料。用户提供真实case后也须先做能力预检，不承诺任意case可运行，不据此扩大采集授权。
+- 运行上述集成需Linux openat2/statx、Python3及匹配Node ABI的SQLite，Windows显式跳过，不能用跳过数当Linux验证。宿主只执行受信文件/DB/状态机代码，不执行被测agent。本节不新增供应商调用、费用或真实项目采集；全部最终AC仍pending，executionVerified/faithfulReplay/strict资格不升级。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

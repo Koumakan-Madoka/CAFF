@@ -13,8 +13,8 @@ const { recordBoundModelApproval, dispatchBoundModelEvaluation } = require('../.
 const { encodeToolChatCompletionsRequest } = require('../../build/server/domain/runtime/badcase-capture/chat-completions-protocol');
 const hash = x => crypto.createHash('sha256').update(x).digest('hex');
 const image = { imageId: 'sha256:' + '1'.repeat(64), repositoryDigest: 'node@sha256:' + '2'.repeat(64), architecture: 'amd64', nodeVersion: 'v24.21.0', pythonVersion: 'Python 3.11.2' };
-function setup(t, prepare = prepareModelEvaluation) {
-  const h = fixture(t), repo = path.resolve(__dirname, '../..');
+function setup(t, prepare = prepareModelEvaluation, captured) {
+  const h = captured || fixture(t), repo = path.resolve(__dirname, '../..');
   const sources = { runtimeArchive: archiveRuntime(repo, path.join(h.root, 'runtime')), harnessArchive: archiveHarness(repo, path.join(h.root, 'harness')) };
   const config = { settings: { provider: 'synthetic', model: 'fixture', contextWindowTokens: 1000, maxOutputTokens: 100, temperature: 0,
     inputMicroUsdPerMillionTokens: 1000000, outputMicroUsdPerMillionTokens: 1000000, maxRequestBytes: 4096, maxResponseBytes: 4096 },
@@ -22,10 +22,12 @@ function setup(t, prepare = prepareModelEvaluation) {
     tools: [{ type: 'function', function: { name: 'read', description: 'synthetic', parameters: { type: 'object' } } }] };
   const roles = { baseline: 'base', candidate: 'candidate' }, rule = { expectedHash: hash('done\n'), badcaseHash: hash('draft\n') };
   const limits = { repetitions: 1, timeoutMs: 25000, perRunLimitMicroUsd: 2200, totalLimitMicroUsd: 4400 };
-  const prepared = prepare(h.request, image, sources, roles, rule, config, limits);
+  const request = h.request || require('../../scripts/badcase-capture/sealed-workbench.cjs').selectSealedMaterials({
+    captureRoot: h.root, selections: [h.selection], image, sources, roles, rule })[0].request;
+  const prepared = prepare(request, image, sources, roles, rule, config, limits);
   const approval = { confirmed: true, planHash: prepared.plan.planHash, approvalId: 'test', expiresAt: Date.now() + 60000 };
   recordBoundModelApproval(h.root, prepared.plan.spec, config, approval);
-  return { ...h, config, prepared, approval, sources, roles, rule, limits };
+  return { ...h, request, config, prepared, approval, sources, roles, rule, limits };
 }
 function network(t, onRequest = () => {}) {
   const original = https.request; t.after(() => { https.request = original; }); let count = 0;
@@ -82,6 +84,62 @@ test('retained model preparer binds approval and actual request costs, excludes 
   const h = setup(t), count = network(t); const report = await execute(h);
   assert.equal(report.ledger.state, 'complete'); assert.equal(count(), 2); assert.equal(report.ledger.knownCostMicroUsd, 60);
   assert.equal(report.ledger.summary.baseline.expectationMet, 1); assert.equal(report.ledger.summary.candidate.expectationMet, 1);
+});
+// Real management HTTP/collector/SQLite/sealing; both SDK/Docker and model
+// transport remain synthetic. This proves composition, NOT actual replay.
+test('HTTP-captured fresh/resume sealed inputs reach the model coordinator without changing archived mode or bytes', {
+  skip: process.platform !== 'linux', timeout: 90000,
+}, async t => {
+  const capturedFixture = require('../../scripts/badcase-capture/captured-workbench-fixture.cjs');
+  const { readBoundModelApproval } = require('../../build/server/domain/runtime/badcase-capture/model-binding');
+  const { readModelEgress } = require('../../build/server/domain/runtime/badcase-capture/model-egress');
+  const { selectSealedMaterials } = require('../../scripts/badcase-capture/sealed-workbench.cjs');
+  const count = network(t);
+  for (const mode of ['fresh', 'resume']) {
+    const captured = await capturedFixture(t, mode);
+    const caseFile = path.join(captured.root, 'projects/p1/cases', hash(captured.selection.messageId) + '.json');
+    const savedCase = fs.readFileSync(caseFile);
+    const h = setup(t, prepareModelEvaluation, captured), seen = [];
+    assert.equal(h.prepared.review.deliveryMode, mode);
+    assert.equal(h.prepared.review.invocationHash, h.r.promptBlobHash);
+    const report = await execute(h, undefined, files => {
+      const capsule = JSON.parse(files.find(f => f.path === 'capsule.json').bytes);
+      assert.deepEqual(capsule.checkpoint, h.cp);
+      const read = digest => Buffer.from(capsule.blobs.find(b => b.sha256 === digest).base64, 'base64');
+      assert.equal(read(h.cp.files['source.txt'].hash).toString(), 'retained bytes');
+      assert.equal(read(h.r.promptBlobHash).toString(), 'synthetic retained invocation');
+      if (mode === 'resume') {
+        assert.deepEqual(read(h.r.sessionBlobHash), h.store.readBlob('p1', h.r.sessionBlobHash));
+        assert.doesNotMatch(read(h.r.sessionBlobHash).toString(), /POST-START/);
+      } else assert.equal(h.r.sessionBlobHash, '');
+      const task = JSON.parse(files.find(f => f.path === 'task.json').bytes);
+      assert.equal(task.deliveryMode, mode);
+      assert.equal(task.role, h.roles[seen.length === 0 ? 'baseline' : 'candidate']);
+      seen.push({ capsuleHash: task.capsuleHash, invocationHash: task.invocationHash, historyHash: task.historyHash });
+    }, {}, true);
+    assert.equal(seen.length, 2); assert.deepEqual(seen[0], seen[1]);
+    assert.equal(report.ledger.state, 'complete'); assert.equal(report.ledger.runs.length, 2);
+    assert.equal(report.ledger.summary.baseline.expectationMet, 1); assert.equal(report.ledger.summary.candidate.expectationMet, 1);
+    for (const run of report.ledger.runs) {
+      const inner = readModelEgress(h.root, run.runId);
+      assert.equal(inner.reason, 'completed'); assert.equal(inner.requests.length, 1);
+    }
+    assert.deepEqual(readBoundModelApproval(h.root, h.approval.approvalId).report, report);
+    assert.deepEqual(fs.readFileSync(caseFile), savedCase);
+    for (const key of ['runnable', 'reproduced', 'evaluable', 'strictEvalEligible', 'complete']) {
+      assert.equal(JSON.parse(savedCase).record[key], false);
+    }
+    // Loss of a required original input must block selection, not silently
+    // reconstruct it from the live target or downgrade resume to fresh.
+    const blob = h.blobPath(mode === 'resume' ? h.r.sessionBlobHash : h.r.promptBlobHash), bytes = fs.readFileSync(blob);
+    try {
+      fs.unlinkSync(blob);
+      assert.throws(() => selectSealedMaterials({ captureRoot: h.root, selections: [h.selection], image,
+        sources: h.sources, roles: h.roles, rule: h.rule }), /^Error: sealed_material_invalid$/);
+      assert.deepEqual(fs.readFileSync(caseFile), savedCase);
+    } finally { fs.writeFileSync(blob, bytes); }
+  }
+  assert.equal(count(), 4); // Four synthetic exchanges, no supplier/SDK execution.
 });
 test('receipt/count/artifact mismatch never settles an invented score or cost', async t => {
   network(t);

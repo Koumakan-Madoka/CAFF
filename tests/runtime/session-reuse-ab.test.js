@@ -949,6 +949,40 @@ test('authorized capture to message seal survives SQLite/service reconstruction 
     assert.equal(restored.ok, true);
     assert.equal(fs.readFileSync(path.join(env.tempDir, `restore-${index}/file.txt`), 'utf8'), index === 0 ? 'before fresh' : 'before resume');
   }
+  // A complete collector input is NOT permission to drop the actual CAFF
+  // bridge/replacements to fit the deliberately narrower model launcher.
+  const { prepareOperator } = require('../../scripts/badcase-capture/model-evaluation-operator.cjs');
+  const repo = path.resolve(__dirname, '../..');
+  const sources = {
+    runtimeArchive: require('../../scripts/badcase-capture/runtime-archive.cjs').archiveRuntime(repo, path.join(env.tempDir, 'runtime')),
+    harnessArchive: require('../../scripts/badcase-capture/harness-archive.cjs').archiveHarness(repo, path.join(env.tempDir, 'harness')),
+  };
+  const model = { settings: { provider: 'synthetic', model: 'fixture', contextWindowTokens: 1000, maxOutputTokens: 100, temperature: 0,
+    inputMicroUsdPerMillionTokens: 1000000, outputMicroUsdPerMillionTokens: 1000000, maxRequestBytes: 4096, maxResponseBytes: 4096 },
+    endpoint: { hostname: 'api.example.com', address: '93.184.216.34', path: '/v1/chat/completions', timeoutMs: 1000, maxRequestBytes: 4096, maxResponseBytes: 4096 },
+    maxRequests: 2, tools: [{ type: 'function', function: { name: 'read', description: 'synthetic', parameters: { type: 'object' } } }] };
+  const operatorRoot = path.join(env.tempDir, 'never-approved-model-reviews');
+  for (const [index, message] of messages.entries()) {
+    const cp = observed[index].checkpoint, archived = JSON.stringify(cp);
+    const harnessBytes = capture.store.readBlob(projectId, cp.replayInput.harness.configSnapshotHash);
+    assert.equal(JSON.parse(harnessBytes).toolBridgeEnabled, true);
+    // This synthetic bridge does not embed live callback values in the prompt;
+    // its replacement list can be empty. The full executor configuration has
+    // several unsupported dimensions; this is not an isolated bridge predicate
+    // test (the independent diagnostic suite covers that guard).
+    assert.ok(Array.isArray(cp.replayInput.controlledReplacements));
+    assert.throws(() => prepareOperator({ root: operatorRoot, captureRoot,
+      selection: { id: 'actual-executor-' + index, projectId, conversationId: conversation.id, messageId: message.id },
+      image: { imageId: 'sha256:' + '1'.repeat(64), repositoryDigest: 'node@sha256:' + '2'.repeat(64), architecture: 'amd64', nodeVersion: 'v24.21.0', pythonVersion: 'Python 3.11.2' },
+      sources, roles: { baseline: 'synthetic baseline', candidate: 'synthetic candidate' },
+      rule: { expectedHash: createHash('sha256').update('done').digest('hex'), badcaseHash: createHash('sha256').update('draft').digest('hex') }, model,
+      limits: { repetitions: 1, timeoutMs: 25000, perRunLimitMicroUsd: 2200, totalLimitMicroUsd: 4400 },
+    }), /^Error: sdk_diagnostic_unsupported$/);
+    assert.equal(JSON.stringify(capture.store.loadCheckpoint(projectId, cp.checkpointId)), archived);
+    assert.deepEqual(capture.store.readBlob(projectId, cp.replayInput.harness.configSnapshotHash), harnessBytes);
+    assert.deepEqual((await api(`/api/projects/${projectId}/conversations/${conversation.id}/messages/${message.id}/badcase-flag`)).seal, seals[index].seal);
+  }
+  assert.equal(fs.existsSync(operatorRoot), false, 'rejected preview must not create an approval or dispatch');
 });
 
 test('Goal Runner reuse requires matching Goal identity, revision, and usage below 50%', async (t) => {
