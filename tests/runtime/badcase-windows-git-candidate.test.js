@@ -174,6 +174,72 @@ test('classified selection precedes reads, preserves tracked mode, rescans metad
   assert.equal(mismatch.readWindowsGitFileCandidate({ policy: { includedIgnoredPatterns: [] } }).reason, 'git_metadata_changed');
 });
 
+function missingCandidate(names, { excluded = [], extra = [], ignoreCase = false, changeAfter = false } = {}) {
+  const first = metadata();
+  first.files.find(f => f.path === '.git/index').content = gitIndex(names);
+  first.files.find(f => f.path === '.git/config').content = Buffer.from(`[core]\nignorecase = ${ignoreCase}\n`);
+  for (const f of first.files) {
+    f.size = String(f.content.length); f.sha256 = hash(f.content);
+    first.entries.find(e => e.path === f.path).size = f.size;
+  }
+  first.entries.push(...extra);
+  let reads = 0;
+  return isolated(() => ({ ...scope(), request: { ...scope().request, excluded } }), (_, __, req) => {
+    if (req.op === 'gitMetadata') return ++reads === 2 && changeAfter ? metadata() : first;
+    return { ok: true, entries: first.entries.filter(e => !e.path.startsWith('.git/') && e.path !== '.git'), files: [] };
+  }).readWindowsGitFileCandidate({ policy: { includedIgnoredPatterns: [] } });
+}
+
+test('verified index records first-checkpoint visible ASCII absences, never case or type replacements', () => {
+  for (const ignoreCase of [false, true]) {
+    const r = missingCandidate(['z.log', 'dir/gone.txt', 'TRACKED.LOG', 'now-dir', 'parent/child', 'a.txt'], {
+      ignoreCase, extra: [entry('now-dir', 'directory'), entry('parent')],
+    });
+    assert.equal(r.ok, true, r.reason);
+    assert.deepEqual([...r.indexDeletions], ['a.txt', 'dir/gone.txt', 'z.log']);
+    assert.ok(r.limitations.includes('indexed_deletions_visible_ascii_only'));
+    assert.equal(r.complete, false); assert.equal(r.strictEvalEligible, false);
+  }
+  const changed = missingCandidate(['gone'], { changeAfter: true });
+  assert.equal(changed.ok, false); assert.equal(Object.hasOwn(changed, 'indexDeletions'), false);
+});
+
+test('indexed absence excludes native deny names, explicit/protected prefixes and short-name uncertainty', () => {
+  // Keep the host conservative visibility predicate synchronized with the fixed
+  // native pruning policy; source drift must fail before another release.
+  const source = require('../../build/server/domain/runtime/badcase-capture/windows-helper-source').WINDOWS_HELPER_SOURCE;
+  const deny = [...source.match(/METADATA_DENY_NAMES = \(([\s\S]*?)\)/)[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+  assert.deepEqual(deny, ['.git', '.pi', '.pi-sandbox', '.ssh', '.aws', '.azure', '.gnupg', '.env', 'auth.json', 'credentials.json']);
+  // .git paths are already rejected by the independent index parser.
+  const blocked = deny.filter(p => p !== '.git').flatMap(p => [p, `nested/${p}/hidden`]);
+  const r = missingCandidate([...blocked, '.ENV.dev', 'nested/.env.prod', 'PRIVATE/file', 'storage/blob', 'LONGNA~1/file', 'privates/safe', 'good.txt'], {
+    excluded: ['private', 'storage'],
+  });
+  assert.equal(r.ok, true, r.reason); assert.deepEqual([...r.indexDeletions], ['good.txt', 'privates/safe']);
+  const control = missingCandidate(['PRIVATE/file', 'storage/blob', 'good.txt']);
+  assert.deepEqual([...control.indexDeletions], ['PRIVATE/file', 'good.txt', 'storage/blob']);
+});
+
+test('Unicode visibility uncertainty suppresses index deletion inference, not ordinary capture', () => {
+  for (const options of [{ excluded: ['caf\u00e9'] }, { extra: [entry('caf\u00e9')] }]) {
+    const r = missingCandidate(['gone'], options); assert.equal(r.ok, true, r.reason);
+    assert.deepEqual([...r.indexDeletions], []);
+    assert.ok(r.limitations.includes('indexed_deletions_namespace_unverified'));
+  }
+  const r = missingCandidate(['caf\u00e9', 'gone']); assert.equal(r.ok, true, r.reason);
+  assert.deepEqual([...r.indexDeletions], []); assert.equal(r.indexDeletionsVerified, false);
+  // Even ignorecase=false must not infer ambiguous NT component identities.
+  const ambiguous = missingCandidate(['Dir/one', 'dir/two']);
+  assert.equal(ambiguous.ok, true); assert.deepEqual([...ambiguous.indexDeletions], []);
+});
+
+test('indexed deletion output is bounded and cannot return a partial batch', () => {
+  assert.equal(missingCandidate(Array.from({ length: 2048 }, (_, i) => `gone-${i}`)).indexDeletions.length, 2048);
+  const r = missingCandidate(Array.from({ length: 2049 }, (_, i) => `gone-${i}`));
+  assert.equal(r.reason, 'git_deletion_limit'); assert.equal(Object.hasOwn(r, 'files'), false);
+  assert.equal(Object.hasOwn(r, 'indexDeletions'), false);
+});
+
 test('observation scope binds native root identity, literal root, exclusions and fixed helper source', () => {
   const first = metadata();
   function read(request) {

@@ -95,7 +95,38 @@ function classify(metadata: any, included: string[]): any {
   })), { tracked: new Set(modes.keys()), applyIgnore: true, gitignoreByDir, globalIgnoreSources,
     isIncludedIgnored: (p: string) => matchesRelativePattern(canonicalPaths.get(p), included) });
   const paths = classification.candidates.map((e: any) => canonicalPaths.get(e.path)!).sort((a: string, b: string) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
-  return { ok: true, paths, ignoreCase, modes: new Map(paths.map((p: string) => [p, modes.get(key(p)) || 0o100644])) };
+  return { ok: true, paths, ignoreCase, indexPaths: parsed.entries.map((e: any) => e.path),
+    modes: new Map(paths.map((p: string) => [p, modes.get(key(p)) || 0o100644])) };
+}
+
+// Conservative absence evidence only, NOT an NT alias probe or a new grant.
+// Match native metadata pruning before inferring absence from its pruned tree.
+// Names mirror windows_read.py METADATA_DENY_NAMES (+ .env.*); a source-parity
+// regression pins this list. Unicode visibility/short-name uncertainty is never
+// guessed using JS casefold. Missing content cannot be scanned for old secrets.
+const nativeDenyNames = new Set(['.git', '.pi', '.pi-sandbox', '.ssh', '.aws', '.azure', '.gnupg',
+  '.env', 'auth.json', 'credentials.json']);
+function indexedAbsences(indexPaths: string[], entries: any[], excluded: string[]): any {
+  const ascii = (p: string) => !/[^\x20-\x7e]/.test(p);
+  if (![...indexPaths, ...entries.map(e => e.path), ...excluded].every(ascii)
+    || !asciiPathSet(indexPaths) || !asciiPathSet(entries.map(e => e.path))) {
+    return { ok: true, verified: false, paths: [] };
+  }
+  const present = new Map(entries.map(e => [e.path.toLowerCase(), e.type]));
+  const prefixes = excluded.map(p => p.replace(/\\/g, '/').toLowerCase());
+  const paths: string[] = [];
+  for (const original of indexPaths) {
+    const p = original.toLowerCase(), parts = p.split('/');
+    if (p.includes('~') || present.has(p) || parts.some(s => nativeDenyNames.has(s) || s.startsWith('.env.'))
+      || prefixes.some(prefix => p === prefix || p.startsWith(`${prefix}/`))
+      // A file replacing an ancestor directory is a type replacement, not an
+      // inferred descendant deletion. An absent directory may contain deletions.
+      || parts.some((_, i) => i > 0 && present.get(parts.slice(0, i).join('/')) === 'file')) continue;
+    paths.push(original);
+    if (paths.length > 2048) return fail('git_deletion_limit');
+  }
+  paths.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  return { ok: true, verified: true, paths };
 }
 
 const rootKey = (p: string) => path.win32.resolve(p).replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
@@ -184,6 +215,8 @@ function* candidateSteps(options: any): Generator<any, any, any> {
     }
     const selected = classify(external ? classificationView(before, externalBefore.sources) : before, included);
     if (!selected.ok) return selected;
+    const absences = indexedAbsences(selected.indexPaths, before.entries, plan.request.excluded);
+    if (!absences.ok) return absences;
     if (external) {
       externalBefore.signature = externalSignature(externalBefore.sources);
       externalBefore.sources.clear(); // retain only digests across ordinary content capture
@@ -225,7 +258,8 @@ function* candidateSteps(options: any): Generator<any, any, any> {
         helperSha256: WINDOWS_HELPER_SOURCE_SHA256 })).digest('hex'),
       presentPaths: before.entries.filter((e: any) => !isGit(e.path)).map((e: any) => e.path),
     };
-    return { ok: true, reason: '', files, blobs, observation, classification: external ? 'bounded_external_git_subset_v1' : 'bounded_local_git_subset_v1',
+    return { ok: true, reason: '', files, blobs, observation,
+      indexDeletions: absences.paths, indexDeletionsVerified: absences.verified, classification: external ? 'bounded_external_git_subset_v1' : 'bounded_local_git_subset_v1',
       complete: false, strictEvalEligible: false, captureAvailable: false,
       limitations: ['no_atomic_snapshot', 'no_independent_consistency_evidence', 'metadata_aba_residual',
         'known_sensitive_names_excluded', 'ambient_global_git_excludes_not_read',
@@ -233,6 +267,8 @@ function* candidateSteps(options: any): Generator<any, any, any> {
         ...(external ? ['external_roots_explicitly_selected_and_pinned', 'external_info_exclude_required', 'external_cross_read_identity_aba_residual']
           : ['external_gitdir_and_unverified_config_blocked']), 'excluded_git_metadata_not_overridden',
         'untracked_windows_mode_synthesized_0644', 'deletion_history_not_collected', 'empty_directories_not_restored',
+        'indexed_deletions_visible_ascii_only', 'indexed_deletions_short_names_and_old_secret_content_unverified',
+        ...(absences.verified ? [] : ['indexed_deletions_namespace_unverified']),
         'session_and_invocation_not_collected', 'windows_turn_collector_not_connected'] };
 }
 

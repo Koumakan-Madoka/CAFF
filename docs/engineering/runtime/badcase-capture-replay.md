@@ -1114,6 +1114,18 @@ Windows collector 在既有跨 await 项目租约内读取同 target 的 latest�
 
 验证：两组接口/范围测试和 collector 历史组合测试在父构建先失败；Windows 自建 NTFS Git/session 夹具连续采集、重开存储，验证真实删除与 ignore/case-only/类型替换/秘密的差别，两次恢复后清单一致；改变排除范围后不沿用历史。原始 first/resume 字节及严格资格保持；这不是日常真实 worktree 或管理开启验收。具体命令/结果以 Goal 证据记录为准。
 
+### 5.54 Windows 已核验索引中的首次采集前缺席记录（管理开启仍关）
+
+在 §5.53 的上一检查点历史之外，本地/显式选择外置 Git 的候选现可输出当前已校验索引中、在本轮完整可见命名空间中缺席的普通文件名。保留索引原拼写，不读取 Git HEAD/objects、不执行 Git、不增加授权根或打开已排除对象。临时推断结果只在既有全树/元数据/外置五源复验全部成功后随候选返回；失败不返回部分删除表、文件计划或 absence evidence。
+
+可见性规则是保守子集，不是另一次 NT 路径探测：索引、枚举名称及编译后的排除前缀须全部可打印 ASCII，索引及树的逐组件拼写须无大小写歧义；否则不推断本轮索引删除，附 `indexed_deletions_namespace_unverified`，普通文件采集仍可成功（ignorecase=true 原有非 ASCII 拒绝不变）。按 ASCII 不分大小写判存活，case-only 名称差异、同名目录、祖先被普通文件替代均不算删除。逐组件排除原生 `METADATA_DENY_NAMES`、`.env.*`，再应用含受信 private/storage 根的编译排除前缀；源列表一致性有回归约束，Python/helper 源码与协议未改。含 `~` 的索引名不猜 8.3 短名语义。仅记录路径，不记录缺席文件的原内容、hash、身份或旧秘密判定；无法扫描不存在的旧内容，不能宣称其历史内容无秘密。
+
+单次索引删除最多 2048 条，超限整批 `git_deletion_limit`，不截断冒充完整。collector 将有验证标记的索引记录与可比历史记录按 ASCII 不分大小写去重合并、字节排序（索引拼写优先），可比基线中已知 secretExcluded 的名字不会被索引重新带回。无历史基线时仍可记录索引缺席；范围改变只使旧历史不可比，不抹掉独立核验的当前索引证据。`integrity.indexedDeletionEvidence=verified_index_visible_ascii_v1` 与 `deletionHistoryBaselineId` 分别说明两类来源；无索引可见性证明时前者为空并保留首次删除未推断限制。删除列表仍进入 manifestHash/配额/发布链，restore 仍只在空目标恢复实际文件，不按 deletions 额外删除目标文件。
+
+本节细化 §5.53：无基线不再必然 deletions=[]，历史限制标签改为 `deletion_history_only_from_comparable_previous_checkpoint`；已验证索引证据不再附“首检查点前 tracked 删除完全未推断”。不是 Git HEAD 删除全集：已从索引移除的 staged deletion、不可见/歧义/Unicode/短名及旧秘密内容仍不完整。complete/strict 恒 false，管理 estimate captureAvailable=false、无回执/enable409 不变，不得据此开放真实项目采集或宣称 AC2/AC9 通过。全局 Git/worktreeConfig、附件、容器映射及普通 CAFF Docker 回放仍待完成；非原子/ABA、同步不可抢占与同 OS 用户/存储 TCB 残余不变。
+
+验证包括父构建失败回归、边界/保护根/大小写/类型/Unicode/元数据漂移用例，本地 NTFS 首次 preMissing、独立外置 linked-worktree 的 deleted 文件，fresh/resume 服务→真实 publisher→重开→两恢复一致，历史合并/秘密路径/范围变化负例。仅自建临时夹具，raw writer enabled 不是管理开启或真实项目 turn；准确命令、计数、独立审查以 Goal E115 为准。零 Key/模型/供应商/真实 Docker/浏览器/生产操作，历史6美元未结算非账单与全部 AC pending、不合并发布保持。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

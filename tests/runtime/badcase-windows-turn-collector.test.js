@@ -149,11 +149,40 @@ test('deletions require a comparable native observation and actual absence, not 
   assert.equal(cp.integrity.windowsObservationScopeHash, sha('native-scope'));
   assert.equal(cp.integrity.deletionHistoryBaselineId, 'previous');
   assert.equal(cp.integrity.knownLimitations.includes('deletion_history_not_collected'), false);
-  assert.ok(cp.integrity.knownLimitations.includes('deletions_only_from_comparable_previous_checkpoint'));
+  assert.ok(cp.integrity.knownLimitations.includes('deletion_history_only_from_comparable_previous_checkpoint'));
   const files = cp.files, deletions = ['dir/lost', 'gone'];
   assert.equal(cp.integrity.manifestHash, sha(JSON.stringify({ files: Object.keys(files).sort().map(p =>
     [p, files[p].hash || '', files[p].size || 0, files[p].secretExcluded === true]), deletions })));
   assert.equal(cp.strictEvalEligible, false); assert.equal(cp.replayInput.complete, false); noLock(h);
+});
+
+test('verified index absences work without history and merge with comparable history once, but never prior secrets', async t => {
+  for (const withHistory of [false, true]) {
+    const h = setup(t, { deps: { './windows-git-candidate': { readWindowsGitFileCandidateAsync: async () => ({
+      ...candidate(), indexDeletions: ['old-secret', 'same', 'first.txt'], indexDeletionsVerified: true,
+    }) } } });
+    h.store.loadLatestCheckpoint = () => withHistory ? ({ schemaVersion: 1, checkpointId: 'previous', projectId: 'p', targetDir: 'C:\\worktree',
+      integrity: { platform: 'win32', windowsObservationScopeHash: sha('native-scope') },
+      files: { historical: { type: 'file' }, SAME: { type: 'file' }, 'OLD-SECRET': { type: 'file', secretExcluded: true } } }) : null;
+    const cp = (await collect(h)).checkpoint;
+    assert.deepEqual([...cp.deletions], withHistory ? ['first.txt', 'historical', 'same'] : ['first.txt', 'old-secret', 'same']);
+    assert.equal(cp.integrity.indexedDeletionEvidence, 'verified_index_visible_ascii_v1');
+    assert.equal(cp.integrity.knownLimitations.includes('tracked_deletions_before_first_checkpoint_not_inferred'), false);
+    assert.equal(cp.strictEvalEligible, false); assert.equal(cp.replayInput.complete, false);
+    assert.equal(cp.integrity.manifestHash, sha(JSON.stringify({ files: Object.keys(cp.files).sort().map(p =>
+      [p, cp.files[p].hash || '', cp.files[p].size || 0, cp.files[p].secretExcluded === true]), deletions: [...cp.deletions] })));
+  }
+});
+
+test('unverified index absences cannot be promoted to deletion evidence or erase missing-history limitations', async t => {
+  for (const indexDeletionsVerified of [undefined, false]) {
+    const h = setup(t, { deps: { './windows-git-candidate': { readWindowsGitFileCandidateAsync: async () => ({
+      ...candidate(), indexDeletions: ['unproven'], indexDeletionsVerified,
+    }) } } });
+    const cp = (await collect(h)).checkpoint;
+    assert.deepEqual([...cp.deletions], []); assert.equal(cp.integrity.indexedDeletionEvidence, '');
+    assert.ok(cp.integrity.knownLimitations.includes('tracked_deletions_before_first_checkpoint_not_inferred'));
+  }
 });
 
 test('missing/mismatched/foreign/legacy history never fabricates deletions or a baseline association', async t => {
@@ -206,6 +235,9 @@ test('native Windows files and independently authorized resume enter real publis
     env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(root, 'absent-global'), GIT_TEMPLATE_DIR: '' } });
   git('init', '-q'); git('config', 'core.ignorecase', 'false'); fs.writeFileSync(path.join(target, 'tracked'), 'original'); git('add', 'tracked');
   fs.writeFileSync(path.join(target, 'preMissing'), 'already gone'); git('add', 'preMissing'); fs.unlinkSync(path.join(target, 'preMissing'));
+  const privateDir = path.join(target, 'private'); fs.mkdirSync(privateDir);
+  fs.writeFileSync(path.join(privateDir, 'hidden'), 'not authorized'); fs.writeFileSync(path.join(target, '.env'), 'not archived');
+  git('add', '-f', 'private/hidden', '.env'); fs.unlinkSync(path.join(privateDir, 'hidden')); fs.unlinkSync(path.join(target, '.env'));
   fs.writeFileSync(path.join(target, 'tracked'), 'dirty'); fs.writeFileSync(path.join(target, 'untracked'), 'new');
   fs.writeFileSync(path.join(target, 'secret'), 'sk-SENTINELabcdefghijk');
   for (const p of ['gone', 'becomesDir', 'CaseBefore']) fs.writeFileSync(path.join(target, p), 'before');
@@ -215,7 +247,7 @@ test('native Windows files and independently authorized resume enter real publis
   const sessionPath = path.join(sessions, 'turn.jsonl'); fs.writeFileSync(sessionPath, bytes);
   const service = createBadcaseCaptureService({ captureRoot }); service.savePolicy('p', { authorizedDirs: [target], authorizedInputDirs: [sessions], excludedPatterns: [] });
   const policy = service.authorizeProject('p'); assert.equal(policy.status, 'disabled');
-  const collector = createWindowsTurnCollector({ store: service.store });
+  const collector = createWindowsTurnCollector({ store: service.store, privateDirs: [privateDir] });
   const input = { projectId: 'p', conversationId: 'c', turnId: 't', agentId: 'a', targetDir: target, sessionPath, deliveryMode: 'resume', prompt: 'question',
     runConfig: { provider: 'test', model: 'test', skillIds: [], conversationSkillIds: [] },
     harness: { configSnapshot: { toolBridgeEnabled: true, deliveryMode: 'resume', piVersion: '0.85.1' }, skillSnapshots: [] } };
@@ -224,7 +256,9 @@ test('native Windows files and independently authorized resume enter real publis
   service.store.savePolicy({ ...policy, status: 'enabled' });
   const result = await collector.captureTurnCheckpoint(input); assert.equal(result.captured, true, result.reason);
   const reopened = createCaptureStore({ captureRoot }), cp = reopened.loadCheckpoint('p', result.checkpointId);
-  assert.deepEqual(cp, result.checkpoint); assert.equal(cp.replayInput.deliveryMode, 'resume'); assert.equal(cp.replayInput.complete, false);
+  assert.deepEqual(cp, result.checkpoint); assert.deepEqual(cp.deletions, ['preMissing']);
+  assert.equal(cp.integrity.indexedDeletionEvidence, 'verified_index_visible_ascii_v1');
+  assert.equal(cp.replayInput.deliveryMode, 'resume'); assert.equal(cp.replayInput.complete, false);
   assert.deepEqual(reopened.readBlob('p', cp.replayInput.sessionBlobHash), bytes); assert.equal(cp.strictEvalEligible, false);
   assert.equal(cp.files.tracked.hash, sha('dirty')); assert.equal(cp.files.untracked.hash, sha('new')); assert.equal(cp.files.secret.secretExcluded, true);
   assert.equal(reopened.hasBlob('p', sha('sk-SENTINELabcdefghijk')), false);
@@ -250,7 +284,7 @@ test('native Windows files and independently authorized resume enter real publis
   const next = await collector.captureTurnCheckpoint({ ...input, turnId: 'next' });
   assert.equal(next.captured, true, next.reason);
   const cp2 = createCaptureStore({ captureRoot }).loadCheckpoint('p', next.checkpointId);
-  assert.deepEqual(cp2.deletions, ['gone', 'tracked']);
+  assert.deepEqual(cp2.deletions, ['gone', 'preMissing', 'tracked']);
   assert.equal(cp2.integrity.deletionHistoryBaselineId, cp.checkpointId);
   assert.equal(cp2.integrity.windowsObservationScopeHash, cp.integrity.windowsObservationScopeHash);
   assert.equal(cp2.files.untracked, undefined); assert.equal(fs.existsSync(path.join(target, 'untracked')), true);
@@ -271,7 +305,7 @@ test('native Windows files and independently authorized resume enter real publis
   service.store.savePolicy({ ...service.store.loadPolicy('p'), excludedPatterns: ['excludedLater'] });
   fs.unlinkSync(path.join(target, 'casebefore'));
   const changed = await collector.captureTurnCheckpoint({ ...input, turnId: 'scope-changed' });
-  assert.equal(changed.captured, true, changed.reason); assert.deepEqual(changed.checkpoint.deletions, []);
+  assert.equal(changed.captured, true, changed.reason); assert.deepEqual(changed.checkpoint.deletions, ['preMissing', 'tracked']);
   assert.notEqual(changed.checkpoint.integrity.windowsObservationScopeHash, cp2.integrity.windowsObservationScopeHash);
   assert.equal(changed.checkpoint.integrity.deletionHistoryBaselineId, '');
 });

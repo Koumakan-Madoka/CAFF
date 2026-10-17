@@ -71,17 +71,25 @@ export function createWindowsTurnCollector(options: any = {}): any {
           && previous.integrity?.platform === 'win32' && previous.integrity.windowsObservationScopeHash === scopeHash
           && priorFiles && typeof priorFiles === 'object' && !Array.isArray(priorFiles) && Object.keys(priorFiles).every(ascii);
         const present = new Set<string>(comparable ? observation.presentPaths.map((p: string) => p.toLowerCase()) : []);
-        const deletions: string[] = comparable ? Object.keys(priorFiles).filter(p => priorFiles[p]?.type === 'file'
-          && priorFiles[p].secretExcluded !== true && !present.has(p.toLowerCase()))
-          .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))) : [];
+        const historical: string[] = comparable ? Object.keys(priorFiles).filter(p => priorFiles[p]?.type === 'file'
+          && priorFiles[p].secretExcluded !== true && !present.has(p.toLowerCase())) : [];
+        const indexedVerified = files.indexDeletionsVerified === true && Array.isArray(files.indexDeletions);
+        const priorSecrets = new Set<string>(comparable ? Object.keys(priorFiles).filter(p => priorFiles[p]?.secretExcluded === true)
+          .map(p => p.toLowerCase()) : []);
+        // Index evidence is relative to the verified current index, not a prior
+        // checkpoint. Never let it reintroduce a known comparable secret path.
+        const indexed: string[] = indexedVerified ? files.indexDeletions.filter((p: string) => !priorSecrets.has(p.toLowerCase())) : [];
+        const deletions = [...new Map([...historical, ...indexed].map(p => [p.toLowerCase(), p])).values()]
+          .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
         const manifestHash = crypto.createHash('sha256').update(JSON.stringify({
           files: Object.keys(files.files).sort().map(p => [p, files.files[p].hash || '', files.files[p].size || 0,
             files.files[p].secretExcluded === true]), deletions,
         })).digest('hex');
         const limitations = files.limitations.filter((s: string) => !['windows_turn_collector_not_connected',
           'session_and_invocation_not_collected', 'deletion_history_not_collected'].includes(s));
-        limitations.push('deletions_only_from_comparable_previous_checkpoint', 'tracked_deletions_before_first_checkpoint_not_inferred',
-          'secret_and_type_replacements_not_inferred', ...(comparable ? [] : ['deletion_history_baseline_unavailable']));
+        limitations.push('deletion_history_only_from_comparable_previous_checkpoint',
+          ...(indexedVerified ? [] : ['tracked_deletions_before_first_checkpoint_not_inferred']),
+          'known_comparable_secrets_and_type_replacements_not_inferred', ...(comparable ? [] : ['deletion_history_baseline_unavailable']));
         const checkpoint = {
           schemaVersion: 1, checkpointId: crypto.randomUUID(), projectId, targetDir,
           conversationId: String(input.conversationId || ''), turnId: String(input.turnId || ''), agentId: String(input.agentId || ''),
@@ -89,6 +97,7 @@ export function createWindowsTurnCollector(options: any = {}): any {
           gitMetadata: files.classification,
           integrity: { algorithm: 'sha256', manifestHash, helperSha256: WINDOWS_HELPER_SOURCE_SHA256, platform: 'win32',
             windowsObservationScopeHash: scopeHash, deletionHistoryBaselineId: comparable ? previous.checkpointId : '',
+            indexedDeletionEvidence: indexedVerified ? 'verified_index_visible_ascii_v1' : '',
             knownLimitations: [...new Set([...limitations, 'windows_management_enable_not_connected'])] },
           consistency: { evidence: 'content-verified', atomicityGuaranteed: false, secondScanMode: 'full-hash', retries: 0, differingPaths: [] },
           replayInput, environment: input.environment || {}, strictEvalEligible: false,

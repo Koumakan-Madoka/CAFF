@@ -78,6 +78,7 @@ test('explicit external roots bind gitfile/commondir/backlink before classified 
   assert.ok(r.limitations.includes('external_info_exclude_required'));
   assert.ok(r.limitations.includes('deletion_history_not_collected'));
   assert.equal(Object.hasOwn(r.files, 'deleted'), false);
+  assert.deepEqual([...r.indexDeletions], ['deleted']);
 });
 
 test('external selection requires BOTH exact independent root grants and original valid pins; no pointer-derived grants', async () => {
@@ -249,6 +250,7 @@ test('native linked-worktree classifies independently pinned external inputs, re
   const oracle = git(work, 'ls-files', '-c', '-o', '--exclude-standard', '-z').split('\0').filter(p => p && p !== 'deleted').concat('included.log').sort();
   assert.deepEqual(Object.keys(r.files).sort(), oracle); assert.equal(r.files['tracked.log'].hash, hash('dirty'));
   assert.ok(r.limitations.includes('windows_ignorecase_ascii_projection'));
+  assert.deepEqual([...r.indexDeletions], ['deleted']);
   const { restoreCheckpoint } = require('../../build/server/domain/runtime/badcase-capture/restore');
   // Test-only CAS writer, NOT enable or a real turn. Manifest shape matches the file restore contract.
   for (const [digest, bytes] of r.blobs) service.store.stageBlob('p', 'fixture', digest, bytes);
@@ -294,6 +296,8 @@ test('native linked-worktree classifies independently pinned external inputs, re
     assert.equal(cp.replayInput.complete, false); assert.equal(cp.strictEvalEligible, false);
     assert.equal(cp.files['tracked.log'].hash, hash('dirty')); assert.equal(cp.files.secret.secretExcluded, true);
     assert.ok(cp.integrity.knownLimitations.includes('windows_ignorecase_ascii_projection'));
+    assert.deepEqual(cp.deletions, ['deleted']);
+    assert.equal(cp.integrity.indexedDeletionEvidence, 'verified_index_visible_ascii_v1');
     if (deliveryMode === 'resume') assert.deepEqual(reopenedService.store.readBlob('p', cp.replayInput.sessionBlobHash), sessionBytes);
     const restoredLists = [];
     for (const n of [1, 2]) {
