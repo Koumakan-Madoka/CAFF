@@ -4,9 +4,13 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
+// Diagnostics only: never inspect an exception, SDK content or tool arguments.
+// These labels are not execution/score authority and do not relax any guard.
+let failurePhase = 'bootstrap', requestLimitAttempted = false;
 (async () => {
   if (process.platform !== 'linux' || process.getuid?.() !== 65534 || process.cwd() !== '/work'
     || !fs.existsSync('/.dockerenv')) throw Error('container_required');
+  failurePhase = 'materials';
   const { verifyMaterialBytes } = require('./pi-probe-guards.cjs');
   const manifest = JSON.parse(fs.readFileSync('/work/manifest.json'));
   assert.equal(manifest.schemaVersion, 1); assert.ok(Array.isArray(manifest.files) && manifest.files.length <= 4096);
@@ -32,6 +36,7 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
   const start = performance.now();
   function gate() { assert.ok(Number.isSafeInteger(q.expiresAt) && Date.now() < q.expiresAt && performance.now() - start < 25000, 'task_expired'); }
   gate();
+  failurePhase = 'input';
   const { planRetainedSdkDiagnostic } = require('./retained-sdk-diagnostic.js');
   const { materializeInitializationCapsule } = require('./capsule-materialization.js');
   const capsule = fs.readFileSync('/work/capsule.json', 'utf8'), expected = JSON.parse(fs.readFileSync('/work/expected.json'));
@@ -43,6 +48,7 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
   process.env.PI_OFFLINE = '1'; process.env.PI_CODING_AGENT_DIR = '/work/agent';
   let networkCalls = 0, modelCalls = 0;
   globalThis.fetch = async () => { networkCalls++; throw Error('network_forbidden'); };
+  failurePhase = 'runtime';
   const sdk = await import('./runtime/dist/bundle/index.js');
   assert.equal(sdk.VERSION, '0.85.1');
   for (const p of ['runtime/package.json', 'runtime/bundled-pi-ai/package.json']) assert.equal(JSON.parse(fs.readFileSync('/work/' + p)).version, '0.85.1');
@@ -55,7 +61,11 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
   const model = modelRuntime.getModel(s.provider, s.model); assert.ok(model);
   const { createMailbox, modelStream } = require('./container-model-adapter.cjs');
   const mailbox = createMailbox(profile, gate);
-  modelRuntime.streamSimple = modelStream(profile, async body => { modelCalls++; return mailbox(body); }, gate);
+  modelRuntime.streamSimple = modelStream(profile, async body => {
+    modelCalls++;
+    if (modelCalls > profile.maxRequests) requestLimitAttempted = true;
+    return mailbox(body);
+  }, gate);
   const sessionPath = '/work/resume-input.jsonl';
   if (plan.mode === 'resume') fs.writeFileSync(sessionPath, plan.sessionText, { flag: 'wx', mode: 0o600 });
   const manager = plan.mode === 'resume' ? sdk.SessionManager.open(sessionPath, '/work/sessions', cwd) : sdk.SessionManager.create(cwd, '/work/sessions');
@@ -66,6 +76,7 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
     getSystemPrompt: () => q.role, getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [], extendResources: () => {}, reload: async () => {},
   };
+  failurePhase = 'session';
   const { session, modelFallbackMessage } = await sdk.createAgentSession({ cwd, agentDir: '/work/agent', model, modelRuntime,
     thinkingLevel: 'off', tools: ['read', 'write', 'edit', 'bash'], resourceLoader, sessionManager: manager,
     settingsManager: sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }) });
@@ -73,10 +84,13 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
     assert.equal(modelFallbackMessage, undefined); assert.equal(manager.getCwd(), cwd); assert.deepEqual(session.messages, plan.messages);
     if (plan.mode === 'resume') assert.equal(manager.getSessionId(), plan.sessionId);
     const toolNames = []; session.subscribe(e => { if (e.type === 'tool_execution_end') toolNames.push(e.toolName); });
+    failurePhase = 'prompt';
     gate(); await session.prompt(plan.invocation, { expandPromptTemplates: false }); gate();
+    failurePhase = 'final';
     assert.ok(modelCalls > 0); assert.equal(networkCalls, 0);
     assert.equal(session.messages.at(-1).role, 'assistant'); assert.equal(session.messages.at(-1).stopReason, 'stop');
     // Only this fixed bounded artifact goes to the independent host scorer.
+    failurePhase = 'artifact';
     const artifact = cwd + '/evaluation-result.txt'; const st = fs.lstatSync(artifact, { bigint: true });
     assert.ok(st.isFile() && st.size <= 4096n);
     const fd = fs.openSync(artifact, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
@@ -85,9 +99,14 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
       const actual = fs.fstatSync(fd, { bigint: true }); assert.equal(actual.ino, st.ino); assert.equal(actual.dev, st.dev); assert.equal(actual.size, st.size);
       bytes = Buffer.alloc(4097); const n = fs.readSync(fd, bytes, 0, bytes.length, 0); assert.ok(n <= 4096); bytes = bytes.subarray(0, n);
     } finally { fs.closeSync(fd); }
+    failurePhase = 'receipt';
     console.log(JSON.stringify({ kind: 'model-sdk-task-v1', runId: q.runId, roleHash: hash(q.role), capsuleHash: q.capsuleHash,
       inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash, deliveryMode: plan.mode,
       invocationHash: hash(plan.invocation), historyHash: hash(JSON.stringify(plan.messages)), modelCalls, networkCalls, toolNames,
       artifactBase64: bytes.toString('base64') }));
+    failurePhase = 'dispose';
   } finally { session.dispose(); }
-})().catch(() => { process.stderr.write('model_sdk_task_failed\n'); process.exitCode = 1; });
+})().catch(() => {
+  process.stderr.write('model_sdk_task_failed:' + (requestLimitAttempted ? 'request_limit' : failurePhase) + '\n');
+  process.exitCode = 1;
+});

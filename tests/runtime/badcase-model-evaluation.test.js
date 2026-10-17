@@ -39,7 +39,7 @@ function network(t) {
     queueMicrotask(() => { req.emit('socket', socket); socket.emit('secureConnect'); }); return req;
   }; return () => count;
 }
-async function execute(h, mutate = () => {}, before = () => {}) {
+async function execute(h, mutate = () => {}, before = () => {}, resultPatch = {}) {
   return dispatchBoundModelEvaluation(h.root, h.approval.approvalId, (run, send) => h.prepared.execute(h.root, run, send, async (i, files, options) => {
     before(files); assert.deepEqual(i, image); assert.equal(options.timeoutMs, 25000); assert.equal(typeof options.probe, 'function');
     assert.equal(files.some(f => f.bytes.includes(h.rule.expectedHash)), false);
@@ -51,7 +51,7 @@ async function execute(h, mutate = () => {}, before = () => {}) {
       inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash, deliveryMode: q.deliveryMode, invocationHash: q.invocationHash, historyHash: q.historyHash,
       networkCalls: 0, modelCalls: 1, toolNames: [], artifactBase64: Buffer.from('done\n').toString('base64') };
     mutate(receipt);
-    return { containerId: 'a'.repeat(64), manifest, result: { code: 0, stdout: JSON.stringify(receipt), stderr: '' } };
+    return { containerId: 'a'.repeat(64), manifest, result: { code: 0, stdout: JSON.stringify(receipt), stderr: '', ...resultPatch } };
   }), () => ({ value: 'synthetic-inert', expiresAt: Date.now() + 5000 }));
 }
 test('retained model preparer binds approval and actual request costs, excludes endpoint/credential/rubric from stage', async t => {
@@ -66,6 +66,15 @@ test('receipt/count/artifact mismatch never settles an invented score or cost', 
     assert.equal(report.dispatchState, 'unresolved'); assert.equal(report.ledger.runs[0].score, null); assert.equal(report.ledger.runs[0].costMicroUsd, null);
   }
 });
+test('task stderr is never scoring authority, even with a valid receipt and zero exit', async t => {
+  const count = network(t);
+  for (const stderr of ['model_sdk_task_failed:request_limit\n', 'model_sdk_task_failed:dispose\n', 'model_sdk_task_failed\n', 'model_sdk_task_failed:unknown\n']) {
+    const h = setup(t), report = await execute(h, undefined, undefined, { stderr });
+    assert.equal(report.dispatchState, 'unresolved'); assert.equal(report.ledger.runs.length, 1);
+    assert.equal(report.ledger.runs[0].score, null); assert.equal(report.ledger.runs[0].costMicroUsd, null);
+  }
+  assert.equal(count(), 4); // Baselines only; no candidate or automatic retry.
+});
 test('corrupt sealed input blocks container creation and model requests', async t => {
   const h = setup(t), count = network(t); fs.writeFileSync(h.blobPath(h.r.promptBlobHash), 'tampered');
   const report = await execute(h, undefined, () => assert.fail('must not launch'));
@@ -78,5 +87,29 @@ test('legacy text-only profile and out-of-supervisor time limits fail before any
 });
 test('new task harness refuses host execution before SDK import', () => {
   const r = require('node:child_process').spawnSync(process.execPath, ['scripts/badcase-capture/model-task-container.cjs'], { encoding: 'utf8' });
-  assert.equal(r.status, 1); assert.equal(r.stdout, ''); assert.equal(r.stderr, 'model_sdk_task_failed\n');
+  assert.equal(r.status, 1); assert.equal(r.stdout, ''); assert.equal(r.stderr, 'model_sdk_task_failed:bootstrap\n');
+});
+test('task failure reports only its fixed active phase, without touching the thrown exception', async () => {
+  const diagnostic = require('../helpers/badcase-task-diagnostics.cjs');
+  for (const phase of ['bootstrap', 'materials', 'input', 'runtime', 'session', 'prompt', 'final', 'artifact', 'receipt', 'dispose']) {
+    const r = await diagnostic(phase);
+    assert.equal(r.exitCode, 1, phase); assert.equal(r.stderr, 'model_sdk_task_failed:' + phase + '\n', phase);
+    if (phase !== 'dispose') assert.equal(r.stdout, '', phase);
+    if (['prompt', 'final', 'artifact', 'receipt', 'dispose'].includes(phase)) assert.equal(r.disposed, 1, phase);
+  }
+});
+test('actual request-limit attempt is latched even if SDK swallows its exception; no extra exchange succeeds', async () => {
+  const diagnostic = require('../helpers/badcase-task-diagnostics.cjs');
+  for (const fault of ['request_limit', 'request_limit_swallowed']) {
+    const r = await diagnostic(fault);
+    assert.equal(r.exitCode, 1); assert.equal(r.stderr, 'model_sdk_task_failed:request_limit\n');
+    assert.equal(r.received, 3); assert.equal(r.stdout, ''); assert.equal(r.disposed, 1);
+  }
+  for (const fault of [undefined, 'at_limit']) {
+    const success = await diagnostic(fault);
+    assert.equal(success.exitCode, undefined); assert.equal(success.stderr, ''); assert.equal(success.received, fault ? 2 : 1); assert.equal(success.disposed, 1);
+    assert.equal(JSON.parse(success.stdout).kind, 'model-sdk-task-v1');
+  }
+  const atLimit = await diagnostic('at_limit_artifact');
+  assert.equal(atLimit.exitCode, 1); assert.equal(atLimit.stderr, 'model_sdk_task_failed:artifact\n'); assert.equal(atLimit.received, 2);
 });

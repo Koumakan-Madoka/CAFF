@@ -768,6 +768,17 @@ E78 在已审 `8a46d342`、99文件逐字节核验及186/186预检后，用新�
 
 作者验证：新增4例旧实现先红后绿；Windows七套190＝188通过/2链接权限跳过，Linux Node22.22 190/190；15个私有副本变异全红（旧模式门控、类型/边界/未知键/audio、模式hash绑定、主机减缓存/加缓存、SDK折扣/重复计数/丢计数等），逐字节恢复复绿并清理。fast1929通过/41跳过、smoke101、build/check及双typecheck通过；本段代码验证零新增Key/供应商/Docker/UI，尚未以新版本调用供应商，不宣称已跑通对照。全部AC pending、不合并发布。
 
+### 5.27 容器任务失败的固定阶段诊断（不提升执行资格）
+
+E80 在已审 `bf63c60d` 与 cached 新 profile 下，基线2请求均HTTP200并通过协议/usage检查，随后 `driver_failed`；外层仍unresolved/无评分、候选未启动。临时容器已清理，无原始模型/工具正文可回溯，**不能确认是请求上限、SDK、最终消息、文件或回执失败**。本增量只在容器任务原有失败出口提供固定阶段，不把假设当根因、不追加付费请求。
+
+- `model-task-container.cjs` 失败stderr改为唯一一行 `model_sdk_task_failed:<phase>\n`；phase只来自源码常量：`bootstrap`、`materials`、`input`、`runtime`、`session`、`prompt`、`final`、`artifact`、`receipt`、`dispose`。它表示当前校验/操作边界，不保存异常message/code/stack/cause、SDK消息、工具名/参数、路径、模型正文或计数；catch不读取抛出值的任何属性。材料/输入/环境/工具定义/预算/最终消息/产物和回执的原判定均不变。
+- 仅当容器实际尝试进入第 `maxRequests+1` 次 mailbox 调用，额外锁存 `request_limit`，失败出口优先报该标签；SDK吞掉异常再以error消息结束时仍能辨别。请求数限制仍由原mailbox检查，不增加请求额度、不再派发、不改SDK retry设置。标签只表明曾发生超限尝试，不断言它是唯一根因；如果任务原本成功，诊断不新增失败条件。
+- 这些stderr是被测容器可伪造的非权威诊断，不是完成回执或评分依据。宿主原有 `code===0`、空stderr及完整回执/账本校验保持不变；包括 `dispose` 在输出回执后失败，仍因非零退出/非空stderr拒绝评分。未知或旧stderr不解释为成功，不按字符串匹配绕过任何校验。请求账本 `failureStage` 闭集、外层schema及 `driver_failed` 语义不变；本节不自动将容器阶段写入请求账本或UI。受信操作者可在独立观察器中仅保留精确白名单标签，未知stderr不得保存/展示正文。
+- probe实际字节本已进入manifest/harnessHash，本变更必须新计划/批准；不复用E80批准，不修复其他host编译模块未入摘要的既有缺口。Goal D14按用户2026-10-17裁决记录既定DeepSeek同用途持续授权、金额无上限、不逐批重问；仍以有界执行计划、新的可审计批准、失败停止及逐次记账管理，不等于后台无限循环或真实项目采集授权。
+
+离线验证：`node --test tests/runtime/badcase-model-evaluation.test.js tests/runtime/badcase-container-model-relay.test.js` Windows与Linux Node22.22均15/15。覆盖宿主拒绝、合成VM逐阶段/恶意异常Proxy、请求超限抛出/被SDK吞掉、恰好上限后产物失败不误报超限、成功回执不变，以及零退出/有效回执带任何stderr仍不评分/不启动候选。VM替换动态import并提供合成SDK/FS，不运行真正SDK/容器/工具，不冒充E80现场或证明真实失败原因。Linux私有副本14单点变异全红（9阶段塌缩、删除超限锁存、错误>=边界、移除锁存优先、读取异常属性、宿主忽略stderr），逐字节恢复15/15并清理。fast1932通过/41跳过、smoke101、build/check及双typecheck通过。本增量代码验证零新增Key/供应商/Docker/UI操作；真实供应商/容器诊断须在固定SHA独立审查后另立计划，全部AC pending、不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
