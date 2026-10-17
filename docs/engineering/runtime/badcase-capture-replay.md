@@ -845,6 +845,18 @@ E89在已审`feeeddf1`下按新计划/批准运行：实际仅1请求HTTP200后`
 - 因而“采集输入完整”不等于“现有模型入口支持该输入”。普通CAFF turn通常带工具桥、受控路径/回调替换或复杂resume历史；这些语义尚未实现时必须明确阻断，不得为了对照成功剥去它们。当前可运行闭环仍是显式关闭工具桥、无skill/替换且历史满足线性纯user文本限制的材料。用户提供真实case后也须先做能力预检，不承诺任意case可运行，不据此扩大采集授权。
 - 运行上述集成需Linux openat2/statx、Python3及匹配Node ABI的SQLite，Windows显式跳过，不能用跳过数当Linux验证。宿主只执行受信文件/DB/状态机代码，不执行被测agent。本节不新增供应商调用、费用或真实项目采集；全部最终AC仍pending，executionVerified/faithfulReplay/strict资格不升级。
 
+### 5.34 Windows 安全读取底座（尚未接通采集）
+
+`helpers/badcase-capture/windows_read.py`新增受信 Python/ctypes 原生 NT 读取原语。**本阶段不修改 `detectCaptureCapability`，Windows 采集仍在扫描目标前失败关闭**；不把单文件读取测试称作实际 worktree 检查点或恢复证据。它是 W2 的实现底座，不是 AC2 已通过。
+
+- 只接受固定本地驱动器上的 NTFS 目录，拒 UNC、网络/可移动驱动器、设备/extended namespace 输入及不支持的文件系统。先打开驱动器根，再将每个经过保守语法检查的路径组件交给 `NtCreateFile(RootDirectory=已持有父句柄)`；所有祖先句柄保持至根上下文或单次读取结束。禁止 `..`、绝对路径、反斜杠形式的相对路径、ADS、空组件、尾空格/点、设备别名和非法 UTF-16。路径规范化不是授权证明。
+- 每级设 `OBJ_DONT_REPARSE`、`FILE_OPEN_REPARSE_POINT`并核对句柄属性，拒绝 junction/symlink/其他重解析对象，不跟随挂载点；只有磁盘普通文件可读。祖先与文件打开均不分享删除权限，持有期间 Windows 拒绝重命名/删除；仍分享读写，不锁住普通写入，不承诺原子快照。打开不兼容或被拒绝时不回退其他路径/API。
+- 根身份由同一个句柄查询 `FileIdInfo` 的卷序列号/128 位文件 ID 和 `FileBasicInfo` 的创建时间，全部为十进制/十六进制字符串。传入 expected 身份时，先核对再打开子文件；错误身份或路径被新目录替代时拒绝。文件读取前后核对同句柄 ID、长度、写入/变更时间及属性，有变化不返回成功内容。身份复用、元数据 ABA 和文件间非原子性仍属残余限制，不提升 strict 资格。
+- `Root`只作为上下文管理器使用，异常路径关闭所有已开句柄；测试内 `_after_open` 是受信进程内故障注入，不提供 CLI 或 agent 工具。尚无枚举、helper 协议/源码嵌入、管理授权 pin 集成、跨进程绑定、CAS/恢复或 Linux 容器路径映射；后续不能直接以 Node pathname 递归遍历补齐枚举，也不能重新打开未核对身份的根。外置 Git 元数据/session/附件仍需各自授权，不由此获得权限。
+- 原生测试仅操作自建临时 NTFS 目录：二进制/空文件/Unicode 字节与 hash、字符串身份持久重开、身份错误与根替换、越界/别名、真实 junction（不要求管理员）、祖先/文件重命名拒绝、并发写检测、大小边界、缺文件/目录/异常后句柄计数恢复。`test:fast`纳入 Node wrapper，在 Windows 必须实际运行七个 Python 测试（缺 Python 或文件系统不支持即失败），非 Windows 显式跳过，不能冒充 Windows 证据。未触及真实项目采集或付费模型。驱动器/文件系统不支持的负例仅注入 API 结果，未访问真实网络/可移动卷；真实 junction 负例不能替代所有重解析类型的逐类实测。
+
+API依据：[NtCreateFile](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile)、[OBJECT_ATTRIBUTES](https://learn.microsoft.com/en-us/windows/win32/api/ntdef/ns-ntdef-_object_attributes)、[CreateFileW sharing/reparse flags](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[FileIdInfo](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)、[GetFileInformationByHandleEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileinformationbyhandleex)。Python解释器/ctypes/原生Windows、同OS用户及受信helper部署仍属TCB。正式接通采集前须补完整管理→采集→恢复与拒绝边界证据，再以固定新SHA独立审查；全部AC pending，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
