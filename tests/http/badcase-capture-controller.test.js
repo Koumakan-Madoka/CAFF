@@ -178,15 +178,24 @@ test('default GET and guard failures never scan or authorize', async t => {
   assert.equal(touches, 0);
 });
 
-test('Windows real HTTP native capacity preview has exact bytes but no enable receipt while collector is unavailable', { skip: process.platform !== 'win32' }, async t => {
+test('Windows real HTTP native capacity preview protects configured private roots and never issues an enable receipt', { skip: process.platform !== 'win32' }, async t => {
   const h = setup(t);
+  const hidden = path.join(h.target, 'custom-private'); fs.mkdirSync(hidden);
+  fs.writeFileSync(path.join(hidden, 'data'), 'PRIVATE_SENTINEL');
+  const alias = path.join(h.root, 'private-alias'); fs.symlinkSync(hidden, alias, 'junction');
+  t.after(() => { if (fs.existsSync(alias)) fs.rmdirSync(alias); });
+  const privateDirs = [alias];
+  t.diagnostic('self-created NTFS fixture; private scope is constructor-owned');
+  h.service = createBadcaseCaptureService({ captureRoot: h.captureRoot, privateDirs });
+  h.options.service = h.service;
+  privateDirs.length = 0; // caller cannot shrink the constructor's trusted scope
   let controller;
   const server = http.createServer(async (req, res) => {
     try { await controller({ req, res, pathname: req.url }); }
     catch (error) { res.writeHead(error.statusCode || 500); res.end(JSON.stringify({ error: error.message })); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
   const port = server.address().port;
   controller = createBadcaseCaptureController({ ...h.options, port });
   const base = `http://127.0.0.1:${port}`;
@@ -204,6 +213,14 @@ test('Windows real HTTP native capacity preview has exact bytes but no enable re
   assert.equal((await post('enable', { confirmed: true, estimateId: 'forged' })).status, 409);
   assert.equal(createBadcaseCaptureService({ captureRoot: h.captureRoot }).loadPolicy('project-test').status, 'disabled');
   assert.equal(h.service.store.listCheckpoints('project-test').length, 0);
+  assert.equal(h.service.computeUsage('project-test').bytesByKind.blobs, 0);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SENTINEL|private-alias|custom-private/);
+  const blockedService = createBadcaseCaptureService({ captureRoot: h.captureRoot, privateDirs: [h.root] });
+  controller = createBadcaseCaptureController({ ...h.options, service: blockedService, port });
+  const blocked = await (await post('estimate', {})).json();
+  assert.equal(blocked.complete, false); assert.equal(blocked.estimateId, null);
+  assert.equal(blocked.estimates[0].reason, 'estimate_scope_rejected');
+  assert.equal(blockedService.loadPolicy('project-test').status, 'disabled');
 });
 
 test('Windows native authorization failures return sanitized errors and stay disabled', { skip: process.platform !== 'win32' }, async t => {

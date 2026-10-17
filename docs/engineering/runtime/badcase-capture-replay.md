@@ -1092,6 +1092,16 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 验证：opt-in 与默认 parser 正反例；case-only tracked mode/精确 selector/策略原拼写；索引与树的完整名及父组件冲突、Unicode路径/规则、字符类与误拼写 ignore 来源均拒绝；64/65组件边界、项数/字节小限额注入正反例（不冒充真实大输入）覆盖前缀展开的边界；八组 ASCII wildcard/否定/目录/深层规则对照真实 Git `ls-files`。自建 NTFS 本地 Git 树以两步 rename 确认磁盘 case-only 改名，再经真实 service fresh/resume→publisher→重开store→两次恢复一致，CRLF session与秘密排除保持；自建 linked-worktree 服务链改为真实 ignorecase=true 并核验限制标签。临时 Git 只用于夹具/oracle，采集路径不执行 Git；raw test writer enabled不是管理开启或用户真实turn。E111 P3补32个互异且精确授权条目通过、33个拒绝、最后一条单独通过的独立上限用例。初新接口测试在父构建两项断言红，负例原先被整体不支持阻断，随后加强固定原因与针对性变异；误拼写 ignore 来源的初始变异被重复名守卫遮蔽，改为替换而不是新增来源后完整重跑检出。原生新夹具首次仅缺自建 info 目录，修正后完整重跑。详细命令、计数、变异及独立审查见Goal E112。全部AC pending；零真实项目采集/Key/模型/供应商/真实Docker/浏览器/生产；历史6美元未结算非账单不变，不合并发布。
 
+### 5.52 Windows 管理预估与 collector 共用受信私有根边界（开启仍关）
+
+修复服务门面的接线遗漏：此前 Windows collector 收到 `options.privateDirs`，但同步与 HTTP 使用的异步容量预估只传 agentDir，可能枚举显式私有根内的文件元数据、把其字节数计入预估；并非正文读取或 CAS 泄露。直接调用 metadata scope compiler 的私有根校验已存在，本次补齐生产调用链，不修改 Python/helper 协议、排除算法或授权权限。
+
+- 服务构造时，仅 Windows 创建受信 scope：固定 agentDir、structuredClone 私有根列表（未传为 []）；同一配置传给 collector 与同步/异步预估。调用方随后替换 options 字段或修改原数组，不能在后续请求/await 期间缩小保护范围或改换 agentDir。更改这组宿主配置须重建服务；不是随请求传入或持久授权的可变选择。未知/未配置私有目录不自动发现，同 OS 用户、存储与解释器仍属 TCB。
+- 复用既有 literal+canonical 双重保护：私有根在 worktree 内（含外部别名指回 worktree）时在原生打开子对象前排除；私有根包含 worktree 时拒绝整个预估。私有 junction 指向树外也必须先排除而不是尝试进入。不是通过 realpath 改写 helper 目标，不扩大授权、不重新 pin；环境私有根保护仍在每次编译时叠加。
+- Linux 不读取这组 Windows-only 配置，沿既有同步 collector/异步估算 worker；未扩大 Linux 接受集合。预估仍仅元数据，complete 表示预估枚举无缺口，不表示检查点完整；Windows captureAvailable=false、无开启回执、enable 409、无 checkpoint/blob 写入保持不变。
+
+回归先红：真实 NTFS 同步/异步服务各把应排除的 5B 计入（8B≠3B），真实 HTTP 把私有 16B 计入（21B≠5B）；VM 服务级测试定位遗漏及借用可变配置。修复后验证外部私有别名、树内私有 junction/目录、私有祖先拒绝，配置等待期间锁存及 Linux 不访问 privateDirs getter，均不修改原 pin/策略/检查点。7 语义变异最终全断言红，编译磁盘字节不改。首 HTTP red-first 断言失败后的 keepalive 清理挂起被工具超时终止（未计通过）；加 closeAllConnections 后重跑取得正常 exit1 断言红。首 Linux 私有闭包遗漏动态 estimate-worker，补齐后完整重跑；首 Linux 分支变异以原始 getter 异常失败，改为显式 doesNotThrow 断言后全部重跑，均不冒充通过。准确环境/命令/计数见 Goal E113。此修复不是管理开启或真实 turn 验收；全局 Git/worktreeConfig/删除历史/附件/容器映射及全部AC仍待完成，零真实项目采集/Key/模型/供应商/真实Docker/浏览器/生产；历史6美元未结算非账单不变，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

@@ -99,6 +99,39 @@ test('Windows preview refuses private roots, policy wildcards, unpinned input an
   assert.equal((await service.estimateDirectoryAsync('p', root)).ok, false, 'estimate must not silently install/re-authorize');
 });
 
+for (const method of ['estimateDirectory', 'estimateDirectoryAsync']) {
+  test(`Windows service ${method} protects static private roots, canonical aliases and private ancestors`, native, async t => {
+    const { base, root, captureRoot, service: initial } = setup(t);
+    initial.authorizeProject('p');
+    const privateAlias = path.join(base, 'private-alias');
+    fs.symlinkSync(path.join(root, 'nested'), privateAlias, 'junction');
+    t.after(() => { if (fs.existsSync(privateAlias)) fs.rmdirSync(privateAlias); });
+    const privateDirs = [privateAlias];
+    const options = { captureRoot, privateDirs };
+    const service = createBadcaseCaptureService(options);
+    // Trusted service scope is static, just as the turn collector's scope is.
+    privateDirs.length = 0; options.privateDirs = [];
+    const before = service.loadPolicy('p');
+    const result = await service[method]('p', root);
+    assert.equal(result.ok, true, result.reason); assert.equal(result.totalBytes, 3); assert.equal(result.fileCount, 2);
+    assert.equal(result.captureAvailable, false);
+    assert.deepEqual(service.loadPolicy('p'), before);
+    assert.equal(service.store.listCheckpoints('p').length, 0);
+    assert.equal(service.computeUsage('p').bytesByKind.blobs, 0);
+
+    const outside = path.join(base, 'outside'); fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'data'), 'PRIVATE_SENTINEL');
+    const privateJunction = path.join(root, 'local-private');
+    fs.symlinkSync(outside, privateJunction, 'junction');
+    t.after(() => { if (fs.existsSync(privateJunction)) fs.rmdirSync(privateJunction); });
+    const guarded = createBadcaseCaptureService({ captureRoot, privateDirs: [path.join(root, 'nested'), privateJunction] });
+    const safe = await guarded[method]('p', root);
+    assert.equal(safe.ok, true, safe.reason); assert.equal(safe.totalBytes, 3); assert.equal(safe.fileCount, 2);
+    const blocked = createBadcaseCaptureService({ captureRoot, privateDirs: [base] });
+    assert.equal((await blocked[method]('p', root)).reason, 'estimate_scope_rejected');
+  });
+}
+
 test('Windows preview excludes a private-directory alias into the worktree, and refuses a private ancestor', native, async t => {
   const { base, root, service } = setup(t);
   const alias = path.join(base, 'custom-private-alias');
@@ -129,6 +162,53 @@ function isolated(moduleName, { child, helper, disk, clock, timers, replace = s 
   }, { filename: file });
   return exports;
 }
+
+test('Windows facade latches one trusted scope for collector and both previews; Linux does not consume Windows-only scope', async t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-winpreview-scope-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const filename = path.resolve(__dirname, '../../build/server/domain/runtime/badcase-capture/index.js');
+  const local = require('node:module').createRequire(filename);
+  const load = (platform, deps) => {
+    const api = {};
+    require('node:vm').runInNewContext(fs.readFileSync(filename, 'utf8'), {
+      exports: api, structuredClone, process: { platform, env: {} },
+      require: id => deps[id] || local(id),
+    }, { filename });
+    return api;
+  };
+  const seen = [];
+  let release;
+  const api = load('win32', {
+    './windows-turn-collector': { createWindowsTurnCollector: opts => {
+      seen.push(['collector', opts]); return { captureTurnCheckpoint: () => ({ captured: false }) };
+    } },
+    './windows-estimate': { estimateWindowsDirectory: opts => { seen.push(['sync', opts]); return { ok: true }; },
+      estimateWindowsDirectoryAsync: opts => { seen.push(['async', opts]); return new Promise(r => { release = () => r({ ok: true }); }); } },
+  });
+  const privateDirs = ['C:/private'];
+  const options = { captureRoot: base, privateDirs, agentDir: 'C:/app' };
+  const service = api.createBadcaseCaptureService(options);
+  privateDirs[0] = 'C:/UNTRUSTED'; options.privateDirs = []; options.agentDir = 'C:/UNTRUSTED';
+  assert.equal(service.estimateDirectory('p', 'C:/work').ok, true);
+  const pending = service.estimateDirectoryAsync('p', 'C:/work');
+  privateDirs.push('C:/later'); options.agentDir = 'C:/later';
+  release(); assert.equal((await pending).ok, true);
+  assert.deepEqual(seen.map(([name]) => name), ['collector', 'sync', 'async']);
+  for (const [, scope] of seen) {
+    assert.deepEqual(Array.from(scope.privateDirs || []), ['C:/private']);
+    assert.equal(scope.agentDir, 'C:/app');
+  }
+  assert.notEqual(seen[0][1].privateDirs, privateDirs, 'scope must not borrow caller array');
+
+  const calls = [];
+  const linux = load('linux', { './estimate-process': { runEstimateProcess: opts => { calls.push(opts); return { ok: true }; } } });
+  const linuxOptions = { captureRoot: base, get privateDirs() { throw Error('Windows scope accessed on Linux'); } };
+  let linuxService;
+  assert.doesNotThrow(() => { linuxService = linux.createBadcaseCaptureService(linuxOptions); });
+  assert.equal((await linuxService.estimateDirectoryAsync('p', '/work')).ok, true);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(Object.keys(calls[0]).sort(), ['captureRoot', 'projectId', 'targetDir']);
+});
 
 test('Windows estimate compiles persisted exclusions and private boundaries before transport; exact sum refuses overflow', async () => {
   let calls = 0, last;

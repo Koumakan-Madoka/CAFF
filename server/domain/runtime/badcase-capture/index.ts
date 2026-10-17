@@ -50,10 +50,16 @@ export function createBadcaseCaptureService(options: any = {}) {
     onFileRead: typeof options.onFileRead === 'function' ? options.onFileRead : null,
   });
 
+  // One constructor-owned trusted Windows scope for preview AND collection.
+  // Do not borrow mutable caller options across requests/awaits. Linux retains
+  // its original path and does not consume Windows-only private-root settings.
+  const windowsScope = process.platform === 'win32'
+    ? { agentDir: options.agentDir, privateDirs: structuredClone(options.privateDirs === undefined ? [] : options.privateDirs) }
+    : null;
   // No enable bypass: Windows estimate still advertises captureAvailable=false.
   // Selection is host-platform explicit, never a failed-Windows fallback to Linux.
-  const turnCollector = process.platform === 'win32'
-    ? createWindowsTurnCollector({ store, agentDir: options.agentDir, privateDirs: options.privateDirs }) : collector;
+  const turnCollector = windowsScope
+    ? createWindowsTurnCollector({ store, ...windowsScope }) : collector;
 
   return {
     captureRoot,
@@ -135,7 +141,7 @@ export function createBadcaseCaptureService(options: any = {}) {
         const id = String(projectId || '').trim(), target = String(targetDir || '').trim();
         if (!id || !target) return { ok: false, reason: !id ? 'project_id_missing' : 'target_dir_missing',
           fileCount: 0, totalBytes: 0, durationMs: Date.now() - start };
-        const result = await estimateWindowsDirectoryAsync({ captureRoot, agentDir: options.agentDir,
+        const result = await estimateWindowsDirectoryAsync({ captureRoot, ...windowsScope,
           targetDir: target, policy: store.loadPolicy(id) });
         return { ...result, durationMs: Date.now() - start };
       }
@@ -153,7 +159,7 @@ export function createBadcaseCaptureService(options: any = {}) {
       if (!target) return fail('target_dir_missing');
       const policy = normalizeCapturePolicy(store.loadPolicy(id), id);
       if (process.platform === 'win32') {
-        return { ...estimateWindowsDirectory({ captureRoot, agentDir: options.agentDir, targetDir: target, policy }),
+        return { ...estimateWindowsDirectory({ captureRoot, ...windowsScope, targetDir: target, policy }),
           durationMs: Date.now() - startedAt };
       }
       const tree: any = collector.estimateTree(path.resolve(target), policy);
