@@ -202,7 +202,7 @@ test('Windows identity operations have a separate bounded management timeout', (
   assert.equal(api.invokeWindowsHelper('python', 'helper', request).ok, true);
 });
 
-test('Windows snapshot operations use a bounded 25-second synchronous timeout without path selectors', () => {
+test('Windows snapshot/classification operations each use a bounded 25-second synchronous timeout', () => {
   let timeout, sent;
   const request = { version: 1, op: 'snapshot', root: 'C:/authorized', expected: identity, excluded: [] };
   const api = isolatedTransport({
@@ -212,8 +212,11 @@ test('Windows snapshot operations use a bounded 25-second synchronous timeout wi
       return { status: 0, stdout: wire({ version: 1, ok: true, identity, entries: [], files: [] }, Buffer.alloc(0)), stderr: Buffer.alloc(0) };
     } },
   });
-  assert.equal(api.invokeWindowsHelper('python', 'helper', request).ok, true);
-  assert.equal(timeout, 25000); assert.deepEqual(sent, request);
+  for (const op of ['snapshot', 'gitMetadata', 'selectedSnapshot']) {
+    const value = { ...request, op, ...(op === 'selectedSnapshot' ? { paths: [] } : {}) };
+    assert.equal(api.invokeWindowsHelper('python', 'helper', value).ok, true);
+    assert.equal(timeout, 25000); assert.deepEqual(sent, value);
+  }
 });
 
 test('Windows helper refusals use fixed closed reason strings and never bodies', () => {

@@ -937,6 +937,23 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 本段无真实项目采集、Key/供应商、真实Docker/UI或生产操作；历史6美元未结算预留非账单及全部 AC pending 不变，不合并发布。
 
+### 5.40 Windows 本地 Git 子集分类后读取（仍非 turn collector）
+
+新增内部 `readWindowsGitFileCandidate`：在 §5.39 全文件原型之外提供**先读固定分类源→计算选择→只读选中文件→复核分类源**的独立入口，不执行 Git，不自动安装/re-pin、不持久化，不接管理/API/agent 工具或 turn。旧原型仍禁止生产接线；不能把本段当作完整 Git/ignored 策略或 Windows 已可开启。
+
+- 独立闭集 `gitMetadata` 请求与 estimate 相同；原生三 walk/两读仅返回根 `.git` 文件（作为数据、不解释指向）、`.git/config/index/commondir/info/exclude` 和树中精确名 `.gitignore` 的内容。只允许 `.git/info` 为目录，其余固定子源必须为文件；根 `.git` 可为目录或 gitfile。进入根 `.git` 时只打开这张固定清单，hooks/objects/refs 等在子对象打开前剪枝；不展开 include、excludesFile、commondir 或 gitdir。用户/保护根排除依旧先于这张清单，**不覆盖默认 `.git` 排除以换取成功**。大小写变体/嵌套 `.git` 拒绝；其他原生敏感名称表、pin、重解析/句柄及 TCB 边界保留。`gitMetadata` 会读取分类所需的树内 `.gitignore`，包括忽略子树内此类规则源，但不读取其普通文件内容。
+- 独立 `selectedSnapshot` 必须显式 paths（含空列表），在三 walk/两读范围内要求所有路径精确命中 canonical 普通文件；大小写/8.3别名、目录或缺失路径在第一次内容读前整批拒绝，不将空选择降成全采集。保留完整的非秘密元数据 manifest，files/body 恰好为请求选择；宿主复核完整闭集/顺序/身份/长度/hash和无尾随字节。`gitMetadata` 的宿主消费方另复核 `.git` 子项固定清单及类型。旧 identity/capture/estimate/snapshot 接受集合不变。
+- 宿主要求 canonical 本地 `.git` 目录及可读 config/index；gitfile、commondir、缺少/被排除元数据、配置 include/excludesFile/未验证语法、损坏 index/规则或源中的秘密一律在普通文件内容读取前拒绝，无“宁多采”回退。复用既有内置 index/config/gitignore 解析器及 tracked 优先、目录忽略/深层规则、info/exclude和策略显式纳入逻辑。新增 `parseGitIndex` 可选 `stageZero:true` 拒绝单个未合并 stage，旧调用不传时行为不变；另拒重复名/非可移植路径/符号链接 mode，tracked mode 保留 index 的0644/0755，untracked mode 合成0644。
+- 本地配置子集不验证 `core.ignorecase=true`（Windows Git 常见默认值），故明确拒绝；不为跑通夹具自动改项目配置。**不读 OS 用户级/系统/XDG 默认 Git 配置和全局忽略，外置 Git 元数据独立授权读取尚未实现**。因此机器可读分类名仅 `bounded_local_git_subset_v1`，并列出 `ambient_global_git_excludes_not_read` 等限制；`complete/strictEvalEligible/captureAvailable` 恒 false，不能宣称普通真实 worktree 的 ignored 授权已完整落实，更不能接 collector。
+- 首轮分类元数据（含整个非敏感文件树的元数据）与选读时非 Git manifest 必须一致；选读后再原生读取全部固定分类源，与首轮的完整 manifest 和源内容 hash/身份逐项摘要对比。任何变化/失败不返回部分 blob 计划、不重试。秘密源拒绝不返回 hash/身份/正文；普通秘密文件只留 secretExcluded，安全 blob 独立非池化 Buffer.alloc，避免共享 backing 保留排除秘密。**多进程之间未持有同一根，跨调用 ABA/文件间非原子性仍可能漏检，不证明现场一致**。
+- 每个新 helper op 各25秒，3个同步调用累计最多75秒的子进程限额（另有宿主校验/解析开销），不是单个25秒 turn 截止或异步业务接线。2048文件/64MiB单体/128MiB body/1MiB请求/32MiB头/100000项/64层不变。无 quota/引用事务/session/附件/真实 invocation/删除历史/空目录恢复/容器映射；不构成 AC2/AC9。
+
+作者验证：Windows10 build19045/x64、Python3.13.5、Node24.13.1，原生23/23（两新项在旧协议先红）；11套 Node129=99通过/30跳过，原生按选择两读证明未选普通文件零 Root.read，固定元数据源证明 hooks/objects 子对象零打开。自建临时 Git 仓库仅测试侧执行 git init/add/config/ls-files，独立隔绝全局配置、显式设 `core.ignorecase=false`；dirty tracked、untracked、根/深层 .gitignore、info/exclude、ignored目录与显式纳入的文件集合和真实 ls-files 对照一致。该测试 Git 是oracle/夹具构造，不是采集器执行 Git，也不是用户真实 worktree/turn 或历史badcase证据。缺 `.git` 授权、gitfile、单stage、坏校验/编码/规则、源秘密/配置未知均拒绝；选读前后变化及失败无计划。新Node套最初缺模块的装载红不冒充语义回归证据。
+
+`test:fast`2049通过/43跳过（含check/build）、smoke101、双typecheck/diff-check通过。WSL Debian Node22.22私有63文件逐字节核验，九套87=70通过/17平台或挂载权限跳过，副本已清理。私有副本17个非等价单点变异全红、逐字节恢复后Node两套16/16及原生23/23复绿并清理：5原生（Git固定清单、元数据源选择、空选择不回退、全路径预检、源类型）；12 Node（tracked优先、忽略启用、显式纳入、单stage、后继元数据摘要、选读manifest、配置验证、秘密扫描、backing隔离、恒false、新op25秒、wire固定清单）。首次扩展夹具因空Git模板无info目录而失败，补齐测试自身目录后全量重跑；不是产品故障或通过证据。
+
+本段无真实项目采集/Key/供应商/真实Docker/UI/生产操作；历史6美元未结算预留非账单、全部AC pending及不合并发布不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

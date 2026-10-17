@@ -295,7 +295,7 @@ class Root:
             self.stack.close()
         self.stack = self.handle = None
 
-    def walk(self, max_entries=100000, max_depth=64, _after_list=None, excluded=(), _metadata_only=False):
+    def walk(self, max_entries=100000, max_depth=64, _after_list=None, excluded=(), _metadata_only=False, _git_metadata=False):
         """Metadata-only tree enumeration. Not a coherent multi-file snapshot.
 
         Parent handles are held until their subtree completes. Each child is
@@ -319,8 +319,17 @@ class Root:
                 relative = prefix + '/' + name if prefix else name
                 # Never open/stat/recurse an excluded child, including reparses.
                 # Parent-directory names are necessarily read to prune children.
-                if _excluded_path(relative, prefixes) or (_metadata_only and _metadata_denied(name)):
+                if _excluded_path(relative, prefixes):
                     continue
+                if _git_metadata and _nt_equal(name, '.git'):
+                    # Only the literal top-level repository marker. Never
+                    # silently treat a nested repository/case alias as absent.
+                    if relative != '.git':
+                        raise Refused('git_metadata_unsupported')
+                elif _metadata_only and _metadata_denied(name):
+                    continue
+                if _git_metadata and relative.startswith('.git/') and relative not in GIT_METADATA_PATHS:
+                    continue  # objects/hooks/refs/etc are not opened or listed
                 if depth + 1 > max_depth:
                     raise Refused("depth_limit")
                 if len(entries) >= max_entries:
@@ -389,6 +398,15 @@ HEADER_LIMIT = 32 * 1024 * 1024
 BODY_LIMIT = 128 * 1024 * 1024
 FILE_LIMIT = 64 * 1024 * 1024
 SNAPSHOT_FILE_LIMIT = 2048
+# Exact bounded sources only. No include/excludesFile/commondir/gitdir expansion.
+GIT_METADATA_PATHS = frozenset(['.git/config', '.git/index', '.git/commondir', '.git/info', '.git/info/exclude'])
+
+
+def _git_source(relative):
+    return (relative == '.git' or relative in GIT_METADATA_PATHS
+            or relative.split('/')[-1] == '.gitignore')
+
+
 PUBLIC_REASONS = frozenset([
     'request_invalid', 'helper_failed', 'windows_required', 'root_path_invalid',
     'path_invalid', 'root_open_rejected', 'drive_unsupported', 'filesystem_unsupported',
@@ -397,7 +415,7 @@ PUBLIC_REASONS = frozenset([
     'file_identity_mismatch', 'enumeration_failed', 'enumeration_invalid',
     'directory_changed', 'entry_limit', 'depth_limit', 'limit_invalid',
     'path_not_in_manifest', 'too_large', 'read_failed', 'short_read',
-    'changed_during_read', 'output_limit', 'estimate_scope_rejected', 'snapshot_changed',
+    'changed_during_read', 'output_limit', 'estimate_scope_rejected', 'snapshot_changed', 'git_metadata_unsupported',
 ])
 
 
@@ -436,9 +454,9 @@ def _request(stream):
             raise Refused('request_invalid')
         op = value.get('op')
         keys = {'version', 'op', 'root'}
-        if op in ('capture', 'estimate', 'snapshot'):
+        if op in ('capture', 'estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot'):
             keys |= {'expected', 'excluded'}
-            if op == 'capture':
+            if op in ('capture', 'selectedSnapshot'):
                 keys.add('paths')
         elif op != 'identity':
             raise Refused('request_invalid')
@@ -450,7 +468,7 @@ def _request(stream):
         suffix = match[2].replace('\\', '/')
         if suffix:
             components(suffix)
-        if op in ('capture', 'estimate', 'snapshot'):
+        if op in ('capture', 'estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot'):
             if not _valid_identity(value['expected']):
                 raise Refused('request_invalid')
             _excluded_prefixes(value['excluded'])
@@ -467,16 +485,27 @@ def _request(stream):
         raise Refused('request_invalid') from None
 
 
-def _snapshot(root, excluded):
+def _snapshot(root, excluded, paths=None, git_metadata=False):
     """Bounded two-content-read candidate, NOT an atomic snapshot.
 
     Hold the authorized root for all passes. Three metadata walks bracket the
     two full reads. Fail the entire response on drift; never return partial
     bytes. Secret detection belongs to the trusted host BEFORE CAS/staging.
-    Git/ignored classification is deliberately NOT implemented by this helper.
+    Git/ignored classification belongs to the trusted host. A selected snapshot
+    accepts only exact canonical file members, preflighting ALL before reading.
+    The separate metadata operation reads only fixed classification sources.
     """
-    entries = root.walk(excluded=excluded, _metadata_only=True)
-    selected = [e for e in entries if e['type'] == 'file']
+    def walk():
+        return root.walk(excluded=excluded, _metadata_only=True, _git_metadata=git_metadata)
+    entries = walk()
+    if git_metadata and any(e['path'] in GIT_METADATA_PATHS and e['type'] !=
+                            ('directory' if e['path'] == '.git/info' else 'file') for e in entries):
+        raise Refused('git_metadata_unsupported')
+    manifest = {e['path']: e for e in entries if e['type'] == 'file'}
+    if paths is not None and any(p not in manifest for p in paths):
+        raise Refused('path_not_in_manifest')
+    selected = ([manifest[p] for p in paths] if paths is not None
+                else [e for e in entries if e['type'] == 'file' and (not git_metadata or _git_source(e['path']))])
     if len(selected) > SNAPSHOT_FILE_LIMIT:
         raise Refused('entry_limit')
     if any(e['size'] > FILE_LIMIT for e in selected) or sum(e['size'] for e in selected) > BODY_LIMIT:
@@ -489,14 +518,14 @@ def _snapshot(root, excluded):
         bodies.append(value['content'])
         files.append({'path': entry['path'], 'size': str(value['size']),
                       'sha256': value['sha256'], 'identity': value['identity']})
-    if root.walk(excluded=excluded, _metadata_only=True) != entries:
+    if walk() != entries:
         raise Refused('snapshot_changed')
     for entry, first in zip(selected, files):
         value = root.read(entry['path'], FILE_LIMIT, expected_identity=entry['identity'])
         if (value['size'] != entry['size'] or value['sha256'] != first['sha256']
                 or value['identity'] != first['identity']):
             raise Refused('snapshot_changed')
-    if root.walk(excluded=excluded, _metadata_only=True) != entries:
+    if walk() != entries:
         raise Refused('snapshot_changed')
     return entries, files, bodies
 
@@ -505,12 +534,13 @@ def serve(input_stream, output_stream):
     try:
         request = _request(input_stream)  # all syntax validated before target open
         bodies = []
-        if request['op'] in ('estimate', 'snapshot') and any(_metadata_denied(p) for p in request['root'][3:].replace('\\', '/').split('/') if p):
+        if request['op'] in ('estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot') and any(_metadata_denied(p) for p in request['root'][3:].replace('\\', '/').split('/') if p):
             raise Refused('estimate_scope_rejected')
         with Root(request['root'], request.get('expected')) as root:
             header = {'version': 1, 'ok': True, 'identity': root.identity}
-            if request['op'] == 'snapshot':
-                entries, files, bodies = _snapshot(root, request['excluded'])
+            if request['op'] in ('snapshot', 'gitMetadata', 'selectedSnapshot'):
+                entries, files, bodies = _snapshot(root, request['excluded'],
+                                                  request.get('paths'), request['op'] == 'gitMetadata')
                 header['entries'] = [{**e, 'size': str(e['size'])} for e in entries]
                 header['files'] = files
             elif request['op'] in ('capture', 'estimate'):

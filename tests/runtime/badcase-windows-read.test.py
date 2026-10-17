@@ -66,6 +66,74 @@ class WindowsRead(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())['code'], 'estimate_scope_rejected')
             self.assertEqual(unopened.call_count, 0, 'observe outside production catch')
 
+    def test_git_metadata_reads_only_fixed_sources_never_hooks_objects_or_external_gitdir(self):
+        git = self.root / '.git'
+        git.mkdir(); (git / 'info').mkdir(); (git / 'objects').mkdir(); (git / 'hooks').mkdir()
+        (git / 'index').write_bytes(b'index-fixture')
+        (git / 'config').write_bytes(b'[core]\nignorecase = false\n')
+        (git / 'info' / 'exclude').write_bytes(b'*.local\n')
+        (git / 'objects' / 'private').write_bytes(b'PRIVATE_SENTINEL')
+        (git / 'hooks' / 'post-checkout').write_bytes(b'PRIVATE_SENTINEL')
+        (self.root / '.gitignore').write_bytes(b'ignored\n')
+        request = {**self.snapshot_request(), 'op': 'gitMetadata'}
+        reads, opened = [], []
+        original_read, original_relative = w.Root.read, w._relative
+        def read(root, relative, *args, **kwargs):
+            reads.append(relative)
+            return original_read(root, relative, *args, **kwargs)
+        def observe(stack, handle, name, directory):
+            opened.append(name)
+            return original_relative(stack, handle, name, directory)
+        with patch.object(w.Root, 'read', read), patch.object(w, '_relative', observe):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+        header, body = out.getvalue().split(b'\n', 1); header = json.loads(header)
+        self.assertTrue(header['ok'], header)
+        expected = ['.git/config', '.git/index', '.git/info/exclude', '.gitignore']
+        self.assertEqual(reads, expected * 2)
+        self.assertEqual([f['path'] for f in header['files']], expected)
+        self.assertNotIn('hooks', opened); self.assertNotIn('objects', opened)
+        self.assertNotIn(b'PRIVATE_SENTINEL', body)
+        (git / 'index').unlink(); (git / 'index').mkdir()
+        reads.clear()
+        with patch.object(w.Root, 'read', read):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+        self.assertEqual(json.loads(out.getvalue())['code'], 'git_metadata_unsupported')
+        self.assertEqual(reads, [], 'all fixed-source types checked before any read')
+        # Gitfile is returned as data only, never interpreted as authority.
+        import shutil
+        shutil.rmtree(git)
+        git.write_bytes(('gitdir: ' + str(self.outside)).encode())
+        with patch.object(w, '_relative', observe):
+            opened.clear(); out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+        self.assertTrue(json.loads(out.getvalue().split(b'\n', 1)[0])['ok'])
+        self.assertNotIn('unauthorized', opened)
+        self.assertNotIn('sub/sample.bin', reads)
+
+    def test_selected_snapshot_preflights_all_paths_and_never_reads_unselected_ignored_content(self):
+        (self.root / 'ignored').write_bytes(b'PRIVATE_SENTINEL')
+        request = {**self.snapshot_request(), 'op': 'selectedSnapshot', 'paths': ['sub/sample.bin']}
+        original = w.Root.read
+        reads = []
+        def read(root, relative, *args, **kwargs):
+            reads.append(relative); return original(root, relative, *args, **kwargs)
+        with patch.object(w.Root, 'read', read):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+        header, body = out.getvalue().split(b'\n', 1)
+        self.assertTrue(json.loads(header)['ok'], header)
+        self.assertEqual(reads, ['sub/sample.bin'] * 2)
+        self.assertEqual(body, self.bytes)
+        for paths in [['SUB/sample.bin'], ['sub/sample.bin', 'missing'], ['sub'], ['.git/index']]:
+            reads.clear()
+            with patch.object(w.Root, 'read', read):
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'paths': paths})), out)
+            self.assertEqual(json.loads(out.getvalue())['code'], 'path_not_in_manifest')
+            self.assertEqual(reads, [], 'all selectors must pass before first content read')
+        # Empty selection is valid, without falling back to all-file snapshot.
+        reads.clear()
+        with patch.object(w.Root, 'read', read):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'paths': []})), out)
+        self.assertTrue(json.loads(out.getvalue())['ok']); self.assertEqual(reads, [])
+
     def snapshot_request(self):
         with w.Root(str(self.root)) as root:
             pin = root.identity.copy()

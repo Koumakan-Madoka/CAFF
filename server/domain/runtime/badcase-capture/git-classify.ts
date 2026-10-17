@@ -392,7 +392,7 @@ export function parseGitConfigSubset(text: any) {
 // 解析 git index（v2/v3/v4，sha1=20B/sha256=32B）。严格走查：条目数、名字 NUL
 // 终止、v2/v3 的 8 字节对齐、扩展区 sig+size 逐帧推进、结尾恰为整索引校验 hash。
 // 任何损坏 → ok:false（调用方失败关闭：降级多采并标记不完整，绝不静默猜测）。
-export function parseGitIndex(buffer: any, hashLen: any) {
+export function parseGitIndex(buffer: any, hashLen: any, options: any = {}) {
   const fail = (reason: string) => ({ ok: false, reason, entries: [] as any[] });
   const hashBytes = Number(hashLen) === 32 ? 32 : 20;
   if (!Buffer.isBuffer(buffer) || buffer.length < 12 + hashBytes) {
@@ -423,6 +423,9 @@ export function parseGitIndex(buffer: any, hashLen: any) {
     // Gitlinks require a separately verified submodule checkout and dependencies.
     if (![0o100644, 0o100755, 0o120000].includes(mode)) return fail('index_unsupported_mode');
     const flags = buffer.readUInt16BE(offset + fixedLen - 2);
+    // Opt-in stricter consumer: a single remaining conflict stage must not be
+    // mistaken for a resolved tracked mode. Existing Linux semantics unchanged.
+    if (options.stageZero === true && (flags & 0x3000) !== 0) return fail('index_unmerged_stage');
     offset += fixedLen;
     if (flags & 0x4000) {
       // extended 标志仅 v3+ 合法，多 2 字节扩展标志位。
