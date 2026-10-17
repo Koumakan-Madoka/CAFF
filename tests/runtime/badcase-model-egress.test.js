@@ -287,7 +287,7 @@ test('policy copied before asynchronous driver and post-transport clock rollback
 
 test('diagnostic metadata is allowlisted, optional for old records, forbidden on success and never reads thrown getters', async t => {
   const { labelModelFailure } = require('../../build/server/domain/runtime/badcase-capture/model-egress.js');
-  for (const mode of ['legacy', 'label', 'envelope-legacy', 'choice-legacy', 'spoof', 'getter', 'proxy', 'invalid-label', 'invalid-choice']) {
+  for (const mode of ['legacy', 'label', 'envelope-legacy', 'choice-legacy', 'spoof', 'getter', 'proxy', 'invalid-label', 'invalid-choice', 'invalid-tool']) {
     const { root, policy, dir } = fixture(t); let touched = false;
     const report = await dispatchModelEgress(root, policy, async send => {
       await assert.rejects(send(Buffer.from('ok')));
@@ -297,6 +297,7 @@ test('diagnostic metadata is allowlisted, optional for old records, forbidden on
       if (mode === 'choice-legacy') throw labelModelFailure(Error('PRIVATE-ERROR'), 'protocol_response_choice');
       if (mode === 'invalid-label') throw labelModelFailure(Error('PRIVATE-ERROR'), 'PRIVATE-FAKE-STAGE');
       if (mode === 'invalid-choice') throw labelModelFailure(Error('PRIVATE-ERROR'), 'protocol_response_choice_PRIVATE');
+      if (mode === 'invalid-tool') throw labelModelFailure(Error('PRIVATE-ERROR'), 'protocol_response_tool_PRIVATE');
       if (mode === 'proxy') throw new Proxy({}, { get() { touched = true; throw Error('PRIVATE-PROXY'); } });
       if (mode === 'getter') throw { get failureStage() { touched = true; throw Error('PRIVATE-GETTER'); } };
       throw Object.assign(Error('PRIVATE-ERROR'), mode === 'spoof' ? { failureStage: 'protocol_response' } : {});

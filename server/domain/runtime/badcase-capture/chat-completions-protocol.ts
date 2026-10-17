@@ -86,15 +86,28 @@ export function toolChatCompletionsSettings(input: unknown) {
     return { settings, tools, settingsHash: hash(JSON.stringify({ settings, tools })), perRequestReserveMicroUsd: s.perRequestReserveMicroUsd };
   } catch { fail(); }
 }
-function toolCall(value: any, tools: any[], seen: Set<string>): string {
+function toolCall(value: any, tools: any[], seen: Set<string>, response = false): string {
+  // The same ordered predicates serve requests and responses. Request failures
+  // remain generic; only response failures receive closed, value-free labels.
+  const reject = (stage: ModelFailureStage): never => { if (response) responseFailure(stage); fail(); };
   const f = value?.function;
-  if (!keys(value, ['id', 'type', 'function']) || !id(value.id) || seen.has(value.id) || value.type !== 'function'
-    || !keys(f, ['name', 'arguments']) || !tools.some(t => t.function.name === f.name) || !text(f.arguments)
-    || Buffer.byteLength(f.arguments) > 65536) fail();
+  if (!keys(value, ['id', 'type', 'function'])) reject('protocol_response_tool_keys');
+  if (!id(value.id)) reject('protocol_response_tool_id');
+  if (seen.has(value.id)) reject('protocol_response_tool_reused');
+  if (value.type !== 'function') reject('protocol_response_tool_type');
+  if (!keys(f, ['name', 'arguments'])) reject('protocol_response_tool_function_keys');
+  if (!tools.some(t => t.function.name === f.name)) reject('protocol_response_tool_name');
+  if (!text(f.arguments)) reject('protocol_response_tool_arguments_text');
+  if (Buffer.byteLength(f.arguments) > 65536) reject('protocol_response_tool_arguments_size');
   // Preserve provider argument bytes. Syntax/object/depth only: the container's
   // pinned tool validator must still validate arguments against the approved schema.
-  const args = JSON.parse(f.arguments); if (!object(args)) fail(); stableJson(args);
-  if (containsSecretSentinel(f.arguments) || containsSecretSentinel(JSON.stringify(args))) fail();
+  let args: any;
+  try { args = JSON.parse(f.arguments); } catch { reject('protocol_response_tool_arguments_json'); }
+  if (!object(args)) reject('protocol_response_tool_arguments_object');
+  try {
+    stableJson(args);
+    if (containsSecretSentinel(f.arguments) || containsSecretSentinel(JSON.stringify(args))) fail();
+  } catch { reject('protocol_response_tool_arguments_structure'); }
   seen.add(value.id); return value.id;
 }
 function validateToolMessages(value: any, tools: any[]) {
@@ -207,8 +220,8 @@ function validateResponse(v: any, s: ChatCompletionsSettings, tools?: any[], see
   if (s.compatibilityProfile && Object.hasOwn(c.message, 'reasoning_content') && c.message.reasoning_content !== null && c.message.reasoning_content !== '')
     responseFailure('protocol_response_choice_reasoning_invalid');
   if (calling) {
-    if (!Array.isArray(c.message.tool_calls) || c.message.tool_calls.length !== 1) fail();
-    toolCall(c.message.tool_calls[0], tools!, seen);
+    if (!Array.isArray(c.message.tool_calls) || c.message.tool_calls.length !== 1) responseFailure('protocol_response_tool_calls');
+    toolCall(c.message.tool_calls[0], tools!, seen, true);
   }
   const u = v.usage;
   // Keep primary bounds/arithmetic and legacy zero-details behavior. Only the

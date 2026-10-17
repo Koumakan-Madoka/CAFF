@@ -779,6 +779,16 @@ E80 在已审 `bf63c60d` 与 cached 新 profile 下，基线2请求均HTTP200并
 
 离线验证：`node --test tests/runtime/badcase-model-evaluation.test.js tests/runtime/badcase-container-model-relay.test.js` Windows与Linux Node22.22均15/15。覆盖宿主拒绝、合成VM逐阶段/恶意异常Proxy、请求超限抛出/被SDK吞掉、恰好上限后产物失败不误报超限、成功回执不变，以及零退出/有效回执带任何stderr仍不评分/不启动候选。VM替换动态import并提供合成SDK/FS，不运行真正SDK/容器/工具，不冒充E80现场或证明真实失败原因。Linux私有副本14单点变异全红（9阶段塌缩、删除超限锁存、错误>=边界、移除锁存优先、读取异常属性、宿主忽略stderr），逐字节恢复15/15并清理。fast1932通过/41跳过、smoke101、build/check及双typecheck通过。本增量代码验证零新增Key/供应商/Docker/UI操作；真实供应商/容器诊断须在固定SHA独立审查后另立计划，全部AC pending、不合并发布。
 
+### 5.28 工具调用响应的固定拒绝标签（接受集合不变）
+
+E83 在已审 `89dc41ac` 下以新计划运行，基线仅1请求收到HTTP200后落旧粗标签 `protocol_response`，无评分、候选未启动、失败即停。**具体失败谓词仍未知**；本节只补剩余工具调用拒绝路径的诊断，不将静态可疑范围当成真实根因，不重试旧批准、不放宽多个调用或未知工具等限制。
+
+- `protocol_response_tool_` 后缀固定为12项：`calls`（非数组或不恰为1个）、`keys`、`id`、`reused`、`type`、`function_keys`、`name`、`arguments_text`、`arguments_size`、`arguments_json`、`arguments_object`、`arguments_structure`。原短路顺序逐项保留；最后一项涵盖原 stableJson 结构/深度/节点/引用限制与秘密哨兵检查，原顶层响应解码的秘密排除仍先执行。仅报首个固定标签，不含ID、工具名、参数、动态键值、正文、异常属性或数值。
+- 共享 toolCall 的请求历史路径仍抛通用协议错误，不携带响应标签；响应路径才显式开启诊断。JSON解析和结构验证的异常不读任何属性；所有原拒绝输入仍拒绝，seen仅在完整验证后添加。原参数字节不规范化、不删字段，仍须容器内工具按批准schema验证；65536字节上限不变。
+- 标签进入原schema-v1诊断闭集，未知后缀读写两侧拒绝，仅transport_failed可带；旧 `protocol_response` 继续可读、不回溯重分类。usage/完整prompt费用、预算预留不退款、失败停止后续请求、不评分及外层报告语义均不变。配置/harness变更后须新计划/新批准，其他hostCode编译模块缺口不变。
+
+离线负例先在旧实现失败，新增覆盖12项标签、持久读写、未知后缀、正文不落盘、旧记录兼容、未知费用/停止请求、请求历史仍无响应标签，以及可达的相邻双故障顺序。无效ID不可能同时是历史复用ID（纳入历史前已验证ID），该相邻交换无可达双故障，未宣称此等价变异被测试杀死。Windows七套212＝210通过/2链接权限跳过，Linux Node22.22七套212/212；50文件私有副本字节核验，41个非等价单点变异全部红（12标签退化、11守卫、6可达相邻交换、12闭集删除），逐字节恢复212/212并清理副本。build/check、双typecheck、fast1954通过/41跳过、smoke101及diff-check通过。本增量零Key/供应商/Docker/UI操作，E83具体原因仍未知，累计$4未结算预留非账单；全部AC pending、不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

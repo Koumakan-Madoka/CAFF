@@ -178,6 +178,92 @@ test('explicit cached nonthinking tools retain full prompt accounting and valida
   await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(v))(request(c)), e => modelFailureStage(e) === 'protocol_response_usage_reasoning_tokens');
 });
 
+const toolFailureCases = () => [
+  ['calls', v => v.choices[0].message.tool_calls = null],
+  ['calls', v => v.choices[0].message.tool_calls = []],
+  ['calls', v => v.choices[0].message.tool_calls.push(call('call-2'))],
+  ['keys', (v, c) => c.extra = 'PRIVATE-EXTRA'],
+  ['keys', v => v.choices[0].message.tool_calls[0] = null],
+  ['id', (v, c) => c.id = 'PRIVATE-ID/'],
+  ['reused', () => {}, true],
+  ['type', (v, c) => c.type = 'PRIVATE-TYPE'],
+  ['function_keys', (v, c) => c.function = null],
+  ['function_keys', (v, c) => c.function.extra = 'PRIVATE-EXTRA'],
+  ['name', (v, c) => c.function.name = 'PRIVATE-NAME'],
+  ['arguments_text', (v, c) => c.function.arguments = []],
+  ['arguments_text', (v, c) => c.function.arguments = 'PRIVATE-ARG\u0000'],
+  ['arguments_size', (v, c) => c.function.arguments = ' '.repeat(65537)],
+  ['arguments_json', (v, c) => c.function.arguments = '{PRIVATE-ARG'],
+  ['arguments_object', (v, c) => c.function.arguments = '[]'],
+  ['arguments_object', (v, c) => c.function.arguments = 'null'],
+  ['arguments_structure', (v, c) => c.function.arguments = '{"$ref":"PRIVATE-REF"}'],
+  ['arguments_structure', (v, c) => c.function.arguments = JSON.stringify({ k: Array(2050).fill(0) })],
+  ['arguments_structure', (v, c) => c.function.arguments = '{"k":'.repeat(18) + '{}' + '}'.repeat(18)],
+];
+
+test('tool response failures have fixed labels, durable closed records and unchanged stop/unknown-cost semantics', async t => {
+  for (const [check, change, reused] of toolFailureCases()) await t.test(check, async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-tool-label-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const c = config(); c.settings.maxResponseBytes = 131072;
+    const v = response(); change(v, v.choices[0].message.tool_calls[0]);
+    const stage = 'protocol_response_tool_' + check, h = reused ? history() : messages();
+    await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(v))(request(c, h)), e => {
+      assert.equal(modelFailureStage(e), stage); assert.deepEqual(Object.keys(e), ['code']); assert.equal(e.cause, undefined); return invalid(e);
+    });
+    const p = api.toolChatCompletionsSettings(c), runId = hash(stage);
+    const policy = { approvalId: 'synthetic', planHash: hash('plan'), runId,
+      provider: c.settings.provider, model: c.settings.model, settingsHash: p.settingsHash, expiresAt: Date.now() + 60000,
+      maxRequests: 2, maxRequestBytes: 8192, maxResponseBytes: 131072, timeoutMs: 1000, perRequestReserveMicroUsd: 1200, runLimitMicroUsd: 2400 };
+    let calls = 0;
+    const report = await api.dispatchToolChatCompletions(root, policy, c, async send => {
+      await assert.rejects(send(api.encodeToolChatCompletionsRequest(c, h)), /model_egress_transport_failed/);
+      await assert.rejects(send(api.encodeToolChatCompletionsRequest(c, h)), /model_egress_stopped/);
+    }, async () => { calls++; return exchange(v)(); });
+    assert.equal(calls, 1); assert.equal(report.reason, 'transport_failed'); assert.equal(report.unknownCostRequests, 1);
+    assert.equal(report.committedMicroUsd, 1200); assert.equal(report.knownCostMicroUsd, 0); assert.equal(report.requests[0].failureStage, stage);
+    for (const key of ['costMicroUsd', 'responseHash', 'responseBytes']) assert.equal(report.requests[0][key], null);
+    assert.deepEqual(readModelEgress(root, runId), report);
+    const dir = path.join(root, 'model-egress', runId), file = path.join(dir, '0001.result.json'), original = fs.readFileSync(file, 'utf8');
+    assert.ok(!fs.readdirSync(dir).map(n => fs.readFileSync(path.join(dir, n), 'utf8')).join('').includes('PRIVATE-'));
+    for (const failureStage of [stage + '_PRIVATE', 'protocol_response_tool_PRIVATE']) {
+      fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(original), failureStage }));
+      assert.throws(() => readModelEgress(root, runId), /model_egress_record_invalid/);
+    }
+    // Historical coarse labels remain readable; never retroactively classify them.
+    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(original), failureStage: 'protocol_response' }));
+    assert.equal(readModelEgress(root, runId).requests[0].failureStage, 'protocol_response');
+    fs.writeFileSync(file, original); assert.deepEqual(readModelEgress(root, runId), report);
+  });
+});
+
+test('tool labels preserve first-failure order and do not label request history failures as responses', async () => {
+  const changes = toolFailureCases();
+  // Reachable adjacent double faults retain order. Invalid IDs cannot also be
+  // reused: every ID admitted into request history already passed id().
+  const pairs = [['keys', 'id'], ['reused', 'type'], ['type', 'function_keys'],
+    ['function_keys', 'name'], ['name', 'arguments_text'], ['arguments_text', 'arguments_size'],
+    ['arguments_size', 'arguments_json']];
+  for (const [first, second] of pairs) {
+    const choose = check => check === 'function_keys' ? changes.filter(x => x[0] === check).at(-1) : changes.find(x => x[0] === check);
+    const v = response(), a = choose(first), b = choose(second);
+    a[1](v, v.choices[0].message.tool_calls[0]); b[1](v, v.choices[0].message.tool_calls[0]);
+    const h = a[2] || b[2] ? history() : messages();
+    // Size and JSON must coexist: oversized malformed JSON, not an overwritten value.
+    if (first === 'arguments_text') v.choices[0].message.tool_calls[0].function.arguments = '\u0000' + ' '.repeat(65536);
+    if (first === 'arguments_size') v.choices[0].message.tool_calls[0].function.arguments = '{' + ' '.repeat(65536);
+    const c = config(); c.settings.maxResponseBytes = 131072;
+    await assert.rejects(api.createToolChatCompletionsTransport(c, exchange(v))(request(c, h)), e => {
+      assert.equal(modelFailureStage(e), 'protocol_response_tool_' + first, first + ' before ' + second); return invalid(e);
+    });
+  }
+  for (const [check, change, reused] of changes) {
+    if (reused) continue;
+    const v = response(); change(v, v.choices[0].message.tool_calls[0]);
+    const h = [...messages(), v.choices[0].message, { role: 'tool', tool_call_id: 'call-1', content: 'result' }];
+    assert.throws(() => api.encodeToolChatCompletionsRequest(config(), h), e => invalid(e) && modelFailureStage(e) === undefined);
+  }
+});
+
 test('argument byte bound is independent of outer response limit', async () => {
   const c = config(); c.settings.maxResponseBytes = 131072;
   for (const delta of [0, 1]) {
