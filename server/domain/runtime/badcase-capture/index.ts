@@ -10,6 +10,8 @@ import { createCollector } from './collector';
 import { restoreCheckpoint } from './restore';
 import { runEstimateProcess } from './estimate-process';
 import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
+import { prepareWindowsAuthorization } from './windows-authorization';
+import { invokeWindowsHelper } from './windows-helper';
 
 export function resolveCaptureRoot(options: any = {}) {
   const explicit = String(options.captureRoot || '').trim() || String(process.env.CAFF_BADCASE_CAPTURE_DIR || '').trim();
@@ -66,11 +68,30 @@ export function createBadcaseCaptureService(options: any = {}) {
     },
 
     // 显式授权动作（唯一允许钉住根身份的入口）：对当前策略中的 authorizedDirs 与
-    // authorizedInputDirs 固定 realpath + Linux statx 目录对象身份。采集时根被替换
-    // （realpath 变化或 dev/ino/btime 不符）即拒绝；能力不可用时 identity 缺失，
-    // 采集阶段按 authorized_root_identity_missing 失败关闭。
+    // authorizedInputDirs 固定目录对象身份。Linux: realpath + statx；Windows:
+    // literal path + native NT identity (no junction resolution/fallback).
+    // Windows authorization always leaves capture disabled; estimate/collector
+    // capability remains unavailable until their separate integration is ready.
     authorizeProject(projectId: any) {
       const policy = store.loadPolicy(projectId);
+      if (process.platform === 'win32') {
+        const runtime = prepareWindowsAuthorization({ captureRoot });
+        const nativeIdentityFn = (dir: any) => {
+          if (!runtime.ok) return null;
+          const result = invokeWindowsHelper(runtime.python, runtime.helperPath, { version: 1, op: 'identity', root: dir });
+          return result.ok ? result.identity : null;
+        };
+        const saved = store.savePolicy(pinAuthorizedDirs({ ...policy, projectId, status: 'disabled', suspendReason: '' }, { nativeIdentityFn }));
+        const allPinned = saved.authorizedDirs.every((dir: any) => saved.authorizedDirPins[pinKey(dir)]?.identity)
+          && saved.authorizedInputDirs.every((dir: any) => saved.authorizedInputPins[pinKey(dir)]?.identity);
+        // Persist disabled/cleared pins first, but never report an unsupported
+        // native root or runtime as successful authorization to management UI.
+        if (!runtime.ok || !allPinned) {
+          const code = runtime.ok ? 'windows_authorization_root_rejected' : 'windows_authorization_unavailable';
+          throw Object.assign(new Error('Windows capture authorization unavailable'), { code });
+        }
+        return saved;
+      }
       const capability = detectCaptureCapability({ captureRoot });
       const statxFn = capability.ok
         ? (dir: any) => {

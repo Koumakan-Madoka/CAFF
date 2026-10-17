@@ -173,6 +173,10 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
       if (error && typeof error === 'object' && 'code' in error && error.code === 'capture_writer_busy') {
         throw issue('capture_writer_busy', 409);
       }
+      if (error && typeof error === 'object' && 'code' in error
+          && (error.code === 'windows_authorization_unavailable' || error.code === 'windows_authorization_root_rejected')) {
+        throw issue(error.code, 409);
+      }
       throw error;
     }
   };

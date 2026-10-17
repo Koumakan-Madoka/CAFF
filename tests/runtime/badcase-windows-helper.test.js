@@ -188,6 +188,20 @@ test('Windows process boundary verifies source, sends pins only on stdin and dis
     .invokeWindowsHelper('python', 'helper', request).reason, 'windows_required');
 });
 
+test('Windows identity operations have a separate bounded management timeout', () => {
+  const request = { version: 1, op: 'identity', root: 'C:/authorized' };
+  const api = isolatedTransport({
+    disk: { statSync: () => ({ size: Buffer.byteLength(WINDOWS_HELPER_SOURCE) }), readFileSync: () => Buffer.from(WINDOWS_HELPER_SOURCE) },
+    child: { spawnSync(python, args, options) {
+      assert.equal(options.timeout, 10000);
+      assert.equal(options.timeout, limits.identityTimeoutMs);
+      assert.deepEqual(JSON.parse(options.input), request);
+      return { status: 0, stdout: wire({ version: 1, ok: true, identity }, Buffer.alloc(0)), stderr: Buffer.alloc(0) };
+    } },
+  });
+  assert.equal(api.invokeWindowsHelper('python', 'helper', request).ok, true);
+});
+
 test('Windows helper refusals use fixed closed reason strings and never bodies', () => {
   const { request } = fixture();
   for (const code of ['root_identity_mismatch', 'path_not_in_manifest', 'helper_failed', 'changed_during_read']) {

@@ -63,9 +63,9 @@ function normalizeDirPins(value: any) {
       if (!normalizedKey || !pinned) {
         continue;
       }
-      // pin 结构：{ realpath, identity? }。identity 是授权动作时 statx 得到的
-      // (devMajor, devMinor, ino, btimeSec, btimeNsec)（仅 Linux 可得）；
-      // 兼容早期纯字符串 realpath pin。
+      // pin: { realpath, identity? }. Linux identity is statx dev/ino/btime;
+      // Windows identity is native volumeSerial/fileId/creationTime strings.
+      // Legacy string-only pins remain readable, never sufficient to capture.
       if (typeof pinned === 'string') {
         const realpath = pinned.trim();
         if (realpath) {
@@ -97,7 +97,9 @@ function normalizeDirPins(value: any) {
 // 解析失败（目录不存在等）记为空——normalize 丢弃空 pin，采集按 authorized_root_unpinned 拒绝。
 // authorizedDirs → authorizedDirPins；authorizedInputDirs（session 等树外回放输入的
 // 独立授权边界）→ authorizedInputPins。
-function pinDirList(dirs: any, statxFn: any) {
+// Windows nativeIdentityFn instead queries the literal resolved path, refusing
+// junctions/ancestors; no realpath or statx fallback and no pin on native failure.
+function pinDirList(dirs: any, statxFn: any, nativeIdentityFn: any) {
   const pins: Record<string, any> = {};
   const list = Array.isArray(dirs) ? dirs : [];
   for (const dir of list) {
@@ -106,6 +108,15 @@ function pinDirList(dirs: any, statxFn: any) {
       continue;
     }
     try {
+      if (nativeIdentityFn) {
+        // NT helper must see the literal path: resolving a junction here would
+        // erase the reparse boundary before native validation. Failure never
+        // falls back to realpath/statx or an identity-less authorization pin.
+        const resolved = path.resolve(raw);
+        const identity = nativeIdentityFn(resolved);
+        if (identity && typeof identity === 'object') pins[pinKey(raw)] = { realpath: resolved, identity };
+        continue;
+      }
       const realpath = fs.realpathSync(path.resolve(raw));
       const pin: any = { realpath };
       if (statxFn) {
@@ -125,10 +136,11 @@ function pinDirList(dirs: any, statxFn: any) {
 export function pinAuthorizedDirs(policy: any, options: any = {}) {
   const source = policy && typeof policy === 'object' ? policy : {};
   const statxFn = typeof options.statxFn === 'function' ? options.statxFn : null;
+  const nativeIdentityFn = typeof options.nativeIdentityFn === 'function' ? options.nativeIdentityFn : null;
   return {
     ...source,
-    authorizedDirPins: pinDirList(source.authorizedDirs, statxFn),
-    authorizedInputPins: pinDirList(source.authorizedInputDirs, statxFn),
+    authorizedDirPins: pinDirList(source.authorizedDirs, statxFn, nativeIdentityFn),
+    authorizedInputPins: pinDirList(source.authorizedInputDirs, statxFn, nativeIdentityFn),
   };
 }
 

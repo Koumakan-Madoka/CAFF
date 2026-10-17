@@ -889,6 +889,18 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 私有副本21个非等价单点变异全红：12个原生点（排除提前prune、NT大小写、根pin、叶pin、重复键、请求限额、身份schema、canonical manifest、body额度、头限额、walk/read长度、全局排序），9个Node点（枚举size字符串、卷约束、响应根pin、文件身份、body额度、文件hash、响应闭集、stderr拒绝、进程error拒绝）；各恢复逐字节一致后原生18/18、Node9/9，副本清理。零真实项目采集/模型Key/供应商/Docker/UI；历史6美元未结算预留非账单口径不变，不合并发布。
 
+### 5.37 Windows 显式授权根身份持久化（采集仍关闭）
+
+- 管理门面 `authorizeProject` 在 Windows 安装并自检已审查原生 helper，将 worktree 根与独立输入根分别保存为 `{realpath, identity:{volumeSerial,fileId,creationTime}}`；三个身份字段保持字符串。此处 `realpath` 是历史字段名，Windows 保存 **literal resolved path**，不先跟随 junction；根或祖先为 junction 即无 pin。Linux 仍用原 realpath/statx 路径，不改采集接受集合。
+- 唯有显式授权创建/更新 pin。普通保存只保留仍列出的旧 pin，拒绝来参伪造的 pin；新增根无授权，移除根同时移除 pin；重启保留原对象身份。替根后的原 pin 在 native capture 请求中拒绝，只有再次显式授权才能换 pin。Windows 授权无论成功与否均保存 disabled，失败根不保留旧 pin，不回退 Linux/Node stat/WSL/纯路径授权；API 仍复用 local-admin/CSRF/确认，授权不等于开启。任一项目根/独立输入根失败不得报告部分成功：先持久化disabled和本轮成功的pin，再抛固定code，由HTTP映射409 `windows_authorization_unavailable` / `windows_authorization_root_rejected`；不透传异常正文。三个拒绝负例先红后绿。
+- `windows-authorization.ts` 在采集存储内安装完整 SHA 命名的源码。首次排他创建，已有文件必须为普通文件且字节摘要正确，篡改不自动修复；并发首次安装读到半写文件可失败关闭，不承诺安装原子性。解释器经 PATH 显式固定候选顺序 python→python3，以 `-I -B`、10秒/1KiB验证 Windows Python≥3.9 的固定标记。每次授权重跑存储内独立临时目录身份稳定性与真实 junction 根拒绝自检，只删除自己的探针，失败原因固定不回传正文。
+- 每个 native identity 请求另设10秒上限，capture 请求原限额不变。仍沿用同步管理门面：批量根的耗时顺序累加，可能阻塞事件循环；这不是异步批量授权或崩溃后探针自动回收的交付。路径/解释器/同OS用户/存储为 TCB，源码磁盘摘要不证明不可变执行体；自检不扫描项目文件、不证明捕获一致性或完整回放。
+- 证据：Windows10 build19045/x64、Python3.13.5、Node24.13.1，自建临时NTFS根经真实门面/存储/helper验证主/输入pin、重启、替根、普通保存不重新pin、移除/新增根、真实junction根与祖先拒绝、源码安装/篡改失败；仅身份元数据查询，无真实项目采集。新授权套8/8，helper套10/10、原生wrapper1/1；与safe-read/estimate授权/HTTP管理组合82=57通过/25跳过。原生Python18/18由wrapper执行。
+- 共享Linux回归：WSL Debian Node22.22，54文件私有副本逐字节核验；safe-read/estimate授权/Windows协议与合成管理四套60=52通过/8跳过（Windows原生与无CAP_SYS_ADMIN挂载缺证据），副本清理。首次合成VM在Linux以普通symlink模拟junction，rmdir语义不同导致自检清理断言失败；只为该VM模拟Windows junction删除行为后重跑通过，生产代码不变，不冒充Linux原生Windows证据。
+- 私有副本11非等价单点变异全红并逐字节恢复：literal改realpath、跳过Windows分支、普通保存接受伪pin、失败仍生成pin、删disabled、项目根/输入根完整pin检查各一处、排他写改覆盖写、身份稳定性、junction拒绝、identity超时。全量fast2026通过/43跳过（含check/build）、smoke101、双typecheck与diff-check；首次fast脚本8193字符超过Windows cmd限制未执行，改为独立 `test:badcase-windows` 子脚本后完整重跑，不将失败计通过。
+- **尚未接通**：持久策略→强制秘密/私有/Git/ignored排除编译、Windows estimate/collector双扫/CAS恢复、session输入读取、容器路径映射。原Windows采集能力门仍失败关闭，HTTP无法从真实估算获得开启回执；强制手工设置enabled也在采集能力门被拒。S1继续验证零目标内容读取，不把disabled短路当作能力门验证。旧节“零管理接线”是其固定SHA历史范围，当前只接身份授权。
+- 未启动UI/真实Docker/模型/供应商，全部AC pending；历史6美元未结算预留非账单不变，不合并发布。本段不构成Windows实际worktree采集恢复或AC2通过。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

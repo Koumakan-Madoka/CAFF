@@ -1,6 +1,6 @@
-// Audited low-level transport only. NOT connected to capability, authorization,
-// estimate, or collector. A caller must persist approval/pin separately; a valid
-// native response is not proof of a coherent snapshot or a replayable turn.
+// Audited low-level transport. Explicit Windows management authorization uses
+// identity queries; capture capability, estimate and collector remain unconnected.
+// A valid response is not proof of a coherent snapshot or a replayable turn.
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
@@ -10,7 +10,7 @@ import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
 export const WINDOWS_HELPER_LIMITS = Object.freeze({
   requestBytes: 1024 * 1024, headerBytes: 32 * 1024 * 1024,
   bodyBytes: 128 * 1024 * 1024, fileBytes: 64 * 1024 * 1024,
-  entries: 100000, paths: 2048, exclusions: 256, timeoutMs: 10 * 60 * 1000,
+  entries: 100000, paths: 2048, exclusions: 256, timeoutMs: 10 * 60 * 1000, identityTimeoutMs: 10000,
 });
 const REASONS = new Set([
   'request_invalid', 'helper_failed', 'windows_required', 'root_path_invalid',
@@ -146,7 +146,8 @@ export function invokeWindowsHelper(python: string, helperPath: string, request:
       return { ok: false, reason: 'helper_integrity_failed' };
     }
     const result = spawnSync(python, ['-I', '-B', helperPath], {
-      input, encoding: 'buffer', windowsHide: true, timeout: WINDOWS_HELPER_LIMITS.timeoutMs,
+      input, encoding: 'buffer', windowsHide: true,
+      timeout: request.op === 'identity' ? WINDOWS_HELPER_LIMITS.identityTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
       maxBuffer: WINDOWS_HELPER_LIMITS.headerBytes + WINDOWS_HELPER_LIMITS.bodyBytes + 1,
     });
     if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stderr) || result.stderr.length !== 0) {

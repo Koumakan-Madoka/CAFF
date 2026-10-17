@@ -151,6 +151,24 @@ test('default GET and guard failures never scan or authorize', async t => {
   assert.equal(touches, 0);
 });
 
+test('Windows native authorization failures return sanitized errors and stay disabled', { skip: process.platform !== 'win32' }, async t => {
+  const h = setup(t);
+  const alias = path.join(h.root, 'alias');
+  fs.symlinkSync(h.target, alias, 'junction');
+  await rejects(() => invoke(h.controller, 'authorize', authorization(alias)), 'windows_authorization_root_rejected', 409);
+  assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
+  assert.deepEqual(h.service.loadPolicy('project-test').authorizedDirPins, {});
+  const auth = require('../../build/server/domain/runtime/badcase-capture/windows-authorization');
+  const prepare = auth.prepareWindowsAuthorization;
+  auth.prepareWindowsAuthorization = () => ({ ok: false, reason: 'windows_authorization_unavailable' });
+  try {
+    await rejects(() => invoke(h.controller, 'authorize', authorization(h.target)), 'windows_authorization_unavailable', 409);
+    const persisted = createBadcaseCaptureService({ captureRoot: h.captureRoot }).loadPolicy('project-test');
+    assert.equal(persisted.status, 'disabled');
+    assert.deepEqual(persisted.authorizedDirPins, {});
+  } finally { auth.prepareWindowsAuthorization = prepare; }
+});
+
 test('authorization is explicit, disables collection, and settings cannot expand or re-pin it', async t => {
   const h = setup(t);
   await rejects(() => invoke(h.controller, 'authorize', { ...authorization(h.target), confirmed: false }), 'badcase_capture_confirmation_required');

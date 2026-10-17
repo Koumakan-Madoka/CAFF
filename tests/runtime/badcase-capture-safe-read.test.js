@@ -137,6 +137,10 @@ test('S1: win32 能力缺失 → 拒绝采集且零目标内容读取', { skip: 
   try {
     const service = makeService(tempDir);
     authorize(service, 'project-1', enabledPolicy(projectDir));
+    assert.equal(service.loadPolicy('project-1').status, 'disabled', 'Windows explicit authorization leaves collection disabled');
+    // Exercise the still-closed collector gate independently of management's
+    // disable-on-authorization invariant (normal HTTP enable is still blocked).
+    service.savePolicy('project-1', { ...service.loadPolicy('project-1'), status: 'enabled' });
     const result = service.captureTurnCheckpoint(captureArgs(projectDir));
     assert.equal(result.captured, false);
     assert.ok(result.reason.startsWith('capture_unavailable:safe_read_capability_missing:win32'),
