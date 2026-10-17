@@ -1057,6 +1057,19 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 
 5原生+12Node单点变异最终17点全部断言红，原生私有副本字节恢复后30/30且清理，Node仅进程内拦截、编译磁盘SHA不改，干净基线复绿。初轮op负例仍携session不合法path，删op门存活；改合法session请求后红；删源码SHA守卫最初令mock等待不终止（看门狗超时，不计红），改错误admission时mock立即close后红；首次native身份变异仅触发JSONDecodeError不计，改拆头/body对象断言后全点重跑。最终回归数字记Goal，不以测试数替代功能。零真实项目采集/Key/供应商/Docker/浏览器/生产，全部AC pending，历史6美元未结算非账单、不合并发布；外置指针绑定/分类、全局忽略、core.ignorecase=true、删除历史/附件及服务开启/容器映射仍待完成。
 
+### 5.49 Windows linked-worktree 外置 Git 指针绑定与分类（内部候选，服务门仍关）
+
+`readWindowsGitFileCandidateAsync` 新增可信调用方可选的 `externalGit:{metadataRoot,commonRoot}`。只支持 linked-worktree 的有限布局：工作根 `.git` 为普通 gitfile，metadata 根有 `commondir/gitdir/index`，common 根有 `config/info/exclude`。**本轮将 §5.48 的读取接入实际文件分类，不新增服务/collector 的外置根选择或管理开启；不自动发现或保存选择，不开启真实项目采集。** 同步候选收到该选项立即 `git_external_async_required`，无同步回退；不提供选项仍沿用原本地子集及外置 gitfile 拒绝语义。
+
+- async 入场在第一次 await 前 clone 所有 options，固定工作根、两个选择根、策略与 pin。两个外置根各自必须精确独立授权且保有原 pin；worktree 授权、父目录授权、孤立 pin、相同的两个根、工作树内根、UNC/驱动器号相对路径均不足。原 reader 对每次实际读取再检查 literal+canonical 保护与原生身份；agentDir 也作为私有根传入，不重新 pin、不安装 helper。默认 `.git` 排除不被覆盖，排除导致 marker 不可用时明确拒绝。
+- 原生 `gitMetadata` 已能返回普通 `.git` 文件，本轮不更改 Python/helper/协议。gitfile 必须精确 `gitdir: ` 前缀；所有指针为严格 UTF-8、最多32768字节、仅一行（可有一个 LF/CRLF 结尾），拒空白边界、控制字符/BOM、UNC、根相对及驱动器号相对路径。允许绝对驱动器路径或相对路径，以相应基目录做纯 win32 词法归一化，按 Windows 不区分大小写比较到**预选根**：`.git`→metadataRoot，`commondir`→commonRoot，`gitdir`→当前工作根/.git。指针只作比较，绝不作为授权、helper 目标或新读路径；先核两个授权与 gitfile，再依次核 commondir/backlink，之后才读 config/index/exclude。
+- 五固定源均必需；**缺 info/exclude 也拒绝**，不把任何错误猜作可选不存在。每组累计最多128MiB（另受既有每文件64MiB、指针32KiB约束），全部来源过秘密扫描后才解析。config 复用原有限语法，include/excludesFile/未知 extensions、worktreeConfig、core.ignorecase=true 等仍拒绝，不读 config.worktree 或全局 Git。二进制 index 复用独立 checksum/stage/mode/路径校验，缺/坏元数据无全采回退。
+- 将已绑定的外置 config/index/info-exclude 与原工作树 `.gitignore` 投影到原有分类器，先得精确选择，再调用 selectedSnapshot；只投影分类材料，不把外置元数据归档为文件 blob。保留 tracked mode、忽略规则、显式 ignored 纳入、秘密剔除及独立 backing。选择前后纳入范围的工作树非 Git manifest 和 gitMetadata 签名仍复核；普通内容选读后再次读取五外置源并比较字节摘要。初始外置源在分类后只保留摘要，避免跨内容采集继续持有一组源 Buffer；不宣称安全擦除。
+- 全链含最多13个 helper 调用，复用同一较早25秒观察期限、两活跃名额、kill→close；任何阶段失败或迟到立即停止，不消费迟到正文、不返回部分计划/秘密/内部异常文本。非原子与 ABA 残余仍在，尤其外置 reader 不跨调用返回叶身份，前后仅字节摘要比较，不能证明同一叶对象或全源同时存在。同步 clone/fs/解析不可抢占，不承诺硬终止。
+- 成功仅 `bounded_external_git_subset_v1`，`complete/strictEvalEligible/captureAvailable` 全部 false。全局忽略、未支持配置、删除历史、空目录、会话/附件、服务选择与容器路径映射未因此完成。删除 tracked 项仅在当前文件集合中缺席，不冒充已采集删除历史；untracked mode 仍合成0644。
+
+验证使用自建 Windows NTFS linked-worktree，临时 Git 操作仅用于建立夹具及 `ls-files` 分类 oracle（采集路径本身不执行 Git）：分别显式管理 pin 两个输入根，分类 dirty/tracked/untracked/显式 ignored/info-exclude；测试 writer 将安全 blob 入 CAS，保存不完整夹具清单并两次恢复一致，秘密不恢复、缺失 tracked 项不出现。策略仍 disabled，不是真实项目或真实 turn；缺 exclude、默认 `.git` 排除、worktreeConfig 与指针变更均拒绝。闭集授权/指针、五源前后变更、10次外置读取逐次失败及迟到、等待中篡改选择等由隔离 VM 测试覆盖；128MiB累计上限通过小限额注入验证，不冒充真实大文件写入。首批8项在旧代码7项断言红（含原生布局拒绝）/1项消极负例绿；后补该负例必须实际到达外置指针读取的断言，另补累计限额/逐阶段故障及工作树内根覆盖；最终测试/变异及独立审查结果记 Goal。全部AC pending，零真实项目采集/模型/Key/供应商/Docker/UI/生产，不合并发布；历史6美元未结算非账单不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

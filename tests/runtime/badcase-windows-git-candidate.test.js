@@ -39,7 +39,7 @@ test('selected snapshot and git metadata have independent closed request/respons
 function isolated(scope, helper, clock = require('node:perf_hooks').performance) {
   const filename = path.join(__dirname, '../../build/server/domain/runtime/badcase-capture/windows-git-candidate.js');
   const local = require('node:module').createRequire(filename), exports = {};
-  require('node:vm').runInNewContext(fs.readFileSync(filename, 'utf8'), { exports, module: { exports }, Buffer, Map, Set,
+  require('node:vm').runInNewContext(fs.readFileSync(filename, 'utf8'), { exports, module: { exports }, Buffer, Map, Set, structuredClone,
     require: name => name === './windows-estimate' ? { prepareWindowsMetadataScope: scope }
       : name === './windows-helper' ? { invokeWindowsHelper: helper, invokeWindowsGitHelper: helper, encodeWindowsHelperRequest: encode }
         : name === 'node:perf_hooks' ? { performance: clock } : local(name) }, { filename });

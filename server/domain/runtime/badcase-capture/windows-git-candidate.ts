@@ -1,8 +1,11 @@
-// Internal LOCAL Git subset prototype, NOT a turn collector/enable capability.
-// No Git execution, implicit global config reads, external gitdir expansion,
+// Internal bounded Git subset prototype, NOT a turn collector/enable capability.
+// No Git execution, implicit global config reads or pointer-derived authorization,
 // install/re-pin, persistence or fallback to the unclassified all-file reader.
-// Requires visible canonical .git directory/config/index and verified local
-// grammar. Missing/unsupported classification blocks ordinary content reads.
+// Requires visible canonical .git metadata and verified config/index grammar.
+// External layout is opt-in with TWO exact independent input roots. Missing or
+// unsupported classification blocks ordinary content reads.
+import path from 'node:path';
+import { readWindowsGitMetadataInput } from './windows-git-input';
 import { prepareWindowsMetadataScope } from './windows-estimate';
 import { invokeWindowsHelper, invokeWindowsGitHelper, encodeWindowsHelperRequest } from './windows-helper';
 const { performance } = require('node:perf_hooks');
@@ -61,6 +64,69 @@ function classify(metadata: any, included: string[]): any {
   return { ok: true, paths, modes };
 }
 
+const rootKey = (p: string) => path.win32.resolve(p).replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+const within = (root: string, target: string) => target === root || target.startsWith(`${root}/`);
+
+// Explicit, independently authorized roots only. Parsed pointers are comparisons,
+// NEVER lookup keys, grants or helper targets. The reader still verifies literal
+// scope, protected roots and the original native pin on EVERY external read.
+function externalBinding(options: any, metadata: any): any {
+  const roots = options.externalGit;
+  if (!roots || typeof roots !== 'object' || Array.isArray(roots)
+    || Object.keys(roots).length !== 2 || !['metadataRoot', 'commonRoot'].every(k => Object.hasOwn(roots, k))) return fail('git_external_not_authorized');
+  const authorized = options.policy?.authorizedInputDirs, pins = options.policy?.authorizedInputPins;
+  const work = rootKey(options.targetDir);
+  for (const root of [roots.metadataRoot, roots.commonRoot]) {
+    if (typeof root !== 'string' || !/^[a-z]:[\\/]/i.test(root)
+      || !Array.isArray(authorized) || !authorized.some((p: any) => typeof p === 'string' && /^[a-z]:[\\/]/i.test(p) && rootKey(p) === rootKey(root))) return fail('git_external_not_authorized');
+    const pin = pins?.[path.win32.resolve(root).toLowerCase()];
+    if (!pin || typeof pin.realpath !== 'string' || !/^[a-z]:[\\/]/i.test(pin.realpath)
+      || rootKey(pin.realpath) !== rootKey(root) || within(work, rootKey(root))
+      || !encodeWindowsHelperRequest({ version: 1, op: 'gitInput', root, expected: pin.identity, path: 'index' })) return fail('git_external_not_authorized');
+  }
+  if (rootKey(roots.metadataRoot) === rootKey(roots.commonRoot)) return fail('git_external_not_authorized');
+  const marker = metadata.files.find((f: any) => f.path === '.git');
+  if (metadata.entries.find((e: any) => e.path === '.git')?.type !== 'file' || !marker
+    || !pointerMatches(marker.content, options.targetDir, roots.metadataRoot, true)) return fail('git_external_pointer_invalid');
+  return { ok: true, roots };
+}
+
+function pointerMatches(bytes: any, base: string, expected: string, gitfile = false): boolean {
+  try {
+    if (!Buffer.isBuffer(bytes) || bytes.length > 32768 || containsSecretSentinel(bytes)) return false;
+    let text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes).replace(/\r?\n$/, '');
+    if (gitfile) { if (!text.startsWith('gitdir: ')) return false; text = text.slice(8); }
+    if (!text || text !== text.trim() || /[\x00-\x1f\x7f\ufeff]/.test(text)
+      || /^[\\/]/.test(text) || (/^[a-z]:/i.test(text) && !/^[a-z]:[\\/]/i.test(text))) return false;
+    return rootKey(path.win32.resolve(base, text)) === rootKey(expected);
+  } catch { return false; }
+}
+
+// All five sources are required in this bounded subset. Missing info/exclude
+// blocks rather than guessing absence; worktreeConfig/includes/global ignores
+// remain unsupported. No optional-file discovery or implicit ambient reads.
+function* externalSources(options: any, roots: any): Generator<any, any, any> {
+  const sources = new Map<string, any>();
+  let totalBytes = 0;
+  for (const name of ['commondir', 'gitdir', 'config', 'index', 'info/exclude']) {
+    const root = ['commondir', 'gitdir', 'index'].includes(name) ? roots.metadataRoot : roots.commonRoot;
+    const result = yield { gitInput: { metadataRoot: root, metadataPath: name } };
+    if (!result.ok || !Buffer.isBuffer(result.content)) return fail('git_external_input_unavailable');
+    totalBytes += result.content.length;
+    if (totalBytes > 128 * 1024 * 1024) return fail('git_external_input_limit');
+    if (containsSecretSentinel(result.content)) return fail('git_metadata_secret_excluded');
+    sources.set(name, result.content);
+    if (name === 'commondir' && !pointerMatches(result.content, roots.metadataRoot, roots.commonRoot)) return fail('git_external_pointer_invalid');
+    if (name === 'gitdir' && !pointerMatches(result.content, roots.metadataRoot, path.win32.join(options.targetDir, '.git'))) return fail('git_external_pointer_invalid');
+  }
+  return { ok: true, sources };
+}
+const externalSignature = (sources: Map<string, any>) => JSON.stringify([...sources].map(([name, bytes]) => [name, crypto.createHash('sha256').update(bytes).digest('hex')]));
+function classificationView(metadata: any, sources: Map<string, any>): any {
+  return { ...metadata, entries: [...metadata.entries.filter((e: any) => !isGit(e.path)), { path: '.git', type: 'directory' }],
+    files: [...metadata.files.filter((f: any) => !isGit(f.path)), ...['config', 'index', 'info/exclude'].map(name => ({ path: `.git/${name}`, content: sources.get(name) }))] };
+}
+
 // One shared state machine: async may not relax classification or bypass a
 // failed phase by retrying through the legacy synchronous transport.
 function* candidateSteps(options: any): Generator<any, any, any> {
@@ -73,8 +139,21 @@ function* candidateSteps(options: any): Generator<any, any, any> {
     const request = { ...plan.request, op: 'gitMetadata' };
     const before = yield { helperPath: plan.helperPath, request };
     if (!before.ok) return fail(before.reason);
-    const selected = classify(before, included);
+    let external: any = null, externalBefore: any = null;
+    if (options.externalGit !== undefined || before.entries.find((e: any) => e.path === '.git')?.type === 'file') {
+      // An unselected gitfile keeps the legacy fail-closed behavior.
+      if (options.externalGit === undefined) return fail('git_metadata_unsupported');
+      external = externalBinding(options, before);
+      if (!external.ok) return external;
+      externalBefore = yield* externalSources(options, external.roots);
+      if (!externalBefore.ok) return externalBefore;
+    }
+    const selected = classify(external ? classificationView(before, externalBefore.sources) : before, included);
     if (!selected.ok) return selected;
+    if (external) {
+      externalBefore.signature = externalSignature(externalBefore.sources);
+      externalBefore.sources.clear(); // retain only digests across ordinary content capture
+    }
     const selection = { ...plan.request, op: 'selectedSnapshot', paths: selected.paths };
     if (!encodeWindowsHelperRequest(selection)) return fail('git_selection_limit');
     const snapshot = yield { helperPath: plan.helperPath, request: selection };
@@ -85,6 +164,13 @@ function* candidateSteps(options: any): Generator<any, any, any> {
     const after = yield { helperPath: plan.helperPath, request };
     if (!after.ok) return fail(after.reason);
     if (signature(before) !== signature(after)) return fail('git_metadata_changed');
+    if (external) {
+      const checked = externalBinding(options, after);
+      if (!checked.ok) return checked;
+      const externalAfter = yield* externalSources(options, external.roots);
+      if (!externalAfter.ok) return externalAfter;
+      if (externalBefore.signature !== externalSignature(externalAfter.sources)) return fail('git_metadata_changed');
+    }
     const files: any = Object.create(null), blobs = new Map<string, any>();
     for (const file of snapshot.files) {
       const mode = selected.modes.get(file.path) || 0o100644;
@@ -96,11 +182,12 @@ function* candidateSteps(options: any): Generator<any, any, any> {
         }
       }
     }
-    return { ok: true, reason: '', files, blobs, classification: 'bounded_local_git_subset_v1',
+    return { ok: true, reason: '', files, blobs, classification: external ? 'bounded_external_git_subset_v1' : 'bounded_local_git_subset_v1',
       complete: false, strictEvalEligible: false, captureAvailable: false,
       limitations: ['no_atomic_snapshot', 'no_independent_consistency_evidence', 'metadata_aba_residual',
         'known_sensitive_names_excluded', 'ambient_global_git_excludes_not_read',
-        'external_gitdir_and_unverified_config_blocked', 'excluded_git_metadata_not_overridden',
+        ...(external ? ['external_roots_explicitly_selected_and_pinned', 'external_info_exclude_required', 'external_cross_read_identity_aba_residual']
+          : ['external_gitdir_and_unverified_config_blocked']), 'excluded_git_metadata_not_overridden',
         'untracked_windows_mode_synthesized_0644', 'deletion_history_not_collected', 'empty_directories_not_restored',
         'session_and_invocation_not_collected', 'windows_turn_collector_not_connected'] };
 }
@@ -109,6 +196,7 @@ function* candidateSteps(options: any): Generator<any, any, any> {
 // as a fallback by async; neither entry is connected to turn/API/enable paths.
 export function readWindowsGitFileCandidate(options: any): any {
   try {
+    if (options.externalGit !== undefined) return fail('git_external_async_required');
     const steps = candidateSteps(options);
     let state = steps.next();
     while (!state.done) {
@@ -127,6 +215,8 @@ export async function readWindowsGitFileCandidateAsync(options: any): Promise<an
   const deadline = Math.min(started + 25000, options.deadline ?? Infinity);
   if (started >= deadline) return fail('git_capture_timeout');
   try {
+    // Lock selected roots, pins, policy and worktree before the first await.
+    options = structuredClone(options);
     const steps = candidateSteps(options);
     let state = steps.next();
     while (true) {
@@ -135,7 +225,10 @@ export async function readWindowsGitFileCandidateAsync(options: any): Promise<an
         if (state.value.ok) state.value.limitations.push('async_git_chain_25s_observed_deadline');
         return state.value;
       }
-      const result = await invokeWindowsGitHelper('python', state.value.helperPath, state.value.request, deadline);
+      const result = state.value.gitInput
+        ? await readWindowsGitMetadataInput({ ...state.value.gitInput, policy: options.policy,
+          captureRoot: options.captureRoot, privateDirs: [...(options.privateDirs || []), ...(options.agentDir ? [options.agentDir] : [])], deadline })
+        : await invokeWindowsGitHelper('python', state.value.helperPath, state.value.request, deadline);
       if (performance.now() >= deadline) return fail('git_capture_timeout');
       state = steps.next(result);
     }
