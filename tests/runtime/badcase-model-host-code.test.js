@@ -48,6 +48,38 @@ test('unsupported or out-of-tree dependencies fail closed rather than disappeari
   fs.writeFileSync(path.join(a.dir, 'leaf.cjs'), 'require(' + JSON.stringify(outside) + ')');
   assert.throws(() => a.capture(), /^Error: model_host_code_invalid$/);
 });
+test('inventory single-file byte limit accepts exactly 1MiB and rejects one byte more on capture and verify', t => {
+  const h = fixture(t), leaf = path.join(h.dir, 'leaf.cjs');
+  fs.writeFileSync(leaf, Buffer.alloc(1048576, 32));
+  let snapshot; assert.doesNotThrow(() => { snapshot = h.capture(); snapshot.verify(); });
+  fs.appendFileSync(leaf, ' ');
+  assert.throws(() => h.capture(), /^Error: model_host_code_invalid$/);
+  assert.throws(() => snapshot.verify(), /^Error: model_host_code_invalid$/);
+  fs.truncateSync(leaf, 1048576); snapshot.verify();
+});
+test('inventory graph cap accepts exactly 256 unique files including roots and rejects the 257th', t => {
+  const h = fixture(t), leaf = path.join(h.dir, 'leaf.cjs');
+  for (let i = 0; i < 253; i++) fs.writeFileSync(path.join(h.dir, 'n' + i + '.cjs'), '// synthetic leaf\n');
+  fs.writeFileSync(leaf, Array.from({ length: 252 }, (_, i) => "require('./n" + i + ".cjs');").join('\n'));
+  let snapshot; assert.doesNotThrow(() => { snapshot = h.capture(); snapshot.verify(); });
+  assert.equal(Object.keys(snapshot.files).length, 256);
+  // Repeated edges do not count as additional files.
+  fs.appendFileSync(leaf, "\nrequire('./n0.cjs');"); assert.equal(Object.keys(h.capture().files).length, 256);
+  fs.appendFileSync(leaf, "\nrequire('./n252.cjs');");
+  assert.throws(() => h.capture(), /^Error: model_host_code_invalid$/);
+  assert.throws(() => snapshot.verify(), /^Error: model_host_code_invalid$/);
+});
+test('inventory rejects invalid UTF-8 bytes rather than hashing replacement text, on capture and verify', t => {
+  const h = fixture(t), leaf = path.join(h.dir, 'leaf.cjs');
+  fs.writeFileSync(leaf, '// 合法 UTF-8\n'); const snapshot = h.capture(); snapshot.verify();
+  for (const bytes of [Buffer.from([0xff]), Buffer.from([0xc0, 0xaf]), Buffer.from([0xe2, 0x82]),
+    Buffer.from([0xed, 0xa0, 0x80]), Buffer.from([0xef, 0xbf, 0xbd, 0xff])]) {
+    fs.writeFileSync(leaf, bytes);
+    assert.throws(() => h.capture(), /^Error: model_host_code_invalid$/);
+    assert.throws(() => snapshot.verify(), /^Error: model_host_code_invalid$/);
+  }
+  fs.writeFileSync(leaf, '// 合法 UTF-8\n'); snapshot.verify();
+});
 test('directory symlink or junction ancestors cannot supply inventory dependencies', t => {
   const h = fixture(t), real = path.join(h.dir, 'real-dir'), link = path.join(h.dir, 'alias-dir');
   fs.mkdirSync(real); fs.writeFileSync(path.join(real, 'module.cjs'), '// synthetic dependency\n');

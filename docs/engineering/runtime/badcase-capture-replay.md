@@ -801,6 +801,16 @@ E85确认编译模块变动后计划仍与E83相同：旧hostCode仅列6个脚�
 
 离线验证用独立临时源码副本修改编译模块/传递辅助文件，比较harness与plan hash、阻断旧批准与派发、删除文件、发送前和回执前漂移；清单单测验证路径无关/排序/lazy依赖/新增边及不执行源码、越界/动态/外部依赖拒绝。实际runProbe→relay→send组合使用合成Docker协议fixture，**不是Docker/SDK运行或E85复现证据**。不读取真实Key、不新增供应商/真实Docker/UI操作。累计$4.50仍为未结算预留非账单，全部AC pending，不合并发布。
 
+### 5.30 工具调用键集失败的无正文分类
+
+E85仅确认`protocol_response_tool_keys`拒绝，未保留响应正文，无法回溯缺键/额外键或值形态。本节只在原`keys(value, ['id','type','function'])`失败分支内细分，接受集合及原首败顺序不变，不授权删除字段或兼容供应商扩展：
+
+- 固定标签`protocol_response_tool_keys_shape`表示非对象或数组；`keys_missing`表示缺少至少一个必需键且没有额外键；`keys_mixed`表示既缺必需键又有额外键；`keys_index`表示三个必需键均存在且唯一额外键是固定的已知`index`；`keys_extra`表示必需键齐全、其他额外键组合。后四者同前缀`protocol_response_tool_`。分类不读取`index`或未知键的值，不保留动态键名、键数量、具体缺键、正文或异常内容，`keys_index`不表示值有效或可直接放行。
+- 请求历史仍在原失败点抛通用错误，不进入新分类；transport请求验证保持`protocol_request`且零exchange。通过键集后原id/reused/type/function/arguments检查顺序不变。原`protocol_response_tool_keys`和`protocol_response`旧记录继续可读，不回溯重分类；新标签进入持久化闭集，仅transport_failed可带，未知后缀拒绝。未知费用、预留不退款、失败停止、不评分不变。
+- 测试包括全部7种缺键组合及与额外键组合、非对象、唯一index的多种不透明值、index与未知键同时存在、键集与后续谓词双故障、原参数字节保持、持久重读/旧粗标签/未知后缀和正文不落盘；分类断言在旧实现先红。同时收编E86 P3：清单单文件恰好1MiB/多1字节、恰好256文件/第257文件、重复依赖计数以及非法UTF-8的capture/verify负例，不修改清单代码或限额。
+
+新编译字节由§5.29纳入harnessHash，须新计划/新批准后才能真实调用；本节离线验证不读取Key、不发供应商请求或启动真实Docker/UI。不倒推E85原因、不升级回放资格，累计$4.50未结算预留非账单，全部AC pending、不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

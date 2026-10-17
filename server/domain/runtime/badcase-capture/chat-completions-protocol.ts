@@ -91,7 +91,19 @@ function toolCall(value: any, tools: any[], seen: Set<string>, response = false)
   // remain generic; only response failures receive closed, value-free labels.
   const reject = (stage: ModelFailureStage): never => { if (response) responseFailure(stage); fail(); };
   const f = value?.function;
-  if (!keys(value, ['id', 'type', 'function'])) reject('protocol_response_tool_keys');
+  if (!keys(value, ['id', 'type', 'function'])) {
+    // Classify only the original rejected branch. Never retain dynamic key
+    // names/values; index denotes the one fixed, known extra key, not its value.
+    // Request history keeps its original generic failure and does not classify.
+    if (!response) fail();
+    if (!object(value)) reject('protocol_response_tool_keys_shape');
+    const required = ['id', 'type', 'function'];
+    const missing = !required.every(k => Object.hasOwn(value, k));
+    const extra = Object.keys(value).filter(k => !required.includes(k));
+    if (missing) reject(extra.length ? 'protocol_response_tool_keys_mixed' : 'protocol_response_tool_keys_missing');
+    if (extra.length === 1 && extra[0] === 'index') reject('protocol_response_tool_keys_index');
+    reject('protocol_response_tool_keys_extra');
+  }
   if (!id(value.id)) reject('protocol_response_tool_id');
   if (seen.has(value.id)) reject('protocol_response_tool_reused');
   if (value.type !== 'function') reject('protocol_response_tool_type');

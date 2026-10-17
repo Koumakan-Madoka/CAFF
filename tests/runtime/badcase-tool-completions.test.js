@@ -182,8 +182,18 @@ const toolFailureCases = () => [
   ['calls', v => v.choices[0].message.tool_calls = null],
   ['calls', v => v.choices[0].message.tool_calls = []],
   ['calls', v => v.choices[0].message.tool_calls.push(call('call-2'))],
-  ['keys', (v, c) => c.extra = 'PRIVATE-EXTRA'],
-  ['keys', v => v.choices[0].message.tool_calls[0] = null],
+  ['keys_extra', (v, c) => c['PRIVATE-EXTRA'] = 'PRIVATE-VALUE'],
+  ...[null, [], 'PRIVATE-SHAPE', 1, true].map(shape => ['keys_shape', v => v.choices[0].message.tool_calls[0] = shape]),
+  ...Array.from({ length: 7 }, (_, i) => ['keys_missing', (v, c) => {
+    ['id', 'type', 'function'].forEach((key, bit) => { if ((i + 1) & (1 << bit)) delete c[key]; });
+  }]),
+  ...Array.from({ length: 7 }, (_, i) => ['keys_mixed', (v, c) => {
+    ['id', 'type', 'function'].forEach((key, bit) => { if ((i + 1) & (1 << bit)) delete c[key]; });
+    c['PRIVATE-EXTRA'] = 'PRIVATE-VALUE';
+  }]),
+  ['keys_mixed', (v, c) => { delete c.type; c.index = 0; }],
+  ...[null, 0, 1, -1, 'PRIVATE-INDEX', {}, []].map(index => ['keys_index', (v, c) => c.index = index]),
+  ['keys_extra', (v, c) => { c.index = 0; c['PRIVATE-EXTRA'] = 'PRIVATE-VALUE'; }],
   ['id', (v, c) => c.id = 'PRIVATE-ID/'],
   ['reused', () => {}, true],
   ['type', (v, c) => c.type = 'PRIVATE-TYPE'],
@@ -232,6 +242,8 @@ test('tool response failures have fixed labels, durable closed records and uncha
     // Historical coarse labels remain readable; never retroactively classify them.
     fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(original), failureStage: 'protocol_response' }));
     assert.equal(readModelEgress(root, runId).requests[0].failureStage, 'protocol_response');
+    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(original), failureStage: 'protocol_response_tool_keys' }));
+    assert.equal(readModelEgress(root, runId).requests[0].failureStage, 'protocol_response_tool_keys');
     fs.writeFileSync(file, original); assert.deepEqual(readModelEgress(root, runId), report);
   });
 });
@@ -240,7 +252,7 @@ test('tool labels preserve first-failure order and do not label request history 
   const changes = toolFailureCases();
   // Reachable adjacent double faults retain order. Invalid IDs cannot also be
   // reused: every ID admitted into request history already passed id().
-  const pairs = [['keys', 'id'], ['reused', 'type'], ['type', 'function_keys'],
+  const pairs = [['keys_extra', 'id'], ['keys_index', 'id'], ['keys_missing', 'type'], ['keys_mixed', 'type'], ['reused', 'type'], ['type', 'function_keys'],
     ['function_keys', 'name'], ['name', 'arguments_text'], ['arguments_text', 'arguments_size'],
     ['arguments_size', 'arguments_json']];
   for (const [first, second] of pairs) {
