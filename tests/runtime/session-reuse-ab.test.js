@@ -756,6 +756,68 @@ test('pre-turn asynchronous capture settles before startRun and preserves fresh/
   }
 });
 
+// Internal Windows collector injection, not the management/service enable path.
+test('Windows native composed collector publishes before real executor fresh/resume start and never associates failed publication',
+  { skip: process.platform !== 'win32' }, async t => {
+  const base = '../../build/server/domain/runtime/badcase-capture/';
+  const { createBadcaseCaptureService } = require(base + 'index');
+  const { createWindowsTurnCollector } = require(base + 'windows-turn-collector');
+  const { resolveSessionPath } = require('../../build/lib/minimal-pi');
+  const { execFileSync } = require('node:child_process');
+  const digest = b => require('node:crypto').createHash('sha256').update(b).digest('hex');
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const projectDir = path.join(env.tempDir, 'project'), captureRoot = path.join(env.tempDir, 'capture'), projectId = 'windows-fixture';
+  fs.mkdirSync(projectDir); fs.mkdirSync(path.join(env.tempDir, 'named-sessions'));
+  const git = (...args) => execFileSync('git', ['-C', projectDir, ...args], { windowsHide: true,
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(env.tempDir, 'absent-global'), GIT_TEMPLATE_DIR: '' } });
+  git('init', '-q'); git('config', 'core.ignorecase', 'false'); fs.writeFileSync(path.join(projectDir, 'file.txt'), 'before fresh'); git('add', 'file.txt');
+  const agent = createAgent(), conversation = createConversation(agent);
+  conversation.projectId = projectId; conversation.worktreePath = projectDir;
+  const store = createFakeStore(conversation, { withReuse: true }); store.agentDir = projectDir;
+  seedUserMessage(store, 'u1', 'WINDOWS-COMPOSED-FRESH');
+  const service = createBadcaseCaptureService({ captureRoot });
+  service.savePolicy(projectId, { authorizedDirs: [projectDir], authorizedInputDirs: [env.tempDir], excludedPatterns: [] });
+  const policy = service.authorizeProject(projectId); assert.equal(policy.status, 'disabled');
+  // Explicit synthetic writer setup only; public Windows enable gate is unchanged.
+  service.store.savePolicy({ ...policy, status: 'enabled' });
+  const nativeCollector = createWindowsTurnCollector({ store: service.store }), pendingCaptures = [];
+  const collector = { captureTurnCheckpoint(input) { const pending = nativeCollector.captureTurnCheckpoint(input); pendingCaptures.push(pending); return pending; } };
+  const bytes = Buffer.from([{ type: 'session', version: 3, id: 's', cwd: projectDir },
+    { type: 'message', id: 'u', parentId: null, message: { role: 'user', content: 'fixture history', timestamp: 1 } }].map(x => JSON.stringify(x)).join('\r\n') + '\r\n');
+  const seen = [];
+  const observe = record => {
+    const cp = service.store.loadLatestCheckpoint(projectId, projectDir); assert.ok(cp, 'manifest on disk before startRun');
+    assert.equal(cp.replayInput.deliveryMode, record.options.resume ? 'resume' : 'fresh');
+    assert.equal(cp.replayInput.complete, false); assert.equal(cp.strictEvalEligible, false);
+    assert.equal(cp.files['file.txt'].hash, digest(record.options.resume ? 'before resume' : 'before fresh'));
+    assert.equal(cp.turnId, record.options.resume ? 'win-resume' : 'win-fresh');
+    if (record.options.resume) assert.deepEqual(service.store.readBlob(projectId, cp.replayInput.sessionBlobHash), bytes);
+    else fs.writeFileSync(resolveSessionPath(record.options.session, record.options.agentDir), bytes);
+    fs.writeFileSync(path.join(projectDir, 'file.txt'), record.options.resume ? 'after resume' : 'before resume');
+    seen.push(cp);
+  };
+  for (const [index, mode] of ['fresh', 'resume'].entries()) {
+    if (index) seedUserMessage(store, 'u2', 'WINDOWS-COMPOSED-DELTA');
+    await runTurn({ executor: env.createExecutor(store, { badcaseCapture: collector, onStartRun: observe }), conversation, agent, store, turnId: `win-${mode}` });
+    await Promise.all(pendingCaptures); // Drain even a deliberately mutated executor before fixture cleanup.
+    const message = store.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+    assert.equal(message.status, 'completed', message.metadata?.errorMessage); assert.equal(message.metadata.badcaseCheckpointId, seen[index].checkpointId);
+  }
+  const old = service.store.loadLatestCheckpoint(projectId, projectDir), save = service.store.saveCheckpoint;
+  service.store.saveCheckpoint = () => { throw Error('PRIVATE_WRITE_SENTINEL'); };
+  seedUserMessage(store, 'u3', 'WINDOWS-PUBLICATION-FAILURE');
+  try {
+    await runTurn({ executor: env.createExecutor(store, { badcaseCapture: collector, onStartRun: () => {
+      assert.equal(service.store.loadLatestCheckpoint(projectId, projectDir).checkpointId, old.checkpointId);
+      assert.equal(service.store.loadPolicy(projectId).status, 'suspended');
+    } }), conversation, agent, store, turnId: 'win-failed-publication' });
+  } finally { await Promise.all(pendingCaptures); service.store.saveCheckpoint = save; }
+  const failedCaptureMessage = store.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+  assert.equal(failedCaptureMessage.status, 'completed'); assert.equal(failedCaptureMessage.metadata.badcaseCheckpointId || '', '');
+  assert.equal(JSON.stringify(failedCaptureMessage).includes('PRIVATE_WRITE_SENTINEL'), false);
+  assert.equal(env.captured.length, 3); assert.equal(fs.existsSync(path.join(captureRoot, 'projects', projectId, '.writer-lock')), false);
+});
+
 // Real collector/CAS/helper/restore, synthetic session and mock startRun/store.
 // This closes the wiring-to-archive gap, not real pi/DB replay acceptance.
 test('real capture service archives pre-start fresh/resume inputs and survives restart', { skip: require('../helpers/capture-capability').capSkip }, async (t) => {

@@ -14,7 +14,10 @@ const normalized = (p: string) => path.win32.resolve(p).replace(/\\/g, '/').repl
 const under = (root: string, target: string) => target === root || target.startsWith(`${root}/`);
 
 export async function readWindowsSessionInput(options: any = {}): Promise<any> {
-  const deadline = performance.now() + 25000;
+  const started = performance.now();
+  if (options.deadline !== undefined && (typeof options.deadline !== 'number' || !Number.isFinite(options.deadline))) return fail('session_input_deadline_invalid');
+  const deadline = Math.min(started + 25000, options.deadline ?? Infinity);
+  if (started >= deadline) return fail('session_input_timeout');
   if (process.platform !== 'win32') return fail('windows_required');
   try {
     if (!absolute(options.inputPath) || !absolute(options.captureRoot)) return fail('session_not_authorized');

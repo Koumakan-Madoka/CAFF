@@ -122,7 +122,10 @@ export async function readWindowsGitFileCandidateAsync(options: any): Promise<an
   // Observed monotonic deadline includes scope compilation, wire validation,
   // classification and owned-blob construction, not three fresh child budgets.
   // Synchronous fs/parsing cannot be preempted; late completion is rejected.
-  const deadline = performance.now() + 25000;
+  const started = performance.now();
+  if (options.deadline !== undefined && (typeof options.deadline !== 'number' || !Number.isFinite(options.deadline))) return fail('git_capture_deadline_invalid');
+  const deadline = Math.min(started + 25000, options.deadline ?? Infinity);
+  if (started >= deadline) return fail('git_capture_timeout');
   try {
     const steps = candidateSteps(options);
     let state = steps.next();

@@ -177,6 +177,19 @@ test('Windows preparation refuses platform/invalid mode and observes one overall
   assert.equal((await final.prepareWindowsReplayInput(options())).reason, 'replay_input_timeout'); assert.equal(calls, 1);
 });
 
+test('Windows preparation forwards a shorter outer deadline, caps a longer one and rejects invalid values', async () => {
+  let now = 100, calls = 0;
+  const api = loadWindows(async opts => { calls++; assert.equal(opts.deadline, 150); now = 150;
+    return { ok: true, get content() { assert.fail('late session consumed'); } }; }, () => now);
+  assert.equal((await api.prepareWindowsReplayInput({ ...options(), deadline: 150 })).reason, 'replay_input_timeout');
+  for (const deadline of [-1, NaN, Infinity, '150']) {
+    now = 100; assert.equal((await api.prepareWindowsReplayInput({ ...options(), deadline })).ok, false);
+  }
+  assert.equal(calls, 1);
+  const capped = loadWindows(async opts => { assert.equal(opts.deadline, 25100); return { ok: false, reason: 'session_not_authorized' }; }, () => 100);
+  assert.equal((await capped.prepareWindowsReplayInput({ ...options(), deadline: 100000 })).ok, true);
+});
+
 test('real Linux collector rejects malformed UTF-8 inside otherwise valid session JSON without archiving replacement bytes', { skip: process.platform !== 'linux' }, t => {
   const { createBadcaseCaptureService } = require(base + 'index');
   const { detectCaptureCapability } = require(base + 'safe-read');

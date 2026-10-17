@@ -37,6 +37,22 @@ function adapter(helper = async () => ({ ok: true, identity, file: { ...header.f
   return { api, count: () => calls };
 }
 
+test('session reader shares an earlier outer deadline, never extends 25s, rejects invalid/expired before metadata', async () => {
+  let now = 100, realpaths = 0;
+  const a = adapter(async (_p, _h, _r, deadline) => { assert.equal(deadline, 150); now = 150;
+    return { get ok() { assert.fail('late response consumed'); } }; }, p => { realpaths++; return path.win32.resolve(p); },
+    { 'node:perf_hooks': { performance: { now: () => now } } });
+  assert.equal((await a.api.readWindowsSessionInput({ ...options(), deadline: 150 })).reason, 'session_input_timeout');
+  const before = realpaths;
+  for (const deadline of [100, -1, NaN, Infinity, '150']) {
+    now = 100; assert.equal((await a.api.readWindowsSessionInput({ ...options(), deadline })).ok, false);
+  }
+  assert.equal(a.count(), 1); assert.equal(realpaths, before);
+  const capped = adapter(async (_p, _h, _r, deadline) => { assert.equal(deadline, 25100); return { ok: true, file: { content } }; },
+    p => path.win32.resolve(p), { 'node:perf_hooks': { performance: { now: () => 100 } } });
+  assert.equal((await capped.api.readWindowsSessionInput({ ...options(), deadline: 100000 })).ok, true);
+});
+
 test('session wire is an exact single JSONL file schema, never a snapshot selection', () => {
   assert.deepEqual(JSON.parse(transport.encodeWindowsHelperRequest(request)), request);
   for (const change of [{ path: '../turn.jsonl' }, { path: 'turn.txt' }, { path: 'TURN.JSONL' },

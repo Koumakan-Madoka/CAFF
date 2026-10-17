@@ -1033,6 +1033,16 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 - 私有进程内 10 单点变异全断言红：有损解码、秘密守卫、未验证维度、共享池 backing、结构归档门、受控替换、模式、await 前 clone、await 后期限与最终期限；源码/build 磁盘字节不变，干净进程复绿。Python/helper/内嵌源码均未改；Windows 原生 27/27，Windows 输入相关八套 72=71 通过/1 Linux 跳过。完整 fast/typecheck/build/smoke 结果记 Goal，不以测试数替代功能证据。
 - **仍无 Windows turn collector/服务/管理开启接线**；外置 Git、全局忽略、core.ignorecase=true、输入依赖与附件真正归档、删除历史、真实工作树采集、Docker 路径替换/工具桥仍待完成。Windows 采集门保持关闭，全部 AC pending。零真实项目采集/Key/供应商/Docker/浏览器/生产，不合并发布；历史 6 美元未结算预留非账单保持。
 
+### 5.47 Windows 文件/输入/发布的单租约组合（内部执行器注入，管理门仍关闭）
+
+`windows-turn-collector.ts` 提供内部 `createWindowsTurnCollector`，将原生本地 Git 子集候选、独立授权 session 输入准备及预备检查点发布串成一个异步操作。**服务仍选择原 collector，Windows 管理 estimate 的 `captureAvailable=false` 与开启拒绝不改**；本段不授权或开启任何真实项目采集。后续生产选择该实现须另经固定 SHA 审查。
+
+- 第一处 await 前 clone 全部调用材料并固定驱动器号绝对工作根；显式 fresh/resume 之外的模式拒绝，不默认降 fresh。策略在项目 async 租约内重读并 clone，必须 enabled；租约跨文件与 session helper 的真实 close，一直到显式 `writeSync` 调 publisher 完成及释放成功后，才能给执行器返回 checkpoint ID。普通策略写、封存、GC 与另一 collector 在 await 中仍 busy；释放失败即使清单已落盘也不返回成功关联，不盲删持久证据。
+- 文件候选、输入准备及精确 session 读取接受可选的内部绝对单调 deadline：仅有限 number，取 `min(本层开始+25秒,外层deadline)`，不能延长旧上限；组合层共享从入场起的同一个 25 秒观察期限，读后迟到材料不消费，发布前逾期不写。同步 scope/clone/解析/最终 CAS 与 JSON 写不可抢占；**最后期限检查在发布前，已进入同步发布的写可能超过期限，不能事后伪造回滚或宣称硬 25 秒终止**。helper 的 kill→close、两名额与无同步回退语义不改。
+- `privateDirs` 是可信宿主配置而非 turn 输入。文件 scope 增加显式私有根 literal+canonical 排除，与存储、agentDir、当前 sandbox/private 保护并行；坏格式/包含目标的私有根拒绝，遇 junction 不以 realpath 替代 NT 目标。它不自动发现同机全部私有根，也不是万能秘密检测器。
+- schema-v1 清单保留关联 ID、完整 harness、session 模式与原字节；文件 blob 与输入 plans 一起交原 publisher 做引用闭包/秘密/hash/配额复验。`replayInput.complete=false` 恒定，并添加 `windows_capture_subset_unverified`，秘密文件另外列出排除路径；`strictEvalEligible=false` 不变。删除列表仍为空，不把策略排除/未知旧现场推断成删除；原有缺口（全局 Git、外置 gitdir、未验证配置、空目录、mode 合成等）不被组合动作抹除。`content-verified` 仅表示候选链未检测到变化，不是原子或独立一致性证明。
+- 原生组合证据仅自建 NTFS Git/session 夹具（独立管理授权 pin 后用测试 writer 设 enabled）：真实 helper→共享校验→单租约 publisher→重开存储→两恢复清单一致；秘密不进入 CAS、resume/CRLF 保留、整体仍 incomplete。执行器测试注入此内部 collector，验证 fresh/resume 的实际 `agent-executor` 在 mock `startRun` 时清单已在磁盘，发布写失败继续 turn 但不关联旧/latest checkpoint。mock runtime/聊天 store 不是真实 pi、生产服务选择、用户 UI 或普通 CAFF Docker 回放证据；不构成 AC 通过。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

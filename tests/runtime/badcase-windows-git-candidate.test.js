@@ -45,6 +45,23 @@ function isolated(scope, helper, clock = require('node:perf_hooks').performance)
         : name === 'node:perf_hooks' ? { performance: clock } : local(name) }, { filename });
   return exports;
 }
+test('async Git chain accepts only finite outer deadlines, never extends its own cap or consumes late data', async () => {
+  let now = 100, scopes = 0, calls = 0;
+  const api = isolated(() => { scopes++; return scope(); }, async (_python, _helper, _request, deadline) => {
+    calls++; assert.equal(deadline, 150); now = 150;
+    return { get ok() { assert.fail('late metadata consumed'); } };
+  }, { now: () => now });
+  assert.equal((await api.readWindowsGitFileCandidateAsync({ deadline: 150, policy: { includedIgnoredPatterns: [] } })).reason, 'git_capture_timeout');
+  assert.equal(calls, 1); assert.equal(scopes, 1);
+  for (const deadline of [100, -1, NaN, Infinity, '150']) {
+    now = 100; assert.equal((await api.readWindowsGitFileCandidateAsync({ deadline })).ok, false);
+  }
+  assert.equal(calls, 1); assert.equal(scopes, 1, 'expired/invalid requests cannot compile or read scope');
+  now = 100;
+  const cap = isolated(scope, async (_p, _h, _r, deadline) => { assert.equal(deadline, 25100); return { ok: false, reason: 'expected' }; }, { now: () => now });
+  assert.equal((await cap.readWindowsGitFileCandidateAsync({ deadline: 100000, policy: { includedIgnoredPatterns: [] } })).reason, 'expected');
+});
+
 function gitIndex(names) {
   const chunks = [Buffer.from('DIRC00000000', 'ascii')];
   chunks[0].writeUInt32BE(2, 4); chunks[0].writeUInt32BE(names.length, 8);

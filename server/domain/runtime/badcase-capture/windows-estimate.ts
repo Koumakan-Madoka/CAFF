@@ -53,7 +53,9 @@ export function prepareWindowsMetadataScope(options: any): any {
   try {
     if (normalized(fs.realpathSync.native(root)) !== key) return fail('estimate_scope_rejected');
   } catch { return fail('estimate_scope_unverifiable'); }
-  const protectedRoots = [options.captureRoot, options.agentDir,
+  if (options.privateDirs !== undefined && (!Array.isArray(options.privateDirs)
+    || options.privateDirs.some((p: any) => typeof p !== 'string' || !p))) return fail('windows_estimate_policy_invalid');
+  const protectedRoots = [options.captureRoot, options.agentDir, ...(options.privateDirs || []),
     process.env.PI_AGENT_SANDBOX_DIR, process.env.PI_AGENT_PRIVATE_DIR].filter(Boolean);
   for (const protectedRoot of protectedRoots) {
     if (typeof protectedRoot !== 'string' || !/^[a-z]:[\\/]/i.test(protectedRoot)

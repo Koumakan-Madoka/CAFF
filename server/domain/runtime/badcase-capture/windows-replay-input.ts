@@ -9,7 +9,9 @@ import { prepareReplayInput } from './replay-input-preparation';
 export async function prepareWindowsReplayInput(options: any = {}): Promise<any> {
   const fail = (reason: string) => ({ ok: false, reason });
   if (process.platform !== 'win32') return fail('windows_required');
-  const deadline = performance.now() + 25000;
+  const started = performance.now();
+  if (options.deadline !== undefined && (typeof options.deadline !== 'number' || !Number.isFinite(options.deadline))) return fail('replay_input_invalid');
+  const deadline = Math.min(started + 25000, options.deadline ?? Infinity);
   const expired = () => performance.now() >= deadline;
   try {
     // Latch plain runtime materials before await. A caller changing the live
@@ -24,7 +26,7 @@ export async function prepareWindowsReplayInput(options: any = {}): Promise<any>
     if (mode === 'resume' && sessionPath) {
       try {
         access = await readWindowsSessionInput({ inputPath: sessionPath, captureRoot: options.captureRoot,
-          policy: options.policy, privateDirs: options.privateDirs });
+          policy: options.policy, privateDirs: options.privateDirs, deadline });
       } catch { access = { ok: false, reason: 'session_input_unavailable' }; }
     }
     // Do not consume late content, and never switch deliveryMode to fresh.

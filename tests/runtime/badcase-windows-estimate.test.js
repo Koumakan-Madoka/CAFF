@@ -168,6 +168,21 @@ test('Windows estimate compiles persisted exclusions and private boundaries befo
   assert.equal(calls, 1);
 });
 
+test('explicit private roots contribute literal and canonical exclusions; malformed or containing roots fail closed', () => {
+  let calls = 0;
+  const api = isolated('windows-estimate', { helper: { encodeWindowsHelperRequest: encode }, disk: { realpathSync: { native: p => {
+    calls++; return p === 'C:\\private-alias' ? 'C:\\worktree\\hidden' : p;
+  } } } });
+  const options = { targetDir: 'C:/worktree', captureRoot: 'C:/capture', privateDirs: ['C:/worktree/local-private', 'C:/private-alias'],
+    policy: { authorizedDirs: ['C:/worktree'], authorizedDirPins: { 'c:\\worktree': { realpath: 'C:/worktree', identity } }, excludedPatterns: [] } };
+  const result = api.prepareWindowsMetadataScope(options); assert.equal(result.ok, true, result.reason);
+  assert.deepEqual([...result.request.excluded], ['local-private', 'hidden']);
+  for (const privateDirs of ['not-array', ['C:/'], ['relative'], ['\\\\remote\\share'], [''], [null], [false]]) {
+    assert.equal(api.prepareWindowsMetadataScope({ ...options, privateDirs }).ok, false);
+  }
+  assert.ok(calls > 0);
+});
+
 test('Windows async estimate rejects same-name tampered helper before spawn and restores capacity', async t => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-winasync-integrity-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
