@@ -53,4 +53,36 @@ async function runRetainedModeProbe(request, image, options = {}) {
     || r.stderr !== '' || r.stdout !== JSON.stringify(plan.expectedReceipt) + '\n') throw Object.assign(Error('capsule_probe_failed'), { code: 'capsule_probe_failed' });
   return { ...plan.expectedReceipt, containerId: r.containerId, cleaned: true, inputHash: r.inputHash, provenance: p.provenance };
 }
-module.exports = { runRetainedInputProbe, taskFor, runRetainedModeProbe, modeTaskFor };
+// Separate static staging entry: mapped WORKING inputs never replace archive blobs.
+const worktreeEntry = `
+const fs=require('node:fs');
+try {
+ if(process.platform!=='linux'||process.getuid()!==65534||process.cwd()!=='/work'||!fs.existsSync('/.dockerenv'))throw Error();
+ const {materializeWorktreeReplayInputs}=require('./worktree-replay-materialization.js');
+ const receipt=materializeWorktreeReplayInputs(fs.readFileSync('capsule.json','utf8'),JSON.parse(fs.readFileSync('expected.json','utf8')),JSON.parse(fs.readFileSync('declaration.json','utf8')),'/work/restored');
+ console.log(JSON.stringify(receipt));
+} catch { process.stderr.write('replay_working_copy_failed\\n'); process.exitCode=1; }
+`;
+function worktreeTaskFor(capsule, expected, declaration, image) {
+  const task = buildTask(capsule, expected, image, worktreeEntry);
+  const build = path.resolve(__dirname, '../../build/server/domain/runtime/badcase-capture');
+  for (const name of ['worktree-replay-inputs', 'worktree-replay-materialization']) {
+    task.files.push(file(name + '.js', fs.readFileSync(path.join(build, name + '.js'))));
+  }
+  task.files.push(file('declaration.json', JSON.stringify(declaration)));
+  prepareOfflineTask(task); return task;
+}
+async function runRetainedWorktreeProbe(request, declaration, image, options = {}) {
+  const p = prepareRetainedInitializationCapsule(request);
+  const expected = { capsuleHash: p.capsuleHash, checkpointChecksum: p.provenance.checkpointChecksum };
+  const { planWorktreeReplayMaterialization } = require('../../build/server/domain/runtime/badcase-capture/worktree-replay-materialization');
+  const plan = planWorktreeReplayMaterialization(p.capsule, expected, declaration);
+  const task = worktreeTaskFor(p.capsule, expected, declaration, image), prepared = prepareOfflineTask(task);
+  const r = await (options.runTask || runOfflineDockerTask)(task);
+  if (!r || r.state !== 'completed' || r.cleaned !== true || r.inputHash !== prepared.inputHash
+    || !/^[a-f0-9]{64}$/.test(r.containerId) || r.stderr !== '' || r.stdout !== JSON.stringify(plan.expectedReceipt) + '\n') {
+    throw Object.assign(Error('replay_working_copy_probe_failed'), { code: 'replay_working_copy_probe_failed' });
+  }
+  return { ...plan.expectedReceipt, containerId: r.containerId, cleaned: true, inputHash: r.inputHash, provenance: p.provenance };
+}
+module.exports = { runRetainedInputProbe, taskFor, runRetainedModeProbe, modeTaskFor, runRetainedWorktreeProbe, worktreeTaskFor };

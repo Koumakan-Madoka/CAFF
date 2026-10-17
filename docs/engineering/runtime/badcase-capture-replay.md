@@ -1160,6 +1160,20 @@ cwd 和 read/write/edit `arguments.path` 继续必须整字段，不借相邻空
 
 只改纯输入准备层；原归档、完整配置/历史、fresh/resume模式、权限复验、固定目的地和全部false资格标志不变。不接SDK/工具桥/管理/UI/真实采集，不调用模型，不冒充容器执行证据。Windows管理开启仍关闭；普通CAFF Docker fresh/resume、隔离回调/凭据和其余验收义务未完成，全部AC pending。准确命令、计数和新固定SHA独立审查以Goal E118为准；历史6美元未结算非账单、不合并发布不变。
 
+### 5.58 映射输入与 rwx 恢复的静态容器工作副本接线
+
+新增内部 `planWorktreeReplayMaterialization` / `materializeWorktreeReplayInputs`，将 §5.55 的 rwx 恢复和 §5.56–5.57 的显式输入映射组合为一次静态工作副本落盘。仍不导入 SDK、不执行捕获文件、不提交 invocation、不注入凭据、不授予启动许可。完整 capsule/mode/声明校验及 runConfig 对象、controlledReplacements 数组形状检查在首次写入前完成；缺材料不补空配置或默认清单。实际写入仅 Linux，其他平台在调用底层恢复前 `replay_working_copy_platform_unsupported`，无 WSL/宿主执行回退。
+
+生产容器入口固定目的地 `/work/restored`：原 snapshot 文件按普通 rwx 恢复，原 checkpoint 和全部输入/技能 blob 仍在独立 `materials` 下，随后排他创建 `working-inputs`。内部静态测试可传自有临时目录，此时文本中的 `/work/restored/snapshot` 只是未来容器逻辑路径，不能据此在宿主启动 agent。每次必须全新目的地，既有目录或链接由原排他恢复拒绝；不覆写上一 variant。
+
+working-inputs 固定包含排序后的 `prompt.txt`、`run-config.json`、`harness.json`、`skill-snapshots.json`、`controlled-replacements.json`、`declaration.json`，仅 resume 另含 `session.jsonl`。prompt/session 为映射后的工作材料；session 延续原 JSONL 局部替换与 CRLF 保留语义，不降 fresh。配置/清单按解析对象 JSON 序列化，完整字段保留，**不是原配置字节相等声明**；原始配置/技能字节仍在 materials/blobs。受控变量仅保留原占位符和清单，不在本步替换。未知完整配置/技能路径仍待执行器核验，不剥 toolBridgeEnabled 或复杂配置以冒充支持。
+
+底层恢复回执的 materializedHash/modeInventoryHash/fileModePreserved 须与计划匹配，之后才写 working-inputs。每个工作文件以 O_CREAT|O_EXCL|O_RDWR|O_NOFOLLOW、0600 打开，同 fd 写入、fchmod、fstat 核验普通文件/精确大小及无特殊位的0600，再以从0开始的有界位置读取（额外1字节检测长度变化）比对内容，finally close。I/O 原生错误传播，固定核验失败为 `replay_working_copy_write_failed`；失败可留下本次新建的部分目录，无成功回执、不清理、不解除引用保护、不回滚。祖先/同 OS 用户和存储仍为 TCB；不宣称原子恢复、掉电 fsync 保证或阻止同权限并发篡改。
+
+计划的 `expectedReceipt` 是预期；实际落盘步骤仅在上述检查完成后返回对应回执，仍非独立容器证明。`kind=worktree-replay-materialization-v1` 继承映射/原材料/权限摘要，另以 workingInputHash 绑定排序的工作文件 path/size/sha256 表和 workingInputCount。fileModePreserved 仅普通 snapshot 文件 rwx；piExecuted/launchAuthorized/runnable/reproduced/evaluable/strictEvalEligible 恒false。
+
+`retained-input-probe.cjs` 新增独立 `worktreeTaskFor/runRetainedWorktreeProbe`：固定静态容器入口消费 capsule/expected/declaration，使用既有隔离 Docker 底座；宿主先规划，容器再完整复验。wrapper 须精确比对 completed/cleaned/inputHash/64hex containerId/空stderr/完整stdout回执，不暴露原始输出。旧内容probe、mode probe、SDK/模型 launcher、采集服务/管理门与UI保持原接线。新自动测试纳入材料组/fast；WSL 静态恢复与 fake transport 不作真实 Docker 证明。真实工具桥/隔离回调/受控凭据替换、普通 fresh/resume SDK 执行仍未完成，Windows管理开启仍关闭，全部AC pending。准确命令、计数及新固定SHA独立审查以Goal E119为准；历史6美元未结算非账单、不合并发布不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
