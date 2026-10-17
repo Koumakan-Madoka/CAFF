@@ -1,6 +1,6 @@
-// Internal Windows composition, intentionally NOT selected by the service or
-// management enable gate. Test/next-stage callers may inject it into executor.
-// Existing bounded local-Git limitations remain: no external gitdir/global Git,
+// Windows service collector. Management enable remains closed: metadata-only
+// estimate issues no receipt. Tests may explicitly set their own fixture enabled.
+// Bounded local/external Git limitations remain: no ambient global Git,
 // deletion history or independent consistency proof. Never advertise complete.
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -8,6 +8,7 @@ import { performance } from 'node:perf_hooks';
 import { withAsyncProjectWriteLease } from './project-write-lock';
 import { readWindowsGitFileCandidateAsync } from './windows-git-candidate';
 import { prepareWindowsReplayInput } from './windows-replay-input';
+import { selectWindowsExternalGit } from './windows-external-selection';
 import { publishPreparedCheckpoint } from './checkpoint-publication';
 import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
 
@@ -35,7 +36,7 @@ export function createWindowsTurnCollector(options: any = {}): any {
         if (policy.status !== 'enabled') return failed('policy_not_enabled');
         if (performance.now() >= deadline) return failed('windows_capture_timeout');
         const files = await readWindowsGitFileCandidateAsync({ policy, targetDir, captureRoot: store.captureRoot,
-          agentDir, privateDirs, deadline });
+          agentDir, privateDirs, deadline, externalGit: selectWindowsExternalGit(policy, targetDir) });
         if (performance.now() >= deadline) return failed('windows_capture_timeout');
         if (!files.ok) return failed(files.reason);
         const prepared = await prepareWindowsReplayInput({ input, policy, authorizedRoot: targetDir,

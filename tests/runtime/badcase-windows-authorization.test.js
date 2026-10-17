@@ -18,7 +18,7 @@ function temp(t) {
 }
 function runtime() { return require('../../build/server/domain/runtime/badcase-capture/windows-authorization'); }
 
-test('Windows explicit authorization persists exact native pins across service restart', native, t => {
+test('Windows explicit authorization persists exact native pins across service restart', native, async t => {
   const { root, inputs, captureRoot, service } = temp(t);
   assert.deepEqual(service.loadPolicy('p').authorizedDirPins, {});
   const policy = service.authorizeProject('p');
@@ -44,7 +44,9 @@ test('Windows explicit authorization persists exact native pins across service r
   assert.equal(preview.ok, true, 'native metadata preview is now available');
   assert.equal(preview.captureAvailable, false, 'collector remains closed');
   restarted.savePolicy('p', { ...policy, status: 'enabled' });
-  assert.match(restarted.captureTurnCheckpoint({ projectId: 'p', targetDir: root }).reason, /^capture_unavailable:/);
+  const capture = await restarted.captureTurnCheckpoint({ projectId: 'p', targetDir: root, deliveryMode: 'fresh' });
+  assert.equal(capture.captured, false); assert.equal(capture.reason, 'git_metadata_unsupported');
+  assert.equal(restarted.store.listCheckpoints('p').length, 0, 'unclassified empty directory is not captured');
 });
 
 test('Windows replacement and added roots cannot be re-pinned by ordinary save', native, t => {

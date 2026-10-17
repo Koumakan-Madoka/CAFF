@@ -19,7 +19,7 @@
     let adminEnabled = false;
     let savedDraft = '';
     let expiryTimer = null;
-    const scopeNames = ['authorizedDirs', 'authorizedInputDirs', 'includedIgnoredPatterns', 'excludedPatterns'];
+    const scopeNames = ['authorizedDirs', 'authorizedInputDirs', 'includedIgnoredPatterns', 'excludedPatterns', 'windowsExternalGit'];
     const limitNames = ['stagingRetentionDays', 'stagingQuotaBytes'];
     root.innerHTML = `
       <h3>问题现场采集（预览）</h3>
@@ -29,6 +29,8 @@
       <div class="settings-form compact-settings-form">
         <label>文件采集根（绝对路径，每行一个）<textarea name="authorizedDirs" rows="3" spellcheck="false"></textarea></label>
         <label>输入/session 授权根（绝对路径，每行一个，可空）<textarea name="authorizedInputDirs" rows="2" spellcheck="false"></textarea></label>
+        <label>Windows 外置 Git 显式选择（JSON 数组，可空）<textarea name="windowsExternalGit" rows="3" spellcheck="false" placeholder='[{"worktree":"C:/work","metadataRoot":"C:/main/.git/worktrees/work","commonRoot":"C:/main/.git"}]'></textarea></label>
+        <p class="muted">每个 worktree 单独选择两个外置 Git 根；文件根须列在上方文件授权中，两个元数据根须分别列在输入授权中。指针不授予权限，不自动发现根；修改选择将关闭采集。此选择尚不开放 Windows 开启或 Docker 回放。</p>
         <label>明确纳入的 ignored 模式（每行一个，可空）<textarea name="includedIgnoredPatterns" rows="2" spellcheck="false"></textarea></label>
         <label>排除模式（每行一个）<textarea name="excludedPatterns" rows="2" spellcheck="false"></textarea></label>
         <div class="button-row"><button type="button" data-capture-action="authorize">1. 确认授权目录（不启用）</button></div>
@@ -78,7 +80,8 @@
       if (!result?.policy || (!result?.usage && !usageUnavailable)) throw new Error('badcase_capture_state_invalid');
       current = result;
       const policy = result.policy;
-      for (const name of scopeNames) field(name).value = (policy[name] || []).join('\n');
+      for (const name of scopeNames) field(name).value = name === 'windowsExternalGit'
+        ? JSON.stringify(policy[name] || [], null, 2) : (policy[name] || []).join('\n');
       for (const name of limitNames) field(name).value = String(policy[name]);
       savedDraft = draft();
       const status = { disabled: '已关闭', enabled: '已开启', suspended: '已暂停' }[policy.status] || String(policy.status);
@@ -141,9 +144,14 @@
       /** @type {Record<string, any>} */
       let body = {};
       if (action === 'authorize') {
-        body = Object.fromEntries(scopeNames.map(name => [name, lines(name)]));
+        body = Object.fromEntries(scopeNames.filter(name => name !== 'windowsExternalGit').map(name => [name, lines(name)]));
+        try {
+          body.windowsExternalGit = JSON.parse(field('windowsExternalGit').value.trim() || '[]');
+          if (!Array.isArray(body.windowsExternalGit)) throw new Error('invalid');
+        } catch { notice('外置 Git 选择必须为 JSON 数组；未发送授权请求。'); return; }
         if (!body.authorizedDirs.length) { notice('请显式填写至少一个文件采集绝对路径。'); return; }
-        const description = scopeNames.map(name => `${name}:\n${body[name].join('\n') || '（空）'}`).join('\n\n');
+        const description = scopeNames.map(name => `${name}:\n${name === 'windowsExternalGit'
+          ? JSON.stringify(body[name], null, 2) : body[name].join('\n') || '（空）'}`).join('\n\n');
         if (!confirm(`授权项目 ${project.name || id} 的以下范围？\n${description}\n\n将先关闭采集并替换原授权；失败也不自动恢复旧范围。本步骤不启用采集。请勿纳入凭据或未获准的私有目录。`)) return;
         body.confirmed = true;
       } else if (action === 'enable') {

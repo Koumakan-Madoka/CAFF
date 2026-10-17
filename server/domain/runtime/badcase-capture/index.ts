@@ -7,6 +7,7 @@ const path = require('node:path');
 import { normalizeCapturePolicy, matchesRelativePattern, pinAuthorizedDirs, pinKey } from './capture-policy';
 import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
+import { createWindowsTurnCollector } from './windows-turn-collector';
 import { restoreCheckpoint } from './restore';
 import { runEstimateProcess } from './estimate-process';
 import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
@@ -49,6 +50,11 @@ export function createBadcaseCaptureService(options: any = {}) {
     onFileRead: typeof options.onFileRead === 'function' ? options.onFileRead : null,
   });
 
+  // No enable bypass: Windows estimate still advertises captureAvailable=false.
+  // Selection is host-platform explicit, never a failed-Windows fallback to Linux.
+  const turnCollector = process.platform === 'win32'
+    ? createWindowsTurnCollector({ store, agentDir: options.agentDir, privateDirs: options.privateDirs }) : collector;
+
   return {
     captureRoot,
     store,
@@ -65,7 +71,11 @@ export function createBadcaseCaptureService(options: any = {}) {
       const existing = store.loadPolicy(projectId);
       merged.authorizedDirPins = preserveExistingPins(existing.authorizedDirPins, merged.authorizedDirs);
       merged.authorizedInputPins = preserveExistingPins(existing.authorizedInputPins, merged.authorizedInputDirs);
-      return store.savePolicy(merged);
+      const normalized = normalizeCapturePolicy(merged, projectId);
+      if (JSON.stringify(normalized.windowsExternalGit) !== JSON.stringify(existing.windowsExternalGit)) {
+        normalized.status = 'disabled'; normalized.suspendReason = '';
+      }
+      return store.savePolicy(normalized);
     },
 
     // 显式授权动作（唯一允许钉住根身份的入口）：对当前策略中的 authorizedDirs 与
@@ -104,7 +114,7 @@ export function createBadcaseCaptureService(options: any = {}) {
     },
 
     captureTurnCheckpoint(input: any) {
-      return collector.captureTurnCheckpoint(input);
+      return turnCollector.captureTurnCheckpoint(input);
     },
 
     restoreCheckpoint(input: any) {

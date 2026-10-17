@@ -36,6 +36,20 @@ function setup(t, overrides = {}) {
     deliveryMode: 'resume', prompt: 'question', sessionPath: 'C:/sessions/turn.jsonl', environment: { template: 'not-pinned' } };
   return { root, store, seen, input, collector };
 }
+test('collector selects external roots ONLY from locked policy at exact actual worktree, not invocation parameters', async t => {
+  const h = setup(t), entry = { worktree: 'C:/worktree', metadataRoot: 'C:/main/.git/worktrees/work', commonRoot: 'C:/main/.git' };
+  const policy = { ...h.store.loadPolicy('p'), authorizedDirs: [entry.worktree],
+    authorizedInputDirs: [entry.metadataRoot, entry.commonRoot], windowsExternalGit: [entry] };
+  h.store.loadPolicy = () => policy; // VM Windows semantics on every host
+  h.input.externalGit = { metadataRoot: 'C:/UNTRUSTED', commonRoot: 'C:/UNTRUSTED' };
+  assert.equal((await h.collector.captureTurnCheckpoint(h.input)).captured, true);
+  const selected = h.seen.find(x => x[0] === 'files')[1].externalGit;
+  assert.deepEqual(JSON.parse(JSON.stringify(selected)), { metadataRoot: path.win32.resolve(entry.metadataRoot), commonRoot: path.win32.resolve(entry.commonRoot) });
+  h.seen.length = 0;
+  await h.collector.captureTurnCheckpoint({ ...h.input, targetDir: 'C:/worktree/sub' });
+  assert.equal(h.seen.find(x => x[0] === 'files')[1].externalGit, undefined);
+});
+
 const collect = h => h.collector.captureTurnCheckpoint(h.input);
 const noLock = h => assert.equal(fs.existsSync(path.join(h.root, 'projects/p/.writer-lock')), false);
 

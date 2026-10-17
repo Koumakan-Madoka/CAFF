@@ -103,7 +103,7 @@ const ASSISTANT_TEXT = (id, parent, text) =>
 
 // ---------- S1: win32 失败关闭 ----------
 
-test('S1: win32 能力缺失 → 拒绝采集且零目标内容读取', { skip: winSkip }, () => {
+test('S1: Windows 不支持 Linux 同步 collector，能力缺失拒绝且零目标内容读取', { skip: winSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -138,10 +138,13 @@ test('S1: win32 能力缺失 → 拒绝采集且零目标内容读取', { skip: 
     const service = makeService(tempDir);
     authorize(service, 'project-1', enabledPolicy(projectDir));
     assert.equal(service.loadPolicy('project-1').status, 'disabled', 'Windows explicit authorization leaves collection disabled');
-    // Exercise the still-closed collector gate independently of management's
-    // disable-on-authorization invariant (normal HTTP enable is still blocked).
+    // Explicit Linux/sync collector remains unavailable on Windows. The
+    // service now selects its native async collector (separately tested), never
+    // falls back here. Normal HTTP Windows enable is still blocked.
     service.savePolicy('project-1', { ...service.loadPolicy('project-1'), status: 'enabled' });
-    const result = service.captureTurnCheckpoint(captureArgs(projectDir));
+    const { createCollector } = require('../../build/server/domain/runtime/badcase-capture/collector');
+    const linuxCollector = createCollector({ store: service.store });
+    const result = linuxCollector.captureTurnCheckpoint(captureArgs(projectDir));
     assert.equal(result.captured, false);
     assert.ok(result.reason.startsWith('capture_unavailable:safe_read_capability_missing:win32'),
       `实际原因 ${result.reason}`);

@@ -564,7 +564,9 @@ test('容量预估须先授权但不必开启，不读取内容、不写检查�
   assert.deepEqual(service.loadPolicy('project-1'), policyBefore);
   assert.equal(service.store.listCheckpoints('project-1').length, 0);
   assert.equal(service.computeUsage('project-1').totalBytes, 0);
-  if (process.platform !== 'linux') {
+  if (process.platform === 'win32') {
+    assert.equal(estimate.captureAvailable, false, 'native metadata preview never grants enable capability');
+  } else if (process.platform !== 'linux') {
     assert.equal(estimate.ok, false, 'metadata preview also fails closed without constrained enumeration');
     assert.match(estimate.reason, /capture_unavailable:safe_read_capability_missing/);
     assert.equal(service.store.listCheckpoints('project-1').length, 0);

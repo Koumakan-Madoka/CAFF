@@ -120,6 +120,29 @@ test('external gitfile pointers are strict UTF8 single lines, compared only to e
   assert.equal((await harness(f).run()).ok, true, 'relative gitfile resolves against worktree but never grants a new root');
 });
 
+test('normalization cannot erase forbidden pointer syntax into an otherwise matching root (E110 P3)', async () => {
+  const resolve = (base, text) => path.win32.resolve(base, text).toLowerCase();
+  for (const control of ['\x00', '\x01', '\x1f', '\x7f', '\ufeff']) {
+    for (const field of ['marker', 'commondir', 'gitdir']) {
+      const f = fixture();
+      const expected = field === 'marker' ? roots.metadataRoot : field === 'commondir' ? roots.commonRoot : 'C:/w/.git';
+      const text = `${expected}/${control}/..`;
+      assert.equal(resolve(field === 'marker' ? 'C:/w' : roots.metadataRoot, text), resolve('C:/', expected), 'only syntax guard can reject');
+      if (field === 'marker') f.before.files[0].content = Buffer.from(`gitdir: ${text}\n`);
+      else f.sources.set(field, Buffer.from(`${text}\n`));
+      const h = harness(f), r = await h.run();
+      assert.equal(r.reason, 'git_external_pointer_invalid', field);
+      assert.deepEqual(h.ops, field === 'marker' ? ['gitMetadata'] : field === 'commondir' ? ['gitMetadata', 'commondir'] : ['gitMetadata', 'commondir', 'gitdir']);
+      assert.equal(Object.hasOwn(r, 'blobs'), false);
+    }
+  }
+  for (const text of [` ${roots.metadataRoot}`, `${roots.metadataRoot} `, 'C:../main/.git/worktrees/w', '/main/.git/worktrees/w']) {
+    assert.equal(resolve('C:/w', text.trim()), resolve('C:/', roots.metadataRoot));
+    const f = fixture(); f.before.files[0].content = Buffer.from(`gitdir: ${text}\n`);
+    const h = harness(f); assert.equal((await h.run()).reason, 'git_external_pointer_invalid'); assert.deepEqual(h.ops, ['gitMetadata']);
+  }
+});
+
 test('commondir and backlink mismatch/unsupported bytes stop before common config/index and ordinary file reads', async () => {
   for (const [p, bytes] of [['commondir', 'C:/other'], ['gitdir', 'C:/other/.git'], ['commondir', '../..\nextra'],
     ['gitdir', '/w/.git'], ['gitdir', 'C:relative'], ['commondir', 'sk-SENTINELabcdefghijk'], ['commondir', Buffer.from([255])]]) {
@@ -242,6 +265,48 @@ test('native linked-worktree classifies independently pinned external inputs, re
     safeBlobBytes: [...r.blobs.values()].reduce((n, b) => n + b.length, 0), classification: r.classification,
     complete: r.complete, strictEvalEligible: r.strictEvalEligible, captureAvailable: r.captureAvailable }));
   assert.equal(service.loadPolicy('p').status, 'disabled'); assert.equal(service.store.listCheckpoints('p').length, 1, 'only the explicit test writer persisted a fixture');
+  // Real service selection (not collector injection), real async publication,
+  // only a self-built fixture with test-only enabled status. Management remains closed.
+  const serviceRoot = path.join(base, 'service-storage'), sessions = path.join(base, 'sessions'); fs.mkdirSync(sessions);
+  const selectedService = createBadcaseCaptureService({ captureRoot: serviceRoot });
+  selectedService.savePolicy('p', { authorizedDirs: [work], authorizedInputDirs: [...Object.values(externalGit), sessions],
+    windowsExternalGit: [{ worktree: work, ...externalGit }], excludedPatterns: [], includedIgnoredPatterns: ['included.log'] });
+  const authorized = selectedService.authorizeProject('p');
+  assert.equal(authorized.status, 'disabled');
+  const preview = await selectedService.estimateDirectoryAsync('p', work); assert.equal(preview.ok, true); assert.equal(preview.captureAvailable, false);
+  const turn = { projectId: 'p', conversationId: 'fixture-c', turnId: 'fixture-t', agentId: 'fixture-a', targetDir: work,
+    deliveryMode: 'fresh', prompt: 'question', externalGit: { metadataRoot: 'C:/untrusted', commonRoot: 'C:/untrusted' },
+    runConfig: { provider: 'test', model: 'test', skillIds: [], conversationSkillIds: [] },
+    harness: { configSnapshot: { toolBridgeEnabled: true, deliveryMode: 'fresh', piVersion: '0.85.1' }, skillSnapshots: [] } };
+  assert.equal((await selectedService.captureTurnCheckpoint(turn)).reason, 'policy_not_enabled');
+  selectedService.store.savePolicy({ ...authorized, status: 'enabled' });
+  const reopenedService = createBadcaseCaptureService({ captureRoot: serviceRoot });
+  const sessionBytes = Buffer.from([{ type: 'session', version: 3, id: 's', cwd: work },
+    { type: 'message', id: 'u', parentId: null, message: { role: 'user', content: 'hello', timestamp: 1 } }].map(x => JSON.stringify(x)).join('\r\n') + '\r\n');
+  const sessionPath = path.join(sessions, 'turn.jsonl'); fs.writeFileSync(sessionPath, sessionBytes);
+  const serviceStart = performance.now();
+  for (const deliveryMode of ['fresh', 'resume']) {
+    const input = { ...turn, deliveryMode, sessionPath, harness: { ...turn.harness, configSnapshot: { ...turn.harness.configSnapshot, deliveryMode } } };
+    const captured = await reopenedService.captureTurnCheckpoint(input); assert.equal(captured.captured, true, captured.reason);
+    const cp = reopenedService.store.loadCheckpoint('p', captured.checkpointId);
+    assert.equal(cp.gitMetadata, 'bounded_external_git_subset_v1'); assert.equal(cp.replayInput.deliveryMode, deliveryMode);
+    assert.equal(cp.replayInput.complete, false); assert.equal(cp.strictEvalEligible, false);
+    assert.equal(cp.files['tracked.log'].hash, hash('dirty')); assert.equal(cp.files.secret.secretExcluded, true);
+    if (deliveryMode === 'resume') assert.deepEqual(reopenedService.store.readBlob('p', cp.replayInput.sessionBlobHash), sessionBytes);
+    const restoredLists = [];
+    for (const n of [1, 2]) {
+      const targetDir = path.join(base, `service-${deliveryMode}-${n}`);
+      const restored = reopenedService.restoreCheckpoint({ projectId: 'p', checkpointId: cp.checkpointId, targetDir });
+      assert.equal(restored.ok, true, restored.reason); restoredLists.push(manifest(targetDir));
+      assert.equal(fs.existsSync(path.join(targetDir, 'secret')), false); assert.equal(fs.existsSync(path.join(targetDir, '.git')), false);
+    }
+    assert.deepEqual(restoredLists[0], restoredLists[1]);
+  }
+  assert.equal(reopenedService.store.listCheckpoints('p').length, 2);
+  const wrongRoot = await reopenedService.captureTurnCheckpoint({ ...turn, targetDir: main }); assert.equal(wrongRoot.captured, false);
+  assert.equal(reopenedService.store.listCheckpoints('p').length, 2);
+  t.diagnostic(JSON.stringify({ fixtureOnly: true, serviceTwoModesMs: Math.round(performance.now() - serviceStart),
+    usageBytes: reopenedService.computeUsage('p').totalBytes, platform: process.platform, managementEnable: false }));
   const savedExclude = fs.readFileSync(path.join(externalGit.commonRoot, 'info/exclude'));
   fs.rmSync(path.join(externalGit.commonRoot, 'info/exclude'));
   assert.equal((await readWindowsGitFileCandidateAsync(options())).reason, 'git_external_input_unavailable');

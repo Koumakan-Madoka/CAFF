@@ -148,6 +148,22 @@ test('authorization and enable require separate confirmation; cancel sends no mu
   assert.equal(enable.body.estimateId, 'receipt-a'); assert.equal(enable.body.confirmed, true);
   assert.match(h.confirms.at(-1), /123/); assert.match(h.root.textContent, /已开启/);
 });
+test('external Git JSON selection is explicit, confirmed, read-only on load and draft-invalidates receipt', async t => {
+  const selected = [{ worktree: 'C:/work', metadataRoot: 'C:/main/.git/worktrees/work', commonRoot: 'C:/main/.git' }];
+  const h = setup(t, url => url.endsWith('/badcase-capture') ? { ...snapshot(), policy: { ...snapshot().policy, windowsExternalGit: selected } } : undefined);
+  await h.panel.select({ id: 'a' });
+  assert.deepEqual(JSON.parse(h.field('windowsExternalGit').value), selected); assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
+  await h.click('estimate'); assert.equal(h.button('enable').disabled, false);
+  h.edit('windowsExternalGit', '{bad'); assert.equal(h.button('enable').disabled, true); assert.equal(h.button('estimate').disabled, true);
+  await h.click('authorize'); assert.equal(h.calls.some(c => c.url.endsWith('/authorize')), false); assert.match(h.root.textContent, /JSON/);
+  h.edit('windowsExternalGit', JSON.stringify(selected)); h.accept(false); await h.click('authorize');
+  assert.equal(h.calls.some(c => c.url.endsWith('/authorize')), false);
+  h.accept(true); await h.click('authorize');
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(c => c.url.endsWith('/authorize')).body.windowsExternalGit)), selected);
+  assert.match(h.confirms.at(-1), /worktrees/); assert.equal(h.calls.some(c => c.url.endsWith('/enable')), false);
+  await h.panel.select(null); assert.equal(h.field('windowsExternalGit').value, '');
+});
+
 test('partial estimate and unknown reason never enable or inject markup', async t => {
   const h = setup(t, url => url.endsWith('/estimate') ? estimate({ complete: false, estimateId: 'forged-but-incomplete',
     estimates: [{ targetDir: '/repo', ok: false, reason: '<img src=x onerror=alert(1)>' }] }) : undefined);

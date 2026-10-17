@@ -4,6 +4,7 @@
 // - authorizedDirs：仅这些目录（及子目录）允许采集；目标目录不在清单内时不采集。
 // - excludedPatterns / includedIgnoredPatterns：相对授权目录的路径模式（** 后缀表前缀匹配）。
 
+import { normalizeWindowsExternalGitSelection } from './windows-external-selection';
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -158,6 +159,7 @@ export function defaultCapturePolicy(projectId: any) {
     // 输入才允许被读取归档；不因“属于回放材料”自动获授权（GPT 复审 #1 第六轮）。
     authorizedInputDirs: [] as string[],
     authorizedInputPins: {} as Record<string, string>,
+    windowsExternalGit: [] as any[], // explicit per-worktree selection; never a grant
     includedIgnoredPatterns: [] as string[],
     // 注意：本阶段不提供秘密豁免机制（secretAllowlistPatterns 已移除）。命中哨兵一律排除；
     // 已知假阳性路径只能用 excludedPatterns 整体排除，或经评审修订哨兵模式集。
@@ -182,6 +184,9 @@ export function normalizeCapturePolicy(raw: any, projectId: any) {
     authorizedDirPins: normalizeDirPins(source.authorizedDirPins),
     authorizedInputDirs: normalizeDirList(source.authorizedInputDirs),
     authorizedInputPins: normalizeDirPins(source.authorizedInputPins),
+    windowsExternalGit: normalizeWindowsExternalGitSelection(source.windowsExternalGit, {
+      authorizedDirs: normalizeDirList(source.authorizedDirs), authorizedInputDirs: normalizeDirList(source.authorizedInputDirs),
+    }),
     includedIgnoredPatterns: normalizePatternList(source.includedIgnoredPatterns, []),
     // secretAllowlistPatterns 已移除：即使调用方传入也不保留、不生效（GPT 复审 #6）。
     excludedPatterns: normalizePatternList(source.excludedPatterns, DEFAULT_EXCLUDED_PATTERNS),

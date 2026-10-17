@@ -6,6 +6,7 @@ import { createLocalAdminGuard } from '../http/local-admin-guard';
 import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
 import { realpathOrResolved, isSameOrUnderPathString } from '../domain/runtime/badcase-capture/capture-policy';
+import { normalizeWindowsExternalGitSelection } from '../domain/runtime/badcase-capture/windows-external-selection';
 
 // Local administration only, not an agent tool. Under Goal D10 the same OS user
 // is trusted: these guards/confirmation fields do not authenticate a human.
@@ -109,7 +110,7 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
     const body = await readRequestJson(req);
     const policy = service.loadPolicy(projectId);
     if (action === 'authorize') {
-      fields(body, ['confirmed', 'authorizedDirs', 'authorizedInputDirs', 'includedIgnoredPatterns', 'excludedPatterns']);
+      fields(body, ['confirmed', 'authorizedDirs', 'authorizedInputDirs', 'includedIgnoredPatterns', 'excludedPatterns', 'windowsExternalGit']);
       confirmed(body);
       const next = { ...policy,
         authorizedDirs: directories(body.authorizedDirs, true),
@@ -118,6 +119,8 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
         excludedPatterns: patterns(body.excludedPatterns),
         status: 'disabled', suspendReason: '',
       };
+      const windowsExternalGit = normalizeWindowsExternalGitSelection(body.windowsExternalGit, next);
+      Object.assign(next, { windowsExternalGit });
       invalidate(projectId);
       // Disable first. Any failure while pinning leaves capture disabled, not
       // enabled with a partly changed authorization scope.
@@ -172,6 +175,9 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
     catch (error) {
       // A competing cooperative writer is retryable, not an internal error.
       // Match only the structured lock code; preserve all other failures.
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'capture_external_git_selection_invalid') {
+        throw issue('capture_external_git_selection_invalid');
+      }
       if (error && typeof error === 'object' && 'code' in error && error.code === 'capture_writer_busy') {
         throw issue('capture_writer_busy', 409);
       }

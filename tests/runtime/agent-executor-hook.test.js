@@ -348,7 +348,7 @@ test('pre-turn capture handles refusal/exception/disabled policy and preserves a
       assert.equal(failedReplies.length, runFailed ? 1 : 0);
       assert.equal(turnState.failedCount, runFailed ? 1 : 0);
       assert.equal(targetReads, 0);
-      if (mode === 'disabled') assert.equal(captureResult.reason, 'policy_not_enabled');
+      if (mode === 'disabled') assert.equal((await captureResult).reason, 'policy_not_enabled');
       if (runFailed) {
         const failed = store.messageWrites.updates.find(({ patch }) => patch.status === 'failed');
         assert.ok(failed);

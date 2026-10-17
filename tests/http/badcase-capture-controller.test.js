@@ -38,6 +38,33 @@ function setup(t) {
 const rejects = (fn, code, status = 422) => assert.rejects(fn, e => e.statusCode === status && e.issues?.[0]?.code === code);
 const authorization = target => ({ confirmed: true, authorizedDirs: [target], authorizedInputDirs: [], includedIgnoredPatterns: [], excludedPatterns: ['.git', 'node_modules'] });
 
+test('external selection is authorization-only closed schema, rejects invalid roots before saving or pinning', async t => {
+  const h = setup(t); let pins = 0; h.service.authorizeProject = () => { pins++; };
+  const before = h.service.loadPolicy('project-test');
+  for (const selection of [null, {}, [{ worktree: h.target }], Array(33).fill({})]) {
+    await rejects(() => invoke(h.controller, 'authorize', { ...authorization(h.target), windowsExternalGit: selection }), 'capture_external_git_selection_invalid');
+    assert.deepEqual(h.service.loadPolicy('project-test'), before); assert.equal(pins, 0);
+  }
+  await rejects(() => invoke(h.controller, 'settings', { windowsExternalGit: [] }), 'badcase_capture_unknown_field');
+});
+
+test('Windows HTTP explicit per-worktree selection persists across restart but does not enable or issue receipt', { skip: process.platform !== 'win32' }, async t => {
+  const h = setup(t), meta = path.join(h.root, 'meta'), common = path.join(h.root, 'common'); fs.mkdirSync(meta); fs.mkdirSync(common);
+  const windowsExternalGit = [{ worktree: h.target, metadataRoot: meta, commonRoot: common }];
+  const body = { ...authorization(h.target), authorizedInputDirs: [meta, common], windowsExternalGit };
+  for (const authorizedInputDirs of [[], [common]]) {
+    await rejects(() => invoke(h.controller, 'authorize', { ...body, authorizedInputDirs }), 'capture_external_git_selection_invalid');
+  }
+  const response = await invoke(h.controller, 'authorize', body); assert.equal(response.body.policy.status, 'disabled');
+  assert.deepEqual(response.body.policy.windowsExternalGit, windowsExternalGit);
+  assert.equal(Object.keys(response.body.policy.authorizedInputPins).length, 2);
+  const restarted = createBadcaseCaptureService({ captureRoot: h.captureRoot }); assert.deepEqual(restarted.loadPolicy('project-test'), response.body.policy);
+  const estimated = await invoke(h.controller, 'estimate', {}); assert.equal(estimated.body.captureAvailable, false); assert.equal(estimated.body.estimateId, null);
+  await rejects(() => invoke(h.controller, 'enable', { confirmed: true, estimateId: 'forged' }), 'badcase_capture_estimate_required', 409);
+  const reset = await invoke(h.controller, 'authorize', authorization(h.target)); assert.deepEqual(reset.body.policy.windowsExternalGit, []);
+  assert.equal(reset.body.policy.status, 'disabled');
+});
+
 // Policy/CAS persistence is real; only positive estimates are synthetic here.
 // Real constrained enumeration is independently exercised by the Linux collector suites.
 function fakeEstimates(h) {
@@ -242,7 +269,7 @@ test('estimate receipt gates enable; enable revalidates and disable persists wit
   assert.equal(calls.length, 2);
   const restarted = createBadcaseCaptureService({ captureRoot: h.captureRoot, onFileRead: () => { throw Error('must not read'); } });
   assert.equal(restarted.loadPolicy('project-test').status, 'disabled');
-  assert.equal(restarted.captureTurnCheckpoint({ projectId: 'project-test', targetDir: h.target }).reason, 'policy_not_enabled');
+  assert.equal((await restarted.captureTurnCheckpoint({ projectId: 'project-test', targetDir: h.target, deliveryMode: 'fresh' })).reason, 'policy_not_enabled');
   await rejects(() => invoke(h.controller, 'enable', { confirmed: true, estimateId: estimate.body.estimateId }), 'badcase_capture_estimate_required', 409);
 });
 
