@@ -406,6 +406,9 @@ FILE_LIMIT = 64 * 1024 * 1024
 SNAPSHOT_FILE_LIMIT = 2048
 # Exact bounded sources only. No include/excludesFile/commondir/gitdir expansion.
 GIT_METADATA_PATHS = frozenset(['.git/config', '.git/index', '.git/commondir', '.git/info', '.git/info/exclude'])
+# Independently pinned external metadata root. Fixed names only; contents of
+# gitdir/commondir are returned as bytes, NEVER resolved or followed here.
+GIT_INPUT_PATHS = frozenset(['config', 'index', 'commondir', 'gitdir', 'config.worktree', 'info/exclude'])
 
 
 def _git_source(relative):
@@ -464,7 +467,7 @@ def _request(stream):
             keys |= {'expected', 'excluded'}
             if op in ('capture', 'selectedSnapshot'):
                 keys.add('paths')
-        elif op == 'sessionInput':
+        elif op in ('sessionInput', 'gitInput'):
             keys |= {'expected', 'path'}
         elif op != 'identity':
             raise Refused('request_invalid')
@@ -476,9 +479,11 @@ def _request(stream):
         suffix = match[2].replace('\\', '/')
         if suffix:
             components(suffix)
-        if op == 'sessionInput':
+        if op in ('sessionInput', 'gitInput'):
             if (not _valid_identity(value['expected']) or not isinstance(value['path'], str)
-                    or not value['path'].endswith('.jsonl') or len(value['path'].encode('utf-8')) > 32768
+                    or (op == 'sessionInput' and not value['path'].endswith('.jsonl'))
+                    or (op == 'gitInput' and value['path'] not in GIT_INPUT_PATHS)
+                    or len(value['path'].encode('utf-8')) > 32768
                     or len(components(value['path'])) > 64):
                 raise Refused('request_invalid')
         if op in ('capture', 'estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot'):
@@ -551,8 +556,10 @@ def serve(input_stream, output_stream):
             raise Refused('estimate_scope_rejected')
         with Root(request['root'], request.get('expected')) as root:
             header = {'version': 1, 'ok': True, 'identity': root.identity}
-            if request['op'] == 'sessionInput':
+            if request['op'] in ('sessionInput', 'gitInput'):
                 # No walk, Git discovery, directory expansion or caller hooks.
+                # gitInput permits only fixed names under its own authorized
+                # root, including binary index. Pointer text never grants access.
                 # Two reads bind the returned bytes to one identity/hash; this
                 # is change detection, not an atomic or ABA-proof snapshot.
                 first = root.read(request['path'], FILE_LIMIT, _canonical=True)

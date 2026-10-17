@@ -33,6 +33,85 @@ class WindowsRead(unittest.TestCase):
         self.outside.mkdir()
         (self.outside / 'sample.bin').write_bytes(b'OUTSIDE_SENTINEL')
 
+    def test_git_input_fixed_binary_files_without_walk_or_pointer_expansion(self):
+        request = {**self.session_request(), 'op': 'gitInput', 'path': 'index'}
+        data = b'DIRC\x00\xff\r\n'
+        (self.root / 'index').write_bytes(data)
+        (self.root / 'commondir').write_bytes(b'../../unauthorized\n')
+        opened = []
+        original = w._relative
+        def observe(stack, parent, name, directory):
+            opened.append(name)
+            return original(stack, parent, name, directory)
+        for name, expected in [('index', data), ('commondir', b'../../unauthorized\n')]:
+            with self.subTest(name=name), patch.object(w.Root, 'walk', side_effect=AssertionError('no walk')), patch.object(w, '_relative', observe):
+                opened.clear()
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'path': name})), out)
+                header, body = out.getvalue().split(b'\n', 1)
+                self.assertTrue(json.loads(header)['ok'], header)
+                self.assertEqual(body, expected)
+                self.assertEqual(opened, list(self.root.parts[1:]) + [name] * 2)
+        for name in ['config', 'gitdir', 'config.worktree', 'info/exclude']:
+            target = self.root / name
+            target.parent.mkdir(exist_ok=True)
+            target.write_bytes(b'fixed\r\n')
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'path': name})), out)
+            header, body = out.getvalue().split(b'\n', 1)
+            self.assertTrue(json.loads(header)['ok'], header)
+            self.assertEqual(body, b'fixed\r\n')
+
+    def test_git_input_schema_pin_and_alias_rejected_before_content(self):
+        request = {**self.session_request(), 'op': 'gitInput', 'path': 'index'}
+        (self.root / 'index').write_bytes(b'DIRC')
+        for delta in [{'path': 'INDEX'}, {'path': '../config'}, {'path': 'objects/private'}, {'path': 'worktrees/w/index'},
+                      {'path': 'turn.jsonl'}, {'paths': ['index']}, {'excluded': []}, {'_canonical': False}]:
+            with self.subTest(delta=delta), patch.object(w, 'Root') as unopened:
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, **delta})), out)
+                self.assertEqual(json.loads(out.getvalue()), {'version': 1, 'ok': False, 'code': 'request_invalid'})
+            self.assertEqual(unopened.call_count, 0)
+        (self.root / 'index').rename(self.root / 'Index')
+        with patch.object(w.kernel, 'ReadFile', wraps=w.kernel.ReadFile) as reads:
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+            self.assertEqual(json.loads(out.getvalue())['code'], 'path_not_in_manifest')
+        self.assertEqual(reads.call_count, 0)
+        with patch.object(w.Root, 'read', wraps=w.Root.read) as reads:
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'expected': {**request['expected'], 'fileId': '0' * 32}})), out)
+            self.assertEqual(json.loads(out.getvalue())['code'], 'root_identity_mismatch')
+        self.assertEqual(reads.call_count, 0)
+
+    def test_git_input_junction_drift_and_limit_no_partial_body(self):
+        request = {**self.session_request(), 'op': 'gitInput', 'path': 'info/exclude'}
+        (self.outside / 'exclude').write_bytes(b'OUTSIDE_SENTINEL')
+        linked = self.root / 'info'
+        subprocess.run(['cmd', '/d', '/c', 'mklink', '/J', str(linked), str(self.outside)], check=True, capture_output=True)
+        try:
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+            self.assertFalse(json.loads(out.getvalue())['ok']); self.assertNotIn(b'OUTSIDE_SENTINEL', out.getvalue())
+        finally:
+            linked.rmdir()
+        (self.root / 'index').write_bytes(b'FIRST')
+        request['path'] = 'index'
+        original = w.Root.read
+        for field in ['sha256', 'identity']:
+            count = 0
+            def changed(root, relative, *args, **kwargs):
+                nonlocal count
+                result = original(root, relative, *args, **kwargs); count += 1
+                if count == 2:
+                    result[field] = '0' * 64 if field == 'sha256' else {**result[field], 'fileId': '0' * 32}
+                return result
+            with self.subTest(field=field), patch.object(w.Root, 'read', changed):
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+                header, body = out.getvalue().split(b'\n', 1)
+                self.assertEqual(json.loads(header), {'version': 1, 'ok': False, 'code': 'snapshot_changed'})
+                self.assertEqual(body, b'')
+            self.assertEqual(count, 2)
+        with patch.object(w, 'FILE_LIMIT', 4):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+            header, body = out.getvalue().split(b'\n', 1)
+            self.assertEqual(json.loads(header), {'version': 1, 'ok': False, 'code': 'too_large'})
+            self.assertEqual(body, b'')
+
     def session_request(self, relative='sub/turn.jsonl'):
         return {**{k: v for k, v in self.snapshot_request().items() if k != 'excluded'},
                 'op': 'sessionInput', 'path': relative}

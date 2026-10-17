@@ -53,21 +53,23 @@ function validRelative(value: any) {
       && !/^(?:CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])(?:\..*)?$/i.test(part));
 }
 const GIT_METADATA_PATHS = new Set(['.git/config', '.git/index', '.git/commondir', '.git/info', '.git/info/exclude']);
+const GIT_INPUT_PATHS = new Set(['config', 'index', 'commondir', 'gitdir', 'config.worktree', 'info/exclude']);
 function gitSource(relative: string) {
   return relative === '.git' || GIT_METADATA_PATHS.has(relative) || relative.split('/').at(-1) === '.gitignore';
 }
 function validRequest(request: any) {
-  if (!request || request.version !== 1 || !['identity', 'capture', 'estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput'].includes(request.op)
+  if (!request || request.version !== 1 || !['identity', 'capture', 'estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput'].includes(request.op)
       || !exact(request, request.op === 'identity' ? ['version', 'op', 'root']
-        : request.op === 'sessionInput' ? ['version', 'op', 'root', 'expected', 'path']
+        : ['sessionInput', 'gitInput'].includes(request.op) ? ['version', 'op', 'root', 'expected', 'path']
         : ['estimate', 'snapshot', 'gitMetadata'].includes(request.op) ? ['version', 'op', 'root', 'expected', 'excluded']
           : ['version', 'op', 'root', 'expected', 'excluded', 'paths'])
       || typeof request.root !== 'string' || Buffer.byteLength(request.root) > 32768) return false;
   const match = request.root.match(/^[a-z]:[\\/](.*)$/i);
   if (!match || (match[1] && !validRelative(match[1].replace(/\\/g, '/')))) return false;
   if (request.op === 'identity') return true;
-  if (request.op === 'sessionInput') return validIdentity(request.expected) && validRelative(request.path)
-    && request.path.endsWith('.jsonl') && request.path.split('/').length <= 64;
+  if (['sessionInput', 'gitInput'].includes(request.op)) return validIdentity(request.expected) && validRelative(request.path)
+    && (request.op === 'sessionInput' ? request.path.endsWith('.jsonl') : GIT_INPUT_PATHS.has(request.path))
+    && request.path.split('/').length <= 64;
   return validIdentity(request.expected)
     && Array.isArray(request.excluded) && request.excluded.length <= WINDOWS_HELPER_LIMITS.exclusions
     && request.excluded.every(validRelative)
@@ -104,7 +106,7 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
       return exact(header, ['version', 'ok', 'identity']) && offset === stdout.length
         ? { ok: true, identity: header.identity } : bad();
     }
-    if (request.op === 'sessionInput') {
+    if (['sessionInput', 'gitInput'].includes(request.op)) {
       const file = header.file;
       if (!exact(header, ['version', 'ok', 'identity', 'file']) || !sameIdentity(header.identity, request.expected)
         || !exact(file, ['path', 'size', 'sha256', 'identity']) || file.path !== request.path
@@ -181,7 +183,7 @@ export function invokeWindowsHelper(python: string, helperPath: string, request:
       input, encoding: 'buffer', windowsHide: true,
       timeout: request.op === 'identity' ? WINDOWS_HELPER_LIMITS.identityTimeoutMs
         : request.op === 'estimate' ? WINDOWS_HELPER_LIMITS.estimateTimeoutMs
-          : ['snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput'].includes(request.op) ? WINDOWS_HELPER_LIMITS.snapshotTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
+          : ['snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput'].includes(request.op) ? WINDOWS_HELPER_LIMITS.snapshotTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
       maxBuffer: WINDOWS_HELPER_LIMITS.headerBytes + WINDOWS_HELPER_LIMITS.bodyBytes + 1,
     });
     if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stderr) || result.stderr.length !== 0) {
@@ -205,6 +207,12 @@ export function invokeWindowsGitHelper(python: string, helperPath: string, reque
 // content helpers, but not its operation acceptance set or classification.
 export function invokeWindowsSessionHelper(python: string, helperPath: string, request: any, deadline: number): Promise<any> {
   return invokeWindowsBoundedContentHelper(python, helperPath, request, deadline, ['sessionInput']);
+}
+
+// Separate exact external-Git-file capability. Shares the bounded pool, never
+// enlarges the Git tree or session transport's operation acceptance sets.
+export function invokeWindowsGitInputHelper(python: string, helperPath: string, request: any, deadline: number): Promise<any> {
+  return invokeWindowsBoundedContentHelper(python, helperPath, request, deadline, ['gitInput']);
 }
 
 async function invokeWindowsBoundedContentHelper(python: string, helperPath: string, request: any, deadline: number, allowedOps: string[]): Promise<any> {

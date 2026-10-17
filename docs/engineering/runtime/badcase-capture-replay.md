@@ -1043,6 +1043,20 @@ API依据：[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-har
 - schema-v1 清单保留关联 ID、完整 harness、session 模式与原字节；文件 blob 与输入 plans 一起交原 publisher 做引用闭包/秘密/hash/配额复验。`replayInput.complete=false` 恒定，并添加 `windows_capture_subset_unverified`，秘密文件另外列出排除路径；`strictEvalEligible=false` 不变。删除列表仍为空，不把策略排除/未知旧现场推断成删除；原有缺口（全局 Git、外置 gitdir、未验证配置、空目录、mode 合成等）不被组合动作抹除。`content-verified` 仅表示候选链未检测到变化，不是原子或独立一致性证明。
 - 原生组合证据仅自建 NTFS Git/session 夹具（独立管理授权 pin 后用测试 writer 设 enabled）：真实 helper→共享校验→单租约 publisher→重开存储→两恢复清单一致；秘密不进入 CAS、resume/CRLF 保留、整体仍 incomplete。执行器测试注入此内部 collector，验证 fresh/resume 的实际 `agent-executor` 在 mock `startRun` 时清单已在磁盘，发布写失败继续 turn 但不关联旧/latest checkpoint。mock runtime/聊天 store 不是真实 pi、生产服务选择、用户 UI 或普通 CAFF Docker 回放证据；不构成 AC 通过。
 
+### 5.48 Windows 外置 Git 固定输入原生读取（独立授权前置段，未接分类）
+
+新增内部 `readWindowsGitMetadataInput({metadataRoot,metadataPath,policy,captureRoot,privateDirs,deadline})`，为后续 worktree 外置 Git 分类提供受限字节来源。**不自动发现或追随 `.git`、`gitdir`、`commondir`，不执行 Git，不解析配置/index，不归档、不写 CAS；尚未被 Git 候选/collector/服务调用**，现有本地 Git 子集仍拒外置元数据，Windows 开启门不改。
+
+- `metadataRoot` 必须本身精确列在 `authorizedInputDirs`，且有与该根一致的原生 `authorizedInputPins`；worktree 授权、孤立 pin、只授权父目录均不足，不安装 helper 或重新 pin。未来 common 根与 worktrees/id 根需分别显式授权；此接口不因指针内容扩大范围。当前复用输入根授权表，不新增自动授权/UI 回执。
+- 新闭集 op `gitInput:{version,op,root,expected,path}`，path 仅为 `config/index/commondir/gitdir/config.worktree/info/exclude` 六个精确值；根打开前验证，拒任意 paths/目录展开/大小写与8.3别名。语法先于根打开、原根身份先于后代；复用逐父名称表精确门控及两读身份/size/hash，零 Root.walk，不打开无关子树。允许原生 `.git` 目录作为**独立授权的输入根**，不取消 estimate/树扫描的 `.git` 排除。缺文件仍失败，不把任何错误猜作“可选文件不存在”。
+- 宿主 realpath 仅用于拒别名，不替换 literal 原生根；存储、显式 privateDirs、当前 sandbox/private 的 literal+canonical 根禁止，坏私有根或非 ENOENT 解析错误失败关闭。只保护当前显式配置，不宣称发现其他私有目录；同 OS 用户/解释器/存储仍为 TCB，秘密哨兵不等于万能探测。请求 pin 在 await 前独立复制，调用方后改 pin/名称不更改本次请求。
+- `invokeWindowsGitInputHelper` 的接受集合仅 gitInput，与 session/Git 树 op 互斥；共享源码 SHA/大小检查、两活跃 helper 名额、`python -I -B`/stdin、单文件64MiB、32MiB头+128MiB body、同一较早绝对25秒观察期限及 kill→close 归还。不是全服务名额或进程树沙箱；同步 fs/复制不可抢占，OS 不 close 仍等待，不承诺硬期限。新源码须经既有显式授权安装；旧安装不自动修复或重 pin，无重试/同步回退。
+- 复用单 file 响应的宿主闭集/根pin/同卷叶身份/精确路径/长度/hash/收尾复验。秘密命中不给字节/hash/身份；成功只返回独立非池化原字节 Buffer，**不作 UTF-8 转换**（index 是二进制），后续分类必须另验证文本/index与指针语义。跨读 ABA、非原子与身份复用残余仍在，成功不改变 complete/strict/captureAvailable。
+
+作者证据仅自建 Windows10 build19045/x64 NTFS（Python3.13.5/Node24.13.1）：新增原生三项在旧 op 先红；Node 初八例旧构建全红（前两项为协议断言，其余为缺新模块/函数）；最终原生30/30、新 Node9/9（含 await 请求锁存），十套98=97通过/1 Linux跳过。独立管理 pin→读取二进制 index/CRLF exclude，原根替换/junction/秘密拒绝，disabled/零CAS/零checkpoint；不是真实外置 Git 分类、实际worktree或turn证据。WSL Debian Node22.22私有43文件逐字节核验十套190=176通过/14平台跳过，测试后字节不变并清理；不以Linux合成用例代替Windows证据。
+
+5原生+12Node单点变异最终17点全部断言红，原生私有副本字节恢复后30/30且清理，Node仅进程内拦截、编译磁盘SHA不改，干净基线复绿。初轮op负例仍携session不合法path，删op门存活；改合法session请求后红；删源码SHA守卫最初令mock等待不终止（看门狗超时，不计红），改错误admission时mock立即close后红；首次native身份变异仅触发JSONDecodeError不计，改拆头/body对象断言后全点重跑。最终回归数字记Goal，不以测试数替代功能。零真实项目采集/Key/供应商/Docker/浏览器/生产，全部AC pending，历史6美元未结算非账单、不合并发布；外置指针绑定/分类、全局忽略、core.ignorecase=true、删除历史/附件及服务开启/容器映射仍待完成。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
