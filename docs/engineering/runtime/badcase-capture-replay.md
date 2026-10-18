@@ -1206,9 +1206,19 @@ working-inputs 固定包含排序后的 `prompt.txt`、`run-config.json`、`harn
 
 实测发现Docker tmpfs未显式exec时会阻止`.node`的可执行映射（`failed to map segment from shared object`）。不修改旧调用的WORK默认值；`runProbe`新增仅可信内部调用的布尔 `executableWork`，该诊断显式选择 `/work:rw,exec,nosuid,nodev,...`，并在create前/后及deadline停止前inspect逐项绑定同一选项。`/tmp`仍noexec，rootfs仍只读，network=none、uid65534、cap-drop ALL/no-new-privileges、512MiB/1CPU/64pids、无宿主挂载/socket/端口等原约束不变；无效选项在任何Docker调用前拒绝。exec只使隔离临时分发材料可加载，不扩大宿主访问或允许生产连接。沿用已审查runProbe的25秒观察期限、容器级kill和owner核验后移除；不将其称为绝对硬实时保证。默认daemon仍要求原RepoDigest校验，无自动专用daemon回退。
 
-作者实际Docker验证使用既有固定Node24.21.0/amd64镜像、Python3.11.2；为诊断临时在同一固定隔离镜像内由受信better-sqlite3源码离线编译测试addon（非MVP自动编译功能）。验证真实namespace内CLI→HTTP→双SQLite、跨身份401、关闭/重开、坏native加载拒绝及清理。准确命令、镜像ID/digest、字节数/容器ID与独立审查见Goal E122。早期缺hpp编译输入、停止后tmpfs无法docker-cp、默认tmpfs映射拒绝及Node22宿主不能加载Node24测试addon均不计通过。人工编译的Node24测试addon还观察到间歇 `RemoveEnvironmentCleanupHook`/`Statement::~Statement` native SIGABRT（exit134）；镜像头文件版本与Node24.21.0一致，根因未定，最后双副本成功不能证明稳定性，也未证明正式npm构建同样受影响。失败均无成功回执且容器清理，不为消除此现象降级Node/换镜像/放宽ABI或回退；可靠普通turn运行仍被该环境验证缺口阻断。E121两项P3补gate-clean ambient不继承及门拒绝时CAFF require计数0，独立审查前仍只为作者验证。
+作者实际Docker验证使用既有固定Node24.21.0/amd64镜像、Python3.11.2；为诊断临时在同一固定隔离镜像内由受信better-sqlite3源码离线编译测试addon（非MVP自动编译功能）。验证真实namespace内CLI→HTTP→双SQLite、跨身份401、关闭/重开、坏native加载拒绝及清理。准确命令、镜像ID/digest、字节数/容器ID与独立审查见Goal E122。早期缺hpp编译输入、停止后tmpfs无法docker-cp、默认tmpfs映射拒绝及Node22宿主不能加载Node24测试addon均不计通过。人工编译的Node24测试addon还观察到间歇 `RemoveEnvironmentCleanupHook`/`Statement::~Statement` native SIGABRT（exit134）；镜像头文件版本与Node24.21.0一致，根因未定，最后双副本成功不能证明稳定性，也未证明正式npm构建同样受影响。失败均无成功回执且容器清理，不为消除此现象降级Node/换镜像/放宽ABI或回退；当时尚无正式预编译产物验证；后续限定产物的验证见§5.62，不能据此宣称旧崩溃已修复。E121两项P3补gate-clean ambient不继承及门拒绝时CAFF require计数0，已在E122经GLM独立变异确认闭环。
 
 **这是固定合成Docker诊断，不是普通turn或用户badcase回放完成。** 没有SDK/模型/付费调用、真实trace导入、完整配置技能/受控替换/附件或fresh/resume执行；所有执行评测资格仍false，Windows管理开启仍关，全部AC pending。容器使用内存新身份，供应商/生产凭据不入材料；生产采集/桥/store未改，历史6美元未结算非账单、E106归DeepSeek、用户最终接受且不合并发布均不变。
+
+### 5.62 容器 entry 执行级完整性回归与限定 native 产物验证
+
+补齐E122的P3：测试直接取得 `prepareBridgeFiles` 实际生成的 `probe.cjs`，在VM中执行其异步入口，使用完全惰性的文件/native/bridge替身，**不在宿主加载addon或执行agent**。先确认合法清单经过全部文件读取、native open/query/close后才导入bridge并返回精确回执；分别破坏环境门、manifest schema/inputHash/4096项上限、Node版本/架构、重签后的路径/重复项、文件类型/大小/内容摘要、16MiB总量以及native加载/查询/关闭。失败须为固定错误、零公开输出；校验前拒绝不得触发native/CAFF导入。计数/总量负例的其他材料保持可消费，避免被缺文件或size不匹配遮蔽；VM替身只验证控制逻辑，不作真实ABI/Docker证明。§5.60内层入口同时拒绝LD_PRELOAD/LD_LIBRARY_PATH，与外层保持一致；回归先在旧内层门出现缺少拒绝，再修改门。JS环境门不是对OS动态加载器的沙箱：OS可能在JS运行前消费这些变量，真正隔离仍来自固定镜像、封闭启动环境及Docker约束。
+
+为区分人工编译产物风险，作者显式从 `https://github.com/WiseLibs/better-sqlite3/releases/download/v12.11.1/better-sqlite3-v12.11.1-node-v137-linux-x64.tar.gz` 取得预编译归档，仅在本agent私有临时依赖副本替换固定native位置；不覆盖共享node_modules、不安装/编译、不自动发现或更换版本。归档1,089,588B，SHA-256 `99c43785639d5d3690c396ba245ee680ac8b469a46b19233a3546f0eb7f8e312`；唯一普通文件 `build/Release/better_sqlite3.node` 为2,122,448B，SHA-256 `45cb92a176fb758533db6d9a343acdfc73e4de27ac4c20a0cb2a6fb5be3e84f2`。来源由显式HTTPS地址与下载时哈希记录，**没有发布者签名或独立构建来源证明**；该手工取得步骤不是产品运行时下载/安装功能。
+
+限定计划最多3个隔离容器、失败即停：同一固定Node24.21.0/amd64镜像下，2个容器各8个顺序子进程（显式 `--expose-gc`、每进程100次独立内存库create/insert/select/close及周期GC，2秒/child），父进程先完成完整manifest复验才启动子进程；随后各运行原双回调/5 CLI诊断。第三个容器运行未修改的默认launcher。实测16个压力子进程/1,600次生命周期及3次bridge诊断均通过、无abort，清理后零probe容器；压力脚本只在ignored证据中，不进入被测配置或默认launcher。严格RepoDigest/镜像/网络none/只读根/无挂载/资源/work exec与tmp noexec核验保持。两压力副本同inputHash/dependencyHash，默认副本因entry字节不同inputHash不同，dependencyHash相同。
+
+该结果仅支持**上述固定官方预编译产物、平台与有限负载条件下**继续后续SDK接线；不能归因或修复旧人工 `-O0` 构建的间歇SIGABRT，不能证明无限稳定或其他ABI/架构/版本适用，失败仍须停止分析而非重试冲过。宿主Node22只运行纯launcher测试，不导入Node24 addon。真实trace、完整配置/技能、受控替换及fresh/resume/SDK实际回放仍未接通；所有执行评测资格false、Windows开启门关闭、全部AC pending，无模型/付费/真实采集/生产写入，不合并发布。
 
 ## 6. 威胁模型
 

@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
+const crypto = require('node:crypto');
 const { manifestFor } = require('../../scripts/badcase-capture/pi-probe-materials.cjs');
 const inventory = require('../../scripts/badcase-capture/evaluation-bridge-files.json');
 const repo = path.resolve(__dirname, '../..');
@@ -24,6 +26,118 @@ function fixture(t) {
   }
   return root;
 }
+// Execute the actual staged entry with inert filesystem/native/bridge doubles.
+// No host native loading, SDK, Docker or model execution is permitted by this harness.
+const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+async function entryHarness(files, options = {}) {
+  const manifest = structuredClone(manifestFor(files));
+  const bytes = new Map(files.map(f => ['/work/' + f.path, Buffer.from(f.bytes)]));
+  const environment = structuredClone(image);
+  const r = api().bridgeReceipt(manifest, environment);
+  if (options.manifest) options.manifest(manifest);
+  if (options.resign) manifest.inputHash = digest(JSON.stringify(manifest.files));
+  if (options.environment) options.environment(environment);
+  if (options.bytes) options.bytes(bytes);
+  const reads = [], imports = [], events = [], stdout = [], stderr = [];
+  const proc = { platform: 'linux', getuid: () => 65534, cwd: () => '/work', env: {},
+    version: image.nodeVersion, arch: 'x64', stderr: { write: s => stderr.push(s) }, ...options.process };
+  const fakeFs = {
+    existsSync: p => p === '/.dockerenv' && options.marker !== false,
+    readFileSync: p => {
+      reads.push(p);
+      if (p === 'manifest.json') return Buffer.from(JSON.stringify(manifest));
+      if (p === 'environment.json') return Buffer.from(JSON.stringify(environment));
+      assert.ok(bytes.has(p), 'only staged files may be read'); return bytes.get(p);
+    },
+    lstatSync: p => {
+      assert.ok(bytes.has(p), 'only staged files may be statted');
+      const st = { size: bytes.get(p).length, isFile: () => true, isSymbolicLink: () => false };
+      return options.stat ? options.stat(p, st) : st;
+    },
+  };
+  const code = files.find(f => f.path === 'probe.cjs').bytes.toString('utf8');
+  const result = vm.runInNewContext(code, { process: proc, console: { log: s => stdout.push(s) }, require: name => {
+    if (name === 'node:fs') return fakeFs;
+    if (name === 'node:crypto') return crypto;
+    imports.push(name);
+    if (name === '/work/node_modules/better-sqlite3') {
+      if (options.loadFailure) throw Error('private loader detail');
+      return class Database {
+        constructor(name) { assert.equal(name, ':memory:'); events.push('open'); }
+        prepare(sql) { assert.equal(sql, 'select sqlite_version() as version'); events.push('query');
+          return { get: () => { if (options.queryFailure) throw Error('private query detail');
+            return { version: options.sqliteVersion ?? '3.50.0' }; } }; }
+        close() { events.push('close'); if (options.closeFailure) throw Error('private close detail'); }
+      };
+    }
+    assert.equal(name, '/work/evaluation-bridge-container.cjs');
+    assert.deepEqual(events, ['open', 'query', 'close'], 'native verification must settle before bridge import');
+    return { runContainerBridgeDiagnostic: async () => { events.push('bridge'); return r; } };
+  } }, { timeout: 1000 });
+  await result;
+  return { manifest, reads, imports, events, stdout, stderr, exitCode: proc.exitCode };
+}
+function refused(h, beforeNative = true) {
+  assert.equal(h.exitCode, 1); assert.deepEqual(h.stdout, []);
+  assert.deepEqual(h.stderr, ['evaluation_bridge_container_failed\n']);
+  if (beforeNative) { assert.deepEqual(h.imports, []); assert.deepEqual(h.events, []); }
+}
+test('entry executes full staged verification before native query/close and bridge import', async t => {
+  const root = fixture(t), files = api().prepareBridgeFiles(repo, root, image);
+  const h = await entryHarness(files);
+  assert.equal(h.exitCode, undefined); assert.deepEqual(h.stderr, []);
+  assert.deepEqual(h.events, ['open', 'query', 'close', 'bridge']);
+  assert.deepEqual(h.imports, ['/work/node_modules/better-sqlite3', '/work/evaluation-bridge-container.cjs']);
+  assert.deepEqual(h.reads, ['manifest.json', 'environment.json', ...h.manifest.files.map(f => '/work/' + f.path)]);
+  assert.deepEqual(h.stdout, [JSON.stringify(api().bridgeReceipt(h.manifest, image))]);
+});
+test('entry environment gate rejects before staged reads or native/CAFF import including LD hooks', async t => {
+  const root = fixture(t), files = api().prepareBridgeFiles(repo, root, image);
+  const cases = [{ marker: false }, { process: { platform: 'win32' } }, { process: { getuid: () => 0 } },
+    { process: { getuid: undefined } }, { process: { cwd: () => '/elsewhere' } },
+    ...['CAFF_X', 'PI_X', 'OPENAI_X', 'ANTHROPIC_X', 'AWS_X', 'NODE_OPTIONS', 'NODE_PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH']
+      .map(key => ({ process: { env: { [key]: 'private forbidden value' } } }))];
+  for (const options of cases) { const h = await entryHarness(files, options); refused(h); assert.deepEqual(h.reads, []); }
+  const h = await entryHarness(files, { process: { env: { HARMLESS_AMBIENT: 'allowed by environment gate only' } } });
+  assert.equal(h.exitCode, undefined); assert.equal(h.events.at(-1), 'bridge');
+});
+test('entry rejects manifest schema/hash/count and runtime identity mismatches before native import', async t => {
+  const root = fixture(t), files = api().prepareBridgeFiles(repo, root, image);
+  const cases = [{ manifest: m => { m.schemaVersion = 2; } }, { manifest: m => { m.files = {}; } },
+    { manifest: m => { m.inputHash = '0'.repeat(64); } },
+    { manifest: m => { m.files = Array.from({ length: 4097 }, (_, i) => ({ path: 'extra-' + i, size: 0, sha256: digest('') })); },
+      bytes: map => { for (let i = 0; i < 4097; i++) map.set('/work/extra-' + i, Buffer.alloc(0)); }, resign: true },
+    { process: { version: 'v0.0.0' } }, { process: { arch: 'arm64' } }];
+  for (const options of cases) refused(await entryHarness(files, options));
+});
+test('entry independently rejects resigned invalid paths, duplicates, type/size/hash drift and aggregate overflow', async t => {
+  const root = fixture(t), files = api().prepareBridgeFiles(repo, root, image);
+  for (const invalid of ['/escape', '../escape', 'build/../escape', 'build//x', 'build/./x', 'bad name', 'C:/escape']) {
+    refused(await entryHarness(files, {
+      manifest: m => { m.files[0].path = invalid; },
+      bytes: map => { map.set('/work/' + invalid, files.find(f => f.path === manifestFor(files).files[0].path).bytes); }, resign: true,
+    }));
+  }
+  const cases = [{ manifest: m => { m.files.push({ ...m.files[0] }); }, resign: true },
+    { stat: (p, st) => ({ ...st, isFile: () => false }) },
+    { stat: (p, st) => ({ ...st, size: st.size + 1 }) },
+    { manifest: m => { m.files[0].sha256 = '0'.repeat(64); }, resign: true },
+    { bytes: map => { const name = map.keys().next().value, b = map.get(name); const changed = Buffer.from(b); changed[0] ^= 1; map.set(name, changed); } }];
+  for (const options of cases) refused(await entryHarness(files, options));
+  const large = Buffer.alloc(6 * 1024 * 1024);
+  refused(await entryHarness(files, {
+    manifest: m => { m.files = ['large-a', 'large-b', 'large-c'].map(name => ({ path: name, size: large.length, sha256: digest(large) })); },
+    bytes: map => { for (const name of ['large-a', 'large-b', 'large-c']) map.set('/work/' + name, large); }, resign: true,
+  }));
+});
+test('entry native load/query/close failures never import bridge or return raw diagnostics', async t => {
+  const root = fixture(t), files = api().prepareBridgeFiles(repo, root, image);
+  for (const options of [{ loadFailure: true }, { queryFailure: true }, { sqliteVersion: 'not-a-version' }, { closeFailure: true }]) {
+    const h = await entryHarness(files, options); refused(h, false);
+    assert.deepEqual(h.imports, ['/work/node_modules/better-sqlite3']);
+    assert.deepEqual(h.events, options.loadFailure ? [] : ['open', 'query', 'close']);
+  }
+});
 test('fixed distribution stages only allowlisted files with byte identity; native is data on host', t => {
   const root = fixture(t), { prepareBridgeFiles } = api();
   fs.writeFileSync(path.join(root, 'node_modules/do-not-read-auth.json'), 'unrelated source must not be read');

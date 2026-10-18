@@ -9,7 +9,7 @@ async function runContainerBridgeDiagnostic() {
   try {
     // Check BEFORE importing any CAFF module, opening SQLite or spawning a child.
     if (process.platform !== 'linux' || process.getuid?.() !== 65534 || process.cwd() !== '/work'
-      || !fs.existsSync('/.dockerenv') || Object.keys(process.env).some(k => /^(CAFF_|PI_|OPENAI_|ANTHROPIC_|AWS_|NODE_OPTIONS$|NODE_PATH$)/.test(k))) throw failed();
+      || !fs.existsSync('/.dockerenv') || Object.keys(process.env).some(k => /^(CAFF_|PI_|OPENAI_|ANTHROPIC_|AWS_|NODE_OPTIONS$|NODE_PATH$|LD_PRELOAD$|LD_LIBRARY_PATH$)/.test(k))) throw failed();
     const { startEvaluationCallback } = require('/work/build/server/domain/runtime/badcase-capture/evaluation-callback');
     const { createChatAppStore } = require('/work/build/lib/chat-app-store');
     const seed = { conversationId: 'eval-conversation', turnId: 'eval-turn', agent: { id: 'eval-agent', name: 'Evaluation Agent' },

@@ -93,7 +93,8 @@ test('missing container marker refuses before callback/child even with matching 
 });
 test('container gate refuses unsupported platform, uid, cwd and ambient auth/hooks before any callback or child', async t => {
   for (const change of [{ platform: 'win32' }, { getuid: () => 0 }, { cwd: () => '/elsewhere' },
-    { env: { CAFF_CHAT_API_URL: 'http://production.invalid' } }, { env: { NODE_OPTIONS: '--inspect' } }]) {
+    { env: { CAFF_CHAT_API_URL: 'http://production.invalid' } }, { env: { NODE_OPTIONS: '--inspect' } },
+    { env: { LD_PRELOAD: '/untrusted/addon.so' } }, { env: { LD_LIBRARY_PATH: '/untrusted' } }]) {
     const h = harness(t, { process: change });
     await assert.rejects(h.run(), /evaluation_bridge_diagnostic_failed/);
     assert.equal(h.calls.length, 0); assert.equal(h.services.length, 0); assert.equal(h.imports.length, 0);
