@@ -1198,6 +1198,18 @@ working-inputs 固定包含排序后的 `prompt.txt`、`run-config.json`、`harn
 
 自动测试为**宿主合成CLI/HTTP/SQLite，VM仅模拟容器门和固定路径**，不执行真实agent；脚本在真实宿主调用必须先失败。覆盖双实例持久化、非容器/环境门、部分启动、子进程错误/超输出/超时/坏JSON、含糊关闭及cleanup失败；不能将该测试写成真实容器namespace或Docker证据。§5.59另补 publicLimit/privateLimit 的1..24边界与越界负例（E120 P3），以及append替换Thinking...不吞累计输出预算的正例。生产kernel/bridge/store、采集/管理/UI/SDK均未改。准确分套计数、变异及新SHA独立审查以Goal E121为准；Windows门仍关、完整trace/配置/技能/受控替换与普通fresh/resume Docker回放仍未完成，全部AC pending，零真实项目采集/Key/模型/供应商/真实Docker/生产，历史6美元未结算非账单、不合并发布不变。
 
+### 5.61 固定分发材料与原生 SQLite 的 Docker bridge 诊断接线
+
+`evaluation-bridge-launcher.cjs` 为§5.60增加受信调用入口 `runBridgeDiagnostic(repoRoot, dependencyRoot, image)`，不接HTTP/管理/UI/SDK。两个源根必须显式提供绝对canonical普通目录，不发现或回退依赖位置；每个固定路径的父目录逐层lstat拒链接，叶普通文件同fd有界读取、前后身份/size/mtime/ctime核对，finally close。祖先/受信安装/同OS用户仍TCB，非原子快照或来源认证。跟踪的 `evaluation-bridge-files.json` 固定63个build文件、273个npm/native文件及17个包的name/version；开发期静态require闭包分析只用于生成清单，运行时不扫描树/解析源码/导入包，不执行安装脚本、不npm install/编译。该清单覆盖固定诊断实际用到的分发材料，不承诺任意动态能力/SDK回放闭包完整；依赖变化须更新清单并审查。单文件8MiB、累计16MiB，超限在下一叶open前拒绝；不采集auth/session/真实项目或宿主全局模块。
+
+原生addon必须位于固定 `node_modules/better-sqlite3/build/Release/better_sqlite3.node`。宿主只验证ELF64/小端/ET_DYN及目标amd64或arm64机器号；这**不是**Node ABI、libc或加载成功证明。Docker入口先核验环境门、Node版本/架构、全量manifest的路径/type/size/hash，再真正加载固定better-sqlite3，打开独立内存数据库并查询SQLite版本，finally close；错误架构/缺失/坏addon不回退宿主或另一路绑定。然后运行§5.60双回调及5次CLI诊断。容器内加载成功才回 `nativeSqliteVerified=true`，附inputHash/dependencyHash；主机须逐字核验固定回执、完整manifest、无stderr、exit0、64hex容器ID及既有transport的已核验清理契约，不返回原始stdout/stderr。哈希仅为完整性，不证明第三方分发来源真实性。
+
+实测发现Docker tmpfs未显式exec时会阻止`.node`的可执行映射（`failed to map segment from shared object`）。不修改旧调用的WORK默认值；`runProbe`新增仅可信内部调用的布尔 `executableWork`，该诊断显式选择 `/work:rw,exec,nosuid,nodev,...`，并在create前/后及deadline停止前inspect逐项绑定同一选项。`/tmp`仍noexec，rootfs仍只读，network=none、uid65534、cap-drop ALL/no-new-privileges、512MiB/1CPU/64pids、无宿主挂载/socket/端口等原约束不变；无效选项在任何Docker调用前拒绝。exec只使隔离临时分发材料可加载，不扩大宿主访问或允许生产连接。沿用已审查runProbe的25秒观察期限、容器级kill和owner核验后移除；不将其称为绝对硬实时保证。默认daemon仍要求原RepoDigest校验，无自动专用daemon回退。
+
+作者实际Docker验证使用既有固定Node24.21.0/amd64镜像、Python3.11.2；为诊断临时在同一固定隔离镜像内由受信better-sqlite3源码离线编译测试addon（非MVP自动编译功能）。验证真实namespace内CLI→HTTP→双SQLite、跨身份401、关闭/重开、坏native加载拒绝及清理。准确命令、镜像ID/digest、字节数/容器ID与独立审查见Goal E122。早期缺hpp编译输入、停止后tmpfs无法docker-cp、默认tmpfs映射拒绝及Node22宿主不能加载Node24测试addon均不计通过。人工编译的Node24测试addon还观察到间歇 `RemoveEnvironmentCleanupHook`/`Statement::~Statement` native SIGABRT（exit134）；镜像头文件版本与Node24.21.0一致，根因未定，最后双副本成功不能证明稳定性，也未证明正式npm构建同样受影响。失败均无成功回执且容器清理，不为消除此现象降级Node/换镜像/放宽ABI或回退；可靠普通turn运行仍被该环境验证缺口阻断。E121两项P3补gate-clean ambient不继承及门拒绝时CAFF require计数0，独立审查前仍只为作者验证。
+
+**这是固定合成Docker诊断，不是普通turn或用户badcase回放完成。** 没有SDK/模型/付费调用、真实trace导入、完整配置技能/受控替换/附件或fresh/resume执行；所有执行评测资格仍false，Windows管理开启仍关，全部AC pending。容器使用内存新身份，供应商/生产凭据不入材料；生产采集/桥/store未改，历史6美元未结算非账单、E106归DeepSeek、用户最终接受且不合并发布均不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

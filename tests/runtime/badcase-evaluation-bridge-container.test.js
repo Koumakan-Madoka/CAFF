@@ -11,11 +11,12 @@ const callback = require('../../build/server/domain/runtime/badcase-capture/eval
 const store = require('../../build/lib/chat-app-store');
 function harness(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-container-bridge-test-'));
-  const services = [], calls = [];
+  const services = [], calls = [], imports = [];
   t.after(async () => { for (const s of services) await s.stop(); fs.rmSync(root, { recursive: true, force: true }); });
   const module = { exports: {} };
   let stopped = 0;
   const mockRequire = n => {
+    if (n.startsWith('/work/build/')) imports.push(n);
     if (n === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return {
       startEvaluationCallback: async input => {
         if (options.failSecondStart && services.length === 1) throw Error('private startup detail');
@@ -44,7 +45,7 @@ function harness(t, options = {}) {
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { require: mockRequire, module, process: proc,
     Buffer, URL, fetch: options.ambiguousClose ? (u, cfg) => new URL(u).pathname === '/' ? Promise.reject(Error('timeout')) : fetch(u, cfg) : fetch,
     AbortSignal, setTimeout, clearTimeout, console: { log: () => assert.fail('no raw output in imported entry') } }, { filename });
-  return { run: module.exports.runContainerBridgeDiagnostic, calls, services, root, stopped: () => stopped };
+  return { run: module.exports.runContainerBridgeDiagnostic, calls, services, imports, root, stopped: () => stopped };
 }
 test('entry exists and non-container execution fails before callback import or directory writes', () => {
   assert.equal(fs.existsSync(filename), true);
@@ -52,7 +53,7 @@ test('entry exists and non-container execution fails before callback import or d
   assert.equal(r.status, 1); assert.equal(r.stdout, ''); assert.equal(r.stderr, 'evaluation_bridge_diagnostic_failed\n');
 });
 test('emulated namespace uses existing CLI/HTTP/SQLite, fresh credentials, isolated DBs and always closes callbacks', async t => {
-  const h = harness(t), r = await h.run();
+  const h = harness(t, { process: { env: { HARMLESS_AMBIENT: 'must-not-inherit' } } }), r = await h.run();
   assert.deepEqual(JSON.parse(JSON.stringify(r)), { kind: 'container-evaluation-bridge-diagnostic-v1',
     instances: 2, cliCalls: 5, crossAuthDenied: true, contextVerified: true, participantsVerified: true,
     publicMessagePersisted: true, callbackClosed: true, modelCalls: 0, piExecuted: false, runnable: false,
@@ -62,6 +63,7 @@ test('emulated namespace uses existing CLI/HTTP/SQLite, fresh credentials, isola
     assert.equal(c.exe, process.execPath); assert.equal(c.args[0], '/work/build/lib/agent-chat-tools.js');
     assert.equal(c.cfg.shell, false); assert.equal(c.cfg.cwd, '/work');
     assert.deepEqual(Object.keys(c.cfg.env).sort(), ['CAFF_CHAT_API_URL', 'CAFF_CHAT_CALLBACK_TOKEN', 'CAFF_CHAT_INVOCATION_ID', 'HOME', 'PATH', 'TMPDIR']);
+    assert.equal(Object.hasOwn(c.cfg.env, 'HARMLESS_AMBIENT'), false);
     assert.equal(c.args.some(a => a.includes(h.services[0].credentials.callbackToken)), false);
   }
   assert.notEqual(h.services[0].databasePath, h.services[1].databasePath);
@@ -87,13 +89,13 @@ test('partial startup, malformed/oversized output, child timeout, ambiguous clos
 test('missing container marker refuses before callback/child even with matching uid/cwd', async t => {
   const h = harness(t, { containerMarker: false });
   await assert.rejects(h.run(), /evaluation_bridge_diagnostic_failed/);
-  assert.equal(h.calls.length, 0); assert.equal(h.services.length, 0);
+  assert.equal(h.calls.length, 0); assert.equal(h.services.length, 0); assert.equal(h.imports.length, 0);
 });
 test('container gate refuses unsupported platform, uid, cwd and ambient auth/hooks before any callback or child', async t => {
   for (const change of [{ platform: 'win32' }, { getuid: () => 0 }, { cwd: () => '/elsewhere' },
     { env: { CAFF_CHAT_API_URL: 'http://production.invalid' } }, { env: { NODE_OPTIONS: '--inspect' } }]) {
     const h = harness(t, { process: change });
     await assert.rejects(h.run(), /evaluation_bridge_diagnostic_failed/);
-    assert.equal(h.calls.length, 0); assert.equal(h.services.length, 0);
+    assert.equal(h.calls.length, 0); assert.equal(h.services.length, 0); assert.equal(h.imports.length, 0);
   }
 });

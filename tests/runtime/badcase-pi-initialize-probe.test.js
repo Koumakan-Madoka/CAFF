@@ -82,6 +82,27 @@ test('inspect guard rejects unsafe container configuration and command substitut
     c => { c.HostConfig.Tmpfs['/tmp'] = 'rw'; },
   ]) { const c = structuredClone(base); change(c); assert.throws(() => isolated(c, image, owner)); }
 });
+test('native diagnostic work-exec is explicit, inspect-bound, and never changes default or tmp noexec', async () => {
+  const { isolated, runProbe } = require('../../scripts/badcase-capture/verify-pi-initialization.cjs');
+  const image = { imageId: 'sha256:' + 'a'.repeat(64) }, owner = 'synthetic-owner';
+  const fake = require('../helpers/badcase-fake-docker.cjs')(image);
+  await fake.run(['create', '--name', 'synthetic', '--label', 'caff.badcase.pi-initialization=' + owner, image.imageId]);
+  const base = JSON.parse((await fake.run(['inspect', 'b'.repeat(64)])).stdout)[0];
+  base.Config.Labels = { 'caff.badcase.pi-initialization': owner };
+  base.Config.Cmd = ['-i', 'PATH=/usr/local/bin:/usr/bin:/bin', 'HOME=/work', 'TMPDIR=/tmp', '/bin/sh', '-c', 'tar --no-same-owner -xf - && timeout -k 2 25 node probe.cjs'];
+  assert.doesNotThrow(() => isolated(base, image, owner));
+  assert.throws(() => isolated(base, image, owner, true));
+  const exec = structuredClone(base); exec.HostConfig.Tmpfs['/work'] = 'rw,exec,nosuid,nodev,size=64m,uid=65534,gid=65534,mode=0700';
+  assert.doesNotThrow(() => isolated(exec, image, owner, true));
+  assert.throws(() => isolated(exec, image, owner));
+  exec.HostConfig.Tmpfs['/tmp'] = 'rw,exec,size=16m';
+  assert.throws(() => isolated(exec, image, owner, true));
+  let calls = 0;
+  await assert.rejects(runProbe(image, [{ path: 'probe.cjs', bytes: Buffer.from('// inert') }], {
+    executableWork: 'true', runDocker: async () => { calls++; },
+  }), /probe_work_mode_invalid/);
+  assert.equal(calls, 0);
+});
 test('real probe orchestrator uses injected transport and observes before start; observer failure cleans without starting', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-intent-wire-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

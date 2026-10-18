@@ -13,11 +13,14 @@ const { verifiedCleanupId } = require('./pi-probe-guards.cjs');
 const LABEL = 'caff.badcase.pi-initialization';
 const WORK = 'rw,nosuid,nodev,size=64m,uid=65534,gid=65534,mode=0700';
 const TMP = 'rw,nosuid,nodev,noexec,size=16m,uid=65534,gid=65534,mode=0700';
+// Explicit trusted-native diagnostic opt-in. Default/legacy tasks retain WORK.
+// Docker otherwise supplies noexec for tmpfs, preventing dlopen of staged .node.
+const EXEC_WORK = 'rw,exec,nosuid,nodev,size=64m,uid=65534,gid=65534,mode=0700';
 const CMD = ['-i', 'PATH=/usr/local/bin:/usr/bin:/bin', 'HOME=/work', 'TMPDIR=/tmp', '/bin/sh', '-c',
   'tar --no-same-owner -xf - && timeout -k 2 25 node probe.cjs'];
 const good = r => r && r.code === 0 && !r.failure;
 function one(r) { assert.ok(good(r), 'probe_docker_control_failed'); const a = JSON.parse(r.stdout); assert.equal(a.length, 1); return a[0]; }
-function isolated(c, image, owner) {
+function isolated(c, image, owner, executableWork = false) {
   const h = c.HostConfig;
   assert.match(c.Id, /^[a-f0-9]{64}$/); assert.equal(c.Image, image.imageId);
   assert.equal(c.Config.Labels?.[LABEL], owner); assert.equal(c.Config.User, '65534:65534');
@@ -30,7 +33,8 @@ function isolated(c, image, owner) {
   for (const k of ['Binds', 'Mounts', 'VolumesFrom', 'Devices', 'DeviceRequests']) assert.equal((h[k] || []).length, 0);
   assert.equal(Object.keys(h.PortBindings || {}).length, 0); assert.ok(!h.PidMode); assert.equal(h.IpcMode, 'private');
   assert.equal(h.LogConfig.Type, 'none'); assert.equal(h.AutoRemove, false); assert.ok(['no', ''].includes(h.RestartPolicy.Name));
-  assert.deepEqual(h.Tmpfs, { '/work': WORK, '/tmp': TMP });
+  assert.equal(typeof executableWork, 'boolean');
+  assert.deepEqual(h.Tmpfs, { '/work': executableWork ? EXEC_WORK : WORK, '/tmp': TMP });
 }
 async function runProbe(image, files, options = {}) {
   // Internal trusted transport injection routes the ENTIRE lifecycle, including cleanup.
@@ -38,6 +42,8 @@ async function runProbe(image, files, options = {}) {
   const runDocker = options.runDocker || runDockerCommand;
   const timeoutMs = Object.hasOwn(options, 'timeoutMs') ? options.timeoutMs : 25000;
   assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 25000, 'probe_timeout_invalid');
+  const executableWork = Object.hasOwn(options, 'executableWork') ? options.executableWork : false;
+  assert.equal(typeof executableWork, 'boolean', 'probe_work_mode_invalid');
   const manifest = manifestFor(files);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-pi-init-'));
   const owner = crypto.randomUUID(), name = 'caff-pi-init-' + owner;
@@ -57,9 +63,9 @@ async function runProbe(image, files, options = {}) {
     const created = await runDocker(['create', '--name', name, '--label', LABEL + '=' + owner, '--pull', 'never', '-i',
       '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '512m', '--memory-swap', '512m',
       '--cpus', '1', '--pids-limit', '64', '--user', '65534:65534', '--ipc', 'private', '--workdir', '/work', '--log-driver', 'none',
-      '--tmpfs', '/work:' + WORK, '--tmpfs', '/tmp:' + TMP, '--entrypoint', '/usr/bin/env', image.imageId, ...CMD]);
+      '--tmpfs', '/work:' + (executableWork ? EXEC_WORK : WORK), '--tmpfs', '/tmp:' + TMP, '--entrypoint', '/usr/bin/env', image.imageId, ...CMD]);
     assert.ok(good(created), 'probe_create_failed'); id = created.stdout.trim(); assert.match(id, /^[a-f0-9]{64}$/);
-    const pre = one(await runDocker(['inspect', id])); isolated(pre, image, owner); assert.equal(pre.State.Running, false);
+    const pre = one(await runDocker(['inspect', id])); isolated(pre, image, owner, executableWork); assert.equal(pre.State.Running, false);
     if (options.observeCreated) await options.observeCreated(id, owner);
     // Wall-clock deadline begins before attach (includes stdin extraction). Unlike
     // killing the attach CLI, Docker kill terminates the container process tree.
@@ -73,7 +79,7 @@ async function runProbe(image, files, options = {}) {
       deadlineExpired = true;
       stopping = (async () => {
         const c = one(await runDocker(['inspect', id]));
-        isolated(c, image, owner); verifiedCleanupId(c, owner, id);
+        isolated(c, image, owner, executableWork); verifiedCleanupId(c, owner, id);
         assert.equal(typeof c.State.Running, 'boolean');
         if (c.State.Running) assert.ok(good(await runDocker(['kill', id])), 'probe_stop_failed');
       })().catch(e => { stopError = e; });
@@ -89,7 +95,7 @@ async function runProbe(image, files, options = {}) {
       if (stopping) await stopping;
     }
     if (stopError) throw stopError;
-    const post = one(await runDocker(['inspect', id])); isolated(post, image, owner);
+    const post = one(await runDocker(['inspect', id])); isolated(post, image, owner, executableWork);
     assert.equal(post.State.Running, false); assert.equal(post.State.ExitCode, result.code); assert.equal(post.State.OOMKilled, false);
     if (options.observeCompleted) await options.observeCompleted(id, owner, result);
     // Deadline is sticky even if a late successful exit races the kill. Preserve
