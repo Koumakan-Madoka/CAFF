@@ -102,6 +102,27 @@ test('closed route/method/body/query/auth surface never reaches production, capa
   const context = await request(s, 'context'); assert.equal(context.body.publicMessages.length, 1); assert.equal(context.body.privateMessages.length, 0);
 });
 
+test('context public/private limits accept only canonical integers 1 through 24, never bridge fallback defaults', async t => {
+  const f = fixture(t), s = await start(t, f);
+  for (const name of ['publicLimit', 'privateLimit']) {
+    for (const value of ['1', '9', '10', '19', '20', '24', '25', '0', '-1', 'abc', '01', '1.0', '1e1', '', ' 1', '24\n']) {
+      const url = new URL(s.apiUrl + '/api/agent-tools/context');
+      for (const [k, v] of Object.entries(s.credentials)) url.searchParams.set(k, v);
+      url.searchParams.set(name, value);
+      const r = await fetch(url, { headers: { Connection: 'close' } });
+      assert.equal(r.status, ['1', '9', '10', '19', '20', '24'].includes(value) ? 200 : 400, name + '=' + JSON.stringify(value));
+      if (r.status !== 200) assert.deepEqual(await r.json(), { error: 'evaluation_callback_query_invalid' });
+    }
+  }
+});
+
+test('append replaces the streaming placeholder rather than consuming its output byte budget', async t => {
+  const f = fixture(t), s = await start(t, f);
+  const content = 'z'.repeat(32768);
+  assert.equal((await request(s, 'post-message', { visibility: 'public', content, mode: 'append', noFinalize: true })).status, 200);
+  assert.equal((await request(s, 'context')).body.publicMessages.find(m => m.id === f.seed.assistantMessageId).content, content);
+});
+
 test('runtime credentials and secret sentinels cannot be persisted directly or assembled through public append', async t => {
   const f = fixture(t), s = await start(t, f);
   for (const content of [s.credentials.callbackToken, s.credentials.invocationId, 'sk-' + 'x'.repeat(20)]) {

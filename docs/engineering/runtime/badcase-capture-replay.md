@@ -1188,6 +1188,16 @@ working-inputs 固定包含排序后的 `prompt.txt`、`run-config.json`、`harn
 
 本轮证据为自建种子：真实本地 HTTP + 现有 CLI读写、重开SQLite查询、双实例隔离、错误身份/路由/私信/超额/超时/半包stop及secret-split负例；不是捕获代码宿主回放、真实Docker/SDK/model执行或真实项目采集。§5.58 补 umask 0 下全部恢复目录0700断言，删除working mkdir及底层mkdir mode的独立变异须红，以闭环E119 P3。Windows管理门仍关闭，完整trace导入、Docker内服务接线、能力工具、普通fresh/resume执行、受控变量实际替换等未完成。准确命令、分套计数及固定SHA审查以Goal E120为准，全部AC pending；零真实采集/Key/模型/供应商/真实Docker/浏览器/生产，历史6美元未结算非账单、不合并发布不变。
 
+### 5.60 固定容器内 bridge 诊断入口与退出清理（尚未交付 Docker 闭环）
+
+`evaluation-bridge-container.cjs` 提供固定合成诊断入口：先要求 Linux、uid65534、cwd=/work、/.dockerenv 及无已知 CAFF/PI/provider/Node hook 环境项，再导入受信 `/work/build` 中的回调和 store；不执行 SDK、模型或捕获代码。该环境门不是防同 OS 用户伪造的沙箱；真正隔离仍必须来自既有固定镜像、network=none、无宿主可写挂载/socket、非 privileged 和资源/终止核验。**本提交没有自动打包所需 build/npm/native 闭包或接入 Docker launcher；仅把脚本放进镜像也不证明可运行。** 匹配 Linux/Node ABI 的 better-sqlite3、完整 bridge 依赖以及固定模板内路径仍须显式准备并核验；缺依赖失败，不 npm install、不接宿主 bridge、不回退宿主执行。
+
+入口在同一 namespace 内创建两套新回调/SQLite，使用固定种子与自定义回调身份，而非导入真实 trace。通过固定 `process.execPath + /work/build/lib/agent-chat-tools.js` 子进程执行5次现有 CLI：读context、列participants、noFinalize公开发送、再读本实例和另一实例。验证context/参与者ID、跨实例身份401、输出只在本实例出现；关闭回调后重开其新数据库核验持久结果，连接须明确 ECONNREFUSED 才标 callbackClosed，超时/abort等不算关闭证据。仅返回无身份/原始输出的固定诊断回执，piExecuted/runnable/reproduced/evaluable/strictEvalEligible仍false。
+
+子进程无 shell、stdin关闭、固定cwd，环境只含PATH/HOME/TMPDIR和该实例新生成的3个CAFF bridge变量；不继承宿主身份或模型凭据、不把身份放argv/文件/回执。stdout+stderr合计64KiB，3秒观察超时/超输出发送SIGKILL并等待close，非零退出、任何stderr、坏JSON或后置核验失败均固定失败；不重试。这里只管理固定CLI直接子进程，kill失败或OS不close会等待，不宣称硬3秒或任意进程树终止；真实容器supervisor仍须负责外层硬终止。回调寿命20秒，第二实例启动失败、子进程异常或成功路径均finally停止所有已拥有回调；cleanup失败不得返回成功回执，部分目录仍不自动删除或unpin。尚未把此生命周期绑定到SDK/普通turn launcher。
+
+自动测试为**宿主合成CLI/HTTP/SQLite，VM仅模拟容器门和固定路径**，不执行真实agent；脚本在真实宿主调用必须先失败。覆盖双实例持久化、非容器/环境门、部分启动、子进程错误/超输出/超时/坏JSON、含糊关闭及cleanup失败；不能将该测试写成真实容器namespace或Docker证据。§5.59另补 publicLimit/privateLimit 的1..24边界与越界负例（E120 P3），以及append替换Thinking...不吞累计输出预算的正例。生产kernel/bridge/store、采集/管理/UI/SDK均未改。准确分套计数、变异及新SHA独立审查以Goal E121为准；Windows门仍关、完整trace/配置/技能/受控替换与普通fresh/resume Docker回放仍未完成，全部AC pending，零真实项目采集/Key/模型/供应商/真实Docker/生产，历史6美元未结算非账单、不合并发布不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
