@@ -110,4 +110,6 @@ async function runBridgeDiagnostic(repoRoot, dependencyRoot, image, options = {}
     || JSON.stringify(r.manifest) !== JSON.stringify(m)) throw fail('evaluation_bridge_launch_failed');
   return { ...expected, containerId: r.containerId, cleaned: true };
 }
-module.exports = { prepareBridgeFiles, runBridgeDiagnostic, bridgeReceipt };
+// Internal trusted-distribution primitive reused by the runtime wiring stage.
+// Caller supplies only tracked literal names after prepareBridgeFiles validated roots.
+module.exports = { prepareBridgeFiles, runBridgeDiagnostic, bridgeReceipt, readTrustedDistributionFile: readFixed };

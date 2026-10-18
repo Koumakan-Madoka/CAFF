@@ -1220,6 +1220,20 @@ working-inputs 固定包含排序后的 `prompt.txt`、`run-config.json`、`harn
 
 该结果仅支持**上述固定官方预编译产物、平台与有限负载条件下**继续后续SDK接线；不能归因或修复旧人工 `-O0` 构建的间歇SIGABRT，不能证明无限稳定或其他ABI/架构/版本适用，失败仍须停止分析而非重试冲过。宿主Node22只运行纯launcher测试，不导入Node24 addon。真实trace、完整配置/技能、受控替换及fresh/resume/SDK实际回放仍未接通；所有执行评测资格false、Windows开启门关闭、全部AC pending，无模型/付费/真实采集/生产写入，不合并发布。
 
+### 5.63 生产 CAFF runtime 工厂、默认资源加载器与真实工具的容器接线
+
+新增受信诊断 `caff-runtime-wiring.cjs` / `caff-runtime-container.cjs`，固定新建合成项目，不接受捕获程序、任意配置或prompt评测输入。宿主只静态打包：复用§5.61显式双根/固定bridge分发及既有§4.4 runtime分发拷贝（安装/祖先仍TCB），另外用同fd受限reader拷贝未经改写的 `lib/pi-sdk-host.mjs`、`proxy-routing.mjs`、两项CAFF扩展至原有相对目录。旧bridge launcher仅导出该可信内部reader，不改变原entry/清单/生命周期。最终全manifest仍受4096文件/16MiB限制；不提高上限，不npm install、不在宿主导入SDK、addon或扩展。
+
+首次真实Docker fresh诊断失败并立即停止，resume未启动；之后两个独立单容器固定阶段探针将位置限定到extension registry（2项加载错误、0项已加载），没有打印原始错误或身份。源码确认发布SDK bundle在加载扩展时才懒调用 `require('jiti')`，旧runtime初始化材料缺该依赖，不能用禁用扩展绕过。补固定jiti 2.7.0的 `package.json`、`lib/jiti.cjs`、`dist/jiti.cjs`、`dist/babel.cjs`，在 `runtime/node_modules/jiti` 保持原目录关系并核验name/version；不改写扩展导入，也不另放不同版本root typebox（SDK bundle原virtual/alias机制提供同版本模块）。缺jiti的新增字节对照测试先红，补齐后再建立有界验证计划；失败现场与新计划证据分别保留在Goal，不把失败隐去或算作通过。此扩展接线材料不自动扩大旧runtimeArchive的闭集导入契约，任意捕获扩展/外部依赖归档仍未实现。
+
+容器入口先验证环境、全manifest路径/重复/type/size/hash/总量/runtimeHash、Node身份及显式fresh/resume值，之后才新建项目/agent目录、加载SQLite、SDK和生产host。固定fixture的settings明确授权该合成项目、关闭安装遥测；其余默认资源发现/compaction/retry配置保持，不用空ResourceLoader或诊断system prompt替代真实CAFF runtime。角色SYSTEM.md、项目AGENTS.md、项目skill、contract skill与retired user-scope skill均有不同哨兵，调用原 `normalizeStartCommand` / `createSdkRuntime`，绑定json扩展模式，核对实际模型对象、历史、两扩展注册、context与技能进入/排除及完整工具存在。这里使用openai/gpt-4o-mini仅作离线目录解析，不发请求、无该供应商凭据，不扩展付费模型授权。项目信任只限容器内固定合成目录，不改宿主trust/settings。
+
+fresh走原SessionManager.create；resume先保留独立原JSONL及working副本，再走原精确sessionPath分支，验证实际1条user历史与session ID、原归档字节不变。它只验证固定v3合成历史，不声称复杂历史/附件依赖或历史工作目录已经可重放。通过session实际注册的工具直接执行write/read/edit/read，核对落盘；bash实际检查uid65534与cwd，并用未改写CLI完成read-context→send-public→read-context的隔离HTTP/SQLite闭环。真实 `list_rooms` 扩展调用独立callback未支持的capability路由，须准确拒绝 `evaluation_callback_route_unavailable`，不将拒绝当成功能力、不静默删除工具或接生产路由。这些是驱动器直接调用工具，不是模型决定的tool loop。
+
+callback在容器内新建DB/随机端口/新内存身份，身份仅进入当前容器内进程/工具子进程env，不入Docker Config.Env/argv/分发包/日志/回执。父进程fetch只许该callback精确origin，其余计数并拒绝；SDK PI_OFFLINE，初始化后modelRuntime.streamSimple置拒绝哨兵，**从未提交session.prompt**。子进程的网络硬边界仍是Docker network=none，不把父fetch计数当全网络审计。finally等待runtime.dispose与callback.stop全部settle，任一失败不输出成功；外围仍由原runProbe核验owner/镜像/隔离/期限并移除容器，无宿主回退。测试用惰性VM importer只到SDK边界就拒绝，验证bootstrap门/完整性/清理；Docker默认始终使用真实import，不提供agent授权工具。
+
+本轮采用§5.62同一固定官方native与固定Node24.21.0/amd64镜像，真实fresh/resume已观察默认factory、资源/扩展、文件与shell工具及callback闭环；新SHA完整回归/负例和独立审查状态见Goal。它推进了生产运行时的容器接线，但仍是**零模型调用的固定合成wiring diagnostic**：未接用户选trace/封存capsule、完整捕获配置与外部技能/附件、受控路径/凭据替换、模型出口或prompt双variant执行。所有replay资格false，Windows开启门关闭，全部AC pending。正式native的有限压力成功不修复旧人工构建SIGABRT，不证明真实混合负载无限稳定；若重现仍停止分析，不以重试冲过。不改生产、不付费、不真实采集、不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
