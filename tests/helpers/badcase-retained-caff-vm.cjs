@@ -10,7 +10,8 @@ module.exports = function containerVm(value, image, options = {}) {
   const inputs = working.planWorktreeReplayMaterialization(value.capsule, value.expected, value.worktree);
   const bytes = new Map([['capsule.json', value.capsule], ['expected.json', JSON.stringify(value.expected)],
     ['worktree.json', JSON.stringify(value.worktree)], ['bindings.json', JSON.stringify(value.bindings)]].map(([p, b]) => ['/work/' + p, Buffer.from(b)]));
-  const events = [], loads = [], reads = []; let disposals = 0;
+  if (options.bridge) bytes.set('/work/bridge-association.json', Buffer.from(JSON.stringify(value.association)));
+  const events = [], loads = [], reads = []; let disposals = 0, callbackStops = 0;
   const messages = plan.sessionEntries.slice(1).flatMap(e => e.type === 'message' ? [e.message] : e.type === 'custom_message'
     ? [{ role: 'custom', customType: e.customType, content: e.content, display: e.display, timestamp: Date.parse(e.timestamp) }] : []);
   const fakeFs = { readFileSync: (p, encoding) => { reads.push(p); assert.ok(bytes.has(p), p); const b = bytes.get(p); return encoding ? b.toString(encoding) : b; }, existsSync: p => bytes.has(p),
@@ -36,7 +37,7 @@ module.exports = function containerVm(value, image, options = {}) {
     modelFallbackMessage: options.fallback ? 'fallback' : undefined,
     dispose: async () => { disposals++; events.push('dispose'); if (options.disposeFailure) throw Error('inert_dispose_failure'); } };
   const mod = { exports: {} }, originalFetch = async () => assert.fail('unexpected real fetch');
-  const context = { module: mod, process: { env: {} }, Buffer, console: { log: () => assert.fail('unexpected stdout') }, fetch: originalFetch,
+  const context = { module: mod, process: { env: {} }, Buffer, URL, console: { log: () => assert.fail('unexpected stdout') }, fetch: originalFetch,
     require: name => {
       if (name === 'node:fs') return fakeFs;
       if (name === 'node:crypto') return crypto;
@@ -46,6 +47,20 @@ module.exports = function containerVm(value, image, options = {}) {
         events.push('guard'); if (options.guardFailure) throw Error('inert_guard');
         return { manifest: { inputHash: 'a'.repeat(64), runtimeHash: 'b'.repeat(64), files: [] }, image, mode: options.wrongMode ? 'fresh' : plan.receipt.deliveryMode };
       } };
+      if (name === './retained-caff-callback.cjs') return {
+        bridgeReplacementsHash: 'c'.repeat(64),
+        startRetainedCaffCallback: async (capsule, expected, association, fetch) => {
+          events.push('callback-start'); assert.equal(fetch, originalFetch);
+          if (options.callbackStartFailure) throw Error('inert_callback_start');
+          const p = require(base + 'retained-callback-input').planRetainedEvaluationCallback(capsule, expected, association);
+          context.process.env.CAFF_CHAT_API_URL = 'http://127.0.0.1:12345';
+          return { apiUrl: context.process.env.CAFF_CHAT_API_URL, plan: p,
+            stop: async () => { events.push('callback-stop'); callbackStops++; delete context.process.env.CAFF_CHAT_API_URL;
+              if (options.callbackStopFailure) throw Error('inert_callback_stop'); } };
+        },
+        probeRetainedCaffTools: async (actualSession, config) => { events.push('tools-probe'); assert.equal(actualSession, session); assert.deepEqual(config, plan.config);
+          if (options.callbackProbeFailure) throw Error('inert_probe_failure'); },
+      };
       assert.ok(name.startsWith('/work/build/server/domain/runtime/badcase-capture/'));
       events.push('require:' + path.basename(name));
       if (name.endsWith('/caff-replay-start')) return start;
@@ -62,7 +77,7 @@ module.exports = function containerVm(value, image, options = {}) {
       assert.fail(name);
     } };
   vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, '../../scripts/badcase-capture/retained-caff-container.cjs'), 'utf8'), context, { timeout: 1000 });
-  return { events, loads, reads, bytes, context, originalFetch, disposals: () => disposals,
+  return { events, loads, reads, bytes, context, originalFetch, disposals: () => disposals, callbackStops: () => callbackStops,
     modelGuardRestored: () => modelMethods.every(name => ModelRuntime.prototype[name] === originalMethods.get(name)),
     run: () => mod.exports.runRetainedCaffContainer(async name => {
       loads.push(name); events.push('load:' + name);
@@ -80,5 +95,5 @@ module.exports = function containerVm(value, image, options = {}) {
         if (options.wrongModel) session.model.id = 'different';
         return { runtime };
       } };
-    }) };
+    }, options.bridge === true) };
 };

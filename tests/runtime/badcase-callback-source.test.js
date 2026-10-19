@@ -173,6 +173,7 @@ test('native host service authorized source → actual file collector → CAS �
   const noSourceCp = noSource.store.loadCheckpoint('p1', noSourceResult.checkpointId);
   assert.equal(noSourceCp.replayInput.callbackInput, undefined, 'service without a trusted source never accepts invocation packets');
   assert.ok(noSourceCp.replayInput.incompleteReasons.includes('callback_input_unavailable'));
+  assert.equal(noSourceCp.replayInput.complete, false);
   // Independent revocation persists disabled, and an enabled fixture without
   // consent still collects files but records a missing callback dimension.
   service.savePolicy('p1', service.loadPolicy('p1'), { authorizeCallbackInput: false });
@@ -181,6 +182,7 @@ test('native host service authorized source → actual file collector → CAS �
   const result = await service.captureTurnCheckpoint(value('fresh')); assert.equal(result.captured, true, result.reason);
   const cp = service.store.loadCheckpoint('p1', result.checkpointId); assert.equal(cp.replayInput.callbackInput, undefined);
   assert.ok(cp.replayInput.incompleteReasons.includes('callback_input_unavailable'));
+  assert.equal(cp.replayInput.complete, false);
   assert.equal(fs.existsSync(path.join(captureRoot, 'projects/p1/.writer-lock')), false);
 });
 

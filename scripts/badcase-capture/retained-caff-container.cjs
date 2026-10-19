@@ -1,8 +1,9 @@
 // CONTAINER ONLY. Consume actual capsule/config, never a synthetic replacement.
-// Initialization ONLY: no prompt, tools, callback context, credentials or model run.
+// Default: initialization only. The separate trusted bridge entry also probes
+// real tools/callback, still without a prompt/provider credential/model run.
 const fs = require('node:fs'), crypto = require('node:crypto'), assert = require('node:assert/strict');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
-async function runRetainedCaffContainer(loadModule = specifier => import(specifier)) {
+async function runRetainedCaffContainer(loadModule = specifier => import(specifier), bridgeProbe = false) {
   const { manifest, image, mode } = require('./caff-runtime-bootstrap.cjs').verifyCaffRuntimeStage();
   const base = '/work/build/server/domain/runtime/badcase-capture/';
   const { planRetainedCaffInitialization } = require(base + 'caff-replay-start');
@@ -15,10 +16,15 @@ async function runRetainedCaffContainer(loadModule = specifier => import(specifi
   assert.equal(plan.receipt.deliveryMode, mode);
   const material = planModePreservingReplayCapsule(capsule, expected);
   const working = planWorktreeReplayMaterialization(capsule, expected, worktree);
-  let runtime, modelCalls = 0, externalFetchCalls = 0;
+  assert.equal(typeof bridgeProbe, 'boolean');
+  let runtime, callback, callbackAdapter, modelCalls = 0, externalFetchCalls = 0;
   const modelGuards = [];
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => { externalFetchCalls++; throw Error('external_fetch_forbidden'); };
+  globalThis.fetch = async (input, options) => {
+    const u = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+    if (!callback || u.origin !== callback.apiUrl) { externalFetchCalls++; throw Error('external_fetch_forbidden'); }
+    return originalFetch(input, options);
+  };
   try {
     assert.deepEqual(materializeWorktreeReplayInputs(capsule, expected, worktree, '/work/restored'), working.expectedReceipt);
     assert.equal(read('restored/working-inputs/prompt.txt'), plan.invocation);
@@ -32,6 +38,11 @@ async function runRetainedCaffContainer(loadModule = specifier => import(specifi
         try { fs.lstatSync(plan.config.sessionPath); } catch (e) { if (e.code === 'ENOENT') absent = true; else throw e; }
         assert.equal(absent, true);
       }
+    }
+    if (bridgeProbe) {
+      assert.equal(plan.archivedHarness.toolBridgeEnabled, true);
+      callbackAdapter = require('./retained-caff-callback.cjs');
+      callback = await callbackAdapter.startRetainedCaffCallback(capsule, expected, JSON.parse(read('bridge-association.json')), originalFetch);
     }
     process.env.PI_OFFLINE = '1'; process.env.PI_CODING_AGENT_DIR = plan.config.agentDir; process.env.PI_TELEMETRY = '0';
     const sdk = await loadModule('/work/runtime/dist/bundle/index.js'); assert.equal(sdk.VERSION, '0.85.1');
@@ -81,6 +92,10 @@ async function runRetainedCaffContainer(loadModule = specifier => import(specifi
     // archived global keys must still be observed. This is not a claim about
     // every key's downstream effect or arbitrary settings migrations.
     contains(session.settingsManager.getGlobalSettings(), archivedSettings);
+    if (callback) {
+      await callbackAdapter.probeRetainedCaffTools(session, plan.config, callback);
+      assert.deepEqual(session.messages, history); // direct probe must not invent a model turn
+    }
     assert.deepEqual(errors, []); assert.equal(modelCalls, 0); assert.equal(externalFetchCalls, 0);
     // Only archive materials are immutable: SDK session/settings changes belong
     // to this variant's working copy. Never mutate or unpin the retained source.
@@ -96,14 +111,22 @@ async function runRetainedCaffContainer(loadModule = specifier => import(specifi
       callbackWired: false, controlledReplacementsApplied: false,
       invocationSubmitted: false, modelCalls, externalFetchCalls,
       nodeVersion: image.nodeVersion, architecture: image.architecture, inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash,
-      dependencyHash: hash(JSON.stringify(manifest.files.filter(f => f.path.startsWith('node_modules/')))), observation };
+      dependencyHash: hash(JSON.stringify(manifest.files.filter(f => f.path.startsWith('node_modules/')))),
+      ...(callback ? { kind: 'retained-caff-bridge-probe-v1', initializationOnly: false, bridgeProbeOnly: true,
+        callbackWired: true, callbackToolsVerified: true, callbackClosed: true, runtimeBridgeReplacementsApplied: true,
+        callbackInputHash: callback.plan.receipt.callbackInputHash,
+        callbackAssociationHash: hash(JSON.stringify(callback.plan.callbackInput.association)),
+        runtimeBridgeReplacementsHash: callbackAdapter.bridgeReplacementsHash } : {}), observation };
   } finally {
     try { await runtime?.dispose(); }
     finally {
-      for (const { prototype, name, descriptor } of modelGuards.reverse()) Object.defineProperty(prototype, name, descriptor);
-      globalThis.fetch = originalFetch;
-      for (const key of ['PI_OFFLINE', 'PI_CODING_AGENT_DIR', 'PI_TELEMETRY']) delete process.env[key];
-      assert.equal(modelCalls, 0); assert.equal(externalFetchCalls, 0);
+      try { await callback?.stop(); }
+      finally {
+        for (const { prototype, name, descriptor } of modelGuards.reverse()) Object.defineProperty(prototype, name, descriptor);
+        globalThis.fetch = originalFetch;
+        for (const key of ['PI_OFFLINE', 'PI_CODING_AGENT_DIR', 'PI_TELEMETRY']) delete process.env[key];
+        assert.equal(modelCalls, 0); assert.equal(externalFetchCalls, 0);
+      }
     }
   }
 }

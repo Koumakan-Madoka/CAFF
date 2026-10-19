@@ -4,7 +4,7 @@ const fixture = require('./badcase-initialization-fixture.cjs');
 const sdkConfig = require('./badcase-sdk-config.cjs');
 const { prepareRetainedInitializationCapsule } = require('../../build/server/domain/runtime/badcase-capture/retained-initialization');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
-module.exports = function retainedCaffFixture(t, mode = 'fresh', platform = 'linux') {
+module.exports = function retainedCaffFixture(t, mode = 'fresh', platform = 'linux', change = () => {}) {
   const root = platform === 'win32' ? 'C:\\source\\project' : '/source/project', sep = platform === 'win32' ? '\\' : '/';
   const ext = platform === 'win32' ? 'C:\\installed\\lib\\pi-extensions\\caff-capabilities.mjs' : '/installed/lib/pi-extensions/caff-capabilities.mjs';
   let sdk;
@@ -37,6 +37,8 @@ module.exports = function retainedCaffFixture(t, mode = 'fresh', platform = 'lin
         customType: 'retained-context', content: 'Retained context message.', display: false });
       r.sessionBlobHash = put(session.map(e => JSON.stringify(e)).join('\r\n') + '\r\n');
     }
+    change({ cp, r, config, session, put });
+    r.harness.configSnapshotHash = put(JSON.stringify(config));
   });
   const p = prepareRetainedInitializationCapsule(h.request);
   const worktree = { schemaVersion: 1, sourcePlatform: platform, sourceRoot: root, mappings: [
