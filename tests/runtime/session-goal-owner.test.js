@@ -103,7 +103,10 @@ test('session goal owner persists through normalization and renders in the goal 
 
   const prompt = formatSessionGoalForPrompt(conversation);
   assert.ok(prompt.includes('Owner: Bravo'), 'goal prompt should name the owner agent');
-  assert.ok(prompt.includes('Evidence is the current proof set, not a history log. Replace superseded entries, keep summaries concise, and keep criterion references valid.'));
+  assert.ok(prompt.includes('Call update-goal only when a work-item or criterion status changes, or when a milestone needs proof. Evidence is the proof behind criterion status: add or replace entries only then.'));
+  assert.ok(prompt.includes('Replace superseded entries instead of appending history.'));
+  assert.ok(prompt.includes('Do not record intermediate progress, test counts, or remaining-work lists in evidence; keep them in repository docs or your reply.'));
+  assert.ok(!prompt.includes('Evidence is the current proof set'), 'goal prompt must not ask agents to refresh evidence every turn');
 });
 
 test('a checklist update preserves the same Goal continuation epoch and advances its revision', () => {
