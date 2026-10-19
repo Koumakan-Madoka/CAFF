@@ -1276,6 +1276,15 @@ fixture改为执行生产编译resolver，跨平台测试仅替换显式path语�
 
 本轮真实Docker计划有界3容器：默认命名fresh、默认resume及故意在fresh目标预置文件的拒绝探针，失败即停、无模型请求。fresh验证原命名open分支目标及零历史；resume核对3条上下文；角色和global设置均经实际SDK观测；负例是显式改写诊断entry、重签manifest的测试，不是产品修改或历史badcase。全部容器清理；固定镜像/RepoDigest、架构/Node/native身份、资源/网络/挂载约束不变。仍是合成封存材料，不是实际NTFS授权采集或完整turn；普通trace callback、外置输入归档、凭据/模型出口和UI闭环仍缺，所有AC pending、Windows开启门关闭，历史6美元未结算非账单，不合并发布。新固定SHA与复审结论见Goal，不追认E124–E126为PASS。
 
+### 5.67 显式回调输入状态导入独立评测数据库（非完整 turn 接线）
+
+- 新增纯函数 `evaluation-trace.prepareEvaluationCallbackTrace` 与 `startEvaluationCallback` 的显式 trace 输入分支；旧 seed 分支保持兼容。trace 分支精确键为 `directory/trace/expectedTraceHash/association/lifetimeMs`，不得混用 seed、指定 DB 或在拒绝后降级。新输入是授权调用方提供的 **agent 回调初始状态**，不是 Inspector 投影或历史工具响应播放；此提交尚无生产读取器、执行前捕获/封存挂点或 capsule 关联，不能把合成状态称为已采集历史 trace。
+- 输入 `caff-evaluation-callback-input-v1` 固定包含版本、六项 association（project/conversation/turn/agent/userMessage/assistantMessage ID）、活动回复原 createdAt、conversation（title/type/metadata）、participants、publicMessages，以及必须为空的 privateMessages/pendingDelegations。原始 JSON 最多 4 MiB，32 参与者、2048 消息、32 层元数据；逐条文本最多 32 KiB。哈希与全部 association 在任何 mkdir/SQLite 前校验；哈希仅证明字节完整性，不证明来源或授权。
+- 首版仅标准 Room 公共文本状态；图片/额外消息字段、非终态历史、未知角色、缺触发 user、重复 ID、非法 ISO 时间、非 SQLite `created_at/id` 次序、不可保真的空白身份或非法 Unicode 均拒绝，不截断/重写。已知秘密哨兵、短凭据赋值、嵌套 JSON 凭据键及私有 metadata 标记整包拒绝；不是任意秘密/隐私的完备检测。独立输入授权、源状态真实性及附件/私有祖先完整性仍由后续采集负责。
+- 每次导入仍独占新目录、新 SQLite、随机 loopback 端口/内存凭据，事务导入原消息 ID、turn、role、agentId、sender、正文、时间及 public-post/mention 字段。原 title/metadata 在同一 **新 DB** 事务中以固定 SQL 恢复，避免普通消息 ingress 自动派生标题；不对真实 Room 改名。model-family 仅复用该新 DB 中同 ID/name/description 的固有身份，缺失或不匹配拒绝，绝不伪造为 custom。projectId 仅保留为关联证据，不建立真实项目/worktree/父子 Room、运行配置或外部系统绑定；conversation 的 created/updated/count 等摘要是隔离 DB 自身值，不声称整个原 Room 完整迁移。
+- 原生产 bridge 实际查询新数据库：默认最近 24 条及允许的 publicLimit、当前 user 选择、参与者及后续发送均走真实逻辑，不回放旧 read-context 工具输出。原回调寿命、请求/连接/正文限额、三路由闭集、禁止 handoff/私信/能力操作及 stop 清理保持；输出独立写入，原输入不变。traceReceipt 仅含 hash/关联/计数，`faithfulReplay/strictEvalEligible` 恒 false；运行身份不写入归档/数据库/回执。
+- 固定 Docker 分发增加 `evaluation-trace.js`，无依赖发现/安装/宿主 SDK 执行。专用合成自动测试可在原断网、只读、零挂载、固定镜像/官方 native 的容器中验证此入口；此证据仅是回调输入导入及真实 HTTP/CLI/SQLite，不是原 CAFF fresh/resume 的 callback 接线或模型 turn。生产开启门、真实采集授权、评分规则和所有 AC 不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

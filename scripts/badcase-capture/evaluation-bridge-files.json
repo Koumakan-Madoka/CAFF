@@ -34,6 +34,7 @@
     "build/server/domain/roles/system-role-catalog.js",
     "build/server/domain/runtime/agent-tool-bridge.js",
     "build/server/domain/runtime/badcase-capture/evaluation-callback.js",
+    "build/server/domain/runtime/badcase-capture/evaluation-trace.js",
     "build/server/domain/runtime/badcase-capture/secrets.js",
     "build/server/domain/runtime/message-tool-trace.js",
     "build/server/domain/runtime/pi-capability-bridge.js",

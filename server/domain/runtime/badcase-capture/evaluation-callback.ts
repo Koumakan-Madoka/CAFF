@@ -9,6 +9,7 @@ import { performance } from 'node:perf_hooks';
 import { createChatAppStore } from '../../../../lib/chat-app-store';
 import { createAgentToolBridge } from '../agent-tool-bridge';
 import { containsSecretSentinel } from './secrets';
+import { prepareEvaluationCallbackTrace } from './evaluation-trace';
 const object = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v: any, keys: string[]) => object(v) && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
 const id = (v: any) => typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(v);
@@ -18,8 +19,15 @@ const invalid = () => fail('evaluation_callback_invalid');
 const prefix = '/api/agent-tools/';
 const routes: Record<string, string> = { context: 'GET', participants: 'GET', 'post-message': 'POST' };
 function validate(input: any) {
-  if (!exact(input, ['directory', 'seed', 'lifetimeMs']) || typeof input.directory !== 'string' || !path.isAbsolute(input.directory)
+  const fromTrace = object(input) && Object.hasOwn(input, 'trace');
+  if (!exact(input, fromTrace ? ['directory', 'trace', 'expectedTraceHash', 'association', 'lifetimeMs'] : ['directory', 'seed', 'lifetimeMs'])
+    || typeof input.directory !== 'string' || !path.isAbsolute(input.directory)
     || !Number.isSafeInteger(input.lifetimeMs) || input.lifetimeMs < 1 || input.lifetimeMs > 300000) throw invalid();
+  if (fromTrace) {
+    const prepared = prepareEvaluationCallbackTrace(input.trace, input.expectedTraceHash, input.association);
+    return { directory: path.resolve(input.directory), seed: prepared.seed, trace: prepared.trace,
+      traceReceipt: prepared.receipt, lifetimeMs: input.lifetimeMs };
+  }
   const s = input.seed;
   if (!exact(s, ['conversationId', 'turnId', 'agent', 'userMessage', 'assistantMessageId'])
     || !exact(s.agent, ['id', 'name']) || !exact(s.userMessage, ['id', 'content'])
@@ -27,7 +35,8 @@ function validate(input: any) {
     || s.userMessage.id === s.assistantMessageId || s.agent.id.startsWith('role-family-')
     || !text(s.agent.name, 128) || !text(s.userMessage.content, 32768) || containsSecretSentinel(JSON.stringify(s))) throw invalid();
   // Copy BEFORE the first await; changes to caller input cannot alter a run.
-  return { directory: path.resolve(input.directory), seed: structuredClone(s), lifetimeMs: input.lifetimeMs };
+  return { directory: path.resolve(input.directory), seed: structuredClone(s), lifetimeMs: input.lifetimeMs,
+    trace: null, traceReceipt: null };
 }
 function reply(res: http.ServerResponse, status: number, value: any) {
   const body = JSON.stringify(value);
@@ -51,11 +60,14 @@ async function body(req: http.IncomingMessage) {
 /** Caller must own a dedicated parent directory. Each call owns one NEW child,
  * SQLite DB and loopback ephemeral listener; no reopen/recovery or ambient config.
  * This kernel intentionally supports only context/participants/PUBLIC post, and
- * a single text user seed. Full trace import/capabilities/Docker wiring remain
- * unsupported, NOT stripped or emulated. Do not use as faithful replay proof.
+ * either a legacy single text seed OR explicit versioned public-text input
+ * state. Trace mode never falls back to a seed on failure. Private/delegation/
+ * attachments/capabilities remain unsupported, NOT stripped or emulated.
+ * This is a real mutable isolated DB, not a recording of past tool outputs.
+ * Do not use as faithful replay proof; source capture/Docker wiring are separate.
  */
 export async function startEvaluationCallback(input: any) {
-  const { directory, seed, lifetimeMs } = validate(input);
+  const { directory, seed, lifetimeMs, trace, traceReceipt } = validate(input);
   try {
     const parent = path.dirname(directory), st = fs.lstatSync(parent);
     if (!st.isDirectory() || st.isSymbolicLink() || fs.realpathSync(parent) !== parent) throw Error();
@@ -67,12 +79,35 @@ export async function startEvaluationCallback(input: any) {
     store = createChatAppStore({ agentDir: directory, sqlitePath: databasePath });
     if (process.platform === 'linux') fs.chmodSync(databasePath, 0o600);
     store.db.transaction(() => {
-      const agent = store.saveCustomRoleConfig({ ...seed.agent, personaPrompt: 'Evaluation callback identity only; no agent is executed here.' });
-      store.createConversation({ id: seed.conversationId, title: 'Isolated evaluation', participants: [agent.id] });
-      store.createMessage({ id: seed.userMessage.id, conversationId: seed.conversationId, turnId: seed.turnId,
+      const agents = trace ? trace.participants : [{ ...seed.agent, description: '' }];
+      for (const a of agents) {
+        if (a.id.startsWith('role-family-')) {
+          // Preserve configured system identities, never overwrite/reclassify a
+          // built-in family as custom merely to make an archive import succeed.
+          const existing = store.getAgent(a.id);
+          if (!existing || existing.roleKind !== 'model_family' || existing.name !== a.name || existing.description !== a.description) {
+            throw fail('evaluation_callback_identity_mismatch');
+          }
+        } else store.saveCustomRoleConfig({ ...a, personaPrompt: 'Evaluation callback identity only; no agent is executed here.' });
+      }
+      store.createConversation({ id: seed.conversationId, title: trace ? trace.conversation.title : 'Isolated evaluation',
+        type: trace ? trace.conversation.type : 'standard', metadata: trace ? trace.conversation.metadata : {}, participants: agents.map((a: any) => a.id) });
+      if (trace) for (const m of trace.publicMessages) store.createMessage({
+        id: m.id, conversationId: seed.conversationId, turnId: m.turnId, role: m.role, agentId: m.agentId,
+        senderName: m.senderName, content: m.content, status: m.status, createdAt: m.createdAt,
+        metadata: { mentions: m.mentions, toolBridge: { lastPublicPostedAt: m.publicPostedAt,
+          publicPostCount: m.publicPostCount, lastPublicMode: m.publicPostMode } },
+      });
+      else store.createMessage({ id: seed.userMessage.id, conversationId: seed.conversationId, turnId: seed.turnId,
         role: 'user', senderName: 'Evaluation User', content: seed.userMessage.content, status: 'completed' });
       store.createMessage({ id: seed.assistantMessageId, conversationId: seed.conversationId, turnId: seed.turnId,
-        role: 'assistant', agentId: agent.id, senderName: agent.name, content: 'Thinking...', status: 'streaming' });
+        role: 'assistant', agentId: seed.agent.id, senderName: seed.agent.name, content: 'Thinking...', status: 'streaming',
+        ...(trace ? { createdAt: trace.assistantCreatedAt } : {}) });
+      // UI ingress may derive a title from the first imported user message. This
+      // is a NEW owned DB import, not a UI rename or live Room mutation. Restore
+      // the exact archived title/metadata after insertion, within this transaction.
+      if (trace) store.db.prepare('UPDATE chat_conversations SET title=?, metadata_json=? WHERE id=?')
+        .run(trace.conversation.title, JSON.stringify(trace.conversation.metadata), seed.conversationId);
     })();
   } catch { try { store!.close(); } catch {} throw fail('evaluation_callback_storage_failed', 500); }
   const stage = { status: 'running' };
@@ -156,6 +191,7 @@ export async function startEvaluationCallback(input: any) {
     const address = server.address(); if (!address || typeof address === 'string') throw Error();
     authority = '127.0.0.1:' + address.port;
     live(); timer = setTimeout(() => { void stop().catch(() => {}); }, Math.max(1, deadline - performance.now())); timer.unref();
-    return Object.freeze({ apiUrl: 'http://' + authority, databasePath, credentials, stop });
+    return Object.freeze({ apiUrl: 'http://' + authority, databasePath, credentials, stop,
+      ...(traceReceipt ? { traceReceipt: structuredClone(traceReceipt) } : {}) });
   } catch { await stop(); throw fail('evaluation_callback_start_failed', 500); }
 }
