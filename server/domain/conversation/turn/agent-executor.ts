@@ -2316,6 +2316,13 @@ export function createAgentExecutor(options: any = {}) {
           conversationId,
           turnId,
           agentId: agent.id,
+          userMessageId: promptUserMessage?.id || '',
+          assistantMessageId: assistantMessage.id,
+          // Match the actual prompt snapshot, never substitute a newer user
+          // message if the source changed while the turn was being prepared.
+          callbackUserMessage: promptUserMessage ? Object.fromEntries(
+            ['id', 'content', 'senderName', 'status', 'createdAt', 'turnId']
+              .filter(key => promptUserMessage[key] !== undefined).map(key => [key, promptUserMessage[key]])) : null,
           deliveryMode: resumeSession ? 'resume' : 'fresh',
           prompt,
           // Use the actual invocation projection, not history attachment markers:

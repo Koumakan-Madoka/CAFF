@@ -159,6 +159,7 @@ export function defaultCapturePolicy(projectId: any) {
     // 输入才允许被读取归档；不因“属于回放材料”自动获授权（GPT 复审 #1 第六轮）。
     authorizedInputDirs: [] as string[],
     authorizedInputPins: {} as Record<string, string>,
+    callbackInputAuthorized: false, // independent public Room-state consent; never directory-derived
     windowsExternalGit: [] as any[], // explicit per-worktree selection; never a grant
     includedIgnoredPatterns: [] as string[],
     // 注意：本阶段不提供秘密豁免机制（secretAllowlistPatterns 已移除）。命中哨兵一律排除；
@@ -184,6 +185,7 @@ export function normalizeCapturePolicy(raw: any, projectId: any) {
     authorizedDirPins: normalizeDirPins(source.authorizedDirPins),
     authorizedInputDirs: normalizeDirList(source.authorizedInputDirs),
     authorizedInputPins: normalizeDirPins(source.authorizedInputPins),
+    callbackInputAuthorized: source.callbackInputAuthorized === true,
     windowsExternalGit: normalizeWindowsExternalGitSelection(source.windowsExternalGit, {
       authorizedDirs: normalizeDirList(source.authorizedDirs), authorizedInputDirs: normalizeDirList(source.authorizedInputDirs),
     }),

@@ -168,7 +168,7 @@ export function createServerApp(options: any = {}) {
 
   // Badcase 采集服务：默认落盘 <agentDir>/badcase-capture（运行时数据目录，
   // gitignore）。未显式开启 CapturePolicy 的项目不会进行任何扫描。
-  const badcaseCapture = options.badcaseCapture || createBadcaseCaptureService({ agentDir });
+  const badcaseCapture = options.badcaseCapture || createBadcaseCaptureService({ agentDir, chatStore: store });
   // Separate offline declarations: not capture quota, not paid launch permission.
   const badcaseEvaluations = createEvaluationAdminService({ root: path.join(agentDir, 'badcase-offline-evaluations') });
   const badcaseFlags = createBadcaseFlagService({ captureRoot: badcaseCapture.captureRoot, captureStore: badcaseCapture.store, chatStore: store });

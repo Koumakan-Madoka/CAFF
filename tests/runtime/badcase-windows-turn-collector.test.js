@@ -31,7 +31,7 @@ function setup(t, overrides = {}) {
       : require(require.resolve(id, { paths: [path.dirname(filename)] }))),
   }, { filename });
   assert.equal(typeof api.createWindowsTurnCollector, 'function');
-  const collector = api.createWindowsTurnCollector({ store, agentDir: 'C:/app', privateDirs: ['C:/private'] });
+  const collector = api.createWindowsTurnCollector({ store, agentDir: 'C:/app', privateDirs: ['C:/private'], ...overrides.options });
   const input = { projectId: 'p', conversationId: 'c', turnId: 't', agentId: 'a', targetDir: 'C:/worktree',
     deliveryMode: 'resume', prompt: 'question', sessionPath: 'C:/sessions/turn.jsonl', environment: { template: 'not-pinned' } };
   return { root, store, seen, input, collector };
@@ -308,4 +308,20 @@ test('native Windows files and independently authorized resume enter real publis
   assert.equal(changed.captured, true, changed.reason); assert.deepEqual(changed.checkpoint.deletions, ['preMissing', 'tracked']);
   assert.notEqual(changed.checkpoint.integrity.windowsObservationScopeHash, cp2.integrity.windowsObservationScopeHash);
   assert.equal(changed.checkpoint.integrity.deletionHistoryBaselineId, '');
+});
+
+test('trusted callback source runs under the lease only after native file validation; caller packets cannot override it', async t => {
+  let calls = 0, failFiles = true, h;
+  const sourcePacket = { trace: 'owned source bytes', expectedTraceHash: sha('owned source bytes') };
+  h = setup(t, { options: { readCallbackInput: (input, policy) => {
+    calls++; assert.equal(policy.status, 'enabled'); assert.equal(input.projectId, 'p');
+    assert.throws(() => withProjectWriteLock(h.root, 'p', () => {}), /capture_writer_busy/);
+    return sourcePacket;
+  } }, deps: { './windows-git-candidate': { readWindowsGitFileCandidateAsync: async () => failFiles ? { ok: false, reason: 'root_replaced' } : candidate() } } });
+  h.input.callbackInput = { trace: 'UNTRUSTED_INVOCATION_PACKET' };
+  assert.equal((await collect(h)).reason, 'root_replaced'); assert.equal(calls, 0);
+  failFiles = false; assert.equal((await collect(h)).captured, true); assert.equal(calls, 1);
+  assert.deepEqual(h.seen.find(x => x[0] === 'input')[1].input.callbackInput, sourcePacket);
+  h.store.savePolicy({ ...h.store.loadPolicy('p'), status: 'disabled' });
+  assert.equal((await collect(h)).reason, 'policy_not_enabled'); assert.equal(calls, 1);
 });

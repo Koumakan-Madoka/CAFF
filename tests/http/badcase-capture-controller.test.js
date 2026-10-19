@@ -483,3 +483,23 @@ test('stale, expired, restarted and failed estimates cannot enable; reasons rema
   h.service.estimateDirectoryAsync = () => ({ ok: true, complete: false, uncaptured: [{ reason: 'directory_unreadable' }] });
   assert.equal((await invoke(h.controller, 'estimate', {})).body.estimateId, null);
 });
+
+test('public callback source consent is authorization-only, explicit boolean, persistent, default-off and always disables first', async t => {
+  const h = setup(t); h.service.authorizeProject = () => h.service.loadPolicy('project-test');
+  assert.equal((await invoke(h.controller)).body.policy.callbackInputAuthorized, false);
+  for (const value of [null, 'true', 1, {}, []]) {
+    await rejects(() => invoke(h.controller, 'authorize', { ...authorization(h.target), callbackInputAuthorized: value }), 'badcase_capture_invalid_context_consent');
+    assert.equal(h.service.loadPolicy('project-test').callbackInputAuthorized, false);
+  }
+  await rejects(() => invoke(h.controller, 'settings', { callbackInputAuthorized: true }), 'badcase_capture_unknown_field');
+  const result = await invoke(h.controller, 'authorize', { ...authorization(h.target), callbackInputAuthorized: true });
+  assert.equal(result.body.policy.callbackInputAuthorized, true); assert.equal(result.body.policy.status, 'disabled');
+  assert.equal(createBadcaseCaptureService({ captureRoot: h.captureRoot }).loadPolicy('project-test').callbackInputAuthorized, true);
+  await invoke(h.controller, 'settings', { stagingRetentionDays: 8 }); assert.equal(h.service.loadPolicy('project-test').callbackInputAuthorized, true);
+  await invoke(h.controller, 'authorize', authorization(h.target));
+  assert.equal(h.service.loadPolicy('project-test').callbackInputAuthorized, false, 'old clients do not preserve a hidden grant');
+  h.service.authorizeProject = () => { throw Error('fixture pin failure'); };
+  await assert.rejects(() => invoke(h.controller, 'authorize', { ...authorization(h.target), callbackInputAuthorized: true }), /fixture pin failure/);
+  assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
+  assert.equal(h.service.store.listCheckpoints('project-test').length, 0);
+});

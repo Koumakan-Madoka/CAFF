@@ -1294,6 +1294,17 @@ fixture改为执行生产编译resolver，跨平台测试仅替换显式path语�
 - 自动测试覆盖实际publisher暂存／去重／用量／重开→封存→capsule、删除live manifest后仍读取保留源、fresh／resume不变、原始材料独立不变及两个真实HTTP／SQLite callback副本。相同suite在固定镜像／官方native／断网／零挂载的真实Docker执行，另做缺共享reader负例；这不是SDK回调接线、prompt执行或真实badcase证据。初次将capsule模块重复加入base分发导致旧retained launcher拒绝重复path，已移除不属于base bridge的重复项；只把共享callback validator加入原固定分发，恢复模块仍由原显式清单供应，不通过跳过manifest校验修复。
 - **本段仍未新增生产Room读取器、执行前hook、UI公共上下文授权或开启任何采集**；上游输入由受信调用方显式提供，hash不能证明其来自执行前。普通turn尚缺独立同意后的源状态采集及原SDK callback／受控环境替换接线；旧诊断的complete不升级为整个回放完整性。Windows门仍关闭，所有AC pending、历史6美元未结算非账单，不合并发布。后续真实采集须在先授权／预估／独立开启下进行，不得把事后现场伪装成执行前。
 
+### 5.69 独立公共上下文授权与真实执行前源读取（Windows 开启仍关闭）
+
+- `CapturePolicy.callbackInputAuthorized` 默认且旧策略均为 `false`，只有严格布尔 `true` 生效。这是本项目各 Room 的**公共文本输入**独立授权，不由文件目录、输入目录、hash 或 agent 请求推导。local-admin `authorize` 在原 bootstrap CSRF/本地 guard/显式确认后替换它，并先保持 disabled；旧客户端省略该字段视为撤销。普通 `settings` 不接收该字段，普通 service `savePolicy` 忽略该字段的 grant/revoke，只有受信 authorize 调用的独立第三参数可替换；改变授权会关闭采集。pin 失败仍保持 disabled，不自动恢复旧范围。方案1的同 OS 用户信任边界不变，不宣称防御宿主 shell 模拟管理请求。
+- UI 默认不勾选，并展示标题、公共元数据、参与者及完整公共文本历史范围、私有/附件/委托不支持、容量预估不含上下文成本。勾选变化使旧 estimate 失效；取消确认零写入；普通保存不提交 checkbox 草稿。此变更不启用任何现有项目，不打开 Windows `captureAvailable=false`/无 estimate 回执/enable 409 的门。
+- app-server 仅把已存在的受信 ChatAppStore **对象**交给采集服务，不发现或接受调用方的 DB 路径。executor 在原执行前挂点提供真实 user/assistant ID 和当次 prompt 的用户快照字段。Linux 在既有项目锁、文件根授权/pin/fd 身份复验之后读取源；Windows 在单租约内原生文件候选完整复验成功后读取源。disabled/无授权不会访问源 DB；失败的文件根不会调用源 reader。有受信源时忽略 invocation 自带 callback packet，不能由 agent 指定来源或伪造关联。
+- `callback-source.ts` 在读取 DB 属性前验证 enabled、独立同 project 授权、六关联 ID 及用户快照 id/content；再开启**同步只读 SQLite transaction**，拒绝借用任何外层 transaction，无 await。先只查询当前 Room 的 project/type/长度，再用数值/存在性检查拒绝任何该 Room 私有信箱、涉及该 Room 的 pending 委托、privateOnly/visibility、图片/附件、委托或跨 Room delivery 元数据；不把它们的正文返回采集进程。此 v1 比实际 agent 可见私有范围更保守：其他参与者私有信箱也会阻断，不作空状态替代。
+- SQL 在选择公共正文前限制最多 2049 行（2048 公共 + 当次 queued placeholder）、原正文+metadata 合计 2 MiB、Room metadata 64 KiB、title 1024 B、参与者最多32/聚合 32×(128+4096) B；最终仍受 §5.67 的逐字段及 4 MiB JSON 限制。不截断历史、不输出被拒输入的 hash/正文/任意异常。SQL length/count 自身不是硬时间、物理 I/O 或 SQLite 内存上限。
+- 源采用明确列投影，保留 callback v1 支持的原始身份、title/type/公共 metadata、按原存储顺序排列的公共文本与 public-post/mentions 字段；不复制角色配置、auth、源 DB 或 Inspector。当前 assistant 必须是本关联的 queued `Thinking...` 且未公开发言，只取其真实 createdAt；其余记录原样通过 validator，非终态或晚于 placeholder 的并发消息会整包拒绝，不能删去它们冒充原状态。选中 user 必须与 invocation 的用户快照相符，不取最新消息替代。SQLite transaction 保证其查询的同一源视图，但不与 worktree/session 构成原子现场，检查点记 `callback_sqlite_snapshot_not_atomic_with_files`；不授予 faithful/strict/可评测资格。
+- 输出只有有效的不可变字符串 packet 或 null。null 通过既有共享准备步骤成为 `callback_input_unavailable`/complete=false，文件检查点仍可保存；不得因此回读生产数据、换 seed 或伪造完整。有效 packet 沿 §5.68 的 CAS、引用闭包、配额、封存及 capsule 通道，无新旁路存储。
+- 验证仅使用自建临时 SQLite/NTFS Git fixture：默认/持久化/普通保存边界、API/DOM 显式确认、WAL 第二连接变化下的一致读事务、缺授权/错 project 零源读取、私有/委托无正文选择、预算前置、源快照漂移、真实 Windows service fresh/resume → 原生 collector → CAS → 重启精确读回，以及撤销后的明确输入缺失。fixture 的 raw writer enabled 不是管理开启或真实项目 turn 证据。Docker 只运行源/归档测试，不提交 SDK prompt 或模型请求。尚未把 capsule callback 接入原 CAFF runtime；外置 agentDir/附件及 UI选 trace→普通 turn 对照仍未完成，全部 AC pending。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

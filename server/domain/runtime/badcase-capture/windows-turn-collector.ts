@@ -15,6 +15,7 @@ import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
 
 export function createWindowsTurnCollector(options: any = {}): any {
   const store = options.store;
+  const readCallbackInput = options.readCallbackInput;
   // Static trusted host configuration, not invocation-controlled exclusions.
   const agentDir = options.agentDir, privateDirs = structuredClone(options.privateDirs === undefined ? [] : options.privateDirs);
   return { async captureTurnCheckpoint(value: any = {}): Promise<any> {
@@ -40,6 +41,9 @@ export function createWindowsTurnCollector(options: any = {}): any {
           agentDir, privateDirs, deadline, externalGit: selectWindowsExternalGit(policy, targetDir) });
         if (performance.now() >= deadline) return failed('windows_capture_timeout');
         if (!files.ok) return failed(files.reason);
+        // Native file-root/pin/whole-tree checks succeeded under this lease.
+        // Never trust a caller-supplied callback packet when a source is wired.
+        if (typeof readCallbackInput === 'function') input.callbackInput = readCallbackInput(input, policy);
         const prepared = await prepareWindowsReplayInput({ input, policy, authorizedRoot: targetDir,
           captureRoot: store.captureRoot, privateDirs, deadline });
         if (performance.now() >= deadline) return failed('windows_capture_timeout');
@@ -98,7 +102,8 @@ export function createWindowsTurnCollector(options: any = {}): any {
           integrity: { algorithm: 'sha256', manifestHash, helperSha256: WINDOWS_HELPER_SOURCE_SHA256, platform: 'win32',
             windowsObservationScopeHash: scopeHash, deletionHistoryBaselineId: comparable ? previous.checkpointId : '',
             indexedDeletionEvidence: indexedVerified ? 'verified_index_visible_ascii_v1' : '',
-            knownLimitations: [...new Set([...limitations, 'windows_management_enable_not_connected'])] },
+            knownLimitations: [...new Set([...limitations, 'windows_management_enable_not_connected',
+              ...(typeof readCallbackInput === 'function' ? ['callback_sqlite_snapshot_not_atomic_with_files'] : [])])] },
           consistency: { evidence: 'content-verified', atomicityGuaranteed: false, secondScanMode: 'full-hash', retries: 0, differingPaths: [] },
           replayInput, environment: input.environment || {}, strictEvalEligible: false,
           strictEvalBlockedReason: 'no_independent_consistency_evidence',

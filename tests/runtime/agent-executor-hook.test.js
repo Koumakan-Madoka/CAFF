@@ -1930,6 +1930,9 @@ test('agent executor passes projected images to startRun and pre-turn capture fo
   assert.equal(checkpointInput.conversationId, conversation.id);
   assert.equal(checkpointInput.turnId, turnState.turnId);
   assert.equal(checkpointInput.agentId, agent.id);
+  assert.equal(checkpointInput.userMessageId, 'user-message-with-image');
+  assert.equal(store.getMessage(checkpointInput.assistantMessageId).role, 'assistant');
+  assert.deepEqual(checkpointInput.callbackUserMessage, { id: 'user-message-with-image', content: 'what is this image' });
   const started = store.messageWrites.updates.find(({ patch }) => patch.metadata?.badcaseCheckpointId);
   assert.ok(started, 'checkpoint reference must reach the reply message');
   assert.equal(started.patch.metadata.badcaseCheckpointId, 'checkpoint-image-pass');

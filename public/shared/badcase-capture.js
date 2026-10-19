@@ -19,7 +19,7 @@
     let adminEnabled = false;
     let savedDraft = '';
     let expiryTimer = null;
-    const scopeNames = ['authorizedDirs', 'authorizedInputDirs', 'includedIgnoredPatterns', 'excludedPatterns', 'windowsExternalGit'];
+    const scopeNames = ['authorizedDirs', 'authorizedInputDirs', 'includedIgnoredPatterns', 'excludedPatterns', 'windowsExternalGit', 'callbackInputAuthorized'];
     const limitNames = ['stagingRetentionDays', 'stagingQuotaBytes'];
     root.innerHTML = `
       <h3>问题现场采集（预览）</h3>
@@ -33,7 +33,9 @@
         <p class="muted">每个 worktree 单独选择两个外置 Git 根；文件根须列在上方文件授权中，两个元数据根须分别列在输入授权中。指针不授予权限，不自动发现根；修改选择将关闭采集。此选择尚不开放 Windows 开启或 Docker 回放。</p>
         <label>明确纳入的 ignored 模式（每行一个，可空）<textarea name="includedIgnoredPatterns" rows="2" spellcheck="false"></textarea></label>
         <label>排除模式（每行一个）<textarea name="excludedPatterns" rows="2" spellcheck="false"></textarea></label>
-        <div class="button-row"><button type="button" data-capture-action="authorize">1. 确认授权目录（不启用）</button></div>
+        <label><input name="callbackInputAuthorized" type="checkbox" /> 独立授权采集本项目各 Room 的执行前公共文本上下文（默认不授权）</label>
+        <p class="muted">包括标题、公共元数据、参与者和完整公共文本历史，不含私有信箱、附件或委托；存在这些不支持状态或秘密时整份回调输入缺失，不截断为完整材料。只在已开启、实际 worktree 文件根校验成功后读取。此授权不开放 Windows 开启门，也不授权付费回放。</p>
+        <div class="button-row"><button type="button" data-capture-action="authorize">1. 确认授权范围（不启用）</button></div>
         <label>未标记暂存期限（天）<input name="stagingRetentionDays" type="number" min="1" step="1" /></label>
         <label>暂存配额（字节）<input name="stagingQuotaBytes" type="number" min="1" step="1" /></label>
         <div class="button-row"><button type="button" data-capture-action="settings">仅保存期限/配额</button></div>
@@ -56,7 +58,7 @@
     const field = name => element(`[name="${name}"]`);
     const button = action => element(`[data-capture-action="${action}"]`);
     const notice = text => { element('[data-capture-notice]').textContent = text; };
-    const draft = () => JSON.stringify([...scopeNames, ...limitNames].map(name => field(name).value));
+    const draft = () => JSON.stringify([...scopeNames, ...limitNames].map(name => name === 'callbackInputAuthorized' ? field(name).checked : field(name).value));
     const lines = name => field(name).value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     const dirty = () => savedDraft !== draft();
     function clearReceipt() {
@@ -80,8 +82,11 @@
       if (!result?.policy || (!result?.usage && !usageUnavailable)) throw new Error('badcase_capture_state_invalid');
       current = result;
       const policy = result.policy;
-      for (const name of scopeNames) field(name).value = name === 'windowsExternalGit'
-        ? JSON.stringify(policy[name] || [], null, 2) : (policy[name] || []).join('\n');
+      for (const name of scopeNames) {
+        if (name === 'callbackInputAuthorized') field(name).checked = policy[name] === true;
+        else field(name).value = name === 'windowsExternalGit'
+          ? JSON.stringify(policy[name] || [], null, 2) : (policy[name] || []).join('\n');
+      }
       for (const name of limitNames) field(name).value = String(policy[name]);
       savedDraft = draft();
       const status = { disabled: '已关闭', enabled: '已开启', suspended: '已暂停' }[policy.status] || String(policy.status);
@@ -111,7 +116,10 @@
       project = selected;
       current = null; csrf = ''; adminEnabled = false; pending = selected ? 'load' : '';
       clearReceipt();
-      for (const name of [...scopeNames, ...limitNames]) field(name).value = '';
+      for (const name of [...scopeNames, ...limitNames]) {
+        if (name === 'callbackInputAuthorized') field(name).checked = false;
+        else field(name).value = '';
+      }
       savedDraft = draft();
       element('[data-capture-status]').textContent = selected ? '读取项目采集状态…' : '未选择项目';
       element('[data-capture-usage]').textContent = '';
@@ -144,21 +152,23 @@
       /** @type {Record<string, any>} */
       let body = {};
       if (action === 'authorize') {
-        body = Object.fromEntries(scopeNames.filter(name => name !== 'windowsExternalGit').map(name => [name, lines(name)]));
+        body = Object.fromEntries(scopeNames.filter(name => name !== 'windowsExternalGit').map(name => [name,
+          name === 'callbackInputAuthorized' ? field(name).checked : lines(name)]));
         try {
           body.windowsExternalGit = JSON.parse(field('windowsExternalGit').value.trim() || '[]');
           if (!Array.isArray(body.windowsExternalGit)) throw new Error('invalid');
         } catch { notice('外置 Git 选择必须为 JSON 数组；未发送授权请求。'); return; }
         if (!body.authorizedDirs.length) { notice('请显式填写至少一个文件采集绝对路径。'); return; }
-        const description = scopeNames.map(name => `${name}:\n${name === 'windowsExternalGit'
-          ? JSON.stringify(body[name], null, 2) : body[name].join('\n') || '（空）'}`).join('\n\n');
+        const description = scopeNames.map(name => `${name}:\n${name === 'callbackInputAuthorized'
+          ? body[name] ? '授权本项目各 Room 公共文本上下文（不含私有/附件/委托）' : '不授权公共文本上下文'
+          : name === 'windowsExternalGit' ? JSON.stringify(body[name], null, 2) : body[name].join('\n') || '（空）'}`).join('\n\n');
         if (!confirm(`授权项目 ${project.name || id} 的以下范围？\n${description}\n\n将先关闭采集并替换原授权；失败也不自动恢复旧范围。本步骤不启用采集。请勿纳入凭据或未获准的私有目录。`)) return;
         body.confirmed = true;
       } else if (action === 'enable') {
         if (!receipt || receipt.expiresAt <= now()) {
           clearReceipt(); notice('预估回执已过期，请重新预估。'); updateControls(); return;
         }
-        if (!confirm(`开启项目 ${project.name || id} 的执行前采集？\n${current.policy.authorizedDirs.join('\n')}\n文件预估：${receipt.totalBytes} B（不含 session/图片/镜像/清单；非空间保证）。\n将于每次 agent turn 开始前采集；不代表完整回放或严格评测可用。`)) return;
+        if (!confirm(`开启项目 ${project.name || id} 的执行前采集？\n${current.policy.authorizedDirs.join('\n')}\n公共文本上下文：${current.policy.callbackInputAuthorized === true ? '已独立授权' : '未授权，将标记回调输入缺失'}\n文件预估：${receipt.totalBytes} B（不含上下文/session/图片/镜像/清单；非空间保证）。\n将于每次 agent turn 开始前采集；不代表完整回放或严格评测可用。`)) return;
         body = { confirmed: true, estimateId: receipt.estimateId };
       } else if (action === 'settings') {
         body = Object.fromEntries(limitNames.map(name => [name, Number(field(name).value)]));

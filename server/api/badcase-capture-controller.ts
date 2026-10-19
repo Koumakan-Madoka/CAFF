@@ -110,8 +110,11 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
     const body = await readRequestJson(req);
     const policy = service.loadPolicy(projectId);
     if (action === 'authorize') {
-      fields(body, ['confirmed', 'authorizedDirs', 'authorizedInputDirs', 'includedIgnoredPatterns', 'excludedPatterns', 'windowsExternalGit']);
+      fields(body, ['confirmed', 'authorizedDirs', 'authorizedInputDirs', 'includedIgnoredPatterns', 'excludedPatterns', 'windowsExternalGit', 'callbackInputAuthorized']);
       confirmed(body);
+      if (body.callbackInputAuthorized !== undefined && typeof body.callbackInputAuthorized !== 'boolean') {
+        throw issue('badcase_capture_invalid_context_consent');
+      }
       const next = { ...policy,
         authorizedDirs: directories(body.authorizedDirs, true),
         authorizedInputDirs: directories(body.authorizedInputDirs, false),
@@ -124,7 +127,7 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
       invalidate(projectId);
       // Disable first. Any failure while pinning leaves capture disabled, not
       // enabled with a partly changed authorization scope.
-      service.savePolicy(projectId, next);
+      service.savePolicy(projectId, next, { authorizeCallbackInput: body.callbackInputAuthorized === true });
       service.authorizeProject(projectId);
     } else if (action === 'settings') {
       fields(body, ['stagingRetentionDays', 'stagingQuotaBytes']);

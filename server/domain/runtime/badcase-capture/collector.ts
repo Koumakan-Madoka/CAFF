@@ -802,7 +802,9 @@ export function createCollector(options: any = {}) {
 
       const previous = store.loadLatestCheckpoint(projectId, targetDir);
       const previousFiles = previous && previous.files ? previous.files : null;
-      const { replayInput, plans } = prepareReplayInput(input, deliveryMode, pinnedRoot,
+      const preparedInput = typeof options.readCallbackInput === 'function'
+        ? { ...input, callbackInput: options.readCallbackInput(input, policy) } : input;
+      const { replayInput, plans } = prepareReplayInput(preparedInput, deliveryMode, pinnedRoot,
         inputPath => readAuthorizedReplayInput({ capability, policy }, inputPath));
 
       let consistency: any = null;
@@ -1094,7 +1096,8 @@ export function createCollector(options: any = {}) {
         integrity: {
           algorithm: 'sha256',
           manifestHash: integrityManifestHash,
-          knownLimitations: KNOWN_LIMITATIONS.slice(),
+          knownLimitations: [...KNOWN_LIMITATIONS, ...(typeof options.readCallbackInput === 'function'
+            ? ['callback_sqlite_snapshot_not_atomic_with_files'] : [])],
           helperSha256: capability.helperSha256 || '',
           platform: capability.platform,
         },

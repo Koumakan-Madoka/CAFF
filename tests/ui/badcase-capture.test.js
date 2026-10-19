@@ -285,3 +285,31 @@ test('project page loads panel module before entry and wires selected project, n
   assert.ok(html.indexOf('/shared/badcase-capture.js') < html.indexOf('/projects.js'));
   assert.match(js, /capturePanel\.select\(selected\)/);
 });
+
+test('public Room source consent is unchecked by default, separately disclosed, confirmed and never part of settings', async t => {
+  const h = setup(t); await h.panel.select({ id: 'a' });
+  const checkbox = h.field('callbackInputAuthorized');
+  assert.equal(checkbox.checked, false); assert.match(h.root.textContent, /公共文本上下文/);
+  assert.match(h.root.textContent, /标题.*公共元数据.*参与者.*完整公共文本/);
+  assert.equal(h.calls.some(c => c.method === 'POST'), false);
+  await h.click('estimate'); assert.equal(h.button('enable').disabled, false);
+  checkbox.checked = true; checkbox.dispatchEvent(new checkbox.ownerDocument.defaultView.Event('input', { bubbles: true }));
+  assert.equal(h.button('enable').disabled, true);
+  h.accept(false); await h.click('authorize'); assert.equal(h.calls.some(c => c.url.endsWith('/authorize')), false);
+  h.accept(true); await h.click('authorize');
+  assert.equal(h.calls.find(c => c.url.endsWith('/authorize')).body.callbackInputAuthorized, true);
+  assert.match(h.confirms.at(-1), /授权本项目各 Room 公共文本上下文/);
+  assert.equal(checkbox.checked, false, 'render only persisted consent, not an optimistic grant');
+  checkbox.checked = true; await h.click('settings');
+  assert.equal(Object.hasOwn(h.calls.find(c => c.url.endsWith('/settings')).body, 'callbackInputAuthorized'), false);
+  assert.equal(checkbox.checked, false);
+  await h.click('estimate'); await h.click('enable'); assert.match(h.confirms.at(-1), /未授权.*缺失/);
+});
+
+test('persisted source consent is shown without mutation and resets when another project cannot load', async t => {
+  const h = setup(t, url => url.endsWith('/a/badcase-capture') ? { ...snapshot(), policy: { ...snapshot().policy, callbackInputAuthorized: true } }
+    : url.endsWith('/b/badcase-capture') ? Promise.reject(Error('offline')) : undefined);
+  await h.panel.select({ id: 'a' }); assert.equal(h.field('callbackInputAuthorized').checked, true);
+  await h.panel.select({ id: 'b' }); assert.equal(h.field('callbackInputAuthorized').checked, false);
+  assert.equal(h.calls.some(c => c.method === 'POST'), false);
+});

@@ -14,6 +14,7 @@ import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
 import { prepareWindowsAuthorization } from './windows-authorization';
 import { invokeWindowsHelper } from './windows-helper';
 import { estimateWindowsDirectory, estimateWindowsDirectoryAsync } from './windows-estimate';
+import { readPreTurnCallbackInput } from './callback-source';
 
 export function resolveCaptureRoot(options: any = {}) {
   const explicit = String(options.captureRoot || '').trim() || String(process.env.CAFF_BADCASE_CAPTURE_DIR || '').trim();
@@ -42,8 +43,13 @@ function preserveExistingPins(existingPins: any, dirs: any) {
 export function createBadcaseCaptureService(options: any = {}) {
   const captureRoot = resolveCaptureRoot(options);
   const store = createCaptureStore({ captureRoot });
+  // Constructor-owned source handle only; never accept DB/path/source bytes
+  // from an invocation. Collectors invoke this after file-root authorization
+  // and while holding their project policy lease. Null is an explicit gap.
+  const sourceStore = options.chatStore;
+  const readCallbackInput = sourceStore ? (input: any, policy: any) => readPreTurnCallbackInput(sourceStore, input, policy) : null;
   const collector = createCollector({
-    store,
+    store, readCallbackInput,
     trustMtime: options.trustMtime,
     afterScan: typeof options.afterScan === 'function' ? options.afterScan : null,
     afterFirstScan: typeof options.afterFirstScan === 'function' ? options.afterFirstScan : null,
@@ -59,7 +65,7 @@ export function createBadcaseCaptureService(options: any = {}) {
   // No enable bypass: Windows estimate still advertises captureAvailable=false.
   // Selection is host-platform explicit, never a failed-Windows fallback to Linux.
   const turnCollector = windowsScope
-    ? createWindowsTurnCollector({ store, ...windowsScope }) : collector;
+    ? createWindowsTurnCollector({ store, readCallbackInput, ...windowsScope }) : collector;
 
   return {
     captureRoot,
@@ -72,13 +78,18 @@ export function createBadcaseCaptureService(options: any = {}) {
     // 普通配置保存：不钉住任何新对象。保留仍在清单中的目录的既有 pin；
     // 新增/变更的目录保持未钉住状态，采集按 authorized_root_unpinned 失败关闭，
     // 直到用户通过 authorizeProject 显式授权（GPT 复审 #1 第六轮）。
-    savePolicy(projectId: any, policy: any) {
+    savePolicy(projectId: any, policy: any, consent: any = {}) {
       const merged = { ...(policy && typeof policy === 'object' ? policy : {}), projectId };
       const existing = store.loadPolicy(projectId);
       merged.authorizedDirPins = preserveExistingPins(existing.authorizedDirPins, merged.authorizedDirs);
       merged.authorizedInputPins = preserveExistingPins(existing.authorizedInputPins, merged.authorizedInputDirs);
+      // Only the explicit local-admin authorize action may replace this scope.
+      // Ordinary save ignores caller-supplied grants AND revocations.
+      merged.callbackInputAuthorized = typeof consent.authorizeCallbackInput === 'boolean'
+        ? consent.authorizeCallbackInput : existing.callbackInputAuthorized;
       const normalized = normalizeCapturePolicy(merged, projectId);
-      if (JSON.stringify(normalized.windowsExternalGit) !== JSON.stringify(existing.windowsExternalGit)) {
+      if (normalized.callbackInputAuthorized !== existing.callbackInputAuthorized
+        || JSON.stringify(normalized.windowsExternalGit) !== JSON.stringify(existing.windowsExternalGit)) {
         normalized.status = 'disabled'; normalized.suspendReason = '';
       }
       return store.savePolicy(normalized);
