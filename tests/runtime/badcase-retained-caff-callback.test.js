@@ -7,16 +7,27 @@ const realPlan = require('../../build/server/domain/runtime/badcase-capture/reta
 function adapter(v, options = {}) {
   const env = { ...(options.env || {}) }, events = [], mod = { exports: {} };
   let starts = 0, stops = 0;
-  const files = new Map(), toolCalls = [];
-  const fakeFs = { mkdirSync: p => { if (files.has(p) || options.probeDirectoryExists) throw Error('inert_exists'); files.set(p, null); },
+  const files = new Map(), toolCalls = [], fds = new Map(); let nextFd = 1;
+  const fakeFs = { constants: fs.constants,
+    mkdirSync: (p, opts) => { if (files.has(p) || options.probeDirectoryExists && p.endsWith('.caff-bridge-probe')
+      || options.inputDirectoryExists && p.endsWith('bridge-inputs')) { if (opts?.recursive) return; throw Error('inert_exists'); } files.set(p, null); },
+    openSync: (p, flags, mode) => { assert.equal(flags & fs.constants.O_EXCL, fs.constants.O_EXCL); assert.equal(mode, 0o600);
+      if (files.has(p)) throw Error('inert_exists'); files.set(p, Buffer.alloc(0)); const fd = nextFd++; fds.set(fd, p); return fd; },
+    writeFileSync: (fd, bytes) => { if (options.inputWriteFailure) throw Error('inert_write'); files.set(fds.get(fd), Buffer.from(bytes)); },
+    fchmodSync: () => {}, fstatSync: fd => ({ isFile: () => true, size: files.get(fds.get(fd)).length, mode: options.wrongMode ? 0o644 : 0o600 }),
+    readSync: (fd, b, offset, length, position) => { const data = files.get(fds.get(fd)); const n = data.copy(b, offset, position, position + length);
+      if (options.inputReadCorrupt && n) b[offset] ^= 1; return n; },
+    closeSync: fd => { fds.delete(fd); if (options.inputCloseFailure) throw Error('inert_close'); },
     readFileSync: p => { assert.ok(files.has(p)); return files.get(p); } };
   const callback = { apiUrl: 'http://127.0.0.1:12345', credentials: { invocationId: 'new-invocation', callbackToken: 'a'.repeat(64) },
-    traceReceipt: { traceHash: options.wrongHash ? '0'.repeat(64) : realPlan(v.capsule, v.expected, v.association).receipt.callbackInputHash, association: v.association },
+    traceReceipt: { traceHash: options.wrongHash ? '0'.repeat(64) : realPlan(v.capsule, v.expected, v.association).receipt.callbackInputHash, association: options.wrongAssociation ? { ...v.association, turnId: 'wrong' } : v.association },
     stop: async () => { stops++; events.push('stop'); if (options.stopFailure) throw Error('inert_stop'); } };
   const context = { module: mod, Buffer, AbortSignal, process: { env }, require: name => {
     if (name === 'node:assert/strict') return { ...assert, deepEqual: (a, b) => assert.deepEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b))) };
     if (name === 'node:crypto') return crypto;
     if (name === 'node:fs') return fakeFs;
+    if (name === 'node:path') return path;
+    if (name.endsWith('/controlled-bridge-inputs')) return require('../../build/server/domain/runtime/badcase-capture/controlled-bridge-inputs');
     if (name.endsWith('/retained-callback-input')) return { planRetainedEvaluationCallback: realPlan };
     assert.ok(name.endsWith('/evaluation-callback'));
     return { startEvaluationCallback: async input => { starts++; events.push('start');
@@ -46,7 +57,7 @@ function adapter(v, options = {}) {
     if (name === 'list_rooms') { if (options.routeAllowed) return result('allowed'); throw Error('evaluation_callback_route_unavailable'); }
     assert.equal(name, 'bash');
     if (args.command.includes('id -u')) return result((options.wrongUid ? '0' : '65534') + ':/work/root');
-    assert.ok(args.command.startsWith('node "$CAFF_CHAT_TOOLS_PATH" '));
+    assert.ok(args.command.startsWith('node "$CAFF_CHAT_TOOLS_PATH" ') || args.command.startsWith('node "$CAFF_CHAT_TOOLS_RELATIVE_PATH" '));
     if (args.command.includes('send-public')) { assert.ok(args.command.includes('--no-finalize')); posted = true; return result(JSON.stringify({ message: { id: options.wrongSentId ? 'wrong' : v.association.assistantMessageId } })); }
     assert.ok(args.command.endsWith('read-context')); const p = projection();
     if (options.wrongContext) p.publicMessages = [];
@@ -54,15 +65,17 @@ function adapter(v, options = {}) {
   } });
   const tools = ['write', 'read', 'edit', 'bash', 'list_rooms'].map(tool);
   if (options.missingBash) tools.splice(3, 1);
-  return { api: mod.exports, env, events, toolCalls, starts: () => starts, stops: () => stops,
+  return { api: mod.exports, env, events, toolCalls, files, fds, starts: () => starts, stops: () => stops,
     start: () => mod.exports.startRetainedCaffCallback(v.capsule, v.expected, v.association, originalFetch),
     probe: s => mod.exports.probeRetainedCaffTools({ agent: { state: { tools } } }, { cwd: '/work/root' }, s) };
 }
-test('actual callback adapter binds only five declared env replacements, uses retained trace not seed and removes them after real-refusal check', async t => {
+test('actual callback adapter binds seven declared env replacements, uses retained trace not seed and removes them after real-refusal check', async t => {
   const h = adapter(fixture(t)), s = await h.start();
-  assert.equal(h.starts(), 1); assert.equal(Object.keys(h.env).length, 5);
+  assert.equal(h.starts(), 1); assert.equal(Object.keys(h.env).length, 7);
   assert.equal(h.env.CAFF_CHAT_TOOLS_PATH, '/work/build/lib/agent-chat-tools.js');
-  assert.equal(h.env.CAFF_CHAT_TOOLS_RELATIVE_PATH, '/work/build/lib/agent-chat-tools.js');
+  assert.equal(h.env.CAFF_CHAT_TOOLS_RELATIVE_PATH, '../../build/lib/agent-chat-tools.js');
+  assert.equal(path.posix.resolve('/work/restored/snapshot', h.env.CAFF_CHAT_TOOLS_RELATIVE_PATH), h.env.CAFF_CHAT_TOOLS_PATH);
+  assert.equal(h.env.CAFF_CHAT_CONVERSATION_ID, 'c1'); assert.equal(h.env.CAFF_CHAT_TURN_ID, 't1');
   assert.equal(h.env.CAFF_CHAT_API_URL, s.apiUrl);
   assert.equal(h.env.CAFF_CHAT_CALLBACK_TOKEN, 'a'.repeat(64));
   assert.equal(h.api.bridgeReplacementsHash, crypto.createHash('sha256').update(JSON.stringify(h.api.bridgeReplacements)).digest('hex'));
@@ -71,12 +84,40 @@ test('actual callback adapter binds only five declared env replacements, uses re
   assert.deepEqual(h.events, ['start', 'stop', 'closed-probe']);
 });
 test('actual adapter refuses ambient bridge authority before start; callback attestation or stop failure cannot succeed or leave auth env', async t => {
-  for (const key of ['CAFF_CHAT_API_URL', 'CAFF_CHAT_INVOCATION_ID', 'CAFF_CHAT_CALLBACK_TOKEN', 'CAFF_CHAT_TOOLS_PATH', 'CAFF_CHAT_TOOLS_RELATIVE_PATH']) {
+  for (const key of ['CAFF_CHAT_API_URL', 'CAFF_CHAT_INVOCATION_ID', 'CAFF_CHAT_CALLBACK_TOKEN', 'CAFF_CHAT_CONVERSATION_ID', 'CAFF_CHAT_TURN_ID', 'CAFF_CHAT_TOOLS_PATH', 'CAFF_CHAT_TOOLS_RELATIVE_PATH']) {
     const h = adapter(fixture(t), { env: { [key]: 'ambient' } }); await assert.rejects(h.start()); assert.equal(h.starts(), 0);
   }
-  const h = adapter(fixture(t), { wrongHash: true }); await assert.rejects(h.start()); assert.equal(h.stops(), 1); assert.deepEqual(h.env, {});
+  for (const options of [{ wrongHash: true }, { wrongAssociation: true }]) {
+    const h = adapter(fixture(t), options); await assert.rejects(h.start()); assert.equal(h.stops(), 1); assert.deepEqual(h.env, {});
+  }
   for (const options of [{ stopFailure: true }, { listenerStillLive: true }, { closeCode: 'ETIMEDOUT' }, { closeCode: 'EAI_AGAIN' }, { closeCode: 'ABORT_ERR' }]) {
     const h = adapter(fixture(t), options), s = await h.start(); await assert.rejects(s.stop()); assert.deepEqual(h.env, {});
+  }
+});
+test('actual adapter applies capture-normalized prompt/session only to NEW private working inputs before SDK; failures never return a receipt', async t => {
+  const controlledFixture = require('../helpers/badcase-controlled-bridge-fixture.cjs');
+  const planner = require('../../build/server/domain/runtime/badcase-capture/caff-replay-start').planRetainedCaffBridgeInitialization;
+  for (const mode of ['fresh', 'resume']) {
+    const v = controlledFixture(t, mode), original = JSON.stringify(v), p = planner(v.capsule, v.expected, v.worktree, v.bindings);
+    const h = adapter(v), s = await h.start();
+    try {
+      const effective = h.api.materializeRetainedCaffBridgeInputs(p, s);
+      assert.equal(effective.invocation.includes('{{'), false); assert.ok(effective.invocation.includes(h.env.CAFF_CHAT_CALLBACK_TOKEN));
+      assert.equal(h.files.get('/work/restored/bridge-inputs/prompt.txt').toString(), effective.invocation);
+      assert.equal(effective.config.resume, mode === 'resume'); assert.equal(effective.sessionText === null, mode === 'fresh');
+      assert.equal(h.files.has('/work/restored/bridge-inputs/session.jsonl'), mode === 'resume');
+      if (mode === 'resume') {
+        assert.equal(h.files.get(effective.config.sessionPath).toString(), effective.sessionText);
+        assert.ok(effective.sessionText.includes(h.env.CAFF_CHAT_CALLBACK_TOKEN)); assert.ok(effective.sessionText.endsWith('\r\n'));
+        assert.equal(effective.sessionEntries[0].id, p.sessionEntries[0].id);
+      }
+      assert.deepEqual(effective.receipt, p.receipt); assert.equal(JSON.stringify(v), original); assert.equal(h.fds.size, 0);
+      assert.throws(() => h.api.materializeRetainedCaffBridgeInputs(p, s)); // exclusive directory, never overwrite
+    } finally { await s.stop(); }
+  }
+  for (const options of [{ inputDirectoryExists: true }, { inputWriteFailure: true }, { inputReadCorrupt: true }, { wrongMode: true }, { inputCloseFailure: true }]) {
+    const v = controlledFixture(t, 'resume'), p = planner(v.capsule, v.expected, v.worktree, v.bindings), h = adapter(v, options), s = await h.start();
+    try { assert.throws(() => h.api.materializeRetainedCaffBridgeInputs(p, s)); assert.equal(h.fds.size, 0); } finally { await s.stop(); }
   }
 });
 test('actual probe checks file/shell/CLI/capability results and long history uses the production bounded projection (inert tools)', async t => {
@@ -101,15 +142,30 @@ test('common retained runtime starts callback before SDK, probes after factory a
     assert.equal(r.observation.historyMessages, mode === 'resume' ? 3 : 0);
     assert.equal(h.disposals(), 1); assert.equal(h.callbackStops(), 1);
     assert.ok(h.events.indexOf('restore') < h.events.indexOf('callback-start'));
-    assert.ok(h.events.indexOf('callback-start') < h.events.indexOf('load:/work/runtime/dist/bundle/index.js'));
+    assert.ok(h.events.indexOf('callback-start') < h.events.indexOf('controlled-inputs'));
+    assert.ok(h.events.indexOf('controlled-inputs') < h.events.indexOf('load:/work/runtime/dist/bundle/index.js'));
     assert.ok(h.events.indexOf('factory') < h.events.indexOf('tools-probe'));
     assert.deepEqual(h.events.slice(-2), ['dispose', 'callback-stop']);
     assert.equal(h.context.fetch, h.originalFetch); assert.deepEqual(h.context.process.env, {}); assert.equal(h.modelGuardRestored(), true);
   }
 });
+test('common container sends the effective callback-bound prompt and resume text to the original host, with normalized receipts only', async t => {
+  const harness = require('../helpers/badcase-retained-caff-vm.cjs'), controlledFixture = require('../helpers/badcase-controlled-bridge-fixture.cjs');
+  for (const mode of ['fresh', 'resume']) {
+    const h = harness(controlledFixture(t, mode), { nodeVersion: 'v24.21.0', architecture: 'amd64' }, { bridge: true });
+    const r = await h.run(); assert.equal(r.controlledReplacementsApplied, true);
+    assert.equal(r.controlledInputs.replacementCount, mode === 'resume' ? 9 : 7);
+    assert.equal(r.observation.historyMessages, mode === 'resume' ? 3 : 0);
+    assert.equal(r.invocationSubmitted, false); assert.equal(r.runnable, false);
+    const prompt = h.bytes.get('/work/restored/bridge-inputs/prompt.txt').toString();
+    assert.equal(prompt.includes('{{'), false); assert.ok(prompt.includes('a'.repeat(64)));
+    assert.equal(JSON.stringify(r).includes('http://127.0.0.1:12345'), false); assert.equal(JSON.stringify(r).includes('new-local-invocation'), false);
+    assert.equal(h.bytes.get('/work/restored/working-inputs/prompt.txt').toString().includes('{{CAFF_CHAT_CALLBACK_TOKEN}}'), true);
+  }
+});
 test('callback start/probe/close or runtime dispose failures always reject, clean env and restore model guards', async t => {
   const harness = require('../helpers/badcase-retained-caff-vm.cjs');
-  for (const options of [{ callbackStartFailure: true }, { importFailure: true }, { callbackProbeFailure: true }, { callbackStopFailure: true }, { disposeFailure: true }]) {
+  for (const options of [{ callbackStartFailure: true }, { controlledInputsFailure: true }, { importFailure: true }, { callbackProbeFailure: true }, { callbackStopFailure: true }, { disposeFailure: true }]) {
     const h = harness(fixture(t), { nodeVersion: 'v24.21.0', architecture: 'amd64' }, { bridge: true, ...options });
     await assert.rejects(h.run()); assert.equal(h.callbackStops(), options.callbackStartFailure ? 0 : 1);
     assert.equal(h.context.fetch, h.originalFetch); assert.deepEqual(h.context.process.env, {}); assert.equal(h.modelGuardRestored(), true);

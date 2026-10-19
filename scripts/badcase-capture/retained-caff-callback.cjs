@@ -2,14 +2,16 @@
 // No live source lookup, seed fallback, provider key or production callback.
 const fs = require('node:fs'), assert = require('node:assert/strict'), crypto = require('node:crypto');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
+const relativeCli = require('node:path').posix.relative('/work/restored/snapshot', '/work/build/lib/agent-chat-tools.js');
 // These names/targets, NOT ephemeral auth values, are receipt material. The two
 // auth fields are newly generated local callback credentials, not provider leases.
 const bridgeReplacements = Object.freeze([
   ['CAFF_CHAT_API_URL', 'isolated_loopback_callback'],
   ['CAFF_CHAT_INVOCATION_ID', 'new_local_invocation'],
   ['CAFF_CHAT_CALLBACK_TOKEN', 'new_local_callback_auth'],
+  ['CAFF_CHAT_CONVERSATION_ID', 'retained_conversation_id'], ['CAFF_CHAT_TURN_ID', 'retained_execution_turn_id'],
   ['CAFF_CHAT_TOOLS_PATH', '/work/build/lib/agent-chat-tools.js'],
-  ['CAFF_CHAT_TOOLS_RELATIVE_PATH', '/work/build/lib/agent-chat-tools.js'],
+  ['CAFF_CHAT_TOOLS_RELATIVE_PATH', relativeCli],
 ]);
 const bridgeReplacementsHash = hash(JSON.stringify(bridgeReplacements));
 async function startRetainedCaffCallback(capsule, expected, association, originalFetch) {
@@ -37,13 +39,34 @@ async function startRetainedCaffCallback(capsule, expected, association, origina
   try {
     assert.equal(callback.traceReceipt.traceHash, plan.receipt.callbackInputHash);
     assert.deepEqual(callback.traceReceipt.association, association);
-    for (const [key, value] of [
-      ['CAFF_CHAT_API_URL', callback.apiUrl], ['CAFF_CHAT_INVOCATION_ID', callback.credentials.invocationId],
-      ['CAFF_CHAT_CALLBACK_TOKEN', callback.credentials.callbackToken],
-      ['CAFF_CHAT_TOOLS_PATH', '/work/build/lib/agent-chat-tools.js'], ['CAFF_CHAT_TOOLS_RELATIVE_PATH', '/work/build/lib/agent-chat-tools.js'],
-    ]) process.env[key] = value;
-    return { apiUrl: callback.apiUrl, stop, plan, trace };
+    const values = { CAFF_CHAT_API_URL: callback.apiUrl, CAFF_CHAT_INVOCATION_ID: callback.credentials.invocationId,
+      CAFF_CHAT_CALLBACK_TOKEN: callback.credentials.callbackToken, CAFF_CHAT_CONVERSATION_ID: association.conversationId,
+      CAFF_CHAT_TURN_ID: association.turnId, CAFF_CHAT_TOOLS_PATH: '/work/build/lib/agent-chat-tools.js', CAFF_CHAT_TOOLS_RELATIVE_PATH: relativeCli };
+    for (const [key, value] of Object.entries(values)) process.env[key] = value;
+    return { apiUrl: callback.apiUrl, stop, plan, trace,
+      prepareInputs: input => require(base + 'controlled-bridge-inputs').applyControlledBridgeInputs(input, values) };
   } catch (e) { await stop(); throw e; }
+}
+function materializeRetainedCaffBridgeInputs(plan, callback) {
+  const effective = callback.prepareInputs(plan);
+  assert.deepEqual(effective.receipt, plan.controlledInputs);
+  const directory = '/work/restored/bridge-inputs';
+  fs.mkdirSync(directory, { mode: 0o700 }); // never reuse an old variant/input
+  for (const [name, text] of [['prompt.txt', effective.invocation], ...(plan.config.resume ? [['session.jsonl', effective.sessionText]] : [])]) {
+    assert.equal(typeof text, 'string'); const bytes = Buffer.from(text);
+    const fd = fs.openSync(directory + '/' + name, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW, 0o600);
+    try {
+      fs.writeFileSync(fd, bytes); fs.fchmodSync(fd, 0o600);
+      const st = fs.fstatSync(fd); assert.equal(st.isFile(), true); assert.equal(st.size, bytes.length); assert.equal(st.mode & 0o7777, 0o600);
+      const observed = Buffer.alloc(bytes.length + 1); let offset = 0;
+      while (offset < observed.length) { const n = fs.readSync(fd, observed, offset, observed.length - offset, offset); if (!n) break; offset += n; }
+      assert.equal(offset, bytes.length); assert.deepEqual(observed.subarray(0, offset), bytes);
+    } finally { fs.closeSync(fd); }
+  }
+  assert.equal(plan.config.resume, effective.sessionText !== null);
+  if (plan.config.resume) assert.equal(plan.config.sessionPath, directory + '/session.jsonl');
+  return { ...plan, invocation: effective.invocation, sessionText: effective.sessionText,
+    sessionEntries: effective.sessionText === null ? [] : effective.sessionText.split('\n').slice(0, -1).map(s => JSON.parse(s)) };
 }
 async function probeRetainedCaffTools(session, config, callback) {
   const tools = session.agent.state.tools;
@@ -62,8 +85,8 @@ async function probeRetainedCaffTools(session, config, callback) {
   assert.equal(text(await tool('read', { path: relative + '/file.txt' })).trim(), 'after');
   assert.equal(fs.readFileSync(directory + '/file.txt', 'utf8'), 'after\n');
   assert.equal(text(await tool('bash', { command: 'printf "%s:" "$(id -u)"; pwd', timeout: 2 })).trim(), '65534:' + config.cwd);
-  const cli = args => tool('bash', { command: 'node "$CAFF_CHAT_TOOLS_PATH" ' + args, timeout: 2 });
-  const before = JSON.parse(text(await cli('read-context'))), trace = callback.trace, association = callback.plan.callbackInput.association;
+  const cli = (args, relative = false) => tool('bash', { command: 'node "$' + (relative ? 'CAFF_CHAT_TOOLS_RELATIVE_PATH' : 'CAFF_CHAT_TOOLS_PATH') + '" ' + args, timeout: 2 });
+  const before = JSON.parse(text(await cli('read-context', true))), trace = callback.trace, association = callback.plan.callbackInput.association;
   // Real bridge projection is bounded at 24, with the triggering user added if
   // absent. Validate that exact projection; never claim it returned all history.
   const selected = trace.publicMessages.slice(-24), user = trace.publicMessages.find(m => m.id === association.userMessageId);
@@ -89,4 +112,4 @@ async function probeRetainedCaffTools(session, config, callback) {
   assert.deepEqual(after.publicMessages.filter(m => m.id !== association.assistantMessageId), remaining.map(project));
   await assert.rejects(tool('list_rooms', {}), /^Error: evaluation_callback_route_unavailable$/);
 }
-module.exports = { bridgeReplacements, bridgeReplacementsHash, startRetainedCaffCallback, probeRetainedCaffTools };
+module.exports = { bridgeReplacements, bridgeReplacementsHash, startRetainedCaffCallback, materializeRetainedCaffBridgeInputs, probeRetainedCaffTools };

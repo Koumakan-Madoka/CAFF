@@ -6,17 +6,17 @@ const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 async function runRetainedCaffContainer(loadModule = specifier => import(specifier), bridgeProbe = false) {
   const { manifest, image, mode } = require('./caff-runtime-bootstrap.cjs').verifyCaffRuntimeStage();
   const base = '/work/build/server/domain/runtime/badcase-capture/';
-  const { planRetainedCaffInitialization } = require(base + 'caff-replay-start');
+  const { planRetainedCaffInitialization, planRetainedCaffBridgeInitialization } = require(base + 'caff-replay-start');
   const { materializeWorktreeReplayInputs, planWorktreeReplayMaterialization } = require(base + 'worktree-replay-materialization');
   const { planModePreservingReplayCapsule } = require(base + 'capsule-materialization');
   const read = name => fs.readFileSync('/work/' + name, 'utf8');
   const capsule = read('capsule.json'), expected = JSON.parse(read('expected.json'));
   const worktree = JSON.parse(read('worktree.json')), bindings = JSON.parse(read('bindings.json'));
-  const plan = planRetainedCaffInitialization(capsule, expected, worktree, bindings);
+  assert.equal(typeof bridgeProbe, 'boolean');
+  let plan = (bridgeProbe ? planRetainedCaffBridgeInitialization : planRetainedCaffInitialization)(capsule, expected, worktree, bindings);
   assert.equal(plan.receipt.deliveryMode, mode);
   const material = planModePreservingReplayCapsule(capsule, expected);
   const working = planWorktreeReplayMaterialization(capsule, expected, worktree);
-  assert.equal(typeof bridgeProbe, 'boolean');
   let runtime, callback, callbackAdapter, modelCalls = 0, externalFetchCalls = 0;
   const modelGuards = [];
   const originalFetch = globalThis.fetch;
@@ -28,7 +28,7 @@ async function runRetainedCaffContainer(loadModule = specifier => import(specifi
   try {
     assert.deepEqual(materializeWorktreeReplayInputs(capsule, expected, worktree, '/work/restored'), working.expectedReceipt);
     assert.equal(read('restored/working-inputs/prompt.txt'), plan.invocation);
-    if (plan.config.resume) assert.equal(fs.readFileSync(plan.config.sessionPath, 'utf8'), plan.sessionText);
+    if (plan.config.resume) assert.equal(read('restored/working-inputs/session.jsonl'), plan.sessionText);
     else {
       assert.equal(fs.existsSync('/work/restored/working-inputs/session.jsonl'), false);
       // lstat, not exists(): even a dangling link must not be accepted as new.
@@ -43,6 +43,9 @@ async function runRetainedCaffContainer(loadModule = specifier => import(specifi
       assert.equal(plan.archivedHarness.toolBridgeEnabled, true);
       callbackAdapter = require('./retained-caff-callback.cjs');
       callback = await callbackAdapter.startRetainedCaffCallback(capsule, expected, JSON.parse(read('bridge-association.json')), originalFetch);
+      plan = callbackAdapter.materializeRetainedCaffBridgeInputs(plan, callback);
+      assert.equal(read('restored/bridge-inputs/prompt.txt'), plan.invocation);
+      if (plan.config.resume) assert.equal(fs.readFileSync(plan.config.sessionPath, 'utf8'), plan.sessionText);
     }
     process.env.PI_OFFLINE = '1'; process.env.PI_CODING_AGENT_DIR = plan.config.agentDir; process.env.PI_TELEMETRY = '0';
     const sdk = await loadModule('/work/runtime/dist/bundle/index.js'); assert.equal(sdk.VERSION, '0.85.1');
@@ -116,7 +119,8 @@ async function runRetainedCaffContainer(loadModule = specifier => import(specifi
         callbackWired: true, callbackToolsVerified: true, callbackClosed: true, runtimeBridgeReplacementsApplied: true,
         callbackInputHash: callback.plan.receipt.callbackInputHash,
         callbackAssociationHash: hash(JSON.stringify(callback.plan.callbackInput.association)),
-        runtimeBridgeReplacementsHash: callbackAdapter.bridgeReplacementsHash } : {}), observation };
+        runtimeBridgeReplacementsHash: callbackAdapter.bridgeReplacementsHash,
+        controlledReplacementsApplied: true, controlledInputs: plan.controlledInputs } : {}), observation };
   } finally {
     try { await runtime?.dispose(); }
     finally {

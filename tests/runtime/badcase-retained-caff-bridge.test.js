@@ -38,6 +38,29 @@ test('invalid bridge input rejects before filesystem/transport, without seed fal
   await assert.rejects(api().runRetainedCaffBridge('/missing', '/missing', image, v, { runProbe: async () => { calls++; } }));
   assert.equal(calls, 0);
 });
+test('capture-normalized prompt/session is bridge-only, validates before I/O and never materializes a credential on host', async t => {
+  const controlledFixture = require('../helpers/badcase-controlled-bridge-fixture.cjs');
+  const init = require('../../scripts/badcase-capture/retained-caff-initialization.cjs');
+  for (const mode of ['fresh', 'resume']) {
+    const v = controlledFixture(t, mode, 'win32'), before = JSON.stringify(v), p = api().planBridge(v);
+    assert.equal(p.start.controlledInputs.replacementCount, mode === 'resume' ? 9 : 7);
+    assert.equal(p.start.controlledInputs.variableCount, 7);
+    assert.equal(p.start.config.sessionPath, '/work/restored/' + (mode === 'resume' ? 'bridge-inputs/session.jsonl' : 'working-inputs/fresh-session.jsonl'));
+    assert.throws(() => init.prepareRetainedCaffFiles('/missing', '/missing', image, v), { code: 'replay_sdk_replacements_unapplied' });
+    const files = api().prepareRetainedCaffBridgeFiles(repo, dependencies(t), image, v);
+    assert.equal(files.filter(f => f.path.endsWith('/controlled-bridge-inputs.js')).length, 1);
+    assert.equal(files.find(f => f.path === 'capsule.json').bytes.toString(), v.capsule);
+    assert.equal(JSON.stringify(v), before);
+    for (const change of [r => r.controlledReplacements[0].count++, r => r.controlledReplacements = [],
+      r => r.controlledReplacements.push({ name: 'PI_AGENT_PRIVATE_DIR', count: 1 })]) {
+      const bad = structuredClone(v), d = JSON.parse(bad.capsule); change(d.checkpoint.replayInput);
+      bad.capsule = JSON.stringify(d); bad.expected = { capsuleHash: hash(bad.capsule), checkpointChecksum: hash(JSON.stringify(d.checkpoint)) };
+      let calls = 0;
+      await assert.rejects(api().runRetainedCaffBridge('/missing', '/missing', image, bad, { runProbe: async () => { calls++; } }), { code: 'replay_bridge_replacements_invalid' });
+      assert.equal(calls, 0);
+    }
+  }
+});
 test('bridge staging retains original capsule/config and original initialization entry, supplies closed callback dependencies', t => {
   const v = fixture(t, 'resume'), root = dependencies(t), before = JSON.stringify(v);
   const files = api().prepareRetainedCaffBridgeFiles(repo, root, image, v);

@@ -1324,6 +1324,16 @@ fixture改为执行生产编译resolver，跨平台测试仅替换显式path语�
 - 宿主测试只做静态分发、VM边界桩及原回调内核测试；实际 SDK 和被测文件/shell工具只在 Docker 执行。真实 Docker 的 fresh/resume、缺 callback 模块负例及清理证据以 Goal 为准。输入仍是通过真实封存 API 构造的合成材料，不是用户历史 badcase、实际NTFS项目采集或UI流程；未提交 prompt/调用模型，所有 runnable/reproduced/evaluable/strict/launch 资格恒false。外置 agentDir/附件归档、原prompt内工具路径与运行凭据占位的受控替换、模型出口及UI普通turn对照仍待接通；Windows开启门、所有AC pending、D14批准/双账本及历史6美元未结算非账单不变。
 - E131 的 retention 形状检查仍仅为上游已覆盖的防御性代码，不能将冗余守卫变异存活算作缺陷或声称已复现旧 TypeError。其作者12项实际变异清单不含单独删除该行或删除已有六字段比较覆盖的重复turn检查；审查者的两项冗余变异存活与作者清单不是同一组。E127 PASS固定SHA是 `f2f940a5`；`197aa2a7` 与 `75595721` 的历史FAIL保留，不因后续PASS追认。
 
+### 5.72 归档 prompt/session 的隔离 callback 占位替换（仍非模型 turn）
+
+- 本段取代§5.71初版的“五环境注入、原占位必须为空”限制，**仅用于独立 bridge 入口**。默认 `planRetainedCaffInitialization` / 原初始化入口仍拒绝任何未应用变量；新的 `planRetainedCaffBridgeInitialization` 在分发 I/O 前执行纯 `planControlledBridgeInputs`，宿主只核验模板与计数，不生成/读取认证。完整配置、原 fresh/resume、文件/依赖/session/六关联检查仍先执行，不剥配置、不回读生产、不降 fresh、不授予模型启动资格。
+- 支持七个闭集变量：本容器独立 loopback 的 `CAFF_CHAT_API_URL`、新本地 `CAFF_CHAT_INVOCATION_ID/CAFF_CHAT_CALLBACK_TOKEN`，保留封存执行关联的 `CAFF_CHAT_CONVERSATION_ID/CAFF_CHAT_TURN_ID`，以及固定绝对 CLI 路径与从 `/work/restored/snapshot` 显式派生的 `../../build/lib/agent-chat-tools.js` 相对路径。callback/env 注入、替换和 finally 删除遵循同一七项表；相对 CLI 也通过实际 bash→CLI→HTTP 读取探针验证。不是供应商重新签发、不引入供应商 Key；browser/private/sandbox 变量仍不支持，不能用空值、宿主路径或全局环境替代。
+- 复用采集器原 `{name,count}` 账本，合计 prompt/session 的同名记录；最多512条、每变量累计100000次，输入合计64MiB/100000条JSONL/100000个结构访问上限。每项仅允许 name/count 且是闭集名称及正安全整数；实际模板出现次数须逐变量精确相等。缺项、虚增、未知或 malformed `{{`、非闭集绑定拒绝。裸 `}}` 可为普通嵌套 JSON，不误判占位。输入绑定须为精确127.0.0.1 HTTP origin、格式合规的新本地身份及固定容器 CLI 路径；无 ambient env、来源文件、网络或 SDK 读取。源值已经脱敏的历史包无法反向证明原变量替换是否存在重叠/部分命中；本步骤不补造这种来源证明。
+- 只有 invocation 文本与 session user/assistant 的 string/text块、custom_message 的 string/text块允许替换。ID/键/模型/角色/tool调用/结果/任意扩展状态不得改变；其他位置有占位直接拒绝。session中有占位的JSON字符串必须以 canonical JSON token唯一出现；歧义重复字符串、alternate转义拒绝，不重序列化整行，CRLF和未声明字节保持。原 session validator/未验证维度门仍复验，绝不因替换放宽工具/附件历史支持。合法但超出此子集的包明确阻断，不宣称任意普通 Room 已支持。
+- 容器在 stage guard、归档恢复和新 callback 身份建立后、SDK导入/factory前应用替换；新建独占 `bridge-inputs`，仅把有效 prompt和resume session写入新0600文件，fd级写/读/size/mode复验、finally close。原 `materials`、原带占位 `working-inputs` 与 capsule 不改；resume显式绑定新的 `bridge-inputs/session.jsonl`，fresh仍用不存在的独立命名目标、无旧session读取。任意目录/写读/chmod/close或替换错误阻断SDK与成功回执，可能留下本容器的新部分副本，由原可靠停止/移除负责销毁；不宣称多文件原子或掉电事务。本地短寿命callback身份可能存在该新工作session中，绝不进入归档、分发、argv或日志。
+- `controlledReplacementsApplied=true`只表示此七变量解释器和实际working-input检查已完成；`controlledInputs`仅绑定归一化名称/次数hash与计数，不含随机认证/URL/端口或有效明文。原invocationHash/sessionHash仍绑定带占位的映射后输入，可供变体对照；实际SDK的historyHash包含替换后上下文，可能随本地身份变化，**不能当作跨run归一化相等证据**。原模型哨兵、network none、固定镜像/native、零挂载/生产资源、资源/停止/关闭回执不放宽，所有launch/runnable/reproduced/evaluable/strict资格仍false，未提交prompt。
+- E132 P3回收：增加错误association回显负例、精确EEXIST/非recursive探针目录负例及真实Docker已有归档探针子树拒绝；相对CLI派生及使用如上。回调20秒自停与外层25秒观察预算及通用失败码的可诊断性限制保留，不声称硬25秒或已修复此项。冗余断言无须计作新缺陷。作者红首、变异/回归、实际Docker fresh/resume及缺模块负例以Goal为准，本改动尚无独立PASS，纳入下一重大里程碑审查。外置agentDir/附件、模型出口/普通turn提交与UI端到端仍未完成；Windows门关、全部AC pending、历史6美元未结算非账单、不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { prepareWorktreeReplayInputs } from './worktree-replay-inputs';
 import { planModePreservingReplayCapsule } from './capsule-materialization';
 import { validateSessionV2 } from './session-validator';
+import { planControlledBridgeInputs } from './controlled-bridge-inputs';
 const hash = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
 const fail = (code = 'replay_sdk_config_invalid') => Object.assign(Error(code), { code });
 const object = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -17,12 +18,24 @@ const DESTINATION = '/work/restored/snapshot';
 // Initialization-only gate. This is NOT complete turn replay permission. Pending
 // credential substitutions are refused, never stripped or replaced by ambient auth.
 export function planRetainedCaffInitialization(capsule: string, expected: any, worktreeDeclaration: any, declaration: any) {
-  const plan = planRetainedCaffStart(capsule, expected, worktreeDeclaration, declaration);
-  if (!Array.isArray(plan.controlledReplacements) || plan.controlledReplacements.length !== 0
-    || /\{\{[^{}]+\}\}/.test(JSON.stringify([plan.invocation, plan.sessionText, plan.archivedHarness]))) {
+  return initialization(planRetainedCaffStart(capsule, expected, worktreeDeclaration, declaration), false);
+}
+// Separate bridge-only preparation. This grants NO turn/model execution. Values
+// are unavailable on host: only the container callback may issue local bindings.
+export function planRetainedCaffBridgeInitialization(capsule: string, expected: any, worktreeDeclaration: any, declaration: any) {
+  return initialization(planRetainedCaffStart(capsule, expected, worktreeDeclaration, declaration), true);
+}
+function initialization(plan: any, bridge: boolean) {
+  if (!Array.isArray(plan.controlledReplacements) || /\{\{[^{}]+\}\}/.test(JSON.stringify(plan.archivedHarness))
+    || (!bridge && (plan.controlledReplacements.length !== 0 || /\{\{[^{}]+\}\}/.test(JSON.stringify([plan.invocation, plan.sessionText]))))) {
     throw fail('replay_sdk_replacements_unapplied');
   }
-  const sessionEntries = plan.sessionText === null ? [] : plan.sessionText.split('\n').slice(0, -1).map(s => JSON.parse(s));
+  const controlledInputs = bridge ? planControlledBridgeInputs(plan) : null;
+  if (bridge && plan.config.resume) {
+    plan.config.sessionPath = '/work/restored/bridge-inputs/session.jsonl';
+    plan.receipt.effectiveConfigHash = hash(JSON.stringify(plan.config));
+  }
+  const sessionEntries = plan.sessionText === null ? [] : plan.sessionText.split('\n').slice(0, -1).map((s: string) => JSON.parse(s));
   if (sessionEntries.length) {
     // Recheck the archived validator, including tool/attachment/private-state
     // dimensions. A forged complete flag must not bypass the original gate.
@@ -39,7 +52,7 @@ export function planRetainedCaffInitialization(capsule: string, expected: any, w
       ids.add(e.id);
     }
   }
-  return { ...plan, sessionEntries };
+  return { ...plan, sessionEntries, ...(bridge ? { controlledInputs } : {}) };
 }
 export function planRetainedCaffStart(capsule: string, expected: any, worktreeDeclaration: any, declaration: any) {
   const input = prepareWorktreeReplayInputs(capsule, expected, worktreeDeclaration);

@@ -5,7 +5,13 @@ const base = '../../build/server/domain/runtime/badcase-capture/';
 const start = require(base + 'caff-replay-start'), material = require(base + 'capsule-materialization');
 const working = require(base + 'worktree-replay-materialization');
 module.exports = function containerVm(value, image, options = {}) {
-  const plan = start.planRetainedCaffInitialization(value.capsule, value.expected, value.worktree, value.bindings);
+  const template = (options.bridge ? start.planRetainedCaffBridgeInitialization : start.planRetainedCaffInitialization)(value.capsule, value.expected, value.worktree, value.bindings);
+  const effective = options.bridge ? require(base + 'controlled-bridge-inputs').applyControlledBridgeInputs(template, {
+    CAFF_CHAT_API_URL: 'http://127.0.0.1:12345', CAFF_CHAT_INVOCATION_ID: 'new-local-invocation', CAFF_CHAT_CALLBACK_TOKEN: 'a'.repeat(64),
+    CAFF_CHAT_CONVERSATION_ID: value.association.conversationId, CAFF_CHAT_TURN_ID: value.association.turnId,
+    CAFF_CHAT_TOOLS_PATH: '/work/build/lib/agent-chat-tools.js', CAFF_CHAT_TOOLS_RELATIVE_PATH: '../../build/lib/agent-chat-tools.js' }) : template;
+  const plan = { ...template, invocation: effective.invocation, sessionText: effective.sessionText,
+    sessionEntries: effective.sessionText === null ? [] : effective.sessionText.split('\n').slice(0, -1).map(JSON.parse) };
   const source = material.planModePreservingReplayCapsule(value.capsule, value.expected);
   const inputs = working.planWorktreeReplayMaterialization(value.capsule, value.expected, value.worktree);
   const bytes = new Map([['capsule.json', value.capsule], ['expected.json', JSON.stringify(value.expected)],
@@ -58,6 +64,13 @@ module.exports = function containerVm(value, image, options = {}) {
             stop: async () => { events.push('callback-stop'); callbackStops++; delete context.process.env.CAFF_CHAT_API_URL;
               if (options.callbackStopFailure) throw Error('inert_callback_stop'); } };
         },
+        materializeRetainedCaffBridgeInputs: input => {
+          events.push('controlled-inputs'); assert.deepEqual(input, template);
+          if (options.controlledInputsFailure) throw Error('inert_controlled_inputs');
+          bytes.set('/work/restored/bridge-inputs/prompt.txt', Buffer.from(plan.invocation));
+          if (plan.sessionText !== null) bytes.set(plan.config.sessionPath, Buffer.from(plan.sessionText));
+          return plan;
+        },
         probeRetainedCaffTools: async (actualSession, config) => { events.push('tools-probe'); assert.equal(actualSession, session); assert.deepEqual(config, plan.config);
           if (options.callbackProbeFailure) throw Error('inert_probe_failure'); },
       };
@@ -90,7 +103,7 @@ module.exports = function containerVm(value, image, options = {}) {
         return options.configDrift ? { ...command, config: { ...command.config, thinking: 'high' } } : command; },
       createSdkRuntime: async () => { events.push('factory');
         if (options.modelDuringFactory) modelRuntime[options.modelDuringFactory]();
-        assert.equal(bytes.get('/work/restored/working-inputs/prompt.txt').toString(), plan.invocation);
+        assert.equal(bytes.get('/work/restored/' + (options.bridge ? 'bridge-inputs' : 'working-inputs') + '/prompt.txt').toString(), plan.invocation);
         if (options.archiveTamper) bytes.set('/work/restored/materials/checkpoint.json', Buffer.from('changed'));
         if (options.wrongModel) session.model.id = 'different';
         return { runtime };

@@ -2,7 +2,7 @@
 // No SDK/native import on host, model call, callback seed fabrication or live server.
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { planRetainedCaffInitialization } = require('../../build/server/domain/runtime/badcase-capture/caff-replay-start');
+const { planRetainedCaffInitialization, planRetainedCaffBridgeInitialization } = require('../../build/server/domain/runtime/badcase-capture/caff-replay-start');
 const { prepareCaffRuntimeFiles } = require('./caff-runtime-wiring.cjs');
 const { readTrustedDistributionFile } = require('./evaluation-bridge-launcher.cjs');
 const { manifestFor } = require('./pi-probe-materials.cjs');
@@ -10,14 +10,16 @@ const { verifyProbeImage, runProbe } = require('./verify-pi-initialization.cjs')
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const fail = () => Object.assign(Error('retained_caff_initialization_failed'), { code: 'retained_caff_initialization_failed' });
 function planFor(v) { return planRetainedCaffInitialization(v.capsule, v.expected, v.worktree, v.bindings); }
-function prepareRetainedCaffFiles(repoRoot, dependencyRoot, image, value) {
-  const v = structuredClone(value), plan = planFor(v); // reject before installed-source I/O
+function prepareRetainedCaffFiles(repoRoot, dependencyRoot, image, value, bridge = false) {
+  if (typeof bridge !== 'boolean') throw fail();
+  const v = structuredClone(value), plan = bridge
+    ? planRetainedCaffBridgeInitialization(v.capsule, v.expected, v.worktree, v.bindings) : planFor(v); // before source I/O
   const files = prepareCaffRuntimeFiles(repoRoot, dependencyRoot, image, plan.receipt.deliveryMode);
   files.find(f => f.path === 'probe.cjs').path = 'caff-runtime-bootstrap.cjs';
   const copy = (source, destination) => files.push({ path: destination, bytes: readTrustedDistributionFile(path.resolve(repoRoot), source,
     16 * 1024 * 1024 - files.reduce((n, f) => n + f.bytes.length, 0)) });
   copy('scripts/badcase-capture/retained-caff-container.cjs', 'probe.cjs');
-  for (const name of ['capsule-materialization', 'worktree-replay-inputs', 'worktree-replay-materialization', 'caff-replay-start', 'session-validator']) {
+  for (const name of ['capsule-materialization', 'worktree-replay-inputs', 'worktree-replay-materialization', 'caff-replay-start', 'session-validator', 'controlled-bridge-inputs']) {
     const p = 'build/server/domain/runtime/badcase-capture/' + name + '.js'; copy(p, p);
   }
   for (const [name, text] of [['capsule.json', v.capsule], ['expected.json', JSON.stringify(v.expected)],
