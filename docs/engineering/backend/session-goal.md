@@ -73,8 +73,11 @@ checklist into `workItems`; normalization never invents acceptance criteria.
 - Goal creation requires at least one observable acceptance criterion.
 - Every criterion requires a non-empty `verifyBy` description.
 - Work-item completion reports progress only. It never proves acceptance.
-- Evidence is the current proof set, not a history log. Replace superseded entries,
-  keep summaries concise, and keep criterion references valid.
+- Evidence is the proof behind criterion status, not a progress or history log.
+  Add or replace an entry only when a criterion status changes or a milestone
+  needs proof, and replace superseded entries instead of appending. Intermediate
+  progress, test counts, and remaining-work lists belong in repository docs or
+  replies. Keep summaries concise and criterion references valid.
 - A passed criterion must reference evidence which links back to that criterion.
 - Evidence and criterion references must resolve, and IDs must be non-empty and
   unique within each collection.
@@ -120,7 +123,11 @@ accepted architecture rationale.
 - `suggest-goal` creates or rules on a pending proposal. It does not silently
   mutate structural Goal content.
 - `update-goal` submits factual delivery state and must include `goalRevision`
-  (or `revision`) in its Goal JSON.
+  (or `revision`) in its Goal JSON. Agents call it only when a work-item or
+  criterion status changes or a milestone needs proof. Every accepted update
+  increments the revision, so the next Goal Runner continuation cannot resume
+  the previous provider session (`goal_revision_mismatch`; see
+  [agent session reuse](../runtime/agent-session-reuse.md)).
 - `propose-plan` owns DAG planning. Goal tools do not create ticket or task
   intermediates.
 
