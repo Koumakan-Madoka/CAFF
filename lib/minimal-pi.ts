@@ -217,6 +217,7 @@ async function main(argv = process.argv.slice(2)) {
 
 export const resolveDefaultAgentDir = runtime.resolveDefaultAgentDir;
 export const resolveSessionPath = runtime.resolveSessionPath;
+export const resolveSdkStartConfig = runtime.resolveSdkStartConfig;
 export const sanitizeSessionName = runtime.sanitizeSessionName;
 export const startRun = runtime.startRun;
 

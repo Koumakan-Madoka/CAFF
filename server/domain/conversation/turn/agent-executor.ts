@@ -14,6 +14,7 @@ const {
   resolveIntegerSettingCandidates,
   resolveSetting,
   resolveSessionPath,
+  resolveSdkStartConfig,
   resolveThinkingSetting,
   sanitizeSessionName,
   startRun,
@@ -2302,8 +2303,10 @@ export function createAgentExecutor(options: any = {}) {
     // fresh/resume 模式均已确定，agent 尚未触碰文件系统。采集失败不阻塞用户 turn，
     // 但失败原因由采集服务诚实记录（不伪造成功检查点）。
     let badcaseCheckpointId = '';
+    let capturedSdkStartConfig: any = null;
     if (badcaseCapture) {
       try {
+        capturedSdkStartConfig = resolveSdkStartConfig(provider, model, runOptions);
         const captureTargetDir = String(conversation.worktreePath || sessionProjectDir || resolvedProjectDir || '').trim();
         // Accept synchronous collectors and future asynchronous collectors, but
         // never cross startRun while a pre-turn capture is still in flight.
@@ -2354,6 +2357,9 @@ export function createAgentExecutor(options: any = {}) {
               piVersion: await resolveCapturePiVersion(),
               agentName: String(agent.name || ''),
               deliveryMode: resumeSession ? 'resume' : 'fresh',
+              // Full credential-free IPC descriptor, not just model/version.
+              // This does NOT archive files referenced by these paths.
+              sdkStartConfig: structuredClone(capturedSdkStartConfig),
             },
             skillSnapshots: [
               ...buildCaptureSkillSnapshots(agentConfig.skillIds, resolvedPersonaSkills, new Set()),
@@ -2382,6 +2388,13 @@ export function createAgentExecutor(options: any = {}) {
         // yields. No provider session was touched: use the existing unstarted
         // failure path to restore a claimed resume row and clean up callbacks.
         if (turnState.stopRequested) throw new Error('Stopped before agent run started');
+        // Ambient defaults can change while the collector awaits. Do not link
+        // that checkpoint to a run with a different effective SDK descriptor.
+        if (badcaseCheckpointId && capturedSdkStartConfig
+          && JSON.stringify(resolveSdkStartConfig(provider, model, runOptions)) !== JSON.stringify(capturedSdkStartConfig)) {
+          badcaseCheckpointId = '';
+          console.error('[badcase-capture] sdk_start_config_changed');
+        }
         handle = startRun(provider, model, prompt, runOptions);
       } catch (startError) {
         if (sessionReuseClaim && typeof store.restoreAgentSessionReuse === 'function') {

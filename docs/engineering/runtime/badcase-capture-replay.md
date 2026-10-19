@@ -1234,6 +1234,20 @@ callback在容器内新建DB/随机端口/新内存身份，身份仅进入当�
 
 本轮采用§5.62同一固定官方native与固定Node24.21.0/amd64镜像，真实fresh/resume已观察默认factory、资源/扩展、文件与shell工具及callback闭环；新SHA完整回归/负例和独立审查状态见Goal。它推进了生产运行时的容器接线，但仍是**零模型调用的固定合成wiring diagnostic**：未接用户选trace/封存capsule、完整捕获配置与外部技能/附件、受控路径/凭据替换、模型出口或prompt双variant执行。所有replay资格false，Windows开启门关闭，全部AC pending。正式native的有限压力成功不修复旧人工构建SIGABRT，不证明真实混合负载无限稳定；若重现仍停止分析，不以重试冲过。不改生产、不付费、不真实采集、不合并发布。
 
+### 5.64 完整 SDK 启动配置的采集与 capsule→启动描述符连接（尚未执行回放）
+
+原§5.63固定fixture证明了生产factory能在容器初始化，但日常采集的harness此前只存模型/版本摘要，不能据此重新构造实际thinking、session、cwd、扩展和skill路径。禁止用猜测默认值补齐。新增共享纯函数 `lib/pi-runtime.ts::resolveSdkStartConfig`，由实际IPC发送及执行前采集共同调用，完整保留当前11项SDK启动字段：provider/model/thinking/agentDir/sessionPath/resume/cwd/heartbeatIntervalMs/extensionPaths/additionalSkillPaths/retireUserScopeSkills。沿用原解析、默认和去重语义，不读文件、不启动进程、不加入extraEnv/供应商认证/SQLite/图片/任意options；宿主watchdog等非SDK字段仍由原runtime管理，**本描述符不是完整环境或全部harness归档**。实际SDK host仍会执行原normalizeStartCommand，描述符不冒充SDK加载后的有效配置证明。
+
+executor在capture首个await前生成描述符，脱离引用的副本进入 `configSnapshot.sdkStartConfig`，复用原UTF-8/harness秘密扫描及CAS计划；配置中命中秘密哨兵则不归档该blob、输入incomplete。采集await结束且用户未停止后、startRun前同步重算对比：如果ambient默认值已变化，不关联该checkpoint到新run，发固定 `sdk_start_config_changed` 原因并继续普通turn；不删除旧checkpoint、不假造新现场。该检查不是全进程环境快照，也不证明SDK资源文件没有变化；停止/resume claim恢复及采集失败不阻塞turn的既有语义保持。
+
+新增 `caff-replay-start.ts::planRetainedCaffStart`，消费完整封存capsule、既有worktree映射声明及独立SDK路径绑定声明，输出准备给原factory的完整config。**纯内存计划**：不打开任何原路径、不创建目录、不导入SDK、不调用模型、不签发身份、不提交prompt。先复验capsule/mode/输入映射，然后要求完整11字段闭集、类型、模型/版本/promptVersion/fresh-resume一致；缺 `sdkStartConfig` 的历史包明确拒绝 `replay_sdk_config_missing`，未知SDK字段拒绝而非剥掉。新采集配置不自动升级任何旧包。
+
+绑定声明为 `{schemaVersion:1,sdkConfigHash,bindings:[{pointer,sourcePath,targetPath}]}`，hash绑定原完整config；每个cwd/agentDir/非空resume sessionPath及两路径数组的每一项必须且只能声明一次。只能改变这些已声明路径；其余设置逐值保留。cwd必须是本次实际完整worktree；根内路径映到 `/work/restored/snapshot`，必须有归档文件或后代，Windows使用精确拼写不猜大小写/别名。resume只能绑定已准备的 `/work/restored/working-inputs/session.jsonl`；fresh带非空sessionPath暂拒绝，因为原host会open指定路径，不能以fresh标签掩盖旧session语义。一个显式选定、名称相符的CAFF capabilities分发路径可映到固定容器分发位置；任意其他外置扩展/agentDir/skill不静默替换或删除。
+
+当前支持集合刻意保守：agentDir须在已归档worktree内部，已有SYSTEM.md/settings.json，不合成角色或设置以绕过缺失；禁止携带其auth.json（名称大小写均拒）。普通CAFF的外置私有agentDir仍需独立授权的内容归档、外置contract skill/附件及其他动态依赖闭包尚未完成，本次不跨入这些路径。完整harness、skill inventory、controlled replacement inventory和原始会话字节保留；不将占位符换成真实凭据或把仅配置计划当完整依赖核验。默认loader、settings/扩展/skills的真正执行语义只能由后续容器消费验证，不由这个planner背书。
+
+自动证据包括：父构建缺helper/新planner接口红首、实际隔离fake-host IPC与共享描述符相等、真实executor的fresh/resume采集副本相等以及await期间ambient thinking漂移取消关联；另有完整配置/秘密拒绝/闭集及hash/路径/缺文件/外置依赖/模式负例。fake-host不运行SDK或模型，纯planner不作Docker证据。所有SDK初始化/提交/授权/执行/复现/评测资格仍false；本次尚未把新计划交给Docker entry，§5.63固定fixture不因此变成真实材料回放。Windows管理门仍关、全部AC pending，无真实项目采集、凭据复用、付费调用、生产接线、合并或发布；下一段直接连接该计划与已存在的容器恢复/生产factory，不再新造同类样例。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

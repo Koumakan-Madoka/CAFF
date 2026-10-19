@@ -632,6 +632,11 @@ test('resume capture matches the invocation before start; synchronous failure re
       assert.match(input.prompt, /DELTA-CAPTURE-CONTENT/u);
       assert.equal(input.prompt.includes('HISTORICAL-CAPTURE-CONTENT'), false);
       assert.deepEqual(input.images, run.options.images);
+      const { resolveSdkStartConfig } = require('../../build/lib/minimal-pi');
+      for (let i = 0; i < captures.length; i++) {
+        assert.deepEqual(captures[i].input.harness.configSnapshot.sdkStartConfig,
+          resolveSdkStartConfig(starts[i].provider, starts[i].model, starts[i].options));
+      }
       assert.equal(input.runConfig.provider, run.provider);
       assert.equal(input.runConfig.model, run.model);
       assert.equal(input.conversationId, conversation.id);
@@ -665,6 +670,40 @@ test('resume capture matches the invocation before start; synchronous failure re
         // must survive, rather than advancing or poisoning an unstarted run.
         assert.deepEqual({ ...restored, updatedAt: saved.updatedAt }, saved);
       }
+    });
+  }
+});
+
+test('SDK descriptor drift across awaited capture never associates a stale checkpoint, but does not block the turn', async t => {
+  for (const delivery of ['fresh', 'resume']) for (const drift of [false, true]) {
+    await t.test(`${delivery}/${drift ? 'drift' : 'unchanged'}`, async t => {
+      const previous = process.env.PI_THINKING; process.env.PI_THINKING = '';
+      t.after(() => { if (previous === undefined) delete process.env.PI_THINKING; else process.env.PI_THINKING = previous; });
+      const env = setupExecutorTest(t, { reuseEnabled: true }), agent = createAgent(), conversation = createConversation(agent);
+      agent.runtimeConfig.thinking = '';
+      const store = createFakeStore(conversation, { withReuse: true }); store.agentDir = env.tempDir;
+      seedUserMessage(store, 'u1', 'CONFIG-CAPTURE');
+      if (delivery === 'resume') {
+        await runTurn({ executor: env.createExecutor(store), conversation, agent, store, turnId: 'config-seed' });
+        seedUserMessage(store, 'u2', 'CONFIG-DELTA');
+      }
+      let release, enter, snapshot;
+      const pending = new Promise(resolve => { release = resolve; }), entered = new Promise(resolve => { enter = resolve; });
+      const executor = env.createExecutor(store, { badcaseCapture: { captureTurnCheckpoint(input) {
+        snapshot = structuredClone(input.harness.configSnapshot.sdkStartConfig); enter(); return pending;
+      } } });
+      const running = runTurn({ executor, conversation, agent, store, turnId: 'config-await' });
+      try { await entered; if (drift) process.env.PI_THINKING = 'high'; }
+      finally { release({ captured: true, checkpointId: 'config-cp' }); }
+      await running;
+      const run = env.captured.at(-1), { resolveSdkStartConfig } = require('../../build/lib/minimal-pi');
+      const current = resolveSdkStartConfig(run.provider, run.model, run.options);
+      assert.equal(snapshot.resume, delivery === 'resume');
+      assert.equal(snapshot.thinking, ''); assert.equal(current.thinking, drift ? 'high' : '');
+      const message = store.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+      assert.equal(message.status, 'completed');
+      assert.equal(message.metadata.badcaseCheckpointId || '', drift ? '' : 'config-cp');
+      assert.equal(run.options.resume, delivery === 'resume');
     });
   }
 });

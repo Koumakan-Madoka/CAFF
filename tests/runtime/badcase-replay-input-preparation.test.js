@@ -64,6 +64,23 @@ test('shared preparation preserves controlled substitution and fixed harness/ski
   assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
 });
 
+test('full SDK start descriptor is retained as immutable harness bytes, with existing secret rejection before CAS planning', () => {
+  const value = input('fresh');
+  value.harness.configSnapshot.sdkStartConfig = { provider: 'p', model: 'm', thinking: 'high', cwd: 'C:/project',
+    agentDir: 'C:/agent', sessionPath: '', resume: false, heartbeatIntervalMs: 0,
+    extensionPaths: ['C:/extension.mjs'], additionalSkillPaths: ['C:/skill'], retireUserScopeSkills: true };
+  const before = structuredClone(value.harness.configSnapshot);
+  const result = shared.prepareReplayInput(value, 'fresh', root, () => assert.fail('fresh session read'));
+  const bytes = result.plans.find(p => p.hash === result.replayInput.harness.configSnapshotHash).content;
+  assert.deepEqual(JSON.parse(bytes), before); assertPlans(result);
+  value.harness.configSnapshot.sdkStartConfig.extensionPaths.push('later');
+  assert.deepEqual(JSON.parse(bytes), before, 'caller mutation cannot alter archived descriptor bytes');
+  value.harness.configSnapshot.sdkStartConfig.agentDir = secret;
+  const refused = shared.prepareReplayInput(value, 'fresh', root, () => assert.fail('fresh session read'));
+  assert.equal(refused.replayInput.complete, false); assert.equal(refused.replayInput.harness.configSnapshotHash, undefined);
+  assert.ok(refused.replayInput.incompleteReasons.includes('harness_config_contains_secret')); assertPlans(refused);
+});
+
 for (const kind of ['missing', 'denied', 'broken-chain', 'empty', 'secret', 'utf8']) test(`resume ${kind} never archives damaged/private session or downgrades fresh`, () => {
   const value = input(); let reader = read(session());
   const expected = { missing: 'session_missing', denied: 'session_not_authorized', 'broken-chain': 'session_chain_broken:line_3',
