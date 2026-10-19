@@ -1242,7 +1242,7 @@ executor在capture首个await前生成描述符，脱离引用的副本进入 `c
 
 新增 `caff-replay-start.ts::planRetainedCaffStart`，消费完整封存capsule、既有worktree映射声明及独立SDK路径绑定声明，输出准备给原factory的完整config。**纯内存计划**：不打开任何原路径、不创建目录、不导入SDK、不调用模型、不签发身份、不提交prompt。先复验capsule/mode/输入映射，然后要求完整11字段闭集、类型、模型/版本/promptVersion/fresh-resume一致；缺 `sdkStartConfig` 的历史包明确拒绝 `replay_sdk_config_missing`，未知SDK字段拒绝而非剥掉。新采集配置不自动升级任何旧包。
 
-绑定声明为 `{schemaVersion:1,sdkConfigHash,bindings:[{pointer,sourcePath,targetPath}]}`，hash绑定原完整config；每个cwd/agentDir/非空resume sessionPath及两路径数组的每一项必须且只能声明一次。只能改变这些已声明路径；其余设置逐值保留。cwd必须是本次实际完整worktree；根内路径映到 `/work/restored/snapshot`，必须有归档文件或后代，Windows使用精确拼写不猜大小写/别名。resume只能绑定已准备的 `/work/restored/working-inputs/session.jsonl`；fresh带非空sessionPath暂拒绝，因为原host会open指定路径，不能以fresh标签掩盖旧session语义。一个显式选定、名称相符的CAFF capabilities分发路径可映到固定容器分发位置；任意其他外置扩展/agentDir/skill不静默替换或删除。
+绑定声明为 `{schemaVersion:1,sdkConfigHash,bindings:[{pointer,sourcePath,targetPath}]}`，hash绑定原完整config；每个cwd/agentDir/非空sessionPath及两路径数组的每一项必须且只能声明一次。只能改变这些已声明路径；其余设置逐值保留。cwd必须是本次实际完整worktree；根内路径映到 `/work/restored/snapshot`，必须有归档文件或后代，Windows使用精确拼写不猜大小写/别名。resume只能绑定已准备的 `/work/restored/working-inputs/session.jsonl`。生产executor的fresh同样有非空的命名sessionPath（预定新文件，并非旧历史）；§5.66修正先前将此路径与harness的resume输入混淆的错误。命名fresh必须单独绑定保证不存在的 `/work/restored/working-inputs/fresh-session.jsonl`，保持原host的open分支，不读原路径、不生成旧历史；空sessionPath的fresh仍保持create分支。一个显式选定、名称相符的CAFF capabilities分发路径可映到固定容器分发位置；任意其他外置扩展/agentDir/skill不静默替换或删除。
 
 当前支持集合刻意保守：agentDir须在已归档worktree内部，已有SYSTEM.md/settings.json，不合成角色或设置以绕过缺失；禁止携带其auth.json（名称大小写均拒）。普通CAFF的外置私有agentDir仍需独立授权的内容归档、外置contract skill/附件及其他动态依赖闭包尚未完成，本次不跨入这些路径。完整harness、skill inventory、controlled replacement inventory和原始会话字节保留；不将占位符换成真实凭据或把仅配置计划当完整依赖核验。默认loader、settings/扩展/skills的真正执行语义只能由后续容器消费验证，不由这个planner背书。
 
@@ -1260,9 +1260,21 @@ executor在capture首个await前生成描述符，脱离引用的副本进入 `c
 
 resume以固定SDK `buildSessionContext` 对映射后的原条目生成参考，与真实初始化session.messages逐对象比较，并检查原session ID；不手写仅user投影、不把工具输出播放当执行。`historyVerified`只指**同一SDK对已接受材料的上下文投影一致**，不是独立验证历史语义/附件或完整回放资格。成功返回有界history数量及history/systemPrompt/tool-name清单hash，不返回正文、原始输出或身份；宿主核对精确回执、全部manifest/镜像/模式/声明/配置hash和观察值闭集。容器核对原capsule与全部materials字节不变，工作session/settings可由原SDK在该variant副本内写入；不要求工作session事后与原字节完全相同。finally等待runtime.dispose，失败不得输出成功；outer runProbe仍负责owner核验、隔离、期限和容器树终止/移除。
 
-PI_OFFLINE与父fetch拒绝守卫在SDK前设置、退出恢复；初始化后streamSimple拒绝哨兵作为纵深保护。计数不是全网络或全部模型API审计，硬边界仍是network=none、封闭env、无供应商凭据及零prompt提交。默认沿原镜像RepoDigest/身份门、exec-work的显式native选择、只读root、uid65534、无宿主挂载/socket/端口、cap-drop、512MiB/1CPU/64pids及tmp noexec；无宿主agent回退。
+PI_OFFLINE与父fetch拒绝守卫在SDK前设置、退出恢复；§5.66将原初始化后streamSimple哨兵改为SDK导入后、host/factory调用前安装固定ModelRuntime请求方法原型守卫，并持续到dispose结束。计数不覆盖SDK模块顶层执行、直接provider API或子进程，不是全网络或全部模型API审计，硬边界仍是network=none、封闭env、无供应商凭据及零prompt提交。默认沿原镜像RepoDigest/身份门、exec-work的显式native选择、只读root、uid65534、无宿主挂载/socket/端口、cap-drop、512MiB/1CPU/64pids及tmp noexec；无宿主agent回退。
 
 验证经真实store→封存→capsule生成合成材料，分别送默认Docker入口fresh/resume（Windows来源路径声明），另一个重签外层manifest但损坏capsule的容器负例须固定拒绝；不是授权真实worktree采集，不以合成用例冒充用户badcase。resume保留CRLF、user/assistant/custom-message历史，两个模式共享相同runtime/dependency及systemPrompt/tools hash。VM执行实际entry的restore/config/history/缺session/扩展/model/archive/清理负例仅为控制流覆盖，非Docker证据。适用回归、真实Docker数字和固定SHA审查以Goal E126为准；E124/E125未独立审查部分并入本初始化里程碑，不追认PASS。Windows开启门仍关、全部AC pending、历史6美元未结算非账单；下一步仍需真实trace callback/外置授权配置和依赖归档、受控凭据与模型出口、完整prompt双variant及UI闭环，不合并发布。
+
+### 5.66 独立审查修复：生产命名 fresh 与初始化观测边界
+
+DeepSeek 对 `197aa2a7` 的里程碑审查为 **FAIL（1×P1、5×P3）**，不是自动测试全绿即通过。P1根因为实际executor始终传入sessionName，`resolveSdkStartConfig` 在fresh也解析出命名路径；旧合成fixture却手写空sessionPath，planner因此拒绝真实生产者输出，容器样例还误走create分支。修复选择保留原完整描述符：非空fresh路径须显式hash绑定到独立working-inputs中的固定新文件，恢复后、任何SDK导入前lstat确认其不存在（已存在文件、目录、悬空链接或其他I/O错误均拒绝）。只改工作副本路径，不访问宿主原sessionPath；原factory使用open，初始化结果的sessionFile须与该路径相同且实际历史为空。resume仍必须有归档session并保持ID/历史，不降fresh；未命名fresh仍用create。本层不证明原宿主预定路径过去从未存在，也不补采历史。
+
+fixture改为执行生产编译resolver，跨平台测试仅替换显式path语义及封闭环境，不再手写11字段配置；本机另直接与真实resolver输出逐值比较，并以原host的SessionManager分支桩检出open→create漂移。生产resolver的cwd与Room原始captureTargetDir仍来自不同生产者：**当前只支持与已授权checkpoint根精确同拼写的cwd**。测试覆盖resolver去尾分隔符后的正例，以及大小写、分隔符、尾斜杠、其他根差异；不相同报 `replay_sdk_cwd_mismatch`，不通过宿主realpath/大小写折叠猜目录身份、不扩大授权。它是已测试的支持边界，不声称任意真实Room路径格式都已接通。
+
+补足审查覆盖：结构合法但含custom私有状态的session先断言原validator `ok=true` 且含unverifiedDimensions，再确认精确拒绝 `replay_sdk_session_unverified`；不让结构错误遮蔽该门。容器从原loader读取实际SYSTEM来源，必须命中归档snapshot文件且加载正文与原字节一致（SDK的BOM处理除外），并出现在实际agent systemPrompt中，保留项目SYSTEM优先级。session实际SettingsManager的global设置必须包含全部归档global键值，允许SDK增加当前副本的默认模型字段；失败不输出成功回执。此验证不证明任意setting下游效果或任意旧schema迁移均受支持，project覆盖/迁移仍可导致明确阻断。回执 `archivedResourcesVerified=true` 仅指这些具体检查。
+
+模型哨兵在固定SDK导入后、host导入/factory创建前覆盖ModelRuntime的stream/complete/streamSimple/completeSimple/streamDeferred/fetchDeferred/cancelDeferred七方法，方法缺失即拒；持续至dispose完成，finally还原原型与进程状态，吞掉一次请求尝试也不能返回modelCalls=0。VM对每个方法在factory内注入请求，检出原初始化后打桩的盲窗；它不是任意SDK或provider的安全拦截器。`modelGuardBeforeFactory=true`不等于导入前全模型审计，Docker隔离与零凭据仍不可替代。
+
+本轮真实Docker计划有界3容器：默认命名fresh、默认resume及故意在fresh目标预置文件的拒绝探针，失败即停、无模型请求。fresh验证原命名open分支目标及零历史；resume核对3条上下文；角色和global设置均经实际SDK观测；负例是显式改写诊断entry、重签manifest的测试，不是产品修改或历史badcase。全部容器清理；固定镜像/RepoDigest、架构/Node/native身份、资源/网络/挂载约束不变。仍是合成封存材料，不是实际NTFS授权采集或完整turn；普通trace callback、外置输入归档、凭据/模型出口和UI闭环仍缺，所有AC pending、Windows开启门关闭，历史6美元未结算非账单，不合并发布。新固定SHA与复审结论见Goal，不追认E124–E126为PASS。
 
 ## 6. 威胁模型
 

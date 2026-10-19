@@ -118,7 +118,8 @@ test('actual container entry restores capsule before original factory and verifi
   for (const mode of ['fresh', 'resume']) {
     const h = harness(fixture(t, mode), image), r = await h.run();
     assert.equal(r.deliveryMode, mode); assert.equal(r.sdkInitialized, true); assert.equal(r.observation.historyMessages, mode === 'resume' ? 3 : 0);
-    assert.equal(r.historyVerified, true); assert.equal(r.callbackWired, false); assert.equal(r.modelCalls, 0); assert.equal(r.externalFetchCalls, 0);
+    assert.equal(r.historyVerified, true); assert.equal(r.archivedResourcesVerified, true); assert.equal(r.modelGuardBeforeFactory, true);
+    assert.equal(r.callbackWired, false); assert.equal(r.modelCalls, 0); assert.equal(r.externalFetchCalls, 0);
     assert.equal(r.runnable, false); assert.equal(r.invocationSubmitted, false); assert.equal(h.disposals(), 1);
     assert.ok(h.events.indexOf('restore') < h.events.indexOf('load:/work/runtime/dist/bundle/index.js'));
     assert.ok(h.events.indexOf('load:/work/build/lib/pi-sdk-host.mjs') < h.events.indexOf('factory'));
@@ -138,6 +139,42 @@ test('container rejects missing session/config drift/invalid history and loader/
     assert.equal(h.context.fetch, h.originalFetch); assert.deepEqual(h.context.process.env, {});
   }
 });
+test('valid custom session state with unverified dimensions hits the dedicated guard, not structural rejection', t => {
+  const v = fixture(t, 'resume');
+  resign(v, d => { const r = d.checkpoint.replayInput, b = d.blobs.find(b => b.sha256 === r.sessionBlobHash);
+    const entries = Buffer.from(b.base64, 'base64').toString().trim().split('\n').map(JSON.parse);
+    entries.push({ type: 'custom', id: 'private-state', parentId: 'm3', timestamp: '2026-01-01T00:00:00.004Z', customType: 'private-extension', data: { count: 1 } });
+    const text = entries.map(JSON.stringify).join('\n') + '\n';
+    const checked = require('../../build/server/domain/runtime/badcase-capture/session-validator').validateSessionV2(text, { authorizedRoot: '' });
+    assert.equal(checked.ok, true); assert.ok(checked.unverifiedDimensions.some(s => s.startsWith('extension_state_unverified:')));
+    b.base64 = Buffer.from(text).toString('base64'); b.sha256 = hash(text); r.sessionBlobHash = b.sha256;
+  });
+  assert.throws(() => planner(v), { code: 'replay_sdk_session_unverified' });
+});
+test('named fresh refuses existing or dangling destinations before SDK loading and verifies the exact opened file', async t => {
+  const harness = require('../helpers/badcase-retained-caff-vm.cjs');
+  for (const options of [{ existingFresh: true }, { danglingFresh: true }]) {
+    const h = harness(fixture(t), image, options); await assert.rejects(h.run());
+    assert.deepEqual(h.loads, []); assert.equal(h.disposals(), 0); assert.equal(h.modelGuardRestored(), true);
+  }
+  const h = harness(fixture(t), image, { wrongSessionFile: true }); await assert.rejects(h.run()); assert.equal(h.disposals(), 1);
+});
+test('archived role bytes and settings are observed in actual factory resources, not merely present on disk', async t => {
+  const harness = require('../helpers/badcase-retained-caff-vm.cjs');
+  for (const options of [{ wrongRole: true }, { wrongLoadedRole: true }, { wrongComposedRole: true }, { wrongRoleSource: true }, { wrongSettings: true }]) {
+    const h = harness(fixture(t), image, options); await assert.rejects(h.run());
+    assert.equal(h.disposals(), 1); assert.equal(h.modelGuardRestored(), true);
+  }
+});
+test('all pinned ModelRuntime request methods are guarded before the factory and restored on success and failure', async t => {
+  const harness = require('../helpers/badcase-retained-caff-vm.cjs');
+  for (const name of ['stream', 'complete', 'streamSimple', 'completeSimple', 'streamDeferred', 'fetchDeferred', 'cancelDeferred']) {
+    const h = harness(fixture(t), image, { modelDuringFactory: name }); await assert.rejects(h.run());
+    assert.equal(h.events.some(e => e.startsWith('unguarded-model:')), false); assert.equal(h.modelGuardRestored(), true);
+  }
+  const h = harness(fixture(t), image), r = await h.run(); assert.equal(r.modelCalls, 0); assert.equal(h.modelGuardRestored(), true);
+});
+
 test('retained container entry rejects host execution before capsule restoration or SDK import', () => {
   const r = spawnSync(process.execPath, [path.join(repo, 'scripts/badcase-capture/retained-caff-container.cjs')], { encoding: 'utf8', env: { PATH: process.env.PATH } });
   assert.equal(r.status, 1); assert.equal(r.stdout, ''); assert.equal(r.stderr, 'retained_caff_initialization_failed\n');

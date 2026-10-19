@@ -52,13 +52,16 @@ export function planRetainedCaffStart(capsule: string, expected: any, worktreeDe
     || source.provider !== input.runConfig.provider || source.model !== input.runConfig.model
     || input.harness.agentPromptVersion !== input.runConfig.promptVersion
     || !['0.85.1', 'pi:0.85.1'].includes(input.harness.piVersion)
-    || source.cwd !== worktreeDeclaration.sourceRoot || source.resume !== (input.deliveryMode === 'resume')
+    || source.resume !== (input.deliveryMode === 'resume')
     || !text(source.agentDir) || typeof source.sessionPath !== 'string'
-    || (source.resume ? !text(source.sessionPath) : source.sessionPath !== '')
+    || (source.resume ? !text(source.sessionPath) : source.sessionPath !== '' && !text(source.sessionPath))
     || !Number.isSafeInteger(source.heartbeatIntervalMs) || source.heartbeatIntervalMs < 0
     || typeof source.retireUserScopeSkills !== 'boolean'
     || !['extensionPaths', 'additionalSkillPaths'].every(k => Array.isArray(source[k]) && source[k].length <= 256
       && source[k].every(text) && new Set(source[k]).size === source[k].length)) throw fail();
+  // The capture root and production resolver cwd have distinct producers.
+  // Unsupported lexical aliases are a visible blocker, not inferred authority.
+  if (source.cwd !== worktreeDeclaration.sourceRoot) throw fail('replay_sdk_cwd_mismatch');
   if (!exact(declaration, ['schemaVersion', 'sdkConfigHash', 'bindings']) || declaration.schemaVersion !== 1
     || declaration.sdkConfigHash !== hash(JSON.stringify(source)) || !Array.isArray(declaration.bindings)
     || declaration.bindings.length > 515) throw fail('replay_sdk_bindings_invalid');
@@ -76,7 +79,7 @@ export function planRetainedCaffStart(capsule: string, expected: any, worktreeDe
     return DESTINATION + suffix;
   };
   const required = new Map<string, string>([['/cwd', source.cwd], ['/agentDir', source.agentDir]]);
-  if (source.resume) required.set('/sessionPath', source.sessionPath);
+  if (source.sessionPath) required.set('/sessionPath', source.sessionPath);
   for (const key of ['extensionPaths', 'additionalSkillPaths']) source[key].forEach((v: string, i: number) => required.set(`/${key}/${i}`, v));
   for (const b of declaration.bindings) {
     if (!exact(b, ['pointer', 'sourcePath', 'targetPath']) || !required.has(b.pointer) || seen.has(b.pointer)
@@ -87,7 +90,11 @@ export function planRetainedCaffStart(capsule: string, expected: any, worktreeDe
     if (!components || components.split('/').some((p: string) => !p || p === '.' || p === '..'
       || p.length > 255 || !/^[A-Za-z0-9_.@ -]+$/.test(p) || p.trim() !== p)) throw fail('replay_sdk_bindings_invalid');
     let target: string;
-    if (b.pointer === '/sessionPath') target = '/work/restored/working-inputs/session.jsonl';
+    // Production fresh turns also carry a named sessionPath. Keep open() on a
+    // guaranteed-new variant-local destination, never read that source path or
+    // confuse it with the archived resume input. Empty fresh still uses create().
+    if (b.pointer === '/sessionPath') target = source.resume
+      ? '/work/restored/working-inputs/session.jsonl' : '/work/restored/working-inputs/fresh-session.jsonl';
     else if (b.pointer.startsWith('/extensionPaths/')) {
       // Only this explicitly selected installed CAFF extension may substitute
       // for an external distribution path. Other extensions must be archived.

@@ -1,6 +1,7 @@
 // Owned synthetic sealed capsule through the real store/sealing APIs. No SDK or capture.
 const crypto = require('node:crypto');
 const fixture = require('./badcase-initialization-fixture.cjs');
+const sdkConfig = require('./badcase-sdk-config.cjs');
 const { prepareRetainedInitializationCapsule } = require('../../build/server/domain/runtime/badcase-capture/retained-initialization');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 module.exports = function retainedCaffFixture(t, mode = 'fresh', platform = 'linux') {
@@ -19,9 +20,9 @@ module.exports = function retainedCaffFixture(t, mode = 'fresh', platform = 'lin
       cp.files[name] = { type: 'file', mode: 0o100600, size: Buffer.byteLength(content), hash: put(content) };
     }
     r.runConfig.provider = 'openai'; r.runConfig.model = 'gpt-4o-mini'; config.toolBridgeEnabled = true;
-    sdk = config.sdkStartConfig = { provider: r.runConfig.provider, model: r.runConfig.model, thinking: 'off', agentDir: root + sep + '.agent',
-      cwd: root, resume: mode === 'resume', sessionPath: mode === 'resume' ? root + sep + 'old.jsonl' : '', heartbeatIntervalMs: 0,
-      extensionPaths: [ext], additionalSkillPaths: [root + sep + 'skills' + sep + 'contract'], retireUserScopeSkills: true };
+    sdk = config.sdkStartConfig = sdkConfig(platform, r.runConfig.provider, r.runConfig.model, { thinking: 'off', agentDir: root + sep + '.agent',
+      cwd: root, resume: mode === 'resume', session: 'chat-conv-turn-agent-default-abc123', heartbeatIntervalMs: 0,
+      extensionPaths: [ext], additionalSkillPaths: [root + sep + 'skills' + sep + 'contract'], retireUserScopeSkills: true });
     r.harness.configSnapshotHash = put(JSON.stringify(config));
     r.promptBlobHash = r.normalizedPromptHash = put('Inspect ' + root);
     if (mode === 'resume') {
@@ -44,7 +45,7 @@ module.exports = function retainedCaffFixture(t, mode = 'fresh', platform = 'lin
   const bindings = [['/cwd', sdk.cwd, '/work/restored/snapshot'], ['/agentDir', sdk.agentDir, '/work/restored/snapshot/.agent'],
     ['/extensionPaths/0', ext, '/work/build/lib/pi-extensions/caff-capabilities.mjs'],
     ['/additionalSkillPaths/0', sdk.additionalSkillPaths[0], '/work/restored/snapshot/skills/contract'],
-    ...(mode === 'resume' ? [['/sessionPath', sdk.sessionPath, '/work/restored/working-inputs/session.jsonl']] : [])]
+    ['/sessionPath', sdk.sessionPath, '/work/restored/working-inputs/' + (mode === 'resume' ? 'session.jsonl' : 'fresh-session.jsonl')]]
     .map(([pointer, sourcePath, targetPath]) => ({ pointer, sourcePath, targetPath }));
   return { capsule: p.capsule, expected: { capsuleHash: p.capsuleHash, checkpointChecksum: p.provenance.checkpointChecksum }, worktree,
     bindings: { schemaVersion: 1, sdkConfigHash: hash(JSON.stringify(sdk)), bindings } };

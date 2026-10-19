@@ -27,7 +27,8 @@ function prepareRetainedCaffFiles(repoRoot, dependencyRoot, image, value) {
 function initializationReceipt(manifest, image, plan) {
   return { ...plan.receipt, kind: 'retained-caff-initialization-v1', sdkInitialized: true,
     initializationOnly: true, productionRuntimeFactory: true, fileModePreserved: true,
-    historyVerified: true, archivedMaterialsUnchanged: true, callbackWired: false, controlledReplacementsApplied: false,
+    historyVerified: true, archivedMaterialsUnchanged: true, archivedResourcesVerified: true, modelGuardBeforeFactory: true,
+    callbackWired: false, controlledReplacementsApplied: false,
     invocationSubmitted: false, modelCalls: 0, externalFetchCalls: 0,
     nodeVersion: image.nodeVersion, architecture: image.architecture,
     inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash,

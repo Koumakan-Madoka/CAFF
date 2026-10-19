@@ -16,15 +16,35 @@ async function runRetainedCaffContainer(loadModule = specifier => import(specifi
   const material = planModePreservingReplayCapsule(capsule, expected);
   const working = planWorktreeReplayMaterialization(capsule, expected, worktree);
   let runtime, modelCalls = 0, externalFetchCalls = 0;
+  const modelGuards = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => { externalFetchCalls++; throw Error('external_fetch_forbidden'); };
   try {
     assert.deepEqual(materializeWorktreeReplayInputs(capsule, expected, worktree, '/work/restored'), working.expectedReceipt);
     assert.equal(read('restored/working-inputs/prompt.txt'), plan.invocation);
     if (plan.config.resume) assert.equal(fs.readFileSync(plan.config.sessionPath, 'utf8'), plan.sessionText);
-    else assert.equal(fs.existsSync('/work/restored/working-inputs/session.jsonl'), false);
+    else {
+      assert.equal(fs.existsSync('/work/restored/working-inputs/session.jsonl'), false);
+      // lstat, not exists(): even a dangling link must not be accepted as new.
+      // This is an exclusively created variant directory, never the source path.
+      if (plan.config.sessionPath) {
+        let absent = false;
+        try { fs.lstatSync(plan.config.sessionPath); } catch (e) { if (e.code === 'ENOENT') absent = true; else throw e; }
+        assert.equal(absent, true);
+      }
+    }
     process.env.PI_OFFLINE = '1'; process.env.PI_CODING_AGENT_DIR = plan.config.agentDir; process.env.PI_TELEMETRY = '0';
     const sdk = await loadModule('/work/runtime/dist/bundle/index.js'); assert.equal(sdk.VERSION, '0.85.1');
+    // Cover service construction and factory/extension initialization, not just
+    // the returned runtime. This is a pinned-SDK diagnostic, not a network audit:
+    // module top-level code and direct provider/child-process APIs remain outside
+    // this counter and are isolated by Docker network=none and credential gates.
+    for (const name of ['stream', 'complete', 'streamSimple', 'completeSimple', 'streamDeferred', 'fetchDeferred', 'cancelDeferred']) {
+      const prototype = sdk.ModelRuntime.prototype, descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+      assert.equal(typeof descriptor?.value, 'function');
+      modelGuards.push({ prototype, name, descriptor });
+      Object.defineProperty(prototype, name, { ...descriptor, value: () => { modelCalls++; throw Error('model_forbidden'); } });
+    }
     // The pinned SDK's context builder is the reference, not a hand-written
     // linear-history projection. No open() on a missing session or fresh fallback.
     const history = plan.config.resume ? sdk.buildSessionContext(plan.sessionEntries.slice(1)).messages : [];
@@ -32,14 +52,35 @@ async function runRetainedCaffContainer(loadModule = specifier => import(specifi
     const command = host.normalizeStartCommand({ type: 'start', prompt: plan.invocation, config: plan.config });
     assert.deepEqual(command.config, plan.config); assert.equal(command.prompt, plan.invocation);
     ({ runtime } = await host.createSdkRuntime(sdk, command.config));
-    runtime.services.modelRuntime.streamSimple = () => { modelCalls++; throw Error('model_forbidden'); };
     const session = runtime.session, errors = [];
+    if (plan.config.sessionPath) assert.equal(session.sessionFile, plan.config.sessionPath);
     await session.bindExtensions({ mode: 'json', onError: () => errors.push(true) });
     assert.equal(runtime.modelFallbackMessage, undefined);
     assert.equal(session.model.provider, plan.config.provider); assert.equal(session.model.id, plan.config.model);
     assert.deepEqual(session.messages, history);
     if (plan.config.resume) assert.equal(session.sessionId, plan.sessionEntries[0].id);
-    assert.equal(runtime.services.resourceLoader.getExtensions().errors.length, 0);
+    const loader = runtime.services.resourceLoader;
+    assert.equal(loader.getExtensions().errors.length, 0);
+    // Observe loaded resources, not just their presence on disk. Project SYSTEM
+    // precedence is retained, but its selected source must be archived too.
+    const archivedAt = p => material.files.find(f => f.path === 'snapshot/' + p.slice('/work/restored/snapshot/'.length));
+    const rolePath = loader.getSystemPromptSource()?.path;
+    assert.ok(typeof rolePath === 'string' && rolePath.startsWith('/work/restored/snapshot/'));
+    const role = archivedAt(rolePath); assert.ok(role);
+    const roleText = role.bytes.toString('utf8').replace(/^\uFEFF/, '');
+    assert.equal(loader.getSystemPrompt(), roleText);
+    assert.ok(session.agent.state.systemPrompt.includes(roleText.trim()));
+    const archivedSettings = JSON.parse(archivedAt(plan.config.agentDir + '/settings.json').bytes);
+    const contains = (actual, expected) => {
+      if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
+        assert.ok(actual && typeof actual === 'object' && !Array.isArray(actual));
+        for (const key of Object.keys(expected)) { assert.ok(Object.hasOwn(actual, key)); contains(actual[key], expected[key]); }
+      } else assert.deepEqual(actual, expected);
+    };
+    // SDK may add default-model fields to this variant's settings; supplied
+    // archived global keys must still be observed. This is not a claim about
+    // every key's downstream effect or arbitrary settings migrations.
+    contains(session.settingsManager.getGlobalSettings(), archivedSettings);
     assert.deepEqual(errors, []); assert.equal(modelCalls, 0); assert.equal(externalFetchCalls, 0);
     // Only archive materials are immutable: SDK session/settings changes belong
     // to this variant's working copy. Never mutate or unpin the retained source.
@@ -51,15 +92,18 @@ async function runRetainedCaffContainer(loadModule = specifier => import(specifi
       systemPromptHash: hash(session.agent.state.systemPrompt), toolsHash: hash(JSON.stringify(session.agent.state.tools.map(t => t.name).sort())) };
     return { ...plan.receipt, kind: 'retained-caff-initialization-v1', sdkInitialized: true,
       initializationOnly: true, productionRuntimeFactory: true, fileModePreserved: true,
-      historyVerified: true, archivedMaterialsUnchanged: true, callbackWired: false, controlledReplacementsApplied: false,
+      historyVerified: true, archivedMaterialsUnchanged: true, archivedResourcesVerified: true, modelGuardBeforeFactory: true,
+      callbackWired: false, controlledReplacementsApplied: false,
       invocationSubmitted: false, modelCalls, externalFetchCalls,
       nodeVersion: image.nodeVersion, architecture: image.architecture, inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash,
       dependencyHash: hash(JSON.stringify(manifest.files.filter(f => f.path.startsWith('node_modules/')))), observation };
   } finally {
     try { await runtime?.dispose(); }
     finally {
+      for (const { prototype, name, descriptor } of modelGuards.reverse()) Object.defineProperty(prototype, name, descriptor);
       globalThis.fetch = originalFetch;
       for (const key of ['PI_OFFLINE', 'PI_CODING_AGENT_DIR', 'PI_TELEMETRY']) delete process.env[key];
+      assert.equal(modelCalls, 0); assert.equal(externalFetchCalls, 0);
     }
   }
 }

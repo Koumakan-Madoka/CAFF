@@ -2,6 +2,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fixture = require('../helpers/badcase-initialization-fixture.cjs');
+const sdkConfig = require('../helpers/badcase-sdk-config.cjs');
 const { prepareRetainedInitializationCapsule } = require('../../build/server/domain/runtime/badcase-capture/retained-initialization');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const api = () => require('../../build/server/domain/runtime/badcase-capture/caff-replay-start');
@@ -15,9 +16,9 @@ function inputs(t, mode = 'fresh', platform = 'linux') {
       cp.files[name] = { type: 'file', mode: 0o100600, size: Buffer.byteLength(content), hash: put(content) };
     }
     config.toolBridgeEnabled = true;
-    config.sdkStartConfig = { provider: r.runConfig.provider, model: r.runConfig.model, thinking: 'high', agentDir: root + sep + '.agent',
-      cwd: root, resume: mode === 'resume', sessionPath: mode === 'resume' ? root + sep + 'old.jsonl' : '', heartbeatIntervalMs: 0,
-      extensionPaths: [ext], additionalSkillPaths: [root + sep + 'skills' + sep + 'contract'], retireUserScopeSkills: true };
+    config.sdkStartConfig = sdkConfig(platform, r.runConfig.provider, r.runConfig.model, { thinking: 'high', agentDir: root + sep + '.agent',
+      cwd: root, resume: mode === 'resume', session: 'chat-conv-turn-agent-default-abc123', heartbeatIntervalMs: 0,
+      extensionPaths: [ext], additionalSkillPaths: [root + sep + 'skills' + sep + 'contract'], retireUserScopeSkills: true });
     r.harness.configSnapshotHash = put(JSON.stringify(config));
     r.promptBlobHash = r.normalizedPromptHash = put('Inspect ' + root);
     if (mode === 'resume') { session[0].cwd = root; r.sessionBlobHash = put(session.map(e => JSON.stringify(e)).join('\r\n') + '\r\n'); }
@@ -31,7 +32,7 @@ function inputs(t, mode = 'fresh', platform = 'linux') {
   const bindings = [['/cwd', config.cwd, '/work/restored/snapshot'], ['/agentDir', config.agentDir, '/work/restored/snapshot/.agent'],
     ['/extensionPaths/0', ext, '/work/build/lib/pi-extensions/caff-capabilities.mjs'],
     ['/additionalSkillPaths/0', config.additionalSkillPaths[0], '/work/restored/snapshot/skills/contract'],
-    ...(mode === 'resume' ? [['/sessionPath', config.sessionPath, '/work/restored/working-inputs/session.jsonl']] : [])]
+    ['/sessionPath', config.sessionPath, '/work/restored/working-inputs/' + (mode === 'resume' ? 'session.jsonl' : 'fresh-session.jsonl')]]
     .map(([pointer, sourcePath, targetPath]) => ({ pointer, sourcePath, targetPath }));
   return { capsule: p.capsule, expected, worktree, declaration: { schemaVersion: 1, sdkConfigHash: hash(JSON.stringify(config)), bindings } };
 }
@@ -54,7 +55,7 @@ test('fresh/resume and Windows/Linux source capsules preserve all non-path SDK s
   for (const mode of ['fresh', 'resume']) for (const platform of ['linux', 'win32']) {
     const v = inputs(t, mode, platform), before = JSON.stringify(v), p = run(v);
     assert.equal(p.config.cwd, '/work/restored/snapshot'); assert.equal(p.config.agentDir, '/work/restored/snapshot/.agent');
-    assert.equal(p.config.resume, mode === 'resume'); assert.equal(p.config.sessionPath, mode === 'resume' ? '/work/restored/working-inputs/session.jsonl' : '');
+    assert.equal(p.config.resume, mode === 'resume'); assert.equal(p.config.sessionPath, mode === 'resume' ? '/work/restored/working-inputs/session.jsonl' : '/work/restored/working-inputs/fresh-session.jsonl');
     assert.equal(p.config.thinking, 'high'); assert.equal(p.config.heartbeatIntervalMs, 0); assert.equal(p.config.retireUserScopeSkills, true);
     assert.equal(p.config.model, p.archivedHarness.sdkStartConfig.model); assert.equal(p.config.provider, p.archivedHarness.sdkStartConfig.provider);
     assert.deepEqual(p.config.additionalSkillPaths, ['/work/restored/snapshot/skills/contract']);
@@ -82,8 +83,8 @@ test('legacy summary, unknown SDK keys, mismatched model/mode/version and absent
   for (const mutate of [h => { delete h.sdkStartConfig; }, h => { h.sdkStartConfig.unknown = true; }, h => { h.sdkStartConfig.model = 'different'; },
     h => { h.sdkStartConfig.resume = true; }, h => { h.piVersion = '9'; }, h => { h.sdkStartConfig.thinking = 'guess'; },
     h => { h.sdkStartConfig.heartbeatIntervalMs = -1; }, h => { h.sdkStartConfig.heartbeatIntervalMs = '0'; },
-    h => { h.sdkStartConfig.retireUserScopeSkills = 'true'; }, h => { h.sdkStartConfig.cwd += '/other'; },
-    h => { h.sdkStartConfig.sessionPath = '/historical/nonempty-fresh.jsonl'; }]) {
+    h => { h.sdkStartConfig.retireUserScopeSkills = 'true'; },
+    h => { h.sdkStartConfig.sessionPath = ' '; }]) {
     const v = inputs(t); const d = JSON.parse(v.capsule), blob = d.blobs.find(b => b.sha256 === d.checkpoint.replayInput.harness.configSnapshotHash);
     const h = JSON.parse(Buffer.from(blob.base64, 'base64')); mutate(h);
     const c = JSON.stringify(h); blob.sha256 = hash(c); blob.base64 = Buffer.from(c).toString('base64'); d.checkpoint.replayInput.harness.configSnapshotHash = blob.sha256;
@@ -141,4 +142,47 @@ test('resume stays resume, missing session/mapping fails and cannot be silently 
   const w = inputs(t, 'resume'); change(w, h => { h.sdkStartConfig.sessionPath = ''; }); rejected(w);
   const x = inputs(t, 'resume'); x.worktree.mappings = x.worktree.mappings.filter(m => m.input !== 'session');
   assert.throws(() => run(x), { code: 'replay_worktree_mapping_invalid' });
+});
+
+test('production named fresh descriptor is accepted and keeps the original host open branch without importing old history', async t => {
+  const platform = process.platform === 'win32' ? 'win32' : 'linux', v = inputs(t, 'fresh', platform);
+  const source = JSON.parse(v.capsule), r = source.checkpoint.replayInput;
+  const recorded = JSON.parse(Buffer.from(source.blobs.find(b => b.sha256 === r.harness.configSnapshotHash).base64, 'base64')).sdkStartConfig;
+  const native = require('../../build/lib/pi-runtime').resolveSdkStartConfig(recorded.provider, recorded.model, {
+    ...recorded, session: 'chat-conv-turn-agent-default-abc123', heartbeatIntervalMs: 0,
+  });
+  assert.deepEqual(recorded, native); assert.ok(recorded.sessionPath.includes('named-sessions'));
+  const p = run(v); assert.equal(p.config.resume, false); assert.equal(p.sessionText, null);
+  assert.equal(p.config.sessionPath, '/work/restored/working-inputs/fresh-session.jsonl');
+  const host = await import(require('node:url').pathToFileURL(require('node:path').resolve(__dirname, '../../lib/pi-sdk-host.mjs')).href);
+  const calls = [], sdk = { SessionManager: { open: (...args) => { calls.push(args); return 'opened'; },
+    create: () => assert.fail('must not change the production named-fresh branch'), continueRecent: () => assert.fail('no resume fallback') } };
+  assert.equal(host.createSessionManager(sdk, p.config), 'opened');
+  assert.deepEqual(calls, [[p.config.sessionPath, require('node:path').dirname(p.config.sessionPath), p.config.cwd]]);
+});
+
+test('unnamed fresh keeps create semantics, named fresh requires its own binding and cannot target archived resume material', t => {
+  const named = inputs(t); named.declaration.bindings.find(b => b.pointer === '/sessionPath').targetPath = '/work/restored/working-inputs/session.jsonl';
+  rejected(named, 'replay_sdk_bindings_invalid');
+  const missing = inputs(t); missing.declaration.bindings = missing.declaration.bindings.filter(b => b.pointer !== '/sessionPath');
+  rejected(missing, 'replay_sdk_bindings_invalid');
+  const v = inputs(t); change(v, h => { h.sdkStartConfig.sessionPath = ''; });
+  v.declaration.bindings = v.declaration.bindings.filter(b => b.pointer !== '/sessionPath');
+  const p = run(v); assert.equal(p.config.sessionPath, ''); assert.equal(p.config.resume, false); assert.equal(p.sessionText, null);
+});
+
+test('actual resolver normalization does not silently confer worktree authority on path aliases', t => {
+  // path.resolve normalizes cwd but captureTargetDir may retain the stored Room
+  // spelling. These unsupported mismatches must stay explicit, not be case-folded.
+  for (const platform of ['linux', 'win32']) {
+    const v = inputs(t, 'fresh', platform);
+    const root = v.worktree.sourceRoot, slash = platform === 'win32' ? '\\' : '/';
+    const normalized = sdkConfig(platform, 'anthropic', 'claude-sonnet-4-5', { cwd: root + slash, thinking: 'high', heartbeatIntervalMs: 0 });
+    assert.equal(normalized.cwd, root); assert.equal(run(v).config.cwd, '/work/restored/snapshot');
+    for (const alias of [root + slash, root + slash + 'other', ...(platform === 'win32' ? [root.toUpperCase(), root.replaceAll('\\', '/')] : [])]) {
+      const w = inputs(t, 'fresh', platform); change(w, h => { h.sdkStartConfig.cwd = alias; });
+      w.declaration.bindings.find(b => b.pointer === '/cwd').sourcePath = alias;
+      rejected(w, 'replay_sdk_cwd_mismatch');
+    }
+  }
 });
