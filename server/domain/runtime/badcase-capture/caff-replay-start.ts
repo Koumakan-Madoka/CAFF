@@ -5,6 +5,7 @@
 import crypto from 'node:crypto';
 import { prepareWorktreeReplayInputs } from './worktree-replay-inputs';
 import { planModePreservingReplayCapsule } from './capsule-materialization';
+import { validateSessionV2 } from './session-validator';
 const hash = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
 const fail = (code = 'replay_sdk_config_invalid') => Object.assign(Error(code), { code });
 const object = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -13,6 +14,33 @@ const text = (v: any) => typeof v === 'string' && v.length > 0 && v.trim() === v
 const CONFIG_KEYS = ['provider', 'model', 'thinking', 'agentDir', 'sessionPath', 'resume', 'cwd', 'heartbeatIntervalMs',
   'extensionPaths', 'additionalSkillPaths', 'retireUserScopeSkills'];
 const DESTINATION = '/work/restored/snapshot';
+// Initialization-only gate. This is NOT complete turn replay permission. Pending
+// credential substitutions are refused, never stripped or replaced by ambient auth.
+export function planRetainedCaffInitialization(capsule: string, expected: any, worktreeDeclaration: any, declaration: any) {
+  const plan = planRetainedCaffStart(capsule, expected, worktreeDeclaration, declaration);
+  if (!Array.isArray(plan.controlledReplacements) || plan.controlledReplacements.length !== 0
+    || /\{\{[^{}]+\}\}/.test(JSON.stringify([plan.invocation, plan.sessionText, plan.archivedHarness]))) {
+    throw fail('replay_sdk_replacements_unapplied');
+  }
+  const sessionEntries = plan.sessionText === null ? [] : plan.sessionText.split('\n').slice(0, -1).map(s => JSON.parse(s));
+  if (sessionEntries.length) {
+    // Recheck the archived validator, including tool/attachment/private-state
+    // dimensions. A forged complete flag must not bypass the original gate.
+    const checked = validateSessionV2(plan.sessionText, { authorizedRoot: '' });
+    if (!checked.ok) throw fail('replay_sdk_session_invalid');
+    if (checked.unverifiedDimensions.length) throw fail('replay_sdk_session_unverified');
+    const header = sessionEntries[0], ids = new Set<string>([header.id]);
+    if (!text(header.id) || !text(header.timestamp)) throw fail('replay_sdk_session_invalid');
+    const types = ['message', 'model_change', 'thinking_level_change', 'compaction', 'branch_summary',
+      'custom', 'custom_message', 'label', 'session_info'];
+    for (const e of sessionEntries.slice(1)) {
+      if (!types.includes(e.type) || !text(e.id) || ids.has(e.id) || !text(e.timestamp)
+        || e.parentId === header.id || (e.parentId !== null && !ids.has(e.parentId))) throw fail('replay_sdk_session_invalid');
+      ids.add(e.id);
+    }
+  }
+  return { ...plan, sessionEntries };
+}
 export function planRetainedCaffStart(capsule: string, expected: any, worktreeDeclaration: any, declaration: any) {
   const input = prepareWorktreeReplayInputs(capsule, expected, worktreeDeclaration);
   const material = planModePreservingReplayCapsule(capsule, expected);

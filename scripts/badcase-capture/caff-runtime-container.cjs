@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-// Injected importer is for inert VM tests only; the Docker entry always uses import().
-async function runCaffRuntimeContainer(loadModule = specifier => import(specifier)) {
+// Shared immutable-stage guard. No capsule restoration, SDK or fixture creation.
+function verifyCaffRuntimeStage() {
   if (process.platform !== 'linux' || process.getuid?.() !== 65534 || process.cwd() !== '/work' || !fs.existsSync('/.dockerenv')
     || Object.keys(process.env).some(k => /^(CAFF_|PI_|OPENAI_|ANTHROPIC_|AWS_|NODE_OPTIONS$|NODE_PATH$|LD_PRELOAD$|LD_LIBRARY_PATH$)/.test(k))) throw Error();
   const m = JSON.parse(fs.readFileSync('manifest.json')), image = JSON.parse(fs.readFileSync('environment.json'));
@@ -22,6 +22,11 @@ async function runCaffRuntimeContainer(loadModule = specifier => import(specifie
   assert.equal(hash(JSON.stringify(m.files.filter(f => f.path.startsWith('runtime/')))), m.runtimeHash);
   assert.equal(process.version, image.nodeVersion); assert.equal(process.arch, image.architecture === 'amd64' ? 'x64' : 'arm64');
   const mode = fs.readFileSync('mode.txt', 'utf8'); assert.ok(['fresh', 'resume'].includes(mode));
+  return { manifest: m, image, mode };
+}
+// Injected importer is for inert VM tests only; the Docker entry always uses import().
+async function runCaffRuntimeContainer(loadModule = specifier => import(specifier)) {
+  const { manifest: m, image, mode } = verifyCaffRuntimeStage();
   const cwd = '/work/project', agentDir = '/work/agent';
   fs.mkdirSync(cwd, { mode: 0o700 }); fs.mkdirSync(agentDir, { mode: 0o700 });
   const write = (name, text) => fs.writeFileSync(name, text, { flag: 'wx', mode: 0o600 });
@@ -120,4 +125,4 @@ async function runCaffRuntimeContainer(loadModule = specifier => import(specifie
 if (require.main === module) runCaffRuntimeContainer().then(r => console.log(JSON.stringify(r))).catch(() => {
   process.stderr.write('caff_runtime_container_failed\n'); process.exitCode = 1;
 });
-module.exports = { runCaffRuntimeContainer };
+module.exports = { runCaffRuntimeContainer, verifyCaffRuntimeStage };

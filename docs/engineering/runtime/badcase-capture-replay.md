@@ -1248,6 +1248,22 @@ executor在capture首个await前生成描述符，脱离引用的副本进入 `c
 
 自动证据包括：父构建缺helper/新planner接口红首、实际隔离fake-host IPC与共享描述符相等、真实executor的fresh/resume采集副本相等以及await期间ambient thinking漂移取消关联；另有完整配置/秘密拒绝/闭集及hash/路径/缺文件/外置依赖/模式负例。fake-host不运行SDK或模型，纯planner不作Docker证据。所有SDK初始化/提交/授权/执行/复现/评测资格仍false；本次尚未把新计划交给Docker entry，§5.63固定fixture不因此变成真实材料回放。Windows管理门仍关、全部AC pending，无真实项目采集、凭据复用、付费调用、生产接线、合并或发布；下一段直接连接该计划与已存在的容器恢复/生产factory，不再新造同类样例。
 
+### 5.65 封存 capsule→权限恢复→原 CAFF runtime 的 Docker 初始化入口
+
+新增受信操作者内部 API `retained-caff-initialization.cjs` 与容器入口 `retained-caff-container.cjs`，实际消费§5.64的完整capsule、期望hash、worktree映射和SDK路径绑定，不再创建固定项目、SYSTEM/settings或替换历史。它只允许**初始化**，不提供HTTP/agent授权入口，不接生产server，不提交prompt、不调用工具、不注入凭据、不伪造trace callback seed。普通turn回放尚未完成，`callbackWired=false`、`invocationSubmitted=false`及所有运行/复现/评测资格false。
+
+宿主先脱离复制调用材料并纯验证，之后复用§5.63原分发和同fd可信reader：固定添加四项恢复/planner编译模块及原session-validator，原container脚本作为只导入其guard的 `caff-runtime-bootstrap.cjs`，另放capsule及声明四个DATA文件。仍为4096文件/16MiB总量，不扩大上限、不安装、无宿主SDK/native导入或执行捕获内容。安装来源/祖先/操作者仍属TCB；manifest hash是完整性而非来源认证。`caff-runtime-container.cjs`只将既有完整环境/manifest/Node/mode guard提取导出；原合成入口调用同一个guard，原协议及fixture不变。
+
+新增 `planRetainedCaffInitialization` 复用完整启动计划，任何未应用controlled replacement或未解析占位符均阻断，不删除清单假装支持。resume再次执行原固定版本session-validator，结构错误、未知工具路径依赖、附件像素、扩展私有状态等未验证维度继续阻断；额外拒绝空timestamp/头ID复用/非树父引用。**没有放宽既有sealed-input预检**：普通历史含文件工具的路径依赖仍可能被上游保守门拒绝，复杂依赖尚不宣称支持。fresh不生成旧历史，resume不降fresh。
+
+容器先调用原stage guard，再纯验证全部输入且模式相符，然后在专用新 `/work/restored` 用原mode-preserving materializer恢复snapshot与不可变materials、创建独立working-inputs。先核对写回回执、prompt、resume工作副本原始字节存在，之后才导入原SDK/host；精确调用原normalizeStartCommand并比较全部config，再调用原createSdkRuntime。没有空ResourceLoader、诊断system prompt、in-memory settings覆盖、关闭扩展或合成项目信任；归档settings、角色、项目context/skills和原retired过滤由原factory加载，外置缺依赖仍拒绝。模型无法解析、fallback、扩展错误均失败，不剥配置绕过。
+
+resume以固定SDK `buildSessionContext` 对映射后的原条目生成参考，与真实初始化session.messages逐对象比较，并检查原session ID；不手写仅user投影、不把工具输出播放当执行。`historyVerified`只指**同一SDK对已接受材料的上下文投影一致**，不是独立验证历史语义/附件或完整回放资格。成功返回有界history数量及history/systemPrompt/tool-name清单hash，不返回正文、原始输出或身份；宿主核对精确回执、全部manifest/镜像/模式/声明/配置hash和观察值闭集。容器核对原capsule与全部materials字节不变，工作session/settings可由原SDK在该variant副本内写入；不要求工作session事后与原字节完全相同。finally等待runtime.dispose，失败不得输出成功；outer runProbe仍负责owner核验、隔离、期限和容器树终止/移除。
+
+PI_OFFLINE与父fetch拒绝守卫在SDK前设置、退出恢复；初始化后streamSimple拒绝哨兵作为纵深保护。计数不是全网络或全部模型API审计，硬边界仍是network=none、封闭env、无供应商凭据及零prompt提交。默认沿原镜像RepoDigest/身份门、exec-work的显式native选择、只读root、uid65534、无宿主挂载/socket/端口、cap-drop、512MiB/1CPU/64pids及tmp noexec；无宿主agent回退。
+
+验证经真实store→封存→capsule生成合成材料，分别送默认Docker入口fresh/resume（Windows来源路径声明），另一个重签外层manifest但损坏capsule的容器负例须固定拒绝；不是授权真实worktree采集，不以合成用例冒充用户badcase。resume保留CRLF、user/assistant/custom-message历史，两个模式共享相同runtime/dependency及systemPrompt/tools hash。VM执行实际entry的restore/config/history/缺session/扩展/model/archive/清理负例仅为控制流覆盖，非Docker证据。适用回归、真实Docker数字和固定SHA审查以Goal E126为准；E124/E125未独立审查部分并入本初始化里程碑，不追认PASS。Windows开启门仍关、全部AC pending、历史6美元未结算非账单；下一步仍需真实trace callback/外置授权配置和依赖归档、受控凭据与模型出口、完整prompt双variant及UI闭环，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
