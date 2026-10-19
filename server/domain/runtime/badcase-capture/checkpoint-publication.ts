@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { withProjectWriteLock } from './project-write-lock';
 import { checkpointBlobHashes } from './checkpoint-retention';
 import { containsSecretSentinel } from './secrets';
+import { readCapturedCallbackInput } from './callback-input';
 const hash = (bytes: any) => crypto.createHash('sha256').update(bytes).digest('hex');
 const fail = (reason: string) => Object.assign(Error(reason), { code: reason });
 const result = (reason: string) => ({ captured: false, checkpointId: '', reason });
@@ -51,6 +52,7 @@ export function publishPreparedCheckpoint(options: any): any {
             missing.set(digest, materials.get(digest)!);
           }
         }
+        if (Object.hasOwn(checkpoint.replayInput, 'callbackInput')) readCapturedCallbackInput(checkpoint, h => materials.get(h));
         for (const entry of Object.values(checkpoint.files) as any[]) {
           if (entry.type === 'file' && entry.secretExcluded !== true
             && (!Number.isSafeInteger(entry.size) || entry.size < 0 || materials.get(entry.hash)?.length !== entry.size)) throw Error();

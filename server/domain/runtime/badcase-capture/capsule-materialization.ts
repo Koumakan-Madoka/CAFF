@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
+import { readCapturedCallbackInput } from './callback-input';
 const hash = (b: string | Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 const fail = (code = 'capsule_materials_invalid') => Object.assign(Error(code), { code });
 const object = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -47,6 +48,10 @@ export function decodeInitializationCapsule(capsule: any, expected: any) {
   }
   requireBlob(r.promptBlobHash); requireBlob(r.harness.configSnapshotHash);
   if (r.deliveryMode === 'resume') requireBlob(r.sessionBlobHash);
+  if (Object.hasOwn(r, 'callbackInput')) {
+    try { readCapturedCallbackInput(cp, requireBlob); }
+    catch { throw fail('capsule_callback_input_invalid'); }
+  }
   for (const s of r.harness.skillSnapshots) {
     if (!object(s) || s.sha256 !== s.blobHash) throw fail();
     requireBlob(s.blobHash);

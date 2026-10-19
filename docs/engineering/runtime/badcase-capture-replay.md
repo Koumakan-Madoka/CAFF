@@ -1285,6 +1285,15 @@ fixture改为执行生产编译resolver，跨平台测试仅替换显式path语�
 - 原生产 bridge 实际查询新数据库：默认最近 24 条及允许的 publicLimit、当前 user 选择、参与者及后续发送均走真实逻辑，不回放旧 read-context 工具输出。原回调寿命、请求/连接/正文限额、三路由闭集、禁止 handoff/私信/能力操作及 stop 清理保持；输出独立写入，原输入不变。traceReceipt 仅含 hash/关联/计数，`faithfulReplay/strictEvalEligible` 恒 false；运行身份不写入归档/数据库/回执。
 - 固定 Docker 分发增加 `evaluation-trace.js`，无依赖发现/安装/宿主 SDK 执行。专用合成自动测试可在原断网、只读、零挂载、固定镜像/官方 native 的容器中验证此入口；此证据仅是回调输入导入及真实 HTTP/CLI/SQLite，不是原 CAFF fresh/resume 的 callback 接线或模型 turn。生产开启门、真实采集授权、评分规则和所有 AC 不变。
 
+### 5.68 回调输入的 CAS／封存／capsule 通道（尚未读取生产 Room）
+
+- `prepareReplayInput` 增加受信内部调用方的可选 `callbackInput: { trace, expectedTraceHash }`。必须独立授权整个公共文本输入后才能供应；六项期望关联从调用方的 project/conversation/turn/agent/userMessage/assistantMessage ID 获取，不从 trace 自证。复用§5.67闭集、UTF-8、秘密及不支持状态检查；原 JSON 字节不截断、不脱敏、不替换、不转换成 seed，安全计划使用独立非池化 Buffer。请求了此通道但输入无效／缺失时，整条输入标为 `callback_input_unavailable`，不返回被拒正文、hash、身份或任意异常内容。
+- 成功时 `replayInput.callbackInput` 是闭集 `schemaVersion/kind/blobHash/association` 引用（`caff-evaluation-callback-input-reference-v1`）。引用纳入 `checkpointBlobHashes`，项目／Room／turn／agent须与checkpoint一致；publisher在任何写前还复验真实blob中的全部输入，retention在新建和重复封存时同样复验，不只校验摘要。原配额、去重、统计、共享锁与运行引用通道复用，callback blob不会被闭包遗漏；不增大4MiB总capsule／16MiB分发限额。
+- retained-input预检从CAS重新校验并要求callback assistant ID等于用户封存的message ID；capsule consumer在任何materialization前再次校验输入、引用关联和完整blob闭包。未知引用字段、缺blob、损坏字节、跨checkpoint引用、重签但不支持的回调状态均拒绝，不能靠 `complete=true` 或外层重签绕过。旧无callback字段的诊断材料保持旧维度兼容，但绝不据此证明已保存callback状态。
+- 新纯数据函数 `planRetainedEvaluationCallback` 只从已核验capsule导出§5.67 callback参数，并独立比较调用方提供的完整六项关联；无callback的旧包明确 `callback_input_missing`，不回读现场或生成替代历史。函数不读环境／文件／数据库、不发凭据、不分配目录／端口、无启动授权。宿主可静态核验和恢复数据；真实被测agent仍必须在Docker内运行。计划回执保留capsule／checkpoint／callback hash、关联及计数，launchAuthorized/runnable/faithfulReplay/strictEvalEligible恒false。
+- 自动测试覆盖实际publisher暂存／去重／用量／重开→封存→capsule、删除live manifest后仍读取保留源、fresh／resume不变、原始材料独立不变及两个真实HTTP／SQLite callback副本。相同suite在固定镜像／官方native／断网／零挂载的真实Docker执行，另做缺共享reader负例；这不是SDK回调接线、prompt执行或真实badcase证据。初次将capsule模块重复加入base分发导致旧retained launcher拒绝重复path，已移除不属于base bridge的重复项；只把共享callback validator加入原固定分发，恢复模块仍由原显式清单供应，不通过跳过manifest校验修复。
+- **本段仍未新增生产Room读取器、执行前hook、UI公共上下文授权或开启任何采集**；上游输入由受信调用方显式提供，hash不能证明其来自执行前。普通turn尚缺独立同意后的源状态采集及原SDK callback／受控环境替换接线；旧诊断的complete不升级为整个回放完整性。Windows门仍关闭，所有AC pending、历史6美元未结算非账单，不合并发布。后续真实采集须在先授权／预估／独立开启下进行，不得把事后现场伪装成执行前。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

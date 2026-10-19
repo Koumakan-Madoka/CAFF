@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
+import { readCapturedCallbackInput, validateCallbackInputReference } from './callback-input';
 
 // Internal retention primitive, NOT a SealedCase or a GC transaction. Only a
 // trusted caller may provide the server-derived association. No HTTP/agent tool
@@ -50,6 +51,10 @@ export function checkpointBlobHashes(checkpoint: any): string[] {
   add(replay.promptBlobHash, true);
   add(replay.sessionBlobHash, true);
   add(replay.harness.configSnapshotHash, true);
+  if (Object.hasOwn(replay, 'callbackInput')) {
+    try { add(validateCallbackInputReference(replay.callbackInput, checkpoint).blobHash); }
+    catch { invalid(); }
+  }
   for (const skill of replay.harness.skillSnapshots) {
     if (!object(skill) || skill.sha256 !== skill.blobHash) invalid();
     add(skill.blobHash);
@@ -104,7 +109,9 @@ export function createCheckpointRetentionStore(options: any) {
     if (found) match(found.record, input);
     return found?.record || null;
   }
-  function verifyBlobs(projectId: string, blobHashes: string[]) {
+  function verifyBlobs(projectId: string, blobHashes: string[], checkpoint: any) {
+    const callbackHash = checkpoint.replayInput.callbackInput?.blobHash;
+    let callbackBytes: Buffer | undefined;
     for (const blobHash of blobHashes) {
       let content: Buffer | null;
       try { content = store.readBlob(projectId, blobHash); }
@@ -112,6 +119,11 @@ export function createCheckpointRetentionStore(options: any) {
       if (!Buffer.isBuffer(content)) throw fail('retention_blob_missing');
       if (hash(content) !== blobHash) throw fail('retention_blob_corrupt');
       if (containsSecretSentinel(content)) throw fail('retention_contains_secret');
+      if (blobHash === callbackHash) callbackBytes = content;
+    }
+    if (Object.hasOwn(checkpoint.replayInput, 'callbackInput')) {
+      try { readCapturedCallbackInput(checkpoint, h => h === callbackHash ? callbackBytes : undefined); }
+      catch { throw fail('retention_manifest_invalid'); }
     }
   }
   return {
@@ -120,7 +132,7 @@ export function createCheckpointRetentionStore(options: any) {
       input = scope(input);
       const previous = existing(input);
       if (previous) {
-        verifyBlobs(input.projectId, previous.blobHashes);
+        verifyBlobs(input.projectId, previous.blobHashes, previous.checkpoint);
         return { created: false, reference: previous };
       }
       let checkpoint: any;
@@ -140,7 +152,7 @@ export function createCheckpointRetentionStore(options: any) {
       if (Buffer.byteLength(bytes) > MAX_RECORD_BYTES) throw fail('retention_record_too_large');
       // Verify every distinct referenced blob, not just existence or size. A
       // corrupt CAS hit must never become a successful new retained reference.
-      verifyBlobs(input.projectId, blobHashes);
+      verifyBlobs(input.projectId, blobHashes, checkpoint);
       // Internal sealing writer holds the project lock and reserves both this
       // reference and its final case record before either is published.
       options.beforePublish?.(Buffer.byteLength(bytes));
@@ -158,7 +170,7 @@ export function createCheckpointRetentionStore(options: any) {
       if (!persisted) throw fail('retention_write_failed');
       // A concurrent same-association writer might have retained a different
       // live manifest. Verify the winner's closure, not only our losing plan.
-      verifyBlobs(input.projectId, persisted.blobHashes);
+      verifyBlobs(input.projectId, persisted.blobHashes, persisted.checkpoint);
       return { created, reference: persisted };
     },
     // Conservative inventory only, not a deletion authorization. Callers must

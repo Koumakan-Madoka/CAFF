@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { TextDecoder } from 'node:util';
 import { containsSecretSentinel, replaceControlledVariables } from './secrets';
 import { validateSessionV2, PI_VERSION_PIN } from './session-validator';
+import { prepareCapturedCallbackInput } from './callback-input';
 
 const hash = (bytes: Buffer) => crypto.createHash('sha256').update(bytes).digest('hex');
 // No output plan may retain a pooled backing that also held rejected materials.
@@ -48,6 +49,19 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
     replayInput.complete = false;
     if (!replayInput.incompleteReasons.includes(reason)) replayInput.incompleteReasons.push(reason);
   };
+  // Optional additive callback-input channel. Legacy diagnostics have no such
+  // dimension; new callers requesting it cannot silently lose it. This is NOT
+  // a production DB capture hook or a grant to read public/private Room state.
+  if (Object.hasOwn(input, 'callbackInput')) {
+    try {
+      const callback = prepareCapturedCallbackInput(input);
+      replayInput.callbackInput = callback.reference;
+      plans.push({ hash: callback.reference.blobHash, content: callback.content });
+    } catch {
+      // No rejected bytes, content hashes, identities or arbitrary errors persist.
+      markIncomplete('callback_input_unavailable');
+    }
+  }
   // Runtime images are not archived by this channel; retain only count.
   replayInput.invocationImageCount = Array.isArray(input.images) ? input.images.length : 0;
   if (input.images !== undefined && !Array.isArray(input.images)) {

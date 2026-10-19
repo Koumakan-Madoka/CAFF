@@ -7,6 +7,7 @@ import { createCheckpointRetentionStore } from './checkpoint-retention';
 import { readSealedCase, validateSealRequest } from './sealed-case';
 import { containsSecretSentinel, listControlledReplayVariables } from './secrets';
 import { PI_VERSION_PIN, validateSessionV2 } from './session-validator';
+import { readCapturedCallbackInput } from './callback-input';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (v: string | Buffer) => crypto.createHash('sha256').update(v).digest('hex');
 const object = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -65,6 +66,12 @@ export function inspectRetainedReplayInputs(input: any) {
     if (s.includes('\0') || !Buffer.from(s).equals(b)) throw fail('replay_text_invalid');
     return s;
   }
+  let callbackInputHash = '';
+  if (Object.hasOwn(r, 'callbackInput')) {
+    const callback = readCapturedCallbackInput(cp, h => blobs.get(h));
+    if (callback.association.assistantMessageId !== association.messageId) throw fail('callback_input_association_mismatch');
+    callbackInputHash = callback.expectedTraceHash;
+  }
   const prompt = utf8(r.promptBlobHash);
   let snapshot: any;
   try { snapshot = JSON.parse(utf8(harness.configSnapshotHash)); }
@@ -115,6 +122,7 @@ export function inspectRetainedReplayInputs(input: any) {
     checkpointChecksum: hash(JSON.stringify(cp)), deliveryMode: r.deliveryMode,
     promptBlobHash: r.promptBlobHash, sessionBlobHash: r.sessionBlobHash, configSnapshotHash: harness.configSnapshotHash,
     runConfigHash: hash(JSON.stringify(config)), skillInventoryHash: hash(JSON.stringify(harness.skillSnapshots)),
+    ...(callbackInputHash ? { callbackInputHash } : {}),
     piVersion: PI_VERSION_PIN, blobCount: blobs.size, totalBlobBytes: totalBytes, sessionDimensions,
     requiredReplacements: [...replacements].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([name, count]) => ({ name, count })),
     inputMaterialsVerified: true, launchAuthorized: false, runnable: false, reproduced: false, evaluable: false, strictEvalEligible: false };
