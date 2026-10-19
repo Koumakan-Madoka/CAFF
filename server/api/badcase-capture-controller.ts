@@ -127,7 +127,7 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
       invalidate(projectId);
       // Disable first. Any failure while pinning leaves capture disabled, not
       // enabled with a partly changed authorization scope.
-      service.savePolicy(projectId, next, { authorizeCallbackInput: body.callbackInputAuthorized === true });
+      service.savePolicy(projectId, next, { authorizeCallbackInput: body.callbackInputAuthorized });
       service.authorizeProject(projectId);
     } else if (action === 'settings') {
       fields(body, ['stagingRetentionDays', 'stagingQuotaBytes']);

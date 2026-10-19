@@ -487,6 +487,8 @@ test('stale, expired, restarted and failed estimates cannot enable; reasons rema
 test('public callback source consent is authorization-only, explicit boolean, persistent, default-off and always disables first', async t => {
   const h = setup(t); h.service.authorizeProject = () => h.service.loadPolicy('project-test');
   assert.equal((await invoke(h.controller)).body.policy.callbackInputAuthorized, false);
+  await invoke(h.controller, 'authorize', authorization(h.target));
+  assert.equal(h.service.loadPolicy('project-test').callbackInputAuthorized, false, 'omitted field cannot grant new consent');
   for (const value of [null, 'true', 1, {}, []]) {
     await rejects(() => invoke(h.controller, 'authorize', { ...authorization(h.target), callbackInputAuthorized: value }), 'badcase_capture_invalid_context_consent');
     assert.equal(h.service.loadPolicy('project-test').callbackInputAuthorized, false);
@@ -497,7 +499,9 @@ test('public callback source consent is authorization-only, explicit boolean, pe
   assert.equal(createBadcaseCaptureService({ captureRoot: h.captureRoot }).loadPolicy('project-test').callbackInputAuthorized, true);
   await invoke(h.controller, 'settings', { stagingRetentionDays: 8 }); assert.equal(h.service.loadPolicy('project-test').callbackInputAuthorized, true);
   await invoke(h.controller, 'authorize', authorization(h.target));
-  assert.equal(h.service.loadPolicy('project-test').callbackInputAuthorized, false, 'old clients do not preserve a hidden grant');
+  assert.equal(h.service.loadPolicy('project-test').callbackInputAuthorized, true, 'omitted field neither grants nor revokes existing independent consent');
+  await invoke(h.controller, 'authorize', { ...authorization(h.target), callbackInputAuthorized: false });
+  assert.equal(h.service.loadPolicy('project-test').callbackInputAuthorized, false, 'explicit false revokes consent');
   h.service.authorizeProject = () => { throw Error('fixture pin failure'); };
   await assert.rejects(() => invoke(h.controller, 'authorize', { ...authorization(h.target), callbackInputAuthorized: true }), /fixture pin failure/);
   assert.equal(h.service.loadPolicy('project-test').status, 'disabled');

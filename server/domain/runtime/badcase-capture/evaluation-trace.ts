@@ -77,7 +77,9 @@ export function prepareEvaluationCallbackTrace(raw: any, expectedHash: any, expe
   if (!date(v.assistantCreatedAt) || v.assistantCreatedAt < previous
     || (v.assistantCreatedAt === previous && v.association.assistantMessageId <= previousId)) throw fail();
   const user = messages.get(v.association.userMessageId);
-  if (!user || user.role !== 'user' || user.turnId !== v.association.turnId || !user.content.trim()) throw fail('evaluation_trace_association_mismatch');
+  // association.turnId belongs to the executing assistant; queued users keep
+  // their original accepted-message turnId, already validated as a public row.
+  if (!user || user.role !== 'user' || !user.content.trim()) throw fail('evaluation_trace_association_mismatch');
   if (sensitive(v)) throw fail('evaluation_trace_sensitive');
   return { trace: v, seed: { conversationId: v.association.conversationId, turnId: v.association.turnId,
     agent: { id: active.id, name: active.name }, userMessage: { id: user.id, content: user.content }, assistantMessageId: v.association.assistantMessageId },

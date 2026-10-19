@@ -110,6 +110,7 @@ export function createCheckpointRetentionStore(options: any) {
     return found?.record || null;
   }
   function verifyBlobs(projectId: string, blobHashes: string[], checkpoint: any) {
+    if (!object(checkpoint?.replayInput)) throw fail('retention_manifest_invalid');
     const callbackHash = checkpoint.replayInput.callbackInput?.blobHash;
     let callbackBytes: Buffer | undefined;
     for (const blobHash of blobHashes) {

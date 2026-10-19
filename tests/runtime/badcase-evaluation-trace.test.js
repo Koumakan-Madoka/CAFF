@@ -81,6 +81,17 @@ test('actual HTTP and original CLI read imported full public history/participant
   }
 });
 
+test('accepted-message turn differs from execution turn and survives isolated import without rewriting either', async t => {
+  const f = fixture(t); f.trace.publicMessages[2].turnId = 'accepted-before-queue';
+  let s; await assert.doesNotReject(async () => { s = await start(f); }, 'valid accepted/execution turn separation must import');
+  await s.stop();
+  const store = createChatAppStore({ agentDir: path.dirname(s.databasePath), sqlitePath: s.databasePath });
+  try {
+    assert.equal(store.getMessage('user-current').turnId, 'accepted-before-queue');
+    assert.equal(store.getMessage('assistant-current').turnId, f.trace.association.turnId);
+  } finally { store.close(); }
+});
+
 test('archived model-family identity is preserved, never rewritten as a custom role or silently renamed', async t => {
   const f = fixture(t, true), s = await start(f), r = await request(s, 'context');
   assert.equal(r.value.agent.id, 'role-family-gpt'); assert.equal(r.value.agent.name, f.trace.participants[0].name);
@@ -127,7 +138,7 @@ test('missing, mixed seed, corrupt, forged association or unsupported private/de
     v => { v.publicMessages[0].images = []; }, v => { v.association.assistantMessageId = v.publicMessages[0].id; },
     v => { v.publicMessages[0].role = 'private'; }, v => { v.publicMessages[1].agentId = 'unknown'; },
     v => { v.publicMessages[0].id = v.publicMessages[1].id; }, v => { v.publicMessages[0].createdAt = '2027-01-01T00:00:00.000Z'; },
-    v => { v.publicMessages[2].turnId = 'wrong'; }, v => { v.publicMessages[0].publicPostCount = -1; },
+    v => { v.publicMessages[2].turnId = ''; }, v => { v.publicMessages[0].publicPostCount = -1; },
     v => { v.publicMessages[0].createdAt = '2026-02-31T00:00:00.000Z'; }, v => { v.participants.push(v.participants[0]); },
     v => { v.publicMessages[0].content = '\ud800'; }, v => { v.publicMessages[0].senderName = ' padded '; }, v => { v.participants[0].name = ' padded '; },
     v => { v.participants[0].description = ' padded '; }, v => { delete v.assistantCreatedAt; },

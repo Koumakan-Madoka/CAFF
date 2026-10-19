@@ -1296,14 +1296,23 @@ fixture改为执行生产编译resolver，跨平台测试仅替换显式path语�
 
 ### 5.69 独立公共上下文授权与真实执行前源读取（Windows 开启仍关闭）
 
-- `CapturePolicy.callbackInputAuthorized` 默认且旧策略均为 `false`，只有严格布尔 `true` 生效。这是本项目各 Room 的**公共文本输入**独立授权，不由文件目录、输入目录、hash 或 agent 请求推导。local-admin `authorize` 在原 bootstrap CSRF/本地 guard/显式确认后替换它，并先保持 disabled；旧客户端省略该字段视为撤销。普通 `settings` 不接收该字段，普通 service `savePolicy` 忽略该字段的 grant/revoke，只有受信 authorize 调用的独立第三参数可替换；改变授权会关闭采集。pin 失败仍保持 disabled，不自动恢复旧范围。方案1的同 OS 用户信任边界不变，不宣称防御宿主 shell 模拟管理请求。
+- `CapturePolicy.callbackInputAuthorized` 默认且旧策略均为 `false`，只有严格布尔 `true` 生效。这是本项目各 Room 的**公共文本输入**独立授权，不由文件目录、输入目录、hash 或 agent 请求推导。local-admin `authorize` 在原 bootstrap CSRF/本地 guard/显式确认后替换它，并先保持 disabled；省略该字段不 grant/revoke，默认仍 false（修订见§5.70）。普通 `settings` 不接收该字段，普通 service `savePolicy` 忽略该字段的 grant/revoke，只有受信 authorize 调用的独立第三参数可替换；改变授权会关闭采集。pin 失败仍保持 disabled，不自动恢复旧范围。方案1的同 OS 用户信任边界不变，不宣称防御宿主 shell 模拟管理请求。
 - UI 默认不勾选，并展示标题、公共元数据、参与者及完整公共文本历史范围、私有/附件/委托不支持、容量预估不含上下文成本。勾选变化使旧 estimate 失效；取消确认零写入；普通保存不提交 checkbox 草稿。此变更不启用任何现有项目，不打开 Windows `captureAvailable=false`/无 estimate 回执/enable 409 的门。
-- app-server 仅把已存在的受信 ChatAppStore **对象**交给采集服务，不发现或接受调用方的 DB 路径。executor 在原执行前挂点提供真实 user/assistant ID 和当次 prompt 的用户快照字段。Linux 在既有项目锁、文件根授权/pin/fd 身份复验之后读取源；Windows 在单租约内原生文件候选完整复验成功后读取源。disabled/无授权不会访问源 DB；失败的文件根不会调用源 reader。有受信源时忽略 invocation 自带 callback packet，不能由 agent 指定来源或伪造关联。
-- `callback-source.ts` 在读取 DB 属性前验证 enabled、独立同 project 授权、六关联 ID 及用户快照 id/content；再开启**同步只读 SQLite transaction**，拒绝借用任何外层 transaction，无 await。先只查询当前 Room 的 project/type/长度，再用数值/存在性检查拒绝任何该 Room 私有信箱、涉及该 Room 的 pending 委托、privateOnly/visibility、图片/附件、委托或跨 Room delivery 元数据；不把它们的正文返回采集进程。此 v1 比实际 agent 可见私有范围更保守：其他参与者私有信箱也会阻断，不作空状态替代。
+- app-server 仅把已存在的受信 ChatAppStore **对象**交给采集服务，不发现或接受调用方的 DB 路径。executor 在原执行前挂点提供真实 user/assistant ID 和当次 prompt 的用户快照字段。Linux 在既有项目锁、文件根授权/pin/fd 身份复验之后读取源；Windows 在单租约内原生文件候选完整复验成功后读取源。disabled/无授权不会访问源 DB；失败的文件根不会调用源 reader。service 始终忽略 invocation 自带 callback packet；缺受信源时显式输入缺失，不能由 agent 指定来源或伪造关联。
+- `callback-source.ts` 在读取 DB 属性前验证 enabled、独立同 project 授权、六关联 ID 及用户快照 id/content/turnId；再开启**同步只读 SQLite transaction**，拒绝借用任何外层 transaction，无 await。先只查询当前 Room 的 project/type/长度，再用数值/存在性检查拒绝任何该 Room 私有信箱、涉及该 Room 的 pending 委托、privateOnly/visibility、图片/附件、委托或跨 Room delivery 元数据；不把它们的正文返回采集进程。此 v1 比实际 agent 可见私有范围更保守：其他参与者私有信箱也会阻断，不作空状态替代。
 - SQL 在选择公共正文前限制最多 2049 行（2048 公共 + 当次 queued placeholder）、原正文+metadata 合计 2 MiB、Room metadata 64 KiB、title 1024 B、参与者最多32/聚合 32×(128+4096) B；最终仍受 §5.67 的逐字段及 4 MiB JSON 限制。不截断历史、不输出被拒输入的 hash/正文/任意异常。SQL length/count 自身不是硬时间、物理 I/O 或 SQLite 内存上限。
 - 源采用明确列投影，保留 callback v1 支持的原始身份、title/type/公共 metadata、按原存储顺序排列的公共文本与 public-post/mentions 字段；不复制角色配置、auth、源 DB 或 Inspector。当前 assistant 必须是本关联的 queued `Thinking...` 且未公开发言，只取其真实 createdAt；其余记录原样通过 validator，非终态或晚于 placeholder 的并发消息会整包拒绝，不能删去它们冒充原状态。选中 user 必须与 invocation 的用户快照相符，不取最新消息替代。SQLite transaction 保证其查询的同一源视图，但不与 worktree/session 构成原子现场，检查点记 `callback_sqlite_snapshot_not_atomic_with_files`；不授予 faithful/strict/可评测资格。
 - 输出只有有效的不可变字符串 packet 或 null。null 通过既有共享准备步骤成为 `callback_input_unavailable`/complete=false，文件检查点仍可保存；不得因此回读生产数据、换 seed 或伪造完整。有效 packet 沿 §5.68 的 CAS、引用闭包、配额、封存及 capsule 通道，无新旁路存储。
 - 验证仅使用自建临时 SQLite/NTFS Git fixture：默认/持久化/普通保存边界、API/DOM 显式确认、WAL 第二连接变化下的一致读事务、缺授权/错 project 零源读取、私有/委托无正文选择、预算前置、源快照漂移、真实 Windows service fresh/resume → 原生 collector → CAS → 重启精确读回，以及撤销后的明确输入缺失。fixture 的 raw writer enabled 不是管理开启或真实项目 turn 证据。Docker 只运行源/归档测试，不提交 SDK prompt 或模型请求。尚未把 capsule callback 接入原 CAFF runtime；外置 agentDir/附件及 UI选 trace→普通 turn 对照仍未完成，全部 AC pending。
+
+### 5.70 排队受理与执行 turn 的分别绑定及 E130 修正
+
+- E130 的旧 source/trace validator 错把用户消息 `turnId` 与执行 `association.turnId` 强制相等；真实 `submitConversationMessage → drainConversationQueue → routing-executor` 先给受理消息生成 A，再给执行生成 B。修正采集与导入的错误不变量，不修改调度、消息历史或正常 turn 身份。association 的 turn 始终是当次执行 B；当前 assistant 必须精确匹配 B，选中 user 则必须匹配 executor 快照的原 `turnId=A`。同 turn 的直接调用也保留支持。无快照 turn、快照/源漂移、错 assistant 或其他六关联不匹配仍拒绝；原 JSON/publicMessages 保留 A，导入新 callback DB 不改成 B。hash 仍只证明完整性，不替代受信源与独立授权。
+- service 构造始终安装受信 source adapter；没有 `chatStore`（包括容量 worker/离线服务）时返回 null，不接受 invocation 自带 packet。低层内部 collector 的显式数据准备接口不改变；不得把它冒充管理授权。legacy participant `description=NULL` 在 SQL 长度计数及文本投影时按空串处理；不会改写源行或覆盖 built-in 身份，导入的原 model-family 身份匹配门不放宽。
+- authorize 的独立布尔字段省略时保留既有授权，默认仍为 false；只有显式 true/false grant/revoke。目录变更仍 disabled、仍须原独立 pin/预估/开启；保留既有项目公共上下文同意不授予新项目或新目录权限。普通 settings 不收该字段。此项取代§5.69旧版“省略即撤销”，避免旧客户端静默撤回同意。
+- v1 限制明确：其他 queued/streaming 兄弟消息、晚于当前 placeholder 的消息、任何历史私有信箱、涉及本 Room 的未决委托，都会使整包不可用；非空委托/delivery 元数据即便已终结也不截除。多个用户批次或 mention 清理若使 promptUserMessage 与原锚点正文不同，同样标缺失，不把投影正文写回原历史。既有容量/时间顺序/秘密/附件限制不变，授权不等于该 Room 可回放。记录存在期间阻断，不擅自清理业务历史以通过测试。
+- retention 的 blob 复验入口额外检查 replayInput 形状并返回 `retention_manifest_invalid`；上游闭包校验原已有相同保护，属于防御性加固，不声称复现了可达的旧 TypeError。畸形清单测试验证首次 blob 读取前的固定错误及零引用发布。
+- 回归使用真实自有 SQLite、原 submit/queue/routing/executor，只有 `minimalPi.startRun` 是无进程/无 SDK/无模型 stub；明确断言 A≠B、采集先于 stub、packet 有效和两类身份不改写。另有原生宿主 service fresh/resume → 文件 collector → CAS → 重开、缺 source 拒绝自带 packet、callback DB 导入分别保留 A/B 的测试。Windows fixture raw enabled 不是管理开启；Linux 文件级 complete 不是完整普通 turn 资格。红首、平台/Docker验证及固定SHA复审以 Goal 为准；原75595721 FAIL 保留，不追认PASS。普通SDK回调/外置agentDir/附件/真实UI和模型对照仍待实现，Windows门关、AC pending、不合并发布。
 
 ## 6. 威胁模型
 

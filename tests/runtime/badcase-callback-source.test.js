@@ -12,7 +12,7 @@ function fixture(t) {
   const agent = store.getAgent('role-family-gpt');
   store.createConversation({ id: 'c1', title: 'Owned source', type: 'standard', projectScopeId: 'p1', participants: [agent.id], metadata: { marker: 'SOURCE' } });
   for (const [id, turnId, role, content, second, status] of [
-    ['old', 'old-turn', 'assistant', 'Earlier reply', 0, 'completed'], ['user', 't1', 'user', 'Question', 1, 'completed'],
+    ['old', 'old-turn', 'assistant', 'Earlier reply', 0, 'completed'], ['user', 'accepted-turn', 'user', 'Question', 1, 'completed'],
     ['current', 't1', 'assistant', 'Thinking...', 2, 'queued']]) {
     store.createMessage({ id, conversationId: 'c1', turnId, role, agentId: role === 'assistant' ? agent.id : null,
       senderName: role === 'assistant' ? agent.name : 'You', content, status, metadata: id === 'old'
@@ -20,7 +20,7 @@ function fixture(t) {
     store.db.prepare('UPDATE chat_messages SET created_at = ? WHERE id = ?').run(`2026-01-01T00:00:0${second}.000Z`, id);
   }
   const input = { projectId: 'p1', conversationId: 'c1', turnId: 't1', agentId: agent.id, userMessageId: 'user', assistantMessageId: 'current',
-    callbackUserMessage: { id: 'user', content: 'Question', senderName: 'You', status: 'completed', createdAt: '2026-01-01T00:00:01.000Z' } };
+    callbackUserMessage: { id: 'user', content: 'Question', senderName: 'You', status: 'completed', createdAt: '2026-01-01T00:00:01.000Z', turnId: 'accepted-turn' } };
   const policy = { projectId: 'p1', status: 'enabled', callbackInputAuthorized: true };
   const capture = () => read(store, input, policy);
   return { root, store, input, policy, agent, capture, disposers };
@@ -43,11 +43,13 @@ test('source consent defaults false and is strict boolean, persisted without ext
 
 test('disabled, suspended, unconsented, malformed or cross-project invocation reads zero source queries', () => {
   let touched = 0; const source = { get db() { touched++; throw Error('no source access'); } };
-  const input = { projectId: 'p1', conversationId: 'c1', turnId: 't1', agentId: 'a1', userMessageId: 'u1', assistantMessageId: 'm1', callbackUserMessage: { id: 'u1', content: 'question' } };
+  const input = { projectId: 'p1', conversationId: 'c1', turnId: 't1', agentId: 'a1', userMessageId: 'u1', assistantMessageId: 'm1', callbackUserMessage: { id: 'u1', content: 'question', turnId: 'accepted-turn' } };
   for (const p of [{}, { projectId: 'p1', status: 'disabled', callbackInputAuthorized: true },
     { projectId: 'p1', status: 'suspended', callbackInputAuthorized: true }, { projectId: 'p1', status: 'enabled', callbackInputAuthorized: 'true' },
     { projectId: 'p2', status: 'enabled', callbackInputAuthorized: true }]) assert.equal(read(source, input, p), null);
   assert.equal(read(source, { ...input, conversationId: '../bad' }, { projectId: 'p1', status: 'enabled', callbackInputAuthorized: true }), null);
+  assert.equal(read(source, { ...input, callbackUserMessage: { id: 'u1', content: 'question' } },
+    { projectId: 'p1', status: 'enabled', callbackInputAuthorized: true }), null);
   assert.equal(touched, 0);
 });
 
@@ -71,7 +73,8 @@ test('source scope, active assistant identity/status, prompt snapshot and partic
     assert.equal(read(h.store, { ...h.input, [key]: 'other' }, h.policy), null, key);
   }
   for (const value of [{ ...h.input.callbackUserMessage, content: 'Changed' }, { id: 'user' }, { id: 'other', content: 'Question' },
-    { ...h.input.callbackUserMessage, createdAt: '2026-01-01T00:00:04.000Z' }]) assert.equal(read(h.store, { ...h.input, callbackUserMessage: value }, h.policy), null);
+    { ...h.input.callbackUserMessage, createdAt: '2026-01-01T00:00:04.000Z' },
+    { ...h.input.callbackUserMessage, turnId: 'different-accepted-turn' }, { ...h.input.callbackUserMessage, turnId: undefined }]) assert.equal(read(h.store, { ...h.input, callbackUserMessage: value }, h.policy), null);
   for (const [sql, undo] of [
     ["UPDATE chat_conversations SET project_scope_id='other' WHERE id='c1'", "UPDATE chat_conversations SET project_scope_id='p1' WHERE id='c1'"],
     ["UPDATE chat_messages SET status='running' WHERE id='current'", "UPDATE chat_messages SET status='queued' WHERE id='current'"],
@@ -123,8 +126,8 @@ test('no truncation: oversized raw input or more than 2048 public messages is re
 });
 
 
-test('native Windows service authorized source → actual file collector → CAS → restart keeps exact callback state (owned fixtures only)',
-  { skip: process.platform !== 'win32' }, async t => {
+test('native host service authorized source → actual file collector → CAS → restart keeps distinct turn IDs and exact callback state (owned fixtures only)',
+  { skip: !['win32', 'linux'].includes(process.platform) }, async t => {
   const h = fixture(t), target = path.join(h.root, 'worktree'), sessions = path.join(h.root, 'sessions'), captureRoot = path.join(h.root, 'capture');
   fs.mkdirSync(target); fs.mkdirSync(sessions);
   const git = (...args) => require('node:child_process').execFileSync('git', ['-C', target, ...args], { windowsHide: true,
@@ -155,13 +158,21 @@ test('native Windows service authorized source → actual file collector → CAS
     assert.ok(cp.replayInput.callbackInput, 'service must archive its constructor-owned authorized source');
     const captured = readCapturedCallbackInput(cp, hash => reopened.store.readBlob('p1', hash));
     assert.equal(captured.trace, h.capture().trace); assert.equal(cp.replayInput.deliveryMode, mode);
-    assert.equal(cp.replayInput.complete, false); assert.equal(cp.strictEvalEligible, false);
+    if (process.platform === 'win32') assert.equal(cp.replayInput.complete, false);
+    assert.equal(cp.strictEvalEligible, false);
     assert.equal(cp.files.tracked.hash, crypto.createHash('sha256').update('dirty').digest('hex'));
     assert.equal(captured.association.userMessageId, h.input.userMessageId); assert.equal(captured.association.assistantMessageId, h.input.assistantMessageId);
     if (mode === 'resume') assert.deepEqual(reopened.store.readBlob('p1', cp.replayInput.sessionBlobHash), fs.readFileSync(sessionPath));
     else assert.equal(cp.replayInput.sessionBlobHash, '');
     assert.ok(cp.integrity.knownLimitations.includes('callback_sqlite_snapshot_not_atomic_with_files'));
   }
+  const noSource = createBadcaseCaptureService({ captureRoot });
+  const supplied = { ...value('fresh'), callbackInput: h.capture() };
+  const noSourceResult = await noSource.captureTurnCheckpoint(supplied);
+  assert.equal(noSourceResult.captured, true, noSourceResult.reason);
+  const noSourceCp = noSource.store.loadCheckpoint('p1', noSourceResult.checkpointId);
+  assert.equal(noSourceCp.replayInput.callbackInput, undefined, 'service without a trusted source never accepts invocation packets');
+  assert.ok(noSourceCp.replayInput.incompleteReasons.includes('callback_input_unavailable'));
   // Independent revocation persists disabled, and an enabled fixture without
   // consent still collects files but records a missing callback dimension.
   service.savePolicy('p1', service.loadPolicy('p1'), { authorizeCallbackInput: false });
@@ -171,6 +182,70 @@ test('native Windows service authorized source → actual file collector → CAS
   const cp = service.store.loadCheckpoint('p1', result.checkpointId); assert.equal(cp.replayInput.callbackInput, undefined);
   assert.ok(cp.replayInput.incompleteReasons.includes('callback_input_unavailable'));
   assert.equal(fs.existsSync(path.join(captureRoot, 'projects/p1/.writer-lock')), false);
+});
+
+test('accepted user turn and execution turn remain distinct; either snapshot or assistant association drift is refused', t => {
+  const h = fixture(t), packet = h.capture(); assert.ok(packet);
+  const trace = JSON.parse(packet.trace);
+  assert.equal(trace.association.turnId, 't1');
+  assert.equal(trace.publicMessages.find(m => m.id === 'user').turnId, 'accepted-turn');
+  h.store.db.prepare("UPDATE chat_messages SET turn_id='later-user-turn' WHERE id='user'").run();
+  assert.equal(h.capture(), null, 'user snapshot turn must match its own source row');
+  h.store.db.prepare("UPDATE chat_messages SET turn_id='accepted-turn' WHERE id='user'").run();
+  h.store.db.prepare("UPDATE chat_messages SET turn_id='accepted-turn' WHERE id='current'").run();
+  assert.equal(h.capture(), null, 'assistant must still match the actual execution turn');
+  h.store.db.prepare("UPDATE chat_messages SET turn_id='t1' WHERE id IN ('user','current')").run();
+  h.input.callbackUserMessage.turnId = 't1'; assert.ok(h.capture(), 'non-queued/direct same-turn source remains valid');
+});
+
+test('NULL legacy participant description projects to empty text, never a missing packet', t => {
+  const h = fixture(t); h.store.db.prepare('UPDATE chat_agents SET description=NULL WHERE id=?').run(h.agent.id);
+  const packet = h.capture(); assert.ok(packet);
+  assert.equal(JSON.parse(packet.trace).participants[0].description, '');
+});
+
+test('real submit → queued-batch routing → original executor supplies both turn identities before the runtime stub starts', async t => {
+  const h = fixture(t);
+  h.store.db.exec("DELETE FROM chat_messages WHERE id IN ('user','current')");
+  h.store.updateConversation('c1', { title: 'Queue regression' });
+  const minimalPi = require('../../build/lib/minimal-pi'), original = minimalPi.startRun;
+  const executorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const orchestratorPath = require.resolve('../../build/server/domain/conversation/turn-orchestrator');
+  delete require.cache[executorPath]; delete require.cache[orchestratorPath];
+  const calls = [], packets = [], captures = [], errors = [];
+  minimalPi.startRun = () => {
+    calls.push('startRun');
+    const handle = new (require('node:events').EventEmitter)(); handle.runId = null; handle.sessionPath = '';
+    handle.resultPromise = Promise.resolve({ reply: 'Owned stub reply.', runId: handle.runId, sessionPath: '', usage: null, heartbeatCount: 0 });
+    return handle;
+  };
+  t.after(() => { minimalPi.startRun = original; delete require.cache[executorPath]; delete require.cache[orchestratorPath]; });
+  const { createTurnOrchestrator } = require(orchestratorPath);
+  const orchestrator = createTurnOrchestrator({ store: h.store, agentDir: h.root, sqlitePath: h.store.databasePath,
+    resolveRuntimeParticipants: agents => agents.map(a => ({ ...a, runtimeConfig: { provider: 'deepseek', model: 'deepseek-v4-flash', thinking: 'off', skillIds: [] } })),
+    skillRegistry: { listSkills: () => [], resolveSkills: () => [] }, modeStore: { get: () => null },
+    modelCatalog: { getOptions: () => [{ provider: 'deepseek', model: 'deepseek-v4-flash', runtimeResolvable: true, supportedThinkingLevels: ['off'], input: ['text'] }] },
+    host: '127.0.0.1', port: 0, toolBaseUrl: 'http://127.0.0.1:0', agentToolScriptPath: path.join(h.root, 'never-executed.cjs'),
+    agentToolBridge: { createInvocationContext: input => input, registerInvocation: input => ({ ...input, invocationId: 'owned-invocation', callbackToken: 'owned-test-value', publicPostCount: 0 }), unregisterInvocation() {} },
+    badcaseCapture: { captureTurnCheckpoint(input) { calls.push('capture'); captures.push(input); packets.push(read(h.store, input, h.policy)); return { captured: false, reason: 'source-only-test' }; } },
+    broadcastEvent(_name, value) { if (value?.errorMessage) errors.push(value.errorMessage); },
+  });
+  const accepted = orchestrator.submitConversationMessage('c1', { content: 'Question' });
+  assert.equal(accepted.dispatch, 'started');
+  const deadline = Date.now() + 5000;
+  while (orchestrator.listTurnSummaries({ conversationId: 'c1' }).length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(orchestrator.listTurnSummaries({ conversationId: 'c1' }).length, 0, 'owned run settles');
+  assert.equal(captures.length, 1, JSON.stringify(errors));
+  const input = captures[0];
+  assert.equal(input.userMessageId, accepted.acceptedMessage.id);
+  assert.equal(input.callbackUserMessage.turnId, accepted.acceptedMessage.turnId);
+  assert.notEqual(input.turnId, accepted.acceptedMessage.turnId, 'real queue keeps accepted and execution turns distinct');
+  assert.equal(h.store.getMessage(input.assistantMessageId).turnId, input.turnId);
+  assert.ok(packets[0], 'production-shaped queued invocation must produce a callback packet');
+  const trace = JSON.parse(packets[0].trace);
+  assert.equal(trace.association.turnId, input.turnId);
+  assert.equal(trace.publicMessages.find(m => m.id === input.userMessageId).turnId, accepted.acceptedMessage.turnId);
+  assert.deepEqual(calls, ['capture', 'startRun']);
 });
 
 test('read transaction gives one SQLite snapshot while a separate WAL connection changes the source; never borrows an outer transaction', t => {

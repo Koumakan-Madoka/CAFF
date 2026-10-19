@@ -18,7 +18,8 @@ export function readPreTurnCallbackInput(store: any, input: any, policy: any): a
   if (policy?.status !== 'enabled' || policy.callbackInputAuthorized !== true
     || policy.projectId !== input?.projectId || !keys.every(k => id(input?.[k]))
     || input.userMessageId === input.assistantMessageId
-    || input.callbackUserMessage?.id !== input.userMessageId || typeof input.callbackUserMessage?.content !== 'string') return null;
+    || input.callbackUserMessage?.id !== input.userMessageId || !id(input.callbackUserMessage?.turnId)
+    || typeof input.callbackUserMessage?.content !== 'string') return null;
   try {
     const db = store?.db;
     if (!db || db.inTransaction) return null; // never borrow a writable transaction
@@ -51,10 +52,10 @@ export function readPreTurnCallbackInput(store: any, input: any, policy: any): a
           THEN 1 ELSE 0 END END) AS unsupported
         FROM chat_messages WHERE conversation_id = ?`).get(input.conversationId);
       if (!stats || stats.count < 2 || stats.count > 2049 || stats.bytes > 2 * 1024 * 1024 || stats.unsupported) unavailable();
-      const people = db.prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(length(CAST(a.name AS BLOB)) + length(CAST(a.description AS BLOB))), 0) AS bytes
+      const people = db.prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(length(CAST(a.name AS BLOB)) + length(CAST(COALESCE(a.description, '') AS BLOB))), 0) AS bytes
         FROM chat_conversation_agents ca JOIN chat_agents a ON a.id = ca.agent_id WHERE ca.conversation_id = ?`).get(input.conversationId);
       if (!people || people.count < 1 || people.count > 32 || people.bytes > 32 * (128 + 4096)) unavailable();
-      const participants = db.prepare(`SELECT a.id, a.name, a.description FROM chat_conversation_agents ca
+      const participants = db.prepare(`SELECT a.id, a.name, COALESCE(a.description, '') AS description FROM chat_conversation_agents ca
         JOIN chat_agents a ON a.id = ca.agent_id WHERE ca.conversation_id = ?
         ORDER BY ca.sort_order ASC, ca.created_at ASC, a.created_at ASC LIMIT 33`).all(input.conversationId);
       if (!participants.length || participants.length > 32 || !participants.every(isRoutableConversationAgent)) unavailable();
@@ -69,7 +70,9 @@ export function readPreTurnCallbackInput(store: any, input: any, policy: any): a
         || assistant.status !== 'queued' || assistant.content !== 'Thinking...' || assistant.publicPostCount !== 0 || assistant.publicPostedAt !== '') unavailable();
       const messages = rows.filter((r: any) => r !== assistant).map((r: any) => ({ ...r, mentions: JSON.parse(r.mentions) }));
       const user = messages.find((r: any) => r.id === input.userMessageId);
-      if (!user || user.role !== 'user' || user.turnId !== input.turnId
+      // Accepted-message and execution turns are distinct in queued routing.
+      // Bind the user to its own executor snapshot, not the assistant's turn.
+      if (!user || user.role !== 'user' || user.turnId !== input.callbackUserMessage.turnId
         || !['id', 'content', 'senderName', 'status', 'createdAt', 'turnId'].every(k => input.callbackUserMessage[k] === undefined
           || input.callbackUserMessage[k] === user[k])) unavailable();
       const room = db.prepare('SELECT title, type, metadata_json FROM chat_conversations WHERE id = ?').get(input.conversationId);

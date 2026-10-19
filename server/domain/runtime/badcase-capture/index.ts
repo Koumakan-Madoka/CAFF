@@ -47,7 +47,7 @@ export function createBadcaseCaptureService(options: any = {}) {
   // from an invocation. Collectors invoke this after file-root authorization
   // and while holding their project policy lease. Null is an explicit gap.
   const sourceStore = options.chatStore;
-  const readCallbackInput = sourceStore ? (input: any, policy: any) => readPreTurnCallbackInput(sourceStore, input, policy) : null;
+  const readCallbackInput = (input: any, policy: any) => readPreTurnCallbackInput(sourceStore, input, policy);
   const collector = createCollector({
     store, readCallbackInput,
     trustMtime: options.trustMtime,

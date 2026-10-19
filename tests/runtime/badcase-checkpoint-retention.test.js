@@ -78,6 +78,14 @@ test('missing manifest and malformed schema fail without publishing a reference'
     assert.throws(() => h.retention.retain(h.input)); assert.equal(h.records().length, 0);
   }
 });
+test('malformed replay input is a coded manifest error before any retained blob access', t => {
+  for (const replay of [undefined, null, [], 'invalid']) {
+    const h = setup(t); h.checkpoint.replayInput = replay; h.save();
+    let reads = 0; h.store.readBlob = () => { reads++; throw Error('must not read'); };
+    assert.throws(() => h.retention.retain(h.input), { code: 'retention_manifest_invalid' });
+    assert.equal(reads, 0); assert.equal(h.records().length, 0);
+  }
+});
 test('missing or same-size corrupted file/prompt/session/config/skill blob rejects retention', t => {
   for (const index of [0, 1, 2, 3, 4]) for (const mode of ['missing', 'corrupt']) {
     const h = setup(t), file = h.blobPath(h.hashes[index]);
