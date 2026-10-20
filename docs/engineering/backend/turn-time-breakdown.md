@@ -136,11 +136,15 @@ first hit wins:
    stripped. A bare launcher with no payload (`env`) keeps its own
    meaning; a launcher prefix whose payload matches nothing is `null`,
    never a guessed read.
-2. Test runners (`node --test`, `npm test`, `npm run test:*`,
-   `yarn test:*`/`pnpm test:*` without `run`, `vitest`, `jest`, `mocha`,
+2. Test runners (`node --test`, `node <flags> --test` (flags skipped
+   pairwise so `--import tsx` never swallows `--test` as its value),
+   `npm test`, `npm run test:*`,
+   `yarn test:*`/`pnpm test:*` without `run`, `npm --prefix <dir> test`,
+   `vitest`, `jest`, `mocha`, `npx playwright test`, `npx tsx --test`,
    `pytest`, `python|python3|*.exe -m pytest|unittest` (incl. venv
    paths), `node … vitest.mjs [run]`, `*/node_modules/.bin/{vitest,jest,
-   mocha}`, `go test`, `cargo test`) → `test`. Output fingerprints
+   mocha}` (both slash forms, incl. Windows `node_modules\.bin\…`),
+   `go test`, `cargo test`) → `test`. Output fingerprints
    (`# pass N`, `# fail N`, `tests N passed`, `N failing`, exit code)
    fill run/failure counters. Failed runs stay in `test`. **Every test
    segment counts**: a chained `npm test; npm test` is two full runs —
@@ -184,7 +188,9 @@ tests/`, `npx vitest run`, bare `pytest` — with no path/file subset
 arguments; path-scoped invocations (`node tests/runtime/foo.test.js`,
 `pytest tests/x/`) are `targeted`. Output redirections (`>`, `>>`, `2>`,
 `2>&1`, `&>`) and their targets are stripped before this judgement —
-`npm test > /tmp/x.log` is a full run, never targeted. Wrapper scripts
+`npm test > /tmp/x.log` is a full run, never targeted. Package-dir flags
+(`--prefix <dir>`, `--cwd <dir>`) are selectors, not path subsets:
+`npm --prefix ./pkg test` is a full run of that package. Wrapper scripts
 (`bash scripts/*.sh`, `node scripts/*.js`, npm script chains not listed
 above) are opaque to rules → JEV fallback with command + output.
 `fullRunCount` counts `full-regression` invocations per turn;

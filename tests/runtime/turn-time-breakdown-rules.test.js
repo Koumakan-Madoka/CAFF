@@ -215,6 +215,29 @@ test('runner aliases: python -m pytest/unittest, vitest.mjs, node_modules/.bin',
   assert.deepEqual(pick(classifyBash('npx mocha tests/foo.spec.js')), { category: 'test', runKind: 'targeted' });
 });
 
+test('node <flags> --test and flag-paired direct files (flags never swallow --test as a value)', () => {
+  assert.deepEqual(pick(classifyBash('node --import tsx --test tests/')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('node --import tsx --test tests/a.test.ts')), { category: 'test', runKind: 'targeted' });
+  assert.deepEqual(pick(classifyBash('node --experimental-strip-types --test tests/')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('node -r tsx/cjs --test tests/runtime/foo.test.js')), { category: 'test', runKind: 'targeted' });
+  assert.deepEqual(pick(classifyBash('node --watch --test tests/')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('node --import tsx tests/runtime/foo.test.ts')), { category: 'test', runKind: 'targeted' });
+
+  // A plain script behind flags is not a test run and must stay JEV-bound.
+  assert.equal(classifyBash('node --import tsx src/run.ts'), null);
+  assert.equal(classifyBash('node scripts/custom-runner.js --import tsx'), null);
+});
+
+test('runner aliases: npx playwright/tsx, Windows .bin backslash, npm --prefix', () => {
+  assert.deepEqual(pick(classifyBash('npx playwright test')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('npx playwright test tests/foo.spec.ts')), { category: 'test', runKind: 'targeted' });
+  assert.deepEqual(pick(classifyBash('npx tsx --test tests/')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('node_modules\\.bin\\vitest run')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('npm --prefix ./pkg test')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('npm test --prefix ./pkg')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('npm --prefix ./pkg test tests/foo.test.js')), { category: 'test', runKind: 'targeted' });
+});
+
 test('redirection targets are never path-subset arguments (full stays full)', () => {
   assert.deepEqual(pick(classifyBash('npm test > /tmp/x.log')), { category: 'test', runKind: 'full-regression' });
   assert.deepEqual(pick(classifyBash('npm test 2>/dev/null')), { category: 'test', runKind: 'full-regression' });

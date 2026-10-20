@@ -763,18 +763,45 @@ function stripRedirections(segment: string) {
   return out;
 }
 
+// Flags whose value must be skipped when deciding full vs targeted; a
+// `--prefix ./pkg` directory is a package selector, not a test path subset.
+const PATH_VALUED_FLAGS = new Set(['--prefix', '--cwd', '--dir']);
+
 // Positional arguments that look like paths/files make a test run
 // targeted; runner invocations without one are the canonical full entry.
 // Input is the segment remainder after the runner prefix, already stripped
 // of redirections.
-function hasPathLikeArg(rest: string) {
-  if (!rest) {
-    return false;
+function positionalTestArgs(rest: string) {
+  const words = splitShellWords(rest);
+  const positional: string[] = [];
+
+  for (let i = 0; i < words.length; i += 1) {
+    const token = words[i];
+
+    if (PATH_VALUED_FLAGS.has(token)) {
+      i += 1; // flag value
+      continue;
+    }
+
+    if (token.startsWith('-')) {
+      continue;
+    }
+
+    positional.push(token);
   }
 
-  return splitShellWords(rest)
-    .filter((token) => !token.startsWith('-'))
-    .some((token) => /[\\/]/.test(token) || /\.(js|mjs|cjs|ts|py|go)\b/.test(token));
+  return positional;
+}
+
+// `node --test tests/` / `pytest tests/` (whole suite dir, no file subset)
+// stays full even with trailing flags; any path-like positional is targeted.
+function testRunKindFromRest(rest: string) {
+  const positional = positionalTestArgs(rest);
+  const wholeSuiteOnly = positional.length > 0
+    && positional.every((token) => /^tests\/?$/.test(token) || token === './...' || token === '...');
+  const pathLike = positional.some((token) => /[\\/]/.test(token) || /\.(js|mjs|cjs|ts|py|go)\b/.test(token));
+
+  return wholeSuiteOnly || !pathLike ? 'full-regression' : 'targeted';
 }
 
 const TEST_RUNNER_PREFIXES: Array<{ prefix: RegExp }> = [
@@ -785,42 +812,91 @@ const TEST_RUNNER_PREFIXES: Array<{ prefix: RegExp }> = [
   { prefix: /^(npx\s+)?vitest(\s+run)?/ },
   { prefix: /^(npx\s+)?jest/ },
   { prefix: /^(npx\s+)?mocha/ },
+  { prefix: /^(npx\s+)?playwright\s+test\b/ },
+  { prefix: /^npx\s+tsx\s+--test(?=\s|$)/ },
   { prefix: /^pytest/ },
   // `python -m pytest`, including venv paths and `.exe` (`.venv/Scripts/python.exe -m pytest`).
   { prefix: /^\S*python[\d.]*(\.exe)?\s+-m\s+(pytest|unittest)(?=\s|$)/ },
   // `node --import tsx ./node_modules/vitest/vitest.mjs run` — flags between
   // `node` and the runner entry are skipped pairwise (flag + value).
   { prefix: /^node\s+(?:--?\S+(?:\s+\S+)?\s+)*?\S*vitest\.mjs(\s+run)?(?=\s|$)/ },
-  { prefix: /^\S*node_modules\/\.bin\/(vitest|jest|mocha)(\s+run)?(?=\s|$)/ },
+  // Both slash forms: `node_modules/.bin/vitest` and Windows `node_modules\.bin\vitest`.
+  { prefix: /^\S*node_modules[\\/]\.bin[\\/](vitest|jest|mocha)(\s+run)?(?=\s|$)/ },
   { prefix: /^go\s+test/ },
   { prefix: /^cargo\s+test/ },
 ];
 
+// node flags that consume the next word as a value; everything else between
+// `node` and `--test` is treated as a valueless flag. Pairing matters: an
+// unpaired scan would swallow `--test` itself as the value of the last flag.
+const NODE_VALUE_FLAGS = new Set([
+  '--import',
+  '--loader',
+  '--experimental-loader',
+  '--require',
+  '-r',
+  '--conditions',
+  '-C',
+]);
+
+// `node <flags> --test …` (e.g. `node --import tsx --test tests/`) and the
+// direct single-file form with flags (`node --import tsx tests/foo.test.ts`).
+// Returns null when the first non-flag word is neither `--test` nor a test
+// file, so plain scripts stay JEV-bound rather than guessed.
+function classifyNodeInvocation(cleaned: string) {
+  const tokens = splitShellWords(cleaned);
+
+  if (tokens.length === 0 || baseName(tokens[0]) !== 'node') {
+    return null;
+  }
+
+  let i = 1;
+
+  while (i < tokens.length) {
+    const token = tokens[i];
+
+    if (token === '--test') {
+      return { category: 'test', runKind: testRunKindFromRest(tokens.slice(i + 1).join(' ')) };
+    }
+
+    if (!token.startsWith('-')) {
+      return /\.test\.(js|mjs|cjs|ts)$/.test(token)
+        ? { category: 'test', runKind: 'targeted' }
+        : null;
+    }
+
+    if (NODE_VALUE_FLAGS.has(token)) {
+      i += 1; // flag value
+    }
+
+    i += 1;
+  }
+
+  return null;
+}
+
 function classifyTestSegment(segment: string) {
   // Redirections (and their targets) never decide run kind.
-  const cleaned = stripRedirections(segment).trim();
+  let cleaned = stripRedirections(segment).trim();
+
+  // `npm --prefix ./pkg test …` runs the package's full entry elsewhere;
+  // drop the package-dir flag so runner detection still sees `test`.
+  cleaned = cleaned.replace(/^(npm|pnpm|yarn)\s+--prefix\s+\S+\s+/, '$1 ');
 
   for (const { prefix } of TEST_RUNNER_PREFIXES) {
     if (!prefix.test(cleaned)) {
       continue;
     }
 
-    // `node --test tests/` / `pytest tests/` (whole suite dir, no file
-    // subset) stays full even with trailing flags.
     const rest = cleaned.replace(prefix, '').trim();
-    const positional = splitShellWords(rest).filter((token) => !token.startsWith('-'));
-    const wholeSuiteOnly = positional.length > 0
-      && positional.every((token) => /^tests\/?$/.test(token) || token === './...' || token === '...');
 
-    return {
-      category: 'test',
-      runKind: wholeSuiteOnly || !hasPathLikeArg(rest) ? 'full-regression' : 'targeted',
-    };
+    return { category: 'test', runKind: testRunKindFromRest(rest) };
   }
 
-  // Direct single-file runners: `node tests/foo.test.js`.
-  if (/^node\s+\S*\.test\.(js|mjs|cjs|ts)(\s|$)/.test(cleaned)) {
-    return { category: 'test', runKind: 'targeted' };
+  const nodeResult = classifyNodeInvocation(cleaned);
+
+  if (nodeResult) {
+    return nodeResult;
   }
 
   return null;
