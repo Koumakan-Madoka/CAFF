@@ -81,10 +81,17 @@ function classify(metadata: any, included: string[]): any {
   for (const file of metadata.files) {
     if (file.path === '.git/info/exclude' || (!isGit(file.path) && file.path.split('/').at(-1) === '.gitignore')) {
       const sourceText = text(file);
-      // Character-class range endpoints need Git's casefold wildmatch rules;
-      // lowercasing e.g. [A-z] is NOT equivalent. Reject rather than overclaim.
-      if (ignoreCase && (/[^\x00-\x7f]/.test(sourceText) || sourceText.includes('['))) return fail('git_ignorecase_unverified');
-      const rules = parseGitignoreRules(ignoreCase ? sourceText.toLowerCase() : sourceText);
+      // Check ORIGINAL active patterns before any folding. A stock Git
+      // info/exclude contains "# *.[oa]": comments are not wildmatch rules.
+      // Unicode comments are also inert; escaped/indented '#' remains active.
+      // Character-class ranges and non-ASCII active patterns still reject:
+      // lowercasing [A-z] or Unicode Kelvin-sign patterns is not equivalent.
+      const originalRules = parseGitignoreRules(sourceText);
+      if (ignoreCase && originalRules.some(rule => /[^\x00-\x7f]/.test(rule.source) || rule.source.includes('['))) {
+        return fail('git_ignorecase_unverified');
+      }
+      if (!(originalRules as any).verified) return fail('git_ignore_unverified');
+      const rules = ignoreCase ? parseGitignoreRules(sourceText.toLowerCase()) : originalRules;
       if (!(rules as any).verified) return fail('git_ignore_unverified');
       if (file.path === '.git/info/exclude') globalIgnoreSources.push({ base: '', rules });
       else gitignoreByDir.set(file.path.includes('/') ? key(file.path.slice(0, file.path.lastIndexOf('/'))) : '', rules);

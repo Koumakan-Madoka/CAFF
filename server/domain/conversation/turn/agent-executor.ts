@@ -2307,7 +2307,11 @@ export function createAgentExecutor(options: any = {}) {
     if (badcaseCapture) {
       try {
         capturedSdkStartConfig = resolveSdkStartConfig(provider, model, runOptions);
-        const captureTargetDir = String(conversation.worktreePath || sessionProjectDir || resolvedProjectDir || '').trim();
+        // Capture the exact effective cwd used by startRun's SDK descriptor.
+        // Room metadata may be stale relative to the queued execution binding;
+        // it is never a fallback target or authority for a different directory.
+        // The collector still requires this root's own explicit grant and pin.
+        const captureTargetDir = capturedSdkStartConfig.cwd;
         // Accept synchronous collectors and future asynchronous collectors, but
         // never cross startRun while a pre-turn capture is still in flight.
         const captureResult = await badcaseCapture.captureTurnCheckpoint({

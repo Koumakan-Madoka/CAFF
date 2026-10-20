@@ -716,9 +716,12 @@ test('pre-turn asynchronous capture settles before startRun and preserves fresh/
         const agent = createAgent(), conversation = createConversation(agent);
         const worktree = path.join(env.tempDir, 'actual-worktree');
         fs.mkdirSync(worktree);
-        conversation.worktreePath = worktree;
+        conversation.worktreePath = path.join(env.tempDir, 'stale-room-root');
         const store = createFakeStore(conversation, { withReuse: true });
-        store.agentDir = env.tempDir;
+        // runTurn passes this fixture field as the execution projectDir, while
+        // the real agent/session directory remains env.tempDir. The old test
+        // labelled Room metadata "actual" but started the SDK in its parent.
+        store.agentDir = worktree;
         seedUserMessage(store, 'u1', 'BEFORE-ASYNC-CAPTURE');
         let saved;
         if (delivery === 'resume') {
@@ -750,7 +753,8 @@ test('pre-turn asynchronous capture settles before startRun and preserves fresh/
           assert.equal(env.captured.length, startCount, 'no provider run before capture settles');
           assert.deepEqual(order, ['capture-enter']);
           assert.equal(env.releasedInvocations.length, releases, 'callback remains registered while waiting');
-          assert.equal(observations[0].targetDir, worktree, 'actual worktree, not application/session dir');
+          assert.equal(observations[0].targetDir, worktree, 'actual SDK cwd, not Room metadata or application/session dir');
+          assert.equal(observations[0].targetDir, observations[0].harness.configSnapshot.sdkStartConfig.cwd);
           assert.equal(observations[0].deliveryMode, delivery);
           if (delivery === 'resume') assert.equal(store.peekReuseRow().state, 'busy');
         } finally {

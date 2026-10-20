@@ -67,8 +67,18 @@ test('case-insensitive classification keeps tracked mode and canonical disk spel
   assert.deepEqual(h.ops, ['gitMetadata', 'selectedSnapshot', 'gitMetadata']);
 });
 
+test('Git template and Unicode comments do not become active casefold rules', async () => {
+  const f = fixture();
+  f.files.set('.git/info/exclude', Buffer.from('# *.[oa]\r\n# 中文说明 [A-z]\n*.TMP\n'));
+  f.files.set('.gitignore', Buffer.from('# 中文说明 [A-z]\n*.LOG\nBUILD/\n'));
+  const h = harness(f), result = await h.run();
+  assert.equal(result.ok, true, result.reason);
+  assert.deepEqual(h.selectors, [['.gitignore', 'Include.LOG', 'Sub/.gitignore', 'Sub/keep.bin', 'new', 'tracked.log']]);
+  assert.deepEqual(h.ops, ['gitMetadata', 'selectedSnapshot', 'gitMetadata']);
+});
+
 test('ambiguous case paths, unsupported Unicode and mis-cased ignore source reject before ordinary reads', async () => {
-  for (const kind of ['indexCollision', 'indexParentCollision', 'deepIndex', 'treeCollision', 'treeParentCollision', 'unicodeIndex', 'unicodeTree', 'unicodeIgnore', 'bracketIgnore', 'ignoreAlias']) {
+  for (const kind of ['indexCollision', 'indexParentCollision', 'deepIndex', 'treeCollision', 'treeParentCollision', 'unicodeIndex', 'unicodeTree', 'unicodeIgnore', 'unicodeCasefold', 'bracketIgnore', 'escapedComment', 'indentedComment', 'ignoreAlias']) {
     const f = fixture();
     if (kind === 'indexCollision') f.files.set('.git/index', index(['Tracked.LOG', 'tracked.log']));
     if (kind === 'indexParentCollision') f.files.set('.git/index', index(['Sub/a', 'sub/b']));
@@ -78,7 +88,10 @@ test('ambiguous case paths, unsupported Unicode and mis-cased ignore source reje
     if (kind === 'unicodeIndex') f.files.set('.git/index', index(['caf\u00e9']));
     if (kind === 'unicodeTree') f.entries.push({ path: 'caf\u00e9', type: 'file' });
     if (kind === 'unicodeIgnore') f.files.set('.gitignore', Buffer.from('caf\u00e9\n'));
+    if (kind === 'unicodeCasefold') f.files.set('.gitignore', Buffer.from('\u212A.log\n'));
     if (kind === 'bracketIgnore') f.files.set('.gitignore', Buffer.from('[A-z]*\n'));
+    if (kind === 'escapedComment') f.files.set('.gitignore', Buffer.from('\\# [A-z]\n'));
+    if (kind === 'indentedComment') f.files.set('.gitignore', Buffer.from(' # [A-z]\n'));
     if (kind === 'ignoreAlias') {
       // Replace (do not duplicate) the source: no folded-name collision may
       // mask the independent guard for metadata the native reader won't read.

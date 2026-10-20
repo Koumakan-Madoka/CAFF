@@ -1364,6 +1364,16 @@ fixture改为执行生产编译resolver，跨平台测试仅替换显式path语�
 - 先红：`node --test --test-name-pattern='discloses nested|unsupported Git layouts' tests/ui/badcase-capture.test.js` 在修改 UI 前两项分别因缺静态限制与缺失败解释而断言红。实现后，`node --test tests/runtime/badcase-windows-git-discovery.test.js tests/ui/badcase-capture.test.js tests/http/badcase-capture-controller.test.js` 为55通过/2平台跳过；原生 Windows 自建 Temp linked-worktree 实测嵌套 `.git` 文件和目录均精确拒绝，无候选/绑定返回，策略和库存全等，移除测试自建标记后原三阶段发现继续通过。UI 验证旧开启回执失效、无后续自动预估/授权/开启/重试；此为 JSDOM，不冒称再次跑过真实浏览器。
 - `npm run test:fast` EXIT=0，2427项=2376通过/51跳过/0失败；`npm run test:smoke` EXIT=0，101/101；`npm run typecheck`（含public）EXIT=0，`git diff --check`通过。日志在 ignored `.tmp/badcase-m1-ui-p2/`。未重跑 Docker/SDK/模型，未操作真实用户项目的 authorize/enable。3267 的只读健康探测返回 `ECONNREFUSED`（原两小时实例已不可达），未自动重启或更换端口/DB。M1 仍缺 Windows 开启、真实 turn 执行前检查点、两次恢复、首份/增量容量及耗时；全部 AC pending，不调用 update-goal 追加中间证据，不合并发布。
 
+### 5.76 M1 实际执行 cwd 绑定与真实 Git 模板阻断修正（开启门仍关）
+
+- 采集挂点原先优先选择 `conversation.worktreePath`，但 `startRun` 使用解析后的 SDK descriptor.cwd；当 Room 记录与本次队列执行目录不同，会保存错根或把错根的检查点关联到本次 run。改为直接使用已经归档、与 `startRun` 共用的 `capturedSdkStartConfig.cwd`，保留其精确解析拼写；不改执行目录/Room 绑定，不向上猜 Git 根，不代用户授权/重新 pin。未显式传入 cwd 时仍按 SDK 的同一默认值求目标，但它也必须有自己的独立授权；不借 Room 的旧根采集。旧的 await 后 SDK descriptor 漂移检查不变。
+- 修改前，经原 executor→真实 Windows service/原生 NT collector（仅 `startRun` stub）在自建 Temp Git 两根复现：输入 targetDir 指向旧 Room 根，descriptor/startRun 的 cwd 指向本次实际根。通用 cwd/contract-skills 用例与原生双授权用例先断言红。修正后覆盖旧根单独授权、新根单独授权、未绑定 cwd 三种情形：前两种无自动扩大/重新 pin；实际根未授权精确拒绝、零blob/零关联；实际根独立授权时保存其文件hash，旧根无检查点。成功检查点在 stub start 前落盘、与 message 关联，Windows input.complete/strict 仍false。这里是 fixture 原生接线，不是日常真实模型 turn、管理 enable 或 M1 验收。
+- 原生成功路径随后暴露真实 Git 默认模板失败：`core.ignorecase=true` 时，旧检查对整份 ignore 源做 `includes('[')`，把 `info/exclude` 的标准注释 `# *.[oa]` 当作不支持的字符类。没有清空 fixture 或修改用户 Git 配置来绕过；补直接失败回归，再改为**原始、未折叠的有效规则**接受集检查，注释依原 parser 语义不成为规则，再对合规 ASCII 规则生成小写 matcher。活动的字符类、Unicode（含会折成ASCII的Kelvin字符）、转义 `\#` 及前导空格后的 `#` 仍按活动规则处理并拒绝超出子集的内容。原 parser 的长度/语法验证、秘密检查、选读前拒绝与全部原生边界保留；仍不承诺任意注释/规则语法受支持。
+- 本 Room 已获聊天授权的 Git 根仅做只读诊断摘要，未代写管理授权：common config 3,996B，当前子集语法可解析、ignoreCase=true、无 include/excludesFile 声明；该 worktree 的 config.worktree 本次观察为ENOENT。common info/exclude 有1条包含被拒字符的注释、0条此类活动规则；Room .gitignore 两类均0。未打印/复制配置原文、Key或外部私有文件，没有据此证明全局配置缺失或完整性；全局 Git ignore、worktreeConfig 的支持/独立授权仍是后续开启前义务。
+- 全量 fast 首次在12个原异步捕获情形及其父项失败：旧夹具把 Room 字段叫“实际worktree”，但 `runTurn` 实际传给 SDK 的 projectDir 仍为父级 agentDir。已将**测试执行绑定**改为该测试 worktree，同时令 Room 字段故意陈旧；保留 fresh/resume/stop/异常全部断言，并增加 targetDir=descriptor.cwd。不是恢复“按 Room 字段猜根”，不改生产调度，也不追认旧测试曾证明真实cwd。
+- 最终 `node --test tests/runtime/agent-executor-hook.test.js tests/runtime/session-reuse-ab.test.js tests/runtime/badcase-windows-turn-collector.test.js tests/runtime/badcase-windows-ignorecase.test.js` 为100通过/2平台跳过；`npm run test:fast` EXIT=0，2432项=2381通过/51跳过；`npm run test:smoke` 101/101，`npm run typecheck`（含public）及 diff检查通过。3个进程内变异（恢复旧Room根优先、删除活动规则守卫、先fold再核验原始规则）最终均为明确断言红，build字节hash不变，最终正常测试复绿。初版mutation hook只拦require而未覆盖VM直接读源码，导致1项未应用而存活；修正测试驱动后完整重跑，原记录保留，不计作有效红。日志/脚本在 ignored `.tmp/badcase-m1-actual-cwd/`。
+- 未重跑 Docker/真实SDK或模型，未启动/重启3267、未开启真实目录采集；没有将该原生fixture作为用户真实badcase或M1完成证据。Windows管理开启门、默认 `.git` 分类读取范围、全局/工作树 Git 环境及受信privateDirs接线仍须落实，之后才可做真实turn/两次恢复/首份与增量容量耗时。当前改动仍仅作者自验，提交后按关键目录风险交 DeepSeek 固定SHA独立审查；全部AC pending，不追加Goal中间证据，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
