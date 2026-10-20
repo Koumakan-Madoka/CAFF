@@ -33,7 +33,7 @@ exactly one category (分类口径, committed decision `categories-v1`):
 | `build-check` (构建与检查) | — | `tsc`, `npm run build`, `npm run typecheck`, `npm run check`, `node --check` chains, linters. Not tests. |
 | `process-report` (流程与汇报) | — | CAFF bridge tooling: `update-goal`, `suggest-goal`, `propose-plan`, `send-public`, `create-delegation`, `await-delegation`, `conversation_notify/request` (agent-chat-tools commands). |
 | `thinking` (模型思考) | — | Wall-clock intervals inside the turn span with no tool execution running. Includes model generation and harness overhead; v1 cannot split further (documented, accepted). |
-| `exception-retry` (异常与重试) | — | Two disjoint time sources: (a) tool steps that failed **before any semantic execution** (tool invocation errors, missing results, bridge errors) — the step never did read/write/test work, so no semantic category applies; (b) model-side error intervals: assistant messages with `stopReason = 'error'`, and pi-runtime watchdog/progress-timeout intervals. A failed *test run* stays in `test` (failure is signal); a failed *edit* that executed stays in `write`. |
+| `exception-retry` (异常与重试) | — | Two disjoint time sources: (a) tool steps that failed **before any semantic execution** (tool invocation errors, missing results, bridge errors) — the step never did read/write/test work, so no semantic category applies; (b) model-side error intervals: assistant messages with `stopReason = 'error'` (interval = previous trace event end → that row's timestamp), and pi-runtime watchdog/progress-timeout intervals. Source (b) is complete for live turns and best-effort for historical backfill — runtime-only events that never reached the session JSONL are simply absent, and the panel annotates `partial-*` accordingly. A failed *test run* stays in `test` (failure is signal); a failed *edit* that executed stays in `write`. |
 | `unclassified` (未分类) | — | Rule classifier returned nothing and JEV was disabled, low-confidence, timed out, or errored. Never a hard guess. |
 
 Turn-level metrics (also committed):
@@ -41,12 +41,15 @@ Turn-level metrics (also committed):
 - `firstWriteMs`: turn span start (timestamp of the first trace event —
   the first assistant/model event of this turn's slice, not the user
   message) → the first step that mutates a repo-tracked file.
-- `sessionReused` + `sessionReuseReason`: derived from the task row —
-  `sessionAssistantStartIndex > 0` → `true`, reason `continued named
-  session`（复用既有命名会话，无需冷启动重读全部历史）; start index 0/absent
-  with an existing session file → `false`, reason `session restarted`
-  （会话文件被重建或索引缺失）; no session file → `false`, reason `fresh
-  session`.
+- `sessionReused` + `sessionReuseReason`: read directly from the turn's
+  message metadata (`sessionReused` / `sessionReuseReason`, written by
+  `agent-executor.ts` at turn start; reason codes `reused`, `busy_stale`,
+  `claim_conflict`, `reuse_evaluation_error`, cursor-class reasons). This
+  is the authoritative derivation already surfaced by the trace inspector
+  and labeled by the frontend `sessionReuseReasonLabel` map — the breakdown
+  panel must reuse the same codes and labels, never re-derive. History
+  messages lacking the field display "无记录", never a guess.
+  `sessionAssistantStartIndex` is used only as the §4 slice offset.
 - `fullRunCount` / `fullRunFailCount`: per §5.
 
 ### 3. Time Attribution (resolves open question `q-parallel`)
@@ -95,6 +98,11 @@ Turn-level metrics (also committed):
   (`agent-tool-bridge.ts`). Dedup across both sources by `toolCallId`.
 - Step identity: `(taskId, toolCallId)`. Session-derived steps without a
   `toolCallId` fall back to `(taskId, toolName, ordinal)`.
+- Open intervals: a step without an end timestamp (missing result,
+  interrupted turn) is clamped to the next trace event timestamp when one
+  exists; otherwise it records `durationMs = NULL`, contributes nothing to
+  the §3 union, and is flagged in the step list — open intervals never
+  silently extend to "now".
 
 ### 5. Rule Classifier
 
@@ -114,7 +122,7 @@ first hit wins:
    check`, `node --check`, eslint) → `build-check`.
 4. Mutations (`edit`/`write` tools; bash with `>`, `>>`, `sed -i`,
    `apply_patch`, `tee`, `mv`, `cp` targeting repo paths) → `write` with
-   path-class subcategory.
+   path-class subcategory decided by the **destination** path class.
 5. Reads (`read`/`grep`/`find` tools, `ls`, `cat`, read-only git) → `read`
    with cold-start subcategory before the first write.
 6. Infra failures with no semantic execution (invocation error, missing
@@ -271,6 +279,7 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 | Case | Expected behavior |
 | --- | --- |
 | pi_event `tool_execution_end` arrives | step classified async; turn path never awaits; summary row live-updates |
+| one logical step seen via both pi event and bridge event | dedup by `toolCallId`; bridge calls with distinct `toolCallId`s are separate steps under §3 union — never double-counted |
 | rules classify a step | row upserted `classified_by='rules'`, no JEV call |
 | opaque wrapper script, JEV on, confident | `classified_by='jev'`, cache row written |
 | same command features again | `classified_by='jev-cache'`, zero network calls |
