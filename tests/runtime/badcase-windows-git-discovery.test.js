@@ -23,6 +23,21 @@ test('Windows dependency discovery proposes one root at a time and never grants,
   service.authorizeProject(project);
   const policy = service.loadPolicy(project), usage = service.computeUsage(project);
   const metadataRoot = path.join(main, '.git', 'worktrees', 'work'), commonRoot = path.join(main, '.git');
+  // The guided reader rejects nested repositories/submodules. Do not remove
+  // markers, bypass the check, grant dependencies or archive partial results.
+  const nested = path.join(work, 'sub', '.git');
+  fs.mkdirSync(path.dirname(nested));
+  for (const type of ['file', 'directory']) {
+    if (type === 'file') fs.writeFileSync(nested, 'gitdir: ' + path.join(root, 'ungranted') + '\n');
+    else fs.mkdirSync(nested);
+    const rejected = await service.discoverGitDependenciesAsync(project, work);
+    assert.equal(rejected.ok, false, type); assert.equal(rejected.reason, 'git_metadata_unsupported', type);
+    assert.equal(Object.hasOwn(rejected, 'next'), false, type);
+    assert.equal(Object.hasOwn(rejected, 'selection'), false, type);
+    assert.deepEqual(service.loadPolicy(project), policy); assert.deepEqual(service.computeUsage(project), usage);
+    fs.rmSync(nested, { recursive: true });
+  }
+  fs.rmdirSync(path.dirname(nested));
   fs.renameSync(metadataRoot, metadataRoot + '-hidden');
   const first = await service.discoverGitDependenciesAsync(project, work);
   fs.renameSync(metadataRoot + '-hidden', metadataRoot);

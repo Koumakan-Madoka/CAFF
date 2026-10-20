@@ -33,6 +33,7 @@
       </fieldset>
       <fieldset class="settings-form compact-settings-form"><legend>2. 确认依赖与预估容量</legend>
         <p data-capture-dependency aria-live="polite">授权后检查 Git 依赖；外部目录逐根确认后才会读取。</p>
+        <p class="muted">自动识别暂不支持含嵌套仓库/submodule 的 worktree；遇到限制会停止引导，不会跳过依赖检查。高级设置不保证该布局可采集。</p>
         <div class="button-row"><button type="button" data-capture-action="discover-git" class="ghost-button">重新检查 Git 依赖</button>
         <button type="button" data-capture-action="authorize-dependency">确认所列 Git 范围（不启用）</button></div>
         <label class="capture-consent"><input name="callbackInputAuthorized" type="checkbox" /> 另行同意保存执行前公共文本上下文，供回放使用</label>
@@ -233,7 +234,9 @@
         if (seq !== generation) return;
         if (action === 'discover-git') {
           if (result.ok !== true) {
-            element('[data-capture-dependency]').textContent = `无法自动检查：${result.reason || 'git_discovery_unavailable'}。未扩大授权，未开启；可在高级设置查看现有范围。`;
+            element('[data-capture-dependency]').textContent = result.reason === 'git_metadata_unsupported'
+              ? 'Git 布局不受支持（git_metadata_unsupported，例如嵌套仓库/submodule 或大小写变体的 .git）。已停止本次引导，未扩大授权、未自动继续预估或开启。可改选不含嵌套仓库的验证 worktree，再重新核对授权；如需检查原目录，可在高级设置查看范围，但不保证该布局可采集，不会自动改动仓库。'
+              : `无法自动检查：${result.reason || 'git_discovery_unavailable'}。未扩大授权，未开启；可在高级设置查看现有范围。`;
             notice('Git 依赖检查未完成；没有自动授权或重试。');
           } else {
             if (typeof result.ready !== 'boolean' || result.targetDir !== body.targetDir

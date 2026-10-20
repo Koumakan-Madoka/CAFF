@@ -342,6 +342,33 @@ test('guided external Git flow requires each root consent, needs no JSON and nev
   assert.ok(h.confirms.every(text => text.includes('不启用采集') && text.includes('当前身份')));
 });
 
+test('guided discovery discloses nested repository support limits before confirmation', async t => {
+  const h = setup(t); await h.panel.select({ id: 'a' });
+  assert.match(h.root.querySelector('fieldset:nth-of-type(2)').textContent, /自动识别暂不支持.*嵌套仓库\/submodule/);
+  assert.equal(h.calls.some(c => c.method === 'POST'), false);
+});
+
+test('unsupported Git layouts explain nested repository limits and stop guided continuation without granting or retrying', async t => {
+  const h = setup(t, url => url.endsWith('/discover-git') ? { ok: false, reason: 'git_metadata_unsupported' } : undefined);
+  await h.panel.select({ id: 'a' });
+  await h.click('estimate');
+  assert.equal(h.button('enable').disabled, false);
+  const before = h.field('authorizedDirs').value;
+  await h.click('discover-git');
+  const text = h.root.querySelector('[data-capture-dependency]').textContent;
+  assert.match(text, /git_metadata_unsupported/);
+  assert.match(text, /嵌套仓库\/submodule/);
+  assert.match(text, /停止本次引导/);
+  assert.match(text, /可改选不含嵌套仓库的验证 worktree/);
+  assert.match(text, /不保证.*可采集/);
+  assert.equal(h.button('authorize-dependency').hidden, true);
+  assert.equal(h.button('enable').disabled, true);
+  assert.equal(h.field('authorizedDirs').value, before);
+  assert.equal(h.root.querySelector('[data-capture-advanced]').open, false);
+  await h.click('authorize-dependency'); await h.click('enable'); await tick();
+  assert.deepEqual(h.calls.filter(c => c.method === 'POST').map(c => c.url.split('/').at(-1)), ['estimate', 'discover-git']);
+});
+
 test('late Git candidate response cannot overwrite another project or survive a scope edit', async t => {
   const pending = deferred();
   const h = setup(t, url => url.endsWith('/discover-git') ? pending.promise : undefined);
