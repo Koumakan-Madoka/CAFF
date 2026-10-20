@@ -23,7 +23,7 @@ function text(s, max) { assert.ok(typeof s === 'string' && s.trim() && !s.includ
 // Staging has a JSON inventory and embedded container source; it is deliberately
 // NOT fed into the generic CommonJS-only scanner. This closed extra source list
 // is independently read/verified and committed by launchHash, not omitted.
-const sourceNames = ['sdk-docker-validation.cjs', 'caff-runtime-wiring.cjs', 'evaluation-bridge-launcher.cjs', 'evaluation-bridge-files.json'];
+const sourceNames = ['sdk-docker-validation.cjs', 'sdk-validation-operator.cjs', 'caff-runtime-wiring.cjs', 'evaluation-bridge-launcher.cjs', 'evaluation-bridge-files.json'];
 const sourceRoot = path.resolve(__dirname, '../..');
 const sources = () => sourceNames.map(n => ({ path: 'scripts/badcase-capture/' + n,
   sha256: hash(readTrustedDistributionFile(sourceRoot, 'scripts/badcase-capture/' + n, 1048576)) }));
