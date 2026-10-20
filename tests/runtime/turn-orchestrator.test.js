@@ -1682,6 +1682,53 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.doesNotMatch(prompt, /PowerShell example/u);
 });
 
+test('buildAgentTurnPrompt keeps milestone review and check cadence in parallel turns', () => {
+  const agent = {
+    id: 'agent-parallel-builder',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-parallel-review-cadence',
+    title: 'Parallel Review Cadence',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-parallel-builder',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-parallel-builder/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'user_mentions',
+      parallelGroupSize: 2,
+      parallelGroupIndex: 1,
+    },
+    remainingSlots: 0,
+    routingMode: 'mention_queue',
+    allowHandoffs: false,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Plain at-mentions are allowed for readability, but they will not continue this parallel turn\./u);
+  assert.match(prompt, /Request formal review once per milestone: when a Goal work item is ready to be marked done, or when a change is ready to integrate\./u);
+  assert.match(prompt, /Do not request review of intermediate commits unless the user explicitly asks\./u);
+  assert.match(prompt, /Run targeted checks for intermediate commits; run the full applicable checks once before requesting milestone review\./u);
+});
+
 test('buildAgentTurnPrompt includes browser CLI guidance when configured', () => {
   const agent = {
     id: 'agent-browser',

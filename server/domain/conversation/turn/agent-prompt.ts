@@ -632,6 +632,10 @@ export function buildAgentTurnPromptSections({
     : '';
   const turnRoutingStateSection = formatTurnRoutingState(trigger, agents);
 
+  const reviewCadenceRules = [
+    '- Request formal review once per milestone: when a Goal work item is ready to be marked done, or when a change is ready to integrate. Do not request review of intermediate commits unless the user explicitly asks. After review, fix blocking findings and request re-review of those fixes only; record non-blocking findings without another review round.',
+    '- Run targeted checks for intermediate commits; run the full applicable checks once before requesting milestone review.',
+  ];
   const routingRules = allowHandoffs
     ? [
         '- Reply as this agent only.',
@@ -643,8 +647,7 @@ export function buildAgentTurnPromptSections({
         '- Public room output should go through the chat bridge instead of your final raw reply whenever possible.',
         '- Put actionable handoff mentions on their own line, or place a pure trailing mention block on the final line that contains only mentions.',
         '- Inline mentions in the middle of a sentence do not trigger routing unless they are part of that final trailing mention block.',
-        '- Request formal review once per milestone: when a Goal work item is ready to be marked done, or when a change is ready to integrate. Do not request review of intermediate commits unless the user explicitly asks. After review, fix blocking findings and request re-review of those fixes only; record non-blocking findings without another review round.',
-        '- Run targeted checks for intermediate commits; run the full applicable checks once before requesting milestone review.',
+        ...reviewCadenceRules,
         '- Formal review requests must include the exact commit SHA, review scope and risks, author validation evidence, and desired response format. After sending one, do not modify repository files for the rest of this trace.',
         '- Review worktrees are risk-based: static git show/diff review needs none; a clean room worktree at the requested SHA may be used if the author will not keep writing; create a detached review worktree only when tests need a stable SHA while the room worktree may change, and use a separate writable branch/worktree if the reviewer must modify code.',
         `- Up to ${MAX_PARALLEL_MENTION_BATCH_SIZE} agents run at once; extra actionable mentions queue in later batches.`,
@@ -660,6 +663,7 @@ export function buildAgentTurnPromptSections({
         '- Keep your answer readable in a chat UI.',
         '- Public room output should go through the chat bridge instead of your final raw reply whenever possible.',
         '- Plain at-mentions are allowed for readability, but they will not continue this parallel turn.',
+        ...reviewCadenceRules,
       ];
   const conversationDigestSection = formatConversationDigestsForPrompt(conversation);
   const retrievedMemorySection = formatRetrievedMemorySegments(relatedMemorySegments);
