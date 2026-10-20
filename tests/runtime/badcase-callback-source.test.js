@@ -128,6 +128,7 @@ test('no truncation: oversized raw input or more than 2048 public messages is re
 
 test('native host service authorized source → actual file collector → CAS → restart keeps distinct turn IDs and exact callback state (owned fixtures only)',
   { skip: !['win32', 'linux'].includes(process.platform) }, async t => {
+  require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
   const h = fixture(t), target = path.join(h.root, 'worktree'), sessions = path.join(h.root, 'sessions'), captureRoot = path.join(h.root, 'capture');
   fs.mkdirSync(target); fs.mkdirSync(sessions);
   const git = (...args) => require('node:child_process').execFileSync('git', ['-C', target, ...args], { windowsHide: true,

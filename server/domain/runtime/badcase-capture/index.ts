@@ -16,6 +16,7 @@ import { invokeWindowsHelper } from './windows-helper';
 import { estimateWindowsDirectory, estimateWindowsDirectoryAsync } from './windows-estimate';
 import { readPreTurnCallbackInput } from './callback-source';
 import { discoverWindowsGitDependencies } from './windows-git-discovery';
+import { supportsWindowsGitEnvironment } from './windows-git-environment';
 
 export function resolveCaptureRoot(options: any = {}) {
   const explicit = String(options.captureRoot || '').trim() || String(process.env.CAFF_BADCASE_CAPTURE_DIR || '').trim();
@@ -71,8 +72,10 @@ export function createBadcaseCaptureService(options: any = {}) {
   })() : null;
   // No enable bypass: Windows estimate still advertises captureAvailable=false.
   // Selection is host-platform explicit, never a failed-Windows fallback to Linux.
+  const windowsGitEnvironmentReady = windowsScope ? supportsWindowsGitEnvironment(process.env) : false;
+  const checkWindowsGitEnvironment = () => windowsGitEnvironmentReady && supportsWindowsGitEnvironment(process.env);
   const turnCollector = windowsScope
-    ? createWindowsTurnCollector({ store, readCallbackInput, ...windowsScope }) : collector;
+    ? createWindowsTurnCollector({ store, readCallbackInput, ...windowsScope, checkEnvironment: checkWindowsGitEnvironment }) : collector;
 
   return {
     captureRoot,
@@ -166,7 +169,10 @@ export function createBadcaseCaptureService(options: any = {}) {
           fileCount: 0, totalBytes: 0, durationMs: Date.now() - start };
         const result = await estimateWindowsDirectoryAsync({ captureRoot, ...windowsScope,
           targetDir: target, policy: store.loadPolicy(id) });
-        return { ...result, durationMs: Date.now() - start };
+        return { ...result, ...(result.ok && !checkWindowsGitEnvironment() ? {
+          reason: 'windows_git_environment_unsupported',
+          limitations: [...(result.limitations || []), 'windows_git_environment_unsupported'],
+        } : {}), durationMs: Date.now() - start };
       }
       return runEstimateProcess({ captureRoot, projectId: String(projectId || ''), targetDir: String(targetDir || '') });
     },

@@ -225,6 +225,15 @@ test('Windows facade latches one trusted scope for collector and both previews; 
     assert.equal(scope.agentDir, 'C:/app');
   }
   assert.notEqual(seen[0][1].privateDirs, privateDirs, 'scope must not borrow caller array');
+  const unsupportedAtStartup = seen[0][1].checkEnvironment;
+  assert.equal(unsupportedAtStartup(), false);
+  Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: 'NUL' });
+  assert.equal(unsupportedAtStartup(), false, 'cannot retrofit a differently configured running instance');
+  api.createBadcaseCaptureService({ captureRoot: base });
+  const supportedAtStartup = seen.at(-1)[1].checkEnvironment;
+  assert.equal(supportedAtStartup(), true);
+  env.GIT_INDEX_FILE = 'C:/another-index'; assert.equal(supportedAtStartup(), false);
+  delete env.GIT_INDEX_FILE; assert.equal(supportedAtStartup(), true);
 
   const calls = [];
   const linux = load('linux', { './estimate-process': { runEstimateProcess: opts => { calls.push(opts); return { ok: true }; } } });

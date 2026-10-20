@@ -225,6 +225,7 @@ test('external read chain stops at every failure/late result and bounds aggregat
 test('native linked-worktree classifies independently pinned external inputs, restores twice, refuses changed binding', {
   skip: process.platform !== 'win32' ? 'real Windows NTFS required' : false,
 }, async t => {
+  require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-winext-')); t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const main = path.join(base, 'main'), work = path.join(base, 'work'), captureRoot = path.join(base, 'storage'); fs.mkdirSync(main);
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(base, 'no-global'), GIT_TEMPLATE_DIR: '' };

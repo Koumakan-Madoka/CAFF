@@ -150,6 +150,7 @@ test('bounded ASCII wildcard, negation, directory and nested rules match real Gi
 
 test('native NTFS case-only rename: Git oracle, service fresh/resume publication and two restores (fixture only)',
   { skip: process.platform !== 'win32' }, async t => {
+  require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
   const os = require('node:os'), { execFileSync } = require('node:child_process');
   const { createBadcaseCaptureService } = require(base), { createCaptureStore } = require(base + 'capture-store');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-ignorecase-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));

@@ -36,6 +36,49 @@ function setup(t, overrides = {}) {
     deliveryMode: 'resume', prompt: 'question', sessionPath: 'C:/sessions/turn.jsonl', environment: { template: 'not-pinned' } };
   return { root, store, seen, input, collector };
 }
+test('trusted environment rejection occurs under the lease before files, and drift after files prevents inputs/publication', async t => {
+  let ready = false, checks = 0, drift = 'files';
+  const h = setup(t, { options: { checkEnvironment: () => { checks++; return ready; } }, deps: {
+    './windows-git-candidate': { readWindowsGitFileCandidateAsync: async opts => { h.seen.push(['files', opts]); if (drift === 'files') ready = false; return candidate(); } },
+    './windows-replay-input': { prepareWindowsReplayInput: async opts => { h.seen.push(['input', opts]); if (drift === 'input') ready = false; return prepared(); } },
+  } });
+  assert.equal((await h.collector.captureTurnCheckpoint(h.input)).reason, 'windows_git_environment_unsupported');
+  assert.equal(checks, 1); assert.deepEqual(h.seen, []);
+  ready = true;
+  const changed = await h.collector.captureTurnCheckpoint(h.input);
+  assert.equal(changed.captured, false); assert.equal(changed.reason, 'windows_git_environment_unsupported');
+  assert.deepEqual(h.seen.map(([kind]) => kind), ['files']); noLock(h);
+  h.seen.length = 0; ready = true; drift = 'input';
+  const beforePublication = await h.collector.captureTurnCheckpoint(h.input);
+  assert.equal(beforePublication.captured, false); assert.equal(beforePublication.reason, 'windows_git_environment_unsupported');
+  assert.deepEqual(h.seen.map(([kind]) => kind), ['files', 'input']); noLock(h);
+});
+
+test('Windows Git environment accepts only explicitly disabled ambient config and no injected Git selectors', () => {
+  const { supportsWindowsGitEnvironment: supported } = require(base + 'windows-git-environment');
+  const env = { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: 'NUL', GIT_BASH_PATH: 'C:/Git/bin/bash.exe', OTHER: 'unchanged' };
+  assert.equal(supported(env), true);
+  for (const change of [{ GIT_CONFIG_GLOBAL: '' }, { GIT_CONFIG_GLOBAL: 'C:/missing-config' }, { GIT_CONFIG_NOSYSTEM: '0' },
+    { GIT_CONFIG_COUNT: '0' }, { GIT_CONFIG_PARAMETERS: 'PRIVATE_SENTINEL' }, { GIT_DIR: 'C:/different' },
+    { GIT_WORK_TREE: 'C:/different' }, { GIT_INDEX_FILE: 'C:/different' }, { git_config_global: 'NUL' }]) {
+    assert.equal(supported({ ...env, ...change }), false);
+  }
+  assert.equal(supported({}), false); assert.equal(supported(null), false);
+  assert.equal(env.OTHER, 'unchanged'); assert.equal(Object.keys(env).length, 4, 'checker must not rewrite the environment');
+});
+
+test('native Git for Windows applies the explicitly selected NUL global config instead of the fixture default', { skip: process.platform !== 'win32' }, t => {
+  const { execFileSync } = require('node:child_process');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-win-git-env-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, '.gitconfig'), '[user]\nname = fixture-global\n');
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
+  Object.assign(env, { HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root, GIT_CONFIG_NOSYSTEM: '1' });
+  const git = env => execFileSync('git', ['config', '--list', '--show-origin'], { cwd: root, env, encoding: 'utf8', windowsHide: true });
+  assert.match(git(env), /user.name=fixture-global/);
+  env.GIT_CONFIG_GLOBAL = 'NUL'; assert.equal(git(env), '');
+});
+
 test('collector selects external roots ONLY from locked policy at exact actual worktree, not invocation parameters', async t => {
   const h = setup(t), entry = { worktree: 'C:/worktree', metadataRoot: 'C:/main/.git/worktrees/work', commonRoot: 'C:/main/.git' };
   const policy = { ...h.store.loadPolicy('p'), authorizedDirs: [entry.worktree],

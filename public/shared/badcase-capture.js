@@ -282,7 +282,10 @@
               clearReceipt(); notice('预估回执已过期，请重新预估。'); updateControls();
             }, Math.min(2147483647, result.expiresAt - now()));
           }
-          notice(previewOnly ? '容量预估可用，但 Windows 文件采集尚未接通；不能开启。预估包括 ignored 文件，不含 session、镜像和清单成本；已知凭据/私有名称强制排除，未扫描内容。'
+          const unsupportedGit = Array.isArray(result.estimates) && result.estimates.some(item => item.reason === 'windows_git_environment_unsupported');
+          notice(previewOnly ? unsupportedGit
+            ? '当前实例的 Git 全局/system 配置环境暂不支持采集；不会自动关闭或改动 Git 配置，也不会读取未授权的外部配置。容量仍为元数据预估，不能开启。'
+            : '容量预估可用，但 Windows 文件采集尚未接通；不能开启。预估包括 ignored 文件，不含 session、镜像和清单成本；已知凭据/私有名称强制排除，未扫描内容。'
             : valid ? '预估成功；仍未自动开启。请另行确认开启。' : '无可用开启回执；请检查原因后重新预估。');
         } else {
           showState(result);

@@ -376,6 +376,7 @@ test('pre-turn capture handles refusal/exception/disabled policy and preserves a
 
 test('Windows executor captures only the actual SDK worktree under its own authorization, never the stale Room root',
   { skip: process.platform !== 'win32' }, async t => {
+  require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
   for (const authorized of ['stale', 'actual', 'unbound']) await t.test(authorized, async t => {
     const tempDir = withTempDir('caff-capture-actual-cwd-');
     const minimalPi = require('../../build/lib/minimal-pi');

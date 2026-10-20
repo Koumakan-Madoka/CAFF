@@ -132,6 +132,17 @@ test('metadata-only Windows preview shows bytes and limitations, never enables e
   assert.equal(h.calls.some(c => c.url.endsWith('/enable')), false);
 });
 
+test('unsupported ambient Git configuration is reported without changing it or offering enable', async t => {
+  const h = setup(t, url => url.endsWith('/estimate') ? estimate({ captureAvailable: false,
+    estimates: [{ targetDir: '/repo', ok: true, complete: true, fileCount: 2, totalBytes: 123,
+      captureAvailable: false, reason: 'windows_git_environment_unsupported' }] }) : undefined);
+  await h.panel.select({ id: 'a' }); await h.click('estimate');
+  const text = h.root.querySelector('[data-capture-notice]').textContent;
+  assert.match(text, /Git.*配置.*不支持/); assert.match(text, /不会自动.*关闭.*改动/);
+  assert.equal(h.button('enable').disabled, true); await h.click('enable');
+  assert.equal(h.calls.some(c => c.url.endsWith('/enable')), false);
+});
+
 test('authorization and enable require separate confirmation; cancel sends no mutation', async t => {
   const h = setup(t); await h.panel.select({ id: 'a', name: 'A' });
   h.accept(false); await h.click('authorize'); assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
