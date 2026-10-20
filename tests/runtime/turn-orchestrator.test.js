@@ -1384,6 +1384,7 @@ test('buildAgentTurnPrompt includes active session goal guidance', () => {
   assert.match(prompt, /update-goal --content-stdin applies factual work-item, criterion-status, and evidence updates from a full Goal JSON object; it rejects structural changes and high-risk waivers\. Use it only when a status changes or a milestone needs proof, not to log intermediate progress\. Evidence backs criterion status; replace superseded entries, keep summaries concise, and keep criterion references valid\./u);
   assert.match(prompt, /Call update-goal only when a work-item or criterion status changes, or when a milestone needs proof\./u);
   assert.doesNotMatch(prompt, /Evidence is the current proof set|evidence current with update-goal/u);
+  assert.match(prompt, /Request independent code review once per milestone, when a work item is ready to be marked done, not for intermediate commits\./u);
   assert.match(prompt, /current completion target/u);
   assert.match(prompt, /If the goal appears finished or blocked, create a goal proposal/u);
 });
@@ -1504,6 +1505,7 @@ test('buildAgentTurnPrompt includes paused session goal guidance', () => {
   assert.match(prompt, /Session goal:/u);
   assert.match(prompt, /Status: paused/u);
   assert.match(prompt, /do not actively drive new work/u);
+  assert.doesNotMatch(prompt, /Request independent code review once per milestone/u);
 });
 
 test('buildAgentTurnPrompt includes complete session goal as completed context', () => {
@@ -1557,6 +1559,7 @@ test('buildAgentTurnPrompt includes complete session goal as completed context',
   assert.match(prompt, /Session goal:/u);
   assert.match(prompt, /Status: complete/u);
   assert.match(prompt, /completed context/u);
+  assert.doesNotMatch(prompt, /Request independent code review once per milestone/u);
 });
 
 test('buildAgentTurnPrompt omits cleared session goal guidance', () => {
@@ -1670,6 +1673,10 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /use a concise final reply when no public bridge post is needed/u);
   assert.match(prompt, /exact commit SHA, review scope and risks, author validation evidence, and desired response format/u);
   assert.match(prompt, /do not modify repository files for the rest of this trace/u);
+  assert.match(prompt, /Request formal review once per milestone: when a Goal work item is ready to be marked done, or when a change is ready to integrate\./u);
+  assert.match(prompt, /Do not request review of intermediate commits unless the user explicitly asks\./u);
+  assert.match(prompt, /After review, fix blocking findings and request re-review of those fixes only; record non-blocking findings without another review round\./u);
+  assert.match(prompt, /Run targeted checks for intermediate commits; run the full applicable checks once before requesting milestone review\./u);
   assert.match(prompt, /Review worktrees are risk-based/u);
   assert.match(prompt, /create a detached review worktree only when tests need a stable SHA while the room worktree may change/u);
   assert.doesNotMatch(prompt, /PowerShell example/u);

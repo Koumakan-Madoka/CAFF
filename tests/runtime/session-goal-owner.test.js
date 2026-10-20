@@ -106,6 +106,7 @@ test('session goal owner persists through normalization and renders in the goal 
   assert.ok(prompt.includes('Call update-goal only when a work-item or criterion status changes, or when a milestone needs proof. Evidence is the proof behind criterion status: add or replace entries only then.'));
   assert.ok(prompt.includes('Replace superseded entries instead of appending history.'));
   assert.ok(prompt.includes('Do not record intermediate progress, test counts, or remaining-work lists in evidence; keep them in repository docs or your reply.'));
+  assert.ok(prompt.includes('Request independent code review once per milestone, when a work item is ready to be marked done, not for intermediate commits.'), 'goal prompt should tie code review to milestones');
   assert.ok(!prompt.includes('Evidence is the current proof set'), 'goal prompt must not ask agents to refresh evidence every turn');
 });
 
