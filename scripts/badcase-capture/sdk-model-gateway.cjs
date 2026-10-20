@@ -127,7 +127,8 @@ async function startSdkModelGateway(input, send) {
       || req.headers.authorization !== 'Bearer ' + apiKey) { req.resume(); failure(res, 403); return; }
     if (req.url !== '/v1/chat/completions' || req.method !== 'POST') { req.resume(); failure(res, 404); return; }
     if (req.headers['content-type'] !== 'application/json' || req.headers['content-encoding'] !== undefined) { req.resume(); failure(res, 415); return; }
-    if (stopped || failed || expired() || requests >= maxRequests) { req.resume(); failure(res, 503); return; }
+    if (requests >= maxRequests) failed = true; // an authenticated SDK overrun is a failed run, not just a hidden HTTP denial
+    if (stopped || failed || expired()) { req.resume(); failure(res, 503); return; }
     if (busy) { req.resume(); failure(res, 409); return; }
     busy = true;
     let dispatched = false;

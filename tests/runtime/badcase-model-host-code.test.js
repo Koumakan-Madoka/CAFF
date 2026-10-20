@@ -8,6 +8,7 @@ function fixture(t) {
   fs.copyFileSync(path.resolve(__dirname, '../../scripts/badcase-capture/model-host-code.cjs'), path.join(dir, 'model-host-code.cjs'));
   fs.writeFileSync(path.join(dir, 'model-evaluation-operator.cjs'), "require('./model-evaluation.cjs');\n");
   fs.writeFileSync(path.join(dir, 'model-evaluation.cjs'), "require('node:fs'); function lazy() { return require('./leaf.cjs'); }\n");
+  fs.writeFileSync(path.join(dir, 'approved-sdk-model-gateway.cjs'), "require('./leaf.cjs');\n");
   fs.writeFileSync(path.join(dir, 'leaf.cjs'), "throw Error('must never execute while inventorying');\n");
   return { root, dir, capture: require(path.join(dir, 'model-host-code.cjs')).captureHostCode };
 }
@@ -15,7 +16,7 @@ test('inventory is path-neutral, sorted, includes lazy/transitive dependencies a
   const a = fixture(t), b = fixture(t), first = a.capture(), second = b.capture();
   assert.deepEqual(first.files, second.files);
   assert.deepEqual(Object.keys(first.files), Object.keys(first.files).sort());
-  assert.equal(Object.keys(first.files).length, 4);
+  assert.equal(Object.keys(first.files).length, 5);
   for (const [name, digest] of Object.entries(first.files)) {
     assert.ok(!path.isAbsolute(name) && !name.includes('\\'));
     assert.equal(digest, crypto.createHash('sha256').update(fs.readFileSync(path.join(a.root, name))).digest('hex'));
@@ -60,12 +61,12 @@ test('inventory single-file byte limit accepts exactly 1MiB and rejects one byte
 test('inventory graph cap accepts exactly 256 unique files including roots and rejects the 257th', t => {
   const h = fixture(t), leaf = path.join(h.dir, 'leaf.cjs');
   for (let i = 0; i < 253; i++) fs.writeFileSync(path.join(h.dir, 'n' + i + '.cjs'), '// synthetic leaf\n');
-  fs.writeFileSync(leaf, Array.from({ length: 252 }, (_, i) => "require('./n" + i + ".cjs');").join('\n'));
+  fs.writeFileSync(leaf, Array.from({ length: 251 }, (_, i) => "require('./n" + i + ".cjs');").join('\n'));
   let snapshot; assert.doesNotThrow(() => { snapshot = h.capture(); snapshot.verify(); });
   assert.equal(Object.keys(snapshot.files).length, 256);
   // Repeated edges do not count as additional files.
   fs.appendFileSync(leaf, "\nrequire('./n0.cjs');"); assert.equal(Object.keys(h.capture().files).length, 256);
-  fs.appendFileSync(leaf, "\nrequire('./n252.cjs');");
+  fs.appendFileSync(leaf, "\nrequire('./n251.cjs');");
   assert.throws(() => h.capture(), /^Error: model_host_code_invalid$/);
   assert.throws(() => snapshot.verify(), /^Error: model_host_code_invalid$/);
 });

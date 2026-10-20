@@ -42,6 +42,9 @@ function captureHostCode() {
     visit(__filename);
     visit(path.join(root, 'scripts/badcase-capture/model-evaluation-operator.cjs'));
     visit(path.join(root, 'scripts/badcase-capture/model-evaluation.cjs'));
+    // The new native-SDK gateway/credential-free routing are reviewed host code
+    // too. Old inventories/approvals cannot silently launch the new supervisor.
+    visit(path.join(root, 'scripts/badcase-capture/approved-sdk-model-gateway.cjs'));
     return Object.fromEntries([...files].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
   }
   const files = inventory(), encoded = JSON.stringify(files);
