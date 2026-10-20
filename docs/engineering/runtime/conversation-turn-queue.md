@@ -178,7 +178,7 @@ assertImagePreflightForTargets(turnInput, conversation, {
 - `turn_finished`, root task settlement, active-turn cleanup, and Goal continuation wait until the scheduler reaches a joint fixed point: the ordinary queue is empty and all immediately launched private recipients have settled. When the ordinary queue becomes empty while private executions remain, wait for the next private execution to settle and then re-check the ordinary queue before finishing. A public handoff emitted by that recipient must run in the same turn; do not clear `pendingAgentIds` or emit `conversation_turn_finished` between those steps.
 - An absorbing turn result (`agent_final`, user Stop, or hop limit) still prevents later ordinary launches. The joint drain extends only `queue_exhausted`; it does not reopen a terminal routing decision.
 - Stop applies to every registered sender/recipient handle and prevents late launches. Concurrent prompt construction excludes other Agents' incomplete assistant placeholders.
-- Agent guidance requires one complete private message per recipient per trace, no polling/P2 wait, and commit-pinned formal review. After a formal review request, the author freezes repository writes for the remainder of that trace.
+- Agent guidance requires one complete private message per recipient per trace, no polling/P2 wait, and commit-pinned formal review once per milestone rather than per intermediate commit. After a formal review request, the author freezes repository writes for the remainder of that trace.
 
 ### 4. Validation And Error Matrix
 

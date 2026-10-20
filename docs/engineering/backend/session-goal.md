@@ -78,6 +78,12 @@ checklist into `workItems`; normalization never invents acceptance criteria.
   needs proof, and replace superseded entries instead of appending. Intermediate
   progress, test counts, and remaining-work lists belong in repository docs or
   replies. Keep summaries concise and criterion references valid.
+- Independent code review follows milestones. Agents request one formal review
+  when a work item is ready to be marked done or a change is ready to integrate,
+  not for intermediate commits, unless the user explicitly asks. Blocking findings
+  get a re-review of the fix only; non-blocking findings are recorded without
+  another review round. Intermediate commits run targeted checks; the full
+  applicable checks run once before the milestone review.
 - A passed criterion must reference evidence which links back to that criterion.
 - Evidence and criterion references must resolve, and IDs must be non-empty and
   unique within each collection.

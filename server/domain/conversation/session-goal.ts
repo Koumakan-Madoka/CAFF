@@ -1681,7 +1681,7 @@ export function formatSessionGoalForPrompt(conversation: any) {
           goal.owner ? `Owner: ${goal.owner.agentName}` : '',
           formatGoalDeliveryForPrompt(goal),
           goal.status === 'active'
-            ? 'Call update-goal only when a work-item or criterion status changes, or when a milestone needs proof. Evidence is the proof behind criterion status: add or replace entries only then. Replace superseded entries instead of appending history. Do not record intermediate progress, test counts, or remaining-work lists in evidence; keep them in repository docs or your reply. Keep summaries concise and criterion references valid. Structural changes require a revise proposal and independent review.'
+            ? 'Call update-goal only when a work-item or criterion status changes, or when a milestone needs proof. Evidence is the proof behind criterion status: add or replace entries only then. Replace superseded entries instead of appending history. Do not record intermediate progress, test counts, or remaining-work lists in evidence; keep them in repository docs or your reply. Keep summaries concise and criterion references valid. Structural changes require a revise proposal and independent review. Request independent code review once per milestone, when a work item is ready to be marked done, not for intermediate commits.'
             : '',
           guidance,
         ].filter(Boolean).join('\n');
