@@ -201,9 +201,14 @@
           }
         }
         if (!body.authorizedDirs.length) { notice('请显式填写至少一个文件采集绝对路径。'); return; }
+        // Reauthorization, not a collector bypass: explicitly confirm this
+        // change before sending it. Intrinsic Git-data pruning remains intact;
+        // custom .git/index, .git/** and all other exclusions are unchanged.
+        const gitExclusionRemoved = guided && body.excludedPatterns.includes('.git');
+        if (gitExclusionRemoved) body.excludedPatterns = body.excludedPatterns.filter(item => item !== '.git');
         const consent = body.callbackInputAuthorized ? '授权本项目各 Room 公共文本上下文（不含私有/附件/委托）' : '不授权公共文本上下文';
         const description = guided
-          ? `文件目录：\n${body.authorizedDirs.join('\n')}\n\n输入/Git目录：\n${body.authorizedInputDirs.join('\n') || '（无）'}\n\n${consent}\n排除规则：${body.excludedPatterns.join('、') || '（无自定义规则）'}\n系统凭据/私有目录排除不变。将重新核验并固定上述全部根的当前身份。\n随后读取已授权 worktree 内 .git 分类元数据与 .gitignore 识别依赖（不归档 .git）；外部候选仍需另行授权。`
+          ? `文件目录：\n${body.authorizedDirs.join('\n')}\n\n输入/Git目录：\n${body.authorizedInputDirs.join('\n') || '（无）'}\n\n${consent}\n排除规则：${body.excludedPatterns.join('、') || '（无自定义规则）'}\n系统凭据/私有目录排除不变。将重新核验并固定上述全部根的当前身份。\n${gitExclusionRemoved ? '将从排除清单移除精确项 .git，以允许分类读取；其他排除项不变。\n' : ''}本次授权允许随后检查及每次 agent turn 读取已授权 worktree 内有界的 .git 分类元数据与 .gitignore；.git 数据仍由系统强制排除、不归档。外部候选仍需另行授权。`
           : scopeNames.map(name => `${name}:\n${name === 'callbackInputAuthorized'
             ? consent : name === 'windowsExternalGit' ? JSON.stringify(body[name], null, 2) : body[name].join('\n') || '（空）'}`).join('\n\n');
         if (!confirm(`授权项目 ${project.name || id} 的以下范围？\n${description}\n\n将先关闭采集并替换原授权；失败也不自动恢复旧范围。本步骤不启用采集。请勿纳入凭据或未获准的私有目录。`)) return;

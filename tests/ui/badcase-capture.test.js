@@ -342,6 +342,88 @@ test('guided external Git flow requires each root consent, needs no JSON and nev
   assert.ok(h.confirms.every(text => text.includes('不启用采集') && text.includes('当前身份')));
 });
 
+test('guided reauthorization explicitly removes only the exact .git data exclusion for turn classification; cancel and advanced consent preserve it', async t => {
+  let policy = { ...snapshot().policy, excludedPatterns: ['.git', 'node_modules', 'private', '.git/index', '.git/**'] };
+  const h = setup(t, (url, options) => {
+    if (url.endsWith('/badcase-capture')) return { ...snapshot(), policy };
+    if (url.endsWith('/authorize')) { policy = { ...policy, ...options.body }; return { ...snapshot(), policy }; }
+    if (url.endsWith('/discover-git')) return { ok: false, reason: 'git_metadata_unsupported' };
+  });
+  await h.panel.select({ id: 'a' });
+  const original = h.field('excludedPatterns').value;
+  h.accept(false); await h.click('authorize-worktree');
+  assert.equal(h.calls.some(c => c.method === 'POST'), false); assert.equal(h.field('excludedPatterns').value, original);
+  h.accept(true); await h.click('authorize');
+  assert.deepEqual(Array.from(policy.excludedPatterns), ['.git', 'node_modules', 'private', '.git/index', '.git/**']);
+  await h.click('authorize-worktree');
+  assert.deepEqual(Array.from(policy.excludedPatterns), ['node_modules', 'private', '.git/index', '.git/**']);
+  const consent = h.confirms.at(-1);
+  assert.match(consent, /移除.*精确.*\.git/); assert.match(consent, /每次.*turn.*分类/); assert.match(consent, /\.git.*仍.*不归档/);
+  assert.equal(h.calls.some(c => c.url.endsWith('/enable')), false);
+});
+
+test('native linked-worktree guided default authorization produces a usable classified file selection without archiving Git', { skip: process.platform !== 'win32' }, async t => {
+  const { execFileSync } = require('node:child_process');
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'caff-guided-git-selection-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const main = path.join(root, 'main'), work = path.join(root, 'work'), captureRoot = path.join(root, 'capture');
+  fs.mkdirSync(main);
+  const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(root, 'no-global') };
+  const git = (...args) => execFileSync('git', ['-C', main, ...args], { env, windowsHide: true, encoding: 'utf8' });
+  git('init', '-q'); git('config', 'core.ignorecase', 'true');
+  fs.writeFileSync(path.join(main, '.gitignore'), '*.log\n'); fs.writeFileSync(path.join(main, 'tracked.log'), 'original');
+  git('add', '-f', '.gitignore', 'tracked.log');
+  git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture');
+  git('worktree', 'add', '-qb', 'fixture-work', work);
+  fs.writeFileSync(path.join(work, 'tracked.log'), 'dirty'); fs.writeFileSync(path.join(work, 'untracked'), 'new');
+  fs.writeFileSync(path.join(work, 'ignored.log'), 'IGNORE_SENTINEL'); fs.writeFileSync(path.join(work, 'included.log'), 'include');
+  const base = '../../build/server/domain/runtime/badcase-capture';
+  const service = require(base).createBadcaseCaptureService({ captureRoot });
+  const state = () => ({ policy: service.loadPolicy('p'), usage: service.computeUsage('p') });
+  const h = setup(t, async (url, options) => {
+    if (url === '/api/bootstrap') return { localAdmin: { modelProviders: { enabled: true, csrfToken: 'test-csrf' } } };
+    if (url.endsWith('/badcase-capture')) return state();
+    if (url.endsWith('/authorize')) {
+      assert.equal(options.body.confirmed, true);
+      service.savePolicy('p', { ...service.loadPolicy('p'), ...options.body }); service.authorizeProject('p'); return state();
+    }
+    if (url.endsWith('/discover-git')) return service.discoverGitDependenciesAsync('p', options.body.targetDir);
+    if (url.endsWith('/estimate')) {
+      const result = await service.estimateDirectoryAsync('p', work);
+      return { complete: result.complete, captureAvailable: result.captureAvailable, totalBytes: result.totalBytes,
+        estimateId: null, estimates: [{ targetDir: work, ...result }] };
+    }
+    assert.fail('unexpected UI endpoint');
+  });
+  await h.panel.select({ id: 'p', path: work }); h.edit('includedIgnoredPatterns', 'included.log');
+  // Wait for native I/O via DOM changes without exposing a production test API
+  // or polling. Each predicate describes the next distinct rendered stage.
+  const action = (name, rendered) => new Promise((resolve, reject) => {
+    const observer = new h.root.ownerDocument.defaultView.MutationObserver(() => {
+      if (rendered()) { observer.disconnect(); clearTimeout(timer); resolve(); }
+    });
+    const timer = setTimeout(() => { observer.disconnect(); reject(Error(`UI did not settle: ${name}`)); }, 15000);
+    observer.observe(h.root, { subtree: true, childList: true, attributes: true }); h.button(name).click();
+  });
+  const dependencyText = () => h.root.querySelector('[data-capture-dependency]').textContent;
+  await action('authorize-worktree', () => /本 worktree 的 Git 元数据/.test(dependencyText()));
+  await action('authorize-dependency', () => /Git 公共元数据/.test(dependencyText()));
+  await action('authorize-dependency', () => /元数据预估完成/.test(h.root.querySelector('[data-capture-estimate]').textContent));
+  const policy = service.loadPolicy('p');
+  const selection = require(base + '/windows-external-selection').selectWindowsExternalGit(policy, work);
+  const candidate = await require(base + '/windows-git-candidate').readWindowsGitFileCandidateAsync({
+    policy, targetDir: work, captureRoot, externalGit: selection });
+  assert.equal(candidate.ok, true, candidate.reason);
+  assert.deepEqual(Object.keys(candidate.files).sort(), ['.gitignore', 'included.log', 'tracked.log', 'untracked']);
+  assert.equal(candidate.blobs.has(require('node:crypto').createHash('sha256').update('IGNORE_SENTINEL').digest('hex')), false);
+  assert.equal(policy.excludedPatterns.includes('.git'), false); assert.equal(policy.excludedPatterns.includes('node_modules'), true);
+  assert.equal(policy.authorizedDirs.length, 1); assert.equal(policy.authorizedInputDirs.length, 2);
+  assert.equal(policy.windowsExternalGit.length, 1); assert.equal(policy.callbackInputAuthorized, false);
+  assert.equal(policy.status, 'disabled'); assert.equal(service.store.listCheckpoints('p').length, 0);
+  assert.equal(service.computeUsage('p').totalBytes, 0); assert.equal(h.calls.filter(c => c.url.endsWith('/authorize')).length, 3);
+  assert.equal(h.calls.some(c => c.url.endsWith('/enable')), false); assert.equal(h.button('enable').disabled, true);
+});
+
 test('guided discovery discloses nested repository support limits before confirmation', async t => {
   const h = setup(t); await h.panel.select({ id: 'a' });
   assert.match(h.root.querySelector('fieldset:nth-of-type(2)').textContent, /自动识别暂不支持.*嵌套仓库\/submodule/);
