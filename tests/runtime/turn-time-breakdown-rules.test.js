@@ -158,7 +158,73 @@ test('opaque wrapper scripts and unknown commands → null (JEV fallback)', () =
   assert.equal(classifyBash('bash scripts/run-all.sh'), null);
   assert.equal(classifyBash('node scripts/custom-runner.js'), null);
   assert.equal(classifyBash('./mystery-binary --flag'), null);
-  assert.equal(classifyBash('npm test && bash scripts/wrap.sh'), null); // one opaque segment poisons the chain
+  assert.equal(classifyBash('cat docs/a.md && bash scripts/wrap.sh'), null); // read + opaque stays JEV-bound
+});
+
+test('opaque segment beside a high-confidence runner/build segment classifies by it, flagged', () => {
+  const rescued = classifyBash('npm test && bash scripts/wrap.sh');
+
+  assert.equal(rescued.category, 'test');
+  assert.equal(rescued.runKind, 'full-regression');
+  assert.equal(rescued.hasOpaqueSegment, true);
+
+  const buildRescue = classifyBash('npm run typecheck && ./mystery-post.sh');
+
+  assert.equal(buildRescue.category, 'build-check');
+  assert.equal(buildRescue.hasOpaqueSegment, true);
+
+  const pipedTail = classifyBash('cd X && npm run test:foo 2>&1 | grep -E "^ℹ (pass|fail)" | paste -sd\' \'');
+
+  assert.equal(pipedTail.category, 'test');
+  assert.equal(pipedTail.runKind, 'full-regression');
+  assert.equal(pipedTail.hasOpaqueSegment, undefined);
+});
+
+test('launcher prefixes strip to the real binary: timeout, time, env, sudo, command, nice, stdbuf', () => {
+  assert.deepEqual(pick(classifyBash('timeout 300 npm test')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('timeout -s KILL 60 npm test')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('time npm test')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('env -u FEISHU_APP_ID -u FEISHU_APP_SECRET npm run test:fast')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('env FOO=bar npm test')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('sudo -E npm run typecheck')), { category: 'build-check' });
+  assert.deepEqual(pick(classifyBash('nice -n 5 npm test')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('stdbuf -oL npm test')), { category: 'test', runKind: 'full-regression' });
+
+  // A logged full run with an exit-code echo is a test, never a write.
+  const logged = classifyBash('timeout 900 npm run test:isolated -- bootstrap-service > "$LOGDIR/x.log" 2>&1; echo EXIT=$?');
+
+  assert.equal(logged.category, 'test');
+  assert.equal(logged.runKind, 'full-regression');
+
+  // Launcher prefix with an unrecognized payload must be null, never a
+  // false read.
+  assert.equal(classifyBash('env FOO=bar ./mystery-binary'), null);
+  assert.equal(classifyBash('timeout 60 ./mystery-binary'), null);
+
+  // Bare env still reads the environment.
+  assert.equal(classifyBash('env').category, 'read');
+});
+
+test('runner aliases: python -m pytest/unittest, vitest.mjs, node_modules/.bin', () => {
+  assert.deepEqual(pick(classifyBash('python -m pytest tests/a.py -q')), { category: 'test', runKind: 'targeted' });
+  assert.deepEqual(pick(classifyBash('python3 -m unittest discover')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('.venv/Scripts/python.exe -m pytest tests/ -q')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('python -m pytest -x --tb=short')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('node --import tsx ./node_modules/vitest/vitest.mjs run tests/a.spec.ts')), { category: 'test', runKind: 'targeted' });
+  assert.deepEqual(pick(classifyBash('./node_modules/.bin/vitest run')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('npx mocha tests/foo.spec.js')), { category: 'test', runKind: 'targeted' });
+});
+
+test('redirection targets are never path-subset arguments (full stays full)', () => {
+  assert.deepEqual(pick(classifyBash('npm test > /tmp/x.log')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('npm test 2>/dev/null')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('node --test tests/ > /tmp/o')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('npm run test:fast > /tmp/x.log 2>&1')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('npm test > "$LOGFILE"')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('pytest tests/ -q 2>&1 | tail -5')), { category: 'test', runKind: 'full-regression' });
+
+  // A real path argument still makes the run targeted, redirection or not.
+  assert.deepEqual(pick(classifyBash('node --test tests/runtime/foo.test.js > /tmp/o')), { category: 'test', runKind: 'targeted' });
 });
 
 test('multi-segment commands merge by priority (test > write > build-check > read)', () => {

@@ -129,15 +129,23 @@ first hit wins:
    `cd`/`pushd`/`popd` segments are **neutral**: they carry no category
    and never poison a chain (`cd /repo && npm test` is a test run); a
    command with only neutral segments is `null`. Leading `FOO=bar` env
-   assignments, `sudo`, and a `git -C <path>` prefix are stripped before
-   pattern matching.
+   assignments and **launcher prefixes** — `sudo`, `timeout [-s S] [-k D]
+   <dur>`, `time`, `env [-u X | VAR=v | -i]…`, `command`, `nice [-n N]`,
+   `stdbuf` — are stripped (quote-preserving, via word spans) so anchored
+   patterns see the real binary; a `git -C <path>` prefix is likewise
+   stripped. A bare launcher with no payload (`env`) keeps its own
+   meaning; a launcher prefix whose payload matches nothing is `null`,
+   never a guessed read.
 2. Test runners (`node --test`, `npm test`, `npm run test:*`,
-   `yarn test:*`/`pnpm test:*` without `run`, `vitest`, `jest`, `pytest`,
-   `go test`, `cargo test`) → `test`. Output fingerprints (`# pass N`,
-   `# fail N`, `tests N passed`, `N failing`, exit code) fill run/failure
-   counters. Failed runs stay in `test`. **Every test segment counts**: a
-   chained `npm test; npm test` is two full runs — the step exposes
-   `testRunCounts = {full, targeted}` and `fullRunCount` sums it.
+   `yarn test:*`/`pnpm test:*` without `run`, `vitest`, `jest`, `mocha`,
+   `pytest`, `python|python3|*.exe -m pytest|unittest` (incl. venv
+   paths), `node … vitest.mjs [run]`, `*/node_modules/.bin/{vitest,jest,
+   mocha}`, `go test`, `cargo test`) → `test`. Output fingerprints
+   (`# pass N`, `# fail N`, `tests N passed`, `N failing`, exit code)
+   fill run/failure counters. Failed runs stay in `test`. **Every test
+   segment counts**: a chained `npm test; npm test` is two full runs —
+   the step exposes `testRunCounts = {full, targeted}` and `fullRunCount`
+   sums it.
 3. Build/check (`tsc`, `npm run build`, `npm run typecheck*`, `npm run
    check`, `node --check`, eslint) → `build-check`.
 4. Mutations (`edit`/`write` tools; bash with `>`, `>>`, `sed -i`,
@@ -162,18 +170,25 @@ first hit wins:
    applied) keeps its semantic category even when its exit status is a
    failure; only steps that never got to do semantic work fall through to
    this rule.
-7. Otherwise → `null` (JEV fallback, §6).
+7. Otherwise → `null` (JEV fallback, §6). **Opaque-segment rescue:**
+   when one segment is opaque but another is a high-confidence runner
+   (rule 2) or build/check (rule 3) hit, the command classifies by that
+   hit and the step is flagged `hasOpaqueSegment = true` for honest
+   annotation; opaque next to any weaker category (read/write) stays
+   `null` — a silently wrong `read` is worse than an honest JEV call.
 
 **Full-regression vs targeted (resolves `q-fullrun`, part 1)**: an
 invocation is `full-regression` when it matches the repo's canonical
 full-suite entry — `npm test`, `npm run test:fast`, bare `node --test
 tests/`, `npx vitest run`, bare `pytest` — with no path/file subset
 arguments; path-scoped invocations (`node tests/runtime/foo.test.js`,
-`pytest tests/x/`) are `targeted`. Wrapper scripts (`bash scripts/*.sh`,
-`node scripts/*.js`, npm script chains not listed above) are opaque to
-rules → JEV fallback with command + output. `fullRunCount` counts
-`full-regression` invocations per turn; `fullRunFailCount` counts those
-with non-zero exit or a fail fingerprint.
+`pytest tests/x/`) are `targeted`. Output redirections (`>`, `>>`, `2>`,
+`2>&1`, `&>`) and their targets are stripped before this judgement —
+`npm test > /tmp/x.log` is a full run, never targeted. Wrapper scripts
+(`bash scripts/*.sh`, `node scripts/*.js`, npm script chains not listed
+above) are opaque to rules → JEV fallback with command + output.
+`fullRunCount` counts `full-regression` invocations per turn;
+`fullRunFailCount` counts those with non-zero exit or a fail fingerprint.
 
 ### 6. JEV Fallback
 
@@ -333,9 +348,13 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 - `tests/runtime/turn-time-breakdown-rules.test.js`: every §5 branch,
   path classes (incl. bash destination-path subcategories), cold-start vs
   purposeful reads, full vs targeted fingerprints, per-segment run
-  counting, quote-aware segmentation, neutral `cd` prefixes, `git -C`,
-  `/dev/null` redirections, exception-retry vs failed-test distinction,
-  both bridge forms (CLI and native tool names).
+  counting, quote-aware segmentation, neutral `cd` prefixes, launcher
+  prefixes (`timeout`/`env`/`time`/`sudo`/`command`/`nice`/`stdbuf`),
+  runner aliases (`python -m pytest`, `vitest.mjs`, `node_modules/.bin`),
+  redirection-vs-run-kind separation, opaque-segment rescue with
+  `hasOpaqueSegment`, `git -C`, `/dev/null` redirections,
+  exception-retry vs failed-test distinction, both bridge forms (CLI and
+  native tool names).
 - `tests/runtime/turn-time-breakdown-attribution.test.js`: parallel
   interval union, priority slicing, thinking-time gaps, model error
   intervals → `exception-retry`.

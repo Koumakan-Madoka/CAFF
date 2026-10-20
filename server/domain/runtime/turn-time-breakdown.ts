@@ -448,16 +448,28 @@ function splitShellSegments(command: string) {
   return segments;
 }
 
-// Split one segment into shell words, stripping quotes and escapes so path
-// extraction sees clean tokens.
-function splitShellWords(segment: string) {
-  const words: string[] = [];
+// Quote-aware tokenizer that records each word's start offset, so a
+// launcher prefix can be stripped while the payload keeps its original
+// quoting (rejoining dequoted words would corrupt `>` inside quotes).
+function shellWordSpans(segment: string) {
+  const spans: Array<{ text: string; start: number }> = [];
+  const text = String(segment || '');
   let current = '';
   let quote = '';
   let has = false;
+  let start = 0;
 
-  for (let i = 0; i < segment.length; i += 1) {
-    const ch = segment[i];
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+
+    if (!has) {
+      if (/\s/.test(ch)) {
+        continue;
+      }
+
+      start = i;
+      has = true;
+    }
 
     if (quote === "'") {
       if (ch === "'") {
@@ -466,62 +478,60 @@ function splitShellWords(segment: string) {
         current += ch;
       }
 
-      has = true;
       continue;
     }
 
     if (quote === '"') {
       if (ch === '"') {
         quote = '';
-      } else if (ch === '\\' && i + 1 < segment.length) {
-        current += segment[i + 1];
+      } else if (ch === '\\' && i + 1 < text.length) {
+        current += text[i + 1];
         i += 1;
       } else {
         current += ch;
       }
 
-      has = true;
       continue;
     }
 
     if (ch === "'" || ch === '"') {
       quote = ch;
-      has = true;
       continue;
     }
 
-    if (ch === '\\' && i + 1 < segment.length) {
-      current += segment[i + 1];
+    if (ch === '\\' && i + 1 < text.length) {
+      current += text[i + 1];
       i += 1;
-      has = true;
       continue;
     }
 
     if (/\s/.test(ch)) {
-      if (has) {
-        words.push(current);
-        current = '';
-        has = false;
-      }
-
+      spans.push({ text: current, start });
+      current = '';
+      has = false;
       continue;
     }
 
     current += ch;
-    has = true;
   }
 
   if (has) {
-    words.push(current);
+    spans.push({ text: current, start });
   }
 
-  return words;
+  return spans;
+}
+
+// Split one segment into shell words, stripping quotes and escapes so path
+// extraction sees clean tokens.
+function splitShellWords(segment: string) {
+  return shellWordSpans(segment).map((span) => span.text);
 }
 
 function firstToken(segment: string) {
-  const match = String(segment || '').trim().match(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:sudo\s+)?(\S+)/);
+  const spans = shellWordSpans(segment);
 
-  return match ? match[1] : '';
+  return spans.length > 0 ? spans[0].text : '';
 }
 
 function baseName(token: string) {
@@ -531,68 +541,285 @@ function baseName(token: string) {
   return (parts[parts.length - 1] || '').toLowerCase();
 }
 
-// Leading `FOO=bar` env assignments and `sudo` annotate the command; strip
-// them so anchored patterns see the real binary.
-function stripEnvPrefix(segment: string) {
-  return String(segment || '').replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:sudo\s+)?/, '');
-}
+// Strip launcher prefixes (`FOO=bar` assignments, `sudo`, `timeout 300`,
+// `time`, `env -u X`/`-i`/`VAR=v`, `command`, `nice -n 5`, `stdbuf -oL`) so
+// anchored runner patterns see the real binary. Works on word spans and
+// returns the original payload substring, preserving its quoting. A bare
+// launcher with no payload (`env`, `time`) is returned unchanged so `env`
+// still classifies as a read of the environment; an env/launcher prefix
+// whose payload is unrecognized yields null downstream, never a false read.
+function stripLauncherPrefix(segment: string) {
+  const original = String(segment || '').trim();
 
-// `git -C <path> <sub>` runs elsewhere but classifies by its subcommand.
-function stripGitCPrefix(segment: string) {
-  const match = String(segment || '').match(/^git\s+-C\s+("[^"]*"|'[^']*'|\S+)\s+(.+)$/);
+  if (!original) {
+    return original;
+  }
 
-  return match ? `git ${match[2]}` : segment;
+  const spans = shellWordSpans(original);
+  let i = 0;
+
+  for (let guard = 0; guard < 6 && i < spans.length; guard += 1) {
+    const head = spans[i].text;
+
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head)) {
+      i += 1; // FOO=bar assignment prefix
+      continue;
+    }
+
+    const bin = baseName(head);
+
+    if (bin === 'timeout') {
+      i += 1;
+
+      while (i < spans.length && spans[i].text.startsWith('-')) {
+        const flag = spans[i].text;
+
+        i += 1;
+
+        if ((flag === '-s' || flag === '--signal' || flag === '-k' || flag === '--kill-after') && i < spans.length) {
+          i += 1; // flag value
+        }
+      }
+
+      if (i < spans.length) {
+        i += 1; // the duration
+      }
+
+      continue;
+    }
+
+    if (bin === 'env') {
+      i += 1;
+
+      while (i < spans.length) {
+        const word = spans[i].text;
+
+        if (word === '-u' || word === '--unset' || word === '-C' || word === '--chdir' || word === '-S' || word === '--split-string') {
+          i += 2; // flag + value
+          continue;
+        }
+
+        if (word.startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
+          i += 1;
+          continue;
+        }
+
+        break; // first non-flag, non-assignment word is the payload command
+      }
+
+      continue;
+    }
+
+    if (bin === 'nice') {
+      i += 1;
+
+      while (i < spans.length && spans[i].text.startsWith('-')) {
+        const flag = spans[i].text;
+
+        i += 1;
+
+        if ((flag === '-n' || flag === '--adjustment') && i < spans.length) {
+          i += 1;
+        }
+      }
+
+      continue;
+    }
+
+    if (bin === 'time' || bin === 'sudo' || bin === 'command' || bin === 'stdbuf') {
+      i += 1;
+
+      while (i < spans.length && spans[i].text.startsWith('-')) {
+        i += 1;
+      }
+
+      continue;
+    }
+
+    // `git -C <path> <sub>` runs elsewhere but classifies by its subcommand.
+    if (bin === 'git' && spans[i + 1] && spans[i + 1].text === '-C' && spans[i + 3]) {
+      return `git ${original.slice(spans[i + 3].start)}`;
+    }
+
+    break;
+  }
+
+  if (i > 0 && i < spans.length) {
+    return original.slice(spans[i].start);
+  }
+
+  return original;
 }
 
 function isAgentChatToolsSegment(segment: string) {
   return /agent-chat-tools\.js(\s|$)/.test(segment) || /CAFF_CHAT_TOOLS_PATH/.test(segment);
 }
 
-// A positional argument that looks like a path/file makes a test run
-// targeted; runner invocations without one are the canonical full entry.
-function hasPathLikeArg(segment: string, runnerPrefix: RegExp) {
-  const rest = String(segment || '').replace(runnerPrefix, '').trim();
+// Remove output redirections (`>`, `>>`, `2>`, `2>&1`, `&>`) and their
+// targets, quote-aware. Redirection targets are never path-subset arguments,
+// so `npm test > /tmp/x.log` stays a full-regression run.
+function stripRedirections(segment: string) {
+  const text = String(segment || '');
+  let out = '';
+  let quote = '';
+  let i = 0;
 
+  const skipTarget = (from: number) => {
+    let j = from;
+
+    while (j < text.length && /\s/.test(text[j])) {
+      j += 1;
+    }
+
+    if (text[j] === '&') {
+      j += 1; // fd duplication target, e.g. 2>&1
+    }
+
+    if (text[j] === '"' || text[j] === "'") {
+      const closing = text[j];
+
+      j += 1;
+
+      while (j < text.length && text[j] !== closing) {
+        j += 1;
+      }
+
+      j += 1; // closing quote
+    } else {
+      while (j < text.length && !/\s/.test(text[j])) {
+        j += 1;
+      }
+    }
+
+    return j;
+  };
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    if (quote === "'") {
+      out += ch;
+
+      if (ch === "'") {
+        quote = '';
+      }
+
+      i += 1;
+      continue;
+    }
+
+    if (quote === '"') {
+      out += ch;
+
+      if (ch === '\\' && i + 1 < text.length) {
+        out += text[i + 1];
+        i += 2;
+        continue;
+      }
+
+      if (ch === '"') {
+        quote = '';
+      }
+
+      i += 1;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+
+    if (ch === '\\' && i + 1 < text.length) {
+      out += ch + text[i + 1];
+      i += 2;
+      continue;
+    }
+
+    if (ch === '>' || (ch === '&' && text[i + 1] === '>')) {
+      // A digit immediately before `>` is the source fd (`2>`); drop it.
+      out = out.replace(/(\s|^)\d+$/, '$1');
+
+      if (ch === '&') {
+        i += 1;
+      }
+
+      if (text[i + 1] === '>') {
+        i += 1; // `>>`
+      }
+
+      i += 1; // the `>` itself
+      i = skipTarget(i);
+      out += ' ';
+      continue;
+    }
+
+    out += ch;
+    i += 1;
+  }
+
+  return out;
+}
+
+// Positional arguments that look like paths/files make a test run
+// targeted; runner invocations without one are the canonical full entry.
+// Input is the segment remainder after the runner prefix, already stripped
+// of redirections.
+function hasPathLikeArg(rest: string) {
   if (!rest) {
     return false;
   }
 
-  return rest
-    .split(/\s+/)
+  return splitShellWords(rest)
     .filter((token) => !token.startsWith('-'))
     .some((token) => /[\\/]/.test(token) || /\.(js|mjs|cjs|ts|py|go)\b/.test(token));
 }
 
-const TEST_RUNNER_PREFIXES: Array<{ prefix: RegExp; fullWhenNoPath: boolean }> = [
-  { prefix: /^(npm|pnpm|yarn)\s+(run\s+)?test\b(?!:)/, fullWhenNoPath: true },
+const TEST_RUNNER_PREFIXES: Array<{ prefix: RegExp }> = [
+  { prefix: /^(npm|pnpm|yarn)\s+(run\s+)?test\b(?!:)/ },
   // `npm run test:fast`, but also `yarn test:fast` / `pnpm test:fast` (no run).
-  { prefix: /^(npm|pnpm|yarn)\s+(run\s+)?test:[\w-]+/, fullWhenNoPath: true },
-  { prefix: /^node\s+--test/, fullWhenNoPath: true },
-  { prefix: /^(npx\s+)?vitest(\s+run)?/, fullWhenNoPath: true },
-  { prefix: /^(npx\s+)?jest/, fullWhenNoPath: true },
-  { prefix: /^pytest/, fullWhenNoPath: true },
-  { prefix: /^go\s+test/, fullWhenNoPath: true },
-  { prefix: /^cargo\s+test/, fullWhenNoPath: true },
+  { prefix: /^(npm|pnpm|yarn)\s+(run\s+)?test:[\w-]+/ },
+  { prefix: /^node\s+--test/ },
+  { prefix: /^(npx\s+)?vitest(\s+run)?/ },
+  { prefix: /^(npx\s+)?jest/ },
+  { prefix: /^(npx\s+)?mocha/ },
+  { prefix: /^pytest/ },
+  // `python -m pytest`, including venv paths and `.exe` (`.venv/Scripts/python.exe -m pytest`).
+  { prefix: /^\S*python[\d.]*(\.exe)?\s+-m\s+(pytest|unittest)(?=\s|$)/ },
+  // `node --import tsx ./node_modules/vitest/vitest.mjs run` — flags between
+  // `node` and the runner entry are skipped pairwise (flag + value).
+  { prefix: /^node\s+(?:--?\S+(?:\s+\S+)?\s+)*?\S*vitest\.mjs(\s+run)?(?=\s|$)/ },
+  { prefix: /^\S*node_modules\/\.bin\/(vitest|jest|mocha)(\s+run)?(?=\s|$)/ },
+  { prefix: /^go\s+test/ },
+  { prefix: /^cargo\s+test/ },
 ];
 
 function classifyTestSegment(segment: string) {
+  // Redirections (and their targets) never decide run kind.
+  const cleaned = stripRedirections(segment).trim();
+
   for (const { prefix } of TEST_RUNNER_PREFIXES) {
-    if (!prefix.test(segment)) {
+    if (!prefix.test(cleaned)) {
       continue;
     }
 
-    // `node --test tests/` (whole suite dir, no file subset) stays full.
-    const rest = segment.replace(prefix, '').trim();
-    const wholeSuiteOnly = /^tests\/?$/.test(rest) || /^\.\/\.\.$/.test(rest) || rest === './...';
+    // `node --test tests/` / `pytest tests/` (whole suite dir, no file
+    // subset) stays full even with trailing flags.
+    const rest = cleaned.replace(prefix, '').trim();
+    const positional = splitShellWords(rest).filter((token) => !token.startsWith('-'));
+    const wholeSuiteOnly = positional.length > 0
+      && positional.every((token) => /^tests\/?$/.test(token) || token === './...' || token === '...');
 
     return {
       category: 'test',
-      runKind: wholeSuiteOnly || !hasPathLikeArg(segment, prefix) ? 'full-regression' : 'targeted',
+      runKind: wholeSuiteOnly || !hasPathLikeArg(rest) ? 'full-regression' : 'targeted',
     };
   }
 
   // Direct single-file runners: `node tests/foo.test.js`.
-  if (/^node\s+\S*\.test\.(js|mjs|cjs|ts)(\s|$)/.test(segment)) {
+  if (/^node\s+\S*\.test\.(js|mjs|cjs|ts)(\s|$)/.test(cleaned)) {
     return { category: 'test', runKind: 'targeted' };
   }
 
@@ -621,7 +848,7 @@ const BASH_MUTATION_PATTERNS = [
 
 const BASH_READ_PATTERNS = [
   // sed without -i only writes to stdout → read (sed -i hits mutation first).
-  /^(cat|head|tail|less|more|wc|file|stat|ls|dir|pwd|which|type|echo|grep|rg|find|tree|sed|diff|sort|uniq|tr|du|df|env|printenv|date|uname|basename|dirname|realpath|readlink)(\s|$)/,
+  /^(cat|head|tail|less|more|wc|file|stat|ls|dir|pwd|which|type|echo|grep|rg|find|tree|sed|diff|sort|uniq|tr|du|df|env|printenv|date|uname|basename|dirname|realpath|readlink|paste|cut|column|jq|comm|join|nl|expand|unexpand|fold|fmt|iconv|xxd|od)(\s|$)/,
   /^git\s+(log|show|diff|status|blame|branch|tag\s*$|rev-parse|ls-files|grep|remote\s*$|describe)(\s|$)/,
 ];
 
@@ -717,8 +944,12 @@ export function detectTestFailure(output: any, isError: any) {
 }
 
 function classifyBashSegment(segment: string): any {
-  const token = firstToken(segment);
-  const bin = baseName(token);
+  if (isAgentChatToolsSegment(segment)) {
+    return { category: 'process-report' };
+  }
+
+  const normalized = stripLauncherPrefix(segment);
+  const bin = baseName(firstToken(normalized));
 
   if (!bin) {
     return null;
@@ -729,12 +960,6 @@ function classifyBashSegment(segment: string): any {
   if (bin === 'cd' || bin === 'pushd' || bin === 'popd') {
     return { neutral: true };
   }
-
-  if (isAgentChatToolsSegment(segment)) {
-    return { category: 'process-report' };
-  }
-
-  const normalized = stripGitCPrefix(stripEnvPrefix(segment));
 
   const testResult = classifyTestSegment(normalized);
 
@@ -784,15 +1009,11 @@ export function classifyBashCommand(command: any) {
   }
 
   const results: any[] = segments.map(classifyBashSegment);
-
-  if (results.some((result) => result === null)) {
-    return null; // any opaque segment makes the whole command JEV-bound
-  }
-
+  const hasOpaqueSegment = results.some((result) => result === null);
   const categorized = results.filter((result) => result && !result.neutral);
 
   if (categorized.length === 0) {
-    return null; // only cd/pushd noise — nothing to attribute
+    return null; // only cd/pushd noise, or fully opaque — nothing to attribute
   }
 
   // Every test segment counts: a chained `npm test; npm test` is two full
@@ -806,7 +1027,17 @@ export function classifyBashCommand(command: any) {
       category: 'test',
       runKind: full > 0 ? 'full-regression' : 'targeted',
       testRunCounts: { full, targeted: testHits.length - full },
+      ...(hasOpaqueSegment ? { hasOpaqueSegment: true } : {}),
     };
+  }
+
+  if (hasOpaqueSegment) {
+    // An opaque segment next to a high-confidence runner/build segment
+    // still classifies by that segment, honestly flagged; opaque next to
+    // anything weaker stays JEV-bound (a guessed read is worse than null).
+    const buildHit = categorized.find((result) => result.category === 'build-check');
+
+    return buildHit ? { ...buildHit, hasOpaqueSegment: true } : null;
   }
 
   for (const category of SEGMENT_MERGE_PRIORITY) {
