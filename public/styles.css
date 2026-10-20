@@ -2861,6 +2861,54 @@ textarea {
   gap: 0.7rem;
 }
 
+/* Capture's normal path is a compact wizard, not the raw protocol form. */
+#badcase-capture-panel {
+  gap: 0.65rem;
+  align-content: start;
+}
+
+#badcase-capture-panel :is(h3, p, pre) {
+  margin: 0;
+}
+
+#badcase-capture-panel fieldset {
+  min-width: 0;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--caff-line);
+  border-radius: 8px;
+  gap: 0.55rem;
+}
+
+#badcase-capture-panel legend {
+  padding: 0 0.3rem;
+  font-weight: 600;
+}
+
+#badcase-capture-panel .button-row {
+  justify-content: flex-start;
+}
+
+#badcase-capture-panel fieldset > button {
+  justify-self: start;
+}
+
+#badcase-capture-panel .capture-consent {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+#badcase-capture-panel input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+#badcase-capture-panel [data-capture-advanced] > .settings-form {
+  margin-top: 0.8rem;
+}
+
 .compact-option-card {
   gap: 0.25rem;
   padding: 0.72rem 0.8rem;

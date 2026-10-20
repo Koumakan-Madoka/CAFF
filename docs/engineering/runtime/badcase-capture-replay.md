@@ -1343,6 +1343,17 @@ fixture改为执行生产编译resolver，跨平台测试仅替换显式path语�
 - 原始操作材料（启动脚本、build/stdout/stderr、非秘密启动/库存核验）留在上述自有 ignored/private 运行根，不进Git；本段不是浏览器UI验收或独立审查，未运行回归测试、SDK agent或付费模型。`3df0334c`仍只有作者自验，原审查归属及FAIL不变。
 - 后续主路径仍须用户独立显式授权验证worktree及必要的外置Git/session根，不能把Goal恢复当作目录授权或代用户调用authorize。当前Windows预估仍 `captureAvailable=false`，不发enable receipt；实际Git全局ignore/worktreeConfig与受信privateDirs等支持边界也未被本次启动解决。M1的开启门、真实turn执行前检查点、两次恢复、首份/增量容量及耗时仍未完成；全部AC pending，未合并/发布。
 
+### 5.74 M1 三步用户入口与逐根 Git 依赖候选（不开放采集）
+
+- 经用户确认，将正常入口改为“选择实际worktree并授权 → 确认Git依赖/容量 → 独立开启”。已有授权目录优先，否则使用调用方提供的Room worktree或项目路径作**未授权草稿**，不能从项目路径推断实际turn目录；用户须核对，打开页面只GET。主路径不要求输入JSON或查找外置Git路径；期限/配额/排除/ignored规则/原低层表单和存储明细收进默认折叠的高级设置，离线评测管理也默认折叠。公共文本上下文仍独立checkbox、默认false、含单独内容披露；不把目录同意捆绑成对话或付费同意。
+- 新增local-admin/CSRF保护的 `POST /api/projects/:id/badcase-capture/discover-git`，仅接受 `targetDir` 和显式 `confirmed:true`；无确认、无已pin的精确文件根、私有/存储范围冲突或不支持平台均失败，不执行Git、不跟随链接、不生成CAS/检查点、不写策略/pin/绑定、不授予enable receipt。与管理操作共用generation/policy fingerprint，关闭/重新授权/设置变更使在途结果作废；检查也使旧预估回执失效。Linux/darwin自动识别尚未支持，返回 `git_discovery_windows_only`，不假装自动可用。
+- 读取复用现有原生NT `gitMetadata`：可能枚举已授权worktree元数据并读取该根内的Git分类源（含index/config/.gitignore），不是仅stat `.git`，不读取普通文件内容。**这是一次独立明确确认的管理读取**：确认框说明读取根内`.git`分类元数据/`.gitignore`且不归档`.git`；此调用只移除元数据请求中精确`.git`排除项，其他排除、受信privateDirs、敏感名称及native pin均保持。文件采集策略原有`.git`排除不改变，不能把这一步当成collector已支持默认范围或全局Git配置。普通“重新检查”另弹确认；三步引导的授权确认同时声明随后的元数据检查，不在页面载入或编辑时自动读取。
+- `.git`文件只解析严格有界UTF8单行指针，拒绝控制字符/BOM/UNC/drive-relative/不支持布局/秘密。先只提出metadataRoot候选，不探测/打开它；用户独立确认此根后，才在其原pin下读取固定`gitdir`/`commondir`，核对回指，再提出commonRoot候选，不以指针内容授权读取commonRoot。最后显式确认清单与worktree的关联。UI在每次确认中完整列出文件/输入根、对话同意和排除，明确会关闭采集并重新核验/固定上述全部根的当前身份；复用原authorize协议，不通过普通settings重新pin。新候选尚未单独同意前不能进入请求范围。选择不等于来源真实性、一致性或完整分类证明；真正collector仍须逐次复核，不因UI识别绕过原限制。
+- 引导只在一次成功授权后继续检查已授权材料，在所有必要确认完成后预估；绝不自动enable。取消、失败、切项目、刷新、编辑或关闭会丢弃相应候选/回执，异步结果不能覆盖新项目。容量未知、Windows `captureAvailable=false`、预估失败或缺receipt仍禁止开启。三步及高级设置使用同一持久化状态，不乐观展示成功；修改范围和公共上下文仍需要明确重授权。
+- 作者验证：新原生测试在实现前因服务方法缺失为红；真实Windows NTFS Git linked-worktree验证无授权拒绝、两个根分阶段候选、甚至候选根不存在时仍不读取它、已授权根替换不重新pin、无绑定/库存写入。VM边界验证无未授权外读、严格指针及秘密拒绝；HTTP验证确认/CSRF/未知字段/并发关闭；UI验证三步、默认折叠、无JSON的逐根同意、取消不写、跨项目与草稿失效。`npm run test:fast` EXIT=0（2374通过/51跳过），`test:smoke` 101/101，`typecheck`含public检查通过；`git diff --check`通过。测试不执行SDK/付费模型；这些计数不是M1完成证据。
+- 真实Edge浏览器已在独立空认证实例、受控NTFS linked-worktree上走通三次明确目录确认→自动依赖检查→容量预估，0次手填JSON，文件根1/输入根2，状态仍disabled、公共上下文false、0 blob/0 B；390px页面无横向溢出，JS pageerror=0。这是受控UI验证，不是用户实际项目采集、原turn现场或badcase验收。首次浏览器启动因清洁环境下channel定位不到Edge而停止，明确使用现有已安装Edge绝对路径后继续，未安装软件；随后将fixture误放在自有`.pi-sandbox`下被原生 `estimate_scope_rejected` 正确阻断，低层复现确认根因后把**测试fixture**移到独立Temp目录，没有放宽私有路径保护，原失败保留。原始脚本/日志在ignored `.tmp/badcase-m1-ui/`，截图/浏览器报告在GPT自有private `m1-ui-browser-20261020*`，不进入Git。
+- 本段仍为作者实现/验证，固定SHA独立审查另见本Room，不追认任何旧未审提交PASS。Windows开启门、实际Git环境/受信privateDirs接线、真实turn/两次恢复/首份增量与session/镜像分项测量仍未完成；未代用户在真实项目执行authorize/enable，全部AC pending。目录授权相关旧暂停提案仍待决，用户随后明确批准此M1入口改动，不把该批准解释成自动开启/模型授权或Goal暂停裁决；不调用update-goal追加中间证据，不合并发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

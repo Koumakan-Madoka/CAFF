@@ -159,6 +159,29 @@ test('only structured writer contention is mapped; message lookalikes and other 
   });
 });
 
+test('Git dependency suggestions are local-admin, explicitly confirmed, generation-bound and never mutate policy', async t => {
+  const h = setup(t); let calls = 0, finish;
+  h.service.discoverGitDependenciesAsync = async (id, dir) => {
+    calls++; assert.equal(id, 'project-test'); assert.equal(dir, h.target);
+    return { ok: true, ready: false, targetDir: dir, next: { kind: 'metadata', path: 'C:/candidate' }, selection: null };
+  };
+  const body = { confirmed: true, targetDir: h.target };
+  await rejects(() => invoke(h.controller, 'discover-git', body, { headers: { 'x-caff-csrf-token': '' } }), 'badcase_capture_csrf_invalid', 403);
+  await rejects(() => invoke(h.controller, 'discover-git', { targetDir: h.target }), 'badcase_capture_confirmation_required');
+  await rejects(() => invoke(h.controller, 'discover-git', { ...body, authorized: true }), 'badcase_capture_unknown_field');
+  assert.equal(calls, 0);
+  const before = h.service.loadPolicy('project-test');
+  const result = await invoke(h.controller, 'discover-git', body);
+  assert.equal(result.body.next.path, 'C:/candidate'); assert.equal(calls, 1);
+  assert.deepEqual(h.service.loadPolicy('project-test'), before);
+  h.service.discoverGitDependenciesAsync = () => new Promise(resolve => { finish = resolve; });
+  const pending = invoke(h.controller, 'discover-git', body);
+  await new Promise(resolve => setImmediate(resolve));
+  await invoke(h.controller, 'disable', {});
+  finish({ ok: true, ready: true, targetDir: h.target, next: null, selection: null });
+  await rejects(() => pending, 'badcase_capture_operation_stale', 409);
+});
+
 test('default GET and guard failures never scan or authorize', async t => {
   const h = setup(t);
   let touches = 0;

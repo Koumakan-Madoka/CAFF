@@ -15,6 +15,7 @@ import { prepareWindowsAuthorization } from './windows-authorization';
 import { invokeWindowsHelper } from './windows-helper';
 import { estimateWindowsDirectory, estimateWindowsDirectoryAsync } from './windows-estimate';
 import { readPreTurnCallbackInput } from './callback-source';
+import { discoverWindowsGitDependencies } from './windows-git-discovery';
 
 export function resolveCaptureRoot(options: any = {}) {
   const explicit = String(options.captureRoot || '').trim() || String(process.env.CAFF_BADCASE_CAPTURE_DIR || '').trim();
@@ -140,6 +141,11 @@ export function createBadcaseCaptureService(options: any = {}) {
 
     computeUsage(projectId: any) {
       return store.computeUsage(projectId);
+    },
+
+    discoverGitDependenciesAsync(projectId: any, targetDir: any) {
+      return discoverWindowsGitDependencies({ captureRoot, ...windowsScope,
+        targetDir, policy: store.loadPolicy(projectId) });
     },
 
     // HTTP management must use this bounded asynchronous entry. Windows starts

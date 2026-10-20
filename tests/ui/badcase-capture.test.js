@@ -51,11 +51,11 @@ test('usage shows committed storage categories and labels absent older breakdown
   const h = setup(t, url => url.endsWith('/badcase-capture') ? { ...snapshot(), usage: { totalBytes: 361, blobCount: 2,
     ...(withBreakdown ? { bytesByKind: { blobs: 100, checkpoints: 50, latest: 20, flags: 61, retention: 90, cases: 0, runReferences: 40 } } : {}) } } : undefined);
   await h.panel.select({ id: 'a' });
-  let text = h.root.querySelector('[data-capture-usage]').textContent;
+  let text = h.root.querySelector('[data-capture-storage-detail]').textContent;
   for (const expected of ['CAS：100 B', '检查点：50 B', 'latest：20 B', '标记：61 B', '保留清单：90 B', '封存记录：0 B', '运行引用：40 B']) assert.ok(text.includes(expected), text);
   assert.match(h.root.textContent, /逻辑字节/); assert.match(h.root.textContent, /不含.*staging/);
   withBreakdown = false; await h.click('refresh');
-  text = h.root.querySelector('[data-capture-usage]').textContent;
+  text = h.root.querySelector('[data-capture-storage-detail]').textContent;
   assert.match(text, /分项未知/); assert.doesNotMatch(text, /标记：0 B/);
   assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
 });
@@ -276,6 +276,7 @@ test('real project entry connects selection to panel, with no mutation during bo
   assert.ok(calls.some(c => c.url === '/api/projects/b/badcase-capture'));
   assert.equal(calls.some(c => c.method === 'POST'), false);
   assert.equal(dom.window.document.querySelector('[data-eval-approve]').disabled, true);
+  assert.equal(dom.window.document.querySelector('[data-offline-evaluation-advanced]').open, false);
   assert.match(dom.window.document.querySelector('[data-eval-status]').textContent, /尚未预览/);
 });
 test('project page loads panel module before entry and wires selected project, not active project', () => {
@@ -284,6 +285,77 @@ test('project page loads panel module before entry and wires selected project, n
   assert.ok(html.includes('id="badcase-capture-panel"'));
   assert.ok(html.indexOf('/shared/badcase-capture.js') < html.indexOf('/projects.js'));
   assert.match(js, /capturePanel\.select\(selected\)/);
+});
+
+test('guided path has three steps, hidden defaults and no automatic read or grant on load', async t => {
+  const h = setup(t, url => url.endsWith('/badcase-capture') ? { ...snapshot(), policy: { ...snapshot().policy, authorizedDirs: [] } } : undefined);
+  await h.panel.select({ id: 'a', path: 'C:/app', worktreePath: 'C:/work' });
+  assert.equal(h.field('worktree').value, 'C:/work');
+  assert.equal(h.root.querySelectorAll('fieldset').length, 3);
+  const advanced = h.root.querySelector('[data-capture-advanced]');
+  assert.equal(advanced.open, false);
+  for (const name of ['windowsExternalGit', 'stagingRetentionDays', 'stagingQuotaBytes', 'excludedPatterns']) {
+    assert.ok(advanced.contains(h.field(name)));
+  }
+  assert.equal(advanced.contains(h.field('callbackInputAuthorized')), false);
+  assert.equal(h.button('discover-git').disabled, true);
+  assert.equal(h.calls.some(c => c.method === 'POST'), false);
+  h.accept(false); await h.click('authorize-worktree');
+  assert.equal(h.calls.some(c => c.method === 'POST'), false);
+});
+
+test('guided external Git flow requires each root consent, needs no JSON and never enables from a preview', async t => {
+  const worktree = 'C:/work', metadataRoot = 'C:/main/.git/worktrees/work', commonRoot = 'C:/main/.git';
+  let policy = { ...snapshot().policy, authorizedDirs: [], windowsExternalGit: [], callbackInputAuthorized: false };
+  const h = setup(t, (url, options) => {
+    if (url.endsWith('/badcase-capture')) return { ...snapshot(), policy };
+    if (url.endsWith('/authorize')) { policy = { ...policy, ...options.body, status: 'disabled' }; return { ...snapshot(), policy }; }
+    if (url.endsWith('/discover-git')) {
+      assert.equal(options.body.confirmed, true);
+      const inputs = policy.authorizedInputDirs;
+      return { ok: true, targetDir: worktree, ready: inputs.includes(commonRoot),
+        next: !inputs.includes(metadataRoot) ? { kind: 'metadata', path: metadataRoot }
+          : !inputs.includes(commonRoot) ? { kind: 'common', path: commonRoot } : null,
+        selection: inputs.includes(metadataRoot) ? { worktree, metadataRoot, commonRoot } : null };
+    }
+    if (url.endsWith('/estimate')) return estimate({ captureAvailable: false });
+  });
+  await h.panel.select({ id: 'a', path: worktree });
+  await h.click('authorize-worktree');
+  assert.deepEqual(Array.from(policy.authorizedDirs), [worktree]);
+  assert.equal(policy.authorizedInputDirs.length, 0);
+  assert.match(h.root.querySelector('[data-capture-dependency]').textContent, /本 worktree 的 Git 元数据/);
+  assert.equal(h.calls.filter(c => c.url.endsWith('/authorize')).length, 1);
+  h.accept(false); await h.click('authorize-dependency');
+  assert.equal(h.calls.filter(c => c.url.endsWith('/authorize')).length, 1);
+  h.accept(true); await h.click('authorize-dependency');
+  assert.deepEqual(Array.from(policy.authorizedInputDirs), [metadataRoot]);
+  assert.match(h.root.querySelector('[data-capture-dependency]').textContent, /Git 公共元数据/);
+  await h.click('authorize-dependency');
+  assert.deepEqual(Array.from(policy.authorizedInputDirs), [metadataRoot, commonRoot]);
+  assert.equal(policy.windowsExternalGit[0].commonRoot, commonRoot);
+  assert.equal(policy.callbackInputAuthorized, false);
+  assert.equal(h.button('enable').disabled, true);
+  assert.equal(h.calls.some(c => c.url.endsWith('/enable')), false);
+  assert.equal(h.calls.filter(c => c.url.endsWith('/estimate')).length, 1);
+  assert.equal(h.confirms.some(text => text.includes('JSON') || text.includes('windowsExternalGit')), false);
+  assert.ok(h.confirms.every(text => text.includes('不启用采集') && text.includes('当前身份')));
+});
+
+test('late Git candidate response cannot overwrite another project or survive a scope edit', async t => {
+  const pending = deferred();
+  const h = setup(t, url => url.endsWith('/discover-git') ? pending.promise : undefined);
+  await h.panel.select({ id: 'a' }); await h.click('discover-git');
+  await h.panel.select({ id: 'b' });
+  pending.resolve({ ok: true, ready: false, targetDir: '/repo', next: { kind: 'metadata', path: 'C:/not-for-B' }, selection: null });
+  await tick();
+  assert.equal(h.button('authorize-dependency').disabled, true);
+  assert.equal(h.root.textContent.includes('not-for-B'), false);
+  await h.click('discover-git');
+  assert.equal(h.button('authorize-dependency').disabled, false);
+  h.edit('worktree', 'C:/changed');
+  assert.equal(h.button('authorize-dependency').disabled, true);
+  assert.equal(h.root.querySelector('[data-capture-dependency]').textContent.includes('not-for-B'), false);
 });
 
 test('public Room source consent is unchecked by default, separately disclosed, confirmed and never part of settings', async t => {

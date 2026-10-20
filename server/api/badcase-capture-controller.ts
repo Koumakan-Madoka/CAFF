@@ -92,7 +92,7 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
   }
   async function handleBadcaseCapture(context: any) {
     const { req, res, pathname } = context;
-    const match = pathname.match(/^\/api\/projects\/([^/]+)\/badcase-capture(?:\/(authorize|estimate|enable|disable|settings))?$/);
+    const match = pathname.match(/^\/api\/projects\/([^/]+)\/badcase-capture(?:\/(authorize|estimate|enable|disable|settings|discover-git))?$/);
     if (!match) return false;
     const action = match[2] || '';
     if ((!action && req.method !== 'GET') || (action && req.method !== 'POST')) return false;
@@ -140,6 +140,16 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
       fields(body, []);
       invalidate(projectId);
       service.savePolicy(projectId, { ...policy, status: 'disabled', suspendReason: '' });
+    } else if (action === 'discover-git') {
+      fields(body, ['targetDir', 'confirmed']);
+      confirmed(body);
+      if (typeof body.targetDir !== 'string' || !body.targetDir || body.targetDir.length > 4096
+        || body.targetDir.includes('\0') || !path.isAbsolute(body.targetDir)) throw issue('badcase_capture_invalid_directories');
+      const operation = invalidate(projectId);
+      const result = await service.discoverGitDependenciesAsync(projectId, body.targetDir);
+      assertCurrent(projectId, operation, policy);
+      sendJson(res, 200, result);
+      return true;
     } else if (action === 'estimate') {
       fields(body, []);
       const operation = invalidate(projectId);
