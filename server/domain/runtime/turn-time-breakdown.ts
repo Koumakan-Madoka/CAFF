@@ -808,7 +808,8 @@ const TEST_RUNNER_PREFIXES: Array<{ prefix: RegExp }> = [
   { prefix: /^(npm|pnpm|yarn)\s+(run\s+)?test\b(?!:)/ },
   // `npm run test:fast`, but also `yarn test:fast` / `pnpm test:fast` (no run).
   { prefix: /^(npm|pnpm|yarn)\s+(run\s+)?test:[\w-]+/ },
-  { prefix: /^node\s+--test/ },
+  // node basenames: `node`, `nodejs`, `node.exe` (Windows).
+  { prefix: /^node(js)?(\.exe)?\s+--test/ },
   { prefix: /^(npx\s+)?vitest(\s+run)?/ },
   { prefix: /^(npx\s+)?jest/ },
   { prefix: /^(npx\s+)?mocha/ },
@@ -819,7 +820,7 @@ const TEST_RUNNER_PREFIXES: Array<{ prefix: RegExp }> = [
   { prefix: /^\S*python[\d.]*(\.exe)?\s+-m\s+(pytest|unittest)(?=\s|$)/ },
   // `node --import tsx ./node_modules/vitest/vitest.mjs run` — flags between
   // `node` and the runner entry are skipped pairwise (flag + value).
-  { prefix: /^node\s+(?:--?\S+(?:\s+\S+)?\s+)*?\S*vitest\.mjs(\s+run)?(?=\s|$)/ },
+  { prefix: /^node(js)?(\.exe)?\s+(?:--?\S+(?:\s+\S+)?\s+)*?\S*vitest\.mjs(\s+run)?(?=\s|$)/ },
   // Both slash forms: `node_modules/.bin/vitest` and Windows `node_modules\.bin\vitest`.
   { prefix: /^\S*node_modules[\\/]\.bin[\\/](vitest|jest|mocha)(\s+run)?(?=\s|$)/ },
   { prefix: /^go\s+test/ },
@@ -843,10 +844,12 @@ const NODE_VALUE_FLAGS = new Set([
 // direct single-file form with flags (`node --import tsx tests/foo.test.ts`).
 // Returns null when the first non-flag word is neither `--test` nor a test
 // file, so plain scripts stay JEV-bound rather than guessed.
+const NODE_BIN_BASENAMES = new Set(['node', 'nodejs', 'node.exe']);
+
 function classifyNodeInvocation(cleaned: string) {
   const tokens = splitShellWords(cleaned);
 
-  if (tokens.length === 0 || baseName(tokens[0]) !== 'node') {
+  if (tokens.length === 0 || !NODE_BIN_BASENAMES.has(baseName(tokens[0]))) {
     return null;
   }
 
@@ -905,7 +908,7 @@ function classifyTestSegment(segment: string) {
 const BUILD_CHECK_PATTERNS = [
   /^(npx\s+)?tsc(\s|$)/,
   /^(npm|pnpm|yarn)\s+run\s+(build|typecheck\S*|check|lint\S*)(\s|$)/,
-  /^node\s+--check\s/,
+  /^node(js)?(\.exe)?\s+--check\s/,
   /^(npx\s+)?eslint(\s|$)/,
 ];
 

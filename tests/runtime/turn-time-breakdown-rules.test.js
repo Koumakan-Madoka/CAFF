@@ -283,6 +283,14 @@ test('detectTestFailure fingerprints', () => {
   assert.equal(detectTestFailure('all green', false), false);
 });
 
+test('node basenames: nodejs and node.exe match runner and build-check rules', () => {
+  assert.deepEqual(pick(classifyBash('node.exe --test tests/')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('nodejs --test tests/runtime/foo.test.js')), { category: 'test', runKind: 'targeted' });
+  assert.deepEqual(pick(classifyBash('node.exe --import tsx --test tests/a.test.ts')), { category: 'test', runKind: 'targeted' });
+  assert.deepEqual(pick(classifyBash('nodejs --experimental-strip-types --test tests/')), { category: 'test', runKind: 'full-regression' });
+  assert.equal(classifyBash('node.exe --check build/server/x.js').category, 'build-check');
+});
+
 function pick(result) {
   const picked = { category: result.category };
 

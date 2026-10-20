@@ -21,6 +21,23 @@ export const JEV_MIN_CONFIDENCE = 0.6;
 
 const OUTPUT_HEAD_CHARS = 2000;
 const OUTPUT_TAIL_CHARS = 2000;
+const COMMAND_HEAD_CHARS = 8000;
+
+// Inline-exec flags: everything after them is an opaque script body, not an
+// argument (`node -e`, `python -c`, `bash -c`, `node --eval`).
+const INLINE_EXEC_FLAGS = new Set(['-e', '-c', '-p', '--eval', '--command']);
+
+// Commands are capped at 8000 head chars; the real corpus max is ~26k and
+// the client's own state cap is not at risk, so this is purely a cost bound.
+function truncateStepCommand(command: any) {
+  const value = String(command || '');
+
+  if (value.length <= COMMAND_HEAD_CHARS) {
+    return value;
+  }
+
+  return `${value.slice(0, COMMAND_HEAD_CHARS)}\n…[truncated ${value.length - COMMAND_HEAD_CHARS} chars]…`;
+}
 
 // §6: single-step output is truncated head 2000 + tail 2000 (4000 max) to
 // bound cost and latency; the client's own size caps still apply on top.
@@ -52,7 +69,10 @@ function outputFingerprint(output: any, isError: any) {
 }
 
 function extractArgv(command: any) {
-  const words = String(command || '').split(/\s+/).filter(Boolean);
+  // Only the first logical line carries argv identity; heredoc bodies and
+  // follow-up lines are script text, not arguments.
+  const firstLine = String(command || '').split('\n', 1)[0] || '';
+  const words = firstLine.split(/\s+/).filter(Boolean);
   const argv0 = words.length > 0 ? words[0] : '';
   // First positional (script path / subcommand) is part of command identity:
   // `bash scripts/run-all.sh` and `bash scripts/other.sh` must not share a
@@ -61,20 +81,31 @@ function extractArgv(command: any) {
   const firstPositional = words.slice(1).find((word) => !word.startsWith('-')) || '';
   const flags = words.slice(1).filter((word) => word.startsWith('-')).sort();
 
-  return { argv0, firstPositional, flags };
+  return { argv0, firstPositional, flags, words };
 }
 
 // §6: sha256(toolName + argv[0] + first positional + flags-only(argv) +
-// output fingerprint).
+// output fingerprint). Multi-line / heredoc / inline-script commands are
+// opaque at the argv level (two different `node - <<'NODE'` scripts share
+// argv0 and flags), so a digest of the whole command body joins the key:
+// different scripts never share an entry, identical re-runs still hit.
 export function jevCacheKey(step: any) {
   const toolName = String(step && step.toolName ? step.toolName : 'tool');
   const command = extractStepCommand(step);
-  const { argv0, firstPositional, flags } = extractArgv(command);
+  const { argv0, firstPositional, flags, words } = extractArgv(command);
   const fingerprint = outputFingerprint(step && step.output, step && step.isError);
+  const keyParts: any[] = [toolName, argv0, firstPositional, flags, fingerprint];
+  const bodyIsOpaque = command.includes('<<')
+    || command.includes('\n')
+    || words.some((word) => INLINE_EXEC_FLAGS.has(word));
+
+  if (bodyIsOpaque) {
+    keyParts.push(crypto.createHash('sha256').update(command).digest('hex'));
+  }
 
   return crypto
     .createHash('sha256')
-    .update(JSON.stringify([toolName, argv0, firstPositional, flags, fingerprint]))
+    .update(JSON.stringify(keyParts))
     .digest('hex');
 }
 
@@ -108,7 +139,7 @@ function extractStepCommand(step: any) {
 export function buildJevState(step: any) {
   return {
     toolName: String(step && step.toolName ? step.toolName : 'tool'),
-    command: extractStepCommand(step),
+    command: truncateStepCommand(extractStepCommand(step)),
     output: truncateStepOutput(step && step.output),
     isError: step && step.isError === true,
     durationMs: Number.isFinite(step && step.durationMs) ? step.durationMs : null,
@@ -176,7 +207,16 @@ export function createJevClassifier(options: any = {}) {
     }
 
     const cacheKey = jevCacheKey(step);
-    const cached = cache && typeof cache.get === 'function' ? cache.get(cacheKey) : null;
+    let cached = null;
+
+    if (cache && typeof cache.get === 'function') {
+      try {
+        cached = cache.get(cacheKey);
+      } catch {
+        // A cache read failure behaves as a miss — §6: classification never
+        // throws into the turn path, and the backing store is sqlite in W4.
+      }
+    }
 
     if (cached && JEV_STEP_CATEGORIES.includes(cached.category)) {
       return {
@@ -227,7 +267,7 @@ export function createJevClassifier(options: any = {}) {
 
     if (cache && typeof cache.set === 'function') {
       try {
-        cache.set(cacheKey, { category: choice, runKind, confidence });
+        cache.set(cacheKey, { category: choice, subcategory: null, runKind, confidence });
       } catch {
         // Cache persistence is best-effort; a failed write never fails classification.
       }

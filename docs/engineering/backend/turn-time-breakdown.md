@@ -206,10 +206,13 @@ above) are opaque to rules → JEV fallback with command + output.
 - Request: one `choice` question for the category (options = the §2
   step categories), plus a second `choice` for `runKind`
   (full-regression / targeted / not-a-test, only meaningful when the
-  category answer is `test`) — a single API round trip; state =
-  command + output. Output truncated **head 2000 + tail 2000 chars (4000
-  max)** (resolves `q-fullrun`, part 2) to bound cost and latency; the
-  client's own `maxStateChars`/`maxRequestChars` caps still apply.
+  category answer is `test`) — a single API round trip; state is a
+  structured object `{toolName, command, output, isError, durationMs}`.
+  Command truncated to **head 8000 chars** (pure cost bound; the client's
+  own caps are never approached). Output truncated **head 2000 + tail 2000
+  chars (4000 max)** (resolves `q-fullrun`, part 2) to bound cost and
+  latency; the client's own `maxStateChars`/`maxRequestChars` caps still
+  apply.
 - Latency policy: `timeoutMs = 8000` as the single overall deadline;
   `maxRetries` is left at the client default (passing 0 falls back to the
   default via `normalizePositiveInt`), so a transient failure may retry
@@ -219,17 +222,38 @@ above) are opaque to rules → JEV fallback with command + output.
   agent-tool-bridge instance — classification volume must not consume the
   bridge's process-local budget.
 - Low confidence (< 0.6) or choice `unclassified` → `unclassified`, never a
-  hard guess.
+  hard guess. A **missing** confidence field is accepted as confident —
+  only an explicit value below the threshold degrades; this is also why the
+  cache's `confidence` column is nullable (§7).
+- JEV-classified `write` steps carry `subcategory = null`: the §2 three-way
+  write split (product-code / test-code / docs-evidence) is populated only
+  for rule-classified steps. W4 may post-process subcategories from
+  command/output; v1 does not.
 - Cache: `sha256(toolName + argv[0] + first positional + flags-only(argv)
   + output fingerprint)` → category, in `jev_classification_cache`; cache
-  hits skip the network entirely. The first positional (script path /
+  hits skip the network entirely. argv identity is read from the **first
+  logical line** only. The first positional (script path /
   subcommand) is part of command identity so two different wrapper scripts
   never share an entry; the output fingerprint is coarse (length bucket,
   fail/pass fingerprint, exit status) so log churn still hits the cache.
+  **Opaque bodies**: when the command contains a heredoc (`<<`), a
+  newline, or an inline-exec flag (`-e` / `-c` / `--eval`), argv-level
+  identity collapses (two different `node - <<'NODE'` scripts share argv0
+  and flags), so a sha256 of the whole command body joins the key —
+  different scripts never share an entry, identical re-runs still hit.
+- Cache adapter contract (implemented in W4 over sqlite): `get(key)`
+  returns the stored entry `{category, subcategory, runKind, confidence}`
+  or `null` on miss or parse failure; `set(key, entry)` persists exactly
+  that shape. Both are fault-tolerant: a throwing `get` behaves as a miss,
+  a throwing `set` is swallowed — classification never rejects into the
+  turn path because of the cache.
 - Switch: JEV runs only when `TYPESAFE_API_KEY` is configured **and** the
   per-project config `timeBreakdown.jevEnabled` (system service config
   store) is true; default **false** → rules only (open question
-  `q-jev-config`: wiring waits for credential/config confirmation).
+  `q-jev-config`: wiring waits for credential/config confirmation). When
+  disabled the classifier does not even read the cache — "rules only"
+  means exactly that; do not "fix" this later, it would change the switch
+  semantics.
 - Failure/timeout/disabled: step stored as `unclassified` with
   `jevStatus = 'ok' | 'timeout' | 'error' | 'disabled' | 'low-confidence'`;
   never blocks, never throws into the turn path. A later pass (next view
@@ -275,7 +299,9 @@ CREATE TABLE IF NOT EXISTS chat_turn_time_summaries (
 CREATE TABLE IF NOT EXISTS jev_classification_cache (
   cache_key TEXT PRIMARY KEY,
   category TEXT NOT NULL,
-  confidence REAL NOT NULL,
+  subcategory TEXT,
+  run_kind TEXT,                  -- 'targeted' | 'full-regression' | NULL
+  confidence REAL,                -- NULL when JEV omitted the field (§6)
   created_at TEXT NOT NULL
 );
 ```

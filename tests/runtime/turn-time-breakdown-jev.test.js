@@ -211,3 +211,125 @@ test('cache key is stable across output churn but separates commands and failure
   assert.notEqual(jevCacheKey(step({ isError: true })), base);
   assert.notEqual(jevCacheKey(step({ output: '3 failing' })), base);
 });
+
+test('opaque bodies (heredoc / inline / multi-line) key on the whole script', () => {
+  const readScript = "node - <<'NODE'\nconst fs = require('fs');\nconsole.log(fs.readFileSync('a.txt', 'utf8'));\nNODE";
+  const writeScript = "node - <<'NODE'\nconst fs = require('fs');\nfs.writeFileSync('a.txt', 'x');\nNODE";
+
+  // A read-only heredoc and a writing heredoc must never share an entry.
+  assert.notEqual(jevCacheKey(step({ args: { command: readScript } })), jevCacheKey(step({ args: { command: writeScript } })));
+  // Identical re-runs still hit the cache.
+  assert.equal(jevCacheKey(step({ args: { command: readScript } })), jevCacheKey(step({ args: { command: readScript } })));
+
+  // Same first line, different follow-up body → different keys.
+  const multiA = 'cd /repo && npm test\necho done-a';
+  const multiB = 'cd /repo && npm test\necho done-b';
+
+  assert.notEqual(jevCacheKey(step({ args: { command: multiA } })), jevCacheKey(step({ args: { command: multiB } })));
+
+  // Inline-exec payloads: `bash -c 'npm test'` vs `bash -c 'npm run build'`.
+  assert.notEqual(
+    jevCacheKey(step({ args: { command: "bash -c 'npm test'" } })),
+    jevCacheKey(step({ args: { command: "bash -c 'npm run build'" } })),
+  );
+
+  // Single-line transparent commands keep argv-level identity (no body digest):
+  // two greps of the same pattern in different files share one entry.
+  assert.equal(
+    jevCacheKey(step({ args: { command: 'grep -n foo a.js' } })),
+    jevCacheKey(step({ args: { command: 'grep -n foo b.js' } })),
+  );
+});
+
+test('a throwing cache.get behaves as a miss and never rejects', async () => {
+  const calls = [];
+  const client = fakeClient(() => ({
+    answers: {
+      category: { type: 'choice', choice: 'read', confidence: 0.9 },
+      run_kind: { type: 'choice', choice: 'not-a-test', confidence: 0.9 },
+    },
+  }), calls);
+  const cache = {
+    get: () => {
+      throw new Error('SQLITE_BUSY');
+    },
+    set: () => {},
+  };
+  const classifier = createJevClassifier({ client, cache });
+
+  const result = await classifier.classifyStep(step());
+
+  assert.equal(result.category, 'read');
+  assert.equal(result.jevStatus, 'ok');
+  assert.equal(calls.length, 1);
+});
+
+test('a throwing cache.set never fails classification', async () => {
+  const client = fakeClient(() => ({
+    answers: {
+      category: { type: 'choice', choice: 'write', confidence: 0.95 },
+      run_kind: { type: 'choice', choice: 'not-a-test', confidence: 0.9 },
+    },
+  }), []);
+  const cache = {
+    get: () => null,
+    set: () => {
+      throw new Error('disk full');
+    },
+  };
+  const classifier = createJevClassifier({ client, cache });
+
+  const result = await classifier.classifyStep(step());
+
+  assert.equal(result.category, 'write');
+  assert.equal(result.jevStatus, 'ok');
+});
+
+test('malformed steps never reject classifyStep', async () => {
+  const client = fakeClient(() => ({
+    answers: {
+      category: { type: 'choice', choice: 'unclassified', confidence: 0.9 },
+      run_kind: { type: 'choice', choice: 'not-a-test', confidence: 0.9 },
+    },
+  }), []);
+  const classifier = createJevClassifier({ client });
+
+  for (const weird of [null, undefined, {}, { args: 42 }, { args: '{broken json', output: { bad: true } }, { toolName: 'bash' }]) {
+    const result = await classifier.classifyStep(weird);
+
+    assert.equal(typeof result.category, 'string');
+    assert.ok(result.jevStatus);
+  }
+});
+
+test('cache entries carry the full §7 shape (subcategory, runKind, confidence)', async () => {
+  const cache = memoryCache();
+  const client = fakeClient(() => ({
+    answers: {
+      category: { type: 'choice', choice: 'test', confidence: 0.9 },
+      run_kind: { type: 'choice', choice: 'full-regression', confidence: 0.9 },
+    },
+  }), []);
+  const classifier = createJevClassifier({ client, cache });
+
+  await classifier.classifyStep(step());
+
+  const entry = [...cache.map.values()][0];
+
+  assert.deepEqual(Object.keys(entry).sort(), ['category', 'confidence', 'runKind', 'subcategory']);
+  assert.equal(entry.runKind, 'full-regression');
+  assert.equal(entry.subcategory, null);
+
+  // …and a cache hit must not lose runKind (AC4 fullRunCount depends on it).
+  const second = await classifier.classifyStep(step());
+
+  assert.equal(second.runKind, 'full-regression');
+  assert.equal(second.classifiedBy, 'jev-cache');
+});
+
+test('buildJevState truncates oversized commands at 8000 head chars', () => {
+  const state = buildJevState(step({ args: { command: `node -e "${'x'.repeat(9000)}"` } }));
+
+  assert.ok(state.command.length < 8300);
+  assert.ok(/truncated \d+ chars/.test(state.command));
+});
