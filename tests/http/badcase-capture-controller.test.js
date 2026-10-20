@@ -248,6 +248,57 @@ test('server default capture service receives trusted private roots; Windows nat
   }
 });
 
+test('supported Windows native HTTP estimate and separate enable reach the real collector; environment drift cannot enable or publish', { skip: process.platform !== 'win32' }, async t => {
+  require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
+  const h = setup(t), { execFileSync } = require('node:child_process');
+  const git = (...args) => execFileSync('git', ['-C', h.target, ...args], { env: process.env, windowsHide: true });
+  git('init', '-q'); git('config', 'core.ignorecase', 'true'); git('add', 'hello.txt');
+  fs.writeFileSync(path.join(h.target, 'hello.txt'), 'dirty'); fs.writeFileSync(path.join(h.target, '.gitignore'), '*.log\n');
+  fs.writeFileSync(path.join(h.target, 'untracked'), 'new'); fs.writeFileSync(path.join(h.target, 'included.log'), 'include');
+  fs.writeFileSync(path.join(h.target, 'ignored.log'), 'IGNORE_NOT_AUTHORIZED'); fs.writeFileSync(path.join(h.target, '.env'), 'SECRET_NOT_AUTHORIZED');
+  const helper = require('../../build/server/domain/runtime/badcase-capture/windows-helper'), original = helper.invokeWindowsGitHelper;
+  const ops = []; helper.invokeWindowsGitHelper = (...args) => { ops.push(args[2].op); return original(...args); };
+  t.after(() => { helper.invokeWindowsGitHelper = original; });
+  let controller;
+  const server = http.createServer(async (req, res) => {
+    try { await controller({ req, res, pathname: req.url }); }
+    catch (error) { res.writeHead(error.statusCode || 500); res.end(JSON.stringify({ issues: error.issues || [] })); }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const port = server.address().port, base = `http://127.0.0.1:${port}`;
+  controller = createBadcaseCaptureController({ ...h.options, port });
+  const post = (action, body) => fetch(`${base}/api/projects/project-test/badcase-capture/${action}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-caff-csrf-token': 'test-csrf' }, body: JSON.stringify(body),
+  });
+  assert.equal((await post('authorize', { ...authorization(h.target), excludedPatterns: ['node_modules'], includedIgnoredPatterns: ['included.log'] })).status, 200);
+  const first = await (await post('estimate', {})).json();
+  assert.equal(first.captureAvailable, true); assert.equal(first.complete, true); assert.ok(first.estimateId);
+  assert.equal(first.totalBytes, 21); assert.equal(first.estimates[0].fileCount, 4);
+  assert.equal(first.estimates[0].exclusionPolicy, 'windows-git-classified-v1');
+  assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
+  process.env.GIT_INDEX_FILE = path.join(h.root, 'another-index');
+  assert.equal((await post('enable', { confirmed: true, estimateId: first.estimateId })).status, 409);
+  assert.equal(h.service.loadPolicy('project-test').status, 'disabled'); delete process.env.GIT_INDEX_FILE;
+  const second = await (await post('estimate', {})).json(); assert.ok(second.estimateId); assert.notEqual(second.estimateId, first.estimateId);
+  assert.equal((await post('enable', { confirmed: true, estimateId: second.estimateId })).status, 200);
+  assert.equal(h.service.loadPolicy('project-test').status, 'enabled');
+  assert.equal(h.service.store.listCheckpoints('project-test').length, 0); assert.equal(h.service.computeUsage('project-test').totalBytes, 0);
+  assert.ok(ops.length > 0); assert.ok(ops.every(op => op === 'gitMetadata'), 'authorize/estimate/enable must not read ordinary contents');
+  const input = { projectId: 'project-test', conversationId: 'fixture-c', turnId: 'fixture-t', agentId: 'fixture-a', targetDir: h.target,
+    deliveryMode: 'fresh', prompt: 'question', runConfig: { provider: 'test', model: 'test', skillIds: [], conversationSkillIds: [] },
+    harness: { configSnapshot: { toolBridgeEnabled: true, deliveryMode: 'fresh', piVersion: '0.85.1' }, skillSnapshots: [] } };
+  const captured = await h.service.captureTurnCheckpoint(input); assert.equal(captured.captured, true, captured.reason);
+  assert.ok(ops.includes('selectedSnapshot')); assert.equal(captured.checkpoint.files['ignored.log'], undefined);
+  assert.equal(captured.checkpoint.files['.env'], undefined); assert.equal(captured.checkpoint.files['.git'], undefined);
+  assert.equal(captured.checkpoint.replayInput.complete, false); assert.equal(captured.checkpoint.strictEvalEligible, false);
+  process.env.GIT_DIR = path.join(h.root, 'another-root');
+  const drifted = await h.service.captureTurnCheckpoint({ ...input, turnId: 'fixture-drift' });
+  assert.equal(drifted.captured, false); assert.equal(drifted.reason, 'windows_git_environment_unsupported');
+  assert.equal(h.service.store.listCheckpoints('project-test').length, 1); delete process.env.GIT_DIR;
+  assert.equal((await post('disable', {})).status, 200); assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
+});
+
 test('Windows real HTTP native capacity preview protects configured private roots and never issues an enable receipt', { skip: process.platform !== 'win32' }, async t => {
   const h = setup(t);
   const hidden = path.join(h.target, 'custom-private'); fs.mkdirSync(hidden);

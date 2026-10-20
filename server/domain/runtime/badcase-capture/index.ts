@@ -17,6 +17,8 @@ import { estimateWindowsDirectory, estimateWindowsDirectoryAsync } from './windo
 import { readPreTurnCallbackInput } from './callback-source';
 import { discoverWindowsGitDependencies } from './windows-git-discovery';
 import { supportsWindowsGitEnvironment } from './windows-git-environment';
+import { estimateWindowsGitDirectoryAsync } from './windows-git-candidate';
+import { selectWindowsExternalGit } from './windows-external-selection';
 
 export function resolveCaptureRoot(options: any = {}) {
   const explicit = String(options.captureRoot || '').trim() || String(process.env.CAFF_BADCASE_CAPTURE_DIR || '').trim();
@@ -70,7 +72,8 @@ export function createBadcaseCaptureService(options: any = {}) {
       ? [...privateDirs, ...[process.env.PI_AGENT_SANDBOX_DIR, process.env.PI_AGENT_PRIVATE_DIR].filter(Boolean)]
       : privateDirs };
   })() : null;
-  // No enable bypass: Windows estimate still advertises captureAvailable=false.
+  // Windows enable requires the supported host environment AND a classified
+  // metadata plan. Raw capacity preview never grants capture capability.
   // Selection is host-platform explicit, never a failed-Windows fallback to Linux.
   const windowsGitEnvironmentReady = windowsScope ? supportsWindowsGitEnvironment(process.env) : false;
   const checkWindowsGitEnvironment = () => windowsGitEnvironmentReady && supportsWindowsGitEnvironment(process.env);
@@ -108,8 +111,8 @@ export function createBadcaseCaptureService(options: any = {}) {
     // 显式授权动作（唯一允许钉住根身份的入口）：对当前策略中的 authorizedDirs 与
     // authorizedInputDirs 固定目录对象身份。Linux: realpath + statx；Windows:
     // literal path + native NT identity (no junction resolution/fallback).
-    // Windows authorization always leaves capture disabled. Its separate
-    // metadata preview cannot issue an enable receipt; collector stays closed.
+    // Windows authorization always leaves capture disabled. Only a separate
+    // classified estimate may issue a receipt for a subsequent explicit enable.
     authorizeProject(projectId: any) {
       const policy = store.loadPolicy(projectId);
       if (process.platform === 'win32') {
@@ -167,12 +170,16 @@ export function createBadcaseCaptureService(options: any = {}) {
         const id = String(projectId || '').trim(), target = String(targetDir || '').trim();
         if (!id || !target) return { ok: false, reason: !id ? 'project_id_missing' : 'target_dir_missing',
           fileCount: 0, totalBytes: 0, durationMs: Date.now() - start };
-        const result = await estimateWindowsDirectoryAsync({ captureRoot, ...windowsScope,
-          targetDir: target, policy: store.loadPolicy(id) });
-        return { ...result, ...(result.ok && !checkWindowsGitEnvironment() ? {
-          reason: 'windows_git_environment_unsupported',
-          limitations: [...(result.limitations || []), 'windows_git_environment_unsupported'],
-        } : {}), durationMs: Date.now() - start };
+        const policy = store.loadPolicy(id), ready = checkWindowsGitEnvironment();
+        const result = ready
+          ? await estimateWindowsGitDirectoryAsync({ captureRoot, ...windowsScope, targetDir: target, policy,
+            externalGit: selectWindowsExternalGit(policy, target) })
+          : await estimateWindowsDirectoryAsync({ captureRoot, ...windowsScope, targetDir: target, policy });
+        const environmentReady = ready && checkWindowsGitEnvironment();
+        return { ...result, captureAvailable: result.ok === true && result.complete === true && environmentReady,
+          ...(result.ok && !environmentReady ? { reason: 'windows_git_environment_unsupported',
+            limitations: [...(result.limitations || []), 'windows_git_environment_unsupported'] } : {}),
+          durationMs: Date.now() - start };
       }
       return runEstimateProcess({ captureRoot, projectId: String(projectId || ''), targetDir: String(targetDir || '') });
     },

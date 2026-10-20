@@ -1,5 +1,5 @@
-// Windows service collector. Management enable remains closed: metadata-only
-// estimate issues no receipt. Tests may explicitly set their own fixture enabled.
+// Windows service collector. Management enable requires its separate supported
+// host environment and classified metadata estimate, never a raw capacity scan.
 // Bounded local/external Git limitations remain: no ambient global Git or
 // independent consistency proof; deletion history requires a comparable prior
 // checkpoint and ASCII namespace. Never advertise complete.
@@ -106,7 +106,7 @@ export function createWindowsTurnCollector(options: any = {}): any {
           integrity: { algorithm: 'sha256', manifestHash, helperSha256: WINDOWS_HELPER_SOURCE_SHA256, platform: 'win32',
             windowsObservationScopeHash: scopeHash, deletionHistoryBaselineId: comparable ? previous.checkpointId : '',
             indexedDeletionEvidence: indexedVerified ? 'verified_index_visible_ascii_v1' : '',
-            knownLimitations: [...new Set([...limitations, 'windows_management_enable_not_connected',
+            knownLimitations: [...new Set([...limitations,
               ...(typeof readCallbackInput === 'function' ? ['callback_sqlite_snapshot_not_atomic_with_files'] : [])])] },
           consistency: { evidence: 'content-verified', atomicityGuaranteed: false, secondScanMode: 'full-hash', retries: 0, differingPaths: [] },
           replayInput, environment: input.environment || {}, strictEvalEligible: false,

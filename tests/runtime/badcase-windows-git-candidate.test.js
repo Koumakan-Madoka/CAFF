@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
 const { readWindowsGitFileCandidate, readWindowsGitFileCandidateAsync } = require('../../build/server/domain/runtime/badcase-capture/windows-git-candidate');
-const { encodeWindowsHelperRequest: encode, parseWindowsHelperResponse: parse } = require('../../build/server/domain/runtime/badcase-capture/windows-helper');
+const { encodeWindowsHelperRequest: encode, parseWindowsHelperResponse: parse, WINDOWS_HELPER_LIMITS: limits } = require('../../build/server/domain/runtime/badcase-capture/windows-helper');
 const native = { skip: process.platform !== 'win32' ? 'real Windows NTFS required' : false };
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const identity = { volumeSerial: '1', fileId: 'a'.repeat(32), creationTime: '2' };
@@ -41,7 +41,7 @@ function isolated(scope, helper, clock = require('node:perf_hooks').performance)
   const local = require('node:module').createRequire(filename), exports = {};
   require('node:vm').runInNewContext(fs.readFileSync(filename, 'utf8'), { exports, module: { exports }, Buffer, Map, Set, structuredClone,
     require: name => name === './windows-estimate' ? { prepareWindowsMetadataScope: scope }
-      : name === './windows-helper' ? { invokeWindowsHelper: helper, invokeWindowsGitHelper: helper, encodeWindowsHelperRequest: encode }
+      : name === './windows-helper' ? { invokeWindowsHelper: helper, invokeWindowsGitHelper: helper, encodeWindowsHelperRequest: encode, WINDOWS_HELPER_LIMITS: limits }
         : name === 'node:perf_hooks' ? { performance: clock } : local(name) }, { filename });
   return exports;
 }
@@ -172,6 +172,30 @@ test('classified selection precedes reads, preserves tracked mode, rescans metad
   assert.equal(hashChange.readWindowsGitFileCandidate({ policy: { includedIgnoredPatterns: [] } }).reason, 'git_metadata_changed');
   const mismatch = isolated(scope, (_, __, req) => req.op === 'gitMetadata' ? first : { ...response, entries: [] });
   assert.equal(mismatch.readWindowsGitFileCandidate({ policy: { includedIgnoredPatterns: [] } }).reason, 'git_metadata_changed');
+});
+
+test('classified preview brackets Git sources without ordinary content reads or CAS plans and respects selection byte limits', async () => {
+  const run = async (before, changed = false) => {
+    let reads = 0;
+    const api = isolated(scope, async (_p, _h, request) => {
+      assert.equal(request.op, 'gitMetadata', 'pre-enable preview must never request selectedSnapshot');
+      return ++reads === 2 && changed ? metadata({ entries: [...before.entries, entry('late')] }) : before;
+    });
+    const result = await api.estimateWindowsGitDirectoryAsync({ policy: { includedIgnoredPatterns: [] } });
+    return { result, reads };
+  };
+  const { result, reads } = await run(metadata());
+  assert.equal(result.ok, true, result.reason); assert.equal(reads, 2);
+  assert.equal(result.fileCount, 3); assert.equal(result.totalBytes, 8);
+  assert.equal(result.captureAvailable, false, 'metadata primitive cannot authorize the host runtime'); assert.equal(result.complete, true); assert.equal(result.strictEvalEligible, false);
+  assert.ok(result.limitations.includes('content_not_scanned'));
+  for (const key of ['files', 'blobs', 'observation', 'indexDeletions']) assert.equal(Object.hasOwn(result, key), false);
+  assert.equal((await run(metadata(), true)).result.reason, 'git_metadata_changed');
+  const large = metadata(); large.entries.push(entry('huge', 'file', String(limits.fileBytes + 1)));
+  assert.equal((await run(large)).result.reason, 'too_large');
+  const aggregate = metadata();
+  for (const name of ['big-a', 'big-b', 'big-c']) aggregate.entries.push(entry(name, 'file', String(49 * 1024 * 1024)));
+  assert.equal((await run(aggregate)).result.reason, 'too_large');
 });
 
 function missingCandidate(names, { excluded = [], extra = [], ignoreCase = false, changeAfter = false } = {}) {

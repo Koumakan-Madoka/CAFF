@@ -120,7 +120,7 @@ test('composition owns one lease through files/input/publication; latches materi
   assert.equal(cp.integrity.platform, 'win32'); assert.match(cp.integrity.manifestHash, /^[0-9a-f]{64}$/);
   assert.equal(cp.integrity.knownLimitations.includes('session_and_invocation_not_collected'), false);
   assert.equal(cp.integrity.knownLimitations.includes('windows_turn_collector_not_connected'), false);
-  assert.ok(cp.integrity.knownLimitations.includes('windows_management_enable_not_connected'));
+  assert.equal(cp.integrity.knownLimitations.includes('windows_management_enable_not_connected'), false);
   assert.deepEqual([...cp.deletions], []); assert.equal(h.seen.at(-1)[0], 'publish'); noLock(h);
 });
 

@@ -1,5 +1,5 @@
-// Bounded Git file-candidate used by the Windows service collector. Management
-// enable stays closed; this is not a complete capture capability.
+// Bounded Git file-candidate used by the Windows service collector. Its separate
+// classified preview reads no ordinary contents; the service owns enable gates.
 // No Git execution, implicit global config reads or pointer-derived authorization,
 // install/re-pin, persistence or fallback to the unclassified all-file reader.
 // Requires visible canonical .git metadata and verified config/index grammar.
@@ -8,7 +8,7 @@
 import path from 'node:path';
 import { readWindowsGitMetadataInput } from './windows-git-input';
 import { prepareWindowsMetadataScope } from './windows-estimate';
-import { invokeWindowsHelper, invokeWindowsGitHelper, encodeWindowsHelperRequest } from './windows-helper';
+import { invokeWindowsHelper, invokeWindowsGitHelper, encodeWindowsHelperRequest, WINDOWS_HELPER_LIMITS } from './windows-helper';
 const { performance } = require('node:perf_hooks');
 import { parseGitIndex, parseGitConfigSubset, parseGitignoreRules, classifyWalkEntries } from './git-classify';
 import { matchesRelativePattern } from './capture-policy';
@@ -201,7 +201,7 @@ function classificationView(metadata: any, sources: Map<string, any>): any {
 
 // One shared state machine: async may not relax classification or bypass a
 // failed phase by retrying through the legacy synchronous transport.
-function* candidateSteps(options: any): Generator<any, any, any> {
+function* candidateSteps(options: any, preview = false): Generator<any, any, any> {
     const plan = prepareWindowsMetadataScope(options);
     if (!plan.ok) return fail(plan.reason);
     const included = options.policy?.includedIgnoredPatterns;
@@ -230,11 +230,13 @@ function* candidateSteps(options: any): Generator<any, any, any> {
     }
     const selection = { ...plan.request, op: 'selectedSnapshot', paths: selected.paths };
     if (!encodeWindowsHelperRequest(selection)) return fail('git_selection_limit');
-    const snapshot = yield { helperPath: plan.helperPath, request: selection };
-    if (!snapshot.ok) return fail(snapshot.reason);
-    // Compare full non-Git manifests, not just selected files. No CAS plans
-    // survive an add/delete/identity/metadata change across classification.
-    if (tree(before) !== tree(snapshot)) return fail('git_metadata_changed');
+    const snapshot = preview ? null : yield { helperPath: plan.helperPath, request: selection };
+    if (!preview) {
+      if (!snapshot.ok) return fail(snapshot.reason);
+      // Compare full non-Git manifests, not just selected files. No CAS plans
+      // survive an add/delete/identity/metadata change across classification.
+      if (tree(before) !== tree(snapshot)) return fail('git_metadata_changed');
+    }
     const after = yield { helperPath: plan.helperPath, request };
     if (!after.ok) return fail(after.reason);
     if (signature(before) !== signature(after)) return fail('git_metadata_changed');
@@ -244,6 +246,24 @@ function* candidateSteps(options: any): Generator<any, any, any> {
       const externalAfter = yield* externalSources(options, external.roots);
       if (!externalAfter.ok) return externalAfter;
       if (externalBefore.signature !== externalSignature(externalAfter.sources)) return fail('git_metadata_changed');
+    }
+    if (preview) {
+      const sizes = new Map<string, any>(before.entries.filter((e: any) => e.type === 'file').map((e: any) => [e.path, e.size]));
+      let bytes = 0n;
+      for (const p of selected.paths) {
+        const size = BigInt(sizes.get(p));
+        if (size > BigInt(WINDOWS_HELPER_LIMITS.fileBytes)) return fail('too_large');
+        bytes += size;
+      }
+      if (bytes > BigInt(WINDOWS_HELPER_LIMITS.bodyBytes)) return fail('too_large');
+      // No ordinary file bytes, plans, hashes or deletion evidence escape the
+      // pre-enable path. The service separately verifies its host environment
+      // before promoting this metadata plan to captureAvailable.
+      return { ok: true, reason: '', authorized: true, complete: true, uncaptured: [],
+        fileCount: selected.paths.length, totalBytes: Number(bytes), includesIgnored: false,
+        captureAvailable: false, strictEvalEligible: false, exclusionPolicy: 'windows-git-classified-v1',
+        limitations: ['no_atomic_snapshot', 'content_not_scanned', 'known_sensitive_names_excluded',
+          'only_explicitly_included_ignored_files_counted', 'session_image_and_manifest_costs_excluded'] };
     }
     const files: any = Object.create(null), blobs = new Map<string, any>();
     for (const file of snapshot.files) {
@@ -293,7 +313,15 @@ export function readWindowsGitFileCandidate(options: any): any {
   } catch { return fail('windows_git_candidate_unavailable'); }
 }
 
-export async function readWindowsGitFileCandidateAsync(options: any): Promise<any> {
+export function readWindowsGitFileCandidateAsync(options: any): Promise<any> {
+  return runAsyncCandidate(options, false);
+}
+
+export function estimateWindowsGitDirectoryAsync(options: any): Promise<any> {
+  return runAsyncCandidate(options, true);
+}
+
+async function runAsyncCandidate(options: any, preview: boolean): Promise<any> {
   // Observed monotonic deadline includes scope compilation, wire validation,
   // classification and owned-blob construction, not three fresh child budgets.
   // Synchronous fs/parsing cannot be preempted; late completion is rejected.
@@ -304,7 +332,7 @@ export async function readWindowsGitFileCandidateAsync(options: any): Promise<an
   try {
     // Lock selected roots, pins, policy and worktree before the first await.
     options = structuredClone(options);
-    const steps = candidateSteps(options);
+    const steps = candidateSteps(options, preview);
     let state = steps.next();
     while (true) {
       if (performance.now() >= deadline) return fail('git_capture_timeout');

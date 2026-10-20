@@ -277,7 +277,8 @@ test('native linked-worktree classifies independently pinned external inputs, re
     windowsExternalGit: [{ worktree: work, ...externalGit }], excludedPatterns: [], includedIgnoredPatterns: ['included.log'] });
   const authorized = selectedService.authorizeProject('p');
   assert.equal(authorized.status, 'disabled');
-  const preview = await selectedService.estimateDirectoryAsync('p', work); assert.equal(preview.ok, true); assert.equal(preview.captureAvailable, false);
+  const preview = await selectedService.estimateDirectoryAsync('p', work); assert.equal(preview.ok, true); assert.equal(preview.captureAvailable, true);
+  assert.equal(preview.exclusionPolicy, 'windows-git-classified-v1');
   const turn = { projectId: 'p', conversationId: 'fixture-c', turnId: 'fixture-t', agentId: 'fixture-a', targetDir: work,
     deliveryMode: 'fresh', prompt: 'question', externalGit: { metadataRoot: 'C:/untrusted', commonRoot: 'C:/untrusted' },
     runConfig: { provider: 'test', model: 'test', skillIds: [], conversationSkillIds: [] },

@@ -42,7 +42,7 @@
         <pre data-capture-estimate class="muted" style="white-space:pre-wrap;overflow-wrap:anywhere" aria-live="polite"></pre>
       </fieldset>
       <fieldset class="settings-form compact-settings-form"><legend>3. 开启采集</legend>
-        <p class="muted">Windows 当前仅支持容量预估，采集开启尚不可用。授权和预估不会绕过此限制。</p>
+        <p class="muted">Windows 仅在本实例环境和 Git 分类检查均受支持时才可开启；文件检查点不代表完整回放或严格评测可用。授权和预估不会自动开启。</p>
         <div class="button-row"><button type="button" data-capture-action="enable">确认开启采集</button>
         <button type="button" data-capture-action="disable" class="ghost-button danger">关闭采集</button></div>
       </fieldset>
@@ -55,7 +55,7 @@
         <label>文件采集根（绝对路径，每行一个）<textarea name="authorizedDirs" rows="3" spellcheck="false"></textarea></label>
         <label>输入/session 授权根（绝对路径，每行一个，可空）<textarea name="authorizedInputDirs" rows="2" spellcheck="false"></textarea></label>
         <label>Windows 外置 Git 显式选择（JSON 数组，可空）<textarea name="windowsExternalGit" rows="3" spellcheck="false" placeholder='[{"worktree":"C:/work","metadataRoot":"C:/main/.git/worktrees/work","commonRoot":"C:/main/.git"}]'></textarea></label>
-        <p class="muted">每个 worktree 单独选择两个外置 Git 根；文件根须列在上方文件授权中，两个元数据根须分别列在输入授权中。指针只提出候选，不授予权限；修改选择将关闭采集。此选择尚不开放 Windows 开启或 Docker 回放。</p>
+        <p class="muted">每个 worktree 单独选择两个外置 Git 根；文件根须列在上方文件授权中，两个元数据根须分别列在输入授权中。指针只提出候选，不授予权限；修改选择将关闭采集。选择不等于开启；仍须独立预估与确认。Docker 回放还需另行验证。</p>
         <label>明确纳入的 ignored 模式（每行一个，可空）<textarea name="includedIgnoredPatterns" rows="2" spellcheck="false"></textarea></label>
         <label>排除模式（每行一个）<textarea name="excludedPatterns" rows="2" spellcheck="false"></textarea></label>
         <div class="button-row"><button type="button" data-capture-action="authorize">1. 确认授权范围（不启用）</button></div>
