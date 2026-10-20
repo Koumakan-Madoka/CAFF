@@ -47,6 +47,7 @@
         <button type="button" data-capture-action="disable" class="ghost-button danger">关闭采集</button></div>
       </fieldset>
       <p data-capture-usage></p>
+      <p data-capture-last></p>
       <p data-capture-notice role="status" aria-live="polite"></p>
       <button type="button" data-capture-action="refresh" class="ghost-button">重新读取（丢弃未保存编辑）</button>
       <details data-capture-advanced><summary>高级设置与存储明细</summary>
@@ -64,6 +65,7 @@
         <div class="button-row"><button type="button" data-capture-action="settings">仅保存期限/配额</button></div>
       </div>
       <p data-capture-storage-detail></p>
+      <p data-capture-last-detail class="muted"></p>
       <p class="muted">预估为文件元数据容量上界，可能包含 ignored 文件；重叠根可能重复计数。
       预估未包含 session、图片、镜像和清单成本，不保证实际空间充足。页面总占用为已提交文件逻辑字节，含 CAS/检查点/latest/标记/保留清单；
       不含 policy、staging、未发布临时文件或镜像，不是物理磁盘占用或可用空间。CAS 中的 session 未单独拆分；新增占用尚未提供。</p>
@@ -73,6 +75,21 @@
     const field = name => element(`[name="${name}"]`);
     const button = action => element(`[data-capture-action="${action}"]`);
     const notice = text => { element('[data-capture-notice]').textContent = text; };
+    function showLastCapture(result) {
+      const main = element('[data-capture-last]'), detail = element('[data-capture-last-detail]');
+      detail.textContent = '';
+      if (result.lastCaptureError || result.usageError || !Object.hasOwn(result, 'lastCapture')) {
+        main.textContent = '最近采集统计未知；不表示新增占用为零。'; return;
+      }
+      const data = result.lastCapture;
+      if (!data) { main.textContent = '当前授权范围暂无可用最近采集统计。'; return; }
+      const bytes = value => Number.isSafeInteger(value) && value >= 0 ? `${value} B` : '未知';
+      const duration = typeof data.preparationDurationMs === 'number' && Number.isFinite(data.preparationDurationMs)
+        && data.preparationDurationMs >= 0 ? `${data.preparationDurationMs.toFixed(1)} ms` : '未知';
+      main.textContent = `已保存范围最近一次新增：${bytes(data.totalNewBytes)} · 发布前耗时：${duration}`;
+      const kinds = data.blobBytesByKind || {};
+      detail.textContent = `新增 CAS 载荷：文件：${bytes(kinds.files)}；会话：${bytes(kinds.session)}；其他回放：${bytes(kinds.replay)}；跨类共享：${bytes(kinds.shared)}。\n归档会话大小：${bytes(data.sessionBytes)}；清单/latest 净新增：${bytes(data.newManifestBytes)}；Docker 镜像：未计入。\n以上为去重后的逻辑载荷/清单增量，不是物理磁盘用量；跨类共享不重复计数。发布前耗时不含发布落盘，归档会话大小不等于执行后会话增长。`;
+    }
     const draft = () => JSON.stringify(['worktree', ...scopeNames, ...limitNames].map(name => name === 'callbackInputAuthorized' ? field(name).checked : field(name).value));
     const lines = name => field(name).value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     const dirty = () => savedDraft !== draft();
@@ -112,6 +129,7 @@
       }
       for (const name of limitNames) field(name).value = String(policy[name]);
       savedDraft = draft();
+      showLastCapture(result);
       const status = { disabled: '已关闭', enabled: '已开启', suspended: '已暂停' }[policy.status] || String(policy.status);
       element('[data-capture-status]').textContent = `项目：${project.name || project.id} · 状态：${status}${policy.suspendReason ? ` · ${policy.suspendReason}` : ''}`;
       if (usageUnavailable) {
@@ -151,6 +169,8 @@
       savedDraft = draft();
       element('[data-capture-status]').textContent = selected ? '读取项目采集状态…' : '未选择项目';
       element('[data-capture-usage]').textContent = '';
+      element('[data-capture-last]').textContent = '';
+      element('[data-capture-last-detail]').textContent = '';
       element('[data-capture-estimate]').textContent = '';
       notice(''); updateControls();
       if (!selected) return;

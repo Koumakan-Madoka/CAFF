@@ -75,7 +75,24 @@ export function publishPreparedCheckpoint(options: any): any {
         const newBlobBytes = [...missing.values()].reduce((sum, bytes) => sum + bytes.length, 0);
         const latestDelta = store.latestPointerJsonSize(projectId, checkpoint.targetDir, checkpoint.checkpointId)
           - store.latestPointerSize(projectId, checkpoint.targetDir);
-        checkpoint.stats = { ...checkpoint.stats, newBlobBytes, newManifestBytes: 0, totalNewBytes: 0 };
+        const fileHashes = new Set((Object.values(checkpoint.files) as any[])
+          .filter(f => f.type === 'file' && f.secretExcluded !== true).map(f => f.hash));
+        const replay = checkpoint.replayInput, sessionHash = replay.sessionBlobHash;
+        const replayHashes = new Set([replay.promptBlobHash, replay.harness.configSnapshotHash,
+          replay.callbackInput?.blobHash, ...replay.harness.skillSnapshots.map((s: any) => s.blobHash)].filter(Boolean));
+        const blobBytesByKind = { files: 0, session: 0, replay: 0, shared: 0 };
+        // Credit each NEW unique payload once. Hashes shared across categories
+        // have their own bucket, rather than claiming the bytes for both roles.
+        for (const [digest, bytes] of missing) {
+          const roles: ('files' | 'session' | 'replay')[] = [];
+          if (fileHashes.has(digest)) roles.push('files');
+          if (sessionHash === digest) roles.push('session');
+          if (replayHashes.has(digest)) roles.push('replay');
+          if (!roles.length) throw Error();
+          blobBytesByKind[roles.length > 1 ? 'shared' : roles[0]] += bytes.length;
+        }
+        checkpoint.stats = { ...checkpoint.stats, newBlobBytes, blobBytesByKind,
+          sessionBytes: sessionHash ? materials.get(sessionHash)!.length : null, newManifestBytes: 0, totalNewBytes: 0 };
         // Self-reported stats change JSON width. Require an actual fixed point,
         // not a guessed 4KiB reserve, before writing ANY staging bytes.
         let stable = false;

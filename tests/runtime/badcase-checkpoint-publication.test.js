@@ -58,6 +58,31 @@ test('prepared publication deduplicates all file/input references, counts exact 
   assert.equal(fs.existsSync(path.join(h.project, 'staging')), false);
 });
 
+test('new CAS payload counters separate file/session/replay bytes, retain session size on dedup and credit cross-kind sharing only once', t => {
+  const h = setup(t), session = Buffer.from('archived session'), sessionHash = sha256Hex(session);
+  const first = h.publish({ checkpoint: { ...h.checkpoint, replayInput: { ...h.checkpoint.replayInput, sessionBlobHash: sessionHash } },
+    blobs: new Map([...h.blobs, [sessionHash, session]]) });
+  assert.equal(first.captured, true, first.reason);
+  assert.deepEqual(first.checkpoint.stats.blobBytesByKind, { files: h.bytes.length, session: session.length, replay: h.prompt.length, shared: 0 });
+  assert.equal(first.checkpoint.stats.sessionBytes, session.length);
+  const before = h.store.computeUsage('p1').totalBytes;
+  const second = h.publish({ checkpoint: { ...first.checkpoint, checkpointId: 'cp2' }, blobs: new Map() });
+  assert.equal(second.captured, true, second.reason);
+  assert.deepEqual(second.checkpoint.stats.blobBytesByKind, { files: 0, session: 0, replay: 0, shared: 0 });
+  assert.equal(second.checkpoint.stats.sessionBytes, session.length);
+  assert.equal(second.checkpoint.stats.totalNewBytes, h.store.computeUsage('p1').totalBytes - before);
+  const shared = setup(t);
+  const one = shared.publish({ checkpoint: { ...shared.checkpoint,
+    replayInput: { ...shared.checkpoint.replayInput, promptBlobHash: shared.hash, sessionBlobHash: shared.hash } },
+    blobs: new Map([[shared.hash, shared.bytes]]) });
+  assert.equal(one.captured, true, one.reason);
+  assert.deepEqual(one.checkpoint.stats.blobBytesByKind, { files: 0, session: 0, replay: 0, shared: shared.bytes.length });
+  assert.equal(one.checkpoint.stats.newBlobBytes, shared.bytes.length);
+  assert.equal(one.checkpoint.stats.sessionBytes, shared.bytes.length);
+  const absent = setup(t).publish(); assert.equal(absent.captured, true);
+  assert.equal(absent.checkpoint.stats.sessionBytes, null, 'missing session must not be fabricated as a zero-byte archive');
+});
+
 test('exact quota boundary succeeds, one byte below rejects before staging and suspends', t => {
   const a = setup(t), b = setup(t);
   // Reuse exactly the same prepared manifest/target in independent stores so

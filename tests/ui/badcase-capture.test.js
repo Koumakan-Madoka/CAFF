@@ -59,6 +59,25 @@ test('usage shows committed storage categories and labels absent older breakdown
   assert.match(text, /分项未知/); assert.doesNotMatch(text, /标记：0 B/);
   assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
 });
+test('last capture shows exact new payload categories and archived session size; unknown or legacy data never become zero or stale', async t => {
+  let row = { checkpointId: 'cp1', totalNewBytes: 50, newBlobBytes: 30, newManifestBytes: 20,
+    preparationDurationMs: 12.5, sessionBytes: 10, blobBytesByKind: { files: 10, session: 10, replay: 5, shared: 5 } }, failed = false;
+  const h = setup(t, url => url.endsWith('/badcase-capture') ? { ...snapshot(), lastCapture: row,
+    lastCaptureError: failed ? 'capture_metrics_unavailable' : null } : undefined);
+  await h.panel.select({ id: 'a' });
+  const main = () => h.root.querySelector('[data-capture-last]').textContent;
+  const detail = () => h.root.querySelector('[data-capture-last-detail]').textContent;
+  assert.match(main(), /新增：50 B/); assert.match(main(), /发布前耗时：12\.5 ms/);
+  for (const text of ['文件：10 B', '会话：10 B', '其他回放：5 B', '跨类共享：5 B', '归档会话大小：10 B', 'Docker 镜像：未计入']) assert.ok(detail().includes(text), detail());
+  row = { ...row, blobBytesByKind: null, sessionBytes: null }; await h.click('refresh');
+  assert.match(main(), /新增：50 B/); assert.match(detail(), /文件：未知/); assert.match(detail(), /归档会话大小：未知/);
+  assert.doesNotMatch(detail(), /文件：0 B|会话：0 B|镜像：0 B/);
+  failed = true; await h.click('refresh');
+  assert.match(main(), /统计未知/); assert.doesNotMatch(main() + detail(), /50 B|12\.5 ms/);
+  assert.equal(h.button('disable').disabled, false);
+  await h.panel.select(null); assert.equal(main(), ''); assert.equal(detail(), '');
+});
+
 test('unavailable usage still shows persisted policy, permits disable and refresh, never shows zero or stale bytes', async t => {
   let unavailable = false, status = 'enabled';
   const h = setup(t, url => {

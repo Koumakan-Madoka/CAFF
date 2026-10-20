@@ -75,9 +75,16 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
     try { usage = service.computeUsage(projectId); }
     catch (error) {
       if (!(error instanceof Error) || error.message !== 'capture_usage_unavailable') throw error;
-      return { policy, usage: null, usageError: 'capture_usage_unavailable', trustBoundary: 'same_os_user' };
+      return { policy, usage: null, usageError: 'capture_usage_unavailable', lastCapture: null,
+        lastCaptureError: 'capture_metrics_unavailable', trustBoundary: 'same_os_user' };
     }
-    return { policy, usage, usageError: null, trustBoundary: 'same_os_user' };
+    let lastCapture: any = null;
+    let lastCaptureError: string | null = null;
+    try {
+      if (typeof service.latestCaptureMetrics !== 'function') throw Error();
+      lastCapture = service.latestCaptureMetrics(projectId);
+    } catch { lastCaptureError = 'capture_metrics_unavailable'; }
+    return { policy, usage, usageError: null, lastCapture, lastCaptureError, trustBoundary: 'same_os_user' };
   }
   async function estimates(projectId: string, policy: any, operation: symbol) {
     if (!policy.authorizedDirs.length) throw issue('badcase_capture_not_authorized', 409);

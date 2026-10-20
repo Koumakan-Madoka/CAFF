@@ -182,6 +182,37 @@ test('Git dependency suggestions are local-admin, explicitly confirmed, generati
   await rejects(() => pending, 'badcase_capture_operation_stale', 409);
 });
 
+test('latest capture metrics persist, stay within currently authorized roots and expose unknown legacy counters without reading blobs', async t => {
+  const h = setup(t);
+  h.service.savePolicy('project-test', { authorizedDirs: [h.target], authorizedInputDirs: [] });
+  const cp = { checkpointId: 'metrics-cp', projectId: 'project-test', targetDir: h.target, createdAt: '2026-10-20T00:00:00.000Z',
+    integrity: { platform: 'win32' }, stats: { totalNewBytes: 50, newBlobBytes: 30, newManifestBytes: 20, durationMs: 12.5,
+      sessionBytes: 10, blobBytesByKind: { files: 10, session: 10, replay: 5, shared: 5 } }, files: { private: 'MUST_NOT_BE_EXPOSED' } };
+  h.service.store.saveCheckpoint('project-test', cp); h.service.store.saveLatestCheckpointId('project-test', h.target, cp.checkpointId);
+  const other = { ...cp, checkpointId: 'other', targetDir: path.join(h.root, 'not-authorized'), createdAt: '2026-10-21T00:00:00.000Z' };
+  h.service.store.saveCheckpoint('project-test', other); h.service.store.saveLatestCheckpointId('project-test', other.targetDir, other.checkpointId);
+  const result = (await invoke(h.controller)).body;
+  assert.equal(result.lastCapture.checkpointId, cp.checkpointId); assert.equal(result.lastCapture.totalNewBytes, 50);
+  assert.equal(result.lastCapture.preparationDurationMs, 12.5); assert.equal(result.lastCapture.sessionBytes, 10);
+  assert.deepEqual(result.lastCapture.blobBytesByKind, cp.stats.blobBytesByKind); assert.equal(result.lastCaptureError, null);
+  assert.doesNotMatch(JSON.stringify(result), /MUST_NOT_BE_EXPOSED/);
+  const restarted = createBadcaseCaptureService({ captureRoot: h.captureRoot });
+  restarted.store.readBlob = () => { assert.fail('metrics must use stored counters, never read file/session contents'); };
+  assert.deepEqual(restarted.latestCaptureMetrics('project-test'), result.lastCapture);
+  delete cp.stats.blobBytesByKind; delete cp.stats.sessionBytes;
+  h.service.store.saveCheckpoint('project-test', cp);
+  const legacy = (await invoke(h.controller)).body.lastCapture;
+  assert.equal(legacy.totalNewBytes, 50); assert.equal(legacy.blobBytesByKind, null); assert.equal(legacy.sessionBytes, null);
+});
+
+test('capture metric read failure remains unknown without leaking errors or hiding a successful settings save', async t => {
+  const h = setup(t); h.service.latestCaptureMetrics = () => { throw Error('PRIVATE_METRICS_PATH'); };
+  const result = await invoke(h.controller, 'settings', { stagingRetentionDays: 2 });
+  assert.equal(result.status, 200); assert.equal(result.body.policy.stagingRetentionDays, 2);
+  assert.equal(result.body.lastCapture, null); assert.equal(result.body.lastCaptureError, 'capture_metrics_unavailable');
+  assert.equal(result.body.usage.totalBytes, 0); assert.doesNotMatch(JSON.stringify(result.body), /PRIVATE_METRICS_PATH/);
+});
+
 test('default GET and guard failures never scan or authorize', async t => {
   const h = setup(t);
   let touches = 0;
