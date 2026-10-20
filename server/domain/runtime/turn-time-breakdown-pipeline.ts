@@ -129,6 +129,11 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
         jevEnabled,
         jevClassifier: null,
         errorEvents: [] as any[],
+        // Anchored by the first pi event of the turn (§8 turn-start marker):
+        // the first tool step can start well after the trace's first event
+        // (model thinking), which would otherwise eat into the span.
+        turnStartedAtMs: null,
+        anonymousStepOrdinal: 0,
         completed: false,
       };
       taskStates.set(taskId, state);
@@ -174,9 +179,17 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
     const attribution = computeTurnAttribution({
       steps,
       errorEvents: state.errorEvents,
+      // The §8 turn-start marker (first pi event) wins over step extremes;
+      // a stored value (e.g. from the §9 full reparse) is the fallback.
       // Live turns account thinking up to "now" (contract §3).
-      turnStartedAtMs: existing && existing.turnStartedAt ? fromIso(existing.turnStartedAt) : null,
-      turnEndedAtMs: terminal ? nowMs : sealedEndMs !== null ? sealedEndMs : nowMs,
+      turnStartedAtMs: Number.isFinite(state.turnStartedAtMs)
+        ? state.turnStartedAtMs
+        : (existing && existing.turnStartedAt ? fromIso(existing.turnStartedAt) : null),
+      turnEndedAtMs: terminal
+        ? (Number.isFinite(terminal.endedAtMs) ? terminal.endedAtMs : nowMs)
+        : sealedEndMs !== null
+          ? sealedEndMs
+          : nowMs,
     });
     const nextStatus = terminal
       ? terminal.status
@@ -297,6 +310,24 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
     return promise;
   }
 
+  function processTurnStart(input: any) {
+    const state = ensureTaskState(input);
+
+    if (!state) {
+      return;
+    }
+
+    const startedAtMs = Number.isFinite(input.startedAtMs) ? input.startedAtMs : null;
+
+    if (startedAtMs !== null && (state.turnStartedAtMs === null || startedAtMs < state.turnStartedAtMs)) {
+      state.turnStartedAtMs = startedAtMs;
+    }
+
+    // Creates the live summary row even before the first tool step, so an
+    // in-progress turn is refreshable from its true start (AC1).
+    summarizeTask(state);
+  }
+
   function processStep(input: any) {
     const state = ensureTaskState(input);
 
@@ -307,7 +338,15 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
     const step = input.step || {};
     const startedAtMs = Number.isFinite(step.startedAtMs) ? step.startedAtMs : null;
     const endedAtMs = Number.isFinite(step.endedAtMs) ? step.endedAtMs : null;
-    const stepKey = String(step.stepKey || step.toolCallId || `${step.toolName || 'tool'}:live:${queue.length}`).trim();
+    let stepKey = String(step.stepKey || step.toolCallId || '').trim();
+
+    if (!stepKey) {
+      // pi always sends a toolCallId; this fallback exists for defensive
+      // completeness and must still be unique per step (contract §7:
+      // toolName + ordinal), so anonymous steps never overwrite each other.
+      state.anonymousStepOrdinal = (state.anonymousStepOrdinal || 0) + 1;
+      stepKey = `${step.toolName || 'tool'}:live:${state.anonymousStepOrdinal}`;
+    }
     const durationMs = startedAtMs !== null && endedAtMs !== null && endedAtMs >= startedAtMs
       ? endedAtMs - startedAtMs
       : null;
@@ -394,7 +433,10 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
 
     state.completed = true;
     summarizeTask(state, {
-      status: 'complete',
+      // Failed/cancelled turns seal as partial-interrupted (§8), not
+      // complete — the panel must say the turn never finished (AC5).
+      status: input.status === 'partial-interrupted' ? 'partial-interrupted' : 'complete',
+      endedAtMs: Number.isFinite(input.endedAtMs) ? input.endedAtMs : undefined,
       metrics: {
         ...(input.sessionReused !== undefined ? { sessionReused: input.sessionReused === true } : {}),
         ...(input.sessionReuseReason ? { sessionReuseReason: String(input.sessionReuseReason) } : {}),
@@ -413,7 +455,9 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
       const item = queue.shift();
 
       try {
-        if (item.kind === 'step') {
+        if (item.kind === 'start') {
+          processTurnStart(item);
+        } else if (item.kind === 'step') {
           processStep(item);
         } else if (item.kind === 'error') {
           processErrorEvent(item);
@@ -465,6 +509,13 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
 
   return {
     // Fire-and-forget; never throws, never awaits classification.
+    enqueueTurnStart(input: any) {
+      try {
+        return enqueue({ ...input, kind: 'start' });
+      } catch {
+        return false;
+      }
+    },
     enqueueStep(input: any) {
       try {
         return enqueue({ ...input, kind: 'step' });

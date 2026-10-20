@@ -2373,11 +2373,38 @@ export function createAgentExecutor(options: any = {}) {
     // the classification pipeline. Enqueue only — the turn path never awaits
     // classification or storage.
     const toolExecutionStarts = new Map<string, any>();
+    let turnBreakdownStarted = false;
 
     if (turnTimeBreakdownPipeline) {
       handle.on('pi_event', (event: any) => {
         const piEvent = event && event.piEvent;
         const eventType = String(piEvent && piEvent.type ? piEvent.type : '');
+
+        if (!turnBreakdownStarted) {
+          // §8 turn-start marker: the trace's first event anchors the turn
+          // span — the first tool step can start well after it (model
+          // thinking), which would otherwise eat into the span.
+          turnBreakdownStarted = true;
+          turnTimeBreakdownPipeline.enqueueTurnStart({
+            taskId: stageTaskId,
+            messageId: assistantMessage.id,
+            conversationId,
+            startedAtMs: Date.now(),
+          });
+        }
+
+        if (eventType === 'auto_retry_start') {
+          // §2(b): model retry intervals feed exception-retry (interval =
+          // previous trace event end → retry timestamp).
+          turnTimeBreakdownPipeline.enqueueErrorEvent({
+            taskId: stageTaskId,
+            messageId: assistantMessage.id,
+            conversationId,
+            timestampMs: Date.now(),
+          });
+          return;
+        }
+
         const toolCallId = String(piEvent && piEvent.toolCallId ? piEvent.toolCallId : '').trim();
 
         if (!toolCallId) {
@@ -3027,6 +3054,31 @@ export function createAgentExecutor(options: any = {}) {
       stage.lastTextDeltaAt = stage.lastTextDeltaAt || null;
       stage.endedAt = nowIso();
       applyStageCurrentTool(stage, null);
+
+      if (turnTimeBreakdownPipeline) {
+        // §8: failed/cancelled turns must seal too — otherwise the summary
+        // stays `live` forever and thinking grows without bound (AC5).
+        if (!stopRequested && invocationFailure.kind === 'timeout') {
+          // §2(b): the watchdog timeout interval (last trace event →
+          // termination) counts as exception-retry, not thinking.
+          turnTimeBreakdownPipeline.enqueueErrorEvent({
+            taskId: stageTaskId,
+            messageId: assistantMessage.id,
+            conversationId,
+            timestampMs: Date.parse(stage.endedAt) || Date.now(),
+          });
+        }
+
+        turnTimeBreakdownPipeline.completeTask({
+          taskId: stageTaskId,
+          messageId: assistantMessageFailed.id,
+          conversationId,
+          status: 'partial-interrupted',
+          endedAtMs: Date.parse(stage.endedAt) || Date.now(),
+          sessionReused: resumeSession === true,
+          sessionReuseReason: sessionReuseDecision && sessionReuseDecision.reason ? String(sessionReuseDecision.reason) : '',
+        });
+      }
 
       if (!stopRequested) {
         failedReplies.push(assistantMessageFailed);

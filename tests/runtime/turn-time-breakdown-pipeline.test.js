@@ -303,3 +303,88 @@ test('a worker item failure is logged and swallowed; later items still process',
 
   assert.ok(rows.some((row) => row.step_key === 'call-good'));
 });
+
+test('turn-start marker anchors the span at the first trace event, not the first tool step', async (t) => {
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+  let nowMs = 10_000;
+  const pipeline = createPipeline(store, { now: () => nowMs });
+
+  // First pi event of the turn at t=1000; the first tool step only starts
+  // at t=2000 — the gap is model thinking and must not be eaten.
+  pipeline.enqueueTurnStart({ taskId: 'task-1', messageId: 'msg-1', conversationId: 'conv-1', startedAtMs: 1000 });
+  await pipeline.flushForTests();
+
+  const early = repo.getSummary('msg-1');
+
+  assert.equal(early.status, 'live');
+  assert.equal(early.turnStartedAt, new Date(1000).toISOString());
+  assert.equal(early.categoryMs.thinking, 9000); // 1000 → now(10000), no steps yet
+
+  pipeline.enqueueStep({
+    taskId: 'task-1',
+    messageId: 'msg-1',
+    conversationId: 'conv-1',
+    step: step({ startedAtMs: 2000, endedAtMs: 3000 }),
+  });
+  await pipeline.flushForTests();
+
+  const later = repo.getSummary('msg-1');
+
+  assert.equal(later.turnStartedAt, new Date(1000).toISOString(), 'span start must not jump to the first step');
+  assert.equal(later.categoryMs.test, 1000);
+  assert.equal(later.categoryMs.thinking, 8000); // 1000→2000 + 3000→10000
+});
+
+test('completeTask seals failed/cancelled turns as partial-interrupted at the given end', async (t) => {
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+  let nowMs = 10_000;
+  const pipeline = createPipeline(store, { now: () => nowMs });
+
+  pipeline.enqueueStep({ taskId: 'task-1', messageId: 'msg-1', conversationId: 'conv-1', step: step() });
+  await pipeline.flushForTests();
+
+  // The turn fails at t=9000 (stage.endedAt); "now" keeps running.
+  nowMs = 400_000;
+  pipeline.completeTask({
+    taskId: 'task-1',
+    messageId: 'msg-1',
+    conversationId: 'conv-1',
+    status: 'partial-interrupted',
+    endedAtMs: 9000,
+  });
+  await pipeline.flushForTests();
+
+  const sealed = repo.getSummary('msg-1');
+
+  assert.equal(sealed.status, 'partial-interrupted');
+  assert.equal(sealed.turnEndedAt, new Date(9000).toISOString(), 'sealed at the stage end, not at "now"');
+  // span 1000→9000 = 8000; test interval 1000→5000 = 4000; thinking = 4000.
+  assert.equal(sealed.categoryMs.thinking, 4000, 'thinking must not stretch to "now" after sealing');
+});
+
+test('anonymous steps without a toolCallId get distinct keys and never overwrite', async (t) => {
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+  const pipeline = createPipeline(store);
+
+  pipeline.enqueueStep({
+    taskId: 'task-1',
+    messageId: 'msg-1',
+    conversationId: 'conv-1',
+    step: step({ stepKey: '', toolCallId: '', startedAtMs: 1000, endedAtMs: 2000 }),
+  });
+  pipeline.enqueueStep({
+    taskId: 'task-1',
+    messageId: 'msg-1',
+    conversationId: 'conv-1',
+    step: step({ stepKey: '', toolCallId: '', startedAtMs: 3000, endedAtMs: 4000 }),
+  });
+  await pipeline.flushForTests();
+
+  const rows = repo.listSteps('task-1');
+
+  assert.equal(rows.length, 2, 'contract §7 fallback is toolName + ordinal — anonymous steps must not collapse');
+  assert.notEqual(rows[0].step_key, rows[1].step_key);
+});

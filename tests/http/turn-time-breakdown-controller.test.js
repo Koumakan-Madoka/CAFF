@@ -342,3 +342,79 @@ test('cross-chunk merge: a result parsed in a later pass joins the stored open r
   assert.equal(second.json.breakdown.steps[0].category, 'test');
   assert.equal(second.json.breakdown.categoryMs.test, 7000);
 });
+
+test('live refresh keeps the original turn span, firstWriteMs, and error intervals', async (t) => {
+  const { store, conversation, handler, tempDir } = createFixture(t, 'live-refresh');
+  const sessionPath = writeSession(tempDir, 's7.jsonl', [
+    assistantLine(BASE + 1_000, [{ id: 'c1', name: 'read', arguments: { path: 'a.ts' } }]),
+    toolResultLine(BASE + 2_000, 'c1', 'read', 'x'),
+    assistantLine(BASE + 4_000, [{ id: 'c2', name: 'edit', arguments: { path: 'server/a.ts' } }]),
+    toolResultLine(BASE + 5_000, 'c2', 'edit', 'ok'),
+    // §2(b): a model-side error interval at +6s (previous step end +5s → 6s).
+    assistantLine(BASE + 6_000, [], { stopReason: 'error' }),
+  ]);
+  const taskId = 'task-live-refresh-1';
+
+  createTaskRow(store, { taskId, sessionPath });
+  createAssistantMessage(store, conversation.id, 'msg-1', { taskId, status: 'streaming' });
+
+  const first = await invoke(handler, breakdownUrl(conversation.id, 'msg-1'));
+
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.json.breakdown.status, 'live');
+  assert.equal(first.json.breakdown.metrics.firstWriteMs, 3000); // +1s → +4s
+  const firstExceptionMs = first.json.breakdown.categoryMs['exception-retry'];
+
+  assert.equal(firstExceptionMs, 1000); // +5s → +6s
+
+  // The turn continues: a full regression runs much later.
+  fs.appendFileSync(
+    sessionPath,
+    assistantLine(BASE + 20_000, [{ id: 'c3', name: 'bash', arguments: { command: 'npm test' } }]) + '\n'
+      + toolResultLine(BASE + 25_000, 'c3', 'bash', '# pass 5\n# fail 0') + '\n'
+  );
+
+  const second = await invoke(handler, breakdownUrl(conversation.id, 'msg-1'));
+  const breakdown = second.json.breakdown;
+
+  // Regression guard: the refresh must not re-anchor the span at the
+  // delta's first event (firstWriteMs went negative, exception-retry
+  // vanished when only the delta was parsed).
+  assert.equal(breakdown.metrics.firstWriteMs, 3000, 'firstWriteMs must stay anchored at the trace start');
+  assert.ok(breakdown.metrics.firstWriteMs >= 0);
+  assert.equal(breakdown.categoryMs['exception-retry'], firstExceptionMs, 'error intervals must not shrink on refresh');
+  assert.equal(breakdown.categoryMs.test, 5000);
+  assert.equal(breakdown.steps.length, 3);
+});
+
+test('a failed message seals partial-interrupted with a bounded span (AC5)', async (t) => {
+  const { store, conversation, handler, tempDir } = createFixture(t, 'failed');
+  const sessionPath = writeSession(tempDir, 's8.jsonl', [
+    assistantLine(BASE + 1_000, [{ id: 'c1', name: 'bash', arguments: { command: 'npm test' } }]),
+    toolResultLine(BASE + 30_000, 'c1', 'bash', '# pass 1\n# fail 0'),
+  ]);
+  const taskId = 'task-failed-1';
+
+  createTaskRow(store, { taskId, sessionPath });
+  createAssistantMessage(store, conversation.id, 'msg-1', {
+    taskId,
+    status: 'failed',
+    createdAt: '2026-10-20T10:00:35.000Z',
+  });
+
+  const response = await invoke(handler, breakdownUrl(conversation.id, 'msg-1'));
+  const breakdown = response.json.breakdown;
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(breakdown.status, 'partial-interrupted', 'a failed turn must be honestly annotated, not live forever');
+  assert.equal(breakdown.categoryMs.test, 29_000);
+  // Span seals at message finalization (+35s), not at "now" — thinking is
+  // bounded to 5s no matter when the view is opened.
+  assert.equal(breakdown.categoryMs.thinking, 5000);
+
+  // Terminal status → cached path serves the same sealed numbers.
+  const cached = await invoke(handler, breakdownUrl(conversation.id, 'msg-1'));
+
+  assert.equal(cached.json.breakdown.status, 'partial-interrupted');
+  assert.equal(cached.json.breakdown.categoryMs.thinking, 5000);
+});

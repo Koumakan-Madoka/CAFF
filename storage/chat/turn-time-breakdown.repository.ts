@@ -177,13 +177,15 @@ export class TurnTimeBreakdownRepository {
     return this.getStepStatement.get(String(taskId || ''), String(stepKey || '')) || null;
   }
 
-  // Steps awaiting (or worth retrying) JEV resolution. payload_json carries
-  // their classifier input so a retry needs no session re-parse.
+  // Steps awaiting (or worth retrying) JEV resolution: timeout/error (§6
+  // retry semantics) plus orphaned `pending` rows whose async resolution
+  // never landed (e.g. process restart) — payload_json carries their
+  // classifier input so the retry needs no session re-parse.
   listJevRetrySteps(taskId: any) {
     return this.db.prepare(`
       SELECT *
       FROM chat_turn_time_steps
-      WHERE task_id = ? AND jev_status IN ('timeout', 'error')
+      WHERE task_id = ? AND jev_status IN ('pending', 'timeout', 'error')
       ORDER BY started_at ASC, id ASC
     `).all(String(taskId || ''));
   }

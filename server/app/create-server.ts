@@ -39,7 +39,7 @@ const {
   MAX_IMAGE_WIDTH,
 } = require('../../lib/image-constants');
 const { resolveToolRelativePath } = require('../http/path-utils');
-const { HOST, PORT, ROOT_DIR, TYPESAFE_API_KEY, TYPESAFE_BASE_URL, TYPESAFE_MODEL, TYPESAFE_MAX_REQUESTS, TYPESAFE_TOKEN_BUDGET } = require('./config');
+const { HOST, PORT, ROOT_DIR, TYPESAFE_ENABLED, TYPESAFE_API_KEY, TYPESAFE_BASE_URL, TYPESAFE_MODEL, TYPESAFE_MAX_REQUESTS, TYPESAFE_TOKEN_BUDGET } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
 const { createTurnTimeBreakdownPipeline } = require('../domain/runtime/turn-time-breakdown-pipeline');
 const { createTypeSafeClient } = require('../domain/integrations/typesafe/typesafe-client');
@@ -664,6 +664,14 @@ export function createServerApp(options: any = {}) {
   const turnTimeBreakdownPipeline = createTurnTimeBreakdownPipeline({
     repository: store.turnTimeBreakdownRepository,
     resolveJevEnabled(context: any) {
+      // §6: the repo-wide master switch gates first — the same convention
+      // as `jev_ask` (agent-tool-bridge). A project switch must never send
+      // unredacted v1 payloads while TYPESAFE_ENABLED is off, even if a
+      // stale TYPESAFE_API_KEY is present in the environment.
+      if (!TYPESAFE_ENABLED) {
+        return false;
+      }
+
       // Per-project switch `timeBreakdown.jevEnabled`, default false
       // (contract §6, open question q-jev-config).
       try {
@@ -684,6 +692,11 @@ export function createServerApp(options: any = {}) {
     createJevClient() {
       // §6: dedicated client instance with its own process-local budget —
       // classification volume must not consume the bridge client's budget.
+      // Gated on the repo-wide master switch + key, same as `jev_ask`.
+      if (!TYPESAFE_ENABLED || !TYPESAFE_API_KEY) {
+        return null;
+      }
+
       return createTypeSafeClient({
         apiKey: TYPESAFE_API_KEY,
         baseUrl: TYPESAFE_BASE_URL || undefined,

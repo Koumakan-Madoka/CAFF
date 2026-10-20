@@ -247,13 +247,18 @@ above) are opaque to rules → JEV fallback with command + output.
   that shape. Both are fault-tolerant: a throwing `get` behaves as a miss,
   a throwing `set` is swallowed — classification never rejects into the
   turn path because of the cache.
-- Switch: JEV runs only when `TYPESAFE_API_KEY` is configured **and** the
-  per-project config `timeBreakdown.jevEnabled` (system service config
-  store) is true; default **false** → rules only (open question
-  `q-jev-config`: wiring waits for credential/config confirmation). When
-  disabled the classifier does not even read the cache — "rules only"
-  means exactly that; do not "fix" this later, it would change the switch
-  semantics.
+- Switch: JEV runs only when the repo-wide master switch
+  `TYPESAFE_ENABLED=true` (same convention as `jev_ask` in
+  `agent-tool-bridge.ts`), **and** `TYPESAFE_API_KEY` is configured,
+  **and** the per-project config `timeBreakdown.jevEnabled` (system
+  service config store) is true; default **false** → rules only (open
+  question `q-jev-config`: wiring waits for credential/config
+  confirmation). The master switch gates both client construction and
+  `resolveJevEnabled`, so a project switch can never send unredacted v1
+  payloads while the global capability is off, even with a stale key in
+  the environment. When disabled the classifier does not even read the
+  cache — "rules only" means exactly that; do not "fix" this later, it
+  would change the switch semantics.
 - Failure/timeout/disabled: step stored as `unclassified` with
   `jevStatus = 'ok' | 'timeout' | 'error' | 'disabled' | 'low-confidence'
   | 'pending'`; never blocks, never throws into the turn path. `pending`
@@ -298,8 +303,8 @@ CREATE TABLE IF NOT EXISTS chat_turn_time_summaries (
   turn_ended_at TEXT,
   category_ms_json TEXT NOT NULL,   -- {category: ms} after §3 attribution
   metrics_json TEXT NOT NULL,       -- firstWriteMs, sessionReused(+Reason), fullRunCount, fullRunFailCount
-  parse_offset INTEGER,             -- JSONL byte offset for incremental re-parse
-  assistant_count INTEGER,          -- cumulative assistant rows seen; the §4 slice boundary must not reset across passes
+  parse_offset INTEGER,             -- last parsed JSONL byte offset (bookkeeping; §9 re-parses the full slice)
+  assistant_count INTEGER,          -- cumulative assistant rows seen (bookkeeping; the §9 re-parse is a full slice pass)
   computed_at TEXT NOT NULL
 );
 
@@ -321,14 +326,25 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   toolName, args, result, isError, startedAt, endedAt}` onto an in-process
   async queue; `tryAppendInvocationEvent` in `agent-tool-bridge.ts` remains
   the secondary hook for CAFF-native bridge tools absent from the pi
-  stream. The turn path **never awaits** classification; the queue timer is
-  `unref`'d and must never keep the process alive (same contract as the
-  observability sampler).
-- Summary lifecycle: the first classified step of a task inserts the
-  `chat_turn_time_summaries` row with `status = 'live'`; every subsequent
-  step updates it incrementally, so an in-progress turn is refreshable
-  (AC1). Task completion flips it to `complete`; a missing terminal event
-  yields `partial-interrupted` and the panel says so.
+  stream. The first pi event of a turn enqueues a **turn-start marker**
+  anchoring the span at the trace's first event (the first tool step can
+  start well after it — model thinking); `auto_retry_start` enqueues a
+  §2(b) error event (interval = previous trace event end → retry
+  timestamp). The turn path **never awaits** classification; the queue
+  timer is `unref`'d and must never keep the process alive (same contract
+  as the observability sampler).
+- Summary lifecycle: the first classified step (or the turn-start marker)
+  of a task inserts the `chat_turn_time_summaries` row with
+  `status = 'live'`; every subsequent step updates it incrementally, so an
+  in-progress turn is refreshable (AC1). Task completion flips it to
+  `complete`. **Failure and cancellation seal too**: the executor's catch
+  path calls `completeTask` with `status = 'partial-interrupted'` and
+  `endedAtMs = stage.endedAt` — otherwise the summary would stay `live`
+  forever with thinking growing without bound (AC5). A watchdog
+  (`progress_timeout` family) failure additionally enqueues a §2(b) error
+  event at the stage end so the no-progress tail counts as
+  exception-retry, not thinking. A missing terminal event yields
+  `partial-interrupted` and the panel says so.
 - Worker: rule-classify → upsert `chat_turn_time_steps`; JEV-needed steps
   are stored `unclassified` + pending, then resolved asynchronously and
   updated in place.
@@ -340,19 +356,27 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 
 - `GET /api/conversations/:conversationId/messages/:messageId/time-breakdown`
   → `{ status, categoryMs, metrics, steps[] , computedAt }`.
-- Fresh summary row (terminal status) → return as-is (cached path target:
-  < 2 s). A `live` row is returned after an incremental catch-up parse
-  from `parse_offset`/`assistant_count` — cheap, and it repairs queue-drop
-  gaps (§8) on every click during an active turn.
-- No/stale row → locate `message → task → session_path +
-  sessionAssistantStartIndex`, parse the JSONL from `parse_offset` with the
-  §4 step parser (assistant `tool_call` starts joined to `toolResult`
-  ends), classify
+- Fresh summary row (terminal status: `complete`, `partial-truncated`,
+  `partial-interrupted`) → return as-is (cached path target: < 2 s).
+- No row or a `live` row → locate `message → task → session_path +
+  sessionAssistantStartIndex`, **re-parse the turn slice from offset 0**
+  with the §4 step parser (assistant `tool_call` starts joined to
+  `toolResult` ends). A full reparse — not an incremental delta — because
+  a delta cannot reproduce the turn start or the §2(b) error events that
+  earlier passes already consumed (measured ~38 ms for a 17.87 MB
+  session, far inside the AC5 budget); every refresh therefore sees the
+  same authoritative span, `firstWriteMs`, and error intervals. Classify
   with **rules + JEV cache only** (fresh JEV calls are excluded from the
   synchronous backfill so multi-MB logs finish < 10 s; pending steps are
   marked and resolved asynchronously), upsert rows, return. Steps already
   resolved by JEV keep their category — backfill only refreshes their
   timing; rows already classified `jev`/`jev-cache` are never re-ruled.
+  Rows already `pending`/`timeout`/`error` are refreshed but never
+  re-enqueued by the parse loop; the retry list below owns them.
+- Async JEV retry per click: `pending`/`timeout`/`error` rows with a
+  `payload_json` are re-offered to the pipeline (deduped by step key,
+  capped at 64 per click) after the response is assembled — the cap
+  bounds budget burn when JEV is down and the view keeps refreshing.
 - Corrupt JSONL lines are skipped and flip status to `partial-truncated`;
   an unterminated in-flight tail (normal mid-turn) is excluded from the
   offset but never flips status. No full historical backfill — only on
@@ -384,9 +408,11 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 | classification worker throws | logged, turn path never sees it |
 | queue overflow | step events kept in `a2a_task_events`; classification dropped + counted; lazy backfill repairs |
 | cached summary read | API < 2 s |
-| multi-MB JSONL lazy backfill | < 10 s excluding JEV waits; `partial-*` flags honest |
+| multi-MB JSONL lazy backfill | full slice re-parse < 10 s excluding JEV waits; `partial-*` flags honest |
+| failed / cancelled turn | sealed `partial-interrupted` at stage end by the executor catch path; watchdog tail counted as exception-retry; thinking bounded (AC5) |
 | interrupted turn (no terminal event) | `partial-interrupted`, panel annotates |
 | JEV off (default) | rules only; no `TYPESAFE_API_KEY` access attempted |
+| project JEV switch on but `TYPESAFE_ENABLED` off | rules only; client never constructed; no payload leaves the process |
 
 ### 12. Tests Required
 

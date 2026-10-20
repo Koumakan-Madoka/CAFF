@@ -1,10 +1,12 @@
 // Turn time breakdown — §9 read path and lazy backfill. The API returns a
 // stored summary when it is terminal (cached path); a missing or `live`
-// summary is (re)computed from the session JSONL incrementally
-// (parse_offset), classified with rules + the JEV cache ONLY inside the
-// synchronous path (fresh JEV calls are excluded so multi-MB logs finish
-// within the AC5 budget), and pending steps resolve asynchronously via the
-// pipeline afterwards.
+// summary is recomputed from the session JSONL with a full reparse of the
+// turn slice (assistantStartIndex) — measured ~38 ms for a 17.87 MB
+// session, far inside the AC5 budget, and the only way to keep the turn
+// span and §2(b) error events identical across refreshes. Classification
+// uses rules + the JEV cache ONLY inside the synchronous path (fresh JEV
+// calls are excluded so multi-MB logs finish within the AC5 budget), and
+// pending steps resolve asynchronously via the pipeline afterwards.
 
 import { computeTurnAttribution } from './turn-time-breakdown-attribution';
 import {
@@ -13,6 +15,10 @@ import {
   parseSessionTurnSteps,
 } from './turn-time-breakdown';
 import { jevCacheKey, truncateStepOutput } from './turn-time-breakdown-jev';
+
+// Per-click cap on async JEV retries (§9): bounds budget burn when JEV is
+// down and the user keeps refreshing a live view.
+const MAX_JEV_RETRIES_PER_CLICK = 64;
 
 function fromIso(value: any) {
   const parsed = Date.parse(String(value || ''));
@@ -191,11 +197,15 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
     return assembleResponse(summary, repository.listSteps(slice.taskId), message);
   }
 
+  // §9: the synchronous read path re-parses the turn slice from offset 0
+  // (measured ~38 ms for a 17.87 MB session — far inside the AC5 budget).
+  // An incremental delta cannot reproduce the turn start or the §2(b)
+  // error events that earlier passes already consumed, which skewed
+  // turnStartedAt/firstWriteMs/exception-retry on every live refresh; a
+  // full reparse keeps every refresh on the same authoritative span.
   const parsed = slice.sessionPath
     ? parseSessionTurnSteps(slice.sessionPath, agentDir, {
         assistantStartIndex: slice.assistantStartIndex,
-        fromOffset: summary && Number.isSafeInteger(summary.parseOffset) ? summary.parseOffset : 0,
-        assistantCountBase: summary && Number.isSafeInteger(summary.assistantCount) ? summary.assistantCount : 0,
       })
     : null;
 
@@ -209,6 +219,7 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
     ? pipeline.isJevEnabled(jevContext)
     : false;
   const pendingForAsync: any[] = [];
+  const pendingKeys = new Set<string>();
 
   if (parsed) {
     // Rebuild the rule classifier's cold-start state from steps stored by
@@ -291,6 +302,32 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
         continue;
       }
 
+      if (
+        existingRow
+        && existingRow.category === 'unclassified'
+        && (existingRow.jev_status === 'pending' || existingRow.jev_status === 'timeout' || existingRow.jev_status === 'error')
+      ) {
+        // Already queued for async JEV (pipeline in flight, or covered by
+        // the retry list below): refresh timing only, never push a second
+        // ask for the same step on every refresh click.
+        repository.upsertStep({
+          ...baseRow,
+          stepKey,
+          category: 'unclassified',
+          subcategory: null,
+          classifiedBy: 'unclassified',
+          jevStatus: jevEnabled ? existingRow.jev_status : 'disabled',
+          confidence: null,
+          runKind: null,
+          runFailed: null,
+          payloadJson: existingRow.payload_json || JSON.stringify({
+            args: step.args !== undefined ? step.args : null,
+            output: truncateStepOutput(step.output),
+          }),
+        });
+        continue;
+      }
+
       const classified = classifier.classify({
         toolName: step.toolName,
         args: step.args,
@@ -357,14 +394,23 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
 
       if (jevEnabled) {
         pendingForAsync.push({ stepKey, step });
+        pendingKeys.add(stepKey);
       }
     }
   }
 
-  // §6: a later pass may reclassify timeout/error steps via cache or a fresh
-  // call — payload_json makes the retry reproducible without a re-parse.
+  // §6: a later pass may reclassify pending/timeout/error steps via cache or
+  // a fresh call — payload_json makes the retry reproducible without a
+  // re-parse. Capped per click so a JEV outage plus repeated refreshes
+  // cannot burn through the dedicated client's process-local budget.
   if (jevEnabled) {
-    for (const row of repository.listJevRetrySteps(slice.taskId)) {
+    const retryRows = repository.listJevRetrySteps(slice.taskId).slice(0, MAX_JEV_RETRIES_PER_CLICK);
+
+    for (const row of retryRows) {
+      if (pendingKeys.has(row.step_key)) {
+        continue;
+      }
+
       const payload = safeJsonParse(row.payload_json);
 
       if (!payload) {
@@ -386,6 +432,7 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
           durationMs: row.duration_ms,
         },
       });
+      pendingKeys.add(row.step_key);
     }
   }
 
@@ -393,14 +440,22 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
     .listSteps(slice.taskId)
     .filter((row: any) => row.ended_at === null || row.ended_at === undefined)
     .length;
-  const messageCompleted = String(message.status || '') === 'completed';
+  const messageStatus = String(message.status || '');
+  const messageCompleted = messageStatus === 'completed';
+  // A failed/cancelled message is terminal too (AC5): seal it
+  // `partial-interrupted` instead of leaving the summary `live` forever
+  // with thinking growing without bound.
+  const messageFailed = messageStatus === 'failed';
+  const messageTerminal = messageCompleted || messageFailed;
   const status = parsed && parsed.truncated
     ? 'partial-truncated'
     : messageCompleted
       ? openStepCount > 0
         ? 'partial-interrupted'
         : 'complete'
-      : (summary && summary.status) || 'live';
+      : messageFailed
+        ? 'partial-interrupted'
+        : (summary && summary.status) || 'live';
   // §2: session reuse comes straight from the authoritative message
   // metadata; history messages lacking the fields simply omit them (the
   // panel renders 无记录, never a guess).
@@ -414,16 +469,16 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
     reuseMetrics.sessionReuseReason = String(messageMetadata.sessionReuseReason);
   }
 
-  // Turn span end: a completed turn seals at message finalization (so the
+  // Turn span end: a terminal turn seals at message finalization (so the
   // last model generation counts as thinking); a live turn accounts to now.
-  const messageEndMs = messageCompleted
+  const messageEndMs = messageTerminal
     ? fromIso(message.updatedAt) || fromIso(message.createdAt)
     : null;
   const stepEnds = repository
     .listSteps(slice.taskId)
     .map((row: any) => fromIso(row.ended_at))
     .filter((value: any) => value !== null);
-  const derivedTurnEndMs = messageCompleted
+  const derivedTurnEndMs = messageTerminal
     ? Math.max(messageEndMs || 0, ...stepEnds, 0) || null
     : nowMs;
 
