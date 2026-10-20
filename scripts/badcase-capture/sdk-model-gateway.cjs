@@ -179,4 +179,27 @@ async function startSdkModelGateway(input, send) {
     declaration: { ...JSON.parse(JSON.stringify(MAPPING)), mappingHash: hash(JSON.stringify(MAPPING)), settingsHash: reviewed.settingsHash },
     status: () => ({ requests, busy, failed, stopped }), stop };
 }
-module.exports = { startSdkModelGateway };
+// Explicit models.json input for a NEW isolated validation runtime, not a
+// patcher for captured configs or a way to change a production/global provider.
+// Caller owns the private agentDir, env injection and approval/code binding.
+// Nothing is written here. The returned environment MUST NOT enter archives/logs.
+function sdkGatewayModelRouting(input, gateway) {
+  const p = toolChatCompletionsSettings(input), s = p.settings;
+  check(s.compatibilityProfile && s.provider === 'opencode-go' && s.model === 'deepseek-v4.1-flash');
+  check(gateway?.declaration?.kind === MAPPING.kind && gateway.declaration.settingsHash === p.settingsHash);
+  const match = typeof gateway.baseUrl === 'string' && /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/v1$/.exec(gateway.baseUrl);
+  check(match && Number(match[1]) <= 65535 && typeof gateway.apiKey === 'string' && /^[a-f0-9]{64}$/.test(gateway.apiKey));
+  const provider = { api: 'openai-completions', baseUrl: gateway.baseUrl, apiKey: '$CAFF_SDK_MODEL_GATEWAY_KEY',
+    compat: { supportsStore: true, supportsDeveloperRole: false, supportsReasoningEffort: false,
+      supportsUsageInStreaming: true, supportsStrictMode: false, supportsOpenAIGrammarTools: false,
+      maxTokensField: 'max_completion_tokens', thinkingFormat: 'deepseek' },
+    models: [{ id: s.model, name: s.model, reasoning: true,
+      thinkingLevelMap: { off: 'none', minimal: null, low: null, medium: null, high: null, xhigh: null, max: null },
+      input: ['text'], contextWindow: s.contextWindowTokens, maxTokens: s.maxOutputTokens,
+      // Declared tariffs only, NOT measured provider billing or invented discount.
+      cost: { input: s.inputMicroUsdPerMillionTokens / 1e6, output: s.outputMicroUsdPerMillionTokens / 1e6,
+        cacheRead: s.inputMicroUsdPerMillionTokens / 1e6, cacheWrite: 0 },
+      samplingParams: { temperature: s.temperature, n: 1, store: false, parallel_tool_calls: false, tool_choice: 'auto' } }] };
+  return { models: { providers: { [s.provider]: provider } }, environment: { CAFF_SDK_MODEL_GATEWAY_KEY: gateway.apiKey } };
+}
+module.exports = { startSdkModelGateway, sdkGatewayModelRouting };

@@ -62,6 +62,15 @@ test('binding hash commits all endpoint/settings/rate/cap fields, stable order, 
   for (const other of [{ ...c, extra: 1 }, { ...c, maxRequests: 0 }, { ...c, maxRequests: 1001 }, { ...c, endpoint: { ...c.endpoint, maxRequestBytes: 4095 } }]) assert.throws(() => modelBinding(other), rejected);
 });
 
+test('ordinary CAFF-sized tool definitions persist in the existing approval record without raising its cap', t => {
+  const c = config(); c.settings.maxRequestBytes = 32768; c.endpoint.maxRequestBytes = 32768;
+  c.tools = [{ type: 'function', function: { name: 'read', description: 'x'.repeat(10085), parameters: { type: 'object' } } }];
+  const f = fixture(t, c), saved = approve(f);
+  assert.equal(saved.binding.config.tools[0].function.description, c.tools[0].function.description);
+  assert.equal(readBoundModelApproval(f.root, f.approval.approvalId).binding.settingsHash, saved.binding.settingsHash);
+  assert.ok(fs.statSync(f.archive).size < 16384);
+});
+
 test('OpenCode profile is approval-bound and propagates stable per-run sessions through both budget ledgers', async t => {
   const c = config(); c.settings.provider = 'opencode-go';
   Object.assign(c.endpoint, { hostname: 'opencode.ai', path: '/zen/go/v1/chat/completions', clientProfile: 'opencode-go-v1' });

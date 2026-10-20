@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { startSdkModelGateway } = require('../../scripts/badcase-capture/sdk-model-gateway.cjs');
+const { startSdkModelGateway, sdkGatewayModelRouting } = require('../../scripts/badcase-capture/sdk-model-gateway.cjs');
 const protocol = require('../../build/server/domain/runtime/badcase-capture/chat-completions-protocol');
 const { dispatchToolChatCompletions } = protocol;
 const { readModelEgress } = require('../../build/server/domain/runtime/badcase-capture/model-egress');
@@ -77,6 +77,29 @@ test('buffered SDK HTTP gateway preserves text, definitions, serial tool history
   assert.ok(!JSON.stringify(g.declaration).includes(g.apiKey));
   const capped = await send(g); assert.equal(capped.status, 503); assert.equal(n, 2);
   await g.stop(); await assert.rejects(send(g));
+});
+
+test('native SDK routing keeps model identity and declared costs, with a local-only environment identity instead of supplier auth', async t => {
+  const g = await fixture(t, async () => Buffer.from(JSON.stringify(reply())));
+  const p = profile(), routing = sdkGatewayModelRouting(p, g), provider = routing.models.providers[p.settings.provider];
+  assert.equal(provider.api, 'openai-completions'); assert.equal(provider.baseUrl, g.baseUrl);
+  assert.equal(provider.apiKey, '$CAFF_SDK_MODEL_GATEWAY_KEY');
+  assert.equal(routing.environment.CAFF_SDK_MODEL_GATEWAY_KEY, g.apiKey);
+  assert.ok(!JSON.stringify(routing.models).includes(g.apiKey));
+  const model = provider.models[0]; assert.equal(model.id, p.settings.model); assert.deepEqual(model.input, ['text']);
+  assert.equal(model.contextWindow, p.settings.contextWindowTokens); assert.equal(model.maxTokens, p.settings.maxOutputTokens);
+  assert.deepEqual(model.cost, { input: 1, output: 2, cacheRead: 1, cacheWrite: 0 });
+  assert.equal(model.reasoning, true); assert.equal(provider.compat.thinkingFormat, 'deepseek');
+  assert.equal(provider.compat.supportsDeveloperRole, false); assert.equal(provider.compat.supportsStrictMode, false);
+  assert.equal(provider.compat.maxTokensField, 'max_completion_tokens');
+  assert.deepEqual(model.samplingParams, { temperature: 0, n: 1, store: false, parallel_tool_calls: false, tool_choice: 'auto' });
+  const changed = profile(); changed.tools[0].function.description += ' changed';
+  assert.throws(() => sdkGatewayModelRouting(changed, g));
+  for (const patch of [{ baseUrl: 'https://production.example/v1' }, { baseUrl: g.baseUrl + '/other' }, { apiKey: 'bad identity' }]) {
+    assert.throws(() => sdkGatewayModelRouting(p, { ...g, ...patch }));
+  }
+  const plain = profile(); delete plain.settings.compatibilityProfile;
+  assert.throws(() => sdkGatewayModelRouting(plain, g));
 });
 
 test('unknown settings, changed tool definitions, nonempty reasoning and unsupported content fail before any send; no retry', async t => {

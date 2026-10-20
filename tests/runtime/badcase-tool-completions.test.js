@@ -40,12 +40,22 @@ test('explicit tool profile binds complete definitions with distinct hash; legac
 test('tool registry rejects empty/duplicate/unknown/oversized/deep/ref/secret declarations', () => {
   for (const change of [c => c.tools = [], c => c.tools.push(c.tools[0]), c => c.tools = Array.from({ length: 17 }, (_, i) => ({ type: 'function', function: { ...c.tools[0].function, name: 'tool' + i } })),
     c => c.tools[0].type = 'custom', c => c.tools[0].function.name = '../bad', c => c.tools[0].function.extra = true,
-    c => c.tools[0].function.description = 'x'.repeat(8192), c => c.tools[0].function.description = 'sk-' + 'a'.repeat(32),
+    c => c.tools[0].function.description = 'x'.repeat(16384), c => c.tools[0].function.description = 'sk-' + 'a'.repeat(32),
     c => c.tools[0].function.parameters.$ref = 'https://example.test/schema', c => c.tools[0].function.parameters = [],
     c => { let p = c.tools[0].function.parameters; for (let i = 0; i < 20; i++) p = p.nested = {}; },
     c => c.tools[0].function.parameters.values = Array(2050).fill(0), c => c.extra = true]) {
     const c = config(); change(c); assert.throws(() => api.toolChatCompletionsSettings(c), invalid);
   }
+});
+
+test('ordinary CAFF-sized reviewed tool declarations fit without truncating schemas or descriptions', () => {
+  const c = config(); c.settings.maxRequestBytes = 32768;
+  c.tools[0].function.description = 'Complete reviewed tool description. ' + 'x'.repeat(10000);
+  const p = api.toolChatCompletionsSettings(c), raw = api.encodeToolChatCompletionsRequest(c, messages());
+  assert.ok(Buffer.byteLength(JSON.stringify(p.tools)) > 8192);
+  assert.equal(JSON.parse(raw).tools[0].function.description, c.tools[0].function.description);
+  const changed = structuredClone(c); changed.tools[0].function.description += '!';
+  assert.notEqual(api.toolChatCompletionsSettings(changed).settingsHash, p.settingsHash);
 });
 
 test('tool encoder preserves argument bytes and matching history, fixes definitions and serial execution', () => {

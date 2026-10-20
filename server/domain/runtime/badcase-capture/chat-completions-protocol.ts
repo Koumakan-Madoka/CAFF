@@ -74,7 +74,10 @@ export function toolChatCompletionsSettings(input: unknown) {
     if (!keys(v, ['settings', 'tools']) || !Array.isArray(v.tools) || v.tools.length < 1 || v.tools.length > 16) fail();
     const s = chatCompletionsSettings(v.settings), seen = new Set<string>();
     const tools = stableJson(v.tools);
-    if (Buffer.byteLength(JSON.stringify(tools)) > 8192 || containsSecretSentinel(JSON.stringify(tools))) fail();
+    // The full normal CAFF tool registry is ~10 KiB; never strip extension tools
+    // to fit the former 8 KiB diagnostic cap. Definitions remain hash-bound and
+    // below the existing structure/request/approval-record limits.
+    if (Buffer.byteLength(JSON.stringify(tools)) > 16384 || containsSecretSentinel(JSON.stringify(tools))) fail();
     for (const t of tools) {
       const f = t?.function;
       if (!keys(t, ['type', 'function']) || t.type !== 'function' || !keys(f, ['name', 'description', 'parameters'])
