@@ -203,7 +203,10 @@ above) are opaque to rules → JEV fallback with command + output.
   external client.
 - Trigger: rule classifier returned `null` (includes opaque wrapper
   scripts that actually run tests).
-- Request: one `choice` question, options = the §2 categories; state =
+- Request: one `choice` question for the category (options = the §2
+  step categories), plus a second `choice` for `runKind`
+  (full-regression / targeted / not-a-test, only meaningful when the
+  category answer is `test`) — a single API round trip; state =
   command + output. Output truncated **head 2000 + tail 2000 chars (4000
   max)** (resolves `q-fullrun`, part 2) to bound cost and latency; the
   client's own `maxStateChars`/`maxRequestChars` caps still apply.
@@ -217,9 +220,12 @@ above) are opaque to rules → JEV fallback with command + output.
   bridge's process-local budget.
 - Low confidence (< 0.6) or choice `unclassified` → `unclassified`, never a
   hard guess.
-- Cache: `sha256(toolName + argv[0] + flags-only(argv) + output
-  fingerprint)` → category, in `jev_classification_cache`; cache hits skip
-  the network entirely.
+- Cache: `sha256(toolName + argv[0] + first positional + flags-only(argv)
+  + output fingerprint)` → category, in `jev_classification_cache`; cache
+  hits skip the network entirely. The first positional (script path /
+  subcommand) is part of command identity so two different wrapper scripts
+  never share an entry; the output fingerprint is coarse (length bucket,
+  fail/pass fingerprint, exit status) so log churn still hits the cache.
 - Switch: JEV runs only when `TYPESAFE_API_KEY` is configured **and** the
   per-project config `timeBreakdown.jevEnabled` (system service config
   store) is true; default **false** → rules only (open question
