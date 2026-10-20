@@ -201,6 +201,53 @@ test('default GET and guard failures never scan or authorize', async t => {
   assert.equal(touches, 0);
 });
 
+test('server default capture service receives trusted private roots; Windows native preview retains them after caller mutation', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-capture-server-scope-'));
+  let app;
+  t.after(async () => {
+    if (app) await new Promise(resolve => app.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const target = path.join(root, 'worktree'), hidden = path.join(target, 'operator-private');
+  fs.mkdirSync(hidden, { recursive: true }); fs.writeFileSync(path.join(hidden, 'data'), 'PRIVATE_SENTINEL');
+  fs.writeFileSync(path.join(target, 'hello.txt'), 'hello');
+  const agentDir = path.join(root, 'agent'), captureRoot = path.join(root, 'capture');
+  const privateDirs = [hidden];
+  let service, received;
+  const filename = require.resolve('../../build/server/app/create-server');
+  const local = require('node:module').createRequire(filename), api = {};
+  require('node:vm').runInNewContext(fs.readFileSync(filename, 'utf8'), {
+    exports: api, process, Buffer, console, setInterval, clearInterval, setTimeout, clearTimeout,
+    require: id => id === '../domain/runtime/badcase-capture' ? {
+      createBadcaseCaptureService(options) {
+        received = options;
+        // Test storage isolation only; keep the app's default composition and
+        // real service/native reader. No replacement collector or fake result.
+        service = createBadcaseCaptureService({ ...options, captureRoot }); return service;
+      },
+    } : local(id),
+  }, { filename });
+  const { isolateExternalIntegrations } = require('../helpers/external-integrations');
+  const { withClearedRecoveryRuntimeEnvironment } = require('../helpers/recovery-runtime-env');
+  isolateExternalIntegrations();
+  app = withClearedRecoveryRuntimeEnvironment(() => api.createServerApp({ host: '127.0.0.1', port: 0,
+    agentDir, sqlitePath: path.join(agentDir, 'chat.sqlite'), uploadsDir: path.join(root, 'uploads'), projectDir: target,
+    badcaseCapturePrivateDirs: privateDirs }));
+  assert.deepEqual(received.privateDirs, privateDirs, 'default app must not discard operator-owned private roots');
+  assert.equal(received.agentDir, agentDir); assert.equal(received.chatStore, app.store);
+  privateDirs.length = 0;
+  const policy = service.savePolicy('scope', { authorizedDirs: [target], authorizedInputDirs: [] });
+  assert.equal(policy.status, 'disabled'); assert.equal(service.computeUsage('scope').totalBytes, 0);
+  if (process.platform === 'win32') {
+    service.authorizeProject('scope');
+    for (const result of [service.estimateDirectory('scope', target), await service.estimateDirectoryAsync('scope', target)]) {
+      assert.equal(result.ok, true, result.reason); assert.equal(result.totalBytes, 5); assert.equal(result.fileCount, 1);
+      assert.equal(result.captureAvailable, false); assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SENTINEL|operator-private/);
+    }
+    assert.equal(service.store.listCheckpoints('scope').length, 0);
+  }
+});
+
 test('Windows real HTTP native capacity preview protects configured private roots and never issues an enable receipt', { skip: process.platform !== 'win32' }, async t => {
   const h = setup(t);
   const hidden = path.join(h.target, 'custom-private'); fs.mkdirSync(hidden);

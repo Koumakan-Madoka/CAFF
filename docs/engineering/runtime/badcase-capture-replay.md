@@ -1374,6 +1374,15 @@ fixture改为执行生产编译resolver，跨平台测试仅替换显式path语�
 - 最终 `node --test tests/runtime/agent-executor-hook.test.js tests/runtime/session-reuse-ab.test.js tests/runtime/badcase-windows-turn-collector.test.js tests/runtime/badcase-windows-ignorecase.test.js` 为100通过/2平台跳过；`npm run test:fast` EXIT=0，2432项=2381通过/51跳过；`npm run test:smoke` 101/101，`npm run typecheck`（含public）及 diff检查通过。3个进程内变异（恢复旧Room根优先、删除活动规则守卫、先fold再核验原始规则）最终均为明确断言红，build字节hash不变，最终正常测试复绿。初版mutation hook只拦require而未覆盖VM直接读源码，导致1项未应用而存活；修正测试驱动后完整重跑，原记录保留，不计作有效红。日志/脚本在 ignored `.tmp/badcase-m1-actual-cwd/`。
 - 未重跑 Docker/真实SDK或模型，未启动/重启3267、未开启真实目录采集；没有将该原生fixture作为用户真实badcase或M1完成证据。Windows管理开启门、默认 `.git` 分类读取范围、全局/工作树 Git 环境及受信privateDirs接线仍须落实，之后才可做真实turn/两次恢复/首份与增量容量耗时。当前改动仍仅作者自验，提交后按关键目录风险交 DeepSeek 固定SHA独立审查；全部AC pending，不追加Goal中间证据，不合并发布。
 
+## M1 当前状态
+
+- 按 D20 继续 Goal 顺序交付。本节是 M1 唯一在后续原地覆盖的当前状态；§5.73–5.76 保留历史记录，不再新增 §5.x。`58acc8a` 的单独审查被用户取消，DeepSeek 调用被停止不是审查结论；它与本轮改动一并留到 M1 收尾固定 SHA 的全量检查/独立审查，不能记作独立 PASS。M1 与全部 AC 仍未完成。
+- 已补默认 app→采集服务的受信私有根接线：操作方在 `createServerApp` 构造参数 `badcaseCapturePrivateDirs` 提供额外保护根，默认服务传入原 `privateDirs`，既有 `agentDir` 及其全部 agent sandbox 保护不变。这不是项目设置、HTTP/agent 授权入口或自动发现私有目录；不把未列明的外部路径宣称为已保护。Windows 服务构造时同时固定 `PI_AGENT_SANDBOX_DIR` / `PI_AGENT_PRIVATE_DIR` 的原值，供发现、同步/异步预估及 turn collector 共用；调用方改数组、进程后来清除/改写这些变量不能移除启动保护。原 reader 的实时环境保护仍保留，新增根仍只能收窄范围；畸形配置仍交原校验拒绝。Linux 不消费该 Windows scope。
+- 回归先红后绿：旧 app 丢弃构造私有根（`received.privateDirs=undefined`）；旧服务未固定启动变量（VM scope 缺两个原根，真实 NTFS 元数据预估计入2个文件而非1个）。修正后，自建 Temp Windows 目录和 junction 经原授权/helper 的两种预估都只计普通文件5 B，私有文件不计；变量/调用方数组修改后仍成立，状态 disabled、0检查点、CAS统计占用0 B（不含策略/pin/helper文件）。本轮 app 测试仅在工厂包装层固定自建 captureRoot 以隔离存储，其余 app/store/service/原生 reader 为真；不启动监听、不提交 SDK prompt，不冒称浏览器 UI、真实 agent turn 或生产环境验证。首次 app 用例清理先删目录后关闭 SQLite 出现 EPERM，已改为先 `app.close` 再删除；两个失败运行的确切自建 Temp 根在进程退出后已清理，不清理其他环境。
+- 只对两份修改的 TS 文件调用 `typescript.transpileModule` 更新测试所需 ignored build，未跑全量 build/typecheck。定向命令：`node --test tests/runtime/badcase-windows-estimate.test.js tests/runtime/badcase-windows-git-discovery.test.js tests/runtime/badcase-windows-git-input.test.js tests/runtime/badcase-windows-session-input.test.js tests/runtime/badcase-windows-turn-collector.test.js tests/http/badcase-capture-controller.test.js`，86项=84通过/2平台跳过/0失败；另 `git diff --check` 通过。红首和最终日志在 ignored `.tmp/badcase-m1-actual-cwd/d20-*.log`。按 D20 未跑 fast/smoke/typecheck 全量、不做变异、不发中途审查、不追加 Goal 证据。
+- 剩余主路径：实际 Git 全局配置/ignore 与 worktreeConfig 的接受范围（不支持就阻断）、默认 `.git` 数据排除与必需分类读取的授权接线、Windows 管理开启门；之后才是独立实例里的用户授权→预估→单独开启、真实 turn 执行前检查点、两次恢复及首份/增量文件/session/镜像成本和耗时。3267 旧预览已到期，本轮未重启、未代写真实目录授权/开启、无模型/Docker运行；需要用户操作时一次列清，当前先完成不依赖点击的接线，不因这些未完成项宣称暂停或验收通过。
+- 原审查 P3 留存一行：`c7c9b583` 的大小写替换、全量分类源耦合、通用诊断、多根替换提示及守卫测试缺口按原 Room 审查保留（排除文档冲突已由 §5.75 限定）；E132/P3 与未审 `3df0334c` 仍属 M3/M5，不在本轮加固或追认。历史 FAIL/审查归属、$6 未结算非账单、用户最终接受与不合并发布不变。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |

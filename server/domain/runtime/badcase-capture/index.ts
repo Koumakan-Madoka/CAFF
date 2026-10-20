@@ -60,9 +60,15 @@ export function createBadcaseCaptureService(options: any = {}) {
   // One constructor-owned trusted Windows scope for preview AND collection.
   // Do not borrow mutable caller options across requests/awaits. Linux retains
   // its original path and does not consume Windows-only private-root settings.
-  const windowsScope = process.platform === 'win32'
-    ? { agentDir: options.agentDir, privateDirs: structuredClone(options.privateDirs === undefined ? [] : options.privateDirs) }
-    : null;
+  const windowsScope = process.platform === 'win32' ? (() => {
+    const privateDirs = structuredClone(options.privateDirs === undefined ? [] : options.privateDirs);
+    // Startup host boundaries must survive later process.env changes. Readers
+    // retain their live ambient guards too, so new boundaries can only narrow
+    // scope. Preserve invalid configuration for the existing fail-closed checks.
+    return { agentDir: options.agentDir, privateDirs: Array.isArray(privateDirs)
+      ? [...privateDirs, ...[process.env.PI_AGENT_SANDBOX_DIR, process.env.PI_AGENT_PRIVATE_DIR].filter(Boolean)]
+      : privateDirs };
+  })() : null;
   // No enable bypass: Windows estimate still advertises captureAvailable=false.
   // Selection is host-platform explicit, never a failed-Windows fallback to Linux.
   const turnCollector = windowsScope

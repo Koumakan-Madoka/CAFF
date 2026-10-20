@@ -163,39 +163,65 @@ function isolated(moduleName, { child, helper, disk, clock, timers, replace = s 
   return exports;
 }
 
+test('native preview keeps startup sandbox/private aliases excluded after ambient variables are restored', { skip: process.platform !== 'win32' }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-win-startup-private-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const target = path.join(root, 'worktree'), hidden = path.join(target, 'host-private'), alias = path.join(root, 'private-alias');
+  fs.mkdirSync(hidden, { recursive: true }); fs.writeFileSync(path.join(target, 'ordinary'), 'hello');
+  fs.writeFileSync(path.join(hidden, 'data'), 'PRIVATE_SENTINEL'); fs.symlinkSync(hidden, alias, 'junction');
+  t.after(() => { if (fs.existsSync(alias)) fs.rmdirSync(alias); });
+  for (const name of ['PI_AGENT_SANDBOX_DIR', 'PI_AGENT_PRIVATE_DIR']) {
+    const before = process.env[name]; let service;
+    try {
+      process.env[name] = alias;
+      service = createBadcaseCaptureService({ captureRoot: path.join(root, name) });
+    } finally { if (before === undefined) delete process.env[name]; else process.env[name] = before; }
+    service.savePolicy('p', { authorizedDirs: [target], authorizedInputDirs: [] }); service.authorizeProject('p');
+    for (const result of [service.estimateDirectory('p', target), await service.estimateDirectoryAsync('p', target)]) {
+      assert.equal(result.ok, true, result.reason); assert.equal(result.fileCount, 1); assert.equal(result.totalBytes, 5);
+      assert.equal(result.captureAvailable, false); assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SENTINEL|host-private/);
+    }
+    assert.equal(service.loadPolicy('p').status, 'disabled'); assert.equal(service.computeUsage('p').totalBytes, 0);
+  }
+});
+
 test('Windows facade latches one trusted scope for collector and both previews; Linux does not consume Windows-only scope', async t => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-winpreview-scope-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const filename = path.resolve(__dirname, '../../build/server/domain/runtime/badcase-capture/index.js');
   const local = require('node:module').createRequire(filename);
-  const load = (platform, deps) => {
+  const load = (platform, deps, env = {}) => {
     const api = {};
     require('node:vm').runInNewContext(fs.readFileSync(filename, 'utf8'), {
-      exports: api, structuredClone, process: { platform, env: {} },
+      exports: api, structuredClone, process: { platform, env },
       require: id => deps[id] || local(id),
     }, { filename });
     return api;
   };
   const seen = [];
   let release;
+  const env = { PI_AGENT_SANDBOX_DIR: 'C:/host-sandbox', PI_AGENT_PRIVATE_DIR: 'C:/host-private' };
   const api = load('win32', {
     './windows-turn-collector': { createWindowsTurnCollector: opts => {
       seen.push(['collector', opts]); return { captureTurnCheckpoint: () => ({ captured: false }) };
     } },
     './windows-estimate': { estimateWindowsDirectory: opts => { seen.push(['sync', opts]); return { ok: true }; },
       estimateWindowsDirectoryAsync: opts => { seen.push(['async', opts]); return new Promise(r => { release = () => r({ ok: true }); }); } },
-  });
+    './windows-git-discovery': { discoverWindowsGitDependencies: opts => { seen.push(['discovery', opts]); return { ok: true }; } },
+  }, env);
   const privateDirs = ['C:/private'];
   const options = { captureRoot: base, privateDirs, agentDir: 'C:/app' };
   const service = api.createBadcaseCaptureService(options);
   privateDirs[0] = 'C:/UNTRUSTED'; options.privateDirs = []; options.agentDir = 'C:/UNTRUSTED';
+  delete env.PI_AGENT_SANDBOX_DIR; env.PI_AGENT_PRIVATE_DIR = 'C:/changed-after-construction';
+  assert.equal((await service.discoverGitDependenciesAsync('p', 'C:/work')).ok, true);
   assert.equal(service.estimateDirectory('p', 'C:/work').ok, true);
   const pending = service.estimateDirectoryAsync('p', 'C:/work');
   privateDirs.push('C:/later'); options.agentDir = 'C:/later';
   release(); assert.equal((await pending).ok, true);
-  assert.deepEqual(seen.map(([name]) => name), ['collector', 'sync', 'async']);
+  assert.deepEqual(seen.map(([name]) => name), ['collector', 'discovery', 'sync', 'async']);
   for (const [, scope] of seen) {
-    assert.deepEqual(Array.from(scope.privateDirs || []), ['C:/private']);
+    assert.deepEqual(Array.from(scope.privateDirs || []), ['C:/private', 'C:/host-sandbox', 'C:/host-private']);
     assert.equal(scope.agentDir, 'C:/app');
   }
   assert.notEqual(seen[0][1].privateDirs, privateDirs, 'scope must not borrow caller array');
