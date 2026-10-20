@@ -1334,6 +1334,15 @@ fixture改为执行生产编译resolver，跨平台测试仅替换显式path语�
 - `controlledReplacementsApplied=true`只表示此七变量解释器和实际working-input检查已完成；`controlledInputs`仅绑定归一化名称/次数hash与计数，不含随机认证/URL/端口或有效明文。原invocationHash/sessionHash仍绑定带占位的映射后输入，可供变体对照；实际SDK的historyHash包含替换后上下文，可能随本地身份变化，**不能当作跨run归一化相等证据**。原模型哨兵、network none、固定镜像/native、零挂载/生产资源、资源/停止/关闭回执不放宽，所有launch/runnable/reproduced/evaluable/strict资格仍false，未提交prompt。
 - E132 P3回收：增加错误association回显负例、精确EEXIST/非recursive探针目录负例及真实Docker已有归档探针子树拒绝；相对CLI派生及使用如上。回调20秒自停与外层25秒观察预算及通用失败码的可诊断性限制保留，不声称硬25秒或已修复此项。冗余断言无须计作新缺陷。作者红首、变异/回归、实际Docker fresh/resume及缺模块负例以Goal为准，本改动尚无独立PASS，纳入下一重大里程碑审查。外置agentDir/附件、模型出口/普通turn提交与UI端到端仍未完成；Windows门关、全部AC pending、历史6美元未结算非账单、不合并发布。
 
+### 5.73 M1 Windows 隔离管理实例（尚未授权采集）
+
+- Goal revision 369 恢复后按 M1→M5 顺序执行。本轮先启动真实管理实例，不继续扩展合成 replay 探针，不修改采集实现；中间操作记录放本段，不新增 Goal 证据或更改任何 AC 状态。
+- 运行代码固定为 `3df0334c6d80d9e24b183d4f355ab04b4dd1ab21`，来源为本 Room 的 `room/bbfe286c-kimi-https-arxiv-org-pdf-260` worktree；`npm run build` EXIT=0。原 `createServerApp` 绑定 `127.0.0.1:3267`，未访问/重启3100或其他 Room 实例。独立运行根为 GPT 自有 private 存储中的 `m1-isolated-20261020/`：DB=`preview.sqlite`，agent/config/session=`agent/`，采集存储=`capture/`，上传=`uploads/`，日志=`logs/`，HOME、USERPROFILE、AppData、Temp也分别指向该新运行根。启动前探测3267空闲，bind失败只退出，不终止任何未知进程；探测不是端口租约。
+- 子进程环境仅继承 Windows 基本运行变量（PATH/PATHEXT/SystemRoot/windir/ComSpec/SystemDrive/CPU信息），其余使用本实例显式路径；未继承原 CAFF/PI 认证、供应商 Key、代理、Feishu或 TypeSafe配置，未复制既有认证文件或模型配置。此进程仍信任宿主及 PATH，不是 Docker 沙箱；不能据此替代 M3 的整体容器隔离。实例设置两小时自动关闭，只保存自有PID与非秘密启动信息，不自动重启；过期需重新核验后显式启动。
+- 同实例 HTTP 核验：`GET /`=200（41,441字节），`GET /api/health`=200，`core.ready=true`、`chat.ready=false`、总 `ok=false`（空白配置、没有就绪默认角色，不能说聊天已可用）；Feishu `configured=false`。bootstrap中0个会话，独立项目指向本 Room worktree。采集状态 `disabled`，文件/输入授权均空、公共上下文授权false；真实管理 `POST estimate {}` 精确返回409/`badcase_capture_not_authorized`，未发送authorize/enable、未生成检查点。库存blob数及各类占用均0。bootstrap CSRF只在内存用于该拒绝检查，未写日志/对话/归档。
+- 原始操作材料（启动脚本、build/stdout/stderr、非秘密启动/库存核验）留在上述自有 ignored/private 运行根，不进Git；本段不是浏览器UI验收或独立审查，未运行回归测试、SDK agent或付费模型。`3df0334c`仍只有作者自验，原审查归属及FAIL不变。
+- 后续主路径仍须用户独立显式授权验证worktree及必要的外置Git/session根，不能把Goal恢复当作目录授权或代用户调用authorize。当前Windows预估仍 `captureAvailable=false`，不发enable receipt；实际Git全局ignore/worktreeConfig与受信privateDirs等支持边界也未被本次启动解决。M1的开启门、真实turn执行前检查点、两次恢复、首份/增量容量及耗时仍未完成；全部AC pending，未合并/发布。
+
 ## 6. 威胁模型
 
 | 威胁 | 后果 | 契约缓解 |
