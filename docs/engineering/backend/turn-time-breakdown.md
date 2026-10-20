@@ -9,8 +9,10 @@
   (`public/chat/message-timeline.js`, trace toggle area), showing where the
   wall-clock time of that single turn (one trace) went.
 - Applies when changes touch `server/domain/runtime/turn-time-breakdown.ts`
-  (new), the `tryAppendInvocationEvent` hook in
-  `server/domain/runtime/agent-tool-bridge.ts`, the time-breakdown API
+  (new), the pi-event classification hook in
+  `server/domain/conversation/turn/agent-executor.ts` (and the event
+  surfacing in `lib/pi-runtime.ts`), the secondary `tryAppendInvocationEvent`
+  hook in `server/domain/runtime/agent-tool-bridge.ts`, the time-breakdown API
   controller, the migration additions in `storage/sqlite/migrations.ts`, or
   the breakdown button/panel in `public/chat/message-timeline.js`.
 - In scope: single-trace observability only. Out of scope (goal non-goals):
@@ -31,37 +33,66 @@ exactly one category (分类口径, committed decision `categories-v1`):
 | `build-check` (构建与检查) | — | `tsc`, `npm run build`, `npm run typecheck`, `npm run check`, `node --check` chains, linters. Not tests. |
 | `process-report` (流程与汇报) | — | CAFF bridge tooling: `update-goal`, `suggest-goal`, `propose-plan`, `send-public`, `create-delegation`, `await-delegation`, `conversation_notify/request` (agent-chat-tools commands). |
 | `thinking` (模型思考) | — | Wall-clock intervals inside the turn span with no tool execution running. Includes model generation and harness overhead; v1 cannot split further (documented, accepted). |
-| `exception-retry` (异常与重试) | — | Steps whose failure carries no semantic work: tool invocation errors, model call errors, bridge errors, timeouts before execution, and exact-duplicate retries after such infra failures. A failed *test run* stays in `test` (failure is signal); a failed *edit* stays in `write`. |
+| `exception-retry` (异常与重试) | — | Two disjoint time sources: (a) tool steps that failed **before any semantic execution** (tool invocation errors, missing results, bridge errors) — the step never did read/write/test work, so no semantic category applies; (b) model-side error intervals: assistant messages with `stopReason = 'error'`, and pi-runtime watchdog/progress-timeout intervals. A failed *test run* stays in `test` (failure is signal); a failed *edit* that executed stays in `write`. |
 | `unclassified` (未分类) | — | Rule classifier returned nothing and JEV was disabled, low-confidence, timed out, or errored. Never a hard guess. |
 
-Turn-level metrics (also committed): `firstWriteMs` (turn start → first
-repo-file mutation), `sessionReused` + `sessionReuseReason`,
-`fullRunCount`, `fullRunFailCount`.
+Turn-level metrics (also committed):
+
+- `firstWriteMs`: turn span start (timestamp of the first trace event —
+  the first assistant/model event of this turn's slice, not the user
+  message) → the first step that mutates a repo-tracked file.
+- `sessionReused` + `sessionReuseReason`: derived from the task row —
+  `sessionAssistantStartIndex > 0` → `true`, reason `continued named
+  session`（复用既有命名会话，无需冷启动重读全部历史）; start index 0/absent
+  with an existing session file → `false`, reason `session restarted`
+  （会话文件被重建或索引缺失）; no session file → `false`, reason `fresh
+  session`.
+- `fullRunCount` / `fullRunFailCount`: per §5.
 
 ### 3. Time Attribution (resolves open question `q-parallel`)
 
 - All accounting is wall clock. Per category, take the **union of its step
   execution intervals** — parallel tools never double-count.
 - Overlapping steps of *different* categories: the overlapped slice is
-  attributed by fixed priority `test > write > build-check > exception-retry
-  > read > process-report > unclassified`. Rationale: proportional splitting
-  assumes parallelism is uniformly shared, which distorts IO-wait-heavy
-  steps; priority-on-union is deterministic, reproducible, and matches the
-  committed "区间并集计、不重复计时".
-- `thinking` = turn span minus the union of all tool execution intervals.
-  Turn span = timestamp of the first event of the trace (first model call or
-  tool step) → timestamp of the last event; for a live turn, "now".
+  attributed by fixed priority `test > write > build-check > read >
+  process-report > exception-retry > unclassified`. Rationale: proportional
+  splitting assumes parallelism is uniformly shared, which distorts
+  IO-wait-heavy steps; priority-on-union is deterministic, reproducible, and
+  matches the committed "区间并集计、不重复计时". Model error/timeout
+  intervals (§2 source (b)) are disjoint from tool intervals by
+  construction — the model was not executing a tool while erroring — so
+  their low priority position is defensive only.
+- `thinking` = turn span minus the union of all tool execution intervals
+  minus §2(b) error intervals. Turn span = timestamp of the first event of
+  the trace (first model call or tool step) → timestamp of the last event;
+  for a live turn, "now".
 
 ### 4. Data Sources and Step Extraction
 
-- **Authoritative history**: pi session JSONL, parsed by
-  `readSessionAssistantSnapshot` (`server/domain/runtime/message-tool-trace.ts`)
-  with the task's `sessionAssistantStartIndex` slice — immune to the
-  `MAX_TOOL_EVENT_COUNT = 200` window that truncates the tool-trace API.
-  Session rows win on timestamps when both sources have a step.
-- **Real-time**: bridge tool events (`a2a_task_events`,
-  `event_type = 'agent_tool_call'`) carry `toolCallId`, tool name, request,
-  result, status, `durationMs`, and `created_at`.
+- **Authoritative history**: pi session JSONL. Two extraction paths:
+  - `readSessionAssistantSnapshot`
+    (`server/domain/runtime/message-tool-trace.ts`) is reused **only** for
+    model/usage events and the `sessionAssistantStartIndex` per-turn slice.
+    It parses `role === 'assistant'` rows only; its `toolCalls` carry no
+    timestamps and no output, so it cannot feed timing or classification.
+  - A new step parser (`turn-time-breakdown.ts`) reads both row kinds:
+    `tool_call` items inside assistant rows give each step's start (all
+    tool_calls in one assistant message share that message's timestamp —
+    parallel starts are expected and handled by §3 union), and
+    `role === 'toolResult'` rows give the end `timestamp`, `toolCallId`,
+    `toolName`, `content` (output), and `isError`. Interval = assistant
+    message timestamp → matching toolResult timestamp, joined by
+    `toolCallId`; a toolResult without a matching call is still recorded
+    with end-only timing and flagged.
+- **Real-time**: the pi event stream — `handle.on('pi_event', ...)` in
+  `server/domain/conversation/turn/agent-executor.ts` receives
+  `tool_execution_start` / `tool_execution_end` (`toolCallId`, `toolName`,
+  `args`/`result`, `isError`; pi-sdk `ToolExecutionEndEvent`).
+  `lib/pi-runtime.ts` currently consumes both only to maintain
+  `activeToolCalls`; the pipeline surfaces them onward to the classifier
+  sink. CAFF-native bridge tools that do not pass through the pi event
+  stream remain covered by `tryAppendInvocationEvent`
+  (`agent-tool-bridge.ts`). Dedup across both sources by `toolCallId`.
 - Step identity: `(taskId, toolCallId)`. Session-derived steps without a
   `toolCallId` fall back to `(taskId, toolName, ordinal)`.
 
@@ -71,8 +102,10 @@ Inputs: tool name, command argv (for `bash`), affected path class, CAFF tool
 name, exit status, and command-output features. Evaluation order is fixed;
 first hit wins:
 
-1. CAFF bridge commands (`node .../agent-chat-tools.js <cmd>`) →
-   `process-report`.
+1. CAFF bridge activity — both forms: CLI (`node .../agent-chat-tools.js
+   <cmd>`) and native bridge tool names (`update-goal`, `suggest-goal`,
+   `propose-plan`, `send-public`, `create-delegation`, `await-delegation`,
+   `conversation_notify`, `conversation_request`) → `process-report`.
 2. Test runners (`node --test`, `npm test`, `npm run test:*`, `vitest`,
    `jest`, `pytest`, `go test`, `cargo test`) → `test`. Output fingerprints
    (`# pass N`, `# fail N`, `tests N passed`, `N failing`, exit code) fill
@@ -84,7 +117,12 @@ first hit wins:
    path-class subcategory.
 5. Reads (`read`/`grep`/`find` tools, `ls`, `cat`, read-only git) → `read`
    with cold-start subcategory before the first write.
-6. Infra failures with no semantic work → `exception-retry`.
+6. Infra failures with no semantic execution (invocation error, missing
+   result) → `exception-retry`. Rules 2–5 deliberately run first: a step
+   that *did* execute semantics (a test that ran and failed, an edit that
+   applied) keeps its semantic category even when its exit status is a
+   failure; only steps that never got to do semantic work fall through to
+   this rule.
 7. Otherwise → `null` (JEV fallback, §6).
 
 **Full-regression vs targeted (resolves `q-fullrun`, part 1)**: an
@@ -109,9 +147,16 @@ with non-zero exit or a fail fingerprint.
   command + output. Output truncated **head 2000 + tail 2000 chars (4000
   max)** (resolves `q-fullrun`, part 2) to bound cost and latency; the
   client's own `maxStateChars`/`maxRequestChars` caps still apply.
-- Latency policy: `timeoutMs = 8000`, `maxRetries = 0` (fallback replaces
-  retries). Low confidence (< 0.6) or choice `unclassified` →
-  `unclassified`, never a hard guess.
+- Latency policy: `timeoutMs = 8000` as the single overall deadline;
+  `maxRetries` is left at the client default (passing 0 falls back to the
+  default via `normalizePositiveInt`), so a transient failure may retry
+  within the 8 s deadline and then still lands on the fallback path.
+- Dedicated client: the pipeline constructs its own `createTypeSafeClient`
+  instance with its own `maxRequests`/`tokenBudget`, never sharing the
+  agent-tool-bridge instance — classification volume must not consume the
+  bridge's process-local budget.
+- Low confidence (< 0.6) or choice `unclassified` → `unclassified`, never a
+  hard guess.
 - Cache: `sha256(toolName + argv[0] + flags-only(argv) + output
   fingerprint)` → category, in `jev_classification_cache`; cache hits skip
   the network entirely.
@@ -171,19 +216,26 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 
 ### 8. Real-Time Pipeline
 
-- Hook: `tryAppendInvocationEvent` in `agent-tool-bridge.ts`, after
-  `runStore.appendTaskEvent` succeeds, enqueues `{taskId, messageId,
-  payload}` onto an in-process async queue. The turn path **never awaits**
-  classification; the queue timer is `unref`'d and must never keep the
-  process alive (same contract as the observability sampler).
+- Hook: the pi event stream (`handle.on('pi_event', ...)`,
+  `agent-executor.ts`). On `tool_execution_end` (start/end pair gives the
+  interval) the pipeline enqueues `{taskId, messageId, toolCallId,
+  toolName, args, result, isError, startedAt, endedAt}` onto an in-process
+  async queue; `tryAppendInvocationEvent` in `agent-tool-bridge.ts` remains
+  the secondary hook for CAFF-native bridge tools absent from the pi
+  stream. The turn path **never awaits** classification; the queue timer is
+  `unref`'d and must never keep the process alive (same contract as the
+  observability sampler).
+- Summary lifecycle: the first classified step of a task inserts the
+  `chat_turn_time_summaries` row with `status = 'live'`; every subsequent
+  step updates it incrementally, so an in-progress turn is refreshable
+  (AC1). Task completion flips it to `complete`; a missing terminal event
+  yields `partial-interrupted` and the panel says so.
 - Worker: rule-classify → upsert `chat_turn_time_steps`; JEV-needed steps
   are stored `unclassified` + pending, then resolved asynchronously and
   updated in place.
 - Queue overflow (depth cap, default 256): drop with a counter; affected
   turns are completed by lazy backfill on next view click. Dropped steps
-  must never lose the bridge event itself — only the classification.
-- Task completion flips the summary to `complete`; a missing terminal event
-  yields `partial-interrupted` and the panel says so.
+  must never lose the underlying event — only the classification.
 
 ### 9. API and Lazy Backfill
 
@@ -191,7 +243,9 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   → `{ status, categoryMs, metrics, steps[] , computedAt }`.
 - Fresh summary row → return as-is (cached path target: < 2 s).
 - No/stale row → locate `message → task → session_path +
-  sessionAssistantStartIndex`, parse the JSONL from `parse_offset`, classify
+  sessionAssistantStartIndex`, parse the JSONL from `parse_offset` with the
+  §4 step parser (assistant `tool_call` starts joined to `toolResult`
+  ends), classify
   with **rules + JEV cache only** (fresh JEV calls are excluded from the
   synchronous backfill so multi-MB logs finish < 10 s; pending steps are
   marked and resolved asynchronously), upsert rows, return.
@@ -207,15 +261,16 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   会话复用及原因, 全量回归遍数/失败次数), and the step list with category
   labels. In-progress turns expose a refresh action that re-fetches the
   latest stored rows.
-- Token usage display (open question `q-tokens`): v1 **shows** per-turn
-  model token consumption in the metrics row since the data already exists
-  in the model-usage path; flagged for user confirmation at review — removal
-  is a one-line change if rejected.
+- Token usage display (open question `q-tokens`): v1 does **not** show
+  token consumption by default; the panel gains it only after the user
+  confirms the open question. The API may already carry the fields so
+  enabling is display-only.
 
 ### 11. Validation & Error Matrix
 
 | Case | Expected behavior |
 | --- | --- |
+| pi_event `tool_execution_end` arrives | step classified async; turn path never awaits; summary row live-updates |
 | rules classify a step | row upserted `classified_by='rules'`, no JEV call |
 | opaque wrapper script, JEV on, confident | `classified_by='jev'`, cache row written |
 | same command features again | `classified_by='jev-cache'`, zero network calls |
@@ -229,11 +284,17 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 
 ### 12. Tests Required
 
+- `tests/runtime/turn-time-breakdown-parser.test.js`: §4 step parser —
+  assistant `tool_call` ↔ `toolResult` join by `toolCallId`, parallel
+  shared starts, orphan toolResults, truncated/corrupt lines,
+  `sessionAssistantStartIndex` slicing, incremental `parse_offset`.
 - `tests/runtime/turn-time-breakdown-rules.test.js`: every §5 branch,
   path classes, cold-start vs purposeful reads, full vs targeted
-  fingerprints, exception-retry vs failed-test distinction.
+  fingerprints, exception-retry vs failed-test distinction, both bridge
+  forms (CLI and native tool names).
 - `tests/runtime/turn-time-breakdown-attribution.test.js`: parallel
-  interval union, priority slicing, thinking-time gaps.
+  interval union, priority slicing, thinking-time gaps, model error
+  intervals → `exception-retry`.
 - `tests/runtime/turn-time-breakdown-jev.test.js`: fake JEV covering
   success / timeout / error / low-confidence / disabled; cache hit;
   truncation length; no turn-path blocking.
