@@ -16,6 +16,7 @@ const { createChatWorkspaceOperationRepository } = require('../storage/chat/work
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
+const { createTurnTimeBreakdownRepository } = require('../storage/chat/turn-time-breakdown.repository');
 const { createChatMessageRecoveryRepository } = require('../storage/chat/message-recovery.repository');
 const { createChatSystemServiceConfigRepository } = require('../storage/chat/system-service-config.repository');
 const { createChatPrivateMessageRepository } = require('../storage/chat/private-message.repository');
@@ -974,6 +975,7 @@ export class ChatAppStore {
       this.participantRepository = createChatParticipantRepository(this.db);
       this.messageRepository = createChatMessageRepository(this.db);
       this.messageDetailRepository = createChatMessageDetailRepository(this.db);
+      this.turnTimeBreakdownRepository = createTurnTimeBreakdownRepository(this.db);
       this.messageRecoveryRepository = createChatMessageRecoveryRepository(this.db);
       this.systemServiceConfigRepository = createChatSystemServiceConfigRepository(this.db);
       this.privateMessageRepository = createChatPrivateMessageRepository(this.db);

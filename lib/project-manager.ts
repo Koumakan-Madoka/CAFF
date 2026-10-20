@@ -99,6 +99,11 @@ function sanitizeProjectRecord(project: any) {
     createdAt: String(project.createdAt || '').trim() || nowIso(),
     updatedAt: String(project.updatedAt || '').trim() || nowIso(),
     lastOpenedAt: String(project.lastOpenedAt || '').trim() || '',
+    // Per-project feature switches (e.g. timeBreakdown.jevEnabled, contract
+    // §6) pass through untouched; absent means default-off.
+    ...(project.timeBreakdown && typeof project.timeBreakdown === 'object' && !Array.isArray(project.timeBreakdown)
+      ? { timeBreakdown: project.timeBreakdown }
+      : {}),
   };
 }
 

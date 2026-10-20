@@ -289,3 +289,64 @@ test('parser incremental offsets resume without double counting', () => {
     assert.equal(second.steps[0].endedAtMs, 1500);
   });
 });
+
+test('incremental passes with a slice boundary count assistant messages cumulatively', () => {
+  inTempDir((agentDir) => {
+    // Turn slice starts after 2 prior assistant messages; the turn's own
+    // first assistant row arrives in pass 1, its toolResult in pass 2.
+    const sessionPath = writeSession(agentDir, 'sliced-inc.jsonl', [
+      assistantLine(100, [{ id: 'old1', name: 'bash', arguments: { command: 'ls' } }]),
+      toolResultLine(200, 'old1', 'bash', 'old'),
+      assistantLine(300, [{ id: 'old2', name: 'bash', arguments: { command: 'ls' } }]),
+      toolResultLine(400, 'old2', 'bash', 'old'),
+      assistantLine(1000, [{ id: 'c1', name: 'bash', arguments: { command: 'npm test' } }]),
+    ]);
+
+    const first = parseSessionTurnSteps(sessionPath, agentDir, { assistantStartIndex: 2 });
+
+    assert.equal(first.steps.length, 1);
+    assert.equal(first.steps[0].toolCallId, 'c1');
+    assert.equal(first.steps[0].open, true);
+    assert.equal(first.assistantMessageTotal, 3);
+
+    fs.appendFileSync(sessionPath, toolResultLine(5000, 'c1', 'bash', '# pass 3') + '\n');
+
+    // Without assistantCountBase the resumed pass would restart the counter
+    // at 0 and skip the result as pre-slice traffic.
+    const second = parseSessionTurnSteps(sessionPath, agentDir, {
+      assistantStartIndex: 2,
+      fromOffset: first.endOffset,
+      assistantCountBase: first.assistantMessageTotal,
+    });
+
+    assert.equal(second.steps.length, 1);
+    assert.equal(second.steps[0].toolCallId, 'c1');
+    assert.equal(second.steps[0].orphan, true);
+    assert.equal(second.steps[0].endedAtMs, 5000);
+  });
+});
+
+test('slice startIndex 0 never skips results in incremental passes', () => {
+  inTempDir((agentDir) => {
+    const sessionPath = writeSession(agentDir, 'zero-index.jsonl', [
+      assistantLine(1000, [{ id: 'c1', name: 'bash', arguments: { command: 'ls' } }]),
+    ]);
+
+    const first = parseSessionTurnSteps(sessionPath, agentDir, { assistantStartIndex: 0 });
+
+    assert.equal(first.steps.length, 1);
+
+    fs.appendFileSync(sessionPath, toolResultLine(2000, 'c1', 'bash', 'ok') + '\n');
+
+    const second = parseSessionTurnSteps(sessionPath, agentDir, {
+      assistantStartIndex: 0,
+      fromOffset: first.endOffset,
+      assistantCountBase: first.assistantMessageTotal,
+    });
+
+    // startIndex 0 means "no slice": the result must surface as an orphan
+    // for the pipeline's cross-chunk merge, not be skipped.
+    assert.equal(second.steps.length, 1);
+    assert.equal(second.steps[0].orphan, true);
+  });
+});

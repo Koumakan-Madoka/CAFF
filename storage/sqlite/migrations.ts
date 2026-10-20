@@ -705,8 +705,75 @@ CREATE INDEX IF NOT EXISTS idx_agent_delegation_events
 `);
 }
 
+function ensureTurnTimeBreakdownSchema(db: any) {
+  // Turn time breakdown (docs/engineering/backend/turn-time-breakdown.md §7):
+  // per-step classification rows, per-message live summaries, and the JEV
+  // classification cache. run_count_full/run_count_targeted persist the §5
+  // per-segment test counts so fullRunCount survives `npm test; npm test`.
+  db.exec(`
+CREATE TABLE IF NOT EXISTS chat_turn_time_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL,
+  message_id TEXT,
+  step_key TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  subcategory TEXT,
+  classified_by TEXT NOT NULL,
+  jev_status TEXT,
+  confidence REAL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  duration_ms INTEGER,
+  run_kind TEXT,
+  run_failed INTEGER,
+  run_count_full INTEGER,
+  run_count_targeted INTEGER,
+  payload_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (task_id, step_key)
+);
+
+CREATE TABLE IF NOT EXISTS chat_turn_time_summaries (
+  message_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  turn_started_at TEXT,
+  turn_ended_at TEXT,
+  category_ms_json TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  parse_offset INTEGER,
+  assistant_count INTEGER,
+  computed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS jev_classification_cache (
+  cache_key TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  subcategory TEXT,
+  run_kind TEXT,
+  confidence REAL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_turn_time_steps_task_id ON chat_turn_time_steps (task_id);
+  `);
+
+  ensureColumn(db, 'chat_turn_time_steps', 'run_count_full', 'run_count_full INTEGER');
+  ensureColumn(db, 'chat_turn_time_steps', 'run_count_targeted', 'run_count_targeted INTEGER');
+  // JEV-bound steps keep a compact {args, output} payload so a later pass
+  // can reclassify timeout/error steps without re-parsing the session (§6).
+  ensureColumn(db, 'chat_turn_time_steps', 'payload_json', 'payload_json TEXT');
+  // Cumulative assistant-message count beside parse_offset: incremental
+  // passes resume mid-file and the §4 slice boundary must not reset (§9).
+  ensureColumn(db, 'chat_turn_time_summaries', 'assistant_count', 'assistant_count INTEGER');
+}
+
 export function migrateChatSchema(db: any, options: any = {}) {
   migrateLegacyModelFamilyRoles(db, { backupPath: options.backupPath });
+  ensureTurnTimeBreakdownSchema(db);
   db.exec(`
 CREATE TABLE IF NOT EXISTS chat_role_identities (
   role_id TEXT PRIMARY KEY,

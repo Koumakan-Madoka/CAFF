@@ -52,6 +52,7 @@ const { buildPromptMessages } = require('./prompt-visibility');
 const { createAgentContextSnapshot } = require('./context-snapshot');
 const { settleAgentDelegationChild } = require('../agent-delegation');
 const { markConversationRetrievalTraceUsage } = require('../retrieval-trace');
+const { extractToolResultText } = require('../../runtime/turn-time-breakdown');
 const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { createBrowserCliSessionName, resolveBrowserCliPath } = require('./browser-cli');
@@ -1401,6 +1402,7 @@ async function waitForAssistantMessageCompleted(callback: any, message: any) {
 
 export function createAgentExecutor(options: any = {}) {
   const store = options.store;
+  const turnTimeBreakdownPipeline = options.turnTimeBreakdownPipeline || null;
   const skillRegistry = options.skillRegistry;
   const modeStore = options.modeStore;
   const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
@@ -2367,6 +2369,72 @@ export function createAgentExecutor(options: any = {}) {
       });
     });
 
+    // Turn time breakdown (contract §8): forward tool execution intervals to
+    // the classification pipeline. Enqueue only — the turn path never awaits
+    // classification or storage.
+    const toolExecutionStarts = new Map<string, any>();
+
+    if (turnTimeBreakdownPipeline) {
+      handle.on('pi_event', (event: any) => {
+        const piEvent = event && event.piEvent;
+        const eventType = String(piEvent && piEvent.type ? piEvent.type : '');
+        const toolCallId = String(piEvent && piEvent.toolCallId ? piEvent.toolCallId : '').trim();
+
+        if (!toolCallId) {
+          return;
+        }
+
+        if (eventType === 'tool_execution_start') {
+          toolExecutionStarts.set(toolCallId, {
+            startedAtMs: Date.now(),
+            toolName: piEvent.toolName,
+            args: piEvent.args !== undefined ? piEvent.args : null,
+          });
+          return;
+        }
+
+        if (eventType !== 'tool_execution_end') {
+          return;
+        }
+
+        const start = toolExecutionStarts.get(toolCallId) || null;
+
+        toolExecutionStarts.delete(toolCallId);
+        // pi ToolExecutionEndEvent.result is the tool's return value: a
+        // string, a content array, or a {content, details} wrapper.
+        const rawResult = piEvent.result;
+        let output = extractToolResultText(
+          rawResult && typeof rawResult === 'object' && !Array.isArray(rawResult) && rawResult.content !== undefined
+            ? rawResult.content
+            : rawResult
+        );
+
+        if (!output && rawResult !== undefined && rawResult !== null) {
+          try {
+            output = JSON.stringify(rawResult);
+          } catch {
+            output = '';
+          }
+        }
+
+        turnTimeBreakdownPipeline.enqueueStep({
+          taskId: stageTaskId,
+          messageId: assistantMessage.id,
+          conversationId,
+          step: {
+            stepKey: toolCallId,
+            toolCallId,
+            toolName: String(piEvent.toolName || (start && start.toolName) || 'tool'),
+            args: start ? start.args : null,
+            output,
+            isError: piEvent.isError === true,
+            startedAtMs: start ? start.startedAtMs : null,
+            endedAtMs: Date.now(),
+          },
+        });
+      });
+    }
+
     handle.on('system_prompt', (event: any) => {
       const systemPrompt = String(event && event.systemPrompt || '').trim();
 
@@ -2383,6 +2451,17 @@ export function createAgentExecutor(options: any = {}) {
 
     handle.on('assistant_message', (event: any) => {
       const message = event && event.message && typeof event.message === 'object' ? event.message : null;
+
+      // §2(b): model-side error intervals feed exception-retry.
+      if (turnTimeBreakdownPipeline && message && message.stopReason === 'error') {
+        turnTimeBreakdownPipeline.enqueueErrorEvent({
+          taskId: stageTaskId,
+          messageId: assistantMessage.id,
+          conversationId,
+          timestampMs: Date.parse(String(message.timestamp || '')) || Date.now(),
+        });
+      }
+
       const modelEvent = message
         ? createModelCallObservabilityEvent(observabilityTimelineState, {
             messageKey: event.messageKey,
@@ -2655,6 +2734,17 @@ export function createAgentExecutor(options: any = {}) {
       });
 
       completedReplies.push(assistantMessageDone);
+
+      if (turnTimeBreakdownPipeline) {
+        // Seal the live summary: status -> complete, turn end = now (§8).
+        turnTimeBreakdownPipeline.completeTask({
+          taskId: stageTaskId,
+          messageId: assistantMessageDone.id,
+          conversationId,
+          sessionReused: resumeSession === true,
+          sessionReuseReason: sessionReuseDecision && sessionReuseDecision.reason ? String(sessionReuseDecision.reason) : '',
+        });
+      }
       const delegationSettlement = queueItem.delegationId && delegationRuntime && typeof delegationRuntime.settleRecipient === 'function'
         ? delegationRuntime.settleRecipient({ delegationId: queueItem.delegationId, status: 'succeeded', result: {
             messageId: assistantMessageDone.id,

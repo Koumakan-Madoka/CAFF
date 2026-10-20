@@ -82,7 +82,7 @@ function toEpochMs(value: any) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function extractToolResultText(content: any) {
+export function extractToolResultText(content: any) {
   if (typeof content === 'string') {
     return content;
   }
@@ -163,12 +163,28 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
   const startIndex = Number.isSafeInteger(Number(options.assistantStartIndex)) && Number(options.assistantStartIndex) >= 0
     ? Number(options.assistantStartIndex)
     : null;
+  // Incremental passes resume mid-file: the slice boundary check must count
+  // assistant messages cumulatively across passes, not just within this one.
+  const assistantCountBase = Number.isSafeInteger(Number(options.assistantCountBase)) && Number(options.assistantCountBase) > 0
+    ? Number(options.assistantCountBase)
+    : 0;
   const pendingCalls = new Map<string, any>();
   const steps: any[] = [];
   const errorEvents: any[] = [];
-  let assistantMessageTotal = 0;
+  let assistantMessageTotal = assistantCountBase;
   let selectedAssistantOrdinal = 0;
   let corruptLines = 0;
+  // First event of the sliced trace (assistant or toolResult) — the §3 turn
+  // span start, so thinking before the first tool call is accounted.
+  let firstEventMs: number | null = null;
+
+  const noteEventMs = (value: any) => {
+    const ms = toEpochMs(value);
+
+    if (ms !== null && (firstEventMs === null || ms < firstEventMs)) {
+      firstEventMs = ms;
+    }
+  };
 
   const flushStep = (call: any, result: any) => {
     const startedAtMs = call ? call.startedAtMs : null;
@@ -219,6 +235,7 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
       }
 
       selectedAssistantOrdinal += 1;
+      noteEventMs(message.timestamp);
 
       if (message.stopReason === 'error') {
         errorEvents.push({
@@ -261,12 +278,14 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
 
     if (message.role === 'toolResult' || message.role === 'tool_result' || message.role === 'toolresult') {
       // Results belonging to assistant messages before the slice boundary
-      // are prior-turn traffic, not orphans.
-      if (startIndex !== null && assistantMessageTotal <= startIndex) {
+      // are prior-turn traffic, not orphans. With startIndex 0 nothing is
+      // pre-slice, so no result is ever skipped.
+      if (startIndex !== null && startIndex > 0 && assistantMessageTotal <= startIndex) {
         continue;
       }
 
       const toolCallId = String(message.toolCallId || '').trim();
+      noteEventMs(message.timestamp);
       const result = {
         toolCallId,
         toolName: String(message.toolName || '').trim(),
@@ -305,6 +324,7 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
     inFlightTail,
     corruptLines,
     assistantMessageTotal,
+    firstEventMs,
     endOffset: fromOffset + consumedBytes,
   };
 }

@@ -37,6 +37,7 @@ import {
   summarizeAgentContextSnapshot,
 } from '../domain/conversation/turn/context-snapshot';
 import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
+import { getTurnTimeBreakdownForMessage } from '../domain/runtime/turn-time-breakdown-service';
 
 type ApiContext = {
   req: IncomingMessage;
@@ -239,6 +240,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const conversationMessageDeletionService = options.conversationMessageDeletionService || null;
   const messageRecoveryService = options.messageRecoveryService || null;
   const conversationMutationCoordinator = options.conversationMutationCoordinator || null;
+  const turnTimeBreakdownPipeline = options.turnTimeBreakdownPipeline || null;
 
   function listConversationHeaders() {
     return typeof store.listConversationTree === 'function'
@@ -1296,6 +1298,52 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       sendJson(res, 200, {
         trace: buildMessageToolTrace(message),
       });
+      return true;
+    }
+
+    const messageTimeBreakdownMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/time-breakdown$/);
+
+    if (messageTimeBreakdownMatch && req.method === 'GET') {
+      const conversationId = decodeURIComponent(messageTimeBreakdownMatch[1]);
+      const messageId = decodeURIComponent(messageTimeBreakdownMatch[2]);
+      const conversation = store.getConversationWithoutMessages(conversationId);
+
+      if (!conversation) {
+        throw createHttpError(404, 'Conversation not found');
+      }
+
+      const message = store.getMessage(messageId);
+
+      if (!message || message.conversationId !== conversationId) {
+        throw createHttpError(404, 'Message not found');
+      }
+
+      if (message.role !== 'assistant') {
+        throw createHttpError(400, 'Only assistant messages can have a time breakdown');
+      }
+
+      let resolvedSessionPath = '';
+
+      try {
+        resolvedSessionPath = turnOrchestrator.resolveAssistantMessageSessionPath(message);
+      } catch {
+        resolvedSessionPath = '';
+      }
+
+      const breakdown = getTurnTimeBreakdownForMessage({
+        db: store.db,
+        agentDir: store.agentDir,
+        message,
+        repository: store.turnTimeBreakdownRepository,
+        pipeline: turnTimeBreakdownPipeline,
+        resolvedSessionPath,
+      });
+
+      if (!breakdown) {
+        throw createHttpError(404, 'No time breakdown recorded for this message');
+      }
+
+      sendJson(res, 200, { breakdown });
       return true;
     }
 

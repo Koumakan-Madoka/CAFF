@@ -39,8 +39,10 @@ const {
   MAX_IMAGE_WIDTH,
 } = require('../../lib/image-constants');
 const { resolveToolRelativePath } = require('../http/path-utils');
-const { HOST, PORT, ROOT_DIR } = require('./config');
+const { HOST, PORT, ROOT_DIR, TYPESAFE_API_KEY, TYPESAFE_BASE_URL, TYPESAFE_MODEL, TYPESAFE_MAX_REQUESTS, TYPESAFE_TOKEN_BUDGET } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
+const { createTurnTimeBreakdownPipeline } = require('../domain/runtime/turn-time-breakdown-pipeline');
+const { createTypeSafeClient } = require('../domain/integrations/typesafe/typesafe-client');
 const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
 const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
 const {
@@ -657,9 +659,46 @@ export function createServerApp(options: any = {}) {
     },
   });
 
+  // Turn time breakdown pipeline (contract §8): created once per server,
+  // shared by the pi-event hook (agent executor) and the bridge hook.
+  const turnTimeBreakdownPipeline = createTurnTimeBreakdownPipeline({
+    repository: store.turnTimeBreakdownRepository,
+    resolveJevEnabled(context: any) {
+      // Per-project switch `timeBreakdown.jevEnabled`, default false
+      // (contract §6, open question q-jev-config).
+      try {
+        const conversationId = String(context && context.conversationId || '').trim();
+        const conversation = conversationId && typeof store.getConversationWithoutMessages === 'function'
+          ? store.getConversationWithoutMessages(conversationId)
+          : null;
+        const projectScopeId = String(conversation && conversation.projectScopeId || '').trim();
+        const project = projectScopeId
+          ? projectManager.listProjects().find((candidate: any) => candidate && candidate.id === projectScopeId)
+          : null;
+
+        return Boolean(project && project.timeBreakdown && project.timeBreakdown.jevEnabled === true);
+      } catch {
+        return false;
+      }
+    },
+    createJevClient() {
+      // §6: dedicated client instance with its own process-local budget —
+      // classification volume must not consume the bridge client's budget.
+      return createTypeSafeClient({
+        apiKey: TYPESAFE_API_KEY,
+        baseUrl: TYPESAFE_BASE_URL || undefined,
+        model: TYPESAFE_MODEL || undefined,
+        maxRequests: TYPESAFE_MAX_REQUESTS,
+        tokenBudget: TYPESAFE_TOKEN_BUDGET,
+        timeoutMs: 8000,
+      });
+    },
+  });
+
   const agentToolBridge = createAgentToolBridge({
     store,
     agentDir,
+    turnTimeBreakdownPipeline,
     piCapabilityBridge: options.piCapabilityBridge,
     crossConversationDeliveryService,
     cancelDelegation(delegationId: any, reason: any) {
@@ -722,6 +761,7 @@ export function createServerApp(options: any = {}) {
       return activeProjectDir;
     },
     agentToolBridge,
+    turnTimeBreakdownPipeline,
     broadcastEvent,
     broadcastConversationSummary,
     broadcastRuntimeState,
@@ -1211,6 +1251,7 @@ export function createServerApp(options: any = {}) {
       conversationMessageDeletionService,
       messageRecoveryService,
       conversationMutationCoordinator,
+      turnTimeBreakdownPipeline,
       uploadService,
     }),
     createImageUploadController({

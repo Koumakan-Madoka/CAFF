@@ -255,9 +255,12 @@ above) are opaque to rules → JEV fallback with command + output.
   means exactly that; do not "fix" this later, it would change the switch
   semantics.
 - Failure/timeout/disabled: step stored as `unclassified` with
-  `jevStatus = 'ok' | 'timeout' | 'error' | 'disabled' | 'low-confidence'`;
-  never blocks, never throws into the turn path. A later pass (next view
-  click) may reclassify `timeout`/`error` steps via cache or a fresh call.
+  `jevStatus = 'ok' | 'timeout' | 'error' | 'disabled' | 'low-confidence'
+  | 'pending'`; never blocks, never throws into the turn path. `pending`
+  marks a step queued for async JEV resolution (§8/§9). A later pass (next
+  view click) may reclassify `timeout`/`error` steps via cache or a fresh
+  call — JEV-bound steps persist a compact `payload_json`
+  ({args, truncated output}) so the retry needs no session re-parse.
 
 ### 7. Storage Schema (new migration)
 
@@ -278,6 +281,9 @@ CREATE TABLE IF NOT EXISTS chat_turn_time_steps (
   duration_ms INTEGER,
   run_kind TEXT,                    -- 'targeted' | 'full-regression' | NULL
   run_failed INTEGER,               -- 0/1/NULL
+  run_count_full INTEGER,           -- §5 per-segment counts (`npm test; npm test` = 2)
+  run_count_targeted INTEGER,
+  payload_json TEXT,                -- JEV-bound steps only: {args, truncated output} for retry
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (task_id, step_key)
@@ -293,6 +299,7 @@ CREATE TABLE IF NOT EXISTS chat_turn_time_summaries (
   category_ms_json TEXT NOT NULL,   -- {category: ms} after §3 attribution
   metrics_json TEXT NOT NULL,       -- firstWriteMs, sessionReused(+Reason), fullRunCount, fullRunFailCount
   parse_offset INTEGER,             -- JSONL byte offset for incremental re-parse
+  assistant_count INTEGER,          -- cumulative assistant rows seen; the §4 slice boundary must not reset across passes
   computed_at TEXT NOT NULL
 );
 
@@ -333,14 +340,19 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 
 - `GET /api/conversations/:conversationId/messages/:messageId/time-breakdown`
   → `{ status, categoryMs, metrics, steps[] , computedAt }`.
-- Fresh summary row → return as-is (cached path target: < 2 s).
+- Fresh summary row (terminal status) → return as-is (cached path target:
+  < 2 s). A `live` row is returned after an incremental catch-up parse
+  from `parse_offset`/`assistant_count` — cheap, and it repairs queue-drop
+  gaps (§8) on every click during an active turn.
 - No/stale row → locate `message → task → session_path +
   sessionAssistantStartIndex`, parse the JSONL from `parse_offset` with the
   §4 step parser (assistant `tool_call` starts joined to `toolResult`
   ends), classify
   with **rules + JEV cache only** (fresh JEV calls are excluded from the
   synchronous backfill so multi-MB logs finish < 10 s; pending steps are
-  marked and resolved asynchronously), upsert rows, return.
+  marked and resolved asynchronously), upsert rows, return. Steps already
+  resolved by JEV keep their category — backfill only refreshes their
+  timing; rows already classified `jev`/`jev-cache` are never re-ruled.
 - Corrupt JSONL lines are skipped and flip status to `partial-truncated`;
   an unterminated in-flight tail (normal mid-turn) is excluded from the
   offset but never flips status. No full historical backfill — only on
@@ -396,13 +408,18 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 - `tests/runtime/turn-time-breakdown-attribution.test.js`: parallel
   interval union, priority slicing, thinking-time gaps, model error
   intervals → `exception-retry`.
+- `tests/runtime/turn-time-breakdown-pipeline.test.js`: enqueue is
+  non-blocking (zero storage writes on the turn path), live→complete
+  summary lifecycle, toolCallId dedup, JEV pending→resolved→cache-hit,
+  timeout/error/disabled statuses, queue overflow drop counter, worker
+  failure isolation.
 - `tests/runtime/turn-time-breakdown-jev.test.js`: fake JEV covering
   success / timeout / error / low-confidence / disabled; cache hit;
   truncation length; no turn-path blocking.
 - `tests/storage/turn-time-breakdown-store.test.js`: migration, upsert
-  idempotence, summary lifecycle.
+  idempotence, summary lifecycle, JEV cache adapter camelCase shape lock.
 - `tests/http/turn-time-breakdown-controller.test.js`: cached read, lazy
-  backfill, `partial-*` statuses, error mapping.
+  backfill, `partial-*` statuses, cross-chunk orphan merge, error mapping.
 - `tests/ui/turn-time-breakdown.test.js`: button visibility, panel
   rendering, in-progress refresh.
 - Golden-sample regression (goal AC3) and replay-vs-retrospective script

@@ -857,6 +857,7 @@ export function createTurnOrchestrator(options: any = {}) {
         modeStore,
         getProjectDir,
         agentToolBridge,
+        turnTimeBreakdownPipeline: options.turnTimeBreakdownPipeline || null,
         broadcastEvent,
         broadcastConversationSummary,
         emitTurnProgress,
