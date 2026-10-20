@@ -86,7 +86,15 @@ Turn-level metrics (also committed):
     `toolName`, `content` (output), and `isError`. Interval = assistant
     message timestamp → matching toolResult timestamp, joined by
     `toolCallId`; a toolResult without a matching call is still recorded
-    with end-only timing and flagged.
+    with end-only timing and flagged. Incremental re-parse advances
+    `parse_offset` in **bytes**, always to a newline boundary; a
+    call/result pair split across two incremental passes (open step in
+    pass N, end-only orphan in pass N+1) is merged back into one step by
+    `toolCallId` in the pipeline — never stored as two rows. An
+    unterminated trailing line that does not yet parse is an in-flight
+    tail: excluded from `parse_offset`, and it does **not** flip
+    `partial-truncated`; that status is reserved for genuinely corrupt
+    middle lines (`corruptLines > 0`).
 - **Real-time**: the pi event stream — `handle.on('pi_event', ...)` in
   `server/domain/conversation/turn/agent-executor.ts` receives
   `tool_execution_start` / `tool_execution_end` (`toolCallId`, `toolName`,
@@ -113,18 +121,41 @@ first hit wins:
 1. CAFF bridge activity — both forms: CLI (`node .../agent-chat-tools.js
    <cmd>`) and native bridge tool names (`update-goal`, `suggest-goal`,
    `propose-plan`, `send-public`, `create-delegation`, `await-delegation`,
-   `conversation_notify`, `conversation_request`) → `process-report`.
-2. Test runners (`node --test`, `npm test`, `npm run test:*`, `vitest`,
-   `jest`, `pytest`, `go test`, `cargo test`) → `test`. Output fingerprints
-   (`# pass N`, `# fail N`, `tests N passed`, `N failing`, exit code) fill
-   run/failure counters. Failed runs stay in `test`.
+   `conversation_notify`, `conversation_request`, `list_rooms`,
+   `room_workspace_*`) → `process-report`.
+
+   Shell segmentation is **quote-aware**: `&&`, `||`, `;`, `|` split only
+   outside single/double quotes, so `rg -n "a\|b"` stays one segment.
+   `cd`/`pushd`/`popd` segments are **neutral**: they carry no category
+   and never poison a chain (`cd /repo && npm test` is a test run); a
+   command with only neutral segments is `null`. Leading `FOO=bar` env
+   assignments, `sudo`, and a `git -C <path>` prefix are stripped before
+   pattern matching.
+2. Test runners (`node --test`, `npm test`, `npm run test:*`,
+   `yarn test:*`/`pnpm test:*` without `run`, `vitest`, `jest`, `pytest`,
+   `go test`, `cargo test`) → `test`. Output fingerprints (`# pass N`,
+   `# fail N`, `tests N passed`, `N failing`, exit code) fill run/failure
+   counters. Failed runs stay in `test`. **Every test segment counts**: a
+   chained `npm test; npm test` is two full runs — the step exposes
+   `testRunCounts = {full, targeted}` and `fullRunCount` sums it.
 3. Build/check (`tsc`, `npm run build`, `npm run typecheck*`, `npm run
    check`, `node --check`, eslint) → `build-check`.
 4. Mutations (`edit`/`write` tools; bash with `>`, `>>`, `sed -i`,
-   `apply_patch`, `tee`, `mv`, `cp` targeting repo paths) → `write` with
-   path-class subcategory decided by the **destination** path class.
-5. Reads (`read`/`grep`/`find` tools, `ls`, `cat`, read-only git) → `read`
-   with cold-start subcategory before the first write.
+   `apply_patch`, `tee`, `mv`, `cp`, `rm`, `mkdir`, `touch` targeting repo
+   paths; `git checkout --`/`git restore`) → `write` with path-class
+   subcategory decided by the **destination** path class (redirection
+   target, `tee` operand, `mv`/`cp` destination, `sed -i` operand; NULL
+   when no target is extractable — never a hardcoded guess). VCS
+   bookkeeping that mutates repo state but not file contents (`git add`,
+   `commit`, `rm`, `mv`, `stash`, `apply`, `am`) → `write` with NULL
+   subcategory. Redirections to `/dev/null`/`NUL` discard output and are
+   **not** writes.
+5. Reads (`read`/`grep`/`find` tools, `ls`, `cat`, `sed` without `-i`,
+   `diff`, read-only git incl. via `git -C`) → `read` with cold-start
+   subcategory before the first write. The classifier exposes
+   `noteExternalCategory`: JEV and exception-retry outcomes that resolve
+   to `write` are fed back so later reads flip cold-start →
+   purposeful-lookup even when the write itself was rule-opaque.
 6. Infra failures with no semantic execution (invocation error, missing
    result) → `exception-retry`. Rules 2–5 deliberately run first: a step
    that *did* execute semantics (a test that ran and failed, an edit that
@@ -257,9 +288,10 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   with **rules + JEV cache only** (fresh JEV calls are excluded from the
   synchronous backfill so multi-MB logs finish < 10 s; pending steps are
   marked and resolved asynchronously), upsert rows, return.
-- Truncated/corrupt JSONL lines are skipped and flip status to
-  `partial-truncated`; the panel annotates honestly. No full historical
-  backfill — only on click (goal non-goal `ng-backfill`).
+- Corrupt JSONL lines are skipped and flip status to `partial-truncated`;
+  an unterminated in-flight tail (normal mid-turn) is excluded from the
+  offset but never flips status. No full historical backfill — only on
+  click (goal non-goal `ng-backfill`).
 
 ### 10. Frontend
 
@@ -295,12 +327,15 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 
 - `tests/runtime/turn-time-breakdown-parser.test.js`: §4 step parser —
   assistant `tool_call` ↔ `toolResult` join by `toolCallId`, parallel
-  shared starts, orphan toolResults, truncated/corrupt lines,
-  `sessionAssistantStartIndex` slicing, incremental `parse_offset`.
+  shared starts, orphan toolResults, corrupt lines vs in-flight tail,
+  `sessionAssistantStartIndex` slicing, incremental `parse_offset`
+  (byte-accurate under multibyte content).
 - `tests/runtime/turn-time-breakdown-rules.test.js`: every §5 branch,
-  path classes, cold-start vs purposeful reads, full vs targeted
-  fingerprints, exception-retry vs failed-test distinction, both bridge
-  forms (CLI and native tool names).
+  path classes (incl. bash destination-path subcategories), cold-start vs
+  purposeful reads, full vs targeted fingerprints, per-segment run
+  counting, quote-aware segmentation, neutral `cd` prefixes, `git -C`,
+  `/dev/null` redirections, exception-retry vs failed-test distinction,
+  both bridge forms (CLI and native tool names).
 - `tests/runtime/turn-time-breakdown-attribution.test.js`: parallel
   interval union, priority slicing, thinking-time gaps, model error
   intervals → `exception-retry`.

@@ -31,6 +31,8 @@ const BRIDGE_NATIVE_TOOL_NAMES = new Set([
   'cancel-delegation',
   'conversation-notify',
   'conversation-request',
+  'conversation_notify', // model-visible underscore forms
+  'conversation_request',
   'read-context',
   'search-messages',
   'search-memory',
@@ -39,6 +41,11 @@ const BRIDGE_NATIVE_TOOL_NAMES = new Set([
   'update-memory',
   'forget-memory',
   'list-participants',
+  'list_rooms',
+  'room_workspace_preview',
+  'room_workspace_bind',
+  'room_workspace_rename_preview',
+  'room_workspace_rename_bind',
 ]);
 
 const READ_TOOL_NAMES = new Set(['read', 'grep', 'find', 'ls']);
@@ -131,21 +138,27 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
     : 0;
   const slice = buffer.subarray(fromOffset);
   const text = slice.toString('utf8');
-  const lines = text.split('\n');
-  let truncated = false;
-  let consumedLength = text.length;
 
+  // Offsets are BYTE offsets and always advance to a newline boundary.
   // A trailing line without a newline terminator may still be in-flight;
   // consume it only when it parses, otherwise leave it for the next pass.
-  if (lines.length > 0 && !text.endsWith('\n')) {
-    const tail = lines[lines.length - 1];
+  let parseText = text;
+  let consumedBytes = slice.length;
+  let inFlightTail = false;
+
+  if (text.length > 0 && !text.endsWith('\n')) {
+    const lastNewline = text.lastIndexOf('\n');
+    const tail = lastNewline === -1 ? text : text.slice(lastNewline + 1);
 
     if (tail.trim() && !safeJsonParse(tail)) {
-      truncated = true;
-      consumedLength -= Buffer.byteLength(tail, 'utf8');
-      lines.pop();
+      inFlightTail = true;
+      parseText = lastNewline === -1 ? '' : text.slice(0, lastNewline + 1);
+      consumedBytes = Buffer.byteLength(parseText, 'utf8');
     }
   }
+
+  const lines = parseText.split('\n');
+  let truncated = false;
 
   const startIndex = Number.isSafeInteger(Number(options.assistantStartIndex)) && Number(options.assistantStartIndex) >= 0
     ? Number(options.assistantStartIndex)
@@ -155,7 +168,7 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
   const errorEvents: any[] = [];
   let assistantMessageTotal = 0;
   let selectedAssistantOrdinal = 0;
-  let parseErrorCount = 0;
+  let corruptLines = 0;
 
   const flushStep = (call: any, result: any) => {
     const startedAtMs = call ? call.startedAtMs : null;
@@ -187,7 +200,7 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
     const entry = safeJsonParse(trimmed);
 
     if (!entry) {
-      parseErrorCount += 1;
+      corruptLines += 1;
       truncated = true;
       continue;
     }
@@ -286,10 +299,13 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
   return {
     steps,
     errorEvents,
+    // truncated = genuinely corrupt lines only. An unterminated in-flight
+    // tail is normal for a live turn and must not flip partial-truncated.
     truncated,
-    parseErrorCount,
+    inFlightTail,
+    corruptLines,
     assistantMessageTotal,
-    endOffset: fromOffset + Buffer.byteLength(slice.subarray(0, consumedLength).toString('utf8'), 'utf8'),
+    endOffset: fromOffset + consumedBytes,
   };
 }
 
@@ -346,12 +362,160 @@ export function classifyPathSubcategory(rawPath: any) {
   return 'product-code';
 }
 
-// Split a shell command into naive segments on &&, ||, ;, |.
+// Split a shell command into segments on &&, ||, ;, | — quote-aware, so
+// alternation inside quotes (`rg -n "a\|b"`, `grep "foo;bar"`) never splits.
 function splitShellSegments(command: string) {
-  return String(command || '')
-    .split(/&&|\|\||[;|]/)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
+  const segments: string[] = [];
+  let current = '';
+  let quote = '';
+
+  const push = () => {
+    const trimmed = current.trim();
+
+    if (trimmed) {
+      segments.push(trimmed);
+    }
+
+    current = '';
+  };
+
+  const text = String(command || '');
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+
+    if (quote === "'") {
+      current += ch;
+
+      if (ch === "'") {
+        quote = '';
+      }
+
+      continue;
+    }
+
+    if (quote === '"') {
+      current += ch;
+
+      if (ch === '\\' && i + 1 < text.length) {
+        current += text[i + 1];
+        i += 1;
+      } else if (ch === '"') {
+        quote = '';
+      }
+
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+
+    if (ch === '\\' && i + 1 < text.length) {
+      current += ch + text[i + 1];
+      i += 1;
+      continue;
+    }
+
+    if (ch === ';') {
+      push();
+      continue;
+    }
+
+    if (ch === '|') {
+      push();
+
+      if (text[i + 1] === '|') {
+        i += 1;
+      }
+
+      continue;
+    }
+
+    if (ch === '&' && text[i + 1] === '&') {
+      push();
+      i += 1;
+      continue;
+    }
+
+    current += ch;
+  }
+
+  push();
+
+  return segments;
+}
+
+// Split one segment into shell words, stripping quotes and escapes so path
+// extraction sees clean tokens.
+function splitShellWords(segment: string) {
+  const words: string[] = [];
+  let current = '';
+  let quote = '';
+  let has = false;
+
+  for (let i = 0; i < segment.length; i += 1) {
+    const ch = segment[i];
+
+    if (quote === "'") {
+      if (ch === "'") {
+        quote = '';
+      } else {
+        current += ch;
+      }
+
+      has = true;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = '';
+      } else if (ch === '\\' && i + 1 < segment.length) {
+        current += segment[i + 1];
+        i += 1;
+      } else {
+        current += ch;
+      }
+
+      has = true;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      has = true;
+      continue;
+    }
+
+    if (ch === '\\' && i + 1 < segment.length) {
+      current += segment[i + 1];
+      i += 1;
+      has = true;
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      if (has) {
+        words.push(current);
+        current = '';
+        has = false;
+      }
+
+      continue;
+    }
+
+    current += ch;
+    has = true;
+  }
+
+  if (has) {
+    words.push(current);
+  }
+
+  return words;
 }
 
 function firstToken(segment: string) {
@@ -365,6 +529,19 @@ function baseName(token: string) {
   const parts = normalized.split('/');
 
   return (parts[parts.length - 1] || '').toLowerCase();
+}
+
+// Leading `FOO=bar` env assignments and `sudo` annotate the command; strip
+// them so anchored patterns see the real binary.
+function stripEnvPrefix(segment: string) {
+  return String(segment || '').replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:sudo\s+)?/, '');
+}
+
+// `git -C <path> <sub>` runs elsewhere but classifies by its subcommand.
+function stripGitCPrefix(segment: string) {
+  const match = String(segment || '').match(/^git\s+-C\s+("[^"]*"|'[^']*'|\S+)\s+(.+)$/);
+
+  return match ? `git ${match[2]}` : segment;
 }
 
 function isAgentChatToolsSegment(segment: string) {
@@ -388,7 +565,8 @@ function hasPathLikeArg(segment: string, runnerPrefix: RegExp) {
 
 const TEST_RUNNER_PREFIXES: Array<{ prefix: RegExp; fullWhenNoPath: boolean }> = [
   { prefix: /^(npm|pnpm|yarn)\s+(run\s+)?test\b(?!:)/, fullWhenNoPath: true },
-  { prefix: /^(npm|pnpm|yarn)\s+run\s+test:[\w-]+/, fullWhenNoPath: true },
+  // `npm run test:fast`, but also `yarn test:fast` / `pnpm test:fast` (no run).
+  { prefix: /^(npm|pnpm|yarn)\s+(run\s+)?test:[\w-]+/, fullWhenNoPath: true },
   { prefix: /^node\s+--test/, fullWhenNoPath: true },
   { prefix: /^(npx\s+)?vitest(\s+run)?/, fullWhenNoPath: true },
   { prefix: /^(npx\s+)?jest/, fullWhenNoPath: true },
@@ -428,20 +606,91 @@ const BUILD_CHECK_PATTERNS = [
   /^(npx\s+)?eslint(\s|$)/,
 ];
 
+// Patterns below run on the env-stripped segment; segments are already
+// split, so anchors are `^`.
 const BASH_MUTATION_PATTERNS = [
-  /(?:^|\s)>{1,2}\s*\S/, // redirections
-  /(?:^|\s)sed\s+(-\S+\s+)*-i(\s|$)/,
-  /(?:^|\s)apply_patch(\s|$)/,
-  /(?:^|\s)tee\s+\S/,
-  /(?:^|\s)(mv|cp|rm)\s+\S/,
+  /(?:^|\s)>{1,2}\s*\S/, // redirections (after /dev/null stripping)
+  /^sed\s+(-\S+\s+)*(-i\S*|--in-place\S*)(\s|$)/,
+  /^apply_patch(\s|$)/,
+  /^tee\s+\S/,
+  /^(mv|cp|rm|mkdir|touch)(\s|$)/,
   /^git\s+(checkout|restore)\s+(--\s*)?\S/,
-  /^git\s+(apply|am)(\s|$)/,
+  // VCS bookkeeping mutates repo state, not file contents: write, NULL path class.
+  /^git\s+(apply|am|add|commit|rm|mv|stash)(\s|$)/,
 ];
 
 const BASH_READ_PATTERNS = [
-  /^(cat|head|tail|less|more|wc|file|stat|ls|dir|pwd|which|type|echo|grep|rg|find|tree)(\s|$)/,
-  /^git\s+(log|show|diff|status|blame|branch|tag\s*$|rev-parse|ls-files|grep)(\s|$)/,
+  // sed without -i only writes to stdout → read (sed -i hits mutation first).
+  /^(cat|head|tail|less|more|wc|file|stat|ls|dir|pwd|which|type|echo|grep|rg|find|tree|sed|diff|sort|uniq|tr|du|df|env|printenv|date|uname|basename|dirname|realpath|readlink)(\s|$)/,
+  /^git\s+(log|show|diff|status|blame|branch|tag\s*$|rev-parse|ls-files|grep|remote\s*$|describe)(\s|$)/,
 ];
+
+// §5 rule 4: the write subcategory comes from the DESTINATION path class.
+// Best-effort extraction; unresolvable targets keep subcategory NULL rather
+// than guessing product-code.
+function extractBashWriteTarget(segment: string) {
+  const redirection = /(?:^|\s)(?:\d+|&)?>{1,2}\s*("[^"]*"|'[^']*'|[^\s]+)/g;
+  let match;
+
+  while ((match = redirection.exec(segment)) !== null) {
+    const target = match[1].replace(/^['"]|['"]$/g, '');
+
+    if (target && target !== '/dev/null' && target !== 'NUL') {
+      return target;
+    }
+  }
+
+  const words = splitShellWords(segment);
+  const bin = baseName(words[0] || '');
+
+  if (bin === 'tee') {
+    return words.slice(1).find((word) => !word.startsWith('-')) || '';
+  }
+
+  if (bin === 'mv' || bin === 'cp') {
+    const operands = words.slice(1).filter((word) => !word.startsWith('-'));
+
+    return operands[operands.length - 1] || '';
+  }
+
+  if (bin === 'rm' || bin === 'mkdir' || bin === 'touch') {
+    return words.slice(1).find((word) => !word.startsWith('-')) || '';
+  }
+
+  if (bin === 'sed') {
+    // `sed -i [-e script]... file` — the file operand comes last.
+    const operands = words.slice(1).filter((word) => !word.startsWith('-'));
+
+    return operands[operands.length - 1] || '';
+  }
+
+  if (bin === 'git') {
+    const sub = words[1];
+
+    if (sub === 'checkout' || sub === 'restore') {
+      const operands = words.slice(2).filter((word) => word !== '--' && !word.startsWith('-'));
+
+      return operands[0] || '';
+    }
+  }
+
+  return '';
+}
+
+function classifyBashMutation(segment: string): any {
+  // Discarding output (`> /dev/null`, `2>/dev/null`) is not a repo write.
+  const withoutDevNull = segment.replace(/(?:\d+|&)?>{1,2}\s*(?:\/dev\/null|NUL)\b/g, ' ');
+
+  for (const pattern of BASH_MUTATION_PATTERNS) {
+    if (pattern.test(withoutDevNull)) {
+      const target = extractBashWriteTarget(segment);
+
+      return { category: 'write', subcategory: target ? classifyPathSubcategory(target) : null };
+    }
+  }
+
+  return null;
+}
 
 // Test output fingerprints (node:test TAP, mocha, jest, pytest).
 export function detectTestFailure(output: any, isError: any) {
@@ -467,7 +716,7 @@ export function detectTestFailure(output: any, isError: any) {
   return /command exited with code\s+[1-9]/i.test(text);
 }
 
-function classifyBashSegment(segment: string) {
+function classifyBashSegment(segment: string): any {
   const token = firstToken(segment);
   const bin = baseName(token);
 
@@ -475,11 +724,17 @@ function classifyBashSegment(segment: string) {
     return null;
   }
 
+  // Directory changes annotate the real command; they carry no category and
+  // never poison a chain (`cd /repo && npm test` is a test run).
+  if (bin === 'cd' || bin === 'pushd' || bin === 'popd') {
+    return { neutral: true };
+  }
+
   if (isAgentChatToolsSegment(segment)) {
     return { category: 'process-report' };
   }
 
-  const normalized = segment;
+  const normalized = stripGitCPrefix(stripEnvPrefix(segment));
 
   const testResult = classifyTestSegment(normalized);
 
@@ -493,14 +748,14 @@ function classifyBashSegment(segment: string) {
     }
   }
 
-  for (const pattern of BASH_MUTATION_PATTERNS) {
-    if (pattern.test(segment)) {
-      return { category: 'write' };
-    }
+  const mutation = classifyBashMutation(normalized);
+
+  if (mutation) {
+    return mutation;
   }
 
   for (const pattern of BASH_READ_PATTERNS) {
-    if (pattern.test(segment)) {
+    if (pattern.test(normalized)) {
       return { category: 'read' };
     }
   }
@@ -528,17 +783,37 @@ export function classifyBashCommand(command: any) {
     return null;
   }
 
-  const results = segments.map(classifyBashSegment);
+  const results: any[] = segments.map(classifyBashSegment);
 
   if (results.some((result) => result === null)) {
     return null; // any opaque segment makes the whole command JEV-bound
   }
 
+  const categorized = results.filter((result) => result && !result.neutral);
+
+  if (categorized.length === 0) {
+    return null; // only cd/pushd noise — nothing to attribute
+  }
+
+  // Every test segment counts: a chained `npm test; npm test` is two full
+  // runs, not one (fullRunCount feeds the AC4 replay evidence).
+  const testHits = categorized.filter((result) => result.category === 'test');
+
+  if (testHits.length > 0) {
+    const full = testHits.filter((hit) => hit.runKind === 'full-regression').length;
+
+    return {
+      category: 'test',
+      runKind: full > 0 ? 'full-regression' : 'targeted',
+      testRunCounts: { full, targeted: testHits.length - full },
+    };
+  }
+
   for (const category of SEGMENT_MERGE_PRIORITY) {
-    const hit = results.find((result) => result && result.category === category);
+    const hit = categorized.find((result) => result && result.category === category);
 
     if (hit) {
-      return hit;
+      return { ...hit };
     }
   }
 
@@ -575,10 +850,6 @@ export function createTurnRuleClassifier() {
 
         if (result.category === 'test') {
           result.runFailed = detectTestFailure(step && step.output, step && step.isError);
-        }
-
-        if (result.category === 'write') {
-          result.subcategory = 'product-code'; // bash path extraction is best-effort
         }
 
         if (result.category === 'read') {
@@ -618,5 +889,15 @@ export function createTurnRuleClassifier() {
     return null;
   }
 
-  return { classify };
+  return {
+    classify,
+    // W3/W4 feed JEV and exception-retry outcomes back: a write the rules
+    // could not see (opaque script, JEV-resolved) still flips later reads
+    // from cold-start-reread to purposeful-lookup.
+    noteExternalCategory(category: any) {
+      if (category === 'write') {
+        writeSeen = true;
+      }
+    },
+  };
 }

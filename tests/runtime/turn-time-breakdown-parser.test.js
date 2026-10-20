@@ -167,7 +167,7 @@ test('parser collects stopReason=error assistant rows as error events', () => {
   });
 });
 
-test('parser flags an unparseable trailing line as truncated and excludes it from the offset', () => {
+test('parser leaves an unterminated in-flight tail unconsumed without flagging truncation', () => {
   inTempDir((agentDir) => {
     const good = assistantLine(1000, [{ id: 'c1', name: 'bash', arguments: { command: 'ls' } }]);
     const dir = path.join(agentDir, 'named-sessions');
@@ -180,7 +180,9 @@ test('parser flags an unparseable trailing line as truncated and excludes it fro
 
     const parsed = parseSessionTurnSteps(sessionPath, agentDir);
 
-    assert.equal(parsed.truncated, true);
+    assert.equal(parsed.inFlightTail, true);
+    assert.equal(parsed.truncated, false); // in-flight tail is normal mid-turn
+    assert.equal(parsed.corruptLines, 0);
     assert.equal(parsed.steps.length, 1);
     assert.equal(parsed.steps[0].open, true);
 
@@ -190,7 +192,9 @@ test('parser flags an unparseable trailing line as truncated and excludes it fro
     const reparsed = parseSessionTurnSteps(sessionPath, agentDir, { fromOffset: parsed.endOffset });
 
     assert.equal(reparsed.truncated, false);
+    assert.equal(reparsed.inFlightTail, false);
     assert.equal(reparsed.assistantMessageTotal, 1);
+    assert.equal(reparsed.endOffset, fs.statSync(sessionPath).size);
   });
 });
 
@@ -205,7 +209,8 @@ test('parser flags corrupted middle lines as truncated but keeps parsing', () =>
     const parsed = parseSessionTurnSteps(sessionPath, agentDir);
 
     assert.equal(parsed.truncated, true);
-    assert.equal(parsed.parseErrorCount, 1);
+    assert.equal(parsed.corruptLines, 1);
+    assert.equal(parsed.inFlightTail, false);
     assert.equal(parsed.steps.length, 1);
     assert.equal(parsed.steps[0].durationMs, 500);
   });
@@ -221,6 +226,43 @@ test('parser rejects paths outside the agent named-sessions dir', () => {
     assert.equal(parseSessionTurnSteps('', agentDir), null);
     assert.equal(parseSessionTurnSteps(null, agentDir), null);
     assert.equal(parseSessionTurnSteps(path.join(agentDir, 'named-sessions', 'missing.jsonl'), agentDir), null);
+  });
+});
+
+test('parser incremental offsets are byte-accurate with multibyte content', () => {
+  inTempDir((agentDir) => {
+    const dir = path.join(agentDir, 'named-sessions');
+
+    fs.mkdirSync(dir, { recursive: true });
+
+    const sessionPath = path.join(dir, 's.jsonl');
+    const line1 = assistantLine(1000, [{ id: 'c1', name: 'bash', arguments: { command: 'echo 你好世界' } }]);
+    const line2 = toolResultLine(1500, 'c1', 'bash', '输出：耗时分析 ✓');
+    const line3 = assistantLine(2000, [{ id: 'c2', name: 'read', arguments: { path: '文档/说明.md' } }]);
+    const line4 = toolResultLine(2600, 'c2', 'read', '文件内容');
+
+    // Pass 1 consumes a complete call/result pair; pass 2 resumes at the
+    // byte offset and must see exactly the new pair — no duplicates, no loss.
+    fs.writeFileSync(sessionPath, line1 + '\n' + line2 + '\n');
+
+    const first = parseSessionTurnSteps(sessionPath, agentDir);
+
+    assert.equal(first.steps.map((step) => step.toolCallId).join(','), 'c1');
+    assert.equal(first.inFlightTail, false);
+
+    fs.appendFileSync(sessionPath, line3 + '\n' + line4 + '\n');
+
+    const second = parseSessionTurnSteps(sessionPath, agentDir, { fromOffset: first.endOffset });
+
+    assert.equal(second.steps.map((step) => step.toolCallId).join(','), 'c2');
+    assert.equal(second.steps[0].durationMs, 600);
+    assert.equal(second.truncated, false);
+    assert.equal(second.endOffset, fs.statSync(sessionPath).size);
+
+    const full = parseSessionTurnSteps(sessionPath, agentDir);
+    const incrementalIds = [...first.steps, ...second.steps].map((step) => step.toolCallId).sort();
+
+    assert.deepEqual(incrementalIds, full.steps.map((step) => step.toolCallId).sort());
   });
 });
 

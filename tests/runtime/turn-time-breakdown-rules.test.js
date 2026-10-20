@@ -20,14 +20,16 @@ test('CAFF bridge: CLI form and native tool names → process-report', () => {
   assert.equal(classifyBash('node ./build/lib/agent-chat-tools.js send-public --content x').category, 'process-report');
   assert.equal(classifyBash('node "$CAFF_CHAT_TOOLS_PATH" update-goal --content-stdin').category, 'process-report');
 
-  for (const name of ['update-goal', 'suggest-goal', 'send-public', 'create-delegation', 'await-delegation']) {
-    assert.equal(createTurnRuleClassifier().classify({ toolName: name, args: {} }).category, 'process-report');
+  for (const name of ['update-goal', 'suggest-goal', 'send-public', 'create-delegation', 'await-delegation', 'conversation_notify', 'conversation_request', 'list_rooms', 'room_workspace_preview', 'room_workspace_bind']) {
+    assert.equal(createTurnRuleClassifier().classify({ toolName: name, args: {} }).category, 'process-report', name);
   }
 });
 
 test('full-regression entry points: npm test, test:fast, bare node --test, whole suite dir', () => {
   assert.deepEqual(pick(classifyBash('npm test')), { category: 'test', runKind: 'full-regression' });
   assert.deepEqual(pick(classifyBash('npm run test:fast')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('yarn test:fast')), { category: 'test', runKind: 'full-regression' });
+  assert.deepEqual(pick(classifyBash('pnpm test:smoke')), { category: 'test', runKind: 'full-regression' });
   assert.deepEqual(pick(classifyBash('node --test tests/')), { category: 'test', runKind: 'full-regression' });
   assert.deepEqual(pick(classifyBash('pytest')), { category: 'test', runKind: 'full-regression' });
   assert.deepEqual(pick(classifyBash('go test ./...')), { category: 'test', runKind: 'full-regression' });
@@ -90,6 +92,66 @@ test('bash read-only commands → read', () => {
   for (const command of ['ls server/', 'cat docs/a.md', 'git status', 'git diff HEAD~1', 'grep -rn foo server/', 'rg pattern']) {
     assert.equal(classifyBash(command).category, 'read', command);
   }
+});
+
+test('cd prefixes are neutral and never poison the chain', () => {
+  assert.deepEqual(pick(classifyBash('cd /repo && npm test')), { category: 'test', runKind: 'full-regression' });
+  assert.equal(classifyBash('cd /repo && npm run typecheck').category, 'build-check');
+  assert.equal(classifyBash('cd /repo && grep -n foo server/x.ts').category, 'read');
+  assert.equal(classifyBash('cd /repo && npm test 2>&1 | tail -50').category, 'test');
+  assert.equal(classifyBash('cd /repo'), null); // directory change alone attributes nothing
+});
+
+test('segmentation is quote-aware: alternation inside quotes never splits', () => {
+  assert.equal(classifyBash('rg -n "foo|bar" server/').category, 'read');
+  assert.equal(classifyBash("grep -n 'a;b' docs/a.md").category, 'read');
+  assert.equal(classifyBash('echo "x && y" && cat docs/a.md').category, 'read');
+});
+
+test('sed without -i and git -C <path> are reads', () => {
+  assert.equal(classifyBash("sed -n '200,300p' server/x.ts").category, 'read');
+  assert.equal(classifyBash('git -C /repo log --oneline -3').category, 'read');
+  assert.equal(classifyBash('git -C "/repo path" diff HEAD~1').category, 'read');
+});
+
+test('bash write subcategory comes from the destination path class', () => {
+  assert.deepEqual(pick(classifyBash('cat > tests/runtime/x.test.js')), { category: 'write', subcategory: 'test-code' });
+  assert.deepEqual(pick(classifyBash('echo hi >> docs/a.md')), { category: 'write', subcategory: 'docs-evidence' });
+  assert.deepEqual(pick(classifyBash('sed -i s/a/b/ server/x.ts')), { category: 'write', subcategory: 'product-code' });
+  assert.deepEqual(pick(classifyBash('mv a.ts docs/')), { category: 'write', subcategory: 'docs-evidence' });
+  assert.deepEqual(pick(classifyBash('cp x.ts server/')), { category: 'write', subcategory: 'product-code' });
+  assert.deepEqual(pick(classifyBash('git checkout -- tests/x.test.js')), { category: 'write', subcategory: 'test-code' });
+});
+
+test('redirection to /dev/null is not a write; vcs bookkeeping and mkdir are', () => {
+  assert.equal(classifyBash('grep foo server/x.ts > /dev/null').category, 'read');
+  assert.equal(classifyBash('npm test > /dev/null 2>&1').category, 'test');
+  assert.equal(classifyBash('git add .').category, 'write');
+  assert.equal(classifyBash('git commit -m "msg"').category, 'write');
+  assert.equal(classifyBash('git stash').category, 'write');
+  assert.deepEqual(pick(classifyBash('mkdir -p docs/new')), { category: 'write', subcategory: 'docs-evidence' });
+});
+
+test('every test segment counts toward run totals', () => {
+  const twice = classifyBash('npm test; npm test');
+
+  assert.equal(twice.category, 'test');
+  assert.deepEqual(twice.testRunCounts, { full: 2, targeted: 0 });
+
+  const mixed = classifyBash('npm test && node --test tests/runtime/foo.test.js');
+
+  assert.equal(mixed.runKind, 'full-regression');
+  assert.deepEqual(mixed.testRunCounts, { full: 1, targeted: 1 });
+});
+
+test('noteExternalCategory feeds JEV-resolved writes back into cold-start tracking', () => {
+  const classifier = createTurnRuleClassifier();
+
+  assert.equal(classifier.classify(bashStep('bash scripts/run-all.sh')), null); // JEV-bound
+
+  classifier.noteExternalCategory('write');
+
+  assert.equal(classifier.classify({ toolName: 'read', args: { path: 'server/y.ts' } }).subcategory, 'purposeful-lookup');
 });
 
 test('opaque wrapper scripts and unknown commands → null (JEV fallback)', () => {
