@@ -231,3 +231,112 @@ test('status reasons track env gates: master switch off and key missing stay dis
   const r2 = await invoke(keyMissing.controller);
   assert.equal(r2.json.status.reason, 'api_key_missing');
 });
+
+// Cross-layer seam test: a real node http server, the real controller (with
+// the real local-admin guard), and the real browser fetchJson client from
+// public/shared/api-client.js. The 415-on-clear regression lived exactly at
+// this seam (guard requires JSON content-type; fetchJson only adds it when a
+// body is present), which neither the controller harness nor the JSDOM UI
+// harness crossed.
+test('cross-layer: real fetchJson against a real server can clear the cache, and a bodyless DELETE is rejected 415', async (t) => {
+  const http = require('node:http');
+  const vm = require('node:vm');
+  const { buildErrorJsonPayload } = require('../../build/server/http/response');
+
+  const tempDir = withTempDir('caff-jev-config-seam-');
+  const store = createChatAppStore({
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+  });
+
+  const server = http.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const authority = `127.0.0.1:${port}`;
+
+  const service = createJevServiceConfigService({
+    store,
+    turnTimeBreakdownRepository: store.turnTimeBreakdownRepository,
+    masterSwitchEnabled: true,
+    apiKeyConfigured: true,
+    connectionInfo: { baseUrl: 'https://api.typesafe.ai', model: 'jev-latest' },
+  });
+  const controller = createTurnTimeBreakdownJevConfigController({
+    service,
+    host: '127.0.0.1',
+    port,
+    csrfToken: 'system-service-csrf',
+  });
+  server.on('request', async (req, res) => {
+    try {
+      const requestUrl = new URL(req.url, `http://${authority}`);
+      await controller({ req, res, pathname: requestUrl.pathname, requestUrl });
+    } catch (error) {
+      const { sendJson } = require('../../build/server/http/response');
+      sendJson(res, error.statusCode || 500, buildErrorJsonPayload(error));
+    }
+  });
+
+  t.after(() => {
+    server.close();
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  // Load the real browser client (it reads `window` and the global fetch).
+  const clientContext = { window: {}, fetch: globalThis.fetch, JSON, Error };
+  vm.runInNewContext(
+    fs.readFileSync(path.resolve(__dirname, '..', '..', 'public/shared/api-client.js'), 'utf8'),
+    clientContext,
+    { filename: 'public/shared/api-client.js' }
+  );
+  const fetchJson = clientContext.window.CaffShared.fetchJson;
+
+  const repository = store.turnTimeBreakdownRepository;
+  repository.setJevCacheEntry('k1', { category: 'read', subcategory: null, runKind: null, confidence: 0.8 });
+  repository.setJevCacheEntry('k2', { category: 'test', subcategory: null, runKind: null, confidence: null });
+  repository.upsertStep({
+    taskId: 'task-seam',
+    messageId: 'msg-1',
+    stepKey: 'call-1',
+    toolName: 'bash',
+    category: 'test',
+    classifiedBy: 'jev',
+    jevStatus: 'resolved',
+    startedAt: '2026-10-20T10:00:00.000Z',
+    durationMs: 500,
+  });
+
+  const baseUrl = `http://${authority}${ROUTE}`;
+  const mutationHeaders = {
+    origin: `http://${authority}`,
+    'x-caff-csrf-token': 'system-service-csrf',
+  };
+
+  const before = await fetchJson(baseUrl);
+  assert.equal(before.cache.entries, 2);
+
+  // The regression shape: DELETE without a body → fetchJson sends no JSON
+  // content-type → the guard must reject 415. This is exactly what the
+  // pre-fix UI sent, and it must keep failing so the seam stays honest.
+  await assert.rejects(
+    () => fetchJson(`${baseUrl}/cache`, { method: 'DELETE', headers: mutationHeaders }),
+    (error) => error.status === 415 && error.issues[0].code === 'system_service_config_json_required'
+  );
+  assert.equal((await fetchJson(baseUrl)).cache.entries, 2, 'the rejected DELETE must not have cleared anything');
+
+  // The shipped shape: DELETE with an empty JSON body (what
+  // jev-config-management.js now sends).
+  const cleared = await fetchJson(`${baseUrl}/cache`, {
+    method: 'DELETE',
+    headers: mutationHeaders,
+    body: {},
+  });
+  assert.equal(cleared.cleared, 2);
+
+  const after = await fetchJson(baseUrl);
+  assert.equal(after.cache.entries, 0);
+  const steps = repository.listSteps('task-seam');
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0].category, 'test', 'clearing the cache must not touch classified steps');
+});

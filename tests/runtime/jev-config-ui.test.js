@@ -229,6 +229,10 @@ test('clear cache is a two-step confirm: first click arms, second sends DELETE w
   assert.ok(del, 'a DELETE must be issued');
   assert.equal(del.url, '/api/system-services/turn-time-breakdown-jev/cache');
   assert.equal(del.options.headers['X-CAFF-CSRF-Token'], 'csrf-token');
+  // Seam lock: the local-admin guard rejects mutations without a JSON
+  // content-type (415), and fetchJson only adds that header when a body is
+  // present — so the DELETE must carry a body.
+  assert.ok(del.options.body && typeof del.options.body === 'object', 'DELETE must carry a JSON body so fetchJson emits application/json');
   assert.ok(toasts.some((m) => m.includes('已清空 3 条')));
   // After refresh the count renders zero and the button disables.
   assert.equal($('#jev-cache-count').textContent, '0');
@@ -240,6 +244,25 @@ test('clear button starts disabled when the cache is empty', async (t) => {
   await management.refresh();
   assert.equal($('#jev-cache-count').textContent, '0');
   assert.equal($('#clear-jev-cache').disabled, true);
+});
+
+test('a re-render disarms the two-step clear confirm: one click after refresh must not DELETE', async (t) => {
+  const { management, requests, $ } = setup();
+  await management.refresh();
+
+  $('#clear-jev-cache').click(); // arm
+  assert.equal($('#clear-jev-cache').textContent, '确认清空？再次点击确认');
+
+  await management.refresh(); // re-render replaces the button node
+  const reRenderedButton = $('#clear-jev-cache');
+  assert.equal(reRenderedButton.textContent, '清空分类缓存');
+
+  reRenderedButton.click(); // must arm again, not execute
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(!requests.some((r) => r.options.method === 'DELETE'), 'no DELETE may fire after a re-render disarmed the confirm');
+  assert.equal($('#clear-jev-cache').textContent, '确认清空？再次点击确认');
 });
 
 test('read-only deployment renders a locked empty state and issues no request', async (t) => {

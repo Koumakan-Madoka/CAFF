@@ -88,6 +88,16 @@
     function render() {
       const locked = !options.isEnabled();
 
+      // Any re-render (refresh, save) replaces the clear button node, so a
+      // previously armed two-step confirm must not survive into the new DOM
+      // — otherwise a single click after a refresh would execute the
+      // destructive DELETE while the button looks disarmed.
+      clearArmed = false;
+      if (clearArmedTimer) {
+        clearTimeout(clearArmedTimer);
+        clearArmedTimer = 0;
+      }
+
       if (!configuration) {
         root.innerHTML = locked
           ? '<div class="empty-state">当前部署为只读模式，无法读取耗时分析分类（JEV）状态。</div>'
@@ -230,6 +240,9 @@
         const result = await options.fetchJson(`${ROUTE}/cache`, {
           method: 'DELETE',
           headers: { 'X-CAFF-CSRF-Token': options.getCsrfToken() },
+          // local-admin guard requires a JSON content-type on every
+          // mutation; fetchJson only adds it when a body is present.
+          body: {},
         });
         const cleared = result && Number.isFinite(result.cleared) ? result.cleared : 0;
         options.showToast(`已清空 ${cleared} 条分类缓存；已落库步骤的分类结果不受影响`);
