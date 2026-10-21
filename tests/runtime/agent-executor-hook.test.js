@@ -28,7 +28,7 @@ function createRunHandle(reply, resultOverrides = {}) {
   return handle;
 }
 
-function createObservableRunHandle(runIndex = 1) {
+function createObservableRunHandle(runIndex = 1, request = null) {
   const handle = new EventEmitter();
   handle.runId = `run-observability-live-${runIndex}`;
   handle.sessionPath = '';
@@ -38,10 +38,13 @@ function createObservableRunHandle(runIndex = 1) {
     stopReason: 'toolUse',
     timestamp: 101,
     usage: { input: 120, output: 30, cacheRead: 0, totalTokens: 150 },
+    serviceTier: require('../../build/lib/service-tier').normalizeServiceTierRequest(request),
   };
   handle.resultPromise = new Promise((resolve) => {
     setImmediate(() => {
+      if (request) handle.emit('service_tier_request', { request });
       handle.emit('assistant_message', {
+        serviceTier: usageCall.serviceTier,
         messageKey: usageCall.key,
         message: {
           role: 'assistant',
@@ -121,11 +124,14 @@ function createHarnessPromptRunHandle(reply) {
   return handle;
 }
 
-function createFailedRunHandle(error) {
+function createFailedRunHandle(error, request = null) {
   const handle = new EventEmitter();
   handle.runId = 'run-structured-failure';
   handle.sessionPath = '';
-  handle.resultPromise = Promise.reject(error);
+  handle.resultPromise = request ? new Promise((_resolve, reject) => setImmediate(() => {
+    handle.emit('service_tier_request', { request });
+    reject(error);
+  })) : Promise.reject(error);
   return handle;
 }
 
@@ -426,7 +432,7 @@ test('agent executor persists structured provider failure metadata on failed rep
     responseId: `failed-response-${index + 1}`,
     usage: { input: index + 1, output: 1, totalTokens: index + 2 },
   }));
-  let nextRunHandle = createFailedRunHandle(invocationError);
+  let nextRunHandle = createFailedRunHandle(invocationError, { status: 'requested', serviceTierRequested: 'priority', supportSource: 'allowlist' });
 
   minimalPi.startRun = () => nextRunHandle;
   delete require.cache[agentExecutorPath];
@@ -441,6 +447,7 @@ test('agent executor persists structured provider failure metadata on failed rep
   const { createTurnState } = require(turnStatePath);
   const agent = {
     id: 'agent-structured-failure',
+    fast: true,
     name: 'Structured Failure',
     description: 'Tests provider failure projection.',
     personaPrompt: 'Be brief.',
@@ -510,6 +517,9 @@ test('agent executor persists structured provider failure metadata on failed rep
   assert.equal(failedWrite.patch.modelUsage.calls.length, 4);
   assert.equal(Object.hasOwn(failedWrite.patch.metadata, 'modelUsage'), true);
   assert.equal(failedWrite.patch.metadata.modelUsage.modelCallCount, 4);
+  assert.equal(failedWrite.patch.metadata.fastMode.priorityRequestCount, 1);
+  assert.equal(failedWrite.patch.metadata.fastMode.executionConfirmed, false);
+  assert.deepEqual(failedWrite.patch.metadata.fastMode.supportSources, ['allowlist']);
   assert.equal(Object.hasOwn(failedWrite.patch.metadata.modelUsage, 'calls'), false);
 
   nextRunHandle = createRunHandle('', {
@@ -1255,7 +1265,7 @@ test('agent executor publishes a bounded safe model-call event while the assista
   const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
   const minimalPi = require(minimalPiPath);
   const originalStartRun = minimalPi.startRun;
-  const runHandle = createObservableRunHandle();
+  const runHandle = createObservableRunHandle(1, { status: 'requested', serviceTierRequested: 'priority', supportSource: 'catalog', payload: 'must-not-leak' });
 
   minimalPi.startRun = () => runHandle;
   delete require.cache[agentExecutorPath];
@@ -1270,6 +1280,7 @@ test('agent executor publishes a bounded safe model-call event while the assista
   const { createTurnState } = require(turnStatePath);
   const agent = {
     id: 'agent-live-model-event',
+    fast: true,
     name: 'Live Model Event',
     description: 'Tests running observability.',
     personaPrompt: 'Be brief.',
@@ -1328,6 +1339,14 @@ test('agent executor publishes a bounded safe model-call event while the assista
   assert.equal(modelEvents[0].payload.event.timelineSequence, 1);
   assert.equal(modelEvents[0].payload.event.modelCallSequence, 1);
   assert.equal(modelEvents[0].payload.event.tokenUsage.totalTokens, 150);
+  assert.equal(modelEvents[0].payload.event.serviceTier.serviceTierRequested, 'priority');
+  assert.equal(modelEvents[0].payload.event.serviceTier.executionConfirmed, false);
+  const updates = broadcastEvents.filter((e) => e.eventName === 'conversation_message_updated').map((e) => e.payload.message);
+  assert.ok(updates.some((m) => m.status === 'streaming' && m.metadata.fastMode.priorityRequestCount === 1));
+  assert.equal(updates.at(-1).metadata.serviceTierRequested, 'priority');
+  assert.equal(updates.at(-1).metadata.serviceTierObserved, null);
+  assert.equal(updates.at(-1).metadata.fastMode.configured, true);
+  assert.equal(JSON.stringify(updates).includes('must-not-leak'), false);
   assert.equal(JSON.stringify(modelEvents[0].payload).includes('hidden-live-reasoning'), false);
   assert.equal(JSON.stringify(modelEvents[0].payload).includes('visible but not part of observability SSE'), false);
 });

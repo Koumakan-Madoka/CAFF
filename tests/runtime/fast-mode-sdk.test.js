@@ -42,6 +42,7 @@ async function runScenario(t, { fast, transport, provider = 'openai-codex', api 
   let toolCalls = 0;
   let runtime;
   const extensionErrors = [];
+  const tierReports = [];
   const sendResponse = () => responseEvents(`resp_${++responseIndex}`, responseIndex === 1);
   globalThis.fetch = async (url, options) => {
     const urlText = String(url);
@@ -126,7 +127,7 @@ async function runScenario(t, { fast, transport, provider = 'openai-codex', api 
     },
     createAgentSessionFromServices: (options) => sdk.createAgentSessionFromServices({ ...options, tools: ['ping'] }),
   };
-  ({ runtime } = await createSdkRuntime(testSdk, config));
+  ({ runtime } = await createSdkRuntime(testSdk, config, { onServiceTierRequest: (request) => tierReports.push(request) }));
   await runAgentRuntime(runtime, 'Call ping then finish.', () => {}, { onExtensionError: (e) => extensionErrors.push(e) });
   assert.deepEqual(extensionErrors, []);
   assert.ok(requests.length >= 1);
@@ -156,6 +157,13 @@ async function runScenario(t, { fast, transport, provider = 'openai-codex', api 
     }
   }
   assert.equal(catalogCalls, fast === true && provider === 'openai-codex' && api === 'openai-codex-responses' ? 1 : 0);
+  assert.equal(tierReports.length, rejectTier ? 1 : 2, 'hook evidence counts model invocations, not transport retries');
+  for (const report of tierReports) {
+    assert.equal(report.status, expectedFast ? 'requested' : !fast ? 'disabled' : provider !== 'openai-codex' ? 'out_of_scope' : 'unsupported');
+    assert.equal(report.serviceTierRequested, expectedFast ? 'priority' : null);
+    assert.equal(report.supportSource, expectedFast || (fast && supported === false) ? 'catalog' : fast ? 'out_of_scope' : null);
+    assert.equal(Object.keys(report).length, 3, 'never report credentials or provider content');
+  }
 }
 
 for (const transport of ['sse', 'websocket-cached']) {

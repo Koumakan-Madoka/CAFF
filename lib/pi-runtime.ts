@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events');
 const { fork, spawn, spawnSync } = require('node:child_process');
 const { createSqliteRunStore } = require('./sqlite-store');
 const { StreamDiagnostics, DIAGNOSTIC_LIMITS } = require('./stream-diagnostics');
+const { createServiceTierState, recordServiceTierRequest, snapshotServiceTier } = require('./service-tier');
 
 // Retain the exported empty sentinels for API compatibility, never select a vendor.
 const DEFAULT_PROVIDER = '';
@@ -427,6 +428,7 @@ function assistantUsageCallsFromState(state: any) {
     stopReason: String(entry && entry.stopReason ? entry.stopReason : '').trim(),
     timestamp: entry && entry.timestamp !== undefined ? entry.timestamp : null,
     usage: entry && entry.usage && typeof entry.usage === 'object' && !Array.isArray(entry.usage) ? entry.usage : null,
+    serviceTier: entry && entry.serviceTier || null,
   })).filter((entry: any) => entry.usage);
 }
 
@@ -538,6 +540,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       assistantUsageByKey: new Map(),
       activeToolCalls: new Map(),
     };
+    const serviceTierState = createServiceTierState(options.fast);
+    let pendingServiceTier: any = null;
     const childState = { code: null as any, signal: null as any };
     const processHandlers: Array<[any, any]> = [];
     let settled = false;
@@ -570,7 +574,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       emit('stream_diagnostics', { summary });
     }
 
-    function recordAssistantUsage(message: any) {
+    function recordAssistantUsage(message: any, serviceTier: any = null) {
       const usage = extractAssistantUsage(message);
 
       if (!usage) {
@@ -585,6 +589,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         stopReason: message && message.stopReason ? String(message.stopReason) : '',
         timestamp: message && message.timestamp !== undefined ? message.timestamp : null,
         usage,
+        serviceTier: serviceTier || state.assistantUsageByKey.get(key)?.serviceTier || null,
       });
       state.assistantUsage = aggregateAssistantUsage(
         Array.from(state.assistantUsageByKey.values()).map((entry: any) => entry && entry.usage)
@@ -967,6 +972,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     }
 
     function finishWithError(error: any) {
+      error.serviceTier = snapshotServiceTier(serviceTierState);
       if (settled) {
         return;
       }
@@ -1003,6 +1009,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     }
 
     function finishWithResult(result: any) {
+      result.serviceTier = snapshotServiceTier(serviceTierState);
       if (settled) {
         return;
       }
@@ -1079,6 +1086,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       const eventType = String(event && event.type ? event.type : '').trim();
       const toolCallId = String(event && event.toolCallId ? event.toolCallId : '').trim();
 
+      // A pre-provider failure in a later call must not inherit prior Fast
+      // evidence. message_start is too late: adapters can fire onPayload first.
+      if (eventType === 'turn_start') pendingServiceTier = null;
+
       if (eventType === 'tool_execution_start' && toolCallId) {
         state.activeToolCalls.set(toolCallId, normalizeRecoveryIdentifier(event.toolName));
       } else if (eventType === 'tool_execution_end' && toolCallId) {
@@ -1091,9 +1102,11 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         && event.message
         && event.message.role === 'assistant'
       ) {
-        const isNewModelCall = recordAssistantUsage(event.message);
+        const serviceTier = pendingServiceTier;
+        pendingServiceTier = null;
+        const isNewModelCall = recordAssistantUsage(event.message, serviceTier);
         if (isNewModelCall) {
-          emit('assistant_message', { messageKey: getAssistantMessageKey(event.message) || null, message: event.message, text: extractAssistantText(event.message) });
+          emit('assistant_message', { messageKey: getAssistantMessageKey(event.message) || null, message: event.message, text: extractAssistantText(event.message), serviceTier });
         }
         emit('pi_event', { piEvent: event });
         appendAssistantFallback(event.message);
@@ -1137,7 +1150,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
           if (message && message.role === 'assistant') {
             const isNewModelCall = recordAssistantUsage(message);
             if (isNewModelCall) {
-              emit('assistant_message', { messageKey: getAssistantMessageKey(message) || null, message, text: extractAssistantText(message) });
+              emit('assistant_message', { messageKey: getAssistantMessageKey(message) || null, message, text: extractAssistantText(message), serviceTier: null });
             }
             appendAssistantFallback(message);
             emitAssistantError(message);
@@ -1211,6 +1224,15 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       if (message.type === 'ready') {
         refreshHeartbeatTimeout();
+        return;
+      }
+
+      if (message.type === 'service_tier_request') {
+        const request = recordServiceTierRequest(serviceTierState, message.request);
+        if (request) {
+          pendingServiceTier = request;
+          emit('service_tier_request', { request, summary: snapshotServiceTier(serviceTierState) });
+        }
         return;
       }
 

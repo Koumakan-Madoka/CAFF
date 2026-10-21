@@ -174,7 +174,11 @@ switch. `node_modules` stays untouched.
   Existing stored `fast: true` on unsupported models remains harmless: no
   visible toggle or injection. Room profile descriptions mark configured Fast
   even when a custom description is present; default-profile markers use the
-  role's default setting. These markers do not claim actual backend execution.
+  role's default setting. The room menu does not probe the account and may still
+  mark a stored unsupported profile as configured; the round's request evidence
+  distinguishes unsupported/out-of-scope decisions. These markers do not claim
+  actual backend execution. A custom role with an empty/inherited model has no
+  toggle until a supported model is explicitly selected.
 - `fast` never enters the session-reuse static fingerprint
   (`[provider, model, profileId, thinking]` in `agent-executor.ts`):
   toggling must not cold-start sessions, and shipping the feature must not
@@ -182,14 +186,46 @@ switch. `node_modules` stays untouched.
 
 ## Observability
 
-- Message metadata records the requested tier for the round
-  (`serviceTierRequested: "priority" | null`).
-- Backend-executed tier (or the pi-ai cost-multiplier side channel) is shown
-  only when actually observed; otherwise the UI shows "requested Fast"
-  without claiming execution.
-- Display points: `createModelCallObservabilityEvent` (assistant_message
-  handling in `agent-executor.ts`), `message-trace-inspector.ts`
-  sessionProjection, `message-timeline.js` next to the token badge.
+- The extension reports a closed `service_tier_request` IPC event for each
+  `before_provider_request` invocation. `status` is `requested`, `disabled`,
+  `out_of_scope`, `unsupported`, or `error`; `supportSource` is `catalog`,
+  `allowlist`, `out_of_scope`, `account_changed`, or null. It never sends a
+  credential, account ID, request body, catalog entry or exception text.
+  Resolver/payload exceptions preserve pi's fail-open behavior (unchanged
+  payload), but emit `error`, not a successful Fast request. A diagnostic
+  callback failure must not undo an already prepared priority payload.
+- Message metadata stores `fastMode` (schema version 1): `configured`,
+  `requestCount`, `priorityRequestCount`, `skippedRequestCount`, `errorCount`,
+  `supportSources`, `lastRequest`, and safe derived display text. The summary is
+  persisted/broadcast as soon as a hook report arrives, and retained on success,
+  provider rejection and cancellation. It is bounded independently of call count.
+  Top-level `serviceTierRequested` is `priority` iff at least one payload was
+  prepared with priority; otherwise null. `serviceTierObserved` is always null
+  and `executionConfirmed` false in this SDK version.
+- Counts mean **request-preparation hook invocations**, including in-session
+  compaction, not network attempts or completed model calls. HTTP/WS retries
+  reuse the post-hook body without re-firing the hook. Hook evidence does not
+  prove the request was sent, accepted, or executed at priority; later extensions
+  could also replace the payload. W3 wire-capture tests establish serialization
+  behavior for CAFF's configured extension chain, not backend scheduling.
+- Each assistant usage call and model-call timeline event carries its own
+  normalized `serviceTier` decision. A new `turn_start` clears pending evidence,
+  preventing a pre-provider failure from inheriting the previous call's Fast
+  status. Duplicate `agent_end` messages preserve earlier evidence without
+  counting twice. Old sessions/calls without evidence remain unknown, not off.
+- Display points: message timeline badge, expanded model/tool trace per-call
+  pills, Trace Inspector session summary and per-call detail, and Markdown
+  trace export. Labels distinguish configured/not-yet-requested, requested/
+  execution-unconfirmed, partial requests, disabled, unsupported, out-of-scope
+  and injection errors. Source and counts are available in tooltips/details.
+- No request-derived cost multiplier is applied: CAFF preserves pi-ai's cost
+  estimate. A token-price ratio is not a reliable executed-tier side channel
+  (zero/unknown/custom prices and provider-specific reporting can coincide).
+  Both cost and executed-tier limitations are shown in the Fast evidence detail;
+  this feature does not present dollar estimates as subscription quota consumed.
+  Backend confirmation may only be added with a real, separately captured
+  response-tier signal; configuration, successful injection, timing or an
+  unverified price ratio must never set `executionConfirmed`.
 
 ## Runtime verification (W3)
 
@@ -231,6 +267,27 @@ real-subscription and screenshot acceptance remains W6.
   evidence. Storage/API and runtime resolution have separate W2/W3 tests.
 - `configured-model-catalog` and `fast-mode-config` regressions lock the same
   subscription provider/API gate in server projections.
+
+## Observability verification (W5)
+
+Hermetic regression suites (no real subscription calls):
+
+- `fast-mode-observability`: source/status isolation, allowlist/catalog paths,
+  fail-open resolver/payload errors, bounded summaries, closed secret-free
+  projections, partial requests, per-call usage/live timeline preservation.
+- `fast-mode-sdk`: real SDK SSE/WS hook reports alongside W3 wire captures;
+  counts explicitly exclude transport retries. `pi-runtime`: fake-host IPC,
+  per-call correlation, duplicate terminal events and pre-provider failures.
+- `agent-executor-hook`: immediate streaming metadata/SSE, terminal metadata,
+  failed replies and source projection. `trace-inspector`: isolated database
+  storage, API/detail/export projection and legacy unknown evidence.
+- `tests/ui/fast-mode-observability.test.js`: real browser production message,
+  tool trace and inspector renderers; same-card updates, configured/requested/
+  unconfirmed and all skip/error statuses. Set `CAFF_FAST_UI_EVIDENCE_DIR` for
+  fixture screenshots. These do not replace W6 real-room screenshots.
+
+These tests are in `npm test`. W5 improves evidence visibility only; AC5 remains
+open until W6 and must not be inferred from passing hermetic tests.
 
 ## Known limitations
 

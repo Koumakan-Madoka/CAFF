@@ -1781,6 +1781,12 @@
       if (totalCostUsd !== null) {
         callMeta.appendChild(createTracePill(formatUsdCost(totalCostUsd) || '$0.0000', 'duration'));
       }
+      const serviceTier = call && call.serviceTier;
+      if (serviceTier && serviceTier.label) {
+        const badge = createTracePill(serviceTier.label, serviceTier.status === 'error' ? 'failed' : 'neutral');
+        badge.title = serviceTier.detail || '';
+        callMeta.appendChild(badge);
+      }
 
       detail.textContent = bits.length > 0 ? bits.join(' · ') : '该次模型调用没有可展示的 token 用量。';
       titleWrap.append(eyebrow, callTitle);
@@ -2543,6 +2549,7 @@
         contextSnapshot && contextSnapshot.snapshotId ? contextSnapshot.snapshotId : '',
         sessionActionLabel,
         tokenUsageLabel,
+        metadata && metadata.fastMode ? JSON.stringify(metadata.fastMode) : '',
         tokenUsage && tokenUsage.inputTokens !== null ? tokenUsage.inputTokens : '',
         tokenUsage && tokenUsage.uncachedInputTokens !== null ? tokenUsage.uncachedInputTokens : '',
         tokenUsage && tokenUsage.outputTokens !== null ? tokenUsage.outputTokens : '',
@@ -2781,6 +2788,15 @@
         tokenBadge.textContent = tokenUsageLabel;
         tokenBadge.title = formatTokenUsageTitle(tokenUsage, sessionActionLabel);
         time.appendChild(tokenBadge);
+      }
+
+      const fastMode = metadata && metadata.fastMode;
+      if (message.role === 'assistant' && fastMode && fastMode.label) {
+        const badge = document.createElement('span');
+        badge.className = 'message-token-usage message-fast-mode';
+        badge.textContent = fastMode.label;
+        badge.title = fastMode.detail || '';
+        time.appendChild(badge);
       }
 
       body.classList.toggle('digest-result-body', isDigestResultMessage);
