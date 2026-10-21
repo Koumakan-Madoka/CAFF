@@ -206,10 +206,12 @@ test('configured model catalog projects Fast support only for allowlisted openai
       { provider: 'openai-codex', id: 'gpt-6.1-sol', name: 'GPT 6.1 Sol', api: 'openai-codex-responses' },
       { provider: 'openai-codex', id: 'gpt-5.4-mini', name: 'GPT 5.4 mini', api: 'openai-codex-responses' },
       { provider: 'openai', id: 'gpt-6.1-sol', name: 'Relay Sol', api: 'openai-responses' },
+      { provider: 'custom-codex', id: 'gpt-6.1-sol', name: 'Custom Codex', api: 'openai-codex-responses' },
     ],
     readProviderDocument: () => ({ providers: {
       'openai-codex': { models: [{ id: 'gpt-6.1-sol', family: 'gpt' }, { id: 'gpt-5.4-mini', family: 'gpt' }] },
       openai: { models: [{ id: 'gpt-6.1-sol', family: 'gpt' }] },
+      'custom-codex': { models: [{ id: 'gpt-6.1-sol', family: 'gpt' }] },
     } }),
     readRuntimeDefault: () => ({ provider: 'openai-codex', model: 'gpt-6.1-sol' }),
   });
@@ -222,6 +224,8 @@ test('configured model catalog projects Fast support only for allowlisted openai
   assert.equal(miniCodex.supportsFast, false, 'codex model outside the allowlist does not support Fast');
   const solRelay = options.find((option) => option.key === 'openai\u001fgpt-6.1-sol');
   assert.equal(solRelay.supportsFast, false, 'same model id on a non-codex api never supports Fast');
+  assert.equal(options.find((option) => option.provider === 'custom-codex').supportsFast, false,
+    'a custom provider using the Codex dialect must match the runtime subscription-provider gate');
 });
 
 test('bootstrap model options cannot be expanded by stale Agent or Profile rows', () => {

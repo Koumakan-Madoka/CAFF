@@ -48,6 +48,8 @@ const CUSTOM_EDITABLE_FIELDS = Object.freeze([
   'fast',
 ]);
 const FAMILY_UPDATE_FIELD_SET = new Set(FAMILY_EDITABLE_FIELDS);
+// modelProfiles must remain here: normalizeProfiles validates nested runtime
+// fields (including strict Fast booleans) whenever the profile list is replaced.
 const FAMILY_RUNTIME_FIELD_SET = new Set(['provider', 'model', 'thinking', 'modelProfiles']);
 
 function normalize(value: any) {

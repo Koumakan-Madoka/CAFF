@@ -1,7 +1,8 @@
 // Fast mode (service_tier: "priority") support detection for openai-codex
 // subscription models. See docs/engineering/runtime/fast-mode-openai-codex.md.
 //
-// Rule: a model supports Fast iff its pi-ai api is openai-codex-responses AND
+// Rule: a model supports Fast iff its provider is openai-codex, its pi-ai api
+// is openai-codex-responses AND
 // the model is known to offer a `priority` service tier. The preferred source
 // is the live backend catalog (GET /backend-api/codex/models), which is only
 // available to credential-holding runtimes; this static allowlist seeded from
@@ -28,6 +29,7 @@ function normalize(value: any) {
 }
 
 export function supportsFastMode(option: any) {
-  return normalize(option?.api) === FAST_MODE_API
+  return normalize(option?.provider) === 'openai-codex'
+    && normalize(option?.api) === FAST_MODE_API
     && FAST_MODE_MODEL_SET.has(normalize(option?.model));
 }

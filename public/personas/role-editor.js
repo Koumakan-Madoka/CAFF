@@ -20,12 +20,30 @@
       const option = options.getModelOptions().find((item) => item.key === key) || null;
       target.provider = option ? option.provider : '';
       target.model = option ? option.model : '';
+      if (!utils.supportsFast(options.getModelOptions(), target.provider, target.model)) target.fast = false;
       const levels = utils.supportedThinkingLevels(options.getModelOptions(), target.provider, target.model);
       if (target.thinking && !levels.includes(target.thinking)) {
         target.thinking = '';
         return true;
       }
       return false;
+    }
+
+    function fastMarkup(target, index = null) {
+      if (!utils.supportsFast(options.getModelOptions(), target.provider, target.model)) return '';
+      const id = index === null ? 'role-default-fast' : `role-profile-fast-${index}`;
+      const label = index === null ? '默认配置 Fast 模式' : `配置档 ${index + 1} Fast 模式`;
+      return `<div class="runtime-fast-control">
+        <div class="toggle-row"><span>Fast 模式</span><button id="${id}" ${index === null ? '' : 'data-fast-toggle'} class="toggle" type="button" aria-label="${label}" aria-describedby="${id}-hint" aria-pressed="${target.fast === true}"></button></div>
+        <p id="${id}-hint" class="management-note">速度约 1.5 倍，套餐用量消耗更快；保存后下一轮生效，请求前校验模型支持情况。</p>
+      </div>`;
+    }
+
+    function toggleFast(target, id) {
+      target.fast = target.fast !== true;
+      render();
+      document.getElementById(id).focus();
+      options.onDraftChange(draft);
     }
 
     function profileMarkup(profile, index) {
@@ -42,6 +60,7 @@
           <div class="field-grid">
             <label><span>模型</span><select data-field="model"></select></label>
             <label><span>思考强度</span><select data-field="thinking"></select></label>
+            ${fastMarkup(profile, index)}
           </div>
           ${isFamily() ? '' : `<label><span>Profile Persona Prompt</span><textarea data-field="personaPrompt" data-profile-persona rows="4">${utils.escapeHtml(profile.personaPrompt || '')}</textarea></label>`}
         </article>`;
@@ -130,6 +149,7 @@
           <div class="field-grid">
             <label><span>默认模型</span><select id="role-default-model" ${canConfigureRuntime ? '' : 'disabled'}></select></label>
             <label><span>默认思考强度</span><select id="role-default-thinking" ${canConfigureRuntime ? '' : 'disabled'}></select></label>
+            ${fastMarkup(draft)}
           </div>
           <p class="management-note">不支持的旧值不会被就近夹取；切换模型时会明确重置为“跟随运行时默认”。</p>
         </section>
@@ -163,12 +183,14 @@
         if (reset) options.showToast('原思考强度不受新模型支持，已改为跟随运行时默认');
       });
       document.getElementById('role-default-thinking').addEventListener('change', (event) => { draft.thinking = /** @type {HTMLSelectElement} */ (event.target).value; });
+      const fastToggle = document.getElementById('role-default-fast');
+      if (fastToggle) fastToggle.addEventListener('click', () => toggleFast(draft, 'role-default-fast'));
       document.getElementById('add-runtime-profile').addEventListener('click', () => {
         const choices = modelOptions();
         const first = utils.findModelOption(options.getModelOptions(), draft.provider, draft.model) || choices[0] || null;
         const index = (draft.modelProfiles || []).length;
         draft.modelProfiles = Array.isArray(draft.modelProfiles) ? draft.modelProfiles : [];
-        draft.modelProfiles.push({ id: utils.nextProfileId(draft.modelProfiles), name: '', description: '', provider: first ? first.provider : '', model: first ? first.model : '', thinking: '', personaPrompt: '' });
+        draft.modelProfiles.push({ id: utils.nextProfileId(draft.modelProfiles), name: '', description: '', provider: first ? first.provider : '', model: first ? first.model : '', thinking: '', fast: false, personaPrompt: '' });
         render();
         root.querySelector(`[data-profile-index="${index}"] [data-field="name"]`).focus();
       });
@@ -191,6 +213,8 @@
           if (reset) options.showToast('Profile 原思考强度不受新模型支持，已改为跟随运行时默认');
         });
         card.querySelector('[data-field="thinking"]').addEventListener('change', (event) => { draft.modelProfiles[index].thinking = /** @type {HTMLSelectElement} */ (event.target).value; });
+        const profileFastToggle = card.querySelector('[data-fast-toggle]');
+        if (profileFastToggle) profileFastToggle.addEventListener('click', () => toggleFast(draft.modelProfiles[index], `role-profile-fast-${index}`));
       });
       document.getElementById('default-toggle').addEventListener('click', () => { draft.isDefaultChatRole = !draft.isDefaultChatRole; render(); options.onDraftChange(draft); });
       document.getElementById('session-reuse-toggle').addEventListener('click', () => { draft.sessionReuseEnabled = draft.sessionReuseEnabled === false; render(); options.onDraftChange(draft); });

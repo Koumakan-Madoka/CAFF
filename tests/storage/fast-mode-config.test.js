@@ -115,14 +115,17 @@ function gptFamilyRole(overrides = {}) {
   };
 }
 
-test('fast support detection gates on the codex api plus the W1 allowlist', () => {
+test('fast support detection gates on the subscription provider, codex api and W1 allowlist', () => {
   assert.equal(FAST_MODE_API, 'openai-codex-responses');
   assert.ok(FAST_MODE_MODEL_ALLOWLIST.includes('gpt-6.1-sol'));
-  assert.equal(supportsFastMode({ api: 'openai-codex-responses', model: 'gpt-6.1-sol' }), true);
-  assert.equal(supportsFastMode({ api: 'openai-codex-responses', model: 'gpt-5.4-mini' }), false);
-  assert.equal(supportsFastMode({ api: 'openai-responses', model: 'gpt-6.1-sol' }), false);
-  assert.equal(supportsFastMode({ api: '', model: 'gpt-6.1-sol' }), false);
-  assert.equal(supportsFastMode({ api: 'openai-codex-responses', model: '' }), false);
+  const codex = { provider: 'openai-codex', api: 'openai-codex-responses', model: 'gpt-6.1-sol' };
+  assert.equal(supportsFastMode(codex), true);
+  assert.equal(supportsFastMode({ ...codex, provider: 'custom-codex' }), false);
+  assert.equal(supportsFastMode({ ...codex, provider: '' }), false);
+  assert.equal(supportsFastMode({ ...codex, model: 'gpt-5.4-mini' }), false);
+  assert.equal(supportsFastMode({ ...codex, api: 'openai-responses' }), false);
+  assert.equal(supportsFastMode({ ...codex, api: '' }), false);
+  assert.equal(supportsFastMode({ ...codex, model: '' }), false);
   assert.equal(supportsFastMode(null), false);
 });
 

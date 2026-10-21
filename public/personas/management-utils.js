@@ -77,6 +77,12 @@
     return option && Array.isArray(option.supportedThinkingLevels) ? option.supportedThinkingLevels : [];
   }
 
+  function supportsFast(modelOptions, provider, model) {
+    const option = findModelOption(modelOptions, provider, model);
+    return option && option.provider === 'openai-codex'
+      && option.api === 'openai-codex-responses' && option.supportsFast === true;
+  }
+
   function normalizeThinkingLevel(modelOptions, provider, model, current) {
     const value = String(current || '').trim();
     return supportedThinkingLevels(modelOptions, provider, model).includes(value) ? value : '';
@@ -174,5 +180,6 @@
     requestIssueMessage,
     roleModelOptions,
     supportedThinkingLevels,
+    supportsFast,
   };
 })();

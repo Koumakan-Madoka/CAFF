@@ -85,7 +85,8 @@ catalog including `service_tiers` per model. Verified:
   whether the backend rejects `priority` on a catalog model lacking the tier
   is unverifiable here — treat catalog/allowlist gating as the guardrail.
 
-Runtime rule: a model supports Fast iff the (cached) backend catalog lists it
+Runtime rule: within the `openai-codex` provider / `openai-codex-responses`
+API scope, a model supports Fast iff the (cached) backend catalog lists it
 with a `priority` service tier; if the catalog cannot be fetched, fall back to
 the static allowlist seeded from the 0.160.0 probe: `gpt-6.1-sol`,
 `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`,
@@ -97,6 +98,14 @@ allowlist must not override it; the allowlist only covers the fetch-failed
 path. Unsupported models do not show the toggle and never get the
 injection. If the backend still rejects `priority` at request time, the round
 fails with the provider error — no silent downgrade.
+
+The credential-blind `/api/agents` model-option projection uses the same
+provider/API filter and static allowlist, exposed as `supportsFast`. It does
+not probe accounts: a catalog-only/new model may be supported at request time
+but have no editor toggle until the allowlist is updated. Conversely, a
+projected toggle is not proof that the active account's live catalog supports
+the tier; a live negative still wins. The editor and room selector describe
+Fast as configured and subject to request-time support checks, not executed.
 
 ## Injection point
 
@@ -151,10 +160,21 @@ switch. `node_modules` stays untouched.
   it belongs to one runtime (one CAFF round), not a cross-round disk cache.
   Credential/account/base-URL changes clear it; generation checks discard
   in-flight results from the previous identity. Tokens/account IDs never
-  enter logs or trace. No directory probe occurs when Fast is off.
+  enter logs or trace. No directory probe occurs when Fast is off. Since hosts
+  fork each round, enabled rounds can incur up to 1.5 seconds of first-request
+  catalog latency; cached results only avoid repeated probes within that round.
 - Model-profile writes replace the whole profile list: omitted `fast` is
   normalized to false rather than preserving the prior profile value. Editors
   must always send an explicit boolean (the shared payload builder does).
+- The role editor displays independent Fast toggles next to thinking for the
+  default runtime and each profile, for both family and custom roles. New
+  roles/profiles default off; the hint says approximately 1.5x speed and faster
+  subscription usage. Explicitly changing to an unsupported model clears that
+  draft's toggle, so switching back does not silently re-enable paid usage.
+  Existing stored `fast: true` on unsupported models remains harmless: no
+  visible toggle or injection. Room profile descriptions mark configured Fast
+  even when a custom description is present; default-profile markers use the
+  role's default setting. These markers do not claim actual backend execution.
 - `fast` never enters the session-reuse static fingerprint
   (`[provider, model, profileId, thinking]` in `agent-executor.ts`):
   toggling must not cold-start sessions, and shipping the feature must not
@@ -197,6 +217,21 @@ Hermetic tests (no real subscription or network I/O):
 These tests prove request semantics, **not** backend execution as priority;
 real-subscription and screenshot acceptance remains W6.
 
+## Editor verification (W4)
+
+- `tests/ui/fast-mode-ui.test.js` runs the production editor, room selector and
+  styles in a real headless browser with synthetic data and blocked network:
+  independent family/custom default/profile values, explicit boolean payloads,
+  reopening saved values, legacy/new defaults, unsupported model switches,
+  provider/API filtering, mouse/keyboard access, mobile toggle geometry and
+  room-specific selection markers (including custom descriptions).
+- The suite is part of `npm test`. Set `CAFF_FAST_UI_EVIDENCE_DIR` to an ignored
+  output directory to capture desktop/mobile editor and room-selector images.
+  These are **fixture screenshots**, not real-room/API-persistence or W6 E2E
+  evidence. Storage/API and runtime resolution have separate W2/W3 tests.
+- `configured-model-catalog` and `fast-mode-config` regressions lock the same
+  subscription provider/API gate in server projections.
+
 ## Known limitations
 
 - Backend under-reports the executed tier (`default` even for accepted
@@ -213,3 +248,5 @@ real-subscription and screenshot acceptance remains W6.
   subscription because every account-available catalog model offers
   `priority`; catalog/allowlist gating is the guardrail.
 - System Scribe (digest/title/recovery) is out of scope; no Fast there.
+  In-session context compaction uses the same session provider hook and therefore
+  inherits priority when enabled; account for that usage/latency in W6 comparisons.

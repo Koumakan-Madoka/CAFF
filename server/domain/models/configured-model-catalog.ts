@@ -186,7 +186,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
         // Credential-blind projection: the live backend catalog needs the
         // subscription token, so model options fall back to the static
         // allowlist (fast-mode-openai-codex.md, "Support detection").
-        supportsFast: supportsFastMode({ api: entry.api, model: entry.model }),
+        supportsFast: supportsFastMode({ provider: entry.provider, api: entry.api, model: entry.model }),
         supportedThinkingLevels: entry.supportedThinkingLevels,
         input: entry.input,
         contextWindow: entry.contextWindow ?? null,
