@@ -54,7 +54,7 @@ test('migration creates the three turn time breakdown tables', (t) => {
 
   const stepColumns = store.db.prepare(`PRAGMA table_info(chat_turn_time_steps)`).all().map((row) => row.name);
 
-  for (const column of ['task_id', 'step_key', 'category', 'classified_by', 'jev_status', 'run_kind', 'run_count_full', 'run_count_targeted', 'payload_json']) {
+  for (const column of ['task_id', 'step_key', 'category', 'classified_by', 'jev_status', 'run_kind', 'run_count_full', 'run_count_targeted', 'write_scope', 'payload_json']) {
     assert.ok(stepColumns.includes(column), `missing column ${column}`);
   }
 });
@@ -72,6 +72,25 @@ test('step upsert is idempotent on (task_id, step_key) and updates in place', (t
   assert.equal(rows[0].category, 'read');
   assert.equal(rows[0].subcategory, 'cold-start-reread');
   assert.equal(rows[0].run_kind, null);
+});
+
+test('write scope survives the upsert round-trip (firstWriteMs depends on it)', (t) => {
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+
+  repo.upsertStep(stepRow({ stepKey: 'call-sandbox', category: 'write', subcategory: 'product-code', runKind: null, testRunCounts: null, writeScope: 'sandbox' }));
+  repo.upsertStep(stepRow({ stepKey: 'call-repo', category: 'write', subcategory: 'product-code', runKind: null, testRunCounts: null, writeScope: 'repo' }));
+
+  const byKey = Object.fromEntries(repo.listSteps('task-1').map((row) => [row.step_key, row]));
+
+  assert.equal(byKey['call-sandbox'].write_scope, 'sandbox');
+  assert.equal(byKey['call-repo'].write_scope, 'repo');
+
+  // A later sparse re-upsert (async JEV resolution, backfill timing) must
+  // replace the scope, not silently NULL it out.
+  repo.upsertStep(stepRow({ stepKey: 'call-sandbox', category: 'write', subcategory: 'product-code', runKind: null, testRunCounts: null, writeScope: 'sandbox', durationMs: 6000 }));
+
+  assert.equal(repo.getStep('task-1', 'call-sandbox').write_scope, 'sandbox');
 });
 
 test('summary lifecycle: live insert then terminal update preserves task link', (t) => {

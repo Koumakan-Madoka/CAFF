@@ -39,12 +39,12 @@ export class TurnTimeBreakdownRepository {
         task_id, message_id, step_key, tool_name, category, subcategory,
         classified_by, jev_status, confidence, started_at, ended_at,
         duration_ms, run_kind, run_failed, run_count_full, run_count_targeted,
-        payload_json, created_at, updated_at
+        write_scope, payload_json, created_at, updated_at
       ) VALUES (
         @taskId, @messageId, @stepKey, @toolName, @category, @subcategory,
         @classifiedBy, @jevStatus, @confidence, @startedAt, @endedAt,
         @durationMs, @runKind, @runFailed, @runCountFull, @runCountTargeted,
-        @payloadJson, @createdAt, @updatedAt
+        @writeScope, @payloadJson, @createdAt, @updatedAt
       )
       ON CONFLICT(task_id, step_key) DO UPDATE SET
         message_id = excluded.message_id,
@@ -61,6 +61,7 @@ export class TurnTimeBreakdownRepository {
         run_failed = excluded.run_failed,
         run_count_full = excluded.run_count_full,
         run_count_targeted = excluded.run_count_targeted,
+        write_scope = excluded.write_scope,
         payload_json = COALESCE(excluded.payload_json, chat_turn_time_steps.payload_json),
         updated_at = excluded.updated_at
     `);
@@ -156,6 +157,10 @@ export class TurnTimeBreakdownRepository {
       runFailed: step.runFailed === true ? 1 : step.runFailed === false ? 0 : null,
       runCountFull: runCounts && Number.isFinite(runCounts.full) ? runCounts.full : null,
       runCountTargeted: runCounts && Number.isFinite(runCounts.targeted) ? runCounts.targeted : null,
+      // §5 write scope must survive the storage round-trip: firstWriteMs
+      // (§2) counts only repo-scope writes, so a dropped scope would
+      // silently count sandbox/temp scratch as a repo write.
+      writeScope: step.writeScope ? String(step.writeScope) : null,
       payloadJson: step.payloadJson ? String(step.payloadJson) : null,
       createdAt: now,
       updatedAt: now,

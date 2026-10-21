@@ -112,6 +112,70 @@ test('summary goes live on the first step and seals complete on task completion'
   assert.equal(done.categoryMs.thinking, 15_000);
 });
 
+test('firstWriteMs counts repo writes only: sandbox scratch never advances it (storage round-trip)', async (t) => {
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+  let nowMs = 70_000;
+  const pipeline = createPipeline(store, { now: () => nowMs });
+
+  // Sandbox probe edit at +1s relative to turn start, repo edit at +60s.
+  // Without write_scope persistence the metric would read 1000ms.
+  pipeline.enqueueStep({ taskId: 'task-1', messageId: 'msg-1', conversationId: 'conv-1', step: step({
+    stepKey: 'call-scratch',
+    toolCallId: 'call-scratch',
+    toolName: 'edit',
+    args: { path: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/role-x/private/probe.mts' },
+    output: '',
+    startedAtMs: 2_000,
+    endedAtMs: 3_000,
+  }) });
+  pipeline.enqueueStep({ taskId: 'task-1', messageId: 'msg-1', conversationId: 'conv-1', step: step({
+    stepKey: 'call-repo',
+    toolCallId: 'call-repo',
+    toolName: 'edit',
+    args: { path: 'server/index.ts' },
+    output: '',
+    startedAtMs: 61_000,
+    endedAtMs: 62_000,
+  }) });
+  await pipeline.flushForTests();
+
+  // The scope must be real stored data, not just an in-memory pass value.
+  const byKey = Object.fromEntries(repo.listSteps('task-1').map((row) => [row.step_key, row]));
+
+  assert.equal(byKey['call-scratch'].write_scope, 'sandbox');
+  assert.equal(byKey['call-repo'].write_scope, 'repo');
+
+  pipeline.completeTask({ taskId: 'task-1', messageId: 'msg-1', conversationId: 'conv-1' });
+  await pipeline.flushForTests();
+
+  const done = repo.getSummary('msg-1');
+
+  assert.equal(done.metrics.firstWriteMs, 59_000);
+});
+
+test('a turn whose only writes land in the sandbox reports firstWriteMs null', async (t) => {
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+  const pipeline = createPipeline(store, { now: () => 10_000 });
+
+  pipeline.enqueueStep({ taskId: 'task-2', messageId: 'msg-2', conversationId: 'conv-1', step: step({
+    stepKey: 'call-scratch',
+    toolCallId: 'call-scratch',
+    toolName: 'edit',
+    args: { path: '.pi-sandbox/agent-sandboxes/role-x/private/probe.mts' },
+    output: '',
+    startedAtMs: 2_000,
+    endedAtMs: 3_000,
+  }) });
+  pipeline.completeTask({ taskId: 'task-2', messageId: 'msg-2', conversationId: 'conv-1' });
+  await pipeline.flushForTests();
+
+  const done = repo.getSummary('msg-2');
+
+  assert.equal(done.metrics.firstWriteMs ?? null, null);
+});
+
 test('duplicate toolCallId upserts one row (pi + bridge double-source dedup)', async (t) => {
   const store = openStore(t);
   const repo = store.turnTimeBreakdownRepository;
