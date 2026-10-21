@@ -256,22 +256,44 @@ test('live breakdown shows the refresh affordance; failed refresh keeps last res
   assert.deepEqual(errors, []);
 });
 
+test('open panel with an empty (404) state renders honest empty copy and keeps its toggle', async (t) => {
+  const { page, errors, renderWith } = await launchHarness(t);
+
+  await renderWith({
+    message: ASSISTANT_MESSAGE,
+    traceState: null,
+    breakdownState: { open: true, status: 'empty', data: null },
+  });
+
+  // §10: an open panel always keeps its toggle so it can be closed.
+  assert.equal(await page.locator('.message-time-breakdown-toggle').count(), 1);
+  assert.equal(await page.locator('.message-tool-trace-pill', { hasText: '暂无记录' }).count(), 1);
+  assert.match(await page.locator('.message-time-breakdown-note').first().textContent(), /暂无耗时分析记录/u);
+  assert.deepEqual(errors, []);
+});
+
 function loadBreakdownStateMachine(fetchJson) {
   const app = readPublic('app.js');
   const slice = app.slice(
     app.indexOf('function timeBreakdownStateForMessage'),
     app.indexOf('function renderConversationList')
   );
-  const state = { messageTimeBreakdownById: new Map(), selectedConversationId: 'c1' };
+  const state = {
+    messageTimeBreakdownById: new Map(),
+    selectedConversationId: 'c1',
+    currentConversation: { id: 'c1', messages: [{ id: 'm1', role: 'assistant' }] },
+  };
+  const toasts = [];
   const context = {
     state,
     fetchJson,
+    showToast: (text) => toasts.push(text),
     canInspectToolTrace: (message) => Boolean(message && message.role === 'assistant'),
     scheduleConversationPaneRender: () => {},
     Number, String, Array, Object, JSON, Map, Promise, Error, Boolean, encodeURIComponent,
   };
-  vm.runInNewContext(`${slice}; this.__api = { toggleMessageTimeBreakdown, fetchMessageTimeBreakdown, getMessageTimeBreakdownState, timeBreakdownStateForMessage };`, context);
-  return context.__api;
+  vm.runInNewContext(`${slice}; this.__api = { toggleMessageTimeBreakdown, fetchMessageTimeBreakdown, getMessageTimeBreakdownState, timeBreakdownStateForMessage, handleTimeBreakdownRefreshClick };`, context);
+  return { api: context.__api, toasts };
 }
 
 const BREAKDOWN_MESSAGE = { id: 'm1', role: 'assistant' };
@@ -279,7 +301,7 @@ const BREAKDOWN_MESSAGE = { id: 'm1', role: 'assistant' };
 test('fetch state machine: toggle fetches once, terminal reopen is cached, live reopen refetches, 404 is an honest empty state', async () => {
   const calls = [];
   let responder = async () => ({ breakdown: breakdownData() });
-  const api = loadBreakdownStateMachine((url) => {
+  const { api, toasts } = loadBreakdownStateMachine((url) => {
     calls.push(url);
     return responder();
   });
@@ -313,6 +335,24 @@ test('fetch state machine: toggle fetches once, terminal reopen is cached, live 
   api.toggleMessageTimeBreakdown('c1', BREAKDOWN_MESSAGE);
   await api.toggleMessageTimeBreakdown('c1', BREAKDOWN_MESSAGE);
   assert.equal(calls.length, 4);
+});
+
+test('refresh click fetches once against the contract route without toggling open state', async () => {
+  const calls = [];
+  const { api, toasts } = loadBreakdownStateMachine((url) => {
+    calls.push(url);
+    return Promise.resolve({ breakdown: breakdownData() });
+  });
+
+  // The refresh click is a re-fetch, not a toggle: open stays untouched.
+  api.handleTimeBreakdownRefreshClick({ dataset: { messageId: 'm1' } });
+  assert.deepEqual(calls, ['/api/conversations/c1/messages/m1/time-breakdown']);
+  assert.equal(api.timeBreakdownStateForMessage('m1').open, false);
+
+  // Unknown message id → toast, no fetch.
+  api.handleTimeBreakdownRefreshClick({ dataset: { messageId: 'missing' } });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(toasts, ['找不到耗时分析对应的消息']);
 });
 
 test('source wiring guards: click delegation and category bar styles', () => {

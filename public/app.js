@@ -2574,6 +2574,23 @@ function toggleMessageTimeBreakdown(conversationId, message) {
   }
 }
 
+// Extracted from the delegated click handler so the refresh behavior is
+// unit-testable (tests/ui/turn-time-breakdown.test.js vm slice).
+function handleTimeBreakdownRefreshClick(target) {
+  const messageId = target && target.dataset ? target.dataset.messageId || '' : '';
+  const message =
+    state.currentConversation && Array.isArray(state.currentConversation.messages)
+      ? state.currentConversation.messages.find((item) => item.id === messageId) || null
+      : null;
+
+  if (!message) {
+    showToast('找不到耗时分析对应的消息');
+    return;
+  }
+
+  void fetchMessageTimeBreakdown(state.currentConversation.id, message, { force: true });
+}
+
 function timeBreakdownSignatureForMessage(message) {
   const breakdownState = timeBreakdownStateForMessage(message && message.id);
   const breakdown = breakdownState && breakdownState.data ? breakdownState.data : null;
@@ -5574,18 +5591,7 @@ function bindEvents() {
         : null;
 
     if (timeBreakdownRefresh) {
-      const messageId = timeBreakdownRefresh.dataset.messageId || '';
-      const message =
-        state.currentConversation && Array.isArray(state.currentConversation.messages)
-          ? state.currentConversation.messages.find((item) => item.id === messageId) || null
-          : null;
-
-      if (!message) {
-        showToast('找不到耗时分析对应的消息');
-        return;
-      }
-
-      void fetchMessageTimeBreakdown(state.currentConversation.id, message, { force: true });
+      handleTimeBreakdownRefreshClick(timeBreakdownRefresh);
       return;
     }
 

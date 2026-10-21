@@ -390,7 +390,10 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   trace loads it stays discoverable, except that after a 404 (empty
   state) with no trace loaded it hides — a permanently empty button
   would be dishonest. An open or loading panel always keeps its toggle
-  so it can be closed.
+  so it can be closed, and a message with cached breakdown data keeps it
+  too. After a 404 the retry path requires loading the trace first (the
+  toggle reappears once the trace shows tool steps); reopening an
+  `empty` state re-fetches.
 - Panel: per-category duration bars (ms + %), metrics row (首次改文件时间,
   会话复用及原因, 全量回归遍数/失败次数), and the step list with category
   labels. In-progress turns expose a refresh action that re-fetches the
@@ -453,7 +456,8 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 - `tests/http/turn-time-breakdown-controller.test.js`: cached read, lazy
   backfill, `partial-*` statuses, cross-chunk orphan merge, error mapping.
 - `tests/ui/turn-time-breakdown.test.js`: button visibility, panel
-  rendering, in-progress refresh.
+  rendering (incl. empty/live/partial states), in-progress refresh
+  click → fetch.
 - Golden-sample regression (goal AC3) and replay-vs-retrospective script
   (AC4) land with W6.
 
