@@ -95,7 +95,12 @@ Turn-level metrics (also committed):
     `parse_offset` in **bytes**, always to a newline boundary; a
     call/result pair split across two incremental passes (open step in
     pass N, end-only orphan in pass N+1) is merged back into one step by
-    `toolCallId` in the pipeline — never stored as two rows. An
+    `toolCallId` in the pipeline — never stored as two rows. The merge
+    keeps the stored row's classification **including its write scope**
+    (§5 rule 8): washing it to NULL would re-count sandbox/temp scratch
+    as a repo write. The turn-span anchor is the min of the pass's first
+    event and stored row starts, so `firstWriteMs` never goes negative
+    when a kept open row predates the pass's first event. An
     unterminated trailing line that does not yet parse is an in-flight
     tail: excluded from `parse_offset`, and it does **not** flip
     `partial-truncated`; that status is reserved for genuinely corrupt
@@ -312,6 +317,7 @@ CREATE TABLE IF NOT EXISTS chat_turn_time_steps (
   run_count_full INTEGER,           -- §5 per-segment counts (`npm test; npm test` = 2)
   run_count_targeted INTEGER,
   write_scope TEXT,                 -- §5: 'repo'|'sandbox'|'temp'|'unknown'; NULL (legacy/JEV) ≈ repo
+                                    -- upsert: COALESCE(excluded, stored) — sparse writes never wash it
   payload_json TEXT,                -- JEV-bound steps only: {args, truncated output} for retry
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

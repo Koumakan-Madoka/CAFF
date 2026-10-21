@@ -61,7 +61,10 @@ export class TurnTimeBreakdownRepository {
         run_failed = excluded.run_failed,
         run_count_full = excluded.run_count_full,
         run_count_targeted = excluded.run_count_targeted,
-        write_scope = excluded.write_scope,
+        -- Sparse writes (JEV resolution, timing refresh, §4 orphan merge)
+        -- must not wash a stored scope back to NULL ≈ repo; only an
+        -- explicit scope overwrites, same guard as payload_json.
+        write_scope = COALESCE(excluded.write_scope, chat_turn_time_steps.write_scope),
         payload_json = COALESCE(excluded.payload_json, chat_turn_time_steps.payload_json),
         updated_at = excluded.updated_at
     `);

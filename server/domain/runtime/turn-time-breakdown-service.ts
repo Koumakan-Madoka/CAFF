@@ -276,6 +276,11 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
             testRunCounts: Number.isFinite(openRow.run_count_full) || Number.isFinite(openRow.run_count_targeted)
               ? { full: openRow.run_count_full || 0, targeted: openRow.run_count_targeted || 0 }
               : null,
+            // §4 merge keeps the stored row's classification — and that
+            // includes the write scope: dropping it here would wash a
+            // sandbox/temp scratch write back to NULL ≈ repo (§5) and
+            // pollute firstWriteMs.
+            writeScope: openRow.write_scope || null,
           });
           continue;
         }
@@ -477,13 +482,25 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
   const messageEndMs = messageTerminal
     ? fromIso(message.updatedAt) || fromIso(message.createdAt)
     : null;
-  const stepEnds = repository
-    .listSteps(slice.taskId)
+  const storedStepRows = repository.listSteps(slice.taskId);
+  const stepEnds = storedStepRows
     .map((row: any) => fromIso(row.ended_at))
     .filter((value: any) => value !== null);
   const derivedTurnEndMs = messageTerminal
     ? Math.max(messageEndMs || 0, ...stepEnds, 0) || null
     : nowMs;
+
+  // §3: the turn span starts at the trace's first event. A stored open
+  // row from an earlier pass (kept by the §4 orphan merge) can predate
+  // this pass's firstEventMs — take the min so firstWriteMs never goes
+  // negative on the merge branch.
+  const storedStepStartMs = storedStepRows
+    .map((row: any) => fromIso(row.started_at))
+    .filter((value: any) => value !== null);
+  const parsedFirstEventMs = parsed && Number.isFinite(parsed.firstEventMs) ? parsed.firstEventMs : null;
+  const effectiveTurnStartMs = parsedFirstEventMs !== null
+    ? Math.min(parsedFirstEventMs, ...storedStepStartMs)
+    : (storedStepStartMs.length > 0 ? Math.min(...storedStepStartMs) : undefined);
 
   summary = recomputeSummary(repository, {
     messageId,
@@ -491,9 +508,7 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
     conversationId,
     status,
     errorEvents: parsed ? parsed.errorEvents : [],
-    turnStartedAtMs: parsed && parsed.firstEventMs !== null && parsed.firstEventMs !== undefined
-      ? parsed.firstEventMs
-      : undefined,
+    turnStartedAtMs: effectiveTurnStartMs,
     turnEndedAtMs: derivedTurnEndMs !== null ? derivedTurnEndMs : undefined,
     metrics: reuseMetrics,
     parseOffset: parsed ? parsed.endOffset : (summary ? summary.parseOffset : null),

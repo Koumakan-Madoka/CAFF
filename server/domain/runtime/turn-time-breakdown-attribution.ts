@@ -214,7 +214,10 @@ export function computeTurnAttribution(options: any = {}) {
       continue;
     }
 
-    const offset = startMs - turnStartMs;
+    // Clamp at 0: a stored open row kept by the §4 orphan merge can
+    // predate the caller's turn-start anchor; AC1 must never render a
+    // negative "首次改文件" (the service also re-anchors at the min).
+    const offset = Math.max(0, startMs - turnStartMs);
 
     if (firstWriteMs === null || offset < firstWriteMs) {
       firstWriteMs = offset;

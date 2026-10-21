@@ -343,6 +343,77 @@ test('cross-chunk merge: a result parsed in a later pass joins the stored open r
   assert.equal(second.json.breakdown.categoryMs.test, 7000);
 });
 
+test('orphan merge preserves write_scope; a sandbox write never moves firstWriteMs', async (t) => {
+  const { store, conversation, handler, tempDir } = createFixture(t, 'merge-scope');
+  // An earlier pass stored an open sandbox write (probe script); the
+  // session slice now visible contains only the orphan toolResult (the
+  // call line was lost to truncation — the AC5 truncation shape).
+  const sessionPath = writeSession(tempDir, 's9.jsonl', [
+    toolResultLine(BASE + 8_000, 'c9', 'edit', 'ok'),
+  ]);
+  const taskId = 'task-merge-scope-1';
+
+  createTaskRow(store, { taskId, sessionPath });
+  createAssistantMessage(store, conversation.id, 'msg-1', { taskId, status: 'streaming' });
+  store.turnTimeBreakdownRepository.upsertStep({
+    taskId,
+    messageId: 'msg-1',
+    stepKey: 'c9',
+    toolName: 'edit',
+    category: 'write',
+    subcategory: 'product-code',
+    classifiedBy: 'rules',
+    writeScope: 'sandbox',
+    startedAt: new Date(BASE + 1_000).toISOString(),
+    endedAt: null,
+  });
+
+  const response = await invoke(handler, breakdownUrl(conversation.id, 'msg-1'));
+  const breakdown = response.json.breakdown;
+
+  assert.equal(breakdown.steps.length, 1, 'orphan result must merge into the stored open row');
+  assert.equal(breakdown.steps[0].writeScope, 'sandbox', 'merge must not wash write_scope back to NULL');
+  assert.equal(breakdown.steps[0].durationMs, 7000);
+  assert.equal(breakdown.metrics.firstWriteMs, null, 'a sandbox write must not count as first repo write');
+
+  const stored = store.turnTimeBreakdownRepository.getStep(taskId, 'c9');
+
+  assert.equal(stored.write_scope, 'sandbox', 'the stored row keeps its scope through the merge upsert');
+});
+
+test('orphan merge re-anchors the span at the open row start: firstWriteMs never goes negative', async (t) => {
+  const { store, conversation, handler, tempDir } = createFixture(t, 'merge-repo');
+  const sessionPath = writeSession(tempDir, 's10.jsonl', [
+    toolResultLine(BASE + 8_000, 'c9', 'edit', 'ok'),
+  ]);
+  const taskId = 'task-merge-repo-1';
+
+  createTaskRow(store, { taskId, sessionPath });
+  createAssistantMessage(store, conversation.id, 'msg-1', { taskId, status: 'streaming' });
+  store.turnTimeBreakdownRepository.upsertStep({
+    taskId,
+    messageId: 'msg-1',
+    stepKey: 'c9',
+    toolName: 'edit',
+    category: 'write',
+    subcategory: 'product-code',
+    classifiedBy: 'rules',
+    writeScope: 'repo',
+    startedAt: new Date(BASE + 1_000).toISOString(),
+    endedAt: null,
+  });
+
+  const response = await invoke(handler, breakdownUrl(conversation.id, 'msg-1'));
+  const breakdown = response.json.breakdown;
+
+  assert.equal(breakdown.steps.length, 1);
+  assert.equal(breakdown.steps[0].writeScope, 'repo');
+  // Without the min re-anchor the span would start at the orphan result
+  // (+8s) and firstWriteMs would read -7000.
+  assert.equal(breakdown.metrics.firstWriteMs, 0, 'span re-anchors at the open row start (min of trace events)');
+  assert.ok(breakdown.metrics.firstWriteMs >= 0, 'firstWriteMs must never go negative');
+});
+
 test('live refresh keeps the original turn span, firstWriteMs, and error intervals', async (t) => {
   const { store, conversation, handler, tempDir } = createFixture(t, 'live-refresh');
   const sessionPath = writeSession(tempDir, 's7.jsonl', [
