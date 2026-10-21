@@ -324,6 +324,57 @@ test('classifier vanished with jevEnabled still true: pending rows are downgrade
   assert.equal(repo.listJevRetrySteps('task-1').length, 0);
 });
 
+test('full chain: real DB toggle + real resolver drives JEV on/off in the same process', async (t) => {
+  // Contract §6 acceptance chain: DB toggle ON (+ env gates) → opaque
+  // steps actually go through JEV; toggle OFF → new steps land as
+  // jev_status='disabled'. Both flips without rebuilding the pipeline.
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+  const calls = [];
+  const pipeline = createPipeline(store, {
+    resolveJevEnabled: createJevEnabledResolver({
+      store,
+      masterSwitchEnabled: true,
+      apiKeyConfigured: true,
+    }),
+    createJevClient: () => ({
+      ask: async (input) => {
+        calls.push(input);
+        return { answers: { category: { choice: 'test', confidence: 0.9 } } };
+      },
+    }),
+  });
+  const opaque = (stepKey) => step({
+    stepKey,
+    toolCallId: stepKey,
+    args: { command: 'python scripts/run_suite.py' },
+    output: '12 passed in 3.4s',
+  });
+
+  // Toggle ON → the opaque step is classified by JEV in place.
+  store.setSystemServiceToggle(JEV_SERVICE_TYPE, true);
+  pipeline.enqueueStep({ taskId: 'task-on', messageId: 'msg-on', conversationId: 'c', step: opaque('call-on') });
+  await pipeline.flushForTests();
+
+  const onRow = repo.listSteps('task-on')[0];
+
+  assert.equal(onRow.category, 'test');
+  assert.equal(onRow.classified_by, 'jev');
+  assert.equal(onRow.jev_status, 'ok');
+  assert.equal(calls.length, 1);
+
+  // Toggle OFF in the same process → the next step never touches JEV.
+  store.setSystemServiceToggle(JEV_SERVICE_TYPE, false);
+  pipeline.enqueueStep({ taskId: 'task-off', messageId: 'msg-off', conversationId: 'c', step: opaque('call-off') });
+  await pipeline.flushForTests();
+
+  const offRow = repo.listSteps('task-off')[0];
+
+  assert.equal(offRow.category, 'unclassified');
+  assert.equal(offRow.jev_status, 'disabled');
+  assert.equal(calls.length, 1);
+});
+
 test('JEV timeout and error degrade to unclassified with honest status, never rejecting', async (t) => {
   const store = openStore(t);
   const repo = store.turnTimeBreakdownRepository;
