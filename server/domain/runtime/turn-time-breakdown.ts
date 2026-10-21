@@ -942,13 +942,17 @@ const BASH_MUTATION_PATTERNS = [
   /^(mv|cp|rm|mkdir|touch)(\s|$)/,
   /^git\s+(checkout|restore)\s+(--\s*)?\S/,
   // VCS bookkeeping mutates repo state, not file contents: write, NULL path class.
-  /^git\s+(apply|am|add|commit|rm|mv|stash)(\s|$)/,
+  // `git stash list|show` are read-only inspections — excluded here and
+  // matched as read below (golden sample gs-052/gs-146/gs-294).
+  /^git\s+(apply|am|add|commit|rm|mv)(\s|$)/,
+  /^git\s+stash(\s+(?!list\b|show\b)\S*)?\s*$/,
 ];
 
 const BASH_READ_PATTERNS = [
   // sed without -i only writes to stdout → read (sed -i hits mutation first).
-  /^(cat|head|tail|less|more|wc|file|stat|ls|dir|pwd|which|type|echo|grep|rg|find|tree|sed|diff|sort|uniq|tr|du|df|env|printenv|date|uname|basename|dirname|realpath|readlink|paste|cut|column|jq|comm|join|nl|expand|unexpand|fold|fmt|iconv|xxd|od)(\s|$)/,
+  /^(cat|head|tail|less|more|wc|file|stat|ls|dir|pwd|which|type|echo|grep|rg|find|tree|sed|diff|sort|uniq|tr|du|df|env|printenv|date|uname|basename|dirname|realpath|readlink|paste|cut|column|jq|comm|join|nl|expand|unexpand|fold|fmt|iconv|xxd|od|awk|gawk|mawk)(\s|$)/,
   /^git\s+(log|show|diff|status|blame|branch|tag\s*$|rev-parse|ls-files|grep|remote\s*$|describe)(\s|$)/,
+  /^git\s+stash\s+(list|show)(\s|$)/,
 ];
 
 // §5 rule 4: the write subcategory comes from the DESTINATION path class.
@@ -1005,7 +1009,12 @@ function extractBashWriteTarget(segment: string) {
 
 function classifyBashMutation(segment: string): any {
   // Discarding output (`> /dev/null`, `2>/dev/null`) is not a repo write.
-  const withoutDevNull = segment.replace(/(?:\d+|&)?>{1,2}\s*(?:\/dev\/null|NUL)\b/g, ' ');
+  // Neither is scratch redirection into the OS temp area (`> /tmp/x`,
+  // `> "$TMPDIR/x"`, `> %TEMP%\\x`) — 改 covers 产品代码/测试/文档与证据,
+  // and a temp scratch file is none of those (golden sample gs-148/gs-293).
+  const withoutDevNull = segment
+    .replace(/(?:\d+|&)?>{1,2}\s*(?:\/dev\/null|NUL)\b/g, ' ')
+    .replace(/(?:\d+|&)?>{1,2}\s*(?:"(?:\/tmp\/|\/var\/tmp\/|\$\{?TMPDIR\}?|\%TEMP\%|\%TMP\%)[^"]*"|'(?:\/tmp\/|\/var\/tmp\/|\$\{?TMPDIR\}?|\%TEMP\%|\%TMP\%)[^']*'|(?:\/tmp\/|\/var\/tmp\/|\$\{?TMPDIR\}?|\%TEMP\%|\%TMP\%)\S*)/g, ' ');
 
   for (const pattern of BASH_MUTATION_PATTERNS) {
     if (pattern.test(withoutDevNull)) {

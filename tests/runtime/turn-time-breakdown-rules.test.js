@@ -129,7 +129,29 @@ test('redirection to /dev/null is not a write; vcs bookkeeping and mkdir are', (
   assert.equal(classifyBash('git add .').category, 'write');
   assert.equal(classifyBash('git commit -m "msg"').category, 'write');
   assert.equal(classifyBash('git stash').category, 'write');
+  assert.equal(classifyBash('git stash pop').category, 'write');
   assert.deepEqual(pick(classifyBash('mkdir -p docs/new')), { category: 'write', subcategory: 'docs-evidence' });
+});
+
+test('git stash list/show are read; scratch redirection into OS temp is not a write', () => {
+  // Golden sample findings gs-052/gs-146/gs-294: `git stash list` is an
+  // inspection, not VCS bookkeeping that mutates repo state.
+  assert.equal(classifyBash('git stash list').category, 'read');
+  assert.equal(classifyBash('git stash list | wc -l').category, 'read');
+  assert.equal(classifyBash('git stash show -p').category, 'read');
+  assert.equal(classifyBash('git rev-parse HEAD && git status --porcelain | wc -l && git stash list | wc -l').category, 'read');
+
+  // Golden sample findings gs-148/gs-293: a temp scratch file is not 改
+  // (产品代码/测试/文档与证据); the read semantics of the chain dominate.
+  assert.equal(classifyBash('git status -uall --porcelain | awk \'{print $2}\' > /tmp/all.txt && wc -l /tmp/all.txt').category, 'read');
+  assert.equal(classifyBash('grep -o "x" a.js > /tmp/fst.txt').category, 'read');
+  assert.equal(classifyBash('npm test > "$TMPDIR/run.log"').category, 'test');
+  const scratchHeredoc = classifyBash('cat > /tmp/scratch.txt <<\'EOF\'');
+  assert.equal(scratchHeredoc === null || scratchHeredoc.category !== 'write', true);
+
+  // Real repo redirections stay write.
+  assert.equal(classifyBash('echo hi > docs/x.md').category, 'write');
+  assert.equal(classifyBash('cat > tests/x.test.js').category, 'write');
 });
 
 test('every test segment counts toward run totals', () => {

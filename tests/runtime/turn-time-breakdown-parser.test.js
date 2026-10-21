@@ -350,3 +350,34 @@ test('slice startIndex 0 never skips results in incremental passes', () => {
     assert.equal(second.steps[0].orphan, true);
   });
 });
+
+test('performance: a multi-MB session log parses and classifies well under 10s (AC5)', () => {
+  inTempDir((agentDir) => {
+    // ~6MB synthetic log: 3000 tool steps with ~1KB outputs each, mirroring
+    // the shape of the largest real session logs seen in the 三期房间 corpus.
+    const lines = [];
+    const output = 'x'.repeat(1500);
+    for (let i = 0; i < 4000; i++) {
+      const start = 1000000 + i * 2000;
+      lines.push(assistantLine(start, [{ id: 'c' + i, name: 'bash', arguments: { command: i % 7 === 0 ? 'npm test' : 'rg pattern src/' } }]));
+      lines.push(toolResultLine(start + 1500, 'c' + i, 'bash', output, i % 11 === 0));
+    }
+    const sessionPath = writeSession(agentDir, 'big.jsonl', lines);
+    const sizeMb = fs.statSync(sessionPath).size / (1024 * 1024);
+    assert.ok(sizeMb > 4, `synthetic log only ${sizeMb.toFixed(1)}MB — expected multi-MB`);
+
+    const { createTurnRuleClassifier } = require('../../build/server/domain/runtime/turn-time-breakdown');
+    const t0 = performance.now();
+    const parsed = parseSessionTurnSteps(sessionPath, agentDir);
+    const classifier = createTurnRuleClassifier();
+    let classified = 0;
+    for (const s of parsed.steps) {
+      if (classifier.classify(s)) classified++;
+    }
+    const elapsedMs = performance.now() - t0;
+
+    assert.equal(parsed.steps.length, 4000);
+    assert.ok(classified > 0);
+    assert.ok(elapsedMs < 10000, `parse+classify took ${elapsedMs.toFixed(0)}ms for ${sizeMb.toFixed(1)}MB — AC5 budget is 10s`);
+  });
+});

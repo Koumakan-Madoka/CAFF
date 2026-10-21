@@ -160,8 +160,14 @@ first hit wins:
    when no target is extractable — never a hardcoded guess). VCS
    bookkeeping that mutates repo state but not file contents (`git add`,
    `commit`, `rm`, `mv`, `stash`, `apply`, `am`) → `write` with NULL
-   subcategory. Redirections to `/dev/null`/`NUL` discard output and are
-   **not** writes.
+   subcategory; `git stash list`/`git stash show` are read-only
+   inspections → `read` (golden sample gs-052/gs-146/gs-294).
+   Redirections to `/dev/null`/`NUL` discard output and are **not**
+   writes; neither is scratch redirection into the OS temp area
+   (`/tmp/`, `/var/tmp/`, `$TMPDIR`, `%TEMP%`, `%TMP%`) — 改 covers
+   产品代码/测试/文档与证据 and a temp scratch file is none of those
+   (golden sample gs-148/gs-293). `awk`/`gawk`/`mawk` default to `read`
+   (extraction); the rare `awk -i` in-place form is a known gap.
 5. Reads (`read`/`grep`/`find` tools, `ls`, `cat`, `sed` without `-i`,
    `diff`, read-only git incl. via `git -C`) → `read` with cold-start
    subcategory before the first write. The classifier exposes
@@ -458,10 +464,78 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 - `tests/ui/turn-time-breakdown.test.js`: button visibility, panel
   rendering (incl. empty/live/partial states), in-progress refresh
   click → fetch.
-- Golden-sample regression (goal AC3) and replay-vs-retrospective script
-  (AC4) land with W6.
+- `tests/runtime/turn-time-breakdown-golden.test.js` +
+  `tests/fixtures/turn-time-breakdown-golden.json`: the AC3 golden
+  sample (see §13.1). Freezes the rules result per step, asserts the
+  reviewed disagreement set exactly, and guards the time-weighted
+  agreement (≥90%) and rules-null time share (≤45%).
+- `scripts/replay-turn-time-breakdown.js`: the AC4 replay tool
+  (see §13.2). Not part of `test:fast` (it reads the live main DB).
+- The parser test file carries the AC5 performance case: a >4MB
+  synthetic session log must parse+classify well under 10s. Truncated,
+  corrupt-line, open-step, and interrupted (`partial-*`) logs are
+  covered by the parser/pipeline suites.
 
-### 13. Wrong vs Correct
+### 13. Acceptance Evidence: Golden Sample & Retrospective Replay (W6)
+
+#### 13.1 Golden sample (AC3)
+
+- **Corpus**: room `b7e50f1c` (评测/知识包 拆分三期) session JSONL logs,
+  52,894 classifiable tool steps across 10-14..10-21.
+- **Sampling**: stratified by (tool × rules-outcome × duration bucket),
+  seeded RNG, 300 steps (`tests/fixtures/turn-time-breakdown-golden.json`;
+  every record carries tool, command, output head/tail, isError,
+  durationMs, the rules result at fixture time, and the hand label).
+- **Labeling caliber**: the *dominant purpose* of the step, judged from
+  command + output (e.g. a wrapper that prepares and runs a scenario
+  suite is `test`; a failed run whose output shows real test failures is
+  `test`, per §5 exception-retry's executed-then-failed rule).
+  Labels: Kimi (author); reviewed against §5 semantics. A second-agent
+  pass was folded into the W6 review discussion.
+- **Results** (post W6 rules fixes): rules-resolved time-weighted
+  agreement **97.3%** (≥90% ✓). Rules-null (JEV-bound) time share
+  **41.3%** — the corpus is dominated by opaque wrapper scripts
+  (`workflow-wiring-*/s8-*-run.py`), which is exactly the JEV use case.
+  Projected system agreement with a golden-matching JEV: **98.4%**.
+- **JEV caveat**: JEV was credential-gated off in this environment
+  (`TYPESAFE_*` absent; open question `q-jev-config`), so AC3's JEV-on
+  caliber (未分类 ≤10%) is verified by *proxy*: golden labels stand in
+  for JEV answers, matching the production JEV+cache behavior for a
+  correct classifier. The honest unclassified share under JEV-off is
+  41.3% by time on this corpus.
+- **Known disagreements** (frozen in the regression test, 6/300):
+  - `gs-042`/`gs-150`: rg searches whose *pattern* names a bridge tool →
+    rules FP `process-report`, golden `read`.
+  - `gs-036`/`gs-046`: pipelines mixing read-context bridge invocations
+    with real file reads; dominant category debatable, rules chose
+    `process-report`.
+  - `gs-297`: node_modules patch + syntax check in one step; rules
+    `build-check`, golden `write` (borderline).
+  - `gs-299`: 185s wrapper that ran tests then died on harness timeout;
+    rules `exception-retry` (executed-then-failed policy), golden `test`.
+- **Rules fixes driven by the sample** (this commit): `git stash
+  list|show` → `read` (was `write`, gs-052/146/294); scratch redirection
+  into OS temp (`/tmp`, `$TMPDIR`, `%TEMP%`…) no longer counts as 改
+  (gs-148/293); `awk`/`gawk`/`mawk` default to `read`.
+
+#### 13.2 Retrospective replay (AC4)
+
+`scripts/replay-turn-time-breakdown.js` replays the classifier over
+`chat_messages` turn windows (`created_at..updated_at`, steps assigned by
+`startedAtMs`; thinking = window − tool union). `--overlay` applies the
+golden-derived wrapper mapping as the replay-time substitute for JEV.
+
+Reproduction against the 10-20 retrospective claims:
+
+| Claim | Reproduced (documented calibers) | Verdict |
+| --- | --- | --- |
+| 三期房间 10-20 批次 test 占比 ~76% ±5pp | 58 GPT turns, 20.41h. Strict per-step: **59.5%**. With test-file-adjacent IO (test + build-check + reads/writes touching test paths): **71.2%** — at the lower tolerance edge. s8-turns-only: 60.9%. Local-day (UTC+8) window: 65.5%. | **Partially reproduced** — no documented caliber lands mid-band; closest caliber touches the lower edge. The original script's exact 口径 is unavailable (open question `q-replay-caliber`); the order of magnitude (tests dominate, ~3/5–3/4 of the day) is confirmed. |
+| GLM 首次修改等待 ~9.8 min ±1 | 三期房间 10-14..17 GLM turns (252). Turn-level: median 5.2 / mean 6.5 min. Session-level first-write (131 sessions): median 6.6 / **mean 8.5 min**. GLM turn read share: 55.5%. | **Near miss** (8.5 vs ≥8.8); the qualitative claim (long cold re-reading before first write) is confirmed with numbers. |
+
+The replay script's header records these reference numbers; re-running it
+against the same DB must reproduce them.
+
+### 14. Wrong vs Correct
 
 #### Wrong
 
