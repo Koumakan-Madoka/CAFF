@@ -271,6 +271,63 @@ test('role service exposes fast as editable, persists it, and resolves runtimeCo
   assert.equal(customRole.modelProfiles[0].fast, true, 'profiles untouched when not submitted');
 });
 
+test('role service rejects non-boolean fast input instead of coercing truthiness', () => {
+  const roles = [gptFamilyRole()];
+  const service = createService(roles);
+
+  for (const bad of ['false', '0', '1', [], {}, 0, 1, null]) {
+    assert.throws(
+      () => service.updateRole('role-family-gpt', { fast: bad }),
+      (error) => error.statusCode === 422 && error.issues[0].code === 'fast_not_boolean' && error.issues[0].path === 'fast',
+      `family role default must reject ${JSON.stringify(bad)}`
+    );
+    assert.throws(
+      () => service.createCustomRole({ name: 'Bad Fast', fast: bad }),
+      (error) => error.statusCode === 422 && error.issues[0].code === 'fast_not_boolean',
+      `custom role must reject ${JSON.stringify(bad)}`
+    );
+    assert.throws(
+      () => service.updateRole('role-family-gpt', {
+        modelProfiles: [{ id: 'p', name: 'P', provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: '', fast: bad }],
+      }),
+      (error) => error.statusCode === 422 && error.issues[0].code === 'fast_not_boolean' && error.issues[0].path === 'modelProfiles[0].fast',
+      `profile must reject ${JSON.stringify(bad)}`
+    );
+  }
+
+  // Absent keeps the current value; explicit booleans work.
+  const on = service.updateRole('role-family-gpt', { fast: true });
+  assert.equal(on.agents[0].fast, true);
+  const kept = service.updateRole('role-family-gpt', { thinking: 'low' });
+  assert.equal(kept.agents[0].fast, true, 'absent fast keeps the stored value');
+  const off = service.updateRole('role-family-gpt', { fast: false });
+  assert.equal(off.agents[0].fast, false);
+});
+
+test('runtimeConfig.fast profile precedence survives opposing role defaults', () => {
+  const roles = [gptFamilyRole({
+    fast: true,
+    modelProfiles: [
+      { id: 'plain', name: 'Plain', description: '', provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'low', fast: false, personaPrompt: '' },
+      { id: 'legacy', name: 'Legacy', description: '', provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'low', personaPrompt: '' },
+      { id: 'quick', name: 'Quick', description: '', provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'low', fast: true, personaPrompt: '' },
+    ],
+  })];
+  const service = createService(roles);
+
+  const resolved = service.resolveRuntimeParticipants([
+    { id: 'role-family-gpt', selectedModelProfileId: 'plain' },
+    { id: 'role-family-gpt', selectedModelProfileId: null },
+  ]);
+  assert.equal(resolved[0].runtimeConfig.fast, false, 'profile explicit false overrides role default true');
+  assert.equal(resolved[1].runtimeConfig.fast, true, 'role default applies when no profile is selected');
+  const legacy = service.resolveRuntimeParticipants([{ id: 'role-family-gpt', selectedModelProfileId: 'legacy' }]);
+  assert.equal(legacy[0].runtimeConfig.fast, false, 'profile missing fast defaults OFF, not to the role default');
+  service.updateRole('role-family-gpt', { fast: false });
+  const quick = service.resolveRuntimeParticipants([{ id: 'role-family-gpt', selectedModelProfileId: 'quick' }]);
+  assert.equal(quick[0].runtimeConfig.fast, true, 'profile true overrides role default false');
+});
+
 test('role service keeps fast on unsupported models permissive at write time (UI and runtime gate instead)', () => {
   const roles = [gptFamilyRole()];
   const service = createService(roles);

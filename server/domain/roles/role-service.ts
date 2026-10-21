@@ -160,6 +160,23 @@ function resolveConfiguredModel(
   return option;
 }
 
+// Fast toggle (service_tier: priority) consumes subscription quota faster,
+// so only an explicit boolean is accepted: absent keeps the current value
+// (default OFF for new roles/profiles), true turns it on, anything else is
+// rejected instead of being coerced by truthiness.
+function assertFastBoolean(value: any, path: string) {
+  if (typeof value !== 'boolean') {
+    throw createRoleError(
+      422,
+      'fast_not_boolean',
+      'Fast toggle must be an explicit boolean',
+      path,
+      { actualType: Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value }
+    );
+  }
+  return value;
+}
+
 function assertThinkingSupported(option: any, thinking: any, path: string) {
   const normalizedThinking = normalize(thinking);
   if (!normalizedThinking) {
@@ -238,9 +255,9 @@ function normalizeProfiles(
       model: option.model,
       thinking,
       // Fast (service_tier: priority) per-profile toggle, defaults OFF.
-      // Permissive here on purpose: unsupported models keep the stored value
-      // but the runtime injection (W3) and the editor UI gate on support.
-      fast: profile.fast === true,
+      fast: hasOwn(profile, 'fast')
+        ? assertFastBoolean(profile.fast, `modelProfiles[${index}].fast`)
+        : false,
       personaPrompt: roleKind === 'custom' ? normalize(profile.personaPrompt) : '',
     });
   }
@@ -699,7 +716,7 @@ export function createRoleService(options: any = {}) {
         : existing?.sessionReuseEnabled !== false,
       // Fast mode toggle; absent means keep existing (default OFF).
       fast: hasOwn(source, 'fast')
-        ? Boolean(source.fast)
+        ? assertFastBoolean(source.fast, 'fast')
         : existing?.fast === true,
     };
   }
@@ -793,7 +810,7 @@ export function createRoleService(options: any = {}) {
         ? Boolean(input.sessionReuseEnabled)
         : existing.sessionReuseEnabled !== false,
       fast: hasOwn(input, 'fast')
-        ? Boolean(input.fast)
+        ? assertFastBoolean(input.fast, 'fast')
         : existing.fast === true,
     };
 
