@@ -114,11 +114,44 @@ function resolveSessionSlice(db: any, message: any, resolvedSessionPath: any) {
     (taskRow && taskRow.session_path) || resolvedSessionPath || ''
   ).trim();
 
+  // §4 slice end (exclusive): in a reused session the NEXT turn's
+  // assistant-message index is the smallest sessionAssistantStartIndex
+  // among this session's other tasks that is greater than this turn's
+  // start. Without it a backfill reparse would run to EOF and attribute
+  // every later turn's steps to this message.
+  let assistantEndIndex: number | null = null;
+
+  if (sessionPath && db) {
+    try {
+      const siblings = db
+        .prepare('SELECT metadata_json FROM a2a_tasks WHERE session_path = ?')
+        .all(sessionPath);
+
+      for (const row of siblings) {
+        const siblingMetadata = safeJsonParse(row && row.metadata_json);
+        const idx = siblingMetadata ? Number(siblingMetadata.sessionAssistantStartIndex) : NaN;
+
+        if (
+          Number.isSafeInteger(idx)
+          && idx >= 0
+          && (assistantStartIndex === null ? idx > 0 : idx > assistantStartIndex)
+          && (assistantEndIndex === null || idx < assistantEndIndex)
+        ) {
+          assistantEndIndex = idx;
+        }
+      }
+    } catch {
+      // Best effort: without the sibling index the slice runs to EOF
+      // (pre-fix behavior), never a crash on the read path.
+    }
+  }
+
   return {
     taskId,
     taskRow,
     sessionPath,
     assistantStartIndex,
+    assistantEndIndex,
   };
 }
 
@@ -208,6 +241,7 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
   const parsed = slice.sessionPath
     ? parseSessionTurnSteps(slice.sessionPath, agentDir, {
         assistantStartIndex: slice.assistantStartIndex,
+        assistantEndIndex: slice.assistantEndIndex,
       })
     : null;
 
@@ -455,13 +489,37 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
   // with thinking growing without bound.
   const messageFailed = messageStatus === 'failed';
   const messageTerminal = messageCompleted || messageFailed;
+  const storedStepRows = repository.listSteps(slice.taskId);
+  const stepEnds = storedStepRows
+    .map((row: any) => fromIso(row.ended_at))
+    .filter((value: any) => value !== null);
+  // §9 stale-live seal (AC5 "轮次中断如实标注"): a crash leaves the message
+  // `streaming` and the task `running` forever. A turn with no session
+  // event, step end, or message update in the last STALE_LIVE_MS is dead
+  // unless THIS process's pipeline still tracks the task (a genuinely live
+  // turn can go quiet inside one long tool call). Seal the span at the
+  // last sign of life instead of letting thinking grow to now.
+  const STALE_LIVE_MS = 10 * 60 * 1000;
+  const lastActivityCandidates = [
+    parsed && Number.isFinite(parsed.lastEventMs) ? parsed.lastEventMs : null,
+    ...stepEnds,
+    fromIso(message.updatedAt),
+  ].filter((value: any) => value !== null);
+  const lastActivityMs = lastActivityCandidates.length > 0 ? Math.max(...lastActivityCandidates) : null;
+  const taskActiveInProcess = pipeline && typeof pipeline.isTaskActive === 'function'
+    ? pipeline.isTaskActive(slice.taskId) === true
+    : false;
+  const staleLive = !messageTerminal
+    && lastActivityMs !== null
+    && nowMs - lastActivityMs >= STALE_LIVE_MS
+    && !taskActiveInProcess;
   const status = parsed && parsed.truncated
     ? 'partial-truncated'
     : messageCompleted
       ? openStepCount > 0
         ? 'partial-interrupted'
         : 'complete'
-      : messageFailed
+      : messageFailed || staleLive
         ? 'partial-interrupted'
         : (summary && summary.status) || 'live';
   // §2: session reuse comes straight from the authoritative message
@@ -478,17 +536,16 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
   }
 
   // Turn span end: a terminal turn seals at message finalization (so the
-  // last model generation counts as thinking); a live turn accounts to now.
+  // last model generation counts as thinking); a stale-sealed turn seals
+  // at its last sign of life; a live turn accounts to now.
   const messageEndMs = messageTerminal
     ? fromIso(message.updatedAt) || fromIso(message.createdAt)
     : null;
-  const storedStepRows = repository.listSteps(slice.taskId);
-  const stepEnds = storedStepRows
-    .map((row: any) => fromIso(row.ended_at))
-    .filter((value: any) => value !== null);
   const derivedTurnEndMs = messageTerminal
     ? Math.max(messageEndMs || 0, ...stepEnds, 0) || null
-    : nowMs;
+    : staleLive
+      ? lastActivityMs
+      : nowMs;
 
   // §3: the turn span starts at the trace's first event. A stored open
   // row from an earlier pass (kept by the §4 orphan merge) can predate

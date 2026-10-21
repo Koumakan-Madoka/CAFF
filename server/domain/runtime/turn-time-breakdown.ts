@@ -160,8 +160,20 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
   const lines = parseText.split('\n');
   let truncated = false;
 
-  const startIndex = Number.isSafeInteger(Number(options.assistantStartIndex)) && Number(options.assistantStartIndex) >= 0
-    ? Number(options.assistantStartIndex)
+  // null/undefined/'' are ABSENT, not zero: Number(null) === 0 would turn
+  // an explicit null endIndex into "break at the first assistant message".
+  const rawStartIndex = options.assistantStartIndex;
+  const startIndex = rawStartIndex !== null && rawStartIndex !== undefined && rawStartIndex !== ''
+    && Number.isSafeInteger(Number(rawStartIndex)) && Number(rawStartIndex) >= 0
+    ? Number(rawStartIndex)
+    : null;
+  // §4 slice end (exclusive): the next turn's assistant-message index in a
+  // reused session. Without it a backfill reparse would run to EOF and
+  // swallow every later turn's steps into this turn's rows.
+  const rawEndIndex = options.assistantEndIndex;
+  const endIndex = rawEndIndex !== null && rawEndIndex !== undefined && rawEndIndex !== ''
+    && Number.isSafeInteger(Number(rawEndIndex)) && Number(rawEndIndex) >= 0
+    ? Number(rawEndIndex)
     : null;
   // Incremental passes resume mid-file: the slice boundary check must count
   // assistant messages cumulatively across passes, not just within this one.
@@ -177,12 +189,21 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
   // First event of the sliced trace (assistant or toolResult) — the §3 turn
   // span start, so thinking before the first tool call is accounted.
   let firstEventMs: number | null = null;
+  let lastEventMs: number | null = null;
 
   const noteEventMs = (value: any) => {
     const ms = toEpochMs(value);
 
-    if (ms !== null && (firstEventMs === null || ms < firstEventMs)) {
+    if (ms === null) {
+      return;
+    }
+
+    if (firstEventMs === null || ms < firstEventMs) {
       firstEventMs = ms;
+    }
+
+    if (lastEventMs === null || ms > lastEventMs) {
+      lastEventMs = ms;
     }
   };
 
@@ -229,6 +250,13 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
 
     if (message.role === 'assistant') {
       assistantMessageTotal += 1;
+
+      // Slice end: the next turn's first assistant message. A sibling
+      // startIndex of N means "skip N, my turn starts at message N+1", so
+      // this turn's slice ends when the count PASSES the boundary index.
+      if (endIndex !== null && assistantMessageTotal > endIndex) {
+        break;
+      }
 
       if (startIndex !== null && assistantMessageTotal <= startIndex) {
         continue;
@@ -325,6 +353,9 @@ export function parseSessionTurnSteps(sessionPath: any, agentDir: any, options: 
     corruptLines,
     assistantMessageTotal,
     firstEventMs,
+    // Last in-slice event — the stale-live seal (§9) needs a "last sign of
+    // life" that does not depend on wall-clock now.
+    lastEventMs,
     endOffset: fromOffset + consumedBytes,
   };
 }
@@ -395,11 +426,14 @@ export function classifyWriteScope(rawPath: any) {
     return 'unknown';
   }
 
-  // OS temp scratch (including env-var anchored forms).
+  // OS temp scratch (including env-var anchored forms and the Windows
+  // per-user temp root — pi on Windows hands write/edit absolute paths
+  // like C:/Users/<user>/AppData/Local/Temp/x.mjs).
   if (
     /^\/(tmp|var\/tmp)\//.test(portable)
     || /\$\{?TMPDIR\}?/.test(portable)
     || /%(TEMP|TMP)%/i.test(rawPath)
+    || /\/(AppData\/Local\/)?Temp\//i.test(portable)
   ) {
     return 'temp';
   }

@@ -54,7 +54,7 @@ function writeSession(agentDir, name, lines) {
   return filePath;
 }
 
-function createFixture(t, name) {
+function createFixture(t, name, options = {}) {
   const tempDir = withTempDir(`caff-turn-time-http-${name}-`);
   const sqlitePath = path.join(tempDir, 'chat.sqlite');
   // Run schema (a2a_tasks) shares the same database file in production.
@@ -76,6 +76,7 @@ function createFixture(t, name) {
       resolveAssistantMessageSessionPath() { return ''; },
     },
     buildBootstrapPayload() { return {}; },
+    turnTimeBreakdownPipeline: options.turnTimeBreakdownPipeline || null,
   });
 
   t.after(() => {
@@ -112,7 +113,7 @@ function createAssistantMessage(store, conversationId, messageId, options = {}) 
     status: options.status || 'completed',
     taskId: options.taskId || null,
     metadata: {
-      sessionAssistantStartIndex: 0,
+      sessionAssistantStartIndex: Number.isSafeInteger(options.assistantStartIndex) ? options.assistantStartIndex : 0,
       sessionReused: options.sessionReused === true,
       sessionReuseReason: options.sessionReused === true ? 'reused' : 'no_prior_session',
       tokenUsage: { totalTokens: 42 },
@@ -316,7 +317,11 @@ test('missing session and no stored summary → 404; non-assistant → 400; unkn
 });
 
 test('cross-chunk merge: a result parsed in a later pass joins the stored open row', async (t) => {
-  const { store, conversation, handler, tempDir } = createFixture(t, 'merge');
+  // isTaskActive: the in-process pipeline still tracks this turn, so the
+  // §9 stale-live seal (yesterday's timestamps) does not fire.
+  const { store, conversation, handler, tempDir } = createFixture(t, 'merge', {
+    turnTimeBreakdownPipeline: { isTaskActive: () => true },
+  });
   const sessionPath = writeSession(tempDir, 's6.jsonl', [
     assistantLine(BASE + 1_000, [{ id: 'c1', name: 'bash', arguments: { command: 'npm test' } }]),
   ]);
@@ -415,7 +420,9 @@ test('orphan merge re-anchors the span at the open row start: firstWriteMs never
 });
 
 test('live refresh keeps the original turn span, firstWriteMs, and error intervals', async (t) => {
-  const { store, conversation, handler, tempDir } = createFixture(t, 'live-refresh');
+  const { store, conversation, handler, tempDir } = createFixture(t, 'live-refresh', {
+    turnTimeBreakdownPipeline: { isTaskActive: () => true },
+  });
   const sessionPath = writeSession(tempDir, 's7.jsonl', [
     assistantLine(BASE + 1_000, [{ id: 'c1', name: 'read', arguments: { path: 'a.ts' } }]),
     toolResultLine(BASE + 2_000, 'c1', 'read', 'x'),
@@ -488,4 +495,105 @@ test('a failed message seals partial-interrupted with a bounded span (AC5)', asy
 
   assert.equal(cached.json.breakdown.status, 'partial-interrupted');
   assert.equal(cached.json.breakdown.categoryMs.thinking, 5000);
+});
+
+test('reused session: backfill of an earlier turn stops at the next turn boundary', async (t) => {
+  // Two agent turns share ONE session file (session reuse). Turn 1 =
+  // assistant messages 1-2 (read + npm test), turn 2 = assistant message 3
+  // (a 10-minute edit). Without the §4 slice end boundary, backfilling
+  // turn 1 would run to EOF and swallow turn 2's write step into turn 1's
+  // rows (observed in the --store corpus replay: spans 2.8x inflated).
+  const { store, conversation, handler, tempDir } = createFixture(t, 'slice-end');
+  const sessionPath = writeSession(tempDir, 's9.jsonl', [
+    assistantLine(BASE + 1_000, [{ id: 'c1', name: 'read', arguments: { path: 'server/app.ts' } }]),
+    toolResultLine(BASE + 3_000, 'c1', 'read', 'file content'),
+    assistantLine(BASE + 4_000, [{ id: 'c2', name: 'bash', arguments: { command: 'npm test' } }]),
+    toolResultLine(BASE + 14_000, 'c2', 'bash', '# pass 100\n# fail 0'),
+    // Turn 2 begins at assistant message index 2 (0-based slicing below).
+    assistantLine(BASE + 1_000_000, [{ id: 'c3', name: 'edit', arguments: { path: 'server/big.ts' } }]),
+    toolResultLine(BASE + 1_600_000, 'c3', 'edit', 'done'),
+  ]);
+
+  createTaskRow(store, { taskId: 'task-slice-1', sessionPath, assistantStartIndex: 0 });
+  createTaskRow(store, { taskId: 'task-slice-2', sessionPath, assistantStartIndex: 2 });
+  createAssistantMessage(store, conversation.id, 'msg-t1', { taskId: 'task-slice-1', createdAt: '2026-10-20T10:00:00.500Z', assistantStartIndex: 0 });
+  createAssistantMessage(store, conversation.id, 'msg-t2', { taskId: 'task-slice-2', createdAt: '2026-10-20T10:16:40.000Z', assistantStartIndex: 2 });
+  // Turn 1 finalized 20s after its start; turn 2 at +1605s.
+  store.db.prepare('UPDATE chat_messages SET updated_at=? WHERE id=?').run(new Date(BASE + 20_000).toISOString(), 'msg-t1');
+  store.db.prepare('UPDATE chat_messages SET updated_at=? WHERE id=?').run(new Date(BASE + 1_605_000).toISOString(), 'msg-t2');
+
+  const r1 = await invoke(handler, breakdownUrl(conversation.id, 'msg-t1'));
+  const b1 = r1.json.breakdown;
+
+  assert.equal(r1.statusCode, 200);
+  assert.equal(b1.status, 'complete');
+  assert.equal(b1.categoryMs.read, 2_000);
+  assert.equal(b1.categoryMs.test, 10_000);
+  assert.equal(b1.categoryMs.thinking, 7_000, 'span BASE+1s..BASE+20s = 19s, minus 12s tools');
+  assert.equal(b1.categoryMs.write, undefined, 'turn 2 steps must not leak into turn 1');
+  assert.equal(b1.steps.length, 2);
+
+  const r2 = await invoke(handler, breakdownUrl(conversation.id, 'msg-t2'));
+  const b2 = r2.json.breakdown;
+
+  assert.equal(r2.statusCode, 200);
+  assert.equal(b2.categoryMs.write, 600_000);
+  assert.equal(b2.steps.length, 1);
+});
+
+test('stale live: a crash-stuck streaming message seals partial-interrupted at its last sign of life', async (t) => {
+  const { store, conversation, handler, tempDir } = createFixture(t, 'stale-live');
+  const sessionPath = writeSession(tempDir, 's10.jsonl', [
+    assistantLine(BASE + 1_000, [{ id: 'c1', name: 'bash', arguments: { command: 'npm test' } }]),
+    toolResultLine(BASE + 30_000, 'c1', 'bash', '# pass 1\n# fail 0'),
+  ]);
+  const taskId = 'task-stale-1';
+
+  createTaskRow(store, { taskId, sessionPath });
+  createAssistantMessage(store, conversation.id, 'msg-1', {
+    taskId,
+    status: 'streaming', // crash left it mid-turn (and the task `running`)
+    createdAt: '2026-10-20T10:00:35.000Z',
+  });
+
+  const response = await invoke(handler, breakdownUrl(conversation.id, 'msg-1'));
+  const breakdown = response.json.breakdown;
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(breakdown.status, 'partial-interrupted', 'a crash-stuck turn must be honestly annotated (AC5)');
+  assert.equal(breakdown.categoryMs.test, 29_000);
+  // Sealed at the last sign of life (BASE+35s), not at "now" — thinking is
+  // 5s regardless of when the view is opened.
+  assert.equal(breakdown.categoryMs.thinking, 5_000);
+
+  const cached = await invoke(handler, breakdownUrl(conversation.id, 'msg-1'));
+
+  assert.equal(cached.json.breakdown.status, 'partial-interrupted');
+  assert.equal(cached.json.breakdown.categoryMs.thinking, 5_000);
+});
+
+test('stale live guard: a turn the in-process pipeline still tracks stays live', async (t) => {
+  const { store, conversation, handler, tempDir } = createFixture(t, 'still-live', {
+    // A genuinely live turn can go quiet inside one long tool call; the
+    // in-process pipeline still tracks its task, so no stale seal.
+    turnTimeBreakdownPipeline: { isTaskActive: () => true },
+  });
+  const sessionPath = writeSession(tempDir, 's11.jsonl', [
+    assistantLine(BASE + 1_000, [{ id: 'c1', name: 'bash', arguments: { command: 'npm test' } }]),
+    toolResultLine(BASE + 30_000, 'c1', 'bash', '# pass 1\n# fail 0'),
+  ]);
+  const taskId = 'task-still-live-1';
+
+  createTaskRow(store, { taskId, sessionPath });
+  createAssistantMessage(store, conversation.id, 'msg-1', {
+    taskId,
+    status: 'streaming',
+    createdAt: '2026-10-20T10:00:35.000Z',
+  });
+
+  const response = await invoke(handler, breakdownUrl(conversation.id, 'msg-1'));
+  const breakdown = response.json.breakdown;
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(breakdown.status, 'live');
 });

@@ -105,6 +105,18 @@ Turn-level metrics (also committed):
     tail: excluded from `parse_offset`, and it does **not** flip
     `partial-truncated`; that status is reserved for genuinely corrupt
     middle lines (`corruptLines > 0`).
+- **Slice end boundary (reused sessions)**: when several agent turns share
+  one session file, the turn slice runs from `sessionAssistantStartIndex`
+  to the **next turn's start index** (exclusive), resolved as the smallest
+  `sessionAssistantStartIndex` greater than this turn's among the
+  session's sibling rows in `a2a_tasks` (which carries `session_path`).
+  Without this boundary a backfill re-parse would run to EOF and attribute
+  every later turn's steps to the earlier message — first observed in the
+  W7 `--store` corpus replay, where 35/58 turn spans inflated to ~2.8x
+  the message window. A sibling startIndex of N means "skip N assistant
+  messages, my turn starts at message N+1", so the slice stops when the
+  running assistant count passes N. Missing sibling data falls back to
+  EOF (single-turn sessions, the common case, are unaffected).
 - **Real-time**: the pi event stream — `handle.on('pi_event', ...)` in
   `server/domain/conversation/turn/agent-executor.ts` receives
   `tool_execution_start` / `tool_execution_end` (`toolCallId`, `toolName`,
@@ -411,6 +423,16 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   an unterminated in-flight tail (normal mid-turn) is excluded from the
   offset but never flips status. No full historical backfill — only on
   click (goal non-goal `ng-backfill`).
+- **Stale-live seal (AC5 "轮次中断如实标注")**: a crashed turn leaves its
+  message `streaming` and its task `running` forever, so terminal-status
+  detection alone would leave the summary `live` with `thinking` growing
+  to "now" on every click. A non-terminal message whose last sign of life
+  (last in-slice session event, latest stored step end, or message
+  `updated_at` — whichever is newest) is older than 10 minutes is sealed
+  `partial-interrupted` with the span ending at that last sign of life,
+  UNLESS the in-process pipeline still tracks the task
+  (`pipeline.isTaskActive`) — a genuinely live turn can go quiet inside
+  one long tool call, and only the process actually running it can tell.
 
 ### 10. Frontend
 
@@ -449,6 +471,7 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 | cached summary read | API < 2 s |
 | multi-MB JSONL lazy backfill | full slice re-parse < 10 s excluding JEV waits; `partial-*` flags honest |
 | failed / cancelled turn | sealed `partial-interrupted` at stage end by the executor catch path; watchdog tail counted as exception-retry; thinking bounded (AC5) |
+| crash-stuck turn (message `streaming`, task `running`, no events >10 min, pipeline not tracking) | sealed `partial-interrupted` at the last sign of life; thinking bounded (AC5); a pipeline-tracked live turn is never sealed |
 | interrupted turn (no terminal event) | `partial-interrupted`, panel annotates |
 | JEV off (default) | rules only; no `TYPESAFE_API_KEY` access attempted |
 | project JEV switch on but `TYPESAFE_ENABLED` off | rules only; client never constructed; no payload leaves the process |
@@ -459,7 +482,8 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   assistant `tool_call` ↔ `toolResult` join by `toolCallId`, parallel
   shared starts, orphan toolResults, corrupt lines vs in-flight tail,
   `sessionAssistantStartIndex` slicing, incremental `parse_offset`
-  (byte-accurate under multibyte content).
+  (byte-accurate under multibyte content), `assistantEndIndex` slice end
+  boundary, `lastEventMs` tracking.
 - `tests/runtime/turn-time-breakdown-rules.test.js`: every §5 branch,
   path classes (incl. bash destination-path subcategories), cold-start vs
   purposeful reads, full vs targeted fingerprints, per-segment run
@@ -484,7 +508,10 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 - `tests/storage/turn-time-breakdown-store.test.js`: migration, upsert
   idempotence, summary lifecycle, JEV cache adapter camelCase shape lock.
 - `tests/http/turn-time-breakdown-controller.test.js`: cached read, lazy
-  backfill, `partial-*` statuses, cross-chunk orphan merge, error mapping.
+  backfill, `partial-*` statuses, cross-chunk orphan merge, error mapping,
+  reused-session slice end boundary (turn N's backfill excludes turn N+1's
+  steps), stale-live seal (crash-stuck `streaming` → bounded
+  `partial-interrupted`; pipeline-tracked live turn never sealed).
 - `tests/ui/turn-time-breakdown.test.js`: button visibility, panel
   rendering (incl. empty/live/partial states), in-progress refresh
   click → fetch.
@@ -535,7 +562,12 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   (population counts in
   `tests/fixtures/turn-time-breakdown-golden-strata.json`, regenerated
   via `--scan-sessions --emit-strata` only when re-baselining):
-  currently **21.3%**, asserted ≤ 30%.
+  currently **21.3%**, asserted ≤ 30%. (Population note: the 27.2%
+  reviewer cross-check measured a different superset — all agents and a
+  slightly different session set for the same date window — so the two
+  full-window numbers 25.3%/22.5% describe different populations and are
+  not expected to coincide; the like-for-like 10-14..10-21 conversation
+  window cross-check is 27.0% vs 27.2%.)
 - **JEV caveat / explicit AC3 gap**: JEV was credential-gated off in
   this environment (`TYPESAFE_*` absent; open question `q-jev-config`),
   so AC3's JEV-on caliber (未分类 ≤10%) is **not measured, only
@@ -581,8 +613,33 @@ with the documented flags):
 
 | Claim | Reproduced (documented calibers) | Verdict |
 | --- | --- | --- |
-| 三期房间 10-20 批次 test 占比 ~76% ±5pp | 58 GPT turns, 20.41h. **Rules-only: test 0.0%** (unclassified 63.2% — the wrapper scripts are JEV-bound by design). **+`--overlay`: test 59.5%** (overlay = "assume JEV classifies the golden-reviewed wrappers correctly"). **+`--overlay --test-adjacent`: 69.9%** (adds build-check + read/write steps touching test paths). | **Not mid-band reproducible** — the strict rules caliber lands at 0% because the batch is dominated by opaque wrappers; the JEV-proxy caliber lands at 59.5%, the widest documented caliber at 69.9% (lower tolerance edge is 71%). The original script's exact 口径 is unavailable (open question `q-replay-caliber`); the order of magnitude (tests dominate, ~3/5–7/10 of the day) is confirmed. |
-| GLM 首次修改等待 ~9.8 min ±1 | 三期房间 10-14..17 GLM sessions, `--first-write` with §5 write scope (only repo-scope writes count): session-level median 6.8 / **mean 9.4 min** (n=113). Without the write-scope fix (sandbox probe scripts counted) the mean was 8.5 — the W6 first-submission "near miss" was the metric bug, not the claim. | **Reproduced in-band** (9.4 ∈ [8.8, 10.8]). |
+| 三期房间 10-20 批次 test 占比 ~76% ±5pp | 58 GPT turns, 20.41h (window caliber). **Rules-only: test 0.0%** (unclassified 63.2% — the wrapper scripts are JEV-bound by design). **+`--overlay`: test 59.5%** (overlay = "assume JEV classifies the golden-reviewed wrappers correctly"). **+`--overlay --test-adjacent`: 69.9%** (adds build-check + read/write steps touching test paths). DB-path calibers below. | **Mid-band reproducible in the DB-path widest caliber** (75.4%, see below); the window calibers land at 0% / 59.5% / 69.9%. The original script's exact 口径 remains unavailable (open question `q-replay-caliber`); the claim (tests dominate, roughly three quarters of the day) is confirmed under the product path. |
+| GLM 首次修改等待 ~9.8 min ±1 | 三期房间 10-14..17 GLM sessions, `--first-write` with §5 write scope (only repo-scope writes count): session-level median 6.8 / **mean 9.4 min** (n=113); DB-path caliber identical (9.4 / 6.8, n=113). Without the write-scope fix (sandbox probe scripts counted) the mean was 8.5 — the W6 first-submission "near miss" was the metric bug, not the claim. | **Reproduced in-band** (9.4 ∈ [8.8, 10.8], both calibers). |
+
+**DB-path (落库) caliber** — `--store <scratchDb>` (W7): the replay drives
+the real `getTurnTimeBreakdownForMessage` service into a scratch copy of
+the DB (migrations applied), so every step row and summary is produced by
+the product path and aggregates are read back from
+`chat_turn_time_summaries` / `chat_turn_time_steps` — never from replay
+memory. With `--overlay`, rows the rules left unclassified are
+reclassified as pseudo-JEV (`classified_by='jev'`) and the summaries
+recomputed, mirroring production async JEV resolution. Turn spans here
+are the §3 span (first trace event → finalization), not the
+`created_at..updated_at` window, so totals differ from the window caliber
+(18.93h vs 20.41h for the same 58 turns — thinking shrinks because the
+span starts at the first trace event, not at message creation).
+Reproduced on the 10-20 batch (58 GPT turns):
+
+| DB-path caliber | test share |
+| --- | --- |
+| rules-only | 0.0% (unclassified 68.0%) |
+| +`--overlay` | 64.5% |
+| +`--overlay --test-adjacent` (DB categories + one session args re-parse for path lookup) | **75.4% — inside 76%±5** |
+
+The `--store` replay was also what exposed the §4 slice-end defect
+(backfilled turns in reused sessions swallowing later turns' steps) and
+the §9 stale-live gap (crash-stuck `streaming` messages sealed at "now")
+— both fixed with regression tests before this caliber was trusted.
 
 The replay script's header records these reference numbers; re-running it
 with the documented flags against the same DB reproduces them.

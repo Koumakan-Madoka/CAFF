@@ -182,6 +182,14 @@ test('write scope: sandbox/temp scratch writes are scoped, repo writes are repo'
   assert.equal(tmpSed.category, 'write');
   assert.equal(tmpSed.writeScope, 'temp');
 
+  // Windows per-user temp root (pi on Windows hands absolute temp paths).
+  const winTemp = createTurnRuleClassifier().classify({ toolName: 'write', args: { path: 'C:/Users/ZN/AppData/Local/Temp/probe-x.mjs' } });
+  assert.equal(winTemp.category, 'write');
+  assert.equal(winTemp.writeScope, 'temp');
+  // bash redirection into %TEMP% is already stripped as scratch, so the
+  // command itself never becomes a write step at all.
+  assert.notEqual(classifyBash('cat > %TEMP%\\x.mjs')?.category, 'write');
+
   assert.equal(createTurnRuleClassifier().classify({ toolName: 'edit', args: { path: 'server/x.ts' } }).writeScope, 'repo');
   assert.equal(classifyBash('cat > tests/x.test.js').writeScope, 'repo');
   // Unresolvable targets stay unknown (conservatively repo for firstWriteMs).

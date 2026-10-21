@@ -153,6 +153,42 @@ test('parser slices by assistantStartIndex', () => {
   });
 });
 
+test('parser stops at the assistantEndIndex slice boundary (reused-session backfill)', () => {
+  inTempDir((agentDir) => {
+    // Two turns share one session: turn 1 = assistant messages 1-2, turn 2
+    // starts at index 2 (its task stores sessionAssistantStartIndex=2).
+    const sessionPath = writeSession(agentDir, 's.jsonl', [
+      assistantLine(1000, [{ id: 'a1', name: 'read', arguments: { path: 'x' } }]),
+      toolResultLine(1500, 'a1', 'read', 'x'),
+      assistantLine(2000, [{ id: 'a2', name: 'bash', arguments: { command: 'npm test' } }]),
+      toolResultLine(12_000, 'a2', 'bash', '# pass 1\n# fail 0'),
+      assistantLine(100_000, [{ id: 'b1', name: 'edit', arguments: { path: 'server/big.ts' } }]),
+      toolResultLine(700_000, 'b1', 'edit', 'done'),
+    ]);
+
+    // Turn 1 (start 0, end 2): stops before turn 2's first assistant line.
+    const t1 = parseSessionTurnSteps(sessionPath, agentDir, { assistantStartIndex: 0, assistantEndIndex: 2 });
+
+    assert.equal(t1.steps.length, 2);
+    assert.deepEqual(t1.steps.map((s) => s.toolCallId).sort(), ['a1', 'a2']);
+    assert.equal(t1.firstEventMs, 1000);
+    assert.equal(t1.lastEventMs, 12_000, 'last in-slice event, not EOF');
+
+    // Turn 2 (start 2, no end): only its own edit step.
+    const t2 = parseSessionTurnSteps(sessionPath, agentDir, { assistantStartIndex: 2 });
+
+    assert.equal(t2.steps.length, 1);
+    assert.equal(t2.steps[0].toolCallId, 'b1');
+    assert.equal(t2.lastEventMs, 700_000);
+
+    // No boundary (legacy callers): whole file, lastEventMs at EOF event.
+    const whole = parseSessionTurnSteps(sessionPath, agentDir, {});
+
+    assert.equal(whole.steps.length, 3);
+    assert.equal(whole.lastEventMs, 700_000);
+  });
+});
+
 test('parser collects stopReason=error assistant rows as error events', () => {
   inTempDir((agentDir) => {
     const sessionPath = writeSession(agentDir, 's.jsonl', [

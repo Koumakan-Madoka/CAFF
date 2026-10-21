@@ -539,6 +539,13 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
         return false;
       }
     },
+    // Whether this process is still tracking the task (live turn). The
+    // service's §9 stale-live seal uses it: a crashed turn disappears from
+    // the map (or was never registered post-restart), while a genuinely
+    // live turn stays tracked even during one long silent tool call.
+    isTaskActive(taskId: any) {
+      return taskStates.has(String(taskId || ''));
+    },
     // Shared JEV resolution entry for the §9 lazy backfill (steps classified
     // rules+cache only synchronously, then resolved here asynchronously).
     resolvePendingStep(input: any) {
