@@ -666,7 +666,9 @@ export function createServerApp(options: any = {}) {
   // shared by the pi-event hook (agent executor) and the bridge hook.
   const turnTimeBreakdownPipeline = createTurnTimeBreakdownPipeline({
     repository: store.turnTimeBreakdownRepository,
-    // §6: the repo-wide master switch gates first, then the DB toggle
+    // §6: three gates, all enforced inside the resolver so the stored
+    // jev_status always agrees with the status card — repo-wide master
+    // switch, API key configured, then the DB toggle
     // (chat_system_service_toggles, UI-managed). The resolver reads the
     // store on every call, so the UI switch takes effect in this process
     // without a restart. The per-project projects.json switch is
@@ -674,6 +676,7 @@ export function createServerApp(options: any = {}) {
     resolveJevEnabled: createJevEnabledResolver({
       store,
       masterSwitchEnabled: TYPESAFE_ENABLED,
+      apiKeyConfigured: Boolean(TYPESAFE_API_KEY),
     }),
     createJevClient() {
       // §6: dedicated client instance with its own process-local budget —

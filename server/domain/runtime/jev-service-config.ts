@@ -75,15 +75,20 @@ export function resolveJevRuntimeStatus(input: any = {}) {
 }
 
 // Builds the exact resolver the pipeline uses (create-server wires this into
-// turnTimeBreakdownPipeline). Reading the store per call is what makes the
-// toggle take effect immediately; the store read is a single prepared
-// primary-key lookup.
+// turnTimeBreakdownPipeline). ALL THREE gates are enforced here — including
+// the API-key gate — so the stored jev_status can never disagree with the
+// status card: without this, DB-on + key-missing would write rows as
+// 'pending' while the card says api_key_missing, and those rows would stay
+// pending forever (the classifier is null, so nothing ever resolves them).
+// Reading the store per call is what makes the toggle take effect
+// immediately; the store read is a single prepared primary-key lookup.
 export function createJevEnabledResolver(options: any = {}) {
   const store = options.store;
   const masterSwitchEnabled = options.masterSwitchEnabled === true;
+  const apiKeyConfigured = options.apiKeyConfigured === true;
 
   return function isJevEnabled() {
-    if (!masterSwitchEnabled) {
+    if (!masterSwitchEnabled || !apiKeyConfigured) {
       return false;
     }
 

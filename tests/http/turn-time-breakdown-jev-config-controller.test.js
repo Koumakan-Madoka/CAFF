@@ -120,7 +120,7 @@ test('jev config GET serializes without key material or URL userinfo', async (t)
 test('jev config PUT flips the toggle and broadcasts; the pipeline resolver sees it immediately', async (t) => {
   const { controller, store, broadcasts } = createHarness(t);
   const { createJevEnabledResolver } = require('../../build/server/domain/runtime/jev-service-config');
-  const isJevEnabled = createJevEnabledResolver({ store, masterSwitchEnabled: true });
+  const isJevEnabled = createJevEnabledResolver({ store, masterSwitchEnabled: true, apiKeyConfigured: true });
 
   assert.equal(isJevEnabled(), false);
   const response = await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { enabled: true } });
@@ -150,6 +150,21 @@ test('jev config PUT rejects credential fields with 422 instead of ignoring them
     (error) => error.statusCode === 422
   );
   // The rejected write must not have flipped anything.
+  assert.equal(store.getSystemServiceToggle('turn-time-breakdown-jev'), false);
+});
+
+test('jev config PUT rejects a non-boolean enabled with 422 instead of coercing it to off', async (t) => {
+  const { controller, store } = createHarness(t);
+
+  await assert.rejects(
+    () => invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { enabled: 'true' } }),
+    (error) => error.statusCode === 422 && error.issues[0].code === 'invalid_enabled_value'
+  );
+  await assert.rejects(
+    () => invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { enabled: 1 } }),
+    (error) => error.statusCode === 422 && error.issues[0].code === 'invalid_enabled_value'
+  );
+  // The rejected writes must not have flipped anything.
   assert.equal(store.getSystemServiceToggle('turn-time-breakdown-jev'), false);
 });
 

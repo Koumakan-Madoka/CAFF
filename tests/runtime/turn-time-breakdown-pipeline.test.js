@@ -5,6 +5,10 @@ const test = require('node:test');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createTurnTimeBreakdownPipeline } = require('../../build/server/domain/runtime/turn-time-breakdown-pipeline');
+const {
+  JEV_SERVICE_TYPE,
+  createJevEnabledResolver,
+} = require('../../build/server/domain/runtime/jev-service-config');
 const { TypeSafeClientError } = require('../../build/server/domain/integrations/typesafe/typesafe-client');
 const { withTempDir } = require('../helpers/temp-dir');
 
@@ -251,6 +255,45 @@ test('JEV path: pending row first, then async resolution updates in place and wr
   assert.equal(after[1].classified_by, 'jev-cache');
   assert.equal(after[1].run_kind, 'full-regression');
   assert.equal(calls.length, 1);
+});
+
+test('three-gate resolver: DB toggle on but API key missing lands as disabled, never pending', async (t) => {
+  // Production wiring regression (contract §6): the UI can reach
+  // master-on + DB-on + key-missing with one click. The resolver must
+  // include the key gate, or rows would be written 'pending' while no
+  // classifier exists to ever resolve them (the status card would say
+  // api_key_missing at the same time).
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+
+  store.setSystemServiceToggle(JEV_SERVICE_TYPE, true);
+
+  let clientBuilt = 0;
+  const pipeline = createPipeline(store, {
+    resolveJevEnabled: createJevEnabledResolver({
+      store,
+      masterSwitchEnabled: true,
+      apiKeyConfigured: false,
+    }),
+    createJevClient: () => {
+      clientBuilt += 1;
+      return null;
+    },
+  });
+
+  pipeline.enqueueStep({
+    taskId: 'task-1',
+    messageId: 'msg-1',
+    conversationId: 'conv-1',
+    step: step({ stepKey: 'call-1', toolCallId: 'call-1', args: { command: 'python scripts/run_suite.py' } }),
+  });
+  await pipeline.flushForTests();
+
+  const row = repo.listSteps('task-1')[0];
+
+  assert.equal(row.category, 'unclassified');
+  assert.equal(row.jev_status, 'disabled');
+  assert.equal(clientBuilt, 0);
 });
 
 test('JEV timeout and error degrade to unclassified with honest status, never rejecting', async (t) => {

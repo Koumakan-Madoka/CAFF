@@ -79,7 +79,7 @@ test('toggle store: absent row means off, set flips on/off, updated_at is record
 
 test('createJevEnabledResolver flips in the same process without a restart', (t) => {
   const { store } = openStore(t);
-  const isJevEnabled = createJevEnabledResolver({ store, masterSwitchEnabled: true });
+  const isJevEnabled = createJevEnabledResolver({ store, masterSwitchEnabled: true, apiKeyConfigured: true });
 
   assert.equal(isJevEnabled(), false);
   store.setSystemServiceToggle(JEV_SERVICE_TYPE, true);
@@ -90,10 +90,22 @@ test('createJevEnabledResolver flips in the same process without a restart', (t)
 
 test('createJevEnabledResolver: master switch off stays off even with the DB toggle on', (t) => {
   const { store } = openStore(t);
-  const isJevEnabled = createJevEnabledResolver({ store, masterSwitchEnabled: false });
+  const isJevEnabled = createJevEnabledResolver({ store, masterSwitchEnabled: false, apiKeyConfigured: true });
 
   store.setSystemServiceToggle(JEV_SERVICE_TYPE, true);
   assert.equal(isJevEnabled(), false);
+});
+
+test('createJevEnabledResolver: API key missing stays off even with master + DB toggle on', (t) => {
+  const { store } = openStore(t);
+  // Both shapes must fail closed: explicitly false, and omitted entirely
+  // (a caller that forgets the gate must not silently enable JEV).
+  const explicit = createJevEnabledResolver({ store, masterSwitchEnabled: true, apiKeyConfigured: false });
+  const omitted = createJevEnabledResolver({ store, masterSwitchEnabled: true });
+
+  store.setSystemServiceToggle(JEV_SERVICE_TYPE, true);
+  assert.equal(explicit(), false);
+  assert.equal(omitted(), false);
 });
 
 test('deprecated projects.json timeBreakdown.jevEnabled no longer participates', (t) => {
@@ -106,7 +118,7 @@ test('deprecated projects.json timeBreakdown.jevEnabled no longer participates',
     projects: [{ id: 'p1', name: 'demo', path: tempDir, timeBreakdown: { jevEnabled: true } }],
   }));
 
-  const isJevEnabled = createJevEnabledResolver({ store, masterSwitchEnabled: true });
+  const isJevEnabled = createJevEnabledResolver({ store, masterSwitchEnabled: true, apiKeyConfigured: true });
   assert.equal(isJevEnabled(), false);
 
   store.setSystemServiceToggle(JEV_SERVICE_TYPE, true);

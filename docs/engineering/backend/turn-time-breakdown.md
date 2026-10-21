@@ -311,7 +311,11 @@ above) are opaque to rules → JEV fallback with command + output.
   an ABSENT row means off (default installs ship off, the migration
   never seeds rows). The resolver reads the store on every
   classification decision, so the UI switch takes effect in the same
-  process without a restart; the two env gates still require one.
+  process without a restart; the two env gates still require one. The
+  flip applies to subsequent turns and to steps that have not started
+  yet — a turn already in flight keeps the verdict it entered with
+  (the pipeline snapshots the resolver result at the turn's first
+  event).
   The API key stays env-only: it is never stored in the DB, never
   echoed by any response, and a PUT carrying a credential-ish field is
   rejected with 422. The status surface derives endpoint/model from the

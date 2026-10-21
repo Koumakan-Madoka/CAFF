@@ -49,6 +49,19 @@ export function createTurnTimeBreakdownJevConfigController(options: any = {}): R
     throw new Error('JEV configuration service is required');
   }
 
+  // `enabled` is the only writable field and it is strictly boolean: a
+  // truthy string/number must not be silently coerced into OFF — that would
+  // invert the operator's intent without any signal.
+  function assertValidEnabled(body: any) {
+    if (body && typeof body === 'object' && !Array.isArray(body)
+      && Object.prototype.hasOwnProperty.call(body, 'enabled')
+      && typeof body.enabled !== 'boolean') {
+      throw createHttpError(422, 'enabled must be a boolean', {
+        issues: [{ code: 'invalid_enabled_value', path: 'enabled' }],
+      });
+    }
+  }
+
   function assertNoCredentialFields(body: any) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return;
@@ -91,6 +104,7 @@ export function createTurnTimeBreakdownJevConfigController(options: any = {}): R
       guard.assertMutation(req);
       const body = await readRequestJson(req);
       assertNoCredentialFields(body);
+      assertValidEnabled(body);
       const configuration = service.updateConfiguration(body);
       broadcastEvent('system_service_config_updated', {
         serviceType: 'turn-time-breakdown-jev',

@@ -7,6 +7,10 @@ const test = require('node:test');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSqliteRunStore } = require('../../build/lib/sqlite-store');
 const { createConversationsController } = require('../../build/server/api/conversations-controller');
+const {
+  JEV_SERVICE_TYPE,
+  createJevEnabledResolver,
+} = require('../../build/server/domain/runtime/jev-service-config');
 const { withTempDir } = require('../helpers/temp-dir');
 
 const BASE = Date.parse('2026-10-20T10:00:00.000Z');
@@ -231,6 +235,59 @@ test('firstWriteMs metric reflects the first repo write of the turn', async (t) 
   assert.equal(breakdown.metrics.firstWriteMs, 4000); // 1000 → 5000
   assert.equal(breakdown.steps[1].category, 'write');
   assert.equal(breakdown.steps[1].subcategory, 'product-code');
+});
+
+test('click path with DB toggle on but API key missing: steps land as disabled, never pending', async (t) => {
+  // Contract §6 three-gate regression at the service layer: the UI can
+  // reach master-on + DB-on + key-missing with one click. The lazy
+  // backfill must write jev_status='disabled' and queue nothing for
+  // async JEV resolution — a 'pending' row here would never resolve
+  // (no classifier exists) and would be re-collected as retryable on
+  // every click.
+  const { store, conversation, tempDir } = createFixture(t, 'jev-key-missing');
+
+  store.setSystemServiceToggle(JEV_SERVICE_TYPE, true);
+
+  // Production-shaped pipeline wiring: the real three-gate resolver
+  // (master on, key missing, DB row now on).
+  const pipeline = {
+    isJevEnabled: createJevEnabledResolver({ store, masterSwitchEnabled: true, apiKeyConfigured: false }),
+    isTaskActive: () => false,
+    resolvePendingStep: () => Promise.resolve(false),
+  };
+  const pipelineHandler = createConversationsController({
+    store,
+    turnOrchestrator: { resolveAssistantMessageSessionPath() { return ''; } },
+    buildBootstrapPayload() { return {}; },
+    turnTimeBreakdownPipeline: pipeline,
+  });
+
+  const sessionPath = writeSession(tempDir, 's3b.jsonl', [
+    assistantLine(BASE + 1_000, [{ id: 'c1', name: 'bash', arguments: { command: 'python scripts/run_suite.py' } }]),
+    toolResultLine(BASE + 5_000, 'c1', 'bash', '12 passed'),
+  ]);
+  const taskId = 'task-jev-key-missing-1';
+
+  createTaskRow(store, { taskId, sessionPath });
+  createAssistantMessage(store, conversation.id, 'msg-1', { taskId });
+
+  const first = await invoke(pipelineHandler, breakdownUrl(conversation.id, 'msg-1'));
+
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.json.breakdown.steps.length, 1);
+  assert.equal(first.json.breakdown.steps[0].category, 'unclassified');
+  assert.equal(first.json.breakdown.steps[0].jevStatus, 'disabled');
+
+  // A second click must not surface a zombie pending row either.
+  const second = await invoke(pipelineHandler, breakdownUrl(conversation.id, 'msg-1'));
+
+  assert.equal(second.statusCode, 200);
+  assert.ok(second.json.breakdown.steps.every((s) => s.jevStatus !== 'pending'));
+
+  const rows = store.turnTimeBreakdownRepository.listSteps(taskId);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].jev_status, 'disabled');
 });
 
 test('opaque commands classify as unclassified/disabled when JEV is off (default)', async (t) => {
