@@ -226,6 +226,22 @@ test('open panel renders category bars in contract order, metrics, and step rows
   // Terminal breakdown: no live refresh hint.
   assert.equal(await page.locator('.message-time-breakdown-note', { hasText: '轮次仍在进行' }).count(), 0);
   assert.deepEqual(errors, []);
+
+  // Partial statuses render honest pills (AC5).
+  await renderWith({
+    message: ASSISTANT_MESSAGE,
+    traceState: { open: false, status: 'ready', data: emptyTrace(3) },
+    breakdownState: { open: true, status: 'ready', data: breakdownData({ status: 'partial-interrupted' }) },
+  });
+  assert.equal(await page.locator('.message-tool-trace-pill', { hasText: '轮次中断或失败，结果不完整' }).count(), 1);
+
+  await renderWith({
+    message: ASSISTANT_MESSAGE,
+    traceState: { open: false, status: 'ready', data: emptyTrace(3) },
+    breakdownState: { open: true, status: 'ready', data: breakdownData({ status: 'partial-truncated' }) },
+  });
+  assert.equal(await page.locator('.message-tool-trace-pill', { hasText: '日志截断，结果不完整' }).count(), 1);
+  assert.deepEqual(errors, []);
 });
 
 test('live breakdown shows the refresh affordance; failed refresh keeps last result with a note', async (t) => {
