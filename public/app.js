@@ -2566,7 +2566,10 @@ function toggleMessageTimeBreakdown(conversationId, message) {
     // Reopening a live turn must refetch; a terminal breakdown stays cached.
     const staleLive = breakdownState.data && breakdownState.data.status === 'live';
     void fetchMessageTimeBreakdown(conversationId, message, {
-      force: breakdownState.status === 'error' || breakdownState.status === 'idle' || staleLive,
+      force: breakdownState.status === 'error'
+        || breakdownState.status === 'idle'
+        || breakdownState.status === 'empty'
+        || staleLive,
     });
   }
 }

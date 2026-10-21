@@ -384,12 +384,18 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 
 ### 10. Frontend
 
-- "耗时分析" button beside the trace toggle in `message-timeline.js`,
-  rendered when the message has tool steps or an existing breakdown.
+- "耗时分析" button beside the trace toggle in `message-timeline.js`.
+  Visibility: once the trace is loaded the toggle shows only when the
+  message has tool steps (`summary.toolExecutionCount > 0`); before the
+  trace loads it stays discoverable, except that after a 404 (empty
+  state) with no trace loaded it hides — a permanently empty button
+  would be dishonest. An open or loading panel always keeps its toggle
+  so it can be closed.
 - Panel: per-category duration bars (ms + %), metrics row (首次改文件时间,
   会话复用及原因, 全量回归遍数/失败次数), and the step list with category
   labels. In-progress turns expose a refresh action that re-fetches the
-  latest stored rows.
+  latest stored rows; a failed refresh keeps the last result and shows a
+  刷新失败，显示上次结果 note instead of silently presenting stale data.
 - Token usage display (open question `q-tokens`): v1 does **not** show
   token consumption by default; the panel gains it only after the user
   confirms the open question. The API may already carry the fields so

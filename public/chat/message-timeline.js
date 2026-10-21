@@ -1537,15 +1537,13 @@
       return button;
     }
 
-    // §10 visibility: render the toggle when the message has tool steps (from
-    // the loaded trace) or an existing/open breakdown. Before the trace loads
-    // the button stays discoverable; a 404 resolves to an honest empty state.
+    // §10 visibility: once the trace is loaded the toggle shows only when
+    // the message has tool steps; before the trace loads it stays
+    // discoverable, except after a 404 (empty state) with no trace loaded —
+    // a permanently empty button would be dishonest. An open or loading
+    // panel always keeps its toggle so it can be closed.
     function shouldShowTimeBreakdownToggle(trace, breakdownState) {
       if (breakdownState && (breakdownState.open || breakdownState.data || breakdownState.status === 'loading')) {
-        return true;
-      }
-
-      if (!trace) {
         return true;
       }
 
@@ -1554,7 +1552,15 @@
         ? Number(summary.toolExecutionCount || summary.totalSteps || 0)
         : 0;
 
-      return toolCount > 0;
+      if (trace) {
+        return toolCount > 0;
+      }
+
+      if (breakdownState && breakdownState.status === 'empty') {
+        return false;
+      }
+
+      return true;
     }
 
     function formatBreakdownDuration(durationMs) {
@@ -1848,6 +1854,15 @@
         empty.textContent = '暂无耗时分析记录（历史消息或本轮尚无工具步骤；进行中的轮次可稍后刷新）。';
         body.appendChild(empty);
       } else {
+        // A failed refresh keeps the last result and says so (review note:
+        // silently showing stale data reads as if it were fresh).
+        if (breakdownState.status === 'error') {
+          const stale = document.createElement('div');
+          stale.className = 'message-time-breakdown-note failed';
+          stale.textContent = '刷新失败，显示上次结果。';
+          body.appendChild(stale);
+        }
+
         body.append(
           buildTimeBreakdownBars(breakdown.categoryMs),
           buildTimeBreakdownMetrics(breakdown),
