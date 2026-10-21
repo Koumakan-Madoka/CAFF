@@ -1437,6 +1437,10 @@ CREATE INDEX IF NOT EXISTS idx_a2a_tasks_parent_run_id ON a2a_tasks (parent_run_
 CREATE INDEX IF NOT EXISTS idx_a2a_tasks_run_id ON a2a_tasks (run_id);
 CREATE INDEX IF NOT EXISTS idx_a2a_tasks_status ON a2a_tasks (status);
 CREATE INDEX IF NOT EXISTS idx_a2a_tasks_updated_at ON a2a_tasks (updated_at DESC);
+-- The turn-time-breakdown service resolves reused-session slice ends via
+-- WHERE session_path = ? on every uncached read (contract sections 4/9);
+-- on a multi-GB DB that full scan costs tens of ms per click without this.
+CREATE INDEX IF NOT EXISTS idx_a2a_tasks_session_path ON a2a_tasks (session_path);
 CREATE INDEX IF NOT EXISTS idx_a2a_task_events_task_id ON a2a_task_events (task_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_a2a_artifacts_task_id ON a2a_artifacts (task_id, created_at ASC);
   `);

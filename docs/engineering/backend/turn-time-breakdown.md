@@ -113,10 +113,24 @@ Turn-level metrics (also committed):
   Without this boundary a backfill re-parse would run to EOF and attribute
   every later turn's steps to the earlier message — first observed in the
   W7 `--store` corpus replay, where 35/58 turn spans inflated to ~2.8x
-  the message window. A sibling startIndex of N means "skip N assistant
+  the message window. (A recomputation sealing the non-terminal turn at
+its last sign of life instead of "now" gives 43.1h / 2.3x for the same
+batch — different sealing point, same direction and magnitude.) A
+sibling startIndex of N means "skip N assistant
   messages, my turn starts at message N+1", so the slice stops when the
   running assistant count passes N. Missing sibling data falls back to
   EOF (single-turn sessions, the common case, are unaffected).
+  Coverage note: this fallback is a legacy-data concern, not a going-
+  forward gap — in the production DB (2026-10-21) 11,102 of 16,051
+  `a2a_tasks` rows with a `session_path` carry no
+  `sessionAssistantStartIndex`, but by month that is 2026-03: 142/142,
+  2026-09: 54/458, 2026-10: 0/404; the index has been recorded since
+  10-08, so every new turn is covered. Two edge semantics: a turn whose
+  OWN startIndex is missing resolves its end boundary as the smallest
+  sibling index > 0 (its slice still starts at the session beginning);
+  and the sibling lookup runs `WHERE session_path = ?` on `a2a_tasks`,
+  which is indexed (`idx_a2a_tasks_session_path`) so uncached reads do
+  not full-scan the task table.
 - **Real-time**: the pi event stream — `handle.on('pi_event', ...)` in
   `server/domain/conversation/turn/agent-executor.ts` receives
   `tool_execution_start` / `tool_execution_end` (`toolCallId`, `toolName`,
@@ -613,7 +627,12 @@ with the documented flags):
 
 | Claim | Reproduced (documented calibers) | Verdict |
 | --- | --- | --- |
-| 三期房间 10-20 批次 test 占比 ~76% ±5pp | 58 GPT turns, 20.41h (window caliber). **Rules-only: test 0.0%** (unclassified 63.2% — the wrapper scripts are JEV-bound by design). **+`--overlay`: test 59.5%** (overlay = "assume JEV classifies the golden-reviewed wrappers correctly"). **+`--overlay --test-adjacent`: 69.9%** (adds build-check + read/write steps touching test paths). DB-path calibers below. | **Mid-band reproducible in the DB-path widest caliber** (75.4%, see below); the window calibers land at 0% / 59.5% / 69.9%. The original script's exact 口径 remains unavailable (open question `q-replay-caliber`); the claim (tests dominate, roughly three quarters of the day) is confirmed under the product path. |
+| 三期房间 10-20 批次 test 占比 ~76% ±5pp | 58 GPT turns, 20.41h (window caliber). **Rules-only: test 0.0%** (unclassified 63.2% — the wrapper scripts are JEV-bound by design). **+`--overlay`: test 59.5%** (overlay = "assume JEV classifies the golden-reviewed wrappers correctly"). **+`--overlay --test-adjacent`: 69.9%** (adds build-check + read/write steps touching test paths). DB-path calibers below. | **Mid-band reproducible in the DB-path widest caliber** (75.4%, see below); the window calibers land at 0% / 59.5% / 69.9%. The original script's exact 口径 remains unavailable (open question `q-replay-caliber`); the claim (tests dominate, roughly three quarters of the day) holds on
+product-path rows under the widest documented caliber. Note the honest
+limits of that sentence: the stored rows and summaries are product-path,
+but the 75.4% test share still carries the overlay assumption (pseudo-
+JEV classifying the wrappers as test) and the test-adjacent re-mapping
+is done in replay memory on top of the stored rows, not persisted. |
 | GLM 首次修改等待 ~9.8 min ±1 | 三期房间 10-14..17 GLM sessions, `--first-write` with §5 write scope (only repo-scope writes count): session-level median 6.8 / **mean 9.4 min** (n=113); DB-path caliber identical (9.4 / 6.8, n=113). Without the write-scope fix (sandbox probe scripts counted) the mean was 8.5 — the W6 first-submission "near miss" was the metric bug, not the claim. | **Reproduced in-band** (9.4 ∈ [8.8, 10.8], both calibers). |
 
 **DB-path (落库) caliber** — `--store <scratchDb>` (W7): the replay drives

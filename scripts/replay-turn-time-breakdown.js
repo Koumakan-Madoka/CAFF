@@ -73,8 +73,15 @@ function arg(name, fallback) {
 }
 const has = (name) => process.argv.includes('--' + name);
 
-const DB_PATH = arg('db', '.pi-sandbox/pi-state.sqlite');
-const SANDBOX = arg('sandbox', '.pi-sandbox');
+// Paths default to the repo-root sandbox, resolved against the repo
+// root (not the caller's cwd) so the documented commands re-run from
+// anywhere; explicit --db/--sandbox values are honored as given.
+const REPO_ROOT = path.join(__dirname, '..');
+function resolveRepoRelative(p) {
+  return path.isAbsolute(p) ? p : path.resolve(REPO_ROOT, p);
+}
+const DB_PATH = resolveRepoRelative(arg('db', '.pi-sandbox/pi-state.sqlite'));
+const SANDBOX = resolveRepoRelative(arg('sandbox', '.pi-sandbox'));
 const CONVERSATION = arg('conversation', null);
 const FROM = arg('from', '1970-01-01');
 const TO = arg('to', '2999-01-01');
@@ -402,6 +409,12 @@ const sessionFirstWrite = [];
 
 for (const [sessionPath, turns] of bySession) {
   const parsed = mod.parseSessionTurnSteps(sessionPath, SANDBOX, {});
+  if (!parsed) {
+    // Missing/unreadable session file (e.g. --sandbox pointing at the
+    // wrong directory): skip honestly instead of crashing on .steps.
+    console.error(`skip: session not parseable: ${sessionPath}`);
+    continue;
+  }
   if (FIRST_WRITE && turns.length) {
     const classifier = mod.createTurnRuleClassifier();
     let firstWrite = null;
