@@ -235,6 +235,35 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
     const classifier = resolveJevClassifier(state);
 
     if (!classifier || !classifier.enabled) {
+      // Honest-disable guard: a stored `pending` row whose classifier
+      // vanished (env gates flipped across a restart, or the client
+      // factory threw and resolveSharedJevClient caught it to null)
+      // would otherwise linger forever — nothing resolves it and every
+      // click re-collects it via listJevRetrySteps. Downgrade it to
+      // 'disabled' in place. Zero behavior change while the resolver
+      // gates and the client factory stay in sync. timeout/error rows
+      // keep their status: they are retry-worthy once the gates realign.
+      try {
+        const stored = repository.getStep(state.taskId, stepRow.stepKey);
+
+        if (stored && stored.jev_status === 'pending') {
+          repository.upsertStep({
+            taskId: state.taskId,
+            messageId: state.messageId,
+            stepKey: stored.step_key,
+            toolName: stored.tool_name,
+            category: 'unclassified',
+            subcategory: null,
+            classifiedBy: 'unclassified',
+            jevStatus: 'disabled',
+            confidence: null,
+            startedAt: stored.started_at,
+            endedAt: stored.ended_at,
+            durationMs: stored.duration_ms,
+          });
+        }
+      } catch {}
+
       return Promise.resolve(false);
     }
 

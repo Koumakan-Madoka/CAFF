@@ -170,6 +170,25 @@ test('service: getConfiguration reports status + cache count; update flips; clea
   assert.equal(steps[0].classified_by, 'jev');
 });
 
+test('service: updateConfiguration fails closed on a non-boolean enabled', (t) => {
+  const { store } = openStore(t);
+  const service = createJevServiceConfigService({
+    store,
+    turnTimeBreakdownRepository: store.turnTimeBreakdownRepository,
+    masterSwitchEnabled: true,
+    apiKeyConfigured: true,
+    connectionInfo: CONNECTION,
+  });
+
+  // A future caller bypassing the controller (script, migration) inherits
+  // the same fail-closed semantics: no silent coercion into OFF.
+  assert.throws(
+    () => service.updateConfiguration({ enabled: 'true' }),
+    (error) => error.statusCode === 422 && error.issues[0].code === 'invalid_enabled_value'
+  );
+  assert.equal(store.getSystemServiceToggle(JEV_SERVICE_TYPE), false);
+});
+
 test('service: GET payload never contains the API key or URL userinfo', (t) => {
   const { store } = openStore(t);
   const service = createJevServiceConfigService({

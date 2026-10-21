@@ -315,7 +315,12 @@ above) are opaque to rules → JEV fallback with command + output.
   flip applies to subsequent turns and to steps that have not started
   yet — a turn already in flight keeps the verdict it entered with
   (the pipeline snapshots the resolver result at the turn's first
-  event).
+  event). All three gates are evaluated inside `resolveJevEnabled`
+  itself (master switch, API key configured, DB toggle), so the stored
+  `jev_status` can never disagree with the status card — that key gate
+  inside the resolver is load-bearing: without it, DB-on + key-missing
+  would write unresolvable `pending` rows while the card says
+  `api_key_missing`.
   The API key stays env-only: it is never stored in the DB, never
   echoed by any response, and a PUT carrying a credential-ish field is
   rejected with 422. The status surface derives endpoint/model from the

@@ -15,6 +15,8 @@
 // DEPRECATED and no longer participates in the decision (it predates this
 // UI; no project ever enabled it).
 
+import { createHttpError } from '../../http/http-errors';
+
 export const JEV_SERVICE_TYPE = 'turn-time-breakdown-jev';
 
 export type JevStatusReason = 'enabled' | 'master_switch_off' | 'api_key_missing' | 'db_switch_off';
@@ -145,6 +147,16 @@ export function createJevServiceConfigService(options: any = {}) {
 
   function updateConfiguration(payload: any) {
     const source = payload && typeof payload === 'object' ? payload : {};
+
+    // Fail closed at the service boundary too (the controller already
+    // 422s this): a non-boolean `enabled` must never be silently coerced
+    // into OFF, whatever caller passes it.
+    if (Object.prototype.hasOwnProperty.call(source, 'enabled') && typeof source.enabled !== 'boolean') {
+      throw createHttpError(422, 'enabled must be a boolean', {
+        issues: [{ code: 'invalid_enabled_value', path: 'enabled' }],
+      });
+    }
+
     store.setSystemServiceToggle(JEV_SERVICE_TYPE, source.enabled === true);
     return getConfiguration();
   }

@@ -296,6 +296,34 @@ test('three-gate resolver: DB toggle on but API key missing lands as disabled, n
   assert.equal(clientBuilt, 0);
 });
 
+test('classifier vanished with jevEnabled still true: pending rows are downgraded to disabled, never zombie', async (t) => {
+  // Drift guard (contract §6): if the client factory ever fails while
+  // the resolver still says enabled (factory throw caught to null, or a
+  // future gate drift), the early-return branch must flip the just-
+  // written 'pending' row to 'disabled' — otherwise it lingers forever
+  // and every click re-collects it via listJevRetrySteps.
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+  const pipeline = createPipeline(store, {
+    resolveJevEnabled: () => true,
+    createJevClient: () => null,
+  });
+
+  pipeline.enqueueStep({
+    taskId: 'task-1',
+    messageId: 'msg-1',
+    conversationId: 'conv-1',
+    step: step({ stepKey: 'call-1', toolCallId: 'call-1', args: { command: 'python scripts/run_suite.py' } }),
+  });
+  await pipeline.flushForTests();
+
+  const row = repo.listSteps('task-1')[0];
+
+  assert.equal(row.category, 'unclassified');
+  assert.equal(row.jev_status, 'disabled');
+  assert.equal(repo.listJevRetrySteps('task-1').length, 0);
+});
+
 test('JEV timeout and error degrade to unclassified with honest status, never rejecting', async (t) => {
   const store = openStore(t);
   const repo = store.turnTimeBreakdownRepository;
