@@ -25,7 +25,7 @@ function baseResponse(overrides = {}) {
   };
 }
 
-function setup({ enabled = true, response = baseResponse(), failPut = null } = {}) {
+function setup({ enabled = true, response = baseResponse(), failPut = null, failDelete = null } = {}) {
   const dom = new JSDOM('<div id="root"></div><span id="dot"></span>');
   const requests = [];
   const toasts = [];
@@ -68,6 +68,7 @@ function setup({ enabled = true, response = baseResponse(), failPut = null } = {
         return structuredClone(current);
       }
       if (method === 'DELETE') {
+        if (failDelete) throw failDelete;
         const cleared = current.cache.entries;
         current.cache.entries = 0;
         return { cleared };
@@ -237,6 +238,30 @@ test('clear cache is a two-step confirm: first click arms, second sends DELETE w
   // After refresh the count renders zero and the button disables.
   assert.equal($('#jev-cache-count').textContent, '0');
   assert.equal($('#clear-jev-cache').disabled, true);
+});
+
+test('clear failure resets the confirm label: the button must not read 确认清空 while disarmed', async (t) => {
+  const { management, requests, $ } = setup({
+    failDelete: { status: 500, message: 'boom' },
+  });
+  await management.refresh();
+
+  $('#clear-jev-cache').click(); // arm
+  $('#clear-jev-cache').click(); // confirm → DELETE fails
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(requests.filter((r) => r.options.method === 'DELETE').length, 1);
+  const button = $('#clear-jev-cache');
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, '清空分类缓存', 'label must match the disarmed internal state');
+  assert.ok(!$('#jev-config-error').classList.contains('hidden'));
+
+  button.click(); // after failure, a click only re-arms — it must not execute
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests.filter((r) => r.options.method === 'DELETE').length, 1);
+  assert.equal($('#clear-jev-cache').textContent, '确认清空？再次点击确认');
 });
 
 test('clear button starts disabled when the cache is empty', async (t) => {

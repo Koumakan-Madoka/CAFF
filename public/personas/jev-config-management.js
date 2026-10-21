@@ -249,6 +249,10 @@
         await refresh();
       } catch (error) {
         showError(error, '清空分类缓存失败');
+        // The request already consumed the armed state; reset the label too,
+        // otherwise the button reads "确认清空？" while a click would only
+        // re-arm (honest behavior, lying label).
+        disarmClear();
         clearButton.disabled = false;
         throw error;
       } finally {
