@@ -141,3 +141,35 @@ test('metrics: no write step → firstWriteMs null; runKind fallback when counts
   assert.equal(metrics.fullRunCount, 1);
   assert.equal(metrics.fullRunFailCount, 0);
 });
+
+test('metrics: firstWriteMs ignores sandbox/temp scratch writes (repo only)', () => {
+  // W6 re-review blocking 1: writing a probe script into the agent sandbox
+  // is not "首次改仓库文件"; unknown scope is conservatively repo.
+  const { metrics } = computeTurnAttribution({
+    steps: [
+      step({ category: 'write', writeScope: 'sandbox', startedAtMs: 1000, endedAtMs: 2000 }),
+      step({ category: 'write', writeScope: 'temp', startedAtMs: 2500, endedAtMs: 3000 }),
+      step({ category: 'write', writeScope: 'repo', startedAtMs: 5000, endedAtMs: 6000 }),
+    ],
+    turnStartedAtMs: 0,
+    turnEndedAtMs: 9000,
+  });
+
+  assert.equal(metrics.firstWriteMs, 5000);
+
+  const scratchOnly = computeTurnAttribution({
+    steps: [step({ category: 'write', writeScope: 'sandbox', startedAtMs: 1000, endedAtMs: 2000 })],
+    turnStartedAtMs: 0,
+    turnEndedAtMs: 9000,
+  });
+
+  assert.equal(scratchOnly.metrics.firstWriteMs, null);
+
+  const unknownCounts = computeTurnAttribution({
+    steps: [step({ category: 'write', startedAtMs: 3000, endedAtMs: 4000 })],
+    turnStartedAtMs: 0,
+    turnEndedAtMs: 9000,
+  });
+
+  assert.equal(unknownCounts.metrics.firstWriteMs, 3000);
+});

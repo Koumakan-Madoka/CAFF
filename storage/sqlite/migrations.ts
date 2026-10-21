@@ -769,6 +769,10 @@ CREATE INDEX IF NOT EXISTS idx_chat_turn_time_steps_task_id ON chat_turn_time_st
   // Cumulative assistant-message count beside parse_offset: incremental
   // passes resume mid-file and the §4 slice boundary must not reset (§9).
   ensureColumn(db, 'chat_turn_time_summaries', 'assistant_count', 'assistant_count INTEGER');
+  // §5 write scope ('repo'|'sandbox'|'temp'|'unknown'): firstWriteMs counts
+  // only repo-scope writes; NULL (legacy rows, JEV-classified writes) is
+  // conservatively treated as repo.
+  ensureColumn(db, 'chat_turn_time_steps', 'write_scope', 'write_scope TEXT');
 }
 
 export function migrateChatSchema(db: any, options: any = {}) {

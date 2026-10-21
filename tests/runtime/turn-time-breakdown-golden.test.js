@@ -18,6 +18,12 @@ const test = require('node:test');
 
 const { createTurnRuleClassifier } = require('../../build/server/domain/runtime/turn-time-breakdown');
 const fixture = require('../fixtures/turn-time-breakdown-golden.json');
+// Stratum population of the full corpus (tool × rules-outcome × duration
+// bucket), regenerated only when re-baselining:
+//   node scripts/replay-turn-time-breakdown.js --sandbox <sandbox> \
+//     --conversation b7e50f1c --scan-sessions \
+//     --emit-strata tests/fixtures/turn-time-breakdown-golden-strata.json
+const strata = require('../fixtures/turn-time-breakdown-golden-strata.json');
 
 // Reviewed disagreement set (W6). Each id is a deliberate or documented
 // classification difference, not an unnoticed bug:
@@ -68,8 +74,27 @@ test('golden sample: time-weighted agreement >= 90%, disagreement set frozen', (
   const agreement = agreeMs / resolvedMs;
   assert.ok(agreement >= 0.9, `time-weighted agreement ${(agreement * 100).toFixed(1)}% < 90%`);
   assert.deepEqual([...disagreements].sort(), [...KNOWN_DISAGREEMENTS].sort());
-  // Rules-null share is JEV-bound by design (wrapper scripts); guard against
-  // rules coverage regressions pushing it beyond the sampled 41.3%.
-  assert.ok(unclassifiedMs / totalMs <= 0.45,
-    `rules-null time share ${(unclassifiedMs / totalMs * 100).toFixed(1)}% exceeds 45% guard`);
+  // The sample-internal null share (41.3%) is a stratification artifact —
+  // wrapper strata were deliberately over-sampled. The honest guard is the
+  // stratum-weighted estimate of the corpus null share (contract §13.1):
+  // weight each sampled step by population/sample per stratum. Measured
+  // 21.3% ≈ the direct corpus scan (22.5% full window / 27.0% 10-14..21).
+  const sampleCount = {};
+  for (const s of fixture) {
+    sampleCount[s.stratum] = (sampleCount[s.stratum] || 0) + 1;
+  }
+  let weightedNullMs = 0;
+  let weightedTotalMs = 0;
+  for (const s of fixture) {
+    const population = strata[s.stratum];
+    assert.ok(population && population.count > 0, `stratum population missing for ${s.stratum}`);
+    const weight = population.count / sampleCount[s.stratum];
+    weightedTotalMs += s.durationMs * weight;
+    if (!s.rulesCategory) {
+      weightedNullMs += s.durationMs * weight;
+    }
+  }
+  const weightedNullShare = weightedNullMs / weightedTotalMs;
+  assert.ok(weightedNullShare <= 0.3,
+    `stratum-weighted corpus null share ${(weightedNullShare * 100).toFixed(1)}% exceeds 30% guard`);
 });

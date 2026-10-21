@@ -190,10 +190,21 @@ export function computeTurnAttribution(options: any = {}) {
   categoryMs.thinking = Math.max(0, turnSpanMs - attribution.unionMs);
 
   // Metrics (§2): firstWriteMs, full regression counters.
+  // firstWriteMs is the first REPO-file mutation: sandbox/temp scratch
+  // writes (probe scripts, /tmp scratch) never move it; a missing/unknown
+  // scope is conservatively treated as repo (§5 write scope).
   let firstWriteMs = null;
 
   for (const step of steps) {
     if (String(step && step.category) !== 'write') {
+      continue;
+    }
+
+    const scope = step && step.writeScope !== undefined && step.writeScope !== null
+      ? String(step.writeScope)
+      : null;
+
+    if (scope === 'sandbox' || scope === 'temp') {
       continue;
     }
 

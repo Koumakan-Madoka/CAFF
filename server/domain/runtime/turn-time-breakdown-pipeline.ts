@@ -162,6 +162,7 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
       endedAtMs: fromIso(row.ended_at),
       runKind: row.run_kind,
       runFailed: row.run_failed === 1,
+      writeScope: row.write_scope || null,
       testRunCounts: Number.isFinite(row.run_count_full) || Number.isFinite(row.run_count_targeted)
         ? {
             full: Number.isFinite(row.run_count_full) ? row.run_count_full : 0,
@@ -383,6 +384,7 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
         runKind: classified.runKind || null,
         runFailed: classified.runFailed === true ? true : classified.category === 'test' ? false : null,
         testRunCounts: classified.testRunCounts || null,
+        writeScope: classified.writeScope || null,
       });
       summarizeTask(state);
       return;

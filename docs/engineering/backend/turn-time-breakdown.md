@@ -28,7 +28,7 @@ exactly one category (分类口径, committed decision `categories-v1`):
 | Category | Subcategories | Definition |
 | --- | --- | --- |
 | `read` (读) | `cold-start-reread` (冷启动重读), `purposeful-lookup` (有目的查阅) | Reads of files, search, read-only git (`log`/`show`/`diff`/`status`). Reads before the turn's first repo-file mutation are `cold-start-reread`; afterwards `purposeful-lookup`. |
-| `write` (改) | `product-code`, `test-code`, `docs-evidence` | Mutations of repo-tracked files: `edit`/`write` tools, bash redirections (`>`, `>>`), `sed -i`, `apply_patch`, `tee`. Path class decides the subcategory: `tests/**` → `test-code`; `docs/**`, `.agents/**` → `docs-evidence`; otherwise `product-code`. |
+| `write` (改) | `product-code`, `test-code`, `docs-evidence` | Mutations of repo-tracked files: `edit`/`write` tools, bash redirections (`>`, `>>`), `sed -i`, `apply_patch`, `tee`. Path class decides the subcategory: `tests/**` → `test-code`; `docs/**`, `.agents/**` → `docs-evidence`; otherwise `product-code`. Every write step also carries a **write scope** (§5 rule 8): `repo` / `sandbox` / `temp` / `unknown`; only `repo` (and conservatively `unknown`) counts toward `firstWriteMs`, and only a repo-scope write ends the cold-start read phase. |
 | `test` (测) | `targeted` (定向测试), `full-regression` (全量回归) | Test runner invocations. Records run count and failure count. |
 | `build-check` (构建与检查) | — | `tsc`, `npm run build`, `npm run typecheck`, `npm run check`, `node --check` chains, linters. Not tests. |
 | `process-report` (流程与汇报) | — | CAFF bridge tooling: `update-goal`, `suggest-goal`, `propose-plan`, `send-public`, `create-delegation`, `await-delegation`, `conversation_notify/request` (agent-chat-tools commands). |
@@ -40,7 +40,12 @@ Turn-level metrics (also committed):
 
 - `firstWriteMs`: turn span start (timestamp of the first trace event —
   the first assistant/model event of this turn's slice, not the user
-  message) → the first step that mutates a repo-tracked file.
+  message) → the first step that mutates a **repo-tracked** file. Write
+  steps carry a write scope (§5): `repo` counts; `sandbox` (agent
+  `.pi-sandbox` / `agent-sandboxes` / `$PI_AGENT_PRIVATE_DIR` probe
+  scripts) and `temp` (OS temp scratch) never move this metric even
+  though they stay `write` steps; `unknown` (unresolvable target,
+  JEV-classified write, legacy row) is conservatively treated as repo.
 - `sessionReused` + `sessionReuseReason`: read directly from the turn's
   message metadata (`sessionReused` / `sessionReuseReason`, written by
   `agent-executor.ts` at turn start; reason codes `reused`, `busy_stale`,
@@ -168,6 +173,18 @@ first hit wins:
    产品代码/测试/文档与证据 and a temp scratch file is none of those
    (golden sample gs-148/gs-293). `awk`/`gawk`/`mawk` default to `read`
    (extraction); the rare `awk -i` in-place form is a known gap.
+   `git stash push/drop/create` (and bare `git stash`) mutate repo state
+   → `write` with NULL subcategory; only `list`/`show` are reads.
+   Every `write` classification also carries a **write scope**
+   (`classifyWriteScope`, §2): `repo` for relative (workdir-anchored)
+   targets; `sandbox` for `.pi-sandbox/` / `agent-sandboxes/` paths and
+   `$PI_AGENT_PRIVATE_DIR` / `$PI_AGENT_SANDBOX_DIR` references; `temp`
+   for `/tmp/`, `/var/tmp/`, `$TMPDIR`, `%TEMP%`, `%TMP%`; `unknown`
+   for anything else (absolute paths outside the known scratch areas,
+   unresolvable targets). `unknown` is conservatively treated as repo
+   by `firstWriteMs` and the cold-start flip; `sandbox`/`temp` writes
+   stay `write` steps but never end the cold-start read phase (§2 read
+   row: "first repo-file mutation").
 5. Reads (`read`/`grep`/`find` tools, `ls`, `cat`, `sed` without `-i`,
    `diff`, read-only git incl. via `git -C`) → `read` with cold-start
    subcategory before the first write. The classifier exposes
@@ -294,6 +311,7 @@ CREATE TABLE IF NOT EXISTS chat_turn_time_steps (
   run_failed INTEGER,               -- 0/1/NULL
   run_count_full INTEGER,           -- §5 per-segment counts (`npm test; npm test` = 2)
   run_count_targeted INTEGER,
+  write_scope TEXT,                 -- §5: 'repo'|'sandbox'|'temp'|'unknown'; NULL (legacy/JEV) ≈ repo
   payload_json TEXT,                -- JEV-bound steps only: {args, truncated output} for retry
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -465,10 +483,12 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   rendering (incl. empty/live/partial states), in-progress refresh
   click → fetch.
 - `tests/runtime/turn-time-breakdown-golden.test.js` +
-  `tests/fixtures/turn-time-breakdown-golden.json`: the AC3 golden
+  `tests/fixtures/turn-time-breakdown-golden.json` +
+  `tests/fixtures/turn-time-breakdown-golden-strata.json`: the AC3 golden
   sample (see §13.1). Freezes the rules result per step, asserts the
   reviewed disagreement set exactly, and guards the time-weighted
-  agreement (≥90%) and rules-null time share (≤45%).
+  agreement (≥90%) and the stratum-weighted corpus null-share estimate
+  (≤30%; the sample-internal 41.3% is a stratification artifact, §13.1).
 - `scripts/replay-turn-time-breakdown.js`: the AC4 replay tool
   (see §13.2). Not part of `test:fast` (it reads the live main DB).
 - The parser test file carries the AC5 performance case: a >4MB
@@ -493,16 +513,34 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   Labels: Kimi (author); reviewed against §5 semantics. A second-agent
   pass was folded into the W6 review discussion.
 - **Results** (post W6 rules fixes): rules-resolved time-weighted
-  agreement **97.3%** (≥90% ✓). Rules-null (JEV-bound) time share
-  **41.3%** — the corpus is dominated by opaque wrapper scripts
-  (`workflow-wiring-*/s8-*-run.py`), which is exactly the JEV use case.
+  agreement **97.3%** (≥90% ✓).
+- **Null share — sample vs corpus** (W6 re-review correction): the
+  sample-internal rules-null time share is **41.3%**, but that is a
+  stratification artifact (opaque-wrapper strata were deliberately
+  over-sampled) and is NOT the corpus property. The corpus-level
+  rules-null time share, measured with
+  `node scripts/replay-turn-time-breakdown.js --sandbox <sandbox>
+  --conversation b7e50f1c --from 2026-10-14 --to 2026-10-21
+  --scan-sessions`, is **27.0%** (587 sessions / 30,348 steps; the
+  independent reviewer measured 27.2% with his own probe — cross-check
+  within 0.2pp); over the full session window it is **22.5%**
+  (977 sessions / 53,022 steps). The regression guardrail therefore
+  compares a **stratum-weighted** estimate from the fixture
+  (population counts in
+  `tests/fixtures/turn-time-breakdown-golden-strata.json`, regenerated
+  via `--scan-sessions --emit-strata` only when re-baselining):
+  currently **21.3%**, asserted ≤ 30%.
+- **JEV caveat / explicit AC3 gap**: JEV was credential-gated off in
+  this environment (`TYPESAFE_*` absent; open question `q-jev-config`),
+  so AC3's JEV-on caliber (未分类 ≤10%) is **not measured, only
+  proxied**: golden labels stand in for JEV answers, matching the
+  production JEV+cache behavior for a correct classifier. The honest
+  corpus unclassified share under JEV-off is 27.0% (10-14..10-21
+  window) — far above 10%, so the AC3 ≤10% number cannot be evidenced
+  without live JEV credentials. This gap is recorded at the same level
+  as the missing JEV credentials themselves and is part of
+  `q-replay-caliber` user adjudication.
   Projected system agreement with a golden-matching JEV: **98.4%**.
-- **JEV caveat**: JEV was credential-gated off in this environment
-  (`TYPESAFE_*` absent; open question `q-jev-config`), so AC3's JEV-on
-  caliber (未分类 ≤10%) is verified by *proxy*: golden labels stand in
-  for JEV answers, matching the production JEV+cache behavior for a
-  correct classifier. The honest unclassified share under JEV-off is
-  41.3% by time on this corpus.
 - **Known disagreements** (frozen in the regression test, 6/300):
   - `gs-042`/`gs-150`: rg searches whose *pattern* names a bridge tool →
     rules FP `process-report`, golden `read`.
@@ -513,27 +551,35 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
     `build-check`, golden `write` (borderline).
   - `gs-299`: 185s wrapper that ran tests then died on harness timeout;
     rules `exception-retry` (executed-then-failed policy), golden `test`.
-- **Rules fixes driven by the sample** (this commit): `git stash
+- **Rules fixes driven by the sample** (W6): `git stash
   list|show` → `read` (was `write`, gs-052/146/294); scratch redirection
   into OS temp (`/tmp`, `$TMPDIR`, `%TEMP%`…) no longer counts as 改
   (gs-148/293); `awk`/`gawk`/`mawk` default to `read`.
+  W6 re-review added: `git stash push/drop/create` → `write` (the
+  list/show carve-out had regressed them to `null`); write scope
+  (`repo`/`sandbox`/`temp`/`unknown`) so sandbox probe-script writes
+  (gs-175 shape) no longer move `firstWriteMs`.
 
 #### 13.2 Retrospective replay (AC4)
 
 `scripts/replay-turn-time-breakdown.js` replays the classifier over
 `chat_messages` turn windows (`created_at..updated_at`, steps assigned by
 `startedAtMs`; thinking = window − tool union). `--overlay` applies the
-golden-derived wrapper mapping as the replay-time substitute for JEV.
+golden-derived wrapper mapping as the replay-time substitute for JEV;
+the overlay is a hand-written mapping for THIS corpus batch only — it is
+replay evidence for this batch, not a reusable artifact.
 
-Reproduction against the 10-20 retrospective claims:
+Reproduction against the 10-20 retrospective claims (W6 re-review
+calibers — every number below is a direct output of the replay script
+with the documented flags):
 
 | Claim | Reproduced (documented calibers) | Verdict |
 | --- | --- | --- |
-| 三期房间 10-20 批次 test 占比 ~76% ±5pp | 58 GPT turns, 20.41h. Strict per-step: **59.5%**. With test-file-adjacent IO (test + build-check + reads/writes touching test paths): **71.2%** — at the lower tolerance edge. s8-turns-only: 60.9%. Local-day (UTC+8) window: 65.5%. | **Partially reproduced** — no documented caliber lands mid-band; closest caliber touches the lower edge. The original script's exact 口径 is unavailable (open question `q-replay-caliber`); the order of magnitude (tests dominate, ~3/5–3/4 of the day) is confirmed. |
-| GLM 首次修改等待 ~9.8 min ±1 | 三期房间 10-14..17 GLM turns (252). Turn-level: median 5.2 / mean 6.5 min. Session-level first-write (131 sessions): median 6.6 / **mean 8.5 min**. GLM turn read share: 55.5%. | **Near miss** (8.5 vs ≥8.8); the qualitative claim (long cold re-reading before first write) is confirmed with numbers. |
+| 三期房间 10-20 批次 test 占比 ~76% ±5pp | 58 GPT turns, 20.41h. **Rules-only: test 0.0%** (unclassified 63.2% — the wrapper scripts are JEV-bound by design). **+`--overlay`: test 59.5%** (overlay = "assume JEV classifies the golden-reviewed wrappers correctly"). **+`--overlay --test-adjacent`: 69.9%** (adds build-check + read/write steps touching test paths). | **Not mid-band reproducible** — the strict rules caliber lands at 0% because the batch is dominated by opaque wrappers; the JEV-proxy caliber lands at 59.5%, the widest documented caliber at 69.9% (lower tolerance edge is 71%). The original script's exact 口径 is unavailable (open question `q-replay-caliber`); the order of magnitude (tests dominate, ~3/5–7/10 of the day) is confirmed. |
+| GLM 首次修改等待 ~9.8 min ±1 | 三期房间 10-14..17 GLM sessions, `--first-write` with §5 write scope (only repo-scope writes count): session-level median 6.8 / **mean 9.4 min** (n=113). Without the write-scope fix (sandbox probe scripts counted) the mean was 8.5 — the W6 first-submission "near miss" was the metric bug, not the claim. | **Reproduced in-band** (9.4 ∈ [8.8, 10.8]). |
 
 The replay script's header records these reference numbers; re-running it
-against the same DB must reproduce them.
+with the documented flags against the same DB reproduces them.
 
 ### 14. Wrong vs Correct
 

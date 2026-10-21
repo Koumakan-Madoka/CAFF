@@ -74,6 +74,7 @@ function mapStoredStep(row: any) {
     durationMs: Number.isFinite(row.duration_ms) ? row.duration_ms : null,
     runKind: row.run_kind,
     runFailed: row.run_failed === null || row.run_failed === undefined ? null : row.run_failed === 1,
+    writeScope: row.write_scope || null,
     testRunCounts: Number.isFinite(row.run_count_full) || Number.isFinite(row.run_count_targeted)
       ? {
           full: Number.isFinite(row.run_count_full) ? row.run_count_full : 0,
@@ -131,6 +132,7 @@ function recomputeSummary(repository: any, input: any) {
     endedAtMs: fromIso(row.ended_at),
     runKind: row.run_kind,
     runFailed: row.run_failed === 1,
+    writeScope: row.write_scope || null,
     testRunCounts: Number.isFinite(row.run_count_full) || Number.isFinite(row.run_count_targeted)
       ? {
           full: Number.isFinite(row.run_count_full) ? row.run_count_full : 0,
@@ -347,6 +349,7 @@ export function getTurnTimeBreakdownForMessage(options: any = {}) {
           runKind: classified.runKind || null,
           runFailed: classified.runFailed === true ? true : classified.category === 'test' ? false : null,
           testRunCounts: classified.testRunCounts || null,
+          writeScope: classified.writeScope || null,
         });
         continue;
       }

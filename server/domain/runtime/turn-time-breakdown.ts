@@ -382,6 +382,52 @@ export function classifyPathSubcategory(rawPath: any) {
   return 'product-code';
 }
 
+// §5 write scope: WHERE a write lands. `firstWriteMs` (§2, "首次改仓库文件")
+// counts only repo-scope writes; scratch writes into the agent sandbox
+// (probe scripts under .pi-sandbox / agent-sandboxes, $PI_AGENT_PRIVATE_DIR)
+// or the OS temp area are still `write` steps, but they never move the
+// first-repo-write metric. `unknown` (unresolvable or absolute paths outside
+// the known scratch areas) is conservatively treated as repo.
+export function classifyWriteScope(rawPath: any) {
+  const portable = String(rawPath || '').replace(/\\/g, '/');
+
+  if (!portable) {
+    return 'unknown';
+  }
+
+  // OS temp scratch (including env-var anchored forms).
+  if (
+    /^\/(tmp|var\/tmp)\//.test(portable)
+    || /\$\{?TMPDIR\}?/.test(portable)
+    || /%(TEMP|TMP)%/i.test(rawPath)
+  ) {
+    return 'temp';
+  }
+
+  // Agent sandbox / private storage (never repo-tracked).
+  if (
+    /\.pi-sandbox(\/|$)/.test(portable)
+    || /agent-sandboxes(\/|$)/.test(portable)
+    || /\$\{?PI_AGENT_(PRIVATE|SANDBOX)_DIR\}?/.test(rawPath)
+  ) {
+    return 'sandbox';
+  }
+
+  // A relative path resolves against the repo workdir → repo write.
+  const isRelative = !portable.startsWith('/')
+    && !/^[A-Za-z]:\//.test(portable)
+    && !portable.startsWith('~')
+    && !portable.startsWith('$')
+    && !portable.startsWith('%');
+
+  return isRelative ? 'repo' : 'unknown';
+}
+
+// firstWriteMs counts repo writes; unknown is conservatively repo (§2).
+export function writeScopeCountsAsRepo(scope: any) {
+  return scope !== 'sandbox' && scope !== 'temp';
+}
+
 // Split a shell command into segments on &&, ||, ;, | — quote-aware, so
 // alternation inside quotes (`rg -n "a\|b"`, `grep "foo;bar"`) never splits.
 function splitShellSegments(command: string) {
@@ -945,7 +991,7 @@ const BASH_MUTATION_PATTERNS = [
   // `git stash list|show` are read-only inspections — excluded here and
   // matched as read below (golden sample gs-052/gs-146/gs-294).
   /^git\s+(apply|am|add|commit|rm|mv)(\s|$)/,
-  /^git\s+stash(\s+(?!list\b|show\b)\S*)?\s*$/,
+  /^git\s+stash(\s+(?!list\b|show\b)\S+.*)?$/,
 ];
 
 const BASH_READ_PATTERNS = [
@@ -1020,7 +1066,11 @@ function classifyBashMutation(segment: string): any {
     if (pattern.test(withoutDevNull)) {
       const target = extractBashWriteTarget(segment);
 
-      return { category: 'write', subcategory: target ? classifyPathSubcategory(target) : null };
+      return {
+        category: 'write',
+        subcategory: target ? classifyPathSubcategory(target) : null,
+        writeScope: target ? classifyWriteScope(target) : 'unknown',
+      };
     }
   }
 
@@ -1196,9 +1246,12 @@ export function createTurnRuleClassifier() {
         }
       }
     } else if (WRITE_TOOL_NAMES.has(toolName)) {
+      const toolPath = extractToolPath(step);
+
       result = {
         category: 'write',
-        subcategory: classifyPathSubcategory(extractToolPath(step)),
+        subcategory: classifyPathSubcategory(toolPath),
+        writeScope: toolPath ? classifyWriteScope(toolPath) : 'unknown',
       };
     } else if (READ_TOOL_NAMES.has(toolName)) {
       result = {
@@ -1208,7 +1261,11 @@ export function createTurnRuleClassifier() {
     }
 
     if (result && result.category === 'write') {
-      writeSeen = true;
+      // Only a repo-file mutation ends the cold-start phase (§2 read row);
+      // sandbox/temp scratch writes leave later reads cold-start-reread.
+      if (writeScopeCountsAsRepo(result.writeScope)) {
+        writeSeen = true;
+      }
     }
 
     if (result) {

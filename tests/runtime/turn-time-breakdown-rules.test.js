@@ -154,6 +154,56 @@ test('git stash list/show are read; scratch redirection into OS temp is not a wr
   assert.equal(classifyBash('cat > tests/x.test.js').category, 'write');
 });
 
+test('git stash push/drop/create are writes (only list/show are reads)', () => {
+  // W6 re-review non-blocking: the multi-word stash mutations regressed to
+  // null when list/show were carved out; they mutate repo state → write.
+  assert.equal(classifyBash('git stash push -m "wip"').category, 'write');
+  assert.equal(classifyBash('git stash drop stash@{0}').category, 'write');
+  assert.equal(classifyBash('git stash create').category, 'write');
+  assert.equal(classifyBash('git stash list').category, 'read');
+  assert.equal(classifyBash('git stash show -p').category, 'read');
+});
+
+test('write scope: sandbox/temp scratch writes are scoped, repo writes are repo', () => {
+  // W6 re-review blocking 1: a sandbox probe-script write must not move
+  // firstWriteMs ("首次改仓库文件"). gs-175 is exactly this shape.
+  const sandboxEdit = createTurnRuleClassifier().classify({ toolName: 'edit', args: { path: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/role-family-kimi/private/probes-extra.mts' } });
+  assert.equal(sandboxEdit.category, 'write');
+  assert.equal(sandboxEdit.writeScope, 'sandbox');
+
+  const privateRedirect = classifyBash('cat > "$PI_AGENT_PRIVATE_DIR/x.mjs" <<\'EOF\'\nconsole.log(1)\nEOF');
+  assert.equal(privateRedirect.category, 'write');
+  assert.equal(privateRedirect.writeScope, 'sandbox');
+
+  const sandboxPath = classifyBash('cat > .pi-sandbox/agent-sandboxes/role-family-glm/private/x.mjs <<\'EOF\'\nx\nEOF');
+  assert.equal(sandboxPath.writeScope, 'sandbox');
+
+  const tmpSed = classifyBash('sed -i s/a/b/ /tmp/x');
+  assert.equal(tmpSed.category, 'write');
+  assert.equal(tmpSed.writeScope, 'temp');
+
+  assert.equal(createTurnRuleClassifier().classify({ toolName: 'edit', args: { path: 'server/x.ts' } }).writeScope, 'repo');
+  assert.equal(classifyBash('cat > tests/x.test.js').writeScope, 'repo');
+  // Unresolvable targets stay unknown (conservatively repo for firstWriteMs).
+  assert.equal(classifyBash('git add -A').writeScope, 'unknown');
+});
+
+test('write scope: only a repo-file mutation ends the cold-start read phase', () => {
+  const classifier = createTurnRuleClassifier();
+
+  classifier.classify({ toolName: 'edit', args: { path: 'E:/x/.pi-sandbox/private/p.mts' } });
+  assert.equal(
+    classifier.classify({ toolName: 'read', args: { path: 'server/a.ts' } }).subcategory,
+    'cold-start-reread',
+  );
+
+  classifier.classify({ toolName: 'edit', args: { path: 'server/a.ts' } });
+  assert.equal(
+    classifier.classify({ toolName: 'read', args: { path: 'server/b.ts' } }).subcategory,
+    'purposeful-lookup',
+  );
+});
+
 test('every test segment counts toward run totals', () => {
   const twice = classifyBash('npm test; npm test');
 
