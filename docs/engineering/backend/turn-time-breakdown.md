@@ -335,6 +335,16 @@ above) are opaque to rules → JEV fallback with command + output.
   the environment. When disabled the classifier does not even read the
   cache — "rules only" means exactly that; do not "fix" this later, it
   would change the switch semantics.
+- UI panel (system-services page, `personas/jev-config-management.js`):
+  a status card mirroring `resolveJevRuntimeStatus` (master switch, key
+  configured-or-not, DB toggle, endpoint, model, conclusion + reason —
+  the server is the single source of the verdict, the UI only maps
+  `status.reason` to copy and never re-derives it), the enable toggle
+  (PUT on save, effective immediately for subsequent turns), and the
+  cache manager (entry count + a two-step inline confirm clear). When
+  the toggle is on but `status.effective` is false, the panel must say
+  so explicitly next to the toggle ("已开启，但当前不生效：<reason>") —
+  an ON toggle must never read as "enabled and working".
 - Failure/timeout/disabled: step stored as `unclassified` with
   `jevStatus = 'ok' | 'timeout' | 'error' | 'disabled' | 'low-confidence'
   | 'pending'`; never blocks, never throws into the turn path. `pending`

@@ -2823,6 +2823,30 @@ textarea {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.jev-gate-list {
+  list-style: none;
+  margin: 0 0 0.9rem;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.jev-gate-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.88rem;
+}
+
+.jev-gate-row .jev-gate-label {
+  color: var(--muted);
+}
+
+.jev-gate-row small {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .management-note,
 .management-error {
   margin: 0;
