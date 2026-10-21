@@ -111,7 +111,8 @@ building the body and before both transports:
   `input`, so the hook covers them; retries within one `stream()` call reuse
   the same post-hook body.
 
-Filter: inject only when `ctx.model.api === "openai-codex-responses"`. Relay
+Filter: inject only when `ctx.model.api === "openai-codex-responses"` **and**
+`ctx.model.provider === "openai-codex"`. Relay
 stations on `openai-responses` / `openai-completions`, other families
 (GLM/Kimi/DeepSeek/Claude), and official API-key channels are never touched,
 even if the toggle is on.
@@ -132,9 +133,28 @@ switch. `node_modules` stays untouched.
 - Room-scoped usage rides the existing room-level model-profile selection
   (`chat_conversation_agents.model_profile_id`); no new room/message-level
   override.
-- The toggle reaches the SDK host per round (start-command config whitelist
-  or env, precedent: `caff-capabilities`); the SDK host forks per round, so a
-  toggle change applies to the next round with no service restart.
+- The toggle reaches the SDK host per round as the explicit boolean
+  `start.config.fast`: `agent-executor.ts` resolves it from `runtimeConfig`
+  (or selected profile/default), and `pi-runtime.ts` forwards it through IPC.
+  Both IPC boundaries require `=== true`; no ambient environment variable
+  can enable it. The SDK host forks per round, so a toggle change applies
+  to the next round with no service restart.
+- `lib/pi-extensions/caff-fast-mode.mjs` supplies a named inline extension
+  factory in `pi-sdk-host.mjs`'s resource-loader options. Each factory captures
+  the round's setting, avoiding process-global cross-runtime state. The build
+  copies this module unchanged alongside the existing stream-read extension.
+- Support resolution runs only for enabled, in-scope requests. It obtains the
+  active credential via `ctx.modelRegistry.getApiKeyAndHeaders(model)`, then
+  probes the official catalog with a 1.5-second fetch/body deadline and no
+  redirects. It does not send credentials to custom endpoints. The memory-only
+  cache lasts five minutes for a valid catalog and 30 seconds for failure;
+  it belongs to one runtime (one CAFF round), not a cross-round disk cache.
+  Credential/account/base-URL changes clear it; generation checks discard
+  in-flight results from the previous identity. Tokens/account IDs never
+  enter logs or trace. No directory probe occurs when Fast is off.
+- Model-profile writes replace the whole profile list: omitted `fast` is
+  normalized to false rather than preserving the prior profile value. Editors
+  must always send an explicit boolean (the shared payload builder does).
 - `fast` never enters the session-reuse static fingerprint
   (`[provider, model, profileId, thinking]` in `agent-executor.ts`):
   toggling must not cold-start sessions, and shipping the feature must not
@@ -150,6 +170,32 @@ switch. `node_modules` stays untouched.
 - Display points: `createModelCallObservabilityEvent` (assistant_message
   handling in `agent-executor.ts`), `message-trace-inspector.ts`
   sessionProjection, `message-timeline.js` next to the token badge.
+
+## Runtime verification (W3)
+
+Hermetic tests (no real subscription or network I/O):
+
+- `tests/runtime/fast-mode-runtime.test.js`: explicit opt-in, API/provider
+  isolation, payload immutability, static-list parity, catalog positive and
+  authoritative negative results, fetch/malformed/timeout fallback, cache TTL,
+  credential/account switch and stale in-flight result isolation.
+- `tests/runtime/fast-mode-sdk.test.js`: actual SDK host and pi-ai serializers
+  with fake OAuth, intercepted fetch and fake WebSocket; captures compressed
+  SSE bodies, HTTP retries, post-tool model requests, reused WebSocket delta
+  frames, WebSocket connection-limit retries and automatic SSE fallback.
+  Covers on/off, catalog-negative and non-subscription providers; a separate
+  non-Codex API case uses that API's SSE transport. Tier rejection remains a
+  provider error; pi-ai may retry it, but never without `priority`.
+- `tests/runtime/pi-sdk-host.test.js` and `pi-runtime.test.js`: per-runtime
+  factory registration and explicit-boolean start-command/IPC forwarding.
+- `tests/runtime/session-reuse-ab.test.js`: changing Fast false/true/false
+  preserves session identity/hash and reports `reused`; the legacy fingerprint
+  input array stays exactly `[provider, model, reuseProfileId, thinking]`.
+  The formerly orphaned suite's model-catalog fixture now includes the
+  preflight resolution/thinking evidence and the suite is in `npm test`.
+
+These tests prove request semantics, **not** backend execution as priority;
+real-subscription and screenshot acceptance remains W6.
 
 ## Known limitations
 

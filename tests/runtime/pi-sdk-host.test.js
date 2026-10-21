@@ -170,6 +170,11 @@ test('SDK host maps an explicit CAFF session path and extension list into an Age
   ]);
   assert.equal(servicesCall.options.cwd, cwd);
   assert.equal(servicesCall.options.agentDir, agentDir);
+  const fastExtension = servicesCall.options.resourceLoaderOptions.extensionFactories[0];
+  assert.equal(fastExtension.name, 'caff-fast-mode');
+  let fastHook;
+  fastExtension.factory({ on: (_name, handler) => { fastHook = handler; } });
+  assert.equal(await fastHook({ payload: {} }, { model: { api: 'openai-codex-responses', provider: 'openai-codex' } }), undefined);
 
   const createCall = calls.find((entry) => entry.type === 'create_agent_session_from_services');
   assert.equal(createCall.options.sessionManager.kind, 'session_open');
@@ -293,6 +298,27 @@ test('SDK host start command normalizes contract skill scoping fields', async ()
   });
   assert.deepEqual(legacyCommand.config.additionalSkillPaths, []);
   assert.equal(legacyCommand.config.retireUserScopeSkills, false);
+});
+
+test('SDK host normalizes Fast to explicit true, defaulting off', async () => {
+  const { normalizeStartCommand, createSdkRuntime } = await loadHostModule();
+  for (const value of [undefined, false, true, 'true', 'false', 1, null]) {
+    const command = normalizeStartCommand({ type: 'start', prompt: 'go', config: { fast: value } });
+    assert.equal(command.config.fast, value === true);
+  }
+  const calls = [];
+  await createSdkRuntime(createFakeSdk(calls), {
+    provider: 'test-provider', model: 'test-model', cwd: path.resolve('.'),
+    agentDir: path.resolve('test-agent-dir'), fast: true,
+  });
+  const factory = calls.find((c) => c.type === 'create_agent_session_services')
+    .options.resourceLoaderOptions.extensionFactories[0].factory;
+  let handler;
+  factory({ on: (_name, fn) => { handler = fn; } });
+  // No auth = the documented static fallback, with no network request.
+  assert.deepEqual(await handler({ payload: { input: [] } }, {
+    model: { provider: 'openai-codex', api: 'openai-codex-responses', id: 'gpt-6.1-sol' },
+  }), { input: [], service_tier: 'priority' });
 });
 
 test('SDK host maps resume and fresh runs to the pinned agent directory session tree', async () => {

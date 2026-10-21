@@ -1439,6 +1439,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
           provider: provider || '',
           model: model || '',
           thinking: thinking || '',
+          fast: options.fast === true,
           agentDir,
           sessionPath: sessionPath || '',
           resume,

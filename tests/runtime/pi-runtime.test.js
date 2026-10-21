@@ -1399,6 +1399,7 @@ test('pi runtime forwards skill scoping fields through IPC with the session cwd'
     cwd: projectDir,
     additionalSkillPaths: [contractSkillPath, duplicateContractSkillPath],
     retireUserScopeSkills: true,
+    fast: true,
     session: 'named-session',
     heartbeatIntervalMs: 50,
     heartbeatTimeoutMs: 10000,
@@ -1426,6 +1427,7 @@ test('pi runtime forwards skill scoping fields through IPC with the session cwd'
   assert.equal(command.config.cwd, projectDir);
   assert.deepEqual(command.config.additionalSkillPaths, [path.resolve(contractSkillPath)]);
   assert.equal(command.config.retireUserScopeSkills, true);
+  assert.equal(command.config.fast, true);
 
   const legacyCaptured = { command: null };
   const legacyHandle = runtime.startRun('test-provider', 'test-model', 'legacy options', {
@@ -1453,6 +1455,7 @@ test('pi runtime forwards skill scoping fields through IPC with the session cwd'
   legacyCaptured.command = JSON.parse(fs.readFileSync(capturePath, 'utf8')).command;
   assert.deepEqual(legacyCaptured.command.config.additionalSkillPaths, []);
   assert.equal(legacyCaptured.command.config.retireUserScopeSkills, false);
+  assert.equal(legacyCaptured.command.config.fast, false);
 });
 
 test('pi runtime sends an IPC abort command before forcing process termination', async (t) => {

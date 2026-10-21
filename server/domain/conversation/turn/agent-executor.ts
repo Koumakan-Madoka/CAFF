@@ -731,6 +731,7 @@ function resolveConversationAgentConfig(agent: any) {
       provider: String(runtimeConfig.provider || '').trim(),
       model: String(runtimeConfig.model || '').trim(),
       thinking: String(runtimeConfig.thinking || '').trim(),
+      fast: runtimeConfig.fast === true,
       personaPrompt: String(runtimeConfig.personaPrompt || '').trim(),
       skillIds: Array.isArray(runtimeConfig.skillIds) ? runtimeConfig.skillIds : [],
       conversationSkillIds: Array.isArray(agent && (agent.conversationSkillIds || agent.conversationSkills))
@@ -747,6 +748,7 @@ function resolveConversationAgentConfig(agent: any) {
     provider: resolveSetting(selectedModelProfile ? selectedModelProfile.provider : '', agent && agent.provider, ''),
     model: resolveSetting(selectedModelProfile ? selectedModelProfile.model : '', agent && agent.model, ''),
     thinking: resolveSetting(selectedModelProfile ? selectedModelProfile.thinking : '', agent && agent.thinking, ''),
+    fast: (selectedModelProfile ? selectedModelProfile.fast : agent?.fast) === true,
     personaPrompt: resolveSetting(selectedModelProfile ? selectedModelProfile.personaPrompt : '', agent && agent.personaPrompt, ''),
     skillIds: Array.isArray(agent && (agent.skillIds || agent.skills)) ? agent.skillIds || agent.skills : [],
     conversationSkillIds: Array.isArray(agent && (agent.conversationSkillIds || agent.conversationSkills))
@@ -2143,6 +2145,7 @@ export function createAgentExecutor(options: any = {}) {
 
     const runOptions: any = {
       thinking,
+      fast: agentConfig.fast,
       images: invocationImages,
       extensionPaths: piCapabilityExtensionPath ? [piCapabilityExtensionPath] : [],
       agentDir,

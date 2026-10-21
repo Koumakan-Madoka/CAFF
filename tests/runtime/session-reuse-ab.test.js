@@ -359,7 +359,10 @@ function setupExecutorTest(t, { reuseEnabled }) {
         toolBaseUrl: 'http://127.0.0.1:3100',
         agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
         agentToolRelativePath: './lib/agent-chat-tools.js',
-        modelCatalog: { getOptions: () => [{ provider: PROVIDER, model: MODEL, contextWindow: CONTEXT_WINDOW }] },
+        modelCatalog: { getOptions: () => [{
+          provider: PROVIDER, model: MODEL, contextWindow: CONTEXT_WINDOW,
+          runtimeResolvable: true, supportedThinkingLevels: ['off', 'low'],
+        }] },
       });
     },
   };
@@ -546,6 +549,56 @@ test('reused mode resumes the stored session with only the delta appended and ad
   assert.equal(env.captured[2].options.resume, true);
   assert.match(env.captured[2].prompt, /ARRIVED-DURING-RUN/u);
   assert.equal(env.captured[2].prompt.includes('DELTA-U3-CONTENT'), false);
+});
+
+test('executor forwards Fast from the resolved config or selected profile, never falls back from profile false', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: false });
+  for (const [defaultFast, profileFast, resolvedFast, expected] of [
+    [true, false, undefined, false], [false, true, undefined, true],
+    [true, undefined, undefined, false], [true, true, false, false], [false, false, true, true],
+  ]) {
+    const agent = createAgent();
+    if (resolvedFast === undefined) {
+      Object.assign(agent, agent.runtimeConfig, { fast: defaultFast,
+        selectedModelProfile: { ...agent.runtimeConfig, fast: profileFast },
+      });
+      delete agent.runtimeConfig;
+    } else agent.runtimeConfig.fast = resolvedFast;
+    const conversation = createConversation(agent);
+    const store = createFakeStore(conversation);
+    store.agentDir = env.tempDir;
+    seedUserMessage(store, 'u1', 'Go.');
+    await runTurn({ executor: env.createExecutor(store), conversation, agent, store, turnId: `forward-${env.captured.length}` });
+    assert.equal(env.captured.at(-1).options.fast, expected);
+  }
+});
+
+test('Fast toggles apply on the next turn without changing the legacy static fingerprint or session', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'Start.');
+  await runTurn({ executor: env.createExecutor(store), conversation, agent, store, turnId: 'fast-1' });
+  const initialHash = store.peekReuseRow().staticSegmentHash;
+  const initialSession = env.captured[0].options.session;
+  assert.equal(env.captured[0].options.fast, false, 'legacy config defaults off');
+  for (const [index, fast] of [true, false, true].entries()) {
+    agent.runtimeConfig.fast = fast;
+    seedUserMessage(store, `u${index + 2}`, 'Continue.');
+    await runTurn({ executor: env.createExecutor(store), conversation, agent, store, turnId: `fast-${index + 2}` });
+    const captured = env.captured.at(-1);
+    assert.equal(captured.options.fast, fast);
+    assert.equal(captured.options.resume, true);
+    assert.equal(captured.options.session, initialSession);
+    assert.equal(store.peekReuseRow().staticSegmentHash, initialHash);
+    const message = store.messageWrites.creates.filter((m) => m.role === 'assistant').at(-1);
+    assert.equal(message.metadata.sessionReuseReason, 'reused');
+  }
+  // Shipping Fast must not change hashes even when the field is absent.
+  const source = fs.readFileSync(path.resolve(__dirname, '../../server/domain/conversation/turn/agent-executor.ts'), 'utf8');
+  assert.match(source, /computeStaticPromptHash\(promptSections, \[provider, model, reuseProfileId, thinking\]\)/u);
 });
 
 test('Goal Runner reuse requires matching Goal identity, revision, and usage below 50%', async (t) => {
