@@ -20,6 +20,8 @@ declare global {
     sourceLabel?: string;
     family?: 'gpt' | 'claude' | 'gemini' | 'deepseek' | 'qwen' | 'glm' | 'kimi' | null;
     familySource?: 'explicit' | 'provider_alias' | 'model_alias' | 'unknown' | 'conflict';
+    api?: string;
+    supportsFast?: boolean;
     supportedThinkingLevels?: Array<'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
   };
 

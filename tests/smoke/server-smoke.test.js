@@ -5210,7 +5210,8 @@ test('role API protects model-family roles and shares one availability projectio
   // ADR 0001 Phase 2: per-agent session reuse toggle is editable on family
   // roles and defaults ON.
   assert.equal(initialGpt.sessionReuseEnabled, true);
-  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole', 'avatarDataUrl', 'sessionReuseEnabled']);
+  assert.equal(initialGpt.fast, false);
+  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole', 'avatarDataUrl', 'sessionReuseEnabled', 'fast']);
   assert.deepEqual(initialGpt.availability, { status: 'default_model_missing', familyModelCount: 1 });
   assert.deepEqual(initialQwen.availability, { status: 'no_family_models', familyModelCount: 0 });
 

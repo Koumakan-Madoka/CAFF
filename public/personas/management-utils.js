@@ -123,10 +123,11 @@
       provider: profile.provider || '',
       model: profile.model || '',
       thinking: normalizeThinkingLevel(modelOptions, profile.provider, profile.model, profile.thinking),
+      fast: profile.fast === true,
       ...(family ? {} : { personaPrompt: profile.personaPrompt || '' }),
     }));
     if (family) {
-      const payload = { isDefaultChatRole: Boolean(role.isDefaultChatRole), avatarDataUrl: role.avatarDataUrl || '', sessionReuseEnabled: role.sessionReuseEnabled !== false };
+      const payload = { isDefaultChatRole: Boolean(role.isDefaultChatRole), avatarDataUrl: role.avatarDataUrl || '', sessionReuseEnabled: role.sessionReuseEnabled !== false, fast: role.fast === true };
       if (role.model || roleModelOptions(role, modelOptions).length > 0) {
         Object.assign(payload, {
           provider: role.provider || '',
@@ -152,6 +153,7 @@
       modelProfiles: profiles,
       isDefaultChatRole: Boolean(role.isDefaultChatRole),
       sessionReuseEnabled: role.sessionReuseEnabled !== false,
+      fast: role.fast === true,
     };
   }
 

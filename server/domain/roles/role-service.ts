@@ -29,6 +29,7 @@ const FAMILY_EDITABLE_FIELDS = Object.freeze([
   'isDefaultChatRole',
   'avatarDataUrl',
   'sessionReuseEnabled',
+  'fast',
 ]);
 const CUSTOM_EDITABLE_FIELDS = Object.freeze([
   'name',
@@ -44,6 +45,7 @@ const CUSTOM_EDITABLE_FIELDS = Object.freeze([
   'modelProfiles',
   'isDefaultChatRole',
   'sessionReuseEnabled',
+  'fast',
 ]);
 const FAMILY_UPDATE_FIELD_SET = new Set(FAMILY_EDITABLE_FIELDS);
 const FAMILY_RUNTIME_FIELD_SET = new Set(['provider', 'model', 'thinking', 'modelProfiles']);
@@ -235,6 +237,10 @@ function normalizeProfiles(
       provider: option.provider,
       model: option.model,
       thinking,
+      // Fast (service_tier: priority) per-profile toggle, defaults OFF.
+      // Permissive here on purpose: unsupported models keep the stored value
+      // but the runtime injection (W3) and the editor UI gate on support.
+      fast: profile.fast === true,
       personaPrompt: roleKind === 'custom' ? normalize(profile.personaPrompt) : '',
     });
   }
@@ -575,6 +581,9 @@ export function createRoleService(options: any = {}) {
             provider: option.provider,
             model: option.model,
             thinking: canonicalThinking,
+            // Fast toggle: selected profile wins over the role default, same
+            // precedence as provider/model/thinking.
+            fast: (selectedProfile || role).fast === true,
             personaPrompt: roleKind === 'model_family'
               ? ''
               : normalize(selectedProfile ? selectedProfile.personaPrompt : role.personaPrompt),
@@ -688,6 +697,10 @@ export function createRoleService(options: any = {}) {
       sessionReuseEnabled: hasOwn(source, 'sessionReuseEnabled')
         ? Boolean(source.sessionReuseEnabled)
         : existing?.sessionReuseEnabled !== false,
+      // Fast mode toggle; absent means keep existing (default OFF).
+      fast: hasOwn(source, 'fast')
+        ? Boolean(source.fast)
+        : existing?.fast === true,
     };
   }
 
@@ -779,6 +792,9 @@ export function createRoleService(options: any = {}) {
       sessionReuseEnabled: hasOwn(input, 'sessionReuseEnabled')
         ? Boolean(input.sessionReuseEnabled)
         : existing.sessionReuseEnabled !== false,
+      fast: hasOwn(input, 'fast')
+        ? Boolean(input.fast)
+        : existing.fast === true,
     };
 
     if (touchesRuntime) {
