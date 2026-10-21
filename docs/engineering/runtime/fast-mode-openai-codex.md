@@ -289,6 +289,93 @@ Hermetic regression suites (no real subscription calls):
 These tests are in `npm test`. W5 improves evidence visibility only; AC5 remains
 open until W6 and must not be inferred from passing hermetic tests.
 
+## Real-room verification (W6, partial; execution proof blocked)
+
+Tested the unchanged implementation at
+`73f413f140aa9af0a4a6de418a2c284e2ddc4405` on 2026-10-21. This is a
+**room preview**, not a merged `develop` acceptance candidate or user acceptance.
+Port 3261 was checked immediately before binding. The preview had a fresh private
+agent directory, SQLite database, project, uploads, sessions and logs. Only the
+Codex subscription credential and two model definitions were copied; the source
+credential/configuration/database was not modified. Feishu/Lark delivery and
+system Scribe were disabled; SSE was selected and in-session compaction/retry
+was disabled for the comparison. All experimental room/API traffic targeted
+the preview, not the 3100 application.
+The preview was stopped and its copied `auth.json` removed after verification;
+3261 was checked unbound afterward.
+
+The fixed user prompt asked for only `READY` without tools. Six fresh rooms
+alternated off/on (three samples per arm), with `gpt-6.1-sol`, thinking `low`.
+One on sample selected the Fast model profile while the global default remained
+off. All six replies completed, each with one model request and HTTP 200:
+
+| Arm | Room completion times (ms) | Median (ms) |
+|---|---|---|
+| off | 3704, 3720, 7744 | 3720 |
+| priority | 4288, 4487, 6300 | 4487 |
+
+These times include CAFF startup/dispatch, SDK process creation, support lookup
+and terminal-message persistence (200 ms observation granularity). The cold,
+very short-prompt preview was **not faster** with Fast (off/on median ratio
+0.83); this does not establish or refute provider scheduling speed. There was
+no cache-busting or randomization beyond alternating arms, and one enabled
+sample used the timeout/allowlist fallback. Do not substitute W1's faster
+microbenchmark for this result, or present either as guaranteed acceleration.
+
+Additional real-room checks:
+
+- The role editor saved default Fast off / profile Fast on through the actual
+  HTTP API; reload retained both independent booleans. Real screenshots show
+  the model, usage warning, default/profile controls and selected room profile.
+- In the same server process and room, changing only Fast on → off → on used the
+  identical session name and static segment hash; both later traces reported
+  `sessionReuseReason: reused`. Wire observations changed from priority to no
+  field and back on the next turn. W3's legacy-fingerprint regression remains
+  the evidence for compatibility with pre-feature sessions (not a production
+  upgrade experiment).
+- A separate off/on observation pair in that reused room captured response
+  events: both reported `response.created.service_tier: auto` and
+  `response.completed.service_tier: default`, even though the on request carried
+  priority. The initial six samples captured request bodies and HTTP status but
+  not SSE events: the backend omitted Content-Type and the first observer
+  incorrectly gated on it. The corrected observer parsed the two later streams
+  without changing their bytes. No execution confirmation was obtained.
+- `gpt-5.3-codex-spark` with Fast configured produced `unsupported`, zero
+  priority preparations and a wire request without `service_tier`; the backend
+  returned HTTP 400 because that model is unavailable to this ChatGPT account.
+  The unsupported-configuration guard is verified, **not** the behavior of an
+  account-available model whose catalog lacks priority. The latter remains
+  unavailable for real testing on this subscription.
+- Actual message badges, Trace Inspector summary and per-call detail show
+  “Fast 已请求 · 执行未确认”, with the reused-session evidence. Failed/unsupported
+  messages do not claim Fast execution. Ten successful requests plus the one
+  unsupported request were made in total; no tool calls were requested.
+
+Ignored local evidence is under `.tmp/fast-w6/`: `summary.json`, `wire.jsonl`,
+`*-inspector.json`, `instance.log`, `run-live.cjs`, `observe-wire.mjs`,
+`capture-real.cjs`, and screenshots `real-{room-fast,trace,room-profile,
+default-config,profile-config}.png`. The wire observer stores only model/tier,
+HTTP status, Content-Type, timestamps and token counts, never credentials,
+authorization headers, request/response bodies or output text. Screenshot replay
+uses the persisted preview database with no credential present and makes no model
+requests. `typecheck.log` and `tests.log`
+record passing `npm run typecheck` and full `npm test` (including build).
+
+One pre-existing API limitation was encountered: changing a family role's model
+while omitting its existing profile list revalidates internally normalized
+`personaPrompt: ""` and rejects it with `family_persona_not_allowed`. It also
+exists at the room's `develop` baseline `ab1afd9`. The real editor sends the
+complete family-safe list and saves successfully; the unsupported-model probe
+likewise supplied that list. This unrelated bug is recorded, not silently fixed
+or counted as a Fast regression.
+
+**Gate:** real-room evidence completes the remaining implementation evidence for
+AC2–AC4. AC5 still lacks independent priority-execution proof; neither HTTP 200,
+timing nor a requested-tier cost multiplier can close it. W6/AC6 are not done:
+final milestone review, integration and user acceptance have not occurred. Stop
+further quota-consuming probes until a reliable backend signal is available or
+the user explicitly authorizes a reviewed change to the acceptance requirement.
+
 ## Known limitations
 
 - Backend under-reports the executed tier (`default` even for accepted
