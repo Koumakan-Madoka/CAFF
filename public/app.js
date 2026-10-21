@@ -32,6 +32,7 @@ const state = {
   activeMentionContext: null,
   messageToolTraceById: new Map(),
   messageToolTraceTimers: new Map(),
+  messageTimeBreakdownById: new Map(),
   optimisticMessagesByConversation: new Map(),
   workspaceAuthorizationCardsByConversation: new Map(),
   bindingWorkspaceAuthorizationIds: new Set(),
@@ -1006,6 +1007,8 @@ function setupChatModules() {
             timelineMessagesForConversation,
             toolTraceSignatureForMessage,
             toolTraceStateForMessage,
+            timeBreakdownSignatureForMessage,
+            timeBreakdownStateForMessage,
           },
           showToast,
         })
@@ -2451,6 +2454,149 @@ function toggleMessageToolTrace(conversationId, message) {
   void fetchMessageToolTrace(conversationId, message, {
     force: traceState.status === 'error' || traceState.status === 'idle',
   });
+}
+
+function timeBreakdownStateForMessage(messageId) {
+  return messageId ? state.messageTimeBreakdownById.get(messageId) || null : null;
+}
+
+function getMessageTimeBreakdownState(messageId) {
+  const normalizedMessageId = String(messageId || '').trim();
+
+  if (!normalizedMessageId) {
+    return null;
+  }
+
+  const existing = timeBreakdownStateForMessage(normalizedMessageId);
+
+  if (existing) {
+    return existing;
+  }
+
+  const created = {
+    open: false,
+    status: 'idle',
+    errorMessage: '',
+    data: null,
+    promise: null,
+  };
+
+  state.messageTimeBreakdownById.set(normalizedMessageId, created);
+  return created;
+}
+
+function messageTimeBreakdownUrl(conversationId, messageId) {
+  return `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/time-breakdown`;
+}
+
+async function fetchMessageTimeBreakdown(conversationId, message, options = {}) {
+  if (!conversationId || !canInspectToolTrace(message)) {
+    return null;
+  }
+
+  const breakdownState = getMessageTimeBreakdownState(message.id);
+
+  if (!breakdownState) {
+    return null;
+  }
+
+  if (!options.force && breakdownState.status === 'loading' && breakdownState.promise) {
+    return breakdownState.promise;
+  }
+
+  if (!options.force && breakdownState.status === 'ready' && breakdownState.data) {
+    return breakdownState.data;
+  }
+
+  breakdownState.status = 'loading';
+  breakdownState.errorMessage = '';
+  scheduleConversationPaneRender();
+
+  const request = fetchJson(messageTimeBreakdownUrl(conversationId, message.id))
+    .then((result) => {
+      breakdownState.status = 'ready';
+      breakdownState.data = result && result.breakdown ? result.breakdown : null;
+      breakdownState.errorMessage = '';
+      if (state.selectedConversationId === conversationId) {
+        scheduleConversationPaneRender();
+      }
+      return breakdownState.data;
+    })
+    .catch((error) => {
+      // Contract §9: a missing record (history not yet computed or a turn
+      // without tool steps) is an honest empty state, not an error.
+      if (error && error.status === 404) {
+        breakdownState.status = 'empty';
+        breakdownState.data = null;
+        breakdownState.errorMessage = '';
+      } else {
+        breakdownState.status = 'error';
+        breakdownState.errorMessage = error && error.message ? error.message : '耗时分析加载失败';
+      }
+      if (state.selectedConversationId === conversationId) {
+        scheduleConversationPaneRender();
+      }
+      return null;
+    })
+    .finally(() => {
+      if (breakdownState.promise === request) {
+        breakdownState.promise = null;
+      }
+    });
+
+  breakdownState.promise = request;
+  return request;
+}
+
+function toggleMessageTimeBreakdown(conversationId, message) {
+  if (!conversationId || !canInspectToolTrace(message)) {
+    return;
+  }
+
+  const breakdownState = getMessageTimeBreakdownState(message.id);
+
+  if (!breakdownState) {
+    return;
+  }
+
+  breakdownState.open = !breakdownState.open;
+  scheduleConversationPaneRender();
+
+  if (breakdownState.open) {
+    // Reopening a live turn must refetch; a terminal breakdown stays cached.
+    const staleLive = breakdownState.data && breakdownState.data.status === 'live';
+    void fetchMessageTimeBreakdown(conversationId, message, {
+      force: breakdownState.status === 'error' || breakdownState.status === 'idle' || staleLive,
+    });
+  }
+}
+
+function timeBreakdownSignatureForMessage(message) {
+  const breakdownState = timeBreakdownStateForMessage(message && message.id);
+  const breakdown = breakdownState && breakdownState.data ? breakdownState.data : null;
+  const metrics = breakdown && breakdown.metrics && typeof breakdown.metrics === 'object' ? breakdown.metrics : null;
+  const steps = breakdown && Array.isArray(breakdown.steps) ? breakdown.steps : [];
+
+  return [
+    breakdownState && breakdownState.open ? 'open' : 'closed',
+    breakdownState && breakdownState.status ? breakdownState.status : 'idle',
+    breakdownState && breakdownState.errorMessage ? breakdownState.errorMessage : '',
+    breakdown && breakdown.status ? breakdown.status : '',
+    breakdown && breakdown.computedAt ? breakdown.computedAt : '',
+    steps.length,
+    metrics && Number.isFinite(metrics.firstWriteMs) ? metrics.firstWriteMs : '',
+    metrics && Number.isFinite(metrics.fullRunCount) ? metrics.fullRunCount : '',
+    metrics && Number.isFinite(metrics.fullRunFailCount) ? metrics.fullRunFailCount : '',
+    breakdown && breakdown.categoryMs ? JSON.stringify(breakdown.categoryMs) : '',
+    // Live turns: step-level changes must refresh the list even when the
+    // category totals happen to be unchanged between refreshes.
+    steps.map((step) => [
+      step && step.stepKey,
+      step && step.category,
+      step && step.durationMs,
+      step && step.jevStatus,
+    ].join(':')).join('|'),
+  ].join('\u001e');
 }
 
 function renderConversationList() {
@@ -5395,6 +5541,48 @@ function bindEvents() {
         toolTraceCopyButton.textContent = previousText;
       }
 
+      return;
+    }
+
+    const timeBreakdownToggle =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-time-breakdown-toggle'))
+        : null;
+
+    if (timeBreakdownToggle) {
+      const messageId = timeBreakdownToggle.dataset.messageId || '';
+      const message =
+        state.currentConversation && Array.isArray(state.currentConversation.messages)
+          ? state.currentConversation.messages.find((item) => item.id === messageId) || null
+          : null;
+
+      if (!message) {
+        showToast('找不到耗时分析对应的消息');
+        return;
+      }
+
+      toggleMessageTimeBreakdown(state.currentConversation.id, message);
+      return;
+    }
+
+    const timeBreakdownRefresh =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-time-breakdown-refresh'))
+        : null;
+
+    if (timeBreakdownRefresh) {
+      const messageId = timeBreakdownRefresh.dataset.messageId || '';
+      const message =
+        state.currentConversation && Array.isArray(state.currentConversation.messages)
+          ? state.currentConversation.messages.find((item) => item.id === messageId) || null
+          : null;
+
+      if (!message) {
+        showToast('找不到耗时分析对应的消息');
+        return;
+      }
+
+      void fetchMessageTimeBreakdown(state.currentConversation.id, message, { force: true });
       return;
     }
 

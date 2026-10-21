@@ -1571,6 +1571,227 @@ textarea {
   border-color: rgba(255, 255, 255, 0.1);
 }
 
+.message-time-breakdown {
+  display: grid;
+  gap: 0.72rem;
+  padding: 0.78rem 0.9rem;
+  border-radius: 16px;
+  border: 1px solid rgba(34, 49, 63, 0.08);
+  background: rgba(34, 49, 63, 0.03);
+}
+
+.message-time-breakdown.hidden {
+  display: none;
+}
+
+.message-card.user .message-time-breakdown,
+.message-card.private .message-time-breakdown {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.message-time-breakdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.message-time-breakdown-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.message-time-breakdown-header-pills {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.message-time-breakdown-toggle,
+.message-time-breakdown-refresh {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.32rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.message-time-breakdown-refresh {
+  min-height: 0;
+  padding: 0.24rem 0.66rem;
+}
+
+.message-time-breakdown-body {
+  display: grid;
+  gap: 0.72rem;
+}
+
+.message-time-breakdown-bars {
+  display: grid;
+  gap: 0.34rem;
+}
+
+.message-time-breakdown-bar {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.74rem;
+}
+
+.message-time-breakdown-bar-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.message-time-breakdown-bar-track {
+  height: 0.5rem;
+  border-radius: 999px;
+  background: rgba(34, 49, 63, 0.08);
+  overflow: hidden;
+}
+
+.message-time-breakdown-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(34, 49, 63, 0.35);
+}
+
+.message-time-breakdown-bar.category-read .message-time-breakdown-bar-fill {
+  background: #4c78a8;
+}
+
+.message-time-breakdown-bar.category-write .message-time-breakdown-bar-fill {
+  background: #f58518;
+}
+
+.message-time-breakdown-bar.category-test .message-time-breakdown-bar-fill {
+  background: #2a9d8f;
+}
+
+.message-time-breakdown-bar.category-build-check .message-time-breakdown-bar-fill {
+  background: #7a5195;
+}
+
+.message-time-breakdown-bar.category-process-report .message-time-breakdown-bar-fill {
+  background: #9d6b53;
+}
+
+.message-time-breakdown-bar.category-thinking .message-time-breakdown-bar-fill {
+  background: #6b7280;
+}
+
+.message-time-breakdown-bar.category-exception-retry .message-time-breakdown-bar-fill {
+  background: #e45756;
+}
+
+.message-time-breakdown-bar.category-unclassified .message-time-breakdown-bar-fill {
+  background: #bab0ac;
+}
+
+.message-time-breakdown-bar-amount {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: rgba(34, 49, 63, 0.72);
+}
+
+.message-time-breakdown-metrics {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.message-time-breakdown-metric {
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  background: rgba(34, 49, 63, 0.06);
+  border: 1px solid rgba(34, 49, 63, 0.08);
+}
+
+.message-time-breakdown-steps {
+  display: grid;
+  gap: 0.3rem;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
+.message-time-breakdown-step {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 10px;
+  border: 1px solid rgba(34, 49, 63, 0.06);
+  background: rgba(255, 255, 255, 0.55);
+  font-size: 0.74rem;
+}
+
+.message-time-breakdown-step-index {
+  min-width: 1.4rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: rgba(34, 49, 63, 0.55);
+}
+
+.message-time-breakdown-step-main {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.message-time-breakdown-step-headline {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.message-time-breakdown-step-tool {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-time-breakdown-step-category {
+  flex: 0 0 auto;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  background: rgba(34, 49, 63, 0.08);
+}
+
+.message-time-breakdown-step-extra {
+  font-size: 0.68rem;
+  color: rgba(34, 49, 63, 0.6);
+}
+
+.message-time-breakdown-step-duration {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.message-time-breakdown-note {
+  font-size: 0.74rem;
+  color: rgba(34, 49, 63, 0.62);
+}
+
+.message-time-breakdown-note.failed {
+  color: #b23a48;
+}
+
 .message-tool-trace-header {
   display: flex;
   align-items: flex-start;
