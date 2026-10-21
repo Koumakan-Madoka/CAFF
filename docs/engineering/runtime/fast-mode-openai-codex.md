@@ -64,8 +64,10 @@ execution. Consequences:
 of the vendor's "1.5x" claim. This timing separation is side evidence
 consistent with priority execution, not proof: the sample is small and the
 executed tier is not independently confirmed by the response (see above).
-Formal per-instance timing acceptance runs in the delivery work item (W6),
-which is also where execution-tier evidence for AC5 must come from.
+Formal per-instance timing comparisons are recorded in the delivery work item
+(W6). The original requirement for independent execution-tier proof was later
+revised with user authorization; see the acceptance boundary below. Neither
+benchmark is a guarantee of acceleration.
 
 ## Support detection
 
@@ -286,10 +288,10 @@ Hermetic regression suites (no real subscription calls):
   unconfirmed and all skip/error statuses. Set `CAFF_FAST_UI_EVIDENCE_DIR` for
   fixture screenshots. These do not replace W6 real-room screenshots.
 
-These tests are in `npm test`. W5 improves evidence visibility only; AC5 remains
-open until W6 and must not be inferred from passing hermetic tests.
+These tests are in `npm test`. W5 improves evidence visibility only; real
+request-side AC5 evidence comes from W6, not from passing hermetic tests.
 
-## Real-room verification (W6, partial; execution proof blocked)
+## Real-room verification (W6, request-side evidence)
 
 Tested the unchanged implementation at
 `73f413f140aa9af0a4a6de418a2c284e2ddc4405` on 2026-10-21. This is a
@@ -369,12 +371,22 @@ complete family-safe list and saves successfully; the unsupported-model probe
 likewise supplied that list. This unrelated bug is recorded, not silently fixed
 or counted as a Fast regression.
 
-**Gate:** real-room evidence completes the remaining implementation evidence for
-AC2–AC4. AC5 still lacks independent priority-execution proof; neither HTTP 200,
-timing nor a requested-tier cost multiplier can close it. W6/AC6 are not done:
-final milestone review, integration and user acceptance have not occurred. Stop
-further quota-consuming probes until a reliable backend signal is available or
-the user explicitly authorizes a reviewed change to the acceptance requirement.
+**Acceptance boundary (2026-10-21):** real-room evidence completes the remaining
+implementation evidence for AC2–AC4. The user subsequently authorized the remote
+integration workflow while accepting independent execution-tier confirmation as
+an explicit limitation. The non-author accepted that narrowly scoped AC5 revision
+at Goal revision 24; revision 25 resumed delivery. AC5 now requires captured real
+priority requests with successful responses, omission when off, the existing
+three-per-arm timing comparison, unsupported-model behavior and environment
+isolation. It no longer requires a priority echo or independent execution proof.
+HTTP 200, timing, community reports and request-derived pricing still must not be
+presented as execution confirmation. No other criterion was waived: AC5/AC6 and
+W6 remain pending/in progress until their evidence, final fixed-SHA review,
+integration and user acceptance are recorded. The unsupported-model requirement
+is covered by the successful non-Codex scope check below; the distinct
+account-available/catalog-negative Codex case has no live sample and remains a
+known limitation, not a claimed pass. Do not repeat quota-consuming
+execution-signal probes to chase a priority echo.
 
 ## Current pi execution-signal audit (W6 follow-up)
 
@@ -446,17 +458,119 @@ summary stores neither output text, full response bodies nor response-header
 values outside the tier-label allowlist (ordinary SDK sessions remain private). Source and live evidence agree: pi confirms the
 priority request and successful completion, but **this SDK/channel currently
 supplies no independent priority-execution signal**. This is an observability
-limit, not proof that Fast failed. AC5 remains pending under its current wording;
-Codex CLI status or access to a separate billing interface is not a prerequisite
-for operating CAFF Fast and is not used to redefine its behavior.
+limit, not proof that Fast failed. Under the user-authorized revision above,
+independent execution confirmation is a retained limitation, not a condition
+that requires repeated paid probing. The unsupported-model requirement is
+addressed below; final delivery gates are not waived. Codex CLI status or access
+to a separate billing interface is not a prerequisite for operating CAFF Fast and
+is not used to redefine its behavior.
+
+## Integration readiness follow-up (W6)
+
+A zero-generation-request catalog recheck on 2026-10-21 returned HTTP 200 for
+client versions 0.160.0 and 0.144.6; all nine and five entries respectively
+(including hidden entries) listed `priority`. This confirms why the current
+subscription cannot supply a live Codex catalog-negative example. Directory
+lookup is not an unsupported-model generation test and does not prove execution.
+
+The acceptance wording requires one unsupported model, not specifically a Codex
+catalog-negative model. The non-author clarified that the confirmed non-Codex
+scope rule is an eligible case; no acceptance text/status was changed or waived.
+A fresh isolated room preview at port 3261 exercised the actual application,
+role API, participant resolution, SDK host, extension and DeepSeek provider:
+
+- The role-default configuration was `deepseek/deepseek-v4-flash`, thinking
+  `off`, `fast: true`, with no selected model profile. The role API persisted
+  true, and the actual assistant metadata recorded `configured: true`.
+- Exactly **one** real model request was allowed, with retries and compaction
+  disabled. The captured Chat Completions body had **no `service_tier` field**;
+  the backend returned HTTP 200 and the assistant completed successfully.
+- Message and per-request evidence recorded `out_of_scope` / `out_of_scope`,
+  zero priority preparations, null observed tier and `executionConfirmed: false`.
+  The actual browser screenshot shows “Fast 未请求 · 通道不适用”. This proves
+  only the non-Codex scope guard, not Codex catalog-negative backend behavior.
+- Agent configuration, sandbox, project, SQLite, uploads and logs were isolated;
+  external deliveries and system Scribe were disabled. The instance was stopped,
+  its port checked free, and both private `auth.json` and `models.json` copies
+  removed. The source credentials/configuration and production instance were not
+  modified. No extra Codex generation request was made in this follow-up.
+
+Evidence is in `.tmp/fast-w6-integration/`: `catalog-summary.json`,
+`noncodex-summary.json`, `noncodex-wire.jsonl`, `noncodex-inspector.json`,
+`noncodex-room.png`, the diagnostic scripts and instance log. Its manifest covers
+all regular files except itself and hashes the expanded manifests of the older
+W6 evidence bundles. The older manifests were first verified, archived unchanged
+and then expanded to every evidence file, including `instance.log`, extra
+screenshots/DOM captures and the pi-audit helper/log files. Raw artifacts remain
+ignored; they are not committed as a separate task ledger.
+
+`npm run typecheck` and full `npm test` (including checks/build/smoke) pass:
+1443 passed, 4 skipped, 0 failed. Logs are in the same integration evidence
+folder. This makes the request-side acceptance evidence ready for independent
+fixed-SHA review; it is not itself merge approval, user acceptance or release.
+
+## Upstream discussions and evidence boundaries
+
+Public issue/PR bodies, maintainer replies and merge status were checked on
+2026-10-21. These sources explain the chosen request semantics and reporting
+limitations; they are **not** execution receipts for CAFF's current account:
+
+- [pi PR #2996](https://github.com/earendil-works/pi/pull/2996), merged
+  2026-04-13, adds `serviceTier` to Codex Responses to reproduce `/fast` by
+  sending `priority`.
+- [pi issue #3188](https://github.com/earendil-works/pi/issues/3188) reports the
+  same priority-request/default-response mismatch. Its author reports six Codex
+  runs per arm with median total times of 13.96 s (default) and 9.57 s (priority).
+  The maintainer suspected a backend reporting bug, but explicitly closed the
+  issue without an OpenAI reply. That hypothesis and another user's timings do
+  not establish this subscription's executed tier or speed.
+- [pi PR #3307](https://github.com/earendil-works/pi/pull/3307), merged
+  2026-04-16, falls back to the requested tier for Codex cost estimates when the
+  response says `default`. Its purpose is accounting; it does not expose a new
+  independent execution signal. CAFF does not manufacture one from that fallback
+  and does not change its cost calculation.
+- In [pi issue #4643](https://github.com/earendil-works/pi/issues/4643), the
+  maintainer recommends an extension rather than a cross-provider `/fast`
+  abstraction. A subsequent community example uses `before_provider_request`
+  with provider/API/model filtering, the same extension seam used by CAFF.
+- [pi issue #11040](https://github.com/earendil-works/pi/issues/11040) reports
+  the `streamSimple` option drop and confirms that payload injection puts
+  `service_tier: priority` on the wire. Its linked PR #11042 was **not merged**
+  when checked; a closed issue is not evidence that our pinned SDK was fixed.
+  CAFF's extension bypasses the option drop without upgrading or patching pi.
+- That issue links a [Codex repository reply](https://github.com/openai/codex/issues/14204#issuecomment-4033184620)
+  explaining that, in ChatGPT-authenticated mode, Fast is handled by server-side
+  routing and final `service_tier` is not a reliable end-to-end verification
+  field; `default` does not itself mean Fast was ignored. This is context about
+  the shared backend, not proof that a particular CAFF turn used priority.
+
+Conclusion: `priority` is an upstream-supported request mechanism. A `default`
+echo neither proves nor disproves Fast execution. Preserve the distinction
+between configured, requested and independently confirmed; the current UI must
+continue to say “Fast 已请求 · 执行未确认”, with no fixed speed guarantee.
+
+## User controls
+
+- In role management, select GPT (or a compatible custom role), choose a supported
+  Codex model in **默认运行配置**, enable **Fast 模式** beside thinking, and save
+  the role. This changes rooms using that role's default configuration; selected
+  profiles have their own independent value and do not inherit the role toggle.
+- For room-specific opt-in, leave the default off, add a **运行 Profile** with
+  Fast enabled, save, then select that profile for GPT in the room settings.
+  Select a Fast-disabled profile/default to stop requesting priority. A profile
+  switch can still cold-start under existing model/profile reuse rules; only a
+  change to `fast` alone is guaranteed not to alter the static fingerprint.
+- Saving applies to the next round, not an already running round. The toggle is
+  hidden for unsupported models and warns about increased subscription usage.
+  There is no chat `/fast` command or single-message override in this delivery.
 
 ## Known limitations
 
-- Backend under-reports the executed tier (`default` even for accepted
-  `priority` requests), and the executed tier is **not independently
-  confirmed** by W1: request acceptance (200 vs 400 on bogus values) plus a
-  small-sample timing gap are consistent with priority execution but do not
-  prove it. AC5's execution evidence remains open until W6.
+- The backend reports `default` even for accepted `priority` requests; this is
+  not an independent record of the executed tier. W1's acceptance and timing
+  evidence does not prove execution either. The user-authorized acceptance
+  boundary retains this limitation; do not claim “executed as Fast” or promise
+  fixed acceleration.
 - In the current injection path pi-ai's priority cost multiplier does not
   fire (it only applies when the response reports `priority`, which this
   backend does not do via payload injection). If rounds actually execute as
