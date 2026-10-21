@@ -758,6 +758,16 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   created_at TEXT NOT NULL
 );
 
+-- Generic per-service on/off toggles (contract §6: the JEV switch lives
+-- here once the system-services UI ships). An ABSENT row is the
+-- default-off state; the migration must not seed rows, or a fresh install
+-- would come up with features silently enabled.
+CREATE TABLE IF NOT EXISTS chat_system_service_toggles (
+  service_type TEXT PRIMARY KEY CHECK (length(trim(service_type)) > 0),
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_chat_turn_time_steps_task_id ON chat_turn_time_steps (task_id);
   `);
 

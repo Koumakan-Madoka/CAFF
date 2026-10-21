@@ -19,6 +19,7 @@ const { createChatMessageDetailRepository } = require('../storage/chat/message-d
 const { createTurnTimeBreakdownRepository } = require('../storage/chat/turn-time-breakdown.repository');
 const { createChatMessageRecoveryRepository } = require('../storage/chat/message-recovery.repository');
 const { createChatSystemServiceConfigRepository } = require('../storage/chat/system-service-config.repository');
+const { createChatSystemServiceToggleRepository } = require('../storage/chat/system-service-toggle.repository');
 const { createChatPrivateMessageRepository } = require('../storage/chat/private-message.repository');
 const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.repository');
 const { createChatSummarySegmentRepository } = require('../storage/chat/summary-segment.repository');
@@ -978,6 +979,7 @@ export class ChatAppStore {
       this.turnTimeBreakdownRepository = createTurnTimeBreakdownRepository(this.db);
       this.messageRecoveryRepository = createChatMessageRecoveryRepository(this.db);
       this.systemServiceConfigRepository = createChatSystemServiceConfigRepository(this.db);
+      this.systemServiceToggleRepository = createChatSystemServiceToggleRepository(this.db);
       this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
       this.memoryCardRepository = createChatMemoryCardRepository(this.db);
       this.summarySegmentRepository = createChatSummarySegmentRepository(this.db);
@@ -4215,6 +4217,20 @@ export class ChatAppStore {
         nowIso()
       )
     );
+  }
+
+  getSystemServiceToggle(serviceType: any) {
+    const row = this.systemServiceToggleRepository.get(String(serviceType || '').trim());
+    // Absent row = default-off (contract §6); the migration never seeds.
+    return Boolean(row && row.enabled === 1);
+  }
+
+  setSystemServiceToggle(serviceType: any, enabled: any) {
+    const normalizedServiceType = String(serviceType || '').trim();
+    if (!normalizedServiceType) {
+      throw new Error('serviceType is required');
+    }
+    return this.systemServiceToggleRepository.setEnabled(normalizedServiceType, Boolean(enabled), nowIso());
   }
 
   getSystemServiceConfig(serviceType: any) {

@@ -304,11 +304,24 @@ above) are opaque to rules → JEV fallback with command + output.
 - Switch: JEV runs only when the repo-wide master switch
   `TYPESAFE_ENABLED=true` (same convention as `jev_ask` in
   `agent-tool-bridge.ts`), **and** `TYPESAFE_API_KEY` is configured,
-  **and** the per-project config `timeBreakdown.jevEnabled` (system
-  service config store) is true; default **false** → rules only (open
-  question `q-jev-config`: wiring waits for credential/config
-  confirmation). The master switch gates both client construction and
-  `resolveJevEnabled`, so a project switch can never send unredacted v1
+  **and** the DB toggle
+  `chat_system_service_toggles['turn-time-breakdown-jev']` is on. The
+  toggle is managed from the system-services UI
+  (`/api/system-services/turn-time-breakdown-jev`, local-admin gated);
+  an ABSENT row means off (default installs ship off, the migration
+  never seeds rows). The resolver reads the store on every
+  classification decision, so the UI switch takes effect in the same
+  process without a restart; the two env gates still require one.
+  The API key stays env-only: it is never stored in the DB, never
+  echoed by any response, and a PUT carrying a credential-ish field is
+  rejected with 422. The status surface derives endpoint/model from the
+  same `resolveTypeSafeConnectionInfo()` the client uses (no parallel
+  defaulting) and strips URL userinfo before display. The earlier
+  per-project `projects.json` switch `timeBreakdown.jevEnabled` is
+  DEPRECATED and no longer participates (it predates the UI; no project
+  ever enabled it — a test pins that editing projects.json has no
+  effect). The master switch gates both client construction and
+  `resolveJevEnabled`, so the UI switch can never send unredacted v1
   payloads while the global capability is off, even with a stale key in
   the environment. When disabled the classifier does not even read the
   cache — "rules only" means exactly that; do not "fix" this later, it
@@ -371,6 +384,12 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
   run_kind TEXT,                  -- 'targeted' | 'full-regression' | NULL
   confidence REAL,                -- NULL when JEV omitted the field (§6)
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_system_service_toggles (
+  service_type TEXT PRIMARY KEY,  -- e.g. 'turn-time-breakdown-jev' (§6)
+  enabled INTEGER NOT NULL,       -- 0/1; ABSENT row = off, never seeded
+  updated_at TEXT NOT NULL
 );
 ```
 

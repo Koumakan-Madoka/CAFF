@@ -25,6 +25,9 @@ const { createModelProvidersController } = require('../api/model-providers-contr
 const { createSubscriptionAuthController } = require('../api/subscription-auth-controller');
 const { createModelCatalogController } = require('../api/model-catalog-controller');
 const { createRecoveryScribeConfigController } = require('../api/recovery-scribe-config-controller');
+const { createTurnTimeBreakdownJevConfigController } = require('../api/turn-time-breakdown-jev-config-controller');
+const { createJevEnabledResolver, createJevServiceConfigService } = require('../domain/runtime/jev-service-config');
+const { resolveTypeSafeConnectionInfo } = require('../domain/integrations/typesafe/typesafe-client');
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
@@ -663,32 +666,15 @@ export function createServerApp(options: any = {}) {
   // shared by the pi-event hook (agent executor) and the bridge hook.
   const turnTimeBreakdownPipeline = createTurnTimeBreakdownPipeline({
     repository: store.turnTimeBreakdownRepository,
-    resolveJevEnabled(context: any) {
-      // §6: the repo-wide master switch gates first — the same convention
-      // as `jev_ask` (agent-tool-bridge). A project switch must never send
-      // unredacted v1 payloads while TYPESAFE_ENABLED is off, even if a
-      // stale TYPESAFE_API_KEY is present in the environment.
-      if (!TYPESAFE_ENABLED) {
-        return false;
-      }
-
-      // Per-project switch `timeBreakdown.jevEnabled`, default false
-      // (contract §6, open question q-jev-config).
-      try {
-        const conversationId = String(context && context.conversationId || '').trim();
-        const conversation = conversationId && typeof store.getConversationWithoutMessages === 'function'
-          ? store.getConversationWithoutMessages(conversationId)
-          : null;
-        const projectScopeId = String(conversation && conversation.projectScopeId || '').trim();
-        const project = projectScopeId
-          ? projectManager.listProjects().find((candidate: any) => candidate && candidate.id === projectScopeId)
-          : null;
-
-        return Boolean(project && project.timeBreakdown && project.timeBreakdown.jevEnabled === true);
-      } catch {
-        return false;
-      }
-    },
+    // §6: the repo-wide master switch gates first, then the DB toggle
+    // (chat_system_service_toggles, UI-managed). The resolver reads the
+    // store on every call, so the UI switch takes effect in this process
+    // without a restart. The per-project projects.json switch is
+    // deprecated and no longer participates.
+    resolveJevEnabled: createJevEnabledResolver({
+      store,
+      masterSwitchEnabled: TYPESAFE_ENABLED,
+    }),
     createJevClient() {
       // §6: dedicated client instance with its own process-local budget —
       // classification volume must not consume the bridge client's budget.
@@ -1234,6 +1220,27 @@ export function createServerApp(options: any = {}) {
           broadcastEvent,
         })]
       : []),
+    createTurnTimeBreakdownJevConfigController({
+      service: createJevServiceConfigService({
+        store,
+        turnTimeBreakdownRepository: store.turnTimeBreakdownRepository,
+        masterSwitchEnabled: TYPESAFE_ENABLED,
+        apiKeyConfigured: Boolean(TYPESAFE_API_KEY),
+        connectionInfo: resolveTypeSafeConnectionInfo({
+          baseUrl: TYPESAFE_BASE_URL || undefined,
+          model: TYPESAFE_MODEL || undefined,
+        }),
+      }),
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+      broadcastEvent,
+    }),
     createProjectsController({ projectManager, syncActiveProject }),
     createAgentToolsController({ agentToolBridge }),
     createConversationDeliveriesController({

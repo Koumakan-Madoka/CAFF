@@ -544,6 +544,16 @@ function readBodyWithAbort(response: any, signal: AbortSignal): Promise<string> 
   });
 }
 
+// Single source for connection resolution: the status surface (system
+// services UI) must never re-implement the defaulting rules, or the two
+// drift apart when defaults change.
+export function resolveTypeSafeConnectionInfo(options: any = {}) {
+  const env = options.env && typeof options.env === 'object' ? options.env : process.env;
+  const baseUrl = trimString(options.baseUrl || trimString(env.TYPESAFE_BASE_URL) || TYPESAFE_API_BASE_URL).replace(/\/+$/u, '') || TYPESAFE_API_BASE_URL;
+  const model = trimString(options.model || trimString(env.TYPESAFE_MODEL)) || DEFAULT_MODEL;
+  return { baseUrl, model };
+}
+
 export function createTypeSafeClient(options: any = {}) {
   const fetchImpl = typeof options.fetch === 'function'
     ? options.fetch
@@ -553,8 +563,9 @@ export function createTypeSafeClient(options: any = {}) {
     : (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   const apiKey = trimString(options.apiKey || process.env.TYPESAFE_API_KEY);
-  const baseUrl = trimString(options.baseUrl || TYPESAFE_API_BASE_URL).replace(/\/+$/u, '') || TYPESAFE_API_BASE_URL;
-  const defaultModel = trimString(options.model || process.env.TYPESAFE_MODEL) || DEFAULT_MODEL;
+  const connectionInfo = resolveTypeSafeConnectionInfo({ baseUrl: options.baseUrl, model: options.model });
+  const baseUrl = connectionInfo.baseUrl;
+  const defaultModel = connectionInfo.model;
 
   const limits = {
     timeoutMs: normalizePositiveInt(options.timeoutMs, DEFAULT_TIMEOUT_MS),

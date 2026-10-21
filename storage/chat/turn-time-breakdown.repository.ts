@@ -31,6 +31,8 @@ export class TurnTimeBreakdownRepository {
   upsertSummaryStatement: any;
   getJevCacheStatement: any;
   setJevCacheStatement: any;
+  countJevCacheStatement: any;
+  clearJevCacheStatement: any;
 
   constructor(db: any) {
     this.db = db;
@@ -131,6 +133,13 @@ export class TurnTimeBreakdownRepository {
         subcategory = excluded.subcategory,
         run_kind = excluded.run_kind,
         confidence = excluded.confidence
+    `);
+    this.countJevCacheStatement = db.prepare(`
+      SELECT count(*) AS entry_count
+      FROM jev_classification_cache
+    `);
+    this.clearJevCacheStatement = db.prepare(`
+      DELETE FROM jev_classification_cache
     `);
   }
 
@@ -266,6 +275,19 @@ export class TurnTimeBreakdownRepository {
       confidence: Number.isFinite(entry.confidence) ? entry.confidence : null,
       createdAt: nowIso(),
     });
+  }
+
+  countJevCacheEntries() {
+    const row = this.countJevCacheStatement.get();
+    return row && Number.isFinite(row.entry_count) ? row.entry_count : 0;
+  }
+
+  // Clears the classification cache only (§6 UI). Already-classified steps
+  // in chat_turn_time_steps keep their category — the cache is a shortcut,
+  // not the record.
+  clearJevCache() {
+    const result = this.clearJevCacheStatement.run();
+    return Number.isFinite(result && result.changes) ? result.changes : 0;
   }
 }
 

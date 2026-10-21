@@ -99,8 +99,11 @@ function sanitizeProjectRecord(project: any) {
     createdAt: String(project.createdAt || '').trim() || nowIso(),
     updatedAt: String(project.updatedAt || '').trim() || nowIso(),
     lastOpenedAt: String(project.lastOpenedAt || '').trim() || '',
-    // Per-project feature switches (e.g. timeBreakdown.jevEnabled, contract
-    // §6) pass through untouched; absent means default-off.
+    // DEPRECATED: timeBreakdown.jevEnabled no longer participates in the
+    // JEV enable decision (contract §6) — the switch moved to the DB toggle
+    // chat_system_service_toggles['turn-time-breakdown-jev'], managed by the
+    // system-services UI. The field still passes through untouched so old
+    // projects.json files keep parsing; absent means default-off.
     ...(project.timeBreakdown && typeof project.timeBreakdown === 'object' && !Array.isArray(project.timeBreakdown)
       ? { timeBreakdown: project.timeBreakdown }
       : {}),
