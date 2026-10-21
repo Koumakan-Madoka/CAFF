@@ -13,6 +13,45 @@ function createFakeSdkHost(baseDir, scriptLines) {
   return hostPath;
 }
 
+test('Fast IPC evidence attaches to the correct call, resets before pre-provider failure and survives errors', async (t) => {
+  if (!requireSpawn(t)) return;
+  const tempDir = withTempDir('caff-fast-ipc-');
+  const host = createFakeSdkHost(tempDir, [
+    "process.on('message', (c) => {",
+    " if(c.type==='abort') process.exit(0); if(c.type!=='start') return;",
+    " const emit = (event) => process.send({type:'pi_event',event});",
+    " emit({type:'turn_start'});",
+    " process.send({type:'service_tier_request', request:{status:'requested',serviceTierRequested:'priority',supportSource:'catalog',payload:'private'}});",
+    " const a={role:'assistant',responseId:'a',stopReason:'toolUse',content:[],timestamp:1,usage:{input:2,output:1,totalTokens:3}};",
+    " emit({type:'message_end',message:a});",
+    " emit({type:'agent_end',messages:[a]});",
+    " emit({type:'turn_start'});",
+    " const b={...a,responseId:'b',stopReason:'error',errorMessage:'pre-provider failure',timestamp:2};",
+    " emit({type:'message_end',message:b});",
+    " setTimeout(()=>process.exit(0),20);",
+    "});",
+  ]);
+  const { runtime, restore } = loadRuntimeWithSdkHost(host);
+  let handle;
+  t.after(() => { handle?.cancel('cleanup'); restore(); fs.rmSync(tempDir, { recursive: true, force: true }); });
+  const messages = [], requests = [];
+  handle = runtime.startRun('test-provider', 'test-model', 'test', { fast: true, agentDir: tempDir, sqlitePath: path.join(tempDir, 'run.sqlite'), heartbeatIntervalMs: 0, streamOutput: false });
+  handle.on('assistant_message', (e) => messages.push(e));
+  handle.on('service_tier_request', (e) => requests.push(e));
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.serviceTier.priorityRequestCount, 1);
+    assert.equal(error.serviceTier.executionConfirmed, false);
+    assert.equal(error.usageCalls[0].serviceTier.serviceTierRequested, 'priority');
+    assert.equal(error.usageCalls[1].serviceTier, null);
+    return true;
+  });
+  assert.equal(messages.length, 2, 'agent_end must not double count');
+  assert.equal(messages[0].serviceTier.serviceTierRequested, 'priority');
+  assert.equal(messages[1].serviceTier, null);
+  assert.equal(requests.length, 1);
+  assert.equal(JSON.stringify(requests).includes('private'), false);
+});
+
 function createFakeSdkHostEchoPrompt(baseDir, usage = null) {
   return createFakeSdkHost(baseDir, [
     "process.on('message', (command) => {",
@@ -1399,6 +1438,7 @@ test('pi runtime forwards skill scoping fields through IPC with the session cwd'
     cwd: projectDir,
     additionalSkillPaths: [contractSkillPath, duplicateContractSkillPath],
     retireUserScopeSkills: true,
+    fast: true,
     session: 'named-session',
     heartbeatIntervalMs: 50,
     heartbeatTimeoutMs: 10000,
@@ -1426,6 +1466,7 @@ test('pi runtime forwards skill scoping fields through IPC with the session cwd'
   assert.equal(command.config.cwd, projectDir);
   assert.deepEqual(command.config.additionalSkillPaths, [path.resolve(contractSkillPath)]);
   assert.equal(command.config.retireUserScopeSkills, true);
+  assert.equal(command.config.fast, true);
 
   const legacyCaptured = { command: null };
   const legacyHandle = runtime.startRun('test-provider', 'test-model', 'legacy options', {
@@ -1453,6 +1494,7 @@ test('pi runtime forwards skill scoping fields through IPC with the session cwd'
   legacyCaptured.command = JSON.parse(fs.readFileSync(capturePath, 'utf8')).command;
   assert.deepEqual(legacyCaptured.command.config.additionalSkillPaths, []);
   assert.equal(legacyCaptured.command.config.retireUserScopeSkills, false);
+  assert.equal(legacyCaptured.command.config.fast, false);
 });
 
 test('pi runtime sends an IPC abort command before forcing process termination', async (t) => {

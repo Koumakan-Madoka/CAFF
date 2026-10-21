@@ -738,6 +738,7 @@ CREATE TABLE IF NOT EXISTS chat_agents (
   model_family TEXT,
   is_default_chat_role INTEGER NOT NULL DEFAULT 0 CHECK (is_default_chat_role IN (0, 1)),
   session_reuse_enabled INTEGER NOT NULL DEFAULT 1 CHECK (session_reuse_enabled IN (0, 1)),
+  fast INTEGER NOT NULL DEFAULT 0 CHECK (fast IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   CHECK (
@@ -1182,6 +1183,14 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
     'chat_agents',
     'session_reuse_enabled',
     'session_reuse_enabled INTEGER NOT NULL DEFAULT 1 CHECK (session_reuse_enabled IN (0, 1))'
+  );
+  // Fast mode (service_tier: priority) toggle, defaults OFF. Only meaningful
+  // for openai-codex-responses models; see fast-mode-openai-codex.md.
+  ensureColumn(
+    db,
+    'chat_agents',
+    'fast',
+    'fast INTEGER NOT NULL DEFAULT 0 CHECK (fast IN (0, 1))'
   );
   ensureColumn(db, 'chat_conversations', 'type', "type TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'chat_conversations', 'metadata_json', 'metadata_json TEXT');

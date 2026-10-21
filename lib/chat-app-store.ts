@@ -209,6 +209,8 @@ function normalizeModelProfile(profile: any, index = 0) {
     provider,
     model,
     thinking,
+    // Fast (service_tier: priority) per-profile toggle, defaults OFF.
+    fast: profile.fast === true,
     personaPrompt,
   };
 }
@@ -264,6 +266,11 @@ function normalizeAgentRow(row: any) {
     sessionReuseEnabled: row.session_reuse_enabled === undefined || row.session_reuse_enabled === null
       ? true
       : Boolean(row.session_reuse_enabled),
+    // Fast mode toggle defaults OFF; legacy rows without the column
+    // (pre-migration reads in tests) also default OFF.
+    fast: row.fast === undefined || row.fast === null
+      ? false
+      : Boolean(row.fast),
     selectedModelProfileId: selectedModelProfileId || null,
     selectedModelProfile,
     conversationSkillIds: parseSkillRefs(row.conversation_skills_json),
@@ -2261,6 +2268,7 @@ export class ChatAppStore {
       modelFamily: null,
       isDefaultChatRole: Boolean(input.isDefaultChatRole),
       sessionReuseEnabled: input.sessionReuseEnabled !== false,
+      fast: input.fast === true,
     });
   }
 
@@ -2282,6 +2290,7 @@ export class ChatAppStore {
       modelProfiles: this.normalizeModelProfiles(input.modelProfiles),
       isDefaultChatRole: Boolean(input.isDefaultChatRole),
       sessionReuseEnabled: input.sessionReuseEnabled !== false,
+      fast: input.fast === true,
       ...(Object.hasOwn(input, 'avatarDataUrl') ? { avatarDataUrl: normalizeAvatarDataUrl(input.avatarDataUrl) } : {}),
     });
   }

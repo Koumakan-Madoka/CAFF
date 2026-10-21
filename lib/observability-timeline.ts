@@ -1,3 +1,5 @@
+import { normalizeServiceTierRequest } from './service-tier';
+
 export const MAX_RETAINED_OBSERVABILITY_EVENTS = 16;
 const OBSERVABILITY_STATE = Symbol.for('caff.observabilityTimelineState');
 
@@ -14,7 +16,9 @@ function positiveInteger(value: any, fallback = 0) {
 function normalizedEvents(value: any) {
   return (Array.isArray(value) ? value : []).filter(
     (event) => event && typeof event === 'object' && !Array.isArray(event)
-  );
+  ).map((event) => Object.prototype.hasOwnProperty.call(event, 'serviceTier')
+    ? { ...event, serviceTier: normalizeServiceTierRequest(event.serviceTier) }
+    : event);
 }
 
 function timestampMillis(value: any) {
@@ -286,6 +290,7 @@ export function createModelCallObservabilityEvent(state: any, input: any = {}) {
     isColdStart,
     providerMiss,
     tokenUsage,
+    serviceTier: normalizeServiceTierRequest(input.serviceTier),
   });
 }
 

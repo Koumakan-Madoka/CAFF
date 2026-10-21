@@ -5210,7 +5210,8 @@ test('role API protects model-family roles and shares one availability projectio
   // ADR 0001 Phase 2: per-agent session reuse toggle is editable on family
   // roles and defaults ON.
   assert.equal(initialGpt.sessionReuseEnabled, true);
-  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole', 'avatarDataUrl', 'sessionReuseEnabled']);
+  assert.equal(initialGpt.fast, false);
+  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole', 'avatarDataUrl', 'sessionReuseEnabled', 'fast']);
   assert.deepEqual(initialGpt.availability, { status: 'default_model_missing', familyModelCount: 1 });
   assert.deepEqual(initialQwen.availability, { status: 'no_family_models', familyModelCount: 0 });
 
@@ -5251,6 +5252,47 @@ test('role API protects model-family roles and shares one availability projectio
     body: { sessionReuseEnabled: true, avatarDataUrl: '' },
   });
   assert.equal(reuseRestored.agent.sessionReuseEnabled, true);
+
+  // Fast is a quota-affecting opt-in: both role defaults and profile
+  // overrides must reject non-booleans at the HTTP boundary, without writes.
+  const fastCustom = await fetchJson(baseUrl, '/api/agents', {
+    method: 'POST',
+    body: { name: 'Fast validation', provider: 'openai', model: 'gpt-test' },
+  });
+  assert.equal(fastCustom.agent.fast, false);
+  const fastCustomPath = `/api/agents/${encodeURIComponent(fastCustom.agent.id)}`;
+  for (const fast of ['false', '0', '1', [], {}, 0, 1, null]) {
+    const profile = { id: 'fast-check', name: 'Fast check', provider: 'openai', model: 'gpt-test', fast };
+    for (const [pathname, method, body, issuePath] of [
+      ['/api/agents/role-family-gpt', 'PUT', { fast }, 'fast'],
+      [fastCustomPath, 'PUT', { fast }, 'fast'],
+      ['/api/agents', 'POST', { name: 'Invalid Fast', provider: 'openai', model: 'gpt-test', fast }, 'fast'],
+      ['/api/agents/role-family-gpt', 'PUT', { provider: 'openai', model: 'gpt-test', thinking: '', modelProfiles: [profile] }, 'modelProfiles[0].fast'],
+      [fastCustomPath, 'PUT', { modelProfiles: [profile] }, 'modelProfiles[0].fast'],
+      ['/api/agents', 'POST', { name: 'Invalid Fast profile', provider: 'openai', model: 'gpt-test', modelProfiles: [profile] }, 'modelProfiles[0].fast'],
+    ]) {
+      const response = await fetchJsonResponse(baseUrl, pathname, { method, body });
+      assert.equal(response.status, 422, `${method} ${pathname}: ${JSON.stringify(body)}`);
+      assert.equal(response.json.issues[0].code, 'fast_not_boolean');
+      assert.equal(response.json.issues[0].path, issuePath);
+    }
+  }
+  const afterInvalidFast = await fetchJson(baseUrl, '/api/agents');
+  assert.equal(afterInvalidFast.agents.length, directory.agents.length + 1);
+  for (const id of ['role-family-gpt', fastCustom.agent.id]) {
+    const agent = afterInvalidFast.agents.find((item) => item.id === id);
+    assert.equal(agent.fast, false);
+    assert.deepEqual(agent.modelProfiles, []);
+  }
+  for (const pathname of ['/api/agents/role-family-gpt', fastCustomPath]) {
+    const enabled = await fetchJson(baseUrl, pathname, { method: 'PUT', body: { fast: true } });
+    assert.equal(enabled.agent.fast, true);
+    const preserved = await fetchJson(baseUrl, pathname, { method: 'PUT', body: { avatarDataUrl: '' } });
+    assert.equal(preserved.agent.fast, true);
+    const disabled = await fetchJson(baseUrl, pathname, { method: 'PUT', body: { fast: false } });
+    assert.equal(disabled.agent.fast, false);
+  }
+  await fetchJson(baseUrl, fastCustomPath, { method: 'DELETE' });
 
   for (const body of [
     { personaPrompt: 'Pretend to be someone.' },
