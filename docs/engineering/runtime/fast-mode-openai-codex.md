@@ -376,6 +376,80 @@ final milestone review, integration and user acceptance have not occurred. Stop
 further quota-consuming probes until a reliable backend signal is available or
 the user explicitly authorizes a reviewed change to the acceptance requirement.
 
+## Current pi execution-signal audit (W6 follow-up)
+
+The authority for CAFF behavior is the **actually loaded** pi-coding-agent
+0.85.1 and its nested pi-ai 0.85.1, not the separately installed top-level
+pi-ai 1.3.0 or Codex CLI. The following source paths are relative to
+`node_modules/@earendil-works/pi-coding-agent/` and were read without modification:
+
+- `dist/core/sdk.js`: connects `before_provider_request` to `onPayload` and
+  `after_provider_response` to `onResponse`.
+- `node_modules/@earendil-works/pi-ai/dist/api/simple-options.js`: forwards both
+  callbacks, but not `serviceTier`, through `streamSimple`.
+- `node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js`:
+  `onPayload` changes the body before serialization; SSE `onResponse` supplies
+  HTTP status and headers before stream consumption. That callback does not
+  receive a response body. This version's WebSocket path does not invoke it.
+- `node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js`:
+  completion processing reads the raw response tier for pricing, but does not
+  preserve that tier on the assistant message. `responseId` is preserved and
+  can correlate responses, but is not itself a tier signal.
+
+An isolated diagnostic through CAFF's real SDK factory, real Fast extension
+and the installed provider made one completed off request and one completed on
+request, with no tools, compaction, agent retries, application port or database.
+Both used a fresh private agent directory and the same short prompt/model/
+thinking. Source credentials/configuration stayed unchanged; the copied
+credential was deleted afterward. The only extra extension observed the SDK's
+response callback; a temporary fetch observer parsed the original SSE stream
+without modifying its bytes. Stored header **values** are restricted to closed
+known tier labels; cookie, routing-state, account, quota and balance values are
+never recorded. There was initially one failed connection attempt before CAFF's
+proxy dispatcher was installed; it had no HTTP response or usage and is retained
+separately, not counted as a completed sample. No transport retries were enabled.
+
+| Evidence | Off | On |
+|---|---|---|
+| Serialized request tier | absent | priority |
+| HTTP / assistant outcome | 200 / stop | 200 / stop |
+| Raw created / completed tier | auto / default | auto / default |
+| Raw input / output tokens | 61 / 5 | 61 / 5 |
+| Cached / reasoning tokens | 0 / 0 | 0 / 0 |
+| Tier/speed/priority response-header candidates | none | none |
+| pi usage cost / same-model baseline cost | 1 | 1 |
+| Assistant message tier property | absent | absent |
+
+This adds **one** directly observed on response to the earlier real-room off/on
+response pair. The initial six room comparison samples did not capture SSE
+response events; the earlier pair contains only one on response, not two.
+
+`tests/runtime/fast-mode-pi-evidence.test.js` exercises the real SDK/CAFF factory
+with synthetic SSE and WebSocket responses, no real credentials or network:
+
+- Injection plus a `default` response keeps base pricing and exposes no message
+  tier; disabling Fast omits the request field.
+- A synthetic raw `priority` response doubles provider pricing but still has no
+  persisted tier property. The synthetic result is not a live execution claim.
+- The HTTP response hook exposes only status/headers, even without Content-Type;
+  the current WebSocket adapter does not emit that hook.
+- A separate native low-level `serviceTier: priority` control also doubles
+  pricing when the raw response says `default`, due to
+  `resolveCodexServiceTier`'s **request-derived fallback**. Therefore switching
+  to that option or multiplying costs cannot manufacture independent execution
+  proof. The production injection approach and cost handling are unchanged.
+
+The seven regressions are part of `npm test`. Local diagnostic evidence and
+scripts are in `.tmp/fast-w6-pi/`, including `live-summary.json`,
+`live-network-failure.json`, `probe-live.mjs` and a hash manifest. The diagnostic
+summary stores neither output text, full response bodies nor response-header
+values outside the tier-label allowlist (ordinary SDK sessions remain private). Source and live evidence agree: pi confirms the
+priority request and successful completion, but **this SDK/channel currently
+supplies no independent priority-execution signal**. This is an observability
+limit, not proof that Fast failed. AC5 remains pending under its current wording;
+Codex CLI status or access to a separate billing interface is not a prerequisite
+for operating CAFF Fast and is not used to redefine its behavior.
+
 ## Known limitations
 
 - Backend under-reports the executed tier (`default` even for accepted
