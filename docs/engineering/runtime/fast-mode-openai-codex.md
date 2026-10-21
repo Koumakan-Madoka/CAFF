@@ -18,7 +18,10 @@ of `@earendil-works/pi-ai@0.85.1` (embedded in `pi-coding-agent@0.85.1`) and
   requests stay byte-identical.
 - The backend validates tier values: an unknown value is rejected with
   HTTP 400 `{"detail":"Unsupported service_tier: <value>"}`. A 200 on a
-  `priority` request therefore means the tier value was accepted, not ignored.
+  `priority` request proves the tier value passed validation and the request
+  was accepted; it does **not** by itself prove the backend actually
+  scheduled the request on the priority tier (a legal value could still be
+  downgraded or ignored server-side).
 - Model availability is account-gated, not originator-gated: models the
   subscription does not offer fail with HTTP 400 `The '<model>' model is not
   supported when using Codex with a ChatGPT account.` regardless of the
@@ -33,18 +36,20 @@ For `gpt-6.1-sol` and `gpt-6-astra` on this subscription:
   **including accepted `priority` requests**.
 
 This matches pi-ai's own workaround: `resolveCodexServiceTier()` in
-`openai-codex-responses.js` trusts the *request* tier when the response says
-`"default"`. Consequences:
+`openai-codex-responses.js` falls back to the *request* tier when the
+response says `"default"`. That fallback is a reporting rule, not proof of
+execution. Consequences:
 
 - CAFF must never claim "executed as Fast" from the response body alone.
   Display the requested tier; only show backend confirmation when the response
   actually reports `priority` (not observed on this subscription so far).
 - With payload injection (`onPayload`), pi-ai's `options.serviceTier` stays
   undefined, so its service-tier cost multiplier (priority ×2, gpt-5.5 ×2.5)
-  does **not** fire and CAFF cost stats under-report real quota consumption.
-  Cost accounting for Fast rounds is a known limitation; the subscription
-  quota is consumed at the Fast rate regardless of what CAFF's token costs
-  show.
+  does **not** fire. If the backend does execute these rounds as priority,
+  subscription quota is presumably consumed at the Fast rate while CAFF's
+  token-cost stats show the unmultiplied amount — i.e. CAFF cost accounting
+  for Fast rounds may under-report. This is a known limitation, not a
+  verified measurement of quota behavior.
 
 ## Speedup evidence (fixed prompt, reasoning effort `low`, cache disabled)
 
@@ -55,9 +60,12 @@ This matches pi-ai's own workaround: `resolveCodexServiceTier()` in
 | `priority` | 7 265 ms | 1 247 ms |
 | default | 14 460 ms | 6 053 ms |
 
-≈2.0× total / ≈4.9× TTFB on this small-prompt benchmark, consistent with the
-vendor's "1.5x" claim (direction and magnitude). Formal per-instance timing
-acceptance runs in the delivery work item, not here.
+≈2.0× total / ≈4.9× TTFB on this small-prompt benchmark, in the direction
+of the vendor's "1.5x" claim. This timing separation is side evidence
+consistent with priority execution, not proof: the sample is small and the
+executed tier is not independently confirmed by the response (see above).
+Formal per-instance timing acceptance runs in the delivery work item (W6),
+which is also where execution-tier evidence for AC5 must come from.
 
 ## Support detection
 
@@ -81,7 +89,12 @@ Runtime rule: a model supports Fast iff the (cached) backend catalog lists it
 with a `priority` service tier; if the catalog cannot be fetched, fall back to
 the static allowlist seeded from the 0.160.0 probe: `gpt-6.1-sol`,
 `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`,
-`gpt-5.6-luna`. Unsupported models do not show the toggle and never get the
+`gpt-5.6-luna`. Catalog results are per-account: cache entries must be keyed
+by credential/account and discarded on account switch, never reused across
+accounts. A *successful* catalog fetch that lacks the model (or lists it
+without `priority`) is authoritative-negative for that account — the static
+allowlist must not override it; the allowlist only covers the fetch-failed
+path. Unsupported models do not show the toggle and never get the
 injection. If the backend still rejects `priority` at request time, the round
 fails with the provider error — no silent downgrade.
 
@@ -141,11 +154,15 @@ switch. `node_modules` stays untouched.
 ## Known limitations
 
 - Backend under-reports the executed tier (`default` even for accepted
-  `priority` requests); execution evidence is timing + the fact that invalid
-  tier values are rejected, not a response field.
-- CAFF token-cost stats under-report Fast rounds (pi-ai multiplier only fires
-  when the response reports `priority`, which this backend does not do via
-  payload injection). Subscription quota is still consumed at the Fast rate.
+  `priority` requests), and the executed tier is **not independently
+  confirmed** by W1: request acceptance (200 vs 400 on bogus values) plus a
+  small-sample timing gap are consistent with priority execution but do not
+  prove it. AC5's execution evidence remains open until W6.
+- In the current injection path pi-ai's priority cost multiplier does not
+  fire (it only applies when the response reports `priority`, which this
+  backend does not do via payload injection). If rounds actually execute as
+  priority, CAFF token-cost estimates for them may be low relative to real
+  quota consumption; quota behavior itself is not measured by CAFF.
 - Unsupported-model behavior (reject vs silent) is unverifiable on this
   subscription because every account-available catalog model offers
   `priority`; catalog/allowlist gating is the guardrail.
