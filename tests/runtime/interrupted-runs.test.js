@@ -5,6 +5,7 @@ const { execFileSync } = require('node:child_process');
 const test = require('node:test');
 const { createServerApp } = require('../../build/server/app/create-server');
 const { createMessageRecoveryService } = require('../../build/server/domain/conversation/message-recovery');
+const { createAgentDelegation } = require('../../build/server/domain/conversation/agent-delegation');
 const { createAgentToolBridge } = require('../../build/server/domain/runtime/agent-tool-bridge');
 const { bindAndPersistRoomWorkspace } = require('../../build/server/domain/conversation/room-workspace');
 const { registerTurnHandle, unregisterTurnHandle } = require('../../build/server/domain/conversation/turn/turn-stop');
@@ -267,6 +268,82 @@ test('shutdown cancels both lanes and queued side waiters without launching queu
       'service shutdown is not persisted as a user cancellation of queued side work');
   } finally {
     for (const release of releases) release();
+    await close();
+  }
+});
+
+test('shutdown persists a settled delegation continuation without dispatch and restart keeps it pending', async t => {
+  const f = createInterruptedFixture(t);
+  const recipient = f.store.saveCustomRoleConfig({
+    id: 'delegation-recipient', name: 'Recipient', personaPrompt: 'Synthetic only',
+    provider: 'test-provider', model: 'test-model',
+  });
+  f.store.updateConversation(f.room.id, {
+    participants: [f.agent.id, recipient.id],
+    metadata: { conversationTurnQueue: { lastConsumedUserMessageId: '' } },
+  });
+  const executions = [];
+  let release;
+  const { app, close } = openApp(t, f, {
+    executeConversationAgent: async input => {
+      executions.push(input.agent.id);
+      const reply = f.store.createMessage({
+        conversationId: input.conversationId, turnId: input.turnId,
+        role: 'assistant', agentId: input.agent.id, content: 'Thinking...', status: 'streaming',
+        metadata: { streaming: true, triggeredByMessageId: input.promptUserMessage.id },
+      });
+      const stopped = new Promise(resolve => { release = resolve; });
+      const handle = { cancel(reason) { release(reason); } };
+      registerTurnHandle(input.turnState, handle);
+      try {
+        const reason = await stopped;
+        f.store.updateMessage(reply.id, { status: 'failed', errorMessage: reason });
+        // Let the real side-dispatch catch settle the child through the server's
+        // delegation runtime/onCompletion wiring while shutdown is in progress.
+        throw new Error(reason);
+      } finally { unregisterTurnHandle(input.turnState, handle); }
+    },
+  });
+  const created = createAgentDelegation(app.store, {
+    conversationId: f.room.id, agentId: f.agent.id, agentName: f.agent.name,
+    invocationId: 'shutdown-requester', turnId: 'shutdown-requester-turn',
+  }, { recipientAgentIds: [recipient.id], content: 'Synthetic delegated work', idempotencyKey: 'shutdown' });
+  const delegation = app.store.markAgentDelegationAwaiting(created.delegation.id, new Date().toISOString());
+  app.turnOrchestrator.dispatchAgentDelegation({ delegation, childDelegations: created.childDelegations });
+  const continuations = store => store.listMessages(f.room.id).filter(message =>
+    message.metadata.source === 'agent-delegation-continuation' && message.metadata.delegationId === delegation.id);
+  try {
+    await waitFor(() => executions.length === 1);
+    await close();
+    assert.deepEqual(executions, [recipient.id], 'closing must not execute the requester continuation');
+    assert.equal(f.store.getAgentDelegation(created.childDelegations[0].id).status, 'cancelled');
+    const terminal = f.store.getAgentDelegation(delegation.id);
+    assert.equal(terminal.status, 'failed');
+    assert.ok(terminal.continuationEnqueuedAt);
+    assert.equal(f.store.listAgentDelegationEvents(delegation.id)
+      .filter(event => event.event_type === 'continuation_enqueued').length, 1);
+    const persisted = continuations(f.store);
+    assert.equal(persisted.length, 1, 'the one-shot continuation marker must have a durable requester message');
+    assert.deepEqual(persisted[0].metadata.initialAgentIds, [f.agent.id]);
+    assert.equal(persisted[0].role, 'user');
+    assert.equal(persisted[0].status, 'completed');
+    assert.match(persisted[0].content, /"status":"failed"/u);
+
+    const restarted = openApp(t, f, {
+      async executeConversationAgent(input) {
+        executions.push(input.agent.id);
+        return { stopTurn: false };
+      },
+    });
+    try {
+      assert.deepEqual(continuations(restarted.app.store).map(message => message.id), [persisted[0].id]);
+      assert.deepEqual(restarted.app.store.listPendingMainUserMessages(f.room.id).map(message => message.id), [persisted[0].id]);
+      assert.equal(restarted.app.turnOrchestrator.getConversationQueueDepth(f.room.id), 1);
+      assert.deepEqual(executions, [recipient.id], 'restart must retain the pending message without replaying the stopped child');
+      assert.equal(restarted.app.store.getAgentDelegation(delegation.id).continuationEnqueuedAt, terminal.continuationEnqueuedAt);
+    } finally { await restarted.close(); }
+  } finally {
+    release?.('Synthetic cleanup');
     await close();
   }
 });

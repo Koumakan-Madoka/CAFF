@@ -529,6 +529,39 @@ streaming enabled, and leaves retry count/backoff/tool context under PI control.
   rename idle/live guard, manual Recovery compatibility, shutdown of both lanes
   without queued launches, and execution cleanup before database close).
 
+### Known lifecycle limits
+
+These non-blocking limits were recorded during independent review of interrupted
+run reconciliation; they are not behavior changes in this fix.
+
+- **N1 — Real executor Stop semantics:** graceful shutdown uses the existing
+  cancellation path. An assistant message can be `failed` with `服务关闭中断`
+  while retaining `metadata.cancelled=true`; stage tasks and delegation
+  recipients can be `cancelled`, and Recovery classifies the interruption as
+  `user_cancelled`. Synthetic shutdown integration tests cover orchestration and
+  cleanup ordering, not the real executor's end-to-end cancellation metadata.
+- **N2 — Graceful versus crash side recovery:** an in-flight side reply already
+  marked `failed` during graceful shutdown is terminal, so the next startup
+  does not automatically resubmit that source. Unresolved side sources after
+  crash/kill, and sources still queued at shutdown, retain existing recovery
+  eligibility. This fix does not unify those replay policies.
+- **N3 — Legacy DAG startup ordering:** interrupted-run reconciliation precedes
+  `dagScheduler.reconcileOnStartup`. Old-style DAG child conversations without
+  a Goal binding can become `blocked` because their replies are now failed and
+  do not receive D25 automatic continuation. Goal-bound nodes are unaffected.
+- **N4 — Completion settlement tuning:** the default termination deadline leaves
+  only one second after forced kill. Independent review reported a sample of
+  3,201 completed production runs with 4.3-second p99 cleanup, a 5.1-second
+  maximum, and roughly 1% requiring forced kill; this sample was not remeasured
+  by these isolated tests. Expected completion without observed close may fail
+  under the tight margin. Follow-up tuning can use `terminationSettleMs` /
+  `PI_TERMINATION_SETTLE_MS`; this fix does not change the defaults or watchdog
+  thresholds.
+- **N5 — Lifecycle error/timeout limits:** startup reconciliation failure blocks
+  startup. Shutdown has no global timeout (the Pi deadline only bounds its own
+  run handles), and reconciliation errors are reported through logging and the
+  close callback but do not change the process exit code.
+
 ## Agent Run Watchdogs
 
 ### Signatures and configuration

@@ -99,10 +99,15 @@ SQLite selects the bounded union first, then the runtime applies visibility and 
   is resubmitted; no old child process is resumed.
 - `turnOrchestrator.shutdown('服务关闭中断')` synchronously closes admission.
   New message/direct-turn/side submissions reject with `503 server_closing`;
-  Goal/delegation continuations no longer enqueue new work. Cancel queued side
-  waiters before live slots can release, stop registered main/side handles,
-  clear remaining slot waits, and await tracked direct turns, main drain loops
-  and side execution promises including their root-task/finally cleanup.
+  automatic Goal continuations no longer enqueue new work. Delegation terminal
+  continuations still persist their requester main-queue message: settlement
+  already consumed the write-once `continuation_enqueued_at` marker, so dropping
+  the message would permanently lose the wake-up. The closing drain refuses to
+  dispatch it; startup rediscovers it as pending with the original requester
+  target. Cancel queued side waiters before live slots can release, stop
+  registered main/side handles, clear remaining slot waits, and await tracked
+  direct turns, main drain loops and side execution promises including their
+  root-task/finally cleanup.
 - A closing main drain never claims another pending batch or auto-continuation;
   a side cleanup cannot restart the main drain. Service shutdown does not stamp
   the user-only `dispatchCancelled` marker on queued side sources. Existing
@@ -121,8 +126,9 @@ SQLite selects the bounded union first, then the runtime applies visibility and 
   executors: startup orphan failure, side resubmission plus pending main queue
   preservation, side interruption before run creation, rename after restart
   versus a live streaming message, unchanged manual Recovery acceptance, both
-  execution lanes and queued waiters on shutdown, admission rejection, and
-  executor cleanup before database close.
+  execution lanes and queued waiters on shutdown, admission rejection,
+  executor cleanup before database close, and terminal delegation continuation
+  persistence without dispatch plus pending-message discovery after restart.
 - `tests/storage/interrupted-runs.test.js` proves atomic rollback, terminal/user
   preservation, parent tasks, unmessaged runs and repeat-call idempotency.
 - Existing turn-orchestrator, Goal/Stop, cross-Room, runtime/watchdog and server

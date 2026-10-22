@@ -1040,7 +1040,9 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function enqueueDelegationContinuation(delegation: any) {
-    if (closing) return { scheduled: false, reason: 'server_closing' };
+    // Terminal settlement already consumed the write-once continuation marker.
+    // Persist even during shutdown: the closing drain refuses dispatch, and
+    // startup queue discovery must still find the requester's pending message.
     const conversationId = String(delegation && delegation.requesterConversationId || '').trim();
     const agentId = String(delegation && delegation.requesterAgentId || '').trim();
     if (!conversationId || !agentId || !delegation || !delegation.terminalAt) return { scheduled: false, reason: 'invalid_delegation' };
