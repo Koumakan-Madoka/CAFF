@@ -482,15 +482,68 @@ streaming enabled, and leaves retry count/backoff/tool context under PI control.
   parent directory creation uses the decoded underlying filesystem path, and
   unsupported URI query parameters fail fast instead of being silently ignored.
 
+## Interrupted Run Reconciliation
+
+- `ChatAppStore.reconcileInterruptedRuns(reason)` is a lifecycle-only operation,
+  not an online stale-age watchdog. Its safety premise is **one CAFF process
+  exclusively owning one SQLite database**. Production, acceptance and room
+  previews must use distinct databases. Shared-database instances require a
+  separately designed owner/lease protocol; never run this sweep beside a live
+  writer from another process.
+- One transaction fails assistant messages in `queued|running|streaming`, all
+  `running` runs (including runs without a message), and associated
+  `queued|running` tasks plus their parent/root tasks. Still-active tasks linked
+  to already-finalized stale side replies are included even when no child run
+  was created. Already-terminal messages/runs/tasks and user messages are not
+  rewritten. Repeated calls are idempotent; a failure rolls back the transaction.
+- Message failure uses the existing stale-side-reply convention: clear only
+  exact `Thinking...`, retain partial text and existing metadata, and set
+  `failure=true`, `streaming=false`, `recoveredAfterRestart=true`. Normal Store
+  writes preserve context/model-usage/observability detail contracts. Runs/tasks
+  receive the same interruption reason and one `ended_at` timestamp. There is no
+  schema change or new status value; historical diagnostics are not fabricated.
+- Startup: after orphan session-reuse claims are swept, prepare queue and side
+  recovery before the generic sweep. Side recovery keeps its original reply
+  marker (`Recovered after process restart before side dispatch completed`) and
+  resubmission decision. `beforeStartupDispatch` then reconciles with
+  `服务重启中断`, before any prepared dispatch starts. A reconciliation error
+  prevents dispatch/startup instead of running with untrusted active records.
+- Normal `createServerApp().close()`: stop turn admission and cancel queued
+  side waiters, cancel registered main/side handles, and await execution/queue
+  cleanup. Keep the existing SSE, observability, integration and delivery-drain
+  cleanup; then reconcile remaining active records with `服务关闭中断`, and
+  only then close SQLite. Existing terminal cancellation outcomes remain
+  terminal; the sweep only fails records still active. A reconciliation error
+  is logged and passed to the close callback, with startup available as the
+  next reconciliation opportunity.
+- Crash/kill cannot execute shutdown cleanup; the next startup supplies the
+  failure boundary. No automatic replay, scribe call, rename-guard bypass, or
+  new SSE broadcast is added. Existing pending-user and side-dispatch recovery
+  remain their own owners. Reconnect reads the persisted terminal states.
+- A reconciled message may use the unchanged manual Recovery entry point when
+  its existing task/run links, context snapshot and session evidence pass that
+  service's integrity checks. Missing evidence is not synthesized.
+- Required tests: `tests/storage/interrupted-runs.test.js` (states, terminal
+  preservation, parent tasks, rollback, idempotency) and
+  `tests/runtime/interrupted-runs.test.js` (startup order, existing recovery,
+  rename idle/live guard, manual Recovery compatibility, shutdown of both lanes
+  without queued launches, and execution cleanup before database close).
+
 ## Agent Run Watchdogs
 
 ### Signatures and configuration
 
-- `lib/pi-runtime.ts` accepts `startRun(provider, model, prompt, { heartbeatTimeoutMs?, progressTimeoutMs?, idleTimeoutMs?, timeoutMs? })`.
+- `lib/pi-runtime.ts` accepts `startRun(provider, model, prompt, { heartbeatTimeoutMs?, progressTimeoutMs?, idleTimeoutMs?, timeoutMs?, terminateGraceMs?, terminationSettleMs? })`.
 - Host liveness resolves from `heartbeatTimeoutMs` -> `PI_HEARTBEAT_TIMEOUT_MS` -> 60 seconds.
 - Useful-progress timeout resolves from `progressTimeoutMs` -> legacy `idleTimeoutMs` -> `PI_PROGRESS_TIMEOUT_MS` -> legacy `PI_IDLE_TIMEOUT_MS` -> 10 minutes.
 - Absolute run timeout resolves from `timeoutMs` -> `PI_TIMEOUT_MS` -> 3 hours.
-- Setting any resolved timeout to `0` disables that watchdog.
+- Setting a heartbeat/progress/absolute timeout to `0` disables that watchdog.
+- Termination grace resolves from `terminateGraceMs` -> `PI_TERMINATE_GRACE_MS`
+  -> 5 seconds; zero forces the process tree immediately after abort.
+- Termination settlement resolves from `terminationSettleMs` ->
+  `PI_TERMINATION_SETTLE_MS` -> resolved `terminateGraceMs + 1000` milliseconds
+  (6 seconds with default grace). It starts when termination begins, not after
+  force kill, must be strictly greater than grace, and cannot be disabled.
 
 ### Contracts
 
@@ -506,6 +559,18 @@ streaming enabled, and leaves retry count/backoff/tool context under PI control.
   `progress_timeout`, or `run_timeout`.
 - `runs.timeout_ms` stores the absolute limit and `runs.idle_timeout_ms` stores
   the useful-progress limit. `runs.heartbeat_timeout_ms` remains host liveness.
+- Once termination begins, a referenced settlement timer bounds the wait for
+  child `close`. If `close` never arrives, persist a failed run, reject its
+  result promise, and include `closeObserved=false` and
+  `settleDeadlineExceeded=true` in the termination reason and final watchdog
+  diagnostics. Keep the original reason type (including cancellation/timeouts);
+  error text states that child close was not observed. Expected completion
+  without observed close also fails, never infers a successful exit.
+- A normal close cancels the deadline and retains existing exit/completion
+  semantics. Late close/IPC/stdio data cannot overwrite a terminal run. Terminal
+  observers cannot re-enter settlement; failure/success emits only once. On a
+  missing-close deadline, detach IPC/child references and dispose stderr after
+  failure persistence. This is not proof that external side effects stopped.
 
 ### Validation matrix
 
@@ -516,6 +581,10 @@ streaming enabled, and leaves retry count/backoff/tool context under PI control.
 | Host and IPC become silent | Terminate with `heartbeat_timeout`. |
 | A timeout is configured as `0` | Disable only that watchdog. |
 | Watchdog terminates a run on Windows | Kill the pi host and its descendant process tree through `taskkill /T`, forcing it after the grace period. |
+| Termination never yields child `close` | Fail at the settlement deadline; preserve reason type and record missing close. |
+| Expected completion never yields child `close` | Fail rather than normalize an unobserved exit to success. |
+| Normal or late close | Normal close keeps existing semantics; late close cannot rewrite terminal state. |
+| Settlement setting is zero or no greater than grace | Reject configuration before child launch. |
 
 ### Required tests
 
@@ -523,6 +592,9 @@ streaming enabled, and leaves retry count/backoff/tool context under PI control.
   hosts to assert the watchdogs do not extend one another.
 - `tests/storage/run-store.test.js` asserts all three configured timeout values
   are persisted in their existing SQLite columns.
+- `tests/runtime/pi-runtime-settle.test.js` uses synthetic children that never
+  emit close after abort/kill; it covers timeout/cancel/expected completion,
+  deadline configuration, normal/late close, and reentrant terminal observers.
 - `tests/runtime/agent-executor-hook.test.js` covers the executor-to-runtime
   options wiring when that contract changes.
 

@@ -739,6 +739,12 @@ export function createServerApp(options: any = {}) {
     uploadsDir,
     delegationRuntime,
     executeConversationAgent: options.executeConversationAgent,
+    beforeStartupDispatch() {
+      // Single-process database ownership: recovery has prepared its stale
+      // side replies, but no new execution has been submitted yet. Fail closed
+      // if this transaction fails; do not start with untrusted active state.
+      store.reconcileInterruptedRuns('服务重启中断');
+    },
     async onAssistantMessageCompleted(message: any) {
       await maybeAutoCreateDigestAfterAssistantMessage(message);
 
@@ -1294,6 +1300,7 @@ export function createServerApp(options: any = {}) {
 
   function close(callback: any) {
     deliveryRuntimeClosing = true;
+    const turnsClosePromise = turnOrchestrator.shutdown('服务关闭中断');
     sseBus.closeAll();
     runtimeObservability.dispose();
     subscriptionLoginService.dispose();
@@ -1314,15 +1321,22 @@ export function createServerApp(options: any = {}) {
 
     server.close(() => {
       const finishClose = () => {
+        let reconciliationError: any = null;
+        try {
+          store.reconcileInterruptedRuns('服务关闭中断');
+        } catch (error) {
+          reconciliationError = error;
+          console.error(`[runtime] Shutdown reconciliation failed: ${error}`);
+        }
         store.close();
 
         if (typeof callback === 'function') {
-          callback();
+          callback(reconciliationError);
         }
       };
-      const pendingCloseWork = deliveryDrainPromise
-        ? Promise.allSettled([deliveryDrainPromise, feishuClosePromise])
-        : feishuClosePromise;
+      const pendingCloseWork = Promise.allSettled([
+        turnsClosePromise, feishuClosePromise, ...(deliveryDrainPromise ? [deliveryDrainPromise] : []),
+      ]);
 
       void Promise.resolve(pendingCloseWork).then(finishClose, finishClose);
     });

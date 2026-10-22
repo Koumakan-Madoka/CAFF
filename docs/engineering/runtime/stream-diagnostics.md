@@ -24,7 +24,8 @@ The parent records receipt time (epoch milliseconds), not a provider timestamp:
   `codeUnits`, scanned code units, scanned non-whitespace code units, and
   `unscannedCodeUnits`;
 - progress refresh counts/time/reason, heartbeat count/time, configured watchdog
-  limits and `progressArmed`/`terminating` capture state;
+  limits and `progressArmed`/`terminating` capture state; watchdog lifecycle
+  fields `terminationSettleMs`, `closeObserved`, `settleDeadlineExceeded`;
 - `capture`: `periodic`, `terminating`, or `finished`.
 
 All four existing progress-refresh sites are annotated: `initial`, `pi_event`,
@@ -34,6 +35,11 @@ refreshes. Events received during termination may appear in the diagnostic
 window without refreshing the timer. The terminating snapshot is taken after
 watchdogs are cleared; the final snapshot may include abort-tail events. On
 natural child exit, `progressArmed` can still be true immediately before cleanup.
+The termination settlement deadline from [Agent Runtime](agent-runtime.md) may
+produce a final failed snapshot without child close: `closeObserved=false`,
+`settleDeadlineExceeded=true`. Observed close produces `closeObserved=true`;
+late close cannot replace the already-final snapshot. These flags describe
+parent observations, not proof that every descendant or external action stopped.
 
 ### Phase observations
 
@@ -101,7 +107,10 @@ writes no data.
 
 A killed child normally yields a final snapshot from the surviving parent. A
 killed/crashed parent, failed storage write, or power loss may leave only the last
-successful periodic snapshot (or null before the first flush). A 30-second period
+successful periodic snapshot (or null before the first flush). Startup
+interruption reconciliation fails orphaned run rows but retains that snapshot;
+it cannot fabricate a historical finished capture or determine an exact crash
+time. A 30-second period
 is not a durability deadline: scheduling/storage stalls can delay it. The recent
 window overwrites older detail even though aggregate counters remain. Timestamps
 use the parent's wall clock, so clock adjustment can distort elapsed gaps; negative
@@ -120,6 +129,9 @@ history from these samples.
   These are time-scaled simulations, not a claim of a real 15-minute load test.
 - `tests/runtime/pi-runtime.test.js`: baseline watchdog/completion/retry/recovery
   suite, with assertions for all four persisted refresh reasons.
+- `tests/runtime/pi-runtime-settle.test.js`: failed final snapshot when a killed
+  synthetic child never emits close; ordinary, late and reentrant close;
+  deadline configuration and cancellation/expected-completion boundaries.
 - `tests/storage/run-store.test.js`: legacy migration, metadata independence,
   replacement semantics and hard size guard.
 

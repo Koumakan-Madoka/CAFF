@@ -77,6 +77,58 @@ const promptMessages = store.listPromptMessages(conversationId, {
 ```
 SQLite selects the bounded union first, then the runtime applies visibility and prompt-user replacement to that canonical set.
 
+## Process Restart And Shutdown Boundary
+
+- This lifecycle assumes a single CAFF process exclusively owns its SQLite
+  database. Do not share a database between production, acceptance or previews.
+- Startup queue discovery and side recovery run before new dispatches. Side
+  recovery first freezes its eligible source/target/prompt decision and marks
+  stale assistant replies using the existing side-recovery reason. It returns
+  deferred dispatches instead of submitting each immediately.
+- `createServerApp` supplies `beforeStartupDispatch()` to run the single Store
+  reconciliation transaction with `服务重启中断` after that preparation and after
+  session-reuse claim cleanup. Only when it succeeds may the deferred side
+  dispatches start. The generic sweep therefore neither hides a recoverable
+  side source behind a new failed reply nor mistakes its replacement run for
+  a previous-process orphan. Side sources with unavailable targets are not
+  replayed; their remaining active reply records still fail in the sweep.
+- Main pending-user discovery/cursors and side cancellation markers keep their
+  existing semantics. Reconciliation does not consume user messages, replay an
+  interrupted main execution, invoke Recovery Scribe, or change rename idle
+  checks. It fails old active run/task records even for side work whose source
+  is resubmitted; no old child process is resumed.
+- `turnOrchestrator.shutdown('服务关闭中断')` synchronously closes admission.
+  New message/direct-turn/side submissions reject with `503 server_closing`;
+  Goal/delegation continuations no longer enqueue new work. Cancel queued side
+  waiters before live slots can release, stop registered main/side handles,
+  clear remaining slot waits, and await tracked direct turns, main drain loops
+  and side execution promises including their root-task/finally cleanup.
+- A closing main drain never claims another pending batch or auto-continuation;
+  a side cleanup cannot restart the main drain. Service shutdown does not stamp
+  the user-only `dispatchCancelled` marker on queued side sources. Existing
+  intentional user Stop behavior is unchanged.
+- The server waits for turn shutdown alongside its existing delivery-drain and
+  integration cleanup, reconciles remaining active rows with `服务关闭中断`,
+  and closes SQLite last. Runtime cancellation records that already reached a
+  terminal state stay unchanged. Pi's termination settlement deadline bounds
+  a run handle whose child never emits close (see [Agent Runtime](agent-runtime.md)).
+- Reconciliation emits no new SSE event. Clients reconnect against persisted
+  failed states; eligible records can enter the existing manual Recovery API.
+
+### Validation
+
+- `tests/runtime/interrupted-runs.test.js` uses temporary SQLite and synthetic
+  executors: startup orphan failure, side resubmission plus pending main queue
+  preservation, side interruption before run creation, rename after restart
+  versus a live streaming message, unchanged manual Recovery acceptance, both
+  execution lanes and queued waiters on shutdown, admission rejection, and
+  executor cleanup before database close.
+- `tests/storage/interrupted-runs.test.js` proves atomic rollback, terminal/user
+  preservation, parent tasks, unmessaged runs and repeat-call idempotency.
+- Existing turn-orchestrator, Goal/Stop, cross-Room, runtime/watchdog and server
+  smoke tests remain regression gates. No test uses production/acceptance ports
+  or databases.
+
 ## Default Initial Agent Resolution
 
 ### 1. Scope / Trigger

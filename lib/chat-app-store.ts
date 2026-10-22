@@ -33,6 +33,7 @@ const {
 } = require('../storage/chat/agent-delegation.repository');
 const { createChatPlanRepository } = require('../storage/chat/plan.repository');
 const { createChatSessionReuseRepository } = require('../storage/chat/session-reuse.repository');
+const { reconcileInterruptedRuns } = require('../storage/chat/interrupted-runs');
 const {
   NODE_STATUSES,
   validatePlanDoc,
@@ -3794,6 +3795,24 @@ export class ChatAppStore {
 
   markAgentSessionReusePoisoned(conversationId: any, agentId: any, profileId: any, poisonReason: any, now: any) {
     return this.sessionReuseRepository.markPoisoned(conversationId, agentId, profileId, poisonReason, now);
+  }
+
+  reconcileInterruptedRuns(reason: string) {
+    return reconcileInterruptedRuns(this.db, reason, (messageId: string) => {
+      const message = this.getMessage(messageId);
+      if (!message) throw new Error(`Interrupted message disappeared during reconciliation: ${messageId}`);
+      this.updateMessage(messageId, {
+        content: message.content === 'Thinking...' ? '' : String(message.content || ''),
+        status: 'failed',
+        errorMessage: reason,
+        metadata: {
+          ...(message.metadata || {}),
+          failure: true,
+          streaming: false,
+          recoveredAfterRestart: true,
+        },
+      });
+    });
   }
 
   sweepOrphanedAgentSessionReuseClaims(poisonReason: any, now: any) {
