@@ -705,8 +705,104 @@ CREATE INDEX IF NOT EXISTS idx_agent_delegation_events
 `);
 }
 
+function ensureTurnTimeBreakdownSchema(db: any) {
+  // Turn time breakdown (docs/engineering/backend/turn-time-breakdown.md §7):
+  // per-step classification rows, per-message live summaries, and the JEV
+  // classification cache. run_count_full/run_count_targeted persist the §5
+  // per-segment test counts so fullRunCount survives `npm test; npm test`.
+  db.exec(`
+CREATE TABLE IF NOT EXISTS chat_turn_time_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL,
+  message_id TEXT,
+  step_key TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  subcategory TEXT,
+  classified_by TEXT NOT NULL,
+  jev_status TEXT,
+  confidence REAL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  duration_ms INTEGER,
+  run_kind TEXT,
+  run_failed INTEGER,
+  run_count_full INTEGER,
+  run_count_targeted INTEGER,
+  payload_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (task_id, step_key)
+);
+
+CREATE TABLE IF NOT EXISTS chat_turn_time_summaries (
+  message_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  turn_started_at TEXT,
+  turn_ended_at TEXT,
+  category_ms_json TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  parse_offset INTEGER,
+  assistant_count INTEGER,
+  computed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS jev_classification_cache (
+  cache_key TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  subcategory TEXT,
+  run_kind TEXT,
+  confidence REAL,
+  created_at TEXT NOT NULL
+);
+
+-- Generic per-service on/off toggles (contract §6: the JEV switch lives
+-- here once the system-services UI ships). An ABSENT row is the
+-- default-off state; the migration must not seed rows, or a fresh install
+-- would come up with features silently enabled.
+CREATE TABLE IF NOT EXISTS chat_system_service_toggles (
+  service_type TEXT PRIMARY KEY CHECK (length(trim(service_type)) > 0),
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  updated_at TEXT NOT NULL
+);
+
+-- Per-service credentials/connection settings (contract §6: the JEV API
+-- key and endpoint/model live here, UI-managed, write-only). Kept in a
+-- separate table from the toggles on purpose: the toggle table's core
+-- invariant is "absent row = off", while a credential row naturally exists
+-- whether or not the switch is on — mixing them would give "row exists"
+-- two meanings. api_key NULL = not configured; base_url/model NULL = use
+-- the client defaults.
+CREATE TABLE IF NOT EXISTS chat_system_service_credentials (
+  service_type TEXT PRIMARY KEY CHECK (length(trim(service_type)) > 0),
+  api_key TEXT,
+  base_url TEXT,
+  model TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_turn_time_steps_task_id ON chat_turn_time_steps (task_id);
+  `);
+
+  ensureColumn(db, 'chat_turn_time_steps', 'run_count_full', 'run_count_full INTEGER');
+  ensureColumn(db, 'chat_turn_time_steps', 'run_count_targeted', 'run_count_targeted INTEGER');
+  // JEV-bound steps keep a compact {args, output} payload so a later pass
+  // can reclassify timeout/error steps without re-parsing the session (§6).
+  ensureColumn(db, 'chat_turn_time_steps', 'payload_json', 'payload_json TEXT');
+  // Cumulative assistant-message count beside parse_offset: incremental
+  // passes resume mid-file and the §4 slice boundary must not reset (§9).
+  ensureColumn(db, 'chat_turn_time_summaries', 'assistant_count', 'assistant_count INTEGER');
+  // §5 write scope ('repo'|'sandbox'|'temp'|'unknown'): firstWriteMs counts
+  // only repo-scope writes; NULL (legacy rows, JEV-classified writes) is
+  // conservatively treated as repo.
+  ensureColumn(db, 'chat_turn_time_steps', 'write_scope', 'write_scope TEXT');
+}
+
 export function migrateChatSchema(db: any, options: any = {}) {
   migrateLegacyModelFamilyRoles(db, { backupPath: options.backupPath });
+  ensureTurnTimeBreakdownSchema(db);
   db.exec(`
 CREATE TABLE IF NOT EXISTS chat_role_identities (
   role_id TEXT PRIMARY KEY,
@@ -1375,6 +1471,10 @@ CREATE INDEX IF NOT EXISTS idx_a2a_tasks_parent_run_id ON a2a_tasks (parent_run_
 CREATE INDEX IF NOT EXISTS idx_a2a_tasks_run_id ON a2a_tasks (run_id);
 CREATE INDEX IF NOT EXISTS idx_a2a_tasks_status ON a2a_tasks (status);
 CREATE INDEX IF NOT EXISTS idx_a2a_tasks_updated_at ON a2a_tasks (updated_at DESC);
+-- The turn-time-breakdown service resolves reused-session slice ends via
+-- WHERE session_path = ? on every uncached read (contract sections 4/9);
+-- on a multi-GB DB that full scan costs tens of ms per click without this.
+CREATE INDEX IF NOT EXISTS idx_a2a_tasks_session_path ON a2a_tasks (session_path);
 CREATE INDEX IF NOT EXISTS idx_a2a_task_events_task_id ON a2a_task_events (task_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_a2a_artifacts_task_id ON a2a_artifacts (task_id, created_at ASC);
   `);

@@ -1,0 +1,142 @@
+{
+ "read|read|mid": {
+  "count": 7622,
+  "durationMs": 77146289
+ },
+ "bash|process-report|mid": {
+  "count": 3970,
+  "durationMs": 66433216
+ },
+ "bash|read|short": {
+  "count": 7084,
+  "durationMs": 21826535
+ },
+ "bash|NULL|short": {
+  "count": 1906,
+  "durationMs": 6490279
+ },
+ "bash|NULL|mid": {
+  "count": 5912,
+  "durationMs": 84345546
+ },
+ "read|read|short": {
+  "count": 4035,
+  "durationMs": 14114977
+ },
+ "bash|read|mid": {
+  "count": 9771,
+  "durationMs": 137296760
+ },
+ "bash|build-check|short": {
+  "count": 97,
+  "durationMs": 351734
+ },
+ "bash|test|mid": {
+  "count": 1751,
+  "durationMs": 28005235
+ },
+ "bash|test|short": {
+  "count": 385,
+  "durationMs": 1451334
+ },
+ "bash|write|mid": {
+  "count": 309,
+  "durationMs": 5032066
+ },
+ "bash|process-report|short": {
+  "count": 1278,
+  "durationMs": 4337446
+ },
+ "bash|process-report|long": {
+  "count": 89,
+  "durationMs": 8441386
+ },
+ "edit|write|mid": {
+  "count": 4621,
+  "durationMs": 79166587
+ },
+ "edit|write|long": {
+  "count": 156,
+  "durationMs": 15112452
+ },
+ "edit|write|short": {
+  "count": 670,
+  "durationMs": 2609492
+ },
+ "bash|test|long": {
+  "count": 126,
+  "durationMs": 14557619
+ },
+ "write|write|mid": {
+  "count": 976,
+  "durationMs": 24155478
+ },
+ "write|write|short": {
+  "count": 47,
+  "durationMs": 161156
+ },
+ "bash|write|short": {
+  "count": 126,
+  "durationMs": 437583
+ },
+ "bash|read|long": {
+  "count": 779,
+  "durationMs": 104129722
+ },
+ "bash|build-check|mid": {
+  "count": 482,
+  "durationMs": 5976453
+ },
+ "read|read|long": {
+  "count": 93,
+  "durationMs": 15607060
+ },
+ "write|write|long": {
+  "count": 200,
+  "durationMs": 23378391
+ },
+ "bash|NULL|long": {
+  "count": 474,
+  "durationMs": 98816640
+ },
+ "list_rooms|process-report|mid": {
+  "count": 8,
+  "durationMs": 83742
+ },
+ "conversation_notify|process-report|mid": {
+  "count": 1,
+  "durationMs": 20862
+ },
+ "bash|exception-retry|mid": {
+  "count": 14,
+  "durationMs": 191464
+ },
+ "bash|write|long": {
+  "count": 21,
+  "durationMs": 2128181
+ },
+ "conversation_request|process-report|mid": {
+  "count": 6,
+  "durationMs": 140061
+ },
+ "list_rooms|process-report|short": {
+  "count": 4,
+  "durationMs": 10469
+ },
+ "bash|build-check|long": {
+  "count": 3,
+  "durationMs": 852043
+ },
+ "room_workspace_preview|process-report|short": {
+  "count": 1,
+  "durationMs": 1379
+ },
+ "bash|exception-retry|long": {
+  "count": 4,
+  "durationMs": 915645
+ },
+ "conversation_notify|process-report|long": {
+  "count": 1,
+  "durationMs": 74281
+ }
+}

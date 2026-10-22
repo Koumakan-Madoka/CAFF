@@ -63,6 +63,46 @@
 
   chat.sessionReuseReasonLabel = sessionReuseReasonLabel;
 
+  // Turn time breakdown (耗时分析): fixed taxonomy from the engineering
+  // contract (docs/engineering/backend/turn-time-breakdown.md §2). Display
+  // order is stable across refreshes; bars are sorted by it, not by size.
+  const TIME_BREAKDOWN_CATEGORY_ORDER = [
+    'read',
+    'write',
+    'test',
+    'build-check',
+    'process-report',
+    'thinking',
+    'exception-retry',
+    'unclassified',
+  ];
+  const TIME_BREAKDOWN_CATEGORY_LABELS = {
+    read: '读',
+    write: '改',
+    test: '测',
+    'build-check': '构建与检查',
+    'process-report': '流程与汇报',
+    thinking: '模型思考',
+    'exception-retry': '异常与重试',
+    unclassified: '未分类',
+  };
+  const TIME_BREAKDOWN_SUBCATEGORY_LABELS = {
+    // UI vocabulary guard (tests/ui/context-inspector.test.js): never show the
+    // jargon 冷启动; the data key stays 'cold-start-reread' per contract §2.
+    'cold-start-reread': '上下文重读',
+    'purposeful-lookup': '有目的查阅',
+    'product-code': '产品代码',
+    'test-code': '测试',
+    'docs-evidence': '文档与证据',
+  };
+  const TIME_BREAKDOWN_JEV_STATUS_LABELS = {
+    pending: 'JEV 分类中',
+    timeout: 'JEV 超时',
+    error: 'JEV 失败',
+    'low-confidence': 'JEV 低置信度',
+    disabled: 'JEV 已关闭',
+  };
+
   // Display-only projection: do not change recovery eligibility or session state.
   // Provider summaries may contain response/request bodies even after redaction.
   // Recognize a small set of reported reasons, but never echo arbitrary error text.
@@ -173,6 +213,8 @@
       timelineMessagesForConversation,
       toolTraceSignatureForMessage,
       toolTraceStateForMessage,
+      timeBreakdownSignatureForMessage = () => '',
+      timeBreakdownStateForMessage = () => null,
     } = helpers;
 
     const TRACE_SCROLL_STEP_LIMIT = 8;
@@ -1482,6 +1524,362 @@
       return button;
     }
 
+    // §10: the 耗时分析 toggle sits beside the trace toggle. It opens the
+    // breakdown section (a sibling of the trace section in the card).
+    function buildTimeBreakdownToggleButton(messageId, isOpen) {
+      const button = document.createElement('button');
+
+      button.type = 'button';
+      button.className = 'message-time-breakdown-toggle ghost-button';
+      button.dataset.messageId = messageId;
+      button.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      button.textContent = isOpen ? '收起耗时分析' : '耗时分析';
+      return button;
+    }
+
+    // §10 visibility: once the trace is loaded the toggle shows only when
+    // the message has tool steps; before the trace loads it stays
+    // discoverable, except after a 404 (empty state) with no trace loaded —
+    // a permanently empty button would be dishonest. An open or loading
+    // panel always keeps its toggle so it can be closed.
+    function shouldShowTimeBreakdownToggle(trace, breakdownState) {
+      if (breakdownState && (breakdownState.open || breakdownState.data || breakdownState.status === 'loading')) {
+        return true;
+      }
+
+      const summary = trace && trace.summary ? trace.summary : null;
+      const toolCount = summary
+        ? Number(summary.toolExecutionCount || summary.totalSteps || 0)
+        : 0;
+
+      if (trace) {
+        return toolCount > 0;
+      }
+
+      if (breakdownState && breakdownState.status === 'empty') {
+        return false;
+      }
+
+      return true;
+    }
+
+    function formatBreakdownDuration(durationMs) {
+      const value = Number(durationMs);
+
+      if (!Number.isFinite(value) || value < 0) {
+        return '';
+      }
+
+      if (value < 1000) {
+        return `${Math.round(value)}ms`;
+      }
+
+      const totalSeconds = value / 1000;
+
+      if (totalSeconds < 60) {
+        return `${totalSeconds.toFixed(totalSeconds >= 10 ? 0 : 1)} 秒`;
+      }
+
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = Math.round(totalSeconds - minutes * 60);
+
+      return seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`;
+    }
+
+    function timeBreakdownStatusLabel(status) {
+      if (status === 'complete') {
+        return { text: '已完成', tone: 'success' };
+      }
+
+      if (status === 'partial-truncated') {
+        return { text: '日志截断，结果不完整', tone: 'failed' };
+      }
+
+      if (status === 'partial-interrupted') {
+        return { text: '轮次中断或失败，结果不完整', tone: 'failed' };
+      }
+
+      return { text: '进行中', tone: 'running' };
+    }
+
+    function timeBreakdownSessionReuseText(metrics) {
+      if (!metrics || typeof metrics.sessionReused !== 'boolean') {
+        return '会话复用：无记录';
+      }
+
+      const reason = sessionReuseReasonLabel(metrics.sessionReuseReason);
+
+      if (metrics.sessionReused) {
+        // A reused session carries reason 'reused', which maps to no label —
+        // render 已复用 explicitly instead of a blank reason (W1 review note).
+        return reason ? `会话复用：已复用 · ${reason}` : '会话复用：已复用';
+      }
+
+      return reason ? `会话复用：未复用 · ${reason}` : '会话复用：未复用';
+    }
+
+    function buildTimeBreakdownBars(categoryMs) {
+      const wrap = document.createElement('div');
+      wrap.className = 'message-time-breakdown-bars';
+
+      const source = categoryMs && typeof categoryMs === 'object' ? categoryMs : {};
+      const totalMs = TIME_BREAKDOWN_CATEGORY_ORDER.reduce((sum, key) => {
+        const value = Number(source[key]);
+        return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+      }, 0);
+
+      for (const key of TIME_BREAKDOWN_CATEGORY_ORDER) {
+        const value = Number(source[key]);
+        const ms = Number.isFinite(value) && value > 0 ? value : 0;
+        const row = document.createElement('div');
+        const label = document.createElement('span');
+        const track = document.createElement('div');
+        const fill = document.createElement('div');
+        const amount = document.createElement('span');
+        const percent = totalMs > 0 ? (ms / totalMs) * 100 : 0;
+
+        row.className = `message-time-breakdown-bar category-${key}`;
+        label.className = 'message-time-breakdown-bar-label';
+        label.textContent = TIME_BREAKDOWN_CATEGORY_LABELS[key] || key;
+        track.className = 'message-time-breakdown-bar-track';
+        fill.className = 'message-time-breakdown-bar-fill';
+        fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+        amount.className = 'message-time-breakdown-bar-amount';
+        amount.textContent = ms > 0
+          ? `${formatBreakdownDuration(ms)} · ${percent.toFixed(percent >= 10 ? 0 : 1)}%`
+          : '0';
+
+        track.appendChild(fill);
+        row.append(label, track, amount);
+        wrap.appendChild(row);
+      }
+
+      return wrap;
+    }
+
+    function buildTimeBreakdownMetrics(breakdown) {
+      const wrap = document.createElement('div');
+      wrap.className = 'message-time-breakdown-metrics';
+
+      const metrics = breakdown && breakdown.metrics && typeof breakdown.metrics === 'object' ? breakdown.metrics : {};
+      const items = [];
+
+      items.push(
+        metrics.firstWriteMs === null || metrics.firstWriteMs === undefined
+          ? '首次改文件：本轮无写入'
+          : `首次改文件：${formatBreakdownDuration(metrics.firstWriteMs)}`
+      );
+      items.push(timeBreakdownSessionReuseText(metrics));
+
+      const fullRunCount = Number.isFinite(metrics.fullRunCount) ? metrics.fullRunCount : 0;
+      const fullRunFailCount = Number.isFinite(metrics.fullRunFailCount) ? metrics.fullRunFailCount : 0;
+      items.push(
+        fullRunFailCount > 0
+          ? `全量回归：${fullRunCount} 遍，失败 ${fullRunFailCount} 次`
+          : `全量回归：${fullRunCount} 遍`
+      );
+
+      for (const text of items) {
+        const item = document.createElement('span');
+        item.className = 'message-time-breakdown-metric';
+        item.textContent = text;
+        wrap.appendChild(item);
+      }
+
+      return wrap;
+    }
+
+    function timeBreakdownStepCategoryText(step) {
+      const category = String(step && step.category ? step.category : 'unclassified');
+      const categoryLabel = TIME_BREAKDOWN_CATEGORY_LABELS[category] || category;
+      const subcategory = String(step && step.subcategory ? step.subcategory : '');
+      const subLabel = subcategory ? TIME_BREAKDOWN_SUBCATEGORY_LABELS[subcategory] || subcategory : '';
+
+      return subLabel ? `${categoryLabel} · ${subLabel}` : categoryLabel;
+    }
+
+    function buildTimeBreakdownStepRow(step, index) {
+      const row = document.createElement('div');
+      const category = String(step && step.category ? step.category : 'unclassified');
+      row.className = `message-time-breakdown-step category-${category}`;
+
+      const indexBadge = document.createElement('span');
+      indexBadge.className = 'message-time-breakdown-step-index';
+      indexBadge.textContent = String(index + 1);
+
+      const name = document.createElement('span');
+      name.className = 'message-time-breakdown-step-tool';
+      name.textContent = String(step && step.toolName ? step.toolName : 'tool');
+
+      const categoryBadge = document.createElement('span');
+      categoryBadge.className = 'message-time-breakdown-step-category';
+      categoryBadge.textContent = timeBreakdownStepCategoryText(step);
+
+      const extras = [];
+
+      if (step && step.runKind === 'full-regression') {
+        extras.push('全量回归');
+      } else if (step && step.runKind === 'targeted') {
+        extras.push('定向测试');
+      }
+
+      if (step && step.runFailed === true) {
+        extras.push('失败');
+      }
+
+      const jevLabel = step && step.jevStatus ? TIME_BREAKDOWN_JEV_STATUS_LABELS[step.jevStatus] || '' : '';
+
+      if (jevLabel) {
+        extras.push(jevLabel);
+      }
+
+      const duration = document.createElement('span');
+      duration.className = 'message-time-breakdown-step-duration';
+      duration.textContent = step && step.durationMs === null
+        ? '无终点'
+        : formatBreakdownDuration(step && step.durationMs) || '0';
+
+      const main = document.createElement('div');
+      main.className = 'message-time-breakdown-step-main';
+      const headline = document.createElement('div');
+      headline.className = 'message-time-breakdown-step-headline';
+      headline.append(name, categoryBadge);
+      main.appendChild(headline);
+
+      if (extras.length > 0) {
+        const extra = document.createElement('div');
+        extra.className = 'message-time-breakdown-step-extra';
+        extra.textContent = extras.join(' · ');
+        main.appendChild(extra);
+      }
+
+      row.append(indexBadge, main, duration);
+      return row;
+    }
+
+    function buildTimeBreakdownStepList(breakdown) {
+      const wrap = document.createElement('div');
+      wrap.className = 'message-time-breakdown-steps';
+
+      const steps = (breakdown && Array.isArray(breakdown.steps) ? breakdown.steps : [])
+        .slice()
+        .sort((a, b) => String(a && a.startedAt || '').localeCompare(String(b && b.startedAt || '')));
+
+      if (steps.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'message-time-breakdown-note';
+        empty.textContent = '本轮没有记录到工具步骤。';
+        wrap.appendChild(empty);
+        return wrap;
+      }
+
+      steps.forEach((step, index) => {
+        wrap.appendChild(buildTimeBreakdownStepRow(step, index));
+      });
+
+      return wrap;
+    }
+
+    function buildTimeBreakdownRefreshButton(messageId) {
+      const button = document.createElement('button');
+
+      button.type = 'button';
+      button.className = 'message-time-breakdown-refresh ghost-button';
+      button.dataset.messageId = messageId;
+      button.textContent = '刷新';
+      return button;
+    }
+
+    function syncTimeBreakdownSection(container, message) {
+      if (!container) {
+        return;
+      }
+
+      if (!canInspectToolTrace(message)) {
+        container.className = 'message-time-breakdown hidden';
+        container.replaceChildren();
+        return;
+      }
+
+      const breakdownState = timeBreakdownStateForMessage(message.id) || null;
+
+      if (!breakdownState || !breakdownState.open) {
+        container.className = 'message-time-breakdown hidden';
+        container.replaceChildren();
+        return;
+      }
+
+      container.className = 'message-time-breakdown open';
+
+      const header = document.createElement('div');
+      const title = document.createElement('span');
+      const headerPills = document.createElement('div');
+      header.className = 'message-time-breakdown-header';
+      title.className = 'message-time-breakdown-title';
+      title.textContent = '耗时分析';
+      headerPills.className = 'message-time-breakdown-header-pills';
+
+      const breakdown = breakdownState.data || null;
+
+      if (breakdown) {
+        const statusInfo = timeBreakdownStatusLabel(breakdown.status);
+        headerPills.appendChild(createTracePill(statusInfo.text, statusInfo.tone, { live: breakdown.status === 'live' }));
+      } else if (breakdownState.status === 'loading') {
+        headerPills.appendChild(createTracePill('载入耗时分析中', 'running'));
+      } else if (breakdownState.status === 'error') {
+        headerPills.appendChild(createTracePill(breakdownState.errorMessage || '耗时分析加载失败', 'failed'));
+      } else if (breakdownState.status === 'empty') {
+        headerPills.appendChild(createTracePill('暂无记录', 'neutral'));
+      }
+
+      headerPills.appendChild(buildTimeBreakdownRefreshButton(message.id));
+      header.append(title, headerPills);
+
+      const body = document.createElement('div');
+      body.className = 'message-time-breakdown-body';
+
+      if (breakdownState.status === 'loading' && !breakdown) {
+        const loading = document.createElement('div');
+        loading.className = 'message-time-breakdown-note';
+        loading.textContent = '正在汇总这一轮的时间花在哪里…';
+        body.appendChild(loading);
+      } else if (breakdownState.status === 'error' && !breakdown) {
+        const error = document.createElement('div');
+        error.className = 'message-time-breakdown-note failed';
+        error.textContent = breakdownState.errorMessage || '耗时分析加载失败';
+        body.appendChild(error);
+      } else if (!breakdown) {
+        const empty = document.createElement('div');
+        empty.className = 'message-time-breakdown-note';
+        empty.textContent = '暂无耗时分析记录（历史消息或本轮尚无工具步骤；进行中的轮次可稍后刷新）。';
+        body.appendChild(empty);
+      } else {
+        // A failed refresh keeps the last result and says so (review note:
+        // silently showing stale data reads as if it were fresh).
+        if (breakdownState.status === 'error') {
+          const stale = document.createElement('div');
+          stale.className = 'message-time-breakdown-note failed';
+          stale.textContent = '刷新失败，显示上次结果。';
+          body.appendChild(stale);
+        }
+
+        body.append(
+          buildTimeBreakdownBars(breakdown.categoryMs),
+          buildTimeBreakdownMetrics(breakdown),
+          buildTimeBreakdownStepList(breakdown)
+        );
+
+        if (breakdown.status === 'live') {
+          const hint = document.createElement('div');
+          hint.className = 'message-time-breakdown-note';
+          hint.textContent = '轮次仍在进行：数据按已落库的步骤实时汇总，可点击刷新查看最新结果。';
+          body.appendChild(hint);
+        }
+      }
+
+      container.replaceChildren(header, body);
+    }
+
     function buildTraceActivityNote(trace, liveStage) {
       const activity = liveStageActivity(liveStage) || traceActivity(trace);
 
@@ -2176,12 +2574,23 @@
         summaryWrap.appendChild(createTracePill(`当前：${liveActivity.currentToolName}`, 'running', { live: true }));
       }
 
+      // §10: the 耗时分析 toggle sits beside the trace toggle in the same
+      // header; the breakdown section itself is a sibling of the trace card.
+      const breakdownState = timeBreakdownStateForMessage(message.id) || null;
+      const breakdownToggle = shouldShowTimeBreakdownToggle(trace, breakdownState)
+        ? buildTimeBreakdownToggleButton(message.id, Boolean(breakdownState && breakdownState.open))
+        : null;
       const liveSpotlight = shouldShowLiveSpotlight
         ? buildTraceLiveSpotlight(trace, liveStage, summaryWrap, buildTraceToggleButton(message.id, traceState.open, { prominent: true }))
         : null;
 
       if (liveSpotlight) {
         header.append(liveSpotlight);
+        if (breakdownToggle) {
+          header.append(breakdownToggle);
+        }
+      } else if (breakdownToggle) {
+        header.append(buildTraceToggleButton(message.id, traceState.open), breakdownToggle, summaryWrap);
       } else {
         header.append(buildTraceToggleButton(message.id, traceState.open), summaryWrap);
       }
@@ -2378,6 +2787,7 @@
       failurePanel.setAttribute('aria-live', 'polite');
       const liveHint = document.createElement('div');
       const toolTrace = document.createElement('section');
+      const timeBreakdown = document.createElement('section');
       const imageGallery = document.createElement('div');
       const errorToggle = document.createElement('button');
       const deleteControls = document.createElement('div');
@@ -2395,6 +2805,7 @@
       recoveryPanel.setAttribute('aria-live', 'polite');
       liveHint.className = 'message-live-hint hidden';
       toolTrace.className = 'message-tool-trace hidden';
+      timeBreakdown.className = 'message-time-breakdown hidden';
       imageGallery.className = 'message-images';
       imageGallery.hidden = true;
       errorToggle.type = 'button';
@@ -2451,7 +2862,7 @@
       deleteControls.append(selectLabel, deleteButton);
 
       meta.append(sender, time, deleteControls);
-      card.append(meta, failurePanel, crossConversationPanel, recoveryPanel, toolTrace, imageGallery, body, errorToggle, liveHint);
+      card.append(meta, failurePanel, crossConversationPanel, recoveryPanel, toolTrace, timeBreakdown, imageGallery, body, errorToggle, liveHint);
       syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots);
 
       return card;
@@ -2502,6 +2913,7 @@
         ? isConversationMessageDeletionBlocked(conversationId)
         : false;
       const traceSignature = toolTraceSignatureForMessage(message);
+      const timeBreakdownSignature = timeBreakdownSignatureForMessage(message);
       const delegationRoute = delegationRouteForMessage(message, agents);
       const liveStopTarget = liveStage && ['queued', 'running', 'terminating'].includes(liveStage.status)
         ? liveStage.slotId
@@ -2580,6 +2992,7 @@
         recoveryRequestMessageIds.has(message.id) ? 'recovery-requesting' : '',
         delegationRouteSignature(delegationRoute),
         traceSignature,
+        timeBreakdownSignature,
         liveStage && liveStage.stopRequested ? 'live-stopping' : '',
         liveStopInFlight ? 'live-stop-inflight' : '',
         queuedSideCancelTarget ? 'queued-side-cancellable' : '',
@@ -2632,6 +3045,7 @@
       const recoveryPanel = card.querySelector('.message-recovery-panel');
       const liveHint = card.querySelector('.message-live-hint');
       const toolTrace = card.querySelector('.message-tool-trace');
+      const timeBreakdown = card.querySelector('.message-time-breakdown');
       const imageGallery = card.querySelector('.message-images');
       const errorToggle = card.querySelector('.message-error-toggle');
       const deleteControls = card.querySelector('.message-delete-controls');
@@ -2821,6 +3235,7 @@
         renderMessageBody(body, bodyText, agents);
       }
       syncToolTraceSection(toolTrace, message, liveStage);
+      syncTimeBreakdownSection(timeBreakdown, message);
 
       if (liveHint) {
         const shouldShowLiveHint = Boolean(liveLabel);

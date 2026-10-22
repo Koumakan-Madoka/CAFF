@@ -110,7 +110,7 @@ function loadProviderManagement(provider) {
 test('production management page loads focused modules before the entry and preserves the compatibility route', () => {
   const html = fs.readFileSync(path.join(projectRoot, 'public/personas.html'), 'utf8');
   const scripts = Array.from(html.matchAll(/<script defer src="([^"]+)"/gu), (match) => match[1]);
-  assert.deepEqual(scripts.slice(-9), [
+  assert.deepEqual(scripts.slice(-10), [
     '/personas/management-utils.js',
     '/personas/role-editor.js',
     '/personas/role-management.js',
@@ -119,6 +119,7 @@ test('production management page loads focused modules before the entry and pres
     '/personas/subscription-login.js',
     '/personas/provider-management.js',
     '/personas/recovery-scribe-management.js',
+    '/personas/jev-config-management.js',
     '/personas.js',
   ]);
   assert.match(html, /id="role-management-view"/u);
