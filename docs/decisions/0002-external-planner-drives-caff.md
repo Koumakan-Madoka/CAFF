@@ -3,7 +3,8 @@
 - Status: Proposed
 - Proposed: 2026-10-23
 - Decision owner: CAFF project user
-- Independent reviewer: pending
+- Independent reviewer: Kimi (APPROVE WITH NITS on `22e3423`, 2026-10-23; all
+  six non-blocking notes addressed)
 - Amends: ADR 0001 (who may rule on Goal proposals); the D28 rule that every
   ruling through the REST Goal endpoint is the user's
 
@@ -54,8 +55,8 @@ awkward and unsafe:
   - The SSE stream has no replay.
   - Reaching the runner budget is broadcast only when a new pause proposal is
     created.
-- `set`, `revise`, `pause`, `resume` and `complete` silently discard a pending
-  proposal together with the last ruling.
+- `set`, `revise`, `pause`, `resume` and `complete` discard a pending proposal
+  together with the last ruling, without leaving a durable record of either.
 - `revise` and `update-delivery` reset omitted fields instead of keeping them.
 - Outside a few admin controllers, `/api/*` mutations check neither Host nor
   Origin. Request bodies are parsed as JSON whatever their Content-Type.
@@ -93,8 +94,12 @@ The planner is a distinct principal:
 - It records planner messages and rulings under the planner's own identity,
   never as the user's.
 - Only `kind: 'user'` passes the user-only gates.
-- Requests without a planner credential still count as the user's, so the D28
-  rule keeps applying to them.
+- Requests from the CAFF UI still count as the user's, so the D28 rule keeps
+  applying to them.
+- Once mutating routes check Host and Origin (P1), a mutating request must
+  either come from the CAFF UI or carry a valid planner credential. A request
+  that claims to be the planner but has a missing or invalid credential is
+  rejected. It is never treated as the user's.
 
 The credential keeps principals apart for audit and gating. It is not a
 security boundary against agents that run under the same OS account, unless
@@ -107,6 +112,10 @@ Goal, the planner may act without asking the user each time:
 
 - Rule on implementer pause and resume proposals.
 - Resume the Goal after the runner budget is reached.
+- Resume a Goal that paused after repeated failures, once the planner has
+  diagnosed the cause and recorded it in the ruling reason.
+- Change the Goal owner to another agent already in the room, with the reason
+  recorded.
 - Accept or reject structural revisions that change only work items,
   provisional decisions and open questions.
 - Approve normal-risk criterion waivers, with the rationale recorded.
@@ -119,7 +128,10 @@ specific item, including:
 
 - Creating or replacing a Goal. Creating its room and binding its workspace are
   part of this approval.
-- Changing a Goal's objective, committed decisions or non-goals.
+- Changing a Goal's objective, committed decisions or non-goals. Moving a
+  decision between committed and provisional, in either direction, counts as
+  changing a committed decision.
+- Adding agents to the room.
 - Changing its acceptance criteria (statement, `verifyBy`, risk).
 - Push, PR, merge, acceptance (`accepted_sha`) and release. caff-workflow is
   unchanged here.
@@ -128,7 +140,9 @@ specific item, including:
 
 When the user gives such an approval in the planner conversation, the planner
 may submit the change. CAFF records it as planner-submitted, with the user's
-approval as a planner-attested claim. ADR 0001's server-enforced user gates are
+approval as a planner-attested claim. The claim names where and when the user
+approved: a planner session reference with a timestamp, or a quote of the
+approval. ADR 0001's server-enforced user gates are
 different: high-risk waivers and changes to accepted-ADR decisions remain a
 direct user ruling in CAFF.
 
@@ -167,8 +181,10 @@ planner is online, items wait, and the user can still act in the UI.
 
 ### Review
 
-The planner reviews implementer work once per milestone. A planner from another
-model family than the implementer satisfies the no-self-review rule. Secondary
+The planner reviews implementer work once per milestone. When the planner and
+the implementer come from different model families, the planner's review
+satisfies the no-self-review rule. When they come from the same family, it does
+not: a reviewer from another family, or the user, reviews instead. Secondary
 reviewers join only when asked. Merging still requires the user's authorization.
 
 ### Multi-agent features
@@ -196,7 +212,9 @@ Whether to remove any of them will be decided later from usage data.
    - the attention queue with `wait`;
    - proposal loss that is recorded or rejected instead of silent;
    - merge semantics for `revise`;
-   - Host/Origin checks and the planner credential on mutating `/api/*` routes.
+   - Host/Origin checks and the planner credential on mutating `/api/*` routes;
+   - `session-goal.md` and the D28 section of `dag-execution.md` updated to
+     match this ADR.
 3. **P2:**
    - a structured review request and verdict;
    - implementer prompts that know about the planner;
