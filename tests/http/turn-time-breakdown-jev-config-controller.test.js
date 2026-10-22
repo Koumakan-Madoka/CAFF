@@ -8,12 +8,16 @@ const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const {
   createTurnTimeBreakdownJevConfigController,
 } = require('../../build/server/api/turn-time-breakdown-jev-config-controller');
-const { createJevServiceConfigService } = require('../../build/server/domain/runtime/jev-service-config');
+const {
+  JEV_SERVICE_TYPE,
+  createJevEnabledResolver,
+  createJevServiceConfigService,
+} = require('../../build/server/domain/runtime/jev-service-config');
 const { withTempDir } = require('../helpers/temp-dir');
 
 const ROUTE = '/api/system-services/turn-time-breakdown-jev';
 
-function createHarness(t, options = {}) {
+function createHarness(t) {
   const tempDir = withTempDir('caff-jev-config-http-');
   const store = createChatAppStore({
     agentDir: tempDir,
@@ -28,9 +32,6 @@ function createHarness(t, options = {}) {
   const service = createJevServiceConfigService({
     store,
     turnTimeBreakdownRepository: store.turnTimeBreakdownRepository,
-    masterSwitchEnabled: options.masterSwitchEnabled !== undefined ? options.masterSwitchEnabled : true,
-    apiKeyConfigured: options.apiKeyConfigured !== undefined ? options.apiKeyConfigured : true,
-    connectionInfo: options.connectionInfo || { baseUrl: 'https://api.typesafe.ai', model: 'jev-latest' },
   });
   const broadcasts = [];
   const controller = createTurnTimeBreakdownJevConfigController({
@@ -88,15 +89,17 @@ function mutationHeaders() {
   };
 }
 
-test('jev config GET returns four-state status and is local-admin guarded', async (t) => {
+test('jev config GET returns three-state status and is local-admin guarded', async (t) => {
   const { controller } = createHarness(t);
   const response = await invoke(controller);
   assert.equal(response.handled, true);
   assert.equal(response.statusCode, 200);
   assert.equal(response.json.config.enabled, false);
-  assert.equal(response.json.status.reason, 'db_switch_off');
+  assert.equal(response.json.config.apiKeyConfigured, false);
+  assert.equal(response.json.status.reason, 'api_key_missing');
   assert.equal(response.json.status.effective, false);
   assert.equal(response.json.status.endpoint, 'https://api.typesafe.ai');
+  assert.equal(response.json.status.model, 'jev-latest');
   assert.equal(response.json.cache.entries, 0);
 
   await assert.rejects(
@@ -105,55 +108,63 @@ test('jev config GET returns four-state status and is local-admin guarded', asyn
   );
 });
 
-test('jev config GET serializes without key material or URL userinfo', async (t) => {
-  const { controller } = createHarness(t, {
-    connectionInfo: { baseUrl: 'https://user:SUPERSECRET@api.typesafe.ai', model: 'jev-latest' },
-  });
-  const response = await invoke(controller);
-  assert.equal(response.statusCode, 200);
-  const raw = JSON.stringify(response.json);
-  assert.ok(!raw.includes('SUPERSECRET'), 'key material must never appear in the response');
-  assert.ok(!raw.includes('user:'), 'URL userinfo must never appear in the response');
-  assert.equal(response.json.status.endpoint, 'https://api.typesafe.ai');
-});
-
-test('jev config PUT flips the toggle and broadcasts; the pipeline resolver sees it immediately', async (t) => {
+test('jev config PUT key + toggle reaches enabled; every response stays free of key material', async (t) => {
   const { controller, store, broadcasts } = createHarness(t);
-  const { createJevEnabledResolver } = require('../../build/server/domain/runtime/jev-service-config');
-  const isJevEnabled = createJevEnabledResolver({ store, masterSwitchEnabled: true, apiKeyConfigured: true });
+  const isJevEnabled = createJevEnabledResolver({ store });
 
   assert.equal(isJevEnabled(), false);
-  const response = await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { enabled: true } });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.json.config.enabled, true);
-  assert.equal(response.json.status.effective, true);
-  assert.equal(response.json.status.reason, 'enabled');
+
+  // Toggle first, key later: the intermediate state is honestly reported.
+  const toggled = await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { enabled: true } });
+  assert.equal(toggled.json.config.enabled, true);
+  assert.equal(toggled.json.status.reason, 'api_key_missing');
+  assert.equal(toggled.json.status.effective, false);
+  assert.equal(isJevEnabled(), false);
+
+  const keyed = await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { apiKey: 'sk-controller-secret' } });
+  assert.equal(keyed.statusCode, 200);
+  assert.equal(keyed.json.config.apiKeyConfigured, true);
+  assert.equal(keyed.json.status.effective, true);
+  assert.equal(keyed.json.status.reason, 'enabled');
+  assert.equal(JSON.stringify(keyed.json).includes('sk-controller-secret'), false);
   // Same-process immediate effect: no server rebuild, the next resolver
-  // call reads the flipped row.
+  // call reads the stored key.
   assert.equal(isJevEnabled(), true);
-  assert.deepEqual(broadcasts.map((entry) => entry.name), ['system_service_config_updated']);
+  assert.ok(broadcasts.every((entry) => !JSON.stringify(entry).includes('sk-controller-secret')),
+    'broadcast events must never carry the key');
+
+  // Clearing the key flips back in-process.
+  const cleared = await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { clearApiKey: true } });
+  assert.equal(cleared.json.config.apiKeyConfigured, false);
+  assert.equal(cleared.json.status.reason, 'api_key_missing');
+  assert.equal(isJevEnabled(), false);
 
   const off = await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { enabled: false } });
   assert.equal(off.json.config.enabled, false);
   assert.equal(isJevEnabled(), false);
 });
 
-test('jev config PUT rejects credential fields with 422 instead of ignoring them', async (t) => {
+test('jev config PUT rejects credential look-alike fields with 422; apiKey is the only accepted one', async (t) => {
   const { controller, store } = createHarness(t);
 
-  await assert.rejects(
-    () => invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { enabled: true, apiKey: 'x' } }),
-    (error) => error.statusCode === 422 && error.issues[0].code === 'credential_field_not_accepted'
-  );
-  await assert.rejects(
-    () => invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { token: 'x' } }),
-    (error) => error.statusCode === 422
-  );
-  // The rejected write must not have flipped anything.
-  assert.equal(store.getSystemServiceToggle('turn-time-breakdown-jev'), false);
+  for (const field of ['api_key', 'key', 'token', 'secret', 'password', 'authorization']) {
+    await assert.rejects(
+      () => invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { [field]: 'x' } }),
+      (error) => error.statusCode === 422 && error.issues[0].code === 'credential_field_not_accepted',
+      `field ${field} must be rejected`
+    );
+  }
+
+  // The accepted field goes through.
+  const ok = await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { apiKey: 'sk-accepted' } });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(store.getSystemServiceCredential(JEV_SERVICE_TYPE).apiKey, 'sk-accepted');
+
+  // Rejected writes must not have flipped anything.
+  assert.equal(store.getSystemServiceToggle(JEV_SERVICE_TYPE), false);
 });
 
-test('jev config PUT rejects a non-boolean enabled with 422 instead of coercing it to off', async (t) => {
+test('jev config PUT rejects invalid payloads with 422 instead of coercing them', async (t) => {
   const { controller, store } = createHarness(t);
 
   await assert.rejects(
@@ -161,11 +172,36 @@ test('jev config PUT rejects a non-boolean enabled with 422 instead of coercing 
     (error) => error.statusCode === 422 && error.issues[0].code === 'invalid_enabled_value'
   );
   await assert.rejects(
-    () => invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { enabled: 1 } }),
-    (error) => error.statusCode === 422 && error.issues[0].code === 'invalid_enabled_value'
+    () => invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { apiKey: 'sk-a', clearApiKey: true } }),
+    (error) => error.statusCode === 422 && error.issues[0].code === 'credential_conflict'
+  );
+  await assert.rejects(
+    () => invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { baseUrl: 'not-a-url' } }),
+    (error) => error.statusCode === 422 && error.issues[0].code === 'invalid_base_url'
   );
   // The rejected writes must not have flipped anything.
-  assert.equal(store.getSystemServiceToggle('turn-time-breakdown-jev'), false);
+  assert.equal(store.getSystemServiceToggle(JEV_SERVICE_TYPE), false);
+  assert.equal(store.getSystemServiceCredential(JEV_SERVICE_TYPE), null);
+});
+
+test('jev config PUT endpoint/model overrides show up in GET with userinfo stripped', async (t) => {
+  const { controller } = createHarness(t);
+
+  const response = await invoke(controller, {
+    method: 'PUT',
+    headers: mutationHeaders(),
+    body: { baseUrl: 'https://user:SUPERSECRET@proxy.example.com/v1', model: 'jev-pro' },
+  });
+  assert.equal(response.statusCode, 200);
+  const raw = JSON.stringify(response.json);
+  assert.ok(!raw.includes('SUPERSECRET'), 'userinfo must never appear in the response');
+  assert.equal(response.json.status.endpoint, 'https://proxy.example.com/v1');
+  assert.equal(response.json.status.model, 'jev-pro');
+
+  // Empty string resets to the client defaults.
+  const reset = await invoke(controller, { method: 'PUT', headers: mutationHeaders(), body: { baseUrl: '', model: '' } });
+  assert.equal(reset.json.status.endpoint, 'https://api.typesafe.ai');
+  assert.equal(reset.json.status.model, 'jev-latest');
 });
 
 test('jev config mutations require CSRF + loopback', async (t) => {
@@ -222,26 +258,15 @@ test('jev cache DELETE clears entries and leaves classified steps untouched', as
   assert.equal(steps[0].category, 'test');
 });
 
-test('status reasons track env gates: master switch off and key missing stay distinguishable', async (t) => {
-  const masterOff = createHarness(t, { masterSwitchEnabled: false });
-  const r1 = await invoke(masterOff.controller);
-  assert.equal(r1.json.status.reason, 'master_switch_off');
-
-  const keyMissing = createHarness(t, { apiKeyConfigured: false });
-  const r2 = await invoke(keyMissing.controller);
-  assert.equal(r2.json.status.reason, 'api_key_missing');
-});
-
-// Cross-layer seam test: a real node http server, the real controller (with
-// the real local-admin guard), and the real browser fetchJson client from
-// public/shared/api-client.js. The 415-on-clear regression lived exactly at
-// this seam (guard requires JSON content-type; fetchJson only adds it when a
-// body is present), which neither the controller harness nor the JSDOM UI
-// harness crossed.
-test('cross-layer: real fetchJson against a real server can clear the cache, and a bodyless DELETE is rejected 415', async (t) => {
+// Cross-layer seam tests: a real node http server, the real controller
+// (with the real local-admin guard), and the real browser fetchJson client
+// from public/shared/api-client.js. The 415-on-clear regression lived
+// exactly at this seam (guard requires JSON content-type; fetchJson only
+// adds it when a body is present), which neither the controller harness nor
+// the JSDOM UI harness crossed.
+async function withRealServer(t, run) {
   const http = require('node:http');
   const vm = require('node:vm');
-  const { buildErrorJsonPayload } = require('../../build/server/http/response');
 
   const tempDir = withTempDir('caff-jev-config-seam-');
   const store = createChatAppStore({
@@ -257,9 +282,6 @@ test('cross-layer: real fetchJson against a real server can clear the cache, and
   const service = createJevServiceConfigService({
     store,
     turnTimeBreakdownRepository: store.turnTimeBreakdownRepository,
-    masterSwitchEnabled: true,
-    apiKeyConfigured: true,
-    connectionInfo: { baseUrl: 'https://api.typesafe.ai', model: 'jev-latest' },
   });
   const controller = createTurnTimeBreakdownJevConfigController({
     service,
@@ -272,15 +294,9 @@ test('cross-layer: real fetchJson against a real server can clear the cache, and
       const requestUrl = new URL(req.url, `http://${authority}`);
       await controller({ req, res, pathname: requestUrl.pathname, requestUrl });
     } catch (error) {
-      const { sendJson } = require('../../build/server/http/response');
+      const { sendJson, buildErrorJsonPayload } = require('../../build/server/http/response');
       sendJson(res, error.statusCode || 500, buildErrorJsonPayload(error));
     }
-  });
-
-  t.after(() => {
-    server.close();
-    try { store.close(); } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   // Load the real browser client (it reads `window` and the global fetch).
@@ -292,51 +308,97 @@ test('cross-layer: real fetchJson against a real server can clear the cache, and
   );
   const fetchJson = clientContext.window.CaffShared.fetchJson;
 
-  const repository = store.turnTimeBreakdownRepository;
-  repository.setJevCacheEntry('k1', { category: 'read', subcategory: null, runKind: null, confidence: 0.8 });
-  repository.setJevCacheEntry('k2', { category: 'test', subcategory: null, runKind: null, confidence: null });
-  repository.upsertStep({
-    taskId: 'task-seam',
-    messageId: 'msg-1',
-    stepKey: 'call-1',
-    toolName: 'bash',
-    category: 'test',
-    classifiedBy: 'jev',
-    jevStatus: 'resolved',
-    startedAt: '2026-10-20T10:00:00.000Z',
-    durationMs: 500,
+  t.after(() => {
+    server.close();
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const baseUrl = `http://${authority}${ROUTE}`;
   const mutationHeaders = {
     origin: `http://${authority}`,
     'x-caff-csrf-token': 'system-service-csrf',
   };
 
-  const before = await fetchJson(baseUrl);
-  assert.equal(before.cache.entries, 2);
+  await run({ store, fetchJson, baseUrl: `http://${authority}${ROUTE}`, mutationHeaders });
+}
 
-  // The regression shape: DELETE without a body → fetchJson sends no JSON
-  // content-type → the guard must reject 415. This is exactly what the
-  // pre-fix UI sent, and it must keep failing so the seam stays honest.
-  await assert.rejects(
-    () => fetchJson(`${baseUrl}/cache`, { method: 'DELETE', headers: mutationHeaders }),
-    (error) => error.status === 415 && error.issues[0].code === 'system_service_config_json_required'
-  );
-  assert.equal((await fetchJson(baseUrl)).cache.entries, 2, 'the rejected DELETE must not have cleared anything');
+test('cross-layer: real fetchJson against a real server can clear the cache, and a bodyless DELETE is rejected 415', async (t) => {
+  await withRealServer(t, async ({ store, fetchJson, baseUrl, mutationHeaders }) => {
+    const repository = store.turnTimeBreakdownRepository;
+    repository.setJevCacheEntry('k1', { category: 'read', subcategory: null, runKind: null, confidence: 0.8 });
+    repository.setJevCacheEntry('k2', { category: 'test', subcategory: null, runKind: null, confidence: null });
+    repository.upsertStep({
+      taskId: 'task-seam',
+      messageId: 'msg-1',
+      stepKey: 'call-1',
+      toolName: 'bash',
+      category: 'test',
+      classifiedBy: 'jev',
+      jevStatus: 'resolved',
+      startedAt: '2026-10-20T10:00:00.000Z',
+      durationMs: 500,
+    });
 
-  // The shipped shape: DELETE with an empty JSON body (what
-  // jev-config-management.js now sends).
-  const cleared = await fetchJson(`${baseUrl}/cache`, {
-    method: 'DELETE',
-    headers: mutationHeaders,
-    body: {},
+    const before = await fetchJson(baseUrl);
+    assert.equal(before.cache.entries, 2);
+
+    // The regression shape: DELETE without a body → fetchJson sends no JSON
+    // content-type → the guard must reject 415. This is exactly what the
+    // pre-fix UI sent, and it must keep failing so the seam stays honest.
+    await assert.rejects(
+      () => fetchJson(`${baseUrl}/cache`, { method: 'DELETE', headers: mutationHeaders }),
+      (error) => error.status === 415 && error.issues[0].code === 'system_service_config_json_required'
+    );
+    assert.equal((await fetchJson(baseUrl)).cache.entries, 2, 'the rejected DELETE must not have cleared anything');
+
+    // The shipped shape: DELETE with an empty JSON body (what
+    // jev-config-management.js now sends).
+    const cleared = await fetchJson(`${baseUrl}/cache`, {
+      method: 'DELETE',
+      headers: mutationHeaders,
+      body: {},
+    });
+    assert.equal(cleared.cleared, 2);
+
+    const after = await fetchJson(baseUrl);
+    assert.equal(after.cache.entries, 0);
+    const steps = repository.listSteps('task-seam');
+    assert.equal(steps.length, 1);
+    assert.equal(steps[0].category, 'test', 'clearing the cache must not touch classified steps');
   });
-  assert.equal(cleared.cleared, 2);
+});
 
-  const after = await fetchJson(baseUrl);
-  assert.equal(after.cache.entries, 0);
-  const steps = repository.listSteps('task-seam');
-  assert.equal(steps.length, 1);
-  assert.equal(steps[0].category, 'test', 'clearing the cache must not touch classified steps');
+test('cross-layer: real fetchJson writes a key over the wire; the key never comes back, not even in error bodies', async (t) => {
+  await withRealServer(t, async ({ store, fetchJson, baseUrl, mutationHeaders }) => {
+    const KEY = 'sk-wire-secret-9f2b7c';
+
+    const putResponse = await fetchJson(baseUrl, {
+      method: 'PUT',
+      headers: mutationHeaders,
+      body: { enabled: true, apiKey: KEY },
+    });
+    assert.equal(putResponse.config.apiKeyConfigured, true);
+    assert.equal(putResponse.status.effective, true);
+    assert.equal(JSON.stringify(putResponse).includes(KEY), false, 'PUT response must not echo the key');
+
+    const getResponse = await fetchJson(baseUrl);
+    assert.equal(JSON.stringify(getResponse).includes(KEY), false, 'GET must not echo the key');
+
+    // A rejected write's error body must not carry the key either (send
+    // the key alongside an invalid field so a body-echoing handler would
+    // include it).
+    await assert.rejects(
+      () => fetchJson(baseUrl, { method: 'PUT', headers: mutationHeaders, body: { enabled: 'yes', apiKey: KEY } }),
+      (error) => {
+        assert.equal(error.status, 422);
+        assert.equal(JSON.stringify(error).includes(KEY), false, 'error body must not echo the key');
+        return true;
+      }
+    );
+
+    // The stored row (internal surface) does hold the key — that is the
+    // point of the write — and the resolver sees it in-process.
+    assert.equal(store.getSystemServiceCredential(JEV_SERVICE_TYPE).apiKey, KEY);
+    assert.equal(createJevEnabledResolver({ store })(), true);
+  });
 });

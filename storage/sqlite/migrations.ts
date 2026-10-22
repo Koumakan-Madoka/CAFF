@@ -768,6 +768,21 @@ CREATE TABLE IF NOT EXISTS chat_system_service_toggles (
   updated_at TEXT NOT NULL
 );
 
+-- Per-service credentials/connection settings (contract §6: the JEV API
+-- key and endpoint/model live here, UI-managed, write-only). Kept in a
+-- separate table from the toggles on purpose: the toggle table's core
+-- invariant is "absent row = off", while a credential row naturally exists
+-- whether or not the switch is on — mixing them would give "row exists"
+-- two meanings. api_key NULL = not configured; base_url/model NULL = use
+-- the client defaults.
+CREATE TABLE IF NOT EXISTS chat_system_service_credentials (
+  service_type TEXT PRIMARY KEY CHECK (length(trim(service_type)) > 0),
+  api_key TEXT,
+  base_url TEXT,
+  model TEXT,
+  updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_chat_turn_time_steps_task_id ON chat_turn_time_steps (task_id);
   `);
 

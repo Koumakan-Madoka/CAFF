@@ -48,28 +48,53 @@ export function createTurnTimeBreakdownPipeline(options: any = {}) {
   const createJevClient = typeof options.createJevClient === 'function'
     ? options.createJevClient
     : () => null;
+  // Optional fingerprint of the client material (contract §6): when the DB
+  // credential row changes (key rotation, endpoint/model override, key
+  // cleared), the fingerprint changes and the shared client is rebuilt —
+  // configuration edits take effect in the same process without a cross-
+  // module invalidate() that would miss the service click path. Rebuilding
+  // intentionally resets the client's process-local budget counters. When
+  // no fingerprint source is provided (tests), the client is built once,
+  // exactly as before.
+  const getJevClientFingerprint = typeof options.getJevClientFingerprint === 'function'
+    ? options.getJevClientFingerprint
+    : null;
 
   const queue: any[] = [];
   const taskStates = new Map<string, any>();
   const pendingAsync = new Set<Promise<any>>();
   let drainTimer: any = null;
   let droppedCount = 0;
-  let jevClient: any = null;
-  let jevClientResolved = false;
+  let jevClientCache: any = null;
 
   function resolveSharedJevClient() {
-    if (!jevClientResolved) {
-      jevClientResolved = true;
+    let fingerprint = 'static';
 
+    if (getJevClientFingerprint) {
       try {
-        jevClient = createJevClient();
-      } catch (error: any) {
-        logger.warn('[turn-time-breakdown] JEV client construction failed:', error && error.message ? error.message : error);
-        jevClient = null;
+        fingerprint = String(getJevClientFingerprint());
+      } catch {
+        // A failing fingerprint read must not churn the client factory on
+        // every step; keep the last verdict (or null) until it recovers.
+        return jevClientCache ? jevClientCache.client : null;
       }
     }
 
-    return jevClient;
+    if (jevClientCache && jevClientCache.fingerprint === fingerprint) {
+      return jevClientCache.client;
+    }
+
+    let client = null;
+
+    try {
+      client = createJevClient();
+    } catch (error: any) {
+      logger.warn('[turn-time-breakdown] JEV client construction failed:', error && error.message ? error.message : error);
+      client = null;
+    }
+
+    jevClientCache = { fingerprint, client };
+    return client;
   }
 
   // One JEV classifier per task state, sharing the dedicated client and the

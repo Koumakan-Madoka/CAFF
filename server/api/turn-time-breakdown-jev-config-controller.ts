@@ -17,11 +17,11 @@ type ApiContext = {
 const ROUTE = '/api/system-services/turn-time-breakdown-jev';
 const CACHE_ROUTE = `${ROUTE}/cache`;
 
-// The API key stays env-only (contract §6): a PUT carrying any credential-ish
-// field is rejected with 422 instead of silently ignored, so an operator
-// never believes the UI stored a secret.
+// Credential material is accepted ONLY through the exact `apiKey` field
+// (contract §6: stored in the DB, write-only, never echoed). Look-alike
+// fields are still rejected with 422 instead of silently ignored, so an
+// operator never believes the UI stored a secret under the wrong name.
 const FORBIDDEN_BODY_KEYS = new Set([
-  'apikey',
   'api_key',
   'key',
   'token',
@@ -49,9 +49,10 @@ export function createTurnTimeBreakdownJevConfigController(options: any = {}): R
     throw new Error('JEV configuration service is required');
   }
 
-  // `enabled` is the only writable field and it is strictly boolean: a
-  // truthy string/number must not be silently coerced into OFF — that would
-  // invert the operator's intent without any signal.
+  // `enabled` is strictly boolean: a truthy string/number must not be
+  // silently coerced into OFF — that would invert the operator's intent
+  // without any signal. (The service re-validates every field at its own
+  // boundary; this check keeps the API-layer 422 stable.)
   function assertValidEnabled(body: any) {
     if (body && typeof body === 'object' && !Array.isArray(body)
       && Object.prototype.hasOwnProperty.call(body, 'enabled')
@@ -69,7 +70,7 @@ export function createTurnTimeBreakdownJevConfigController(options: any = {}): R
 
     for (const key of Object.keys(body)) {
       if (FORBIDDEN_BODY_KEYS.has(String(key).toLowerCase())) {
-        throw createHttpError(422, 'The API key is env-only and must not be sent to this endpoint', {
+        throw createHttpError(422, 'Credential material is only accepted in the apiKey field (stored, never echoed)', {
           issues: [{ code: 'credential_field_not_accepted', path: String(key) }],
         });
       }
@@ -106,9 +107,12 @@ export function createTurnTimeBreakdownJevConfigController(options: any = {}): R
       assertNoCredentialFields(body);
       assertValidEnabled(body);
       const configuration = service.updateConfiguration(body);
+      // The broadcast must never carry credential material: only the
+      // non-secret effective state goes on the wire.
       broadcastEvent('system_service_config_updated', {
         serviceType: 'turn-time-breakdown-jev',
         enabled: configuration.config.enabled,
+        apiKeyConfigured: configuration.config.apiKeyConfigured,
       });
       sendJson(res, 200, configuration);
       return true;

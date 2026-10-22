@@ -301,47 +301,75 @@ above) are opaque to rules → JEV fallback with command + output.
   that shape. Both are fault-tolerant: a throwing `get` behaves as a miss,
   a throwing `set` is swallowed — classification never rejects into the
   turn path because of the cache.
-- Switch: JEV runs only when the repo-wide master switch
-  `TYPESAFE_ENABLED=true` (same convention as `jev_ask` in
-  `agent-tool-bridge.ts`), **and** `TYPESAFE_API_KEY` is configured,
-  **and** the DB toggle
-  `chat_system_service_toggles['turn-time-breakdown-jev']` is on. The
-  toggle is managed from the system-services UI
+- Switch: JEV runs only when the DB toggle
+  `chat_system_service_toggles['turn-time-breakdown-jev']` is on **and** a
+  non-empty API key is stored in
+  `chat_system_service_credentials['turn-time-breakdown-jev']` — a SINGLE
+  decision point, both gates read from the DB inside `resolveJevEnabled`
+  (user-ruled 2026-10-22: one switch in the panel, none hidden in env).
+  Both are managed from the system-services UI
   (`/api/system-services/turn-time-breakdown-jev`, local-admin gated);
-  an ABSENT row means off (default installs ship off, the migration
-  never seeds rows). The resolver reads the store on every
-  classification decision, so the UI switch takes effect in the same
-  process without a restart; the two env gates still require one. The
-  flip applies to subsequent turns and to steps that have not started
-  yet — a turn already in flight keeps the verdict it entered with
-  (the pipeline snapshots the resolver result at the turn's first
-  event). All three gates are evaluated inside `resolveJevEnabled`
-  itself (master switch, API key configured, DB toggle), so the stored
-  `jev_status` can never disagree with the status card — that key gate
-  inside the resolver is load-bearing: without it, DB-on + key-missing
-  would write unresolvable `pending` rows while the card says
-  `api_key_missing`.
-  The API key stays env-only: it is never stored in the DB, never
-  echoed by any response, and a PUT carrying a credential-ish field is
-  rejected with 422. The status surface derives endpoint/model from the
-  same `resolveTypeSafeConnectionInfo()` the client uses (no parallel
-  defaulting) and strips URL userinfo before display. The earlier
-  per-project `projects.json` switch `timeBreakdown.jevEnabled` is
-  DEPRECATED and no longer participates (it predates the UI; no project
-  ever enabled it — a test pins that editing projects.json has no
-  effect). The master switch gates both client construction and
-  `resolveJevEnabled`, so the UI switch can never send unredacted v1
-  payloads while the global capability is off, even with a stale key in
-  the environment. When disabled the classifier does not even read the
-  cache — "rules only" means exactly that; do not "fix" this later, it
-  would change the switch semantics.
+  an ABSENT toggle row means off (default installs ship off, the
+  migration never seeds rows), and an absent credential row or NULL
+  `api_key` means not configured. The resolver reads the store on every
+  classification decision, so flipping the toggle or writing/clearing
+  the key takes effect in the same process without a restart. The flip
+  applies to subsequent turns and to steps that have not started yet —
+  a turn already in flight keeps the verdict it entered with (the
+  pipeline snapshots the resolver result at the turn's first event).
+  Both gates are evaluated inside `resolveJevEnabled` itself (DB
+  toggle, stored API key), so the stored `jev_status` can never
+  disagree with the status card — that key gate inside the resolver is
+  load-bearing: without it, toggle-on + key-missing would write
+  unresolvable `pending` rows while the card says `api_key_missing`.
+  The classification pipeline NEVER reads `TYPESAFE_ENABLED` /
+  `TYPESAFE_API_KEY` / `TYPESAFE_BASE_URL` / `TYPESAFE_MODEL`: the
+  dedicated client is built only from the DB credential row with
+  `env: {}` cutting every env fallback in `createTypeSafeClient`, so a
+  leftover env key can never silently drive classification (a test pins
+  "env fully set + DB key absent → no client is constructed and steps
+  land as `disabled`"). The separate `jev_ask` agent tool (disabled by
+  default) still uses the env convention; it is not part of this
+  pipeline. The API key is stored in PLAINTEXT in the local sqlite
+  (user-ruled: for a loopback-only local tool this is the same exposure
+  as `.env.local` on the same disk) and is WRITE-ONLY — GET returns a
+  `configured` boolean, no API response, error body, log line, or event
+  payload may carry the value, and a PUT carrying credential-ish fields
+  other than the exact `apiKey` is rejected with 422. `apiKey` (set)
+  and `clearApiKey: true` (clear) are mutually exclusive in one write
+  (422); `baseUrl`/`model` accept an override or an empty string to
+  reset to the client defaults. The pipeline caches its dedicated
+  client keyed by a sha256 fingerprint of the credential material
+  (key + endpoint + model): any credential change rebuilds the client
+  in-process, and rebuilding intentionally resets the client's
+  process-local budget counters. Changing the effective endpoint or
+  model also clears `jev_classification_cache` (cached categories came
+  from the old model); rotating the key alone does not. The status
+  surface derives endpoint/model from the DB row over the same
+  `resolveTypeSafeConnectionInfo({ env: {} })` defaults the client uses
+  (no parallel defaulting) and strips URL userinfo before display. The
+  earlier per-project `projects.json` switch
+  `timeBreakdown.jevEnabled` is DEPRECATED and no longer participates
+  (it predates the UI; no project ever enabled it — a test pins that
+  editing projects.json has no effect). Because the key now lives in
+  the DB, an acceptance/demo database snapshot may contain a real
+  credential: never copy such a snapshot outside ignored local storage.
+  When disabled the classifier does not even read the cache — "rules
+  only" means exactly that; do not "fix" this later, it would change
+  the switch semantics.
 - UI panel (system-services page, `personas/jev-config-management.js`):
-  a status card mirroring `resolveJevRuntimeStatus` (master switch, key
-  configured-or-not, DB toggle, endpoint, model, conclusion + reason —
-  the server is the single source of the verdict, the UI only maps
-  `status.reason` to copy and never re-derives it), the enable toggle
-  (PUT on save, effective immediately for subsequent turns), and the
-  cache manager (entry count + a two-step inline confirm clear). When
+  a status card mirroring `resolveJevRuntimeStatus` (DB toggle, key
+  configured-or-not, endpoint, model, conclusion + reason — the server
+  is the single source of the verdict, the UI only maps `status.reason`
+  to copy and never re-derives it), the enable toggle, a credential
+  section (password input — write-only, staged "clear the stored key"
+  applied by the same save button), an advanced section (endpoint/model
+  inputs prefilled with the effective values; empty resets to default),
+  and the cache manager (entry count + a two-step inline confirm
+  clear). All edits are staged locally and applied by one PUT on save,
+  effective immediately for subsequent turns. The credential section
+  must state that an env-configured key is NOT migrated (the pipeline
+  no longer reads env) so an upgrading operator is not surprised. When
   the toggle is on but `status.effective` is false, the panel must say
   so explicitly next to the toggle ("已开启，但当前不生效：<reason>") —
   an ON toggle must never read as "enabled and working".
@@ -408,6 +436,14 @@ CREATE TABLE IF NOT EXISTS jev_classification_cache (
 CREATE TABLE IF NOT EXISTS chat_system_service_toggles (
   service_type TEXT PRIMARY KEY,  -- e.g. 'turn-time-breakdown-jev' (§6)
   enabled INTEGER NOT NULL,       -- 0/1; ABSENT row = off, never seeded
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_system_service_credentials (
+  service_type TEXT PRIMARY KEY,  -- e.g. 'turn-time-breakdown-jev' (§6)
+  api_key TEXT,                   -- plaintext, write-only; NULL = not configured
+  base_url TEXT,                  -- NULL = client default
+  model TEXT,                     -- NULL = client default
   updated_at TEXT NOT NULL
 );
 ```

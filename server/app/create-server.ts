@@ -26,8 +26,7 @@ const { createSubscriptionAuthController } = require('../api/subscription-auth-c
 const { createModelCatalogController } = require('../api/model-catalog-controller');
 const { createRecoveryScribeConfigController } = require('../api/recovery-scribe-config-controller');
 const { createTurnTimeBreakdownJevConfigController } = require('../api/turn-time-breakdown-jev-config-controller');
-const { createJevEnabledResolver, createJevServiceConfigService } = require('../domain/runtime/jev-service-config');
-const { resolveTypeSafeConnectionInfo } = require('../domain/integrations/typesafe/typesafe-client');
+const { createJevEnabledResolver, createJevServiceConfigService, readJevClientMaterial } = require('../domain/runtime/jev-service-config');
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
@@ -42,7 +41,7 @@ const {
   MAX_IMAGE_WIDTH,
 } = require('../../lib/image-constants');
 const { resolveToolRelativePath } = require('../http/path-utils');
-const { HOST, PORT, ROOT_DIR, TYPESAFE_ENABLED, TYPESAFE_API_KEY, TYPESAFE_BASE_URL, TYPESAFE_MODEL, TYPESAFE_MAX_REQUESTS, TYPESAFE_TOKEN_BUDGET } = require('./config');
+const { HOST, PORT, ROOT_DIR, TYPESAFE_MAX_REQUESTS, TYPESAFE_TOKEN_BUDGET } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
 const { createTurnTimeBreakdownPipeline } = require('../domain/runtime/turn-time-breakdown-pipeline');
 const { createTypeSafeClient } = require('../domain/integrations/typesafe/typesafe-client');
@@ -666,30 +665,40 @@ export function createServerApp(options: any = {}) {
   // shared by the pi-event hook (agent executor) and the bridge hook.
   const turnTimeBreakdownPipeline = createTurnTimeBreakdownPipeline({
     repository: store.turnTimeBreakdownRepository,
-    // §6: three gates, all enforced inside the resolver so the stored
-    // jev_status always agrees with the status card — repo-wide master
-    // switch, API key configured, then the DB toggle
-    // (chat_system_service_toggles, UI-managed). The resolver reads the
-    // store on every call, so the UI switch takes effect in this process
-    // without a restart. The per-project projects.json switch is
-    // deprecated and no longer participates.
+    // §6: single decision point, both gates read from the DB inside the
+    // resolver — the UI-managed toggle (chat_system_service_toggles) and a
+    // stored API key (chat_system_service_credentials). The classification
+    // pipeline NEVER reads TYPESAFE_* env (the panel is the only switch);
+    // the resolver reads the store on every call, so UI changes take
+    // effect in this process without a restart. The per-project
+    // projects.json switch is deprecated and no longer participates.
     resolveJevEnabled: createJevEnabledResolver({
       store,
-      masterSwitchEnabled: TYPESAFE_ENABLED,
-      apiKeyConfigured: Boolean(TYPESAFE_API_KEY),
     }),
+    getJevClientFingerprint() {
+      // Rebuild the cached client exactly when the stored credential
+      // material changes (key rotation, endpoint/model override, key
+      // cleared) — same-process immediate effect without a restart.
+      const material = readJevClientMaterial(store);
+      return material ? material.fingerprint : 'none';
+    },
     createJevClient() {
       // §6: dedicated client instance with its own process-local budget —
       // classification volume must not consume the bridge client's budget.
-      // Gated on the repo-wide master switch + key, same as `jev_ask`.
-      if (!TYPESAFE_ENABLED || !TYPESAFE_API_KEY) {
+      // Built ONLY from the DB credential row: env: {} cuts every
+      // TYPESAFE_* fallback in the shared client factory, so a leftover
+      // env key can never silently drive classification.
+      const material = readJevClientMaterial(store);
+
+      if (!material) {
         return null;
       }
 
       return createTypeSafeClient({
-        apiKey: TYPESAFE_API_KEY,
-        baseUrl: TYPESAFE_BASE_URL || undefined,
-        model: TYPESAFE_MODEL || undefined,
+        apiKey: material.apiKey,
+        baseUrl: material.baseUrl,
+        model: material.model,
+        env: {},
         maxRequests: TYPESAFE_MAX_REQUESTS,
         tokenBudget: TYPESAFE_TOKEN_BUDGET,
         timeoutMs: 8000,
@@ -1227,12 +1236,6 @@ export function createServerApp(options: any = {}) {
       service: createJevServiceConfigService({
         store,
         turnTimeBreakdownRepository: store.turnTimeBreakdownRepository,
-        masterSwitchEnabled: TYPESAFE_ENABLED,
-        apiKeyConfigured: Boolean(TYPESAFE_API_KEY),
-        connectionInfo: resolveTypeSafeConnectionInfo({
-          baseUrl: TYPESAFE_BASE_URL || undefined,
-          model: TYPESAFE_MODEL || undefined,
-        }),
       }),
       host,
       port,

@@ -562,8 +562,14 @@ export function createTypeSafeClient(options: any = {}) {
     ? options.sleep
     : (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  const apiKey = trimString(options.apiKey || process.env.TYPESAFE_API_KEY);
-  const connectionInfo = resolveTypeSafeConnectionInfo({ baseUrl: options.baseUrl, model: options.model });
+  // `options.env` overrides where defaults come from: the JEV classification
+  // pipeline passes `env: {}` so its client NEVER falls back to the process
+  // TYPESAFE_* variables (contract §6 — the pipeline's only configuration
+  // source is the DB credential row; jev_ask and other callers keep the
+  // default process.env behavior).
+  const env = options.env && typeof options.env === 'object' ? options.env : process.env;
+  const apiKey = trimString(options.apiKey || env.TYPESAFE_API_KEY);
+  const connectionInfo = resolveTypeSafeConnectionInfo({ baseUrl: options.baseUrl, model: options.model, env });
   const baseUrl = connectionInfo.baseUrl;
   const defaultModel = connectionInfo.model;
 

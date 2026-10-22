@@ -8,6 +8,7 @@ const { createTurnTimeBreakdownPipeline } = require('../../build/server/domain/r
 const {
   JEV_SERVICE_TYPE,
   createJevEnabledResolver,
+  readJevClientMaterial,
 } = require('../../build/server/domain/runtime/jev-service-config');
 const { TypeSafeClientError } = require('../../build/server/domain/integrations/typesafe/typesafe-client');
 const { withTempDir } = require('../helpers/temp-dir');
@@ -257,10 +258,10 @@ test('JEV path: pending row first, then async resolution updates in place and wr
   assert.equal(calls.length, 1);
 });
 
-test('three-gate resolver: DB toggle on but API key missing lands as disabled, never pending', async (t) => {
+test('single-point resolver: DB toggle on but no stored API key lands as disabled, never pending', async (t) => {
   // Production wiring regression (contract §6): the UI can reach
-  // master-on + DB-on + key-missing with one click. The resolver must
-  // include the key gate, or rows would be written 'pending' while no
+  // toggle-on + key-missing with one click. The resolver must include
+  // the key gate, or rows would be written 'pending' while no
   // classifier exists to ever resolve them (the status card would say
   // api_key_missing at the same time).
   const store = openStore(t);
@@ -270,11 +271,7 @@ test('three-gate resolver: DB toggle on but API key missing lands as disabled, n
 
   let clientBuilt = 0;
   const pipeline = createPipeline(store, {
-    resolveJevEnabled: createJevEnabledResolver({
-      store,
-      masterSwitchEnabled: true,
-      apiKeyConfigured: false,
-    }),
+    resolveJevEnabled: createJevEnabledResolver({ store }),
     createJevClient: () => {
       clientBuilt += 1;
       return null;
@@ -294,6 +291,123 @@ test('three-gate resolver: DB toggle on but API key missing lands as disabled, n
   assert.equal(row.category, 'unclassified');
   assert.equal(row.jev_status, 'disabled');
   assert.equal(clientBuilt, 0);
+});
+
+test('env TYPESAPE_* fully set but no DB credential: pipeline stays disabled and never builds a client', async (t) => {
+  // Contract §6 (user-ruled 2026-10-22): the classification pipeline
+  // NEVER reads the environment — the panel is the only switch and the
+  // DB row the only key source. A leftover env key must not silently
+  // drive classification.
+  const prevEnabled = process.env.TYPESAFE_ENABLED;
+  const prevKey = process.env.TYPESAFE_API_KEY;
+  process.env.TYPESAFE_ENABLED = 'true';
+  process.env.TYPESAFE_API_KEY = 'sk-leftover-env-key';
+  t.after(() => {
+    if (prevEnabled === undefined) { delete process.env.TYPESAFE_ENABLED; } else { process.env.TYPESAFE_ENABLED = prevEnabled; }
+    if (prevKey === undefined) { delete process.env.TYPESAFE_API_KEY; } else { process.env.TYPESAFE_API_KEY = prevKey; }
+  });
+
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+  store.setSystemServiceToggle(JEV_SERVICE_TYPE, true);
+
+  let clientBuilt = 0;
+  const pipeline = createPipeline(store, {
+    // Production-shaped wiring: the resolver and the client factory both
+    // read ONLY the DB (createJevClient here mimics create-server, which
+    // returns null when readJevClientMaterial finds no stored key).
+    resolveJevEnabled: createJevEnabledResolver({ store }),
+    getJevClientFingerprint: () => {
+      const material = readJevClientMaterial(store);
+      return material ? material.fingerprint : 'none';
+    },
+    createJevClient: () => {
+      clientBuilt += 1;
+      return readJevClientMaterial(store)
+        ? { ask: async () => ({ answers: { category: { choice: 'test', confidence: 0.9 } } }) }
+        : null;
+    },
+  });
+
+  pipeline.enqueueStep({
+    taskId: 'task-env',
+    messageId: 'msg-env',
+    conversationId: 'conv-1',
+    step: step({ stepKey: 'call-1', toolCallId: 'call-1', args: { command: 'python scripts/run_suite.py' } }),
+  });
+  await pipeline.flushForTests();
+
+  const row = repo.listSteps('task-env')[0];
+  assert.equal(row.jev_status, 'disabled');
+  assert.equal(clientBuilt, 0, 'no client may be constructed without a stored key, env be damned');
+
+  // Storing a key through the credential path flips it on in the same
+  // process — no restart, no pipeline rebuild.
+  store.updateSystemServiceCredential(JEV_SERVICE_TYPE, { setApiKey: 'sk-db-key' });
+  pipeline.enqueueStep({
+    taskId: 'task-db',
+    messageId: 'msg-db',
+    conversationId: 'conv-1',
+    step: step({ stepKey: 'call-2', toolCallId: 'call-2', args: { command: 'python scripts/run_suite.py' } }),
+  });
+  await pipeline.flushForTests();
+
+  assert.equal(clientBuilt, 1);
+  const dbRow = repo.listSteps('task-db')[0];
+  assert.equal(dbRow.category, 'test');
+  assert.equal(dbRow.jev_status, 'ok');
+});
+
+test('fingerprint-keyed client cache: rotation rebuilds, unchanged material reuses, clearing disables', async (t) => {
+  const store = openStore(t);
+  const repo = store.turnTimeBreakdownRepository;
+  store.setSystemServiceToggle(JEV_SERVICE_TYPE, true);
+  store.updateSystemServiceCredential(JEV_SERVICE_TYPE, { setApiKey: 'sk-key-v1' });
+
+  let clientBuilt = 0;
+  const pipeline = createPipeline(store, {
+    resolveJevEnabled: createJevEnabledResolver({ store }),
+    getJevClientFingerprint: () => {
+      const material = readJevClientMaterial(store);
+      return material ? material.fingerprint : 'none';
+    },
+    createJevClient: () => {
+      clientBuilt += 1;
+      return {
+        ask: async () => ({ answers: { category: { choice: 'test', confidence: 0.9 } } }),
+      };
+    },
+  });
+  const opaque = (stepKey) => step({
+    stepKey,
+    toolCallId: stepKey,
+    args: { command: `python scripts/run_suite_${stepKey}.py` },
+    output: '12 passed in 3.4s',
+  });
+
+  pipeline.enqueueStep({ taskId: 'task-v1', messageId: 'm1', conversationId: 'c', step: opaque('call-v1') });
+  await pipeline.flushForTests();
+  assert.equal(clientBuilt, 1);
+
+  // Same material → the cached client is reused (no rebuild per step).
+  pipeline.enqueueStep({ taskId: 'task-v1b', messageId: 'm2', conversationId: 'c', step: opaque('call-v1b') });
+  await pipeline.flushForTests();
+  assert.equal(clientBuilt, 1);
+
+  // Key rotation → fingerprint changes → the client is rebuilt in-process.
+  store.updateSystemServiceCredential(JEV_SERVICE_TYPE, { setApiKey: 'sk-key-v2' });
+  pipeline.enqueueStep({ taskId: 'task-v2', messageId: 'm3', conversationId: 'c', step: opaque('call-v2') });
+  await pipeline.flushForTests();
+  assert.equal(clientBuilt, 2);
+
+  // Clearing the key → the resolver fails closed: new steps land as
+  // disabled and no zombie pending rows appear.
+  store.updateSystemServiceCredential(JEV_SERVICE_TYPE, { clearApiKey: true });
+  pipeline.enqueueStep({ taskId: 'task-cleared', messageId: 'm4', conversationId: 'c', step: opaque('call-cleared') });
+  await pipeline.flushForTests();
+  const clearedRow = repo.listSteps('task-cleared')[0];
+  assert.equal(clearedRow.jev_status, 'disabled');
+  assert.equal(repo.listJevRetrySteps('task-cleared').length, 0);
 });
 
 test('classifier vanished with jevEnabled still true: pending rows are downgraded to disabled, never zombie', async (t) => {
@@ -324,19 +438,16 @@ test('classifier vanished with jevEnabled still true: pending rows are downgrade
   assert.equal(repo.listJevRetrySteps('task-1').length, 0);
 });
 
-test('full chain: real DB toggle + real resolver drives JEV on/off in the same process', async (t) => {
-  // Contract §6 acceptance chain: DB toggle ON (+ env gates) → opaque
+test('full chain: real DB toggle + credential + real resolver drives JEV on/off in the same process', async (t) => {
+  // Contract §6 acceptance chain: DB toggle ON + stored key → opaque
   // steps actually go through JEV; toggle OFF → new steps land as
   // jev_status='disabled'. Both flips without rebuilding the pipeline.
   const store = openStore(t);
   const repo = store.turnTimeBreakdownRepository;
+  store.updateSystemServiceCredential(JEV_SERVICE_TYPE, { setApiKey: 'sk-test-key' });
   const calls = [];
   const pipeline = createPipeline(store, {
-    resolveJevEnabled: createJevEnabledResolver({
-      store,
-      masterSwitchEnabled: true,
-      apiKeyConfigured: true,
-    }),
+    resolveJevEnabled: createJevEnabledResolver({ store }),
     createJevClient: () => ({
       ask: async (input) => {
         calls.push(input);

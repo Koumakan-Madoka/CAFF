@@ -238,20 +238,19 @@ test('firstWriteMs metric reflects the first repo write of the turn', async (t) 
 });
 
 test('click path with DB toggle on but API key missing: steps land as disabled, never pending', async (t) => {
-  // Contract §6 three-gate regression at the service layer: the UI can
-  // reach master-on + DB-on + key-missing with one click. The lazy
-  // backfill must write jev_status='disabled' and queue nothing for
-  // async JEV resolution — a 'pending' row here would never resolve
-  // (no classifier exists) and would be re-collected as retryable on
-  // every click.
+  // Contract §6 single-point regression at the service layer: the UI can
+  // reach toggle-on + key-missing with one click. The lazy backfill must
+  // write jev_status='disabled' and queue nothing for async JEV
+  // resolution — a 'pending' row here would never resolve (no classifier
+  // exists) and would be re-collected as retryable on every click.
   const { store, conversation, tempDir } = createFixture(t, 'jev-key-missing');
 
   store.setSystemServiceToggle(JEV_SERVICE_TYPE, true);
 
-  // Production-shaped pipeline wiring: the real three-gate resolver
-  // (master on, key missing, DB row now on).
+  // Production-shaped pipeline wiring: the real resolver (toggle on, no
+  // stored key).
   const pipeline = {
-    isJevEnabled: createJevEnabledResolver({ store, masterSwitchEnabled: true, apiKeyConfigured: false }),
+    isJevEnabled: createJevEnabledResolver({ store }),
     isTaskActive: () => false,
     resolvePendingStep: () => Promise.resolve(false),
   };
