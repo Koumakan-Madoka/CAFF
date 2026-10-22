@@ -158,9 +158,10 @@ test('role UI payload keeps family fields credential-free and preserves complete
   assert.deepEqual(JSON.parse(JSON.stringify(family)), {
     provider: 'openai', model: 'gpt-5.4', thinking: 'high',
     avatarDataUrl: 'data:image/png;base64,AAAA',
-    modelProfiles: [{ id: 'deep', name: 'Deep', description: '', provider: 'openai', model: 'gpt-5.4', thinking: 'high' }],
+    modelProfiles: [{ id: 'deep', name: 'Deep', description: '', provider: 'openai', model: 'gpt-5.4', thinking: 'high', fast: false }],
     isDefaultChatRole: true,
     sessionReuseEnabled: true,
+    fast: false,
   });
 
   const custom = utils.buildRolePayload({

@@ -77,6 +77,12 @@
     return option && Array.isArray(option.supportedThinkingLevels) ? option.supportedThinkingLevels : [];
   }
 
+  function supportsFast(modelOptions, provider, model) {
+    const option = findModelOption(modelOptions, provider, model);
+    return option && option.provider === 'openai-codex'
+      && option.api === 'openai-codex-responses' && option.supportsFast === true;
+  }
+
   function normalizeThinkingLevel(modelOptions, provider, model, current) {
     const value = String(current || '').trim();
     return supportedThinkingLevels(modelOptions, provider, model).includes(value) ? value : '';
@@ -123,10 +129,11 @@
       provider: profile.provider || '',
       model: profile.model || '',
       thinking: normalizeThinkingLevel(modelOptions, profile.provider, profile.model, profile.thinking),
+      fast: profile.fast === true,
       ...(family ? {} : { personaPrompt: profile.personaPrompt || '' }),
     }));
     if (family) {
-      const payload = { isDefaultChatRole: Boolean(role.isDefaultChatRole), avatarDataUrl: role.avatarDataUrl || '', sessionReuseEnabled: role.sessionReuseEnabled !== false };
+      const payload = { isDefaultChatRole: Boolean(role.isDefaultChatRole), avatarDataUrl: role.avatarDataUrl || '', sessionReuseEnabled: role.sessionReuseEnabled !== false, fast: role.fast === true };
       if (role.model || roleModelOptions(role, modelOptions).length > 0) {
         Object.assign(payload, {
           provider: role.provider || '',
@@ -152,6 +159,7 @@
       modelProfiles: profiles,
       isDefaultChatRole: Boolean(role.isDefaultChatRole),
       sessionReuseEnabled: role.sessionReuseEnabled !== false,
+      fast: role.fast === true,
     };
   }
 
@@ -172,5 +180,6 @@
     requestIssueMessage,
     roleModelOptions,
     supportedThinkingLevels,
+    supportsFast,
   };
 })();

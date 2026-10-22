@@ -3052,6 +3052,11 @@ textarea {
   align-items: center;
 }
 
+.runtime-fast-control .toggle-row {
+  flex-direction: row;
+  align-items: center;
+}
+
 .toggle {
   position: relative;
   width: 48px;

@@ -190,6 +190,7 @@
         provider: agent && agent.provider ? agent.provider : '',
         model: agent && agent.model ? agent.model : '',
         thinking: agent && agent.thinking ? agent.thinking : '',
+        fast: agent && agent.fast === true,
         personaPrompt: agent && agent.personaPrompt ? agent.personaPrompt : '',
       };
     }
@@ -224,6 +225,7 @@
         parts.push(profile.provider);
       }
 
+      if (profile.fast === true) parts.push('Fast 已配置（请求前校验支持，用量更快消耗）');
       return parts.join(' · ');
     }
 
@@ -240,8 +242,9 @@
         return '使用基础配置';
       }
 
+      const fastHint = profile.fast === true ? ' · Fast 已配置（请求前校验支持，用量更快消耗）' : '';
       if (profile.description) {
-        return profile.description;
+        return profile.description + fastHint;
       }
 
       const parts = [];
@@ -255,10 +258,10 @@
       }
 
       if (!profile.id) {
-        return parts.length > 0 ? parts.join(' / ') : '使用基础配置';
+        return (parts.length > 0 ? parts.join(' / ') : '使用基础配置') + fastHint;
       }
 
-      return parts.length > 0 ? parts.join(' / ') : '模型专属配置';
+      return (parts.length > 0 ? parts.join(' / ') : '模型专属配置') + fastHint;
     }
 
     function closeAllProfileMenus(exceptGroup = null) {

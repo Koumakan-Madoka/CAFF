@@ -925,6 +925,7 @@ function buildTraceTimelineEvents(modelUsage: any, steps: any[]) {
       isColdStart: call.isColdStart,
       providerMiss: call.providerMiss,
       tokenUsage: call.tokenUsage,
+      serviceTier: call.serviceTier || null,
     });
 
     normalizedSteps.forEach((step, index) => {

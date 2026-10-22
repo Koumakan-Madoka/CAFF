@@ -3809,6 +3809,7 @@ function renderAgentTrace(inspector) {
     const items = [
       ['Session', `${(sessionData && sessionData.label) || '-'}${sessionReasonSuffix}`],
       ['模型', modelLabel],
+      ['Fast', sessionData && sessionData.fastMode ? sessionData.fastMode.label : '未知（旧记录无证据）'],
       ['总耗时', summary.totalDurationMs === null || summary.totalDurationMs === undefined
         ? '-'
         : Number.isFinite(Number(summary.totalDurationMs)) ? `${formatInspectorNumber(summary.totalDurationMs)} ms` : '-'],
@@ -3828,6 +3829,7 @@ function renderAgentTrace(inspector) {
       const value = document.createElement('strong');
       label.textContent = labelText;
       value.textContent = valueText;
+      if (labelText === 'Fast' && sessionData && sessionData.fastMode) value.title = sessionData.fastMode.detail || '';
       cell.append(label, value);
       grid.appendChild(cell);
     });

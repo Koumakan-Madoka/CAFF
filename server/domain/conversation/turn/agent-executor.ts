@@ -1,6 +1,7 @@
 const { randomUUID } = require('node:crypto');
 const { createHttpError } = require('../../../http/http-errors');
 const { createConfiguredModelCatalog } = require('../../models/configured-model-catalog');
+const { createServiceTierState, recordServiceTierRequest, snapshotServiceTier } = require('../../../../lib/service-tier');
 const { inspectModelConfiguration } = require('../../models/model-configuration');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -732,6 +733,7 @@ function resolveConversationAgentConfig(agent: any) {
       provider: String(runtimeConfig.provider || '').trim(),
       model: String(runtimeConfig.model || '').trim(),
       thinking: String(runtimeConfig.thinking || '').trim(),
+      fast: runtimeConfig.fast === true,
       personaPrompt: String(runtimeConfig.personaPrompt || '').trim(),
       skillIds: Array.isArray(runtimeConfig.skillIds) ? runtimeConfig.skillIds : [],
       conversationSkillIds: Array.isArray(agent && (agent.conversationSkillIds || agent.conversationSkills))
@@ -748,6 +750,7 @@ function resolveConversationAgentConfig(agent: any) {
     provider: resolveSetting(selectedModelProfile ? selectedModelProfile.provider : '', agent && agent.provider, ''),
     model: resolveSetting(selectedModelProfile ? selectedModelProfile.model : '', agent && agent.model, ''),
     thinking: resolveSetting(selectedModelProfile ? selectedModelProfile.thinking : '', agent && agent.thinking, ''),
+    fast: (selectedModelProfile ? selectedModelProfile.fast : agent?.fast) === true,
     personaPrompt: resolveSetting(selectedModelProfile ? selectedModelProfile.personaPrompt : '', agent && agent.personaPrompt, ''),
     skillIds: Array.isArray(agent && (agent.skillIds || agent.skills)) ? agent.skillIds || agent.skills : [],
     conversationSkillIds: Array.isArray(agent && (agent.conversationSkillIds || agent.conversationSkills))
@@ -1864,9 +1867,15 @@ export function createAgentExecutor(options: any = {}) {
     });
     let contextSnapshot = buildContextSnapshot();
     let contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
+    const serviceTierState = createServiceTierState(agentConfig.fast);
+    const serviceTierMetadata = () => {
+      const fastMode = snapshotServiceTier(serviceTierState);
+      return { fastMode, serviceTierRequested: fastMode.serviceTierRequested, serviceTierObserved: null };
+    };
     const queuedMetadata = {
       provider,
       model,
+      ...serviceTierMetadata(),
       promptVersion: AGENT_PROMPT_VERSION,
       modelProfileId: agentConfig.profileId,
       modelProfileName: agentConfig.profileName,
@@ -2145,6 +2154,7 @@ export function createAgentExecutor(options: any = {}) {
 
     const runOptions: any = {
       thinking,
+      fast: agentConfig.fast,
       images: invocationImages,
       extensionPaths: piCapabilityExtensionPath ? [piCapabilityExtensionPath] : [],
       agentDir,
@@ -2476,6 +2486,17 @@ export function createAgentExecutor(options: any = {}) {
       contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
     });
 
+    handle.on('service_tier_request', (event: any) => {
+      if (!recordServiceTierRequest(serviceTierState, event && event.request)) return;
+      // Persist immediately: a stream may fail or be stopped before message_end.
+      // Read current metadata to preserve bridge/public-post updates.
+      const current = store.getMessage(assistantMessage.id);
+      const updated = store.updateMessage(assistantMessage.id, {
+        metadata: { ...(current && current.metadata || startedMetadata), ...serviceTierMetadata() },
+      });
+      broadcastEvent('conversation_message_updated', { conversationId, message: updated });
+    });
+
     handle.on('assistant_message', (event: any) => {
       const message = event && event.message && typeof event.message === 'object' ? event.message : null;
 
@@ -2496,6 +2517,7 @@ export function createAgentExecutor(options: any = {}) {
             stopReason: message.stopReason,
             timestamp: message.timestamp,
             tokenUsage: summarizeTokenUsage(message.usage),
+            serviceTier: event.serviceTier,
           })
         : null;
       if (!modelEvent) {
@@ -2699,6 +2721,7 @@ export function createAgentExecutor(options: any = {}) {
       const finalMetadata = {
         provider,
         model,
+        ...serviceTierMetadata(),
         promptVersion: AGENT_PROMPT_VERSION,
         heartbeatCount: result.heartbeatCount || 0,
         sessionName,
@@ -3035,6 +3058,7 @@ export function createAgentExecutor(options: any = {}) {
           usage: errorUsage,
           tokenUsage: errorTokenUsage,
           modelUsage: buildLightweightModelUsageSummary(errorModelUsage),
+          ...serviceTierMetadata(),
           invocationFailure,
           agentContextSnapshot: contextSnapshotReference,
         },

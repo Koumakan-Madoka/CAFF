@@ -48,6 +48,10 @@ Use this index for Pi runtime, prompt, Agent tool, Goal, and DAG integration cha
   (ADR 0001)
 - `propose-plan.md`: `propose-plan` CLI/bridge contract for the shared DAG plan,
   self-repair error codes, and `agent_tool_call` event summaries
+- `fast-mode-openai-codex.md`: per-role Fast toggle (`service_tier: "priority"`)
+  for openai-codex subscription models — wire format, backend catalog support
+  detection, extension injection point, config chain, observability, and
+  measured response under-reporting limitation
 - `stream-diagnostics.md`: content-free SDK event/delta statistics, bounded run
   snapshots, phase inference limits, and unchanged watchdog behavior
 - `runtime-observability.md`: `createRuntimeObservability` counter providers,

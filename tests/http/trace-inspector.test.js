@@ -101,6 +101,33 @@ function createAssistant(store, conversationId, messageId, options = {}) {
   });
 }
 
+test('Fast evidence survives storage and trace/export projections, never inferring execution', async (t) => {
+  const { createServiceTierState, recordServiceTierRequest, snapshotServiceTier } = require('../../build/lib/service-tier');
+  const { store, conversation, handler } = createFixture(t, 'fast-evidence');
+  const state = createServiceTierState(true);
+  recordServiceTierRequest(state, { status: 'requested', serviceTierRequested: 'priority', supportSource: 'catalog' });
+  const message = createAssistant(store, conversation.id, 'fast-message');
+  store.updateMessage(message.id, {
+    metadata: { ...message.metadata, fastMode: { ...snapshotServiceTier(state), serviceTierObserved: 'priority', executionConfirmed: true, payload: 'DO-NOT-PROJECT' } },
+    modelUsage: { calls: [{ sequence: 1, timestamp: 1001, tokenUsage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 }, serviceTier: { status: 'requested', serviceTierRequested: 'priority', supportSource: 'catalog', payload: 'DO-NOT-PROJECT' } }] },
+  });
+  const response = await invoke(handler, traceUrl(conversation.id, message.id));
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json.session.fastMode.serviceTierRequested, 'priority');
+  assert.equal(response.json.session.fastMode.serviceTierObserved, null);
+  assert.equal(response.json.session.fastMode.executionConfirmed, false);
+  assert.match(response.json.session.fastMode.label, /已请求.*执行未确认/u);
+  const call = response.json.trace.events.find((event) => event.kind === 'model_call');
+  assert.equal(call.detail.serviceTier.supportSource, 'catalog');
+  assert.match(call.summary, /Fast 已请求/u);
+  assert.equal(JSON.stringify(response.json).includes('DO-NOT-PROJECT'), false);
+  const exported = await invoke(handler, `${traceUrl(conversation.id, message.id)}-export`);
+  assert.match(exported.body, /Fast 已请求.*执行未确认/u);
+  const legacy = createAssistant(store, conversation.id, 'legacy-no-fast');
+  const old = await invoke(handler, traceUrl(conversation.id, legacy.id));
+  assert.equal(old.json.session.fastMode, null, 'absence means unknown, not off');
+});
+
 async function invoke(handler, pathname) {
   const requestUrl = new URL(pathname, 'http://127.0.0.1');
   const req = new PassThrough();
