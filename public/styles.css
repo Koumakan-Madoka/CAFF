@@ -2490,6 +2490,14 @@ textarea {
   color: var(--caff-success);
 }
 
+[data-theme="dark"] .message-token-usage {
+  background: var(--caff-surface-hover);
+}
+
+[data-theme="dark"] .message-card.assistant .message-token-usage {
+  background: color-mix(in srgb, var(--agent-color, var(--teal)) 18%, var(--caff-surface-elevated));
+}
+
 [data-theme="dark"] .message-time-breakdown {
   border-color: var(--caff-border);
   background: var(--caff-surface-elevated);
