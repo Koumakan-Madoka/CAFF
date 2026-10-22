@@ -135,6 +135,19 @@ export function createTurnOrchestrator(options: any = {}) {
   const sideDispatchMessageIds = new Map();
   const queuedSideDispatches = new Map();
   const agentSlotRegistry = createAgentSlotRegistry();
+  const pendingExecutions = new Set<Promise<any>>();
+  let closing = false;
+  let shutdownPromise: Promise<void> | null = null;
+
+  function trackExecution<T>(promise: Promise<T>): Promise<T> {
+    pendingExecutions.add(promise);
+    void promise.then(() => pendingExecutions.delete(promise), () => pendingExecutions.delete(promise));
+    return promise;
+  }
+
+  function requireAcceptingWork() {
+    if (closing) throw createHttpError(503, '服务关闭中断', { code: 'server_closing' });
+  }
 
   const { emitTurnProgress, emitAgentSlotFinished } = createTurnEventEmitter({ broadcastEvent });
   const requiresBoundedProjections = requiresBoundedConversationProjections(store);
@@ -876,6 +889,7 @@ export function createTurnOrchestrator(options: any = {}) {
   const baseExecuteConversationAgent = providedExecuteConversationAgent || agentExecutor.executeConversationAgent;
 
   async function executeConversationAgentWithSlot(input: any) {
+    if (closing) return { stopTurn: true, terminationReason: 'stopped_by_user' };
     const conversationId = String(input && input.conversationId ? input.conversationId : '').trim();
     const agentId = String(input && input.agent && input.agent.id ? input.agent.id : '').trim();
     const lane = input && input.turnState && input.turnState.executionLane === 'side' ? 'side' : 'main';
@@ -1002,6 +1016,11 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   async function runConversationTurn(conversationId: any, userContent: any) {
+    requireAcceptingWork();
+    return trackExecution(executeConversationTurn(conversationId, userContent));
+  }
+
+  async function executeConversationTurn(conversationId: any, userContent: any) {
     const normalizedConversationId = String(conversationId || '').trim();
 
     if (
@@ -1022,6 +1041,9 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function enqueueDelegationContinuation(delegation: any) {
+    // Terminal settlement already consumed the write-once continuation marker.
+    // Persist even during shutdown: the closing drain refuses dispatch, and
+    // startup queue discovery must still find the requester's pending message.
     const conversationId = String(delegation && delegation.requesterConversationId || '').trim();
     const agentId = String(delegation && delegation.requesterAgentId || '').trim();
     if (!conversationId || !agentId || !delegation || !delegation.terminalAt) return { scheduled: false, reason: 'invalid_delegation' };
@@ -1291,6 +1313,7 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function scheduleGoalContinuation(conversationId: any, options: any = {}) {
+    if (closing) return { scheduled: false, reason: 'server_closing' };
     const scheduled = enqueueGoalContinuationMessage(conversationId, options);
 
     if (!scheduled.scheduled) {
@@ -1309,6 +1332,7 @@ export function createTurnOrchestrator(options: any = {}) {
     const normalizedConversationId = String(conversationId || '').trim();
 
     if (
+      closing ||
       !normalizedConversationId ||
       dispatchingConversationIds.has(normalizedConversationId) ||
       hasActiveAgentSlots(normalizedConversationId)
@@ -1320,7 +1344,7 @@ export function createTurnOrchestrator(options: any = {}) {
     ensureQueueState(normalizedConversationId).idle = false;
     broadcastRuntimeState();
 
-    void (async () => {
+    void trackExecution((async () => {
       // Set to true when the loop's final poll found the queue empty and no
       // goal continuation was scheduled: the queue state is then settleable
       // when the dispatch marker is released below (settlement must not
@@ -1329,7 +1353,7 @@ export function createTurnOrchestrator(options: any = {}) {
       let drainedIdle = false;
 
       try {
-        while (true) {
+        while (!closing) {
           if (activeConversationIds.has(normalizedConversationId) || hasActiveAgentSlots(normalizedConversationId)) {
             break;
           }
@@ -1407,7 +1431,7 @@ export function createTurnOrchestrator(options: any = {}) {
 
         broadcastRuntimeState();
       }
-    })();
+    })());
 
     return true;
   }
@@ -1729,6 +1753,7 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function startSideDispatch(entry: any) {
+    requireAcceptingWork();
     const conversationId = entry.conversationId;
     markSideDispatchMessage(conversationId, entry.acceptedMessage.id);
 
@@ -1738,6 +1763,7 @@ export function createTurnOrchestrator(options: any = {}) {
       resolveExecution = resolve;
       rejectExecution = reject;
     });
+    trackExecution(executionPromise);
     void executionPromise.catch(() => {});
 
     const slotRequest = agentSlotRegistry.requestSlot({
@@ -1971,6 +1997,7 @@ export function createTurnOrchestrator(options: any = {}) {
 
   function recoverPersistedSideDispatches() {
     let recoveryMessages = [] as any[];
+    const pendingDispatches: Array<() => void> = [];
 
     if (store && typeof store.listSideDispatchRecoveryMessages === 'function') {
       recoveryMessages = store.listSideDispatchRecoveryMessages();
@@ -2010,17 +2037,15 @@ export function createTurnOrchestrator(options: any = {}) {
       }
 
       markStaleSideDispatchReplyMessages(conversationId, message.id);
-      submitSideDispatch(
-        conversation,
-        { metadata },
-        message,
-        sideTarget,
-        {
-          promptSnapshotMessageIds: buildPromptSnapshotMessageIdsThroughMessage(conversationId, message.id),
-          projectDirSnapshot: getProjectDir ? String(getProjectDir(conversation) || '').trim() : '',
-        }
-      );
+      const dispatchOptions = {
+        promptSnapshotMessageIds: buildPromptSnapshotMessageIdsThroughMessage(conversationId, message.id),
+        projectDirSnapshot: getProjectDir ? String(getProjectDir(conversation) || '').trim() : '',
+      };
+      pendingDispatches.push(() => {
+        submitSideDispatch(conversation, { metadata }, message, sideTarget, dispatchOptions);
+      });
     }
+    return pendingDispatches;
   }
 
   function previewRouting(conversationId: any, input: any = {}) {
@@ -2075,6 +2100,7 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function submitConversationMessage(conversationId: any, input: any) {
+    requireAcceptingWork();
     const storedConversation = loadRoutingConversation(conversationId);
 
     if (!storedConversation) {
@@ -2490,6 +2516,39 @@ export function createTurnOrchestrator(options: any = {}) {
     };
   }
 
+  function shutdown(reason: string = '服务关闭中断') {
+    if (shutdownPromise) return shutdownPromise;
+    closing = true;
+    // Cancel queued side work before releasing any live slot. This is service
+    // interruption, not a user cancellation of its persisted dispatch source.
+    for (const entries of queuedSideDispatches.values()) {
+      for (const entry of entries.values()) {
+        try { entry.cancel(reason); } catch {}
+      }
+    }
+    for (const turn of activeTurns.values()) requestStopMainTurn(turn.conversationId, reason);
+    for (const slot of activeAgentSlots.values()) {
+      slot.stopRequested = true;
+      slot.stopReason = reason;
+      slot.status = 'stopping';
+      for (const handle of slot.runHandles instanceof Set ? slot.runHandles : []) {
+        try { handle.cancel(reason); } catch {}
+      }
+    }
+    // Also reject main-lane waiters; they have no child handle to cancel yet.
+    for (const conversationId of new Set([
+      ...activeConversationIds, ...dispatchingConversationIds, ...queueStates.keys(),
+      ...Array.from(activeAgentSlots.values()).map((slot: any) => slot.conversationId),
+    ])) agentSlotRegistry.clearConversation(conversationId);
+    shutdownPromise = (async () => {
+      // Await executor/root-task/queue finally blocks, not merely child exits.
+      // pi-runtime bounds a missing close with its termination settle deadline.
+      while (pendingExecutions.size > 0) await Promise.allSettled([...pendingExecutions]);
+      for (const state of queueStates.values()) state.idle = true;
+    })();
+    return shutdownPromise;
+  }
+
   function clearConversationState(conversationId: any) {
     activeConversationIds.delete(conversationId);
     activeTurns.delete(conversationId);
@@ -2570,7 +2629,12 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   recoverPersistedQueueStates();
-  recoverPersistedSideDispatches();
+  // Preserve recovery's decision and stale-reply semantics before a generic
+  // failure could make its source appear completed. No new run may start
+  // until the lifecycle owner reconciles the previous process's records.
+  const recoveredSideDispatches = recoverPersistedSideDispatches();
+  if (typeof options.beforeStartupDispatch === 'function') options.beforeStartupDispatch();
+  for (const dispatch of recoveredSideDispatches) dispatch();
 
   return {
     buildRuntimePayload,
@@ -2594,6 +2658,7 @@ export function createTurnOrchestrator(options: any = {}) {
     enqueueDelegationContinuation,
     runConversationTurn,
     scheduleGoalContinuation,
+    shutdown,
     submitConversationMessage,
     summarizeTurnState,
     syncCurrentTurnAgent,
