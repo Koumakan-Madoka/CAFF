@@ -2408,6 +2408,141 @@ textarea {
   color: inherit;
 }
 
+/* ---- Dark theme: observability panels (tool trace + time breakdown) ---- */
+
+[data-theme="dark"] .message-tool-trace-step-index {
+  border-color: var(--caff-border-strong);
+  background: var(--caff-surface-hover);
+}
+
+[data-theme="dark"] .message-tool-trace-step.success .message-tool-trace-step-index {
+  border-color: color-mix(in srgb, var(--caff-success) 34%, transparent);
+  background: color-mix(in srgb, var(--caff-success) 16%, transparent);
+  color: var(--caff-success);
+}
+
+[data-theme="dark"] .message-tool-trace-step.failed .message-tool-trace-step-index {
+  border-color: color-mix(in srgb, var(--caff-danger) 38%, transparent);
+  background: color-mix(in srgb, var(--caff-danger) 18%, transparent);
+  color: var(--caff-danger);
+}
+
+[data-theme="dark"] .message-tool-trace-step.running .message-tool-trace-step-index {
+  border-color: color-mix(in srgb, var(--caff-warning) 38%, transparent);
+  background: color-mix(in srgb, var(--caff-warning) 20%, transparent);
+  color: var(--caff-warning);
+}
+
+[data-theme="dark"] .message-tool-trace-step-line {
+  background: var(--caff-border);
+}
+
+[data-theme="dark"] .message-tool-trace-step-alert {
+  border-left-color: var(--caff-danger);
+  background: var(--caff-danger-soft);
+  color: var(--caff-danger);
+}
+
+[data-theme="dark"] .message-tool-trace-pill {
+  background: var(--caff-surface-hover);
+}
+
+[data-theme="dark"] .message-tool-trace-pill.success,
+[data-theme="dark"] .message-tool-trace-pill.running {
+  background: color-mix(in srgb, var(--caff-success) 16%, transparent);
+  color: var(--caff-success);
+}
+
+[data-theme="dark"] .message-tool-trace-pill.failed {
+  background: color-mix(in srgb, var(--caff-danger) 18%, transparent);
+  color: var(--caff-danger);
+}
+
+[data-theme="dark"] .message-tool-trace-pill.duration,
+[data-theme="dark"] .message-tool-trace-pill.time {
+  background: var(--caff-surface-hover);
+}
+
+[data-theme="dark"] .message-tool-trace-live-eyebrow {
+  color: var(--caff-text-soft);
+}
+
+[data-theme="dark"] .message-tool-trace-note {
+  background: var(--caff-surface-hover);
+}
+
+[data-theme="dark"] .message-tool-trace-note.failed {
+  background: var(--caff-danger-soft);
+  color: var(--caff-danger);
+}
+
+[data-theme="dark"] .message-tool-trace-note.running {
+  background: var(--caff-success-soft);
+  color: var(--caff-success);
+}
+
+[data-theme="dark"] .message-tool-trace-steps-viewport.scrollable::-webkit-scrollbar-thumb {
+  background: var(--caff-border-strong);
+}
+
+[data-theme="dark"] .message-live-hint {
+  background: color-mix(in srgb, var(--caff-success) 16%, transparent);
+  color: var(--caff-success);
+}
+
+[data-theme="dark"] .message-time-breakdown {
+  border-color: var(--caff-border);
+  background: var(--caff-surface-elevated);
+}
+
+[data-theme="dark"] .message-card.user .message-time-breakdown,
+[data-theme="dark"] .message-card.private .message-time-breakdown {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .message-time-breakdown-bar-track {
+  background: var(--caff-surface-hover);
+}
+
+[data-theme="dark"] .message-time-breakdown-bar-fill {
+  background: var(--caff-border-strong);
+}
+
+[data-theme="dark"] .message-time-breakdown-bar-amount {
+  color: var(--caff-text-soft);
+}
+
+[data-theme="dark"] .message-time-breakdown-metric {
+  background: var(--caff-surface-hover);
+  border-color: var(--caff-border);
+}
+
+[data-theme="dark"] .message-time-breakdown-step {
+  border-color: var(--caff-border);
+  background: var(--caff-surface-hover);
+}
+
+[data-theme="dark"] .message-time-breakdown-step-index {
+  color: var(--caff-text-soft);
+}
+
+[data-theme="dark"] .message-time-breakdown-step-category {
+  background: color-mix(in srgb, var(--caff-text-soft) 16%, transparent);
+}
+
+[data-theme="dark"] .message-time-breakdown-step-extra {
+  color: var(--caff-text-soft);
+}
+
+[data-theme="dark"] .message-time-breakdown-note {
+  color: var(--caff-text-soft);
+}
+
+[data-theme="dark"] .message-time-breakdown-note.failed {
+  color: var(--caff-danger);
+}
+
 .message-live-hint {
   display: inline-flex;
   align-items: center;
