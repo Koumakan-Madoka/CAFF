@@ -16,8 +16,11 @@ const { createChatWorkspaceOperationRepository } = require('../storage/chat/work
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
+const { createTurnTimeBreakdownRepository } = require('../storage/chat/turn-time-breakdown.repository');
 const { createChatMessageRecoveryRepository } = require('../storage/chat/message-recovery.repository');
 const { createChatSystemServiceConfigRepository } = require('../storage/chat/system-service-config.repository');
+const { createChatSystemServiceToggleRepository } = require('../storage/chat/system-service-toggle.repository');
+const { createChatSystemServiceCredentialRepository } = require('../storage/chat/system-service-credential.repository');
 const { createChatPrivateMessageRepository } = require('../storage/chat/private-message.repository');
 const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.repository');
 const { createChatSummarySegmentRepository } = require('../storage/chat/summary-segment.repository');
@@ -982,8 +985,11 @@ export class ChatAppStore {
       this.participantRepository = createChatParticipantRepository(this.db);
       this.messageRepository = createChatMessageRepository(this.db);
       this.messageDetailRepository = createChatMessageDetailRepository(this.db);
+      this.turnTimeBreakdownRepository = createTurnTimeBreakdownRepository(this.db);
       this.messageRecoveryRepository = createChatMessageRecoveryRepository(this.db);
       this.systemServiceConfigRepository = createChatSystemServiceConfigRepository(this.db);
+      this.systemServiceToggleRepository = createChatSystemServiceToggleRepository(this.db);
+      this.systemServiceCredentialRepository = createChatSystemServiceCredentialRepository(this.db);
       this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
       this.memoryCardRepository = createChatMemoryCardRepository(this.db);
       this.summarySegmentRepository = createChatSummarySegmentRepository(this.db);
@@ -4241,6 +4247,76 @@ export class ChatAppStore {
         nowIso()
       )
     );
+  }
+
+  getSystemServiceToggle(serviceType: any) {
+    const row = this.systemServiceToggleRepository.get(String(serviceType || '').trim());
+    // Absent row = default-off (contract §6); the migration never seeds.
+    return Boolean(row && row.enabled === 1);
+  }
+
+  // INTERNAL ONLY (contract §6): the row carries the plaintext API key. It
+  // feeds the resolver, the client factory, and the credential write path —
+  // it must never be serialized into an API response, error body, log line,
+  // or event payload.
+  getSystemServiceCredential(serviceType: any) {
+    const row = this.systemServiceCredentialRepository.get(String(serviceType || '').trim());
+    if (!row) {
+      return null;
+    }
+    return {
+      serviceType: row.service_type,
+      apiKey: row.api_key,
+      baseUrl: row.base_url,
+      model: row.model,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  // Read-modify-write with explicit semantics: `setApiKey` stores a new key,
+  // `clearApiKey: true` removes it, `baseUrl`/`model` as a non-empty string
+  // store an override and as '' reset to the client defaults. Absent fields
+  // leave the stored value unchanged. Returns only non-secret state so the
+  // key never flows back through a return value either.
+  updateSystemServiceCredential(serviceType: any, changes: any = {}) {
+    const normalizedServiceType = String(serviceType || '').trim();
+    if (!normalizedServiceType) {
+      throw new Error('serviceType is required');
+    }
+    const existing = this.systemServiceCredentialRepository.get(normalizedServiceType);
+    const next = {
+      apiKey: existing ? existing.api_key : null,
+      baseUrl: existing ? existing.base_url : null,
+      model: existing ? existing.model : null,
+    };
+    if (Object.prototype.hasOwnProperty.call(changes, 'setApiKey')) {
+      next.apiKey = String(changes.setApiKey || '').trim() || null;
+    }
+    if (changes.clearApiKey === true) {
+      next.apiKey = null;
+    }
+    if (Object.prototype.hasOwnProperty.call(changes, 'baseUrl')) {
+      next.baseUrl = String(changes.baseUrl || '').trim() || null;
+    }
+    if (Object.prototype.hasOwnProperty.call(changes, 'model')) {
+      next.model = String(changes.model || '').trim() || null;
+    }
+    const updatedAt = nowIso();
+    this.systemServiceCredentialRepository.save(normalizedServiceType, next, updatedAt);
+    return {
+      apiKeyConfigured: Boolean(next.apiKey),
+      baseUrl: next.baseUrl,
+      model: next.model,
+      updatedAt,
+    };
+  }
+
+  setSystemServiceToggle(serviceType: any, enabled: any) {
+    const normalizedServiceType = String(serviceType || '').trim();
+    if (!normalizedServiceType) {
+      throw new Error('serviceType is required');
+    }
+    return this.systemServiceToggleRepository.setEnabled(normalizedServiceType, Boolean(enabled), nowIso());
   }
 
   getSystemServiceConfig(serviceType: any) {

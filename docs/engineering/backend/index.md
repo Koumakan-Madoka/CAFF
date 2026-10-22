@@ -18,6 +18,7 @@ backend domain services.
 - Digest-to-skill draft extraction and confirmation (`../runtime/skill-extraction.md`)
 - Cross-conversation summary segment memory search and no-message memory health/backfill projections (`summary-memory.md`)
 - Bounded agent metrics window and projections (`agent-metrics.md`)
+- Per-turn time breakdown: rule/JEV classification, async pipeline, lazy backfill, and panel (`turn-time-breakdown.md`)
 - Reversible message detail tables, atomic dual writes, dual reads, and bounded
   context-snapshot pagination (`message-detail-storage.md`)
 - Manual failed/user-stopped message Recovery Capsule persistence, evidence grading, isolated
@@ -69,6 +70,7 @@ backend domain services.
 - `../runtime/skill-extraction.md`: `/digest extract-skill` and `/skill-drafts` contracts
 - `summary-memory.md`: searchable digest segment ledger, `/api/memory/search` contracts, and OOM-safe no-message health/backfill projections (`getConversationWithoutMessages()` / header-only global paths, `listMessages` poison guard, heap/RSS/latency budgets)
 - `agent-metrics.md`: `/api/metrics/agent` dual-boundary ≤31-day window (400 `metrics_agent_window_invalid`, no silent default), bounded SQL projections (no raw `metadata_json`/`event_json` materialization), offline CLI explicit-unbounded mode, and production-shape gate budgets
+- `turn-time-breakdown.md`: per-reply "耗时分析" — category taxonomy, wall-clock union attribution with priority slicing, rule classifier + JEV fallback (switch, cache, truncation, fail-soft), async non-blocking pipeline hooked at the pi event stream (`tool_execution_end`, secondary `tryAppendInvocationEvent`), storage schema, lazy on-click backfill, API, and panel contracts
 - `message-detail-storage.md`: message-keyed context snapshot/model usage tables,
   atomic Expand dual writes, table-first metadata fallback reads, first-plus-latest
   call retention, stable cursor pagination, deletion, and rollback contracts

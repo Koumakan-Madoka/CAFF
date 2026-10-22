@@ -346,12 +346,17 @@ test('provider refresh failure does not block the initial system services view o
         async refresh() { calls.push('system-services'); },
       };
     },
+    createJevConfigManagement() {
+      return {
+        async refresh() { calls.push('jev-services'); },
+      };
+    },
   };
 
   dom.window.eval(source);
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(calls, ['roles', 'providers', 'system-services']);
+  assert.deepEqual(calls, ['roles', 'providers', 'system-services', 'jev-services']);
   assert.equal(dom.window.document.body.dataset.managementReady, 'true');
   assert.equal(dom.window.document.getElementById('system-services-view').classList.contains('hidden'), false);
   assert.equal(dom.window.document.getElementById('show-system-services').getAttribute('aria-selected'), 'true');

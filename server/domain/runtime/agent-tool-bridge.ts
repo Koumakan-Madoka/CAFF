@@ -380,6 +380,7 @@ export function createAgentToolBridge(options: any = {}) {
   const resolveProject = typeof options.resolveProject === 'function' ? options.resolveProject : () => null;
   let piCapabilityBridge = options.piCapabilityBridge || null;
   let typeSafeClient = options.typeSafeClient || null;
+  const timeBreakdownPipeline = options.turnTimeBreakdownPipeline || null;
   const activeInvocations = new Map();
   const workspaceAuthorizations = options.workspaceAuthorizations || new RoomWorkspaceAuthorizationStore();
 
@@ -417,6 +418,39 @@ export function createAgentToolBridge(options: any = {}) {
     if (runStore && taskId && typeof runStore.appendTaskEvent === 'function') {
       try {
         runStore.appendTaskEvent(taskId, eventType, payload);
+      } catch {}
+    }
+
+    // Turn time breakdown (contract §8): CAFF-native bridge tools bypass the
+    // pi event stream, so this secondary hook is their only classification
+    // source. Enqueue only — never awaited, dedup by toolCallId.
+    if (timeBreakdownPipeline && eventType === 'agent_tool_call' && payload && typeof payload === 'object') {
+      try {
+        const endedAtMs = Date.now();
+        const durationMs = Number.isFinite(Number(payload.durationMs)) ? Number(payload.durationMs) : null;
+        let output = '';
+
+        try {
+          output = payload.result !== undefined ? JSON.stringify(payload.result) : '';
+        } catch {
+          output = '';
+        }
+
+        timeBreakdownPipeline.enqueueStep({
+          taskId,
+          messageId: context.assistantMessageId || null,
+          conversationId: context.conversationId || null,
+          step: {
+            stepKey: String(payload.toolCallId || payload.invocationId || `${payload.tool || 'bridge'}:${endedAtMs}`),
+            toolCallId: String(payload.toolCallId || ''),
+            toolName: String(payload.tool || 'bridge'),
+            args: payload.request !== undefined ? payload.request : null,
+            output,
+            isError: payload.status !== 'succeeded',
+            startedAtMs: durationMs !== null ? endedAtMs - durationMs : null,
+            endedAtMs,
+          },
+        });
       } catch {}
     }
 

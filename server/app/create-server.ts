@@ -25,6 +25,8 @@ const { createModelProvidersController } = require('../api/model-providers-contr
 const { createSubscriptionAuthController } = require('../api/subscription-auth-controller');
 const { createModelCatalogController } = require('../api/model-catalog-controller');
 const { createRecoveryScribeConfigController } = require('../api/recovery-scribe-config-controller');
+const { createTurnTimeBreakdownJevConfigController } = require('../api/turn-time-breakdown-jev-config-controller');
+const { createJevEnabledResolver, createJevServiceConfigService, readJevClientMaterial } = require('../domain/runtime/jev-service-config');
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
@@ -39,8 +41,10 @@ const {
   MAX_IMAGE_WIDTH,
 } = require('../../lib/image-constants');
 const { resolveToolRelativePath } = require('../http/path-utils');
-const { HOST, PORT, ROOT_DIR } = require('./config');
+const { HOST, PORT, ROOT_DIR, TYPESAFE_MAX_REQUESTS, TYPESAFE_TOKEN_BUDGET } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
+const { createTurnTimeBreakdownPipeline } = require('../domain/runtime/turn-time-breakdown-pipeline');
+const { createTypeSafeClient } = require('../domain/integrations/typesafe/typesafe-client');
 const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
 const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
 const {
@@ -657,9 +661,55 @@ export function createServerApp(options: any = {}) {
     },
   });
 
+  // Turn time breakdown pipeline (contract §8): created once per server,
+  // shared by the pi-event hook (agent executor) and the bridge hook.
+  const turnTimeBreakdownPipeline = createTurnTimeBreakdownPipeline({
+    repository: store.turnTimeBreakdownRepository,
+    // §6: single decision point, both gates read from the DB inside the
+    // resolver — the UI-managed toggle (chat_system_service_toggles) and a
+    // stored API key (chat_system_service_credentials). The classification
+    // pipeline NEVER reads TYPESAFE_* env (the panel is the only switch);
+    // the resolver reads the store on every call, so UI changes take
+    // effect in this process without a restart. The per-project
+    // projects.json switch is deprecated and no longer participates.
+    resolveJevEnabled: createJevEnabledResolver({
+      store,
+    }),
+    getJevClientFingerprint() {
+      // Rebuild the cached client exactly when the stored credential
+      // material changes (key rotation, endpoint/model override, key
+      // cleared) — same-process immediate effect without a restart.
+      const material = readJevClientMaterial(store);
+      return material ? material.fingerprint : 'none';
+    },
+    createJevClient() {
+      // §6: dedicated client instance with its own process-local budget —
+      // classification volume must not consume the bridge client's budget.
+      // Built ONLY from the DB credential row: env: {} cuts every
+      // TYPESAFE_* fallback in the shared client factory, so a leftover
+      // env key can never silently drive classification.
+      const material = readJevClientMaterial(store);
+
+      if (!material) {
+        return null;
+      }
+
+      return createTypeSafeClient({
+        apiKey: material.apiKey,
+        baseUrl: material.baseUrl,
+        model: material.model,
+        env: {},
+        maxRequests: TYPESAFE_MAX_REQUESTS,
+        tokenBudget: TYPESAFE_TOKEN_BUDGET,
+        timeoutMs: 8000,
+      });
+    },
+  });
+
   const agentToolBridge = createAgentToolBridge({
     store,
     agentDir,
+    turnTimeBreakdownPipeline,
     piCapabilityBridge: options.piCapabilityBridge,
     crossConversationDeliveryService,
     cancelDelegation(delegationId: any, reason: any) {
@@ -722,6 +772,7 @@ export function createServerApp(options: any = {}) {
       return activeProjectDir;
     },
     agentToolBridge,
+    turnTimeBreakdownPipeline,
     broadcastEvent,
     broadcastConversationSummary,
     broadcastRuntimeState,
@@ -1187,6 +1238,21 @@ export function createServerApp(options: any = {}) {
           broadcastEvent,
         })]
       : []),
+    createTurnTimeBreakdownJevConfigController({
+      service: createJevServiceConfigService({
+        store,
+        turnTimeBreakdownRepository: store.turnTimeBreakdownRepository,
+      }),
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+      broadcastEvent,
+    }),
     createProjectsController({ projectManager, syncActiveProject }),
     createAgentToolsController({ agentToolBridge }),
     createConversationDeliveriesController({
@@ -1217,6 +1283,7 @@ export function createServerApp(options: any = {}) {
       conversationMessageDeletionService,
       messageRecoveryService,
       conversationMutationCoordinator,
+      turnTimeBreakdownPipeline,
       uploadService,
     }),
     createImageUploadController({
