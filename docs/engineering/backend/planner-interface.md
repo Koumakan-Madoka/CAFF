@@ -7,10 +7,11 @@ It covers planner attribution, mutation guards, Goal control, durable attention,
 and bounded monitoring. It does not introduce a CLI, MCP, a review/verdict
 protocol, different implementer prompts, or new DAG/delegation/Feishu behavior.
 
-**M1 planner-reviewed contract; implementation in progress, not shipped.**
-M1 passed planner re-review at `6d22d583`; the required credential-location
-amendment was committed at `1a0fdb74`. M2–M5 must implement and verify this
-contract before integration into `develop`.
+**Implemented P1 contract.** This document describes the implementation in the
+revision containing it, including identity/guards, Goal control, attention and
+bounded views. It is not a declaration that any running instance was upgraded:
+integration, acceptance and deployment remain separately authorized operations
+under caff-workflow.
 
 Related implemented contracts: [Session Goal](session-goal.md),
 [DAG execution, D28](dag-execution.md), [controller patterns](controller-patterns.md),
@@ -37,10 +38,9 @@ type Principal =
 P1 supports one configured local planner identity per server instance:
 `plannerId = 'local-planner'`, `plannerName = 'External Planner'` by default.
 The deployment may configure the name (`CAFF_PLANNER_NAME`); requests cannot.
-M2 must document this optional setting in `.env.example`, including the default
-and an example `# CAFF_PLANNER_NAME=Claude Code`. This configures attribution,
-not a credential or a Room agent. M1 changes only this interface contract; it
-neither edits the local environment nor implements the setting.
+`.env.example` documents the default and optional
+`# CAFF_PLANNER_NAME=Claude Code`. This configures attribution, not a credential
+or a Room agent; it does not edit the local environment.
 The ID is stable across credential rotation. A planner is not a Room participant,
 cannot own a Goal, and consumes no model slot. Multiple independent planner
 identities and credential administration are not P1 features.
@@ -65,7 +65,7 @@ identities and credential administration are not P1 features.
   absolute path and apply the same protection/ancestor checks. Missing required
   state-directory configuration or unsafe paths fail closed. Log the resolved
   credential path at startup, never the token. This is runtime state, never a
-  repository file. M2 documents both planner settings in `.env.example`.
+  repository file. Both planner settings are documented in `.env.example`.
 - The directory/file must be owner-only: directory `0700` and file `0600` on
   POSIX; the SID-only, protected Windows DACL specified below on Windows.
   A chmod call alone is not evidence of Windows confidentiality. Reject
@@ -160,12 +160,12 @@ ordinary read/traverse access from rights permitting path replacement. A
 root-owned POSIX sticky temporary ancestor is compatible with a securely owned
 private child; an arbitrary other-user-writable ancestor is not.
 
-M2 evidence must include automated command-construction and pure ACE-validation
-tests: paths with spaces/quotes/Chinese characters, SID-only grants, stale
+Credential verification includes automated command-construction and pure
+ACE-validation tests: paths with spaces/quotes/Chinese characters, SID-only grants, stale
 explicit or inherited group grants (including unresolved SIDs), missing owner
 access, unprotected/null DACL, wrong owner/flags, helper failure and malformed
-output. Separately, before M2 review, GPT or the planner must run a **local
-Windows check** against an isolated instance: inspect the actual directory and
+output. The automated matrix is supplemented by a **local Windows check**
+against an isolated instance: inspect the actual directory and
 file descriptors by SID, resolve the local CodexSandboxUsers SID for the check
 only, confirm that group has no read access, and prove a credential-authenticated
 request succeeds. Record the check method, sanitized SID/ACE result and HTTP
@@ -568,8 +568,8 @@ resolved as superseded and the new proposal gets its own attention item.
 The complete replay feed therefore retains both sides of the replacement,
 including replacements by a different proposer. This is audit of draft
 replacement, not an accepted/rejected verdict or permission for an agent to
-rule on a planner-bound Goal. M3 implements the ruling/proposal transaction;
-M4 adds both attention transitions to that same transaction.
+rule on a planner-bound Goal. The ruling/proposal write and both attention
+transitions share that same transaction.
 
 The browser displays the pending proposal before sending a conflicting action;
 a 409 caused by a race also offers confirmation. Only an explicit user confirm
@@ -599,7 +599,7 @@ budget/failure counters. Do not create a new Goal or reset/enqueue a runner
 cycle merely to bind it. The revision follows the existing fresh-session rule.
 Record `adoption: { boundBy: { kind: 'user' }, reason }` in the binding, with
 `boundAt` as the time; this is not a proposal ruling. No implicit adoption or
-binding is permitted. In M3 the Goal panel adds a minimal “交给规划者” entry for
+binding is permitted. The Goal panel provides a minimal “交给规划者” entry for
 an eligible unbound Goal. It displays a user confirmation, then sends bind-planner
 with the displayed ID/revision and reason through the CSRF-protected browser
 path (user principal, never planner bearer); cancellation has no writes.
@@ -708,11 +708,10 @@ Successful attribution comes only from actual completedAgentIds, not the root's
 status alone. A marker named unknown is always conservative/manual. Keep the
 starting Goal association server-derived and preserve it through task updates.
 
-For subsequent M4 monitoring details, prefer explicit resolution over inference,
-leave uncertain ownership unprocessed, do not replay history or guess legacy
-associations, and preserve existing behavior. Record such clarifications at M4
-review; changes to committed decisions, acceptance or safety boundaries still
-require a pause.
+Monitoring follows conservative rules: prefer explicit resolution over
+inference, leave uncertain ownership unprocessed, do not replay history or guess
+legacy associations, and preserve existing behavior. Changes to committed
+decisions, acceptance or safety boundaries still require a pause.
 
 Acknowledgement accepts a nonblank reason only for goal_completed/turn_failed
 (400 `attention_reason_required` if absent/blank). Persist that reason alongside
@@ -934,9 +933,14 @@ aliases where old clients depend on them; new global guard codes are canonical.
 - Agent-tools remain invocation-authenticated. Feishu verification and webhook
   responses, native DAG completion, cross-Room delivery and delegation do not
   gain new features or weaken authentication.
-- M5 synchronizes `session-goal.md`, the D28 section of `dag-execution.md`,
-  `conversation-title.md`, controller/bootstrap/frontend guard contracts and any
-  runtime documentation affected by the final implementation.
+- Accepting a legacy set proposal now revalidates its proposer/default owner
+  against the current routable roster/runtime profile. A removed/unavailable
+  proposer returns 400 `goal_owner_invalid` without consuming the proposal.
+  Dismiss it and resubmit set with an explicit valid owner (M3 review N10).
+- Related contracts are synchronized in `session-goal.md`, the D28 section of
+  `dag-execution.md`, `conversation-title.md`, `controller-patterns.md`,
+  `architecture.md` (bootstrap/lifecycle), frontend `ui-structure.md`, and runtime
+  `conversation-turn-queue.md` / `agent-session-reuse.md`.
 
 ### Planner-confirmed decision: factual updates and session reuse
 
@@ -953,10 +957,9 @@ optimization would need a separately specified versioned Goal-delta delivery/ack
 provider-known contract revision versus delivery revision, atomic claim/race
 checks, restart coverage and prompt parity tests. That is not safe to hide inside
 this P1 interface change. No reuse exception is implemented in P1. The planner
-confirmed this and the per-turn failure/default choices in the M1 review; the
-planner will update the Goal decision classifications after M1 passes.
+confirmed this and the per-turn failure/default choices in the M1 review.
 
-### Acceptance evidence required during implementation
+### Required regression and acceptance evidence
 
 1. Credential/attribution HTTP tests: valid planner message/ruling; missing,
    wrong and malformed credentials with zero writes; forged body identity;

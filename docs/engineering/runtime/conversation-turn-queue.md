@@ -77,6 +77,43 @@ const promptMessages = store.listPromptMessages(conversationId, {
 ```
 SQLite selects the bounded union first, then the runtime applies visibility and prompt-user replacement to that canonical set.
 
+## Planner Submission, Attention And Monitoring
+
+- Authenticated planner messages preserve role=user for existing routing but
+  persist configured planner sender/source/principal server-side. They use the
+  same main/side policy, image preflight and durable queue, not an execution
+  bypass. Responses are lean acknowledgements without history/global runtime.
+- Planner `clientRequestId` retries reuse the persistent per-Room message
+  identity. Transactional acceptance checks duplicates under an immediate write
+  lock before new persistence; a matching retry returns dispatch=duplicate and
+  the original main/side lane/target. It neither rewrites attribution nor
+  broadcasts creation/enqueues/starts work again, even while the first turn is
+  running. Changed content/images return MESSAGE_IDEMPOTENCY_CONFLICT. Recovery
+  remains responsible for durably accepted pending work, not HTTP retry replay;
+  there is no exactly-once model-execution guarantee.
+- Root main and independent side tasks save a server-derived starting Goal
+  ID/revision. Terminal failure creates one durable attention item only if the
+  current Goal ID still matches; use its terminal revision. Reply children,
+  internal retries, user cancellation and tasks with no starting Goal create
+  no item. Replacement/clear never assigns an old task to a new Goal.
+- Store terminal-task persistence and attention commit together. failedAgentIds
+  comes from actual failure attribution, not the owner/roster. A later successful
+  terminal commit resolves only earlier clearly single-agent failures for the
+  same Goal/agent/lane. Multi-agent/unknown requires explicit resolution; cancel
+  neither creates nor resolves. This does not change runner failure counters,
+  thresholds, turn limits, retry or cancellation behavior.
+- Planner state/portfolio reads use indexed terminal-root projections and
+  `getConversationMutationState` for busy (main/side active/dispatching/queued).
+  They neither initialize queues nor read message text. lastTurn is the latest
+  terminal main/side root for the Room, not a claim about the current Goal;
+  summary is a fixed terminal-status label, not provider error text/output.
+  Exact lifecycle and <=64 KiB state schema are in
+  [planner-interface.md](../backend/planner-interface.md).
+- Regressions: `tests/http/planner-lean-retry.test.js`,
+  `tests/storage/planner-turn-attention.test.js`,
+  `tests/http/planner-state.test.js`, and interrupted-run suites. Existing
+  side/main dispatch, Feishu, DAG, cross-Room and delegation tests remain gates.
+
 ## Process Restart And Shutdown Boundary
 
 - This lifecycle assumes a single CAFF process exclusively owns its SQLite
@@ -119,6 +156,13 @@ SQLite selects the bounded union first, then the runtime applies visibility and 
   a run handle whose child never emits close (see [Agent Runtime](agent-runtime.md)).
 - Reconciliation emits no new SSE event. Clients reconnect against persisted
   failed states; eligible records can enter the existing manual Recovery API.
+  Newly interrupted root tasks also write turn_failed attention in the same
+  reconciliation transaction, only when their saved starting Goal still matches;
+  attribution is unknown, requiring explicit resolution. Old already-terminal
+  tasks are not replayed and legacy tasks without Goal association are not
+  guessed. After-commit attention notifications wake waits independently of SSE.
+  Server close ends planner waits with 503/cleans listeners and timers before
+  runtime/database teardown; the durable creation cursor survives reconnect.
 
 ### Validation
 
@@ -346,10 +390,14 @@ if (triggerType === 'agent' && dispatchedTraceRecipientKeys.has(sourceTraceKey))
     - `acceptedMessage`: persisted user message that was accepted immediately
     - `conversation`: latest stored conversation snapshot
     - `conversations`: updated conversation summaries
-    - `dispatch`: `'started' | 'queued'`
+    - `dispatch`: `'started' | 'queued'` (planner matching retry: `'duplicate'`)
     - `dispatchLane`: `'main' | 'side'`
     - `dispatchTargetAgentId`: `string | null`
     - `runtime`: latest runtime payload from `buildRuntimePayload()`
+  - The above full envelope is the browser contract. Planner replies contain
+    only conversationId, lean acceptedMessage identity/allowlisted metadata and
+    dispatch/lane/target; no contentBlocks, history or runtime. See the planner
+    submission section above.
 - `POST /api/conversations/:conversationId/stop`
   - Success response: `{ conversationId, turn, agentSlots, runtime }`
   - Domain result from `turnOrchestrator.requestStopConversationExecution(...)` also tracks `cancelledQueuedSideDispatchCount`
@@ -452,7 +500,7 @@ if (triggerType === 'agent' && dispatchedTraceRecipientKeys.has(sourceTraceKey))
 | `DELETE /conversation` | queued side-slot work | `409 当前会话仍有待处理消息，请等待自动续跑完成后再删除` |
 | `DELETE /conversation?force=1` | idle queued main-lane failure | delete succeeds and drops the queued main-lane messages with the conversation |
 | queue drain loop | `runConversationTurn()` throws | log the failure, keep queue pending, do not advance `lastConsumedUserMessageId`, and expose queue failure metadata |
-| queue drain loop | Goal Runner turn returns zero replies + structured eligible failures in ≤60s | persist the same-epoch streak; on count 3 pause Goal before another continuation can be claimed |
+| queue drain loop | Goal Runner turn returns structured eligible failures | persist existing same-mode/total streaks; at the configured threshold pause before another continuation; duration never participates |
 | queue drain loop | Agent failed replies exist but the call did not throw | still consume the user message under existing semantics; evaluate Goal streak from the returned result instead of queue `catch` |
 | queue drain loop | ordinary user batch follows a Goal failure streak | clear the streak without changing the Goal lifecycle status |
 
