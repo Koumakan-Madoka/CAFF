@@ -210,6 +210,15 @@ webhook validation. `X-CAFF-Principal: planner` on those routes is rejected with
   committed decision linked by `adrPath`. All other kinds return 403, including
   planner REST direct actions, proposal acceptance, and replacement paths that
   would otherwise bypass the same check. Failure leaves all state unchanged.
+  M2 review R2: non-user principals (including planners and agents) also cannot
+  downgrade an existing high-risk criterion to any non-high risk, delete its ID,
+  or omit it when replacing/clearing a Goal. Check against the previous Goal,
+  regardless of the criterion's current acceptance status. Return 403
+  `goal_high_risk_change_user_required`; a high-risk waiver still uses
+  `goal_high_risk_waiver_user_required`. This prevents downgrade-then-waive and
+  delete/replace bypasses. Users may make these structural changes subject to
+  ordinary validation; normal-risk changes/deletions remain unchanged. Agents
+  may propose changes for a user to rule on, but cannot accept them themselves.
 - Normal waivers still require reviewed `revise`, evidence/reason validation,
   and independent review. `update-delivery` cannot introduce a waiver.
 - Generic Room `PUT` is not a Goal write backdoor. When replacing unrelated
@@ -690,6 +699,7 @@ Missing required bounded-store projections fail closed with 501
 | 403 `api_host_mismatch`, `api_origin_mismatch`, `api_csrf_invalid` | Browser/planner mutation guard failure, as applicable |
 | 403 existing local-admin `*_local_only` | Existing local-only boundary remains |
 | 403 `goal_high_risk_waiver_user_required`, `goal_accepted_adr_change_user_required` | Direct user ruling in CAFF required; attestation is insufficient |
+| 403 `goal_high_risk_change_user_required` | Non-user cannot downgrade/delete an existing high-risk criterion or drop it on Goal replacement/clear; ask the user to rule |
 | 403 `goal_metadata_reserved` | Generic Room PUT cannot alter server-owned Goal/D28 binding metadata; use the Goal endpoint |
 | 403 `goal_planner_ruling_required` | Room agent cannot rule on a planner-driven Goal |
 | 403 `goal_planner_binding_user_required` | Only the user may adopt an existing Goal via bind-planner |
@@ -757,6 +767,10 @@ planner will update the Goal decision classifications after M1 passes.
    wrong and malformed credentials with zero writes; forged body identity;
    planner rejection and user success for both user-only gates, including direct
    actions and replacement bypass attempts; rotation and secure-file failure.
+   M3/R2 additionally covers planner and agent downgrade/delete/replacement
+   attempts (403 without Goal/proposal/ruling mutation), user success for the
+   same changes and unchanged normal-risk behavior. Include the actual agent
+   callback/bridge acceptance path, not only a caller-supplied domain principal.
    M2 also requires the Windows command/ACE unit matrix and local isolated
    CodexSandboxUsers-no-read / valid-planner-auth check specified in §1; include
    sanitized diagnostics and results in the M2 review evidence. Cover default

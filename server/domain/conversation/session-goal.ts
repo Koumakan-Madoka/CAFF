@@ -981,6 +981,17 @@ function assertUserOnlyGoalChanges(previousGoal: any, nextGoal: any, principal: 
       code: 'goal_high_risk_waiver_user_required', criterionIds: newlyWaived.map((criterion: any) => criterion.id),
     });
   }
+  // Protect the existing boundary, not only a newly waived status: otherwise
+  // a non-user can downgrade first and waive later, or drop it in a new Goal.
+  // A changed ID is removal too; clearing a Goal removes every criterion.
+  const next = new Map<string, any>((nextGoal?.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
+  const downgradedOrRemoved = [...previous.values()].filter((criterion: any) =>
+    criterion.risk === 'high' && next.get(criterion.id)?.risk !== 'high');
+  if (downgradedOrRemoved.length > 0) {
+    throw createHttpError(403, 'High-risk acceptance criteria can only be downgraded or removed by the user', {
+      code: 'goal_high_risk_change_user_required', criterionIds: downgradedOrRemoved.map((criterion: any) => criterion.id),
+    });
+  }
 }
 
 function goalFromMutation(action: string, existingGoal: any, input: any, timestamp: string) {
