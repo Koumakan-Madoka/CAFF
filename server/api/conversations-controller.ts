@@ -597,7 +597,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         ...enrichedBody,
         projectScopeId,
         modeId,
-        metadata: {},
+        metadata: String(body.title || '').trim() ? { titleSource: 'manual' } : {},
       });
 
       sendJson(res, 201, {
@@ -890,7 +890,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         // Authenticated by the server before parsing, never from JSON.
         // Browser rulings remain user; planner rulings retain their identity.
         ruledBy: principal,
-      });
+      }, { resolveRuntimeParticipants: roleService?.resolveRuntimeParticipants });
       let autoContinuation = null;
 
       if (req.method === 'POST') {

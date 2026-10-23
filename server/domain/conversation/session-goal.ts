@@ -161,6 +161,27 @@ function normalizeGoalOwner(value: any) {
   };
 }
 
+function initialGoalStatus(input: any) {
+  if (!Object.prototype.hasOwnProperty.call(input, 'status')) return 'active';
+  if (input.status === 'active' || input.status === 'paused') return input.status;
+  throw createHttpError(400, 'Initial Goal status must be active or paused', { code: 'goal_initial_status_invalid' });
+}
+
+function resolveGoalOwner(conversation: any, value: any, options: any = {}) {
+  const agentId = isPlainObject(value) && typeof value.agentId === 'string' ? normalizeText(value.agentId) : '';
+  const invalid = () => createHttpError(400, 'Goal owner must be a current routable conversation participant', { code: 'goal_owner_invalid' });
+  if (!agentId || isNonRoutableSystemActorId(agentId)) throw invalid();
+  const agent = (Array.isArray(conversation.agents) ? conversation.agents : []).find((candidate: any) => candidate?.id === agentId);
+  if (!agent || (agent.availability?.status && agent.availability.status !== 'available')) throw invalid();
+  if (typeof options.resolveRuntimeParticipants === 'function') {
+    try {
+      const resolved = options.resolveRuntimeParticipants([agent]);
+      if (!Array.isArray(resolved) || !resolved.some((candidate: any) => candidate?.id === agentId)) throw invalid();
+    } catch { throw invalid(); }
+  }
+  return { agentId, agentName: normalizeText(agent.name) || agentId };
+}
+
 function normalizeProposalAction(value: any) {
   const action = normalizeText(value).toLowerCase();
   return SESSION_GOAL_PROPOSAL_ACTIONS.has(action) ? action : '';
@@ -345,6 +366,10 @@ function normalizeSessionGoalProposal(value: any) {
     ...(impact ? { impact } : {}),
     ...(affectedWorkItems.length > 0 ? { affectedWorkItems } : {}),
     ...(baseRevision !== null ? { baseRevision } : {}),
+    ...(action === 'set' ? {
+      initialStatus: value.initialStatus ?? 'active',
+      ...(Object.prototype.hasOwnProperty.call(value, 'owner') ? { owner: value.owner } : {}),
+    } : {}),
     ...(delivery ? delivery : {}),
     proposedBy: {
       agentId: normalizeText(proposedBy.agentId),
@@ -994,7 +1019,7 @@ function assertUserOnlyGoalChanges(previousGoal: any, nextGoal: any, principal: 
   }
 }
 
-function goalFromMutation(action: string, existingGoal: any, input: any, timestamp: string) {
+function goalFromMutation(action: string, existingGoal: any, input: any, timestamp: string, conversation: any, options: any) {
   if (action === 'set') {
     const objective = normalizeObjective(input && input.objective);
     const delivery = normalizeGoalDelivery(input, timestamp, {
@@ -1003,7 +1028,8 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
     requireAcceptanceCriteria(delivery);
     return {
       objective,
-      status: 'active',
+      status: initialGoalStatus(input),
+      ...(Object.prototype.hasOwnProperty.call(input, 'owner') ? { owner: resolveGoalOwner(conversation, input.owner, options) } : {}),
       createdAt: existingGoal ? existingGoal.createdAt : timestamp,
       updatedAt: timestamp,
       goalId: newGoalId(),
@@ -1105,7 +1131,7 @@ function responseForConversation(conversation: any, overrides: any = {}) {
   };
 }
 
-export function applySessionGoalAction(store: any, conversationId: any, input: any = {}) {
+export function applySessionGoalAction(store: any, conversationId: any, input: any = {}, options: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
   const conversation = getGoalConversation(store, normalizedConversationId);
 
@@ -1199,7 +1225,10 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
         code: 'goal_proposal_self_review',
       });
     }
-    const goal = goalFromMutation(existingProposal.action, existingGoal, existingProposal, timestamp);
+    const mutationInput = existingProposal.action === 'set'
+      ? { ...existingProposal, status: existingProposal.initialStatus ?? 'active' }
+      : existingProposal;
+    const goal = goalFromMutation(existingProposal.action, existingGoal, mutationInput, timestamp, conversation, options);
     assertUserOnlyGoalChanges(existingGoal, goal, ruling.ruledBy, existingProposal.action === 'set');
     const previousCriteria = new Map((existingGoal && existingGoal.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
     const newlyWaivedHighRisk = (goal.acceptanceCriteria || []).filter((criterion: any) => {
@@ -1232,9 +1261,11 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
           }),
         }
       : goal;
-    // Goal owner: accepting a set proposal stamps the proposer as owner.
+    // Explicit owner wins; legacy set proposals still default to the proposer.
+    // Resolve again now: the roster/runtime may have changed while awaiting review.
     const acceptedOwner = existingProposal.action === 'set'
-      ? normalizeGoalOwner(existingProposal.proposedBy)
+      ? goal.owner || (normalizeGoalOwner(existingProposal.proposedBy)
+        ? resolveGoalOwner(conversation, existingProposal.proposedBy, options) : null)
       : null;
     const goalWithOwner = acceptedOwner ? { ...reviewedGoal, owner: acceptedOwner } : reviewedGoal;
     const provisionalChanges = existingProposal.action === 'revise'
@@ -1374,7 +1405,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     });
   }
 
-  const goal = goalFromMutation(action, existingGoal, input, timestamp);
+  const goal = goalFromMutation(action, existingGoal, input, timestamp, conversation, options);
   assertUserOnlyGoalChanges(existingGoal, goal, input.ruledBy, action === 'set');
   const factualRunner = factualOnly ? getSessionGoalRunner(conversation) : null;
   // Checklist progress is factual state inside the current goal epoch. It
@@ -1408,7 +1439,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
   });
 }
 
-export function proposeSessionGoalAction(store: any, conversationId: any, input: any = {}, proposer: any = {}) {
+export function proposeSessionGoalAction(store: any, conversationId: any, input: any = {}, proposer: any = {}, options: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
   const conversation = getGoalConversation(store, normalizedConversationId);
 
@@ -1471,6 +1502,10 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
     ...(objective ? { objective } : {}),
     ...(reason ? { reason } : {}),
     ...(action !== 'set' && existingGoal ? { baseRevision: existingGoal.revision } : {}),
+    ...(action === 'set' ? {
+      initialStatus: initialGoalStatus(input),
+      ...(Object.prototype.hasOwnProperty.call(input, 'owner') ? { owner: resolveGoalOwner(conversation, input.owner, options) } : {}),
+    } : {}),
     ...(proposedDelivery || {}),
     ...(clipText(input.impact, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH) ? { impact: clipText(input.impact, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH) } : {}),
     ...(Array.isArray(input.affectedWorkItems) ? { affectedWorkItems: input.affectedWorkItems } : {}),

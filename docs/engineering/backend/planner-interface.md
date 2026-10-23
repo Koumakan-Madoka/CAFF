@@ -392,6 +392,13 @@ set proposal still defaults to its proposer. A supplied owner overrides that
 default after validation. A paused initial Goal must enqueue **zero** continuation
 messages. An active Goal's first continuation must target the persisted owner,
 not participant order. `status` is initial set state, not a revise/update shortcut.
+A pending set proposal stores this separately as `initialStatus` (its own
+`status` stays `pending`) and retains an explicit proposed owner. Acceptance
+revalidates that owner against the current roster and selected runtime profile;
+an owner removed or made unavailable since proposal creation returns 400 without
+consuming the proposal. A supplied name is never authoritative. Internal
+application/automatic creation titles keep their existing title-source behavior;
+only a caller-supplied nonblank title at the Room-creation HTTP boundary is manual.
 
 ### Merge semantics
 
@@ -692,6 +699,7 @@ Missing required bounded-store projections fail closed with 501
 | --- | --- |
 | 400 `goal_revision_required` | Supply current ID/revision (0/null only for first set) |
 | 400 `goal_owner_invalid` | Choose a currently routable Room participant |
+| 400 `goal_initial_status_invalid` | Initial set status must be active or paused |
 | 400 `idempotency_key_required` | Supply a valid planner Room-creation retry key |
 | 400 `attention_query_invalid` | Correct cursor/filter/timeout |
 | 400 existing Goal validation codes | Invalid definitions, missing verifyBy, evidence IDs/links or waiver reason; nothing written |

@@ -2099,7 +2099,7 @@ export function createAgentToolBridge(options: any = {}) {
           // The ruling principal is persisted atomically with the mutation
           // (durable D28 record the scheduler validates at settle/reconcile).
           ruledBy: { agentId: context.agentId, agentName: context.agentName },
-        });
+        }, { resolveRuntimeParticipants: options.resolveRuntimeParticipants });
         const summary = pickConversationSummary(result.conversation);
 
         broadcastEvent('conversation_goal_proposal_cleared', {
@@ -2184,7 +2184,8 @@ export function createAgentToolBridge(options: any = {}) {
         activeStore,
         context.conversationId,
         goalInput,
-        { agentId: context.agentId, agentName: context.agentName }
+        { agentId: context.agentId, agentName: context.agentName },
+        { resolveRuntimeParticipants: options.resolveRuntimeParticipants }
       );
       const summary = pickConversationSummary(result.conversation);
 

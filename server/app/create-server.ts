@@ -714,6 +714,7 @@ export function createServerApp(options: any = {}) {
     store,
     agentDir,
     turnTimeBreakdownPipeline,
+    resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
     piCapabilityBridge: options.piCapabilityBridge,
     crossConversationDeliveryService,
     cancelDelegation(delegationId: any, reason: any) {
