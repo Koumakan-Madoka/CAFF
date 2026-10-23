@@ -357,6 +357,21 @@ Use each operation's existing safety mechanism, not a universal receipt table:
   tombstone when the Room is deleted, until separately authorized cleanup;
   retry then returns 410 `conversation_gone`, never recreates the target.
   Never store credentials.
+  M4 retry details: version the digest as v1 SHA-256 over a deterministic JSON
+  representation of caller intent. Trim title/project/mode IDs; omitted or blank
+  title means the same default title request. Normalize participant string/object
+  ID aliases, optional profile aliases and skill-reference aliases using existing
+  roster syntax; omit ignored participant properties, deduplicate skill IDs and
+  retain participant/skill order. Object-key order is immaterial. Do not include
+  mutable role/provider defaults or mode-injected skills in the digest.
+  A matching committed mapping is checked before current project/mode/participant
+  availability validation, and again under the creation transaction's write lock.
+  It returns the original lean creation snapshot, not today's title/mode. This
+  never schedules work or reapplies changed defaults. A changed digest conflicts
+  even for a tombstoned key; a matching tombstone returns 410. Deletion marks the
+  mapping in the same SQLite transaction (including cascaded/direct SQL deletes),
+  and neither recreating that Room ID nor a restart makes the key reusable.
+  Duplicate Idempotency-Key headers are invalid, not a comma-joined retry key.
 - **Goal writes** require no Idempotency-Key or receipt. The goalId/revision
   preconditions (plus proposalId for rulings/supersession) prevent replay of a
   committed action. After a lost response, repeating the old request gets 409
