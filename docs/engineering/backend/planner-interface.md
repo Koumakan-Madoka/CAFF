@@ -802,6 +802,29 @@ budget remains 64 KiB plus 1 KiB of Room identity; total size is linear in Room
 count (not a fixed global cap). `observedAt` marks the read; live busy state may
 change immediately after it. Do not claim a transactional snapshot of OS runs.
 
+M4 monitoring details (conservative projection, no inferred recovery):
+- Counts follow the existing Goal normalizer's collection limits and legacy
+  aliases; only presence/status/risk markers cross the SQLite boundary, not
+  decision, criterion, work-item or evidence text.
+- Owner, proposer, ruling principal and planner binding are explicit allowlists.
+  Display names are clipped to 160 code points, timestamps to 80; adoption reason
+  is clipped to 500. Runner uses the existing normalized fields, with failure
+  summaries redacted and clipped and no arbitrary extension fields.
+- lastTurn is the latest terminal main/side root for the Room, ordered by
+  endedAt (updatedAt if absent), then task ID. It does not claim association with
+  the current Goal. Reply children and in-flight roots are excluded. Its ID is
+  the persisted turnId (task ID only if absent); summary is a fixed status label,
+  never error_message/output_text. Missing trustworthy failure classification
+  is omitted, not inferred from free text. A database without run tables has
+  lastTurn=null; creating those tables is not a read side effect.
+- Busy reads existing runtime main/side active/dispatching/queue state, including
+  queued work even when no root task has started. Portfolio obtains grouped
+  unresolved counts once and does not use directory/bootstrap hydration.
+- Never truncate an identifier into another identity: an identifier over 512
+  code points, an oversized legacy objective without a stored Goal ID, or a
+  projection exceeding the stated UTF-8 byte budget fails with 501 rather than
+  returning a misleading identity or falling back to full hydration.
+
 Missing required bounded-store projections fail closed with 501
 `planner_projection_unavailable`, never full-conversation fallback.
 
