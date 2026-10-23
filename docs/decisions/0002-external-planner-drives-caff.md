@@ -202,9 +202,13 @@ Whether to remove any of them will be decided later from usage data.
 
 ### Delivery order
 
-1. **P0:** this ADR, the README positioning and the planner interface
-   specification.
+1. **P0:** this ADR and the README positioning. The planner interface is
+   designed in the P1 Goal. Its committed decisions and acceptance criteria
+   carry the design. The engineering contract is P1's first work item and is
+   merged together with the implementation, because `docs/engineering/` holds
+   only implemented contracts.
 2. **P1, minimal planner support:**
+   - the planner interface contract under `docs/engineering/`, written first;
    - planner identity and attribution;
    - `set` with an owner and an initial paused state;
    - room titles locked at creation;
