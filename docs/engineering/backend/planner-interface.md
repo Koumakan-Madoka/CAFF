@@ -809,11 +809,12 @@ M4 monitoring details (conservative projection, no inferred recovery):
 - Owner, proposer, ruling principal and planner binding are explicit allowlists.
   Display names are clipped to 160 code points, timestamps to 80; adoption reason
   is clipped to 500. Runner uses the existing normalized fields, with failure
-  summaries redacted and clipped and no arbitrary extension fields.
+  summaries redacted and clipped and no arbitrary extension fields. A legacy
+  ruling with no stored ID projects id=null, never a newly invented ruling ID.
 - lastTurn is the latest terminal main/side root for the Room, ordered by
   endedAt (updatedAt if absent), then task ID. It does not claim association with
   the current Goal. Reply children and in-flight roots are excluded. Its ID is
-  the persisted turnId (task ID only if absent); summary is a fixed status label,
+  the persisted turnId (task ID only if absent/unusable); summary is a fixed status label,
   never error_message/output_text. Missing trustworthy failure classification
   is omitted, not inferred from free text. A database without run tables has
   lastTurn=null; creating those tables is not a read side effect.

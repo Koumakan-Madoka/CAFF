@@ -734,6 +734,19 @@ export function createTurnOrchestrator(options: any = {}) {
     return queueState;
   }
 
+  function getPlannerBusyState(conversationId: string) {
+    // Monitoring must not call ensureQueueState/getConversationQueueDepth: those
+    // hydrate headers or pending message bodies and can create queue entries.
+    if (activeConversationIds.has(conversationId) || dispatchingConversationIds.has(conversationId)
+      || activeTurns.has(conversationId) || hasActiveAgentSlots(conversationId)
+      || (queuedSideDispatches.get(conversationId)?.size || 0) > 0) return true;
+    if (typeof store?.hasPendingPlannerMainWork !== 'function') {
+      throw createHttpError(501, 'Bounded planner queue projection unavailable', { code: 'planner_projection_unavailable' });
+    }
+    const cursor = queueStates.get(conversationId)?.lastConsumedUserMessageId;
+    return store.hasPendingPlannerMainWork(conversationId, cursor);
+  }
+
   function getConversationMutationState(conversationId: any) {
     const normalizedConversationId = String(conversationId || '').trim();
     const active = activeConversationIds.has(normalizedConversationId);
@@ -2643,6 +2656,7 @@ export function createTurnOrchestrator(options: any = {}) {
     dispatchCrossConversationDelivery,
     emitTurnProgress,
     getConversationMutationState,
+    getPlannerBusyState,
     getConversationQueueDepth,
     getRuntimeStats,
     listAgentSlotSummaries,

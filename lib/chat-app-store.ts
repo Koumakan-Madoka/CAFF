@@ -15,6 +15,7 @@ const { createChatConversationRepository } = require('../storage/chat/conversati
 const { createChatWorkspaceOperationRepository } = require('../storage/chat/workspace-operation.repository');
 const { createGoalRulingRepository } = require('../storage/chat/goal-ruling.repository');
 const { createPlannerAttentionRepository } = require('../storage/chat/planner-attention.repository');
+const { createPlannerStateRepository } = require('../storage/chat/planner-state.repository');
 const { subscribePlannerAttention } = require('../storage/chat/planner-attention-notifications');
 const { syncPlannerAttention } = require('../server/domain/conversation/planner-attention');
 const { createPlannerTurnAttention } = require('../server/domain/conversation/planner-turn-attention');
@@ -990,6 +991,7 @@ export class ChatAppStore {
       this.goalRulingRepository = createGoalRulingRepository(this.db);
       this.goalRulingRepository.backfill();
       this.plannerAttentionRepository = createPlannerAttentionRepository(this.db);
+      this.plannerStateRepository = createPlannerStateRepository(this.db);
       this.plannerTurnAttention = createPlannerTurnAttention(this.db);
       this.participantRepository = createChatParticipantRepository(this.db);
       this.reconcilePlannerAttention();
@@ -3600,6 +3602,20 @@ export class ChatAppStore {
 
   countUnresolvedPlannerAttention() {
     return this.plannerAttentionRepository.counts();
+  }
+
+  getPlannerConversationState(conversationId: string) {
+    return this.plannerStateRepository.get(conversationId);
+  }
+
+  listPlannerGoalStates() {
+    return this.plannerStateRepository.list();
+  }
+
+  hasPendingPlannerMainWork(conversationId: string, cursor?: string) {
+    const afterMessageId = cursor ?? this.plannerStateRepository.queueCursor(conversationId)
+      ?? this.messageRepository.inferLastConsumedUserMessageId(conversationId);
+    return this.messageRepository.hasPendingMainUserMessages(conversationId, afterMessageId);
   }
 
   reconcilePlannerAttention() {

@@ -1,3 +1,4 @@
+import { ensurePlannerTerminalIndex } from '../run/planner-terminal-projection';
 import {
   migrateLegacyModelFamilyRoles,
   reconcileSystemModelFamilyRoles,
@@ -801,6 +802,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_turn_time_steps_task_id ON chat_turn_time_st
 }
 
 export function migrateChatSchema(db: any, options: any = {}) {
+  ensurePlannerTerminalIndex(db);
   migrateLegacyModelFamilyRoles(db, { backupPath: options.backupPath });
   ensureTurnTimeBreakdownSchema(db);
   db.exec(`
@@ -1568,4 +1570,5 @@ CREATE INDEX IF NOT EXISTS idx_a2a_tasks_session_path ON a2a_tasks (session_path
 CREATE INDEX IF NOT EXISTS idx_a2a_task_events_task_id ON a2a_task_events (task_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_a2a_artifacts_task_id ON a2a_artifacts (task_id, created_at ASC);
   `);
+  ensurePlannerTerminalIndex(db);
 }

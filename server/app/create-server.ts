@@ -19,6 +19,7 @@ const {
 const { createFeishuController } = require('../api/feishu-controller');
 const { createHealthController } = require('../api/health-controller');
 const { createPlannerAttentionController } = require('../api/planner-attention-controller');
+const { createPlannerStateController } = require('../api/planner-state-controller');
 const { createPlannerAttentionWait } = require('../domain/conversation/planner-attention-wait');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createMemoryController } = require('../api/memory-controller');
@@ -1198,6 +1199,7 @@ export function createServerApp(options: any = {}) {
   const plannerAttentionWait = createPlannerAttentionWait(store);
   const router = createRouter([
     createPlannerAttentionController({ store, waitService: plannerAttentionWait }),
+    createPlannerStateController({ store, turnOrchestrator }),
     createHealthController({ getHealthStatus }),
     createBootstrapController({ sseBus, turnOrchestrator, buildBootstrapPayload }),
     createFeishuController({ feishuService: feishuIntegration }),
