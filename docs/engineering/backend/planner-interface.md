@@ -624,7 +624,7 @@ rules or an extra runner iteration.
 | Failure circuit-breaker pause | Once per error-paused runner incident | Explicit resume, or Goal completed/replaced/cleared |
 | Owner removed/unroutable | Once per removed-owner incident, eager roster path and lazy runner path share key | Valid owner assigned/restored, or Goal completed/replaced/cleared |
 | Goal complete | Once per Goal's transition to complete (including accepted complete proposal) | Planner acknowledgement or replacement/clear; mere reads do not resolve it |
-| Terminal turn failure | Once per final failed turn ID associated with a Goal | A later successful turn, explicit resume, acknowledgement, or Goal completed/replaced/cleared |
+| Terminal turn failure | Once per final failed turn ID associated with a Goal | A later successful terminal transition for the same Goal/agent/lane, explicit resume, acknowledgement, or Goal completed/replaced/cleared |
 
 **Planner-confirmed failure frequency:** one item for every terminal failed
 turn, not only a streak threshold. This includes failed queued turns while a
@@ -633,6 +633,23 @@ attempts and multiple failed reply slots inside the same turn. It is an attentio
 not a new pause/retry policy. The existing same-mode/total-streak guards alone
 decide automatic failure pauses. This prevents a first failed round from being
 invisible; one item per turn bounds duplication. The planner can batch reads.
+
+M4 planner clarification: both root `conversation_turn` (main lane) and root
+`conversation_side_dispatch` (side lane) count. Reply child tasks and internal
+retries do not. At root-task creation, persist the server-derived Goal ID and
+revision from that task's starting context. At its terminal transition, create
+attention only if the current live Goal has that same ID, using the terminal
+Goal revision as the occurrence revision. A task started without a Goal cannot
+be assigned to a later Goal; a task started before replacement/clear cannot
+produce attention for the new Goal. Never infer association from a timestamp,
+message body, client claim or the mere presence of a different current Goal.
+
+A successful terminal transition can resolve only earlier failures for the same
+Goal, same agent and same lane (`main` or `side`), ordered by durable terminal
+commit, not turn start time. Another agent's or another lane's success is not
+proof of recovery. Cancellation neither creates nor resolves attention. Other
+scopes remain resolvable by explicit resume, acknowledgement or Goal
+completion/replacement/clear; existing pause thresholds are unchanged.
 
 Acknowledgement accepts a nonblank reason only for goal_completed/turn_failed
 (400 `attention_reason_required` if absent/blank). Persist that reason alongside
@@ -655,7 +672,11 @@ Startup reconciles current proposal, budget-limited runner, failure pause,
 missing owner and completion from bounded metadata and stable occurrence keys.
 Repair missing rows idempotently before serving attention reads; do not replay
 all historical messages or fabricate old turn failures. New turn-failure rows
-commit with terminal turn persistence. Existing resolved rows are never reopened
+commit with terminal turn persistence. Interrupted-run reconciliation also
+inserts attention for newly failed root tasks in that same transaction, but
+only when a saved starting Goal association still matches the live Goal. Do
+not backfill already-terminal historical tasks or guess the Goal association of
+old-format tasks that did not persist one. Existing resolved rows are never reopened
 just because a process restarted. Replacement/clear resolves outstanding items
 from the retired Goal with an explicit resolution, retaining them for replay.
 Room deletion may remove its items, but never resets the global sequence.
