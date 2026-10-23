@@ -49,9 +49,23 @@ identities and credential administration are not P1 features.
 
 - Generate 32 cryptographically random bytes, base64url-encoded, on each server
   start. Compare the supplied value without timing-dependent string comparison.
-- Write `{ version: 1, plannerId, plannerName, token, issuedAt }` atomically to
-  `<agentDir>/runtime/planner.json`, where `agentDir` is this instance's resolved
-  `PI_CODING_AGENT_DIR`. This is runtime state, never a repository file.
+- Write `{ version: 1, plannerId, plannerName, token, issuedAt }` atomically in
+  the current user's state directory, **not agentDir**. Repository/agentDir
+  ancestors may allow sandbox accounts or other accounts to modify/replace the
+  path; a protected file DACL alone cannot make that location trustworthy.
+  Defaults: Windows `%LOCALAPPDATA%/CAFF/planner/`; POSIX
+  `${XDG_STATE_HOME:-~/.local/state}/caff/planner/`.
+- The deterministic filename is `planner-<hostHash>-<port>.json`, where hostHash
+  is the full lowercase hex SHA-256 of the UTF-8 configured bind host after
+  trimming, lowercasing and removing surrounding IPv6 brackets; port is the
+  actual bound decimal port (resolve port `0` after listening). Clients compute
+  it from the instance's bind host/port, not a request Host alias. Distinct
+  instances use distinct files; rotate only after successfully binding.
+- `CAFF_PLANNER_CREDENTIAL_FILE` overrides the entire filename; require an
+  absolute path and apply the same protection/ancestor checks. Missing required
+  state-directory configuration or unsafe paths fail closed. Log the resolved
+  credential path at startup, never the token. This is runtime state, never a
+  repository file. M2 documents both planner settings in `.env.example`.
 - The directory/file must be owner-only: directory `0700` and file `0600` on
   POSIX; the SID-only, protected Windows DACL specified below on Windows.
   A chmod call alone is not evidence of Windows confidentiality. Reject
@@ -63,7 +77,8 @@ identities and credential administration are not P1 features.
   diagnostic; the browser console remains usable. Never publish an insecure
   token or fall back to treating a planner as the user.
 - Isolated instances must have different agent directories, databases and
-  credential files. The DACL denies ordinary other local accounts, including
+  credential files. Tests use temporary LOCALAPPDATA/XDG_STATE_HOME or an
+  explicit temporary CAFF_PLANNER_CREDENTIAL_FILE; never real user state. The DACL denies ordinary other local accounts, including
   accounts whose access comes from CodexSandboxUsers or unresolved group SIDs.
   Processes under the **same account** can still read the credential. SYSTEM
   and administrators exercising ownership/privilege are not isolated by this
@@ -124,7 +139,13 @@ not a reason to weaken the permissions.
 Path integrity is also required: a DACL on a file does not prevent an untrusted
 account from replacing an ancestor it controls. Detect unsafe writable/reparse
 ancestors and fail closed rather than repairing shared repository/sandbox ACLs.
-Use a trusted per-instance agent directory when that check fails.
+Apply these checks to the user-state location or explicit override, not the
+old agentDir location. Use a trusted per-instance state location when they fail;
+never silently fall back to the repository. Ancestor checks may trust the
+current account, SYSTEM and administrators (POSIX root); they must distinguish
+ordinary read/traverse access from rights permitting path replacement. A
+root-owned POSIX sticky temporary ancestor is compatible with a securely owned
+private child; an arbitrary other-user-writable ancestor is not.
 
 M2 evidence must include automated command-construction and pure ACE-validation
 tests: paths with spaces/quotes/Chinese characters, SID-only grants, stale
@@ -448,7 +469,11 @@ budget/failure counters. Do not create a new Goal or reset/enqueue a runner
 cycle merely to bind it. The revision follows the existing fresh-session rule.
 Record `adoption: { boundBy: { kind: 'user' }, reason }` in the binding, with
 `boundAt` as the time; this is not a proposal ruling. No implicit adoption or
-new binding UI is required in P1; this explicit user API path is sufficient.
+binding is permitted. In M3 the Goal panel adds a minimal “交给规划者” entry for
+an eligible unbound Goal. It displays a user confirmation, then sends bind-planner
+with the displayed ID/revision and reason through the CSRF-protected browser
+path (user principal, never planner bearer); cancellation has no writes.
+Refresh on a concurrent-change 409 rather than silently rebinding a changed Goal.
 
 The binding is scoped to that Goal ID, survives credential rotation, lifecycle,
 owner changes and restarts, and is removed on clear or a user replacement set
@@ -714,7 +739,9 @@ planner will update the Goal decision classifications after M1 passes.
    actions and replacement bypass attempts; rotation and secure-file failure.
    M2 also requires the Windows command/ACE unit matrix and local isolated
    CodexSandboxUsers-no-read / valid-planner-auth check specified in §1; include
-   sanitized diagnostics and results in the M2 review evidence.
+   sanitized diagnostics and results in the M2 review evidence. Cover default
+   Windows/POSIX state paths, deterministic per-instance filenames, absolute
+   overrides, unsafe ancestors and isolation from real user-state directories.
 2. Mutation HTTP matrix: wrong Host, wrong/missing/null Origin, wrong/missing
    CSRF, non-JSON; image upload missing CSRF and cross-origin rejected; browser,
    planner, callback, webhook and multipart successes; existing local-only
@@ -730,6 +757,8 @@ planner will update the Goal decision classifications after M1 passes.
    rejected; unbound and DAG worker/verifier/scheduler/user behavior unchanged.
    User bind-planner preserves Goal ID/content/counters and bumps revision;
    non-user, stale, pending-proposal and DAG binding attempts are rejected.
+   The M3 Goal-panel adoption entry requires confirmation, sends the user/CSRF
+   request, and leaves state unchanged on cancellation.
 5. Storage/runtime tests: each attention source, deduplication, same-transaction
    rollback, restart recovery and resolution; budget item with another pending
    proposal. HTTP wait arrival, timeout, disconnect race, multi-page cursor
