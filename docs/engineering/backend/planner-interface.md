@@ -7,10 +7,10 @@ It covers planner attribution, mutation guards, Goal control, durable attention,
 and bounded monitoring. It does not introduce a CLI, MCP, a review/verdict
 protocol, different implementer prompts, or new DAG/delegation/Feishu behavior.
 
-**M1 review candidate, not shipped behavior.** This document is written before
-implementation and ships with it, not independently. M2–M5 must implement and
-verify it before integration into `develop`. This amended M1 candidate still
-requires planner re-review and PASS before implementation begins.
+**M1 planner-reviewed contract; implementation in progress, not shipped.**
+M1 passed planner re-review at `6d22d583`; the required credential-location
+amendment was committed at `1a0fdb74`. M2–M5 must implement and verify this
+contract before integration into `develop`.
 
 Related implemented contracts: [Session Goal](session-goal.md),
 [DAG execution, D28](dag-execution.md), [controller patterns](controller-patterns.md),
@@ -77,8 +77,15 @@ identities and credential administration are not P1 features.
   diagnostic; the browser console remains usable. Never publish an insecure
   token or fall back to treating a planner as the user.
 - Isolated instances must have different agent directories, databases and
-  credential files. Tests use temporary LOCALAPPDATA/XDG_STATE_HOME or an
-  explicit temporary CAFF_PLANNER_CREDENTIAL_FILE; never real user state. The DACL denies ordinary other local accounts, including
+  credential files. Automated server tests inject an in-memory credential by
+  application options (not an environment-controlled production bypass), on
+  Windows and Linux alike. Storage-specific POSIX tests use private temporary
+  state. Tests never read or rotate real service credentials. The user-approved
+  Windows ACL test exception (2026-10-23) uses a new, exclusive random directory
+  under `%LOCALAPPDATA%/CAFF/planner-tests/`, deletes it afterwards, and never
+  changes ACLs on shared ancestors. Other test state/logs remain in system Temp;
+  Temp itself is not a safe Windows credential ancestor on this machine.
+  The DACL denies ordinary other local accounts, including
   accounts whose access comes from CodexSandboxUsers or unresolved group SIDs.
   Processes under the **same account** can still read the credential. SYSTEM
   and administrators exercising ownership/privilege are not isolated by this
@@ -109,10 +116,14 @@ not a reason to weaken the permissions.
    Add explicit `Allow` / `FullControl` rules only for the allowed SIDs.
    Directory rules use `ContainerInherit | ObjectInherit` and propagation None;
    file rules use inheritance None and propagation None. Replace the entire
-   DACL using `Directory.SetAccessControl` / `File.SetAccessControl`; do not just
-   add grants, disable inheritance while retaining old explicit ACEs, or modify
-   unrelated parent/repository ACLs. Apply this to the runtime directory and
-   empty temporary file. Validate any existing destination before rotation;
+   DACL using `Directory.SetAccessControl` / `File.SetAccessControl`, or pass the
+   new security descriptor to their creation-time .NET overloads (directory
+   creation / `FileStream` with `CreateNew`) so access is private from creation.
+   Do not just add grants, retain old explicit ACEs, truncate an existing
+   temporary path, or modify unrelated parent/repository ACLs. Apply this to
+   newly created runtime directories and the empty temporary file. Existing
+   unsafe private directories are rejected, not silently repaired. Validate
+   any existing destination before rotation;
    unsafe ownership/permissions fail closed, rather than trusting or reading its
    contents. Never expose a nonempty broadly readable temporary file.
 3. Re-read owner, DACL and file attributes from the filesystem, not from the
@@ -142,7 +153,9 @@ ancestors and fail closed rather than repairing shared repository/sandbox ACLs.
 Apply these checks to the user-state location or explicit override, not the
 old agentDir location. Use a trusted per-instance state location when they fail;
 never silently fall back to the repository. Ancestor checks may trust the
-current account, SYSTEM and administrators (POSIX root); they must distinguish
+current account, SYSTEM, administrators and Windows' privileged TrustedInstaller
+service SID (POSIX root); this does not permit those extra SIDs in the private
+credential directory/file DACL. Checks must distinguish
 ordinary read/traverse access from rights permitting path replacement. A
 root-owned POSIX sticky temporary ancestor is compatible with a securely owned
 private child; an arbitrary other-user-writable ancestor is not.
