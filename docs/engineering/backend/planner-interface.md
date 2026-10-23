@@ -583,8 +583,8 @@ SQLite stores attention separately from Room metadata. Each item has:
 {
   sequence: number;              // positive global monotonic SQLite sequence
   conversationId: string;
-  goalId: string;
-  goalRevision: number;          // occurrence revision, not a mutable cursor
+  goalId: string | null;        // null when no live Goal exists at occurrence
+  goalRevision: number;          // occurrence revision (0 without a Goal), not a mutable cursor
   kind: 'proposal_pending' | 'budget_exhausted' | 'failure_paused'
       | 'owner_removed' | 'goal_completed' | 'turn_failed';
   sourceId: string;              // proposal, runner-cycle, owner incident or turn ID
@@ -595,6 +595,14 @@ SQLite stores attention separately from Room metadata. Each item has:
   resolvedBy?: Principal;        // automatic resolutions use system
 }
 ```
+
+M4 planner clarification: an initial pending set proposal may exist before any
+live Goal. Its attention row has required conversationId, goalId=null and
+goalRevision=0, deduplicated by proposalId as usual. Acceptance, dismissal and
+supersession update only resolution fields; they never backfill or rewrite the
+occurrence's Goal identity. Read the new Goal from the state view. Portfolio
+includes these Rooms with state.goal=null as specified in §7. A failed turn
+without an associated live Goal does not create a turn_failed item.
 
 Unique occurrence keys prevent duplicate items during retry, event re-entry and
 restart reconciliation. Sequence allocation never reuses a committed sequence
@@ -866,7 +874,10 @@ planner will update the Goal decision classifications after M1 passes.
    request, and leaves state unchanged on cancellation.
 5. Storage/runtime tests: each attention source, deduplication, same-transaction
    rollback, restart recovery and resolution; budget item with another pending
-   proposal. HTTP wait arrival, timeout, disconnect race, multi-page cursor
+   proposal. Include no-Goal set proposals: null/0 occurrence identity survives
+   restart and acceptance/dismissal/supersession, with only resolution fields
+   updated. No-Goal failed turns produce no attention; portfolio still includes
+   Rooms whose only Goal state is a pending set proposal. HTTP wait arrival, timeout, disconnect race, multi-page cursor
    replay (including resolved offline rows), acknowledgement restrictions.
 6. HTTP/storage projection tests: exact summaries, no message/private/tool data,
    64-KiB state bound for huge Rooms, grouped portfolio unresolved counts and
