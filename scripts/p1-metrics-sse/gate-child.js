@@ -887,7 +887,7 @@ async function runSseConnectCycles(args) {
 // ---------------------------------------------------------------------------
 
 async function runConcurrentMetricsSse(args, manifest) {
-  const { createServerApp } = require('../../build/server/app/create-server');
+  const { createTestServerApp: createServerApp } = require('../../tests/helpers/server-app');
 
   const findFreePort = () =>
     new Promise((resolve, reject) => {

@@ -356,8 +356,9 @@ function normalizeSessionGoalProposal(value: any) {
 }
 
 /**
- * Who ruled on a proposal. `user` = UI/REST manual ruling (forced
- * server-side by the controller, never client-supplied); `agent` = bridge
+ * Who ruled on a proposal. `user` = browser manual ruling; `planner` =
+ * authenticated external planner (both server-derived, never JSON claims);
+ * `agent` = bridge
  * ruling by a participant agent; `system` = no authoritative principal was
  * recorded (internal/legacy call) — the DAG scheduler never treats a system
  * ruling as a valid verification.
@@ -367,6 +368,10 @@ function normalizeRuledBy(value: any) {
   const kind = normalizeText(source.kind).toLowerCase();
   if (kind === 'user' || kind === 'system') {
     return { kind };
+  }
+  if (kind === 'planner') {
+    const plannerId = normalizeText(source.plannerId);
+    return plannerId ? { kind: 'planner', plannerId, plannerName: normalizeText(source.plannerName) || 'External Planner' } : { kind: 'system' };
   }
   const agentId = normalizeText(source.agentId);
   if (agentId) {
@@ -956,6 +961,28 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
   };
 }
 
+function assertUserOnlyGoalChanges(previousGoal: any, nextGoal: any, principal: any, replacement = false) {
+  if (normalizeRuledBy(principal).kind === 'user') return;
+  const adrChanges = acceptedAdrChanges(previousGoal, nextGoal);
+  if (adrChanges.length > 0) {
+    throw createHttpError(403, 'Accepted ADR decisions can only be changed by the user', {
+      code: 'goal_accepted_adr_change_user_required', changes: adrChanges,
+    });
+  }
+  const previous = new Map<string, any>((previousGoal?.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
+  const newlyWaived = (nextGoal?.acceptanceCriteria || []).filter((criterion: any) => {
+    const old = previous.get(criterion.id);
+    return criterion.status === 'waived' && (criterion.risk === 'high' || old?.risk === 'high')
+      && (replacement || !old || old.status !== 'waived' || old.statement !== criterion.statement
+        || old.verifyBy !== criterion.verifyBy || old.risk !== criterion.risk);
+  });
+  if (newlyWaived.length > 0) {
+    throw createHttpError(403, 'High-risk acceptance criteria can only be waived by the user', {
+      code: 'goal_high_risk_waiver_user_required', criterionIds: newlyWaived.map((criterion: any) => criterion.id),
+    });
+  }
+}
+
 function goalFromMutation(action: string, existingGoal: any, input: any, timestamp: string) {
   if (action === 'set') {
     const objective = normalizeObjective(input && input.objective);
@@ -1000,6 +1027,7 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
       updatedAt: timestamp,
       ...delivery,
     };
+    assertUserOnlyGoalChanges(existingGoal, nextGoal, input.ruledBy);
     if (structuralGoalProjection(nextGoal) !== structuralGoalProjection(existingGoal)) {
       throw createHttpError(409, 'Factual Goal updates cannot change the objective, decisions, criteria, or work-item definitions', {
         code: 'goal_structural_review_required',
@@ -1087,6 +1115,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
   }
 
   if (action === 'clear') {
+    assertUserOnlyGoalChanges(existingGoal, null, input.ruledBy);
     const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
     return responseForConversation(nextConversation, {
       goal: null,
@@ -1138,6 +1167,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     }
 
     if (existingProposal.action === 'clear') {
+      assertUserOnlyGoalChanges(existingGoal, null, input.ruledBy);
       // Approving a clear wipes the whole goal epoch — including rulings.
       const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
       return responseForConversation(nextConversation, {
@@ -1159,26 +1189,12 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       });
     }
     const goal = goalFromMutation(existingProposal.action, existingGoal, existingProposal, timestamp);
-    const adrChanges = existingProposal.action === 'revise'
-      ? acceptedAdrChanges(existingGoal, goal)
-      : [];
-    if (ruling.ruledBy.kind === 'agent' && adrChanges.length > 0) {
-      throw createHttpError(403, 'Accepted ADR decisions can only be changed by the user', {
-        code: 'goal_accepted_adr_change_user_required',
-        changes: adrChanges,
-      });
-    }
+    assertUserOnlyGoalChanges(existingGoal, goal, ruling.ruledBy, existingProposal.action === 'set');
     const previousCriteria = new Map((existingGoal && existingGoal.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
     const newlyWaivedHighRisk = (goal.acceptanceCriteria || []).filter((criterion: any) => {
       const previous: any = previousCriteria.get(criterion.id);
       return criterion.status === 'waived' && criterion.risk === 'high' && (!previous || previous.status !== 'waived');
     });
-    if (ruling.ruledBy.kind === 'agent' && newlyWaivedHighRisk.length > 0) {
-      throw createHttpError(403, 'High-risk acceptance criteria can only be waived by the user', {
-        code: 'goal_high_risk_waiver_user_required',
-        criterionIds: newlyWaivedHighRisk.map((criterion: any) => criterion.id),
-      });
-    }
     const reviewedGoal = newlyWaivedHighRisk.length > 0 || (goal.acceptanceCriteria || []).some((criterion: any) => {
       const previous: any = previousCriteria.get(criterion.id);
       return criterion.status === 'waived' && (!previous || previous.status !== 'waived');
@@ -1190,7 +1206,9 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
             if (criterion.status !== 'waived' || (previous && previous.status === 'waived')) return criterion;
             const reviewer = ruling.ruledBy.kind === 'user'
               ? 'user'
-              : ruling.ruledBy.agentName || ruling.ruledBy.agentId || 'reviewer';
+              : ruling.ruledBy.kind === 'planner'
+                ? ruling.ruledBy.plannerName
+                : ruling.ruledBy.agentName || ruling.ruledBy.agentId || 'reviewer';
             return {
               ...criterion,
               waiver: {
@@ -1346,6 +1364,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
   }
 
   const goal = goalFromMutation(action, existingGoal, input, timestamp);
+  assertUserOnlyGoalChanges(existingGoal, goal, input.ruledBy, action === 'set');
   const factualRunner = factualOnly ? getSessionGoalRunner(conversation) : null;
   // Checklist progress is factual state inside the current goal epoch. It
   // must not erase a pending proposal or the durable ruling that proves how

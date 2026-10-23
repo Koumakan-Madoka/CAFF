@@ -85,7 +85,7 @@ async function startIsolatedApp() {
       },
     },
   }));
-  const child = spawn(process.execPath, ['build/lib/app-server.js'], {
+  const child = spawn(process.execPath, ['tests/helpers/server-child.js'], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,

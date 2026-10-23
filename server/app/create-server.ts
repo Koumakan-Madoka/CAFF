@@ -84,6 +84,8 @@ const { buildErrorJsonPayload, sendJson } = require('../http/response');
 const { serveStaticFile } = require('../http/static-file');
 const { createHttpError } = require('../http/http-errors');
 const { isLoopbackAddress } = require('../http/local-admin-guard');
+const { createPlannerCredential } = require('../domain/security/planner-credential');
+const { authenticateApiRequest } = require('../http/planner-authentication');
 
 // resolveToolRelativePath is now imported from ../http/path-utils
 
@@ -1135,6 +1137,15 @@ export function createServerApp(options: any = {}) {
   });
 
   let server: any = null;
+  // Tests inject an in-memory provider via options, never an environment flag.
+  // Production rotation happens only after this instance successfully binds.
+  const plannerCredential = options.plannerCredential || createPlannerCredential({
+    host,
+    getPort() {
+      const address = server && server.address();
+      return address && typeof address === 'object' ? address.port : 0;
+    },
+  });
   const { buildBootstrapPayload, buildConfiguredModelOptions } = createBootstrapPayloadBuilder({
     store,
     skillRegistry,
@@ -1299,15 +1310,16 @@ export function createServerApp(options: any = {}) {
   ]);
 
   server = http.createServer(async (req: any, res: any) => {
-    const requestUrl = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
-
     try {
+      const requestUrl = new URL(req.url, toolBaseUrl);
       if (requestUrl.pathname.startsWith('/api/')) {
+        const principal = authenticateApiRequest(req, requestUrl.pathname, plannerCredential);
         const handled = await router.route({
           req,
           res,
           pathname: requestUrl.pathname,
           requestUrl,
+          principal,
         });
 
         if (!handled) {
@@ -1333,6 +1345,7 @@ export function createServerApp(options: any = {}) {
 
   function start(onListen: any) {
     server.listen(port, host, () => {
+      plannerCredential.initialize();
       try {
         uploadService.reconcile();
       } catch {}
@@ -1366,6 +1379,7 @@ export function createServerApp(options: any = {}) {
   }
 
   function close(callback: any) {
+    plannerCredential.disable();
     deliveryRuntimeClosing = true;
     const turnsClosePromise = turnOrchestrator.shutdown('服务关闭中断');
     sseBus.closeAll();

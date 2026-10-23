@@ -96,6 +96,17 @@ function bootTimeline(messages, options = {}) {
   return { dom, window, document, conversation, renderer, recoveryCalls, toasts };
 }
 
+test('timeline shows the authenticated planner name, while ordinary browser messages remain You', (t) => {
+  const base = { role: 'user', status: 'completed', createdAt: '2026-10-23T00:00:00.000Z' };
+  const { dom, document } = bootTimeline([
+    { ...base, id: 'planner', content: 'Planner instruction', senderName: 'Test Planner', metadata: { source: 'planner', principal: { kind: 'planner', plannerId: 'local-planner', plannerName: 'Test Planner' } } },
+    { ...base, id: 'browser', content: 'Browser instruction', senderName: 'Untrusted client label', metadata: { source: 'web-ui' } },
+  ]);
+  t.after(() => dom.window.close());
+  const labels = [...document.querySelectorAll('.message-sender-label')].map(element => element.textContent);
+  assert.deepEqual(labels, ['Test Planner', 'You']);
+});
+
 test('configuration-blocked recovery provides a safe configuration entry instead of a command', () => {
   const message = failedMessage();
   message.recoveryCapability = {

@@ -1,9 +1,11 @@
 import * as path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { URL } from 'node:url';
 
 import type { RouteHandler } from '../http/router';
+import type { HttpPrincipal } from '../http/planner-authentication';
 import { createHttpError } from '../http/http-errors';
 import { readRequestJson } from '../http/request-body';
 import { sendFileDownload, sendJson, sendTextDownload } from '../http/response';
@@ -29,6 +31,7 @@ import {
 } from '../domain/conversation/session-goal';
 import {
   getDagNodeExecutionContext,
+  getDagNodeGoalBinding,
   isDagBoundGoalMutationAllowed,
 } from '../domain/conversation/dag-goal-binding';
 import {
@@ -44,6 +47,7 @@ type ApiContext = {
   res: ServerResponse;
   pathname: string;
   requestUrl: URL;
+  principal?: HttpPrincipal;
 };
 
 const FEISHU_PLATFORM = 'feishu';
@@ -312,7 +316,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   }
 
   return async function handleConversationsRequest(context) {
-    const { req, res, pathname, requestUrl } = context;
+    const { req, res, pathname, requestUrl, principal = { kind: 'user' } } = context;
 
     if (req.method === 'GET' && pathname === '/api/conversations') {
       sendJson(res, 200, buildConversationDirectoryPage(store, requestUrl.searchParams));
@@ -866,6 +870,12 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (conversationGoalMatch && (req.method === 'GET' || req.method === 'POST')) {
       const conversationId = decodeURIComponent(conversationGoalMatch[1]);
       const body = req.method === 'POST' ? await readRequestJson(req) : { action: 'get' };
+      const goalAction = String(body && body.action || '').trim().toLowerCase().replace(/_/g, '-');
+      if (req.method === 'POST' && principal.kind === 'planner'
+        && (goalAction === 'accept-proposal' || goalAction === 'dismiss-proposal')
+        && getDagNodeGoalBinding(store.getConversationWithoutMessages(conversationId))) {
+        throw createHttpError(403, 'External planners cannot rule as DAG verifiers or the user', { code: 'dag_verifier_only' });
+      }
       // While a DAG node is doing, the bound child Goal may only receive
       // factual delivery updates or pending-proposal rulings. Direct lifecycle
       // mutation would bypass the worker-to-verifier completion protocol.
@@ -877,11 +887,9 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       }
       const result = applySessionGoalAction(store, conversationId, {
         ...(body || {}),
-        // D28: a ruling via this endpoint is ALWAYS the user (manual
-        // verification). Forced server-side — a client-supplied ruledBy is
-        // never trusted. The principal is persisted atomically with the
-        // proposal clear (durable ruling record), not just broadcast.
-        ruledBy: { kind: 'user' },
+        // Authenticated by the server before parsing, never from JSON.
+        // Browser rulings remain user; planner rulings retain their identity.
+        ruledBy: principal,
       });
       let autoContinuation = null;
 
@@ -899,12 +907,9 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         }
 
         if (result.proposalChanged) {
-          // D28: the user accepting/rejecting via the UI is a legitimate
-          // ruling path (manual verification). The cleared event must carry
-          // the authoritative pre-clear proposal snapshot (the scheduler
-          // derives the node result summary from it) plus an explicit user
-          // ruling marker — an absent ruledBy would be indistinguishable
-          // from a missing enforcement check.
+          // Carry the authoritative proposal snapshot and authenticated
+          // principal. D28 still treats only the user as manual verification;
+          // an external planner must never be mislabeled as that user.
           const goalAction = String(body && body.action || '').trim().toLowerCase();
           const isRulingAction = result.proposalCleared
             && (goalAction === 'accept-proposal' || goalAction === 'accept_proposal'
@@ -915,7 +920,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
             proposal: result.proposalCleared ? (result.clearedProposal || null) : result.proposal,
             ...(isRulingAction ? {
               outcome: goalAction.startsWith('accept') ? 'accepted' : 'rejected',
-              ruledBy: { kind: 'user' },
+              ruledBy: principal,
             } : {}),
             conversation: result.conversation,
             summary,
@@ -965,16 +970,22 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         }
       }
 
-      const latestConversation = store.getConversation(conversationId) || result.conversation;
-      sendJson(res, 200, {
-        conversation: latestConversation,
-        goal: result.goal,
-        proposal: result.proposal,
-        cleared: result.cleared,
-        autoContinuation,
-        summary: pickConversationSummary(latestConversation),
-        conversations: listConversationHeaders(),
-      });
+      if (principal.kind === 'planner') {
+        sendJson(res, 200, { conversationId, goal: result.goal, proposal: result.proposal,
+          ruling: result.ruling, cleared: result.cleared, autoContinuation });
+      } else {
+        const latestConversation = store.getConversation(conversationId) || result.conversation;
+        sendJson(res, 200, {
+          conversation: latestConversation,
+          goal: result.goal,
+          proposal: result.proposal,
+          ruling: result.ruling,
+          cleared: result.cleared,
+          autoContinuation,
+          summary: pickConversationSummary(latestConversation),
+          conversations: listConversationHeaders(),
+        });
+      }
       return true;
     }
 
@@ -1017,9 +1028,23 @@ export function createConversationsController(options: any = {}): RouteHandler<A
             ? existingConversation.agents.map((agent: any) => String(agent && agent.id || '').trim()).filter(Boolean)
             : []
         );
-        const validatedBody = (Array.isArray(body.participants) || Array.isArray(body.agentIds))
+        let validatedBody = (Array.isArray(body.participants) || Array.isArray(body.agentIds))
           ? { ...body, participants: validateConversationParticipants(body, { recoverableRoleIds }) }
           : body;
+        if (body.metadata !== undefined && existingConversation) {
+          const incoming = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
+          const existing = existingConversation.metadata || {};
+          const isReserved = (key: string) => key.startsWith('sessionGoal') || key === 'dagNodeGoalBinding';
+          for (const key of Object.keys(incoming).filter(isReserved)) {
+            if (!isDeepStrictEqual(incoming[key], existing[key])) {
+              throw createHttpError(403, 'Goal metadata is server-owned; use the Goal endpoint', { code: 'goal_metadata_reserved' });
+            }
+          }
+          // A partial/empty metadata replacement must not silently clear a Goal,
+          // proposal, ruling, runner or future Goal audit/binding record.
+          const reserved = Object.fromEntries(Object.entries(existing).filter(([key]) => isReserved(key)));
+          validatedBody = { ...validatedBody, metadata: { ...incoming, ...reserved } };
+        }
         const conversation = store.updateConversation(conversationId, validatedBody);
 
         if (!conversation) {
@@ -1479,9 +1504,20 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       const result = turnOrchestrator.submitConversationMessage(conversationId, {
         content: body.content,
         imageIds: Array.isArray(body.imageIds) ? body.imageIds : [],
-        metadata: clientRequestId ? { clientRequestId } : undefined,
+        ...(principal.kind === 'planner' ? { senderName: principal.plannerName } : {}),
+        metadata: {
+          ...(clientRequestId ? { clientRequestId } : {}),
+          ...(principal.kind === 'planner' ? { source: 'planner', principal } : {}),
+        },
       });
-      sendJson(res, 200, result);
+      if (principal.kind === 'planner') {
+        const message = result.acceptedMessage;
+        sendJson(res, 200, { conversationId, acceptedMessage: {
+          id: message.id, senderName: message.senderName, role: message.role, metadata: message.metadata,
+        }, dispatch: result.dispatch, dispatchLane: result.dispatchLane, dispatchTargetAgentId: result.dispatchTargetAgentId });
+      } else {
+        sendJson(res, 200, result);
+      }
       return true;
     }
 

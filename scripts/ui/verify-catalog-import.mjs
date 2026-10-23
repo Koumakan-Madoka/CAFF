@@ -118,7 +118,7 @@ async function startIsolatedApp({ withCatalogCache }) {
   }
   const port = await findFreePort();
   const logs = { stdout: '', stderr: '' };
-  const child = spawn(process.execPath, [path.join(ROOT_DIR, 'build', 'lib', 'app-server.js')], {
+  const child = spawn(process.execPath, [path.join(ROOT_DIR, 'tests', 'helpers', 'server-child.js')], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,

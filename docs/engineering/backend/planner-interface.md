@@ -212,6 +212,12 @@ webhook validation. `X-CAFF-Principal: planner` on those routes is rejected with
   would otherwise bypass the same check. Failure leaves all state unchanged.
 - Normal waivers still require reviewed `revise`, evidence/reason validation,
   and independent review. `update-delivery` cannot introduce a waiver.
+- Generic Room `PUT` is not a Goal write backdoor. When replacing unrelated
+  metadata, preserve server-owned `sessionGoal*` keys (Goal, proposal, ruling,
+  runner and future audit/binding state) and the existing D28
+  `dagNodeGoalBinding` enforcement anchor. Explicit changes to those keys return
+  403 `goal_metadata_reserved` for both browser and planner; an unchanged
+  snapshot may be echoed. Use the Goal endpoint for all Goal mutations.
 - ADR 0002's other reserved approvals remain planner-attested, not an invented
   server-verifiable delegation policy. The planner records where and when the
   user approved in the Goal action/ruling `reason`, or in a preceding attributed
@@ -684,6 +690,7 @@ Missing required bounded-store projections fail closed with 501
 | 403 `api_host_mismatch`, `api_origin_mismatch`, `api_csrf_invalid` | Browser/planner mutation guard failure, as applicable |
 | 403 existing local-admin `*_local_only` | Existing local-only boundary remains |
 | 403 `goal_high_risk_waiver_user_required`, `goal_accepted_adr_change_user_required` | Direct user ruling in CAFF required; attestation is insufficient |
+| 403 `goal_metadata_reserved` | Generic Room PUT cannot alter server-owned Goal/D28 binding metadata; use the Goal endpoint |
 | 403 `goal_planner_ruling_required` | Room agent cannot rule on a planner-driven Goal |
 | 403 `goal_planner_binding_user_required` | Only the user may adopt an existing Goal via bind-planner |
 | 403 existing `goal_proposal_self_review`, DAG codes | Existing self-review/worker/verifier restrictions remain |

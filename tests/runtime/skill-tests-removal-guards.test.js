@@ -389,7 +389,7 @@ async function waitForServer(baseUrl, timeoutMs = 10000) {
 }
 
 test('removed API routes return 404 via real HTTP', async (t) => {
-  const { createServerApp } = require('../../build/server/app/create-server');
+  const { createTestServerApp: createServerApp } = require('../helpers/server-app');
   const { withTempDir } = require('../helpers/temp-dir');
 
   const tempDir = withTempDir('caff-removal-http-');

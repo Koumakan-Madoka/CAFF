@@ -8,7 +8,7 @@ const test = require('node:test');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSkillRegistry } = require('../../build/lib/skill-registry');
-const { createServerApp } = require('../../build/server/app/create-server');
+const { createTestServerApp: createServerApp } = require('../helpers/server-app');
 const { createBootstrapPayloadBuilder } = require('../../build/server/api/bootstrap-payload');
 const { createConversationsController } = require('../../build/server/api/conversations-controller');
 const { createMemoryController } = require('../../build/server/api/memory-controller');
@@ -4993,7 +4993,7 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
       },
     },
   }), 'utf8');
-  const child = spawn(process.execPath, ['build/lib/app-server.js'], {
+  const child = spawn(process.execPath, ['tests/helpers/server-child.js'], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,
