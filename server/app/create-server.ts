@@ -86,6 +86,8 @@ const { createHttpError } = require('../http/http-errors');
 const { isLoopbackAddress } = require('../http/local-admin-guard');
 const { createPlannerCredential } = require('../domain/security/planner-credential');
 const { authenticateApiRequest } = require('../http/planner-authentication');
+const { createApiMutationGuard } = require('../http/api-mutation-guard');
+const { formatAuthority } = require('../http/request-authority');
 
 // resolveToolRelativePath is now imported from ../http/path-utils
 
@@ -1146,6 +1148,12 @@ export function createServerApp(options: any = {}) {
       return address && typeof address === 'object' ? address.port : 0;
     },
   });
+  const apiMutationGuard = createApiMutationGuard({ host, csrfToken: providerConfigCsrfToken,
+    getAuthority() {
+      const address = server && server.address();
+      return formatAuthority(host, address && typeof address === 'object' ? address.port : port);
+    },
+  });
   const { buildBootstrapPayload, buildConfiguredModelOptions } = createBootstrapPayloadBuilder({
     store,
     skillRegistry,
@@ -1153,6 +1161,7 @@ export function createServerApp(options: any = {}) {
     modeStore,
     modelCatalog,
     roleService,
+    apiSecurity: () => ({ csrfToken: providerConfigCsrfToken }),
     localAdmin: () => ({
       modelProviders: {
         enabled: providerConfigLocalEnabled,
@@ -1314,6 +1323,7 @@ export function createServerApp(options: any = {}) {
       const requestUrl = new URL(req.url, toolBaseUrl);
       if (requestUrl.pathname.startsWith('/api/')) {
         const principal = authenticateApiRequest(req, requestUrl.pathname, plannerCredential);
+        apiMutationGuard.assertMutation(req, requestUrl.pathname, principal);
         const handled = await router.route({
           req,
           res,

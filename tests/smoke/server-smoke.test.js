@@ -5,6 +5,7 @@ const { spawn } = require('node:child_process');
 const net = require('node:net');
 const { PassThrough } = require('node:stream');
 const test = require('node:test');
+const { browserFetch: fetch } = require('../helpers/browser-fetch');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSkillRegistry } = require('../../build/lib/skill-registry');

@@ -9,6 +9,7 @@ export function createBootstrapPayloadBuilder({
   turnOrchestrator,
   modeStore,
   localAdmin,
+  apiSecurity,
   modelCatalog,
   roleService,
 }: any) {
@@ -39,6 +40,7 @@ export function createBootstrapPayloadBuilder({
     const selectedConversationId = conversations[0] ? conversations[0].id : null;
 
     return {
+      apiSecurity: typeof apiSecurity === 'function' ? apiSecurity() : apiSecurity || {},
       localAdmin: typeof localAdmin === 'function' ? localAdmin() : localAdmin || {},
       runtime: turnOrchestrator.buildRuntimePayload(),
       modelOptions: roleDirectory.modelOptions,

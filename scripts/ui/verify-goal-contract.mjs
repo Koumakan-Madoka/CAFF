@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { browserFetch as fetch } from '../../tests/helpers/browser-fetch.js';
 
 // E2E-GOAL-01 (P0): save and reload must preserve the structured delivery contract.
 // E2E-GOAL-02 (P1): a stale revision must fail without changing persisted data.

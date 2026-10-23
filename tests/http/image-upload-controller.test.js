@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
 const test = require('node:test');
+const { browserFetch: fetch } = require('../helpers/browser-fetch');
 
 const { createTestServerApp: createServerApp } = require('../helpers/server-app');
 const { isolateExternalIntegrations } = require('../helpers/external-integrations');

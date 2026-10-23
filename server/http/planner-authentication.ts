@@ -2,6 +2,11 @@ import type { PlannerCredential, PlannerPrincipal } from '../domain/security/pla
 import { createHttpError } from './http-errors';
 
 export type HttpPrincipal = { kind: 'user' } | PlannerPrincipal;
+const AUTHENTICATED_PRINCIPAL = Symbol('caff.authenticatedPrincipal');
+export function getAuthenticatedPrincipal(req: any): HttpPrincipal | null | undefined { return req[AUTHENTICATED_PRINCIPAL]; }
+export function isNativeApiDomain(method: string, pathname: string) {
+  return pathname.startsWith('/api/agent-tools/') || (method === 'POST' && pathname === '/api/integrations/feishu/webhook');
+}
 
 function headerPresent(req: any, name: string) {
   return Object.prototype.hasOwnProperty.call(req.headers || {}, name);
@@ -19,10 +24,14 @@ function invalidCredential(): never {
 // null means a native trust domain, NOT a user. Its existing controller must
 // still authenticate the invocation or webhook. A bearer never replaces that.
 export function authenticateApiRequest(req: any, pathname: string, credential: PlannerCredential): HttpPrincipal | null {
+  delete req[AUTHENTICATED_PRINCIPAL];
+  const principal = derivePrincipal(req, pathname, credential);
+  Object.defineProperty(req, AUTHENTICATED_PRINCIPAL, { value: principal, configurable: true });
+  return principal;
+}
+function derivePrincipal(req: any, pathname: string, credential: PlannerCredential): HttpPrincipal | null {
   const claimed = headerPresent(req, 'x-caff-principal');
-  const native = pathname.startsWith('/api/agent-tools/')
-    || (pathname === '/api/integrations/feishu/webhook' && req.method === 'POST');
-  if (native) {
+  if (isNativeApiDomain(req.method, pathname)) {
     if (claimed) invalidCredential();
     return null;
   }

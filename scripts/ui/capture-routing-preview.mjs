@@ -7,6 +7,7 @@
 // 退出码: 0 成功 / 1 失败 / 2 缺少 repo-owned playwright-core
 
 import { randomUUID } from 'node:crypto';
+import { browserFetch as fetch } from '../../tests/helpers/browser-fetch.js';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';

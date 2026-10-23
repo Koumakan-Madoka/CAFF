@@ -7,6 +7,7 @@
 // 退出码: 0 全绿 / 1 有 FAIL / 2 缺少 repo-owned playwright-core
 
 import { randomUUID } from 'node:crypto';
+import { browserFetch as fetch } from '../tests/helpers/browser-fetch.js';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -909,8 +910,12 @@ try {
   const cleanupResults = [];
   for (const id of createdIds) {
     const cleanup = await page.evaluate(async (cid) => {
-      const response = await fetch(`/api/conversations/${encodeURIComponent(cid)}`, { method: 'DELETE' });
-      return { id: cid, ok: response.ok, status: response.status, body: (await response.text()).slice(0, 240) };
+      try {
+        const payload = await window.CaffShared.fetchJson(`/api/conversations/${encodeURIComponent(cid)}`, { method: 'DELETE' });
+        return { id: cid, ok: true, status: 200, body: JSON.stringify(payload).slice(0, 240) };
+      } catch (error) {
+        return { id: cid, ok: false, status: error.status, body: String(error.message).slice(0, 240) };
+      }
     }, id);
     cleanupResults.push(cleanup);
   }

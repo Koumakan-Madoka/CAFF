@@ -5,6 +5,7 @@
 // Default out: .tmp/ui-evidence/caff-ui-m4/v2-density/before-measurements.json
 
 import { randomUUID } from 'node:crypto';
+import { browserFetch as fetch } from '../../tests/helpers/browser-fetch.js';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';

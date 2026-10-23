@@ -953,6 +953,11 @@ async function runConcurrentMetricsSse(args, manifest) {
       app.start((error) => (error ? reject(error) : resolve()));
     });
 
+    const apiBase = `http://127.0.0.1:${port}`;
+    const apiBootstrap = await fetch(`${apiBase}/api/bootstrap`).then(response => response.json());
+    const csrfToken = apiBootstrap.apiSecurity && apiBootstrap.apiSecurity.csrfToken;
+    if (!csrfToken) throw new Error('HTTP gate bootstrap missing CSRF token');
+
     // Warm baseline: one valid metrics request + observability probe.
     const warmup = await fetch(metricsUrl(validQueries[0]));
     if (warmup.status !== 200) throw new Error(`warmup metrics request returned ${warmup.status}`);
@@ -1010,7 +1015,7 @@ async function runConcurrentMetricsSse(args, manifest) {
         for (const messageId of deletableMessageIds) {
           const response = await fetch(deletionUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', Origin: apiBase, 'X-CAFF-CSRF-Token': csrfToken },
             body: JSON.stringify({ messageIds: [messageId] }),
           });
           statuses.push(response.status);
