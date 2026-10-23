@@ -317,14 +317,19 @@ For every authenticated planner Goal write:
 
 - Supply `goalId` and `goalRevision` from the last complete read. All actions,
   including lifecycle, owner change, replacement, clearing and rulings, check
-  them before mutation. First `set` with no Goal uses `goalId: null` and
-  `goalRevision: 0`; only this creation case accepts revision zero.
+  them before mutation. When there is no live Goal, first `set` and rulings on
+  a pending proposal use `goalId: null, goalRevision: 0` to mean “no current
+  Goal”; this includes accept-proposal, dismiss-proposal and operations with
+  literal supersedeProposal=true. Such operations involving a pending proposal
+  must also supply its exactly matching proposalId. Missing proposalId is still
+  rejected, and revision zero is never valid when a live Goal exists.
 - Missing/invalid preconditions return 400 `goal_revision_required`; a different
   Goal ID or revision returns 409 `goal_revision_conflict`. Read again and
   inspect the change before deciding on a new action; never blindly force a
   stale write.
-- Rulings additionally require `proposalId`, exactly matching the pending
-  proposal, or 409 `goal_proposal_conflict`. This protects proposals created or
+- Rulings and confirmed supersession additionally require `proposalId`, exactly
+  matching the pending proposal, or 409 `goal_proposal_conflict` (including a
+  missing ID). This protects proposals created or
   replaced without a Goal revision change. No pending proposal returns 404.
 - Browser and agent compatibility remains: existing required revision checks
   for revise/update-delivery and proposal baseRevision are retained. They may
@@ -489,6 +494,19 @@ transaction; clear can additionally archive its final ruling without retaining
 live Goal metadata. Startup idempotently archives recognized legacy rulings
 in metadata-only batches, preserving absent/legacy attribution rather than
 inventing a user principal.
+
+Agent `suggest-goal` retains its existing technical replacement behavior:
+submitting another proposal may replace a pending proposal without new CLI
+parameters or a Goal revision bump. In that **same transaction**, append a
+superseded record containing the old proposal ID/action/full snapshot, the
+replacing agent's identity and `supersedingProposalId` (the new proposal ID),
+then persist the new proposal. The old proposal's attention item becomes
+resolved as superseded and the new proposal gets its own attention item.
+The complete replay feed therefore retains both sides of the replacement,
+including replacements by a different proposer. This is audit of draft
+replacement, not an accepted/rejected verdict or permission for an agent to
+rule on a planner-bound Goal. M3 implements the ruling/proposal transaction;
+M4 adds both attention transitions to that same transaction.
 
 The browser displays the pending proposal before sending a conflicting action;
 a 409 caused by a race also offers confirmation. Only an explicit user confirm
@@ -711,7 +729,7 @@ Missing required bounded-store projections fail closed with 501
 
 | HTTP / code | Meaning and recovery |
 | --- | --- |
-| 400 `goal_revision_required` | Supply current ID/revision (0/null only for first set) |
+| 400 `goal_revision_required` | Supply current ID/revision; null/0 only for first set or pending-proposal operations while no live Goal exists |
 | 400 `goal_owner_invalid` | Choose a currently routable Room participant |
 | 400 `goal_initial_status_invalid` | Initial set status must be active or paused |
 | 400 `idempotency_key_required` | Supply a valid planner Room-creation retry key |
@@ -729,7 +747,7 @@ Missing required bounded-store projections fail closed with 501
 | 403 `goal_planner_binding_user_required` | Only the user may adopt an existing Goal via bind-planner |
 | 403 existing `goal_proposal_self_review`, DAG codes | Existing self-review/worker/verifier restrictions remain |
 | 404 existing Room/Goal/proposal errors, `attention_not_found` | Read state again; do not invent an entity |
-| 409 `goal_revision_conflict`, `goal_proposal_conflict` | Concurrent change or committed retry; read again and inspect before a new action |
+| 409 `goal_revision_conflict`, `goal_proposal_conflict` | Concurrent change or committed retry, or missing/mismatching required proposalId; read again and inspect before a new action |
 | 409 `goal_planner_binding_conflict` | Goal already has a planner binding; no implicit replacement |
 | 409 `goal_proposal_pending` | Rule first, or explicitly confirm and identify supersession |
 | 409 `goal_structural_review_required`, `goal_waiver_review_required`, `goal_acceptance_incomplete` | Use reviewed revision / finish acceptance, not a factual or lifecycle shortcut |
@@ -811,6 +829,10 @@ planner will update the Goal decision classifications after M1 passes.
    survives first message and refinement; each of five guarded actions' 409 and
    supersede paths with archived snapshot/identity; omission, explicit empty,
    item-field preservation, full old payload, stale revision/proposal and retry.
+   No-live-Goal initial set accept/dismiss/supersession uses null/0 plus matching
+   proposalId; missing IDs and zero revision with a live Goal fail unchanged.
+   Agent proposal replacement archives old snapshot/identity/new proposal ID
+   atomically; M4 also tests old/new attention transitions and durable replay.
 4. Bridge/HTTP/DAG tests: bound planner/user rulings allowed, every agent ruling
    rejected; unbound and DAG worker/verifier/scheduler/user behavior unchanged.
    User bind-planner preserves Goal ID/content/counters and bumps revision;
