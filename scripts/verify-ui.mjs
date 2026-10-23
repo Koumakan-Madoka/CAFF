@@ -19,6 +19,7 @@ import { verifyManagementPages } from './ui/verify-management-pages.mjs';
 import { resolveVerificationRoomContext } from './ui/room-fixture.mjs';
 import { verifyGoalContract } from './ui/verify-goal-contract.mjs';
 import { verifyThemeIcons } from './ui/verify-theme-icons.mjs';
+import edgeCdp from '../tests/helpers/edge-cdp.js';
 
 let chromium;
 try {
@@ -36,6 +37,7 @@ const OUT = process.env.CAFF_VERIFY_OUT || path.join(os.tmpdir(), 'caff-ui-verif
 const MANAGEMENT_SCREENSHOT = 'ui-v2-1440-management.png';
 fs.mkdirSync(OUT, { recursive: true });
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+const teardownConversationIds = new Set();
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -101,10 +103,18 @@ async function startIsolatedApp() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `caff-ui-${RUN_ID}-`));
   const port = await findFreePort();
   const logs = { stdout: '', stderr: '' };
-  const child = spawn(process.execPath, ['tests/helpers/server-child.js'], {
+  const env = {};
+  for (const key of ['SystemRoot', 'SYSTEMROOT', 'COMSPEC', 'ComSpec', 'PATH', 'Path', 'PATHEXT', 'TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'WINDIR', 'ProgramFiles', 'ProgramFiles(x86)']) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
+  const home = path.join(tempDir, 'home');
+  fs.mkdirSync(home);
+  const child = spawn(process.execPath, ['tests/helpers/ui-server-child.js'], {
     cwd: ROOT_DIR,
     env: {
-      ...process.env,
+      ...env,
+      HOME: home,
+      USERPROFILE: home,
       CAFF_DISABLE_ENV_LOCAL: '1',
       CHAT_APP_HOST: '127.0.0.1',
       CHAT_APP_PORT: String(port),
@@ -189,8 +199,10 @@ async function createVerificationConversation(baseUrl, title, roleId) {
 }
 
 async function deleteVerificationConversation(baseUrl, conversationId) {
+  teardownConversationIds.add(conversationId);
   const response = await fetch(`${baseUrl}api/conversations/${encodeURIComponent(conversationId)}`, { method: 'DELETE' });
-  return { ok: response.ok, status: response.status, body: (await response.text()).slice(0, 240) };
+  await response.text();
+  return { ok: response.ok, status: response.status }; // Never record bootstrap/CSRF data returned by DELETE.
 }
 
 async function verificationResidue(baseUrl) {
@@ -244,12 +256,17 @@ try {
   }
   const baselineConversation = await createVerificationConversation(APP, `${TITLE_PREFIX}-BASE`, verificationRoleId);
   baselineConversationId = baselineConversation.id;
-  browser = await chromium.launch({ channel: 'msedge', headless: true });
+  browser = await chromium.launch({ ...(process.platform === 'win32' ? { executablePath: edgeCdp.edgeExecutable() } : { channel: 'msedge' }), headless: true });
 
-function isExpectedEmptyPlanResponse(response) {
+function isExpectedMissingFixtureResponse(response) {
   if (response.status() !== 404) return false;
   try {
-    return /^\/api\/conversations\/[^/]+\/plan$/u.test(new URL(response.url()).pathname);
+    const pathname = new URL(response.url()).pathname;
+    if (/^\/api\/conversations\/[^/]+\/plan$/u.test(pathname)) return true;
+    // Only best-effort probes for this run's explicitly deleted fixture Room:
+    // SSE/UI callbacks can outlive DELETE. All other 404s remain failures.
+    const probe = pathname.match(/^\/api\/conversations\/([^/]+)\/(routing-preview|workspace\/authorizations)$/u);
+    return Boolean(probe && teardownConversationIds.has(decodeURIComponent(probe[1])));
   } catch {
     return false;
   }
@@ -264,7 +281,7 @@ async function newTrackedPage(viewport, extra = {}) {
   page.on('console', (msg) => { if (msg.type() === 'error') page.consoleErrors.push(msg.text()); });
   page.on('pageerror', (err) => page.pageErrors.push(String(err)));
   page.on('response', (res) => {
-    if (isExpectedEmptyPlanResponse(res)) return;
+    if (isExpectedMissingFixtureResponse(res)) return;
     if (res.status() === 404) page.notFound.push(res.url());
     if (res.status() >= 400 && !res.url().includes('favicon')) page.badResponses.push(`${res.status()} ${res.url()}`);
   });
@@ -907,12 +924,16 @@ try {
   });
   ok('K4 failed send restore re-expands composer height', composerRestore.before >= 150 && composerRestore.after >= 150 && composerRestore.valueLength === 1400, JSON.stringify(composerRestore));
 } finally {
+  // Dispose failed-send draft timers/requests before deleting their Room. This
+  // prevents a late best-effort routing preview from racing fixture teardown.
+  await page.reload({ waitUntil: 'load' });
   const cleanupResults = [];
   for (const id of createdIds) {
+    teardownConversationIds.add(id);
     const cleanup = await page.evaluate(async (cid) => {
       try {
-        const payload = await window.CaffShared.fetchJson(`/api/conversations/${encodeURIComponent(cid)}`, { method: 'DELETE' });
-        return { id: cid, ok: true, status: 200, body: JSON.stringify(payload).slice(0, 240) };
+        await window.CaffShared.fetchJson(`/api/conversations/${encodeURIComponent(cid)}`, { method: 'DELETE' });
+        return { id: cid, ok: true, status: 200 };
       } catch (error) {
         return { id: cid, ok: false, status: error.status, body: String(error.message).slice(0, 240) };
       }
