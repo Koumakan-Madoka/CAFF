@@ -877,6 +877,24 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   FOREIGN KEY (origin_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL
 );
 
+-- Deliberately no Room FK/cascade: retry keys outlive deleted Rooms. The
+-- deletion trigger persists a tombstone even when a Room ID is later reused.
+CREATE TABLE IF NOT EXISTS chat_planner_room_creations (
+  planner_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 200),
+  request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+  conversation_id TEXT NOT NULL,
+  response_json TEXT NOT NULL CHECK (json_valid(response_json)),
+  created_at TEXT NOT NULL,
+  deleted_at TEXT,
+  PRIMARY KEY (planner_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_planner_room_creation_conversation ON chat_planner_room_creations (conversation_id);
+CREATE TRIGGER IF NOT EXISTS chat_planner_room_creation_deleted AFTER DELETE ON chat_conversations BEGIN
+  UPDATE chat_planner_room_creations SET deleted_at=COALESCE(deleted_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    WHERE conversation_id=OLD.id;
+END;
+
 CREATE TABLE IF NOT EXISTS chat_goal_rulings (
   sequence INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT NOT NULL UNIQUE,

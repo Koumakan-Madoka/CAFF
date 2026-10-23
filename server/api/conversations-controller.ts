@@ -12,6 +12,7 @@ import { sendFileDownload, sendJson, sendTextDownload } from '../http/response';
 
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
 import { applyConversationDigestAction } from '../domain/conversation/conversation-digest';
+import { plannerRoomCreationKey, plannerRoomCreationDigest } from '../domain/conversation/planner-room-creation';
 import { buildConversationMessagePage } from '../domain/conversation/message-pagination';
 import {
   buildMessageTraceInspector,
@@ -564,6 +565,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     }
 
     if (req.method === 'POST' && pathname === '/api/conversations') {
+      const key = principal.kind === 'planner' ? plannerRoomCreationKey(req) : null;
       const body = await readRequestJson(req);
       if (!isPlainObject(body)) {
         throw roomCreationError(400, 'room_invalid_request', 'Room request must be an object', 'body');
@@ -571,6 +573,17 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       const unknownField = Object.keys(body).find((key) => !CREATE_ROOM_FIELDS.has(key));
       if (unknownField) {
         throw roomCreationError(400, 'room_unknown_field', `Unknown Room field: ${unknownField}`, unknownField);
+      }
+      let retry: any = null;
+      if (principal.kind === 'planner') {
+        if (typeof store.replayPlannerRoomCreation !== 'function' || typeof store.createPlannerConversation !== 'function') {
+          throw createHttpError(501, 'Planner Room creation projection unavailable', { code: 'planner_projection_unavailable' });
+        }
+        retry = { plannerId: principal.plannerId, key, digest: plannerRoomCreationDigest(body) };
+        const replay = store.replayPlannerRoomCreation(retry);
+        if (replay) {
+          res.setHeader('Idempotency-Replayed', 'true'); sendJson(res, 201, replay.response); return true;
+        }
       }
       const projectScopeId = String(body.projectScopeId || '').trim();
       if (!projectScopeId) {
@@ -593,12 +606,18 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         participants: validateConversationParticipants(body),
       };
       const enrichedBody = mergeModeSkillIdsIntoParticipants(conversationInput, mode);
-      const conversation = store.createConversation({
+      const creationInput = {
         ...enrichedBody,
         projectScopeId,
         modeId,
         metadata: String(body.title || '').trim() ? { titleSource: 'manual' } : {},
-      });
+      };
+      if (retry) {
+        const created = store.createPlannerConversation(creationInput, retry);
+        if (created.replayed) res.setHeader('Idempotency-Replayed', 'true');
+        sendJson(res, 201, created.response); return true;
+      }
+      const conversation = store.createConversation(creationInput);
 
       sendJson(res, 201, {
         conversation,

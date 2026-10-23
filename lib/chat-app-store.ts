@@ -16,6 +16,7 @@ const { createChatWorkspaceOperationRepository } = require('../storage/chat/work
 const { createGoalRulingRepository } = require('../storage/chat/goal-ruling.repository');
 const { createPlannerAttentionRepository } = require('../storage/chat/planner-attention.repository');
 const { createPlannerStateRepository } = require('../storage/chat/planner-state.repository');
+const { createPlannerRoomCreationRepository } = require('../storage/chat/planner-room-creation.repository');
 const { subscribePlannerAttention } = require('../storage/chat/planner-attention-notifications');
 const { syncPlannerAttention } = require('../server/domain/conversation/planner-attention');
 const { createPlannerTurnAttention } = require('../server/domain/conversation/planner-turn-attention');
@@ -992,6 +993,7 @@ export class ChatAppStore {
       this.goalRulingRepository.backfill();
       this.plannerAttentionRepository = createPlannerAttentionRepository(this.db);
       this.plannerStateRepository = createPlannerStateRepository(this.db);
+      this.plannerRoomCreationRepository = createPlannerRoomCreationRepository(this.db);
       this.plannerTurnAttention = createPlannerTurnAttention(this.db);
       this.participantRepository = createChatParticipantRepository(this.db);
       this.reconcilePlannerAttention();
@@ -1156,7 +1158,7 @@ export class ChatAppStore {
         };
       });
 
-      this.createConversationTransaction = this.db.transaction((payload: any) => {
+      this.createConversationTransaction = this.db.transaction((payload: any, messageProjection = 'full') => {
         const timestamp = nowIso();
 
         if (!Array.isArray(payload.participants) || payload.participants.length === 0) {
@@ -1190,7 +1192,9 @@ export class ChatAppStore {
         syncPlannerAttention(this.plannerAttentionRepository, payload.id, {}, payload.metadata,
           { agents: this.listConversationAgents(payload.id) });
 
-        return this.getConversation(payload.id);
+        return messageProjection === 'identity'
+          ? { id: payload.id, title: payload.title, type: normalizeConversationType(payload.type), metadata: payload.metadata || {}, projectScopeId: payload.projectScopeId }
+          : this.getConversation(payload.id);
       });
 
       this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any, messageProjection: any = 'full', options: any = {}) => {
@@ -3399,7 +3403,15 @@ export class ChatAppStore {
     this.deleteExternalEventTransaction(eventRecordId);
   }
 
-  createConversation(input: any = {}) {
+  replayPlannerRoomCreation(retry: any) {
+    return this.plannerRoomCreationRepository.replay(retry);
+  }
+
+  createPlannerConversation(input: any, retry: any) {
+    return this.plannerRoomCreationRepository.create(retry, () => this.createConversation(input, { messageProjection: 'identity' }));
+  }
+
+  createConversation(input: any = {}, options: any = {}) {
     const id = String(input.id || randomUUID()).trim();
     const title = String(input.title || '').trim() || 'New Conversation';
     const participants = this.normalizeConversationParticipantsInput(input);
@@ -3411,7 +3423,7 @@ export class ChatAppStore {
       projectScopeId: String(input.projectScopeId || '').trim() || null,
       metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
       participants,
-    });
+    }, options.messageProjection);
   }
 
   bindConversationWorkspace(conversationId: any, workspace: any) {
