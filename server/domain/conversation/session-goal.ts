@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { requiresBoundedConversationProjections } from '../../../lib/conversation-hydration-contract';
 import { createHttpError } from '../../http/http-errors';
 import { isNonRoutableSystemActorId } from '../roles/system-actor-catalog';
+import { assertGoalCriterionPatchState, mergeGoalPatch } from './goal-patch';
 import {
   acceptedAdrChanges,
   incompleteAcceptanceCriteria,
@@ -1019,6 +1020,19 @@ function assertUserOnlyGoalChanges(previousGoal: any, nextGoal: any, principal: 
   }
 }
 
+function mergeGoalMutationInput(existingGoal: any, input: any, timestamp: string) {
+  if (!Object.prototype.hasOwnProperty.call(input, 'workItems') && hasChecklistInput(input)) {
+    const legacy = checklistInputValue(input);
+    if (typeof legacy !== 'string' && !Array.isArray(legacy)) {
+      throw createHttpError(400, 'Invalid explicit Goal checklist patch', { code: 'goal_patch_invalid' });
+    }
+    return mergeGoalPatch(existingGoal, input, {
+      legacyWorkItems: typeof legacy === 'string' ? normalizeChecklistItems(legacy, timestamp) : legacy,
+    });
+  }
+  return mergeGoalPatch(existingGoal, input);
+}
+
 function goalFromMutation(action: string, existingGoal: any, input: any, timestamp: string, conversation: any, options: any) {
   if (action === 'set') {
     const objective = normalizeObjective(input && input.objective);
@@ -1043,9 +1057,9 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
   }
 
   if (action === 'revise') {
-    const objective = normalizeObjective(input && input.objective);
-    const delivery = normalizeGoalDelivery(input, timestamp);
-    requireAcceptanceCriteria(delivery);
+    const mergedInput = mergeGoalMutationInput(existingGoal, input, timestamp);
+    const objective = normalizeObjective(mergedInput.objective);
+    const delivery = normalizeGoalDelivery(mergedInput, timestamp);
     return {
       ...existingGoal,
       objective,
@@ -1056,10 +1070,11 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
   }
 
   if (action === 'update-delivery' || action === 'update_delivery') {
-    const delivery = normalizeGoalDelivery(input, timestamp);
-    validateGoalDelivery(delivery);
+    const mergedInput = mergeGoalMutationInput(existingGoal, input, timestamp);
+    const delivery = normalizeGoalDelivery(mergedInput, timestamp);
     const nextGoal = {
       ...existingGoal,
+      objective: normalizeObjective(mergedInput.objective),
       revision: existingGoal.revision + 1,
       updatedAt: timestamp,
       ...delivery,
@@ -1070,6 +1085,7 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
         code: 'goal_structural_review_required',
       });
     }
+    validateGoalDelivery(delivery);
     const previousCriteria = new Map((existingGoal.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
     const newlyWaived = (nextGoal.acceptanceCriteria || []).filter((criterion: any) => {
       const previous: any = previousCriteria.get(criterion.id);
@@ -1230,6 +1246,10 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       : existingProposal;
     const goal = goalFromMutation(existingProposal.action, existingGoal, mutationInput, timestamp, conversation, options);
     assertUserOnlyGoalChanges(existingGoal, goal, ruling.ruledBy, existingProposal.action === 'set');
+    if (existingProposal.action === 'revise') {
+      requireAcceptanceCriteria(goal);
+      assertGoalCriterionPatchState(existingGoal, mutationInput, goal);
+    }
     const previousCriteria = new Map((existingGoal && existingGoal.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
     const newlyWaivedHighRisk = (goal.acceptanceCriteria || []).filter((criterion: any) => {
       const previous: any = previousCriteria.get(criterion.id);
@@ -1407,6 +1427,10 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
 
   const goal = goalFromMutation(action, existingGoal, input, timestamp, conversation, options);
   assertUserOnlyGoalChanges(existingGoal, goal, input.ruledBy, action === 'set');
+  if (action === 'revise') {
+    requireAcceptanceCriteria(goal);
+    assertGoalCriterionPatchState(existingGoal, input, goal);
+  }
   const factualRunner = factualOnly ? getSessionGoalRunner(conversation) : null;
   // Checklist progress is factual state inside the current goal epoch. It
   // must not erase a pending proposal or the durable ruling that proves how
@@ -1472,13 +1496,14 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
     }
   }
 
+  const timestamp = nowIso();
+  const mutationInput = action === 'revise' ? mergeGoalMutationInput(existingGoal, input, timestamp) : input;
   const objective = action === 'set' || action === 'revise'
-    ? normalizeObjective(input.objective || (existingGoal && existingGoal.objective))
+    ? normalizeObjective(mutationInput.objective)
     : '';
   const reason = normalizeProposalReason(input.reason);
-  const timestamp = nowIso();
   const proposedDelivery = action === 'set' || action === 'revise'
-    ? normalizeGoalDelivery(input, timestamp, {
+    ? normalizeGoalDelivery(mutationInput, timestamp, {
         legacyChecklist: hasChecklistInput(input) ? normalizeChecklistItems(checklistInputValue(input), timestamp) : [],
       })
     : null;
@@ -1486,6 +1511,7 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
     requireAcceptanceCriteria(proposedDelivery);
   }
   if (action === 'revise') {
+    assertGoalCriterionPatchState(existingGoal, mutationInput, proposedDelivery);
     const provisionalChanges = provisionalDecisionChanges(existingGoal, proposedDelivery);
     const impact = clipText(input.impact, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH);
     if (provisionalChanges.length > 0 && (!reason || !impact)) {

@@ -422,9 +422,15 @@ revise proposals and factual updates alike:
 - Changing a criterion's definition cannot inherit a passing result for the old
   definition. Preserve existing UI replacement-ID/proof-link safety. Changed
   definitions require explicit valid new acceptance state, never silent proof
-  transfer. Factual updates that change definitions return 409.
-- `null`, wrong collection types and blank required text return 400; they are
-  not implicit clear commands. `decisions: {}` preserves every group.
+  transfer: an existing criterion whose statement, verifyBy or risk changes must
+  supply status; passed additionally supplies evidenceRefs, waived supplies waiver.
+  Otherwise return 400 `goal_acceptance_state_required`. Proof-link and user-only
+  validations still apply. Factual updates that change definitions return 409.
+- `null`, wrong collection/property types and blank required text return 400
+  `goal_patch_invalid`; they are not implicit clear commands. `decisions: {}`
+  preserves every group. Legacy acceptance_criteria/verify_by and checklist
+  aliases still work when the canonical field is absent; canonical wins if both
+  are supplied. Merge aliases before normalization too.
 - An old client sending the entire current Goal keeps replacement semantics for
   its explicitly supplied collections. A fully supplied, valid old payload has
   the same normalized result as before, apart from the documented corrections.
@@ -702,6 +708,8 @@ Missing required bounded-store projections fail closed with 501
 | 400 `goal_initial_status_invalid` | Initial set status must be active or paused |
 | 400 `idempotency_key_required` | Supply a valid planner Room-creation retry key |
 | 400 `attention_query_invalid` | Correct cursor/filter/timeout |
+| 400 `goal_patch_invalid` | Invalid explicit patch value/type/required text; omission is not null |
+| 400 `goal_acceptance_state_required` | Changed criterion definition needs explicit new acceptance state/proof fields |
 | 400 existing Goal validation codes | Invalid definitions, missing verifyBy, evidence IDs/links or waiver reason; nothing written |
 | 401 `planner_credential_invalid` | Missing/invalid declared planner credential; never downgrade to user |
 | 403 `api_host_mismatch`, `api_origin_mismatch`, `api_csrf_invalid` | Browser/planner mutation guard failure, as applicable |

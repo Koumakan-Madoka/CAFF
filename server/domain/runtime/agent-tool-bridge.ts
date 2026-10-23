@@ -2177,9 +2177,13 @@ export function createAgentToolBridge(options: any = {}) {
         }
       }
 
-      const goalInput = body.goal && typeof body.goal === 'object' && !Array.isArray(body.goal)
-        ? { ...body.goal, action, objective: body.goal.objective || objective, reason: body.goal.reason || reason }
-        : { ...body, action, objective, reason, ...(checklistText ? { checklistText } : {}) };
+      const goalSource = body.goal && typeof body.goal === 'object' && !Array.isArray(body.goal) ? body.goal : body;
+      const goalInput = {
+        ...goalSource, action, reason: goalSource.reason || reason,
+        // Omission must reach the patch merger as omission, not a synthesized
+        // blank objective. Preserve explicit invalid values for validation.
+        ...(!Object.hasOwn(goalSource, 'objective') && Object.hasOwn(body, 'objective') ? { objective: body.objective } : {}),
+      };
       const result = proposeSessionGoalAction(
         activeStore,
         context.conversationId,
@@ -2291,6 +2295,7 @@ export function createAgentToolBridge(options: any = {}) {
       const result = applySessionGoalAction(activeStore, context.conversationId, {
         ...goalUpdate,
         action: 'update-delivery',
+        ruledBy: { kind: 'agent', agentId: context.agentId, agentName: context.agentName },
       });
       const summary = pickConversationSummary(result.conversation);
       broadcastEvent('conversation_goal_updated', {
