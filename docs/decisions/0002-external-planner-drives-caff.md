@@ -1,7 +1,7 @@
 # ADR 0002: An External Planner Drives CAFF
 
-- Status: Proposed
-- Proposed: 2026-10-23
+- Status: Accepted
+- Accepted: 2026-10-23
 - Decision owner: CAFF project user
 - Independent reviewer: Kimi (APPROVE WITH NITS on `22e3423`, 2026-10-23; all
   six non-blocking notes addressed)
