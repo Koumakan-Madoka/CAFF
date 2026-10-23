@@ -10,6 +10,8 @@ export type AttentionOccurrence = {
   kind: AttentionKind;
   sourceId: string;
   summary: string;
+  failedAgentIds?: string[];
+  lane?: 'main' | 'side';
   createdAt: string;
 };
 export type AttentionQuery = { after?: number; limit?: number; conversationId?: string; status?: 'all' | 'unresolved' | 'resolved' };
@@ -21,6 +23,8 @@ function project(row: any) {
     goalId: row.goal_id, goalRevision: row.goal_revision, kind: row.kind,
     sourceId: row.source_id, summary: row.summary, createdAt: row.created_at,
     resolvedAt: row.resolved_at, resolution: row.resolution,
+    ...(row.kind === 'turn_failed' ? { failedAgentIds: JSON.parse(row.failed_agent_ids_json || '["unknown"]'),
+      ...(row.lane ? { lane: row.lane } : {}) } : {}),
     ...(row.resolved_by_json ? { resolvedBy: JSON.parse(row.resolved_by_json) } : {}),
   };
 }
@@ -45,8 +49,8 @@ export function createPlannerAttentionRepository(db: any) {
   const getSource = db.prepare(`SELECT * FROM chat_planner_attention
     WHERE conversation_id = ? AND kind = ? AND source_id = ?`);
   const insert = db.prepare(`INSERT INTO chat_planner_attention
-    (conversation_id, goal_id, goal_revision, kind, source_id, summary, created_at)
-    VALUES (@conversationId, @goalId, @goalRevision, @kind, @sourceId, @summary, @createdAt)
+    (conversation_id, goal_id, goal_revision, kind, source_id, summary, created_at, failed_agent_ids_json, lane)
+    VALUES (@conversationId, @goalId, @goalRevision, @kind, @sourceId, @summary, @createdAt, @failedAgentIdsJson, @lane)
     ON CONFLICT(conversation_id, kind, source_id) DO NOTHING`);
   const resolve = db.prepare(`UPDATE chat_planner_attention SET resolved_at=@at,
     resolution=@resolution, resolved_by_json=@principalJson, resolution_reason=@reason
@@ -71,7 +75,8 @@ export function createPlannerAttentionRepository(db: any) {
     const old = getSource.get(input.conversationId, input.kind, input.sourceId);
     if (old) return project(old);
     const summary = Array.from(input.summary).slice(0, 500).join('');
-    insert.run({ ...input, summary });
+    insert.run({ ...input, summary, failedAgentIdsJson: input.failedAgentIds ? JSON.stringify(input.failedAgentIds) : null,
+      lane: input.lane || null });
     return project(getSource.get(input.conversationId, input.kind, input.sourceId));
   }
 
@@ -117,6 +122,13 @@ export function createPlannerAttentionRepository(db: any) {
     },
     resolveGoal(conversationId: string, goalId: string, resolution: string, at: string) {
       resolveGoal.run({ conversationId, goalId, resolution, at });
+    },
+    resolveSuccessfulTurn(conversationId: string, goalId: string, lane: string, agentId: string, at: string) {
+      if (!agentId || agentId === 'unknown') return;
+      db.prepare(`UPDATE chat_planner_attention SET resolved_at=@at, resolution='turn_succeeded',
+        resolved_by_json='{"kind":"system"}' WHERE conversation_id=@conversationId AND goal_id=@goalId
+        AND kind='turn_failed' AND lane=@lane AND failed_agent_ids_json=@agentJson AND resolved_at IS NULL`)
+        .run({ conversationId, goalId, lane, agentJson: JSON.stringify([agentId]), at });
     },
     resolve: resolveItem,
     acknowledge: db.transaction((sequence: number, input: any = {}) => {

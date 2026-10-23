@@ -903,6 +903,8 @@ CREATE TABLE IF NOT EXISTS chat_planner_attention (
   kind TEXT NOT NULL CHECK (kind IN ('proposal_pending', 'budget_exhausted', 'failure_paused', 'owner_removed', 'goal_completed', 'turn_failed')),
   source_id TEXT NOT NULL CHECK (length(trim(source_id)) > 0),
   summary TEXT NOT NULL CHECK (length(summary) <= 500),
+  failed_agent_ids_json TEXT,
+  lane TEXT CHECK (lane IS NULL OR lane IN ('main', 'side')),
   created_at TEXT NOT NULL,
   resolved_at TEXT,
   resolution TEXT,
@@ -930,22 +932,6 @@ CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_unresolved
   ON chat_planner_attention (conversation_id, sequence) WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_status
   ON chat_planner_attention (resolved_at, sequence);
-
-CREATE TRIGGER IF NOT EXISTS chat_planner_attention_immutable
-  BEFORE UPDATE ON chat_planner_attention
-  WHEN OLD.resolved_at IS NOT NULL
-    OR NEW.sequence IS NOT OLD.sequence
-    OR NEW.conversation_id IS NOT OLD.conversation_id
-    OR NEW.goal_id IS NOT OLD.goal_id
-    OR NEW.goal_revision IS NOT OLD.goal_revision
-    OR NEW.kind IS NOT OLD.kind
-    OR NEW.source_id IS NOT OLD.source_id
-    OR NEW.summary IS NOT OLD.summary
-    OR NEW.created_at IS NOT OLD.created_at
-    OR NEW.resolved_at IS NULL
-  BEGIN
-    SELECT RAISE(ABORT, 'Attention occurrence and resolved data are immutable');
-  END;
 
 CREATE TABLE IF NOT EXISTS chat_acceptance_records (
   id TEXT PRIMARY KEY,
@@ -1340,6 +1326,23 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_ttl ON image_uploads (ttl_expires_a
 CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   `);
 
+  ensureColumn(db, 'chat_planner_attention', 'failed_agent_ids_json', 'failed_agent_ids_json TEXT');
+  ensureColumn(db, 'chat_planner_attention', 'lane', "lane TEXT CHECK (lane IS NULL OR lane IN ('main', 'side'))");
+  db.exec(`
+DROP TRIGGER IF EXISTS chat_planner_attention_immutable;
+CREATE TRIGGER chat_planner_attention_immutable BEFORE UPDATE ON chat_planner_attention
+WHEN OLD.resolved_at IS NOT NULL
+  OR NEW.sequence IS NOT OLD.sequence OR NEW.conversation_id IS NOT OLD.conversation_id
+  OR NEW.goal_id IS NOT OLD.goal_id OR NEW.goal_revision IS NOT OLD.goal_revision
+  OR NEW.kind IS NOT OLD.kind OR NEW.source_id IS NOT OLD.source_id
+  OR NEW.summary IS NOT OLD.summary OR NEW.created_at IS NOT OLD.created_at
+  OR NEW.failed_agent_ids_json IS NOT OLD.failed_agent_ids_json OR NEW.lane IS NOT OLD.lane
+  OR NEW.resolved_at IS NULL
+BEGIN SELECT RAISE(ABORT, 'Attention occurrence and resolved data are immutable'); END;
+CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_turn_scope
+  ON chat_planner_attention(conversation_id, goal_id, lane, failed_agent_ids_json)
+  WHERE resolved_at IS NULL AND kind='turn_failed';
+  `);
   ensureColumn(db, 'chat_agents', 'model_profiles_json', 'model_profiles_json TEXT');
   ensureColumn(db, 'chat_agents', 'avatar_data_url', 'avatar_data_url TEXT');
   ensureColumn(db, 'chat_agents', 'sandbox_name', 'sandbox_name TEXT');

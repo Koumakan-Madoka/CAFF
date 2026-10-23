@@ -1403,7 +1403,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     };
     const metadata = existingProposal.action === 'set'
       ? withSetPlannerBinding(conversation, baseMetadata, goalWithNotice, input, options, timestamp) : baseMetadata;
-    const nextConversation = updateConversationMetadata(store, conversation, metadata);
+    const nextConversation = updateConversationMetadata(store, conversation, metadata, { goalAction: existingProposal.action });
     return responseForConversation(nextConversation, {
       goal: getSessionGoal(nextConversation),
       proposal: null,
@@ -1549,7 +1549,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
         input.reason || `Superseded by ${action}`, timestamp, existingGoal, action) } : {}),
     };
   const metadata = action === 'set' ? withSetPlannerBinding(conversation, nextMetadata, goal, input, options, timestamp) : nextMetadata;
-  const nextConversation = updateConversationMetadata(store, conversation, metadata);
+  const nextConversation = updateConversationMetadata(store, conversation, metadata, { goalAction: action });
   return responseForConversation(nextConversation, {
     goal: getSessionGoal(nextConversation),
     proposal: factualOnly ? getSessionGoalProposal(nextConversation) : null,

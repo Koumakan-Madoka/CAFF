@@ -5,6 +5,7 @@ const { createRunSessionRepository } = require('../storage/run/session.repositor
 const { createRunRepository } = require('../storage/run/run.repository');
 const { createRunTaskRepository } = require('../storage/run/task.repository');
 const { DIAGNOSTIC_LIMITS } = require('./stream-diagnostics');
+const { createPlannerTurnAttention } = require('../server/domain/conversation/planner-turn-attention');
 
 function nowIso() {
   return new Date().toISOString();
@@ -133,6 +134,7 @@ export class SqliteRunStore {
       this.sessionRepository = createRunSessionRepository(this.db);
       this.runRepository = createRunRepository(this.db);
       this.taskRepository = createRunTaskRepository(this.db);
+      this.plannerTurnAttention = createPlannerTurnAttention(this.db);
     } catch (error) {
       if (connection.ownsDb) {
         try {
@@ -286,7 +288,7 @@ export class SqliteRunStore {
     } = task || {};
     const createdAt = nowIso();
 
-    return normalizeTaskRow(
+    return this.db.transaction(() => normalizeTaskRow(
       this.taskRepository.create({
         taskId,
         parentTaskId,
@@ -304,18 +306,25 @@ export class SqliteRunStore {
         inputText,
         outputText,
         errorMessage,
-        metadataJson: serializeJson(metadata),
+        metadataJson: serializeJson(this.plannerTurnAttention?.startingMetadata(kind, metadata) ?? metadata),
         artifactSummaryJson: serializeJson(artifactSummary),
         createdAt,
         updatedAt: createdAt,
         startedAt: startedAt || null,
         endedAt: endedAt || null,
       })
-    );
+    ))();
   }
 
   updateTask(taskId: any, updates: any = {}) {
-    return normalizeTaskRow(this.taskRepository.update(taskId, normalizeTaskUpdates(updates)));
+    return this.db.transaction(() => {
+      const before = this.taskRepository.get(taskId);
+      const normalized = normalizeTaskUpdates(updates);
+      const next = this.taskRepository.update(taskId,
+        this.plannerTurnAttention?.preserveStartingMetadata(before, normalized) || normalized);
+      this.plannerTurnAttention?.terminal(before, next);
+      return normalizeTaskRow(next);
+    })();
   }
 
   appendTaskEvent(taskId: any, eventType: any, payload: any) {

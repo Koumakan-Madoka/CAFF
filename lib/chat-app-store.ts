@@ -16,6 +16,7 @@ const { createChatWorkspaceOperationRepository } = require('../storage/chat/work
 const { createGoalRulingRepository } = require('../storage/chat/goal-ruling.repository');
 const { createPlannerAttentionRepository } = require('../storage/chat/planner-attention.repository');
 const { syncPlannerAttention } = require('../server/domain/conversation/planner-attention');
+const { createPlannerTurnAttention } = require('../server/domain/conversation/planner-turn-attention');
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
@@ -988,6 +989,7 @@ export class ChatAppStore {
       this.goalRulingRepository = createGoalRulingRepository(this.db);
       this.goalRulingRepository.backfill();
       this.plannerAttentionRepository = createPlannerAttentionRepository(this.db);
+      this.plannerTurnAttention = createPlannerTurnAttention(this.db);
       this.participantRepository = createChatParticipantRepository(this.db);
       this.reconcilePlannerAttention();
       this.messageRepository = createChatMessageRepository(this.db);
@@ -3880,7 +3882,7 @@ export class ChatAppStore {
           recoveredAfterRestart: true,
         },
       });
-    });
+    }, (before: any, next: any, interrupted: boolean) => this.plannerTurnAttention?.terminal(before, next, interrupted));
   }
 
   sweepOrphanedAgentSessionReuseClaims(poisonReason: any, now: any) {

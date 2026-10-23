@@ -36,6 +36,7 @@ export function syncPlannerAttention(repository: any, conversationId: string,
   ensureProposal(nextGoal, nextProposal);
   if (!nextGoal) return;
 
+  if (options.goalAction === 'resume') repository.resolveKind(conversationId, nextGoal.goalId, 'turn_failed', 'goal_resumed', at);
   const runner = getSessionGoalRunner(next);
   const effectiveRunner = runner && runner.goalUpdatedAt === nextGoal.updatedAt ? runner : null;
   function ensure(kind: string, summary: string, createdAt = at) {
