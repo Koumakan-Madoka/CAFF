@@ -178,7 +178,9 @@ for (const kind of ['adr', 'high-risk']) {
       ...(kind === 'adr' ? [{ action: 'clear' }] : [{ ...current, ...change, action: 'update-delivery' },
         { ...current, action: 'set', acceptanceCriteria: [criterion({ risk: 'normal', status: 'waived', waiver: { reason: 'Cannot lower risk to bypass gate' } })] }]),
     ]) {
-      const response = await f.post(input);
+      const response = await f.post({ ...input, ...(['set', 'revise'].includes(input.action) ? {
+        supersedeProposal: true, proposalId: getSessionGoalProposal(f.app.store.getConversationWithoutMessages(f.room.id)).id,
+      } : {}) });
       assert.equal(response.status, 403);
       assert.equal(response.body.code, kind === 'adr' ? 'goal_accepted_adr_change_user_required' : 'goal_high_risk_waiver_user_required');
       assert.equal(JSON.stringify(f.app.store.getConversationWithoutMessages(f.room.id).metadata), before);

@@ -541,10 +541,16 @@ async function submitGoalCommand(conversationId, command) {
     return null;
   }
 
-  const result = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/goal`, {
-    method: 'POST',
-    body: command,
+  const endpoint = `/api/conversations/${encodeURIComponent(conversationId)}/goal`;
+  const result = await sessionGoalUtils.submitWithProposalConfirmation({
+    conversation: state.currentConversation,
+    command,
+    post: (body) => fetchJson(endpoint, { method: 'POST', body }),
+    read: () => fetchJson(endpoint),
+    refresh: (latest) => { applyConversationResponse(latest); renderAll(); },
+    confirm: (description) => window.confirm(description),
   });
+  if (!result) return null;
 
   applyConversationResponse(result);
   if (result.summary) {

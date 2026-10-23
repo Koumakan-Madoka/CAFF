@@ -476,11 +476,19 @@ requested action and resolves the proposal's attention item. The ordinary
 `sessionGoalRuling` remains the latest ruling projection; append-only SQLite
 ruling history retains all previous accepted/rejected/superseded rulings across
 lifecycle mutations and Goal replacement/clear. Do not grow unbounded Room
-metadata or erase the last ruling on pause/resume/revise. A rejected or failed
-superseding operation must not create a superseded ruling. Explicit clear also
+metadata or erase the last ruling on pause/resume/revise. Replacement set may
+clear the old epoch's live ruling projection (required by DAG child redispatch),
+but not its archived record; accepted set or superseding set installs its new
+ruling. A rejected or failed superseding operation must not create a superseded ruling. Explicit clear also
 archives any pending proposal as superseded before clearing live metadata.
 Deleting a Room may delete its history as part of that separately approved
-operation; there is no background history pruning in P1.
+operation; there is no background history pruning in P1. The SQLite archive
+is `chat_goal_rulings`, separate from metadata, with immutable ruling IDs and
+append order. Metadata writes archive the previous/latest ruling in the same
+transaction; clear can additionally archive its final ruling without retaining
+live Goal metadata. Startup idempotently archives recognized legacy rulings
+in metadata-only batches, preserving absent/legacy attribution rather than
+inventing a user principal.
 
 The browser displays the pending proposal before sending a conflicting action;
 a 409 caused by a race also offers confirmation. Only an explicit user confirm

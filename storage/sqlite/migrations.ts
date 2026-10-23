@@ -875,6 +875,26 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   FOREIGN KEY (origin_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS chat_goal_rulings (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  conversation_id TEXT NOT NULL,
+  goal_id TEXT,
+  goal_revision INTEGER NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('accepted', 'rejected', 'superseded')),
+  ruled_at TEXT NOT NULL,
+  ruling_json TEXT NOT NULL,
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_goal_rulings_conversation
+  ON chat_goal_rulings (conversation_id, sequence);
+
+CREATE TRIGGER IF NOT EXISTS chat_goal_rulings_immutable
+  BEFORE UPDATE ON chat_goal_rulings BEGIN
+    SELECT RAISE(ABORT, 'Goal ruling history is append-only');
+  END;
+
 CREATE TABLE IF NOT EXISTS chat_acceptance_records (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,

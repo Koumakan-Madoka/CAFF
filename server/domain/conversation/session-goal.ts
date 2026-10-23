@@ -20,7 +20,7 @@ const SESSION_GOAL_RULING_METADATA_KEY = 'sessionGoalRuling';
 const SESSION_GOAL_RUNNER_METADATA_KEY = 'sessionGoalRunner';
 const SESSION_GOAL_STATUSES = new Set(['active', 'paused', 'complete']);
 const SESSION_GOAL_PROPOSAL_ACTIONS = new Set(['set', 'revise', 'pause', 'resume', 'complete', 'clear']);
-const SESSION_GOAL_RULING_OUTCOMES = new Set(['accepted', 'rejected']);
+const SESSION_GOAL_RULING_OUTCOMES = new Set(['accepted', 'rejected', 'superseded']);
 const SESSION_GOAL_ACTIONS = new Set(['set', 'revise', 'pause', 'resume', 'complete', 'clear', 'set-owner', 'set_owner', 'update-delivery', 'update_delivery', 'update-checklist', 'update_checklist']);
 const SESSION_GOAL_CHECKLIST_STATUSES = new Set(['todo', 'in_progress', 'done']);
 const MAX_SESSION_GOAL_OBJECTIVE_LENGTH = 2000;
@@ -448,10 +448,12 @@ function normalizeSessionGoalRuling(value: any) {
     ruledBy: normalizeRuledBy(value.ruledBy || value.ruled_by),
     proposalSnapshot,
     ruledAt: normalizeText(value.ruledAt || value.ruled_at) || nowIso(),
+    ...(Object.prototype.hasOwnProperty.call(value, 'goalId') ? { goalId: value.goalId || null, goalRevision: value.goalRevision ?? 0 } : {}),
+    ...(normalizeProposalAction(value.supersedingAction) ? { supersedingAction: normalizeProposalAction(value.supersedingAction) } : {}),
   };
 }
 
-function buildRulingRecord(proposal: any, outcome: string, ruledBy: any, reason: any, timestamp: string) {
+function buildRulingRecord(proposal: any, outcome: string, ruledBy: any, reason: any, timestamp: string, goal: any, supersedingAction = '') {
   const snapshot = normalizeSessionGoalProposal(proposal);
   if (!snapshot) {
     throw createHttpError(500, 'Cannot record a ruling without a valid proposal snapshot');
@@ -471,6 +473,9 @@ function buildRulingRecord(proposal: any, outcome: string, ruledBy: any, reason:
     ruledBy: normalizeRuledBy(ruledBy),
     proposalSnapshot,
     ruledAt: timestamp,
+    goalId: goal?.goalId || null,
+    goalRevision: goal?.revision || 0,
+    ...(supersedingAction ? { supersedingAction } : {}),
   };
 }
 
@@ -585,12 +590,13 @@ function buildMetadataWithGoal(conversation: any, goal: any, options: any = {}) 
   const metadata = currentMetadata(conversation);
   const {
     [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal,
-    [SESSION_GOAL_RULING_METADATA_KEY]: _ruling,
+    [SESSION_GOAL_RULING_METADATA_KEY]: existingRuling,
     [SESSION_GOAL_RUNNER_METADATA_KEY]: existingRunner,
     ...remainingMetadata
   } = metadata;
   return {
     ...remainingMetadata,
+    ...(!options.clearRuling && existingRuling ? { [SESSION_GOAL_RULING_METADATA_KEY]: existingRuling } : {}),
     ...(!options.clearRunner && existingRunner ? { [SESSION_GOAL_RUNNER_METADATA_KEY]: existingRunner } : {}),
     [SESSION_GOAL_METADATA_KEY]: goal,
   };
@@ -641,13 +647,13 @@ function getGoalConversation(store: any, conversationId: any) {
     : null;
 }
 
-function updateConversationMetadata(store: any, conversation: any, metadata: any) {
+function updateConversationMetadata(store: any, conversation: any, metadata: any, options: any = {}) {
   // metadata-only 写入：不传 title，避免 titleSource 状态机误判为 manual 改名。
   if (store && typeof store.updateConversationWithoutMessages === 'function') {
     return store.updateConversationWithoutMessages(conversation.id, {
       type: conversation.type,
       metadata,
-    });
+    }, { goalRulings: options.goalRulings || [] });
   }
   if (requiresBoundedConversationProjections(store)) {
     return missingBoundedGoalProjection('updateConversationWithoutMessages');
@@ -657,10 +663,6 @@ function updateConversationMetadata(store: any, conversation: any, metadata: any
     type: conversation.type,
     metadata,
   });
-}
-
-function updateConversationGoal(store: any, conversation: any, goal: any, options: any = {}) {
-  return updateConversationMetadata(store, conversation, buildMetadataWithGoal(conversation, goal, options));
 }
 
 function updateConversationProposal(store: any, conversation: any, proposal: any) {
@@ -965,14 +967,8 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
     errorPausedAt: occurredAt,
     updatedAt: occurredAt,
   };
-  const metadata = currentMetadata(conversation);
-  const {
-    [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal,
-    [SESSION_GOAL_RULING_METADATA_KEY]: _ruling,
-    ...remainingMetadata
-  } = metadata;
   const nextConversation = updateConversationMetadata(store, conversation, {
-    ...remainingMetadata,
+    ...currentMetadata(conversation),
     [SESSION_GOAL_METADATA_KEY]: pausedGoal,
     [SESSION_GOAL_RUNNER_METADATA_KEY]: pausedRunner,
   });
@@ -1167,9 +1163,36 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     });
   }
 
+  // Supplied proposal IDs protect rulings and confirmed supersession against
+  // a proposal replaced without a Goal revision change.
+  if ((action === 'accept-proposal' || action === 'accept_proposal' || action === 'dismiss-proposal' || action === 'dismiss_proposal'
+    || input.supersedeProposal === true) && input.proposalId !== undefined && input.proposalId !== existingProposal?.id) {
+    throw createHttpError(409, 'The pending Goal proposal has changed', { code: 'goal_proposal_conflict' });
+  }
+  const guarded = ['set', 'revise', 'pause', 'resume', 'complete'].includes(action);
+  if (guarded && existingProposal && input.supersedeProposal !== true) {
+    throw createHttpError(409, 'Rule on the pending Goal proposal or explicitly confirm supersession', { code: 'goal_proposal_pending' });
+  }
+  if (guarded && existingProposal && input.supersedeProposal === true
+    && normalizeRuledBy(input.ruledBy).kind === 'planner' && input.proposalId !== existingProposal.id) {
+    throw createHttpError(409, 'Planner supersession requires the current proposal ID', { code: 'goal_proposal_conflict' });
+  }
+  // Optional stronger browser preconditions bind confirmation to the Goal it
+  // displayed. Legacy callers without an ID keep their existing checks.
+  if (Object.prototype.hasOwnProperty.call(input, 'goalId')) {
+    if ((input.goalId || null) !== (existingGoal?.goalId || null)) {
+      throw createHttpError(409, 'The session Goal has changed', { code: 'goal_revision_conflict' });
+    }
+    if (existingGoal) assertGoalRevision(existingGoal, input);
+  }
+
   if (action === 'clear') {
     assertUserOnlyGoalChanges(existingGoal, null, input.ruledBy);
-    const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
+    const ruling = existingProposal ? buildRulingRecord(existingProposal, 'superseded', input.ruledBy,
+      input.reason || 'Superseded by clear', timestamp, existingGoal, 'clear') : null;
+    const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation), {
+      goalRulings: ruling ? [ruling] : [],
+    });
     return responseForConversation(nextConversation, {
       goal: null,
       proposal: null,
@@ -1178,12 +1201,13 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       proposalChanged: Boolean(existingProposal),
       proposalCleared: Boolean(existingProposal),
       clearedProposal: existingProposal || null,
+      clearedRuling: ruling,
     });
   }
 
   if (action === 'dismiss-proposal' || action === 'dismiss_proposal') {
     const ruling = existingProposal
-      ? buildRulingRecord(existingProposal, 'rejected', input.ruledBy, input.reason, timestamp)
+      ? buildRulingRecord(existingProposal, 'rejected', input.ruledBy, input.reason, timestamp, existingGoal)
       : null;
     if (ruling?.ruledBy?.kind === 'agent'
       && ruling.ruledBy.agentId === existingProposal?.proposedBy?.agentId) {
@@ -1219,10 +1243,14 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       });
     }
 
+    const ruling = buildRulingRecord(existingProposal, 'accepted', input.ruledBy, input.reason, timestamp, existingGoal);
+    if (ruling.ruledBy.kind === 'agent'
+      && ruling.ruledBy.agentId === existingProposal.proposedBy?.agentId) {
+      throw createHttpError(403, 'The proposer cannot review their own Goal proposal', { code: 'goal_proposal_self_review' });
+    }
     if (existingProposal.action === 'clear') {
       assertUserOnlyGoalChanges(existingGoal, null, input.ruledBy);
-      // Approving a clear wipes the whole goal epoch — including rulings.
-      const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
+      const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation), { goalRulings: [ruling] });
       return responseForConversation(nextConversation, {
         goal: null,
         proposal: null,
@@ -1231,16 +1259,10 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
         proposalChanged: true,
         proposalCleared: true,
         clearedProposal: existingProposal,
+        clearedRuling: ruling,
       });
     }
 
-    const ruling = buildRulingRecord(existingProposal, 'accepted', input.ruledBy, input.reason, timestamp);
-    if (ruling.ruledBy.kind === 'agent'
-      && ruling.ruledBy.agentId === existingProposal.proposedBy?.agentId) {
-      throw createHttpError(403, 'The proposer cannot review their own Goal proposal', {
-        code: 'goal_proposal_self_review',
-      });
-    }
     const mutationInput = existingProposal.action === 'set'
       ? { ...existingProposal, status: existingProposal.initialStatus ?? 'active' }
       : existingProposal;
@@ -1309,6 +1331,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     const metadata = {
       ...buildMetadataWithGoal(conversation, goalWithNotice, {
         clearRunner: existingProposal.action === 'set' || existingProposal.action === 'resume',
+        clearRuling: existingProposal.action === 'set',
       }),
       [SESSION_GOAL_RULING_METADATA_KEY]: ruling,
     };
@@ -1343,18 +1366,6 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       proposalChanged: true,
       checklistTarget: 'proposal',
       autoContinue: false,
-    });
-  }
-
-  if (action === 'clear') {
-    const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
-    return responseForConversation(nextConversation, {
-      goal: null,
-      proposal: null,
-      cleared: true,
-      goalChanged: true,
-      proposalChanged: Boolean(existingProposal),
-      proposalCleared: Boolean(existingProposal),
     });
   }
 
@@ -1449,8 +1460,10 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
         }
         : {}),
     })
-    : updateConversationGoal(store, conversation, goal, {
-      clearRunner: action === 'set' || action === 'resume',
+    : updateConversationMetadata(store, conversation, {
+      ...buildMetadataWithGoal(conversation, goal, { clearRunner: action === 'set' || action === 'resume', clearRuling: action === 'set' }),
+      ...(existingProposal ? { [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(existingProposal, 'superseded', input.ruledBy,
+        input.reason || `Superseded by ${action}`, timestamp, existingGoal, action) } : {}),
     });
   return responseForConversation(nextConversation, {
     goal: getSessionGoal(nextConversation),

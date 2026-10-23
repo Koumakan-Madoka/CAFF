@@ -13,6 +13,7 @@ const { createChatRoleIdentityRepository } = require('../storage/chat/role-ident
 const { createChatConversationAgentHistoryRepository } = require('../storage/chat/conversation-agent-history.repository');
 const { createChatConversationRepository } = require('../storage/chat/conversation.repository');
 const { createChatWorkspaceOperationRepository } = require('../storage/chat/workspace-operation.repository');
+const { createGoalRulingRepository } = require('../storage/chat/goal-ruling.repository');
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
@@ -982,6 +983,8 @@ export class ChatAppStore {
       this.conversationAgentHistoryRepository = createChatConversationAgentHistoryRepository(this.db);
       this.conversationRepository = createChatConversationRepository(this.db);
       this.workspaceOperationRepository = createChatWorkspaceOperationRepository(this.db);
+      this.goalRulingRepository = createGoalRulingRepository(this.db);
+      this.goalRulingRepository.backfill();
       this.participantRepository = createChatParticipantRepository(this.db);
       this.messageRepository = createChatMessageRepository(this.db);
       this.messageDetailRepository = createChatMessageDetailRepository(this.db);
@@ -1172,7 +1175,16 @@ export class ChatAppStore {
         return this.getConversation(payload.id);
       });
 
-      this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any, messageProjection: any = 'full') => {
+      this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any, messageProjection: any = 'full', options: any = {}) => {
+        // Archive the previous and next latest rulings in the SAME transaction
+        // as metadata. Replacement/clear cannot lose the old audit record;
+        // either an archive or metadata failure rolls the entire change back.
+        const previous = this.conversationRepository.get(conversationId);
+        this.goalRulingRepository.append(conversationId, parseJson(previous?.metadata_json));
+        this.goalRulingRepository.append(conversationId, updates.metadata);
+        for (const ruling of options.goalRulings || []) {
+          this.goalRulingRepository.append(conversationId, { sessionGoalRuling: ruling });
+        }
         if (updates.title !== undefined) {
           this.conversationRepository.update(conversationId, {
             title: updates.title,
@@ -3544,11 +3556,15 @@ export class ChatAppStore {
       type,
       metadata,
       participants,
-    }, options && options.messageProjection === 'none' ? 'none' : 'full');
+    }, options && options.messageProjection === 'none' ? 'none' : 'full', options);
   }
 
-  updateConversationWithoutMessages(conversationId: any, updates: any = {}) {
-    return this.updateConversation(conversationId, updates, { messageProjection: 'none' });
+  updateConversationWithoutMessages(conversationId: any, updates: any = {}, options: any = {}) {
+    return this.updateConversation(conversationId, updates, { ...options, messageProjection: 'none' });
+  }
+
+  listSessionGoalRulings(conversationId: string, options: any = {}) {
+    return this.goalRulingRepository.list(conversationId, options.limit ?? 100);
   }
 
   getConversationTitleSource(conversationId: any) {

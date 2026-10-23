@@ -910,17 +910,16 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           // Carry the authoritative proposal snapshot and authenticated
           // principal. D28 still treats only the user as manual verification;
           // an external planner must never be mislabeled as that user.
-          const goalAction = String(body && body.action || '').trim().toLowerCase();
-          const isRulingAction = result.proposalCleared
-            && (goalAction === 'accept-proposal' || goalAction === 'accept_proposal'
-              || goalAction === 'dismiss-proposal' || goalAction === 'dismiss_proposal');
+          const clearedRuling = result.clearedRuling || result.ruling;
+          const hasRuling = result.proposalCleared && clearedRuling
+            && clearedRuling.proposalId === result.clearedProposal?.id;
           broadcastEvent(result.proposalCleared ? 'conversation_goal_proposal_cleared' : 'conversation_goal_proposal_updated', {
             conversationId,
             goal: result.goal,
             proposal: result.proposalCleared ? (result.clearedProposal || null) : result.proposal,
-            ...(isRulingAction ? {
-              outcome: goalAction.startsWith('accept') ? 'accepted' : 'rejected',
-              ruledBy: principal,
+            ...(hasRuling ? {
+              outcome: clearedRuling.outcome,
+              ruledBy: clearedRuling.ruledBy,
             } : {}),
             conversation: result.conversation,
             summary,
