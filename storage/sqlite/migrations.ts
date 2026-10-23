@@ -917,6 +917,21 @@ CREATE TABLE IF NOT EXISTS chat_planner_attention (
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS chat_planner_attention_changes (
+  singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+  revision INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO chat_planner_attention_changes(singleton, revision) VALUES (1, 0) ON CONFLICT DO NOTHING;
+CREATE TRIGGER IF NOT EXISTS chat_planner_attention_changed_ai AFTER INSERT ON chat_planner_attention BEGIN
+  UPDATE chat_planner_attention_changes SET revision=revision+1 WHERE singleton=1;
+END;
+CREATE TRIGGER IF NOT EXISTS chat_planner_attention_changed_au AFTER UPDATE ON chat_planner_attention BEGIN
+  UPDATE chat_planner_attention_changes SET revision=revision+1 WHERE singleton=1;
+END;
+CREATE TRIGGER IF NOT EXISTS chat_planner_attention_changed_ad AFTER DELETE ON chat_planner_attention BEGIN
+  UPDATE chat_planner_attention_changes SET revision=revision+1 WHERE singleton=1;
+END;
+
 CREATE TABLE IF NOT EXISTS chat_planner_attention_conditions (
   conversation_id TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('budget_exhausted', 'failure_paused', 'owner_removed', 'goal_completed')),

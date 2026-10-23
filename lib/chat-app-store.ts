@@ -15,6 +15,7 @@ const { createChatConversationRepository } = require('../storage/chat/conversati
 const { createChatWorkspaceOperationRepository } = require('../storage/chat/workspace-operation.repository');
 const { createGoalRulingRepository } = require('../storage/chat/goal-ruling.repository');
 const { createPlannerAttentionRepository } = require('../storage/chat/planner-attention.repository');
+const { subscribePlannerAttention } = require('../storage/chat/planner-attention-notifications');
 const { syncPlannerAttention } = require('../server/domain/conversation/planner-attention');
 const { createPlannerTurnAttention } = require('../server/domain/conversation/planner-turn-attention');
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
@@ -3588,6 +3589,10 @@ export class ChatAppStore {
   listPlannerAttention(query: any = {}) {
     return this.plannerAttentionRepository.list(query);
   }
+
+  getPlannerAttentionVersion() { return this.plannerAttentionRepository.version(); }
+
+  subscribePlannerAttention(callback: () => void) { return subscribePlannerAttention(this.db, callback); }
 
   resolvePlannerAttention(sequence: number, input: any = {}) {
     return this.plannerAttentionRepository.acknowledge(sequence, input);

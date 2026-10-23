@@ -18,6 +18,8 @@ const {
 } = require('../api/conversation-deliveries-controller');
 const { createFeishuController } = require('../api/feishu-controller');
 const { createHealthController } = require('../api/health-controller');
+const { createPlannerAttentionController } = require('../api/planner-attention-controller');
+const { createPlannerAttentionWait } = require('../domain/conversation/planner-attention-wait');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createMemoryController } = require('../api/memory-controller');
 const { createRuntimeObservabilityController } = require('../api/runtime-observability-controller');
@@ -1193,7 +1195,9 @@ export function createServerApp(options: any = {}) {
   runtimeObservability.registerCounterProvider('invocations', () => agentToolBridge.getRuntimeStats());
   runtimeObservability.registerCounterProvider('sse', () => sseBus.getStats());
 
+  const plannerAttentionWait = createPlannerAttentionWait(store);
   const router = createRouter([
+    createPlannerAttentionController({ store, waitService: plannerAttentionWait }),
     createHealthController({ getHealthStatus }),
     createBootstrapController({ sseBus, turnOrchestrator, buildBootstrapPayload }),
     createFeishuController({ feishuService: feishuIntegration }),
@@ -1391,6 +1395,7 @@ export function createServerApp(options: any = {}) {
   }
 
   function close(callback: any) {
+    plannerAttentionWait.close();
     plannerCredential.disable();
     deliveryRuntimeClosing = true;
     const turnsClosePromise = turnOrchestrator.shutdown('服务关闭中断');
@@ -1447,6 +1452,7 @@ export function createServerApp(options: any = {}) {
     getHealthStatus,
     host,
     port,
+    plannerAttentionWait,
     runtimeObservability,
     runMaybeAutoCreateDigest,
     server,

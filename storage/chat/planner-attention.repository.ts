@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createHttpError } from '../../server/http/http-errors';
+import { notifyPlannerAttentionAfterCommit, plannerAttentionVersion } from './planner-attention-notifications';
 
 export type AttentionKind = 'proposal_pending' | 'budget_exhausted' | 'failure_paused'
   | 'owner_removed' | 'goal_completed' | 'turn_failed';
@@ -75,13 +76,14 @@ export function createPlannerAttentionRepository(db: any) {
     const old = getSource.get(input.conversationId, input.kind, input.sourceId);
     if (old) return project(old);
     const summary = Array.from(input.summary).slice(0, 500).join('');
-    insert.run({ ...input, summary, failedAgentIdsJson: input.failedAgentIds ? JSON.stringify(input.failedAgentIds) : null,
+    const info = insert.run({ ...input, summary, failedAgentIdsJson: input.failedAgentIds ? JSON.stringify(input.failedAgentIds) : null,
       lane: input.lane || null });
+    if (info.changes) notifyPlannerAttentionAfterCommit(db);
     return project(getSource.get(input.conversationId, input.kind, input.sourceId));
   }
 
   function resolveItem(sequence: number, resolution: string, principal: any, at: string, reason: string | null = null) {
-    resolve.run({ sequence, resolution, principalJson: JSON.stringify(principal), at, reason });
+    if (resolve.run({ sequence, resolution, principalJson: JSON.stringify(principal), at, reason }).changes) notifyPlannerAttentionAfterCommit(db);
     return project(get.get(sequence));
   }
 
@@ -114,21 +116,22 @@ export function createPlannerAttentionRepository(db: any) {
     clearCondition(conversationId: string, kind: AttentionKind) { clearCondition.run(conversationId, kind); },
     clearGoalConditions(conversationId: string, goalId: string) { clearGoalConditions.run(conversationId, goalId); },
     resolveKind(conversationId: string, goalId: string, kind: AttentionKind, resolution: string, at: string) {
-      resolveKind.run({ conversationId, goalId, kind, resolution, at });
+      if (resolveKind.run({ conversationId, goalId, kind, resolution, at }).changes) notifyPlannerAttentionAfterCommit(db);
     },
     get(sequence: number) { return project(get.get(sequence)); },
     findSource(conversationId: string, kind: AttentionKind, sourceId: string) {
       return project(getSource.get(conversationId, kind, sourceId));
     },
     resolveGoal(conversationId: string, goalId: string, resolution: string, at: string) {
-      resolveGoal.run({ conversationId, goalId, resolution, at });
+      if (resolveGoal.run({ conversationId, goalId, resolution, at }).changes) notifyPlannerAttentionAfterCommit(db);
     },
     resolveSuccessfulTurn(conversationId: string, goalId: string, lane: string, agentId: string, at: string) {
       if (!agentId || agentId === 'unknown') return;
-      db.prepare(`UPDATE chat_planner_attention SET resolved_at=@at, resolution='turn_succeeded',
+      const info = db.prepare(`UPDATE chat_planner_attention SET resolved_at=@at, resolution='turn_succeeded',
         resolved_by_json='{"kind":"system"}' WHERE conversation_id=@conversationId AND goal_id=@goalId
         AND kind='turn_failed' AND lane=@lane AND failed_agent_ids_json=@agentJson AND resolved_at IS NULL`)
         .run({ conversationId, goalId, lane, agentJson: JSON.stringify([agentId]), at });
+      if (info.changes) notifyPlannerAttentionAfterCommit(db);
     },
     resolve: resolveItem,
     acknowledge: db.transaction((sequence: number, input: any = {}) => {
@@ -144,6 +147,7 @@ export function createPlannerAttentionRepository(db: any) {
       return resolveItem(sequence, 'acknowledged', input.principal, new Date().toISOString(), input.reason.trim());
     }),
     list,
+    version() { return plannerAttentionVersion(db); },
     counts() { return Object.fromEntries(counts.all().map((row: any) => [row.conversation_id, Number(row.count)])); },
   };
 }

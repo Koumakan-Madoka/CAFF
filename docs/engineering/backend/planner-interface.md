@@ -746,8 +746,13 @@ read/subscribe race. Wake/re-query on committed changes until matching rows
 exist or the deadline expires; unrelated Room events must not cause a false
 nonempty result. Timeout is 200 with items=[], timedOut=true and a safe cursor,
 not an error. Client disconnect removes listeners/timers; server shutdown ends
-waits without fabricating items. Reconnect with the last successfully received
-cursor. If the response was lost, re-reading may repeat rows but cannot lose
+waits with 503 `planner_wait_closed`, without fabricating items. After-commit
+in-process notifications accelerate wakeups; a small SQLite change revision
+(separate from the creation cursor) also detects committed changes from other
+connections/processes via polling only while a waiter exists. Rollback never
+publishes a notification. Neither notifications nor the change revision replace
+the durable cursor query as the source of returned rows. Reconnect with the
+last successfully received cursor. If the response was lost, re-reading may repeat rows but cannot lose
 them. Clients deduplicate by sequence. SSE remains optional, non-replayable UI
 transport and is not required for this protocol.
 
@@ -835,6 +840,7 @@ Missing required bounded-store projections fail closed with 501
 | 410 `conversation_gone` | Room-creation key refers to a deleted Room; no replay creation |
 | 415 `api_json_required`, `api_multipart_required` | Correct route Content-Type; never bypass CSRF |
 | 501 `planner_projection_unavailable` | Required bounded store capability unavailable; no hydration fallback |
+| 503 `planner_wait_closed` | Server is shutting down; reconnect with the last received cursor |
 
 Guard failures are pre-write. Invalid planner intent is checked before the
 ordinary browser guard; a mismatching Host with a valid planner is still 403.
