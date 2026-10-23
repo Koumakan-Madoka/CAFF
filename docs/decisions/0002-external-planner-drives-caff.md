@@ -46,8 +46,8 @@ awkward and unsafe:
   - The user-only gates in `session-goal.ts` reject only `kind: 'agent'`.
 
   As a result, a planner using REST can change accepted-ADR decisions and
-  waive high-risk criteria. Only a procedural rule prevents that today: ask the
-  user before every write.
+  waive high-risk criteria. Only procedural rules on the planner's side
+  prevent that today.
 - REST `set` cannot name an owner. It also schedules the first continuation in
   the same request, so the first turn can go to whichever agent default routing
   picks.
@@ -232,9 +232,12 @@ builds it, and the planner reviews each milestone.
 
 - **Audit:** rulings gain a third principal kind, and records show whether the
   user, the planner or an agent ruled.
-- **Until P1 ships:** the planner keeps asking the user before every CAFF
-  write. This holds until planner identity ships and the user approves a Goal
-  under this ADR.
+- **Until P1 ships:** the delegated scope already applies, but CAFF records
+  the planner's writes as the user's. The planner marks each such write as its
+  own in the ruling reason or the message text and keeps a local log. It still
+  asks the user about each reserved item, and it never uses REST for high-risk
+  waivers or accepted-ADR decision changes. The planner follows these rules
+  itself; the server does not enforce them before P1.
 - **User control:** more rulings happen without the user. The reserved list
   and the recorded planner rulings are how the user stays in control. The user
   can take back a Goal at any time by ruling directly or pausing it.
