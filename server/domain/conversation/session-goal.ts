@@ -83,6 +83,24 @@ function assertGoalRevision(existingGoal: any, input: any, options: any = {}) {
   return expectedRevision;
 }
 
+function assertPlannerGoalPreconditions(goal: any, proposal: any, input: any, action: string) {
+  if (normalizeRuledBy(input.ruledBy).kind !== 'planner') return;
+  const ruling = ['accept-proposal', 'accept_proposal', 'dismiss-proposal', 'dismiss_proposal'].includes(action);
+  const absentAllowed = !goal && (action === 'set' || ruling || input.supersedeProposal === true);
+  const valid = goal
+    ? typeof input.goalId === 'string' && input.goalId.trim() !== '' && Number.isSafeInteger(input.goalRevision) && input.goalRevision > 0
+    : absentAllowed && input.goalId === null && input.goalRevision === 0;
+  if (!valid) throw createHttpError(400, 'Planner writes require the current Goal ID/revision (null/0 for an absent Goal)', { code: 'goal_revision_required' });
+  if (goal && (input.goalId !== goal.goalId || input.goalRevision !== goal.revision)) {
+    throw createHttpError(409, 'The Goal ID or revision has changed', { code: 'goal_revision_conflict' });
+  }
+  if (ruling && !proposal) throw createHttpError(404, 'No session goal proposal is pending');
+  if ((ruling || (proposal && (input.supersedeProposal === true || action === 'clear')))
+    && (typeof input.proposalId !== 'string' || input.proposalId !== proposal.id)) {
+    throw createHttpError(409, 'Planner ruling/supersession requires the current proposal ID', { code: 'goal_proposal_conflict' });
+  }
+}
+
 /**
  * Unique proposal id. Consumers (e.g. the DAG scheduler) derive idempotency
  * keys from the proposal; createdAt alone has only millisecond resolution
@@ -450,10 +468,11 @@ function normalizeSessionGoalRuling(value: any) {
     ruledAt: normalizeText(value.ruledAt || value.ruled_at) || nowIso(),
     ...(Object.prototype.hasOwnProperty.call(value, 'goalId') ? { goalId: value.goalId || null, goalRevision: value.goalRevision ?? 0 } : {}),
     ...(normalizeProposalAction(value.supersedingAction) ? { supersedingAction: normalizeProposalAction(value.supersedingAction) } : {}),
+    ...(normalizeText(value.supersedingProposalId) ? { supersedingProposalId: normalizeText(value.supersedingProposalId) } : {}),
   };
 }
 
-function buildRulingRecord(proposal: any, outcome: string, ruledBy: any, reason: any, timestamp: string, goal: any, supersedingAction = '') {
+function buildRulingRecord(proposal: any, outcome: string, ruledBy: any, reason: any, timestamp: string, goal: any, supersedingAction = '', supersedingProposalId = '') {
   const snapshot = normalizeSessionGoalProposal(proposal);
   if (!snapshot) {
     throw createHttpError(500, 'Cannot record a ruling without a valid proposal snapshot');
@@ -476,6 +495,7 @@ function buildRulingRecord(proposal: any, outcome: string, ruledBy: any, reason:
     goalId: goal?.goalId || null,
     goalRevision: goal?.revision || 0,
     ...(supersedingAction ? { supersedingAction } : {}),
+    ...(supersedingProposalId ? { supersedingProposalId } : {}),
   };
 }
 
@@ -1163,6 +1183,8 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     });
   }
 
+  assertPlannerGoalPreconditions(existingGoal, existingProposal, input, action);
+
   // Supplied proposal IDs protect rulings and confirmed supersession against
   // a proposal replaced without a Goal revision change.
   if ((action === 'accept-proposal' || action === 'accept_proposal' || action === 'dismiss-proposal' || action === 'dismiss_proposal'
@@ -1555,7 +1577,17 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  const nextConversation = updateConversationProposal(store, conversation, proposal);
+  const previousProposal = getSessionGoalProposal(conversation);
+  const nextMetadata = {
+    ...buildMetadataWithProposal(conversation, proposal),
+    ...(previousProposal ? { [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(previousProposal, 'superseded',
+      { kind: 'agent', agentId: proposer.agentId, agentName: proposer.agentName },
+      reason || 'Superseded by a replacement Goal proposal', timestamp, existingGoal, action, proposal.id) } : {}),
+  };
+  // Technical draft replacement is not accept/reject authority. Persist the
+  // old snapshot/new ID and new pending proposal together; M4 adds attention
+  // resolution/creation to the store's same metadata transaction.
+  const nextConversation = updateConversationMetadata(store, conversation, nextMetadata);
 
   return responseForConversation(nextConversation, {
     goal: existingGoal,

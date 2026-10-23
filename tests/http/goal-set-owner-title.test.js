@@ -32,7 +32,11 @@ async function fixture(t) {
     const response = await fetch(base + endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() };
   }
-  const goal = command => post(`/api/conversations/${room.id}/goal`, { goalId: null, goalRevision: 0, ...command });
+  const goal = command => {
+    const metadata = app.store.getConversationWithoutMessages(room.id).metadata;
+    return post(`/api/conversations/${room.id}/goal`, { goalId: metadata.sessionGoal?.goalId ?? null,
+      goalRevision: metadata.sessionGoal?.revision ?? 0, ...(metadata.sessionGoalProposal ? { proposalId: metadata.sessionGoalProposal.id } : {}), ...command });
+  };
   return { app, room, calls, catalog, post, goal, bootstrap, projects };
 }
 

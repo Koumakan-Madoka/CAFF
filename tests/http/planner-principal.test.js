@@ -26,8 +26,13 @@ async function fixture(t, options = {}) {
   const author = app.store.saveCustomRoleConfig({ id: 'author', name: 'Author', personaPrompt: 'synthetic', provider: 'openai', model: 'gpt-5' });
   const room = app.store.createConversation({ title: 'Planner test', participants: [{ agentId: author.id }] });
   async function post(body, asPlanner = true, suffix = 'goal') {
+    const metadata = app.store.getConversationWithoutMessages(room.id).metadata;
+    const preconditions = asPlanner && suffix === 'goal' ? {
+      goalId: metadata.sessionGoal?.goalId ?? null, goalRevision: metadata.sessionGoal?.revision ?? 0,
+      ...(metadata.sessionGoalProposal ? { proposalId: metadata.sessionGoalProposal.id } : {}),
+    } : {};
     const response = await fetch(`${base}/api/conversations/${room.id}/${suffix}`, { method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(asPlanner ? { Authorization: 'Bearer ' + token } : { Origin: base, 'X-CAFF-CSRF-Token': csrfToken }) }, body: JSON.stringify(body) });
+      headers: { 'Content-Type': 'application/json', ...(asPlanner ? { Authorization: 'Bearer ' + token } : { Origin: base, 'X-CAFF-CSRF-Token': csrfToken }) }, body: JSON.stringify({ ...preconditions, ...body }) });
     return { status: response.status, body: await response.json() };
   }
   return { app, room, base, token, credential, post };
