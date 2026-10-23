@@ -317,6 +317,26 @@ Other routes retain their current endpoints and domain validation. Authenticatio
 is not authorization to push, bind workspaces, add agents, restart or delete
 without the user's approval. There is no planner-specific execution bypass.
 
+### Lean reply details
+
+Planner acceptedMessage.metadata is an allowlisted public acknowledgement:
+clientRequestId, source/principal, routing classification and main/side dispatch
+fields when present. Never echo contentBlocks (which can embed the text body),
+image paths, tool traces or arbitrary metadata. Planner submission skips building
+browser response history/directory/runtime frames; new-message UI broadcasts and
+ordinary execution remain unchanged. The planner autoContinuation projection is
+only scheduled/reason, optional dispatch and an optional lean message identity
+with runner correlation metadata (Goal ID/revision, iteration/limit, initial
+agent IDs); no continuation message content, duplicate Goal body or global runtime.
+Browser write response envelopes remain unchanged.
+
+GET Goal retains the browser envelope and complete normalized Goal/proposal/
+ruling. Its conversation and directory headers contain no message bodies or
+previews (messages=[] and lastMessagePreview=''); counts may use indexed header
+queries. It never calls full conversation/message hydration, for either caller.
+The planner receives only the documented lean envelope. Missing required header
+capabilities returns planner_projection_unavailable rather than a full fallback.
+
 ### Goal concurrency
 
 For every authenticated planner Goal write:
@@ -382,6 +402,16 @@ Use each operation's existing safety mechanism, not a universal receipt table:
   persistent per-Room message deduplication and `MESSAGE_IDEMPOTENCY_CONFLICT`
   for changed content/imageIds. A duplicate must not cause another dispatch;
   this does not require storing a full HTTP response receipt.
+  M4 detail: the planner path acknowledges a matching existing message with
+  dispatch='duplicate', its persisted main/side lane and target (null for main),
+  and the existing message identity. It neither broadcasts another creation nor
+  enqueues/starts another dispatch, even if the original turn is still running.
+  Compare trimmed turn content and ordered/deduplicated imageIds using the same
+  persistent message validator as acceptance, before current routing/provider or
+  image-preflight checks; do not reattribute or rewrite the stored message. A
+  final transactional acceptance check closes competing-insert races. This adds
+  no model retry or historical replay policy; ordinary queue recovery remains
+  responsible for durably accepted pending work.
 - **Attention resolve** requires no key or receipt: it is a monotonic
   unresolved-to-resolved transition. Retrying returns the existing resolved
   item, never another resolution or overwrite of the original reason/principal.
