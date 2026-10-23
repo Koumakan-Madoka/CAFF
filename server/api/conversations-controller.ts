@@ -13,6 +13,7 @@ import { sendFileDownload, sendJson, sendTextDownload } from '../http/response';
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
 import { applyConversationDigestAction } from '../domain/conversation/conversation-digest';
 import { plannerRoomCreationKey, plannerRoomCreationDigest } from '../domain/conversation/planner-room-creation';
+import { plannerMessageAcknowledgement, plannerContinuationAcknowledgement } from '../domain/conversation/planner-acknowledgement';
 import { buildConversationMessagePage } from '../domain/conversation/message-pagination';
 import {
   buildMessageTraceInspector,
@@ -28,6 +29,8 @@ import {
 import {
   applySessionGoalAction,
   getSessionGoal,
+  getSessionGoalProposal,
+  getSessionGoalRuling,
   pauseSessionGoalForRemovedOwner,
 } from '../domain/conversation/session-goal';
 import {
@@ -888,7 +891,20 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
     if (conversationGoalMatch && (req.method === 'GET' || req.method === 'POST')) {
       const conversationId = decodeURIComponent(conversationGoalMatch[1]);
-      const body = req.method === 'POST' ? await readRequestJson(req) : { action: 'get' };
+      if (req.method === 'GET') {
+        if (typeof store.getConversationGoalProjection !== 'function'
+          || (principal.kind !== 'planner' && typeof store.listConversationGoalHeaders !== 'function')) {
+          throw createHttpError(501, 'Goal header projection unavailable', { code: 'planner_projection_unavailable' });
+        }
+        const conversation = store.getConversationGoalProjection(conversationId);
+        if (!conversation) throw createHttpError(404, 'Conversation not found');
+        const projection = { goal: getSessionGoal(conversation), proposal: getSessionGoalProposal(conversation),
+          ruling: getSessionGoalRuling(conversation), cleared: false, autoContinuation: null };
+        sendJson(res, 200, principal.kind === 'planner' ? { conversationId, ...projection }
+          : { conversation, ...projection, summary: pickConversationSummary(conversation), conversations: store.listConversationGoalHeaders() });
+        return true;
+      }
+      const body = await readRequestJson(req);
       const goalAction = String(body && body.action || '').trim().toLowerCase().replace(/_/g, '-');
       if (req.method === 'POST' && principal.kind === 'planner'
         && (goalAction === 'accept-proposal' || goalAction === 'dismiss-proposal')
@@ -990,7 +1006,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
       if (principal.kind === 'planner') {
         sendJson(res, 200, { conversationId, goal: result.goal, proposal: result.proposal,
-          ruling: result.ruling, cleared: result.cleared, autoContinuation });
+          ruling: result.ruling, cleared: result.cleared, autoContinuation: plannerContinuationAcknowledgement(autoContinuation) });
       } else {
         const latestConversation = store.getConversation(conversationId) || result.conversation;
         sendJson(res, 200, {
@@ -1504,9 +1520,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (messageMatch && req.method === 'POST') {
       const conversationId = decodeURIComponent(messageMatch[1]);
       const body = await readRequestJson(req);
-      const conversation = store.getConversationWithoutMessages(conversationId);
-
-      if (!conversation) {
+      if (principal.kind !== 'planner' && !store.getConversationWithoutMessages(conversationId)) {
         throw createHttpError(404, '会话不存在');
       }
 
@@ -1527,12 +1541,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           ...(clientRequestId ? { clientRequestId } : {}),
           ...(principal.kind === 'planner' ? { source: 'planner', principal } : {}),
         },
-      });
+      }, principal.kind === 'planner' ? { responseProjection: 'planner' } : {});
       if (principal.kind === 'planner') {
-        const message = result.acceptedMessage;
-        sendJson(res, 200, { conversationId, acceptedMessage: {
-          id: message.id, senderName: message.senderName, role: message.role, metadata: message.metadata,
-        }, dispatch: result.dispatch, dispatchLane: result.dispatchLane, dispatchTargetAgentId: result.dispatchTargetAgentId });
+        sendJson(res, 200, { conversationId, acceptedMessage: plannerMessageAcknowledgement(result.acceptedMessage),
+          dispatch: result.dispatch, dispatchLane: result.dispatchLane, dispatchTargetAgentId: result.dispatchTargetAgentId });
       } else {
         sendJson(res, 200, result);
       }

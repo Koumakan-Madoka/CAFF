@@ -2370,6 +2370,15 @@ export class ChatAppStore {
     return this.conversationRepository.listHeaders().map(normalizeConversationHeader);
   }
 
+  getConversationGoalProjection(conversationId: string) {
+    const row = this.conversationRepository.getGoalHeader(conversationId);
+    return row ? normalizeConversation(row, this.listConversationAgents(conversationId), []) : null;
+  }
+
+  listConversationGoalHeaders() {
+    return this.conversationRepository.listGoalHeaders().map(normalizeConversationHeader);
+  }
+
   listConversationTree() {
     const latestDeliveryByTarget = new Map(
       this.crossConversationDeliveryRepository
@@ -4463,6 +4472,28 @@ export class ChatAppStore {
     );
   }
 
+  findMessageRetry(payload: any = {}) {
+    const metadata = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};
+    if (metadata.contentBlocks) throw createHttpError(400, 'Client must not submit contentBlocks; content + imageIds only', { code: 'TEXT_BLOCK_FROM_CLIENT_REJECTED' });
+    const clientRequestId = String(metadata.clientRequestId || payload.clientRequestId || '').trim();
+    if (!clientRequestId) return null;
+    const canonical = normalizeMessageRow(this.messageRepository.getByClientRequestId(payload.conversationId, clientRequestId));
+    if (!canonical) return null;
+    const imageIds = [...new Set((Array.isArray(payload.imageIds) ? payload.imageIds : []).map((id: any) => String(id || '').trim()).filter(Boolean))];
+    const existingImageIds = (Array.isArray(canonical.metadata?.contentBlocks) ? canonical.metadata.contentBlocks : [])
+      .filter((block: any) => block?.type === 'image').map((block: any) => String(block.imageId || '').trim()).filter(Boolean);
+    if (String(canonical.content || '') === String(payload.content || '') && existingImageIds.length === imageIds.length
+      && existingImageIds.every((id: string, index: number) => id === imageIds[index])) return canonical;
+    throw createHttpError(409, 'Same client_request_id used with a different message payload; retry must reuse the exact content and imageIds', { code: 'MESSAGE_IDEMPOTENCY_CONFLICT' });
+  }
+
+  acceptPlannerMessage(payload: any) {
+    return this.db.transaction(() => {
+      const existing = this.findMessageRetry(payload);
+      return existing ? { message: existing, duplicate: true } : { message: this.createMessage(payload), duplicate: false };
+    }).immediate();
+  }
+
   createMessage(payload: any = {}) {
     const conversation = this.getConversationWithoutMessages(payload.conversationId);
 
@@ -4484,43 +4515,8 @@ export class ChatAppStore {
     const rawImageIds = Array.isArray(payload.imageIds) ? payload.imageIds : [];
     const imageIds = Array.from(new Set(rawImageIds.map((id: any) => String(id || '').trim()).filter(Boolean)));
 
-    if (clientRequestId) {
-      const existingByRequest = this.messageRepository.getByClientRequestId(
-        payload.conversationId,
-        clientRequestId
-      );
-
-      if (existingByRequest) {
-        const canonical = normalizeMessageRow(existingByRequest);
-
-        if (canonical) {
-          const existingBlocks =
-            canonical.metadata && Array.isArray(canonical.metadata.contentBlocks)
-              ? canonical.metadata.contentBlocks
-              : [];
-          const existingImageIds = existingBlocks
-            .filter((block: any) => block && block.type === 'image')
-            .map((block: any) => String(block.imageId || '').trim())
-            .filter(Boolean);
-          const normalizedContent = String(payload.content || '');
-          const sameContent = String(canonical.content || '') === normalizedContent;
-          const sameImages =
-            existingImageIds.length === imageIds.length &&
-            existingImageIds.every((id: string, index: number) => id === imageIds[index]);
-
-          if (sameContent && sameImages) {
-            return canonical;
-          }
-
-          const conflictError = new Error(
-            'Same client_request_id used with a different message payload; retry must reuse the exact content and imageIds'
-          ) as any;
-          conflictError.statusCode = 409;
-          conflictError.code = 'MESSAGE_IDEMPOTENCY_CONFLICT';
-          throw conflictError;
-        }
-      }
-    }
+    const retry = this.findMessageRetry(payload);
+    if (retry) return retry;
 
     if (imageIds.length > MAX_IMAGES_PER_MESSAGE) {
       const imageLimitError = new Error(`At most ${MAX_IMAGES_PER_MESSAGE} images per message`) as any;

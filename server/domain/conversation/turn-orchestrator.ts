@@ -2112,8 +2112,23 @@ export function createTurnOrchestrator(options: any = {}) {
     };
   }
 
-  function submitConversationMessage(conversationId: any, input: any) {
+  function duplicatePlannerMessage(message: any) {
+    const side = message.metadata?.dispatchLane === 'side';
+    return { acceptedMessage: message, dispatch: 'duplicate', dispatchLane: side ? 'side' : 'main',
+      dispatchTargetAgentId: side ? message.metadata?.dispatchTargetAgentId || null : null };
+  }
+
+  function submitConversationMessage(conversationId: any, input: any, submissionOptions: any = {}) {
     requireAcceptingWork();
+    const planner = submissionOptions.responseProjection === 'planner';
+    if (planner) {
+      if (typeof store?.findMessageRetry !== 'function' || typeof store?.acceptPlannerMessage !== 'function') {
+        throw createHttpError(501, 'Planner message acceptance projection unavailable', { code: 'planner_projection_unavailable' });
+      }
+      const previous = store.findMessageRetry({ conversationId, content: String(input?.content || '').trim(),
+        imageIds: input?.imageIds, metadata: input?.metadata });
+      if (previous) return duplicatePlannerMessage(previous);
+    }
     const storedConversation = loadRoutingConversation(conversationId);
 
     if (!storedConversation) {
@@ -2173,24 +2188,20 @@ export function createTurnOrchestrator(options: any = {}) {
     const routingRecordedAt = nowIso();
 
     let dispatchResult = null as any;
-    const acceptedMessage = store.createMessage(
-      createAcceptedMessagePayload(conversationId, {
-        ...turnInput,
-        metadata: {
-          ...turnInput.metadata,
-          routing: routingMetadata,
-          routingStatus,
-          routingRecordedAt,
-          ...(shouldSideDispatch
-            ? {
-                dispatchLane: 'side',
-                dispatchTargetAgentId: sideTarget ? sideTarget.targetAgentId : null,
-                routingDispatchedAt: routingRecordedAt,
-              }
-            : {}),
-        },
-      })
-    );
+    const messagePayload = createAcceptedMessagePayload(conversationId, {
+      ...turnInput,
+      metadata: {
+        ...turnInput.metadata,
+        routing: routingMetadata,
+        routingStatus,
+        routingRecordedAt,
+        ...(shouldSideDispatch ? { dispatchLane: 'side', dispatchTargetAgentId: sideTarget ? sideTarget.targetAgentId : null,
+          routingDispatchedAt: routingRecordedAt } : {}),
+      },
+    });
+    const acceptance = planner ? store.acceptPlannerMessage(messagePayload) : { message: store.createMessage(messagePayload), duplicate: false };
+    const acceptedMessage = acceptance.message;
+    if (acceptance.duplicate) return duplicatePlannerMessage(acceptedMessage);
 
     broadcastEvent('conversation_message_created', {
       conversationId,
@@ -2214,6 +2225,8 @@ export function createTurnOrchestrator(options: any = {}) {
       };
     }
 
+    if (planner) return { acceptedMessage, dispatch: dispatchResult.dispatch, dispatchLane: dispatchResult.dispatchLane,
+      dispatchTargetAgentId: dispatchResult.dispatchTargetAgentId };
     return {
       acceptedMessage,
       conversation: {
