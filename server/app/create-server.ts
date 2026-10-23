@@ -1287,6 +1287,7 @@ export function createServerApp(options: any = {}) {
     createConversationPlanController({ store, broadcastEvent }),
     createConversationsController({
       store,
+      plannerIdentity: plannerCredential.identity,
       agentToolBridge,
       conversationSpawnService,
       roleService,

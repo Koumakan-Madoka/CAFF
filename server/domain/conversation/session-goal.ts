@@ -4,6 +4,8 @@ import { requiresBoundedConversationProjections } from '../../../lib/conversatio
 import { createHttpError } from '../../http/http-errors';
 import { isNonRoutableSystemActorId } from '../roles/system-actor-catalog';
 import { assertGoalCriterionPatchState, mergeGoalPatch } from './goal-patch';
+import { SESSION_GOAL_PLANNER_BINDING_KEY, assertPlannerGoalRulingAllowed,
+  createSessionGoalPlannerBinding, hasSessionGoalPlannerBinding } from './planner-goal-binding';
 import {
   acceptedAdrChanges,
   incompleteAcceptanceCriteria,
@@ -622,6 +624,15 @@ function buildMetadataWithGoal(conversation: any, goal: any, options: any = {}) 
   };
 }
 
+function withSetPlannerBinding(conversation: any, metadata: any, goal: any, input: any, options: any, timestamp: string) {
+  const { [SESSION_GOAL_PLANNER_BINDING_KEY]: _previousBinding, ...withoutBinding } = metadata;
+  const principal = normalizeRuledBy(input.ruledBy);
+  const shouldBind = principal.kind === 'planner' || (principal.kind === 'user' && input.plannerDriven === true);
+  if (!shouldBind) return withoutBinding;
+  return { ...withoutBinding, [SESSION_GOAL_PLANNER_BINDING_KEY]: createSessionGoalPlannerBinding(conversation, goal,
+    principal.kind === 'planner' ? principal : options.plannerIdentity, timestamp) };
+}
+
 function buildMetadataWithProposal(conversation: any, proposal: any) {
   const metadata = currentMetadata(conversation);
   return {
@@ -637,6 +648,7 @@ function buildMetadataWithoutGoal(conversation: any) {
     [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal,
     [SESSION_GOAL_RULING_METADATA_KEY]: _ruling,
     [SESSION_GOAL_RUNNER_METADATA_KEY]: _runner,
+    [SESSION_GOAL_PLANNER_BINDING_KEY]: _plannerBinding,
     ...remainingMetadata
   } = metadata;
   return remainingMetadata;
@@ -1183,6 +1195,33 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     });
   }
 
+  const principal = normalizeRuledBy(input.ruledBy);
+  if (action === 'bind-planner') {
+    if (principal.kind !== 'user') throw createHttpError(403, 'Only the user may adopt a planner for an existing Goal', { code: 'goal_planner_binding_user_required' });
+    if (!existingGoal) throw createHttpError(404, 'No session goal is set');
+    if (typeof input.goalId !== 'string' || !input.goalId.trim() || !Number.isSafeInteger(input.goalRevision) || input.goalRevision <= 0) {
+      throw createHttpError(400, 'Goal ID and revision are required for planner adoption', { code: 'goal_revision_required' });
+    }
+    if (input.goalId !== existingGoal.goalId || input.goalRevision !== existingGoal.revision) {
+      throw createHttpError(409, 'The Goal ID or revision has changed', { code: 'goal_revision_conflict' });
+    }
+    if (hasSessionGoalPlannerBinding(conversation)) throw createHttpError(409, 'Goal already has a planner binding', { code: 'goal_planner_binding_conflict' });
+    if (existingProposal) throw createHttpError(409, 'Rule on the pending proposal before planner adoption', { code: 'goal_proposal_pending' });
+    const reason = normalizeProposalReason(input.reason);
+    if (!reason) throw createHttpError(400, 'Planner adoption requires a reason', { code: 'goal_planner_binding_reason_required' });
+    const goal = { ...existingGoal, revision: existingGoal.revision + 1, updatedAt: timestamp };
+    const binding = createSessionGoalPlannerBinding(conversation, goal, options.plannerIdentity, timestamp, { boundBy: { kind: 'user' }, reason });
+    const runner = getSessionGoalRunner(conversation);
+    const metadata = { ...currentMetadata(conversation), [SESSION_GOAL_METADATA_KEY]: goal,
+      [SESSION_GOAL_PLANNER_BINDING_KEY]: binding,
+      ...(runner && runner.goalUpdatedAt === goalRunnerKey(existingGoal)
+        ? { [SESSION_GOAL_RUNNER_METADATA_KEY]: { ...currentMetadata(conversation)[SESSION_GOAL_RUNNER_METADATA_KEY], goalUpdatedAt: goalRunnerKey(goal) } } : {}) };
+    const nextConversation = updateConversationMetadata(store, conversation, metadata);
+    return responseForConversation(nextConversation, { goalChanged: true, autoContinue: false });
+  }
+  if (['accept-proposal', 'accept_proposal', 'dismiss-proposal', 'dismiss_proposal'].includes(action)) {
+    assertPlannerGoalRulingAllowed(conversation, principal);
+  }
   assertPlannerGoalPreconditions(existingGoal, existingProposal, input, action);
 
   // Supplied proposal IDs protect rulings and confirmed supersession against
@@ -1350,13 +1389,15 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     const goalWithNotice = changeNotice
       ? { ...goalWithOwner, changeNotices: [...(existingGoal?.changeNotices || []), changeNotice].slice(-20) }
       : goalWithOwner;
-    const metadata = {
+    const baseMetadata = {
       ...buildMetadataWithGoal(conversation, goalWithNotice, {
         clearRunner: existingProposal.action === 'set' || existingProposal.action === 'resume',
         clearRuling: existingProposal.action === 'set',
       }),
       [SESSION_GOAL_RULING_METADATA_KEY]: ruling,
     };
+    const metadata = existingProposal.action === 'set'
+      ? withSetPlannerBinding(conversation, baseMetadata, goalWithNotice, input, options, timestamp) : baseMetadata;
     const nextConversation = updateConversationMetadata(store, conversation, metadata);
     return responseForConversation(nextConversation, {
       goal: getSessionGoal(nextConversation),
@@ -1397,6 +1438,10 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     }
 
     const ownerAgentId = normalizeText(input.ownerAgentId || input.owner_agent_id);
+    if (principal.kind === 'planner') {
+      if (!normalizeProposalReason(input.reason)) throw createHttpError(400, 'Planner owner reassignment requires a reason', { code: 'goal_owner_reason_required' });
+      if (!ownerAgentId) throw createHttpError(400, 'Planner reassignment requires a routable owner', { code: 'goal_owner_invalid' });
+    }
     let nextGoal: any;
 
     if (ownerAgentId) {
@@ -1405,19 +1450,10 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
           code: 'session_goal_owner_system_actor_not_routable',
         });
       }
-      const participants = Array.isArray(conversation.agents) ? conversation.agents : [];
-      const agent = participants.find((participant: any) => participant && normalizeText(participant.id) === ownerAgentId);
-
-      if (!agent) {
-        throw createHttpError(400, 'Goal owner must be a current conversation participant');
-      }
-
+      const owner = resolveGoalOwner(conversation, { agentId: ownerAgentId }, options);
       nextGoal = {
         ...existingGoal,
-        owner: {
-          agentId: ownerAgentId,
-          agentName: normalizeText(agent.name) || ownerAgentId,
-        },
+        owner,
         revision: existingGoal.revision + 1,
         updatedAt: timestamp,
       };
@@ -1425,6 +1461,14 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       const { owner: _previousOwner, ...goalWithoutOwner } = existingGoal;
       nextGoal = { ...goalWithoutOwner, revision: existingGoal.revision + 1, updatedAt: timestamp };
     }
+
+    const ownerChangeNotice = principal.kind === 'planner' ? {
+      id: `notice_${randomUUID()}`, type: 'owner_changed',
+      changes: [{ id: 'owner', previous: existingGoal.owner?.agentName || '(unset)', next: nextGoal.owner.agentName }],
+      reason: normalizeProposalReason(input.reason), impact: 'Owner reassigned; runner counters preserved',
+      affectedWorkItems: [], reviewer: principal, createdAt: timestamp,
+    } : null;
+    if (ownerChangeNotice) nextGoal.changeNotices = [...(existingGoal.changeNotices || []), ownerChangeNotice].slice(-20);
 
     // set-owner is a factual owner change inside the current goal epoch: it
     // must not erase a pending proposal, the durable ruling, or runner state.
@@ -1455,21 +1499,33 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       goalChanged: true,
       proposalChanged: false,
       autoContinue: false,
+      changeNotice: ownerChangeNotice,
     });
   }
 
-  const goal = goalFromMutation(action, existingGoal, input, timestamp, conversation, options);
+  let goal = goalFromMutation(action, existingGoal, input, timestamp, conversation, options);
   assertUserOnlyGoalChanges(existingGoal, goal, input.ruledBy, action === 'set');
+  let changeNotice = null;
   if (action === 'revise') {
     requireAcceptanceCriteria(goal);
     assertGoalCriterionPatchState(existingGoal, input, goal);
+    const changes = provisionalDecisionChanges(existingGoal, goal);
+    if (changes.length > 0) {
+      const reason = normalizeProposalReason(input.reason), impact = normalizeProposalReason(input.impact);
+      if (!reason || !impact) throw createHttpError(400, 'Changing a provisional decision requires both reason and impact', {
+        code: 'goal_provisional_change_context_required', changes,
+      });
+      changeNotice = { id: `notice_${randomUUID()}`, type: 'provisional_decision_changed', changes, reason, impact,
+        affectedWorkItems: Array.isArray(input.affectedWorkItems) ? input.affectedWorkItems.slice(0, 40) : [], reviewer: principal, createdAt: timestamp };
+      goal = { ...goal, changeNotices: [...(existingGoal?.changeNotices || []), changeNotice].slice(-20) };
+    }
   }
   const factualRunner = factualOnly ? getSessionGoalRunner(conversation) : null;
   // Checklist progress is factual state inside the current goal epoch. It
   // must not erase a pending proposal or the durable ruling that proves how
   // the current lifecycle state was reached.
-  const nextConversation = factualOnly
-    ? updateConversationMetadata(store, conversation, {
+  const nextMetadata = factualOnly
+    ? {
       ...currentMetadata(conversation),
       [SESSION_GOAL_METADATA_KEY]: goal,
       ...(factualRunner && factualRunner.goalUpdatedAt === goalRunnerKey(existingGoal)
@@ -1481,12 +1537,14 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
           },
         }
         : {}),
-    })
-    : updateConversationMetadata(store, conversation, {
+    }
+    : {
       ...buildMetadataWithGoal(conversation, goal, { clearRunner: action === 'set' || action === 'resume', clearRuling: action === 'set' }),
       ...(existingProposal ? { [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(existingProposal, 'superseded', input.ruledBy,
         input.reason || `Superseded by ${action}`, timestamp, existingGoal, action) } : {}),
-    });
+    };
+  const metadata = action === 'set' ? withSetPlannerBinding(conversation, nextMetadata, goal, input, options, timestamp) : nextMetadata;
+  const nextConversation = updateConversationMetadata(store, conversation, metadata);
   return responseForConversation(nextConversation, {
     goal: getSessionGoal(nextConversation),
     proposal: factualOnly ? getSessionGoalProposal(nextConversation) : null,
@@ -1494,6 +1552,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     proposalChanged: factualOnly ? false : Boolean(existingProposal),
     proposalCleared: factualOnly ? false : Boolean(existingProposal),
     clearedProposal: factualOnly ? null : existingProposal || null,
+    changeNotice,
     autoContinue: !factualOnly,
   });
 }

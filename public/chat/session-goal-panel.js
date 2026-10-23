@@ -100,6 +100,8 @@
       appendDetail(dom.sessionGoalDetails, '状态', sessionGoalUtils.statusLabel(goal));
       const owner = sessionGoalUtils.ownerForGoal(goal);
       appendDetail(dom.sessionGoalDetails, '主理人', owner ? owner.agentName : '未设置');
+      const binding = state.currentConversation && state.currentConversation.metadata && state.currentConversation.metadata.sessionGoalPlannerBinding;
+      if (binding) appendDetail(dom.sessionGoalDetails, '规划者', binding.plannerName || '已绑定规划者');
       if (runner && runner.iteration > 0 && runner.maxIterations > 0) {
         appendDetail(dom.sessionGoalDetails, '自动续跑', `${runner.iteration}/${runner.maxIterations}`);
       }
@@ -142,12 +144,12 @@
       const notices = goal && Array.isArray(goal.changeNotices) ? goal.changeNotices : [];
       appendDetail(
         dom.sessionGoalDetails,
-        '决策变更通知',
+        '目标变更通知',
         notices.map((notice) => {
           const changes = Array.isArray(notice && notice.changes) ? notice.changes : [];
           const changeText = changes.map((change) => `${change.previous || '(无)'} -> ${change.next || '(已移除)'}`).join('；');
           const reviewer = notice && notice.reviewer
-            ? notice.reviewer.kind === 'user' ? 'user' : notice.reviewer.agentName || notice.reviewer.agentId || 'reviewer'
+            ? notice.reviewer.kind === 'user' ? 'user' : notice.reviewer.plannerName || notice.reviewer.agentName || notice.reviewer.agentId || 'reviewer'
             : 'reviewer';
           return `${changeText}\n理由：${notice.reason || '(未填写)'}\n影响：${notice.impact || '(未填写)'}\n审核：${reviewer}`;
         }).join('\n\n')
@@ -370,6 +372,14 @@
         metadata && typeof metadata === 'object' && metadata.dagNodeGoalBinding
         && hasGoal && (status === 'active' || status === 'paused')
       );
+
+      if (dom.sessionGoalBindPlannerButton) {
+        const eligible = hasGoal && metadata && !Object.prototype.hasOwnProperty.call(metadata, 'sessionGoalPlannerBinding')
+          && !Object.prototype.hasOwnProperty.call(metadata, 'dagNodeGoalBinding');
+        dom.sessionGoalBindPlannerButton.classList.toggle('hidden', !eligible);
+        dom.sessionGoalBindPlannerButton.disabled = disabled || !eligible || hasProposal;
+        dom.sessionGoalBindPlannerButton.title = hasProposal ? '请先裁决待处理提案' : '由规划者和用户裁决，房间内 agent 仍可提案与评审';
+      }
 
       if (dom.sessionGoalSaveButton) {
         dom.sessionGoalSaveButton.disabled = disabled || dagExecutionLocked;
@@ -637,6 +647,16 @@
 
       if (dom.sessionGoalDismissProposalButton) {
         dom.sessionGoalDismissProposalButton.addEventListener('click', () => submitAction({ action: 'dismiss-proposal' }));
+      }
+
+      if (dom.sessionGoalBindPlannerButton) {
+        dom.sessionGoalBindPlannerButton.addEventListener('click', () => {
+          const goal = currentGoal();
+          if (!goal || dom.sessionGoalBindPlannerButton.disabled) return;
+          if (!window.confirm('将当前目标交给配置的外部规划者？之后只有规划者和用户可以裁决提案，房间内 agent 仍可提案和评审。')) return;
+          submitAction({ action: 'bind-planner', goalId: goal.goalId, goalRevision: goal.revision,
+            reason: '用户在 Goal 面板确认交给规划者' });
+        });
       }
 
       if (dom.sessionGoalOwnerSelect) {

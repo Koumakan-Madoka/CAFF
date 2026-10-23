@@ -4,6 +4,7 @@ const { pickConversationSummary, serializeConversationPrivateMessageForUi } = re
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
 const { filterRoutableConversationAgents } = require('../roles/system-actor-catalog');
 const { applySessionGoalAction, getSessionGoalProposal, proposeSessionGoalAction } = require('../conversation/session-goal');
+const { assertPlannerGoalRulingAllowed } = require('../conversation/planner-goal-binding');
 const { getDagNodeGoalBinding } = require('../conversation/dag-goal-binding');
 const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
@@ -2058,6 +2059,10 @@ export function createAgentToolBridge(options: any = {}) {
         throw createHttpError(501, 'Session goal proposals are not available');
       }
 
+      if (action === 'bind-planner' || action === 'bind_planner') {
+        throw createHttpError(403, 'Only the user may adopt a planner for an existing Goal', { code: 'goal_planner_binding_user_required' });
+      }
+
       // accept/reject (D28): act on the PENDING proposal instead of creating
       // one. The proposer can never rule on their own proposal (403) — this
       // is what lets a DAG verifier agent accept/reject a worker's completion
@@ -2067,6 +2072,7 @@ export function createAgentToolBridge(options: any = {}) {
         if (!conversation) {
           throw createHttpError(404, 'Conversation not found');
         }
+        assertPlannerGoalRulingAllowed(conversation, { kind: 'agent', agentId: context.agentId, agentName: context.agentName });
         const pendingProposal = getSessionGoalProposal(conversation);
         if (!pendingProposal) {
           throw createHttpError(404, 'No session goal proposal is pending');

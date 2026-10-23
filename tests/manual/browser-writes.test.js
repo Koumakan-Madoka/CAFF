@@ -79,7 +79,8 @@ test('real browser writes carry CSRF and preserve chat, Goal, workspace, provide
     });
     const page = await context.newPage();
     page.setDefaultTimeout(12000);
-    page.on('dialog', dialog => dialog.accept());
+    let acceptDialogs = true;
+    page.on('dialog', dialog => acceptDialogs ? dialog.accept() : dialog.dismiss());
     async function clickWrite(selector, pathname, method = 'POST', expected = 200) {
       const pending = page.waitForResponse(response => new URL(response.url()).pathname === pathname && response.request().method() === method);
       await page.locator(selector).click();
@@ -179,7 +180,42 @@ test('real browser writes carry CSRF and preserve chat, Goal, workspace, provide
     await page.fill('#session-goal-objective', 'Browser Goal revised');
     await clickWrite('#session-goal-save-button', `/api/conversations/${room.id}/goal`);
     assert.equal(app.store.getConversationWithoutMessages(room.id).metadata.sessionGoal.objective, 'Browser Goal revised');
+    // M3: exercise real confirmation controls, not only mocked window.confirm.
+    const suggest = command => app.agentToolBridge.handleSuggestGoal({ invocationId: invocation.invocationId, callbackToken: invocation.callbackToken, ...command });
+    const proposal = suggest({ action: 'pause', reason: 'Browser milestone review' }).proposal;
+    await page.waitForSelector('#session-goal-proposal-card:not(.hidden)');
+    await page.fill('#session-goal-objective', 'Browser Goal supersession');
+    acceptDialogs = false;
+    const beforeCancel = structuredClone(app.store.getConversationWithoutMessages(room.id).metadata);
+    const writesBeforeCancel = writes.length;
+    await page.click('#session-goal-save-button');
+    await page.waitForFunction(() => !document.querySelector('#session-goal-save-button').disabled);
+    assert.deepEqual(app.store.getConversationWithoutMessages(room.id).metadata, beforeCancel);
+    assert.equal(writes.length, writesBeforeCancel);
+    acceptDialogs = true;
+    const superseded = await clickWrite('#session-goal-save-button', `/api/conversations/${room.id}/goal`);
+    assert.equal(superseded.ruling.outcome, 'superseded');
+    assert.equal(superseded.ruling.proposalId, proposal.id);
+    assert.equal(app.store.listSessionGoalRulings(room.id).at(-1).proposalId, proposal.id);
+    passed('pending proposal confirmation cancels without writes and supersedes with durable audit');
+
+    await page.waitForSelector('#session-goal-bind-planner-button:not(.hidden)');
+    acceptDialogs = false;
+    const beforeAdoption = structuredClone(app.store.getConversationWithoutMessages(room.id).metadata);
+    await page.click('#session-goal-bind-planner-button');
+    assert.deepEqual(app.store.getConversationWithoutMessages(room.id).metadata, beforeAdoption);
+    acceptDialogs = true;
+    const adopted = await clickWrite('#session-goal-bind-planner-button', `/api/conversations/${room.id}/goal`);
+    assert.equal(adopted.goal.goalId, beforeAdoption.sessionGoal.goalId);
+    assert.equal(adopted.goal.revision, beforeAdoption.sessionGoal.revision + 1);
+    assert.equal(app.store.getConversationWithoutMessages(room.id).metadata.sessionGoalPlannerBinding.plannerName, 'Isolated Test Planner');
+    assert.deepEqual(adopted.ruling, beforeAdoption.sessionGoalRuling);
+    suggest({ action: 'pause', reason: 'Planner-bound draft' });
+    assert.throws(() => suggest({ action: 'accept' }), error => error.statusCode === 403 && error.code === 'goal_planner_ruling_required');
+    passed('user adoption confirms, preserves Goal and ruling, and blocks agent verdicts');
+    await page.screenshot({ path: path.join(output, 'goal-adopted.png') });
     await clickWrite('#session-goal-clear-button', `/api/conversations/${room.id}/goal`);
+    assert.equal(app.store.getConversationWithoutMessages(room.id).metadata.sessionGoalPlannerBinding, undefined);
     passed('Goal create, pause, revise and clear buttons succeed');
     await page.screenshot({ path: path.join(output, 'goal-writes.png') });
 

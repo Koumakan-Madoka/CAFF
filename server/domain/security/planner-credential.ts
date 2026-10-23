@@ -11,6 +11,7 @@ export type PlannerCredential = {
   authenticate(token: string): PlannerPrincipal | null;
   disable(): void;
   readonly path: string | null;
+  readonly identity: PlannerPrincipal;
 };
 type PathOptions = { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; host: string; port: number };
 type CredentialFileSystem = Pick<typeof fs, 'lstatSync' | 'mkdirSync' | 'closeSync' | 'openSync' | 'writeFileSync' | 'fsyncSync' | 'renameSync' | 'unlinkSync'>;
@@ -62,7 +63,7 @@ export function createInMemoryPlannerCredential(options: { token: string; planne
   const expected = tokenDigest(options.token);
   const principal = principalFor(options.plannerName);
   let digest: Buffer | null = null;
-  return { path: null, initialize() { digest = expected; }, disable() { digest = null; },
+  return { path: null, identity: principal, initialize() { digest = expected; }, disable() { digest = null; },
     authenticate(token) { return authenticate(digest, token, principal); } };
 }
 
@@ -154,6 +155,6 @@ export function createPlannerCredential(options: CredentialOptions): PlannerCred
     }
   }
 
-  return { initialize, get path() { return credentialFile; },
+  return { initialize, identity: principal, get path() { return credentialFile; },
     authenticate(token) { return authenticate(digest, token, principal); }, disable() { digest = null; } };
 }

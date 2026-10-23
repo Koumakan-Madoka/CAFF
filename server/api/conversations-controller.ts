@@ -890,7 +890,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         // Authenticated by the server before parsing, never from JSON.
         // Browser rulings remain user; planner rulings retain their identity.
         ruledBy: principal,
-      }, { resolveRuntimeParticipants: roleService?.resolveRuntimeParticipants });
+      }, { resolveRuntimeParticipants: roleService?.resolveRuntimeParticipants, plannerIdentity: options.plannerIdentity });
       let autoContinuation = null;
 
       if (req.method === 'POST') {

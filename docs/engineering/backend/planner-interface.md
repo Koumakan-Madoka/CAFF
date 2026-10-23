@@ -383,7 +383,7 @@ Goal fields, evidence validation, completion requirements and IDs are those in
 | `set` | Required objective and nonempty acceptanceCriteria; optional decisions/workItems/evidence. Optional `owner: { agentId }` and `status: 'active' \| 'paused'` (default active). Creates a new goalId at revision 1. |
 | `revise` | Partial structural delivery contract, merged as below; reason/impact remain required when changing provisional decisions. Does not replace the Goal ID or owner. |
 | `update-delivery` | Partial factual delivery state; merges omissions, preserves pending proposal/ruling and same-Goal runner counters. Structural definitions and new waivers remain forbidden. |
-| `set-owner` | Existing `ownerAgentId`, plus reason for planner reassignment; current routable participant required. Does not reset runner budget/failure counters or discard proposal/ruling. Legacy user clear-owner behavior is unchanged. |
+| `set-owner` | Existing `ownerAgentId`, plus reason for planner reassignment; current routable participant/runtime profile required. Planner reassignment records an owner_changed entry (previous/new owner and reason, authenticated reviewer) in bounded Goal changeNotices. Does not reset runner budget/failure counters or discard proposal/ruling. Only the legacy user/internal path may clear owner. |
 | `bind-planner` | User-only explicit adoption of the configured planner for an existing unbound, non-DAG Goal; required goalId, goalRevision and reason. Preserves Goal identity/content, owner, status, evidence and runner counters; details below. |
 | `pause`, `resume`, `complete` | Existing lifecycle behavior, now guarded against proposal loss. Completion still needs all criteria passed or validly waived. Resume starts the existing fresh runner cycle; P1 does not change budgets. |
 | `accept-proposal`, `dismiss-proposal` | Rule on the identified pending proposal with reason and server-derived principal; accepted proposal baseRevision must still match. |
@@ -731,7 +731,9 @@ Missing required bounded-store projections fail closed with 501
 | --- | --- |
 | 400 `goal_revision_required` | Supply current ID/revision; null/0 only for first set or pending-proposal operations while no live Goal exists |
 | 400 `goal_owner_invalid` | Choose a currently routable Room participant |
+| 400 `goal_owner_reason_required` | Planner owner reassignment requires a reason |
 | 400 `goal_initial_status_invalid` | Initial set status must be active or paused |
+| 400 `goal_planner_binding_reason_required` | User adoption requires a nonblank reason |
 | 400 `idempotency_key_required` | Supply a valid planner Room-creation retry key |
 | 400 `attention_query_invalid` | Correct cursor/filter/timeout |
 | 400 `goal_patch_invalid` | Invalid explicit patch value/type/required text; omission is not null |

@@ -252,6 +252,12 @@
   // proposal AND Goal snapshot, not permission to discard whatever arrives next.
   async function submitWithProposalConfirmation({ conversation, command, post, read, refresh, confirm }) {
     const guarded = ['set', 'revise', 'pause', 'resume', 'complete'].includes(command.action);
+    if (command.action === 'bind-planner') {
+      try { return await post(command); } catch (error) {
+        if (error.status === 409) refresh(await read());
+        throw error;
+      }
+    }
     if (!guarded) return post(command);
     const displayedGoal = goalForConversation(conversation);
     const expectedId = command.goalId === undefined ? displayedGoal && displayedGoal.goalId || null : command.goalId;

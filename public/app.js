@@ -151,6 +151,7 @@ const dom = {
   sessionGoalDetails: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-details')),
   sessionGoalOwnerCard: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-owner-card')),
   sessionGoalOwnerSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('session-goal-owner-select')),
+  sessionGoalBindPlannerButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-bind-planner-button')),
   sessionGoalProgressCard: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-card')),
   sessionGoalProgressSummary: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-summary')),
   sessionGoalProgressFill: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-fill')),
