@@ -626,9 +626,11 @@ not a new pause/retry policy. The existing same-mode/total-streak guards alone
 decide automatic failure pauses. This prevents a first failed round from being
 invisible; one item per turn bounds duplication. The planner can batch reads.
 
-Acknowledgement accepts a nonblank reason only for goal_completed/turn_failed.
-It cannot hide a pending proposal or unresolved budget/failure/owner condition
-(409 `attention_condition_active`). Already-resolved items return the same item
+Acknowledgement accepts a nonblank reason only for goal_completed/turn_failed
+(400 `attention_reason_required` if absent/blank). Persist that reason alongside
+the resolution principal in SQLite; it is not a new creation event or part of
+the monitoring summary. It cannot hide a pending proposal or unresolved
+budget/failure/owner condition (409 `attention_condition_active`). Already-resolved items return the same item
 without another transition. Missing items return 404 `attention_not_found`.
 No new Room UI for acknowledgements is required; the user can still handle the
 underlying Goal/proposal in the current UI.
@@ -762,6 +764,7 @@ Missing required bounded-store projections fail closed with 501
 | 400 `goal_planner_binding_reason_required` | User adoption requires a nonblank reason |
 | 400 `idempotency_key_required` | Supply a valid planner Room-creation retry key |
 | 400 `attention_query_invalid` | Correct cursor/filter/timeout |
+| 400 `attention_reason_required` | Supply a nonblank acknowledgement reason |
 | 400 `goal_patch_invalid` | Invalid explicit patch value/type/required text; omission is not null |
 | 400 `goal_acceptance_state_required` | Changed criterion definition needs explicit new acceptance state/proof fields |
 | 400 existing Goal validation codes | Invalid definitions, missing verifyBy, evidence IDs/links or waiver reason; nothing written |

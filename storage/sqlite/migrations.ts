@@ -895,6 +895,49 @@ CREATE TRIGGER IF NOT EXISTS chat_goal_rulings_immutable
     SELECT RAISE(ABORT, 'Goal ruling history is append-only');
   END;
 
+CREATE TABLE IF NOT EXISTS chat_planner_attention (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL,
+  goal_id TEXT,
+  goal_revision INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('proposal_pending', 'budget_exhausted', 'failure_paused', 'owner_removed', 'goal_completed', 'turn_failed')),
+  source_id TEXT NOT NULL CHECK (length(trim(source_id)) > 0),
+  summary TEXT NOT NULL CHECK (length(summary) <= 500),
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolution TEXT,
+  resolved_by_json TEXT,
+  resolution_reason TEXT,
+  UNIQUE (conversation_id, kind, source_id),
+  CHECK ((goal_id IS NULL AND goal_revision = 0) OR (goal_id IS NOT NULL AND goal_revision > 0)),
+  CHECK ((resolved_at IS NULL AND resolution IS NULL AND resolved_by_json IS NULL AND resolution_reason IS NULL)
+    OR (resolved_at IS NOT NULL AND length(trim(resolution)) > 0 AND resolved_by_json IS NOT NULL)),
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_room
+  ON chat_planner_attention (conversation_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_unresolved
+  ON chat_planner_attention (conversation_id, sequence) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_status
+  ON chat_planner_attention (resolved_at, sequence);
+
+CREATE TRIGGER IF NOT EXISTS chat_planner_attention_immutable
+  BEFORE UPDATE ON chat_planner_attention
+  WHEN OLD.resolved_at IS NOT NULL
+    OR NEW.sequence IS NOT OLD.sequence
+    OR NEW.conversation_id IS NOT OLD.conversation_id
+    OR NEW.goal_id IS NOT OLD.goal_id
+    OR NEW.goal_revision IS NOT OLD.goal_revision
+    OR NEW.kind IS NOT OLD.kind
+    OR NEW.source_id IS NOT OLD.source_id
+    OR NEW.summary IS NOT OLD.summary
+    OR NEW.created_at IS NOT OLD.created_at
+    OR NEW.resolved_at IS NULL
+  BEGIN
+    SELECT RAISE(ABORT, 'Attention occurrence and resolved data are immutable');
+  END;
+
 CREATE TABLE IF NOT EXISTS chat_acceptance_records (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,

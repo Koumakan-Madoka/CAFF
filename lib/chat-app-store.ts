@@ -14,6 +14,8 @@ const { createChatConversationAgentHistoryRepository } = require('../storage/cha
 const { createChatConversationRepository } = require('../storage/chat/conversation.repository');
 const { createChatWorkspaceOperationRepository } = require('../storage/chat/workspace-operation.repository');
 const { createGoalRulingRepository } = require('../storage/chat/goal-ruling.repository');
+const { createPlannerAttentionRepository } = require('../storage/chat/planner-attention.repository');
+const { syncPlannerProposalAttention } = require('../server/domain/conversation/planner-attention');
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
@@ -985,6 +987,8 @@ export class ChatAppStore {
       this.workspaceOperationRepository = createChatWorkspaceOperationRepository(this.db);
       this.goalRulingRepository = createGoalRulingRepository(this.db);
       this.goalRulingRepository.backfill();
+      this.plannerAttentionRepository = createPlannerAttentionRepository(this.db);
+      this.reconcilePlannerAttention();
       this.participantRepository = createChatParticipantRepository(this.db);
       this.messageRepository = createChatMessageRepository(this.db);
       this.messageDetailRepository = createChatMessageDetailRepository(this.db);
@@ -1171,6 +1175,7 @@ export class ChatAppStore {
           lastMessageAt: null,
         });
         this.replaceConversationParticipants(payload.id, payload.participants);
+        syncPlannerProposalAttention(this.plannerAttentionRepository, payload.id, {}, payload.metadata);
 
         return this.getConversation(payload.id);
       });
@@ -1184,6 +1189,8 @@ export class ChatAppStore {
         for (const ruling of options.goalRulings || []) {
           this.goalRulingRepository.append(conversationId, { sessionGoalRuling: ruling });
         }
+        syncPlannerProposalAttention(this.plannerAttentionRepository, conversationId,
+          parseJson(previous?.metadata_json), updates.metadata, options);
         if (updates.title !== undefined) {
           this.conversationRepository.update(conversationId, {
             title: updates.title,
@@ -3564,6 +3571,35 @@ export class ChatAppStore {
 
   listSessionGoalRulings(conversationId: string, options: any = {}) {
     return this.goalRulingRepository.list(conversationId, options.limit ?? 100);
+  }
+
+  listPlannerAttention(query: any = {}) {
+    return this.plannerAttentionRepository.list(query);
+  }
+
+  resolvePlannerAttention(sequence: number, input: any = {}) {
+    return this.plannerAttentionRepository.acknowledge(sequence, input);
+  }
+
+  countUnresolvedPlannerAttention() {
+    return this.plannerAttentionRepository.counts();
+  }
+
+  reconcilePlannerAttention() {
+    this.db.transaction(() => {
+      // Upgrade/recovery reads bounded metadata pages, never messages or traces.
+      const page = this.db.prepare('SELECT id, metadata_json FROM chat_conversations WHERE id > ? ORDER BY id LIMIT 100');
+      let after = '';
+      for (;;) {
+        const rows = page.all(after);
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          const metadata = parseJson(row.metadata_json) || {};
+          syncPlannerProposalAttention(this.plannerAttentionRepository, row.id, metadata, metadata);
+        }
+        after = rows[rows.length - 1].id;
+      }
+    })();
   }
 
   getConversationTitleSource(conversationId: any) {
