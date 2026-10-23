@@ -213,8 +213,14 @@ webhook validation. `X-CAFF-Principal: planner` on those routes is rejected with
   M2 review R2: non-user principals (including planners and agents) also cannot
   downgrade an existing high-risk criterion to any non-high risk, delete its ID,
   or omit it when replacing/clearing a Goal. Check against the previous Goal,
-  regardless of the criterion's current acceptance status. Return 403
-  `goal_high_risk_change_user_required`; a high-risk waiver still uses
+  regardless of the criterion's current acceptance status while that Goal is
+  unfinished. M3 review N8: when the previous Goal is already `complete`,
+  retiring that Goal with replacement `set` or `clear` is exempt from this
+  downgrade/removal check, for direct actions and accepted proposals alike.
+  This does not exempt `revise`, waive any new high-risk criterion, or bypass
+  the accepted-ADR decision gate. Creating/replacing/clearing a Goal still
+  requires the explicit user approval/attestation specified by ADR 0002.
+  Return 403 `goal_high_risk_change_user_required`; a high-risk waiver still uses
   `goal_high_risk_waiver_user_required`. This prevents downgrade-then-waive and
   delete/replace bypasses. Users may make these structural changes subject to
   ordinary validation; normal-risk changes/deletions remain unchanged. Agents
@@ -489,11 +495,23 @@ archives any pending proposal as superseded before clearing live metadata.
 Deleting a Room may delete its history as part of that separately approved
 operation; there is no background history pruning in P1. The SQLite archive
 is `chat_goal_rulings`, separate from metadata, with immutable ruling IDs and
-append order. Metadata writes archive the previous/latest ruling in the same
-transaction; clear can additionally archive its final ruling without retaining
-live Goal metadata. Startup idempotently archives recognized legacy rulings
-in metadata-only batches, preserving absent/legacy attribution rather than
-inventing a user principal.
+append order. When the latest ruling projection changes, archive the previous
+snapshot and the new ruling in the same metadata transaction; an unchanged
+projection is not re-appended on unrelated Room updates. Clear can additionally
+archive its final ruling without retaining live Goal metadata. New or explicitly
+changed ruling records remain strict: reusing an archived ID for different
+content fails and rolls back the entire write.
+
+M3 review N9: an already-present historical snapshot whose ID conflicts with an
+archived record must not freeze Room updates or startup. While archiving the
+**previous snapshot** or backfilling legacy metadata, keep the immutable archived
+record and skip that conflicting legacy snapshot with a sanitized
+`goal_ruling_legacy_conflict` diagnostic (stage and Room ID, no ruling content).
+An unchanged old-format/malformed/conflicting projection does not block title,
+participant or unrelated metadata updates. Do not swallow SQLite/write failures
+or relax validation for a newly submitted ruling. Startup idempotently archives
+recognized legacy rulings in metadata-only batches, preserving absent/legacy
+attribution rather than inventing a user principal.
 
 Agent `suggest-goal` retains its existing technical replacement behavior:
 submitting another proposal may replace a pending proposal without new CLI
@@ -743,7 +761,7 @@ Missing required bounded-store projections fail closed with 501
 | 403 `api_host_mismatch`, `api_origin_mismatch`, `api_csrf_invalid` | Browser/planner mutation guard failure, as applicable |
 | 403 existing local-admin `*_local_only` | Existing local-only boundary remains |
 | 403 `goal_high_risk_waiver_user_required`, `goal_accepted_adr_change_user_required` | Direct user ruling in CAFF required; attestation is insufficient |
-| 403 `goal_high_risk_change_user_required` | Non-user cannot downgrade/delete an existing high-risk criterion or drop it on Goal replacement/clear; ask the user to rule |
+| 403 `goal_high_risk_change_user_required` | Non-user cannot downgrade/delete an existing high-risk criterion; replacement set/clear may retire a completed Goal, but unfinished Goals and revise remain protected |
 | 403 `goal_metadata_reserved` | Generic Room PUT cannot alter server-owned Goal/D28 binding metadata; use the Goal endpoint |
 | 403 `goal_planner_ruling_required` | Room agent cannot rule on a planner-driven Goal |
 | 403 `goal_planner_binding_user_required` | Only the user may adopt an existing Goal via bind-planner |
@@ -815,6 +833,11 @@ planner will update the Goal decision classifications after M1 passes.
    attempts (403 without Goal/proposal/ruling mutation), user success for the
    same changes and unchanged normal-risk behavior. Include the actual agent
    callback/bridge acceptance path, not only a caller-supplied domain principal.
+   M4/N8 covers retiring a completed high-risk Goal with direct/accepted set or
+   clear, while unfinished Goals, revise, new high-risk waivers and accepted-ADR
+   changes stay protected. M4/N9 covers unrelated updates and reopen with legacy,
+   malformed or conflicting old ruling metadata, immutable archive preservation,
+   sanitized conflict diagnostics and strict rollback for new ruling conflicts.
    M2 also requires the Windows command/ACE unit matrix and local isolated
    CodexSandboxUsers-no-read / valid-planner-auth check specified in §1; include
    sanitized diagnostics and results in the M2 review evidence. Cover default
