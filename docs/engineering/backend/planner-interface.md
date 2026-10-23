@@ -593,6 +593,8 @@ SQLite stores attention separately from Room metadata. Each item has:
   resolvedAt: string | null;
   resolution: string | null;     // e.g. proposal_accepted, goal_resumed, acknowledged
   resolvedBy?: Principal;        // automatic resolutions use system
+  failedAgentIds?: string[];     // turn_failed only; ['unknown'] if not attributable
+  lane?: 'main' | 'side';        // turn_failed correlation scope
 }
 ```
 
@@ -650,6 +652,22 @@ commit, not turn start time. Another agent's or another lane's success is not
 proof of recovery. Cancellation neither creates nor resolves attention. Other
 scopes remain resolvable by explicit resume, acknowledgement or Goal
 completion/replacement/clear; existing pause thresholds are unchanged.
+
+Multi-agent clarification: every turn_failed row records failedAgentIds. Only
+an unambiguously attributed singleton may be automatically resolved by a later
+successful terminal transition for that same agent/Goal/lane. Multiple failed
+agents are never partially tracked or automatically resolved. Root exceptions
+or missing/invalid attribution use ['unknown'] and require explicit resolution;
+never infer the failing agent from the owner, entry roster or planned targets.
+Successful attribution comes only from actual completedAgentIds, not the root's
+status alone. A marker named unknown is always conservative/manual. Keep the
+starting Goal association server-derived and preserve it through task updates.
+
+For subsequent M4 monitoring details, prefer explicit resolution over inference,
+leave uncertain ownership unprocessed, do not replay history or guess legacy
+associations, and preserve existing behavior. Record such clarifications at M4
+review; changes to committed decisions, acceptance or safety boundaries still
+require a pause.
 
 Acknowledgement accepts a nonblank reason only for goal_completed/turn_failed
 (400 `attention_reason_required` if absent/blank). Persist that reason alongside
