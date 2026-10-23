@@ -46,7 +46,16 @@ async function fixture(t) {
     applySessionGoalAction(app.store, room.id, { action: 'pause', ruledBy: { kind: 'user' } });
     return getSessionGoal(app.store.getConversationWithoutMessages(room.id));
   }
-  return { app, room, author, call, seed, snapshot };
+  function finish() {
+    const goal = getSessionGoal(app.store.getConversationWithoutMessages(room.id));
+    applySessionGoalAction(app.store, room.id, { action: 'update-delivery', goalRevision: goal.revision,
+      acceptanceCriteria: goal.acceptanceCriteria.map(item => ({ id: item.id, status: 'passed', evidenceRefs: ['completion-proof'] })),
+      evidence: [{ id: 'completion-proof', criterionIds: goal.acceptanceCriteria.map(item => item.id), summary: 'Synthetic completed acceptance' }],
+      ruledBy: { kind: 'user' } });
+    applySessionGoalAction(app.store, room.id, { action: 'complete', ruledBy: { kind: 'user' } });
+    return getSessionGoal(app.store.getConversationWithoutMessages(room.id));
+  }
+  return { app, room, author, call, seed, finish, snapshot };
 }
 function change(goal, operation) {
   const acceptanceCriteria = operation === 'downgrade'
@@ -86,3 +95,64 @@ for (const operation of ['downgrade', 'delete', 'replace', 'clear']) {
     });
   }
 }
+
+const nextGoal = () => ({ action: 'set', objective: 'Next Goal in the same Room', status: 'paused',
+  acceptanceCriteria: [criterion('next', 'normal')], workItems: [], evidence: [] });
+for (const action of ['set', 'clear']) {
+  test(`N8 planner direct ${action} can retire a completed high-risk Goal`, async t => {
+    const f = await fixture(t); f.seed(); const completed = f.finish();
+    const result = await f.call(action === 'set' ? nextGoal() : { action });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    if (action === 'clear') assert.equal(result.body.goal, null);
+    else {
+      assert.notEqual(result.body.goal.goalId, completed.goalId);
+      assert.equal(result.body.goal.status, 'paused');
+      assert.equal(result.body.goal.acceptanceCriteria[0].id, 'next');
+    }
+  });
+  for (const caller of ['planner', 'agent']) {
+    test(`N8 ${caller} can accept ${action} retiring a completed high-risk Goal`, async t => {
+      const f = await fixture(t); f.seed(); f.finish();
+      proposeSessionGoalAction(f.app.store, f.room.id, action === 'set' ? nextGoal() : { action }, { agentId: f.author.id, agentName: f.author.name });
+      const result = await f.call({ action: caller === 'agent' ? 'accept' : 'accept-proposal' }, caller);
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(f.app.store.listSessionGoalRulings(f.room.id).at(-1).outcome, 'accepted');
+    });
+  }
+  test(`N8 ${action} still protects an active high-risk Goal`, async t => {
+    const f = await fixture(t); f.seed();
+    applySessionGoalAction(f.app.store, f.room.id, { action: 'resume', ruledBy: { kind: 'user' } });
+    const before = f.snapshot(), result = await f.call(action === 'set' ? nextGoal() : { action });
+    assert.equal(result.status, 403);
+    assert.equal(result.body.code, 'goal_high_risk_change_user_required');
+    assert.deepEqual(f.snapshot(), before);
+  });
+  test(`N8 completed ${action} cannot bypass the accepted-ADR gate`, async t => {
+    const f = await fixture(t), g = f.seed();
+    applySessionGoalAction(f.app.store, f.room.id, { action: 'revise', goalRevision: g.revision,
+      decisions: { committed: [{ id: 'adr', statement: 'Protected decision', adrPath: 'docs/decisions/0001-goal-driven-workflow.md' }] }, ruledBy: { kind: 'user' } });
+    f.finish(); const before = f.snapshot(), result = await f.call(action === 'set' ? nextGoal() : { action });
+    assert.equal(result.status, 403);
+    assert.equal(result.body.code, 'goal_accepted_adr_change_user_required');
+    assert.deepEqual(f.snapshot(), before);
+  });
+}
+
+test('N8 retiring a completed Goal never authorizes a new high-risk waiver', async t => {
+  const f = await fixture(t); f.seed(); f.finish();
+  const before = f.snapshot(), command = { ...nextGoal(), acceptanceCriteria: [{ ...criterion('next-high', 'high'),
+    status: 'waived', waiver: { reason: 'Synthetic claim cannot authorize a high-risk waiver' } }] };
+  const result = await f.call(command);
+  assert.equal(result.status, 403);
+  assert.equal(result.body.code, 'goal_high_risk_waiver_user_required');
+  assert.deepEqual(f.snapshot(), before);
+});
+
+test('N8 completed Goal revise still cannot drop a high-risk criterion', async t => {
+  const f = await fixture(t); f.seed(); f.finish();
+  const before = f.snapshot(), result = await f.call({ action: 'revise', acceptanceCriteria: [{ id: 'retained' }],
+    evidence: [{ id: 'completion-proof', criterionIds: ['retained'] }] });
+  assert.equal(result.status, 403);
+  assert.equal(result.body.code, 'goal_high_risk_change_user_required');
+  assert.deepEqual(f.snapshot(), before);
+});

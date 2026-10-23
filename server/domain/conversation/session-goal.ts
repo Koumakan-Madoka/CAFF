@@ -1035,7 +1035,12 @@ function assertUserOnlyGoalChanges(previousGoal: any, nextGoal: any, principal: 
       code: 'goal_high_risk_waiver_user_required', criterionIds: newlyWaived.map((criterion: any) => criterion.id),
     });
   }
-  // Protect the existing boundary, not only a newly waived status: otherwise
+  // A completed Goal has already passed completion validation. Retiring it
+  // via set/clear cannot bypass its acceptance checks (M3 review N8). This
+  // exception deliberately follows the ADR/new-waiver gates above, and does
+  // not permit revising away a protected criterion, even on a completed Goal.
+  if (previousGoal?.status === 'complete' && (replacement || nextGoal === null)) return;
+  // Protect the unfinished boundary, not only a newly waived status: otherwise
   // a non-user can downgrade first and waive later, or drop it in a new Goal.
   // A changed ID is removal too; clearing a Goal removes every criterion.
   const next = new Map<string, any>((nextGoal?.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));

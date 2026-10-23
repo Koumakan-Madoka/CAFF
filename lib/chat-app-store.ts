@@ -1176,12 +1176,11 @@ export class ChatAppStore {
       });
 
       this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any, messageProjection: any = 'full', options: any = {}) => {
-        // Archive the previous and next latest rulings in the SAME transaction
-        // as metadata. Replacement/clear cannot lose the old audit record;
-        // either an archive or metadata failure rolls the entire change back.
+        // Archive changed ruling projections in the SAME transaction as
+        // metadata. An unchanged legacy snapshot must not freeze unrelated
+        // updates; new ruling/archive or metadata failures still roll back.
         const previous = this.conversationRepository.get(conversationId);
-        this.goalRulingRepository.append(conversationId, parseJson(previous?.metadata_json));
-        this.goalRulingRepository.append(conversationId, updates.metadata);
+        this.goalRulingRepository.archiveTransition(conversationId, parseJson(previous?.metadata_json), updates.metadata);
         for (const ruling of options.goalRulings || []) {
           this.goalRulingRepository.append(conversationId, { sessionGoalRuling: ruling });
         }
