@@ -4375,9 +4375,11 @@ test('conversations controller accepts and dismisses session goal proposals', as
 
 test('conversations controller promotes a structured pending set proposal on acceptance', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
+  store.saveCustomRoleConfig({ id: 'agent-builder', name: 'Builder', personaPrompt: 'Synthetic Builder', provider: 'cheap-provider', model: 'cheap-model' });
   const conversation = createSmokeConversation(store, {
     id: 'goal-set-proposal-contract-conversation',
     title: 'Goal Set Proposal Contract Conversation',
+    participants: [{ agentId: 'agent-builder' }],
     metadata: {
       sessionGoalProposal: {
         id: 'prop-set-contract',

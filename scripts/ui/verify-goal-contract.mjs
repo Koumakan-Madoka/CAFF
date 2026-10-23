@@ -12,13 +12,18 @@ export async function verifyGoalContract({ browser, baseUrl, conversationId, ok 
     return { status: response.status, body: await response.json() };
   }
   const seeded = await post({
-    action: 'set', objective: 'E2E structured Goal original',
+    // This verifies editing/proof retention, not Goal Runner execution. A
+    // paused seed cannot race the browser with a budget pause proposal that
+    // correctly requires the new explicit supersession confirmation.
+    action: 'set', status: 'paused', objective: 'E2E structured Goal original',
     decisions: { committed: [{ id: 'decision-durable', statement: 'Keep durable decisions', rationale: 'Preserve context', adrPath: 'docs/decisions/test.md' }] },
     acceptanceCriteria: [{ id: 'criterion-durable', statement: 'Evidence survives editing', verifyBy: 'Browser and API assertions', status: 'passed', risk: 'high', evidenceRefs: ['proof-durable'] }],
     workItems: [{ id: 'work-durable', text: 'Verify contract', status: 'done', acceptanceCriteriaRefs: ['criterion-durable'] }],
     evidence: [{ id: 'proof-durable', summary: 'Seeded verification fixture', reference: 'fixture://goal-contract', criterionIds: ['criterion-durable'] }],
   });
   assert.equal(seeded.status, 200, `Goal seed failed (${seeded.status})`);
+  assert.equal(seeded.body.autoContinuation, null);
+  assert.equal(seeded.body.proposal, null);
   const original = seeded.body.conversation.metadata.sessionGoal;
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   try {
