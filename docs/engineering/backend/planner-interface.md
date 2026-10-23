@@ -9,8 +9,8 @@ protocol, different implementer prompts, or new DAG/delegation/Feishu behavior.
 
 **M1 review candidate, not shipped behavior.** This document is written before
 implementation and ships with it, not independently. M2–M5 must implement and
-verify it before integration into `develop`. Sections marked **review decision**
-are recommendations, not permission to implement an unresolved choice.
+verify it before integration into `develop`. This amended M1 candidate still
+requires planner re-review and PASS before implementation begins.
 
 Related implemented contracts: [Session Goal](session-goal.md),
 [DAG execution, D28](dag-execution.md), [controller patterns](controller-patterns.md),
@@ -37,11 +37,15 @@ type Principal =
 P1 supports one configured local planner identity per server instance:
 `plannerId = 'local-planner'`, `plannerName = 'External Planner'` by default.
 The deployment may configure the name (`CAFF_PLANNER_NAME`); requests cannot.
+M2 must document this optional setting in `.env.example`, including the default
+and an example `# CAFF_PLANNER_NAME=Claude Code`. This configures attribution,
+not a credential or a Room agent. M1 changes only this interface contract; it
+neither edits the local environment nor implements the setting.
 The ID is stable across credential rotation. A planner is not a Room participant,
 cannot own a Goal, and consumes no model slot. Multiple independent planner
 identities and credential administration are not P1 features.
 
-### Credential file (review decision: retain the provisional approach)
+### Credential file (planner-confirmed approach; Windows protection amended)
 
 - Generate 32 cryptographically random bytes, base64url-encoded, on each server
   start. Compare the supplied value without timing-dependent string comparison.
@@ -49,19 +53,91 @@ identities and credential administration are not P1 features.
   `<agentDir>/runtime/planner.json`, where `agentDir` is this instance's resolved
   `PI_CODING_AGENT_DIR`. This is runtime state, never a repository file.
 - The directory/file must be owner-only: directory `0700` and file `0600` on
-  POSIX; an owner-only Windows DACL with inherited broad access removed on
-  Windows. A chmod call alone is not evidence of Windows confidentiality.
-  Reject symlink/reparse-point destinations and unsafe existing permissions.
+  POSIX; the SID-only, protected Windows DACL specified below on Windows.
+  A chmod call alone is not evidence of Windows confidentiality. Reject
+  symlink/reparse-point destinations and unsafe existing permissions. Secure
+  the runtime directory and an empty temporary file **before** writing any
+  token bytes; re-verify the final file after atomic replacement.
 - Verify permissions before publishing the credential. If secure creation or
   verification fails, disable planner authentication and log a non-secret
   diagnostic; the browser console remains usable. Never publish an insecure
   token or fall back to treating a planner as the user.
 - Isolated instances must have different agent directories, databases and
-  credential files. Shared-account agents may still read the file: this is
-  attribution/gating, **not** an OS sandbox boundary.
+  credential files. The DACL denies ordinary other local accounts, including
+  accounts whose access comes from CodexSandboxUsers or unresolved group SIDs.
+  Processes under the **same account** can still read the credential. SYSTEM
+  and administrators exercising ownership/privilege are not isolated by this
+  scheme. This is attribution/gating, **not** a same-account OS sandbox boundary.
 - Rotation invalidates the previous token. A client receiving 401 may re-read
   its locally configured file; it must not retry as a browser/user principal.
   No token in bootstrap, URLs, messages, SQLite records, errors, logs or SSE.
+
+#### Windows setting and language-independent verification
+
+Node has no built-in ACL API. Use the OS Windows PowerShell executable at the
+trusted system path (`%SystemRoot%/System32/WindowsPowerShell/v1.0/powershell.exe`)
+to call .NET `System.Security.AccessControl` APIs. Invoke it with an argument
+array, `shell: false`, `-NoLogo -NoProfile -NonInteractive -EncodedCommand` and a
+fixed UTF-16LE/base64 script. Set stdin/stdout encoding explicitly to UTF-8;
+send paths as JSON on stdin, never interpolate a path into code. The ACL helper
+never receives token bytes. Do not resolve PowerShell from PATH, load profiles,
+parse `icacls`/`whoami` display text, or use localized account names. Missing/blocked PowerShell is a secure-creation failure,
+not a reason to weaken the permissions.
+
+1. Obtain the current process account SID from
+   `[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value`.
+   Set the owner with `SecurityIdentifier`, not `NTAccount`. The allowed SID set
+   is exactly that account plus optional SYSTEM (`S-1-5-18`); no Administrators,
+   Users, Everyone, CodexSandboxUsers, or unresolved additional SID is allowed.
+2. Construct a **new** `DirectorySecurity` / `FileSecurity`, set the owner, and
+   call `SetAccessRuleProtection(true, false)` (protect DACL, discard inheritance).
+   Add explicit `Allow` / `FullControl` rules only for the allowed SIDs.
+   Directory rules use `ContainerInherit | ObjectInherit` and propagation None;
+   file rules use inheritance None and propagation None. Replace the entire
+   DACL using `Directory.SetAccessControl` / `File.SetAccessControl`; do not just
+   add grants, disable inheritance while retaining old explicit ACEs, or modify
+   unrelated parent/repository ACLs. Apply this to the runtime directory and
+   empty temporary file. Validate any existing destination before rotation;
+   unsafe ownership/permissions fail closed, rather than trusting or reading its
+   contents. Never expose a nonempty broadly readable temporary file.
+3. Re-read owner, DACL and file attributes from the filesystem, not from the
+   object used to set them. Use `GetOwner(typeof(SecurityIdentifier))` and
+   `GetAccessRules(true, true, typeof(SecurityIdentifier))`; emit machine JSON
+   with SID strings, numeric rights/type/inheritance/propagation flags,
+   `IsInherited`, `AreAccessRulesProtected` and reparse attributes. Do not use
+   translated identity or rights text. A pure validator checks: owner equals
+   current SID; protected, non-null/nonempty DACL; exactly one expected explicit
+   Allow/FullControl ACE per allowed SID; expected flags for directory/file;
+   no inherited, deny, unknown-SID or unsupported ACE. Reject malformed/truncated
+   JSON and an unreadable or unsupported security descriptor. An unknown SID
+   is not ignored merely because Windows cannot resolve its account name.
+4. Only enable planner authentication after directory and final file pass this
+   verification. On helper/set/read/validation failure, remain disabled, do not
+   publish or use the new token, and reject planner intent with 401. Log a
+   structured non-secret diagnostic: `planner_credentials_disabled`, stage
+   (`create`, `set_acl`, `verify_acl` or `publish`), target path, expected/actual
+   owner SID, DACL protection flag, offending ACE SID and numeric rights/flags,
+   stable failure reason, and helper exit code or numeric OS error when present.
+   Never log credential content, stdin containing credentials, or unfiltered
+   subprocess output; the browser remains available.
+
+Path integrity is also required: a DACL on a file does not prevent an untrusted
+account from replacing an ancestor it controls. Detect unsafe writable/reparse
+ancestors and fail closed rather than repairing shared repository/sandbox ACLs.
+Use a trusted per-instance agent directory when that check fails.
+
+M2 evidence must include automated command-construction and pure ACE-validation
+tests: paths with spaces/quotes/Chinese characters, SID-only grants, stale
+explicit or inherited group grants (including unresolved SIDs), missing owner
+access, unprotected/null DACL, wrong owner/flags, helper failure and malformed
+output. Separately, before M2 review, GPT or the planner must run a **local
+Windows check** against an isolated instance: inspect the actual directory and
+file descriptors by SID, resolve the local CodexSandboxUsers SID for the check
+only, confirm that group has no read access, and prove a credential-authenticated
+request succeeds. Record the check method, sanitized SID/ACE result and HTTP
+status, never the token. If a sandbox-account access probe is available, attempt
+a read and record access denied without printing file contents. A missing local
+check is missing M2 evidence; mock tests alone do not establish Windows secrecy.
 
 ### Planner intent and authentication
 
@@ -117,7 +193,7 @@ write capability and does not receive permissive CORS headers.
 
 | Caller / route | Required validation |
 | --- | --- |
-| Browser, ordinary API write | Exact configured Host authority, same-origin Origin, JSON Content-Type, CSRF header |
+| Browser, ordinary API write | Valid configured Host authority (loopback aliases below), same-origin Origin, JSON Content-Type, CSRF header |
 | Browser `POST /api/conversations/:id/images` | Same Host, Origin and CSRF; `multipart/form-data` with valid boundary instead of JSON |
 | Authenticated planner, ordinary API write | Host and the route's Content-Type; bearer replaces Origin and CSRF, not other validation |
 | `/api/agent-tools/*` | Existing invocationId + callbackToken and invocation-scope checks; no browser CSRF/Origin or new Host requirement |
@@ -125,11 +201,29 @@ write capability and does not receive permissive CORS headers.
 
 Host means the configured listening authority, with the actual bound port
 (including a port allocated from `0`), not an authority reconstructed from the
-untrusted Host header. Do not trust forwarded headers. Origin must equal the
-server's own HTTP origin, including port; missing, `null`, different hostname or
-scheme is rejected. Existing local-only admin routes keep their additional
-loopback bind/peer restrictions, including for planner requests; general Room
-routes do not gain a new loopback-only restriction.
+untrusted Host header. Do not trust forwarded headers or resolve arbitrary
+hostnames to decide trust.
+
+- For a loopback bind, the allowed authorities are `127.0.0.1:<port>`,
+  `localhost:<port>` and `[::1]:<port>`. Host accepts any of these, and browser
+  Origin must be the same HTTP origin as the **validated request Host**,
+  including port. Thus opening the UI at localhost works with a 127.0.0.1 bind;
+  a cross-alias Origin/Host pair is still cross-origin and rejected. Only these
+  literal aliases qualify; an attacker-controlled DNS name resolving to
+  loopback is not an alias.
+- For a non-loopback bind, Host must exactly match the configured authority,
+  and Origin must equal its HTTP origin; there is no loopback-alias exception.
+- Missing, `null`, different-origin or different-scheme browser Origin is
+  rejected. Existing local-only admin routes retain their additional loopback
+  bind/peer checks, including for planners; their write guards use the same
+  alias rules. General Room routes gain no loopback-only restriction.
+
+**Read-side scope / known limitation:** P1 adds no Host checks to read routes.
+Ordinary reads that currently lack Host validation continue to lack it; the
+existing local-admin read restrictions are not removed. DNS rebinding that
+reads data through those ordinary routes remains a known risk, deferred to a
+separate change. Planner-only reads still require their bearer credential.
+Do not treat this mutation-hardening work as read-side DNS-rebinding protection.
 
 JSON means `application/json`, optionally with parameters such as charset.
 Even bodyless DELETE/POST clients send this Content-Type (`{}` when needed).
@@ -177,8 +271,9 @@ For every authenticated planner Goal write:
   them before mutation. First `set` with no Goal uses `goalId: null` and
   `goalRevision: 0`; only this creation case accepts revision zero.
 - Missing/invalid preconditions return 400 `goal_revision_required`; a different
-  Goal ID or revision returns 409 `goal_revision_conflict`. Read again, inspect
-  the change, and use a new request key; do not blindly force a stale write.
+  Goal ID or revision returns 409 `goal_revision_conflict`. Read again and
+  inspect the change before deciding on a new action; never blindly force a
+  stale write.
 - Rulings additionally require `proposalId`, exactly matching the pending
   proposal, or 409 `goal_proposal_conflict`. This protects proposals created or
   replaced without a Goal revision change. No pending proposal returns 404.
@@ -189,30 +284,40 @@ For every authenticated planner Goal write:
 
 ### Idempotency
 
-Planner Room creation, message submission, Goal writes and attention resolution
-require `Idempotency-Key` (nonblank opaque string, at most 200 characters).
-Missing/invalid keys return 400 `idempotency_key_required`. `clientRequestId`
-remains available to old clients; planner clients reuse the same value on a
-message retry, but it does not replace this header.
+Use each operation's existing safety mechanism, not a universal receipt table:
 
-Persist successful operation receipts in SQLite scoped by planner ID, method,
-canonical path and key. Store a digest of the semantic JSON request, the result
-and resulting record IDs, **not** the credential. Receipt and domain writes
-commit atomically. Identical retries return the original status and result,
-with `Idempotency-Replayed: true`, before re-checking now-stale Goal preconditions;
-no second message/Room/ruling/attention item or continuation is created. Different
-payload under the same key returns 409 `idempotency_key_conflict`. Concurrent
-identical submissions serialize; failed precondition/auth/domain validation
-creates no successful receipt. Receipts survive restart and credential rotation.
-Keep them for the lifetime of their Room (server-level receipts until explicit
-maintenance); no automatic short TTL that could duplicate an old retry.
+- **Planner Room creation only** requires `Idempotency-Key` (nonblank opaque
+  string, at most 200 characters); missing/invalid returns 400
+  `idempotency_key_required`. Persist a Room-creation-specific mapping scoped
+  by planner ID and key, with a semantic request digest and created Room ID,
+  atomically with the Room. Same key/payload returns the original 201 lean
+  creation result with `Idempotency-Replayed: true`, not another Room. A
+  different payload returns 409 `idempotency_key_conflict`. Concurrent requests
+  serialize; mappings survive restart/rotation. Keep a non-reusable key
+  tombstone when the Room is deleted, until separately authorized cleanup;
+  retry then returns 410 `conversation_gone`, never recreates the target.
+  Never store credentials.
+- **Goal writes** require no Idempotency-Key or receipt. The goalId/revision
+  preconditions (plus proposalId for rulings/supersession) prevent replay of a
+  committed action. After a lost response, repeating the old request gets 409
+  (or 404 if its Goal/proposal was cleared); re-read and inspect state rather
+  than expecting the old result or automatically submitting at a new revision.
+- **Messages** require no Idempotency-Key. Planner clients must provide and
+  reuse `clientRequestId` when retry safety is needed. Keep the existing
+  persistent per-Room message deduplication and `MESSAGE_IDEMPOTENCY_CONFLICT`
+  for changed content/imageIds. A duplicate must not cause another dispatch;
+  this does not require storing a full HTTP response receipt.
+- **Attention resolve** requires no key or receipt: it is a monotonic
+  unresolved-to-resolved transition. Retrying returns the existing resolved
+  item, never another resolution or overwrite of the original reason/principal.
+- Other mutation routes keep their existing journals, preconditions and retry
+  rules. No general retry-safety claim is made for operations without such a
+  mechanism: a supplied Idempotency-Key does not make an arbitrary write safe.
 
 A crash after commit but before dispatch/broadcast must not lose accepted work:
 use the existing durable message queue and runner recovery. Publishing SSE and
 waking waiters happen after commit. Do not claim exactly-once model execution;
-the existing execution/reconciliation contract remains authoritative. Other
-mutation routes retain their existing operation journals/idempotency rules; a
-planner must not automatically retry them merely because it supplied this key.
+the existing execution/reconciliation contract remains authoritative.
 
 ## 4. Goal actions, ownership and binding
 
@@ -225,6 +330,7 @@ Goal fields, evidence validation, completion requirements and IDs are those in
 | `revise` | Partial structural delivery contract, merged as below; reason/impact remain required when changing provisional decisions. Does not replace the Goal ID or owner. |
 | `update-delivery` | Partial factual delivery state; merges omissions, preserves pending proposal/ruling and same-Goal runner counters. Structural definitions and new waivers remain forbidden. |
 | `set-owner` | Existing `ownerAgentId`, plus reason for planner reassignment; current routable participant required. Does not reset runner budget/failure counters or discard proposal/ruling. Legacy user clear-owner behavior is unchanged. |
+| `bind-planner` | User-only explicit adoption of the configured planner for an existing unbound, non-DAG Goal; required goalId, goalRevision and reason. Preserves Goal identity/content, owner, status, evidence and runner counters; details below. |
 | `pause`, `resume`, `complete` | Existing lifecycle behavior, now guarded against proposal loss. Completion still needs all criteria passed or validly waived. Resume starts the existing fresh runner cycle; P1 does not change budgets. |
 | `accept-proposal`, `dismiss-proposal` | Rule on the identified pending proposal with reason and server-derived principal; accepted proposal baseRevision must still match. |
 | `clear` | Destructive, explicit user approval required by ADR 0002; preserve audit before clearing the live Goal/binding/proposal. |
@@ -251,7 +357,12 @@ revise proposals and factual updates alike:
 - For a supplied criterion/work item/evidence record with a known ID, omitted
   properties retain their old values, including status, risk, timestamps,
   evidenceRefs, waiver and criterionIds. New records use existing defaults.
-  Removing an item from a supplied collection removes it; list omission does not.
+  A supplied collection must list **every ID to retain**; an unchanged retained
+  item can be just `{ "id": "existing-id" }`. Removing an ID removes that record,
+  subject to validation; removing a criterion/work item is structural, so
+  update-delivery returns 409 rather than accepting such a deletion. Evidence
+  replacement remains factual if all proof-link rules pass. List omission
+  preserves the entire collection.
 - Changing a criterion's definition cannot inherit a passing result for the old
   definition. Preserve existing UI replacement-ID/proof-link safety. Changed
   definitions require explicit valid new acceptance state, never silent proof
@@ -262,17 +373,25 @@ revise proposals and factual updates alike:
   its explicitly supplied collections. A fully supplied, valid old payload has
   the same normalized result as before, apart from the documented corrections.
 
-Example factual write (other fields remain byte-for-byte equivalent in the
-normalized Goal; `c1` already exists):
+Example factual write: the existing Goal has work items `w1`, `w2`, criteria
+`c1`, `c2`, and evidence `e0`; `e1` is new. Unchanged retained records list only
+their IDs. Other fields remain equivalent in the normalized Goal, apart from
+normal revision/update timestamps:
 
 ```json
 {
   "action": "update-delivery",
   "goalId": "goal_example",
   "goalRevision": 7,
-  "workItems": [{ "id": "w1", "status": "done" }],
-  "acceptanceCriteria": [{ "id": "c1", "status": "passed", "evidenceRefs": ["e1"] }],
-  "evidence": [{ "id": "e1", "criterionIds": ["c1"], "kind": "test", "summary": "Targeted regression passed" }]
+  "workItems": [{ "id": "w1", "status": "done" }, { "id": "w2" }],
+  "acceptanceCriteria": [
+    { "id": "c1", "status": "passed", "evidenceRefs": ["e1"] },
+    { "id": "c2" }
+  ],
+  "evidence": [
+    { "id": "e0" },
+    { "id": "e1", "criterionIds": ["c1"], "kind": "test", "summary": "Targeted regression passed" }
+  ]
 }
 ```
 
@@ -314,6 +433,22 @@ A planner direct `set` or planner acceptance of an agent's `set` writes
 in the same transaction. A user may explicitly request `plannerDriven: true`
 when setting/accepting a set, binding the configured local planner. Existing
 unbound Goals are not silently rebound merely by a planner read or factual write.
+
+To adopt an existing Goal without replacement, the browser/user may submit
+`{ action: 'bind-planner', goalId, goalRevision, reason }`. This action requires
+`kind === 'user'`; planner and agent callers return 403
+`goal_planner_binding_user_required`. Check the supplied ID/revision even for
+user callers; missing/stale preconditions use the concurrency errors in §3.
+An existing binding returns 409 `goal_planner_binding_conflict`; a pending
+proposal returns 409 `goal_proposal_pending` (rule first; this action has no
+supersede shortcut). Native DAG bindings remain ineligible. Atomically add the
+configured planner binding, increment Goal revision/update time, and retain
+all delivery content, owner, lifecycle status, latest ruling and runner
+budget/failure counters. Do not create a new Goal or reset/enqueue a runner
+cycle merely to bind it. The revision follows the existing fresh-session rule.
+Record `adoption: { boundBy: { kind: 'user' }, reason }` in the binding, with
+`boundAt` as the time; this is not a proposal ruling. No implicit adoption or
+new binding UI is required in P1; this explicit user API path is sufficient.
 
 The binding is scoped to that Goal ID, survives credential rotation, lifecycle,
 owner changes and restarts, and is removed on clear or a user replacement set
@@ -365,10 +500,10 @@ cursor reset. Source identity is not a raw timestamp or arbitrary error text.
 | Goal complete | Once per Goal's transition to complete (including accepted complete proposal) | Planner acknowledgement or replacement/clear; mere reads do not resolve it |
 | Terminal turn failure | Once per final failed turn ID associated with a Goal | A later successful turn, explicit resume, acknowledgement, or Goal completed/replaced/cleared |
 
-**Review decision — failure frequency:** recommend every terminal failed turn,
-not only a streak threshold. This includes failed queued turns while a Goal is
-present, but excludes user cancellation, provider-internal retry attempts and
-multiple failed reply slots inside the same turn. It is an attention notification,
+**Planner-confirmed failure frequency:** one item for every terminal failed
+turn, not only a streak threshold. This includes failed queued turns while a
+Goal is present, but excludes user cancellation, provider-internal retry
+attempts and multiple failed reply slots inside the same turn. It is an attention notification,
 not a new pause/retry policy. The existing same-mode/total-streak guards alone
 decide automatic failure pauses. This prevents a first failed round from being
 invisible; one item per turn bounds duplication. The planner can batch reads.
@@ -380,11 +515,13 @@ without another transition. Missing items return 404 `attention_not_found`.
 No new Room UI for acknowledgements is required; the user can still handle the
 underlying Goal/proposal in the current UI.
 
-Goal/proposal/runner transitions, ruling archive, attention insert/resolution and
-operation receipt belong in the same SQLite transaction. This applies to REST,
-agent tools, owner-removal checks and system runner transitions, not only planner
-requests. Roll back on persistence failure. Notify only after commit. Queue
-production uses durable transitions, never SSE as its source of truth.
+Goal/proposal/runner transitions, ruling archive and related attention
+insert/resolution belong in the same SQLite transaction. Likewise Room creation
+and its dedicated retry mapping commit together; no universal operation
+receipts are needed. This applies to REST, agent tools, owner-removal checks
+and system runner transitions, not only planner requests. Roll back on
+persistence failure. Notify only after commit. Queue production uses durable
+transitions, never SSE as its source of truth.
 
 Startup reconciles current proposal, budget-limited runner, failure pause,
 missing owner and completion from bounded metadata and stable occurrence keys.
@@ -409,8 +546,8 @@ Both list and wait accept:
 - `status`: `all` (default), `unresolved`, or `resolved`.
 - Wait only: `timeoutSeconds`, default 60, integer range 1–300.
 
-**Review decision:** retain the provisional 60/300-second defaults. Invalid
-parameters return 400 `attention_query_invalid`; do not silently clamp a cursor.
+**Planner-confirmed defaults:** 60/300 seconds. Invalid parameters return 400
+`attention_query_invalid`; do not silently clamp a cursor.
 
 ```json
 {
@@ -502,7 +639,7 @@ Missing required bounded-store projections fail closed with 501
 | --- | --- |
 | 400 `goal_revision_required` | Supply current ID/revision (0/null only for first set) |
 | 400 `goal_owner_invalid` | Choose a currently routable Room participant |
-| 400 `idempotency_key_required` | Supply a valid retry key |
+| 400 `idempotency_key_required` | Supply a valid planner Room-creation retry key |
 | 400 `attention_query_invalid` | Correct cursor/filter/timeout |
 | 400 existing Goal validation codes | Invalid definitions, missing verifyBy, evidence IDs/links or waiver reason; nothing written |
 | 401 `planner_credential_invalid` | Missing/invalid declared planner credential; never downgrade to user |
@@ -510,13 +647,17 @@ Missing required bounded-store projections fail closed with 501
 | 403 existing local-admin `*_local_only` | Existing local-only boundary remains |
 | 403 `goal_high_risk_waiver_user_required`, `goal_accepted_adr_change_user_required` | Direct user ruling in CAFF required; attestation is insufficient |
 | 403 `goal_planner_ruling_required` | Room agent cannot rule on a planner-driven Goal |
+| 403 `goal_planner_binding_user_required` | Only the user may adopt an existing Goal via bind-planner |
 | 403 existing `goal_proposal_self_review`, DAG codes | Existing self-review/worker/verifier restrictions remain |
 | 404 existing Room/Goal/proposal errors, `attention_not_found` | Read state again; do not invent an entity |
-| 409 `goal_revision_conflict`, `goal_proposal_conflict` | Concurrent change; read again, inspect, use a new key |
+| 409 `goal_revision_conflict`, `goal_proposal_conflict` | Concurrent change or committed retry; read again and inspect before a new action |
+| 409 `goal_planner_binding_conflict` | Goal already has a planner binding; no implicit replacement |
 | 409 `goal_proposal_pending` | Rule first, or explicitly confirm and identify supersession |
 | 409 `goal_structural_review_required`, `goal_waiver_review_required`, `goal_acceptance_incomplete` | Use reviewed revision / finish acceptance, not a factual or lifecycle shortcut |
-| 409 `idempotency_key_conflict` | Same key with different semantic request; do not retry it |
+| 409 `idempotency_key_conflict` | Room-creation key reused for a different semantic request |
+| 409 `MESSAGE_IDEMPOTENCY_CONFLICT` | Existing message clientRequestId reused with different content/images |
 | 409 `attention_condition_active` | Handle the underlying blocking state |
+| 410 `conversation_gone` | Room-creation key refers to a deleted Room; no replay creation |
 | 415 `api_json_required`, `api_multipart_required` | Correct route Content-Type; never bypass CSRF |
 | 501 `planner_projection_unavailable` | Required bounded store capability unavailable; no hydration fallback |
 
@@ -529,8 +670,9 @@ aliases where old clients depend on them; new global guard codes are canonical.
 
 ## 9. Compatibility, migration and verification
 
-- SQLite changes are additive: attention, ruling archive and operation receipts,
-  with indexes for sequence/Room/unresolved counts and unique source keys. Keep
+- SQLite changes are additive: attention, ruling archive and a scoped
+  Room-creation deduplication mapping, not a generic operation-receipt table;
+  indexes cover sequence/Room/unresolved counts and unique source keys. Keep
   existing Goal IDs, revisions, roster, evidence, runner counters and DAG binding.
 - Legacy Goals stay unbound. Recognized old rulings remain readable; archive the
   current durable ruling idempotently on upgrade, without inventing a principal
@@ -546,7 +688,7 @@ aliases where old clients depend on them; new global guard codes are canonical.
   `conversation-title.md`, controller/bootstrap/frontend guard contracts and any
   runtime documentation affected by the final implementation.
 
-### Review decision: factual updates and session reuse
+### Planner-confirmed decision: factual updates and session reuse
 
 Current code always increments Goal revision on update-delivery. Goal Runner
 reuse compares the trigger, current Goal and provider-known revision; resume
@@ -555,13 +697,14 @@ or rewriting the provider-known revision would let the model act on unseen
 criterion/evidence/ruling state. Accepting lifecycle or structural proposals is
 not a factual-only change; even rejection changes review guidance.
 
-**Recommendation for P1: retain current fresh-session behavior.** Batch factual
-writes and rulings, but do not implement a reuse exception. A later optimization
-would need a separately specified versioned Goal-delta delivery/acknowledgement,
+**P1 retains current fresh-session behavior, confirmed by the planner.**
+Batch factual writes and rulings, but do not implement a reuse exception. A later
+optimization would need a separately specified versioned Goal-delta delivery/acknowledgement,
 provider-known contract revision versus delivery revision, atomic claim/race
 checks, restart coverage and prompt parity tests. That is not safe to hide inside
-this P1 interface change. Planner confirmation is required; no reuse code is
-changed during contract drafting.
+this P1 interface change. No reuse exception is implemented in P1. The planner
+confirmed this and the per-turn failure/default choices in the M1 review; the
+planner will update the Goal decision classifications after M1 passes.
 
 ### Acceptance evidence required during implementation
 
@@ -569,17 +712,24 @@ changed during contract drafting.
    wrong and malformed credentials with zero writes; forged body identity;
    planner rejection and user success for both user-only gates, including direct
    actions and replacement bypass attempts; rotation and secure-file failure.
+   M2 also requires the Windows command/ACE unit matrix and local isolated
+   CodexSandboxUsers-no-read / valid-planner-auth check specified in §1; include
+   sanitized diagnostics and results in the M2 review evidence.
 2. Mutation HTTP matrix: wrong Host, wrong/missing/null Origin, wrong/missing
    CSRF, non-JSON; image upload missing CSRF and cross-origin rejected; browser,
    planner, callback, webhook and multipart successes; existing local-only
    restrictions. UI/smoke cover chat, Goals, Room creation, workspace authorization,
    models/projects/skills management and image upload with the shared token.
+   Cover all three loopback aliases, same-alias Origin/Host success, cross-alias
+   rejection, exact non-loopback matching, and unchanged admin read restrictions.
 3. Runtime/HTTP tests: owner invalid/paused/no enqueue/first target; manual title
    survives first message and refinement; each of five guarded actions' 409 and
    supersede paths with archived snapshot/identity; omission, explicit empty,
    item-field preservation, full old payload, stale revision/proposal and retry.
 4. Bridge/HTTP/DAG tests: bound planner/user rulings allowed, every agent ruling
    rejected; unbound and DAG worker/verifier/scheduler/user behavior unchanged.
+   User bind-planner preserves Goal ID/content/counters and bumps revision;
+   non-user, stale, pending-proposal and DAG binding attempts are rejected.
 5. Storage/runtime tests: each attention source, deduplication, same-transaction
    rollback, restart recovery and resolution; budget item with another pending
    proposal. HTTP wait arrival, timeout, disconnect race, multi-page cursor
