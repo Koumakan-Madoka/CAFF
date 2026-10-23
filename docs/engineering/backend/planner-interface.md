@@ -607,7 +607,15 @@ without an associated live Goal does not create a turn_failed item.
 Unique occurrence keys prevent duplicate items during retry, event re-entry and
 restart reconciliation. Sequence allocation never reuses a committed sequence
 within the same database; restoring a different/older database requires client
-cursor reset. Source identity is not a raw timestamp or arbitrary error text.
+cursor reset. Source identity is not a raw timestamp or arbitrary error text. Non-proposal
+conditions use server-issued incident IDs, retained in a small SQLite current-
+condition mapping in the same transaction as their attention rows. The mapping
+survives restart and acknowledgement; ending a condition removes its mapping,
+not its replay history. A later recurrence receives a new incident ID. For
+budget exhaustion, the existing effective runner's persisted allocation counter
+(`iteration >= maxIterations > 0`) establishes exhaustion independently of
+proposal presence; this is notification only, not a change to claim/dispatch
+rules or an extra runner iteration.
 
 | Source | Creation / deduplication | Resolution |
 | --- | --- | --- |

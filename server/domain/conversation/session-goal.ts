@@ -685,7 +685,7 @@ function updateConversationMetadata(store: any, conversation: any, metadata: any
     return store.updateConversationWithoutMessages(conversation.id, {
       type: conversation.type,
       metadata,
-    }, { goalRulings: options.goalRulings || [] });
+    }, { ...options, goalRulings: options.goalRulings || [] });
   }
   if (requiresBoundedConversationProjections(store)) {
     return missingBoundedGoalProjection('updateConversationWithoutMessages');
@@ -1497,7 +1497,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     if (migratedRunner) {
       nextMetadata[SESSION_GOAL_RUNNER_METADATA_KEY] = migratedRunner;
     }
-    const nextConversation = updateConversationMetadata(store, conversation, nextMetadata);
+    const nextConversation = updateConversationMetadata(store, conversation, nextMetadata, { ownerValidated: Boolean(ownerAgentId) });
     return responseForConversation(nextConversation, {
       goal: getSessionGoal(nextConversation),
       proposal: getSessionGoalProposal(nextConversation),
@@ -1737,7 +1737,8 @@ export function pauseSessionGoalForRemovedOwner(store: any, conversationId: any,
   if (!existingProposal) {
     nextMetadata[SESSION_GOAL_PROPOSAL_METADATA_KEY] = proposal;
   }
-  const nextConversation = updateConversationMetadata(store, conversation, nextMetadata);
+  const nextConversation = updateConversationMetadata(store, conversation, nextMetadata,
+    { ownerRemovedAgentId: normalizedOwner.agentId });
 
   return {
     changed: true,

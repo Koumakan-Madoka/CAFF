@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createHttpError } from '../../server/http/http-errors';
 
 export type AttentionKind = 'proposal_pending' | 'budget_exhausted' | 'failure_paused'
@@ -56,6 +57,23 @@ export function createPlannerAttentionRepository(db: any) {
   const resolveGoal = db.prepare(`UPDATE chat_planner_attention SET resolved_at=@at,
     resolution=@resolution, resolved_by_json='{"kind":"system"}'
     WHERE conversation_id=@conversationId AND goal_id=@goalId AND resolved_at IS NULL`);
+  const resolveKind = db.prepare(`UPDATE chat_planner_attention SET resolved_at=@at,
+    resolution=@resolution, resolved_by_json='{"kind":"system"}'
+    WHERE conversation_id=@conversationId AND goal_id=@goalId AND kind=@kind AND resolved_at IS NULL`);
+  const getCondition = db.prepare('SELECT goal_id, source_id FROM chat_planner_attention_conditions WHERE conversation_id=? AND kind=?');
+  const putCondition = db.prepare(`INSERT INTO chat_planner_attention_conditions (conversation_id, kind, goal_id, source_id)
+    VALUES (@conversationId, @kind, @goalId, @sourceId)
+    ON CONFLICT(conversation_id, kind) DO UPDATE SET goal_id=excluded.goal_id, source_id=excluded.source_id`);
+  const clearCondition = db.prepare('DELETE FROM chat_planner_attention_conditions WHERE conversation_id=? AND kind=?');
+  const clearGoalConditions = db.prepare('DELETE FROM chat_planner_attention_conditions WHERE conversation_id=? AND goal_id=?');
+
+  function append(input: AttentionOccurrence) {
+    const old = getSource.get(input.conversationId, input.kind, input.sourceId);
+    if (old) return project(old);
+    const summary = Array.from(input.summary).slice(0, 500).join('');
+    insert.run({ ...input, summary });
+    return project(getSource.get(input.conversationId, input.kind, input.sourceId));
+  }
 
   function resolveItem(sequence: number, resolution: string, principal: any, at: string, reason: string | null = null) {
     resolve.run({ sequence, resolution, principalJson: JSON.stringify(principal), at, reason });
@@ -81,12 +99,17 @@ export function createPlannerAttentionRepository(db: any) {
   return {
     // Checking first avoids burning AUTOINCREMENT values for unrelated Room
     // writes/reconciliation. The unique source constraint is the final guard.
-    append(input: AttentionOccurrence) {
-      const old = getSource.get(input.conversationId, input.kind, input.sourceId);
-      if (old) return project(old);
-      const summary = Array.from(input.summary).slice(0, 500).join('');
-      insert.run({ ...input, summary });
-      return project(getSource.get(input.conversationId, input.kind, input.sourceId));
+    append,
+    ensureCondition(input: Omit<AttentionOccurrence, 'sourceId'>) {
+      const previous = getCondition.get(input.conversationId, input.kind);
+      const sourceId = previous?.goal_id === input.goalId ? previous.source_id : `incident_${randomUUID()}`;
+      if (!previous || previous.goal_id !== input.goalId) putCondition.run({ ...input, sourceId });
+      return append({ ...input, sourceId });
+    },
+    clearCondition(conversationId: string, kind: AttentionKind) { clearCondition.run(conversationId, kind); },
+    clearGoalConditions(conversationId: string, goalId: string) { clearGoalConditions.run(conversationId, goalId); },
+    resolveKind(conversationId: string, goalId: string, kind: AttentionKind, resolution: string, at: string) {
+      resolveKind.run({ conversationId, goalId, kind, resolution, at });
     },
     get(sequence: number) { return project(get.get(sequence)); },
     findSource(conversationId: string, kind: AttentionKind, sourceId: string) {

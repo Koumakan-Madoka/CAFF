@@ -15,7 +15,7 @@ const { createChatConversationRepository } = require('../storage/chat/conversati
 const { createChatWorkspaceOperationRepository } = require('../storage/chat/workspace-operation.repository');
 const { createGoalRulingRepository } = require('../storage/chat/goal-ruling.repository');
 const { createPlannerAttentionRepository } = require('../storage/chat/planner-attention.repository');
-const { syncPlannerProposalAttention } = require('../server/domain/conversation/planner-attention');
+const { syncPlannerAttention } = require('../server/domain/conversation/planner-attention');
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
@@ -988,8 +988,8 @@ export class ChatAppStore {
       this.goalRulingRepository = createGoalRulingRepository(this.db);
       this.goalRulingRepository.backfill();
       this.plannerAttentionRepository = createPlannerAttentionRepository(this.db);
-      this.reconcilePlannerAttention();
       this.participantRepository = createChatParticipantRepository(this.db);
+      this.reconcilePlannerAttention();
       this.messageRepository = createChatMessageRepository(this.db);
       this.messageDetailRepository = createChatMessageDetailRepository(this.db);
       this.turnTimeBreakdownRepository = createTurnTimeBreakdownRepository(this.db);
@@ -1129,12 +1129,19 @@ export class ChatAppStore {
           throw error;
         }
 
+        const affectedRooms = this.db.prepare(`SELECT c.id, c.metadata_json FROM chat_conversations c
+          JOIN chat_conversation_agents ca ON ca.conversation_id=c.id WHERE ca.agent_id=?`).all(agent.id);
         const historyCount = this.conversationAgentHistoryRepository.snapshotActiveRole(
           agent.id,
           retiredAt,
           reason
         );
         this.agentRepository.delete(agent.id);
+        for (const room of affectedRooms) {
+          const metadata = parseJson(room.metadata_json) || {};
+          syncPlannerAttention(this.plannerAttentionRepository, room.id, metadata, metadata,
+            { agents: this.listConversationAgents(room.id) });
+        }
 
         return {
           roleId: agent.id,
@@ -1175,7 +1182,8 @@ export class ChatAppStore {
           lastMessageAt: null,
         });
         this.replaceConversationParticipants(payload.id, payload.participants);
-        syncPlannerProposalAttention(this.plannerAttentionRepository, payload.id, {}, payload.metadata);
+        syncPlannerAttention(this.plannerAttentionRepository, payload.id, {}, payload.metadata,
+          { agents: this.listConversationAgents(payload.id) });
 
         return this.getConversation(payload.id);
       });
@@ -1185,12 +1193,11 @@ export class ChatAppStore {
         // metadata. An unchanged legacy snapshot must not freeze unrelated
         // updates; new ruling/archive or metadata failures still roll back.
         const previous = this.conversationRepository.get(conversationId);
+        const previousAgents = this.listConversationAgents(conversationId);
         this.goalRulingRepository.archiveTransition(conversationId, parseJson(previous?.metadata_json), updates.metadata);
         for (const ruling of options.goalRulings || []) {
           this.goalRulingRepository.append(conversationId, { sessionGoalRuling: ruling });
         }
-        syncPlannerProposalAttention(this.plannerAttentionRepository, conversationId,
-          parseJson(previous?.metadata_json), updates.metadata, options);
         if (updates.title !== undefined) {
           this.conversationRepository.update(conversationId, {
             title: updates.title,
@@ -1208,6 +1215,9 @@ export class ChatAppStore {
         if (Array.isArray(updates.participants)) {
           this.replaceConversationParticipants(conversationId, updates.participants);
         }
+        syncPlannerAttention(this.plannerAttentionRepository, conversationId,
+          parseJson(previous?.metadata_json), updates.metadata,
+          { ...options, previousAgents, agents: this.listConversationAgents(conversationId) });
 
         return messageProjection === 'none'
           ? this.getConversationWithoutMessages(conversationId)
@@ -3595,7 +3605,8 @@ export class ChatAppStore {
         if (rows.length === 0) break;
         for (const row of rows) {
           const metadata = parseJson(row.metadata_json) || {};
-          syncPlannerProposalAttention(this.plannerAttentionRepository, row.id, metadata, metadata);
+          syncPlannerAttention(this.plannerAttentionRepository, row.id, metadata, metadata,
+            { agents: this.listConversationAgents(row.id) });
         }
         after = rows[rows.length - 1].id;
       }
