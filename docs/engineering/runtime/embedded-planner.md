@@ -256,8 +256,9 @@ secrets. Use the same builder for version, interactive and headless launches.
 | Common inherited path values | PATH, HOME |
 | Windows inherited paths | SystemRoot, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, TMP |
 | POSIX inherited paths | XDG_STATE_HOME, TMPDIR |
+| Inherited network proxy configuration | HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY; http_proxy, https_proxy, all_proxy, no_proxy |
 | CAFF-generated fixed flags | DISABLE_AUTOUPDATER=1; CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT=1 |
-| PTY-generated terminal type | TERM=xterm-256color for interactive mode only, never inherited |
+| PTY-generated terminal capabilities | TERM=xterm-256color and COLORTERM=truecolor for interactive mode only, never inherited |
 | CAFF-generated instance/room | CAFF_BASE_URL (configured loopback authority and actual port), CAFF_ROOM_ID |
 | CAFF-generated credential **path** | CAFF_PLANNER_CREDENTIAL_FILE, only the resolved P1 provider path when available |
 
@@ -267,38 +268,62 @@ Host alias. The version probe has no room ID and need not receive the credential
 locator. Missing required path values produce a diagnostic, not a fallback to
 another user's configuration. On Windows, normalize inherited key spelling
 case-insensitively and emit one PATH/SystemRoot/etc. spelling; do not let duplicate
-case variants smuggle non-allowlisted entries. On POSIX use exact names.
+case variants smuggle non-allowlisted entries. On POSIX use exact names and
+preserve explicitly configured uppercase/lowercase proxy entries; do not guess
+which a CLI/library prefers. On Windows emit one uppercase name per proxy;
+if conflicting case variants are supplied, the exact uppercase spelling wins.
+Do not merge NO_PROXY lists or reconstruct proxy URLs.
+
+Proxy forwarding is required even when the user configures their network exit
+only in the system environment. Proxy URLs may contain username/password: this
+is the sole allowlisted inherited credential-bearing configuration, not a CAFF
+or provider credential. Never log their values, including malformed URLs or
+NO_PROXY contents; diagnostics expose only variable name/presence and replace
+any value with `[redacted-proxy]`. Apply redaction before errors, audit/UI output
+or subprocess diagnostics are retained, not just to a displayed URL's userinfo.
+Tests use synthetic proxy credentials and assert they never reach diagnostics.
 
 Do not inherit ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, provider base URLs or
 other provider keys; CAFF_CHAT_* invocation secrets; CAFF planner token values;
-PI_*, NODE_OPTIONS, shell startup variables, proxy configuration, arbitrary
-CLAUDE_CODE_* or nesting/session state. The repaint flag above is a deliberate
+PI_*, NODE_OPTIONS, shell startup variables, arbitrary CLAUDE_CODE_* (including
+preferences) or nesting/session state. The repaint flag above is a deliberate
 new constant, not an inherited Claude session variable. `CAFF_CLAUDE_CLI` is a
-parent launch option, not child configuration. No credential value in argv,
-env, append prompt, websocket auth acknowledgement, SQLite or diagnostics.
-The browser's CSRF token is never supplied to a CLI child.
+parent launch option, not child configuration. No CAFF/provider credential value
+in the CAFF-created env, argv, append prompt, websocket auth acknowledgement,
+SQLite or diagnostics; the proxy passthrough exception never authorizes logging
+proxy credentials. The browser's CSRF token is never supplied to a CLI child.
 
 Claude Code uses the user's subscription/configuration through retained home
-paths. The whitelist prevents inherited provider-key billing; it does **not**
-sanitize user-owned settings, hooks, MCP configuration or local account access.
-If the CLI is configured for a provider elsewhere, CAFF must not claim it has
-proved subscription billing. Never read/print login files to diagnose this.
+paths. User-specific environment configuration for provider, gateway, model and
+preferences must go in the `env` object of the user's `~/.claude/settings.json`
+to affect CAFF-hosted sessions; system environment values outside the allowlist
+(including CLAUDE_CODE_* preferences) are not inherited. Claude Code applies its
+own settings after launch; CAFF neither copies these values nor reads/rewrites
+the settings file. The allowlist governs CAFF's initial child environment, not
+subsequent user-owned CLI settings, hooks, MCP configuration or local account
+access. It prevents inherited provider-key billing, but does **not** prove
+subscription billing if the CLI's settings select another provider. Never
+read/print login files or settings contents to diagnose this.
 
 The caff CLI reads the P1 credential file and makes authenticated bearer
 requests, always declaring planner intent. P1 rotates its token on server start.
 On 401 the client may re-read its configured file; it cannot retry as browser/user.
 Goal revision/proposal conflicts require re-reading and inspection, not blind
-replay. UI HTTP calls use CSRF/user authentication, not the planner credential.
+replay. The adapter must bypass proxies for its fixed loopback CAFF requests,
+so a planner bearer never reaches the user's network-exit proxy. UI HTTP calls
+use CSRF/user authentication, not the planner credential.
 
-**Existing-code prerequisite:** P1 ships the HTTP interface, not a repository
+**Planner-confirmed prerequisite:** P1 ships the HTTP interface, not a repository
 `caff` planner CLI (and package.json has no such bin). `agent-chat-tools` is an
-implementer invocation client, not a substitute. M1 recommends a minimal
-repository-owned P1 CLI adapter as an M4 prerequisite, with fixed instance/room,
-credential-file authentication, bounded reads and existing Goal/proposal/message
-operations only. Its concrete executable/argument prefix must be recorded in
-the tool-policy verification (§10) before wake-ups can be enabled. This is an
-explicit review question, not a claim that an external helper already exists
-or authorization to grow a general-purpose shell/REST proxy.
+implementer invocation client, not a substitute. M4 first implements the minimal
+repository-owned P1 CLI adapter, bound to the current instance and CAFF_ROOM_ID;
+all other rooms are rejected, and authentication uses only the credential file.
+Its commands are limited to state/full-Goal reads, attention reads, Goal rulings
+and actions with P1 preconditions, messages to the current owner, and wakeup
+finish. All commands use the argument-only transport in §6–§7. Its exact trusted
+invocation prefix is recorded in §10's M4 verification evidence and reviewed as
+the ADR 0003 caff CLI. No general REST/shell proxy, caller-selected URL/room,
+credential argument or expansion of Goal structure is authorized.
 
 ## 5. Terminal WebSocket protocol v1
 
@@ -380,7 +405,12 @@ Bound per-socket outbound buffering to 1 MiB. Disconnect a slow consumer rather
 than accumulate an unbounded transcript or block all rooms; the PTY becomes
 retained. Do not keep a replay ring, scrape Claude transcript files or resend old
 output. Reconnect authenticates afresh, reattaches the existing PTY if present,
-then forwards **future output only**. Resize may request normal CLI repaint;
+then forwards **future output only**. After reattaching a retained PTY, the
+host must actively request one normal CLI repaint by calling resize with the
+new client's validated current dimensions, even when they equal the old size;
+register the output listener first so the new repaint output reaches the pane.
+If the platform's same-size resize is a no-op, verify a safe resize-only repaint
+mechanism in the platform check; never substitute replay or injected keystrokes.
 `--resume` continues the CLI's own session when a new process is needed, not a
 CAFF history-replay mechanism. UI explicitly labels this limitation.
 
@@ -471,11 +501,21 @@ Wake-up command shape (candidate flag spelling must be checked under §10):
       --disallowedTools <edit/write/PowerShell/other unsafe tools>
 ```
 
-Deliver the bounded wake-up prompt on stdin, then EOF, rather than in shell
-text. Use pipes, not a PTY. Do not pass `--dangerously-skip-permissions`, enable
-new MCP servers, enable all Bash, or inherit tools from the interactive pane.
-`--max-turns` is fixed at 12 initially. Also bound wall runtime to 10 minutes;
-turn limits alone do not stop a hanging tool. Apply §3 tree termination.
+The **CAFF host** writes the bounded wake-up prompt to its child's stdin pipe,
+then EOF; this is process I/O, not a model shell command. Use pipes, not a PTY.
+Do not pass `--dangerously-skip-permissions`, enable new MCP servers, enable all
+Bash, or inherit tools from the interactive pane. `--max-turns` is fixed at 12
+initially. Also bound wall runtime to 10 minutes; turn limits alone do not stop
+a hanging tool. Apply §3 tree termination.
+
+Every **model-invoked adapter command** is argument-only: one invocation of the
+fixed caff prefix and enumerated subcommand, with scalar flags and, when data is
+needed, one `--json` argument under §7's quoting/size rules. This applies to
+Goal actions/rulings, owner messages and finish as well as reads. No command
+requires stdin, a file, pipe, redirection, heredoc, command substitution, shell
+variable expansion or a multiline command. The adapter never evaluates payload
+text as shell code. Commands/body options outside this closed interface fail
+before any HTTP call.
 
 The allowed capability set is caff CLI plus Claude Code's `Read`, `Glob`, `Grep`.
 The only allowed shell invocation is the exact trusted caff adapter entry and
@@ -527,10 +567,12 @@ blocking condition just to silence it. On 409 reread and inspect, not blind retr
 Do not edit/commit files. Do not run a second planner/session or call the agent
 chat bridge. Do not wait/poll indefinitely or recursively schedule yourself.
 
-Before exiting, submit the bounded wake-up outcome via the caff completion
-operation scoped to this attempt and room: handled / needs_user / no_action
-for each occurrence, with a short reason; then end. CAFF verifies resolution
-against current durable state. Plain final prose is not an accepted verdict.
+Before exiting, submit the bounded wake-up outcome via one argument-only caff
+wakeup finish call: --attempt <id> --json <the single quoted compact JSON array
+defined below>. Include handled / needs_user / no_action and a short reason for
+every included occurrence. Do not use stdin, files or shell operators; then end.
+CAFF verifies resolution against current durable state. Plain final prose is
+not an accepted verdict.
 ```
 
 Include only P1 bounded monitoring projections plus at most 100 attention items
@@ -540,14 +582,57 @@ a complete Goal/proposal via an explicit read when needed, not by copying all
 messages/evidence into each prompt. `busy` and last-turn status are advisory,
 not a new Goal Runner scheduling rule. No cross-room portfolio auto-injection.
 
-The minimal caff adapter needs a P2 completion command (proposed semantic shape:
-`wakeup finish --attempt <id>` with JSON on stdin). It authenticates as planner,
-never takes a token on the command line, and can finish only the matching active
-attempt/room and included sequences. Server validates an array of
-`{ sequence, disposition: 'handled' | 'needs_user' | 'no_action', reason }`;
-reason is nonblank and at most 500 code points. Identical completion retries
-return the stored result; conflicting rewrites or another room's IDs fail.
-This is a wake-up receipt, **not** P3's review-request/verdict protocol.
+### Argument-only payload and completion contract
+
+Command suffix (the trusted, installation-specific caff prefix precedes this;
+`<id>` is the supplied attempt UUID, not literal shell redirection):
+
+```text
+wakeup finish --attempt <id> --json '[{"sequence":42,"disposition":"needs_user","reason":"User approval\u003b no action"}]'
+```
+
+All adapter commands accept their complete input as arguments; a read may need
+no payload, while actions, messages and finish use one `--json` value. Never
+require `--content-stdin`, a temp file or an auxiliary shell command. For the
+Claude Code **Bash** tool on both Windows and POSIX, use one single-quoted,
+compact ASCII-only JSON argument on one physical line. Inside JSON strings,
+encode apostrophe as `\u0027`; encode shell metacharacters (`$`, backtick, `;`,
+`&`, pipe, `<`, `>`, parentheses), controls/newlines and non-ASCII characters as
+JSON `\uXXXX` escapes (surrogate pairs for non-BMP characters). Double quotes
+and backslashes use JSON escapes. Thus payload data never closes the outer
+single quotes or creates executable shell syntax. Do not use double-quoted
+shell payloads, alternate shell quoting/evaluation or additional decoding as
+code. For example the `\u003b` above decodes to a literal semicolon in a reason,
+not a second command. This convention does not enable cmd or PowerShell.
+
+The encoded JSON argument is at most **16 KiB** UTF-8; for finish, its final
+`{ items: [...] }` HTTP body must also fit that budget (account for the wrapper
+before sending). The complete invocation, including the fixed executable/script
+prefix and quoting, is at most **24,576 UTF-16 code units** so it fits Windows
+process launch limits as well as POSIX.
+Use concise reasons; batch selection must leave room for a short receipt for
+every included sequence (at most 100). Reject an oversized payload before HTTP;
+never silently truncate IDs, drop receipt entries or fall back to stdin/files.
+No tokens, proxy URLs or credential values belong in these arguments or reasons.
+
+The CLI parses JSON once as data, rejecting duplicate JSON keys, unknown keys,
+invalid Unicode, NUL, unsupported/duplicate flags and noncanonical payload
+encoding. Finish accepts only an array with exactly one record per included
+sequence: `{ sequence, disposition: 'handled' | 'needs_user' | 'no_action', reason }`.
+Sequence is a positive safe integer; reason is nonblank, single-line, contains
+no controls and is at most 500 code points after JSON decoding. The CLI maps
+this array to the HTTP body `{ items: [...] }`; no arbitrary request path,
+method, URL, room or authentication override is accepted. Other subcommands
+also have closed per-command schemas and the same encoded/launch limits.
+
+The server independently enforces the 16 KiB serialized-body limit and strict
+body/item schema, lengths and unique sequences, P1 planner authentication,
+room/attempt ownership, matching current active attempt and complete included
+membership. A decoded reason is stored/rendered as text only, never evaluated
+or used to select tools/routes. Unknown/missing/extra items fail atomically;
+another room's attempt is not accessible. Identical completion retries return
+the stored result; conflicting rewrites fail. This is a wake-up receipt,
+**not** P3's review-request/verdict protocol.
 
 For `handled`, confirm the P1 occurrence is resolved; otherwise store
 `unresolved` and keep it visible without auto-retrying. `needs_user` persists
@@ -612,7 +697,7 @@ Proposed room-scoped routes (names are P2 additions, not changes to P1 reads):
 | `PUT /wakeups` | strict `{ enabled: boolean }`; browser confirmation + ordinary P1 mutation guards; disabling stops future admission, not an already committed attempt or live PTY |
 | `GET /wakeups?before=<sequence>&limit=20` | newest-first summaries, limit 1–100; `{ items, nextBefore, hasMore }`; exclusive cursor; no transcript bodies or full Goals |
 | `GET /wakeups/:attemptId?afterChunk=0&limit=50` | exact room match; summary + paged retained chunks, limit 1–100, original chunk IDs, next cursor/hasMore/truncated/expired markers; response <=128 KiB UTF-8 |
-| `POST /wakeups/:attemptId/finish` | planner-only completion from §7; current active attempt and included occurrences only, strict body, no new authority over Goal |
+| `POST /wakeups/:attemptId/finish` | planner-only completion from §7; strict `{ items: [...] }` body <=16 KiB, complete unique included membership, matching active attempt/room; no new authority over Goal |
 
 Validate cursors as safe nonnegative integers; list `before` must be positive
 when supplied. Invalid filters/body return 400; missing/other-room attempt is
@@ -701,6 +786,16 @@ user configuration. Reuse P1's approved isolated ACL fixture only where actual
 Windows protected-file behavior is required; do not change shared ancestor
 ACLs. Clocks, admission, process and termination adapters are injectable.
 
+Review-fix regression coverage must include argument-only action/message/finish
+encoding and size limits, duplicate keys/flags/items and unknown/other-room
+inputs rejected before writes; quoted shell metacharacters decode only to text.
+Fake environment tests cover all eight proxy spellings, POSIX preservation,
+Windows case collisions, system-env-only proxy configuration, authenticated and
+malformed synthetic proxy URLs redacted in diagnostics, and the adapter's direct
+loopback connection. Reattach tests require resize/repaint after subscribing to
+output, including unchanged dimensions; PTY env tests assert generated
+COLORTERM=truecolor. These tests do not replace the real CLI tool-policy gate.
+
 ### Automated and UI evidence by milestone
 
 | Milestone | Required evidence |
@@ -730,7 +825,7 @@ instance; the implementer supplies fake-CLI automation and sanitized commands.
 | ADR premise | How to verify / evidence and gate |
 | --- | --- |
 | Required CLI flags on supported minimum | Planner inspects official 2.1.310 help/docs and records version/OS/architecture plus exact flags: --session-id, --resume in TUI and -p, --append-system-prompt, --output-format stream-json, --max-turns, --allowedTools/--disallowedTools and any required --tools/--verbose dependency. In isolated home/session, create once, exit/resume interactively, then print-mode resume; confirm same transcript/session, prompt and cwd without exposing login state. Fake argv tests prove host construction only. Missing/incompatible flags block the affected path; no guessed flag fallback. |
-| Can allowedTools mean caff-only shell? | Planner runs the actual minimal adapter and the exact combined tool policy on minimum CLI, Windows and Linux. Positive: current-room bounded read and permitted planner write via credential file. Negative: PowerShell, edits, other shell executables, node -e, path/quoting aliases, argument escape/raw-HTTP options, `;`, `&&`, pipes, redirects, substitutions and multiline commands, MCP/subagents. Use isolated sentinel files/fixtures and assert denied operations caused no effects. Save sanitized argv, requested tools and denials, not credential contents. If an unsafe command is permitted or an undocumented wildcard is required, disable wake-ups and pause before delivery. |
+| Can allowedTools mean caff-only shell? | Planner runs the actual minimal adapter and exact combined tool policy on minimum CLI, Windows and Linux; record the complete fixed invocation prefix. Positive: current-room read, permitted planner action/message and an argument-only `wakeup finish` that actually submits its receipt. Include a finish reason containing shell metacharacters/apostrophes encoded per §7; assert the decoded reason is preserved as text, receipt succeeds and no extra process/file/shell side effect occurs. Negative: malformed/noncanonical quoting, unescaped payload delimiters, oversized JSON, duplicate keys/items, wrong room/attempt, PowerShell, edits, other executables, node -e, path aliases, argument escape/raw-HTTP options, executable `;`/`&&`, pipes, redirects, substitutions, heredocs, multiline commands, MCP/subagents. Assert denial/validation causes no unauthorized effects; payload text is not exempt from testing because it is quoted. Save sanitized argv and outcomes, not credentials. If safe finish is denied or unsafe syntax is permitted, disable wake-ups and pause; fake argv tests do not prove enforcement. |
 | Approval-required tool denied in -p | Planner configures an isolated tool needing approval, with the real restrictive print invocation; verify it is denied/exits boundedly without hanging and without executing the sentinel side effect. No permission prompt auto-answer or bypass flag. Record exit and outcome; fake CLI tests separately cover denial/timeout classification. |
 | node-pty prebuild/compilation | On each supported developer tuple, independent npm ci and fake-CLI PTY smoke; record Node, OS, architecture, node-pty 1.1.0 and prebuild-vs-build result. Windows baseline claims prebuild only for tuples actually tested. Linux CI fresh install with compiler, PTY echo/resize/exit/tree cleanup tests, full checks and CI link pinned to candidate SHA. A missing compiler/prebuild is a failed prerequisite, not a skipped test. |
 | ConPTY full repaint | Planner/user uses real Edge pane on supported Windows builds with CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT=1: stream output, scroll, drag-resize, narrow overlay, detach/reconnect and resume. Check stale fragments/blank frames against expected screen and capture bounded sanitized video/screenshots. Fake PTY tests assert flag/env and resize flow, but cannot establish visual repaint. Record Windows/Node/CLI/terminal-library versions. |
@@ -742,19 +837,22 @@ the evidence rather than silently changing the delegated/safety boundary.
 
 ## 11. M1 review decisions and document synchronization
 
-Requested decisions in the M1 review:
+The planner accepted all four design recommendations in the M1 review of
+`6e109bc` (2026-10-26), while blocking the contract pending B1/R1 fixes; this is
+not an M1 PASS or authorization to enter M2:
 
-1. Accept the bounded wake-up prompt/completion draft (§7), including needs-user
-   suppression without P1 acknowledgement or Goal writes.
-2. Accept SQLite with bounded/redacted transcripts retained 30 days, durable
-   summaries/claims, cursor paging and the explicit truncation policy (§8),
-   rather than raw files or unbounded room metadata.
-3. Confirm the minimal P1 planner CLI adapter prerequisite (§4), since the
-   assumed repository entry does not exist; no implementation expansion before
-   that confirmation. Its exact safe Bash policy remains an M4 real-CLI gate.
-4. Confirm explicit details: reject a second terminal client; suppress wake-ups
-   for retained PTYs too; require one interactive initialization; no historical
-   output/input replay; fail closed on ambiguous session/process ownership.
+1. Bounded wake-up prompt/completion (§7), with needs-user suppression without
+   P1 acknowledgement or Goal writes; completion must be argument-only (B1).
+2. SQLite with bounded/redacted transcript bodies retained 30 days, durable
+   summaries/quota/claims, cursor paging and the stated truncation policy (§8).
+3. M4 first supplies the minimal, current-instance/current-room P1 CLI adapter
+   within the confirmed command scope (§4). The exact prefix/tool policy remains
+   a real-CLI verification gate, reviewed with M4; Goal structure is unchanged.
+4. Reject a second terminal client; suppress wake-ups for retained PTYs; require
+   interactive initialization; no historical input/output replay; fail closed
+   on ambiguous process/session ownership. N1's mandatory reattach repaint and
+   N2's generated truecolor hint are adopted. N3 leaves the Goal objective's
+   “four kinds” text unchanged pending a separately authorized user decision.
 
 M5 updates affected implemented contracts and indexes: backend
 `planner-interface.md` (embedded transport, adapter, P3 review-protocol pointer;
