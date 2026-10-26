@@ -2,6 +2,8 @@
 (function registerPlannerTerminalPane() {
   const chat = window.CaffChat || (window.CaffChat = {});
   const explanations = {
+    planner_process_exited: 'Claude Code 已退出。需要时手动连接即可继续同一会话；不会自动重启。',
+    planner_process_stopped: 'Claude Code 已停止。会话 UUID 保留，需要时手动连接即可继续；不会自动重启。',
     planner_process_exit_unconfirmed: '旧进程是否退出尚未确认。请先自行核实所有旧会话进程均已停止，再修复遗留租约。修复不会终止进程，也不会更换 UUID。',
     planner_session_unavailable: '会话可能不可用：可能尚未保存过消息，或会话记录已不存在。可确认后保留 UUID 重新初始化；如果会话其实还在，CLI 会拒绝一次，再打开即可恢复。元数据损坏则需要用户检查配置，不会自动重置。',
     planner_terminal_in_use: '另一个页面正在使用这个终端。请先关闭该页面的终端，再手动重连。',
@@ -59,7 +61,7 @@
     }
     const client = clientFactory({ screen, onState: setStatus,
       onReady(message) { lastCode = ''; notice(message.resumed ? '已续接同一会话；仅显示后续输出，不回放历史。' : '正在初始化同一房间会话；若目录可信，请自行选择 Yes, I trust this folder（默认可能为 No, exit）。CAFF 不会自动确认。'); controls(); },
-      onExit(message) { setStatus('exited', message.reasonCode === 'planner_session_unavailable' ? message.reasonCode : ''); },
+      onExit(message) { setStatus('exited', message.reasonCode || 'planner_process_exited'); },
       onAttention(message) { if (Number.isSafeInteger(message.unresolvedCount)) notice(`有 ${message.unresolvedCount} 条待处理事项，请读取当前状态；不会注入终端输入。`); },
       focusToolbar() { button('close').focus(); } });
     function widthLimit() {

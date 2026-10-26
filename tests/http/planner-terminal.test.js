@@ -46,6 +46,28 @@ test('authenticated terminal has ready before live output, owns input/resize, re
   const exit = once(ws2, 'close'); ws2.send(JSON.stringify({ type: 'terminate' })); await exit;
 });
 
+test('resumed WS terminate reports intentional stop, while a missing saved session still reports unavailability', async t => {
+  const f = await fixture(t, { authTimeoutMs: 5000, cliFixture: path.join(__dirname, '../fixtures/fake-planner-session-cli.cjs') });
+  async function start() {
+    const ws = f.connect(), events = [];
+    ws.on('message', data => events.push(JSON.parse(data)));
+    await once(ws, 'open'); ws.send(JSON.stringify(f.auth));
+    return { ws, events, wait: async predicate => { while (!events.some(predicate)) await once(ws, 'message'); return events.find(predicate); } };
+  }
+  const first = await start(); await first.wait(e => e.type === 'output' && e.data.includes('FAKE_SESSION_READY'));
+  first.ws.send(JSON.stringify({ type: 'input', data: 'save\r' }));
+  await first.wait(e => e.type === 'output' && e.data.includes('FAKE_SESSION_SAVED'));
+  const firstClosed = once(first.ws, 'close'); first.ws.send(JSON.stringify({ type: 'input', data: '/exit\r' }));
+  await firstClosed; assert.equal(first.events.find(e => e.type === 'exit').reasonCode, 'planner_process_exited');
+  const resumed = await start(); await resumed.wait(e => e.type === 'output' && e.data.includes('FAKE_SESSION_READY'));
+  assert.equal(resumed.events[0].resumed, true);
+  const stopped = once(resumed.ws, 'close'); resumed.ws.send(JSON.stringify({ type: 'terminate' })); await stopped;
+  assert.equal(resumed.events.find(e => e.type === 'exit').reasonCode, 'planner_process_stopped');
+  fs.unlinkSync(path.join(f.root, 'fake-saved-session.json'));
+  const missing = await start(); const missingClosed = once(missing.ws, 'close'); await missingClosed;
+  assert.equal(missing.events.find(e => e.type === 'exit').reasonCode, 'planner_session_unavailable');
+});
+
 test('post-auth unknown messages and invalid input cause no PTY input', async t => {
   const f = await fixture(t, { authTimeoutMs: 5000 });
   for (const message of [{ type: 'input', data: 'x'.repeat(16385) }, { type: 'resize', cols: 501, rows: 30 }, { type: 'auth', ...f.auth }, { type: 'input', data: 'bad', cwd: 'evil' }]) {

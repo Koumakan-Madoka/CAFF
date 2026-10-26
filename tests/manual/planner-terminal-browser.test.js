@@ -18,7 +18,7 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     const { fixture } = require('../helpers/planner-terminal');
     const { EmbeddedPlannerRepository } = require('../../build/storage/chat/embedded-planner.repository');
     let browser;
-    const results = [], errors = [], external = [], frames = [], writes = [], versions = {};
+    const results = [], errors = [], external = [], frames = [], writes = [], versions = {}, palettes = [];
     // Close Edge before fixture teardown, so upgraded sockets release normally.
     t.after(async () => { if (browser) await browser.close(); fs.rmSync(home, { recursive: true, force: true }); });
     const f = await fixture(t, { authTimeoutMs: 5000, cliFixture: path.join(__dirname, '../fixtures/fake-planner-session-cli.cjs') });
@@ -26,7 +26,7 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     const repository = new EmbeddedPlannerRepository(f.app.store);
     assert.ok(![3100,3200].includes(f.port) && ![3100,3200].includes(off.port));
     t.after(() => {
-      fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ results, errors, external, frames, writes, versions,
+      fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ results, errors, external, frames, writes, versions, palettes,
         runtimeDeleted: !fs.existsSync(f.root), offRuntimeDeleted: !fs.existsSync(off.root), homeDeleted: !fs.existsSync(home) }, null, 2));
       console.info('Sanitized terminal browser evidence: ' + output);
     });
@@ -78,6 +78,26 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     const selector = id => '#planner-terminal-' + id;
     const visible = id => page.locator(selector(id)).isVisible();
     const waitText = text => page.waitForFunction(text => document.querySelector('#planner-terminal-screen').textContent.includes(text), text);
+    async function checkPalette(name) {
+      const palette = await page.locator(selector('screen')).evaluate(el => {
+        const viewport = el.querySelector('.xterm-viewport'), terminal = el.querySelector('.xterm'), cells = el.querySelector('.xterm-screen');
+        return { caffTheme: document.documentElement.dataset.theme, screen: getComputedStyle(el).backgroundColor,
+          terminal: getComputedStyle(terminal).backgroundColor, viewport: getComputedStyle(viewport).backgroundColor,
+          unusedHeight: viewport.getBoundingClientRect().height - cells.getBoundingClientRect().height };
+      });
+      palettes.push({ name, ...palette }); console.info('PALETTE | ' + JSON.stringify(palettes.at(-1)));
+      assert.equal(palette.screen, 'rgb(17, 19, 18)');
+      assert.equal(palette.terminal, palette.screen); assert.equal(palette.viewport, palette.screen);
+    }
+    async function checkNeutralExit(stopped) {
+      const notice = await page.locator(selector('notice')).textContent();
+      assert.match(notice, stopped ? /Claude Code 已停止/ : /Claude Code 已退出/);
+      assert.match(notice, /手动连接/); assert.doesNotMatch(notice, /可能不可用|暂不可用|检查本机配置/);
+      assert.equal(await visible('repair'), false); assert.equal(await visible('reinitialize'), false);
+      const count = await page.evaluate(() => window.__terminalSockets.length);
+      await page.waitForTimeout(100); assert.equal(await page.evaluate(() => window.__terminalSockets.length), count);
+      await page.screenshot({ path: path.join(output, stopped ? 'terminal-light-stopped.png' : 'terminal-light-exited.png') });
+    }
     async function selectRoom(id) {
       if (await page.locator('#sidebar').getAttribute('aria-hidden') === 'true') await page.click('#sidebarToggle');
       await page.click(`.conversation-item[data-id="${id}"]`);
@@ -89,6 +109,7 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
       const response = await context.request.get(f.base + '/vendor/planner-terminal/' + asset);
       assert.equal(response.status(), 200); assert.ok(response.headers()['content-type'].includes(mime));
     }
+    await page.evaluate(() => window.CaffTheme.setTheme('light'));
     await page.click(selector('toggle')); await waitText('FAKE_SESSION_READY');
     assert.equal(await page.locator('.main').evaluate(el => el.inert), false);
     assert.equal(await page.locator(selector('pane')).getAttribute('aria-modal'), null);
@@ -108,8 +129,10 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     await page.locator(selector('resize')).focus(); await page.keyboard.press('ArrowRight');
     assert.ok(frames.some(x => x.type === 'resize' && x.cols >= 20 && x.rows >= 5));
     assert.ok(await page.locator('.main').evaluate(el => el.getBoundingClientRect().width >= 379));
+    await page.locator('.xterm-helper-textarea').focus(); await page.keyboard.type('palette'); await page.keyboard.press('Enter'); await waitText('PALETTE_DONE');
     await page.screenshot({ path: path.join(output, 'terminal-light-desktop.png') });
-    pass('pointer and keyboard separator sizing preserve chat space and send PTY dimensions');
+    await checkPalette('light after resize, with dark-oriented synthetic ANSI path/trust text');
+    pass('pointer and keyboard sizing send PTY dimensions; light CAFF retains readable dark terminal and no black viewport strip');
 
     await page.locator('.xterm').evaluate(el => { el.dataset.previousTerminalView = 'old'; });
     await page.click(selector('close')); assert.equal(await visible('pane'), false);
@@ -137,7 +160,15 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     await selectRoom(f.room.id); await page.click(selector('toggle')); await page.waitForFunction(() => document.querySelector('#planner-terminal-status').textContent === '已连接');
     pass('second page rejected without output; room switch disposes old view and does not launch next room');
 
+    // Launch a new process with --resume before Stop, not just reattach a retained first launch.
+    await page.locator('.xterm-helper-textarea').focus(); await page.keyboard.type('/exit'); await page.keyboard.press('Enter');
+    await page.waitForFunction(() => document.querySelector('#planner-terminal-status').textContent === '已退出');
+    await checkNeutralExit(false);
+    await page.click(selector('reconnect')); await waitText('FAKE_SESSION_READY');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, 'fake-launch.json'))).argv[0], '--resume');
     await page.click(selector('stop')); await page.waitForFunction(() => document.querySelector('#planner-terminal-status').textContent === '已退出');
+    await checkNeutralExit(true); await checkPalette('light after resumed Stop');
+    pass('normal /exit and explicit resumed Stop give neutral guidance, hide recovery controls and never auto-restart');
     fs.unlinkSync(path.join(f.root, 'fake-saved-session.json'));
     await page.click(selector('reconnect')); await page.waitForSelector(selector('reinitialize') + ':not([hidden])');
     assert.match(await page.locator(selector('notice')).textContent(), /可能不可用/);
@@ -162,6 +193,7 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     await page.evaluate(() => window.CaffTheme.setTheme('dark'));
     await page.waitForFunction(() => getComputedStyle(document.querySelector('#planner-terminal-close')).backgroundColor === 'rgb(30, 33, 31)');
     await page.screenshot({ path: path.join(output, 'terminal-dark-desktop.png') });
+    await checkPalette('dark live switch');
     await page.focus('#refresh-button'); // Desktop chat focus is valid until overlay entry.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForFunction(() => document.querySelector('.main').inert && document.querySelector('#planner-terminal-pane').getAttribute('aria-modal') === 'true');

@@ -229,6 +229,13 @@ Closing/hiding the pane, navigation and network loss detach, not kill. Start a
 terminate that PTY tree. Connected PTYs have no 30-minute process lifetime limit.
 An explicit authenticated `terminate` command stops only the room's process;
 it is distinct from pane close and does not restart CAFF or clear the session.
+Before invoking the stop adapter, record explicit CAFF stop intent. On observed
+exit, user terminate, retention expiry and server shutdown all classify as
+`planner_process_stopped`, regardless of exit code (including Windows
+0xC000013A). A `stopping` state alone is not intent: uncertain exit observation
+also enters that state. Do not turn an intentional stop into a session-recovery
+warning. Detached/closed sockets receive no exit event; their processes still
+use the same stop path.
 
 Do not evict another room to satisfy the global cap. Interactive requests get
 `planner_process_limit`; eligible wake-ups remain durably pending and retry on
@@ -294,12 +301,20 @@ Node 24.13.1 in disposable directories during M2 review (2026-10-26):
    changing that record. A subsequent `--resume` succeeds.
 6. Normal exit from a resumed conversation (`/exit` or two Ctrl+C presses)
    returns code 0.
+7. M3 planner review additionally observed that trust inherits from a trusted
+   ancestor: the user's home was trusted, so descendants (including system
+   Temp) did not show the dialog. A worktree outside that trusted ancestor did.
+   For M5 use an isolated worktree outside trusted ancestors when verifying
+   trust prompts, rather than assuming a new directory is untrusted.
 
 These are version-dependent planner observations, not implementer real-CLI
-checks or guarantees for future versions. Recheck all six after CLI upgrades.
-A nonzero resumed exit is only a **heuristic** for `planner_session_unavailable`;
-it is not proof that a record is missing. Never scrape transcripts, generate a
-replacement UUID, or automatically retry with `--session-id` based on that code.
+checks or guarantees for future versions. Recheck them after CLI upgrades.
+Only a **non-CAFF-initiated**, nonzero resumed exit is a **heuristic** for
+`planner_session_unavailable`; it is not proof that a record is missing.
+CAFF-initiated stops instead report `planner_process_stopped` regardless of
+exit code; normal zero-code exits report `planner_process_exited`. Never scrape
+transcripts, generate a replacement UUID, or automatically retry with
+`--session-id` based on that code.
 
 The browser user may explicitly confirm `POST /terminal/session/reinitialize`
 (§8). After the bounded body is read, synchronously reject any in-memory room
@@ -818,6 +833,14 @@ widths use a full-width overlay with an explicit close button, correct focus
 return and no interaction through a covered background. Preserve existing
 AppShell focus/inert and scroll-owner rules; do not turn desktop chat inert.
 All controls retain 44px targets, visible focus and light/dark contrast.
+The terminal itself defaults to the same dark palette in both CAFF themes
+(background `#111312`, foreground/cursor `#f0f1ed`, readable ANSI bright-black
+gray `#9a9a9a`), so the default CLI's ANSI path and trust-selection colors remain
+readable. Toolbar, frame and guidance
+still follow CAFF's theme. CAFF neither reads nor modifies the CLI's theme
+settings; no terminal-palette preference or switch is added in M3. The screen,
+xterm root and viewport share the terminal background, including the fractional
+unused row below the cell grid; do not expose xterm CSS's default black strip.
 
 Copy xterm JS/CSS and addon-fit assets from pinned packages into build static
 assets at build time, preserving licenses; no CDN, runtime download or new
@@ -834,6 +857,11 @@ warning, pending/needs-user indicators, and paginated wake-up records. Closing
 is detach; stopping the process is a separately labelled explicit confirmation.
 Do not imply a resumed terminal has a replay buffer. A backend-declared disabled
 capability cannot be re-enabled from browser local storage.
+Normal exit (`planner_process_exited`) and explicit CAFF stop
+(`planner_process_stopped`) show neutral exited/stopped guidance: same UUID,
+manual connection when needed, no automatic restart. Neither offers lease repair
+or session reinitialization; an unknown failure code retains the fixed generic
+failure explanation. Subsequent socket close must not erase the exit guidance.
 
 M3 must show a **Reinitialize session** confirmation control when the pane's
 last exit carries `planner_session_unavailable`. Say **the session may be
@@ -887,6 +915,8 @@ by the existing P1 protected-path diagnostic, not broadcast to the browser.
 | `planner_terminal_in_use`, `planner_room_busy`, `planner_process_limit` | Keep existing owner/process; explicitly reconnect later |
 | `planner_terminal_auth_invalid`, `planner_terminal_auth_timeout` | Generic policy close; refresh bootstrap for a new explicit connection |
 | `planner_terminal_message_invalid`, `planner_terminal_message_too_large` | Fix schema/chunking; zero unvalidated PTY writes |
+| `planner_process_exited` | Neutral normal-exit guidance; manual connection to the same session, no automatic restart or recovery buttons |
+| `planner_process_stopped` | Neutral CAFF-initiated stop (terminate/retention/shutdown), independent of exit code; same UUID, no automatic restart or recovery buttons |
 | `planner_process_spawn_failed`, `planner_process_exit_unconfirmed` | Release only on proven failure/exit; otherwise quarantine room/slot |
 | `planner_wakeup_credential_unavailable`, `planner_wakeup_tools_unverified`, `session_uninitialized` | Wake-ups unavailable/deferred with visible reason; no user-principal or broader-tool fallback |
 | `planner_wakeup_rate_limited`, `planner_wakeup_timeout`, `planner_wakeup_stream_invalid` | Preserve record/pending state; no recursive retry |
@@ -946,7 +976,7 @@ M4 must test missing-record print-mode classification and no unattended retry.
 | M1 contract | Clean bound branch/ADR ancestry, independent npm ci, contract cross-check/link check, full existing checks; planner PASS before implementation |
 | M2 host + WS | Red tests before code; first/resume UUID, ambiguous launch failure, cwd/binding/unbound policy, version floor/probe failures, environment secret sentinels (including Windows case variants), retention/reconnect/descendant cleanup; every concurrent PTY/headless/second-page race and cap; shutdown and parent-death uncertainty |
 | M2 security | Wrong/duplicate Host/Origin, missing/null/cross-alias Origin, disabled/wildcard/non-loopback, wrong peer, auth timeout/wrong/stale token/binary/unknown schema, fragments/maxPayload, no pre-auth output/spawn/metadata; invalid input/resize, post-auth second auth, heartbeat/application idle/backpressure, upgrade shutdown |
-| M3 pane | DOM/controller and real Edge fake-CLI checks: input/output, drag + keyboard sizing, resize, close/detach, future-output-only reconnect, switching rooms, narrow overlay/focus, disabled entry, no clipboard/URL side effects |
+| M3 pane | DOM/controller and real Edge fake-CLI checks: input/output, drag + keyboard sizing, resize, close/detach, future-output-only reconnect, switching rooms, narrow overlay/focus, disabled entry, no clipboard/URL side effects; neutral normal-exit/resumed-Stop guidance without recovery controls, CAFF stop vs unsolicited nonzero exit, fixed dark terminal in both CAFF themes and matching viewport background; light-theme ANSI path/trust sample and exit/stop screenshots |
 | M4 scheduler/store | Five positive triggers; goal_completed/unknown/null/retired/unbound/DAG/opt-out negatives; retained and attached terminal suppression, quota boundary/restart/clock rollback, coalescing and >100-item batches, catch-up once, transaction/spawn fault injection, needs-user no Goal write/re-wake, stale Goal/proposal conflicts, exact CLI tool argv, stream failures/truncation/redaction/paging/retention and no secret values |
 | M5 compatibility | Feature-off parity, P1 planner attribution/client credentials and user-only gates, no Goal Runner/DAG/delivery changes; final docs match code; isolated real-CLI checks and Linux CI |
 

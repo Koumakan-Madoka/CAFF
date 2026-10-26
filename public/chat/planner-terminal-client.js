@@ -11,13 +11,13 @@
     const ResizeObserverCtor = options.ResizeObserverCtor || window.ResizeObserver;
     const encoder = new TextEncoder();
     let generation = 0, attached = false, readable = false, outputBytes = 0;
-    let socket = null, terminal = null, addon = null, observer = null, themeObserver = null;
+    let socket = null, terminal = null, addon = null, observer = null;
     let subscriptions = [];
 
     function status(state, code = '') { options.onState?.(state, code); }
     function dispose() {
       generation++; attached = readable = false;
-      observer?.disconnect(); themeObserver?.disconnect(); observer = themeObserver = null;
+      observer?.disconnect(); observer = null;
       for (const subscription of subscriptions) subscription.dispose();
       subscriptions = [];
       if (socket) {
@@ -50,21 +50,22 @@
       if (attached) send({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
     }
     function theme() {
-      if (!terminal) return;
-      const style = getComputedStyle(document.documentElement);
-      const background = style.getPropertyValue('--caff-surface-sunk').trim() || '#111312';
-      const foreground = style.getPropertyValue('--caff-text').trim() || '#f0f1ed';
-      terminal.options.theme = { background, foreground, cursor: foreground, cursorAccent: background, selectionBackground: '#57759066' };
+      // Claude Code's default ANSI palette expects a dark background. CAFF's
+      // chrome may switch themes, but must not recolor CLI output or its settings.
+      const style = getComputedStyle(screen);
+      const background = style.getPropertyValue('--planner-terminal-background').trim() || '#111312';
+      const foreground = style.getPropertyValue('--planner-terminal-foreground').trim() || '#f0f1ed';
+      return { background, foreground, cursor: foreground, cursorAccent: background, selectionBackground: '#57759066', brightBlack: '#9a9a9a' };
     }
     function connect(roomId, token) {
       dispose();
       const current = generation;
       if (!TerminalCtor || !FitAddonCtor || !SocketCtor) return status('unavailable', 'planner_terminal_assets_unavailable');
       terminal = new TerminalCtor({ cols: 120, rows: 30, fontSize: 13, fontFamily: 'Consolas, "Liberation Mono", monospace',
-        scrollback: 2000, disableStdin: true, allowProposedApi: false, allowTransparency: false,
+        scrollback: 2000, disableStdin: true, allowProposedApi: false, allowTransparency: false, theme: theme(),
         // Do not install web-links/clipboard addons or permit OSC hyperlink activation.
         linkHandler: { activate() {} }, windowOptions: {} });
-      addon = new FitAddonCtor(); terminal.loadAddon(addon); terminal.open(screen); theme();
+      addon = new FitAddonCtor(); terminal.loadAddon(addon); terminal.open(screen);
       for (const id of [8, 52]) subscriptions.push(terminal.parser.registerOscHandler(id, () => true));
       subscriptions.push(terminal.onData(data => {
         if (current !== generation || !attached) return;
@@ -85,8 +86,6 @@
       });
       fit();
       observer = new ResizeObserverCtor(() => { if (current === generation) fit(); }); observer.observe(screen);
-      themeObserver = new MutationObserver(() => { if (current === generation) theme(); });
-      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
       const url = new URL(`/api/conversations/${encodeURIComponent(roomId)}/planner/terminal`, window.location.href);
       url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       socket = new SocketCtor(url.href);

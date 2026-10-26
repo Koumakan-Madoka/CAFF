@@ -85,6 +85,30 @@ test('session-unavailable recovery uses cautious fixed wording and separate conf
   assert.match(f.q('guidance').textContent, /Yes, I trust this folder/);
 });
 
+for (const [code, text] of [['planner_process_exited', /Claude Code 已退出/], ['planner_process_stopped', /Claude Code 已停止/]]) {
+  test(`${code} has neutral guidance and no recovery controls, even after an earlier session failure`, async t => {
+    const f = fixture(t); f.pane.sync('room-a', { enabled: true }); await f.pane.open();
+    f.hooks.onExit({ reasonCode: 'planner_session_unavailable', exitCode: 1 });
+    assert.equal(f.q('reinitialize').hidden, false);
+    f.hooks.onState('exited', code); f.hooks.onExit({ reasonCode: code, exitCode: code.endsWith('stopped') ? -1073741510 : 0 });
+    f.hooks.onState('disconnected'); // Socket close must preserve the neutral reason.
+    assert.equal(f.q('status').textContent, '已退出');
+    assert.match(f.q('notice').textContent, text);
+    assert.match(f.q('notice').textContent, /手动连接/);
+    assert.doesNotMatch(f.q('notice').textContent, /暂不可用|可能不可用|检查本机配置/);
+    assert.equal(f.q('repair').hidden, true); assert.equal(f.q('reinitialize').hidden, true);
+    assert.equal(f.connections.length, 1);
+  });
+}
+
+test('unknown exit failure retains fixed fallback instead of child output', async t => {
+  const f = fixture(t); f.pane.sync('room-a', { enabled: true }); await f.pane.open();
+  f.hooks.onExit({ reasonCode: 'synthetic_unknown_failure', exitCode: 1, message: 'private sentinel' });
+  assert.match(f.q('notice').textContent, /终端暂不可用/);
+  assert.doesNotMatch(f.q('notice').textContent, /private sentinel/);
+  assert.equal(f.q('reinitialize').hidden, true);
+});
+
 test('uncertain lease offers a distinct user repair; corrupt metadata error renders fixed explanation without raw payload', async t => {
   const f = fixture(t, { failWrite: true });
   f.state({ available: true, processState: 'uncertain', reasonCode: 'planner_process_exit_unconfirmed' });
@@ -174,6 +198,27 @@ function clientFixture(t) {
   const ready = s => s.onmessage({ data: JSON.stringify({ type: 'ready', version: 1, historyReplay: false, resumed: false }) });
   return { w, client, sockets, terminals, states, exits, observations, ready };
 }
+
+test('terminal defaults to the same dark palette in both CAFF themes and after a live theme change', async t => {
+  const f = clientFixture(t);
+  // Deliberately light CAFF tokens; the CLI palette must not inherit them.
+  f.w.document.documentElement.style.setProperty('--caff-surface-sunk', '#fafafa');
+  f.w.document.documentElement.style.setProperty('--caff-text', '#111111');
+  for (const theme of ['light', 'dark']) {
+    f.w.document.documentElement.dataset.theme = theme;
+    f.client.connect('room-a', 'synthetic');
+    const palette = f.terminals.at(-1).options.theme;
+    assert.equal(palette.background, '#111312'); assert.equal(palette.foreground, '#f0f1ed');
+    assert.equal(palette.cursor, palette.foreground); assert.equal(palette.cursorAccent, palette.background);
+    assert.equal(palette.brightBlack, '#9a9a9a'); // Readable gray for ANSI 90 paths, not xterm's dim #555.
+    f.w.document.documentElement.dataset.theme = theme === 'light' ? 'dark' : 'light';
+    await tick();
+    assert.deepEqual(f.terminals.at(-1).options.theme, palette);
+  }
+  const css = read('public/chat/planner-terminal.css');
+  assert.match(css, /--planner-terminal-background:\s*#111312/);
+  assert.match(css, /\.planner-terminal-screen \.xterm-viewport\s*\{\s*background(?:-color)?:\s*var\(--planner-terminal-background\)/);
+});
 
 test('client authenticates only in first message, gates input/output until ready, chunks paste and resize, and blocks OSC clipboard/links', t => {
   const f = clientFixture(t); f.client.connect('room-a', 'synthetic-token');

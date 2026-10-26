@@ -29,7 +29,7 @@ function fixture(t, overrides = {}) {
       child.config = config; child.writes = []; child.sizes = [];
       child.write = data => child.writes.push(data);
       child.resize = (cols, rows) => { child.sizes.push([cols, rows]); child.emit('data', 'repaint'); };
-      child.stop = () => { child.stopped = true; if (!child.hang) child.emit('exit', { exitCode: 0 }); };
+      child.stop = () => { child.stopped = true; if (!child.hang) child.emit('exit', { exitCode: child.stopExitCode ?? 0 }); };
       children.push(child); return child;
     }, setTimer: (fn, ms) => { const id = {}; timers.set(id, { fn, ms }); return id; },
     clearTimer: id => timers.delete(id), ...overrides });
@@ -98,6 +98,44 @@ test('retention expiry stops only the room; stopping keeps admission until confi
   assert.equal(f.children[0].stopped, true); assert.equal(f.host.state(f.room.id), 'stopping');
   await assert.rejects(f.attach(), /planner_room_busy/);
   f.children[0].emit('exit', { exitCode: 0 }); assert.equal(f.host.state(f.room.id), 'absent');
+});
+
+for (const cause of ['terminate', 'retention', 'shutdown']) {
+  for (const exitCode of [0, -1073741510]) {
+    test(`CAFF ${cause} of a resumed session is an intentional stop (exit ${exitCode}), not session unavailability`, async t => {
+      const f = fixture(t); await f.attach(); f.children[0].emit('exit', { exitCode: 0 });
+      const events = [];
+      const resumed = await f.host.attach(f.room.id, { cols: 120, rows: 30 }, e => events.push(e));
+      assert.equal(resumed.resumed, true); const child = f.children[1]; child.stopExitCode = exitCode;
+      if (cause === 'retention') {
+        resumed.detach(); const expiry = [...f.timers.values()][0]; expiry.fn();
+        // A detached pane has no listener: expiry must stop without sending it anything.
+        assert.deepEqual(events, []);
+      } else {
+        if (cause === 'shutdown') await f.host.close(); else resumed.terminate();
+        assert.equal(events.at(-1).reasonCode, 'planner_process_stopped');
+        assert.equal(events.at(-1).exitCode, exitCode);
+      }
+      assert.equal(child.stopped, true); assert.equal(f.host.state(f.room.id), 'absent');
+      assert.equal(f.repository.hasLease(f.room.id), false);
+    });
+  }
+}
+
+for (const exitCode of [0, 1, -1073741510]) {
+  test(`unsolicited resumed exit ${exitCode} keeps the nonzero session-unavailable heuristic`, async t => {
+    const f = fixture(t); await f.attach(); f.children[0].emit('exit', { exitCode: 0 });
+    const events = []; await f.host.attach(f.room.id, { cols: 120, rows: 30 }, e => events.push(e));
+    f.children[1].emit('exit', { exitCode });
+    assert.equal(events.at(-1).reasonCode, exitCode === 0 ? 'planner_process_exited' : 'planner_session_unavailable');
+  });
+}
+
+test('uncertain exit observation is not itself a CAFF-requested stop', async t => {
+  const f = fixture(t); await f.attach(); f.children[0].emit('exit', { exitCode: 0 });
+  const events = []; await f.host.attach(f.room.id, { cols: 120, rows: 30 }, e => events.push(e));
+  f.children[1].emit('uncertain'); f.children[1].emit('exit', { exitCode: 1 });
+  assert.equal(events.at(-1).reasonCode, 'planner_session_unavailable');
 });
 
 test('ambiguous launch never reuses --session-id; persisted lease fails closed after restart', async t => {

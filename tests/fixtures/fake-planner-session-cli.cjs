@@ -22,6 +22,9 @@ process.stdin.on('data', chunk => {
   if (input === 'save') {
     fs.writeFileSync(record, JSON.stringify({ sessionId }));
     process.stdout.write('FAKE_SESSION_SAVED\r\n');
+  } else if (input === 'palette') {
+    // Representative dark-oriented CLI ANSI output, not a real trust dialog.
+    process.stdout.write('Accessing workspace (synthetic):\r\n\x1b[90m/synthetic/worktree\x1b[0m\r\n\x1b[38;2;177;156;217mYes, I trust this folder (synthetic)\x1b[0m\r\nPALETTE_DONE\r\n');
   } else if (input === 'safety') {
     process.stdout.write('\x1b]52;c;U1lOVEhFVElDX09OTFk=\x07\x1b]8;;https://terminal-sentinel.invalid\x07link\x1b]8;;\x07 <img src="https://terminal-sentinel.invalid/image"> SAFETY_DONE\r\n');
   } else process.stdout.write('ECHO:' + input + '\r\n');

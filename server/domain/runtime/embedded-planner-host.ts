@@ -12,7 +12,7 @@ type Listener = (event: TerminalEvent) => void;
 type Entry = {
   state: 'starting' | 'interactive-attached' | 'interactive-retained' | 'headless-running' | 'stopping';
   context?: PlannerRoom; process?: PlannerProcess; leaseId?: string; sessionId?: string; listener?: Listener;
-  retention?: any; retentionDeadline?: number; ended: Promise<void>; end(): void;
+  retention?: any; retentionDeadline?: number; stopRequested?: boolean; ended: Promise<void>; end(): void;
 };
 type Options = {
   repository: EmbeddedPlannerRepository; resolveRoom(id: string): PlannerRoom | Promise<PlannerRoom>;
@@ -36,7 +36,9 @@ export function createEmbeddedPlannerHost(options: Options) {
   }
   function stop(entry: Entry): void {
     if (entry.retention) { cancel(entry.retention); entry.retention = undefined; }
-    entry.state = 'stopping';
+    // Mark intent before stop(): an adapter may emit exit synchronously. State
+    // alone is not intent, since an uncertain observation also fences as stopping.
+    entry.stopRequested = true; entry.state = 'stopping';
     entry.process?.stop();
   }
   function release(id: string, entry: Entry): void {
@@ -166,7 +168,7 @@ export function createEmbeddedPlannerHost(options: Options) {
         });
         child.on('overflow', () => current.listener?.({ type: 'error', code: 'planner_terminal_slow_consumer', message: 'Terminal connection is too slow' }));
         child.once('exit', (exit: any) => {
-          current.listener?.({ type: 'exit', ...exit, reasonCode: resumed && exit.exitCode !== 0 ? 'planner_session_unavailable' : 'planner_process_exited' });
+          current.listener?.({ type: 'exit', ...exit, reasonCode: current.stopRequested ? 'planner_process_stopped' : resumed && exit.exitCode !== 0 ? 'planner_session_unavailable' : 'planner_process_exited' });
           release(id, current);
         });
         child.once('uncertain', () => {

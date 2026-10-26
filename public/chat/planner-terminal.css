@@ -65,15 +65,26 @@ body.chat-app .planner-terminal-wakeups button { min-height: 44px; padding: 6px 
 body.chat-app #planner-terminal-status { font-size: 12px; margin-right: auto; }
 body.chat-app .planner-terminal-notice { margin: 0; font-size: 12px; overflow-wrap: anywhere; color: var(--caff-text); }
 body.chat-app .planner-terminal-screen {
+  --planner-terminal-background: #111312;
+  --planner-terminal-foreground: #f0f1ed;
+  color-scheme: dark;
   flex: 1 0 120px;
   min-height: 120px;
   min-width: 0;
   overflow: hidden;
   padding: 4px;
-  background: var(--caff-surface-sunk);
+  background: var(--planner-terminal-background);
   border: 1px solid var(--caff-border);
 }
-body.chat-app .planner-terminal-screen .xterm { height: 100%; }
+body.chat-app .planner-terminal-screen .xterm {
+  height: 100%;
+  background: var(--planner-terminal-background);
+}
+/* xterm's viewport defaults to #000. Match the unused fractional-row area to
+   the renderer background too, rather than hiding it with a near-black theme. */
+body.chat-app .planner-terminal-screen .xterm-viewport {
+  background-color: var(--planner-terminal-background);
+}
 body.chat-app .planner-terminal-help { flex: 0 0 auto; font-size: 12px; }
 body.chat-app .planner-terminal-help summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; }
 body.chat-app .planner-terminal-help p { margin: 4px 0; overflow-wrap: anywhere; }
