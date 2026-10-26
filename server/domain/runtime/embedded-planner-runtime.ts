@@ -56,6 +56,18 @@ export function createEmbeddedPlannerRuntime(options: any) {
     }
     return { repaired };
   }
-  return { start, roomState, repair, getHost: () => host, capability: () => ({ ...capability }),
+  function reinitializeSession(id: string) {
+    if (!enabled || closed || host?.hasEntry(id)) throw plannerError('planner_room_busy');
+    if (!options.store.getConversationWithoutMessages(id)) throw plannerError('planner_room_missing');
+    // Ownership check and repository transaction are synchronous: admission
+    // cannot race between the in-memory fence, durable lease and metadata write.
+    const reinitialized = repository!.reinitializeSession(id);
+    if (reinitialized) {
+      const log = config.log || ((entry: object) => console.info(JSON.stringify(entry)));
+      log({ event: 'planner_session_reinitialized', conversationId: id, reasonCode: 'planner_session_reinitialized' });
+    }
+    return { reinitialized };
+  }
+  return { start, roomState, repair, reinitializeSession, getHost: () => host, capability: () => ({ ...capability }),
     async close() { closed = true; capability.available = false; await startup; await host?.close(); } };
 }

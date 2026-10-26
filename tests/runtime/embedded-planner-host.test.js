@@ -142,6 +142,15 @@ test('PTY and headless launches share the same synchronous admission path and in
   headless.stop(); assert.equal(f.host.state(f.room.id), 'absent');
 });
 
+test('session reinitialization defers headless admission as session_uninitialized without launching', async t => {
+  const f = fixture(t); await f.attach();
+  f.children[0].emit('exit', { exitCode: 0 });
+  assert.equal(f.repository.reinitializeSession(f.room.id), true);
+  await assert.rejects(f.host.startHeadless(f.room.id, () => { throw new Error('must not launch'); }), /session_uninitialized/);
+  assert.equal(f.host.hasEntry(f.room.id), false); assert.equal(f.repository.hasLease(f.room.id), false);
+  assert.equal(f.children.length, 1);
+});
+
 test('CLI fake version floor, invalid output, literal path with spaces and no shell shims', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-planner-cli-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

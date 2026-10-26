@@ -55,6 +55,35 @@ test('startup reconciliation releases only ESRCH guardians, preserves live/unkno
   assert.doesNotMatch(JSON.stringify(log), /private sentinel|old-session/);
 });
 
+test('session reinitialization changes only launchAttempted, preserves UUID/opt-in/unknown metadata and is idempotent', t => {
+  const f = fixture(t), repository = new EmbeddedPlannerRepository(f.store), room = f.room();
+  const claim = repository.claim(room.id); repository.release(room.id, claim.leaseId);
+  const metadata = { ...f.store.getConversationWithoutMessages(room.id).metadata,
+    synthetic: { keep: ['unchanged'] }, embeddedPlanner: { ...repository.read(room.id), wakeupsEnabled: true, future: { keep: true } } };
+  f.store.updateConversationWithoutMessages(room.id, { metadata });
+  const before = f.store.getConversationWithoutMessages(room.id).metadata;
+  assert.equal(repository.reinitializeSession(room.id), true);
+  assert.deepEqual(f.store.getConversationWithoutMessages(room.id).metadata,
+    { ...before, embeddedPlanner: { ...before.embeddedPlanner, launchAttempted: false } });
+  assert.equal(repository.read(room.id).launchAttempted, false); // JSON boolean, not numeric zero
+  const after = f.store.db.prepare('SELECT metadata_json FROM chat_conversations WHERE id=?').get(room.id).metadata_json;
+  assert.equal(repository.reinitializeSession(room.id), false);
+  assert.equal(f.store.db.prepare('SELECT metadata_json FROM chat_conversations WHERE id=?').get(room.id).metadata_json, after);
+  assert.equal(repository.leaseCount(), 0);
+});
+
+test('session reinitialization allocates nothing for absent metadata, rejects missing rooms and never releases a lease', t => {
+  const f = fixture(t), repository = new EmbeddedPlannerRepository(f.store), room = f.room();
+  const before = f.store.db.prepare('SELECT metadata_json FROM chat_conversations WHERE id=?').get(room.id).metadata_json;
+  assert.equal(repository.reinitializeSession(room.id), false);
+  assert.equal(f.store.db.prepare('SELECT metadata_json FROM chat_conversations WHERE id=?').get(room.id).metadata_json, before);
+  assert.throws(() => repository.reinitializeSession('missing-room'), /planner_room_missing/);
+  const claim = repository.claim(room.id), meta = repository.read(room.id);
+  assert.throws(() => repository.reinitializeSession(room.id), /planner_process_exit_unconfirmed/);
+  assert.deepEqual(repository.read(room.id), meta); assert.equal(repository.hasLease(room.id), true);
+  assert.equal(f.store.db.prepare('SELECT lease_id FROM chat_embedded_planner_leases WHERE conversation_id=?').get(room.id).lease_id, claim.leaseId);
+});
+
 test('default signal-zero probe releases an actually exited synthetic PID and preserves the current PID', async t => {
   const f = fixture(t), repository = new EmbeddedPlannerRepository(f.store), dead = f.room(), live = f.room();
   const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { env: {}, stdio: 'ignore' });

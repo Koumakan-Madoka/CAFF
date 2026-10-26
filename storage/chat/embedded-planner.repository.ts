@@ -46,6 +46,18 @@ export class EmbeddedPlannerRepository {
   repair(roomId: string): boolean {
     return this.store.db.prepare('DELETE FROM chat_embedded_planner_leases WHERE conversation_id=?').run(roomId).changes === 1;
   }
+  reinitializeSession(roomId: string): boolean {
+    return this.store.db.transaction(() => {
+      // Never reset launch state while a possibly live writer owns this UUID.
+      if (this.hasLease(roomId)) throw plannerError('planner_process_exit_unconfirmed');
+      const metadata = this.read(roomId);
+      if (!metadata?.launchAttempted) return false;
+      // Preserve the UUID, opt-in and all other (including unknown) metadata.
+      this.store.db.prepare("UPDATE chat_conversations SET metadata_json=json_set(metadata_json, '$.embeddedPlanner.launchAttempted', json('false')) WHERE id=?")
+        .run(roomId);
+      return true;
+    })();
+  }
   read(roomId: string): EmbeddedPlannerMetadata | null {
     const room = this.store.getConversationWithoutMessages(roomId);
     if (!room) throw plannerError('planner_room_missing');

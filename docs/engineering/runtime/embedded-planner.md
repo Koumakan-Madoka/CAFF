@@ -125,14 +125,15 @@ a session or change a Goal revision. The wake-up toggle changes only this
 namespace, never adopts an unbound Goal.
 
 First launch persists `launchAttempted=true` **before** invoking the child,
-then uses `--session-id <uuid>`. All subsequent launches use `--resume <uuid>`;
-never use `--continue`, fork, random replacement IDs or name-based session
-lookup. Metadata allocation/launch failure is diagnosed, not hidden by starting
-another session. If the CLI never created the first transcript, a later resume
-can fail: keep the UUID, show `planner_session_unavailable`, and require explicit
-user-assisted repair. Do not automatically replay prompts or retry as a fresh
-session after an ambiguous launch. `launchAttempted` is not proof that Claude
-Code successfully saved a transcript.
+then uses `--session-id <uuid>`. While that flag is true, subsequent launches use
+`--resume <uuid>`; never use `--continue`, fork, random replacement IDs or
+name-based session lookup. Metadata allocation/launch failure is diagnosed,
+not hidden by starting another session. If the CLI never created the first
+transcript, a later resume can fail: keep the UUID, show that the session
+**may** be unavailable (`planner_session_unavailable`), and offer the explicit
+user-confirmed reinitialization in §3. Do not automatically replay prompts or
+retry as a fresh session after an ambiguous launch. `launchAttempted` is not
+proof that Claude Code successfully saved a transcript.
 
 A wake-up always uses `--resume`. A room without a first interactive launch
 waits with `session_uninitialized`; its UI asks the user to open/initialize the
@@ -272,6 +273,53 @@ the current instance still has **any** in-memory entry for the room, including
 starting, retained, headless and stopping. Check ownership synchronously with
 lease release after reading the bounded confirmation body. The M3 repair control
 must explain this user responsibility; reconnect resumes the same session.
+Lease repair preserves `launchAttempted` and is separate from session recovery.
+
+### User-confirmed session reinitialization
+
+A first launch can exit before Claude Code saves any conversation. The planner
+observed these behaviors with **Claude Code 2.1.310**, Windows 10 19045 and
+Node 24.13.1 in disposable directories during M2 review (2026-10-26):
+
+1. The folder-trust dialog defaults to **No, exit**. Esc exits with code 0;
+   selecting No exits with code 1. Neither creates a conversation record.
+2. Accepting trust, then `/exit` at the prompt without sending a message exits
+   with code 0 and also creates no conversation record.
+3. `--resume <uuid>` without a record prints
+   `No conversation found with session ID: <uuid>` and exits with code 1.
+4. With no record, `--session-id <same uuid>` starts normally.
+5. With a saved record (the planner created one using a minimal print-mode
+   round), `--session-id <same uuid>` prints
+   `Error: Session ID <uuid> is already in use.` and exits with code 1 without
+   changing that record. A subsequent `--resume` succeeds.
+6. Normal exit from a resumed conversation (`/exit` or two Ctrl+C presses)
+   returns code 0.
+
+These are version-dependent planner observations, not implementer real-CLI
+checks or guarantees for future versions. Recheck all six after CLI upgrades.
+A nonzero resumed exit is only a **heuristic** for `planner_session_unavailable`;
+it is not proof that a record is missing. Never scrape transcripts, generate a
+replacement UUID, or automatically retry with `--session-id` based on that code.
+
+The browser user may explicitly confirm `POST /terminal/session/reinitialize`
+(§8). After the bounded body is read, synchronously reject any in-memory room
+entry with 409 `planner_room_busy`; reject an existing durable lease with 409
+`planner_process_exit_unconfirmed` (first confirm old writers are stopped and
+use lease repair). A missing room is 404. In one transaction use `json_set` to
+change **only** `embeddedPlanner.launchAttempted` to JSON false. Preserve
+`sessionId`, `wakeupsEnabled`, unknown planner fields and all other room metadata.
+No metadata, or an already-false flag, returns `{ reinitialized: false }` without
+allocating metadata. Otherwise return `{ reinitialized: true }` and emit only the
+fixed `planner_session_reinitialized` diagnostic plus the room ID. The operation
+is idempotent, spawns/kills nothing and never releases a lease.
+
+Afterward `/state.sessionInitialized` is false and headless admission waits
+with `session_uninitialized`. The next interactive attach persists true before
+launch as usual and uses `--session-id <same uuid>` (`ready.resumed=false`).
+Later launches resume. If the record actually exists, the CLI safely rejects
+that one initialization attempt; reopening then uses `--resume` because true
+was already persisted. Neither recovery operation automatically opens a pane,
+reconnects, answers trust, or sends a message.
 
 ## 4. Child environment and planner authentication
 
@@ -472,6 +520,16 @@ Goal. Never infer it belongs to a later Goal. Goal revision changes alone do
 not create a new occurrence; occurrence sequence/sourceId identify the incident.
 Replacement/clear retires the old Goal, without porting its eligibility or
 suppression to a new Goal. A paused Goal may still need planner action.
+
+For M4, the `sessionInitialized`/`launchAttempted` flag is only an admission
+marker, not evidence of a saved conversation (§3). If print-mode `--resume`
+reports `No conversation found with session ID`, classify the attempt as
+`planner_session_unavailable`, retain its result as needing user recovery, and
+do not retry. Show the user-confirmed session reinitialization path; do not
+change the flag or submit a new-session launch automatically. An explicitly
+reinitialized session instead waits with `session_uninitialized` before any
+wake-up spawn. This M4 classification is a required follow-up, not M2 scheduler
+implementation.
 
 An attached **or retained** PTY suppresses headless execution. Show an attention
 badge/state and let the user/planner inspect current items; do not feed the
@@ -722,6 +780,7 @@ Proposed room-scoped routes (names are P2 additions, not changes to P1 reads):
 | --- | --- |
 | `GET /state` | `{ available, reasonCode, processState, attached, wakeupsEnabled, sessionInitialized, pendingCount, needsUserCount, quota: { used, limit: 4, nextEligibleAt } }`; no transcript/credential; no spawn |
 | `POST /terminal/repair` | Browser user only, ordinary CSRF plus local bind/peer/Host/Origin guards; planner/agent rejected. Body <=1 KiB, exactly `{ "confirm": true }` (one literal key, no duplicates/extra fields); no query. 409 for any in-memory room entry, 404 for missing room/disabled endpoint; otherwise release only that room's lease and return `{ repaired: boolean }`, preserving its session UUID and other rooms. No process kill or spawn. |
+| `POST /terminal/session/reinitialize` | Browser user only; same CSRF, local bind/peer/Host/Origin guards and strict <=1 KiB `{ "confirm": true }` protocol as lease repair; no query, planner/agent rejected, feature-off/non-loopback endpoint absent. Any in-memory entry: 409 `planner_room_busy`; durable lease: 409 `planner_process_exit_unconfirmed`; missing room: 404. Only set `launchAttempted=false`, preserve UUID/opt-in/all other metadata; return `{ reinitialized: boolean }`, false for no metadata/already false. No spawn, kill or lease release; fixed diagnostic only when changed (§3). |
 | `PUT /wakeups` | strict `{ enabled: boolean }`; browser confirmation + ordinary P1 mutation guards; disabling stops future admission, not an already committed attempt or live PTY |
 | `GET /wakeups?before=<sequence>&limit=20` | newest-first summaries, limit 1–100; `{ items, nextBefore, hasMore }`; exclusive cursor; no transcript bodies or full Goals |
 | `GET /wakeups/:attemptId?afterChunk=0&limit=50` | exact room match; summary + paged retained chunks, limit 1–100, original chunk IDs, next cursor/hasMore/truncated/expired markers; response <=128 KiB UTF-8 |
@@ -773,6 +832,20 @@ is detach; stopping the process is a separately labelled explicit confirmation.
 Do not imply a resumed terminal has a replay buffer. A backend-declared disabled
 capability cannot be re-enabled from browser local storage.
 
+M3 must show a **Reinitialize session** confirmation control when the pane's
+last exit carries `planner_session_unavailable`. Say **the session may be
+unavailable**: it may never have saved a message, or its conversation record may
+no longer exist. This exit code is heuristic, not a definitive diagnosis. Explain
+that the UUID is preserved; if the conversation actually still exists, the CLI
+will reject initialization once and reopening will resume it. This control is
+separate from lease repair; a persistent lease must be repaired first, and no
+live/retained/stopping process may be reset. Do not automatically reconnect or
+send input after confirmation. By the terminal's folder-trust guidance, tell the
+user to select **Yes, I trust this folder** to continue when they trust the
+verified directory. The choice remains the user's; never send an automatic
+answer or default-enter keystroke. M2 supplies the route/contract only, not the
+pane controls.
+
 Diagnostics use stable codes and bounded fixed explanations, not raw child
 output. Logs include stage, room/attempt IDs, version, duration, numeric
 exit/error codes and counts as needed. They exclude input/output bytes, tokens,
@@ -783,7 +856,9 @@ by the existing P1 protected-path diagnostic, not broadcast to the browser.
 | --- | --- |
 | `planner_terminal_disabled`, `planner_terminal_local_only` | Configure opt-in/loopback with user-authorized restart, not a request override |
 | `planner_cli_missing`, `planner_cli_version_unsupported`, `planner_cli_version_invalid`, `planner_cli_probe_timeout`, `planner_cli_launch_unsupported` | Fix installed executable/version; do not download/update automatically |
-| `planner_workspace_invalid`, `planner_session_unavailable` | Inspect binding/transcript; no project-root/new-session fallback |
+| `planner_workspace_invalid` | Inspect binding; no project-root fallback |
+| `planner_session_unavailable` | Session may be unavailable; explicit user-confirmed same-UUID reinitialization after all process/lease ownership is clear (§3), never automatic new-session fallback |
+| `planner_session_reinitialized` | Fixed changed-state diagnostic only; user explicitly opens the next same-UUID initialization |
 | `planner_terminal_in_use`, `planner_room_busy`, `planner_process_limit` | Keep existing owner/process; explicitly reconnect later |
 | `planner_terminal_auth_invalid`, `planner_terminal_auth_timeout` | Generic policy close; refresh bootstrap for a new explicit connection |
 | `planner_terminal_message_invalid`, `planner_terminal_message_too_large` | Fix schema/chunking; zero unvalidated PTY writes |
@@ -830,6 +905,14 @@ unsupported extensions and lexical/realpath escapes. Lease coverage includes the
 pre-PID migration, default signal-zero checks for exited/live synthetic PIDs,
 unknown/missing PID preservation, startup recovery, PID-write failure fencing,
 user-only repair guards/confirmation/busy ownership, and same-UUID reattach.
+B3 adds repository-only-field/idempotence preservation, user-only session reset
+guard matrices, distinct in-memory/durable-lease conflicts, state and headless
+pre-admission checks. A session-aware fake CLI reproduces missing-transcript
+resume failure, same-UUID reinitialization followed by resume, and duplicate
+`--session-id` exit 1 with unchanged saved data followed by successful resume.
+The fake models the planner's §3 observations; it does not independently verify
+the real CLI. M3 must test both recovery controls and trust/heuristic wording;
+M4 must test missing-record print-mode classification and no unattended retry.
 
 ### Automated and UI evidence by milestone
 
