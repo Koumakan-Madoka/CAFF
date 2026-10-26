@@ -91,6 +91,9 @@ const { createPlannerCredential } = require('../domain/security/planner-credenti
 const { authenticateApiRequest } = require('../http/planner-authentication');
 const { createApiMutationGuard } = require('../http/api-mutation-guard');
 const { formatAuthority } = require('../http/request-authority');
+const { createEmbeddedPlannerRuntime } = require('../domain/runtime/embedded-planner-runtime');
+const { installPlannerTerminal } = require('../http/planner-terminal');
+const { createEmbeddedPlannerController } = require('../api/embedded-planner-controller');
 
 // resolveToolRelativePath is now imported from ../http/path-utils
 
@@ -1158,6 +1161,7 @@ export function createServerApp(options: any = {}) {
       return formatAuthority(host, address && typeof address === 'object' ? address.port : port);
     },
   });
+  const embeddedPlanner = createEmbeddedPlannerRuntime({ host, store, projectManager, config: options.embeddedPlanner });
   const { buildBootstrapPayload, buildConfiguredModelOptions } = createBootstrapPayloadBuilder({
     store,
     skillRegistry,
@@ -1166,6 +1170,7 @@ export function createServerApp(options: any = {}) {
     modelCatalog,
     roleService,
     apiSecurity: () => ({ csrfToken: providerConfigCsrfToken }),
+    plannerTerminal: embeddedPlanner.capability,
     localAdmin: () => ({
       modelProviders: {
         enabled: providerConfigLocalEnabled,
@@ -1198,6 +1203,9 @@ export function createServerApp(options: any = {}) {
 
   const plannerAttentionWait = createPlannerAttentionWait(store);
   const router = createRouter([
+    createEmbeddedPlannerController({ store, runtime: embeddedPlanner, host, csrfToken: providerConfigCsrfToken,
+      getAuthority() { const address = server && server.address(); return formatAuthority(host, address?.port || port); },
+    }),
     createPlannerAttentionController({ store, waitService: plannerAttentionWait }),
     createPlannerStateController({ store, turnOrchestrator }),
     createHealthController({ getHealthStatus }),
@@ -1361,9 +1369,17 @@ export function createServerApp(options: any = {}) {
     }
   });
 
+  const plannerTerminal = installPlannerTerminal({ server, host, csrfToken: providerConfigCsrfToken,
+    capability: embeddedPlanner.capability, getHost: embeddedPlanner.getHost,
+    hasRoom: (id: string) => !!store.getConversationWithoutMessages(id),
+    authTimeoutMs: options.embeddedPlanner?.authTimeoutMs,
+    idleMs: options.embeddedPlanner?.idleMs, pingMs: options.embeddedPlanner?.pingMs, pongMs: options.embeddedPlanner?.pongMs,
+  });
+
   function start(onListen: any) {
-    server.listen(port, host, () => {
+    server.listen(port, host, async () => {
       plannerCredential.initialize();
+      await embeddedPlanner.start(buildToolBaseUrl(host, server.address().port), plannerCredential.path);
       try {
         uploadService.reconcile();
       } catch {}
@@ -1397,6 +1413,8 @@ export function createServerApp(options: any = {}) {
   }
 
   function close(callback: any) {
+    const plannerTerminalClosePromise = plannerTerminal.close();
+    const embeddedPlannerClosePromise = embeddedPlanner.close();
     plannerAttentionWait.close();
     plannerCredential.disable();
     deliveryRuntimeClosing = true;
@@ -1435,7 +1453,7 @@ export function createServerApp(options: any = {}) {
         }
       };
       const pendingCloseWork = Promise.allSettled([
-        turnsClosePromise, feishuClosePromise, ...(deliveryDrainPromise ? [deliveryDrainPromise] : []),
+        turnsClosePromise, feishuClosePromise, embeddedPlannerClosePromise, plannerTerminalClosePromise, ...(deliveryDrainPromise ? [deliveryDrainPromise] : []),
       ]);
 
       void Promise.resolve(pendingCloseWork).then(finishClose, finishClose);

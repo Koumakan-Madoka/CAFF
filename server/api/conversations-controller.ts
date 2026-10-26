@@ -1068,7 +1068,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         if (body.metadata !== undefined && existingConversation) {
           const incoming = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
           const existing = existingConversation.metadata || {};
-          const isReserved = (key: string) => key.startsWith('sessionGoal') || key === 'dagNodeGoalBinding';
+          const isReserved = (key: string) => key.startsWith('sessionGoal') || key === 'dagNodeGoalBinding' || key === 'embeddedPlanner';
           for (const key of Object.keys(incoming).filter(isReserved)) {
             if (!isDeepStrictEqual(incoming[key], existing[key])) {
               throw createHttpError(403, 'Goal metadata is server-owned; use the Goal endpoint', { code: 'goal_metadata_reserved' });

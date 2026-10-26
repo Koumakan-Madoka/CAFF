@@ -13,9 +13,16 @@ jobs:
         with:
           node-version: 22.19.0
           cache: npm
-      - run: npm ci
+      - name: Native PTY build prerequisites
+        run: python3 --version && g++ --version && make --version
+      - run: npm ci --foreground-scripts
+      - name: Require Linux node-pty compilation output
+        run: test -f node_modules/node-pty/build/Release/pty.node
       - name: Select runner Chrome for browser fixtures
         run: |
           browser="$(command -v google-chrome)"
           echo "CAFF_UI_BROWSER_PATH=$browser" >> "$GITHUB_ENV"
+      - run: npm run typecheck
       - run: npm test
+      - run: npm run test:dag-execution
+      - run: git diff --check
