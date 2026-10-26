@@ -14,4 +14,8 @@ jobs:
           node-version: 22.19.0
           cache: npm
       - run: npm ci
+      - name: Select runner Chrome for browser fixtures
+        run: |
+          browser="$(command -v google-chrome)"
+          echo "CAFF_UI_BROWSER_PATH=$browser" >> "$GITHUB_ENV"
       - run: npm test

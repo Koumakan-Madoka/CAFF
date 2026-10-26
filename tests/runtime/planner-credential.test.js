@@ -128,7 +128,7 @@ function memoryFiles() {
     lstatSync(file) { if (!files.has(file)) throw Object.assign(Error('missing'), { code: 'ENOENT' }); return { isSymbolicLink: () => false }; },
     openSync(file) { assert.ok(files.has(file)); return file; },
     writeFileSync(file, content) { files.set(file, String(content)); },
-    renameSync(from, to) { files.set(to, files.get(from)); files.delete(from); },
+    renameSync(from, to) { assert.ok(files.has(from)); files.set(to, files.get(from)); files.delete(from); },
     unlinkSync(file) { files.delete(file); }, closeSync() {}, fsyncSync() {}, mkdirSync() {},
   };
   return { files, io };
@@ -136,7 +136,7 @@ function memoryFiles() {
 
 test('credential rotation and fail-closed ACL errors do not leak tokens or downgrade identity', () => {
   const { files, io } = memoryFiles();
-  const credentialFile = path.join(path.parse(process.cwd()).root, 'virtual-planner', 'credential.json');
+  const credentialFile = path.win32.join('C:\\', 'virtual-planner', 'credential.json');
   const calls = [], logs = [];
   const acl = (input) => {
     calls.push(input);
@@ -148,7 +148,8 @@ test('credential rotation and fail-closed ACL errors do not leak tokens or downg
   const first = createPlannerCredential(options);
   assert.equal(first.authenticate('anything'), null);
   first.initialize();
-  const token = JSON.parse(files.get(credentialFile)).token;
+  assert.equal(first.path, credentialFile);
+  const token = JSON.parse(files.get(first.path)).token;
   assert.deepEqual(first.authenticate(token), { kind: 'planner', plannerId: 'local-planner', plannerName: 'External Planner' });
   assert.equal(first.authenticate('wrong'), null);
   assert.ok(!JSON.stringify(calls).includes(token));
@@ -156,7 +157,9 @@ test('credential rotation and fail-closed ACL errors do not leak tokens or downg
   const second = createPlannerCredential({ ...options, env: { ...options.env, CAFF_PLANNER_NAME: 'Claude Code' } });
   second.initialize();
   assert.equal(second.authenticate(token), null);
-  assert.equal(JSON.parse(files.get(credentialFile)).plannerName, 'Claude Code');
+  const rotated = JSON.parse(files.get(second.path));
+  assert.equal(rotated.plannerName, 'Claude Code');
+  assert.equal(second.authenticate(rotated.token).plannerName, 'Claude Code');
   const disabled = createPlannerCredential({ ...options, windowsAcl: () => { throw Error('untrusted localized output'); } });
   disabled.initialize();
   assert.equal(disabled.authenticate(token), null);
@@ -164,9 +167,39 @@ test('credential rotation and fail-closed ACL errors do not leak tokens or downg
   assert.ok(!JSON.stringify(logs).includes('untrusted localized output'));
 });
 
+test('Windows publication keeps resolved default, override and UNC paths independent of the host', () => {
+  for (const env of [
+    { LOCALAPPDATA: path.win32.join('C:\\', 'Users', 'Test', 'AppData', 'Local') },
+    { CAFF_PLANNER_CREDENTIAL_FILE: 'C:\\virtual-planner\\nested\\..\\凭证.json' },
+    { CAFF_PLANNER_CREDENTIAL_FILE: '\\\\host\\share\\virtual-planner\\credential.json' },
+  ]) {
+    const { files, io } = memoryFiles();
+    const expected = resolvePlannerCredentialPath({ env, platform: 'win32', host: 'localhost', port: 12345 });
+    const calls = [];
+    const credential = createPlannerCredential({ platform: 'win32', fileSystem: io, env, host: 'localhost', getPort: () => 12345, log() {},
+      windowsAcl(input) {
+        calls.push(input);
+        assert.equal(input.directory, path.win32.dirname(expected));
+        assert.equal(input.targetPath, expected);
+        if (input.operation === 'prepare') {
+          assert.equal(path.win32.dirname(input.temporaryPath), input.directory);
+          assert.match(path.win32.basename(input.temporaryPath), /^\.planner-[a-f0-9]{32}\.tmp$/);
+          files.set(input.temporaryPath, '');
+        }
+        return { currentSid: sid, directory: snapshot(true), file: snapshot() };
+      } });
+    credential.initialize();
+    assert.equal(credential.path, expected);
+    assert.deepEqual(calls.map(input => input.operation), ['prepare', 'inspect']);
+    assert.deepEqual([...files.keys()], [credential.path]);
+    const token = JSON.parse(files.get(credential.path)).token;
+    assert.equal(credential.authenticate(token).kind, 'planner');
+  }
+});
+
 test('unsafe existing/final ACL snapshots disable authentication without leaving a newly published credential', () => {
   const { files, io } = memoryFiles();
-  const file = path.join(path.parse(process.cwd()).root, 'virtual-planner', 'credential.json');
+  const file = path.win32.join('C:\\', 'virtual-planner', 'credential.json');
   const logs = [];
   const options = { platform: 'win32', fileSystem: io, env: { CAFF_PLANNER_CREDENTIAL_FILE: file }, host: 'localhost', getPort: () => 12345, log: entry => logs.push(entry) };
   let inspectedToken;
@@ -178,8 +211,10 @@ test('unsafe existing/final ACL snapshots disable authentication without leaving
     return { currentSid: sid, directory: snapshot(true), file: descriptor };
   } });
   credential.initialize();
+  assert.equal(credential.path, file);
+  assert.equal(typeof inspectedToken, 'string');
   assert.equal(credential.authenticate(inspectedToken), null);
-  assert.equal(files.has(file), false);
+  assert.equal(files.has(credential.path), false);
   assert.ok(!JSON.stringify(logs).includes(inspectedToken));
   files.set(file, 'existing-unsafe-file-must-not-be-read-or-replaced');
   const before = files.get(file);

@@ -77,7 +77,7 @@ function assertPosixPrivate(target: string, directory: boolean, io: CredentialFi
     || (s.mode & 0o777) !== (directory ? 0o700 : 0o600) || (!directory && s.nlink !== 1)) throw aclError('posix_permissions_invalid');
 }
 function assertPosixAncestors(directory: string, io: CredentialFileSystem) {
-  let ancestor = path.dirname(directory);
+  let ancestor = path.posix.dirname(directory);
   while (true) {
     const s = lstatIfPresent(ancestor, io);
     if (s) {
@@ -87,7 +87,7 @@ function assertPosixAncestors(directory: string, io: CredentialFileSystem) {
       if (s.isSymbolicLink() || !s.isDirectory() || (s.uid !== process.getuid!() && s.uid !== 0)
         || ((s.mode & 0o022) !== 0 && !stickyRoot)) throw aclError('unsafe_ancestor');
     }
-    const parent = path.dirname(ancestor);
+    const parent = path.posix.dirname(ancestor);
     if (ancestor === parent) break;
     ancestor = parent;
   }
@@ -96,6 +96,7 @@ function assertPosixAncestors(directory: string, io: CredentialFileSystem) {
 export function createPlannerCredential(options: CredentialOptions): PlannerCredential {
   const env = options.env || process.env;
   const platform = options.platform || process.platform;
+  const paths = platform === 'win32' ? path.win32 : path.posix;
   const io = options.fileSystem || fs;
   const acl = options.windowsAcl || ((input: AclInput) => runWindowsAcl(input, env));
   const log = options.log || ((entry: Record<string, unknown>) => console.info(JSON.stringify(entry)));
@@ -111,8 +112,8 @@ export function createPlannerCredential(options: CredentialOptions): PlannerCred
     try {
       credentialFile = resolvePlannerCredentialPath({ env, platform, host: options.host, port: options.getPort() });
       log({ event: 'planner_credential_path', path: credentialFile });
-      const directory = path.dirname(credentialFile);
-      temporaryPath = path.join(directory, `.planner-${randomBytes(16).toString('hex')}.tmp`);
+      const directory = paths.dirname(credentialFile);
+      temporaryPath = paths.join(directory, `.planner-${randomBytes(16).toString('hex')}.tmp`);
       stage = 'set_acl';
       if (platform === 'win32') {
         const result = acl({ operation: 'prepare', directory, temporaryPath, targetPath: credentialFile });
