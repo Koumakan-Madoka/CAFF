@@ -156,16 +156,34 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
 
 ### Verify during implementation
 
-These facts depend on versions or platforms. The P2 contract records how each
-one was checked:
+These facts depend on versions or platforms. The following **implementation
+verification annotations (2026-10-26)** point to evidence, not changes to the
+accepted decisions. See the [P2 verification matrix](../engineering/runtime/embedded-planner.md#adr-0003-verify-during-implementation-checklist)
+and [planner acceptance records](../engineering/runtime/embedded-planner.md#planner-real-cli-acceptance-records):
 
-- the CLI flags this ADR relies on, against the supported minimum version;
-- whether `--allowedTools` can express "the caff CLI only, no other shell",
-  given that Bash rules match the whole command text;
-- that a tool call needing approval is denied in `-p`;
-- node-pty prebuild coverage on each developer machine, and its compilation on
-  Linux CI;
-- the ConPTY repaint setting on the Windows versions in use.
+- **CLI flags / supported minimum:** Windows official CLI 2.1.310 verified in
+  M2 session/version observations, M3 interactive/resume and M4a/M4b real print
+  runs; final M4 code `1c7b10e4`. Exact runtime argv is in P2 §10. Recheck after
+  CLI upgrades; numeric version success alone does not prove compatibility.
+- **caff-only `--allowedTools`:** M4a `7ccdd39e` real adversarial gate passed
+  positive commands and denied compound/other-program/unsafe tools in an
+  untrusted worktree. Explicit dontAsk was additionally verified; M4b runtime
+  pins it, 2.1.x >=2.1.310 and whitespace-free trusted prefix paths. The initial
+  M4b behavioral BLOCK and successful `1c7b10e4` revalidation are both retained
+  in P2 §10. Other versions/paths require another gate, never broader permission.
+- **Approval in `-p`:** M4a's mkdir/redirect/git-status probes were denied,
+  without hanging or sentinel effects, including dontAsk hardening. Minimal
+  allowlisted environment found Git Bash without additional path variables.
+- **node-pty:** Windows x64 / Node 24.13.1 / node-pty 1.1.0 prebuild installation
+  and real PTY/fake CLI cleanup suites passed (M2/M3 reviews). **Linux CI has
+  not run**: `.github/workflows/test.yml` requires Ubuntu/Node 22.19.0 compiler
+  prerequisites, fresh install, compiled `pty.node`, and full checks. A
+  candidate-pinned successful CI result still requires authorized publication;
+  Windows PASS or the workflow file is not Linux build evidence.
+- **ConPTY repaint:** Windows 10.0.19045 / Edge 155 / CLI 2.1.310 verified in M3
+  at `f7de4822`: real interaction, drag/narrow/desktop resize, retained reattach,
+  saved-session resume and readable trust/path output in light CAFF. No claim
+  about untested Windows versions or platforms.
 
 ### Change to ADR 0002's delivery order
 

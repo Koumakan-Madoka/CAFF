@@ -4,8 +4,12 @@
 
 This is the P1 contract for [ADR 0002](../../decisions/0002-external-planner-drives-caff.md).
 It covers planner attribution, mutation guards, Goal control, durable attention,
-and bounded monitoring. It does not introduce a CLI, MCP, a review/verdict
-protocol, different implementer prompts, or new DAG/delegation/Feishu behavior.
+and bounded monitoring. P1 itself does not introduce a CLI or process host;
+P2 adds the repository-owned minimal CLI and embedded official Claude Code
+terminal/wake-ups in [embedded-planner.md](../runtime/embedded-planner.md),
+without changing this interface's semantics. MCP, the structured review/verdict
+protocol and planner-aware implementer prompts belong to P3 under ADR 0003;
+there is no new DAG/delegation/Feishu behavior.
 
 **Implemented P1 contract.** This document describes the implementation in the
 revision containing it, including identity/guards, Goal control, attention and
@@ -229,8 +233,9 @@ webhook validation. `X-CAFF-Principal: planner` on those routes is rejected with
   and independent review. `update-delivery` cannot introduce a waiver.
 - Generic Room `PUT` is not a Goal write backdoor. When replacing unrelated
   metadata, preserve server-owned `sessionGoal*` keys (Goal, proposal, ruling,
-  runner and future audit/binding state) and the existing D28
-  `dagNodeGoalBinding` enforcement anchor. Explicit changes to those keys return
+  runner and future audit/binding state), the existing D28
+  `dagNodeGoalBinding` enforcement anchor, and P2's `embeddedPlanner` session/opt-in
+  namespace. Explicit changes to those keys return
   403 `goal_metadata_reserved` for both browser and planner; an unchanged
   snapshot may be echoed. Use the Goal endpoint for all Goal mutations.
 - ADR 0002's other reserved approvals remain planner-attested, not an invented
@@ -745,7 +750,8 @@ Room deletion may remove its items, but never resets the global sequence.
 
 Review requests in ADR 0002 are represented in P1 by the milestone's pending
 pause/complete proposal and its attention row. No heuristic extraction of public
-text and no structured review-request source are introduced; the latter is P2.
+text and no structured review-request source are introduced; the latter is P3
+under ADR 0003, not P2's event wake-up receipt.
 
 ## 6. Cursor list and long polling
 
@@ -941,6 +947,49 @@ aliases where old clients depend on them; new global guard codes are canonical.
   `dag-execution.md`, `conversation-title.md`, `controller-patterns.md`,
   `architecture.md` (bootstrap/lifecycle), frontend `ui-structure.md`, and runtime
   `conversation-turn-queue.md` / `agent-session-reuse.md`.
+
+### P2 embedded transport and adapter boundary
+
+P2 hosts the same configured `local-planner` principal, not an additional Room
+agent, owner or Pi model slot. The official CLI runs in a per-room PTY or bounded
+print-mode wake-up. Default-off `CAFF_PLANNER_TERMINAL=1` requires loopback bind;
+local configuration and shared-instance restart still require user authorization.
+The terminal requires CLI >=2.1.310; unattended tool policy is provisionally
+verified only for 2.1.x >=2.1.310 with whitespace-free trusted adapter paths.
+
+The repository's `lib/caff.ts` / `lib/planner-cli.ts` builds to `build/lib/caff.js`.
+Its trusted invocation is the exact absolute Node+adapter prefix, never an
+agent invocation bridge. Six commands only: state, full Goal read, bounded
+current-room attention read, preconditioned delegated Goal action, current-owner
+message, and active-attempt wakeup finish. It cannot set/clear a Goal, bind the
+planner, proxy arbitrary HTTP or select another room/URL/credential. It reads
+only the configured P1 credential file, sends explicit planner intent and
+bypasses proxies on the fixed loopback instance. The closed surface is narrower
+than P1 REST; no new attribution or user-only-gate exception is introduced.
+Exact commands, payload escaping, size limits and the interactive guide are
+in [P2 §4](../runtime/embedded-planner.md#4-child-environment-and-planner-authentication)
+and [§7](../runtime/embedded-planner.md#7-wake-up-prompt-and-completion).
+
+Do not confuse P1 `/api/planner/conversations/:id/state` (bounded Goal monitor)
+with P2 `/api/conversations/:id/planner/state` (process/session/wake-up state).
+P2 additionally exposes terminal WS, user-only confirmed lease repair/session
+reinitialization and opt-in, protected paged records, and planner-only finish
+under `/api/conversations/:id/planner`. P2 checks loopback bind/peer/Host on
+these reads; browser reads require CSRF (and matching Origin if sent), planner
+reads require bearer. WS always requires matching Origin and first-message
+CSRF before any process/output: P1 bearer exemptions do not apply to upgrades.
+These extra P2 checks do not claim to harden all ordinary P1 reads.
+
+Only five P1 occurrence kinds can trigger an opted-in matching unfinished
+planner-bound non-DAG Goal: proposal_pending, budget_exhausted, failure_paused,
+owner_removed, turn_failed. An attached or retained PTY suppresses the run;
+4 attempts/room/rolling hour consume real CLI usage. P2 stores claims/quota and
+sanitized bounded transcripts separately in three SQLite tables. `needs_user`
+is suppression, **not P1 resolution or a Goal ruling**; finish alone never
+acknowledges an active condition. Actual actions still use the exact P1
+Goal/revision/proposal/identity rules. Restore/repair controls preserve the UUID
+and require browser-user confirmation, not planner self-recovery. Full security,
+lifecycle, recovery and retention contracts live in the linked P2 document.
 
 ### Planner-confirmed decision: factual updates and session reuse
 

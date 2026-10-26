@@ -2,11 +2,13 @@
 
 ## Status, scope and sources
 
-**M1 contract candidate, not an implemented-feature claim.** This document is
-written first for planner review. M2–M5 implement and verify it; it must be
-reconciled with the implementation before integration. It does not mean a
-running instance has been upgraded. Push, PR, merge, acceptance, release and
-shared-instance restart each retain their separate user-authorization gates.
+**Implemented P2 contract.** M1 contract, M2 host/security, M3 pane and M4
+wake-ups passed independent planner review; M4's final implementation is
+`1c7b10e4ab2bea2becc53278b9f15f959d122984`. Windows real-CLI acceptance is
+recorded in §10, including the initially blocked run and successful revalidation.
+M5 reconciles these docs; final review and Linux CI are still separate gates.
+This is not a claim that a running instance has been upgraded. Push, PR, merge,
+acceptance, release and shared-instance restart each require user authorization.
 
 Sources: [ADR 0003](../../decisions/0003-embedded-claude-code-planner.md),
 [ADR 0002](../../decisions/0002-external-planner-drives-caff.md),
@@ -34,9 +36,10 @@ Terminology used below:
 - **Needs user**: a P2 scheduling disposition, not resolution of a P1 attention
   item and not a new Goal/proposal state.
 
-Default limits and protocol details below are explicit M1 recommendations for
-review. ADR changes or a failed safety premise require a pause proposal; no
-implicit fallback is permitted.
+The limits and protocol below are the implemented, planner-reviewed defaults.
+The CLI minor-version/tool-policy gate remains deliberately provisional (§10).
+ADR changes or a failed safety premise require a pause proposal; no implicit
+fallback is permitted.
 
 ## 1. Composition and feature gate
 
@@ -73,6 +76,37 @@ Bootstrap adds only a capability such as
 Do not publish local executable paths, credentials or wake transcripts there.
 An explicitly enabled but unavailable feature shows its reason; an off feature
 has no header entry. Room-specific state comes from the routes in §8.
+
+### Operator enablement and usage
+
+1. Install/login to the official Claude Code CLI separately from Pi's provider
+   login. CAFF does not install, update, log in, or choose a subscription for it.
+   The terminal needs numeric CLI >=2.1.310; unattended wake-ups additionally
+   require the verified 2.1.x line and a whitespace-free trusted adapter prefix
+   (§6/§10). A newer minor may allow the terminal while disabling wake-ups.
+2. In the intended instance's local configuration set `CAFF_PLANNER_TERMINAL=1`
+   and bind loopback. `CAFF_CLAUDE_CLI` optionally selects one executable path.
+   Obtain explicit authorization before changing shared configuration/restarting;
+   editing a template or opening a panel does not authorize a 3100 restart.
+3. After that separately authorized restart, open the room-header terminal,
+   inspect the verified working directory and answer trust/permission prompts
+   yourself. Save at least one conversation message before exiting: merely
+   opening the pane does not prove a resumable session exists (§3).
+4. Wake-ups are a separate per-room user confirmation, off by default, for a
+   matching planner-bound unfinished non-DAG Goal. An existing unbound Goal
+   needs the user-only P1 adoption action; opening a terminal does not bind it.
+   Close the CLI normally or explicitly Stop it to permit unattended work:
+   hiding the pane retains the PTY and suppresses wake-ups for up to 30 minutes.
+5. Each wake-up consumes the CLI's configured subscription/provider usage, not
+   free CAFF work: at most 4 attempts/rolling hour/room, max 12 turns and a
+   10-minute wall bound, with at most 4 processes in the instance. These are
+   usage bounds, not a monetary price cap. Inspect quota/needs-user/records in
+   the pane. Disabling prevents future admission, not an already reserved run.
+
+Use the two distinct recovery controls in §3 only after their confirmations;
+normal exit/Stop needs only a later manual connection, not recovery. Child
+settings/proxy/billing boundaries are in §4. This feature is for trusted local
+use, not remote/multi-user service or a same-account OS sandbox.
 
 ## 2. CLI, session and working directory
 
@@ -421,7 +455,7 @@ credential argument or expansion of Goal structure is authorized.
 The trusted invocation is the absolute Node executable plus the absolute built
 adapter, each single-quoted with forward-slash paths (§10). Do not use a PATH
 alias, npm shim, `node -e`, or the agent bridge. The package bin is for discovery;
-the candidate tool rule permits only the recorded absolute prefix. No install,
+the unattended tool rule permits only the recorded absolute prefix. No install,
 PATH mutation or global link is needed. All arguments are explicit; stdin is
 ignored. The following suffixes are the complete interface:
 
@@ -451,8 +485,8 @@ Collections are bounded to P1's sizes: 60 work items, 40 criteria/decision items
 Owner checking is a **preflight snapshot**, not a new atomic server constraint:
 P1's message endpoint has no Goal/owner compare-and-set. A change after that
 read may leave the explicitly targeted old owner as recipient. Do not claim
-atomic current-owner delivery, reroute or replay it automatically. M4b must not
-use owner messages as proof that a Goal mutation was authorized.
+atomic current-owner delivery, reroute or replay it automatically. Owner
+messages are not proof that a Goal mutation was authorized.
 
 Only `CAFF_BASE_URL` accepts the instance authority, strictly
 `http://127.0.0.1:<port>`, `http://localhost:<port>` or
@@ -479,6 +513,50 @@ credential/path/proxy values. Credential values are
 redacted even from a misbehaving successful response. 401 requires a new
 explicit invocation (which rereads the file); no automatic write retry or user
 fallback.
+
+### Interactive caff command guide (N10)
+
+The interactive append prompt frames the planner role; it does **not** inject
+the wake-up command card or infer a PATH alias. This documentation is the N10
+interactive guide. From the actual CAFF checkout/Node installation used to
+build and start this instance, an operator can locate the two non-secret paths:
+
+```text
+node -p "JSON.stringify({node:process.execPath,adapter:require('node:path').resolve('build/lib/caff.js')})"
+```
+
+Run that discovery in the **CAFF checkout**, not an unrelated room project
+whose `build/` may belong to another program. Use the resulting absolute Node
+and adapter paths, normalized to forward slashes and individually single-quoted
+as in §10's concrete Windows prefix. Do not copy another installation/review
+clone's path. Replace `<prefix>` below with those two quoted paths, not a shell
+variable, PATH `caff`/`node` alias, npm shim or `agent-chat-tools`:
+
+```text
+<prefix> state
+<prefix> goal read
+<prefix> attention read --after 0 --limit 100
+<prefix> goal action --json '<canonical action object>'
+<prefix> owner message --json '<canonical message object>'
+```
+
+Read current state/full Goal first. §4's closed command table and §7's card,
+eight action examples, required preconditions, escape table and size limits
+apply to these CLI calls too; there is no `--help` command. Each call is one
+argument-only command with nothing chained before/after it. Hosted sessions
+already receive `CAFF_BASE_URL`, `CAFF_ROOM_ID` and, when available, the P1
+credential-file **path**. Do not read/print the token or pass URL/room/credential
+flags. The adapter reads the file itself; on unavailable credentials stop, never
+fall back to user or agent authentication. A manually run external planner must
+be explicitly configured for its intended instance/room and the P1 file locator;
+never resume the embedded room UUID in that other terminal.
+
+The sixth command, `wakeup finish --attempt <id> --json '<array>'`, is **only**
+for the scheduler-issued active attempt/batch in §7. Interactive inspection has
+no attempt to finish; do not invent an ID or copy the sample sequence. The
+interactive CLI's tool permissions still follow the user's own settings, unlike
+the fixed unattended policy. This guide grants no edits/commits on the
+implementer's branch or user-reserved operations.
 
 ## 5. Terminal WebSocket protocol v1
 
@@ -529,7 +607,7 @@ After auth, under admission checks, server sends one `ready`, then live output:
 | Direction / type | Payload / semantics |
 | --- | --- |
 | server `ready` | `{ type, version: 1, sessionId, state: 'attached', resumed: boolean, historyReplay: false }`; resumed means launch used resume or existing PTY was reattached |
-| server `output` | `{ type, data: string }`; live PTY bytes decoded as streaming UTF-8, maximum 16 KiB data per chunk |
+| server `output` | `{ type, data: string }`; live PTY bytes decoded as streaming UTF-8, maximum 8 KiB data per chunk (JSON escaping still fits the 64 KiB frame) |
 | client `input` | `{ type, data: string }`; bounded text passed as PTY input only after ready |
 | client `resize` | `{ type, cols, rows }`; integer cols 20–500 and rows 5–300; resize only that client's room PTY |
 | client `detach` | `{ type }`; close connection normally, retain PTY |
@@ -604,15 +682,14 @@ not create a new occurrence; occurrence sequence/sourceId identify the incident.
 Replacement/clear retires the old Goal, without porting its eligibility or
 suppression to a new Goal. A paused Goal may still need planner action.
 
-For M4, the `sessionInitialized`/`launchAttempted` flag is only an admission
+The `sessionInitialized`/`launchAttempted` flag is only an admission
 marker, not evidence of a saved conversation (§3). If print-mode `--resume`
 reports `No conversation found with session ID`, classify the attempt as
 `planner_session_unavailable`, retain its result as needing user recovery, and
 do not retry. Show the user-confirmed session reinitialization path; do not
 change the flag or submit a new-session launch automatically. An explicitly
 reinitialized session instead waits with `session_uninitialized` before any
-wake-up spawn. This M4 classification is a required follow-up, not M2 scheduler
-implementation.
+wake-up spawn. Runtime tests cover the missing-record outcome and suppression.
 
 An attached **or retained** PTY suppresses headless execution. Show an attention
 badge/state and let the user/planner inspect current items; do not feed the
@@ -708,16 +785,17 @@ The local-account/CLI permission system is not an OS sandbox.
 text, not a parsed executable/argv. The allow rule, available tool set and deny
 rules must be tested together with compound commands, substitutions, redirects,
 newlines, alternate quoting/path spellings and CLI escape options. Do not use
-`--disallowedTools Bash` if it also disables the one permitted adapter. Record
-the exact verified rule/argv at M4. If the minimum CLI cannot express this
+`--disallowedTools Bash` if it also disables the one permitted adapter. Keep
+the exact verified rule/argv and version record in §10. If the minimum CLI cannot express this
 restriction, keep wake-ups unavailable and pause for planner/user decision;
 never weaken the rule silently or claim fake-CLI argv tests prove enforcement.
 
-## 7. Wake-up prompt and completion (M1 recommendation)
+## 7. Wake-up prompt and completion
 
 Use the same planner policy as §2, then a per-run envelope capped at **64 KiB
 UTF-8 including policy**. Treat descriptions, file contents and tool results as
-untrusted data, not new authority. Example draft:
+untrusted data, not new authority. Policy shape (the implementation also emits
+the mandatory concrete command card below):
 
 ```text
 CAFF event wake-up <attempt id>; room <id>; observed at <UTC>.
@@ -895,15 +973,15 @@ reassign its outcome to the replacement Goal or trust a final-text claim over
 SQLite. Previously committed P1 writes remain committed after CLI failure;
 CAFF does not roll them back or repeat them.
 
-## 8. Wake-up storage and bounded browser API (M1 recommendation)
+## 8. Wake-up storage and bounded browser API
 
-**Recommend SQLite, not per-run transcript files.** Attempts, hourly accounting,
+**SQLite, not per-run transcript files.** Attempts, hourly accounting,
 occurrence dispositions and transcripts share the instance's existing isolated
 SQLite database. This avoids orphan file indexes and makes quota/deduplication
 survive restarts atomically. Do not store raw logs in room metadata or public
 messages, and do not introduce a task ledger.
 
-Additive schema responsibilities (exact migration names may follow store style):
+Additive tables owned by `PlannerWakeupRepository`:
 
 | Table | Durable facts / indexes |
 | --- | --- |
@@ -917,7 +995,7 @@ publish nothing and spawn nothing. The audit never changes P1 attention
 occurrence identity/resolution rules. A needs-user item stays visible in P1;
 only actual Goal actions or permitted P1 acknowledgements resolve it.
 
-**Retention recommendation:** keep attempt summaries, quota facts and occurrence
+**Retention:** keep attempt summaries, quota facts and occurrence
 claims until separately authorized room deletion/cleanup, matching P1's
 no-background-history-pruning stance. Retain transcript bodies for **30 days**,
 then prune only bodies in small bounded batches; preserve summary, outcome,
@@ -928,7 +1006,7 @@ cleans P2 rows without resetting global sequences. No new general cleanup API.
 
 Cap retained event text per wake-up to **1 MiB**, individual event records to
 64 KiB; preserve first 64 KiB and latest 960 KiB with original chunk order,
-dropped-byte/event counts and a visible truncation marker. Keep stderr detection only in an ephemeral redacted 4 KiB tail. Retained stderr
+dropped-byte counts and a visible truncation marker. Keep stderr detection only in an ephemeral redacted 4 KiB tail. Retained stderr
 diagnostics are fixed classifications/omission markers, not raw child stderr or
 configuration/login dumps. A single unterminated/oversized stream-json line is a
 protocol failure and terminates the child rather than growing memory forever.
@@ -939,11 +1017,11 @@ only a type/count diagnostic. The record is an explicitly bounded sanitized
 transcript, not a claim to preserve every raw byte. Claude Code owns its
 separate session transcript, outside this API and this retention policy.
 
-Proposed room-scoped routes (names are P2 additions, not changes to P1 reads):
+Implemented room-scoped routes (P2 additions, not changes to P1 reads):
 
 | Method / path suffix under `/api/conversations/:id/planner` | Contract |
 | --- | --- |
-| `GET /state` | `{ available, reasonCode, processState, attached, wakeupsEnabled, sessionInitialized, pendingCount, needsUserCount, quota: { used, limit: 4, nextEligibleAt } }`; no transcript/credential; no spawn |
+| `GET /state` | `{ available, reasonCode, processState, attached, wakeupsEnabled, sessionInitialized, wakeupAvailable, wakeupReasonCode, pendingCount, needsUserCount, quota: { used, limit: 4, nextEligibleAt } }`; no transcript/credential; no spawn |
 | `POST /terminal/repair` | Browser user only, ordinary CSRF plus local bind/peer/Host/Origin guards; planner/agent rejected. Body <=1 KiB, exactly `{ "confirm": true }` (one literal key, no duplicates/extra fields); no query. 409 for any in-memory room entry, 404 for missing room/disabled endpoint; otherwise release only that room's lease and return `{ repaired: boolean }`, preserving its session UUID and other rooms. No process kill or spawn. |
 | `POST /terminal/session/reinitialize` | Browser user only; same CSRF, local bind/peer/Host/Origin guards and strict <=1 KiB `{ "confirm": true }` protocol as lease repair; no query, planner/agent rejected, feature-off/non-loopback endpoint absent. Any in-memory entry: 409 `planner_room_busy`; durable lease: 409 `planner_process_exit_unconfirmed`; missing room: 404. Only set `launchAttempted=false`, preserve UUID/opt-in/all other metadata; return `{ reinitialized: boolean }`, false for no metadata/already false. No spawn, kill or lease release; fixed diagnostic only when changed (§3). |
 | `PUT /wakeups` | strict `{ enabled: boolean }`; browser confirmation + ordinary P1 mutation guards; disabling stops future admission, not an already committed attempt or live PTY |
@@ -985,7 +1063,7 @@ The terminal itself defaults to the same dark palette in both CAFF themes
 gray `#9a9a9a`), so the default CLI's ANSI path and trust-selection colors remain
 readable. Toolbar, frame and guidance
 still follow CAFF's theme. CAFF neither reads nor modifies the CLI's theme
-settings; no terminal-palette preference or switch is added in M3. The screen,
+settings; there is no terminal-palette preference or switch. The screen,
 xterm root and viewport share the terminal background, including the fractional
 unused row below the cell grid; do not expose xterm CSS's default black strip.
 
@@ -1010,7 +1088,7 @@ manual connection when needed, no automatic restart. Neither offers lease repair
 or session reinitialization; an unknown failure code retains the fixed generic
 failure explanation. Subsequent socket close must not erase the exit guidance.
 
-M3 must show a **Reinitialize session** confirmation control when the pane's
+The pane shows a **Reinitialize session** confirmation control when the pane's
 last exit carries `planner_session_unavailable`. Say **the session may be
 unavailable**: it may never have saved a message, or its conversation record may
 no longer exist. This exit code is heuristic, not a definitive diagnosis. Explain
@@ -1021,9 +1099,9 @@ live/retained/stopping process may be reset. Do not automatically reconnect or
 send input after confirmation. By the terminal's folder-trust guidance, tell the
 user to select **Yes, I trust this folder** to continue when they trust the
 verified directory. The choice remains the user's; never send an automatic
-answer or default-enter keystroke. M2 supplies the route/contract; M3 implements the pane controls.
+answer or default-enter keystroke.
 
-M3 implementation ownership: `planner-terminal-client.js` owns xterm, live WS,
+Implementation ownership: `planner-terminal-client.js` owns xterm, live WS,
 UTF-8/frame-safe paste chunks, bounded renderer/send buffers and disposal;
 `planner-terminal-pane.js` owns explicit bootstrap/state reads, confirmation
 controls, manual connection and width preference. `planner-terminal.css` styles
@@ -1041,7 +1119,7 @@ reconnect/room switch. OSC 52 (clipboard) and OSC 8 (hyperlinks) are consumed;
 no web-links/clipboard addon or URL/window action is enabled. Client-side
 failure uses browser-valid close code 1000; server policy close codes remain
 as specified in §5. Input stops on termination, but trailing process output is
-drained until exit. M4 wires the user-only per-room wake-up checkbox with a
+drained until exit. The pane wires the user-only per-room wake-up checkbox with a
 subscription-usage confirmation, quota/pending/needs-user/gate explanations, and
 cursor-paged summary/event views. Both record GETs explicitly send the current
 bootstrap CSRF token (shared fetchJson only supplies it automatically on writes).
@@ -1121,8 +1199,8 @@ pre-admission checks. A session-aware fake CLI reproduces missing-transcript
 resume failure, same-UUID reinitialization followed by resume, and duplicate
 `--session-id` exit 1 with unchanged saved data followed by successful resume.
 The fake models the planner's §3 observations; it does not independently verify
-the real CLI. M3 must test both recovery controls and trust/heuristic wording;
-M4 must test missing-record print-mode classification and no unattended retry.
+the real CLI. Pane tests cover both recovery controls and trust/heuristic
+wording; wake-up tests cover missing-record classification and no unattended retry.
 
 ### Automated and UI evidence by milestone
 
@@ -1153,7 +1231,8 @@ uses `buildVerifiedPlannerWakeup()`. This provisional gate allows only the same
 minor/major, prerelease or path containing spaces requires a new planner gate;
 show `planner_wakeup_tools_unverified` and do not run. Fake argv/Bash tests are
 not substituted for this real CLI evidence. Production scheduling/finish/UI
-are implemented in M4b, with real end-to-end acceptance still pending.
+are implemented in M4b and passed planner real end-to-end acceptance at
+`1c7b10e4` (record below); Linux CI remains outstanding.
 
 Current Windows installation's exact trusted adapter prefix (not shell variables):
 
@@ -1206,8 +1285,8 @@ The helper's finish route is **memory-only and test-only**, explicitly returns
 validates its own receipt schema. It is not installed in the production router,
 does not prove quota/membership persistence or production finish acceptance,
 and cannot enable wake-ups. The other reads/actions/messages use real P1
-controllers and authentication. M4b must independently implement/test the real
-receipt boundary; it must not copy this verification seam into production.
+controllers and authentication. Production uses the independently tested
+persistent receipt boundary in §8, not this synthetic verification seam.
 
 Gate checklist: permitted current-room state/full-Goal/attention reads, a
 preconditioned allowed Goal action and attributed owner message, then a finish
@@ -1278,27 +1357,72 @@ acceptance BLOCK**: the model tried unsupported `--help` instead of state/Goal
 reads, and unescaped parentheses caused two locally rejected receipts before
 it succeeded. B1/B2 correction adds the explicit card/escape diagnostics above;
 fake-CLI coverage reads state/full Goal and performs a planner-attributed P1
-ruling plus one production receipt from the card. This is not proof that the
-real model follows the revised prompt; planner revalidation remains required.
-Identical finish idempotency was independently verified (N11). Interactive
-command guidance (N10) remains a non-blocking M5 documentation/prompt follow-up.
+ruling plus one production receipt from the card. The blocked result is retained
+here, not replaced by a false first-run PASS; real revalidation is recorded below.
+Identical finish idempotency was independently verified (N11). N10 uses the
+interactive documentation guide in §4; no runtime prompt change was needed.
+
+### Planner real-CLI acceptance records
+
+These are planner-reported checks on 2026-10-26, not model calls made by the
+implementer or automated suites. Environment: Windows 10.0.19045, Node 24.13.1,
+Edge 155 where applicable, npm-native official Claude Code **2.1.310**, the
+CAFF allowlisted initial environment, isolated random-loopback instances and
+no 3100/3200 access. User-owned CLI configuration/login was used only by the
+planner; no configuration contents, login files or credentials are copied here.
+
+| Record / fixed code | Verified behavior / public review reference |
+| --- | --- |
+| M2 `4b6db58` | Native npm bin resolution/version probe and the version-dependent session/trust/missing-record behavior in §3; guardian lease and same-UUID recovery reviewed. Message `20baffef-5c14-4f1e-ab2e-4b93ae40cbf4`; version-dependent M2 planner observations are retained in §3. |
+| M3 `619164de`, final `f7de4822` | Actual Edge+xterm+node-pty+Claude: initial render, minimal interaction, drag/390px/desktop repaint, retained reconnect, normal exit and resume with the saved answer. In a worktree outside trusted ancestors the trust prompt was visible and answered manually. Final light-theme path/selection readable, `/exit` and resumed Stop neutral, no recovery controls/page errors. Messages `a3757107-3737-41d7-af53-c906113f0c5a`, `843db670-9c97-4ab3-bb2b-92a7830a28fd`. |
+| M4a `7ccdd39e` | Exact argv/prefix adversarial permissions and argument transport gate, including minimal-env Bash, untrusted cwd, approval denials and explicit dontAsk, as recorded verbatim above. Message `cb387b6e-35fe-4396-b080-0e2a1a232b1f`. |
+| M4b first run `c9ba1c2f` | Mechanism passed but model behavior BLOCK, as recorded above; no Goal write. Message `2050f3a9-ee80-4c24-84ce-05d870e879ef`. |
+| M4b revalidation `1c7b10e4` | **PASS**, complete production scheduling/adapter/finish with actual model behavior, detailed below. Message `88dde408-45b4-4a3b-a533-9626a321a81c`. |
+
+M4b revalidation used the same isolated setup/script as the first run:
+
+1. Save a real session by interactive terminal WebSocket, exit normally, and
+   enable per-room wake-ups as browser user. The owner submits a resume proposal.
+2. First **live** wake-up: model calls `state`, `goal read`, then
+   `goal action accept-proposal`. A semicolon in the first reason is locally
+   rejected with the canonical-escape hint; the corrected invocation succeeds.
+   **One** production finish is accepted, disposition handled, P1 item resolved.
+3. The synthetic owner replies immediately, so the unchanged Goal Runner reaches
+   its existing 20-round budget in about 0.1 seconds. Budget exhaustion and its
+   system pause proposal trigger a second **live** wake-up, batched together.
+   The model reads state/Goal, accepts the pause proposal, and submits finish.
+   Budget exhaustion is needs_user: whether to exceed the safety budget or
+   replace the Goal belongs to the user. This does not reset/extend the runner.
+4. Both durable rulings have `ruledBy.kind=planner` (`E2E Planner`). Both init
+   projections contain exactly Bash/Glob/Grep/Read and dontAsk. Quota is **2/4**;
+   the needs_user item does not wake again. Audit records contain neither the
+   planner bearer nor gateway secret. Nine actual tool calls executed once each;
+   duplicate transcript entries had the same tool_use ID, not re-executed calls.
+5. CLI-estimated usage for the interaction and two wakes was **under USD 1** in
+   this fixture. The M4a adversarial gate cost about USD 5.5; neither observation
+   is a price guarantee or production budget setting.
+
+The planner independently reran full checks and gave M4 overall PASS at
+`1c7b10e4`. If later code changes affect runtime behavior, repeat a short real
+smoke at the final SHA; docs-only M5 does not change the reviewed argv/prompt.
+Linux CI and real-CLI checks on other platforms are not inferred from Windows.
 
 ### ADR 0003 “Verify during implementation” checklist
 
-M1 records **methods**, not new real-CLI verification claims. The ADR's prior
-Windows observations are a baseline, not evidence that the future host works.
-The planner/user performs real CLI acceptance on an authorized isolated
-instance; the implementer supplies fake-CLI automation and sanitized commands.
+The following maps the original M1 verification methods to actual evidence.
+Windows planner checks are not Linux evidence. In particular **Linux CI has not
+run**: an authorized push/PR and a successful candidate-pinned CI result are
+still required before integration. The implementer has not run real Claude.
 
-| ADR premise | How to verify / evidence and gate |
+| ADR premise | Current evidence / repeat gate |
 | --- | --- |
-| Required CLI flags on supported minimum | Planner inspects official 2.1.310 help/docs and records version/OS/architecture plus exact flags: --session-id, --resume in TUI and -p, --append-system-prompt, --output-format stream-json, --max-turns, --allowedTools/--disallowedTools and any required --tools/--verbose dependency. In isolated home/session, create once, exit/resume interactively, then print-mode resume; confirm same transcript/session, prompt and cwd without exposing login state. Fake argv tests prove host construction only. Missing/incompatible flags block the affected path; no guessed flag fallback. |
-| Can allowedTools mean caff-only shell? | Planner runs the actual minimal adapter and exact combined tool policy on minimum CLI, Windows and Linux; record the complete fixed invocation prefix. Positive: current-room read, permitted planner action/message and an argument-only `wakeup finish` that actually submits its receipt. Include a finish reason containing shell metacharacters/apostrophes encoded per §7; assert the decoded reason is preserved as text, receipt succeeds and no extra process/file/shell side effect occurs. Negative: malformed/noncanonical quoting, unescaped payload delimiters, oversized JSON, duplicate keys/items, wrong room/attempt, PowerShell, edits, other executables, node -e, path aliases, argument escape/raw-HTTP options, executable `;`/`&&`, pipes, redirects, substitutions, heredocs, multiline commands, MCP/subagents. Assert denial/validation causes no unauthorized effects; payload text is not exempt from testing because it is quoted. Save sanitized argv and outcomes, not credentials. If safe finish is denied or unsafe syntax is permitted, disable wake-ups and pause; fake argv tests do not prove enforcement. |
-| Minimal Windows environment can use Bash | Planner uses the same initial allowlist in an isolated real CLI session, then invokes a harmless Bash read and the current-room caff read once the M4 adapter exists. Merely rendering the TUI is not evidence that Git Bash discovery works. Record outcome without settings/login contents. If discovery requires ProgramFiles, PATHEXT or another path variable, document that observed need and minimally extend/test the allowlist; do not preemptively inherit more environment or provider values. |
-| Untrusted worktree plus print-mode tools | At M4, planner runs the actual restrictive `-p` invocation in a fresh, untrusted worktree, without relying on project-level permissions.allow (which may not apply there). Repeat permitted read/finish and denied unsafe-tool/approval sentinel checks. Interactive directory-trust prompts remain for the user to answer normally in the pane; no automatic trust or approval. If the command-line policy cannot enforce the boundary, leave wake-ups unavailable and pause. |
-| Approval-required tool denied in -p | Planner configures an isolated tool needing approval, with the real restrictive print invocation; verify it is denied/exits boundedly without hanging and without executing the sentinel side effect. No permission prompt auto-answer or bypass flag. Record exit and outcome; fake CLI tests separately cover denial/timeout classification. |
-| node-pty prebuild/compilation | On each supported developer tuple, independent npm ci and fake-CLI PTY smoke; record Node, OS, architecture, node-pty 1.1.0 and prebuild-vs-build result. Windows baseline claims prebuild only for tuples actually tested. Linux CI fresh install with compiler, PTY echo/resize/exit/tree cleanup tests, full checks and CI link pinned to candidate SHA. A missing compiler/prebuild is a failed prerequisite, not a skipped test. |
-| ConPTY full repaint | Planner/user uses real Edge pane on supported Windows builds with CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT=1: stream output, scroll, drag-resize, narrow overlay, detach/reconnect and resume. Check stale fragments/blank frames against expected screen and capture bounded sanitized video/screenshots. Fake PTY tests assert flag/env and resize flow, but cannot establish visual repaint. Record Windows/Node/CLI/terminal-library versions. |
+| Required CLI flags on supported minimum | **Windows PASS**: M2's version/session observations (§3), M3 real TUI/resume and M4a/M4b real print-mode/append/stream-json/verbose/max-turns/tool invocation records above. `tests/runtime/embedded-planner-cli-layout.test.js`, host/session/process suites and wake-up argv tests cover construction/failures, not real permissions. Recheck actual flags/session persistence after CLI upgrades; no guessed fallback. |
+| Can allowedTools mean caff-only shell? | **Windows PASS at 2.1.310**: §10 exact prefix/argv and verbatim M4a eight positive/fifteen negative/dontAsk results; real production finish plus corrected canonical reason in M4b. CLI/HTTP tests cover malformed/noncanonical/oversized/duplicate/wrong-room payloads before writes. Policy remains provisional for 2.1.x >=2.1.310 and whitespace-free prefixes; other versions/paths require a new real gate. Linux real-CLI policy has not been verified. A safe-call denial or unsafe-call success fails closed and requires pause, never broader permissions. |
+| Minimal Windows environment can use Bash | **PASS**: M4a N1 and real M4b caff Bash calls under `buildPlannerEnvironment`; no ProgramFiles/PATHEXT expansion needed. Environment/adapter tests cover key stripping, proxy redaction and direct loopback authentication. Recheck after CLI/Git Bash/platform changes; do not infer success from a rendered TUI. |
+| Untrusted worktree plus print-mode tools | **PASS on Windows**: M4a gate used the fresh `E:\tmp\caff-m4a-gate\wt` without project permissions/settings; N2 confirms -p skips the dialog while explicit restrictions hold. M3 manually answered trust outside trusted ancestors. Do not use inherited ancestor trust as evidence or auto-confirm prompts. |
+| Approval-required tool denied in -p | **PASS on Windows**: M4a mkdir/echo-redirection/git-status and compound commands denied without hanging/sentinel effects; hardened dontAsk positives still pass. No bypass or automatic approval. Fake timeout/denial tests supplement, not replace, this gate. |
+| node-pty prebuild/compilation | **Windows x64 / Node 24.13.1 / node-pty 1.1.0 PASS**: independent npm ci + real PTY/fake CLI echo/resize/exit/descendant/parent-death suites in M2/M3 and independent reviews. **Linux CI NOT RUN**: `.github/workflows/test.yml` specifies Ubuntu/Node 22.19.0, compiler prerequisites, fresh npm ci, required `build/Release/pty.node`, typecheck/full tests/DAG/diff. A successful candidate-pinned CI URL is required after user-authorized publication; workflow existence is not compilation evidence. |
+| ConPTY full repaint | **Windows 10.0.19045 / Edge 155 / CLI 2.1.310 PASS**: M3 records above with real xterm 6.0.0/addon-fit 0.11.0/node-pty 1.1.0, repaint flag, streaming, desktop/390px resize, retained reattach and saved-session resume; final dark terminal within light CAFF is readable without stale fragments. Fake Edge media in Goal evidence supplements the planner observations; it is not proof on other Windows builds. |
 
 A future CLI/tool behavior change reopens these compatibility checks. Numeric
 version success alone does not establish tool confinement or ConPTY correctness.
@@ -1308,8 +1432,9 @@ the evidence rather than silently changing the delegated/safety boundary.
 ## 11. M1 review decisions and document synchronization
 
 The planner accepted all four design recommendations in the M1 review of
-`6e109bc` (2026-10-26), while blocking the contract pending B1/R1 fixes; this is
-not an M1 PASS or authorization to enter M2:
+`6e109bc` (2026-10-26), initially blocking on B1/R1. Those fixes passed at
+`7e950e8`; M2 passed at `4b6db58`, M3 at `f7de4822`, M4a at `7ccdd39e`, and
+M4b at `1c7b10e4`. The accepted design conclusions remain:
 
 1. Bounded wake-up prompt/completion (§7), with needs-user suppression without
    P1 acknowledgement or Goal writes; completion must be argument-only (B1).
@@ -1324,10 +1449,12 @@ not an M1 PASS or authorization to enter M2:
    N2's generated truecolor hint are adopted. N3 leaves the Goal objective's
    “four kinds” text unchanged pending a separately authorized user decision.
 
-M5 updates affected implemented contracts and indexes: backend
-`planner-interface.md` (embedded transport, adapter, P3 review-protocol pointer;
-P1 semantics unchanged), `architecture.md` (host/upgrade/scheduler startup and
-shutdown), frontend `ui-structure.md` (pane ownership/focus/resources), runtime
-index and any affected configuration/build/test guidance. Do not turn this
-candidate into an “implemented” contract before corresponding evidence exists,
-and do not rewrite accepted ADRs to hide discrepancies.
+Synchronized contracts: backend [planner interface](../backend/planner-interface.md)
+(P1 semantics unchanged; embedded transport/adapter and P3 pointer),
+[architecture](../backend/architecture.md) (startup/upgrade/host/scheduler/shutdown),
+frontend [UI structure](../frontend/ui-structure.md) (pane/record ownership and
+focus/resources), [runtime index](index.md), [README](../../../README.md),
+[configuration template](../../../.env.example), and ADR 0003's verification
+index. This is implementation/verification documentation, not a new release
+or a rewrite of accepted decisions. Final docs review, Linux CI and user
+push/PR/merge/acceptance/restart authorizations remain separate.

@@ -67,6 +67,80 @@ random-port instance, temporary SQLite, synthetic executor and in-memory test
 credential; live Windows ACL checks use only the explicitly approved exclusive
 planner-tests directory, never service credentials.
 
+## Embedded Claude Code Planner (P2)
+
+[Embedded planner contract](../runtime/embedded-planner.md) implements
+[ADR 0003](../../decisions/0003-embedded-claude-code-planner.md) over the existing
+[P1 principal/Goal/attention interface](planner-interface.md). This is the
+**official external CLI**, not an Agent SDK session, Room agent or implementer
+model slot. Native Goal Runner/DAG/delegation/delivery/Feishu behavior is unchanged.
+
+- `embedded-planner-runtime.ts` owns the opt-in capability and lifecycle.
+  `CAFF_PLANNER_TERMINAL=1` is effective only on a loopback bind; off means no
+  CLI probe, terminal/wake routes or wake timers. Configuration changes and
+  shared restarts require separate user authorization, never a browser override.
+- After listening and P1 credential initialization, reconcile persisted leases,
+  resolve/check the CLI once, then wire the shared host and wake-up runtime.
+  Terminal minimum: 2.1.310. Wake policy: verified 2.1.x >=2.1.310, exact trusted
+  prefix without whitespace, fixed dontAsk/four tools; incompatible versions
+  fail closed for wakes without unnecessarily disabling a valid terminal.
+  Bootstrap returns capability/version/reason only, never executable paths or
+  planner bearer. CLI settings/login remain the user's, separate from Pi.
+- `embedded-planner-host.ts` owns synchronous per-room/session and global
+  four-process admission, including retained/stopping processes. Each room
+  keeps a reserved UUID and launches in its own verified worktree (unbound:
+  project root, read/plan-only prompt). First interactive launch uses session-id;
+  subsequent launches and all wakes use resume. No agent session-reuse or
+  historical input/output replay is introduced.
+- `server/http/planner-terminal.ts` installs ws/noServer on the HTTP upgrade
+  event. Host/mandatory same-origin Origin/loopback checks precede handshake;
+  first-message CSRF plus limits precede process allocation or data. A second
+  page is refused, not another writer. Detach retains the PTY 30 minutes;
+  explicit Stop, retention expiry and shutdown tear down only its owned tree.
+- PTY and print guardians supervise process trees and parent loss. The lease
+  repository stores guardian PID; startup signal-zero checks release only a
+  proven absent guardian, never kill old PIDs. Unknown/live ownership remains
+  fenced. Browser-only confirmed lease repair and separate same-UUID session
+  reinitialization do not spawn/kill and cannot bypass a live in-memory entry.
+- `planner-wakeup-runtime.ts` subscribes to committed P1 attention, checks the
+  current matching planner-bound Goal/opt-in, and suppresses attached **and
+  retained** PTYs. `PlannerWakeupRepository` atomically reserves claims and
+  rolling quota before spawn; 4/hour/room, 12 turns/10 minutes per attempt.
+  Restart catch-up deduplicates; failures/needs_user are never replayed just
+  because attention is still unresolved. Wakes consume real CLI configured
+  usage; neither the quota nor turn bound is a monetary budget cap.
+- `planner-wakeup-command-card.ts` renders actual-prefix commands and canonical
+  escape examples into the 64-KiB-bounded stdin envelope. The child launches
+  with argv arrays, new allowlisted env and explicit tools/dontAsk/MCP boundary.
+  Runtime checks init's four tools and mode before storing event text. Initial
+  provider keys/session env are stripped; proxies pass through with values
+  redacted; user CLI settings may still choose another billed provider.
+- `lib/caff.ts` / `planner-cli.ts` is a closed current-room P1 adapter. Credentials
+  are read from file only; loopback HTTP bypasses proxies and never retries as
+  user. Canonical encoding/schema/size checks precede credential reads or HTTP.
+  P1 authenticates/attributes actual Goal writes and owner messages. Production
+  finish validates attempt/membership/current state independently, not a generic
+  REST proxy, P1 acknowledgement or P3 review verdict.
+- `embedded-planner-controller.ts` serves protected process state, user-only
+  opt-in/recovery and cursor-paged audit/finish. Three wake tables preserve
+  attempts/items/chunks: sanitized event text <=1 MiB (first 64 KiB/latest
+  960 KiB), body-only expiration after 30 days, persistent summaries/claims/quota.
+  Event-detail responses <=128 KiB; no thinking/tool inputs/results/raw stderr or
+  credentials. CLI's own transcript is outside this API's retention policy.
+
+Shutdown closes WS upgrades/sockets and wake admission first, stops/awaits
+hosted children, finalizes interrupted wake records, then closes SQLite with
+other runtime teardown. A late unconfirmed exit leaves its persisted fence for
+next startup instead of writing to closed storage. P1 authentication is disabled
+during shutdown; no late child may fall back to browser authority.
+
+Verification: `test:embedded-planner` includes host/lease/session/WS/UI/adapter/
+print/scheduler/store/HTTP tests using temporary state, random ports and fake
+CLIs only. Real Edge fake-CLI walkthroughs use `test:planner-terminal-ui` and
+`test:planner-wakeup-ui`. Planner Windows/CLI 2.1.310 real acceptance and exact
+argv are in P2 §10; Linux node-pty compilation/full CI remain an explicit
+candidate-pinned post-authorization gate, not inferred from Windows success.
+
 ## Watch Points
 
 - `server/app/create-server.ts` is the central wiring point. Changes there often

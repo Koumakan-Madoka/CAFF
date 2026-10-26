@@ -10,11 +10,15 @@ Use this index for Pi runtime, prompt, Agent tool, Goal, and DAG integration cha
 - `server/domain/conversation/skill-draft.ts` - digest-to-skill draft extraction and confirmation
 - `server/domain/conversation/turn/*`
 - `server/domain/runtime/agent-tool-bridge.ts`
+- `server/domain/runtime/embedded-planner-*`, `planner-wakeup-*` and the minimal
+  `lib/caff.ts` / `lib/planner-cli.ts` adapter
 - Active project and sandbox propagation into agent runs
 
 ## Pre-Development Checklist
 
 - [ ] Read `agent-runtime.md`
+- [ ] Read `embedded-planner.md` for official CLI/PTY/WS hosting, session/lease
+      recovery, allowlisted env, caff commands, wake scheduling/records and gates
 - [ ] Read `agent-delegation.md` when changing in-room delegation persistence,
       bridge tools, await/yield, recipient side dispatch, cancellation, deadline
       settlement, continuation, or read-context pending projections
@@ -32,6 +36,9 @@ Use this index for Pi runtime, prompt, Agent tool, Goal, and DAG integration cha
 ## Documents
 
 - `agent-runtime.md`: Pi runtime flow, prompt/tool contracts, and safety rules
+- `embedded-planner.md`: ADR 0003 P2 default-off official Claude Code room
+  terminal, process/WS/credential boundaries, user recovery, closed CLI and
+  command card, opted-in quota/claims/audit, real-CLI evidence and Linux CI gate
 - `agent-delegation.md`: durable in-room delegation state, requester identity,
   side-lane execution/cancellation, await/yield, deadlines, continuation, and
   read-context compatibility

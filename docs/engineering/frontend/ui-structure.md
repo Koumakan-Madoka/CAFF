@@ -28,7 +28,7 @@
   [controller guards](../backend/controller-patterns.md) and
   [planner contract](../backend/planner-interface.md).
 
-## Embedded Planner Terminal (P2 M3)
+## Embedded Planner Terminal and Wake-up Records (P2)
 
 - See [embedded planner](../runtime/embedded-planner.md) for process/WS/security
   and recovery contracts. The feature-off header entry stays hidden. Bootstrap's
@@ -68,7 +68,9 @@
   focus. Controls/summary/checkbox labels retain >=44px targets in both themes.
 - xterm 6.0.0 + addon-fit 0.11.0 and their notices are local build assets under
   `/vendor/planner-terminal/`, copied from pinned dependencies with no bundler.
-  M3 displays explicitly disabled wake-up/record controls; M4 supplies them.
+  Both CAFF themes keep a readable dark CLI palette (`#111312` background),
+  including the xterm root/screen/viewport and fractional unused bottom row.
+  The toolbar/frame still follow CAFF theme; no CLI settings are read/modified.
 - `tests/ui/planner-terminal-pane.test.js` and HTTP session tests lock lifecycle,
   authentication gating, fixed diagnostics, confirmations, shell coordination,
   disposal, limits and browser-valid close behavior. Opt-in
@@ -77,6 +79,48 @@
   no real Claude or shared instance. It covers input/output, pointer/keyboard
   sizing, retention/reconnect, second page, room switch, both recovery controls,
   OSC sentinels, light/dark, 820/390/375/320 overlay/focus and a short walkthrough.
+
+### Wake-up controls, records and acceptance boundary
+
+- Feature opt-in is the server's `CAFF_PLANNER_TERMINAL=1` on loopback, off by
+  default; changing shared configuration/restarting requires user authorization.
+  The terminal requires CLI >=2.1.310; wake-ups additionally require verified
+  2.1.x >=2.1.310 and whitespace-free trusted Node/adapter paths. Fixed reasons
+  explain unavailable versions/credentials instead of broadening permissions.
+- The per-room checkbox confirms subscription/provider usage before enabling,
+  is off by default, and only targets the current unfinished planner-bound
+  non-DAG Goal. It cannot implicitly adopt a Goal or grant planner authority.
+  Cancelling sends nothing. Disabling stops future admission, not an active
+  attempt. Init tool checks and version gates remain server-owned.
+- Show pending/needs-user and rolling quota (4 attempts/hour/room), next-eligible
+  time and gate reason. Each wake is at most 12 turns/10 minutes and consumes
+  real CLI configured usage, not a dollar-capped/free background operation.
+  Attached **or retained** PTYs suppress it; closing the pane is not Stop.
+  Pending attention is advisory UI, never keystrokes sent into Claude.
+- Records are read-only cursor-paged summaries and text events, not a public
+  message or second terminal. Both GET paths explicitly attach current bootstrap
+  CSRF (shared fetchJson attaches it automatically only on writes); Host/peer
+  and optional Origin are validated. Browser never receives planner bearer.
+  Use textContent, no HTML/ANSI, and replace the current page on pagination.
+  Event-detail responses <=128 KiB; retained event text <=1 MiB/run; body expiration
+  after 30 days keeps summaries/results/claims/quota. No thinking/tool bodies
+  or raw stderr. Invalidated requests cannot repopulate a closed/switched room.
+- `needs_user` is not P1 resolution or an accepted Goal proposal. The UI must
+  not synthesize Goal mutations or acknowledge an active condition from a
+  receipt. A claimed item is not automatically re-run. Historical records stay
+  readable if a newer CLI disables new wakes; an enabled room can be disabled.
+- Normal exit/Stop use neutral guidance without recovery controls. Session
+  reinitialization is distinct from lease repair, preserves UUID/opt-in and
+  never reconnects. P1 user-only guards still protect both recovery operations.
+- Automated pane/HTTP tests cover the production calls; opt-in
+  `npm run test:planner-wakeup-ui` runs real Edge with fake CLI and actual
+  P1/production finish, covering enable/cancel/suppression/records/paging and
+  narrow/light/dark states. The planner's real Edge/official CLI 2.1.310 terminal
+  and wake-up acceptance is recorded in [P2 §10](../runtime/embedded-planner.md#planner-real-cli-acceptance-records).
+  Fake automation is not real-model behavior evidence or a Linux CI result.
+- Interactive caff command discovery/prefix and the closed command card are
+  documented in [P2 §4](../runtime/embedded-planner.md#interactive-caff-command-guide-n10)
+  (N10 documentation option); no unreviewed runtime prompt change is implied.
 
 ## Conversation Tree Row Layout
 

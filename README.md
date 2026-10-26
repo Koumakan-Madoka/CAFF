@@ -2,7 +2,7 @@
 
 **Claude Code 负责规划，多模型 Agent 负责实现，验收证据说明结果：一个本地 AI 工程执行平台。**
 
-CAFF（Conversational Agent Framework & Playground）基于 **Pi SDK** 构建。外部规划者（目前是 Claude Code）拆解任务、编写 Goal、指派实现者，并按里程碑评审。GPT、GLM、Kimi、DeepSeek 等模型族的 Agent 在独立的 Git worktree 中按 Goal 实现，提交变更与验收证据。方向和关键授权始终在你手里。
+CAFF（Conversational Agent Framework & Playground）基于 **Pi SDK** 构建。独立于实现者的规划者（目前是 Claude Code）拆解任务、编写 Goal、指派实现者，并按里程碑评审。GPT、GLM、Kimi、DeepSeek 等模型族的 Agent 在独立的 Git worktree 中按 Goal 实现，提交变更与验收证据。方向和关键授权始终在你手里。
 
 CAFF 把执行过程中的关键问题放在一起：**谁在执行、改动在哪里、Goal 推进到哪一步、有哪些验收证据、哪些事在等你拍板。**
 
@@ -15,14 +15,14 @@ CAFF 把执行过程中的关键问题放在一起：**谁在执行、改动在�
 | 角色 | 由谁担任 | 负责什么 |
 | --- | --- | --- |
 | 你 | 项目负责人 | 定方向；批准 Goal，以及目标、承诺决策、非目标和验收标准的变更；推送、合并、验收与发布 |
-| 规划者 | Claude Code，在 CAFF 外部运行 | 规划并编写 Goal，指派实现者，跟踪进度，在委托范围内裁决提案，按里程碑评审 |
+| 规划者 | 官方 Claude Code CLI，在用户终端或房间内嵌终端中运行 | 规划并编写 Goal，指派实现者，跟踪进度，在委托范围内裁决提案，按里程碑评审 |
 | 实现者 | Room 里的模型族 Agent，如 GPT | 作为 Goal 负责人实现、记录证据、提出变更，不能裁决自己的提案 |
 
 在规划者驱动的 Goal 里，只有规划者和你能裁决提案，其他 Agent 可以评审、提意见。每个模型族 Agent 以各自身份参与。消息流、工具调用、上下文快照与执行轨迹都可以查看，执行也可以随时停止。
 
 哪些事规划者可以自己决定、哪些必须由你批准，以及后续的推进顺序，见 [ADR 0002](docs/decisions/0002-external-planner-drives-caff.md)。
 
-> 这是 2026-10 确定的新定位，以下配套能力还在开发：规划者身份、待处理队列、`caff` 命令行，以及随仓库发布的 Claude Code 技能。在此之前，Claude Code 通过与 Web 工作台相同的 HTTP API 操作 CAFF，它的操作都记在用户名下。ADR 0002 委托范围内的事由它直接处理，它会在裁决理由和消息开头注明是自己代为处理；保留给你的事仍会逐项问你。这些规则靠 Claude Code 一侧遵守，CAFF 服务端目前并不强制。
+> 本版本已实现 P1 规划者身份、写守卫、Goal 绑定与待处理队列，以及 P2 最小 `caff` CLI、默认关闭的房间内嵌终端和按房间开启的叫醒。规划者通过凭证文件以自己的身份操作，不冒充用户；高风险豁免、已关联 ADR 的承诺决策等仍有直接用户守卫。其他用户保留授权仍须规划者逐项取得，内嵌进程不是 OS 沙箱。结构化评审协议、规划者感知的实现者提示词和跨房间控制台属于 P3。实现/评审不等于已部署；见 [P1 接口](docs/engineering/backend/planner-interface.md)、[ADR 0003](docs/decisions/0003-embedded-claude-code-planner.md) 和 [P2 契约](docs/engineering/runtime/embedded-planner.md)。
 
 ## 为什么是 CAFF
 
@@ -197,21 +197,38 @@ curl http://127.0.0.1:3100/api/health
 | `PI_SQLITE_PATH` | SQLite 数据文件路径 |
 | `PI_PROVIDER` / `PI_MODEL` / `PI_THINKING` | 用户显式指定的运行模型与推理配置；无厂商默认兜底，不替代系统书记选择 |
 | `PI_CHAT_SESSION_REUSE_ENABLED` | Session 复用总开关，设为 `0` 可关闭；未收录于 `.env.example`，可自行添加 |
+| `CAFF_PLANNER_TERMINAL` | `1` 开启 P2 内嵌规划者；默认关闭，仅回环绑定生效，修改共享实例配置/重启须另行授权 |
+| `CAFF_CLAUDE_CLI` | 可选的官方 Claude CLI 单个可执行路径；不设置时从 PATH 查找，不接受 shell 命令 |
+| `CAFF_PLANNER_NAME` / `CAFF_PLANNER_CREDENTIAL_FILE` | P1 规划者显示名及可选绝对凭证文件路径；令牌由服务安全生成/轮换，不手工填入环境 |
 
 基础配置模板见 [`.env.example`](.env.example)，复用策略配置另见 [Session 复用契约](docs/engineering/runtime/agent-session-reuse.md)。凭据留在本地配置中，不要提交到仓库。CAFF 面向可信本地环境；不要未经访问控制与安全评估直接暴露到公网。运行多个实例时，请分别配置端口、数据库与运行目录，不要让多个实例共写同一数据库。
 
 摘要、标题精炼与现场整理共用「系统服务 → 系统书记」中显式保存的模型选择，底层继续使用 PI 模型目录。升级后不会自动迁移旧的隐式默认；未配置时需先选择模型。详见 [模型选择与升级说明](docs/engineering/backend/model-selection.md)。
 
+### 房间里的 Claude Code（P2，默认关闭）
+
+1. 单独安装官方 Claude Code CLI 并完成自己的登录；这不是 Pi 的订阅登录。交互终端要求 **>=2.1.310**。CAFF 不自动安装、升级或确认权限。
+2. 在目标实例的本地配置设 `CAFF_PLANNER_TERMINAL=1`，保持回环绑定。**先取得该实例配置变更与重启授权**；本文不授权重启 3100。启动后，房间页头可打开非模态终端分栏（窄屏覆盖），目录为绑定 worktree，否则为项目根目录、提示只读规划。确认信任前核对路径，至少发送并保存一次消息后才能可靠续接。
+3. 每房间固定一个 CAFF 专用会话 UUID；不要在自己的另一终端 resume 同一 UUID。仅一个页面可连接；关闭分栏只断开，进程保留 30 分钟，全实例最多 4 个。**附着和保留中的终端都会抑制叫醒**；要让叫醒运行，正常退出 CLI 或明确 Stop。正常退出/Stop 后手动连接即可，不需要恢复操作。
+4. 叫醒是另一个默认关闭的**按房间用户确认**开关，仅针对当前规划者绑定、未完成且非 DAG 的 Goal。只响应五类待处理事项，每房间滚动一小时最多 4 次，每次最多 12 turns／10 分钟；使用 CLI 自己的订阅或配置的 provider，**消耗真实用量，不是免费任务，也不是美元金额上限**。只能由用户处理的事项记为 needs_user，不会反复叫醒；配额、原因和脱敏分页记录在面板查看。
+5. 自动叫醒还要求已验证的 **2.1.x 且 >=2.1.310**、可信 Node/适配器前缀路径无空白；其他版本/路径保持 `planner_wakeup_tools_unverified`，等待规划者重跑权限关卡，不扩大权限。终端交互遵循用户 CLI 权限；叫醒固定四个工具、caff-only Bash 和 dontAsk，不能编辑/写文件或运行其他 shell 命令。
+
+**安全与恢复**：WebSocket 校验 Host/Origin，CSRF 令牌只在首消息传递；认证前不启动进程或发送输出。子进程仅继承路径/代理白名单，不继承 provider 密钥或 Claude 会话变量；用户专属 provider/网关/模型偏好放在自己的 `~/.claude/settings.json` 的 `env` 中，CAFF 不读取/改写它。CLI 后续设置仍可选择付费 provider，不能据此保证订阅计费。caff 仅从 P1 凭证文件鉴权、直连固定回环房间，不打印令牌。此边界防浏览器跨源滥用，不隔离同账号本地进程，不支持远程/多用户开放。
+
+崩溃后若旧租约阻断，先确认旧会话进程全已停止，再用**修复租约**；若首次没有保存消息或记录消失导致“会话可能不可用”，在无进程/租约占用时确认**同 UUID 重新初始化**。二者不相互替代、不自动重连；记录若仍存在，CLI 可能拒绝一次初始化，再打开即可 resume。详见 [使用、命令卡与恢复契约](docs/engineering/runtime/embedded-planner.md)。Windows/CLI 2.1.310 已有规划者真机证据；Linux CI 仍需授权发布候选后执行，不能把 Windows PASS 当作 Linux 通过。
+
 ## 架构与扩展
 
 ```text
-Claude Code（规划者） · 浏览器工作台（观察与审批）
-    │ HTTP / SSE
-    ▼
+外部 Claude Code → caff / P1 HTTP     浏览器工作台（观察与审批）
+                  │                    │ HTTP / SSE / 首消息鉴权 WS
+                  ▼                    ▼
 Room · Goal / 证据 / 裁决 · 显式路由 · DAG · 投递与回执
     ├── Pi SDK Host → 模型 Provider / 实现者 Agent 工具
+    ├── 内嵌规划者宿主 → node-pty 交互 / 受限管道叫醒 → 官方 Claude CLI
+    │                       └── caff 适配器 → P1 规划者身份 HTTP
     ├── Git branch / worktree → 任务文件状态
-    └── SQLite → 消息、目标、执行与投递状态
+    └── SQLite → 消息、目标、执行、租约与有界叫醒记录
 ```
 
 - **Skills**：按项目与会话组织工作规范和专门能力。
@@ -230,6 +247,7 @@ Room · Goal / 证据 / 裁决 · 显式路由 · DAG · 投递与回执
 
 ## 深入了解
 
+- [ADR 0003：每房间内嵌 Claude Code](docs/decisions/0003-embedded-claude-code-planner.md) · [内嵌规划者契约与交互 caff 指南](docs/engineering/runtime/embedded-planner.md)
 - [ADR 0002：外部规划者驱动 CAFF](docs/decisions/0002-external-planner-drives-caff.md) · [ADR 0001：Goal 驱动的交付流程](docs/decisions/0001-goal-driven-workflow.md)
 - [工程文档入口](docs/engineering/index.md)
 - [Room 工作区与验收边界](docs/engineering/backend/room-context-workspace.md)
