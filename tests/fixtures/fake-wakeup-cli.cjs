@@ -50,7 +50,31 @@ else {
       const prefix = /Bash\('([^']+)' '([^']+)' state\)/.exec(args[args.indexOf('--allowedTools') + 1]);
       const adapter = prefix[2], { encodePlannerJson } = require(path.join(path.dirname(adapter), 'planner-cli'));
       const call = argv => new Promise((resolve, reject) => execFile(process.execPath, [adapter, ...argv], { env: process.env, timeout: 10000 }, (e, stdout) => e ? reject(e) : resolve(JSON.parse(stdout))));
-      if (mode !== 'no-finish') {
+      if (mode === 'command-card') {
+        // Follow the stdin card, not a hard-coded adapter path from tool argv.
+        // This substitutes the model only; it does not prove CLI permissions.
+        const lines = input.split('\n'), stateLine = lines.find(line => /^'[^']+' '[^']+' state$/.test(line));
+        if (!stateLine) throw new Error('Missing state command card');
+        const cardPrefix = stateLine.slice(0, -6), commands = [];
+        const fromCard = async (template, values = {}) => {
+          let line = lines.find(candidate => candidate === cardPrefix + ' ' + template);
+          if (!line) throw new Error('Missing card command: ' + template);
+          for (const [key, value] of Object.entries(values)) line = line.replace(key, value);
+          const words = [...line.matchAll(/'([^']*)'|([^\s]+)/g)].map(m => m[1] ?? m[2]);
+          commands.push(template.split(' --')[0]);
+          return new Promise((resolve, reject) => execFile(words[0], words.slice(1), { env: process.env, timeout: 10000 }, (e, stdout) => e ? reject(e) : resolve(JSON.parse(stdout))));
+        };
+        const state = await fromCard('state'), view = await fromCard('goal read');
+        const attention = await fromCard('attention read --after <n> --limit <n>', { '--after <n>': '--after 0', '--limit <n>': '--limit 100' });
+        if (state.conversationId !== envelope.roomId || !attention.items.some(i => i.sequence === envelope.items[0].sequence)) throw new Error('Invalid read');
+        const { goal, proposal } = view, reason = "Owner's request (reviewed)";
+        const ruling = await fromCard("goal action --json '<object>'", { '<object>': encodePlannerJson({ action: 'dismiss-proposal', goalId: goal.goalId, goalRevision: goal.revision, proposalId: proposal.id, reason }) });
+        const current = await call(['goal', 'read']);
+        await fromCard("owner message --json '<object>'", { '<object>': encodePlannerJson({ goalId: current.goal.goalId, goalRevision: current.goal.revision, ownerAgentId: current.goal.owner.agentId, content: 'Synthetic card instruction', clientRequestId: 'card-' + envelope.attemptId }) });
+        const finish = await fromCard(`wakeup finish --attempt ${envelope.attemptId} --json '<array>'`, { '<array>': encodePlannerJson(envelope.items.map(i => ({ sequence: i.sequence, disposition: 'handled', reason }))) });
+        fs.writeFileSync(path.join(process.cwd(), 'fake-command-card.json'), JSON.stringify({ commands, conversationId: state.conversationId, goalId: goal.goalId, ruling: ruling.ruling, finish }));
+      }
+      else if (mode !== 'no-finish') {
         const view = await call(['goal', 'read']);
         if (view.goal?.owner?.agentId)
           await call(['owner', 'message', '--json', encodePlannerJson({ goalId: view.goal.goalId, goalRevision: view.goal.revision, ownerAgentId: view.goal.owner.agentId, content: 'Synthetic wake-up instruction', clientRequestId: 'wake-' + envelope.attemptId })]);

@@ -471,8 +471,11 @@ no global/fetch proxy agent, redirects or retries; pin localhost to 127.0.0.1.
 Always send planner intent plus bearer and JSON Content-Type. A 10-second
 request deadline and 8 MiB response cap bound complete Goal reads; oversize is
 an explicit failure, never a truncated successful Goal. stdout is compact JSON;
-stderr is a fixed JSON error code with optional status/safe server code, never
-raw errors, request bodies, credential/path/proxy values. Credential values are
+stderr is a fixed JSON error code with optional status/safe server code. A
+noncanonical JSON argument uses `caff_payload_noncanonical` and may add only
+`escape`, the first required lowercase `\uXXXX` spelling (§7); malformed JSON
+remains `caff_payload_invalid`. Never echo raw errors, payload/key/context text,
+credential/path/proxy values. Credential values are
 redacted even from a misbehaving successful response. 401 requires a new
 explicit invocation (which rereads the file); no automatic write retry or user
 fallback.
@@ -750,6 +753,35 @@ CAFF verifies resolution against current durable state. Plain final prose is
 not an accepted verdict.
 ```
 
+The stdin envelope MUST include a self-contained command card, not merely
+"use caff CLI" or the finish syntax. `planner-wakeup-command-card.ts` renders
+all six §4 commands with the **actual trusted absolute prefix** on each line:
+
+```text
+<prefix> state
+<prefix> goal read
+<prefix> attention read --after <n> --limit <n>
+<prefix> goal action --json '<object>'
+<prefix> owner message --json '<object>'
+<prefix> wakeup finish --attempt <actual attempt UUID> --json '<array>'
+```
+
+These are the only six commands: no `--help`, aliases or undocumented flags.
+Each Bash invocation is exactly one command, with nothing before or after it.
+Document placeholder substitution (never literal shell redirection) and the
+suggested order `state -> goal read -> delegated action -> finish`. Document
+required Goal fields `action,goalId,goalRevision,reason`, current proposalId for
+rulings/supersession, ownerAgentId for set-owner, the closed patch fields and
+one canonical example for **each** allowed action (§4). The owner-message card
+lists all five required fields and an example; finish lists all item fields,
+full batch membership and the actual attempt. Examples use placeholder P1 IDs
+and are explicitly not literal instructions: read complete current Goal/proposal
+and retain collection members before constructing a patch. The card does not
+authorize new actions, blind retries, or treating a denied help probe as proof
+that the documented reads are unavailable.
+
+The card and examples, including the explicit escape table below, count toward
+the existing combined 64 KiB budget; never truncate the command card or policy.
 Include only P1 bounded monitoring projections plus at most 100 attention items
 (each summary at most 500 code points). Fit by dropping whole trailing items
 and mark them **not included/not attempted**, preserving policy and IDs. Supply
@@ -770,12 +802,38 @@ All adapter commands accept their complete input as arguments; a read may need
 no payload, while actions, messages and finish use one `--json` value. Never
 require `--content-stdin`, a temp file or an auxiliary shell command. For the
 Claude Code **Bash** tool on both Windows and POSIX, use one single-quoted,
-compact ASCII-only JSON argument on one physical line. Inside JSON strings,
-encode apostrophe as `\u0027`; encode shell metacharacters (`$`, backtick, `;`,
-`&`, pipe, `<`, `>`, parentheses), controls/newlines and non-ASCII characters as
-JSON `\uXXXX` escapes (surrogate pairs for non-BMP characters). Inside string
-values, double quotes and backslashes specifically use `\u0022` and `\u005c`
-(not the shorter backslash escapes); structural JSON quotes remain literal.
+compact ASCII-only JSON argument on one physical line. The stdin command card
+lists every mandatory string-character substitution individually (not the vague
+term "shell metacharacters"):
+
+| String character | Required spelling |
+| --- | --- |
+| double quote `"` | `\u0022` |
+| backslash `\` | `\u005c` |
+| apostrophe `'` | `\u0027` |
+| dollar `$` | `\u0024` |
+| backtick | `\u0060` |
+| semicolon `;` | `\u003b` |
+| ampersand `&` | `\u0026` |
+| pipe | `\u007c` |
+| less-than `<` | `\u003c` |
+| greater-than `>` | `\u003e` |
+| opening parenthesis `(` | `\u0028` |
+| closing parenthesis `)` | `\u0029` |
+
+All characters outside printable ASCII **0x20–0x7E** use `\uXXXX` with
+**lowercase hex**; U+FFFF and below use one UTF-16 code unit, higher characters
+use surrogate pairs (e.g. `\ud83d\ude42`). Decoded NUL, invalid Unicode and
+controls remain invalid per schema. Structural JSON quotes remain literal;
+string quote/backslash/control values cannot use the shorter JSON escapes.
+The card includes a full prefix plus attempt and this complete encoding example
+(decoded reason is `Owner's request (reviewed)`; replace 42 with included
+sequences, and submit every included item):
+
+```text
+wakeup finish --attempt <id> --json '[{"sequence":42,"disposition":"needs_user","reason":"Owner\u0027s request \u0028reviewed\u0029"}]'
+```
+
 M4a's Bash-to-native-Node probe on Windows showed MSYS can consume a slash from
 the shorter spellings, making a Windows path invalid JSON. The uniform Unicode
 spelling passes both the argv parser and shell transport without extra decoding.
@@ -797,7 +855,18 @@ No tokens, proxy URLs or credential values belong in these arguments or reasons.
 
 The CLI parses JSON once as data, rejecting duplicate JSON keys, unknown keys,
 invalid Unicode, NUL, unsupported/duplicate flags and noncanonical payload
-encoding. Finish accepts only an array with exactly one record per included
+encoding. A syntactically valid but noncanonical JSON argument is rejected
+locally before credential access or HTTP with `caff_payload_noncanonical`.
+If a string character needs a different mandatory spelling, return only the
+first required escape, for example
+`{"ok":false,"code":"caff_payload_noncanonical","escape":"\\u0028"}`.
+No payload, offending key, surrounding text, offsets or parser exception may be
+echoed. Whitespace/duplicate-key or unnecessary-escape mismatches may have no
+escape hint; malformed JSON retains `caff_payload_invalid`. The model can fix
+all noncanonical spellings using the card and make a corrected invocation;
+this is not replay of a write (no request occurred), nor permission to retry
+HTTP conflicts. The encoder and accepted payload language are unchanged.
+Finish accepts only an array with exactly one record per included
 sequence: `{ sequence, disposition: 'handled' | 'needs_user' | 'no_action', reason }`.
 Sequence is a positive safe integer; reason is nonblank, single-line, contains
 no controls and is at most 500 code points after JSON decoding. The CLI maps
@@ -1199,6 +1268,20 @@ are stored and included as paged text events; they never resolve P1 themselves.
 Identical receipts return stored per-item outcomes after exit, conflicting ones
 fail. Missing sessions become needs_user without an unattended retry; all actual
 attempts retain their claims and hourly quota even on crash/failure.
+
+M4b first real end-to-end review (`c9ba1c2f`, planner report 2026-10-26):
+CLI 2.1.310 on an isolated random-loopback instance successfully saved the
+interactive session, launched an opted-in proposal wake, reported the four
+expected tools/dontAsk and persisted a production needs_user receipt, using
+one quota slot with no Goal write or credential disclosure. **Behavioral
+acceptance BLOCK**: the model tried unsupported `--help` instead of state/Goal
+reads, and unescaped parentheses caused two locally rejected receipts before
+it succeeded. B1/B2 correction adds the explicit card/escape diagnostics above;
+fake-CLI coverage reads state/full Goal and performs a planner-attributed P1
+ruling plus one production receipt from the card. This is not proof that the
+real model follows the revised prompt; planner revalidation remains required.
+Identical finish idempotency was independently verified (N11). Interactive
+command guidance (N10) remains a non-blocking M5 documentation/prompt follow-up.
 
 ### ADR 0003 “Verify during implementation” checklist
 

@@ -36,6 +36,54 @@ test('live scheduler -> pipe fake CLI -> actual caff/P1 -> production finish; fi
   await new Promise(r => setTimeout(r, 120));
   assert.equal(f.launches().length, 1);
 });
+test('stdin command card includes all actual-prefix commands, closed action examples and explicit canonical escapes within the total budget', async t => {
+  const f = await fixture(t);
+  await f.call('wakeups', { enabled: true }); f.append();
+  const a = await completed(f), launch = f.launches()[0];
+  const { buildVerifiedPlannerWakeup } = require('../../build/server/domain/runtime/embedded-planner-wakeup-command');
+  const { parsePlannerCommand } = require('../../build/lib/planner-cli');
+  const prefix = buildVerifiedPlannerWakeup({ version: '2.1.310', sessionId: launch.args[2], appendPrompt: '' }).adapterPrefix;
+  for (const suffix of ['state', 'goal read', 'attention read --after <n> --limit <n>', "goal action --json '<object>'", "owner message --json '<object>'", `wakeup finish --attempt ${a.id} --json '<array>'`])
+    assert.ok(launch.prompt.split('\n').includes(prefix + ' ' + suffix), suffix);
+  assert.match(launch.prompt, /Only these six commands/); assert.match(launch.prompt, /no --help/);
+  assert.match(launch.prompt, /state -> goal read -> delegated action -> finish/);
+  assert.match(launch.prompt, /nothing before or after/);
+  const examples = launch.prompt.split('\n').filter(line => line.startsWith(prefix + " goal action --json '") && !line.includes('<object>'));
+  const actions = examples.map(line => {
+    const raw = line.slice((prefix + " goal action --json '").length, -1);
+    return parsePlannerCommand(['goal', 'action', '--json', raw], f.room.id).body.action;
+  });
+  assert.deepEqual(actions.sort(), ['pause','resume','complete','set-owner','accept-proposal','dismiss-proposal','update-delivery','revise'].sort());
+  for (const character of ['"', '\\', "'", '$', '`', ';', '&', '|', '<', '>', '(', ')'])
+    assert.ok(launch.prompt.includes(character + ' -> \\u' + character.charCodeAt(0).toString(16).padStart(4, '0')), JSON.stringify(character));
+  assert.ok(launch.prompt.includes('outside printable ASCII 0x20-0x7E'));
+  assert.ok(launch.prompt.includes('lowercase hex') && launch.prompt.includes('surrogate pairs'));
+  const finishExample = launch.prompt.split('\n').find(line => line.startsWith(prefix + ` wakeup finish --attempt ${a.id} --json '[`));
+  assert.ok(finishExample);
+  const receipt = JSON.parse(finishExample.slice(finishExample.indexOf("--json '") + 8, -1));
+  assert.equal(receipt[0].reason, "Owner's request (reviewed)");
+  assert.match(launch.prompt, /caff_payload_noncanonical/);
+  const policy = launch.args[launch.args.indexOf('--append-system-prompt') + 1];
+  assert.ok(Buffer.byteLength(policy) + Buffer.byteLength(launch.prompt) <= 65536);
+});
+test('fake CLI follows the stdin command card through state, full Goal, delegated proposal ruling and one production finish', async t => {
+  const f = await fixture(t, { mode: 'command-card' });
+  const { proposeSessionGoalAction } = require('../../build/server/domain/conversation/session-goal');
+  const proposal = proposeSessionGoalAction(f.app.store, f.room.id, { action: 'resume', reason: 'Synthetic owner request' }, { agentId: 'owner', agentName: 'Owner' }).proposal;
+  await f.call('wakeups', { enabled: true });
+  const a = await completed(f);
+  assert.equal(a.status, 'succeeded');
+  const trace = JSON.parse(fs.readFileSync(path.join(f.root, 'fake-command-card.json'), 'utf8'));
+  assert.deepEqual(trace.commands, ['state','goal read','attention read','goal action','owner message','wakeup finish']);
+  assert.equal(trace.conversationId, f.room.id); assert.equal(trace.goalId, f.goal.goalId);
+  assert.equal(trace.ruling.proposalId, proposal.id); assert.equal(trace.ruling.ruledBy.kind, 'planner');
+  assert.equal(trace.ruling.ruledBy.plannerId, 'local-planner');
+  assert.equal(trace.finish.items[0].reason, "Owner's request (reviewed)");
+  assert.equal(trace.finish.items[0].disposition, 'handled');
+  assert.equal((await f.call('wakeups/' + a.id)).body.chunks.filter(c => c.kind === 'receipt').length, 1);
+  assert.equal(f.launches().length, 1);
+});
+
 test('redaction preserves envelope keys/identities and the complete policy-plus-envelope stays within 64 KiB',async t=>{
   const f=await fixture(t,{expandingRedaction:true});await f.call('wakeups',{enabled:true});
   for(let i=0;i<100;i++)f.append('proposal_pending',{summary:'goal'.repeat(125)});

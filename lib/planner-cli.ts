@@ -8,7 +8,7 @@ const RESPONSE_BYTES = 8 * 1024 * 1024; // Complete Goal, never a truncated succ
 const ID = /^[A-Za-z0-9_-]{1,200}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export class PlannerCliError extends Error {
-  constructor(readonly code: string, readonly status?: number, readonly serverCode?: string) { super(code); }
+  constructor(readonly code: string, readonly status?: number, readonly serverCode?: string, readonly escape?: string) { super(code); }
 }
 function invalid(code = 'caff_input_invalid'): never { throw new PlannerCliError(code); }
 function text(v: unknown, max = 1000, codePoints = false): asserts v is string {
@@ -28,6 +28,33 @@ function list(v: any, validate: (v: any) => void, max = 100) {
 }
 function stringList(v: any) { list(v, item => id(item, 80), 40); }
 
+function stringEscape(n: number): string | undefined {
+  return n < 32 || n > 126 || /["\\'$`;&|<>()]/.test(String.fromCharCode(n))
+    ? '\\u' + n.toString(16).padStart(4, '0') : undefined;
+}
+// Scan only already-valid JSON strings for a minimal correction hint. Never
+// return keys, surrounding text, offsets, the payload, or a parser exception.
+function firstRequiredEscape(raw: string): string | undefined {
+  let quoted = false;
+  const short: Record<string, number> = { '"': 34, '\\': 92, '/': 47, b: 8, f: 12, n: 10, r: 13, t: 9 };
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (!quoted) { if (c === '"') quoted = true; continue; }
+    if (c === '"') { quoted = false; continue; }
+    if (c === '\\') {
+      const unicode = raw[i + 1] === 'u', length = unicode ? 6 : 2;
+      const n = unicode ? parseInt(raw.slice(i + 2, i + 6), 16) : short[raw[i + 1]];
+      const expected = stringEscape(n);
+      if (expected && raw.slice(i, i + length) !== expected) return expected;
+      i += length - 1;
+    } else {
+      const expected = stringEscape(raw.charCodeAt(i));
+      if (expected) return expected;
+    }
+  }
+  return undefined;
+}
+
 // Parse JSON exactly once, then compare a canonical serialization. Duplicate
 // keys, alternate escapes/whitespace and raw shell delimiters cannot survive
 // this comparison. Data is never evaluated or decoded a second time as code.
@@ -40,8 +67,7 @@ export function encodePlannerJson(value: any, depth = 0): string {
       const c = value[i], n = value.charCodeAt(i);
       // Unicode escapes also avoid MSYS-to-native argv losing a slash from
       // JSON's \" / \\ spellings. Structural JSON quotes remain literal.
-      if (n < 32 || n > 126 || /["\\'$`;&|<>()]/.test(c)) result += '\\u' + n.toString(16).padStart(4, '0');
-      else result += c;
+      result += stringEscape(n) ?? c;
     }
     return result + '"';
   }
@@ -54,7 +80,7 @@ function payload(raw: string) {
   if (Buffer.byteLength(raw) > PAYLOAD_BYTES) invalid('caff_payload_too_large');
   try {
     const value = JSON.parse(raw);
-    if (encodePlannerJson(value) !== raw) invalid('caff_payload_invalid');
+    if (encodePlannerJson(value) !== raw) throw new PlannerCliError('caff_payload_noncanonical', undefined, undefined, firstRequiredEscape(raw));
     return value;
   } catch (error) { if (error instanceof PlannerCliError) throw error; invalid('caff_payload_invalid'); }
 }

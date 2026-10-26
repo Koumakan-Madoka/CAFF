@@ -47,6 +47,15 @@ test('CLI entry exists and canonical payload encoding round-trips Unicode/metach
   assert.ok(encoded.includes('\\u0022') && encoded.includes('\\u005c'));
 });
 
+test('canonical encoder retains the gate-verified spelling for every valid BMP code unit and surrogate pairs', () => {
+  let value = '';
+  for (let n = 1; n <= 0xffff; n++) if (n < 0xd800 || n > 0xdfff) value += String.fromCharCode(n);
+  value += '🙂';
+  const baseline = '"' + value.replace(/[^\x20-\x7e]|["\\'$`;&|<>()]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')) + '"';
+  assert.equal(api().encodePlannerJson(value), baseline);
+  assert.equal(JSON.parse(baseline), value);
+});
+
 test('state, full Goal and bounded room attention use fixed paths, explicit planner intent and only the credential file', async t => {
   const f = await fixture(t);
   for (const [args, expected] of [[['state'], '/api/planner/conversations/room-a/state'], [['goal', 'read'], '/api/conversations/room-a/goal'], [['attention', 'read', '--after', '2', '--limit', '10'], '/api/planner/attention?conversationId=room-a&after=2&limit=10&status=unresolved']]) {
@@ -87,9 +96,39 @@ test('bad commands, rooms, URL/credential overrides, schemas, duplicate keys/fla
   ];
   for (const args of invalid) {
     const r = await f.run(args, { CAFF_PLANNER_CREDENTIAL_FILE: path.join(f.root, 'missing') });
-    assert.notEqual(r.code, 0, JSON.stringify(args)); assert.match(r.stderr, /caff_input_invalid|caff_payload_invalid|caff_payload_too_large/);
+    assert.notEqual(r.code, 0, JSON.stringify(args)); assert.match(r.stderr, /caff_input_invalid|caff_payload_invalid|caff_payload_noncanonical|caff_payload_too_large/);
     assert.equal(f.requests.length, 0, JSON.stringify(args));
   }
+});
+
+test('noncanonical JSON reports only the first required Unicode escape before credential access or HTTP; corrected encoding is accepted', async t => {
+  const f = await fixture(t);
+  for (const character of ['"', '\\', "'", '$', '`', ';', '&', '|', '<', '>', '(', ')', '\n', '中', '🙂']) {
+    const reason = 'private-payload-sentinel' + character + ')';
+    const value = [{ sequence: 1, disposition: 'needs_user', reason }];
+    const r = await f.run(['wakeup', 'finish', '--attempt', attempt, '--json', JSON.stringify(value)], { CAFF_PLANNER_CREDENTIAL_FILE: path.join(f.root, 'missing') });
+    assert.equal(r.code, 1);
+    assert.deepEqual(JSON.parse(r.stderr), { ok: false, code: 'caff_payload_noncanonical', escape: '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0') });
+    assert.equal(r.stdout, '');
+    assert.ok(!r.stderr.includes('private-payload-sentinel'));
+    assert.equal(f.requests.length, 0);
+  }
+  for (const [raw, escape] of [['{"a":"\\u003B"}', '\\u003b'], ['{"a":"\\u0027(\\u0029"}', '\\u0028'], ['{"a":"safe\\u005c(\\u0029"}', '\\u0028'], ['{"a(":"private-key-sentinel"}', '\\u0028']]) {
+    const r = await f.run(['goal', 'action', '--json', raw]);
+    assert.deepEqual(JSON.parse(r.stderr), { ok: false, code: 'caff_payload_noncanonical', escape });
+    assert.equal(f.requests.length, 0);
+  }
+  for (const raw of ['{ "a":1}', '{"a":1,"a":1}', '{"a":"\\u0061"}', '{"a":"\\/"}']) {
+    const r = await f.run(['goal', 'action', '--json', raw]);
+    assert.deepEqual(JSON.parse(r.stderr), { ok: false, code: 'caff_payload_noncanonical' });
+    assert.equal(f.requests.length, 0);
+  }
+  const malformed = await f.run(['goal', 'action', '--json', '{private-malformed-sentinel']);
+  assert.deepEqual(JSON.parse(malformed.stderr), { ok: false, code: 'caff_payload_invalid' });
+  const receipt = [{ sequence: 1, disposition: 'needs_user', reason: "Owner's request (reviewed)" }];
+  const corrected = await f.run(['wakeup', 'finish', '--attempt', attempt, '--json', api().encodePlannerJson(receipt)]);
+  assert.equal(corrected.code, 0, corrected.stderr);
+  assert.deepEqual(f.requests[0].body, { items: receipt });
 });
 
 test('bad or nonliteral instance URL, missing/unsafe room binding and absent/malformed file never use environment tokens', async t => {
