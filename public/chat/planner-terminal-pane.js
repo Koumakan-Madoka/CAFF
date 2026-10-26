@@ -39,6 +39,8 @@
     const listeners = [];
     let roomId = '', capability = {}, epoch = 0, visible = false, operation = false, destroyed = false;
     let phase = 'disconnected', lastCode = '', preferredWidth = 500, pointer = null;
+    let readToken = '', wakeState = {}, recordsBefore = null, recordId = '', recordAfter = 0, recordsHasMore = false, recordHasMore = false;
+    const wakeInput = /** @type {HTMLInputElement} */ (q('wakeups'));
     try { const saved = Number(localStorage.getItem('caff:planner-terminal-width')); if (saved >= 320 && saved <= 900) preferredWidth = saved; } catch {}
     function listen(target, event, fn) { target.addEventListener(event, fn); listeners.push(() => target.removeEventListener(event, fn)); }
     function notice(text) { q('notice').textContent = text; }
@@ -49,6 +51,22 @@
       button('repair').hidden = lastCode !== 'planner_process_exit_unconfirmed';
       button('reinitialize').hidden = lastCode !== 'planner_session_unavailable';
       button('repair').disabled = button('reinitialize').disabled = operation || ['connecting','authenticating','attached','stopping'].includes(phase);
+      wakeInput.disabled = operation || (!wakeState.wakeupAvailable && !wakeState.wakeupsEnabled);
+      button('records').disabled = operation || !readToken;
+      button('records-next').disabled = operation || !recordsHasMore;
+      button('record-next').disabled = operation || !recordHasMore;
+      for (const row of q('record-list').querySelectorAll('button')) row.disabled = operation;
+    }
+    function showWakeState(state) {
+      wakeState = state; wakeInput.checked = !!state.wakeupsEnabled;
+      const reasons = { planner_wakeup_tools_unverified: '叫醒工具策略未验证：仅支持已验证的 2.1.x（至少 2.1.310）且可信路径无空格；需规划者重新验证。', planner_wakeup_credential_unavailable: '叫醒凭证文件不可用，请检查本机规划者凭证。', planner_wakeup_goal_unbound: '只有当前规划者绑定的未完成 Goal 可以开启叫醒。', planner_wakeup_storage_unavailable: '叫醒存储不可用，已停止后续叫醒；请检查本机实例。', session_uninitialized: '请先打开终端并保存一次会话；初始化前不会叫醒。' };
+      q('wake-status').textContent = `待处理 ${state.pendingCount || 0}；需要用户 ${state.needsUserCount || 0}；小时用量 ${state.quota?.used || 0} / 4。` + (reasons[state.wakeupReasonCode] || '') + ' 终端在线或仍在保留期时不叫醒。';
+      controls();
+    }
+    function clearRecords() {
+      recordsBefore = null; recordId = ''; recordAfter = 0; recordsHasMore = recordHasMore = false;
+      q('record-panel').hidden = true; q('record-list').replaceChildren(); q('record-output').textContent = ''; q('record-title').textContent = '';
+      button('records-next').disabled = button('record-next').disabled = true;
     }
     function setStatus(next, code = '') {
       // A socket close after an exit/error must not erase the actionable reason.
@@ -62,7 +80,7 @@
     const client = clientFactory({ screen, onState: setStatus,
       onReady(message) { lastCode = ''; notice(message.resumed ? '已续接同一会话；仅显示后续输出，不回放历史。' : '正在初始化同一房间会话；若目录可信，请自行选择 Yes, I trust this folder（默认可能为 No, exit）。CAFF 不会自动确认。'); controls(); },
       onExit(message) { setStatus('exited', message.reasonCode || 'planner_process_exited'); },
-      onAttention(message) { if (Number.isSafeInteger(message.unresolvedCount)) notice(`有 ${message.unresolvedCount} 条待处理事项，请读取当前状态；不会注入终端输入。`); },
+      onAttention(message) { if (Number.isSafeInteger(message.unresolvedCount)) { showWakeState({ ...wakeState, pendingCount: message.unresolvedCount, needsUserCount: message.needsUserCount }); notice(`有 ${message.unresolvedCount} 条待处理事项，请读取当前状态；不会注入终端输入。`); } },
       focusToolbar() { button('close').focus(); } });
     function widthLimit() {
       const side = document.getElementById('sidebar')?.getBoundingClientRect().width || 0;
@@ -87,7 +105,7 @@
       applyWidth();
     }
     function close(restoreFocus = true) {
-      epoch++; visible = false; operation = false; pointer = null;
+      epoch++; visible = false; operation = false; pointer = null; readToken = ''; clearRecords();
       client.dispose(); phase = 'disconnected';
       pane.hidden = true; pane.inert = true; pane.setAttribute('aria-hidden', 'true');
       toggle.setAttribute('aria-expanded', 'false');
@@ -102,8 +120,10 @@
       if (!boot.plannerTerminal?.enabled) { close(); toggle.hidden = true; return null; }
       const token = boot.apiSecurity?.csrfToken;
       if (typeof token !== 'string' || !token) throw new Error('missing bootstrap');
+      readToken = token;
       const state = await fetchJson(`/api/conversations/${encodeURIComponent(id)}/planner/state`, { headers: { 'X-CAFF-CSRF-Token': token } });
       if (!isCurrent(id, version)) return null;
+      showWakeState(state);
       return { state, token, capability: boot.plannerTerminal };
     }
     async function connect() {
@@ -155,6 +175,52 @@
       } catch (error) { if (isCurrent(id, version)) setStatus('unavailable', error.code); }
       finally { if (isCurrent(id, version)) { operation = false; controls(); } }
     }
+    async function toggleWakeups() {
+      const enabled = wakeInput.checked, id = roomId, version = epoch;
+      wakeInput.checked = !!wakeState.wakeupsEnabled;
+      if (!visible || operation || (enabled && !confirm('自动叫醒会消耗 Claude 订阅额度，每房间每小时最多 4 次，仅处理当前规划者 Goal 的指定事项。终端在线或保留期间不运行。确认开启？'))) return;
+      operation = true; controls();
+      try {
+        await fetchJson(`/api/conversations/${encodeURIComponent(id)}/planner/wakeups`, { method: 'PUT', body: { enabled } });
+        if (isCurrent(id,version)) { wakeState.wakeupsEnabled = enabled; wakeInput.checked = enabled; }
+      } catch { if (isCurrent(id,version)) q('wake-status').textContent = '叫醒设置未确认，请手动刷新状态；不会自动重试。'; }
+      finally { if (isCurrent(id,version)) { operation = false; controls(); } }
+    }
+    async function readRecords(before = null) {
+      if (!visible || operation) return;
+      const id = roomId, version = epoch; operation = true; controls();
+      try {
+        const page = await fetchJson(`/api/conversations/${encodeURIComponent(id)}/planner/wakeups` + (before === null ? '' : `?before=${before}`), { headers: { 'X-CAFF-CSRF-Token': readToken } });
+        if (!isCurrent(id,version)) return;
+        q('record-panel').hidden = false; q('record-list').hidden = false; q('record-list').replaceChildren(); q('record-output').textContent = '';
+        q('record-title').textContent = '叫醒摘要（正文保留 30 天；显示内容可能已截断）';
+        recordsBefore = page.nextBefore; recordsHasMore = !!page.hasMore; recordId = ''; recordAfter = 0; recordHasMore = false;
+        for (const item of page.items || []) {
+          const row = document.createElement('button'); row.type = 'button'; row.className = 'ghost-button';
+          row.textContent = `${item.reservedAt} · ${item.status} · ${item.summary}`;
+          row.addEventListener('click', () => { recordId = item.id; recordAfter = 0; void readRecord(); }); q('record-list').append(row);
+        }
+      } catch { if (isCurrent(id,version)) q('record-title').textContent = '记录读取失败，请手动重试。'; }
+      finally { if (isCurrent(id,version)) { operation = false; controls(); client.fit(); } }
+    }
+    async function readRecord() {
+      if (!visible || operation || !recordId) return;
+      const id = roomId, version = epoch, attempt = recordId; operation = true; controls();
+      try {
+        const page = await fetchJson(`/api/conversations/${encodeURIComponent(id)}/planner/wakeups/${encodeURIComponent(attempt)}?afterChunk=${recordAfter}`, { headers: { 'X-CAFF-CSRF-Token': readToken } });
+        if (!isCurrent(id,version) || recordId !== attempt) return;
+        q('record-title').textContent = `${page.summary?.status || ''}${page.summary?.reasonCode ? ' · ' + page.summary.reasonCode : ''}${page.truncated ? ' · 正文已截断' : ''}${page.transcriptExpired ? ' · 正文已过期' : ''}`;
+        q('record-list').hidden = true;
+        q('record-output').textContent = (page.chunks || []).map(item => `[${item.kind}] ${item.text}`).join('\n');
+        recordAfter = page.nextAfter; recordHasMore = !!page.hasMore;
+      } catch { if (isCurrent(id,version)) q('record-title').textContent = '事件读取失败，请手动重试。'; }
+      finally { if (isCurrent(id,version)) { operation = false; controls(); client.fit(); } }
+    }
+    listen(wakeInput, 'change', () => { void toggleWakeups(); });
+    listen(button('records'), 'click', () => { void readRecords(); });
+    listen(button('records-next'), 'click', () => { void readRecords(recordsBefore); });
+    listen(button('record-next'), 'click', () => { void readRecord(); });
+    listen(button('records-close'), 'click', () => { clearRecords(); client.fit(); button('records').focus(); });
     listen(toggle, 'click', () => { if (visible) close(); else void open(); });
     listen(button('close'), 'click', () => close());
     listen(pane, 'caff-terminal-close', () => close());

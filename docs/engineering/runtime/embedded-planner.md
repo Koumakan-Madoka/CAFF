@@ -432,7 +432,7 @@ ignored. The following suffixes are the complete interface:
 | `attention read` | Optional `--after <nonnegative integer>`, `--limit <1..500>` (defaults 0/100); fixed room filter and `status=unresolved`; no wait, portfolio, other-room or resolve escape |
 | `goal action --json '<object>'` | P1 POST Goal; allowed actions: pause, resume, complete, set-owner, accept-proposal, dismiss-proposal, update-delivery, revise. Always supply goalId/goalRevision and nonblank reason (<=1000 UTF-16 code units); null/0 means no current Goal. Rulings and literal supersedeProposal=true also require proposalId. set-owner requires ownerAgentId. No self-selected principal. |
 | `owner message --json '<object>'` | Exactly goalId, goalRevision, ownerAgentId, content (nonblank single-line <=4000 UTF-16 code units, no `@`), clientRequestId. Read complete current Goal, reject a changed Goal/revision/owner without posting, then append a pure trailing `@<ownerAgentId>` and use the ordinary P1 messages endpoint. No arbitrary recipient/image/raw routing arguments. |
-| `wakeup finish --attempt <uuid> --json '<array>'` | §7 array -> fixed room/attempt finish route with `{items:[...]}`. M4a implements the client only; the production durable endpoint remains M4b. Missing endpoint is an ordinary non-retried error, not synthetic success. |
+| `wakeup finish --attempt <uuid> --json '<array>'` | §7 array -> fixed room/attempt finish route with `{items:[...]}`. M4a introduced the client; M4b supplies the production durable endpoint in §8. The original gate helper remains explicitly synthetic, never a fallback on a missing production endpoint. |
 
 Goal patches use a closed **subset** of P1: factual workItems `{id,status}`,
 criteria `{id,status,evidenceRefs}`, evidence
@@ -656,7 +656,7 @@ receipts and are not enough to prevent duplicate attempts.
 
 ### Invocation and tools
 
-Wake-up command shape (candidate flag spelling must be checked under §10):
+Wake-up command shape (verified gate and exact runtime argv in §10):
 
 ```text
 <cli> -p --resume <room uuid> --output-format stream-json
@@ -664,6 +664,8 @@ Wake-up command shape (candidate flag spelling must be checked under §10):
       --tools <explicit minimal tool set>
       --allowedTools <read-only tools and exact caff-only Bash rule>
       --disallowedTools <edit/write/PowerShell/other unsafe tools>
+      --strict-mcp-config --mcp-config '{"mcpServers":{}}'
+      --permission-mode dontAsk
 ```
 
 The **CAFF host** writes the bounded wake-up prompt to its child's stdin pipe,
@@ -689,6 +691,14 @@ Python, curl, git, package managers, shell expansion, arbitrary script paths or
 raw HTTP escape. Disable Write, Edit, NotebookEdit, PowerShell and other
 non-allowlisted tools (including configured MCP/task/subagent/browser tools).
 A denied approval in print mode ends as denied/needs-user, never as approval.
+Runtime pins `dontAsk`; it does not inherit an interactive auto/default permission
+mode. The verified tool boundary is provisionally valid only for numeric CLI
+2.1.x versions >=2.1.310 and trusted adapter-prefix paths without whitespace.
+Other versions or space-bearing paths fail closed with
+`planner_wakeup_tools_unverified`, without disabling the interactive terminal.
+The envelope is sent only via stdin followed by EOF. Variadic options each have
+one explicit argument followed by another option (or argv end), never a positional
+prompt that could be consumed as another tool/config value.
 The local-account/CLI permission system is not an OS sandbox.
 
 **Do not assume `Bash(caff:*)` is sufficient.** Bash permissions match command
@@ -849,8 +859,9 @@ cleans P2 rows without resetting global sequences. No new general cleanup API.
 
 Cap retained event text per wake-up to **1 MiB**, individual event records to
 64 KiB; preserve first 64 KiB and latest 960 KiB with original chunk order,
-dropped-byte/event counts and a visible truncation marker. Cap stderr diagnosis
-to a redacted 4 KiB tail. A single unterminated/oversized stream-json line is a
+dropped-byte/event counts and a visible truncation marker. Keep stderr detection only in an ephemeral redacted 4 KiB tail. Retained stderr
+diagnostics are fixed classifications/omission markers, not raw child stderr or
+configuration/login dumps. A single unterminated/oversized stream-json line is a
 protocol failure and terminates the child rather than growing memory forever.
 Drain pipes even when retention is full. Never persist thinking/reasoning,
 credentials, authorization headers, raw environment or login/config contents.
@@ -961,9 +972,17 @@ reconnect/room switch. OSC 52 (clipboard) and OSC 8 (hyperlinks) are consumed;
 no web-links/clipboard addon or URL/window action is enabled. Client-side
 failure uses browser-valid close code 1000; server policy close codes remain
 as specified in §5. Input stops on termination, but trailing process output is
-drained until exit. M3's wake-up toggle/record entry are explicitly disabled and
-labelled not yet enabled, pending M4 endpoints and scheduling; they perform no
-writes. N6 recovery/state reads of corrupt session metadata return fixed 409
+drained until exit. M4 wires the user-only per-room wake-up checkbox with a
+subscription-usage confirmation, quota/pending/needs-user/gate explanations, and
+cursor-paged summary/event views. Both record GETs explicitly send the current
+bootstrap CSRF token (shared fetchJson only supplies it automatically on writes).
+Record and receipt text uses textContent only;
+no HTML/ANSI execution or accumulated browser transcript. Next page replaces the
+current bounded page. Room switch/close clears record DOM and invalidates stale
+requests; it never reconnects or injects terminal input. A retained PTY still
+suppresses wake-ups. Records remain readable when a newer CLI version makes
+new wake-ups unavailable; an already-enabled room can still be disabled.
+N6 recovery/state reads of corrupt session metadata return fixed 409
 `planner_session_unavailable`, without resetting it or exposing stored data.
 
 Diagnostics use stable codes and bounded fixed explanations, not raw child
@@ -985,7 +1004,7 @@ by the existing P1 protected-path diagnostic, not broadcast to the browser.
 | `planner_process_exited` | Neutral normal-exit guidance; manual connection to the same session, no automatic restart or recovery buttons |
 | `planner_process_stopped` | Neutral CAFF-initiated stop (terminate/retention/shutdown), independent of exit code; same UUID, no automatic restart or recovery buttons |
 | `planner_process_spawn_failed`, `planner_process_exit_unconfirmed` | Release only on proven failure/exit; otherwise quarantine room/slot |
-| `planner_wakeup_credential_unavailable`, `planner_wakeup_tools_unverified`, `session_uninitialized` | Wake-ups unavailable/deferred with visible reason; no user-principal or broader-tool fallback |
+| `planner_wakeup_credential_unavailable`, `planner_wakeup_tools_unverified`, `planner_wakeup_storage_unavailable`, `session_uninitialized` | Wake-ups unavailable/deferred with visible reason; no user-principal or broader-tool fallback |
 | `planner_wakeup_rate_limited`, `planner_wakeup_timeout`, `planner_wakeup_stream_invalid` | Preserve record/pending state; no recursive retry |
 
 Expected busy/deferral is not a fabricated completed wake-up. Record actual
@@ -1055,13 +1074,17 @@ node-pty and run applicable tests. Real-browser proof uses a temporary instance
 and fake CLI, keeping bounded screenshots/video/logs in system temp, not the
 worktree. No live 3100/3200 probe or real subscription/model call by automation.
 
-### M4a candidate invocation and real-CLI gate record
+### M4 invocation and real-CLI gate record
 
-**Candidate, awaiting planner real-CLI verification.** No unattended launcher,
-scheduler, wake-up persistence, browser API or UI wiring is added in M4a.
-`buildPlannerWakeupCandidate()` returns `verified:false`; it is not called by
-the runtime and cannot enable wake-ups. Fake argv or Bash transport tests do
-not establish Claude Code permission enforcement.
+**Verified by the planner on 2026-10-26, Claude Code 2.1.310**, including the
+explicit dontAsk hardening below. M4a's original candidate builder remains
+available with `verified:false` solely for reproducing that gate; M4b runtime
+uses `buildVerifiedPlannerWakeup()`. This provisional gate allows only the same
+2.1 minor line >=2.1.310 and whitespace-free trusted prefix paths. A different
+minor/major, prerelease or path containing spaces requires a new planner gate;
+show `planner_wakeup_tools_unverified` and do not run. Fake argv/Bash tests are
+not substituted for this real CLI evidence. Production scheduling/finish/UI
+are implemented in M4b, with real end-to-end acceptance still pending.
 
 Current Windows installation's exact trusted adapter prefix (not shell variables):
 
@@ -1075,7 +1098,8 @@ prefix and argv in the planner gate result; never silently replace the executabl
 with PATH `node`/`caff`. Unsupported shell/permission-pattern metacharacters in
 installation paths fail closed, rather than broadening a rule.
 
-Exact candidate arguments after the resolved official claude executable/prefix:
+Exact final runtime arguments after the resolved official claude executable/prefix
+(the review-tested original candidate plus explicit dontAsk):
 
 ```json
 [
@@ -1085,7 +1109,8 @@ Exact candidate arguments after the resolved official claude executable/prefix:
   "--tools", "Read,Glob,Grep,Bash",
   "--allowedTools", "Read,Glob,Grep,Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' state),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' goal read),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' attention read*),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' goal action --json *),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' owner message --json *),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' wakeup finish --attempt * --json *)",
   "--disallowedTools", "Write,Edit,NotebookEdit,MultiEdit,PowerShell,Agent,Task,Skill,WebFetch,WebSearch,ToolSearch,mcp__*",
-  "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}"
+  "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+  "--permission-mode", "dontAsk"
 ]
 ```
 
@@ -1126,9 +1151,54 @@ tool. Check minimal-env Git Bash discovery (N1) and bounded approval denial.
 If permitted finish cannot run or any unsafe operation can run, leave wake-ups
 unavailable and pause. Do not compensate with broader permissions or settings.
 
-Planner result (version/platform, exact prefix/argv, positive/negative outcomes,
-N1/approval checks and sanitized evidence): **pending**. M4b begins only after
-this gate passes; Linux real-CLI/CI evidence remains separate.
+Planner result: **PASS** on M4a `7ccdd39e1a875a0fef5ce51ffc4a3f84f355d41e`.
+The following is the planner's verbatim gate record (2026-10-26); it is not an
+implementer claim to have run real Claude. Gate-only fork/no-persistence/budget
+flags below are not added to production wake-ups, which must persist the room
+session. Linux real-CLI/CI evidence remains separate.
+
+**真机关卡记录**（请原样写进契约 §10 的 M4 关卡记录）：
+- **环境**： - Windows 10 19045、Node 24.13.1、npm 原生 Claude Code 2.1.310； - 子进程环境由 `buildPlannerEnvironment` 生成，用的是你的关卡夹具提供的 CAFF_BASE_URL、ROOM 和凭证文件； - 工作目录是从评审克隆新建的 git worktree `E:\tmp\caff-m4a-gate\wt`，不在任何受信任的上级目录下，也没有项目级的 Claude 设置； - 基础会话用一次 print 轮次建立。每个用例在候选 argv 之后追加 `--fork-session --no-session-persistence --max-budget-usd 0.5`，这些参数不影响权限判断； - 适配器前缀是评审克隆的实际路径：`'E:/nodejs/node.exe' 'C:/Users/ZN/AppData/Local/Temp/caff-p2-m2fix-review.EEMO/repo/build/lib/caff.js'`。
+- **init**：每次运行的工具列表都恰好是 `Bash, Glob, Grep, Read`，权限模式是 `default`。
+- **正例（8 个，全部成功，0 次拒绝）**： - `state`、`goal read`、`attention read`； - `goal action` 驳回提案：理由里的 `; & | $ \` ' " () <> 中文 🙂` 逐字保留，裁决人记为 planner； - `owner message`：以规划者身份发出； - `wakeup finish`：回执理由逐字保留； - Read、Grep。
+- **反例（15 个，全部被权限系统拒绝，没有任何哨兵副作用）**： - 需要审批的 `mkdir`、`echo >`、`git status` 在 `-p` 下直接被拒，不会挂起； - 可信前缀后接 `;`、`&&`、`|`、`>`、`$()`、换行、`&`、反引号，以及通配规则后接 `;`，都被拒； - `node -e`、同一个 node 路径接别的脚本、经 Bash 调 PowerShell，都被拒。
+- **禁用工具**：Write、PowerShell、WebSearch、WebFetch 不在 init 工具列表里，模型没有发出任何调用。用户级设置里虽然允许 WebSearch，也被 `--tools` 和 `--disallowedTools` 挡住了。
+- **N1**：在允许列表环境下 Bash 工具正常工作，不需要扩展允许列表。
+- **N2**：`-p` 会跳过信任对话框；不依赖任何项目权限，策略照样成立。
+- **加固验证**：再追加 `--permission-mode dontAsk` 后，8 个正例全部通过，`git status` 和 `;` 复合命令以「don't ask mode」被拒。
+- **花费**：约 38 次运行，CLI 估算约 5.5 美元，单次最长 13 秒。
+
+M4b implementation details: the scheduler subscribes to P1 after-commit attention
+and host slot-release notifications, with a bounded 1024-room FIFO and durable
+re-scans. Busy/quota intents remain pending; a minute maintenance scan also finds
+opt-ins beyond a full queue and prunes bounded old-body batches. Only untrusted text is redacted before envelope serialization: keys, UUIDs and
+other identities are not corrupted by coincidental matches with a short secret.
+The combined append-policy plus stdin envelope is bounded to 64 KiB, measured
+after text redaction/truncation, before selecting/claiming the bounded batch.
+Room metadata,
+Goal binding, session and quota are rechecked under admission; claims/quota
+commit in an immediate SQLite transaction before launch. An opt-out does not
+cancel an already-reserved attempt. No Goal Runner/DAG scheduling rule changes. Known SQLite faults disable further
+wake-up admission with a fixed `planner_wakeup_storage_unavailable` diagnostic,
+not an unhandled timer/event rejection or automatic write replay.
+Print mode uses a separate pipe guardian, the same allowlist/admission path and
+owned tree teardown (Windows non-detached Node/libuv job plus taskkill; POSIX
+process group). Parent loss, explicit stop, natural exit and inherited-pipe
+cleanup are tested with synthetic descendants. Closed-store late exits retain their
+persisted fence for startup reconciliation rather than writing to closed SQLite.
+A 10-minute wall bound and
+64 KiB line bound stop malformed/hanging processes. Unknown/init mismatch,
+thinking, tool input/result/config and raw stderr bodies are not retained.
+Init must report exactly Bash/Glob/Grep/Read and dontAsk; an incompatible init
+makes subsequent wakes unavailable. Sanitized text and fixed result diagnostics
+are retained in UTF-8-safe chunks with first-64-KiB/latest-960-KiB bounds.
+Finish has an independent strict compact UTF-8 `{items:[...]}` HTTP wrapper
+(the adapter's JSON.stringify output, not ASCII shell quoting), rejecting duplicate
+keys/alternative encodings before its atomic membership/state check. Receipts
+are stored and included as paged text events; they never resolve P1 themselves.
+Identical receipts return stored per-item outcomes after exit, conflicting ones
+fail. Missing sessions become needs_user without an unattended retry; all actual
+attempts retain their claims and hourly quota even on crash/failure.
 
 ### ADR 0003 “Verify during implementation” checklist
 

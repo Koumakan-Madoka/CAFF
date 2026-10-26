@@ -6,7 +6,7 @@ import { EmbeddedPlannerRepository } from '../../../storage/chat/embedded-planne
 import { launchPlannerPty } from './embedded-planner-pty';
 
 export type PlannerLaunch = { cli: PlannerCli; args: string[]; cwd: string; env: NodeJS.ProcessEnv; cols: number; rows: number };
-export type PlannerProcess = EventEmitter & { guardianPid?: number; write(data: string): void; resize(cols: number, rows: number): void; stop(): void };
+export type PlannerProcess = EventEmitter & { guardianPid?: number; write(data: string): void; resize(cols: number, rows: number): void; stop(force?: boolean): void };
 export type TerminalEvent = { type: string; [key: string]: unknown };
 type Listener = (event: TerminalEvent) => void;
 type Entry = {
@@ -31,6 +31,8 @@ export function createEmbeddedPlannerHost(options: Options) {
   const cancel = options.clearTimer || clearTimeout;
   const now = options.now || (() => performance.now());
   let closing = false;
+  const changes = new Set<() => void>();
+  function changed() { for (const fn of changes) fn(); }
   function state(id: string): string {
     return entries.get(id)?.state || (repository.hasLease(id) ? 'uncertain' : 'absent');
   }
@@ -46,7 +48,7 @@ export function createEmbeddedPlannerHost(options: Options) {
     if (entry.retention) cancel(entry.retention);
     if (entry.leaseId) repository.release(id, entry.leaseId);
     entry.listener = undefined;
-    entries.delete(id); entry.end();
+    entries.delete(id); entry.end(); changed();
   }
   function admit(id: string): Entry {
     if (closing || entries.has(id)) throw plannerError('planner_room_busy');
@@ -216,6 +218,9 @@ export function createEmbeddedPlannerHost(options: Options) {
     if (timer) clearTimeout(timer);
     // Any uncertain leases deliberately survive; the next boot cannot overlap them.
   }
-  return { attach, startHeadless, state, close, hasEntry: (id: string) => entries.has(id), canWake: (id: string) => !closing && state(id) === 'absent' };
+  return { attach, startHeadless, state, close,
+    onChange(fn: () => void) { changes.add(fn); return () => { changes.delete(fn); }; },
+    attention(id: string, data: { sequences: number[]; unresolvedCount: number; needsUserCount: number }) { entries.get(id)?.listener?.({ type: 'attention', ...data }); },
+    hasEntry: (id: string) => entries.has(id), canWake: (id: string) => !closing && state(id) === 'absent' };
 }
 export type EmbeddedPlannerHost = ReturnType<typeof createEmbeddedPlannerHost>;

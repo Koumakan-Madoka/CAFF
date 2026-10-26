@@ -90,6 +90,10 @@ body.chat-app .planner-terminal-help summary { display: flex; align-items: cente
 body.chat-app .planner-terminal-help p { margin: 4px 0; overflow-wrap: anywhere; }
 body.chat-app .planner-terminal-wakeups label { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 12px; }
 body.chat-app .planner-terminal-wakeups input { width: 16px; height: 16px; }
+body.chat-app .planner-terminal-record-panel { flex: 0 0 auto; max-height: 280px; overflow: auto; border: 1px solid var(--caff-border); padding: 4px; }
+body.chat-app .planner-terminal-record-panel button { min-height: 44px; overflow-wrap: anywhere; }
+body.chat-app #planner-terminal-record-list { display: flex; flex-direction: column; gap: 4px; }
+body.chat-app #planner-terminal-record-output { max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 @media (max-width: 1099px) {
   body.chat-app .planner-terminal-pane {
     position: fixed;

@@ -185,9 +185,20 @@
             <p id="planner-terminal-guidance">首次出现目录信任对话框时，确认目录可信后请自行选择 Yes, I trust this folder。默认选项可能是 No, exit；CAFF 不会替你确认。关闭分栏仅断开，进程保留 30 分钟；重连只接收后续输出，不回放输入或历史。Ctrl+Shift+F6 返回工具栏。</p>
           </details>
           <div class="planner-terminal-wakeups">
-            <label><input id="planner-terminal-wakeups" type="checkbox" disabled />自动叫醒（尚未启用）</label>
-            <button id="planner-terminal-records" class="ghost-button" type="button" disabled>叫醒记录（尚未启用）</button>
+            <label><input id="planner-terminal-wakeups" type="checkbox" disabled />自动叫醒</label>
+            <button id="planner-terminal-records" class="ghost-button" type="button">叫醒记录</button>
           </div>
+          <p id="planner-terminal-wake-status" class="planner-terminal-notice" role="status"></p>
+          <section id="planner-terminal-record-panel" class="planner-terminal-record-panel" aria-label="叫醒记录" hidden>
+            <div class="planner-terminal-controls">
+              <button id="planner-terminal-records-close" class="ghost-button" type="button">收起记录</button>
+              <button id="planner-terminal-records-next" class="ghost-button" type="button" disabled>更早记录</button>
+            </div>
+            <p id="planner-terminal-record-title" class="planner-terminal-notice"></p>
+            <div id="planner-terminal-record-list"></div>
+            <pre id="planner-terminal-record-output" tabindex="0" aria-label="叫醒事件文本"></pre>
+            <button id="planner-terminal-record-next" class="ghost-button" type="button" disabled>后续事件</button>
+          </section>
         </div>
       </aside>
     </div>

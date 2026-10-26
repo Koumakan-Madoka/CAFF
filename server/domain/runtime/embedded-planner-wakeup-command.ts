@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { plannerError } from './embedded-planner-env';
 
-// M4a is a proposal for the real-CLI gate, NOT a launch path or verification
-// switch. M4b must not enable unattended runs merely because argv tests pass.
+// Original M4a candidate is retained for reproducible gate fixtures. Runtime
+// uses only buildVerifiedPlannerWakeup, pinned to the 2026-10-26 CLI gate.
 export function buildPlannerWakeupCandidate(options: { sessionId: string; appendPrompt: string; nodePath?: string; adapterPath?: string }) {
   const quotePath = (value: string) => {
     if ((!path.isAbsolute(value) && !path.win32.isAbsolute(value)) || /[\u0000-\u001f\u007f'"$`;&|<>()*?\[\],]/.test(value) || value.length > 4096) throw plannerError('planner_wakeup_prefix_invalid');
@@ -17,4 +17,13 @@ export function buildPlannerWakeupCandidate(options: { sessionId: string; append
     '--append-system-prompt', options.appendPrompt, '--tools', tools, '--allowedTools', allowedTools, '--disallowedTools', disallowedTools,
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'];
   return { verified: false as const, adapterPrefix, tools, allowedTools, disallowedTools, args };
+}
+
+export function buildVerifiedPlannerWakeup(options: Parameters<typeof buildPlannerWakeupCandidate>[0] & { version: string }) {
+  try {
+    if (!/^2\.1\.(0|[1-9][0-9]*)$/.test(options.version) || Number(options.version.split('.')[2]) < 310) throw new Error();
+    const candidate = buildPlannerWakeupCandidate(options);
+    if (/\s/.test((options.nodePath || process.execPath)) || /\s/.test(options.adapterPath || path.resolve(__dirname, '../../../lib/caff.js'))) throw new Error();
+    return { ...candidate, verified: true as const, args: [...candidate.args, '--permission-mode', 'dontAsk'] };
+  } catch { throw plannerError('planner_wakeup_tools_unverified'); }
 }

@@ -89,6 +89,9 @@ export class EmbeddedPlannerRepository {
     })();
   }
   release(roomId: string, leaseId: string): boolean {
+    // A fenced child's late exit after shutdown must not touch a closed store.
+    // Its persisted lease is reconciled by the next enabled runtime instead.
+    if (!this.store.db.open) return false;
     return this.store.db.prepare('DELETE FROM chat_embedded_planner_leases WHERE conversation_id=? AND lease_id=?').run(roomId, leaseId).changes === 1;
   }
 }

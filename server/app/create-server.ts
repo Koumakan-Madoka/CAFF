@@ -1161,7 +1161,7 @@ export function createServerApp(options: any = {}) {
       return formatAuthority(host, address && typeof address === 'object' ? address.port : port);
     },
   });
-  const embeddedPlanner = createEmbeddedPlannerRuntime({ host, store, projectManager, config: options.embeddedPlanner });
+  const embeddedPlanner = createEmbeddedPlannerRuntime({ host, store, projectManager, config: options.embeddedPlanner, privateValues: [providerConfigCsrfToken] });
   const { buildBootstrapPayload, buildConfiguredModelOptions } = createBootstrapPayloadBuilder({
     store,
     skillRegistry,
@@ -1379,7 +1379,7 @@ export function createServerApp(options: any = {}) {
   function start(onListen: any) {
     server.listen(port, host, async () => {
       plannerCredential.initialize();
-      await embeddedPlanner.start(buildToolBaseUrl(host, server.address().port), plannerCredential.path);
+      await embeddedPlanner.start(buildToolBaseUrl(host, server.address().port), plannerCredential.path, plannerCredential);
       try {
         uploadService.reconcile();
       } catch {}

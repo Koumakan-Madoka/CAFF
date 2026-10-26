@@ -21,6 +21,7 @@ function fixture(t, extra = {}) {
       calls.push([url, options]);
       if (url === '/api/bootstrap') return { apiSecurity: { csrfToken: 'synthetic-csrf' }, plannerTerminal: { enabled: true, available: true } };
       if (url.endsWith('/state')) return roomState;
+      if (extra.respond) return extra.respond(url,options);
       if (extra.failWrite) throw Object.assign(new Error('private sentinel'), { code: 'planner_session_unavailable' });
       return { reinitialized: true, repaired: true };
     },
@@ -169,6 +170,32 @@ test('stale bootstrap completion cannot connect a closed or switched room', asyn
   const f = fixture(t); f.pane.sync('room-a', { enabled: true });
   const pending = f.pane.open(); f.pane.sync('room-b', { enabled: true }); await pending;
   assert.equal(f.connections.length, 0); assert.equal(f.q('pane').hidden, true);
+});
+
+test('wake-up opt-in requires confirmation, shows gate/quota/user counts and never connects or injects input', async t => {
+  const f=fixture(t,{respond:()=>({enabled:true})});
+  f.state({available:true,processState:'absent',sessionInitialized:true,wakeupsEnabled:false,wakeupAvailable:true,wakeupReasonCode:'',pendingCount:2,needsUserCount:1,quota:{used:1,limit:4}});
+  f.pane.sync('room-a',{enabled:true});await f.pane.open();
+  assert.equal(f.q('wakeups').disabled,false);assert.equal(f.q('wakeups').checked,false);
+  assert.match(f.q('wake-status').textContent,/1.*4/);assert.match(f.q('wake-status').textContent,/需要用户.*1/);
+  f.accept(false);f.q('wakeups').click();await tick();assert.equal(f.q('wakeups').checked,false);
+  assert.equal(f.calls.filter(x=>x[0].endsWith('/wakeups')&&x[1]?.method==='PUT').length,0);
+  f.accept(true);f.q('wakeups').click();await tick();
+  assert.ok(f.calls.some(x=>x[0]==='/api/conversations/room-a/planner/wakeups'&&x[1]?.method==='PUT'&&x[1].body.enabled));
+  assert.equal(f.connections.length,1);assert.ok(f.confirms.some(x=>/额度|订阅/.test(x)));
+  f.state({available:true,processState:'absent',wakeupAvailable:false,wakeupReasonCode:'planner_wakeup_tools_unverified',quota:{used:0,limit:4}});await f.pane.refresh();
+  assert.match(f.q('wake-status').textContent,/未验证|重新验证/);assert.equal(f.q('wakeups').disabled,true);
+});
+
+test('wake-up records use cursor paging, render text not HTML and are cleared on room change',async t=>{
+  const f=fixture(t,{respond:url=>url.endsWith('/wakeups')?{items:[{id:'attempt-a',sequence:3,status:'needs_user',summary:'<img src=x>',reservedAt:'2026-10-26'}],nextBefore:3,hasMore:true}:url.includes('before=3')?{items:[],nextBefore:null,hasMore:false}:{summary:{id:'attempt-a',status:'needs_user'},chunks:[{sequence:4,kind:'assistant',text:'<script>sentinel</script>'}],nextAfter:4,hasMore:true,truncated:true,transcriptExpired:false}});
+  f.pane.sync('room-a',{enabled:true});await f.pane.open();f.q('records').click();await tick();
+  assert.equal(f.q('record-list').querySelectorAll('button').length,1);assert.equal(f.q('record-list').querySelector('img'),null);
+  assert.equal(f.calls.find(x=>x[0].endsWith('/wakeups'))[1]?.headers?.['X-CAFF-CSRF-Token'],'synthetic-csrf');
+  f.q('record-list').querySelector('button').click();await tick();assert.match(f.q('record-output').textContent,/<script>sentinel/);assert.equal(f.q('record-output').querySelector('script'),null);
+  f.q('record-next').click();await tick();assert.ok(f.calls.some(x=>x[0].includes('/wakeups/attempt-a?afterChunk=4')));
+  f.q('records-next').click();await tick();assert.ok(f.calls.some(x=>x[0].includes('/wakeups?before=3')));
+  f.pane.sync('room-b',{enabled:true});assert.equal(f.q('record-output').textContent,'');assert.equal(f.q('record-list').children.length,0);
 });
 
 function clientFixture(t) {
