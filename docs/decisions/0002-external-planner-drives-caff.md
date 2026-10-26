@@ -8,8 +8,8 @@
 - Amends: ADR 0001 (who may rule on Goal proposals); the D28 rule that every
   ruling through the REST Goal endpoint is the user's
 - Amended by: [ADR 0003](0003-embedded-claude-code-planner.md), which redefines
-  P2 as the embedded planner and moves the review protocol and implementer
-  prompts to P3
+  P2 as the embedded planner and moves the review protocol, implementer prompts
+  and cross-room console UI to P3
 
 ## Context
 

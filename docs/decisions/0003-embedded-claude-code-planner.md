@@ -3,10 +3,12 @@
 - Status: Proposed
 - Proposed: 2026-10-26
 - Decision owner: CAFF project user
-- Independent reviewer: pending
-- Builds on: [ADR 0002](0002-external-planner-drives-caff.md). This ADR
-  redefines ADR 0002's P2 as the embedded planner. The structured review
-  protocol and planner-aware implementer prompts move to P3.
+- Independent reviewer: Kimi (APPROVE WITH NITS on `cf37f2e`, 2026-10-26; all
+  eight non-blocking notes addressed)
+- Builds on: [ADR 0002](0002-external-planner-drives-caff.md)
+- Amends: ADR 0002's delivery order. P2 becomes the embedded planner; the
+  structured review protocol, planner-aware implementer prompts and the
+  cross-room console UI move to P3.
 
 ## Context
 
@@ -65,13 +67,18 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
 - **Pane:** a non-modal, resizable side panel, toggled from the room header. On
   narrow screens it opens as a full-width overlay.
 - **Session:** each room keeps a stable Claude Code session ID in its metadata.
-  The first launch uses `--session-id`; later launches use `--resume`.
+  The first launch uses `--session-id`; later launches use `--resume`. The room
+  session is reserved for CAFF. The user's own terminal planner works in other
+  sessions, because two processes on one session interleave its transcript.
 - **Working directory and prompt:**
   - The working directory is the room's bound worktree, or the project root if
     the room has none.
   - CAFF appends a system prompt that names the room, its Goal and the
     planner's role: review, rule and instruct, but never commit to the
     implementer's branch.
+  - For a room without a worktree, the prompt also says the session is for
+    reading and planning only: no commits until a worktree is bound. The root
+    stays on `main` under AGENTS.md.
 - **Permissions:** tool permissions follow the user's Claude Code settings.
   Permission prompts appear in the pane, and the user answers them there.
 - **Lifetime:**
@@ -86,16 +93,25 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
 - **Opt-in:** each room has its own off-by-default toggle. It applies only to
   planner-bound Goals.
 - **Triggers:** that room's attention items of kinds `proposal_pending`,
-  `budget_exhausted`, `failure_paused` and `turn_failed`.
+  `budget_exhausted`, `failure_paused`, `owner_removed` and `turn_failed`.
+  `owner_removed` is included because ADR 0002 lets the planner reassign the
+  owner to an agent already in the room.
 - **Run:** CAFF runs `claude -p --resume <room session>` with:
   - a prompt that describes the item;
   - `--output-format stream-json`;
   - a bounded `--max-turns`;
   - tools limited to the caff CLI and read-only tools: no PowerShell, no edits
     and no other shell commands.
-- **Limits:** at most 4 wake-ups per room per hour. While the room's
-  interactive terminal is live, no wake-up runs; the item is shown in the pane
-  instead.
+- **Limits:**
+  - At most 4 wake-ups per room per hour.
+  - While the room's interactive terminal is live, no wake-up runs; the item is
+    shown in the pane instead.
+  - A wake-up that finds the item is reserved to the user makes no Goal change.
+    It marks the item as needing the user and does not wake up for it again.
+    This stops wake-ups from triggering each other in a slow loop.
+- **Catch-up:** when CAFF starts, each room with wake-ups enabled gets one
+  deduplicated wake-up for unresolved trigger items that arrived while CAFF was
+  down. It counts toward the hourly limit.
 - **Audit:**
   - CAFF keeps each wake-up's transcript and result, and the pane can show them.
   - CAFF writes made during a wake-up carry the planner identity from P1.
@@ -112,27 +128,53 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
   - Frame size is limited.
   - Unauthenticated or idle sockets are closed.
 - **Child environment:** child processes get an allowlisted environment:
-  - no provider secrets, such as `ANTHROPIC_API_KEY`;
+  - the system and user path variables that Claude Code and the caff CLI need
+    to find their configuration, subscription login and the P1 credential file:
+    `PATH`, `SystemRoot`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`,
+    `TEMP`/`TMP` on Windows, and `HOME`, `XDG_STATE_HOME`, `TMPDIR` on POSIX;
+  - no provider secrets, such as `ANTHROPIC_API_KEY`, and no credential values.
+    The planner token is found through its credential file, never passed in the
+    environment;
   - no inherited Claude Code session variables;
   - `DISABLE_AUTOUPDATER=1` and `CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT=1`;
   - the CAFF base URL and the room ID.
-- **CLI location:** CAFF finds the `claude` executable on `PATH`, or uses
-  `CAFF_CLAUDE_CLI` when set.
+- **CLI location and version:** CAFF finds the `claude` executable on `PATH`,
+  or uses `CAFF_CLAUDE_CLI` when set. It checks the CLI version at startup;
+  2.1.310 is the baseline. Below the supported minimum, the terminal and
+  wake-ups are disabled and the reason is shown.
 - **Not a sandbox:** as in ADR 0002, processes running under the user's
-  account can reach anything the user can.
+  account can reach anything the user can. Any local process can also read the
+  CSRF token from the loopback bootstrap and drive a terminal. The terminal
+  defends against browsers, not against local processes.
 
 ### Dependencies
 
 - `node-pty` 1.1.0, pinned.
 - `@xterm/xterm` 6.0.0 with `@xterm/addon-fit`.
-- `ws` 8.22.0 or later.
+- `ws` 8.22.0 or later, which includes the fixes for GHSA-96hv-2xvq-fx4p and
+  GHSA-58qx-3vcg-4xpx.
+
+### Verify during implementation
+
+These facts depend on versions or platforms. The P2 contract records how each
+one was checked:
+
+- the CLI flags this ADR relies on, against the supported minimum version;
+- whether `--allowedTools` can express "the caff CLI only, no other shell",
+  given that Bash rules match the whole command text;
+- that a tool call needing approval is denied in `-p`;
+- node-pty prebuild coverage on each developer machine, and its compilation on
+  Linux CI;
+- the ConPTY repaint setting on the Windows versions in use.
 
 ### Change to ADR 0002's delivery order
 
-- **P2:** the embedded planner, meaning the terminal and wake-ups.
+- **P2:** the embedded planner, meaning the terminal and wake-ups. The room
+  pane is the room-level part of ADR 0002's console UI.
 - **P3:**
   - the structured review request and verdict protocol;
   - planner-aware implementer prompts;
+  - the cross-room console UI, such as the portfolio and the attention queue;
   - the optional MCP server;
   - pruning of frozen features.
 
