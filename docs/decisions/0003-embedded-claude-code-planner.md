@@ -1,7 +1,7 @@
 # ADR 0003: CAFF Hosts an Embedded Claude Code Planner per Room
 
-- Status: Proposed
-- Proposed: 2026-10-26
+- Status: Accepted
+- Accepted: 2026-10-26
 - Decision owner: CAFF project user
 - Independent reviewer: Kimi (APPROVE WITH NITS on `cf37f2e`, 2026-10-26; all
   eight non-blocking notes addressed)
