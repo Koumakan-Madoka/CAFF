@@ -3087,9 +3087,11 @@
       senderLabel.textContent = delegationRoute
         ? delegationRoute.label
         : message.role === 'user'
-          ? metadata && metadata.goalAutoContinue
-            ? message.senderName || 'Goal Runner'
-            : 'You'
+          ? metadata && metadata.principal && metadata.principal.kind === 'planner' && metadata.source === 'planner'
+            ? message.senderName || metadata.principal.plannerName || 'External Planner'
+            : metadata && metadata.goalAutoContinue
+              ? message.senderName || 'Goal Runner'
+              : 'You'
           : message.senderName;
       sender.appendChild(senderLabel);
 

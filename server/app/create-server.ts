@@ -18,6 +18,9 @@ const {
 } = require('../api/conversation-deliveries-controller');
 const { createFeishuController } = require('../api/feishu-controller');
 const { createHealthController } = require('../api/health-controller');
+const { createPlannerAttentionController } = require('../api/planner-attention-controller');
+const { createPlannerStateController } = require('../api/planner-state-controller');
+const { createPlannerAttentionWait } = require('../domain/conversation/planner-attention-wait');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createMemoryController } = require('../api/memory-controller');
 const { createRuntimeObservabilityController } = require('../api/runtime-observability-controller');
@@ -84,6 +87,10 @@ const { buildErrorJsonPayload, sendJson } = require('../http/response');
 const { serveStaticFile } = require('../http/static-file');
 const { createHttpError } = require('../http/http-errors');
 const { isLoopbackAddress } = require('../http/local-admin-guard');
+const { createPlannerCredential } = require('../domain/security/planner-credential');
+const { authenticateApiRequest } = require('../http/planner-authentication');
+const { createApiMutationGuard } = require('../http/api-mutation-guard');
+const { formatAuthority } = require('../http/request-authority');
 
 // resolveToolRelativePath is now imported from ../http/path-utils
 
@@ -710,6 +717,7 @@ export function createServerApp(options: any = {}) {
     store,
     agentDir,
     turnTimeBreakdownPipeline,
+    resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
     piCapabilityBridge: options.piCapabilityBridge,
     crossConversationDeliveryService,
     cancelDelegation(delegationId: any, reason: any) {
@@ -1135,6 +1143,21 @@ export function createServerApp(options: any = {}) {
   });
 
   let server: any = null;
+  // Tests inject an in-memory provider via options, never an environment flag.
+  // Production rotation happens only after this instance successfully binds.
+  const plannerCredential = options.plannerCredential || createPlannerCredential({
+    host,
+    getPort() {
+      const address = server && server.address();
+      return address && typeof address === 'object' ? address.port : 0;
+    },
+  });
+  const apiMutationGuard = createApiMutationGuard({ host, csrfToken: providerConfigCsrfToken,
+    getAuthority() {
+      const address = server && server.address();
+      return formatAuthority(host, address && typeof address === 'object' ? address.port : port);
+    },
+  });
   const { buildBootstrapPayload, buildConfiguredModelOptions } = createBootstrapPayloadBuilder({
     store,
     skillRegistry,
@@ -1142,6 +1165,7 @@ export function createServerApp(options: any = {}) {
     modeStore,
     modelCatalog,
     roleService,
+    apiSecurity: () => ({ csrfToken: providerConfigCsrfToken }),
     localAdmin: () => ({
       modelProviders: {
         enabled: providerConfigLocalEnabled,
@@ -1172,7 +1196,10 @@ export function createServerApp(options: any = {}) {
   runtimeObservability.registerCounterProvider('invocations', () => agentToolBridge.getRuntimeStats());
   runtimeObservability.registerCounterProvider('sse', () => sseBus.getStats());
 
+  const plannerAttentionWait = createPlannerAttentionWait(store);
   const router = createRouter([
+    createPlannerAttentionController({ store, waitService: plannerAttentionWait }),
+    createPlannerStateController({ store, turnOrchestrator }),
     createHealthController({ getHealthStatus }),
     createBootstrapController({ sseBus, turnOrchestrator, buildBootstrapPayload }),
     createFeishuController({ feishuService: feishuIntegration }),
@@ -1266,6 +1293,7 @@ export function createServerApp(options: any = {}) {
     createConversationPlanController({ store, broadcastEvent }),
     createConversationsController({
       store,
+      plannerIdentity: plannerCredential.identity,
       agentToolBridge,
       conversationSpawnService,
       roleService,
@@ -1299,15 +1327,17 @@ export function createServerApp(options: any = {}) {
   ]);
 
   server = http.createServer(async (req: any, res: any) => {
-    const requestUrl = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
-
     try {
+      const requestUrl = new URL(req.url, toolBaseUrl);
       if (requestUrl.pathname.startsWith('/api/')) {
+        const principal = authenticateApiRequest(req, requestUrl.pathname, plannerCredential);
+        apiMutationGuard.assertMutation(req, requestUrl.pathname, principal);
         const handled = await router.route({
           req,
           res,
           pathname: requestUrl.pathname,
           requestUrl,
+          principal,
         });
 
         if (!handled) {
@@ -1333,6 +1363,7 @@ export function createServerApp(options: any = {}) {
 
   function start(onListen: any) {
     server.listen(port, host, () => {
+      plannerCredential.initialize();
       try {
         uploadService.reconcile();
       } catch {}
@@ -1366,6 +1397,8 @@ export function createServerApp(options: any = {}) {
   }
 
   function close(callback: any) {
+    plannerAttentionWait.close();
+    plannerCredential.disable();
     deliveryRuntimeClosing = true;
     const turnsClosePromise = turnOrchestrator.shutdown('服务关闭中断');
     sseBus.closeAll();
@@ -1421,6 +1454,7 @@ export function createServerApp(options: any = {}) {
     getHealthStatus,
     host,
     port,
+    plannerAttentionWait,
     runtimeObservability,
     runMaybeAutoCreateDigest,
     server,

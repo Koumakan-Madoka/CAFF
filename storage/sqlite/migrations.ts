@@ -1,3 +1,4 @@
+import { ensurePlannerTerminalIndex } from '../run/planner-terminal-projection';
 import {
   migrateLegacyModelFamilyRoles,
   reconcileSystemModelFamilyRoles,
@@ -801,6 +802,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_turn_time_steps_task_id ON chat_turn_time_st
 }
 
 export function migrateChatSchema(db: any, options: any = {}) {
+  ensurePlannerTerminalIndex(db);
   migrateLegacyModelFamilyRoles(db, { backupPath: options.backupPath });
   ensureTurnTimeBreakdownSchema(db);
   db.exec(`
@@ -874,6 +876,97 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   FOREIGN KEY (origin_conversation_id) REFERENCES chat_conversations(id) ON DELETE RESTRICT,
   FOREIGN KEY (origin_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL
 );
+
+-- Deliberately no Room FK/cascade: retry keys outlive deleted Rooms. The
+-- deletion trigger persists a tombstone even when a Room ID is later reused.
+CREATE TABLE IF NOT EXISTS chat_planner_room_creations (
+  planner_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 200),
+  request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+  conversation_id TEXT NOT NULL,
+  response_json TEXT NOT NULL CHECK (json_valid(response_json)),
+  created_at TEXT NOT NULL,
+  deleted_at TEXT,
+  PRIMARY KEY (planner_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_planner_room_creation_conversation ON chat_planner_room_creations (conversation_id);
+CREATE TRIGGER IF NOT EXISTS chat_planner_room_creation_deleted AFTER DELETE ON chat_conversations BEGIN
+  UPDATE chat_planner_room_creations SET deleted_at=COALESCE(deleted_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    WHERE conversation_id=OLD.id;
+END;
+
+CREATE TABLE IF NOT EXISTS chat_goal_rulings (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  conversation_id TEXT NOT NULL,
+  goal_id TEXT,
+  goal_revision INTEGER NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('accepted', 'rejected', 'superseded')),
+  ruled_at TEXT NOT NULL,
+  ruling_json TEXT NOT NULL,
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_goal_rulings_conversation
+  ON chat_goal_rulings (conversation_id, sequence);
+
+CREATE TRIGGER IF NOT EXISTS chat_goal_rulings_immutable
+  BEFORE UPDATE ON chat_goal_rulings BEGIN
+    SELECT RAISE(ABORT, 'Goal ruling history is append-only');
+  END;
+
+CREATE TABLE IF NOT EXISTS chat_planner_attention (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL,
+  goal_id TEXT,
+  goal_revision INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('proposal_pending', 'budget_exhausted', 'failure_paused', 'owner_removed', 'goal_completed', 'turn_failed')),
+  source_id TEXT NOT NULL CHECK (length(trim(source_id)) > 0),
+  summary TEXT NOT NULL CHECK (length(summary) <= 500),
+  failed_agent_ids_json TEXT,
+  lane TEXT CHECK (lane IS NULL OR lane IN ('main', 'side')),
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolution TEXT,
+  resolved_by_json TEXT,
+  resolution_reason TEXT,
+  UNIQUE (conversation_id, kind, source_id),
+  CHECK ((goal_id IS NULL AND goal_revision = 0) OR (goal_id IS NOT NULL AND goal_revision > 0)),
+  CHECK ((resolved_at IS NULL AND resolution IS NULL AND resolved_by_json IS NULL AND resolution_reason IS NULL)
+    OR (resolved_at IS NOT NULL AND length(trim(resolution)) > 0 AND resolved_by_json IS NOT NULL)),
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS chat_planner_attention_changes (
+  singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+  revision INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO chat_planner_attention_changes(singleton, revision) VALUES (1, 0) ON CONFLICT DO NOTHING;
+CREATE TRIGGER IF NOT EXISTS chat_planner_attention_changed_ai AFTER INSERT ON chat_planner_attention BEGIN
+  UPDATE chat_planner_attention_changes SET revision=revision+1 WHERE singleton=1;
+END;
+CREATE TRIGGER IF NOT EXISTS chat_planner_attention_changed_au AFTER UPDATE ON chat_planner_attention BEGIN
+  UPDATE chat_planner_attention_changes SET revision=revision+1 WHERE singleton=1;
+END;
+CREATE TRIGGER IF NOT EXISTS chat_planner_attention_changed_ad AFTER DELETE ON chat_planner_attention BEGIN
+  UPDATE chat_planner_attention_changes SET revision=revision+1 WHERE singleton=1;
+END;
+
+CREATE TABLE IF NOT EXISTS chat_planner_attention_conditions (
+  conversation_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('budget_exhausted', 'failure_paused', 'owner_removed', 'goal_completed')),
+  goal_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, kind),
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_room
+  ON chat_planner_attention (conversation_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_unresolved
+  ON chat_planner_attention (conversation_id, sequence) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_status
+  ON chat_planner_attention (resolved_at, sequence);
 
 CREATE TABLE IF NOT EXISTS chat_acceptance_records (
   id TEXT PRIMARY KEY,
@@ -1268,6 +1361,23 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_ttl ON image_uploads (ttl_expires_a
 CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   `);
 
+  ensureColumn(db, 'chat_planner_attention', 'failed_agent_ids_json', 'failed_agent_ids_json TEXT');
+  ensureColumn(db, 'chat_planner_attention', 'lane', "lane TEXT CHECK (lane IS NULL OR lane IN ('main', 'side'))");
+  db.exec(`
+DROP TRIGGER IF EXISTS chat_planner_attention_immutable;
+CREATE TRIGGER chat_planner_attention_immutable BEFORE UPDATE ON chat_planner_attention
+WHEN OLD.resolved_at IS NOT NULL
+  OR NEW.sequence IS NOT OLD.sequence OR NEW.conversation_id IS NOT OLD.conversation_id
+  OR NEW.goal_id IS NOT OLD.goal_id OR NEW.goal_revision IS NOT OLD.goal_revision
+  OR NEW.kind IS NOT OLD.kind OR NEW.source_id IS NOT OLD.source_id
+  OR NEW.summary IS NOT OLD.summary OR NEW.created_at IS NOT OLD.created_at
+  OR NEW.failed_agent_ids_json IS NOT OLD.failed_agent_ids_json OR NEW.lane IS NOT OLD.lane
+  OR NEW.resolved_at IS NULL
+BEGIN SELECT RAISE(ABORT, 'Attention occurrence and resolved data are immutable'); END;
+CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_turn_scope
+  ON chat_planner_attention(conversation_id, goal_id, lane, failed_agent_ids_json)
+  WHERE resolved_at IS NULL AND kind='turn_failed';
+  `);
   ensureColumn(db, 'chat_agents', 'model_profiles_json', 'model_profiles_json TEXT');
   ensureColumn(db, 'chat_agents', 'avatar_data_url', 'avatar_data_url TEXT');
   ensureColumn(db, 'chat_agents', 'sandbox_name', 'sandbox_name TEXT');
@@ -1478,4 +1588,5 @@ CREATE INDEX IF NOT EXISTS idx_a2a_tasks_session_path ON a2a_tasks (session_path
 CREATE INDEX IF NOT EXISTS idx_a2a_task_events_task_id ON a2a_task_events (task_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_a2a_artifacts_task_id ON a2a_artifacts (task_id, created_at ASC);
   `);
+  ensurePlannerTerminalIndex(db);
 }

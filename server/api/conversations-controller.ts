@@ -1,15 +1,19 @@
 import * as path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { URL } from 'node:url';
 
 import type { RouteHandler } from '../http/router';
+import type { HttpPrincipal } from '../http/planner-authentication';
 import { createHttpError } from '../http/http-errors';
 import { readRequestJson } from '../http/request-body';
 import { sendFileDownload, sendJson, sendTextDownload } from '../http/response';
 
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
 import { applyConversationDigestAction } from '../domain/conversation/conversation-digest';
+import { plannerRoomCreationKey, plannerRoomCreationDigest } from '../domain/conversation/planner-room-creation';
+import { plannerMessageAcknowledgement, plannerContinuationAcknowledgement } from '../domain/conversation/planner-acknowledgement';
 import { buildConversationMessagePage } from '../domain/conversation/message-pagination';
 import {
   buildMessageTraceInspector,
@@ -25,10 +29,13 @@ import {
 import {
   applySessionGoalAction,
   getSessionGoal,
+  getSessionGoalProposal,
+  getSessionGoalRuling,
   pauseSessionGoalForRemovedOwner,
 } from '../domain/conversation/session-goal';
 import {
   getDagNodeExecutionContext,
+  getDagNodeGoalBinding,
   isDagBoundGoalMutationAllowed,
 } from '../domain/conversation/dag-goal-binding';
 import {
@@ -44,6 +51,7 @@ type ApiContext = {
   res: ServerResponse;
   pathname: string;
   requestUrl: URL;
+  principal?: HttpPrincipal;
 };
 
 const FEISHU_PLATFORM = 'feishu';
@@ -312,7 +320,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   }
 
   return async function handleConversationsRequest(context) {
-    const { req, res, pathname, requestUrl } = context;
+    const { req, res, pathname, requestUrl, principal = { kind: 'user' } } = context;
 
     if (req.method === 'GET' && pathname === '/api/conversations') {
       sendJson(res, 200, buildConversationDirectoryPage(store, requestUrl.searchParams));
@@ -560,6 +568,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     }
 
     if (req.method === 'POST' && pathname === '/api/conversations') {
+      const key = principal.kind === 'planner' ? plannerRoomCreationKey(req) : null;
       const body = await readRequestJson(req);
       if (!isPlainObject(body)) {
         throw roomCreationError(400, 'room_invalid_request', 'Room request must be an object', 'body');
@@ -567,6 +576,17 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       const unknownField = Object.keys(body).find((key) => !CREATE_ROOM_FIELDS.has(key));
       if (unknownField) {
         throw roomCreationError(400, 'room_unknown_field', `Unknown Room field: ${unknownField}`, unknownField);
+      }
+      let retry: any = null;
+      if (principal.kind === 'planner') {
+        if (typeof store.replayPlannerRoomCreation !== 'function' || typeof store.createPlannerConversation !== 'function') {
+          throw createHttpError(501, 'Planner Room creation projection unavailable', { code: 'planner_projection_unavailable' });
+        }
+        retry = { plannerId: principal.plannerId, key, digest: plannerRoomCreationDigest(body) };
+        const replay = store.replayPlannerRoomCreation(retry);
+        if (replay) {
+          res.setHeader('Idempotency-Replayed', 'true'); sendJson(res, 201, replay.response); return true;
+        }
       }
       const projectScopeId = String(body.projectScopeId || '').trim();
       if (!projectScopeId) {
@@ -589,12 +609,18 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         participants: validateConversationParticipants(body),
       };
       const enrichedBody = mergeModeSkillIdsIntoParticipants(conversationInput, mode);
-      const conversation = store.createConversation({
+      const creationInput = {
         ...enrichedBody,
         projectScopeId,
         modeId,
-        metadata: {},
-      });
+        metadata: String(body.title || '').trim() ? { titleSource: 'manual' } : {},
+      };
+      if (retry) {
+        const created = store.createPlannerConversation(creationInput, retry);
+        if (created.replayed) res.setHeader('Idempotency-Replayed', 'true');
+        sendJson(res, 201, created.response); return true;
+      }
+      const conversation = store.createConversation(creationInput);
 
       sendJson(res, 201, {
         conversation,
@@ -865,7 +891,26 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
     if (conversationGoalMatch && (req.method === 'GET' || req.method === 'POST')) {
       const conversationId = decodeURIComponent(conversationGoalMatch[1]);
-      const body = req.method === 'POST' ? await readRequestJson(req) : { action: 'get' };
+      if (req.method === 'GET') {
+        if (typeof store.getConversationGoalProjection !== 'function'
+          || (principal.kind !== 'planner' && typeof store.listConversationGoalHeaders !== 'function')) {
+          throw createHttpError(501, 'Goal header projection unavailable', { code: 'planner_projection_unavailable' });
+        }
+        const conversation = store.getConversationGoalProjection(conversationId);
+        if (!conversation) throw createHttpError(404, 'Conversation not found');
+        const projection = { goal: getSessionGoal(conversation), proposal: getSessionGoalProposal(conversation),
+          ruling: getSessionGoalRuling(conversation), cleared: false, autoContinuation: null };
+        sendJson(res, 200, principal.kind === 'planner' ? { conversationId, ...projection }
+          : { conversation, ...projection, summary: pickConversationSummary(conversation), conversations: store.listConversationGoalHeaders() });
+        return true;
+      }
+      const body = await readRequestJson(req);
+      const goalAction = String(body && body.action || '').trim().toLowerCase().replace(/_/g, '-');
+      if (req.method === 'POST' && principal.kind === 'planner'
+        && (goalAction === 'accept-proposal' || goalAction === 'dismiss-proposal')
+        && getDagNodeGoalBinding(store.getConversationWithoutMessages(conversationId))) {
+        throw createHttpError(403, 'External planners cannot rule as DAG verifiers or the user', { code: 'dag_verifier_only' });
+      }
       // While a DAG node is doing, the bound child Goal may only receive
       // factual delivery updates or pending-proposal rulings. Direct lifecycle
       // mutation would bypass the worker-to-verifier completion protocol.
@@ -877,12 +922,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       }
       const result = applySessionGoalAction(store, conversationId, {
         ...(body || {}),
-        // D28: a ruling via this endpoint is ALWAYS the user (manual
-        // verification). Forced server-side — a client-supplied ruledBy is
-        // never trusted. The principal is persisted atomically with the
-        // proposal clear (durable ruling record), not just broadcast.
-        ruledBy: { kind: 'user' },
-      });
+        // Authenticated by the server before parsing, never from JSON.
+        // Browser rulings remain user; planner rulings retain their identity.
+        ruledBy: principal,
+      }, { resolveRuntimeParticipants: roleService?.resolveRuntimeParticipants, plannerIdentity: options.plannerIdentity });
       let autoContinuation = null;
 
       if (req.method === 'POST') {
@@ -899,23 +942,19 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         }
 
         if (result.proposalChanged) {
-          // D28: the user accepting/rejecting via the UI is a legitimate
-          // ruling path (manual verification). The cleared event must carry
-          // the authoritative pre-clear proposal snapshot (the scheduler
-          // derives the node result summary from it) plus an explicit user
-          // ruling marker — an absent ruledBy would be indistinguishable
-          // from a missing enforcement check.
-          const goalAction = String(body && body.action || '').trim().toLowerCase();
-          const isRulingAction = result.proposalCleared
-            && (goalAction === 'accept-proposal' || goalAction === 'accept_proposal'
-              || goalAction === 'dismiss-proposal' || goalAction === 'dismiss_proposal');
+          // Carry the authoritative proposal snapshot and authenticated
+          // principal. D28 still treats only the user as manual verification;
+          // an external planner must never be mislabeled as that user.
+          const clearedRuling = result.clearedRuling || result.ruling;
+          const hasRuling = result.proposalCleared && clearedRuling
+            && clearedRuling.proposalId === result.clearedProposal?.id;
           broadcastEvent(result.proposalCleared ? 'conversation_goal_proposal_cleared' : 'conversation_goal_proposal_updated', {
             conversationId,
             goal: result.goal,
             proposal: result.proposalCleared ? (result.clearedProposal || null) : result.proposal,
-            ...(isRulingAction ? {
-              outcome: goalAction.startsWith('accept') ? 'accepted' : 'rejected',
-              ruledBy: { kind: 'user' },
+            ...(hasRuling ? {
+              outcome: clearedRuling.outcome,
+              ruledBy: clearedRuling.ruledBy,
             } : {}),
             conversation: result.conversation,
             summary,
@@ -965,16 +1004,22 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         }
       }
 
-      const latestConversation = store.getConversation(conversationId) || result.conversation;
-      sendJson(res, 200, {
-        conversation: latestConversation,
-        goal: result.goal,
-        proposal: result.proposal,
-        cleared: result.cleared,
-        autoContinuation,
-        summary: pickConversationSummary(latestConversation),
-        conversations: listConversationHeaders(),
-      });
+      if (principal.kind === 'planner') {
+        sendJson(res, 200, { conversationId, goal: result.goal, proposal: result.proposal,
+          ruling: result.ruling, cleared: result.cleared, autoContinuation: plannerContinuationAcknowledgement(autoContinuation) });
+      } else {
+        const latestConversation = store.getConversation(conversationId) || result.conversation;
+        sendJson(res, 200, {
+          conversation: latestConversation,
+          goal: result.goal,
+          proposal: result.proposal,
+          ruling: result.ruling,
+          cleared: result.cleared,
+          autoContinuation,
+          summary: pickConversationSummary(latestConversation),
+          conversations: listConversationHeaders(),
+        });
+      }
       return true;
     }
 
@@ -1017,9 +1062,23 @@ export function createConversationsController(options: any = {}): RouteHandler<A
             ? existingConversation.agents.map((agent: any) => String(agent && agent.id || '').trim()).filter(Boolean)
             : []
         );
-        const validatedBody = (Array.isArray(body.participants) || Array.isArray(body.agentIds))
+        let validatedBody = (Array.isArray(body.participants) || Array.isArray(body.agentIds))
           ? { ...body, participants: validateConversationParticipants(body, { recoverableRoleIds }) }
           : body;
+        if (body.metadata !== undefined && existingConversation) {
+          const incoming = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
+          const existing = existingConversation.metadata || {};
+          const isReserved = (key: string) => key.startsWith('sessionGoal') || key === 'dagNodeGoalBinding';
+          for (const key of Object.keys(incoming).filter(isReserved)) {
+            if (!isDeepStrictEqual(incoming[key], existing[key])) {
+              throw createHttpError(403, 'Goal metadata is server-owned; use the Goal endpoint', { code: 'goal_metadata_reserved' });
+            }
+          }
+          // A partial/empty metadata replacement must not silently clear a Goal,
+          // proposal, ruling, runner or future Goal audit/binding record.
+          const reserved = Object.fromEntries(Object.entries(existing).filter(([key]) => isReserved(key)));
+          validatedBody = { ...validatedBody, metadata: { ...incoming, ...reserved } };
+        }
         const conversation = store.updateConversation(conversationId, validatedBody);
 
         if (!conversation) {
@@ -1461,9 +1520,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (messageMatch && req.method === 'POST') {
       const conversationId = decodeURIComponent(messageMatch[1]);
       const body = await readRequestJson(req);
-      const conversation = store.getConversationWithoutMessages(conversationId);
-
-      if (!conversation) {
+      if (principal.kind !== 'planner' && !store.getConversationWithoutMessages(conversationId)) {
         throw createHttpError(404, '会话不存在');
       }
 
@@ -1479,9 +1536,18 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       const result = turnOrchestrator.submitConversationMessage(conversationId, {
         content: body.content,
         imageIds: Array.isArray(body.imageIds) ? body.imageIds : [],
-        metadata: clientRequestId ? { clientRequestId } : undefined,
-      });
-      sendJson(res, 200, result);
+        ...(principal.kind === 'planner' ? { senderName: principal.plannerName } : {}),
+        metadata: {
+          ...(clientRequestId ? { clientRequestId } : {}),
+          ...(principal.kind === 'planner' ? { source: 'planner', principal } : {}),
+        },
+      }, principal.kind === 'planner' ? { responseProjection: 'planner' } : {});
+      if (principal.kind === 'planner') {
+        sendJson(res, 200, { conversationId, acceptedMessage: plannerMessageAcknowledgement(result.acceptedMessage),
+          dispatch: result.dispatch, dispatchLane: result.dispatchLane, dispatchTargetAgentId: result.dispatchTargetAgentId });
+      } else {
+        sendJson(res, 200, result);
+      }
       return true;
     }
 

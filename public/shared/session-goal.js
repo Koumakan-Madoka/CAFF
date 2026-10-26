@@ -248,7 +248,61 @@
     return status || '当前没有会话目标。使用 /goal <目标> 设置一个。';
   }
 
+  // Shared by the panel and /goal commands. Confirmation is about a specific
+  // proposal AND Goal snapshot, not permission to discard whatever arrives next.
+  async function submitWithProposalConfirmation({ conversation, command, post, read, refresh, confirm }) {
+    const guarded = ['set', 'revise', 'pause', 'resume', 'complete'].includes(command.action);
+    if (command.action === 'bind-planner') {
+      try { return await post(command); } catch (error) {
+        if (error.status === 409) refresh(await read());
+        throw error;
+      }
+    }
+    if (!guarded) return post(command);
+    const displayedGoal = goalForConversation(conversation);
+    const expectedId = command.goalId === undefined ? displayedGoal && displayedGoal.goalId || null : command.goalId;
+    const expectedRevision = command.goalRevision === undefined ? command.revision === undefined
+      ? displayedGoal && displayedGoal.revision || 0 : command.revision : command.goalRevision;
+    function changed() {
+      return Object.assign(new Error('目标或提案已变化，请核对后重新操作。'), { status: 409, code: 'goal_revision_conflict' });
+    }
+    function confirmed(snapshot) {
+      const goal = goalForConversation(snapshot);
+      if ((goal && goal.goalId || null) !== expectedId || (goal && goal.revision || 0) !== expectedRevision) throw changed();
+      const proposal = proposalForConversation(snapshot);
+      if (!proposal || !proposal.id) throw changed();
+      const description = [formatProposalStatus(proposal), proposalReasonText(proposal),
+        '继续此操作将替代该提案，并保留 superseded 裁决记录。确认继续？'].filter(Boolean).join('\n\n');
+      if (!confirm(description)) return null;
+      return { ...command, goalId: expectedId, goalRevision: expectedRevision, proposalId: proposal.id, supersedeProposal: true };
+    }
+    let request = command;
+    let wasConfirmed = false;
+    if (proposalForConversation(conversation)) {
+      request = confirmed(conversation);
+      if (!request) return null;
+      wasConfirmed = true;
+    }
+    try {
+      return await post(request);
+    } catch (error) {
+      if (error.status !== 409 || !['goal_proposal_pending', 'goal_proposal_conflict'].includes(error.code)) throw error;
+      const latest = await read();
+      refresh(latest);
+      if (wasConfirmed || error.code !== 'goal_proposal_pending') throw error;
+      const retry = confirmed(latest.conversation);
+      if (!retry) return null;
+      // Exactly one confirmed retry. A second race is surfaced, never rebased
+      // or repeatedly prompted into approving an unseen proposal.
+      try { return await post(retry); } catch (retryError) {
+        if (retryError.status === 409) refresh(await read());
+        throw retryError;
+      }
+    }
+  }
+
   shared.sessionGoal = {
+    submitWithProposalConfirmation,
     goalForConversation,
     proposalForConversation,
     runnerForConversation,

@@ -1,5 +1,33 @@
 # UI Structure
 
+## Shared API Write Guard
+
+- `public/shared/api-client.js` owns browser CSRF state. `fetchJson` remembers
+  `apiSecurity.csrfToken` from bootstrap (legacy local-admin aliases remain
+  supported), coalesces lazy bootstrap loading before the first write, and adds
+  `X-CAFF-CSRF-Token` on same-origin `/api/*` mutations. Every page, including
+  projects/skills/metrics and personas admin forms, uses this shared client.
+- JSON writes set `Content-Type: application/json` even without a caller body
+  (`{}` is sent). `fetchFormDataJson` adds the same CSRF header but removes
+  manually supplied Content-Type so fetch supplies the multipart boundary.
+  Images have no Origin/CSRF exemption. Direct mutation fetches must obey the
+  same contract; never add a planner bearer to browser code.
+- Host and Origin are checked server-side; the browser must not forge either.
+  A stale-token `403 api_csrf_invalid` clears and refreshes bootstrap for the
+  **next** action, then reports the current failure. It never automatically
+  replays a potentially committed mutation. Existing error status/code/payload
+  remain available to domain UI handlers.
+- Planner messages keep transport role=user, but their source/principal and
+  persisted configured sender name render as the planner, never `You`. Browser
+  messages and existing delegation/runtime provenance labels remain unchanged.
+- `tests/ui/api-security.test.js` covers token acquisition/coalescing, all
+  mutation methods, bodyless JSON, multipart boundaries, legacy aliases and
+  non-replay on stale-token errors. `tests/manual/browser-writes.test.js --run`
+  verifies real Edge chat/image/Goal/creation/workspace/admin writes with the
+  CSRF header on a synthetic random-port instance. See
+  [controller guards](../backend/controller-patterns.md) and
+  [planner contract](../backend/planner-interface.md).
+
 ## Conversation Tree Row Layout
 
 ### Scope / Trigger
@@ -106,6 +134,23 @@ if (runner && runner.status === 'error_paused') {
 ### Required Tests
 
 - `tests/ui/app-shell.test.js` verifies pending objective/checklist visibility and that the no-active-goal form still shows its normal default state.
+
+## Goal Proposal Conflicts And Planner Adoption
+
+- `session-goal-panel.js` displays pending review content before conflicting
+  set/revise/pause/resume/complete operations. Explicit confirm sends
+  `supersedeProposal: true` and the displayed proposalId; cancel produces zero
+  writes. A 409 race refreshes current state and offers confirmation for one
+  retry only, never a blind replacement of another proposal.
+- An eligible unbound non-DAG Goal offers “交给规划者”. Confirm sends user-only
+  bind-planner with goalId/goalRevision/reason through the browser CSRF path.
+  It preserves the Goal/owner/status/ruling/counters; cancel sends nothing and
+  concurrent changes require refresh. Bound labels are display, not authority:
+  every agent accept/reject is still rejected by the server on planner Goals.
+- `tests/ui/goal-proposal-guard.test.js` covers confirmation/cancel/races;
+  `tests/ui/goal-planner-binding.test.js` covers adoption and restrictions.
+  The manual browser-write suite also verifies persisted supersession audit,
+  user adoption preservation and subsequent agent denial.
 
 ## Goal Owner Select
 

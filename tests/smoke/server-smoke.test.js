@@ -5,10 +5,11 @@ const { spawn } = require('node:child_process');
 const net = require('node:net');
 const { PassThrough } = require('node:stream');
 const test = require('node:test');
+const { browserFetch: fetch } = require('../helpers/browser-fetch');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSkillRegistry } = require('../../build/lib/skill-registry');
-const { createServerApp } = require('../../build/server/app/create-server');
+const { createTestServerApp: createServerApp } = require('../helpers/server-app');
 const { createBootstrapPayloadBuilder } = require('../../build/server/api/bootstrap-payload');
 const { createConversationsController } = require('../../build/server/api/conversations-controller');
 const { createMemoryController } = require('../../build/server/api/memory-controller');
@@ -4374,9 +4375,11 @@ test('conversations controller accepts and dismisses session goal proposals', as
 
 test('conversations controller promotes a structured pending set proposal on acceptance', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
+  store.saveCustomRoleConfig({ id: 'smoke-goal-builder', name: 'Builder', personaPrompt: 'Synthetic Builder', provider: 'cheap-provider', model: 'cheap-model' });
   const conversation = createSmokeConversation(store, {
     id: 'goal-set-proposal-contract-conversation',
     title: 'Goal Set Proposal Contract Conversation',
+    participants: [{ agentId: 'smoke-goal-builder' }],
     metadata: {
       sessionGoalProposal: {
         id: 'prop-set-contract',
@@ -4404,7 +4407,7 @@ test('conversations controller promotes a structured pending set proposal on acc
         ],
         evidence: [],
         proposedBy: {
-          agentId: 'agent-builder',
+          agentId: 'smoke-goal-builder',
           agentName: 'Builder',
         },
         createdAt: '2026-05-03T00:00:00.000Z',
@@ -4420,6 +4423,7 @@ test('conversations controller promotes a structured pending set proposal on acc
   });
 
   assert.equal(acceptResult.json.goal.objective, 'Ship structured Goal proposal support');
+  assert.equal(acceptResult.json.goal.owner.agentId, 'smoke-goal-builder');
   assert.equal(acceptResult.json.goal.acceptanceCriteria.length, 1);
   assert.equal(acceptResult.json.goal.acceptanceCriteria[0].verifyBy, 'Inspect the Goal API response');
   assert.equal(acceptResult.json.goal.workItems.length, 2);
@@ -4993,7 +4997,7 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
       },
     },
   }), 'utf8');
-  const child = spawn(process.execPath, ['build/lib/app-server.js'], {
+  const child = spawn(process.execPath, ['tests/helpers/server-child.js'], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,

@@ -22,12 +22,13 @@ contextWindow 的来源链路：`resolveSessionReuseContextWindow` 从 `modelCat
 
 仅 `source=goal-runner && goalAutoContinue=true` 的自动续跑使用严格策略；用户消息、mention、handoff 等人工/普通触发继续使用上表的普通策略，不因会话存在 active Goal 而增加门禁。
 
-- Goal 元数据包含不可变 `goalId` 与正整数 `revision`。新建/替换/恢复 Goal 生成新 ID 和 revision 1；同一 Goal 的 objective/status/owner/checklist 变化保留 ID 并递增 revision。
+- Goal 元数据包含不可变 `goalId` 与正整数 `revision`。新建/替换 Goal 生成新 ID 和 revision 1；同一 Goal 的 revise、pause/resume、owner、update-delivery 及实际改变 Goal 的裁决保留 ID 并递增 revision。恢复（resume）不是替换 Goal；仅驳回提案不等于修改 Goal revision。
 - Goal Runner 消息在 claim 时固化 `goalId + goalRevision`。严格判定要求消息固化值、当前 Goal 和 reusable 行记录的 provider 已知值三方一致。缺失返回 `goal_identity_missing`，ID 不一致返回 `goal_identity_mismatch`，revision 不一致返回 `goal_revision_mismatch`。
 - 严格策略的 usage ratio 必须 `< min(普通配置阈值, 0.5)`。因此达到 0.5 必须 fresh，即使 `PI_CHAT_SESSION_REUSE_MAX_USAGE_RATIO` 被配置为更高；配置为更低值时更低值继续生效。
 - reusable 行的 nullable `goal_id/goal_revision` 表示该 provider Session 最近实际收到的 Goal 版本。fresh 完整 prompt 成功后记录当前 Goal；resume 未重新投递 Goal 段，因此成功后继承 claim 前值，绝不能把外部发生的新 revision 冒充为 provider 已知。
 - 原子 claim 同时使用 null-safe equality 守卫 `goal_id/goal_revision`。旧 schema 行迁移后为 null/null：普通触发兼容，严格 Goal Runner 以 `goal_identity_missing` fresh，并在首次干净 fresh 成功后自愈。
-- checklist 更新在同一 metadata 写中迁移同 Goal runner 的 `goalUpdatedAt` key，保留 iteration 与失败 streak；这修复了每次 checklist 更新后 continuation iteration 回到 1 的问题。
+- 同 Goal 的 factual update-delivery 在同一 metadata 写中迁移 runner 的 `goalUpdatedAt` key，保留 iteration 与失败 streak；用户采用规划者（bind-planner）也保留这些计数，显式 resume 则沿用既有 fresh runner cycle。
+- [外部规划者 P1](../backend/planner-interface.md#planner-confirmed-decision-factual-updates-and-session-reuse) 不引入 factual-only 复用例外。状态/证据更新、采用和裁决导致 revision 改变时，下一轮 Goal Runner 仍 fresh（`goal_revision_mismatch`）；保留 runner 预算不等于复用 provider Session。不要把监控摘要回写为完整 Goal，也不要把未投递的 revision 写成 provider 已知值。版本化 Goal-delta 投递/确认属于另行设计，不在 P1 内。
 
 ### Signatures And Fields
 

@@ -1,6 +1,7 @@
 // Lifecycle-only reconciliation. The caller must own the database exclusively
 // and stop admission/settle live writers before invoking this transaction.
-export function reconcileInterruptedRuns(db: any, reason: string, failMessage: (id: string) => void) {
+export function reconcileInterruptedRuns(db: any, reason: string, failMessage: (id: string) => void,
+  terminalTask?: (before: any, next: any, interrupted: boolean) => void) {
   return db.transaction(() => {
     const endedAt = new Date().toISOString();
     const messages = db.prepare(`
@@ -35,7 +36,7 @@ export function reconcileInterruptedRuns(db: any, reason: string, failMessage: (
       // already have finalized a stale side reply before its run was created;
       // that message's still-active task must also be settled. UNION (rather
       // than UNION ALL) also bounds malformed cyclic parent links.
-      tasks = db.prepare(`
+      const changedTasks = db.prepare(`
         WITH RECURSIVE linked(id, parent_task_id) AS (
           SELECT id, parent_task_id FROM a2a_tasks
           WHERE id IN (SELECT value FROM json_each(@taskIds))
@@ -50,7 +51,10 @@ export function reconcileInterruptedRuns(db: any, reason: string, failMessage: (
         UPDATE a2a_tasks SET status = 'failed', error_message = @reason,
           ended_at = @endedAt, updated_at = @endedAt
         WHERE status IN ('queued', 'running') AND id IN (SELECT id FROM linked)
-      `).run({ taskIds: JSON.stringify(taskIds), runIds: JSON.stringify(runIds), reason, endedAt }).changes;
+        RETURNING id, kind, status, metadata_json, artifact_summary_json, ended_at
+      `).all({ taskIds: JSON.stringify(taskIds), runIds: JSON.stringify(runIds), reason, endedAt });
+      tasks = changedTasks.length;
+      for (const next of changedTasks) terminalTask?.({ ...next, status: 'running' }, next, true);
     }
     return { messages: messages.length, runs: runs.length, tasks };
   })();

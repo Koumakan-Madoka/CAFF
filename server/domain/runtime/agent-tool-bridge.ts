@@ -4,6 +4,7 @@ const { pickConversationSummary, serializeConversationPrivateMessageForUi } = re
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
 const { filterRoutableConversationAgents } = require('../roles/system-actor-catalog');
 const { applySessionGoalAction, getSessionGoalProposal, proposeSessionGoalAction } = require('../conversation/session-goal');
+const { assertPlannerGoalRulingAllowed } = require('../conversation/planner-goal-binding');
 const { getDagNodeGoalBinding } = require('../conversation/dag-goal-binding');
 const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
@@ -2058,6 +2059,10 @@ export function createAgentToolBridge(options: any = {}) {
         throw createHttpError(501, 'Session goal proposals are not available');
       }
 
+      if (action === 'bind-planner' || action === 'bind_planner') {
+        throw createHttpError(403, 'Only the user may adopt a planner for an existing Goal', { code: 'goal_planner_binding_user_required' });
+      }
+
       // accept/reject (D28): act on the PENDING proposal instead of creating
       // one. The proposer can never rule on their own proposal (403) — this
       // is what lets a DAG verifier agent accept/reject a worker's completion
@@ -2067,6 +2072,7 @@ export function createAgentToolBridge(options: any = {}) {
         if (!conversation) {
           throw createHttpError(404, 'Conversation not found');
         }
+        assertPlannerGoalRulingAllowed(conversation, { kind: 'agent', agentId: context.agentId, agentName: context.agentName });
         const pendingProposal = getSessionGoalProposal(conversation);
         if (!pendingProposal) {
           throw createHttpError(404, 'No session goal proposal is pending');
@@ -2099,7 +2105,7 @@ export function createAgentToolBridge(options: any = {}) {
           // The ruling principal is persisted atomically with the mutation
           // (durable D28 record the scheduler validates at settle/reconcile).
           ruledBy: { agentId: context.agentId, agentName: context.agentName },
-        });
+        }, { resolveRuntimeParticipants: options.resolveRuntimeParticipants });
         const summary = pickConversationSummary(result.conversation);
 
         broadcastEvent('conversation_goal_proposal_cleared', {
@@ -2177,14 +2183,19 @@ export function createAgentToolBridge(options: any = {}) {
         }
       }
 
-      const goalInput = body.goal && typeof body.goal === 'object' && !Array.isArray(body.goal)
-        ? { ...body.goal, action, objective: body.goal.objective || objective, reason: body.goal.reason || reason }
-        : { ...body, action, objective, reason, ...(checklistText ? { checklistText } : {}) };
+      const goalSource = body.goal && typeof body.goal === 'object' && !Array.isArray(body.goal) ? body.goal : body;
+      const goalInput = {
+        ...goalSource, action, reason: goalSource.reason || reason,
+        // Omission must reach the patch merger as omission, not a synthesized
+        // blank objective. Preserve explicit invalid values for validation.
+        ...(!Object.hasOwn(goalSource, 'objective') && Object.hasOwn(body, 'objective') ? { objective: body.objective } : {}),
+      };
       const result = proposeSessionGoalAction(
         activeStore,
         context.conversationId,
         goalInput,
-        { agentId: context.agentId, agentName: context.agentName }
+        { agentId: context.agentId, agentName: context.agentName },
+        { resolveRuntimeParticipants: options.resolveRuntimeParticipants }
       );
       const summary = pickConversationSummary(result.conversation);
 
@@ -2290,6 +2301,7 @@ export function createAgentToolBridge(options: any = {}) {
       const result = applySessionGoalAction(activeStore, context.conversationId, {
         ...goalUpdate,
         action: 'update-delivery',
+        ruledBy: { kind: 'agent', agentId: context.agentId, agentName: context.agentName },
       });
       const summary = pickConversationSummary(result.conversation);
       broadcastEvent('conversation_goal_updated', {

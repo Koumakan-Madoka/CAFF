@@ -260,10 +260,10 @@ test('jev cache DELETE clears entries and leaves classified steps untouched', as
 
 // Cross-layer seam tests: a real node http server, the real controller
 // (with the real local-admin guard), and the real browser fetchJson client
-// from public/shared/api-client.js. The 415-on-clear regression lived
-// exactly at this seam (guard requires JSON content-type; fetchJson only
-// adds it when a body is present), which neither the controller harness nor
-// the JSDOM UI harness crossed.
+// from public/shared/api-client.js. The old 415-on-clear regression lived at
+// this seam when the client omitted JSON Content-Type on bodyless mutations.
+// P1 now declares JSON for every JSON mutation; raw non-JSON callers must still
+// fail. Neither controller-only nor JSDOM-only harnesses cover the wire seam.
 async function withRealServer(t, run) {
   const http = require('node:http');
   const vm = require('node:vm');
@@ -322,7 +322,7 @@ async function withRealServer(t, run) {
   await run({ store, fetchJson, baseUrl: `http://${authority}${ROUTE}`, mutationHeaders });
 }
 
-test('cross-layer: real fetchJson against a real server can clear the cache, and a bodyless DELETE is rejected 415', async (t) => {
+test('cross-layer: fetchJson declares JSON for bodyless DELETE, while a raw non-JSON DELETE is rejected 415', async (t) => {
   await withRealServer(t, async ({ store, fetchJson, baseUrl, mutationHeaders }) => {
     const repository = store.turnTimeBreakdownRepository;
     repository.setJevCacheEntry('k1', { category: 'read', subcategory: null, runKind: null, confidence: 0.8 });
@@ -342,21 +342,17 @@ test('cross-layer: real fetchJson against a real server can clear the cache, and
     const before = await fetchJson(baseUrl);
     assert.equal(before.cache.entries, 2);
 
-    // The regression shape: DELETE without a body → fetchJson sends no JSON
-    // content-type → the guard must reject 415. This is exactly what the
-    // pre-fix UI sent, and it must keep failing so the seam stays honest.
-    await assert.rejects(
-      () => fetchJson(`${baseUrl}/cache`, { method: 'DELETE', headers: mutationHeaders }),
-      (error) => error.status === 415 && error.issues[0].code === 'system_service_config_json_required'
-    );
+    // Raw non-JSON callers must still fail. The shared client now declares
+    // JSON even without an explicit body, as required by the P1 write guard.
+    const rejected = await fetch(`${baseUrl}/cache`, { method: 'DELETE', headers: mutationHeaders });
+    assert.equal(rejected.status, 415);
+    assert.equal((await rejected.json()).issues[0].code, 'system_service_config_json_required');
     assert.equal((await fetchJson(baseUrl)).cache.entries, 2, 'the rejected DELETE must not have cleared anything');
 
-    // The shipped shape: DELETE with an empty JSON body (what
-    // jev-config-management.js now sends).
+    // Both explicit {} (the existing UI) and omitted bodies use JSON now.
     const cleared = await fetchJson(`${baseUrl}/cache`, {
       method: 'DELETE',
       headers: mutationHeaders,
-      body: {},
     });
     assert.equal(cleared.cleared, 2);
 

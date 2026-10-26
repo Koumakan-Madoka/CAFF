@@ -3,6 +3,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { requiresBoundedConversationProjections } from '../../../lib/conversation-hydration-contract';
 import { createHttpError } from '../../http/http-errors';
 import { isNonRoutableSystemActorId } from '../roles/system-actor-catalog';
+import { assertGoalCriterionPatchState, mergeGoalPatch } from './goal-patch';
+import { SESSION_GOAL_PLANNER_BINDING_KEY, assertPlannerGoalRulingAllowed,
+  createSessionGoalPlannerBinding, hasSessionGoalPlannerBinding } from './planner-goal-binding';
 import {
   acceptedAdrChanges,
   incompleteAcceptanceCriteria,
@@ -19,7 +22,7 @@ const SESSION_GOAL_RULING_METADATA_KEY = 'sessionGoalRuling';
 const SESSION_GOAL_RUNNER_METADATA_KEY = 'sessionGoalRunner';
 const SESSION_GOAL_STATUSES = new Set(['active', 'paused', 'complete']);
 const SESSION_GOAL_PROPOSAL_ACTIONS = new Set(['set', 'revise', 'pause', 'resume', 'complete', 'clear']);
-const SESSION_GOAL_RULING_OUTCOMES = new Set(['accepted', 'rejected']);
+const SESSION_GOAL_RULING_OUTCOMES = new Set(['accepted', 'rejected', 'superseded']);
 const SESSION_GOAL_ACTIONS = new Set(['set', 'revise', 'pause', 'resume', 'complete', 'clear', 'set-owner', 'set_owner', 'update-delivery', 'update_delivery', 'update-checklist', 'update_checklist']);
 const SESSION_GOAL_CHECKLIST_STATUSES = new Set(['todo', 'in_progress', 'done']);
 const MAX_SESSION_GOAL_OBJECTIVE_LENGTH = 2000;
@@ -80,6 +83,24 @@ function assertGoalRevision(existingGoal: any, input: any, options: any = {}) {
     });
   }
   return expectedRevision;
+}
+
+function assertPlannerGoalPreconditions(goal: any, proposal: any, input: any, action: string) {
+  if (normalizeRuledBy(input.ruledBy).kind !== 'planner') return;
+  const ruling = ['accept-proposal', 'accept_proposal', 'dismiss-proposal', 'dismiss_proposal'].includes(action);
+  const absentAllowed = !goal && (action === 'set' || ruling || input.supersedeProposal === true);
+  const valid = goal
+    ? typeof input.goalId === 'string' && input.goalId.trim() !== '' && Number.isSafeInteger(input.goalRevision) && input.goalRevision > 0
+    : absentAllowed && input.goalId === null && input.goalRevision === 0;
+  if (!valid) throw createHttpError(400, 'Planner writes require the current Goal ID/revision (null/0 for an absent Goal)', { code: 'goal_revision_required' });
+  if (goal && (input.goalId !== goal.goalId || input.goalRevision !== goal.revision)) {
+    throw createHttpError(409, 'The Goal ID or revision has changed', { code: 'goal_revision_conflict' });
+  }
+  if (ruling && !proposal) throw createHttpError(404, 'No session goal proposal is pending');
+  if ((ruling || (proposal && (input.supersedeProposal === true || action === 'clear')))
+    && (typeof input.proposalId !== 'string' || input.proposalId !== proposal.id)) {
+    throw createHttpError(409, 'Planner ruling/supersession requires the current proposal ID', { code: 'goal_proposal_conflict' });
+  }
 }
 
 /**
@@ -159,6 +180,27 @@ function normalizeGoalOwner(value: any) {
     agentId,
     agentName: normalizeText(source.agentName) || agentId,
   };
+}
+
+function initialGoalStatus(input: any) {
+  if (!Object.prototype.hasOwnProperty.call(input, 'status')) return 'active';
+  if (input.status === 'active' || input.status === 'paused') return input.status;
+  throw createHttpError(400, 'Initial Goal status must be active or paused', { code: 'goal_initial_status_invalid' });
+}
+
+function resolveGoalOwner(conversation: any, value: any, options: any = {}) {
+  const agentId = isPlainObject(value) && typeof value.agentId === 'string' ? normalizeText(value.agentId) : '';
+  const invalid = () => createHttpError(400, 'Goal owner must be a current routable conversation participant', { code: 'goal_owner_invalid' });
+  if (!agentId || isNonRoutableSystemActorId(agentId)) throw invalid();
+  const agent = (Array.isArray(conversation.agents) ? conversation.agents : []).find((candidate: any) => candidate?.id === agentId);
+  if (!agent || (agent.availability?.status && agent.availability.status !== 'available')) throw invalid();
+  if (typeof options.resolveRuntimeParticipants === 'function') {
+    try {
+      const resolved = options.resolveRuntimeParticipants([agent]);
+      if (!Array.isArray(resolved) || !resolved.some((candidate: any) => candidate?.id === agentId)) throw invalid();
+    } catch { throw invalid(); }
+  }
+  return { agentId, agentName: normalizeText(agent.name) || agentId };
 }
 
 function normalizeProposalAction(value: any) {
@@ -345,6 +387,10 @@ function normalizeSessionGoalProposal(value: any) {
     ...(impact ? { impact } : {}),
     ...(affectedWorkItems.length > 0 ? { affectedWorkItems } : {}),
     ...(baseRevision !== null ? { baseRevision } : {}),
+    ...(action === 'set' ? {
+      initialStatus: value.initialStatus ?? 'active',
+      ...(Object.prototype.hasOwnProperty.call(value, 'owner') ? { owner: value.owner } : {}),
+    } : {}),
     ...(delivery ? delivery : {}),
     proposedBy: {
       agentId: normalizeText(proposedBy.agentId),
@@ -356,8 +402,9 @@ function normalizeSessionGoalProposal(value: any) {
 }
 
 /**
- * Who ruled on a proposal. `user` = UI/REST manual ruling (forced
- * server-side by the controller, never client-supplied); `agent` = bridge
+ * Who ruled on a proposal. `user` = browser manual ruling; `planner` =
+ * authenticated external planner (both server-derived, never JSON claims);
+ * `agent` = bridge
  * ruling by a participant agent; `system` = no authoritative principal was
  * recorded (internal/legacy call) — the DAG scheduler never treats a system
  * ruling as a valid verification.
@@ -367,6 +414,10 @@ function normalizeRuledBy(value: any) {
   const kind = normalizeText(source.kind).toLowerCase();
   if (kind === 'user' || kind === 'system') {
     return { kind };
+  }
+  if (kind === 'planner') {
+    const plannerId = normalizeText(source.plannerId);
+    return plannerId ? { kind: 'planner', plannerId, plannerName: normalizeText(source.plannerName) || 'External Planner' } : { kind: 'system' };
   }
   const agentId = normalizeText(source.agentId);
   if (agentId) {
@@ -417,10 +468,13 @@ function normalizeSessionGoalRuling(value: any) {
     ruledBy: normalizeRuledBy(value.ruledBy || value.ruled_by),
     proposalSnapshot,
     ruledAt: normalizeText(value.ruledAt || value.ruled_at) || nowIso(),
+    ...(Object.prototype.hasOwnProperty.call(value, 'goalId') ? { goalId: value.goalId || null, goalRevision: value.goalRevision ?? 0 } : {}),
+    ...(normalizeProposalAction(value.supersedingAction) ? { supersedingAction: normalizeProposalAction(value.supersedingAction) } : {}),
+    ...(normalizeText(value.supersedingProposalId) ? { supersedingProposalId: normalizeText(value.supersedingProposalId) } : {}),
   };
 }
 
-function buildRulingRecord(proposal: any, outcome: string, ruledBy: any, reason: any, timestamp: string) {
+function buildRulingRecord(proposal: any, outcome: string, ruledBy: any, reason: any, timestamp: string, goal: any, supersedingAction = '', supersedingProposalId = '') {
   const snapshot = normalizeSessionGoalProposal(proposal);
   if (!snapshot) {
     throw createHttpError(500, 'Cannot record a ruling without a valid proposal snapshot');
@@ -440,6 +494,10 @@ function buildRulingRecord(proposal: any, outcome: string, ruledBy: any, reason:
     ruledBy: normalizeRuledBy(ruledBy),
     proposalSnapshot,
     ruledAt: timestamp,
+    goalId: goal?.goalId || null,
+    goalRevision: goal?.revision || 0,
+    ...(supersedingAction ? { supersedingAction } : {}),
+    ...(supersedingProposalId ? { supersedingProposalId } : {}),
   };
 }
 
@@ -554,15 +612,25 @@ function buildMetadataWithGoal(conversation: any, goal: any, options: any = {}) 
   const metadata = currentMetadata(conversation);
   const {
     [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal,
-    [SESSION_GOAL_RULING_METADATA_KEY]: _ruling,
+    [SESSION_GOAL_RULING_METADATA_KEY]: existingRuling,
     [SESSION_GOAL_RUNNER_METADATA_KEY]: existingRunner,
     ...remainingMetadata
   } = metadata;
   return {
     ...remainingMetadata,
+    ...(!options.clearRuling && existingRuling ? { [SESSION_GOAL_RULING_METADATA_KEY]: existingRuling } : {}),
     ...(!options.clearRunner && existingRunner ? { [SESSION_GOAL_RUNNER_METADATA_KEY]: existingRunner } : {}),
     [SESSION_GOAL_METADATA_KEY]: goal,
   };
+}
+
+function withSetPlannerBinding(conversation: any, metadata: any, goal: any, input: any, options: any, timestamp: string) {
+  const { [SESSION_GOAL_PLANNER_BINDING_KEY]: _previousBinding, ...withoutBinding } = metadata;
+  const principal = normalizeRuledBy(input.ruledBy);
+  const shouldBind = principal.kind === 'planner' || (principal.kind === 'user' && input.plannerDriven === true);
+  if (!shouldBind) return withoutBinding;
+  return { ...withoutBinding, [SESSION_GOAL_PLANNER_BINDING_KEY]: createSessionGoalPlannerBinding(conversation, goal,
+    principal.kind === 'planner' ? principal : options.plannerIdentity, timestamp) };
 }
 
 function buildMetadataWithProposal(conversation: any, proposal: any) {
@@ -580,6 +648,7 @@ function buildMetadataWithoutGoal(conversation: any) {
     [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal,
     [SESSION_GOAL_RULING_METADATA_KEY]: _ruling,
     [SESSION_GOAL_RUNNER_METADATA_KEY]: _runner,
+    [SESSION_GOAL_PLANNER_BINDING_KEY]: _plannerBinding,
     ...remainingMetadata
   } = metadata;
   return remainingMetadata;
@@ -610,13 +679,13 @@ function getGoalConversation(store: any, conversationId: any) {
     : null;
 }
 
-function updateConversationMetadata(store: any, conversation: any, metadata: any) {
+function updateConversationMetadata(store: any, conversation: any, metadata: any, options: any = {}) {
   // metadata-only 写入：不传 title，避免 titleSource 状态机误判为 manual 改名。
   if (store && typeof store.updateConversationWithoutMessages === 'function') {
     return store.updateConversationWithoutMessages(conversation.id, {
       type: conversation.type,
       metadata,
-    });
+    }, { ...options, goalRulings: options.goalRulings || [] });
   }
   if (requiresBoundedConversationProjections(store)) {
     return missingBoundedGoalProjection('updateConversationWithoutMessages');
@@ -626,10 +695,6 @@ function updateConversationMetadata(store: any, conversation: any, metadata: any
     type: conversation.type,
     metadata,
   });
-}
-
-function updateConversationGoal(store: any, conversation: any, goal: any, options: any = {}) {
-  return updateConversationMetadata(store, conversation, buildMetadataWithGoal(conversation, goal, options));
 }
 
 function updateConversationProposal(store: any, conversation: any, proposal: any) {
@@ -934,14 +999,8 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
     errorPausedAt: occurredAt,
     updatedAt: occurredAt,
   };
-  const metadata = currentMetadata(conversation);
-  const {
-    [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal,
-    [SESSION_GOAL_RULING_METADATA_KEY]: _ruling,
-    ...remainingMetadata
-  } = metadata;
   const nextConversation = updateConversationMetadata(store, conversation, {
-    ...remainingMetadata,
+    ...currentMetadata(conversation),
     [SESSION_GOAL_METADATA_KEY]: pausedGoal,
     [SESSION_GOAL_RUNNER_METADATA_KEY]: pausedRunner,
   });
@@ -956,7 +1015,58 @@ export function recordSessionGoalContinuationOutcome(store: any, conversationId:
   };
 }
 
-function goalFromMutation(action: string, existingGoal: any, input: any, timestamp: string) {
+function assertUserOnlyGoalChanges(previousGoal: any, nextGoal: any, principal: any, replacement = false) {
+  if (normalizeRuledBy(principal).kind === 'user') return;
+  const adrChanges = acceptedAdrChanges(previousGoal, nextGoal);
+  if (adrChanges.length > 0) {
+    throw createHttpError(403, 'Accepted ADR decisions can only be changed by the user', {
+      code: 'goal_accepted_adr_change_user_required', changes: adrChanges,
+    });
+  }
+  const previous = new Map<string, any>((previousGoal?.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
+  const newlyWaived = (nextGoal?.acceptanceCriteria || []).filter((criterion: any) => {
+    const old = previous.get(criterion.id);
+    return criterion.status === 'waived' && (criterion.risk === 'high' || old?.risk === 'high')
+      && (replacement || !old || old.status !== 'waived' || old.statement !== criterion.statement
+        || old.verifyBy !== criterion.verifyBy || old.risk !== criterion.risk);
+  });
+  if (newlyWaived.length > 0) {
+    throw createHttpError(403, 'High-risk acceptance criteria can only be waived by the user', {
+      code: 'goal_high_risk_waiver_user_required', criterionIds: newlyWaived.map((criterion: any) => criterion.id),
+    });
+  }
+  // A completed Goal has already passed completion validation. Retiring it
+  // via set/clear cannot bypass its acceptance checks (M3 review N8). This
+  // exception deliberately follows the ADR/new-waiver gates above, and does
+  // not permit revising away a protected criterion, even on a completed Goal.
+  if (previousGoal?.status === 'complete' && (replacement || nextGoal === null)) return;
+  // Protect the unfinished boundary, not only a newly waived status: otherwise
+  // a non-user can downgrade first and waive later, or drop it in a new Goal.
+  // A changed ID is removal too; clearing a Goal removes every criterion.
+  const next = new Map<string, any>((nextGoal?.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
+  const downgradedOrRemoved = [...previous.values()].filter((criterion: any) =>
+    criterion.risk === 'high' && next.get(criterion.id)?.risk !== 'high');
+  if (downgradedOrRemoved.length > 0) {
+    throw createHttpError(403, 'High-risk acceptance criteria can only be downgraded or removed by the user', {
+      code: 'goal_high_risk_change_user_required', criterionIds: downgradedOrRemoved.map((criterion: any) => criterion.id),
+    });
+  }
+}
+
+function mergeGoalMutationInput(existingGoal: any, input: any, timestamp: string) {
+  if (!Object.prototype.hasOwnProperty.call(input, 'workItems') && hasChecklistInput(input)) {
+    const legacy = checklistInputValue(input);
+    if (typeof legacy !== 'string' && !Array.isArray(legacy)) {
+      throw createHttpError(400, 'Invalid explicit Goal checklist patch', { code: 'goal_patch_invalid' });
+    }
+    return mergeGoalPatch(existingGoal, input, {
+      legacyWorkItems: typeof legacy === 'string' ? normalizeChecklistItems(legacy, timestamp) : legacy,
+    });
+  }
+  return mergeGoalPatch(existingGoal, input);
+}
+
+function goalFromMutation(action: string, existingGoal: any, input: any, timestamp: string, conversation: any, options: any) {
   if (action === 'set') {
     const objective = normalizeObjective(input && input.objective);
     const delivery = normalizeGoalDelivery(input, timestamp, {
@@ -965,7 +1075,8 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
     requireAcceptanceCriteria(delivery);
     return {
       objective,
-      status: 'active',
+      status: initialGoalStatus(input),
+      ...(Object.prototype.hasOwnProperty.call(input, 'owner') ? { owner: resolveGoalOwner(conversation, input.owner, options) } : {}),
       createdAt: existingGoal ? existingGoal.createdAt : timestamp,
       updatedAt: timestamp,
       goalId: newGoalId(),
@@ -979,9 +1090,9 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
   }
 
   if (action === 'revise') {
-    const objective = normalizeObjective(input && input.objective);
-    const delivery = normalizeGoalDelivery(input, timestamp);
-    requireAcceptanceCriteria(delivery);
+    const mergedInput = mergeGoalMutationInput(existingGoal, input, timestamp);
+    const objective = normalizeObjective(mergedInput.objective);
+    const delivery = normalizeGoalDelivery(mergedInput, timestamp);
     return {
       ...existingGoal,
       objective,
@@ -992,19 +1103,22 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
   }
 
   if (action === 'update-delivery' || action === 'update_delivery') {
-    const delivery = normalizeGoalDelivery(input, timestamp);
-    validateGoalDelivery(delivery);
+    const mergedInput = mergeGoalMutationInput(existingGoal, input, timestamp);
+    const delivery = normalizeGoalDelivery(mergedInput, timestamp);
     const nextGoal = {
       ...existingGoal,
+      objective: normalizeObjective(mergedInput.objective),
       revision: existingGoal.revision + 1,
       updatedAt: timestamp,
       ...delivery,
     };
+    assertUserOnlyGoalChanges(existingGoal, nextGoal, input.ruledBy);
     if (structuralGoalProjection(nextGoal) !== structuralGoalProjection(existingGoal)) {
       throw createHttpError(409, 'Factual Goal updates cannot change the objective, decisions, criteria, or work-item definitions', {
         code: 'goal_structural_review_required',
       });
     }
+    validateGoalDelivery(delivery);
     const previousCriteria = new Map((existingGoal.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
     const newlyWaived = (nextGoal.acceptanceCriteria || []).filter((criterion: any) => {
       const previous: any = previousCriteria.get(criterion.id);
@@ -1066,7 +1180,7 @@ function responseForConversation(conversation: any, overrides: any = {}) {
   };
 }
 
-export function applySessionGoalAction(store: any, conversationId: any, input: any = {}) {
+export function applySessionGoalAction(store: any, conversationId: any, input: any = {}, options: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
   const conversation = getGoalConversation(store, normalizedConversationId);
 
@@ -1086,8 +1200,65 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     });
   }
 
+  const principal = normalizeRuledBy(input.ruledBy);
+  if (action === 'bind-planner') {
+    if (principal.kind !== 'user') throw createHttpError(403, 'Only the user may adopt a planner for an existing Goal', { code: 'goal_planner_binding_user_required' });
+    if (!existingGoal) throw createHttpError(404, 'No session goal is set');
+    if (typeof input.goalId !== 'string' || !input.goalId.trim() || !Number.isSafeInteger(input.goalRevision) || input.goalRevision <= 0) {
+      throw createHttpError(400, 'Goal ID and revision are required for planner adoption', { code: 'goal_revision_required' });
+    }
+    if (input.goalId !== existingGoal.goalId || input.goalRevision !== existingGoal.revision) {
+      throw createHttpError(409, 'The Goal ID or revision has changed', { code: 'goal_revision_conflict' });
+    }
+    if (hasSessionGoalPlannerBinding(conversation)) throw createHttpError(409, 'Goal already has a planner binding', { code: 'goal_planner_binding_conflict' });
+    if (existingProposal) throw createHttpError(409, 'Rule on the pending proposal before planner adoption', { code: 'goal_proposal_pending' });
+    const reason = normalizeProposalReason(input.reason);
+    if (!reason) throw createHttpError(400, 'Planner adoption requires a reason', { code: 'goal_planner_binding_reason_required' });
+    const goal = { ...existingGoal, revision: existingGoal.revision + 1, updatedAt: timestamp };
+    const binding = createSessionGoalPlannerBinding(conversation, goal, options.plannerIdentity, timestamp, { boundBy: { kind: 'user' }, reason });
+    const runner = getSessionGoalRunner(conversation);
+    const metadata = { ...currentMetadata(conversation), [SESSION_GOAL_METADATA_KEY]: goal,
+      [SESSION_GOAL_PLANNER_BINDING_KEY]: binding,
+      ...(runner && runner.goalUpdatedAt === goalRunnerKey(existingGoal)
+        ? { [SESSION_GOAL_RUNNER_METADATA_KEY]: { ...currentMetadata(conversation)[SESSION_GOAL_RUNNER_METADATA_KEY], goalUpdatedAt: goalRunnerKey(goal) } } : {}) };
+    const nextConversation = updateConversationMetadata(store, conversation, metadata);
+    return responseForConversation(nextConversation, { goalChanged: true, autoContinue: false });
+  }
+  if (['accept-proposal', 'accept_proposal', 'dismiss-proposal', 'dismiss_proposal'].includes(action)) {
+    assertPlannerGoalRulingAllowed(conversation, principal);
+  }
+  assertPlannerGoalPreconditions(existingGoal, existingProposal, input, action);
+
+  // Supplied proposal IDs protect rulings and confirmed supersession against
+  // a proposal replaced without a Goal revision change.
+  if ((action === 'accept-proposal' || action === 'accept_proposal' || action === 'dismiss-proposal' || action === 'dismiss_proposal'
+    || input.supersedeProposal === true) && input.proposalId !== undefined && input.proposalId !== existingProposal?.id) {
+    throw createHttpError(409, 'The pending Goal proposal has changed', { code: 'goal_proposal_conflict' });
+  }
+  const guarded = ['set', 'revise', 'pause', 'resume', 'complete'].includes(action);
+  if (guarded && existingProposal && input.supersedeProposal !== true) {
+    throw createHttpError(409, 'Rule on the pending Goal proposal or explicitly confirm supersession', { code: 'goal_proposal_pending' });
+  }
+  if (guarded && existingProposal && input.supersedeProposal === true
+    && normalizeRuledBy(input.ruledBy).kind === 'planner' && input.proposalId !== existingProposal.id) {
+    throw createHttpError(409, 'Planner supersession requires the current proposal ID', { code: 'goal_proposal_conflict' });
+  }
+  // Optional stronger browser preconditions bind confirmation to the Goal it
+  // displayed. Legacy callers without an ID keep their existing checks.
+  if (Object.prototype.hasOwnProperty.call(input, 'goalId')) {
+    if ((input.goalId || null) !== (existingGoal?.goalId || null)) {
+      throw createHttpError(409, 'The session Goal has changed', { code: 'goal_revision_conflict' });
+    }
+    if (existingGoal) assertGoalRevision(existingGoal, input);
+  }
+
   if (action === 'clear') {
-    const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
+    assertUserOnlyGoalChanges(existingGoal, null, input.ruledBy);
+    const ruling = existingProposal ? buildRulingRecord(existingProposal, 'superseded', input.ruledBy,
+      input.reason || 'Superseded by clear', timestamp, existingGoal, 'clear') : null;
+    const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation), {
+      goalRulings: ruling ? [ruling] : [],
+    });
     return responseForConversation(nextConversation, {
       goal: null,
       proposal: null,
@@ -1096,12 +1267,13 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       proposalChanged: Boolean(existingProposal),
       proposalCleared: Boolean(existingProposal),
       clearedProposal: existingProposal || null,
+      clearedRuling: ruling,
     });
   }
 
   if (action === 'dismiss-proposal' || action === 'dismiss_proposal') {
     const ruling = existingProposal
-      ? buildRulingRecord(existingProposal, 'rejected', input.ruledBy, input.reason, timestamp)
+      ? buildRulingRecord(existingProposal, 'rejected', input.ruledBy, input.reason, timestamp, existingGoal)
       : null;
     if (ruling?.ruledBy?.kind === 'agent'
       && ruling.ruledBy.agentId === existingProposal?.proposedBy?.agentId) {
@@ -1137,9 +1309,14 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       });
     }
 
+    const ruling = buildRulingRecord(existingProposal, 'accepted', input.ruledBy, input.reason, timestamp, existingGoal);
+    if (ruling.ruledBy.kind === 'agent'
+      && ruling.ruledBy.agentId === existingProposal.proposedBy?.agentId) {
+      throw createHttpError(403, 'The proposer cannot review their own Goal proposal', { code: 'goal_proposal_self_review' });
+    }
     if (existingProposal.action === 'clear') {
-      // Approving a clear wipes the whole goal epoch — including rulings.
-      const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
+      assertUserOnlyGoalChanges(existingGoal, null, input.ruledBy);
+      const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation), { goalRulings: [ruling] });
       return responseForConversation(nextConversation, {
         goal: null,
         proposal: null,
@@ -1148,37 +1325,24 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
         proposalChanged: true,
         proposalCleared: true,
         clearedProposal: existingProposal,
+        clearedRuling: ruling,
       });
     }
 
-    const ruling = buildRulingRecord(existingProposal, 'accepted', input.ruledBy, input.reason, timestamp);
-    if (ruling.ruledBy.kind === 'agent'
-      && ruling.ruledBy.agentId === existingProposal.proposedBy?.agentId) {
-      throw createHttpError(403, 'The proposer cannot review their own Goal proposal', {
-        code: 'goal_proposal_self_review',
-      });
-    }
-    const goal = goalFromMutation(existingProposal.action, existingGoal, existingProposal, timestamp);
-    const adrChanges = existingProposal.action === 'revise'
-      ? acceptedAdrChanges(existingGoal, goal)
-      : [];
-    if (ruling.ruledBy.kind === 'agent' && adrChanges.length > 0) {
-      throw createHttpError(403, 'Accepted ADR decisions can only be changed by the user', {
-        code: 'goal_accepted_adr_change_user_required',
-        changes: adrChanges,
-      });
+    const mutationInput = existingProposal.action === 'set'
+      ? { ...existingProposal, status: existingProposal.initialStatus ?? 'active' }
+      : existingProposal;
+    const goal = goalFromMutation(existingProposal.action, existingGoal, mutationInput, timestamp, conversation, options);
+    assertUserOnlyGoalChanges(existingGoal, goal, ruling.ruledBy, existingProposal.action === 'set');
+    if (existingProposal.action === 'revise') {
+      requireAcceptanceCriteria(goal);
+      assertGoalCriterionPatchState(existingGoal, mutationInput, goal);
     }
     const previousCriteria = new Map((existingGoal && existingGoal.acceptanceCriteria || []).map((criterion: any) => [criterion.id, criterion]));
     const newlyWaivedHighRisk = (goal.acceptanceCriteria || []).filter((criterion: any) => {
       const previous: any = previousCriteria.get(criterion.id);
       return criterion.status === 'waived' && criterion.risk === 'high' && (!previous || previous.status !== 'waived');
     });
-    if (ruling.ruledBy.kind === 'agent' && newlyWaivedHighRisk.length > 0) {
-      throw createHttpError(403, 'High-risk acceptance criteria can only be waived by the user', {
-        code: 'goal_high_risk_waiver_user_required',
-        criterionIds: newlyWaivedHighRisk.map((criterion: any) => criterion.id),
-      });
-    }
     const reviewedGoal = newlyWaivedHighRisk.length > 0 || (goal.acceptanceCriteria || []).some((criterion: any) => {
       const previous: any = previousCriteria.get(criterion.id);
       return criterion.status === 'waived' && (!previous || previous.status !== 'waived');
@@ -1190,7 +1354,9 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
             if (criterion.status !== 'waived' || (previous && previous.status === 'waived')) return criterion;
             const reviewer = ruling.ruledBy.kind === 'user'
               ? 'user'
-              : ruling.ruledBy.agentName || ruling.ruledBy.agentId || 'reviewer';
+              : ruling.ruledBy.kind === 'planner'
+                ? ruling.ruledBy.plannerName
+                : ruling.ruledBy.agentName || ruling.ruledBy.agentId || 'reviewer';
             return {
               ...criterion,
               waiver: {
@@ -1203,9 +1369,11 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
           }),
         }
       : goal;
-    // Goal owner: accepting a set proposal stamps the proposer as owner.
+    // Explicit owner wins; legacy set proposals still default to the proposer.
+    // Resolve again now: the roster/runtime may have changed while awaiting review.
     const acceptedOwner = existingProposal.action === 'set'
-      ? normalizeGoalOwner(existingProposal.proposedBy)
+      ? goal.owner || (normalizeGoalOwner(existingProposal.proposedBy)
+        ? resolveGoalOwner(conversation, existingProposal.proposedBy, options) : null)
       : null;
     const goalWithOwner = acceptedOwner ? { ...reviewedGoal, owner: acceptedOwner } : reviewedGoal;
     const provisionalChanges = existingProposal.action === 'revise'
@@ -1226,13 +1394,16 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     const goalWithNotice = changeNotice
       ? { ...goalWithOwner, changeNotices: [...(existingGoal?.changeNotices || []), changeNotice].slice(-20) }
       : goalWithOwner;
-    const metadata = {
+    const baseMetadata = {
       ...buildMetadataWithGoal(conversation, goalWithNotice, {
         clearRunner: existingProposal.action === 'set' || existingProposal.action === 'resume',
+        clearRuling: existingProposal.action === 'set',
       }),
       [SESSION_GOAL_RULING_METADATA_KEY]: ruling,
     };
-    const nextConversation = updateConversationMetadata(store, conversation, metadata);
+    const metadata = existingProposal.action === 'set'
+      ? withSetPlannerBinding(conversation, baseMetadata, goalWithNotice, input, options, timestamp) : baseMetadata;
+    const nextConversation = updateConversationMetadata(store, conversation, metadata, { goalAction: existingProposal.action });
     return responseForConversation(nextConversation, {
       goal: getSessionGoal(nextConversation),
       proposal: null,
@@ -1266,24 +1437,16 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     });
   }
 
-  if (action === 'clear') {
-    const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
-    return responseForConversation(nextConversation, {
-      goal: null,
-      proposal: null,
-      cleared: true,
-      goalChanged: true,
-      proposalChanged: Boolean(existingProposal),
-      proposalCleared: Boolean(existingProposal),
-    });
-  }
-
   if (action === 'set-owner' || action === 'set_owner') {
     if (!existingGoal) {
       throw createHttpError(404, 'No session goal is set');
     }
 
     const ownerAgentId = normalizeText(input.ownerAgentId || input.owner_agent_id);
+    if (principal.kind === 'planner') {
+      if (!normalizeProposalReason(input.reason)) throw createHttpError(400, 'Planner owner reassignment requires a reason', { code: 'goal_owner_reason_required' });
+      if (!ownerAgentId) throw createHttpError(400, 'Planner reassignment requires a routable owner', { code: 'goal_owner_invalid' });
+    }
     let nextGoal: any;
 
     if (ownerAgentId) {
@@ -1292,19 +1455,10 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
           code: 'session_goal_owner_system_actor_not_routable',
         });
       }
-      const participants = Array.isArray(conversation.agents) ? conversation.agents : [];
-      const agent = participants.find((participant: any) => participant && normalizeText(participant.id) === ownerAgentId);
-
-      if (!agent) {
-        throw createHttpError(400, 'Goal owner must be a current conversation participant');
-      }
-
+      const owner = resolveGoalOwner(conversation, { agentId: ownerAgentId }, options);
       nextGoal = {
         ...existingGoal,
-        owner: {
-          agentId: ownerAgentId,
-          agentName: normalizeText(agent.name) || ownerAgentId,
-        },
+        owner,
         revision: existingGoal.revision + 1,
         updatedAt: timestamp,
       };
@@ -1312,6 +1466,14 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       const { owner: _previousOwner, ...goalWithoutOwner } = existingGoal;
       nextGoal = { ...goalWithoutOwner, revision: existingGoal.revision + 1, updatedAt: timestamp };
     }
+
+    const ownerChangeNotice = principal.kind === 'planner' ? {
+      id: `notice_${randomUUID()}`, type: 'owner_changed',
+      changes: [{ id: 'owner', previous: existingGoal.owner?.agentName || '(unset)', next: nextGoal.owner.agentName }],
+      reason: normalizeProposalReason(input.reason), impact: 'Owner reassigned; runner counters preserved',
+      affectedWorkItems: [], reviewer: principal, createdAt: timestamp,
+    } : null;
+    if (ownerChangeNotice) nextGoal.changeNotices = [...(existingGoal.changeNotices || []), ownerChangeNotice].slice(-20);
 
     // set-owner is a factual owner change inside the current goal epoch: it
     // must not erase a pending proposal, the durable ruling, or runner state.
@@ -1335,23 +1497,40 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     if (migratedRunner) {
       nextMetadata[SESSION_GOAL_RUNNER_METADATA_KEY] = migratedRunner;
     }
-    const nextConversation = updateConversationMetadata(store, conversation, nextMetadata);
+    const nextConversation = updateConversationMetadata(store, conversation, nextMetadata, { ownerValidated: Boolean(ownerAgentId) });
     return responseForConversation(nextConversation, {
       goal: getSessionGoal(nextConversation),
       proposal: getSessionGoalProposal(nextConversation),
       goalChanged: true,
       proposalChanged: false,
       autoContinue: false,
+      changeNotice: ownerChangeNotice,
     });
   }
 
-  const goal = goalFromMutation(action, existingGoal, input, timestamp);
+  let goal = goalFromMutation(action, existingGoal, input, timestamp, conversation, options);
+  assertUserOnlyGoalChanges(existingGoal, goal, input.ruledBy, action === 'set');
+  let changeNotice = null;
+  if (action === 'revise') {
+    requireAcceptanceCriteria(goal);
+    assertGoalCriterionPatchState(existingGoal, input, goal);
+    const changes = provisionalDecisionChanges(existingGoal, goal);
+    if (changes.length > 0) {
+      const reason = normalizeProposalReason(input.reason), impact = normalizeProposalReason(input.impact);
+      if (!reason || !impact) throw createHttpError(400, 'Changing a provisional decision requires both reason and impact', {
+        code: 'goal_provisional_change_context_required', changes,
+      });
+      changeNotice = { id: `notice_${randomUUID()}`, type: 'provisional_decision_changed', changes, reason, impact,
+        affectedWorkItems: Array.isArray(input.affectedWorkItems) ? input.affectedWorkItems.slice(0, 40) : [], reviewer: principal, createdAt: timestamp };
+      goal = { ...goal, changeNotices: [...(existingGoal?.changeNotices || []), changeNotice].slice(-20) };
+    }
+  }
   const factualRunner = factualOnly ? getSessionGoalRunner(conversation) : null;
   // Checklist progress is factual state inside the current goal epoch. It
   // must not erase a pending proposal or the durable ruling that proves how
   // the current lifecycle state was reached.
-  const nextConversation = factualOnly
-    ? updateConversationMetadata(store, conversation, {
+  const nextMetadata = factualOnly
+    ? {
       ...currentMetadata(conversation),
       [SESSION_GOAL_METADATA_KEY]: goal,
       ...(factualRunner && factualRunner.goalUpdatedAt === goalRunnerKey(existingGoal)
@@ -1363,10 +1542,14 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
           },
         }
         : {}),
-    })
-    : updateConversationGoal(store, conversation, goal, {
-      clearRunner: action === 'set' || action === 'resume',
-    });
+    }
+    : {
+      ...buildMetadataWithGoal(conversation, goal, { clearRunner: action === 'set' || action === 'resume', clearRuling: action === 'set' }),
+      ...(existingProposal ? { [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(existingProposal, 'superseded', input.ruledBy,
+        input.reason || `Superseded by ${action}`, timestamp, existingGoal, action) } : {}),
+    };
+  const metadata = action === 'set' ? withSetPlannerBinding(conversation, nextMetadata, goal, input, options, timestamp) : nextMetadata;
+  const nextConversation = updateConversationMetadata(store, conversation, metadata, { goalAction: action });
   return responseForConversation(nextConversation, {
     goal: getSessionGoal(nextConversation),
     proposal: factualOnly ? getSessionGoalProposal(nextConversation) : null,
@@ -1374,11 +1557,12 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     proposalChanged: factualOnly ? false : Boolean(existingProposal),
     proposalCleared: factualOnly ? false : Boolean(existingProposal),
     clearedProposal: factualOnly ? null : existingProposal || null,
+    changeNotice,
     autoContinue: !factualOnly,
   });
 }
 
-export function proposeSessionGoalAction(store: any, conversationId: any, input: any = {}, proposer: any = {}) {
+export function proposeSessionGoalAction(store: any, conversationId: any, input: any = {}, proposer: any = {}, options: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
   const conversation = getGoalConversation(store, normalizedConversationId);
 
@@ -1411,13 +1595,14 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
     }
   }
 
+  const timestamp = nowIso();
+  const mutationInput = action === 'revise' ? mergeGoalMutationInput(existingGoal, input, timestamp) : input;
   const objective = action === 'set' || action === 'revise'
-    ? normalizeObjective(input.objective || (existingGoal && existingGoal.objective))
+    ? normalizeObjective(mutationInput.objective)
     : '';
   const reason = normalizeProposalReason(input.reason);
-  const timestamp = nowIso();
   const proposedDelivery = action === 'set' || action === 'revise'
-    ? normalizeGoalDelivery(input, timestamp, {
+    ? normalizeGoalDelivery(mutationInput, timestamp, {
         legacyChecklist: hasChecklistInput(input) ? normalizeChecklistItems(checklistInputValue(input), timestamp) : [],
       })
     : null;
@@ -1425,6 +1610,7 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
     requireAcceptanceCriteria(proposedDelivery);
   }
   if (action === 'revise') {
+    assertGoalCriterionPatchState(existingGoal, mutationInput, proposedDelivery);
     const provisionalChanges = provisionalDecisionChanges(existingGoal, proposedDelivery);
     const impact = clipText(input.impact, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH);
     if (provisionalChanges.length > 0 && (!reason || !impact)) {
@@ -1441,6 +1627,10 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
     ...(objective ? { objective } : {}),
     ...(reason ? { reason } : {}),
     ...(action !== 'set' && existingGoal ? { baseRevision: existingGoal.revision } : {}),
+    ...(action === 'set' ? {
+      initialStatus: initialGoalStatus(input),
+      ...(Object.prototype.hasOwnProperty.call(input, 'owner') ? { owner: resolveGoalOwner(conversation, input.owner, options) } : {}),
+    } : {}),
     ...(proposedDelivery || {}),
     ...(clipText(input.impact, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH) ? { impact: clipText(input.impact, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH) } : {}),
     ...(Array.isArray(input.affectedWorkItems) ? { affectedWorkItems: input.affectedWorkItems } : {}),
@@ -1451,7 +1641,17 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  const nextConversation = updateConversationProposal(store, conversation, proposal);
+  const previousProposal = getSessionGoalProposal(conversation);
+  const nextMetadata = {
+    ...buildMetadataWithProposal(conversation, proposal),
+    ...(previousProposal ? { [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(previousProposal, 'superseded',
+      { kind: 'agent', agentId: proposer.agentId, agentName: proposer.agentName },
+      reason || 'Superseded by a replacement Goal proposal', timestamp, existingGoal, action, proposal.id) } : {}),
+  };
+  // Technical draft replacement is not accept/reject authority. Persist the
+  // old snapshot/new ID and new pending proposal together; M4 adds attention
+  // resolution/creation to the store's same metadata transaction.
+  const nextConversation = updateConversationMetadata(store, conversation, nextMetadata);
 
   return responseForConversation(nextConversation, {
     goal: existingGoal,
@@ -1537,7 +1737,8 @@ export function pauseSessionGoalForRemovedOwner(store: any, conversationId: any,
   if (!existingProposal) {
     nextMetadata[SESSION_GOAL_PROPOSAL_METADATA_KEY] = proposal;
   }
-  const nextConversation = updateConversationMetadata(store, conversation, nextMetadata);
+  const nextConversation = updateConversationMetadata(store, conversation, nextMetadata,
+    { ownerRemovedAgentId: normalizedOwner.agentId });
 
   return {
     changed: true,

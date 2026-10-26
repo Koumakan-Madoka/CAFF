@@ -3,8 +3,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
 const test = require('node:test');
+const { browserFetch: fetch } = require('../helpers/browser-fetch');
 
-const { createServerApp } = require('../../build/server/app/create-server');
+const { createTestServerApp: createServerApp } = require('../helpers/server-app');
 const { isolateExternalIntegrations } = require('../helpers/external-integrations');
 const { withTempDir } = require('../helpers/temp-dir');
 const { pngBuffer } = require('../storage/image-buffers');
