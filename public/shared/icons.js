@@ -16,6 +16,7 @@
     'x',
     'refresh',
     'panel-right',
+    'terminal',
     'arrow-down',
     'archive',
     'file-text',

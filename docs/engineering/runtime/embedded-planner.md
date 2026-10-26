@@ -487,7 +487,10 @@ register the output listener first so the new repaint output reaches the pane.
 If the platform's same-size resize is a no-op, verify a safe resize-only repaint
 mechanism in the platform check; never substitute replay or injected keystrokes.
 `--resume` continues the CLI's own session when a new process is needed, not a
-CAFF history-replay mechanism. UI explicitly labels this limitation.
+CAFF history-replay mechanism. UI explicitly labels this limitation. A CLI or
+ConPTY resize repaint may include characters from its current screen; this is
+newly received process output, not a CAFF-retained/replayed transcript. A manual
+reconnect disposes the old xterm view and creates a new one.
 
 A restart invalidates CSRF. Refresh bootstrap before a manual reconnect; do not
 blindly retry a failed auth with cached credentials or resubmit terminal input.
@@ -843,8 +846,30 @@ live/retained/stopping process may be reset. Do not automatically reconnect or
 send input after confirmation. By the terminal's folder-trust guidance, tell the
 user to select **Yes, I trust this folder** to continue when they trust the
 verified directory. The choice remains the user's; never send an automatic
-answer or default-enter keystroke. M2 supplies the route/contract only, not the
-pane controls.
+answer or default-enter keystroke. M2 supplies the route/contract; M3 implements the pane controls.
+
+M3 implementation ownership: `planner-terminal-client.js` owns xterm, live WS,
+UTF-8/frame-safe paste chunks, bounded renderer/send buffers and disposal;
+`planner-terminal-pane.js` owns explicit bootstrap/state reads, confirmation
+controls, manual connection and width preference. `planner-terminal.css` styles
+the sibling pane; `app.js` passes capability/current-room changes, never tokens
+or transcript state. Only the width (320–900px, further bounded to leave chat
+space) is persisted in local storage. At <=1099px the pane becomes a full-width
+overlay; AppShell owns its background inert/focus coordination. Escape in the
+terminal is passed to the CLI (including trust), not treated as UI close;
+Ctrl+Shift+F6 returns to the toolbar. Desktop chat remains interactive.
+
+Pinned xterm/addon JS/CSS and both LICENSE notices are copied to
+`build/public/vendor/planner-terminal` at build time, not into source or a CDN.
+Browser-local xterm scrollback is bounded to 2000 lines and discarded on
+reconnect/room switch. OSC 52 (clipboard) and OSC 8 (hyperlinks) are consumed;
+no web-links/clipboard addon or URL/window action is enabled. Client-side
+failure uses browser-valid close code 1000; server policy close codes remain
+as specified in §5. Input stops on termination, but trailing process output is
+drained until exit. M3's wake-up toggle/record entry are explicitly disabled and
+labelled not yet enabled, pending M4 endpoints and scheduling; they perform no
+writes. N6 recovery/state reads of corrupt session metadata return fixed 409
+`planner_session_unavailable`, without resetting it or exposing stored data.
 
 Diagnostics use stable codes and bounded fixed explanations, not raw child
 output. Logs include stage, room/attempt IDs, version, duration, numeric

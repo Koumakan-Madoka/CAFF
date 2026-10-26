@@ -24,6 +24,7 @@ export function createEmbeddedPlannerController(options: any) {
         if (error?.code === 'planner_room_missing') throw createHttpError(404, 'Room not found');
         if (error?.code === 'planner_room_busy') throw createHttpError(409, 'Planner process is still owned by this instance', { code: error.code });
         if (error?.code === 'planner_process_exit_unconfirmed') throw createHttpError(409, 'Repair the planner lease before reinitializing its session', { code: error.code });
+        if (error?.code === 'planner_session_unavailable') throw createHttpError(409, 'Planner session metadata is unavailable; user inspection is required', { code: error.code });
         throw error;
       }
       return true;
@@ -42,6 +43,7 @@ export function createEmbeddedPlannerController(options: any) {
     try { sendJson(res, 200, options.runtime.roomState(match[1])); }
     catch (error: any) {
       if (error?.code === 'planner_room_missing') throw createHttpError(404, 'Room not found');
+      if (error?.code === 'planner_session_unavailable') throw createHttpError(409, 'Planner session metadata is unavailable; user inspection is required', { code: error.code });
       throw error;
     }
     return true;

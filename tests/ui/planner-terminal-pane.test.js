@@ -1,0 +1,232 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const { JSDOM } = require('jsdom');
+const ROOT = path.join(__dirname, '../..');
+const read = name => fs.readFileSync(path.join(ROOT, name), 'utf8');
+const tick = () => new Promise(r => setImmediate(r));
+function fixture(t, extra = {}) {
+  const dom = new JSDOM(read('public/index.html'), { url: 'http://127.0.0.1:45678', pretendToBeVisual: true, runScripts: 'outside-only' });
+  t.after(() => dom.window.close());
+  const changes = new Set();
+  const w = dom.window, media = { matches: false, addEventListener: (_event, fn) => changes.add(fn), removeEventListener: (_event, fn) => changes.delete(fn), change: () => changes.forEach(fn => fn()) };
+  w.matchMedia = () => media;
+  const calls = [], connections = [], confirms = [], clients = [];
+  let roomState = { available: true, processState: 'absent', sessionInitialized: true }, accept = true, hooks;
+  w.CaffShared = {}; w.caffShell = { setTerminalOverlay: value => calls.push(['overlay', value]), closeDrawer() {} };
+  w.eval(read('public/chat/planner-terminal-pane.js'));
+  const pane = w.CaffChat.createPlannerTerminalPane({
+    fetchJson: async (url, options) => {
+      calls.push([url, options]);
+      if (url === '/api/bootstrap') return { apiSecurity: { csrfToken: 'synthetic-csrf' }, plannerTerminal: { enabled: true, available: true } };
+      if (url.endsWith('/state')) return roomState;
+      if (extra.failWrite) throw Object.assign(new Error('private sentinel'), { code: 'planner_session_unavailable' });
+      return { reinitialized: true, repaired: true };
+    },
+    confirm: text => { confirms.push(text); return accept; },
+    clientFactory: options => {
+      hooks = options;
+      const client = { connect: (...args) => { connections.push(args); options.onState('connecting'); }, dispose: () => calls.push(['dispose']), fit() {}, terminate: () => calls.push(['terminate']) };
+      clients.push(client); return client;
+    },
+  });
+  const q = id => w.document.getElementById('planner-terminal-' + id);
+  return { w, pane, q, calls, connections, confirms, clients, media, get hooks() { return hooks; },
+    state: value => { roomState = value; }, accept: value => { accept = value; } };
+}
+
+test('terminal assets are pinned/build-local with licenses, loaded before pane/app, and have a dedicated check/test suite', () => {
+  const pkg = JSON.parse(read('package.json'));
+  assert.equal(pkg.dependencies['@xterm/xterm'], '6.0.0'); assert.equal(pkg.dependencies['@xterm/addon-fit'], '0.11.0');
+  const html = read('public/index.html'), build = read('scripts/copy-build-assets.js');
+  for (const file of ['xterm.js', 'xterm.css', 'addon-fit.js']) assert.ok(html.includes('/vendor/planner-terminal/' + file));
+  assert.ok(html.indexOf('/vendor/planner-terminal/xterm.js') < html.indexOf('/chat/planner-terminal-client.js'));
+  assert.ok(html.indexOf('/chat/planner-terminal-pane.js') < html.indexOf('/app.js'));
+  assert.match(build, /@xterm/); assert.match(build, /LICENSE/);
+  assert.match(pkg.scripts.check, /planner-terminal-client.js/); assert.match(pkg.scripts.check, /planner-terminal-pane.js/);
+  assert.match(pkg.scripts['test:embedded-planner'], /planner-terminal-pane.test.js/);
+});
+
+test('disabled entry does not read/spawn; desktop opening leaves chat usable, closing detaches/disposes without terminate', async t => {
+  const f = fixture(t); f.pane.sync('room-a', { enabled: false });
+  assert.equal(f.q('toggle').hidden, true); await f.pane.open(); assert.equal(f.connections.length, 0);
+  f.pane.sync('room-a', { enabled: true, available: true }); await f.pane.open();
+  assert.equal(f.q('pane').hidden, false); assert.equal(f.q('toggle').getAttribute('aria-expanded'), 'true');
+  assert.equal(f.w.document.querySelector('.main').inert, undefined);
+  assert.equal(f.q('pane').hasAttribute('aria-modal'), false);
+  assert.deepEqual(f.connections[0], ['room-a', 'synthetic-csrf']);
+  f.pane.close(); assert.equal(f.q('pane').hidden, true); assert.equal(f.q('toggle').getAttribute('aria-expanded'), 'false');
+  assert.ok(f.calls.some(x => x[0] === 'dispose')); assert.ok(!f.calls.some(x => x[0] === 'terminate'));
+  assert.equal(f.w.document.activeElement, f.q('toggle'));
+});
+
+test('disconnect never auto-reconnects; manual reconnect refreshes bootstrap and switching rooms disposes without starting another', async t => {
+  const f = fixture(t); f.pane.sync('room-a', { enabled: true }); await f.pane.open();
+  f.hooks.onState('disconnected'); await tick(); assert.equal(f.connections.length, 1);
+  f.q('reconnect').click(); await tick(); assert.equal(f.connections.length, 2);
+  assert.equal(f.calls.filter(x => x[0] === '/api/bootstrap').length, 2);
+  f.pane.sync('room-b', { enabled: true }); assert.equal(f.q('pane').hidden, true);
+  assert.equal(f.connections.length, 2); assert.ok(f.calls.filter(x => x[0] === 'dispose').length >= 2);
+});
+
+test('session-unavailable recovery uses cautious fixed wording and separate confirmation, and never reconnects or inputs after recovery', async t => {
+  const f = fixture(t); f.pane.sync('room-a', { enabled: true }); await f.pane.open();
+  f.hooks.onExit({ reasonCode: 'planner_session_unavailable', exitCode: 1 });
+  assert.equal(f.q('reinitialize').hidden, false); assert.match(f.q('notice').textContent, /可能不可用/);
+  assert.match(f.q('notice').textContent, /保存.*消息/); assert.match(f.q('notice').textContent, /拒绝一次/);
+  f.accept(false); f.q('reinitialize').click(); await tick();
+  assert.equal(f.calls.filter(x => x[0].endsWith('/reinitialize')).length, 0);
+  f.accept(true); f.q('reinitialize').click(); await tick();
+  const write = f.calls.find(x => x[0].endsWith('/reinitialize'));
+  assert.equal(write[0], '/api/conversations/room-a/planner/terminal/session/reinitialize');
+  assert.deepEqual(JSON.parse(JSON.stringify(write[1])), { method: 'POST', body: { confirm: true } });
+  assert.equal(f.connections.length, 1); assert.ok(f.confirms.every(x => x.includes('UUID')));
+  assert.match(f.q('guidance').textContent, /Yes, I trust this folder/);
+});
+
+test('uncertain lease offers a distinct user repair; corrupt metadata error renders fixed explanation without raw payload', async t => {
+  const f = fixture(t, { failWrite: true });
+  f.state({ available: true, processState: 'uncertain', reasonCode: 'planner_process_exit_unconfirmed' });
+  f.pane.sync('room-a', { enabled: true }); await f.pane.open();
+  assert.equal(f.connections.length, 0); assert.equal(f.q('repair').hidden, false);
+  f.q('repair').click(); await tick();
+  assert.ok(f.calls.some(x => x[0] === '/api/conversations/room-a/planner/terminal/repair'));
+  assert.match(f.confirms[0], /旧.*进程/); assert.doesNotMatch(f.q('notice').textContent, /private sentinel/);
+  assert.match(f.q('notice').textContent, /元数据|可能不可用/);
+});
+
+test('narrow overlay has explicit close/focus handoff; separator is keyboard operable and persisted width is bounded', async t => {
+  const f = fixture(t); f.media.matches = true; f.pane.sync('room-a', { enabled: true }); await f.pane.open();
+  assert.equal(f.q('pane').getAttribute('aria-modal'), 'true'); assert.ok(f.calls.some(x => x[0] === 'overlay' && x[1]));
+  f.pane.close(); assert.ok(f.calls.some(x => x[0] === 'overlay' && !x[1]));
+  f.media.matches = false; await f.pane.open();
+  const handle = f.q('resize'); assert.equal(handle.getAttribute('role'), 'separator');
+  const initial = Number(handle.getAttribute('aria-valuenow'));
+  handle.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+  assert.ok(Number(handle.getAttribute('aria-valuenow')) > initial);
+  handle.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+  assert.ok(Number(handle.getAttribute('aria-valuenow')) <= 900);
+  assert.ok(Number(f.w.localStorage.getItem('caff:planner-terminal-width')) <= 900);
+});
+
+test('desktop-to-narrow breakpoint hands background focus into the terminal without stealing existing terminal focus', async t => {
+  const f = fixture(t); f.pane.sync('room-a', { enabled: true }); await f.pane.open();
+  f.w.document.getElementById('composer-input').focus();
+  f.media.matches = true; f.media.change();
+  assert.equal(f.w.document.activeElement, f.q('close'));
+  const textarea = f.w.document.createElement('textarea'); f.q('screen').append(textarea); textarea.focus();
+  f.media.change(); assert.equal(f.w.document.activeElement, textarea);
+});
+
+test('real shell keeps narrow terminal background inert, preserves terminal Escape, and restores nested drawer focus', async t => {
+  const f = fixture(t); f.w.Element.prototype.scrollTo = () => {};
+  f.media.matches = true;
+  f.w.eval(read('public/shell/app-shell.js'));
+  f.pane.sync('room-a', { enabled: true }); await f.pane.open();
+  assert.equal(f.w.document.querySelector('.main').inert, true);
+  assert.equal(f.w.document.querySelector('.rail').inert, true);
+  assert.equal(f.q('pane').inert, false);
+  const textarea = f.w.document.createElement('textarea'); f.q('screen').append(textarea); textarea.focus();
+  textarea.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); assert.equal(f.q('pane').hidden, false);
+  f.w.caffShell.openTab('session-goal-drawer'); assert.equal(f.w.document.getElementById('appShell').inert, true);
+  f.w.caffShell.closeDrawer(); assert.equal(f.w.document.getElementById('appShell').inert, false);
+  assert.equal(f.w.document.querySelector('.main').inert, true); assert.equal(f.q('pane').inert, false);
+  const summary = f.w.document.querySelector('.planner-terminal-help summary');
+  summary.getClientRects = f.q('close').getClientRects = () => [{ width: 44, height: 44 }];
+  f.q('close').focus(); f.q('close').dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+  assert.equal(f.w.document.activeElement, summary);
+  summary.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Tab', bubbles: true })); assert.equal(f.w.document.activeElement, f.q('close'));
+  f.q('close').focus(); f.q('close').dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(f.q('pane').hidden, true); assert.equal(f.w.document.querySelector('.main').inert, false);
+});
+
+test('stale bootstrap completion cannot connect a closed or switched room', async t => {
+  const f = fixture(t); f.pane.sync('room-a', { enabled: true });
+  const pending = f.pane.open(); f.pane.sync('room-b', { enabled: true }); await pending;
+  assert.equal(f.connections.length, 0); assert.equal(f.q('pane').hidden, true);
+});
+
+function clientFixture(t) {
+  const dom = new JSDOM('<div id="screen"></div>', { url: 'http://127.0.0.1:45678', runScripts: 'outside-only' }); t.after(() => dom.window.close());
+  const w = dom.window, sockets = [], terminals = [], states = [], exits = [], observations = [];
+  w.TextEncoder = TextEncoder;
+  class Terminal {
+    constructor(options) { this.options = options; this.cols = 120; this.rows = 30; this.output = []; this.osc = []; this.parser = { registerOscHandler: (id, fn) => { this.osc.push([id, fn]); return { dispose() {} }; } }; terminals.push(this); }
+    loadAddon(addon) { this.addon = addon; } open() {} resize(c,r) { this.cols = c; this.rows = r; }
+    onData(fn) { this.input = fn; return { dispose: () => { this.inputDisposed = true; } }; }
+    write(data, done) { this.output.push(data); done(); } dispose() { this.disposed = true; } focus() {}
+  }
+  class Socket {
+    constructor(url) { this.url = url; this.readyState = 0; this.bufferedAmount = 0; this.sent = []; sockets.push(this); }
+    send(text) { this.sent.push(JSON.parse(text)); }
+    close(code) {
+      if (code !== undefined && code !== 1000 && !(code >= 3000 && code <= 4999)) throw new Error('InvalidAccessError: invalid browser close code');
+      this.closed = true; this.readyState = 3;
+    }
+  }
+  class FitAddon { proposeDimensions() { return { cols: 100, rows: 35 }; } }
+  class Observer { constructor(fn) { this.fn = fn; observations.push(this); } observe() {} disconnect() { this.disconnected = true; } }
+  w.eval(read('public/chat/planner-terminal-client.js'));
+  const client = w.CaffChat.createPlannerTerminalClient({ screen: w.document.getElementById('screen'), TerminalCtor: Terminal, FitAddonCtor: FitAddon, SocketCtor: Socket,
+    ResizeObserverCtor: Observer, onState: (...args) => states.push(args), onExit: e => exits.push(e) });
+  t.after(() => client.dispose());
+  const ready = s => s.onmessage({ data: JSON.stringify({ type: 'ready', version: 1, historyReplay: false, resumed: false }) });
+  return { w, client, sockets, terminals, states, exits, observations, ready };
+}
+
+test('client authenticates only in first message, gates input/output until ready, chunks paste and resize, and blocks OSC clipboard/links', t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic-token');
+  const s = f.sockets[0], term = f.terminals[0]; assert.equal(s.url, 'ws://127.0.0.1:45678/api/conversations/room-a/planner/terminal');
+  term.input('before'); assert.equal(s.sent.length, 0); s.readyState = 1; s.onopen();
+  assert.equal(s.sent[0].type, 'auth'); assert.equal(s.sent[0].token, 'synthetic-token'); assert.equal(s.sent[0].cols, 100);
+  term.input('before-ready'); assert.equal(s.sent.length, 1); f.ready(s);
+  term.input('😀'.repeat(9000) + String.fromCharCode(0).repeat(20000));
+  const inputs = s.sent.filter(x => x.type === 'input'); assert.ok(inputs.length > 1);
+  assert.equal(inputs.map(x => x.data).join(''), '😀'.repeat(9000) + String.fromCharCode(0).repeat(20000));
+  for (const x of inputs) assert.ok(Buffer.byteLength(JSON.stringify(x)) <= 65536);
+  f.client.fit(); assert.ok(s.sent.some(x => x.type === 'resize' && x.cols === 100 && x.rows === 35));
+  s.onmessage({ data: JSON.stringify({ type: 'output', data: 'live-only' }) }); assert.deepEqual(term.output, ['live-only']);
+  assert.ok(term.osc.some(([id, fn]) => id === 52 && fn('clipboard') === true));
+  assert.ok(term.osc.some(([id, fn]) => id === 8 && fn('url') === true));
+  assert.equal(term.options.linkHandler.activate('event', 'https://evil.invalid'), undefined);
+});
+
+test('terminating disables input but drains trailing output until observed exit', t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic'); const s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+  f.client.terminate(); f.terminals[0].input('blocked');
+  s.onmessage({ data: JSON.stringify({ type: 'output', data: 'shutdown-output' }) });
+  assert.deepEqual(f.terminals[0].output, ['shutdown-output']); assert.equal(f.states.at(-1)[0], 'stopping');
+  assert.equal(s.closed, undefined); assert.equal(s.sent.filter(x => x.type === 'input').length, 0);
+  s.onmessage({ data: JSON.stringify({ type: 'exit', exitCode: 0, reasonCode: 'planner_process_exited' }) });
+  assert.equal(f.states.at(-1)[0], 'exited');
+});
+
+test('client handles server rejection with a browser-valid close code and preserves its actionable diagnostic', t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic'); const s = f.sockets[0]; s.readyState = 1; s.onopen();
+  assert.doesNotThrow(() => s.onmessage({ data: JSON.stringify({ type: 'error', code: 'planner_terminal_in_use' }) }));
+  assert.equal(s.closed, true); assert.equal(f.states.at(-1)[1], 'planner_terminal_in_use');
+});
+
+test('client never renders pre-ready output and bounds both input/output backlog without retry', t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic'); const s = f.sockets[0]; s.readyState = 1; s.onopen();
+  s.onmessage({ data: JSON.stringify({ type: 'output', data: 'pre-ready' }) });
+  assert.equal(f.terminals[0].output.length, 0); assert.equal(s.closed, true);
+  f.client.connect('room-a', 'synthetic'); const second = f.sockets[1]; second.readyState = 1; second.onopen(); f.ready(second);
+  second.bufferedAmount = 1024 * 1024; f.terminals[1].input('must-not-buffer');
+  assert.equal(second.sent.filter(x => x.type === 'input').length, 0); assert.equal(second.closed, true);
+  f.client.connect('room-a', 'synthetic'); const third = f.sockets[2]; third.readyState = 1; third.onopen(); f.ready(third);
+  f.terminals[2].write = () => {}; // Slow renderer never acknowledges its queued data.
+  for (let i = 0; i < 65; i++) third.onmessage({ data: JSON.stringify({ type: 'output', data: 'x'.repeat(16384) }) });
+  assert.equal(third.closed, true); assert.equal(f.states.at(-1)[1], 'planner_terminal_slow_consumer');
+  assert.equal(f.sockets.length, 3);
+});
+
+test('client ignores stale socket/input after disposal, creates a fresh terminal on manual reconnect and disposes observers', t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic'); const old = f.sockets[0], term = f.terminals[0];
+  old.readyState = 1; old.onopen(); f.ready(old); const dataHandler = old.onmessage;
+  f.client.dispose(); term.input('stale'); dataHandler({ data: JSON.stringify({ type: 'output', data: 'stale' }) });
+  assert.equal(term.disposed, true); assert.equal(old.closed, true); assert.equal(term.output.length, 0);
+  assert.ok(f.observations.every(x => x.disconnected));
+  f.client.connect('room-b', 'new-synthetic'); assert.equal(f.sockets.length, 2); assert.equal(f.terminals[1].output.length, 0);
+});

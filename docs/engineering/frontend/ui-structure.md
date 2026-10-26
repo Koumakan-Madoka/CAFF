@@ -28,6 +28,56 @@
   [controller guards](../backend/controller-patterns.md) and
   [planner contract](../backend/planner-interface.md).
 
+## Embedded Planner Terminal (P2 M3)
+
+- See [embedded planner](../runtime/embedded-planner.md) for process/WS/security
+  and recovery contracts. The feature-off header entry stays hidden. Bootstrap's
+  capability is authoritative; local storage never enables it.
+- `app.js` passes capability/current room to `createPlannerTerminalPane`.
+  `public/chat/planner-terminal-pane.js` owns its sibling DOM, explicit state
+  requests, manual connect/reconnect, recovery confirmations and bounded width.
+  `planner-terminal-client.js` owns xterm + addon-fit, live WS, input/output,
+  resize and disposal; `planner-terminal.css` owns scoped layout. Neither
+  module moves or writes message-list nodes or the context drawer.
+- At desktop widths the pane is non-modal and leaves at least 380px of chat
+  space. A 44px pointer/keyboard separator adjusts width (320–900px, further
+  bounded by available space); only this preference is stored. At <=1099px the
+  pane is a full-width overlay. `caffShell.setTerminalOverlay(boolean)` owns
+  background inert and focus coordination with the mobile sidebar/context
+  drawer; desktop chat is never made inert just because terminal is open.
+- Closing/switching rooms disposes socket, input handlers, xterm/addon and
+  observers without terminating the retained PTY. No automatic reconnection,
+  history/input replay or trust/permission confirmation. New connections read
+  fresh bootstrap then send CSRF only in the first WS message. Browser state
+  reads use the CSRF header; browser mutations use shared fetchJson, never a
+  planner bearer. Tokens/terminal output are not persisted in browser storage.
+- Retained PTY resize may repaint its own current screen, which is not a CAFF
+  transcript replay. Each manual reconnect creates a fresh view with bounded
+  local scrollback. Output is terminal text, not HTML; OSC clipboard/hyperlinks,
+  automatic URL activation and window actions are not enabled.
+- Separate explicit controls stop the process, repair a stale lease, or
+  reinitialize the same UUID. The latter appears after session-unavailable
+  exit; wording says **可能不可用**, explains never-saved/deleted records and
+  one harmless CLI rejection if the record still exists. Repair asks the user
+  to confirm all old writers have stopped. No success automatically reconnects.
+  Corrupt metadata is a fixed 409 explanation, not a raw server exception.
+- First-session guidance explicitly names **Yes, I trust this folder** and
+  warns that No/exit may be the default. The user makes the choice. Escape
+  inside terminal remains CLI input; Ctrl+Shift+F6 focuses the close/toolbar
+  area. The narrow overlay has a visible close control and restores trigger
+  focus. Controls/summary/checkbox labels retain >=44px targets in both themes.
+- xterm 6.0.0 + addon-fit 0.11.0 and their notices are local build assets under
+  `/vendor/planner-terminal/`, copied from pinned dependencies with no bundler.
+  M3 displays explicitly disabled wake-up/record controls; M4 supplies them.
+- `tests/ui/planner-terminal-pane.test.js` and HTTP session tests lock lifecycle,
+  authentication gating, fixed diagnostics, confirmations, shell coordination,
+  disposal, limits and browser-valid close behavior. Opt-in
+  `npm run test:planner-terminal-ui` uses real Edge/xterm/node-pty with a fake
+  CLI, random port, synthetic credentials and system-temp SQLite/home/media;
+  no real Claude or shared instance. It covers input/output, pointer/keyboard
+  sizing, retention/reconnect, second page, room switch, both recovery controls,
+  OSC sentinels, light/dark, 820/390/375/320 overlay/focus and a short walkthrough.
+
 ## Conversation Tree Row Layout
 
 ### Scope / Trigger

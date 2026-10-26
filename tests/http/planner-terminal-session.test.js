@@ -128,6 +128,17 @@ test('session reinitialization controller rejects agents, non-loopback binds/pee
   assert.equal(calls, 0);
 });
 
+test('corrupt planner metadata returns a fixed 409 recovery explanation, not an internal error', { timeout: 30000 }, async t => {
+  const f = await fixture(t), repository = new EmbeddedPlannerRepository(f.app.store);
+  const claim = repository.claim(f.room.id); repository.release(f.room.id, claim.leaseId);
+  f.app.store.db.prepare("UPDATE chat_conversations SET metadata_json=json_set(metadata_json, '$.embeddedPlanner.sessionId', 'corrupt-sentinel') WHERE id=?").run(f.room.id);
+  const response = await reinitialize(f); assert.equal(response.status, 409);
+  const result = await response.json(); assert.equal(result.code, 'planner_session_unavailable');
+  assert.doesNotMatch(JSON.stringify(result), /corrupt-sentinel|UPDATE|SELECT/);
+  const read = await fetch(f.base + `/api/conversations/${f.room.id}/planner/state`, { headers: { 'X-CAFF-CSRF-Token': f.auth.token } });
+  assert.equal(read.status, 409); assert.equal((await read.json()).code, 'planner_session_unavailable');
+});
+
 test('session reinitialization is absent when disabled or non-loopback, and only accepts POST', { timeout: 30000 }, async t => {
   const off = await fixture(t, { enabled: false }); assert.equal((await reinitialize(off)).status, 404);
   const nonlocal = await fixture(t, { bindHost: '0.0.0.0' });

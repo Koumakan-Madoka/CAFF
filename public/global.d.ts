@@ -101,6 +101,7 @@ declare global {
   };
 
   type CaffAppShell = {
+    setTerminalOverlay: (open: boolean) => void;
     openTab: (panelId: string) => void;
     releaseTab: (panelId: string) => void;
     closeDrawer: () => void;
@@ -132,6 +133,8 @@ declare global {
     CaffTheme?: CaffThemeController;
     CaffIcons?: CaffIconController;
     caffShell?: CaffAppShell;
+    Terminal?: any;
+    FitAddon?: any;
   }
 
   interface HTMLElement {

@@ -29,6 +29,17 @@ function copyFile(sourcePath, targetPath) {
 
 copyDir(path.join(ROOT_DIR, 'public'), path.join(BUILD_DIR, 'public'));
 copyDir(path.join(ROOT_DIR, 'assets'), path.join(BUILD_DIR, 'assets'));
+// Pinned local terminal assets, including notices. Missing packages fail build;
+// no CDN, runtime download, source-tree vendor copy or browser bundler.
+const terminalAssets = path.join(BUILD_DIR, 'public', 'vendor', 'planner-terminal');
+ensureDir(terminalAssets);
+for (const [source, target] of [
+  ['@xterm/xterm/lib/xterm.js', 'xterm.js'],
+  ['@xterm/xterm/css/xterm.css', 'xterm.css'],
+  ['@xterm/xterm/LICENSE', 'xterm-LICENSE'],
+  ['@xterm/addon-fit/lib/addon-fit.js', 'addon-fit.js'],
+  ['@xterm/addon-fit/LICENSE', 'addon-fit-LICENSE'],
+]) fs.copyFileSync(path.join(ROOT_DIR, 'node_modules', source), path.join(terminalAssets, target));
 copyFile(path.join(ROOT_DIR, 'scripts', 'chat-schema-backup.mjs'), path.join(BUILD_DIR, 'scripts', 'chat-schema-backup.mjs'));
 copyFile(path.join(ROOT_DIR, 'lib', 'pi-sdk-host.mjs'), path.join(BUILD_DIR, 'lib', 'pi-sdk-host.mjs'));
 copyFile(path.join(ROOT_DIR, 'lib', 'pi-model-config-validator.mjs'), path.join(BUILD_DIR, 'lib', 'pi-model-config-validator.mjs'));
