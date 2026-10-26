@@ -403,10 +403,11 @@ replay. The adapter must bypass proxies for its fixed loopback CAFF requests,
 so a planner bearer never reaches the user's network-exit proxy. UI HTTP calls
 use CSRF/user authentication, not the planner credential.
 
-**Planner-confirmed prerequisite:** P1 ships the HTTP interface, not a repository
-`caff` planner CLI (and package.json has no such bin). `agent-chat-tools` is an
-implementer invocation client, not a substitute. M4 first implements the minimal
-repository-owned P1 CLI adapter, bound to the current instance and CAFF_ROOM_ID;
+**Planner-confirmed prerequisite, implemented in M4a:** P1 shipped the HTTP
+interface without a repository CLI. P2 adds `lib/caff.ts` (built as
+`build/lib/caff.js`, package bin `caff`) over `lib/planner-cli.ts`.
+`agent-chat-tools` is an implementer invocation client, not a substitute.
+The minimal repository-owned P1 CLI adapter is bound to the current instance and CAFF_ROOM_ID;
 all other rooms are rejected, and authentication uses only the credential file.
 Its commands are limited to state/full-Goal reads, attention reads, Goal rulings
 and actions with P1 preconditions, messages to the current owner, and wakeup
@@ -414,6 +415,67 @@ finish. All commands use the argument-only transport in §6–§7. Its exact tru
 invocation prefix is recorded in §10's M4 verification evidence and reviewed as
 the ADR 0003 caff CLI. No general REST/shell proxy, caller-selected URL/room,
 credential argument or expansion of Goal structure is authorized.
+
+### M4a closed adapter surface
+
+The trusted invocation is the absolute Node executable plus the absolute built
+adapter, each single-quoted with forward-slash paths (§10). Do not use a PATH
+alias, npm shim, `node -e`, or the agent bridge. The package bin is for discovery;
+the candidate tool rule permits only the recorded absolute prefix. No install,
+PATH mutation or global link is needed. All arguments are explicit; stdin is
+ignored. The following suffixes are the complete interface:
+
+| Command | Arguments / HTTP mapping |
+| --- | --- |
+| `state` | No flags; `GET /api/planner/conversations/<CAFF_ROOM_ID>/state` |
+| `goal read` | No flags; complete P1 `GET /api/conversations/<room>/goal`, never the bounded summary as a replacement |
+| `attention read` | Optional `--after <nonnegative integer>`, `--limit <1..500>` (defaults 0/100); fixed room filter and `status=unresolved`; no wait, portfolio, other-room or resolve escape |
+| `goal action --json '<object>'` | P1 POST Goal; allowed actions: pause, resume, complete, set-owner, accept-proposal, dismiss-proposal, update-delivery, revise. Always supply goalId/goalRevision and nonblank reason (<=1000 UTF-16 code units); null/0 means no current Goal. Rulings and literal supersedeProposal=true also require proposalId. set-owner requires ownerAgentId. No self-selected principal. |
+| `owner message --json '<object>'` | Exactly goalId, goalRevision, ownerAgentId, content (nonblank single-line <=4000 UTF-16 code units, no `@`), clientRequestId. Read complete current Goal, reject a changed Goal/revision/owner without posting, then append a pure trailing `@<ownerAgentId>` and use the ordinary P1 messages endpoint. No arbitrary recipient/image/raw routing arguments. |
+| `wakeup finish --attempt <uuid> --json '<array>'` | §7 array -> fixed room/attempt finish route with `{items:[...]}`. M4a implements the client only; the production durable endpoint remains M4b. Missing endpoint is an ordinary non-retried error, not synthetic success. |
+
+Goal patches use a closed **subset** of P1: factual workItems `{id,status}`,
+criteria `{id,status,evidenceRefs}`, evidence
+`{id,criterionIds,kind,summary,reference}`. `revise` additionally permits
+work-item text, provisional/openQuestions decision patches (id plus
+statement/changeConditions or question), impact and normal-waiver
+`waiver:{reason}`. No objective, committed/non-goal/criterion-definition edits,
+set/clear/bind-planner, arbitrary metadata, URL, credential, room, shell or HTTP
+options. Such user-reserved work is reported needs_user, not made available by
+an adapter escape. Omission/replacement semantics and final authorization stay
+P1's; retained records may contain only their IDs. The adapter never invents a
+fresh precondition or automatically rules at a new revision after conflict.
+Collections are bounded to P1's sizes: 60 work items, 40 criteria/decision items,
+100 evidence records, 40 ID refs; IDs in delivery records are <=80 characters.
+
+Owner checking is a **preflight snapshot**, not a new atomic server constraint:
+P1's message endpoint has no Goal/owner compare-and-set. A change after that
+read may leave the explicitly targeted old owner as recipient. Do not claim
+atomic current-owner delivery, reroute or replay it automatically. M4b must not
+use owner messages as proof that a Goal mutation was authorized.
+
+Only `CAFF_BASE_URL` accepts the instance authority, strictly
+`http://127.0.0.1:<port>`, `http://localhost:<port>` or
+`http://[::1]:<port>` (optional terminal slash). No userinfo/path/query/fragment,
+noncanonical IP spelling, arbitrary DNS alias or caller flag. The configured
+room ID must be a bounded ASCII ID; a `--room` flag is rejected even for that
+same room. Read only the P1 file from the generated absolute locator, or P1's
+deterministic user-state path calculated from this configured bind authority.
+Validate bounded regular-file contents/version/local-planner identity/token
+shape; do not create, rotate or repair a credential. P1 remains responsible for
+secure publication/ACLs. Environment token values and stdin never authenticate.
+
+Command/schema/encoding/size validation completes **before file access or any
+HTTP**, including owner-message preflight. Use `node:http` with `agent:false`,
+no global/fetch proxy agent, redirects or retries; pin localhost to 127.0.0.1.
+Always send planner intent plus bearer and JSON Content-Type. A 10-second
+request deadline and 8 MiB response cap bound complete Goal reads; oversize is
+an explicit failure, never a truncated successful Goal. stdout is compact JSON;
+stderr is a fixed JSON error code with optional status/safe server code, never
+raw errors, request bodies, credential/path/proxy values. Credential values are
+redacted even from a misbehaving successful response. 401 requires a new
+explicit invocation (which rereads the file); no automatic write retry or user
+fallback.
 
 ## 5. Terminal WebSocket protocol v1
 
@@ -701,8 +763,13 @@ Claude Code **Bash** tool on both Windows and POSIX, use one single-quoted,
 compact ASCII-only JSON argument on one physical line. Inside JSON strings,
 encode apostrophe as `\u0027`; encode shell metacharacters (`$`, backtick, `;`,
 `&`, pipe, `<`, `>`, parentheses), controls/newlines and non-ASCII characters as
-JSON `\uXXXX` escapes (surrogate pairs for non-BMP characters). Double quotes
-and backslashes use JSON escapes. Thus payload data never closes the outer
+JSON `\uXXXX` escapes (surrogate pairs for non-BMP characters). Inside string
+values, double quotes and backslashes specifically use `\u0022` and `\u005c`
+(not the shorter backslash escapes); structural JSON quotes remain literal.
+M4a's Bash-to-native-Node probe on Windows showed MSYS can consume a slash from
+the shorter spellings, making a Windows path invalid JSON. The uniform Unicode
+spelling passes both the argv parser and shell transport without extra decoding.
+Thus payload data never closes the outer
 single quotes or creates executable shell syntax. Do not use double-quoted
 shell payloads, alternate shell quoting/evaluation or additional decoding as
 code. For example the `\u003b` above decodes to a literal semicolon in a reason,
@@ -987,6 +1054,81 @@ suite. Intermediate commits run targeted checks only. Linux CI must compile
 node-pty and run applicable tests. Real-browser proof uses a temporary instance
 and fake CLI, keeping bounded screenshots/video/logs in system temp, not the
 worktree. No live 3100/3200 probe or real subscription/model call by automation.
+
+### M4a candidate invocation and real-CLI gate record
+
+**Candidate, awaiting planner real-CLI verification.** No unattended launcher,
+scheduler, wake-up persistence, browser API or UI wiring is added in M4a.
+`buildPlannerWakeupCandidate()` returns `verified:false`; it is not called by
+the runtime and cannot enable wake-ups. Fake argv or Bash transport tests do
+not establish Claude Code permission enforcement.
+
+Current Windows installation's exact trusted adapter prefix (not shell variables):
+
+```text
+'E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js'
+```
+
+The builder derives the same form from `process.execPath` and its own absolute
+built adapter location on Linux or a review clone. Record that clone's **actual**
+prefix and argv in the planner gate result; never silently replace the executable
+with PATH `node`/`caff`. Unsupported shell/permission-pattern metacharacters in
+installation paths fail closed, rather than broadening a rule.
+
+Exact candidate arguments after the resolved official claude executable/prefix:
+
+```json
+[
+  "-p", "--resume", "<saved CAFF test session UUID>",
+  "--verbose", "--output-format", "stream-json", "--max-turns", "12",
+  "--append-system-prompt", "<bounded planner policy from section 2>",
+  "--tools", "Read,Glob,Grep,Bash",
+  "--allowedTools", "Read,Glob,Grep,Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' state),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' goal read),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' attention read*),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' goal action --json *),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' owner message --json *),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' wakeup finish --attempt * --json *)",
+  "--disallowedTools", "Write,Edit,NotebookEdit,MultiEdit,PowerShell,Agent,Task,Skill,WebFetch,WebSearch,ToolSearch,mcp__*",
+  "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}"
+]
+```
+
+`--verbose` is included for print stream-json compatibility; explicit empty MCP
+configuration plus strict mode prevents inheriting configured MCP servers. Both
+flag compatibility and the combined tools/rules must pass the minimum-version
+gate. The bounded §7 envelope goes to the child pipe followed by EOF, not a
+model shell pipeline. No permission bypass flag, automatic approval or new
+permanent Claude settings file is used.
+
+The planner may start `node tests/manual/planner-cli-gate.test.js --run` after
+building. This opt-in helper never launches Claude: it starts only a random-port
+isolated P1 test instance (feature off, temporary SQLite/home/uploads, synthetic
+executor and file credential). Its output gives **paths/IDs, not token values**,
+complete candidate argv, a pending proposal and one expected finish sequence.
+Use the emitted CAFF-only environment overrides with the normal allowlist and
+planner-controlled real CLI home/config, and run Claude in a fresh worktree
+outside trusted ancestors. First create a genuine saved test session normally;
+replace the helper's placeholder UUID when resuming it. Ctrl+C closes the test
+server and deletes its test state.
+
+The helper's finish route is **memory-only and test-only**, explicitly returns
+`synthetic:true,durable:false`, accepts only its generated attempt/sequence and
+validates its own receipt schema. It is not installed in the production router,
+does not prove quota/membership persistence or production finish acceptance,
+and cannot enable wake-ups. The other reads/actions/messages use real P1
+controllers and authentication. M4b must independently implement/test the real
+receipt boundary; it must not copy this verification seam into production.
+
+Gate checklist: permitted current-room state/full-Goal/attention reads, a
+preconditioned allowed Goal action and attributed owner message, then a finish
+reason with apostrophe/double quote/backslash/metacharacters/Chinese/emoji using
+§7 canonical encoding. Assert exact decoded text and no sentinel effect.
+Adversarial attempts include PowerShell, edits, another executable, node -e,
+alternate paths/quoting/CLI escape flags, `;`/`&&`, pipes, redirects, substitutions,
+heredocs, multiline commands, MCP/subagent discovery and an approval-required
+tool. Check minimal-env Git Bash discovery (N1) and bounded approval denial.
+If permitted finish cannot run or any unsafe operation can run, leave wake-ups
+unavailable and pause. Do not compensate with broader permissions or settings.
+
+Planner result (version/platform, exact prefix/argv, positive/negative outcomes,
+N1/approval checks and sanitized evidence): **pending**. M4b begins only after
+this gate passes; Linux real-CLI/CI evidence remains separate.
 
 ### ADR 0003 “Verify during implementation” checklist
 
