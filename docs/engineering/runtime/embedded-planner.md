@@ -84,11 +84,16 @@ has no header entry. Room-specific state comes from the routes in §8.
 - Spawn with an argument array, never concatenate room/prompt text into a
   command line or use `shell: true`. Windows PATH lookup is case-insensitive;
   preserve executable paths with spaces and non-ASCII characters. Prefer a
-  directly executable native CLI. An explicit `.js`/`.cjs` entry (including a
-  fake CLI fixture) runs as `process.execPath` plus that absolute script path
-  and the CLI argument array. A `.cmd`/`.ps1` shim is not permission to introduce
-  arbitrary cmd/PowerShell evaluation: explicitly resolve a supported underlying
-  executable/Node entry or report `planner_cli_launch_unsupported`.
+  directly executable native CLI. An explicit `.js`/`.cjs`/`.mjs` entry (including
+  a fake CLI fixture) runs as `process.execPath` plus that absolute script path
+  and the CLI argument array. Never parse or execute a `.cmd` shim: read its
+  adjacent `node_modules/@anthropic-ai/claude-code/package.json` and resolve
+  `bin.claude` (or `bin` when it is a string). Require a package-relative path,
+  lexical and realpath containment in that package, and a regular file. Support
+  `.exe` directly or `.js`/`.cjs`/`.mjs` through Node; missing/malformed bins,
+  directory/symlink escapes and other extensions fail with
+  `planner_cli_launch_unsupported`. Do not guess a legacy `cli.js` or introduce
+  arbitrary cmd/PowerShell evaluation for `.cmd`/`.ps1` shims.
 - Run `<resolved cli> --version`, bounded to 5 seconds and 8 KiB of output.
   Parse a semantic version numerically; baseline/minimum is **2.1.310**.
   Reject older and unrecognized prerelease/version output, never compare
@@ -245,6 +250,28 @@ After a crash, mark unfinished wake records interrupted, but do not replay them.
 Parent-death child cleanup must be checked on both platforms. If an old child
 might still own a session, block that room until its absence is established or
 the user repairs it; a restarted in-memory map is not proof of exclusivity.
+
+`chat_embedded_planner_leases` fences each room/session/lease UUID. A lazy,
+additive migration adds nullable `guardian_pid`; legacy rows stay unknown.
+After a guardian reports successful startup, persist **its PID**, not the CLI
+PID, under the matching lease UUID. A crash before that write leaves an unknown
+lease. PID persistence failure after spawn stops the child, but does not release
+admission without observed exit.
+
+At enabled runtime startup, before admission, check every recorded positive
+PID with `process.kill(pid, 0)` on Windows and POSIX. Only `ESRCH` establishes
+absence and automatically releases that lease, with a fixed diagnostic containing
+room ID and `planner_guardian_absent`, never raw errors or child data. Existing
+PIDs (including reuse), all other errors, missing/invalid PIDs keep the fence.
+This check **never kills** a process or clears the stable session UUID.
+
+A browser user may explicitly confirm the room-scoped repair route in §8 after
+verifying that old session writers are stopped. It releases only that room's
+lease; it never kills a process or resets/replaces its UUID. Reject repair when
+the current instance still has **any** in-memory entry for the room, including
+starting, retained, headless and stopping. Check ownership synchronously with
+lease release after reading the bounded confirmation body. The M3 repair control
+must explain this user responsibility; reconnect resumes the same session.
 
 ## 4. Child environment and planner authentication
 
@@ -694,6 +721,7 @@ Proposed room-scoped routes (names are P2 additions, not changes to P1 reads):
 | Method / path suffix under `/api/conversations/:id/planner` | Contract |
 | --- | --- |
 | `GET /state` | `{ available, reasonCode, processState, attached, wakeupsEnabled, sessionInitialized, pendingCount, needsUserCount, quota: { used, limit: 4, nextEligibleAt } }`; no transcript/credential; no spawn |
+| `POST /terminal/repair` | Browser user only, ordinary CSRF plus local bind/peer/Host/Origin guards; planner/agent rejected. Body <=1 KiB, exactly `{ "confirm": true }` (one literal key, no duplicates/extra fields); no query. 409 for any in-memory room entry, 404 for missing room/disabled endpoint; otherwise release only that room's lease and return `{ repaired: boolean }`, preserving its session UUID and other rooms. No process kill or spawn. |
 | `PUT /wakeups` | strict `{ enabled: boolean }`; browser confirmation + ordinary P1 mutation guards; disabling stops future admission, not an already committed attempt or live PTY |
 | `GET /wakeups?before=<sequence>&limit=20` | newest-first summaries, limit 1–100; `{ items, nextBefore, hasMore }`; exclusive cursor; no transcript bodies or full Goals |
 | `GET /wakeups/:attemptId?afterChunk=0&limit=50` | exact room match; summary + paged retained chunks, limit 1–100, original chunk IDs, next cursor/hasMore/truncated/expired markers; response <=128 KiB UTF-8 |
@@ -796,6 +824,13 @@ loopback connection. Reattach tests require resize/repaint after subscribing to
 output, including unchanged dimensions; PTY env tests assert generated
 COLORTERM=truecolor. These tests do not replace the real CLI tool-policy gate.
 
+M2 review-fix coverage adds synthetic native (`bin/claude.exe`) and legacy
+Node npm layouts, including string/object `bin`, malformed/missing manifests,
+unsupported extensions and lexical/realpath escapes. Lease coverage includes the
+pre-PID migration, default signal-zero checks for exited/live synthetic PIDs,
+unknown/missing PID preservation, startup recovery, PID-write failure fencing,
+user-only repair guards/confirmation/busy ownership, and same-UUID reattach.
+
 ### Automated and UI evidence by milestone
 
 | Milestone | Required evidence |
@@ -826,6 +861,8 @@ instance; the implementer supplies fake-CLI automation and sanitized commands.
 | --- | --- |
 | Required CLI flags on supported minimum | Planner inspects official 2.1.310 help/docs and records version/OS/architecture plus exact flags: --session-id, --resume in TUI and -p, --append-system-prompt, --output-format stream-json, --max-turns, --allowedTools/--disallowedTools and any required --tools/--verbose dependency. In isolated home/session, create once, exit/resume interactively, then print-mode resume; confirm same transcript/session, prompt and cwd without exposing login state. Fake argv tests prove host construction only. Missing/incompatible flags block the affected path; no guessed flag fallback. |
 | Can allowedTools mean caff-only shell? | Planner runs the actual minimal adapter and exact combined tool policy on minimum CLI, Windows and Linux; record the complete fixed invocation prefix. Positive: current-room read, permitted planner action/message and an argument-only `wakeup finish` that actually submits its receipt. Include a finish reason containing shell metacharacters/apostrophes encoded per §7; assert the decoded reason is preserved as text, receipt succeeds and no extra process/file/shell side effect occurs. Negative: malformed/noncanonical quoting, unescaped payload delimiters, oversized JSON, duplicate keys/items, wrong room/attempt, PowerShell, edits, other executables, node -e, path aliases, argument escape/raw-HTTP options, executable `;`/`&&`, pipes, redirects, substitutions, heredocs, multiline commands, MCP/subagents. Assert denial/validation causes no unauthorized effects; payload text is not exempt from testing because it is quoted. Save sanitized argv and outcomes, not credentials. If safe finish is denied or unsafe syntax is permitted, disable wake-ups and pause; fake argv tests do not prove enforcement. |
+| Minimal Windows environment can use Bash | Planner uses the same initial allowlist in an isolated real CLI session, then invokes a harmless Bash read and the current-room caff read once the M4 adapter exists. Merely rendering the TUI is not evidence that Git Bash discovery works. Record outcome without settings/login contents. If discovery requires ProgramFiles, PATHEXT or another path variable, document that observed need and minimally extend/test the allowlist; do not preemptively inherit more environment or provider values. |
+| Untrusted worktree plus print-mode tools | At M4, planner runs the actual restrictive `-p` invocation in a fresh, untrusted worktree, without relying on project-level permissions.allow (which may not apply there). Repeat permitted read/finish and denied unsafe-tool/approval sentinel checks. Interactive directory-trust prompts remain for the user to answer normally in the pane; no automatic trust or approval. If the command-line policy cannot enforce the boundary, leave wake-ups unavailable and pause. |
 | Approval-required tool denied in -p | Planner configures an isolated tool needing approval, with the real restrictive print invocation; verify it is denied/exits boundedly without hanging and without executing the sentinel side effect. No permission prompt auto-answer or bypass flag. Record exit and outcome; fake CLI tests separately cover denial/timeout classification. |
 | node-pty prebuild/compilation | On each supported developer tuple, independent npm ci and fake-CLI PTY smoke; record Node, OS, architecture, node-pty 1.1.0 and prebuild-vs-build result. Windows baseline claims prebuild only for tuples actually tested. Linux CI fresh install with compiler, PTY echo/resize/exit/tree cleanup tests, full checks and CI link pinned to candidate SHA. A missing compiler/prebuild is a failed prerequisite, not a skipped test. |
 | ConPTY full repaint | Planner/user uses real Edge pane on supported Windows builds with CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT=1: stream output, scroll, drag-resize, narrow overlay, detach/reconnect and resume. Check stale fragments/blank frames against expected screen and capture bounded sanitized video/screenshots. Fake PTY tests assert flag/env and resize flow, but cannot establish visual repaint. Record Windows/Node/CLI/terminal-library versions. |

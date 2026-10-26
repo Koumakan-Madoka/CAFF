@@ -7,6 +7,24 @@ import { launchPlannerPty } from './embedded-planner-pty';
 export const MINIMUM_PLANNER_CLI = '2.1.310';
 export type PlannerCli = { file: string; prefix: string[] };
 
+function resolveNpmPlannerEntry(shim: string): string {
+  try {
+    const pkg = fs.realpathSync(path.join(path.dirname(shim), 'node_modules', '@anthropic-ai', 'claude-code'));
+    const manifest = JSON.parse(fs.readFileSync(path.join(pkg, 'package.json'), 'utf8'));
+    const bin = typeof manifest?.bin === 'string' ? manifest.bin : manifest?.bin?.claude;
+    if (typeof bin !== 'string' || !bin.trim() || bin.includes('\0') || path.win32.isAbsolute(bin) || path.posix.isAbsolute(bin)) throw new Error();
+    const within = (file: string) => {
+      const relative = path.relative(pkg, file);
+      return !!relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+    };
+    const candidate = path.resolve(pkg, bin.replace(/\\/g, path.sep));
+    if (!within(candidate)) throw new Error();
+    const entry = fs.realpathSync(candidate);
+    if (!within(entry) || !fs.statSync(entry).isFile()) throw new Error();
+    return entry;
+  } catch { throw plannerError('planner_cli_launch_unsupported'); }
+}
+
 export function resolvePlannerCli(options: { override?: string; env?: NodeJS.ProcessEnv }): PlannerCli {
   const env = options.env || process.env;
   const override = options.override;
@@ -16,13 +34,11 @@ export function resolvePlannerCli(options: { override?: string; env?: NodeJS.Pro
       : [path.join(dir, 'claude')]);
   for (let candidate of candidates) {
     if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) continue;
-    // Support the standard npm installation without executing/parsing its shell shim.
-    if (/\.cmd$/i.test(candidate)) {
-      const entry = path.join(path.dirname(candidate), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-      if (!fs.existsSync(entry)) throw plannerError('planner_cli_launch_unsupported');
-      candidate = entry;
-    }
-    if (/\.(?:js|cjs)$/i.test(candidate)) return { file: process.execPath, prefix: [candidate] };
+    // Read the npm package's declared bin; never parse or execute the shim.
+    const npmShim = /\.cmd$/i.test(candidate);
+    if (npmShim) candidate = resolveNpmPlannerEntry(candidate);
+    if (/\.(?:js|cjs|mjs)$/i.test(candidate)) return { file: process.execPath, prefix: [candidate] };
+    if (npmShim && !/\.exe$/i.test(candidate)) throw plannerError('planner_cli_launch_unsupported');
     if (/\.(?:ps1|bat)$/i.test(candidate)) throw plannerError('planner_cli_launch_unsupported');
     if (process.platform === 'win32' && !/\.exe$/i.test(candidate)) throw plannerError('planner_cli_launch_unsupported');
     return { file: candidate, prefix: [] };

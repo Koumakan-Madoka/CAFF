@@ -40,7 +40,11 @@ export function launchPlannerPty(config: PlannerLaunch): Promise<PlannerProcess>
       events.stop(); reject(plannerError('planner_process_exit_unconfirmed'));
     }, 10000);
     worker.on('message', (message: any) => {
-      if (message.type === 'started') { clearTimeout(timer); started = true; resolve(events); }
+      if (message.type === 'started') {
+        clearTimeout(timer); started = true;
+        events.guardianPid = worker.pid;
+        resolve(events);
+      }
       else if (message.type === 'data') {
         if (activated) events.emit('data', message.data);
         else {

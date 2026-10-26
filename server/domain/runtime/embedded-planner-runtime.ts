@@ -19,6 +19,7 @@ export function createEmbeddedPlannerRuntime(options: any) {
     if (!enabled || closed) return;
     startup = (async () => {
       try {
+        repository!.reconcileLeases({ probe: config.probeGuardian, log: config.log });
         const env = buildPlannerEnvironment({ source: config.env, baseUrl });
         const cli = resolvePlannerCli({ override: config.cliPath ?? process.env.CAFF_CLAUDE_CLI, env });
         const version = await probePlannerCli(cli, env);
@@ -45,6 +46,16 @@ export function createEmbeddedPlannerRuntime(options: any) {
       pendingCount: repository?.pendingCount(id, room.metadata?.sessionGoal?.goalId) || 0, needsUserCount: 0,
       quota: { used: 0, limit: 4, nextEligibleAt: null } };
   }
-  return { start, roomState, getHost: () => host, capability: () => ({ ...capability }),
+  function repair(id: string) {
+    if (!enabled || closed || host?.hasEntry(id)) throw plannerError('planner_room_busy');
+    if (!options.store.getConversationWithoutMessages(id)) throw plannerError('planner_room_missing');
+    const repaired = repository!.repair(id);
+    if (repaired) {
+      const log = config.log || ((entry: object) => console.info(JSON.stringify(entry)));
+      log({ event: 'planner_lease_released', conversationId: id, reasonCode: 'planner_user_confirmed_repair' });
+    }
+    return { repaired };
+  }
+  return { start, roomState, repair, getHost: () => host, capability: () => ({ ...capability }),
     async close() { closed = true; capability.available = false; await startup; await host?.close(); } };
 }

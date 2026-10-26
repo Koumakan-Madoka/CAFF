@@ -801,6 +801,18 @@ CREATE INDEX IF NOT EXISTS idx_chat_turn_time_steps_task_id ON chat_turn_time_st
   ensureColumn(db, 'chat_turn_time_steps', 'write_scope', 'write_scope TEXT');
 }
 
+// Lazy feature migration: disabled instances do not allocate planner runtime
+// state. Existing pre-PID leases stay NULL/uncertain; never guess their owner.
+export function migrateEmbeddedPlannerLeaseSchema(db: any) {
+  db.transaction(() => {
+    db.exec(`CREATE TABLE IF NOT EXISTS chat_embedded_planner_leases (
+      conversation_id TEXT PRIMARY KEY REFERENCES chat_conversations(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL UNIQUE, lease_id TEXT NOT NULL UNIQUE, guardian_pid INTEGER
+    )`);
+    ensureColumn(db, 'chat_embedded_planner_leases', 'guardian_pid', 'guardian_pid INTEGER');
+  })();
+}
+
 export function migrateChatSchema(db: any, options: any = {}) {
   ensurePlannerTerminalIndex(db);
   migrateLegacyModelFamilyRoles(db, { backupPath: options.backupPath });

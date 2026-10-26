@@ -12,6 +12,7 @@ async function fixture(t, extra = {}) {
   const cli = path.join(root, 'fake cli.cjs');
   fs.copyFileSync(path.join(__dirname, '../fixtures/fake-planner-cli.cjs'), cli);
   const app = createTestServerApp({ host: extra.bindHost || '127.0.0.1', port: 0, agentDir: root, sqlitePath: path.join(root, 'chat.sqlite'), projectDir: root, uploadsDir: path.join(root, 'uploads'),
+    ...(extra.plannerCredential ? { plannerCredential: extra.plannerCredential } : {}),
     embeddedPlanner: { enabled: true, cliPath: cli, env: { PATH: process.env.PATH, HOME: root, USERPROFILE: root, SystemRoot: process.env.SystemRoot }, authTimeoutMs: 100, ...extra },
     modelCatalog: { getOptions: () => [], invalidate() {} }, executeConversationAgent: async () => ({ stopTurn: true }) });
   const sockets = []; let stopped = false;

@@ -109,13 +109,24 @@ test('ambiguous launch never reuses --session-id; persisted lease fails closed a
   await assert.rejects(f.attach(), /planner_process_exit_unconfirmed/);
 });
 
+test('PID persistence failure after spawn stops the child but fences admission until its observed exit', async t => {
+  const child = new EventEmitter(); child.guardianPid = process.pid;
+  child.write = () => {}; child.resize = () => {}; child.stop = () => { child.stopped = true; };
+  const f = fixture(t, { launch: () => child }); f.children.push(child);
+  f.repository.recordGuardian = () => { throw new Error('synthetic persistence failure'); };
+  await assert.rejects(f.attach(), /planner_process_exit_unconfirmed/);
+  assert.equal(child.stopped, true); assert.equal(f.repository.hasLease(f.room.id), true);
+  assert.equal(f.host.hasEntry(f.room.id), true); await assert.rejects(f.attach(), /planner_room_busy/);
+  child.emit('exit', { exitCode: 0 }); assert.equal(f.repository.hasLease(f.room.id), false);
+});
+
 test('PTY and headless launches share the same synchronous admission path and initialized session', async t => {
   const f = fixture(t);
   let starts = 0;
   const launch = config => {
     starts++;
     assert.deepEqual(config.args.slice(0, 2), ['--resume', f.repository.read(f.room.id).sessionId]);
-    const child = new EventEmitter(); child.stop = () => child.emit('exit', { exitCode: 0 });
+    const child = new EventEmitter(); child.guardianPid = process.pid; child.stop = () => child.emit('exit', { exitCode: 0 });
     child.write = () => {}; child.resize = () => {}; f.children.push(child); return child;
   };
   await assert.rejects(f.host.startHeadless(f.room.id, launch), /session_uninitialized/);
@@ -125,6 +136,7 @@ test('PTY and headless launches share the same synchronous admission path and in
   f.children[0].emit('exit', { exitCode: 0 });
   const headless = await f.host.startHeadless(f.room.id, launch);
   assert.equal(starts, 1); assert.equal(f.host.state(f.room.id), 'headless-running');
+  assert.equal(f.store.db.prepare('SELECT guardian_pid FROM chat_embedded_planner_leases WHERE conversation_id=?').get(f.room.id).guardian_pid, process.pid);
   await assert.rejects(f.attach(), /planner_room_busy/);
   await assert.rejects(f.host.startHeadless(f.room.id, launch), /planner_room_busy/);
   headless.stop(); assert.equal(f.host.state(f.room.id), 'absent');

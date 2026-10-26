@@ -39,11 +39,12 @@ test('guardian IPC parent death stops the fake CLI and its descendants', async t
   const f = fixture(t);
   const parentScript = path.join(f.root, 'parent.cjs');
   const adapter = path.resolve(__dirname, '../../build/server/domain/runtime/embedded-planner-pty');
-  fs.writeFileSync(parentScript, `require(${JSON.stringify(adapter)}).launchPlannerPty(${JSON.stringify(f.config)}).then(()=>process.send('started'));`);
+  fs.writeFileSync(parentScript, `require(${JSON.stringify(adapter)}).launchPlannerPty(${JSON.stringify(f.config)}).then(child=>process.send({guardianPid:child.guardianPid}));`);
   const parent = fork(parentScript, [], { env: f.config.env, execArgv: [], stdio: ['ignore','ignore','ignore','ipc'] });
   t.after(() => parent.kill());
-  await once(parent, 'message'); await waitFor(() => fs.existsSync(path.join(f.root, 'pids.json')));
+  const [{ guardianPid }] = await once(parent, 'message'); await waitFor(() => fs.existsSync(path.join(f.root, 'pids.json')));
   const pids = JSON.parse(fs.readFileSync(path.join(f.root, 'pids.json')));
+  assert.ok(Number.isSafeInteger(guardianPid) && guardianPid > 0 && !pids.includes(guardianPid));
   const end = once(parent, 'exit'); parent.kill(); await end;
-  await waitFor(() => pids.every(pid => !alive(pid)));
+  await waitFor(() => [...pids, guardianPid].every(pid => !alive(pid)));
 });

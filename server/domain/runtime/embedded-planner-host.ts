@@ -6,7 +6,7 @@ import { EmbeddedPlannerRepository } from '../../../storage/chat/embedded-planne
 import { launchPlannerPty } from './embedded-planner-pty';
 
 export type PlannerLaunch = { cli: PlannerCli; args: string[]; cwd: string; env: NodeJS.ProcessEnv; cols: number; rows: number };
-export type PlannerProcess = EventEmitter & { write(data: string): void; resize(cols: number, rows: number): void; stop(): void };
+export type PlannerProcess = EventEmitter & { guardianPid?: number; write(data: string): void; resize(cols: number, rows: number): void; stop(): void };
 export type TerminalEvent = { type: string; [key: string]: unknown };
 type Listener = (event: TerminalEvent) => void;
 type Entry = {
@@ -57,6 +57,18 @@ export function createEmbeddedPlannerHost(options: Options) {
     entries.set(id, entry);
     return entry;
   }
+  function recordGuardian(id: string, entry: Entry, child: PlannerProcess): void {
+    // Synthetic DI processes may lack a PID; their lease stays unknown. The
+    // real guardian adapter always supplies its own PID, never the CLI PID.
+    if (child.guardianPid === undefined) return;
+    try { repository.recordGuardian(id, entry.leaseId!, child.guardianPid); }
+    catch {
+      // A child already exists: failed PID persistence must never free its slot.
+      // Observe its eventual exit via the installed listeners, otherwise fence.
+      entry.listener = undefined; stop(entry);
+      throw plannerError('planner_process_exit_unconfirmed');
+    }
+  }
   // M4 supplies the print-mode launcher and post-admission eligibility/quota
   // reservation. It cannot bypass the PTY's room/session/global admission path.
   async function startHeadless(id: string, launch: (config: PlannerLaunch) => PlannerProcess | Promise<PlannerProcess>,
@@ -82,6 +94,7 @@ export function createEmbeddedPlannerHost(options: Options) {
       entry.process = child; entry.state = 'headless-running';
       child.once('exit', () => release(id, entry));
       child.once('uncertain', () => { entry.state = 'stopping'; });
+      recordGuardian(id, entry, child);
       if (closing) stop(entry);
       return { process: child, sessionId: entry.sessionId, finished: entry.ended, stop: () => stop(entry) };
     } catch (error: any) {
@@ -160,6 +173,7 @@ export function createEmbeddedPlannerHost(options: Options) {
           current.state = 'stopping';
           current.listener?.({ type: 'error', code: 'planner_process_exit_unconfirmed', message: 'Process exit could not be confirmed' });
         });
+        recordGuardian(id, current, child);
         if (closing) stop(current);
       } catch (error: any) {
         if (error?.code === 'planner_process_exit_unconfirmed') { current.state = 'stopping'; }
@@ -200,6 +214,6 @@ export function createEmbeddedPlannerHost(options: Options) {
     if (timer) clearTimeout(timer);
     // Any uncertain leases deliberately survive; the next boot cannot overlap them.
   }
-  return { attach, startHeadless, state, close, canWake: (id: string) => !closing && state(id) === 'absent' };
+  return { attach, startHeadless, state, close, hasEntry: (id: string) => entries.has(id), canWake: (id: string) => !closing && state(id) === 'absent' };
 }
 export type EmbeddedPlannerHost = ReturnType<typeof createEmbeddedPlannerHost>;
