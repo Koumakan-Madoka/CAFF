@@ -141,11 +141,12 @@ export function createEmbeddedPlannerHost(options: Options) {
         }
         current.process = child; current.listener = listener; current.state = 'interactive-attached';
         child.on('data', (data: string) => {
-          // UTF-8 code-point boundaries; no split surrogate pairs in JSON chunks.
+          // UTF-8 code-point boundaries; 8 KiB data also fits the 64 KiB wire
+          // budget under worst-case 6x JSON escaping of dense terminal controls.
           let chunk = '', bytes = 0;
           for (const char of data) {
             const n = Buffer.byteLength(char);
-            if (bytes + n > 16384) { current.listener?.({ type: 'output', data: chunk }); chunk = ''; bytes = 0; }
+            if (bytes + n > 8192) { current.listener?.({ type: 'output', data: chunk }); chunk = ''; bytes = 0; }
             chunk += char; bytes += n;
           }
           if (chunk) current.listener?.({ type: 'output', data: chunk });

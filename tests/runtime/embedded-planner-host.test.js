@@ -69,6 +69,18 @@ test('first launch persists one UUID before spawn; detach, reattach/repaint and 
   assert.deepEqual(f.children[1].config.args.slice(0, 2), ['--resume', meta.sessionId]);
 });
 
+test('live output chunks fit both UTF-8 data and complete JSON frame budgets, including dense terminal controls', async t => {
+  const f = fixture(t), events = [];
+  await f.host.attach(f.room.id, { cols: 120, rows: 30 }, e => events.push(e));
+  f.children[0].emit('data', '\u0000'.repeat(40000) + '😀'.repeat(10000));
+  assert.ok(events.length > 1);
+  for (const event of events) {
+    assert.ok(Buffer.byteLength(event.data) <= 16384);
+    assert.ok(Buffer.byteLength(JSON.stringify(event)) <= 65536);
+  }
+  assert.equal(events.map(e => e.data).join(''), '\u0000'.repeat(40000) + '😀'.repeat(10000));
+});
+
 test('room lock rejects parallel pages, retained PTY blocks headless admission; cap never evicts', async t => {
   const f = fixture(t, { maxProcesses: 2 }); const a = await f.attach();
   await assert.rejects(f.attach(), /planner_terminal_in_use/);
