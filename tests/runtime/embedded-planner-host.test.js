@@ -40,10 +40,31 @@ function fixture(t, overrides = {}) {
 
 test('child environment is an allowlist on POSIX, with proxies but without inherited credentials/session preferences', () => {
   const env = buildPlannerEnvironment({ platform: 'linux', source: { PATH: '/bin', HOME: '/synthetic', XDG_STATE_HOME: '/state', TMPDIR: '/tmp', HTTP_PROXY: 'http://u:p@proxy.invalid', http_proxy: 'http://lower.invalid', NO_PROXY: 'localhost', https_proxy: 'https://lower.invalid', ALL_PROXY: 'socks://proxy.invalid', all_proxy: 'socks://lower.invalid', HTTPS_PROXY: 'https://proxy.invalid', no_proxy: '127.0.0.1', ANTHROPIC_API_KEY: 'sentinel', ANTHROPIC_AUTH_TOKEN: 'sentinel', CAFF_CHAT_TOKEN: 'sentinel', NODE_OPTIONS: 'sentinel', CLAUDE_CODE_SESSION_ID: 'sentinel', CLAUDE_CODE_MODEL: 'sentinel', CAFF_CLAUDE_CLI: 'sentinel', TERM: 'wrong', COLORTERM: 'wrong' }, baseUrl: 'http://127.0.0.1:45678', roomId: 'room-test', credentialPath: '/synthetic/credential.json', interactive: true });
-  assert.deepEqual(Object.keys(env).sort(), ['PATH','HOME','XDG_STATE_HOME','TMPDIR','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','http_proxy','https_proxy','all_proxy','no_proxy','DISABLE_AUTOUPDATER','CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT','TERM','COLORTERM','CAFF_BASE_URL','CAFF_ROOM_ID','CAFF_PLANNER_CREDENTIAL_FILE'].sort());
+  assert.deepEqual(Object.keys(env).sort(), ['PATH','HOME','XDG_STATE_HOME','TMPDIR','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','http_proxy','https_proxy','all_proxy','no_proxy','DISABLE_AUTOUPDATER','CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT','CLAUDE_CODE_NO_FLICKER','TERM','COLORTERM','CAFF_BASE_URL','CAFF_ROOM_ID','CAFF_PLANNER_CREDENTIAL_FILE'].sort());
   assert.equal(env.HTTP_PROXY, 'http://u:p@proxy.invalid'); assert.equal(env.http_proxy, 'http://lower.invalid');
   assert.equal(env.COLORTERM, 'truecolor'); assert.equal(env.CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT, '1');
 });
+
+for (const platform of ['linux', 'win32']) {
+  for (const interactive of [true, false, undefined]) {
+    test(`${platform} ${interactive === true ? 'interactive PTY pins fullscreen' : `noninteractive (${interactive}) omits renderer pin`} without inheriting renderer preferences`, () => {
+      for (const inherited of ['0', '1', 'unexpected']) {
+        const source = Object.freeze({ PATH: '/bin', HOME: '/synthetic', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\synthetic',
+          CLAUDE_CODE_NO_FLICKER: inherited, claude_code_no_flicker: 'lowercase-sentinel',
+          CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1', claude_code_disable_alternate_screen: 'lowercase-sentinel',
+          CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT: '0', TERM: 'wrong', COLORTERM: 'wrong' });
+        const env = buildPlannerEnvironment({ platform, source, interactive, baseUrl: 'http://127.0.0.1:45678' });
+        assert.equal(env.CLAUDE_CODE_NO_FLICKER, interactive === true ? '1' : undefined);
+        assert.equal(env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN, undefined);
+        assert.equal(env.TERM, interactive === true ? 'xterm-256color' : undefined);
+        assert.equal(env.COLORTERM, interactive === true ? 'truecolor' : undefined);
+        assert.equal(env.CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT, '1');
+        assert.deepEqual(Object.keys(env).filter(k => /^claude_code_/i.test(k)).sort(),
+          ['CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT', ...(interactive === true ? ['CLAUDE_CODE_NO_FLICKER'] : [])]);
+      }
+    });
+  }
+}
 
 test('Windows normalizes path/proxy case collisions and requires user configuration paths', () => {
   const env = buildPlannerEnvironment({ platform: 'win32', source: { Path: 'C:\\bin', SYSTEMROOT: 'C:\\Windows', userprofile: 'C:\\synthetic', HTTP_PROXY: 'upper', http_proxy: 'lower', claude_code_session_id: 'sentinel', anthropic_api_key: 'sentinel' }, baseUrl: 'http://localhost:45678', interactive: false });

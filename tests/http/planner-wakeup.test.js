@@ -13,6 +13,8 @@ test('live scheduler -> pipe fake CLI -> actual caff/P1 -> production finish; fi
   const launch = f.launches()[0];
   assert.equal(launch.env.ANTHROPIC_API_KEY, undefined);
   assert.equal(launch.env.CLAUDE_CODE_SESSION_ID, undefined);
+  assert.equal(launch.env.CLAUDE_CODE_NO_FLICKER, undefined);
+  assert.equal(launch.env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN, undefined);
   assert.equal(launch.env.CAFF_CHAT_TOKEN, undefined);
   assert.equal(launch.env.DISABLE_AUTOUPDATER, '1');
   assert.equal(launch.env.CAFF_ROOM_ID, f.room.id);

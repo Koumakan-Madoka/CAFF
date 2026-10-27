@@ -8,7 +8,10 @@ wake-ups passed independent planner review; M4's final implementation is
 recorded in §10, including the initially blocked run and successful revalidation.
 M5 docs passed at `383d2859`. The user-approved 2026-10-27 repaint correction
 (bundled ConPTY + Unicode graphemes) supersedes the earlier repaint conclusion;
-its planner review/real-CLI recheck and Linux CI remain separate gates (§10).
+its implementation `6e022e97` and fit correction `3b246f47` passed planner review
+and real-CLI checks (§10). The separately user-approved interactive renderer pin
+is now implemented; its final-SHA planner recheck and Linux CI remain separate
+gates (§10).
 This is not a claim that a running instance has been upgraded. Push, PR, merge,
 acceptance, release and shared-instance restart each require user authorization.
 
@@ -401,7 +404,7 @@ secrets. Use the same builder for version, interactive and headless launches.
 | POSIX inherited paths | XDG_STATE_HOME, TMPDIR |
 | Inherited network proxy configuration | HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY; http_proxy, https_proxy, all_proxy, no_proxy |
 | CAFF-generated fixed flags | DISABLE_AUTOUPDATER=1; CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT=1 |
-| PTY-generated terminal capabilities | TERM=xterm-256color and COLORTERM=truecolor for interactive mode only, never inherited |
+| Interactive PTY-generated renderer/capabilities | CLAUDE_CODE_NO_FLICKER=1; TERM=xterm-256color; COLORTERM=truecolor for interactive mode only, never inherited; version probes and print wake-ups omit the renderer pin |
 | CAFF-generated instance/room | CAFF_BASE_URL (configured loopback authority and actual port), CAFF_ROOM_ID |
 | CAFF-generated credential **path** | CAFF_PLANNER_CREDENTIAL_FILE, only the resolved P1 provider path when available |
 
@@ -429,8 +432,18 @@ Tests use synthetic proxy credentials and assert they never reach diagnostics.
 Do not inherit ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, provider base URLs or
 other provider keys; CAFF_CHAT_* invocation secrets; CAFF planner token values;
 PI_*, NODE_OPTIONS, shell startup variables, arbitrary CLAUDE_CODE_* (including
-preferences) or nesting/session state. The repaint flag above is a deliberate
-new constant, not an inherited Claude session variable. `CAFF_CLAUDE_CLI` is a
+preferences) or nesting/session state. The repaint and interactive renderer flags
+above are deliberate new constants, not inherited Claude session variables.
+The **2026-10-27 user-approved renderer pin** fixes
+`CLAUDE_CODE_NO_FLICKER=1` only when `interactive: true`, alongside TERM/COLORTERM.
+Parent values of NO_FLICKER (including `0`) and
+`CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` are discarded, not copied or merged,
+including Windows case aliases. Noninteractive version probes and print wake-ups
+never receive NO_FLICKER from this builder, even if the parent sets it.
+This prevents the classic-renderer blank reattach and the shared boot-failure
+side effect observed by the planner on CLI 2.1.311 (§10); CAFF does not inspect,
+reset or rewrite the user's `~/.claude.json` or `fullscreenBootStrikes` counter.
+`CAFF_CLAUDE_CLI` is a
 parent launch option, not child configuration. No CAFF/provider credential value
 in the CAFF-created env, argv, append prompt, websocket auth acknowledgement,
 SQLite or diagnostics; the proxy passthrough exception never authorizes logging
@@ -1453,8 +1466,9 @@ the screen; xterm defaulted to Unicode 6. Replacing only the browser provider
 with Unicode 11/15 made the old-ConPTY stream worse (extra wraps/repeated lines).
 Bundled ConPTY plus 15-graphemes produced zero wraps and one copy of each row.
 The planner also observed real Claude enter the alternate buffer and found no
-repeat rows after streaming Chinese/emoji, delete/retype and resize. Those are
-**diagnostic observations**, not candidate-pinned approval of this code.
+repeat rows after streaming Chinese/emoji, delete/retype and resize. Those initial
+**diagnostic observations** were followed by the candidate-pinned planner checks
+below, not treated as approval by themselves.
 
 The implementation therefore changes both ends (§2/§9), never silently falls
 back, and leaves print-mode argv/permissions/version gates unchanged. Author
@@ -1472,9 +1486,55 @@ the Windows guardian cwd to the Node directory fixed the reproduction without
 cleanup retries/delays; CLI cwd remains unchanged. Tests delete the fake worktree
 before waiting for transient OpenConsole disappearance. This identifies the
 **new bundled-ConPTY early-shutdown case**, not the unconfirmed older N9 issue.
-This is synthetic rendering, not proof of Claude's
-streaming/TUI decisions. Planner review and real-Claude recheck on the new SHA
-are still required; no inherited M3 PASS or Linux CI claim.
+This is synthetic rendering, not proof of Claude's streaming/TUI decisions.
+The planner subsequently gave **PASS** on `6e022e97` (message
+`6c1916b0-5ddb-465f-b6bf-70ee74d632db`): real npm CLI **2.1.311**, production
+15-graphemes + bundled ConPTY, Chinese/emoji streaming, delete/retype, wide/narrow
+resize, retained reconnect, exit/resume and Stop. Six snapshots had zero wraps
+and one copy of each answer; exit/Stop were neutral, OpenConsole was cleaned up,
+and the page had no errors. Retained reconnect may repaint into a new normal
+xterm buffer; it is not evidence that the CLI switched renderers.
+
+Fit correction `3b246f47` also received **PASS** (message
+`f6912ebe-58e8-4b89-abef-6205e05452ea`). The fit parent has no padding/border;
+its outer frame owns decorations. Independent Edge + fake-CLI checks found
+705px of grid within 712px with a one-line notice, and 690px within 693px with a
+two-line notice; initial/reconnected real CLI smoke was not clipped. Neither
+result substitutes for Linux CI or the separately changed renderer gate below.
+
+### 2026-10-27 interactive renderer pin
+
+The user approved fixing the interactive renderer after the planner's
+no-model-call diagnosis on **Claude Code 2.1.311**, Windows 10.0.19045 and bundled
+ConPTY (instruction/approval message
+`401c0275-5006-4978-a8eb-d477cae90264`, following
+`f6912ebe-58e8-4b89-abef-6205e05452ea`). The default CLI can fall back from
+fullscreen/alternate-screen to classic/main-screen inline rendering. An abnormal
+stop within about ten seconds of fullscreen startup records a pending failure
+in the user's shared `~/.claude.json` `fullscreenBootStrikes`; a later default
+startup can count it and switch renderers even in the user's external terminal.
+The classic renderer was actually blank after retained reconnect under bundled
+ConPTY and has a history of repeated lines. Width fixes alone do not pin it.
+
+Planner-reported observations, **not calls made by the implementer**:
+
+| Probe | Configuration / action | Planner result on 2.1.311 |
+| --- | --- | --- |
+| A' | NO_FLICKER=1, force-stop immediately after fullscreen startup, then start normally | No additional boot strike; the subsequent default launch still used fullscreen. |
+| B' (control) | Default environment, force-stop immediately after fullscreen startup, then start normally | The next startup counted one failure and fell back to classic. |
+| E' | Start with NO_FLICKER=1 while a boot failure is already pending | Fullscreen was still selected. |
+| D' | Default environment, finish normally with `/exit` | The strike count cleared. |
+
+CAFF therefore generates `CLAUDE_CODE_NO_FLICKER=1` only for interactive PTYs
+(§4), without changing shared configuration or the print-mode tool policy,
+version gates, dependencies or UI permissions. Version probes and `-p` launches
+remain noninteractive and omit it. Tests seed parent NO_FLICKER=0 and
+DISABLE_ALTERNATE_SCREEN=1, check the builder on Windows/POSIX, record the actual
+fake CLI's PTY/version-probe environment, and assert absence in the scheduled
+print launch. These prove environment construction, **not real CLI renderer
+behavior**. Planner review and a short actual-CLI validation at the final
+renderer-pin SHA are still required before child-env/real-cli acceptance;
+previous-SHA smokes and Linux CI are not inferred.
 
 ### ADR 0003 “Verify during implementation” checklist
 
@@ -1491,7 +1551,7 @@ still required before integration. The implementer has not run real Claude.
 | Untrusted worktree plus print-mode tools | **PASS on Windows**: M4a gate used the fresh `E:\tmp\caff-m4a-gate\wt` without project permissions/settings; N2 confirms -p skips the dialog while explicit restrictions hold. M3 manually answered trust outside trusted ancestors. Do not use inherited ancestor trust as evidence or auto-confirm prompts. |
 | Approval-required tool denied in -p | **PASS on Windows**: M4a mkdir/echo-redirection/git-status and compound commands denied without hanging/sentinel effects; hardened dontAsk positives still pass. No bypass or automatic approval. Fake timeout/denial tests supplement, not replace, this gate. |
 | node-pty prebuild/compilation | **Windows x64 / Node 24.13.1 / node-pty 1.1.0 PASS**: independent install and real PTY/fake CLI suites in M2/M3. The repaint correction adds bundled-DLL Stop/expiry/shutdown/parent-death and OpenConsole cleanup checks. The distribution contains x64/arm64 DLL + OpenConsole, not proof of arm64 execution. `.github/workflows/test.yml` now checks Windows and Linux / Node 22.19.0; `scripts/check-planner-pty.js` requires Windows bundled artifacts or Linux compiled `build/Release/pty.node`. **CI NOT RUN**: successful candidate-pinned URLs still require authorized publication; local Windows PASS/workflow existence is not Linux compilation evidence. |
-| ConPTY full repaint | **Earlier M3 smoke was insufficient**: see the 2026-10-27 correction below. The repaint flag alone did not prevent old-ConPTY/Unicode-width ghosting. Use bundled ConPTY + xterm grapheme widths; author Edge/fake-CLI regression supplements, but cannot replace, planner real-Claude candidate revalidation. No claim about untested Windows versions/platforms. |
+| ConPTY full repaint | **Earlier M3 smoke was insufficient**: see the 2026-10-27 correction above. Bundled ConPTY + graphemes passed candidate-pinned real CLI 2.1.311 at `6e022e97`; fit passed at `3b246f47`. The separately approved interactive NO_FLICKER pin addresses classic-renderer reattach/boot strikes, with planner A'/B'/E'/D' observations above; final renderer-pin SHA still requires planner real-CLI revalidation. No claim about untested Windows versions/platforms or Linux CI. |
 
 A future CLI/tool behavior change reopens these compatibility checks. Numeric
 version success alone does not establish tool confinement or ConPTY correctness.

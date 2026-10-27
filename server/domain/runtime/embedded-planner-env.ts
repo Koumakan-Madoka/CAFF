@@ -33,6 +33,11 @@ export function buildPlannerEnvironment(options: {
     if (!path.isAbsolute(options.credentialPath)) throw plannerError('planner_environment_invalid');
     env.CAFF_PLANNER_CREDENTIAL_FILE = options.credentialPath;
   }
-  if (options.interactive) { env.TERM = 'xterm-256color'; env.COLORTERM = 'truecolor'; }
+  if (options.interactive) {
+    env.TERM = 'xterm-256color'; env.COLORTERM = 'truecolor';
+    // Pin fullscreen without recording early PTY stops as shared boot failures.
+    // Print wake-ups and version probes deliberately omit this generated flag.
+    env.CLAUDE_CODE_NO_FLICKER = '1';
+  }
   return env;
 }

@@ -35,6 +35,10 @@ test('authenticated terminal has ready before live output, owns input/resize, re
   const launch = JSON.parse(fs.readFileSync(path.join(f.root, 'fake-launch.json')));
   assert.equal(launch.cwd, f.root); assert.equal(launch.env.ANTHROPIC_API_KEY, undefined); assert.equal(launch.env.CAFF_ROOM_ID, f.room.id);
   assert.equal(launch.env.COLORTERM, 'truecolor');
+  assert.equal(launch.env.CLAUDE_CODE_NO_FLICKER, '1');
+  assert.equal(launch.env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN, undefined);
+  const probe = JSON.parse(fs.readFileSync(path.join(f.root, 'fake-probe.json')));
+  assert.deepEqual(probe, { noFlicker: null, disableAlternateScreen: null });
   const second = await closed(f.connect(), s => s.send(JSON.stringify(f.auth)));
   assert.equal(second.code, 1013); assert.equal(JSON.parse(second.messages[0]).code, 'planner_terminal_in_use');
   ws.send(JSON.stringify({ type: 'resize', cols: 100, rows: 40 }));

@@ -137,6 +137,16 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
     environment;
   - no inherited Claude Code session variables;
   - `DISABLE_AUTOUPDATER=1` and `CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT=1`;
+  - **User-approved amendment, 2026-10-27:** interactive PTYs also set
+    `CLAUDE_CODE_NO_FLICKER=1`, alongside generated TERM/COLORTERM. This pins the
+    fullscreen renderer and avoids counting early PTY stops as shared fullscreen
+    boot failures, which could change the renderer in the user's own terminal.
+    Print wake-ups and version probes do **not** set this flag. Parent renderer
+    preferences (including `CLAUDE_CODE_NO_FLICKER=0` and
+    `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`) are still not inherited; CAFF does not
+    read or rewrite `~/.claude.json`. Approval/instruction: room message
+    `401c0275-5006-4978-a8eb-d477cae90264`; planner's CLI 2.1.311 A'/B'/E'/D'
+    observations and final-candidate verification gate are in P2 §10;
   - the CAFF base URL and the room ID.
 - **CLI location and version:** CAFF finds the `claude` executable on `PATH`,
   or uses `CAFF_CLAUDE_CLI` when set. It checks the CLI version at startup;
