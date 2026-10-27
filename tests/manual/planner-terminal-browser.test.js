@@ -18,7 +18,7 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     const { fixture } = require('../helpers/planner-terminal');
     const { EmbeddedPlannerRepository } = require('../../build/storage/chat/embedded-planner.repository');
     let browser;
-    const results = [], errors = [], external = [], frames = [], writes = [], versions = {}, palettes = [];
+    const results = [], errors = [], external = [], frames = [], writes = [], versions = {}, palettes = [], fits = [];
     // Close Edge before fixture teardown, so upgraded sockets release normally.
     t.after(async () => { if (browser) await browser.close(); fs.rmSync(home, { recursive: true, force: true }); });
     const f = await fixture(t, { authTimeoutMs: 5000, cliFixture: path.join(__dirname, '../fixtures/fake-planner-session-cli.cjs') });
@@ -26,7 +26,7 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     const repository = new EmbeddedPlannerRepository(f.app.store);
     assert.ok(![3100,3200].includes(f.port) && ![3100,3200].includes(off.port));
     t.after(() => {
-      fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ results, errors, external, frames, writes, versions, palettes,
+      fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ results, errors, external, frames, writes, versions, palettes, fits,
         runtimeDeleted: !fs.existsSync(f.root), offRuntimeDeleted: !fs.existsSync(off.root), homeDeleted: !fs.existsSync(home) }, null, 2));
       console.info('Sanitized terminal browser evidence: ' + output);
     });
@@ -95,6 +95,30 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
       assert.equal(palette.screen, 'rgb(17, 19, 18)');
       assert.equal(palette.terminal, palette.screen); assert.equal(palette.viewport, palette.screen);
     }
+    async function checkFit(name) {
+      // Let layout and the production ResizeObserver settle, without calling fit
+      // from the test or replacing addon-fit's actual dimension calculation.
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const geometry = await page.locator(selector('screen')).evaluate(el => {
+        const term = window.__plannerTerminals.at(-1), grid = el.querySelector('.xterm-screen').getBoundingClientRect();
+        function contentRect(node) {
+          const rect = node.getBoundingClientRect(), css = getComputedStyle(node);
+          return { top: rect.top + parseFloat(css.borderTopWidth) + parseFloat(css.paddingTop),
+            bottom: rect.bottom - parseFloat(css.borderBottomWidth) - parseFloat(css.paddingBottom) };
+        }
+        const screen = contentRect(el), root = contentRect(el.querySelector('.xterm'));
+        const notice = document.querySelector('#planner-terminal-notice'), noticeCss = getComputedStyle(notice);
+        return { rows: term.rows, cellHeight: grid.height / term.rows, gridTop: grid.top, gridBottom: grid.bottom,
+          contentTop: Math.max(screen.top, root.top), contentBottom: Math.min(screen.bottom, root.bottom),
+          noticeLines: notice.getBoundingClientRect().height / parseFloat(noticeCss.lineHeight),
+          viewportHeight: innerHeight, paneWidth: document.querySelector('#planner-terminal-pane').getBoundingClientRect().width };
+      });
+      fits.push({ name, ...geometry }); console.info('FIT | ' + JSON.stringify(fits.at(-1)));
+      const visibleHeight = geometry.contentBottom - geometry.contentTop;
+      assert.ok(geometry.rows * geometry.cellHeight <= visibleHeight + 0.1, name + ': rows × cell height exceeds visible content height');
+      assert.ok(geometry.gridTop >= geometry.contentTop - 0.1 && geometry.gridBottom <= geometry.contentBottom + 0.1, name + ': cell grid is clipped');
+      return geometry;
+    }
     async function checkNeutralExit(stopped) {
       const notice = await page.locator(selector('notice')).textContent();
       assert.match(notice, stopped ? /Claude Code 已停止/ : /Claude Code 已退出/);
@@ -128,6 +152,34 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     assert.equal(context.pages().length, 1);
     const meta = repository.read(f.room.id), guardian = f.app.store.db.prepare('SELECT guardian_pid FROM chat_embedded_planner_leases WHERE conversation_id=?').get(f.room.id).guardian_pid;
     pass('local licensed assets; non-modal sibling pane; real keyboard input/output and first session saved');
+
+    // One/two-line notices change the available height. Sweep a complete cell's
+    // fractional remainder to catch the old border-box + 10px overcount reliably.
+    const originalNotice = await page.locator(selector('notice')).textContent();
+    async function fitSweep(name, lines) {
+      await page.locator(selector('notice')).evaluate((el, lines) => {
+        el.style.whiteSpace = 'pre-line'; el.textContent = lines === 1 ? '合成单行提示。' : '合成提示第一行。\n合成提示第二行。';
+      }, lines);
+      for (let offset = 0; offset < 16; offset++) {
+        await page.setViewportSize({ width: 1440, height: 1000 + offset });
+        const geometry = await checkFit(name + ' +' + offset + 'px');
+        assert.ok(Math.abs(geometry.noticeLines - lines) < 0.01, 'test must actually render ' + lines + ' notice lines');
+      }
+      await page.screenshot({ path: path.join(output, 'terminal-fit-' + name + '.png') });
+    }
+    await fitSweep('one-line', 1); await fitSweep('two-lines', 2);
+    for (const [name, delta, lines] of [['wider', -80, 1], ['narrower', 130, 2]]) {
+      const previous = await page.locator(selector('pane')).boundingBox(), grip = await page.locator(selector('resize')).boundingBox();
+      await page.mouse.move(grip.x + 22, grip.y + 100); await page.mouse.down();
+      await page.mouse.move(grip.x + 22 + delta, grip.y + 100); await page.mouse.up();
+      await page.waitForFunction(({ width, delta }) => delta < 0
+        ? document.querySelector('#planner-terminal-pane').getBoundingClientRect().width > width + 40
+        : document.querySelector('#planner-terminal-pane').getBoundingClientRect().width < width - 40, { width: previous.width, delta });
+      await fitSweep(name, lines);
+    }
+    await page.locator(selector('notice')).evaluate((el, text) => { el.style.removeProperty('white-space'); el.textContent = text; }, originalNotice);
+    await page.setViewportSize({ width: 1440, height: 1000 }); await checkFit('restored real notice');
+    pass('fit cell grid stays fully visible for one/two-line notices and pointer widening/narrowing across fractional-row heights');
 
     const before = await page.locator(selector('pane')).boundingBox(), handle = await page.locator(selector('resize')).boundingBox();
     await page.mouse.move(handle.x + 22, handle.y + 100); await page.mouse.down(); await page.mouse.move(handle.x - 60, handle.y + 100); await page.mouse.up();

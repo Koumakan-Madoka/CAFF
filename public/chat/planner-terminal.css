@@ -64,7 +64,7 @@ body.chat-app .planner-terminal-recovery button,
 body.chat-app .planner-terminal-wakeups button { min-height: 44px; padding: 6px 10px; font-size: 12px; }
 body.chat-app #planner-terminal-status { font-size: 12px; margin-right: auto; }
 body.chat-app .planner-terminal-notice { margin: 0; font-size: 12px; overflow-wrap: anywhere; color: var(--caff-text); }
-body.chat-app .planner-terminal-screen {
+body.chat-app .planner-terminal-frame {
   --planner-terminal-background: #111312;
   --planner-terminal-foreground: #f0f1ed;
   color-scheme: dark;
@@ -75,6 +75,16 @@ body.chat-app .planner-terminal-screen {
   padding: 4px;
   background: var(--planner-terminal-background);
   border: 1px solid var(--caff-border);
+}
+/* addon-fit measures its parent's computed height/width, not its content box.
+   Keep decoration on the outer frame so a fractional last row cannot be cut. */
+body.chat-app .planner-terminal-screen {
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: var(--planner-terminal-background);
 }
 body.chat-app .planner-terminal-screen .xterm {
   height: 100%;

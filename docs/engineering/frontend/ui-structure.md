@@ -79,6 +79,10 @@
   Both CAFF themes keep a readable dark CLI palette (`#111312` background),
   including the xterm root/screen/viewport and fractional unused bottom row.
   The toolbar/frame still follow CAFF theme; no CLI settings are read/modified.
+  Addon-fit measures the undecorated `.planner-terminal-screen`; only the outer
+  `.planner-terminal-frame` has padding/border, avoiding a 10px overcount of its
+  usable height. Edge checks rows × cell height against visible content after
+  one/two-line notices and widening/narrowing across fractional-row remainders.
 - `tests/ui/planner-terminal-pane.test.js` and HTTP session tests lock lifecycle,
   authentication gating, fixed diagnostics, confirmations, shell coordination,
   disposal, limits and browser-valid close behavior. Opt-in

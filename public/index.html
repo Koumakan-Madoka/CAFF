@@ -180,7 +180,9 @@
             <button id="planner-terminal-repair" class="ghost-button" type="button" hidden>修复遗留租约</button>
             <button id="planner-terminal-reinitialize" class="ghost-button" type="button" hidden>重新初始化会话</button>
           </div>
-          <div id="planner-terminal-screen" class="planner-terminal-screen" aria-label="Claude Code 终端输入输出"></div>
+          <div class="planner-terminal-frame">
+            <div id="planner-terminal-screen" class="planner-terminal-screen" aria-label="Claude Code 终端输入输出"></div>
+          </div>
           <details class="planner-terminal-help">
             <summary>终端与信任提示</summary>
             <p id="planner-terminal-guidance">首次出现目录信任对话框时，确认目录可信后请自行选择 Yes, I trust this folder。默认选项可能是 No, exit；CAFF 不会替你确认。关闭分栏仅断开，进程保留 30 分钟；重连只接收后续输出，不回放输入或历史。Ctrl+Shift+F6 返回工具栏。</p>

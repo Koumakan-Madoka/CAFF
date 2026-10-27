@@ -55,6 +55,25 @@ test('terminal assets are pinned/build-local with licenses, loaded before pane/a
   assert.match(pkg.scripts['test:embedded-planner'], /planner-terminal-pane.test.js/);
 });
 
+test('fit measures an undecorated screen; only its outer frame owns padding and border', t => {
+  const f = fixture(t);
+  const style = f.w.document.createElement('style');
+  // JSDOM does not resolve custom properties in border shorthands. Edge below
+  // verifies the actual themed layout; here substitute only the border color.
+  style.textContent = read('public/chat/planner-terminal.css').replaceAll('var(--caff-border)', '#777');
+  f.w.document.head.append(style);
+  const screen = f.q('screen'), frame = screen.parentElement;
+  assert.ok(frame.classList.contains('planner-terminal-frame'));
+  const measured = f.w.getComputedStyle(screen), decorated = f.w.getComputedStyle(frame);
+  for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
+    assert.equal(measured['padding' + side], '0px');
+    assert.equal(measured['border' + side + 'Width'], '0px');
+    assert.equal(decorated['padding' + side], '4px');
+    assert.equal(decorated['border' + side + 'Width'], '1px');
+  }
+  assert.equal(measured.height, '100%');
+});
+
 test('disabled entry does not read/spawn; desktop opening leaves chat usable, closing detaches/disposes without terminate', async t => {
   const f = fixture(t); f.pane.sync('room-a', { enabled: false });
   assert.equal(f.q('toggle').hidden, true); await f.pane.open(); assert.equal(f.connections.length, 0);

@@ -1085,6 +1085,11 @@ still follow CAFF's theme. CAFF neither reads nor modifies the CLI's theme
 settings; there is no terminal-palette preference or switch. The screen,
 xterm root and viewport share the terminal background, including the fractional
 unused row below the cell grid; do not expose xterm CSS's default black strip.
+The parent measured by addon-fit (`.planner-terminal-screen`) has no padding or
+border; its outer `.planner-terminal-frame` owns both. Fit reads computed parent
+height/width, not the border-box's usable content size. Keep rows × cell height
+within the visible content area after one/two-line notices and width changes,
+including fractional-row remainders, so the bottom status row is never clipped.
 
 Copy xterm JS/CSS, addon-fit and addon-unicode-graphemes JS plus all **three**
 LICENSE notices from pinned packages into build static assets at build time;

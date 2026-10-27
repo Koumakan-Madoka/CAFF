@@ -195,7 +195,7 @@ and [planner acceptance records](../engineering/runtime/embedded-planner.md#plan
   traced the mismatch to system ConPTY's old emoji widths plus xterm's Unicode 6
   default. Updating only browser widths worsened wrapping; bundled ConPTY plus
   15-graphemes gave zero wraps/one copy per line, with real-Claude diagnostic
-  streaming/delete/resize also clean (Windows 10.0.19045 / Edge 155 / CLI 2.1.310).
+  streaming/delete/resize also clean (Windows 10.0.19045 / Edge 155 / CLI 2.1.311).
   P2 §10 retains this correction and new real-PTY + fake-CLI Edge regression;
   candidate-pinned planner review/real-Claude revalidation remains required.
   No claim about untested Windows versions, arm64 execution or Linux CI.
