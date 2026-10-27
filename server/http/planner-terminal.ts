@@ -89,7 +89,7 @@ export function installPlannerTerminal(options: {
             }, options.pingMs ?? 30000);
           } catch (error: any) {
             const allowed = ['planner_terminal_in_use','planner_room_busy','planner_process_limit','planner_process_exit_unconfirmed',
-              'planner_workspace_invalid','planner_session_unavailable','planner_process_spawn_failed'];
+              'planner_workspace_invalid','planner_session_unavailable','planner_process_spawn_failed','planner_conpty_unavailable'];
             const code = allowed.includes(error?.code) ? error.code : 'planner_process_spawn_failed';
             send({ type: 'error', code, message: 'Planner terminal is unavailable' });
           }

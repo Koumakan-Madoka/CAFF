@@ -68,6 +68,14 @@ test('resumed WS terminate reports intentional stop, while a missing saved sessi
   assert.equal(missing.events.find(e => e.type === 'exit').reasonCode, 'planner_session_unavailable');
 });
 
+test('bundled ConPTY attach failure has a fixed WS reason, no ready/output or retained lease', async t => {
+  const f = await fixture(t, { authTimeoutMs: 5000, launch: () => { throw Object.assign(new Error('private sentinel'), { code: 'planner_conpty_unavailable' }); } });
+  const result = await closed(f.connect(), s => s.send(JSON.stringify(f.auth)));
+  assert.equal(result.code, 1011);
+  assert.deepEqual(result.messages.map(JSON.parse), [{ type: 'error', code: 'planner_conpty_unavailable', message: 'Planner terminal is unavailable' }]);
+  assert.equal(f.app.store.db.prepare('SELECT count(*) AS n FROM chat_embedded_planner_leases').get().n, 0);
+});
+
 test('post-auth unknown messages and invalid input cause no PTY input', async t => {
   const f = await fixture(t, { authTimeoutMs: 5000 });
   for (const message of [{ type: 'input', data: 'x'.repeat(16385) }, { type: 'resize', cols: 501, rows: 30 }, { type: 'auth', ...f.auth }, { type: 'input', data: 'bad', cwd: 'evil' }]) {

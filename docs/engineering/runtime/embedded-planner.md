@@ -6,7 +6,9 @@
 wake-ups passed independent planner review; M4's final implementation is
 `1c7b10e4ab2bea2becc53278b9f15f959d122984`. Windows real-CLI acceptance is
 recorded in §10, including the initially blocked run and successful revalidation.
-M5 reconciles these docs; final review and Linux CI are still separate gates.
+M5 docs passed at `383d2859`. The user-approved 2026-10-27 repaint correction
+(bundled ConPTY + Unicode graphemes) supersedes the earlier repaint conclusion;
+its planner review/real-CLI recheck and Linux CI remain separate gates (§10).
 This is not a claim that a running instance has been upgraded. Push, PR, merge,
 acceptance, release and shared-instance restart each require user authorization.
 
@@ -134,9 +136,26 @@ use, not remote/multi-user service or a same-account OS sandbox.
   lexicographically. A later version passes the numeric floor but is not proof
   of flag/tool-policy compatibility (§10). No auto-update or package download.
 - Dependencies at implementation: `node-pty` **1.1.0**, `@xterm/xterm` **6.0.0**,
-  `@xterm/addon-fit` **0.11.0**, `ws` **8.22.0 or later** with a committed lockfile.
+  `@xterm/addon-fit` **0.11.0**, `@xterm/addon-unicode-graphemes` **0.4.0**
+  (exact, experimental upstream; user approved on 2026-10-27 to fix ghosting),
+  `ws` **8.22.0 or later** with a committed lockfile. No new test dependency.
   Windows uses supported prebuilds; Linux CI installs a compiler/node-gyp
   toolchain. Do not claim a prebuild on an untested Node/OS/architecture tuple.
+- Windows PTYs, including the version probe, require **`useConpty: true`,
+  `useConptyDll: true`**: node-pty's bundled newer ConPTY, never the OS's older
+  ConPTY. Before spawn, use the pinned package's native loader to locate the
+  selected `conpty.node` (Release/Debug/prebuild priority), and require readable
+  regular `conpty/conpty.dll` and `conpty/OpenConsole.exe` beside it. A missing
+  native module/file fails closed as `planner_conpty_unavailable`, preserved in
+  capability, state and authenticated WS errors, without raw path/error text.
+  No system-ConPTY fallback. The installed 1.1.0 package contains both files
+  under **win32-x64 and win32-arm64** prebuilds; arm64 execution is not claimed.
+  POSIX gets no Windows options/file checks. On Windows the guardian's cwd is
+  the Node executable's directory, not the room directory: bundled OpenConsole
+  inherits that cwd and can briefly survive the PTY exit event. This prevents
+  it from pinning a room worktree or test directory during teardown. The actual
+  CLI still gets the verified **room cwd** explicitly via `pty.spawn`. Print-mode
+  wake-ups remain pipes with unchanged tool argv, version gates and cleanup.
 
 ### Server-owned room metadata
 
@@ -1067,9 +1086,17 @@ settings; there is no terminal-palette preference or switch. The screen,
 xterm root and viewport share the terminal background, including the fractional
 unused row below the cell grid; do not expose xterm CSS's default black strip.
 
-Copy xterm JS/CSS and addon-fit assets from pinned packages into build static
-assets at build time, preserving licenses; no CDN, runtime download or new
-bundler. A focused `public/chat/` module owns terminal lifecycle, fits after
+Copy xterm JS/CSS, addon-fit and addon-unicode-graphemes JS plus all **three**
+LICENSE notices from pinned packages into build static assets at build time;
+no CDN, runtime download or new bundler. Load xterm, fit, then grapheme addon
+before the client. Construct with **`allowProposedApi: true`**, open the terminal,
+then load `UnicodeGraphemesAddon`; require `terminal.unicode.activeVersion ===
+'15-graphemes'` before any socket/auth/process admission. Missing, failed or
+inactive addon gives `planner_terminal_unicode_unavailable`, disposes the view
+and opens no socket: never silently fall back to Unicode 6. This proposed API
+is necessary for the pinned addon's Unicode 15 grapheme-width provider, not an
+extension of allowed terminal-output capabilities. OSC 8 and 52 are still
+consumed; no link/clipboard/window permission is added. A focused `public/chat/` module owns terminal lifecycle, fits after
 layout/drag/viewport changes and sends validated integer sizes. Dispose xterm,
 addon, observers and socket handlers on room change. Closing the UI must not
 leave a browser input handler writing to the old room. Do not enable clipboard
@@ -1112,7 +1139,7 @@ overlay; AppShell owns its background inert/focus coordination. Escape in the
 terminal is passed to the CLI (including trust), not treated as UI close;
 Ctrl+Shift+F6 returns to the toolbar. Desktop chat remains interactive.
 
-Pinned xterm/addon JS/CSS and both LICENSE notices are copied to
+Pinned xterm/addon JS/CSS and all three LICENSE notices are copied to
 `build/public/vendor/planner-terminal` at build time, not into source or a CDN.
 Browser-local xterm scrollback is bounded to 2000 lines and discarded on
 reconnect/room switch. OSC 52 (clipboard) and OSC 8 (hyperlinks) are consumed;
@@ -1143,6 +1170,8 @@ by the existing P1 protected-path diagnostic, not broadcast to the browser.
 | `planner_terminal_disabled`, `planner_terminal_local_only` | Configure opt-in/loopback with user-authorized restart, not a request override |
 | `planner_cli_missing`, `planner_cli_version_unsupported`, `planner_cli_version_invalid`, `planner_cli_probe_timeout`, `planner_cli_launch_unsupported` | Fix installed executable/version; do not download/update automatically |
 | `planner_workspace_invalid` | Inspect binding; no project-root fallback |
+| `planner_conpty_unavailable` | Repair the local node-pty bundled ConPTY installation; fixed explanation, no system-ConPTY fallback or automatic download |
+| `planner_terminal_unicode_unavailable` | Repair local grapheme addon build assets; no socket or Unicode 6 fallback |
 | `planner_session_unavailable` | Session may be unavailable; explicit user-confirmed same-UUID reinitialization after all process/lease ownership is clear (§3), never automatic new-session fallback |
 | `planner_session_reinitialized` | Fixed changed-state diagnostic only; user explicitly opens the next same-UUID initialization |
 | `planner_terminal_in_use`, `planner_room_busy`, `planner_process_limit` | Keep existing owner/process; explicitly reconnect later |
@@ -1212,6 +1241,7 @@ wording; wake-up tests cover missing-record classification and no unattended ret
 | M3 pane | DOM/controller and real Edge fake-CLI checks: input/output, drag + keyboard sizing, resize, close/detach, future-output-only reconnect, switching rooms, narrow overlay/focus, disabled entry, no clipboard/URL side effects; neutral normal-exit/resumed-Stop guidance without recovery controls, CAFF stop vs unsolicited nonzero exit, fixed dark terminal in both CAFF themes and matching viewport background; light-theme ANSI path/trust sample and exit/stop screenshots |
 | M4 scheduler/store | Five positive triggers; goal_completed/unknown/null/retired/unbound/DAG/opt-out negatives; retained and attached terminal suppression, quota boundary/restart/clock rollback, coalescing and >100-item batches, catch-up once, transaction/spawn fault injection, needs-user no Goal write/re-wake, stale Goal/proposal conflicts, exact CLI tool argv, stream failures/truncation/redaction/paging/retention and no secret values |
 | M5 compatibility | Feature-off parity, P1 planner attribution/client credentials and user-only gates, no Goal Runner/DAG/delivery changes; final docs match code; isolated real-CLI checks and Linux CI |
+| M5 repaint correction | Red/green Windows bundled-ConPTY options and missing-file/diagnostic propagation; POSIX unchanged; real PTY Stop/expiry/shutdown/parent-death cleanup with no newly spawned package-path OpenConsole left over; grapheme addon activation/failure/disposal and licensed build assets; existing real Edge fixture at fixed 59 columns with six Chinese/emoji/VS16 lines, repeated erase/redraw, zero isWrapped rows, exact once-per-line including spaces; planner repeats real Claude interaction/delete/resize at candidate SHA |
 
 Before each milestone review run `npm run typecheck`, `npm test`,
 `npm run test:dag-execution`, `git diff --check` once on the candidate. Record
@@ -1407,6 +1437,40 @@ The planner independently reran full checks and gave M4 overall PASS at
 smoke at the final SHA; docs-only M5 does not change the reviewed argv/prompt.
 Linux CI and real-CLI checks on other platforms are not inferred from Windows.
 
+### 2026-10-27 repaint correction
+
+The user reported frequent ghosting on isolated instance 3310 and approved the
+fix; planner instruction `dd5c3818-2de6-4936-b1ac-19ad52d7c38b`. No implementer
+access to 3310/3100 is authorized. The planner's deterministic recording/replay
+in system-temp `caff-ghost-diag` confirmed **two coupled width models**: Windows
+10's system ConPTY treated emoji such as U+2705/U+274C as one cell and rewrote
+the screen; xterm defaulted to Unicode 6. Replacing only the browser provider
+with Unicode 11/15 made the old-ConPTY stream worse (extra wraps/repeated lines).
+Bundled ConPTY plus 15-graphemes produced zero wraps and one copy of each row.
+The planner also observed real Claude enter the alternate buffer and found no
+repeat rows after streaming Chinese/emoji, delete/retype and resize. Those are
+**diagnostic observations**, not candidate-pinned approval of this code.
+
+The implementation therefore changes both ends (§2/§9), never silently falls
+back, and leaves print-mode argv/permissions/version gates unchanged. Author
+red/green tests and actual Edge + fake CLI cover a fixed 59-column alternate
+screen, six exactly full-width Chinese lines prefixed ✅ ⚠️ ❌ 🙂 📌 🚀, nine
+erase/redraw passes, no `isWrapped` rows, exact one copy including post-emoji
+spaces; all assets/three notices are local. Windows process tests observe new
+package-path OpenConsole instances and require their disappearance on explicit
+stop, retention expiry, shutdown and guardian parent death (without touching
+pre-existing processes). The first full check exposed repeatable EPERM in the
+existing immediate server-shutdown fixture. Diagnostic PTY/guardian exit timing
+and a process snapshot confirmed a surviving package-path OpenConsole after its
+guardian exited; its inherited room cwd pinned the temp directory. Moving only
+the Windows guardian cwd to the Node directory fixed the reproduction without
+cleanup retries/delays; CLI cwd remains unchanged. Tests delete the fake worktree
+before waiting for transient OpenConsole disappearance. This identifies the
+**new bundled-ConPTY early-shutdown case**, not the unconfirmed older N9 issue.
+This is synthetic rendering, not proof of Claude's
+streaming/TUI decisions. Planner review and real-Claude recheck on the new SHA
+are still required; no inherited M3 PASS or Linux CI claim.
+
 ### ADR 0003 “Verify during implementation” checklist
 
 The following maps the original M1 verification methods to actual evidence.
@@ -1421,8 +1485,8 @@ still required before integration. The implementer has not run real Claude.
 | Minimal Windows environment can use Bash | **PASS**: M4a N1 and real M4b caff Bash calls under `buildPlannerEnvironment`; no ProgramFiles/PATHEXT expansion needed. Environment/adapter tests cover key stripping, proxy redaction and direct loopback authentication. Recheck after CLI/Git Bash/platform changes; do not infer success from a rendered TUI. |
 | Untrusted worktree plus print-mode tools | **PASS on Windows**: M4a gate used the fresh `E:\tmp\caff-m4a-gate\wt` without project permissions/settings; N2 confirms -p skips the dialog while explicit restrictions hold. M3 manually answered trust outside trusted ancestors. Do not use inherited ancestor trust as evidence or auto-confirm prompts. |
 | Approval-required tool denied in -p | **PASS on Windows**: M4a mkdir/echo-redirection/git-status and compound commands denied without hanging/sentinel effects; hardened dontAsk positives still pass. No bypass or automatic approval. Fake timeout/denial tests supplement, not replace, this gate. |
-| node-pty prebuild/compilation | **Windows x64 / Node 24.13.1 / node-pty 1.1.0 PASS**: independent npm ci + real PTY/fake CLI echo/resize/exit/descendant/parent-death suites in M2/M3 and independent reviews. **Linux CI NOT RUN**: `.github/workflows/test.yml` specifies Ubuntu/Node 22.19.0, compiler prerequisites, fresh npm ci, required `build/Release/pty.node`, typecheck/full tests/DAG/diff. A successful candidate-pinned CI URL is required after user-authorized publication; workflow existence is not compilation evidence. |
-| ConPTY full repaint | **Windows 10.0.19045 / Edge 155 / CLI 2.1.310 PASS**: M3 records above with real xterm 6.0.0/addon-fit 0.11.0/node-pty 1.1.0, repaint flag, streaming, desktop/390px resize, retained reattach and saved-session resume; final dark terminal within light CAFF is readable without stale fragments. Fake Edge media in Goal evidence supplements the planner observations; it is not proof on other Windows builds. |
+| node-pty prebuild/compilation | **Windows x64 / Node 24.13.1 / node-pty 1.1.0 PASS**: independent install and real PTY/fake CLI suites in M2/M3. The repaint correction adds bundled-DLL Stop/expiry/shutdown/parent-death and OpenConsole cleanup checks. The distribution contains x64/arm64 DLL + OpenConsole, not proof of arm64 execution. `.github/workflows/test.yml` now checks Windows and Linux / Node 22.19.0; `scripts/check-planner-pty.js` requires Windows bundled artifacts or Linux compiled `build/Release/pty.node`. **CI NOT RUN**: successful candidate-pinned URLs still require authorized publication; local Windows PASS/workflow existence is not Linux compilation evidence. |
+| ConPTY full repaint | **Earlier M3 smoke was insufficient**: see the 2026-10-27 correction below. The repaint flag alone did not prevent old-ConPTY/Unicode-width ghosting. Use bundled ConPTY + xterm grapheme widths; author Edge/fake-CLI regression supplements, but cannot replace, planner real-Claude candidate revalidation. No claim about untested Windows versions/platforms. |
 
 A future CLI/tool behavior change reopens these compatibility checks. Numeric
 version success alone does not establish tool confinement or ConPTY correctness.

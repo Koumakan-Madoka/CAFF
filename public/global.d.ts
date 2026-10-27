@@ -135,6 +135,7 @@ declare global {
     caffShell?: CaffAppShell;
     Terminal?: any;
     FitAddon?: any;
+    UnicodeGraphemesAddon?: any;
   }
 
   interface HTMLElement {

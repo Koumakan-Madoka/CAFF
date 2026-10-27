@@ -35,7 +35,7 @@ export function createEmbeddedPlannerRuntime(options: any) {
         wakeups = createPlannerWakeupRuntime({store:options.store,host,version,credentialPath,credential,env:config.env,privateValues:options.privateValues,config});
         records = wakeups.repository;
       } catch (error: any) {
-        const allowed = ['planner_environment_invalid','planner_cli_missing','planner_cli_version_invalid','planner_cli_version_unsupported','planner_cli_probe_timeout','planner_cli_launch_unsupported'];
+        const allowed = ['planner_environment_invalid','planner_cli_missing','planner_cli_version_invalid','planner_cli_version_unsupported','planner_cli_probe_timeout','planner_cli_launch_unsupported','planner_conpty_unavailable'];
         capability = { ...capability, available: false, reasonCode: allowed.includes(error?.code) ? error.code : 'planner_cli_launch_unsupported' };
       }
     })();

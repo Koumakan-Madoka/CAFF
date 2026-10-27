@@ -94,6 +94,20 @@ test('default signal-zero probe releases an actually exited synthetic PID and pr
   assert.equal(repository.hasLease(dead.id), false); assert.equal(repository.hasLease(live.id), true); assert.equal(logs.length, 1);
 });
 
+test('version probe bundled ConPTY failure remains visible as a fixed capability/state reason', async t => {
+  const f = fixture(t), room = f.room(), vm = require('node:vm');
+  const runtimePath = require.resolve('../../build/server/domain/runtime/embedded-planner-runtime');
+  const realRequire = require('node:module').createRequire(runtimePath), module = { exports: {} };
+  vm.runInNewContext(fs.readFileSync(runtimePath, 'utf8'), { exports: module.exports, module, process, console,
+    require: name => name === './embedded-planner-cli' ? { ...realRequire(name), probePlannerCli: async () => { throw Object.assign(new Error('private sentinel'), { code: 'planner_conpty_unavailable' }); } } : realRequire(name),
+  });
+  const runtime = module.exports.createEmbeddedPlannerRuntime({ host: '127.0.0.1', store: f.store,
+    config: { enabled: true, cliPath: process.execPath, env: { PATH: process.env.PATH, HOME: f.root, USERPROFILE: f.root, SystemRoot: process.env.SystemRoot } } });
+  t.after(() => runtime.close()); await runtime.start('http://127.0.0.1:45678', null);
+  assert.equal(runtime.capability().reasonCode, 'planner_conpty_unavailable');
+  assert.equal(runtime.capability().available, false); assert.equal(runtime.roomState(room.id).reasonCode, 'planner_conpty_unavailable');
+});
+
 test('runtime startup reconciles durable leases before admission, and default probe preserves a live guardian PID', { timeout: 30000 }, async t => {
   const f = fixture(t), repository = new EmbeddedPlannerRepository(f.store), dead = f.room(), live = f.room();
   const deadPid = process.pid === 12345 ? 12346 : 12345;

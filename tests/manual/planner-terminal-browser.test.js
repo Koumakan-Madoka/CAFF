@@ -39,6 +39,7 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     browser = await chromium.launch({ executablePath: edgeExecutable(), headless: true });
     versions.edge = browser.version(); versions.node = process.version; versions.os = os.release();
     versions.xterm = require('@xterm/xterm/package.json').version; versions.addonFit = require('@xterm/addon-fit/package.json').version;
+    versions.unicodeGraphemes = require('@xterm/addon-unicode-graphemes/package.json').version;
     async function newContext(options = {}, allowedBase = f.base) {
       const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, ...options });
       await context.route('**/*', route => {
@@ -48,6 +49,11 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
       await context.addInitScript(() => {
         const Original = window.WebSocket;
         window.__terminalSockets = [];
+        window.__plannerTerminals = [];
+        let Terminal;
+        Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal, set: Ctor => {
+          Terminal = class extends Ctor { constructor(...args) { super(...args); window.__plannerTerminals.push(this); } };
+        } });
         window.__clipboardWrites = 0;
         Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => { window.__clipboardWrites++; } }, configurable: true });
         window.WebSocket = class extends Original { constructor(...args) { super(...args); window.__terminalSockets.push(this); } };
@@ -105,7 +111,7 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     }
     function pass(name) { results.push({ name, passed: true }); console.info('PASS | ' + name); }
     await page.goto(f.base); await page.waitForSelector(selector('toggle') + ':not([hidden])'); await selectRoom(f.room.id);
-    for (const [asset, mime] of [['xterm.js','javascript'], ['addon-fit.js','javascript'], ['xterm.css','text/css'], ['xterm-LICENSE','octet-stream'], ['addon-fit-LICENSE','octet-stream']]) {
+    for (const [asset, mime] of [['xterm.js','javascript'], ['addon-fit.js','javascript'], ['addon-unicode-graphemes.js','javascript'], ['xterm.css','text/css'], ['xterm-LICENSE','octet-stream'], ['addon-fit-LICENSE','octet-stream'], ['addon-unicode-graphemes-LICENSE','octet-stream']]) {
       const response = await context.request.get(f.base + '/vendor/planner-terminal/' + asset);
       assert.equal(response.status(), 200); assert.ok(response.headers()['content-type'].includes(mime));
     }
@@ -213,6 +219,45 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     await page.click(selector('close')); assert.equal(await page.locator('.main').evaluate(el => el.inert), false);
     assert.equal(await page.evaluate(() => document.activeElement.id), 'planner-terminal-toggle');
     pass('light/dark and full-width narrow overlay; inert background, trust guidance and keyboard/close focus handoff');
+
+    // Same production client and guardian, fixed 59-column test geometry. No new
+    // headless-terminal/test dependency; inspect the real Edge xterm public buffer.
+    const ghostPage = await context.newPage(); await ghostPage.goto(f.base);
+    await ghostPage.waitForFunction(() => window.CaffChat?.createPlannerTerminalClient && window.UnicodeGraphemesAddon);
+    await ghostPage.evaluate(async roomId => {
+      const screen = document.createElement('div'); screen.id = 'ghost-screen';
+      Object.assign(screen.style, { position: 'fixed', inset: '0', zIndex: '1000', background: '#111312', width: '700px', height: '600px' }); document.body.append(screen);
+      const boot = await fetch('/api/bootstrap').then(res => res.json());
+      window.__ghostClient = window.CaffChat.createPlannerTerminalClient({ screen,
+        FitAddonCtor: class extends window.FitAddon.FitAddon { proposeDimensions() { return { cols: 59, rows: 24 }; } },
+        onState: state => { window.__ghostState = state; }, onExit: exit => { window.__ghostExit = exit; },
+      });
+      window.__ghostClient.connect(roomId, boot.apiSecurity.csrfToken);
+    }, f.room.id);
+    await ghostPage.waitForFunction(() => window.__ghostState === 'attached');
+    assert.equal(await ghostPage.evaluate(() => window.__plannerTerminals.at(-1).unicode.activeVersion), '15-graphemes');
+    await ghostPage.evaluate(() => window.__plannerTerminals.at(-1).focus());
+    await ghostPage.keyboard.type('ghost'); await ghostPage.keyboard.press('Enter');
+    await ghostPage.waitForFunction(() => {
+      const buffer = window.__plannerTerminals.at(-1).buffer.active;
+      return Array.from({ length: buffer.length }, (_, i) => buffer.getLine(i).translateToString(true)).includes('GHOST_DONE');
+    });
+    const ghost = await ghostPage.evaluate(() => {
+      const term = window.__plannerTerminals.at(-1), b = term.buffer.active;
+      return { cols: term.cols, version: term.unicode.activeVersion, bufferType: b.type,
+        rows: Array.from({ length: b.length }, (_, i) => ({ text: b.getLine(i).translateToString(true), wrapped: b.getLine(i).isWrapped })) };
+    });
+    const ghostLines = JSON.parse(fs.readFileSync(path.join(f.root, 'fake-ghost-lines.json'), 'utf8'));
+    assert.equal(ghost.cols, 59); assert.equal(ghost.bufferType, 'alternate');
+    assert.equal(ghost.rows.filter(row => row.wrapped).length, 0, 'no automatic wrapping after repeated erase/repaint');
+    for (const line of ghostLines) {
+      assert.equal(ghost.rows.filter(row => row.text === line).length, 1, 'each Chinese/emoji line must appear exactly once, including its spaces');
+    }
+    fs.writeFileSync(path.join(output, 'ghost-buffer.json'), JSON.stringify(ghost, null, 2));
+    await ghostPage.screenshot({ path: path.join(output, 'terminal-59-column-graphemes.png') });
+    await ghostPage.evaluate(() => window.__ghostClient.terminate());
+    await ghostPage.waitForFunction(() => window.__ghostExit?.reasonCode === 'planner_process_stopped'); await ghostPage.close();
+    pass('59-column real bundled PTY + synthetic Unicode/VS16 redraw: no wraps, duplicates or lost spaces in the real xterm buffer');
 
     const offContext = await newContext({ viewport: { width: 320, height: 750 } }, off.base), offPage = await offContext.newPage();
     await offPage.goto(off.base);

@@ -20,6 +20,8 @@
     planner_terminal_connection_failed: '终端连接失败，请检查服务并手动重连。没有自动重试或重放输入。',
     planner_cli_checking: '正在核查 Claude Code 版本，请稍后手动刷新。',
     planner_terminal_assets_unavailable: '终端静态资源不可用，请检查构建结果。',
+    planner_terminal_unicode_unavailable: 'Unicode 字素插件不可用，已停止连接以避免重影；请检查本地构建资源，不会回退到旧宽度表。',
+    planner_conpty_unavailable: 'node-pty 自带的新版 ConPTY 不可用，请检查依赖安装中的 conpty.dll 和 OpenConsole.exe；不会回退到系统旧版。',
     planner_terminal_auth_invalid: '终端鉴权未通过。请刷新页面或明确点击重连获取新凭据；不会自动重试。',
     planner_terminal_message_invalid: '终端协议不匹配，已断开；没有重放输入。',
     planner_terminal_slow_consumer: '终端连接过慢，已断开以限制缓冲；请手动重连。',

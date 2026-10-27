@@ -138,6 +138,12 @@ test('uncertain exit observation is not itself a CAFF-requested stop', async t =
   assert.equal(events.at(-1).reasonCode, 'planner_session_unavailable');
 });
 
+test('bundled ConPTY failure reaches the pane as a fixed reason and releases the unstarted room', async t => {
+  const f = fixture(t, { launch: () => { throw Object.assign(new Error('private sentinel'), { code: 'planner_conpty_unavailable' }); } });
+  await assert.rejects(f.attach(), { code: 'planner_conpty_unavailable' });
+  assert.equal(f.host.state(f.room.id), 'absent'); assert.equal(f.repository.leaseCount(), 0);
+});
+
 test('ambiguous launch never reuses --session-id; persisted lease fails closed after restart', async t => {
   const f = fixture(t, { launch: () => { throw new Error('synthetic spawn failure with private data'); } });
   await assert.rejects(f.attach(), /planner_process_spawn_failed/);

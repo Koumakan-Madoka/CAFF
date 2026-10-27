@@ -4,7 +4,10 @@ on:
   pull_request:
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     env:
       CAFF_REQUIRE_SPAWN: "1"
     steps:
@@ -14,11 +17,13 @@ jobs:
           node-version: 22.19.0
           cache: npm
       - name: Native PTY build prerequisites
+        if: runner.os == 'Linux'
         run: python3 --version && g++ --version && make --version
       - run: npm ci --foreground-scripts
-      - name: Require Linux node-pty compilation output
-        run: test -f node_modules/node-pty/build/Release/pty.node
+      - name: Require native PTY artifacts (Linux compiled module / Windows bundled ConPTY)
+        run: node scripts/check-planner-pty.js
       - name: Select runner Chrome for browser fixtures
+        if: runner.os == 'Linux'
         run: |
           browser="$(command -v google-chrome)"
           echo "CAFF_UI_BROWSER_PATH=$browser" >> "$GITHUB_ENV"

@@ -7,6 +7,7 @@
     const screen = options.screen;
     const TerminalCtor = options.TerminalCtor || window.Terminal;
     const FitAddonCtor = options.FitAddonCtor || window.FitAddon?.FitAddon;
+    const UnicodeAddonCtor = options.UnicodeGraphemesAddonCtor || window.UnicodeGraphemesAddon?.UnicodeGraphemesAddon;
     const SocketCtor = options.SocketCtor || window.WebSocket;
     const ResizeObserverCtor = options.ResizeObserverCtor || window.ResizeObserver;
     const encoder = new TextEncoder();
@@ -61,11 +62,20 @@
       dispose();
       const current = generation;
       if (!TerminalCtor || !FitAddonCtor || !SocketCtor) return status('unavailable', 'planner_terminal_assets_unavailable');
+      if (!UnicodeAddonCtor) return status('unavailable', 'planner_terminal_unicode_unavailable');
       terminal = new TerminalCtor({ cols: 120, rows: 30, fontSize: 13, fontFamily: 'Consolas, "Liberation Mono", monospace',
-        scrollback: 2000, disableStdin: true, allowProposedApi: false, allowTransparency: false, theme: theme(),
+        scrollback: 2000, disableStdin: true, allowProposedApi: true, allowTransparency: false, theme: theme(),
         // Do not install web-links/clipboard addons or permit OSC hyperlink activation.
         linkHandler: { activate() {} }, windowOptions: {} });
       addon = new FitAddonCtor(); terminal.loadAddon(addon); terminal.open(screen);
+      try {
+        // Unicode's proposed API is required by the pinned grapheme addon only.
+        // No extra output capabilities; OSC 8/52 remain intercepted below.
+        terminal.loadAddon(new UnicodeAddonCtor());
+        if (terminal.unicode.activeVersion !== '15-graphemes') throw new Error();
+      } catch {
+        dispose(); return status('unavailable', 'planner_terminal_unicode_unavailable');
+      }
       for (const id of [8, 52]) subscriptions.push(terminal.parser.registerOscHandler(id, () => true));
       subscriptions.push(terminal.onData(data => {
         if (current !== generation || !attached) return;

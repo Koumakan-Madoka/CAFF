@@ -153,7 +153,7 @@ export function createEmbeddedPlannerHost(options: Options) {
           child = await launch({ cli: options.cli, args: [claim.first ? '--session-id' : '--resume', current.sessionId,
             '--append-system-prompt', prompt], cwd: current.context.cwd, env, ...size });
         } catch (error: any) {
-          if (error?.code === 'planner_process_exit_unconfirmed') throw error;
+          if (['planner_process_exit_unconfirmed', 'planner_conpty_unavailable'].includes(error?.code)) throw error;
           throw plannerError('planner_process_spawn_failed');
         }
         current.process = child; current.listener = listener; current.state = 'interactive-attached';

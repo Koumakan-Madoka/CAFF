@@ -39,6 +39,8 @@ for (const [source, target] of [
   ['@xterm/xterm/LICENSE', 'xterm-LICENSE'],
   ['@xterm/addon-fit/lib/addon-fit.js', 'addon-fit.js'],
   ['@xterm/addon-fit/LICENSE', 'addon-fit-LICENSE'],
+  ['@xterm/addon-unicode-graphemes/lib/addon-unicode-graphemes.js', 'addon-unicode-graphemes.js'],
+  ['@xterm/addon-unicode-graphemes/LICENSE', 'addon-unicode-graphemes-LICENSE'],
 ]) fs.copyFileSync(path.join(ROOT_DIR, 'node_modules', source), path.join(terminalAssets, target));
 copyFile(path.join(ROOT_DIR, 'scripts', 'chat-schema-backup.mjs'), path.join(BUILD_DIR, 'scripts', 'chat-schema-backup.mjs'));
 copyFile(path.join(ROOT_DIR, 'lib', 'pi-sdk-host.mjs'), path.join(BUILD_DIR, 'lib', 'pi-sdk-host.mjs'));

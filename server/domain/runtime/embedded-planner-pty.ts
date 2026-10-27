@@ -8,9 +8,13 @@ export function launchPlannerPty(config: PlannerLaunch): Promise<PlannerProcess>
   return new Promise((resolve, reject) => {
     const events = new EventEmitter() as PlannerProcess;
     const worker = fork(path.join(__dirname, 'embedded-planner-pty-worker.js'), [], {
-      env: config.env, cwd: config.cwd, execArgv: [], stdio: ['ignore','ignore','ignore','ipc'],
+      // Bundled OpenConsole inherits the guardian cwd and can briefly outlive
+      // its PTY exit event. Do not let that helper pin the room worktree/temp
+      // directory. The actual CLI still gets config.cwd explicitly in spawn.
+      env: config.env, cwd: process.platform === 'win32' ? path.dirname(process.execPath) : config.cwd,
+      execArgv: [], stdio: ['ignore','ignore','ignore','ipc'],
     });
-    let started = false, failed = false, exit: any = null;
+    let started = false, failureCode = '', exit: any = null;
     let activated = false, initialBytes = 0, initialOverflow = false;
     let initialData: string[] = [];
     // Bound only the initial IPC->listener handoff; never retain/replay output
@@ -55,13 +59,13 @@ export function launchPlannerPty(config: PlannerLaunch): Promise<PlannerProcess>
       }
       else if (message.type === 'overflow') events.emit('overflow');
       else if (message.type === 'exit') exit = { exitCode: message.exitCode, ...(message.signal ? { signal: String(message.signal) } : {}) };
-      else if (message.type === 'spawn_failed') failed = true;
+      else if (message.type === 'spawn_failed') failureCode = message.code === 'planner_conpty_unavailable' ? message.code : 'planner_process_spawn_failed';
     });
-    worker.once('error', () => { clearTimeout(timer); failed = true; reject(plannerError('planner_process_spawn_failed')); });
+    worker.once('error', () => { clearTimeout(timer); failureCode = 'planner_process_spawn_failed'; reject(plannerError(failureCode)); });
     worker.once('exit', () => {
       clearTimeout(timer);
       if (stopTimer) clearTimeout(stopTimer);
-      if (!started) reject(plannerError(failed ? 'planner_process_spawn_failed' : 'planner_process_exit_unconfirmed'));
+      if (!started) reject(plannerError(failureCode || 'planner_process_exit_unconfirmed'));
       else if (exit) events.emit('exit', exit);
       else events.emit('uncertain');
     });

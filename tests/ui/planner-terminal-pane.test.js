@@ -40,8 +40,14 @@ function fixture(t, extra = {}) {
 test('terminal assets are pinned/build-local with licenses, loaded before pane/app, and have a dedicated check/test suite', () => {
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.dependencies['@xterm/xterm'], '6.0.0'); assert.equal(pkg.dependencies['@xterm/addon-fit'], '0.11.0');
+  assert.equal(pkg.dependencies['@xterm/addon-unicode-graphemes'], '0.4.0');
   const html = read('public/index.html'), build = read('scripts/copy-build-assets.js');
-  for (const file of ['xterm.js', 'xterm.css', 'addon-fit.js']) assert.ok(html.includes('/vendor/planner-terminal/' + file));
+  for (const file of ['xterm.js', 'xterm.css', 'addon-fit.js', 'addon-unicode-graphemes.js']) assert.ok(html.includes('/vendor/planner-terminal/' + file));
+  assert.ok(html.indexOf('/vendor/planner-terminal/xterm.js') < html.indexOf('/vendor/planner-terminal/addon-unicode-graphemes.js'));
+  assert.ok(html.indexOf('/vendor/planner-terminal/addon-unicode-graphemes.js') < html.indexOf('/chat/planner-terminal-client.js'));
+  for (const [source, target] of [['lib/addon-unicode-graphemes.js', 'addon-unicode-graphemes.js'], ['LICENSE', 'addon-unicode-graphemes-LICENSE']]) {
+    assert.ok(fs.readFileSync(path.join(ROOT, 'node_modules/@xterm/addon-unicode-graphemes', source)).equals(fs.readFileSync(path.join(ROOT, 'build/public/vendor/planner-terminal', target))));
+  }
   assert.ok(html.indexOf('/vendor/planner-terminal/xterm.js') < html.indexOf('/chat/planner-terminal-client.js'));
   assert.ok(html.indexOf('/chat/planner-terminal-pane.js') < html.indexOf('/app.js'));
   assert.match(build, /@xterm/); assert.match(build, /LICENSE/);
@@ -198,13 +204,13 @@ test('wake-up records use cursor paging, render text not HTML and are cleared on
   f.pane.sync('room-b',{enabled:true});assert.equal(f.q('record-output').textContent,'');assert.equal(f.q('record-list').children.length,0);
 });
 
-function clientFixture(t) {
+function clientFixture(t, extra = {}) {
   const dom = new JSDOM('<div id="screen"></div>', { url: 'http://127.0.0.1:45678', runScripts: 'outside-only' }); t.after(() => dom.window.close());
   const w = dom.window, sockets = [], terminals = [], states = [], exits = [], observations = [];
   w.TextEncoder = TextEncoder;
   class Terminal {
-    constructor(options) { this.options = options; this.cols = 120; this.rows = 30; this.output = []; this.osc = []; this.parser = { registerOscHandler: (id, fn) => { this.osc.push([id, fn]); return { dispose() {} }; } }; terminals.push(this); }
-    loadAddon(addon) { this.addon = addon; } open() {} resize(c,r) { this.cols = c; this.rows = r; }
+    constructor(options) { this.options = options; this.unicode = { activeVersion: '6' }; this.cols = 120; this.rows = 30; this.output = []; this.osc = []; this.parser = { registerOscHandler: (id, fn) => { this.osc.push([id, fn]); return { dispose() {} }; } }; terminals.push(this); }
+    loadAddon(addon) { this.addon = addon; addon.activate?.(this); } open() { this.opened = true; } resize(c,r) { this.cols = c; this.rows = r; }
     onData(fn) { this.input = fn; return { dispose: () => { this.inputDisposed = true; } }; }
     write(data, done) { this.output.push(data); done(); } dispose() { this.disposed = true; } focus() {}
   }
@@ -218,12 +224,45 @@ function clientFixture(t) {
   }
   class FitAddon { proposeDimensions() { return { cols: 100, rows: 35 }; } }
   class Observer { constructor(fn) { this.fn = fn; observations.push(this); } observe() {} disconnect() { this.disconnected = true; } }
+  class UnicodeAddon { activate(term) { assert.equal(term.opened, true); assert.equal(term.options.allowProposedApi, true); term.unicode.activeVersion = '15-graphemes'; } }
+  w.UnicodeGraphemesAddon = { UnicodeGraphemesAddon: extra.missingUnicode ? undefined : extra.UnicodeAddon || UnicodeAddon };
   w.eval(read('public/chat/planner-terminal-client.js'));
   const client = w.CaffChat.createPlannerTerminalClient({ screen: w.document.getElementById('screen'), TerminalCtor: Terminal, FitAddonCtor: FitAddon, SocketCtor: Socket,
     ResizeObserverCtor: Observer, onState: (...args) => states.push(args), onExit: e => exits.push(e) });
   t.after(() => client.dispose());
   const ready = s => s.onmessage({ data: JSON.stringify({ type: 'ready', version: 1, historyReplay: false, resumed: false }) });
   return { w, client, sockets, terminals, states, exits, observations, ready };
+}
+
+test('Unicode grapheme addon is loaded after open, selects 15-graphemes, and survives manual reconnect', t => {
+  const f = clientFixture(t);
+  for (let i = 0; i < 2; i++) {
+    f.client.connect('room-a', 'synthetic');
+    assert.equal(f.terminals[i].unicode.activeVersion, '15-graphemes');
+    assert.equal(f.terminals[i].options.allowProposedApi, true);
+    assert.equal(f.sockets.length, i + 1);
+  }
+});
+
+for (const extra of [{ missingUnicode: true }, { UnicodeAddon: class { activate() {} } }, { UnicodeAddon: class { activate() { throw new Error('private sentinel'); } } }]) {
+  test('missing, inactive or broken Unicode addon fails closed before socket/auth/CLI startup', t => {
+    const f = clientFixture(t, extra);
+    assert.doesNotThrow(() => f.client.connect('room-a', 'synthetic'));
+    assert.equal(f.sockets.length, 0);
+    assert.deepEqual(f.states.at(-1), ['unavailable', 'planner_terminal_unicode_unavailable']);
+    assert.ok(f.terminals.every(term => term.disposed));
+  });
+}
+
+for (const code of ['planner_conpty_unavailable', 'planner_terminal_unicode_unavailable']) {
+  test(`${code} displays fixed guidance without recovery or automatic retries`, async t => {
+    const f = fixture(t); f.pane.sync('room-a', { enabled: true }); await f.pane.open();
+    f.hooks.onState('unavailable', code);
+    assert.match(f.q('notice').textContent, /ConPTY|Unicode/);
+    assert.doesNotMatch(f.q('notice').textContent, /终端暂不可用/);
+    assert.equal(f.q('repair').hidden, true); assert.equal(f.q('reinitialize').hidden, true);
+    assert.equal(f.connections.length, 1);
+  });
 }
 
 test('terminal defaults to the same dark palette in both CAFF themes and after a live theme change', async t => {

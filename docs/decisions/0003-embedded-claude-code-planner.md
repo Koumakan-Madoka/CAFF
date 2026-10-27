@@ -151,6 +151,14 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
 
 - `node-pty` 1.1.0, pinned.
 - `@xterm/xterm` 6.0.0 with `@xterm/addon-fit`.
+- **User-approved amendment, 2026-10-27:** add experimental
+  `@xterm/addon-unicode-graphemes` **0.4.0**, exactly pinned, to fix terminal
+  ghosting. Its Unicode 15 grapheme-width provider requires `allowProposedApi`;
+  this does not enable additional OSC/output capabilities. Pair it with
+  node-pty's bundled newer ConPTY (`useConptyDll: true`) on Windows, never a
+  silent fallback to OS ConPTY/Unicode 6. No additional test dependency was
+  authorized. Approval/instruction: room message
+  `dd5c3818-2de6-4936-b1ac-19ad52d7c38b`; details/evidence in P2 §2/§9/§10.
 - `ws` 8.22.0 or later, which includes the fixes for GHSA-96hv-2xvq-fx4p and
   GHSA-58qx-3vcg-4xpx.
 
@@ -180,10 +188,17 @@ and [planner acceptance records](../engineering/runtime/embedded-planner.md#plan
   prerequisites, fresh install, compiled `pty.node`, and full checks. A
   candidate-pinned successful CI result still requires authorized publication;
   Windows PASS or the workflow file is not Linux build evidence.
-- **ConPTY repaint:** Windows 10.0.19045 / Edge 155 / CLI 2.1.310 verified in M3
-  at `f7de4822`: real interaction, drag/narrow/desktop resize, retained reattach,
-  saved-session resume and readable trust/path output in light CAFF. No claim
-  about untested Windows versions or platforms.
+- **ConPTY repaint — corrected 2026-10-27:** M3 `619164de` checked interaction,
+  drag/narrow/desktop resize, reattach and resume; `f7de4822` rechecked readable
+  light-theme trust/path and neutral exit/Stop. These short smokes did not catch
+  frequent ghosting later reported on 3310. Planner deterministic capture/replay
+  traced the mismatch to system ConPTY's old emoji widths plus xterm's Unicode 6
+  default. Updating only browser widths worsened wrapping; bundled ConPTY plus
+  15-graphemes gave zero wraps/one copy per line, with real-Claude diagnostic
+  streaming/delete/resize also clean (Windows 10.0.19045 / Edge 155 / CLI 2.1.310).
+  P2 §10 retains this correction and new real-PTY + fake-CLI Edge regression;
+  candidate-pinned planner review/real-Claude revalidation remains required.
+  No claim about untested Windows versions, arm64 execution or Linux CI.
 
 ### Change to ADR 0002's delivery order
 

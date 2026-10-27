@@ -36,7 +36,7 @@
 - `app.js` passes capability/current room to `createPlannerTerminalPane`.
   `public/chat/planner-terminal-pane.js` owns its sibling DOM, explicit state
   requests, manual connect/reconnect, recovery confirmations and bounded width.
-  `planner-terminal-client.js` owns xterm + addon-fit, live WS, input/output,
+  `planner-terminal-client.js` owns xterm + addon-fit + Unicode graphemes, live WS, input/output,
   resize and disposal; `planner-terminal.css` owns scoped layout. Neither
   module moves or writes message-list nodes or the context drawer.
 - At desktop widths the pane is non-modal and leaves at least 380px of chat
@@ -66,8 +66,16 @@
   inside terminal remains CLI input; Ctrl+Shift+F6 focuses the close/toolbar
   area. The narrow overlay has a visible close control and restores trigger
   focus. Controls/summary/checkbox labels retain >=44px targets in both themes.
-- xterm 6.0.0 + addon-fit 0.11.0 and their notices are local build assets under
-  `/vendor/planner-terminal/`, copied from pinned dependencies with no bundler.
+- xterm 6.0.0 + addon-fit 0.11.0 + addon-unicode-graphemes **0.4.0** and all three
+  notices are local build assets under `/vendor/planner-terminal/`, loaded in
+  that order before the client, with no bundler. The experimental grapheme
+  addon was user-approved on 2026-10-27 for ghosting. `allowProposedApi: true`
+  is required only for its Unicode-width API: open first, load the addon,
+  require `unicode.activeVersion === '15-graphemes'` before connecting. Missing,
+  broken or inactive addon fails with `planner_terminal_unicode_unavailable`,
+  no socket and no Unicode 6 fallback; OSC 8/52 remain blocked. Windows server
+  PTYs require node-pty's bundled ConPTY DLL + OpenConsole, not OS ConPTY;
+  `planner_conpty_unavailable` explains installation failure, never falls back.
   Both CAFF themes keep a readable dark CLI palette (`#111312` background),
   including the xterm root/screen/viewport and fractional unused bottom row.
   The toolbar/frame still follow CAFF theme; no CLI settings are read/modified.
@@ -79,6 +87,11 @@
   no real Claude or shared instance. It covers input/output, pointer/keyboard
   sizing, retention/reconnect, second page, room switch, both recovery controls,
   OSC sentinels, light/dark, 820/390/375/320 overlay/focus and a short walkthrough.
+  Its 59-column real-PTY + fake-CLI repaint regression uses six exactly full
+  Chinese/emoji/VS16 rows, repeated erase/redraw, and real xterm buffer assertions:
+  zero `isWrapped`, one exact copy per row, including spaces after emoji. No
+  extra test dependency; planner real-Claude streaming/delete/resize recheck is
+  still separate from this synthetic rendering evidence.
 
 ### Wake-up controls, records and acceptance boundary
 

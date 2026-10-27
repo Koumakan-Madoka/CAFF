@@ -3,6 +3,26 @@
 import * as pty from 'node-pty';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
+import fs from 'node:fs';
+
+function conptyOptions(): { useConpty?: boolean; useConptyDll?: boolean } {
+  if (process.platform !== 'win32') return {};
+  try {
+    // Pinned node-pty 1.1.0 selects build/Release, build/Debug, then prebuilds.
+    // Validate beside the native module it actually loads, not an unused copy.
+    const utilsPath = require.resolve('node-pty/lib/utils');
+    const native = require('node-pty/lib/utils').loadNativeModule('conpty');
+    const directory = path.resolve(path.dirname(utilsPath), native.dir, 'conpty');
+    for (const name of ['conpty.dll', 'OpenConsole.exe']) {
+      const file = path.join(directory, name);
+      if (!fs.statSync(file).isFile()) throw new Error();
+      fs.accessSync(file, fs.constants.R_OK);
+    }
+    return { useConpty: true, useConptyDll: true };
+  } catch {
+    throw Object.assign(new Error('planner_conpty_unavailable'), { code: 'planner_conpty_unavailable' });
+  }
+}
 import type { PlannerLaunch } from './embedded-planner-host';
 
 export function runPlannerPtyWorker(): void {
@@ -42,7 +62,7 @@ export function runPlannerPtyWorker(): void {
       try {
         terminal = pty.spawn(config.cli.file, [...config.cli.prefix, ...config.args], {
           cwd: config.cwd, env: config.env as Record<string,string>, cols: config.cols, rows: config.rows,
-          name: 'xterm-256color', useConpty: true, useConptyDll: false,
+          name: 'xterm-256color', ...conptyOptions(),
         });
         terminal.onData(data => {
           // Bound IPC queue too. Slow peers cannot accumulate a hidden transcript.
@@ -63,8 +83,8 @@ export function runPlannerPtyWorker(): void {
         });
         send({ type: 'started' });
         if (!process.connected) stop();
-      } catch {
-        finished = true; send({ type: 'spawn_failed' });
+      } catch (error: any) {
+        finished = true; send({ type: 'spawn_failed', code: error?.code === 'planner_conpty_unavailable' ? error.code : 'planner_process_spawn_failed' });
         if (process.connected) process.disconnect();
       }
     } else if (terminal && !stopping && message.type === 'input') terminal.write(message.data);

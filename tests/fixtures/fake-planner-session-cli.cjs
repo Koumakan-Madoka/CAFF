@@ -25,6 +25,18 @@ process.stdin.on('data', chunk => {
   } else if (input === 'palette') {
     // Representative dark-oriented CLI ANSI output, not a real trust dialog.
     process.stdout.write('Accessing workspace (synthetic):\r\n\x1b[90m/synthetic/worktree\x1b[0m\r\n\x1b[38;2;177;156;217mYes, I trust this folder (synthetic)\x1b[0m\r\nPALETTE_DONE\r\n');
+  } else if (input === 'ghost') {
+    // Deterministic synthetic TUI, six *exactly* 59-cell rows. The emoji/VS16
+    // prefix plus padding exposes a width disagreement without a model call.
+    const lines = ['✅', '⚠️', '❌', '🙂', '📌', '🚀'].map((emoji, i) => `${emoji} 行${i + 1} ` + '中文重绘'.repeat(6) + ' OK!');
+    fs.writeFileSync('fake-ghost-lines.json', JSON.stringify(lines));
+    process.stdout.write('\x1b[?1049h');
+    let round = 0;
+    const render = () => {
+      process.stdout.write('\x1b[H' + lines.map(line => '\x1b[2K' + line).join('\r\n') + '\r\n\x1b[2K' + (round < 8 ? '输入🙂 待删除中文' : 'GHOST_DONE'));
+      if (++round <= 8) setTimeout(render, 30);
+    };
+    render();
   } else if (input === 'safety') {
     process.stdout.write('\x1b]52;c;U1lOVEhFVElDX09OTFk=\x07\x1b]8;;https://terminal-sentinel.invalid\x07link\x1b]8;;\x07 <img src="https://terminal-sentinel.invalid/image"> SAFETY_DONE\r\n');
   } else process.stdout.write('ECHO:' + input + '\r\n');
