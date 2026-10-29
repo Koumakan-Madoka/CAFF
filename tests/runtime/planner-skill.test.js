@@ -300,6 +300,50 @@ test('goal-lint flags evidence the server would truncate, drop or relabel', asyn
   assert.match(result.stdout, /evidence e2\.summary: empty/);
 });
 
+test('goal-lint mirrors the server list caps, generated IDs and accepted shapes', async (t) => {
+  const file = path.join(tempDir(t, 'caff-ops-lint-'), 'goal.json');
+  const lint = (goal) => {
+    fs.writeFileSync(file, JSON.stringify({ objective: 'Ship the change.', ...goal }));
+    return runCli(path.join(SKILL_DIR, 'scripts', 'goal-lint.js'), [file]);
+  };
+  const many = (n, make) => Array.from({ length: n }, (_, i) => make(i));
+  const criteria = (n) => many(n, (i) => ({ statement: `Criterion ${i + 1}.`, verifyBy: 'npm test' }));
+
+  // normalizeGoal* accept items without IDs (criterion-<n>, work-<n>, ...), work
+  // items as plain strings or without a status (todo), and case-insensitive values.
+  let result = await lint({
+    acceptanceCriteria: [...criteria(2), { text: 'Aliased.', verify_by: 'npm test', risk: 'High' }],
+    workItems: ['Implement it.', { title: 'Test it.' }],
+  });
+  assert.equal(result.code, 0, result.stdout);
+
+  // A generated ID can still collide with an explicit one.
+  result = await lint({
+    acceptanceCriteria: [{ id: 'criterion-2', statement: 'A.', verifyBy: 'npm test' }, { statement: 'B.', verifyBy: 'npm test' }],
+    workItems: ['Implement it.'],
+  });
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(result.stdout, /duplicate criterion criterion-2/);
+
+  // Statuses are matched the way the server matches them.
+  result = await lint({ acceptanceCriteria: criteria(1), workItems: [{ text: 'Started.', status: 'In-Progress' }, { text: 'New.', status: 'TODO' }] });
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(result.stdout, /work item work-1 status in_progress/);
+  assert.doesNotMatch(result.stdout, /stored as "todo"|work item work-2/);
+
+  // The server keeps only the first 40/40/60/100 items of these lists.
+  result = await lint({
+    decisions: { committed: many(41, (i) => ({ id: `d${i}`, statement: 'Decided.' })) },
+    acceptanceCriteria: criteria(41),
+    workItems: many(61, (i) => ({ id: `w${i}`, text: 'Work.' })),
+    evidence: many(101, (i) => ({ id: `e${i}`, kind: 'test', summary: 'Passed.' })),
+  });
+  assert.equal(result.code, 1, result.stdout);
+  for (const cap of ['decisions.committed: 41 items > 40', 'acceptanceCriteria: 41 items > 40', 'workItems: 61 items > 60', 'evidence: 101 items > 100']) {
+    assert.ok(result.stdout.includes(cap), `missing "${cap}":\n${result.stdout.slice(-600)}`);
+  }
+});
+
 test('send prints its request ID before posting, so a lost response can be retried without a duplicate', async (t) => {
   const room = '00000000-0000-4000-8000-000000000001';
   const base = await fakeServer(t, (req, res) => {
