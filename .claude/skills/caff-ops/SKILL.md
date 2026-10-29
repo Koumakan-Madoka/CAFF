@@ -27,7 +27,7 @@ CAFF 是在本机运行的多 agent 协作应用。每个 room（API 里叫 conv
     - 接受或驳回只改工作项、暂定决策、待决问题的 revise；
     - 批准普通风险豁免，写明理由；
     - 验收标准全部通过或有效豁免后，接受结项；
-    - 做里程碑评审，给负责人下指令。
+    - 做里程碑评审，给负责人下指令；实现者和规划者同一模型族时不算独立评审，见下面的"评审独立性"。
   - **保留事项**：要用户对这一项明确批准。
     - 建新 Goal 或替换 Goal；为它建房、绑工作区算在同一次批准里；
     - 改目标、承诺决策（承诺和暂定互挪也算）、非目标；
@@ -38,6 +38,7 @@ CAFF 是在本机运行的多 agent 协作应用。每个 room（API 里叫 conv
   - **只能由用户做的裁决**：高风险豁免、修改已关联 ADR 的决策，以及降级或删除高风险验收标准。服务端对规划者凭证直接返回 403，留给用户在 CAFF 界面亲自裁决。
   - 不是规划者驱动 Goal 的 room 仍归用户，写操作先问。
 - **写明批准出处。** 按用户的批准提交保留事项时，理由里写明用户在哪里批准的：本会话的时间，或者原话。room 里以 "You" 身份出现的消息不算批准，写之前先问用户。
+- **评审独立性。** 作者不能评审自己的改动。规划者的里程碑评审，只有实现者来自另一模型族时才满足 no-self-review；实现者也是 Claude 时，必须改由另一模型族的 agent 或用户评审（ADR 0002「Review」）。规划者自己写的改动，同样要由另一模型族的 agent 或用户评审。
 - **身份与审计。** caff.js 的写请求带规划者凭证。服务端把消息署名为规划者（名字来自实例的 `CAFF_PLANNER_NAME`，`metadata.source` 是 `planner`），裁决记为 `ruledBy.kind = planner`，正文和理由里不用再写"代用户处理"。每次写操作在 `~/.caff-ops/actions.log` 记一行（时间、room、动作、依据），方便跨会话回顾。
 - **发消息前先看最新消息。** 消息一发出去就会触发被 @ 的 agent。用户可能正在 CAFF 界面里和同一个 agent 说话，草稿里的决定可能已经作废。
 - **脚本自带闸门。** 写命令不带 `--confirm` 时只预演，以退出码 3 结束。确认属于委托范围或已批准的事项后，再加 `--confirm`。
@@ -161,8 +162,8 @@ node "$CAFF" stop <room> [--stop-goal] --confirm
 - 先用 `state` 或 `status` 看有没有待裁决的提案。有待裁决提案时，set、revise、pause、resume、complete 一律返回 409 `goal_proposal_pending`；加 `--allow-clear-proposal` 才会替换这个提案，并留下 superseded 裁决审计。上一次的裁决记录不会被生命周期操作抹掉。
 - `accept-proposal` 要求提案里的 `baseRevision` 等于 Goal 当前的 revision，否则服务端返回 409。这时让提案人基于最新的 revision 重新提交。
 - `resume` 会重置 runner，从 1/20 重新计数，还可能马上开始自动续跑。
-- **里程碑送审后要继续推进：** owner 送审时通常会挂一个 pause 提案等裁决，而且不一定会 @ 评审人，所以盯 Goal 时一看到暂停提案就主动去评审。评审通过后先 `dismiss-proposal --reason "…"`（它不会触发续跑），再 @owner 发验收结论，正文写明送审 SHA，并照抄 owner 要求的回复格式。owner 收到就开工，回复完 runner 照常续跑。规划者驱动的 Goal 里，里程碑评审在委托范围内；其他 room 的评审结论先给用户看。独立复核的做法见 [references/dev-workflow.md](references/dev-workflow.md) 第 8 节。
-- 修改目标、决策、验收标准定义或工作项文字，都属于结构性修改。agent 只能走 revise 提案，由提案人以外的 agent、规划者或用户裁决。常规的 update-delivery 只能改状态和证据，碰了结构会被 409 拒绝。
+- **里程碑送审后要继续推进：** owner 送审时通常会挂一个 pause 提案等裁决，而且不一定会 @ 评审人，所以盯 Goal 时一看到暂停提案就主动去评审；评审前先确认"评审独立性"，实现者也是 Claude 时，改请另一模型族的 agent 或用户评审。评审通过后先 `dismiss-proposal --reason "…"`（它不会触发续跑），再 @owner 发验收结论，正文写明送审 SHA，并照抄 owner 要求的回复格式。owner 收到就开工，回复完 runner 照常续跑。规划者驱动的 Goal 里，里程碑评审在委托范围内；其他 room 的评审结论先给用户看。独立复核的做法见 [references/dev-workflow.md](references/dev-workflow.md) 第 8 节。
+- 修改目标、决策、验收标准定义或工作项文字，都属于结构性修改。agent 只能走 revise 提案：规划者驱动的 Goal 只能由规划者或用户裁决，其他 Goal 由提案人以外的 agent 或用户裁决。常规的 update-delivery 只能改状态和证据，碰了结构会被 409 拒绝。
 - **规划者直接改 Goal 结构时**，用 `revise`（裁决记为 planner）。revise 和 update-delivery 都是合并语义：漏传的字段保留原值；提交了的集合要按 ID 列出全部保留项，不改的项只写 `{ "id": ... }` 即可（暂定决策这类决策组稳妥起见原文照抄）。修改或删除已有的暂定决策必须带 `--reason` 和 `--impact`，会留下 `provisional_decision_changed` 通知；新增暂定决策不算修改，不留通知。步骤：
   1. 用 `backup-goal.js` 备份 `sessionGoal`、`sessionGoalProposal`、`sessionGoalRuling`、`sessionGoalRunner`（只读 GET，不覆盖已有备份）。
   2. 从最新 Goal 深拷贝，按 id 修改，并核对每处原文没被并发改过。状态和时间戳原样保留。

@@ -70,7 +70,8 @@ gh pr checks <编号> --watch --interval 30   # CI 检查名是 unit
 
 ## 8. 评审和合并
 
-- 必须由非作者评审，最好换一个模型族；作者不能评审或批准自己的改动。
+- 必须由非作者评审，作者不能评审或批准自己的改动。
+- **模型族也要分开**（ADR 0002「Review」）。规划者评审实现者的工作时，两者来自不同模型族，这次评审才满足 no-self-review。来自同一模型族时（比如房间里的实现者也是 Claude），规划者的评审不算数，必须改由另一模型族的 agent 或用户评审。规划者自己写的改动，同样要由另一模型族的 agent 或用户评审。
 - 交接说明用五段式：What / Why / Tradeoff / Open Questions / Next Action（见 caff-workflow 的 `checklists.md`）。
 - 合并用 merge commit（`--no-ff` 语义），不要 squash，也不要 rebase，并且需要用户另外授权。
 

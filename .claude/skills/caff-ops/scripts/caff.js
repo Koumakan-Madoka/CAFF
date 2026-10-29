@@ -855,14 +855,18 @@ const commands = {
 async function resolveProject(flags) {
   const explicit = typeof flags.project === 'string' ? flags.project : CAFF_PROJECT_ID;
   const { projects = [] } = await api('GET', '/api/projects');
-  if (explicit) return projects.find((project) => project.id === explicit) || { id: explicit };
+  const list = projects.map((project) => `  ${project.id}  ${project.name}  ${project.path || ''}`).join('\n');
+  if (explicit) {
+    const named = projects.find((project) => project.id === explicit);
+    if (named) return named;
+    throw new Error(`project ${explicit} does not exist on ${BASE}; pass --project <id>:\n${list}`);
+  }
   const key = (value) => {
     const resolved = path.resolve(String(value));
     return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
   };
   const own = CAFF_HOME && projects.find((project) => project.path && key(project.path) === key(CAFF_HOME));
   if (own) return own;
-  const list = projects.map((project) => `  ${project.id}  ${project.name}  ${project.path || ''}`).join('\n');
   throw new Error(`no project has the path ${CAFF_HOME || '(unknown checkout)'}; pass --project <id>:\n${list}`);
 }
 
