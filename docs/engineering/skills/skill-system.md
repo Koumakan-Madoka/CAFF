@@ -195,7 +195,7 @@ How old data is handled:
 
 - `lib/mode-store.ts` drops both retired ids (`RETIRED_HELPER_SKILL_IDS`) from stored modes on read and on save, so no DB rewrite is needed for modes.
 - At startup, the same retirement pass that removes retired product skills strips both ids from Room participants' `conversation_skills_json`.
-- `agent-prompt.ts` keeps its generic `forceDynamicConversationSkillIds` option for rendering selected skills as descriptors. Nothing passes it any more.
+- `agent-prompt.ts` keeps its generic `forceDynamicConversationSkillIds` option for rendering selected skills as descriptors. No production code passes it any more; `tests/runtime/skill-loading.test.js` still exercises it directly.
 
 ## Development Guidelines
 
