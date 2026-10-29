@@ -8,15 +8,19 @@ const {
   resolveContractSkillPaths,
 } = require('../../build/lib/contract-skills');
 
-test('contract skill allowlist is the reviewed six-skill set in a stable order', () => {
+test('contract skill allowlist is the reviewed five-skill set in a stable order', () => {
   assert.deepEqual(CONTRACT_SKILL_IDS, [
     'caff-workflow',
-    'create-command',
     'dag-planning',
     'grill-with-docs',
     'grilling',
     'domain-modeling',
   ]);
+});
+
+test('the retired create-command template is gone from the contract layer', () => {
+  // create-command was a verbatim Trellis template; nothing ships it any more.
+  assert.equal(fs.existsSync(path.resolve(__dirname, '..', '..', '.agents', 'skills', 'create-command')), false);
 });
 
 test('contract skill paths map to the repo .agents/skills root', () => {
