@@ -123,8 +123,10 @@ test('planner skill is discoverable by Claude Code and absent from the in-room a
 });
 
 // The CLI runs as a child process with a scrubbed environment, so a test never
-// inherits a developer's instance settings or reaches a live instance.
-function runCli(script, args, env = {}) {
+// inherits a developer's instance settings or reaches a live instance. A child
+// still running after timeoutMs, or once stderr matches killOn, is stopped and
+// reported as killed.
+function runCli(script, args, env = {}, { killOn, timeoutMs = 20000 } = {}) {
   const childEnv = { ...process.env };
   for (const key of ['CAFF_HOME', 'CAFF_PROJECT_ID', 'CAFF_BASE_URL', 'CAFF_PLANNER_CREDENTIAL_FILE']) delete childEnv[key];
   Object.assign(childEnv, env);
@@ -132,10 +134,24 @@ function runCli(script, args, env = {}) {
     const child = spawn(process.execPath, [script, ...args], { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
+    let killed = false;
+    const stop = () => {
+      if (!killed) {
+        killed = true;
+        child.kill();
+      }
+    };
+    const timer = setTimeout(stop, timeoutMs);
     child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+      if (killOn && killOn.test(stderr)) stop();
+    });
     child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr, killed });
+    });
   });
 }
 
@@ -191,15 +207,26 @@ test('caff.js finds its checkout: main, linked worktree, broken pointer, skill l
   assert.equal(await home(other, { CAFF_HOME: main }), main);
 });
 
-async function projectsServer(t, projects) {
-  const server = http.createServer((req, res) => {
-    const known = req.method === 'GET' && req.url === '/api/projects';
-    res.writeHead(known ? 200 : 404, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(known ? { activeProjectId: projects[0].id, projects } : { error: 'not found' }));
-  });
+function reply(res, status, body) {
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
+
+async function fakeServer(t, handler) {
+  const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(resolve);
+  }));
   return `http://127.0.0.1:${server.address().port}`;
+}
+
+function projectsServer(t, projects) {
+  return fakeServer(t, (req, res) => {
+    const known = req.method === 'GET' && req.url === '/api/projects';
+    reply(res, known ? 200 : 404, known ? { activeProjectId: projects[0].id, projects } : { error: 'not found' });
+  });
 }
 
 test('create-room dry run names its project and refuses an unknown one', async (t) => {
@@ -235,4 +262,65 @@ test('create-room dry run names its project and refuses an unknown one', async (
   assert.equal(result.code, 1, result.stdout);
   assert.match(result.stderr, /no project has the path/);
   assert.match(result.stderr, /project-active[\s\S]*project-own/);
+});
+
+// No planner credential: requests go to the fake server unauthenticated.
+function plannerEnv(t, base) {
+  return { CAFF_BASE_URL: base, CAFF_PLANNER_CREDENTIAL_FILE: path.join(tempDir(t, 'caff-ops-cred-'), 'none.json') };
+}
+
+test('send prints its request ID before posting, so a lost response can be retried without a duplicate', async (t) => {
+  const room = '00000000-0000-4000-8000-000000000001';
+  const base = await fakeServer(t, (req, res) => {
+    if (req.method === 'POST' && req.url === `/api/conversations/${room}/routing-preview`) {
+      reply(res, 200, { agents: [{ id: 'role-family-kimi', name: 'Kimi' }], strategy: 'user_mentions', executionMode: 'serial' });
+    } else if (req.method === 'POST' && req.url === `/api/conversations/${room}/messages`) {
+      // The server takes the message, then the response is lost on the way back.
+      req.resume();
+      req.on('end', () => req.socket.destroy());
+    } else {
+      reply(res, 404, { error: 'not found' });
+    }
+  });
+  const result = await runCli(CLI, ['send', room, '--text', 'ping', '--confirm'], plannerEnv(t, base));
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(result.stdout, /retry with --request-id claude-code-\d+/);
+});
+
+test('wait-attention reports a query that can never succeed instead of retrying it', async (t) => {
+  const base = await fakeServer(t, (req, res) => {
+    if (req.url.startsWith('/api/planner/attention/wait')) reply(res, 400, { error: 'Invalid attention query', code: 'attention_query_invalid' });
+    else if (req.url.startsWith('/api/conversations?')) reply(res, 200, { conversations: [] });
+    else reply(res, 404, { error: 'not found' });
+  });
+  const env = plannerEnv(t, base);
+
+  let result = await runCli(CLI, ['wait-attention', '--status', 'bogus'], env, { timeoutMs: 10000 });
+  assert.equal(result.killed, false, `a rejected query was retried:\n${result.stderr}`);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /HTTP 400 .*attention_query_invalid/);
+
+  result = await runCli(CLI, ['wait-attention', '--room', 'no such room'], env, { timeoutMs: 10000 });
+  assert.equal(result.killed, false, `an unknown room was retried:\n${result.stderr}`);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /no room matches/);
+});
+
+test('wait-attention keeps retrying while the server restarts', async (t) => {
+  // Connection refused, a 503 and a 401 from a rotated credential all pass once the restart completes.
+  const closed = await new Promise((resolve) => {
+    const server = http.createServer().listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(`http://127.0.0.1:${port}`));
+    });
+  });
+  const cases = [['connection refused', closed]];
+  for (const status of [503, 401]) {
+    cases.push([`HTTP ${status}`, await fakeServer(t, (req, res) => reply(res, status, { error: 'restarting' }))]);
+  }
+  for (const [label, base] of cases) {
+    const result = await runCli(CLI, ['wait-attention'], plannerEnv(t, base), { killOn: /retrying in 15s/, timeoutMs: 10000 });
+    assert.equal(result.killed, true, `${label} ended the wait:\n${result.stderr}`);
+    assert.match(result.stderr, /wait error: .*retrying in 15s/, label);
+  }
 });

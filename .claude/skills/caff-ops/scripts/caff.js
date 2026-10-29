@@ -167,7 +167,9 @@ async function api(method, pathname, body, extraHeaders = {}) {
     const hint = !planner && write && [401, 403, 415].includes(response.status)
       ? `\nhint: no planner credential found at ${plannerCredentialFile() || '(unknown path)'}; a P1 server only accepts planner-authenticated writes from this CLI.`
       : '';
-    throw new Error(`HTTP ${response.status} ${method} ${pathname}${code}: ${String(detail).slice(0, 400)}${hint}`);
+    const error = new Error(`HTTP ${response.status} ${method} ${pathname}${code}: ${String(detail).slice(0, 400)}${hint}`);
+    error.status = response.status;
+    throw error;
   }
   return json;
 }
@@ -626,7 +628,10 @@ const commands = {
     requireConfirm(flags, 'Sending a message');
     // Reuse --request-id on a retry: the server deduplicates by clientRequestId
     // and a P1 server acknowledges the duplicate without dispatching it again.
+    // Print it before posting: when the server accepts the message but the
+    // response is lost, this line is the only record of the ID to retry with.
     const clientRequestId = typeof flags['request-id'] === 'string' ? flags['request-id'] : `claude-code-${Date.now()}`;
+    console.log(`request ${clientRequestId}: if this send fails, retry with --request-id ${clientRequestId}`);
     const result = await api('POST', `/api/conversations/${encodeURIComponent(roomId)}/messages`, { content, clientRequestId });
     const accepted = result.acceptedMessage || {};
     console.log(`sent: message ${accepted.id}${accepted.turnId ? ` turn ${accepted.turnId}` : ''} as "${accepted.senderName}"`
@@ -818,12 +823,16 @@ const commands = {
     const timeout = Math.min(300, Math.max(1, Number(flags.timeout || 300)));
     const deadline = Date.now() + Number(flags['max-minutes'] || 240) * 60000;
     let after = Number(flags.after || 0);
+    // Resolve a room keyword once: a keyword that matches no room cannot succeed later.
+    const query = typeof flags.room === 'string' ? { ...flags, room: await resolveRoom(flags.room) } : flags;
     while (Date.now() < deadline) {
       let page;
       try {
-        page = await api('GET', `/api/planner/attention/wait?${await attentionQuery({ ...flags, after }, { timeoutSeconds: timeout })}`);
+        page = await api('GET', `/api/planner/attention/wait?${await attentionQuery({ ...query, after }, { timeoutSeconds: timeout })}`);
       } catch (error) {
-        // A restart rotates the credential and drops the connection: re-read and retry.
+        // A restart drops the connection or rotates the credential: re-read it and retry.
+        // Any other rejection (an invalid --status or --after) is reported instead.
+        if (!isTransientError(error)) throw error;
         cachedPlannerCredential = undefined;
         console.error(`wait error: ${String(error.message).split('\n')[0]}; retrying in 15s`);
         await new Promise((resolve) => setTimeout(resolve, 15000));
@@ -849,6 +858,14 @@ const commands = {
     printAttention({ items: [result.item], nextCursor: '-', highWatermark: '-', hasMore: false });
   },
 };
+
+// No HTTP status means the request got no answer (connection refused or dropped).
+// 401 follows a restart that rotated the credential; 408, 429 and 5xx can pass.
+// Any other status is an answer that a retry will not change.
+function isTransientError(error) {
+  const status = error && error.status;
+  return !Number.isInteger(status) || status >= 500 || [401, 408, 429].includes(status);
+}
 
 // The UI's active project can be any project, so the default is the instance's
 // project for this checkout; anything else must be named.
