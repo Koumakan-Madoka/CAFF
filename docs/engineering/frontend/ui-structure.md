@@ -51,9 +51,15 @@
   fresh bootstrap then send CSRF only in the first WS message. Browser state
   reads use the CSRF header; browser mutations use shared fetchJson, never a
   planner bearer. Tokens/terminal output are not persisted in browser storage.
-- Retained PTY resize may repaint its own current screen, which is not a CAFF
-  transcript replay. Each manual reconnect creates a fresh view with bounded
-  local scrollback. Output is terminal text, not HTML; OSC clipboard/hyperlinks,
+- Each manual reconnect creates a fresh view with bounded local scrollback.
+  Before requesting retained-PTY repaint, the host sends one generated frame
+  restoring its closed allowlist of latest DEC private-mode states (alternate
+  screen first, bracketed paste/focus/etc.); no screen content is retained.
+  It nudges one column, waits for first output or 500 ms, then restores the
+  newest client size, cancelling stale attachment/process waits. The CLI may
+  repaint its own current screen; neither this nor the mode frame is CAFF
+  transcript replay. See [P2 §5](../runtime/embedded-planner.md#5-terminal-websocket-protocol-v1).
+  Output is terminal text, not HTML; OSC clipboard/hyperlinks,
   automatic URL activation and window actions are not enabled.
 - Separate explicit controls stop the process, repair a stale lease, or
   reinitialize the same UUID. The latter appears after session-unavailable
@@ -89,7 +95,9 @@
   `npm run test:planner-terminal-ui` uses real Edge/xterm/node-pty with a fake
   CLI, random port, synthetic credentials and system-temp SQLite/home/media;
   no real Claude or shared instance. It covers input/output, pointer/keyboard
-  sizing, retention/reconnect, second page, room switch, both recovery controls,
+  sizing, retention/reconnect (including 16 same-size repaints with asynchronously
+  sampled dimensions, restored alternate/paste/focus modes and bracketed multiline
+  paste reaching the fake CLI), second page, room switch, both recovery controls,
   OSC sentinels, light/dark, 820/390/375/320 overlay/focus and a short walkthrough.
   Its 59-column real-PTY + fake-CLI repaint regression uses six exactly full
   Chinese/emoji/VS16 rows, repeated erase/redraw, and real xterm buffer assertions:

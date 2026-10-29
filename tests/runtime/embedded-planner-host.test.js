@@ -90,6 +90,94 @@ test('first launch persists one UUID before spawn; detach, reattach/repaint and 
   assert.deepEqual(f.children[1].config.args.slice(0, 2), ['--resume', meta.sessionId]);
 });
 
+// An asynchronous console observer sees only the last size in a same-tick
+// resize pair. This models libuv/ConPTY sampling, not synchronous resize echo.
+async function retainedFixture(t, options = {}) {
+  const f = fixture(t, { repaintTimeoutMs: 500, ...options });
+  const first = await f.attach(), child = f.children[0];
+  child.resize = (cols, rows) => { child.sizes.push([cols, rows]); };
+  first.detach();
+  return { ...f, child, first };
+}
+
+test('B1 retained nudge stays observable until asynchronous first output; latest size wins', async t => {
+  const f = await retainedFixture(t), output = [];
+  const a = await f.host.attach(f.room.id, { cols: 120, rows: 30 }, e => {
+    if (e.type === 'output') assert.deepEqual(f.child.sizes, [[121, 30]], 'forward first output before restoring');
+    output.push(e);
+  });
+  assert.deepEqual(f.child.sizes, [[121, 30]], 'no restore in the nudge tick');
+  assert.equal([...f.timers.values()][0].ms, 500);
+  a.resize(140, 42);
+  assert.deepEqual(f.child.sizes, [[121, 30]], 'defer new size until output or cap');
+  await new Promise(resolve => setImmediate(resolve));
+  // A fake CLI polling after the tick observes a changed size, so it repaints.
+  assert.deepEqual(f.child.sizes.at(-1), [121, 30]);
+  f.child.emit('data', 'observed changed size');
+  assert.deepEqual(output, [{ type: 'output', data: 'observed changed size' }]);
+  assert.deepEqual(f.child.sizes, [[121, 30], [140, 42]]);
+  assert.equal(f.timers.size, 0);
+});
+
+test('B1 quiet retained nudge restores at timeout exactly once, including 500-column boundary', async t => {
+  const f = await retainedFixture(t, { repaintTimeoutMs: 17 });
+  const a = await f.host.attach(f.room.id, { cols: 500, rows: 30 }, () => {});
+  assert.deepEqual(f.child.sizes, [[499, 30]]);
+  a.resize(99, 22);
+  const timeout = [...f.timers.values()][0]; assert.equal(timeout.ms, 17); timeout.fn();
+  assert.deepEqual(f.child.sizes, [[499, 30], [99, 22]]);
+  f.child.emit('data', 'late repaint'); timeout.fn();
+  assert.equal(f.child.sizes.length, 2); assert.equal(f.timers.size, 0);
+});
+
+for (const race of ['exit', 'uncertain', 'terminate', 'shutdown', 'disconnect', 'replace', 'new-process']) {
+  test(`B1 ${race} cancels old nudge; stale callbacks cannot resize invalid ownership`, async t => {
+    const f = await retainedFixture(t);
+    const old = await f.host.attach(f.room.id, { cols: 120, rows: 30 }, () => {});
+    assert.deepEqual(f.child.sizes, [[121, 30]]);
+    const stale = [...f.timers.values()][0];
+    if (race === 'exit' || race === 'new-process') f.child.emit('exit', { exitCode: 0 });
+    else if (race === 'uncertain') f.child.emit('uncertain');
+    else if (race === 'terminate') old.terminate();
+    else if (race === 'shutdown') await f.host.close();
+    else old.detach();
+    if (race === 'replace') {
+      const next = await f.host.attach(f.room.id, { cols: 80, rows: 20 }, () => {});
+      old.detach(); stale.fn();
+      assert.deepEqual(f.child.sizes, [[121, 30], [81, 20]]);
+      next.resize(90, 25); f.child.emit('data', 'new owner repaint');
+      assert.deepEqual(f.child.sizes.at(-1), [90, 25]);
+    } else {
+      if (race === 'new-process') await f.attach();
+      stale.fn(); f.child.emit('data', 'late old output');
+      assert.deepEqual(f.child.sizes, [[121, 30]]);
+    }
+  });
+}
+
+test('B2 retained first frame restores only tracked modes before nudge, including output received while detached', async t => {
+  const f = await retainedFixture(t), events = [];
+  f.child.emit('data', 'private screen text\x1b[?2004;1004;1049h\x1b[?25l\x1b[?9999h');
+  let nudged = false;
+  f.child.resize = (cols, rows) => { nudged = true; f.child.sizes.push([cols, rows]); };
+  await f.host.attach(f.room.id, { cols: 120, rows: 30 }, e => {
+    if (!events.length) assert.equal(nudged, false); events.push(e);
+  });
+  assert.deepEqual(events, [{ type: 'output', data: '\x1b[?1049h\x1b[?25l\x1b[?1004h\x1b[?2004h' }]);
+  assert.equal(nudged, true);
+});
+
+test('B2 mode parsing crosses host 8-KiB chunks and data events, with latest off and reset', async t => {
+  const f = fixture(t); const a = await f.attach(), child = f.children[0];
+  child.emit('data', 'x'.repeat(8190) + '\x1b[?20'); child.emit('data', '04;1049h');
+  child.emit('data', '\x1b[?2004l'); a.detach();
+  const events = []; const b = await f.host.attach(f.room.id, { cols: 120, rows: 30 }, e => events.push(e));
+  assert.equal(events[0].data, '\x1b[?1049h\x1b[?2004l');
+  b.detach(); child.emit('data', '\x1bc');
+  events.length = 0; await f.host.attach(f.room.id, { cols: 120, rows: 30 }, e => events.push(e));
+  assert.ok(events.every(e => e.data === 'repaint'), 'reset leaves no stale modes or screen text');
+});
+
 test('live output chunks fit both UTF-8 data and complete JSON frame budgets, including dense terminal controls', async t => {
   const f = fixture(t), events = [];
   await f.host.attach(f.room.id, { cols: 120, rows: 30 }, e => events.push(e));
@@ -250,6 +338,34 @@ test('starting admission is synchronous across async validation and default four
   const extra = f.store.createConversation({ title: 'cap', projectScopeId: 'project-test', participants: [{ agentId: 'synthetic' }] });
   await assert.rejects(f.attach(extra.id), /planner_process_limit/);
   resolve(); await Promise.all(starts); assert.equal(f.children.length, 4);
+});
+
+test('B2 mode tracker parses multi-parameter, every sequence split, reset and only a closed allowlist', () => {
+  const { createTerminalModeTracker } = require('../../build/server/domain/runtime/embedded-planner-modes');
+  const all = [1,25,47,1047,1049,1000,1002,1003,1006,1015,1004,2004,2031,9001];
+  const wire = '\x1b[?' + all.join(';') + 'h';
+  for (let split = 0; split <= wire.length; split++) {
+    const modes = createTerminalModeTracker(); modes.feed(wire.slice(0, split)); modes.feed(wire.slice(split));
+    const restored = modes.restore(); assert.ok(restored.startsWith('\x1b[?1049h'));
+    assert.deepEqual([...restored.matchAll(/\x1b\[\?(\d+)h/g)].map(m => +m[1]).sort((a,b) => a-b), [...all].sort((a,b) => a-b));
+    modes.feed('\x1b[?25;2004l\x1b[?9999;2;3;52h');
+    assert.match(modes.restore(), /\x1b\[\?2004l/); assert.doesNotMatch(modes.restore(), /9999|\?2h|\?3h|\?52h/);
+    for (const reset of ['\x1bc', '\x1b[!p', '\x9b!p']) {
+      modes.feed(wire); modes.feed(reset); assert.equal(modes.restore(), '');
+    }
+  }
+});
+
+test('B2 mode tracker ignores strings, malformed/oversized CSI and cancelled sequences without retaining screen content', () => {
+  const { createTerminalModeTracker } = require('../../build/server/domain/runtime/embedded-planner-modes');
+  const modes = createTerminalModeTracker();
+  const sequences = ['\x1b]title\x1b[?2004h\x07', '\x1bPprivate\x1b[?1049h\x1b\\', '\x1b[?20😀04h', '\x1b[?2004:1h',
+    '\x1b[?2004$h', '\x1b[?2004\x18h', '\x1b[?' + '1;'.repeat(100000) + '2004h'];
+  for (const wire of sequences) { for (let i = 0; i < wire.length; i += 8192) modes.feed(wire.slice(i, i + 8192)); assert.equal(modes.restore(), ''); }
+  modes.feed('screen secret sentinel'.repeat(10000) + '\x1b[?2004h\x1b[?2004l');
+  assert.equal(modes.restore(), '\x1b[?2004l');
+  modes.feed('\x1b'); modes.feed('c'); assert.equal(modes.restore(), '');
+  modes.feed('\x1b[?1049h'); modes.feed('\x1b['); modes.feed('!'); modes.feed('p'); assert.equal(modes.restore(), '');
 });
 
 test('metadata claim preserves unrelated concurrent Goal state and a room changed after detach cannot attach', async t => {

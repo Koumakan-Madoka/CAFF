@@ -50,6 +50,29 @@ test('authenticated terminal has ready before live output, owns input/resize, re
   const exit = once(ws2, 'close'); ws2.send(JSON.stringify({ type: 'terminate' })); await exit;
 });
 
+test('retained WS sends ready, then generated modes, then newly observed repaint without screen replay', async t => {
+  let child;
+  const f = await fixture(t, { authTimeoutMs: 5000, launch: () => {
+    child = new (require('node:events').EventEmitter)(); child.sizes = [];
+    child.write = () => {}; child.resize = (cols, rows) => child.sizes.push([cols, rows]);
+    child.stop = () => child.emit('exit', { exitCode: 0 }); return child;
+  } });
+  const ws = f.connect(); await once(ws, 'open');
+  let next = once(ws, 'message'); ws.send(JSON.stringify(f.auth)); await next;
+  next = once(ws, 'message'); child.emit('data', 'old-screen\x1b[?1049;2004h'); await next;
+  const end = once(ws, 'close'); ws.send(JSON.stringify({ type: 'detach' })); await end;
+  const ws2 = f.connect(), events = [];
+  ws2.on('message', data => events.push(JSON.parse(data)));
+  await once(ws2, 'open'); ws2.send(JSON.stringify(f.auth));
+  while (events.length < 2) await once(ws2, 'message');
+  assert.equal(events[0].type, 'ready'); assert.equal(events[0].historyReplay, false);
+  assert.deepEqual(events[1], { type: 'output', data: '\x1b[?1049h\x1b[?2004h' });
+  assert.deepEqual(child.sizes, [[121, 30]]);
+  next = once(ws2, 'message'); child.emit('data', 'new-repaint'); await next;
+  assert.deepEqual(events[2], { type: 'output', data: 'new-repaint' });
+  assert.deepEqual(child.sizes, [[121, 30], [120, 30]]);
+});
+
 test('resumed WS terminate reports intentional stop, while a missing saved session still reports unavailability', async t => {
   const f = await fixture(t, { authTimeoutMs: 5000, cliFixture: path.join(__dirname, '../fixtures/fake-planner-session-cli.cjs') });
   async function start() {

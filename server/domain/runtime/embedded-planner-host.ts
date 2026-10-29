@@ -4,6 +4,7 @@ import { buildPlannerEnvironment, plannerError } from './embedded-planner-env';
 import { plannerAppendPrompt, type PlannerRoom } from './embedded-planner-room';
 import { EmbeddedPlannerRepository } from '../../../storage/chat/embedded-planner.repository';
 import { launchPlannerPty } from './embedded-planner-pty';
+import { createTerminalModeTracker, type TerminalModeTracker } from './embedded-planner-modes';
 
 export type PlannerLaunch = { cli: PlannerCli; args: string[]; cwd: string; env: NodeJS.ProcessEnv; cols: number; rows: number };
 export type PlannerProcess = EventEmitter & { guardianPid?: number; write(data: string): void; resize(cols: number, rows: number): void; stop(force?: boolean): void };
@@ -13,12 +14,15 @@ type Entry = {
   state: 'starting' | 'interactive-attached' | 'interactive-retained' | 'headless-running' | 'stopping';
   context?: PlannerRoom; process?: PlannerProcess; leaseId?: string; sessionId?: string; listener?: Listener;
   retention?: any; retentionDeadline?: number; stopRequested?: boolean; ended: Promise<void>; end(): void;
+  modes?: TerminalModeTracker; size?: { cols: number; rows: number };
+  repaint?: { timer?: any; finish(): void };
 };
 type Options = {
   repository: EmbeddedPlannerRepository; resolveRoom(id: string): PlannerRoom | Promise<PlannerRoom>;
   baseUrl: string; env?: NodeJS.ProcessEnv; credentialPath?: string | null; cli: PlannerCli; maxProcesses?: number;
   launch?: (config: PlannerLaunch) => PlannerProcess | Promise<PlannerProcess>;
   setTimer?: (fn: () => void, ms: number) => any; clearTimer?: (id: any) => void; now?: () => number;
+  repaintTimeoutMs?: number;
 };
 export function validTerminalSize(cols: unknown, rows: unknown): boolean {
   return Number.isInteger(cols) && Number(cols) >= 20 && Number(cols) <= 500
@@ -36,7 +40,28 @@ export function createEmbeddedPlannerHost(options: Options) {
   function state(id: string): string {
     return entries.get(id)?.state || (repository.hasLease(id) ? 'uncertain' : 'absent');
   }
+  function cancelRepaint(entry: Entry): void {
+    if (entry.repaint?.timer) cancel(entry.repaint.timer);
+    entry.repaint = undefined;
+  }
+  function requestRepaint(id: string, entry: Entry, listener: Listener): void {
+    if (entries.get(id) !== entry || entry.state !== 'interactive-attached' || entry.listener !== listener) return;
+    const pending = { timer: undefined as any, finish() {
+      if (entry.repaint !== pending) return;
+      cancelRepaint(entry);
+      if (entries.get(id) !== entry || entry.state !== 'interactive-attached' || entry.listener !== listener) return;
+      const size = entry.size!;
+      entry.process!.resize(size.cols, size.rows);
+    } };
+    entry.repaint = pending;
+    pending.timer = schedule(pending.finish, options.repaintTimeoutMs ?? 500);
+    const size = entry.size!;
+    // libuv samples console size asynchronously: do NOT undo this in the same
+    // tick. Restore after forwarding the first output, or at the bounded cap.
+    entry.process!.resize(size.cols < 500 ? size.cols + 1 : size.cols - 1, size.rows);
+  }
   function stop(entry: Entry): void {
+    cancelRepaint(entry);
     if (entry.retention) { cancel(entry.retention); entry.retention = undefined; }
     // Mark intent before stop(): an adapter may emit exit synchronously. State
     // alone is not intent, since an uncertain observation also fences as stopping.
@@ -45,6 +70,7 @@ export function createEmbeddedPlannerHost(options: Options) {
   }
   function release(id: string, entry: Entry): void {
     if (entries.get(id) !== entry) return;
+    cancelRepaint(entry);
     if (entry.retention) cancel(entry.retention);
     if (entry.leaseId) repository.release(id, entry.leaseId);
     entry.listener = undefined;
@@ -130,12 +156,12 @@ export function createEmbeddedPlannerHost(options: Options) {
         throw error;
       }
       entry.listener = listener;
-      entry.state = 'interactive-attached';
-      // Same-size ioctl/ConPTY resize can be a no-op. A bounded one-column
-      // nudge and restore requests repaint without replay or injected keystrokes.
-      // Install the output listener BEFORE both operations.
-      entry.process!.resize(size.cols < 500 ? size.cols + 1 : size.cols - 1, size.rows);
-      entry.process!.resize(size.cols, size.rows);
+      entry.state = 'interactive-attached'; entry.size = { ...size };
+      // Restore input/buffer modes before requesting *new* CLI repaint output.
+      // No screen contents, transcript replay or input injection. Subscribe first.
+      const modes = entry.modes!.restore();
+      if (modes) listener({ type: 'output', data: modes });
+      requestRepaint(id, entry, listener);
     } else {
       entry = admit(id);
       const current = entry;
@@ -157,7 +183,12 @@ export function createEmbeddedPlannerHost(options: Options) {
           throw plannerError('planner_process_spawn_failed');
         }
         current.process = child; current.listener = listener; current.state = 'interactive-attached';
+        current.size = { ...size }; current.modes = createTerminalModeTracker();
         child.on('data', (data: string) => {
+          current.modes!.feed(data);
+          // Capture this generation before forwarding: a listener may detach or
+          // be replaced during output. It must not finish a later owner's nudge.
+          const repaint = current.repaint;
           // UTF-8 code-point boundaries; 8 KiB data also fits the 64 KiB wire
           // budget under worst-case 6x JSON escaping of dense terminal controls.
           let chunk = '', bytes = 0;
@@ -167,6 +198,7 @@ export function createEmbeddedPlannerHost(options: Options) {
             chunk += char; bytes += n;
           }
           if (chunk) current.listener?.({ type: 'output', data: chunk });
+          if (data.length) repaint?.finish();
         });
         child.on('overflow', () => current.listener?.({ type: 'error', code: 'planner_terminal_slow_consumer', message: 'Terminal connection is too slow' }));
         child.once('exit', (exit: any) => {
@@ -174,6 +206,7 @@ export function createEmbeddedPlannerHost(options: Options) {
           release(id, current);
         });
         child.once('uncertain', () => {
+          cancelRepaint(current);
           current.state = 'stopping';
           current.listener?.({ type: 'error', code: 'planner_process_exit_unconfirmed', message: 'Process exit could not be confirmed' });
         });
@@ -194,10 +227,12 @@ export function createEmbeddedPlannerHost(options: Options) {
       },
       resize(cols: number, rows: number) {
         if (!validTerminalSize(cols, rows) || owned.listener !== listener || owned.state !== 'interactive-attached') throw plannerError('planner_terminal_message_invalid');
-        owned.process!.resize(cols, rows);
+        owned.size = { cols, rows };
+        if (!owned.repaint) owned.process!.resize(cols, rows);
       },
       detach() {
         if (owned.listener !== listener) return;
+        cancelRepaint(owned);
         owned.listener = undefined;
         if (owned.state === 'interactive-attached') {
           owned.state = 'interactive-retained';

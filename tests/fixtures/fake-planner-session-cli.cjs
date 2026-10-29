@@ -12,10 +12,25 @@ if (argv[0] === '--resume' && saved !== sessionId) {
 if (argv[0] === '--session-id' && saved === sessionId) {
   console.log('Error: Session ID ' + sessionId + ' is already in use.'); process.exit(1);
 }
-process.stdout.write('FAKE_SESSION_READY\r\n');
+// Raw input preserves the bracketed-paste delimiters sent by real xterm.
+if (process.stdin.isTTY) process.stdin.setRawMode(true);
+process.stdout.write('\x1b[?1049h\x1b[?2004h\x1b[?1004hFAKE_SESSION_READY\r\n');
+// Model the CLI's asynchronous console-size sampling. A back-to-back nudge is
+// invisible; repaint does NOT re-emit startup modes or retain screen contents.
+let size = `${process.stdout.columns}x${process.stdout.rows}`, repaint = 0;
+setInterval(() => {
+  const next = `${process.stdout.columns}x${process.stdout.rows}`;
+  if (next === size) return;
+  size = next;
+  // Repaint a separate status row while preserving the input cursor. Otherwise
+  // a second resize repaint could erase an ECHO before the browser asserts it.
+  process.stdout.write('\x1b7\x1b[' + process.stdout.rows + ';1H\x1b[2KFAKE_REPAINT_' + (++repaint) + '\x1b8');
+}, 20);
 let pending = '';
 process.stdin.on('data', chunk => {
+  fs.appendFileSync('fake-input.txt', chunk);
   pending += chunk.toString();
+  pending = pending.replace(/\x1b\[[IO]/g, ''); // focus reports are not commands
   if (!/[\r\n]/.test(pending)) return;
   const input = pending.trim(); pending = '';
   if (input === '/exit') process.exit(0); // Deliberately does NOT create a record.

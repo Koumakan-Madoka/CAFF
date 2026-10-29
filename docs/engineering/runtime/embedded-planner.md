@@ -12,7 +12,10 @@ its implementation `6e022e97` and fit correction `3b246f47` passed planner revie
 and real-CLI checks (§10). The separately user-approved interactive renderer pin
 is now implemented. The user also approved default-on terminals on 2026-10-29
 (room message `c3a4790d-7e95-456d-9382-2f8469d5df11`); §1 reflects that amendment.
-The combined final-SHA planner recheck and Linux CI remain separate gates (§10).
+The combined review of `f018369c` was **BLOCK** on retained reattach repaint
+and lost input modes. The corrective implementation follows the planner's
+provisional `reattach-mode-restore` decision (§5/§10); final-SHA real-CLI recheck
+and Linux CI remain separate gates.
 This is not a claim that a running instance has been upgraded. Push, PR, merge,
 acceptance, release and shared-instance restart each require user authorization.
 
@@ -665,7 +668,7 @@ After auth, under admission checks, server sends one `ready`, then live output:
 | Direction / type | Payload / semantics |
 | --- | --- |
 | server `ready` | `{ type, version: 1, sessionId, state: 'attached', resumed: boolean, historyReplay: false }`; resumed means launch used resume or existing PTY was reattached |
-| server `output` | `{ type, data: string }`; live PTY bytes decoded as streaming UTF-8, maximum 8 KiB data per chunk (JSON escaping still fits the 64 KiB frame) |
+| server `output` | `{ type, data: string }`; live PTY bytes decoded as streaming UTF-8, maximum 8 KiB data per chunk (JSON escaping still fits the 64 KiB frame). On retained reattach, the first output may instead be the bounded CAFF-generated mode restoration below, never screen/history content. |
 | client `input` | `{ type, data: string }`; bounded text passed as PTY input only after ready |
 | client `resize` | `{ type, cols, rows }`; integer cols 20–500 and rows 5–300; resize only that client's room PTY |
 | client `detach` | `{ type }`; close connection normally, retain PTY |
@@ -695,13 +698,38 @@ sockets have only the fixed 5-second auth deadline.
 Bound per-socket outbound buffering to 1 MiB. Disconnect a slow consumer rather
 than accumulate an unbounded transcript or block all rooms; the PTY becomes
 retained. Do not keep a replay ring, scrape Claude transcript files or resend old
-output. Reconnect authenticates afresh, reattaches the existing PTY if present,
-then forwards **future output only**. After reattaching a retained PTY, the
-host must actively request one normal CLI repaint by calling resize with the
-new client's validated current dimensions, even when they equal the old size;
-register the output listener first so the new repaint output reaches the pane.
-If the platform's same-size resize is a no-op, verify a safe resize-only repaint
-mechanism in the platform check; never substitute replay or injected keystrokes.
+output. Reconnect authenticates afresh and reattaches the existing PTY if present.
+After `ready`, send a **CAFF-generated mode-restoration output frame** (if any
+modes were observed), then forward **future process output only**. This follows
+the planner's provisional `reattach-mode-restore` decision, not history replay:
+
+- Track only the latest explicit DECSET/DECRST on/off for private modes **1, 25,
+  47, 1047, 1049, 1000, 1002, 1003, 1006, 1015, 1004, 2004, 2031, 9001** in each
+  interactive entry, even when detached. Never retain screen contents/output.
+- Parse `CSI ? Pm h/l` with multiple parameters, across data events and the
+  host's 8 KiB wire chunks. RIS (`ESC c`) and DECSTR (`CSI ! p`) clear tracked
+  state. Ignore non-allowlisted modes, malformed/oversized sequences and mode-like
+  text inside OSC/DCS/control strings. Parser state is bounded (128 CSI parameter/
+  intermediate characters, constant control-string state, fixed-size mode map).
+- Install the new output listener first. Generate one frame of individual
+  allowlisted mode sequences from the current state; `?1049h`, when recorded on,
+  comes first. This restores alternate-buffer, bracketed-paste, focus and related
+  input modes in the **new** xterm before any repaint bytes. Unsupported modes
+  are simply ignored by xterm. No old output, screen snapshot or key injection.
+- Only then request repaint with a bounded **one-column nudge** (cols+1, or
+  cols-1 at the 500-column limit). Keep it observable until the first nonempty
+  PTY data event has been forwarded, or **500 ms**, whichever comes first, then
+  restore the latest validated client dimensions. Do not synchronously undo the
+  nudge: asynchronous CLI/libuv size sampling can miss both operations.
+- A client resize during the wait updates the desired dimensions without ending
+  the wait. Disconnect, replacement, stop, uncertain observation and exit cancel
+  the old wait/timer. Restore only for the still-current entry and attachment;
+  a stale callback must not resize an exited/replaced process or another owner.
+  Timeout is host-only test DI, not browser configuration. Stop/release cancels
+  it along with the existing retention timer.
+
+The transport still sends `ready` before all output (including mode restoration),
+with the same pre-auth silence, bounded buffering and no automatic retries.
 `--resume` continues the CLI's own session when a new process is needed, not a
 CAFF history-replay mechanism. UI explicitly labels this limitation. A CLI or
 ConPTY resize repaint may include characters from its current screen; this is
@@ -1519,8 +1547,10 @@ The planner subsequently gave **PASS** on `6e022e97` (message
 15-graphemes + bundled ConPTY, Chinese/emoji streaming, delete/retype, wide/narrow
 resize, retained reconnect, exit/resume and Stop. Six snapshots had zero wraps
 and one copy of each answer; exit/Stop were neutral, OpenConsole was cleaned up,
-and the page had no errors. Retained reconnect may repaint into a new normal
-xterm buffer; it is not evidence that the CLI switched renderers.
+and the page had no errors. At that SHA, retained reconnect could repaint into
+a new normal xterm buffer without switching the CLI renderer. The 2026-10-29
+review found this was **lost browser mode state**, not an acceptable steady
+state: the mode-restoration correction below supersedes that observation.
 
 Fit correction `3b246f47` also received **PASS** (message
 `f6912ebe-58e8-4b89-abef-6205e05452ea`). The fit parent has no padding/border;
@@ -1563,6 +1593,44 @@ behavior**. Planner review and a short actual-CLI validation at the final
 renderer-pin SHA are still required before child-env/real-cli acceptance;
 previous-SHA smokes and Linux CI are not inferred.
 
+### 2026-10-29 retained reattach correction (B1/B2)
+
+Planner review of `f018369c` was **BLOCK** (message
+`fd898159-d442-4401-b51c-44d2310d53f2`, artifact directory
+`caff-review-artifacts/9fb2a910-p2-reattach-block`, README/probes/screenshots).
+On Windows 10.0.19045, real Claude Code **2.1.312**, bundled ConPTY and the
+production environment builder, no prompt/model call was made during diagnosis:
+
+- **B1:** close/reopen 8 times and socket reconnect 8 times yielded 14 blank
+  views with zero received output. Same-tick nudge/restore was invisible to
+  asynchronous libuv size sampling. Real-CLI controls: no resize 0/8 and
+  back-to-back 0/8; 20/60/150/300 ms gaps each 8/8; first-output-or-500-ms 6/6.
+  Final rule width was the original 58 columns. Earlier smokes happened to
+  change rows, masking the problem.
+- **B2:** CLI startup set bracketed paste, focus and alternate-screen modes,
+  but resize repaint did not re-emit them. A fresh xterm lost those modes;
+  pasting `/help` plus a second line submitted the first line immediately.
+  This could submit a truncated ordinary model prompt. The planner authorized
+  the closed in-memory mode tracker/restoration in §5 as a provisional decision.
+- **Already verified in that review:** develop merge parents/scripts and flag
+  parsing; real renderer pin entered alternate screen twice in about 3.4 s,
+  early stops left `fullscreenBootStrikes=null`, noninteractive launches omitted
+  the pin, and Stop left no CLI or package-path OpenConsole. These do not waive
+  the final retained-reattach gate.
+
+The correction in §5 leaves CLI flags, permissions, dependencies, session
+reinitialization and the pane's “future output/no history replay” wording
+unchanged. Automated host regressions model delayed console sampling and cover
+first output/cap, newest dimensions, exit/uncertain/stop, detach/replacement and
+old-process callbacks. Tracker tests cover split/multiple parameters, reset,
+closed modes and ignored strings/oversized sequences. Existing Edge + fake-CLI
+checks now start with alternate/paste/focus modes, poll size asynchronously
+without re-emitting them, verify 16 fixed-size retained reattaches repaint and
+assert multiline paste arrives with bracket delimiters. This is **synthetic**
+evidence, not final real-CLI acceptance: the planner must repeat 16 reattaches
+and paste checks at the new fixed SHA before marking the related work complete.
+The no-message `--resume` failure still uses M2's manual reinitialization (§3).
+
 ### ADR 0003 “Verify during implementation” checklist
 
 The following maps the original M1 verification methods to actual evidence.
@@ -1578,7 +1646,7 @@ still required before integration. The implementer has not run real Claude.
 | Untrusted worktree plus print-mode tools | **PASS on Windows**: M4a gate used the fresh `E:\tmp\caff-m4a-gate\wt` without project permissions/settings; N2 confirms -p skips the dialog while explicit restrictions hold. M3 manually answered trust outside trusted ancestors. Do not use inherited ancestor trust as evidence or auto-confirm prompts. |
 | Approval-required tool denied in -p | **PASS on Windows**: M4a mkdir/echo-redirection/git-status and compound commands denied without hanging/sentinel effects; hardened dontAsk positives still pass. No bypass or automatic approval. Fake timeout/denial tests supplement, not replace, this gate. |
 | node-pty prebuild/compilation | **Windows x64 / Node 24.13.1 / node-pty 1.1.0 PASS**: independent install and real PTY/fake CLI suites in M2/M3. The repaint correction adds bundled-DLL Stop/expiry/shutdown/parent-death and OpenConsole cleanup checks. The distribution contains x64/arm64 DLL + OpenConsole, not proof of arm64 execution. `.github/workflows/test.yml` now checks Windows and Linux / Node 22.19.0; `scripts/check-planner-pty.js` requires Windows bundled artifacts or Linux compiled `build/Release/pty.node`. **CI NOT RUN**: successful candidate-pinned URLs still require authorized publication; local Windows PASS/workflow existence is not Linux compilation evidence. |
-| ConPTY full repaint | **Earlier M3 smoke was insufficient**: see the 2026-10-27 correction above. Bundled ConPTY + graphemes passed candidate-pinned real CLI 2.1.311 at `6e022e97`; fit passed at `3b246f47`. The separately approved interactive NO_FLICKER pin addresses classic-renderer reattach/boot strikes, with planner A'/B'/E'/D' observations above; final renderer-pin SHA still requires planner real-CLI revalidation. No claim about untested Windows versions/platforms or Linux CI. |
+| ConPTY full repaint | **Earlier M3 smoke was insufficient**: see the 2026-10-27 correction above. Bundled ConPTY + graphemes passed candidate-pinned real CLI 2.1.311 at `6e022e97`; fit passed at `3b246f47`. The separately approved interactive NO_FLICKER pin addresses classic-renderer reattach/boot strikes, with planner A'/B'/E'/D' observations above; the `f018369c` real-CLI renderer check passed but exposed retained reattach B1/B2 (record above). Mode restoration plus asynchronous repaint now require final-SHA real-CLI revalidation. No claim about untested Windows versions/platforms or Linux CI. |
 
 A future CLI/tool behavior change reopens these compatibility checks. Numeric
 version success alone does not establish tool confinement or ConPTY correctness.

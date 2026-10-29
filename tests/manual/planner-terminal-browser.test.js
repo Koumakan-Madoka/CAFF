@@ -209,7 +209,12 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     const socketCount = await page.evaluate(() => window.__terminalSockets.length);
     await page.waitForTimeout(200); assert.equal(await page.evaluate(() => window.__terminalSockets.length), socketCount);
     await page.click(selector('reconnect')); await page.waitForFunction(() => document.querySelector('#planner-terminal-status').textContent === '已连接');
-    pass('close retains same guardian/UUID; manual reconnect creates a fresh view without output replay or automatic retries');
+    await page.waitForFunction(() => window.__plannerTerminals.at(-1).modes.bracketedPasteMode
+      && window.__plannerTerminals.at(-1).modes.sendFocusMode && window.__plannerTerminals.at(-1).buffer.active.type === 'alternate');
+    await page.evaluate(() => window.__plannerTerminals.at(-1).paste('/help\nqqzz7'));
+    await page.waitForFunction(() => document.querySelector('#planner-terminal-screen').textContent.includes('qqzz7'));
+    assert.ok(fs.readFileSync(path.join(f.root, 'fake-input.txt'), 'utf8').includes('\x1b[200~/help\rqqzz7\x1b[201~'), 'multiline paste reaches raw fake CLI bracketed, not as separate submitted commands');
+    pass('close retains same guardian/UUID; manual reconnect restores alternate/paste/focus modes and bracketed multiline paste without replay or automatic retries');
 
     const second = await context.newPage(); await second.goto(f.base);
     if (await second.locator('#sidebar').getAttribute('aria-hidden') === 'true') await second.click('#sidebarToggle');
@@ -290,6 +295,22 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     }, f.room.id);
     await ghostPage.waitForFunction(() => window.__ghostState === 'attached');
     assert.equal(await ghostPage.evaluate(() => window.__plannerTerminals.at(-1).unicode.activeVersion), '15-graphemes');
+    // Fixed size on every attach: unlike pane layout changes, this cannot
+    // accidentally make the old back-to-back implementation pass.
+    for (let i = 0; i < 16; i++) {
+      await ghostPage.evaluate(async roomId => {
+        window.__ghostClient.dispose(); window.__ghostState = '';
+        const boot = await fetch('/api/bootstrap').then(res => res.json());
+        window.__ghostClient.connect(roomId, boot.apiSecurity.csrfToken);
+      }, f.room.id);
+      await ghostPage.waitForFunction(() => window.__ghostState === 'attached');
+      await ghostPage.waitForFunction(() => {
+        const term = window.__plannerTerminals.at(-1), b = term.buffer.active;
+        return term.modes.bracketedPasteMode && term.modes.sendFocusMode && b.type === 'alternate'
+          && Array.from({ length: b.length }, (_, j) => b.getLine(j).translateToString(true)).some(text => text.startsWith('FAKE_REPAINT_'));
+      });
+    }
+    pass('16 same-size retained reattaches repaint with asynchronously sampled CLI size and restored input modes');
     await ghostPage.evaluate(() => window.__plannerTerminals.at(-1).focus());
     await ghostPage.keyboard.type('ghost'); await ghostPage.keyboard.press('Enter');
     await ghostPage.waitForFunction(() => {
