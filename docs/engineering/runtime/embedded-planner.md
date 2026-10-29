@@ -230,6 +230,11 @@ Resolve the room's own project by projectScopeId, not the currently active
 project. For a bound room, use its verified `worktreePath`; a missing, partial,
 foreign or invalid binding fails instead of falling back. For an unbound room,
 use its project's verified root. A room without a usable project cannot launch.
+Canonicalize the project root, room cwd and Git-listed worktrees with native
+realpath (including Windows 8.3 expansion). Check other rooms' stored bindings
+against that same canonical cwd, resolving existing paths through native
+realpath too so short names and junctions cannot bypass exclusive binding;
+use an absolute lexical path only for a stored path that no longer exists.
 Never infer a worktree from the title. On rebinding/project changes, refuse to
 attach to a process launched for a different directory; ask the user to close
 it explicitly before a fresh launch. A live process cannot change cwd.

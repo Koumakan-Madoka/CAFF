@@ -13,20 +13,23 @@ export function resolvePlannerRoom(store: any, projects: any, roomId: string): P
     if (!room) throw plannerError('planner_room_missing');
     const project = projects.listProjects().find((p: any) => p.id === room.projectScopeId);
     if (!project?.path || !path.isAbsolute(project.path)) throw new Error();
-    const root = fs.realpathSync(project.path);
+    const root = fs.realpathSync.native(project.path);
     if (!fs.statSync(root).isDirectory()) throw new Error();
     const binding = [room.branch, room.worktreePath, room.workspaceBaseSha];
     if (binding.some(Boolean) && !binding.every(Boolean)) throw new Error();
     if (!binding.some(Boolean)) return { room, cwd: root, projectId: project.id, branch: null };
     if (!path.isAbsolute(room.worktreePath)) throw new Error();
-    const cwd = fs.realpathSync(room.worktreePath);
+    const cwd = fs.realpathSync.native(room.worktreePath);
     const git = (args: string[], dir = root) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', timeout: 5000, maxBuffer: 1024 * 1024, stdio: ['ignore','pipe','pipe'] });
     const listed = git(['worktree', 'list', '--porcelain', '-z']).split('\0').some(line => line.startsWith('worktree ')
-      && samePath(fs.realpathSync(line.slice(9)), cwd));
+      && samePath(fs.realpathSync.native(line.slice(9)), cwd));
     if (!listed || git(['symbolic-ref', '--short', 'HEAD'], cwd).trim() !== room.branch) throw new Error();
     // Another Room must not be bound to this worktree, even in the same project.
     const foreign = store.db.prepare('SELECT id, worktree_path FROM chat_conversations WHERE id<>? AND worktree_path IS NOT NULL').all(roomId)
-      .some((r: any) => samePath(path.resolve(r.worktree_path), cwd));
+      .some((r: any) => {
+        const other = fs.existsSync(r.worktree_path) ? fs.realpathSync.native(r.worktree_path) : path.resolve(r.worktree_path);
+        return samePath(other, cwd);
+      });
     if (foreign) throw new Error();
     return { room, cwd, branch: room.branch, projectId: project.id };
   } catch (error: any) {
