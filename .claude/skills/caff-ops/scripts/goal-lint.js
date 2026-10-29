@@ -38,6 +38,20 @@ for (const item of goal.workItems || []) {
   if (item.status !== 'todo') problems.push(`work item ${item.id} status ${item.status}`);
   console.log('work', item.id, check(`work ${item.id}`, item.text, 300));
 }
+// goal-contract.ts normalizeGoalEvidence cuts summary and reference to 1000
+// characters, drops a record without a summary and stores an unknown kind as "artifact".
+const EVIDENCE_KINDS = ['command', 'test', 'manual', 'review', 'artifact'];
+const evidenceIds = new Set();
+for (const item of goal.evidence || []) {
+  if (evidenceIds.has(item.id)) problems.push(`duplicate evidence ${item.id}`);
+  evidenceIds.add(item.id);
+  console.log('evidence', item.id, check(`evidence ${item.id}.summary`, item.summary, 1000));
+  const reference = norm(item.reference).length;
+  if (reference > 1000) problems.push(`evidence ${item.id}.reference: ${reference} > 1000`);
+  if (item.kind !== undefined && !EVIDENCE_KINDS.includes(norm(item.kind).toLowerCase())) {
+    problems.push(`evidence ${item.id}.kind "${item.kind}" is stored as "artifact" (allowed: ${EVIDENCE_KINDS.join(', ')})`);
+  }
+}
 if (!(goal.acceptanceCriteria || []).length) problems.push('no acceptance criteria');
 console.log(problems.length ? `PROBLEMS:\n${problems.join('\n')}` : 'OK');
 process.exitCode = problems.length ? 1 : 0;

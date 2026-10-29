@@ -148,7 +148,7 @@ node "$CAFF" stop <room> [--stop-goal] --confirm
 - REST 本身只接受 title、projectScopeId、modeId、participants 四个字段。
 
 ### 给 room 提交新 Goal
-1. 先调研、起草 Goal JSON：objective，decisions（committed / provisional / openQuestions / nonGoals），acceptanceCriteria（每条都要有 verifyBy），workItems（状态全部为 todo）。用 `node "${CLAUDE_SKILL_DIR}/scripts/goal-lint.js" goal.json` 对照 CAFF 上限检查长度：objective ≤2000，决策 statement ≤500，rationale ≤1000，标准 statement ≤500，verifyBy ≤1000，工作项 ≤300。
+1. 先调研、起草 Goal JSON：objective，decisions（committed / provisional / openQuestions / nonGoals），acceptanceCriteria（每条都要有 verifyBy），workItems（状态全部为 todo）。用 `node "${CLAUDE_SKILL_DIR}/scripts/goal-lint.js" goal.json` 对照 CAFF 上限检查长度：objective ≤2000，决策 statement ≤500，rationale ≤1000，标准 statement ≤500，verifyBy ≤1000，工作项 ≤300，证据的 summary 和 reference 都 ≤1000（证据的 kind 只能是 command、test、manual、review、artifact，其他值会被存成 artifact）。
 2. 让用户确认内容，并选定负责人（owner）。Goal 里写"用户批准了某事"时，只写用户在规划者会话里亲口确认过的。
 3. **用户批准后由规划者直接 set：** `node "$CAFF" set-goal <房间> --file goal.json --owner gpt [--paused] --confirm`。
    - 规划者 set 会写入 owner 并自动绑定规划者：在这个 Goal 里只有规划者和用户能裁决，房间 agent 裁决会得到 403。

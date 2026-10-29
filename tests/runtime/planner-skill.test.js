@@ -269,6 +269,37 @@ function plannerEnv(t, base) {
   return { CAFF_BASE_URL: base, CAFF_PLANNER_CREDENTIAL_FILE: path.join(tempDir(t, 'caff-ops-cred-'), 'none.json') };
 }
 
+test('goal-lint flags evidence the server would truncate, drop or relabel', async (t) => {
+  const file = path.join(tempDir(t, 'caff-ops-lint-'), 'goal.json');
+  const lint = (evidence) => {
+    fs.writeFileSync(file, JSON.stringify({
+      objective: 'Ship the change.',
+      acceptanceCriteria: [{ id: 'c1', statement: 'Tests pass.', verifyBy: 'npm test' }],
+      workItems: [{ id: 'w1', text: 'Implement it.', status: 'todo' }],
+      evidence,
+    }));
+    return runCli(path.join(SKILL_DIR, 'scripts', 'goal-lint.js'), [file]);
+  };
+
+  let result = await lint([{ id: 'e1', kind: 'test', criterionIds: ['c1'], summary: 'npm test passed.', reference: 'CI run 1' }]);
+  assert.equal(result.code, 0, result.stdout);
+  assert.match(result.stdout, /^OK$/m);
+
+  // normalizeGoalEvidence cuts summary and reference to 1000 characters, drops a
+  // record without a summary and stores an unknown kind as "artifact".
+  result = await lint([
+    { id: 'e1', kind: 'test', summary: 'x'.repeat(1001) },
+    { id: 'e2', kind: 'screenshot', summary: 'Looks right.', reference: 'y'.repeat(1001) },
+    { id: 'e2', summary: '   ' },
+  ]);
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(result.stdout, /evidence e1\.summary: 1001 > 1000/);
+  assert.match(result.stdout, /evidence e2\.reference: 1001 > 1000/);
+  assert.match(result.stdout, /evidence e2\.kind "screenshot" is stored as "artifact"/);
+  assert.match(result.stdout, /duplicate evidence e2/);
+  assert.match(result.stdout, /evidence e2\.summary: empty/);
+});
+
 test('send prints its request ID before posting, so a lost response can be retried without a duplicate', async (t) => {
   const room = '00000000-0000-4000-8000-000000000001';
   const base = await fakeServer(t, (req, res) => {
