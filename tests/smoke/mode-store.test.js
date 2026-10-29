@@ -45,30 +45,47 @@ test('ModeStore keeps builtin Mode undeletable but configurable', () => {
   } finally { db.close(); }
 });
 
-test('ModeStore binds the create-command helper contract and migrates the legacy skill-creator id on read', () => {
+test('ModeStore binds no helper Skill and drops the retired helper ids on read and save', () => {
   const { db, store } = createStore();
   try {
-    const seeded = store.get('standard');
-    assert.ok(seeded.skillIds.includes('create-command'));
-    assert.ok(!seeded.skillIds.includes('skill-creator'));
+    assert.deepEqual(store.get('standard').skillIds, []);
 
-    // A row stored before the re-pointing still carries the legacy id.
+    // Rows stored while a helper was force-bound still carry its id.
     const ts = new Date().toISOString();
-    db.prepare('INSERT INTO modes VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run('legacy-mode', 'Legacy Mode', '', 0, JSON.stringify(['skill-creator', 'review']), 'dynamic', ts, ts);
+    const insertMode = db.prepare('INSERT INTO modes VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    insertMode.run('legacy-mode', 'Legacy Mode', '', 0, JSON.stringify(['skill-creator', 'review']), 'dynamic', ts, ts);
+    insertMode.run('helper-mode', 'Helper Mode', '', 0, JSON.stringify(['create-command', 'review']), 'dynamic', ts, ts);
+    assert.deepEqual(store.get('legacy-mode').skillIds, ['review']);
+    assert.deepEqual(store.get('helper-mode').skillIds, ['review']);
 
-    const legacy = store.get('legacy-mode');
-    assert.deepEqual(legacy.skillIds, ['create-command', 'review']);
+    assert.deepEqual(store.save({ id: 'plain', name: 'Plain', skillIds: [] }).skillIds, []);
+    assert.deepEqual(store.save({ id: 'stale', name: 'Stale', skillIds: ['create-command', 'review'] }).skillIds, ['review']);
 
-    // Saving through the store persists the re-pointed helper only.
-    const saved = store.save({ id: 'repointed', name: 'Repointed', skillIds: [] });
-    assert.deepEqual(saved.skillIds, ['create-command']);
+    const modeStore = require('../../build/lib/mode-store');
+    assert.equal(modeStore.MODE_HELPER_SKILL_ID, undefined);
+    assert.equal(modeStore.ALWAYS_DYNAMIC_MODE_SKILL_IDS, undefined);
+  } finally { db.close(); }
+});
 
-    // Participant skill binding lists migrate the stale id as well, so old
-    // conversation participants keep loading without a DB rewrite.
-    const { ALWAYS_DYNAMIC_MODE_SKILL_IDS, MODE_HELPER_SKILL_ID } = require('../../build/lib/mode-store');
-    assert.equal(MODE_HELPER_SKILL_ID, 'create-command');
-    assert.deepEqual(ALWAYS_DYNAMIC_MODE_SKILL_IDS, ['create-command']);
+test('ModeStore removes the retired helper ids from Room participants', () => {
+  const db = new Database(':memory:');
+  migrateChatSchema(db);
+  const ts = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO chat_conversations (
+      id, title, type, project_scope_id, parent_conversation_id,
+      origin_conversation_id, tree_depth, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run('helper-room', 'Room', 'standard', 'project-1', null, null, 0, ts, ts);
+  db.prepare(`
+    INSERT INTO chat_conversation_agents (conversation_id, agent_id, conversation_skills_json, created_at)
+    VALUES (?, ?, ?, ?)
+  `).run('helper-room', 'role-family-gpt', JSON.stringify(['create-command', 'review', 'skill-creator']), ts);
+
+  new ModeStore(db);
+  try {
+    const row = db.prepare('SELECT conversation_skills_json FROM chat_conversation_agents').get();
+    assert.deepEqual(JSON.parse(row.conversation_skills_json), ['review']);
   } finally { db.close(); }
 });
 

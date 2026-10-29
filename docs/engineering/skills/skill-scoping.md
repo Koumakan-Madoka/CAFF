@@ -143,6 +143,11 @@ per-turn dynamic `cwd` switching.
    `skill-creator` in their stored `skill_ids_json`; the repair path must
    migrate or tolerate the stale id without breaking mode loads.
 
+**Superseded (2026-10-29):** decision 3 is withdrawn.
+- `create-command` was a verbatim Trellis 0.4.0-beta.8 template, licensed AGPL-3.0, so it was deleted, not rewritten.
+- The contract allowlist now has five ids, and modes no longer bind any helper skill.
+- Stored `skill-creator` and `create-command` ids are dropped instead of migrated. See `skill-system.md`, "Mode Helper Skills (retired)".
+
 ## DD-4: AGENTS.md semantics after the cwd switch
 
 **Facts (verified)**
