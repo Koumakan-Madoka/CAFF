@@ -23,7 +23,6 @@ const {
   extractMentionedAgentIds,
   getAgentById,
 } = require('../mention-routing');
-const { ALWAYS_DYNAMIC_MODE_SKILL_IDS } = require('../../../../lib/mode-store');
 const { resolveContractSkillPaths } = require('../../../../lib/contract-skills');
 const {
   buildLightweightContextSnapshotReference,
@@ -1622,7 +1621,6 @@ export function createAgentExecutor(options: any = {}) {
       allowHandoffs,
       agentToolRelativePath,
       modeLoadingStrategy,
-      forceDynamicConversationSkillIds: ALWAYS_DYNAMIC_MODE_SKILL_IDS,
       browserCliPath,
       orchestrationMode,
       workspaceContext: {

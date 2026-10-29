@@ -177,29 +177,25 @@ Contract:
 
 - `caff-workflow` — mandatory engineering workflow (references `grill-with-docs`)
 - `grill-with-docs`, `grilling`, `domain-modeling` — the grill/ADR clarification chain
-- `create-command`, `dag-planning` — skill authoring and DAG planning helpers
+- `dag-planning` — DAG planning helper
 
 When the active project is the CAFF repo itself, these resolve through the project-scoped external roots above and are exposed as read-only by the skill registry (edits go through git). Keep `.pi-sandbox/skills/` copies only until the corresponding git copies are released to production; remove the shadowing local copies afterwards so the tracked versions win.
 
-## Builtin Mode Helper Skills
+## Mode Helper Skills (retired)
 
-Builtin conversation modes may require fixed helper skills in addition to user-selected or participant-bound skills.
+Modes no longer force-bind a helper skill. A mode's `skillIds` are exactly the skills its owner selected.
 
-Global helper contract: `create-command`
+Until 2026-10-29, `lib/mode-store.ts` added a helper skill to every mode:
+- first `skill-creator`, a skill that never existed in the repository;
+- then `create-command`, after the re-pointing in `skill-scoping.md` DD-3.
 
-- the skill body lives at `.agents/skills/create-command/SKILL.md`
-- `lib/mode-store.ts` exports `MODE_HELPER_SKILL_ID = "create-command"` and includes it in every mode's effective `skillIds`
-- custom mode saves and built-in seed/repair paths re-add `create-command` so users cannot accidentally create a mode without the Skill authoring helper
-- `lib/mode-store.ts` exports `ALWAYS_DYNAMIC_MODE_SKILL_IDS = ["create-command"]`
-- legacy rows that still store the retired `skill-creator` id (the helper contract pointed at a skill that never existed in the repository; see `skill-scoping.md` DD-3) are migrated to `create-command` on read, so old modes keep loading without a DB rewrite
-- `server/domain/conversation/turn/agent-executor.ts` passes those ids to prompt assembly as `forceDynamicConversationSkillIds`
-- `server/domain/conversation/turn/agent-prompt.ts` must render those skills as descriptors even when the mode `loadingStrategy` is `full`; this prevents oversized helper skills from being injected into game/full modes while preserving full injection for other mode skills
+`create-command` was a verbatim copy of a Trellis 0.4.0-beta.8 template. Its text still described Trellis and Codex commands. Trellis is licensed AGPL-3.0, while this repository is MIT. It was removed, not replaced.
 
-Why:
+How old data is handled:
 
-- mode-specific prompt policy becomes reusable and reviewable as a normal skill asset
-- prompt/state separation stays cleaner: static rules in the skill, dynamic facts in mode context
-- fresh installs and existing databases both converge to the same mode contract without manual repair
+- `lib/mode-store.ts` drops both retired ids (`RETIRED_HELPER_SKILL_IDS`) from stored modes on read and on save, so no DB rewrite is needed for modes.
+- At startup, the same retirement pass that removes retired product skills strips both ids from Room participants' `conversation_skills_json`.
+- `agent-prompt.ts` keeps its generic `forceDynamicConversationSkillIds` option for rendering selected skills as descriptors. Nothing passes it any more.
 
 ## Development Guidelines
 
