@@ -238,15 +238,23 @@ function summarizeGoal(goal) {
   ].join(' | ');
 }
 
-async function listAllRooms(maxPages = 20) {
-  const rooms = [];
+// Walks a paged list from newest to oldest until the server reports no more,
+// so no caller acts on a silently truncated list (the oldest page holds a
+// room's original request). A cursor that stops moving fails instead of looping.
+async function forEachPage(pathname, onPage) {
   let cursor = '';
-  for (let page = 0; page < maxPages; page += 1) {
-    const result = await api('GET', `/api/conversations?limit=100${cursor ? `&before=${encodeURIComponent(cursor)}` : ''}`);
-    rooms.push(...(result.conversations || []));
-    if (!result.hasMore || !result.nextCursor) break;
-    cursor = result.nextCursor;
+  for (;;) {
+    const page = await api('GET', `${pathname}${cursor ? `&before=${encodeURIComponent(cursor)}` : ''}`);
+    onPage(page);
+    if (!page.hasMore || !page.nextCursor) return;
+    if (page.nextCursor === cursor) throw new Error(`paging ${pathname} stalled at cursor ${cursor}`);
+    cursor = page.nextCursor;
   }
+}
+
+async function listAllRooms() {
+  const rooms = [];
+  await forEachPage('/api/conversations?limit=100', (page) => rooms.push(...(page.conversations || [])));
   return rooms;
 }
 
@@ -359,18 +367,14 @@ const commands = {
     const pattern = new RegExp(positional[1], 'i');
     const max = Math.max(1, Number(flags.max) || 50);
     const hits = [];
-    let before = '';
-    for (let pageNo = 0; pageNo < 200; pageNo += 1) {
-      const page = await api('GET', `/api/conversations/${encodeURIComponent(roomId)}/messages?limit=100${before}`);
+    await forEachPage(`/api/conversations/${encodeURIComponent(roomId)}/messages?limit=100`, (page) => {
       for (const message of page.items || []) {
         if (typeof flags.sender === 'string' && message.senderName !== flags.sender) continue;
         const content = String(message.content || '');
         const match = pattern.exec(content);
         if (match) hits.push({ message, at: match.index });
       }
-      if (!page.hasMore) break;
-      before = `&before=${encodeURIComponent(page.nextCursor)}`;
-    }
+    });
     hits.sort((a, b) => String(a.message.createdAt).localeCompare(String(b.message.createdAt)));
     for (const { message, at } of hits.slice(0, max)) {
       const content = String(message.content || '');

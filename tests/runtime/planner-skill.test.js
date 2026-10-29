@@ -401,3 +401,57 @@ test('wait-attention keeps retrying while the server restarts', async (t) => {
     assert.match(result.stderr, /wait error: .*retrying in 15s/, label);
   }
 });
+
+// A paged list served newest page first; `before` is the index of the next older page.
+function pagedServer(t, routes) {
+  return fakeServer(t, (req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    const route = routes[url.pathname];
+    if (!route || url.searchParams.has('q')) return reply(res, 200, route ? route.search || { conversations: [] } : { error: 'not found' });
+    const index = Number(url.searchParams.get('before') || 0);
+    const last = route.pages - 1;
+    const body = { hasMore: index < last, nextCursor: route.stuck ? '1' : index < last ? String(index + 1) : null };
+    body[route.key] = route.page(index, last);
+    return reply(res, 200, body);
+  });
+}
+
+test('search and room-prefix lookup read every page instead of stopping early', async (t) => {
+  // The original request is the oldest message, so it sits on the last page.
+  const room = 'abcdef12-0000-4000-8000-000000000001';
+  const message = (id, content) => ({ id, content, senderName: 'You', role: 'user', createdAt: `2026-01-01T00:00:${id.padStart(2, '0').slice(-2)}Z` });
+  const base = await pagedServer(t, {
+    '/api/conversations': {
+      key: 'conversations',
+      pages: 25,
+      page: (index, last) => (index === last ? [{ id: room, title: 'Target' }] : [{ id: `0000000${index % 10}-0000-4000-8000-0000000000${String(index).padStart(2, '0')}`, title: 'Other' }]),
+    },
+    [`/api/conversations/${room}/messages`]: {
+      key: 'items',
+      pages: 205,
+      page: (index, last) => [message(String(index), index === last ? 'the original request' : 'later chatter')],
+    },
+  });
+  const env = plannerEnv(t, base);
+
+  let result = await runCli(CLI, ['search', room, 'original request'], env);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /the original request/);
+  assert.match(result.stdout, /^1 hit\(s\)/m);
+
+  // An 8-character prefix is resolved against every room, not the newest 2000.
+  result = await runCli(CLI, ['search', room.slice(0, 8), 'original request'], env);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /^1 hit\(s\)/m);
+});
+
+test('search fails instead of looping when the server repeats a cursor', async (t) => {
+  const room = 'abcdef12-0000-4000-8000-000000000002';
+  const base = await pagedServer(t, {
+    [`/api/conversations/${room}/messages`]: { key: 'items', pages: 1000, stuck: true, page: () => [] },
+  });
+  const result = await runCli(CLI, ['search', room, 'anything'], plannerEnv(t, base), { timeoutMs: 10000 });
+  assert.equal(result.killed, false, 'search kept paging on a repeated cursor');
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(result.stderr, /stalled/);
+});
