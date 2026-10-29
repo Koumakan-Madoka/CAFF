@@ -4,7 +4,6 @@
 // Usage: node caff.js <command> [args] [--flags]   — run without args for help.
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
@@ -32,18 +31,12 @@ function defaultCaffHome() {
 const BASE = (process.env.CAFF_BASE_URL || 'http://127.0.0.1:3100').replace(/\/+$/, '');
 const CAFF_HOME = process.env.CAFF_HOME || defaultCaffHome();
 const CAFF_PROJECT_ID = process.env.CAFF_PROJECT_ID || '';
-const STATE_DIR = process.env.CAFF_OPS_STATE_DIR || path.join(os.homedir(), '.caff-ops');
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PRIVATE_PATH_RE = /agent-sandboxes|PI_AGENT_PRIVATE_DIR|[\\/]private[\\/]/i;
-// Matches real update-goal invocations, not prose that merely mentions the tool.
-const GOAL_UPDATE_CALL_RE = /['"]update-goal['"]|update-goal\s+--|update-goal[\w-]*\.py/;
 
 const HELP = `CAFF ops CLI  (base ${BASE}, home ${CAFF_HOME || '(not found; set CAFF_HOME)'})
 
 Read-only:
   health                                  server health
-  portfolio [--stale-min N] [--idle-hours H] [--all] [--json] [--no-save]
-                                          every room with a Goal, attention flags first
   rooms [keyword] [--limit N]             search rooms (conversations), newest first
   status <room>                           light room status: goal / proposal / runner / last message
   goal <room> [--json]                    goal details (objective, criteria, work items, evidence)
@@ -51,8 +44,6 @@ Read-only:
   search <room> <regex> [--sender NAME] [--max N]
                                           grep the whole room history, oldest hit first
   trace <room> <messageId>                one assistant turn: session reuse, model calls, failures
-  rounds <room> [--agent ID] [--since today|all|ISO] [--sessions-dir DIR]
-                                          per-turn time breakdown from session JSONL logs
   preview <room> (--file F | --text T)    routing preview (who would be triggered), sends nothing
 
 Planner API (CAFF with ADR 0002 P1; needs the planner credential file):
@@ -80,7 +71,7 @@ Write (within an approved decision or the ADR 0002 delegated scope; reserved ite
 <room> = conversation UUID, its first 8 characters, or a title keyword (exact title wins; ambiguous keywords list candidates).
 Env: CAFF_BASE_URL (default http://127.0.0.1:3100),
      CAFF_HOME (default: the CAFF checkout holding this script; a linked worktree uses its main checkout),
-     CAFF_PROJECT_ID (create-room default project), CAFF_OPS_STATE_DIR (portfolio snapshot, default ~/.caff-ops),
+     CAFF_PROJECT_ID (create-room default project),
      CAFF_PLANNER_CREDENTIAL_FILE (override), CAFF_PLANNER_BIND_HOST (server bind host if it differs from the base URL host).
 Writes carry the planner credential when its file exists (default %LOCALAPPDATA%\\CAFF\\planner\\planner-<sha256(host)>-<port>.json);
 without it they are sent the old way, which a P1 server rejects.`;
@@ -190,15 +181,11 @@ function oneLine(text, max) {
   return max && flat.length > max ? `${flat.slice(0, max)}…(${flat.length})` : flat;
 }
 
-function minutes(ms) {
-  return `${(ms / 60000).toFixed(1)}m`;
-}
-
 async function resolveRoom(arg) {
   if (!arg) throw new Error('missing <room> (conversation UUID, 8-char ID prefix, or title keyword)');
   if (UUID_RE.test(arg)) return arg;
   if (/^[0-9a-f]{8}$/i.test(arg)) {
-    // portfolio prints 8-char prefixes; resolve them against the full room list.
+    // attention and the UI show 8-char room prefixes; resolve them against the full room list.
     const matches = (await listAllRooms()).filter((room) => room.id.startsWith(arg.toLowerCase()));
     if (matches.length === 1) return matches[0].id;
     if (matches.length > 1) throw new Error(`ID prefix ${arg} is ambiguous: ${matches.map((room) => room.id).join(', ')}`);
@@ -251,20 +238,6 @@ function summarizeGoal(goal) {
   ].join(' | ');
 }
 
-function ago(ms) {
-  const mins = Math.max(0, Math.round(ms / 60000));
-  if (mins < 60) return `${mins} 分钟`;
-  const hours = Math.round(mins / 60);
-  return hours < 48 ? `${hours} 小时` : `${Math.round(hours / 24)} 天`;
-}
-
-function when(ms) {
-  if (!ms) return '-';
-  const date = new Date(ms);
-  const hm = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-  return date.toDateString() === new Date().toDateString() ? `今天 ${hm}` : `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${hm}`;
-}
-
 async function listAllRooms(maxPages = 20) {
   const rooms = [];
   let cursor = '';
@@ -277,153 +250,9 @@ async function listAllRooms(maxPages = 20) {
   return rooms;
 }
 
-// Work-item and criterion statuses only; revision bumps from evidence edits do not count as progress.
-function goalStatusKey(goal) {
-  return [...(goal.workItems || []), ...(goal.acceptanceCriteria || [])]
-    .map((item) => `${item.id}:${item.status}`)
-    .join('|');
-}
-
-function readJsonFile(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-function portfolioRow(room, previousRooms, now, staleMs, idleMs) {
-  const meta = room.metadata || {};
-  const goal = meta.sessionGoal;
-  const runner = meta.sessionGoalRunner;
-  const proposal = meta.sessionGoalProposal;
-  const statusKey = goalStatusKey(goal);
-  const before = previousRooms[room.id];
-  const unchanged = Boolean(before && before.goalId === goal.goalId && before.statusKey === statusKey);
-  const snapshot = {
-    goalId: goal.goalId,
-    statusKey,
-    lastStatusChangeAt: unchanged ? before.lastStatusChangeAt : now,
-    baselineRevision: unchanged ? before.baselineRevision : goal.revision,
-  };
-  const lastAt = Date.parse(room.lastMessageAt || room.updatedAt || '') || 0;
-  const idleFor = now - lastAt;
-  const active = goal.status === 'active';
-  const stale = active && idleFor > staleMs;
-  const criteria = goal.acceptanceCriteria || [];
-  const flags = [];
-  if (proposal) {
-    // The runner never auto-continues while a proposal is pending (claimSessionGoalAutoContinue).
-    const waited = now - (Date.parse(proposal.createdAt || '') || now);
-    const allPassed = criteria.length > 0 && criteria.every((c) => c.status === 'passed' || c.status === 'waived');
-    flags.push({
-      level: stale ? 2 : 1,
-      text: `${proposal.action} 提案等裁决 ${ago(waited)}${stale ? `，期间 ${ago(idleFor)}没有新消息（裁决前不会自动续跑）` : ''}${proposal.action === 'complete' && allPassed ? '；验收标准已全部通过，可以结项' : ''}`,
-    });
-  } else if (stale) {
-    let reason = '没有待裁决提案、runner 也没跑满，自动续跑可能出了问题';
-    if (runner && (runner.status === 'budget_limited' || runner.iteration >= runner.maxIterations)) {
-      reason = `runner 已跑满 ${runner.iteration}/${runner.maxIterations}，需要人工续`;
-    } else if (/^Thinking/i.test(String(room.lastMessagePreview || ''))) {
-      reason = '最后一轮停在进行中，可能已中断';
-    }
-    flags.push({ level: 2, text: `Goal 是 active，但 ${ago(idleFor)}没有新消息：${reason}` });
-  }
-  if (runner && ((runner.consecutiveFailureCount || 0) > 0 || (runner.consecutiveModelFailureCount || 0) > 0)) {
-    flags.push({ level: 2, text: `连续失败 ${runner.consecutiveFailureCount || 0} 次（其中模型失败 ${runner.consecutiveModelFailureCount || 0} 次）` });
-  }
-  if (active && idleFor <= staleMs && runner && runner.maxIterations
-    && runner.iteration >= runner.maxIterations - 2 && runner.iteration < runner.maxIterations) {
-    flags.push({ level: 1, text: `runner 即将跑满 ${runner.iteration}/${runner.maxIterations}` });
-  }
-  const revisionDelta = goal.revision - snapshot.baselineRevision;
-  if (active && unchanged && now - snapshot.lastStatusChangeAt > idleMs && revisionDelta >= 3) {
-    flags.push({ level: 1, text: `${ago(now - snapshot.lastStatusChangeAt)}里 revision +${revisionDelta}，但工作项和验收标准的状态都没变` });
-  }
-  const section = flags.length ? 'attention' : active ? 'active' : goal.status === 'paused' ? 'paused' : 'done';
-  return {
-    room,
-    goal,
-    runner,
-    flags,
-    section,
-    lastAt,
-    isChild: Boolean(room.parentConversationId) || Number(room.treeDepth) > 0,
-    snapshot,
-  };
-}
-
-function portfolioLine(row) {
-  const { room, goal, runner } = row;
-  const work = goal.workItems || [];
-  const criteria = goal.acceptanceCriteria || [];
-  const count = (items, status) => items.filter((item) => item.status === status).length;
-  const doing = count(work, 'in_progress');
-  return [
-    `[${room.id.slice(0, 8)}] ${row.isChild ? '↳ ' : ''}${oneLine(room.title, 26)}`,
-    `Goal ${goal.revision !== undefined ? `rev${goal.revision}` : '(旧版)'} ${goal.status}`,
-    goal.owner ? `owner ${goal.owner.agentName}` : null,
-    work.length ? `工作项 ${count(work, 'done')}/${work.length}${doing ? `（进行中 ${doing}）` : ''}` : null,
-    criteria.length ? `标准 ${count(criteria, 'passed')}/${criteria.length}` : null,
-    runner && goal.status === 'active' ? `runner ${runner.iteration}/${runner.maxIterations}` : null,
-    `最后活动 ${when(row.lastAt)}`,
-  ].filter(Boolean).join(' · ');
-}
-
 const commands = {
   async health() {
     console.log(JSON.stringify(await api('GET', '/api/health'), null, 2));
-  },
-
-  async portfolio({ flags }) {
-    const now = Date.now();
-    const staleMs = (Number(flags['stale-min']) || 90) * 60000;
-    const idleMs = (Number(flags['idle-hours']) || 6) * 3600000;
-    const snapshotFile = path.join(STATE_DIR, 'portfolio-snapshot.json');
-    const previous = readJsonFile(snapshotFile);
-    const previousRooms = (previous && previous.rooms) || {};
-    const rows = (await listAllRooms())
-      .filter((room) => room.metadata && room.metadata.sessionGoal)
-      .map((room) => portfolioRow(room, previousRooms, now, staleMs, idleMs));
-
-    if (!flags['no-save']) {
-      fs.mkdirSync(STATE_DIR, { recursive: true });
-      const rooms = Object.fromEntries(rows.map((row) => [row.room.id, row.snapshot]));
-      fs.writeFileSync(snapshotFile, JSON.stringify({ savedAt: new Date(now).toISOString(), rooms }, null, 1));
-    }
-    if (flags.json) {
-      console.log(JSON.stringify(rows.map((row) => ({
-        id: row.room.id,
-        title: row.room.title,
-        section: row.section,
-        child: row.isChild,
-        goal: { revision: row.goal.revision, status: row.goal.status, owner: row.goal.owner ? row.goal.owner.agentName : null },
-        runner: row.runner ? { iteration: row.runner.iteration, maxIterations: row.runner.maxIterations } : null,
-        lastActivity: row.lastAt ? new Date(row.lastAt).toISOString() : null,
-        flags: row.flags.map((flag) => flag.text),
-      })), null, 2));
-      return;
-    }
-
-    const bySection = (name) => rows.filter((row) => row.section === name);
-    const attention = bySection('attention').sort((a, b) =>
-      Math.max(...b.flags.map((f) => f.level)) - Math.max(...a.flags.map((f) => f.level)) || b.lastAt - a.lastAt);
-    const recent = (list) => list.sort((a, b) => b.lastAt - a.lastAt);
-    console.log(`CAFF 项目总览 · ${when(now)} · ${rows.length} 个 room 挂着 Goal${previous ? ` · 对比上次快照 ${when(Date.parse(previous.savedAt))}` : ' · 首次快照，"停滞"要从下次开始判断'}`);
-    console.log(`\n需要关注（${attention.length}）`);
-    for (const row of attention) {
-      console.log(`  ⚠ ${portfolioLine(row)}`);
-      for (const flag of row.flags) console.log(`      → ${flag.text}`);
-    }
-    for (const [name, label] of [['active', '正常推进'], ['paused', '已暂停']]) {
-      const list = recent(bySection(name));
-      console.log(`\n${label}（${list.length}）`);
-      for (const row of list) console.log(`    ${portfolioLine(row)}`);
-    }
-    const done = recent(bySection('done'));
-    console.log(`\n已完成（${done.length}）${flags.all ? '' : '，加 --all 显示'}`);
-    if (flags.all) for (const row of done) console.log(`    ${portfolioLine(row)}`);
-    console.log(`\n深入查看：node caff.js status <8 位 ID>；快照保存在 ${snapshotFile}${flags['no-save'] ? '（本次未更新）' : ''}`);
   },
 
   async rooms({ positional, flags }) {
@@ -571,47 +400,6 @@ const commands = {
     console.log(`retained steps by tool (window may be truncated): ${JSON.stringify(tools)}`);
   },
 
-  async rounds({ positional, flags }) {
-    const roomId = await resolveRoom(positional[0]);
-    const dir = typeof flags['sessions-dir'] === 'string' ? flags['sessions-dir'] : CAFF_HOME && path.join(CAFF_HOME, '.pi-sandbox', 'named-sessions');
-    if (!dir || !fs.existsSync(dir)) {
-      throw new Error(`session log directory ${dir || '(unknown)'} not found; pass --sessions-dir <agent dir>/named-sessions or set CAFF_HOME`);
-    }
-    let since = new Date();
-    since.setHours(0, 0, 0, 0);
-    if (flags.since === 'all') since = new Date(0);
-    else if (typeof flags.since === 'string' && flags.since !== 'today') since = new Date(flags.since);
-    const agent = typeof flags.agent === 'string' ? flags.agent : '';
-    const files = fs.readdirSync(dir)
-      .filter((name) => name.startsWith(`chat-${roomId}-`) && name.endsWith('.jsonl') && (!agent || name.includes(agent)))
-      .map((name) => ({ name, full: path.join(dir, name), mtime: fs.statSync(path.join(dir, name)).mtimeMs }))
-      .filter((file) => file.mtime >= since.getTime())
-      .sort((a, b) => a.mtime - b.mtime);
-    if (files.length === 0) {
-      console.log(`no session logs for ${roomId} since ${fmt(since.getTime())} in ${dir}`);
-      return;
-    }
-    const totals = { n: 0, wall: 0, model: 0, firstEdit: 0, firstEditN: 0, longRun: 0 };
-    for (const file of files) {
-      const round = analyzeSession(file.full);
-      if (!round) continue;
-      totals.n += 1;
-      totals.wall += round.wall;
-      totals.model += round.model;
-      totals.longRun += round.longRuns.reduce((sum, run) => sum + run.ms, 0);
-      if (round.firstEdit !== null) {
-        totals.firstEdit += round.firstEdit;
-        totals.firstEditN += 1;
-      }
-      const goalUpdates = Object.entries(round.goalUpdates).map(([k, v]) => `${v} ${k}`).join(', ') || 'none';
-      console.log(`${fmt(round.start)} ${round.agent} | wall ${minutes(round.wall)} | model ${minutes(round.model)} (${round.calls} calls) | tools ${minutes(round.tool)} | first repo edit ${round.firstEdit === null ? '-' : `@${minutes(round.firstEdit)}`} | edits ${round.edits} reads ${round.reads} | update-goal: ${goalUpdates} | ctx max ${Math.round(round.maxCtx / 1000)}k`);
-      for (const run of round.longRuns) console.log(`    long run ${minutes(run.ms)}: ${run.command}`);
-    }
-    if (totals.n > 0) {
-      console.log(`\n${totals.n} turns | avg wall ${minutes(totals.wall / totals.n)} | model share ${Math.round((100 * totals.model) / totals.wall)}% | avg time to first repo edit ${totals.firstEditN ? minutes(totals.firstEdit / totals.firstEditN) : '-'} | avg long-run time ${minutes(totals.longRun / totals.n)}`);
-    }
-  },
-
   async preview({ positional, flags }) {
     const roomId = await resolveRoom(positional[0]);
     const content = readContent(flags);
@@ -630,7 +418,8 @@ const commands = {
     // and a P1 server acknowledges the duplicate without dispatching it again.
     // Print it before posting: when the server accepts the message but the
     // response is lost, this line is the only record of the ID to retry with.
-    const clientRequestId = typeof flags['request-id'] === 'string' ? flags['request-id'] : `claude-code-${Date.now()}`;
+    // A random default ID: a timestamp collides when two sends start in the same millisecond.
+    const clientRequestId = typeof flags['request-id'] === 'string' ? flags['request-id'] : `claude-code-${crypto.randomUUID()}`;
     console.log(`request ${clientRequestId}: if this send fails, retry with --request-id ${clientRequestId}`);
     const result = await api('POST', `/api/conversations/${encodeURIComponent(roomId)}/messages`, { content, clientRequestId });
     const accepted = result.acceptedMessage || {};
@@ -904,76 +693,6 @@ function printAttention(page) {
     console.log(`#${item.sequence} ${fmt(item.createdAt)} ${item.kind} room ${String(item.conversationId).slice(0, 8)} goal rev ${item.goalRevision}${agents} | ${item.summary} | ${state}`);
   }
   console.log(`items ${page.items.length} | nextCursor ${page.nextCursor} | highWatermark ${page.highWatermark} | hasMore ${page.hasMore}${page.timedOut ? ' | timed out' : ''}`);
-}
-
-function analyzeSession(file) {
-  const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
-  const entries = [];
-  for (const line of lines) {
-    try {
-      entries.push(JSON.parse(line));
-    } catch {
-      // The newest file may still be streaming; skip a partial trailing line.
-    }
-  }
-  if (entries.length < 2) return null;
-  const ts = (entry) => new Date(entry.timestamp).getTime();
-  const start = ts(entries[0]);
-  const agentMatch = path.basename(file).match(/-(role-[a-z0-9-]+?)-(?:default|[a-z0-9]+)-[0-9a-f]+\.jsonl$/i);
-  const round = {
-    start,
-    agent: agentMatch ? agentMatch[1] : '?',
-    wall: ts(entries[entries.length - 1]) - start,
-    model: 0,
-    tool: 0,
-    calls: 0,
-    reads: 0,
-    edits: 0,
-    maxCtx: 0,
-    firstEdit: null,
-    longRuns: [],
-    goalUpdates: {},
-  };
-  const pending = {};
-  let previous = start;
-  for (const entry of entries) {
-    const now = ts(entry);
-    const message = entry.type === 'message' ? entry.message : null;
-    if (message && message.role === 'assistant') {
-      round.calls += 1;
-      const requestStart = typeof message.timestamp === 'number' ? message.timestamp : previous;
-      round.model += Math.max(0, now - requestStart);
-      const usage = message.usage || {};
-      round.maxCtx = Math.max(round.maxCtx, (usage.input || 0) + (usage.cacheRead || 0));
-      for (const block of message.content || []) {
-        if (block.type !== 'toolCall') continue;
-        pending[block.id] = block;
-        const args = block.arguments || {};
-        if (block.name === 'read') round.reads += 1;
-        if ((block.name === 'edit' || block.name === 'write') && !PRIVATE_PATH_RE.test(String(args.path || ''))) {
-          round.edits += 1;
-          if (round.firstEdit === null) round.firstEdit = now - start;
-        }
-      }
-    }
-    if (message && message.role === 'toolResult') {
-      const elapsed = Math.max(0, now - previous);
-      round.tool += elapsed;
-      const call = pending[message.toolCallId];
-      const command = call && call.name === 'bash' ? String((call.arguments || {}).command || '') : '';
-      if (command && elapsed >= 120000) round.longRuns.push({ ms: elapsed, command: oneLine(command, 90) });
-      if (GOAL_UPDATE_CALL_RE.test(command)) {
-        const output = (message.content || []).map((part) => part.text || '').join('');
-        const succeeded = /"ok":\s*true|ok True|'ok': True|receipt True/.test(output);
-        const outcome = /cannot change the objective|goal_structural_review_required|\b409\b/.test(output) ? 'rejected-409'
-          : /Traceback|SyntaxError|Error:/.test(output) && !succeeded ? 'script-error'
-            : succeeded || /"revision"/.test(output) ? 'ok' : 'unknown';
-        round.goalUpdates[outcome] = (round.goalUpdates[outcome] || 0) + 1;
-      }
-    }
-    previous = now;
-  }
-  return round;
 }
 
 async function main() {

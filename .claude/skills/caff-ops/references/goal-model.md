@@ -69,7 +69,7 @@
 | 结项提案一直挂着，接受时报 409 | 提案提交之后 Goal 又更新过，`baseRevision` 过期了。让提案人重新提交，或者由用户直接执行 complete（前提是验收标准全部通过） |
 | 提交很多、测试数猛涨，验收标准却一条没过 | 每个小提交都送独立审查（审查耗时≈实现耗时，PASS 率接近 100%），外加每步全量回归。另一个常见原因是用户口头说"先做 MVP"，但验收标准和承诺决策的严格度从来没降，审查者照着它们审，owner 就照着它们加固。大 room 实测审查能占全部 agent 时间的三分之一以上，FAIL 多半出在大批次（+1000 行以上）上 |
 | 用户裁决了"小改不审"，owner 仍然每个提交都 @ 审查者 | 裁决只写进了 decisions，续跑提示里没有。owner 冷启动时按惯性走。需要在恢复前给 owner 发一条明确的执行约束 |
-| runner 一直在跑，工作项却好几个小时不变；每轮只做"建红测""抽函数""只读确认"之类的一小步 | 有的模型会在推理里给自己设一个并不存在的每轮 token 预算（比如"还剩 14k，不够做完整宿主"），然后缩小这一轮的范围。CAFF 的 prompt、pi 的系统提示词和请求参数里都没有这种预算，轮次结束是 agent 自己 send-public 之后 CAFF 中止下一次调用，不是外部截断。用 `budget-scan.js` 按天、按模型统计这类说法的占比，用 `thinking-grep.js` 看单个 room 的原话 |
+| runner 一直在跑，工作项却好几个小时不变；每轮只做"建红测""抽函数""只读确认"之类的一小步 | 有的模型会在推理里给自己设一个并不存在的每轮 token 预算（比如"还剩 14k，不够做完整宿主"），然后缩小这一轮的范围。CAFF 的 prompt、pi 的系统提示词和请求参数里都没有这种预算，轮次结束是 agent 自己 send-public 之后 CAFF 中止下一次调用，不是外部截断。要确认，可以在 session 日志的推理块里搜"预算""tokens left"这类说法，看占比和原话 |
 | 某条消息显示 `ERROR: 服务重启中断`，runner 不再续跑 | 实例重启打断了正在跑的那一轮，启动对账把它标成了失败；带 Goal 关联的轮次还会在待处理队列里留下 `turn_failed`。重启后不会自动续上，要人工 @owner 继续 |
 | 用户已经批过一次"受控诊断"，owner 遇到同类失败又提暂停 | agent 把用户一句"授权"理解成只管那一轮，还可能把管历史失败的规则套到自己刚写的新测试上。裁决时要写明授权对这一类失败长期有效，并写清边界：每次重跑都要带新的诊断或修复、限定次数、保留现场不动；查不清就登记 unknown，转去做别的工作；同时说明只有哪些情况才该提暂停 |
 | 测试在加载阶段报 `ERR_MODULE_NOT_FOUND`，worktree 里的 `node_modules` 是空的 | 多半是**别的 room** 的清理误删：有 agent 建临时 worktree 时用 junction 指向别人的依赖目录，解除 junction 失败后删除命令照常执行，就会顺着 junction 把目标清空。定位方法：看 `node_modules` 目录的修改时间，再查同一时段所有 agent 的 session 日志（`find <named-sessions 目录> -newermt`），看有没有清理命令。恢复：在 lockfile 与 package.json 依赖一致的前提下，`npm ci --offline` 只用本地缓存 |
@@ -80,35 +80,7 @@
 
 1. `status` 和 `goal`：看状态、提案，以及工作项和标准的分布。
 2. `messages --limit 20`：看每轮汇报了什么，以及"下一步"是否一直在重复。
-3. `rounds --agent <owner>`：看每轮耗时由哪些部分组成、update-goal 的结果。
-4. `trace`：抽查几轮的 `sessionReuseReason` 和失败原因。
-5. 结论里把"机制是否健康"和"实质进展"分开写，有数据就给数据，推测要标明是推测。
+3. `trace`：抽查几轮的 `sessionReuseReason`、模型调用次数和失败原因。
+4. 结论里把"机制是否健康"和"实质进展"分开写，有数据就给数据，推测要标明是推测。
 
-## 全量效率分析（大 room、跨多天）
-
-`rounds` 是按 session 文件统计的。session 复用时，同一个文件里会有好几轮，所以它会把几轮合成一行，还把轮与轮之间的空闲时间算进 wall（实测有 room 被算成 97 小时，按轮拆开只有 76 小时）。跨多天的 room 改用 `scripts/analysis/` 下的脚本，按 user 消息把 session 拆成单轮，再和 CAFF 消息逐条对上。下面的 `${CLAUDE_SKILL_DIR}` 是本 skill 的目录，也就是 SKILL.md 里 caff.js 所在的那个目录：
-
-```bash
-A="${CLAUDE_SKILL_DIR}/scripts/analysis"; D="<系统临时目录>/caff-<room前8位>"; S="<实例 agent 目录>/named-sessions"
-mkdir -p "$D"
-node "$A/fetch-messages.js" <会话UUID> "$D/messages.json"        # 全部消息（只读，分页拉取）
-node "$A/analyze-room.js" "$D/messages.json" "$S" <会话UUID>
-#   按天、按 agent 统计：轮次、wall、冷启动原因、revision 区间、update-goal 次数、测试耗时、首次改文件时间；顺带生成 $D/turns.json
-node "$A/categorize-turns.js" "$D"     # 按活动分类：实现 / 独立审查 / 治理 / 失败 / 短回复，各占多少时间；冷启动 prompt 的增长
-node "$A/reviews-runner.js" "$D"       # 审查结论 PASS/FAIL 和对应的改动规模；runner 每段跑到第几轮
-node "$A/list-turns.js" "$D" <起ISO> <止ISO> [摘要字数]   # 逐轮流水，看具体的循环模式
-node "$A/tokens.js" "$D/messages.json"                  # 按 agent、按天统计 token
-node "$A/thinking-grep.js" "$S" <会话UUID> role-family-gpt <起ISO>   # 推理里的预算、收尾自述：判断每轮是不是被自设预算切碎
-node "$A/budget-scan.js" "$S" role-family-gpt [原话输出文件]   # 全部 session：按天、通道、模型统计"预算"说法的占比（扫全部日志，可能要几分钟）
-```
-
-再加上 `git log --oneline <基线>..<room 分支>` 和 `git diff --numstat` 看提交节奏，以及源码、测试、文档各占多少。用完删掉 `$D`，里面是 room 的原文。
-
-跨 room 对比（判断是个别 room 的问题还是平台通病）：
-
-```bash
-node "$A/scan-review-share.js" 40          # 消息数 ≥40 的新版 Goal room：agent 总时长、审查轮次和时间占比、FAIL 数、验收进度
-node "$A/sample-reviews.js" <会话UUID> 15  # 抽看某个 room 最近的审查消息，判断是不是"每个小步都送审"
-```
-
-这两个脚本按消息时间戳和关键词估算，结论里要注明是估算。参考：大 room 的审查占比可能超过 40%，小 room 大多在 15% 以下。
+更细的统计（按 session 日志逐轮拆解耗时、按活动分类审查和实现的占比）依赖日志格式和启发式规则，不在公共 skill 里。注意 session 复用时，一个 session 文件里会有好几轮，按文件统计会把几轮合成一行，还会把轮与轮之间的空闲时间算进去。

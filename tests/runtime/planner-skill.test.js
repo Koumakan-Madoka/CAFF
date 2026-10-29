@@ -359,7 +359,9 @@ test('send prints its request ID before posting, so a lost response can be retri
   });
   const result = await runCli(CLI, ['send', room, '--text', 'ping', '--confirm'], plannerEnv(t, base));
   assert.equal(result.code, 1, result.stdout);
-  assert.match(result.stdout, /retry with --request-id claude-code-\d+/);
+  // The default ID is a random UUID: a timestamp collides when two sends start in
+  // the same millisecond, and the server then drops one as a duplicate.
+  assert.match(result.stdout, /retry with --request-id claude-code-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/);
 });
 
 test('wait-attention reports a query that can never succeed instead of retrying it', async (t) => {

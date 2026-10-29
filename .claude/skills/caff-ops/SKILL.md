@@ -66,17 +66,15 @@ agent ID 的格式是 `role-family-gpt`、`role-family-glm`、`role-family-kimi`
 
 ```bash
 CAFF="${CLAUDE_SKILL_DIR}/scripts/caff.js"
-node "$CAFF" portfolio                           # 全局总览：所有挂着 Goal 的 room，需要关注的排最前
+node "$CAFF" attention --status unresolved        # 规划者接口：所有需要规划者处理的事项（持久队列；--after 游标、--room、--limit、--json）
 node "$CAFF" rooms <关键词>                       # 按标题关键词找 room
 node "$CAFF" status <room>                        # 轻量状态：Goal、提案、runner、最后一条消息
 node "$CAFF" goal <room>                          # Goal 全貌：目标、验收标准、工作项、证据、大小（--json 输出原始数据）
 node "$CAFF" messages <room> --limit 10           # 最近的消息（--full 看全文，--before 往前翻页）
 node "$CAFF" search <room> "<正则>" --sender You  # 全量历史里 grep（最旧的命中在前；--max 调上限）
 node "$CAFF" trace <room> <assistant消息ID>       # 单轮诊断：是否复用 session、模型调用次数、失败原因
-node "$CAFF" rounds <room> --agent role-family-gpt --since today   # 每轮耗时拆解（读 session 日志；--sessions-dir 指定目录）
 node "$CAFF" preview <room> --file msg.txt        # 路由预览：会触发谁，不发送
 node "$CAFF" state <room>                         # 规划者接口：有界状态（goal/提案/裁决/runner/busy/最后一轮），不带消息
-node "$CAFF" attention --status unresolved        # 规划者接口：持久待处理队列（--after 游标、--room、--limit、--json）
 node "$CAFF" wait-attention --after N --status unresolved   # 长轮询，有新事项就退出（0），超时退出 2；放进 run_in_background
 node "$CAFF" ack <序号> --reason "…" --confirm     # 确认 goal_completed / turn_failed 事项
 node "$CAFF" send <room> --file msg.txt --confirm                    # 写：以规划者身份发消息（--request-id 复用可安全重试）
@@ -88,18 +86,26 @@ node "$CAFF" revise <room> --file patch.json --reason "…" --impact "…" [--af
 node "$CAFF" stop <room> [--stop-goal] --confirm
 ```
 
-`<room>` 可以写会话 UUID、UUID 的前 8 位（`portfolio` 显示的就是这个），也可以写标题。标题里有空格要加引号；关键词对应多个 room 时，脚本会列出候选，再用 ID 指定。脚本没覆盖的接口见 [references/api.md](references/api.md)。
+`<room>` 可以写会话 UUID、UUID 的前 8 位（`attention` 显示的就是这个），也可以写标题。标题里有空格要加引号；关键词对应多个 room 时，脚本会列出候选，再用 ID 指定。脚本没覆盖的接口见 [references/api.md](references/api.md)。
 
 ## 常见任务
 
 ### 巡检所有项目（总经理视角）
-1. 运行 `portfolio`。它一次拉完所有 room，每个挂 Goal 的 room 一行，分成"需要关注 / 正常推进 / 已暂停 / 已完成"四组。可选参数：`--stale-min`（多少分钟没消息算停滞，默认 90）、`--idle-hours`（多少小时状态不变算空转，默认 6）、`--all`（连已完成的也列出）、`--json`、`--no-save`。
-2. 各类提示的含义和处理办法：
-   - **"××提案等裁决"**：有提案待裁决时，runner 不会自动续跑。所以 Goal 显示 active、runner 显示 running，却很多天没有动静，多半就是这个原因，不是故障。如果是 complete 提案，并且验收标准已全部通过，就建议用户结项。接受之前先用 `status` 看提案的 `baseRevision` 是否等于当前 revision：不相等的话接受会被 409 拒绝，要让提案人重新提交，或者由用户直接执行 complete。
-   - **"Goal 是 active，但很久没有新消息"**，而且后面写的不是提案或跑满：这才是真异常。用 `messages` 和 `trace` 查最后一轮出了什么事。
-   - **"runner 已跑满 / 即将跑满"**：需要人工接着推。
-   - **"revision 一直在涨，但状态没变"**：有空转嫌疑，用 `rounds` 分析。这项要和本地快照（`~/.caff-ops/portfolio-snapshot.json`）对比，所以从第二次运行开始才会判断。
-3. 给用户汇报时分三组：需要用户拍板的（保留事项、新决定）、已在委托范围内处理的、正常推进的。
+1. 运行 `attention --status unresolved`。它列出服务端持久队列里所有需要规划者处理的事项：
+   - 待裁决的提案，包括里程碑送审的暂停提案和结项提案；
+   - 跑满预算、失败暂停、owner 被移除；
+   - Goal 完成、轮次失败。
+
+   事项在服务端重启后依然保留，比按消息时间判断更可靠。服务端另有 `GET /api/planner/portfolio`，每个房间一行，附带未处理事项数，见 [references/api.md](references/api.md)。
+2. 对有事项的 room，先用 `state <room>` 看有界状态，需要细节再用 `status`、`goal`、`messages`。
+3. 各类事项的处理办法：
+   - **提案等裁决**：有提案待裁决时，runner 不会自动续跑。所以 Goal 显示 active、runner 显示 running，却很多天没有动静，多半就是这个原因，不是故障。
+     - complete 提案在验收标准全部通过时，建议用户结项。
+     - 接受之前先用 `status` 看提案的 `baseRevision` 是否等于当前 revision。不相等的话，接受会被 409 拒绝，要让提案人重新提交，或者由用户直接执行 complete。
+   - **跑满预算**：需要人工接着推，见下面的"Goal 动作"。
+   - **失败暂停、轮次失败**：先用 `messages` 和 `trace` 查清最后一轮出了什么事，再决定恢复还是让负责人修复。
+4. Goal 是 active 并且正常续跑时，队列里不会有事项。怀疑某个 room 卡住了（很久没有新消息，也没有提案或跑满），就按下面的"为什么这么慢"去查。
+5. 给用户汇报时分三组：需要用户拍板的（保留事项、新决定）、已在委托范围内处理的、正常推进的。
 
 ### "某个 room 的 Goal 跑得怎么样"
 1. 用 `status` 看 Goal 状态、runner 跑到第几轮（上限多少）、有没有待裁决的提案、最后一条消息。runner 字段保留的是最后一次续跑时的值；Goal 不是 active 就不会再续跑，以 Goal 状态为准。
@@ -114,16 +120,18 @@ node "$CAFF" stop <room> [--stop-goal] --confirm
    - 游标按事项的创建顺序递增；队列里事项的解决状态，用 `attention --status unresolved` 重新列出来看。
 
 ### "为什么这么慢 / 是不是卡住了"
-- `rounds` 能看到每一轮的这些数据：
-  - 总耗时和模型时间占比。
-  - 到第一次改仓库文件花了多久：这就是冷启动后重新熟悉上下文的成本。
-  - 超过 2 分钟的长命令：多半是全量回归。
-  - update-goal 调了几次、几次被 409 拒绝。
-- `trace` 看某一轮的 `sessionReuseReason`：
-  - `goal_revision_mismatch`：上一轮改过 Goal，这一轮只能冷启动。
-  - `static_hash_mismatch`：prompt 的静态部分变了，比如刚部署了新代码。
-- 常见根因有三种：工作项没有明确的完成标准，导致同一处反复加固；每轮只做一小步却跑全量回归；每轮都更新 Goal，导致下一轮冷启动。分析方法和判断依据见 [references/goal-model.md](references/goal-model.md)。
-- 跨多天的大 room 不要只看 `rounds`：session 复用时它会把几轮合成一行，还把空闲时间算进去。改用 `${CLAUDE_SKILL_DIR}/scripts/analysis/` 下的脚本，按单轮统计、按活动分类（实现 / 审查 / 治理 / 失败），用法见 goal-model.md 的"全量效率分析"。
+- 用 `messages` 看最近几轮各做了什么、"下一步"是不是一直在重复；消息的 `createdAt` 和 `updatedAt` 能粗略看出每轮耗时。
+- 用 `trace` 看某一轮的诊断：
+  - `sessionReuseReason` 是 `goal_revision_mismatch`：上一轮改过 Goal，这一轮只能冷启动。
+  - `sessionReuseReason` 是 `static_hash_mismatch`：prompt 的静态部分变了，比如刚部署了新代码。
+  - 模型调用次数（含冷启动的调用）和失败原因。
+- 常见根因有三种：
+  - 工作项没有明确的完成标准，导致同一处反复加固；
+  - 每轮只做一小步，却跑全量回归；
+  - 每轮都更新 Goal，导致下一轮冷启动。
+
+  判断依据和更多现象见 [references/goal-model.md](references/goal-model.md)。
+- 想做更细的统计（逐轮耗时拆解、按活动分类），这类分析依赖 session 日志的格式和启发式规则，公共 skill 不提供。本机有这类工具的话，local.md 会写明。
 
 ### "你来接手某个 room 里的问题"
 1. 先找用户的原始诉求，不要从最近几轮推断：`search <room> "<关键词>" --sender You` 找到最初的原话，再用 `messages` 读那段前后的讨论。agent 跑偏时，最近的消息往往已经离原问题很远。
@@ -161,7 +169,7 @@ node "$CAFF" stop <room> [--stop-goal] --confirm
    - **顺序**：先 `goal-action resume`，再发启动消息。如果反过来，owner 在这一轮里拿到的是旧 revision，它调用 update-goal 时会先撞一次 409。
    - room 还没有 worktree 时，先用 `bind-workspace <房间>` 看预览，再加 `--confirm` 绑定。基线落后 origin/develop、且分支还没有提交时，可以把 room 分支快进过去。
 4. **room 已经挂着 Goal 时**，set 会整体替换它：新 goalId，revision 从 1 开始，旧的决策、标准、证据和裁决都不保留（只沿用 createdAt）。替换之前先用 `node "${CLAUDE_SKILL_DIR}/scripts/backup-goal.js" <会话UUID>` 备份（写到 `~/.caff-ops/goal-backups/<前8位>-goal-rev<N>.json`，不覆盖已有备份）。
-5. set 之后用 `node "${CLAUDE_SKILL_DIR}/scripts/compare-goal.js" goal.json <会话UUID> goal` 核对。走提案流程时，接受前再对 `proposal` 核对一次。它逐字段比对 objective、决策、标准和工作项，有不一致就退出 1。
+5. set 之后用 `goal <房间>` 读回，确认 objective、决策、标准和工作项的条数和内容都对得上。goal-lint 已经按服务端规则检查过草稿，这一步只是确认写入成功。
 
 ### Goal 动作（暂停、恢复、裁决提案）
 - 先用 `state` 或 `status` 看有没有待裁决的提案。有待裁决提案时，set、revise、pause、resume、complete 一律返回 409 `goal_proposal_pending`；加 `--allow-clear-proposal` 才会替换这个提案，并留下 superseded 裁决审计。上一次的裁决记录不会被生命周期操作抹掉。
@@ -173,7 +181,7 @@ node "$CAFF" stop <room> [--stop-goal] --confirm
   1. 用 `backup-goal.js` 备份 `sessionGoal`、`sessionGoalProposal`、`sessionGoalRuling`、`sessionGoalRunner`（只读 GET，不覆盖已有备份）。
   2. 从最新 Goal 深拷贝，按 id 修改，并核对每处原文没被并发改过。状态和时间戳原样保留。
   3. 确认没有待裁决的提案（脚本会拦；要替换就加 `--allow-clear-proposal`），带当前 `goalRevision` 提交。
-  4. 用 `compare-goal.js <草稿> <UUID> goal` 核对，再和备份逐字段 diff，确认只改了预期的地方。
+  4. 用 `goal <房间> --json` 读回，和备份里的 `sessionGoal` 逐字段 diff，确认只改了预期的地方。
   - `goal-lint.js` 会把 done 的工作项报成问题，revise 时忽略即可；对局部补丁它还会报 objective 为空、没有验收标准，同样忽略。
   - **revise 会马上给 owner 续跑**（服务端 `autoContinue: true`）。owner 空闲时，它会先拿通用续跑提示跑一轮，抢在你的消息前面。里程碑通过后要 revise，顺序是：先 dismiss 提案，再发结论消息（owner 开跑），紧接着 revise。这时续跑返回 `busy`，不会重复；消息里写明"我马上 revise，update-goal 前先重读 Goal"。
   - owner 正在跑时，revise 触发的续跑会返回 `busy`，不会重复续跑；owner 下一轮因 revision 变化而冷启动。
