@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), test = require('node:test');
 const { randomBytes } = require('node:crypto');
-const { createServerApp } = require('../../build/server/app/create-server');
+const { createTestServerApp: createServerApp } = require('../helpers/server-app');
 const { createInMemoryPlannerCredential } = require('../../build/server/domain/security/planner-credential');
 const { applySessionGoalAction, proposeSessionGoalAction } = require('../../build/server/domain/conversation/session-goal');
 const { isolateExternalIntegrations } = require('../helpers/external-integrations');

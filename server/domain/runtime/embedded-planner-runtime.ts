@@ -7,14 +7,26 @@ import { EmbeddedPlannerRepository } from '../../../storage/chat/embedded-planne
 import { PlannerWakeupRepository } from '../../../storage/chat/planner-wakeup.repository';
 import { createPlannerWakeupRuntime } from './planner-wakeup-runtime';
 
+function terminalSetting(value: string | undefined) {
+  if (value === undefined) return { enabled: true, reasonCode: '' };
+  const flag = value.trim().toLowerCase();
+  if (['1', 'true', 'on', 'yes'].includes(flag)) return { enabled: true, reasonCode: '' };
+  if (['0', 'false', 'off', 'no'].includes(flag)) return { enabled: false, reasonCode: 'planner_terminal_disabled' };
+  return { enabled: false, reasonCode: 'planner_terminal_flag_invalid' };
+}
+
 export function createEmbeddedPlannerRuntime(options: any) {
   const config = options.config || {};
-  const requested = config.enabled ?? process.env.CAFF_PLANNER_TERMINAL === '1';
+  // The internal injection remains explicit for isolated tests. Production
+  // reads the flag once at construction, never from requests or child env.
+  const setting = config.enabled == null ? terminalSetting(process.env.CAFF_PLANNER_TERMINAL)
+    : { enabled: !!config.enabled, reasonCode: 'planner_terminal_disabled' };
+  const requested = setting.enabled;
   const enabled = requested && isLoopbackAddress(options.host);
   let host: EmbeddedPlannerHost | null = null;
   let closed = false;
   let startup: Promise<void> | null = null;
-  let capability = { enabled: !!enabled, available: false, reasonCode: enabled ? 'planner_cli_checking' : requested ? 'planner_terminal_local_only' : 'planner_terminal_disabled',
+  let capability = { enabled: !!enabled, available: false, reasonCode: enabled ? 'planner_cli_checking' : requested ? 'planner_terminal_local_only' : setting.reasonCode,
     minimumVersion: MINIMUM_PLANNER_CLI, cliVersion: null as string | null };
   const repository = enabled ? new EmbeddedPlannerRepository(options.store) : null;
   let records = enabled ? new PlannerWakeupRepository(options.store) : null;

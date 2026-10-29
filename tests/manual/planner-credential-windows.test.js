@@ -8,7 +8,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
-const { createServerApp } = require('../../build/server/app/create-server');
+const { createTestServerApp: createServerApp } = require('../helpers/server-app');
 const { createPlannerCredential, buildWindowsAclInvocation, runWindowsAcl, validateWindowsAclSnapshot } = require('../../build/server/domain/security/planner-credential');
 const { isolateExternalIntegrations } = require('../helpers/external-integrations');
 

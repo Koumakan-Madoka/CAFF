@@ -1,6 +1,8 @@
 // Additional wire/security cases use the shared, isolated synthetic fixture.
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
 const { EventEmitter, once } = require('node:events');
 const { fixture, closed, rejected } = require('../helpers/planner-terminal');
 const { validPlannerUpgrade } = require('../../build/server/http/planner-terminal');
@@ -23,6 +25,73 @@ test('loopback bind and peer are checked independently of untrusted forwarding h
   assert.equal(validPlannerUpgrade(req, '0.0.0.0', 45678), false);
   assert.equal(validPlannerUpgrade(req, '::', 45678), false);
   req.socket.remoteAddress = '192.0.2.1'; assert.equal(validPlannerUpgrade(req, '127.0.0.1', 45678), false);
+});
+
+async function withTerminalFlag(value, run) {
+  const previous = process.env.CAFF_PLANNER_TERMINAL;
+  if (value === undefined) delete process.env.CAFF_PLANNER_TERMINAL;
+  else process.env.CAFF_PLANNER_TERMINAL = value;
+  try { return await run(); }
+  finally {
+    if (previous === undefined) delete process.env.CAFF_PLANNER_TERMINAL;
+    else process.env.CAFF_PLANNER_TERMINAL = previous;
+  }
+}
+
+test('terminal flag defaults on, normalizes explicit values and fails closed with a diagnostic for invalid values', { timeout: 60000 }, async t => {
+  for (const value of [undefined, '1', 'true', 'on', 'yes', ' TRUE ', ' On ', ' YeS ', '0', 'false', 'off', 'no', ' OFF ', ' FaLsE ', ' NO ', 'maybe', '', '   ', '01', '1 true']) {
+    await t.test(value === undefined ? 'unset' : JSON.stringify(value), async t => {
+      const f = await withTerminalFlag(value, () => fixture(t, { enabled: undefined, authTimeoutMs: 5000 }));
+      const on = value === undefined || ['1', 'true', 'on', 'yes'].includes(value.trim().toLowerCase());
+      const off = value !== undefined && ['0', 'false', 'off', 'no'].includes(value.trim().toLowerCase());
+      assert.equal(f.boot.plannerTerminal.enabled, on);
+      assert.equal(f.boot.plannerTerminal.available, on);
+      assert.equal(f.boot.plannerTerminal.reasonCode, on ? '' : off ? 'planner_terminal_disabled' : 'planner_terminal_flag_invalid');
+      assert.equal(fs.existsSync(path.join(f.root, 'fake-probe.json')), on);
+      assert.equal(fs.existsSync(path.join(f.root, 'fake-launch.json')), false);
+      assert.equal(f.app.store.getConversationWithoutMessages(f.room.id).metadata.embeddedPlanner, undefined);
+      if (on) {
+        const state = await (await fetch(f.base + `/api/conversations/${f.room.id}/planner/state`, { headers: { 'X-CAFF-CSRF-Token': f.auth.token } })).json();
+        assert.equal(state.available, true); assert.equal(state.wakeupsEnabled, false);
+        assert.equal(state.processState, 'absent');
+        if (value === undefined) {
+          const ws = await attach(f), end = once(ws, 'close');
+          ws.send(JSON.stringify({ type: 'terminate' })); await end;
+        }
+      } else {
+        assert.equal(await rejected(f.connect()), 404);
+        for (const [suffix, method] of [['state', 'GET'], ['wakeups', 'GET'], ['wakeups', 'PUT'], ['terminal/repair', 'POST'], ['terminal/session/reinitialize', 'POST']]) {
+          const response = await fetch(f.base + `/api/conversations/${f.room.id}/planner/${suffix}`, { method,
+            headers: { Origin: f.base, 'X-CAFF-CSRF-Token': f.auth.token, 'Content-Type': 'application/json' },
+            ...(method === 'GET' ? {} : { body: JSON.stringify(suffix === 'wakeups' ? { enabled: true } : { confirm: true }) }) });
+          assert.equal(response.status, 404); await response.text();
+        }
+      }
+    });
+  }
+});
+
+test('default-on and explicit-on flags cannot enable a wildcard bind or launch a version probe', { timeout: 30000 }, async t => {
+  for (const value of [undefined, ' YES ']) {
+    await t.test(value === undefined ? 'unset' : value, async t => {
+      const f = await withTerminalFlag(value, () => fixture(t, { enabled: undefined, bindHost: '0.0.0.0' }));
+      assert.equal(f.boot.plannerTerminal.enabled, false);
+      assert.equal(f.boot.plannerTerminal.available, false);
+      assert.equal(f.boot.plannerTerminal.reasonCode, 'planner_terminal_local_only');
+      assert.equal(await rejected(f.connect()), 404);
+      assert.equal(fs.existsSync(path.join(f.root, 'fake-probe.json')), false);
+      assert.equal(fs.existsSync(path.join(f.root, 'fake-launch.json')), false);
+    });
+  }
+});
+
+test('explicit injected test configuration overrides the process flag without probing a real CLI', { timeout: 30000 }, async t => {
+  const off = await withTerminalFlag('yes', () => fixture(t, { enabled: false }));
+  assert.equal(off.boot.plannerTerminal.enabled, false);
+  assert.equal(off.boot.plannerTerminal.reasonCode, 'planner_terminal_disabled');
+  assert.equal(fs.existsSync(path.join(off.root, 'fake-probe.json')), false);
+  const on = await withTerminalFlag('maybe', () => fixture(t, { enabled: true }));
+  assert.equal(on.boot.plannerTerminal.available, true);
 });
 
 test('wildcard binding keeps terminal unavailable without probing the configured executable', { timeout: 30000 }, async t => {

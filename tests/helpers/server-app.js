@@ -6,6 +6,8 @@ function createTestPlannerCredential() {
   return createInMemoryPlannerCredential({ token: randomBytes(32).toString('base64url'), plannerName: 'Isolated Test Planner' });
 }
 function createTestServerApp(options = {}) {
-  return createServerApp({ plannerCredential: createTestPlannerCredential(), ...options });
+  // Non-P2 tests must never discover/probe the user's real Claude installation.
+  // P2 fixtures override this with an isolated fake CLI (including flag tests).
+  return createServerApp({ plannerCredential: createTestPlannerCredential(), embeddedPlanner: { enabled: false }, ...options });
 }
 module.exports = { createTestServerApp, createTestPlannerCredential };

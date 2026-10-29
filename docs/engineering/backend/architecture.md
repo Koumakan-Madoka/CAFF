@@ -75,9 +75,13 @@ planner-tests directory, never service credentials.
 **official external CLI**, not an Agent SDK session, Room agent or implementer
 model slot. Native Goal Runner/DAG/delegation/delivery/Feishu behavior is unchanged.
 
-- `embedded-planner-runtime.ts` owns the opt-in capability and lifecycle.
-  `CAFF_PLANNER_TERMINAL=1` is effective only on a loopback bind; off means no
-  CLI probe, terminal/wake routes or wake timers. Configuration changes and
+- `embedded-planner-runtime.ts` owns the default-on terminal capability and lifecycle.
+  Unset `CAFF_PLANNER_TERMINAL` or `1`/`true`/`on`/`yes` requests on;
+  `0`/`false`/`off`/`no` requests off (trimmed, case-insensitive). Other values
+  fail closed with `planner_terminal_flag_invalid`. Only a loopback bind can
+  enable it; off/non-loopback means no CLI probe, terminal/wake routes or wake
+  timers. Bootstrap `enabled` includes the loopback gate; `available` additionally
+  requires successful startup checks. Per-room wake-up opt-in stays default-off. Configuration changes and
   shared restarts require separate user authorization, never a browser override.
 - After listening and P1 credential initialization, reconcile persisted leases,
   resolve/check the CLI once, then wire the shared host and wake-up runtime.

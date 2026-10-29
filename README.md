@@ -22,7 +22,7 @@ CAFF 把执行过程中的关键问题放在一起：**谁在执行、改动在�
 
 哪些事规划者可以自己决定、哪些必须由你批准，以及后续的推进顺序，见 [ADR 0002](docs/decisions/0002-external-planner-drives-caff.md)。
 
-> 本版本已实现 P1 规划者身份、写守卫、Goal 绑定与待处理队列，以及 P2 最小 `caff` CLI、默认关闭的房间内嵌终端和按房间开启的叫醒。规划者通过凭证文件以自己的身份操作，不冒充用户；高风险豁免、已关联 ADR 的承诺决策等仍有直接用户守卫。其他用户保留授权仍须规划者逐项取得，内嵌进程不是 OS 沙箱。结构化评审协议、规划者感知的实现者提示词和跨房间控制台属于 P3。实现/评审不等于已部署；见 [P1 接口](docs/engineering/backend/planner-interface.md)、[ADR 0003](docs/decisions/0003-embedded-claude-code-planner.md) 和 [P2 契约](docs/engineering/runtime/embedded-planner.md)。
+> 本版本已实现 P1 规划者身份、写守卫、Goal 绑定与待处理队列，以及 P2 最小 `caff` CLI、默认开启（仅回环绑定）的房间内嵌终端和按房间开启、默认关闭的叫醒。规划者通过凭证文件以自己的身份操作，不冒充用户；高风险豁免、已关联 ADR 的承诺决策等仍有直接用户守卫。其他用户保留授权仍须规划者逐项取得，内嵌进程不是 OS 沙箱。结构化评审协议、规划者感知的实现者提示词和跨房间控制台属于 P3。实现/评审不等于已部署；见 [P1 接口](docs/engineering/backend/planner-interface.md)、[ADR 0003](docs/decisions/0003-embedded-claude-code-planner.md) 和 [P2 契约](docs/engineering/runtime/embedded-planner.md)。
 
 ## 为什么是 CAFF
 
@@ -197,7 +197,7 @@ curl http://127.0.0.1:3100/api/health
 | `PI_SQLITE_PATH` | SQLite 数据文件路径 |
 | `PI_PROVIDER` / `PI_MODEL` / `PI_THINKING` | 用户显式指定的运行模型与推理配置；无厂商默认兜底，不替代系统书记选择 |
 | `PI_CHAT_SESSION_REUSE_ENABLED` | Session 复用总开关，设为 `0` 可关闭；未收录于 `.env.example`，可自行添加 |
-| `CAFF_PLANNER_TERMINAL` | `1` 开启 P2 内嵌规划者；默认关闭，仅回环绑定生效，修改共享实例配置/重启须另行授权 |
+| `CAFF_PLANNER_TERMINAL` | 默认开启，仅回环绑定生效；不设或 `1`/`true`/`on`/`yes` 开启，`0`/`false`/`off`/`no` 关闭（去首尾空白、不分大小写）；其他值关闭并报 `planner_terminal_flag_invalid`。修改共享实例配置/重启须另行授权 |
 | `CAFF_CLAUDE_CLI` | 可选的官方 Claude CLI 单个可执行路径；不设置时从 PATH 查找，不接受 shell 命令 |
 | `CAFF_PLANNER_NAME` / `CAFF_PLANNER_CREDENTIAL_FILE` | P1 规划者显示名及可选绝对凭证文件路径；令牌由服务安全生成/轮换，不手工填入环境 |
 
@@ -205,10 +205,10 @@ curl http://127.0.0.1:3100/api/health
 
 摘要、标题精炼与现场整理共用「系统服务 → 系统书记」中显式保存的模型选择，底层继续使用 PI 模型目录。升级后不会自动迁移旧的隐式默认；未配置时需先选择模型。详见 [模型选择与升级说明](docs/engineering/backend/model-selection.md)。
 
-### 房间里的 Claude Code（P2，默认关闭）
+### 房间里的 Claude Code（P2，默认开启，仅回环绑定）
 
 1. 单独安装官方 Claude Code CLI 并完成自己的登录；这不是 Pi 的订阅登录。交互终端要求 **>=2.1.310**。CAFF 不自动安装、升级或确认权限。Windows 使用 node-pty 1.1.0 自带新版 ConPTY（需要 conpty.dll 和 OpenConsole.exe）；浏览器使用固定的 Unicode 字素插件 0.4.0。缺失时显示固定原因并停止连接，不回退旧版以免重影。
-2. 在目标实例的本地配置设 `CAFF_PLANNER_TERMINAL=1`，保持回环绑定。**先取得该实例配置变更与重启授权**；本文不授权重启 3100。启动后，房间页头可打开非模态终端分栏（窄屏覆盖），目录为绑定 worktree，否则为项目根目录、提示只读规划。确认信任前核对路径，至少发送并保存一次消息后才能可靠续接。
+2. 保持目标实例回环绑定；`CAFF_PLANNER_TERMINAL` 不设置即默认开启。要关闭，在本地配置设 `CAFF_PLANNER_TERMINAL=0`（或 `false`/`off`/`no`）；`1`/`true`/`on`/`yes` 显式开启，去首尾空白且不分大小写。其他值（含空串）一律关闭，bootstrap 返回 `planner_terminal_flag_invalid`，不回显原值；非回环绑定始终不可用。**先取得该实例配置变更与重启授权**；默认值变更不表示已升级运行中的实例，本文不授权重启 3100。启动后，房间页头可打开非模态终端分栏（窄屏覆盖），目录为绑定 worktree，否则为项目根目录、提示只读规划。确认信任前核对路径，至少发送并保存一次消息后才能可靠续接。
    内嵌交互终端固定 `CLAUDE_CODE_NO_FLICKER=1` 使用全屏渲染器：避免经典渲染器重连空白，也避免提前停止被计入全机共享的全屏启动失败、影响用户自己终端的渲染器（规划者实测 CLI 2.1.311）。该变量由 CAFF 生成，不继承父进程的渲染器偏好，不读写共享 `~/.claude.json`；版本探测与 `-p` 叫醒不设置。版本相关实测与边界见 [契约 §10](docs/engineering/runtime/embedded-planner.md#2026-10-27-interactive-renderer-pin)。
 3. 每房间固定一个 CAFF 专用会话 UUID；不要在自己的另一终端 resume 同一 UUID。仅一个页面可连接；关闭分栏只断开，进程保留 30 分钟，全实例最多 4 个。**附着和保留中的终端都会抑制叫醒**；要让叫醒运行，正常退出 CLI 或明确 Stop。正常退出/Stop 后手动连接即可，不需要恢复操作。
 4. 叫醒是另一个默认关闭的**按房间用户确认**开关，仅针对当前规划者绑定、未完成且非 DAG 的 Goal。只响应五类待处理事项，每房间滚动一小时最多 4 次，每次最多 12 turns／10 分钟；使用 CLI 自己的订阅或配置的 provider，**消耗真实用量，不是免费任务，也不是美元金额上限**。只能由用户处理的事项记为 needs_user，不会反复叫醒；配额、原因和脱敏分页记录在面板查看。

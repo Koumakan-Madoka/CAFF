@@ -118,8 +118,17 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
 
 ### Isolation and security
 
-- **Off by default:** `CAFF_PLANNER_TERMINAL=1` enables the feature, and only
-  when CAFF binds a loopback address.
+- **Default on — user-approved amendment, 2026-10-29:** the user requested
+  "继续推进P2，CAFF_PLANNER_TERMINAL 要默认开启". This supersedes the original
+  off-by-default decision. Unset `CAFF_PLANNER_TERMINAL`, or `1`/`true`/`on`/`yes`,
+  requests on; `0`/`false`/`off`/`no` requests off, after trimming whitespace and
+  case-insensitive comparison. All other values (including empty) fail closed
+  with `planner_terminal_flag_invalid`. It is still effective **only on loopback
+  binding**; Host/Origin, first-message token, frame/idle limits are unchanged.
+  Wake-ups remain separately opt-in per room and off by default. This does not
+  authorize updating/restarting shared instances. Approval/instruction: room
+  message `c3a4790d-7e95-456d-9382-2f8469d5df11`; exact capability and diagnostic
+  semantics are in [P2 §1](../engineering/runtime/embedded-planner.md#1-composition-and-feature-gate).
 - **Terminal WebSocket:**
   - The upgrade handler checks Host and Origin against the same-origin loopback
     aliases.
@@ -228,7 +237,8 @@ and [planner acceptance records](../engineering/runtime/embedded-planner.md#plan
   while the user's terminal is closed.
 - **New attack surface:** a WebSocket now fronts a process that can run shell
   commands. Mitigations:
-  - off by default, loopback only;
+  - loopback only, explicit disable and invalid-value fail-closed configuration
+    (default-on since the user-approved 2026-10-29 amendment above);
   - Host and Origin checks;
   - a token in the first message;
   - an allowlisted child environment.

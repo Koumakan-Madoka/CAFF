@@ -99,8 +99,13 @@
 
 ### Wake-up controls, records and acceptance boundary
 
-- Feature opt-in is the server's `CAFF_PLANNER_TERMINAL=1` on loopback, off by
-  default; changing shared configuration/restarting requires user authorization.
+- The terminal is default-on, still loopback-only. `CAFF_PLANNER_TERMINAL` unset
+  or `1`/`true`/`on`/`yes` requests on; `0`/`false`/`off`/`no` requests off
+  (trimmed, case-insensitive). Invalid values, including empty, disable it with
+  bootstrap reason `planner_terminal_flag_invalid`. Bootstrap `enabled` includes
+  the loopback gate; `available` additionally reflects CLI readiness. Off/invalid
+  or non-loopback hides the entry; local CLI unavailability shows a fixed reason.
+  Changing shared configuration/restarting still requires user authorization.
   The terminal requires CLI >=2.1.310; wake-ups additionally require verified
   2.1.x >=2.1.310 and whitespace-free trusted Node/adapter paths. Fixed reasons
   explain unavailable versions/credentials instead of broadening permissions.

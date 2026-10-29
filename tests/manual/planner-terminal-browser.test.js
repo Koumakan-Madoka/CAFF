@@ -21,7 +21,9 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     const results = [], errors = [], external = [], frames = [], writes = [], versions = {}, palettes = [], fits = [];
     // Close Edge before fixture teardown, so upgraded sockets release normally.
     t.after(async () => { if (browser) await browser.close(); fs.rmSync(home, { recursive: true, force: true }); });
-    const f = await fixture(t, { authTimeoutMs: 5000, cliFixture: path.join(__dirname, '../fixtures/fake-planner-session-cli.cjs') });
+    // Exercise the production unset-flag default; only the CLI/env are synthetic.
+    const f = await fixture(t, { enabled: undefined, authTimeoutMs: 5000, cliFixture: path.join(__dirname, '../fixtures/fake-planner-session-cli.cjs') });
+    assert.equal(f.boot.plannerTerminal.enabled, true); assert.equal(f.boot.plannerTerminal.available, true);
     const off = await fixture(t, { enabled: false });
     const repository = new EmbeddedPlannerRepository(f.app.store);
     assert.ok(![3100,3200].includes(f.port) && ![3100,3200].includes(off.port));

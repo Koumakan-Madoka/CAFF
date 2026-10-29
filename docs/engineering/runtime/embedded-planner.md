@@ -10,8 +10,9 @@ M5 docs passed at `383d2859`. The user-approved 2026-10-27 repaint correction
 (bundled ConPTY + Unicode graphemes) supersedes the earlier repaint conclusion;
 its implementation `6e022e97` and fit correction `3b246f47` passed planner review
 and real-CLI checks (§10). The separately user-approved interactive renderer pin
-is now implemented; its final-SHA planner recheck and Linux CI remain separate
-gates (§10).
+is now implemented. The user also approved default-on terminals on 2026-10-29
+(room message `c3a4790d-7e95-456d-9382-2f8469d5df11`); §1 reflects that amendment.
+The combined final-SHA planner recheck and Linux CI remain separate gates (§10).
 This is not a claim that a running instance has been upgraded. Push, PR, merge,
 acceptance, release and shared-instance restart each require user authorization.
 
@@ -62,7 +63,22 @@ Controllers validate transport data and delegate. Domain services own policy;
 SQLite repositories own transactions. The browser never selects an executable,
 arguments, cwd, environment, session ID or planner principal.
 
-Enable only when `CAFF_PLANNER_TERMINAL=1` **and** the configured bind is
+The terminal is **on by default**, subject to loopback binding (user-approved
+2026-10-29 amendment to ADR 0003). Read `CAFF_PLANNER_TERMINAL` once at runtime
+construction, trim leading/trailing whitespace and compare case-insensitively:
+
+| Value | Requested state / reason when disabled |
+| --- | --- |
+| Unset, `1`, `true`, `on`, `yes` | On |
+| `0`, `false`, `off`, `no` | Off / `planner_terminal_disabled` |
+| Anything else (including empty/whitespace-only) | Off / `planner_terminal_flag_invalid` |
+
+Invalid values never silently enable the terminal; bootstrap carries the fixed
+reason code, without echoing the configured value. The internal boolean config
+injection overrides the environment for isolated tests; it is not an HTTP option.
+Wake-ups remain a separate **off-by-default per-room** setting.
+
+Enable only when the requested state is on **and** the configured bind is
 loopback. Use the existing request-authority loopback predicate, not the
 request Host, forwarded headers or arbitrary DNS resolution. A wildcard bind
 (`0.0.0.0`/`::`) is not loopback even for a local peer. Check the upgrade peer
@@ -79,8 +95,15 @@ not a browser's interactive terminal. Do not downgrade planner writes to user.
 Bootstrap adds only a capability such as
 `plannerTerminal: { enabled, available, reasonCode, minimumVersion, cliVersion }`.
 Do not publish local executable paths, credentials or wake transcripts there.
-An explicitly enabled but unavailable feature shows its reason; an off feature
-has no header entry. Room-specific state comes from the routes in §8.
+`enabled` means the parsed setting is on **and** the configured bind is loopback;
+it does not imply CLI readiness or a running room process. `available` means
+startup checks succeeded and the runtime is not closed. While checking,
+`reasonCode` is `planner_cli_checking`; on success it is empty. If a requested-on
+instance has a non-loopback bind, `enabled=false`, `available=false` and
+`reasonCode=planner_terminal_local_only`. Explicit off and invalid flags both
+return `enabled=false`, `available=false`, with their respective codes above and
+no header entry. A locally enabled but unavailable CLI keeps the entry with its
+bounded reason. Room-specific state comes from the routes in §8.
 
 ### Operator enablement and usage
 
@@ -89,10 +112,13 @@ has no header entry. Room-specific state comes from the routes in §8.
    The terminal needs numeric CLI >=2.1.310; unattended wake-ups additionally
    require the verified 2.1.x line and a whitespace-free trusted adapter prefix
    (§6/§10). A newer minor may allow the terminal while disabling wake-ups.
-2. In the intended instance's local configuration set `CAFF_PLANNER_TERMINAL=1`
-   and bind loopback. `CAFF_CLAUDE_CLI` optionally selects one executable path.
-   Obtain explicit authorization before changing shared configuration/restarting;
-   editing a template or opening a panel does not authorize a 3100 restart.
+2. Keep the intended instance bound to loopback. The terminal is enabled when
+   `CAFF_PLANNER_TERMINAL` is unset; set `0` (or `false`/`off`/`no`) in local
+   configuration to disable it. `1`/`true`/`on`/`yes` explicitly enable it;
+   invalid values disable it with `planner_terminal_flag_invalid` (table above).
+   `CAFF_CLAUDE_CLI` optionally selects one executable path. Obtain explicit
+   authorization before changing shared configuration/restarting; this default
+   change does not upgrade a running instance or authorize a 3100 restart.
 3. After that separately authorized restart, open the room-header terminal,
    inspect the verified working directory and answer trust/permission prompts
    yourself. Save at least one conversation message before exiting: merely
@@ -1185,7 +1211,8 @@ by the existing P1 protected-path diagnostic, not broadcast to the browser.
 
 | Code / condition | Recovery |
 | --- | --- |
-| `planner_terminal_disabled`, `planner_terminal_local_only` | Configure opt-in/loopback with user-authorized restart, not a request override |
+| `planner_terminal_disabled`, `planner_terminal_local_only` | Remove the explicit off setting or configure loopback with user-authorized restart, not a request override |
+| `planner_terminal_flag_invalid` | Correct the flag to a documented value or remove it, then restart with authorization; never echo the invalid value or silently enable |
 | `planner_cli_missing`, `planner_cli_version_unsupported`, `planner_cli_version_invalid`, `planner_cli_probe_timeout`, `planner_cli_launch_unsupported` | Fix installed executable/version; do not download/update automatically |
 | `planner_workspace_invalid` | Inspect binding; no project-root fallback |
 | `planner_conpty_unavailable` | Repair the local node-pty bundled ConPTY installation; fixed explanation, no system-ConPTY fallback or automatic download |

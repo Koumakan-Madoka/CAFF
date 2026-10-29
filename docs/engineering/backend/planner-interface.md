@@ -952,8 +952,12 @@ aliases where old clients depend on them; new global guard codes are canonical.
 
 P2 hosts the same configured `local-planner` principal, not an additional Room
 agent, owner or Pi model slot. The official CLI runs in a per-room PTY or bounded
-print-mode wake-up. Default-off `CAFF_PLANNER_TERMINAL=1` requires loopback bind;
-local configuration and shared-instance restart still require user authorization.
+print-mode wake-up. The terminal is default-on but still requires loopback bind.
+`CAFF_PLANNER_TERMINAL` unset or `1`/`true`/`on`/`yes` requests on;
+`0`/`false`/`off`/`no` requests off (trimmed, case-insensitive); anything else
+fails closed with `planner_terminal_flag_invalid`. Wake-ups remain default-off
+per room. Local configuration and shared-instance restart still require user
+authorization; the changed default does not upgrade running instances.
 The terminal requires CLI >=2.1.310; unattended tool policy is provisionally
 verified only for 2.1.x >=2.1.310 with whitespace-free trusted adapter paths.
 
