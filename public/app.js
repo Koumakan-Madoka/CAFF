@@ -13,6 +13,7 @@ if (!observabilityTimeline) {
 
 const state = {
   runtime: null,
+  plannerTerminal: null,
   modelOptions: [],
   skills: [],
   modes: [],
@@ -831,10 +832,15 @@ let planPanelController = noopPlanPanelController;
 let conversationDigestPanelController = noopRenderer;
 let summaryMemoryPanelController = noopRenderer;
 let conversationPaneRenderer = noopRenderer;
+let plannerTerminalController = { sync(_id, _capability) {} };
 let newConversationDialogController = noopNewConversationDialogController;
 let imageComposerController = noopImageComposerController;
 
 function setupChatModules() {
+  if (typeof chatModules.createPlannerTerminalPane !== 'function') {
+    throw new Error('CaffChat.createPlannerTerminalPane helper is required');
+  }
+  plannerTerminalController = chatModules.createPlannerTerminalPane({ fetchJson });
   if (typeof chatModules.createImageComposerController !== 'function') {
     throw new Error('CaffChat.createImageComposerController helper is required');
   }
@@ -2697,6 +2703,7 @@ function renderCompactConversationPersonaSettings() {
 }
 
 function renderConversationPane() {
+  plannerTerminalController.sync(state.currentConversation?.id || '', state.plannerTerminal);
   conversationPaneRenderer.render();
   imageComposerController.syncConversation(state.currentConversation ? state.currentConversation.id : '');
   imageComposerController.syncBaseAvailability(Boolean(state.currentConversation && !dom.composerInput.disabled));
@@ -4496,6 +4503,7 @@ async function loadEarlierMessages() {
 async function refreshAll(preferredConversationId) {
   const data = await fetchJson('/api/bootstrap');
   state.runtime = data.runtime;
+  state.plannerTerminal = data.plannerTerminal || null;
   state.modelOptions = Array.isArray(data.modelOptions) ? data.modelOptions : [];
   state.skills = Array.isArray(data.skills) ? data.skills : [];
   state.modes = Array.isArray(data.modes) ? data.modes : [];

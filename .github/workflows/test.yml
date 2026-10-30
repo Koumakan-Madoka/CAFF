@@ -4,7 +4,11 @@ on:
   pull_request:
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     env:
       CAFF_REQUIRE_SPAWN: "1"
     steps:
@@ -13,9 +17,34 @@ jobs:
         with:
           node-version: 22.19.0
           cache: npm
-      - run: npm ci
+      - name: Native PTY build prerequisites
+        if: runner.os == 'Linux'
+        run: python3 --version && g++ --version && make --version
+      - run: npm ci --foreground-scripts
+      - name: Require native PTY artifacts (Linux compiled module / Windows bundled ConPTY)
+        run: node scripts/check-planner-pty.js
       - name: Select runner Chrome for browser fixtures
+        if: runner.os == 'Linux'
         run: |
           browser="$(command -v google-chrome)"
           echo "CAFF_UI_BROWSER_PATH=$browser" >> "$GITHUB_ENV"
-      - run: npm test
+      - run: npm run typecheck
+      - name: Linux full suite
+        if: runner.os == 'Linux'
+        run: npm test
+      - name: Linux DAG execution
+        if: runner.os == 'Linux'
+        run: npm run test:dag-execution
+      - name: Linux diff check
+        if: runner.os == 'Linux'
+        run: git diff --check
+      - name: Windows build
+        if: runner.os == 'Windows'
+        run: npm run build
+      - name: Windows embedded planner (blocking)
+        if: runner.os == 'Windows'
+        run: npm run test:embedded-planner
+      - name: Windows full suite (non-blocking)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: npm test

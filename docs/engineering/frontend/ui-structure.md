@@ -28,6 +28,143 @@
   [controller guards](../backend/controller-patterns.md) and
   [planner contract](../backend/planner-interface.md).
 
+## Embedded Planner Terminal and Wake-up Records (P2)
+
+- See [embedded planner](../runtime/embedded-planner.md) for process/WS/security
+  and recovery contracts. The feature-off header entry stays hidden. Bootstrap's
+  capability is authoritative; local storage never enables it.
+- `app.js` passes capability/current room to `createPlannerTerminalPane`.
+  `public/chat/planner-terminal-pane.js` owns its sibling DOM, explicit state
+  requests, manual connect/reconnect, recovery confirmations and bounded width.
+  `planner-terminal-client.js` owns xterm + addon-fit + Unicode graphemes, live WS, input/output,
+  resize and disposal; `planner-terminal.css` owns scoped layout. Neither
+  module moves or writes message-list nodes or the context drawer.
+- At desktop widths the pane is non-modal and leaves at least 380px of chat
+  space. A 44px pointer/keyboard separator adjusts width (320–900px, further
+  bounded by available space); only this preference is stored. At <=1099px the
+  pane is a full-width overlay. `caffShell.setTerminalOverlay(boolean)` owns
+  background inert and focus coordination with the mobile sidebar/context
+  drawer; desktop chat is never made inert just because terminal is open.
+- Closing/switching rooms disposes socket, input handlers, xterm/addon and
+  observers without terminating the retained PTY. No automatic reconnection,
+  history/input replay or trust/permission confirmation. New connections read
+  fresh bootstrap then send CSRF only in the first WS message. Browser state
+  reads use the CSRF header; browser mutations use shared fetchJson, never a
+  planner bearer. Tokens/terminal output are not persisted in browser storage.
+- Each manual reconnect creates a fresh view with bounded local scrollback.
+  Before requesting retained-PTY repaint, the host sends one generated frame
+  restoring its closed allowlist of latest DEC private-mode states (alternate
+  screen first, bracketed paste/focus/etc.); no screen content is retained.
+  It nudges one column, waits for first output or 500 ms, then restores the
+  newest client size, cancelling stale attachment/process waits. The CLI may
+  repaint its own current screen; neither this nor the mode frame is CAFF
+  transcript replay. See [P2 §5](../runtime/embedded-planner.md#5-terminal-websocket-protocol-v1).
+  Output is terminal text, not HTML; OSC clipboard/hyperlinks,
+  automatic URL activation and window actions are not enabled.
+- Separate explicit controls stop the process, repair a stale lease, or
+  reinitialize the same UUID. The latter appears after session-unavailable
+  exit; wording says **可能不可用**, explains never-saved/deleted records and
+  one harmless CLI rejection if the record still exists. Repair asks the user
+  to confirm all old writers have stopped. No success automatically reconnects.
+  Corrupt metadata is a fixed 409 explanation, not a raw server exception.
+- First-session guidance explicitly names **Yes, I trust this folder** and
+  warns that No/exit may be the default. The user makes the choice. Escape
+  inside terminal remains CLI input; Ctrl+Shift+F6 focuses the close/toolbar
+  area. The narrow overlay has a visible close control and restores trigger
+  focus. Controls/summary/checkbox labels retain >=44px targets in both themes.
+- xterm 6.0.0 + addon-fit 0.11.0 + addon-unicode-graphemes **0.4.0** and all three
+  notices are local build assets under `/vendor/planner-terminal/`, loaded in
+  that order before the client, with no bundler. The experimental grapheme
+  addon was user-approved on 2026-10-27 for ghosting. `allowProposedApi: true`
+  is required only for its Unicode-width API: open first, load the addon,
+  require `unicode.activeVersion === '15-graphemes'` before connecting. Missing,
+  broken or inactive addon fails with `planner_terminal_unicode_unavailable`,
+  no socket and no Unicode 6 fallback; OSC 8/52 remain blocked. Windows server
+  PTYs require node-pty's bundled ConPTY DLL + OpenConsole, not OS ConPTY;
+  `planner_conpty_unavailable` explains installation failure, never falls back.
+  Both CAFF themes keep a readable dark CLI palette (`#111312` background),
+  including the xterm root/screen/viewport and fractional unused bottom row.
+  The toolbar/frame still follow CAFF theme; interactive rendering reads/modifies no CLI settings.
+  Addon-fit measures the undecorated `.planner-terminal-screen`; only the outer
+  `.planner-terminal-frame` has padding/border, avoiding a 10px overcount of its
+  usable height. Edge checks rows × cell height against visible content after
+  one/two-line notices and widening/narrowing across fractional-row remainders.
+- `tests/ui/planner-terminal-pane.test.js` and HTTP session tests lock lifecycle,
+  authentication gating, fixed diagnostics, confirmations, shell coordination,
+  disposal, limits and browser-valid close behavior. Opt-in
+  `npm run test:planner-terminal-ui` uses real Edge/xterm/node-pty with a fake
+  CLI, random port, synthetic credentials and system-temp SQLite/home/media;
+  no real Claude or shared instance. It covers input/output, pointer/keyboard
+  sizing, retention/reconnect (including 16 same-size repaints with asynchronously
+  sampled dimensions, restored alternate/paste/focus modes and bracketed multiline
+  paste reaching the fake CLI), second page, room switch, both recovery controls,
+  OSC sentinels, light/dark, 820/390/375/320 overlay/focus and a short walkthrough.
+  Its 59-column real-PTY + fake-CLI repaint regression uses six exactly full
+  Chinese/emoji/VS16 rows, repeated erase/redraw, and real xterm buffer assertions:
+  zero `isWrapped`, one exact copy per row, including spaces after emoji. No
+  extra test dependency; planner real-Claude streaming/delete/resize recheck is
+  still separate from this synthetic rendering evidence.
+
+### Wake-up controls, records and acceptance boundary
+
+- The terminal is default-on, still loopback-only. `CAFF_PLANNER_TERMINAL` unset
+  or `1`/`true`/`on`/`yes` requests on; `0`/`false`/`off`/`no` requests off
+  (trimmed, case-insensitive). Invalid values, including empty, disable it with
+  bootstrap reason `planner_terminal_flag_invalid`. Bootstrap `enabled` includes
+  the loopback gate; `available` additionally reflects CLI readiness. Off/invalid
+  or non-loopback hides the entry; local CLI unavailability shows a fixed reason.
+  Changing shared configuration/restarting still requires user authorization.
+  The terminal requires CLI >=2.1.310; wake-ups additionally require verified
+  2.1.x >=2.1.310 and whitespace-free trusted Node/adapter paths. Fixed reasons
+  explain unavailable versions/credentials instead of broadening permissions.
+  `planner_wakeup_settings_unsafe` additionally shows only the file path and
+  category (Bash allowance, Read/Glob/Grep allowance, additionalDirectories,
+  unreadable, invalid JSON)
+  through textContent, never rules or other setting values. Disable opt-in
+  while unsafe (existing opt-in may still be disabled); the terminal is not
+  disabled. Blocked wakes use no quota/claim and leave attention unchanged.
+  Wake-ups use user-only settings, dontAsk, no bare read allowances and startup
+  rejection of Bash/Read/Glob/Grep rules (leading UTF-8 BOM accepted). Do not use
+  blockReadsOutsideWorkingDirectories: real CLI 2.1.312 also denies the allowed
+  caff command outside cwd. Registry/MDM/server policy is outside the file check
+  (P2 §6). Wake-ups additionally set only `disableAllHooks=true`: user/plugin
+  hooks do not run, managed-policy hooks are unaffected, interactive hooks are
+  unchanged. This boundary still needs final-SHA real CLI verification.
+- The per-room checkbox confirms subscription/provider usage before enabling,
+  is off by default, and only targets the current unfinished planner-bound
+  non-DAG Goal. It cannot implicitly adopt a Goal or grant planner authority.
+  Cancelling sends nothing. Disabling stops future admission, not an active
+  attempt. Init tool checks and version gates remain server-owned.
+- Show pending/needs-user and rolling quota (4 attempts/hour/room), next-eligible
+  time and gate reason. Each wake is at most 12 turns/10 minutes and consumes
+  real CLI configured usage, not a dollar-capped/free background operation.
+  Attached **or retained** PTYs suppress it; closing the pane is not Stop.
+  Pending attention is advisory UI, never keystrokes sent into Claude.
+- Records are read-only cursor-paged summaries and text events, not a public
+  message or second terminal. Both GET paths explicitly attach current bootstrap
+  CSRF (shared fetchJson attaches it automatically only on writes); Host/peer
+  and optional Origin are validated. Browser never receives planner bearer.
+  Use textContent, no HTML/ANSI, and replace the current page on pagination.
+  Event-detail responses <=128 KiB; retained event text <=1 MiB/run; body expiration
+  after 30 days keeps summaries/results/claims/quota. No thinking/tool bodies
+  or raw stderr. Invalidated requests cannot repopulate a closed/switched room.
+- `needs_user` is not P1 resolution or an accepted Goal proposal. The UI must
+  not synthesize Goal mutations or acknowledge an active condition from a
+  receipt. A claimed item is not automatically re-run. Historical records stay
+  readable if a newer CLI disables new wakes; an enabled room can be disabled.
+- Normal exit/Stop use neutral guidance without recovery controls. Session
+  reinitialization is distinct from lease repair, preserves UUID/opt-in and
+  never reconnects. P1 user-only guards still protect both recovery operations.
+- Automated pane/HTTP tests cover the production calls; opt-in
+  `npm run test:planner-wakeup-ui` runs real Edge with fake CLI and actual
+  P1/production finish, covering enable/cancel/suppression/records/paging and
+  narrow/light/dark states. The planner's real Edge/official CLI 2.1.310 terminal
+  and wake-up acceptance is recorded in [P2 §10](../runtime/embedded-planner.md#planner-real-cli-acceptance-records).
+  Fake automation is not real-model behavior evidence or a Linux CI result.
+- Interactive caff command discovery/prefix and the closed command card are
+  documented in [P2 §4](../runtime/embedded-planner.md#interactive-caff-command-guide-n10)
+  (N10 documentation option); no unreviewed runtime prompt change is implied.
+
 ## Conversation Tree Row Layout
 
 ### Scope / Trigger

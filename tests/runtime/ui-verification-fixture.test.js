@@ -37,6 +37,8 @@ test('standalone UI fixture has a runnable synthetic role and isolated storage w
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   assert.ok(bootstrap, logs);
+  assert.equal(bootstrap.plannerTerminal.enabled, false);
+  assert.equal(bootstrap.plannerTerminal.reasonCode, 'planner_terminal_disabled');
   const role = bootstrap.agents.find(agent => agent.id === 'ui-verification-role');
   assert.equal(role.availability.status, 'available');
   const projects = await (await fetch(base + '/api/projects')).json();

@@ -37,6 +37,13 @@
     <script defer src="/chat/summary-memory-panel.js"></script>
     <script defer src="/chat/image-composer.js"></script>
     <script defer src="/chat/conversation-pane.js"></script>
+    <link rel="stylesheet" href="/vendor/planner-terminal/xterm.css" />
+    <link rel="stylesheet" href="/chat/planner-terminal.css" />
+    <script defer src="/vendor/planner-terminal/xterm.js"></script>
+    <script defer src="/vendor/planner-terminal/addon-fit.js"></script>
+    <script defer src="/vendor/planner-terminal/addon-unicode-graphemes.js"></script>
+    <script defer src="/chat/planner-terminal-client.js"></script>
+    <script defer src="/chat/planner-terminal-pane.js"></script>
     <script defer src="/app.js"></script>
   </head>
   <body class="chat-app" data-drawer="closed" data-sidebar="closed">
@@ -91,6 +98,7 @@
           </div>
           <span id="connection-dot" class="connection-dot" data-status="connecting" role="status" aria-label="连接状态" title="正在连接本地服务..."></span>
           <p id="conversation-mode-badge" class="mode-pill hidden"></p>
+          <button id="planner-terminal-toggle" class="icon-btn" type="button" aria-label="打开规划者终端" title="规划者终端" aria-expanded="false" aria-controls="planner-terminal-pane" hidden><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-terminal"></use></svg></button>
           <button id="refresh-button" class="icon-btn" type="button" aria-label="刷新" title="刷新"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-refresh"></use></svg></button>
           <button class="icon-btn icon-label-button" id="drawerToggle" type="button" aria-expanded="false" aria-controls="contextDrawer"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-panel-right"></use></svg><span>面板</span></button>
         </header>
@@ -154,6 +162,48 @@
           </div>
         </form>
       </main>
+      <aside id="planner-terminal-pane" class="planner-terminal-pane" role="region" aria-label="Claude Code 规划者终端" aria-hidden="true" hidden inert>
+        <button id="planner-terminal-resize" class="planner-terminal-resize" type="button" role="separator" aria-label="调整终端宽度（左右方向键）" aria-orientation="vertical" aria-valuemin="320" aria-valuemax="900" aria-valuenow="500" aria-controls="planner-terminal-pane"></button>
+        <div class="planner-terminal-content">
+          <header class="planner-terminal-header">
+            <h2>规划者终端</h2>
+            <button id="planner-terminal-close" class="icon-btn" type="button" aria-label="关闭终端分栏（保留进程）" title="关闭分栏，保留进程"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-x"></use></svg></button>
+          </header>
+          <div class="planner-terminal-controls">
+            <span id="planner-terminal-status" role="status" aria-live="polite">未连接</span>
+            <button id="planner-terminal-reconnect" class="ghost-button" type="button">连接／重连</button>
+            <button id="planner-terminal-refresh" class="ghost-button" type="button">刷新状态</button>
+            <button id="planner-terminal-stop" class="ghost-button danger" type="button" disabled>停止进程</button>
+          </div>
+          <p id="planner-terminal-notice" class="planner-terminal-notice" role="status" aria-live="polite"></p>
+          <div class="planner-terminal-recovery">
+            <button id="planner-terminal-repair" class="ghost-button" type="button" hidden>修复遗留租约</button>
+            <button id="planner-terminal-reinitialize" class="ghost-button" type="button" hidden>重新初始化会话</button>
+          </div>
+          <div class="planner-terminal-frame">
+            <div id="planner-terminal-screen" class="planner-terminal-screen" aria-label="Claude Code 终端输入输出"></div>
+          </div>
+          <details class="planner-terminal-help">
+            <summary>终端与信任提示</summary>
+            <p id="planner-terminal-guidance">首次出现目录信任对话框时，确认目录可信后请自行选择 Yes, I trust this folder。默认选项可能是 No, exit；CAFF 不会替你确认。关闭分栏仅断开，进程保留 30 分钟；重连只接收后续输出，不回放输入或历史。Ctrl+Shift+F6 返回工具栏。</p>
+          </details>
+          <div class="planner-terminal-wakeups">
+            <label><input id="planner-terminal-wakeups" type="checkbox" disabled />自动叫醒</label>
+            <button id="planner-terminal-records" class="ghost-button" type="button">叫醒记录</button>
+          </div>
+          <p id="planner-terminal-wake-status" class="planner-terminal-notice" role="status"></p>
+          <section id="planner-terminal-record-panel" class="planner-terminal-record-panel" aria-label="叫醒记录" hidden>
+            <div class="planner-terminal-controls">
+              <button id="planner-terminal-records-close" class="ghost-button" type="button">收起记录</button>
+              <button id="planner-terminal-records-next" class="ghost-button" type="button" disabled>更早记录</button>
+            </div>
+            <p id="planner-terminal-record-title" class="planner-terminal-notice"></p>
+            <div id="planner-terminal-record-list"></div>
+            <pre id="planner-terminal-record-output" tabindex="0" aria-label="叫醒事件文本"></pre>
+            <button id="planner-terminal-record-next" class="ghost-button" type="button" disabled>后续事件</button>
+          </section>
+        </div>
+      </aside>
     </div>
 
     <div class="drawer-overlay" id="drawerOverlay"></div>

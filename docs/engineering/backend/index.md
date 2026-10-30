@@ -69,7 +69,10 @@ backend domain services.
   prompt, SSE, frontend and legacy owner compatibility
 - `planner-interface.md`: ADR 0002 P1 credentials/attribution, browser/planner write
   guards, lean/retry-safe HTTP operations, durable attention/cursors/wait,
-  bounded state/portfolio, errors and migration
+  bounded state/portfolio, errors and migration; P2 transport/adapter boundary
+- `../runtime/embedded-planner.md`: default-off official CLI host, authenticated
+  terminal upgrade, shared process admission, user recovery, wake-up scheduler/
+  production finish/storage, actual-prefix caff guide and version/platform gates
 - `health-endpoint.md`: `/api/health` local readiness, redaction, and optional integration contracts
 - `conversation-digest.md`: `/digest` API, metadata, prompt, SSE, and frontend panel contracts
 - `conversation-message-deletion.md`: deletion eligibility, batch API, mutation guard, SQLite/image cleanup, SSE, and UI contracts

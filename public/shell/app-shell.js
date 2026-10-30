@@ -25,6 +25,8 @@
     return;
   }
 
+  const terminalPane = document.getElementById('planner-terminal-pane');
+  let terminalOverlay = false;
   const mqDesktop = window.matchMedia('(min-width: 1280px)');
   const mqReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -157,7 +159,7 @@
 
   // ── Focus trap（可见性实测过滤，mock v4） ────────────────────
   function visibleFocusables(root) {
-    return Array.from(root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+    return Array.from(root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])' + (root === terminalPane ? ', summary' : '')))
       .filter((el) => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length > 0);
   }
 
@@ -183,6 +185,8 @@
         setDrawer(false);
       } else if (body.dataset.sidebar === 'open' && !mqDesktop.matches) {
         setSidebar(false, { user: true });
+      } else if (terminalOverlay && !(event.target instanceof Element && event.target.closest('#planner-terminal-screen'))) {
+        terminalPane?.dispatchEvent(new CustomEvent('caff-terminal-close'));
       }
     }
     if (event.key === 'Tab') {
@@ -190,6 +194,8 @@
         trapTab(drawer, event);
       } else if (body.dataset.sidebar === 'open' && !mqDesktop.matches) {
         trapTab(sidebar, event);
+      } else if (terminalOverlay && terminalPane) {
+        trapTab(terminalPane, event);
       }
     }
   });
@@ -239,6 +245,16 @@
         sidebarToggle.focus();
       }
     }
+    syncTerminalInert();
+  }
+
+  function syncTerminalInert() {
+    if (terminalOverlay) {
+      if (rail) rail.inert = true;
+      if (main) main.inert = true;
+      sidebar.inert = true;
+    }
+    if (terminalPane) terminalPane.inert = terminalPane.hidden || (!terminalOverlay && body.dataset.sidebar === 'open' && !mqDesktop.matches);
   }
 
   sidebarToggle.addEventListener('click', () => setSidebar(body.dataset.sidebar !== 'open', { user: true }));
@@ -356,6 +372,13 @@
 
   // ── 对外 API（panel 模块接线） ───────────────────────────────
   const shellApi = {
+    setTerminalOverlay(open) {
+      if (terminalOverlay === !!open) { syncTerminalInert(); return; }
+      terminalOverlay = !!open;
+      // Mobile terminal and sidebar cannot both own background focus.
+      setSidebar(terminalOverlay ? false : body.dataset.sidebar === 'open');
+      syncTerminalInert();
+    },
     openTab(panelId) {
       const tab = tabByPanelId.get(panelId);
       if (!tab) {
