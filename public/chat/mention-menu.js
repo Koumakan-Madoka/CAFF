@@ -89,7 +89,8 @@
     };
   }
 
-  chat.createMentionMenuController = function createMentionMenuController({ state, dom }) {
+  chat.createMentionMenuController = function createMentionMenuController({ state, dom, onComposerChange }) {
+    const notifyComposerChange = typeof onComposerChange === 'function' ? onComposerChange : () => {};
     function mentionableAgents() {
       return state.currentConversation && Array.isArray(state.currentConversation.agents) ? state.currentConversation.agents : [];
     }
@@ -192,6 +193,9 @@
       dom.composerInput.focus();
       dom.composerInput.setSelectionRange(nextCursor, nextCursor);
       closeMenu();
+      // Programmatic mention insertion does not emit an input event; let dependent
+      // composer UI (routing preview) resync after the menu is closed.
+      notifyComposerChange();
     }
 
     function appendHighlightedMessageBody(container, text, agents) {

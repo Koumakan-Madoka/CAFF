@@ -3,18 +3,24 @@ import { createHash, randomUUID } from 'node:crypto';
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
 const MAX_PENDING = 1000;
 
+// Execution failures in this set are transient: no Git or DB mutation happened,
+// so the card returns to pending and the user can retry it once the blocker clears.
+const RETRYABLE_DECIDE_ERROR_CODES = new Set(['room_workspace_execution_active']);
+
 function text(value: unknown) {
   return String(value || '').trim();
 }
 
 function previewFingerprint(preview: any) {
   const canonical = JSON.stringify({
+    kind: text(preview && preview.kind) || 'bind',
     conversationId: text(preview && preview.conversationId),
     projectScopeId: text(preview && preview.projectScopeId),
     repositoryPath: text(preview && preview.repositoryPath),
     baseBranch: text(preview && preview.baseBranch),
     baseSha: text(preview && preview.baseSha),
     branch: text(preview && preview.branch),
+    newBranch: text(preview && preview.newBranch),
     worktreePath: text(preview && preview.worktreePath),
   });
   return createHash('sha256').update(canonical).digest('hex');
@@ -37,11 +43,15 @@ export class RoomWorkspaceAuthorizationStore {
     this.ttlMs = Number.isFinite(ttlMs) && ttlMs >= 30_000 ? Math.min(ttlMs, 60 * 60 * 1000) : DEFAULT_TTL_MS;
   }
 
-  issue({ conversation, preview, invocationId, now = Date.now() }: any) {
+  issue({ conversation, preview, invocationId, sourceMessageId, now = Date.now() }: any) {
     this.expire(now);
     const conversationId = text(conversation && conversation.id) || text(preview && preview.conversationId);
     const projectScopeId = text(conversation && conversation.projectScopeId) || text(preview && preview.projectScopeId);
-    if (!conversationId || !projectScopeId || !preview || preview.alreadyBound) {
+    if (!conversationId || !projectScopeId || !preview) {
+      return null;
+    }
+    // A bound Room cannot issue another bind card, but it may issue a rename card.
+    if (preview.alreadyBound && text(preview.kind) !== 'rename') {
       return null;
     }
 
@@ -56,6 +66,15 @@ export class RoomWorkspaceAuthorizationStore {
       }
     }
 
+    // A new plan supersedes every still-pending card of this Room: an old card can
+    // never execute a plan the user has already replaced.
+    for (const record of this.records.values()) {
+      if (record.status === 'pending' && record.conversationId === conversationId) {
+        record.status = 'superseded';
+        record.decidedAt = new Date(now).toISOString();
+      }
+    }
+
     if (this.records.size >= MAX_PENDING) {
       this.expire(now, true);
     }
@@ -66,6 +85,7 @@ export class RoomWorkspaceAuthorizationStore {
       conversationId,
       projectScopeId,
       invocationId: text(invocationId) || null,
+      sourceMessageId: text(sourceMessageId) || null,
       fingerprint,
       preview,
       status: 'pending',
@@ -84,13 +104,16 @@ export class RoomWorkspaceAuthorizationStore {
       id: record.id,
       conversationId: record.conversationId,
       projectScopeId: record.projectScopeId,
+      kind: text(record.preview.kind) || 'bind',
       branch: record.preview.branch,
+      newBranch: record.preview.newBranch || null,
       worktreePath: record.preview.worktreePath,
       repositoryPath: record.preview.repositoryPath,
       baseBranch: record.preview.baseBranch,
       baseSha: record.preview.baseSha,
       status: record.status,
       errorCode: record.errorCode,
+      sourceMessageId: record.sourceMessageId || null,
       createdAt: record.createdAt,
       expiresAt: record.expiresAt,
       fingerprint: record.fingerprint,
@@ -116,7 +139,14 @@ export class RoomWorkspaceAuthorizationStore {
     }
     this.expire(now);
     if (record.status !== 'pending') {
-      throw authorizationError(409, 'room_workspace_authorization_decided', 'Workspace authorization request is already decided');
+      const cause = record.status === 'failed' && record.errorCode
+        ? ` (previous attempt failed: ${record.errorCode})`
+        : '';
+      throw authorizationError(
+        409,
+        'room_workspace_authorization_decided',
+        `Workspace authorization request is already decided${cause}; ask the Agent to request a new authorization card`
+      );
     }
     return record;
   }
@@ -147,14 +177,29 @@ export class RoomWorkspaceAuthorizationStore {
     }
     record.status = 'consuming';
     try {
-      const result = await execute(record.preview);
+      const result = await execute(record.preview, record);
       record.status = 'accepted';
+      record.errorCode = null;
       record.decidedAt = new Date().toISOString();
       return { record: this.publicRecord(record), result };
     } catch (error: any) {
-      record.status = 'failed';
-      record.errorCode = text(error && error.code) || 'room_workspace_bind_failed';
-      record.decidedAt = new Date().toISOString();
+      // A transient failure (for example another execution active in the Room)
+      // happened before any Git or DB mutation, so the card stays pending and
+      // the user can retry the same card once the blocker clears.
+      const retryable = RETRYABLE_DECIDE_ERROR_CODES.has(String(error && error.code));
+      if (retryable) {
+        record.status = 'pending';
+        record.errorCode = text(error && error.code) || null;
+        record.decidedAt = null;
+      } else {
+        record.status = 'failed';
+        record.errorCode = text(error && error.code) || 'room_workspace_bind_failed';
+        record.decidedAt = new Date().toISOString();
+      }
+      // Surface the terminal record so callers can broadcast the new card state.
+      if (error && typeof error === 'object') {
+        error.authorizationRecord = this.publicRecord(record);
+      }
       throw error;
     }
   }

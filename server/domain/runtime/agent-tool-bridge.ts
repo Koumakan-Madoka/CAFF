@@ -4,6 +4,7 @@ const { pickConversationSummary, serializeConversationPrivateMessageForUi } = re
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
 const { filterRoutableConversationAgents } = require('../roles/system-actor-catalog');
 const { applySessionGoalAction, getSessionGoalProposal, proposeSessionGoalAction } = require('../conversation/session-goal');
+const { assertPlannerGoalRulingAllowed } = require('../conversation/planner-goal-binding');
 const { getDagNodeGoalBinding } = require('../conversation/dag-goal-binding');
 const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
@@ -22,6 +23,8 @@ const {
 const {
   bindAndPersistRoomWorkspace,
   previewRoomWorkspace,
+  previewRoomWorkspaceRename,
+  renameAndPersistRoomWorkspace,
 } = require('../conversation/room-workspace');
 const {
   RoomWorkspaceAuthorizationStore,
@@ -378,6 +381,7 @@ export function createAgentToolBridge(options: any = {}) {
   const resolveProject = typeof options.resolveProject === 'function' ? options.resolveProject : () => null;
   let piCapabilityBridge = options.piCapabilityBridge || null;
   let typeSafeClient = options.typeSafeClient || null;
+  const timeBreakdownPipeline = options.turnTimeBreakdownPipeline || null;
   const activeInvocations = new Map();
   const workspaceAuthorizations = options.workspaceAuthorizations || new RoomWorkspaceAuthorizationStore();
 
@@ -415,6 +419,39 @@ export function createAgentToolBridge(options: any = {}) {
     if (runStore && taskId && typeof runStore.appendTaskEvent === 'function') {
       try {
         runStore.appendTaskEvent(taskId, eventType, payload);
+      } catch {}
+    }
+
+    // Turn time breakdown (contract §8): CAFF-native bridge tools bypass the
+    // pi event stream, so this secondary hook is their only classification
+    // source. Enqueue only — never awaited, dedup by toolCallId.
+    if (timeBreakdownPipeline && eventType === 'agent_tool_call' && payload && typeof payload === 'object') {
+      try {
+        const endedAtMs = Date.now();
+        const durationMs = Number.isFinite(Number(payload.durationMs)) ? Number(payload.durationMs) : null;
+        let output = '';
+
+        try {
+          output = payload.result !== undefined ? JSON.stringify(payload.result) : '';
+        } catch {
+          output = '';
+        }
+
+        timeBreakdownPipeline.enqueueStep({
+          taskId,
+          messageId: context.assistantMessageId || null,
+          conversationId: context.conversationId || null,
+          step: {
+            stepKey: String(payload.toolCallId || payload.invocationId || `${payload.tool || 'bridge'}:${endedAtMs}`),
+            toolCallId: String(payload.toolCallId || ''),
+            toolName: String(payload.tool || 'bridge'),
+            args: payload.request !== undefined ? payload.request : null,
+            output,
+            isError: payload.status !== 'succeeded',
+            startedAtMs: durationMs !== null ? endedAtMs - durationMs : null,
+            endedAtMs,
+          },
+        });
       } catch {}
     }
 
@@ -1344,8 +1381,10 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
-  function handleRoomWorkspaceCapability(kind: 'preview' | 'bind', input: any) {
+  function handleRoomWorkspaceCapability(kind: 'preview' | 'bind' | 'rename_preview' | 'rename_bind', input: any) {
     const principal = input && input.principal;
+    const capabilityArguments = (input && input.arguments) || {};
+    const branchName = String(capabilityArguments.branchName || '').trim() || undefined;
     const conversationId = String(principal && principal.sourceConversationId || '').trim();
     const projectScopeId = String(principal && principal.projectScopeId || '').trim();
     const conversation = store && typeof store.getConversationWithoutMessages === 'function'
@@ -1364,12 +1403,13 @@ export function createAgentToolBridge(options: any = {}) {
       throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
     }
     if (kind === 'preview') {
-      const preview = previewRoomWorkspace({ conversation, project });
+      const preview = previewRoomWorkspace({ conversation, project, branchName });
       if (!preview.alreadyBound) {
         const authorization = workspaceAuthorizations.issue({
           conversation,
           preview,
           invocationId: principal.invocationId,
+          sourceMessageId: principal.sourceMessageId,
         });
         if (authorization) {
           const clientAuthorization = workspaceAuthorizations.clientRecord(
@@ -1384,17 +1424,63 @@ export function createAgentToolBridge(options: any = {}) {
       return preview;
     }
 
-    const result = bindAndPersistRoomWorkspace({
+    if (kind === 'bind') {
+      const result = bindAndPersistRoomWorkspace({
+        store,
+        conversation,
+        project,
+        branchName,
+        workspaceBoundAt: nowIso(),
+      });
+      broadcastConversationSummary(conversationId);
+      return result.workspace;
+    }
+
+    if (kind === 'rename_preview') {
+      // Read-only: never blocked by an active execution; the idle check happens at execution time.
+      const pendingOperation = typeof store.getPendingWorkspaceOperation === 'function'
+        ? store.getPendingWorkspaceOperation(conversationId)
+        : null;
+      const preview = previewRoomWorkspaceRename({ conversation, project, branchName, pendingOperation });
+      const authorization = workspaceAuthorizations.issue({
+        conversation,
+        preview,
+        invocationId: principal.invocationId,
+        sourceMessageId: principal.sourceMessageId,
+      });
+      if (authorization) {
+        const clientAuthorization = workspaceAuthorizations.clientRecord(
+          workspaceAuthorizations.records.get(authorization.id)
+        );
+        broadcastEvent('room_workspace_authorization_updated', {
+          conversationId,
+          authorization: clientAuthorization,
+        });
+      }
+      return preview;
+    }
+
+    // Non-UI fallback: the calling invocation's own assistant message must not count
+    // as a blocking active execution, but any OTHER active execution in the Room —
+    // including another agent running in the same turn — still blocks. Exclusion is
+    // therefore per assistant message, never per turn.
+    const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
+      ? store.hasActiveConversationTurn(conversationId, {
+          excludeMessageId: String(principal.sourceMessageId || '').trim() || undefined,
+        })
+      : false;
+    const result = renameAndPersistRoomWorkspace({
       store,
       conversation,
       project,
-      workspaceBoundAt: nowIso(),
+      branchName,
+      hasActiveExecution,
     });
     broadcastConversationSummary(conversationId);
-    return result.workspace;
+    return { ...result.workspace, recovered: result.recovered === true };
   }
 
-  function handleRoomWorkspaceAuthorization(input: any = {}) {
+  async function handleRoomWorkspaceAuthorization(input: any = {}) {
     const conversationId = String(input.conversationId || '').trim();
     const authorizationId = String(input.authorizationId || '').trim();
     const token = String(input.token || '').trim();
@@ -1413,34 +1499,84 @@ export function createAgentToolBridge(options: any = {}) {
     if (!project) {
       throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
     }
-    return workspaceAuthorizations.decide({
-      id: authorizationId,
-      token,
-      conversationId,
-      decision,
-      fingerprint,
-      execute: async () => {
-        const currentConversation = store.getConversationWithoutMessages(conversationId) || conversation;
-        const currentPreview = previewRoomWorkspace({ conversation: currentConversation, project });
-        if (previewFingerprint(currentPreview) !== fingerprint) {
-          throw createHttpError(409, 'Workspace preview changed; request a new authorization card', {
-            code: 'room_workspace_authorization_stale',
+    let outcome;
+    try {
+      outcome = await workspaceAuthorizations.decide({
+        id: authorizationId,
+        token,
+        conversationId,
+        decision,
+        fingerprint,
+        execute: async (authorizedPreview: any, record: any) => {
+          const currentConversation = store.getConversationWithoutMessages(conversationId) || conversation;
+          if (authorizedPreview && String(authorizedPreview.kind || '') === 'rename') {
+            // The approval path checks EVERY active message, including the card
+            // issuer: after issuing the card the agent may still run tools on the
+            // workspace, so only a fully idle Room may rename. A transient block
+            // returns the card to pending, so the user retries the same card once
+            // the running execution finishes.
+            const hasActiveExecution = typeof store.hasActiveConversationTurn === 'function'
+              ? store.hasActiveConversationTurn(conversationId)
+              : false;
+            const result = renameAndPersistRoomWorkspace({
+              store,
+              conversation: currentConversation,
+              project,
+              branchName: authorizedPreview.newBranch,
+              hasActiveExecution,
+              expectedFingerprint: fingerprint,
+              fingerprintOf: previewFingerprint,
+            });
+            broadcastConversationSummary(conversationId);
+            broadcastEvent('room_workspace_authorization_updated', {
+              conversationId,
+              authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+            });
+            return result;
+          }
+          // Replay the exact authorized naming plan: a custom branchName binds with the
+          // stable directory mode, a default card keeps the automatic naming.
+          const authorizedBranchName = authorizedPreview && authorizedPreview.requestedBranchName
+            ? String(authorizedPreview.requestedBranchName)
+            : undefined;
+          const currentPreview = previewRoomWorkspace({
+            conversation: currentConversation,
+            project,
+            branchName: authorizedBranchName,
           });
-        }
-        const result = bindAndPersistRoomWorkspace({
-          store,
-          conversation: currentConversation,
-          project,
-          workspaceBoundAt: nowIso(),
-        });
-        broadcastConversationSummary(conversationId);
+          if (previewFingerprint(currentPreview) !== fingerprint) {
+            throw createHttpError(409, 'Workspace preview changed; request a new authorization card', {
+              code: 'room_workspace_authorization_stale',
+            });
+          }
+          const result = bindAndPersistRoomWorkspace({
+            store,
+            conversation: currentConversation,
+            project,
+            branchName: authorizedBranchName,
+            workspaceBoundAt: nowIso(),
+          });
+          broadcastConversationSummary(conversationId);
+          broadcastEvent('room_workspace_authorization_updated', {
+            conversationId,
+            authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+          });
+          return result;
+        },
+      });
+    } catch (error: any) {
+      // A decided-but-failed (or retried-pending) card must reach the UI so it
+      // cannot linger on a stale state while the HTTP request itself errors.
+      const decidedRecord = error && error.authorizationRecord;
+      if (decidedRecord) {
         broadcastEvent('room_workspace_authorization_updated', {
           conversationId,
-          authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+          authorization: decidedRecord,
         });
-        return result;
-      },
-    });
+      }
+      throw error;
+    }
+    return outcome;
   }
   function listRoomWorkspaceAuthorizations(conversationId: any) {
     const conversation = store.getConversationWithoutMessages(String(conversationId || '').trim());
@@ -1484,6 +1620,12 @@ export function createAgentToolBridge(options: any = {}) {
           bind(input: any) {
             return handleRoomWorkspaceCapability('bind', input);
           },
+          renamePreview(input: any) {
+            return handleRoomWorkspaceCapability('rename_preview', input);
+          },
+          renameBind(input: any) {
+            return handleRoomWorkspaceCapability('rename_bind', input);
+          },
         }),
         ...createTypeSafeCapabilityDefinitions({
           ask(input: any) {
@@ -1512,6 +1654,8 @@ export function createAgentToolBridge(options: any = {}) {
       sourceConversationId: context.conversationId,
       sourceAgentId: context.agentId,
       sourceAgentName: context.agentName,
+      sourceTurnId: String(context.turnId || '').trim() || null,
+      sourceMessageId: String(context.assistantMessageId || '').trim() || null,
       projectScopeId: String(conversation && conversation.projectScopeId || '').trim(),
       traceId,
       incomingDeliveryId,
@@ -1915,6 +2059,10 @@ export function createAgentToolBridge(options: any = {}) {
         throw createHttpError(501, 'Session goal proposals are not available');
       }
 
+      if (action === 'bind-planner' || action === 'bind_planner') {
+        throw createHttpError(403, 'Only the user may adopt a planner for an existing Goal', { code: 'goal_planner_binding_user_required' });
+      }
+
       // accept/reject (D28): act on the PENDING proposal instead of creating
       // one. The proposer can never rule on their own proposal (403) — this
       // is what lets a DAG verifier agent accept/reject a worker's completion
@@ -1924,6 +2072,7 @@ export function createAgentToolBridge(options: any = {}) {
         if (!conversation) {
           throw createHttpError(404, 'Conversation not found');
         }
+        assertPlannerGoalRulingAllowed(conversation, { kind: 'agent', agentId: context.agentId, agentName: context.agentName });
         const pendingProposal = getSessionGoalProposal(conversation);
         if (!pendingProposal) {
           throw createHttpError(404, 'No session goal proposal is pending');
@@ -1956,7 +2105,7 @@ export function createAgentToolBridge(options: any = {}) {
           // The ruling principal is persisted atomically with the mutation
           // (durable D28 record the scheduler validates at settle/reconcile).
           ruledBy: { agentId: context.agentId, agentName: context.agentName },
-        });
+        }, { resolveRuntimeParticipants: options.resolveRuntimeParticipants });
         const summary = pickConversationSummary(result.conversation);
 
         broadcastEvent('conversation_goal_proposal_cleared', {
@@ -2034,14 +2183,19 @@ export function createAgentToolBridge(options: any = {}) {
         }
       }
 
-      const goalInput = body.goal && typeof body.goal === 'object' && !Array.isArray(body.goal)
-        ? { ...body.goal, action, objective: body.goal.objective || objective, reason: body.goal.reason || reason }
-        : { ...body, action, objective, reason, ...(checklistText ? { checklistText } : {}) };
+      const goalSource = body.goal && typeof body.goal === 'object' && !Array.isArray(body.goal) ? body.goal : body;
+      const goalInput = {
+        ...goalSource, action, reason: goalSource.reason || reason,
+        // Omission must reach the patch merger as omission, not a synthesized
+        // blank objective. Preserve explicit invalid values for validation.
+        ...(!Object.hasOwn(goalSource, 'objective') && Object.hasOwn(body, 'objective') ? { objective: body.objective } : {}),
+      };
       const result = proposeSessionGoalAction(
         activeStore,
         context.conversationId,
         goalInput,
-        { agentId: context.agentId, agentName: context.agentName }
+        { agentId: context.agentId, agentName: context.agentName },
+        { resolveRuntimeParticipants: options.resolveRuntimeParticipants }
       );
       const summary = pickConversationSummary(result.conversation);
 
@@ -2147,6 +2301,7 @@ export function createAgentToolBridge(options: any = {}) {
       const result = applySessionGoalAction(activeStore, context.conversationId, {
         ...goalUpdate,
         action: 'update-delivery',
+        ruledBy: { kind: 'agent', agentId: context.agentId, agentName: context.agentName },
       });
       const summary = pickConversationSummary(result.conversation);
       broadcastEvent('conversation_goal_updated', {

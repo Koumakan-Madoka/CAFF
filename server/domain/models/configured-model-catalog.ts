@@ -7,6 +7,7 @@ import {
   resolveSetting,
 } from '../../../lib/minimal-pi';
 import { classifyModelFamily } from './model-family-registry';
+import { supportsFastMode } from './fast-mode-support';
 import { readModelProviderDocument } from './model-provider-persistence';
 
 const MODEL_KEY_SEPARATOR = '\u001f';
@@ -18,6 +19,7 @@ type RuntimeModel = {
   provider: string;
   id: string;
   name?: string;
+  api?: string;
   supportedThinkingLevels?: string[];
   input?: string[];
   contextWindow?: number;
@@ -108,6 +110,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
         provider,
         model,
         label: normalize(runtimeModel.name) || `${provider} / ${model}`,
+        api: normalize(runtimeModel.api),
         supportedThinkingLevels: normalizeThinkingLevels(runtimeModel.supportedThinkingLevels),
         input: normalizeModelInput(runtimeModel.input),
         contextWindow: normalizeContextWindow(runtimeModel.contextWindow),
@@ -133,6 +136,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
           source: 'models_json' as CatalogSource,
           explicitFamily: normalize(modelConfig?.family),
           runtimeResolvable: Boolean(current),
+          api: current?.api || '',
           supportedThinkingLevels: current?.supportedThinkingLevels || ['off'],
           input: normalizeModelInput(modelConfig?.input),
           contextWindow: normalizeContextWindow(modelConfig?.contextWindow) ?? current?.contextWindow ?? null,
@@ -155,6 +159,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
           source: 'runtime' as CatalogSource,
           explicitFamily: '',
           runtimeResolvable: true,
+          api: current?.api || '',
           supportedThinkingLevels: current?.supportedThinkingLevels || ['off'],
           input: current?.input || ['text'],
           contextWindow: current?.contextWindow ?? null,
@@ -177,6 +182,11 @@ export function createConfiguredModelCatalog(options: any = {}) {
         sourceLabel: sourceLabel(entry.source),
         runtimeResolvable: entry.runtimeResolvable,
         ...classification,
+        api: entry.api || '',
+        // Credential-blind projection: the live backend catalog needs the
+        // subscription token, so model options fall back to the static
+        // allowlist (fast-mode-openai-codex.md, "Support detection").
+        supportsFast: supportsFastMode({ provider: entry.provider, api: entry.api, model: entry.model }),
         supportedThinkingLevels: entry.supportedThinkingLevels,
         input: entry.input,
         contextWindow: entry.contextWindow ?? null,

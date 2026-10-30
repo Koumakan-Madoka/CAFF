@@ -10,7 +10,8 @@ if (!fetchJson
   || !avatarUtils
   || !personas.createRoleManagement
   || !personas.createProviderManagement
-  || !personas.createRecoveryScribeManagement) {
+  || !personas.createRecoveryScribeManagement
+  || !personas.createJevConfigManagement) {
   throw new Error('Role, provider, and system service management modules failed to load');
 }
 
@@ -103,6 +104,44 @@ const recoveryScribeManagement = personas.createRecoveryScribeManagement({
   onManageProviders: () => showView('providers'),
 });
 
+const jevConfigManagement = personas.createJevConfigManagement({
+  root: document.getElementById('jev-config-detail'),
+  fetchJson,
+  showToast,
+  isEnabled: () => adminState.systemServices.enabled,
+  getCsrfToken: () => adminState.systemServices.csrfToken,
+  onStatus(status) {
+    const dot = document.getElementById('system-service-jev-dot');
+    if (!dot) return;
+    dot.className = 'status-dot' + (status && status.effective ? ' default' : status && status.reason !== 'db_switch_off' ? ' warning' : '');
+  },
+});
+
+const systemServiceItems = {
+  scribe: {
+    button: /** @type {HTMLButtonElement} */ (document.getElementById('system-service-select-scribe')),
+    detail: /** @type {HTMLElement} */ (document.getElementById('recovery-scribe-detail')),
+  },
+  jev: {
+    button: /** @type {HTMLButtonElement} */ (document.getElementById('system-service-select-jev')),
+    detail: /** @type {HTMLElement} */ (document.getElementById('jev-config-detail')),
+  },
+};
+
+/** @param {'scribe' | 'jev'} selected */
+function selectSystemService(selected) {
+  for (const key of /** @type {Array<'scribe' | 'jev'>} */ (Object.keys(systemServiceItems))) {
+    const item = systemServiceItems[key];
+    const active = key === selected;
+    item.button.classList.toggle('active', active);
+    item.button.setAttribute('aria-current', String(active));
+    item.detail.classList.toggle('hidden', !active);
+  }
+}
+
+systemServiceItems.scribe.button.addEventListener('click', () => selectSystemService('scribe'));
+systemServiceItems.jev.button.addEventListener('click', () => selectSystemService('jev'));
+
 roleTab.addEventListener('click', () => showView('roles'));
 providerTab.addEventListener('click', () => showView('providers'));
 systemServicesTab.addEventListener('click', () => showView('system-services'));
@@ -113,13 +152,18 @@ document.getElementById('refresh-providers').addEventListener('click', async () 
   try { await providerManagement.refresh(); showToast('供应商状态已刷新'); } catch (error) { showToast(error.message); }
 });
 document.getElementById('refresh-system-services').addEventListener('click', async () => {
-  try { await recoveryScribeManagement.refresh(); showToast('系统服务状态已刷新'); } catch (error) { showToast(error.message); }
+  const succeeded = await refreshSections([
+    { refresh: () => recoveryScribeManagement.refresh(), fallback: '系统书记状态刷新失败' },
+    { refresh: () => jevConfigManagement.refresh(), fallback: 'JEV 配置状态刷新失败' },
+  ]);
+  if (succeeded) showToast('系统服务状态已刷新');
 });
 document.getElementById('refresh-button').addEventListener('click', async () => {
   const succeeded = await refreshSections([
     { refresh: () => roleManagement.refresh(), fallback: '角色目录刷新失败' },
     { refresh: () => providerManagement.refresh(), fallback: '供应商状态刷新失败' },
-    { refresh: () => recoveryScribeManagement.refresh(), fallback: '系统服务状态刷新失败' },
+    { refresh: () => recoveryScribeManagement.refresh(), fallback: '系统书记状态刷新失败' },
+    { refresh: () => jevConfigManagement.refresh(), fallback: 'JEV 配置状态刷新失败' },
   ]);
   if (succeeded) showToast('已刷新');
 });
@@ -149,7 +193,8 @@ async function init() {
     await refreshSections([
       { refresh: () => roleManagement.setDirectory(bootstrap), fallback: '角色目录加载失败' },
       { refresh: () => providerManagement.refresh(), fallback: '供应商状态加载失败' },
-      { refresh: () => recoveryScribeManagement.refresh(), fallback: '系统服务状态加载失败' },
+      { refresh: () => recoveryScribeManagement.refresh(), fallback: '系统书记状态加载失败' },
+      { refresh: () => jevConfigManagement.refresh(), fallback: 'JEV 配置状态加载失败' },
     ]);
     document.body.dataset.managementReady = 'true';
   } catch (error) {

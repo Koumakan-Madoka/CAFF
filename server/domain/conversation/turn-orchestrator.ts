@@ -13,9 +13,12 @@ const {
   createSessionGoalBudgetProposal,
   getSessionGoal,
   getSessionGoalProposal,
+  isGoalRunnerSourceMessage,
   pauseSessionGoalForRemovedOwner,
+  pauseSessionGoalOnUserStop,
   recordSessionGoalContinuationOutcome,
 } = require('./session-goal');
+const { getDagNodeExecutionContext } = require('./dag-goal-binding');
 
 const { getAgentById, extractMentionedAgentIds, resolveTurnExecutionMode } = require('./mention-routing');
 const { buildAgentTurnPrompt, sanitizePromptMentions } = require('./turn/agent-prompt');
@@ -30,7 +33,9 @@ const { createTurnStopper, registerTurnHandle, unregisterTurnHandle } = require(
 const {
   clipText,
   createAgentSlotState,
+  getTurnStage,
   nowIso,
+  resetTurnStage,
   summarizeAgentSlotState,
   summarizeTurnState,
   syncCurrentTurnAgent,
@@ -130,6 +135,19 @@ export function createTurnOrchestrator(options: any = {}) {
   const sideDispatchMessageIds = new Map();
   const queuedSideDispatches = new Map();
   const agentSlotRegistry = createAgentSlotRegistry();
+  const pendingExecutions = new Set<Promise<any>>();
+  let closing = false;
+  let shutdownPromise: Promise<void> | null = null;
+
+  function trackExecution<T>(promise: Promise<T>): Promise<T> {
+    pendingExecutions.add(promise);
+    void promise.then(() => pendingExecutions.delete(promise), () => pendingExecutions.delete(promise));
+    return promise;
+  }
+
+  function requireAcceptingWork() {
+    if (closing) throw createHttpError(503, '服务关闭中断', { code: 'server_closing' });
+  }
 
   const { emitTurnProgress, emitAgentSlotFinished } = createTurnEventEmitter({ broadcastEvent });
   const requiresBoundedProjections = requiresBoundedConversationProjections(store);
@@ -716,6 +734,19 @@ export function createTurnOrchestrator(options: any = {}) {
     return queueState;
   }
 
+  function getPlannerBusyState(conversationId: string) {
+    // Monitoring must not call ensureQueueState/getConversationQueueDepth: those
+    // hydrate headers or pending message bodies and can create queue entries.
+    if (activeConversationIds.has(conversationId) || dispatchingConversationIds.has(conversationId)
+      || activeTurns.has(conversationId) || hasActiveAgentSlots(conversationId)
+      || (queuedSideDispatches.get(conversationId)?.size || 0) > 0) return true;
+    if (typeof store?.hasPendingPlannerMainWork !== 'function') {
+      throw createHttpError(501, 'Bounded planner queue projection unavailable', { code: 'planner_projection_unavailable' });
+    }
+    const cursor = queueStates.get(conversationId)?.lastConsumedUserMessageId;
+    return store.hasPendingPlannerMainWork(conversationId, cursor);
+  }
+
   function getConversationMutationState(conversationId: any) {
     const normalizedConversationId = String(conversationId || '').trim();
     const active = activeConversationIds.has(normalizedConversationId);
@@ -852,6 +883,7 @@ export function createTurnOrchestrator(options: any = {}) {
         modeStore,
         getProjectDir,
         agentToolBridge,
+        turnTimeBreakdownPipeline: options.turnTimeBreakdownPipeline || null,
         broadcastEvent,
         broadcastConversationSummary,
         emitTurnProgress,
@@ -871,12 +903,24 @@ export function createTurnOrchestrator(options: any = {}) {
   const baseExecuteConversationAgent = providedExecuteConversationAgent || agentExecutor.executeConversationAgent;
 
   async function executeConversationAgentWithSlot(input: any) {
+    if (closing) return { stopTurn: true, terminationReason: 'stopped_by_user' };
     const conversationId = String(input && input.conversationId ? input.conversationId : '').trim();
     const agentId = String(input && input.agent && input.agent.id ? input.agent.id : '').trim();
     const lane = input && input.turnState && input.turnState.executionLane === 'side' ? 'side' : 'main';
 
     if (!conversationId || !agentId || lane === 'side') {
       return baseExecuteConversationAgent(input);
+    }
+
+    const stageForSlot = input.turnState ? getTurnStage(input.turnState, agentId) : null;
+
+    // Per-trace stop: a stage cancelled while queued never enters the slot
+    // wait at all; only this stage is skipped, the turn keeps routing.
+    if (stageForSlot && stageForSlot.stopRequested) {
+      return {
+        stopTurn: false,
+        terminationReason: '',
+      };
     }
 
     const slotRequest = agentSlotRegistry.requestSlot({
@@ -886,6 +930,7 @@ export function createTurnOrchestrator(options: any = {}) {
     });
     const waitHandle = slotRequest.queued
       ? {
+          turnStageAgentId: agentId,
           cancel(reason: any) {
             slotRequest.cancel(reason || 'Stopped by user');
           },
@@ -912,6 +957,19 @@ export function createTurnOrchestrator(options: any = {}) {
         };
       }
 
+      // Per-trace stop: the slot wait was cancelled for this stage only.
+      if (stageForSlot && stageForSlot.stopRequested) {
+        resetTurnStage(stageForSlot, 'idle');
+        stageForSlot.stopRequested = true;
+        input.turnState.updatedAt = nowIso();
+        syncCurrentTurnAgent(input.turnState);
+        emitTurnProgress(input.turnState);
+        return {
+          stopTurn: false,
+          terminationReason: '',
+        };
+      }
+
       throw error;
     }
 
@@ -924,6 +982,13 @@ export function createTurnOrchestrator(options: any = {}) {
         return {
           stopTurn: true,
           terminationReason: 'stopped_by_user',
+        };
+      }
+
+      if (stageForSlot && stageForSlot.stopRequested) {
+        return {
+          stopTurn: false,
+          terminationReason: '',
         };
       }
 
@@ -965,6 +1030,11 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   async function runConversationTurn(conversationId: any, userContent: any) {
+    requireAcceptingWork();
+    return trackExecution(executeConversationTurn(conversationId, userContent));
+  }
+
+  async function executeConversationTurn(conversationId: any, userContent: any) {
     const normalizedConversationId = String(conversationId || '').trim();
 
     if (
@@ -985,6 +1055,9 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function enqueueDelegationContinuation(delegation: any) {
+    // Terminal settlement already consumed the write-once continuation marker.
+    // Persist even during shutdown: the closing drain refuses dispatch, and
+    // startup queue discovery must still find the requester's pending message.
     const conversationId = String(delegation && delegation.requesterConversationId || '').trim();
     const agentId = String(delegation && delegation.requesterAgentId || '').trim();
     if (!conversationId || !agentId || !delegation || !delegation.terminalAt) return { scheduled: false, reason: 'invalid_delegation' };
@@ -1254,6 +1327,7 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function scheduleGoalContinuation(conversationId: any, options: any = {}) {
+    if (closing) return { scheduled: false, reason: 'server_closing' };
     const scheduled = enqueueGoalContinuationMessage(conversationId, options);
 
     if (!scheduled.scheduled) {
@@ -1272,6 +1346,7 @@ export function createTurnOrchestrator(options: any = {}) {
     const normalizedConversationId = String(conversationId || '').trim();
 
     if (
+      closing ||
       !normalizedConversationId ||
       dispatchingConversationIds.has(normalizedConversationId) ||
       hasActiveAgentSlots(normalizedConversationId)
@@ -1283,7 +1358,7 @@ export function createTurnOrchestrator(options: any = {}) {
     ensureQueueState(normalizedConversationId).idle = false;
     broadcastRuntimeState();
 
-    void (async () => {
+    void trackExecution((async () => {
       // Set to true when the loop's final poll found the queue empty and no
       // goal continuation was scheduled: the queue state is then settleable
       // when the dispatch marker is released below (settlement must not
@@ -1292,7 +1367,7 @@ export function createTurnOrchestrator(options: any = {}) {
       let drainedIdle = false;
 
       try {
-        while (true) {
+        while (!closing) {
           if (activeConversationIds.has(normalizedConversationId) || hasActiveAgentSlots(normalizedConversationId)) {
             break;
           }
@@ -1370,7 +1445,7 @@ export function createTurnOrchestrator(options: any = {}) {
 
         broadcastRuntimeState();
       }
-    })();
+    })());
 
     return true;
   }
@@ -1692,6 +1767,7 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function startSideDispatch(entry: any) {
+    requireAcceptingWork();
     const conversationId = entry.conversationId;
     markSideDispatchMessage(conversationId, entry.acceptedMessage.id);
 
@@ -1701,6 +1777,7 @@ export function createTurnOrchestrator(options: any = {}) {
       resolveExecution = resolve;
       rejectExecution = reject;
     });
+    trackExecution(executionPromise);
     void executionPromise.catch(() => {});
 
     const slotRequest = agentSlotRegistry.requestSlot({
@@ -1934,6 +2011,7 @@ export function createTurnOrchestrator(options: any = {}) {
 
   function recoverPersistedSideDispatches() {
     let recoveryMessages = [] as any[];
+    const pendingDispatches: Array<() => void> = [];
 
     if (store && typeof store.listSideDispatchRecoveryMessages === 'function') {
       recoveryMessages = store.listSideDispatchRecoveryMessages();
@@ -1973,20 +2051,85 @@ export function createTurnOrchestrator(options: any = {}) {
       }
 
       markStaleSideDispatchReplyMessages(conversationId, message.id);
-      submitSideDispatch(
-        conversation,
-        { metadata },
-        message,
-        sideTarget,
-        {
-          promptSnapshotMessageIds: buildPromptSnapshotMessageIdsThroughMessage(conversationId, message.id),
-          projectDirSnapshot: getProjectDir ? String(getProjectDir(conversation) || '').trim() : '',
-        }
-      );
+      const dispatchOptions = {
+        promptSnapshotMessageIds: buildPromptSnapshotMessageIdsThroughMessage(conversationId, message.id),
+        projectDirSnapshot: getProjectDir ? String(getProjectDir(conversation) || '').trim() : '',
+      };
+      pendingDispatches.push(() => {
+        submitSideDispatch(conversation, { metadata }, message, sideTarget, dispatchOptions);
+      });
     }
+    return pendingDispatches;
   }
 
-  function submitConversationMessage(conversationId: any, input: any) {
+  function previewRouting(conversationId: any, input: any = {}) {
+    const storedConversation = loadRoutingConversation(conversationId);
+
+    if (!storedConversation) {
+      throw createHttpError(404, 'Conversation not found');
+    }
+
+    if (!Array.isArray(storedConversation.agents) || storedConversation.agents.length === 0) {
+      throw createHttpError(400, 'Add at least one agent to the conversation first');
+    }
+
+    const conversation = {
+      ...storedConversation,
+      agents: resolveRuntimeParticipants(storedConversation.agents),
+    };
+    // Preview reuses the exact acceptance-path pipeline
+    // (normalizeConversationTurnInput -> resolveInitialTurnTargets) so the
+    // previewed routing always matches what a freshly submitted message with
+    // the same content would resolve to under the same conversation state.
+    // It is a read-only projection, not a dispatch promise: state changes or
+    // a side-dispatch decision at submit time may produce a different outcome,
+    // which is then authoritatively recorded in the message metadata.
+    const turnInput = normalizeConversationTurnInput(
+      { content: typeof (input && input.content) === 'string' ? input.content : '' },
+      storedConversation
+    );
+    const resolution = resolveInitialTurnTargets(turnInput, conversation);
+    const agentsById = new Map<string, any>(
+      (Array.isArray(conversation.agents) ? conversation.agents : [])
+        .map((agent: any) => [String(agent && agent.id || '').trim(), agent] as [string, any])
+        .filter(([agentId]: [string, any]) => Boolean(agentId))
+    );
+
+    return {
+      conversationId: String(conversationId || '').trim(),
+      agentIds: resolution.agentIds,
+      agents: (Array.isArray(resolution.agentIds) ? resolution.agentIds : []).map((agentId: any) => {
+        const normalizedAgentId = String(agentId || '').trim();
+        const agent = agentsById.get(normalizedAgentId) || null;
+        const name = String(agent && agent.name || '').trim();
+        return {
+          id: normalizedAgentId,
+          name: name || normalizedAgentId,
+        };
+      }),
+      strategy: resolution.strategy,
+      executionMode: resolution.executionMode,
+      explicitIntent: resolution.explicitIntent,
+    };
+  }
+
+  function duplicatePlannerMessage(message: any) {
+    const side = message.metadata?.dispatchLane === 'side';
+    return { acceptedMessage: message, dispatch: 'duplicate', dispatchLane: side ? 'side' : 'main',
+      dispatchTargetAgentId: side ? message.metadata?.dispatchTargetAgentId || null : null };
+  }
+
+  function submitConversationMessage(conversationId: any, input: any, submissionOptions: any = {}) {
+    requireAcceptingWork();
+    const planner = submissionOptions.responseProjection === 'planner';
+    if (planner) {
+      if (typeof store?.findMessageRetry !== 'function' || typeof store?.acceptPlannerMessage !== 'function') {
+        throw createHttpError(501, 'Planner message acceptance projection unavailable', { code: 'planner_projection_unavailable' });
+      }
+      const previous = store.findMessageRetry({ conversationId, content: String(input?.content || '').trim(),
+        imageIds: input?.imageIds, metadata: input?.metadata });
+      if (previous) return duplicatePlannerMessage(previous);
+    }
     const storedConversation = loadRoutingConversation(conversationId);
 
     if (!storedConversation) {
@@ -2031,19 +2174,35 @@ export function createTurnOrchestrator(options: any = {}) {
 
     ensureQueueState(conversationId);
 
+    // Persist the accept-time routing resolution so queued messages can show an
+    // estimate immediately. The executor overwrites metadata.routing with the
+    // execution-time resolution when the batch actually starts (routingStatus
+    // becomes "dispatched"); side-dispatch targets are already authoritative at
+    // accept time.
+    const routingMetadata = {
+      agentIds: initialTargetResolution.agentIds,
+      strategy: initialTargetResolution.strategy,
+      executionMode: initialTargetResolution.executionMode,
+      explicitIntent: initialTargetResolution.explicitIntent,
+    };
+    const routingStatus = shouldSideDispatch ? 'dispatched' : 'accepted';
+    const routingRecordedAt = nowIso();
+
     let dispatchResult = null as any;
-    const acceptedMessage = store.createMessage(
-      createAcceptedMessagePayload(conversationId, {
-        ...turnInput,
-        metadata: shouldSideDispatch
-          ? {
-              ...turnInput.metadata,
-              dispatchLane: 'side',
-              dispatchTargetAgentId: sideTarget ? sideTarget.targetAgentId : null,
-            }
-          : turnInput.metadata,
-      })
-    );
+    const messagePayload = createAcceptedMessagePayload(conversationId, {
+      ...turnInput,
+      metadata: {
+        ...turnInput.metadata,
+        routing: routingMetadata,
+        routingStatus,
+        routingRecordedAt,
+        ...(shouldSideDispatch ? { dispatchLane: 'side', dispatchTargetAgentId: sideTarget ? sideTarget.targetAgentId : null,
+          routingDispatchedAt: routingRecordedAt } : {}),
+      },
+    });
+    const acceptance = planner ? store.acceptPlannerMessage(messagePayload) : { message: store.createMessage(messagePayload), duplicate: false };
+    const acceptedMessage = acceptance.message;
+    if (acceptance.duplicate) return duplicatePlannerMessage(acceptedMessage);
 
     broadcastEvent('conversation_message_created', {
       conversationId,
@@ -2067,6 +2226,8 @@ export function createTurnOrchestrator(options: any = {}) {
       };
     }
 
+    if (planner) return { acceptedMessage, dispatch: dispatchResult.dispatch, dispatchLane: dispatchResult.dispatchLane,
+      dispatchTargetAgentId: dispatchResult.dispatchTargetAgentId };
     return {
       acceptedMessage,
       conversation: {
@@ -2084,7 +2245,256 @@ export function createTurnOrchestrator(options: any = {}) {
     };
   }
 
-  function requestStopConversationExecution(conversationId: any, reason: any = 'Stopped by user') {
+  function stopAgentSlotState(slotState: any, stopReason: any) {
+    if (!slotState.stopRequested) {
+      slotState.stopRequested = true;
+      slotState.stopReason = stopReason;
+      slotState.stopRequestedAt = nowIso();
+      slotState.status = 'stopping';
+    }
+
+    markSideDispatchCancelled(slotState.conversationId, slotState.sourceMessageId, stopReason);
+
+    const handles = slotState.runHandles instanceof Set ? (Array.from(slotState.runHandles) as any[]) : [];
+
+    for (const handle of handles) {
+      if (!handle || typeof handle.cancel !== 'function') {
+        continue;
+      }
+
+      try {
+        handle.cancel(stopReason);
+      } catch {}
+    }
+
+    slotState.updatedAt = nowIso();
+    syncCurrentTurnAgent(slotState);
+    emitTurnProgress(slotState);
+    return summarizeAgentSlotState(slotState);
+  }
+
+  // Stop-goal linkage (D3/D4): evaluated synchronously when the stop request
+  // is accepted, so the goal-runner can never claim the next iteration in
+  // between. Conversation-level stops link only when the caller passed
+  // stopGoal; per-trace stops link only when the stopped trace belongs to a
+  // goal-runner continuation turn AND (for turn stages) the stage is run by
+  // the persisted goal owner. DAG-bound goals are scheduler-owned and are
+  // never paused here.
+  function pauseSessionGoalForStoppedTrace(conversationId: any, linkage: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
+
+    if (!normalizedConversationId) {
+      return null;
+    }
+
+    if (getDagNodeExecutionContext(store, normalizedConversationId)) {
+      return null;
+    }
+
+    const conversation = getConversationHeader(normalizedConversationId);
+    const goal = conversation ? getSessionGoal(conversation) : null;
+
+    if (!goal || goal.status !== 'active') {
+      return null;
+    }
+
+    let linked = false;
+
+    if (linkage.scope === 'conversation') {
+      linked = true;
+    } else if (linkage.scope === 'slot') {
+      const slotState = linkage.slotState;
+      const sourceMessage = slotState && slotState.sourceMessageId && store && typeof store.getMessage === 'function'
+        ? store.getMessage(slotState.sourceMessageId)
+        : null;
+      linked = isGoalRunnerSourceMessage(sourceMessage);
+    } else if (linkage.scope === 'stage') {
+      const turnState = linkage.turnState;
+      const sourceMessages = listTurnSourceMessages(turnState);
+      const goalRunnerBatch = sourceMessages.length > 0 && sourceMessages.every(isGoalRunnerSourceMessage);
+      const ownerAgentId = String(goal.owner && goal.owner.agentId ? goal.owner.agentId : '').trim();
+      linked = goalRunnerBatch && (!ownerAgentId || ownerAgentId === String(linkage.agentId || '').trim());
+    }
+
+    if (!linked) {
+      return null;
+    }
+
+    const result = pauseSessionGoalOnUserStop(store, normalizedConversationId, { reason: 'stopped_by_user' });
+
+    if (result && result.changed) {
+      broadcastGoalUpdateResult(normalizedConversationId, result);
+    }
+
+    return result;
+  }
+
+  function listTurnSourceMessages(turnState: any) {
+    if (!turnState || !store || typeof store.getConversation !== 'function') {
+      return [];
+    }
+
+    const conversation = store.getConversation(turnState.conversationId);
+    const messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+    const startId = String(turnState.batchStartMessageId || turnState.userMessageId || '').trim();
+    const endId = String(turnState.batchEndMessageId || turnState.userMessageId || '').trim();
+
+    if (!startId) {
+      return [];
+    }
+
+    const startIndex = messages.findIndex((message: any) => message && message.id === startId);
+
+    if (startIndex < 0) {
+      return [];
+    }
+
+    let endIndex = endId ? messages.findIndex((message: any) => message && message.id === endId) : -1;
+
+    if (endIndex < startIndex) {
+      endIndex = startIndex;
+    }
+
+    return messages
+      .slice(startIndex, endIndex + 1)
+      .filter((message: any) => message && message.role === 'user');
+  }
+
+  function requestStopConversationTrace(conversationId: any, target: any = {}, reason: any = 'Stopped by user') {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const stopReason = String(reason || 'Stopped by user').trim() || 'Stopped by user';
+    const kind = String(target && target.kind || '').trim();
+
+    if (!normalizedConversationId) {
+      throw createHttpError(404, 'Conversation not found');
+    }
+
+    if (kind === 'slot') {
+      const slotId = String(target.slotId || '').trim();
+      const slotState = Array.from(activeAgentSlots.values()).find(
+        (candidate: any) => candidate && candidate.conversationId === normalizedConversationId && candidate.slotId === slotId
+      ) || null;
+
+      if (!slotState) {
+        throw createHttpError(404, 'This execution is no longer active');
+      }
+
+      const agentSlot = stopAgentSlotState(slotState, stopReason);
+      const goalResult = pauseSessionGoalForStoppedTrace(normalizedConversationId, { scope: 'slot', slotState });
+      broadcastRuntimeState();
+
+      return {
+        kind,
+        agentSlot,
+        goal: goalResult && goalResult.goal ? goalResult.goal : null,
+      };
+    }
+
+    if (kind === 'queued-side') {
+      const requestId = String(target.requestId || '').trim();
+      const targetAgentId = String(target.agentId || '').trim();
+      const queuedEntry = listQueuedSideDispatches(normalizedConversationId).find((entry: any) => {
+        if (!entry) return false;
+        if (requestId) return String(entry.requestId || '').trim() === requestId;
+        if (targetAgentId) return String(entry.targetAgentId || '').trim() === targetAgentId;
+        return false;
+      }) || null;
+
+      if (!queuedEntry) {
+        throw createHttpError(404, 'This queued dispatch is no longer pending');
+      }
+
+      let cancelled = false;
+
+      try {
+        cancelled = Boolean(queuedEntry.cancel(stopReason));
+      } catch {}
+
+      if (cancelled) {
+        markSideDispatchCancelled(normalizedConversationId, queuedEntry.sourceMessageId, stopReason);
+      }
+
+      untrackQueuedSideDispatch(normalizedConversationId, queuedEntry.requestId);
+      broadcastRuntimeState();
+
+      return {
+        kind,
+        cancelledQueuedSideDispatch: cancelled,
+        agentId: String(queuedEntry.targetAgentId || '').trim() || null,
+        sourceMessageId: queuedEntry.sourceMessageId || null,
+        goal: null,
+      };
+    }
+
+    if (kind === 'stage') {
+      const turnState = activeTurns.get(normalizedConversationId) || null;
+
+      if (!turnState) {
+        throw createHttpError(409, 'This conversation is not processing a turn');
+      }
+
+      const agentId = String(target.agentId || '').trim();
+      const stage = agentId ? getTurnStage(turnState, agentId) : null;
+
+      if (!stage) {
+        throw createHttpError(404, 'This stage is not part of the active turn');
+      }
+
+      if (stage.status === 'queued' && !stage.messageId) {
+        // Queued-stage cancel (no assistant message created yet): reset the
+        // stage and flag it so the router skips it when dequeued; the rest
+        // of the turn keeps routing.
+        resetTurnStage(stage, 'idle');
+        stage.stopRequested = true;
+        stage.stopReason = stopReason;
+        stage.stopRequestedAt = nowIso();
+        turnState.pendingAgentIds = (Array.isArray(turnState.pendingAgentIds) ? turnState.pendingAgentIds : [])
+          .filter((pendingAgentId: any) => String(pendingAgentId || '').trim() !== agentId);
+      } else if (stage.status === 'queued' || stage.status === 'running' || stage.status === 'terminating') {
+        if (!stage.stopRequested) {
+          stage.stopRequested = true;
+          stage.stopReason = stopReason;
+          stage.stopRequestedAt = nowIso();
+        }
+
+        const handles = turnState.runHandles instanceof Set ? (Array.from(turnState.runHandles) as any[]) : [];
+
+        for (const handle of handles) {
+          if (!handle || typeof handle.cancel !== 'function') {
+            continue;
+          }
+
+          // Only cancel handles attributed to this stage; handles without an
+          // agent tag (e.g. shared waiters) belong to the turn as a whole.
+          if (String(handle.turnStageAgentId || '').trim() !== agentId) {
+            continue;
+          }
+
+          try {
+            handle.cancel(stopReason);
+          } catch {}
+        }
+      } else {
+        throw createHttpError(409, 'This stage is not running');
+      }
+      turnState.updatedAt = nowIso();
+      syncCurrentTurnAgent(turnState);
+      broadcastRuntimeState();
+      emitTurnProgress(turnState);
+
+      const goalResult = pauseSessionGoalForStoppedTrace(normalizedConversationId, { scope: 'stage', turnState, agentId });
+
+      return {
+        kind,
+        turn: summarizeTurnState(turnState),
+        goal: goalResult && goalResult.goal ? goalResult.goal : null,
+      };
+    }
+
+    throw createHttpError(400, 'Unsupported stop target kind');
+  }
+
+  function requestStopConversationExecution(conversationId: any, reason: any = 'Stopped by user', options: any = {}) {
     const normalizedConversationId = String(conversationId || '').trim();
     const mainTurn = activeTurns.get(normalizedConversationId) || null;
     const slotStates = listConversationActiveAgentSlots(normalizedConversationId);
@@ -2114,42 +2524,56 @@ export function createTurnOrchestrator(options: any = {}) {
     }
 
     for (const slotState of slotStates) {
-      if (!slotState.stopRequested) {
-        slotState.stopRequested = true;
-        slotState.stopReason = stopReason;
-        slotState.stopRequestedAt = nowIso();
-        slotState.status = 'stopping';
-      }
-
-      markSideDispatchCancelled(normalizedConversationId, slotState.sourceMessageId, stopReason);
-
-      const handles = slotState.runHandles instanceof Set ? (Array.from(slotState.runHandles) as any[]) : [];
-
-      for (const handle of handles) {
-        if (!handle || typeof handle.cancel !== 'function') {
-          continue;
-        }
-
-        try {
-          handle.cancel(stopReason);
-        } catch {}
-      }
-
-      slotState.updatedAt = nowIso();
-      syncCurrentTurnAgent(slotState);
-      emitTurnProgress(slotState);
-      agentSlots.push(summarizeAgentSlotState(slotState));
+      agentSlots.push(stopAgentSlotState(slotState, stopReason));
     }
 
     if (slotStates.length > 0 || cancelledQueuedSideDispatchCount > 0) {
       broadcastRuntimeState();
     }
 
+    const goalResult = options && options.stopGoal === true
+      ? pauseSessionGoalForStoppedTrace(normalizedConversationId, { scope: 'conversation' })
+      : null;
+
     return {
       turn,
       agentSlots,
       cancelledQueuedSideDispatchCount,
+      goal: goalResult && goalResult.goal ? goalResult.goal : null,
     };
+  }
+
+  function shutdown(reason: string = '服务关闭中断') {
+    if (shutdownPromise) return shutdownPromise;
+    closing = true;
+    // Cancel queued side work before releasing any live slot. This is service
+    // interruption, not a user cancellation of its persisted dispatch source.
+    for (const entries of queuedSideDispatches.values()) {
+      for (const entry of entries.values()) {
+        try { entry.cancel(reason); } catch {}
+      }
+    }
+    for (const turn of activeTurns.values()) requestStopMainTurn(turn.conversationId, reason);
+    for (const slot of activeAgentSlots.values()) {
+      slot.stopRequested = true;
+      slot.stopReason = reason;
+      slot.status = 'stopping';
+      for (const handle of slot.runHandles instanceof Set ? slot.runHandles : []) {
+        try { handle.cancel(reason); } catch {}
+      }
+    }
+    // Also reject main-lane waiters; they have no child handle to cancel yet.
+    for (const conversationId of new Set([
+      ...activeConversationIds, ...dispatchingConversationIds, ...queueStates.keys(),
+      ...Array.from(activeAgentSlots.values()).map((slot: any) => slot.conversationId),
+    ])) agentSlotRegistry.clearConversation(conversationId);
+    shutdownPromise = (async () => {
+      // Await executor/root-task/queue finally blocks, not merely child exits.
+      // pi-runtime bounds a missing close with its termination settle deadline.
+      while (pendingExecutions.size > 0) await Promise.allSettled([...pendingExecutions]);
+      for (const state of queueStates.values()) state.idle = true;
+    })();
+    return shutdownPromise;
   }
 
   function clearConversationState(conversationId: any) {
@@ -2232,7 +2656,12 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   recoverPersistedQueueStates();
-  recoverPersistedSideDispatches();
+  // Preserve recovery's decision and stale-reply semantics before a generic
+  // failure could make its source appear completed. No new run may start
+  // until the lifecycle owner reconciles the previous process's records.
+  const recoveredSideDispatches = recoverPersistedSideDispatches();
+  if (typeof options.beforeStartupDispatch === 'function') options.beforeStartupDispatch();
+  for (const dispatch of recoveredSideDispatches) dispatch();
 
   return {
     buildRuntimePayload,
@@ -2241,12 +2670,15 @@ export function createTurnOrchestrator(options: any = {}) {
     dispatchCrossConversationDelivery,
     emitTurnProgress,
     getConversationMutationState,
+    getPlannerBusyState,
     getConversationQueueDepth,
     getRuntimeStats,
     listAgentSlotSummaries,
     listTurnSummaries,
+    previewRouting,
     reconcileConversationQueueAfterMessageDeletion,
     requestStopConversationExecution,
+    requestStopConversationTrace,
     requestStopAgentDelegation,
     requestStopCrossConversationDelivery,
     requestStopConversationTurn: requestStopMainTurn,
@@ -2254,6 +2686,7 @@ export function createTurnOrchestrator(options: any = {}) {
     enqueueDelegationContinuation,
     runConversationTurn,
     scheduleGoalContinuation,
+    shutdown,
     submitConversationMessage,
     summarizeTurnState,
     syncCurrentTurnAgent,

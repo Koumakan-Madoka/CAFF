@@ -45,6 +45,10 @@
     <rect x="3" y="4" width="18" height="16" rx="2" />
     <path d="M15 4v16M8 9l3 3-3 3" />
   </symbol>
+  <symbol id="icon-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="m7 9 3 3-3 3M13 15h4" />
+  </symbol>
   <symbol id="icon-arrow-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
     <path d="M12 4v15M6.5 13.5 12 19l5.5-5.5" />
   </symbol>

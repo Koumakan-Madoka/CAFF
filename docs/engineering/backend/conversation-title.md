@@ -50,6 +50,10 @@ maybeAutoCreateConversationDigest(store, conversationId, options): Promise<Diges
 - `PUT /api/conversations/:conversationId` accepts `title` and optional
   top-level `titleSource`; a title write without `titleSource` is a manual
   rename for backward compatibility.
+- `POST /api/conversations` with a nonblank explicit `title` initializes
+  `metadata.titleSource = 'manual'` at the HTTP boundary for both browser and
+  authenticated planner callers. Missing/blank title keeps default naming.
+  Internal store/automatic creation paths retain their existing source rules.
 
 ### 3. Contracts
 
@@ -85,6 +89,17 @@ title and source.
   source and may not accidentally promote the source to `manual`.
 - `manual` is terminal only against automatic sources; `manual -> manual`
   remains valid so users can rename repeatedly.
+
+#### Title locked at HTTP creation
+
+- A caller-supplied nonblank creation title is authoritative immediately, not
+  only after a later rename. First-message derivation and digest model
+  refinement cannot overwrite it; refinement skips the model call for manual
+  sources. Creating without a title still auto-names/refines normally.
+- The server derives the source; creation payload metadata cannot unlock it.
+  Planner creation returns the lean title/source snapshot and replays that
+  original snapshot on a matching idempotent retry. See
+  [planner-interface.md](planner-interface.md#idempotency).
 
 #### First user message title
 
@@ -172,6 +187,8 @@ digest `summaryMode`. An extractive digest may still make one title model call.
 | Explicit incoming source is invalid | Normalize it to `default`; apply/reject that normalized transition. |
 | Any title write omits top-level source | Treat as `manual`; persist title and terminal source. |
 | Metadata-only write embeds a different source | Ignore embedded source and preserve computed state. |
+| HTTP creation supplies a nonblank title | Store manual source immediately; first message and refinement cannot replace it. |
+| HTTP creation omits title or supplies blank title | Keep default naming; first-message/refinement paths remain eligible. |
 | First public user message, source `default`, non-blank | Store normalized/truncated title as `auto_first_message`. |
 | First content is assistant/system/private or blank user text | Keep title/source unchanged. |
 | Second public user message | Never rerun first-message title derivation. |
@@ -218,6 +235,10 @@ digest `summaryMode`. An extractive digest may still make one title model call.
   `tests/http/conversation-rename-guard.test.js`
   - Assert explicit and implicit manual rename semantics and both automatic
     writers losing after manual rename across store and HTTP boundaries.
+- `tests/http/goal-set-owner-title.test.js`
+  - Assert explicit HTTP creation stays manual through the first message and
+    actual auto-digest/refinement path; omitted title still auto-names/refines.
+    Use a synthetic model, not provider calls.
 - `tests/smoke/server-smoke.test.js`
   - Assert a model-backed first auto digest makes the digest model call and one
     subsequent `title_refine` call through the same provider/model chain.

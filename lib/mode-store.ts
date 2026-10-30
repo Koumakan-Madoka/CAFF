@@ -44,7 +44,7 @@ function dedupSkillIds(items: any[]) {
 
 function normalizeSkillIds(value: any) {
   if (Array.isArray(value)) {
-    return dedupSkillIds(migrateLegacySkillIds(value));
+    return dedupSkillIds(value);
   }
 
   const parsed = parseJson(value);
@@ -53,7 +53,7 @@ function normalizeSkillIds(value: any) {
     return [];
   }
 
-  return dedupSkillIds(migrateLegacySkillIds(parsed));
+  return dedupSkillIds(parsed);
 }
 
 function mergeSkillIds(...groups: any[]) {
@@ -72,35 +72,19 @@ function normalizeModeName(value: any) {
 
 const LEGACY_FEISHU_CODING_MODE_ID = 'coding';
 const CODING_MODE_NAME = 'coding';
-// DD-3 of docs/engineering/skills/skill-scoping.md: the mode helper contract
-// previously pointed at a `skill-creator` skill that never existed in the
-// repository. It is re-pointed to `create-command` (the skill-scaffolding
-// skill that replaced it); stored rows that still carry the legacy id are
-// migrated on read so old modes keep loading without a DB rewrite.
-const LEGACY_SKILL_CREATOR_SKILL_ID = 'skill-creator';
-export const MODE_HELPER_SKILL_ID = 'create-command';
-export const ALWAYS_DYNAMIC_MODE_SKILL_IDS = [MODE_HELPER_SKILL_ID];
+// Every mode used to force-bind a helper Skill: first `skill-creator`, which
+// never existed, then `create-command`, a verbatim Trellis template (DD-3 of
+// docs/engineering/skills/skill-scoping.md). Both are retired. Stored modes
+// drop them on read; Room participants are cleaned up at startup.
+const RETIRED_HELPER_SKILL_IDS = ['skill-creator', 'create-command'];
+const RETIRED_HELPER_SKILL_ID_SET = new Set(RETIRED_HELPER_SKILL_IDS);
 
-const REQUIRED_MODE_SKILL_IDS = [MODE_HELPER_SKILL_ID];
-const REQUIRED_MODE_SKILL_ID_SET = new Set(REQUIRED_MODE_SKILL_IDS);
-const LEGACY_MODE_SKILL_ID_REPLACEMENTS: any = {
-  [LEGACY_SKILL_CREATOR_SKILL_ID]: MODE_HELPER_SKILL_ID,
-};
-
-function migrateLegacySkillIds(items: any[]) {
-  return items.map((item: any) => {
-    const skillId = String(item || '').trim();
-    return LEGACY_MODE_SKILL_ID_REPLACEMENTS[skillId] || skillId;
-  });
-}
-
-function withRequiredModeSkillIds(skillIds: any) {
-  return mergeSkillIds(skillIds, REQUIRED_MODE_SKILL_IDS);
+function withoutRetiredSkillIds(skillIds: any) {
+  return normalizeSkillIds(skillIds).filter((skillId: string) => !RETIRED_HELPER_SKILL_ID_SET.has(skillId));
 }
 
 function modeHasSkillBindings(mode: any) {
-  const skillIds = normalizeSkillIds(mode && mode.skillIds);
-  return skillIds.some((skillId: string) => !REQUIRED_MODE_SKILL_ID_SET.has(skillId));
+  return withoutRetiredSkillIds(mode && mode.skillIds).length > 0;
 }
 
 function normalizeLoadingStrategy(value: any) {
@@ -123,7 +107,7 @@ function normalizeModeRow(row: any) {
     name: row.name,
     description: row.description || '',
     builtin: Boolean(row.builtin),
-    skillIds: withRequiredModeSkillIds(row.skill_ids_json),
+    skillIds: withoutRetiredSkillIds(row.skill_ids_json),
     loadingStrategy: normalizeLoadingStrategy(row.loading_strategy),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -136,7 +120,7 @@ const BUILTIN_MODES = [
     name: '普通协作',
     description: '通用多 Agent 协作 Room，可通过 Mode 挂载 Skills',
     builtin: true,
-    skillIds: withRequiredModeSkillIds([]),
+    skillIds: [],
     loadingStrategy: 'dynamic',
   },
 ];
@@ -260,7 +244,7 @@ export class ModeStore {
 
   retireLegacyProductModes() {
     const retiredModeIds = ['skill_test_design', 'werewolf', 'who_is_undercover'];
-    const retiredSkillIds = new Set(['skill-test-design-workbench', 'werewolf', 'who-is-undercover']);
+    const retiredSkillIds = new Set(['skill-test-design-workbench', 'werewolf', 'who-is-undercover', ...RETIRED_HELPER_SKILL_IDS]);
     const listParticipants = this.db.prepare(`
       SELECT conversation_id, agent_id, conversation_skills_json
       FROM chat_conversation_agents
@@ -354,10 +338,9 @@ export class ModeStore {
             continue;
           }
 
-          const existingSkillIds = normalizeSkillIds(existingRow.skill_ids_json);
+          const existingSkillIds = withoutRetiredSkillIds(existingRow.skill_ids_json);
           const mergedSkillIds = mergeSkillIds(existingSkillIds, mode.skillIds);
-          const existingEffectiveSkillIds = withRequiredModeSkillIds(existingRow.skill_ids_json);
-          const shouldUpdateSkillIds = JSON.stringify(mergedSkillIds) !== JSON.stringify(existingEffectiveSkillIds);
+          const shouldUpdateSkillIds = JSON.stringify(mergedSkillIds) !== JSON.stringify(existingSkillIds);
           const shouldUpdateLoadingStrategy = existingMode.loadingStrategy !== mode.loadingStrategy;
 
           if (shouldUpdateSkillIds || shouldUpdateLoadingStrategy) {
@@ -405,7 +388,7 @@ export class ModeStore {
       throw new Error('Mode name is required');
     }
 
-    const skillIds = withRequiredModeSkillIds(input.skillIds);
+    const skillIds = withoutRetiredSkillIds(input.skillIds);
     const loadingStrategy = normalizeLoadingStrategy(input.loadingStrategy);
     const timestamp = nowIso();
 

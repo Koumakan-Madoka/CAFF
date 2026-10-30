@@ -60,7 +60,11 @@ export function planRetainedCaffStart(capsule: string, expected: any, worktreeDe
   const cp = JSON.parse(material.files.find(f => f.path === 'materials/checkpoint.json')!.bytes.toString('utf8'));
   const source = input.harness.sdkStartConfig;
   if (source === undefined) throw fail('replay_sdk_config_missing');
-  if (!exact(source, CONFIG_KEYS) || !text(source.provider) || !text(source.model)
+  // Older capsules predate Fast; preserve their absent field rather than
+  // rewriting the archived descriptor/hash. New descriptors carry a boolean.
+  const knownConfig = exact(source, CONFIG_KEYS)
+    || (exact(source, [...CONFIG_KEYS, 'fast']) && typeof source.fast === 'boolean');
+  if (!knownConfig || !text(source.provider) || !text(source.model)
     || typeof source.thinking !== 'string' || !['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(source.thinking)
     || source.provider !== input.runConfig.provider || source.model !== input.runConfig.model
     || input.harness.agentPromptVersion !== input.runConfig.promptVersion

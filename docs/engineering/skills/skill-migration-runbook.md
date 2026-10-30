@@ -63,9 +63,10 @@ constraints:
 1. `develop` contains the room-branch merge (runtime implementation +
    `.gitignore` rules for all 14 migration targets).
 2. The production instance runs from a checkout that includes the merge, and
-   the six contract-layer skills resolve from that checkout
-   (`lib/contract-skills.ts` allowlist: caff-workflow, create-command,
-   dag-planning, grill-with-docs, grilling, domain-modeling).
+   the contract-layer skills resolve from that checkout
+   (`lib/contract-skills.ts` allowlist: caff-workflow, dag-planning,
+   grill-with-docs, grilling, domain-modeling; `create-command` was retired
+   on 2026-10-29).
 3. User has confirmed the release-step go for this runbook.
 4. All commands run in the **main repo working area** (`E:/pythonproject/caff`),
    not a room worktree; `.pi-sandbox` is ignored storage and invisible to git.

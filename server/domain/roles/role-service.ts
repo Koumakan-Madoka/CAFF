@@ -29,6 +29,7 @@ const FAMILY_EDITABLE_FIELDS = Object.freeze([
   'isDefaultChatRole',
   'avatarDataUrl',
   'sessionReuseEnabled',
+  'fast',
 ]);
 const CUSTOM_EDITABLE_FIELDS = Object.freeze([
   'name',
@@ -44,8 +45,11 @@ const CUSTOM_EDITABLE_FIELDS = Object.freeze([
   'modelProfiles',
   'isDefaultChatRole',
   'sessionReuseEnabled',
+  'fast',
 ]);
 const FAMILY_UPDATE_FIELD_SET = new Set(FAMILY_EDITABLE_FIELDS);
+// modelProfiles must remain here: normalizeProfiles validates nested runtime
+// fields (including strict Fast booleans) whenever the profile list is replaced.
 const FAMILY_RUNTIME_FIELD_SET = new Set(['provider', 'model', 'thinking', 'modelProfiles']);
 
 function normalize(value: any) {
@@ -158,6 +162,23 @@ function resolveConfiguredModel(
   return option;
 }
 
+// Fast toggle (service_tier: priority) consumes subscription quota faster,
+// so only an explicit boolean is accepted: absent keeps the current value
+// (default OFF for new roles/profiles), true turns it on, anything else is
+// rejected instead of being coerced by truthiness.
+function assertFastBoolean(value: any, path: string) {
+  if (typeof value !== 'boolean') {
+    throw createRoleError(
+      422,
+      'fast_not_boolean',
+      'Fast toggle must be an explicit boolean',
+      path,
+      { actualType: Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value }
+    );
+  }
+  return value;
+}
+
 function assertThinkingSupported(option: any, thinking: any, path: string) {
   const normalizedThinking = normalize(thinking);
   if (!normalizedThinking) {
@@ -235,6 +256,10 @@ function normalizeProfiles(
       provider: option.provider,
       model: option.model,
       thinking,
+      // Fast (service_tier: priority) per-profile toggle, defaults OFF.
+      fast: hasOwn(profile, 'fast')
+        ? assertFastBoolean(profile.fast, `modelProfiles[${index}].fast`)
+        : false,
       personaPrompt: roleKind === 'custom' ? normalize(profile.personaPrompt) : '',
     });
   }
@@ -575,6 +600,9 @@ export function createRoleService(options: any = {}) {
             provider: option.provider,
             model: option.model,
             thinking: canonicalThinking,
+            // Fast toggle: selected profile wins over the role default, same
+            // precedence as provider/model/thinking.
+            fast: (selectedProfile || role).fast === true,
             personaPrompt: roleKind === 'model_family'
               ? ''
               : normalize(selectedProfile ? selectedProfile.personaPrompt : role.personaPrompt),
@@ -688,6 +716,10 @@ export function createRoleService(options: any = {}) {
       sessionReuseEnabled: hasOwn(source, 'sessionReuseEnabled')
         ? Boolean(source.sessionReuseEnabled)
         : existing?.sessionReuseEnabled !== false,
+      // Fast mode toggle; absent means keep existing (default OFF).
+      fast: hasOwn(source, 'fast')
+        ? assertFastBoolean(source.fast, 'fast')
+        : existing?.fast === true,
     };
   }
 
@@ -779,6 +811,9 @@ export function createRoleService(options: any = {}) {
       sessionReuseEnabled: hasOwn(input, 'sessionReuseEnabled')
         ? Boolean(input.sessionReuseEnabled)
         : existing.sessionReuseEnabled !== false,
+      fast: hasOwn(input, 'fast')
+        ? assertFastBoolean(input.fast, 'fast')
+        : existing.fast === true,
     };
 
     if (touchesRuntime) {

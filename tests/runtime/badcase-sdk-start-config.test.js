@@ -21,8 +21,11 @@ test('one shared resolver describes exactly the complete SDK wire config without
   const options = { session: 'named', cwd: path.resolve('project'), extensionPaths: ['./extension.mjs', './extension.mjs'],
     additionalSkillPaths: ['./skill'], retireUserScopeSkills: true, extraEnv: { PRIVATE_VALUE: 'never-copy' }, sqlitePath: '/never-copy', images: ['never-copy'] };
   const before = JSON.stringify(options), c = plain(api.resolveSdkStartConfig(' provider ', ' model ', options));
-  assert.deepEqual(Object.keys(c).sort(), ['provider','model','thinking','agentDir','sessionPath','resume','cwd','heartbeatIntervalMs','extensionPaths','additionalSkillPaths','retireUserScopeSkills'].sort());
+  assert.deepEqual(Object.keys(c).sort(), ['provider','model','thinking','fast','agentDir','sessionPath','resume','cwd','heartbeatIntervalMs','extensionPaths','additionalSkillPaths','retireUserScopeSkills'].sort());
   assert.equal(c.provider, 'provider'); assert.equal(c.model, 'model'); assert.equal(c.thinking, 'high');
+  assert.equal(c.fast, false);
+  assert.equal(api.resolveSdkStartConfig('p', 'm', { fast: true }).fast, true);
+  assert.equal(api.resolveSdkStartConfig('p', 'm', { fast: 'true' }).fast, false);
   assert.equal(c.agentDir, path.resolve('agent')); assert.equal(c.sessionPath, path.join(c.agentDir, 'named-sessions/named.jsonl'));
   assert.equal(c.heartbeatIntervalMs, 1234); assert.equal(c.resume, false); assert.equal(c.retireUserScopeSkills, true);
   assert.deepEqual(c.extensionPaths, [path.resolve('extension.mjs')]); assert.deepEqual(c.additionalSkillPaths, [path.resolve('skill')]);

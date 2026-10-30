@@ -43,6 +43,8 @@ export function summarizeTurnState(turnState: any) {
       agentId: agent.agentId,
       agentName: agent.agentName,
       status: agent.status,
+      stopRequested: Boolean(agent.stopRequested),
+      stopReason: agent.stopReason || '',
       messageId: agent.messageId || null,
       taskId: agent.taskId || null,
       runId: agent.runId || null,
@@ -196,6 +198,9 @@ export function resetTurnStage(stage: any, status = 'idle') {
   }
 
   stage.status = status;
+  stage.stopRequested = false;
+  stage.stopReason = '';
+  stage.stopRequestedAt = null;
   stage.messageId = null;
   stage.taskId = null;
   stage.runId = null;

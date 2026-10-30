@@ -13,6 +13,7 @@
 // Defaults: --tag after, out/shots under .tmp/ui-evidence/caff-ui-m4/v3-structure/.
 
 import { randomUUID } from 'node:crypto';
+import { browserFetch as fetch } from '../../tests/helpers/browser-fetch.js';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -101,7 +102,7 @@ async function startIsolatedApp() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `caff-structure-${RUN_ID}-`));
   const port = await findFreePort();
   const logs = { stdout: '', stderr: '' };
-  const child = spawn(process.execPath, ['build/lib/app-server.js'], {
+  const child = spawn(process.execPath, ['tests/helpers/server-child.js'], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,

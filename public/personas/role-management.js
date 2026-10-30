@@ -105,7 +105,7 @@
       renderLists();
       editor.show({
         id: '', name: '', description: '', sandboxName: '', avatarDataUrl: '', personaPrompt: '', provider: '', model: '',
-        thinking: '', accentColor: '#3d405b', skillIds: [], modelProfiles: [], roleKind: 'custom', modelFamily: null,
+        thinking: '', fast: false, accentColor: '#3d405b', skillIds: [], modelProfiles: [], roleKind: 'custom', modelFamily: null,
         isDefaultChatRole: false, availability: { status: 'available', familyModelCount: 0 },
       });
       const name = document.getElementById('role-name');

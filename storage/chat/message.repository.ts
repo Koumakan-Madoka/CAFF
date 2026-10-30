@@ -452,6 +452,15 @@ export class ChatMessageRepository {
     });
   }
 
+  hasPendingMainUserMessages(conversationId: string, afterMessageId: string) {
+    return Boolean(this.db.prepare(`WITH cursor_message AS (
+      SELECT created_at, id FROM chat_messages WHERE conversation_id=@conversationId AND id=@afterMessageId LIMIT 1
+    ) SELECT 1 FROM chat_messages m WHERE m.conversation_id=@conversationId AND m.role='user'
+      AND (json_valid(m.metadata_json)=0 OR COALESCE(json_extract(m.metadata_json, '$.dispatchLane'), '') <> 'side')
+      AND (@afterMessageId='' OR NOT EXISTS (SELECT 1 FROM cursor_message)
+        OR (m.created_at, m.id) > (SELECT created_at, id FROM cursor_message)) LIMIT 1`).get({ conversationId, afterMessageId }));
+  }
+
   findPreviousUserMessageId(conversationId: string, before: any) {
     const normalizedConversationId = String(conversationId || '').trim();
     const createdAt = String(before && before.createdAt || '').trim();

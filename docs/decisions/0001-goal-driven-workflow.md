@@ -4,6 +4,8 @@
 - Accepted: 2026-09-09
 - Decision owner: CAFF project user
 - Independent reviewer: Kimi
+- Amended by: [ADR 0002](0002-external-planner-drives-caff.md), which narrows
+  who may rule on proposals in planner-driven Goals
 
 ## Context
 

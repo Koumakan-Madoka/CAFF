@@ -5,10 +5,11 @@ const { spawn } = require('node:child_process');
 const net = require('node:net');
 const { PassThrough } = require('node:stream');
 const test = require('node:test');
+const { browserFetch: fetch } = require('../helpers/browser-fetch');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSkillRegistry } = require('../../build/lib/skill-registry');
-const { createServerApp } = require('../../build/server/app/create-server');
+const { createTestServerApp: createServerApp } = require('../helpers/server-app');
 const { createBootstrapPayloadBuilder } = require('../../build/server/api/bootstrap-payload');
 const { createConversationsController } = require('../../build/server/api/conversations-controller');
 const { createMemoryController } = require('../../build/server/api/memory-controller');
@@ -853,7 +854,7 @@ test('conversations controller preserves string participant ids when mode skills
     modeStore: {
       get(modeId) {
         return modeId === 'standard'
-          ? { id: 'standard', skillIds: ['create-command'] }
+          ? { id: 'standard', skillIds: ['dag-planning'] }
           : null;
       },
     },
@@ -878,7 +879,7 @@ test('conversations controller preserves string participant ids when mode skills
 
   assert.equal(result.statusCode, 201);
   assert.deepEqual(result.json.conversation.agents.map((participant) => participant.id), [agent.id]);
-  assert.deepEqual(result.json.conversation.agents[0].conversationSkillIds, ['create-command']);
+  assert.deepEqual(result.json.conversation.agents[0].conversationSkillIds, ['dag-planning']);
 });
 
 test('operator project binding resolves a real project and rejects non-terminal delivery ambiguity', async (t) => {
@@ -4543,9 +4544,11 @@ test('conversations controller accepts and dismisses session goal proposals', as
 
 test('conversations controller promotes a structured pending set proposal on acceptance', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
+  store.saveCustomRoleConfig({ id: 'smoke-goal-builder', name: 'Builder', personaPrompt: 'Synthetic Builder', provider: 'cheap-provider', model: 'cheap-model' });
   const conversation = createSmokeConversation(store, {
     id: 'goal-set-proposal-contract-conversation',
     title: 'Goal Set Proposal Contract Conversation',
+    participants: [{ agentId: 'smoke-goal-builder' }],
     metadata: {
       sessionGoalProposal: {
         id: 'prop-set-contract',
@@ -4573,7 +4576,7 @@ test('conversations controller promotes a structured pending set proposal on acc
         ],
         evidence: [],
         proposedBy: {
-          agentId: 'agent-builder',
+          agentId: 'smoke-goal-builder',
           agentName: 'Builder',
         },
         createdAt: '2026-05-03T00:00:00.000Z',
@@ -4589,6 +4592,7 @@ test('conversations controller promotes a structured pending set proposal on acc
   });
 
   assert.equal(acceptResult.json.goal.objective, 'Ship structured Goal proposal support');
+  assert.equal(acceptResult.json.goal.owner.agentId, 'smoke-goal-builder');
   assert.equal(acceptResult.json.goal.acceptanceCriteria.length, 1);
   assert.equal(acceptResult.json.goal.acceptanceCriteria[0].verifyBy, 'Inspect the Goal API response');
   assert.equal(acceptResult.json.goal.workItems.length, 2);
@@ -5162,7 +5166,7 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
       },
     },
   }), 'utf8');
-  const child = spawn(process.execPath, ['build/lib/app-server.js'], {
+  const child = spawn(process.execPath, ['tests/helpers/server-child.js'], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,
@@ -5379,7 +5383,8 @@ test('role API protects model-family roles and shares one availability projectio
   // ADR 0001 Phase 2: per-agent session reuse toggle is editable on family
   // roles and defaults ON.
   assert.equal(initialGpt.sessionReuseEnabled, true);
-  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole', 'avatarDataUrl', 'sessionReuseEnabled']);
+  assert.equal(initialGpt.fast, false);
+  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole', 'avatarDataUrl', 'sessionReuseEnabled', 'fast']);
   assert.deepEqual(initialGpt.availability, { status: 'default_model_missing', familyModelCount: 1 });
   assert.deepEqual(initialQwen.availability, { status: 'no_family_models', familyModelCount: 0 });
 
@@ -5420,6 +5425,47 @@ test('role API protects model-family roles and shares one availability projectio
     body: { sessionReuseEnabled: true, avatarDataUrl: '' },
   });
   assert.equal(reuseRestored.agent.sessionReuseEnabled, true);
+
+  // Fast is a quota-affecting opt-in: both role defaults and profile
+  // overrides must reject non-booleans at the HTTP boundary, without writes.
+  const fastCustom = await fetchJson(baseUrl, '/api/agents', {
+    method: 'POST',
+    body: { name: 'Fast validation', provider: 'openai', model: 'gpt-test' },
+  });
+  assert.equal(fastCustom.agent.fast, false);
+  const fastCustomPath = `/api/agents/${encodeURIComponent(fastCustom.agent.id)}`;
+  for (const fast of ['false', '0', '1', [], {}, 0, 1, null]) {
+    const profile = { id: 'fast-check', name: 'Fast check', provider: 'openai', model: 'gpt-test', fast };
+    for (const [pathname, method, body, issuePath] of [
+      ['/api/agents/role-family-gpt', 'PUT', { fast }, 'fast'],
+      [fastCustomPath, 'PUT', { fast }, 'fast'],
+      ['/api/agents', 'POST', { name: 'Invalid Fast', provider: 'openai', model: 'gpt-test', fast }, 'fast'],
+      ['/api/agents/role-family-gpt', 'PUT', { provider: 'openai', model: 'gpt-test', thinking: '', modelProfiles: [profile] }, 'modelProfiles[0].fast'],
+      [fastCustomPath, 'PUT', { modelProfiles: [profile] }, 'modelProfiles[0].fast'],
+      ['/api/agents', 'POST', { name: 'Invalid Fast profile', provider: 'openai', model: 'gpt-test', modelProfiles: [profile] }, 'modelProfiles[0].fast'],
+    ]) {
+      const response = await fetchJsonResponse(baseUrl, pathname, { method, body });
+      assert.equal(response.status, 422, `${method} ${pathname}: ${JSON.stringify(body)}`);
+      assert.equal(response.json.issues[0].code, 'fast_not_boolean');
+      assert.equal(response.json.issues[0].path, issuePath);
+    }
+  }
+  const afterInvalidFast = await fetchJson(baseUrl, '/api/agents');
+  assert.equal(afterInvalidFast.agents.length, directory.agents.length + 1);
+  for (const id of ['role-family-gpt', fastCustom.agent.id]) {
+    const agent = afterInvalidFast.agents.find((item) => item.id === id);
+    assert.equal(agent.fast, false);
+    assert.deepEqual(agent.modelProfiles, []);
+  }
+  for (const pathname of ['/api/agents/role-family-gpt', fastCustomPath]) {
+    const enabled = await fetchJson(baseUrl, pathname, { method: 'PUT', body: { fast: true } });
+    assert.equal(enabled.agent.fast, true);
+    const preserved = await fetchJson(baseUrl, pathname, { method: 'PUT', body: { avatarDataUrl: '' } });
+    assert.equal(preserved.agent.fast, true);
+    const disabled = await fetchJson(baseUrl, pathname, { method: 'PUT', body: { fast: false } });
+    assert.equal(disabled.agent.fast, false);
+  }
+  await fetchJson(baseUrl, fastCustomPath, { method: 'DELETE' });
 
   for (const body of [
     { personaPrompt: 'Pretend to be someone.' },

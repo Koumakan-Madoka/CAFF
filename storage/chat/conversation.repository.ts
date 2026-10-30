@@ -4,10 +4,13 @@ export class ChatConversationRepository {
   listTreeHeadersStatement: any;
   listDirectoryPageStatement: any;
   getStatement: any;
+  getGoalHeaderStatement: any;
+  listGoalHeadersStatement: any;
   insertStatement: any;
   updateStatement: any;
   bindProjectScopeStatement: any;
   bindWorkspaceStatement: any;
+  renameWorkspaceBranchStatement: any;
   touchStatement: any;
   recomputeLastMessageAtStatement: any;
   deleteStatement: any;
@@ -147,6 +150,12 @@ export class ChatConversationRepository {
       WHERE c.id = ?
       LIMIT 1
     `);
+    const goalHeaders = `SELECT c.*,
+      (SELECT COUNT(*) FROM chat_messages m WHERE m.conversation_id=c.id) AS message_count,
+      (SELECT COUNT(*) FROM chat_conversation_agents ca WHERE ca.conversation_id=c.id) AS agent_count,
+      '' AS last_message_preview FROM chat_conversations c`;
+    this.getGoalHeaderStatement = db.prepare(goalHeaders + ' WHERE c.id=? LIMIT 1');
+    this.listGoalHeadersStatement = db.prepare(goalHeaders + ' ORDER BY c.created_at ASC, c.id ASC');
     this.insertStatement = db.prepare(`
       INSERT INTO chat_conversations (
         id,
@@ -195,6 +204,14 @@ export class ChatConversationRepository {
       WHERE id = @conversationId
         AND branch IS NULL
         AND worktree_path IS NULL
+      RETURNING *
+    `);
+    this.renameWorkspaceBranchStatement = db.prepare(`
+      UPDATE chat_conversations
+      SET branch = @newBranch,
+          updated_at = @updatedAt
+      WHERE id = @conversationId
+        AND branch = @oldBranch
       RETURNING *
     `);
     this.touchStatement = db.prepare(`
@@ -247,6 +264,9 @@ export class ChatConversationRepository {
     return this.getStatement.get(conversationId);
   }
 
+  getGoalHeader(conversationId: string) { return this.getGoalHeaderStatement.get(conversationId); }
+  listGoalHeaders() { return this.listGoalHeadersStatement.all(); }
+
   create(payload: any) {
     this.insertStatement.run(
       payload.id,
@@ -286,6 +306,15 @@ export class ChatConversationRepository {
     return this.bindProjectScopeStatement.get({
       conversationId,
       projectScopeId: payload.projectScopeId,
+      updatedAt: payload.updatedAt,
+    }) || null;
+  }
+
+  renameWorkspaceBranch(conversationId: string, payload: any) {
+    return this.renameWorkspaceBranchStatement.get({
+      conversationId,
+      oldBranch: payload.oldBranch,
+      newBranch: payload.newBranch,
       updatedAt: payload.updatedAt,
     }) || null;
   }

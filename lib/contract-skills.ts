@@ -2,12 +2,11 @@ import path from 'node:path';
 
 // DD-3 of docs/engineering/skills/skill-scoping.md: the contract layer is an
 // explicit allowlist carried as code (not configuration), so it only changes
-// through review. These six skills ride along with every CAFF agent run via
+// through review. These five skills ride along with every CAFF agent run via
 // `resourceLoaderOptions.additionalSkillPaths`, independent of the session
 // project cwd, so the contract layer survives cwd switches to other projects.
 export const CONTRACT_SKILL_IDS: string[] = [
   'caff-workflow',
-  'create-command',
   'dag-planning',
   'grill-with-docs',
   'grilling',

@@ -204,6 +204,7 @@ test('runtime role resolution uses exact family profiles, preserves custom fallb
     provider: 'openai',
     model: 'gpt-deep',
     thinking: 'high',
+    fast: false,
     personaPrompt: '',
     skillIds: [],
   });
@@ -214,6 +215,7 @@ test('runtime role resolution uses exact family profiles, preserves custom fallb
     provider: 'runtime-provider',
     model: 'runtime-model',
     thinking: '',
+    fast: false,
     personaPrompt: 'Base custom persona',
     skillIds: ['custom-persona-skill'],
   });

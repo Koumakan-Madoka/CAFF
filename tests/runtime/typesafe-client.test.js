@@ -615,3 +615,49 @@ test('typesafe client caps the full serialized request body before sending', asy
   assert.equal(calls.length, 0);
   assert.equal(client.getBudgetStatus().requestsUsed, 0);
 });
+
+test('typesafe client with env:{} never falls back to process TYPESAFE_* vars (JEV pipeline isolation, contract §6)', async (t) => {
+  const prevKey = process.env.TYPESAFE_API_KEY;
+  const prevBase = process.env.TYPESAFE_BASE_URL;
+  process.env.TYPESAFE_API_KEY = 'sk-process-env-leftover';
+  process.env.TYPESAFE_BASE_URL = 'https://env-endpoint.example.com';
+  t.after(() => {
+    if (prevKey === undefined) { delete process.env.TYPESAFE_API_KEY; } else { process.env.TYPESAFE_API_KEY = prevKey; }
+    if (prevBase === undefined) { delete process.env.TYPESAFE_BASE_URL; } else { process.env.TYPESAFE_BASE_URL = prevBase; }
+  });
+
+  // env: {} cuts the key fallback: no key at all → not_configured.
+  const keyless = createTypeSafeClient({ env: {}, fetch: async () => { throw new Error('should not fetch'); } });
+  await assert.rejects(
+    () => keyless.ask({ state: 'x', questions: { q1: noulQuestion() } }),
+    (error) => error.code === 'typesafe_not_configured'
+  );
+
+  // env: {} cuts the endpoint fallback: the default base URL wins over the
+  // process env override.
+  const calls = [];
+  const client = createTypeSafeClient({
+    apiKey: 'explicit-key',
+    env: {},
+    fetch: async (url, init) => {
+      calls.push({ url, init });
+      return makeResponse(200, okPayload(['q1']));
+    },
+  });
+  await client.ask({ state: 'x', questions: { q1: noulQuestion() } });
+  assert.equal(calls.length, 1);
+  assert.ok(String(calls[0].url).startsWith('https://api.typesafe.ai'), `expected the default endpoint, got ${calls[0].url}`);
+
+  // Default behavior (no env option) keeps reading process.env: jev_ask and
+  // other callers are untouched.
+  const envCalls = [];
+  const envClient = createTypeSafeClient({
+    fetch: async (url, init) => {
+      envCalls.push({ url, init });
+      return makeResponse(200, okPayload(['q1']));
+    },
+  });
+  await envClient.ask({ state: 'x', questions: { q1: noulQuestion() } });
+  assert.ok(String(envCalls[0].url).startsWith('https://env-endpoint.example.com'), 'process env must still drive callers that do not opt out');
+  assert.equal(envCalls[0].init.headers.Authorization, 'Bearer sk-process-env-leftover');
+});

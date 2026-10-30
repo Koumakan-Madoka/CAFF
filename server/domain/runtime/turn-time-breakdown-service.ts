@@ -1,0 +1,596 @@
+// Turn time breakdown — §9 read path and lazy backfill. The API returns a
+// stored summary when it is terminal (cached path); a missing or `live`
+// summary is recomputed from the session JSONL with a full reparse of the
+// turn slice (assistantStartIndex) — measured ~38 ms for a 17.87 MB
+// session, far inside the AC5 budget, and the only way to keep the turn
+// span and §2(b) error events identical across refreshes. Classification
+// uses rules + the JEV cache ONLY inside the synchronous path (fresh JEV
+// calls are excluded so multi-MB logs finish within the AC5 budget), and
+// pending steps resolve asynchronously via the pipeline afterwards.
+
+import { computeTurnAttribution } from './turn-time-breakdown-attribution';
+import {
+  createTurnRuleClassifier,
+  detectTestFailure,
+  parseSessionTurnSteps,
+} from './turn-time-breakdown';
+import { jevCacheKey, truncateStepOutput } from './turn-time-breakdown-jev';
+
+// Per-click cap on async JEV retries (§9): bounds budget burn when JEV is
+// down and the user keeps refreshing a live view.
+const MAX_JEV_RETRIES_PER_CLICK = 64;
+
+function fromIso(value: any) {
+  const parsed = Date.parse(String(value || ''));
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toIso(msValue: any) {
+  const num = Number(msValue);
+
+  return Number.isFinite(num) && num > 0 ? new Date(num).toISOString() : null;
+}
+
+function safeJsonParse(value: any) {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function loadTaskRow(db: any, taskId: any) {
+  if (!db || !taskId) {
+    return null;
+  }
+
+  try {
+    return db
+      .prepare(
+        `SELECT id, status, run_id, session_path, metadata_json FROM a2a_tasks WHERE id = @taskId`
+      )
+      .get({ taskId: String(taskId) });
+  } catch {
+    return null;
+  }
+}
+
+function mapStoredStep(row: any) {
+  return {
+    stepKey: row.step_key,
+    toolName: row.tool_name,
+    category: row.category,
+    subcategory: row.subcategory,
+    classifiedBy: row.classified_by,
+    jevStatus: row.jev_status,
+    confidence: Number.isFinite(row.confidence) ? row.confidence : null,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    durationMs: Number.isFinite(row.duration_ms) ? row.duration_ms : null,
+    runKind: row.run_kind,
+    runFailed: row.run_failed === null || row.run_failed === undefined ? null : row.run_failed === 1,
+    writeScope: row.write_scope || null,
+    testRunCounts: Number.isFinite(row.run_count_full) || Number.isFinite(row.run_count_targeted)
+      ? {
+          full: Number.isFinite(row.run_count_full) ? row.run_count_full : 0,
+          targeted: Number.isFinite(row.run_count_targeted) ? row.run_count_targeted : 0,
+        }
+      : null,
+  };
+}
+
+function assembleResponse(summary: any, steps: any[], message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+
+  return {
+    status: summary.status,
+    categoryMs: summary.categoryMs,
+    metrics: summary.metrics,
+    steps: steps.map(mapStoredStep),
+    computedAt: summary.computedAt,
+    // §10: token display is an open question (q-tokens); the API already
+    // carries the fields so enabling it later is display-only.
+    tokenUsage: metadata.tokenUsage && typeof metadata.tokenUsage === 'object' ? metadata.tokenUsage : null,
+  };
+}
+
+function resolveSessionSlice(db: any, message: any, resolvedSessionPath: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+  const taskId = String(message && message.taskId ? message.taskId : '').trim();
+  const taskRow = taskId ? loadTaskRow(db, taskId) : null;
+  const taskMetadata = taskRow ? safeJsonParse(taskRow.metadata_json) : null;
+  const startIndexCandidate = metadata.sessionAssistantStartIndex !== undefined
+    ? metadata.sessionAssistantStartIndex
+    : taskMetadata && taskMetadata.sessionAssistantStartIndex;
+  const assistantStartIndex = Number.isSafeInteger(Number(startIndexCandidate)) && Number(startIndexCandidate) >= 0
+    ? Number(startIndexCandidate)
+    : null;
+  const sessionPath = String(
+    (taskRow && taskRow.session_path) || resolvedSessionPath || ''
+  ).trim();
+
+  // §4 slice end (exclusive): in a reused session the NEXT turn's
+  // assistant-message index is the smallest sessionAssistantStartIndex
+  // among this session's other tasks that is greater than this turn's
+  // start. Without it a backfill reparse would run to EOF and attribute
+  // every later turn's steps to this message.
+  let assistantEndIndex: number | null = null;
+
+  if (sessionPath && db) {
+    try {
+      const siblings = db
+        .prepare('SELECT metadata_json FROM a2a_tasks WHERE session_path = ?')
+        .all(sessionPath);
+
+      for (const row of siblings) {
+        const siblingMetadata = safeJsonParse(row && row.metadata_json);
+        const idx = siblingMetadata ? Number(siblingMetadata.sessionAssistantStartIndex) : NaN;
+
+        if (
+          Number.isSafeInteger(idx)
+          && idx >= 0
+          && (assistantStartIndex === null ? idx > 0 : idx > assistantStartIndex)
+          && (assistantEndIndex === null || idx < assistantEndIndex)
+        ) {
+          assistantEndIndex = idx;
+        }
+      }
+    } catch {
+      // Best effort: without the sibling index the slice runs to EOF
+      // (pre-fix behavior), never a crash on the read path.
+    }
+  }
+
+  return {
+    taskId,
+    taskRow,
+    sessionPath,
+    assistantStartIndex,
+    assistantEndIndex,
+  };
+}
+
+// Recompute the summary row from stored steps. Preserves a terminal status
+// unless the caller explicitly transitions it.
+function recomputeSummary(repository: any, input: any) {
+  const rows = repository.listSteps(input.taskId);
+  const steps = rows.map((row: any) => ({
+    category: row.category,
+    startedAtMs: fromIso(row.started_at),
+    endedAtMs: fromIso(row.ended_at),
+    runKind: row.run_kind,
+    runFailed: row.run_failed === 1,
+    writeScope: row.write_scope || null,
+    testRunCounts: Number.isFinite(row.run_count_full) || Number.isFinite(row.run_count_targeted)
+      ? {
+          full: Number.isFinite(row.run_count_full) ? row.run_count_full : 0,
+          targeted: Number.isFinite(row.run_count_targeted) ? row.run_count_targeted : 0,
+        }
+      : null,
+  }));
+  const existing = repository.getSummary(input.messageId);
+  const attribution = computeTurnAttribution({
+    steps,
+    errorEvents: input.errorEvents || [],
+    turnStartedAtMs: input.turnStartedAtMs !== undefined ? input.turnStartedAtMs : null,
+    turnEndedAtMs: input.turnEndedAtMs !== undefined ? input.turnEndedAtMs : null,
+  });
+  const metrics = {
+    ...(existing && existing.metrics ? existing.metrics : {}),
+    ...attribution.metrics,
+    ...(input.metrics || {}),
+  };
+
+  repository.upsertSummary({
+    messageId: input.messageId,
+    taskId: input.taskId,
+    conversationId: input.conversationId,
+    status: input.status || (existing && existing.status) || 'live',
+    turnStartedAt: toIso(attribution.turnStartedAtMs) || (existing && existing.turnStartedAt) || null,
+    turnEndedAt: input.turnEndedAtMs !== undefined
+      ? toIso(attribution.turnEndedAtMs)
+      : (existing && existing.turnEndedAt) || null,
+    categoryMs: attribution.categoryMs,
+    metrics,
+    parseOffset: input.parseOffset !== undefined ? input.parseOffset : (existing ? existing.parseOffset : null),
+    assistantCount: input.assistantCount !== undefined ? input.assistantCount : (existing ? existing.assistantCount : null),
+    computedAt: toIso(input.nowMs),
+  });
+
+  return repository.getSummary(input.messageId);
+}
+
+export function getTurnTimeBreakdownForMessage(options: any = {}) {
+  const db = options.db || null;
+  const agentDir = String(options.agentDir || '').trim();
+  const message = options.message || null;
+  const repository = options.repository || null;
+  const pipeline = options.pipeline || null;
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+
+  if (!db || !repository || !message || !message.id) {
+    return null;
+  }
+
+  const messageId = String(message.id);
+  const conversationId = String(message.conversationId || (options.conversationId || ''));
+  const slice = resolveSessionSlice(db, message, options.resolvedSessionPath);
+
+  if (!slice.taskId) {
+    return null;
+  }
+
+  let summary = repository.getSummary(messageId);
+
+  // Cached path (§9): a terminal summary is returned as-is (< 2 s target).
+  if (summary && summary.status !== 'live') {
+    return assembleResponse(summary, repository.listSteps(slice.taskId), message);
+  }
+
+  // §9: the synchronous read path re-parses the turn slice from offset 0
+  // (measured ~38 ms for a 17.87 MB session — far inside the AC5 budget).
+  // An incremental delta cannot reproduce the turn start or the §2(b)
+  // error events that earlier passes already consumed, which skewed
+  // turnStartedAt/firstWriteMs/exception-retry on every live refresh; a
+  // full reparse keeps every refresh on the same authoritative span.
+  const parsed = slice.sessionPath
+    ? parseSessionTurnSteps(slice.sessionPath, agentDir, {
+        assistantStartIndex: slice.assistantStartIndex,
+        assistantEndIndex: slice.assistantEndIndex,
+      })
+    : null;
+
+  if (!parsed && !summary) {
+    return null; // no session file and no stored rows — nothing to show
+  }
+
+  const messageMetadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+  const jevContext = { taskId: slice.taskId, messageId, conversationId };
+  const jevEnabled = pipeline && typeof pipeline.isJevEnabled === 'function'
+    ? pipeline.isJevEnabled(jevContext)
+    : false;
+  const pendingForAsync: any[] = [];
+  const pendingKeys = new Set<string>();
+
+  if (parsed) {
+    // Rebuild the rule classifier's cold-start state from steps stored by
+    // earlier passes: a write already classified (rules, JEV, or cache)
+    // flips later reads to purposeful-lookup (§5 rule 5).
+    const classifier = createTurnRuleClassifier();
+
+    for (const row of repository.listSteps(slice.taskId)) {
+      if (row.category === 'write') {
+        classifier.noteExternalCategory('write');
+      }
+    }
+
+    for (const step of parsed.steps) {
+      const baseRow = {
+        taskId: slice.taskId,
+        messageId,
+        toolName: step.toolName,
+        startedAt: toIso(step.startedAtMs) || toIso(step.endedAtMs) || toIso(nowMs),
+        endedAt: toIso(step.endedAtMs),
+        durationMs: step.durationMs,
+      };
+
+      // §4 cross-chunk merge: an orphan toolResult joins the open row an
+      // earlier pass stored, instead of becoming a second row.
+      if (step.orphan && step.toolCallId) {
+        const openRow = repository.findOpenStep(slice.taskId, step.toolCallId);
+
+        if (openRow) {
+          // Merge into the stored open row: keep its start and
+          // classification, take the result's end/output. Duration derives
+          // from the pair, never from the orphan alone.
+          const mergedStartMs = fromIso(openRow.started_at);
+          const mergedEndMs = step.endedAtMs;
+
+          repository.upsertStep({
+            ...baseRow,
+            stepKey: openRow.step_key,
+            startedAt: openRow.started_at,
+            durationMs: mergedStartMs !== null && mergedEndMs !== null && mergedEndMs >= mergedStartMs
+              ? mergedEndMs - mergedStartMs
+              : null,
+            category: openRow.category,
+            subcategory: openRow.subcategory,
+            classifiedBy: openRow.classified_by,
+            jevStatus: openRow.jev_status,
+            confidence: openRow.confidence,
+            runKind: openRow.run_kind,
+            runFailed: openRow.category === 'test'
+              ? detectTestFailure(step.output, step.isError)
+              : (openRow.run_failed === 1 ? true : openRow.run_failed === 0 ? false : null),
+            testRunCounts: Number.isFinite(openRow.run_count_full) || Number.isFinite(openRow.run_count_targeted)
+              ? { full: openRow.run_count_full || 0, targeted: openRow.run_count_targeted || 0 }
+              : null,
+            // §4 merge keeps the stored row's classification — and that
+            // includes the write scope: dropping it here would wash a
+            // sandbox/temp scratch write back to NULL ≈ repo (§5) and
+            // pollute firstWriteMs.
+            writeScope: openRow.write_scope || null,
+          });
+          continue;
+        }
+      }
+
+      const stepKey = String(step.stepKey || `step:${step.toolName}:${step.startedAtMs || 'orphan'}`);
+
+      // JEV-resolved rows keep their category; backfill only refreshes timing.
+      const existingRow = repository.getStep(slice.taskId, stepKey);
+
+      if (existingRow && (existingRow.classified_by === 'jev' || existingRow.classified_by === 'jev-cache')) {
+        repository.upsertStep({
+          ...baseRow,
+          stepKey,
+          category: existingRow.category,
+          subcategory: existingRow.subcategory,
+          classifiedBy: existingRow.classified_by,
+          jevStatus: existingRow.jev_status,
+          confidence: existingRow.confidence,
+          runKind: existingRow.run_kind,
+          runFailed: existingRow.run_failed === 1 ? true : existingRow.run_failed === 0 ? false : null,
+          testRunCounts: Number.isFinite(existingRow.run_count_full) || Number.isFinite(existingRow.run_count_targeted)
+            ? { full: existingRow.run_count_full || 0, targeted: existingRow.run_count_targeted || 0 }
+            : null,
+        });
+        continue;
+      }
+
+      if (
+        existingRow
+        && existingRow.category === 'unclassified'
+        && (existingRow.jev_status === 'pending' || existingRow.jev_status === 'timeout' || existingRow.jev_status === 'error')
+      ) {
+        // Already queued for async JEV (pipeline in flight, or covered by
+        // the retry list below): refresh timing only, never push a second
+        // ask for the same step on every refresh click.
+        repository.upsertStep({
+          ...baseRow,
+          stepKey,
+          category: 'unclassified',
+          subcategory: null,
+          classifiedBy: 'unclassified',
+          jevStatus: jevEnabled ? existingRow.jev_status : 'disabled',
+          confidence: null,
+          runKind: null,
+          runFailed: null,
+          payloadJson: existingRow.payload_json || JSON.stringify({
+            args: step.args !== undefined ? step.args : null,
+            output: truncateStepOutput(step.output),
+          }),
+        });
+        continue;
+      }
+
+      const classified = classifier.classify({
+        toolName: step.toolName,
+        args: step.args,
+        output: step.output,
+        isError: step.isError === true,
+      });
+
+      if (classified) {
+        repository.upsertStep({
+          ...baseRow,
+          stepKey,
+          category: classified.category,
+          subcategory: classified.subcategory || null,
+          classifiedBy: 'rules',
+          jevStatus: null,
+          confidence: null,
+          runKind: classified.runKind || null,
+          runFailed: classified.runFailed === true ? true : classified.category === 'test' ? false : null,
+          testRunCounts: classified.testRunCounts || null,
+          writeScope: classified.writeScope || null,
+        });
+        continue;
+      }
+
+      // §9 synchronous path: rules + JEV cache only; fresh JEV calls are
+      // excluded so multi-MB logs stay within the backfill budget.
+      const cacheKey = jevCacheKey(step);
+      const cached = repository.getJevCacheEntry(cacheKey);
+
+      if (cached) {
+        repository.upsertStep({
+          ...baseRow,
+          stepKey,
+          category: cached.category,
+          subcategory: cached.subcategory || null,
+          classifiedBy: 'jev-cache',
+          jevStatus: 'ok',
+          confidence: cached.confidence,
+          runKind: cached.runKind || null,
+          runFailed: cached.category === 'test' ? detectTestFailure(step.output, step.isError) : null,
+        });
+
+        if (cached.category === 'write') {
+          classifier.noteExternalCategory('write');
+        }
+
+        continue;
+      }
+
+      repository.upsertStep({
+        ...baseRow,
+        stepKey,
+        category: 'unclassified',
+        subcategory: null,
+        classifiedBy: 'unclassified',
+        jevStatus: jevEnabled ? 'pending' : 'disabled',
+        confidence: null,
+        runKind: null,
+        runFailed: null,
+        payloadJson: JSON.stringify({
+          args: step.args !== undefined ? step.args : null,
+          output: truncateStepOutput(step.output),
+        }),
+      });
+
+      if (jevEnabled) {
+        pendingForAsync.push({ stepKey, step });
+        pendingKeys.add(stepKey);
+      }
+    }
+  }
+
+  // §6: a later pass may reclassify pending/timeout/error steps via cache or
+  // a fresh call — payload_json makes the retry reproducible without a
+  // re-parse. Capped per click so a JEV outage plus repeated refreshes
+  // cannot burn through the dedicated client's process-local budget.
+  if (jevEnabled) {
+    const retryRows = repository.listJevRetrySteps(slice.taskId).slice(0, MAX_JEV_RETRIES_PER_CLICK);
+
+    for (const row of retryRows) {
+      if (pendingKeys.has(row.step_key)) {
+        continue;
+      }
+
+      const payload = safeJsonParse(row.payload_json);
+
+      if (!payload) {
+        continue;
+      }
+
+      pendingForAsync.push({
+        stepKey: row.step_key,
+        step: {
+          toolName: row.tool_name,
+          args: payload.args,
+          output: payload.output,
+          isError: false,
+          durationMs: row.duration_ms,
+        },
+        baseRow: {
+          startedAt: row.started_at,
+          endedAt: row.ended_at,
+          durationMs: row.duration_ms,
+        },
+      });
+      pendingKeys.add(row.step_key);
+    }
+  }
+
+  const openStepCount = repository
+    .listSteps(slice.taskId)
+    .filter((row: any) => row.ended_at === null || row.ended_at === undefined)
+    .length;
+  const messageStatus = String(message.status || '');
+  const messageCompleted = messageStatus === 'completed';
+  // A failed/cancelled message is terminal too (AC5): seal it
+  // `partial-interrupted` instead of leaving the summary `live` forever
+  // with thinking growing without bound.
+  const messageFailed = messageStatus === 'failed';
+  const messageTerminal = messageCompleted || messageFailed;
+  const storedStepRows = repository.listSteps(slice.taskId);
+  const stepEnds = storedStepRows
+    .map((row: any) => fromIso(row.ended_at))
+    .filter((value: any) => value !== null);
+  // §9 stale-live seal (AC5 "轮次中断如实标注"): a crash leaves the message
+  // `streaming` and the task `running` forever. A turn with no session
+  // event, step end, or message update in the last STALE_LIVE_MS is dead
+  // unless THIS process's pipeline still tracks the task (a genuinely live
+  // turn can go quiet inside one long tool call). Seal the span at the
+  // last sign of life instead of letting thinking grow to now.
+  const STALE_LIVE_MS = 10 * 60 * 1000;
+  const lastActivityCandidates = [
+    parsed && Number.isFinite(parsed.lastEventMs) ? parsed.lastEventMs : null,
+    ...stepEnds,
+    fromIso(message.updatedAt),
+  ].filter((value: any) => value !== null);
+  const lastActivityMs = lastActivityCandidates.length > 0 ? Math.max(...lastActivityCandidates) : null;
+  const taskActiveInProcess = pipeline && typeof pipeline.isTaskActive === 'function'
+    ? pipeline.isTaskActive(slice.taskId) === true
+    : false;
+  const staleLive = !messageTerminal
+    && lastActivityMs !== null
+    && nowMs - lastActivityMs >= STALE_LIVE_MS
+    && !taskActiveInProcess;
+  const status = parsed && parsed.truncated
+    ? 'partial-truncated'
+    : messageCompleted
+      ? openStepCount > 0
+        ? 'partial-interrupted'
+        : 'complete'
+      : messageFailed || staleLive
+        ? 'partial-interrupted'
+        : (summary && summary.status) || 'live';
+  // §2: session reuse comes straight from the authoritative message
+  // metadata; history messages lacking the fields simply omit them (the
+  // panel renders 无记录, never a guess).
+  const reuseMetrics: any = {};
+
+  if (typeof messageMetadata.sessionReused === 'boolean') {
+    reuseMetrics.sessionReused = messageMetadata.sessionReused;
+  }
+
+  if (messageMetadata.sessionReuseReason) {
+    reuseMetrics.sessionReuseReason = String(messageMetadata.sessionReuseReason);
+  }
+
+  // Turn span end: a terminal turn seals at message finalization (so the
+  // last model generation counts as thinking); a stale-sealed turn seals
+  // at its last sign of life; a live turn accounts to now.
+  const messageEndMs = messageTerminal
+    ? fromIso(message.updatedAt) || fromIso(message.createdAt)
+    : null;
+  const derivedTurnEndMs = messageTerminal
+    ? Math.max(messageEndMs || 0, ...stepEnds, 0) || null
+    : staleLive
+      ? lastActivityMs
+      : nowMs;
+
+  // §3: the turn span starts at the trace's first event. A stored open
+  // row from an earlier pass (kept by the §4 orphan merge) can predate
+  // this pass's firstEventMs — take the min so firstWriteMs never goes
+  // negative on the merge branch.
+  const storedStepStartMs = storedStepRows
+    .map((row: any) => fromIso(row.started_at))
+    .filter((value: any) => value !== null);
+  const parsedFirstEventMs = parsed && Number.isFinite(parsed.firstEventMs) ? parsed.firstEventMs : null;
+  const effectiveTurnStartMs = parsedFirstEventMs !== null
+    ? Math.min(parsedFirstEventMs, ...storedStepStartMs)
+    : (storedStepStartMs.length > 0 ? Math.min(...storedStepStartMs) : undefined);
+
+  summary = recomputeSummary(repository, {
+    messageId,
+    taskId: slice.taskId,
+    conversationId,
+    status,
+    errorEvents: parsed ? parsed.errorEvents : [],
+    turnStartedAtMs: effectiveTurnStartMs,
+    turnEndedAtMs: derivedTurnEndMs !== null ? derivedTurnEndMs : undefined,
+    metrics: reuseMetrics,
+    parseOffset: parsed ? parsed.endOffset : (summary ? summary.parseOffset : null),
+    assistantCount: parsed ? parsed.assistantMessageTotal : (summary ? summary.assistantCount : null),
+    nowMs,
+  });
+
+  // Async JEV resolution for pending steps — after the response is
+  // assembled, never inside the synchronous backfill (§9).
+  if (pipeline && pendingForAsync.length > 0) {
+    for (const pending of pendingForAsync) {
+      const stepRow = {
+        stepKey: pending.stepKey,
+        toolName: pending.step.toolName,
+        args: pending.step.args,
+        output: pending.step.output,
+        isError: pending.step.isError === true,
+        durationMs: Number.isFinite(pending.step.durationMs) ? pending.step.durationMs : null,
+        startedAt: pending.baseRow ? pending.baseRow.startedAt : toIso(pending.step.startedAtMs),
+        endedAt: pending.baseRow ? pending.baseRow.endedAt : toIso(pending.step.endedAtMs),
+      };
+
+      Promise.resolve(pipeline.resolvePendingStep({ ...jevContext, step: stepRow })).catch(() => {});
+    }
+  }
+
+  return assembleResponse(summary, repository.listSteps(slice.taskId), message);
+}

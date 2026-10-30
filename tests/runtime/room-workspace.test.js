@@ -11,7 +11,9 @@ function git(cwd, args) {
 }
 
 function initRepo() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-room-workspace-'));
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-room-workspace-'));
+  const root = path.join(outer, 'repo');
+  fs.mkdirSync(root);
   git(root, ['init']);
   git(root, ['config', 'user.name', 'CAFF Test']);
   git(root, ['config', 'user.email', 'caff-test@example.invalid']);
@@ -19,7 +21,7 @@ function initRepo() {
   git(root, ['add', 'README.md']);
   git(root, ['commit', '-m', 'base']);
   git(root, ['branch', 'develop']);
-  return root;
+  return { outer, root };
 }
 
 test('room workspace preview is deterministic and read-only, then confirmation creates one worktree', () => {
@@ -27,7 +29,7 @@ test('room workspace preview is deterministic and read-only, then confirmation c
     previewRoomWorkspace,
     bindRoomWorkspace,
   } = require('../../build/server/domain/conversation/room-workspace');
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const conversationId = randomUUID();
   const conversation = {
     id: conversationId,
@@ -51,16 +53,13 @@ test('room workspace preview is deterministic and read-only, then confirmation c
     assert.equal(git(created.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']), preview.branch);
     assert.equal(git(created.worktreePath, ['rev-parse', 'HEAD']), preview.baseSha);
   } finally {
-    const worktreePath = previewRoomWorkspace({ conversation, project: { id: 'project-1', path: repoRoot } }).worktreePath;
-    try { git(repoRoot, ['worktree', 'remove', '--force', worktreePath]); } catch {}
-    try { fs.rmSync(path.join(path.dirname(repoRoot), 'worktrees'), { recursive: true, force: true }); } catch {}
-    fs.rmSync(repoRoot, { recursive: true, force: true });
+    fs.rmSync(outer, { recursive: true, force: true });
   }
 });
 
 test('room workspace rejects an existing branch instead of attaching it', () => {
   const { bindRoomWorkspace } = require('../../build/server/domain/conversation/room-workspace');
-  const repoRoot = initRepo();
+  const { outer, root: repoRoot } = initRepo();
   const conversationId = randomUUID();
   const conversation = {
     id: conversationId,
@@ -75,6 +74,6 @@ test('room workspace rejects an existing branch instead of attaching it', () => 
       (error) => error && error.code === 'room_workspace_branch_exists'
     );
   } finally {
-    fs.rmSync(repoRoot, { recursive: true, force: true });
+    fs.rmSync(outer, { recursive: true, force: true });
   }
 });

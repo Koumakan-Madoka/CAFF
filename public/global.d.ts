@@ -20,6 +20,8 @@ declare global {
     sourceLabel?: string;
     family?: 'gpt' | 'claude' | 'gemini' | 'deepseek' | 'qwen' | 'glm' | 'kimi' | null;
     familySource?: 'explicit' | 'provider_alias' | 'model_alias' | 'unknown' | 'conflict';
+    api?: string;
+    supportsFast?: boolean;
     supportedThinkingLevels?: Array<'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
   };
 
@@ -99,6 +101,7 @@ declare global {
   };
 
   type CaffAppShell = {
+    setTerminalOverlay: (open: boolean) => void;
     openTab: (panelId: string) => void;
     releaseTab: (panelId: string) => void;
     closeDrawer: () => void;
@@ -130,6 +133,9 @@ declare global {
     CaffTheme?: CaffThemeController;
     CaffIcons?: CaffIconController;
     caffShell?: CaffAppShell;
+    Terminal?: any;
+    FitAddon?: any;
+    UnicodeGraphemesAddon?: any;
   }
 
   interface HTMLElement {

@@ -456,8 +456,8 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
     `- Delegation: ${relativeCommandPrefix} create-delegation --to "AgentId" --idempotency-key "stable-key" --content-stdin [--reference "commit-or-reference"] creates one durable in-room task; when you need to wait use ${relativeCommandPrefix} await-delegation --delegation-id "id". Delegations have no automatic deadline and remain pending until recipient completion or explicit cancellation. Await yields the current run and releases its model slot; do not poll read-context or use shell sleep.`,
     `- Context retrieval: ${relativeCommandPrefix} read-context for latest public context plus your private mailbox; the result includes a revision, hasChanges, pendingDelegations, and shortCircuited fields. Use await-delegation for pending work. ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 for older public messages (optional --speaker "AgentName" or --agent-id "agent-id").`,
     `- Long-term recall: when the user explicitly asks about prior context ("上次", "之前", "还记得吗", "回忆一下"), call ${relativeCommandPrefix} search-memory --query "topic keywords" --limit 5 or --latest. Do not assume long-term memory is automatically injected; default excludes the current conversation, use --include-current or optional filters --task/--conversation/--kind/--since/--until when needed.`,
-    `- Goal and participant governance: ${relativeCommandPrefix} list-participants refreshes visible participants; ${relativeCommandPrefix} suggest-goal --action set|revise|pause|resume|complete|clear|accept|reject --reason "..." proposes a reviewed Goal change; set/revise accept a Goal JSON object through --content-stdin. ${relativeCommandPrefix} update-goal --content-stdin applies factual work-item, criterion-status, and evidence updates from a full Goal JSON object; it rejects structural changes and high-risk waivers. Evidence is the current proof set, not a history log. Replace superseded entries, keep summaries concise, and keep criterion references valid. A proposer can never review their own proposal.`,
-    '- Room workspace: use the model-visible `room_workspace_preview` tool with no arguments to inspect the server-derived branch/worktree. The preview creates a user authorization card; tell the user what will be created and wait for the card decision. Do not call `room_workspace_bind` for the normal UI flow after the user clicks the card; the server performs binding directly. For non-UI fallback only, call `room_workspace_bind` with `{ "confirm": true }` after explicit user confirmation. Never invent or pass conversation IDs, branches, paths, repositories, or base refs.',
+    `- Goal and participant governance: ${relativeCommandPrefix} list-participants refreshes visible participants; ${relativeCommandPrefix} suggest-goal --action set|revise|pause|resume|complete|clear|accept|reject --reason "..." proposes a reviewed Goal change; set/revise accept a Goal JSON object through --content-stdin. ${relativeCommandPrefix} update-goal --content-stdin applies factual work-item, criterion-status, and evidence updates from a full Goal JSON object; it rejects structural changes and high-risk waivers. Use it only when a status changes or a milestone needs proof, not to log intermediate progress. Evidence backs criterion status; replace superseded entries, keep summaries concise, and keep criterion references valid. A proposer can never review their own proposal.`,
+    '- Room workspace: use the model-visible `room_workspace_preview` tool to inspect the server-derived branch/worktree; it accepts an optional `{ "branchName": "full/branch-name" }` to bind with a custom full branch name (no enforced `room/` prefix; omit it for the automatic name). The preview creates a user authorization card showing the exact branch, path, and base; tell the user what will be created and wait for the card decision. Do not call `room_workspace_bind` for the normal UI flow after the user clicks the card; the server performs binding directly. After binding, `room_workspace_rename_preview({ "branchName": "new/full-name" })` requests a user-authorized rename of the bound branch; it only renames an unpublished local branch, never moves the worktree directory, never changes HEAD/files/base, and never touches any remote. For non-UI fallback only, call `room_workspace_bind` with `{ "confirm": true }` (optionally with `branchName`) or `room_workspace_rename_bind` with `{ "confirm": true, "branchName": "new/full-name" }` after explicit user confirmation. Never invent or pass conversation IDs, paths, repositories, or base refs.',
   ].join('\n');
 }
 
@@ -632,6 +632,10 @@ export function buildAgentTurnPromptSections({
     : '';
   const turnRoutingStateSection = formatTurnRoutingState(trigger, agents);
 
+  const reviewCadenceRules = [
+    '- Request formal review once per milestone: when a Goal work item is ready to be marked done, or when a change is ready to integrate. Do not request review of intermediate commits unless the user explicitly asks. After review, fix blocking findings and request re-review of those fixes only; record non-blocking findings without another review round.',
+    '- Run targeted checks for intermediate commits; run the full applicable checks once before requesting milestone review.',
+  ];
   const routingRules = allowHandoffs
     ? [
         '- Reply as this agent only.',
@@ -643,6 +647,7 @@ export function buildAgentTurnPromptSections({
         '- Public room output should go through the chat bridge instead of your final raw reply whenever possible.',
         '- Put actionable handoff mentions on their own line, or place a pure trailing mention block on the final line that contains only mentions.',
         '- Inline mentions in the middle of a sentence do not trigger routing unless they are part of that final trailing mention block.',
+        ...reviewCadenceRules,
         '- Formal review requests must include the exact commit SHA, review scope and risks, author validation evidence, and desired response format. After sending one, do not modify repository files for the rest of this trace.',
         '- Review worktrees are risk-based: static git show/diff review needs none; a clean room worktree at the requested SHA may be used if the author will not keep writing; create a detached review worktree only when tests need a stable SHA while the room worktree may change, and use a separate writable branch/worktree if the reviewer must modify code.',
         `- Up to ${MAX_PARALLEL_MENTION_BATCH_SIZE} agents run at once; extra actionable mentions queue in later batches.`,
@@ -658,6 +663,7 @@ export function buildAgentTurnPromptSections({
         '- Keep your answer readable in a chat UI.',
         '- Public room output should go through the chat bridge instead of your final raw reply whenever possible.',
         '- Plain at-mentions are allowed for readability, but they will not continue this parallel turn.',
+        ...reviewCadenceRules,
       ];
   const conversationDigestSection = formatConversationDigestsForPrompt(conversation);
   const retrievedMemorySection = formatRetrievedMemorySegments(relatedMemorySegments);

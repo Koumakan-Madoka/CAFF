@@ -9,9 +9,14 @@ export type MultipartParseResult =
   | { ok: true; fields: Record<string, string>; files: MultipartFilePart[] }
   | { ok: false; reason: string };
 
-function extractBoundary(contentType: string) {
-  const match = String(contentType || '').match(/boundary=(?:"([^"]+)"|([^;\s]+))/i);
-  return match ? match[1] || match[2] : '';
+export function extractMultipartBoundary(contentType: string) {
+  const value = String(contentType || '').trim();
+  if (!/^multipart\/form-data\s*;/iu.test(value) || /[\r\n]/u.test(value)
+    || (value.match(/;\s*boundary\s*=/giu) || []).length !== 1) return '';
+  const match = value.match(/;\s*boundary\s*=\s*(?:"([^"]*)"|([^;\s]+))\s*(?:;|$)/iu);
+  const boundary = match ? match[1] !== undefined ? match[1] : match[2] : '';
+  return boundary.length >= 1 && boundary.length <= 70 && !boundary.endsWith(' ')
+    && /^[0-9a-z'()+_,\-./:=? ]+$/iu.test(boundary) ? boundary : '';
 }
 
 function parseContentDisposition(value: string) {
@@ -31,7 +36,7 @@ export function parseMultipart(body: Buffer, contentType: string): MultipartPars
     return { ok: false, reason: 'EMPTY_BODY' };
   }
 
-  const boundary = extractBoundary(contentType);
+  const boundary = extractMultipartBoundary(contentType);
 
   if (!boundary) {
     return { ok: false, reason: 'MISSING_BOUNDARY' };

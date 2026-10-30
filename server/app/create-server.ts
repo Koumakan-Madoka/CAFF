@@ -18,6 +18,9 @@ const {
 } = require('../api/conversation-deliveries-controller');
 const { createFeishuController } = require('../api/feishu-controller');
 const { createHealthController } = require('../api/health-controller');
+const { createPlannerAttentionController } = require('../api/planner-attention-controller');
+const { createPlannerStateController } = require('../api/planner-state-controller');
+const { createPlannerAttentionWait } = require('../domain/conversation/planner-attention-wait');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createMemoryController } = require('../api/memory-controller');
 const { createRuntimeObservabilityController } = require('../api/runtime-observability-controller');
@@ -25,6 +28,8 @@ const { createModelProvidersController } = require('../api/model-providers-contr
 const { createSubscriptionAuthController } = require('../api/subscription-auth-controller');
 const { createModelCatalogController } = require('../api/model-catalog-controller');
 const { createRecoveryScribeConfigController } = require('../api/recovery-scribe-config-controller');
+const { createTurnTimeBreakdownJevConfigController } = require('../api/turn-time-breakdown-jev-config-controller');
+const { createJevEnabledResolver, createJevServiceConfigService, readJevClientMaterial } = require('../domain/runtime/jev-service-config');
 const { createProjectsController } = require('../api/projects-controller');
 const { createBadcaseCaptureController } = require('../api/badcase-capture-controller');
 const { createBadcaseFlagsController } = require('../api/badcase-flags-controller');
@@ -45,9 +50,11 @@ const {
   MAX_IMAGE_WIDTH,
 } = require('../../lib/image-constants');
 const { resolveToolRelativePath } = require('../http/path-utils');
-const { HOST, PORT, ROOT_DIR } = require('./config');
+const { HOST, PORT, ROOT_DIR, TYPESAFE_MAX_REQUESTS, TYPESAFE_TOKEN_BUDGET } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
 const { createBadcaseCaptureService } = require('../domain/runtime/badcase-capture');
+const { createTurnTimeBreakdownPipeline } = require('../domain/runtime/turn-time-breakdown-pipeline');
+const { createTypeSafeClient } = require('../domain/integrations/typesafe/typesafe-client');
 const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
 const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
 const {
@@ -87,6 +94,13 @@ const { buildErrorJsonPayload, sendJson } = require('../http/response');
 const { serveStaticFile } = require('../http/static-file');
 const { createHttpError } = require('../http/http-errors');
 const { isLoopbackAddress } = require('../http/local-admin-guard');
+const { createPlannerCredential } = require('../domain/security/planner-credential');
+const { authenticateApiRequest } = require('../http/planner-authentication');
+const { createApiMutationGuard } = require('../http/api-mutation-guard');
+const { formatAuthority } = require('../http/request-authority');
+const { createEmbeddedPlannerRuntime } = require('../domain/runtime/embedded-planner-runtime');
+const { installPlannerTerminal } = require('../http/planner-terminal');
+const { createEmbeddedPlannerController } = require('../api/embedded-planner-controller');
 
 // resolveToolRelativePath is now imported from ../http/path-utils
 
@@ -677,9 +691,56 @@ export function createServerApp(options: any = {}) {
     },
   });
 
+  // Turn time breakdown pipeline (contract §8): created once per server,
+  // shared by the pi-event hook (agent executor) and the bridge hook.
+  const turnTimeBreakdownPipeline = createTurnTimeBreakdownPipeline({
+    repository: store.turnTimeBreakdownRepository,
+    // §6: single decision point, both gates read from the DB inside the
+    // resolver — the UI-managed toggle (chat_system_service_toggles) and a
+    // stored API key (chat_system_service_credentials). The classification
+    // pipeline NEVER reads TYPESAFE_* env (the panel is the only switch);
+    // the resolver reads the store on every call, so UI changes take
+    // effect in this process without a restart. The per-project
+    // projects.json switch is deprecated and no longer participates.
+    resolveJevEnabled: createJevEnabledResolver({
+      store,
+    }),
+    getJevClientFingerprint() {
+      // Rebuild the cached client exactly when the stored credential
+      // material changes (key rotation, endpoint/model override, key
+      // cleared) — same-process immediate effect without a restart.
+      const material = readJevClientMaterial(store);
+      return material ? material.fingerprint : 'none';
+    },
+    createJevClient() {
+      // §6: dedicated client instance with its own process-local budget —
+      // classification volume must not consume the bridge client's budget.
+      // Built ONLY from the DB credential row: env: {} cuts every
+      // TYPESAFE_* fallback in the shared client factory, so a leftover
+      // env key can never silently drive classification.
+      const material = readJevClientMaterial(store);
+
+      if (!material) {
+        return null;
+      }
+
+      return createTypeSafeClient({
+        apiKey: material.apiKey,
+        baseUrl: material.baseUrl,
+        model: material.model,
+        env: {},
+        maxRequests: TYPESAFE_MAX_REQUESTS,
+        tokenBudget: TYPESAFE_TOKEN_BUDGET,
+        timeoutMs: 8000,
+      });
+    },
+  });
+
   const agentToolBridge = createAgentToolBridge({
     store,
     agentDir,
+    turnTimeBreakdownPipeline,
+    resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
     piCapabilityBridge: options.piCapabilityBridge,
     crossConversationDeliveryService,
     cancelDelegation(delegationId: any, reason: any) {
@@ -742,6 +803,7 @@ export function createServerApp(options: any = {}) {
       return activeProjectDir;
     },
     agentToolBridge,
+    turnTimeBreakdownPipeline,
     broadcastEvent,
     broadcastConversationSummary,
     broadcastRuntimeState,
@@ -760,6 +822,12 @@ export function createServerApp(options: any = {}) {
     delegationRuntime,
     badcaseCapture,
     executeConversationAgent: options.executeConversationAgent,
+    beforeStartupDispatch() {
+      // Single-process database ownership: recovery has prepared its stale
+      // side replies, but no new execution has been submitted yet. Fail closed
+      // if this transaction fails; do not start with untrusted active state.
+      store.reconcileInterruptedRuns('服务重启中断');
+    },
     async onAssistantMessageCompleted(message: any) {
       await maybeAutoCreateDigestAfterAssistantMessage(message);
 
@@ -1099,6 +1167,22 @@ export function createServerApp(options: any = {}) {
   });
 
   let server: any = null;
+  // Tests inject an in-memory provider via options, never an environment flag.
+  // Production rotation happens only after this instance successfully binds.
+  const plannerCredential = options.plannerCredential || createPlannerCredential({
+    host,
+    getPort() {
+      const address = server && server.address();
+      return address && typeof address === 'object' ? address.port : 0;
+    },
+  });
+  const apiMutationGuard = createApiMutationGuard({ host, csrfToken: providerConfigCsrfToken,
+    getAuthority() {
+      const address = server && server.address();
+      return formatAuthority(host, address && typeof address === 'object' ? address.port : port);
+    },
+  });
+  const embeddedPlanner = createEmbeddedPlannerRuntime({ host, store, projectManager, config: options.embeddedPlanner, privateValues: [providerConfigCsrfToken] });
   const { buildBootstrapPayload, buildConfiguredModelOptions } = createBootstrapPayloadBuilder({
     store,
     skillRegistry,
@@ -1106,6 +1190,8 @@ export function createServerApp(options: any = {}) {
     modeStore,
     modelCatalog,
     roleService,
+    apiSecurity: () => ({ csrfToken: providerConfigCsrfToken }),
+    plannerTerminal: embeddedPlanner.capability,
     localAdmin: () => ({
       modelProviders: {
         enabled: providerConfigLocalEnabled,
@@ -1136,7 +1222,13 @@ export function createServerApp(options: any = {}) {
   runtimeObservability.registerCounterProvider('invocations', () => agentToolBridge.getRuntimeStats());
   runtimeObservability.registerCounterProvider('sse', () => sseBus.getStats());
 
+  const plannerAttentionWait = createPlannerAttentionWait(store);
   const router = createRouter([
+    createEmbeddedPlannerController({ store, runtime: embeddedPlanner, host, csrfToken: providerConfigCsrfToken,
+      getAuthority() { const address = server && server.address(); return formatAuthority(host, address?.port || port); },
+    }),
+    createPlannerAttentionController({ store, waitService: plannerAttentionWait }),
+    createPlannerStateController({ store, turnOrchestrator }),
     createHealthController({ getHealthStatus }),
     createBootstrapController({ sseBus, turnOrchestrator, buildBootstrapPayload }),
     createFeishuController({ feishuService: feishuIntegration }),
@@ -1239,6 +1331,21 @@ export function createServerApp(options: any = {}) {
         return new URL(buildToolBaseUrl(host, actualPort)).host;
       },
     }),
+    createTurnTimeBreakdownJevConfigController({
+      service: createJevServiceConfigService({
+        store,
+        turnTimeBreakdownRepository: store.turnTimeBreakdownRepository,
+      }),
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+      broadcastEvent,
+    }),
     createProjectsController({ projectManager, syncActiveProject }),
     createAgentToolsController({ agentToolBridge }),
     createConversationDeliveriesController({
@@ -1252,6 +1359,7 @@ export function createServerApp(options: any = {}) {
     createConversationPlanController({ store, broadcastEvent }),
     createConversationsController({
       store,
+      plannerIdentity: plannerCredential.identity,
       agentToolBridge,
       conversationSpawnService,
       roleService,
@@ -1269,6 +1377,7 @@ export function createServerApp(options: any = {}) {
       conversationMessageDeletionService,
       messageRecoveryService,
       conversationMutationCoordinator,
+      turnTimeBreakdownPipeline,
       uploadService,
     }),
     createImageUploadController({
@@ -1284,15 +1393,17 @@ export function createServerApp(options: any = {}) {
   ]);
 
   server = http.createServer(async (req: any, res: any) => {
-    const requestUrl = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
-
     try {
+      const requestUrl = new URL(req.url, toolBaseUrl);
       if (requestUrl.pathname.startsWith('/api/')) {
+        const principal = authenticateApiRequest(req, requestUrl.pathname, plannerCredential);
+        apiMutationGuard.assertMutation(req, requestUrl.pathname, principal);
         const handled = await router.route({
           req,
           res,
           pathname: requestUrl.pathname,
           requestUrl,
+          principal,
         });
 
         if (!handled) {
@@ -1316,8 +1427,17 @@ export function createServerApp(options: any = {}) {
     }
   });
 
+  const plannerTerminal = installPlannerTerminal({ server, host, csrfToken: providerConfigCsrfToken,
+    capability: embeddedPlanner.capability, getHost: embeddedPlanner.getHost,
+    hasRoom: (id: string) => !!store.getConversationWithoutMessages(id),
+    authTimeoutMs: options.embeddedPlanner?.authTimeoutMs,
+    idleMs: options.embeddedPlanner?.idleMs, pingMs: options.embeddedPlanner?.pingMs, pongMs: options.embeddedPlanner?.pongMs,
+  });
+
   function start(onListen: any) {
-    server.listen(port, host, () => {
+    server.listen(port, host, async () => {
+      plannerCredential.initialize();
+      await embeddedPlanner.start(buildToolBaseUrl(host, server.address().port), plannerCredential.path, plannerCredential);
       try {
         uploadService.reconcile();
       } catch {}
@@ -1351,7 +1471,12 @@ export function createServerApp(options: any = {}) {
   }
 
   function close(callback: any) {
+    const plannerTerminalClosePromise = plannerTerminal.close();
+    const embeddedPlannerClosePromise = embeddedPlanner.close();
+    plannerAttentionWait.close();
+    plannerCredential.disable();
     deliveryRuntimeClosing = true;
+    const turnsClosePromise = turnOrchestrator.shutdown('服务关闭中断');
     sseBus.closeAll();
     runtimeObservability.dispose();
     subscriptionLoginService.dispose();
@@ -1372,15 +1497,22 @@ export function createServerApp(options: any = {}) {
 
     server.close(() => {
       const finishClose = () => {
+        let reconciliationError: any = null;
+        try {
+          store.reconcileInterruptedRuns('服务关闭中断');
+        } catch (error) {
+          reconciliationError = error;
+          console.error(`[runtime] Shutdown reconciliation failed: ${error}`);
+        }
         store.close();
 
         if (typeof callback === 'function') {
-          callback();
+          callback(reconciliationError);
         }
       };
-      const pendingCloseWork = deliveryDrainPromise
-        ? Promise.allSettled([deliveryDrainPromise, feishuClosePromise])
-        : feishuClosePromise;
+      const pendingCloseWork = Promise.allSettled([
+        turnsClosePromise, feishuClosePromise, embeddedPlannerClosePromise, plannerTerminalClosePromise, ...(deliveryDrainPromise ? [deliveryDrainPromise] : []),
+      ]);
 
       void Promise.resolve(pendingCloseWork).then(finishClose, finishClose);
     });
@@ -1398,6 +1530,7 @@ export function createServerApp(options: any = {}) {
     getHealthStatus,
     host,
     port,
+    plannerAttentionWait,
     runtimeObservability,
     runMaybeAutoCreateDigest,
     server,

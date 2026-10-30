@@ -372,7 +372,7 @@ function setupExecutorTest(t, { reuseEnabled }) {
         agentToolRelativePath: './lib/agent-chat-tools.js',
         modelCatalog: { getOptions: () => [{
           provider: PROVIDER, model: MODEL, contextWindow: CONTEXT_WINDOW,
-          runtimeResolvable: true, supportedThinkingLevels: ['low'],
+          runtimeResolvable: true, supportedThinkingLevels: ['off', 'low'],
         }] },
       });
     },
@@ -710,7 +710,7 @@ test('SDK descriptor drift across awaited capture never associates a stale check
 
 test('pre-turn asynchronous capture settles before startRun and preserves fresh/resume, including stop while waiting', async (t) => {
   for (const delivery of ['fresh', 'resume']) {
-    for (const mode of ['success', 'refusal', 'exception', 'empty', 'stop', 'stop-exception']) {
+    for (const mode of ['success', 'refusal', 'exception', 'empty', 'stop', 'stop-exception', 'stop-stage']) {
       await t.test(`${delivery}/${mode}`, async (t) => {
         const env = setupExecutorTest(t, { reuseEnabled: true });
         const agent = createAgent(), conversation = createConversation(agent);
@@ -758,7 +758,10 @@ test('pre-turn asynchronous capture settles before startRun and preserves fresh/
           assert.equal(observations[0].deliveryMode, delivery);
           if (delivery === 'resume') assert.equal(store.peekReuseRow().state, 'busy');
         } finally {
-          if (mode.startsWith('stop')) { turnState.stopRequested = true; turnState.stopReason = 'test stop while capturing'; }
+          if (mode.startsWith('stop')) {
+            const stoppedState = mode === 'stop-stage' ? turnState.agents.find(stage => stage.agentId === agent.id) : turnState;
+            stoppedState.stopRequested = true; stoppedState.stopReason = 'test stop while capturing';
+          }
           order.push('capture-settle');
           if (mode.endsWith('exception')) rejectCapture(new Error('synthetic asynchronous capture failure'));
           else resolveCapture(mode === 'empty' ? undefined : mode === 'refusal'
@@ -770,7 +773,7 @@ test('pre-turn asynchronous capture settles before startRun and preserves fresh/
         assert.equal(env.captured.length, startCount + (stopped ? 0 : 1));
         assert.deepEqual(order, stopped ? ['capture-enter', 'capture-settle'] : ['capture-enter', 'capture-settle', 'startRun']);
         const message = store.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
-        const hasCheckpoint = mode === 'success' || mode === 'stop';
+        const hasCheckpoint = mode === 'success' || mode === 'stop' || mode === 'stop-stage';
         assert.equal(message.metadata.badcaseCheckpointId || '', hasCheckpoint ? 'checkpoint-async' : '');
         assert.equal(message.status, stopped ? 'failed' : 'completed');
         assert.equal(result.failedReplies.length, 0, 'user stop is cancellation, not a failed agent reply');
@@ -781,7 +784,8 @@ test('pre-turn asynchronous capture settles before startRun and preserves fresh/
         if (stopped) {
           assert.equal(message.runId, null);
           assert.equal(message.errorMessage, 'Stopped before agent run started');
-          assert.equal(result.outcome.terminationReason, 'stopped_by_user');
+          assert.equal(result.outcome.terminationReason, mode === 'stop-stage' ? '' : 'stopped_by_user');
+          assert.equal(result.outcome.stopTurn, mode !== 'stop-stage');
           if (delivery === 'resume') {
             assert.deepEqual(store.reuseCalls.slice(reuseOffset).map(([name]) => name), ['get', 'claim', 'restore']);
             assert.deepEqual({ ...store.peekReuseRow(), updatedAt: saved.updatedAt }, saved,
@@ -1176,6 +1180,56 @@ test('authorized capture to message seal survives SQLite/service reconstruction 
     assert.deepEqual((await api(`/api/projects/${projectId}/conversations/${conversation.id}/messages/${message.id}/badcase-flag`)).seal, seals[index].seal);
   }
   assert.equal(fs.existsSync(operatorRoot), false, 'rejected preview must not create an approval or dispatch');
+});
+
+test('executor forwards Fast from the resolved config or selected profile, never falls back from profile false', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: false });
+  for (const [defaultFast, profileFast, resolvedFast, expected] of [
+    [true, false, undefined, false], [false, true, undefined, true],
+    [true, undefined, undefined, false], [true, true, false, false], [false, false, true, true],
+  ]) {
+    const agent = createAgent();
+    if (resolvedFast === undefined) {
+      Object.assign(agent, agent.runtimeConfig, { fast: defaultFast,
+        selectedModelProfile: { ...agent.runtimeConfig, fast: profileFast },
+      });
+      delete agent.runtimeConfig;
+    } else agent.runtimeConfig.fast = resolvedFast;
+    const conversation = createConversation(agent);
+    const store = createFakeStore(conversation);
+    store.agentDir = env.tempDir;
+    seedUserMessage(store, 'u1', 'Go.');
+    await runTurn({ executor: env.createExecutor(store), conversation, agent, store, turnId: `forward-${env.captured.length}` });
+    assert.equal(env.captured.at(-1).options.fast, expected);
+  }
+});
+
+test('Fast toggles apply on the next turn without changing the legacy static fingerprint or session', async (t) => {
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const agent = createAgent();
+  const conversation = createConversation(agent);
+  const store = createFakeStore(conversation, { withReuse: true });
+  store.agentDir = env.tempDir;
+  seedUserMessage(store, 'u1', 'Start.');
+  await runTurn({ executor: env.createExecutor(store), conversation, agent, store, turnId: 'fast-1' });
+  const initialHash = store.peekReuseRow().staticSegmentHash;
+  const initialSession = env.captured[0].options.session;
+  assert.equal(env.captured[0].options.fast, false, 'legacy config defaults off');
+  for (const [index, fast] of [true, false, true].entries()) {
+    agent.runtimeConfig.fast = fast;
+    seedUserMessage(store, `u${index + 2}`, 'Continue.');
+    await runTurn({ executor: env.createExecutor(store), conversation, agent, store, turnId: `fast-${index + 2}` });
+    const captured = env.captured.at(-1);
+    assert.equal(captured.options.fast, fast);
+    assert.equal(captured.options.resume, true);
+    assert.equal(captured.options.session, initialSession);
+    assert.equal(store.peekReuseRow().staticSegmentHash, initialHash);
+    const message = store.messageWrites.creates.filter((m) => m.role === 'assistant').at(-1);
+    assert.equal(message.metadata.sessionReuseReason, 'reused');
+  }
+  // Shipping Fast must not change hashes even when the field is absent.
+  const source = fs.readFileSync(path.resolve(__dirname, '../../server/domain/conversation/turn/agent-executor.ts'), 'utf8');
+  assert.match(source, /computeStaticPromptHash\(promptSections, \[provider, model, reuseProfileId, thinking\]\)/u);
 });
 
 test('Goal Runner reuse requires matching Goal identity, revision, and usage below 50%', async (t) => {

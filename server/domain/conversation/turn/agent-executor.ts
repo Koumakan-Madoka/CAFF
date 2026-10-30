@@ -2,6 +2,7 @@ const { randomUUID, createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { createHttpError } = require('../../../http/http-errors');
 const { createConfiguredModelCatalog } = require('../../models/configured-model-catalog');
+const { createServiceTierState, recordServiceTierRequest, snapshotServiceTier } = require('../../../../lib/service-tier');
 const { inspectModelConfiguration } = require('../../models/model-configuration');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -25,7 +26,6 @@ const {
   extractMentionedAgentIds,
   getAgentById,
 } = require('../mention-routing');
-const { ALWAYS_DYNAMIC_MODE_SKILL_IDS } = require('../../../../lib/mode-store');
 const { resolveContractSkillPaths } = require('../../../../lib/contract-skills');
 const {
   buildLightweightContextSnapshotReference,
@@ -55,6 +55,7 @@ const { buildPromptMessages } = require('./prompt-visibility');
 const { createAgentContextSnapshot } = require('./context-snapshot');
 const { settleAgentDelegationChild } = require('../agent-delegation');
 const { markConversationRetrievalTraceUsage } = require('../retrieval-trace');
+const { extractToolResultText } = require('../../runtime/turn-time-breakdown');
 const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { createBrowserCliSessionName, resolveBrowserCliPath } = require('./browser-cli');
@@ -831,6 +832,7 @@ function resolveConversationAgentConfig(agent: any) {
       provider: String(runtimeConfig.provider || '').trim(),
       model: String(runtimeConfig.model || '').trim(),
       thinking: String(runtimeConfig.thinking || '').trim(),
+      fast: runtimeConfig.fast === true,
       personaPrompt: String(runtimeConfig.personaPrompt || '').trim(),
       skillIds: Array.isArray(runtimeConfig.skillIds) ? runtimeConfig.skillIds : [],
       conversationSkillIds: Array.isArray(agent && (agent.conversationSkillIds || agent.conversationSkills))
@@ -847,6 +849,7 @@ function resolveConversationAgentConfig(agent: any) {
     provider: resolveSetting(selectedModelProfile ? selectedModelProfile.provider : '', agent && agent.provider, ''),
     model: resolveSetting(selectedModelProfile ? selectedModelProfile.model : '', agent && agent.model, ''),
     thinking: resolveSetting(selectedModelProfile ? selectedModelProfile.thinking : '', agent && agent.thinking, ''),
+    fast: (selectedModelProfile ? selectedModelProfile.fast : agent?.fast) === true,
     personaPrompt: resolveSetting(selectedModelProfile ? selectedModelProfile.personaPrompt : '', agent && agent.personaPrompt, ''),
     skillIds: Array.isArray(agent && (agent.skillIds || agent.skills)) ? agent.skillIds || agent.skills : [],
     conversationSkillIds: Array.isArray(agent && (agent.conversationSkillIds || agent.conversationSkills))
@@ -1501,6 +1504,7 @@ async function waitForAssistantMessageCompleted(callback: any, message: any) {
 
 export function createAgentExecutor(options: any = {}) {
   const store = options.store;
+  const turnTimeBreakdownPipeline = options.turnTimeBreakdownPipeline || null;
   const skillRegistry = options.skillRegistry;
   const modeStore = options.modeStore;
   const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
@@ -1562,6 +1566,16 @@ export function createAgentExecutor(options: any = {}) {
       return {
         stopTurn: true,
         terminationReason: 'stopped_by_user',
+      };
+    }
+
+    // Per-trace stop: this stage was individually stopped (queued cancel or
+    // a stop requested while it waited for its slot). Skip only this stage;
+    // the rest of the turn continues.
+    if (stage.stopRequested) {
+      return {
+        stopTurn: false,
+        terminationReason: '',
       };
     }
 
@@ -1711,7 +1725,6 @@ export function createAgentExecutor(options: any = {}) {
       allowHandoffs,
       agentToolRelativePath,
       modeLoadingStrategy,
-      forceDynamicConversationSkillIds: ALWAYS_DYNAMIC_MODE_SKILL_IDS,
       browserCliPath,
       orchestrationMode,
       workspaceContext: {
@@ -1956,9 +1969,15 @@ export function createAgentExecutor(options: any = {}) {
     });
     let contextSnapshot = buildContextSnapshot();
     let contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
+    const serviceTierState = createServiceTierState(agentConfig.fast);
+    const serviceTierMetadata = () => {
+      const fastMode = snapshotServiceTier(serviceTierState);
+      return { fastMode, serviceTierRequested: fastMode.serviceTierRequested, serviceTierObserved: null };
+    };
     const queuedMetadata = {
       provider,
       model,
+      ...serviceTierMetadata(),
       promptVersion: AGENT_PROMPT_VERSION,
       modelProfileId: agentConfig.profileId,
       modelProfileName: agentConfig.profileName,
@@ -2237,6 +2256,7 @@ export function createAgentExecutor(options: any = {}) {
 
     const runOptions: any = {
       thinking,
+      fast: agentConfig.fast,
       images: invocationImages,
       extensionPaths: piCapabilityExtensionPath ? [piCapabilityExtensionPath] : [],
       agentDir,
@@ -2398,7 +2418,7 @@ export function createAgentExecutor(options: any = {}) {
         // A user may stop the turn while capture (or its version preflight)
         // yields. No provider session was touched: use the existing unstarted
         // failure path to restore a claimed resume row and clean up callbacks.
-        if (turnState.stopRequested) throw new Error('Stopped before agent run started');
+        if (turnState.stopRequested || stage.stopRequested) throw new Error('Stopped before agent run started');
         // Ambient defaults can change while the collector awaits. Do not link
         // that checkpoint to a run with a different effective SDK descriptor.
         if (badcaseCheckpointId && capturedSdkStartConfig
@@ -2419,7 +2439,18 @@ export function createAgentExecutor(options: any = {}) {
         throw startError;
       }
       activeRunHandle = handle;
+      // Tag the run handle with its stage so per-trace stop cancels only this
+      // stage's handle instead of every handle registered on the turn.
+      handle.turnStageAgentId = agent.id;
       registerTurnHandle(turnState, handle);
+
+      // Close the narrow window between the stage stop request and handle
+      // registration (registerTurnHandle only honors turn-level stops).
+      if (stage.stopRequested && typeof handle.cancel === 'function') {
+        try {
+          handle.cancel(stage.stopReason || 'Stopped by user');
+        } catch {}
+      }
 
       const startedAt = nowIso();
       let rawReply = '';
@@ -2556,46 +2587,162 @@ export function createAgentExecutor(options: any = {}) {
         });
       });
 
-      handle.on('system_prompt', (event: any) => {
-        const systemPrompt = String(event && event.systemPrompt || '').trim();
+    // Turn time breakdown (contract §8): forward tool execution intervals to
+    // the classification pipeline. Enqueue only — the turn path never awaits
+    // classification or storage.
+    const toolExecutionStarts = new Map<string, any>();
+    let turnBreakdownStarted = false;
+
+    if (turnTimeBreakdownPipeline) {
+      handle.on('pi_event', (event: any) => {
+        const piEvent = event && event.piEvent;
+        const eventType = String(piEvent && piEvent.type ? piEvent.type : '');
+
+        if (!turnBreakdownStarted) {
+          // §8 turn-start marker: the trace's first event anchors the turn
+          // span — the first tool step can start well after it (model
+          // thinking), which would otherwise eat into the span.
+          turnBreakdownStarted = true;
+          turnTimeBreakdownPipeline.enqueueTurnStart({
+            taskId: stageTaskId,
+            messageId: assistantMessage.id,
+            conversationId,
+            startedAtMs: Date.now(),
+          });
+        }
+
+        if (eventType === 'auto_retry_start') {
+          // §2(b): model retry intervals feed exception-retry (interval =
+          // previous trace event end → retry timestamp).
+          turnTimeBreakdownPipeline.enqueueErrorEvent({
+            taskId: stageTaskId,
+            messageId: assistantMessage.id,
+            conversationId,
+            timestampMs: Date.now(),
+          });
+          return;
+        }
+
+        const toolCallId = String(piEvent && piEvent.toolCallId ? piEvent.toolCallId : '').trim();
+
+        if (!toolCallId) {
+          return;
+        }
+
+        if (eventType === 'tool_execution_start') {
+          toolExecutionStarts.set(toolCallId, {
+            startedAtMs: Date.now(),
+            toolName: piEvent.toolName,
+            args: piEvent.args !== undefined ? piEvent.args : null,
+          });
+          return;
+        }
+
+        if (eventType !== 'tool_execution_end') {
+          return;
+        }
+
+        const start = toolExecutionStarts.get(toolCallId) || null;
+
+        toolExecutionStarts.delete(toolCallId);
+        // pi ToolExecutionEndEvent.result is the tool's return value: a
+        // string, a content array, or a {content, details} wrapper.
+        const rawResult = piEvent.result;
+        let output = extractToolResultText(
+          rawResult && typeof rawResult === 'object' && !Array.isArray(rawResult) && rawResult.content !== undefined
+            ? rawResult.content
+            : rawResult
+        );
+
+        if (!output && rawResult !== undefined && rawResult !== null) {
+          try {
+            output = JSON.stringify(rawResult);
+          } catch {
+            output = '';
+          }
+        }
+
+        turnTimeBreakdownPipeline.enqueueStep({
+          taskId: stageTaskId,
+          messageId: assistantMessage.id,
+          conversationId,
+          step: {
+            stepKey: toolCallId,
+            toolCallId,
+            toolName: String(piEvent.toolName || (start && start.toolName) || 'tool'),
+            args: start ? start.args : null,
+            output,
+            isError: piEvent.isError === true,
+            startedAtMs: start ? start.startedAtMs : null,
+            endedAtMs: Date.now(),
+          },
+        });
+      });
+    }
+
+    handle.on('system_prompt', (event: any) => {
+      const systemPrompt = String(event && event.systemPrompt || '').trim();
 
         if (!systemPrompt) {
           return;
         }
 
-        const phase = String(event && event.phase || '').trim();
-        harnessSystemPrompt = systemPrompt;
-        harnessPromptSource = phase ? `pi-sdk/system-prompt:${phase}` : 'pi-sdk/system-prompt';
-        contextSnapshot = buildContextSnapshot();
-        contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
-      });
+      const phase = String(event && event.phase || '').trim();
+      harnessSystemPrompt = systemPrompt;
+      harnessPromptSource = phase ? `pi-sdk/system-prompt:${phase}` : 'pi-sdk/system-prompt';
+      contextSnapshot = buildContextSnapshot();
+      contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
+    });
 
-      handle.on('assistant_message', (event: any) => {
-        const message = event && event.message && typeof event.message === 'object' ? event.message : null;
-        const modelEvent = message
-          ? createModelCallObservabilityEvent(observabilityTimelineState, {
-              messageKey: event.messageKey,
-              responseId: message.responseId,
-              stopReason: message.stopReason,
-              timestamp: message.timestamp,
-              tokenUsage: summarizeTokenUsage(message.usage),
-            })
-          : null;
-        if (!modelEvent) {
-          return;
-        }
-        broadcastEvent('conversation_model_event', {
-          conversationId,
-          turnId,
-          taskId: stageTaskId,
-          agentId: agent.id,
-          agentName: agent.name,
-          assistantMessageId: assistantMessage.id,
-          messageId: assistantMessage.id,
-          event: modelEvent,
-          timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
-        });
+    handle.on('service_tier_request', (event: any) => {
+      if (!recordServiceTierRequest(serviceTierState, event && event.request)) return;
+      // Persist immediately: a stream may fail or be stopped before message_end.
+      // Read current metadata to preserve bridge/public-post updates.
+      const current = store.getMessage(assistantMessage.id);
+      const updated = store.updateMessage(assistantMessage.id, {
+        metadata: { ...(current && current.metadata || startedMetadata), ...serviceTierMetadata() },
       });
+      broadcastEvent('conversation_message_updated', { conversationId, message: updated });
+    });
+
+    handle.on('assistant_message', (event: any) => {
+      const message = event && event.message && typeof event.message === 'object' ? event.message : null;
+
+      // §2(b): model-side error intervals feed exception-retry.
+      if (turnTimeBreakdownPipeline && message && message.stopReason === 'error') {
+        turnTimeBreakdownPipeline.enqueueErrorEvent({
+          taskId: stageTaskId,
+          messageId: assistantMessage.id,
+          conversationId,
+          timestampMs: Date.parse(String(message.timestamp || '')) || Date.now(),
+        });
+      }
+
+      const modelEvent = message
+        ? createModelCallObservabilityEvent(observabilityTimelineState, {
+            messageKey: event.messageKey,
+            responseId: message.responseId,
+            stopReason: message.stopReason,
+            timestamp: message.timestamp,
+            tokenUsage: summarizeTokenUsage(message.usage),
+            serviceTier: event.serviceTier,
+          })
+        : null;
+      if (!modelEvent) {
+        return;
+      }
+      broadcastEvent('conversation_model_event', {
+        conversationId,
+        turnId,
+        taskId: stageTaskId,
+        agentId: agent.id,
+        agentName: agent.name,
+        assistantMessageId: assistantMessage.id,
+        messageId: assistantMessage.id,
+        event: modelEvent,
+        timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
+      });
+    });
 
       handle.on('assistant_text_delta', (event: any) => {
         rawReply += event.delta || '';
@@ -2782,6 +2929,7 @@ export function createAgentExecutor(options: any = {}) {
         badcaseCheckpointId,
         provider,
         model,
+        ...serviceTierMetadata(),
         promptVersion: AGENT_PROMPT_VERSION,
         heartbeatCount: result.heartbeatCount || 0,
         sessionName,
@@ -2844,6 +2992,17 @@ export function createAgentExecutor(options: any = {}) {
       });
 
       completedReplies.push(assistantMessageDone);
+
+      if (turnTimeBreakdownPipeline) {
+        // Seal the live summary: status -> complete, turn end = now (§8).
+        turnTimeBreakdownPipeline.completeTask({
+          taskId: stageTaskId,
+          messageId: assistantMessageDone.id,
+          conversationId,
+          sessionReused: resumeSession === true,
+          sessionReuseReason: sessionReuseDecision && sessionReuseDecision.reason ? String(sessionReuseDecision.reason) : '',
+        });
+      }
       const delegationSettlement = queueItem.delegationId && delegationRuntime && typeof delegationRuntime.settleRecipient === 'function'
         ? delegationRuntime.settleRecipient({ delegationId: queueItem.delegationId, status: 'succeeded', result: {
             messageId: assistantMessageDone.id,
@@ -3062,7 +3221,7 @@ export function createAgentExecutor(options: any = {}) {
     } catch (error) {
       const errorValue = error as any;
       const errorMessage = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error');
-      const stopRequested = Boolean(turnState.stopRequested);
+      const stopRequested = Boolean(turnState.stopRequested || (stage && stage.stopRequested));
       const failedRunId = (errorValue && errorValue.runId) || (handle && handle.runId) || null;
       const failedSessionPath = (errorValue && errorValue.sessionPath) || (handle && handle.sessionPath) || '';
       const errorUsage = errorValue && errorValue.usage && typeof errorValue.usage === 'object' && !Array.isArray(errorValue.usage) ? errorValue.usage : null;
@@ -3110,6 +3269,7 @@ export function createAgentExecutor(options: any = {}) {
           usage: errorUsage,
           tokenUsage: errorTokenUsage,
           modelUsage: buildLightweightModelUsageSummary(errorModelUsage),
+          ...serviceTierMetadata(),
           invocationFailure,
           agentContextSnapshot: contextSnapshotReference,
         },
@@ -3129,6 +3289,31 @@ export function createAgentExecutor(options: any = {}) {
       stage.lastTextDeltaAt = stage.lastTextDeltaAt || null;
       stage.endedAt = nowIso();
       applyStageCurrentTool(stage, null);
+
+      if (turnTimeBreakdownPipeline) {
+        // §8: failed/cancelled turns must seal too — otherwise the summary
+        // stays `live` forever and thinking grows without bound (AC5).
+        if (!stopRequested && invocationFailure.kind === 'timeout') {
+          // §2(b): the watchdog timeout interval (last trace event →
+          // termination) counts as exception-retry, not thinking.
+          turnTimeBreakdownPipeline.enqueueErrorEvent({
+            taskId: stageTaskId,
+            messageId: assistantMessage.id,
+            conversationId,
+            timestampMs: Date.parse(stage.endedAt) || Date.now(),
+          });
+        }
+
+        turnTimeBreakdownPipeline.completeTask({
+          taskId: stageTaskId,
+          messageId: assistantMessageFailed.id,
+          conversationId,
+          status: 'partial-interrupted',
+          endedAtMs: Date.parse(stage.endedAt) || Date.now(),
+          sessionReused: resumeSession === true,
+          sessionReuseReason: sessionReuseDecision && sessionReuseDecision.reason ? String(sessionReuseDecision.reason) : '',
+        });
+      }
 
       if (!stopRequested) {
         failedReplies.push(assistantMessageFailed);
@@ -3244,8 +3429,9 @@ export function createAgentExecutor(options: any = {}) {
 
       if (stopRequested) {
         return {
-          stopTurn: true,
-          terminationReason: 'stopped_by_user',
+          // A stage-level stop ends only this stage; the turn keeps routing.
+          stopTurn: Boolean(turnState.stopRequested),
+          terminationReason: turnState.stopRequested ? 'stopped_by_user' : '',
         };
       }
 

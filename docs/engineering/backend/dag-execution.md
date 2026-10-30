@@ -10,7 +10,9 @@
   `lib/dag-worktree.ts`, `lib/dag-merge.ts`, the DAG wiring block in
   `server/app/create-server.ts`, or `store.writePlanNodeExecution` /
   `cross-conversation-delivery.submitFromSystem`.
-- Accepted architecture decision: `docs/decisions/0001-goal-driven-workflow.md`.
+- Accepted architecture decisions: `docs/decisions/0001-goal-driven-workflow.md`
+  and `docs/decisions/0002-external-planner-drives-caff.md` (external planner
+  identity does not replace native DAG worker/verifier authority).
   Planning-side contracts (schema, lifecycle, actor model, vertical slices, and
   dependency review) live in `dag-planning.md`. Historical rationale remains
   available in Git history.
@@ -72,25 +74,39 @@
   - **Binding-authoritative routing**: `getDagNodeExecutionContext(store,
     conversationId)` resolves the live doing-node context (active plan +
     node doing + spawned id match); `isDagBoundGoalMutationAllowed(action)`
-    is the shared whitelist (`get`, `update-checklist`, `accept-proposal`,
-    `dismiss-proposal`). The scheduler routes/verifies against the
-    persisted binding (not participant-order recomputation), so the bridge
+    is the shared whitelist (`get`, factual `update-delivery`, legacy
+    `update-checklist`, `accept-proposal`, `dismiss-proposal`). The scheduler
+    routes/verifies against the persisted binding (not participant-order recomputation), so the bridge
     and scheduler can never disagree after a participant rearrange.
   - **Durable ruling identity**: `sessionGoalRuling.proposalId` must be
     present and exactly equal `sessionGoalRuling.proposalSnapshot.id`;
     malformed/mismatched records normalize to `null`, so scheduler settle and
     reconcile fail closed instead of accepting an unrelated proposal snapshot.
-    Checklist-only goal updates preserve this ruling record; replacing or
-    clearing the goal starts a new epoch and removes stale ruling evidence.
+    Factual goal updates preserve this ruling record; replacement/clear removes
+    stale live epoch evidence but never its append-only SQLite audit. Proposal
+    supersession and its attention transitions share the Goal transaction.
 - Goal REST API (`server/api/conversations-controller.ts`): while
   `getDagNodeExecutionContext` reports a doing node, POST actions outside
   the whitelist → 403 `dag_goal_mutation_forbidden` (direct complete/clear/
   set/pause/resume would bypass the worker→verifier protocol). User
   accept/dismiss broadcasts `conversation_goal_proposal_cleared` with the
-  pre-clear proposal snapshot (`clearedProposal`), `outcome`, and
-  `ruledBy: { kind: 'user' }` — the scheduler derives the node result from
-  the snapshot and treats an explicit user ruling as a legitimate manual
-  verification path.
+  pre-clear proposal snapshot (`clearedProposal`), `outcome`, and the
+  server-authenticated principal. **Only the browser/user path** stamps
+  `ruledBy: { kind: 'user' }`; the scheduler derives the node result from the
+  snapshot and treats that explicit user ruling as legitimate manual
+  verification. An authenticated planner is `kind: 'planner'`, never the user:
+  a planner attempting to rule on a DAG-bound child returns
+  `403 dag_verifier_only`. Valid planner credentials do not confer verifier,
+  scheduler or user authority.
+- **ADR 0002 / planner binding:** `sessionGoalPlannerBinding` governs ordinary
+  planner-driven Goals, not DAG nodes. No planner binding may be added where
+  `dagNodeGoalBinding` is present. Any conflicting anchors fail closed for
+  non-user rulings; D28's user check remains exactly `kind === 'user'`.
+  Native worker/verifier, single-agent scheduler exemption and user manual paths
+  are unchanged. Agent accept/reject on ordinary planner-bound Goals returns
+  `403 goal_planner_ruling_required`, even for an independent reviewer. See
+  [Session Goal](session-goal.md#planner-binding) and
+  [planner interface](planner-interface.md#4-goal-actions-ownership-and-binding).
 
 ### 3. Contracts
 - **Event-driven only (D21)**: the scheduler subscribes to
@@ -293,8 +309,10 @@
 | delivery | agent-principal delivery with forged `dag-*` key / wrong scope / wrong target / stale activation or proposal round | ignored entirely |
 | delivery | verification request / rejection feedback persist throws synchronously | `blocked` `dag_delivery_failed` (no retry path exists for unpersisted deliveries) |
 | verification | verifier routing but no delivery channel wired | `blocked` `dag_verify_unavailable` |
-| goal REST | DAG-bound doing node: POST `complete`/`clear`/`set`/`pause`/`resume` | 403 `dag_goal_mutation_forbidden`; only `get`/`update-checklist`/`accept-proposal`/`dismiss-proposal` allowed |
-| goal REST | binding present but node not doing (done/blocked) | unrestricted — post-execution cleanup stays possible |
+| goal REST | DAG-bound doing node: POST `complete`/`clear`/`set`/`pause`/`resume` | 403 `dag_goal_mutation_forbidden`; only `get`/`update-delivery`/legacy `update-checklist`/proposal rulings allowed |
+| goal REST | binding present but node not doing (done/blocked) | live doing-node mutation lock no longer applies; post-execution cleanup remains possible subject to principal/user gates |
+| goal REST | planner attempts accept/dismiss with a DAG binding | 403 `dag_verifier_only`; planner cannot impersonate user/verifier |
+| Goal adoption | planner binding requested on a DAG child | rejected; no worker/verifier protocol bypass |
 | bridge | proposer accepts/rejects own proposal | 403 `goal_proposal_self_review` |
 | bridge | DAG-bound goal: non-worker proposes complete | 403 `dag_completion_worker_only` |
 | bridge | DAG-bound goal: non-verifier accepts/rejects | 403 `dag_verifier_only` |
@@ -344,6 +362,8 @@
   blocked), late authoritative completion after `recovered_unknown_outcome`
   (`blocked→done` via event and restart reconcile), explicit user-block stays
   blocked, `dag_goal_missing` fail-closed.
+- `tests/http/goal-planner-binding.test.js`: planner-versus-DAG principal gates,
+  conflicting anchors, adoption rejection and unchanged verifier/user paths.
 - `tests/http/conversation-goal-dag-guard.test.js` (3): REST goal mutation
   lock for DAG-bound doing nodes (403 matrix), proposal ruling + checklist
   whitelist with user ruledBy snapshot, post-execution unrestricted

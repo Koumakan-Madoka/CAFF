@@ -13,6 +13,7 @@ if (!observabilityTimeline) {
 
 const state = {
   runtime: null,
+  plannerTerminal: null,
   modelOptions: [],
   skills: [],
   modes: [],
@@ -25,12 +26,14 @@ const state = {
   selectedAgentId: null,
   sending: false,
   stopRequestConversationIds: new Set(),
+  traceStopRequestKeys: new Set(),
   eventSource: null,
   mentionSuggestions: [],
   mentionSelectionIndex: 0,
   activeMentionContext: null,
   messageToolTraceById: new Map(),
   messageToolTraceTimers: new Map(),
+  messageTimeBreakdownById: new Map(),
   optimisticMessagesByConversation: new Map(),
   workspaceAuthorizationCardsByConversation: new Map(),
   bindingWorkspaceAuthorizationIds: new Set(),
@@ -160,6 +163,7 @@ const dom = {
   sessionGoalDetails: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-details')),
   sessionGoalOwnerCard: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-owner-card')),
   sessionGoalOwnerSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('session-goal-owner-select')),
+  sessionGoalBindPlannerButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-bind-planner-button')),
   sessionGoalProgressCard: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-card')),
   sessionGoalProgressSummary: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-summary')),
   sessionGoalProgressFill: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-fill')),
@@ -278,6 +282,7 @@ const dom = {
   composerAttachmentStrip: /** @type {HTMLDivElement | null} */ (document.getElementById('composer-attachment-strip')),
   composerAttachmentStatus: /** @type {HTMLElement | null} */ (document.getElementById('composer-attachment-status')),
   composerMentionMenu: /** @type {HTMLDivElement | null} */ (document.getElementById('composer-mention-menu')),
+  composerRoutingPreview: /** @type {HTMLDivElement | null} */ (document.getElementById('composer-routing-preview')),
   composerStatus: /** @type {HTMLElement | null} */ (document.getElementById('composer-status')),
   stopButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('stop-button')),
   sendButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('send-button')),
@@ -549,10 +554,16 @@ async function submitGoalCommand(conversationId, command) {
     return null;
   }
 
-  const result = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/goal`, {
-    method: 'POST',
-    body: command,
+  const endpoint = `/api/conversations/${encodeURIComponent(conversationId)}/goal`;
+  const result = await sessionGoalUtils.submitWithProposalConfirmation({
+    conversation: state.currentConversation,
+    command,
+    post: (body) => fetchJson(endpoint, { method: 'POST', body }),
+    read: () => fetchJson(endpoint),
+    refresh: (latest) => { applyConversationResponse(latest); renderAll(); },
+    confirm: (description) => window.confirm(description),
   });
+  if (!result) return null;
 
   applyConversationResponse(result);
   if (result.summary) {
@@ -774,6 +785,13 @@ const noopMentionMenuController = {
   syncMenu() {},
 };
 
+const noopRoutingPreviewController = {
+  bindEvents() {},
+  refreshNow() {},
+  scheduleRefresh() {},
+  syncDraft() {},
+};
+
 const noopConversationSettingsController = {
   bindEvents() {},
   closeAllProfileMenus() {},
@@ -815,6 +833,7 @@ const noopImageComposerController = {
 };
 
 let mentionMenuController = noopMentionMenuController;
+let routingPreviewController = noopRoutingPreviewController;
 let conversationListRenderer = noopRenderer;
 let participantPaneRenderer = noopRenderer;
 let messageTimelineRenderer = noopRenderer;
@@ -824,10 +843,15 @@ let planPanelController = noopPlanPanelController;
 let conversationDigestPanelController = noopRenderer;
 let summaryMemoryPanelController = noopRenderer;
 let conversationPaneRenderer = noopRenderer;
+let plannerTerminalController = { sync(_id, _capability) {} };
 let newConversationDialogController = noopNewConversationDialogController;
 let imageComposerController = noopImageComposerController;
 
 function setupChatModules() {
+  if (typeof chatModules.createPlannerTerminalPane !== 'function') {
+    throw new Error('CaffChat.createPlannerTerminalPane helper is required');
+  }
+  plannerTerminalController = chatModules.createPlannerTerminalPane({ fetchJson });
   if (typeof chatModules.createImageComposerController !== 'function') {
     throw new Error('CaffChat.createImageComposerController helper is required');
   }
@@ -897,8 +921,35 @@ function setupChatModules() {
 
   mentionMenuController =
     typeof chatModules.createMentionMenuController === 'function'
-      ? chatModules.createMentionMenuController({ state, dom })
+      ? chatModules.createMentionMenuController({
+          state,
+          dom,
+          onComposerChange() {
+            routingPreviewController.refreshNow();
+          },
+        })
       : noopMentionMenuController;
+
+  routingPreviewController =
+    typeof chatModules.createRoutingPreviewController === 'function'
+      ? chatModules.createRoutingPreviewController({
+          dom: {
+            composerInput: dom.composerInput,
+            routingPreview: dom.composerRoutingPreview,
+          },
+          helpers: {
+            getConversationId() {
+              return state.currentConversation ? state.currentConversation.id : '';
+            },
+            fetchPreview(conversationId, content) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/routing-preview`, {
+                method: 'POST',
+                body: { content },
+              });
+            },
+          },
+        })
+      : noopRoutingPreviewController;
 
   conversationSettingsController =
     typeof chatModules.createConversationSettingsController === 'function'
@@ -975,9 +1026,14 @@ function setupChatModules() {
             privateRecipientNames,
             recoverFailedMessage,
             renderMessageBody,
+            stopConversationTrace,
+            isTraceStopRequestInFlight,
+            queuedSideDispatchCountForMessage,
             timelineMessagesForConversation,
             toolTraceSignatureForMessage,
             toolTraceStateForMessage,
+            timeBreakdownSignatureForMessage,
+            timeBreakdownStateForMessage,
           },
           showToast,
         })
@@ -2425,6 +2481,169 @@ function toggleMessageToolTrace(conversationId, message) {
   });
 }
 
+function timeBreakdownStateForMessage(messageId) {
+  return messageId ? state.messageTimeBreakdownById.get(messageId) || null : null;
+}
+
+function getMessageTimeBreakdownState(messageId) {
+  const normalizedMessageId = String(messageId || '').trim();
+
+  if (!normalizedMessageId) {
+    return null;
+  }
+
+  const existing = timeBreakdownStateForMessage(normalizedMessageId);
+
+  if (existing) {
+    return existing;
+  }
+
+  const created = {
+    open: false,
+    status: 'idle',
+    errorMessage: '',
+    data: null,
+    promise: null,
+  };
+
+  state.messageTimeBreakdownById.set(normalizedMessageId, created);
+  return created;
+}
+
+function messageTimeBreakdownUrl(conversationId, messageId) {
+  return `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/time-breakdown`;
+}
+
+async function fetchMessageTimeBreakdown(conversationId, message, options = {}) {
+  if (!conversationId || !canInspectToolTrace(message)) {
+    return null;
+  }
+
+  const breakdownState = getMessageTimeBreakdownState(message.id);
+
+  if (!breakdownState) {
+    return null;
+  }
+
+  if (!options.force && breakdownState.status === 'loading' && breakdownState.promise) {
+    return breakdownState.promise;
+  }
+
+  if (!options.force && breakdownState.status === 'ready' && breakdownState.data) {
+    return breakdownState.data;
+  }
+
+  breakdownState.status = 'loading';
+  breakdownState.errorMessage = '';
+  scheduleConversationPaneRender();
+
+  const request = fetchJson(messageTimeBreakdownUrl(conversationId, message.id))
+    .then((result) => {
+      breakdownState.status = 'ready';
+      breakdownState.data = result && result.breakdown ? result.breakdown : null;
+      breakdownState.errorMessage = '';
+      if (state.selectedConversationId === conversationId) {
+        scheduleConversationPaneRender();
+      }
+      return breakdownState.data;
+    })
+    .catch((error) => {
+      // Contract §9: a missing record (history not yet computed or a turn
+      // without tool steps) is an honest empty state, not an error.
+      if (error && error.status === 404) {
+        breakdownState.status = 'empty';
+        breakdownState.data = null;
+        breakdownState.errorMessage = '';
+      } else {
+        breakdownState.status = 'error';
+        breakdownState.errorMessage = error && error.message ? error.message : '耗时分析加载失败';
+      }
+      if (state.selectedConversationId === conversationId) {
+        scheduleConversationPaneRender();
+      }
+      return null;
+    })
+    .finally(() => {
+      if (breakdownState.promise === request) {
+        breakdownState.promise = null;
+      }
+    });
+
+  breakdownState.promise = request;
+  return request;
+}
+
+function toggleMessageTimeBreakdown(conversationId, message) {
+  if (!conversationId || !canInspectToolTrace(message)) {
+    return;
+  }
+
+  const breakdownState = getMessageTimeBreakdownState(message.id);
+
+  if (!breakdownState) {
+    return;
+  }
+
+  breakdownState.open = !breakdownState.open;
+  scheduleConversationPaneRender();
+
+  if (breakdownState.open) {
+    // Reopening a live turn must refetch; a terminal breakdown stays cached.
+    const staleLive = breakdownState.data && breakdownState.data.status === 'live';
+    void fetchMessageTimeBreakdown(conversationId, message, {
+      force: breakdownState.status === 'error'
+        || breakdownState.status === 'idle'
+        || breakdownState.status === 'empty'
+        || staleLive,
+    });
+  }
+}
+
+// Extracted from the delegated click handler so the refresh behavior is
+// unit-testable (tests/ui/turn-time-breakdown.test.js vm slice).
+function handleTimeBreakdownRefreshClick(target) {
+  const messageId = target && target.dataset ? target.dataset.messageId || '' : '';
+  const message =
+    state.currentConversation && Array.isArray(state.currentConversation.messages)
+      ? state.currentConversation.messages.find((item) => item.id === messageId) || null
+      : null;
+
+  if (!message) {
+    showToast('找不到耗时分析对应的消息');
+    return;
+  }
+
+  void fetchMessageTimeBreakdown(state.currentConversation.id, message, { force: true });
+}
+
+function timeBreakdownSignatureForMessage(message) {
+  const breakdownState = timeBreakdownStateForMessage(message && message.id);
+  const breakdown = breakdownState && breakdownState.data ? breakdownState.data : null;
+  const metrics = breakdown && breakdown.metrics && typeof breakdown.metrics === 'object' ? breakdown.metrics : null;
+  const steps = breakdown && Array.isArray(breakdown.steps) ? breakdown.steps : [];
+
+  return [
+    breakdownState && breakdownState.open ? 'open' : 'closed',
+    breakdownState && breakdownState.status ? breakdownState.status : 'idle',
+    breakdownState && breakdownState.errorMessage ? breakdownState.errorMessage : '',
+    breakdown && breakdown.status ? breakdown.status : '',
+    breakdown && breakdown.computedAt ? breakdown.computedAt : '',
+    steps.length,
+    metrics && Number.isFinite(metrics.firstWriteMs) ? metrics.firstWriteMs : '',
+    metrics && Number.isFinite(metrics.fullRunCount) ? metrics.fullRunCount : '',
+    metrics && Number.isFinite(metrics.fullRunFailCount) ? metrics.fullRunFailCount : '',
+    breakdown && breakdown.categoryMs ? JSON.stringify(breakdown.categoryMs) : '',
+    // Live turns: step-level changes must refresh the list even when the
+    // category totals happen to be unchanged between refreshes.
+    steps.map((step) => [
+      step && step.stepKey,
+      step && step.category,
+      step && step.durationMs,
+      step && step.jevStatus,
+    ].join(':')).join('|'),
+  ].join('\u001e');
+}
+
 function renderConversationList() {
   conversationListRenderer.render();
   renderConversationDirectoryControls();
@@ -2497,6 +2716,7 @@ function renderCompactConversationPersonaSettings() {
 
 function renderConversationPane() {
   badcaseFlagPanel?.syncConversation(state.currentConversation);
+  plannerTerminalController.sync(state.currentConversation?.id || '', state.plannerTerminal);
   conversationPaneRenderer.render();
   imageComposerController.syncConversation(state.currentConversation ? state.currentConversation.id : '');
   imageComposerController.syncBaseAvailability(Boolean(state.currentConversation && !dom.composerInput.disabled));
@@ -2922,6 +3142,89 @@ function removeActiveAgentSlot(slotId) {
   }
 
   state.runtime.activeAgentSlots = state.runtime.activeAgentSlots.filter((slot) => slot && slot.slotId !== slotId);
+}
+
+// Per-trace stop（每个正在进行的回答一个停止按钮）：target 形如
+// {kind:'stage', agentId}（主 turn 阶段）、{kind:'slot', slotId}（旁路执行）
+// 或 {kind:'queued-side', agentId|requestId}（排队中的旁路派发，点击取消排队）。
+function traceStopRequestKey(conversationId, target) {
+  const id = target && (target.slotId || target.agentId || target.requestId) || '';
+  return `${conversationId}:${target && target.kind || ''}:${id}`;
+}
+
+function isTraceStopRequestInFlight(conversationId, target) {
+  return state.traceStopRequestKeys.has(traceStopRequestKey(conversationId, target));
+}
+
+async function stopConversationTrace(conversationId, target) {
+  const normalizedConversationId = String(conversationId || '').trim();
+
+  if (!normalizedConversationId || !target || !target.kind) {
+    return;
+  }
+
+  const key = traceStopRequestKey(normalizedConversationId, target);
+
+  if (state.traceStopRequestKeys.has(key)) {
+    return;
+  }
+
+  state.traceStopRequestKeys.add(key);
+  renderConversationPane();
+
+  try {
+    const result = await fetchJson(`/api/conversations/${encodeURIComponent(normalizedConversationId)}/traces/stop`, {
+      method: 'POST',
+      body: target,
+    });
+
+    if (result.runtime) {
+      state.runtime = {
+        ...(state.runtime || {}),
+        ...result.runtime,
+      };
+    }
+
+    if (result.turn) {
+      upsertRuntimeTurn(result.turn);
+    }
+
+    if (result.agentSlot) {
+      upsertActiveAgentSlot(result.agentSlot);
+    }
+
+    showToast(target.kind === 'queued-side' ? '已取消该条排队派发' : '正在停止该条回复，其他执行不受影响…');
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.traceStopRequestKeys.delete(key);
+    renderRuntime();
+    renderConversationList();
+    renderConversationPane();
+  }
+}
+
+// 排队中的旁路派发（side dispatch）取消入口：源用户消息仍可按目标 Agent 取消。
+function queuedSideDispatchCountForMessage(message) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+
+  if (!metadata || metadata.dispatchLane !== 'side' || metadata.dispatchCancelled) {
+    return 0;
+  }
+
+  const queueDepths =
+    state.runtime && state.runtime.agentSlotQueueDepths && typeof state.runtime.agentSlotQueueDepths === 'object'
+      ? state.runtime.agentSlotQueueDepths
+      : null;
+  const perAgentDepths = queueDepths && message.conversationId && typeof queueDepths[message.conversationId] === 'object'
+    ? queueDepths[message.conversationId]
+    : null;
+
+  if (!perAgentDepths) {
+    return 0;
+  }
+
+  return Math.max(0, Number(perAgentDepths[String(metadata.dispatchTargetAgentId || '')] || 0));
 }
 
 function turnProgressSignature(turn) {
@@ -3533,6 +3836,7 @@ function renderAgentTrace(inspector) {
     const items = [
       ['Session', `${(sessionData && sessionData.label) || '-'}${sessionReasonSuffix}`],
       ['模型', modelLabel],
+      ['Fast', sessionData && sessionData.fastMode ? sessionData.fastMode.label : '未知（旧记录无证据）'],
       ['总耗时', summary.totalDurationMs === null || summary.totalDurationMs === undefined
         ? '-'
         : Number.isFinite(Number(summary.totalDurationMs)) ? `${formatInspectorNumber(summary.totalDurationMs)} ms` : '-'],
@@ -3552,6 +3856,7 @@ function renderAgentTrace(inspector) {
       const value = document.createElement('strong');
       label.textContent = labelText;
       value.textContent = valueText;
+      if (labelText === 'Fast' && sessionData && sessionData.fastMode) value.title = sessionData.fastMode.detail || '';
       cell.append(label, value);
       grid.appendChild(cell);
     });
@@ -4126,6 +4431,7 @@ async function loadConversation(conversationId) {
     messageHistory.reset(state.messageHistory, '');
     state.currentConversation = null;
     closeMentionMenu();
+    routingPreviewController.syncDraft();
     renderAll();
     return;
   }
@@ -4155,6 +4461,7 @@ async function loadConversation(conversationId) {
   await hydrateCrossConversationDeliveries(state.currentConversation);
   pruneOptimisticMessagesForConversation(normalizedConversationId, messages);
   closeMentionMenu();
+  routingPreviewController.scheduleRefresh();
   warmConversationToolTraces(state.currentConversation);
   syncToolTraceStatesWithConversation(state.currentConversation);
   renderAll();
@@ -4210,6 +4517,7 @@ async function loadEarlierMessages() {
 async function refreshAll(preferredConversationId) {
   const data = await fetchJson('/api/bootstrap');
   state.runtime = data.runtime;
+  state.plannerTerminal = data.plannerTerminal || null;
   state.modelOptions = Array.isArray(data.modelOptions) ? data.modelOptions : [];
   state.skills = Array.isArray(data.skills) ? data.skills : [];
   state.modes = Array.isArray(data.modes) ? data.modes : [];
@@ -4387,6 +4695,7 @@ async function decideWorkspaceAuthorization(authorizationId, decision) {
       method: 'POST',
       body: { token: authorization.token, fingerprint: authorization.fingerprint, decision },
     });
+    const isRename = authorization.kind === 'rename';
     applyWorkspaceAuthorizationEvent({ conversationId, authorization: result.authorization });
     if (state.selectedConversationId === conversationId && result.conversation) {
       // Workspace authorization returns a conversation header (without messages).
@@ -4396,9 +4705,20 @@ async function decideWorkspaceAuthorization(authorizationId, decision) {
       mergeConversationSummary(result.conversation);
       renderAll();
     }
-    showToast(decision === 'accepted' ? '工作区已绑定' : '已拒绝工作区绑定');
+    showToast(decision === 'accepted'
+      ? (isRename ? '分支已重命名' : '工作区已绑定')
+      : (isRename ? '已拒绝分支重命名' : '已拒绝工作区绑定'));
   } catch (error) {
-    showToast(error && error.message ? error.message : '工作区授权失败');
+    if (error && error.code === 'room_workspace_execution_active') {
+      // Transient block: the card stays pending, so the user only needs to wait
+      // for the running execution to finish and then retry the SAME card.
+      showToast('房间仍有执行进行中；请等待执行结束后重试同一张授权卡');
+    } else {
+      showToast(error && error.message ? error.message : '工作区授权失败');
+    }
+    // A failed decision may have changed the card state (failed/superseded or a
+    // retryable pending); resync so the UI never lingers on a stale card.
+    await loadWorkspaceAuthorizationCards(conversationId);
   } finally {
     state.bindingWorkspaceAuthorizationIds.delete(requestKey);
     renderWorkspaceAuthorizationCards();
@@ -4411,27 +4731,31 @@ function renderWorkspaceAuthorizationCards() {
     container.replaceChildren();
     const conversationId = state.selectedConversationId;
     const cards = conversationId ? state.workspaceAuthorizationCardsByConversation.get(conversationId) || [] : [];
-    cards.filter((item) => item && (item.status === 'pending' || item.status === 'accepted' || item.status === 'rejected' || item.status === 'expired' || item.status === 'failed')).forEach((authorization) => {
+    cards.filter((item) => item && (item.status === 'pending' || item.status === 'accepted' || item.status === 'rejected' || item.status === 'expired' || item.status === 'failed' || item.status === 'superseded')).forEach((authorization) => {
       const card = document.createElement('section');
       card.className = `workspace-authorization-card ${authorization.status}`;
       card.setAttribute('role', 'status');
       const title = document.createElement('strong');
+      const isRename = authorization.kind === 'rename';
       const statusLabels = {
-        accepted: '已绑定',
+        accepted: isRename ? '已改名' : '已绑定',
         rejected: '已拒绝',
         expired: '已过期',
-        failed: '绑定失败',
+        failed: isRename ? '改名失败' : '绑定失败',
+        superseded: '已失效',
       };
       title.textContent = authorization.status === 'pending'
-        ? 'Agent 请求绑定 Room 工作区'
+        ? (isRename ? 'Agent 请求重命名工作区分支' : 'Agent 请求绑定 Room 工作区')
         : `工作区授权：${statusLabels[authorization.status] || authorization.status}`;
       const details = document.createElement('p');
-      details.textContent = `${authorization.branch || '-'} · ${authorization.worktreePath || '-'} · 基线 ${authorization.baseSha || '-'}`;
+      details.textContent = isRename
+        ? `${authorization.branch || '-'} → ${authorization.newBranch || '-'} · ${authorization.worktreePath || '-'} · 基线 ${authorization.baseSha || '-'}`
+        : `${authorization.branch || '-'} · ${authorization.worktreePath || '-'} · 基线 ${authorization.baseSha || '-'}`;
       card.append(title, details);
       if (authorization.status === 'pending') {
         const actions = document.createElement('div');
         actions.className = 'button-row compact-button-row';
-        for (const [decision, label] of [['accepted', '授权绑定'], ['rejected', '拒绝']] ) {
+        for (const [decision, label] of [['accepted', isRename ? '授权改名' : '授权绑定'], ['rejected', '拒绝']] ) {
           const button = document.createElement('button');
           button.type = 'button';
           button.textContent = label;
@@ -4846,6 +5170,10 @@ function connectEventStream() {
     renderConversationList();
     renderRuntime();
     void refreshConversationFromEvent(payload.conversationId);
+
+    if (state.currentConversation && state.currentConversation.id === payload.conversationId) {
+      routingPreviewController.refreshNow();
+    }
   });
 
   source.addEventListener('agent_slot_progress', (event) => {
@@ -4898,6 +5226,10 @@ function connectEventStream() {
     renderConversationList();
     renderRuntime();
     void refreshConversationFromEvent(payload.conversationId);
+
+    if (state.currentConversation && state.currentConversation.id === payload.conversationId) {
+      routingPreviewController.refreshNow();
+    }
   });
 
   source.addEventListener('error', () => {
@@ -5263,6 +5595,37 @@ function bindEvents() {
       return;
     }
 
+    const timeBreakdownToggle =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-time-breakdown-toggle'))
+        : null;
+
+    if (timeBreakdownToggle) {
+      const messageId = timeBreakdownToggle.dataset.messageId || '';
+      const message =
+        state.currentConversation && Array.isArray(state.currentConversation.messages)
+          ? state.currentConversation.messages.find((item) => item.id === messageId) || null
+          : null;
+
+      if (!message) {
+        showToast('找不到耗时分析对应的消息');
+        return;
+      }
+
+      toggleMessageTimeBreakdown(state.currentConversation.id, message);
+      return;
+    }
+
+    const timeBreakdownRefresh =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-time-breakdown-refresh'))
+        : null;
+
+    if (timeBreakdownRefresh) {
+      handleTimeBreakdownRefreshClick(timeBreakdownRefresh);
+      return;
+    }
+
     const contextButton =
       event.target instanceof Element
         ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-context-button'))
@@ -5360,6 +5723,7 @@ function bindEvents() {
         await submitGoalCommand(conversationId, goalCommand);
         setComposerValue('');
         closeMentionMenu();
+        routingPreviewController.syncDraft();
       } catch (error) {
         showToast(error.message);
         renderConversationPane();
@@ -5373,6 +5737,7 @@ function bindEvents() {
         await submitDigestCommand(conversationId, digestCommand);
         setComposerValue('');
         closeMentionMenu();
+        routingPreviewController.syncDraft();
       } catch (error) {
         showToast(error.message);
         renderConversationPane();
@@ -5386,6 +5751,7 @@ function bindEvents() {
         await submitSummaryMemoryCommand(summaryMemoryCommand);
         setComposerValue('');
         closeMentionMenu();
+        routingPreviewController.syncDraft();
       } catch (error) {
         showToast(error.message);
         renderConversationPane();
@@ -5404,6 +5770,7 @@ function bindEvents() {
     const shouldStickToBottom = isMessageListNearBottom();
     setComposerValue('');
     closeMentionMenu();
+    routingPreviewController.syncDraft();
     applyOptimisticUserMessage(conversationId, content, clientRequestId, optimisticContentBlocks);
     renderConversationPane();
 
@@ -5468,6 +5835,7 @@ function bindEvents() {
 
       if (state.selectedConversationId === conversationId && !dom.composerInput.value.trim()) {
         setComposerValue(content);
+        routingPreviewController.scheduleRefresh();
       }
 
       showToast(error.message);
@@ -5492,6 +5860,9 @@ function bindEvents() {
     try {
       const result = await fetchJson(`/api/conversations/${conversationId}/stop`, {
         method: 'POST',
+        // 停止联动暂停 Goal（D5）：用户主动停止会话时，同步暂停运行中的
+        // Goal，阻断 goal-runner 下一轮自动续跑；旧调用方不传该字段行为不变。
+        body: { stopGoal: true },
       });
 
       if (result.runtime) {
@@ -5881,6 +6252,7 @@ async function init() {
   const imageConfigPromise = imageComposerController.loadConfig();
   newConversationDialogController.bindEvents();
   mentionMenuController.bindEvents();
+  routingPreviewController.bindEvents();
   conversationSettingsController.bindEvents();
   sessionGoalPanelController.bindEvents();
   planPanelController.bindEvents();

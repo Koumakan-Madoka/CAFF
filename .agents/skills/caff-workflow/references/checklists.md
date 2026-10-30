@@ -22,7 +22,7 @@
 
 ## Commit-pinned review workspace decision
 
-A formal review request must name the exact commit SHA, scope and risks, author validation evidence, and desired response format. The author freezes repository writes for the rest of the trace after sending it.
+Send one formal review request per milestone (a Goal work item ready to be marked done) or integration candidate, not per intermediate commit. A formal review request must name the exact commit SHA, scope and risks, author validation evidence, and desired response format. The author freezes repository writes for the rest of the trace after sending it.
 
 Choose the review workspace from actual mutation/test risk instead of creating one automatically:
 

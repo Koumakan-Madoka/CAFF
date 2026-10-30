@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createServerApp } = require('../../build/server/app/create-server');
+const { createTestServerApp: createServerApp } = require('../helpers/server-app');
 const { createProjectManager } = require('../../build/lib/project-manager');
 const { isolateExternalIntegrations } = require('../helpers/external-integrations');
 const { withClearedRecoveryRuntimeEnvironment } = require('../helpers/recovery-runtime-env');

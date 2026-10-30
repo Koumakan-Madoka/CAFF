@@ -3,6 +3,8 @@ import {
   redactContextInspectorSecrets,
 } from './turn/context-snapshot';
 
+import { normalizeServiceTierRequest, normalizeServiceTierSummary } from '../../../lib/service-tier';
+
 export const TRACE_INSPECTOR_SCHEMA_VERSION = 1;
 export const MAX_SESSION_LINEAGE_DEPTH = 8;
 
@@ -274,6 +276,7 @@ function sessionProjection(message: any, snapshot: any, runEvidence: any) {
     sessionName: clean(metadata.sessionName),
     provider: clean(metadata.provider),
     model: clean(metadata.model),
+    fastMode: normalizeServiceTierSummary(metadata.fastMode),
     label: mode === 'resume'
       ? '复用旧 Session'
       : mode === 'fresh'
@@ -404,6 +407,7 @@ function buildTraceEvents(message: any, snapshot: any, runEvidence: any, toolTra
       const callSequence = nonNegativeInteger(event.modelCallSequence || event.sequence) || index + 1;
       const cache = providerCacheProjection(event);
       const firstCall = callSequence === 1;
+      const serviceTier = normalizeServiceTierRequest(event.serviceTier);
       push({
         id: event.eventId,
         kind: 'model_call',
@@ -411,7 +415,7 @@ function buildTraceEvents(message: any, snapshot: any, runEvidence: any, toolTra
         status: clean(event.stopReason).toLowerCase() === 'error' ? 'failed' : 'completed',
         title: firstCall ? session.label : `模型调用 #${callSequence}`,
         occurredAt: event.timestamp,
-        summary: firstCall ? `${session.label} · ${cache.label}` : cache.label,
+        summary: [firstCall ? `${session.label} · ${cache.label}` : cache.label, serviceTier?.label].filter(Boolean).join(' · '),
         detailRef: 'model_call',
         detail: {
           eventId: clean(event.eventId),
@@ -421,6 +425,7 @@ function buildTraceEvents(message: any, snapshot: any, runEvidence: any, toolTra
           providerCacheStatus: cache.status,
           providerCacheLabel: cache.label,
           tokenUsage: plainObject(event.tokenUsage),
+          serviceTier,
         },
       });
       return;
@@ -500,6 +505,8 @@ export function exportMessageTraceInspectorMarkdown(inspector: any) {
     `- Status: ${clean(inspector.message && inspector.message.status) || 'unknown'}`,
     `- Session: ${clean(inspector.session && inspector.session.label) || 'unknown'}`,
     `- Session reason: ${clean(inspector.session && inspector.session.reason) || 'unknown'}`,
+    `- Fast: ${clean(inspector.session?.fastMode?.label) || 'unknown'}`,
+    ...(inspector.session?.fastMode ? [`- Fast evidence: ${inspector.session.fastMode.detail}`] : []),
     '',
     '## Session Lineage',
     '',

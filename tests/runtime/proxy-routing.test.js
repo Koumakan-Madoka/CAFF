@@ -413,7 +413,7 @@ test('server app installs proxy routing at startup when configured', async () =>
     require('node:fs').mkdtempSync(path.join(require('node:os').tmpdir(), 'caff-proxy-routing-'))
   );
 
-  const child = spawn(process.execPath, ['build/lib/app-server.js'], {
+  const child = spawn(process.execPath, ['tests/helpers/server-child.js'], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,

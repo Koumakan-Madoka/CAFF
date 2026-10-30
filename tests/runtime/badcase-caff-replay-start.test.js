@@ -68,6 +68,20 @@ test('fresh/resume and Windows/Linux source capsules preserve all non-path SDK s
     assert.equal(JSON.stringify(v), before); p.archivedHarness.sdkStartConfig.thinking = 'changed'; assert.equal(run(v).archivedHarness.sdkStartConfig.thinking, 'high');
   }
 });
+test('merged Fast descriptors preserve explicit booleans and legacy absence, rejecting non-booleans', t => {
+  for (const mode of ['fresh', 'resume']) {
+    const current = inputs(t, mode);
+    assert.equal(run(current).config.fast, false);
+    const enabled = inputs(t, mode); change(enabled, h => { h.sdkStartConfig.fast = true; });
+    assert.equal(run(enabled).config.fast, true);
+    const legacy = inputs(t, mode); change(legacy, h => { delete h.sdkStartConfig.fast; });
+    assert.equal(Object.hasOwn(run(legacy).config, 'fast'), false);
+    for (const value of ['true', null, 1]) {
+      const invalid = inputs(t, mode); change(invalid, h => { h.sdkStartConfig.fast = value; }); rejected(invalid);
+    }
+  }
+});
+
 test('planning never inspects any source path or writes material; path strings are only declarations', t => {
   const fs = require('node:fs'), v = inputs(t, 'resume'); api();
   const methods = ['readFileSync', 'openSync', 'lstatSync', 'realpathSync', 'mkdirSync', 'writeFileSync'], old = new Map();

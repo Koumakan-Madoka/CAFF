@@ -1,3 +1,5 @@
+import { normalizeServiceTierRequest } from '../../../lib/service-tier';
+
 function normalizeTokenCount(value: any) {
   if (value === null || value === undefined || value === '') {
     return null;
@@ -171,6 +173,7 @@ export function summarizeModelUsageCalls(calls: any) {
       isColdStart: coldStart,
       providerMiss,
       tokenUsage,
+      serviceTier: normalizeServiceTierRequest(sourceCall && sourceCall.serviceTier),
     });
   }
 

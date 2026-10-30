@@ -8,7 +8,7 @@ module.exports = function sdkConfig(platform, provider, model, options) {
     process: { env: {}, cwd: () => platform === 'win32' ? 'C:\\source\\project' : '/source/project' },
     require: name => {
       if (name === 'node:path') return platform === 'win32' ? path.win32 : path.posix;
-      if (['./sqlite-store', './stream-diagnostics'].includes(name)) return {};
+      if (['./sqlite-store', './stream-diagnostics', './service-tier'].includes(name)) return {};
       if (['node:fs', 'node:events', 'node:child_process'].includes(name)) return require(name);
       throw Error('unexpected_resolver_import');
     },

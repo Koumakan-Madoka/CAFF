@@ -10,6 +10,8 @@ backend domain services.
 - Domain services that support chat, session goals, games, metrics, or projects
 - Backend changes that may affect prompt assembly or active project resolution
 - Session goal API and metadata contracts (`session-goal.md`)
+- External planner identity, central write guards, durable attention/wait and
+  bounded Goal state/portfolio (`planner-interface.md`)
 - Core and role-aware readiness projection (`health-endpoint.md`)
 - Conversation digest API, metadata, prompt, and UI contracts (`conversation-digest.md`)
 - Atomic deletion of eligible unsummarized public messages (`conversation-message-deletion.md`)
@@ -18,6 +20,7 @@ backend domain services.
 - Digest-to-skill draft extraction and confirmation (`../runtime/skill-extraction.md`)
 - Cross-conversation summary segment memory search and no-message memory health/backfill projections (`summary-memory.md`)
 - Bounded agent metrics window and projections (`agent-metrics.md`)
+- Per-turn time breakdown: rule/JEV classification, async pipeline, lazy backfill, and panel (`turn-time-breakdown.md`)
 - Reversible message detail tables, atomic dual writes, dual reads, and bounded
   context-snapshot pagination (`message-detail-storage.md`)
 - Manual failed/user-stopped message Recovery Capsule persistence, evidence grading, isolated
@@ -33,6 +36,8 @@ backend domain services.
 ## Pre-Development Checklist
 
 - [ ] Read `architecture.md`
+- [ ] Read `planner-interface.md` for API authentication/mutation guards,
+      planner attribution, Goal concurrency/binding, retry or attention changes
 - [ ] Read `controller-patterns.md` if you touch controllers, request parsing, or
       HTTP responses
 - [ ] Read `conversation-message-deletion.md` if you touch message deletion,
@@ -53,13 +58,21 @@ backend domain services.
 
 - `room-directory.md`: read-only `list_rooms` capability, local-instance scope, public activity ordering and minimal directory projection
 
-- `architecture.md`: backend module boundaries and ownership
-- `controller-patterns.md`: handler conventions, error flow, and response shape
+- `architecture.md`: backend module boundaries, bootstrap security and server lifecycle
+- `controller-patterns.md`: handler conventions, principal/central guard flow,
+  error flow, and response shape
 - `model-provider-config.md`: local-admin provider API, token-limit defaults,
   validation, patch-clear semantics, and cross-layer test points
 - `feishu-integration.md`: Feishu webhook/long-connection contracts, env keys,
   event normalization, dedup expectations, and test points
-- `session-goal.md`: `/goal` API, metadata, prompt, SSE, and frontend slash command contracts
+- `session-goal.md`: `/goal` API, metadata, merge/audit/principal/binding rules,
+  prompt, SSE, frontend and legacy owner compatibility
+- `planner-interface.md`: ADR 0002 P1 credentials/attribution, browser/planner write
+  guards, lean/retry-safe HTTP operations, durable attention/cursors/wait,
+  bounded state/portfolio, errors and migration; P2 transport/adapter boundary
+- `../runtime/embedded-planner.md`: default-off official CLI host, authenticated
+  terminal upgrade, shared process admission, user recovery, wake-up scheduler/
+  production finish/storage, actual-prefix caff guide and version/platform gates
 - `health-endpoint.md`: `/api/health` local readiness, redaction, and optional integration contracts
 - `conversation-digest.md`: `/digest` API, metadata, prompt, SSE, and frontend panel contracts
 - `conversation-message-deletion.md`: deletion eligibility, batch API, mutation guard, SQLite/image cleanup, SSE, and UI contracts
@@ -69,6 +82,7 @@ backend domain services.
 - `../runtime/skill-extraction.md`: `/digest extract-skill` and `/skill-drafts` contracts
 - `summary-memory.md`: searchable digest segment ledger, `/api/memory/search` contracts, and OOM-safe no-message health/backfill projections (`getConversationWithoutMessages()` / header-only global paths, `listMessages` poison guard, heap/RSS/latency budgets)
 - `agent-metrics.md`: `/api/metrics/agent` dual-boundary ≤31-day window (400 `metrics_agent_window_invalid`, no silent default), bounded SQL projections (no raw `metadata_json`/`event_json` materialization), offline CLI explicit-unbounded mode, and production-shape gate budgets
+- `turn-time-breakdown.md`: per-reply "耗时分析" — category taxonomy, wall-clock union attribution with priority slicing, rule classifier + JEV fallback (switch, cache, truncation, fail-soft), async non-blocking pipeline hooked at the pi event stream (`tool_execution_end`, secondary `tryAppendInvocationEvent`), storage schema, lazy on-click backfill, API, and panel contracts
 - `message-detail-storage.md`: message-keyed context snapshot/model usage tables,
   atomic Expand dual writes, table-first metadata fallback reads, first-plus-latest
   call retention, stable cursor pagination, deletion, and rollback contracts
@@ -79,5 +93,6 @@ backend domain services.
 - `dag-planning.md`: `chat_plans` storage, plan lifecycle (draft→active), shared
   validation, and `/api/conversations/:id/plan` contracts
 - `dag-execution.md`: event-hook scheduler, per-node worktrees, merge executor,
-  completion write-back, and restart reconcile contracts (D21–D26)
+  completion write-back, restart reconcile and worker/verifier-versus-planner
+  authority contracts (D21–D29)
 - See `../skills/` for skill-related backend patterns (skills-controller.ts)

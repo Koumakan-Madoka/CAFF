@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events');
 const { fork, spawn, spawnSync } = require('node:child_process');
 const { createSqliteRunStore } = require('./sqlite-store');
 const { StreamDiagnostics, DIAGNOSTIC_LIMITS } = require('./stream-diagnostics');
+const { createServiceTierState, recordServiceTierRequest, snapshotServiceTier } = require('./service-tier');
 
 // Retain the exported empty sentinels for API compatibility, never select a vendor.
 const DEFAULT_PROVIDER = '';
@@ -14,6 +15,7 @@ const DEFAULT_HEARTBEAT_TIMEOUT_MS = 60 * 1000;
 const DEFAULT_PROGRESS_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_RUN_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const DEFAULT_TERMINATE_GRACE_MS = 5 * 1000;
+const TERMINATION_SETTLE_MARGIN_MS = 1000;
 const MAX_STDERR_TAIL_LENGTH = 4000;
 const MAX_COMPLETION_VERIFY_BYTES = 1024 * 1024;
 const MAX_DEBUG_LINES = 10;
@@ -427,6 +429,7 @@ function assistantUsageCallsFromState(state: any) {
     stopReason: String(entry && entry.stopReason ? entry.stopReason : '').trim(),
     timestamp: entry && entry.timestamp !== undefined ? entry.timestamp : null,
     usage: entry && entry.usage && typeof entry.usage === 'object' && !Array.isArray(entry.usage) ? entry.usage : null,
+    serviceTier: entry && entry.serviceTier || null,
   })).filter((entry: any) => entry.usage);
 }
 
@@ -438,6 +441,7 @@ function resolveSdkStartConfig(provider: any, model: any, options: any = {}) {
   return {
     provider, model: String(model || '').trim(),
     thinking: resolveThinkingSetting(provider, options.thinking, process.env.PI_THINKING, DEFAULT_THINKING),
+    fast: options.fast === true,
     agentDir, sessionPath: resolveSessionPath(options.session, agentDir), resume: Boolean(options.resume),
     cwd: path.resolve(String(options.cwd || process.cwd()).trim() || process.cwd()),
     heartbeatIntervalMs: resolveIntegerSettingCandidates(
@@ -490,6 +494,15 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     DEFAULT_TERMINATE_GRACE_MS,
     'terminateGraceMs'
   );
+  const terminationSettleMs = resolveIntegerSetting(
+    options.terminationSettleMs,
+    process.env.PI_TERMINATION_SETTLE_MS,
+    terminateGraceMs + TERMINATION_SETTLE_MARGIN_MS,
+    'terminationSettleMs'
+  );
+  if (terminationSettleMs <= terminateGraceMs) {
+    throw new Error('terminationSettleMs must be greater than terminateGraceMs');
+  }
   const images = Array.isArray(options.images) ? options.images : [];
   const toolProgressRecovery = options.toolProgressRecovery === true;
   const streamOutput = options.streamOutput !== false;
@@ -542,6 +555,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       assistantUsageByKey: new Map(),
       activeToolCalls: new Map(),
     };
+    const serviceTierState = createServiceTierState(options.fast);
+    let pendingServiceTier: any = null;
     const childState = { code: null as any, signal: null as any };
     const processHandlers: Array<[any, any]> = [];
     let settled = false;
@@ -550,6 +565,9 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     let progressTimeout: any = null;
     let runTimeout: any = null;
     let forceKillTimeout: any = null;
+    let terminationSettleTimeout: any = null;
+    let closeObserved = false;
+    let settleDeadlineExceeded = false;
     let terminationReason: any = null;
     let stderrBuffer = '';
     let ignoreFurtherAssistantOutput = false;
@@ -566,7 +584,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     function captureDiagnostics(capture: 'periodic' | 'terminating' | 'finished') {
       const summary = { ...diagnostics.snapshot(Date.now()), capture,
         watchdog: { progressTimeoutMs, heartbeatTimeoutMs, timeoutMs,
-          progressArmed: Boolean(progressTimeout), terminating } };
+          progressArmed: Boolean(progressTimeout), terminating,
+          terminationSettleMs, closeObserved, settleDeadlineExceeded } };
       if (store && runRecord?.runId) {
         try { store.saveRunDiagnostics(runRecord.runId, summary); }
         catch { emit('diagnostics_warning', { code: 'snapshot_write_failed' }); }
@@ -574,7 +593,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       emit('stream_diagnostics', { summary });
     }
 
-    function recordAssistantUsage(message: any) {
+    function recordAssistantUsage(message: any, serviceTier: any = null) {
       const usage = extractAssistantUsage(message);
 
       if (!usage) {
@@ -589,6 +608,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         stopReason: message && message.stopReason ? String(message.stopReason) : '',
         timestamp: message && message.timestamp !== undefined ? message.timestamp : null,
         usage,
+        serviceTier: serviceTier || state.assistantUsageByKey.get(key)?.serviceTier || null,
       });
       state.assistantUsage = aggregateAssistantUsage(
         Array.from(state.assistantUsageByKey.values()).map((entry: any) => entry && entry.usage)
@@ -713,6 +733,11 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         forceKillTimeout = null;
       }
 
+      if (terminationSettleTimeout) {
+        clearTimeout(terminationSettleTimeout);
+        terminationSettleTimeout = null;
+      }
+
       while (processHandlers.length > 0) {
         const entry = processHandlers.pop();
 
@@ -780,8 +805,29 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         runTimeout = null;
       }
 
+      // This deadline is intentionally referenced: even if no child close
+      // arrives, the terminal persistence/promise settlement must still run.
+      terminationSettleTimeout = setTimeout(() => {
+        if (settled || closeObserved) return;
+        settleDeadlineExceeded = true;
+        const message = `${reason.message || 'pi termination'}; child close was not observed within ${terminationSettleMs}ms`;
+        finishWithError(createInvokeError(message, {
+          exitCode: 1,
+          reply: state.reply,
+          sessionPath: sessionPath || null,
+          stderrTail: state.stderrTail,
+          stdoutLines: [...state.stdoutLines],
+          parseErrors: state.parseErrors,
+          terminationReason: { ...reason, message, closeObserved: false, settleDeadlineExceeded: true },
+        }));
+        // A broken IPC/stdio close must not retain the completed run forever.
+        try { child?.disconnect?.(); } catch {}
+        try { child?.unref?.(); } catch {}
+        try { child?.stderr?.destroy(); } catch {}
+      }, terminationSettleMs);
       captureDiagnostics('terminating');
       emit('run_terminating', { reason });
+      if (settled) return;
       let abortRequested = false;
 
       if (child && child.connected && typeof child.send === 'function') {
@@ -801,6 +847,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         terminateProcessTree(child, false);
       }
 
+      if (settled) return;
       if (terminateGraceMs > 0) {
         forceKillTimeout = setTimeout(() => {
           terminateProcessTree(child, true);
@@ -971,9 +1018,11 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     }
 
     function finishWithError(error: any) {
+      error.serviceTier = snapshotServiceTier(serviceTierState);
       if (settled) {
         return;
       }
+      settled = true;
 
       if (runRecord && runRecord.runId) {
         error.runId = runRecord.runId;
@@ -1001,15 +1050,16 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       });
 
       emit('run_failed', { error, runId: runRecord ? runRecord.runId : null });
-      settled = true;
       cleanup();
       reject(error);
     }
 
     function finishWithResult(result: any) {
+      result.serviceTier = snapshotServiceTier(serviceTierState);
       if (settled) {
         return;
       }
+      settled = true;
 
       if (runRecord && runRecord.runId) {
         result.runId = runRecord.runId;
@@ -1035,7 +1085,6 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       });
 
       emit('run_succeeded', { result, runId: result.runId || null });
-      settled = true;
       cleanup();
       resolve(result);
     }
@@ -1083,6 +1132,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       const eventType = String(event && event.type ? event.type : '').trim();
       const toolCallId = String(event && event.toolCallId ? event.toolCallId : '').trim();
 
+      // A pre-provider failure in a later call must not inherit prior Fast
+      // evidence. message_start is too late: adapters can fire onPayload first.
+      if (eventType === 'turn_start') pendingServiceTier = null;
+
       if (eventType === 'tool_execution_start' && toolCallId) {
         state.activeToolCalls.set(toolCallId, normalizeRecoveryIdentifier(event.toolName));
       } else if (eventType === 'tool_execution_end' && toolCallId) {
@@ -1095,9 +1148,11 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         && event.message
         && event.message.role === 'assistant'
       ) {
-        const isNewModelCall = recordAssistantUsage(event.message);
+        const serviceTier = pendingServiceTier;
+        pendingServiceTier = null;
+        const isNewModelCall = recordAssistantUsage(event.message, serviceTier);
         if (isNewModelCall) {
-          emit('assistant_message', { messageKey: getAssistantMessageKey(event.message) || null, message: event.message, text: extractAssistantText(event.message) });
+          emit('assistant_message', { messageKey: getAssistantMessageKey(event.message) || null, message: event.message, text: extractAssistantText(event.message), serviceTier });
         }
         emit('pi_event', { piEvent: event });
         appendAssistantFallback(event.message);
@@ -1141,7 +1196,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
           if (message && message.role === 'assistant') {
             const isNewModelCall = recordAssistantUsage(message);
             if (isNewModelCall) {
-              emit('assistant_message', { messageKey: getAssistantMessageKey(message) || null, message, text: extractAssistantText(message) });
+              emit('assistant_message', { messageKey: getAssistantMessageKey(message) || null, message, text: extractAssistantText(message), serviceTier: null });
             }
             appendAssistantFallback(message);
             emitAssistantError(message);
@@ -1197,6 +1252,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     addProcessHandler('exit', () => terminateProcessTree(child, true, true));
 
     child.on('message', (message: any) => {
+      if (settled) return;
       if (!message || typeof message !== 'object') {
         recordProtocolError(message);
         return;
@@ -1215,6 +1271,15 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       if (message.type === 'ready') {
         refreshHeartbeatTimeout();
+        return;
+      }
+
+      if (message.type === 'service_tier_request') {
+        const request = recordServiceTierRequest(serviceTierState, message.request);
+        if (request) {
+          pendingServiceTier = request;
+          emit('service_tier_request', { request, summary: snapshotServiceTier(serviceTierState) });
+        }
         return;
       }
 
@@ -1303,6 +1368,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: any) => {
+      if (settled) return;
       stderrBuffer += chunk;
 
       while (true) {
@@ -1334,6 +1400,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     });
 
     child.on('close', (code: any, signal: any) => {
+      if (settled) return;
+      closeObserved = true;
       const finalCode = childState.code === null ? code : childState.code;
       const finalSignal = childState.signal === null ? signal : childState.signal;
 

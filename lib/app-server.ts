@@ -26,10 +26,10 @@ async function installProxyRouting() {
   }
 }
 
-async function main() {
+async function main(options: any = {}) {
   await installProxyRouting();
 
-  const app = createServerApp();
+  const app = createServerApp(options);
   app.start(() => {
     const health = app.getHealthStatus();
     const baseUrl = `http://${health.core.host}:${health.core.port}`;

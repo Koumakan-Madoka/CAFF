@@ -12,11 +12,22 @@ const { createChatAgentRepository } = require('../storage/chat/agent.repository'
 const { createChatRoleIdentityRepository } = require('../storage/chat/role-identity.repository');
 const { createChatConversationAgentHistoryRepository } = require('../storage/chat/conversation-agent-history.repository');
 const { createChatConversationRepository } = require('../storage/chat/conversation.repository');
+const { createChatWorkspaceOperationRepository } = require('../storage/chat/workspace-operation.repository');
+const { createGoalRulingRepository } = require('../storage/chat/goal-ruling.repository');
+const { createPlannerAttentionRepository } = require('../storage/chat/planner-attention.repository');
+const { createPlannerStateRepository } = require('../storage/chat/planner-state.repository');
+const { createPlannerRoomCreationRepository } = require('../storage/chat/planner-room-creation.repository');
+const { subscribePlannerAttention } = require('../storage/chat/planner-attention-notifications');
+const { syncPlannerAttention } = require('../server/domain/conversation/planner-attention');
+const { createPlannerTurnAttention } = require('../server/domain/conversation/planner-turn-attention');
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
+const { createTurnTimeBreakdownRepository } = require('../storage/chat/turn-time-breakdown.repository');
 const { createChatMessageRecoveryRepository } = require('../storage/chat/message-recovery.repository');
 const { createChatSystemServiceConfigRepository } = require('../storage/chat/system-service-config.repository');
+const { createChatSystemServiceToggleRepository } = require('../storage/chat/system-service-toggle.repository');
+const { createChatSystemServiceCredentialRepository } = require('../storage/chat/system-service-credential.repository');
 const { createChatPrivateMessageRepository } = require('../storage/chat/private-message.repository');
 const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.repository');
 const { createChatSummarySegmentRepository } = require('../storage/chat/summary-segment.repository');
@@ -32,6 +43,7 @@ const {
 } = require('../storage/chat/agent-delegation.repository');
 const { createChatPlanRepository } = require('../storage/chat/plan.repository');
 const { createChatSessionReuseRepository } = require('../storage/chat/session-reuse.repository');
+const { reconcileInterruptedRuns } = require('../storage/chat/interrupted-runs');
 const {
   NODE_STATUSES,
   validatePlanDoc,
@@ -208,6 +220,8 @@ function normalizeModelProfile(profile: any, index = 0) {
     provider,
     model,
     thinking,
+    // Fast (service_tier: priority) per-profile toggle, defaults OFF.
+    fast: profile.fast === true,
     personaPrompt,
   };
 }
@@ -263,6 +277,11 @@ function normalizeAgentRow(row: any) {
     sessionReuseEnabled: row.session_reuse_enabled === undefined || row.session_reuse_enabled === null
       ? true
       : Boolean(row.session_reuse_enabled),
+    // Fast mode toggle defaults OFF; legacy rows without the column
+    // (pre-migration reads in tests) also default OFF.
+    fast: row.fast === undefined || row.fast === null
+      ? false
+      : Boolean(row.fast),
     selectedModelProfileId: selectedModelProfileId || null,
     selectedModelProfile,
     conversationSkillIds: parseSkillRefs(row.conversation_skills_json),
@@ -969,11 +988,22 @@ export class ChatAppStore {
       this.agentRepository = createChatAgentRepository(this.db);
       this.conversationAgentHistoryRepository = createChatConversationAgentHistoryRepository(this.db);
       this.conversationRepository = createChatConversationRepository(this.db);
+      this.workspaceOperationRepository = createChatWorkspaceOperationRepository(this.db);
+      this.goalRulingRepository = createGoalRulingRepository(this.db);
+      this.goalRulingRepository.backfill();
+      this.plannerAttentionRepository = createPlannerAttentionRepository(this.db);
+      this.plannerStateRepository = createPlannerStateRepository(this.db);
+      this.plannerRoomCreationRepository = createPlannerRoomCreationRepository(this.db);
+      this.plannerTurnAttention = createPlannerTurnAttention(this.db);
       this.participantRepository = createChatParticipantRepository(this.db);
+      this.reconcilePlannerAttention();
       this.messageRepository = createChatMessageRepository(this.db);
       this.messageDetailRepository = createChatMessageDetailRepository(this.db);
+      this.turnTimeBreakdownRepository = createTurnTimeBreakdownRepository(this.db);
       this.messageRecoveryRepository = createChatMessageRecoveryRepository(this.db);
       this.systemServiceConfigRepository = createChatSystemServiceConfigRepository(this.db);
+      this.systemServiceToggleRepository = createChatSystemServiceToggleRepository(this.db);
+      this.systemServiceCredentialRepository = createChatSystemServiceCredentialRepository(this.db);
       this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
       this.memoryCardRepository = createChatMemoryCardRepository(this.db);
       this.summarySegmentRepository = createChatSummarySegmentRepository(this.db);
@@ -1106,12 +1136,19 @@ export class ChatAppStore {
           throw error;
         }
 
+        const affectedRooms = this.db.prepare(`SELECT c.id, c.metadata_json FROM chat_conversations c
+          JOIN chat_conversation_agents ca ON ca.conversation_id=c.id WHERE ca.agent_id=?`).all(agent.id);
         const historyCount = this.conversationAgentHistoryRepository.snapshotActiveRole(
           agent.id,
           retiredAt,
           reason
         );
         this.agentRepository.delete(agent.id);
+        for (const room of affectedRooms) {
+          const metadata = parseJson(room.metadata_json) || {};
+          syncPlannerAttention(this.plannerAttentionRepository, room.id, metadata, metadata,
+            { agents: this.listConversationAgents(room.id) });
+        }
 
         return {
           roleId: agent.id,
@@ -1121,7 +1158,7 @@ export class ChatAppStore {
         };
       });
 
-      this.createConversationTransaction = this.db.transaction((payload: any) => {
+      this.createConversationTransaction = this.db.transaction((payload: any, messageProjection = 'full') => {
         const timestamp = nowIso();
 
         if (!Array.isArray(payload.participants) || payload.participants.length === 0) {
@@ -1152,11 +1189,24 @@ export class ChatAppStore {
           lastMessageAt: null,
         });
         this.replaceConversationParticipants(payload.id, payload.participants);
+        syncPlannerAttention(this.plannerAttentionRepository, payload.id, {}, payload.metadata,
+          { agents: this.listConversationAgents(payload.id) });
 
-        return this.getConversation(payload.id);
+        return messageProjection === 'identity'
+          ? { id: payload.id, title: payload.title, type: normalizeConversationType(payload.type), metadata: payload.metadata || {}, projectScopeId: payload.projectScopeId }
+          : this.getConversation(payload.id);
       });
 
-      this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any, messageProjection: any = 'full') => {
+      this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any, messageProjection: any = 'full', options: any = {}) => {
+        // Archive changed ruling projections in the SAME transaction as
+        // metadata. An unchanged legacy snapshot must not freeze unrelated
+        // updates; new ruling/archive or metadata failures still roll back.
+        const previous = this.conversationRepository.get(conversationId);
+        const previousAgents = this.listConversationAgents(conversationId);
+        this.goalRulingRepository.archiveTransition(conversationId, parseJson(previous?.metadata_json), updates.metadata);
+        for (const ruling of options.goalRulings || []) {
+          this.goalRulingRepository.append(conversationId, { sessionGoalRuling: ruling });
+        }
         if (updates.title !== undefined) {
           this.conversationRepository.update(conversationId, {
             title: updates.title,
@@ -1174,6 +1224,9 @@ export class ChatAppStore {
         if (Array.isArray(updates.participants)) {
           this.replaceConversationParticipants(conversationId, updates.participants);
         }
+        syncPlannerAttention(this.plannerAttentionRepository, conversationId,
+          parseJson(previous?.metadata_json), updates.metadata,
+          { ...options, previousAgents, agents: this.listConversationAgents(conversationId) });
 
         return messageProjection === 'none'
           ? this.getConversationWithoutMessages(conversationId)
@@ -1248,6 +1301,81 @@ export class ChatAppStore {
         }
         return this.getConversationWithoutMessages(conversationId);
       });
+
+      this.renameConversationWorkspaceBranchTransaction = this.db.transaction((conversationId: any, rename: any) => {
+        const existing = this.getConversationWithoutMessages(conversationId);
+        if (!existing) {
+          const error: any = new Error('Conversation not found');
+          error.code = 'conversation_not_found';
+          throw error;
+        }
+        if (String(existing.branch || '') !== String(rename.oldBranch || '')) {
+          const error: any = new Error('Room workspace binding changed concurrently');
+          error.code = 'room_workspace_binding_conflict';
+          throw error;
+        }
+        const renamed = this.conversationRepository.renameWorkspaceBranch(conversationId, {
+          oldBranch: rename.oldBranch,
+          newBranch: rename.newBranch,
+          updatedAt: rename.updatedAt || nowIso(),
+        });
+        if (!renamed) {
+          const error: any = new Error('Room workspace binding changed concurrently');
+          error.code = 'room_workspace_binding_conflict';
+          throw error;
+        }
+        return this.getConversationWithoutMessages(conversationId);
+      });
+
+      // The branch CAS and the write-ahead operation close-out commit in ONE SQLite
+      // transaction: the journal can never be left pending after the binding moved,
+      // and a failed close-out rolls the binding update back with it.
+      this.renameConversationWorkspaceBranchAndCompleteOperationTransaction = this.db.transaction(
+        (conversationId: any, rename: any, operationId: any) => {
+          const updated = this.renameConversationWorkspaceBranchTransaction(conversationId, rename);
+          const normalizedOperationId = String(operationId || '').trim();
+          if (normalizedOperationId) {
+            const operation = this.workspaceOperationRepository.getById(normalizedOperationId);
+            if (!operation || operation.conversationId !== String(conversationId || '').trim()) {
+              const error: any = new Error('Workspace operation record is missing for the rename close-out');
+              error.code = 'room_workspace_operation_conflict';
+              throw error;
+            }
+            if (operation.status === 'pending') {
+              this.workspaceOperationRepository.complete(normalizedOperationId, nowIso());
+            } else if (operation.status !== 'completed') {
+              const error: any = new Error(`Workspace operation ${normalizedOperationId} is ${operation.status} and cannot be completed`);
+              error.code = 'room_workspace_operation_conflict';
+              throw error;
+            }
+          }
+          return updated;
+        }
+      );
+
+      // A new write-ahead record atomically supersedes any still-pending records of
+      // the Room, so a stale journal row can never outlive the operation that
+      // replaces it.
+      this.replacePendingWorkspaceOperationTransaction = this.db.transaction((operation: any, supersedeErrorCode: any) => {
+        const conversationId = String(operation && operation.conversationId || '').trim();
+        if (conversationId) {
+          this.workspaceOperationRepository.failPendingForConversation(
+            conversationId,
+            String(supersedeErrorCode || 'superseded_by_consistent_state'),
+            nowIso()
+          );
+        }
+        return this.createWorkspaceOperation(operation);
+      });
+
+      this.countActiveConversationTurnsStatement = this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM chat_messages
+        WHERE conversation_id = @conversationId
+          AND role = 'assistant'
+          AND status IN ('queued', 'running', 'streaming')
+          AND (@excludeMessageId = '' OR id <> @excludeMessageId)
+      `);
 
       this.persistMessageDetails = (payload: any) => {
         if (String(payload.role || '').trim() !== 'assistant') {
@@ -2184,6 +2312,7 @@ export class ChatAppStore {
       modelFamily: null,
       isDefaultChatRole: Boolean(input.isDefaultChatRole),
       sessionReuseEnabled: input.sessionReuseEnabled !== false,
+      fast: input.fast === true,
     });
   }
 
@@ -2205,6 +2334,7 @@ export class ChatAppStore {
       modelProfiles: this.normalizeModelProfiles(input.modelProfiles),
       isDefaultChatRole: Boolean(input.isDefaultChatRole),
       sessionReuseEnabled: input.sessionReuseEnabled !== false,
+      fast: input.fast === true,
       ...(Object.hasOwn(input, 'avatarDataUrl') ? { avatarDataUrl: normalizeAvatarDataUrl(input.avatarDataUrl) } : {}),
     });
   }
@@ -2238,6 +2368,15 @@ export class ChatAppStore {
 
   listConversations() {
     return this.conversationRepository.listHeaders().map(normalizeConversationHeader);
+  }
+
+  getConversationGoalProjection(conversationId: string) {
+    const row = this.conversationRepository.getGoalHeader(conversationId);
+    return row ? normalizeConversation(row, this.listConversationAgents(conversationId), []) : null;
+  }
+
+  listConversationGoalHeaders() {
+    return this.conversationRepository.listGoalHeaders().map(normalizeConversationHeader);
   }
 
   listConversationTree() {
@@ -3273,7 +3412,15 @@ export class ChatAppStore {
     this.deleteExternalEventTransaction(eventRecordId);
   }
 
-  createConversation(input: any = {}) {
+  replayPlannerRoomCreation(retry: any) {
+    return this.plannerRoomCreationRepository.replay(retry);
+  }
+
+  createPlannerConversation(input: any, retry: any) {
+    return this.plannerRoomCreationRepository.create(retry, () => this.createConversation(input, { messageProjection: 'identity' }));
+  }
+
+  createConversation(input: any = {}, options: any = {}) {
     const id = String(input.id || randomUUID()).trim();
     const title = String(input.title || '').trim() || 'New Conversation';
     const participants = this.normalizeConversationParticipantsInput(input);
@@ -3285,11 +3432,78 @@ export class ChatAppStore {
       projectScopeId: String(input.projectScopeId || '').trim() || null,
       metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
       participants,
-    });
+    }, options.messageProjection);
   }
 
   bindConversationWorkspace(conversationId: any, workspace: any) {
     return this.bindConversationWorkspaceTransaction(conversationId, workspace);
+  }
+
+  renameConversationWorkspaceBranch(conversationId: any, rename: any) {
+    return this.renameConversationWorkspaceBranchTransaction(conversationId, rename);
+  }
+
+  renameConversationWorkspaceBranchAndCompleteOperation(conversationId: any, rename: any, operationId: any) {
+    return this.renameConversationWorkspaceBranchAndCompleteOperationTransaction(conversationId, rename, operationId);
+  }
+
+  replacePendingWorkspaceOperation(operation: any = {}, supersedeErrorCode: any = 'superseded_by_consistent_state') {
+    return this.replacePendingWorkspaceOperationTransaction(operation, supersedeErrorCode);
+  }
+
+  hasActiveConversationTurn(conversationId: any, options: any = {}) {
+    const normalized = String(conversationId || '').trim();
+    if (!normalized) {
+      return false;
+    }
+    const row = this.countActiveConversationTurnsStatement.get({
+      conversationId: normalized,
+      excludeMessageId: String(options.excludeMessageId || '').trim(),
+    });
+    return Boolean(row && Number(row.count) > 0);
+  }
+
+  createWorkspaceOperation(operation: any = {}) {
+    const now = nowIso();
+    return this.workspaceOperationRepository.create({
+      id: String(operation.id || randomUUID()).trim(),
+      conversationId: String(operation.conversationId || '').trim(),
+      kind: String(operation.kind || 'rename').trim(),
+      oldBranch: String(operation.oldBranch || '').trim(),
+      newBranch: String(operation.newBranch || '').trim(),
+      fingerprint: operation.fingerprint ? String(operation.fingerprint).trim() : null,
+      now,
+    });
+  }
+
+  getPendingWorkspaceOperation(conversationId: any) {
+    const normalized = String(conversationId || '').trim();
+    if (!normalized) {
+      return null;
+    }
+    return this.workspaceOperationRepository.getPendingForConversation(normalized);
+  }
+
+  getWorkspaceOperation(id: any) {
+    const normalized = String(id || '').trim();
+    if (!normalized) {
+      return null;
+    }
+    return this.workspaceOperationRepository.getById(normalized);
+  }
+
+  completeWorkspaceOperation(id: any) {
+    const normalized = String(id || '').trim();
+    if (normalized) {
+      this.workspaceOperationRepository.complete(normalized, nowIso());
+    }
+  }
+
+  failWorkspaceOperation(id: any, errorCode: any) {
+    const normalized = String(id || '').trim();
+    if (normalized) {
+      this.workspaceOperationRepository.fail(normalized, String(errorCode || ''), nowIso());
+    }
   }
 
   listAcceptanceRecords(conversationId: any) {
@@ -3384,11 +3598,63 @@ export class ChatAppStore {
       type,
       metadata,
       participants,
-    }, options && options.messageProjection === 'none' ? 'none' : 'full');
+    }, options && options.messageProjection === 'none' ? 'none' : 'full', options);
   }
 
-  updateConversationWithoutMessages(conversationId: any, updates: any = {}) {
-    return this.updateConversation(conversationId, updates, { messageProjection: 'none' });
+  updateConversationWithoutMessages(conversationId: any, updates: any = {}, options: any = {}) {
+    return this.updateConversation(conversationId, updates, { ...options, messageProjection: 'none' });
+  }
+
+  listSessionGoalRulings(conversationId: string, options: any = {}) {
+    return this.goalRulingRepository.list(conversationId, options.limit ?? 100);
+  }
+
+  listPlannerAttention(query: any = {}) {
+    return this.plannerAttentionRepository.list(query);
+  }
+
+  getPlannerAttentionVersion() { return this.plannerAttentionRepository.version(); }
+
+  subscribePlannerAttention(callback: () => void) { return subscribePlannerAttention(this.db, callback); }
+
+  resolvePlannerAttention(sequence: number, input: any = {}) {
+    return this.plannerAttentionRepository.acknowledge(sequence, input);
+  }
+
+  countUnresolvedPlannerAttention() {
+    return this.plannerAttentionRepository.counts();
+  }
+
+  getPlannerConversationState(conversationId: string) {
+    return this.plannerStateRepository.get(conversationId);
+  }
+
+  listPlannerGoalStates() {
+    return this.plannerStateRepository.list();
+  }
+
+  hasPendingPlannerMainWork(conversationId: string, cursor?: string) {
+    const afterMessageId = cursor ?? this.plannerStateRepository.queueCursor(conversationId)
+      ?? this.messageRepository.inferLastConsumedUserMessageId(conversationId);
+    return this.messageRepository.hasPendingMainUserMessages(conversationId, afterMessageId);
+  }
+
+  reconcilePlannerAttention() {
+    this.db.transaction(() => {
+      // Upgrade/recovery reads bounded metadata pages, never messages or traces.
+      const page = this.db.prepare('SELECT id, metadata_json FROM chat_conversations WHERE id > ? ORDER BY id LIMIT 100');
+      let after = '';
+      for (;;) {
+        const rows = page.all(after);
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          const metadata = parseJson(row.metadata_json) || {};
+          syncPlannerAttention(this.plannerAttentionRepository, row.id, metadata, metadata,
+            { agents: this.listConversationAgents(row.id) });
+        }
+        after = rows[rows.length - 1].id;
+      }
+    })();
   }
 
   getConversationTitleSource(conversationId: any) {
@@ -3641,6 +3907,24 @@ export class ChatAppStore {
 
   markAgentSessionReusePoisoned(conversationId: any, agentId: any, profileId: any, poisonReason: any, now: any) {
     return this.sessionReuseRepository.markPoisoned(conversationId, agentId, profileId, poisonReason, now);
+  }
+
+  reconcileInterruptedRuns(reason: string) {
+    return reconcileInterruptedRuns(this.db, reason, (messageId: string) => {
+      const message = this.getMessage(messageId);
+      if (!message) throw new Error(`Interrupted message disappeared during reconciliation: ${messageId}`);
+      this.updateMessage(messageId, {
+        content: message.content === 'Thinking...' ? '' : String(message.content || ''),
+        status: 'failed',
+        errorMessage: reason,
+        metadata: {
+          ...(message.metadata || {}),
+          failure: true,
+          streaming: false,
+          recoveredAfterRestart: true,
+        },
+      });
+    }, (before: any, next: any, interrupted: boolean) => this.plannerTurnAttention?.terminal(before, next, interrupted));
   }
 
   sweepOrphanedAgentSessionReuseClaims(poisonReason: any, now: any) {
@@ -4071,6 +4355,76 @@ export class ChatAppStore {
     );
   }
 
+  getSystemServiceToggle(serviceType: any) {
+    const row = this.systemServiceToggleRepository.get(String(serviceType || '').trim());
+    // Absent row = default-off (contract §6); the migration never seeds.
+    return Boolean(row && row.enabled === 1);
+  }
+
+  // INTERNAL ONLY (contract §6): the row carries the plaintext API key. It
+  // feeds the resolver, the client factory, and the credential write path —
+  // it must never be serialized into an API response, error body, log line,
+  // or event payload.
+  getSystemServiceCredential(serviceType: any) {
+    const row = this.systemServiceCredentialRepository.get(String(serviceType || '').trim());
+    if (!row) {
+      return null;
+    }
+    return {
+      serviceType: row.service_type,
+      apiKey: row.api_key,
+      baseUrl: row.base_url,
+      model: row.model,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  // Read-modify-write with explicit semantics: `setApiKey` stores a new key,
+  // `clearApiKey: true` removes it, `baseUrl`/`model` as a non-empty string
+  // store an override and as '' reset to the client defaults. Absent fields
+  // leave the stored value unchanged. Returns only non-secret state so the
+  // key never flows back through a return value either.
+  updateSystemServiceCredential(serviceType: any, changes: any = {}) {
+    const normalizedServiceType = String(serviceType || '').trim();
+    if (!normalizedServiceType) {
+      throw new Error('serviceType is required');
+    }
+    const existing = this.systemServiceCredentialRepository.get(normalizedServiceType);
+    const next = {
+      apiKey: existing ? existing.api_key : null,
+      baseUrl: existing ? existing.base_url : null,
+      model: existing ? existing.model : null,
+    };
+    if (Object.prototype.hasOwnProperty.call(changes, 'setApiKey')) {
+      next.apiKey = String(changes.setApiKey || '').trim() || null;
+    }
+    if (changes.clearApiKey === true) {
+      next.apiKey = null;
+    }
+    if (Object.prototype.hasOwnProperty.call(changes, 'baseUrl')) {
+      next.baseUrl = String(changes.baseUrl || '').trim() || null;
+    }
+    if (Object.prototype.hasOwnProperty.call(changes, 'model')) {
+      next.model = String(changes.model || '').trim() || null;
+    }
+    const updatedAt = nowIso();
+    this.systemServiceCredentialRepository.save(normalizedServiceType, next, updatedAt);
+    return {
+      apiKeyConfigured: Boolean(next.apiKey),
+      baseUrl: next.baseUrl,
+      model: next.model,
+      updatedAt,
+    };
+  }
+
+  setSystemServiceToggle(serviceType: any, enabled: any) {
+    const normalizedServiceType = String(serviceType || '').trim();
+    if (!normalizedServiceType) {
+      throw new Error('serviceType is required');
+    }
+    return this.systemServiceToggleRepository.setEnabled(normalizedServiceType, Boolean(enabled), nowIso());
+  }
+
   getSystemServiceConfig(serviceType: any) {
     return normalizeSystemServiceConfigRow(
       this.systemServiceConfigRepository.get(String(serviceType || '').trim())
@@ -4118,6 +4472,28 @@ export class ChatAppStore {
     );
   }
 
+  findMessageRetry(payload: any = {}) {
+    const metadata = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};
+    if (metadata.contentBlocks) throw createHttpError(400, 'Client must not submit contentBlocks; content + imageIds only', { code: 'TEXT_BLOCK_FROM_CLIENT_REJECTED' });
+    const clientRequestId = String(metadata.clientRequestId || payload.clientRequestId || '').trim();
+    if (!clientRequestId) return null;
+    const canonical = normalizeMessageRow(this.messageRepository.getByClientRequestId(payload.conversationId, clientRequestId));
+    if (!canonical) return null;
+    const imageIds = [...new Set((Array.isArray(payload.imageIds) ? payload.imageIds : []).map((id: any) => String(id || '').trim()).filter(Boolean))];
+    const existingImageIds = (Array.isArray(canonical.metadata?.contentBlocks) ? canonical.metadata.contentBlocks : [])
+      .filter((block: any) => block?.type === 'image').map((block: any) => String(block.imageId || '').trim()).filter(Boolean);
+    if (String(canonical.content || '') === String(payload.content || '') && existingImageIds.length === imageIds.length
+      && existingImageIds.every((id: string, index: number) => id === imageIds[index])) return canonical;
+    throw createHttpError(409, 'Same client_request_id used with a different message payload; retry must reuse the exact content and imageIds', { code: 'MESSAGE_IDEMPOTENCY_CONFLICT' });
+  }
+
+  acceptPlannerMessage(payload: any) {
+    return this.db.transaction(() => {
+      const existing = this.findMessageRetry(payload);
+      return existing ? { message: existing, duplicate: true } : { message: this.createMessage(payload), duplicate: false };
+    }).immediate();
+  }
+
   createMessage(payload: any = {}) {
     const conversation = this.getConversationWithoutMessages(payload.conversationId);
 
@@ -4139,43 +4515,8 @@ export class ChatAppStore {
     const rawImageIds = Array.isArray(payload.imageIds) ? payload.imageIds : [];
     const imageIds = Array.from(new Set(rawImageIds.map((id: any) => String(id || '').trim()).filter(Boolean)));
 
-    if (clientRequestId) {
-      const existingByRequest = this.messageRepository.getByClientRequestId(
-        payload.conversationId,
-        clientRequestId
-      );
-
-      if (existingByRequest) {
-        const canonical = normalizeMessageRow(existingByRequest);
-
-        if (canonical) {
-          const existingBlocks =
-            canonical.metadata && Array.isArray(canonical.metadata.contentBlocks)
-              ? canonical.metadata.contentBlocks
-              : [];
-          const existingImageIds = existingBlocks
-            .filter((block: any) => block && block.type === 'image')
-            .map((block: any) => String(block.imageId || '').trim())
-            .filter(Boolean);
-          const normalizedContent = String(payload.content || '');
-          const sameContent = String(canonical.content || '') === normalizedContent;
-          const sameImages =
-            existingImageIds.length === imageIds.length &&
-            existingImageIds.every((id: string, index: number) => id === imageIds[index]);
-
-          if (sameContent && sameImages) {
-            return canonical;
-          }
-
-          const conflictError = new Error(
-            'Same client_request_id used with a different message payload; retry must reuse the exact content and imageIds'
-          ) as any;
-          conflictError.statusCode = 409;
-          conflictError.code = 'MESSAGE_IDEMPOTENCY_CONFLICT';
-          throw conflictError;
-        }
-      }
-    }
+    const retry = this.findMessageRetry(payload);
+    if (retry) return retry;
 
     if (imageIds.length > MAX_IMAGES_PER_MESSAGE) {
       const imageLimitError = new Error(`At most ${MAX_IMAGES_PER_MESSAGE} images per message`) as any;

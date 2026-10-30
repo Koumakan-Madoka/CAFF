@@ -327,7 +327,7 @@ async function runSequentialHealth(args) {
 
 async function runConcurrentHttpHealth(args, manifest) {
   const net = require('node:net');
-  const { createServerApp } = require('../../build/server/app/create-server');
+  const { createTestServerApp: createServerApp } = require('../../tests/helpers/server-app');
 
   const findFreePort = () =>
     new Promise((resolve, reject) => {
