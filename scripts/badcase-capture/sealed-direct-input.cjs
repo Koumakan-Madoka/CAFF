@@ -68,7 +68,7 @@ function prepareSealedDirectTurn(request, candidateRole = null) {
     const capturedCallback = readCapturedCallbackInput(cp, digest => blobs.get(digest));
     ensure(capturedCallback.association.assistantMessageId === association.messageId);
     const callback = Object.fromEntries(['trace', 'expectedTraceHash', 'association'].map(k => [k, capturedCallback[k]]));
-    const input = { kind: 'prepared-caff-turn-v1', prompt, files, sessionText: null, systemPrompt: null, settings: null, callback,
+    const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText: null, systemPrompt: null, settings: null, callback,
       bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements } };
     validateDirectBindings(input.prompt, input.bindings);
     return { supported: true, input, provenance: { caseId: sealed.caseId, checkpointId: cp.checkpointId,
