@@ -216,7 +216,7 @@ curl http://127.0.0.1:3100/api/health
 
 **安全与恢复**：WebSocket 校验 Host/Origin，CSRF 令牌只在首消息传递；认证前不启动进程或发送输出。子进程仅继承路径/代理白名单，不继承 provider 密钥或 Claude 会话变量；用户专属 provider/网关/模型偏好放在自己的 `~/.claude/settings.json` 的 `env` 中，CAFF 不复制这些值或改写设置；仅叫醒启动前读取设置文件做上述安全检查，不回显内容。CLI 后续设置仍可选择付费 provider，不能据此保证订阅计费。caff 仅从 P1 凭证文件鉴权、直连固定回环房间，不打印令牌。此边界防浏览器跨源滥用，不隔离同账号本地进程，不支持远程/多用户开放。
 
-崩溃后若旧租约阻断，先确认旧会话进程全已停止，再用**修复租约**；若首次没有保存消息或记录消失导致“会话可能不可用”，在无进程/租约占用时确认**同 UUID 重新初始化**。二者不相互替代、不自动重连；记录若仍存在，CLI 可能拒绝一次初始化，再打开即可 resume。详见 [使用、命令卡与恢复契约](docs/engineering/runtime/embedded-planner.md)。Windows/CLI 2.1.310 已有规划者真机证据；Linux CI 仍需授权发布候选后执行，不能把 Windows PASS 当作 Linux 通过。
+崩溃后若旧租约阻断，先确认旧会话进程全已停止，再用**修复租约**；若首次没有保存消息或记录消失导致“会话可能不可用”，在无进程/租约占用时确认**同 UUID 重新初始化**。二者不相互替代、不自动重连；记录若仍存在，CLI 可能拒绝一次初始化，再打开即可 resume。详见 [使用、命令卡与恢复契约](docs/engineering/runtime/embedded-planner.md)。Windows 真实 CLI 与 Linux 编译／全量 CI 分别取证，不能相互替代；CI 的平台阻塞范围与已知 Windows 时序抖动见 [契约 §10](docs/engineering/runtime/embedded-planner.md#ci-platform-gates-2026-10-30)，新 SHA 仍须验证。
 
 ## 架构与扩展
 
@@ -272,6 +272,12 @@ npm test
 ```
 
 `npm test` 串联快速测试与启动 smoke test；DAG 相关改动还应执行 `npm run test:dag-planning` 和 `npm run test:dag-execution`。具体变更按对应工程契约补充验证，不把测试脚本存在等同于当前版本已全部通过。
+
+CI（`.github/workflows/test.yml`，Node 22.19.0）保留 `fail-fast: false`，两个系统都阻塞检查依赖安装、原生 PTY 产物和 typecheck：
+- **Ubuntu**：工具链检查、Chrome 选择、完整 `npm test`、DAG 和 diff 检查均阻塞；node-pty 在 CI 编译。
+- **Windows**：`npm run build`、`npm run test:embedded-planner` 阻塞；另一个明确命名的完整 `npm test` 步骤用 `continue-on-error: true` 保留结果但**不阻塞**。Windows job 绿不代表全量通过，应查看该步骤日志。
+
+本 PR 首次引入 Windows 全量 CI，已发现两个非 P2 的既有时序测试在 runner 抖动，本轮不修；本机 Windows 验证和 Linux 全量门槛不变。具体用例、运行链接和原因见 [P2 CI 契约](docs/engineering/runtime/embedded-planner.md#ci-platform-gates-2026-10-30)；workflow 变更的实际行为以候选 SHA 的远端运行为准。
 
 ## 许可证
 

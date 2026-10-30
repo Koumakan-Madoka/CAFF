@@ -38,7 +38,9 @@ Use this index for Pi runtime, prompt, Agent tool, Goal, and DAG integration cha
 - `agent-runtime.md`: Pi runtime flow, prompt/tool contracts, and safety rules
 - `embedded-planner.md`: ADR 0003 P2 default-off official Claude Code room
   terminal, process/WS/credential boundaries, user recovery, closed CLI and
-  command card, opted-in quota/claims/audit, real-CLI evidence and Linux CI gate
+  command card, opted-in quota/claims/audit, real-CLI evidence and platform CI
+  gates (Linux full checks; Windows build/embedded blocking, full suite
+  non-blocking with named timing follow-ups)
 - `agent-delegation.md`: durable in-room delegation state, requester identity,
   side-lane execution/cancellation, await/yield, deadlines, continuation, and
   read-context compatibility

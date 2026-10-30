@@ -142,8 +142,14 @@ Verification: `test:embedded-planner` includes host/lease/session/WS/UI/adapter/
 print/scheduler/store/HTTP tests using temporary state, random ports and fake
 CLIs only. Real Edge fake-CLI walkthroughs use `test:planner-terminal-ui` and
 `test:planner-wakeup-ui`. Planner Windows/CLI 2.1.310 real acceptance and exact
-argv are in P2 §10; Linux node-pty compilation/full CI remain an explicit
-candidate-pinned post-authorization gate, not inferred from Windows success.
+argv are in P2 §10. The [P2 CI gates](../runtime/embedded-planner.md#ci-platform-gates-2026-10-30)
+require dependency install, native PTY artifacts and typecheck on both platforms;
+Linux also blocks on toolchain/Chrome selection, full tests, DAG and diff, while
+Windows blocks on build and embedded tests. Windows full `npm test` remains
+visible but non-blocking because unrelated timing tests are separate follow-ups;
+a green Windows job does not establish a full-suite pass. Keep `fail-fast: false`.
+New workflow candidates require post-authorization, SHA-pinned CI; local Windows
+success is not Linux node-pty compilation/full-suite evidence.
 
 ## Watch Points
 

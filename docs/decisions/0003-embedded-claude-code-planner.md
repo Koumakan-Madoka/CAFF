@@ -231,12 +231,21 @@ and [planner acceptance records](../engineering/runtime/embedded-planner.md#plan
 - **Approval in `-p`:** M4a's mkdir/redirect/git-status probes were denied,
   without hanging or sentinel effects, including dontAsk hardening. Minimal
   allowlisted environment found Git Bash without additional path variables.
-- **node-pty:** Windows x64 / Node 24.13.1 / node-pty 1.1.0 prebuild installation
-  and real PTY/fake CLI cleanup suites passed (M2/M3 reviews). **Linux CI has
-  not run**: `.github/workflows/test.yml` requires Ubuntu/Node 22.19.0 compiler
-  prerequisites, fresh install, compiled `pty.node`, and full checks. A
-  candidate-pinned successful CI result still requires authorized publication;
-  Windows PASS or the workflow file is not Linux build evidence.
+- **node-pty / CI scope — planner clarification, 2026-10-30:** Windows x64 /
+  Node 24.13.1 / node-pty 1.1.0 prebuild installation and real PTY/fake CLI
+  cleanup suites passed (M2/M3 reviews). At `80f165cd`, the planner reported
+  Ubuntu CI (including node-pty compilation/full suite/DAG/diff) passing twice,
+  and Windows embedded tests passing; see [P2 CI gates and run links](../engineering/runtime/embedded-planner.md#ci-platform-gates-2026-10-30).
+  Per room message `c06f410b-2dfb-4299-915d-c0ea6e2b5949`, the workflow keeps
+  `fail-fast: false`, fresh install, native artifact checks and typecheck
+  blocking on both platforms / Node 22.19.0. Ubuntu toolchain/Chrome selection,
+  full `npm test`, DAG and diff checks remain blocking; Windows build and
+  `test:embedded-planner` block, while a separate full `npm test` step is
+  non-blocking (`continue-on-error: true`). Unrelated Windows timing tests are
+  follow-ups, not P2 fixes. This preserves the requirement for local Windows
+  checks plus Linux CI; a green Windows job alone does not mean its full suite
+  passed. The revised workflow needs candidate-pinned CI after authorized
+  publication; Windows PASS or a workflow file is not Linux build evidence.
 - **ConPTY repaint — corrected 2026-10-27:** M3 `619164de` checked interaction,
   drag/narrow/desktop resize, reattach and resume; `f7de4822` rechecked readable
   light-theme trust/path and neutral exit/Stop. These short smokes did not catch

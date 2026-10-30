@@ -15,7 +15,7 @@ is now implemented. The user also approved default-on terminals on 2026-10-29
 The combined review of `f018369c` was **BLOCK** on retained reattach repaint
 and lost input modes. The corrective implementation follows the planner's
 provisional `reattach-mode-restore` decision (§5/§10); final-SHA real-CLI recheck
-and Linux CI remain separate gates.
+and candidate-pinned CI remain separate gates (platform-specific scope in §10).
 This is not a claim that a running instance has been upgraded. Push, PR, merge,
 acceptance, release and shared-instance restart each require user authorization.
 
@@ -1385,10 +1385,56 @@ wording; wake-up tests cover missing-record classification and no unattended ret
 Before each milestone review run `npm run typecheck`, `npm test`,
 `npm run test:dag-execution`, `git diff --check` once on the candidate. Record
 exit results and named existing/new failures; do not silently skip a failed
-suite. Intermediate commits run targeted checks only. Linux CI must compile
-node-pty and run applicable tests. Real-browser proof uses a temporary instance
-and fake CLI, keeping bounded screenshots/video/logs in system temp, not the
-worktree. No live 3100/3200 probe or real subscription/model call by automation.
+suite. Intermediate commits run targeted checks only. Real-browser proof uses
+a temporary instance and fake CLI, keeping bounded screenshots/video/logs in
+system temp, not the worktree. No live 3100/3200 probe or real subscription/model
+call by automation.
+
+### CI platform gates (2026-10-30)
+
+`.github/workflows/test.yml` uses Ubuntu and Windows / Node **22.19.0**, with
+`fail-fast: false` so either platform's failure does not cancel the other.
+Both require checkout, setup-node, `npm ci --foreground-scripts`,
+`node scripts/check-planner-pty.js` and `npm run typecheck`. The artifact check
+requires Linux's compiled `build/Release/pty.node` or Windows's bundled ConPTY.
+
+| Platform | Additional blocking steps | Non-blocking visibility |
+| --- | --- | --- |
+| Ubuntu | Compiler/toolchain prerequisites, runner Chrome selection, full `npm test`, `npm run test:dag-execution`, `git diff --check` | None |
+| Windows | `npm run build`, then `npm run test:embedded-planner` | Separate, explicitly named full `npm test` step with `continue-on-error: true` |
+
+The planner selected this scope in room message
+`c06f410b-2dfb-4299-915d-c0ea6e2b5949`: ADR 0003 requires local Windows checks
+and Linux CI, not a newly introduced blocking Windows full-suite gate. Linux's
+full suite remains blocking. Windows's platform-specific P2 checks remain
+blocking; unrelated timing fixes are outside this PR. **A green Windows job is
+not proof its full suite passed**; inspect that step's outcome and logs. Keep
+local implementation-milestone checks above; this workflow/documentation-only
+change is checked locally by parsing YAML and `git diff --check`, with actual
+CI behavior verified only after an authorized push.
+
+The planner reported two Ubuntu full-suite/DAG/diff passes at `80f165cd` and a
+Windows embedded-suite pass in PR #171 runs
+[41009950428](https://github.com/Koumakan-Madoka/CAFF/actions/runs/41009950428)
+and [41009956974](https://github.com/Koumakan-Madoka/CAFF/actions/runs/41009956974).
+OpenConsole queries fell from 22–29 seconds to 0.2–0.4 seconds (first about
+1.5 seconds) with the complete test-parent environment; the explicit Git Bash
+test also passed. These results do not prove the revised workflow at a new SHA;
+its blocking Windows checks and Ubuntu checks still need candidate-pinned CI.
+
+#### Known limitations / follow-up: Windows full suite non-blocking
+
+The two runs failed in different existing, non-P2 timing tests. Record and
+follow up separately; neither test is changed in PR #171:
+
+- `tests/ui/fast-mode-ui.test.js:80`, “Fast role editor and room profile
+  selection”: 15-second TimeoutError in run 41009950428.
+- `tests/runtime/pi-runtime.test.js:2219`, “keeps user cancellation authoritative
+  during recovery”: unhandledRejection `pi made no model or tool progress for
+  50ms` in run 41009956974; the short watchdog fired first on the slower runner.
+
+Windows full `npm test` remains visible but **non-blocking** for this scope.
+A successful embedded suite does not establish that all Windows tests pass.
 
 ### M4 invocation and real-CLI gate record
 
@@ -1411,7 +1457,8 @@ minor/major, prerelease or path containing spaces requires a new planner gate;
 show `planner_wakeup_tools_unverified` and do not run. Fake argv/Bash tests are
 not substituted for this real CLI evidence. Production scheduling/finish/UI
 are implemented in M4b and passed planner real end-to-end acceptance at
-`1c7b10e4` (record below); Linux CI remains outstanding.
+`1c7b10e4` (record below); current candidate-pinned CI scope/evidence is recorded
+in “CI platform gates” above.
 
 Current Windows installation's exact trusted adapter prefix (not shell variables):
 
@@ -1712,9 +1759,11 @@ The no-message `--resume` failure still uses M2's manual reinitialization (§3).
 ### ADR 0003 “Verify during implementation” checklist
 
 The following maps the original M1 verification methods to actual evidence.
-Windows planner checks are not Linux evidence. In particular **Linux CI has not
-run**: an authorized push/PR and a successful candidate-pinned CI result are
-still required before integration. The implementer has not run real Claude.
+Windows planner checks are not Linux evidence. The planner reported Ubuntu CI
+passes at `80f165cd`; see §10 “CI platform gates” for run links, Windows's
+blocking/non-blocking scope and timing follow-ups. The revised workflow still
+requires an authorized push and successful candidate-pinned blocking checks
+before integration. The implementer has not run real Claude.
 
 | ADR premise | Current evidence / repeat gate |
 | --- | --- |
@@ -1723,7 +1772,7 @@ still required before integration. The implementer has not run real Claude.
 | Minimal Windows environment can use Bash | **PASS**: M4a N1 and real M4b caff Bash calls under `buildPlannerEnvironment`; no ProgramFiles/PATHEXT expansion needed. Environment/adapter tests cover key stripping, proxy redaction and direct loopback authentication. Recheck after CLI/Git Bash/platform changes; do not infer success from a rendered TUI. |
 | Untrusted worktree plus print-mode tools | **PASS on Windows**: M4a gate used the fresh `E:\tmp\caff-m4a-gate\wt` without project permissions/settings; this does not prove resistance to project allowances. The 2026-10-30 P1 probe found a bypass; §6 now excludes project/local settings and relies on dontAsk, no bare read allowances and preflight rejection of read-tool rules. blockReads was rejected because it also blocks caff commands (2.1.312); final-SHA revalidation pending. M3 manually answered trust outside trusted ancestors. Do not use inherited ancestor trust as evidence or auto-confirm prompts. |
 | Approval-required tool denied in -p | **PASS on Windows**: M4a mkdir/echo-redirection/git-status and compound commands denied without hanging/sentinel effects; hardened dontAsk positives still pass. No bypass or automatic approval. Fake timeout/denial tests supplement, not replace, this gate. |
-| node-pty prebuild/compilation | **Windows x64 / Node 24.13.1 / node-pty 1.1.0 PASS**: independent install and real PTY/fake CLI suites in M2/M3. The repaint correction adds bundled-DLL Stop/expiry/shutdown/parent-death and OpenConsole cleanup checks. The distribution contains x64/arm64 DLL + OpenConsole, not proof of arm64 execution. `.github/workflows/test.yml` now checks Windows and Linux / Node 22.19.0; `scripts/check-planner-pty.js` requires Windows bundled artifacts or Linux compiled `build/Release/pty.node`. **CI NOT RUN**: successful candidate-pinned URLs still require authorized publication; local Windows PASS/workflow existence is not Linux compilation evidence. |
+| node-pty prebuild/compilation | **Windows x64 / Node 24.13.1 / node-pty 1.1.0 PASS**: independent install and real PTY/fake CLI suites in M2/M3. The repaint correction adds bundled-DLL Stop/expiry/shutdown/parent-death and OpenConsole cleanup checks. The distribution contains x64/arm64 DLL + OpenConsole, not proof of arm64 execution. `.github/workflows/test.yml` now checks Windows and Linux / Node 22.19.0; `scripts/check-planner-pty.js` requires Windows bundled artifacts or Linux compiled `build/Release/pty.node`. The planner reported Linux compiled-artifact/full-suite CI and Windows embedded-suite passes at `80f165cd` (run links above). The revised workflow keeps Linux full checks and Windows build/embedded checks blocking; Windows full `npm test` is visible but non-blocking due to the named timing follow-ups. New-SHA CI remains pending; local Windows PASS/workflow existence is not Linux compilation evidence. |
 | ConPTY full repaint | **Earlier M3 smoke was insufficient**: see the 2026-10-27 correction above. Bundled ConPTY + graphemes passed candidate-pinned real CLI 2.1.311 at `6e022e97`; fit passed at `3b246f47`. The separately approved interactive NO_FLICKER pin addresses classic-renderer reattach/boot strikes, with planner A'/B'/E'/D' observations above; the `f018369c` real-CLI renderer check passed but exposed retained reattach B1/B2 (record above). Mode restoration plus asynchronous repaint now require final-SHA real-CLI revalidation. No claim about untested Windows versions/platforms or Linux CI. |
 
 A future CLI/tool behavior change reopens these compatibility checks. Numeric
@@ -1758,5 +1807,6 @@ frontend [UI structure](../frontend/ui-structure.md) (pane/record ownership and
 focus/resources), [runtime index](index.md), [README](../../../README.md),
 [configuration template](../../../.env.example), and ADR 0003's verification
 index. This is implementation/verification documentation, not a new release
-or a rewrite of accepted decisions. Final docs review, Linux CI and user
-push/PR/merge/acceptance/restart authorizations remain separate.
+or a rewrite of accepted decisions. Final docs review, candidate-pinned CI under
+the platform gates above and user push/PR/merge/acceptance/restart authorizations
+remain separate.
