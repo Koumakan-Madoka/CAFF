@@ -43,7 +43,7 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     versions.xterm = require('@xterm/xterm/package.json').version; versions.addonFit = require('@xterm/addon-fit/package.json').version;
     versions.unicodeGraphemes = require('@xterm/addon-unicode-graphemes/package.json').version;
     async function newContext(options = {}, allowedBase = f.base) {
-      const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, ...options });
+      const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, permissions: ['clipboard-read', 'clipboard-write'], ...options });
       await context.route('**/*', route => {
         if (new URL(route.request().url()).origin !== allowedBase) { external.push(new URL(route.request().url()).origin); return route.abort(); }
         return route.continue();
@@ -57,7 +57,10 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
           Terminal = class extends Ctor { constructor(...args) { super(...args); window.__plannerTerminals.push(this); } };
         } });
         window.__clipboardWrites = 0;
-        Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => { window.__clipboardWrites++; } }, configurable: true });
+        if (navigator.clipboard) { // about:blank is not a secure clipboard context.
+          const writeText = navigator.clipboard.writeText.bind(navigator.clipboard);
+          navigator.clipboard.writeText = async text => { window.__clipboardWrites++; return writeText(text); };
+        }
         window.WebSocket = class extends Original { constructor(...args) { super(...args); window.__terminalSockets.push(this); } };
       });
       context.on('page', page => {
@@ -154,6 +157,94 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     assert.equal(context.pages().length, 1);
     const meta = repository.read(f.room.id), guardian = f.app.store.db.prepare('SELECT guardian_pid FROM chat_embedded_planner_leases WHERE conversation_id=?').get(f.room.id).guardian_pid;
     pass('local licensed assets; non-modal sibling pane; real keyboard input/output and first session saved');
+
+    // Real bundled xterm and system clipboard, not a replacement copy helper.
+    // The raw fake-CLI log establishes receipt (or non-receipt) beyond the socket.
+    const rawInput = () => fs.readFileSync(path.join(f.root, 'fake-input.txt'), 'utf8');
+    const interruptCount = () => (rawInput().match(/\x03/g) || []).length;
+    const interruptsBeforeCopy = interruptCount(), copyText = 'ECHO:hello';
+    await page.locator('.xterm-helper-textarea').focus();
+    for (const shortcut of ['Control+c', 'Control+Shift+C']) {
+      await page.evaluate(text => {
+        const term = window.__plannerTerminals.at(-1), b = term.buffer.active;
+        const row = Array.from({ length: b.length }, (_, i) => i).find(i => b.getLine(i).translateToString(true) === text);
+        if (row === undefined) throw new Error('Known CLI output not found');
+        term.select(0, row, text.length);
+        window.__copyKeyPrevented = false;
+        document.addEventListener('keydown', function recordCopy(event) {
+          if (event.ctrlKey && event.key.toLowerCase() === 'c') {
+            window.__copyKeyPrevented = event.defaultPrevented;
+            document.removeEventListener('keydown', recordCopy);
+          }
+        });
+      }, copyText);
+      const inputsBeforeCopy = frames.filter(frame => frame.type === 'input').length;
+      const copiesBefore = await page.evaluate(() => window.__clipboardWrites);
+      await page.keyboard.press(shortcut);
+      await page.waitForFunction(async text => await navigator.clipboard.readText() === text && !window.__plannerTerminals.at(-1).hasSelection(), copyText);
+      assert.equal(await page.evaluate(() => window.__clipboardWrites), copiesBefore + 1);
+      assert.equal(await page.evaluate(() => window.__copyKeyPrevented), true);
+      assert.equal(await page.locator('.xterm-helper-textarea').evaluate(el => document.activeElement === el), true);
+      await page.waitForTimeout(100);
+      assert.equal(frames.filter(frame => frame.type === 'input').length, inputsBeforeCopy);
+      assert.equal(interruptCount(), interruptsBeforeCopy);
+      pass(shortcut + ': real clipboard equals selected CLI output, default prevented, selection cleared, focus retained and no input/^C');
+    }
+    for (const succeed of [true, false]) {
+      const inputsBeforeFallback = frames.filter(frame => frame.type === 'input').length;
+      await page.evaluate(({ text, succeed }) => {
+        const term = window.__plannerTerminals.at(-1), b = term.buffer.active;
+        const row = Array.from({ length: b.length }, (_, i) => i).find(i => b.getLine(i).translateToString(true) === text);
+        term.select(0, row, text.length);
+        window.__savedWriteText = navigator.clipboard.writeText;
+        window.__savedExec = document.execCommand;
+        navigator.clipboard.writeText = async () => { throw new Error('synthetic clipboard denial'); };
+        if (!succeed) document.execCommand = () => false;
+      }, { text: copyText, succeed });
+      await page.keyboard.press('Control+c');
+      await page.waitForFunction(succeed => {
+        const term = window.__plannerTerminals.at(-1);
+        return succeed ? !term.hasSelection() : document.querySelector('#planner-terminal-notice').textContent.includes('复制失败');
+      }, succeed);
+      assert.equal(await page.locator('.xterm-helper-textarea').evaluate(el => document.activeElement === el), true);
+      assert.equal(await page.evaluate(() => document.querySelector('#planner-terminal-status').textContent), '已连接');
+      if (succeed) assert.equal(await page.evaluate(() => navigator.clipboard.readText()), copyText);
+      else assert.equal(await page.evaluate(() => window.__plannerTerminals.at(-1).getSelection()), copyText);
+      await page.waitForTimeout(100);
+      assert.equal(interruptCount(), interruptsBeforeCopy);
+      assert.equal(frames.filter(frame => frame.type === 'input').length, inputsBeforeFallback);
+      await page.evaluate(() => {
+        navigator.clipboard.writeText = window.__savedWriteText; document.execCommand = window.__savedExec;
+        window.__plannerTerminals.at(-1).clearSelection();
+      });
+      pass('shared textarea clipboard fallback ' + (succeed ? 'success clears selection' : 'failure retains selection and fixed notice') + '; real xterm focus restored without ^C');
+    }
+    await page.keyboard.press('Control+c'); await waitText('FAKE_INTERRUPT');
+    assert.equal(interruptCount(), interruptsBeforeCopy + 1);
+    pass('unselected Ctrl+C reaches raw CLI as exactly one interrupt');
+
+    await page.evaluate(() => navigator.clipboard.writeText('ctrl-v-paste'));
+    const beforePaste = rawInput().length;
+    await page.keyboard.press('Control+v'); await page.waitForTimeout(150);
+    const pasted = rawInput().slice(beforePaste).includes('\x1b[200~ctrl-v-paste\x1b[201~');
+    results.push({ name: 'Ctrl+V observation (not changed by this Goal)', pasted, sentLiteralCtrlV: rawInput().slice(beforePaste).includes('\x16') });
+    console.info('OBSERVE | ' + JSON.stringify(results.at(-1)));
+    if (pasted) { await page.keyboard.press('Enter'); await waitText('ECHO:ctrl-v-paste'); }
+    else { await page.keyboard.press('Control+c'); } // Clear the synthetic CLI's pending ^V, not a paste fix.
+    // The native context menu is browser chrome, outside Playwright's DOM. Test
+    // its paste-event path separately and label it honestly, not as a menu click.
+    await page.locator('.xterm-screen').click({ button: 'right' });
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => { const term = window.__plannerTerminals.at(-1); term.clearSelection(); term.focus(); });
+    await page.keyboard.press('Control+c');
+    await page.locator('.xterm-helper-textarea').evaluate(el => {
+      const data = new DataTransfer(); data.setData('text/plain', 'menu-paste-event');
+      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    await page.waitForTimeout(150);
+    assert.ok(rawInput().includes('\x1b[200~menu-paste-event\x1b[201~'));
+    await page.keyboard.press('Enter'); await waitText('ECHO:menu-paste-event');
+    pass('context-menu paste-event handler reaches CLI bracketed; native menu command not automated (paste unchanged)');
 
     // One/two-line notices change the available height. Sweep a complete cell's
     // fractional remainder to catch the old border-box + 10px overcount reliably.
