@@ -1286,9 +1286,10 @@ notice without changing connection state; retain the selection across any
 notice-driven row resize. Both outcomes restore xterm focus (the shared helper's
 textarea fallback may take it), unless that view has been disposed/replaced.
 Suppress only transient focus reports during copying, so the fallback emits no
-terminal input; ordinary user input/focus reporting is otherwise unchanged. With no selection Ctrl+C remains the CLI interrupt; macOS
-Cmd+C stays on xterm's native copy-event path. No clipboard reads, output-driven
-copy requests or paste changes are added. OSC 52/8 remain consumed below.
+terminal input; ordinary user input/focus reporting is otherwise unchanged. With
+no selection Ctrl+C remains the CLI interrupt; macOS Cmd+C stays on xterm's
+native copy-event path. No clipboard reads, output-driven copy requests or
+paste changes are added. OSC 52/8 remain consumed below.
 
 Pinned xterm/addon JS/CSS and all three LICENSE notices are copied to
 `build/public/vendor/planner-terminal` at build time, not into source or a CDN.

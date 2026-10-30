@@ -162,9 +162,28 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     // The raw fake-CLI log establishes receipt (or non-receipt) beyond the socket.
     const rawInput = () => fs.readFileSync(path.join(f.root, 'fake-input.txt'), 'utf8');
     const interruptCount = () => (rawInput().match(/\x03/g) || []).length;
+    async function seedClipboard(label) {
+      const sentinel = 'sentinel-' + label;
+      await page.evaluate(text => navigator.clipboard.writeText(text), sentinel);
+      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), sentinel, label + ': fresh clipboard sentinel');
+      return sentinel;
+    }
+    async function checkClipboard(expected, label) {
+      const deadline = Date.now() + 5000;
+      let actual;
+      // Await each system read outside waitForFunction; never test a Promise's
+      // truthiness, and report the last real clipboard value on timeout.
+      do {
+        actual = await page.evaluate(() => navigator.clipboard.readText());
+        if (actual === expected) break;
+        await page.waitForTimeout(50);
+      } while (Date.now() < deadline);
+      assert.equal(actual, expected, label + ': system clipboard readback within 5000ms');
+    }
     const interruptsBeforeCopy = interruptCount(), copyText = 'ECHO:hello';
     await page.locator('.xterm-helper-textarea').focus();
     for (const shortcut of ['Control+c', 'Control+Shift+C']) {
+      await seedClipboard(shortcut);
       await page.evaluate(text => {
         const term = window.__plannerTerminals.at(-1), b = term.buffer.active;
         const row = Array.from({ length: b.length }, (_, i) => i).find(i => b.getLine(i).translateToString(true) === text);
@@ -181,16 +200,19 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
       const inputsBeforeCopy = frames.filter(frame => frame.type === 'input').length;
       const copiesBefore = await page.evaluate(() => window.__clipboardWrites);
       await page.keyboard.press(shortcut);
-      await page.waitForFunction(async text => await navigator.clipboard.readText() === text && !window.__plannerTerminals.at(-1).hasSelection(), copyText);
+      await checkClipboard(copyText, shortcut);
+      await page.waitForFunction(() => !window.__plannerTerminals.at(-1).hasSelection());
       assert.equal(await page.evaluate(() => window.__clipboardWrites), copiesBefore + 1);
       assert.equal(await page.evaluate(() => window.__copyKeyPrevented), true);
       assert.equal(await page.locator('.xterm-helper-textarea').evaluate(el => document.activeElement === el), true);
       await page.waitForTimeout(100);
       assert.equal(frames.filter(frame => frame.type === 'input').length, inputsBeforeCopy);
       assert.equal(interruptCount(), interruptsBeforeCopy);
-      pass(shortcut + ': real clipboard equals selected CLI output, default prevented, selection cleared, focus retained and no input/^C');
+      pass(shortcut + ': fresh sentinel replaced by selected CLI output in real clipboard, default prevented, selection cleared, focus retained and no input/^C');
     }
     for (const succeed of [true, false]) {
+      const label = 'fallback-' + (succeed ? 'success' : 'failure');
+      const sentinel = await seedClipboard(label);
       const inputsBeforeFallback = frames.filter(frame => frame.type === 'input').length;
       await page.evaluate(({ text, succeed }) => {
         const term = window.__plannerTerminals.at(-1), b = term.buffer.active;
@@ -208,8 +230,8 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
       }, succeed);
       assert.equal(await page.locator('.xterm-helper-textarea').evaluate(el => document.activeElement === el), true);
       assert.equal(await page.evaluate(() => document.querySelector('#planner-terminal-status').textContent), '已连接');
-      if (succeed) assert.equal(await page.evaluate(() => navigator.clipboard.readText()), copyText);
-      else assert.equal(await page.evaluate(() => window.__plannerTerminals.at(-1).getSelection()), copyText);
+      await checkClipboard(succeed ? copyText : sentinel, label);
+      if (!succeed) assert.equal(await page.evaluate(() => window.__plannerTerminals.at(-1).getSelection()), copyText);
       await page.waitForTimeout(100);
       assert.equal(interruptCount(), interruptsBeforeCopy);
       assert.equal(frames.filter(frame => frame.type === 'input').length, inputsBeforeFallback);
