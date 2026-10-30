@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), http = require('node:http');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const CLI = path.resolve(__dirname, '../../build/lib/caff.js');
 const api = () => require('../../build/lib/planner-cli');
@@ -163,14 +163,45 @@ test('stale owner snapshot never posts a message, and finish HTTP wrapper has an
   assert.notEqual((await f.run(['wakeup', 'finish', '--attempt', attempt, '--json', ascii(items)])).code, 0); assert.equal(f.requests.length, before);
 });
 
+function resolveTransportBash({ platform = process.platform, env = process.env,
+  gitExecPath = () => execFileSync('git', ['--exec-path'], { env, encoding: 'utf8', windowsHide: true, timeout: 10000 }).trim(),
+  isFile = file => { try { return fs.statSync(file).isFile(); } catch { return false; } },
+} = {}) {
+  if (platform !== 'win32') return 'bash';
+  const explicit = env.CLAUDE_CODE_GIT_BASH_PATH;
+  if (explicit && isFile(explicit)) return explicit;
+  try {
+    const candidate = path.win32.resolve(gitExecPath(), '../../..', 'bin/bash.exe');
+    if (isFile(candidate)) return candidate;
+  } catch { /* Missing git/installation: skip, never fall back to WSL bash. */ }
+  return null;
+}
+
+test('Bash transport selects explicit Git Bash on Windows, never WSL/PATH; missing Git Bash is skippable and POSIX stays unchanged', () => {
+  const root = 'C:/Program Files/Git', explicit = 'C:/explicit/bash.exe';
+  const derived = path.win32.join(root, 'bin/bash.exe');
+  const gitExecPath = () => path.win32.join(root, 'mingw64/libexec/git-core');
+  assert.equal(resolveTransportBash({ platform: 'win32', env: { CLAUDE_CODE_GIT_BASH_PATH: explicit },
+    isFile: file => file === explicit, gitExecPath: () => { throw new Error('explicit path must win'); } }), explicit);
+  for (const env of [{ PATH: 'C:/Windows/System32' }, { CLAUDE_CODE_GIT_BASH_PATH: 'missing', PATH: 'C:/Windows/System32' }])
+    assert.equal(resolveTransportBash({ platform: 'win32', env, gitExecPath, isFile: file => file === derived }), derived);
+  assert.equal(resolveTransportBash({ platform: 'win32', env: {}, gitExecPath, isFile: () => false }), null);
+  assert.equal(resolveTransportBash({ platform: 'win32', env: {}, gitExecPath: () => { throw new Error('git missing'); } }), null);
+  assert.equal(resolveTransportBash({ platform: 'linux', env: { CLAUDE_CODE_GIT_BASH_PATH: explicit },
+    gitExecPath: () => { throw new Error('not POSIX'); }, isFile: () => { throw new Error('not POSIX'); } }), 'bash');
+});
+
 test('canonical single-call Bash transport preserves escaped finish metacharacters as data with no sentinel side effects', async t => {
+  const bash = resolveTransportBash();
+  if (!bash) { t.skip('Git Bash unavailable: set CLAUDE_CODE_GIT_BASH_PATH or install Git with bin/bash.exe; no WSL/PATH fallback'); return; }
+  t.diagnostic('Bash transport executable: ' + bash);
   const f = await fixture(t);
   const { buildPlannerWakeupCandidate } = require('../../build/server/domain/runtime/embedded-planner-wakeup-command');
   const c = buildPlannerWakeupCandidate({ sessionId: attempt, appendPrompt: 'Synthetic' });
   const sentinel = path.join(f.root, 'must-not-exist');
   const receipt = [{ sequence: 1, disposition: 'needs_user', reason: "'\"; touch " + sentinel + '; $(touch ' + sentinel + ') `id` | & 中文 😀' }];
   const command = c.adapterPrefix + ` wakeup finish --attempt ${attempt} --json '` + api().encodePlannerJson(receipt) + "'";
-  const child = spawn('bash', ['-c', command], { env: f.env, shell: false, stdio: ['ignore','pipe','pipe'] });
+  const child = spawn(bash, ['-c', command], { env: f.env, shell: false, stdio: ['ignore','pipe','pipe'] });
   let stderr = ''; child.stderr.on('data', b => stderr += b);
   const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
   assert.equal(code, 0, stderr); assert.deepEqual(f.requests.at(-1).body, { items: receipt });
