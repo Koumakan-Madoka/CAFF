@@ -45,7 +45,7 @@ export function createEmbeddedPlannerController(options: any) {
           if(error?.code==='planner_room_missing')throw createHttpError(404,'Room not found');
           if(error?.code==='planner_session_unavailable')throw createHttpError(409,'Planner session metadata unavailable',{code:error.code});
           if(error?.code==='planner_wakeup_goal_unbound')throw createHttpError(409,'A matching planner-bound Goal is required',{code:error.code});
-          if(['planner_wakeup_tools_unverified','planner_wakeup_credential_unavailable','planner_wakeup_settings_unsafe'].includes(error?.code))throw createHttpError(503,'Wake-ups unavailable',{code:error.code});
+          if(['planner_process_limit_invalid','planner_wakeup_tools_unverified','planner_wakeup_credential_unavailable','planner_wakeup_settings_unsafe'].includes(error?.code))throw createHttpError(503,'Wake-ups unavailable',{code:error.code});
           throw error;
         }
         return true;

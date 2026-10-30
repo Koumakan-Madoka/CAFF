@@ -90,8 +90,11 @@ non-numbers and unsafe integers are invalid. A locally enabled terminal remains
 `enabled=true`, `available=false`, with `planner_process_limit_invalid`; keep
 its entry visible with fixed correction/restart guidance. Do not echo the value,
 fall back to 4, run a version probe, create a process host or start the wake-up
-scheduler. Normal CAFF routes remain usable. Explicit feature-off/non-loopback
-reasons take precedence and still hide the entry. No hot reload: a changed value
+scheduler. For an otherwise eligible planner-bound Goal, enabling wake-ups
+returns HTTP 503 with the same `planner_process_limit_invalid` code and leaves
+opt-in/session metadata unchanged; disabling wake-ups remains permitted. Normal
+CAFF routes remain usable. Explicit feature-off/non-loopback reasons take
+precedence and still hide the entry. No hot reload: a changed value
 requires a separately authorized instance restart/new runtime construction.
 
 Enable only when the requested state is on **and** the configured bind is

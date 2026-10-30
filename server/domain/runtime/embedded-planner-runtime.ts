@@ -106,7 +106,7 @@ export function createEmbeddedPlannerRuntime(options: any) {
       const m=room.metadata,g=m?.sessionGoal,b=m?.sessionGoalPlannerBinding;
       if(!g || !['active','paused'].includes(g.status) || b?.goalId!==g.goalId || b?.plannerId!=='local-planner' || m.dagNodeGoalBinding)throw plannerError('planner_wakeup_goal_unbound');
       const status=wakeups?.capability();
-      if(!status?.available)throw plannerError(status?.reasonCode||'planner_wakeup_tools_unverified');
+      if(!status?.available)throw plannerError(status?.reasonCode||(maxProcesses===null?'planner_process_limit_invalid':'planner_wakeup_tools_unverified'));
     }
     const result=records!.toggle(id,value);wakeups?.scan();return result;
   }

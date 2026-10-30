@@ -39,6 +39,33 @@ for (const value of ['', '   ', '0', '-2', '1.5', '01', '1e2', '9007199254740992
   });
 }
 
+test('invalid process limit returns 503 and the same bounded reason when enabling wake-ups', async t => {
+  const f = await withLimit('private-value-sentinel', () => fixture(t));
+  const { applySessionGoalAction } = require('../../build/server/domain/conversation/session-goal');
+  applySessionGoalAction(f.app.store, f.room.id, {
+    action: 'set', goalId: null, goalRevision: 0, status: 'paused',
+    objective: 'Synthetic wake-up configuration regression', owner: { agentId: 'synthetic' },
+    acceptanceCriteria: [{ id: 'c', statement: 'Synthetic', verifyBy: 'Assertions' }],
+    ruledBy: { kind: 'planner', plannerId: 'local-planner', plannerName: 'Synthetic' },
+  });
+  const metadata = () => f.app.store.getConversationWithoutMessages(f.room.id).metadata;
+  const before = metadata();
+  const headers = { 'Content-Type': 'application/json', Origin: f.base, 'X-CAFF-CSRF-Token': f.auth.token };
+  const url = f.base + `/api/conversations/${f.room.id}/planner/wakeups`;
+  const response = await fetch(url, { method: 'PUT', headers, body: '{"enabled":true}' });
+  const body = await response.json();
+  assert.equal(response.status, 503);
+  assert.equal(body.code, 'planner_process_limit_invalid');
+  assert.ok(!JSON.stringify(body).includes('private-value-sentinel'));
+  assert.deepEqual(metadata(), before);
+  assert.equal(fs.existsSync(path.join(f.root, 'fake-probe.json')), false);
+  assert.equal(fs.existsSync(path.join(f.root, 'fake-launch.json')), false);
+  // An unavailable runtime must still permit opting out without launching it.
+  const disabled = await fetch(url, { method: 'PUT', headers, body: '{"enabled":false}' });
+  assert.equal(disabled.status, 200); assert.deepEqual(await disabled.json(), { enabled: false });
+  assert.equal(metadata().embeddedPlanner.wakeupsEnabled, false);
+});
+
 for (const options of [{ enabled: false }, { bindHost: '0.0.0.0' }]) {
   test('invalid limit cannot override feature-off or local-only restrictions', async t => {
     const f = await withLimit('0', () => fixture(t, options));
