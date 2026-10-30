@@ -28,6 +28,7 @@ test('sealed portable input preserves real start bytes, changes only declared ro
   assert.equal(a.supported, true, JSON.stringify(a)); assert.equal(b.supported, true);
   assert.equal(a.input.sessionText, null); assert.equal(a.input.settings, null); assert.equal(a.input.systemPrompt, null);
   assert.equal(a.input.files[0].base64, Buffer.from('retained bytes').toString('base64'));
+  assert.deepEqual(Object.keys(a.input.callback).sort(), ['association', 'expectedTraceHash', 'trace'], 'callback constructor accepts only its three archived input fields');
   assert.equal(a.provenance.commonInputHash, b.provenance.commonInputHash);
   assert.equal(a.provenance.originalRoleHash, b.provenance.originalRoleHash);
   assert.deepEqual({ ...a.input, prompt: '' }, { ...b.input, prompt: '' });

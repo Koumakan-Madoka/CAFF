@@ -145,9 +145,20 @@ test('fixed distribution stages only allowlisted files with byte identity; nativ
   assert.deepEqual(manifestFor(a), manifestFor(b));
   assert.equal(a.length, inventory.build.length + inventory.dependencies.length + 3);
   assert.equal(a.some(f => f.path.includes('do-not-read')), false);
+  assert.ok(a.some(f => f.path === 'build/storage/run/planner-terminal-projection.js'), 'callback SQLite migrations require the merged planner projection module');
   for (const name of inventory.build) assert.deepEqual(a.find(f => f.path === name).bytes, fs.readFileSync(path.join(repo, name)));
   assert.deepEqual(a.find(f => f.path === native).bytes, fs.readFileSync(path.join(root, native)));
   assert.equal(a.some(f => /(^|\/)(auth|session|models)\.json$/.test(f.path)), false);
+});
+test('fixed build inventory includes module-relative imports required after the develop merge', () => {
+  const staged = new Set(inventory.build);
+  for (const file of inventory.build) {
+    const text = fs.readFileSync(path.join(repo, file), 'utf8');
+    for (const [, specifier] of text.matchAll(/require\(['"](\.[^'"]+)['"]\)/g)) {
+      const relative = path.posix.normalize(path.posix.join(path.posix.dirname(file), specifier)) + '.js';
+      if (fs.existsSync(path.join(repo, relative))) assert.ok(staged.has(relative), file + ' requires unstaged ' + relative);
+    }
+  }
 });
 test('explicit dependency root, fixed versions and ELF architecture required; no automatic host fallback', t => {
   const root = fixture(t), { prepareBridgeFiles } = api();
