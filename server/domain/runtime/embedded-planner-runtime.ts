@@ -61,13 +61,15 @@ export function createEmbeddedPlannerRuntime(options: any) {
     const goal=room.metadata?.sessionGoal,binding=room.metadata?.sessionGoalPlannerBinding;
     const bound=goal && ['active','paused'].includes(goal.status) && binding?.goalId===goal.goalId && binding?.plannerId==='local-planner' && !room.metadata?.dagNodeGoalBinding;
     const unavailableWakeReason=['planner_cli_version_unsupported','planner_cli_version_invalid'].includes(capability.reasonCode)?'planner_wakeup_tools_unverified':capability.reasonCode;
+    const wakeCapability = wakeups?.capability();
     return { available: capability.available,
       reasonCode: processState === 'uncertain' ? 'planner_process_exit_unconfirmed' : capability.reasonCode,
       processState, attached: processState === 'interactive-attached', wakeupsEnabled: metadata?.wakeupsEnabled || false,
       sessionInitialized: metadata?.launchAttempted || false,
       ...(records?.counts(id,room.metadata?.sessionGoal?.goalId) || {pendingCount:0,needsUserCount:0}),
-      wakeupAvailable:!!bound && (wakeups?.capability().available || false),
-      wakeupReasonCode:wakeups?.capability().reasonCode || (!capability.available?unavailableWakeReason:!bound?'planner_wakeup_goal_unbound':!metadata?.launchAttempted?'session_uninitialized':''),
+      wakeupAvailable:!!bound && (wakeCapability?.available || false),
+      wakeupReasonCode:wakeCapability?.reasonCode || (!capability.available?unavailableWakeReason:!bound?'planner_wakeup_goal_unbound':!metadata?.launchAttempted?'session_uninitialized':''),
+      wakeupSettingsIssue:wakeCapability?.settingsIssue,
       quota: records?.quota(id) || { used: 0, limit: 4, nextEligibleAt: null } };
   }
   function repair(id: string) {
@@ -97,7 +99,8 @@ export function createEmbeddedPlannerRuntime(options: any) {
     if(value){
       const m=room.metadata,g=m?.sessionGoal,b=m?.sessionGoalPlannerBinding;
       if(!g || !['active','paused'].includes(g.status) || b?.goalId!==g.goalId || b?.plannerId!=='local-planner' || m.dagNodeGoalBinding)throw plannerError('planner_wakeup_goal_unbound');
-      if(!wakeups?.capability().available)throw plannerError(wakeups?.capability().reasonCode||'planner_wakeup_tools_unverified');
+      const status=wakeups?.capability();
+      if(!status?.available)throw plannerError(status?.reasonCode||'planner_wakeup_tools_unverified');
     }
     const result=records!.toggle(id,value);wakeups?.scan();return result;
   }

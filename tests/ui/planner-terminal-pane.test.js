@@ -212,6 +212,19 @@ test('wake-up opt-in requires confirmation, shows gate/quota/user counts and nev
   assert.match(f.q('wake-status').textContent,/未验证|重新验证/);assert.equal(f.q('wakeups').disabled,true);
 });
 
+test('unsafe settings show exact file and safe category as text, without rule contents', async t => {
+  const f = fixture(t); f.pane.sync('room-a', { enabled: true });
+  const labels = { bash_allow: 'Bash 放行规则', additional_directories: 'additionalDirectories', unreadable: '读不了', invalid_json: '解析不了' };
+  for (const [kind, label] of Object.entries(labels)) {
+    f.state({ available: true, processState: 'absent', wakeupAvailable: false, wakeupReasonCode: 'planner_wakeup_settings_unsafe', wakeupSettingsIssue: { file: '/synthetic/<img src=x>/settings.json', kind } });
+    if (kind === 'bash_allow') await f.pane.open(); else await f.pane.refresh();
+    assert.match(f.q('wake-status').textContent, /叫醒设置不安全/);
+    assert.ok(f.q('wake-status').textContent.includes(label));
+    assert.ok(f.q('wake-status').textContent.includes('/synthetic/<img src=x>/settings.json'));
+    assert.equal(f.q('wake-status').querySelector('img'), null); assert.equal(f.q('wakeups').disabled, true);
+  }
+});
+
 test('wake-up records use cursor paging, render text not HTML and are cleared on room change',async t=>{
   const f=fixture(t,{respond:url=>url.endsWith('/wakeups')?{items:[{id:'attempt-a',sequence:3,status:'needs_user',summary:'<img src=x>',reservedAt:'2026-10-26'}],nextBefore:3,hasMore:true}:url.includes('before=3')?{items:[],nextBefore:null,hasMore:false}:{summary:{id:'attempt-a',status:'needs_user'},chunks:[{sequence:4,kind:'assistant',text:'<script>sentinel</script>'}],nextAfter:4,hasMore:true,truncated:true,transcriptExpired:false}});
   f.pane.sync('room-a',{enabled:true});await f.pane.open();f.q('records').click();await tick();

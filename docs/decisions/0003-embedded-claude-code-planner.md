@@ -102,6 +102,20 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
   - a bounded `--max-turns`;
   - tools limited to the caff CLI and read-only tools: no PowerShell, no edits
     and no other shell commands.
+- **User-approved security correction, 2026-10-30 (PR #171 P1):** wake-ups add
+  `--setting-sources user` and `--settings
+  '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}'`, removing
+  bare Read/Glob/Grep allowances while keeping the same four tools and six Bash
+  adapter rules. Project/local settings (permissions/hooks) do not load. Before
+  each launch, inspect child-user and file-based managed settings; Bash allow
+  rules, nonempty additionalDirectories or unreadable/invalid settings block
+  with `planner_wakeup_settings_unsafe`, no quota/item claim. Only filename and
+  issue category are diagnostic. Registry/MDM/server-delivered managed policy
+  is not inspected; interactive terminals are unchanged. User approval and
+  planner instruction: message `af51ccfd-4ce7-4d6d-9228-85fb46e6a5ac`;
+  exact paths, checks and current argv are in P2 §6/§10. The planner's CLI
+  2.1.312 probe established the old inherited-permission/outside-read gap;
+  final-SHA adversarial and wake-up end-to-end revalidation remain required.
 - **Limits:**
   - At most 4 wake-ups per room per hour.
   - While the room's interactive terminal is live, no wake-up runs; the item is
@@ -197,7 +211,10 @@ and [planner acceptance records](../engineering/runtime/embedded-planner.md#plan
   untrusted worktree. Explicit dontAsk was additionally verified; M4b runtime
   pins it, 2.1.x >=2.1.310 and whitespace-free trusted prefix paths. The initial
   M4b behavioral BLOCK and successful `1c7b10e4` revalidation are both retained
-  in P2 §10. Other versions/paths require another gate, never broader permission.
+  in P2 §10. Those historical gates did not include inherited project/local
+  allowances; the 2026-10-30 correction above closes that demonstrated gap and
+  requires new real CLI verification. Other versions/paths require another gate,
+  never broader permission.
 - **Approval in `-p`:** M4a's mkdir/redirect/git-status probes were denied,
   without hanging or sentinel effects, including dontAsk hardening. Minimal
   allowlisted environment found Git Bash without additional path variables.

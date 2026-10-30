@@ -73,6 +73,20 @@ test('Windows normalizes path/proxy case collisions and requires user configurat
   assert.throws(() => buildPlannerEnvironment({ platform: 'linux', source: { PATH: '/bin' }, baseUrl: 'http://localhost:1' }), /planner_environment_invalid/);
 });
 
+test('headless preflight receives the exact spawn environment before a lease is claimed', async t => {
+  const f = fixture(t), claim = f.repository.claim(f.room.id); f.repository.release(f.room.id, claim.leaseId);
+  let inspected, spawned = false;
+  await assert.rejects(f.host.startHeadless(f.room.id, () => { spawned = true; }, (_room, env) => {
+    inspected = env; assert.equal(env.HOME, f.root); assert.equal(env.CAFF_ROOM_ID, f.room.id);
+    assert.equal(f.repository.hasLease(f.room.id), false);
+    throw Object.assign(new Error('blocked'), { code: 'planner_wakeup_settings_unsafe' });
+  }), { code: 'planner_wakeup_settings_unsafe' });
+  assert.equal(spawned, false); assert.equal(f.host.state(f.room.id), 'absent');
+  const child = new EventEmitter(); child.stop = () => child.emit('exit', { exitCode: 0 });
+  await f.host.startHeadless(f.room.id, launch => { assert.strictEqual(launch.env, inspected); return child; }, (_room, env) => { inspected = env; });
+  child.stop();
+});
+
 test('first launch persists one UUID before spawn; detach, reattach/repaint and exit/resume never replay', async t => {
   const f = fixture(t); const first = await f.attach();
   const meta = f.store.getConversationWithoutMessages(f.room.id).metadata.embeddedPlanner;

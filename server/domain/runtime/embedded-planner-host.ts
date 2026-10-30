@@ -99,18 +99,21 @@ export function createEmbeddedPlannerHost(options: Options) {
       throw plannerError('planner_process_exit_unconfirmed');
     }
   }
+  function headlessEnvironment(id?: string) {
+    return buildPlannerEnvironment({ source: options.env, baseUrl: options.baseUrl, roomId: id, credentialPath: options.credentialPath });
+  }
   // M4 supplies the print-mode launcher and post-admission eligibility/quota
   // reservation. It cannot bypass the PTY's room/session/global admission path.
   async function startHeadless(id: string, launch: (config: PlannerLaunch) => PlannerProcess | Promise<PlannerProcess>,
-    prepare: (context: PlannerRoom) => void | Promise<void> = () => {}) {
+    prepare: (context: PlannerRoom, env: NodeJS.ProcessEnv) => void | Promise<void> = () => {}) {
     const entry = admit(id);
     try {
       entry.context = await options.resolveRoom(id);
       if (!repository.read(id)?.launchAttempted) throw plannerError('session_uninitialized');
       if (closing) throw plannerError('planner_room_busy');
-      const env = buildPlannerEnvironment({ source: options.env, baseUrl: options.baseUrl, roomId: id, credentialPath: options.credentialPath });
+      const env = headlessEnvironment(id);
       const prompt = plannerAppendPrompt(entry.context);
-      await prepare(entry.context);
+      await prepare(entry.context, env);
       if (closing) throw plannerError('planner_room_busy');
       const claim = repository.claim(id);
       entry.leaseId = claim.leaseId; entry.sessionId = claim.metadata.sessionId;
@@ -253,7 +256,7 @@ export function createEmbeddedPlannerHost(options: Options) {
     if (timer) clearTimeout(timer);
     // Any uncertain leases deliberately survive; the next boot cannot overlap them.
   }
-  return { attach, startHeadless, state, close,
+  return { attach, startHeadless, headlessEnvironment, state, close,
     onChange(fn: () => void) { changes.add(fn); return () => { changes.delete(fn); }; },
     attention(id: string, data: { sequences: number[]; unresolvedCount: number; needsUserCount: number }) { entries.get(id)?.listener?.({ type: 'attention', ...data }); },
     hasEntry: (id: string) => entries.has(id), canWake: (id: string) => !closing && state(id) === 'absent' };

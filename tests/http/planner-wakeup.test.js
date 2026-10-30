@@ -20,6 +20,11 @@ test('live scheduler -> pipe fake CLI -> actual caff/P1 -> production finish; fi
   assert.equal(launch.env.CAFF_ROOM_ID, f.room.id);
   assert.equal(launch.env.CAFF_PLANNER_CREDENTIAL_FILE, f.file);
   assert.equal(launch.args[launch.args.indexOf('--permission-mode') + 1], 'dontAsk');
+  assert.equal(launch.args[launch.args.indexOf('--setting-sources') + 1], 'user');
+  assert.equal(launch.args[launch.args.indexOf('--settings') + 1], '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}');
+  const { buildVerifiedPlannerWakeup } = require('../../build/server/domain/runtime/embedded-planner-wakeup-command');
+  assert.deepEqual(launch.args, buildVerifiedPlannerWakeup({ version: '2.1.310', sessionId: launch.args[2], appendPrompt: launch.args[launch.args.indexOf('--append-system-prompt') + 1] }).args);
+  for (const bare of ['Read','Glob','Grep']) assert.ok(!launch.args[launch.args.indexOf('--allowedTools') + 1].split(',').includes(bare));
   assert.ok(Buffer.byteLength(launch.prompt) <= 65536);
   const detail = await f.call('wakeups/' + a.id);
   assert.equal(detail.status, 200);
@@ -38,6 +43,36 @@ test('live scheduler -> pipe fake CLI -> actual caff/P1 -> production finish; fi
   await new Promise(r => setTimeout(r, 120));
   assert.equal(f.launches().length, 1);
 });
+test('settings changed after opt-in block each launch without claims/quota; diagnostics name file/category only; fixing file allows same item', async t => {
+  const logs = [], f = await fixture(t, { log: entry => logs.push(entry) });
+  assert.equal((await f.call('wakeups', { enabled: true })).status, 200);
+  const file = path.join(f.root, '.claude', 'settings.json'); fs.mkdirSync(path.dirname(file));
+  fs.writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash(private-rule-sentinel)'] }, privateField: 'private-field-sentinel' }));
+  const row = f.append();
+  const state = await f.wait(async () => { const r = await f.call('state'); return r.body.wakeupReasonCode === 'planner_wakeup_settings_unsafe' ? r.body : null; });
+  await f.wait(() => logs.some(x => x.reasonCode === 'planner_wakeup_settings_unsafe'));
+  assert.equal(state.available, true); assert.equal(state.wakeupAvailable, false);
+  assert.deepEqual(state.wakeupSettingsIssue, { file, kind: 'bash_allow' });
+  assert.equal(f.launches().length, 0); assert.equal(state.quota.used, 0);
+  assert.equal(f.sessions.hasLease(f.room.id), false);
+  assert.equal((await f.call('wakeups')).body.items.length, 0);
+  assert.ok(f.records.pending(f.room.id, f.goal.goalId).some(x => x.sequence === row.sequence));
+  assert.equal(f.app.store.listPlannerAttention({ conversationId: f.room.id, status: 'unresolved' }).items[0].sequence, row.sequence);
+  const blocked = await f.call('wakeups', { enabled: true }); assert.equal(blocked.status, 503);
+  const diagnostic = JSON.stringify({ state, logs, body: blocked.body });
+  assert.ok(!diagnostic.includes('private-rule-sentinel')); assert.ok(!diagnostic.includes('private-field-sentinel'));
+  assert.ok(logs.some(x => x.settingsIssue?.file === file && x.settingsIssue?.kind === 'bash_allow'));
+  fs.writeFileSync(file, JSON.stringify({ permissions: { allow: ['Read(*)','WebSearch','Edit'] } }));
+  // The exact same occurrence remains pending; no cached unsafe decision.
+  await f.call('wakeups', { enabled: true }); const a = await completed(f);
+  assert.equal(f.launches().length, 1); assert.equal((await f.call('state')).body.quota.used, 1);
+  assert.equal(f.app.store.db.prepare('SELECT attention_sequence FROM chat_planner_wakeup_items WHERE attempt_id=?').get(a.id).attention_sequence, row.sequence);
+  fs.writeFileSync(file, JSON.stringify({ permissions: { additionalDirectories: ['private-directory-sentinel'] } }));
+  const next = f.append(); await f.wait(() => logs.some(x => x.settingsIssue?.kind === 'additional_directories'));
+  assert.equal(f.launches().length, 1); assert.equal((await f.call('state')).body.quota.used, 1);
+  assert.ok(f.records.pending(f.room.id, f.goal.goalId).some(x => x.sequence === next.sequence));
+});
+
 test('stdin command card includes all actual-prefix commands, closed action examples and explicit canonical escapes within the total budget', async t => {
   const f = await fixture(t);
   await f.call('wakeups', { enabled: true }); f.append();

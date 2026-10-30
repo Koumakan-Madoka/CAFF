@@ -5,6 +5,7 @@ import { buildVerifiedPlannerWakeup } from './embedded-planner-wakeup-command';
 import { launchPlannerPrint } from './embedded-planner-print';
 import { plannerAppendPrompt } from './embedded-planner-room';
 import { plannerWakeupCommandCard } from './planner-wakeup-command-card';
+import { checkPlannerWakeupSettings } from './planner-wakeup-settings';
 import type { EmbeddedPlannerHost, PlannerLaunch, PlannerProcess } from './embedded-planner-host';
 function protectedValues(options: any) {
   const values: string[] = [...(options.privateValues || [])];
@@ -54,6 +55,15 @@ export function createPlannerWakeupRuntime(options: {
   }
   if (!reasonCode && !secrets.valid)
     reasonCode = 'planner_wakeup_credential_unavailable';
+  function settingsStatus(env = options.host.headlessEnvironment()) {
+    const status = checkPlannerWakeupSettings({ env, managedSettingsDir: config.managedSettingsDir });
+    return status.issue ? { ...status, issue: { ...status.issue, file: secrets.redact(status.issue.file) } } : status;
+  }
+  function capability() {
+    if (closed || reasonCode) return { available: false, reasonCode, settingsIssue: undefined };
+    const status = settingsStatus(); // No cache: settings may change after opt-in.
+    return { available: status.available, reasonCode: status.reasonCode, settingsIssue: status.issue };
+  }
   let closed = false, pumping = false, scanPending = false, roomCursor = '', moreRooms = false;
   let timer: NodeJS.Timeout | undefined;
   const bootAt = now();
@@ -212,7 +222,14 @@ export function createPlannerWakeupRuntime(options: {
         wall.unref();
         active.set(reserved.id, { stop: (code='planner_wakeup_interrupted') => { reason = code; child?.stop(code==='planner_wakeup_storage_unavailable'); }, timer: wall });
         return launched;
-      }, (context: any) => {
+      }, (context: any, env: NodeJS.ProcessEnv) => {
+        // Check the exact object that will be passed to spawn, before reserving
+        // any attention items or quota (not CAFF's parent environment).
+        const status = settingsStatus(env);
+        if (!status.available) {
+          (config.log || ((entry: object) => console.info(JSON.stringify(entry))))({ event: 'planner_wakeup_deferred', roomId, reasonCode: status.reasonCode, settingsIssue: status.issue });
+          throw Object.assign(new Error(status.reasonCode), { code: status.reasonCode });
+        }
         const c = repository.context(roomId);
         if (!c)
           throw Object.assign(new Error(), { code: 'planner_wakeup_ineligible' });
@@ -243,7 +260,7 @@ export function createPlannerWakeupRuntime(options: {
         try { repository.end(reserved.id, { exitCode: null, resultSeen: false, reasonCode: closed ? 'planner_wakeup_interrupted' : e?.code === 'planner_process_spawn_failed' ? 'planner_process_spawn_failed' : 'planner_process_exit_unconfirmed' }); }
         catch { storageFailure(); }
       }
-      else if (!['planner_wakeup_ineligible', 'session_uninitialized', 'planner_room_busy', 'planner_process_limit', 'planner_process_exit_unconfirmed'].includes(e?.code)) {
+      else if (!['planner_wakeup_settings_unsafe', 'planner_wakeup_ineligible', 'session_uninitialized', 'planner_room_busy', 'planner_process_limit', 'planner_process_exit_unconfirmed'].includes(e?.code)) {
         // Fixed diagnostic only, no caught error/prompt/credential content.
         (config.log || (() => { }))({ event: 'planner_wakeup_deferred', roomId, reasonCode: 'planner_wakeup_ineligible' });
       }
@@ -298,7 +315,7 @@ export function createPlannerWakeupRuntime(options: {
   }, 60000);
   maintenance.unref();
   scan('catch_up');
-  return { repository, capability: () => ({ available: !closed && !reasonCode, reasonCode }), scan,
+  return { repository, capability, scan,
     async stop() { closed = true; unsubscribe(); unhost(); if (timer)
       clearTimeout(timer); clearInterval(maintenance); for (const a of active.values()) {
       clearTimeout(a.timer);

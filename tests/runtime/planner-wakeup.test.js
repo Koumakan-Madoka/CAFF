@@ -27,6 +27,15 @@ test('verified wakeup argv pins dontAsk, version range and no-space trusted pref
   const c = buildVerifiedPlannerWakeup(base);
   assert.equal(c.verified, true);
   assert.equal(c.args[c.args.indexOf('--permission-mode') + 1], 'dontAsk');
+  assert.equal(c.args[c.args.indexOf('--setting-sources') + 1], 'user');
+  assert.equal(c.args[c.args.indexOf('--settings') + 1], '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}');
+  assert.equal(c.tools, 'Read,Glob,Grep,Bash');
+  assert.equal(c.allowedTools, ['state','goal read','attention read*','goal action --json *','owner message --json *','wakeup finish --attempt * --json *'].map(s => `Bash(${c.adapterPrefix} ${s})`).join(','));
+  assert.equal(c.disallowedTools, 'Write,Edit,NotebookEdit,MultiEdit,PowerShell,Agent,Task,Skill,WebFetch,WebSearch,ToolSearch,mcp__*');
+  assert.equal(c.args[c.args.indexOf('--mcp-config') + 1], '{"mcpServers":{}}');
+  assert.ok(c.args.includes('--strict-mcp-config'));
+  const candidate = require('../../build/server/domain/runtime/embedded-planner-wakeup-command').buildPlannerWakeupCandidate(base);
+  assert.deepEqual(c.args, [...candidate.args, '--permission-mode', 'dontAsk']);
   for (const version of ['2.1.309', '2.2.0', '3.1.310', '2.0.999', '2.1.310-beta'])
     assert.throws(() => buildVerifiedPlannerWakeup({ ...base, version }), /planner_wakeup_tools_unverified/);
   assert.equal(buildVerifiedPlannerWakeup({ ...base, version: '2.1.999' }).verified, true);
@@ -145,3 +154,52 @@ test('bounded batching, transactional reservation rollback, transcript head/tail
   assert.equal(f.repository.list(f.room.id).items.length, 1);
   assert.equal(quota, 1);
 });
+
+
+function settingsFixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-wakeup-settings-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const managedSettingsDir = path.join(root, 'managed');
+  const env = { HOME: root, USERPROFILE: root };
+  const file = path.join(root, '.claude', 'settings.json');
+  const write = (value, target = file) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, typeof value === 'string' ? value : JSON.stringify(value)); return target; };
+  const check = (extra = {}) => require('../../build/server/domain/runtime/planner-wakeup-settings').checkPlannerWakeupSettings({ env, managedSettingsDir, ...extra });
+  return { root, env, file, managedSettingsDir, write, check };
+}
+for (const [label, value, kind] of [
+  ['bare Bash', { permissions: { allow: [' Bash '] } }, 'bash_allow'],
+  ['Bash prefix', { permissions: { allow: [' Bash (sensitive-rule-must-not-leak)'] } }, 'bash_allow'],
+  ['extra directory', { permissions: { additionalDirectories: ['private-directory-must-not-leak'] } }, 'additional_directories'],
+  ['invalid JSON', '{sensitive-json-must-not-leak', 'invalid_json'],
+  ['array', [], 'invalid_json'], ['null', null, 'invalid_json'], ['scalar', '123', 'invalid_json'],
+]) test(`wakeup settings reject ${label} with only file and category`, t => {
+  const f = settingsFixture(t); f.write(value);
+  assert.deepEqual(f.check(), { available: false, reasonCode: 'planner_wakeup_settings_unsafe', issue: { file: f.file, kind } });
+});
+test('wakeup settings reject an existing unreadable file (directory) and unreadable managed fragment directory', t => {
+  const f = settingsFixture(t); fs.mkdirSync(f.file, { recursive: true });
+  assert.equal(f.check().issue.kind, 'unreadable');
+  fs.rmSync(f.file, { recursive: true });
+  f.write('{}', path.join(f.managedSettingsDir, 'managed-settings.d'));
+  assert.equal(f.check().issue.kind, 'unreadable');
+});
+test('missing settings and non-Bash allowances are safe; checks use child home/config dir without caching or parent env', t => {
+  const f = settingsFixture(t);
+  assert.equal(f.check().available, true);
+  f.write({ permissions: { allow: ['Read(*)','Glob(*)','Grep(*)','WebSearch','Edit'], additionalDirectories: [] } });
+  assert.equal(f.check().available, true);
+  const configDir = path.join(f.root, 'custom-config'); f.env.CLAUDE_CONFIG_DIR = configDir;
+  f.write({ permissions: { allow: ['Bash(*)'] } }, path.join(configDir, 'settings.json'));
+  assert.equal(f.check().issue.file, path.join(configDir, 'settings.json'));
+  fs.unlinkSync(path.join(configDir, 'settings.json')); assert.equal(f.check().available, true);
+  delete f.env.CLAUDE_CONFIG_DIR;
+  const other = path.join(f.root, 'different-home');
+  f.write({ permissions: { allow: ['Bash'] } }, path.join(other, '.claude', 'settings.json'));
+  assert.equal(f.check({ env: { HOME: other, USERPROFILE: f.root }, platform: 'linux' }).available, false);
+  assert.equal(f.check({ env: { HOME: other, USERPROFILE: f.root }, platform: 'win32' }).available, true);
+});
+for (const name of ['managed-settings.json', 'managed-settings.d/x.json'])
+  test(`file-based managed settings are checked: ${name}`, t => {
+    const f = settingsFixture(t), target = f.write({ permissions: { allow: ['Bash(*)'] } }, path.join(f.managedSettingsDir, name));
+    assert.deepEqual(f.check().issue, { file: target, kind: 'bash_allow' });
+  });

@@ -488,8 +488,10 @@ paths. User-specific environment configuration for provider, gateway, model and
 preferences must go in the `env` object of the user's `~/.claude/settings.json`
 to affect CAFF-hosted sessions; system environment values outside the allowlist
 (including CLAUDE_CODE_* preferences) are not inherited. Claude Code applies its
-own settings after launch; CAFF neither copies these values nor reads/rewrites
-the settings file. The allowlist governs CAFF's initial child environment, not
+own settings after launch; CAFF does not copy these values or rewrite settings.
+Before unattended wake-ups only, CAFF reads the files specified in §6 solely
+for the safety check; contents/values are never returned or logged. The
+allowlist governs CAFF's initial child environment, not
 subsequent user-owned CLI settings, hooks, MCP configuration or local account
 access. It prevents inherited provider-key billing, but does **not** prove
 subscription billing if the CLI's settings select another provider. Never
@@ -804,7 +806,7 @@ reserve an attempt, associate its occurrences and consume quota **before spawn**
 No transaction spans a model run. Publish status only after commit. Ambiguous
 spawn, failed run and interrupted attempt count as attempts, preventing retry
 loops. A pre-admission skip (terminal busy, disabled, no slot, stale/resolved
-item, credential unavailable) consumes no quota and is not a fake CLI attempt.
+item, credential unavailable, unsafe settings) consumes no quota and is not a fake CLI attempt.
 
 At most **4 attempts per room in a rolling 60-minute window**, across all Goals
 and service restarts. Use persisted reservation timestamps; include reservations
@@ -832,8 +834,10 @@ Wake-up command shape (verified gate and exact runtime argv in §10):
 ```text
 <cli> -p --resume <room uuid> --output-format stream-json
       --max-turns 12 --append-system-prompt <planner policy>
+      --setting-sources user
+      --settings '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}'
       --tools <explicit minimal tool set>
-      --allowedTools <read-only tools and exact caff-only Bash rule>
+      --allowedTools <six exact caff-only Bash adapter rules; no bare Read/Glob/Grep>
       --disallowedTools <edit/write/PowerShell/other unsafe tools>
       --strict-mcp-config --mcp-config '{"mcpServers":{}}'
       --permission-mode dontAsk
@@ -871,6 +875,47 @@ The envelope is sent only via stdin followed by EOF. Variadic options each have
 one explicit argument followed by another option (or argv end), never a positional
 prompt that could be consumed as another tool/config value.
 The local-account/CLI permission system is not an OS sandbox.
+
+**Settings isolation (user-approved 2026-10-30; PR #171 P1):** only user
+settings load (`--setting-sources user`), not the room's project/local settings,
+including their permissions and hooks. The inline `--settings` sets
+`permissions.blockReadsOutsideWorkingDirectories=true`; bare Read/Glob/Grep
+allowances are removed. File tools may read only inside the working directory.
+The four available tools, six exact Bash adapter prefixes, deny list and empty
+strict MCP configuration stay unchanged. Interactive terminal policy is unchanged.
+
+Before **each** wake, without caching and before reserving items/quota or
+claiming a session lease, inspect the **same child environment object** passed
+to spawn. User settings are `<CLAUDE_CONFIG_DIR>/settings.json` when that child
+variable exists; otherwise `<USERPROFILE>/.claude/settings.json` on Windows or
+`<HOME>/.claude/settings.json` on POSIX. Never substitute CAFF's own environment.
+The initial child allowlist is unchanged (it does not inherit CLAUDE_CONFIG_DIR),
+but the checker honors it if present in its supplied child environment.
+Also inspect file-based `managed-settings.json` and `managed-settings.d/*.json`
+in `C:\\Program Files\\ClaudeCode` (Windows), `/Library/Application Support/ClaudeCode`
+(macOS), or `/etc/claude-code` (Linux/WSL). The managed directory is injectable
+only through internal composition for isolated tests, never HTTP or room data.
+
+Missing files are safe. Existing unreadable files, invalid JSON/non-object JSON,
+a `permissions.allow` rule whose tool name before `(` is `Bash` (whitespace
+removed), or a nonempty `permissions.additionalDirectories` array block the wake.
+Other allowances (Read/Glob/Grep/WebSearch/Edit etc.) do not block: reads are
+bounded by blockReads, and other tools are absent from `--tools`/denied. A
+fragment directory that exists but cannot be listed also fails closed.
+`planner_wakeup_settings_unsafe` is separate from terminal availability. The
+pane/state return only `wakeupSettingsIssue: { file, kind }`, with categories
+`bash_allow`, `additional_directories`, `unreadable`, `invalid_json`, never rule
+contents, parser errors or other settings fields. Emit a fixed structured
+`planner_wakeup_deferred` instance diagnostic with that reason and file/category;
+no wake-up transcript row is created, no hourly quota/item claim is consumed,
+and attention remains unchanged. Fixing the settings allows a subsequent check
+of the original occurrence; no permanent cached disable. Opt-in PUT returns 503
+while unsafe, but opt-out and historical records remain available.
+
+This check does **not** inspect registry (HKLM/HKCU), MDM or server-delivered
+managed policy. It is not a filesystem/OS sandbox and does not lock settings
+against concurrent local changes. Do not claim isolation from those uninspected
+sources or from same-account processes.
 
 **Do not assume `Bash(caff:*)` is sufficient.** Bash permissions match command
 text, not a parsed executable/argv. The allow rule, available tool set and deny
@@ -1112,7 +1157,7 @@ Implemented room-scoped routes (P2 additions, not changes to P1 reads):
 
 | Method / path suffix under `/api/conversations/:id/planner` | Contract |
 | --- | --- |
-| `GET /state` | `{ available, reasonCode, processState, attached, wakeupsEnabled, sessionInitialized, wakeupAvailable, wakeupReasonCode, pendingCount, needsUserCount, quota: { used, limit: 4, nextEligibleAt } }`; no transcript/credential; no spawn |
+| `GET /state` | `{ available, reasonCode, processState, attached, wakeupsEnabled, sessionInitialized, wakeupAvailable, wakeupReasonCode, wakeupSettingsIssue?: { file, kind }, pendingCount, needsUserCount, quota: { used, limit: 4, nextEligibleAt } }`; no transcript/credential; no spawn |
 | `POST /terminal/repair` | Browser user only, ordinary CSRF plus local bind/peer/Host/Origin guards; planner/agent rejected. Body <=1 KiB, exactly `{ "confirm": true }` (one literal key, no duplicates/extra fields); no query. 409 for any in-memory room entry, 404 for missing room/disabled endpoint; otherwise release only that room's lease and return `{ repaired: boolean }`, preserving its session UUID and other rooms. No process kill or spawn. |
 | `POST /terminal/session/reinitialize` | Browser user only; same CSRF, local bind/peer/Host/Origin guards and strict <=1 KiB `{ "confirm": true }` protocol as lease repair; no query, planner/agent rejected, feature-off/non-loopback endpoint absent. Any in-memory entry: 409 `planner_room_busy`; durable lease: 409 `planner_process_exit_unconfirmed`; missing room: 404. Only set `launchAttempted=false`, preserve UUID/opt-in/all other metadata; return `{ reinitialized: boolean }`, false for no metadata/already false. No spawn, kill or lease release; fixed diagnostic only when changed (§3). |
 | `PUT /wakeups` | strict `{ enabled: boolean }`; browser confirmation + ordinary P1 mutation guards; disabling stops future admission, not an already committed attempt or live PTY |
@@ -1258,6 +1303,7 @@ by the existing P1 protected-path diagnostic, not broadcast to the browser.
 | `planner_process_exited` | Neutral normal-exit guidance; manual connection to the same session, no automatic restart or recovery buttons |
 | `planner_process_stopped` | Neutral CAFF-initiated stop (terminate/retention/shutdown), independent of exit code; same UUID, no automatic restart or recovery buttons |
 | `planner_process_spawn_failed`, `planner_process_exit_unconfirmed` | Release only on proven failure/exit; otherwise quarantine room/slot |
+| `planner_wakeup_settings_unsafe` | Wake-up blocked before reservation/spawn: show file plus Bash allowance / additionalDirectories / unreadable / invalid JSON category only; structured instance diagnostic, no quota/item claim; terminal unchanged |
 | `planner_wakeup_credential_unavailable`, `planner_wakeup_tools_unverified`, `planner_wakeup_storage_unavailable`, `session_uninitialized` | Wake-ups unavailable/deferred with visible reason; no user-principal or broader-tool fallback |
 | `planner_wakeup_rate_limited`, `planner_wakeup_timeout`, `planner_wakeup_stream_invalid` | Preserve record/pending state; no recursive retry |
 
@@ -1332,9 +1378,12 @@ worktree. No live 3100/3200 probe or real subscription/model call by automation.
 ### M4 invocation and real-CLI gate record
 
 **Verified by the planner on 2026-10-26, Claude Code 2.1.310**, including the
-explicit dontAsk hardening below. M4a's original candidate builder remains
-available with `verified:false` solely for reproducing that gate; M4b runtime
-uses `buildVerifiedPlannerWakeup()`. This provisional gate allows only the same
+explicit dontAsk hardening below. This is **historical evidence**, not proof of
+the revised 2026-10-30 settings boundary. The candidate (`verified:false`) and
+`buildVerifiedPlannerWakeup()` now both include §6 settings isolation. The
+planner's CLI 2.1.312 probe found inherited project allowances could bypass the
+old gate; final-candidate adversarial and production end-to-end revalidation
+are required. This provisional version gate allows only the same
 2.1 minor line >=2.1.310 and whitespace-free trusted prefix paths. A different
 minor/major, prerelease or path containing spaces requires a new planner gate;
 show `planner_wakeup_tools_unverified` and do not run. Fake argv/Bash tests are
@@ -1354,16 +1403,18 @@ prefix and argv in the planner gate result; never silently replace the executabl
 with PATH `node`/`caff`. Unsupported shell/permission-pattern metacharacters in
 installation paths fail closed, rather than broadening a rule.
 
-Exact final runtime arguments after the resolved official claude executable/prefix
-(the review-tested original candidate plus explicit dontAsk):
+Current runtime arguments after the resolved official claude executable/prefix
+(includes 2026-10-30 settings hardening; final-SHA real CLI revalidation pending):
 
 ```json
 [
   "-p", "--resume", "<saved CAFF test session UUID>",
   "--verbose", "--output-format", "stream-json", "--max-turns", "12",
   "--append-system-prompt", "<bounded planner policy from section 2>",
+  "--setting-sources", "user",
+  "--settings", "{\"permissions\":{\"blockReadsOutsideWorkingDirectories\":true}}",
   "--tools", "Read,Glob,Grep,Bash",
-  "--allowedTools", "Read,Glob,Grep,Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' state),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' goal read),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' attention read*),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' goal action --json *),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' owner message --json *),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' wakeup finish --attempt * --json *)",
+  "--allowedTools", "Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' state),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' goal read),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' attention read*),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' goal action --json *),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' owner message --json *),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' wakeup finish --attempt * --json *)",
   "--disallowedTools", "Write,Edit,NotebookEdit,MultiEdit,PowerShell,Agent,Task,Skill,WebFetch,WebSearch,ToolSearch,mcp__*",
   "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
   "--permission-mode", "dontAsk"
@@ -1648,7 +1699,7 @@ still required before integration. The implementer has not run real Claude.
 | Required CLI flags on supported minimum | **Windows PASS**: M2's version/session observations (§3), M3 real TUI/resume and M4a/M4b real print-mode/append/stream-json/verbose/max-turns/tool invocation records above. `tests/runtime/embedded-planner-cli-layout.test.js`, host/session/process suites and wake-up argv tests cover construction/failures, not real permissions. Recheck actual flags/session persistence after CLI upgrades; no guessed fallback. |
 | Can allowedTools mean caff-only shell? | **Windows PASS at 2.1.310**: §10 exact prefix/argv and verbatim M4a eight positive/fifteen negative/dontAsk results; real production finish plus corrected canonical reason in M4b. CLI/HTTP tests cover malformed/noncanonical/oversized/duplicate/wrong-room payloads before writes. Policy remains provisional for 2.1.x >=2.1.310 and whitespace-free prefixes; other versions/paths require a new real gate. Linux real-CLI policy has not been verified. A safe-call denial or unsafe-call success fails closed and requires pause, never broader permissions. |
 | Minimal Windows environment can use Bash | **PASS**: M4a N1 and real M4b caff Bash calls under `buildPlannerEnvironment`; no ProgramFiles/PATHEXT expansion needed. Environment/adapter tests cover key stripping, proxy redaction and direct loopback authentication. Recheck after CLI/Git Bash/platform changes; do not infer success from a rendered TUI. |
-| Untrusted worktree plus print-mode tools | **PASS on Windows**: M4a gate used the fresh `E:\tmp\caff-m4a-gate\wt` without project permissions/settings; N2 confirms -p skips the dialog while explicit restrictions hold. M3 manually answered trust outside trusted ancestors. Do not use inherited ancestor trust as evidence or auto-confirm prompts. |
+| Untrusted worktree plus print-mode tools | **PASS on Windows**: M4a gate used the fresh `E:\tmp\caff-m4a-gate\wt` without project permissions/settings; this does not prove resistance to project allowances. The 2026-10-30 P1 probe found a bypass; §6 now excludes project/local settings and fences outside reads, with final-SHA revalidation pending. M3 manually answered trust outside trusted ancestors. Do not use inherited ancestor trust as evidence or auto-confirm prompts. |
 | Approval-required tool denied in -p | **PASS on Windows**: M4a mkdir/echo-redirection/git-status and compound commands denied without hanging/sentinel effects; hardened dontAsk positives still pass. No bypass or automatic approval. Fake timeout/denial tests supplement, not replace, this gate. |
 | node-pty prebuild/compilation | **Windows x64 / Node 24.13.1 / node-pty 1.1.0 PASS**: independent install and real PTY/fake CLI suites in M2/M3. The repaint correction adds bundled-DLL Stop/expiry/shutdown/parent-death and OpenConsole cleanup checks. The distribution contains x64/arm64 DLL + OpenConsole, not proof of arm64 execution. `.github/workflows/test.yml` now checks Windows and Linux / Node 22.19.0; `scripts/check-planner-pty.js` requires Windows bundled artifacts or Linux compiled `build/Release/pty.node`. **CI NOT RUN**: successful candidate-pinned URLs still require authorized publication; local Windows PASS/workflow existence is not Linux compilation evidence. |
 | ConPTY full repaint | **Earlier M3 smoke was insufficient**: see the 2026-10-27 correction above. Bundled ConPTY + graphemes passed candidate-pinned real CLI 2.1.311 at `6e022e97`; fit passed at `3b246f47`. The separately approved interactive NO_FLICKER pin addresses classic-renderer reattach/boot strikes, with planner A'/B'/E'/D' observations above; the `f018369c` real-CLI renderer check passed but exposed retained reattach B1/B2 (record above). Mode restoration plus asynchronous repaint now require final-SHA real-CLI revalidation. No claim about untested Windows versions/platforms or Linux CI. |

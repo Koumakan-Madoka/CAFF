@@ -84,7 +84,7 @@
   `planner_conpty_unavailable` explains installation failure, never falls back.
   Both CAFF themes keep a readable dark CLI palette (`#111312` background),
   including the xterm root/screen/viewport and fractional unused bottom row.
-  The toolbar/frame still follow CAFF theme; no CLI settings are read/modified.
+  The toolbar/frame still follow CAFF theme; interactive rendering reads/modifies no CLI settings.
   Addon-fit measures the undecorated `.planner-terminal-screen`; only the outer
   `.planner-terminal-frame` has padding/border, avoiding a 10px overcount of its
   usable height. Edge checks rows × cell height against visible content after
@@ -117,6 +117,13 @@
   The terminal requires CLI >=2.1.310; wake-ups additionally require verified
   2.1.x >=2.1.310 and whitespace-free trusted Node/adapter paths. Fixed reasons
   explain unavailable versions/credentials instead of broadening permissions.
+  `planner_wakeup_settings_unsafe` additionally shows only the file path and
+  category (Bash allowance, additionalDirectories, unreadable, invalid JSON)
+  through textContent, never rules or other setting values. Disable opt-in
+  while unsafe (existing opt-in may still be disabled); the terminal is not
+  disabled. Blocked wakes use no quota/claim and leave attention unchanged.
+  User-only settings plus blockReadsOutsideWorkingDirectories fence wake-up
+  permissions; registry/MDM/server policy is outside the file check (P2 §6).
 - The per-room checkbox confirms subscription/provider usage before enabling,
   is off by default, and only targets the current unfinished planner-bound
   non-DAG Goal. It cannot implicitly adopt a Goal or grant planner authority.
