@@ -284,7 +284,8 @@ test('create server persists badcase annotations through real HTTP and restart w
   app.store.createMessage({ id: 'flag-message', conversationId: 'flag-room', role: 'assistant', status: 'completed', agentId: 'flag-agent', runId: 101, content: 'synthetic report target' });
   const route = `/api/projects/${projectId}/conversations/flag-room/messages/flag-message/badcase-flag`;
   const body = JSON.stringify({ confirmed: true, actual: 'wrong file', expected: 'selected file' });
-  const denied = await fetch(baseUrl + route, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: baseUrl }, body });
+  // Security negative: the browser helper would silently supply valid CSRF.
+  const denied = await globalThis.fetch(baseUrl + route, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: baseUrl }, body });
   assert.equal(denied.status, 403);
   const bootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json();
   const headers = { 'Content-Type': 'application/json', Origin: baseUrl, 'X-CAFF-CSRF-Token': bootstrap.localAdmin.modelProviders.csrfToken };
@@ -355,7 +356,7 @@ test('create server wires project capture administration without enabling collec
   const get = await fetch(endpoint);
   assert.equal(get.status, 200);
   assert.equal((await get.json()).policy.status, 'disabled');
-  const denied = await fetch(`${endpoint}/authorize`, { method: 'POST',
+  const denied = await globalThis.fetch(`${endpoint}/authorize`, { method: 'POST',
     headers: { 'Content-Type': 'application/json', Origin: baseUrl }, body: '{}' });
   assert.equal(denied.status, 403);
   assert.equal(service.loadPolicy(projectId).status, 'disabled');

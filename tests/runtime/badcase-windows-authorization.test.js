@@ -7,7 +7,9 @@ const { createBadcaseCaptureService } = require('../../build/server/domain/runti
 const { pinKey, pinAuthorizedDirs } = require('../../build/server/domain/runtime/badcase-capture/capture-policy');
 const { invokeWindowsHelper } = require('../../build/server/domain/runtime/badcase-capture/windows-helper');
 const native = { skip: process.platform !== 'win32' ? 'real Windows NTFS required' : false };
+const { isolateWindowsCaptureEnvironment } = require('../helpers/windows-capture-environment');
 function temp(t) {
+  isolateWindowsCaptureEnvironment(t);
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-winauth-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const root = path.join(base, 'worktree'), inputs = path.join(base, 'inputs'), captureRoot = path.join(base, 'storage');

@@ -196,7 +196,7 @@ export async function startEvaluationCallback(input: any) {
       // before stop closes this callback's own disposable SQLite connection.
       readPublicReply: () => {
         live(); const m = store.getMessage(seed.assistantMessageId);
-        return m?.metadata?.toolBridge?.publicPostCount > 0 ? String(m.content || '') : '';
+        return m && m.metadata?.toolBridge?.publicPostCount > 0 ? String(m.content || '') : '';
       },
       ...(traceReceipt ? { traceReceipt: structuredClone(traceReceipt) } : {}) });
   } catch { await stop(); throw fail('evaluation_callback_start_failed', 500); }
