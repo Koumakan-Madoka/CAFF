@@ -4,10 +4,11 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const assert = require('node:assert/strict');
 const { spawn, execFileSync } = require('node:child_process');
 const { manifestFor } = require('./pi-probe-materials.cjs');
-const { readEvaluationKey, validKey, KEY_ENV } = require('./direct-model.cjs');
+const { readEvaluationKey, validKey, modelProfile, DEFAULT_PROFILE, KEY_ENV } = require('./direct-model.cjs');
 const { prepareCaffRuntimeFiles } = require('./caff-runtime-wiring.cjs');
 const { readTrustedDistributionFile } = require('./evaluation-bridge-launcher.cjs');
-function prepareDirectTurnFiles(repoRoot, dependencyRoot, image, input) {
+function prepareDirectTurnFiles(repoRoot, dependencyRoot, image, input, profile = DEFAULT_PROFILE) {
+  modelProfile(profile);
   assert.equal(input?.kind, 'prepared-caff-turn-v1');
   const files = prepareCaffRuntimeFiles(repoRoot, dependencyRoot, image, input.sessionText === null ? 'fresh' : 'resume');
   files.find(f => f.path === 'probe.cjs').path = 'caff-runtime-bootstrap.cjs';
@@ -15,6 +16,7 @@ function prepareDirectTurnFiles(repoRoot, dependencyRoot, image, input) {
     files.push({ path: destination, bytes: readTrustedDistributionFile(path.resolve(repoRoot), 'scripts/badcase-capture/' + source) });
   }
   files.push({ path: 'replay-input.json', bytes: Buffer.from(JSON.stringify(input)) });
+  files.push({ path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify(profile)) });
   manifestFor(files); return files;
 }
 const LABEL = 'caff.badcase.direct';

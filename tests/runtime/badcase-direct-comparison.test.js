@@ -24,7 +24,7 @@ function fakes({ badReply = false, modelError = false, workerError = false, badB
       beforeHash: badBefore ? 'wrong' : expectedTreeHash(input), afterHash: expectedTreeHash(input),
       toolCalls: [{ name: 'read', isError: false, args: { path: 'tracked.txt' } }],
       finalText: leaked ? key : badReply && candidate ? 'wrong facts' : 'stable file; deleted.txt 不存在',
-      modelCalls: [{ model, durationMs: 10, success: !modelError, httpStatus: modelError ? 401 : 200, usage: null }] } };
+      modelCalls: [{ model: files.find(f => f.path === 'evaluation-profile.json') ? JSON.parse(files.find(f => f.path === 'evaluation-profile.json').bytes) : model, durationMs: 10, success: !modelError, httpStatus: modelError ? 401 : 200, usage: null }] } };
   };
   return { state, input, options: { prepare, stage, execute, confirmed: true, readKey: () => { state.keys++; return key; }, onEvent: e => state.events.push(e) } };
 }
@@ -42,6 +42,15 @@ test('N real-driver slots per variant, per-call rows, host scoring only after cl
   assert.equal(f.state.events.filter(e => e.event === 'run').length, 4); assert.equal(JSON.stringify(r).includes(key), false);
   assert.match(formatComparison(r), /original: 2\/2/); assert.match(formatComparison(r), /candidate: 0\/2/);
   assert.match(formatComparison(r), /usage=null/);
+});
+test('explicit DeepSeek profile reaches both stages, manifests and receipts; CAFF auth cannot be used for OpenCode', async () => {
+  const c = { ...config(), modelProfile: 'deepseek/deepseek-v4-flash', keySource: 'caff-deepseek' }, f = fakes(), stage = f.options.stage;
+  f.options.stage = (...args) => { assert.equal(args[4], c.modelProfile); return [...stage(...args), { path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify(args[4])) }]; };
+  const plan = prepareComparison(c, f.options); assert.equal(plan.summary.model, c.modelProfile); assert.equal(f.state.keys, 0);
+  const r = await runComparison(c, f.options); assert.equal(r.completed, true); assert.equal(r.model, c.modelProfile);
+  assert.ok(r.runs.every(r => r.modelCalls.every(c => c.model === 'deepseek/deepseek-v4-flash')));
+  assert.throws(() => prepareComparison({ ...c, modelProfile: undefined }, f.options), /config_invalid/);
+  assert.throws(() => prepareComparison({ ...c, keySource: 'ambient-discovery' }, f.options), /config_invalid/);
 });
 test('model failure stops immediately without retry/candidate; request row retained and not-run denominator explicit', async () => {
   const f = fakes({ modelError: true }), r = await runComparison(config(), f.options);

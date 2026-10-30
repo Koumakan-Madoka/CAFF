@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const { readEvaluationKey, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, ENDPOINT, MODEL, KEY_ENV } = require('../../scripts/badcase-capture/direct-model.cjs');
+const { readEvaluationKey, readCaffDeepseekKey, modelProfile, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, ENDPOINT, MODEL, KEY_ENV } = require('../../scripts/badcase-capture/direct-model.cjs');
 const key = 'test-only-direct-evaluation-key-123456';
 test('explicit env/file key; one terminal newline allowed; descriptor contains reference only', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-key-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -14,6 +14,33 @@ test('explicit env/file key; one terminal newline allowed; descriptor contains r
   assert.equal(routing.providers['opencode-go'].models[0].id, MODEL);
   assert.equal(JSON.stringify(routing).includes(key), false);
   assert.throws(() => directModelRouting('https://other.example/v1'), /endpoint_invalid/);
+});
+test('explicit CAFF DeepSeek source reads only the matching official provider, never executes commands or falls back', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-caff-key-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'models.json');
+  const config = { providers: { deepseek: { baseUrl: 'https://api.deepseek.com', api: 'openai-completions', apiKey: key, models: [{ id: 'deepseek-v4-flash' }] }, other: { apiKey: 'unrelated-private-value' } } };
+  const save = () => fs.writeFileSync(file, JSON.stringify(config)); save(); const before = fs.readFileSync(file);
+  assert.equal(readCaffDeepseekKey({ PI_CODING_AGENT_DIR: root }), key); assert.deepEqual(fs.readFileSync(file), before);
+  config.providers.deepseek.apiKey = '$DEEPSEEK_TEST_KEY'; save();
+  assert.equal(readCaffDeepseekKey({ PI_CODING_AGENT_DIR: root, DEEPSEEK_TEST_KEY: key }), key);
+  for (const patch of [{ apiKey: '!echo private' }, { baseUrl: 'https://other.example' }, { models: [] }, { api: 'other-api' }]) {
+    const saved = { ...config.providers.deepseek }; Object.assign(config.providers.deepseek, patch); save();
+    assert.throws(() => readCaffDeepseekKey({ PI_CODING_AGENT_DIR: root, [KEY_ENV]: key }), /^Error: evaluation_caff_auth_unavailable_or_invalid$/);
+    config.providers.deepseek = saved;
+  }
+  assert.throws(() => readCaffDeepseekKey({ [KEY_ENV]: key }), /caff_auth_unavailable_or_invalid/);
+});
+test('DeepSeek model, endpoint and observed call labels are selected together, never relabelled OpenCode', async () => {
+  const selected = 'deepseek/deepseek-v4-flash', p = modelProfile(selected);
+  assert.deepEqual(p, { provider: 'deepseek', model: 'deepseek-v4-flash', endpoint: 'https://api.deepseek.com' });
+  const routing = directModelRouting(undefined, selected).providers.deepseek;
+  assert.equal(routing.baseUrl, p.endpoint); assert.equal(routing.models[0].id, p.model); assert.equal(routing.apiKey, '$' + KEY_ENV);
+  assert.throws(() => directModelRouting(ENDPOINT, selected), /endpoint_invalid/);
+  assert.throws(() => modelProfile('deepseek/unknown'), /profile_invalid/);
+  const observer = observeDirectFetch(async () => new Response('ok'), { profile: selected });
+  await assert.rejects(observer.fetch(ENDPOINT + '/chat/completions'), /request_blocked/);
+  await observer.fetch(p.endpoint + '/chat/completions'); observer.complete({ stopReason: 'stop' });
+  assert.equal(observer.calls[0].model, selected); assert.equal(observer.calls[0].success, true);
 });
 test('invalid explicit file has no ambient fallback and no content/path in errors', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-key-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));

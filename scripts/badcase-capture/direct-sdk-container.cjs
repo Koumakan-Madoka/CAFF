@@ -12,6 +12,8 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   let manifest;
   try { ({ manifest } = require('/work/caff-runtime-bootstrap.cjs').verifyCaffRuntimeStage()); }
   finally { process.env[direct.KEY_ENV] = key; }
+  const profile = JSON.parse(fs.readFileSync('/work/evaluation-profile.json'));
+  const selected = direct.modelProfile(profile);
   const input = JSON.parse(fs.readFileSync('/work/replay-input.json'));
   assert.equal(input.kind, 'prepared-caff-turn-v1'); assert.equal(typeof input.prompt, 'string');
   assert.ok(input.prompt.trim() && Buffer.byteLength(input.prompt) <= 131072);
@@ -40,7 +42,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   const beforeHash = treeHash();
   if (input.settings !== null) write(agentDir + '/settings.json', JSON.stringify(input.settings));
   if (input.systemPrompt !== null) write(agentDir + '/SYSTEM.md', input.systemPrompt);
-  write(agentDir + '/models.json', JSON.stringify(direct.directModelRouting(baseUrl)));
+  write(agentDir + '/models.json', JSON.stringify(direct.directModelRouting(baseUrl, profile)));
   if (input.sessionText !== null) write(sessionPath, input.sessionText);
   else assert.equal(fs.existsSync(sessionPath), false);
   let runtime, callback, observer, receipt, toolCalls = [], extensionErrors = [];
@@ -65,17 +67,17 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
         CAFF_CHAT_TOOLS_RELATIVE_PATH: '../build/lib/agent-chat-tools.js', PI_AGENT_SANDBOX_DIR: '/tmp/sandbox', PI_AGENT_PRIVATE_DIR: '/tmp/private' };
       Object.assign(process.env, values); prompt = direct.bindDirectPrompt(prompt, input.bindings, values);
     }
-    observer = direct.observeDirectFetch(originalFetch, { baseUrl, callbackUrl: callback?.apiUrl });
+    observer = direct.observeDirectFetch(originalFetch, { baseUrl, profile, callbackUrl: callback?.apiUrl });
     globalThis.fetch = observer.fetch;
     const sdk = await loadModule('/work/runtime/dist/bundle/index.js'); assert.equal(sdk.VERSION, '0.85.1');
     const host = await loadModule('/work/build/lib/pi-sdk-host.mjs');
     const config = host.normalizeStartCommand({ type: 'start', prompt, config: {
-      cwd, agentDir, sessionPath, resume: input.sessionText !== null, provider: direct.PROVIDER, model: direct.MODEL,
+      cwd, agentDir, sessionPath, resume: input.sessionText !== null, provider: selected.provider, model: selected.model,
       thinking: 'off', fast: false, extensionPaths: ['/work/build/lib/pi-extensions/caff-capabilities.mjs'],
       additionalSkillPaths: [], retireUserScopeSkills: true } }).config;
     ({ runtime } = await host.createSdkRuntime(sdk, config)); const session = runtime.session;
     await session.bindExtensions({ mode: 'json', onError: () => extensionErrors.push(true) });
-    assert.equal(runtime.modelFallbackMessage, undefined); assert.equal(session.model.provider, direct.PROVIDER); assert.equal(session.model.id, direct.MODEL);
+    assert.equal(runtime.modelFallbackMessage, undefined); assert.equal(session.model.provider, selected.provider); assert.equal(session.model.id, selected.model);
     assert.equal(runtime.services.resourceLoader.getExtensions().errors.length, 0);
     const initialHistory = input.sessionText === null ? [] : sdk.buildSessionContext(input.sessionText.trimEnd().split('\n').map(JSON.parse).slice(1)).messages;
     assert.deepEqual(session.messages, initialHistory);

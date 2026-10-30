@@ -1,4 +1,4 @@
-// Trusted direct-provider helpers. No gateway, credential discovery or persistence.
+// Trusted direct-provider helpers. No gateway, automatic auth discovery or persistence.
 const fs = require('node:fs');
 const ENDPOINT = 'https://opencode.ai/zen/go/v1';
 const PROVIDER = 'opencode-go', MODEL = 'deepseek-v4.1-flash';
@@ -28,15 +28,37 @@ function readEvaluationKey(env = process.env) {
   if (env[KEY_ENV] === undefined) throw fail('evaluation_key_missing');
   return validKey(env[KEY_ENV]);
 }
+const DEFAULT_PROFILE = PROVIDER + '/' + MODEL;
+const DEEPSEEK_PROFILE = 'deepseek/deepseek-v4-flash';
+function modelProfile(name = DEFAULT_PROFILE) {
+  if (name === DEFAULT_PROFILE) return { provider: PROVIDER, model: MODEL, endpoint: ENDPOINT };
+  if (name === DEEPSEEK_PROFILE) return { provider: 'deepseek', model: 'deepseek-v4-flash', endpoint: 'https://api.deepseek.com' };
+  throw fail('evaluation_profile_invalid');
+}
+// Host only, explicitly selected by the user. No auth.json scan, shell
+// evaluation, source modification, or fallback to any unrelated credential.
+function readCaffDeepseekKey(env = process.env) {
+  try {
+    const path = require('node:path'), dir = env.PI_CODING_AGENT_DIR;
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw Error();
+    const file = path.join(dir, 'models.json'), stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.size > 1024 * 1024) throw Error();
+    const p = JSON.parse(fs.readFileSync(file, 'utf8')).providers?.deepseek;
+    if (p?.baseUrl !== modelProfile(DEEPSEEK_PROFILE).endpoint || p.api !== 'openai-completions'
+      || !p.models?.some(m => m.id === 'deepseek-v4-flash') || typeof p.apiKey !== 'string' || p.apiKey.startsWith('!')) throw Error();
+    return validKey(p.apiKey.startsWith('$') ? env[p.apiKey.slice(1)] : p.apiKey);
+  } catch { throw fail('evaluation_caff_auth_unavailable_or_invalid'); }
+}
 // Only a variable reference is written to models.json, never the actual key.
-function directModelRouting(baseUrl = ENDPOINT) {
-  if (baseUrl !== ENDPOINT && !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/v1$/.test(baseUrl)) throw fail('evaluation_endpoint_invalid');
-  return { providers: { [PROVIDER]: {
+function directModelRouting(baseUrl, profile = DEFAULT_PROFILE) {
+  const selected = modelProfile(profile); baseUrl ??= selected.endpoint;
+  if (baseUrl !== selected.endpoint && !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/v1$/.test(baseUrl)) throw fail('evaluation_endpoint_invalid');
+  return { providers: { [selected.provider]: {
     api: 'openai-completions', baseUrl, apiKey: '$' + KEY_ENV,
     compat: { supportsStore: true, supportsDeveloperRole: false, supportsReasoningEffort: false,
       supportsUsageInStreaming: true, supportsStrictMode: false, supportsOpenAIGrammarTools: false,
-      maxTokensField: 'max_completion_tokens', thinkingFormat: 'deepseek' },
-    models: [{ id: MODEL, name: MODEL, reasoning: true, input: ['text'], contextWindow: 1048576, maxTokens: 4096,
+      maxTokensField: profile === DEEPSEEK_PROFILE ? 'max_tokens' : 'max_completion_tokens', thinkingFormat: 'deepseek' },
+    models: [{ id: selected.model, name: selected.model, reasoning: true, input: ['text'], contextWindow: 1048576, maxTokens: 4096,
       thinkingLevelMap: { off: 'none', minimal: null, low: null, medium: null, high: null, xhigh: null, max: null },
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       samplingParams: { temperature: 0, n: 1, store: false, parallel_tool_calls: false, tool_choice: 'auto' } }],
@@ -45,14 +67,16 @@ function directModelRouting(baseUrl = ENDPOINT) {
 // Observe native SDK HTTP attempts, without changing request/response bytes or
 // converting SSE. A failed attempt latches closed: SDK retries cannot send again.
 // Callback traffic is passed through only to the separately supplied local URL.
-function observeDirectFetch(fetch, { baseUrl = ENDPOINT, callbackUrl, maxRequests = 32 } = {}) {
+function observeDirectFetch(fetch, { baseUrl, profile = DEFAULT_PROFILE, callbackUrl, maxRequests = 32 } = {}) {
+  const selected = modelProfile(profile); baseUrl ??= selected.endpoint;
+  directModelRouting(baseUrl, profile);
   const calls = []; let failed = false;
   const observed = async (request, options) => {
     const url = typeof request === 'string' || request instanceof URL ? String(request) : request.url;
     if (callbackUrl && new URL(url).origin === callbackUrl) return fetch(request, options);
     if (url !== baseUrl + '/chat/completions' || failed || calls.length >= maxRequests) throw fail('evaluation_request_blocked');
     const start = performance.now();
-    const row = { model: PROVIDER + '/' + MODEL, durationMs: 0, success: false, httpStatus: null, usage: null };
+    const row = { model: selected.provider + '/' + selected.model, durationMs: 0, success: false, httpStatus: null, usage: null };
     calls.push(row);
     try {
       const response = await fetch(request, options);
@@ -94,4 +118,4 @@ function bindDirectPrompt(prompt, bindings, values) {
   if (!values || !BINDING_NAMES.every(n => typeof values[n] === 'string' && values[n] && !values[n].includes('{{'))) throw fail('evaluation_bindings_unsupported');
   return prompt.replaceAll(bindings.sourceRoot, '/work/restored').replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, name) => values[name]);
 }
-module.exports = { readEvaluationKey, validKey, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, ENDPOINT, PROVIDER, MODEL, KEY_ENV };
+module.exports = { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, ENDPOINT, PROVIDER, MODEL, KEY_ENV, DEFAULT_PROFILE, DEEPSEEK_PROFILE };

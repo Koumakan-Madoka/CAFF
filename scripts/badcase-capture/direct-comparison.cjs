@@ -4,11 +4,10 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const { prepareSealedDirectTurn } = require('./sealed-direct-input.cjs');
 const { prepareDirectTurnFiles, runDirectDockerTask } = require('./direct-docker.cjs');
-const { readEvaluationKey, validKey, PROVIDER, MODEL } = require('./direct-model.cjs');
+const { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, DEFAULT_PROFILE, DEEPSEEK_PROFILE } = require('./direct-model.cjs');
 const { manifestFor } = require('./pi-probe-materials.cjs');
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const fail = code => Object.assign(Error(code), { code });
-const model = PROVIDER + '/' + MODEL;
 function validateRules(rules) {
   if (!rules || rules.kind !== 'read-only-files-v1'
     || Object.keys(rules).some(k => !['kind', 'readPaths', 'absentPaths', 'requiredReplyFragments'].includes(k))
@@ -40,11 +39,15 @@ function scoreReadOnlyFiles(receipt, rules, beforeHash) {
 }
 function prepareComparison(config, options = {}) {
   if (!config || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'rules', 'timeoutMs'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'rules', 'timeoutMs', 'modelProfile', 'keySource'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)
     || typeof config.candidateRole !== 'string' || !config.candidateRole.trim()
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')) throw fail('evaluation_config_invalid');
+  const profile = config.modelProfile ?? DEFAULT_PROFILE;
+  modelProfile(profile);
+  if (config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
+    || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
   const rules = validateRules(config.rules), prepare = options.prepare || prepareSealedDirectTurn;
   const original = prepare(config.request), candidate = prepare(config.request, config.candidateRole);
   if (original.supported !== true || candidate.supported !== true) return { supported: false, reason: 'unsupported_or_missing_replay_materials' };
@@ -55,7 +58,7 @@ function prepareComparison(config, options = {}) {
   const inputs = { original: original.input, candidate: candidate.input };
   const summary = { kind: 'sealed-prompt-comparison-v1', caseId: original.provenance.caseId,
     checkpointId: original.provenance.checkpointId, checkpointHash: original.provenance.checkpointHash,
-    commonInputHash: original.provenance.commonInputHash, model, repeats: config.repeats,
+    commonInputHash: original.provenance.commonInputHash, model: profile, repeats: config.repeats,
     imageId: config.image.imageId, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
     strictEvalEligible: false };
@@ -67,10 +70,10 @@ async function runComparison(config, options = {}) {
   if (!plan.supported) return { ...plan, runs: [], modelCallsKnown: 0 };
   if (options.confirmed !== true) throw fail('evaluation_confirmation_required');
   const stage = options.stage || prepareDirectTurnFiles, execute = options.execute || runDirectDockerTask;
-  const emit = options.onEvent || (() => {}), keyReader = options.readKey || readEvaluationKey;
+  const emit = options.onEvent || (() => {}), keyReader = options.readKey || (fixed.keySource === 'caff-deepseek' ? readCaffDeepseekKey : readEvaluationKey);
   const files = {}, manifests = {};
   for (const variant of ['original', 'candidate']) {
-    files[variant] = stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, plan.inputs[variant]);
+    files[variant] = stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, plan.inputs[variant], fixed.modelProfile);
     manifests[variant] = manifestFor(files[variant]);
   }
   if (manifests.original.runtimeHash !== manifests.candidate.runtimeHash) throw fail('evaluation_runtime_mismatch');
@@ -85,7 +88,7 @@ async function runComparison(config, options = {}) {
       // fallback if bytes changed after the planned starting point.
       const fresh = prepareComparison(fixed, options);
       if (!fresh.supported || JSON.stringify(fresh.summary) !== JSON.stringify(plan.summary)
-        || manifestFor(stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, fresh.inputs[variant])).inputHash !== manifests[variant].inputHash) {
+        || manifestFor(stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, fresh.inputs[variant], fixed.modelProfile)).inputHash !== manifests[variant].inputHash) {
         throw fail('evaluation_input_changed');
       }
       let task;
@@ -98,7 +101,7 @@ async function runComparison(config, options = {}) {
       const valid = !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
         && receipt.inputHash === manifests[variant].inputHash && receipt.runtimeHash === manifests[variant].runtimeHash
         && receipt.beforeHash === plan.beforeHash && Array.isArray(receipt.modelCalls) && receipt.modelCalls.length > 0
-        && receipt.modelCalls.every(c => c.model === model && typeof c.success === 'boolean' && Number.isFinite(c.durationMs) && c.durationMs >= 0);
+        && receipt.modelCalls.every(c => c.model === plan.summary.model && typeof c.success === 'boolean' && Number.isFinite(c.durationMs) && c.durationMs >= 0);
       if (valid) {
         row.modelCalls = receipt.modelCalls;
         row.finalText = receipt.finalText;
