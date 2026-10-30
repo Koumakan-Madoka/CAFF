@@ -6,6 +6,7 @@ import { resolvePlannerRoom } from './embedded-planner-room';
 import { EmbeddedPlannerRepository } from '../../../storage/chat/embedded-planner.repository';
 import { PlannerWakeupRepository } from '../../../storage/chat/planner-wakeup.repository';
 import { createPlannerWakeupRuntime } from './planner-wakeup-runtime';
+import { parsePlannerMaxProcesses } from './embedded-planner-config';
 
 function terminalSetting(value: string | undefined) {
   if (value === undefined) return { enabled: true, reasonCode: '' };
@@ -21,18 +22,23 @@ export function createEmbeddedPlannerRuntime(options: any) {
   // reads the flag once at construction, never from requests or child env.
   const setting = config.enabled == null ? terminalSetting(process.env.CAFF_PLANNER_TERMINAL)
     : { enabled: !!config.enabled, reasonCode: 'planner_terminal_disabled' };
+  // Snapshot once, even if start() is delayed. Invalid limits keep a locally
+  // enabled entry visible with a fixed diagnostic, but start no planner/probe.
+  let maxProcesses: number | null;
+  try { maxProcesses = parsePlannerMaxProcesses(process.env.CAFF_PLANNER_MAX_PROCESSES); }
+  catch { maxProcesses = null; }
   const requested = setting.enabled;
   const enabled = requested && isLoopbackAddress(options.host);
   let host: EmbeddedPlannerHost | null = null;
   let closed = false;
   let startup: Promise<void> | null = null;
-  let capability = { enabled: !!enabled, available: false, reasonCode: enabled ? 'planner_cli_checking' : requested ? 'planner_terminal_local_only' : setting.reasonCode,
+  let capability = { enabled: !!enabled, available: false, reasonCode: enabled ? maxProcesses === null ? 'planner_process_limit_invalid' : 'planner_cli_checking' : requested ? 'planner_terminal_local_only' : setting.reasonCode,
     minimumVersion: MINIMUM_PLANNER_CLI, cliVersion: null as string | null };
   const repository = enabled ? new EmbeddedPlannerRepository(options.store) : null;
   let records = enabled ? new PlannerWakeupRepository(options.store) : null;
   let wakeups: ReturnType<typeof createPlannerWakeupRuntime> | null = null;
   async function start(baseUrl: string, credentialPath: string | null, credential?: any) {
-    if (!enabled || closed) return;
+    if (!enabled || closed || maxProcesses === null) return;
     startup = (async () => {
       try {
         records!.interrupt();
@@ -41,7 +47,7 @@ export function createEmbeddedPlannerRuntime(options: any) {
         const cli = resolvePlannerCli({ override: config.cliPath ?? process.env.CAFF_CLAUDE_CLI, env });
         const version = await probePlannerCli(cli, env);
         if (closed) return;
-        host = createEmbeddedPlannerHost({ repository: repository!, cli, baseUrl, credentialPath, env: config.env, launch: config.launch,
+        host = createEmbeddedPlannerHost({ repository: repository!, cli, baseUrl, credentialPath, maxProcesses, env: config.env, launch: config.launch,
           resolveRoom: id => resolvePlannerRoom(options.store, options.projectManager, id) });
         capability = { ...capability, available: true, reasonCode: '', cliVersion: version };
         wakeups = createPlannerWakeupRuntime({store:options.store,host,version,credentialPath,credential,env:config.env,privateValues:options.privateValues,config});
