@@ -8,7 +8,7 @@ const { isolateExternalIntegrations } = require('./external-integrations');
 isolateExternalIntegrations();
 
 async function fixture(t, extra = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-planner-ws-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'caff-planner-ws-')));
   const cli = path.join(root, 'fake cli.cjs');
   fs.copyFileSync(extra.cliFixture || path.join(__dirname, '../fixtures/fake-planner-cli.cjs'), cli);
   const app = createTestServerApp({ host: extra.bindHost || '127.0.0.1', port: 0, agentDir: root, sqlitePath: path.join(root, 'chat.sqlite'), projectDir: root, uploadsDir: path.join(root, 'uploads'),

@@ -10,7 +10,7 @@ const { isolateExternalIntegrations } = require('./external-integrations');
 
 async function createPlannerCliGate() {
   isolateExternalIntegrations();
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-planner-cli-gate-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'caff-planner-cli-gate-')));
   const token = randomBytes(32).toString('base64url'), attemptId = randomUUID();
   const credential = createInMemoryPlannerCredential({ token, plannerName: 'Synthetic Gate Planner' });
   const model = { provider: 'synthetic', model: 'synthetic', runtimeResolvable: true, input: ['text'], supportedThinkingLevels: ['off'] };

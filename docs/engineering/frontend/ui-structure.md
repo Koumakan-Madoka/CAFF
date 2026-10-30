@@ -127,7 +127,9 @@
   rejection of Bash/Read/Glob/Grep rules (leading UTF-8 BOM accepted). Do not use
   blockReadsOutsideWorkingDirectories: real CLI 2.1.312 also denies the allowed
   caff command outside cwd. Registry/MDM/server policy is outside the file check
-  (P2 §6); this boundary still needs final-SHA real CLI verification.
+  (P2 §6). Wake-ups additionally set only `disableAllHooks=true`: user/plugin
+  hooks do not run, managed-policy hooks are unaffected, interactive hooks are
+  unchanged. This boundary still needs final-SHA real CLI verification.
 - The per-room checkbox confirms subscription/provider usage before enabling,
   is off by default, and only targets the current unfinished planner-bound
   non-DAG Goal. It cannot implicitly adopt a Goal or grant planner authority.

@@ -107,7 +107,7 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
   the same four tools and six Bash adapter rules. Project/local settings
   (permissions/hooks) do not load. Outside reads are rejected by dontAsk with
   no read-tool allowance. **Correction after real CLI 2.1.312 review:** do not
-  use `blockReadsOutsideWorkingDirectories` / `--settings`; it also denied the
+  set `blockReadsOutsideWorkingDirectories`; it also denied the
   explicitly allowed caff.js command outside the room cwd, so `f3d0ae72` could
   not complete a wake. Before each launch, inspect child-user and file-based
   managed settings; Bash/Read/Glob/Grep allow rules, nonempty
@@ -120,6 +120,15 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
   exact paths, checks and current argv are in P2 §6/§10. The planner's CLI
   2.1.312 probe established the old inherited-permission/outside-read gap;
   final-SHA adversarial and wake-up end-to-end revalidation remain required.
+- **Hook hardening, 2026-10-30 (PR #171 P1 #2):** immediately after
+  `--setting-sources user`, add only `--settings '{"disableAllHooks":true}'`.
+  User-level and plugin hooks do not run during unattended wakes, including
+  SessionStart on resume; command hooks otherwise bypass the tool allowlist.
+  Managed-policy hooks are **not** affected, and interactive terminal hooks are
+  unchanged. This is not the rejected blockReads setting: the planner's CLI
+  2.1.312 hook-only probe suppressed hook events while allowing caff state.
+  Final-SHA hook/permission/end-to-end revalidation remains required. Instruction
+  and user-approved Goal revision: message `eb1cc2c0-699f-4502-a7fc-0f2b810a0e83`.
 - **Limits:**
   - At most 4 wake-ups per room per hour.
   - While the room's interactive terminal is live, no wake-up runs; the item is

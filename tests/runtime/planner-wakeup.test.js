@@ -28,7 +28,10 @@ test('verified wakeup argv pins dontAsk, version range and no-space trusted pref
   assert.equal(c.verified, true);
   assert.equal(c.args[c.args.indexOf('--permission-mode') + 1], 'dontAsk');
   assert.equal(c.args[c.args.indexOf('--setting-sources') + 1], 'user');
-  assert.ok(!c.args.includes('--settings'));
+  assert.deepEqual(c.args, ['-p', '--resume', base.sessionId, '--verbose', '--output-format', 'stream-json', '--max-turns', '12',
+    '--append-system-prompt', base.appendPrompt, '--setting-sources', 'user', '--settings', '{"disableAllHooks":true}',
+    '--tools', c.tools, '--allowedTools', c.allowedTools, '--disallowedTools', c.disallowedTools,
+    '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--permission-mode', 'dontAsk']);
   assert.ok(!c.args.some(arg => arg.includes('blockReadsOutsideWorkingDirectories')));
   assert.equal(c.tools, 'Read,Glob,Grep,Bash');
   assert.equal(c.allowedTools, ['state','goal read','attention read*','goal action --json *','owner message --json *','wakeup finish --attempt * --json *'].map(s => `Bash(${c.adapterPrefix} ${s})`).join(','));

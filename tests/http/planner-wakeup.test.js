@@ -21,7 +21,8 @@ test('live scheduler -> pipe fake CLI -> actual caff/P1 -> production finish; fi
   assert.equal(launch.env.CAFF_PLANNER_CREDENTIAL_FILE, f.file);
   assert.equal(launch.args[launch.args.indexOf('--permission-mode') + 1], 'dontAsk');
   assert.equal(launch.args[launch.args.indexOf('--setting-sources') + 1], 'user');
-  assert.ok(!launch.args.includes('--settings'));
+  const settingsStart = launch.args.indexOf('--setting-sources');
+  assert.deepEqual(launch.args.slice(settingsStart, settingsStart + 4), ['--setting-sources', 'user', '--settings', '{"disableAllHooks":true}']);
   assert.ok(!launch.args.some(arg => arg.includes('blockReadsOutsideWorkingDirectories')));
   const { buildVerifiedPlannerWakeup } = require('../../build/server/domain/runtime/embedded-planner-wakeup-command');
   assert.deepEqual(launch.args, buildVerifiedPlannerWakeup({ version: '2.1.310', sessionId: launch.args[2], appendPrompt: launch.args[launch.args.indexOf('--append-system-prompt') + 1] }).args);

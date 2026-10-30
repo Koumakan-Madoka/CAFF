@@ -834,7 +834,7 @@ Wake-up command shape (verified gate and exact runtime argv in §10):
 ```text
 <cli> -p --resume <room uuid> --output-format stream-json
       --max-turns 12 --append-system-prompt <planner policy>
-      --setting-sources user
+      --setting-sources user --settings '{"disableAllHooks":true}'
       --tools <explicit minimal tool set>
       --allowedTools <six exact caff-only Bash adapter rules; no bare Read/Glob/Grep>
       --disallowedTools <edit/write/PowerShell/other unsafe tools>
@@ -884,9 +884,16 @@ that could broaden this default boundary. Do **not** set
 `blockReadsOutsideWorkingDirectories`: the planner's real CLI 2.1.312
 positive/negative controls showed that it treats the allowed caff.js absolute
 path outside the room cwd as an outside read, overriding the Bash allowance
-and preventing caff state/goal read/finish. Candidate and verified argv omit
-`--settings` entirely. This corrects the initial 2026-10-30 hardening, not a
-permission bypass or expansion of the six Bash prefixes.
+and preventing caff state/goal read/finish. Candidate and verified argv never
+set blockReads. The only inline `--settings` value is
+`{"disableAllHooks":true}`, immediately after `--setting-sources user`.
+Unattended wake-ups do not run **user-level or plugin hooks**, including
+SessionStart on resume: command hooks otherwise run with full user permissions
+outside the tool allowlist. **Managed-policy hooks are not affected** by this
+flag and remain outside this boundary. Interactive terminal settings/hooks are
+unchanged. The planner's CLI 2.1.312 hook-only probe saw no hook events while
+caff state remained allowed; final-SHA end-to-end revalidation is still required.
+This does not reintroduce blockReads, a permission bypass or broader Bash rules.
 The four available tools, six exact Bash adapter prefixes, deny list and empty
 strict MCP configuration stay unchanged. Interactive terminal policy is unchanged.
 
@@ -1393,8 +1400,12 @@ planner's CLI 2.1.312 probe found inherited project allowances could bypass the
 old gate. The first hardening candidate `f3d0ae72` denied echo/outside reads,
 but its blockReads setting also denied the explicitly allowed caff commands
 and produced an unknown/no-receipt wake (BLOCK). Current argv removes that
-setting and checks read-tool allowances instead; final-candidate negative,
-positive-caff and production end-to-end revalidation are required. This provisional version gate allows only the same
+setting and checks read-tool allowances instead. `c020ddb7` passed the planner's
+negative, positive-caff and production end-to-end revalidation (planner pause
+ruling, handled/needs_user receipts). A subsequent probe found user SessionStart
+hooks still executing; current argv adds only `disableAllHooks=true`. New-SHA
+hook, negative/positive permissions and production end-to-end revalidation are
+required; c020ddb7 acceptance does not prove the revised hook boundary. This provisional version gate allows only the same
 2.1 minor line >=2.1.310 and whitespace-free trusted prefix paths. A different
 minor/major, prerelease or path containing spaces requires a new planner gate;
 show `planner_wakeup_tools_unverified` and do not run. Fake argv/Bash tests are
@@ -1423,6 +1434,7 @@ Current runtime arguments after the resolved official claude executable/prefix
   "--verbose", "--output-format", "stream-json", "--max-turns", "12",
   "--append-system-prompt", "<bounded planner policy from section 2>",
   "--setting-sources", "user",
+  "--settings", "{\"disableAllHooks\":true}",
   "--tools", "Read,Glob,Grep,Bash",
   "--allowedTools", "Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' state),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' goal read),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' attention read*),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' goal action --json *),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' owner message --json *),Bash('E:/nodejs/node.exe' 'E:/pythonproject/worktrees/room/9fb2a910-p2-claude-code/build/lib/caff.js' wakeup finish --attempt * --json *)",
   "--disallowedTools", "Write,Edit,NotebookEdit,MultiEdit,PowerShell,Agent,Task,Skill,WebFetch,WebSearch,ToolSearch,mcp__*",

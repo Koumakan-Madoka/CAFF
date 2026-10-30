@@ -15,6 +15,7 @@ export function buildPlannerWakeupCandidate(options: { sessionId: string; append
   const disallowedTools = 'Write,Edit,NotebookEdit,MultiEdit,PowerShell,Agent,Task,Skill,WebFetch,WebSearch,ToolSearch,mcp__*';
   const args = ['-p', '--resume', options.sessionId, '--verbose', '--output-format', 'stream-json', '--max-turns', '12',
     '--append-system-prompt', options.appendPrompt, '--setting-sources', 'user',
+    '--settings', '{"disableAllHooks":true}',
     '--tools', tools, '--allowedTools', allowedTools, '--disallowedTools', disallowedTools,
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'];
   return { verified: false as const, adapterPrefix, tools, allowedTools, disallowedTools, args };

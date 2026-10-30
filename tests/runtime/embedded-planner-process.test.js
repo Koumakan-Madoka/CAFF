@@ -56,16 +56,16 @@ function openConsoles() {
   let output;
   try {
     output = execFileSync(ps, ['-NoProfile', '-NonInteractive', '-Command', '@(Get-Process -Name OpenConsole -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ ProcessId = $_.Id; ExecutablePath = $_.Path } }) | ConvertTo-Json -Compress'],
-      { encoding: 'utf8', windowsHide: true, timeout: 60000, env: { SystemRoot: process.env.SystemRoot,
+      { encoding: 'utf8', windowsHide: true, timeout: 60000, env: { ...process.env,
         PSModulePath: path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/Modules') } }).trim();
   } finally { console.info(`OpenConsole query: ${Math.round(performance.now() - started)} ms`); }
   const rows = output ? JSON.parse(output) : [];
   return (Array.isArray(rows) ? rows : [rows]).filter(p => p.ExecutablePath?.toLowerCase().startsWith(packageRoot)).map(p => p.ProcessId);
 }
-test('OpenConsole query avoids WMI, bounds module discovery, allows 60s and always logs timing', () => {
+test('OpenConsole query keeps full parent environment, bounds module discovery, allows 60s and always logs timing', () => {
   const source = openConsoles.toString();
   for (const fails of [false, true]) {
-    const calls = [], logs = [], synthetic = { platform: 'win32', env: { SystemRoot: 'C:\\Windows', PSModulePath: 'untrusted-module-path' } };
+    const calls = [], logs = [], synthetic = { platform: 'win32', env: { SystemRoot: 'C:\\Windows', PSModulePath: 'untrusted-module-path', CAFF_TEST_PARENT_SENTINEL: 'kept' } };
     const invoke = vm.runInNewContext(source + ';openConsoles', {
       fs, path, require, process: synthetic, console: { info: text => logs.push(text) }, performance,
       execFileSync: (...args) => { calls.push(args); if (fails) throw new Error('synthetic timeout'); return '[]'; },
@@ -74,7 +74,7 @@ test('OpenConsole query avoids WMI, bounds module discovery, allows 60s and alwa
     const [, args, options] = calls[0];
     assert.ok(args.at(-1).includes('Get-Process -Name OpenConsole')); assert.ok(!args.at(-1).includes('Get-CimInstance'));
     assert.equal(options.timeout, 60000);
-    assert.deepEqual({ ...options.env }, { SystemRoot: 'C:\\Windows', PSModulePath: path.join('C:\\Windows', 'System32/WindowsPowerShell/v1.0/Modules') });
+    assert.deepEqual({ ...options.env }, { ...synthetic.env, PSModulePath: path.join('C:\\Windows', 'System32/WindowsPowerShell/v1.0/Modules') });
     assert.ok(logs.some(text => /OpenConsole query.*ms/.test(text)));
   }
 });

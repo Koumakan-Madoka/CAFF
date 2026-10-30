@@ -8,7 +8,7 @@ const { createProjectManager } = require('../../build/lib/project-manager');
 const { isolateExternalIntegrations } = require('./external-integrations');
 isolateExternalIntegrations();
 async function fixture(t, extra = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-wakeup-http-')), token = randomBytes(32).toString('base64url'), file = path.join(root, 'synthetic-credential.json'), cli = path.join(root, 'fake-wakeup.cjs');
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'caff-wakeup-http-'))), token = randomBytes(32).toString('base64url'), file = path.join(root, 'synthetic-credential.json'), cli = path.join(root, 'fake-wakeup.cjs');
   fs.writeFileSync(file, JSON.stringify({ version: 1, plannerId: 'local-planner', plannerName: 'Synthetic', token, issuedAt: new Date().toISOString() }), { mode: 0o600 });
   fs.copyFileSync(path.join(__dirname, '../fixtures/fake-wakeup-cli.cjs'), cli);
   if (extra.version)
