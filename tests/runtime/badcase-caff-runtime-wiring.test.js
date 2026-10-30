@@ -101,12 +101,12 @@ test('bootstrap fresh has no resume copy; resume keeps separate exact archive/wo
     if (mode === 'resume') assert.deepEqual(h.store.get('/work/archived-session.jsonl'), h.store.get('/work/working-session.jsonl'));
   }
 });
-test('stages unchanged production runtime host, two extensions and actual SDK distribution; mode is explicit', t => {
+test('stages unchanged production host with its imported Fast module and actual SDK distribution; mode is explicit', t => {
   const root = fixture(t), a = api();
   for (const mode of ['fresh', 'resume']) {
     const files = a.prepareCaffRuntimeFiles(repo, root, image, mode), m = manifestFor(files);
     assert.ok(m.runtimeBytes > 0); assert.equal(files.find(f => f.path === 'mode.txt').bytes.toString(), mode);
-    for (const name of ['pi-sdk-host.mjs', 'proxy-routing.mjs', 'pi-extensions/caff-capabilities.mjs', 'pi-extensions/caff-stream-read-retry.mjs']) {
+    for (const name of ['pi-sdk-host.mjs', 'proxy-routing.mjs', 'pi-extensions/caff-capabilities.mjs', 'pi-extensions/caff-stream-read-retry.mjs', 'pi-extensions/caff-fast-mode.mjs']) {
       assert.deepEqual(files.find(f => f.path === 'build/lib/' + name).bytes, fs.readFileSync(path.join(repo, 'lib', name)));
     }
     for (const name of ['package.json', 'lib/jiti.cjs', 'dist/jiti.cjs', 'dist/babel.cjs']) {

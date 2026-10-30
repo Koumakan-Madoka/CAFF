@@ -1,0 +1,59 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+const { readEvaluationKey, directModelRouting, observeDirectFetch, ENDPOINT, MODEL, KEY_ENV } = require('../../scripts/badcase-capture/direct-model.cjs');
+const key = 'test-only-direct-evaluation-key-123456';
+test('explicit env/file key; one terminal newline allowed; descriptor contains reference only', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-key-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'input.key'); fs.writeFileSync(file, key + '\r\n');
+  assert.equal(readEvaluationKey({ CAFF_BADCASE_MODEL_KEY_FILE: file, [KEY_ENV]: 'ignored-ambient' }), key);
+  assert.equal(readEvaluationKey({ [KEY_ENV]: key }), key);
+  assert.throws(() => readEvaluationKey({}), /^Error: evaluation_key_missing$/);
+  const routing = directModelRouting(); assert.equal(routing.providers['opencode-go'].baseUrl, ENDPOINT);
+  assert.equal(routing.providers['opencode-go'].apiKey, '$' + KEY_ENV);
+  assert.equal(routing.providers['opencode-go'].models[0].id, MODEL);
+  assert.equal(JSON.stringify(routing).includes(key), false);
+  assert.throws(() => directModelRouting('https://other.example/v1'), /endpoint_invalid/);
+});
+test('invalid explicit file has no ambient fallback and no content/path in errors', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-key-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'private-path.key');
+  for (const contents of [key + '\nextra', key + '\n\n', '', 'short', key + ' ', key + '\0', 'x'.repeat(4099)]) {
+    fs.writeFileSync(file, contents);
+    assert.throws(() => readEvaluationKey({ CAFF_BADCASE_MODEL_KEY_FILE: file, [KEY_ENV]: key }), e => {
+      assert.equal(e.message, 'evaluation_key_file_unavailable_or_invalid'); assert.equal(e.message.includes(file), false); return true;
+    });
+  }
+  assert.throws(() => readEvaluationKey({ CAFF_BADCASE_MODEL_KEY_FILE: path.join(root, 'missing'), [KEY_ENV]: key }), /file_unavailable_or_invalid/);
+  assert.throws(() => readEvaluationKey({ CAFF_BADCASE_MODEL_KEY_FILE: root, [KEY_ENV]: key }), /file_unavailable_or_invalid/);
+});
+test('observer sends exact native body/auth and returns exact SSE Response; one record per attempt', async () => {
+  const body = JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'hello' }], stream: true });
+  const response = new Response('data: native-sse-bytes\n\n', { status: 200 }); const options = { method: 'POST', body, headers: { authorization: 'Bearer ' + key } };
+  let sent = 0;
+  const observer = observeDirectFetch(async (url, opts) => { sent++; assert.equal(url, ENDPOINT + '/chat/completions'); assert.equal(opts, options); return response; });
+  assert.equal(await observer.fetch(ENDPOINT + '/chat/completions', options), response);
+  observer.complete({ stopReason: 'toolUse', usage: { input: 10, output: 3, cacheRead: 2, cacheWrite: 0, totalTokens: 15 } });
+  assert.equal(sent, 1); assert.equal(observer.calls.length, 1); assert.equal(observer.calls[0].success, true);
+  assert.equal(observer.calls[0].httpStatus, 200); assert.equal(observer.calls[0].usage.totalTokens, 15);
+  assert.ok(observer.calls[0].durationMs >= 0); assert.equal(JSON.stringify(observer.calls).includes(key), false);
+});
+test('HTTP/model/transport failure closes subsequent attempts; no vendor error/body saved', async () => {
+  for (const scenario of ['http', 'model', 'transport']) {
+    let sent = 0;
+    const observer = observeDirectFetch(async () => { sent++; if (scenario === 'transport') throw Error(key); return new Response(key, { status: scenario === 'http' ? 401 : 200 }); });
+    if (scenario === 'transport') await assert.rejects(observer.fetch(ENDPOINT + '/chat/completions'), /^Error: evaluation_request_failed$/);
+    else { await observer.fetch(ENDPOINT + '/chat/completions'); observer.complete({ stopReason: 'error', errorMessage: key }); }
+    await assert.rejects(observer.fetch(ENDPOINT + '/chat/completions'), /request_blocked/);
+    assert.equal(sent, 1); assert.equal(observer.calls.length, 1); assert.equal(observer.calls[0].success, false);
+    assert.equal(JSON.stringify(observer.calls).includes(key), false);
+  }
+});
+test('observer permits only exact provider endpoint and explicitly supplied callback origin', async () => {
+  let sent = 0; const observer = observeDirectFetch(async () => { sent++; return new Response('ok'); }, { callbackUrl: 'http://127.0.0.1:4567', maxRequests: 1 });
+  await assert.rejects(observer.fetch('http://127.0.0.1:3100/api/bootstrap'), /request_blocked/);
+  await assert.rejects(observer.fetch(ENDPOINT + '/chat/completions?other=1'), /request_blocked/);
+  await observer.fetch('http://127.0.0.1:4567/api/agent-tools/context'); assert.equal(observer.calls.length, 0);
+  await observer.fetch(ENDPOINT + '/chat/completions'); observer.complete({ stopReason: 'stop' });
+  await assert.rejects(observer.fetch(ENDPOINT + '/chat/completions'), /request_blocked/); assert.equal(sent, 2);
+});

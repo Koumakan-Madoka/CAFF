@@ -28,7 +28,7 @@ function prepareCaffRuntimeFiles(repoRoot, dependencyRoot, image, mode) {
     }
     const jiti = JSON.parse(files.find(f => f.path === 'runtime/node_modules/jiti/package.json').bytes);
     if (jiti.name !== 'jiti' || jiti.version !== '2.7.0') throw Error();
-    for (const name of ['pi-sdk-host.mjs', 'proxy-routing.mjs', 'pi-extensions/caff-capabilities.mjs', 'pi-extensions/caff-stream-read-retry.mjs']) {
+    for (const name of ['pi-sdk-host.mjs', 'proxy-routing.mjs', 'pi-extensions/caff-capabilities.mjs', 'pi-extensions/caff-stream-read-retry.mjs', 'pi-extensions/caff-fast-mode.mjs']) {
       copy('lib/' + name, 'build/lib/' + name);
     }
     copy('scripts/badcase-capture/caff-runtime-container.cjs', 'probe.cjs');
