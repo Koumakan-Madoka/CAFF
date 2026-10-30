@@ -245,14 +245,59 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     assert.equal(interruptCount(), interruptsBeforeCopy + 1);
     pass('unselected Ctrl+C reaches raw CLI as exactly one interrupt');
 
-    await page.evaluate(() => navigator.clipboard.writeText('ctrl-v-paste'));
-    const beforePaste = rawInput().length;
-    await page.keyboard.press('Control+v'); await page.waitForTimeout(150);
-    const pasted = rawInput().slice(beforePaste).includes('\x1b[200~ctrl-v-paste\x1b[201~');
-    results.push({ name: 'Ctrl+V observation (not changed by this Goal)', pasted, sentLiteralCtrlV: rawInput().slice(beforePaste).includes('\x16') });
+    async function waitRawInput(expected, before, label) {
+      const deadline = Date.now() + 5000;
+      let actual;
+      // Await real Node-side polling; an async waitForFunction predicate would
+      // risk accepting a truthy Promise instead of checking the raw CLI bytes.
+      do {
+        actual = rawInput().slice(before);
+        if (actual.includes(expected)) break;
+        await page.waitForTimeout(50);
+      } while (Date.now() < deadline);
+      assert.ok(actual.includes(expected), label + ': expected ' + JSON.stringify(expected)
+        + ' in raw CLI input, actual=' + JSON.stringify(actual));
+      return actual;
+    }
+    await page.waitForFunction(() => window.__plannerTerminals.at(-1).modes.bracketedPasteMode);
+    for (const shortcut of ['Control+v', 'Control+Shift+V']) {
+      const sentinel = await seedClipboard('paste-' + shortcut);
+      const beforePaste = rawInput().length;
+      await page.keyboard.press(shortcut);
+      const actual = await waitRawInput('\x1b[200~' + sentinel + '\x1b[201~', beforePaste, shortcut);
+      assert.equal(actual.includes('\x16'), false, shortcut + ': no literal ^V');
+      pass(shortcut + ': fresh clipboard sentinel reaches raw CLI bracketed without ^V');
+      const beforeClear = rawInput().length;
+      await page.keyboard.press('Control+c'); await waitRawInput('\x03', beforeClear, 'clear synthetic pending paste');
+    }
+    const beforeAltV = rawInput().length;
+    await page.keyboard.press('Alt+v');
+    assert.equal(await waitRawInput('\x1bv', beforeAltV, 'Alt+V'), '\x1bv');
+    const beforeAltClear = rawInput().length;
+    await page.keyboard.press('Control+c'); await waitRawInput('\x03', beforeAltClear, 'clear synthetic Alt+V');
+    pass('Alt+V still reaches raw CLI unchanged as ESC v');
+
+    const imageTypes = await page.evaluate(async () => {
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      return (await navigator.clipboard.read()).flatMap(item => item.types);
+    });
+    assert.ok(imageTypes.includes('image/png')); assert.equal(imageTypes.includes('text/plain'), false);
+    await page.locator('.xterm-helper-textarea').evaluate(el => {
+      el.addEventListener('paste', event => {
+        window.__imagePaste = { trusted: event.isTrusted, types: [...event.clipboardData.types],
+          textLength: event.clipboardData.getData('text/plain').length };
+      }, { capture: true, once: true });
+    });
+    const beforeImagePaste = rawInput().length;
+    await page.keyboard.press('Control+v'); await page.waitForFunction(() => window.__imagePaste);
+    await page.waitForTimeout(200);
+    results.push({ name: 'image-only clipboard Ctrl+V (observation, no image fallback)', imageTypes,
+      paste: await page.evaluate(() => window.__imagePaste), rawInput: rawInput().slice(beforeImagePaste) });
     console.info('OBSERVE | ' + JSON.stringify(results.at(-1)));
-    if (pasted) { await page.keyboard.press('Enter'); await waitText('ECHO:ctrl-v-paste'); }
-    else { await page.keyboard.press('Control+c'); } // Clear the synthetic CLI's pending ^V, not a paste fix.
+    const beforeImageClear = rawInput().length;
+    await page.keyboard.press('Control+c'); await waitRawInput('\x03', beforeImageClear, 'clear synthetic image paste');
     // The native context menu is browser chrome, outside Playwright's DOM. Test
     // its paste-event path separately and label it honestly, not as a menu click.
     await page.locator('.xterm-screen').click({ button: 'right' });
@@ -266,7 +311,7 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     await page.waitForTimeout(150);
     assert.ok(rawInput().includes('\x1b[200~menu-paste-event\x1b[201~'));
     await page.keyboard.press('Enter'); await waitText('ECHO:menu-paste-event');
-    pass('context-menu paste-event handler reaches CLI bracketed; native menu command not automated (paste unchanged)');
+    pass('context-menu paste-event handler reaches CLI bracketed; native menu command not automated');
 
     // One/two-line notices change the available height. Sweep a complete cell's
     // fractional remainder to catch the old border-box + 10px overcount reliably.
@@ -455,6 +500,58 @@ test('real Edge terminal pane: interaction, retention, manual reconnect, sizing,
     assert.equal(fs.existsSync(path.join(off.root, 'fake-launch.json')), false);
     assert.equal(off.app.store.getConversationWithoutMessages(off.room.id).metadata.embeddedPlanner, undefined);
     await offContext.close(); pass('feature-off real browser has no terminal entry/socket/session/process, including narrow layout');
+
+    // Observe the existing >1 MiB backlog policy in a separate synthetic
+    // instance, so partial input or a disconnect cannot affect other checks.
+    const large = await fixture(t, { authTimeoutMs: 5000, cliFixture: path.join(__dirname, '../fixtures/fake-planner-session-cli.cjs') });
+    assert.ok(![3100,3200,3310].includes(large.port));
+    large.app.store.savePlanForConversation(large.room.id, { doc: { nodes: [
+      { id: 'fixture', title: 'Synthetic only', goal: 'Do not execute', status: 'pending', depends_on: [], kind: 'work' },
+    ] } });
+    const largeContext = await newContext({}, large.base), largePage = await largeContext.newPage();
+    await largePage.goto(large.base); await largePage.click(selector('toggle'));
+    await largePage.waitForFunction(() => document.querySelector('#planner-terminal-screen').textContent.includes('FAKE_SESSION_READY'));
+    await largePage.locator('.xterm-helper-textarea').focus();
+    const largeChars = 1024 * 1024 + 65536;
+    await largePage.evaluate(async length => {
+      const text = 'L'.repeat(length);
+      await navigator.clipboard.writeText(text);
+      if (await navigator.clipboard.readText() !== text) throw new Error('Large clipboard seed mismatch');
+      const socket = window.__terminalSockets.at(-1), send = socket.send.bind(socket);
+      window.__largePaste = { inputFrames: 0, inputBytes: 0, maxChunkBytes: 0, closeCode: null };
+      socket.send = data => {
+        const message = JSON.parse(data);
+        if (message.type === 'input') {
+          const bytes = new TextEncoder().encode(message.data).length, stats = window.__largePaste;
+          stats.inputFrames++; stats.inputBytes += bytes; stats.maxChunkBytes = Math.max(stats.maxChunkBytes, bytes);
+        }
+        return send(data);
+      };
+      socket.addEventListener('close', event => { window.__largePaste.closeCode = event.code; });
+    }, largeChars);
+    const largeRaw = () => {
+      const file = path.join(large.root, 'fake-input.txt');
+      return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    };
+    const beforeLarge = largeRaw().length;
+    await largePage.keyboard.press('Control+v');
+    const largeDeadline = Date.now() + 10000;
+    let lastLength = -1, stableSince = Date.now();
+    do {
+      const length = largeRaw().length;
+      if (length !== lastLength) { lastLength = length; stableSince = Date.now(); }
+      if (Date.now() - stableSince >= 1000) break;
+      await largePage.waitForTimeout(100);
+    } while (Date.now() < largeDeadline);
+    const largeReceived = largeRaw().slice(beforeLarge);
+    results.push({ name: '>1 MiB Ctrl+V (observation, existing limits unchanged)', clipboardChars: largeChars,
+      ...await largePage.evaluate(() => ({ ...window.__largePaste, status: document.querySelector('#planner-terminal-status').textContent,
+        notice: document.querySelector('#planner-terminal-notice').textContent })),
+      rawBytes: Buffer.byteLength(largeReceived), payloadCharsReceived: (largeReceived.match(/L/g) || []).length,
+      bracketStart: largeReceived.startsWith('\x1b[200~'), bracketEnd: largeReceived.endsWith('\x1b[201~'),
+      sentLiteralCtrlV: largeReceived.includes('\x16') });
+    console.info('OBSERVE | ' + JSON.stringify(results.at(-1)));
+    await largeContext.close(); await large.close();
 
     // A short, separate recording keeps evidence bounded instead of filming the whole test.
     const videoContext = await newContext({ recordVideo: { dir: output, size: { width: 1000, height: 750 } } });

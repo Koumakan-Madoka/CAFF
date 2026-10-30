@@ -113,6 +113,12 @@
         if (chunk) send({ type: 'input', data: chunk });
       }));
       terminal.attachCustomKeyEventHandler?.(event => {
+        if (event.type === 'keydown' && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey
+          && event.key.toLowerCase() === 'v') {
+          // Skip xterm's ^V conversion without cancelling the browser's native
+          // paste event; xterm already handles its text and bracketed-paste mode.
+          return false;
+        }
         if (event.type === 'keydown' && event.ctrlKey && !event.altKey && !event.metaKey
           && event.key.toLowerCase() === 'c' && terminal.hasSelection()) {
           event.preventDefault();

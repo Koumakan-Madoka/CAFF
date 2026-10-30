@@ -111,6 +111,7 @@ test('session-unavailable recovery uses cautious fixed wording and separate conf
   assert.match(f.q('guidance').textContent, /Yes, I trust this folder/);
   assert.match(f.q('guidance').textContent, /Shift 拖动选择/);
   assert.match(f.q('guidance').textContent, /选中后 Ctrl\+C 复制，无选中时 Ctrl\+C 中断/);
+  assert.match(f.q('guidance').textContent, /Ctrl\+V 粘贴文本/);
 });
 
 for (const [code, text] of [['planner_process_exited', /Claude Code 已退出/], ['planner_process_stopped', /Claude Code 已停止/]]) {
@@ -277,12 +278,37 @@ function clientFixture(t, extra = {}) {
   function key(term, overrides = {}) {
     const event = new w.KeyboardEvent(overrides.type || 'keydown', { key: 'c', ctrlKey: true, cancelable: true, ...overrides });
     const result = term.keyHandler(event);
-    // Model xterm's normal Ctrl+C path; the real browser test verifies xterm itself.
-    if (result && event.type === 'keydown' && event.ctrlKey && event.key.toLowerCase() === 'c') term.input('\x03');
+    // Model xterm's control-character paths; the browser test verifies xterm itself.
+    if (result && event.type === 'keydown' && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
+      if (event.key.toLowerCase() === 'c') term.input('\x03');
+      if (event.key.toLowerCase() === 'v') term.input('\x16');
+    }
     return { result, event };
   }
   return { w, client, sockets, terminals, states, exits, observations, copies, notices, ready, key, get toolbarFocus() { return toolbarFocus; } };
 }
+
+for (const key of ['v', 'V']) {
+  test(`Ctrl+V keydown (${key}) yields to native paste without preventing default or sending ^V`, t => {
+    const f = clientFixture(t); f.client.connect('room-a', 'synthetic');
+    const term = f.terminals[0], s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+    const { result, event } = f.key(term, { key });
+    assert.equal(result, false); assert.equal(event.defaultPrevented, false);
+    assert.equal(s.sent.filter(x => x.type === 'input').length, 0);
+    assert.deepEqual(f.copies, []); assert.equal(f.toolbarFocus, 0);
+  });
+}
+
+test('native-paste key branch leaves other event types, Shift/Alt/Meta combinations and other keys alone', t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic'); const term = f.terminals[0];
+  for (const overrides of [{ type: 'keyup' }, { type: 'keypress' }, { shiftKey: true, key: 'V' },
+    { altKey: true }, { metaKey: true }, { ctrlKey: false, altKey: true },
+    { ctrlKey: false, metaKey: true }, { ctrlKey: false }, { key: 'b' }]) {
+    const { result, event } = f.key(term, { key: 'v', ...overrides });
+    assert.equal(result, true, JSON.stringify(overrides)); assert.equal(event.defaultPrevented, false);
+  }
+  assert.deepEqual(f.copies, []); assert.equal(f.toolbarFocus, 0);
+});
 
 for (const shiftKey of [false, true]) {
   test(`selected Ctrl+${shiftKey ? 'Shift+' : ''}C copies only selection without input, clears on success and restores terminal focus`, async t => {
