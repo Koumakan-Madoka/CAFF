@@ -37,7 +37,8 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
         if (st.isDirectory()) walk(p, rel + '/'); else rows.push({ path: rel, type: st.isSymbolicLink() ? 'symlink' : 'file', sha256: st.isFile() ? hash(fs.readFileSync(p)) : null });
       }
     }
-    walk(cwd); return hash(JSON.stringify(rows));
+    walk(cwd); rows.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    return hash(JSON.stringify(rows));
   };
   const beforeHash = treeHash();
   if (input.settings !== null) write(agentDir + '/settings.json', JSON.stringify(input.settings));
@@ -94,10 +95,14 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     try { await session.prompt(prompt); } catch { threw = true; }
     const final = session.messages.filter(m => m.role === 'assistant').at(-1);
     const text = (final?.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+    // A callback turn is graded on what it actually published, including no
+    // publication. Internal SDK text is diagnostic only, never a substitute.
+    const finalText = callback ? callback.readPublicReply() : text;
+    const replySource = finalText ? (callback ? 'public' : 'internal') : 'none';
     receipt = { kind: 'direct-caff-turn-v1', inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash,
       success: !threw && final?.stopReason === 'stop' && observer.calls.length > 0 && observer.calls.every(c => c.success),
       historyMessages: initialHistory.length, historyHash: hash(JSON.stringify(initialHistory)), tools, toolCalls,
-      modelCalls: observer.calls, finalText: callback?.readPublicReply?.() || text, beforeHash, afterHash: treeHash(),
+      modelCalls: observer.calls, finalText, replySource, beforeHash, afterHash: treeHash(),
       // No worker self-score. The host scores only after container removal.
       scored: false, sealedCheckpointVerified: false };
     assert.deepEqual(extensionErrors, []);

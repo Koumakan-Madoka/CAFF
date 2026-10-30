@@ -33,7 +33,7 @@ function scoreReadOnlyFiles(receipt, rules, beforeHash) {
     unchanged: receipt?.beforeHash === beforeHash && receipt?.afterHash === beforeHash && !calls.some(c => ['write', 'edit'].includes(c.name)),
     // Deliberately literal, user-confirmable MVP rubric, not semantic judging.
     // The fragments should include the file facts and the missing-file claim.
-    reply: typeof receipt?.finalText === 'string' && rules.requiredReplyFragments.every(s => receipt.finalText.includes(s)),
+    reply: receipt?.replySource === 'public' && typeof receipt.finalText === 'string' && rules.requiredReplyFragments.every(s => receipt.finalText.includes(s)),
   };
   return { pass: Object.values(checks).every(Boolean), checks };
 }
@@ -95,7 +95,7 @@ async function runComparison(config, options = {}) {
       try { task = await execute(fixed.image, files[variant], { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000 }); }
       catch { task = { failed: true, reason: 'evaluation_failed' }; }
       if (leaksKey(task)) task = { failed: true, reason: 'evaluation_output_contains_key' };
-      const receipt = task?.receipt, row = { variant, iteration, status: 'error', checks: null, finalText: '', modelCalls: [],
+      const receipt = task?.receipt, row = { variant, iteration, status: 'error', checks: null, finalText: '', replySource: 'unknown', modelCalls: [],
         containerId: task?.containerId || null, cleaned: task?.cleaned === true, isolation: task?.isolation || null,
         inputHash: manifests[variant].inputHash };
       const valid = !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
@@ -105,6 +105,7 @@ async function runComparison(config, options = {}) {
       if (valid) {
         row.modelCalls = receipt.modelCalls;
         row.finalText = receipt.finalText;
+        row.replySource = ['public', 'internal', 'none'].includes(receipt.replySource) ? receipt.replySource : 'unknown';
         modelCallsKnown += row.modelCalls.length;
         for (const [i, call] of row.modelCalls.entries()) emit({ event: 'model_call', variant, iteration, request: i + 1, ...call });
         if (receipt.success === true && receipt.modelCalls.every(c => c.success)) {
@@ -129,9 +130,9 @@ async function runComparison(config, options = {}) {
 }
 function formatComparison(result) {
   if (!result.supported) return '不可回放：缺材料或超出当前支持范围。\n';
-  const lines = ['模型：' + result.model, '变体\t轮次\t结果\t模型请求'];
+  const lines = ['模型：' + result.model, '变体\t轮次\t结果\t模型请求\t回复来源'];
   for (const r of result.runs || []) {
-    lines.push([r.variant, r.iteration, r.status, r.reason === 'run_evidence_unavailable' ? 'unknown' : r.modelCalls.length].join('\t'));
+    lines.push([r.variant, r.iteration, r.status, r.reason === 'run_evidence_unavailable' ? 'unknown' : r.modelCalls.length, r.replySource ?? 'unknown'].join('\t'));
     for (const [i, c] of r.modelCalls.entries()) lines.push('  #' + (i + 1) + ' ' + c.model + ' ' + Math.round(c.durationMs) + 'ms ' + (c.success ? 'success' : 'failed') + ' usage=' + JSON.stringify(c.usage ?? null));
   }
   for (const v of ['original', 'candidate']) {
