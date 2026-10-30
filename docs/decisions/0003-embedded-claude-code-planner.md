@@ -103,14 +103,18 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
   - tools limited to the caff CLI and read-only tools: no PowerShell, no edits
     and no other shell commands.
 - **User-approved security correction, 2026-10-30 (PR #171 P1):** wake-ups add
-  `--setting-sources user` and `--settings
-  '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}'`, removing
-  bare Read/Glob/Grep allowances while keeping the same four tools and six Bash
-  adapter rules. Project/local settings (permissions/hooks) do not load. Before
-  each launch, inspect child-user and file-based managed settings; Bash allow
-  rules, nonempty additionalDirectories or unreadable/invalid settings block
+  `--setting-sources user`, removing bare Read/Glob/Grep allowances while keeping
+  the same four tools and six Bash adapter rules. Project/local settings
+  (permissions/hooks) do not load. Outside reads are rejected by dontAsk with
+  no read-tool allowance. **Correction after real CLI 2.1.312 review:** do not
+  use `blockReadsOutsideWorkingDirectories` / `--settings`; it also denied the
+  explicitly allowed caff.js command outside the room cwd, so `f3d0ae72` could
+  not complete a wake. Before each launch, inspect child-user and file-based
+  managed settings; Bash/Read/Glob/Grep allow rules, nonempty
+  additionalDirectories or unreadable/invalid settings block
   with `planner_wakeup_settings_unsafe`, no quota/item claim. Only filename and
-  issue category are diagnostic. Registry/MDM/server-delivered managed policy
+  issue category are diagnostic. One leading UTF-8 BOM is accepted before
+  parsing, with the same permission checks. Registry/MDM/server-delivered managed policy
   is not inspected; interactive terminals are unchanged. User approval and
   planner instruction: message `af51ccfd-4ce7-4d6d-9228-85fb46e6a5ac`;
   exact paths, checks and current argv are in P2 §6/§10. The planner's CLI

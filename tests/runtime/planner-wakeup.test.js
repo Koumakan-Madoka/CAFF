@@ -28,7 +28,8 @@ test('verified wakeup argv pins dontAsk, version range and no-space trusted pref
   assert.equal(c.verified, true);
   assert.equal(c.args[c.args.indexOf('--permission-mode') + 1], 'dontAsk');
   assert.equal(c.args[c.args.indexOf('--setting-sources') + 1], 'user');
-  assert.equal(c.args[c.args.indexOf('--settings') + 1], '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}');
+  assert.ok(!c.args.includes('--settings'));
+  assert.ok(!c.args.some(arg => arg.includes('blockReadsOutsideWorkingDirectories')));
   assert.equal(c.tools, 'Read,Glob,Grep,Bash');
   assert.equal(c.allowedTools, ['state','goal read','attention read*','goal action --json *','owner message --json *','wakeup finish --attempt * --json *'].map(s => `Bash(${c.adapterPrefix} ${s})`).join(','));
   assert.equal(c.disallowedTools, 'Write,Edit,NotebookEdit,MultiEdit,PowerShell,Agent,Task,Skill,WebFetch,WebSearch,ToolSearch,mcp__*');
@@ -169,6 +170,10 @@ function settingsFixture(t) {
 for (const [label, value, kind] of [
   ['bare Bash', { permissions: { allow: [' Bash '] } }, 'bash_allow'],
   ['Bash prefix', { permissions: { allow: [' Bash (sensitive-rule-must-not-leak)'] } }, 'bash_allow'],
+  ...['Read','Glob','Grep'].flatMap(tool => [
+    [tool, { permissions: { allow: [tool] } }, 'read_allow'],
+    [tool + ' prefix', { permissions: { allow: [' ' + tool + '(*) '] } }, 'read_allow'],
+  ]),
   ['extra directory', { permissions: { additionalDirectories: ['private-directory-must-not-leak'] } }, 'additional_directories'],
   ['invalid JSON', '{sensitive-json-must-not-leak', 'invalid_json'],
   ['array', [], 'invalid_json'], ['null', null, 'invalid_json'], ['scalar', '123', 'invalid_json'],
@@ -183,10 +188,10 @@ test('wakeup settings reject an existing unreadable file (directory) and unreada
   f.write('{}', path.join(f.managedSettingsDir, 'managed-settings.d'));
   assert.equal(f.check().issue.kind, 'unreadable');
 });
-test('missing settings and non-Bash allowances are safe; checks use child home/config dir without caching or parent env', t => {
+test('missing settings and non-read/non-Bash allowances are safe; checks use child home/config dir without caching or parent env', t => {
   const f = settingsFixture(t);
   assert.equal(f.check().available, true);
-  f.write({ permissions: { allow: ['Read(*)','Glob(*)','Grep(*)','WebSearch','Edit'], additionalDirectories: [] } });
+  f.write({ permissions: { allow: ['WebSearch','Edit'], additionalDirectories: [] } });
   assert.equal(f.check().available, true);
   const configDir = path.join(f.root, 'custom-config'); f.env.CLAUDE_CONFIG_DIR = configDir;
   f.write({ permissions: { allow: ['Bash(*)'] } }, path.join(configDir, 'settings.json'));
@@ -197,6 +202,13 @@ test('missing settings and non-Bash allowances are safe; checks use child home/c
   f.write({ permissions: { allow: ['Bash'] } }, path.join(other, '.claude', 'settings.json'));
   assert.equal(f.check({ env: { HOME: other, USERPROFILE: f.root }, platform: 'linux' }).available, false);
   assert.equal(f.check({ env: { HOME: other, USERPROFILE: f.root }, platform: 'win32' }).available, true);
+});
+test('settings accept a leading UTF-8 BOM without skipping unsafe permissions', t => {
+  const f = settingsFixture(t);
+  f.write('\uFEFF' + JSON.stringify({ permissions: { allow: ['WebSearch','Edit'] } }));
+  assert.equal(f.check().available, true);
+  f.write('\uFEFF' + JSON.stringify({ permissions: { allow: ['Bash(*)'] } }));
+  assert.deepEqual(f.check().issue, { file: f.file, kind: 'bash_allow' });
 });
 for (const name of ['managed-settings.json', 'managed-settings.d/x.json'])
   test(`file-based managed settings are checked: ${name}`, t => {

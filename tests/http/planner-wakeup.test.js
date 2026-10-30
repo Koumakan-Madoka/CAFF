@@ -21,7 +21,8 @@ test('live scheduler -> pipe fake CLI -> actual caff/P1 -> production finish; fi
   assert.equal(launch.env.CAFF_PLANNER_CREDENTIAL_FILE, f.file);
   assert.equal(launch.args[launch.args.indexOf('--permission-mode') + 1], 'dontAsk');
   assert.equal(launch.args[launch.args.indexOf('--setting-sources') + 1], 'user');
-  assert.equal(launch.args[launch.args.indexOf('--settings') + 1], '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}');
+  assert.ok(!launch.args.includes('--settings'));
+  assert.ok(!launch.args.some(arg => arg.includes('blockReadsOutsideWorkingDirectories')));
   const { buildVerifiedPlannerWakeup } = require('../../build/server/domain/runtime/embedded-planner-wakeup-command');
   assert.deepEqual(launch.args, buildVerifiedPlannerWakeup({ version: '2.1.310', sessionId: launch.args[2], appendPrompt: launch.args[launch.args.indexOf('--append-system-prompt') + 1] }).args);
   for (const bare of ['Read','Glob','Grep']) assert.ok(!launch.args[launch.args.indexOf('--allowedTools') + 1].split(',').includes(bare));
@@ -63,6 +64,12 @@ test('settings changed after opt-in block each launch without claims/quota; diag
   assert.ok(!diagnostic.includes('private-rule-sentinel')); assert.ok(!diagnostic.includes('private-field-sentinel'));
   assert.ok(logs.some(x => x.settingsIssue?.file === file && x.settingsIssue?.kind === 'bash_allow'));
   fs.writeFileSync(file, JSON.stringify({ permissions: { allow: ['Read(*)','WebSearch','Edit'] } }));
+  const readState = await f.wait(async () => { const r = await f.call('state'); return r.body.wakeupSettingsIssue?.kind === 'read_allow' ? r.body : null; });
+  await f.wait(() => logs.some(x => x.settingsIssue?.kind === 'read_allow'));
+  assert.equal(readState.wakeupReasonCode, 'planner_wakeup_settings_unsafe');
+  assert.equal(f.launches().length, 0); assert.equal(readState.quota.used, 0);
+  assert.ok(f.records.pending(f.room.id, f.goal.goalId).some(x => x.sequence === row.sequence));
+  fs.writeFileSync(file, JSON.stringify({ permissions: { allow: ['WebSearch','Edit'] } }));
   // The exact same occurrence remains pending; no cached unsafe decision.
   await f.call('wakeups', { enabled: true }); const a = await completed(f);
   assert.equal(f.launches().length, 1); assert.equal((await f.call('state')).body.quota.used, 1);

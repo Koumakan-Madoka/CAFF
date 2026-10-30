@@ -118,12 +118,16 @@
   2.1.x >=2.1.310 and whitespace-free trusted Node/adapter paths. Fixed reasons
   explain unavailable versions/credentials instead of broadening permissions.
   `planner_wakeup_settings_unsafe` additionally shows only the file path and
-  category (Bash allowance, additionalDirectories, unreadable, invalid JSON)
+  category (Bash allowance, Read/Glob/Grep allowance, additionalDirectories,
+  unreadable, invalid JSON)
   through textContent, never rules or other setting values. Disable opt-in
   while unsafe (existing opt-in may still be disabled); the terminal is not
   disabled. Blocked wakes use no quota/claim and leave attention unchanged.
-  User-only settings plus blockReadsOutsideWorkingDirectories fence wake-up
-  permissions; registry/MDM/server policy is outside the file check (P2 §6).
+  Wake-ups use user-only settings, dontAsk, no bare read allowances and startup
+  rejection of Bash/Read/Glob/Grep rules (leading UTF-8 BOM accepted). Do not use
+  blockReadsOutsideWorkingDirectories: real CLI 2.1.312 also denies the allowed
+  caff command outside cwd. Registry/MDM/server policy is outside the file check
+  (P2 §6); this boundary still needs final-SHA real CLI verification.
 - The per-room checkbox confirms subscription/provider usage before enabling,
   is off by default, and only targets the current unfinished planner-bound
   non-DAG Goal. It cannot implicitly adopt a Goal or grant planner authority.

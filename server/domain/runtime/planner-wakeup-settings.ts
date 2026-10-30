@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export type WakeupSettingsIssue = { file: string; kind: 'bash_allow' | 'additional_directories' | 'unreadable' | 'invalid_json' };
+export type WakeupSettingsIssue = { file: string; kind: 'bash_allow' | 'read_allow' | 'additional_directories' | 'unreadable' | 'invalid_json' };
 type SettingsStatus = { available: true; reasonCode: ''; issue?: undefined }
   | { available: false; reasonCode: 'planner_wakeup_settings_unsafe'; issue: WakeupSettingsIssue };
 
@@ -34,12 +34,14 @@ export function checkPlannerWakeupSettings(options: {
     try { text = fs.readFileSync(file, 'utf8'); }
     catch { return unsafe(file, 'unreadable'); }
     let settings: any;
-    try { settings = JSON.parse(text); }
+    try { settings = JSON.parse(text.replace(/^\uFEFF/, '')); }
     catch { return unsafe(file, 'invalid_json'); }
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return unsafe(file, 'invalid_json');
     const permissions = settings.permissions;
-    if (Array.isArray(permissions?.allow) && permissions.allow.some((rule: unknown) =>
-      typeof rule === 'string' && rule.split('(', 1)[0].replace(/\s/g, '') === 'Bash')) return unsafe(file, 'bash_allow');
+    const allowedNames = Array.isArray(permissions?.allow) ? permissions.allow.filter((rule: unknown) => typeof rule === 'string')
+      .map((rule: string) => rule.split('(', 1)[0].replace(/\s/g, '')) : [];
+    if (allowedNames.includes('Bash')) return unsafe(file, 'bash_allow');
+    if (allowedNames.some((name: string) => ['Read', 'Glob', 'Grep'].includes(name))) return unsafe(file, 'read_allow');
     if (Array.isArray(permissions?.additionalDirectories) && permissions.additionalDirectories.length) return unsafe(file, 'additional_directories');
   }
   return { available: true, reasonCode: '' };

@@ -63,7 +63,7 @@
       wakeState = state; wakeInput.checked = !!state.wakeupsEnabled;
       const reasons = { planner_wakeup_tools_unverified: '叫醒工具策略未验证：仅支持已验证的 2.1.x（至少 2.1.310）且可信路径无空格；需规划者重新验证。', planner_wakeup_credential_unavailable: '叫醒凭证文件不可用，请检查本机规划者凭证。', planner_wakeup_goal_unbound: '只有当前规划者绑定的未完成 Goal 可以开启叫醒。', planner_wakeup_storage_unavailable: '叫醒存储不可用，已停止后续叫醒；请检查本机实例。', session_uninitialized: '请先打开终端并保存一次会话；初始化前不会叫醒。' };
       const issue = state.wakeupSettingsIssue;
-      const kinds = { bash_allow: 'Bash 放行规则', additional_directories: 'additionalDirectories 非空', unreadable: '读不了', invalid_json: '解析不了（须为 JSON 对象）' };
+      const kinds = { bash_allow: 'Bash 放行规则', read_allow: 'Read/Glob/Grep 放行规则', additional_directories: 'additionalDirectories 非空', unreadable: '读不了', invalid_json: '解析不了（须为 JSON 对象）' };
       const settingsReason = state.wakeupReasonCode === 'planner_wakeup_settings_unsafe'
         ? '叫醒设置不安全：' + (typeof issue?.file === 'string' ? issue.file : '设置文件') + '；' + (kinds[issue?.kind] || '请检查设置文件') + '。未启动叫醒，不占配额，事项保持待处理。'
         : '';

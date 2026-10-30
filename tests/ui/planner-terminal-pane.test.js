@@ -214,7 +214,7 @@ test('wake-up opt-in requires confirmation, shows gate/quota/user counts and nev
 
 test('unsafe settings show exact file and safe category as text, without rule contents', async t => {
   const f = fixture(t); f.pane.sync('room-a', { enabled: true });
-  const labels = { bash_allow: 'Bash 放行规则', additional_directories: 'additionalDirectories', unreadable: '读不了', invalid_json: '解析不了' };
+  const labels = { bash_allow: 'Bash 放行规则', read_allow: 'Read/Glob/Grep 放行规则', additional_directories: 'additionalDirectories', unreadable: '读不了', invalid_json: '解析不了' };
   for (const [kind, label] of Object.entries(labels)) {
     f.state({ available: true, processState: 'absent', wakeupAvailable: false, wakeupReasonCode: 'planner_wakeup_settings_unsafe', wakeupSettingsIssue: { file: '/synthetic/<img src=x>/settings.json', kind } });
     if (kind === 'bash_allow') await f.pane.open(); else await f.pane.refresh();
