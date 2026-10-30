@@ -48,11 +48,14 @@ test('real HTTP and existing CLI use the existing bridge with isolated durable S
   assert.equal(context.body.latestUserMessage.id, f.seed.userMessage.id); assert.equal(context.body.latestUserMessage.content, f.seed.userMessage.content);
   assert.equal(context.body.publicMessages.some(m => m.id === f.seed.assistantMessageId), false, 'streaming placeholder hidden');
   const participants = await request(s, 'participants'); assert.equal(participants.status, 200); assert.equal(participants.body.participants[0].id, f.seed.agent.id);
+  assert.equal(s.readPublicReply(), '');
   const sent = await cli(s, ['send-public', '--content', 'Synthetic isolated output.', '--no-finalize']);
   assert.equal(sent.code, 0, sent.stderr); assert.equal(JSON.parse(sent.stdout).message.id, f.seed.assistantMessageId);
   const read = await cli(s, ['read-context']); assert.equal(read.code, 0, read.stderr);
   assert.equal(JSON.parse(read.stdout).publicMessages.find(m => m.id === f.seed.assistantMessageId).content, 'Synthetic isolated output.');
+  assert.equal(s.readPublicReply(), 'Synthetic isolated output.');
   await s.stop(); await s.stop();
+  assert.throws(() => s.readPublicReply(), { code: 'evaluation_callback_expired' });
   const store = createChatAppStore({ agentDir: f.directory, sqlitePath: s.databasePath });
   try { assert.equal(store.getMessage(f.seed.assistantMessageId).content, 'Synthetic isolated output.'); } finally { store.close(); }
   for (const name of fs.readdirSync(f.directory)) if (fs.statSync(path.join(f.directory, name)).isFile()) {

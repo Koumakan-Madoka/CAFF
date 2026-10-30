@@ -76,4 +76,22 @@ function observeDirectFetch(fetch, { baseUrl = ENDPOINT, callbackUrl, maxRequest
   }
   return { fetch: observed, calls, complete };
 }
-module.exports = { readEvaluationKey, validKey, directModelRouting, observeDirectFetch, ENDPOINT, PROVIDER, MODEL, KEY_ENV };
+const BINDING_NAMES = ['CAFF_CHAT_API_URL', 'CAFF_CHAT_INVOCATION_ID', 'CAFF_CHAT_CALLBACK_TOKEN', 'CAFF_CHAT_CONVERSATION_ID',
+  'CAFF_CHAT_TURN_ID', 'CAFF_CHAT_TOOLS_PATH', 'CAFF_CHAT_TOOLS_RELATIVE_PATH', 'PI_AGENT_SANDBOX_DIR', 'PI_AGENT_PRIVATE_DIR'];
+function validateDirectBindings(prompt, bindings) {
+  if (typeof prompt !== 'string' || !bindings || typeof bindings.sourceRoot !== 'string' || !/^(?:[A-Za-z]:[\\\\/]|\/)/.test(bindings.sourceRoot)
+    || !Array.isArray(bindings.controlledReplacements)) throw fail('evaluation_bindings_unsupported');
+  const counts = new Map();
+  for (const r of bindings.controlledReplacements) {
+    if (!BINDING_NAMES.includes(r?.name) || !Number.isSafeInteger(r.count) || r.count < 1) throw fail('evaluation_bindings_unsupported');
+    counts.set(r.name, (counts.get(r.name) || 0) + r.count);
+  }
+  for (const name of BINDING_NAMES) if (prompt.split('{{' + name + '}}').length - 1 !== (counts.get(name) || 0)) throw fail('evaluation_bindings_unsupported');
+  if (prompt.replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, name) => BINDING_NAMES.includes(name) ? '' : '{{').includes('{{')) throw fail('evaluation_bindings_unsupported');
+}
+function bindDirectPrompt(prompt, bindings, values) {
+  validateDirectBindings(prompt, bindings);
+  if (!values || !BINDING_NAMES.every(n => typeof values[n] === 'string' && values[n] && !values[n].includes('{{'))) throw fail('evaluation_bindings_unsupported');
+  return prompt.replaceAll(bindings.sourceRoot, '/work/restored').replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, name) => values[name]);
+}
+module.exports = { readEvaluationKey, validKey, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, ENDPOINT, PROVIDER, MODEL, KEY_ENV };

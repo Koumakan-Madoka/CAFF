@@ -65,6 +65,7 @@ const { summarizeModelUsageCalls, summarizeTokenUsage } = require('../../runtime
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
 const { getSessionGoal } = require('../session-goal');
+const { inspectPortableAgentConfig } = require('../../runtime/badcase-capture/portable-inputs');
 
 const HEARTBEAT_EVENT_REASON_LIMIT = 200;
 const TURN_PREVIEW_LENGTH = 180;
@@ -2349,6 +2350,7 @@ export function createAgentExecutor(options: any = {}) {
               .filter(key => promptUserMessage[key] !== undefined).map(key => [key, promptUserMessage[key]])) : null,
           deliveryMode: resumeSession ? 'resume' : 'fresh',
           prompt,
+          roleSection: deliveredPromptSections.find((section: any) => section.sectionKey === 'private_persona')?.content || '',
           // Use the actual invocation projection, not history attachment markers:
           // text-only models may intentionally receive no image bytes.
           images: runOptions.images,
@@ -2391,6 +2393,7 @@ export function createAgentExecutor(options: any = {}) {
               // Full credential-free IPC descriptor, not just model/version.
               // This does NOT archive files referenced by these paths.
               sdkStartConfig: structuredClone(capturedSdkStartConfig),
+              portableRuntime: inspectPortableAgentConfig(capturedSdkStartConfig),
             },
             skillSnapshots: [
               ...buildCaptureSkillSnapshots(agentConfig.skillIds, resolvedPersonaSkills, new Set()),

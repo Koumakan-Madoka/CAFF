@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const { readEvaluationKey, directModelRouting, observeDirectFetch, ENDPOINT, MODEL, KEY_ENV } = require('../../scripts/badcase-capture/direct-model.cjs');
+const { readEvaluationKey, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, ENDPOINT, MODEL, KEY_ENV } = require('../../scripts/badcase-capture/direct-model.cjs');
 const key = 'test-only-direct-evaluation-key-123456';
 test('explicit env/file key; one terminal newline allowed; descriptor contains reference only', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-key-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -26,6 +26,21 @@ test('invalid explicit file has no ambient fallback and no content/path in error
   }
   assert.throws(() => readEvaluationKey({ CAFF_BADCASE_MODEL_KEY_FILE: path.join(root, 'missing'), [KEY_ENV]: key }), /file_unavailable_or_invalid/);
   assert.throws(() => readEvaluationKey({ CAFF_BADCASE_MODEL_KEY_FILE: root, [KEY_ENV]: key }), /file_unavailable_or_invalid/);
+});
+test('portable prompt binds only the recorded callback/path variables, never ambient values or an invented session', () => {
+  const names = ['CAFF_CHAT_API_URL', 'CAFF_CHAT_INVOCATION_ID', 'CAFF_CHAT_CALLBACK_TOKEN', 'CAFF_CHAT_CONVERSATION_ID', 'CAFF_CHAT_TURN_ID',
+    'CAFF_CHAT_TOOLS_PATH', 'CAFF_CHAT_TOOLS_RELATIVE_PATH', 'PI_AGENT_SANDBOX_DIR', 'PI_AGENT_PRIVATE_DIR'];
+  const values = Object.fromEntries(names.map(n => [n, 'isolated-' + n]));
+  for (const sourceRoot of ['/old/root', 'C:' + String.fromCharCode(92) + 'source']) {
+    const prompt = sourceRoot + '\n' + names.map(n => '{{' + n + '}}').join('\n');
+    const bindings = { sourceRoot, controlledReplacements: names.map(name => ({ name, count: 1 })) };
+    validateDirectBindings(prompt, bindings);
+    const result = bindDirectPrompt(prompt, bindings, values); assert.ok(result.startsWith('/work/restored\n'));
+    assert.equal(result.includes('{{'), false); assert.equal(result.includes(sourceRoot), false);
+    assert.throws(() => bindDirectPrompt(prompt + '{{UNKNOWN}}', bindings, values), /bindings_unsupported/);
+    assert.throws(() => bindDirectPrompt(prompt, { ...bindings, controlledReplacements: [] }, values), /bindings_unsupported/);
+    assert.throws(() => bindDirectPrompt(prompt, bindings, {}), /bindings_unsupported/);
+  }
 });
 test('observer sends exact native body/auth and returns exact SSE Response; one record per attempt', async () => {
   const body = JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'hello' }], stream: true });

@@ -1198,6 +1198,7 @@ test('agent executor pins session and capture to the actual cwd, not stale Room 
     id: 'agent-skill-scoping',
     name: 'Scoping Agent',
     description: 'Exercises the two-layer skill scoping run options.',
+    personaPrompt: 'Read files without modifying them.',
     skillIds: [],
   };
   const conversation = {
@@ -1260,6 +1261,10 @@ test('agent executor pins session and capture to the actual cwd, not stale Room 
   assert.equal(captured.options.metadata.sessionProjectDir, projectDir);
   assert.equal(checkpointInput.targetDir, projectDir);
   assert.equal(checkpointInput.targetDir, checkpointInput.harness.configSnapshot.sdkStartConfig.cwd);
+  assert.equal(checkpointInput.roleSection, 'Your private persona instructions:\nRead files without modifying them.');
+  assert.ok(captured.prompt.includes(checkpointInput.roleSection));
+  assert.equal(checkpointInput.harness.configSnapshot.portableRuntime.kind, 'portable-default-resources-v1');
+  assert.equal(checkpointInput.harness.configSnapshot.portableRuntime.supported, false, 'nonstandard external extension is not silently discarded');
   assert.equal(store.messageWrites.updates.find(({ patch }) => patch.metadata?.badcaseCheckpointId)?.patch.metadata.badcaseCheckpointId,
     'checkpoint-actual-cwd');
 });

@@ -192,6 +192,12 @@ export async function startEvaluationCallback(input: any) {
     authority = '127.0.0.1:' + address.port;
     live(); timer = setTimeout(() => { void stop().catch(() => {}); }, Math.max(1, deadline - performance.now())); timer.unref();
     return Object.freeze({ apiUrl: 'http://' + authority, databasePath, credentials, stop,
+      // Trusted worker observation, not an additional HTTP capability. Read
+      // before stop closes this callback's own disposable SQLite connection.
+      readPublicReply: () => {
+        live(); const m = store.getMessage(seed.assistantMessageId);
+        return m?.metadata?.toolBridge?.publicPostCount > 0 ? String(m.content || '') : '';
+      },
       ...(traceReceipt ? { traceReceipt: structuredClone(traceReceipt) } : {}) });
   } catch { await stop(); throw fail('evaluation_callback_start_failed', 500); }
 }

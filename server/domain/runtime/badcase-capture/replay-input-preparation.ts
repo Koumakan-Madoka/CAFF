@@ -76,6 +76,15 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
     const promptHash = hash(promptBuffer);
     plans.push({ hash: promptHash, content: promptBuffer });
     replayInput.promptBlobHash = promptHash; replayInput.normalizedPromptHash = promptHash;
+    // Bind the actual delivered CAFF role section, not a newly invented SYSTEM
+    // prompt. Delta/legacy/ambiguous inputs have no replaceable role span.
+    if (typeof input.roleSection === 'string' && input.roleSection.trim()) {
+      const role = replaceControlledVariables(input.roleSection.trim(), input.controlledValues).text;
+      const start = replaced.text.indexOf(role);
+      if (start >= 0 && replaced.text.indexOf(role, start + 1) === -1) {
+        replayInput.roleSpan = { start, end: start + role.length, sha256: hash(ownedUtf8(role)) };
+      }
+    }
   }
 
   if (deliveryMode === 'resume') {
