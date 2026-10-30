@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import crypto from 'node:crypto';
 import type { RouteHandler } from '../http/router';
 import { createHttpError } from '../http/http-errors';
@@ -99,7 +100,7 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
   }
   async function handleBadcaseCapture(context: any) {
     const { req, res, pathname } = context;
-    const match = pathname.match(/^\/api\/projects\/([^/]+)\/badcase-capture(?:\/(authorize|estimate|enable|disable|settings|discover-git))?$/);
+    const match = pathname.match(/^\/api\/projects\/([^/]+)\/badcase-capture(?:\/(authorize|estimate|enable|disable|settings|discover-git|configure))?$/);
     if (!match) return false;
     const action = match[2] || '';
     if ((!action && req.method !== 'GET') || (action && req.method !== 'POST')) return false;
@@ -116,7 +117,36 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
     if (!action) { sendJson(res, 200, state(projectId)); return true; }
     const body = await readRequestJson(req);
     const policy = service.loadPolicy(projectId);
-    if (action === 'authorize') {
+    if (action === 'configure') {
+      // MVP: one directory + one explicit switch. Reuse the existing pin and
+      // estimate path; never make external Git layouts implicitly authorized.
+      fields(body, ['confirmed', 'targetDir', 'enabled']);
+      confirmed(body);
+      if (typeof body.enabled !== 'boolean') throw issue('badcase_capture_invalid_body');
+      if (!body.enabled) {
+        invalidate(projectId);
+        service.savePolicy(projectId, { ...policy, status: 'disabled', suspendReason: '' });
+      } else {
+        const targetDir = directories([body.targetDir], true)[0];
+        let git;
+        try { git = fs.lstatSync(path.join(targetDir, '.git')); } catch {}
+        if (!git?.isDirectory() || git.isSymbolicLink()) throw issue('badcase_capture_layout_unsupported');
+        const sessionDir = options.sessionInputDir;
+        if (typeof sessionDir !== 'string' || !path.isAbsolute(sessionDir)) throw issue('badcase_capture_unavailable', 503);
+        fs.mkdirSync(sessionDir, { recursive: true });
+        const operation = invalidate(projectId);
+        service.savePolicy(projectId, { ...policy, authorizedDirs: [targetDir],
+          authorizedInputDirs: directories([sessionDir], false), windowsExternalGit: [],
+          includedIgnoredPatterns: [], excludedPatterns: policy.excludedPatterns.filter((p: string) => p !== '.git'),
+          status: 'disabled', suspendReason: '' }, { authorizeCallbackInput: true });
+        service.authorizeProject(projectId);
+        const pinned = service.loadPolicy(projectId);
+        const failed = (await estimates(projectId, pinned, operation)).find((r: any) => r.ok !== true || r.complete !== true || r.captureAvailable === false);
+        assertCurrent(projectId, operation, pinned);
+        if (failed) throw issue(failed.reason || 'badcase_capture_collector_unavailable', 409);
+        service.savePolicy(projectId, { ...pinned, status: 'enabled', suspendReason: '' });
+      }
+    } else if (action === 'authorize') {
       fields(body, ['confirmed', 'authorizedDirs', 'authorizedInputDirs', 'includedIgnoredPatterns', 'excludedPatterns', 'windowsExternalGit', 'callbackInputAuthorized']);
       confirmed(body);
       if (body.callbackInputAuthorized !== undefined && typeof body.callbackInputAuthorized !== 'boolean') {

@@ -1296,6 +1296,7 @@ export function createServerApp(options: any = {}) {
       : []),
     createBadcaseCaptureController({
       service: badcaseCapture,
+      sessionInputDir: path.join(agentDir, 'named-sessions'),
       projectManager,
       host,
       port,

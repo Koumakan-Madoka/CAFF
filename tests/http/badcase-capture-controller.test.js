@@ -38,6 +38,36 @@ function setup(t) {
 const rejects = (fn, code, status = 422) => assert.rejects(fn, e => e.statusCode === status && e.issues?.[0]?.code === code);
 const authorization = target => ({ confirmed: true, authorizedDirs: [target], authorizedInputDirs: [], includedIgnoredPatterns: [], excludedPatterns: ['.git', 'node_modules'] });
 
+test('compact configure authorizes directory and instance sessions, checks estimate, then enables; disable does not read source', async t => {
+  const h = setup(t), sessions = path.join(h.root, 'sessions');
+  fs.mkdirSync(path.join(h.target, '.git'));
+  h.service.authorizeProject = () => h.service.loadPolicy('project-test');
+  const scans = fakeEstimates(h);
+  const controller = createBadcaseCaptureController({ ...h.options, sessionInputDir: sessions });
+  const enabled = await invoke(controller, 'configure', { confirmed: true, targetDir: h.target, enabled: true });
+  assert.equal(enabled.body.policy.status, 'enabled');
+  assert.deepEqual(enabled.body.policy.authorizedDirs, [h.target]);
+  assert.deepEqual(enabled.body.policy.authorizedInputDirs, [sessions]);
+  assert.equal(enabled.body.policy.callbackInputAuthorized, true);
+  assert.equal(enabled.body.policy.excludedPatterns.includes('.git'), false);
+  assert.deepEqual(enabled.body.policy.windowsExternalGit, []);
+  assert.equal(scans.length, 1);
+  const disabled = await invoke(controller, 'configure', { confirmed: true, enabled: false });
+  assert.equal(disabled.body.policy.status, 'disabled'); assert.equal(scans.length, 1);
+});
+test('compact configure rejects unconfirmed/external Git and failed estimates leave capture off', async t => {
+  const h = setup(t), controller = createBadcaseCaptureController({ ...h.options, sessionInputDir: path.join(h.root, 'sessions') });
+  const body = { confirmed: true, enabled: true, targetDir: h.target };
+  await rejects(() => invoke(controller, 'configure', { ...body, confirmed: false }), 'badcase_capture_confirmation_required');
+  fs.writeFileSync(path.join(h.target, '.git'), 'gitdir: elsewhere');
+  await rejects(() => invoke(controller, 'configure', body), 'badcase_capture_layout_unsupported');
+  fs.unlinkSync(path.join(h.target, '.git')); fs.mkdirSync(path.join(h.target, '.git'));
+  h.service.authorizeProject = () => h.service.loadPolicy('project-test');
+  h.service.estimateDirectoryAsync = () => ({ ok: false, reason: 'git_metadata_unsupported' });
+  await rejects(() => invoke(controller, 'configure', body), 'git_metadata_unsupported', 409);
+  assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
+});
+
 test('external selection is authorization-only closed schema, rejects invalid roots before saving or pinning', async t => {
   const h = setup(t); let pins = 0; h.service.authorizeProject = () => { pins++; };
   const before = h.service.loadPolicy('project-test');
