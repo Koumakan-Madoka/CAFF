@@ -2,12 +2,14 @@
 // No model gateway, auto prompt generation, secret discovery, or self-scoring.
 const crypto = require('node:crypto');
 const path = require('node:path');
-const { prepareSealedDirectTurn } = require('./sealed-direct-input.cjs');
+const { prepareSealedDirectTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
 const { prepareDirectTurnFiles, runDirectDockerTask } = require('./direct-docker.cjs');
 const { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, DEFAULT_PROFILE, DEEPSEEK_PROFILE } = require('./direct-model.cjs');
 const { manifestFor } = require('./pi-probe-materials.cjs');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 const { resolveWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-candidate');
+const { resolveGlobalWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-global-candidate');
+const { collectWikiCandidateFiles } = require('../../build/server/domain/runtime/badcase-capture/wiki-candidate-files');
 const { validateLiteralRules, scoreLiteralFiles } = require('./file-literal-rules.cjs');
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const fail = code => Object.assign(Error(code), { code });
@@ -43,19 +45,43 @@ function scoreReadOnlyFiles(receipt, rules, beforeHash) {
 }
 function prepareComparison(config, options = {}) {
   if (!config || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)
-    || (config.wikiCandidate === undefined ? typeof config.candidateRole !== 'string' || !config.candidateRole.trim() : config.candidateRole !== undefined)
+    || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== 1
+    || config.candidateRole !== undefined && (typeof config.candidateRole !== 'string' || !config.candidateRole.trim())
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')) throw fail('evaluation_config_invalid');
   const profile = config.modelProfile ?? DEFAULT_PROFILE;
   modelProfile(profile);
   if (config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
     || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
-  const rules = validateRules(config.rules), prepare = options.prepare || prepareSealedDirectTurn;
+  const rules = validateRules(config.rules);
+  let prepare = options.prepare || prepareSealedDirectTurn, globalWikiCandidate = null, globalState, globalSaved, globalFiles;
+  if (config.globalWikiCandidate !== undefined) {
+    const selection = config.globalWikiCandidate;
+    if (!selection || typeof selection !== 'object' || Array.isArray(selection)
+      || Object.keys(selection).sort().join(',') !== 'candidateId,globalRoot,sourceWorktree'
+      || !path.isAbsolute(selection.globalRoot || '') || !path.isAbsolute(selection.sourceWorktree || '')
+      || typeof selection.candidateId !== 'string') throw fail('evaluation_config_invalid');
+    globalState = createWikiStore({ globalRoot: selection.globalRoot, sourceWorktree: selection.sourceWorktree }).read();
+    globalSaved = globalState.candidates.find(c => c.id === selection.candidateId && c.kind === 'global-wiki-candidate-v1');
+    if (!globalSaved || globalSaved.status !== 'confirmed') throw fail('wiki_candidate_confirmation_required');
+    if (globalSaved.target?.kind !== 'global-system-prompt') throw fail('evaluation_target_unsupported');
+    globalFiles = collectWikiCandidateFiles(globalState);
+    resolveGlobalWikiCandidate(globalState, globalSaved.id, globalSaved.targetId, globalSaved.baseHash, globalFiles);
+    const prepareTarget = options.prepareTarget || prepareSealedPromptTarget;
+    prepare = (request, replacement = null) => prepareTarget(request, globalSaved.targetId, replacement);
+  }
   const original = prepare(config.request);
-  if (original.supported !== true) return { supported: false, reason: 'unsupported_or_missing_replay_materials' };
+  if (original.supported !== true) return { supported: false, reason: config.globalWikiCandidate ? 'unsupported_or_missing_declared_prompt_target' : 'unsupported_or_missing_replay_materials' };
   let candidateRole = config.candidateRole, wikiCandidate = null;
+  if (globalSaved) {
+    const selected = resolveGlobalWikiCandidate(globalState, globalSaved.id, original.provenance.targetId,
+      original.provenance.originalTargetHash, original.input.files);
+    candidateRole = selected.candidateText;
+    globalWikiCandidate = { id: selected.id, versionId: selected.versionId, entryIds: selected.entryIds,
+      targetId: selected.targetId, baseHash: selected.baseHash, candidateHash: selected.candidateHash };
+  }
   if (config.wikiCandidate !== undefined) {
     const selection = config.wikiCandidate;
     if (!selection || typeof selection !== 'object' || Array.isArray(selection)
@@ -69,7 +95,7 @@ function prepareComparison(config, options = {}) {
     wikiCandidate = { id: selected.id, versionId: selected.versionId, entryIds: selected.entryIds, candidateRoleHash: selected.candidateRoleHash };
   }
   const candidate = prepare(config.request, candidateRole);
-  if (candidate.supported !== true) return { supported: false, reason: 'unsupported_or_missing_replay_materials' };
+  if (candidate.supported !== true) return { supported: false, reason: config.globalWikiCandidate ? 'unsupported_or_missing_declared_prompt_target' : 'unsupported_or_missing_replay_materials' };
   if (original.provenance.checkpointHash !== candidate.provenance.checkpointHash
     || original.provenance.commonInputHash !== candidate.provenance.commonInputHash) throw fail('evaluation_start_mismatch');
   if (rules.kind === 'read-only-files-v1') {
@@ -85,7 +111,8 @@ function prepareComparison(config, options = {}) {
     model: profile, repeats: config.repeats,
     imageId: config.image.imageId, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
-    strictEvalEligible: false, ...(wikiCandidate ? { wikiCandidate } : {}) };
+    strictEvalEligible: false, ...(wikiCandidate ? { wikiCandidate } : {}),
+    ...(globalWikiCandidate ? { targetId: globalWikiCandidate.targetId, globalWikiCandidate } : {}) };
   return { supported: true, inputs, summary, beforeHash: expectedTreeHash(original.input) };
 }
 async function runComparison(config, options = {}) {

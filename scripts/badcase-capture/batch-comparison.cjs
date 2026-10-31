@@ -5,17 +5,20 @@ const { createWikiStore } = require(base + 'wiki-store');
 const { resolveWikiCandidate } = require(base + 'wiki-candidate');
 const { planReplaySplit } = require(base + 'wiki-split');
 const { prepareComparison, runComparison } = require('./direct-comparison.cjs');
+const { prepareGlobalBatch } = require('./global-batch-plan.cjs');
 const { readCaffDeepseekKey, validKey, DEEPSEEK_PROFILE } = require('./direct-model.cjs');
 const fail = code => Object.assign(Error(code), { code });
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const variants = ['original', 'candidate'];
 function prepareBatch(config, options = {}) {
-  if (!config || Object.keys(config).some(k => !['captureRoot', 'sourceWorktree', 'projectId', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases'].includes(k))
+  const scopeFields = config?.globalRoot === undefined ? ['captureRoot', 'projectId'] : ['globalRoot'];
+  if (!config || Object.keys(config).some(k => ![...scopeFields, 'sourceWorktree', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases'].includes(k))
     || !Array.isArray(config.cases) || !config.cases.length || config.cases.length > 20
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')
     || !Number.isSafeInteger(config.repeats ?? 3) || (config.repeats ?? 3) < 1 || (config.repeats ?? 3) > 20
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)) throw fail('evaluation_batch_config_invalid');
+  if (config.globalRoot !== undefined) return prepareGlobalBatch(config, options);
   const state = createWikiStore(config).read(), split = state.replaySplit;
   if (!split) throw fail('evaluation_batch_split_required');
   const expectedSplit = planReplaySplit(split.caseIds);
@@ -88,7 +91,8 @@ async function runBatch(config, options = {}) {
   }
   emit({ event: 'batch_plan', ...plan.summary });
   for (const item of plan.prepared) {
-    let result = { sourceCaseId: item.sourceCaseId, split: item.split, comparison: item.comparison || null,
+    let result = { sourceCaseId: item.sourceCaseId, split: item.split,
+      ...(item.category ? { category: item.category, replayId: item.replayId || null, fixture: item.fixture || null } : {}), comparison: item.comparison || null,
       status: 'not-run', runs: [], modelCallsKnown: 0, callsUnavailable: false };
     if (!item.supported) result = { ...result, status: 'unsupported', reason: item.reason };
     else if (!stopped) {
@@ -107,7 +111,7 @@ async function runBatch(config, options = {}) {
               if (!calls.has(index)) calls.set(index, []); calls.get(index).push(event);
             }
             if (event.event === 'run') observedRuns.push({ ...event, modelCalls: calls.get(event.variant + ':' + event.iteration) || [] });
-            emit({ ...event, sourceCaseId: item.sourceCaseId, split: item.split });
+            emit({ ...event, sourceCaseId: item.sourceCaseId, split: item.split, ...(item.category ? { category: item.category } : {}) });
           } });
         result = { ...result, status: comparison.supported ? (comparison.completed ? 'completed' : 'error') : 'unsupported',
           ...(comparison.reason ? { reason: comparison.reason } : {}), runs: comparison.runs,
@@ -130,23 +134,29 @@ async function runBatch(config, options = {}) {
   const result = { ...plan.summary, completed: results.every(c => c.status === 'completed'), runtimeHash,
     cases: results, totals: totalsFor(results, plan.summary.repeats),
     bySplit: Object.fromEntries(['train', 'test'].map(split => [split, totalsFor(results.filter(c => c.split === split), plan.summary.repeats)])),
+    ...(plan.summary.scope === 'global' ? { byCategory: Object.fromEntries(['reproduction', 'probe', 'control'].map(category => [category, totalsFor(results.filter(c => c.category === category), plan.summary.repeats)])) } : {}),
     modelCallsKnown: results.reduce((n, c) => n + c.modelCallsKnown, 0), callsUnavailable: results.some(c => c.callsUnavailable) };
   emit({ event: 'batch_summary', ...result }); return result;
 }
 function formatBatch(result) {
-  const lines = ['GPT WikiSkill 批量对照（不保证提分）', '计划 ' + result.planHash,
+  const lines = [result.scope === 'global' ? 'WikiSkill 全局提示词批量对照（不保证提分）' : 'GPT WikiSkill 批量对照（不保证提分）', '计划 ' + result.planHash,
     '材料预检支持 ' + result.preparedReplayableCount + '/' + result.cases.length + '；wiki 训练 ' + result.wikiTrainingCount + '；留出来源 ' + result.split.testCaseIds.length + '；补充训练来源 ' + result.additionalTrainingCaseIds.length,
     '已记录模型请求 ' + result.modelCallsKnown + (result.callsUnavailable ? '（存在未知/不完整调用记录）' : ''),
-    '用例\t分组\t执行状态\t原 通过/计划(失败/错误/未运行)\t候选 通过/计划(失败/错误/未运行)'];
-  for (const c of result.cases) lines.push([c.sourceCaseId, c.split, c.status, ...variants.map(v => {
+    '用例\t训练/留出及题型\t执行状态\t原 通过/计划(失败/错误/未运行)\t候选 通过/计划(失败/错误/未运行)'];
+  for (const c of result.cases) lines.push([c.sourceCaseId, c.split + (c.category ? '/' + c.category : ''), c.status, ...variants.map(v => {
     const t = c.totals[v]; return `${t.passed}/${t.planned}(${t.failed}/${t.errors}/${t.notRun})`;
   })].join('\t'));
-  for (const [name, totals] of [['总体', result.totals], ['训练', result.bySplit.train], ['留出', result.bySplit.test]]) {
+  for (const [name, totals] of [['总体', result.totals], ['训练', result.bySplit.train], ['留出', result.bySplit.test],
+    ...(result.byCategory ? [['复现', result.byCategory.reproduction], ['探针', result.byCategory.probe], ['控制', result.byCategory.control]] : [])]) {
     for (const v of variants) {
       const t = totals[v]; lines.push(`${name} ${v}: ${t.passed}/${t.planned} 通过，${t.failed} 失败，${t.errors} 错误，${t.notRun} 未运行；可评分通过率 ${t.passRate === null ? 'N/A' : (100 * t.passRate).toFixed(1) + '%'} (${t.scored}次可评分)`);
     }
   }
-  if (result.disclosures.length) lines.push('数量披露：' + result.disclosures.join(', '));
+  if (result.scope === 'global') {
+    lines.push(`本轮固定题组 ${result.cases.length} 题；原划分中未选作本轮任务的训练来源 ${result.excludedSplitTrainingCaseIds.length} 条（未重新划分留出）。`);
+    lines.push('题组经原基线筛选，存在选择偏差；只复现了汇报难懂一类，探针与控制题不计作该类失败复现。');
+  }
+  if (result.disclosures.length) lines.push('披露：' + result.disclosures.join(', '));
   if (!result.completed) lines.push('批次未完整执行；无自动重试。');
   return lines.join('\n') + '\n';
 }
