@@ -98,6 +98,7 @@ window.client=CaffChat.createPlannerTerminalClient({screen:document.querySelecto
         { ...fixtures[0], name: 'duplicate', duplicate: true },
         { ...fixtures[0], name: 'approved-first-request-risk', forged: true },
         { ...fixtures[0], name: 'no-gesture', idle: true, denied: true },
+        { ...fixtures[0], name: 'grant-expiry-without-request', requests: [], noRequest: true, denied: true, silent: true },
         { ...fixtures[0], name: 'untrusted-events', synthetic: true, denied: true },
         { ...fixtures[0], name: 'query', requests: ['\x1b]52;c;?\x07'], denied: true },
         { ...fixtures[0], name: 'other-selector', requests: ['\x1b]52;p;YQ==\x07'], denied: true },
@@ -149,8 +150,8 @@ window.client=CaffChat.createPlannerTerminalClient({screen:document.querySelecto
         }
         const deadline = Date.now() + 4000;
         while (!plan.emitted && Date.now() < deadline) await page.waitForTimeout(10);
-        assert.equal(plan.emitted, true, fixture.name + ': synthetic peer emitted response');
-        await page.waitForTimeout(100);
+        assert.equal(plan.emitted, true, fixture.name + ': synthetic peer completed release action');
+        await page.waitForTimeout(fixture.noRequest ? 1150 : 100);
         await page.evaluate(() => new Promise(resolve => term.write('', resolve)));
         const state = await page.evaluate(() => ({ ...record, hostSelection: term.hasSelection(), focused: document.activeElement === term.textarea }));
         assert.equal(state.hostSelection, false, 'native workflow must not create an xterm selection');
@@ -185,7 +186,9 @@ window.client=CaffChat.createPlannerTerminalClient({screen:document.querySelecto
             assert.equal(state.writes[0].active, true, 'async OSC still has transient user activation');
           } else {
             assert.ok(state.notices.every(x => !x.includes('已复制')), 'no forged product success');
-            if (!fixture.silent) assert.ok(state.notices.some(x => /拒绝|失败|过期/.test(x)));
+            if (!fixture.silent) assert.ok(state.notices.some(x => /拒绝|失败/.test(x)));
+            if (!fixture.fallback) assert.ok(state.notices.every(x => !x.includes('重新拖选')), 'denial must not assume a drag source');
+            if (fixture.noRequest) assert.deepEqual(state.notices, [], 'grant expiry without a CLI request is silent');
           }
         }
         console.info((process.argv.includes('--expect-red') ? 'RED' : 'PASS') + ' | ' + fixture.name + ': ' + JSON.stringify(actual));

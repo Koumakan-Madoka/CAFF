@@ -1319,9 +1319,19 @@ requests fail closed rather than extending the window. Raw evidence remains in
 ignored `.tmp/planner-native-copy/real-cli-reuse-probe.json`; synthesized WS tests
 are regression evidence, not additional real-CLI captures.
 
-CAFF success is shown only after the browser write helper resolves; failure,
-refusal and expiry use fixed notices, never the CLI's copied-character toast or
-untrusted error/payload text. Native selection is never cleared or rebuilt.
+CAFF success is shown only after the browser write helper resolves; actual failure
+and refusal use fixed notices, never the CLI's copied-character toast or untrusted
+error/payload text. **Grant expiry is silent**, including when no OSC 52 arrives
+or a partial request remains incomplete: a drag is not proof of an attempted copy.
+A completed late/unauthorized request uses the neutral notice
+`终端剪贴板请求已拒绝，未执行复制。`, not an instruction to repeat a drag.
+Existing 2.1.316 capture/source
+excerpts establish ordinary-drag copying only; they do **not establish** whether
+`/copy` or double/triple clicks also emit OSC 52. Do not infer the initiating CLI
+action from those indistinguishable bytes or claim these other actions are
+supported; no real-CLI invocation was made to investigate them during review fixes.
+This wording change does not extend admission beyond the approved drag gate.
+Native selection is never cleared or rebuilt.
 Recheck the same generation, interaction, focus, visibility and connection before
 a denied asynchronous write may use the shared textarea fallback. Its synchronous
 focus changes emit no terminal input; restore only the same still-current view,
@@ -1338,8 +1348,11 @@ dragging** to select xterm text (not Claude Code's application-internal selectio
 browser default and return false to xterm, without sending input or `^C`.
 Success clears the selection; failure preserves it and shows a fixed short
 notice without changing connection state; retain the selection across any
-notice-driven row resize. Both outcomes restore xterm focus (the shared helper's
-textarea fallback may take it), unless that view has been disposed/replaced.
+notice-driven row resize. A pending Ctrl+C failure still reports to its original,
+existing generation after mouse release/focus changes, without requiring the old
+interaction authorization. A disposed/replaced view gets no notice. Fallback and
+focus restoration remain interaction-guarded: do not steal focus after a mouse or
+focus change (the shared helper's textarea fallback may otherwise take it).
 Suppress only transient focus reports during copying, so the fallback emits no
 terminal input; ordinary user input/focus reporting is otherwise unchanged. With
 no selection Ctrl+C remains the CLI interrupt; macOS Cmd+C stays on xterm's

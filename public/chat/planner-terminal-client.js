@@ -57,10 +57,8 @@
         if (!selected?.moved || event.button !== 0 || !ordinaryMouse(event) || !focusedView()
           || !screen.contains(event.target)) return revokeCopy();
         grant = { until: performance.now() + copyWindowMs };
-        grantTimer = setTimeout(() => {
-          grant = null; grantTimer = null;
-          if (focusedView()) options.onNotice?.('复制请求已过期，请重新拖选。');
-        }, copyWindowMs);
+        // Expiring a grant is not evidence that the CLI tried to copy anything.
+        grantTimer = setTimeout(() => { grant = null; grantTimer = null; }, copyWindowMs);
       });
       listen(screen, 'focusout', event => {
         if (!fallbackFocus && !screen.contains(event.relatedTarget)) revokeCopy();
@@ -109,7 +107,7 @@
         }
       } catch { text = null; }
       if (text === null) {
-        if (focusedView()) options.onNotice?.('复制请求已拒绝，请重新拖选。');
+        if (focusedView()) options.onNotice?.('终端剪贴板请求已拒绝，未执行复制。');
         return;
       }
       // Consume synchronously, before any browser Promise or next OSC request.
@@ -198,7 +196,8 @@
     }
     async function copySelection() {
       const owned = terminal, current = generation, action = interaction;
-      const sameView = () => current === generation && action === interaction;
+      const ownsView = () => current === generation && terminal === owned;
+      const sameView = () => ownsView() && action === interaction;
       copying++;
       try {
         await window.CaffShared.copyTextToClipboard(owned.getSelection(), {
@@ -206,7 +205,9 @@
         });
         if (sameView()) owned.clearSelection();
       } catch {
-        if (sameView()) {
+        // Focus/mouse changes cancel fallback/focus restoration, not the user's
+        // failure result while the original terminal view still exists.
+        if (ownsView()) {
           const selection = owned.getSelectionPosition(), cols = owned.cols;
           options.onNotice?.('复制失败，请重试；选区已保留。');
           // The notice changes available height; xterm clears selection on row

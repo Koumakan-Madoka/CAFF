@@ -705,3 +705,49 @@ for (const resolveWrite of [true, false]) {
     assert.equal(f.w.document.activeElement, toolbar); assert.deepEqual(f.notices, []); assert.equal(f.fallbacks, 0);
   });
 }
+
+for (const partialRequest of [false, true]) {
+  test('review R1: grant expiry is silent without a completed OSC request, partial=' + partialRequest, t => {
+    const f = nativeFixture(t), timers = [];
+    // Execute the actual grantTimer callback deterministically, not just advance
+    // performance.now(): the regression is the timer's unsolicited notice.
+    f.w.setTimeout = fn => { timers.push(fn); return timers.length; };
+    f.w.clearTimeout = () => {};
+    f.drag();
+    if (partialRequest) f.output('\x1b]52;c;YQ==');
+    assert.equal(timers.length, 1);
+    f.now(1001); timers[0]();
+    assert.deepEqual(f.notices, []); assert.deepEqual(f.copies, []);
+    if (partialRequest) f.output('\x07'); else f.output(oscCopy('fixed late request'));
+    assert.deepEqual(f.copies, []);
+    assert.match(f.notices.at(-1), /拒绝/);
+    assert.doesNotMatch(f.notices.at(-1), /重新拖选|过期/);
+  });
+}
+
+test('review R2: ungranted OSC 52 refusal does not assume the CLI used drag selection', t => {
+  const f = nativeFixture(t); f.output(oscCopy('fixed non-gesture request'));
+  assert.deepEqual(f.copies, []);
+  assert.match(f.notices.at(-1), /拒绝/);
+  assert.doesNotMatch(f.notices.at(-1), /重新拖选|选区|拖动|过期/);
+});
+
+for (const action of ['mouseup', 'blur', 'toolbar']) {
+  test('review R3: pending Ctrl+C failure remains visible without restoring focus after ' + action, async t => {
+    let reject;
+    const f = nativeFixture(t, { realHelper: true, copy: () => new Promise((_resolve, fail) => { reject = fail; }) });
+    const term = f.terminals[0]; term.selection = 'fixed keyboard selection';
+    assert.equal(f.key(term).result, false);
+    if (action === 'mouseup') f.mouse('mouseup');
+    if (action === 'blur') term.textarea.blur();
+    if (action === 'toolbar') {
+      const toolbar = f.w.document.createElement('button'); f.w.document.body.append(toolbar); toolbar.focus();
+    }
+    const focus = f.w.document.activeElement, focusCount = term.focused;
+    reject(new Error('synthetic denial')); await tick();
+    assert.match(f.notices.at(-1) || '', /复制失败，请重试；选区已保留/);
+    assert.equal(term.selection, 'fixed keyboard selection');
+    assert.equal(f.w.document.activeElement, focus); assert.equal(term.focused, focusCount);
+    assert.equal(f.fallbacks, 0); assert.equal(f.sockets[0].sent.filter(x => x.type === 'input').length, 0);
+  });
+}
