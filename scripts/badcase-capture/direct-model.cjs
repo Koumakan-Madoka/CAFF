@@ -70,26 +70,29 @@ function directModelRouting(baseUrl, profile = DEFAULT_PROFILE) {
 function observeDirectFetch(fetch, { baseUrl, profile = DEFAULT_PROFILE, callbackUrl, maxRequests = 32 } = {}) {
   const selected = modelProfile(profile); baseUrl ??= selected.endpoint;
   directModelRouting(baseUrl, profile);
-  const calls = []; let failed = false;
+  const calls = []; let failed = false, pending = null;
   const observed = async (request, options) => {
     const url = typeof request === 'string' || request instanceof URL ? String(request) : request.url;
     if (callbackUrl && new URL(url).origin === callbackUrl) return fetch(request, options);
     if (url !== baseUrl + '/chat/completions' || failed || calls.length >= maxRequests) throw fail('evaluation_request_blocked');
     const start = performance.now();
     const row = { model: selected.provider + '/' + selected.model, durationMs: 0, success: false, httpStatus: null, usage: null };
-    calls.push(row);
+    calls.push(row); pending = row;
     try {
       const response = await fetch(request, options);
       row.httpStatus = response.status;
-      if (!response.ok) failed = true;
+      if (!response.ok) { failed = true; pending = null; }
       // Completion/usage are recorded from the SDK event after SSE consumption.
       row.durationMs = performance.now() - start;
       Object.defineProperty(row, 'started', { value: start });
       return response;
-    } catch { failed = true; row.durationMs = performance.now() - start; throw fail('evaluation_request_failed'); }
+    } catch { failed = true; pending = null; row.durationMs = performance.now() - start; throw fail('evaluation_request_failed'); }
   };
   function complete(message) {
-    const row = calls.at(-1); if (!row) return;
+    // The sequential SDK may emit an error after a refused retry/budget slot
+    // without another HTTP call. Complete each real request at most once;
+    // never attribute that synthetic error or its zero usage to an old call.
+    const row = pending; pending = null; if (!row) return;
     row.durationMs = performance.now() - (row.started ?? performance.now());
     row.success = row.httpStatus === 200 && ['stop', 'toolUse'].includes(message?.stopReason);
     if (!row.success) failed = true;

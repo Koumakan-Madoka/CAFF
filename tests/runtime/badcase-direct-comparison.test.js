@@ -107,6 +107,23 @@ test('model failure stops immediately without retry/candidate; request row retai
   assert.equal(r.modelCallsKnown, 1); assert.equal(r.callsUnavailable, false); assert.equal(r.totals.original.notRun, 1); assert.equal(r.totals.candidate.notRun, 2);
   assert.equal(f.state.events.find(e => e.event === 'model_call').httpStatus, 401);
 });
+test('a turn stopped after successful HTTP calls is still error, never pass or a fabricated failed request', async () => {
+  const f = fakes(), execute = f.options.execute;
+  f.options.execute = async (...args) => {
+    const result = await execute(...args);
+    result.receipt.success = false; // e.g. the next SDK attempt hit the request budget before HTTP.
+    return result;
+  };
+  const r = await runComparison(config(), f.options);
+  assert.equal(f.state.executions, 1);
+  assert.equal(r.completed, false);
+  assert.equal(r.runs[0].status, 'error');
+  assert.equal(r.runs[0].reason, 'model_turn_failed');
+  assert.equal(r.runs[0].modelCalls[0].success, true);
+  assert.equal(r.modelCallsKnown, 1);
+  assert.equal(r.totals.original.notRun, 1);
+  assert.equal(r.totals.candidate.notRun, 2);
+});
 test('missing worker/cleanup/before-state or leaked output cannot score; raw errors and selected key never logged', async () => {
   for (const setup of [{ workerError: true }, { badBefore: true }, { leaked: true }]) {
     const f = fakes(setup), r = await runComparison(config(), f.options);

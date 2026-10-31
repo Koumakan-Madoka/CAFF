@@ -80,6 +80,30 @@ test('observer sends exact native body/auth and returns exact SSE Response; one 
   assert.equal(observer.calls[0].httpStatus, 200); assert.equal(observer.calls[0].usage.totalTokens, 15);
   assert.ok(observer.calls[0].durationMs >= 0); assert.equal(JSON.stringify(observer.calls).includes(key), false);
 });
+test('SDK errors without a new HTTP attempt cannot overwrite the previous completed request at the budget limit', async () => {
+  let sent = 0;
+  const observer = observeDirectFetch(async () => { sent++; return new Response('native bytes'); }, { maxRequests: 1 });
+  await observer.fetch(ENDPOINT + '/chat/completions');
+  observer.complete({ stopReason: 'toolUse', usage: { input: 10, output: 3, cacheRead: 2, cacheWrite: 0, totalTokens: 15 } });
+  const before = structuredClone(observer.calls);
+  await assert.rejects(observer.fetch(ENDPOINT + '/chat/completions'), /request_blocked/);
+  observer.complete({ stopReason: 'error', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } });
+  assert.equal(sent, 1); assert.deepEqual(observer.calls, before, 'blocked SDK retries are not model requests and must not rewrite the last real call');
+  observer.complete({ stopReason: 'stop' });
+  assert.deepEqual(observer.calls, before, 'a duplicate completion cannot reuse a finished request slot');
+});
+test('unrecorded SDK retry errors do not extend failed HTTP/transport durations or invent usage', async () => {
+  for (const failure of ['http', 'transport']) {
+    const observer = observeDirectFetch(async () => { if (failure === 'transport') throw Error('unavailable'); return new Response('unavailable', { status: 503 }); });
+    if (failure === 'transport') await assert.rejects(observer.fetch(ENDPOINT + '/chat/completions'), /request_failed/);
+    else await observer.fetch(ENDPOINT + '/chat/completions');
+    const before = structuredClone(observer.calls);
+    await assert.rejects(observer.fetch(ENDPOINT + '/chat/completions'), /request_blocked/);
+    observer.complete({ stopReason: 'error', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } });
+    assert.deepEqual(observer.calls, before);
+    assert.equal(observer.calls[0].usage, null);
+  }
+});
 test('HTTP/model/transport failure closes subsequent attempts; no vendor error/body saved', async () => {
   for (const scenario of ['http', 'model', 'transport']) {
     let sent = 0;
