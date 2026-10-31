@@ -108,7 +108,49 @@ test('a leak or role mismatch in the last case fails whole preflight before any 
     assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0); assert.equal(h.state.events.length, 0);
   }
 });
-test('source list must exactly equal frozen selection, with distinct GPT checkpoints and no unsupported scope options', t => {
+test('screening replacement may add already-exposed training sources without changing the frozen holdout or omitting its slots', async t => {
+  const h = setup(t), before = h.store.read(), originalHash = h.plan().summary.planHash;
+  const source = before.cases.find(c => !h.split.caseIds.includes(c.id) && c.split === 'train');
+  const extra = structuredClone(h.config.cases[0]); extra.sourceCaseId = source.id; extra.request.association.checkpointId = 'cp-extra';
+  h.config.cases.push(extra); h.state.allPass = true;
+  const p = h.plan();
+  assert.equal(p.summary.cases.length, 7); assert.equal(p.summary.preparedReplayableCount, 7);
+  const { createdAt, ...frozenPartition } = h.split;
+  assert.deepEqual(p.summary.split, frozenPartition);
+  assert.deepEqual(p.summary.additionalTrainingCaseIds, [source.id]);
+  assert.equal(p.summary.cases.find(c => c.sourceCaseId === source.id).split, 'train');
+  assert.notEqual(p.summary.planHash, originalHash); assert.deepEqual(h.store.read(), before);
+  await assert.rejects(runBatch(h.config, { ...h.options, expectedPlanHash: originalHash }), /confirmation_required/);
+  assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);
+  const r = await h.run();
+  assert.equal(r.completed, true); assert.equal(h.state.executions, 42);
+  assert.equal(r.totals.original.planned, 21); assert.equal(r.bySplit.train.original.planned, 15); assert.equal(r.bySplit.test.original.planned, 6);
+  assert.deepEqual(h.store.read(), before); assert.match(formatBatch(r), /补充训练来源 1/);
+});
+test('an added training replay still undergoes leak preflight before any original or candidate execution', async t => {
+  const h = setup(t), source = h.store.read().cases.find(c => !h.split.caseIds.includes(c.id));
+  const extra = structuredClone(h.config.cases[0]); extra.sourceCaseId = source.id; extra.request.association.checkpointId = 'cp-extra';
+  h.config.cases.push(extra);
+  const prepare = h.options.prepare;
+  h.options.prepare = (...args) => {
+    const p = prepare(...args);
+    if (args[0].association.checkpointId === 'cp-extra') p.input.files = [{ path: 'leak.txt', base64: Buffer.from(h.guideline).toString('base64'), sha256: sha(h.guideline) }];
+    return p;
+  };
+  await assert.rejects(h.run(), /candidate_leak/);
+  assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0); assert.equal(h.state.events.length, 0);
+});
+test('new unexposed sources cannot be silently added or replace frozen test slots', t => {
+  const h = setup(t), fresh = h.store.addTextCases([{ source: { origin: 'http://127.0.0.1:3100', projectId: 'p1', conversationId: 'c1', messageId: 'new-after-generation', agentId: 'role-family-gpt' },
+    role: 'GPT', actual: 'new problem', expected: 'New expected behavior', message: 'done', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }]).cases[0];
+  const extra = structuredClone(h.config.cases[0]); extra.sourceCaseId = fresh.id; extra.request.association.checkpointId = 'cp-extra';
+  assert.throws(() => prepareBatch({ ...h.config, cases: [...h.config.cases, extra] }, h.options), /batch_cases_invalid/);
+  const known = h.store.read().cases.find(c => !h.split.caseIds.includes(c.id) && c.id !== fresh.id);
+  extra.sourceCaseId = known.id;
+  assert.throws(() => prepareBatch({ ...h.config, cases: [...h.config.cases.filter(c => c.sourceCaseId !== h.split.testCaseIds[0]), extra] }, h.options), /batch_cases_invalid/);
+  assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);
+});
+test('all frozen source slots are required, with distinct GPT checkpoints and no unsupported scope options', t => {
   const h = setup(t), copy = () => structuredClone(h.config);
   for (const change of [c => c.cases.pop(), c => c.cases.push(c.cases[0]), c => { c.cases[0].sourceCaseId = 'unknown'; },
     c => { c.cases[0].request.association.agentId = 'Kimi'; }, c => { c.cases[1].request = c.cases[0].request; }, c => { c.candidateRole = 'bypass'; },

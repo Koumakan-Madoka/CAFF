@@ -28,9 +28,13 @@ function prepareBatch(config, options = {}) {
   const selected = new Map(), sealedIdentities = new Set();
   for (const item of config.cases) {
     if (!item || Object.keys(item).sort().join(',') !== 'request,rules,sourceCaseId'
-      || !split.caseIds.includes(item.sourceCaseId) || selected.has(item.sourceCaseId)) throw fail('evaluation_batch_cases_invalid');
+      || selected.has(item.sourceCaseId)) throw fail('evaluation_batch_cases_invalid');
     const source = state.cases.find(c => c.id === item.sourceCaseId);
-    if (!source || source.split !== (split.testCaseIds.includes(source.id) ? 'test' : 'train')) throw fail('evaluation_batch_split_invalid');
+    // Screening may need a different task from an already exposed training
+    // source. Never redraw the frozen holdout or label a new source as test.
+    if (!split.caseIds.includes(item.sourceCaseId)
+      && (!source || source.split !== 'train' || !version.caseIds.includes(source.id))) throw fail('evaluation_batch_cases_invalid');
+    if (!source || source.role !== 'GPT' || source.split !== (split.testCaseIds.includes(source.id) ? 'test' : 'train')) throw fail('evaluation_batch_split_invalid');
     if (item.request !== null) {
       const a = item.request?.association;
       if (item.request?.captureRoot !== config.captureRoot || a?.projectId !== config.projectId || a?.agentId !== 'role-family-gpt') throw fail('evaluation_batch_cases_invalid');
@@ -40,8 +44,11 @@ function prepareBatch(config, options = {}) {
     } else if (item.rules !== null) throw fail('evaluation_batch_cases_invalid');
     selected.set(item.sourceCaseId, item);
   }
-  if (selected.size !== split.caseIds.length) throw fail('evaluation_batch_cases_invalid');
-  const prepared = split.caseIds.map(sourceCaseId => {
+  // Keep every original slot (explicitly unsupported when necessary) so a
+  // screened replacement cannot silently drop difficult held-out cases.
+  if (split.caseIds.some(id => !selected.has(id))) throw fail('evaluation_batch_cases_invalid');
+  const additionalTrainingCaseIds = [...selected.keys()].filter(id => !split.caseIds.includes(id)).sort();
+  const prepared = [...split.caseIds, ...additionalTrainingCaseIds].map(sourceCaseId => {
     const item = selected.get(sourceCaseId), splitName = split.testCaseIds.includes(sourceCaseId) ? 'test' : 'train';
     if (item.request === null) return { sourceCaseId, split: splitName, supported: false, reason: 'no_sealed_replay' };
     const comparisonConfig = { repoRoot: config.repoRoot, dependencyRoot: config.dependencyRoot, image: config.image,
@@ -56,7 +63,7 @@ function prepareBatch(config, options = {}) {
   const supportedCount = prepared.filter(c => c.supported).length;
   const summary = { kind: 'wiki-batch-comparison-v1', configHash: hash(config), projectId: config.projectId, model: DEEPSEEK_PROFILE,
     candidate: { id: candidate.id, candidateRoleHash: candidate.candidateRoleHash, versionId: candidate.versionId, entryIds: candidate.entryIds },
-    split: expectedSplit, repeats: config.repeats ?? 3, wikiTrainingCount: version.caseIds.length, preparedReplayableCount: supportedCount,
+    split: expectedSplit, additionalTrainingCaseIds, repeats: config.repeats ?? 3, wikiTrainingCount: version.caseIds.length, preparedReplayableCount: supportedCount,
     disclosures: [...(supportedCount < 6 ? ['fewer_than_6_prepared_replays'] : []), ...(version.caseIds.length < 10 ? ['fewer_than_10_wiki_training_cases'] : [])],
     cases: prepared.map(({ comparisonConfig, ...record }) => record) };
   return { summary: { ...summary, planHash: hash(summary) }, prepared };
@@ -128,7 +135,7 @@ async function runBatch(config, options = {}) {
 }
 function formatBatch(result) {
   const lines = ['GPT WikiSkill 批量对照（不保证提分）', '计划 ' + result.planHash,
-    '材料预检支持 ' + result.preparedReplayableCount + '/' + result.cases.length + '；wiki 训练 ' + result.wikiTrainingCount + '；留出来源 ' + result.split.testCaseIds.length,
+    '材料预检支持 ' + result.preparedReplayableCount + '/' + result.cases.length + '；wiki 训练 ' + result.wikiTrainingCount + '；留出来源 ' + result.split.testCaseIds.length + '；补充训练来源 ' + result.additionalTrainingCaseIds.length,
     '已记录模型请求 ' + result.modelCallsKnown + (result.callsUnavailable ? '（存在未知/不完整调用记录）' : ''),
     '用例\t分组\t执行状态\t原 通过/计划(失败/错误/未运行)\t候选 通过/计划(失败/错误/未运行)'];
   for (const c of result.cases) lines.push([c.sourceCaseId, c.split, c.status, ...variants.map(v => {

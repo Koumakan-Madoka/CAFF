@@ -51,7 +51,7 @@
 ### Wiki 批量对照
 
 - `compare-wiki-batch.cjs --config <绝对路径> --plan` 只读预检整个批次：固定的 GPT 已确认候选、approved 来源、冻结划分、每条封存/角色/文件泄漏检查与规则，返回 `planHash`；不读取 Key、不接触 Docker，不把预检支持称为已运行。真正执行需 `--run --confirmed --expected-plan <hash> --output <新的绝对路径>`，计划变化即拒绝；不覆盖旧结果。确认 flag/hash 是受信操作方对用户已批准用例/规则的执行确认，不是人类身份认证。
-- 配置仅含 `captureRoot/sourceWorktree/projectId/candidateId/repoRoot/dependencyRoot/image/repeats/timeoutMs/cases`，每条 case 仅含 `sourceCaseId/request/rules`。来源集合须恰好等于冻结的计划任务集合，禁止重复源或复用同一个检查点凑数；关联必须是本项目、本采集根的 GPT。request 和 rules 均为 null 可明确标无封存，其余缺材料按 sealed-direct 不支持处理；不是把历史文本当可回放任务。用户确认的重放任务与新封存的对应由操作方显式绑定，不能由本 CLI 自动证明任务语义等价。
+- 配置仅含 `captureRoot/sourceWorktree/projectId/candidateId/repoRoot/dependencyRoot/image/repeats/timeoutMs/cases`，每条 case 仅含 `sourceCaseId/request/rules`。必须保留冻结计划的全部来源槽位，禁止重复源或复用同一个检查点凑数；关联必须是本项目、本采集根的 GPT。筛选替换任务可补充**已属于该候选 wiki 版本训练集**的来源，记录为 `additionalTrainingCaseIds`，仍是 train，不改写存储中的划分、不重抽留出；新增未参与该版本归纳的来源拒绝。增补改变计划 hash，必须按新计划取得用户确认，不能沿用旧执行确认。request 和 rules 均为 null 可明确标无封存；被替换的原计划来源也须保留为不支持项并计入未执行分母，不得偷偷删去困难的留出项。其余缺材料按 sealed-direct 不支持处理；不是把历史文本当可回放任务。用户确认的重放任务与新封存的对应由操作方显式绑定，不能由本 CLI 自动证明任务语义等价。
 - 单一候选不得使用留出来源生成的 wiki；各用例必须与候选的原角色 hash 一致。对**全部**用例先预检，最后一条角色不匹配/泄漏也在任何 Key/模型使用前阻断；初始不支持用例明确列出并保留分母，其余可支持用例可继续执行。默认原/候选各3次，沿用单例1–20次、超时和 D5 容器隔离，不给批量入口新增网络/挂载权限；固定官方 DeepSeek 模型与 D4 Key 来源，批内只读 Key 一次，仅以环境变量注入各一次性容器。
 - 每条仍复用 `runComparison`。每个用例执行前重验整体计划，每次模型运行仍重验封存和固定分发；用例间 runtimeHash 变化在后续模型执行前拒绝。基础设施或模型 error 停止余下批次，不重试；普通任务 fail 不阻断其余轮次。JSONL 保留带来源 ID/分组的逐调用、逐轮、逐用例和整批汇总；异常中断保留已知事件，未得到完整证据的活动槽位记基础设施 error 并标调用记录未知，不补造成功或零调用。
 - 逐用例、总体、训练、留出分别报告原/候选的 planned/attempted/pass/fail/error/notRun。`passRate = pass/(pass+fail)` 仅对可评分项，零分母为 null/N/A；同时保存 `plannedPassRate = pass/planned`，CLI 明示通过/计划、失败、错误、未运行及可评分分母，不能用剔除错误假装整体提分。`completed` 只表示所有计划轮次完成，不等于所有任务通过。准备支持少于6条、wiki训练少于10条会显式披露，不因数量字段存在就满足验收。
@@ -75,7 +75,7 @@
 - 当前规则 `read-only-files-v1` 要求指定路径确有成功 read、前后文件树 hash 相同、无 write/edit 调用，公共回复包含用户确认的字面片段。宿主与容器将完整相对路径按同一字典序排序后计算文件树 hash，不使用目录深度优先顺序。`absentPaths` 必须与归档删除清单及文件缺席一致；字面回复核对不是语义评分器或自动根因判断，规则/评分只在宿主，不发送独立参考答案。
 - 新增 `file-literals-v1`：`files` 中每项仅含 `path/contains/notContains`，两种字面数组可一空但不能全空，不支持正则/语义评分。允许在恢复副本中编辑/新增文件；每个指定文件必须存在且为可读取的普通 UTF-8 文件，即使只检查“不包含”也不能用文件缺失凑通过。参考字面值仅留宿主，原/候选 worker 输入同样只增加待取证路径，未向 prompt/模型发送参考答案。
 - worker 在本轮工具执行结束后读取至多16个指定路径，每文件≤64 KiB、合计≤256 KiB，记录 final bytes 的 base64/hash/size。宿主在确认容器删除后校验编码、hash、大小和文字，再按逐文件字面谓词评分，结果/运行事件保存这些证据及逐项检查。已知文件不存在为 fail；证据缺失/损坏、二进制、链接/目录、越界或秘密哨兵命中等为 error，停止后续轮次而非伪判通过。可用的实际模型请求记录仍保留，未运行单列；不以文件证据不可用冒称模型零调用。worker 和宿主均拒绝选定 Key 藏在 base64 文件证据中，不能用编码绕过输出检查；不是检测所有秘密的保证。
-- `read-only-files-v1` 行为不变；新规则依赖同一受信 worker 提供最终文件证据，不是宿主对任意敌对代码的独立文件系统证明。当前只做合成 worker/宿主链验证，尚未用真实用例跑新规则或批量对照。
+- `read-only-files-v1` 行为不变；新规则依赖同一受信 worker 提供最终文件证据，不是宿主对任意敌对代码的独立文件系统证明。已用真实模型对作者构造的同类小任务做原角色基线筛选，但不是原历史现场复现、正式封存用例 A/B 或用户验收。按基线表现筛选/加强题目会带来选择偏差；#4/#10/#14 只对 wiki 生成保留，已查看这些来源的基线，后续须披露测试集并非完全未见，不据此声称无偏泛化或必然提分。
 - 本轮确认的流程样例：checkpoint `c559893e-0bd7-4f13-8b19-71317b8acaf9`；读取 tracked.txt、dirty.txt、untracked.txt，零文件改动；回复包含 `stable file`、`dirty before turn`、`untracked before turn`、`deleted.txt`、`不存在`。候选仅追加逐项核验要求，原/候选各 3 次。
 - 作者真实运行结果为原 3/3、候选 3/3，18 次模型请求，6 容器均已删除。这证明流程闭环，不是 badcase 已复现、候选提分或独立审查通过。原始记录在忽略的私有证据存储中，Goal 引用这些记录；旧记录没有 `replySource`，不回填或声称已按修复后的来源规则重跑。
 
