@@ -165,6 +165,22 @@ test('pending candidate writes cannot be repeated and stale responses cannot rep
   assert.equal(h.el('versions').options.length, 2); assert.equal(h.el('targets').disabled, false);
   assert.doesNotMatch(h.el('status').textContent, /草稿已保存/);
 });
+test('result view shows per-case/run and overall/category/holdout scores, with errors and not-run separate; no execution controls', async t => {
+  const totals = { original: { passed: 1, planned: 3, failed: 1, errors: 1, notRun: 0, scored: 2, passRate: .5 }, candidate: { passed: 0, planned: 3, failed: 0, errors: 0, notRun: 3, scored: 0, passRate: null } };
+  const h = setup(t, () => ({ ...data(), comparisons: [{ id: 'comparison-a', createdAt: '2026-10-31T00:00:00Z', candidate: { id: 'candidate-a', targetId: 'global-harness-behavior-v1', candidateHash: 'c'.repeat(64) }, planHash: 'p'.repeat(64), completed: false, model: 'deepseek/deepseek-v4-flash', modelCallsKnown: 2, callsUnavailable: true,
+    totals, bySplit: { train: totals, test: totals }, byCategory: { reproduction: totals, probe: totals, control: totals }, disclosures: ['fewer_than_6_prepared_replays'],
+    cases: [{ sourceCaseId: '<img src=x>', split: 'test', category: 'reproduction', status: 'error', reason: 'run_evidence_unavailable', totals, runs: [{ variant: 'original', iteration: 1, status: 'error', reason: 'run_evidence_unavailable', cleaned: true }] }] }] }));
+  await h.panel.load();
+  const text = h.el('results').textContent;
+  for (const literal of ['总体', '训练', '留出', '复现题', '接口膨胀探针', '控制题', '1/3', '50.0%', 'N/A', '错误', '未运行', '不完整', '只复现了汇报难懂一类', '选择偏差', '<img src=x>', 'candidate-a', 'comparison-a', 'run_evidence_unavailable']) assert.ok(text.includes(literal), literal);
+  assert.equal(h.el('results').querySelector('button,input,img,script'), null); assert.equal(h.posts().length, 0);
+});
+test('empty results explicitly exclude old screenings, and failed reload clears stale score claims', async t => {
+  let fail = false;
+  const h = setup(t, () => { if (fail) throw Error('private failure'); return data(); }); await h.panel.load();
+  assert.match(h.el('results').textContent, /尚未.*全局提示词.*历史筛选/);
+  fail = true; await h.panel.load(); assert.doesNotMatch(h.el('results').textContent, /1\/3|50.0%/); assert.match(h.el('results').textContent, /尚未读取/);
+});
 test('legacy role candidates are not offered for new target confirmation', async t => {
   const h = setup(t, () => ({ ...data(), candidates: [{ id: 'legacy-role', role: 'GPT', status: 'draft' }] }));
   await h.panel.load(); assert.equal(h.el('candidates').querySelector('button'), null); assert.doesNotMatch(h.el('candidates').textContent, /legacy-role/);

@@ -22,7 +22,7 @@
         <div class="button-row"><button type="button" data-wiki-generate>生成候选草稿</button></div>
         <div data-wiki-candidates></div></section>
       <section id="wikiskill-results" class="stack-card"><h2>对照结果</h2>
-        <p>尚未运行本轮全局提示词对照；历史筛选结果不冒充正式评测结果。</p></section>`;
+        <div data-wiki-results></div></section>`;
     const el = name => root.querySelector(`[data-wiki-${name}]`);
     const notice = message => { el('status').textContent = message; };
     const node = (tag, text) => { const result = document.createElement(tag); result.textContent = text; return result; };
@@ -48,7 +48,7 @@
       el('case-count').textContent = state ? `全局共 ${state.cases.length} 条来源用例，${(state.replayCases || []).length} 条同类任务封存` : '尚未读取';
       const split = state?.replaySplit;
       el('split-info').textContent = split ? `已固定重放任务来源划分：训练 ${split.trainCaseIds.length} 条，留出 ${split.testCaseIds.length} 条${split.insufficientSamples ? '（不足6条，无独立留出集）' : ''}。留出来源不进入 wiki 生成；这不代表已产生可回放封存。` : '尚未固定重放任务来源划分。';
-      renderCandidates();
+      renderCandidates(); renderResults();
       if (!state) return;
       // List ALL cases independently of the selected wiki version, including
       // holdout and unclassified sources. All external prose is textContent.
@@ -123,6 +123,44 @@
         const button = node('button', candidate.status === 'confirmed' ? '已确认（未启动评测）' : '确认此候选'); button.type = 'button';
         button.dataset.reviewed = String(candidate.status === 'confirmed'); button.addEventListener('click', () => { void confirmCandidate(candidate); });
         card.append(button); el('candidates').append(card);
+      }
+    }
+    function renderResults() {
+      const container = el('results'); container.replaceChildren();
+      if (!state) { container.append(node('p', '尚未读取对照结果。')); return; }
+      const results = state.comparisons || [];
+      if (!results.length) { container.append(node('p', '尚未保存本轮全局提示词对照；历史筛选结果不冒充正式评测结果。')); return; }
+      container.append(node('p', '最近20份全局提示词对照，仅展示已保存结果。通过/计划包含错误与未运行；可评分通过率仅以通过+失败为分母，不保证提分。'));
+      container.append(node('p', '题组经原基线筛选，存在选择偏差；只复现了汇报难懂一类，接口膨胀探针与控制题不计作更多失败复现。'));
+      const category = { reproduction: '汇报复现题', probe: '接口膨胀探针', control: '控制题' };
+      function appendTotals(parent, label, totals) {
+        const group = document.createElement('div'); group.append(node('h4', label));
+        for (const variant of ['original', 'candidate']) {
+          const t = totals[variant], rate = t.passRate === null ? 'N/A' : (100 * t.passRate).toFixed(1) + '%';
+          group.append(node('p', `${variant === 'original' ? '原版本' : '候选'}：${t.passed}/${t.planned} 通过，${t.failed} 失败，${t.errors} 错误，${t.notRun} 未运行；可评分通过率 ${rate}（${t.scored} 次）。`));
+        }
+        parent.append(group);
+      }
+      for (const result of results) {
+        const card = document.createElement('details'); card.open = results.length === 1;
+        card.append(node('summary', `${result.createdAt} · ${result.completed ? '已完整执行' : '执行不完整'} · ${result.id}`));
+        card.append(node('p', `候选：${result.candidate.id}；目标：${result.candidate.targetId}；候选 hash：${result.candidate.candidateHash}；计划 hash：${result.planHash}`));
+        card.append(node('p', `模型：${result.model}；已记录 ${result.modelCallsKnown} 次模型请求${result.callsUnavailable ? '（调用记录存在未知或不完整，不能视为零调用）' : ''}。未自动重试。`));
+        appendTotals(card, '总体', result.totals);
+        for (const [key, label] of [['train', '训练'], ['test', '留出']]) appendTotals(card, label, result.bySplit[key]);
+        for (const key of ['reproduction', 'probe', 'control']) appendTotals(card, category[key], result.byCategory[key]);
+        for (const c of result.cases) {
+          const item = document.createElement('details');
+          const status = { completed: '已完整执行', error: '错误', unsupported: '不支持', 'not-run': '未执行' }[c.status] || c.status;
+          item.append(node('summary', `${c.sourceCaseId} · ${c.split === 'test' ? '留出' : '训练'} · ${category[c.category]} · ${status}`));
+          if (c.reason) item.append(node('p', `原因：${c.reason}`));
+          appendTotals(item, '逐题', c.totals);
+          for (const r of c.runs) item.append(node('p', `${r.variant === 'original' ? '原版本' : '候选'} 第${r.iteration}次：${r.status}${r.reason ? ' · ' + r.reason : ''}`));
+          card.append(item);
+        }
+        const disclosure = { fewer_than_6_prepared_replays: '预检支持的封存不足6条', fewer_than_10_wiki_training_cases: 'Wiki训练用例不足10条' };
+        for (const key of result.disclosures || []) if (disclosure[key]) card.append(node('p', '披露：' + disclosure[key]));
+        container.append(card);
       }
     }
     async function generateCandidate() {

@@ -2,6 +2,7 @@
 const crypto = require('node:crypto'), path = require('node:path');
 const base = '../../build/server/domain/runtime/badcase-capture/';
 const { createWikiStore } = require(base + 'wiki-store');
+const { wikiComparisonTotals: totalsFor } = require(base + 'wiki-comparison-store');
 const { resolveWikiCandidate } = require(base + 'wiki-candidate');
 const { planReplaySplit } = require(base + 'wiki-split');
 const { prepareComparison, runComparison } = require('./direct-comparison.cjs');
@@ -71,25 +72,17 @@ function prepareBatch(config, options = {}) {
     cases: prepared.map(({ comparisonConfig, ...record }) => record) };
   return { summary: { ...summary, planHash: hash(summary) }, prepared };
 }
-function totalsFor(cases, repeats) {
-  return Object.fromEntries(variants.map(variant => {
-    const rows = cases.flatMap(c => c.runs || []).filter(r => r.variant === variant), planned = cases.length * repeats;
-    const passed = rows.filter(r => r.status === 'pass').length, failed = rows.filter(r => r.status === 'fail').length, errors = rows.filter(r => r.status === 'error').length;
-    return [variant, { planned, attempted: rows.length, passed, failed, errors, notRun: planned - rows.length,
-      scored: passed + failed, passRate: passed + failed ? passed / (passed + failed) : null, plannedPassRate: planned ? passed / planned : null }];
-  }));
-}
 async function runBatch(config, options = {}) {
   const fixed = structuredClone(config), plan = prepareBatch(fixed, options);
   if (options.confirmed !== true || options.expectedPlanHash !== plan.summary.planHash) throw fail('evaluation_batch_confirmation_required');
-  const emit = options.onEvent || (() => {}), results = [];
+  const emit = options.onEvent || (() => {}), results = [], executionId = crypto.randomUUID();
   let key, stopped = false, runtimeHash = null;
   if (plan.prepared.some(c => c.supported)) {
     key = validKey((options.readKey || readCaffDeepseekKey)());
     const serialized = JSON.stringify(plan.summary);
     if (serialized.includes(key) || serialized.includes(JSON.stringify(key).slice(1, -1))) throw fail('evaluation_output_contains_key');
   }
-  emit({ event: 'batch_plan', ...plan.summary });
+  emit({ event: 'batch_plan', ...plan.summary, executionId });
   for (const item of plan.prepared) {
     let result = { sourceCaseId: item.sourceCaseId, split: item.split,
       ...(item.category ? { category: item.category, replayId: item.replayId || null, fixture: item.fixture || null } : {}), comparison: item.comparison || null,
@@ -131,7 +124,7 @@ async function runBatch(config, options = {}) {
     result.totals = totalsFor([result], plan.summary.repeats);
     results.push(result); emit({ event: 'case_summary', ...result });
   }
-  const result = { ...plan.summary, completed: results.every(c => c.status === 'completed'), runtimeHash,
+  const result = { ...plan.summary, executionId, completed: results.every(c => c.status === 'completed'), runtimeHash,
     cases: results, totals: totalsFor(results, plan.summary.repeats),
     bySplit: Object.fromEntries(['train', 'test'].map(split => [split, totalsFor(results.filter(c => c.split === split), plan.summary.repeats)])),
     ...(plan.summary.scope === 'global' ? { byCategory: Object.fromEntries(['reproduction', 'probe', 'control'].map(category => [category, totalsFor(results.filter(c => c.category === category), plan.summary.repeats)])) } : {}),

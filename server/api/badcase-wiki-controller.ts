@@ -6,6 +6,7 @@ import { sendJson } from '../http/response';
 import { createWikiStore } from '../domain/runtime/badcase-capture/wiki-store';
 import { listWikiTargets } from '../domain/runtime/badcase-capture/wiki-targets';
 import { collectWikiCandidateFiles } from '../domain/runtime/badcase-capture/wiki-candidate-files';
+import { createWikiComparisonStore } from '../domain/runtime/badcase-capture/wiki-comparison-store';
 
 // Local candidate preparation/review only. Neither loading, approving a guideline nor
 // confirming a candidate starts a model request or edits a production role.
@@ -20,6 +21,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_candidate_invalid: 422, wiki_candidate_leak: 422, wiki_candidate_not_found: 404,
     wiki_candidate_approved_required: 409, wiki_candidate_confirmation_required: 409, wiki_candidate_role_mismatch: 409,
     wiki_target_unknown: 422, wiki_candidate_target_mismatch: 409, wiki_candidate_anchor_unsupported: 409,
+    wiki_comparison_record_invalid: 409,
   };
   return async ({ req, res, pathname }: any) => {
     const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate))?$/);
@@ -40,8 +42,9 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       const { confirmed, ...mutation } = input; input = mutation;
     }
     try {
-      const store = createWikiStore({ globalRoot: options.globalRoot, sourceWorktree: options.sourceWorktree,
-        sourceWorktrees: options.projectManager?.listProjects().map((p: any) => p.path) || [] });
+      const scope = { globalRoot: options.globalRoot, sourceWorktree: options.sourceWorktree,
+        sourceWorktrees: options.projectManager?.listProjects().map((p: any) => p.path) || [] };
+      const store = createWikiStore(scope);
       if (match[1] === 'review') store.review(input);
       if (match[1] === 'confirm-candidate') store.confirmCandidate(input);
       if (match[1] === 'candidate' || match[1] === 'confirm-global-candidate') {
@@ -52,7 +55,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         if (match[1] === 'candidate') store.createGlobalCandidate({ versionId: input.versionId, entryIds: input.entryIds, targetId: input.targetId, files }, input.expectedRevision);
         else store.confirmGlobalCandidate({ ...input, files });
       }
-      sendJson(res, 200, { ...store.read(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
+      sendJson(res, 200, { ...store.read(), comparisons: createWikiComparisonStore(scope).read(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

@@ -141,6 +141,87 @@ test('the public batch CLI plans the global seven-task suite without reading a K
   assert.equal(planned.preparedOnly, true); assert.equal(planned.dockerVerified, false); assert.equal(planned.cases.length, 7);
   assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);
 });
+test('global result store survives reopen, deduplicates and projects only score/provenance fields without touching wiki revision', async t => {
+  const { createWikiComparisonStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+  const h = setup(t), r = await h.run(), before = h.store.read(), store = createWikiComparisonStore(h.config);
+  r.cases[0].runs[0].finalText = 'private reply ' + h.root;
+  r.cases[0].runs[0].fileEvidence = [{ base64: Buffer.from('private bytes').toString('base64') }];
+  r.cases[0].runs[0].isolation = { privileged: false, unknown: h.root };
+  r.totals.original.passed = 999; // Stored aggregates are derived from rows, not caller totals.
+  const saved = store.save(r), again = store.save(r), reopened = createWikiComparisonStore(h.config).read();
+  assert.equal(saved.id, again.id); assert.equal(reopened.length, 1); assert.equal(reopened[0].id, saved.id);
+  assert.equal(reopened[0].totals.original.passed, 21); assert.equal(reopened[0].bySplit.test.original.planned, 9);
+  assert.equal(reopened[0].byCategory.reproduction.candidate.planned, 9); assert.equal(reopened[0].cases[0].runs.length, 6);
+  for (const literal of [h.root, 'private reply', 'private bytes', 'base64', 'finalText', 'unknown']) assert.equal(JSON.stringify(reopened).includes(literal), false);
+  assert.deepEqual(h.store.read(), before);
+  // A separately requested execution is not collapsed just because its scores match.
+  const second = await h.run(); assert.notEqual(store.save(second).id, saved.id); assert.equal(store.read().length, 2);
+});
+test('persisted partial results keep errors, unknown calls, unsupported and not-run slots; invalid/stale evidence never overwrites', async t => {
+  const { createWikiComparisonStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+  const h = setup(t); h.state.failAt = 1; const r = await h.run(), store = createWikiComparisonStore(h.config);
+  r.callsUnavailable = r.cases[0].callsUnavailable = true;
+  const saved = store.save(r); assert.equal(saved.completed, false); assert.equal(saved.totals.original.errors, 1);
+  assert.equal(saved.totals.original.notRun, 20); assert.equal(saved.totals.candidate.notRun, 21); assert.equal(saved.callsUnavailable, true);
+  for (const mutate of [c => { c.kind = 'wiki-batch-comparison-v1'; }, c => { c.candidate.candidateHash = 'e'.repeat(64); },
+    c => { c.cases[0].runs.push(c.cases[0].runs[0]); }, c => { c.cases[0].runs[0].status = 'skipped'; },
+    c => { c.cases[0].sourceCaseId = 'foreign'; }, c => { c.cases[0].split = c.cases[0].split === 'train' ? 'test' : 'train'; }]) {
+    const altered = structuredClone(r); mutate(altered); assert.throws(() => store.save(altered), /wiki_comparison_invalid/);
+  }
+  assert.equal(store.read().length, 1);
+  const directory = path.join(h.config.globalRoot, 'comparisons'), file = path.join(directory, fs.readdirSync(directory).find(n => n.endsWith('.json')));
+  fs.writeFileSync(file, '{}'); assert.throws(() => store.read(), /wiki_comparison_record_invalid/);
+});
+test('global CLI execution persists the same summary for the read-only page, including incomplete batches; plan does not write', async t => {
+  const { createWikiComparisonStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+  const { main } = require('../../scripts/badcase-capture/compare-wiki-batch.cjs');
+  const h = setup(t); h.state.failAt = 1;
+  const config = path.join(h.root, 'cli-config.json'), output = path.join(h.root, 'events.jsonl'); fs.writeFileSync(config, JSON.stringify(h.config));
+  const write = process.stdout.write, code = process.exitCode; let printed = '';
+  process.stdout.write = data => { printed += data; return true; };
+  try {
+    await main(['--config', config, '--plan'], h.options);
+    assert.equal(createWikiComparisonStore(h.config).read().length, 0); assert.equal(h.state.executions, 0);
+    printed = '';
+    await main(['--config', config, '--run', '--confirmed', '--expected-plan', h.plan().summary.planHash, '--output', output, '--json'], h.options);
+    const result = JSON.parse(printed), saved = createWikiComparisonStore(h.config).read()[0];
+    assert.equal(result.comparisonId, saved.id); assert.deepEqual(result.totals, saved.totals); assert.equal(saved.completed, false);
+    assert.equal(saved.totals.original.errors, 1); assert.equal(h.state.executions, 1);
+    assert.ok(fs.readFileSync(output, 'utf8').includes('batch_summary'));
+  } finally { process.stdout.write = write; process.exitCode = code; }
+});
+test('unsupported sealed tasks persist all denominators with N/A and zero executions', async t => {
+  const { createWikiComparisonStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+  const h = setup(t, { missingTarget: true }), r = await h.run(), saved = createWikiComparisonStore(h.config).save(r);
+  assert.equal(saved.totals.original.notRun, 21); assert.equal(saved.totals.original.passRate, null);
+  assert.equal(saved.cases.every(c => c.status === 'unsupported'), true); assert.equal(h.state.executions, 0);
+});
+test('global HTTP exposes persisted projections read-only after reopen and rejects result injection; corrupt results fail closed', async t => {
+  const { createWikiComparisonStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+  const { createBadcaseWikiController } = require('../../build/server/api/badcase-wiki-controller');
+  const h = setup(t), r = await h.run(), store = createWikiComparisonStore(h.config), saved = store.save(r), before = h.store.read();
+  const controller = createBadcaseWikiController({ ...h.config, host: '127.0.0.1', port: 4313 });
+  const req = { method: 'GET', headers: { host: '127.0.0.1:4313' }, socket: { remoteAddress: '127.0.0.1' } }; let response;
+  const res = { writeHead() {}, end(body) { response = JSON.parse(body); } };
+  assert.equal(await controller({ req, res, pathname: '/api/wikiskill' }), true);
+  assert.equal(response.comparisons[0].id, saved.id); assert.deepEqual(response.comparisons[0].totals, r.totals);
+  assert.equal(JSON.stringify(response.comparisons).includes(h.root), false); assert.deepEqual(h.store.read(), before);
+  for (const pathname of ['/api/wikiskill/comparisons', '/api/wikiskill/compare', '/api/wikiskill/results']) assert.equal(await controller({ req: { method: 'POST' }, res, pathname }), false);
+  const directory = path.join(h.config.globalRoot, 'comparisons'), file = path.join(directory, fs.readdirSync(directory).find(n => n.endsWith('.json')));
+  fs.writeFileSync(file, '{}'); await assert.rejects(controller({ req, res, pathname: '/api/wikiskill' }), e => e.statusCode === 409 && e.issues[0].code === 'wiki_comparison_record_invalid');
+});
+test('global CLI result save failure keeps fsynced evidence and does not rerun models', async t => {
+  const { main } = require('../../scripts/badcase-capture/compare-wiki-batch.cjs');
+  const { createWikiComparisonStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+  const h = setup(t); h.state.failAt = 1;
+  const config = path.join(h.root, 'cli-config.json'), output = path.join(h.root, 'events.jsonl'); fs.writeFileSync(config, JSON.stringify(h.config));
+  const blocker = path.join(h.config.globalRoot, 'comparisons'); fs.writeFileSync(blocker, 'owned test blocker');
+  await assert.rejects(main(['--config', config, '--run', '--confirmed', '--expected-plan', h.plan().summary.planHash, '--output', output], h.options), /wiki_comparison_write_failed/);
+  assert.equal(h.state.executions, 1);
+  const summary = JSON.parse(fs.readFileSync(output, 'utf8').trim().split('\n').at(-1)); assert.equal(summary.event, 'batch_summary');
+  fs.unlinkSync(blocker); const saved = createWikiComparisonStore(h.config).save(summary);
+  assert.equal(saved.totals.original.errors, 1); assert.equal(h.state.executions, 1);
+});
 test('global batch model error stops all remaining slots, retaining per-case/category/holdout error and unexecuted totals', async t => {
   const h = setup(t); h.state.failAt = 1; const r = await h.run();
   assert.equal(r.completed, false); assert.equal(h.state.executions, 1); assert.equal(r.totals.original.errors, 1); assert.equal(r.totals.original.notRun, 20); assert.equal(r.totals.candidate.notRun, 21);
