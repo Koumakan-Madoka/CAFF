@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 import { getWikiTarget } from './wiki-targets';
 import { containsSecretSentinel } from './secrets';
-import { assertWikiGuidelinesNoLeak, buildAppendOnlyWikiDiff } from './wiki-candidate';
+import { assertWikiCandidateNoLeak, buildAppendOnlyWikiDiff } from './wiki-candidate';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 const id = (v: any) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v);
@@ -19,7 +19,7 @@ export function buildGlobalWikiCandidate(state: any, input: any) {
   const appendedSection = '\n\nWikiSkill 已审核准则：\n' + guidelines.map((g: string) => '- ' + g).join('\n');
   const candidateText = target.baseText + appendedSection;
   if (Buffer.byteLength(candidateText) > 65536 || containsSecretSentinel(candidateText)) throw fail('wiki_candidate_invalid');
-  assertWikiGuidelinesNoLeak([candidateText], state.cases.map((c: any) => c.expected), input.files);
+  assertWikiCandidateNoLeak(candidateText, state.cases.map((c: any) => c.expected), input.files, target);
   const identity = { kind: 'global-wiki-candidate-v1', targetId: target.id, baseHash: target.baseHash,
     candidateHash: hash(candidateText), versionId: version.id, entryIds: [...input.entryIds] };
   return { id: 'candidate-' + hash(JSON.stringify(identity)), ...identity, target, baseText: target.baseText, appendedSection, candidateText,
@@ -29,6 +29,8 @@ export function buildGlobalWikiCandidate(state: any, input: any) {
 export function resolveGlobalWikiCandidate(state: any, candidateId: string, targetId: string, baseHash: string, files: any[]) {
   const saved = state.candidates?.find((c: any) => c.id === candidateId && c.kind === 'global-wiki-candidate-v1');
   if (!saved || saved.status !== 'confirmed') throw fail('wiki_candidate_confirmation_required');
+  const target = getWikiTarget(targetId);
+  if (saved.targetId !== targetId || target.baseHash !== baseHash || saved.baseHash !== baseHash || saved.baseText !== target.baseText) throw fail('wiki_candidate_target_mismatch');
   const rebuilt = buildGlobalWikiCandidate(state, { versionId: saved.versionId, entryIds: saved.entryIds, targetId: saved.targetId, files });
   if (saved.targetId !== targetId || rebuilt.baseHash !== baseHash || rebuilt.id !== saved.id || rebuilt.candidateHash !== saved.candidateHash
     || rebuilt.candidateText !== saved.candidateText || rebuilt.diff !== saved.diff || JSON.stringify(rebuilt.target) !== JSON.stringify(saved.target)) throw fail('wiki_candidate_target_mismatch');

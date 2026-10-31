@@ -2,6 +2,7 @@ const test = require('node:test'), assert = require('node:assert/strict'), fs = 
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 const { listWikiTargets, getWikiTarget } = require('../../build/server/domain/runtime/badcase-capture/wiki-targets');
 const { resolveGlobalWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-global-candidate');
+const { assertWikiCandidateNoLeak } = require('../../build/server/domain/runtime/badcase-capture/wiki-candidate');
 const sha = value => crypto.createHash('sha256').update(value).digest('hex'), code = value => e => e.code === value;
 function setup(t, guideline = '先核验再用读者能理解的语言说明结果。', expected = 'A distinctive expected answer.') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'global-candidate-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -43,12 +44,44 @@ test('both target types generate only from approved entries, persist diff as dra
     assert.throws(() => resolveGlobalWikiCandidate(h.store.read(), c.id, targetId, 'f'.repeat(64), []), code('wiki_candidate_target_mismatch'));
   }
 });
-test('the full candidate is scanned, including declared base prose rather than only the added guidelines', t => {
+test('only pre-existing overlaps inside the pinned base are exempt; copies in added prose are still rejected', t => {
   for (const [targetId, expected] of [['global-harness-behavior-v1', 'Keep your answer readable'], ['tool-description-list_rooms', 'List other Rooms by latest public message']]) {
     const h = setup(t, '核实后再汇报。', expected); h.approve();
-    assert.throws(() => h.store.createGlobalCandidate({ ...h.input, targetId }), code('wiki_candidate_leak'));
-    assert.equal(h.store.read().candidates.length, 0);
+    const file = { path: 'fixture.txt', base64: Buffer.from(expected).toString('base64'), sha256: sha(expected) };
+    const c = h.store.createGlobalCandidate({ ...h.input, targetId, files: [file] });
+    assert.equal(c.status, 'draft'); assert.equal(c.baseText, getWikiTarget(targetId).baseText);
+    h.store.confirmGlobalCandidate({ candidateId: c.id, candidateHash: c.candidateHash, expectedRevision: h.store.read().revision, files: [file] });
+    assert.equal(resolveGlobalWikiCandidate(h.store.read(), c.id, targetId, c.baseHash, [file]).candidateText, c.candidateText);
+    const copied = setup(t, 'Additional instruction: ' + expected, expected); copied.approve();
+    assert.throws(() => copied.store.createGlobalCandidate({ ...copied.input, targetId, files: [file] }), code('wiki_candidate_leak'));
+    assert.equal(copied.store.read().candidates.length, 0);
   }
+});
+test('eight-character windows crossing the original/addition seam are never exempt', t => {
+  for (const targetId of ['global-harness-behavior-v1', 'tool-description-list_rooms']) {
+    const target = getWikiTarget(targetId), seam = [...target.baseText].slice(-4).join('') + '\n\nWi';
+    assert.equal([...seam].length, 8);
+    const h = setup(t, '核实后汇报。', 'prefix-' + seam + '-suffix'); h.approve();
+    assert.throws(() => h.store.createGlobalCandidate({ ...h.input, targetId }), code('wiki_candidate_leak'));
+    const f = setup(t); f.approve();
+    const bytes = Buffer.from('prefix-' + seam + '-suffix');
+    assert.throws(() => f.store.createGlobalCandidate({ ...f.input, targetId, files: [{ path: 'fixture.txt', base64: bytes.toString('base64'), sha256: sha(bytes) }] }), code('wiki_candidate_leak'));
+  }
+});
+test('a prefix/hash mismatch is rejected before any exemption; Unicode positions and repeated matches are checked', () => {
+  const baseText = '固定😀原文片段abcdefgh', base = { baseText, baseHash: sha(baseText) }, text = baseText + '\nNew prose.';
+  assertWikiCandidateNoLeak(text, ['abcdefgh'], [], base);
+  const emoji = { path: 'short.txt', base64: Buffer.from('😀').toString('base64'), sha256: sha('😀') };
+  assertWikiCandidateNoLeak(text, [], [emoji], base);
+  assert.throws(() => assertWikiCandidateNoLeak(text + '😀', [], [emoji], base), code('wiki_candidate_leak'));
+  for (const tampered of [{ ...base, baseHash: 'f'.repeat(64) }, { ...base, baseText: 'different' }]) {
+    assert.throws(() => assertWikiCandidateNoLeak(text, ['abcdefgh'], [], tampered), code('wiki_candidate_target_mismatch'));
+  }
+  assert.throws(() => assertWikiCandidateNoLeak(text.replace('固定', '改变'), ['abcdefgh'], [], base), code('wiki_candidate_target_mismatch'));
+  assert.throws(() => assertWikiCandidateNoLeak(text + ' abcdefgh', ['abcdefgh'], [], base), code('wiki_candidate_leak'));
+  assert.throws(() => assertWikiCandidateNoLeak(text + ' abcd', ['abcd'], [], base), code('wiki_candidate_leak'));
+  const cross = 'efgh\nNew';
+  assert.throws(() => assertWikiCandidateNoLeak(text, ['prefix-' + cross + '-suffix'], [], base), code('wiki_candidate_leak'));
 });
 test('global operator selects either declared target without changing legacy role configuration or calling a model', t => {
   const h = setup(t), { createCandidate, collectGlobalCandidateFiles } = require('../../scripts/badcase-capture/create-wiki-candidate.cjs');

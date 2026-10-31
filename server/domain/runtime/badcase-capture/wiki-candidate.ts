@@ -11,7 +11,25 @@ const identifier = (value: any) => typeof value === 'string' && /^[A-Za-z0-9_-]{
 // Literal-only guard: complete nonempty values, nonempty lines, and any shared
 // run of >=8 Unicode characters. Shorter paraphrases are NOT semantic detection.
 export function assertWikiGuidelinesNoLeak(guidelines: string[], expected: string[], files: any[]) {
-  const combined = guidelines.join('\n');
+  assertNoLeak(guidelines, expected, files, 0);
+}
+
+// Only the global-target builder supplies this base, from the declared catalog.
+// Matches are exempt by occurrence, not by value: copying an old fragment into
+// the addition, or forming one across the seam, must still be rejected.
+export function assertWikiCandidateNoLeak(candidate: string, expected: string[], files: any[], base: { baseText: string; baseHash: string }) {
+  if (!base || typeof base.baseText !== 'string' || !base.baseText || hash(base.baseText) !== base.baseHash
+    || typeof candidate !== 'string' || !candidate.startsWith(base.baseText)) throw fail('wiki_candidate_target_mismatch');
+  assertNoLeak([candidate], expected, files, base.baseText.length);
+}
+
+function assertNoLeak(guidelines: string[], expected: string[], files: any[], unchangedEnd: number) {
+  const combined = guidelines.join('\n'), combinedBytes = Buffer.from(combined);
+  const unchangedBytes = Buffer.byteLength(combined.slice(0, unchangedEnd));
+  const newMatch = (fragment: string) => {
+    const start = combined.lastIndexOf(fragment);
+    return start >= 0 && start + fragment.length > unchangedEnd;
+  };
   const sources = expected.filter(s => typeof s === 'string' && s.trim());
   if (!Array.isArray(files) || files.length > 1024) throw fail('wiki_candidate_invalid');
   let size = 0;
@@ -19,15 +37,16 @@ export function assertWikiGuidelinesNoLeak(guidelines: string[], expected: strin
     if (!file || typeof file.base64 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)) throw fail('wiki_candidate_invalid');
     const bytes = Buffer.from(file.base64, 'base64'); size += bytes.length;
     if (size > 4 * 1024 * 1024 || hash(bytes) !== file.sha256) throw fail('wiki_candidate_invalid');
-    if (bytes.length && Buffer.from(combined).includes(bytes)) throw fail('wiki_candidate_leak');
+    const start = bytes.length ? combinedBytes.lastIndexOf(bytes) : -1;
+    if (start >= 0 && start + bytes.length > unchangedBytes) throw fail('wiki_candidate_leak');
     const text = bytes.toString('utf8');
     if (Buffer.from(text).equals(bytes) && text.trim()) sources.push(text);
   }
   const windows = [...new Set(guidelines.flatMap(g => {
     const chars = [...g]; return chars.slice(0, Math.max(0, chars.length - 7)).map((_, i) => chars.slice(i, i + 8).join(''));
-  }))];
+  }))].filter(newMatch);
   for (const source of sources) {
-    if (combined.includes(source.trim()) || source.split(/\r?\n/).some(line => line.trim() && combined.includes(line.trim()))
+    if (newMatch(source.trim()) || source.split(/\r?\n/).some(line => line.trim() && newMatch(line.trim()))
       || windows.some(fragment => source.includes(fragment))) throw fail('wiki_candidate_leak');
   }
 }
