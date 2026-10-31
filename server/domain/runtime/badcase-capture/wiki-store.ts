@@ -10,6 +10,7 @@ import { containsSecretSentinel } from './secrets';
 import { buildWikiCandidate, resolveWikiCandidate } from './wiki-candidate';
 import { planReplaySplit } from './wiki-split';
 import { validateSealRequest } from './sealed-case';
+import { buildGlobalWikiCandidate, resolveGlobalWikiCandidate } from './wiki-global-candidate';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -252,6 +253,30 @@ export function createWikiStore(options: any) {
           caseIds, trainingHash: hash(JSON.stringify(cases)), entries: entries.map((e: any, i: number) => ({ id: `entry-${i + 1}`, ...e, status: 'draft' })), unclassified };
         state.versions.push(version);
         return { changed: true, value: version };
+      }).value;
+    },
+    createGlobalCandidate(input: any) {
+      return change(state => {
+        const candidate = buildGlobalWikiCandidate(state, input);
+        const existing = state.candidates.find((c: any) => c.id === candidate.id);
+        if (existing) return { changed: false, value: existing };
+        const saved = { ...candidate, status: 'draft', createdAt: new Date().toISOString() };
+        state.candidates.push(saved);
+        return { changed: true, value: saved };
+      }).value;
+    },
+    confirmGlobalCandidate(input: any) {
+      shape(input, ['candidateId', 'candidateHash', 'expectedRevision', 'files']);
+      const candidateId = id(input.candidateId);
+      if (!Number.isSafeInteger(input.expectedRevision) || !/^[a-f0-9]{64}$/.test(input.candidateHash)) throw fail('wiki_candidate_invalid');
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const current = state.candidates.find((c: any) => c.id === candidateId && c.kind === 'global-wiki-candidate-v1');
+        if (!current || current.candidateHash !== input.candidateHash) throw fail('wiki_candidate_not_found');
+        resolveGlobalWikiCandidate({ ...state, candidates: [{ ...current, status: 'confirmed' }] }, current.id, current.targetId, current.baseHash, input.files);
+        if (current.status === 'confirmed') return { changed: false, value: current };
+        current.status = 'confirmed'; current.confirmedAt = new Date().toISOString();
+        return { changed: true, value: current };
       }).value;
     },
     createCandidate(input: any) {

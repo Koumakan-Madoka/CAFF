@@ -32,6 +32,20 @@ export function assertWikiGuidelinesNoLeak(guidelines: string[], expected: strin
   }
 }
 
+export function buildAppendOnlyWikiDiff(base: string, appendedSection: string, filename: string) {
+  const candidate = base + appendedSection, trailingNewline = base.endsWith('\n'), oldLines = base.split('\n');
+  if (trailingNewline) oldLines.pop();
+  const added = appendedSection.split('\n');
+  if (!trailingNewline) added.shift();
+  if (candidate.endsWith('\n')) added.pop();
+  let diff = `--- a/${filename}\n+++ b/${filename}\n`;
+  if (trailingNewline) diff += `@@ -${oldLines.length},1 +${oldLines.length},${added.length + 1} @@\n ${oldLines.at(-1)}\n`;
+  else diff += `@@ -${oldLines.length},1 +${oldLines.length},${added.length + 1} @@\n-${oldLines.at(-1)}\n\\ No newline at end of file\n+${oldLines.at(-1)}\n`;
+  diff += added.map(line => '+' + line).join('\n') + '\n';
+  if (!candidate.endsWith('\n')) diff += '\\ No newline at end of file\n';
+  return diff;
+}
+
 export function buildWikiCandidate(state: any, input: any) {
   if (!input || Object.keys(input).some(k => !['versionId', 'entryIds', 'baseRole', 'anchor', 'files'].includes(k))
     || !identifier(input.versionId) || !Array.isArray(input.entryIds) || !input.entryIds.length || input.entryIds.length > 100
@@ -55,16 +69,7 @@ export function buildWikiCandidate(state: any, input: any) {
     candidateRoleHash: hash(candidateRole), anchor: { ...anchor } };
   // A real append-only unified diff, including the original's exact final
   // newline state. The full original body is separately available for review.
-  const trailingNewline = input.baseRole.endsWith('\n'), oldLines = input.baseRole.split('\n');
-  if (trailingNewline) oldLines.pop();
-  const added = appendedSection.split('\n');
-  if (!trailingNewline) added.shift(); // first newline terminates the old tail
-  if (candidateRole.endsWith('\n')) added.pop();
-  let diff = '--- a/GPT-role.txt\n+++ b/GPT-role.txt\n';
-  if (trailingNewline) diff += `@@ -${oldLines.length},1 +${oldLines.length},${added.length + 1} @@\n ${oldLines.at(-1)}\n`;
-  else diff += `@@ -${oldLines.length},1 +${oldLines.length},${added.length + 1} @@\n-${oldLines.at(-1)}\n\\ No newline at end of file\n+${oldLines.at(-1)}\n`;
-  diff += added.map(line => '+' + line).join('\n') + '\n';
-  if (!candidateRole.endsWith('\n')) diff += '\\ No newline at end of file\n';
+  const diff = buildAppendOnlyWikiDiff(input.baseRole, appendedSection, 'GPT-role.txt');
   return { id: 'candidate-' + hash(JSON.stringify(identity)), role: 'GPT', ...identity, baseRole: input.baseRole,
     appendedSection, candidateRole, diff, fileHashes: input.files.map((f: any) => ({ path: f.path, sha256: f.sha256 })) };
 }

@@ -3,9 +3,24 @@
 // production role. Generation is distinct from the user's later UI confirmation.
 const fs = require('node:fs'), path = require('node:path');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
-const { prepareSealedDirectTurn } = require('./sealed-direct-input.cjs');
+const { prepareSealedDirectTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
 const fail = code => Object.assign(Error(code), { code });
+function collectGlobalCandidateFiles(state, options = {}) {
+  const files = [];
+  for (const replay of state.replayCases || []) {
+    const prepared = (options.prepareTarget || prepareSealedPromptTarget)(replay.request, 'global-harness-behavior-v1');
+    if (!prepared.supported || prepared.provenance.checkpointHash !== replay.checkpointHash) throw fail('wiki_candidate_anchor_unsupported');
+    files.push(...prepared.input.files.map(file => ({ ...file, path: replay.id + '/' + file.path })));
+  }
+  return files;
+}
 function createCandidate(config, options = {}) {
+  if (config?.globalRoot !== undefined) {
+    if (Object.keys(config).some(k => !['globalRoot', 'sourceWorktree', 'versionId', 'entryIds', 'targetId'].includes(k))) throw fail('wiki_candidate_invalid');
+    const store = createWikiStore({ globalRoot: config.globalRoot, sourceWorktree: config.sourceWorktree });
+    return store.createGlobalCandidate({ versionId: config.versionId, entryIds: config.entryIds, targetId: config.targetId,
+      files: collectGlobalCandidateFiles(store.read(), options) });
+  }
   if (!config || Object.keys(config).some(k => !['captureRoot', 'sourceWorktree', 'projectId', 'versionId', 'entryIds', 'request'].includes(k))
     || config.request?.captureRoot !== config.captureRoot || config.request?.association?.projectId !== config.projectId
     || config.request?.association?.agentId !== 'role-family-gpt') throw fail('wiki_candidate_invalid');
@@ -16,6 +31,10 @@ function createCandidate(config, options = {}) {
       originalRoleHash: prepared.provenance.originalRoleHash }, files: prepared.input.files });
 }
 function main(args = process.argv.slice(2)) {
+  if (args.length === 1 && args[0] === '--targets') {
+    process.stdout.write(JSON.stringify(require('../../build/server/domain/runtime/badcase-capture/wiki-targets').listWikiTargets()) + '\n');
+    return;
+  }
   if (args.length !== 3 || args[0] !== '--config' || !path.isAbsolute(args[1]) || args[2] !== '--confirmed') throw fail('wiki_candidate_usage');
   let config;
   try {
@@ -23,11 +42,13 @@ function main(args = process.argv.slice(2)) {
     config = JSON.parse(fs.readFileSync(args[1], 'utf8'));
   } catch { throw fail('wiki_config_invalid'); }
   const candidate = createCandidate(config);
-  process.stdout.write(JSON.stringify({ id: candidate.id, status: candidate.status, candidateRoleHash: candidate.candidateRoleHash, diff: candidate.diff }) + '\n');
+  process.stdout.write(JSON.stringify({ id: candidate.id, status: candidate.status,
+    ...(candidate.kind === 'global-wiki-candidate-v1' ? { kind: candidate.kind, targetId: candidate.targetId, candidateHash: candidate.candidateHash }
+      : { candidateRoleHash: candidate.candidateRoleHash }), diff: candidate.diff }) + '\n');
 }
 if (require.main === module) {
   try { main(); } catch (e) {
     process.stderr.write(JSON.stringify({ error: /^wiki_[a-z_]+$/.test(e.code || '') ? e.code : 'wiki_candidate_failed' }) + '\n'); process.exitCode = 1;
   }
 }
-module.exports = { createCandidate, main };
+module.exports = { createCandidate, collectGlobalCandidateFiles, main };
