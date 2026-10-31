@@ -79,8 +79,11 @@ test('report for another approval or changed plan is never shown as confirmation
     assert.equal(h.el('report').textContent, ''); assert.match(h.el('status').textContent, /结果未知/);
   }
 });
-test('projects page loads and selects the real panel', () => {
+test('projects page retains capture only, without the legacy offline evaluation panel', () => {
   const root = path.resolve(__dirname, '../../public');
-  assert.match(fs.readFileSync(path.join(root, 'projects.html'), 'utf8'), /shared\/badcase-evaluations.js/);
-  assert.match(fs.readFileSync(path.join(root, 'projects.js'), 'utf8'), /evaluationPanel.select\(selected\)/);
+  const html = fs.readFileSync(path.join(root, 'projects.html'), 'utf8');
+  const script = fs.readFileSync(path.join(root, 'projects.js'), 'utf8');
+  assert.doesNotMatch(html + script, /badcase-evaluations|evaluationPanel|createBadcaseEvaluationPanel/);
+  assert.match(html, /shared\/badcase-capture.js/);
+  assert.match(script, /capturePanel.select\(selected\)/);
 });
