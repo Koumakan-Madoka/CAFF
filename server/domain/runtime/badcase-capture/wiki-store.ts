@@ -266,6 +266,21 @@ export function createWikiStore(options: any) {
         return { changed: true, value: saved };
       }).value;
     },
+    deprecateGlobalCandidate(input: any) {
+      shape(input, ['candidateId', 'candidateHash', 'expectedRevision', 'reason']);
+      const candidateId = id(input.candidateId);
+      if (!Number.isSafeInteger(input.expectedRevision) || !/^[a-f0-9]{64}$/.test(input.candidateHash)
+        || input.reason !== 'wrong_tool_target') throw fail('wiki_candidate_invalid');
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const current = state.candidates.find((c: any) => c.id === candidateId && c.kind === 'global-wiki-candidate-v1');
+        if (!current || current.candidateHash !== input.candidateHash) throw fail('wiki_candidate_not_found');
+        if (current.status === 'deprecated') return { changed: false, value: current };
+        if (current.status !== 'draft') throw fail('wiki_candidate_invalid');
+        current.status = 'deprecated'; current.deprecatedAt = new Date().toISOString(); current.deprecationReason = input.reason;
+        return { changed: true, value: current };
+      }).value;
+    },
     confirmGlobalCandidate(input: any) {
       shape(input, ['candidateId', 'candidateHash', 'expectedRevision', 'files']);
       const candidateId = id(input.candidateId);
@@ -274,6 +289,7 @@ export function createWikiStore(options: any) {
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         const current = state.candidates.find((c: any) => c.id === candidateId && c.kind === 'global-wiki-candidate-v1');
         if (!current || current.candidateHash !== input.candidateHash) throw fail('wiki_candidate_not_found');
+        if (current.status === 'deprecated') throw fail('wiki_candidate_deprecated');
         resolveGlobalWikiCandidate({ ...state, candidates: [{ ...current, status: 'confirmed' }] }, current.id, current.targetId, current.baseHash, input.files);
         if (current.status === 'confirmed') return { changed: false, value: current };
         current.status = 'confirmed'; current.confirmedAt = new Date().toISOString();

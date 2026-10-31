@@ -181,6 +181,13 @@ test('empty results explicitly exclude old screenings, and failed reload clears 
   assert.match(h.el('results').textContent, /尚未.*全局提示词.*历史筛选/);
   fail = true; await h.panel.load(); assert.doesNotMatch(h.el('results').textContent, /1\/3|50.0%/); assert.match(h.el('results').textContent, /尚未读取/);
 });
+test('deprecated wrong-tool candidates retain prose/diff but cannot be confirmed or mistaken for a draft', async t => {
+  const d = data(); d.candidates = [{ id: 'old-list-rooms', kind: 'global-wiki-candidate-v1', target: d.targets[1], targetId: d.targets[1].id, versionId: 'wiki-2', entryIds: ['entry-1'], candidateHash: 'c'.repeat(64), candidateText: 'Retained old prose', diff: '+Retained diff', status: 'deprecated', deprecationReason: 'wrong_tool_target' }];
+  const h = setup(t, () => d); await h.panel.load();
+  assert.match(h.el('candidates').textContent, /已废弃/); assert.match(h.el('candidates').textContent, /工具用途/);
+  assert.match(h.el('candidates').textContent, /Retained old prose.*Retained diff/);
+  const button = h.el('candidates').querySelector('button'); assert.ok(button.disabled); button.click(); await tick(); assert.equal(h.posts().length, 0);
+});
 test('legacy role candidates are not offered for new target confirmation', async t => {
   const h = setup(t, () => ({ ...data(), candidates: [{ id: 'legacy-role', role: 'GPT', status: 'draft' }] }));
   await h.panel.load(); assert.equal(h.el('candidates').querySelector('button'), null); assert.doesNotMatch(h.el('candidates').textContent, /legacy-role/);

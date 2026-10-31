@@ -36,6 +36,7 @@ test('declared harness fragment is the existing shared prose for every family/cu
     const prompt = formatAgentTurnPromptSections(sections), span = locateGlobalPromptTarget(prompt, targetId);
     assert.equal(prompt.slice(span.start, span.end), oldSharedRules);
     assert.ok(sections.find(s => s.sectionKey === 'rules').content.startsWith('Rules:\n' + oldSharedRules + '\n'));
+    assert.ok(prompt.includes('- Speak publicly: node ./tools.js send-public [--no-finalize] --content-stdin (--no-finalize posts an interim update and keeps the current run active).'));
   }
 });
 test('global target replacement changes one exact slot, not role instructions, identity, routing, tools, skills or files', t => {

@@ -11,6 +11,9 @@ export const GLOBAL_HARNESS_BEHAVIOR_RULES = Object.freeze([
   '- Keep your answer readable in a chat UI.',
   '- Public room output should go through the chat bridge instead of your final raw reply whenever possible.',
 ]);
+// Existing prose after the send-public CLI usage in tool_instructions.
+// The command/flags remain outside this description target and do not change.
+export const SEND_PUBLIC_CHAT_BRIDGE_DESCRIPTION = '(--no-finalize posts an interim update and keeps the current run active).';
 const ID = 'global-harness-behavior-v1';
 const fail = () => Object.assign(Error('wiki_prompt_target_unsupported'), { code: 'wiki_prompt_target_unsupported' });
 export function getGlobalPromptTarget(id: string) {

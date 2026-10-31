@@ -14,7 +14,7 @@ function setup(t, guideline = '先核验再用读者能理解的语言说明结�
   return { store, options, input, approve };
 }
 test('declared target catalog reflects each actual tool description without mutating or registering tools', () => {
-  const targets = listWikiTargets(); assert.equal(targets.length, 9);
+  const targets = listWikiTargets(); assert.equal(targets.length, 10);
   assert.equal(targets[0].kind, 'global-system-prompt');
   const extension = require('../../lib/pi-extensions/caff-capabilities.mjs'), tools = [];
   extension.default({ registerTool: definition => tools.push(definition) });
@@ -97,6 +97,31 @@ test('global operator selects either declared target without changing legacy rol
   assert.throws(() => collectGlobalCandidateFiles({ replayCases: [{ ...state.replayCases[0], checkpointHash: 'b'.repeat(64) }] }), code('wiki_candidate_anchor_unsupported'));
   fs.writeFileSync(f.blobPath(f.cp.files['source.txt'].hash), 'corrupt');
   assert.throws(() => collectGlobalCandidateFiles(state), code('wiki_candidate_anchor_unsupported'));
+});
+test('send-public targets the existing chat bridge description, not an unrelated native tool', t => {
+  const target = getWikiTarget('tool-description-send-public');
+  const { SEND_PUBLIC_CHAT_BRIDGE_DESCRIPTION } = require('../../build/lib/agent-prompt-targets');
+  assert.equal(target.toolName, 'send-public'); assert.equal(target.source, 'chat-bridge-cli-description');
+  assert.equal(target.baseText, SEND_PUBLIC_CHAT_BRIDGE_DESCRIPTION); assert.equal(target.baseHash, sha(target.baseText));
+  assert.equal(target.baseText, '(--no-finalize posts an interim update and keeps the current run active).');
+  const h = setup(t); h.approve(); const c = h.store.createGlobalCandidate({ ...h.input, targetId: target.id });
+  assert.equal(c.targetId, target.id); assert.equal(c.status, 'draft'); assert.ok(c.diff.includes('+' + '- 先核验'));
+});
+test('wrong-tool drafts can be deprecated without deletion, revival, or changing another candidate/wiki', t => {
+  const h = setup(t); h.approve();
+  const global = h.store.createGlobalCandidate(h.input), old = h.store.createGlobalCandidate({ ...h.input, targetId: 'tool-description-list_rooms' });
+  const before = h.store.read(), input = { candidateId: old.id, candidateHash: old.candidateHash, expectedRevision: before.revision, reason: 'wrong_tool_target' };
+  assert.throws(() => h.store.deprecateGlobalCandidate({ ...input, candidateHash: 'f'.repeat(64) }), code('wiki_candidate_not_found'));
+  assert.throws(() => h.store.deprecateGlobalCandidate({ ...input, expectedRevision: before.revision - 1 }), code('wiki_revision_conflict'));
+  h.store.deprecateGlobalCandidate(input);
+  const after = createWikiStore(h.options).read(), deprecated = after.candidates.find(c => c.id === old.id);
+  assert.equal(after.candidates.length, 2); assert.equal(deprecated.status, 'deprecated'); assert.equal(deprecated.deprecationReason, 'wrong_tool_target');
+  assert.equal(deprecated.candidateText, old.candidateText); assert.equal(deprecated.candidateHash, old.candidateHash); assert.equal(deprecated.diff, old.diff);
+  assert.deepEqual(after.versions, before.versions); assert.deepEqual(after.cases, before.cases); assert.deepEqual(after.candidates.find(c => c.id === global.id), global);
+  assert.throws(() => h.store.confirmGlobalCandidate({ candidateId: old.id, candidateHash: old.candidateHash, expectedRevision: after.revision, files: [] }), code('wiki_candidate_deprecated'));
+  assert.throws(() => resolveGlobalWikiCandidate(after, old.id, old.targetId, old.baseHash, []), code('wiki_candidate_confirmation_required'));
+  assert.equal(h.store.createGlobalCandidate({ ...h.input, targetId: old.targetId }).status, 'deprecated');
+  h.store.deprecateGlobalCandidate({ ...input, expectedRevision: after.revision }); assert.equal(h.store.read().revision, after.revision);
 });
 test('expected answer fragments and fixture file contents are rejected for both candidate target types', t => {
   for (const targetId of ['global-harness-behavior-v1', 'tool-description-list_rooms']) {

@@ -115,13 +115,15 @@
       if (!candidates.length) el('candidates').append(node('p', '尚无全局目标候选；旧角色候选不用于本轮调优。'));
       for (const candidate of candidates) {
         const card = document.createElement('section'); card.className = 'stack-card';
-        card.append(node('h3', `${candidate.target.title} · ${candidate.status === 'confirmed' ? '已确认' : '草稿'}`));
+        const deprecated = candidate.status === 'deprecated';
+        card.append(node('h3', `${candidate.target.title} · ${deprecated ? '已废弃' : candidate.status === 'confirmed' ? '已确认' : '草稿'}`));
+        if (deprecated) card.append(node('p', '废弃原因：所选工具用途与准则无关；仅保留记录，不可确认或评测。'));
         card.append(node('p', `来源版本：${candidate.versionId}；条目：${candidate.entryIds.join('、')}；候选：${candidate.id}`));
         card.append(node('p', `内容 hash：${candidate.candidateHash}`));
         const details = document.createElement('details'); details.append(node('summary', '候选全文'), node('pre', candidate.candidateText)); card.append(details);
         card.append(node('h4', 'Diff'), node('pre', candidate.diff));
-        const button = node('button', candidate.status === 'confirmed' ? '已确认（未启动评测）' : '确认此候选'); button.type = 'button';
-        button.dataset.reviewed = String(candidate.status === 'confirmed'); button.addEventListener('click', () => { void confirmCandidate(candidate); });
+        const button = node('button', deprecated ? '已废弃（保留记录）' : candidate.status === 'confirmed' ? '已确认（未启动评测）' : '确认此候选'); button.type = 'button';
+        button.dataset.reviewed = String(candidate.status !== 'draft'); button.addEventListener('click', () => { void confirmCandidate(candidate); });
         card.append(button); el('candidates').append(card);
       }
     }

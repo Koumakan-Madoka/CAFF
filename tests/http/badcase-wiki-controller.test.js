@@ -92,10 +92,10 @@ test('candidate confirmation requires exact hash, revision and explicit user act
 });
 
 test('global candidate HTTP flow exposes real targets and only accepts approved sources, exact revision/hash and confirmation', async t => {
-  for (const targetId of ['global-harness-behavior-v1', 'tool-description-list_rooms']) {
+  for (const targetId of ['global-harness-behavior-v1', 'tool-description-list_rooms', 'tool-description-send-public']) {
     const h = setup(t), v = h.seed(), route = { pathname: '/api/wikiskill/candidate' };
     const catalog = (await h.invoke()).body.targets;
-    assert.equal(catalog.length, 9); assert.ok(catalog.find(t => t.id === targetId));
+    assert.equal(catalog.length, 10); assert.ok(catalog.find(t => t.id === targetId));
     assert.equal(catalog.some(t => t.execute || t.parameters), false);
     const body = { confirmed: true, expectedRevision: 2, versionId: v.id, entryIds: [v.entries[0].id], targetId };
     await rejects(h.invoke(body, route), 'wiki_candidate_approved_required', 409);
@@ -119,6 +119,14 @@ test('global candidate HTTP flow exposes real targets and only accepts approved 
     const saved = await h.invoke(confirmBody, confirmRoute); assert.equal(saved.body.candidates[0].status, 'confirmed');
     assert.equal(createWikiStore(h.config).read().candidates[0].status, 'confirmed');
   }
+});
+test('deprecated draft remains in GET but hash-bound HTTP confirmation cannot revive it', async t => {
+  const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, expectedRevision: 2, decision: 'approved' });
+  const c = h.store.createGlobalCandidate({ versionId: v.id, entryIds: [v.entries[0].id], targetId: 'tool-description-list_rooms', files: [] });
+  h.store.deprecateGlobalCandidate({ candidateId: c.id, candidateHash: c.candidateHash, expectedRevision: 4, reason: 'wrong_tool_target' });
+  assert.equal((await h.invoke()).body.candidates[0].status, 'deprecated');
+  await rejects(h.invoke({ confirmed: true, candidateId: c.id, candidateHash: c.candidateHash, expectedRevision: 5 }, { pathname: '/api/wikiskill/confirm-global-candidate' }), 'wiki_candidate_deprecated', 409);
+  assert.equal(h.store.read().revision, 5);
 });
 test('candidate HTTP errors disclose no sealed paths and cannot bypass missing registered materials', async t => {
   const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, expectedRevision: 2, decision: 'approved' });
