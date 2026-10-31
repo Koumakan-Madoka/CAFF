@@ -7,13 +7,14 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], published = '', withCallback = true } = {}) {
+async function workerReceipt(t, { files = [], published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect the files.', files: files.map(p => ({ path: p,
     base64: Buffer.from(p).toString('base64'), sha256: crypto.createHash('sha256').update(p).digest('hex') })),
     sessionText: null, settings: null, systemPrompt: null,
-    callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: {} } : null };
+    callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: {} } : null,
+    ...(fileEvidencePaths === undefined ? {} : { fileEvidencePaths }) };
   fs.writeFileSync(path.join(root, 'evaluation-profile.json'), JSON.stringify(model));
   fs.writeFileSync(path.join(root, 'replay-input.json'), JSON.stringify(input));
   const mapped = p => { assert.ok(p.startsWith('/work/')); return path.join(root, p.slice(6)); };
@@ -26,6 +27,7 @@ async function workerReceipt(t, { files = [], published = '', withCallback = tru
     agent: { state: { tools: Array.from({ length: 10 }, (_, i) => ({ name: 'tool-' + i })) } },
     bindExtensions: async () => {}, subscribe: f => { subscriber = f; }, prompt: async () => {
       const message = { role: 'assistant', content: [{ type: 'text', text: 'INTERNAL ONLY: stable file; deleted.txt 不存在' }], stopReason: 'stop' };
+      afterTurn(path.join(root, 'restored'));
       session.messages.push(message); observer.calls.push({ model, durationMs: 1, success: true });
       subscriber({ type: 'message_end', message });
     } };
@@ -33,6 +35,7 @@ async function workerReceipt(t, { files = [], published = '', withCallback = tru
   const workerRequire = name => {
     if (name === 'node:fs') return workerFs;
     if (name === '/work/direct-model.cjs') return { ...require('../../scripts/badcase-capture/direct-model.cjs'), observeDirectFetch: () => observer };
+    if (name === '/work/build/server/domain/runtime/badcase-capture/secrets') return require('../../build/server/domain/runtime/badcase-capture/secrets');
     if (name === '/work/caff-runtime-bootstrap.cjs') return { verifyCaffRuntimeStage: () => ({ manifest: { inputHash: 'input', runtimeHash: 'runtime' } }) };
     if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async () => ({
       apiUrl: 'http://127.0.0.1:1', credentials: { invocationId: 'fixture', callbackToken: 'fixture-only' },
@@ -146,6 +149,23 @@ test('worker callback reply never falls back to internal SDK text, and source is
   const standalone = (await workerReceipt(t, { withCallback: false })).receipt;
   assert.match(standalone.finalText, /INTERNAL ONLY/); assert.equal(standalone.replySource, 'internal');
 });
+test('worker returns only requested final file bytes, with explicit missing/unsupported and no encoded credentials', async t => {
+  const { scoreLiteralFiles } = require('../../scripts/badcase-capture/file-literal-rules.cjs');
+  const rules = { kind: 'file-literals-v1', files: [{ path: 'output.txt', contains: ['verified result'], notContains: ['TODO'] }] };
+  const successful = (await workerReceipt(t, { files: ['source.txt'], fileEvidencePaths: ['output.txt'],
+    afterTurn: cwd => fs.writeFileSync(path.join(cwd, 'output.txt'), 'verified result\n') })).receipt;
+  assert.equal(scoreLiteralFiles(successful, rules).pass, true); assert.equal(successful.fileEvidence.length, 1);
+  assert.equal(successful.fileEvidence[0].size, Buffer.byteLength('verified result\n'));
+  const missing = (await workerReceipt(t, { fileEvidencePaths: ['output.txt'] })).receipt;
+  assert.equal(missing.fileEvidence[0].state, 'missing'); assert.equal(scoreLiteralFiles(missing, rules).pass, false);
+  for (const bytes of [Buffer.from([0xff, 0xfe]), Buffer.from('a\0b'), Buffer.from('x'.repeat(65537)), Buffer.from(key), Buffer.from('sk-FAKE_SENTINEL_123456')]) {
+    const receipt = (await workerReceipt(t, { fileEvidencePaths: ['output.txt'], afterTurn: cwd => fs.writeFileSync(path.join(cwd, 'output.txt'), bytes) })).receipt;
+    assert.deepEqual(receipt.fileEvidence, [{ path: 'output.txt', state: 'unsupported' }]);
+    assert.equal(scoreLiteralFiles(receipt, rules).available, false);
+    assert.equal(JSON.stringify(receipt).includes(bytes.toString('base64')), false);
+  }
+});
+
 test('host requires public provenance even if internal/legacy text matches every reply fragment', () => {
   const f = fakes(), beforeHash = expectedTreeHash(f.input), base = { success: true, modelCalls: [{ success: true }],
     toolCalls: [{ name: 'read', isError: false, args: { path: 'tracked.txt' } }], beforeHash, afterHash: beforeHash,

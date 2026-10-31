@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
 import { buildWikiCandidate, resolveWikiCandidate } from './wiki-candidate';
+import { planReplaySplit } from './wiki-split';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -65,7 +66,7 @@ export function createWikiStore(options: any) {
   // Wiki records embed their own text, not CAS references. Keep them outside
   // the checkpoint inventory: existing expiry/GC only owns projects/<id>/CAS.
   const directory = path.join(captureRoot, 'wiki', projectId, 'snapshots');
-  const fresh = () => ({ schemaVersion: 1, projectId, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[] });
+  const fresh = () => ({ schemaVersion: 1, projectId, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replaySplit: null });
   function read(): any {
     let names: string[];
     try { names = fs.readdirSync(directory); }
@@ -88,6 +89,8 @@ export function createWikiStore(options: any) {
       // Backward-compatible read of snapshots written before candidate support.
       if (record.candidates === undefined) record.candidates = [];
       if (!Array.isArray(record.candidates)) throw Error();
+      if (record.replaySplit === undefined) record.replaySplit = null;
+      if (record.replaySplit !== null && (typeof record.replaySplit !== 'object' || Array.isArray(record.replaySplit))) throw Error();
       return record;
     } catch { throw fail('wiki_record_invalid'); }
   }
@@ -122,8 +125,10 @@ export function createWikiStore(options: any) {
         for (const candidate of normalized) {
           const existing = state.cases.find((c: any) => c.id === candidate.id);
           if (existing) {
-            const { createdAt, ...content } = existing;
-            if (JSON.stringify(content) !== JSON.stringify(candidate)) throw fail('wiki_case_conflict');
+            // The operator may have frozen this source case into the holdout
+            // set. Reimport never resets that local selection to training.
+            const { createdAt, split, ...content } = existing, { split: initialSplit, ...original } = candidate;
+            if (JSON.stringify(content) !== JSON.stringify(original)) throw fail('wiki_case_conflict');
             batch.push(existing);
           } else {
             const saved = { ...candidate, createdAt: now }; state.cases.push(saved); batch.push(saved); created++;
@@ -132,6 +137,23 @@ export function createWikiStore(options: any) {
         return { changed: created > 0, value: { created, cases: batch } };
       });
       return { ...result.value, revision: result.revision };
+    },
+    setReplaySplit(input: any) {
+      shape(input, ['caseIds']);
+      const plan = planReplaySplit(input.caseIds);
+      return change(state => {
+        if (state.replaySplit) {
+          if (state.replaySplit.id !== plan.id) throw fail('wiki_split_frozen');
+          return { changed: false, value: state.replaySplit };
+        }
+        if (plan.caseIds.some(id => !state.cases.some((c: any) => c.id === id && c.role === 'GPT'))) throw fail('wiki_unknown_case');
+        // Even a rejected/draft version means the model already saw that case.
+        // Do not relabel exposed training data as an untouched test set.
+        if (state.versions.some((v: any) => v.caseIds.some((id: string) => plan.testCaseIds.includes(id)))) throw fail('wiki_split_training_conflict');
+        for (const c of state.cases) if (plan.caseIds.includes(c.id)) c.split = plan.testCaseIds.includes(c.id) ? 'test' : 'train';
+        const saved = { ...plan, createdAt: new Date().toISOString() }; state.replaySplit = saved;
+        return { changed: true, value: saved };
+      }).value;
     },
     saveDraft(input: any) {
       shape(input, ['caseIds', 'model', 'entries', 'unclassified']);

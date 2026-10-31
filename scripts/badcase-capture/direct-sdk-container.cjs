@@ -3,6 +3,28 @@
 // its caller prepared a complete sealed checkpoint; that is a separate gate.
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict'), crypto = require('node:crypto');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
+function collectFileEvidence(cwd, paths, key) {
+  assert.ok(Array.isArray(paths) && paths.length > 0 && paths.length <= 16 && new Set(paths).size === paths.length);
+  const { containsSecretSentinel } = require('/work/build/server/domain/runtime/badcase-capture/secrets');
+  let total = 0;
+  return paths.map(name => {
+    assert.ok(typeof name === 'string' && name.length <= 512 && /^[A-Za-z0-9_.@/-]+$/.test(name)
+      && name.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git'));
+    try {
+      const parts = name.split('/'); let target = cwd, stat;
+      for (const [index, part] of parts.entries()) {
+        target += '/' + part; stat = fs.lstatSync(target);
+        if (stat.isSymbolicLink() || (index < parts.length - 1 && !stat.isDirectory())) return { path: name, state: 'unsupported' };
+      }
+      if (!stat.isFile() || stat.size > 65536) return { path: name, state: 'unsupported' };
+      const bytes = fs.readFileSync(target); total += bytes.length;
+      const text = bytes.toString('utf8');
+      if (bytes.length > 65536 || total > 262144 || !Buffer.from(text).equals(bytes) || text.includes('\0')
+        || bytes.includes(key) || containsSecretSentinel(bytes)) return { path: name, state: 'unsupported' };
+      return { path: name, state: 'file', base64: bytes.toString('base64'), sha256: hash(bytes), size: bytes.length };
+    } catch (e) { return { path: name, state: e.code === 'ENOENT' ? 'missing' : 'unsupported' }; }
+  });
+}
 async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   assert.ok(process.platform === 'linux' && process.getuid?.() === 65534 && process.cwd() === '/work' && fs.existsSync('/.dockerenv'));
   const direct = require('/work/direct-model.cjs'), key = direct.validKey(process.env[direct.KEY_ENV]);
@@ -103,6 +125,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       success: !threw && final?.stopReason === 'stop' && observer.calls.length > 0 && observer.calls.every(c => c.success),
       historyMessages: initialHistory.length, historyHash: hash(JSON.stringify(initialHistory)), tools, toolCalls,
       modelCalls: observer.calls, finalText, replySource, beforeHash, afterHash: treeHash(),
+      ...(input.fileEvidencePaths === undefined ? {} : { fileEvidence: collectFileEvidence(cwd, input.fileEvidencePaths, key) }),
       // No worker self-score. The host scores only after container removal.
       scored: false, sealedCheckpointVerified: false };
     assert.deepEqual(extensionErrors, []);
@@ -116,4 +139,4 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   return receipt;
 }
 if (require.main === module) main().then(r => console.log(JSON.stringify(r))).catch(() => { process.stderr.write('direct_caff_turn_failed\n'); process.exitCode = 1; });
-module.exports = { main };
+module.exports = { main, collectFileEvidence };

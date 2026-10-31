@@ -26,6 +26,8 @@
 - `scripts/badcase-capture/import-text-cases.cjs --config <绝对路径> --confirmed` 是操作方入口，不部署到 3100。配置仅含 `captureRoot`、`sourceWorktree`、`projectId`、`selections`；每项 selection 仅含用户确认的 `conversationId`、`messageId`、`actual`、`expected`。没有确认参数时不访问 API、不落盘。
 - 导入仅 GET 固定 `http://127.0.0.1:3100` 的会话、分页公共消息和所选消息的 tool-trace API；不打开生产 SQLite、不 POST 标记、不读私信/session 文件、不修改生产库，不转发认证或跟随重定向。只接受终态 `role-family-gpt` assistant 消息，每批最多 20 条，每房间最多扫描 100 页（每页 100 条），单响应最多 2 MiB，单请求 10 秒；越界或不支持直接失败。
 - 纯文本用例保存实际问题、期望、GPT 角色、源消息与轨迹摘录。摘录各最多 32 KiB 并显式标截断，轨迹 API 404 显式标缺失，其他失败不冒充缺失；沿用秘密哨兵拒绝策略，不声称可检测所有秘密。整批成功才本地原子发布，同一来源同内容重提幂等，变化则冲突，不覆盖已确认材料。此入口不封存现场，永远记录 `kind: text-only`、`replayable: false`、`split: train`，不能用于回放评分。
+- 用户确认重放任务来源后，先运行 `assign-wiki-split.cjs --config <绝对路径> --confirmed`，配置仅含 `captureRoot/sourceWorktree/projectId/caseIds`；caseIds 是计划重放任务对应的已导入源用例，不是已回放的证明。固定种子 `wikiskill-holdout-v1` 对源 ID 排序哈希，≥6条取 `round(N/3)` 条留出，其余训练；不足6条不建独立测试集并显式披露。未选作重放任务来源的纯文本用例仍为训练集；为满足 wiki 的≥10条训练要求，须在扣除留出来源后仍有足够材料。
+- 划分写入外部 wiki 快照并冻结，同一集合不同顺序重提幂等，不允许看结果后换种子/增删任务重划。曾进入任一 wiki 版本的用例不能后来伪称未见测试集；已标为 test 的来源在生成入口读取 Key 前被拒绝，存储层也拒绝其混入 draft。重新导入不把 test 改回 train，源用例仍 `text-only/replayable:false`；页面只展示计划划分，不把它冒充可回放数量。若最终有任务不支持，后续批量报告须披露真实可回放数，不重划来隐藏缺口。
 - wiki 自包含文本存于源 worktree 外的 `<captureRoot>/wiki/<projectId>/snapshots/`，不把文本放进 checkpoint CAS。复用项目 writer lock，每次变更追加带 checksum 的不可覆盖快照；重启读取最新完整快照，损坏拒绝而不退回旧审核状态。该目录不属于 checkpoint TTL/配额或 orphan GC 的删除范围，也不算作 CAS 容量。
 - `wiki-store.ts` 的 draft 接口校验所选训练用例关联、每用例至少归入一条或有明确未归类原因；未知用例/遗漏拒绝。条目含标题、失败模式、症状、根因假设、≤300 Unicode 字符的 prompt 准则、关联用例 ID 和 `draft/approved/rejected` 状态。模型输出不能指定批准状态；每次重新生成创建新版本，不覆盖旧版本。
 - `generate-wiki.cjs --config <绝对路径> --confirmed --output <新的绝对路径>` 是操作方模型归纳入口，配置只含 `captureRoot`、`sourceWorktree`、`projectId`、明确所选的 `caseIds` 和沿用 S3 的固定 `image` 身份。每次1–20条、输入最多1 MiB，只投影所选 GPT 训练用例的问题/期望/消息/轨迹摘录与截断状态；测试集、其他用例、源认证配置不发送。无确认、未知或非训练用例在读取 Key/调用模型前拒绝。模型内容为不可信数据，宿主验证字段、≤300字及全用例覆盖后才追加新版本；不自动重试、补写遗漏或批准条目。
@@ -59,9 +61,12 @@
 
 - 只使用本地已存在、ID/RepoDigest/架构匹配的固定 Linux 镜像，不自动 pull/build。每次新容器：非 root `65534:65534`、只读根、cap-drop ALL、no-new-privileges、非 privileged、1 GiB 内存/同额 swap 上限、2 CPU、128 pids、独立 IPC、超时强停。
 - `/work` 与 `/tmp` 为限额 tmpfs；无宿主 bind、生产 DB/凭据目录、Docker socket、设备或发布端口。输入经 stdin tar 放入 tmpfs，工作目录是恢复出的副本。Docker 日志驱动为 none，inspect 只保存脱敏隔离投影，不保存包含环境值的原对象。
-- 真实模型运行使用 bridge 网络；native fetch 观察器只放行选定模型 URL 和容器本地回调。**这不是工具进程的网络出口防火墙**，不承诺阻止任意恶意项目代码外联；本 MVP 只执行用户确认的受信只读 trace，不将其用于敌对代码隔离保证。
+- 真实模型运行使用 bridge 网络；native fetch 观察器只放行选定模型 URL 和容器本地回调。**这不是工具进程的网络出口防火墙**，不承诺阻止任意恶意项目代码外联；本 MVP 只执行用户确认的受信任务（旧只读 trace 或已确认的文件产出任务），不将其用于敌对代码隔离保证。
 - 宿主在容器退出、核验身份/隔离并确认删除后才评分。`pass`/`fail` 为可评分的任务结论，模型/worker/清理失败为 `error`；未执行次数单独列出，不从分母消失。
 - 当前规则 `read-only-files-v1` 要求指定路径确有成功 read、前后文件树 hash 相同、无 write/edit 调用，公共回复包含用户确认的字面片段。宿主与容器将完整相对路径按同一字典序排序后计算文件树 hash，不使用目录深度优先顺序。`absentPaths` 必须与归档删除清单及文件缺席一致；字面回复核对不是语义评分器或自动根因判断，规则/评分只在宿主，不发送独立参考答案。
+- 新增 `file-literals-v1`：`files` 中每项仅含 `path/contains/notContains`，两种字面数组可一空但不能全空，不支持正则/语义评分。允许在恢复副本中编辑/新增文件；每个指定文件必须存在且为可读取的普通 UTF-8 文件，即使只检查“不包含”也不能用文件缺失凑通过。参考字面值仅留宿主，原/候选 worker 输入同样只增加待取证路径，未向 prompt/模型发送参考答案。
+- worker 在本轮工具执行结束后读取至多16个指定路径，每文件≤64 KiB、合计≤256 KiB，记录 final bytes 的 base64/hash/size。宿主在确认容器删除后校验编码、hash、大小和文字，再按逐文件字面谓词评分，结果/运行事件保存这些证据及逐项检查。已知文件不存在为 fail；证据缺失/损坏、二进制、链接/目录、越界或秘密哨兵命中等为 error，停止后续轮次而非伪判通过。可用的实际模型请求记录仍保留，未运行单列；不以文件证据不可用冒称模型零调用。worker 和宿主均拒绝选定 Key 藏在 base64 文件证据中，不能用编码绕过输出检查；不是检测所有秘密的保证。
+- `read-only-files-v1` 行为不变；新规则依赖同一受信 worker 提供最终文件证据，不是宿主对任意敌对代码的独立文件系统证明。当前只做合成 worker/宿主链验证，尚未用真实用例跑新规则或批量对照。
 - 本轮确认的流程样例：checkpoint `c559893e-0bd7-4f13-8b19-71317b8acaf9`；读取 tracked.txt、dirty.txt、untracked.txt，零文件改动；回复包含 `stable file`、`dirty before turn`、`untracked before turn`、`deleted.txt`、`不存在`。候选仅追加逐项核验要求，原/候选各 3 次。
 - 作者真实运行结果为原 3/3、候选 3/3，18 次模型请求，6 容器均已删除。这证明流程闭环，不是 badcase 已复现、候选提分或独立审查通过。原始记录在忽略的私有证据存储中，Goal 引用这些记录；旧记录没有 `replySource`，不回填或声称已按修复后的来源规则重跑。
 
@@ -85,5 +90,5 @@
 - 任意宿主现场在 Linux 的通用恢复、进程内存/后台服务/外部系统状态、权限/ACL/链接/并发原子一致性、`.git`/index/git status 的逐字保真。
 - 此 MVP 主路径以外的换根、外置 Git 元数据、submodule/嵌套仓库、全局 Git 配置、复杂 ignore 语法；底层保留旧实现不等于本轮承诺其端到端可用。
 - 正式 sealed-direct 入口的 resume、图片、额外技能/外部系统指令/自定义设置或旧缺材料封存。底层 fresh/resume 合成 Docker 演练不冒充这些历史用例已可回放。
-- 尚未完成真实用例验收的 wiki/候选链，以及尚未接通的批量评测，不因接口或合成测试存在就视为验收通过。不同封存原角色版本不能共用同一个候选；需用户明确另起迭代，不自动适配。未经用户审核自动生效、多轮自动调优、语义自动判分、任意规则插件、自动提分/确定性保证、自动发布或修改生产 prompt 均非本 Goal 承诺。
+- 尚未完成真实用例验收的 wiki/候选、固定划分和新字面评分链，以及尚未接通的批量评测，不因接口或合成测试存在就视为验收通过。不同封存原角色版本不能共用同一个候选；需用户明确另起迭代，不自动适配。未经用户审核自动生效、多轮自动调优、语义自动判分、任意规则插件、自动提分/确定性保证、自动发布或修改生产 prompt 均非本 Goal 承诺。
 - 后台自动定时 GC、任意不可信代码的外联隔离、对同权限宿主/Docker 管理员隐藏容器环境 Key，以及没有可信 worker 记录时的精确供应商计费证明。

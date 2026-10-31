@@ -114,8 +114,9 @@ test('compare-sealed wiki mode cannot read Key/execute before confirmation; exac
 });
 test('old wiki snapshots without candidate arrays remain readable and migrate only on a real write', t => {
   const h = setup(t), file = path.join(h.config.captureRoot, 'wiki/p1/snapshots/000000000002.json');
-  const envelope = JSON.parse(fs.readFileSync(file)); delete envelope.record.candidates; envelope.checksum = sha(JSON.stringify(envelope.record)); fs.writeFileSync(file, JSON.stringify(envelope));
-  const before = fs.readFileSync(file); assert.deepEqual(h.store.read().candidates, []); assert.deepEqual(fs.readFileSync(file), before);
+  const envelope = JSON.parse(fs.readFileSync(file)); delete envelope.record.candidates; delete envelope.record.replaySplit;
+  envelope.checksum = sha(JSON.stringify(envelope.record)); fs.writeFileSync(file, JSON.stringify(envelope));
+  const before = fs.readFileSync(file); assert.deepEqual(h.store.read().candidates, []); assert.equal(h.store.read().replaySplit, null); assert.deepEqual(fs.readFileSync(file), before);
   h.approve(); assert.deepEqual(fs.readFileSync(file), before);
   const latest = JSON.parse(fs.readFileSync(path.join(path.dirname(file), '000000000003.json'))); assert.deepEqual(latest.record.candidates, []);
 });

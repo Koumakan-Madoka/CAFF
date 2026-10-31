@@ -112,6 +112,15 @@ test('failed candidate confirmation locks writes without auto retry; stale proje
   assert.equal(other.el('confirm-candidate').disabled, false); assert.match(other.el('candidate-info').textContent, /待用户确认/);
 });
 
+test('page discloses fixed holdout counts or insufficient samples without claiming text-only cases are replayable', async t => {
+  for (const small of [false, true]) {
+    const h = setup(t, () => ({ ...data(), replaySplit: { trainCaseIds: ['c1', 'c2', 'c3', 'c4'], testCaseIds: small ? [] : ['c5', 'c6'], insufficientSamples: small } }));
+    await h.panel.select({ id: 'p1' });
+    assert.match(h.el('split-info').textContent, small ? /不足6条，无独立留出集/ : /训练 4 条，留出 2 条/);
+    assert.match(h.el('split-info').textContent, /不代表已产生可回放封存/); assert.equal(h.posts().length, 0);
+  }
+});
+
 test('projects page wires the review panel without exposing model/key/config inputs', () => {
   const html = fs.readFileSync(path.resolve(__dirname, '../../public/projects.html'), 'utf8');
   const js = fs.readFileSync(path.resolve(__dirname, '../../public/projects.js'), 'utf8');

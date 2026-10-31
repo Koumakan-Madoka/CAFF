@@ -8,9 +8,11 @@ const { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, DEFAULT_
 const { manifestFor } = require('./pi-probe-materials.cjs');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 const { resolveWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-candidate');
+const { validateLiteralRules, scoreLiteralFiles } = require('./file-literal-rules.cjs');
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const fail = code => Object.assign(Error(code), { code });
 function validateRules(rules) {
+  if (rules?.kind === 'file-literals-v1') return validateLiteralRules(rules);
   if (!rules || rules.kind !== 'read-only-files-v1'
     || Object.keys(rules).some(k => !['kind', 'readPaths', 'absentPaths', 'requiredReplyFragments'].includes(k))
     || !Array.isArray(rules.absentPaths) || rules.absentPaths.length > 16 || new Set(rules.absentPaths).size !== rules.absentPaths.length
@@ -70,12 +72,17 @@ function prepareComparison(config, options = {}) {
   if (candidate.supported !== true) return { supported: false, reason: 'unsupported_or_missing_replay_materials' };
   if (original.provenance.checkpointHash !== candidate.provenance.checkpointHash
     || original.provenance.commonInputHash !== candidate.provenance.commonInputHash) throw fail('evaluation_start_mismatch');
-  for (const p of rules.readPaths) if (!original.input.files.some(f => f.path === p)) throw fail('evaluation_rules_invalid');
-  for (const p of rules.absentPaths) if (original.input.files.some(f => f.path === p) || !original.input.deletions?.includes(p)) throw fail('evaluation_rules_invalid');
-  const inputs = { original: original.input, candidate: candidate.input };
+  if (rules.kind === 'read-only-files-v1') {
+    for (const p of rules.readPaths) if (!original.input.files.some(f => f.path === p)) throw fail('evaluation_rules_invalid');
+    for (const p of rules.absentPaths) if (original.input.files.some(f => f.path === p) || !original.input.deletions?.includes(p)) throw fail('evaluation_rules_invalid');
+  }
+  // Only requested paths, never literal reference values, enter worker inputs.
+  const evidenceConfig = rules.kind === 'file-literals-v1' ? { fileEvidencePaths: rules.files.map(f => f.path) } : {};
+  const inputs = { original: { ...original.input, ...evidenceConfig }, candidate: { ...candidate.input, ...evidenceConfig } };
   const summary = { kind: 'sealed-prompt-comparison-v1', caseId: original.provenance.caseId,
     checkpointId: original.provenance.checkpointId, checkpointHash: original.provenance.checkpointHash,
-    commonInputHash: original.provenance.commonInputHash, model: profile, repeats: config.repeats,
+    commonInputHash: rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig })) : original.provenance.commonInputHash,
+    model: profile, repeats: config.repeats,
     imageId: config.image.imageId, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
     strictEvalEligible: false, ...(wikiCandidate ? { wikiCandidate } : {}) };
@@ -111,7 +118,9 @@ async function runComparison(config, options = {}) {
       let task;
       try { task = await execute(fixed.image, files[variant], { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000 }); }
       catch { task = { failed: true, reason: 'evaluation_failed' }; }
-      if (leaksKey(task)) task = { failed: true, reason: 'evaluation_output_contains_key' };
+      const encodedLeak = Array.isArray(task?.receipt?.fileEvidence) && task.receipt.fileEvidence.some(f =>
+        typeof f?.base64 === 'string' && Buffer.from(f.base64, 'base64').includes(key));
+      if (leaksKey(task) || encodedLeak) task = { failed: true, reason: 'evaluation_output_contains_key' };
       const receipt = task?.receipt, row = { variant, iteration, status: 'error', checks: null, finalText: '', replySource: 'unknown', modelCalls: [],
         containerId: task?.containerId || null, cleaned: task?.cleaned === true, isolation: task?.isolation || null,
         inputHash: manifests[variant].inputHash };
@@ -126,8 +135,13 @@ async function runComparison(config, options = {}) {
         modelCallsKnown += row.modelCalls.length;
         for (const [i, call] of row.modelCalls.entries()) emit({ event: 'model_call', variant, iteration, request: i + 1, ...call });
         if (receipt.success === true && receipt.modelCalls.every(c => c.success)) {
-          const score = scoreReadOnlyFiles(receipt, plan.summary.rules, plan.beforeHash);
-          row.status = score.pass ? 'pass' : 'fail'; row.checks = score.checks;
+          const literal = plan.summary.rules.kind === 'file-literals-v1';
+          const score = literal ? scoreLiteralFiles(receipt, plan.summary.rules) : scoreReadOnlyFiles(receipt, plan.summary.rules, plan.beforeHash);
+          if (score.available === false) { row.reason = 'file_evidence_unavailable'; stopped = true; }
+          else {
+            row.status = score.pass ? 'pass' : 'fail'; row.checks = score.checks;
+            if (literal) { row.fileEvidence = receipt.fileEvidence; row.fileChecks = score.details; }
+          }
         } else { row.reason = 'model_turn_failed'; stopped = true; }
       } else { row.reason = 'run_evidence_unavailable'; stopped = true; callsUnavailable = true; }
       // Only accept worker output after verified removal. On an infrastructure

@@ -9,7 +9,7 @@
       <p class="muted">模型生成的均为草稿。通过条目不修改生产 prompt，也不启动评测。生成由操作方运行；本页无需填写 JSON。</p>
       <div class="button-row"><label>版本 <select data-wiki-versions></select></label><button type="button" data-wiki-refresh>刷新</button></div>
       <p data-wiki-status role="status" aria-live="polite"></p>
-      <div data-wiki-coverage></div><div data-wiki-entries></div><details><summary>关联用例（纯文本不用于评测）</summary><div data-wiki-cases></div></details>
+      <p data-wiki-split-info></p><div data-wiki-coverage></div><div data-wiki-entries></div><details><summary>关联用例（纯文本不用于评测）</summary><div data-wiki-cases></div></details>
       <h3>GPT 候选 prompt</h3><p class="muted">操作方从封存原角色与已通过条目生成；本页确认只解锁后续评测，不立即运行，不修改生产 prompt。</p>
       <label>候选 <select data-wiki-candidates></select></label><p data-wiki-candidate-info></p>
       <pre data-wiki-diff style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
@@ -48,6 +48,8 @@
     }
     function render() {
       renderCandidate();
+      const split = state?.replaySplit;
+      el('split-info').textContent = split ? `已固定重放任务来源划分：训练 ${split.trainCaseIds.length} 条，留出 ${split.testCaseIds.length} 条${split.insufficientSamples ? '（不足6条，无独立留出集）' : ''}。留出来源不进入 wiki 生成；这不代表已产生可回放封存。` : '尚未固定重放任务来源划分。';
       el('versions').replaceChildren(); el('coverage').replaceChildren(); el('entries').replaceChildren(); el('cases').replaceChildren();
       if (!state) return;
       for (const v of state.versions) {
