@@ -33,7 +33,7 @@ async function main(argv = process.argv.slice(2)) {
   } finally { fs.closeSync(fd); }
 }
 if (require.main === module) main().catch(e => {
-  const code = /^evaluation_[a-z_]+$/.test(e?.code || e?.message || '') ? e.code || e.message : 'evaluation_failed';
+  const code = /^(evaluation|wiki_candidate)_[a-z_]+$/.test(e?.code || e?.message || '') ? e.code || e.message : 'evaluation_failed';
   process.stderr.write(JSON.stringify({ error: code }) + '\n'); process.exitCode = 1;
 });
 module.exports = { main, argumentsFor };

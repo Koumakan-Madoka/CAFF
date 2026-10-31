@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
+import { buildWikiCandidate, resolveWikiCandidate } from './wiki-candidate';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -64,7 +65,7 @@ export function createWikiStore(options: any) {
   // Wiki records embed their own text, not CAS references. Keep them outside
   // the checkpoint inventory: existing expiry/GC only owns projects/<id>/CAS.
   const directory = path.join(captureRoot, 'wiki', projectId, 'snapshots');
-  const fresh = () => ({ schemaVersion: 1, projectId, revision: 0, cases: [] as any[], versions: [] as any[] });
+  const fresh = () => ({ schemaVersion: 1, projectId, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[] });
   function read(): any {
     let names: string[];
     try { names = fs.readdirSync(directory); }
@@ -84,6 +85,9 @@ export function createWikiStore(options: any) {
       if (envelope.schemaVersion !== 1 || !record || record.schemaVersion !== 1 || record.projectId !== projectId
         || record.revision !== Number(latest.slice(0, 12)) || !Number.isSafeInteger(record.revision) || record.revision < 1
         || !Array.isArray(record.cases) || !Array.isArray(record.versions) || envelope.checksum !== hash(JSON.stringify(record))) throw Error();
+      // Backward-compatible read of snapshots written before candidate support.
+      if (record.candidates === undefined) record.candidates = [];
+      if (!Array.isArray(record.candidates)) throw Error();
       return record;
     } catch { throw fail('wiki_record_invalid'); }
   }
@@ -149,6 +153,33 @@ export function createWikiStore(options: any) {
           caseIds, trainingHash: hash(JSON.stringify(cases)), entries: entries.map((e: any, i: number) => ({ id: `entry-${i + 1}`, ...e, status: 'draft' })), unclassified };
         state.versions.push(version);
         return { changed: true, value: version };
+      }).value;
+    },
+    createCandidate(input: any) {
+      return change(state => {
+        const candidate = buildWikiCandidate(state, input);
+        const existing = state.candidates.find((c: any) => c.id === candidate.id);
+        if (existing) return { changed: false, value: existing };
+        const saved = { ...candidate, status: 'draft', createdAt: new Date().toISOString() };
+        state.candidates.push(saved);
+        return { changed: true, value: saved };
+      }).value;
+    },
+    confirmCandidate(input: any) {
+      shape(input, ['candidateId', 'candidateRoleHash', 'expectedRevision']);
+      const candidateId = id(input.candidateId);
+      if (!Number.isSafeInteger(input.expectedRevision) || !/^[a-f0-9]{64}$/.test(input.candidateRoleHash)) throw fail('wiki_candidate_invalid');
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const current = state.candidates.find((c: any) => c.id === candidateId);
+        if (!current || current.candidateRoleHash !== input.candidateRoleHash) throw fail('wiki_candidate_not_found');
+        // Revalidate approved sources and all currently imported expectations.
+        // File contents were scanned at generation and are scanned again from
+        // each sealed input by the evaluation gate, never fetched from live cwd.
+        resolveWikiCandidate({ ...state, candidates: [{ ...current, status: 'confirmed' }] }, current.id, current.anchor.originalRoleHash, []);
+        if (current.status === 'confirmed') return { changed: false, value: current };
+        current.status = 'confirmed'; current.confirmedAt = new Date().toISOString();
+        return { changed: true, value: current };
       }).value;
     },
     review(input: any) {

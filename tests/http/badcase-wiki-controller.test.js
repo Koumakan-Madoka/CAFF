@@ -1,5 +1,5 @@
 const test = require('node:test'), assert = require('node:assert/strict');
-const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), crypto = require('node:crypto');
 const { PassThrough } = require('node:stream');
 const { createBadcaseWikiController } = require('../../build/server/api/badcase-wiki-controller');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
@@ -60,6 +60,28 @@ test('confirmation/closed schema, unknown scope and membership edits fail withou
   assert.equal(h.store.read().revision, 2);
   const reject = await h.invoke(body); assert.equal(reject.body.versions[0].entries[0].status, 'rejected');
 });
+test('candidate confirmation requires exact hash, revision and explicit user action; GET never confirms', async t => {
+  const h = setup(t), v = h.seed();
+  h.store.review({ versionId: v.id, entryId: v.entries[0].id, expectedRevision: 2, decision: 'approved' });
+  const baseRole = 'Keep the original GPT identity.';
+  const candidate = h.store.createCandidate({ versionId: v.id, entryIds: [v.entries[0].id], baseRole, files: [], anchor: {
+    caseId: 'case1', checkpointId: 'cp1', originalRoleHash: crypto.createHash('sha256').update('Your private persona instructions:\n' + baseRole).digest('hex') } });
+  const route = { pathname: '/api/projects/p1/badcase-wiki/confirm-candidate' };
+  const body = { confirmed: true, candidateId: candidate.id, candidateRoleHash: candidate.candidateRoleHash, expectedRevision: 4 };
+  assert.equal((await h.invoke()).body.candidates[0].status, 'draft');
+  for (const confirmed of [false, 'true', 1]) await rejects(h.invoke({ ...body, confirmed }, route), 'wiki_confirmation_required');
+  await rejects(h.invoke({ ...body, candidateRoleHash: 'a'.repeat(64) }, route), 'wiki_candidate_not_found', 404);
+  await rejects(h.invoke({ ...body, expectedRevision: 3 }, route), 'wiki_revision_conflict', 409);
+  await rejects(h.invoke({ ...body, candidateRole: 'replacement' }, route), 'wiki_invalid_input');
+  for (const headers of [{ origin: 'http://evil.test' }, { 'x-caff-csrf-token': '' }]) {
+    await assert.rejects(h.invoke(body, { ...route, headers }), e => e.statusCode === 403);
+    assert.equal(h.store.read().candidates[0].status, 'draft');
+  }
+  const result = await h.invoke(body, route); assert.equal(result.body.candidates[0].status, 'confirmed');
+  assert.equal(createWikiStore(h.config).read().candidates[0].status, 'confirmed');
+  assert.equal((await h.invoke()).body.revision, 5);
+});
+
 test('corrupt storage and unknown exceptions are sanitized, never returning raw paths', async t => {
   const h = setup(t); h.seed();
   const file = path.join(h.config.captureRoot, 'wiki/p1/snapshots/000000000002.json'); fs.writeFileSync(file, 'broken');

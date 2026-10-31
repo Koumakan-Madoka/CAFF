@@ -26,6 +26,7 @@ test('sealed portable input preserves real start bytes, changes only declared ro
   const f = portable(t), before = fs.readFileSync(f.source);
   const a = prepareSealedDirectTurn(f.request), b = prepareSealedDirectTurn(f.request, 'Read only. Verify each file.');
   assert.equal(a.supported, true, JSON.stringify(a)); assert.equal(b.supported, true);
+  assert.equal(a.originalRole, 'Read only.'); assert.equal(b.originalRole, a.originalRole, 'anchor always exposes archived original, not candidate');
   assert.equal(a.input.sessionText, null); assert.equal(a.input.settings, null); assert.equal(a.input.systemPrompt, null);
   assert.equal(a.input.files[0].base64, Buffer.from('retained bytes').toString('base64'));
   assert.deepEqual(Object.keys(a.input.callback).sort(), ['association', 'expectedTraceHash', 'trace'], 'callback constructor accepts only its three archived input fields');

@@ -31,7 +31,11 @@
 - `generate-wiki.cjs --config <绝对路径> --confirmed --output <新的绝对路径>` 是操作方模型归纳入口，配置只含 `captureRoot`、`sourceWorktree`、`projectId`、明确所选的 `caseIds` 和沿用 S3 的固定 `image` 身份。每次1–20条、输入最多1 MiB，只投影所选 GPT 训练用例的问题/期望/消息/轨迹摘录与截断状态；测试集、其他用例、源认证配置不发送。无确认、未知或非训练用例在读取 Key/调用模型前拒绝。模型内容为不可信数据，宿主验证字段、≤300字及全用例覆盖后才追加新版本；不自动重试、补写遗漏或批准条目。
 - 归纳只调用官方 `deepseek/deepseek-v4-flash` 一次，复用 D4 的只读 Key 来源与 `runDirectDockerTask` 一次性容器隔离，不在宿主推理，不挂载生产 DB、凭据目录、Docker socket 或真实仓库；仅输入一个文本 JSON 和固定 worker，无 agent 工具。容器最长120秒、响应最多512 KiB，非200/截断/无效JSON失败。输出 JSONL 记录模型、耗时、成败、可得用量、容器清理/隔离投影与新版本ID；基础设施未提供调用记录为 null，不冒称零调用。CLI 保留现有 Linux Docker 宿主要求，Windows 须由受信操作方沿用 S3 的 Linux 执行方式，页面不提供模型/Key/镜像 JSON 配置。
 - `projects.html` 选择项目后可展开“WikiSkill 条目审核”，查看历次版本、归类/未归类原因、关联用例及摘录，编辑 draft 文字并通过/驳回；无需填写 JSON。`GET /api/projects/:id/badcase-wiki` 只读，`POST .../review` 沿用本地管理 Host/Origin/CSRF 门禁与显式确认。以当前 revision 防止旧页面覆盖新状态，审核后的条目冻结；重分组需重新生成，最小编辑器不改关联用例。页面加载、保存、审核均不调用模型、不生成/评测候选、不改生产角色；保存结果未知时先刷新核对，不自动重试。
-- 上述生成链和审核页面目前以合成材料定向验证，**尚未用用户确认的真实清单生成 wiki，候选 prompt 与批量评测仍未接通**；不构成 AC5–AC7 的真实用例证据。
+- `create-wiki-candidate.cjs --config <绝对路径> --confirmed` 是无模型的候选生成入口。配置含 `captureRoot/sourceWorktree/projectId/versionId/entryIds/request`；request 必须是同项目 GPT 的封存关联。复用 sealed-direct 校验并从封存中提取原角色，不读取当前生产角色、不补造缺材料。只选一个 wiki 版本内的 approved 条目，候选严格等于原角色原文 + 固定标题/项目符号包装的所选准则，不追加用例期望、标题、症状或根因文字。候选、原文、追加段、diff、角色 hash、条目与封存锚点、文件 hash 一起保存在外部 wiki 快照中，初始为 draft；同内容重提幂等。
+- 准则的泄漏检查是**字面启发式，不是语义检测**：拒绝包含已导入用例的完整非空期望/非空行，或与期望/用例文件共享任意连续≥8个 Unicode 字符；完整非空文件内容即使不足8字也拒绝。生成时只读扫描封存锚点文件；比较入口对每个实际封存输入再次扫描文件，并对当前已导入的全部期望重验。参考答案不发给被测模型；不宣称识别短于8字且非完整值/行的片段、改写或所有秘密。失败只报通用泄漏码，不打印命中的参考内容。
+- 页面在“GPT 候选 prompt”显示候选、完整原/候选角色、diff 与 SHA256；用户明确确认才通过 `POST .../confirm-candidate` 冻结确认状态，绑定候选 ID/hash 和当前 revision。仍沿用本地管理门禁，旧 revision、改写候选或未确认拒绝；确认本身不启动评测、不修改生产 prompt。读取旧版无 candidates 的快照只在内存补空数组，不改原文件。
+- `compare-sealed` 可用 `wikiCandidate: { sourceWorktree, candidateId }` 替代 `candidateRole`；两者不能混用。此模式在读取 Key/接触 Docker 前要求持久化确认、所选来源仍 approved、候选内容/hash 可重建、当前封存的原角色 hash 与候选锚点一致；不同角色版本明确拒绝，不对各用例偷偷拼接不同候选。每轮继续重验，并在 plan/results summary 记录候选 ID、wiki/条目与候选角色 hash。旧的手写 `candidateRole` 入口保留兼容，但不代表获得 wiki 审核/确认。
+- 上述 wiki 生成、审核、候选与单用例确认门禁目前仅以合成材料定向验证，**尚未用用户确认的真实清单生成 wiki 或候选，批量评测仍未接通**；不构成 AC5–AC7 的真实用例证据。
 
 ### 可回放子集与对比入口
 
@@ -81,5 +85,5 @@
 - 任意宿主现场在 Linux 的通用恢复、进程内存/后台服务/外部系统状态、权限/ACL/链接/并发原子一致性、`.git`/index/git status 的逐字保真。
 - 此 MVP 主路径以外的换根、外置 Git 元数据、submodule/嵌套仓库、全局 Git 配置、复杂 ignore 语法；底层保留旧实现不等于本轮承诺其端到端可用。
 - 正式 sealed-direct 入口的 resume、图片、额外技能/外部系统指令/自定义设置或旧缺材料封存。底层 fresh/resume 合成 Docker 演练不冒充这些历史用例已可回放。
-- 尚未完成真实用例验收的 wiki 归纳/审核链，以及尚未接通的 approved 条目到候选 prompt 的生成与确认、批量评测，不因接口或合成测试存在就视为验收通过。未经用户审核自动生效、多轮自动调优、语义自动判分、任意规则插件、自动提分/确定性保证、自动发布或修改生产 prompt 均非本 Goal 承诺。
+- 尚未完成真实用例验收的 wiki/候选链，以及尚未接通的批量评测，不因接口或合成测试存在就视为验收通过。不同封存原角色版本不能共用同一个候选；需用户明确另起迭代，不自动适配。未经用户审核自动生效、多轮自动调优、语义自动判分、任意规则插件、自动提分/确定性保证、自动发布或修改生产 prompt 均非本 Goal 承诺。
 - 后台自动定时 GC、任意不可信代码的外联隔离、对同权限宿主/Docker 管理员隐藏容器环境 Key，以及没有可信 worker 记录时的精确供应商计费证明。

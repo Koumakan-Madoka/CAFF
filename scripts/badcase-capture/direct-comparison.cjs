@@ -6,6 +6,8 @@ const { prepareSealedDirectTurn } = require('./sealed-direct-input.cjs');
 const { prepareDirectTurnFiles, runDirectDockerTask } = require('./direct-docker.cjs');
 const { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, DEFAULT_PROFILE, DEEPSEEK_PROFILE } = require('./direct-model.cjs');
 const { manifestFor } = require('./pi-probe-materials.cjs');
+const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
+const { resolveWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-candidate');
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const fail = code => Object.assign(Error(code), { code });
 function validateRules(rules) {
@@ -39,9 +41,9 @@ function scoreReadOnlyFiles(receipt, rules, beforeHash) {
 }
 function prepareComparison(config, options = {}) {
   if (!config || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'rules', 'timeoutMs', 'modelProfile', 'keySource'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)
-    || typeof config.candidateRole !== 'string' || !config.candidateRole.trim()
+    || (config.wikiCandidate === undefined ? typeof config.candidateRole !== 'string' || !config.candidateRole.trim() : config.candidateRole !== undefined)
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')) throw fail('evaluation_config_invalid');
   const profile = config.modelProfile ?? DEFAULT_PROFILE;
@@ -49,8 +51,23 @@ function prepareComparison(config, options = {}) {
   if (config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
     || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
   const rules = validateRules(config.rules), prepare = options.prepare || prepareSealedDirectTurn;
-  const original = prepare(config.request), candidate = prepare(config.request, config.candidateRole);
-  if (original.supported !== true || candidate.supported !== true) return { supported: false, reason: 'unsupported_or_missing_replay_materials' };
+  const original = prepare(config.request);
+  if (original.supported !== true) return { supported: false, reason: 'unsupported_or_missing_replay_materials' };
+  let candidateRole = config.candidateRole, wikiCandidate = null;
+  if (config.wikiCandidate !== undefined) {
+    const selection = config.wikiCandidate;
+    if (!selection || typeof selection !== 'object' || Array.isArray(selection)
+      || Object.keys(selection).sort().join(',') !== 'candidateId,sourceWorktree'
+      || !path.isAbsolute(selection.sourceWorktree || '') || typeof selection.candidateId !== 'string'
+      || config.request?.association?.agentId !== 'role-family-gpt') throw fail('evaluation_config_invalid');
+    const state = createWikiStore({ captureRoot: config.request.captureRoot, projectId: config.request.association.projectId,
+      sourceWorktree: selection.sourceWorktree }).read();
+    const selected = resolveWikiCandidate(state, selection.candidateId, original.provenance.originalRoleHash, original.input.files);
+    candidateRole = selected.candidateRole;
+    wikiCandidate = { id: selected.id, versionId: selected.versionId, entryIds: selected.entryIds, candidateRoleHash: selected.candidateRoleHash };
+  }
+  const candidate = prepare(config.request, candidateRole);
+  if (candidate.supported !== true) return { supported: false, reason: 'unsupported_or_missing_replay_materials' };
   if (original.provenance.checkpointHash !== candidate.provenance.checkpointHash
     || original.provenance.commonInputHash !== candidate.provenance.commonInputHash) throw fail('evaluation_start_mismatch');
   for (const p of rules.readPaths) if (!original.input.files.some(f => f.path === p)) throw fail('evaluation_rules_invalid');
@@ -61,7 +78,7 @@ function prepareComparison(config, options = {}) {
     commonInputHash: original.provenance.commonInputHash, model: profile, repeats: config.repeats,
     imageId: config.image.imageId, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
-    strictEvalEligible: false };
+    strictEvalEligible: false, ...(wikiCandidate ? { wikiCandidate } : {}) };
   return { supported: true, inputs, summary, beforeHash: expectedTreeHash(original.input) };
 }
 async function runComparison(config, options = {}) {

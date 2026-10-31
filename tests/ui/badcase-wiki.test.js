@@ -81,6 +81,37 @@ test('mismatched project data or failed GET leaves review unavailable', async t 
     assert.match(h.el('status').textContent, /读取失败/); assert.equal(h.root.querySelector('[data-action]'), null); assert.equal(h.posts().length, 0);
   }
 });
+test('candidate diff/full roles render as text; only explicit confirmation binds displayed hash/revision', async t => {
+  const state = data(); state.candidates = [{ id: 'candidate-1', versionId: 'wiki-2', entryIds: ['entry-1'], status: 'draft', candidateRoleHash: 'a'.repeat(64),
+    baseRole: 'Original identity', candidateRole: 'Original identity\n<script>literal guideline</script>', diff: '+<img src=x> literal diff' }];
+  const h = setup(t, (url, options) => {
+    if (options.method === 'POST') { state.candidates[0].status = 'confirmed'; state.revision++; }
+    return JSON.parse(JSON.stringify(state));
+  });
+  await h.panel.select({ id: 'p1' });
+  assert.equal(h.posts().length, 0); assert.equal(h.el('confirm-candidate').disabled, false);
+  assert.match(h.el('diff').textContent, /<img src=x>/); assert.match(h.el('candidate-role').textContent, /<script>/);
+  assert.equal(h.root.querySelector('img,script'), null); assert.match(h.el('candidate-info').textContent, /待用户确认，不可评测/);
+  h.accept(false); h.el('confirm-candidate').click(); await tick(); assert.equal(h.posts().length, 0);
+  h.accept(true); h.el('confirm-candidate').click(); await tick();
+  const post = h.posts()[0]; assert.match(post.url, /badcase-wiki\/confirm-candidate$/);
+  assert.deepEqual(JSON.parse(JSON.stringify(post.body)), { confirmed: true, candidateId: 'candidate-1', candidateRoleHash: 'a'.repeat(64), expectedRevision: 3 });
+  assert.equal(h.el('confirm-candidate').disabled, true); assert.match(h.el('status').textContent, /尚未运行评测/);
+  h.el('confirm-candidate').click(); await tick(); assert.equal(h.posts().length, 1);
+});
+test('failed candidate confirmation locks writes without auto retry; stale project results are ignored', async t => {
+  const candidate = { id: 'candidate-1', versionId: 'wiki-2', entryIds: ['entry-1'], status: 'draft', candidateRoleHash: 'a'.repeat(64), baseRole: 'base', candidateRole: 'candidate', diff: '+guideline' };
+  const h = setup(t, (url, options) => { if (options.method === 'POST') throw Error('private'); return { ...data(), candidates: [candidate] }; });
+  await h.panel.select({ id: 'p1' }); h.el('confirm-candidate').click(); await tick();
+  assert.equal(h.posts().length, 1); assert.equal(h.el('confirm-candidate').disabled, true); assert.match(h.el('status').textContent, /未自动重试/);
+  assert.doesNotMatch(h.root.textContent, /private/);
+  const pending = deferred();
+  const other = setup(t, (url, options) => options.method === 'POST' ? pending.promise : { ...data(url.includes('/p2/') ? 'p2' : 'p1'), candidates: [candidate] });
+  await other.panel.select({ id: 'p1' }); other.el('confirm-candidate').click(); await tick();
+  await other.panel.select({ id: 'p2' }); pending.resolve({ ...data(), candidates: [{ ...candidate, status: 'confirmed' }] }); await tick();
+  assert.equal(other.el('confirm-candidate').disabled, false); assert.match(other.el('candidate-info').textContent, /待用户确认/);
+});
+
 test('projects page wires the review panel without exposing model/key/config inputs', () => {
   const html = fs.readFileSync(path.resolve(__dirname, '../../public/projects.html'), 'utf8');
   const js = fs.readFileSync(path.resolve(__dirname, '../../public/projects.js'), 'utf8');

@@ -71,7 +71,8 @@ function prepareSealedDirectTurn(request, candidateRole = null) {
     const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText: null, systemPrompt: null, settings: null, callback,
       bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements } };
     validateDirectBindings(input.prompt, input.bindings);
-    return { supported: true, input, provenance: { caseId: sealed.caseId, checkpointId: cp.checkpointId,
+    return { supported: true, input, originalRole: originalRole.slice('Your private persona instructions:\n'.length),
+      provenance: { caseId: sealed.caseId, checkpointId: cp.checkpointId,
       checkpointHash: hash(JSON.stringify(cp)), originalRoleHash: span.sha256,
       commonInputHash: hash(JSON.stringify({ ...input, prompt: commonPrompt })),
       variant: candidateRole === null ? 'original' : 'candidate', strictEvalEligible: false } };
