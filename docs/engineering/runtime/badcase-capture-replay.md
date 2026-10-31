@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-本契约描述 2026-10-30 用户确认的最短路径 MVP（Goal `goal_aa132140-e957-4a58-9ed6-d58812370377`）。旧设计与审查记录保留在 Git 历史和各自 Goal 记录中，不把历史 FAIL 追认为 PASS，也不沿用已取消的网关、双账本或持久付费批准义务。交付与验收证据以当前 Goal 为准；本文件不是另一份任务台账。
+本契约描述 2026-10-30 用户确认的最短路径 MVP，以及 2026-10-31 批准的 WikiSkill 层扩展（Goal `goal_aa132140-e957-4a58-9ed6-d58812370377`）。S0–S3 的固定 SHA `460d0512` 与 wiki 层最后一起由用户一次性接受，旧证据不冒充新增功能证据。旧设计与审查记录保留在 Git 历史和各自 Goal 记录中，不把历史 FAIL 追认为 PASS，也不沿用已取消的网关、双账本或持久付费批准义务。交付与验收证据以当前 Goal 为准；本文件不是另一份任务台账。
 
 ### 采集与恢复
 
@@ -20,6 +20,15 @@
 - 关联由服务端从消息的 project/conversation/message/turn/agent/task/checkpoint/run 派生，不接受客户端改绑。标记与封存状态分别查询；已标记不代表已封存，已封存不代表可回放。
 - 同一消息相同文本重复提交幂等，不新增第二份封存；不同文本不覆盖原记录。没有执行前检查点的旧消息显示缺现场，材料缺失不现场补造。进程重启后，对仍存在且归属有效的消息可查询原记录。
 - 封存通过保留引用 pin 住清单和可达 blob，不受普通期限/配额回收。采集存储在源 worktree 外，属于同 OS 用户可信存储，不挂载给评测 agent。
+
+### WikiSkill 用例与版本存储（已实现的底座）
+
+- `scripts/badcase-capture/import-text-cases.cjs --config <绝对路径> --confirmed` 是操作方入口，不部署到 3100。配置仅含 `captureRoot`、`sourceWorktree`、`projectId`、`selections`；每项 selection 仅含用户确认的 `conversationId`、`messageId`、`actual`、`expected`。没有确认参数时不访问 API、不落盘。
+- 导入仅 GET 固定 `http://127.0.0.1:3100` 的会话、分页公共消息和所选消息的 tool-trace API；不打开生产 SQLite、不 POST 标记、不读私信/session 文件、不修改生产库，不转发认证或跟随重定向。只接受终态 `role-family-gpt` assistant 消息，每批最多 20 条，每房间最多扫描 100 页（每页 100 条），单响应最多 2 MiB，单请求 10 秒；越界或不支持直接失败。
+- 纯文本用例保存实际问题、期望、GPT 角色、源消息与轨迹摘录。摘录各最多 32 KiB 并显式标截断，轨迹 API 404 显式标缺失，其他失败不冒充缺失；沿用秘密哨兵拒绝策略，不声称可检测所有秘密。整批成功才本地原子发布，同一来源同内容重提幂等，变化则冲突，不覆盖已确认材料。此入口不封存现场，永远记录 `kind: text-only`、`replayable: false`、`split: train`，不能用于回放评分。
+- wiki 自包含文本存于源 worktree 外的 `<captureRoot>/wiki/<projectId>/snapshots/`，不把文本放进 checkpoint CAS。复用项目 writer lock，每次变更追加带 checksum 的不可覆盖快照；重启读取最新完整快照，损坏拒绝而不退回旧审核状态。该目录不属于 checkpoint TTL/配额或 orphan GC 的删除范围，也不算作 CAS 容量。
+- `wiki-store.ts` 的 draft 接口校验所选训练用例关联、每用例至少归入一条或有明确未归类原因；未知用例/遗漏拒绝。条目含标题、失败模式、症状、根因假设、≤300 Unicode 字符的 prompt 准则、关联用例 ID 和 `draft/approved/rejected` 状态。模型输出不能指定批准状态；每次重新生成创建新版本，不覆盖旧版本。
+- 审核接口以当前 revision 防止旧页面覆盖新状态；只允许编辑 draft 的文字、通过或驳回，审核后的条目冻结，重新生成另起 draft 版本。重分组需重新生成，最小编辑器不改关联用例。这里的模型名与 draft 数据是待接入生成器的存储契约，**目前尚未接通真实模型聚类、审核页面、候选 prompt 或批量评测**；合成定向测试不构成 AC5–AC7 的真实用例证据。
 
 ### 可回放子集与对比入口
 
@@ -69,5 +78,5 @@
 - 任意宿主现场在 Linux 的通用恢复、进程内存/后台服务/外部系统状态、权限/ACL/链接/并发原子一致性、`.git`/index/git status 的逐字保真。
 - 此 MVP 主路径以外的换根、外置 Git 元数据、submodule/嵌套仓库、全局 Git 配置、复杂 ignore 语法；底层保留旧实现不等于本轮承诺其端到端可用。
 - 正式 sealed-direct 入口的 resume、图片、额外技能/外部系统指令/自定义设置或旧缺材料封存。底层 fresh/resume 合成 Docker 演练不冒充这些历史用例已可回放。
-- 自动 prompt 生成、wiki 聚类、语义自动判分、任意规则插件、自动提分/确定性保证、自动发布或修改生产 prompt。
+- 尚未接通的真实模型 wiki 聚类、审核页面、approved 条目到候选 prompt 的生成与确认、批量评测，不因存储接口已存在就视为可用。未经用户审核自动生效、多轮自动调优、语义自动判分、任意规则插件、自动提分/确定性保证、自动发布或修改生产 prompt 均非本 Goal 承诺。
 - 后台自动定时 GC、任意不可信代码的外联隔离、对同权限宿主/Docker 管理员隐藏容器环境 Key，以及没有可信 worker 记录时的精确供应商计费证明。
