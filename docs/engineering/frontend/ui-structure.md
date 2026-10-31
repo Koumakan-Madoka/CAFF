@@ -59,8 +59,14 @@
   newest client size, cancelling stale attachment/process waits. The CLI may
   repaint its own current screen; neither this nor the mode frame is CAFF
   transcript replay. See [P2 §5](../runtime/embedded-planner.md#5-terminal-websocket-protocol-v1).
-  Output is terminal text, not HTML; OSC clipboard/hyperlinks,
-  automatic URL activation and window actions are not enabled.
+  Output is terminal text, not HTML; automatic URL activation, OSC 8 and window
+  actions remain disabled. The only output-copy exception is a trusted ordinary
+  native drag followed by one valid OSC 52 `c`/UTF-8 Base64/BEL write in 1000 ms,
+  at most 64 KiB. Correlate the initial raw ESC arrival across fragments, not
+  xterm's queued parser completion; revoke on focus/connection/view changes.
+  This does not authenticate same-PTY content: the user accepted a first-valid
+  forged request winning inside that window. Show actual browser-copy results,
+  never treat the CLI toast as success. See the runtime contract for full limits.
 - Separate explicit controls stop the process, repair a stale lease, or
   reinitialize the same UUID. The latter appears after session-unavailable
   exit; wording says **可能不可用**, explains never-saved/deleted records and
@@ -79,7 +85,8 @@
   is required only for its Unicode-width API: open first, load the addon,
   require `unicode.activeVersion === '15-graphemes'` before connecting. Missing,
   broken or inactive addon fails with `planner_terminal_unicode_unavailable`,
-  no socket and no Unicode 6 fallback; OSC 8/52 remain blocked. Windows server
+  no socket and no Unicode 6 fallback; OSC 8/52 remain consumed by xterm (only
+  the bounded native-copy observer above may write). Windows server
   PTYs require node-pty's bundled ConPTY DLL + OpenConsole, not OS ConPTY;
   `planner_conpty_unavailable` explains installation failure, never falls back.
   Both CAFF themes keep a readable dark CLI palette (`#111312` background),
@@ -99,6 +106,12 @@
   sampled dimensions, restored alternate/paste/focus modes and bracketed multiline
   paste reaching the fake CLI), second page, room switch, both recovery controls,
   OSC sentinels, light/dark, 820/390/375/320 overlay/focus and a short walkthrough.
+  It also runs `planner-terminal-native-copy.test.js` serially: real plain mouse
+  drags (including Chinese/multiline), fresh clipboard sentinels and awaited
+  readback, with no pre-granted product clipboard permissions; fragmented,
+  duplicate, idle, expired/pre-grant requests, the accepted first-request race,
+  and real textarea fallback success/failure. The synthetic WS peer uses the
+  captured protocol; it is not a real Claude selection or production acceptance.
   Its 59-column real-PTY + fake-CLI repaint regression uses six exactly full
   Chinese/emoji/VS16 rows, repeated erase/redraw, and real xterm buffer assertions:
   zero `isWrapped`, one exact copy per row, including spaces after emoji. No

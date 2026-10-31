@@ -1232,13 +1232,15 @@ then load `UnicodeGraphemesAddon`; require `terminal.unicode.activeVersion ===
 inactive addon gives `planner_terminal_unicode_unavailable`, disposes the view
 and opens no socket: never silently fall back to Unicode 6. This proposed API
 is necessary for the pinned addon's Unicode 15 grapheme-width provider, not an
-extension of allowed terminal-output capabilities. OSC 8 and 52 are still
-consumed; no link/clipboard/window permission is added. A focused `public/chat/` module owns terminal lifecycle, fits after
+extension of allowed terminal-output capabilities. OSC 8 and 52 remain consumed
+by xterm; the separately gesture-gated native-copy path below is the only
+output-driven clipboard exception. No link/window capability or permission request
+is added. A focused `public/chat/` module owns terminal lifecycle, fits after
 layout/drag/viewport changes and sends validated integer sizes. Dispose xterm,
 addon, observers and socket handlers on room change. Closing the UI must not
-leave a browser input handler writing to the old room. Do not enable clipboard
-write, arbitrary OSC actions, automatic URL opening or HTML interpretation from
-terminal output. The terminal is not a sanitized public-message renderer.
+leave a browser input handler writing to the old room. Do not enable unconditionally
+output-driven clipboard writes, arbitrary OSC actions, automatic URL opening or
+HTML interpretation from terminal output. The terminal is not a sanitized public-message renderer.
 
 Show connecting/authenticating/attached/disconnected/busy/unavailable/exited
 states, a manual reconnect action, off-by-default wake-up toggle with usage
@@ -1276,8 +1278,61 @@ overlay; AppShell owns its background inert/focus coordination. Escape in the
 terminal is passed to the CLI (including trust), not treated as UI close;
 Ctrl+Shift+F6 returns to the toolbar. Desktop chat remains interactive.
 
-When Claude Code captures the mouse, hold **Shift while dragging** to select
-xterm text (not Claude Code's application-internal selection). On a user
+**Native drag copy (user-approved 2026-10-31):** retain Claude Code's ordinary
+left-button drag selection, highlighting and mouse reports. Observe trusted mouse
+events without cancelling, rewriting, capturing or injecting them. In a visible,
+connected terminal with CLI mouse tracking enabled, an ordinary unmodified left
+drag (at least 4 CSS px movement), released inside the same focused terminal,
+grants **one valid write within 1000 ms**. A click, Shift/Alt/Ctrl/Meta drag,
+untrusted synthetic event, outside release or non-tracking xterm selection does
+not grant it. Consumption, expiry, new gesture, focus/window/visibility loss,
+stop/exit/socket failure, close/dispose and room replacement revoke the grant.
+
+Only the captured installed Claude Code 2.1.316 form is accepted:
+`ESC ] 52 ; c ; canonical-Base64(UTF-8 text) BEL`. Require canonical padding,
+fatal UTF-8 decode, non-whitespace text and **at most 64 KiB decoded**. Reject
+NUL/non-text controls (allow tab/CR/LF), unsupported selectors, extra fields,
+queries/reads, malformed/oversized bodies, C1/ST/wrapped forms and OSC 8. Never
+read the clipboard, reply with its content, request permissions or install a
+clipboard addon. All OSC 8/52 still reach xterm's consume-only handlers; this
+raw-output observer neither transforms output nor reconstructs a selection.
+
+Correlate authorization at the arrival of the request's **initial ESC**, not at
+xterm's asynchronous parser completion. Preserve that exact grant across WS
+fragments; require it still current/unexpired at BEL before consuming it and
+calling the shared write-only helper. Pre-grant prefixes (including a lone ESC),
+requests completed under another gesture and pre-grant queued renderer output
+cannot borrow a later grant. The new observer buffers at most 87,389 characters
+(5 header + 87,384 encoded); this is NOT a claim that xterm's separate upstream
+OSC buffer has the same limit. It continues consuming an oversized body without
+storing more. Renderer/backlog limits remain unchanged.
+
+**Accepted residual risk:** the user explicitly accepted that untrusted output
+in the **same PTY stream** can submit the first valid request during that short
+window and replace the intended selection with other text. Timing, valid Base64
+and a trusted gesture do **not authenticate content origin**. Idle requests,
+queries, extra writes, expiry and lifecycle cancellation are not waived. Actual
+CLI protocol capture used two fixed UI labels (`Claude`, `Claude Code`), selector
+`c`, BEL and UTF-8 Base64, arriving 32 ms / 1 ms after SGR release (browser OSC
+completion 33 ms / 2 ms). Two local samples are not a latency guarantee; late
+requests fail closed rather than extending the window. Raw evidence remains in
+ignored `.tmp/planner-native-copy/real-cli-reuse-probe.json`; synthesized WS tests
+are regression evidence, not additional real-CLI captures.
+
+CAFF success is shown only after the browser write helper resolves; failure,
+refusal and expiry use fixed notices, never the CLI's copied-character toast or
+untrusted error/payload text. Native selection is never cleared or rebuilt.
+Recheck the same generation, interaction, focus, visibility and connection before
+a denied asynchronous write may use the shared textarea fallback. Its synchronous
+focus changes emit no terminal input; restore only the same still-current view,
+never a toolbar/new room. Later completion has no stale-view notice/focus action.
+An already-issued browser write cannot be cancelled or undone; lifecycle checks
+prevent new admissions/fallbacks, not the completion of a write already issued.
+The user approved combining design and implementation into **one final independent
+review**, rather than a separate pre-implementation design-review gate.
+
+As an alternative, when Claude Code captures the mouse, hold **Shift while
+dragging** to select xterm text (not Claude Code's application-internal selection). On a user
 **keydown**, Ctrl+C or Ctrl+Shift+C with an xterm selection writes only
 `terminal.getSelection()` through `CaffShared.copyTextToClipboard`; prevent the
 browser default and return false to xterm, without sending input or `^C`.
@@ -1288,8 +1343,8 @@ textarea fallback may take it), unless that view has been disposed/replaced.
 Suppress only transient focus reports during copying, so the fallback emits no
 terminal input; ordinary user input/focus reporting is otherwise unchanged. With
 no selection Ctrl+C remains the CLI interrupt; macOS Cmd+C stays on xterm's
-native copy-event path. No clipboard reads or output-driven copy requests are
-added. OSC 52/8 remain consumed below.
+native copy-event path. No clipboard reads are added. The native-copy exception
+above does not alter this keyboard path or enable general OSC 52/8 actions.
 
 On Ctrl+V **keydown** without Shift/Alt/Meta, return false to xterm without
 preventing the browser default. This skips xterm's `^V` control character and
@@ -1297,16 +1352,17 @@ lets the user's native paste event deliver text through xterm's existing paste
 handler, including bracketed-paste mode and newline normalization. Ctrl+Shift+V
 already follows the native paste path; Alt+V and macOS Cmd+V remain unchanged.
 CAFF does not call `navigator.clipboard.readText`, request clipboard permissions,
-install a clipboard addon or accept clipboard requests from CLI output. This
-adds text paste only, with no image fallback or confirmation UI. Existing 8 KiB
+install a clipboard addon or accept ungated clipboard requests from CLI output.
+This adds text paste only, with no image fallback or confirmation UI. Existing 8 KiB
 input chunks and 1 MiB backlog limits are unchanged; oversized paste is not
 promised to arrive in full.
 
 Pinned xterm/addon JS/CSS and all three LICENSE notices are copied to
 `build/public/vendor/planner-terminal` at build time, not into source or a CDN.
 Browser-local xterm scrollback is bounded to 2000 lines and discarded on
-reconnect/room switch. OSC 52 (clipboard) and OSC 8 (hyperlinks) are consumed;
-no web-links/clipboard addon or URL/window action is enabled. Client-side
+reconnect/room switch. OSC 52 (clipboard) and OSC 8 (hyperlinks) are consumed by
+xterm; only the bounded native-copy observer above may write. No
+web-links/clipboard addon or URL/window action is enabled. Client-side
 failure uses browser-valid close code 1000; server policy close codes remain
 as specified in §5. Input stops on termination, but trailing process output is
 drained until exit. The pane wires the user-only per-room wake-up checkbox with a
@@ -1403,7 +1459,7 @@ wording; wake-up tests cover missing-record classification and no unattended ret
 | M1 contract | Clean bound branch/ADR ancestry, independent npm ci, contract cross-check/link check, full existing checks; planner PASS before implementation |
 | M2 host + WS | Red tests before code; first/resume UUID, ambiguous launch failure, cwd/binding/unbound policy, version floor/probe failures, environment secret sentinels (including Windows case variants), retention/reconnect/descendant cleanup; every concurrent PTY/headless/second-page race and cap; shutdown and parent-death uncertainty |
 | M2 security | Wrong/duplicate Host/Origin, missing/null/cross-alias Origin, disabled/wildcard/non-loopback, wrong peer, auth timeout/wrong/stale token/binary/unknown schema, fragments/maxPayload, no pre-auth output/spawn/metadata; invalid input/resize, post-auth second auth, heartbeat/application idle/backpressure, upgrade shutdown |
-| M3 pane | DOM/controller and real Edge fake-CLI checks: input/output, drag + keyboard sizing, resize, close/detach, future-output-only reconnect, switching rooms, narrow overlay/focus, disabled entry, no clipboard/URL side effects; neutral normal-exit/resumed-Stop guidance without recovery controls, CAFF stop vs unsolicited nonzero exit, fixed dark terminal in both CAFF themes and matching viewport background; light-theme ANSI path/trust sample and exit/stop screenshots |
+| M3 pane | DOM/controller and real Edge fake-CLI checks: input/output, drag + keyboard sizing, resize, close/detach, future-output-only reconnect, switching rooms, narrow overlay/focus, disabled entry, no ungated clipboard/URL side effects; native ordinary-drag clipboard readback with default product permissions, bounded OSC rejection and lifecycle/fallback checks; neutral normal-exit/resumed-Stop guidance without recovery controls, CAFF stop vs unsolicited nonzero exit, fixed dark terminal in both CAFF themes and matching viewport background; light-theme ANSI path/trust sample and exit/stop screenshots |
 | M4 scheduler/store | Five positive triggers; goal_completed/unknown/null/retired/unbound/DAG/opt-out negatives; retained and attached terminal suppression, quota boundary/restart/clock rollback, coalescing and >100-item batches, catch-up once, transaction/spawn fault injection, needs-user no Goal write/re-wake, stale Goal/proposal conflicts, exact CLI tool argv, stream failures/truncation/redaction/paging/retention and no secret values |
 | M5 compatibility | Feature-off parity, P1 planner attribution/client credentials and user-only gates, no Goal Runner/DAG/delivery changes; final docs match code; isolated real-CLI checks and Linux CI |
 | M5 repaint correction | Red/green Windows bundled-ConPTY options and missing-file/diagnostic propagation; POSIX unchanged; real PTY Stop/expiry/shutdown/parent-death cleanup with no newly spawned package-path OpenConsole left over; grapheme addon activation/failure/disposal and licensed build assets; existing real Edge fixture at fixed 59 columns with six Chinese/emoji/VS16 lines, repeated erase/redraw, zero isWrapped rows, exact once-per-line including spaces; planner repeats real Claude interaction/delete/resize at candidate SHA |

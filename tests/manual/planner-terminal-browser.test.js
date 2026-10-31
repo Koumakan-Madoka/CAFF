@@ -1,4 +1,6 @@
 // Opt-in real Edge + xterm + node-pty + synthetic session CLI. No real Claude.
+// Run serially with the native-copy suite: both own fixed clipboard fixtures.
+require('./planner-terminal-native-copy.test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
