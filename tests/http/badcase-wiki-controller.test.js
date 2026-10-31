@@ -6,8 +6,8 @@ const { createWikiStore } = require('../../build/server/domain/runtime/badcase-c
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-wiki-api-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const captureRoot = path.join(root, 'capture'), sourceWorktree = path.join(root, 'source');
-  const config = { captureRoot, sourceWorktree, projectId: 'p1' }, store = createWikiStore(config);
-  const options = { captureRoot, projectManager: { listProjects: () => [{ id: 'p1', path: sourceWorktree }] }, host: '127.0.0.1', port: 4313, csrfToken: 'synthetic-csrf' };
+  const config = { globalRoot: captureRoot, sourceWorktree }, store = createWikiStore(config);
+  const options = { globalRoot: captureRoot, sourceWorktree, projectManager: { listProjects: () => [] }, host: '127.0.0.1', port: 4313, csrfToken: 'synthetic-csrf' };
   const controller = createBadcaseWikiController(options);
   const seed = () => {
     const r = store.addTextCases([{ source: { origin: 'http://127.0.0.1:3100', projectId: 'p1', conversationId: 'c1', messageId: 'm1', agentId: 'role-family-gpt' }, role: 'GPT',
@@ -19,7 +19,7 @@ function setup(t) {
     req.headers = { host: '127.0.0.1:4313', origin: 'http://127.0.0.1:4313', 'content-type': 'application/json', 'x-caff-csrf-token': 'synthetic-csrf', ...overrides.headers };
     let result;
     const res = { writeHead(status) { this.status = status; }, end(bytes) { result = { status: this.status, body: JSON.parse(bytes) }; } };
-    const pending = controller({ req, res, pathname: overrides.pathname || '/api/projects/p1/badcase-wiki' + (body === undefined ? '' : '/review') });
+    const pending = controller({ req, res, pathname: overrides.pathname || '/api/wikiskill' + (body === undefined ? '' : '/review') });
     req.end(body === undefined ? undefined : JSON.stringify(body)); assert.equal(await pending, true); return result;
   }
   return { root, config, options, store, seed, invoke };
@@ -29,8 +29,16 @@ const rejects = (promise, code, status = 422) => assert.rejects(promise, e => e.
 test('GET is read-only and returns the local external collection without filesystem paths', async t => {
   const h = setup(t), result = await h.invoke();
   assert.equal(result.status, 200); assert.equal(result.body.revision, 0); assert.deepEqual(result.body.cases, []);
-  assert.equal(fs.existsSync(h.config.captureRoot), false); assert.equal(fs.existsSync(h.config.sourceWorktree), false);
+  assert.equal(fs.existsSync(h.config.globalRoot), false); assert.equal(fs.existsSync(h.config.sourceWorktree), false);
   assert.equal(JSON.stringify(result).includes(h.root), false);
+});
+test('legacy project wiki URLs are not routed; the global endpoint cannot select a root or owning project', async t => {
+  const h = setup(t), controller = createBadcaseWikiController(h.options);
+  assert.equal(await controller({ req: {}, res: {}, pathname: '/api/projects/p1/badcase-wiki' }), false);
+  for (const extra of [{ projectId: 'foreign' }, { globalRoot: h.root }]) {
+    await rejects(h.invoke({ confirmed: true, ...extra }), 'wiki_invalid_input');
+  }
+  assert.equal(fs.existsSync(h.config.globalRoot), false);
 });
 test('draft prose editing and approval persist; stale/reviewed writes cannot overwrite them', async t => {
   const h = setup(t), v = h.seed();
@@ -47,16 +55,17 @@ test('Host/remote/Origin/CSRF gates reject requests before any storage mutation'
   for (const override of [{ remoteAddress: '10.1.1.1' }, { headers: { host: 'evil.test:4313' } },
     { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) {
     await assert.rejects(h.invoke(body, override), e => [403, 404].includes(e.statusCode));
-    assert.equal(fs.existsSync(h.config.captureRoot), false);
+    assert.equal(fs.existsSync(h.config.globalRoot), false);
   }
 });
-test('confirmation/closed schema, unknown scope and membership edits fail without changing the version', async t => {
+test('confirmation/closed schema and membership edits fail without changing the global version', async t => {
   const h = setup(t), v = h.seed();
   const body = { confirmed: true, versionId: v.id, entryId: v.entries[0].id, expectedRevision: 2, decision: 'rejected' };
   for (const confirmed of [false, 'true', 1]) await rejects(h.invoke({ ...body, confirmed }), 'wiki_confirmation_required');
   await rejects(h.invoke({ ...body, captureRoot: 'foreign' }), 'wiki_invalid_input');
   await rejects(h.invoke({ ...body, patch: { caseIds: [] } }), 'wiki_membership_edit_unsupported');
-  await rejects(h.invoke(undefined, { pathname: '/api/projects/p2/badcase-wiki' }), 'wiki_project_missing', 404);
+  assert.equal((await h.invoke()).body.scope, 'global');
+  assert.equal((await h.invoke()).body.projectId, undefined);
   assert.equal(h.store.read().revision, 2);
   const reject = await h.invoke(body); assert.equal(reject.body.versions[0].entries[0].status, 'rejected');
 });
@@ -66,7 +75,7 @@ test('candidate confirmation requires exact hash, revision and explicit user act
   const baseRole = 'Keep the original GPT identity.';
   const candidate = h.store.createCandidate({ versionId: v.id, entryIds: [v.entries[0].id], baseRole, files: [], anchor: {
     caseId: 'case1', checkpointId: 'cp1', originalRoleHash: crypto.createHash('sha256').update('Your private persona instructions:\n' + baseRole).digest('hex') } });
-  const route = { pathname: '/api/projects/p1/badcase-wiki/confirm-candidate' };
+  const route = { pathname: '/api/wikiskill/confirm-candidate' };
   const body = { confirmed: true, candidateId: candidate.id, candidateRoleHash: candidate.candidateRoleHash, expectedRevision: 4 };
   assert.equal((await h.invoke()).body.candidates[0].status, 'draft');
   for (const confirmed of [false, 'true', 1]) await rejects(h.invoke({ ...body, confirmed }, route), 'wiki_confirmation_required');
@@ -84,9 +93,9 @@ test('candidate confirmation requires exact hash, revision and explicit user act
 
 test('corrupt storage and unknown exceptions are sanitized, never returning raw paths', async t => {
   const h = setup(t); h.seed();
-  const file = path.join(h.config.captureRoot, 'wiki/p1/snapshots/000000000002.json'); fs.writeFileSync(file, 'broken');
+  const file = path.join(h.config.globalRoot, 'snapshots/000000000002.json'); fs.writeFileSync(file, 'broken');
   await rejects(h.invoke(), 'wiki_record_invalid', 409);
-  const bad = createBadcaseWikiController({ ...h.options, captureRoot: 'not-absolute' });
+  const bad = createBadcaseWikiController({ ...h.options, globalRoot: 'not-absolute' });
   const req = { method: 'GET', headers: { host: '127.0.0.1:4313' }, socket: { remoteAddress: '127.0.0.1' } };
-  await rejects(bad({ req, res: {}, pathname: '/api/projects/p1/badcase-wiki' }), 'wiki_unavailable', 503);
+  await rejects(bad({ req, res: {}, pathname: '/api/wikiskill' }), 'wiki_unavailable', 503);
 });

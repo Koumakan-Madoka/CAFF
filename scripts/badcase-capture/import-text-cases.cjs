@@ -84,7 +84,7 @@ async function main(args = process.argv.slice(2)) {
   let config;
   try {
     const bytes = fs.readFileSync(args[1]); if (bytes.length > 1024 * 1024) throw Error(); config = JSON.parse(bytes.toString('utf8'));
-    if (!config || Object.keys(config).some(k => !['captureRoot', 'sourceWorktree', 'projectId', 'selections'].includes(k))) throw Error();
+    if (!config || Object.keys(config).some(k => !['globalRoot', 'captureRoot', 'sourceWorktree', 'projectId', 'selections'].includes(k))) throw Error();
   } catch { throw fail('wiki_config_invalid'); }
   const store = createWikiStore(config);
   const result = await importTextCases({ selections: config.selections, confirmed: true, store });

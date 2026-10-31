@@ -5,6 +5,7 @@ const ROUTES = [
   { key: 'personas', file: 'personas.html', route: '/personas.html', primary: '#new-custom-role' },
   { key: 'skills', file: 'skills.html', route: '/skills.html', primary: '#new-skill-button' },
   { key: 'projects', file: 'projects.html', route: '/projects.html', primary: '#new-project-form button[type="submit"]' },
+  { key: 'wikiskill', file: 'wikiskill.html', route: '/wikiskill.html', primary: '[data-wiki-refresh]' },
   { key: 'metrics', file: 'metrics.html', route: '/metrics.html', primary: '#filter-form button[type="submit"]' },
 ];
 

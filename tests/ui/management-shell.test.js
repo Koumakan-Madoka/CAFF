@@ -19,7 +19,7 @@ const VERIFY_UI = fs.readFileSync(path.join(ROOT, 'scripts', 'verify-ui.mjs'), '
 const MANAGEMENT_HELPER = path.join(ROOT, 'public', 'shared', 'management-list.js');
 const MANAGEMENT_VERIFY = path.join(ROOT, 'scripts', 'ui', 'verify-management-pages.mjs');
 
-const ROUTES = ['/', '/personas.html', '/skills.html', '/projects.html', '/metrics.html'];
+const ROUTES = ['/', '/personas.html', '/skills.html', '/projects.html', '/wikiskill.html', '/metrics.html'];
 const PAGES = [
   {
     key: 'personas',

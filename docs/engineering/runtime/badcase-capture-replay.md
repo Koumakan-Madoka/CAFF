@@ -23,21 +23,24 @@
 
 ### WikiSkill 用例、模型归纳与审核
 
-- `scripts/badcase-capture/import-text-cases.cjs --config <绝对路径> --confirmed` 是操作方入口，不部署到 3100。配置仅含 `captureRoot`、`sourceWorktree`、`projectId`、`selections`；每项 selection 仅含用户确认的 `conversationId`、`messageId`、`actual`、`expected`。没有确认参数时不访问 API、不落盘。
+- `scripts/badcase-capture/import-text-cases.cjs --config <绝对路径> --confirmed` 是操作方入口，不部署到 3100。新全局配置含 `globalRoot`（实例的 `<agentDir>/badcase-global`）、`sourceWorktree`（仅用于校验存储在源目录外）、`selections`；不含所属 `projectId`。旧项目配置只为迁移/历史入口兼容保留。每项 selection 仅含用户确认的 `conversationId`、`messageId`、`actual`、`expected`。没有确认参数时不访问 API、不落盘。
 - 导入仅 GET 固定 `http://127.0.0.1:3100` 的会话、分页公共消息和所选消息的 tool-trace API；不打开生产 SQLite、不 POST 标记、不读私信/session 文件、不修改生产库，不转发认证或跟随重定向。只接受终态 `role-family-gpt` assistant 消息，每批最多 20 条，每房间最多扫描 100 页（每页 100 条），单响应最多 2 MiB，单请求 10 秒；越界或不支持直接失败。
 - 纯文本用例保存实际问题、期望、GPT 角色、源消息与轨迹摘录。摘录各最多 32 KiB 并显式标截断，轨迹 API 404 显式标缺失，其他失败不冒充缺失；沿用秘密哨兵拒绝策略，不声称可检测所有秘密。整批成功才本地原子发布，同一来源同内容重提幂等，变化则冲突，不覆盖已确认材料。此入口不封存现场，永远记录 `kind: text-only`、`replayable: false`、`split: train`，不能用于回放评分。
-- 用户确认重放任务来源后，先运行 `assign-wiki-split.cjs --config <绝对路径> --confirmed`，配置仅含 `captureRoot/sourceWorktree/projectId/caseIds`；caseIds 是计划重放任务对应的已导入源用例，不是已回放的证明。固定种子 `wikiskill-holdout-v1` 对源 ID 排序哈希，≥6条取 `round(N/3)` 条留出，其余训练；不足6条不建独立测试集并显式披露。未选作重放任务来源的纯文本用例仍为训练集；为满足 wiki 的≥10条训练要求，须在扣除留出来源后仍有足够材料。
+- 用户确认重放任务来源后，先运行 `assign-wiki-split.cjs --config <绝对路径> --confirmed`，新全局配置含 `globalRoot/sourceWorktree/caseIds`；caseIds 是计划重放任务对应的已导入源用例，不是已回放的证明。固定种子 `wikiskill-holdout-v1` 对源 ID 排序哈希，≥6条取 `round(N/3)` 条留出，其余训练；不足6条不建独立测试集并显式披露。未选作重放任务来源的纯文本用例仍为训练集；为满足 wiki 的≥10条训练要求，须在扣除留出来源后仍有足够材料。
 - 划分写入外部 wiki 快照并冻结，同一集合不同顺序重提幂等，不允许看结果后换种子/增删任务重划。曾进入任一 wiki 版本的用例不能后来伪称未见测试集；已标为 test 的来源在生成入口读取 Key 前被拒绝，存储层也拒绝其混入 draft。重新导入不把 test 改回 train，源用例仍 `text-only/replayable:false`；页面只展示计划划分，不把它冒充可回放数量。若最终有任务不支持，后续批量报告须披露真实可回放数，不重划来隐藏缺口。
-- wiki 自包含文本存于源 worktree 外的 `<captureRoot>/wiki/<projectId>/snapshots/`，不把文本放进 checkpoint CAS。复用项目 writer lock，每次变更追加带 checksum 的不可覆盖快照；重启读取最新完整快照，损坏拒绝而不退回旧审核状态。该目录不属于 checkpoint TTL/配额或 orphan GC 的删除范围，也不算作 CAS 容量。
+- wiki 与用例是全局对象：存于源 worktree 外 `<agentDir>/badcase-global/snapshots/`，记录 `scope: global`，没有所属项目；用例只在 `source` 中记录来源项目/房间/消息。API 不依赖项目存在或当前激活项目。复用 writer-lock 原语在独立根下取固定锁，每次变更追加带 checksum 的不可覆盖快照；重启读取最新完整快照，损坏拒绝而不退回旧审核状态。不属于 checkpoint CAS、TTL/配额或 orphan GC 的删除范围。
+- `migrate-global-wiki.cjs --config <绝对路径> --confirmed` 显式迁移已有本地集合，不访问3100或模型。配置含 `globalRoot/sourceWorktree/legacy`，legacy 含旧 `captureRoot/sourceWorktree/projectId`。保留全部用例、版本、条目ID/文字/审核状态、时间与固定划分；源快照不修改，目标记录迁移来源 checksum。相同源重复迁移无写入，不覆盖迁移后的审核；只支持一个既有集合迁入空全局存储，多集合合并直接拒绝。
 - `wiki-store.ts` 的 draft 接口校验所选训练用例关联、每用例至少归入一条或有明确未归类原因；未知用例/遗漏拒绝。条目含标题、失败模式、症状、根因假设、≤300 Unicode 字符的 prompt 准则、关联用例 ID 和 `draft/approved/rejected` 状态。模型输出不能指定批准状态；每次重新生成创建新版本，不覆盖旧版本。
-- `generate-wiki.cjs --config <绝对路径> --confirmed --output <新的绝对路径>` 是操作方模型归纳入口，配置只含 `captureRoot`、`sourceWorktree`、`projectId`、明确所选的 `caseIds` 和沿用 S3 的固定 `image` 身份。每次1–20条、输入最多1 MiB，只投影所选 GPT 训练用例的问题/期望/消息/轨迹摘录与截断状态；测试集、其他用例、源认证配置不发送。无确认、未知或非训练用例在读取 Key/调用模型前拒绝。模型内容为不可信数据，宿主验证字段、≤300字及全用例覆盖后才追加新版本；不自动重试、补写遗漏或批准条目。
+- `generate-wiki.cjs --config <绝对路径> --confirmed --output <新的绝对路径>` 是操作方模型归纳入口，新全局配置只含 `globalRoot`、`sourceWorktree`、明确所选的 `caseIds` 和沿用 S3 的固定 `image` 身份。每次1–20条、输入最多1 MiB，只投影所选 GPT 训练用例的问题/期望/消息/轨迹摘录与截断状态；测试集、其他用例、源认证配置不发送。无确认、未知或非训练用例在读取 Key/调用模型前拒绝。模型内容为不可信数据，宿主验证字段、≤300字及全用例覆盖后才追加新版本；不自动重试、补写遗漏或批准条目。
 - 归纳只调用官方 `deepseek/deepseek-v4-flash` 一次，复用 D4 的只读 Key 来源与 `runDirectDockerTask` 一次性容器隔离，不在宿主推理，不挂载生产 DB、凭据目录、Docker socket 或真实仓库；仅输入一个文本 JSON 和固定 worker，无 agent 工具。容器最长120秒、响应最多512 KiB，非200/截断/无效JSON失败。输出 JSONL 记录模型、耗时、成败、可得用量、容器清理/隔离投影与新版本ID；基础设施未提供调用记录为 null，不冒称零调用。CLI 保留现有 Linux Docker 宿主要求，Windows 须由受信操作方沿用 S3 的 Linux 执行方式，页面不提供模型/Key/镜像 JSON 配置。
-- `projects.html` 选择项目后可展开“WikiSkill 条目审核”，查看历次版本、归类/未归类原因、关联用例及摘录，编辑 draft 文字并通过/驳回；无需填写 JSON。`GET /api/projects/:id/badcase-wiki` 只读，`POST .../review` 沿用本地管理 Host/Origin/CSRF 门禁与显式确认。以当前 revision 防止旧页面覆盖新状态，审核后的条目冻结；重分组需重新生成，最小编辑器不改关联用例。页面加载、保存、审核均不调用模型、不生成/评测候选、不改生产角色；保存结果未知时先刷新核对，不自动重试。
-- `create-wiki-candidate.cjs --config <绝对路径> --confirmed` 是无模型的候选生成入口。配置含 `captureRoot/sourceWorktree/projectId/versionId/entryIds/request`；request 必须是同项目 GPT 的封存关联。复用 sealed-direct 校验并从封存中提取原角色，不读取当前生产角色、不补造缺材料。只选一个 wiki 版本内的 approved 条目，候选严格等于原角色原文 + 固定标题/项目符号包装的所选准则，不追加用例期望、标题、症状或根因文字。候选、原文、追加段、diff、角色 hash、条目与封存锚点、文件 hash 一起保存在外部 wiki 快照中，初始为 draft；同内容重提幂等。
+- 独立主导航 `/wikiskill.html` 提供全局用例、Wiki 审核、候选、对照结果四区。当前已接通前两区：展示全部用例（包括留出/未归类）、来源与纯文本/可回放类型，历次版本、归类覆盖，编辑 draft 并通过/驳回。候选/结果区明确提示尚未接通新全局目标，不将旧角色候选当作本轮交付；`projects.html` 移除 wiki/离线评测控件，只保留项目采集目录与开关。
+- `GET /api/wikiskill` 只读，`POST /api/wikiskill/review` 沿用本地管理 Host/Origin/CSRF 门禁与显式确认；不接受客户端选择项目或存储根。以当前 revision 防止旧页面覆盖新状态，审核后的条目冻结；重分组需重新生成，最小编辑器不改关联用例。页面加载、保存、审核均不调用模型、不生成/评测候选、不改生产角色；保存结果未知时先刷新核对，不自动重试。旧项目 wiki HTTP 路由不再提供。
+- 以下角色候选/批量机制是已有兼容基础，不是新版 D12 全局目标的完成声明。新版须只替换一个声明的全局系统提示词片段或工具 description，其余配置不变；正在接线，页面不暴露旧角色确认入口。
+- `create-wiki-candidate.cjs --config <绝对路径> --confirmed` 是旧版无模型的角色候选生成入口。配置含 `captureRoot/sourceWorktree/projectId/versionId/entryIds/request`；request 必须是同项目 GPT 的封存关联。复用 sealed-direct 校验并从封存中提取原角色，不读取当前生产角色、不补造缺材料。只选一个 wiki 版本内的 approved 条目，候选严格等于原角色原文 + 固定标题/项目符号包装的所选准则，不追加用例期望、标题、症状或根因文字。候选、原文、追加段、diff、角色 hash、条目与封存锚点、文件 hash 一起保存在外部 wiki 快照中，初始为 draft；同内容重提幂等。
 - 准则的泄漏检查是**字面启发式，不是语义检测**：拒绝包含已导入用例的完整非空期望/非空行，或与期望/用例文件共享任意连续≥8个 Unicode 字符；完整非空文件内容即使不足8字也拒绝。生成时只读扫描封存锚点文件；比较入口对每个实际封存输入再次扫描文件，并对当前已导入的全部期望重验。参考答案不发给被测模型；不宣称识别短于8字且非完整值/行的片段、改写或所有秘密。失败只报通用泄漏码，不打印命中的参考内容。
-- 页面在“GPT 候选 prompt”显示候选、完整原/候选角色、diff 与 SHA256；用户明确确认才通过 `POST .../confirm-candidate` 冻结确认状态，绑定候选 ID/hash 和当前 revision。仍沿用本地管理门禁，旧 revision、改写候选或未确认拒绝；确认本身不启动评测、不修改生产 prompt。读取旧版无 candidates 的快照只在内存补空数组，不改原文件。
+- 旧角色候选的确认基础仍绑定候选 ID/hash 与当前 revision，并重验批准状态和泄漏；确认本身不启动评测、不修改生产 prompt。新全局页尚不提供此旧角色操作；全局目标的确认与评测接线另行完成。读取旧版无 candidates 的快照只在内存补空数组，不改原文件。
 - `compare-sealed` 可用 `wikiCandidate: { sourceWorktree, candidateId }` 替代 `candidateRole`；两者不能混用。此模式在读取 Key/接触 Docker 前要求持久化确认、所选来源仍 approved、候选内容/hash 可重建、当前封存的原角色 hash 与候选锚点一致；不同角色版本明确拒绝，不对各用例偷偷拼接不同候选。每轮继续重验，并在 plan/results summary 记录候选 ID、wiki/条目与候选角色 hash。旧的手写 `candidateRole` 入口保留兼容，但不代表获得 wiki 审核/确认。
-- 已只读导入用户确认的16条真实历史；保持13条训练、3条留出（#4/#10/#14），由训练集真实生成5条 wiki 草稿，审核页面可查。中性同类任务的原角色基线仍在筛选，不能把字面评分误伤当作历史失败已复现；尚未完成真实候选确认或正式批量 A/B，AC5–AC7 不因接口/基线存在而自动通过。
+- 已只读导入用户确认的16条真实历史；保持13条训练、3条留出（#4/#10/#14），由训练集真实生成5条 wiki 草稿。用户已批准方案A的7道题：R1/#1、R2/#4、R9/#2三道汇报复现题，v6 R3/#6接口膨胀探针，#10/#14/#16三道控制题；不再继续筛题，不重归纳wiki。只复现了汇报难懂一类，不能把字面误伤当复现；尚未完成全局目标候选或正式 A/B，AC5–AC7 不因接口存在而自动通过。
 
 ### 可回放子集与对比入口
 
@@ -55,7 +58,7 @@
 - 单一候选不得使用留出来源生成的 wiki；各用例必须与候选的原角色 hash 一致。对**全部**用例先预检，最后一条角色不匹配/泄漏也在任何 Key/模型使用前阻断；初始不支持用例明确列出并保留分母，其余可支持用例可继续执行。默认原/候选各3次，沿用单例1–20次、超时和 D5 容器隔离，不给批量入口新增网络/挂载权限；固定官方 DeepSeek 模型与 D4 Key 来源，批内只读 Key 一次，仅以环境变量注入各一次性容器。
 - 每条仍复用 `runComparison`。每个用例执行前重验整体计划，每次模型运行仍重验封存和固定分发；用例间 runtimeHash 变化在后续模型执行前拒绝。基础设施或模型 error 停止余下批次，不重试；普通任务 fail 不阻断其余轮次。JSONL 保留带来源 ID/分组的逐调用、逐轮、逐用例和整批汇总；异常中断保留已知事件，未得到完整证据的活动槽位记基础设施 error 并标调用记录未知，不补造成功或零调用。
 - 逐用例、总体、训练、留出分别报告原/候选的 planned/attempted/pass/fail/error/notRun。`passRate = pass/(pass+fail)` 仅对可评分项，零分母为 null/N/A；同时保存 `plannedPassRate = pass/planned`，CLI 明示通过/计划、失败、错误、未运行及可评分分母，不能用剔除错误假装整体提分。`completed` 只表示所有计划轮次完成，不等于所有任务通过。准备支持少于6条、wiki训练少于10条会显式披露，不因数量字段存在就满足验收。
-- 该批量入口目前为操作方 CLI，不提供网页一键启动或结果库；网页用于 wiki/候选审核，输出 JSONL 与 CLI/JSON 汇总作为结果材料。目前仅合成驱动验证，不宣称真实调用、任务已复现、候选提分或用户接受。
+- 该旧批量入口目前为操作方 CLI，不提供网页一键启动或结果库；新全局页面结果区仍待接通。输出 JSONL 与 CLI/JSON 汇总作为结果材料。旧链仅合成驱动验证，不冒称新版全局目标已真实运行或用户接受。
 
 ### 模型与凭据
 

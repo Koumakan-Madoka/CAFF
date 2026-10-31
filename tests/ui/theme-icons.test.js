@@ -9,7 +9,7 @@ const test = require('node:test');
 const { JSDOM } = require('jsdom');
 
 const ROOT = path.join(__dirname, '..', '..');
-const PAGE_FILES = ['index.html', 'personas.html', 'skills.html', 'projects.html', 'metrics.html'];
+const PAGE_FILES = ['index.html', 'personas.html', 'skills.html', 'projects.html', 'metrics.html', 'wikiskill.html'];
 const THEME_JS_PATH = path.join(ROOT, 'public', 'shared', 'theme.js');
 const ICONS_JS_PATH = path.join(ROOT, 'public', 'shared', 'icons.js');
 const ICON_SPRITE_PATH = path.join(ROOT, 'public', 'assets', 'icons.svg');

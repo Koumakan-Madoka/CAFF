@@ -1,0 +1,13 @@
+body.management-app[data-page="wikiskill"] .wikiskill-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem;
+  scroll-behavior: smooth;
+}
+.wikiskill-content #badcase-wiki-panel { max-width: 72rem; margin: auto; }
+.wikiskill-content .stack-card { margin-block: 1rem; overflow-wrap: anywhere; min-width: 0; }
+.wikiskill-content details { border-bottom: 1px solid var(--border-color, #8885); padding-block: .6rem; }
+.wikiskill-content summary { cursor: pointer; overflow-wrap: anywhere; }
+.wikiskill-content select, .wikiskill-content textarea { max-width: 100%; }
+.wikiskill-content .button-row a { padding: .5rem; }

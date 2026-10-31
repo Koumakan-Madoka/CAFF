@@ -1,6 +1,7 @@
-// Small, operator-owned WikiSkill collection. Uses the existing capture writer
-// lock and external capture root, never the chat/production database. Every
-// mutation publishes a new immutable snapshot; reviewed entries are frozen.
+// Operator-owned WikiSkill collection, never the chat/production database.
+// globalRoot selects the project-independent store. Legacy captureRoot/projectId
+// remains available to read/migrate existing collections and old replay records.
+// Every mutation publishes an immutable snapshot; reviewed entries are frozen.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -57,16 +58,24 @@ function textCase(value: any) {
 }
 
 export function createWikiStore(options: any) {
-  if (!options || !path.isAbsolute(options.captureRoot || '') || !path.isAbsolute(options.sourceWorktree || '')) throw fail('wiki_root_required');
-  const captureRoot = path.resolve(options.captureRoot), source = path.resolve(options.sourceWorktree), projectId = id(options.projectId);
-  const relative = path.relative(source, captureRoot);
-  if (!relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep))) throw fail('wiki_storage_inside_source');
+  const global = options?.globalRoot !== undefined;
+  const root = global ? options.globalRoot : options?.captureRoot;
+  if (!options || !path.isAbsolute(root || '') || !path.isAbsolute(options.sourceWorktree || '')) throw fail('wiki_root_required');
+  if (global && options.projectId !== undefined) throw fail('wiki_global_project_unsupported');
+  const captureRoot = path.resolve(root), projectId = global ? null : id(options.projectId);
+  const sources = [options.sourceWorktree, ...(options.sourceWorktrees || [])];
+  for (const source of sources) {
+    if (!path.isAbsolute(source)) throw fail('wiki_root_required');
+    const relative = path.relative(path.resolve(source), captureRoot);
+    if (!relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep))) throw fail('wiki_storage_inside_source');
+  }
   // Directory ancestors are same-OS-user trusted, as in capture-store; this is
   // not a filesystem sandbox or support for symlink/path-swap configurations.
   // Wiki records embed their own text, not CAS references. Keep them outside
   // the checkpoint inventory: existing expiry/GC only owns projects/<id>/CAS.
-  const directory = path.join(captureRoot, 'wiki', projectId, 'snapshots');
-  const fresh = () => ({ schemaVersion: 1, projectId, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replaySplit: null });
+  const directory = global ? path.join(captureRoot, 'snapshots') : path.join(captureRoot, 'wiki', projectId!, 'snapshots');
+  const identity = global ? { scope: 'global' } : { projectId };
+  const fresh = () => ({ schemaVersion: 1, ...identity, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replaySplit: null });
   function read(): any {
     let names: string[];
     try { names = fs.readdirSync(directory); }
@@ -83,7 +92,8 @@ export function createWikiStore(options: any) {
       } finally { fs.closeSync(fd); }
       if (bytes.length > MAX_BYTES) throw Error();
       const envelope = JSON.parse(bytes.toString('utf8')), record = envelope.record;
-      if (envelope.schemaVersion !== 1 || !record || record.schemaVersion !== 1 || record.projectId !== projectId
+      if (envelope.schemaVersion !== 1 || !record || record.schemaVersion !== 1
+        || (global ? record.scope !== 'global' || record.projectId !== undefined : record.projectId !== projectId)
         || record.revision !== Number(latest.slice(0, 12)) || !Number.isSafeInteger(record.revision) || record.revision < 1
         || !Array.isArray(record.cases) || !Array.isArray(record.versions) || envelope.checksum !== hash(JSON.stringify(record))) throw Error();
       // Backward-compatible read of snapshots written before candidate support.
@@ -109,7 +119,9 @@ export function createWikiStore(options: any) {
     finally { try { fs.unlinkSync(temp); } catch {} }
   }
   function change(action: (state: any) => { changed: boolean; value: any }) {
-    return withProjectWriteLock(captureRoot, projectId, () => {
+    // Reuse the existing lock primitive under this independent root; the fixed
+    // lock key is not a project association and is never stored in wiki data.
+    return withProjectWriteLock(captureRoot, global ? 'global-wiki' : projectId!, () => {
       const state = read(), result = action(state);
       if (result.changed) { state.revision++; publish(state); }
       return { value: result.value, revision: state.revision };
@@ -117,6 +129,21 @@ export function createWikiStore(options: any) {
   }
   return {
     read,
+    migrateProjectCollection(legacyOptions: any) {
+      if (!global || legacyOptions?.globalRoot !== undefined) throw fail('wiki_migration_invalid');
+      const legacy = createWikiStore(legacyOptions).read();
+      if (!legacy.revision) throw fail('wiki_migration_empty');
+      const migration = { projectId: legacy.projectId, revision: legacy.revision, checksum: hash(JSON.stringify(legacy)) };
+      return change(state => {
+        if (state.migration?.checksum === migration.checksum) return { changed: false, value: { migrated: false, migration } };
+        // This MVP migrates one existing collection into a fresh global store.
+        // Merging unrelated histories/ID collisions is explicitly unsupported.
+        if (state.revision !== 0) throw fail('wiki_migration_conflict');
+        const { projectId: oldProject, revision: oldRevision, ...content } = legacy;
+        Object.assign(state, content, identity, { revision: oldRevision, migration });
+        return { changed: true, value: { migrated: true, migration } };
+      });
+    },
     addTextCases(values: any[]) {
       if (!Array.isArray(values) || !values.length || values.length > 20) throw fail('wiki_invalid_input');
       const normalized = values.map(textCase);

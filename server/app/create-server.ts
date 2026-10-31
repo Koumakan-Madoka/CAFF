@@ -1322,7 +1322,8 @@ export function createServerApp(options: any = {}) {
       },
     }),
     createBadcaseWikiController({
-      captureRoot: badcaseCapture.captureRoot,
+      globalRoot: path.join(agentDir, 'badcase-global'),
+      sourceWorktree: initialProjectDir,
       projectManager, host, port, csrfToken: providerConfigCsrfToken,
       getAuthority() {
         const address = server && server.address();

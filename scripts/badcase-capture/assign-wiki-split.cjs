@@ -10,7 +10,7 @@ function main(args = process.argv.slice(2)) {
   try {
     if (!fs.lstatSync(args[1]).isFile() || fs.statSync(args[1]).size > 1024 * 1024) throw Error();
     config = JSON.parse(fs.readFileSync(args[1], 'utf8'));
-    if (!config || Object.keys(config).some(k => !['captureRoot', 'sourceWorktree', 'projectId', 'caseIds'].includes(k))) throw Error();
+    if (!config || Object.keys(config).some(k => !['globalRoot', 'captureRoot', 'sourceWorktree', 'projectId', 'caseIds'].includes(k))) throw Error();
   } catch { throw fail('wiki_config_invalid'); }
   const plan = createWikiStore(config).setReplaySplit({ caseIds: config.caseIds });
   process.stdout.write(JSON.stringify(plan) + '\n');

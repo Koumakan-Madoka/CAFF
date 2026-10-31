@@ -19,28 +19,24 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_candidate_approved_required: 409, wiki_candidate_confirmation_required: 409, wiki_candidate_role_mismatch: 409,
   };
   return async ({ req, res, pathname }: any) => {
-    const match = pathname.match(/^\/api\/projects\/([^/]+)\/badcase-wiki(?:\/(review|confirm-candidate))?$/);
-    if (!match || (match[2] ? req.method !== 'POST' : req.method !== 'GET')) return false;
-    if (match[2]) guard.assertMutation(req); else guard.assertRead(req);
-    let projectId: string;
-    try { projectId = decodeURIComponent(match[1]); } catch { throw issue('wiki_project_missing', 404); }
-    const project = /^[A-Za-z0-9_-]{1,128}$/.test(projectId)
-      && options.projectManager?.listProjects().find((p: any) => p.id === projectId);
-    if (!project) throw issue('wiki_project_missing', 404);
+    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate))?$/);
+    if (!match || (match[1] ? req.method !== 'POST' : req.method !== 'GET')) return false;
+    if (match[1]) guard.assertMutation(req); else guard.assertRead(req);
     let input;
-    if (match[2]) {
+    if (match[1]) {
       input = await readRequestJson(req, { bodyLimit: 64 * 1024 });
       if (!input || typeof input !== 'object' || Array.isArray(input)
-        || Object.keys(input).some(k => !(match[2] === 'confirm-candidate'
+        || Object.keys(input).some(k => !(match[1] === 'confirm-candidate'
           ? ['confirmed', 'candidateId', 'candidateRoleHash', 'expectedRevision']
           : ['confirmed', 'versionId', 'entryId', 'expectedRevision', 'patch', 'decision']).includes(k))) throw issue('wiki_invalid_input');
       if (input.confirmed !== true) throw issue('wiki_confirmation_required');
       const { confirmed, ...mutation } = input; input = mutation;
     }
     try {
-      const store = createWikiStore({ captureRoot: options.captureRoot, sourceWorktree: project.path, projectId });
-      if (match[2] === 'review') store.review(input);
-      if (match[2] === 'confirm-candidate') store.confirmCandidate(input);
+      const store = createWikiStore({ globalRoot: options.globalRoot, sourceWorktree: options.sourceWorktree,
+        sourceWorktrees: options.projectManager?.listProjects().map((p: any) => p.path) || [] });
+      if (match[1] === 'review') store.review(input);
+      if (match[1] === 'confirm-candidate') store.confirmCandidate(input);
       sendJson(res, 200, { ...store.read(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
