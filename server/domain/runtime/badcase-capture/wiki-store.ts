@@ -9,6 +9,7 @@ import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
 import { buildWikiCandidate, resolveWikiCandidate } from './wiki-candidate';
 import { planReplaySplit } from './wiki-split';
+import { validateSealRequest } from './sealed-case';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -75,7 +76,7 @@ export function createWikiStore(options: any) {
   // the checkpoint inventory: existing expiry/GC only owns projects/<id>/CAS.
   const directory = global ? path.join(captureRoot, 'snapshots') : path.join(captureRoot, 'wiki', projectId!, 'snapshots');
   const identity = global ? { scope: 'global' } : { projectId };
-  const fresh = () => ({ schemaVersion: 1, ...identity, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replaySplit: null });
+  const fresh = () => ({ schemaVersion: 1, ...identity, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replayCases: [] as any[], replaySplit: null });
   function read(): any {
     let names: string[];
     try { names = fs.readdirSync(directory); }
@@ -99,6 +100,10 @@ export function createWikiStore(options: any) {
       // Backward-compatible read of snapshots written before candidate support.
       if (record.candidates === undefined) record.candidates = [];
       if (!Array.isArray(record.candidates)) throw Error();
+      // Do not normalize legacy project records with a new field: their
+      // migration checksum predates replay registration and must stay stable.
+      if (record.replayCases === undefined && global) record.replayCases = [];
+      if (record.replayCases !== undefined && !Array.isArray(record.replayCases)) throw Error();
       if (record.replaySplit === undefined) record.replaySplit = null;
       if (record.replaySplit !== null && (typeof record.replaySplit !== 'object' || Array.isArray(record.replaySplit))) throw Error();
       return record;
@@ -164,6 +169,51 @@ export function createWikiStore(options: any) {
         return { changed: created > 0, value: { created, cases: batch } };
       });
       return { ...result.value, revision: result.revision };
+    },
+    // Trusted operator registration, not a user report and not a claim that a
+    // historical text-only source had a checkpoint. The CLI verifies the sealed
+    // closure/rules first; every evaluation must verify it again before launch.
+    addReplayCase(input: any) { return this.addReplayCases([input])[0]; },
+    addReplayCases(inputs: any[]) {
+      if (!global) throw fail('wiki_global_required');
+      if (!Array.isArray(inputs) || !inputs.length || inputs.length > 20) throw fail('wiki_invalid_input');
+      const contents = inputs.map(input => {
+        shape(input, ['sourceCaseId', 'category', 'task', 'fixture', 'request', 'rules', 'checkpointHash']);
+        const sourceCaseId = id(input.sourceCaseId), task = text(input.task, 32768);
+        if (!['reproduction', 'probe', 'control'].includes(input.category)) throw fail('wiki_invalid_input');
+        shape(input.fixture, ['commit', 'sourceCommit', 'sourceSubdirectory', 'filesHash']);
+        const fixture = structuredClone(input.fixture);
+        if (![fixture.commit, fixture.sourceCommit].every(v => typeof v === 'string' && /^[a-f0-9]{40}$/.test(v))
+          || typeof fixture.filesHash !== 'string' || !/^[a-f0-9]{64}$/.test(fixture.filesHash)
+          || typeof input.checkpointHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.checkpointHash)) throw fail('wiki_invalid_input');
+        id(fixture.sourceSubdirectory);
+        const request = validateSealRequest(structuredClone(input.request));
+        const rules = structuredClone(input.rules);
+        if (!rules || !['read-only-files-v1', 'file-literals-v1'].includes(rules.kind)) throw fail('wiki_invalid_input');
+        return { sourceCaseId, category: input.category, task, fixture, request, rules, checkpointHash: input.checkpointHash };
+      });
+      return change(state => {
+        if (!state.replaySplit) throw fail('wiki_replay_split_required');
+        let changed = false;
+        const savedCases = contents.map(content => {
+          const { sourceCaseId, request } = content;
+          const source = state.cases.find((c: any) => c.id === sourceCaseId);
+          if (!source) throw fail('wiki_unknown_case');
+          const existing = state.replayCases.find((c: any) => c.sourceCaseId === sourceCaseId);
+          if (existing) {
+            if (existing.contentHash !== hash(JSON.stringify(content))) throw fail('wiki_replay_conflict');
+            return existing;
+          }
+          if (state.replayCases.some((c: any) => c.request.captureRoot === request.captureRoot
+            && c.request.association.projectId === request.association.projectId
+            && c.request.association.checkpointId === request.association.checkpointId)) throw fail('wiki_replay_conflict');
+          const saved = { id: `replay-${hash(JSON.stringify(content))}`, kind: 'sealed-replay', replayable: true,
+            ...content, contentHash: hash(JSON.stringify(content)), split: source.split, source: source.source, createdAt: new Date().toISOString() };
+          state.replayCases.push(saved); changed = true;
+          return saved;
+        });
+        return { changed, value: savedCases };
+      }).value;
     },
     setReplaySplit(input: any) {
       shape(input, ['caseIds']);

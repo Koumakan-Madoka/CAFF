@@ -35,6 +35,16 @@ test('load GETs only the global endpoint; coverage and ALL source cases includin
   assert.equal(h.el('cases').children.length, 2); assert.equal(h.root.querySelector('img,script'), null);
   assert.equal(h.el('versions').options.length, 2); assert.equal(h.el('versions').value, 'wiki-3'); assert.equal(h.field('guideline').disabled, false);
 });
+test('sealed representative tasks show their split/category/commit without pretending the historical text has a worktree', async t => {
+  const h = setup(t, () => ({ ...data(), replayCases: [{ sourceCaseId: 'held-out', task: '<img src=x> Write steps.', category: 'reproduction', split: 'test', fixture: { commit: 'fixed-fixture-commit' }, request: { association: { checkpointId: 'sealed-checkpoint' } } }] }));
+  await h.panel.load();
+  assert.match(h.el('case-count').textContent, /2 条来源用例，1 条同类任务封存/);
+  assert.match(h.el('cases').textContent, /同类任务 · 可回放封存 · 汇报复现题 · 留出/);
+  assert.match(h.el('cases').textContent, /不是原历史现场/);
+  assert.match(h.el('cases').textContent, /fixed-fixture-commit.*sealed-checkpoint/);
+  assert.match(h.el('cases').textContent, /纯文本 · 缺现场/);
+  assert.equal(h.root.querySelector('img'), null); assert.equal(h.posts().length, 0);
+});
 test('save is draft only; approval requires confirmation and freezes the saved prose', async t => {
   const h = setup(t); await h.panel.load(); h.field('guideline').value = '逐项核验后报告。'; await h.click('save');
   assert.equal(h.posts().length, 1); assert.equal(h.posts()[0].body.expectedRevision, 3); assert.equal(h.posts()[0].body.decision, undefined);

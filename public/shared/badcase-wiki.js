@@ -36,7 +36,7 @@
     }
     function render() {
       el('versions').replaceChildren(); el('coverage').replaceChildren(); el('entries').replaceChildren(); el('cases').replaceChildren();
-      el('case-count').textContent = state ? `全局共 ${state.cases.length} 条用例` : '尚未读取';
+      el('case-count').textContent = state ? `全局共 ${state.cases.length} 条来源用例，${(state.replayCases || []).length} 条同类任务封存` : '尚未读取';
       const split = state?.replaySplit;
       el('split-info').textContent = split ? `已固定重放任务来源划分：训练 ${split.trainCaseIds.length} 条，留出 ${split.testCaseIds.length} 条${split.insufficientSamples ? '（不足6条，无独立留出集）' : ''}。留出来源不进入 wiki 生成；这不代表已产生可回放封存。` : '尚未固定重放任务来源划分。';
       if (!state) return;
@@ -46,6 +46,12 @@
         const details = document.createElement('details'), source = c.source || {};
         details.append(node('summary', `${c.id} · ${c.replayable === true ? '可回放' : '纯文本 · 缺现场'} · ${c.split === 'test' ? '留出' : '训练'}`));
         details.append(node('p', `来源项目：${source.projectId || '未绑定'}；房间：${source.conversationId || '未记录'}；消息：${source.messageId || '未记录'}`));
+        for (const replay of (state.replayCases || []).filter(r => r.sourceCaseId === c.id)) {
+          const category = { reproduction: '汇报复现题', probe: '接口膨胀探针', control: '控制题' }[replay.category] || replay.category;
+          details.append(node('p', `同类任务 · 可回放封存 · ${category} · ${replay.split === 'test' ? '留出' : '训练'}；不是原历史现场。`));
+          details.append(node('p', `任务：${replay.task}`));
+          details.append(node('p', `固定提交：${replay.fixture.commit}；检查点：${replay.request.association.checkpointId}`));
+        }
         const content = node('pre', `实际问题：${c.actual}\n期望行为：${c.expected}\n消息${c.messageTruncated ? '（截断）' : ''}：\n${c.message}\n轨迹${c.traceTruncated ? '（截断）' : ''}（${c.traceState}）：\n${c.traceExcerpt}`);
         content.style.whiteSpace = 'pre-wrap'; content.style.overflowWrap = 'anywhere'; details.append(content); el('cases').append(details);
       }

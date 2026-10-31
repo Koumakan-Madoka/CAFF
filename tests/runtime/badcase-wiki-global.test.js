@@ -53,6 +53,20 @@ test('migration retains the frozen holdout; a repeated import cannot reset it to
   h.global.addTextCases(values);
   assert.deepEqual(h.global.read().cases.filter(c => c.split === 'test').map(c => c.id).sort(), [...split.testCaseIds].sort());
 });
+test('pre-registration legacy migration checksum stays stable when optional replay records are absent', t => {
+  const h = setup(t); h.seed(h.legacy);
+  const file = path.join(h.legacyOptions.captureRoot, 'wiki/old-project/snapshots/000000000002.json');
+  const envelope = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete envelope.record.replayCases;
+  envelope.checksum = crypto.createHash('sha256').update(JSON.stringify(envelope.record)).digest('hex');
+  fs.writeFileSync(file, JSON.stringify(envelope) + '\n');
+  const before = treeDigest(h.legacyOptions.captureRoot);
+  assert.equal(h.global.migrateProjectCollection(h.legacyOptions).value.migrated, true);
+  assert.equal(h.global.read().migration.checksum, envelope.checksum);
+  assert.deepEqual(h.global.read().replayCases, []);
+  assert.equal(h.global.migrateProjectCollection(h.legacyOptions).value.migrated, false);
+  assert.deepEqual(treeDigest(h.legacyOptions.captureRoot), before);
+});
 test('global migration refuses unrelated existing histories, empty sources, or malformed snapshots', t => {
   const h = setup(t);
   assert.throws(() => h.global.migrateProjectCollection(h.legacyOptions), code('wiki_migration_empty'));
