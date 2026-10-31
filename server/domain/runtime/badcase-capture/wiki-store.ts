@@ -45,18 +45,62 @@ function entry(value: any, allowed: Set<string>) {
 }
 function textCase(value: any) {
   shape(value, ['source', 'role', 'actual', 'expected', 'message', 'traceExcerpt', 'traceState', 'messageTruncated', 'traceTruncated']);
-  shape(value.source, ['origin', 'projectId', 'conversationId', 'messageId', 'agentId']);
+  shape(value.source, ['origin', 'projectId', 'conversationId', 'conversationTitle', 'messageId', 'agentId']);
   const s = value.source;
   if (s.origin !== 'http://127.0.0.1:3100' || s.agentId !== 'role-family-gpt' || value.role !== 'GPT') throw fail('wiki_source_invalid');
-  const source = { origin: s.origin, projectId: s.projectId === null ? null : id(s.projectId), conversationId: id(s.conversationId), messageId: id(s.messageId), agentId: s.agentId };
+  const source = { origin: s.origin, projectId: s.projectId === null ? null : id(s.projectId), conversationId: id(s.conversationId),
+    conversationTitle: s.conversationTitle === undefined ? '' : text(s.conversationTitle, 1024, true), messageId: id(s.messageId), agentId: s.agentId };
   if (!['available', 'missing'].includes(value.traceState) || typeof value.messageTruncated !== 'boolean' || typeof value.traceTruncated !== 'boolean') throw fail('wiki_invalid_input');
   const message = text(value.message, 32768, true), traceExcerpt = text(value.traceExcerpt, 32768, true);
   if (value.traceState === 'missing' && (traceExcerpt !== '' || value.traceTruncated)) throw fail('wiki_invalid_input');
   // Text-only cases are never upgraded to replayable merely because the source
   // message happens to reference a checkpoint in a different instance.
-  return { id: `text-${hash(JSON.stringify(source))}`, kind: 'text-only', role: 'GPT', split: 'train', replayable: false,
+  const identity = { origin: source.origin, projectId: source.projectId, conversationId: source.conversationId, messageId: source.messageId, agentId: source.agentId };
+  return { id: `text-${hash(JSON.stringify(identity))}`, kind: 'text-only', role: 'GPT', split: 'train', replayable: false,
     source, actual: text(value.actual, 8192), expected: text(value.expected, 8192), message, traceExcerpt,
     traceState: value.traceState, messageTruncated: value.messageTruncated, traceTruncated: value.traceTruncated };
+}
+function markedCase(value: any) {
+  shape(value, ['source', 'role', 'actual', 'expected', 'message', 'traceExcerpt', 'traceState', 'messageTruncated', 'traceTruncated']);
+  shape(value.source, ['projectId', 'conversationId', 'conversationTitle', 'messageId', 'agentId']);
+  const s = value.source;
+  const source = { origin: 'local-mark', projectId: s.projectId === null ? null : id(s.projectId), conversationId: id(s.conversationId),
+    conversationTitle: text(s.conversationTitle, 1024), messageId: id(s.messageId), agentId: id(s.agentId) };
+  if (!['available', 'missing'].includes(value.traceState) || typeof value.messageTruncated !== 'boolean' || typeof value.traceTruncated !== 'boolean') throw fail('wiki_invalid_input');
+  const message = text(value.message, 32768, true), traceExcerpt = text(value.traceExcerpt, 32768, true);
+  if (value.traceState === 'missing' && (traceExcerpt !== '' || value.traceTruncated)) throw fail('wiki_invalid_input');
+  return { id: `marked-${hash(JSON.stringify({ projectId: source.projectId, conversationId: source.conversationId, messageId: source.messageId }))}`,
+    kind: 'marked-badcase', role: text(value.role, 128), split: 'train', replayable: false, source,
+    actual: text(value.actual, 8192), expected: text(value.expected, 8192), message, traceExcerpt,
+    traceState: value.traceState, messageTruncated: value.messageTruncated, traceTruncated: value.traceTruncated };
+}
+function initialMemberships(state: any, caseId: string) {
+  const version = state.versions.at(-1), memberships: any[] = [];
+  for (const e of version?.entries || []) if (e.status === 'approved' && e.caseIds.includes(caseId)) {
+    memberships.push({ entryId: e.id, source: 'version', at: e.reviewedAt || version.createdAt });
+  }
+  return { version, memberships };
+}
+function caseStateView(state: any, caseId: string) {
+  const c = state.cases.find((item: any) => item.id === caseId);
+  if (!c) throw fail('wiki_unknown_case');
+  if (c.split === 'test') return { caseId, status: 'holdout', memberships: [], reason: '留出用例不参与归纳', updatedAt: c.createdAt };
+  const override = (state.caseStates || []).find((item: any) => item.caseId === caseId);
+  if (override) return { caseId, status: override.memberships.length ? 'assigned' : override.status,
+    memberships: structuredClone(override.memberships), reason: override.reason || '', updatedAt: override.updatedAt };
+  const { version, memberships } = initialMemberships(state, caseId);
+  if (memberships.length) return { caseId, status: 'assigned', memberships, reason: '', updatedAt: memberships.map(m => m.at).sort().at(-1) };
+  const unclassified = version?.unclassified?.find((u: any) => u.caseId === caseId);
+  return { caseId, status: unclassified ? 'unfit' : 'pending', memberships: [], reason: unclassified?.reason || '', updatedAt: version?.createdAt || c.createdAt };
+}
+function saveCaseState(state: any, value: any) {
+  const index = state.caseStates.findIndex((item: any) => item.caseId === value.caseId);
+  const saved = { caseId: value.caseId, status: value.status, memberships: structuredClone(value.memberships || []), reason: value.reason || '', updatedAt: value.updatedAt };
+  if (index < 0) state.caseStates.push(saved); else state.caseStates[index] = saved;
+}
+function appendEvent(state: any, event: any) {
+  const saved = { id: `event-${state.revision + 1}-${state.events.length + 1}`, createdAt: new Date().toISOString(), ...event };
+  state.events.push(saved); return saved;
 }
 
 export function createWikiStore(options: any) {
@@ -77,7 +121,8 @@ export function createWikiStore(options: any) {
   // the checkpoint inventory: existing expiry/GC only owns projects/<id>/CAS.
   const directory = global ? path.join(captureRoot, 'snapshots') : path.join(captureRoot, 'wiki', projectId!, 'snapshots');
   const identity = global ? { scope: 'global' } : { projectId };
-  const fresh = () => ({ schemaVersion: 1, ...identity, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replayCases: [] as any[], replaySplit: null });
+  const fresh = () => ({ schemaVersion: 1, ...identity, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replayCases: [] as any[], replaySplit: null,
+    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[] });
   function read(): any {
     let names: string[];
     try { names = fs.readdirSync(directory); }
@@ -107,6 +152,10 @@ export function createWikiStore(options: any) {
       if (record.replayCases !== undefined && !Array.isArray(record.replayCases)) throw Error();
       if (record.replaySplit === undefined) record.replaySplit = null;
       if (record.replaySplit !== null && (typeof record.replaySplit !== 'object' || Array.isArray(record.replaySplit))) throw Error();
+      for (const field of ['suggestions', 'caseStates', 'inductionRuns', 'events']) {
+        if (record[field] === undefined) record[field] = [];
+        if (!Array.isArray(record[field])) throw Error();
+      }
       return record;
     } catch { throw fail('wiki_record_invalid'); }
   }
@@ -154,12 +203,16 @@ export function createWikiStore(options: any) {
       if (!Array.isArray(values) || !values.length || values.length > 20) throw fail('wiki_invalid_input');
       const normalized = values.map(textCase);
       const result = change(state => {
-        const now = new Date().toISOString(), batch: any[] = []; let created = 0;
+        const now = new Date().toISOString(), batch: any[] = []; let created = 0, updated = 0;
         for (const candidate of normalized) {
           const existing = state.cases.find((c: any) => c.id === candidate.id);
           if (existing) {
             // The operator may have frozen this source case into the holdout
             // set. Reimport never resets that local selection to training.
+            // A room title is additive display provenance, never case identity.
+            if (!existing.source.conversationTitle && candidate.source.conversationTitle) {
+              existing.source.conversationTitle = candidate.source.conversationTitle; updated++;
+            }
             const { createdAt, split, ...content } = existing, { split: initialSplit, ...original } = candidate;
             if (JSON.stringify(content) !== JSON.stringify(original)) throw fail('wiki_case_conflict');
             batch.push(existing);
@@ -167,9 +220,53 @@ export function createWikiStore(options: any) {
             const saved = { ...candidate, createdAt: now }; state.cases.push(saved); batch.push(saved); created++;
           }
         }
-        return { changed: created > 0, value: { created, cases: batch } };
+        return { changed: created + updated > 0, value: { created, updated, cases: batch } };
       });
       return { ...result.value, revision: result.revision };
+    },
+    addMarkedCase(value: any) {
+      if (!global) throw fail('wiki_global_required');
+      const candidate = markedCase(value);
+      const result = change(state => {
+        const existing = state.cases.find((c: any) => c.id === candidate.id
+          || (c.source.conversationId === candidate.source.conversationId && c.source.messageId === candidate.source.messageId));
+        if (existing) {
+          if (existing.actual !== candidate.actual || existing.expected !== candidate.expected) throw fail('wiki_case_conflict');
+          return { changed: false, value: { created: false, case: existing } };
+        }
+        const now = new Date().toISOString(), saved = { ...candidate, createdAt: now };
+        state.cases.push(saved);
+        saveCaseState(state, { caseId: saved.id, status: 'pending', memberships: [], reason: '', updatedAt: now });
+        appendEvent(state, { type: 'case-marked', caseIds: [saved.id] });
+        return { changed: true, value: { created: true, case: saved } };
+      });
+      return { ...result.value, revision: result.revision };
+    },
+    backfillConversationTitles(values: any[]) {
+      if (!global || !Array.isArray(values) || !values.length || values.length > 1000) throw fail('wiki_invalid_input');
+      const updates = values.map(value => {
+        shape(value, ['conversationId', 'conversationTitle']);
+        return { conversationId: id(value.conversationId), conversationTitle: text(value.conversationTitle, 1024) };
+      });
+      if (new Set(updates.map(u => u.conversationId)).size !== updates.length) throw fail('wiki_invalid_input');
+      const result = change(state => {
+        let updated = 0;
+        for (const update of updates) {
+          const matches = state.cases.filter((c: any) => c.source.conversationId === update.conversationId);
+          if (!matches.length) throw fail('wiki_unknown_case');
+          for (const c of matches) {
+            if (c.source.conversationTitle === update.conversationTitle) continue;
+            if (c.source.conversationTitle) throw fail('wiki_case_conflict');
+            c.source.conversationTitle = update.conversationTitle; updated++;
+          }
+        }
+        return { changed: updated > 0, value: { updated } };
+      });
+      return { ...result.value, revision: result.revision };
+    },
+    getCaseStates() {
+      const state = read();
+      return state.cases.map((c: any) => caseStateView(state, c.id));
     },
     // Trusted operator registration, not a user report and not a claim that a
     // historical text-only source had a checkpoint. The CLI verifies the sealed
@@ -214,6 +311,134 @@ export function createWikiStore(options: any) {
           return saved;
         });
         return { changed, value: savedCases };
+      }).value;
+    },
+    recordInduction(input: any, expectedRevision?: number) {
+      shape(input, ['caseIds', 'model', 'proof', 'results']);
+      const caseIds = ids(input.caseIds), selected = new Set(caseIds);
+      if (caseIds.length > 20 || input.model !== MODEL || !Array.isArray(input.results) || input.results.length !== caseIds.length) throw fail('wiki_invalid_input');
+      shape(input.proof, ['inputHash', 'calls', 'cleaned', 'isolation', 'containerId']);
+      if (typeof input.proof.inputHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.proof.inputHash)
+        || !Array.isArray(input.proof.calls) || input.proof.cleaned !== true) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (expectedRevision !== undefined && state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
+        for (const caseId of caseIds) {
+          const c = state.cases.find((item: any) => item.id === caseId);
+          if (!c || c.split !== 'train' || caseStateView(state, caseId).status !== 'pending') throw fail('wiki_not_pending');
+        }
+        const base = state.versions.at(-1), approved = new Set((base?.entries || []).filter((e: any) => e.status === 'approved').map((e: any) => e.id));
+        const seen = new Set(), normalized = input.results.map((r: any) => {
+          shape(r, ['caseId', 'kind', 'entryId', 'reason', 'confidence', 'proposal']);
+          const caseId = id(r.caseId);
+          if (!selected.has(caseId) || seen.has(caseId) || !['assign', 'new', 'none'].includes(r.kind)) throw fail('wiki_model_output_invalid');
+          seen.add(caseId);
+          const reason = text(r.reason, 2048), confidence = text(r.confidence, 32);
+          if (r.kind === 'assign') {
+            if (!approved.has(r.entryId) || r.proposal !== undefined) throw fail('wiki_model_output_invalid');
+            return { caseId, kind: r.kind, entryId: id(r.entryId), reason, confidence };
+          }
+          if (r.kind === 'none') {
+            if (r.entryId !== undefined || r.proposal !== undefined) throw fail('wiki_model_output_invalid');
+            return { caseId, kind: r.kind, reason, confidence };
+          }
+          const proposal = entry(r.proposal, selected);
+          if (!proposal.caseIds.includes(caseId) || r.entryId !== undefined) throw fail('wiki_model_output_invalid');
+          return { caseId, kind: r.kind, reason, confidence, proposal };
+        });
+        if (seen.size !== caseIds.length) throw fail('wiki_model_output_invalid');
+        const now = new Date().toISOString();
+        const run: any = { id: `induction-${state.revision + 1}-${hash(JSON.stringify({ caseIds, results: normalized, inputHash: input.proof.inputHash })).slice(0, 16)}`,
+          createdAt: now, model: MODEL, caseIds: [...caseIds], inputHash: input.proof.inputHash,
+          calls: structuredClone(input.proof.calls), cleaned: true,
+          ...(input.proof.containerId === undefined ? {} : { containerId: text(input.proof.containerId, 128) }),
+          ...(input.proof.isolation === undefined ? {} : { isolation: structuredClone(input.proof.isolation) }) };
+        let nextEntry = 1 + state.versions.flatMap((v: any) => v.entries).reduce((max: number, e: any) => {
+          const match = /^entry-(\d+)$/.exec(e.id); return Math.max(max, match ? Number(match[1]) : 0);
+        }, 0);
+        const proposalEntries = new Map();
+        for (const r of normalized.filter((item: any) => item.kind === 'new')) {
+          const key = JSON.stringify(r.proposal);
+          if (!proposalEntries.has(key)) proposalEntries.set(key, { id: `entry-${nextEntry++}`, proposal: r.proposal, suggestionCaseIds: [] });
+          proposalEntries.get(key).suggestionCaseIds.push(r.caseId);
+        }
+        const suggestions = normalized.map((r: any) => {
+          const proposalEntry = r.kind === 'new' ? [...proposalEntries.values()].find((p: any) => JSON.stringify(p.proposal) === JSON.stringify(r.proposal)) : null;
+          return { id: `suggestion-${hash(run.id + '\0' + r.caseId + '\0' + r.kind).slice(0, 24)}`, runId: run.id, caseId: r.caseId,
+            kind: r.kind, ...(r.kind === 'none' ? {} : { entryId: r.kind === 'new' ? proposalEntry.id : r.entryId }),
+            reason: r.reason, confidence: r.confidence, status: 'pending', createdAt: now };
+        });
+        let version: any = null;
+        if (proposalEntries.size) {
+          const allCaseIds = [...new Set([...(base?.caseIds || []), ...caseIds])];
+          const entries = structuredClone(base?.entries || []);
+          for (const p of proposalEntries.values()) {
+            const suggestionIds = suggestions.filter((s: any) => s.kind === 'new' && s.entryId === p.id).map((s: any) => s.id);
+            entries.push({ id: p.id, ...structuredClone(p.proposal), status: 'draft', suggestionIds, createdAt: now });
+          }
+          const covered = new Set(entries.flatMap((e: any) => e.caseIds));
+          const unclassified = allCaseIds.filter((caseId: string) => !covered.has(caseId)).map((caseId: string) => {
+            const previous = base?.unclassified?.find((u: any) => u.caseId === caseId);
+            const result = normalized.find((r: any) => r.caseId === caseId);
+            return { caseId, reason: previous?.reason || result?.reason || '归属建议待确认' };
+          });
+          version = { id: `wiki-${state.revision + 1}`, createdAt: now, model: MODEL, role: base?.role || 'global', kind: 'incremental-induction',
+            caseIds: allCaseIds, trainingHash: hash(JSON.stringify(allCaseIds)), entries, unclassified, inductionRunId: run.id };
+          state.versions.push(version); run.versionId = version.id;
+        }
+        for (const r of normalized) {
+          const current = caseStateView(state, r.caseId);
+          saveCaseState(state, { caseId: r.caseId, status: r.kind === 'none' ? 'unfit' : 'suggested',
+            memberships: current.memberships, reason: r.reason, updatedAt: now });
+        }
+        state.suggestions.push(...suggestions); state.inductionRuns.push(run);
+        appendEvent(state, { type: 'induction-run', runId: run.id, caseIds: [...caseIds], ...(version ? { versionId: version.id } : {}) });
+        return { changed: true, value: { run, suggestions, version } };
+      }).value;
+    },
+    resolveSuggestion(input: any) {
+      shape(input, ['suggestionId', 'decision', 'expectedRevision']);
+      const suggestionId = id(input.suggestionId);
+      if (!['accepted', 'rejected'].includes(input.decision) || !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const suggestion = state.suggestions.find((s: any) => s.id === suggestionId);
+        if (!suggestion) throw fail('wiki_suggestion_not_found');
+        if (suggestion.status !== 'pending') throw fail('wiki_suggestion_resolved');
+        if (suggestion.kind === 'new') throw fail('wiki_suggestion_review_required');
+        const current = caseStateView(state, suggestion.caseId), now = new Date().toISOString();
+        if (input.decision === 'accepted' && suggestion.kind === 'assign') {
+          const approved = state.versions.at(-1)?.entries.some((e: any) => e.id === suggestion.entryId && e.status === 'approved');
+          if (!approved) throw fail('wiki_entry_not_found');
+          if (!current.memberships.some((m: any) => m.entryId === suggestion.entryId)) current.memberships.push({ entryId: suggestion.entryId, source: 'model-confirmed', at: now });
+          current.status = 'assigned'; current.reason = '';
+        } else if (input.decision === 'accepted' && suggestion.kind === 'none') current.status = 'unfit';
+        else { current.status = current.memberships.length ? 'assigned' : 'pending'; current.reason = input.decision === 'rejected' ? '建议已否决，可手动归入或重新归纳' : current.reason; }
+        current.updatedAt = now; saveCaseState(state, current);
+        suggestion.status = input.decision; suggestion.resolvedAt = now;
+        appendEvent(state, { type: input.decision === 'accepted' ? 'suggestion-confirmed' : 'suggestion-rejected', suggestionId, caseIds: [suggestion.caseId], ...(suggestion.entryId ? { entryId: suggestion.entryId } : {}) });
+        return { changed: true, value: suggestion };
+      }).value;
+    },
+    assignCase(input: any) {
+      shape(input, ['caseId', 'entryId', 'expectedRevision']);
+      const caseId = id(input.caseId);
+      if (input.entryId !== null) id(input.entryId);
+      if (!Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const current = caseStateView(state, caseId);
+        if (current.status === 'holdout') throw fail('wiki_unknown_training_case');
+        const now = new Date().toISOString();
+        if (input.entryId === null) {
+          current.memberships = []; current.status = 'pending'; current.reason = '已手动移出模式';
+        } else {
+          const approved = state.versions.at(-1)?.entries.some((e: any) => e.id === input.entryId && e.status === 'approved');
+          if (!approved) throw fail('wiki_entry_not_found');
+          current.memberships = [{ entryId: input.entryId, source: 'manual', at: now }]; current.status = 'assigned'; current.reason = '';
+        }
+        current.updatedAt = now; saveCaseState(state, current);
+        appendEvent(state, { type: input.entryId === null ? 'manual-removed' : 'manual-assigned', caseIds: [caseId], ...(input.entryId ? { entryId: input.entryId } : {}) });
+        return { changed: true, value: caseStateView(state, caseId) };
       }).value;
     },
     setReplaySplit(input: any) {
@@ -340,7 +565,26 @@ export function createWikiStore(options: any) {
         if (input.patch?.caseIds !== undefined) throw fail('wiki_membership_edit_unsupported');
         const revised = entry({ ...fields, ...input.patch }, new Set(version.caseIds));
         Object.assign(current, revised);
-        if (input.decision) { current.status = input.decision; current.reviewedAt = new Date().toISOString(); }
+        if (input.decision) {
+          current.status = input.decision; current.reviewedAt = new Date().toISOString();
+          // A model-proposed pattern still uses the normal draft review API.
+          // Only its approval confirms the associated membership suggestions.
+          for (const suggestionId of current.suggestionIds || []) {
+            const suggestion = state.suggestions.find((s: any) => s.id === suggestionId && s.kind === 'new');
+            if (!suggestion || suggestion.status !== 'pending') continue;
+            const now = current.reviewedAt, view = caseStateView(state, suggestion.caseId);
+            if (input.decision === 'approved') {
+              if (!view.memberships.some((m: any) => m.entryId === current.id)) view.memberships.push({ entryId: current.id, source: 'model-confirmed', at: now });
+              view.status = 'assigned'; view.reason = '';
+            } else {
+              view.memberships = view.memberships.filter((m: any) => m.entryId !== current.id);
+              view.status = view.memberships.length ? 'assigned' : 'pending'; view.reason = '新模式草稿已驳回';
+            }
+            view.updatedAt = now; saveCaseState(state, view);
+            suggestion.status = input.decision === 'approved' ? 'accepted' : 'rejected'; suggestion.resolvedAt = now;
+            appendEvent(state, { type: input.decision === 'approved' ? 'suggestion-confirmed' : 'suggestion-rejected', suggestionId, caseIds: [suggestion.caseId], entryId: current.id });
+          }
+        }
         return { changed: true, value: current };
       }).value;
     },

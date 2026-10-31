@@ -160,6 +160,31 @@ test('HTTP generation and confirmation scan real retained files rather than acce
     assert.equal(h.store.read().revision, revision);
   }
 });
+test('incremental induction and membership endpoints persist suggestions and provenance without client-selected model input', async t => {
+  const h = setup(t), version = h.seed();
+  h.store.review({ versionId: version.id, entryId: 'entry-1', expectedRevision: 2, decision: 'approved' });
+  const marked = h.store.addMarkedCase({ source: { projectId: 'p1', conversationId: 'local-room', conversationTitle: '本地标记房间', messageId: 'local-message', agentId: 'role-family-kimi' }, role: 'Kimi',
+    actual: '额外增加流程', expected: '直接完成明确要求', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false });
+  let calls = 0;
+  h.options.runInduction = async ({ store, expectedRevision }) => {
+    calls++; assert.equal(expectedRevision, 4);
+    return store.recordInduction({ caseIds: [marked.case.id], model: 'deepseek/deepseek-v4-flash', proof: { inputHash: 'a'.repeat(64), calls: [], cleaned: true },
+      results: [{ caseId: marked.case.id, kind: 'assign', entryId: 'entry-1', reason: '症状一致', confidence: '高' }] }, expectedRevision);
+  };
+  const induction = await h.invoke({ confirmed: true, expectedRevision: 4 }, { pathname: '/api/wikiskill/induct' });
+  assert.equal(calls, 1); assert.equal(induction.body.caseStates.find(s => s.caseId === marked.case.id).status, 'suggested');
+  const suggestion = induction.body.suggestions[0];
+  await rejects(h.invoke({ confirmed: true, expectedRevision: 5, model: 'other' }, { pathname: '/api/wikiskill/induct' }), 'wiki_invalid_input');
+  assert.equal(calls, 1);
+  const accepted = await h.invoke({ confirmed: true, suggestionId: suggestion.id, decision: 'accepted', expectedRevision: 5 }, { pathname: '/api/wikiskill/suggestion' });
+  assert.equal(accepted.body.caseStates.find(s => s.caseId === marked.case.id).memberships[0].source, 'model-confirmed');
+  await h.invoke({ confirmed: true, caseId: marked.case.id, entryId: null, expectedRevision: 6 }, { pathname: '/api/wikiskill/membership' });
+  const manual = await h.invoke({ confirmed: true, caseId: marked.case.id, entryId: 'entry-1', expectedRevision: 7 }, { pathname: '/api/wikiskill/membership' });
+  assert.equal(manual.body.caseStates.find(s => s.caseId === marked.case.id).memberships[0].source, 'manual');
+  assert.equal(createWikiStore(h.config).getCaseStates().find(s => s.caseId === marked.case.id).memberships[0].source, 'manual');
+  assert.equal(manual.body.events.some(e => e.type === 'induction-run'), true);
+});
+
 test('corrupt storage and unknown exceptions are sanitized, never returning raw paths', async t => {
   const h = setup(t); h.seed();
   const file = path.join(h.config.globalRoot, 'snapshots/000000000002.json'); fs.writeFileSync(file, 'broken');

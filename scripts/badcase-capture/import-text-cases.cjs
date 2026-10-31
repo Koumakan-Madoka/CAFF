@@ -71,7 +71,7 @@ async function importTextCases({ selections, confirmed, store, fetchImpl = globa
       if (data !== null && (!data.trace || typeof data.trace !== 'object' || Array.isArray(data.trace))) throw fail('wiki_source_invalid');
       const trace = data === null ? { text: '', truncated: false } : excerpt(JSON.stringify(data.trace));
       batch.push({ source: { origin: ORIGIN, projectId: conversation.projectScopeId || conversation.projectId || null,
-        conversationId, messageId: message.id, agentId: message.agentId }, role: 'GPT', actual: s.actual, expected: s.expected,
+        conversationId, conversationTitle: conversation.title || conversation.name || '', messageId: message.id, agentId: message.agentId }, role: 'GPT', actual: s.actual, expected: s.expected,
         message: body.text, traceExcerpt: trace.text, traceState: data === null ? 'missing' : 'available',
         messageTruncated: body.truncated, traceTruncated: trace.truncated });
     }

@@ -38,6 +38,7 @@ const { createBadcaseEvaluationsController } = require('../api/badcase-evaluatio
 const { createEvaluationAdminService } = require('../domain/runtime/badcase-capture/evaluation-admin');
 const { createBadcaseFlagService } = require('../domain/runtime/badcase-capture/badcase-flags');
 const { createBadcaseSealingService } = require('../domain/runtime/badcase-capture/sealing-service');
+const { createWikiStore } = require('../domain/runtime/badcase-capture/wiki-store');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createImageUploadController } = require('../api/image-upload-controller');
@@ -192,7 +193,10 @@ export function createServerApp(options: any = {}) {
   // Separate offline declarations: not capture quota, not paid launch permission.
   const badcaseEvaluations = createEvaluationAdminService({ root: path.join(agentDir, 'badcase-offline-evaluations') });
   const badcaseFlags = createBadcaseFlagService({ captureRoot: badcaseCapture.captureRoot, captureStore: badcaseCapture.store, chatStore: store });
-  const badcaseSealing = createBadcaseSealingService({ flags: badcaseFlags, captureStore: badcaseCapture.store, databasePath: store.databasePath });
+  const badcaseWikiStore = createWikiStore({ globalRoot: path.join(agentDir, 'badcase-global'), sourceWorktree: initialProjectDir,
+    sourceWorktrees: projectManager.listProjects().map((p: any) => p.path) });
+  const badcaseSealing = createBadcaseSealingService({ flags: badcaseFlags, captureStore: badcaseCapture.store, databasePath: store.databasePath,
+    wikiStore: badcaseWikiStore, chatStore: store });
 
   // Crash-recovery sweep: a busy session-reuse claim is only ever held by a
   // live run inside this process, so any busy row visible at startup is
@@ -1324,6 +1328,9 @@ export function createServerApp(options: any = {}) {
     createBadcaseWikiController({
       globalRoot: path.join(agentDir, 'badcase-global'),
       sourceWorktree: initialProjectDir,
+      runInduction: options.badcaseWikiInductionRunner || ((input: any) => require('../../../scripts/badcase-capture/wiki-induction.cjs').inductWikiCases({
+        ...input, image: options.badcaseWikiInductionImage, confirmed: true,
+      })),
       projectManager, host, port, csrfToken: providerConfigCsrfToken,
       getAuthority() {
         const address = server && server.address();

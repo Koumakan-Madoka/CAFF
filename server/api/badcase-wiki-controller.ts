@@ -21,10 +21,13 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_candidate_invalid: 422, wiki_candidate_leak: 422, wiki_candidate_not_found: 404, wiki_candidate_deprecated: 409,
     wiki_candidate_approved_required: 409, wiki_candidate_confirmation_required: 409, wiki_candidate_role_mismatch: 409,
     wiki_target_unknown: 422, wiki_candidate_target_mismatch: 409, wiki_candidate_anchor_unsupported: 409,
-    wiki_comparison_record_invalid: 409,
+    wiki_comparison_record_invalid: 409, wiki_no_pending_cases: 409, wiki_not_pending: 409,
+    wiki_suggestion_not_found: 404, wiki_suggestion_resolved: 409, wiki_suggestion_review_required: 409,
+    wiki_model_output_invalid: 422, wiki_generation_failed: 503, wiki_unknown_training_case: 422,
+    wiki_training_input_too_large: 422, evaluation_caff_auth_unavailable_or_invalid: 503, evaluation_linux_required: 503,
   };
   return async ({ req, res, pathname }: any) => {
-    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate))?$/);
+    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership))?$/);
     if (!match || (match[1] ? req.method !== 'POST' : req.method !== 'GET')) return false;
     if (match[1]) guard.assertMutation(req); else guard.assertRead(req);
     let input;
@@ -34,6 +37,9 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         'confirm-candidate': ['confirmed', 'candidateId', 'candidateRoleHash', 'expectedRevision'],
         candidate: ['confirmed', 'versionId', 'entryIds', 'targetId', 'expectedRevision'],
         'confirm-global-candidate': ['confirmed', 'candidateId', 'candidateHash', 'expectedRevision'],
+        induct: ['confirmed', 'expectedRevision'],
+        suggestion: ['confirmed', 'suggestionId', 'decision', 'expectedRevision'],
+        membership: ['confirmed', 'caseId', 'entryId', 'expectedRevision'],
         review: ['confirmed', 'versionId', 'entryId', 'expectedRevision', 'patch', 'decision'],
       };
       if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -46,6 +52,12 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         sourceWorktrees: options.projectManager?.listProjects().map((p: any) => p.path) || [] };
       const store = createWikiStore(scope);
       if (match[1] === 'review') store.review(input);
+      if (match[1] === 'suggestion') store.resolveSuggestion(input);
+      if (match[1] === 'membership') store.assignCase(input);
+      if (match[1] === 'induct') {
+        if (typeof options.runInduction !== 'function') throw Object.assign(Error(), { code: 'wiki_induction_unavailable' });
+        await options.runInduction({ store, expectedRevision: input.expectedRevision });
+      }
       if (match[1] === 'confirm-candidate') store.confirmCandidate(input);
       if (match[1] === 'candidate' || match[1] === 'confirm-global-candidate') {
         const state = store.read();
@@ -55,7 +67,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         if (match[1] === 'candidate') store.createGlobalCandidate({ versionId: input.versionId, entryIds: input.entryIds, targetId: input.targetId, files }, input.expectedRevision);
         else store.confirmGlobalCandidate({ ...input, files });
       }
-      sendJson(res, 200, { ...store.read(), comparisons: createWikiComparisonStore(scope).read(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
+      sendJson(res, 200, { ...store.read(), caseStates: store.getCaseStates(), comparisons: createWikiComparisonStore(scope).read(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

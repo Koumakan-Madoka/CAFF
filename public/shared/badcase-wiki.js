@@ -3,357 +3,369 @@
   const shared = window.CaffShared || (window.CaffShared = {});
   shared.createBadcaseWikiPanel = function (options) {
     const root = options.root, fetchJson = options.fetchJson;
-    const confirm = options.confirm || (message => window.confirm(message));
-    let generation = 0, state = null, versionId = '', pending = false, writable = false;
-    root.innerHTML = `<section class="wiki-progress" aria-labelledby="wiki-progress-title">
-        <div><p class="wiki-eyebrow" id="wiki-progress-title">当前进度</p><p class="wiki-progress-text" data-wiki-progress-text>正在读取进度…</p></div>
-        <button class="ghost-button wiki-refresh" type="button" data-wiki-refresh>刷新数据</button>
-      </section>
-      <nav class="wiki-steps" aria-label="WikiSkill 四个步骤">
-        <a href="#wikiskill-cases"><span class="wiki-step-number">1</span><span><strong>用例</strong><small data-wiki-step-cases-meta>了解问题来源</small></span></a>
-        <a href="#wikiskill-wiki"><span class="wiki-step-number">2</span><span><strong>Wiki 准则</strong><small data-wiki-step-wiki-meta>审核归纳结果</small></span></a>
-        <a href="#wikiskill-candidates"><span class="wiki-step-number">3</span><span><strong>候选</strong><small data-wiki-step-candidates-meta>看懂改动再确认</small></span></a>
-        <a href="#wikiskill-results"><span class="wiki-step-number">4</span><span><strong>对照结果</strong><small data-wiki-step-results-meta>查看真实通过率</small></span></a>
-      </nav>
-      <p class="wiki-notice" data-wiki-status role="status" aria-live="polite"></p>
-      <section id="wikiskill-cases" class="stack-card wikiskill-section">
-        <div class="wiki-section-heading"><div><p class="wiki-eyebrow">第 1 步 · 收集问题</p><h2>用例</h2></div><span class="wiki-count" data-wiki-case-count></span></div>
-        <p class="muted">这些是全局问题来源。纯文本用例只帮助归纳准则；另有封存现场的同类任务才能用于回放评测。</p>
-        <p class="wiki-split-info" data-wiki-split-info></p><div class="wiki-case-list" data-wiki-cases></div></section>
-      <section id="wikiskill-wiki" class="stack-card wikiskill-section">
-        <div class="wiki-section-heading"><div><p class="wiki-eyebrow">第 2 步 · 审核准则</p><h2>Wiki 准则</h2></div></div>
-        <p class="muted">准则是从训练用例归纳出的通用改进方向。通过或驳回只完成审核，不会修改生产提示词，也不会启动评测。</p>
-        <div class="wiki-version-row"><label>查看版本 <select data-wiki-versions></select></label><div data-wiki-coverage></div></div>
-        <div class="wiki-entry-list" data-wiki-entries></div></section>
-      <section id="wikiskill-candidates" class="stack-card wikiskill-section wikiskill-candidates-section">
-        <div class="wiki-section-heading"><div><p class="wiki-eyebrow">第 3 步 · 确认改动</p><h2>候选</h2></div></div>
-        <p class="muted">每份候选只改一个目标。先看新增内容及其来源，再决定是否确认；确认不会直接修改生产提示词。</p>
-        <div class="wiki-candidate-list" data-wiki-candidates></div>
-        <details class="wiki-generator"><summary>需要另一份候选？选择目标与已通过准则</summary>
-          <div class="wiki-generator-body"><label>要修改的目标 <select data-wiki-targets></select></label><p class="muted" data-wiki-target-info></p>
-          <details><summary>查看目标原文</summary><pre data-wiki-target-base></pre></details>
-          <fieldset class="wiki-entry-picker"><legend>选择当前版本中已通过的准则</legend><div data-wiki-candidate-entries></div></fieldset>
-          <div class="button-row"><button type="button" data-wiki-generate>生成候选草稿</button></div>
-          <p class="muted">生成只保存一份草稿，不调用模型、不启动评测，也不修改生产配置。</p></div></details></section>
-      <section id="wikiskill-results" class="stack-card wikiskill-section">
-        <div class="wiki-section-heading"><div><p class="wiki-eyebrow">第 4 步 · 查看证据</p><h2>对照结果</h2></div></div>
-        <div data-wiki-results></div></section>`;
-    const el = name => root.querySelector(`[data-wiki-${name}]`);
-    const notice = message => { el('status').textContent = message; };
-    const node = (tag, text) => { const result = document.createElement(tag); result.textContent = text; return result; };
-    const badge = (text, tone = '') => { const result = node('span', text); result.className = `wiki-badge ${tone}`; return result; };
-    const categoryLabels = { reproduction: '汇报复现题', probe: '接口膨胀探针', control: '控制题' };
-    const statusLabels = { approved: '已通过', rejected: '已驳回', draft: '草稿', confirmed: '已确认', deprecated: '已废弃' };
-    const shortId = value => value ? String(value).slice(0, 8) + '…' : '未记录';
-    const caseTitle = item => String(item?.actual || item?.task || '未命名问题').trim().split('\n')[0] || '未命名问题';
-    const caseById = id => state?.cases?.find(item => item.id === id);
-    const targetLabel = target => {
-      if (!target) return '未声明目标';
-      if (target.kind === 'global-system-prompt') return '全局系统提示词（所有 agent 共用）';
-      const fromTitle = String(target.title || '').split('·').pop().trim().split(/[（(]/)[0].trim();
-      return `工具 ${target.toolName || fromTitle || '描述'} 的说明`;
+    const confirmAction = options.confirm || (message => window.confirm(message));
+    root.innerHTML = `<div class="wsk-shell">
+      <header class="top">
+        <div class="title-row"><h1>WikiSkill</h1></div>
+        <p class="lede">用例沉淀成知识库里的模式；通过审核的模式用来改写提示词和工具描述；评测结论再记回知识库，供下一轮参考。</p>
+        <div class="next" role="status"><span class="next-label">下一步</span><span class="next-text" id="next-text">正在读取真实数据…</span><button type="button" class="btn small" id="next-go">去处理</button><button type="button" class="btn small ghost" id="wsk-refresh">刷新</button></div>
+        <nav aria-label="WikiSkill 分区"><div class="tabs" role="tablist">
+          <button type="button" class="tab" role="tab" id="tab-cases" data-tab="cases"><span class="t-name">用例</span><span class="t-count" id="cnt-cases"></span><span class="t-sub">原始经验</span></button><span class="arrow" aria-hidden="true">→</span>
+          <button type="button" class="tab" role="tab" id="tab-wiki" data-tab="wiki"><span class="t-name">知识库</span><span class="t-count" id="cnt-wiki"></span><span class="t-sub">归纳出的模式</span></button><span class="arrow" aria-hidden="true">→</span>
+          <button type="button" class="tab" role="tab" id="tab-targets" data-tab="targets"><span class="t-name">优化对象</span><span class="t-count" id="cnt-targets"></span><span class="t-sub">提示词与工具描述</span></button><span class="arrow" aria-hidden="true">→</span>
+          <button type="button" class="tab" role="tab" id="tab-impact" data-tab="impact"><span class="t-name">评测记录</span><span class="t-count" id="cnt-impact"></span><span class="t-sub">效果与演进</span></button><span class="loop" aria-hidden="true">↺ 评测结论记回知识库</span>
+        </div></nav>
+      </header>
+      <main>
+        <section id="view-wiki" class="view" role="tabpanel" aria-labelledby="tab-wiki"><div class="split">
+          <aside class="index" aria-label="知识库目录"><div class="inbox" id="wiki-inbox"></div>
+            <label class="search"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"></circle><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"></path></svg><input id="wiki-q" type="search" placeholder="搜索模式、症状、准则或用例原话" autocomplete="off" aria-label="搜索知识库"><kbd aria-hidden="true">/</kbd></label>
+            <div class="quick">试试 <button type="button" data-q="术语">术语</button><button type="button" data-q="暂停">暂停</button><button type="button" data-q="审批">审批</button><button type="button" data-q="分支">分支</button><button type="button" data-q="MVP">MVP</button></div>
+            <div class="seg" role="radiogroup" aria-label="按审核状态筛选" id="wiki-seg"></div><p class="result-count" id="wiki-count"></p><ol class="entry-list" id="wiki-list"></ol><div class="case-hits" id="wiki-casehits" hidden></div><div class="coverage" id="wiki-coverage"></div>
+          </aside><article class="page" id="wiki-page" aria-live="polite"><p class="muted-note">正在读取知识库…</p></article>
+        </div></section>
+        <section id="view-cases" class="view" role="tabpanel" aria-labelledby="tab-cases" hidden><div class="groups">
+          <div class="toolbar"><label class="search"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"></circle><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"></path></svg><input id="cases-q" type="search" placeholder="搜索问题、期望、来源房间或回放任务" autocomplete="off" aria-label="搜索用例"><kbd aria-hidden="true">/</kbd></label>
+            <label class="field">归属模式 <select id="cases-group"></select></label><label class="field">集合 <select id="cases-split"><option value="all">全部</option><option value="train">训练</option><option value="test">留出</option></select></label><label class="check"><input type="checkbox" id="cases-replay"> 只看有回放题的</label><div class="seg" role="radiogroup" aria-label="显示方式" id="cases-mode"></div>
+          </div><p class="summary" id="cases-summary"></p><div class="groups" id="cases-body"></div>
+        </div></section>
+        <section id="view-targets" class="view" role="tabpanel" aria-labelledby="tab-targets" hidden><div class="split"><aside class="index" id="targets-list" aria-label="优化对象"></aside><article class="page" id="target-page" aria-live="polite"></article></div></section>
+        <section id="view-impact" class="view" role="tabpanel" aria-labelledby="tab-impact" hidden><div class="impact-grid"><section class="panel"><h2>对照评测</h2><div id="impact-runs"></div></section><section class="panel"><h2>演进记录</h2><p class="hint">每次归纳、审核、候选和评测结论都记在这里。下次生成候选时参考它，避开已经失败过的改法。</p><ol class="timeline" id="impact-log"></ol></section></div></section>
+      </main>
+    </div><div class="toast" id="toast" role="status" hidden></div>`;
+    const $ = selector => root.querySelector(selector);
+    const $$ = selector => [...root.querySelectorAll(selector)];
+    const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, char => ESC[char]);
+    const terms = value => String(value || '').toLowerCase().split(/\s+/).filter(Boolean);
+    const hl = (value, ts) => {
+      const text = String(value == null ? '' : value);
+      if (!ts.length) return esc(text);
+      const pattern = ts.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).filter(Boolean);
+      if (!pattern.length) return esc(text);
+      const re = new RegExp(pattern.join('|'), 'gi'); let last = 0, output = '', match;
+      while ((match = re.exec(text))) { output += esc(text.slice(last, match.index)) + '<mark>' + esc(match[0]) + '</mark>'; last = match.index + match[0].length; if (!match[0].length) re.lastIndex++; }
+      return output + esc(text.slice(last));
     };
-    function controls() {
-      el('refresh').disabled = pending;
-      el('versions').disabled = pending || !state?.versions.length;
-      for (const input of el('entries').querySelectorAll('textarea,button')) input.disabled = pending || !writable || input.dataset.reviewed === 'true';
-      el('targets').disabled = pending || !writable || !state?.targets?.length;
-      for (const input of el('candidate-entries').querySelectorAll('input')) input.disabled = pending || !writable;
-      el('generate').disabled = pending || !writable || !el('targets').value || !el('candidate-entries').querySelector('input:checked');
-      for (const button of el('candidates').querySelectorAll('[data-wiki-confirm-candidate]')) button.disabled = pending || !writable || button.dataset.reviewed === 'true';
-      root.setAttribute('aria-busy', String(pending));
+    const pad = n => String(n).padStart(2, '0');
+    const fmt = iso => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+    const latest = list => list.filter(Boolean).sort().slice(-1)[0];
+    const ENTRY_STATUS = { approved: ['已通过', 'ok'], draft: ['草稿 · 待审核', 'warn'], rejected: ['已驳回', 'bad'] };
+    const CAND_STATUS = { draft: ['草稿 · 待你确认', 'warn'], confirmed: ['已确认 · 待评测', 'info'], evaluated: ['已评测', 'ok'], deprecated: ['已废弃', ''] };
+    const CATEGORY = { reproduction: ['复现题', 'repro'], probe: ['探针题', 'probe'], control: ['控制题', 'control'] };
+    const SPLIT = { train: '训练', test: '留出' };
+    const pill = (map, status) => { const [label, tone] = map[status] || [status, '']; return `<span class="pill ${tone}">${esc(label)}</span>`; };
+    const catChip = replay => { const [label, cls] = CATEGORY[replay.category] || [replay.category, '']; return `<span class="chip cat ${cls}">${esc(label)}</span>`; };
+    let D = null, versionId = '', generation = 0, pending = false, writable = false, toastTimer;
+    const state = { view: 'wiki', entryId: '', wikiQ: '', wikiStatus: 'all', casesQ: '', casesGroup: 'all', casesSplit: 'all', casesReplay: false, casesMode: 'group', focusCase: null, targetId: '' };
+    const VIEWS = ['cases', 'wiki', 'targets', 'impact'];
+    let caseById = new Map(), caseByN = new Map(), stateByCase = new Map(), entryById = new Map(), replayBySource = new Map(), targetById = new Map();
+    const currentVersion = () => D?.versions.find(v => v.id === versionId) || D?.versions.at(-1) || null;
+    const latestVersion = () => D?.versions.at(-1) || null;
+    const entries = () => currentVersion()?.entries || [];
+    const approvedEntries = () => (latestVersion()?.entries || []).filter(e => e.status === 'approved');
+    const findEntry = (id, preferredVersion) => {
+      const versions = preferredVersion ? [D?.versions.find(v => v.id === preferredVersion)] : [...(D?.versions || [])].reverse();
+      for (const version of versions) { const entry = version?.entries.find(e => e.id === id); if (entry) return { entry, version }; }
+      return { entry: null, version: null };
+    };
+    const entryChip = (id, preferredVersion) => { const { entry, version } = findEntry(id, preferredVersion); if (!entry) return ''; const n = (version?.entries || []).findIndex(e => e.id === id) + 1;
+      return `<a class="chip wiki" href="#${esc(id)}" data-entry="${esc(id)}" data-version="${esc(version?.id || '')}">模式 ${n} · ${esc(entry.title)}</a>`; };
+    const targetLabel = target => String(target?.title || '未命名目标').replace(/^工具描述 · /, '').replace(/^全局系统提示词 · /, '');
+    const targetFull = target => target?.kind === 'global-system-prompt' ? '全局系统提示词（所有 agent 共用）' : `工具 ${targetLabel(target)} 的说明`;
+    const globalTarget = () => D?.targets.find(t => t.kind === 'global-system-prompt');
+    const candsFor = targetId => (D?.candidates || []).filter(c => c.kind === 'global-wiki-candidate-v1' && c.targetId === targetId);
+    const activeCands = () => (D?.candidates || []).filter(c => c.kind === 'global-wiki-candidate-v1' && c.status !== 'deprecated');
+    const pendingSuggestions = () => (D?.suggestions || []).filter(s => s.status === 'pending');
+    const rawPending = () => (D?.cases || []).filter(c => caseState(c).status === 'pending');
+    const suggestionFor = c => pendingSuggestions().filter(s => s.caseId === c.id).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0] || null;
+    function derive() {
+      caseById = new Map((D?.cases || []).map(c => [c.id, c])); caseByN = new Map((D?.cases || []).map((c, i) => { c.n = i + 1; return [c.n, c]; }));
+      stateByCase = new Map((D?.caseStates || []).map(s => [s.caseId, s])); entryById = new Map(entries().map((e, i) => { e.n = i + 1; return [e.id, e]; }));
+      replayBySource = new Map((D?.replayCases || []).map(r => [r.sourceCaseId, r])); targetById = new Map((D?.targets || []).map(t => [t.id, t]));
+      if (!entryById.has(state.entryId)) state.entryId = entries()[0]?.id || '';
+      if (!targetById.has(state.targetId)) state.targetId = globalTarget()?.id || D?.targets[0]?.id || '';
     }
-    function accept(data) {
-      if (!data || data.scope !== 'global' || data.projectId !== undefined || data.schemaVersion !== 1 || !Number.isSafeInteger(data.revision)
-        || !Array.isArray(data.cases) || !Array.isArray(data.versions)) throw Error('invalid_wiki_response');
-      state = data; writable = true;
-      if (!state.versions.some(v => v.id === versionId)) versionId = state.versions.at(-1)?.id || '';
+    function caseState(c) {
+      const saved = stateByCase.get(c.id); if (saved) return saved;
+      if (c.split === 'test') return { caseId: c.id, status: 'holdout', memberships: [], reason: '留出用例不参与归纳', updatedAt: c.createdAt };
+      const memberships = (latestVersion()?.entries || []).filter(e => e.status === 'approved' && e.caseIds.includes(c.id)).map(e => ({ entryId: e.id, source: 'version', at: e.reviewedAt || latestVersion().createdAt }));
+      return { caseId: c.id, status: memberships.length ? 'assigned' : 'pending', memberships, reason: '', updatedAt: c.createdAt };
+    }
+    const stateText = c => { const s = caseState(c); if (s.status === 'assigned') return `归入 ${s.memberships.map(m => entryChip(m.entryId)).join('、')}`; return { holdout: '留出，不参与归纳', pending: '待归纳', suggested: '待归纳，有建议', unfit: '未能归类' }[s.status] || s.status; };
+    function nextStep() {
+      if (!D) return { text: '正在读取真实数据…', hash: 'wiki' };
+      const draft = entries().find(e => e.status === 'draft'); if (draft) return { text: `审核知识库里的草稿模式「${draft.title}」`, hash: draft.id };
+      const global = globalTarget(), globalDraft = (D.candidates || []).find(c => c.targetId === global?.id && c.status === 'draft');
+      if (globalDraft) return { text: '确认全局提示词候选，然后开始对照评测', hash: 'targets', target: global.id };
+      const suggested = pendingSuggestions().find(s => s.kind === 'assign'); if (suggested) return { text: '确认或调整模型给出的用例归属建议', hash: 'case-' + caseById.get(suggested.caseId)?.n };
+      if (rawPending().length) return { text: `用模型归纳 ${rawPending().length} 条待归纳用例；结果只保存为建议`, hash: 'cases', group: 'inbox' };
+      if (!(D.comparisons || []).length) return { text: '查看评测计划与演进记录', hash: 'impact' };
+      return { text: '查看逐题对照结果和演进记录', hash: 'impact' };
+    }
+    function toast(text) { const el = $('#toast'); el.textContent = text; el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 3600); }
+    function go(hash) { if (!D) return; location.hash = hash; applyHash(); }
+    function applyHash() {
+      if (!D) return;
+      const h = decodeURIComponent(location.hash.slice(1));
+      if (VIEWS.includes(h)) state.view = h;
+      else if ((D.versions || []).some(v => v.entries.some(e => e.id === h))) { state.view = 'wiki'; state.entryId = h; }
+      else if (/^case-\d+$/.test(h) && caseByN.has(Number(h.slice(5)))) { Object.assign(state, { view: 'cases', casesQ: '', casesGroup: 'all', casesSplit: 'all', casesReplay: false, focusCase: Number(h.slice(5)) }); $('#cases-q').value = ''; }
+      else state.view = 'wiki';
       render();
     }
-    function renderProgress() {
-      if (!state) { el('progress-text').textContent = '读取完成后，这里会告诉你下一步该做什么。'; return; }
-      const latest = state.versions.at(-1), approved = latest?.entries.filter(entry => entry.status === 'approved').length || 0;
-      const globalCandidates = (state.candidates || []).filter(candidate => candidate.kind === 'global-wiki-candidate-v1'
-        && candidate.status !== 'deprecated' && candidate.target?.kind === 'global-system-prompt');
-      const confirmed = globalCandidates.find(candidate => candidate.status === 'confirmed');
-      const results = state.comparisons || [];
-      if (results.length) el('progress-text').textContent = `已保存 ${results.length} 份对照结果 → 查看逐题与总体通过率`;
-      else if (confirmed) el('progress-text').textContent = '全局提示词候选已确认 → 下一步：用 7 道题，原版本与候选各 3 次运行真实模型对照';
-      else if (globalCandidates.some(candidate => candidate.status === 'draft')) el('progress-text').textContent = `${approved} 条准则已通过 → 请确认全局提示词候选 → 然后开始对照评测`;
-      else if (approved) el('progress-text').textContent = `${approved} 条准则已通过 → 请生成并确认全局提示词候选 → 然后开始对照评测`;
-      else el('progress-text').textContent = '请先审核 Wiki 准则 → 通过后生成候选 → 确认后再开始对照评测';
-      el('step-cases-meta').textContent = `${state.cases.length} 条来源 · ${(state.replayCases || []).length} 道封存题`;
-      el('step-wiki-meta').textContent = `${approved} 条已通过`;
-      el('step-candidates-meta').textContent = globalCandidates.length ? '有候选待查看' : '看懂改动再确认';
-      el('step-results-meta').textContent = results.length ? `${results.length} 份已保存结果` : '尚无正式结果';
-    }
-    function renderCases() {
-      el('cases').replaceChildren();
-      el('case-count').textContent = state ? `${state.cases.length} 条来源 · ${(state.replayCases || []).length} 道封存题` : '尚未读取';
-      const split = state?.replaySplit;
-      el('split-info').textContent = split ? `训练 ${split.trainCaseIds.length} 条，留出 ${split.testCaseIds.length} 条${split.insufficientSamples ? '（不足6条，无独立留出集）' : ''}。留出不参与准则归纳；这不代表已产生可回放封存。` : '尚未固定训练与留出划分。';
-      if (!state) return;
-      for (const c of state.cases) {
-        const details = document.createElement('details'), source = c.source || {};
-        details.className = 'wiki-case-card';
-        const summary = document.createElement('summary');
-        const title = node('span', caseTitle(c)); title.className = 'wiki-case-title';
-        const meta = node('span', ''); meta.className = 'wiki-case-meta';
-        meta.append(badge(c.split === 'test' ? '留出' : '训练', c.split === 'test' ? 'is-holdout' : ''));
-        const replays = (state.replayCases || []).filter(replay => replay.sourceCaseId === c.id);
-        meta.append(badge(c.replayable === true ? '可回放' : '纯文本来源'));
-        if (replays.length) meta.append(badge(`${replays.length} 道可回放题`, 'is-replay'));
-        meta.append(node('span', `来源房间：${shortId(source.conversationId)}`));
-        summary.append(title, meta); details.append(summary);
-        const sourceLine = node('p', `来源房间：${source.conversationId || '未记录'}；来源项目：${source.projectId || '未绑定'}`);
-        sourceLine.className = 'wiki-case-source'; details.append(sourceLine);
-        for (const replay of replays) {
-          const replayCard = node('section', ''); replayCard.className = 'wiki-replay-card';
-          replayCard.append(node('h3', `同类封存任务 · ${categoryLabels[replay.category] || replay.category} · ${replay.split === 'test' ? '留出' : '训练'}`));
-          replayCard.append(node('p', replay.task));
-          replayCard.append(node('p', '这是用于评测的同类任务，不是原历史现场。'));
-          const technical = document.createElement('details'); technical.className = 'wiki-technical';
-          technical.append(node('summary', '封存技术详情'), node('pre', `固定提交：${replay.fixture.commit}\n检查点：${replay.request.association.checkpointId}`));
-          replayCard.append(technical); details.append(replayCard);
-        }
-        const content = node('pre', `实际问题：${c.actual}\n期望行为：${c.expected}\n消息${c.messageTruncated ? '（截断）' : ''}：\n${c.message}\n轨迹${c.traceTruncated ? '（截断）' : ''}（${c.traceState}）：\n${c.traceExcerpt}`);
-        content.className = 'wiki-case-content'; details.append(content);
-        const technical = document.createElement('details'); technical.className = 'wiki-technical';
-        technical.append(node('summary', '来源技术详情'), node('pre', `用例标识：${c.id}\n消息标识：${source.messageId || '未记录'}\n执行角色：${source.agentId || '未记录'}`));
-        details.append(technical); el('cases').append(details);
-      }
-    }
-    function renderWiki() {
-      el('versions').replaceChildren(); el('coverage').replaceChildren(); el('entries').replaceChildren();
-      if (!state) return;
-      state.versions.forEach((v, index) => {
-        const option = node('option', `版本 ${index + 1} · ${v.entries.length} 条准则 · ${v.createdAt}`);
-        option.value = v.id; option.selected = v.id === versionId; el('versions').append(option);
-      });
-      const v = state.versions.find(item => item.id === versionId);
-      if (!v) { el('coverage').textContent = '尚无 Wiki 版本。'; return; }
-      const assigned = new Set(v.entries.flatMap(entry => entry.caseIds));
-      el('coverage').append(node('p', `训练用例 ${v.caseIds.length} 条；已归类 ${assigned.size} 条；未归类 ${v.unclassified.length} 条。`));
-      for (const u of v.unclassified) el('coverage').append(node('p', `${caseById(u.caseId) ? caseTitle(caseById(u.caseId)) : '来源用例'}：未归类 — ${u.reason}`));
-      const technical = document.createElement('details'); technical.className = 'wiki-technical';
-      technical.append(node('summary', '版本技术详情'), node('p', `版本标识：${v.id}`)); el('coverage').append(technical);
-      for (const e of v.entries) {
-        const card = document.createElement('details'); card.className = 'wiki-entry-card settings-form';
-        card.dataset.wikiEntryCard = e.id; card.open = e.status === 'draft';
-        const summary = document.createElement('summary');
-        summary.append(node('span', e.title), badge(statusLabels[e.status] || e.status, e.status === 'approved' ? 'is-approved' : ''), node('span', `${e.caseIds.length} 条关联用例`));
-        card.append(summary);
-        const inputs = {};
-        for (const [field, label] of Object.entries({ title: '标题', failureMode: '失败模式', symptoms: '症状', rootCauseHypothesis: '根因假设', guideline: 'Prompt 准则（≤300字）' })) {
-          const wrap = node('label', label), input = document.createElement('textarea'); input.rows = field === 'title' ? 1 : 3;
-          input.value = e[field]; input.name = field; input.dataset.reviewed = String(e.status !== 'draft'); input.disabled = e.status !== 'draft';
-          inputs[field] = input; wrap.append(input); card.append(wrap);
-        }
-        const related = node('div', ''); related.className = 'wiki-related-cases';
-        related.append(node('p', `关联用例（${e.caseIds.length} 条）：`));
-        const list = document.createElement('ul');
-        for (const id of e.caseIds) list.append(node('li', caseById(id) ? caseTitle(caseById(id)) : '来源用例（技术详情见用例列表）'));
-        related.append(list); card.append(related);
-        const buttons = document.createElement('div'); buttons.className = 'button-row';
-        for (const [action, label] of [['save', '保存草稿'], ['approved', '通过'], ['rejected', '驳回']]) {
-          const button = node('button', label); button.type = 'button'; button.dataset.action = action; button.dataset.entry = e.id;
-          button.dataset.reviewed = String(e.status !== 'draft'); button.disabled = e.status !== 'draft';
-          button.addEventListener('click', () => { void review(e, inputs, action); }); buttons.append(button);
-        }
-        card.append(buttons); el('entries').append(card);
-      }
-    }
-    function showTarget() {
-      const target = state?.targets?.find(item => item.id === el('targets').value);
-      el('target-info').textContent = !target ? '暂无声明目标。' : target.kind === 'tool-description'
-        ? `${targetLabel(target)}：只生成候选并展示改动，本期不要求评测结论。` : `${targetLabel(target)}：只替换这一处，其余提示词、角色、工具和技能保持不变。`;
-      el('target-base').textContent = target?.baseText || '';
-    }
-    function showWikiEntry(selectedVersion, entryId) {
-      if (!state?.versions.some(item => item.id === selectedVersion)) return;
-      versionId = selectedVersion; render(); controls();
-      const entry = [...el('entries').querySelectorAll('[data-wiki-entry-card]')].find(item => item.dataset.wikiEntryCard === entryId);
-      if (entry) { entry.open = true; entry.scrollIntoView?.({ block: 'center' }); entry.querySelector('summary')?.focus(); }
-    }
-    function sourceButton(entry, selectedVersion) {
-      const link = node('a', `来源：${entry.title} · ${entry.caseIds.length} 条关联用例`);
-      link.href = '#wikiskill-wiki'; link.className = 'wiki-source-link'; link.dataset.wikiSourceEntry = entry.id;
-      link.addEventListener('click', event => { event.preventDefault(); showWikiEntry(selectedVersion, entry.id); }); return link;
-    }
-    function appendAddition(container, candidate, entries) {
-      const base = candidate.target?.baseText || '', full = String(candidate.candidateText || '');
-      const addition = base && full.startsWith(base) ? full.slice(base.length) : full;
-      const expectedAddition = `\n\nWikiSkill 已审核准则：\n${entries.map(entry => `- ${entry.guideline}`).join('\n')}`;
-      if (entries.length && addition === expectedAddition) {
-        const title = node('p', 'WikiSkill 已审核准则：'); title.className = 'wiki-addition-title';
-        const list = document.createElement('ol'); list.className = 'wiki-added-list';
-        for (const entry of entries) {
-          const item = node('li', ''); item.className = 'wiki-added-guideline';
-          item.append(node('p', entry.guideline), sourceButton(entry, candidate.versionId)); list.append(item);
-        }
-        container.append(title, list); return;
-      }
-      container.append(node('pre', addition));
-      if (entries.length) {
-        const sources = node('div', ''); sources.className = 'wiki-addition-sources';
-        for (const entry of entries) sources.append(sourceButton(entry, candidate.versionId));
-        container.append(sources);
-      }
-    }
-    function renderCandidates() {
-      const selected = el('targets').value;
-      el('targets').replaceChildren(); el('candidate-entries').replaceChildren(); el('candidates').replaceChildren();
-      for (const target of state?.targets || []) {
-        const option = node('option', targetLabel(target)); option.value = target.id; option.selected = target.id === selected; el('targets').append(option);
-      }
-      showTarget();
-      const approved = state?.versions.find(v => v.id === versionId)?.entries.filter(entry => entry.status === 'approved') || [];
-      if (!approved.length) el('candidate-entries').append(node('p', '当前版本没有已通过准则；请先完成 Wiki 审核。'));
-      for (const entry of approved) {
-        const label = node('label', ''), box = document.createElement('input'); box.type = 'checkbox'; box.value = entry.id;
-        box.addEventListener('change', controls); label.append(box, node('span', `${entry.title}（${entry.caseIds.length} 条关联用例）\n${entry.guideline}`)); el('candidate-entries').append(label);
-      }
-      const candidates = (state?.candidates || []).filter(candidate => candidate.kind === 'global-wiki-candidate-v1')
-        .slice().sort((a, b) => Number(a.status === 'deprecated') - Number(b.status === 'deprecated'));
-      if (!candidates.length) el('candidates').append(node('p', '尚无候选。可在下方选择目标和已通过准则生成草稿。'));
-      for (const candidate of candidates) {
-        const deprecated = candidate.status === 'deprecated', confirmed = candidate.status === 'confirmed';
-        const card = node('article', ''); card.className = `wiki-candidate-card${deprecated ? ' is-deprecated' : ''}`;
-        const heading = node('div', ''); heading.className = 'wiki-candidate-heading';
-        heading.append(node('h3', targetLabel(candidate.target)), badge(statusLabels[candidate.status] || candidate.status, confirmed ? 'is-approved' : '')); card.append(heading);
-        card.append(node('p', candidate.target?.kind === 'global-system-prompt'
-          ? '只修改所有 agent 共用的这一段系统提示词；其他角色、工具和配置保持不变。'
-          : '只修改这个工具的说明文字；工具参数、执行逻辑和其他提示词保持不变。'));
-        if (deprecated) card.append(node('p', '已废弃：所选工具用途与准则无关。原文和记录保留，不能再确认或用于评测。'));
-        const entries = candidate.entryIds.map(id => state.versions.find(v => v.id === candidate.versionId)?.entries.find(entry => entry.id === id)).filter(Boolean);
-        const compare = node('div', ''); compare.className = 'wiki-candidate-compare';
-        const original = node('section', ''); original.className = 'wiki-compare-pane wiki-original-pane';
-        const originalDetails = document.createElement('details'); originalDetails.dataset.wikiOriginal = ''; originalDetails.className = 'wiki-original-details';
-        originalDetails.append(node('summary', `原文 ${[...(candidate.target?.baseText || '')].length} 字（未改动，展开查看）`), node('pre', candidate.target?.baseText || '')); original.append(originalDetails);
-        const proposed = node('section', ''); proposed.className = 'wiki-compare-pane wiki-proposed-pane';
-        proposed.append(node('h4', entries.length ? `候选 · 新增 ${entries.length} 条准则` : '候选 · 新增内容'), node('p', '原文保持不变，以下为新增内容。'));
-        const addition = node('div', ''); addition.className = 'wiki-addition'; appendAddition(addition, candidate, entries); proposed.append(addition);
-        compare.append(original, proposed); card.append(compare);
-        const technical = document.createElement('details'); technical.className = 'wiki-technical';
-        technical.append(node('summary', '技术详情'), node('pre', `候选标识：${candidate.id}\n来源版本：${candidate.versionId}\n条目标识：${candidate.entryIds.join('、')}\n内容 hash：${candidate.candidateHash}`)); card.append(technical);
-        const action = node('div', ''); action.className = 'wiki-confirm-row';
-        const button = node('button', deprecated ? '已废弃，不可确认' : confirmed ? '已确认' : '确认此候选'); button.type = 'button';
-        button.dataset.wikiConfirmCandidate = ''; button.dataset.reviewed = String(candidate.status !== 'draft');
-        button.addEventListener('click', () => { void confirmCandidate(candidate); }); action.append(button);
-        const explanation = candidate.target?.kind === 'global-system-prompt'
-          ? confirmed ? '正式对照将使用 7 道题，原版本与候选各 3 次运行真实模型；页面不会自行启动评测。'
-            : '确认后才会安排正式对照：7 道题，原版本与候选各 3 次，使用真实模型。此按钮不会直接启动评测，也不会改生产提示词。'
-          : '工具描述本期只展示候选，不运行对照；确认不会修改生产工具说明。';
-        action.append(node('p', explanation)); card.append(action); el('candidates').append(card);
-      }
-    }
-    function renderResults() {
-      const container = el('results'); container.replaceChildren();
-      if (!state) { container.append(node('p', '尚未读取对照结果。')); return; }
-      const results = state.comparisons || [];
-      if (!results.length) { container.append(node('p', '尚未保存本轮全局提示词对照；历史筛选结果不冒充正式评测结果。')); return; }
-      container.append(node('p', '这里只展示已保存的真实对照。通过/计划包含错误与未运行；可评分通过率仅以通过+失败为分母，不保证提分。'));
-      container.append(node('p', '题组经原基线筛选，存在选择偏差；只复现了汇报难懂一类，接口膨胀探针与控制题不计作更多失败复现。'));
-      function appendTotals(parent, label, totals) {
-        const group = node('div', ''); group.className = 'wiki-result-totals'; group.append(node('h4', label));
-        for (const variant of ['original', 'candidate']) {
-          const t = totals[variant], rate = t.passRate === null ? 'N/A' : (100 * t.passRate).toFixed(1) + '%';
-          group.append(node('p', `${variant === 'original' ? '原版本' : '候选'}：${t.passed}/${t.planned} 通过，${t.failed} 失败，${t.errors} 错误，${t.notRun} 未运行；可评分通过率 ${rate}（${t.scored} 次）。`));
-        }
-        parent.append(group);
-      }
-      results.forEach((result, index) => {
-        const card = document.createElement('details'); card.open = results.length === 1; card.className = 'wiki-result-card';
-        card.append(node('summary', `${result.createdAt} · 第 ${index + 1} 份对照 · ${result.completed ? '已完整执行' : '执行不完整'}`));
-        const target = state.targets?.find(item => item.id === result.candidate.targetId);
-        card.append(node('p', `对照目标：${targetLabel(target || { kind: 'global-system-prompt' })}`));
-        card.append(node('p', `模型：${result.model}；已记录 ${result.modelCallsKnown} 次模型请求${result.callsUnavailable ? '（调用记录存在未知或不完整，不能视为零调用）' : ''}。未自动重试。`));
-        const technical = document.createElement('details'); technical.className = 'wiki-technical';
-        technical.append(node('summary', '对照技术详情'), node('pre', `结果标识：${result.id}\n候选标识：${result.candidate.id}\n目标标识：${result.candidate.targetId}\n候选 hash：${result.candidate.candidateHash}\n计划 hash：${result.planHash}`)); card.append(technical);
-        appendTotals(card, '总体', result.totals);
-        for (const [key, label] of [['train', '训练'], ['test', '留出']]) appendTotals(card, label, result.bySplit[key]);
-        for (const key of ['reproduction', 'probe', 'control']) appendTotals(card, categoryLabels[key], result.byCategory[key]);
-        for (const c of result.cases) {
-          const item = document.createElement('details'), source = caseById(c.sourceCaseId);
-          const status = { completed: '已完整执行', error: '错误', unsupported: '不支持', 'not-run': '未执行' }[c.status] || c.status;
-          item.append(node('summary', `${source ? caseTitle(source) : '来源用例'} · ${c.split === 'test' ? '留出' : '训练'} · ${categoryLabels[c.category]} · ${status}`));
-          if (c.reason) item.append(node('p', `原因：${c.reason}`));
-          item.append(node('p', `来源用例标识：${c.sourceCaseId}`));
-          appendTotals(item, '逐题', c.totals);
-          for (const r of c.runs) item.append(node('p', `${r.variant === 'original' ? '原版本' : '候选'} 第${r.iteration}次：${r.status}${r.reason ? ' · ' + r.reason : ''}`));
-          card.append(item);
-        }
-        const disclosure = { fewer_than_6_prepared_replays: '预检支持的封存不足6条', fewer_than_10_wiki_training_cases: 'Wiki训练用例不足10条' };
-        for (const key of result.disclosures || []) if (disclosure[key]) card.append(node('p', '披露：' + disclosure[key]));
-        container.append(card);
-      });
+    function renderHeader() {
+      $('#cnt-cases').textContent = D ? `${D.cases.length} 条` : '—';
+      $('#cnt-wiki').textContent = D ? `${entries().length} 条模式` : '—';
+      $('#cnt-targets').textContent = D ? `${activeCands().length} 个候选` : '—';
+      $('#cnt-impact').textContent = D ? `${(D.comparisons || []).length} 次评测` : '—';
+      $$('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === state.view)));
+      const step = nextStep(); $('#next-text').textContent = step.text; const button = $('#next-go'); button.dataset.go = step.hash;
+      if (step.target) button.dataset.target = step.target; else delete button.dataset.target;
+      if (step.group) button.dataset.group = step.group; else delete button.dataset.group;
     }
     function render() {
-      renderCases(); renderWiki(); renderCandidates(); renderResults(); renderProgress();
+      renderHeader(); VIEWS.forEach(view => { $('#view-' + view).hidden = view !== state.view; });
+      if (!D) { $('#wiki-list').innerHTML = ''; $('#wiki-page').innerHTML = '<p class="muted-note">尚未读取知识库。</p>'; $('#wiki-inbox').innerHTML = ''; $('#wiki-coverage').innerHTML = ''; return; }
+      ({ wiki: renderWiki, cases: renderCases, targets: renderTargets, impact: renderImpact })[state.view](); controls();
     }
-    async function generateCandidate() {
-      if (pending || !writable) return;
-      const entryIds = [...el('candidate-entries').querySelectorAll('input:checked')].map(input => input.value);
-      const targetId = el('targets').value, selected = versionId, revision = state.revision, seq = generation;
-      if (!entryIds.length || !targetId || !confirm('用所选已通过准则为此目标生成候选草稿？不会修改生产提示词或启动评测。')) return;
-      if (seq !== generation || selected !== versionId) return;
-      pending = true; notice('生成候选草稿…'); controls();
-      try {
-        const data = await fetchJson('/api/wikiskill/candidate', { method: 'POST', body: { confirmed: true, expectedRevision: revision, versionId: selected, entryIds, targetId } });
-        if (seq !== generation) return;
-        accept(data); notice('候选草稿已保存；请查看新增内容后确认，未修改生产提示词或启动评测。');
-      } catch { if (seq === generation) { writable = false; notice('生成被拒绝、失败或结果未知；未自动重试，请刷新核对。若仍被拒绝，请检查批准状态、目标版本或字面泄漏。'); } }
-      finally { if (seq === generation) { pending = false; controls(); } }
+    /* Knowledge base */
+    function wikiMatch(entry, ts) {
+      if (!ts.length) return { ok: true, why: [] };
+      const fields = [['标题', entry.title], ['失败模式', entry.failureMode], ['症状', entry.symptoms], ['根因', entry.rootCauseHypothesis], ['准则', entry.guideline]]
+        .concat(entry.caseIds.map(id => { const c = caseById.get(id); return [`用例 #${c?.n || '?'}`, `${c?.actual || ''} ${c?.expected || ''}`]; }));
+      const has = (value, term) => String(value).toLowerCase().includes(term);
+      const ok = ts.every(t => fields.some(([, value]) => has(value, t)));
+      return { ok, why: ok ? fields.filter(([, value]) => ts.some(t => has(value, t))).map(([key]) => key) : [] };
     }
-    async function confirmCandidate(candidate) {
-      if (pending || !writable || candidate.status !== 'draft') return;
-      const seq = generation, revision = state.revision;
-      const consequence = candidate.target?.kind === 'global-system-prompt'
-        ? '确认后才会安排正式对照：7 道题，原版本与候选各 3 次，使用真实模型。此操作本身不启动评测，也不修改生产提示词。'
-        : '工具描述本期只展示候选，不运行对照；此操作不会修改生产工具说明。';
-      if (!confirm(`确认 ${targetLabel(candidate.target)} 的这份候选？\n${consequence}`)) return;
-      if (seq !== generation) return;
-      pending = true; notice('确认候选…'); controls();
-      try {
-        const data = await fetchJson('/api/wikiskill/confirm-global-candidate', { method: 'POST', body: { confirmed: true,
-          candidateId: candidate.id, candidateHash: candidate.candidateHash, expectedRevision: revision } });
-        if (seq !== generation) return;
-        accept(data); notice('候选已确认；未修改生产提示词、未启动评测。');
-      } catch { if (seq === generation) { writable = false; notice('确认被拒绝、失败或结果未知；未自动重试，请刷新核对。'); } }
-      finally { if (seq === generation) { pending = false; controls(); } }
+    function evidenceIds(entry) {
+      const ids = new Set(entry.caseIds);
+      if (currentVersion()?.id === latestVersion()?.id) for (const c of D.cases) for (const m of caseState(c).memberships || []) if (m.entryId === entry.id) ids.add(c.id);
+      return [...ids];
+    }
+    const replaysFor = entry => (D.replayCases || []).filter(r => evidenceIds(entry).includes(r.sourceCaseId));
+    const candsUsing = entryId => (D.candidates || []).filter(c => c.kind === 'global-wiki-candidate-v1' && c.entryIds.includes(entryId));
+    const suggestionsFor = entryId => pendingSuggestions().filter(s => s.kind === 'assign' && s.entryId === entryId);
+    function inboxBox() {
+      const proposals = entries().filter(e => e.status === 'draft' && (e.suggestionIds || []).some(id => pendingSuggestions().some(s => s.id === id && s.kind === 'new')));
+      const assign = pendingSuggestions().filter(s => s.kind === 'assign'), raw = rawPending(), unfit = D.cases.filter(c => caseState(c).status === 'unfit');
+      const items = [
+        ...proposals.map(e => `<li><a href="#${esc(e.id)}" data-entry="${esc(e.id)}">新模式提议：${esc(e.title)}</a><span>待审核</span></li>`),
+        ...assign.map(s => { const c = caseById.get(s.caseId), e = entryById.get(s.entryId); return `<li><a href="#case-${c?.n}" data-case="${c?.n}">用例 #${c?.n} 建议归入${e ? `模式 ${e.n}` : '已有模式'}</a><span>待确认</span></li>`; }),
+        raw.length ? `<li><a href="#cases" data-group="inbox">${raw.length} 条新用例还没归纳</a><span>待归纳</span></li>` : '',
+        unfit.length ? `<li><a href="#cases" data-group="unfit">${unfit.length} 条未能归类</a><span>可手动归入</span></li>` : '',
+      ].join('');
+      if (!items) return '';
+      return `<div class="inbox-head"><h4>待你处理</h4></div><ul>${items}</ul><button type="button" class="btn small" data-induct ${!raw.length || pending || !writable ? 'disabled' : ''}>用模型归纳新用例</button><p class="inbox-note">归纳只提建议：归入已有模式、提议新模式，或标为未能归类。你确认后才生效，已审核的模式不会被改写。</p>`;
+    }
+    function renderWiki() {
+      const ts = terms(state.wikiQ), counts = { all: entries().length, approved: 0, draft: 0, rejected: 0 };
+      entries().forEach(e => { counts[e.status] = (counts[e.status] || 0) + 1; });
+      $('#wiki-seg').innerHTML = [['all', '全部'], ['approved', '已通过'], ['draft', '草稿'], ['rejected', '已驳回']].map(([key, label]) => `<button type="button" role="radio" data-wiki-status="${key}" aria-checked="${state.wikiStatus === key}">${label} ${counts[key] || 0}</button>`).join('');
+      const rows = entries().filter(e => state.wikiStatus === 'all' || e.status === state.wikiStatus).map(e => ({ e, m: wikiMatch(e, ts) })).filter(r => r.m.ok);
+      if (rows.length && !rows.some(r => r.e.id === state.entryId)) state.entryId = rows[0].e.id; entryById = new Map(entries().map((e, i) => { e.n = i + 1; return [e.id, e]; }));
+      $('#wiki-count').textContent = ts.length ? `找到 ${rows.length} 条模式` : `共 ${rows.length} 条模式 · 版本 ${currentVersion()?.id || '—'}`;
+      $('#wiki-list').innerHTML = rows.map(({ e, m }) => { const reps = replaysFor(e).length; return `<li><button type="button" class="entry-item" data-entry="${esc(e.id)}" aria-current="${e.id === state.entryId}"><span class="entry-title">${hl(e.title, ts)}</span><span class="entry-fm">${hl(e.failureMode, ts)}</span><span class="entry-meta">${pill(ENTRY_STATUS, e.status)}<span>${evidenceIds(e).length} 条用例</span><span>${reps ? `${reps} 道回放题` : '无回放题'}</span></span>${m.why.length ? `<span class="why">匹配：${esc(m.why.slice(0, 4).join(' · '))}</span>` : ''}</button></li>`; }).join('') || '<li class="empty-line">没有匹配的模式。换个说法试试，或者到「用例」里搜原话。</li>';
+      const hits = ts.length ? D.cases.filter(c => ts.every(t => `${c.actual} ${c.expected} ${c.source.conversationTitle || ''}`.toLowerCase().includes(t))) : [];
+      $('#wiki-casehits').hidden = !hits.length; $('#wiki-casehits').innerHTML = hits.length ? `<h4>用例原话里的匹配 · ${hits.length}</h4>` + hits.map(c => `<a href="#case-${c.n}" data-case="${c.n}"><span class="num">#${c.n}</span><span>${hl(c.actual, ts)}</span><span class="sub">${esc(caseState(c).status === 'holdout' ? '留出，不参与归纳' : caseState(c).status === 'assigned' ? '已归入模式' : caseState(c).status === 'suggested' ? '待归纳，有建议' : caseState(c).status === 'unfit' ? '未能归类' : '待归纳')}</span></a>`).join('') : '';
+      $('#wiki-inbox').innerHTML = inboxBox();
+      const train = D.cases.filter(c => c.split !== 'test'), assigned = train.filter(c => caseState(c).status === 'assigned'), unfit = train.filter(c => caseState(c).status === 'unfit'), inbox = train.filter(c => ['pending', 'suggested'].includes(caseState(c).status));
+      $('#wiki-coverage').innerHTML = `<h4>用例归类</h4><ul><li><b>${train.length}</b> 条训练用例，<b>${assigned.length}</b> 条已归入模式</li><li><a href="#cases" data-group="inbox"><b>${inbox.length}</b> 条待归纳</a> · <a href="#cases" data-group="unfit"><b>${unfit.length}</b> 条未能归类</a></li><li><a href="#cases" data-group="holdout"><b>${D.cases.filter(c => c.split === 'test').length}</b> 条留出用例</a>按设计不参与归纳</li></ul><label class="version-picker">查看版本 <select id="wiki-version">${D.versions.map(v => `<option value="${esc(v.id)}" ${v.id === currentVersion()?.id ? 'selected' : ''}>${esc(v.id)} · ${fmt(v.createdAt)}</option>`).join('')}</select></label><p class="ver">${esc(currentVersion()?.model || '未记录模型')} · 已通过条目内容冻结</p>`;
+      const entry = entryById.get(state.entryId); $('#wiki-page').innerHTML = entry ? entryPage(entry, ts) : '<p class="muted-note">没有可显示的模式。新用例归纳出的新模式建议会出现在这里。</p>';
+    }
+    function evidenceRow(c, ts) {
+      const replay = replayBySource.get(c.id); return `<li><a class="ev" href="#case-${c.n}" data-case="${c.n}"><span class="num">#${c.n}</span><span class="ev-actual">${hl(c.actual, ts)}</span><span class="ev-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</span><span class="chips"><span class="chip">${SPLIT[c.split]}</span><span class="chip">来自 ${esc(c.source.conversationTitle || '未命名房间')}</span>${replay ? catChip(replay) : ''}</span></a></li>`;
+    }
+    function suggestRow(suggestion) {
+      const c = caseById.get(suggestion.caseId); if (!c) return '';
+      return `<li class="suggest-row">${evidenceRow(c, [])}<p class="suggest"><span class="lbl">理由</span>${esc(suggestion.reason)}（把握：${esc(suggestion.confidence)}）</p><div class="row-actions"><button type="button" class="btn small primary" data-confirm-suggestion="${esc(suggestion.id)}">确认归入</button><button type="button" class="btn small" data-reject-suggestion="${esc(suggestion.id)}">不是这里</button></div></li>`;
+    }
+    function entryPage(entry, ts) {
+      const reps = replaysFor(entry), cands = candsUsing(entry.id), suggestions = suggestionsFor(entry.id), proposal = entry.status === 'draft' && (entry.suggestionIds || []).length;
+      const ids = evidenceIds(entry), editor = entry.status === 'draft';
+      return `<nav class="crumb"><a href="#wiki" data-go="wiki">知识库</a><span aria-hidden="true">›</span><span>${proposal ? '新模式提议' : `模式 ${entry.n} / ${entries().length}`}</span></nav>
+        <header class="page-head"><h2>${hl(entry.title, ts)}</h2><div class="page-meta">${pill(ENTRY_STATUS, entry.status)}<span>${esc(currentVersion().id)} 归纳</span>${entry.reviewedAt ? `<span>${fmt(entry.reviewedAt)} 通过审核</span>` : ''}</div>${proposal ? '<p class="muted-note">现有模式解释不了关联用例，所以模型提议新建这一条。通过审核后才能用于候选；确认前不会改变用例归属。</p>' : ''}${editor ? `<div class="page-actions"><button type="button" class="btn primary" data-review="approved">通过</button><button type="button" class="btn" data-review="save">保存草稿</button><button type="button" class="btn ghost" data-review="rejected">驳回</button></div>` : '<p class="muted-note">已审核条目已冻结；增量归纳和手动归属不会改写这条内容。</p>'}</header>
+        ${editor ? editForm(entry) : `<dl class="facts"><div><dt>失败模式</dt><dd>${hl(entry.failureMode, ts)}</dd></div><div><dt>典型症状</dt><dd>${hl(entry.symptoms, ts)}</dd></div><div><dt>根因假设</dt><dd>${hl(entry.rootCauseHypothesis, ts)}</dd></div></dl><section class="guideline" aria-label="准则"><h3>准则</h3><p class="hint">${entry.status === 'approved' ? '这句话可以用于生成候选提示词' : '通过审核后，这句话才可以写进候选提示词'}</p><p class="gl-text">${hl(entry.guideline, ts)}</p></section>`}
+        <section class="block"><div class="block-head"><h3>证据用例 <span class="count">${ids.length}</span></h3><a class="hint" href="#cases" data-group="${esc(entry.id)}">在用例页按此模式查看</a></div>${ids.length ? `<ul class="evidence">${ids.map(id => caseById.get(id)).filter(Boolean).map(c => evidenceRow(c, ts)).join('')}</ul>` : '<p class="muted-note">还没有确认归属的证据用例。</p>'}</section>
+        ${suggestions.length ? `<section class="block"><div class="block-head"><h3>建议加入的用例 <span class="count">${suggestions.length}</span></h3><span class="hint">你确认后才算证据</span></div><ul class="evidence">${suggestions.map(suggestRow).join('')}</ul></section>` : ''}
+        <section class="block"><div class="block-head"><h3>回放题 <span class="count">${reps.length}</span></h3><span class="hint">评测时用这些题检验这条准则</span></div>${reps.length ? `<ul class="replays">${reps.map(r => { const c = caseById.get(r.sourceCaseId), totals = comparisonCase(r); return `<li>${catChip(r)}<span class="task">“${esc(r.task)}”<span class="res"> · 用例 #${c?.n} · ${SPLIT[r.split]}</span></span><span class="res">原版 ${score(totals, 'original')} · 候选 ${score(totals, 'candidate')}</span></li>`; }).join('')}</ul>` : '<p class="muted-note">这个模式还没有回放题，评测暂时验证不了这条准则。</p>'}</section>
+        <section class="block"><div class="block-head"><h3>用在哪些候选 <span class="count">${cands.length}</span></h3></div>${cands.length ? `<ul class="uses">${cands.map(c => { const target = targetById.get(c.targetId); return `<li><a href="#targets" data-target="${esc(c.targetId)}">${esc(targetFull(target))}</a>${pill(CAND_STATUS, c.status)}<span class="res">${fmt(c.createdAt)}</span></li>`; }).join('')}</ul>` : '<p class="muted-note">还没有候选用到这条准则。</p>'}</section>`;
+    }
+    function editForm(entry) {
+      const area = (name, label, rows) => `<label class="field">${label}<textarea name="${name}" rows="${rows}" ${pending || !writable ? 'disabled' : ''}>${esc(entry[name])}</textarea></label>`;
+      return `<div class="edit-form">${area('title', '标题', 1)}${area('failureMode', '失败模式', 3)}${area('symptoms', '典型症状', 3)}${area('rootCauseHypothesis', '根因假设', 3)}${area('guideline', '准则（不超过 300 字）', 3)}</div>`;
+    }
+    /* Cases */
+    function caseMatch(c, ts) { if (!ts.length) return true; const replay = replayBySource.get(c.id); const hay = [c.actual, c.expected, c.source.conversationTitle || '', replay?.task || '', `#${c.n}`].join(' ').toLowerCase(); return ts.every(t => hay.includes(t)); }
+    function inGroup(c, group) { const s = caseState(c); if (group === 'all') return true; if (group === 'inbox') return ['pending', 'suggested'].includes(s.status); if (group === 'holdout' || group === 'unfit') return s.status === group; return (s.memberships || []).some(m => m.entryId === group); }
+    const STATE_CHIP = { holdout: '<span class="chip holdout">留出 · 不参与归纳</span>', pending: '<span class="chip pending">待归纳</span>', suggested: '<span class="chip pending">待归纳 · 有建议</span>', unfit: '<span class="chip warn">未能归类</span>' };
+    function suggestionLine(c) {
+      const s = suggestionFor(c); if (!s) return '';
+      if (s.kind === 'assign') return `<p class="suggest"><span class="lbl">建议</span>归入 ${entryChip(s.entryId)}（把握：${esc(s.confidence)}）。${esc(s.reason)}</p>`;
+      if (s.kind === 'new') return `<p class="suggest"><span class="lbl">建议</span>新建模式 ${entryChip(s.entryId)}。${esc(s.reason)}</p>`;
+      return `<p class="suggest"><span class="lbl">归纳结果</span>${esc(s.reason)}（把握：${esc(s.confidence)}）</p>`;
+    }
+    function membershipSource(c) {
+      const s = caseState(c); if (s.status === 'holdout') return '按固定种子划入留出集';
+      if (!s.memberships?.length) return s.status === 'suggested' ? '模型建议，待确认' : s.status === 'unfit' ? '模型归纳后未能归类' : '尚未归入模式';
+      return s.memberships.map(m => m.source === 'manual' ? `手动调整 · ${fmt(m.at)}` : m.source === 'model-confirmed' ? `模型建议经确认 · ${fmt(m.at)}` : `${latestVersion()?.id || ''} 模型归纳，随模式审核通过`).join('；');
+    }
+    function manualControls(c) {
+      const s = caseState(c); if (s.status === 'holdout') return '';
+      const selected = s.memberships?.[0]?.entryId || '';
+      return `<div class="manual-controls"><select data-manual-entry aria-label="选择归属模式"><option value="">选择已通过模式</option>${approvedEntries().map(e => `<option value="${esc(e.id)}" ${selected === e.id ? 'selected' : ''}>${esc(e.title)}</option>`).join('')}</select><button type="button" class="btn small" data-manual-assign>${selected ? '改归属' : '手动归入'}</button>${s.memberships?.length ? '<button type="button" class="btn small ghost" data-manual-remove>移出模式</button>' : ''}</div>`;
+    }
+    function caseCard(c, ts) {
+      const replay = replayBySource.get(c.id), s = caseState(c), suggestion = suggestionFor(c), owner = s.status === 'assigned' ? s.memberships.map(m => entryChip(m.entryId)).join('') : STATE_CHIP[s.status];
+      return `<article class="case" id="c-${c.n}"><div class="case-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4></div><p class="case-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</p>${suggestionLine(c)}<div class="chips">${owner}<span class="chip">${SPLIT[c.split]}</span><span class="chip">来自 ${hl(c.source.conversationTitle || '未命名房间', ts)}</span>${replay ? catChip(replay) : ''}</div>
+        <div class="row-actions">${suggestion?.kind === 'assign' ? `<button type="button" class="btn small primary" data-confirm-suggestion="${esc(suggestion.id)}">确认归入</button><button type="button" class="btn small" data-reject-suggestion="${esc(suggestion.id)}">不是这里</button>` : ''}${suggestion?.kind === 'new' ? entryChip(suggestion.entryId) : ''}</div>${manualControls(c)}
+        <details class="more"><summary>详情</summary><dl class="kv">${replay ? `<div><dt>回放任务</dt><dd>“${hl(replay.task, ts)}”</dd></div>` : ''}<div><dt>归属来源</dt><dd>${esc(membershipSource(c))}</dd></div><div><dt>标记时间</dt><dd>${fmt(c.createdAt)}</dd></div><div><dt>来源消息</dt><dd class="mono">${esc(c.source.messageId || '未记录')}</dd></div><div><dt>用例 ID</dt><dd class="mono">${esc(c.id)}</dd></div>${replay ? `<div><dt>固定提交</dt><dd class="mono">${esc(replay.fixture.commit)}</dd></div><div><dt>检查点</dt><dd class="mono">${esc(replay.request.association.checkpointId)}</dd></div>` : ''}</dl>${c.message || c.traceExcerpt ? `<details class="more"><summary>来源回复与轨迹摘录</summary><pre class="case-original">${esc(`来源回复${c.messageTruncated ? '（截断）' : ''}：\n${c.message}\n\n轨迹${c.traceTruncated ? '（截断）' : ''}（${c.traceState}）：\n${c.traceExcerpt}`)}</pre></details>` : ''}</details></article>`;
+    }
+    function renderCases() {
+      $('#cases-group').innerHTML = [['all', '全部'], ['inbox', '待归纳'], ...approvedEntries().map(e => [e.id, `模式 ${e.n || ''} · ${e.title}`]), ['holdout', '留出 · 不参与归纳'], ['unfit', '未能归类']].map(([value, label]) => `<option value="${esc(value)}" ${state.casesGroup === value ? 'selected' : ''}>${esc(label)}</option>`).join('');
+      $('#cases-split').value = state.casesSplit; $('#cases-replay').checked = state.casesReplay;
+      $('#cases-mode').innerHTML = [['group', '按模式分组'], ['list', '列表']].map(([key, label]) => `<button type="button" role="radio" data-cases-mode="${key}" aria-checked="${state.casesMode === key}">${label}</button>`).join('');
+      const ts = terms(state.casesQ), visible = D.cases.filter(c => caseMatch(c, ts) && inGroup(c, state.casesGroup) && (state.casesSplit === 'all' || c.split === state.casesSplit) && (!state.casesReplay || replayBySource.has(c.id)));
+      const filtered = ts.length || state.casesGroup !== 'all' || state.casesSplit !== 'all' || state.casesReplay;
+      const train = D.cases.filter(c => c.split !== 'test'), assigned = train.filter(c => caseState(c).status === 'assigned'), unfit = train.filter(c => caseState(c).status === 'unfit'), inbox = train.filter(c => ['pending', 'suggested'].includes(caseState(c).status));
+      $('#cases-summary').textContent = `${filtered ? `显示 ${visible.length} / ${D.cases.length} 条 · ` : ''}训练 ${train.length} 条（已归入模式 ${assigned.length}）· 留出 ${D.cases.filter(c => c.split === 'test').length} 条 · 有回放题 ${D.replayCases.length} 条 · 待归纳 ${inbox.length} 条、未能归类 ${unfit.length} 条`;
+      let html;
+      if (state.casesMode === 'list') html = visible.length ? `<div class="case-grid">${visible.map(c => caseCard(c, ts)).join('')}</div>` : '<p class="muted-note">没有符合条件的用例。</p>';
+      else {
+        const groups = /** @type {any[]} */ ([]);
+        groups.push({ key: 'inbox', title: '待归纳', action: true, keep: true, note: '新用例来自聊天里的「标记问题」：只填实际问题和期望行为，不用判断模式。模型只给建议，你确认后才生效；也可以直接手动归入。', items: visible.filter(c => inGroup(c, 'inbox')) });
+        for (const e of approvedEntries()) groups.push({ key: e.id, title: `模式 ${e.n || ''} · ${e.title}`, link: e.id, items: visible.filter(c => inGroup(c, e.id)) });
+        groups.push({ key: 'holdout', title: '留出 · 不参与归纳', note: '这些用例不给归纳模型看，只用来检查候选是不是只记住了训练用例。', items: visible.filter(c => inGroup(c, 'holdout')) });
+        groups.push({ key: 'unfit', title: '未能归类', keep: true, note: '归纳过、但不属于任何现有模式的用例。你可以随时手动归入。', items: visible.filter(c => inGroup(c, 'unfit')) });
+        const visibleGroups = groups.filter(group => (state.casesGroup === 'all' || state.casesGroup === group.key) && (group.items.length || (group.keep && !filtered)));
+        html = visibleGroups.length ? visibleGroups.map(group => `<section class="group"><div class="group-head"><h3>${esc(group.title)}</h3><span class="gcount">${group.items.length} 条</span>${group.link ? `<a href="#${esc(group.link)}" data-entry="${esc(group.link)}">打开模式页</a>` : ''}${group.action ? `<button type="button" class="btn small" data-induct ${!rawPending().length || pending || !writable ? 'disabled' : ''}>用模型归纳新用例</button>` : ''}</div>${group.note ? `<p class="group-note">${esc(group.note)}</p>` : ''}${group.items.length ? `<div class="case-grid">${group.items.map(c => caseCard(c, ts)).join('')}</div>` : ''}</section>`).join('') : '<p class="muted-note">没有符合条件的用例。</p>';
+      }
+      $('#cases-body').innerHTML = html;
+      if (state.focusCase) { const el = $('#c-' + state.focusCase); state.focusCase = null; if (el) { el.scrollIntoView({ block: 'center', behavior: 'auto' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1900); } }
+    }
+    /* Optimization targets */
+    function candidateCard(candidate, target) {
+      const deprecated = candidate.status === 'deprecated', confirmed = candidate.status === 'confirmed', isGlobal = target.kind === 'global-system-prompt';
+      const sources = candidate.entryIds.map(id => findEntry(id, candidate.versionId)).filter(x => x.entry);
+      const foot = deprecated ? `<button type="button" class="btn" data-confirm-candidate="${esc(candidate.id)}" disabled>已废弃，不能确认</button>` : `<button type="button" class="btn primary" data-confirm-candidate="${esc(candidate.id)}" ${confirmed || pending || !writable ? 'disabled' : ''}>${confirmed ? '已确认' : '确认此候选'}</button><p>${isGlobal ? `确认后开始对照评测：${D.replayCases.length} 道回放题，原版本和候选各跑 3 次真实模型；结果记到评测记录和对应的模式页。不会修改生产提示词。` : '工具描述的候选本期只展示，确认后不会自动评测，也不会修改生产配置。'}</p>`;
+      return `<section class="cand${deprecated ? ' is-dep' : ''}"><header class="cand-head"><h3>候选</h3>${pill(CAND_STATUS, candidate.status)}<time>${fmt(candidate.createdAt)} 生成</time></header>${deprecated ? '<p class="dep-note">目标选错了：list_rooms 是列出房间的工具，和“汇报先给结论”这类准则无关。记录保留，不能确认。</p>' : ''}<p class="basis">依据 ${sources.length} 条模式 ${sources.map(({ entry, version }) => entryChip(entry.id, version.id)).join('')}</p><div class="compare"><details class="orig"><summary>原文 ${[...(candidate.target?.baseText || target.baseText || '')].length} 字 · 不改动（展开查看）</summary><pre class="text">${esc(candidate.target?.baseText || target.baseText || '')}</pre></details><div class="added"><h4>在原文末尾新增 ${sources.length} 条准则</h4><ol>${sources.map(({ entry, version }) => `<li><p>${esc(entry.guideline)}</p><a class="src-link" href="#${esc(entry.id)}" data-entry="${esc(entry.id)}" data-version="${esc(version.id)}">来自模式 ${(version.entries.findIndex(e => e.id === entry.id) + 1)} · ${esc(entry.title)}</a></li>`).join('')}</ol></div></div><footer class="cand-foot">${foot}</footer><details class="more"><summary>技术详情</summary><dl class="kv"><div><dt>候选 ID</dt><dd class="mono">${esc(candidate.id)}</dd></div><div><dt>来源版本</dt><dd class="mono">${esc(candidate.versionId)}</dd></div><div><dt>内容 hash</dt><dd class="mono">${esc(candidate.candidateHash)}</dd></div></dl></details></section>`;
+    }
+    function renderTargets() {
+      const rank = target => { const cs = candsFor(target.id); return cs.some(c => c.status !== 'deprecated') ? 0 : cs.length ? 1 : 2; };
+      const item = target => { const cs = candsFor(target.id), live = cs.filter(c => c.status !== 'deprecated').length; return `<button type="button" class="titem" data-target="${esc(target.id)}" aria-current="${target.id === state.targetId}"><span class="tname">${esc(targetLabel(target))}</span><span class="tlen">原文 ${[...(target.baseText || '')].length} 字${cs.length ? ` · ${cs.length} 个候选` : ''}</span>${live ? '<span class="pill warn">待确认</span>' : cs.length ? '<span class="pill">已废弃</span>' : ''}</button>`; };
+      $('#targets-list').innerHTML = [['global-system-prompt', '全局系统提示词'], ['tool-description', '工具描述']].map(([kind, label]) => `<div class="tgroup"><h4>${label}</h4>${D.targets.filter(t => t.kind === kind).sort((a, b) => rank(a) - rank(b)).map(item).join('')}</div>`).join('') + '<p class="side-note">每个候选只改一个对象，其余提示词、角色和工具保持不变。</p>';
+      const target = targetById.get(state.targetId) || D.targets[0]; if (!target) { $('#target-page').innerHTML = '<p class="muted-note">尚未声明优化对象。</p>'; return; }
+      const candidates = candsFor(target.id).sort((a, b) => Number(a.status === 'deprecated') - Number(b.status === 'deprecated'));
+      const about = target.kind === 'global-system-prompt' ? '所有 agent 每一轮都会读到这段话，改动会影响所有角色。' : 'agent 决定要不要、怎么调用这个工具时，会读这段说明。';
+      $('#target-page').innerHTML = `<nav class="crumb"><a href="#targets" data-go="targets">优化对象</a><span aria-hidden="true">›</span><span>${target.kind === 'global-system-prompt' ? '全局系统提示词' : '工具描述'}</span></nav><header class="page-head"><h2>${esc(targetFull(target))}</h2><p class="lede">${about}</p></header>${candidates.length ? candidates.map(c => candidateCard(c, target)).join('') : '<p class="muted-note">还没有候选。从知识库里选已通过的模式，就能为它生成一份候选。</p>'}
+        <details class="generator"><summary data-show-generator>从已通过的模式生成候选</summary><p class="hint">只替换当前对象；生成草稿不会调用模型、启动评测或修改生产配置。</p><div class="entry-picker">${approvedEntriesForSelection().map(e => `<label><input type="checkbox" data-candidate-entry="${esc(e.id)}"><span><b>${esc(e.title)}</b><br><span class="hint">${esc(e.guideline)}</span></span></label>`).join('') || '<p class="muted-note">当前版本没有已通过模式。</p>'}</div><div><button type="button" class="btn" data-generate-candidate disabled>生成候选草稿</button></div></details>`;
+    }
+    function approvedEntriesForSelection() { return entries().filter(e => e.status === 'approved'); }
+    /* Evaluation and evolution */
+    function latestComparison() { return (D?.comparisons || []).at(-1) || null; }
+    function comparisonCase(replay) { const result = latestComparison(); return result?.cases.find(c => c.sourceCaseId === replay.sourceCaseId) || null; }
+    function score(record, variant) { const t = record?.totals?.[variant]; return t ? `${t.passed}/${t.planned}` : '—/3'; }
+    function scoreCell(record, variant) { const t = record?.totals?.[variant]; if (!t) return '<span class="pending">—/3</span>'; return `${t.passed}/${t.planned}${t.errors ? `<span class="run-issues">错误 ${t.errors}</span>` : ''}${t.notRun ? `<span class="run-issues">未运行 ${t.notRun}</span>` : ''}`; }
+    function renderImpact() {
+      const order = { reproduction: 0, probe: 1, control: 2 }, result = latestComparison();
+      const reps = D.replayCases.slice().sort((a, b) => order[a.category] - order[b.category] || caseById.get(a.sourceCaseId).n - caseById.get(b.sourceCaseId).n);
+      const rows = reps.map(replay => { const c = caseById.get(replay.sourceCaseId), s = caseState(c), record = comparisonCase(replay); const owner = s.memberships?.length ? s.memberships.map(m => entryChip(m.entryId)).join(' ') : '<span class="chip holdout">留出</span>'; return `<tr><td>“${esc(replay.task)}” <a href="#case-${c.n}" data-case="${c.n}" class="res">用例 #${c.n}</a></td><td>${catChip(replay)}</td><td>${SPLIT[replay.split]}</td><td>${owner}</td><td class="n">${scoreCell(record, 'original')}</td><td class="n">${scoreCell(record, 'candidate')}</td></tr>`; }).join('');
+      const total = reps.length * 3, global = globalTarget(), ready = (D.candidates || []).find(c => c.targetId === global?.id && c.status === 'draft');
+      const totals = result?.totals;
+      $('#impact-runs').innerHTML = `${!result ? `<div class="empty-state"><p><b>还没有评测结果。</b>${ready ? `确认全局提示词候选后开始：${reps.length} 道回放题，原版本和候选各跑 3 次。` : '有已确认的候选后才能开始评测。'}</p>${ready ? `<button type="button" class="btn small" data-go="targets" data-target="${esc(global.id)}">去确认候选</button>` : ''}</div>` : `<p class="hint">${esc(result.createdAt)} · ${esc(result.model)} · 已记录 ${result.modelCallsKnown} 次模型请求。${result.completed ? '所有计划轮次已执行完成。' : '执行不完整；错误和未运行不会算作通过。'}</p>`}<div class="table-wrap"><table class="runs"><thead><tr><th>回放题</th><th>类型</th><th>集合</th><th>对应模式</th><th class="n">原版通过</th><th class="n">候选通过</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="4">合计 · 复现 ${reps.filter(r => r.category === 'reproduction').length} · 探针 ${reps.filter(r => r.category === 'probe').length} · 控制 ${reps.filter(r => r.category === 'control').length}</td><td class="n">${totals ? scoreCell({ totals }, 'original') : `<span class="pending">—/${total}</span>`}</td><td class="n">${totals ? scoreCell({ totals }, 'candidate') : `<span class="pending">—/${total}</span>`}</td></tr></tfoot></table></div><ul class="legend"><li><b>复现题</b>原版会犯的错，看候选能不能修好</li><li><b>探针题</b>原版偶尔会犯，用来观察</li><li><b>控制题</b>原版本来做得对，看候选会不会改坏</li><li><b>留出</b>不参与归纳，检查候选是不是只记住了训练用例</li><li><b>解读边界</b>题组经原基线筛选，存在选择偏差；只复现了汇报难懂一类，不保证提分。</li></ul>`;
+      renderTimeline();
+    }
+    function renderTimeline() {
+      const events = [], byCat = key => D.replayCases.filter(r => r.category === key).length;
+      if (D.cases.length) events.push({ at: latest(D.cases.map(c => c.createdAt)), kind: '用例', text: `保存 ${D.cases.length} 条真实用例；新标记用例默认进入训练集` });
+      if (D.replaySplit) events.push({ at: D.replaySplit.createdAt, kind: '划分', text: `固定留出集 ${D.cases.filter(c => c.split === 'test').map(c => '#' + c.n).join(' ')}，不参与归纳` });
+      for (const version of D.versions) events.push({ at: version.createdAt, kind: '知识库', text: `${version.id}：从 ${version.caseIds.length} 条训练用例归纳出 ${version.entries.length} 条模式，未归类 ${version.unclassified.length} 条` });
+      if (D.replayCases.length) events.push({ at: latest(D.replayCases.map(r => r.createdAt)), kind: '回放题', text: `封存 ${D.replayCases.length} 道回放题（复现 ${byCat('reproduction')} · 探针 ${byCat('probe')} · 控制 ${byCat('control')}）` });
+      for (const version of D.versions) for (const entry of version.entries.filter(e => e.reviewedAt)) events.push({ at: entry.reviewedAt, kind: '审核', text: `模式「${entry.title}」${entry.status === 'approved' ? '通过审核' : '已驳回'}` });
+      for (const candidate of D.candidates.filter(c => c.kind === 'global-wiki-candidate-v1')) { const target = targetById.get(candidate.targetId); events.push({ at: candidate.createdAt, kind: '候选', text: `生成候选：${targetFull(target)}（${candidate.entryIds.length} 条准则）` }); if (candidate.confirmedAt) events.push({ at: candidate.confirmedAt, kind: '确认', text: `确认候选：${targetFull(target)}` }); if (candidate.deprecatedAt) events.push({ at: candidate.deprecatedAt, kind: '废弃', text: `废弃用途不符的候选：${targetFull(target)}` }); }
+      for (const result of D.comparisons || []) events.push({ at: result.createdAt, kind: '评测', text: `保存对照结果：原版 ${result.totals.original.passed}/${result.totals.original.planned}，候选 ${result.totals.candidate.passed}/${result.totals.candidate.planned}` });
+      const explicit = new Set();
+      for (const event of D.events || []) {
+        if (event.runId) explicit.add(event.runId);
+        const caseNumbers = (event.caseIds || []).map(id => '#' + caseById.get(id)?.n).join(' ');
+        const labels = { 'case-marked': ['标记', `新用例进入待归纳 ${caseNumbers}`], 'induction-run': ['归纳', `模型完成一次增量归纳 ${caseNumbers}；只保存建议`], 'suggestion-confirmed': ['归属', `确认模型建议 ${caseNumbers}`], 'suggestion-rejected': ['归属', `否决模型建议 ${caseNumbers}`], 'manual-assigned': ['归属', `手动归入模式 ${caseNumbers}`], 'manual-removed': ['归属', `手动移出模式 ${caseNumbers}`] };
+        const label = labels[event.type]; if (label) events.push({ at: event.createdAt, kind: label[0], text: label[1] });
+      }
+      for (const run of D.inductionRuns || []) if (!explicit.has(run.id)) events.push({ at: run.createdAt, kind: '归纳', text: `模型完成一次增量归纳（${run.caseIds.length} 条用例）；只保存建议` });
+      events.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+      $('#impact-log').innerHTML = `<li class="now"><time>现在</time><span><span class="kind">等待</span>${esc(nextStep().text)}</span></li>` + events.map(event => `<li><time>${fmt(event.at)}</time><span><span class="kind">${esc(event.kind)}</span>${esc(event.text)}</span></li>`).join('');
+    }
+    /* API and controls */
+    function accept(data) {
+      if (!data || data.scope !== 'global' || data.projectId !== undefined || data.schemaVersion !== 1 || !Number.isSafeInteger(data.revision) || !Array.isArray(data.cases) || !Array.isArray(data.versions)) throw Error('invalid_wiki_response');
+      D = data; writable = true;
+      if (!D.versions.some(v => v.id === versionId)) versionId = D.versions.at(-1)?.id || '';
+      derive(); render();
+    }
+    function controls() {
+      root.setAttribute('aria-busy', String(pending));
+      $$('[data-induct]').forEach(button => { button.disabled = pending || !writable || !rawPending().length; });
+      $$('[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-generate-candidate]').forEach(button => { button.disabled = pending || !writable || (button.hasAttribute('data-generate-candidate') && !$$('[data-candidate-entry]:checked').length); });
+      $$('[data-confirm-candidate]').forEach(button => { const candidate = D?.candidates.find(c => c.id === button.dataset.confirmCandidate); button.disabled = pending || !writable || candidate?.status !== 'draft'; });
+      $$('.edit-form textarea').forEach(input => { input.disabled = pending || !writable; });
+      $('#wsk-refresh').disabled = pending;
     }
     async function load() {
-      const seq = ++generation; state = null; writable = false; pending = true;
-      render(); notice('读取全局用例与准则…'); controls();
-      try {
-        const data = await fetchJson('/api/wikiskill');
-        if (seq !== generation) return;
-        accept(data); notice('只读加载完成；未调用模型。');
-      } catch { if (seq === generation) notice('读取失败；未修改 Wiki。'); }
+      const seq = ++generation; D = null; writable = false; pending = true; derive(); render(); controls();
+      try { const data = await fetchJson('/api/wikiskill'); if (seq !== generation) return; accept(data); toast('已读取真实数据；页面刷新不会调用模型。'); }
+      catch { if (seq === generation) toast('读取失败；未修改 Wiki。'); }
       finally { if (seq === generation) { pending = false; controls(); } }
     }
-    async function review(entry, inputs, action) {
-      if (pending || !writable || entry.status !== 'draft') return;
-      const seq = generation, selected = versionId, revision = state.revision;
-      const patch = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value]));
-      if (!patch.guideline.trim() || [...patch.guideline].length > 300) { notice('准则须为1–300字。'); return; }
-      if (action !== 'save' && !confirm(`确认${action === 'approved' ? '通过' : '驳回'} ${patch.title}？审核后冻结，不能覆盖。\n准则：${patch.guideline}`)) return;
-      if (seq !== generation || selected !== versionId) return;
-      pending = true; notice('保存中…'); controls();
-      try {
-        const data = await fetchJson('/api/wikiskill/review', { method: 'POST', body: { confirmed: true, versionId: selected,
-          entryId: entry.id, expectedRevision: revision, patch, ...(action === 'save' ? {} : { decision: action }) } });
-        if (seq !== generation) return;
-        accept(data); notice('已保存；未修改 prompt 或启动评测。');
-      } catch {
-        if (seq === generation) { writable = false; notice('保存失败或结果未知；未自动重试。草稿保留在页面，请刷新核对最新状态。'); }
-      } finally { if (seq === generation) { pending = false; controls(); } }
+    async function mutate(url, body, success) {
+      if (pending || !writable) return;
+      const seq = generation, expectedRevision = D.revision; pending = true; controls();
+      try { const data = await fetchJson(url, { method: 'POST', body: { confirmed: true, expectedRevision, ...body } }); if (seq !== generation) return; accept(data); toast(success); }
+      catch { if (seq === generation) { writable = false; toast('操作被拒绝、失败或结果未知；未自动重试，请刷新核对。'); } }
+      finally { if (seq === generation) { pending = false; controls(); } }
     }
-    el('targets').addEventListener('change', () => { showTarget(); controls(); });
-    el('generate').addEventListener('click', () => { void generateCandidate(); });
-    el('refresh').addEventListener('click', () => { void load(); });
-    el('versions').addEventListener('change', () => { versionId = el('versions').value; render(); controls(); });
+    async function review(entry, decision) {
+      if (entry.status !== 'draft' || pending || !writable) return;
+      const patch = {};
+      for (const field of ['title', 'failureMode', 'symptoms', 'rootCauseHypothesis', 'guideline']) patch[field] = root.querySelector(`[name="${field}"]`)?.value ?? entry[field];
+      if (!patch.guideline.trim() || [...patch.guideline].length > 300) { toast('准则须为 1–300 字。'); return; }
+      if (decision !== 'save' && !confirmAction(`确认${decision === 'approved' ? '通过' : '驳回'}「${patch.title}」？审核后内容冻结。`)) return;
+      await mutate('/api/wikiskill/review', { versionId: currentVersion().id, entryId: entry.id, patch, ...(decision === 'save' ? {} : { decision }) }, decision === 'save' ? '草稿已保存。' : '审核结果已保存；未修改生产提示词或启动评测。');
+    }
+    root.addEventListener('click', event => {
+      const el = event.target.closest('[data-tab],[data-go],[data-entry],[data-case],[data-group],[data-target],[data-q],[data-wiki-status],[data-cases-mode],[data-induct],[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-confirm-candidate],[data-generate-candidate]');
+      if (!el || el.disabled || !D) return;
+      if (el.dataset.tab) { go(el.dataset.tab); return; }
+      if (el.dataset.q !== undefined) { state.wikiQ = el.dataset.q; $('#wiki-q').value = state.wikiQ; renderWiki(); $('#wiki-q').focus(); return; }
+      if (el.dataset.wikiStatus) { state.wikiStatus = el.dataset.wikiStatus; renderWiki(); return; }
+      if (el.dataset.casesMode) { state.casesMode = el.dataset.casesMode; renderCases(); return; }
+      if (el.dataset.group) { event.preventDefault(); Object.assign(state, { casesGroup: el.dataset.group, casesQ: '', casesSplit: 'all', casesReplay: false }); $('#cases-q').value = ''; go('cases'); return; }
+      if (el.dataset.case) { event.preventDefault(); go('case-' + el.dataset.case); return; }
+      if (el.dataset.entry) { event.preventDefault(); if (el.dataset.version) versionId = el.dataset.version; state.entryId = el.dataset.entry; derive(); go(el.dataset.entry); if (window.matchMedia?.('(max-width: 860px)').matches) $('#wiki-page').scrollIntoView({ block: 'start' }); return; }
+      if (el.dataset.target) { event.preventDefault(); state.targetId = el.dataset.target; if (state.view === 'targets' && !el.dataset.go) { renderTargets(); controls(); return; } go('targets'); return; }
+      if (el.dataset.go) { event.preventDefault(); go(el.dataset.go); return; }
+      if (el.hasAttribute('data-induct')) { void mutate('/api/wikiskill/induct', {}, '模型归纳完成，建议已保存；请确认或调整归属。'); return; }
+      if (el.dataset.confirmSuggestion) { void mutate('/api/wikiskill/suggestion', { suggestionId: el.dataset.confirmSuggestion, decision: 'accepted' }, '归属建议已确认；归属来源和时间已保存。'); return; }
+      if (el.dataset.rejectSuggestion) { void mutate('/api/wikiskill/suggestion', { suggestionId: el.dataset.rejectSuggestion, decision: 'rejected' }, '建议已否决；可手动归入或重新归纳。'); return; }
+      if (el.hasAttribute('data-manual-assign')) { const card = el.closest('.case'), select = card?.querySelector('[data-manual-entry]'); if (!select?.value) { toast('请先选择一个已通过模式。'); return; } const c = caseByN.get(Number(card.id.slice(2))); void mutate('/api/wikiskill/membership', { caseId: c.id, entryId: select.value }, '已手动调整归属并保存来源。'); return; }
+      if (el.hasAttribute('data-manual-remove')) { const card = el.closest('.case'), c = caseByN.get(Number(card.id.slice(2))); void mutate('/api/wikiskill/membership', { caseId: c.id, entryId: null }, '已移出模式；用例回到待归纳。'); return; }
+      if (el.dataset.review) { void review(entryById.get(state.entryId), el.dataset.review); return; }
+      if (el.dataset.confirmCandidate) { const candidate = D.candidates.find(c => c.id === el.dataset.confirmCandidate), target = targetById.get(candidate.targetId); if (!confirmAction(`确认${targetFull(target)}的这份候选？此操作不会直接启动评测或修改生产配置。`)) return; void mutate('/api/wikiskill/confirm-global-candidate', { candidateId: candidate.id, candidateHash: candidate.candidateHash }, '候选已确认；未启动评测或修改生产配置。'); return; }
+      if (el.hasAttribute('data-generate-candidate')) { const entryIds = $$('[data-candidate-entry]:checked').map(input => input.dataset.candidateEntry); if (!entryIds.length || !confirmAction('用所选已通过模式生成候选草稿？不会修改生产提示词或启动评测。')) return; void mutate('/api/wikiskill/candidate', { versionId: currentVersion().id, entryIds, targetId: state.targetId }, '候选草稿已生成；请查看新增内容后确认。'); }
+    });
+    root.addEventListener('change', event => {
+      const el = event.target;
+      if (el.id === 'wiki-version') { versionId = el.value; state.entryId = ''; derive(); renderWiki(); controls(); }
+      if (el.id === 'cases-group') { state.casesGroup = el.value; renderCases(); }
+      if (el.id === 'cases-split') { state.casesSplit = el.value; renderCases(); }
+      if (el.id === 'cases-replay') { state.casesReplay = el.checked; renderCases(); }
+      if (el.hasAttribute('data-candidate-entry')) controls();
+    });
+    $('#wiki-q').addEventListener('input', event => { state.wikiQ = event.target.value; renderWiki(); });
+    $('#cases-q').addEventListener('input', event => { state.casesQ = event.target.value; renderCases(); });
+    $('#wsk-refresh').addEventListener('click', () => { void load(); });
+    document.addEventListener('keydown', event => { if (event.key !== '/' || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return; const input = state.view === 'wiki' ? $('#wiki-q') : state.view === 'cases' ? $('#cases-q') : null; if (input) { event.preventDefault(); input.focus(); } });
+    window.addEventListener('hashchange', applyHash);
     render(); controls();
-    return { load };
+    return { load() { return load().then(() => { if (D) applyHash(); }); } };
   };
 })();

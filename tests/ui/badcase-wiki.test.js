@@ -2,233 +2,206 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
 const { JSDOM } = require('jsdom');
 const tick = () => new Promise(resolve => setImmediate(resolve));
-const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+const clone = value => JSON.parse(JSON.stringify(value));
+const approvedEntry = { id: 'entry-1', title: '未经要求引入额外机制', failureMode: '简单任务被扩大', symptoms: '增加额外审批', rootCauseHypothesis: '过度设计', guideline: '先完成用户明确要求。', caseIds: ['c1'], status: 'approved', reviewedAt: '2026-10-31T10:00:00Z' };
 function data() {
-  const entry = { id: 'entry-1', title: '<img src=x>', failureMode: 'unsupported claims', symptoms: 'no checks', rootCauseHypothesis: 'skipped verification', guideline: '先核验后结论。', caseIds: ['c1'], status: 'draft' };
   return { schemaVersion: 1, scope: 'global', revision: 3, targets: [
-    { id: 'global-harness-behavior-v1', kind: 'global-system-prompt', title: '全局行为准则', baseText: 'Shared harness prose.', baseHash: 'a'.repeat(64) },
-    { id: 'tool-description-list_rooms', kind: 'tool-description', title: '工具描述 · list_rooms', baseText: 'List Rooms.', baseHash: 'b'.repeat(64) },
-  ], candidates: [], cases: [
-    { id: 'c1', kind: 'text-only', split: 'train', actual: 'no evidence', expected: 'run checks', message: '<script>bad()</script>', traceState: 'missing', traceExcerpt: '', source: { projectId: 'source-project', conversationId: 'source-room', messageId: 'source-message' } },
-    { id: 'held-out', kind: 'text-only', split: 'test', actual: 'test source', expected: 'test expectation', message: '', traceState: 'missing', traceExcerpt: '', source: { projectId: 'another-project', conversationId: 'test-room', messageId: 'test-message' } },
-  ], versions: [
-    { id: 'wiki-2', createdAt: 'earlier', caseIds: ['c1'], entries: [{ ...entry, status: 'approved', title: 'Earlier approved' }], unclassified: [] },
-    { id: 'wiki-3', createdAt: 'now', caseIds: ['c1', 'c2'], entries: [entry], unclassified: [{ caseId: 'c2', reason: 'missing context' }] },
-  ] };
+    { id: 'global-harness-behavior-v1', kind: 'global-system-prompt', title: '全局系统提示词 · 共用行为准则', baseText: 'Shared harness prose.', baseHash: 'a'.repeat(64) },
+    { id: 'tool-description-send-public', kind: 'tool-description', title: '工具描述 · send-public（公开发言）', baseText: 'Post publicly.', baseHash: 'b'.repeat(64) },
+    { id: 'tool-description-list_rooms', kind: 'tool-description', title: '工具描述 · list_rooms', baseText: 'List Rooms.', baseHash: 'c'.repeat(64) },
+  ], cases: [
+    { id: 'c1', kind: 'text-only', split: 'train', actual: 'MVP 阶段又增加审批流程', expected: '先完成明确要求', message: '<script>bad()</script>', traceState: 'missing', traceExcerpt: '', source: { projectId: 'p1', conversationId: 'room-1', conversationTitle: 'WikiSkill调优CAF', messageId: 'm1', agentId: 'role-family-gpt' }, createdAt: '2026-10-31T01:00:00Z' },
+    { id: 'c2', kind: 'text-only', split: 'test', actual: '验收步骤术语太多', expected: '写成可操作步骤', message: '', traceState: 'missing', traceExcerpt: '', source: { projectId: 'p2', conversationId: 'room-2', conversationTitle: '验收房间', messageId: 'm2', agentId: 'role-family-gpt' }, createdAt: '2026-10-31T01:01:00Z' },
+    { id: 'c3', kind: 'marked-badcase', split: 'train', actual: '更新 README 前又检查其他文件', expected: '直接更新 README', message: '', traceState: 'missing', traceExcerpt: '', source: { projectId: 'p3', conversationId: 'room-3', conversationTitle: '重写CAFF的README', messageId: 'm3', agentId: 'role-family-kimi' }, createdAt: '2026-10-31T11:00:00Z' },
+    { id: 'c4', kind: 'marked-badcase', split: 'train', actual: '简单任务外又增加核对流程', expected: '按用户要求直接做', message: '', traceState: 'missing', traceExcerpt: '', source: { projectId: 'p4', conversationId: 'room-4', conversationTitle: '新标记房间', messageId: 'm4', agentId: 'role-family-kimi' }, createdAt: '2026-10-31T11:02:00Z' },
+    { id: 'c5', kind: 'marked-badcase', split: 'train', actual: '把 room worktree 说成 DAG 专用', expected: '按实际结构描述', message: '', traceState: 'missing', traceExcerpt: '', source: { projectId: 'p5', conversationId: 'room-5', conversationTitle: '事实描述房间', messageId: 'm5', agentId: 'role-family-kimi' }, createdAt: '2026-10-31T11:03:00Z' },
+  ], caseStates: [
+    { caseId: 'c1', status: 'assigned', memberships: [{ entryId: 'entry-1', source: 'version', at: '2026-10-31T10:00:00Z' }], reason: '', updatedAt: '2026-10-31T10:00:00Z' },
+    { caseId: 'c2', status: 'holdout', memberships: [], reason: '留出用例不参与归纳', updatedAt: '2026-10-31T01:01:00Z' },
+    { caseId: 'c3', status: 'pending', memberships: [], reason: '', updatedAt: '2026-10-31T11:00:00Z' },
+    { caseId: 'c4', status: 'suggested', memberships: [], reason: '同属额外流程', updatedAt: '2026-10-31T11:04:00Z' },
+    { caseId: 'c5', status: 'unfit', memberships: [], reason: '孤立事实错误，等待同类用例', updatedAt: '2026-10-31T11:05:00Z' },
+  ], suggestions: [
+    { id: 's-assign', runId: 'run-1', caseId: 'c4', kind: 'assign', entryId: 'entry-1', reason: '同属额外流程', confidence: '中', status: 'pending', createdAt: '2026-10-31T11:04:00Z' },
+    { id: 's-none', runId: 'run-1', caseId: 'c5', kind: 'none', reason: '孤立事实错误，等待同类用例', confidence: '低', status: 'pending', createdAt: '2026-10-31T11:05:00Z' },
+  ], versions: [{ id: 'wiki-3', createdAt: '2026-10-31T01:07:00Z', model: 'deepseek/deepseek-v4-flash', caseIds: ['c1'], entries: [clone(approvedEntry)], unclassified: [] }],
+  replaySplit: { trainCaseIds: ['c1', 'c3', 'c4', 'c5'], testCaseIds: ['c2'], createdAt: '2026-10-31T01:06:00Z' },
+  replayCases: [
+    { sourceCaseId: 'c1', task: '看下项目情况并写报告。', category: 'reproduction', split: 'train', fixture: { commit: 'a'.repeat(40) }, request: { association: { checkpointId: 'cp1' } }, createdAt: '2026-10-31T09:00:00Z' },
+    { sourceCaseId: 'c2', task: '写验收步骤。', category: 'control', split: 'test', fixture: { commit: 'b'.repeat(40) }, request: { association: { checkpointId: 'cp2' } }, createdAt: '2026-10-31T09:01:00Z' },
+  ], candidates: [{ id: 'candidate-global', kind: 'global-wiki-candidate-v1', targetId: 'global-harness-behavior-v1', versionId: 'wiki-3', entryIds: ['entry-1'], candidateHash: 'd'.repeat(64),
+    target: { id: 'global-harness-behavior-v1', kind: 'global-system-prompt', title: '全局系统提示词 · 共用行为准则', baseText: 'Shared harness prose.' },
+    candidateText: 'Shared harness prose.\n\nWikiSkill 已审核准则：\n- 先完成用户明确要求。', diff: '--- a/x\n+++ b/x\n@@\n\\ No newline', status: 'draft', createdAt: '2026-10-31T10:45:00Z' },
+    { id: 'candidate-old', kind: 'global-wiki-candidate-v1', targetId: 'tool-description-list_rooms', versionId: 'wiki-3', entryIds: ['entry-1'], candidateHash: 'e'.repeat(64),
+      target: { id: 'tool-description-list_rooms', kind: 'tool-description', title: '工具描述 · list_rooms', baseText: 'List Rooms.' }, candidateText: 'Retained old prose', diff: '+hidden', status: 'deprecated', createdAt: '2026-10-31T10:46:00Z' }],
+  events: [], inductionRuns: [], comparisons: [] };
 }
 function setup(t, handler) {
-  const dom = new JSDOM('<div id="panel"></div>', { runScripts: 'outside-only', url: 'http://127.0.0.1/' }); t.after(() => dom.window.close());
+  const dom = new JSDOM('<div id="panel"></div>', { runScripts: 'outside-only', url: 'http://127.0.0.1/wikiskill.html' });
+  t.after(() => dom.window.close());
+  dom.window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {} });
+  dom.window.HTMLElement.prototype.scrollIntoView = function () {};
   dom.window.eval(fs.readFileSync(path.resolve(__dirname, '../../public/shared/badcase-wiki.js'), 'utf8'));
-  const root = dom.window.document.getElementById('panel'), calls = [], confirms = []; let accepted = true, saved = data();
+  const root = dom.window.document.getElementById('panel'), calls = [], confirms = [];
+  let accepted = true, saved = data();
   const panel = dom.window.CaffShared.createBadcaseWikiPanel({ root, confirm: message => { confirms.push(message); return accepted; }, fetchJson: async (url, options = {}) => {
-    calls.push({ url, ...options }); const custom = handler?.(url, options); if (custom !== undefined) return custom;
+    calls.push({ url, ...options }); const custom = handler?.(url, options, saved); if (custom !== undefined) return custom;
     if (options.method === 'POST') {
-      if (url.endsWith('/candidate')) {
+      if (url.endsWith('/induct')) {
+        const state = saved.caseStates.find(s => s.caseId === 'c3'); state.status = 'suggested'; state.reason = '建议归入额外流程';
+        saved.suggestions.push({ id: 's-new-assign', runId: 'run-new', caseId: 'c3', kind: 'assign', entryId: 'entry-1', reason: '建议归入额外流程', confidence: '高', status: 'pending', createdAt: '2026-10-31T11:10:00Z' });
+        saved.events.push({ id: 'event-run', type: 'induction-run', runId: 'run-new', caseIds: ['c3'], createdAt: '2026-10-31T11:10:00Z' });
+      } else if (url.endsWith('/suggestion')) {
+        const suggestion = saved.suggestions.find(s => s.id === options.body.suggestionId); suggestion.status = options.body.decision;
+        const state = saved.caseStates.find(s => s.caseId === suggestion.caseId);
+        if (options.body.decision === 'accepted') { state.status = 'assigned'; state.memberships = [{ entryId: suggestion.entryId, source: 'model-confirmed', at: '2026-10-31T11:11:00Z' }]; }
+        else { state.status = 'pending'; state.memberships = []; }
+        saved.events.push({ id: 'event-resolve-' + suggestion.id, type: options.body.decision === 'accepted' ? 'suggestion-confirmed' : 'suggestion-rejected', suggestionId: suggestion.id, caseIds: [suggestion.caseId], createdAt: '2026-10-31T11:11:00Z' });
+      } else if (url.endsWith('/membership')) {
+        const state = saved.caseStates.find(s => s.caseId === options.body.caseId);
+        state.status = options.body.entryId ? 'assigned' : 'pending'; state.memberships = options.body.entryId ? [{ entryId: options.body.entryId, source: 'manual', at: '2026-10-31T11:12:00Z' }] : [];
+      } else if (url.endsWith('/review')) {
+        const version = saved.versions.find(v => v.id === options.body.versionId), entry = version.entries.find(e => e.id === options.body.entryId);
+        Object.assign(entry, options.body.patch); if (options.body.decision) entry.status = options.body.decision;
+        if (entry.suggestionIds && options.body.decision) for (const id of entry.suggestionIds) {
+          const suggestion = saved.suggestions.find(s => s.id === id); suggestion.status = options.body.decision === 'approved' ? 'accepted' : 'rejected';
+          const state = saved.caseStates.find(s => s.caseId === suggestion.caseId); state.status = options.body.decision === 'approved' ? 'assigned' : 'pending';
+          if (options.body.decision === 'approved') state.memberships = [{ entryId: entry.id, source: 'model-confirmed', at: '2026-10-31T11:13:00Z' }];
+        }
+      } else if (url.endsWith('/candidate')) {
         const target = saved.targets.find(v => v.id === options.body.targetId);
-        saved.candidates.push({ id: 'candidate-1', kind: 'global-wiki-candidate-v1', targetId: target.id, target, versionId: options.body.versionId,
-          entryIds: options.body.entryIds, candidateHash: 'c'.repeat(64), candidateText: '<img src=x> proposed', diff: '--- a/target\n+++ b/target\n+<script>new</script>', status: 'draft' });
-      } else if (url.endsWith('/confirm-global-candidate')) saved.candidates[0].status = 'confirmed';
-      else { const e = saved.versions[1].entries[0]; Object.assign(e, options.body.patch); if (options.body.decision) e.status = options.body.decision; }
+        saved.candidates.push({ id: 'candidate-new', kind: 'global-wiki-candidate-v1', targetId: target.id, target, versionId: options.body.versionId, entryIds: options.body.entryIds,
+          candidateHash: 'f'.repeat(64), candidateText: target.baseText + '\n\nWikiSkill 已审核准则：\n- 先完成用户明确要求。', diff: '+not-rendered', status: 'draft', createdAt: '2026-10-31T11:14:00Z' });
+      } else if (url.endsWith('/confirm-global-candidate')) saved.candidates.find(c => c.id === options.body.candidateId).status = 'confirmed';
       saved.revision++;
     }
-    return JSON.parse(JSON.stringify(saved));
+    return clone(saved);
   } });
-  const el = name => root.querySelector(`[data-wiki-${name}]`);
-  return { root, panel, calls, confirms, el, window: dom.window, accept: value => { accepted = value; },
-    posts: () => calls.filter(c => c.method === 'POST'), field: name => root.querySelector(`[name="${name}"]`),
-    click: async action => { root.querySelector(`[data-action="${action}"]`).click(); await tick(); } };
+  return { root, panel, calls, confirms, saved: () => saved, window: dom.window, accept: value => { accepted = value; }, posts: () => calls.filter(c => c.method === 'POST'),
+    click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
-test('load GETs only the global endpoint; coverage and ALL source cases including holdout render as text', async t => {
+
+test('prototype structure defaults to knowledge base, keeps loop tab order and uses real room titles without examples', async t => {
   const h = setup(t); await h.panel.load();
   assert.equal(h.calls.length, 1); assert.equal(h.calls[0].url, '/api/wikiskill'); assert.equal(h.posts().length, 0);
-  assert.match(h.root.textContent, /训练用例 2 条；已归类 1 条；未归类 1 条/); assert.match(h.root.textContent, /missing context/);
-  for (const literal of ['source-project', 'source-room', 'source-message', 'test-room', 'another-project', 'run checks', '<script>bad', '留出', '纯文本']) assert.ok(h.root.textContent.includes(literal));
-  assert.equal(h.el('cases').children.length, 2); assert.equal(h.root.querySelector('img,script'), null);
-  assert.equal(h.el('versions').options.length, 2); assert.equal(h.el('versions').value, 'wiki-3'); assert.equal(h.field('guideline').disabled, false);
+  assert.deepEqual([...h.root.querySelectorAll('[data-tab]')].map(b => b.dataset.tab), ['cases', 'wiki', 'targets', 'impact']);
+  assert.equal(h.root.querySelector('[data-tab="wiki"]').getAttribute('aria-selected'), 'true');
+  assert.equal(h.root.querySelector('#view-wiki').hidden, false); assert.equal(h.root.querySelector('#view-cases').hidden, true);
+  assert.match(h.root.querySelector('#next-text').textContent, /确认全局提示词候选/);
+  assert.match(h.root.querySelector('#wiki-list').textContent, /未经要求引入额外机制/);
+  assert.match(h.root.querySelector('#wiki-page').textContent, /MVP 阶段又增加审批流程/);
+  assert.match(h.root.querySelector('#wiki-page').textContent, /WikiSkill调优CAF/);
+  assert.doesNotMatch(h.root.textContent, /示例|example-17|proposal-1/);
+  assert.match(h.root.querySelector('#wiki-inbox').textContent, /待你处理/);
 });
-test('sealed representative tasks show their split/category/commit without pretending the historical text has a worktree', async t => {
-  const h = setup(t, () => ({ ...data(), replayCases: [{ sourceCaseId: 'held-out', task: '<img src=x> Write steps.', category: 'reproduction', split: 'test', fixture: { commit: 'fixed-fixture-commit' }, request: { association: { checkpointId: 'sealed-checkpoint' } } }] }));
-  await h.panel.load();
-  assert.match(h.el('case-count').textContent, /2 条来源 · 1 道封存题/);
-  assert.match(h.el('cases').textContent, /同类封存任务 · 汇报复现题 · 留出/);
-  assert.match(h.el('cases').textContent, /不是原历史现场/);
-  assert.match(h.el('cases').textContent, /fixed-fixture-commit[\s\S]*sealed-checkpoint/);
-  assert.match(h.el('cases').textContent, /纯文本来源/);
-  assert.equal(h.root.querySelector('img'), null); assert.equal(h.posts().length, 0);
-});
-test('save is draft only; approval requires confirmation and freezes the saved prose', async t => {
-  const h = setup(t); await h.panel.load(); h.field('guideline').value = '逐项核验后报告。'; await h.click('save');
-  assert.equal(h.posts().length, 1); assert.equal(h.posts()[0].body.expectedRevision, 3); assert.equal(h.posts()[0].body.decision, undefined);
-  assert.equal(h.field('guideline').disabled, false);
-  h.accept(false); await h.click('approved'); assert.equal(h.posts().length, 1);
-  h.accept(true); await h.click('approved'); assert.equal(h.posts().length, 2); assert.equal(h.posts()[1].body.expectedRevision, 4);
-  assert.equal(h.posts()[1].body.decision, 'approved'); assert.equal(h.posts()[1].body.confirmed, true);
-  assert.equal(h.field('guideline').disabled, true); assert.match(h.el('status').textContent, /未修改 prompt 或启动评测/);
-  assert.equal(h.calls.every(c => /^\/api\/wikiskill(?:\/review)?$/.test(c.url)), true);
-});
-test('reviewed versions stay immutable; version selection never hides global/holdout cases', async t => {
+
+test('knowledge search covers pattern fields and case prose, highlights matches and names match locations; slash focuses search', async t => {
   const h = setup(t); await h.panel.load();
-  h.el('versions').value = 'wiki-2'; h.el('versions').dispatchEvent(new h.window.Event('change'));
-  assert.equal(h.field('guideline').disabled, true); await h.click('save'); assert.equal(h.posts().length, 0);
-  assert.equal(h.el('cases').children.length, 2);
-  h.el('versions').value = 'wiki-3'; h.el('versions').dispatchEvent(new h.window.Event('change')); await h.click('rejected');
-  assert.equal(h.posts()[0].body.decision, 'rejected'); assert.equal(h.field('guideline').disabled, true);
+  const input = h.root.querySelector('#wiki-q'); input.value = '额外'; input.dispatchEvent(new h.window.Event('input'));
+  assert.match(h.root.querySelector('#wiki-list').textContent, /匹配：.*标题/);
+  assert.ok(h.root.querySelector('#wiki-list mark')); assert.ok(h.root.querySelector('#wiki-page mark'));
+  input.value = 'README'; input.dispatchEvent(new h.window.Event('input'));
+  assert.equal(h.root.querySelector('#wiki-casehits').hidden, false); assert.match(h.root.querySelector('#wiki-casehits').textContent, /用例原话里的匹配/);
+  h.window.document.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: '/', bubbles: true })); assert.equal(h.window.document.activeElement, input);
+  h.root.querySelector('[data-q="术语"]').click(); assert.equal(input.value, '术语');
 });
-test('invalid guideline never posts; failed write keeps draft and disables writes until refresh', async t => {
-  const h = setup(t, (url, options) => { if (options.method === 'POST') throw Error('private-error'); }); await h.panel.load();
-  for (const text of ['', '字'.repeat(301)]) { h.field('guideline').value = text; await h.click('save'); assert.equal(h.posts().length, 0); }
-  h.field('guideline').value = '本地尚未保存'; await h.click('save');
-  assert.equal(h.posts().length, 1); assert.equal(h.field('guideline').value, '本地尚未保存'); assert.equal(h.field('guideline').disabled, true);
-  assert.match(h.el('status').textContent, /未自动重试/); assert.doesNotMatch(h.root.textContent, /private-error/);
-  h.el('refresh').click(); await tick(); assert.equal(h.field('guideline').disabled, false);
+
+test('cases default to pattern groups and expose pending/suggested/unfit/holdout states and membership provenance', async t => {
+  const h = setup(t); await h.panel.load(); await h.click('[data-tab="cases"]');
+  const text = h.root.querySelector('#view-cases').textContent;
+  for (const literal of ['按模式分组', '待归纳', '待归纳 · 有建议', '未能归类', '留出 · 不参与归纳', '重写CAFF的README', '同属额外流程', '模型建议']) assert.ok(text.includes(literal), literal);
+  assert.ok(h.root.querySelector('#c-3 [data-induct]') || h.root.querySelector('[data-induct]'));
+  assert.ok(h.root.querySelector('[data-confirm-suggestion="s-assign"]'));
+  assert.equal(h.root.querySelector('#c-2 [data-confirm-suggestion]'), null);
+  const details = h.root.querySelector('#c-1 .kv').textContent; assert.match(details, /模型归纳，随模式审核通过/);
+  assert.match(h.root.querySelector('#c-4 .kv').textContent, /待确认/);
+  assert.match(h.root.querySelector('#c-5').textContent, /孤立事实错误/);
 });
-test('stale GET and review responses after a reload cannot overwrite the new collection', async t => {
-  const read = deferred(), post = deferred(); let gets = 0;
-  const h = setup(t, (url, options) => options.method === 'POST' ? post.promise : (++gets === 1 ? read.promise : data()));
-  const first = h.panel.load(); await h.panel.load(); read.resolve({ ...data(), scope: 'wrong' }); await first;
-  assert.equal(h.field('guideline').disabled, false);
-  await h.click('save'); await h.click('save'); assert.equal(h.posts().length, 1);
-  await h.panel.load(); post.resolve({ ...data(), versions: [] }); await tick();
-  assert.equal(h.field('guideline').disabled, false); assert.doesNotMatch(h.el('status').textContent, /保存失败/);
+
+test('pending -> model suggestion -> confirm/manual membership uses real APIs and persists returned provenance', async t => {
+  const h = setup(t); await h.panel.load(); await h.click('[data-induct]');
+  assert.equal(h.posts()[0].url, '/api/wikiskill/induct'); assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, expectedRevision: 3 });
+  assert.match(h.root.textContent, /建议已保存/);
+  await h.click('[data-confirm-suggestion="s-new-assign"]');
+  assert.deepEqual(clone(h.posts()[1].body), { confirmed: true, suggestionId: 's-new-assign', decision: 'accepted', expectedRevision: 4 });
+  await h.click('[data-tab="cases"]'); assert.match(h.root.querySelector('#c-3 .kv').textContent, /模型建议经确认/);
+  await h.click('#c-3 [data-manual-remove]');
+  assert.deepEqual(clone(h.posts()[2].body), { confirmed: true, caseId: 'c3', entryId: null, expectedRevision: 5 });
+  const select = h.root.querySelector('#c-3 [data-manual-entry]'); select.value = 'entry-1'; await h.click('#c-3 [data-manual-assign]');
+  assert.deepEqual(clone(h.posts()[3].body), { confirmed: true, caseId: 'c3', entryId: 'entry-1', expectedRevision: 6 });
+  assert.match(h.root.querySelector('#c-3 .kv').textContent, /手动/);
 });
-test('project-scoped data or failed GET leaves review unavailable', async t => {
-  for (const handler of [() => ({ ...data(), scope: undefined, projectId: 'foreign' }), () => { throw Error('raw failure'); }]) {
-    const h = setup(t, handler); await h.panel.load();
-    assert.match(h.el('status').textContent, /读取失败/); assert.equal(h.root.querySelector('[data-action]'), null); assert.equal(h.posts().length, 0);
-  }
+
+test('new pattern proposal remains a normal editable draft; review approval confirms membership without rewriting old approved prose', async t => {
+  const h = setup(t, (_url, _options, saved) => {
+    if (saved.versions[0].entries.some(e => e.id === 'entry-2')) return undefined;
+    saved.versions[0].entries.push({ id: 'entry-2', title: '没验证就汇报', failureMode: '执行后未检查', symptoms: '服务报错仍说成功', rootCauseHypothesis: '把执行当结果', guideline: '汇报前亲自核验。', caseIds: ['c4'], status: 'draft', suggestionIds: ['s-new'] });
+    saved.suggestions.push({ id: 's-new', runId: 'run-new', caseId: 'c4', kind: 'new', entryId: 'entry-2', reason: '现有模式不覆盖', confidence: '中', status: 'pending', createdAt: '2026-10-31T11:06:00Z' });
+    return undefined;
+  }); await h.panel.load();
+  await h.click('[data-entry="entry-2"]'); assert.match(h.root.querySelector('#wiki-page').textContent, /新模式提议/);
+  const textarea = h.root.querySelector('[name="guideline"]'); assert.equal(textarea.disabled, false); textarea.value = '汇报完成前亲自验证结果。';
+  h.accept(false); await h.click('[data-review="approved"]'); assert.equal(h.posts().length, 0);
+  h.accept(true); await h.click('[data-review="approved"]');
+  const post = h.posts()[0]; assert.equal(post.url, '/api/wikiskill/review'); assert.equal(post.body.entryId, 'entry-2'); assert.equal(post.body.decision, 'approved'); assert.equal(post.body.patch.caseIds, undefined);
+  assert.equal(h.saved().versions[0].entries[0].guideline, approvedEntry.guideline);
+  assert.equal(h.saved().caseStates.find(s => s.caseId === 'c4').memberships[0].source, 'model-confirmed');
+  assert.equal(h.root.querySelector('[name="guideline"]'), null);
 });
-test('fixed holdout counts are disclosed without claiming text cases are replayable', async t => {
-  for (const small of [false, true]) {
-    const h = setup(t, () => ({ ...data(), replaySplit: { trainCaseIds: ['c1', 'c2', 'c3', 'c4'], testCaseIds: small ? [] : ['c5', 'c6'], insufficientSamples: small } }));
-    await h.panel.load();
-    assert.match(h.el('split-info').textContent, small ? /不足6条，无独立留出集/ : /训练 4 条，留出 2 条/);
-    assert.match(h.el('split-info').textContent, /不代表已产生可回放封存/); assert.equal(h.posts().length, 0);
-  }
+
+test('target page preserves readable candidate comparison, generation and hash-bound confirmation without unified diff', async t => {
+  const h = setup(t); await h.panel.load(); await h.click('[data-tab="targets"]');
+  const page = h.root.querySelector('#target-page'), text = page.textContent;
+  for (const literal of ['全局系统提示词', 'Shared harness prose.', '新增 1 条准则', '先完成用户明确要求。', '来自模式 1', '确认此候选', '原版本和候选各跑 3 次']) assert.ok(text.includes(literal), literal);
+  for (const marker of ['--- a/x', '+++ b/x', '@@', 'No newline']) assert.equal(text.includes(marker), false);
+  assert.equal(page.querySelector('.orig').open, false);
+  h.accept(false); await h.click('[data-confirm-candidate="candidate-global"]'); assert.equal(h.posts().length, 0);
+  h.accept(true); await h.click('[data-confirm-candidate="candidate-global"]');
+  assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, candidateId: 'candidate-global', candidateHash: 'd'.repeat(64), expectedRevision: 3 });
+  assert.equal(h.posts()[0].url, '/api/wikiskill/confirm-global-candidate');
+  await h.click('[data-target="tool-description-send-public"]'); await h.click('[data-show-generator]');
+  const checkbox = h.root.querySelector('[data-candidate-entry="entry-1"]'); checkbox.click(); await h.click('[data-generate-candidate]');
+  assert.equal(h.posts()[1].url, '/api/wikiskill/candidate'); assert.deepEqual(clone(h.posts()[1].body.entryIds), ['entry-1']);
+  assert.match(h.root.querySelector('#target-page').textContent, /工具 send-public（公开发言） 的说明/);
+  await h.click('[data-target="tool-description-list_rooms"]');
+  const deprecated = h.root.querySelector('[data-confirm-candidate="candidate-old"]'); assert.ok(deprecated.disabled); assert.match(h.root.querySelector('#target-page').textContent, /目标选错了/);
 });
-test('WikiSkill is a standalone navigation destination; projects contains only capture, not wiki/evaluation controls', () => {
+
+test('impact shows per-replay comparison and evolution events without inventing results or run controls', async t => {
+  const totals = { original: { passed: 1, planned: 3, failed: 1, errors: 1, notRun: 0, scored: 2, passRate: .5 }, candidate: { passed: 2, planned: 3, failed: 0, errors: 0, notRun: 1, scored: 2, passRate: 1 } };
+  const h = setup(t, (_url, _options, saved) => { saved.comparisons = [{ id: 'comparison-1', createdAt: '2026-10-31T12:00:00Z', candidate: { id: 'candidate-global', targetId: 'global-harness-behavior-v1' }, model: 'deepseek/deepseek-v4-flash', modelCallsKnown: 4, completed: false,
+    totals, bySplit: { train: totals, test: totals }, byCategory: { reproduction: totals, probe: totals, control: totals }, disclosures: [],
+    cases: [{ sourceCaseId: 'c1', split: 'train', category: 'reproduction', status: 'error', reason: 'run_error', totals, runs: [] }] }]; return undefined; });
+  await h.panel.load(); await h.click('[data-tab="impact"]');
+  const text = h.root.querySelector('#impact-runs').textContent;
+  for (const literal of ['1/3', '2/3', '错误 1', '未运行 1', '复现题', '控制题', '选择偏差', '只复现了汇报难懂一类']) assert.ok(text.includes(literal), literal);
+  const log = h.root.querySelector('#impact-log').textContent;
+  for (const literal of ['归纳', '候选', '审核', '回放题']) assert.ok(log.includes(literal), literal);
+  assert.equal(h.root.querySelector('#impact-runs button[data-run], #impact-runs button[data-retry]'), null);
+});
+
+test('empty impact explains the next action and keeps all seven planned slots distinct from errors/not-run', async t => {
+  const h = setup(t); await h.panel.load(); await h.click('[data-tab="impact"]');
+  assert.match(h.root.querySelector('#impact-runs').textContent, /还没有评测结果/);
+  assert.match(h.root.querySelector('#impact-runs').textContent, /确认全局提示词候选/);
+  assert.match(h.root.querySelector('#impact-runs').textContent, /—\/6/); // two replay cases x three runs in this fixture
+  assert.match(h.root.querySelector('#impact-log').textContent, /等待/);
+});
+
+test('user prose and search highlighting stay text-only; failed writes disable mutation until refresh', async t => {
+  const h = setup(t, (url, options) => { if (options.method === 'POST') throw Error('private-path'); return undefined; });
+  await h.panel.load(); assert.equal(h.root.querySelector('img,script'), null);
+  await h.click('[data-induct]'); assert.match(h.root.querySelector('#toast').textContent, /失败|未知/);
+  assert.equal(h.root.querySelector('[data-induct]').disabled, true); assert.doesNotMatch(h.root.textContent, /private-path/);
+  await h.panel.load(); assert.equal(h.root.querySelector('[data-induct]').disabled, false);
+});
+
+test('standalone navigation, projects capture-only boundary and responsive prototype CSS remain in force', () => {
   const read = file => fs.readFileSync(path.resolve(__dirname, '../../public/' + file), 'utf8');
   for (const page of ['index', 'personas', 'skills', 'projects', 'metrics', 'wikiskill']) assert.match(read(page + '.html'), /href="\/wikiskill.html"/);
   assert.doesNotMatch(read('projects.html') + read('projects.js'), /badcase-wiki|badcase-evaluation|wikiPanel|evaluationPanel/);
   assert.match(read('wikiskill.html'), /aria-current="page" href="\/wikiskill.html"/);
-  const dom = new JSDOM(read('wikiskill.html'));
-  assert.equal(dom.window.document.querySelectorAll('.rail-link[aria-current="page"]').length, 1); dom.window.close();
   assert.match(read('wikiskill.js'), /panel.load\(\)/); assert.doesNotMatch(read('wikiskill.js'), /projectId|api\/projects/);
-});
-
-test('candidate controls show both targets but disable generation until approved entries are selected', async t => {
-  const h = setup(t); await h.panel.load();
-  assert.equal(h.el('targets').options.length, 2); assert.equal(h.el('generate').disabled, true);
-  assert.equal(h.el('candidate-entries').querySelectorAll('input').length, 0);
-  h.el('versions').value = 'wiki-2'; h.el('versions').dispatchEvent(new h.window.Event('change'));
-  const box = h.el('candidate-entries').querySelector('input'); assert.ok(box); assert.equal(box.checked, false);
-  box.click(); assert.equal(h.el('generate').disabled, false);
-  h.el('targets').value = 'tool-description-list_rooms'; h.el('targets').dispatchEvent(new h.window.Event('change'));
-  assert.match(h.el('target-info').textContent, /工具 list_rooms 的说明.*本期不要求评测结论/);
-  assert.match(h.el('target-base').textContent, /List Rooms/);
-  h.accept(false); h.el('generate').click(); await tick(); assert.equal(h.posts().length, 0);
-  h.accept(true); h.el('generate').click(); await tick();
-  assert.equal(h.posts().length, 1);
-  assert.deepEqual(JSON.parse(JSON.stringify(h.posts()[0].body)), { confirmed: true, expectedRevision: 3, versionId: 'wiki-2', entryIds: ['entry-1'], targetId: 'tool-description-list_rooms' });
-  assert.equal(h.posts()[0].url, '/api/wikiskill/candidate');
-  assert.match(h.el('candidates').textContent, /<img src=x> proposed/); assert.doesNotMatch(h.el('candidates').textContent, /\+<script>new<\/script>|\+\+\+ b\/target|No newline/);
-  assert.equal(h.root.querySelector('img,script'), null);
-  assert.equal(h.el('candidates').querySelector('[data-wiki-confirm-candidate]').disabled, false);
-  assert.match(h.el('status').textContent, /草稿.*未.*评测/);
-});
-test('candidate confirmation binds displayed hash and current revision; confirmation itself never runs a comparison', async t => {
-  const h = setup(t); await h.panel.load(); h.el('versions').value = 'wiki-2'; h.el('versions').dispatchEvent(new h.window.Event('change'));
-  h.el('candidate-entries').querySelector('input').click(); h.el('generate').click(); await tick();
-  h.accept(false); h.el('candidates').querySelector('[data-wiki-confirm-candidate]').click(); await tick(); assert.equal(h.posts().length, 1);
-  h.accept(true); h.el('candidates').querySelector('[data-wiki-confirm-candidate]').click(); await tick();
-  assert.equal(h.posts().length, 2); assert.equal(h.posts()[1].url, '/api/wikiskill/confirm-global-candidate');
-  assert.deepEqual(JSON.parse(JSON.stringify(h.posts()[1].body)), { confirmed: true, candidateId: 'candidate-1', candidateHash: 'c'.repeat(64), expectedRevision: 4 });
-  assert.match(h.el('candidates').textContent, /已确认/); assert.equal(h.el('candidates').querySelector('[data-wiki-confirm-candidate]').disabled, true);
-  assert.match(h.el('status').textContent, /未启动评测/);
-  assert.equal(h.calls.some(c => /compare|start/.test(c.url)), false);
-});
-test('candidate unknown write result disables all writes until refresh and does not retry', async t => {
-  const h = setup(t, (url, options) => { if (url.endsWith('/candidate')) throw Error('private-filesystem-path'); });
-  await h.panel.load(); h.el('versions').value = 'wiki-2'; h.el('versions').dispatchEvent(new h.window.Event('change'));
-  h.el('candidate-entries').querySelector('input').click(); h.el('generate').click(); await tick();
-  assert.equal(h.posts().length, 1); assert.equal(h.el('generate').disabled, true);
-  assert.match(h.el('status').textContent, /结果未知.*刷新/); assert.doesNotMatch(h.root.textContent, /private-filesystem-path/);
-  h.el('generate').click(); await tick(); assert.equal(h.posts().length, 1);
-  await h.panel.load(); assert.equal(h.el('targets').disabled, false);
-});
-test('pending candidate writes cannot be repeated and stale responses cannot replace refreshed data', async t => {
-  const post = deferred();
-  const h = setup(t, (url, options) => options.method === 'POST' ? post.promise : undefined);
-  await h.panel.load(); h.el('versions').value = 'wiki-2'; h.el('versions').dispatchEvent(new h.window.Event('change'));
-  h.el('candidate-entries').querySelector('input').click(); h.el('generate').click(); h.el('generate').click(); await tick();
-  assert.equal(h.posts().length, 1); assert.equal(h.el('targets').disabled, true); assert.equal(h.el('versions').disabled, true);
-  await h.panel.load(); post.resolve({ ...data(), versions: [], candidates: [] }); await tick();
-  assert.equal(h.el('versions').options.length, 2); assert.equal(h.el('targets').disabled, false);
-  assert.doesNotMatch(h.el('status').textContent, /草稿已保存/);
-});
-test('result view shows per-case/run and overall/category/holdout scores, with errors and not-run separate; no execution controls', async t => {
-  const totals = { original: { passed: 1, planned: 3, failed: 1, errors: 1, notRun: 0, scored: 2, passRate: .5 }, candidate: { passed: 0, planned: 3, failed: 0, errors: 0, notRun: 3, scored: 0, passRate: null } };
-  const h = setup(t, () => ({ ...data(), comparisons: [{ id: 'comparison-a', createdAt: '2026-10-31T00:00:00Z', candidate: { id: 'candidate-a', targetId: 'global-harness-behavior-v1', candidateHash: 'c'.repeat(64) }, planHash: 'p'.repeat(64), completed: false, model: 'deepseek/deepseek-v4-flash', modelCallsKnown: 2, callsUnavailable: true,
-    totals, bySplit: { train: totals, test: totals }, byCategory: { reproduction: totals, probe: totals, control: totals }, disclosures: ['fewer_than_6_prepared_replays'],
-    cases: [{ sourceCaseId: '<img src=x>', split: 'test', category: 'reproduction', status: 'error', reason: 'run_evidence_unavailable', totals, runs: [{ variant: 'original', iteration: 1, status: 'error', reason: 'run_evidence_unavailable', cleaned: true }] }] }] }));
-  await h.panel.load();
-  const text = h.el('results').textContent;
-  for (const literal of ['总体', '训练', '留出', '复现题', '接口膨胀探针', '控制题', '1/3', '50.0%', 'N/A', '错误', '未运行', '不完整', '只复现了汇报难懂一类', '选择偏差', '<img src=x>', 'candidate-a', 'comparison-a', 'run_evidence_unavailable']) assert.ok(text.includes(literal), literal);
-  assert.equal(h.el('results').querySelector('button,input,img,script'), null); assert.equal(h.posts().length, 0);
-});
-test('empty results explicitly exclude old screenings, and failed reload clears stale score claims', async t => {
-  let fail = false;
-  const h = setup(t, () => { if (fail) throw Error('private failure'); return data(); }); await h.panel.load();
-  assert.match(h.el('results').textContent, /尚未.*全局提示词.*历史筛选/);
-  fail = true; await h.panel.load(); assert.doesNotMatch(h.el('results').textContent, /1\/3|50.0%/); assert.match(h.el('results').textContent, /尚未读取/);
-});
-test('deprecated wrong-tool candidates retain readable prose but cannot be confirmed or mistaken for a draft', async t => {
-  const d = data(); d.candidates = [{ id: 'old-list-rooms', kind: 'global-wiki-candidate-v1', target: d.targets[1], targetId: d.targets[1].id, versionId: 'wiki-2', entryIds: ['entry-1'], candidateHash: 'c'.repeat(64), candidateText: 'Retained old prose', diff: '+Retained diff', status: 'deprecated', deprecationReason: 'wrong_tool_target' }];
-  const h = setup(t, () => d); await h.panel.load();
-  assert.match(h.el('candidates').textContent, /已废弃/); assert.match(h.el('candidates').textContent, /工具用途/);
-  assert.match(h.el('candidates').textContent, /Retained old prose/); assert.doesNotMatch(h.el('candidates').textContent, /Retained diff/);
-  const button = h.el('candidates').querySelector('[data-wiki-confirm-candidate]'); assert.ok(button.disabled); button.click(); await tick(); assert.equal(h.posts().length, 0);
-  assert.ok(h.el('candidates').querySelector('.wiki-candidate-card.is-deprecated'));
-});
-test('legacy role candidates are not offered for new target confirmation', async t => {
-  const h = setup(t, () => ({ ...data(), candidates: [{ id: 'legacy-role', role: 'GPT', status: 'draft' }] }));
-  await h.panel.load(); assert.equal(h.el('candidates').querySelector('button'), null); assert.doesNotMatch(h.el('candidates').textContent, /legacy-role/);
-});
-
-test('first-time progress and candidate comparison explain the next action without unified diff or technical-id clutter', async t => {
-  const d = data(), approved = d.versions[0].entries[0];
-  d.versions = [{ ...d.versions[0], entries: [approved], caseIds: ['c1'] }];
-  d.candidates = [{ id: 'candidate-readable', kind: 'global-wiki-candidate-v1', target: d.targets[0], targetId: d.targets[0].id,
-    versionId: 'wiki-2', entryIds: ['entry-1'], candidateHash: 'c'.repeat(64),
-    candidateText: d.targets[0].baseText + '\n\nWikiSkill 已审核准则：\n- 先核验后结论。',
-    diff: '--- a/target\n+++ b/target\n@@ -1 +1 @@\n\\ No newline at end of file', status: 'draft' }];
-  const h = setup(t, () => d); await h.panel.load();
-  assert.match(h.el('progress-text').textContent, /1 条准则已通过 → 请确认全局提示词候选 → 然后开始对照评测/);
-  const candidates = h.el('candidates'), text = candidates.textContent;
-  for (const literal of ['全局系统提示词（所有 agent 共用）', '原文', '候选', '新增 1 条准则', '先核验后结论。', '来源：Earlier approved', '1 条关联用例', '7 道题', '原版本与候选各 3 次', '不会直接启动评测']) assert.ok(text.includes(literal), literal);
-  for (const marker of ['--- a/target', '+++ b/target', '@@ -1', 'No newline']) assert.equal(text.includes(marker), false, marker);
-  const original = candidates.querySelector('[data-wiki-original]');
-  assert.equal(original.open, false); assert.match(original.querySelector('summary').textContent, /原文 21 字（未改动，展开查看）/);
-  assert.equal(candidates.querySelector('[data-wiki-candidate-base]'), null);
-  const addition = candidates.querySelector('.wiki-addition'), list = addition.querySelector('ol.wiki-added-list');
-  assert.ok(list); assert.equal(list.children.length, 1); assert.equal(addition.querySelector('.wiki-addition-title').textContent, 'WikiSkill 已审核准则：');
-  assert.equal(addition.querySelectorAll('span').length, 0); assert.doesNotMatch(addition.textContent, /^\s*-\s*$/m);
-  const caseSummary = h.el('cases').querySelector('summary');
-  assert.match(caseSummary.textContent, /no evidence/); assert.match(caseSummary.textContent, /来源房间：source-r…/);
-  assert.doesNotMatch(caseSummary.textContent, /text-|source-room|source-message/);
-  const source = candidates.querySelector('[data-wiki-source-entry="entry-1"]'); assert.ok(source);
-  assert.equal(source.tagName, 'A'); assert.equal(source.getAttribute('href'), '#wikiskill-wiki');
-  source.click();
-  const entry = h.el('entries').querySelector('[data-wiki-entry-card="entry-1"]'); assert.equal(entry.open, true);
-  assert.match(entry.querySelector('summary').textContent, /Earlier approved.*1 条关联用例/);
-  assert.equal(h.posts().length, 0);
-});
-
-test('candidate target labels use plain language and comparison stacks on narrow screens', async t => {
-  const h = setup(t); await h.panel.load();
-  assert.equal(h.el('targets').options[0].textContent, '全局系统提示词（所有 agent 共用）');
-  assert.equal(h.el('targets').options[1].textContent, '工具 list_rooms 的说明');
-  const css = fs.readFileSync(path.resolve(__dirname, '../../public/wikiskill.css'), 'utf8');
-  assert.match(css, /@media\s*\(max-width:/); assert.match(css, /grid-template-columns:\s*1fr/);
-  assert.match(css, /\.wiki-candidate-compare\s*\{[^}]*grid-template-columns:\s*1fr/s);
-  assert.match(css, /\.wiki-source-link\s*\{[^}]*font-size:\s*13px[^}]*overflow-wrap:\s*anywhere/s);
+  const css = read('wikiskill.css'); assert.match(css, /@media\s*\(max-width:\s*860px\)/); assert.match(css, /@media\s*\(max-width:\s*640px\)/);
+  assert.match(css, /\.split\s*\{[^}]*grid-template-columns:/s);
 });

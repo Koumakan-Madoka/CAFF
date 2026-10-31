@@ -199,8 +199,12 @@ test('real HTTP POST invokes readonly SQLite reader and file worker; restart GET
     chat.db.prepare(`INSERT INTO runs (id, agent_dir, cwd, prompt, prompt_length, status, started_at, task_id, assistant_errors_json) VALUES (1, '/not-read', '/not-read', 'not archived', 12, 'succeeded', '2026-01-01', 'task1', '[]')`).run();
     chat.db.prepare(`INSERT INTO a2a_tasks (id, run_id, kind, status, metadata_json, output_text, created_at, updated_at) VALUES ('task1', 1, 'conversation_agent_reply', 'succeeded', ?, 'RAW-OUTPUT-NOT-ARCHIVED', '2026-01-01', '2026-01-01')`).run(JSON.stringify({ conversationId: 'c1', turnId: 't1', agentId: 'a1' }));
     chat.db.prepare(`INSERT INTO a2a_task_events (task_id, event_type, event_json, created_at) VALUES ('task1', 'agent_tool_call', ?, '2026-01-01')`).run(JSON.stringify({ tool: 'read', result: 'RAW-TOOL-NOT-ARCHIVED' }));
+    const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
+    const wikiStore = createWikiStore({ globalRoot: path.join(h.root, 'global-wiki'), sourceWorktree: path.join(h.root, 'source') });
+    h.options.wikiStore = wikiStore;
     const rebuild = () => {
       h.options.flags = createBadcaseFlagService({ captureRoot: h.root, captureStore: h.store, chatStore: chat });
+      h.options.chatStore = chat;
       h.options.databasePath = databasePath; delete h.options.readTrajectory;
       return createBadcaseFlagsController({ service: h.options.flags, sealingService: h.create(), projectManager: { listProjects: () => [{ id: 'p1' }] }, host: '127.0.0.1', csrfToken: 'synthetic-csrf', getAuthority: () => `127.0.0.1:${server.address().port}` });
     };
@@ -212,10 +216,16 @@ test('real HTTP POST invokes readonly SQLite reader and file worker; restart GET
     const post = () => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base, 'X-CAFF-CSRF-Token': 'synthetic-csrf' }, body: JSON.stringify({ confirmed: true, actual: 'bad', expected: 'good' }) });
     const response = await post(); assert.equal(response.status, 201); const first = await response.json();
     assert.equal(first.seal.state, 'saved_incomplete'); assert.equal(first.seal.trajectory.selectedEventCount, 1);
+    assert.equal(first.wikiCase.created, true); assert.equal(first.wikiCase.case.split, 'train');
+    assert.equal(first.wikiCase.case.source.conversationTitle, 'Synthetic');
+    assert.equal(first.wikiCase.case.actual, 'bad'); assert.equal(first.wikiCase.case.expected, 'good');
+    assert.equal(first.wikiCase.case.source.messageId, 'm1'); assert.equal(first.wikiCase.case.source.conversationId, 'c1');
     const before = h.store.computeUsage('p1');
     chat.close(); chat = createChatAppStore({ agentDir: h.root, sqlitePath: databasePath }); controller = rebuild();
+    assert.equal(createWikiStore({ globalRoot: path.join(h.root, 'global-wiki'), sourceWorktree: path.join(h.root, 'source') }).getCaseStates()[0].status, 'pending');
     assert.deepEqual((await (await fetch(url)).json()).seal, first.seal);
     const retry = await post(); assert.equal(retry.status, 200); assert.deepEqual((await retry.json()).seal, first.seal);
+    assert.equal(first.wikiCase.case.kind, 'marked-badcase');
     assert.deepEqual(h.store.computeUsage('p1'), before);
     const dir = path.join(h.root, 'projects/p1/cases'); const text = fs.readFileSync(path.join(dir, fs.readdirSync(dir)[0]), 'utf8');
     assert.doesNotMatch(text, /RAW-OUTPUT|RAW-TOOL|MESSAGE-BODY/);

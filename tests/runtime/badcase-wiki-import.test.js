@@ -14,7 +14,7 @@ function fixture(overrides = {}) {
       const older = u.searchParams.has('before');
       return new Response(JSON.stringify(older || !overrides.paginate ? { items: [message], hasMore: false, nextCursor: null } : { items: [], hasMore: true, nextCursor: 'older' }));
     }
-    return new Response(JSON.stringify({ conversation: { id: 'room-a', projectScopeId: 'source-project' } }));
+    return new Response(JSON.stringify({ conversation: { id: 'room-a', title: '来源房间标题', projectScopeId: 'source-project' } }));
   };
   const store = { addTextCases(batch) { batches.push(batch); return { created: batch.length, cases: batch, revision: 1 }; } };
   return { calls, batches, store, fetchImpl };
@@ -26,6 +26,7 @@ test('confirmed import uses only GET on fixed 3100 API and stores text, not a re
   assert.equal(h.calls.length, 4); assert.equal(h.batches.length, 1);
   const c = h.batches[0][0];
   assert.equal(c.source.projectId, 'source-project'); assert.equal(c.source.messageId, 'message-a');
+  assert.equal(c.source.conversationTitle, '来源房间标题');
   assert.equal(c.role, 'GPT'); assert.equal(c.message, 'claimed done'); assert.equal(c.traceState, 'available');
   assert.equal(c.checkpointId, undefined); assert.equal(c.expected, selected().expected);
   assert.deepEqual(Object.keys(h.calls[0].options).sort(), ['method', 'redirect', 'signal']);

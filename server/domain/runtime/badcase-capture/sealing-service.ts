@@ -35,6 +35,15 @@ export function createBadcaseSealingService(options: any) {
       // Annotation failures retain their existing HTTP error semantics. No seal
       // dependency can roll back or hide a successfully persisted annotation.
       const marked = flags.mark(input);
+      let wikiCase;
+      if (options.wikiStore) {
+        const message = options.chatStore?.getMessage(input.messageId);
+        const conversation = options.chatStore?.getConversationWithoutMessages(input.conversationId);
+        wikiCase = options.wikiStore.addMarkedCase({ source: { projectId: input.projectId, conversationId: input.conversationId,
+          conversationTitle: conversation?.title || '未命名房间', messageId: input.messageId, agentId: message.agentId },
+          role: message.agentId, actual: input.actual, expected: input.expected,
+          message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false });
+      }
       const key = marked.flag.flagId;
       if (!inFlight.has(key)) {
         const task = Promise.resolve().then(async () => {
@@ -60,7 +69,7 @@ export function createBadcaseSealingService(options: any) {
         void task.finally(() => { if (inFlight.get(key) === task) inFlight.delete(key); });
       }
       const seal = await inFlight.get(key);
-      return { ...marked, seal };
+      return { ...marked, ...(wikiCase ? { wikiCase } : {}), seal };
     },
   };
 }
