@@ -48,13 +48,17 @@ function prepareSealedDirectTurn(request, candidateRole = null) {
     const span = r.roleSpan;
     ensure(span && Number.isSafeInteger(span.start) && Number.isSafeInteger(span.end) && span.start >= 0 && span.end > span.start && span.end <= prompt.length);
     const originalRole = prompt.slice(span.start, span.end);
-    ensure(hash(originalRole) === span.sha256 && originalRole.startsWith('Your private persona instructions:\n')
+    // Legacy custom personas keep their wrapper. The selected GPT family has
+    // no persona, so use only its actually archived Rules section instead.
+    const rolePrefix = originalRole.startsWith('Your private persona instructions:\n') ? 'Your private persona instructions:\n'
+      : association.agentId === 'role-family-gpt' && originalRole.startsWith('Rules:\n') ? 'Rules:\n' : null;
+    ensure(rolePrefix && originalRole.slice(rolePrefix.length).trim() && hash(originalRole) === span.sha256
       && !originalRole.includes('{{') && prompt.indexOf(originalRole) === span.start && prompt.indexOf(originalRole, span.start + 1) === -1);
     const commonPrompt = prompt.slice(0, span.start) + '{{ROLE_VARIANT}}' + prompt.slice(span.end);
     if (candidateRole !== null) {
       ensure(typeof candidateRole === 'string' && candidateRole.trim() && Buffer.byteLength(candidateRole) <= 65536
         && !candidateRole.includes('{{') && !containsSecretSentinel(candidateRole));
-      prompt = prompt.slice(0, span.start) + 'Your private persona instructions:\n' + candidateRole + prompt.slice(span.end);
+      prompt = prompt.slice(0, span.start) + rolePrefix + candidateRole + prompt.slice(span.end);
     }
     ensure(Buffer.byteLength(prompt) <= 131072);
     const names = Object.keys(cp.files); ensure(names.length <= 1024);
@@ -71,7 +75,7 @@ function prepareSealedDirectTurn(request, candidateRole = null) {
     const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText: null, systemPrompt: null, settings: null, callback,
       bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements } };
     validateDirectBindings(input.prompt, input.bindings);
-    return { supported: true, input, originalRole: originalRole.slice('Your private persona instructions:\n'.length),
+    return { supported: true, input, originalRole: originalRole.slice(rolePrefix.length),
       provenance: { caseId: sealed.caseId, checkpointId: cp.checkpointId,
       checkpointHash: hash(JSON.stringify(cp)), originalRoleHash: span.sha256,
       commonInputHash: hash(JSON.stringify({ ...input, prompt: commonPrompt })),

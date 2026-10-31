@@ -24,7 +24,7 @@ module.exports = function fixture(t, mode = 'fresh', change = () => {}) {
     files: { 'source.txt': { type: 'file', size: 14, hash: put('retained bytes') } }, deletions: ['deleted.txt'], uncaptured: [], targetDir: '/historical/not-mounted', replayInput: r };
   change({ r, cp, config, session, put });
   store.saveCheckpoint('p1', cp);
-  const association = { projectId: 'p1', checkpointId: 'cp1', conversationId: 'c1', messageId: 'msg1', turnId: 't1', agentId: 'a1', taskId: 'task1', runId: 1 };
+  const association = { projectId: 'p1', checkpointId: 'cp1', conversationId: 'c1', messageId: 'msg1', turnId: 't1', agentId: cp.agentId, taskId: 'task1', runId: 1 };
   const request = { captureRoot: root, association, flagId: 'flag-' + hash('p1\0msg1'), replayRunId: 'init-run' };
   saveSealedCase({ captureRoot: root, association, flagId: request.flagId });
   return { root, request, store, cp, r, put, source: path.join(root, 'projects/p1/retention', hash(request.flagId) + '.json'),

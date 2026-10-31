@@ -37,14 +37,14 @@
 - 准则的泄漏检查是**字面启发式，不是语义检测**：拒绝包含已导入用例的完整非空期望/非空行，或与期望/用例文件共享任意连续≥8个 Unicode 字符；完整非空文件内容即使不足8字也拒绝。生成时只读扫描封存锚点文件；比较入口对每个实际封存输入再次扫描文件，并对当前已导入的全部期望重验。参考答案不发给被测模型；不宣称识别短于8字且非完整值/行的片段、改写或所有秘密。失败只报通用泄漏码，不打印命中的参考内容。
 - 页面在“GPT 候选 prompt”显示候选、完整原/候选角色、diff 与 SHA256；用户明确确认才通过 `POST .../confirm-candidate` 冻结确认状态，绑定候选 ID/hash 和当前 revision。仍沿用本地管理门禁，旧 revision、改写候选或未确认拒绝；确认本身不启动评测、不修改生产 prompt。读取旧版无 candidates 的快照只在内存补空数组，不改原文件。
 - `compare-sealed` 可用 `wikiCandidate: { sourceWorktree, candidateId }` 替代 `candidateRole`；两者不能混用。此模式在读取 Key/接触 Docker 前要求持久化确认、所选来源仍 approved、候选内容/hash 可重建、当前封存的原角色 hash 与候选锚点一致；不同角色版本明确拒绝，不对各用例偷偷拼接不同候选。每轮继续重验，并在 plan/results summary 记录候选 ID、wiki/条目与候选角色 hash。旧的手写 `candidateRole` 入口保留兼容，但不代表获得 wiki 审核/确认。
-- 上述 wiki/候选/批量链目前仅以合成材料定向验证，**尚未用用户确认的真实清单生成 wiki、候选或批量运行**；不构成 AC5–AC7 的真实用例证据。
+- 已只读导入用户确认的16条真实历史；保持13条训练、3条留出（#4/#10/#14），由训练集真实生成5条 wiki 草稿，审核页面可查。中性同类任务的原角色基线仍在筛选，不能把字面评分误伤当作历史失败已复现；尚未完成真实候选确认或正式批量 A/B，AC5–AC7 不因接口/基线存在而自动通过。
 
 ### 可回放子集与对比入口
 
 - 当前正式 MVP 入口为 `scripts/badcase-capture/compare-sealed.cjs`。`--config <绝对路径> --plan` 只准备与校验材料，不读 Key、不接触 Docker/模型；`--run --confirmed --output <新的绝对路径>` 才执行，输出路径已存在时拒绝覆盖。
 - 配置显式指定封存关联、可信代码/依赖根、固定镜像身份、候选角色、重复次数、规则和超时。`repeats` 为 1–20，超时 1–300 秒，默认每容器 120 秒。新输入/角色/规则不自动复用旧结果。
 - `sealed-direct-input.cjs` 重新读取封存与保留引用，验证所有引用 blob 的 hash、角色片段唯一性/位置、原始运行配置、回调材料及 portable-default-resources 声明。只接受材料完整的 fresh、无图片、无额外技能/外部设置依赖的已声明可移植子集。旧封存不原地修补；不支持时返回 `unsupported_or_missing_replay_materials`，不是空会话 fallback。
-- 原变体使用封存 prompt；候选只替换归档时已定位且 hash 匹配的角色指令片段。其他归一化输入保持相同，分别记录 checkpoint/common-input/variant/distribution hash，每次运行前重验封存和可信分发未变。模型是明确选择的评测配置，不把它冒称为采集模型本身。
+- 原变体使用封存 prompt；候选只替换归档时已定位且 hash 匹配的角色指令片段。GPT 模型族角色本来没有自定义 persona，采集仅把它已交付的 `Rules:` 段定位进元数据，不改变 SDK 实际收到的 prompt；候选在这段规则原文后追加已审核准则，身份/会话/工具/技能等其他段不变。旧自定义角色仍使用 `Your private persona instructions:` 段；两种包装分别校验原片段 hash 并保留原包装，不为 GPT 虚构 persona，不为无片段的旧封存补造定位，其他模型族的 Rules 段不在此首个 GPT 子集内。其他归一化输入保持相同，分别记录 checkpoint/common-input/variant/distribution hash，每次运行前重验封存和可信分发未变。执行模型是明确选择的评测配置，当前是 DeepSeek 执行 GPT 角色指令，不冒称 GPT 模型或采集时的原模型。
 - 受控替换仅限已记录的工作根、回调地址/临时身份、会话标识、工具与私有目录变量；未知占位符或替换计数不符拒绝。回调在容器内独立建立，不连接生产会话/DB。公共回复参与评分，不能以最后一条内部 SDK 文本替代已发布内容；未发布时回复为空。worker 记录 `replySource`（`public` / `internal` / `none`），逐次结果/事件与 CLI 展示该来源；缺少可信来源记录时标 `unknown`，不把未知说成未发布。规则只接受 `public`，缺来源的旧 receipt 不重新判为通过。
 - 真正的原 CAFF SDK、工具和扩展在 Docker 内执行，不播放历史工具输出，不在宿主运行被测 agent。可信固定分发包括匹配的 Linux 原生依赖；缺依赖直接失败，不移除工具/扩展绕过。
 

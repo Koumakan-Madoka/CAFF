@@ -2350,7 +2350,12 @@ export function createAgentExecutor(options: any = {}) {
               .filter(key => promptUserMessage[key] !== undefined).map(key => [key, promptUserMessage[key]])) : null,
           deliveryMode: resumeSession ? 'resume' : 'fresh',
           prompt,
-          roleSection: deliveredPromptSections.find((section: any) => section.sectionKey === 'private_persona')?.content || '',
+          // GPT model-family roles intentionally have no private persona. Bind
+          // their existing routing/rule section as the append-only role body;
+          // this changes capture metadata, not the prompt sent to the SDK.
+          roleSection: deliveredPromptSections.find((section: any) => section.sectionKey === (
+            agent.roleKind === 'model_family' && agent.id === 'role-family-gpt' ? 'rules' : 'private_persona'
+          ))?.content || '',
           // Use the actual invocation projection, not history attachment markers:
           // text-only models may intentionally receive no image bytes.
           images: runOptions.images,

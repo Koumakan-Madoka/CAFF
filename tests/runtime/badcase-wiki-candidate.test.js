@@ -41,6 +41,22 @@ test('only selected approved guidelines append to the exact archived GPT role; s
   assert.equal(resolveWikiCandidate(createWikiStore(h.config).read(), c.id, h.input.anchor.originalRoleHash, h.files).candidateRole, c.candidateRole);
   h.confirm(c); assert.equal(h.store.read().revision, 5, 'confirmation retry at current revision is idempotent');
 });
+test('GPT family Rules anchor appends approved guidelines without inserting a custom-persona marker', t => {
+  const h = setup(t); h.approve();
+  const input = { ...h.input, anchor: { ...h.input.anchor, originalRoleHash: sha('Rules:\n' + h.baseRole) } };
+  const c = h.store.createCandidate(input);
+  assert.equal(c.baseRole, h.baseRole);
+  assert.equal(c.candidateRole, h.baseRole + c.appendedSection);
+  assert.doesNotMatch(c.candidateRole, /Your private persona instructions:/);
+  h.confirm(c);
+  assert.equal(resolveWikiCandidate(h.store.read(), c.id, input.anchor.originalRoleHash, h.files).candidateRole, c.candidateRole);
+  const prepared = { ...h.prepared, provenance: { ...h.prepared.provenance, originalRoleHash: input.anchor.originalRoleHash } };
+  const prepare = (_request, role) => ({ ...prepared, input: { ...prepared.input, prompt: 'Rules:\n' + (role || h.baseRole) } });
+  const plan = prepareComparison({ ...h.comparison, wikiCandidate: { ...h.comparison.wikiCandidate, candidateId: c.id } }, { prepare });
+  assert.equal(plan.inputs.original.prompt, 'Rules:\n' + h.baseRole);
+  assert.equal(plan.inputs.candidate.prompt, 'Rules:\n' + c.candidateRole);
+  assert.throws(() => h.store.createCandidate({ ...input, anchor: { ...input.anchor, originalRoleHash: sha('Other:\n' + h.baseRole) } }), code('wiki_candidate_role_mismatch'));
+});
 test('displayed unified diff applies to exact original bytes, with or without trailing newline', t => {
   const h = setup(t); h.approve();
   const target = path.join(h.root, 'GPT-role.txt');

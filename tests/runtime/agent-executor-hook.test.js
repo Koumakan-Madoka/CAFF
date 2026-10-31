@@ -1062,7 +1062,7 @@ test('agent executor sends the prevalidated runtime config without env fallback 
   process.env.PI_HEARTBEAT_TIMEOUT_MS = '11000';
   process.env.PI_PROGRESS_TIMEOUT_MS = '22000';
   process.env.PI_TIMEOUT_MS = '33000';
-  let captured = null;
+  let captured = null, familyCheckpointInput = null;
 
   minimalPi.startRun = (provider, model, prompt, options) => {
     captured = { provider, model, prompt, options };
@@ -1130,6 +1130,10 @@ test('agent executor sends the prevalidated runtime config without env fallback 
     agentToolRelativePath: './lib/agent-chat-tools.js',
     piCapabilityExtensionPath,
     modelCatalog: { getOptions: () => [{ provider: 'openai-runtime', model: 'gpt-runtime', runtimeResolvable: true, supportedThinkingLevels: ['max'] }] },
+    badcaseCapture: { captureTurnCheckpoint(input) {
+      familyCheckpointInput = input;
+      return { captured: true, checkpointId: 'family-checkpoint' };
+    } },
   });
   const turnState = createTurnState(conversation, 'turn-runtime-config');
 
@@ -1165,6 +1169,10 @@ test('agent executor sends the prevalidated runtime config without env fallback 
   assert.deepEqual(captured.options.extensionPaths, [piCapabilityExtensionPath]);
   assert.doesNotMatch(captured.prompt, /Contaminated family Persona|contaminated-family-skill/u);
   assert.match(captured.prompt, /This is a model-family identity, not a fictional persona\./u);
+  assert.match(familyCheckpointInput.roleSection, /^Rules:\n- Reply as this agent only\./);
+  assert.ok(captured.prompt.includes(familyCheckpointInput.roleSection));
+  assert.doesNotMatch(captured.prompt, /Your private persona instructions:|WikiSkill 已审核准则/);
+  assert.equal(familyCheckpointInput.agentId, 'role-family-gpt');
 });
 
 test('agent executor pins session and capture to the actual cwd, not stale Room worktree metadata, with the contract skills', async (t) => {

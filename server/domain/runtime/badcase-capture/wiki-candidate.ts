@@ -3,7 +3,9 @@ import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (value: string | Buffer) => crypto.createHash('sha256').update(value).digest('hex');
-const PREFIX = 'Your private persona instructions:\n';
+// Infer only the two supported archived wrappers from the bound span hash.
+// No new persona is invented for the GPT model-family role.
+const PREFIXES = ['Your private persona instructions:\n', 'Rules:\n'];
 const identifier = (value: any) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 
 // Literal-only guard: complete nonempty values, nonempty lines, and any shared
@@ -39,7 +41,7 @@ export function buildWikiCandidate(state: any, input: any) {
   const anchor = input.anchor;
   if (!anchor || Object.keys(anchor).sort().join(',') !== 'caseId,checkpointId,originalRoleHash'
     || !identifier(anchor.caseId) || !identifier(anchor.checkpointId) || !/^[a-f0-9]{64}$/.test(anchor.originalRoleHash)
-    || hash(PREFIX + input.baseRole) !== anchor.originalRoleHash) throw fail('wiki_candidate_role_mismatch');
+    || !PREFIXES.some(prefix => hash(prefix + input.baseRole) === anchor.originalRoleHash)) throw fail('wiki_candidate_role_mismatch');
   const version = state.versions.find((v: any) => v.id === input.versionId && v.role === 'GPT');
   const entries = input.entryIds.map((id: string) => version?.entries.find((e: any) => e.id === id && e.status === 'approved'));
   if (entries.some((e: any) => !e)) throw fail('wiki_candidate_approved_required');
