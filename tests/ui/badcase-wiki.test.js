@@ -5,7 +5,10 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function data() {
   const entry = { id: 'entry-1', title: '<img src=x>', failureMode: 'unsupported claims', symptoms: 'no checks', rootCauseHypothesis: 'skipped verification', guideline: '先核验后结论。', caseIds: ['c1'], status: 'draft' };
-  return { schemaVersion: 1, scope: 'global', revision: 3, cases: [
+  return { schemaVersion: 1, scope: 'global', revision: 3, targets: [
+    { id: 'global-harness-behavior-v1', kind: 'global-system-prompt', title: '全局行为准则', baseText: 'Shared harness prose.', baseHash: 'a'.repeat(64) },
+    { id: 'tool-description-list_rooms', kind: 'tool-description', title: '工具描述 · list_rooms', baseText: 'List Rooms.', baseHash: 'b'.repeat(64) },
+  ], candidates: [], cases: [
     { id: 'c1', kind: 'text-only', split: 'train', actual: 'no evidence', expected: 'run checks', message: '<script>bad()</script>', traceState: 'missing', traceExcerpt: '', source: { projectId: 'source-project', conversationId: 'source-room', messageId: 'source-message' } },
     { id: 'held-out', kind: 'text-only', split: 'test', actual: 'test source', expected: 'test expectation', message: '', traceState: 'missing', traceExcerpt: '', source: { projectId: 'another-project', conversationId: 'test-room', messageId: 'test-message' } },
   ], versions: [
@@ -19,7 +22,15 @@ function setup(t, handler) {
   const root = dom.window.document.getElementById('panel'), calls = [], confirms = []; let accepted = true, saved = data();
   const panel = dom.window.CaffShared.createBadcaseWikiPanel({ root, confirm: message => { confirms.push(message); return accepted; }, fetchJson: async (url, options = {}) => {
     calls.push({ url, ...options }); const custom = handler?.(url, options); if (custom !== undefined) return custom;
-    if (options.method === 'POST') { const e = saved.versions[1].entries[0]; Object.assign(e, options.body.patch); if (options.body.decision) e.status = options.body.decision; saved.revision++; }
+    if (options.method === 'POST') {
+      if (url.endsWith('/candidate')) {
+        const target = saved.targets.find(v => v.id === options.body.targetId);
+        saved.candidates.push({ id: 'candidate-1', kind: 'global-wiki-candidate-v1', targetId: target.id, target, versionId: options.body.versionId,
+          entryIds: options.body.entryIds, candidateHash: 'c'.repeat(64), candidateText: '<img src=x> proposed', diff: '--- a/target\n+++ b/target\n+<script>new</script>', status: 'draft' });
+      } else if (url.endsWith('/confirm-global-candidate')) saved.candidates[0].status = 'confirmed';
+      else { const e = saved.versions[1].entries[0]; Object.assign(e, options.body.patch); if (options.body.decision) e.status = options.body.decision; }
+      saved.revision++;
+    }
     return JSON.parse(JSON.stringify(saved));
   } });
   const el = name => root.querySelector(`[data-wiki-${name}]`);
@@ -102,4 +113,59 @@ test('WikiSkill is a standalone navigation destination; projects contains only c
   const dom = new JSDOM(read('wikiskill.html'));
   assert.equal(dom.window.document.querySelectorAll('.rail-link[aria-current="page"]').length, 1); dom.window.close();
   assert.match(read('wikiskill.js'), /panel.load\(\)/); assert.doesNotMatch(read('wikiskill.js'), /projectId|api\/projects/);
+});
+
+test('candidate controls show both targets but disable generation until approved entries are selected', async t => {
+  const h = setup(t); await h.panel.load();
+  assert.equal(h.el('targets').options.length, 2); assert.equal(h.el('generate').disabled, true);
+  assert.equal(h.el('candidate-entries').querySelectorAll('input').length, 0);
+  h.el('versions').value = 'wiki-2'; h.el('versions').dispatchEvent(new h.window.Event('change'));
+  const box = h.el('candidate-entries').querySelector('input'); assert.ok(box); assert.equal(box.checked, false);
+  box.click(); assert.equal(h.el('generate').disabled, false);
+  h.el('targets').value = 'tool-description-list_rooms'; h.el('targets').dispatchEvent(new h.window.Event('change'));
+  assert.match(h.el('target-info').textContent, /工具描述.*本期不要求评测结论/);
+  assert.match(h.el('target-base').textContent, /List Rooms/);
+  h.accept(false); h.el('generate').click(); await tick(); assert.equal(h.posts().length, 0);
+  h.accept(true); h.el('generate').click(); await tick();
+  assert.equal(h.posts().length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.posts()[0].body)), { confirmed: true, expectedRevision: 3, versionId: 'wiki-2', entryIds: ['entry-1'], targetId: 'tool-description-list_rooms' });
+  assert.equal(h.posts()[0].url, '/api/wikiskill/candidate');
+  assert.match(h.el('candidates').textContent, /<img src=x> proposed/); assert.match(h.el('candidates').textContent, /\+<script>new<\/script>/);
+  assert.equal(h.root.querySelector('img,script'), null);
+  assert.equal(h.el('candidates').querySelector('button').disabled, false);
+  assert.match(h.el('status').textContent, /草稿.*未.*评测/);
+});
+test('candidate confirmation binds displayed hash and current revision; confirmation itself never runs a comparison', async t => {
+  const h = setup(t); await h.panel.load(); h.el('versions').value = 'wiki-2'; h.el('versions').dispatchEvent(new h.window.Event('change'));
+  h.el('candidate-entries').querySelector('input').click(); h.el('generate').click(); await tick();
+  h.accept(false); h.el('candidates').querySelector('button').click(); await tick(); assert.equal(h.posts().length, 1);
+  h.accept(true); h.el('candidates').querySelector('button').click(); await tick();
+  assert.equal(h.posts().length, 2); assert.equal(h.posts()[1].url, '/api/wikiskill/confirm-global-candidate');
+  assert.deepEqual(JSON.parse(JSON.stringify(h.posts()[1].body)), { confirmed: true, candidateId: 'candidate-1', candidateHash: 'c'.repeat(64), expectedRevision: 4 });
+  assert.match(h.el('candidates').textContent, /已确认/); assert.equal(h.el('candidates').querySelector('button').disabled, true);
+  assert.match(h.el('status').textContent, /未启动评测/);
+  assert.equal(h.calls.some(c => /compare|start/.test(c.url)), false);
+});
+test('candidate unknown write result disables all writes until refresh and does not retry', async t => {
+  const h = setup(t, (url, options) => { if (url.endsWith('/candidate')) throw Error('private-filesystem-path'); });
+  await h.panel.load(); h.el('versions').value = 'wiki-2'; h.el('versions').dispatchEvent(new h.window.Event('change'));
+  h.el('candidate-entries').querySelector('input').click(); h.el('generate').click(); await tick();
+  assert.equal(h.posts().length, 1); assert.equal(h.el('generate').disabled, true);
+  assert.match(h.el('status').textContent, /结果未知.*刷新/); assert.doesNotMatch(h.root.textContent, /private-filesystem-path/);
+  h.el('generate').click(); await tick(); assert.equal(h.posts().length, 1);
+  await h.panel.load(); assert.equal(h.el('targets').disabled, false);
+});
+test('pending candidate writes cannot be repeated and stale responses cannot replace refreshed data', async t => {
+  const post = deferred();
+  const h = setup(t, (url, options) => options.method === 'POST' ? post.promise : undefined);
+  await h.panel.load(); h.el('versions').value = 'wiki-2'; h.el('versions').dispatchEvent(new h.window.Event('change'));
+  h.el('candidate-entries').querySelector('input').click(); h.el('generate').click(); h.el('generate').click(); await tick();
+  assert.equal(h.posts().length, 1); assert.equal(h.el('targets').disabled, true); assert.equal(h.el('versions').disabled, true);
+  await h.panel.load(); post.resolve({ ...data(), versions: [], candidates: [] }); await tick();
+  assert.equal(h.el('versions').options.length, 2); assert.equal(h.el('targets').disabled, false);
+  assert.doesNotMatch(h.el('status').textContent, /草稿已保存/);
+});
+test('legacy role candidates are not offered for new target confirmation', async t => {
+  const h = setup(t, () => ({ ...data(), candidates: [{ id: 'legacy-role', role: 'GPT', status: 'draft' }] }));
+  await h.panel.load(); assert.equal(h.el('candidates').querySelector('button'), null); assert.doesNotMatch(h.el('candidates').textContent, /legacy-role/);
 });

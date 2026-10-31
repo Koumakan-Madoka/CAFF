@@ -56,11 +56,14 @@ test('global operator selects either declared target without changing legacy rol
   assert.throws(() => createCandidate(config), code('wiki_candidate_approved_required'));
   h.approve(); const c = createCandidate(config); assert.equal(c.targetId, config.targetId); assert.equal(c.status, 'draft');
   assert.throws(() => createCandidate({ ...config, projectId: 'bound-project' }), code('wiki_candidate_invalid'));
-  const state = { replayCases: [{ id: 'replay-1', request: {}, checkpointHash: 'a'.repeat(64) }] };
-  assert.throws(() => collectGlobalCandidateFiles(state, { prepareTarget: () => ({ supported: false }) }), code('wiki_candidate_anchor_unsupported'));
-  const file = { path: 'x', base64: Buffer.from('fixture data').toString('base64'), sha256: sha('fixture data') };
-  assert.deepEqual(collectGlobalCandidateFiles(state, { prepareTarget: () => ({ supported: true, input: { files: [file] }, provenance: { checkpointHash: 'a'.repeat(64) } }) }), [{ ...file, path: 'replay-1/x' }]);
-  assert.throws(() => collectGlobalCandidateFiles(state, { prepareTarget: () => ({ supported: true, input: { files: [] }, provenance: { checkpointHash: 'b'.repeat(64) } }) }), code('wiki_candidate_anchor_unsupported'));
+  const f = require('../helpers/badcase-initialization-fixture.cjs')(t);
+  const state = { replayCases: [{ id: 'replay-1', request: f.request, checkpointHash: sha(JSON.stringify(f.cp)) }] };
+  const before = fs.readFileSync(f.source);
+  assert.deepEqual(collectGlobalCandidateFiles(state), [{ path: 'replay-1/source.txt', base64: Buffer.from('retained bytes').toString('base64'), sha256: sha('retained bytes') }]);
+  assert.deepEqual(fs.readFileSync(f.source), before);
+  assert.throws(() => collectGlobalCandidateFiles({ replayCases: [{ ...state.replayCases[0], checkpointHash: 'b'.repeat(64) }] }), code('wiki_candidate_anchor_unsupported'));
+  fs.writeFileSync(f.blobPath(f.cp.files['source.txt'].hash), 'corrupt');
+  assert.throws(() => collectGlobalCandidateFiles(state), code('wiki_candidate_anchor_unsupported'));
 });
 test('expected answer fragments and fixture file contents are rejected for both candidate target types', t => {
   for (const targetId of ['global-harness-behavior-v1', 'tool-description-list_rooms']) {

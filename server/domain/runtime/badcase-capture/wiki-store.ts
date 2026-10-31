@@ -255,8 +255,9 @@ export function createWikiStore(options: any) {
         return { changed: true, value: version };
       }).value;
     },
-    createGlobalCandidate(input: any) {
+    createGlobalCandidate(input: any, expectedRevision?: number) {
       return change(state => {
+        if (expectedRevision !== undefined && state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
         const candidate = buildGlobalWikiCandidate(state, input);
         const existing = state.candidates.find((c: any) => c.id === candidate.id);
         if (existing) return { changed: false, value: existing };

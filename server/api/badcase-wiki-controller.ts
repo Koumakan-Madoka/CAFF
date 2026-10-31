@@ -4,8 +4,10 @@ import { createLocalAdminGuard } from '../http/local-admin-guard';
 import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
 import { createWikiStore } from '../domain/runtime/badcase-capture/wiki-store';
+import { listWikiTargets } from '../domain/runtime/badcase-capture/wiki-targets';
+import { collectWikiCandidateFiles } from '../domain/runtime/badcase-capture/wiki-candidate-files';
 
-// Review/confirmation only. Neither loading, approving a guideline nor
+// Local candidate preparation/review only. Neither loading, approving a guideline nor
 // confirming a candidate starts a model request or edits a production role.
 export function createBadcaseWikiController(options: any = {}): RouteHandler<any> {
   const guard = createLocalAdminGuard({ ...options, issuePrefix: 'badcase_wiki' });
@@ -17,18 +19,23 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_collection_too_large: 422, wiki_record_invalid: 409, wiki_write_failed: 503, capture_writer_busy: 409,
     wiki_candidate_invalid: 422, wiki_candidate_leak: 422, wiki_candidate_not_found: 404,
     wiki_candidate_approved_required: 409, wiki_candidate_confirmation_required: 409, wiki_candidate_role_mismatch: 409,
+    wiki_target_unknown: 422, wiki_candidate_target_mismatch: 409, wiki_candidate_anchor_unsupported: 409,
   };
   return async ({ req, res, pathname }: any) => {
-    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate))?$/);
+    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate))?$/);
     if (!match || (match[1] ? req.method !== 'POST' : req.method !== 'GET')) return false;
     if (match[1]) guard.assertMutation(req); else guard.assertRead(req);
     let input;
     if (match[1]) {
       input = await readRequestJson(req, { bodyLimit: 64 * 1024 });
+      const fields: Record<string, string[]> = {
+        'confirm-candidate': ['confirmed', 'candidateId', 'candidateRoleHash', 'expectedRevision'],
+        candidate: ['confirmed', 'versionId', 'entryIds', 'targetId', 'expectedRevision'],
+        'confirm-global-candidate': ['confirmed', 'candidateId', 'candidateHash', 'expectedRevision'],
+        review: ['confirmed', 'versionId', 'entryId', 'expectedRevision', 'patch', 'decision'],
+      };
       if (!input || typeof input !== 'object' || Array.isArray(input)
-        || Object.keys(input).some(k => !(match[1] === 'confirm-candidate'
-          ? ['confirmed', 'candidateId', 'candidateRoleHash', 'expectedRevision']
-          : ['confirmed', 'versionId', 'entryId', 'expectedRevision', 'patch', 'decision']).includes(k))) throw issue('wiki_invalid_input');
+        || Object.keys(input).some(k => !fields[match[1]].includes(k))) throw issue('wiki_invalid_input');
       if (input.confirmed !== true) throw issue('wiki_confirmation_required');
       const { confirmed, ...mutation } = input; input = mutation;
     }
@@ -37,7 +44,15 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         sourceWorktrees: options.projectManager?.listProjects().map((p: any) => p.path) || [] });
       if (match[1] === 'review') store.review(input);
       if (match[1] === 'confirm-candidate') store.confirmCandidate(input);
-      sendJson(res, 200, { ...store.read(), trustBoundary: 'same_os_user' });
+      if (match[1] === 'candidate' || match[1] === 'confirm-global-candidate') {
+        const state = store.read();
+        if (!Number.isSafeInteger(input.expectedRevision)) throw Object.assign(Error(), { code: 'wiki_invalid_input' });
+        if (state.revision !== input.expectedRevision) throw Object.assign(Error(), { code: 'wiki_revision_conflict' });
+        const files = collectWikiCandidateFiles(state);
+        if (match[1] === 'candidate') store.createGlobalCandidate({ versionId: input.versionId, entryIds: input.entryIds, targetId: input.targetId, files }, input.expectedRevision);
+        else store.confirmGlobalCandidate({ ...input, files });
+      }
+      sendJson(res, 200, { ...store.read(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

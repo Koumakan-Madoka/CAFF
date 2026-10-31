@@ -91,6 +91,67 @@ test('candidate confirmation requires exact hash, revision and explicit user act
   assert.equal((await h.invoke()).body.revision, 5);
 });
 
+test('global candidate HTTP flow exposes real targets and only accepts approved sources, exact revision/hash and confirmation', async t => {
+  for (const targetId of ['global-harness-behavior-v1', 'tool-description-list_rooms']) {
+    const h = setup(t), v = h.seed(), route = { pathname: '/api/wikiskill/candidate' };
+    const catalog = (await h.invoke()).body.targets;
+    assert.equal(catalog.length, 9); assert.ok(catalog.find(t => t.id === targetId));
+    assert.equal(catalog.some(t => t.execute || t.parameters), false);
+    const body = { confirmed: true, expectedRevision: 2, versionId: v.id, entryIds: [v.entries[0].id], targetId };
+    await rejects(h.invoke(body, route), 'wiki_candidate_approved_required', 409);
+    h.store.review({ versionId: v.id, entryId: v.entries[0].id, expectedRevision: 2, decision: 'approved' });
+    await rejects(h.invoke(body, route), 'wiki_revision_conflict', 409);
+    body.expectedRevision = 3;
+    for (const extra of [{ files: [] }, { globalRoot: h.root }, { candidateText: 'injected' }]) await rejects(h.invoke({ ...body, ...extra }, route), 'wiki_invalid_input');
+    for (const confirmed of [false, 'true', 1]) await rejects(h.invoke({ ...body, confirmed }, route), 'wiki_confirmation_required');
+    for (const override of [{ remoteAddress: '10.1.1.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) {
+      await assert.rejects(h.invoke(body, { ...route, ...override }), e => [403, 404].includes(e.statusCode));
+    }
+    const generated = await h.invoke(body, route), c = generated.body.candidates[0];
+    assert.equal(c.kind, 'global-wiki-candidate-v1'); assert.equal(c.targetId, targetId); assert.equal(c.status, 'draft');
+    assert.match(c.diff, /WikiSkill 已审核准则/); assert.equal(h.store.read().revision, 4);
+    const confirmRoute = { pathname: '/api/wikiskill/confirm-global-candidate' }, confirmBody = { confirmed: true, candidateId: c.id, candidateHash: c.candidateHash, expectedRevision: 4 };
+    for (const confirmed of [false, 'true', 1]) await rejects(h.invoke({ ...confirmBody, confirmed }, confirmRoute), 'wiki_confirmation_required');
+    await rejects(h.invoke({ ...confirmBody, files: [] }, confirmRoute), 'wiki_invalid_input');
+    await rejects(h.invoke({ ...confirmBody, candidateHash: 'f'.repeat(64) }, confirmRoute), 'wiki_candidate_not_found', 404);
+    await rejects(h.invoke({ ...confirmBody, expectedRevision: 3 }, confirmRoute), 'wiki_revision_conflict', 409);
+    assert.equal((await h.invoke()).body.candidates[0].status, 'draft');
+    const saved = await h.invoke(confirmBody, confirmRoute); assert.equal(saved.body.candidates[0].status, 'confirmed');
+    assert.equal(createWikiStore(h.config).read().candidates[0].status, 'confirmed');
+  }
+});
+test('candidate HTTP errors disclose no sealed paths and cannot bypass missing registered materials', async t => {
+  const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, expectedRevision: 2, decision: 'approved' });
+  await rejects(h.invoke({ confirmed: true, expectedRevision: 3, versionId: v.id, entryIds: [v.entries[0].id], targetId: 'arbitrary' }, { pathname: '/api/wikiskill/candidate' }), 'wiki_target_unknown');
+  // Unknown lower-level storage errors are deliberately not reflected to HTTP.
+  const file = path.join(h.config.globalRoot, 'snapshots/000000000003.json');
+  const envelope = JSON.parse(fs.readFileSync(file)); envelope.record.replayCases = [{ id: 'r', request: { captureRoot: h.root }, checkpointHash: 'a'.repeat(64) }];
+  envelope.checksum = crypto.createHash('sha256').update(JSON.stringify(envelope.record)).digest('hex'); fs.writeFileSync(file, JSON.stringify(envelope));
+  await rejects(h.invoke({ confirmed: true, expectedRevision: 3, versionId: v.id, entryIds: [v.entries[0].id], targetId: 'global-harness-behavior-v1' }, { pathname: '/api/wikiskill/candidate' }), 'wiki_candidate_anchor_unsupported', 409);
+  assert.equal(h.store.read().candidates.length, 0);
+});
+test('HTTP generation and confirmation scan real retained files rather than accepting client file evidence', async t => {
+  const f = require('../helpers/badcase-initialization-fixture.cjs')(t, 'fresh', ({ cp }) => { cp.agentId = 'role-family-gpt'; });
+  for (const atConfirmation of [false, true]) {
+    const h = setup(t), v = h.seed();
+    h.store.review({ versionId: v.id, entryId: v.entries[0].id, expectedRevision: 2, patch: { guideline: 'Never copy retained bytes.' }, decision: 'approved' });
+    const generationRoute = { pathname: '/api/wikiskill/candidate' };
+    let candidate;
+    if (atConfirmation) candidate = (await h.invoke({ confirmed: true, versionId: v.id, entryIds: [v.entries[0].id], targetId: 'global-harness-behavior-v1', expectedRevision: 3 }, generationRoute)).body.candidates[0];
+    h.store.setReplaySplit({ caseIds: v.caseIds });
+    h.store.addReplayCase({ sourceCaseId: v.caseIds[0], category: 'control', task: 'Inspect source.txt.', fixture: { commit: 'a'.repeat(40), sourceCommit: 'b'.repeat(40), sourceSubdirectory: 'R1', filesHash: 'c'.repeat(64) }, request: f.request,
+      rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] }, checkpointHash: crypto.createHash('sha256').update(JSON.stringify(f.cp)).digest('hex') });
+    const revision = h.store.read().revision;
+    if (atConfirmation) {
+      await rejects(h.invoke({ confirmed: true, candidateId: candidate.id, candidateHash: candidate.candidateHash, expectedRevision: revision }, { pathname: '/api/wikiskill/confirm-global-candidate' }), 'wiki_candidate_leak');
+      assert.equal(h.store.read().candidates[0].status, 'draft');
+    } else {
+      await rejects(h.invoke({ confirmed: true, versionId: v.id, entryIds: [v.entries[0].id], targetId: 'global-harness-behavior-v1', expectedRevision: revision }, generationRoute), 'wiki_candidate_leak');
+      assert.equal(h.store.read().candidates.length, 0);
+    }
+    assert.equal(h.store.read().revision, revision);
+  }
+});
 test('corrupt storage and unknown exceptions are sanitized, never returning raw paths', async t => {
   const h = setup(t); h.seed();
   const file = path.join(h.config.globalRoot, 'snapshots/000000000002.json'); fs.writeFileSync(file, 'broken');

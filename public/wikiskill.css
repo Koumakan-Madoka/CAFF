@@ -11,3 +11,6 @@ body.management-app[data-page="wikiskill"] .wikiskill-content {
 .wikiskill-content summary { cursor: pointer; overflow-wrap: anywhere; }
 .wikiskill-content select, .wikiskill-content textarea { max-width: 100%; }
 .wikiskill-content .button-row a { padding: .5rem; }
+.wikiskill-content pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wikiskill-content [data-wiki-candidate-entries] label { display: flex; align-items: flex-start; gap: .5rem; margin-block: .75rem; }
+.wikiskill-content [data-wiki-candidate-entries] input { flex: 0 0 auto; margin-top: .25rem; }
