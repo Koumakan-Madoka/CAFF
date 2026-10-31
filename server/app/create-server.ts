@@ -33,6 +33,7 @@ const { createJevEnabledResolver, createJevServiceConfigService, readJevClientMa
 const { createProjectsController } = require('../api/projects-controller');
 const { createBadcaseCaptureController } = require('../api/badcase-capture-controller');
 const { createBadcaseFlagsController } = require('../api/badcase-flags-controller');
+const { createBadcaseWikiController } = require('../api/badcase-wiki-controller');
 const { createBadcaseEvaluationsController } = require('../api/badcase-evaluations-controller');
 const { createEvaluationAdminService } = require('../domain/runtime/badcase-capture/evaluation-admin');
 const { createBadcaseFlagService } = require('../domain/runtime/badcase-capture/badcase-flags');
@@ -1314,6 +1315,15 @@ export function createServerApp(options: any = {}) {
       host,
       port,
       csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+    }),
+    createBadcaseWikiController({
+      captureRoot: badcaseCapture.captureRoot,
+      projectManager, host, port, csrfToken: providerConfigCsrfToken,
       getAuthority() {
         const address = server && server.address();
         const actualPort = address && typeof address === 'object' ? address.port : port;

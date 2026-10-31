@@ -21,14 +21,17 @@
 - 同一消息相同文本重复提交幂等，不新增第二份封存；不同文本不覆盖原记录。没有执行前检查点的旧消息显示缺现场，材料缺失不现场补造。进程重启后，对仍存在且归属有效的消息可查询原记录。
 - 封存通过保留引用 pin 住清单和可达 blob，不受普通期限/配额回收。采集存储在源 worktree 外，属于同 OS 用户可信存储，不挂载给评测 agent。
 
-### WikiSkill 用例与版本存储（已实现的底座）
+### WikiSkill 用例、模型归纳与审核
 
 - `scripts/badcase-capture/import-text-cases.cjs --config <绝对路径> --confirmed` 是操作方入口，不部署到 3100。配置仅含 `captureRoot`、`sourceWorktree`、`projectId`、`selections`；每项 selection 仅含用户确认的 `conversationId`、`messageId`、`actual`、`expected`。没有确认参数时不访问 API、不落盘。
 - 导入仅 GET 固定 `http://127.0.0.1:3100` 的会话、分页公共消息和所选消息的 tool-trace API；不打开生产 SQLite、不 POST 标记、不读私信/session 文件、不修改生产库，不转发认证或跟随重定向。只接受终态 `role-family-gpt` assistant 消息，每批最多 20 条，每房间最多扫描 100 页（每页 100 条），单响应最多 2 MiB，单请求 10 秒；越界或不支持直接失败。
 - 纯文本用例保存实际问题、期望、GPT 角色、源消息与轨迹摘录。摘录各最多 32 KiB 并显式标截断，轨迹 API 404 显式标缺失，其他失败不冒充缺失；沿用秘密哨兵拒绝策略，不声称可检测所有秘密。整批成功才本地原子发布，同一来源同内容重提幂等，变化则冲突，不覆盖已确认材料。此入口不封存现场，永远记录 `kind: text-only`、`replayable: false`、`split: train`，不能用于回放评分。
 - wiki 自包含文本存于源 worktree 外的 `<captureRoot>/wiki/<projectId>/snapshots/`，不把文本放进 checkpoint CAS。复用项目 writer lock，每次变更追加带 checksum 的不可覆盖快照；重启读取最新完整快照，损坏拒绝而不退回旧审核状态。该目录不属于 checkpoint TTL/配额或 orphan GC 的删除范围，也不算作 CAS 容量。
 - `wiki-store.ts` 的 draft 接口校验所选训练用例关联、每用例至少归入一条或有明确未归类原因；未知用例/遗漏拒绝。条目含标题、失败模式、症状、根因假设、≤300 Unicode 字符的 prompt 准则、关联用例 ID 和 `draft/approved/rejected` 状态。模型输出不能指定批准状态；每次重新生成创建新版本，不覆盖旧版本。
-- 审核接口以当前 revision 防止旧页面覆盖新状态；只允许编辑 draft 的文字、通过或驳回，审核后的条目冻结，重新生成另起 draft 版本。重分组需重新生成，最小编辑器不改关联用例。这里的模型名与 draft 数据是待接入生成器的存储契约，**目前尚未接通真实模型聚类、审核页面、候选 prompt 或批量评测**；合成定向测试不构成 AC5–AC7 的真实用例证据。
+- `generate-wiki.cjs --config <绝对路径> --confirmed --output <新的绝对路径>` 是操作方模型归纳入口，配置只含 `captureRoot`、`sourceWorktree`、`projectId`、明确所选的 `caseIds` 和沿用 S3 的固定 `image` 身份。每次1–20条、输入最多1 MiB，只投影所选 GPT 训练用例的问题/期望/消息/轨迹摘录与截断状态；测试集、其他用例、源认证配置不发送。无确认、未知或非训练用例在读取 Key/调用模型前拒绝。模型内容为不可信数据，宿主验证字段、≤300字及全用例覆盖后才追加新版本；不自动重试、补写遗漏或批准条目。
+- 归纳只调用官方 `deepseek/deepseek-v4-flash` 一次，复用 D4 的只读 Key 来源与 `runDirectDockerTask` 一次性容器隔离，不在宿主推理，不挂载生产 DB、凭据目录、Docker socket 或真实仓库；仅输入一个文本 JSON 和固定 worker，无 agent 工具。容器最长120秒、响应最多512 KiB，非200/截断/无效JSON失败。输出 JSONL 记录模型、耗时、成败、可得用量、容器清理/隔离投影与新版本ID；基础设施未提供调用记录为 null，不冒称零调用。CLI 保留现有 Linux Docker 宿主要求，Windows 须由受信操作方沿用 S3 的 Linux 执行方式，页面不提供模型/Key/镜像 JSON 配置。
+- `projects.html` 选择项目后可展开“WikiSkill 条目审核”，查看历次版本、归类/未归类原因、关联用例及摘录，编辑 draft 文字并通过/驳回；无需填写 JSON。`GET /api/projects/:id/badcase-wiki` 只读，`POST .../review` 沿用本地管理 Host/Origin/CSRF 门禁与显式确认。以当前 revision 防止旧页面覆盖新状态，审核后的条目冻结；重分组需重新生成，最小编辑器不改关联用例。页面加载、保存、审核均不调用模型、不生成/评测候选、不改生产角色；保存结果未知时先刷新核对，不自动重试。
+- 上述生成链和审核页面目前以合成材料定向验证，**尚未用用户确认的真实清单生成 wiki，候选 prompt 与批量评测仍未接通**；不构成 AC5–AC7 的真实用例证据。
 
 ### 可回放子集与对比入口
 
@@ -78,5 +81,5 @@
 - 任意宿主现场在 Linux 的通用恢复、进程内存/后台服务/外部系统状态、权限/ACL/链接/并发原子一致性、`.git`/index/git status 的逐字保真。
 - 此 MVP 主路径以外的换根、外置 Git 元数据、submodule/嵌套仓库、全局 Git 配置、复杂 ignore 语法；底层保留旧实现不等于本轮承诺其端到端可用。
 - 正式 sealed-direct 入口的 resume、图片、额外技能/外部系统指令/自定义设置或旧缺材料封存。底层 fresh/resume 合成 Docker 演练不冒充这些历史用例已可回放。
-- 尚未接通的真实模型 wiki 聚类、审核页面、approved 条目到候选 prompt 的生成与确认、批量评测，不因存储接口已存在就视为可用。未经用户审核自动生效、多轮自动调优、语义自动判分、任意规则插件、自动提分/确定性保证、自动发布或修改生产 prompt 均非本 Goal 承诺。
+- 尚未完成真实用例验收的 wiki 归纳/审核链，以及尚未接通的 approved 条目到候选 prompt 的生成与确认、批量评测，不因接口或合成测试存在就视为验收通过。未经用户审核自动生效、多轮自动调优、语义自动判分、任意规则插件、自动提分/确定性保证、自动发布或修改生产 prompt 均非本 Goal 承诺。
 - 后台自动定时 GC、任意不可信代码的外联隔离、对同权限宿主/Docker 管理员隐藏容器环境 Key，以及没有可信 worker 记录时的精确供应商计费证明。

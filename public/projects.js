@@ -36,6 +36,11 @@ const capturePanel = shared.createBadcaseCapturePanel({
   fetchJson,
 });
 
+const wikiPanel = shared.createBadcaseWikiPanel({
+  root: document.getElementById('badcase-wiki-panel'),
+  fetchJson,
+});
+
 const evaluationPanel = shared.createBadcaseEvaluationPanel({
   root: document.getElementById('badcase-evaluation-panel'),
   fetchJson,
@@ -135,6 +140,7 @@ function renderSelectedProject() {
     dom.deleteProjectButton.disabled = !selected;
   }
   void capturePanel.select(selected);
+  void wikiPanel.select(selected);
   void evaluationPanel.select(selected);
 }
 
