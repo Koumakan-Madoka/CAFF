@@ -10,10 +10,11 @@ const { readSealedCase, validateSealRequest } = require(base + 'sealed-case');
 const { readCapturedCallbackInput } = require(base + 'callback-input');
 const { containsSecretSentinel } = require(base + 'secrets');
 const { validateDirectBindings } = require('./direct-model.cjs');
+const { locateGlobalPromptTarget } = require('../../build/lib/agent-prompt-targets');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const ensure = value => { if (!value) throw Error('unsupported'); };
 const empty = v => Array.isArray(v) && v.length === 0;
-function prepareSealedDirectTurn(request, candidateRole = null) {
+function prepareTurn(request, candidateRole, promptTarget) {
   try {
     const { captureRoot, association, flagId } = validateSealRequest(structuredClone(request));
     const sealed = readSealedCase({ captureRoot, association, flagId }); ensure(sealed);
@@ -45,20 +46,38 @@ function prepareSealedDirectTurn(request, candidateRole = null) {
       && config.cwd === cp.targetDir && config.provider === r.runConfig.provider && config.model === r.runConfig.model);
     ensure(empty(r.runConfig.skillIds) && empty(r.runConfig.conversationSkillIds) && empty(r.harness.skillSnapshots));
     let prompt = utf8(r.promptBlobHash); ensure(r.normalizedPromptHash === r.promptBlobHash);
-    const span = r.roleSpan;
-    ensure(span && Number.isSafeInteger(span.start) && Number.isSafeInteger(span.end) && span.start >= 0 && span.end > span.start && span.end <= prompt.length);
-    const originalRole = prompt.slice(span.start, span.end);
-    // Legacy custom personas keep their wrapper. The selected GPT family has
-    // no persona, so use only its actually archived Rules section instead.
-    const rolePrefix = originalRole.startsWith('Your private persona instructions:\n') ? 'Your private persona instructions:\n'
-      : association.agentId === 'role-family-gpt' && originalRole.startsWith('Rules:\n') ? 'Rules:\n' : null;
-    ensure(rolePrefix && originalRole.slice(rolePrefix.length).trim() && hash(originalRole) === span.sha256
-      && !originalRole.includes('{{') && prompt.indexOf(originalRole) === span.start && prompt.indexOf(originalRole, span.start + 1) === -1);
-    const commonPrompt = prompt.slice(0, span.start) + '{{ROLE_VARIANT}}' + prompt.slice(span.end);
-    if (candidateRole !== null) {
-      ensure(typeof candidateRole === 'string' && candidateRole.trim() && Buffer.byteLength(candidateRole) <= 65536
-        && !candidateRole.includes('{{') && !containsSecretSentinel(candidateRole));
-      prompt = prompt.slice(0, span.start) + rolePrefix + candidateRole + prompt.slice(span.end);
+    let commonPrompt, variantInfo, identityInfo;
+    if (promptTarget) {
+      // Global harness text is independent of the actor/persona/roleSpan. Only
+      // an exact declared fragment from the archive is editable; no current
+      // prompt/config is substituted when an old archive lacks this fragment.
+      const target = locateGlobalPromptTarget(prompt, promptTarget.id), replacement = promptTarget.replacement;
+      commonPrompt = prompt.slice(0, target.start) + '{{GLOBAL_PROMPT_TARGET}}' + prompt.slice(target.end);
+      if (replacement !== null) {
+        ensure(typeof replacement === 'string' && replacement.trim() && Buffer.byteLength(replacement) <= 65536
+          && !replacement.includes('{{') && !containsSecretSentinel(replacement));
+        prompt = prompt.slice(0, target.start) + replacement + prompt.slice(target.end);
+      }
+      variantInfo = { target, baseText: target.baseText };
+      identityInfo = { targetId: target.id, originalTargetHash: target.baseHash };
+    } else {
+      const span = r.roleSpan;
+      ensure(span && Number.isSafeInteger(span.start) && Number.isSafeInteger(span.end) && span.start >= 0 && span.end > span.start && span.end <= prompt.length);
+      const originalRole = prompt.slice(span.start, span.end);
+      // Legacy custom personas keep their wrapper. The selected GPT family has
+      // no persona, so use only its actually archived Rules section instead.
+      const rolePrefix = originalRole.startsWith('Your private persona instructions:\n') ? 'Your private persona instructions:\n'
+        : association.agentId === 'role-family-gpt' && originalRole.startsWith('Rules:\n') ? 'Rules:\n' : null;
+      ensure(rolePrefix && originalRole.slice(rolePrefix.length).trim() && hash(originalRole) === span.sha256
+        && !originalRole.includes('{{') && prompt.indexOf(originalRole) === span.start && prompt.indexOf(originalRole, span.start + 1) === -1);
+      commonPrompt = prompt.slice(0, span.start) + '{{ROLE_VARIANT}}' + prompt.slice(span.end);
+      if (candidateRole !== null) {
+        ensure(typeof candidateRole === 'string' && candidateRole.trim() && Buffer.byteLength(candidateRole) <= 65536
+          && !candidateRole.includes('{{') && !containsSecretSentinel(candidateRole));
+        prompt = prompt.slice(0, span.start) + rolePrefix + candidateRole + prompt.slice(span.end);
+      }
+      variantInfo = { originalRole: originalRole.slice(rolePrefix.length) };
+      identityInfo = { originalRoleHash: span.sha256 };
     }
     ensure(Buffer.byteLength(prompt) <= 131072);
     const names = Object.keys(cp.files); ensure(names.length <= 1024);
@@ -75,11 +94,13 @@ function prepareSealedDirectTurn(request, candidateRole = null) {
     const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText: null, systemPrompt: null, settings: null, callback,
       bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements } };
     validateDirectBindings(input.prompt, input.bindings);
-    return { supported: true, input, originalRole: originalRole.slice(rolePrefix.length),
+    return { supported: true, input, ...variantInfo,
       provenance: { caseId: sealed.caseId, checkpointId: cp.checkpointId,
-      checkpointHash: hash(JSON.stringify(cp)), originalRoleHash: span.sha256,
+      checkpointHash: hash(JSON.stringify(cp)), ...identityInfo,
       commonInputHash: hash(JSON.stringify({ ...input, prompt: commonPrompt })),
-      variant: candidateRole === null ? 'original' : 'candidate', strictEvalEligible: false } };
-  } catch { return { supported: false, reason: 'unsupported_or_missing_replay_materials' }; }
+      variant: (promptTarget ? promptTarget.replacement === null : candidateRole === null) ? 'original' : 'candidate', strictEvalEligible: false } };
+  } catch { return { supported: false, reason: promptTarget ? 'unsupported_or_missing_declared_prompt_target' : 'unsupported_or_missing_replay_materials' }; }
 }
-module.exports = { prepareSealedDirectTurn };
+function prepareSealedDirectTurn(request, candidateRole = null) { return prepareTurn(request, candidateRole, null); }
+function prepareSealedPromptTarget(request, targetId, replacement = null) { return prepareTurn(request, null, { id: targetId, replacement }); }
+module.exports = { prepareSealedDirectTurn, prepareSealedPromptTarget };
