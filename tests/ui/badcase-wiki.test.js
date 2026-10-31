@@ -49,11 +49,11 @@ test('load GETs only the global endpoint; coverage and ALL source cases includin
 test('sealed representative tasks show their split/category/commit without pretending the historical text has a worktree', async t => {
   const h = setup(t, () => ({ ...data(), replayCases: [{ sourceCaseId: 'held-out', task: '<img src=x> Write steps.', category: 'reproduction', split: 'test', fixture: { commit: 'fixed-fixture-commit' }, request: { association: { checkpointId: 'sealed-checkpoint' } } }] }));
   await h.panel.load();
-  assert.match(h.el('case-count').textContent, /2 条来源用例，1 条同类任务封存/);
-  assert.match(h.el('cases').textContent, /同类任务 · 可回放封存 · 汇报复现题 · 留出/);
+  assert.match(h.el('case-count').textContent, /2 条来源 · 1 道封存题/);
+  assert.match(h.el('cases').textContent, /同类封存任务 · 汇报复现题 · 留出/);
   assert.match(h.el('cases').textContent, /不是原历史现场/);
-  assert.match(h.el('cases').textContent, /fixed-fixture-commit.*sealed-checkpoint/);
-  assert.match(h.el('cases').textContent, /纯文本 · 缺现场/);
+  assert.match(h.el('cases').textContent, /fixed-fixture-commit[\s\S]*sealed-checkpoint/);
+  assert.match(h.el('cases').textContent, /纯文本来源/);
   assert.equal(h.root.querySelector('img'), null); assert.equal(h.posts().length, 0);
 });
 test('save is draft only; approval requires confirmation and freezes the saved prose', async t => {
@@ -123,26 +123,26 @@ test('candidate controls show both targets but disable generation until approved
   const box = h.el('candidate-entries').querySelector('input'); assert.ok(box); assert.equal(box.checked, false);
   box.click(); assert.equal(h.el('generate').disabled, false);
   h.el('targets').value = 'tool-description-list_rooms'; h.el('targets').dispatchEvent(new h.window.Event('change'));
-  assert.match(h.el('target-info').textContent, /工具描述.*本期不要求评测结论/);
+  assert.match(h.el('target-info').textContent, /工具 list_rooms 的说明.*本期不要求评测结论/);
   assert.match(h.el('target-base').textContent, /List Rooms/);
   h.accept(false); h.el('generate').click(); await tick(); assert.equal(h.posts().length, 0);
   h.accept(true); h.el('generate').click(); await tick();
   assert.equal(h.posts().length, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(h.posts()[0].body)), { confirmed: true, expectedRevision: 3, versionId: 'wiki-2', entryIds: ['entry-1'], targetId: 'tool-description-list_rooms' });
   assert.equal(h.posts()[0].url, '/api/wikiskill/candidate');
-  assert.match(h.el('candidates').textContent, /<img src=x> proposed/); assert.match(h.el('candidates').textContent, /\+<script>new<\/script>/);
+  assert.match(h.el('candidates').textContent, /<img src=x> proposed/); assert.doesNotMatch(h.el('candidates').textContent, /\+<script>new<\/script>|\+\+\+ b\/target|No newline/);
   assert.equal(h.root.querySelector('img,script'), null);
-  assert.equal(h.el('candidates').querySelector('button').disabled, false);
+  assert.equal(h.el('candidates').querySelector('[data-wiki-confirm-candidate]').disabled, false);
   assert.match(h.el('status').textContent, /草稿.*未.*评测/);
 });
 test('candidate confirmation binds displayed hash and current revision; confirmation itself never runs a comparison', async t => {
   const h = setup(t); await h.panel.load(); h.el('versions').value = 'wiki-2'; h.el('versions').dispatchEvent(new h.window.Event('change'));
   h.el('candidate-entries').querySelector('input').click(); h.el('generate').click(); await tick();
-  h.accept(false); h.el('candidates').querySelector('button').click(); await tick(); assert.equal(h.posts().length, 1);
-  h.accept(true); h.el('candidates').querySelector('button').click(); await tick();
+  h.accept(false); h.el('candidates').querySelector('[data-wiki-confirm-candidate]').click(); await tick(); assert.equal(h.posts().length, 1);
+  h.accept(true); h.el('candidates').querySelector('[data-wiki-confirm-candidate]').click(); await tick();
   assert.equal(h.posts().length, 2); assert.equal(h.posts()[1].url, '/api/wikiskill/confirm-global-candidate');
   assert.deepEqual(JSON.parse(JSON.stringify(h.posts()[1].body)), { confirmed: true, candidateId: 'candidate-1', candidateHash: 'c'.repeat(64), expectedRevision: 4 });
-  assert.match(h.el('candidates').textContent, /已确认/); assert.equal(h.el('candidates').querySelector('button').disabled, true);
+  assert.match(h.el('candidates').textContent, /已确认/); assert.equal(h.el('candidates').querySelector('[data-wiki-confirm-candidate]').disabled, true);
   assert.match(h.el('status').textContent, /未启动评测/);
   assert.equal(h.calls.some(c => /compare|start/.test(c.url)), false);
 });
@@ -181,14 +181,47 @@ test('empty results explicitly exclude old screenings, and failed reload clears 
   assert.match(h.el('results').textContent, /尚未.*全局提示词.*历史筛选/);
   fail = true; await h.panel.load(); assert.doesNotMatch(h.el('results').textContent, /1\/3|50.0%/); assert.match(h.el('results').textContent, /尚未读取/);
 });
-test('deprecated wrong-tool candidates retain prose/diff but cannot be confirmed or mistaken for a draft', async t => {
+test('deprecated wrong-tool candidates retain readable prose but cannot be confirmed or mistaken for a draft', async t => {
   const d = data(); d.candidates = [{ id: 'old-list-rooms', kind: 'global-wiki-candidate-v1', target: d.targets[1], targetId: d.targets[1].id, versionId: 'wiki-2', entryIds: ['entry-1'], candidateHash: 'c'.repeat(64), candidateText: 'Retained old prose', diff: '+Retained diff', status: 'deprecated', deprecationReason: 'wrong_tool_target' }];
   const h = setup(t, () => d); await h.panel.load();
   assert.match(h.el('candidates').textContent, /已废弃/); assert.match(h.el('candidates').textContent, /工具用途/);
-  assert.match(h.el('candidates').textContent, /Retained old prose.*Retained diff/);
-  const button = h.el('candidates').querySelector('button'); assert.ok(button.disabled); button.click(); await tick(); assert.equal(h.posts().length, 0);
+  assert.match(h.el('candidates').textContent, /Retained old prose/); assert.doesNotMatch(h.el('candidates').textContent, /Retained diff/);
+  const button = h.el('candidates').querySelector('[data-wiki-confirm-candidate]'); assert.ok(button.disabled); button.click(); await tick(); assert.equal(h.posts().length, 0);
+  assert.ok(h.el('candidates').querySelector('.wiki-candidate-card.is-deprecated'));
 });
 test('legacy role candidates are not offered for new target confirmation', async t => {
   const h = setup(t, () => ({ ...data(), candidates: [{ id: 'legacy-role', role: 'GPT', status: 'draft' }] }));
   await h.panel.load(); assert.equal(h.el('candidates').querySelector('button'), null); assert.doesNotMatch(h.el('candidates').textContent, /legacy-role/);
+});
+
+test('first-time progress and candidate comparison explain the next action without unified diff or technical-id clutter', async t => {
+  const d = data(), approved = d.versions[0].entries[0];
+  d.versions = [{ ...d.versions[0], entries: [approved], caseIds: ['c1'] }];
+  d.candidates = [{ id: 'candidate-readable', kind: 'global-wiki-candidate-v1', target: d.targets[0], targetId: d.targets[0].id,
+    versionId: 'wiki-2', entryIds: ['entry-1'], candidateHash: 'c'.repeat(64),
+    candidateText: d.targets[0].baseText + '\n\nWikiSkill 已审核准则：\n- 先核验后结论。',
+    diff: '--- a/target\n+++ b/target\n@@ -1 +1 @@\n\\ No newline at end of file', status: 'draft' }];
+  const h = setup(t, () => d); await h.panel.load();
+  assert.match(h.el('progress-text').textContent, /1 条准则已通过 → 请确认全局提示词候选 → 然后开始对照评测/);
+  const candidates = h.el('candidates'), text = candidates.textContent;
+  for (const literal of ['全局系统提示词（所有 agent 共用）', '原文', '候选', '新增 1 条准则', '先核验后结论。', '来源：Earlier approved', '1 条关联用例', '7 道题', '原版本与候选各 3 次', '不会直接启动评测']) assert.ok(text.includes(literal), literal);
+  for (const marker of ['--- a/target', '+++ b/target', '@@ -1', 'No newline']) assert.equal(text.includes(marker), false, marker);
+  assert.equal(candidates.querySelector('[data-wiki-original]').open, false);
+  assert.equal(candidates.querySelector('[data-wiki-candidate-base]').open, false);
+  const caseSummary = h.el('cases').querySelector('summary');
+  assert.match(caseSummary.textContent, /no evidence/); assert.match(caseSummary.textContent, /来源房间：source-r…/);
+  assert.doesNotMatch(caseSummary.textContent, /text-|source-room|source-message/);
+  const source = candidates.querySelector('[data-wiki-source-entry="entry-1"]'); assert.ok(source);
+  source.click();
+  const entry = h.el('entries').querySelector('[data-wiki-entry-card="entry-1"]'); assert.equal(entry.open, true);
+  assert.match(entry.querySelector('summary').textContent, /Earlier approved.*1 条关联用例/);
+  assert.equal(h.posts().length, 0);
+});
+
+test('candidate target labels use plain language and comparison stacks on narrow screens', async t => {
+  const h = setup(t); await h.panel.load();
+  assert.equal(h.el('targets').options[0].textContent, '全局系统提示词（所有 agent 共用）');
+  assert.equal(h.el('targets').options[1].textContent, '工具 list_rooms 的说明');
+  const css = fs.readFileSync(path.resolve(__dirname, '../../public/wikiskill.css'), 'utf8');
+  assert.match(css, /@media\s*\(max-width:/); assert.match(css, /grid-template-columns:\s*1fr/);
 });
