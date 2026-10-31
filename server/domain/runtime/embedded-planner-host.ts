@@ -5,6 +5,7 @@ import { plannerAppendPrompt, type PlannerRoom } from './embedded-planner-room';
 import { EmbeddedPlannerRepository } from '../../../storage/chat/embedded-planner.repository';
 import { launchPlannerPty } from './embedded-planner-pty';
 import { createTerminalModeTracker, type TerminalModeTracker } from './embedded-planner-modes';
+import { DEFAULT_PLANNER_MAX_PROCESSES } from './embedded-planner-config';
 
 export type PlannerLaunch = { cli: PlannerCli; args: string[]; cwd: string; env: NodeJS.ProcessEnv; cols: number; rows: number };
 export type PlannerProcess = EventEmitter & { guardianPid?: number; write(data: string): void; resize(cols: number, rows: number): void; stop(force?: boolean): void };
@@ -81,7 +82,7 @@ export function createEmbeddedPlannerHost(options: Options) {
     if (repository.hasLease(id)) throw plannerError('planner_process_exit_unconfirmed');
     // Include uncertain persisted leases and starting/stopping/deleted-room children.
     const localLeases = [...entries.entries()].filter(([roomId, e]) => e.leaseId && repository.hasLease(roomId)).length;
-    if (entries.size + repository.leaseCount() - localLeases >= (options.maxProcesses ?? 4)) throw plannerError('planner_process_limit');
+    if (entries.size + repository.leaseCount() - localLeases >= (options.maxProcesses ?? DEFAULT_PLANNER_MAX_PROCESSES)) throw plannerError('planner_process_limit');
     let end!: () => void;
     const entry: Entry = { state: 'starting', ended: new Promise<void>(resolve => { end = resolve; }), end: () => end() };
     entries.set(id, entry);

@@ -9,6 +9,7 @@
     planner_terminal_in_use: '另一个页面正在使用这个终端。请先关闭该页面的终端，再手动重连。',
     planner_room_busy: '房间进程正在启动、运行或停止，请稍后手动刷新状态。',
     planner_process_limit: '全局规划者进程已达上限，不会替你停止其他房间。',
+    planner_process_limit_invalid: 'CAFF_PLANNER_MAX_PROCESSES 配置无效：须为正的十进制安全整数（1–9007199254740991，无前导零），未设置默认 4。请修正后按授权流程重启实例；不会回退或启动规划者。',
     planner_workspace_invalid: '房间工作区不可用，请检查绑定；不会自动改用其他目录。',
     planner_cli_version_unsupported: 'Claude Code 版本低于支持下限，请自行更新后按授权流程重启实例。',
     planner_cli_missing: '未找到 Claude Code，请检查本机安装和配置。',

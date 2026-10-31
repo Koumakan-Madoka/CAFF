@@ -127,6 +127,19 @@ for (const [code, text] of [['planner_process_exited', /Claude Code 已退出/],
   });
 }
 
+test('invalid startup process limit gives actionable fixed guidance without connecting or recovery controls', async t => {
+  const f = fixture(t);
+  f.state({ available: false, processState: 'absent', reasonCode: 'planner_process_limit_invalid', wakeupAvailable: false });
+  f.pane.sync('room-a', { enabled: true, available: false }); await f.pane.open();
+  assert.equal(f.q('toggle').hidden, false); assert.equal(f.q('status').textContent, '暂不可用');
+  assert.match(f.q('notice').textContent, /CAFF_PLANNER_MAX_PROCESSES/);
+  assert.match(f.q('notice').textContent, /正.*安全整数/); assert.match(f.q('notice').textContent, /默认 4/);
+  assert.match(f.q('notice').textContent, /重启/); assert.match(f.q('notice').textContent, /不会回退/);
+  assert.equal(f.connections.length, 0); assert.equal(f.q('wakeups').disabled, true);
+  assert.equal(f.q('repair').hidden, true); assert.equal(f.q('reinitialize').hidden, true);
+  f.q('reconnect').click(); await tick(); assert.equal(f.connections.length, 0);
+});
+
 test('unknown exit failure retains fixed fallback instead of child output', async t => {
   const f = fixture(t); f.pane.sync('room-a', { enabled: true }); await f.pane.open();
   f.hooks.onExit({ reasonCode: 'synthetic_unknown_failure', exitCode: 1, message: 'private sentinel' });

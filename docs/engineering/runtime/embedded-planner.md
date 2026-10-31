@@ -81,6 +81,22 @@ reason code, without echoing the configured value. The internal boolean config
 injection overrides the environment for isolated tests; it is not an HTTP option.
 Wake-ups remain a separate **off-by-default per-room** setting.
 
+Read `CAFF_PLANNER_MAX_PROCESSES` once at runtime construction too, from the
+parent startup environment (not requests, sanitized child env or CLI settings).
+Unset means **4**. After trimming surrounding whitespace, accept only canonical
+positive decimal safe integers (`1` through `9007199254740991`, no leading zeros).
+Empty/whitespace-only, zero, negatives, signs, fractions, exponent/hex notation,
+non-numbers and unsafe integers are invalid. A locally enabled terminal remains
+`enabled=true`, `available=false`, with `planner_process_limit_invalid`; keep
+its entry visible with fixed correction/restart guidance. Do not echo the value,
+fall back to 4, run a version probe, create a process host or start the wake-up
+scheduler. For an otherwise eligible planner-bound Goal, enabling wake-ups
+returns HTTP 503 with the same `planner_process_limit_invalid` code and leaves
+opt-in/session metadata unchanged; disabling wake-ups remains permitted. Normal
+CAFF routes remain usable. Explicit feature-off/non-loopback reasons take
+precedence and still hide the entry. No hot reload: a changed value
+requires a separately authorized instance restart/new runtime construction.
+
 Enable only when the requested state is on **and** the configured bind is
 loopback. Use the existing request-authority loopback predicate, not the
 request Host, forwarded headers or arbitrary DNS resolution. A wildcard bind
@@ -105,8 +121,9 @@ startup checks succeeded and the runtime is not closed. While checking,
 instance has a non-loopback bind, `enabled=false`, `available=false` and
 `reasonCode=planner_terminal_local_only`. Explicit off and invalid flags both
 return `enabled=false`, `available=false`, with their respective codes above and
-no header entry. A locally enabled but unavailable CLI keeps the entry with its
-bounded reason. Room-specific state comes from the routes in §8.
+no header entry. A locally enabled but unavailable CLI or invalid process-limit
+configuration keeps the entry with its bounded reason. Room-specific state
+comes from the routes in §8.
 
 ### Operator enablement and usage
 
@@ -119,7 +136,10 @@ bounded reason. Room-specific state comes from the routes in §8.
    `CAFF_PLANNER_TERMINAL` is unset; set `0` (or `false`/`off`/`no`) in local
    configuration to disable it. `1`/`true`/`on`/`yes` explicitly enable it;
    invalid values disable it with `planner_terminal_flag_invalid` (table above).
-   `CAFF_CLAUDE_CLI` optionally selects one executable path. Obtain explicit
+   `CAFF_CLAUDE_CLI` optionally selects one executable path.
+   `CAFF_PLANNER_MAX_PROCESSES=6`, for example, changes the shared instance slot
+   cap to 6 at the next authorized restart; leaving it unset keeps 4. Use only
+   the positive decimal safe-integer format above. Obtain explicit
    authorization before changing shared configuration/restarting; this default
    change does not upgrade a running instance or authorize a 3100 restart.
 3. After that separately authorized restart, open the room-header terminal,
@@ -133,8 +153,9 @@ bounded reason. Room-specific state comes from the routes in §8.
    hiding the pane retains the PTY and suppresses wake-ups for up to 30 minutes.
 5. Each wake-up consumes the CLI's configured subscription/provider usage, not
    free CAFF work: at most 4 attempts/rolling hour/room, max 12 turns and a
-   10-minute wall bound, with at most 4 processes in the instance. These are
-   usage bounds, not a monetary price cap. Inspect quota/needs-user/records in
+   10-minute wall bound, sharing the configured instance process cap (default 4).
+   Changing that cap does not change the 4/hour/room quota. These are usage
+   bounds, not a monetary price cap. Inspect quota/needs-user/records in
    the pane. Disabling prevents future admission, not an already reserved run.
 
 Use the two distinct recovery controls in §3 only after their confirmations;
@@ -288,10 +309,21 @@ This is planner session framing, not P3 implementer-prompt work.
 ## 3. Process ownership and lifetime
 
 One application process exclusively owns its database, as in existing runtime
-contracts. The **global four-process cap** is for that instance, counting
-interactive (attached or retained), headless, starting and stopping processes.
-The version probe also reserves a slot while alive. This is not a cross-instance
-OS lease and does not make shared SQLite or manually reused sessions safe.
+contracts. The **global instance process cap** is
+`CAFF_PLANNER_MAX_PROCESSES` (default **4**, parsed as in §1), counting interactive
+(attached or retained), headless, starting and stopping processes, plus unknown
+persisted leases; local entries with a durable lease count only once. Both
+execution modes use the same configured host, without per-room override. Startup
+version checking finishes before this host admits any room process.
+This is not a cross-instance OS lease and does not make shared SQLite or
+manually reused sessions safe.
+
+The default 4 is a conservative resource/usage guardrail, **not a measured
+machine-capacity result**. A planner can create descendant processes, so the
+slot count is not the total OS process count or a memory/CPU bound. Raising it
+requires operator judgment and, for a capacity claim, separate measurements of
+process-tree memory/CPU, startup latency and CAFF responsiveness. No real-CLI
+capacity benchmark or machine sizing is implied by this configuration feature.
 
 Use one synchronous admission/lock path for both execution modes. Reserve the
 room/session and global slot before asynchronous validation/spawn; release on
@@ -1306,6 +1338,7 @@ by the existing P1 protected-path diagnostic, not broadcast to the browser.
 | --- | --- |
 | `planner_terminal_disabled`, `planner_terminal_local_only` | Remove the explicit off setting or configure loopback with user-authorized restart, not a request override |
 | `planner_terminal_flag_invalid` | Correct the flag to a documented value or remove it, then restart with authorization; never echo the invalid value or silently enable |
+| `planner_process_limit_invalid` | Correct/remove `CAFF_PLANNER_MAX_PROCESSES` (§1), then restart with authorization; visible unavailable entry, no probe/host/wake scheduler, no value echo or silent fallback |
 | `planner_cli_missing`, `planner_cli_version_unsupported`, `planner_cli_version_invalid`, `planner_cli_probe_timeout`, `planner_cli_launch_unsupported` | Fix installed executable/version; do not download/update automatically |
 | `planner_workspace_invalid` | Inspect binding; no project-root fallback |
 | `planner_conpty_unavailable` | Repair the local node-pty bundled ConPTY installation; fixed explanation, no system-ConPTY fallback or automatic download |

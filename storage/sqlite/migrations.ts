@@ -1373,9 +1373,13 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_ttl ON image_uploads (ttl_expires_a
 CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   `);
 
-  ensureColumn(db, 'chat_planner_attention', 'failed_agent_ids_json', 'failed_agent_ids_json TEXT');
-  ensureColumn(db, 'chat_planner_attention', 'lane', "lane TEXT CHECK (lane IS NULL OR lane IN ('main', 'side'))");
-  db.exec(`
+  // db.exec() does not make a multi-statement DDL refresh atomic. Serialize
+  // writers before replacing the trigger, and roll back its DROP if CREATE
+  // fails; other connections must never see an unguarded attention table.
+  db.transaction(() => {
+    ensureColumn(db, 'chat_planner_attention', 'failed_agent_ids_json', 'failed_agent_ids_json TEXT');
+    ensureColumn(db, 'chat_planner_attention', 'lane', "lane TEXT CHECK (lane IS NULL OR lane IN ('main', 'side'))");
+    db.exec(`
 DROP TRIGGER IF EXISTS chat_planner_attention_immutable;
 CREATE TRIGGER chat_planner_attention_immutable BEFORE UPDATE ON chat_planner_attention
 WHEN OLD.resolved_at IS NOT NULL
@@ -1389,7 +1393,8 @@ BEGIN SELECT RAISE(ABORT, 'Attention occurrence and resolved data are immutable'
 CREATE INDEX IF NOT EXISTS idx_chat_planner_attention_turn_scope
   ON chat_planner_attention(conversation_id, goal_id, lane, failed_agent_ids_json)
   WHERE resolved_at IS NULL AND kind='turn_failed';
-  `);
+    `);
+  }).immediate();
   ensureColumn(db, 'chat_agents', 'model_profiles_json', 'model_profiles_json TEXT');
   ensureColumn(db, 'chat_agents', 'avatar_data_url', 'avatar_data_url TEXT');
   ensureColumn(db, 'chat_agents', 'sandbox_name', 'sandbox_name TEXT');
