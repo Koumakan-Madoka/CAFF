@@ -176,35 +176,29 @@
       if (entry) { entry.open = true; entry.scrollIntoView?.({ block: 'center' }); entry.querySelector('summary')?.focus(); }
     }
     function sourceButton(entry, selectedVersion) {
-      const button = node('button', `来源：${entry.title} · ${entry.caseIds.length} 条关联用例`);
-      button.type = 'button'; button.className = 'wiki-source-link'; button.dataset.wikiSourceEntry = entry.id;
-      button.addEventListener('click', () => showWikiEntry(selectedVersion, entry.id)); return button;
+      const link = node('a', `来源：${entry.title} · ${entry.caseIds.length} 条关联用例`);
+      link.href = '#wikiskill-wiki'; link.className = 'wiki-source-link'; link.dataset.wikiSourceEntry = entry.id;
+      link.addEventListener('click', event => { event.preventDefault(); showWikiEntry(selectedVersion, entry.id); }); return link;
     }
     function appendAddition(container, candidate, entries) {
       const base = candidate.target?.baseText || '', full = String(candidate.candidateText || '');
       const addition = base && full.startsWith(base) ? full.slice(base.length) : full;
-      let cursor = 0, matched = true;
-      const parts = [];
-      for (const entry of entries) {
-        const index = addition.indexOf(entry.guideline, cursor);
-        if (index < 0) { matched = false; break; }
-        parts.push({ text: addition.slice(cursor, index), entry }); cursor = index + entry.guideline.length;
-      }
-      if (!matched) {
-        container.append(node('pre', addition));
-        if (entries.length) {
-          const sources = node('div', ''); sources.className = 'wiki-addition-sources';
-          for (const entry of entries) sources.append(sourceButton(entry, candidate.versionId));
-          container.append(sources);
+      const expectedAddition = `\n\nWikiSkill 已审核准则：\n${entries.map(entry => `- ${entry.guideline}`).join('\n')}`;
+      if (entries.length && addition === expectedAddition) {
+        const title = node('p', 'WikiSkill 已审核准则：'); title.className = 'wiki-addition-title';
+        const list = document.createElement('ol'); list.className = 'wiki-added-list';
+        for (const entry of entries) {
+          const item = node('li', ''); item.className = 'wiki-added-guideline';
+          item.append(node('p', entry.guideline), sourceButton(entry, candidate.versionId)); list.append(item);
         }
-        return;
+        container.append(title, list); return;
       }
-      for (const part of parts) {
-        container.append(node('span', part.text));
-        const guideline = node('section', ''); guideline.className = 'wiki-added-guideline';
-        guideline.append(node('p', part.entry.guideline), sourceButton(part.entry, candidate.versionId)); container.append(guideline);
+      container.append(node('pre', addition));
+      if (entries.length) {
+        const sources = node('div', ''); sources.className = 'wiki-addition-sources';
+        for (const entry of entries) sources.append(sourceButton(entry, candidate.versionId));
+        container.append(sources);
       }
-      container.append(node('span', addition.slice(cursor)));
     }
     function renderCandidates() {
       const selected = el('targets').value;
@@ -234,14 +228,10 @@
         const entries = candidate.entryIds.map(id => state.versions.find(v => v.id === candidate.versionId)?.entries.find(entry => entry.id === id)).filter(Boolean);
         const compare = node('div', ''); compare.className = 'wiki-candidate-compare';
         const original = node('section', ''); original.className = 'wiki-compare-pane wiki-original-pane';
-        original.append(node('h4', '原文'), node('p', '未变内容默认折叠。'));
-        const originalDetails = document.createElement('details'); originalDetails.dataset.wikiOriginal = '';
-        originalDetails.append(node('summary', `展开原文（${[...(candidate.target?.baseText || '')].length} 字）`), node('pre', candidate.target?.baseText || '')); original.append(originalDetails);
+        const originalDetails = document.createElement('details'); originalDetails.dataset.wikiOriginal = ''; originalDetails.className = 'wiki-original-details';
+        originalDetails.append(node('summary', `原文 ${[...(candidate.target?.baseText || '')].length} 字（未改动，展开查看）`), node('pre', candidate.target?.baseText || '')); original.append(originalDetails);
         const proposed = node('section', ''); proposed.className = 'wiki-compare-pane wiki-proposed-pane';
-        proposed.append(node('h4', '候选'), node('p', '原文不变，下面高亮部分是新增内容。'));
-        const proposedBase = document.createElement('details'); proposedBase.dataset.wikiCandidateBase = '';
-        proposedBase.append(node('summary', '展开相同的原文'), node('pre', candidate.target?.baseText || '')); proposed.append(proposedBase);
-        proposed.append(node('h5', entries.length ? `新增 ${entries.length} 条准则` : '新增内容'));
+        proposed.append(node('h4', entries.length ? `候选 · 新增 ${entries.length} 条准则` : '候选 · 新增内容'), node('p', '原文保持不变，以下为新增内容。'));
         const addition = node('div', ''); addition.className = 'wiki-addition'; appendAddition(addition, candidate, entries); proposed.append(addition);
         compare.append(original, proposed); card.append(compare);
         const technical = document.createElement('details'); technical.className = 'wiki-technical';

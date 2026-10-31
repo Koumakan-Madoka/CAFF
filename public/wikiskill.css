@@ -373,7 +373,7 @@ body.management-app[data-page="wikiskill"] .wikiskill-content {
 
 .wiki-candidate-compare {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 14px;
   margin: 16px 0;
 }
@@ -399,6 +399,24 @@ body.management-app[data-page="wikiskill"] .wikiskill-content {
   margin-top: 12px;
 }
 
+.wiki-original-pane {
+  padding: 0;
+  background: var(--caff-surface);
+}
+
+.wiki-original-pane > details {
+  margin-top: 0;
+}
+
+.wiki-original-details > summary {
+  padding: 12px 14px;
+  font-weight: 650;
+}
+
+.wiki-original-details > pre {
+  margin: 0 12px 12px;
+}
+
 .wiki-proposed-pane {
   border-color: color-mix(in srgb, var(--caff-teal) 42%, var(--caff-line));
   background: color-mix(in srgb, var(--caff-teal) 5%, var(--caff-surface));
@@ -410,12 +428,11 @@ body.management-app[data-page="wikiskill"] .wikiskill-content {
 }
 
 .wiki-addition {
-  margin-top: 8px;
-  padding: 12px;
+  margin-top: 12px;
+  padding: 14px;
   border: 1px solid color-mix(in srgb, var(--caff-teal) 38%, var(--caff-line));
   border-radius: 10px;
-  background: color-mix(in srgb, var(--caff-teal) 13%, var(--caff-surface));
-  white-space: pre-wrap;
+  background: color-mix(in srgb, var(--caff-teal) 10%, var(--caff-surface));
   overflow-wrap: anywhere;
 }
 
@@ -426,13 +443,31 @@ body.management-app[data-page="wikiskill"] .wikiskill-content {
   background: transparent;
 }
 
+.wiki-addition-title {
+  margin: 0 0 10px !important;
+  color: color-mix(in srgb, var(--caff-teal) 72%, var(--caff-ink));
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.wiki-added-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 30px;
+  list-style: decimal;
+}
+
 .wiki-added-guideline {
-  margin: 8px 0;
-  padding: 12px;
-  border-left: 4px solid var(--caff-teal);
+  padding: 12px 12px 12px 14px;
+  border-left: 3px solid var(--caff-teal);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--caff-teal) 12%, var(--caff-surface));
-  white-space: normal;
+  background: color-mix(in srgb, var(--caff-teal) 9%, var(--caff-surface));
+}
+
+.wiki-added-guideline::marker {
+  color: color-mix(in srgb, var(--caff-teal) 72%, var(--caff-ink));
+  font-weight: 800;
 }
 
 .wiki-added-guideline p {
@@ -443,22 +478,22 @@ body.management-app[data-page="wikiskill"] .wikiskill-content {
 }
 
 .wiki-source-link {
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  color: color-mix(in srgb, var(--caff-teal) 72%, var(--caff-ink));
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.5;
-  text-align: left;
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  display: inline-block;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--caff-teal) 24%, var(--caff-line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--caff-teal) 6%, var(--caff-surface));
+  color: color-mix(in srgb, var(--caff-teal) 68%, var(--caff-ink));
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.55;
+  text-decoration: none;
+  overflow-wrap: anywhere;
 }
 
-.wiki-source-link:hover:not(:disabled) {
-  transform: none;
+.wiki-source-link:hover {
+  border-color: var(--caff-accent);
   color: var(--caff-accent-deep);
 }
 

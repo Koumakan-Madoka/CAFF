@@ -206,12 +206,17 @@ test('first-time progress and candidate comparison explain the next action witho
   const candidates = h.el('candidates'), text = candidates.textContent;
   for (const literal of ['全局系统提示词（所有 agent 共用）', '原文', '候选', '新增 1 条准则', '先核验后结论。', '来源：Earlier approved', '1 条关联用例', '7 道题', '原版本与候选各 3 次', '不会直接启动评测']) assert.ok(text.includes(literal), literal);
   for (const marker of ['--- a/target', '+++ b/target', '@@ -1', 'No newline']) assert.equal(text.includes(marker), false, marker);
-  assert.equal(candidates.querySelector('[data-wiki-original]').open, false);
-  assert.equal(candidates.querySelector('[data-wiki-candidate-base]').open, false);
+  const original = candidates.querySelector('[data-wiki-original]');
+  assert.equal(original.open, false); assert.match(original.querySelector('summary').textContent, /原文 21 字（未改动，展开查看）/);
+  assert.equal(candidates.querySelector('[data-wiki-candidate-base]'), null);
+  const addition = candidates.querySelector('.wiki-addition'), list = addition.querySelector('ol.wiki-added-list');
+  assert.ok(list); assert.equal(list.children.length, 1); assert.equal(addition.querySelector('.wiki-addition-title').textContent, 'WikiSkill 已审核准则：');
+  assert.equal(addition.querySelectorAll('span').length, 0); assert.doesNotMatch(addition.textContent, /^\s*-\s*$/m);
   const caseSummary = h.el('cases').querySelector('summary');
   assert.match(caseSummary.textContent, /no evidence/); assert.match(caseSummary.textContent, /来源房间：source-r…/);
   assert.doesNotMatch(caseSummary.textContent, /text-|source-room|source-message/);
   const source = candidates.querySelector('[data-wiki-source-entry="entry-1"]'); assert.ok(source);
+  assert.equal(source.tagName, 'A'); assert.equal(source.getAttribute('href'), '#wikiskill-wiki');
   source.click();
   const entry = h.el('entries').querySelector('[data-wiki-entry-card="entry-1"]'); assert.equal(entry.open, true);
   assert.match(entry.querySelector('summary').textContent, /Earlier approved.*1 条关联用例/);
@@ -224,4 +229,6 @@ test('candidate target labels use plain language and comparison stacks on narrow
   assert.equal(h.el('targets').options[1].textContent, '工具 list_rooms 的说明');
   const css = fs.readFileSync(path.resolve(__dirname, '../../public/wikiskill.css'), 'utf8');
   assert.match(css, /@media\s*\(max-width:/); assert.match(css, /grid-template-columns:\s*1fr/);
+  assert.match(css, /\.wiki-candidate-compare\s*\{[^}]*grid-template-columns:\s*1fr/s);
+  assert.match(css, /\.wiki-source-link\s*\{[^}]*font-size:\s*13px[^}]*overflow-wrap:\s*anywhere/s);
 });
