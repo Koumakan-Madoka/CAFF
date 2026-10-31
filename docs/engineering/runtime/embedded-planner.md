@@ -1308,6 +1308,32 @@ overlay; AppShell owns its background inert/focus coordination. Escape in the
 terminal is passed to the CLI (including trust), not treated as UI close;
 Ctrl+Shift+F6 returns to the toolbar. Desktop chat remains interactive.
 
+When Claude Code captures the mouse, hold **Shift while dragging** to select
+xterm text (not Claude Code's application-internal selection). On a user
+**keydown**, Ctrl+C or Ctrl+Shift+C with an xterm selection writes only
+`terminal.getSelection()` through `CaffShared.copyTextToClipboard`; prevent the
+browser default and return false to xterm, without sending input or `^C`.
+Success clears the selection; failure preserves it and shows a fixed short
+notice without changing connection state; retain the selection across any
+notice-driven row resize. Both outcomes restore xterm focus (the shared helper's
+textarea fallback may take it), unless that view has been disposed/replaced.
+Suppress only transient focus reports during copying, so the fallback emits no
+terminal input; ordinary user input/focus reporting is otherwise unchanged. With
+no selection Ctrl+C remains the CLI interrupt; macOS Cmd+C stays on xterm's
+native copy-event path. No clipboard reads or output-driven copy requests are
+added. OSC 52/8 remain consumed below.
+
+On Ctrl+V **keydown** without Shift/Alt/Meta, return false to xterm without
+preventing the browser default. This skips xterm's `^V` control character and
+lets the user's native paste event deliver text through xterm's existing paste
+handler, including bracketed-paste mode and newline normalization. Ctrl+Shift+V
+already follows the native paste path; Alt+V and macOS Cmd+V remain unchanged.
+CAFF does not call `navigator.clipboard.readText`, request clipboard permissions,
+install a clipboard addon or accept clipboard requests from CLI output. This
+adds text paste only, with no image fallback or confirmation UI. Existing 8 KiB
+input chunks and 1 MiB backlog limits are unchanged; oversized paste is not
+promised to arrive in full.
+
 Pinned xterm/addon JS/CSS and all three LICENSE notices are copied to
 `build/public/vendor/planner-terminal` at build time, not into source or a CDN.
 Browser-local xterm scrollback is bounded to 2000 lines and discarded on

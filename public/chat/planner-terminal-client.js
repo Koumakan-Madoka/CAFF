@@ -11,13 +11,13 @@
     const SocketCtor = options.SocketCtor || window.WebSocket;
     const ResizeObserverCtor = options.ResizeObserverCtor || window.ResizeObserver;
     const encoder = new TextEncoder();
-    let generation = 0, attached = false, readable = false, outputBytes = 0;
+    let generation = 0, attached = false, readable = false, outputBytes = 0, copying = 0;
     let socket = null, terminal = null, addon = null, observer = null;
     let subscriptions = [];
 
     function status(state, code = '') { options.onState?.(state, code); }
     function dispose() {
-      generation++; attached = readable = false;
+      generation++; attached = readable = false; copying = 0;
       observer?.disconnect(); observer = null;
       for (const subscription of subscriptions) subscription.dispose();
       subscriptions = [];
@@ -58,6 +58,28 @@
       const foreground = style.getPropertyValue('--planner-terminal-foreground').trim() || '#f0f1ed';
       return { background, foreground, cursor: foreground, cursorAccent: background, selectionBackground: '#57759066', brightBlack: '#9a9a9a' };
     }
+    async function copySelection() {
+      const owned = terminal, current = generation;
+      copying++;
+      try {
+        // User keydown only, never CLI/OSC output. Use the shared write-only helper.
+        await window.CaffShared.copyTextToClipboard(owned.getSelection());
+        if (current === generation) owned.clearSelection();
+      } catch {
+        if (current === generation) {
+          const selection = owned.getSelectionPosition(), cols = owned.cols;
+          options.onNotice?.('复制失败，请重试；选区已保留。');
+          // The notice changes available height; xterm clears selection on row
+          // resize. Fit synchronously and restore before ResizeObserver runs.
+          fit();
+          if (selection && owned.cols === cols) owned.select(selection.start.x, selection.start.y,
+            (selection.end.y - selection.start.y) * cols + selection.end.x - selection.start.x);
+        }
+      } finally {
+        // The helper's textarea fallback can steal focus; never focus a stale view.
+        if (current === generation) { owned.focus(); copying--; }
+      }
+    }
     function connect(roomId, token) {
       dispose();
       const current = generation;
@@ -79,6 +101,8 @@
       for (const id of [8, 52]) subscriptions.push(terminal.parser.registerOscHandler(id, () => true));
       subscriptions.push(terminal.onData(data => {
         if (current !== generation || !attached) return;
+        // Clipboard fallback focus changes are UI-only, not CLI input.
+        if (copying && (data === '\x1b[I' || data === '\x1b[O')) return;
         // 8 KiB also bounds a complete JSON frame under worst-case 6x escaping.
         let chunk = '', bytes = 0;
         for (const char of data) {
@@ -89,6 +113,18 @@
         if (chunk) send({ type: 'input', data: chunk });
       }));
       terminal.attachCustomKeyEventHandler?.(event => {
+        if (event.type === 'keydown' && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey
+          && event.key.toLowerCase() === 'v') {
+          // Skip xterm's ^V conversion without cancelling the browser's native
+          // paste event; xterm already handles its text and bracketed-paste mode.
+          return false;
+        }
+        if (event.type === 'keydown' && event.ctrlKey && !event.altKey && !event.metaKey
+          && event.key.toLowerCase() === 'c' && terminal.hasSelection()) {
+          event.preventDefault();
+          void copySelection();
+          return false; // Even failed copies must not become a CLI interrupt.
+        }
         if (event.ctrlKey && event.shiftKey && event.key === 'F6') {
           options.focusToolbar?.(); return false;
         }

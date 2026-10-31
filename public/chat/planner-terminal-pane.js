@@ -85,7 +85,7 @@
       q('status').textContent = labels[next] || '暂不可用';
       pane.dataset.connection = next; controls();
     }
-    const client = clientFactory({ screen, onState: setStatus,
+    const client = clientFactory({ screen, onState: setStatus, onNotice: notice,
       onReady(message) { lastCode = ''; notice(message.resumed ? '已续接同一会话；仅显示后续输出，不回放历史。' : '正在初始化同一房间会话；若目录可信，请自行选择 Yes, I trust this folder（默认可能为 No, exit）。CAFF 不会自动确认。'); controls(); },
       onExit(message) { setStatus('exited', message.reasonCode || 'planner_process_exited'); },
       onAttention(message) { if (Number.isSafeInteger(message.unresolvedCount)) { showWakeState({ ...wakeState, pendingCount: message.unresolvedCount, needsUserCount: message.needsUserCount }); notice(`有 ${message.unresolvedCount} 条待处理事项，请读取当前状态；不会注入终端输入。`); } },

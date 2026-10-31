@@ -109,6 +109,9 @@ test('session-unavailable recovery uses cautious fixed wording and separate conf
   assert.deepEqual(JSON.parse(JSON.stringify(write[1])), { method: 'POST', body: { confirm: true } });
   assert.equal(f.connections.length, 1); assert.ok(f.confirms.every(x => x.includes('UUID')));
   assert.match(f.q('guidance').textContent, /Yes, I trust this folder/);
+  assert.match(f.q('guidance').textContent, /Shift 拖动选择/);
+  assert.match(f.q('guidance').textContent, /选中后 Ctrl\+C 复制，无选中时 Ctrl\+C 中断/);
+  assert.match(f.q('guidance').textContent, /Ctrl\+V 粘贴文本/);
 });
 
 for (const [code, text] of [['planner_process_exited', /Claude Code 已退出/], ['planner_process_stopped', /Claude Code 已停止/]]) {
@@ -251,13 +254,21 @@ test('wake-up records use cursor paging, render text not HTML and are cleared on
 
 function clientFixture(t, extra = {}) {
   const dom = new JSDOM('<div id="screen"></div>', { url: 'http://127.0.0.1:45678', runScripts: 'outside-only' }); t.after(() => dom.window.close());
-  const w = dom.window, sockets = [], terminals = [], states = [], exits = [], observations = [];
+  const w = dom.window, sockets = [], terminals = [], states = [], exits = [], observations = [], copies = [], notices = [];
+  let toolbarFocus = 0;
   w.TextEncoder = TextEncoder;
+  w.CaffShared = { copyTextToClipboard: text => { copies.push(text); return extra.copy ? extra.copy(text, w) : Promise.resolve(); } };
   class Terminal {
     constructor(options) { this.options = options; this.unicode = { activeVersion: '6' }; this.cols = 120; this.rows = 30; this.output = []; this.osc = []; this.parser = { registerOscHandler: (id, fn) => { this.osc.push([id, fn]); return { dispose() {} }; } }; terminals.push(this); }
-    loadAddon(addon) { this.addon = addon; addon.activate?.(this); } open() { this.opened = true; } resize(c,r) { this.cols = c; this.rows = r; }
+    loadAddon(addon) { this.addon = addon; addon.activate?.(this); } open() { this.opened = true; }
+    resize(c,r) { if (r !== this.rows) this.selection = ''; this.cols = c; this.rows = r; }
     onData(fn) { this.input = fn; return { dispose: () => { this.inputDisposed = true; } }; }
-    write(data, done) { this.output.push(data); done(); } dispose() { this.disposed = true; } focus() {}
+    write(data, done) { this.output.push(data); done(); } dispose() { this.disposed = true; }
+    attachCustomKeyEventHandler(fn) { this.keyHandler = fn; }
+    hasSelection() { return !!this.selection; } getSelection() { return this.selection; }
+    getSelectionPosition() { return this.range; }
+    clearSelection() { this.selection = ''; this.cleared = (this.cleared || 0) + 1; }
+    focus() { this.focused = (this.focused || 0) + 1; }
   }
   class Socket {
     constructor(url) { this.url = url; this.readyState = 0; this.bufferedAmount = 0; this.sent = []; sockets.push(this); }
@@ -267,17 +278,139 @@ function clientFixture(t, extra = {}) {
       this.closed = true; this.readyState = 3;
     }
   }
-  class FitAddon { proposeDimensions() { return { cols: 100, rows: 35 }; } }
+  class FitAddon { proposeDimensions() { return extra.dimensions ? extra.dimensions() : { cols: 100, rows: 35 }; } }
   class Observer { constructor(fn) { this.fn = fn; observations.push(this); } observe() {} disconnect() { this.disconnected = true; } }
   class UnicodeAddon { activate(term) { assert.equal(term.opened, true); assert.equal(term.options.allowProposedApi, true); term.unicode.activeVersion = '15-graphemes'; } }
   w.UnicodeGraphemesAddon = { UnicodeGraphemesAddon: extra.missingUnicode ? undefined : extra.UnicodeAddon || UnicodeAddon };
   w.eval(read('public/chat/planner-terminal-client.js'));
   const client = w.CaffChat.createPlannerTerminalClient({ screen: w.document.getElementById('screen'), TerminalCtor: Terminal, FitAddonCtor: FitAddon, SocketCtor: Socket,
-    ResizeObserverCtor: Observer, onState: (...args) => states.push(args), onExit: e => exits.push(e) });
+    ResizeObserverCtor: Observer, onState: (...args) => states.push(args), onExit: e => exits.push(e),
+    onNotice: text => { notices.push(text); extra.onNotice?.(text); }, focusToolbar: () => { toolbarFocus++; } });
   t.after(() => client.dispose());
   const ready = s => s.onmessage({ data: JSON.stringify({ type: 'ready', version: 1, historyReplay: false, resumed: false }) });
-  return { w, client, sockets, terminals, states, exits, observations, ready };
+  function key(term, overrides = {}) {
+    const event = new w.KeyboardEvent(overrides.type || 'keydown', { key: 'c', ctrlKey: true, cancelable: true, ...overrides });
+    const result = term.keyHandler(event);
+    // Model xterm's control-character paths; the browser test verifies xterm itself.
+    if (result && event.type === 'keydown' && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
+      if (event.key.toLowerCase() === 'c') term.input('\x03');
+      if (event.key.toLowerCase() === 'v') term.input('\x16');
+    }
+    return { result, event };
+  }
+  return { w, client, sockets, terminals, states, exits, observations, copies, notices, ready, key, get toolbarFocus() { return toolbarFocus; } };
 }
+
+for (const key of ['v', 'V']) {
+  test(`Ctrl+V keydown (${key}) yields to native paste without preventing default or sending ^V`, t => {
+    const f = clientFixture(t); f.client.connect('room-a', 'synthetic');
+    const term = f.terminals[0], s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+    const { result, event } = f.key(term, { key });
+    assert.equal(result, false); assert.equal(event.defaultPrevented, false);
+    assert.equal(s.sent.filter(x => x.type === 'input').length, 0);
+    assert.deepEqual(f.copies, []); assert.equal(f.toolbarFocus, 0);
+  });
+}
+
+test('native-paste key branch leaves other event types, Shift/Alt/Meta combinations and other keys alone', t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic'); const term = f.terminals[0];
+  for (const overrides of [{ type: 'keyup' }, { type: 'keypress' }, { shiftKey: true, key: 'V' },
+    { altKey: true }, { metaKey: true }, { ctrlKey: false, altKey: true },
+    { ctrlKey: false, metaKey: true }, { ctrlKey: false }, { key: 'b' }]) {
+    const { result, event } = f.key(term, { key: 'v', ...overrides });
+    assert.equal(result, true, JSON.stringify(overrides)); assert.equal(event.defaultPrevented, false);
+  }
+  assert.deepEqual(f.copies, []); assert.equal(f.toolbarFocus, 0);
+});
+
+for (const shiftKey of [false, true]) {
+  test(`selected Ctrl+${shiftKey ? 'Shift+' : ''}C copies only selection without input, clears on success and restores terminal focus`, async t => {
+    const f = clientFixture(t); f.client.connect('room-a', 'synthetic');
+    const term = f.terminals[0], s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+    term.selection = '选中的 text\n第二行 🙂';
+    const { result, event } = f.key(term, { shiftKey, key: shiftKey ? 'C' : 'c' });
+    assert.equal(result, false); assert.equal(event.defaultPrevented, true);
+    assert.deepEqual(f.copies, ['选中的 text\n第二行 🙂']);
+    await tick();
+    assert.equal(s.sent.filter(x => x.type === 'input').length, 0);
+    assert.equal(term.selection, ''); assert.equal(term.cleared, 1); assert.equal(term.focused, 1);
+    assert.deepEqual(f.notices, []);
+    // A second Ctrl+C now interrupts instead of copying the previous selection.
+    assert.equal(f.key(term).result, true);
+    assert.equal(s.sent.filter(x => x.type === 'input').at(-1).data, '\x03');
+  });
+}
+
+test('unselected Ctrl+C passes through to xterm; Ctrl+Shift+F6 still returns to toolbar', t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic');
+  const term = f.terminals[0], s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+  const { result, event } = f.key(term);
+  assert.equal(result, true); assert.equal(event.defaultPrevented, false); assert.deepEqual(f.copies, []);
+  assert.equal(s.sent.filter(x => x.type === 'input').at(-1).data, '\x03');
+  assert.equal(f.key(term, { key: 'F6', shiftKey: true }).result, false); assert.equal(f.toolbarFocus, 1);
+});
+
+for (const sync of [false, true]) {
+  test(`clipboard ${sync ? 'throw' : 'rejection'} retains selection, never interrupts and reports fixed notice with focus restored`, async t => {
+    const f = clientFixture(t, { copy: () => { if (sync) throw new Error('private sentinel'); return Promise.reject(new Error('private sentinel')); } });
+    f.client.connect('room-a', 'synthetic'); const term = f.terminals[0], s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+    term.selection = 'keep this'; const { result, event } = f.key(term); await tick();
+    assert.equal(result, false); assert.equal(event.defaultPrevented, true);
+    assert.equal(s.sent.filter(x => x.type === 'input').length, 0);
+    assert.equal(term.selection, 'keep this'); assert.equal(term.cleared, undefined); assert.equal(term.focused, 1);
+    assert.match(f.notices[0], /复制失败/); assert.doesNotMatch(f.notices[0], /private sentinel/);
+    assert.equal(f.states.at(-1)[0], 'attached');
+  });
+}
+
+for (const reject of [false, true]) {
+  test(`clipboard fallback ${reject ? 'failure' : 'success'} sends neither transient focus reports nor interrupt input`, async t => {
+    let term;
+    const f = clientFixture(t, { copy: async () => { term.input('\x1b[O'); if (reject) throw new Error(); } });
+    f.client.connect('room-a', 'synthetic'); term = f.terminals[0]; const s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+    term.selection = 'copy'; const focus = term.focus.bind(term);
+    term.focus = () => { focus(); term.input('\x1b[I'); };
+    assert.equal(f.key(term).result, false); await tick();
+    assert.equal(s.sent.filter(x => x.type === 'input').length, 0);
+    term.input('\x1b[O'); assert.equal(s.sent.filter(x => x.type === 'input').at(-1).data, '\x1b[O');
+  });
+}
+
+test('copy failure retains selection when its notice changes terminal height and xterm clears on row resize', async t => {
+  let rows = 35;
+  const f = clientFixture(t, { copy: async () => { throw new Error(); }, onNotice: () => { rows = 36; }, dimensions: () => ({ cols: 100, rows }) });
+  f.client.connect('room-a', 'synthetic'); const term = f.terminals[0];
+  term.selection = 'keep this'; term.range = { start: { x: 2, y: 1 }, end: { x: 11, y: 1 } };
+  term.select = (x, y, length) => { assert.deepEqual([x, y, length], [2, 1, 9]); term.selection = 'keep this'; };
+  f.key(term); await tick(); f.observations[0].fn();
+  assert.equal(term.rows, 36); assert.equal(term.selection, 'keep this'); assert.equal(term.focused, 1);
+});
+
+test('only Ctrl+C keydown copies; keyup, Alt/Cmd combinations and CLI OSC never trigger clipboard writes', async t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic'); const term = f.terminals[0]; term.selection = 'selected';
+  for (const event of [{ type: 'keyup' }, { type: 'keypress' }, { altKey: true }, { metaKey: true }, { ctrlKey: false, metaKey: true }, { key: 'x' }]) {
+    assert.equal(f.key(term, event).result, true);
+  }
+  assert.ok(term.osc.every(([, handler]) => handler('arbitrary output') === true));
+  await tick(); assert.deepEqual(f.copies, []);
+});
+
+for (const reject of [false, true]) {
+  test(`late clipboard ${reject ? 'failure' : 'success'} cannot focus/clear or notify a disposed/replaced terminal`, async t => {
+    let settle;
+    const f = clientFixture(t, { copy: () => new Promise((resolve, fail) => { settle = reject ? fail : resolve; }) });
+    f.client.connect('room-a', 'synthetic'); const old = f.terminals[0]; old.selection = 'old'; f.key(old);
+    f.client.connect('room-b', 'synthetic'); settle(); await tick();
+    assert.equal(old.focused, undefined); assert.equal(old.cleared, undefined);
+    assert.equal(f.terminals[1].focused, undefined); assert.deepEqual(f.notices, []);
+  });
+}
+
+test('copy failure notice renders in pane without changing its connection status', async t => {
+  const f = fixture(t); f.pane.sync('room-a', { enabled: true }); await f.pane.open(); f.hooks.onState('attached');
+  f.hooks.onNotice('复制失败，请重试。');
+  assert.equal(f.q('notice').textContent, '复制失败，请重试。'); assert.equal(f.q('status').textContent, '已连接');
+});
 
 test('Unicode grapheme addon is loaded after open, selects 15-graphemes, and survives manual reconnect', t => {
   const f = clientFixture(t);

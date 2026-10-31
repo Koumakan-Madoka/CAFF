@@ -29,7 +29,9 @@ setInterval(() => {
 let pending = '';
 process.stdin.on('data', chunk => {
   fs.appendFileSync('fake-input.txt', chunk);
-  pending += chunk.toString();
+  const data = chunk.toString();
+  if (data.includes('\x03')) { pending = ''; process.stdout.write('FAKE_INTERRUPT\r\n'); }
+  pending += data.slice(data.lastIndexOf('\x03') + 1);
   pending = pending.replace(/\x1b\[[IO]/g, ''); // focus reports are not commands
   if (!/[\r\n]/.test(pending)) return;
   const input = pending.trim(); pending = '';
