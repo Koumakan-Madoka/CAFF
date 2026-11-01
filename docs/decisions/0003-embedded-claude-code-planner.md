@@ -151,18 +151,30 @@ The design relies on these facts, verified on 2026-10-26 with Claude Code CLI
   requests on; `0`/`false`/`off`/`no` requests off, after trimming whitespace and
   case-insensitive comparison. All other values (including empty) fail closed
   with `planner_terminal_flag_invalid`. It is still effective **only on loopback
-  binding**; Host/Origin, first-message token, frame/idle limits are unchanged.
+  binding**; Host/Origin, first-message token and frame limits are unchanged.
   Wake-ups remain separately opt-in per room and off by default. This does not
   authorize updating/restarting shared instances. Approval/instruction: room
   message `c3a4790d-7e95-456d-9382-2f8469d5df11`; exact capability and diagnostic
   semantics are in [P2 §1](../engineering/runtime/embedded-planner.md#1-composition-and-feature-gate).
+- **No idle disconnect — user-approved amendment, 2026-11-01:** the user
+  requested removing the 15-minute idle disconnect. Healthy authenticated
+  terminal connections have **no application-layer idle time limit**; absence
+  of input, output or resize does not close them. This supersedes the former
+  idle-socket closure rule. Authentication deadlines, ping/pong liveness checks,
+  frame/buffer limits, single-writer admission, process caps and the 30-minute
+  post-disconnect retention remain unchanged. An idle connected terminal
+  continues to occupy a process slot. Approval/instruction: room message
+  `c65d5913-2589-45f1-8750-c741b93ab251`; current connection semantics are in
+  [P2 §5](../engineering/runtime/embedded-planner.md#5-terminal-websocket-protocol-v1).
 - **Terminal WebSocket:**
   - The upgrade handler checks Host and Origin against the same-origin loopback
     aliases.
   - The client must send the CSRF token as its first message before CAFF spawns
     or sends anything.
   - Frame size is limited.
-  - Unauthenticated or idle sockets are closed.
+  - Unauthenticated sockets are closed on authentication failure or timeout;
+    sockets that fail ping/pong liveness checks are terminated. Healthy
+    authenticated sockets have no application-layer idle time limit.
 - **Child environment:** child processes get an allowlisted environment:
   - the system and user path variables that Claude Code and the caff CLI need
     to find their configuration, subscription login and the P1 credential file:
