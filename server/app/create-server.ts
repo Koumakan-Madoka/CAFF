@@ -1373,7 +1373,7 @@ export function createServerApp(options: any = {}) {
     capability: embeddedPlanner.capability, getHost: embeddedPlanner.getHost,
     hasRoom: (id: string) => !!store.getConversationWithoutMessages(id),
     authTimeoutMs: options.embeddedPlanner?.authTimeoutMs,
-    idleMs: options.embeddedPlanner?.idleMs, pingMs: options.embeddedPlanner?.pingMs, pongMs: options.embeddedPlanner?.pongMs,
+    pingMs: options.embeddedPlanner?.pingMs, pongMs: options.embeddedPlanner?.pongMs,
   });
 
   function start(onListen: any) {

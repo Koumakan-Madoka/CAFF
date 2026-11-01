@@ -22,7 +22,7 @@ function keys(message: Record<string,unknown>, names: string[]): boolean {
 export function installPlannerTerminal(options: {
   server: Server; host: string; csrfToken: string; hasRoom(id: string): boolean;
   capability(): { enabled: boolean; available: boolean }; getHost(): EmbeddedPlannerHost | null;
-  authTimeoutMs?: number; idleMs?: number; pingMs?: number; pongMs?: number;
+  authTimeoutMs?: number; pingMs?: number; pongMs?: number;
 }) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 65536, perMessageDeflate: false });
   let closed = false;
@@ -32,19 +32,14 @@ export function installPlannerTerminal(options: {
   function connect(ws: WebSocket, roomId: string) {
     let authenticated = false, ready = false;
     let attachment: Awaited<ReturnType<EmbeddedPlannerHost['attach']>> | null = null;
-    let idleTimer: NodeJS.Timeout | undefined, pingTimer: NodeJS.Timeout | undefined, pongTimer: NodeJS.Timeout | undefined;
+    let pingTimer: NodeJS.Timeout | undefined, pongTimer: NodeJS.Timeout | undefined;
     let waiting: TerminalEvent[] = [], waitingBytes = 0;
     const authTimer = setTimeout(() => ws.close(1008, 'Terminal policy'), options.authTimeoutMs ?? 5000);
-    function touch() {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => ws.close(1000, 'Terminal idle'), options.idleMs ?? 15 * 60 * 1000);
-    }
     function send(event: TerminalEvent) {
       if (ws.readyState !== WebSocket.OPEN || !authenticated) return;
       const json = JSON.stringify(event);
       if (ws.bufferedAmount + Buffer.byteLength(json) > 1024 * 1024) { ws.close(1008, 'Terminal slow consumer'); return; }
       ws.send(json, error => { if (error) ws.terminate(); });
-      if (event.type === 'output') touch();
       if (event.type === 'exit') ws.close(1000, 'Terminal exited');
       if (event.type === 'error') ws.close(['planner_terminal_in_use','planner_room_busy','planner_process_limit'].includes(String(event.code)) ? 1013 : 1011, 'Terminal unavailable');
     }
@@ -58,7 +53,6 @@ export function installPlannerTerminal(options: {
     ws.on('error', () => {}); // ws performs UTF-8, frame and aggregate-size validation.
     ws.on('close', () => {
       clearTimeout(authTimer);
-      if (idleTimer) clearTimeout(idleTimer);
       if (pingTimer) clearInterval(pingTimer);
       if (pongTimer) clearTimeout(pongTimer);
       waiting = []; attachment?.detach();
@@ -82,7 +76,7 @@ export function installPlannerTerminal(options: {
             ready = true;
             for (const event of waiting) send(event);
             waiting = []; waitingBytes = 0;
-            touch();
+            // Healthy authenticated sockets have no application-idle deadline.
             pingTimer = setInterval(() => {
               if (pongTimer || ws.readyState !== WebSocket.OPEN) return;
               ws.ping(); pongTimer = setTimeout(() => ws.terminate(), options.pongMs ?? 10000);
@@ -97,9 +91,9 @@ export function installPlannerTerminal(options: {
         }
         if (!ready || !attachment) throw new Error();
         if (message.type === 'input' && keys(message, ['type','data']) && typeof message.data === 'string' && Buffer.byteLength(message.data) <= 16384) {
-          attachment.write(message.data); touch();
+          attachment.write(message.data);
         } else if (message.type === 'resize' && keys(message, ['type','cols','rows']) && validTerminalSize(message.cols, message.rows)) {
-          attachment.resize(Number(message.cols), Number(message.rows)); touch();
+          attachment.resize(Number(message.cols), Number(message.rows));
         } else if (message.type === 'detach' && keys(message, ['type'])) ws.close(1000, 'Terminal detached');
         else if (message.type === 'terminate' && keys(message, ['type'])) attachment.terminate();
         else throw new Error();
