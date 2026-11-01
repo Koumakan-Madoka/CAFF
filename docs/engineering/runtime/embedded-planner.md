@@ -730,9 +730,14 @@ Codes do not confer retry permission or reveal token validity details.
 ### Liveness, backpressure and reconnection
 
 Authenticated sockets get ping every 30 seconds, with a 10-second pong deadline.
-Also close after 15 minutes without input/output/resize; ping/pong does not reset
-application idle. Either close detaches and begins PTY retention. Unauthenticated
-sockets have only the fixed 5-second auth deadline.
+Healthy authenticated connections have **no application-idle time limit**: absence
+of input/output/resize is not a reason to disconnect. Do not inject PTY input or
+fake resize events as keepalives. An open terminal continues to occupy its process
+slot, even when idle; existing process caps and single-writer admission still
+apply. A real disconnect, missed pong or explicit detach begins the unchanged
+30-minute PTY retention period. Unauthenticated sockets still have the fixed
+5-second auth deadline. This removes CAFF's idle disconnect, not network/browser
+failures or explicit process exit/shutdown, and does not add automatic reconnect.
 
 Bound per-socket outbound buffering to 1 MiB. Disconnect a slow consumer rather
 than accumulate an unbounded transcript or block all rooms; the PTY becomes
@@ -1504,7 +1509,7 @@ wording; wake-up tests cover missing-record classification and no unattended ret
 | --- | --- |
 | M1 contract | Clean bound branch/ADR ancestry, independent npm ci, contract cross-check/link check, full existing checks; planner PASS before implementation |
 | M2 host + WS | Red tests before code; first/resume UUID, ambiguous launch failure, cwd/binding/unbound policy, version floor/probe failures, environment secret sentinels (including Windows case variants), retention/reconnect/descendant cleanup; every concurrent PTY/headless/second-page race and cap; shutdown and parent-death uncertainty |
-| M2 security | Wrong/duplicate Host/Origin, missing/null/cross-alias Origin, disabled/wildcard/non-loopback, wrong peer, auth timeout/wrong/stale token/binary/unknown schema, fragments/maxPayload, no pre-auth output/spawn/metadata; invalid input/resize, post-auth second auth, heartbeat/application idle/backpressure, upgrade shutdown |
+| M2 security | Wrong/duplicate Host/Origin, missing/null/cross-alias Origin, disabled/wildcard/non-loopback, wrong peer, auth timeout/wrong/stale token/binary/unknown schema, fragments/maxPayload, no pre-auth output/spawn/metadata; invalid input/resize, post-auth second auth, heartbeat/no application-idle limit/backpressure, upgrade shutdown |
 | M3 pane | DOM/controller and real Edge fake-CLI checks: input/output, drag + keyboard sizing, resize, close/detach, future-output-only reconnect, switching rooms, narrow overlay/focus, disabled entry, no ungated clipboard/URL side effects; native ordinary-drag clipboard readback with default product permissions, bounded OSC rejection and lifecycle/fallback checks; neutral normal-exit/resumed-Stop guidance without recovery controls, CAFF stop vs unsolicited nonzero exit, fixed dark terminal in both CAFF themes and matching viewport background; light-theme ANSI path/trust sample and exit/stop screenshots |
 | M4 scheduler/store | Five positive triggers; goal_completed/unknown/null/retired/unbound/DAG/opt-out negatives; retained and attached terminal suppression, quota boundary/restart/clock rollback, coalescing and >100-item batches, catch-up once, transaction/spawn fault injection, needs-user no Goal write/re-wake, stale Goal/proposal conflicts, exact CLI tool argv, stream failures/truncation/redaction/paging/retention and no secret values |
 | M5 compatibility | Feature-off parity, P1 planner attribution/client credentials and user-only gates, no Goal Runner/DAG/delivery changes; final docs match code; isolated real-CLI checks and Linux CI |
