@@ -265,6 +265,34 @@ function createConversationsControllerHarness(t, options = {}) {
   return { handler, store, broadcastEvents };
 }
 
+test('unsupported Wiki storage cannot prevent server startup or hide a saved annotation', async t => {
+  const root = withTempDir('caff-wiki-startup-');
+  // Existing installations/fixtures may place agent data inside the project.
+  // Wiki must reject that layout, without making unrelated routes unavailable.
+  const app = createServerApp({ host: '127.0.0.1', port: 0, agentDir: root,
+    projectDir: root, sqlitePath: path.join(root, 'chat.sqlite'), uploadsDir: path.join(root, 'uploads') });
+  t.after(async () => { await new Promise(resolve => app.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); });
+  await new Promise(resolve => app.start(resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  assert.equal((await fetch(base + '/api/bootstrap')).status, 200);
+  const wiki = await fetch(base + '/api/wikiskill');
+  assert.equal(wiki.status, 503);
+  assert.equal(fs.existsSync(path.join(root, 'badcase-global')), false);
+  const projectId = (await (await fetch(base + '/api/projects')).json()).activeProjectId;
+  app.store.saveCustomRoleConfig({ id: 'wiki-startup-agent', name: 'Synthetic', personaPrompt: 'test' });
+  app.store.createConversation({ id: 'wiki-startup-room', title: 'Synthetic', participants: ['wiki-startup-agent'], projectScopeId: projectId });
+  app.store.createMessage({ id: 'wiki-startup-message', conversationId: 'wiki-startup-room', role: 'assistant', status: 'completed', agentId: 'wiki-startup-agent', runId: 101, content: 'synthetic' });
+  const route = `/api/projects/${projectId}/conversations/wiki-startup-room/messages/wiki-startup-message/badcase-flag`;
+  const response = await fetch(base + route, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true, actual: 'synthetic problem', expected: 'synthetic expectation' }) });
+  assert.equal(response.status, 201);
+  const marked = await response.json();
+  assert.equal(marked.flag.messageId, 'wiki-startup-message');
+  assert.deepEqual(marked.wikiCase, { error: 'wiki_case_unavailable' });
+  assert.deepEqual((await (await fetch(base + route)).json()).flag, marked.flag);
+  assert.equal(fs.existsSync(path.join(root, 'badcase-global')), false, 'unsupported layout is not silently allowed');
+});
+
 test('create server persists badcase annotations through real HTTP and restart without enabling capture', async (t) => {
   const tempDir = withTempDir('caff-flags-server-');
   const projectDir = path.join(tempDir, 'project'); fs.mkdirSync(projectDir);

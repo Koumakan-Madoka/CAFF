@@ -193,8 +193,15 @@ export function createServerApp(options: any = {}) {
   // Separate offline declarations: not capture quota, not paid launch permission.
   const badcaseEvaluations = createEvaluationAdminService({ root: path.join(agentDir, 'badcase-offline-evaluations') });
   const badcaseFlags = createBadcaseFlagService({ captureRoot: badcaseCapture.captureRoot, captureStore: badcaseCapture.store, chatStore: store });
-  const badcaseWikiStore = createWikiStore({ globalRoot: path.join(agentDir, 'badcase-global'), sourceWorktree: initialProjectDir,
-    sourceWorktrees: projectManager.listProjects().map((p: any) => p.path) });
+  // Wiki is an optional secondary write after a durable annotation. Validate
+  // its layout at use time (including current projects), not during startup:
+  // an unsupported layout must not disable chat or hide a saved annotation.
+  const badcaseWikiStore = {
+    addMarkedCase(input: any) {
+      return createWikiStore({ globalRoot: path.join(agentDir, 'badcase-global'), sourceWorktree: initialProjectDir,
+        sourceWorktrees: projectManager.listProjects().map((p: any) => p.path) }).addMarkedCase(input);
+    },
+  };
   const badcaseSealing = createBadcaseSealingService({ flags: badcaseFlags, captureStore: badcaseCapture.store, databasePath: store.databasePath,
     wikiStore: badcaseWikiStore, chatStore: store });
 
