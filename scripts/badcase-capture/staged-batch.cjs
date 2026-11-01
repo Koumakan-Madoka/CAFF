@@ -5,6 +5,7 @@ const { runComparison } = require('./direct-comparison.cjs');
 const { validKey, readCaffDeepseekKey } = require('./direct-model.cjs');
 const { wikiComparisonTotals: totals } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
 const { decideWikiGate } = require('../../build/server/domain/runtime/badcase-capture/wiki-gate-policy');
+const { wikiGoalCaseNumber } = require('../../build/server/domain/runtime/badcase-capture/wiki-suite');
 const fail = code=>Object.assign(Error(code),{code});
 async function runStagedBatch(config, plan, options) {
   const emit=options.onEvent || (()=>{}), executionId=crypto.randomUUID(), results=[];
@@ -66,7 +67,7 @@ function formatStagedBatch(result) {
     `无误伤：原版 ${d.noHarm.original.passed}/${d.noHarm.original.total}，候选 ${d.noHarm.candidate.passed}/${d.noHarm.candidate.total}；少通过 ${d.noHarm.loss} 次，容许 ${d.noHarm.allowedLoss} 次；${d.noHarm.passed?'满足':'不满足'}`];
   for(const stage of ['gate','test']) {
     lines.push(labels[stage]+'（单独统计）','用例\t题型\t状态\t原版通过/有效(错误/未执行)\t候选通过/有效(错误/未执行)');
-    for(const c of result.cases.filter(c=>c.stage===stage)) lines.push([c.sourceCaseId,categories[c.category],c.status+(c.reason?' / '+c.reason:''),...['original','candidate'].map(v=>{const t=c.totals[v];return `${t.passed}/${t.scored}(${t.errors}/${t.notRun})`;})].join('\t'));
+    for(const c of result.cases.filter(c=>c.stage===stage)) lines.push([wikiGoalCaseNumber(c.sourceCaseId) ? '#'+wikiGoalCaseNumber(c.sourceCaseId) : c.sourceCaseId,categories[c.category],c.status+(c.reason?' / '+c.reason:''),...['original','candidate'].map(v=>{const t=c.totals[v];return `${t.passed}/${t.scored}(${t.errors}/${t.notRun})`;})].join('\t'));
     for(const v of ['original','candidate']) {const t=result.byStage[stage][v];lines.push(`${labels[stage]} ${v}: ${t.passed}/${t.planned} 通过，${t.failed} 失败，${t.errors} 环境错误，${t.notRun} 未执行；有效 ${t.scored}，通过率 ${t.passRate===null?'N/A':(100*t.passRate).toFixed(1)+'%'}`);}
   }
   lines.push('代理模型 DeepSeek；小样本；题组经原基线筛选，存在挑题偏差；只复现了汇报难懂一类，探针与其他模式只报告。',

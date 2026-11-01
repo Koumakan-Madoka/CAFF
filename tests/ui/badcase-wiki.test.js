@@ -109,7 +109,7 @@ test('knowledge search covers pattern fields and case prose, highlights matches 
 test('cases default to pattern groups and expose pending/suggested/unfit/holdout states and membership provenance', async t => {
   const h = setup(t); await h.panel.load(); await h.click('[data-tab="cases"]');
   const text = h.root.querySelector('#view-cases').textContent;
-  for (const literal of ['按模式分组', '待归纳', '待归纳 · 有建议', '未能归类', '留出 · 不参与归纳', '重写CAFF的README', '同属额外流程', '模型建议']) assert.ok(text.includes(literal), literal);
+  for (const literal of ['按模式分组', '待归纳', '待归纳 · 有建议', '未能归类', '测试 · 不参与归纳', '重写CAFF的README', '同属额外流程', '模型建议']) assert.ok(text.includes(literal), literal);
   assert.ok(h.root.querySelector('#c-3 [data-induct]') || h.root.querySelector('[data-induct]'));
   assert.ok(h.root.querySelector('[data-confirm-suggestion="s-assign"]'));
   assert.equal(h.root.querySelector('#c-2 [data-confirm-suggestion]'), null);
@@ -193,7 +193,7 @@ test('impact shows per-replay comparison and evolution events without inventing 
     cases: [{ sourceCaseId: 'c1', split: 'train', category: 'reproduction', status: 'error', reason: 'run_error', totals, runs: [] }] }]; return undefined; });
   await h.panel.load(); await h.click('[data-tab="impact"]');
   const text = h.root.querySelector('#impact-runs').textContent;
-  for (const literal of ['1/3', '2/3', '错误 1', '未运行 1', '复现题', '控制题', '选择偏差', '只复现了汇报难懂一类']) assert.ok(text.includes(literal), literal);
+  for (const literal of ['1/3', '2/3', '错误 1', '未运行 1', '复现题', '防误伤题', '挑题偏差', '只复现了汇报难懂一类']) assert.ok(text.includes(literal), literal);
   const log = h.root.querySelector('#impact-log').textContent;
   for (const literal of ['归纳', '候选', '审核', '回放题']) assert.ok(log.includes(literal), literal);
   assert.equal(h.root.querySelector('#impact-runs button[data-run], #impact-runs button[data-retry]'), null);
@@ -203,10 +203,42 @@ test('empty impact explains the next action and keeps all seven planned slots di
   const h = setup(t); await h.panel.load(); await h.click('[data-tab="impact"]');
   assert.match(h.root.querySelector('#impact-runs').textContent, /还没有评测结果/);
   assert.match(h.root.querySelector('#impact-runs').textContent, /确认全局提示词候选/);
-  assert.match(h.root.querySelector('#impact-runs').textContent, /—\/6/); // two replay cases x three runs in this fixture
+  assert.match(h.root.querySelector('#impact-runs').textContent, /—\/10/); // each unexecuted question has ten planned runs per version
+  assert.equal(h.root.querySelectorAll('[data-evaluation-stage]').length, 2);
+  assert.doesNotMatch(h.root.querySelector('#impact-runs').textContent, /合计|各跑 3 次/);
   assert.match(h.root.querySelector('#impact-log').textContent, /等待/);
 });
 
+test('D14/D15 display Goal numbers and train/gate/test without changing stored source data or exposing internal IDs in reasons',async t=>{
+  const h=setup(t,(_url,_options,saved)=>{
+    saved.cases[0].displayNumber=1;saved.cases[0].evaluationStage='gate';saved.cases[1].displayNumber=4;saved.cases[3].displayNumber=17;saved.cases[4].displayNumber=18;
+    saved.cases[2].split='gate';saved.caseStates.find(s=>s.caseId==='c3').status='holdout';
+    saved.suggestions[0].reason='同属 entry-1，未知 entry-999。<img src=x onerror=evil()>';
+    return undefined;
+  });await h.panel.load();
+  assert.doesNotMatch(h.root.querySelector('#wiki-page .suggest-row').textContent,/entry-1|entry-999/);
+  assert.equal(h.root.querySelector('#wiki-page img'),null);await h.click('[data-tab="cases"]');
+  assert.match(h.root.querySelector('#c-4').textContent,/验收步骤术语太多/);assert.match(h.root.querySelector('#c-1 .chips').textContent,/训练.*本轮门槛/);
+  assert.match(h.root.querySelector('#c-3').textContent,/门槛.*不参与归纳/);assert.equal(h.root.querySelector('#c-3 [data-manual-assign]'),null);
+  assert.deepEqual([...h.root.querySelectorAll('#cases-split option')].map(o=>o.textContent),['全部','训练','门槛','测试']);
+  const split=h.root.querySelector('#cases-split');split.value='gate';split.dispatchEvent(new h.window.Event('change',{bubbles:true}));
+  assert.ok(h.root.querySelector('#c-3'));assert.ok(h.root.querySelector('#c-1'));assert.equal(h.root.querySelector('#c-4'),null);
+  assert.doesNotMatch(h.root.querySelector('#view-cases').textContent,/entry-1|entry-999/);assert.equal(h.posts().length,0);
+  assert.equal(h.saved().cases[0].split,'train');
+});
+test('D16 impact separates gate/test rates, shows mechanical inputs and a durable rejection event with tests unexecuted',async t=>{
+  const totals={original:{passed:0,planned:10,failed:10,errors:1,notRun:0,scored:10,passRate:0},candidate:{passed:4,planned:10,failed:6,errors:0,notRun:0,scored:10,passRate:.4}};
+  const zero={original:{passed:0,planned:10,failed:0,errors:0,notRun:10,scored:0,passRate:null},candidate:{passed:0,planned:10,failed:0,errors:0,notRun:10,scored:0,passRate:null}};
+  const result={id:'staged',createdAt:'2026-11-01T10:00:00Z',kind:'wiki-staged-batch-comparison-v1',evaluation:{kind:'wikiskill-gate-v1'},model:'deepseek/deepseek-v4-flash',modelCallsKnown:21,completed:true,
+    gateDecision:{outcome:'rejected',repair:{original:{passed:0,total:20},candidate:{passed:4,total:20},pValue:.053,passed:false},noHarm:{original:{passed:10,total:10},candidate:{passed:10,total:10},loss:0,allowedLoss:1,passed:true}},byStage:{gate:totals,test:zero},
+    cases:[{sourceCaseId:'c1',stage:'gate',status:'completed',totals},{sourceCaseId:'c2',stage:'test',status:'not-run',reason:'gate_rejected',totals:zero}]};
+  const h=setup(t,(_url,_options,saved)=>{saved.comparisons=[result,{...result,id:'old',createdAt:'2026-10-31T01:00:00Z',gateDecision:{...result.gateDecision,outcome:'accepted'}}];return undefined;});
+  await h.panel.load();await h.click('[data-tab="impact"]');const text=h.root.querySelector('#impact-runs').textContent;
+  for(const literal of ['门槛判定：拒绝','Fisher','0/20','4/20','0.053','允许少通过 1','门槛','测试','40.0%','N/A','错误 1','未运行 10','代理模型','小样本','挑题偏差','不作为采纳依据'])assert.ok(text.includes(literal),literal);
+  assert.doesNotMatch(text,/合计|总体/);assert.equal(h.root.querySelectorAll('[data-evaluation-stage]').length,2);
+  assert.match(h.root.querySelector('#impact-log').textContent,/门槛判定.*拒绝/);assert.match(h.root.querySelector('[data-evaluation-stage="test"]').textContent,/门槛拒绝.*未运行/);
+  assert.equal(h.posts().length,0);
+});
 test('user prose and search highlighting stay text-only; failed writes disable mutation until refresh', async t => {
   const h = setup(t, (url, options) => { if (options.method === 'POST') throw Error('private-path'); return undefined; });
   await h.panel.load(); assert.equal(h.root.querySelector('img,script'), null);
@@ -224,5 +256,6 @@ test('standalone navigation, projects capture-only boundary and responsive proto
   const css = read('wikiskill.css'); assert.match(css, /@media\s*\(max-width:\s*860px\)/); assert.match(css, /@media\s*\(max-width:\s*640px\)/);
   assert.match(css, /\.split\s*\{[^}]*grid-template-columns:/s);
   assert.match(css, /\.toolbar \.check\s*\{[^}]*white-space:\s*nowrap/s);
+  assert.match(css, /\.toolbar \.field\s*\{[^}]*white-space:\s*nowrap/s);
   assert.match(css, /\.search input:focus-visible\s*\{[^}]*outline:\s*none/s);
 });

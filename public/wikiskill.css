@@ -129,6 +129,7 @@ a.chip:hover { text-decoration: none; border-color: var(--border-strong); }
 .toolbar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
 .toolbar .search { flex: 1 1 280px; }
 .toolbar .check { flex: 0 0 auto; white-space: nowrap; }
+.toolbar .field { flex: 0 0 auto; white-space: nowrap; max-width: 100%; }
 .field, .check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); }
 .field select { background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; max-width: 18em; color: var(--text); }
 .groups { display: grid; gap: 24px; }
@@ -200,6 +201,9 @@ a.chip:hover { text-decoration: none; border-color: var(--border-strong); }
 .empty-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; background: var(--sunk); border-radius: 10px; padding: 12px 14px; }
 .empty-state p { flex: 1 1 240px; }
 .table-wrap { overflow-x: auto; }
+.evaluation-stage { display: grid; gap: 10px; padding: 18px 0; border-top: 1px solid var(--border); }
+.gate-decision { display: grid; gap: 8px; padding: 14px 16px; margin: 14px 0; border-radius: 10px; background: var(--accent-soft); }
+.stage-rates { display: grid; gap: 6px; font-size: 13px; color: var(--soft); }
 table.runs { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 600px; }
 .runs th { text-align: left; font-size: 12.5px; color: var(--soft); font-weight: 650; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .runs td { padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }

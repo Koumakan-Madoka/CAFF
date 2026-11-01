@@ -7,6 +7,7 @@ import { createWikiStore } from '../domain/runtime/badcase-capture/wiki-store';
 import { listWikiTargets } from '../domain/runtime/badcase-capture/wiki-targets';
 import { collectWikiCandidateFiles } from '../domain/runtime/badcase-capture/wiki-candidate-files';
 import { createWikiComparisonStore } from '../domain/runtime/badcase-capture/wiki-comparison-store';
+import { wikiDisplayCases } from '../domain/runtime/badcase-capture/wiki-suite';
 
 // Local candidate preparation/review only. Neither loading, approving a guideline nor
 // confirming a candidate starts a model request or edits a production role.
@@ -67,7 +68,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         if (match[1] === 'candidate') store.createGlobalCandidate({ versionId: input.versionId, entryIds: input.entryIds, targetId: input.targetId, files }, input.expectedRevision);
         else store.confirmGlobalCandidate({ ...input, files });
       }
-      sendJson(res, 200, { ...store.read(), caseStates: store.getCaseStates(), comparisons: createWikiComparisonStore(scope).read(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
+      const state = store.read();
+      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), comparisons: createWikiComparisonStore(scope).read(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

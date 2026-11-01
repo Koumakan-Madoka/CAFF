@@ -26,7 +26,7 @@
         </div></section>
         <section id="view-cases" class="view" role="tabpanel" aria-labelledby="tab-cases" hidden><div class="groups">
           <div class="toolbar"><label class="search"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"></circle><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"></path></svg><input id="cases-q" type="search" placeholder="搜索问题、期望、来源房间或回放任务" autocomplete="off" aria-label="搜索用例"><kbd aria-hidden="true">/</kbd></label>
-            <label class="field">归属模式 <select id="cases-group"></select></label><label class="field">集合 <select id="cases-split"><option value="all">全部</option><option value="train">训练</option><option value="test">留出</option></select></label><label class="check"><input type="checkbox" id="cases-replay"> 只看有回放题的</label><div class="seg" role="radiogroup" aria-label="显示方式" id="cases-mode"></div>
+            <label class="field">归属模式 <select id="cases-group"></select></label><label class="field">集合 <select id="cases-split"><option value="all">全部</option><option value="train">训练</option><option value="gate">门槛</option><option value="test">测试</option></select></label><label class="check"><input type="checkbox" id="cases-replay"> 只看有回放题的</label><div class="seg" role="radiogroup" aria-label="显示方式" id="cases-mode"></div>
           </div><p class="summary" id="cases-summary"></p><div class="groups" id="cases-body"></div>
         </div></section>
         <section id="view-targets" class="view" role="tabpanel" aria-labelledby="tab-targets" hidden><div class="split"><aside class="index" id="targets-list" aria-label="优化对象"></aside><article class="page" id="target-page" aria-live="polite"></article></div></section>
@@ -52,8 +52,13 @@
     const latest = list => list.filter(Boolean).sort().slice(-1)[0];
     const ENTRY_STATUS = { approved: ['已通过', 'ok'], draft: ['草稿 · 待审核', 'warn'], rejected: ['已驳回', 'bad'] };
     const CAND_STATUS = { draft: ['草稿 · 待你确认', 'warn'], confirmed: ['已确认 · 待评测', 'info'], evaluated: ['已评测', 'ok'], deprecated: ['已废弃', ''] };
-    const CATEGORY = { reproduction: ['复现题', 'repro'], probe: ['探针题', 'probe'], control: ['控制题', 'control'] };
-    const SPLIT = { train: '训练', test: '留出' };
+    const CATEGORY = { reproduction: ['复现题', 'repro'], probe: ['探针题', 'probe'], control: ['防误伤题', 'control'] };
+    const SPLIT = { train: '训练', gate: '门槛', test: '测试' };
+    const displaySet = c => c.split === 'train' && c.evaluationStage === 'gate' ? '训练 · 本轮门槛' : SPLIT[c.split];
+    const replayStage = replay => comparisonCase(replay)?.stage || caseById.get(replay.sourceCaseId)?.evaluationStage || (replay.split === 'test' ? 'test' : 'gate');
+    function explainReason(reason) {
+      return String(reason || '').replace(/entry-\d+/g, id => { const {entry,version} = findEntry(id); return entry ? `模式 ${version.entries.findIndex(e=>e.id===id)+1}（${entry.title}）` : '未识别模式'; });
+    }
     const pill = (map, status) => { const [label, tone] = map[status] || [status, '']; return `<span class="pill ${tone}">${esc(label)}</span>`; };
     const catChip = replay => { const [label, cls] = CATEGORY[replay.category] || [replay.category, '']; return `<span class="chip cat ${cls}">${esc(label)}</span>`; };
     let D = null, versionId = '', generation = 0, pending = false, writable = false, toastTimer;
@@ -80,19 +85,19 @@
     const rawPending = () => (D?.cases || []).filter(c => caseState(c).status === 'pending');
     const suggestionFor = c => pendingSuggestions().filter(s => s.caseId === c.id).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0] || null;
     function derive() {
-      caseById = new Map((D?.cases || []).map(c => [c.id, c])); caseByN = new Map((D?.cases || []).map((c, i) => { c.n = i + 1; return [c.n, c]; }));
+      caseById = new Map((D?.cases || []).map(c => [c.id, c])); caseByN = new Map((D?.cases || []).map((c, i) => { c.n = c.displayNumber || i + 1; return [c.n, c]; }));
       stateByCase = new Map((D?.caseStates || []).map(s => [s.caseId, s])); entryById = new Map(entries().map((e, i) => { e.n = i + 1; return [e.id, e]; }));
       replayBySource = new Map((D?.replayCases || []).map(r => [r.sourceCaseId, r])); targetById = new Map((D?.targets || []).map(t => [t.id, t]));
       if (!entryById.has(state.entryId)) state.entryId = entries()[0]?.id || '';
       if (!targetById.has(state.targetId)) state.targetId = globalTarget()?.id || D?.targets[0]?.id || '';
     }
     function caseState(c) {
+      if (c.split !== 'train') return { caseId: c.id, status: 'holdout', memberships: [], reason: `${SPLIT[c.split]}用例不参与归纳`, updatedAt: c.createdAt };
       const saved = stateByCase.get(c.id); if (saved) return saved;
-      if (c.split === 'test') return { caseId: c.id, status: 'holdout', memberships: [], reason: '留出用例不参与归纳', updatedAt: c.createdAt };
       const memberships = (latestVersion()?.entries || []).filter(e => e.status === 'approved' && e.caseIds.includes(c.id)).map(e => ({ entryId: e.id, source: 'version', at: e.reviewedAt || latestVersion().createdAt }));
       return { caseId: c.id, status: memberships.length ? 'assigned' : 'pending', memberships, reason: '', updatedAt: c.createdAt };
     }
-    const stateText = c => { const s = caseState(c); if (s.status === 'assigned') return `归入 ${s.memberships.map(m => entryChip(m.entryId)).join('、')}`; return { holdout: '留出，不参与归纳', pending: '待归纳', suggested: '待归纳，有建议', unfit: '未能归类' }[s.status] || s.status; };
+    const stateText = c => { const s = caseState(c); if (s.status === 'assigned') return `归入 ${s.memberships.map(m => entryChip(m.entryId)).join('、')}`; return { holdout: `${SPLIT[c.split]}，不参与归纳`, pending: '待归纳', suggested: '待归纳，有建议', unfit: '未能归类' }[s.status] || s.status; };
     function nextStep() {
       if (!D) return { text: '正在读取真实数据…', hash: 'wiki' };
       const draft = entries().find(e => e.status === 'draft'); if (draft) return { text: `审核知识库里的草稿模式「${draft.title}」`, hash: draft.id };
@@ -167,18 +172,18 @@
       $('#wiki-count').textContent = ts.length ? `找到 ${rows.length} 条模式` : `共 ${rows.length} 条模式 · 版本 ${currentVersion()?.id || '—'}`;
       $('#wiki-list').innerHTML = rows.map(({ e, m }) => { const reps = replaysFor(e).length; return `<li><button type="button" class="entry-item" data-entry="${esc(e.id)}" aria-current="${e.id === state.entryId}"><span class="entry-title">${hl(e.title, ts)}</span><span class="entry-fm">${hl(e.failureMode, ts)}</span><span class="entry-meta">${pill(ENTRY_STATUS, e.status)}<span>${evidenceIds(e).length} 条用例</span><span>${reps ? `${reps} 道回放题` : '无回放题'}</span></span>${m.why.length ? `<span class="why">匹配：${esc(m.why.slice(0, 4).join(' · '))}</span>` : ''}</button></li>`; }).join('') || '<li class="empty-line">没有匹配的模式。换个说法试试，或者到「用例」里搜原话。</li>';
       const hits = ts.length ? D.cases.filter(c => ts.every(t => `${c.actual} ${c.expected} ${c.source.conversationTitle || ''}`.toLowerCase().includes(t))) : [];
-      $('#wiki-casehits').hidden = !hits.length; $('#wiki-casehits').innerHTML = hits.length ? `<h4>用例原话里的匹配 · ${hits.length}</h4>` + hits.map(c => `<a href="#case-${c.n}" data-case="${c.n}"><span class="num">#${c.n}</span><span>${hl(c.actual, ts)}</span><span class="sub">${esc(caseState(c).status === 'holdout' ? '留出，不参与归纳' : caseState(c).status === 'assigned' ? '已归入模式' : caseState(c).status === 'suggested' ? '待归纳，有建议' : caseState(c).status === 'unfit' ? '未能归类' : '待归纳')}</span></a>`).join('') : '';
+      $('#wiki-casehits').hidden = !hits.length; $('#wiki-casehits').innerHTML = hits.length ? `<h4>用例原话里的匹配 · ${hits.length}</h4>` + hits.map(c => `<a href="#case-${c.n}" data-case="${c.n}"><span class="num">#${c.n}</span><span>${hl(c.actual, ts)}</span><span class="sub">${esc(caseState(c).status === 'holdout' ? `${SPLIT[c.split]}，不参与归纳` : caseState(c).status === 'assigned' ? '已归入模式' : caseState(c).status === 'suggested' ? '待归纳，有建议' : caseState(c).status === 'unfit' ? '未能归类' : '待归纳')}</span></a>`).join('') : '';
       $('#wiki-inbox').innerHTML = inboxBox();
-      const train = D.cases.filter(c => c.split !== 'test'), assigned = train.filter(c => caseState(c).status === 'assigned'), unfit = train.filter(c => caseState(c).status === 'unfit'), inbox = train.filter(c => ['pending', 'suggested'].includes(caseState(c).status));
-      $('#wiki-coverage').innerHTML = `<h4>用例归类</h4><ul><li><b>${train.length}</b> 条训练用例，<b>${assigned.length}</b> 条已归入模式</li><li><a href="#cases" data-group="inbox"><b>${inbox.length}</b> 条待归纳</a> · <a href="#cases" data-group="unfit"><b>${unfit.length}</b> 条未能归类</a></li><li><a href="#cases" data-group="holdout"><b>${D.cases.filter(c => c.split === 'test').length}</b> 条留出用例</a>按设计不参与归纳</li></ul><label class="version-picker">查看版本 <select id="wiki-version">${D.versions.map(v => `<option value="${esc(v.id)}" ${v.id === currentVersion()?.id ? 'selected' : ''}>${esc(v.id)} · ${fmt(v.createdAt)}</option>`).join('')}</select></label><p class="ver">${esc(currentVersion()?.model || '未记录模型')} · 已通过条目内容冻结</p>`;
+      const train = D.cases.filter(c => c.split === 'train'), assigned = train.filter(c => caseState(c).status === 'assigned'), unfit = train.filter(c => caseState(c).status === 'unfit'), inbox = train.filter(c => ['pending', 'suggested'].includes(caseState(c).status));
+      $('#wiki-coverage').innerHTML = `<h4>用例归类</h4><ul><li><b>${train.length}</b> 条训练用例，<b>${assigned.length}</b> 条已归入模式</li><li><a href="#cases" data-group="inbox"><b>${inbox.length}</b> 条待归纳</a> · <a href="#cases" data-group="unfit"><b>${unfit.length}</b> 条未能归类</a></li><li><a href="#cases" data-group="holdout"><b>${D.cases.filter(c => c.split === 'test').length}</b> 条测试用例</a>，另有 <b>${D.cases.filter(c=>c.split === 'gate').length}</b> 条门槛用例，均不参与归纳</li></ul><label class="version-picker">查看版本 <select id="wiki-version">${D.versions.map(v => `<option value="${esc(v.id)}" ${v.id === currentVersion()?.id ? 'selected' : ''}>${esc(v.id)} · ${fmt(v.createdAt)}</option>`).join('')}</select></label><p class="ver">${esc(currentVersion()?.model || '未记录模型')} · 已通过条目内容冻结</p>`;
       const entry = entryById.get(state.entryId); $('#wiki-page').innerHTML = entry ? entryPage(entry, ts) : '<p class="muted-note">没有可显示的模式。新用例归纳出的新模式建议会出现在这里。</p>';
     }
     function evidenceRow(c, ts) {
-      const replay = replayBySource.get(c.id); return `<li><a class="ev" href="#case-${c.n}" data-case="${c.n}"><span class="num">#${c.n}</span><span class="ev-actual">${hl(c.actual, ts)}</span><span class="ev-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</span><span class="chips"><span class="chip">${SPLIT[c.split]}</span><span class="chip">来自 ${esc(c.source.conversationTitle || '未命名房间')}</span>${replay ? catChip(replay) : ''}</span></a></li>`;
+      const replay = replayBySource.get(c.id); return `<li><a class="ev" href="#case-${c.n}" data-case="${c.n}"><span class="num">#${c.n}</span><span class="ev-actual">${hl(c.actual, ts)}</span><span class="ev-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</span><span class="chips"><span class="chip">${displaySet(c)}</span><span class="chip">来自 ${esc(c.source.conversationTitle || '未命名房间')}</span>${replay ? catChip(replay) : ''}</span></a></li>`;
     }
     function suggestRow(suggestion) {
       const c = caseById.get(suggestion.caseId); if (!c) return '';
-      return `<li class="suggest-row">${evidenceRow(c, [])}<p class="suggest"><span class="lbl">理由</span>${esc(suggestion.reason)}（把握：${esc(suggestion.confidence)}）</p><div class="row-actions"><button type="button" class="btn small primary" data-confirm-suggestion="${esc(suggestion.id)}">确认归入</button><button type="button" class="btn small" data-reject-suggestion="${esc(suggestion.id)}">不是这里</button></div></li>`;
+      return `<li class="suggest-row">${evidenceRow(c, [])}<p class="suggest"><span class="lbl">理由</span>${esc(explainReason(suggestion.reason))}（把握：${esc(suggestion.confidence)}）</p><div class="row-actions"><button type="button" class="btn small primary" data-confirm-suggestion="${esc(suggestion.id)}">确认归入</button><button type="button" class="btn small" data-reject-suggestion="${esc(suggestion.id)}">不是这里</button></div></li>`;
     }
     function entryPage(entry, ts) {
       const reps = replaysFor(entry), cands = candsUsing(entry.id), suggestions = suggestionsFor(entry.id), proposal = entry.status === 'draft' && (entry.suggestionIds || []).length;
@@ -188,7 +193,7 @@
         ${editor ? editForm(entry) : `<dl class="facts"><div><dt>失败模式</dt><dd>${hl(entry.failureMode, ts)}</dd></div><div><dt>典型症状</dt><dd>${hl(entry.symptoms, ts)}</dd></div><div><dt>根因假设</dt><dd>${hl(entry.rootCauseHypothesis, ts)}</dd></div></dl><section class="guideline" aria-label="准则"><h3>准则</h3><p class="hint">${entry.status === 'approved' ? '这句话可以用于生成候选提示词' : '通过审核后，这句话才可以写进候选提示词'}</p><p class="gl-text">${hl(entry.guideline, ts)}</p></section>`}
         <section class="block"><div class="block-head"><h3>证据用例 <span class="count">${ids.length}</span></h3><a class="hint" href="#cases" data-group="${esc(entry.id)}">在用例页按此模式查看</a></div>${ids.length ? `<ul class="evidence">${ids.map(id => caseById.get(id)).filter(Boolean).map(c => evidenceRow(c, ts)).join('')}</ul>` : '<p class="muted-note">还没有确认归属的证据用例。</p>'}</section>
         ${suggestions.length ? `<section class="block"><div class="block-head"><h3>建议加入的用例 <span class="count">${suggestions.length}</span></h3><span class="hint">你确认后才算证据</span></div><ul class="evidence">${suggestions.map(suggestRow).join('')}</ul></section>` : ''}
-        <section class="block"><div class="block-head"><h3>回放题 <span class="count">${reps.length}</span></h3><span class="hint">评测时用这些题检验这条准则</span></div>${reps.length ? `<ul class="replays">${reps.map(r => { const c = caseById.get(r.sourceCaseId), totals = comparisonCase(r); return `<li>${catChip(r)}<span class="task">“${esc(r.task)}”<span class="res"> · 用例 #${c?.n} · ${SPLIT[r.split]}</span></span><span class="res">原版 ${score(totals, 'original')} · 候选 ${score(totals, 'candidate')}</span></li>`; }).join('')}</ul>` : '<p class="muted-note">这个模式还没有回放题，评测暂时验证不了这条准则。</p>'}</section>
+        <section class="block"><div class="block-head"><h3>回放题 <span class="count">${reps.length}</span></h3><span class="hint">评测时用这些题检验这条准则</span></div>${reps.length ? `<ul class="replays">${reps.map(r => { const c = caseById.get(r.sourceCaseId), totals = comparisonCase(r); return `<li>${catChip(r)}<span class="task">“${esc(r.task)}”<span class="res"> · 用例 #${c?.n} · 本轮${SPLIT[replayStage(r)]}</span></span><span class="res">原版 ${score(totals, 'original')} · 候选 ${score(totals, 'candidate')}</span></li>`; }).join('')}</ul>` : '<p class="muted-note">这个模式还没有回放题，评测暂时验证不了这条准则。</p>'}</section>
         <section class="block"><div class="block-head"><h3>用在哪些候选 <span class="count">${cands.length}</span></h3></div>${cands.length ? `<ul class="uses">${cands.map(c => { const target = targetById.get(c.targetId); return `<li><a href="#targets" data-target="${esc(c.targetId)}">${esc(targetFull(target))}</a>${pill(CAND_STATUS, c.status)}<span class="res">${fmt(c.createdAt)}</span></li>`; }).join('')}</ul>` : '<p class="muted-note">还没有候选用到这条准则。</p>'}</section>`;
     }
     function editForm(entry) {
@@ -198,15 +203,16 @@
     /* Cases */
     function caseMatch(c, ts) { if (!ts.length) return true; const replay = replayBySource.get(c.id); const hay = [c.actual, c.expected, c.source.conversationTitle || '', replay?.task || '', `#${c.n}`].join(' ').toLowerCase(); return ts.every(t => hay.includes(t)); }
     function inGroup(c, group) { const s = caseState(c); if (group === 'all') return true; if (group === 'inbox') return ['pending', 'suggested'].includes(s.status); if (group === 'holdout' || group === 'unfit') return s.status === group; return (s.memberships || []).some(m => m.entryId === group); }
-    const STATE_CHIP = { holdout: '<span class="chip holdout">留出 · 不参与归纳</span>', pending: '<span class="chip pending">待归纳</span>', suggested: '<span class="chip pending">待归纳 · 有建议</span>', unfit: '<span class="chip warn">未能归类</span>' };
+    const STATE_CHIP = { pending: '<span class="chip pending">待归纳</span>', suggested: '<span class="chip pending">待归纳 · 有建议</span>', unfit: '<span class="chip warn">未能归类</span>' };
     function suggestionLine(c) {
       const s = suggestionFor(c); if (!s) return '';
-      if (s.kind === 'assign') return `<p class="suggest"><span class="lbl">建议</span>归入 ${entryChip(s.entryId)}（把握：${esc(s.confidence)}）。${esc(s.reason)}</p>`;
-      if (s.kind === 'new') return `<p class="suggest"><span class="lbl">建议</span>新建模式 ${entryChip(s.entryId)}。${esc(s.reason)}</p>`;
-      return `<p class="suggest"><span class="lbl">归纳结果</span>${esc(s.reason)}（把握：${esc(s.confidence)}）</p>`;
+      const reason = esc(explainReason(s.reason));
+      if (s.kind === 'assign') return `<p class="suggest"><span class="lbl">建议</span>归入 ${entryChip(s.entryId)}（把握：${esc(s.confidence)}）。${reason}</p>`;
+      if (s.kind === 'new') return `<p class="suggest"><span class="lbl">建议</span>新建模式 ${entryChip(s.entryId)}。${reason}</p>`;
+      return `<p class="suggest"><span class="lbl">归纳结果</span>${reason}（把握：${esc(s.confidence)}）</p>`;
     }
     function membershipSource(c) {
-      const s = caseState(c); if (s.status === 'holdout') return '按固定种子划入留出集';
+      const s = caseState(c); if (s.status === 'holdout') return c.kind === 'marked-badcase' ? `按用例 ID 固定 hash 划入${SPLIT[c.split]}集，不参与归纳` : '保留原有固定测试集合，不参与归纳';
       if (!s.memberships?.length) return s.status === 'suggested' ? '模型建议，待确认' : s.status === 'unfit' ? '模型归纳后未能归类' : '尚未归入模式';
       return s.memberships.map(m => m.source === 'manual' ? `手动调整 · ${fmt(m.at)}` : m.source === 'model-confirmed' ? `模型建议经确认 · ${fmt(m.at)}` : `${latestVersion()?.id || ''} 模型归纳，随模式审核通过`).join('；');
     }
@@ -216,26 +222,26 @@
       return `<div class="manual-controls"><select data-manual-entry aria-label="选择归属模式"><option value="">选择已通过模式</option>${approvedEntries().map(e => `<option value="${esc(e.id)}" ${selected === e.id ? 'selected' : ''}>${esc(e.title)}</option>`).join('')}</select><button type="button" class="btn small" data-manual-assign>${selected ? '改归属' : '手动归入'}</button>${s.memberships?.length ? '<button type="button" class="btn small ghost" data-manual-remove>移出模式</button>' : ''}</div>`;
     }
     function caseCard(c, ts) {
-      const replay = replayBySource.get(c.id), s = caseState(c), suggestion = suggestionFor(c), owner = s.status === 'assigned' ? s.memberships.map(m => entryChip(m.entryId)).join('') : STATE_CHIP[s.status];
-      return `<article class="case" id="c-${c.n}"><div class="case-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4></div><p class="case-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</p>${suggestionLine(c)}<div class="chips">${owner}<span class="chip">${SPLIT[c.split]}</span><span class="chip">来自 ${hl(c.source.conversationTitle || '未命名房间', ts)}</span>${replay ? catChip(replay) : ''}</div>
+      const replay = replayBySource.get(c.id), s = caseState(c), suggestion = suggestionFor(c), owner = s.status === 'assigned' ? s.memberships.map(m => entryChip(m.entryId)).join('') : s.status === 'holdout' ? `<span class="chip holdout">${SPLIT[c.split]} · 不参与归纳</span>` : STATE_CHIP[s.status];
+      return `<article class="case" id="c-${c.n}"><div class="case-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4></div><p class="case-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</p>${suggestionLine(c)}<div class="chips">${owner}<span class="chip">${displaySet(c)}</span><span class="chip">来自 ${hl(c.source.conversationTitle || '未命名房间', ts)}</span>${replay ? catChip(replay) : ''}</div>
         <div class="row-actions">${suggestion?.kind === 'assign' ? `<button type="button" class="btn small primary" data-confirm-suggestion="${esc(suggestion.id)}">确认归入</button><button type="button" class="btn small" data-reject-suggestion="${esc(suggestion.id)}">不是这里</button>` : ''}${suggestion?.kind === 'new' ? entryChip(suggestion.entryId) : ''}</div>
         <details class="more"><summary>详情</summary><dl class="kv">${replay ? `<div><dt>回放任务</dt><dd>“${hl(replay.task, ts)}”</dd></div>` : ''}<div><dt>归属来源</dt><dd>${esc(membershipSource(c))}</dd></div><div><dt>标记时间</dt><dd>${fmt(c.createdAt)}</dd></div><div><dt>来源消息</dt><dd class="mono">${esc(c.source.messageId || '未记录')}</dd></div><div><dt>用例 ID</dt><dd class="mono">${esc(c.id)}</dd></div>${replay ? `<div><dt>固定提交</dt><dd class="mono">${esc(replay.fixture.commit)}</dd></div><div><dt>检查点</dt><dd class="mono">${esc(replay.request.association.checkpointId)}</dd></div>` : ''}</dl>${manualControls(c)}${c.message || c.traceExcerpt ? `<details class="more"><summary>来源回复与轨迹摘录</summary><pre class="case-original">${esc(`来源回复${c.messageTruncated ? '（截断）' : ''}：\n${c.message}\n\n轨迹${c.traceTruncated ? '（截断）' : ''}（${c.traceState}）：\n${c.traceExcerpt}`)}</pre></details>` : ''}</details></article>`;
     }
     function renderCases() {
-      $('#cases-group').innerHTML = [['all', '全部'], ['inbox', '待归纳'], ...approvedEntries().map(e => [e.id, `模式 ${e.n || ''} · ${e.title}`]), ['holdout', '留出 · 不参与归纳'], ['unfit', '未能归类']].map(([value, label]) => `<option value="${esc(value)}" ${state.casesGroup === value ? 'selected' : ''}>${esc(label)}</option>`).join('');
+      $('#cases-group').innerHTML = [['all', '全部'], ['inbox', '待归纳'], ...approvedEntries().map(e => [e.id, `模式 ${e.n || ''} · ${e.title}`]), ['holdout', '门槛/测试 · 不参与归纳'], ['unfit', '未能归类']].map(([value, label]) => `<option value="${esc(value)}" ${state.casesGroup === value ? 'selected' : ''}>${esc(label)}</option>`).join('');
       $('#cases-split').value = state.casesSplit; $('#cases-replay').checked = state.casesReplay;
       $('#cases-mode').innerHTML = [['group', '按模式分组'], ['list', '列表']].map(([key, label]) => `<button type="button" role="radio" data-cases-mode="${key}" aria-checked="${state.casesMode === key}">${label}</button>`).join('');
-      const ts = terms(state.casesQ), visible = D.cases.filter(c => caseMatch(c, ts) && inGroup(c, state.casesGroup) && (state.casesSplit === 'all' || c.split === state.casesSplit) && (!state.casesReplay || replayBySource.has(c.id)));
+      const ts = terms(state.casesQ), visible = D.cases.filter(c => caseMatch(c, ts) && inGroup(c, state.casesGroup) && (state.casesSplit === 'all' || c.split === state.casesSplit || state.casesSplit === 'gate' && c.evaluationStage === 'gate') && (!state.casesReplay || replayBySource.has(c.id)));
       const filtered = ts.length || state.casesGroup !== 'all' || state.casesSplit !== 'all' || state.casesReplay;
-      const train = D.cases.filter(c => c.split !== 'test'), assigned = train.filter(c => caseState(c).status === 'assigned'), unfit = train.filter(c => caseState(c).status === 'unfit'), inbox = train.filter(c => ['pending', 'suggested'].includes(caseState(c).status));
-      $('#cases-summary').textContent = `${filtered ? `显示 ${visible.length} / ${D.cases.length} 条 · ` : ''}训练 ${train.length} 条（已归入模式 ${assigned.length}）· 留出 ${D.cases.filter(c => c.split === 'test').length} 条 · 有回放题 ${D.replayCases.length} 条 · 待归纳 ${inbox.length} 条、未能归类 ${unfit.length} 条`;
+      const train = D.cases.filter(c => c.split === 'train'), assigned = train.filter(c => caseState(c).status === 'assigned'), unfit = train.filter(c => caseState(c).status === 'unfit'), inbox = train.filter(c => ['pending', 'suggested'].includes(caseState(c).status));
+      $('#cases-summary').textContent = `${filtered ? `显示 ${visible.length} / ${D.cases.length} 条 · ` : ''}归纳集合：训练 ${train.length} 条（已归入模式 ${assigned.length}）· 门槛 ${D.cases.filter(c=>c.split === 'gate').length} 条 · 测试 ${D.cases.filter(c=>c.split === 'test').length} 条。本轮回放：门槛 ${D.replayCases.filter(r=>replayStage(r)==='gate').length} 题、测试 ${D.replayCases.filter(r=>replayStage(r)==='test').length} 题；原16条不重新划分。待归纳 ${inbox.length} 条、未能归类 ${unfit.length} 条`;
       let html;
       if (state.casesMode === 'list') html = visible.length ? `<div class="case-grid">${visible.map(c => caseCard(c, ts)).join('')}</div>` : '<p class="muted-note">没有符合条件的用例。</p>';
       else {
         const groups = /** @type {any[]} */ ([]);
         groups.push({ key: 'inbox', title: '待归纳', action: true, keep: true, note: '新用例来自聊天里的「标记问题」：只填实际问题和期望行为，不用判断模式。模型只给建议，你确认后才生效；也可以直接手动归入。', items: visible.filter(c => inGroup(c, 'inbox')) });
         for (const e of approvedEntries()) groups.push({ key: e.id, title: `模式 ${e.n || ''} · ${e.title}`, link: e.id, items: visible.filter(c => inGroup(c, e.id)) });
-        groups.push({ key: 'holdout', title: '留出 · 不参与归纳', note: '这些用例不给归纳模型看，只用来检查候选是不是只记住了训练用例。', items: visible.filter(c => inGroup(c, 'holdout')) });
+        groups.push({ key: 'holdout', title: '门槛/测试 · 不参与归纳', note: '新门槛和测试用例不发送给归纳模型。原16条保留既有13训练/3测试；本轮门槛中原有训练题另作标注，不假称未见数据。', items: visible.filter(c => inGroup(c, 'holdout')) });
         groups.push({ key: 'unfit', title: '未能归类', keep: true, note: '归纳过、但不属于任何现有模式的用例。你可以随时手动归入。', items: visible.filter(c => inGroup(c, 'unfit')) });
         const visibleGroups = groups.filter(group => (state.casesGroup === 'all' || state.casesGroup === group.key) && (group.items.length || (group.keep && !filtered)));
         html = visibleGroups.length ? visibleGroups.map(group => `<section class="group"><div class="group-head"><h3>${esc(group.title)}</h3><span class="gcount">${group.items.length} 条</span>${group.link ? `<a href="#${esc(group.link)}" data-entry="${esc(group.link)}">打开模式页</a>` : ''}${group.action ? `<button type="button" class="btn small" data-induct ${!rawPending().length || pending || !writable ? 'disabled' : ''}>用模型归纳新用例</button>` : ''}</div>${group.note ? `<p class="group-note">${esc(group.note)}</p>` : ''}${group.items.length ? `<div class="case-grid">${group.items.map(c => caseCard(c, ts)).join('')}</div>` : ''}</section>`).join('') : '<p class="muted-note">没有符合条件的用例。</p>';
@@ -262,33 +268,51 @@
     }
     function approvedEntriesForSelection() { return entries().filter(e => e.status === 'approved'); }
     /* Evaluation and evolution */
-    function latestComparison() { return (D?.comparisons || []).at(-1) || null; }
+    function latestComparison() { return (D?.comparisons || []).slice().sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))[0] || null; }
     function comparisonCase(replay) { const result = latestComparison(); return result?.cases.find(c => c.sourceCaseId === replay.sourceCaseId) || null; }
-    function score(record, variant) { const t = record?.totals?.[variant]; return t ? `${t.passed}/${t.planned}` : '—/3'; }
-    function scoreCell(record, variant) { const t = record?.totals?.[variant]; if (!t) return '<span class="pending">—/3</span>'; return `${t.passed}/${t.planned}${t.errors ? `<span class="run-issues">错误 ${t.errors}</span>` : ''}${t.notRun ? `<span class="run-issues">未运行 ${t.notRun}</span>` : ''}`; }
+    function score(record, variant) { const t = record?.totals?.[variant]; return t ? `${t.passed}/${t.planned}` : '—/10'; }
+    function scoreCell(record, variant) { const t = record?.totals?.[variant]; if (!t) return '<span class="pending">—/10</span>'; return `${t.passed}/${t.planned}${t.failed ? `<span class="run-issues">不通过 ${t.failed}</span>` : ''}${t.errors ? `<span class="run-issues">错误 ${t.errors}</span>` : ''}${t.notRun ? `<span class="run-issues">未运行 ${t.notRun}</span>` : ''}`; }
+    const outcomeText = value => ({accepted:'接受',rejected:'拒绝',indeterminate:'无法判定'}[value] || '待运行');
+    function decisionText(d) {
+      if (!d) return '<p class="hint">门槛尚未运行：修好与无误伤同时满足才接受；探针和其他模式只报告。</p>';
+      const pair = t => `原版 ${t.original.passed}/${t.original.total}，候选 ${t.candidate.passed}/${t.candidate.total}`;
+      return `<section class="gate-decision"><h3>门槛判定：${outcomeText(d.outcome)}</h3><p>修好：${pair(d.repair)}；单侧 Fisher p=${d.repair.pValue == null ? 'N/A' : esc(Number(d.repair.pValue).toPrecision(4))}，要求 p&lt;0.05，${d.repair.passed?'满足':'不满足'}。</p><p>无误伤：${pair(d.noHarm)}；少通过 ${d.noHarm.loss} 次，允许少通过 ${d.noHarm.allowedLoss} 次，${d.noHarm.passed?'满足':'不满足'}。</p><p class="hint">只有目标模式的门槛复现题计入修好，门槛中全部防误伤题计入无误伤。门槛有题未补齐则无法判定，不运行测试。</p></section>`;
+    }
+    function stageSummary(totals) {
+      if (!totals) return '<p class="hint">尚无本阶段的正式统计。</p>';
+      return `<div class="stage-rates">${['original','candidate'].map(v=>{const t=totals[v];return `<p><b>${v==='original'?'原版':'候选'}</b> ${t.passed}/${t.planned} 通过 · 不通过 ${t.failed} · 错误 ${t.errors} · 未运行 ${t.notRun}；有效 ${t.scored}，通过率 ${t.passRate==null?'N/A':(100*t.passRate).toFixed(1)+'%'}</p>`;}).join('')}</div>`;
+    }
     function renderImpact() {
       const order = { reproduction: 0, probe: 1, control: 2 }, result = latestComparison();
       const reps = D.replayCases.slice().sort((a, b) => order[a.category] - order[b.category] || caseById.get(a.sourceCaseId).n - caseById.get(b.sourceCaseId).n);
-      const rows = reps.map(replay => { const c = caseById.get(replay.sourceCaseId), s = caseState(c), record = comparisonCase(replay); const owner = s.memberships?.length ? s.memberships.map(m => entryChip(m.entryId)).join(' ') : '<span class="chip holdout">留出</span>'; return `<tr><td>“${esc(replay.task)}” <a href="#case-${c.n}" data-case="${c.n}" class="res">用例 #${c.n}</a></td><td>${catChip(replay)}</td><td>${SPLIT[replay.split]}</td><td>${owner}</td><td class="n">${scoreCell(record, 'original')}</td><td class="n">${scoreCell(record, 'candidate')}</td></tr>`; }).join('');
-      const total = reps.length * 3, global = globalTarget(), ready = (D.candidates || []).find(c => c.targetId === global?.id && c.status === 'draft');
-      const totals = result?.totals;
-      $('#impact-runs').innerHTML = `${!result ? `<div class="empty-state"><p><b>还没有评测结果。</b>${ready ? `确认全局提示词候选后开始：${reps.length} 道回放题，原版本和候选各跑 3 次。` : '有已确认的候选后才能开始评测。'}</p>${ready ? `<button type="button" class="btn small" data-go="targets" data-target="${esc(global.id)}">去确认候选</button>` : ''}</div>` : `<p class="hint">${esc(result.createdAt)} · ${esc(result.model)} · 已记录 ${result.modelCallsKnown} 次模型请求。${result.completed ? '所有计划轮次已执行完成。' : '执行不完整；错误和未运行不会算作通过。'}</p>`}<div class="table-wrap"><table class="runs"><thead><tr><th>回放题</th><th>类型</th><th>集合</th><th>对应模式</th><th class="n">原版通过</th><th class="n">候选通过</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="4">合计 · 复现 ${reps.filter(r => r.category === 'reproduction').length} · 探针 ${reps.filter(r => r.category === 'probe').length} · 控制 ${reps.filter(r => r.category === 'control').length}</td><td class="n">${totals ? scoreCell({ totals }, 'original') : `<span class="pending">—/${total}</span>`}</td><td class="n">${totals ? scoreCell({ totals }, 'candidate') : `<span class="pending">—/${total}</span>`}</td></tr></tfoot></table></div><ul class="legend"><li><b>复现题</b>原版会犯的错，看候选能不能修好</li><li><b>探针题</b>原版偶尔会犯，用来观察</li><li><b>控制题</b>原版本来做得对，看候选会不会改坏</li><li><b>留出</b>不参与归纳，检查候选是不是只记住了训练用例</li><li><b>解读边界</b>题组经原基线筛选，存在选择偏差；只复现了汇报难懂一类，不保证提分。</li></ul>`;
+      const global = globalTarget(), ready = (D.candidates || []).find(c => c.targetId === global?.id && c.status === 'draft');
+      const stages = ['gate','test'].map(stage=>{
+        const selected = reps.filter(r=>replayStage(r)===stage), d=result?.gateDecision;
+        const rows=selected.map(replay=>{const c=caseById.get(replay.sourceCaseId),s=caseState(c),record=comparisonCase(replay);const owner=s.memberships?.length?s.memberships.map(m=>entryChip(m.entryId)).join(' '):'<span class="chip">不参与归纳</span>';return `<tr><td>“${esc(replay.task)}” <a href="#case-${c.n}" data-case="${c.n}" class="res">用例 #${c.n}</a></td><td>${catChip(replay)}</td><td>${owner}</td><td class="n">${scoreCell(record,'original')}</td><td class="n">${scoreCell(record,'candidate')}</td></tr>`;}).join('');
+        const note=stage==='gate'?'先执行；每题原/候选各10次有效，交替执行。':d?.outcome==='rejected'?'门槛拒绝，测试未运行。':d?.outcome==='indeterminate'?'门槛无法判定，测试未运行。':'只有门槛接受后才执行一次；每题原/候选各10次有效。';
+        return `<section class="evaluation-stage" data-evaluation-stage="${stage}"><h3>${SPLIT[stage]} · ${selected.length} 题</h3><p class="hint">${note}</p><div class="table-wrap"><table class="runs"><thead><tr><th>回放题</th><th>类型</th><th>对应模式</th><th class="n">原版通过/计划</th><th class="n">候选通过/计划</th></tr></thead><tbody>${rows}</tbody></table></div>${stageSummary(result?.byStage?.[stage])}</section>`;
+      }).join('');
+      $('#impact-runs').innerHTML = `${!result ? `<div class="empty-state"><p><b>还没有评测结果。</b>${ready ? '请确认全局提示词候选；每题每版10次，先跑门槛，接受才跑测试。' : '确认候选后由操作方执行；页面加载不会启动评测。'}</p>${ready ? `<button type="button" class="btn small" data-go="targets" data-target="${esc(global.id)}">去确认候选</button>` : ''}</div>` : `<p class="hint">${esc(result.createdAt)} · ${esc(result.model)} · 已记录 ${result.modelCallsKnown} 次模型请求。${result.completed ? '本轮流程已结束，不表示获准采纳。' : '执行不完整；错误和未运行不算通过。'}${!result.evaluation?' 此为历史结果，不是本轮两阶段评测。':''}</p>`}${decisionText(result?.gateDecision)}${stages}<ul class="legend"><li><b>复现题</b>目标模式的门槛复现题检验能否修好</li><li><b>探针题</b>只报告，不影响判定</li><li><b>防误伤题</b>原版本来做得对，看候选会不会改坏</li><li><b>错误与未运行</b>环境错误每题两版共最多补5次；模型循环、超时或超调用上限计不通过，补不齐则无法判定</li><li><b>解读边界</b>代理模型 DeepSeek、小样本、原基线筛题有挑题偏差；只复现了汇报难懂一类，不作为采纳依据，不保证提分。</li></ul>`;
       renderTimeline();
     }
     function renderTimeline() {
       const events = [], byCat = key => D.replayCases.filter(r => r.category === key).length;
-      if (D.cases.length) events.push({ at: latest(D.cases.map(c => c.createdAt)), kind: '用例', text: `保存 ${D.cases.length} 条真实用例；新标记用例默认进入训练集` });
-      if (D.replaySplit) events.push({ at: D.replaySplit.createdAt, kind: '划分', text: `固定留出集 ${D.cases.filter(c => c.split === 'test').map(c => '#' + c.n).join(' ')}，不参与归纳` });
+      if (D.cases.length) events.push({ at: latest(D.cases.map(c => c.createdAt)), kind: '用例', text: `保存 ${D.cases.length} 条真实用例；新标记用例按固定 hash 分训练50%/门槛25%/测试25%` });
+      if (D.replaySplit) events.push({ at: D.replaySplit.createdAt, kind: '划分', text: `原16条的固定测试集 ${D.cases.filter(c => c.split === 'test').map(c => '#' + c.n).join(' ')} 不参与归纳；其余保留原训练集合` });
       for (const version of D.versions) events.push({ at: version.createdAt, kind: '知识库', text: `${version.id}：从 ${version.caseIds.length} 条训练用例归纳出 ${version.entries.length} 条模式，未归类 ${version.unclassified.length} 条` });
-      if (D.replayCases.length) events.push({ at: latest(D.replayCases.map(r => r.createdAt)), kind: '回放题', text: `封存 ${D.replayCases.length} 道回放题（复现 ${byCat('reproduction')} · 探针 ${byCat('probe')} · 控制 ${byCat('control')}）` });
+      if (D.replayCases.length) events.push({ at: latest(D.replayCases.map(r => r.createdAt)), kind: '回放题', text: `封存 ${D.replayCases.length} 道回放题（复现 ${byCat('reproduction')} · 探针 ${byCat('probe')} · 防误伤 ${byCat('control')}）` });
       for (const version of D.versions) for (const entry of version.entries.filter(e => e.reviewedAt)) events.push({ at: entry.reviewedAt, kind: '审核', text: `模式「${entry.title}」${entry.status === 'approved' ? '通过审核' : '已驳回'}` });
-      for (const candidate of D.candidates.filter(c => c.kind === 'global-wiki-candidate-v1')) { const target = targetById.get(candidate.targetId); events.push({ at: candidate.createdAt, kind: '候选', text: `生成候选：${targetFull(target)}（${candidate.entryIds.length} 条准则）` }); if (candidate.confirmedAt) events.push({ at: candidate.confirmedAt, kind: '确认', text: `确认候选：${targetFull(target)}` }); if (candidate.deprecatedAt) events.push({ at: candidate.deprecatedAt, kind: '废弃', text: `废弃用途不符的候选：${targetFull(target)}` }); }
-      for (const result of D.comparisons || []) events.push({ at: result.createdAt, kind: '评测', text: `保存对照结果：原版 ${result.totals.original.passed}/${result.totals.original.planned}，候选 ${result.totals.candidate.passed}/${result.totals.candidate.planned}` });
+      for (const candidate of D.candidates.filter(c => c.kind === 'global-wiki-candidate-v1')) { const target = targetById.get(candidate.targetId); events.push({ at: candidate.createdAt, kind: '候选', text: `生成候选：${targetFull(target)}（${candidate.entryIds.length} 条准则）` }); if (candidate.confirmedAt) events.push({ at: candidate.confirmedAt, kind: '确认', text: `确认候选：${targetFull(target)}` }); if (candidate.deprecatedAt) events.push({ at: candidate.deprecatedAt, kind: '废弃', text: `废弃${candidate.deprecationReason==='multiple_patterns'?'合并多模式':'用途不符'}的候选：${targetFull(target)}` }); }
+      for (const result of D.comparisons || []) {
+        if (result.gateDecision) events.push({ at:result.createdAt,kind:'门槛判定',text:`门槛判定：${outcomeText(result.gateDecision.outcome)}；修好${result.gateDecision.repair.passed?'满足':'不满足'}、无误伤${result.gateDecision.noHarm.passed?'满足':'不满足'}。候选和 diff 保留，不自动采纳。` });
+        for (const stage of ['gate','test']) {const t=result.byStage?.[stage];if(t)events.push({at:result.createdAt,kind:'评测',text:`${SPLIT[stage]}结果：原版 ${t.original.passed}/${t.original.planned}，候选 ${t.candidate.passed}/${t.candidate.planned}；错误 ${t.original.errors}/${t.candidate.errors}，未运行 ${t.original.notRun}/${t.candidate.notRun}`});}
+        if (!result.byStage) events.push({at:result.createdAt,kind:'历史评测',text:'历史单阶段结果已保存，不作为本轮两阶段判定。'});
+      }
       const explicit = new Set();
       for (const event of D.events || []) {
         if (event.runId) explicit.add(event.runId);
         const caseNumbers = (event.caseIds || []).map(id => '#' + caseById.get(id)?.n).join(' ');
-        const labels = { 'case-marked': ['标记', `新用例进入待归纳 ${caseNumbers}`], 'induction-run': ['归纳', `模型完成一次增量归纳 ${caseNumbers}；只保存建议`], 'suggestion-confirmed': ['归属', `确认模型建议 ${caseNumbers}`], 'suggestion-rejected': ['归属', `否决模型建议 ${caseNumbers}`], 'manual-assigned': ['归属', `手动归入模式 ${caseNumbers}`], 'manual-removed': ['归属', `手动移出模式 ${caseNumbers}`] };
+        const labels = { 'case-marked': ['标记', `新用例已入库 ${caseNumbers}（仅训练集合进入待归纳）`], 'induction-run': ['归纳', `模型完成一次增量归纳 ${caseNumbers}；只保存建议`], 'suggestion-confirmed': ['归属', `确认模型建议 ${caseNumbers}`], 'suggestion-rejected': ['归属', `否决模型建议 ${caseNumbers}`], 'manual-assigned': ['归属', `手动归入模式 ${caseNumbers}`], 'manual-removed': ['归属', `手动移出模式 ${caseNumbers}`] };
         const label = labels[event.type]; if (label) events.push({ at: event.createdAt, kind: label[0], text: label[1] });
       }
       for (const run of D.inductionRuns || []) if (!explicit.has(run.id)) events.push({ at: run.createdAt, kind: '归纳', text: `模型完成一次增量归纳（${run.caseIds.length} 条用例）；只保存建议` });
