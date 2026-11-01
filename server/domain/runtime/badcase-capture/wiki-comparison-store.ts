@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { createWikiStore } from './wiki-store';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
+import { projectStagedResult } from './wiki-staged-result';
 
 const variants = ['original', 'candidate'];
 const categories = ['reproduction', 'probe', 'control'];
@@ -25,13 +26,15 @@ export function wikiComparisonTotals(cases: any[], repeats: number) {
   return Object.fromEntries(variants.map(variant => {
     const rows = cases.flatMap(c => c.runs || []).filter(r => r.variant === variant), planned = cases.length * repeats;
     const passed = rows.filter(r => r.status === 'pass').length, failed = rows.filter(r => r.status === 'fail').length, errors = rows.filter(r => r.status === 'error').length;
-    return [variant, { planned, attempted: rows.length, passed, failed, errors, notRun: planned - rows.length,
+    const staged = cases.some(c => c.stage === 'gate' || c.stage === 'test');
+    return [variant, { planned, attempted: rows.length, passed, failed, errors, notRun: planned - (staged ? passed + failed : rows.length),
       scored: passed + failed, passRate: passed + failed ? passed / (passed + failed) : null, plannedPassRate: planned ? passed / planned : null }];
   }));
 }
 // Allowlist projection: never serialize arbitrary worker text, paths, file bytes,
 // usage objects, Docker inspect, or caller-supplied aggregate counters.
 function projectResult(input: any): any {
+  if (input?.kind === 'wiki-staged-batch-comparison-v1') return projectStagedResult(input, wikiComparisonTotals);
   check(input?.kind === 'wiki-global-batch-comparison-v1' && input.scope === 'global' && input.model === 'deepseek/deepseek-v4-flash');
   const repeats = count(input.repeats); check(repeats >= 1 && repeats <= 20);
   const candidate = input.candidate;
@@ -118,6 +121,12 @@ export function createWikiComparisonStore(options: any) {
           check(source && source.split === c.split);
           if (c.replayId) check(replay?.id === c.replayId && replay.category === c.category && replay.split === c.split);
           else check(c.status === 'unsupported' && !replay);
+        }
+        if (payload.evaluation) {
+          const e = payload.evaluation, version = state.versions.find((v:any)=>v.id===candidate.versionId);
+          check(candidate.entryIds.length===1 && e.targetEntryId===candidate.entryIds[0]);
+          const entry=version?.entries.find((e:any)=>e.id===candidate.entryIds[0]);
+          check(entry && JSON.stringify(e.targetReproductionCaseIds)===JSON.stringify(payload.cases.filter((c:any)=>c.stage==='gate' && c.category==='reproduction' && entry.caseIds.includes(c.sourceCaseId)).map((c:any)=>c.sourceCaseId).sort()));
         }
         const target = path.join(directory, name);
         if (fs.existsSync(target)) return readFile(name);

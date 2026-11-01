@@ -23,7 +23,7 @@ function seal(t, { missingTarget = false } = {}) {
     r.harness.configSnapshotHash = put(JSON.stringify(config));
   });
 }
-function setup(t, { confirmed = true, tool = false, missingTarget = false } = {}) {
+function setup(t, { confirmed = true, tool = false, missingTarget = false, staged = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'global-comparison-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const scope = { globalRoot: path.join(root, 'global'), sourceWorktree: path.join(root, 'source') }, store = createWikiStore(scope);
   const sources = store.addTextCases(Array.from({ length: 16 }, (_, n) => ({ source: { origin: 'http://127.0.0.1:3100', projectId: 'history-project-' + n, conversationId: 'history-room', messageId: 'message-' + n, agentId: 'role-family-gpt' }, role: 'GPT', actual: 'Unclear report', expected: 'Unique expected visible outcome number ' + n, message: 'Internal jargon', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }))).cases;
@@ -36,7 +36,7 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false } = {}
   const train = store.read().cases.filter(c => c.split === 'train').map(c => c.id), guideline = '先核实，再用读者能理解的语言说明结论。';
   const v = store.saveDraft({ caseIds: train, model: 'deepseek/deepseek-v4-flash', entries: [{ title: 'Clear', failureMode: 'jargon', symptoms: 'unclear', rootCauseHypothesis: 'audience', guideline, caseIds: train }], unclassified: [] });
   store.review({ versionId: v.id, entryId: v.entries[0].id, expectedRevision: store.read().revision, decision: 'approved' });
-  const seals = selected.map(() => seal(t, { missingTarget })), categories = ['reproduction', 'reproduction', 'reproduction', 'probe', 'control', 'control', 'control'];
+  const seals = selected.map(() => seal(t, { missingTarget })), categories = staged ? ['reproduction', 'control', 'control', 'reproduction', 'reproduction', 'probe', 'control'] : ['reproduction', 'reproduction', 'reproduction', 'probe', 'control', 'control', 'control'];
   const rules = { kind: 'file-literals-v1', files: [{ path: 'REPORT.md', contains: ['RESULT'], notContains: ['TODO'] }] };
   for (let i = 0; i < 7; i++) {
     // A missing declared target is still an honestly registered old seal. The
@@ -49,6 +49,7 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false } = {}
   const files = collectWikiCandidateFiles(store.read()), candidate = store.createGlobalCandidate({ versionId: v.id, entryIds: [v.entries[0].id], targetId: tool ? 'tool-description-list_rooms' : targetId, files });
   if (confirmed) store.confirmGlobalCandidate({ candidateId: candidate.id, candidateHash: candidate.candidateHash, expectedRevision: store.read().revision, files });
   const config = { ...scope, candidateId: candidate.id, repoRoot: root, dependencyRoot: root, image: { imageId: 'sha256:' + '1'.repeat(64) }, cases: selected.map((c, i) => ({ sourceCaseId: c.id, category: categories[i] })) };
+  if (staged) { config.repeats = 10; config.evaluation = { kind: 'wikiskill-gate-v1', targetEntryId: 'entry-1', gateCaseIds: selected.slice(3).map(c => c.id), testCaseIds: selected.slice(0,3).map(c => c.id) }; }
   const single = { request: seals[0].request, globalWikiCandidate: { ...scope, candidateId: candidate.id }, repoRoot: root, dependencyRoot: root, image: config.image, repeats: 3, rules, modelProfile: 'deepseek/deepseek-v4-flash', keySource: 'caff-deepseek' };
   const state = { keys: 0, executions: 0, events: [], failAt: 0 }, key = 'synthetic-global-evaluation-key-123456';
   const options = { confirmed: true, readKey: () => { state.keys++; return key; }, onEvent: event => state.events.push(event),
@@ -64,6 +65,87 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false } = {}
   const plan = () => prepareBatch(config, options), run = () => runBatch(config, { ...options, expectedPlanHash: plan().summary.planHash });
   return { root, store, sources, split, seals, candidate, config, single, state, options, plan, run, guideline };
 }
+test('D13/D16 global staged suite alternates 10 valid runs, rejects without running tests and has no cross-stage total', async t => {
+  const h = setup(t, { staged: true }), before = h.store.read(), p = h.plan();
+  assert.equal(p.summary.repeats, 10); assert.equal(p.summary.evaluation.kind, 'wikiskill-gate-v1');
+  const r = await h.run();
+  assert.equal(h.state.executions,80); assert.equal(r.completed,true); assert.equal(r.gateDecision.outcome,'rejected');
+  assert.equal(r.totals,undefined); assert.equal(r.bySplit,undefined); assert.equal(r.byStage.gate.original.passed,40);
+  assert.equal(r.byStage.test.original.notRun,30);
+  for (const c of r.cases.filter(c=>c.stage==='gate')) assert.deepEqual(c.runs.map(r=>r.variant),Array.from({length:10},()=>['original','candidate']).flat());
+  assert.ok(r.cases.filter(c=>c.stage==='test').every(c=>c.reason==='gate_rejected' && !c.runs.length));
+  assert.equal(h.state.events.filter(e=>e.event==='gate_decision').length,1); assert.deepEqual(h.store.read(),before);
+  assert.match(formatBatch(r),/门槛/); assert.match(formatBatch(r),/测试/); assert.doesNotMatch(formatBatch(r),/总体|合计.*7/);
+});
+function stagedDriver(h, { improve = false, environment = 0, modelLimit = false, timeout = false } = {}) {
+  let current; const emit = h.options.onEvent, execute = h.options.execute;
+  h.options.onEvent = e => { if (e.event==='plan') current=e.sourceCaseId; emit(e); };
+  h.options.execute = async (...args) => {
+    const task = await execute(...args), n = h.state.executions;
+    if (n<=environment) return {...task,failed:true,reason:'worker_failed',receipt:undefined};
+    if (timeout && n===1) return {...task,failed:true,code:124,reason:'model_timeout',receipt:undefined,inputHash:task.receipt.inputHash,runtimeHash:task.receipt.runtimeHash};
+    if (modelLimit && n===1) { task.receipt.success=false; return task; }
+    const input=JSON.parse(args[1][0].bytes), candidate=input.prompt.includes(h.guideline);
+    if (improve && h.config.cases.find(c=>c.sourceCaseId===current).category==='reproduction' && !candidate) {
+      task.receipt.fileEvidence=[{path:'REPORT.md',state:'file',base64:Buffer.from('WRONG').toString('base64'),sha256:sha('WRONG'),size:5}];
+    }
+    return task;
+  };
+}
+test('acceptance runs test stage exactly once after gate event; decision and separate rates survive store reopen', async t => {
+  const { createWikiComparisonStore }=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+  const h=setup(t,{staged:true}); stagedDriver(h,{improve:true}); const r=await h.run();
+  assert.equal(r.gateDecision.outcome,'accepted'); assert.equal(h.state.executions,140);
+  const events=h.state.events, at=events.findIndex(e=>e.event==='gate_decision');
+  assert.ok(at>0); assert.ok(events.findIndex(e=>e.event==='run' && e.stage==='test')>at);
+  assert.equal(r.gateDecision.repair.original.passed,0); assert.equal(r.gateDecision.repair.candidate.passed,20);
+  const store=createWikiComparisonStore(h.config), saved=store.save(r);
+  assert.equal(saved.totals,undefined); assert.equal(saved.byStage.test.original.planned,30);
+  assert.deepEqual(createWikiComparisonStore(h.config).read()[0],saved);
+  const forged=structuredClone(r); forged.gateDecision.outcome='rejected'; assert.throws(()=>store.save(forged),/wiki_comparison_invalid/);
+});
+test('environment errors are separate attempts, at most five extra per question; exhaustion is indeterminate and test is untouched', async t => {
+  for (const errors of [1,6]) {
+    const h=setup(t,{staged:true}); stagedDriver(h,{environment:errors,improve:true}); const r=await h.run();
+    assert.equal(r.byStage.gate.original.errors+r.byStage.gate.candidate.errors,errors);
+    assert.ok(r.cases.every(c=>c.runs.length<=25));
+    if(errors===1) { assert.equal(r.gateDecision.outcome,'accepted'); assert.equal(h.state.executions,141); assert.equal(r.byStage.gate.original.scored,40); }
+    else { assert.equal(r.gateDecision.outcome,'indeterminate'); assert.equal(h.state.executions,85); assert.equal(r.byStage.test.original.attempted,0); assert.equal(r.completed,false); }
+    const {createWikiComparisonStore}=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+    const saved=createWikiComparisonStore(h.config).save(r); assert.deepEqual(saved.byStage,r.byStage);
+  }
+});
+test('model loop/request ceiling and proven container model timeout count as fail, not retriable environment error', async t=>{
+  for(const mode of ['modelLimit','timeout']) {
+    const h=setup(t,{staged:true}); stagedDriver(h,{[mode]:true}); const r=await h.run();
+    assert.equal(h.state.executions,80); assert.equal(r.byStage.gate.original.failed,1); assert.equal(r.byStage.gate.original.errors,0);
+  }
+});
+test('staged HTTP environmental failures retain request metering, are replaced, and never count as a model fail',async t=>{
+  const h=setup(t,{staged:true}), execute=h.options.execute;
+  h.options.execute=async(...args)=>{const task=await execute(...args);if(h.state.executions===1){task.receipt.success=false;task.receipt.modelCalls[0].success=false;task.receipt.modelCalls[0].httpStatus=503;}return task;};
+  const r=await h.run(); assert.equal(h.state.executions,81);assert.equal(r.byStage.gate.original.errors,1);assert.equal(r.byStage.gate.original.failed,0);
+  assert.equal(r.modelCallsKnown,81);assert.equal(r.callsUnavailable,false);assert.equal(r.gateDecision.outcome,'rejected');
+});
+test('staged CLI saves a rejected round and its gate event without calling test models or producing an overall total',async t=>{
+  const {main}=require('../../scripts/badcase-capture/compare-wiki-batch.cjs');
+  const {createWikiComparisonStore}=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+  const h=setup(t,{staged:true}),config=path.join(h.root,'config.json'),output=path.join(h.root,'events.jsonl');fs.writeFileSync(config,JSON.stringify(h.config));
+  const write=process.stdout.write,code=process.exitCode;let printed='';process.stdout.write=s=>{printed+=s;return true;};
+  try {await main(['--config',config,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output,'--json'],h.options);}
+  finally {process.stdout.write=write;process.exitCode=code;}
+  const r=JSON.parse(printed),saved=createWikiComparisonStore(h.config).read()[0];
+  assert.equal(r.comparisonId,saved.id);assert.equal(saved.gateDecision.outcome,'rejected');assert.equal(saved.completed,true);
+  assert.equal(saved.totals,undefined);assert.equal(saved.byStage.test.original.notRun,30);assert.equal(h.state.executions,80);
+  assert.ok(fs.readFileSync(output,'utf8').includes('gate_decision'));
+});
+test('staged planning pins 10 repetitions, target mode and all gate/test IDs before any key use',t=>{
+  const h=setup(t,{staged:true});
+  for(const change of [c=>{c.repeats=3;},c=>{c.evaluation.targetEntryId='entry-2';},c=>c.evaluation.gateCaseIds.pop(),c=>{c.evaluation.testCaseIds=c.evaluation.gateCaseIds;}]) {
+    const c=structuredClone(h.config);change(c);assert.throws(()=>prepareBatch(c,h.options));
+  }
+  assert.equal(h.state.keys,0);assert.equal(h.state.executions,0);
+});
 test('confirmed global candidate changes exactly one shared fragment, not the custom role, callback, files or config', async t => {
   const h = setup(t), before = h.store.read(), p = prepareComparison(h.single, h.options);
   assert.equal(p.supported, true); assert.equal(h.state.keys, 0);

@@ -99,7 +99,7 @@ async function runDirectDockerTask(image, files, options = {}) {
     if (!result.failure) { assert.equal(post.State.Running, false); assert.equal(post.State.ExitCode, result.code); }
     // Raw Docker inspect includes runtime env; never return/save that object.
     // Failed worker stderr/provider bodies are deliberately not result material.
-    if (!good(result) || post.State.OOMKilled) result = { code: result.code, failed: true, reason: result.failure || (post.State.OOMKilled ? 'oom' : 'worker_failed') };
+    if (!good(result) || post.State.OOMKilled) result = { code: result.code, failed: true, reason: result.failure || (post.State.OOMKilled ? 'oom' : post.State.ExitCode === 124 ? 'model_timeout' : 'worker_failed') };
     else if ([result.stdout, result.stderr].some(s => s.includes(key) || s.includes(JSON.stringify(key).slice(1, -1)))) throw fail('evaluation_output_contains_key');
     else { assert.equal(result.stderr, '', 'evaluation_worker_stderr'); result = { code: 0, receipt: JSON.parse(result.stdout) }; }
   } finally {

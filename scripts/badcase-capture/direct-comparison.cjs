@@ -45,8 +45,9 @@ function scoreReadOnlyFiles(receipt, rules, beforeHash) {
 }
 function prepareComparison(config, options = {}) {
   if (!config || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)
+    || config.executionPolicy !== undefined && (config.executionPolicy !== 'alternating-valid-v1' || !config.globalWikiCandidate || config.repeats !== 10)
     || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== 1
     || config.candidateRole !== undefined && (typeof config.candidateRole !== 'string' || !config.candidateRole.trim())
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
@@ -108,7 +109,7 @@ function prepareComparison(config, options = {}) {
   const summary = { kind: 'sealed-prompt-comparison-v1', caseId: original.provenance.caseId,
     checkpointId: original.provenance.checkpointId, checkpointHash: original.provenance.checkpointHash,
     commonInputHash: rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig })) : original.provenance.commonInputHash,
-    model: profile, repeats: config.repeats,
+    model: profile, repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
     imageId: config.image.imageId, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
     strictEvalEligible: false, ...(wikiCandidate ? { wikiCandidate } : {}),
@@ -133,8 +134,18 @@ async function runComparison(config, options = {}) {
   if (leaksKey(plan.summary)) throw fail('evaluation_output_contains_key');
   emit({ event: 'plan', ...plan.summary, runtimeHash: manifests.original.runtimeHash });
   const runs = []; let stopped = false, modelCallsKnown = 0, callsUnavailable = false;
-  for (const variant of ['original', 'candidate']) {
-    for (let iteration = 1; iteration <= fixed.repeats && !stopped; iteration++) {
+  const alternating = fixed.executionPolicy === 'alternating-valid-v1';
+  const variants = ['original','candidate'], validCount = v => runs.filter(r=>r.variant===v && r.status!=='error').length;
+  const legacySlots = variants.flatMap(variant=>Array.from({length:fixed.repeats},(_,i)=>({variant,iteration:i+1})));
+  let cursor=0, nextVariant=0, fatal=false;
+  while (!stopped) {
+      let variant, iteration;
+      if (alternating) {
+        if (runs.length>=2*fixed.repeats+5 || variants.every(v=>validCount(v)===fixed.repeats)) break;
+        if (validCount(variants[nextVariant])===fixed.repeats) nextVariant=1-nextVariant;
+        variant=variants[nextVariant]; nextVariant=1-nextVariant;
+        iteration=runs.filter(r=>r.variant===variant).length+1;
+      } else { const slot=legacySlots[cursor++]; if(!slot) break; ({variant,iteration}=slot); }
       // Recheck seal AND current static distribution; no live-source or fresh
       // fallback if bytes changed after the planned starting point.
       const fresh = prepareComparison(fixed, options);
@@ -169,20 +180,39 @@ async function runComparison(config, options = {}) {
             row.status = score.pass ? 'pass' : 'fail'; row.checks = score.checks;
             if (literal) { row.fileEvidence = receipt.fileEvidence; row.fileChecks = score.details; }
           }
-        } else { row.reason = 'model_turn_failed'; stopped = true; }
-      } else { row.reason = 'run_evidence_unavailable'; stopped = true; callsUnavailable = true; }
-      // Only accept worker output after verified removal. On an infrastructure
-      // failure no score/zero-call claim is fabricated and no variant retries.
+        } else {
+          row.reason = 'model_turn_failed';
+          // Successful HTTP/tool cycles stopped by the model/request ceiling or
+          // HTTP-200 truncation are model failures. Provider/network failures
+          // remain environmental errors. Legacy single/role runs still stop.
+          if (alternating && receipt.modelCalls.every(c=>c.success || c.httpStatus===200)) row.status='fail';
+          else stopped=true;
+        }
+      } else {
+        row.reason = 'run_evidence_unavailable'; stopped = true; callsUnavailable = true;
+        // Inner `timeout` exited 124 after a started, isolated task, with hashes
+        // and cleanup verified by the launcher. Docker control timeouts/OOM or
+        // unknown cleanup are NOT proof of a model timeout.
+        if (alternating && task?.failed && task.reason==='model_timeout' && task.code===124 && task.cleaned===true && task.isolation
+          && task.inputHash===manifests[variant].inputHash && task.runtimeHash===manifests[variant].runtimeHash) {
+          row.status='fail'; row.reason='model_timeout'; stopped=false;
+        }
+      }
+      if (alternating) {
+        fatal = task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
+        if (!fatal) stopped=false; // bounded by 20 valid slots + 5 extra attempts
+        else stopped=true;
+      }
       runs.push(row); const { modelCalls: omitted, ...eventRow } = row; emit({ event: 'run', ...eventRow });
-    }
   }
   const totals = Object.fromEntries(['original', 'candidate'].map(v => {
     const rows = runs.filter(r => r.variant === v);
     return [v, { planned: fixed.repeats, attempted: rows.length, passed: rows.filter(r => r.status === 'pass').length,
       failed: rows.filter(r => r.status === 'fail').length, errors: rows.filter(r => r.status === 'error').length,
-      notRun: fixed.repeats - rows.length }];
+      notRun: fixed.repeats - (alternating ? rows.filter(r=>r.status!=='error').length : rows.length) }];
   }));
-  const result = { ...plan.summary, supported: true, completed: !stopped, runs, totals, modelCallsKnown, callsUnavailable };
+  const result = { ...plan.summary, supported: true, completed: alternating ? variants.every(v=>validCount(v)===fixed.repeats) : !stopped, runs, totals, modelCallsKnown, callsUnavailable,
+    ...(alternating ? {fatal} : {}) };
   emit({ event: 'summary', completed: result.completed, totals, modelCallsKnown, callsUnavailable });
   return result;
 }

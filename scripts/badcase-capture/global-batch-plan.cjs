@@ -43,13 +43,29 @@ function prepareGlobalBatch(config, options = {}) {
   // frozen partition. All held-out sources remain mandatory. The exact suite,
   // including missing seals, is bound by the independently confirmed plan hash.
   if (split.testCaseIds.some(id => !selected.has(id))) throw fail('evaluation_batch_cases_invalid');
+  let evaluation;
+  if (config.evaluation !== undefined) {
+    const e = config.evaluation, all = [...selected.keys()];
+    if (!e || Object.keys(e).sort().join(',') !== 'gateCaseIds,kind,targetEntryId,testCaseIds' || e.kind !== 'wikiskill-gate-v1'
+      || config.repeats !== 10 || candidate.entryIds.length !== 1 || e.targetEntryId !== candidate.entryIds[0]
+      || !Array.isArray(e.gateCaseIds) || !e.gateCaseIds.length || !Array.isArray(e.testCaseIds) || !e.testCaseIds.length
+      || [...e.gateCaseIds,...e.testCaseIds].length !== all.length || new Set([...e.gateCaseIds,...e.testCaseIds]).size !== all.length
+      || all.some(id=>!e.gateCaseIds.includes(id) && !e.testCaseIds.includes(id))
+      || e.testCaseIds.length !== split.testCaseIds.length || split.testCaseIds.some(id=>!e.testCaseIds.includes(id))) throw fail('evaluation_gate_config_invalid');
+    const entry = version.entries.find(e=>e.id===candidate.entryIds[0]);
+    const targetReproductionCaseIds = e.gateCaseIds.filter(id=>selected.get(id).category==='reproduction' && entry.caseIds.includes(id)).sort();
+    if (!targetReproductionCaseIds.length || !e.gateCaseIds.some(id=>selected.get(id).category==='control')) throw fail('evaluation_gate_config_invalid');
+    evaluation = { ...e, gateCaseIds:[...e.gateCaseIds].sort(),testCaseIds:[...e.testCaseIds].sort(),targetReproductionCaseIds,maxExtraAttemptsPerCase:5 };
+  }
   const additionalTrainingCaseIds = [...selected.keys()].filter(id => !split.caseIds.includes(id)).sort();
   const excludedSplitTrainingCaseIds = split.trainCaseIds.filter(id => !selected.has(id));
   const prepared = [...selected.keys()].sort().map(sourceCaseId => {
     const { replay, ...record } = selected.get(sourceCaseId);
+    if (evaluation) record.stage = evaluation.gateCaseIds.includes(sourceCaseId) ? 'gate' : 'test';
     if (!replay) return { ...record, supported: false, reason: 'no_sealed_replay' };
     const comparisonConfig = { repoRoot: config.repoRoot, dependencyRoot: config.dependencyRoot, image: config.image,
       request: replay.request, rules: replay.rules, repeats: config.repeats ?? 3,
+      ...(evaluation ? { executionPolicy:'alternating-valid-v1' } : {}),
       globalWikiCandidate: { ...scope, candidateId: candidate.id }, modelProfile: DEEPSEEK_PROFILE, keySource: 'caff-deepseek',
       ...(config.timeoutMs === undefined ? {} : { timeoutMs: config.timeoutMs }) };
     const plan = prepareComparison(comparisonConfig, options);
@@ -58,11 +74,13 @@ function prepareGlobalBatch(config, options = {}) {
       ...(plan.supported ? { comparison: plan.summary, comparisonConfig } : { reason: plan.reason }) };
   });
   const supportedCount = prepared.filter(c => c.supported).length;
-  const summary = { kind: 'wiki-global-batch-comparison-v1', scope: 'global', configHash: hash(config), model: DEEPSEEK_PROFILE,
+  const summary = { kind: evaluation ? 'wiki-staged-batch-comparison-v1' : 'wiki-global-batch-comparison-v1', scope: 'global',
+    ...(evaluation ? { evaluation } : {}), configHash: hash(config), model: DEEPSEEK_PROFILE,
     candidate: { id: candidate.id, targetId: candidate.targetId, baseHash: candidate.baseHash, candidateHash: candidate.candidateHash,
       versionId: candidate.versionId, entryIds: candidate.entryIds },
     split: expectedSplit, additionalTrainingCaseIds, excludedSplitTrainingCaseIds, repeats: config.repeats ?? 3, wikiTrainingCount: version.caseIds.length, preparedReplayableCount: supportedCount,
     disclosures: ['baseline_screening_selection_bias', 'only_reporting_failures_reproduced',
+      ...(evaluation ? ['proxy_model_deepseek','small_sample','not_adoption_evidence'] : []),
       ...(supportedCount < 6 ? ['fewer_than_6_prepared_replays'] : []), ...(version.caseIds.length < 10 ? ['fewer_than_10_wiki_training_cases'] : [])],
     cases: prepared.map(({ comparisonConfig, ...record }) => record) };
   return { summary: { ...summary, planHash: hash(summary) }, prepared };

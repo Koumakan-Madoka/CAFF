@@ -1,4 +1,5 @@
-// HOST ONLY. One immutable candidate, one frozen source split, no auto retries.
+// HOST ONLY. One immutable candidate, one frozen source split. D13 staged
+// execution permits only bounded environmental replacements, not prompt edits.
 const crypto = require('node:crypto'), path = require('node:path');
 const base = '../../build/server/domain/runtime/badcase-capture/';
 const { createWikiStore } = require(base + 'wiki-store');
@@ -13,7 +14,7 @@ const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).
 const variants = ['original', 'candidate'];
 function prepareBatch(config, options = {}) {
   const scopeFields = config?.globalRoot === undefined ? ['captureRoot', 'projectId'] : ['globalRoot'];
-  if (!config || Object.keys(config).some(k => ![...scopeFields, 'sourceWorktree', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases'].includes(k))
+  if (!config || Object.keys(config).some(k => ![...scopeFields, 'sourceWorktree', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases', ...(config.globalRoot !== undefined ? ['evaluation'] : [])].includes(k))
     || !Array.isArray(config.cases) || !config.cases.length || config.cases.length > 20
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')
@@ -75,6 +76,7 @@ function prepareBatch(config, options = {}) {
 async function runBatch(config, options = {}) {
   const fixed = structuredClone(config), plan = prepareBatch(fixed, options);
   if (options.confirmed !== true || options.expectedPlanHash !== plan.summary.planHash) throw fail('evaluation_batch_confirmation_required');
+  if (plan.summary.evaluation) return require('./staged-batch.cjs').runStagedBatch(fixed, plan, options);
   const emit = options.onEvent || (() => {}), results = [], executionId = crypto.randomUUID();
   let key, stopped = false, runtimeHash = null;
   if (plan.prepared.some(c => c.supported)) {
@@ -132,6 +134,7 @@ async function runBatch(config, options = {}) {
   emit({ event: 'batch_summary', ...result }); return result;
 }
 function formatBatch(result) {
+  if (result.evaluation) return require('./staged-batch.cjs').formatStagedBatch(result);
   const lines = [result.scope === 'global' ? 'WikiSkill 全局提示词批量对照（不保证提分）' : 'GPT WikiSkill 批量对照（不保证提分）', '计划 ' + result.planHash,
     '材料预检支持 ' + result.preparedReplayableCount + '/' + result.cases.length + '；wiki 训练 ' + result.wikiTrainingCount + '；留出来源 ' + result.split.testCaseIds.length + '；补充训练来源 ' + result.additionalTrainingCaseIds.length,
     '已记录模型请求 ' + result.modelCallsKnown + (result.callsUnavailable ? '（存在未知/不完整调用记录）' : ''),

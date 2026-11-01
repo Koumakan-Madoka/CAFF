@@ -4,7 +4,7 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const { runDirectDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs');
 const image = { imageId: 'sha256:' + '1'.repeat(64), repositoryDigest: 'node@sha256:' + '2'.repeat(64), architecture: 'amd64' };
 const id = '3'.repeat(64), key = 'test-only-direct-evaluation-key-123456';
-function fake({ badIsolation = false, failed = false, leaked = false, timeout = false, lostCreate = false, imageEnv } = {}) {
+function fake({ badIsolation = false, failed = false, leaked = false, timeout = false, lostCreate = false, modelTimeout = false, imageEnv } = {}) {
   const calls = []; let container = null, running = false;
   async function run(args, options = {}) {
     calls.push({ args: [...args], options });
@@ -18,12 +18,12 @@ function fake({ badIsolation = false, failed = false, leaked = false, timeout = 
         HostConfig: { NetworkMode: value('--network'), ReadonlyRootfs: true, Privileged: badIsolation, CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges'],
           Memory: 1073741824, MemorySwap: 1073741824, NanoCpus: 2000000000, PidsLimit: 128, IpcMode: 'private', LogConfig: { Type: 'none' }, AutoRemove: false,
           RestartPolicy: { Name: 'no' }, Tmpfs: Object.fromEntries(args.flatMap((a, i) => a === '--tmpfs' ? [args[i + 1].split(/:(.*)/s).slice(0, 2)] : [])) },
-        Mounts: [{ Type: 'tmpfs', Destination: '/work' }, { Type: 'tmpfs', Destination: '/tmp' }], State: { Running: false, ExitCode: failed ? 1 : 0, OOMKilled: false } };
+        Mounts: [{ Type: 'tmpfs', Destination: '/work' }, { Type: 'tmpfs', Destination: '/tmp' }], State: { Running: false, ExitCode: modelTimeout ? 124 : failed ? 1 : 0, OOMKilled: false } };
       return lostCreate ? { code: null, failure: 'timeout', stdout: '', stderr: key } : ok(id + '\n');
     }
     if (args[0] === 'inspect') return container ? ok(container) : { code: 1, stdout: '', stderr: '' };
     if (args[0] === 'start') { container.State.Running = timeout; return timeout ? { code: null, failure: 'timeout', stdout: key, stderr: key }
-      : { code: failed ? 1 : 0, stdout: failed ? key : JSON.stringify({ kind: 'test', ...(leaked ? { text: key } : {}) }), stderr: failed ? key : '' }; }
+      : { code: modelTimeout ? 124 : failed ? 1 : 0, stdout: failed ? key : JSON.stringify({ kind: 'test', ...(leaked ? { text: key } : {}) }), stderr: failed ? key : '' }; }
     if (args[0] === 'rm') { container = null; running = false; return ok(''); }
     if (args[0] === 'ps') return ok(container ? id : '');
     throw Error('unexpected');
@@ -74,6 +74,13 @@ test('input/output credential matches refused; cleanup on output leak/isolation 
     await assert.rejects(runDirectDockerTask(image, files, { key, timeoutMs: 1000, runDocker: fakeRun.run }));
     assert.equal(fakeRun.remaining(), false); assert.ok(fakeRun.calls.some(c => c.args[0] === 'rm'));
   }
+});
+test('inner model timeout is distinguished from Docker attach/control timeout only after isolation and cleanup', async () => {
+  const f = fake({modelTimeout:true}), r = await runDirectDockerTask(image,files,{key,timeoutMs:1000,runDocker:f.run});
+  assert.equal(r.failed,true);assert.equal(r.code,124);assert.equal(r.reason,'model_timeout');
+  assert.equal(r.cleaned,true);assert.equal(f.remaining(),false);assert.ok(r.inputHash && r.runtimeHash && r.isolation);
+  const g=fake({timeout:true}), control=await runDirectDockerTask(image,files,{key,timeoutMs:1000,runDocker:g.run});
+  assert.equal(control.reason,'timeout');assert.notEqual(control.code,124);
 });
 test('worker failure and attach timeout never return raw stdout/stderr and remove process tree', async () => {
   for (const setup of [{ failed: true }, { timeout: true }]) {
