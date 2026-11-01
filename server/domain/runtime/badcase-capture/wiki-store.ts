@@ -495,11 +495,12 @@ export function createWikiStore(options: any) {
       shape(input, ['candidateId', 'candidateHash', 'expectedRevision', 'reason']);
       const candidateId = id(input.candidateId);
       if (!Number.isSafeInteger(input.expectedRevision) || !/^[a-f0-9]{64}$/.test(input.candidateHash)
-        || input.reason !== 'wrong_tool_target') throw fail('wiki_candidate_invalid');
+        || !['wrong_tool_target', 'multiple_patterns'].includes(input.reason)) throw fail('wiki_candidate_invalid');
       return change(state => {
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         const current = state.candidates.find((c: any) => c.id === candidateId && c.kind === 'global-wiki-candidate-v1');
         if (!current || current.candidateHash !== input.candidateHash) throw fail('wiki_candidate_not_found');
+        if (input.reason === 'multiple_patterns' && current.entryIds.length <= 1) throw fail('wiki_candidate_invalid');
         if (current.status === 'deprecated') return { changed: false, value: current };
         if (current.status !== 'draft') throw fail('wiki_candidate_invalid');
         current.status = 'deprecated'; current.deprecatedAt = new Date().toISOString(); current.deprecationReason = input.reason;

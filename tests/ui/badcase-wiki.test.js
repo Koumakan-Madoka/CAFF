@@ -155,7 +155,7 @@ test('new pattern proposal remains a normal editable draft; review approval conf
 test('target page preserves readable candidate comparison, generation and hash-bound confirmation without unified diff', async t => {
   const h = setup(t); await h.panel.load(); await h.click('[data-tab="targets"]');
   const page = h.root.querySelector('#target-page'), text = page.textContent;
-  for (const literal of ['全局系统提示词', 'Shared harness prose.', '新增 1 条准则', '先完成用户明确要求。', '来自模式 1', '确认此候选', '原版本和候选各跑 3 次']) assert.ok(text.includes(literal), literal);
+  for (const literal of ['全局系统提示词', 'Shared harness prose.', '新增 1 条准则', '先完成用户明确要求。', '来自模式 1', '确认此候选', '每题原版本和候选各跑 10 次', '先跑门槛', '接受才跑测试']) assert.ok(text.includes(literal), literal);
   for (const marker of ['--- a/x', '+++ b/x', '@@', 'No newline']) assert.equal(text.includes(marker), false);
   assert.equal(page.querySelector('.orig').open, false);
   h.accept(false); await h.click('[data-confirm-candidate="candidate-global"]'); assert.equal(h.posts().length, 0);
@@ -168,6 +168,22 @@ test('target page preserves readable candidate comparison, generation and hash-b
   assert.match(h.root.querySelector('#target-page').textContent, /工具 send-public（公开发言） 的说明/);
   await h.click('[data-target="tool-description-list_rooms"]');
   const deprecated = h.root.querySelector('[data-confirm-candidate="candidate-old"]'); assert.ok(deprecated.disabled); assert.match(h.root.querySelector('#target-page').textContent, /目标选错了/);
+});
+
+test('candidate generator permits one pattern only and explains combined-candidate deprecation', async t => {
+  const h = setup(t, (_url, _options, saved) => {
+    if (!saved.versions[0].entries.some(e => e.id === 'entry-2')) saved.versions[0].entries.push({ ...clone(approvedEntry), id: 'entry-2', title: '第二模式' });
+    if (!saved.candidates.some(c => c.id === 'candidate-combined')) saved.candidates.push({ ...clone(saved.candidates[0]), id: 'candidate-combined', entryIds: ['entry-1', 'entry-2'], status: 'deprecated', deprecationReason: 'multiple_patterns' });
+    return undefined;
+  });
+  await h.panel.load(); await h.click('[data-tab="targets"]');
+  assert.match(h.root.querySelector('.is-dep .dep-note').textContent, /多.*模式|合并.*准则/);
+  assert.equal(h.root.querySelector('[data-confirm-candidate="candidate-combined"]').disabled, true);
+  const first = h.root.querySelector('[data-candidate-entry="entry-1"]'), second = h.root.querySelector('[data-candidate-entry="entry-2"]');
+  assert.equal(first.type, 'radio'); first.click(); second.click();
+  assert.equal(h.root.querySelectorAll('[data-candidate-entry]:checked').length, 1);
+  await h.click('[data-generate-candidate]');
+  assert.deepEqual(clone(h.posts()[0].body.entryIds), ['entry-2']);
 });
 
 test('impact shows per-replay comparison and evolution events without inventing results or run controls', async t => {

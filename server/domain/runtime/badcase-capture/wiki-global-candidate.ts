@@ -9,7 +9,7 @@ const hash = (value: string) => crypto.createHash('sha256').update(value).digest
 const id = (v: any) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v);
 export function buildGlobalWikiCandidate(state: any, input: any) {
   if (state.scope !== 'global' || !input || Object.keys(input).some(k => !['versionId', 'entryIds', 'targetId', 'files'].includes(k))
-    || !id(input.versionId) || !id(input.targetId) || !Array.isArray(input.entryIds) || !input.entryIds.length || input.entryIds.length > 100
+    || !id(input.versionId) || !id(input.targetId) || !Array.isArray(input.entryIds) || input.entryIds.length !== 1
     || input.entryIds.some((v: any) => !id(v)) || new Set(input.entryIds).size !== input.entryIds.length) throw fail('wiki_candidate_invalid');
   const target = getWikiTarget(input.targetId), version = state.versions.find((v: any) => v.id === input.versionId);
   const entries = input.entryIds.map((entryId: string) => version?.entries.find((e: any) => e.id === entryId && e.status === 'approved'));

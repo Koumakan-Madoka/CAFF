@@ -123,6 +123,35 @@ test('wrong-tool drafts can be deprecated without deletion, revival, or changing
   assert.equal(h.store.createGlobalCandidate({ ...h.input, targetId: old.targetId }).status, 'deprecated');
   h.store.deprecateGlobalCandidate({ ...input, expectedRevision: after.revision }); assert.equal(h.store.read().revision, after.revision);
 });
+test('D12 global candidates select exactly one approved pattern, preserving its guideline verbatim', t => {
+  const { buildGlobalWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-global-candidate');
+  const h = setup(t); h.approve(); const state = h.store.read();
+  state.versions[0].entries.push({ ...state.versions[0].entries[0], id: 'entry-2', guideline: '另一条准则。' });
+  for (const targetId of ['global-harness-behavior-v1', 'tool-description-send-public']) {
+    const input = { ...h.input, targetId };
+    const candidate = buildGlobalWikiCandidate(state, input);
+    assert.equal(candidate.appendedSection, '\n\nWikiSkill 已审核准则：\n- ' + state.versions[0].entries[0].guideline);
+    assert.throws(() => buildGlobalWikiCandidate(state, { ...input, entryIds: ['entry-1', 'entry-2'] }), code('wiki_candidate_invalid'));
+  }
+});
+test('a historical combined draft can be deprecated while retaining text, diff, hashes and all other data', t => {
+  const h = setup(t); h.approve(); const single = h.store.createGlobalCandidate(h.input);
+  // Seed a pre-D12 snapshot as an old writer did. New writers must not create
+  // multi-pattern candidates, but read/deprecation must preserve their history.
+  const state = h.store.read(), old = { ...single, id: 'candidate-historical-combined', entryIds: ['entry-1', 'entry-2'], candidateText: single.candidateText + '\n- 另一条准则。', diff: single.diff + '\n+另一条准则。' };
+  old.candidateHash = sha(old.candidateText); state.candidates.push(old); state.revision++;
+  const file = path.join(h.options.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: sha(JSON.stringify(state)), record: state }));
+  const before = h.store.read(), input = { candidateId: old.id, candidateHash: old.candidateHash, expectedRevision: before.revision, reason: 'multiple_patterns' };
+  assert.throws(() => h.store.deprecateGlobalCandidate({ ...input, candidateId: single.id, candidateHash: single.candidateHash }), code('wiki_candidate_invalid'));
+  h.store.deprecateGlobalCandidate(input);
+  const after = createWikiStore(h.options).read(), saved = after.candidates.find(c => c.id === old.id);
+  assert.equal(saved.status, 'deprecated'); assert.equal(saved.deprecationReason, 'multiple_patterns');
+  for (const field of ['candidateText', 'diff', 'candidateHash', 'entryIds']) assert.deepEqual(saved[field], old[field]);
+  for (const field of ['cases', 'versions', 'replayCases', 'replaySplit']) assert.deepEqual(after[field], before[field]);
+  assert.deepEqual(after.candidates.find(c => c.id === single.id), single);
+  assert.throws(() => h.store.confirmGlobalCandidate({ candidateId: old.id, candidateHash: old.candidateHash, expectedRevision: after.revision, files: [] }), code('wiki_candidate_deprecated'));
+});
 test('expected answer fragments and fixture file contents are rejected for both candidate target types', t => {
   for (const targetId of ['global-harness-behavior-v1', 'tool-description-list_rooms']) {
     const h = setup(t, 'Use this: A distinctive expected answer.'); h.approve();
