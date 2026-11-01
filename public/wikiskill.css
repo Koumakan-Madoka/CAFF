@@ -211,7 +211,8 @@ table.runs { width: 100%; border-collapse: collapse; font-size: 13.5px; min-widt
 .runs tfoot td { font-weight: 650; border-bottom: 0; }
 .runs .pending { color: var(--soft); }
 .runs .chip { white-space: nowrap; }
-.runs td:nth-child(3) { white-space: nowrap; }
+.runs .chip.wiki { white-space: normal; max-width: 20ch; }
+.runs td:nth-child(3) { white-space: normal; }
 .run-issues { display: block; font-size: 11.5px; color: var(--warn); }
 .legend { margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; font-size: 12.5px; color: var(--soft); }
 .legend b { color: var(--text); font-weight: 600; margin-right: 6px; }
