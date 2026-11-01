@@ -2,7 +2,15 @@ import crypto from 'node:crypto';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
 export const WIKI_SPLIT_SEED = 'wikiskill-holdout-v1';
-// Fixed before generation/evaluation; no outcome-dependent seed or reshuffling.
+// D15: only newly marked cases use this per-ID policy. Never reassign existing
+// imported/marked records when reading, restarting, or adding another case.
+export const WIKI_MARKED_SPLIT_SALT = 'wikiskill-marked-split-v1';
+export function assignMarkedCaseSplit(caseId: any): 'train' | 'gate' | 'test' {
+  if (typeof caseId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(caseId)) throw fail('wiki_invalid_case_ids');
+  const bucket = crypto.createHash('sha256').update(WIKI_MARKED_SPLIT_SALT + '\0' + caseId).digest().readUInt32BE(0);
+  return bucket < 0x80000000 ? 'train' : bucket < 0xc0000000 ? 'gate' : 'test';
+}
+// Legacy fixed cohort; no outcome-dependent seed or reshuffling.
 export function planReplaySplit(caseIds: any) {
   if (!Array.isArray(caseIds) || !caseIds.length || caseIds.length > 20 || new Set(caseIds).size !== caseIds.length
     || caseIds.some(id => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id))) throw fail('wiki_invalid_case_ids');

@@ -1,6 +1,6 @@
 const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
-const { planReplaySplit, WIKI_SPLIT_SEED } = require('../../build/server/domain/runtime/badcase-capture/wiki-split');
+const { planReplaySplit, WIKI_SPLIT_SEED, assignMarkedCaseSplit, WIKI_MARKED_SPLIT_SALT } = require('../../build/server/domain/runtime/badcase-capture/wiki-split');
 const { generateWiki, prepareWikiGeneration } = require('../../scripts/badcase-capture/generate-wiki.cjs');
 const { main } = require('../../scripts/badcase-capture/assign-wiki-split.cjs');
 function setup(t) {
@@ -22,6 +22,20 @@ test('fixed-seed holdout is independent of input order and has a golden 6-case r
     assert.equal(split.trainCaseIds.length + split.testCaseIds.length, count); assert.equal(split.insufficientSamples, count < 6);
   }
   for (const bad of [[], ['duplicate', 'duplicate'], ['../unsafe'], Array.from({ length: 21 }, (_, i) => 'c' + i)]) assert.throws(() => planReplaySplit(bad), /invalid_case_ids/);
+});
+test('D15 per-ID hash has a pinned salt and fixed 50/25/25 buckets independent of batch or contents', () => {
+  assert.equal(WIKI_MARKED_SPLIT_SALT, 'wikiskill-marked-split-v1');
+  const ids = ['marked-3c73ae7aa9a7de040ff21ae02dc758a47ea5ec828c49a736aead2889730e671b'];
+  assert.equal(assignMarkedCaseSplit(ids[0]), 'train');
+  const counts = { train: 0, gate: 0, test: 0 }, crypto = require('node:crypto');
+  for (let i = 0; i < 10000; i++) {
+    const id = 'marked-' + i, digest = crypto.createHash('sha256').update('wikiskill-marked-split-v1\0' + id).digest();
+    const bucket = digest.readUInt32BE(0), expected = bucket < 0x80000000 ? 'train' : bucket < 0xc0000000 ? 'gate' : 'test';
+    assert.equal(assignMarkedCaseSplit(id), expected); counts[expected]++;
+  }
+  assert.ok(counts.train > 4800 && counts.train < 5200);
+  for (const split of ['gate', 'test']) assert.ok(counts[split] > 2300 && counts[split] < 2700);
+  for (const bad of ['', '../outside', null]) assert.throws(() => assignMarkedCaseSplit(bad), /invalid_case_ids/);
 });
 test('freeze once before generation, persist and keep unrelated text cases in training; imports never reset holdout', t => {
   const h = setup(t), selected = h.cases.slice(0, 6).map(c => c.id), p = h.store.setReplaySplit({ caseIds: selected });

@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
 import { buildWikiCandidate, resolveWikiCandidate } from './wiki-candidate';
-import { planReplaySplit } from './wiki-split';
+import { assignMarkedCaseSplit, planReplaySplit } from './wiki-split';
 import { validateSealRequest } from './sealed-case';
 import { buildGlobalWikiCandidate, resolveGlobalWikiCandidate } from './wiki-global-candidate';
 
@@ -69,8 +69,8 @@ function markedCase(value: any) {
   if (!['available', 'missing'].includes(value.traceState) || typeof value.messageTruncated !== 'boolean' || typeof value.traceTruncated !== 'boolean') throw fail('wiki_invalid_input');
   const message = text(value.message, 32768, true), traceExcerpt = text(value.traceExcerpt, 32768, true);
   if (value.traceState === 'missing' && (traceExcerpt !== '' || value.traceTruncated)) throw fail('wiki_invalid_input');
-  return { id: `marked-${hash(JSON.stringify({ projectId: source.projectId, conversationId: source.conversationId, messageId: source.messageId }))}`,
-    kind: 'marked-badcase', role: text(value.role, 128), split: 'train', replayable: false, source,
+  const caseId = `marked-${hash(JSON.stringify({ projectId: source.projectId, conversationId: source.conversationId, messageId: source.messageId }))}`;
+  return { id: caseId, kind: 'marked-badcase', role: text(value.role, 128), split: assignMarkedCaseSplit(caseId), replayable: false, source,
     actual: text(value.actual, 8192), expected: text(value.expected, 8192), message, traceExcerpt,
     traceState: value.traceState, messageTruncated: value.messageTruncated, traceTruncated: value.traceTruncated };
 }
@@ -84,7 +84,7 @@ function initialMemberships(state: any, caseId: string) {
 function caseStateView(state: any, caseId: string) {
   const c = state.cases.find((item: any) => item.id === caseId);
   if (!c) throw fail('wiki_unknown_case');
-  if (c.split === 'test') return { caseId, status: 'holdout', memberships: [], reason: '留出用例不参与归纳', updatedAt: c.createdAt };
+  if (c.split !== 'train') return { caseId, status: 'holdout', memberships: [], reason: c.split === 'gate' ? '门槛用例不参与归纳' : '测试用例不参与归纳', updatedAt: c.createdAt };
   const override = (state.caseStates || []).find((item: any) => item.caseId === caseId);
   if (override) return { caseId, status: override.memberships.length ? 'assigned' : override.status,
     memberships: structuredClone(override.memberships), reason: override.reason || '', updatedAt: override.updatedAt };
@@ -236,8 +236,8 @@ export function createWikiStore(options: any) {
         }
         const now = new Date().toISOString(), saved = { ...candidate, createdAt: now };
         state.cases.push(saved);
-        saveCaseState(state, { caseId: saved.id, status: 'pending', memberships: [], reason: '', updatedAt: now });
-        appendEvent(state, { type: 'case-marked', caseIds: [saved.id] });
+        saveCaseState(state, { caseId: saved.id, status: saved.split === 'train' ? 'pending' : 'holdout', memberships: [], reason: '', updatedAt: now });
+        appendEvent(state, { type: 'case-marked', caseIds: [saved.id], split: saved.split });
         return { changed: true, value: { created: true, case: saved } };
       });
       return { ...result.value, revision: result.revision };
@@ -450,6 +450,7 @@ export function createWikiStore(options: any) {
           return { changed: false, value: state.replaySplit };
         }
         if (plan.caseIds.some(id => !state.cases.some((c: any) => c.id === id && c.role === 'GPT'))) throw fail('wiki_unknown_case');
+        if (state.cases.some((c: any) => c.kind === 'marked-badcase' && plan.caseIds.includes(c.id))) throw fail('wiki_split_frozen');
         // Even a rejected/draft version means the model already saw that case.
         // Do not relabel exposed training data as an untouched test set.
         if (state.versions.some((v: any) => v.caseIds.some((id: string) => plan.testCaseIds.includes(id)))) throw fail('wiki_split_training_conflict');
