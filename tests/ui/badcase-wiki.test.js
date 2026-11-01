@@ -243,6 +243,31 @@ test('D16 impact separates gate/test rates, shows mechanical inputs and a durabl
   const imported=rows.find(li=>li.querySelector('.kind')?.textContent==='用例');assert.doesNotMatch(imported.textContent,/固定 hash|50%|25%/);
   assert.equal(h.posts().length,0);
 });
+test('separate executions retain interrupted observations without pooling them into the complete rerun', async t => {
+  const totals = n => ({ original: { passed: 0, planned: 10, failed: 10, errors: 0, notRun: 0, scored: 10, passRate: 0 }, candidate: { passed: n, planned: 10, failed: 10-n, errors: 0, notRun: 0, scored: 10, passRate: n/10 } });
+  const gateDecision = { outcome: 'accepted', repair: { original: { passed: 0, total: 20 }, candidate: { passed: 5, total: 20 }, pValue: .023562, passed: true }, noHarm: { original: { passed: 10, total: 10 }, candidate: { passed: 10, total: 10 }, loss: 0, allowedLoss: 1, passed: true } };
+  const complete = { id: 'rerun', executionId: 'new-execution', createdAt: '2026-11-01T15:31:00Z', model: 'deepseek/deepseek-v4-flash', modelCallsKnown: 1317, evaluation: {}, completed: true, gateDecision,
+    byStage: { gate: totals(5), test: totals(1) }, cases: [{ sourceCaseId: 'c1', stage: 'gate', totals: totals(5) }, { sourceCaseId: 'c2', stage: 'test', totals: totals(1) }] };
+  const interrupted = { ...clone(complete), id: 'interrupted', executionId: 'old-execution', createdAt: '2026-11-01T14:13:00Z', completed: false,
+    gateDecision: { ...clone(gateDecision), outcome: 'indeterminate' }, byStage: { gate: totals(0), test: totals(0) }, cases: [{ sourceCaseId: 'c1', stage: 'gate', reason: 'operator_interrupted', totals: totals(0), runs: [] }] };
+  const h = setup(t, (_url, _options, saved) => { saved.comparisons = [interrupted, complete]; return undefined; });
+  await h.panel.load(); await h.click('[data-tab="impact"]');
+  assert.equal(h.root.querySelectorAll('.comparison-history [data-comparison]').length, 2);
+  assert.equal(h.root.querySelector('[data-comparison="rerun"]').getAttribute('aria-pressed'), 'true');
+  assert.match(h.root.querySelector('[data-comparison="interrupted"]').textContent, /执行 1.*中断，不计入判定/);
+  assert.match(h.root.querySelector('[data-comparison="rerun"]').textContent, /执行 2.*完整/);
+  assert.match(h.root.querySelector('[data-evaluation-stage="gate"] tbody').textContent, /5\/10/);
+  assert.match(h.root.querySelector('#impact-runs').textContent, /仅使用本次执行.*不拼接/);
+  await h.click('[data-comparison="interrupted"]');
+  assert.match(h.root.querySelector('.gate-decision h3').textContent, /中断观察/);
+  assert.doesNotMatch(h.root.querySelector('[data-evaluation-stage="gate"] tbody').textContent, /5\/10/);
+  assert.match(h.root.querySelector('#impact-log').textContent, /执行 1.*中断，不计入判定/);
+  await h.click('[data-comparison="rerun"]');
+  assert.match(h.root.querySelector('.gate-decision h3').textContent, /门槛判定：接受/);
+  assert.match(h.root.querySelector('[data-evaluation-stage="gate"] tbody').textContent, /5\/10/);
+  assert.equal(h.calls.length, 1); assert.equal(h.posts().length, 0);
+});
+
 test('user prose and search highlighting stay text-only; failed writes disable mutation until refresh', async t => {
   const h = setup(t, (url, options) => { if (options.method === 'POST') throw Error('private-path'); return undefined; });
   await h.panel.load(); assert.equal(h.root.querySelector('img,script'), null);

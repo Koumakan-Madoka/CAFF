@@ -204,6 +204,9 @@ a.chip:hover { text-decoration: none; border-color: var(--border-strong); }
 .evaluation-stage { display: grid; gap: 10px; padding: 18px 0; border-top: 1px solid var(--border); }
 .gate-decision { display: grid; gap: 8px; padding: 14px 16px; margin: 14px 0; border-radius: 10px; background: var(--accent-soft); }
 .stage-rates { display: grid; gap: 6px; font-size: 13px; color: var(--soft); }
+.comparison-history { display: grid; gap: 6px; margin-bottom: 12px; }
+.comparison-history .btn { white-space: normal; text-align: left; min-width: 0; }
+body.management-app[data-page="wikiskill"] .wikiskill-content .comparison-history .btn[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
 table.runs { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 600px; }
 .runs th { text-align: left; font-size: 12.5px; color: var(--soft); font-weight: 650; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .runs td { padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }

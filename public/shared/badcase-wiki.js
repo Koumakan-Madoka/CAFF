@@ -62,7 +62,7 @@
     const pill = (map, status) => { const [label, tone] = map[status] || [status, '']; return `<span class="pill ${tone}">${esc(label)}</span>`; };
     const catChip = replay => { const [label, cls] = CATEGORY[replay.category] || [replay.category, '']; return `<span class="chip cat ${cls}">${esc(label)}</span>`; };
     let D = null, versionId = '', generation = 0, pending = false, writable = false, toastTimer;
-    const state = { view: 'wiki', entryId: '', wikiQ: '', wikiStatus: 'all', casesQ: '', casesGroup: 'all', casesSplit: 'all', casesReplay: false, casesMode: 'group', focusCase: null, targetId: '' };
+    const state = { view: 'wiki', entryId: '', wikiQ: '', wikiStatus: 'all', casesQ: '', casesGroup: 'all', casesSplit: 'all', casesReplay: false, casesMode: 'group', focusCase: null, targetId: '', comparisonId: '' };
     const VIEWS = ['cases', 'wiki', 'targets', 'impact'];
     let caseById = new Map(), caseByN = new Map(), stateByCase = new Map(), entryById = new Map(), replayBySource = new Map(), targetById = new Map();
     const currentVersion = () => D?.versions.find(v => v.id === versionId) || D?.versions.at(-1) || null;
@@ -268,31 +268,38 @@
     }
     function approvedEntriesForSelection() { return entries().filter(e => e.status === 'approved'); }
     /* Evaluation and evolution */
-    function latestComparison() { return (D?.comparisons || []).slice().sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))[0] || null; }
+    function comparisonOrder() { return (D?.comparisons || []).slice().sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)) || String(a.id).localeCompare(String(b.id))); }
+    function latestComparison() { return comparisonOrder().at(-1) || null; }
+    function selectedComparison() { return (D?.comparisons || []).find(r=>r.id===state.comparisonId) || latestComparison(); }
+    function interruptedComparison(result) { return result?.completed===false && (result.cases || []).some(c=>c.reason==='operator_interrupted' || (c.runs || []).some(r=>r.reason==='operator_interrupted')); }
+    function executionLabel(result) { return `执行 ${comparisonOrder().findIndex(r=>r.id===result.id)+1}`; }
+    function comparisonHistory(selected) {
+      return `<div class="comparison-history" aria-label="独立执行记录">${comparisonOrder().reverse().map(result=>`<button type="button" class="btn small" data-comparison="${esc(result.id)}" aria-pressed="${result.id===selected?.id}" title="${esc(result.executionId || result.id)}">${executionLabel(result)} · ${interruptedComparison(result)?'中断，不计入判定':result.completed?'完整执行':'执行不完整'} · ${fmt(result.createdAt)}</button>`).join('')}</div>`;
+    }
     function comparisonCase(replay) { const result = latestComparison(); return result?.cases.find(c => c.sourceCaseId === replay.sourceCaseId) || null; }
     function score(record, variant) { const t = record?.totals?.[variant]; return t ? `${t.passed}/${t.planned}` : '—/10'; }
     function scoreCell(record, variant) { const t = record?.totals?.[variant]; if (!t) return '<span class="pending">—/10</span>'; return `${t.passed}/${t.planned}${t.failed ? `<span class="run-issues">不通过 ${t.failed}</span>` : ''}${t.errors ? `<span class="run-issues">错误 ${t.errors}</span>` : ''}${t.notRun ? `<span class="run-issues">未运行 ${t.notRun}</span>` : ''}`; }
     const outcomeText = value => ({accepted:'接受',rejected:'拒绝',indeterminate:'无法判定'}[value] || '待运行');
-    function decisionText(d) {
+    function decisionText(d, interrupted = false) {
       if (!d) return '<p class="hint">门槛尚未运行：修好与无误伤同时满足才接受；探针和其他模式只报告。</p>';
       const pair = t => `原版 ${t.original.passed}/${t.original.total}，候选 ${t.candidate.passed}/${t.candidate.total}`;
-      return `<section class="gate-decision"><h3>门槛判定：${outcomeText(d.outcome)}</h3><p>修好：${pair(d.repair)}；单侧 Fisher p=${d.repair.pValue == null ? 'N/A' : esc(Number(d.repair.pValue).toPrecision(4))}，要求 p&lt;0.05，${d.repair.passed?'满足':'不满足'}。</p><p>无误伤：${pair(d.noHarm)}；少通过 ${d.noHarm.loss} 次，允许少通过 ${d.noHarm.allowedLoss} 次，${d.noHarm.passed?'满足':'不满足'}。</p><p class="hint">只有目标模式的门槛复现题计入修好，门槛中全部防误伤题计入无误伤。门槛有题未补齐则无法判定，不运行测试。</p></section>`;
+      return `<section class="gate-decision"><h3>${interrupted?'中断观察（不计入正式判定）':'门槛判定：'+outcomeText(d.outcome)}</h3><p>修好：${pair(d.repair)}；单侧 Fisher p=${d.repair.pValue == null ? 'N/A' : esc(Number(d.repair.pValue).toPrecision(4))}，要求 p&lt;0.05，${d.repair.passed?'满足':'不满足'}。</p><p>无误伤：${pair(d.noHarm)}；少通过 ${d.noHarm.loss} 次，允许少通过 ${d.noHarm.allowedLoss} 次，${d.noHarm.passed?'满足':'不满足'}。</p><p class="hint">只有目标模式的门槛复现题计入修好，门槛中全部防误伤题计入无误伤。门槛有题未补齐则无法判定，不运行测试。</p></section>`;
     }
     function stageSummary(totals) {
       if (!totals) return '<p class="hint">尚无本阶段的正式统计。</p>';
       return `<div class="stage-rates">${['original','candidate'].map(v=>{const t=totals[v];return `<p><b>${v==='original'?'原版':'候选'}</b> ${t.passed}/${t.planned} 通过 · 不通过 ${t.failed} · 错误 ${t.errors} · 未运行 ${t.notRun}；有效 ${t.scored}，通过率 ${t.passRate==null?'N/A':(100*t.passRate).toFixed(1)+'%'}</p>`;}).join('')}</div>`;
     }
     function renderImpact() {
-      const order = { reproduction: 0, probe: 1, control: 2 }, result = latestComparison();
+      const order = { reproduction: 0, probe: 1, control: 2 }, result = selectedComparison();
       const reps = D.replayCases.slice().sort((a, b) => order[a.category] - order[b.category] || caseById.get(a.sourceCaseId).n - caseById.get(b.sourceCaseId).n);
       const global = globalTarget(), ready = (D.candidates || []).find(c => c.targetId === global?.id && c.status === 'draft');
       const stages = ['gate','test'].map(stage=>{
         const selected = reps.filter(r=>replayStage(r)===stage), d=result?.gateDecision;
-        const rows=selected.map(replay=>{const c=caseById.get(replay.sourceCaseId),s=caseState(c),record=comparisonCase(replay);const owner=s.memberships?.length?s.memberships.map(m=>entryChip(m.entryId, undefined, true)).join(' '):'<span class="chip">不参与归纳</span>';return `<tr><td>“${esc(replay.task)}” <a href="#case-${c.n}" data-case="${c.n}" class="res">用例 #${c.n}</a></td><td>${catChip(replay)}</td><td>${owner}</td><td class="n">${scoreCell(record,'original')}</td><td class="n">${scoreCell(record,'candidate')}</td></tr>`;}).join('');
+        const rows=selected.map(replay=>{const c=caseById.get(replay.sourceCaseId),s=caseState(c),record=result?.cases.find(r=>r.sourceCaseId===replay.sourceCaseId);const owner=s.memberships?.length?s.memberships.map(m=>entryChip(m.entryId, undefined, true)).join(' '):'<span class="chip">不参与归纳</span>';return `<tr><td>“${esc(replay.task)}” <a href="#case-${c.n}" data-case="${c.n}" class="res">用例 #${c.n}</a></td><td>${catChip(replay)}</td><td>${owner}</td><td class="n">${scoreCell(record,'original')}</td><td class="n">${scoreCell(record,'candidate')}</td></tr>`;}).join('');
         const note=stage==='gate'?'先执行；每题原/候选各10次有效，交替执行。':d?.outcome==='rejected'?'门槛拒绝，测试未运行。':d?.outcome==='indeterminate'?'门槛无法判定，测试未运行。':'只有门槛接受后才执行一次；每题原/候选各10次有效。';
         return `<section class="evaluation-stage" data-evaluation-stage="${stage}"><h3>${SPLIT[stage]} · ${selected.length} 题</h3><p class="hint">${note}</p><div class="table-wrap"><table class="runs"><thead><tr><th>回放题</th><th>类型</th><th>对应模式</th><th class="n">原版通过/计划</th><th class="n">候选通过/计划</th></tr></thead><tbody>${rows}</tbody></table></div>${stageSummary(result?.byStage?.[stage])}</section>`;
       }).join('');
-      $('#impact-runs').innerHTML = `${!result ? `<div class="empty-state"><p><b>还没有评测结果。</b>${ready ? '请确认全局提示词候选；每题每版10次，先跑门槛，接受才跑测试。' : '确认候选后由操作方执行；页面加载不会启动评测。'}</p>${ready ? `<button type="button" class="btn small" data-go="targets" data-target="${esc(global.id)}">去确认候选</button>` : ''}</div>` : `<p class="hint">${esc(result.createdAt)} · ${esc(result.model)} · 已记录 ${result.modelCallsKnown} 次模型请求。${result.completed ? '本轮流程已结束，不表示获准采纳。' : '执行不完整；错误和未运行不算通过。'}${!result.evaluation?' 此为历史结果，不是本轮两阶段评测。':''}</p>`}${decisionText(result?.gateDecision)}${stages}<ul class="legend"><li><b>复现题</b>目标模式的门槛复现题检验能否修好</li><li><b>探针题</b>只报告，不影响判定</li><li><b>防误伤题</b>原版本来做得对，看候选会不会改坏</li><li><b>错误与未运行</b>环境错误每题两版共最多补5次；模型循环、超时或超调用上限计不通过，补不齐则无法判定</li><li><b>解读边界</b>代理模型 DeepSeek、小样本、原基线筛题有挑题偏差；只复现了汇报难懂一类，不作为采纳依据，不保证提分。</li></ul>`;
+      $('#impact-runs').innerHTML = `${comparisonHistory(result)}${!result ? `<div class="empty-state"><p><b>还没有评测结果。</b>${ready ? '请确认全局提示词候选；每题每版10次，先跑门槛，接受才跑测试。' : '确认候选后由操作方执行；页面加载不会启动评测。'}</p>${ready ? `<button type="button" class="btn small" data-go="targets" data-target="${esc(global.id)}">去确认候选</button>` : ''}</div>` : `<p class="hint">${esc(result.createdAt)} · ${esc(result.model)} · 已记录 ${result.modelCallsKnown} 次模型请求。${result.completed ? '完整执行；仅使用本次执行的结果，不拼接其他执行；不表示获准采纳。' : interruptedComparison(result) ? '中断，不计入判定；以下仅为中断时的观察，保留记录，不与重跑结果拼接。' : '执行不完整；错误和未运行不算通过。'}${!result.evaluation?' 此为历史结果，不是本轮两阶段评测。':''}</p>`}${decisionText(result?.gateDecision, interruptedComparison(result))}${stages}<ul class="legend"><li><b>复现题</b>目标模式的门槛复现题检验能否修好</li><li><b>探针题</b>只报告，不影响判定</li><li><b>防误伤题</b>原版本来做得对，看候选会不会改坏</li><li><b>错误与未运行</b>环境错误每题两版共最多补5次；模型循环、超时或超调用上限计不通过，补不齐则无法判定</li><li><b>解读边界</b>代理模型 DeepSeek、小样本、原基线筛题有挑题偏差；只复现了汇报难懂一类，不作为采纳依据，不保证提分。</li></ul>`;
       renderTimeline();
     }
     function renderTimeline() {
@@ -307,9 +314,11 @@
       for (const version of D.versions) for (const entry of version.entries.filter(e => e.reviewedAt)) events.push({ at: entry.reviewedAt, kind: '审核', text: `模式「${entry.title}」${entry.status === 'approved' ? '通过审核' : '已驳回'}` });
       for (const candidate of D.candidates.filter(c => c.kind === 'global-wiki-candidate-v1')) { const target = targetById.get(candidate.targetId); events.push({ at: candidate.createdAt, kind: '候选', text: `生成候选：${targetFull(target)}（${candidate.entryIds.length} 条准则）` }); if (candidate.confirmedAt) events.push({ at: candidate.confirmedAt, kind: '确认', text: `确认候选：${targetFull(target)}` }); if (candidate.deprecatedAt) events.push({ at: candidate.deprecatedAt, kind: '废弃', text: `废弃${candidate.deprecationReason==='multiple_patterns'?'合并多模式':'用途不符'}的候选：${targetFull(target)}` }); }
       for (const result of D.comparisons || []) {
-        if (result.gateDecision) events.push({ at:result.createdAt,kind:'门槛判定',text:`门槛判定：${outcomeText(result.gateDecision.outcome)}；修好${result.gateDecision.repair.passed?'满足':'不满足'}、无误伤${result.gateDecision.noHarm.passed?'满足':'不满足'}。候选和 diff 保留，不自动采纳。` });
-        for (const stage of ['gate','test']) {const t=result.byStage?.[stage];if(t)events.push({at:result.createdAt,kind:'评测',text:`${SPLIT[stage]}结果：原版 ${t.original.passed}/${t.original.planned}，候选 ${t.candidate.passed}/${t.candidate.planned}；错误 ${t.original.errors}/${t.candidate.errors}，未运行 ${t.original.notRun}/${t.candidate.notRun}`});}
-        if (!result.byStage) events.push({at:result.createdAt,kind:'历史评测',text:'历史单阶段结果已保存，不作为本轮两阶段判定。'});
+        const label=executionLabel(result), interrupted=interruptedComparison(result);
+        if (interrupted) events.push({at:result.createdAt,kind:'中断',text:`${label}：中断，不计入判定；记录保留，不与完整重跑拼接。`});
+        else if (result.gateDecision) events.push({ at:result.createdAt,kind:'门槛判定',text:`${label}：门槛判定：${outcomeText(result.gateDecision.outcome)}；修好${result.gateDecision.repair.passed?'满足':'不满足'}、无误伤${result.gateDecision.noHarm.passed?'满足':'不满足'}。候选和 diff 保留，不自动采纳。` });
+        for (const stage of ['gate','test']) {const t=result.byStage?.[stage];if(t)events.push({at:result.createdAt,kind:interrupted?'中断观察':'评测',text:`${label} · ${SPLIT[stage]}${interrupted?'观察（不计入判定）':'结果'}：原版 ${t.original.passed}/${t.original.planned}，候选 ${t.candidate.passed}/${t.candidate.planned}；错误 ${t.original.errors}/${t.candidate.errors}，未运行 ${t.original.notRun}/${t.candidate.notRun}`});}
+        if (!result.byStage) events.push({at:result.createdAt,kind:'历史评测',text:`${label}：历史单阶段结果已保存，不作为本轮两阶段判定。`});
       }
       const explicit = new Set();
       for (const event of D.events || []) {
@@ -359,9 +368,10 @@
       await mutate('/api/wikiskill/review', { versionId: currentVersion().id, entryId: entry.id, patch, ...(decision === 'save' ? {} : { decision }) }, decision === 'save' ? '草稿已保存。' : '审核结果已保存；未修改生产提示词或启动评测。');
     }
     root.addEventListener('click', event => {
-      const el = event.target.closest('[data-tab],[data-go],[data-entry],[data-case],[data-group],[data-target],[data-q],[data-wiki-status],[data-cases-mode],[data-induct],[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-confirm-candidate],[data-generate-candidate]');
+      const el = event.target.closest('[data-tab],[data-go],[data-entry],[data-case],[data-group],[data-target],[data-q],[data-wiki-status],[data-cases-mode],[data-comparison],[data-induct],[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-confirm-candidate],[data-generate-candidate]');
       if (!el || el.disabled || !D) return;
       if (el.dataset.tab) { go(el.dataset.tab); return; }
+      if (el.dataset.comparison) { if ((D.comparisons || []).some(r=>r.id===el.dataset.comparison)) { state.comparisonId=el.dataset.comparison; renderImpact(); } return; }
       if (el.dataset.q !== undefined) { state.wikiQ = el.dataset.q; $('#wiki-q').value = state.wikiQ; renderWiki(); $('#wiki-q').focus(); return; }
       if (el.dataset.wikiStatus) { state.wikiStatus = el.dataset.wikiStatus; renderWiki(); return; }
       if (el.dataset.casesMode) { state.casesMode = el.dataset.casesMode; renderCases(); return; }
