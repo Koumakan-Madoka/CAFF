@@ -74,8 +74,8 @@
       for (const version of versions) { const entry = version?.entries.find(e => e.id === id); if (entry) return { entry, version }; }
       return { entry: null, version: null };
     };
-    const entryChip = (id, preferredVersion) => { const { entry, version } = findEntry(id, preferredVersion); if (!entry) return ''; const n = (version?.entries || []).findIndex(e => e.id === id) + 1;
-      return `<a class="chip wiki" href="#${esc(id)}" data-entry="${esc(id)}" data-version="${esc(version?.id || '')}">模式 ${n} · ${esc(entry.title)}</a>`; };
+    const entryChip = (id, preferredVersion, compact = false) => { const { entry, version } = findEntry(id, preferredVersion); if (!entry) return ''; const n = (version?.entries || []).findIndex(e => e.id === id) + 1;
+      return `<a class="chip wiki" href="#${esc(id)}" data-entry="${esc(id)}" data-version="${esc(version?.id || '')}" title="模式 ${n} · ${esc(entry.title)}" aria-label="模式 ${n} · ${esc(entry.title)}">模式 ${n}${compact ? '' : ` · ${esc(entry.title)}`}</a>`; };
     const targetLabel = target => String(target?.title || '未命名目标').replace(/^工具描述 · /, '').replace(/^全局系统提示词 · /, '');
     const targetFull = target => target?.kind === 'global-system-prompt' ? '全局系统提示词（所有 agent 共用）' : `工具 ${targetLabel(target)} 的说明`;
     const globalTarget = () => D?.targets.find(t => t.kind === 'global-system-prompt');
@@ -288,7 +288,7 @@
       const global = globalTarget(), ready = (D.candidates || []).find(c => c.targetId === global?.id && c.status === 'draft');
       const stages = ['gate','test'].map(stage=>{
         const selected = reps.filter(r=>replayStage(r)===stage), d=result?.gateDecision;
-        const rows=selected.map(replay=>{const c=caseById.get(replay.sourceCaseId),s=caseState(c),record=comparisonCase(replay);const owner=s.memberships?.length?s.memberships.map(m=>entryChip(m.entryId)).join(' '):'<span class="chip">不参与归纳</span>';return `<tr><td>“${esc(replay.task)}” <a href="#case-${c.n}" data-case="${c.n}" class="res">用例 #${c.n}</a></td><td>${catChip(replay)}</td><td>${owner}</td><td class="n">${scoreCell(record,'original')}</td><td class="n">${scoreCell(record,'candidate')}</td></tr>`;}).join('');
+        const rows=selected.map(replay=>{const c=caseById.get(replay.sourceCaseId),s=caseState(c),record=comparisonCase(replay);const owner=s.memberships?.length?s.memberships.map(m=>entryChip(m.entryId, undefined, true)).join(' '):'<span class="chip">不参与归纳</span>';return `<tr><td>“${esc(replay.task)}” <a href="#case-${c.n}" data-case="${c.n}" class="res">用例 #${c.n}</a></td><td>${catChip(replay)}</td><td>${owner}</td><td class="n">${scoreCell(record,'original')}</td><td class="n">${scoreCell(record,'candidate')}</td></tr>`;}).join('');
         const note=stage==='gate'?'先执行；每题原/候选各10次有效，交替执行。':d?.outcome==='rejected'?'门槛拒绝，测试未运行。':d?.outcome==='indeterminate'?'门槛无法判定，测试未运行。':'只有门槛接受后才执行一次；每题原/候选各10次有效。';
         return `<section class="evaluation-stage" data-evaluation-stage="${stage}"><h3>${SPLIT[stage]} · ${selected.length} 题</h3><p class="hint">${note}</p><div class="table-wrap"><table class="runs"><thead><tr><th>回放题</th><th>类型</th><th>对应模式</th><th class="n">原版通过/计划</th><th class="n">候选通过/计划</th></tr></thead><tbody>${rows}</tbody></table></div>${stageSummary(result?.byStage?.[stage])}</section>`;
       }).join('');
@@ -297,7 +297,10 @@
     }
     function renderTimeline() {
       const events = [], byCat = key => D.replayCases.filter(r => r.category === key).length;
-      if (D.cases.length) events.push({ at: latest(D.cases.map(c => c.createdAt)), kind: '用例', text: `保存 ${D.cases.length} 条真实用例；新标记用例按固定 hash 分训练50%/门槛25%/测试25%` });
+      if (D.cases.length) events.push({ at: latest(D.cases.map(c => c.createdAt)), kind: '用例', text: `保存 ${D.cases.length} 条真实用例` });
+      // Goal D15 was accepted at this timestamp (rev27 decision notice), not
+      // when the original cases were imported. Read-only historical projection.
+      events.push({ at: '2026-11-01T13:22:28.080Z', kind: '规则', text: '新标记用例按固定 hash 分训练50%/门槛25%/测试25%；现有16条保持原集合，不追溯重分。' });
       if (D.replaySplit) events.push({ at: D.replaySplit.createdAt, kind: '划分', text: `原16条的固定测试集 ${D.cases.filter(c => c.split === 'test').map(c => '#' + c.n).join(' ')} 不参与归纳；其余保留原训练集合` });
       for (const version of D.versions) events.push({ at: version.createdAt, kind: '知识库', text: `${version.id}：从 ${version.caseIds.length} 条训练用例归纳出 ${version.entries.length} 条模式，未归类 ${version.unclassified.length} 条` });
       if (D.replayCases.length) events.push({ at: latest(D.replayCases.map(r => r.createdAt)), kind: '回放题', text: `封存 ${D.replayCases.length} 道回放题（复现 ${byCat('reproduction')} · 探针 ${byCat('probe')} · 防误伤 ${byCat('control')}）` });

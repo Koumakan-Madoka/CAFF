@@ -237,6 +237,10 @@ test('D16 impact separates gate/test rates, shows mechanical inputs and a durabl
   for(const literal of ['门槛判定：拒绝','Fisher','0/20','4/20','0.053','允许少通过 1','门槛','测试','40.0%','N/A','错误 1','未运行 10','代理模型','小样本','挑题偏差','不作为采纳依据'])assert.ok(text.includes(literal),literal);
   assert.doesNotMatch(text,/合计|总体/);assert.equal(h.root.querySelectorAll('[data-evaluation-stage]').length,2);
   assert.match(h.root.querySelector('#impact-log').textContent,/门槛判定.*拒绝/);assert.match(h.root.querySelector('[data-evaluation-stage="test"]').textContent,/门槛拒绝.*未运行/);
+  const chip=h.root.querySelector('.runs [data-entry="entry-1"]');assert.equal(chip.textContent,'模式 1');assert.match(chip.title,/未经要求引入额外机制/);
+  const rows=[...h.root.querySelectorAll('#impact-log li')],policy=rows.find(li=>li.querySelector('.kind')?.textContent==='规则');
+  assert.ok(policy);assert.match(policy.querySelector('time').textContent,/11-01/);assert.match(policy.textContent,/训练50%.*门槛25%.*测试25%/);
+  const imported=rows.find(li=>li.querySelector('.kind')?.textContent==='用例');assert.doesNotMatch(imported.textContent,/固定 hash|50%|25%/);
   assert.equal(h.posts().length,0);
 });
 test('user prose and search highlighting stay text-only; failed writes disable mutation until refresh', async t => {
