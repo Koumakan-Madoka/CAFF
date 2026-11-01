@@ -116,6 +116,9 @@ test('cases default to pattern groups and expose pending/suggested/unfit/holdout
   const details = h.root.querySelector('#c-1 .kv').textContent; assert.match(details, /模型归纳，随模式审核通过/);
   assert.match(h.root.querySelector('#c-4 .kv').textContent, /待确认/);
   assert.match(h.root.querySelector('#c-5').textContent, /孤立事实错误/);
+  const manual = [...h.root.querySelectorAll('[data-manual-entry],[data-manual-assign],[data-manual-remove]')];
+  assert.ok(manual.length > 0); assert.ok(manual.every(el => el.closest('details.more')), 'manual membership controls belong inside details');
+  assert.equal(h.root.querySelector('.case > .manual-controls'), null);
 });
 
 test('pending -> model suggestion -> confirm/manual membership uses real APIs and persists returned provenance', async t => {
@@ -204,4 +207,6 @@ test('standalone navigation, projects capture-only boundary and responsive proto
   assert.match(read('wikiskill.js'), /panel.load\(\)/); assert.doesNotMatch(read('wikiskill.js'), /projectId|api\/projects/);
   const css = read('wikiskill.css'); assert.match(css, /@media\s*\(max-width:\s*860px\)/); assert.match(css, /@media\s*\(max-width:\s*640px\)/);
   assert.match(css, /\.split\s*\{[^}]*grid-template-columns:/s);
+  assert.match(css, /\.toolbar \.check\s*\{[^}]*white-space:\s*nowrap/s);
+  assert.match(css, /\.search input:focus-visible\s*\{[^}]*outline:\s*none/s);
 });

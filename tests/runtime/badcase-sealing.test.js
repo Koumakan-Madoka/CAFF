@@ -86,6 +86,31 @@ test('simultaneous identical requests converge and unrelated annotations cannot 
   await assert.rejects(service.mark({ ...h.input, actual: 'different' }), e => e.code === 'flag_already_exists');
 });
 
+test('wiki dependency failures preserve the saved annotation and seal with an explicit wikiCase error', async t => {
+  for (const mode of ['missing-message', 'add-failure']) {
+    const h = setup(t); let writes = 0;
+    h.options.wikiStore = { addMarkedCase() { writes++; throw Error('PRIVATE-WIKI-PATH'); } };
+    h.options.chatStore = { getMessage: () => mode === 'missing-message' ? null : { ...h.message, content: 'source body' },
+      getConversationWithoutMessages: () => ({ title: '标记房间' }) };
+    const result = await h.create().mark(h.input);
+    assert.equal(result.seal.state, 'saved_incomplete');
+    assert.deepEqual(result.wikiCase, { error: 'wiki_case_unavailable' });
+    assert.ok(h.flags.get(h.input)); assert.equal(writes, mode === 'missing-message' ? 0 : 1);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE-WIKI-PATH/);
+  }
+});
+test('marked wiki case keeps a UTF-8-safe source message excerpt and truncation flag across restart', async t => {
+  const h = setup(t); h.message.content = '前' + '字'.repeat(20000) + '后';
+  const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
+  const config = { globalRoot: path.join(h.root, 'global-wiki'), sourceWorktree: path.join(h.root, 'source') };
+  h.options.wikiStore = createWikiStore(config);
+  h.options.chatStore = { getMessage: () => h.message, getConversationWithoutMessages: () => ({ title: '标记房间' }) };
+  const result = await h.create().mark(h.input), saved = result.wikiCase.case;
+  assert.equal(saved.messageTruncated, true); assert.ok(saved.message.startsWith('前'));
+  assert.ok(Buffer.byteLength(saved.message) <= 32768); assert.doesNotMatch(saved.message, /\uFFFD/);
+  assert.equal(saved.message.includes('后'), false); assert.equal(saved.traceState, 'missing');
+  assert.deepEqual(createWikiStore(config).read().cases.find(c => c.id === saved.id), saved);
+});
 test('unreadable inventory is not treated as empty and leaves no retention or case', async t => {
   const h = setup(t); fs.writeFileSync(path.join(h.root, 'projects/p1/latest'), 'invalid category');
   const result = await h.create().mark(h.input);
@@ -220,6 +245,7 @@ test('real HTTP POST invokes readonly SQLite reader and file worker; restart GET
     assert.equal(first.wikiCase.case.source.conversationTitle, 'Synthetic');
     assert.equal(first.wikiCase.case.actual, 'bad'); assert.equal(first.wikiCase.case.expected, 'good');
     assert.equal(first.wikiCase.case.source.messageId, 'm1'); assert.equal(first.wikiCase.case.source.conversationId, 'c1');
+    assert.equal(first.wikiCase.case.message, 'MESSAGE-BODY-NOT-ARCHIVED'); assert.equal(first.wikiCase.case.messageTruncated, false);
     const before = h.store.computeUsage('p1');
     chat.close(); chat = createChatAppStore({ agentDir: h.root, sqlitePath: databasePath }); controller = rebuild();
     assert.equal(createWikiStore({ globalRoot: path.join(h.root, 'global-wiki'), sourceWorktree: path.join(h.root, 'source') }).getCaseStates()[0].status, 'pending');

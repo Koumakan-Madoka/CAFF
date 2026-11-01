@@ -6,6 +6,13 @@ const associationFailures = ['flag_seal_association_incomplete', 'flag_seal_asso
 const processFailures = ['seal_busy', 'seal_timeout', 'seal_process_failed', 'seal_output_limit', 'seal_output_invalid', 'seal_lock_release_failed', 'capture_lock_invalid'];
 const failed = (state: string, reason: string) => ({ state, reason, checkpointSaved: false, complete: false,
   captured: false, runnable: false, reproduced: false, evaluable: false, strictEvalEligible: false });
+function messageExcerpt(value: any) {
+  if (typeof value !== 'string') throw Object.assign(Error('wiki_source_invalid'), { code: 'wiki_source_invalid' });
+  if (Buffer.byteLength(value) <= 32768) return { text: value, truncated: false };
+  let text = '', size = 0;
+  for (const char of value) { size += Buffer.byteLength(char); if (size > 32768) break; text += char; }
+  return { text, truncated: true };
+}
 // POST owns the asynchronous operation. A disconnected client does not cancel
 // it; restart queries are read-only and an explicit same-text retry is safe.
 // Tests may inject adapters; neither HTTP nor persisted input controls them.
@@ -37,12 +44,20 @@ export function createBadcaseSealingService(options: any) {
       const marked = flags.mark(input);
       let wikiCase;
       if (options.wikiStore) {
-        const message = options.chatStore?.getMessage(input.messageId);
-        const conversation = options.chatStore?.getConversationWithoutMessages(input.conversationId);
-        wikiCase = options.wikiStore.addMarkedCase({ source: { projectId: input.projectId, conversationId: input.conversationId,
-          conversationTitle: conversation?.title || '未命名房间', messageId: input.messageId, agentId: message.agentId },
-          role: message.agentId, actual: input.actual, expected: input.expected,
-          message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false });
+        try {
+          const message = options.chatStore?.getMessage(input.messageId);
+          if (!message) throw Object.assign(Error('wiki_source_invalid'), { code: 'wiki_source_invalid' });
+          const conversation = options.chatStore?.getConversationWithoutMessages(input.conversationId);
+          const excerpt = messageExcerpt(message.content);
+          wikiCase = options.wikiStore.addMarkedCase({ source: { projectId: input.projectId, conversationId: input.conversationId,
+            conversationTitle: conversation?.title || '未命名房间', messageId: input.messageId, agentId: message.agentId },
+            role: message.agentId, actual: input.actual, expected: input.expected,
+            message: excerpt.text, traceExcerpt: '', traceState: 'missing', messageTruncated: excerpt.truncated, traceTruncated: false });
+        } catch {
+          // The annotation is already durable. A secondary Wiki failure must be
+          // visible without rolling back the mark, its seal, or leaking details.
+          wikiCase = { error: 'wiki_case_unavailable' };
+        }
       }
       const key = marked.flag.flagId;
       if (!inFlight.has(key)) {
