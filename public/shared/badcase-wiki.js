@@ -319,9 +319,10 @@
     function renderTimeline() {
       const events = [], byCat = key => D.replayCases.filter(r => r.category === key).length;
       if (D.cases.length) events.push({ at: latest(D.cases.map(c => c.createdAt)), kind: '用例', text: `保存 ${D.cases.length} 条真实用例` });
-      // Goal D15 was accepted at this timestamp (rev27 decision notice), not
-      // when the original cases were imported. Read-only historical projection.
-      events.push({ at: '2026-11-01T13:22:28.080Z', kind: '规则', text: '新标记用例按固定 hash 分训练50%/门槛25%/测试25%；现有16条保持原集合，不追溯重分。' });
+      // Read-only policy history: keep the original adoption date, explicitly
+      // supersede the hash policy, and date the current D15 to its acceptance.
+      events.push({ at: '2026-11-01T13:22:28.080Z', kind: '规则', text: '旧规则（2026-11-02已被取代）：新标记用例按固定 hash 分训练50%/门槛25%/测试25%；现有16条保持原集合，不追溯重分。' });
+      events.push({ at: '2026-11-02T07:03:20.095Z', kind: '规则', text: '现行规则：新标记先待预分类，再按模式配额定组（训练50%/门槛25%/测试25%）；同缺按训练→门槛→测试，组别冻结，现有16条不重分。' });
       if (D.replaySplit) events.push({ at: D.replaySplit.createdAt, kind: '划分', text: `原16条的固定测试集 ${D.cases.filter(c => c.split === 'test').map(c => '#' + c.n).join(' ')} 不参与归纳；其余保留原训练集合` });
       for (const version of D.versions) events.push({ at: version.createdAt, kind: '知识库', text: `${version.id}：从 ${version.caseIds.length} 条训练用例归纳出 ${version.entries.length} 条模式，未归类 ${version.unclassified.length} 条` });
       if (D.replayCases.length) events.push({ at: latest(D.replayCases.map(r => r.createdAt)), kind: '回放题', text: `封存 ${D.replayCases.length} 道回放题（复现 ${byCat('reproduction')} · 探针 ${byCat('probe')} · 防误伤 ${byCat('control')}）` });
