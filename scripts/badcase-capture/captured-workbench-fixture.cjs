@@ -18,9 +18,9 @@ module.exports = async function capturedFixture(t, mode, options = {}) {
     { type: 'message', id: 'm1', parentId: null, timestamp: '2026-01-01T00:00:00.001Z', message: { role: 'user', content: 'synthetic retained history', timestamp: 1 } },
   ].map(e => JSON.stringify(e)).join('\n') + '\n';
   const sessionPath = path.join(inputs, 'session.jsonl'); fs.writeFileSync(sessionPath, session);
-  const service = load('server/domain/runtime/badcase-capture/index').createBadcaseCaptureService({ captureRoot: root });
   const dbOptions = { agentDir: base, sqlitePath: path.join(base, 'synthetic.sqlite') };
   let chat = load('lib/chat-app-store').createChatAppStore(dbOptions), server, authority;
+  const service = load('server/domain/runtime/badcase-capture/index').createBadcaseCaptureService({ captureRoot: root, chatStore: chat });
   const common = { host: '127.0.0.1', getAuthority: () => authority, csrfToken: 'synthetic-captured-workbench', projectManager: { listProjects: () => [{ id: 'p1' }] } };
   const capture = load('server/api/badcase-capture-controller').createBadcaseCaptureController({ ...common, service });
   let flagsController;
@@ -47,22 +47,32 @@ module.exports = async function capturedFixture(t, mode, options = {}) {
     }
     const route = '/api/projects/p1/badcase-capture';
     await api(route + '/authorize', { confirmed: true, authorizedDirs: [target], authorizedInputDirs: [inputs],
-      includedIgnoredPatterns: [], excludedPatterns: service.loadPolicy('p1').excludedPatterns });
+      includedIgnoredPatterns: [], excludedPatterns: service.loadPolicy('p1').excludedPatterns, callbackInputAuthorized: true });
     const estimate = await api(route + '/estimate', {}); assert.equal(estimate.complete, true);
     await api(route + '/enable', { confirmed: true, estimateId: estimate.estimateId });
+    // The service now archives independently authorized pre-turn public state:
+    // create the real queued-message shape before collecting, not after it.
+    chat.saveCustomRoleConfig({ id: 'a1', name: 'Synthetic', personaPrompt: 'not executed' });
+    chat.createConversation({ id: 'c1', title: 'Synthetic', participants: ['a1'], projectScopeId: 'p1' });
+    const user = chat.createMessage({ id: 'user1', conversationId: 'c1', role: 'user', status: 'completed',
+      turnId: 'accepted-turn', content: 'synthetic retained invocation', createdAt: '2026-01-01T00:00:00.000Z' });
+    chat.createMessage({ id: messageId, conversationId: 'c1', role: 'assistant', status: 'queued', agentId: 'a1', turnId: 't1',
+      content: 'Thinking...', createdAt: '2026-01-01T00:00:00.001Z' });
     const cpResult = service.captureTurnCheckpoint({ projectId: 'p1', conversationId: 'c1', turnId: 't1', agentId: 'a1',
+      userMessageId: user.id, assistantMessageId: messageId, callbackUserMessage: user,
       targetDir: target, deliveryMode: mode, prompt: 'synthetic retained invocation', ...(mode === 'resume' ? { sessionPath } : {}), controlledValues: {},
       runConfig: { provider: 'anthropic', model: 'claude-sonnet-4-5', promptVersion: 'v1', skillIds: [], conversationSkillIds: [] },
       harness: { serverVersion: 'synthetic-captured-workbench', configSnapshot: { piVersion: 'pi:0.85.1', agentPromptVersion: 'v1',
         toolBridgeEnabled: false, deliveryMode: mode, agentName: 'synthetic' }, skillSnapshots: [] } });
     assert.equal(cpResult.captured, true); const cp = cpResult.checkpoint, r = cp.replayInput;
     assert.equal(r.complete, true, JSON.stringify(r.incompleteReasons));
+    const callback = load('server/domain/runtime/badcase-capture/callback-input').readCapturedCallbackInput(cp, h => service.store.readBlob('p1', h));
+    assert.equal(callback.association.assistantMessageId, messageId);
+    assert.equal(JSON.parse(callback.trace).publicMessages[0].content, user.content);
     // Simulate mutation AFTER the checkpoint, not a real agent execution.
     fs.writeFileSync(path.join(target, 'source.txt'), 'after simulated turn'); fs.appendFileSync(sessionPath, 'POST-START\n');
-    chat.saveCustomRoleConfig({ id: 'a1', name: 'Synthetic', personaPrompt: 'not executed' });
-    chat.createConversation({ id: 'c1', title: 'Synthetic', participants: ['a1'], projectScopeId: 'p1' });
-    chat.createMessage({ id: messageId, conversationId: 'c1', role: 'assistant', status: 'completed', agentId: 'a1', turnId: 't1',
-      taskId: 'task1', runId: 1, content: 'not archived', metadata: { badcaseCheckpointId: cp.checkpointId } });
+    chat.updateMessage(messageId, { status: 'completed', taskId: 'task1', runId: 1,
+      content: 'not archived', metadata: { badcaseCheckpointId: cp.checkpointId } });
     load('lib/sqlite-store').createSqliteRunStore({ agentDir: base, db: chat.db });
     chat.db.prepare(`INSERT INTO runs (id, agent_dir, cwd, prompt, prompt_length, status, started_at, task_id, assistant_errors_json)
       VALUES (1, '/not-read', '/not-read', 'not-read', 8, 'succeeded', '2026-01-01', 'task1', '[]')`).run();

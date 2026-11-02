@@ -275,7 +275,7 @@ function findAssistantCreate(store) {
   return create;
 }
 
-async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.', promptUserMessage = null, persistedRunStore = null, onTurnState = null }) {
+async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.', promptUserMessage = null, persistedRunStore = null, onTurnState = null, projectDir = store.agentDir }) {
   const { createTurnState } = require(require.resolve('../../build/server/domain/conversation/turn/turn-state'));
   const turnState = createTurnState(conversation, turnId);
   if (onTurnState) onTurnState(turnState);
@@ -304,7 +304,7 @@ async function runTurn({ executor, conversation, agent, store, turnId, reply = '
     enqueueAgent() {},
     allowHandoffs: true,
     finalStopsTurn: true,
-    projectDir: store.agentDir,
+    projectDir,
   });
   return { outcome, turnState, events, failedReplies };
 }
@@ -917,7 +917,10 @@ test('real capture service archives pre-start fresh/resume inputs and survives r
       const fresh = observations[0].checkpoint;
       assert.ok(fresh, 'real checkpoint must be on disk before startRun');
       assert.equal(fresh.replayInput.deliveryMode, 'fresh');
-      assert.equal(fresh.replayInput.complete, true, JSON.stringify(fresh.replayInput.incompleteReasons));
+      // This store is an in-memory executor fake, not an authorized SQLite
+      // callback source. File/session capture works; completeness must not lie.
+      assert.equal(fresh.replayInput.complete, false);
+      assert.deepEqual(fresh.replayInput.incompleteReasons, ['callback_input_unavailable']);
       assert.equal(fresh.replayInput.sessionBlobHash, '');
       assert.match(service.store.readBlob(projectId, fresh.replayInput.promptBlobHash).toString('utf8'), /HISTORICAL-REAL-CAPTURE/u);
       assert.equal(fresh.files['file.txt'].hash, digest('before fresh'));
@@ -941,7 +944,9 @@ test('real capture service archives pre-start fresh/resume inputs and survives r
       assert.ok(resume);
       assert.equal(record.options.resume, true, 'capture degradation must not change invocation mode');
       assert.equal(resume.replayInput.deliveryMode, 'resume');
-      assert.equal(resume.replayInput.complete, mode === 'archived', JSON.stringify(resume.replayInput.incompleteReasons));
+      assert.equal(resume.replayInput.complete, false);
+      assert.ok(resume.replayInput.incompleteReasons.includes('callback_input_unavailable'));
+      if (mode === 'archived') assert.deepEqual(resume.replayInput.incompleteReasons, ['callback_input_unavailable']);
       assert.equal(resume.files['file.txt'].hash, digest('before resume'));
       assert.match(record.prompt, /DELTA-REAL-CAPTURE/u);
       assert.equal(record.prompt.includes('HISTORICAL-REAL-CAPTURE'), false);
@@ -971,7 +976,7 @@ test('real capture service archives pre-start fresh/resume inputs and survives r
           const targetDir = path.join(env.tempDir, `${checkpoint.checkpointId}-${copy}`);
           const result = restarted.restoreCheckpoint({ projectId, checkpointId: checkpoint.checkpointId, targetDir });
           assert.equal(result.ok, true);
-          assert.equal(result.replayInputComplete, checkpoint === fresh || mode === 'archived');
+          assert.equal(result.replayInputComplete, false);
           assert.equal(result.strictEvalEligible, false);
           assert.equal(fs.readFileSync(path.join(targetDir, 'file.txt'), 'utf8'), checkpoint === fresh ? 'before fresh' : 'before resume');
           return result.restoredFiles;
@@ -1017,7 +1022,7 @@ test('authorized capture to message seal survives SQLite/service reconstruction 
   chat.createConversation({ id: 'conversation-reuse-ab', title: 'Synthetic capture chain', participants: [agent.id], projectScopeId: projectId });
   const conversation = { ...chat.getConversation('conversation-reuse-ab'), agents: [agent], worktreePath: projectDir };
   const rebuild = () => {
-    capture = createBadcaseCaptureService({ captureRoot });
+    capture = createBadcaseCaptureService({ captureRoot, chatStore: chat });
     const options = { projectManager: { listProjects: () => [{ id: projectId }] }, host: '127.0.0.1',
       getAuthority: () => new URL(base).host, csrfToken: 'synthetic-capture-chain' };
     captureController = createBadcaseCaptureController({ ...options, service: capture });
@@ -1042,7 +1047,7 @@ test('authorized capture to message seal survives SQLite/service reconstruction 
   const endpoint = `/api/projects/${projectId}/badcase-capture`;
   assert.equal((await api(endpoint)).policy.status, 'disabled');
   await api(endpoint + '/authorize', { confirmed: true, authorizedDirs: [projectDir], authorizedInputDirs: [sessionDir],
-    includedIgnoredPatterns: [], excludedPatterns: ['.git', 'node_modules'] });
+    includedIgnoredPatterns: [], excludedPatterns: ['.git', 'node_modules'], callbackInputAuthorized: true });
   const estimate = await api(endpoint + '/estimate', {});
   assert.equal(estimate.complete, true); assert.equal(estimate.totalBytes, Buffer.byteLength('before fresh'));
   assert.equal(capture.loadPolicy(projectId).status, 'disabled');
@@ -1054,7 +1059,8 @@ test('authorized capture to message seal survives SQLite/service reconstruction 
   const observed = [], messages = [], seals = [];
   for (const [index, mode] of ['fresh', 'resume'].entries()) {
     const usageBefore = capture.computeUsage(projectId);
-    const user = chat.createMessage({ id: `u${index + 1}`, conversationId: conversation.id, role: 'user', status: 'completed', content: `synthetic input ${mode}` });
+    const user = chat.createMessage({ id: `u${index + 1}`, conversationId: conversation.id, turnId: `accepted-${mode}`,
+      role: 'user', status: 'completed', content: `synthetic input ${mode}` });
     const runStore = createSqliteRunStore({ agentDir: env.tempDir, db: chat.db });
     const executor = env.createExecutor(chat, { badcaseCapture: capture, runId: index + 1,
       onStartRun(record) {
@@ -1069,13 +1075,17 @@ test('authorized capture to message seal survives SQLite/service reconstruction 
         else fs.appendFileSync(sessionPath, 'POST-START-NOT-ARCHIVED\n');
         fs.writeFileSync(target, index === 0 ? 'before resume' : 'after resume');
       } });
-    await runTurn({ executor, conversation, agent, store: chat, turnId: `chain-${mode}`, promptUserMessage: user, persistedRunStore: runStore });
+    await runTurn({ executor, conversation, agent, store: chat, projectDir, turnId: `chain-${mode}`, promptUserMessage: user, persistedRunStore: runStore });
     assert.equal(observed.length, index + 1);
     const observation = observed[index], cp = observation.checkpoint;
     assert.ok(cp, 'checkpoint must already exist before synthetic startRun');
     assert.equal(observation.runId, index + 1); assert.equal(observation.resume, index === 1,
       JSON.stringify(chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1)?.metadata));
     assert.equal(cp.replayInput.deliveryMode, mode); assert.equal(cp.replayInput.complete, true, JSON.stringify(cp.replayInput.incompleteReasons));
+    const { readCapturedCallbackInput } = load('server/domain/runtime/badcase-capture/callback-input');
+    const callback = readCapturedCallbackInput(cp, hash => capture.store.readBlob(projectId, hash));
+    assert.equal(callback.association.userMessageId, user.id); assert.equal(callback.association.assistantMessageId,
+      chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1).id);
     assert.equal(cp.files['file.txt'].hash, createHash('sha256').update(`before ${mode}`).digest('hex'));
     if (index === 1) assert.deepEqual(capture.store.readBlob(projectId, cp.replayInput.sessionBlobHash), sessionBytes);
     const message = chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
@@ -1130,7 +1140,7 @@ test('authorized capture to message seal survives SQLite/service reconstruction 
   await api(endpoint + '/disable', {});
   const beforeDisabled = capture.computeUsage(projectId), count = capture.store.listCheckpoints(projectId).length;
   const user = chat.createMessage({ id: 'u3', conversationId: conversation.id, role: 'user', status: 'completed', content: 'disabled synthetic turn' });
-  await runTurn({ executor: env.createExecutor(chat, { badcaseCapture: capture, runId: 3 }), conversation, agent, store: chat,
+  await runTurn({ executor: env.createExecutor(chat, { badcaseCapture: capture, runId: 3 }), conversation, agent, store: chat, projectDir,
     turnId: 'chain-disabled', promptUserMessage: user });
   const disabledMessage = chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
   assert.equal(disabledMessage.metadata.badcaseCheckpointId, '');

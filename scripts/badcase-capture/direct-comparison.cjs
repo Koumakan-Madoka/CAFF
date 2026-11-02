@@ -162,7 +162,13 @@ async function runComparison(config, options = {}) {
       const receipt = task?.receipt, row = { variant, iteration, status: 'error', checks: null, finalText: '', replySource: 'unknown', modelCalls: [],
         containerId: task?.containerId || null, cleaned: task?.cleaned === true, isolation: task?.isolation || null,
         inputHash: manifests[variant].inputHash };
-      const valid = !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
+      // Missing run evidence can be environmental; explicit conflicting hashes
+      // are integrity drift and must never be hidden by a replacement attempt.
+      const evidenceChanged = [[receipt?.inputHash, manifests[variant].inputHash],
+        [receipt?.runtimeHash, manifests[variant].runtimeHash], [receipt?.beforeHash, plan.beforeHash],
+        [task?.inputHash, manifests[variant].inputHash], [task?.runtimeHash, manifests[variant].runtimeHash]]
+        .some(([actual, expected]) => actual !== undefined && actual !== expected);
+      const valid = !evidenceChanged && !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
         && receipt.inputHash === manifests[variant].inputHash && receipt.runtimeHash === manifests[variant].runtimeHash
         && receipt.beforeHash === plan.beforeHash && Array.isArray(receipt.modelCalls) && receipt.modelCalls.length > 0
         && receipt.modelCalls.every(c => c.model === plan.summary.model && typeof c.success === 'boolean' && Number.isFinite(c.durationMs) && c.durationMs >= 0);
@@ -199,9 +205,11 @@ async function runComparison(config, options = {}) {
         }
       }
       if (alternating) {
-        fatal = task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
-        if (!fatal) stopped=false; // bounded by 20 valid slots + 5 extra attempts
-        else stopped=true;
+        fatal = row.reason === 'file_evidence_unavailable' || evidenceChanged
+          || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
+        // Only environmental errors may consume the five replacement attempts.
+        // Evidence/integrity stops propagate to the remaining cases and stages.
+        stopped = fatal;
       }
       runs.push(row); const { modelCalls: omitted, ...eventRow } = row; emit({ event: 'run', ...eventRow });
   }

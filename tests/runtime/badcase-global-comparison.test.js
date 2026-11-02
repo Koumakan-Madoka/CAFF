@@ -127,6 +127,69 @@ test('staged HTTP environmental failures retain request metering, are replaced, 
   const r=await h.run(); assert.equal(h.state.executions,81);assert.equal(r.byStage.gate.original.errors,1);assert.equal(r.byStage.gate.original.failed,0);
   assert.equal(r.modelCallsKnown,81);assert.equal(r.callsUnavailable,false);assert.equal(r.gateDecision.outcome,'rejected');
 });
+test('staged unavailable/corrupt file evidence stops the entire batch, retaining calls and all unrun slots', async t => {
+  for (const fault of ['absent', 'unsupported', 'corrupt']) await t.test(fault, async t => {
+    const h = setup(t, { staged: true }), execute = h.options.execute;
+    h.options.execute = async (...args) => {
+      const task = await execute(...args);
+      if (fault === 'absent') delete task.receipt.fileEvidence;
+      else if (fault === 'unsupported') task.receipt.fileEvidence = [{ path: 'REPORT.md', state: 'unsupported' }];
+      else task.receipt.fileEvidence[0].sha256 = '0'.repeat(64);
+      return task;
+    };
+    const r = await h.run(), first = r.cases.find(c => c.stage === 'gate');
+    assert.equal(h.state.executions, 1);
+    assert.equal(r.completed, false); assert.equal(r.gateDecision.outcome, 'indeterminate');
+    assert.equal(first.runs[0].reason, 'file_evidence_unavailable'); assert.equal(first.runs[0].status, 'error');
+    assert.equal(r.modelCallsKnown, 1); assert.equal(r.callsUnavailable, false);
+    assert.equal(r.byStage.gate.original.errors, 1); assert.equal(r.byStage.gate.original.notRun, 40);
+    assert.equal(r.byStage.gate.candidate.notRun, 40); assert.equal(r.byStage.test.original.attempted, 0);
+    assert.ok(r.cases.filter(c => c.stage === 'gate').slice(1).every(c => c.reason === 'prior_integrity_error' && !c.runs.length));
+    const { createWikiComparisonStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+    assert.deepEqual(createWikiComparisonStore(h.config).save(r).byStage, r.byStage);
+  });
+});
+test('staged receipt/launcher hash drift is fatal, not a replaceable environment error', async t => {
+  for (const field of ['beforeHash', 'inputHash', 'runtimeHash', 'launcherInputHash', 'launcherRuntimeHash']) await t.test(field, async t => {
+    const h = setup(t, { staged: true }), execute = h.options.execute;
+    h.options.execute = async (...args) => {
+      const task = await execute(...args);
+      if (field.startsWith('launcher')) task[field === 'launcherInputHash' ? 'inputHash' : 'runtimeHash'] = '0'.repeat(64);
+      else task.receipt[field] = '0'.repeat(64);
+      return task;
+    };
+    const r = await h.run();
+    assert.equal(h.state.executions, 1); assert.equal(r.gateDecision.outcome, 'indeterminate');
+    assert.equal(r.cases.find(c => c.stage === 'gate').runs[0].reason, 'run_evidence_unavailable');
+    assert.equal(r.byStage.test.original.attempted, 0); assert.equal(r.callsUnavailable, true);
+  });
+});
+test('staged cleanup uncertainty and plaintext/encoded key leaks remain fatal', async t => {
+  for (const fault of ['cleanup', 'plaintext', 'encoded']) await t.test(fault, async t => {
+    const h = setup(t, { staged: true }), execute = h.options.execute;
+    h.options.execute = async (...args) => {
+      const task = await execute(...args);
+      if (fault === 'cleanup') task.cleaned = false;
+      else if (fault === 'plaintext') task.receipt.finalText = args[2].key;
+      else task.receipt.fileEvidence[0].base64 = Buffer.from(args[2].key).toString('base64');
+      return task;
+    };
+    const r = await h.run();
+    assert.equal(h.state.executions, 1); assert.equal(r.gateDecision.outcome, 'indeterminate');
+    assert.equal(r.byStage.test.original.attempted, 0);
+    assert.equal(JSON.stringify(h.state.events).includes('synthetic-global-evaluation-key-123456'), false);
+  });
+});
+test('staged known missing files are ordinary fails, not unavailable evidence or fatal stops', async t => {
+  const h = setup(t, { staged: true }), execute = h.options.execute;
+  h.options.execute = async (...args) => {
+    const task = await execute(...args); task.receipt.fileEvidence = [{ path: 'REPORT.md', state: 'missing' }]; return task;
+  };
+  const r = await runComparison({ ...h.single, repeats: 10, executionPolicy: 'alternating-valid-v1' }, h.options);
+  assert.equal(h.state.executions, 20); assert.equal(r.completed, true); assert.equal(r.fatal, false);
+  assert.equal(r.totals.original.failed, 10); assert.equal(r.totals.candidate.failed, 10);
+  assert.equal(r.totals.original.errors, 0);
+});
 test('staged CLI saves a rejected round and its gate event without calling test models or producing an overall total',async t=>{
   const {main}=require('../../scripts/badcase-capture/compare-wiki-batch.cjs');
   const {createWikiComparisonStore}=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
