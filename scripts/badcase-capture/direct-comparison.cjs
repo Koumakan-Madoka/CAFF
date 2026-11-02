@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const { prepareSealedDirectTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
 const { prepareDirectTurnFiles, runDirectDockerTask } = require('./direct-docker.cjs');
+const { prepareReplayGit } = require('./replay-git.cjs');
 const { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, DEFAULT_PROFILE, DEEPSEEK_PROFILE } = require('./direct-model.cjs');
 const { manifestFor } = require('./pi-probe-materials.cjs');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
@@ -45,7 +46,7 @@ function scoreReadOnlyFiles(receipt, rules, beforeHash) {
 }
 function prepareComparison(config, options = {}) {
   if (!config || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)
     || config.executionPolicy !== undefined && (config.executionPolicy !== 'alternating-valid-v1' || !config.globalWikiCandidate || config.repeats !== 10)
     || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== 1
@@ -105,16 +106,26 @@ function prepareComparison(config, options = {}) {
   }
   // Only requested paths, never literal reference values, enter worker inputs.
   const evidenceConfig = rules.kind === 'file-literals-v1' ? { fileEvidencePaths: rules.files.map(f => f.path) } : {};
-  const inputs = { original: { ...original.input, ...evidenceConfig }, candidate: { ...candidate.input, ...evidenceConfig } };
+  let repository;
+  if (config.repository !== undefined) {
+    // The operator supplies an independently recorded commit, never an implicit
+    // current HEAD. Ordinary source-file bytes are not substituted for capture.
+    if (original.input.bindings?.sourceRoot && path.resolve(config.repository?.sourceRoot || '') !== path.resolve(original.input.bindings.sourceRoot)) throw fail('evaluation_repository_source_mismatch');
+    repository = prepareReplayGit(config.repository, original.input, { knownValues: options.knownValues || [] });
+  }
+  const repositoryConfig = repository ? { repository: repository.report, gitFiles: repository.gitFiles } : {};
+  const inputs = { original: { ...original.input, ...evidenceConfig, ...repositoryConfig }, candidate: { ...candidate.input, ...evidenceConfig, ...repositoryConfig } };
   const summary = { kind: 'sealed-prompt-comparison-v1', caseId: original.provenance.caseId,
     checkpointId: original.provenance.checkpointId, checkpointHash: original.provenance.checkpointHash,
-    commonInputHash: rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig })) : original.provenance.commonInputHash,
+    commonInputHash: repository || rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig,
+      ...(repository ? { repository: repository.report, gitFileHashes: repository.gitFiles.map(f => ({ path: f.path, sha256: f.sha256 })) } : {}) })) : original.provenance.commonInputHash,
     model: profile, repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
     imageId: config.image.imageId, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
-    strictEvalEligible: false, ...(wikiCandidate ? { wikiCandidate } : {}),
+    strictEvalEligible: false, ...(repository ? { repository: repository.report } : {}), ...(wikiCandidate ? { wikiCandidate } : {}),
     ...(globalWikiCandidate ? { targetId: globalWikiCandidate.targetId, globalWikiCandidate } : {}) };
-  return { supported: true, inputs, summary, beforeHash: expectedTreeHash(original.input) };
+  return { supported: true, inputs, summary, beforeHash: expectedTreeHash(original.input),
+    ...(repository ? { checkRepositoryKnownValues: repository.checkKnownValues } : {}) };
 }
 async function runComparison(config, options = {}) {
   // A planning call never reads a key or contacts Docker/model services.
@@ -130,6 +141,9 @@ async function runComparison(config, options = {}) {
   }
   if (manifests.original.runtimeHash !== manifests.candidate.runtimeHash) throw fail('evaluation_runtime_mismatch');
   const key = validKey(keyReader()); // No persistence or argv/env-file creation.
+  // Check sanitized plaintext before compression can hide a late-known key in
+  // Git objects. Such a mismatch stops before any event/Docker/model request.
+  plan.checkRepositoryKnownValues?.([key, ...(options.knownValues || [])]);
   const leaksKey = value => { const s = JSON.stringify(value) || ''; return s.includes(key) || s.includes(JSON.stringify(key).slice(1, -1)); };
   if (leaksKey(plan.summary)) throw fail('evaluation_output_contains_key');
   emit({ event: 'plan', ...plan.summary, runtimeHash: manifests.original.runtimeHash });
@@ -166,13 +180,20 @@ async function runComparison(config, options = {}) {
       // are integrity drift and must never be hidden by a replacement attempt.
       const evidenceChanged = [[receipt?.inputHash, manifests[variant].inputHash],
         [receipt?.runtimeHash, manifests[variant].runtimeHash], [receipt?.beforeHash, plan.beforeHash],
-        [task?.inputHash, manifests[variant].inputHash], [task?.runtimeHash, manifests[variant].runtimeHash]]
+        [task?.inputHash, manifests[variant].inputHash], [task?.runtimeHash, manifests[variant].runtimeHash],
+        ...(plan.summary.repository ? [[receipt?.repository?.sourceHead, plan.summary.repository.sourceHead],
+          [receipt?.repository?.restoredHead, plan.summary.repository.restoredHead]] : [])]
         .some(([actual, expected]) => actual !== undefined && actual !== expected);
       const valid = !evidenceChanged && !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
         && receipt.inputHash === manifests[variant].inputHash && receipt.runtimeHash === manifests[variant].runtimeHash
-        && receipt.beforeHash === plan.beforeHash && Array.isArray(receipt.modelCalls) && receipt.modelCalls.length > 0
+        && receipt.beforeHash === plan.beforeHash
+        && (!plan.summary.repository || receipt.repository?.gitAvailable === true && receipt.repository?.historyCommitCount === 1
+          && receipt.repository?.historyIncluded === false && receipt.repository?.headIdenticalToSource === false
+          && receipt.repository?.sourceHead === plan.summary.repository.sourceHead && receipt.repository?.restoredHead === plan.summary.repository.restoredHead)
+        && Array.isArray(receipt.modelCalls) && receipt.modelCalls.length > 0
         && receipt.modelCalls.every(c => c.model === plan.summary.model && typeof c.success === 'boolean' && Number.isFinite(c.durationMs) && c.durationMs >= 0);
       if (valid) {
+        if (plan.summary.repository) row.repository = { ...plan.summary.repository, gitAvailable: true, historyCommitCount: 1 };
         row.modelCalls = receipt.modelCalls;
         row.finalText = receipt.finalText;
         row.replySource = ['public', 'internal', 'none'].includes(receipt.replySource) ? receipt.replySource : 'unknown';
@@ -226,7 +247,10 @@ async function runComparison(config, options = {}) {
 }
 function formatComparison(result) {
   if (!result.supported) return '不可回放：缺材料或超出当前支持范围。\n';
-  const lines = ['模型：' + result.model, '变体\t轮次\t结果\t模型请求\t回复来源'];
+  const lines = ['模型：' + result.model];
+  if (result.repository) lines.push('Git：脱敏后重建，HEAD不同于源仓库；只有1个基线提交，无历史提交。',
+    '源HEAD：' + result.repository.sourceHead, '恢复HEAD：' + result.repository.restoredHead);
+  lines.push('变体\t轮次\t结果\t模型请求\t回复来源');
   for (const r of result.runs || []) {
     lines.push([r.variant, r.iteration, r.status, r.reason === 'run_evidence_unavailable' ? 'unknown' : r.modelCalls.length, r.replySource ?? 'unknown'].join('\t'));
     for (const [i, c] of r.modelCalls.entries()) lines.push('  #' + (i + 1) + ' ' + c.model + ' ' + Math.round(c.durationMs) + 'ms ' + (c.success ? 'success' : 'failed') + ' usage=' + JSON.stringify(c.usage ?? null));

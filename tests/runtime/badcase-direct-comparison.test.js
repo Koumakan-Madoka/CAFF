@@ -7,12 +7,13 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {} } = {}) {
+async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect the files.', files: files.map(p => ({ path: p,
     base64: Buffer.from(fileBytes[p] ?? p).toString('base64'), sha256: crypto.createHash('sha256').update(fileBytes[p] ?? p).digest('hex') })),
     sessionText: null, settings: null, systemPrompt: null,
+    ...(repositorySnapshot ? { repository: repositorySnapshot.report, gitFiles: repositorySnapshot.gitFiles } : {}),
     callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: {} } : null,
     ...(fileEvidencePaths === undefined ? {} : { fileEvidencePaths }) };
   fs.writeFileSync(path.join(root, 'evaluation-profile.json'), JSON.stringify(model));
@@ -38,6 +39,11 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
   const runtime = { session, services: { resourceLoader: { getExtensions: () => ({ errors: [] }) } }, dispose: async () => { disposed = true; } };
   const workerRequire = name => {
     if (name === 'node:fs') return workerFs;
+    if (name === 'node:child_process') return { execFileSync: (program, args, options) => {
+      assert.equal(program, 'git'); assert.equal(options.env.CAFF_BADCASE_MODEL_KEY, undefined);
+      return require('node:child_process').execFileSync(program, args.map(a => a === '/work/restored' ? mapped(a) : a),
+        { ...options, env: { ...require('../../scripts/badcase-capture/replay-git.cjs').gitEnvironment(), ...options.env, PATH: process.env.PATH, SystemRoot: process.env.SystemRoot } });
+    } };
     if (name === '/work/direct-model.cjs') return { ...require('../../scripts/badcase-capture/direct-model.cjs'), observeDirectFetch: () => observer };
     if (name === '/work/build/server/domain/runtime/badcase-capture/secrets') return require('../../build/server/domain/runtime/badcase-capture/secrets');
     if (name === '/work/caff-runtime-bootstrap.cjs') return { verifyCaffRuntimeStage: () => ({ manifest: { inputHash: 'input', runtimeHash: 'runtime' } }) };
@@ -167,6 +173,18 @@ test('worker consumes a large verified directory workspace without needing file 
   const { receipt, input } = await workerReceipt(t, { files: ['nested/large.txt', 'plain.txt'],
     fileBytes: { 'nested/large.txt': bytes }, directoryWorkspace: true });
   assert.equal(receipt.beforeHash, expectedTreeHash(input)); assert.equal(receipt.afterHash, expectedTreeHash(input));
+});
+test('actual worker verifies reconstructed Git, discloses changed HEAD/no history and hashes only captured working files', async t => {
+  const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-git-source-'));
+  t.after(() => fs.rmSync(sourceRoot, { recursive: true, force: true }));
+  const { prepareReplayGit, gitEnvironment } = require('../../scripts/badcase-capture/replay-git.cjs');
+  const git = args => require('node:child_process').execFileSync('git', ['-C', sourceRoot, '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args], { env: gitEnvironment(), encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  git(['init', '-q']); fs.writeFileSync(path.join(sourceRoot, 'source.txt'), 'before'); git(['add', 'source.txt']); git(['commit', '-q', '-m', 'unit test source']);
+  const head = git(['rev-parse', 'HEAD']).trim(), repositorySnapshot = prepareReplayGit({ sourceRoot, head }, { files: [{ path: 'source.txt' }], deletions: [] });
+  const { receipt, input } = await workerReceipt(t, { files: ['source.txt'], fileBytes: { 'source.txt': 'captured dirty file' }, directoryWorkspace: true, repositorySnapshot });
+  assert.equal(receipt.repository.gitAvailable, true); assert.equal(receipt.repository.historyCommitCount, 1);
+  assert.equal(receipt.repository.historyIncluded, false); assert.equal(receipt.repository.sourceHead, head);
+  assert.notEqual(receipt.repository.restoredHead, head); assert.equal(receipt.beforeHash, expectedTreeHash(input));
 });
 test('worker callback reply never falls back to internal SDK text, and source is explicit', async t => {
   const missing = (await workerReceipt(t)).receipt;

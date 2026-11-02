@@ -21,7 +21,21 @@ function prepareDirectReplayInput(input) {
     files.push({ path: 'replay-workspace/' + f.path, bytes });
     return { path: f.path, sha256: f.sha256, size: bytes.length };
   });
-  files.push({ path: 'replay-input.json', bytes: Buffer.from(JSON.stringify({ ...input, files: inventory, workspace: 'replay-workspace' })) });
+  let gitInventory;
+  if (input.gitFiles !== undefined) {
+    assert.ok(input.repository?.kind === 'sanitized-root-git-v1' && input.repository.historyIncluded === false
+      && input.repository.headIdenticalToSource === false && Array.isArray(input.gitFiles) && input.gitFiles.length === 6);
+    gitInventory = input.gitFiles.map(f => {
+      assert.match(f.path, /^\.git\/(?:HEAD|config|index|refs\/heads\/replay-baseline|objects\/pack\/pack-[a-f0-9]{40,64}\.(?:pack|idx))$/);
+      assert.equal(typeof f.base64, 'string');
+      const bytes = Buffer.from(f.base64, 'base64'); assert.equal(bytes.toString('base64'), f.base64);
+      assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), f.sha256);
+      files.push({ path: 'replay-workspace/' + f.path, bytes });
+      return { path: f.path, sha256: f.sha256, size: bytes.length };
+    });
+  } else assert.equal(input.repository, undefined);
+  files.push({ path: 'replay-input.json', bytes: Buffer.from(JSON.stringify({ ...input, files: inventory,
+    ...(gitInventory ? { gitFiles: gitInventory } : {}), workspace: 'replay-workspace' })) });
   manifestFor(files, { replayWorkspace: true });
   return files;
 }

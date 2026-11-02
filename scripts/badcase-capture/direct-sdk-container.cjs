@@ -45,13 +45,19 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   assert.ok(input.systemPrompt === null || typeof input.systemPrompt === 'string');
   const cwd = '/work/restored', agentDir = '/work/agent', sessionPath = '/work/session.jsonl';
   assert.ok(input.workspace === undefined || input.workspace === 'replay-workspace');
-  const directoryWorkspace = input.workspace === 'replay-workspace' && input.files.length > 0;
+  const gitFiles = input.gitFiles || [];
+  assert.ok(Array.isArray(gitFiles) && (gitFiles.length === 0 && input.repository === undefined
+    || gitFiles.length === 6 && input.repository?.kind === 'sanitized-root-git-v1' && input.repository.historyIncluded === false && input.repository.headIdenticalToSource === false));
+  const directoryWorkspace = input.workspace === 'replay-workspace' && input.files.length + gitFiles.length > 0;
   if (!directoryWorkspace) fs.mkdirSync(cwd, { mode: 0o700 });
   fs.mkdirSync(agentDir, { mode: 0o700 });
   const write = (p, b) => fs.writeFileSync(p, b, { flag: 'wx', mode: 0o600 });
   const names = new Set();
-  for (const f of input.files) {
-    assert.ok(typeof f.path === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(f.path) && f.path.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git') && !names.has(f.path));
+  for (const f of [...input.files, ...gitFiles]) {
+    const gitFile = gitFiles.includes(f);
+    assert.ok(typeof f.path === 'string' && !names.has(f.path) && (gitFile
+      ? /^\.git\/(?:HEAD|config|index|refs\/heads\/replay-baseline|objects\/pack\/pack-[a-f0-9]{40,64}\.(?:pack|idx))$/.test(f.path)
+      : /^[A-Za-z0-9_.@/-]+$/.test(f.path) && f.path.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git')));
     names.add(f.path);
     let bytes;
     if (directoryWorkspace) {
@@ -65,10 +71,20 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     assert.equal(hash(bytes), f.sha256);
   }
   if (directoryWorkspace) fs.renameSync('/work/replay-workspace', cwd);
+  let repository;
+  if (gitFiles.length) {
+    const { execFileSync } = require('node:child_process');
+    const git = args => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 10000, maxBuffer: 65536,
+      env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const restoredHead = git(['rev-parse', '--verify', 'HEAD']), count = git(['rev-list', '--all', '--count']);
+    assert.equal(restoredHead, input.repository.restoredHead); assert.notEqual(restoredHead, input.repository.sourceHead); assert.equal(count, '1');
+    repository = { ...input.repository, gitAvailable: true, historyCommitCount: 1 };
+  }
   const treeHash = () => {
     const rows = [];
     function walk(dir, relative = '') {
       for (const name of fs.readdirSync(dir).sort()) {
+        if (relative === '' && name === '.git' && repository) continue;
         const p = dir + '/' + name, rel = relative + name, st = fs.lstatSync(p);
         if (st.isDirectory()) walk(p, rel + '/'); else rows.push({ path: rel, type: st.isSymbolicLink() ? 'symlink' : 'file', sha256: st.isFile() ? hash(fs.readFileSync(p)) : null });
       }
@@ -139,6 +155,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       success: !threw && final?.stopReason === 'stop' && observer.calls.length > 0 && observer.calls.every(c => c.success),
       historyMessages: initialHistory.length, historyHash: hash(JSON.stringify(initialHistory)), tools, toolCalls,
       modelCalls: observer.calls, finalText, replySource, beforeHash, afterHash: treeHash(),
+      ...(repository ? { repository } : {}),
       ...(input.fileEvidencePaths === undefined ? {} : { fileEvidence: collectFileEvidence(cwd, input.fileEvidencePaths, key) }),
       // No worker self-score. The host scores only after container removal.
       scored: false, sealedCheckpointVerified: false };
