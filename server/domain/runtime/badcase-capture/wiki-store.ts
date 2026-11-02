@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
 import { buildWikiCandidate, resolveWikiCandidate } from './wiki-candidate';
-import { assignMarkedCaseSplit, planReplaySplit } from './wiki-split';
+import { assignPatternQuotaSplit, planReplaySplit } from './wiki-split';
 import { validateSealRequest } from './sealed-case';
 import { buildGlobalWikiCandidate, resolveGlobalWikiCandidate } from './wiki-global-candidate';
 
@@ -61,7 +61,7 @@ function textCase(value: any) {
     traceState: value.traceState, messageTruncated: value.messageTruncated, traceTruncated: value.traceTruncated };
 }
 function markedCase(value: any) {
-  shape(value, ['source', 'role', 'actual', 'expected', 'message', 'traceExcerpt', 'traceState', 'messageTruncated', 'traceTruncated']);
+  shape(value, ['source', 'role', 'actual', 'expected', 'message', 'traceExcerpt', 'traceState', 'messageTruncated', 'traceTruncated', 'sealedCheckpointId', 'createdAt']);
   shape(value.source, ['projectId', 'conversationId', 'conversationTitle', 'messageId', 'agentId']);
   const s = value.source;
   const source = { origin: 'local-mark', projectId: s.projectId === null ? null : id(s.projectId), conversationId: id(s.conversationId),
@@ -69,8 +69,11 @@ function markedCase(value: any) {
   if (!['available', 'missing'].includes(value.traceState) || typeof value.messageTruncated !== 'boolean' || typeof value.traceTruncated !== 'boolean') throw fail('wiki_invalid_input');
   const message = text(value.message, 32768, true), traceExcerpt = text(value.traceExcerpt, 32768, true);
   if (value.traceState === 'missing' && (traceExcerpt !== '' || value.traceTruncated)) throw fail('wiki_invalid_input');
+  if (value.createdAt !== undefined && (typeof value.createdAt !== 'string' || !Number.isFinite(Date.parse(value.createdAt)))) throw fail('wiki_invalid_input');
   const caseId = `marked-${hash(JSON.stringify({ projectId: source.projectId, conversationId: source.conversationId, messageId: source.messageId }))}`;
-  return { id: caseId, kind: 'marked-badcase', role: text(value.role, 128), split: assignMarkedCaseSplit(caseId), replayable: false, source,
+  return { id: caseId, kind: 'marked-badcase', role: text(value.role, 128), split: null, replayable: false, source,
+    ...(value.createdAt === undefined ? {} : { createdAt: new Date(value.createdAt).toISOString() }),
+    sealedCheckpointId: value.sealedCheckpointId == null ? null : id(value.sealedCheckpointId),
     actual: text(value.actual, 8192), expected: text(value.expected, 8192), message, traceExcerpt,
     traceState: value.traceState, messageTruncated: value.messageTruncated, traceTruncated: value.traceTruncated };
 }
@@ -84,7 +87,16 @@ function initialMemberships(state: any, caseId: string) {
 function caseStateView(state: any, caseId: string) {
   const c = state.cases.find((item: any) => item.id === caseId);
   if (!c) throw fail('wiki_unknown_case');
-  if (c.split !== 'train') return { caseId, status: 'holdout', memberships: [], reason: c.split === 'gate' ? '门槛用例不参与归纳' : '测试用例不参与归纳', updatedAt: c.createdAt };
+  if (c.split === null) return { caseId, status: 'pending-preclassification', memberships: [], reason: '', updatedAt: c.createdAt };
+  if (c.split !== 'train') {
+    if (c.preclassification) {
+      const confirmed = (state.classifications || []).find((v: any) => v.caseId === caseId);
+      return { caseId, status: confirmed ? 'classification-confirmed' : 'classification-pending',
+        memberships: confirmed?.entryId ? [{ entryId: confirmed.entryId, source: confirmed.source, at: confirmed.confirmedAt }] : [],
+        reason: confirmed ? '' : c.preclassification.reason, updatedAt: confirmed?.confirmedAt || c.preclassification.createdAt };
+    }
+    return { caseId, status: 'holdout', memberships: [], reason: c.split === 'gate' ? '门槛用例不参与归纳' : '测试用例不参与归纳', updatedAt: c.createdAt };
+  }
   const override = (state.caseStates || []).find((item: any) => item.caseId === caseId);
   if (override) return { caseId, status: override.memberships.length ? 'assigned' : override.status,
     memberships: structuredClone(override.memberships), reason: override.reason || '', updatedAt: override.updatedAt };
@@ -97,6 +109,11 @@ function saveCaseState(state: any, value: any) {
   const index = state.caseStates.findIndex((item: any) => item.caseId === value.caseId);
   const saved = { caseId: value.caseId, status: value.status, memberships: structuredClone(value.memberships || []), reason: value.reason || '', updatedAt: value.updatedAt };
   if (index < 0) state.caseStates.push(saved); else state.caseStates[index] = saved;
+}
+function saveClassification(state: any, caseId: string, entryId: string | null, source: string, now: string) {
+  const value = { caseId, entryId, source, confirmedAt: now };
+  const i = state.classifications.findIndex((v: any) => v.caseId === caseId);
+  if (i < 0) state.classifications.push(value); else state.classifications[i] = value;
 }
 function appendEvent(state: any, event: any) {
   const saved = { id: `event-${state.revision + 1}-${state.events.length + 1}`, createdAt: new Date().toISOString(), ...event };
@@ -122,7 +139,7 @@ export function createWikiStore(options: any) {
   const directory = global ? path.join(captureRoot, 'snapshots') : path.join(captureRoot, 'wiki', projectId!, 'snapshots');
   const identity = global ? { scope: 'global' } : { projectId };
   const fresh = () => ({ schemaVersion: 1, ...identity, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replayCases: [] as any[], replaySplit: null,
-    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[] });
+    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[], classifications: [] as any[] });
   function read(): any {
     let names: string[];
     try { names = fs.readdirSync(directory); }
@@ -152,7 +169,7 @@ export function createWikiStore(options: any) {
       if (record.replayCases !== undefined && !Array.isArray(record.replayCases)) throw Error();
       if (record.replaySplit === undefined) record.replaySplit = null;
       if (record.replaySplit !== null && (typeof record.replaySplit !== 'object' || Array.isArray(record.replaySplit))) throw Error();
-      for (const field of ['suggestions', 'caseStates', 'inductionRuns', 'events']) {
+      for (const field of ['suggestions', 'caseStates', 'inductionRuns', 'events', 'classifications']) {
         if (record[field] === undefined) record[field] = [];
         if (!Array.isArray(record[field])) throw Error();
       }
@@ -232,11 +249,16 @@ export function createWikiStore(options: any) {
           || (c.source.conversationId === candidate.source.conversationId && c.source.messageId === candidate.source.messageId));
         if (existing) {
           if (existing.actual !== candidate.actual || existing.expected !== candidate.expected) throw fail('wiki_case_conflict');
+          // A successful seal retry can supply evidence before allocation only;
+          // after freezing, neither the old group nor its inputs are rewritten.
+          if (existing.split === null && !existing.sealedCheckpointId && candidate.sealedCheckpointId) {
+            existing.sealedCheckpointId = candidate.sealedCheckpointId;
+            return { changed: true, value: { created: false, case: existing } };
+          }
           return { changed: false, value: { created: false, case: existing } };
         }
-        const now = new Date().toISOString(), saved = { ...candidate, createdAt: now };
+        const now = candidate.createdAt || new Date().toISOString(), saved = { ...candidate, createdAt: now };
         state.cases.push(saved);
-        saveCaseState(state, { caseId: saved.id, status: saved.split === 'train' ? 'pending' : 'holdout', memberships: [], reason: '', updatedAt: now });
         appendEvent(state, { type: 'case-marked', caseIds: [saved.id], split: saved.split });
         return { changed: true, value: { created: true, case: saved } };
       });
@@ -313,7 +335,10 @@ export function createWikiStore(options: any) {
         return { changed, value: savedCases };
       }).value;
     },
-    recordInduction(input: any, expectedRevision?: number) {
+    recordPreclassification(input: any, expectedRevision?: number) {
+      return this.recordInduction(input, expectedRevision, 'preclassification');
+    },
+    recordInduction(input: any, expectedRevision?: number, phase = 'induction') {
       shape(input, ['caseIds', 'model', 'proof', 'results']);
       const caseIds = ids(input.caseIds), selected = new Set(caseIds);
       if (caseIds.length > 20 || input.model !== MODEL || !Array.isArray(input.results) || input.results.length !== caseIds.length) throw fail('wiki_invalid_input');
@@ -322,10 +347,15 @@ export function createWikiStore(options: any) {
         || !Array.isArray(input.proof.calls) || input.proof.cleaned !== true) throw fail('wiki_invalid_input');
       return change(state => {
         if (expectedRevision !== undefined && state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
+        const preclassify = phase === 'preclassification';
         for (const caseId of caseIds) {
           const c = state.cases.find((item: any) => item.id === caseId);
-          if (!c || c.split !== 'train' || caseStateView(state, caseId).status !== 'pending') throw fail('wiki_not_pending');
+          if (!c || (preclassify ? c.split !== null || c.kind !== 'marked-badcase'
+            : c.split !== 'train' || caseStateView(state, caseId).status !== 'pending')) throw fail('wiki_not_pending');
         }
+        // A preclassification run owns the complete pending batch, never a
+        // caller-chosen subset that could change quota allocation order.
+        if (preclassify && state.cases.some((c: any) => c.split === null && !selected.has(c.id))) throw fail('wiki_not_pending');
         const base = state.versions.at(-1), approved = new Set((base?.entries || []).filter((e: any) => e.status === 'approved').map((e: any) => e.id));
         const seen = new Set(), normalized = input.results.map((r: any) => {
           shape(r, ['caseId', 'kind', 'entryId', 'reason', 'confidence', 'proposal']);
@@ -341,6 +371,12 @@ export function createWikiStore(options: any) {
             if (r.entryId !== undefined || r.proposal !== undefined) throw fail('wiki_model_output_invalid');
             return { caseId, kind: r.kind, reason, confidence };
           }
+          if (preclassify) {
+            // Classification is not wiki induction: no new-pattern prose may
+            // be learned from the still-unallocated batch.
+            if (r.entryId !== undefined || r.proposal !== undefined) throw fail('wiki_model_output_invalid');
+            return { caseId, kind: r.kind, reason, confidence };
+          }
           const proposal = entry(r.proposal, selected);
           if (!proposal.caseIds.includes(caseId) || r.entryId !== undefined) throw fail('wiki_model_output_invalid');
           return { caseId, kind: r.kind, reason, confidence, proposal };
@@ -348,20 +384,39 @@ export function createWikiStore(options: any) {
         if (seen.size !== caseIds.length) throw fail('wiki_model_output_invalid');
         const now = new Date().toISOString();
         const run: any = { id: `induction-${state.revision + 1}-${hash(JSON.stringify({ caseIds, results: normalized, inputHash: input.proof.inputHash })).slice(0, 16)}`,
-          createdAt: now, model: MODEL, caseIds: [...caseIds], inputHash: input.proof.inputHash,
+          createdAt: now, phase, model: MODEL, caseIds: [...caseIds], inputHash: input.proof.inputHash,
           calls: structuredClone(input.proof.calls), cleaned: true,
           ...(input.proof.containerId === undefined ? {} : { containerId: text(input.proof.containerId, 128) }),
           ...(input.proof.isolation === undefined ? {} : { isolation: structuredClone(input.proof.isolation) }) };
+        if (preclassify) {
+          const ordered = caseIds.map(k => state.cases.find((c: any) => c.id === k)).sort((a: any, b: any) =>
+            a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+          for (const c of ordered) {
+            const r = normalized.find((v: any) => v.caseId === c.id)!;
+            let split: 'train' | 'gate' | 'test' = 'train';
+            if (r.kind === 'assign' && c.sealedCheckpointId) {
+              const linked = new Set(base.entries.find((e: any) => e.id === r.entryId && e.status === 'approved').caseIds);
+              const counts = { train: 0, gate: 0, test: 0 };
+              for (const previous of state.cases) if (Object.hasOwn(counts, previous.split)
+                && (previous.preclassification?.entryId === r.entryId || linked.has(previous.id))) counts[previous.split as keyof typeof counts]++;
+              split = assignPatternQuotaSplit(counts);
+            }
+            c.split = split;
+            c.preclassification = { ...structuredClone(r), runId: run.id, createdAt: now };
+            appendEvent(state, { type: 'case-preclassified', caseIds: [c.id], runId: run.id, split, kind: r.kind, reason: r.reason, ...(r.entryId ? { entryId: r.entryId } : {}) });
+          }
+        }
+        const trainingCaseIds = caseIds.filter(k => state.cases.find((c: any) => c.id === k).split === 'train');
         let nextEntry = 1 + state.versions.flatMap((v: any) => v.entries).reduce((max: number, e: any) => {
           const match = /^entry-(\d+)$/.exec(e.id); return Math.max(max, match ? Number(match[1]) : 0);
         }, 0);
         const proposalEntries = new Map();
-        for (const r of normalized.filter((item: any) => item.kind === 'new')) {
+        for (const r of normalized.filter((item: any) => item.kind === 'new' && !preclassify)) {
           const key = JSON.stringify(r.proposal);
           if (!proposalEntries.has(key)) proposalEntries.set(key, { id: `entry-${nextEntry++}`, proposal: r.proposal, suggestionCaseIds: [] });
           proposalEntries.get(key).suggestionCaseIds.push(r.caseId);
         }
-        const suggestions = normalized.map((r: any) => {
+        const suggestions = normalized.filter((r: any) => !(preclassify && r.kind === 'new')).map((r: any) => {
           const proposalEntry = r.kind === 'new' ? [...proposalEntries.values()].find((p: any) => JSON.stringify(p.proposal) === JSON.stringify(r.proposal)) : null;
           return { id: `suggestion-${hash(run.id + '\0' + r.caseId + '\0' + r.kind).slice(0, 24)}`, runId: run.id, caseId: r.caseId,
             kind: r.kind, ...(r.kind === 'none' ? {} : { entryId: r.kind === 'new' ? proposalEntry.id : r.entryId }),
@@ -369,7 +424,7 @@ export function createWikiStore(options: any) {
         });
         let version: any = null;
         if (proposalEntries.size) {
-          const allCaseIds = [...new Set([...(base?.caseIds || []), ...caseIds])];
+          const allCaseIds = [...new Set([...(base?.caseIds || []), ...trainingCaseIds])];
           const entries = structuredClone(base?.entries || []);
           for (const p of proposalEntries.values()) {
             const suggestionIds = suggestions.filter((s: any) => s.kind === 'new' && s.entryId === p.id).map((s: any) => s.id);
@@ -385,13 +440,13 @@ export function createWikiStore(options: any) {
             caseIds: allCaseIds, trainingHash: hash(JSON.stringify(allCaseIds)), entries, unclassified, inductionRunId: run.id };
           state.versions.push(version); run.versionId = version.id;
         }
-        for (const r of normalized) {
+        for (const r of normalized.filter((v: any) => trainingCaseIds.includes(v.caseId))) {
           const current = caseStateView(state, r.caseId);
-          saveCaseState(state, { caseId: r.caseId, status: r.kind === 'none' ? 'unfit' : 'suggested',
+          saveCaseState(state, { caseId: r.caseId, status: preclassify && r.kind === 'new' ? 'pending' : r.kind === 'none' ? 'unfit' : 'suggested',
             memberships: current.memberships, reason: r.reason, updatedAt: now });
         }
         state.suggestions.push(...suggestions); state.inductionRuns.push(run);
-        appendEvent(state, { type: 'induction-run', runId: run.id, caseIds: [...caseIds], ...(version ? { versionId: version.id } : {}) });
+        appendEvent(state, { type: preclassify ? 'preclassification-run' : 'induction-run', runId: run.id, caseIds: [...caseIds], ...(version ? { versionId: version.id } : {}) });
         return { changed: true, value: { run, suggestions, version } };
       }).value;
     },
@@ -406,6 +461,17 @@ export function createWikiStore(options: any) {
         if (suggestion.status !== 'pending') throw fail('wiki_suggestion_resolved');
         if (suggestion.kind === 'new') throw fail('wiki_suggestion_review_required');
         const current = caseStateView(state, suggestion.caseId), now = new Date().toISOString();
+        const c = state.cases.find((v: any) => v.id === suggestion.caseId);
+        if (c.split !== 'train') {
+          if (!c.preclassification || suggestion.kind !== 'assign') throw fail('wiki_unknown_training_case');
+          if (input.decision === 'accepted') {
+            if (!state.versions.at(-1)?.entries.some((e: any) => e.id === suggestion.entryId && e.status === 'approved')) throw fail('wiki_entry_not_found');
+            saveClassification(state, c.id, suggestion.entryId, 'model-confirmed', now);
+          }
+          suggestion.status = input.decision; suggestion.resolvedAt = now;
+          appendEvent(state, { type: input.decision === 'accepted' ? 'classification-confirmed' : 'classification-rejected', caseIds: [c.id], suggestionId, entryId: suggestion.entryId });
+          return { changed: true, value: suggestion };
+        }
         if (input.decision === 'accepted' && suggestion.kind === 'assign') {
           const approved = state.versions.at(-1)?.entries.some((e: any) => e.id === suggestion.entryId && e.status === 'approved');
           if (!approved) throw fail('wiki_entry_not_found');
@@ -428,7 +494,17 @@ export function createWikiStore(options: any) {
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         const current = caseStateView(state, caseId);
         if (current.status === 'holdout') throw fail('wiki_unknown_training_case');
+        if (current.status === 'pending-preclassification') throw fail('wiki_not_pending');
         const now = new Date().toISOString();
+        const c = state.cases.find((v: any) => v.id === caseId);
+        if (c.split !== 'train') {
+          if (!c.preclassification) throw fail('wiki_unknown_training_case');
+          if (input.entryId !== null && !state.versions.at(-1)?.entries.some((e: any) => e.id === input.entryId && e.status === 'approved')) throw fail('wiki_entry_not_found');
+          saveClassification(state, caseId, input.entryId, 'manual', now);
+          for (const suggestion of state.suggestions.filter((s: any) => s.caseId === caseId && s.status === 'pending')) { suggestion.status = 'rejected'; suggestion.resolvedAt = now; }
+          appendEvent(state, { type: 'classification-confirmed', caseIds: [caseId], entryId: input.entryId, source: 'manual' });
+          return { changed: true, value: caseStateView(state, caseId) };
+        }
         if (input.entryId === null) {
           current.memberships = []; current.status = 'pending'; current.reason = '已手动移出模式';
         } else {

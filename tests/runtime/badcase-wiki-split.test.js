@@ -23,7 +23,7 @@ test('fixed-seed holdout is independent of input order and has a golden 6-case r
   }
   for (const bad of [[], ['duplicate', 'duplicate'], ['../unsafe'], Array.from({ length: 21 }, (_, i) => 'c' + i)]) assert.throws(() => planReplaySplit(bad), /invalid_case_ids/);
 });
-test('D15 per-ID hash has a pinned salt and fixed 50/25/25 buckets independent of batch or contents', () => {
+test('historical per-ID hash remains reproducible for old evidence but is no longer used for new marks', () => {
   assert.equal(WIKI_MARKED_SPLIT_SALT, 'wikiskill-marked-split-v1');
   const ids = ['marked-3c73ae7aa9a7de040ff21ae02dc758a47ea5ec828c49a736aead2889730e671b'];
   assert.equal(assignMarkedCaseSplit(ids[0]), 'train');

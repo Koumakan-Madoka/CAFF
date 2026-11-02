@@ -23,53 +23,30 @@ function setup(t) {
   return { root, config, store, oldCaseId, markedInput, marked, caseId: marked.case.id };
 }
 
-test('marked badcase enters train/pending with room title, is idempotent, and survives restart', t => {
+test('marked badcase enters unallocated/pending-preclassification with room title, is idempotent, and survives restart', t => {
   const h = setup(t), c = h.marked.case;
-  assert.equal(h.marked.created, true); assert.equal(c.kind, 'marked-badcase'); assert.equal(c.split, 'train'); assert.equal(c.replayable, false);
+  assert.equal(h.marked.created, true); assert.equal(c.kind, 'marked-badcase'); assert.equal(c.split, null); assert.equal(c.replayable, false);
   assert.equal(c.source.conversationTitle, '新房间'); assert.equal(c.source.messageId, 'new-message');
-  assert.deepEqual(h.store.getCaseStates().find(s => s.caseId === c.id), { caseId: c.id, status: 'pending', memberships: [], reason: '', updatedAt: c.createdAt });
+  assert.deepEqual(h.store.getCaseStates().find(s => s.caseId === c.id), { caseId: c.id, status: 'pending-preclassification', memberships: [], reason: '', updatedAt: c.createdAt });
   assert.equal(h.store.addMarkedCase(h.markedInput).created, false); assert.equal(h.store.read().cases.length, 2);
   const restored = createWikiStore(h.config);
-  assert.equal(restored.read().cases.length, 2); assert.equal(restored.getCaseStates().find(s => s.caseId === c.id).status, 'pending');
+  assert.equal(restored.read().cases.length, 2); assert.equal(restored.getCaseStates().find(s => s.caseId === c.id).status, 'pending-preclassification');
   assert.equal(restored.read().events.filter(e => e.type === 'case-marked').length, 1);
 });
 
-test('D15 new marked cases persist their hash split; gate/test never enter induction or manual membership', async t => {
-  const h = setup(t), before = h.store.read(), selected = [];
-  for (const [messageId, expectedSplit] of [['split-0', 'train'], ['split-2', 'gate'], ['split-3', 'test']]) {
-    const value = { ...h.markedInput, source: { ...h.markedInput.source, messageId }, role: 'GPT' };
-    const saved = h.store.addMarkedCase(value).case;
-    assert.equal(saved.split, expectedSplit); selected.push(saved);
-    assert.equal(h.store.addMarkedCase(value).case.split, expectedSplit);
-    assert.equal(createWikiStore(h.config).read().cases.find(c => c.id === saved.id).split, expectedSplit);
-    const status = h.store.getCaseStates().find(s => s.caseId === saved.id).status;
-    assert.equal(status, expectedSplit === 'train' ? 'pending' : 'holdout');
-    assert.throws(() => h.store.addMarkedCase({ ...value, split: 'train' }), /wiki_invalid_input/);
-    assert.throws(() => h.store.setReplaySplit({ caseIds: [saved.id] }), /wiki_split_frozen/);
-    // Case text, role and room title do not participate in allocation.
-    const other = createWikiStore({ globalRoot: path.join(h.root, 'other-' + messageId), sourceWorktree: h.config.sourceWorktree });
-    assert.equal(other.addMarkedCase({ ...value, role: 'Different', actual: '不同问题', expected: '不同期望', message: '不同原话' }).case.split, expectedSplit);
-  }
+test('D15 preclassification selects all unallocated marks, never the old training text; direct induction cannot bypass allocation', t => {
+  const h = setup(t), before = h.store.read();
   const prepared = prepareWikiInduction(h.store), payload = JSON.parse(prepared.files[0].bytes);
-  assert.deepEqual(prepared.caseIds.sort(), [h.caseId, selected[0].id].sort());
-  assert.equal(payload.cases.length, 2);
-  let reads = 0;
-  const { generateWiki } = require('../../scripts/badcase-capture/generate-wiki.cjs');
-  for (const c of selected.filter(c => c.split !== 'train')) {
-    assert.equal(JSON.stringify(payload).includes(c.id), false);
-    assert.throws(() => h.store.assignCase({ caseId: c.id, entryId: 'entry-1', expectedRevision: h.store.read().revision }), /wiki_unknown_training_case/);
-    assert.throws(() => h.store.saveDraft({ caseIds: [c.id], model: MODEL, entries: [], unclassified: [{ caseId: c.id, reason: '未归类' }] }), /wiki_unknown_training_case/);
-    assert.throws(() => h.store.recordInduction({ caseIds: [c.id], model: MODEL, proof: { inputHash: 'a'.repeat(64), calls: [], cleaned: true }, results: [{ caseId: c.id, kind: 'none', reason: '未归类', confidence: '低' }] }), /wiki_not_pending/);
-    await assert.rejects(generateWiki({ store: h.store, confirmed: true, caseIds: [c.id] }, { readKey: () => { reads++; } }), /wiki_unknown_training_case/);
-  }
-  assert.equal(reads, 0);
-  assert.deepEqual(h.store.read().cases.slice(0, before.cases.length), before.cases);
-  assert.deepEqual(h.store.read().versions, before.versions);
+  assert.equal(prepared.phase, 'preclassification'); assert.deepEqual(prepared.caseIds, [h.caseId]);
+  assert.equal(payload.cases.length, 1); assert.equal(JSON.stringify(payload).includes(h.oldCaseId), false);
+  assert.throws(() => h.store.recordInduction({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'a'.repeat(64), calls: [], cleaned: true }, results: [{ caseId: h.caseId, kind: 'none', reason: '未归类', confidence: '低' }] }), /wiki_not_pending/);
+  assert.throws(() => h.store.setReplaySplit({ caseIds: [h.caseId] }), /wiki_split_frozen|wiki_unknown_case/);
+  assert.deepEqual(h.store.read(), before);
 });
 
 test('pending -> assign suggestion -> confirmed/manual membership persists without rewriting approved entries', t => {
   const h = setup(t), before = JSON.stringify(h.store.read().versions[0].entries[0]);
-  const saved = h.store.recordInduction({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'a'.repeat(64), calls: [], cleaned: true }, results: [
+  const saved = h.store.recordPreclassification({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'a'.repeat(64), calls: [], cleaned: true }, results: [
     { caseId: h.caseId, kind: 'assign', entryId: 'entry-1', reason: '同属额外流程', confidence: '中' },
   ] }, 4);
   assert.equal(saved.version, null); assert.equal(saved.suggestions[0].status, 'pending');
@@ -92,12 +69,14 @@ test('pending -> assign suggestion -> confirmed/manual membership persists witho
 test('new-pattern suggestion creates a draft for normal review; approval assigns, rejection does not', t => {
   for (const decision of ['approved', 'rejected']) {
     const h = setup(t), before = JSON.stringify(h.store.read().versions[0].entries[0]);
+    h.store.recordPreclassification({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'b'.repeat(64), calls: [], cleaned: true },
+      results: [{ caseId: h.caseId, kind: 'new', reason: '需要新模式，先定为训练', confidence: '中' }] }, 4);
     const saved = h.store.recordInduction({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'b'.repeat(64), calls: [], cleaned: true }, results: [
       { caseId: h.caseId, kind: 'new', reason: '现有模式不覆盖', confidence: '中', proposal: { title: '额外流程', failureMode: '自行加流程', symptoms: '简单任务变复杂', rootCauseHypothesis: '过度设计', guideline: '先完成明确要求。', caseIds: [h.caseId] } },
-    ] }, 4);
+    ] }, 5);
     assert.equal(saved.version.entries.length, 2); assert.equal(saved.version.entries[1].status, 'draft');
     assert.equal(saved.version.entries[0].status, 'approved'); assert.equal(JSON.stringify(saved.version.entries[0]), before);
-    h.store.review({ versionId: saved.version.id, entryId: saved.version.entries[1].id, expectedRevision: 5, patch: { guideline: '先完成明确要求，再考虑扩展。' }, decision });
+    h.store.review({ versionId: saved.version.id, entryId: saved.version.entries[1].id, expectedRevision: 6, patch: { guideline: '先完成明确要求，再考虑扩展。' }, decision });
     const state = h.store.getCaseStates().find(s => s.caseId === h.caseId);
     assert.equal(h.store.read().suggestions[0].status, decision === 'approved' ? 'accepted' : 'rejected');
     assert.equal(state.status, decision === 'approved' ? 'assigned' : 'pending');
@@ -109,7 +88,7 @@ test('new-pattern suggestion creates a draft for normal review; approval assigns
 
 test('none suggestion is explicit unfit and does not create a pattern or membership', t => {
   const h = setup(t);
-  h.store.recordInduction({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'c'.repeat(64), calls: [], cleaned: true }, results: [
+  h.store.recordPreclassification({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'c'.repeat(64), calls: [], cleaned: true }, results: [
     { caseId: h.caseId, kind: 'none', reason: '只有孤立事实错误', confidence: '低' },
   ] }, 4);
   assert.equal(h.store.read().versions.length, 1); assert.equal(h.store.read().suggestions[0].kind, 'none');

@@ -168,7 +168,7 @@ test('incremental induction and membership endpoints persist suggestions and pro
   let calls = 0;
   h.options.runInduction = async ({ store, expectedRevision }) => {
     calls++; assert.equal(expectedRevision, 4);
-    return store.recordInduction({ caseIds: [marked.case.id], model: 'deepseek/deepseek-v4-flash', proof: { inputHash: 'a'.repeat(64), calls: [], cleaned: true },
+    return store.recordPreclassification({ caseIds: [marked.case.id], model: 'deepseek/deepseek-v4-flash', proof: { inputHash: 'a'.repeat(64), calls: [], cleaned: true },
       results: [{ caseId: marked.case.id, kind: 'assign', entryId: 'entry-1', reason: '症状一致', confidence: '高' }] }, expectedRevision);
   };
   const induction = await h.invoke({ confirmed: true, expectedRevision: 4 }, { pathname: '/api/wikiskill/induct' });
@@ -182,7 +182,7 @@ test('incremental induction and membership endpoints persist suggestions and pro
   const manual = await h.invoke({ confirmed: true, caseId: marked.case.id, entryId: 'entry-1', expectedRevision: 7 }, { pathname: '/api/wikiskill/membership' });
   assert.equal(manual.body.caseStates.find(s => s.caseId === marked.case.id).memberships[0].source, 'manual');
   assert.equal(createWikiStore(h.config).getCaseStates().find(s => s.caseId === marked.case.id).memberships[0].source, 'manual');
-  assert.equal(manual.body.events.some(e => e.type === 'induction-run'), true);
+  assert.equal(manual.body.events.some(e => e.type === 'preclassification-run'), true);
 });
 
 test('corrupt storage and unknown exceptions are sanitized, never returning raw paths', async t => {

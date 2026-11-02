@@ -42,23 +42,6 @@ export function createBadcaseSealingService(options: any) {
       // Annotation failures retain their existing HTTP error semantics. No seal
       // dependency can roll back or hide a successfully persisted annotation.
       const marked = flags.mark(input);
-      let wikiCase;
-      if (options.wikiStore) {
-        try {
-          const message = options.chatStore?.getMessage(input.messageId);
-          if (!message) throw Object.assign(Error('wiki_source_invalid'), { code: 'wiki_source_invalid' });
-          const conversation = options.chatStore?.getConversationWithoutMessages(input.conversationId);
-          const excerpt = messageExcerpt(message.content);
-          wikiCase = options.wikiStore.addMarkedCase({ source: { projectId: input.projectId, conversationId: input.conversationId,
-            conversationTitle: conversation?.title || '未命名房间', messageId: input.messageId, agentId: message.agentId },
-            role: message.agentId, actual: input.actual, expected: input.expected,
-            message: excerpt.text, traceExcerpt: '', traceState: 'missing', messageTruncated: excerpt.truncated, traceTruncated: false });
-        } catch {
-          // The annotation is already durable. A secondary Wiki failure must be
-          // visible without rolling back the mark, its seal, or leaking details.
-          wikiCase = { error: 'wiki_case_unavailable' };
-        }
-      }
       const key = marked.flag.flagId;
       if (!inFlight.has(key)) {
         const task = Promise.resolve().then(async () => {
@@ -84,6 +67,24 @@ export function createBadcaseSealingService(options: any) {
         void task.finally(() => { if (inFlight.get(key) === task) inFlight.delete(key); });
       }
       const seal = await inFlight.get(key);
+      let wikiCase;
+      if (options.wikiStore) {
+        try {
+          const message = options.chatStore?.getMessage(input.messageId);
+          if (!message) throw Object.assign(Error('wiki_source_invalid'), { code: 'wiki_source_invalid' });
+          const conversation = options.chatStore?.getConversationWithoutMessages(input.conversationId);
+          const excerpt = messageExcerpt(message.content);
+          wikiCase = options.wikiStore.addMarkedCase({ source: { projectId: input.projectId, conversationId: input.conversationId,
+            conversationTitle: conversation?.title || '未命名房间', messageId: input.messageId, agentId: message.agentId },
+            role: message.agentId, actual: input.actual, expected: input.expected, createdAt: marked.flag.createdAt,
+            sealedCheckpointId: seal?.checkpointSaved === true ? seal.association.checkpointId : null,
+            message: excerpt.text, traceExcerpt: '', traceState: 'missing', messageTruncated: excerpt.truncated, traceTruncated: false });
+        } catch {
+          // Annotation and seal are already durable. Never hide their success
+          // or leak dependency details if secondary Wiki ingestion fails.
+          wikiCase = { error: 'wiki_case_unavailable' };
+        }
+      }
       return { ...marked, ...(wikiCase ? { wikiCase } : {}), seal };
     },
   };

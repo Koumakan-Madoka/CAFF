@@ -241,14 +241,16 @@ test('real HTTP POST invokes readonly SQLite reader and file worker; restart GET
     const post = () => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base, 'X-CAFF-CSRF-Token': 'synthetic-csrf' }, body: JSON.stringify({ confirmed: true, actual: 'bad', expected: 'good' }) });
     const response = await post(); assert.equal(response.status, 201); const first = await response.json();
     assert.equal(first.seal.state, 'saved_incomplete'); assert.equal(first.seal.trajectory.selectedEventCount, 1);
-    assert.equal(first.wikiCase.created, true); assert.equal(first.wikiCase.case.split, 'gate'); // D15 pinned ID: p1/c1/m1
+    assert.equal(first.wikiCase.created, true); assert.equal(first.wikiCase.case.split, null);
+    assert.equal(first.wikiCase.case.sealedCheckpointId, 'cp1');
+    assert.equal(first.wikiCase.case.createdAt, first.flag.createdAt);
     assert.equal(first.wikiCase.case.source.conversationTitle, 'Synthetic');
     assert.equal(first.wikiCase.case.actual, 'bad'); assert.equal(first.wikiCase.case.expected, 'good');
     assert.equal(first.wikiCase.case.source.messageId, 'm1'); assert.equal(first.wikiCase.case.source.conversationId, 'c1');
     assert.equal(first.wikiCase.case.message, 'MESSAGE-BODY-NOT-ARCHIVED'); assert.equal(first.wikiCase.case.messageTruncated, false);
     const before = h.store.computeUsage('p1');
     chat.close(); chat = createChatAppStore({ agentDir: h.root, sqlitePath: databasePath }); controller = rebuild();
-    assert.equal(createWikiStore({ globalRoot: path.join(h.root, 'global-wiki'), sourceWorktree: path.join(h.root, 'source') }).getCaseStates()[0].status, 'holdout');
+    assert.equal(createWikiStore({ globalRoot: path.join(h.root, 'global-wiki'), sourceWorktree: path.join(h.root, 'source') }).getCaseStates()[0].status, 'pending-preclassification');
     assert.deepEqual((await (await fetch(url)).json()).seal, first.seal);
     const retry = await post(); assert.equal(retry.status, 200); assert.deepEqual((await retry.json()).seal, first.seal);
     assert.equal(first.wikiCase.case.kind, 'marked-badcase');

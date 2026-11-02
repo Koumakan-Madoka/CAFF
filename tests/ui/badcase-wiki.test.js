@@ -121,6 +121,28 @@ test('cases default to pattern groups and expose pending/suggested/unfit/holdout
   assert.equal(h.root.querySelector('.case > .manual-controls'), null);
 });
 
+test('D15 pending-preclassification and held-out classification appear in cases/inbox, never as wiki evidence', async t => {
+  const h = setup(t, (_url, _options, saved) => {
+    saved.cases[2].split = null; saved.caseStates[2].status = 'pending-preclassification';
+    saved.cases[3].split = 'gate'; saved.cases[3].preclassification = { kind: 'assign', entryId: 'entry-1', reason: '症状相符<script>bad()</script>', runId: 'preclass-run' };
+    saved.caseStates[3].status = 'classification-pending';
+    saved.cases[4].split = 'test'; saved.cases[4].preclassification = { kind: 'assign', entryId: 'entry-1', reason: '同类', runId: 'preclass-run' };
+    saved.caseStates[4].status = 'classification-confirmed'; saved.caseStates[4].memberships = [{ entryId: 'entry-1', source: 'manual', at: '2026-11-02T01:00:00Z' }];
+    return undefined;
+  });
+  await h.panel.load();
+  assert.match(h.root.querySelector('#wiki-inbox').textContent, /待预分类/);
+  assert.match(h.root.querySelector('#wiki-inbox').textContent, /用例 #4.*待确认|用例 #4.*建议归入/);
+  assert.doesNotMatch(h.root.querySelector('#wiki-page .evidence').textContent, /简单任务外又增加核对流程|把 room worktree/);
+  assert.equal(h.root.querySelector('#wiki-page .suggest-row'), null);
+  await h.click('[data-tab="cases"]');
+  assert.match(h.root.querySelector('#c-3').textContent, /待预分类/); assert.equal(h.root.querySelector('#c-3 [data-manual-assign]'), null);
+  assert.match(h.root.querySelector('#c-4').textContent, /预分类.*模式 1/); assert.match(h.root.querySelector('#c-4').textContent, /待确认/);
+  assert.match(h.root.querySelector('#c-5').textContent, /已确认/); assert.ok(h.root.querySelector('#c-4 [data-manual-assign]'));
+  assert.equal(h.root.querySelector('#c-4 script'), null);
+  assert.ok([...h.root.querySelectorAll('#cases-split option')].some(o => o.textContent === '待预分类'));
+});
+
 test('pending -> model suggestion -> confirm/manual membership uses real APIs and persists returned provenance', async t => {
   const h = setup(t); await h.panel.load(); await h.click('[data-induct]');
   assert.equal(h.posts()[0].url, '/api/wikiskill/induct'); assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, expectedRevision: 3 });
@@ -220,7 +242,7 @@ test('D14/D15 display Goal numbers and train/gate/test without changing stored s
   assert.equal(h.root.querySelector('#wiki-page img'),null);await h.click('[data-tab="cases"]');
   assert.match(h.root.querySelector('#c-4').textContent,/验收步骤术语太多/);assert.match(h.root.querySelector('#c-1 .chips').textContent,/训练.*本轮门槛/);
   assert.match(h.root.querySelector('#c-3').textContent,/门槛.*不参与归纳/);assert.equal(h.root.querySelector('#c-3 [data-manual-assign]'),null);
-  assert.deepEqual([...h.root.querySelectorAll('#cases-split option')].map(o=>o.textContent),['全部','训练','门槛','测试']);
+  assert.deepEqual([...h.root.querySelectorAll('#cases-split option')].map(o=>o.textContent),['全部','训练','门槛','测试','待预分类']);
   const split=h.root.querySelector('#cases-split');split.value='gate';split.dispatchEvent(new h.window.Event('change',{bubbles:true}));
   assert.ok(h.root.querySelector('#c-3'));assert.ok(h.root.querySelector('#c-1'));assert.equal(h.root.querySelector('#c-4'),null);
   assert.doesNotMatch(h.root.querySelector('#view-cases').textContent,/entry-1|entry-999/);assert.equal(h.posts().length,0);
