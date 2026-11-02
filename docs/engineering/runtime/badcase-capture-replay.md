@@ -6,7 +6,7 @@
 
 ### 2026-11-02 生产同配置扩展（M1 实现中）
 
-当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。以下已实现文件脱敏、目录传输、无历史 Git 基线及 Linux npm 依赖缓存，不宣称真实 GPT 准入或回放已通过；GPT 凭据链路仍待实现，真实准入另按 Goal 验证。
+当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。以下已实现文件脱敏、目录传输、无历史 Git 基线、Linux npm 依赖缓存及 GPT 宿主传输基础模块，不宣称真实 GPT 准入或回放已通过；GPT 容器/CLI 凭据接线仍待实现，真实准入另按 Goal 验证。
 
 - 新采集的纳入范围普通文件：Linux 与 Windows 均在内存中将哨兵命中的值替换为 `[*]`，保留路径、非秘密内容及可得 mode。私钥擦除整个块（缺 END 时擦到文件末尾），二进制/无效 UTF-8 逐字节保留非秘密部分；二进制沿用高置信哨兵子集，不扩大为键值误报。结构化 prompt/session/harness、分类用 Git 元数据和显式/敏感路径排除策略不变。
 - 仅对安全字节计算 CAS hash/size；不存原始秘密内容或其 hash。文件元数据另存 `secretRedacted/originalSize/redactionCount`，检查点记录 `secretRedactedPaths` 及文件数。脱敏本身不新增缺材料原因，也不升级 Windows subset/严格评测资格。
@@ -21,6 +21,14 @@
 - 仅支持 `package.json` + npm v2/v3 `package-lock.json`，公开 `registry.npmjs.org` HTTPS 下载及已封存的相对本地 package。锁中的有认证/非标准URL、缺本地材料、其他包管理器、`.npmrc`、独立 shrinkwrap 文件均拒绝；npm嵌套/捆绑条目可能缺少 integrity，沿用原lock且在计划/CLI披露数量，不补造校验值。缓存身份绑定全部封存文件/Git hash、package/lock hash、安装器源码、镜像ID/架构、Node版本及安装命令；完成且容器删除确认后才原子发布归档和固定回执，每次读取重新验hash，损坏拒绝、不静默重建。
 - 依赖归档单独流送，不进控制JSON；安装器先输出固定回执行，再在容器仍运行时流出归档（停止后tmpfs已不可取，不用 `docker cp`）。评测容器重新核验归档hash/条目和Node版本后解包到恢复副本，删除临时归档；两变体共享完全相同的缓存身份，逐次回执缺安装证据/身份不符不得评分。工作树hash不含新增的 `.git`/`node_modules` 管理数据，不声称依赖目录的逐字不变。安装最多15分钟，正式turn当前仍1–300秒；依赖恢复不等于已完成真实GPT回放。
 - 实测第0步lock安装时旧 `/tmp` 256MiB 耗尽（ENOSPC），因此 direct launcher（含其归纳调用方）统一为4GiB内存/同额swap上限、`/work` 2GiB、`/tmp` 1GiB tmpfs；仍为2 CPU/128 pids，无宿主挂载/发布端口。隔离投影现记录实际tmpfs及memorySwap。后续生产长轮次配置不以本次依赖测量替代验证。
+
+#### GPT 宿主传输基础模块（尚未接入评测入口）
+
+- `codex-transport.cjs` 仅供受信宿主调用，必须显式确认并指定宿主 `.pi-sandbox/auth.json` 绝对路径；构造不读凭据，首次有效请求才以只读、文件身份核验方式读取。只选择 `openai-codex` 的 `type/access/expires` 及 access JWT 的账号/过期声明，不使用 refresh 字段、不调用 OAuth 运行时、不写回、不自动重读轮换；检查源声明和 JWT 的较早过期时间，过期失败。只在内存保留 access lease；源文件不存在/不合法/链接/过期均不回退环境变量或其他 provider。JWT 本地解码不是签名认证，真实认证由供应方执行。
+- 固定请求身份为 `openai-codex/gpt-6.1-sol`、原生 `openai-codex-responses`、thinking `xhigh`、Fast 关闭。只接受该模型的 `stream:true/store:false` Responses 请求，拒绝改模型、thinking、service tier、目的端点或未知敏感请求头；宿主替换 Authorization/账号头，其余原生 JSON 或 zstd 请求字节不改写。调用方须选择原生 SSE；本切片不支持 WebSocket，也不宣称与生产自动 WebSocket 传输一致。
+- 每个传输实例使用专属 undici `ProxyAgent`，固定经宿主 `http://127.0.0.1:17890` 请求 `https://chatgpt.com/backend-api/codex/responses`；不依赖全局 dispatcher、NO_PROXY 或代理环境变量，不跟重定向、不直连回退。收到非200、协议错误事件、过期、网络或额度错误即锁闭，后续请求不得发送；错误正文和上游响应头不进入结果，只保留固定错误码。200 SSE 在内存收齐后保留原字节交原生 parser，发送前/返回前检查选定 access 不在正文中泄漏。
+- 为内存与失控响应保护，压缩及解压后模型请求各最多16MiB，响应最多32MiB；这不是仓库传输的旧4MiB上限。单请求显式期限1秒–45分钟，支持调用方中止、销毁专属连接；不代表正式turn已经放宽现有300秒上限。用量由原生 SDK 返回，不把HTTP200当模型成功，也不以token数推算ChatGPT剩余额度。
+- 当前只验证合成凭据、原生序列化/解析和本地假代理拒绝；**未接入 `compare-sealed`、批量配置或 Windows 入口，未读取真实账号或调用模型**。后续接线须保证真实 access 不进入容器/暂存输入/日志/证据，并在无模型准入通过后暂停，待用户选择并标记真实GPT用例。
 
 ### 采集与恢复
 
