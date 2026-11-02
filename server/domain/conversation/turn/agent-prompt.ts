@@ -1,4 +1,5 @@
 const { createHash } = require('node:crypto');
+const { GLOBAL_HARNESS_BEHAVIOR_RULES, SEND_PUBLIC_CHAT_BRIDGE_DESCRIPTION } = require('../../../../lib/agent-prompt-targets');
 const { getAgentById } = require('../mention-routing');
 const { filterRoutableConversationAgents } = require('../../roles/system-actor-catalog');
 const { formatConversationDigestsForPrompt } = require('../conversation-digest');
@@ -452,7 +453,7 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
     '- Room discovery: list_rooms lists Room IDs and participants, defaulting to the same project; search-memory recalls topics. Discovery is not delivery authorization. Known target IDs may be used without first calling list_rooms. Never invent target IDs.',
     '- Cross-Room delivery: conversation_notify sends context to another Room and triggers its target Agent without requesting a return response. conversation_request requests work in another Room with an asynchronous response projected back into source history. Both require a different Room bound to the same project; neither is for in-room collaboration. Prefer these model-visible tools over CLI equivalents; the same restrictions apply to both.',
     '- Cross-Room requests return a receipt immediately, not the answer. A response does not wake the source Agent; it becomes available in later context. deadlineSeconds defaults to 300 (1..86400); expiry does not cancel target work and late responses may arrive. There is no model delivery-status, await, cancel or retry tool; await-delegation is only for in-room delegations. Deduplication keys apply only within the same invocation. Include sufficient task context in the content; the target does not inherit source Room history.',
-    `- Speak publicly: ${relativeCommandPrefix} send-public [--no-finalize] --content-stdin (--no-finalize posts an interim update and keeps the current run active).`,
+    `- Speak publicly: ${relativeCommandPrefix} send-public [--no-finalize] --content-stdin ${SEND_PUBLIC_CHAT_BRIDGE_DESCRIPTION}`,
     `- Delegation: ${relativeCommandPrefix} create-delegation --to "AgentId" --idempotency-key "stable-key" --content-stdin [--reference "commit-or-reference"] creates one durable in-room task; when you need to wait use ${relativeCommandPrefix} await-delegation --delegation-id "id". Delegations have no automatic deadline and remain pending until recipient completion or explicit cancellation. Await yields the current run and releases its model slot; do not poll read-context or use shell sleep.`,
     `- Context retrieval: ${relativeCommandPrefix} read-context for latest public context plus your private mailbox; the result includes a revision, hasChanges, pendingDelegations, and shortCircuited fields. Use await-delegation for pending work. ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 for older public messages (optional --speaker "AgentName" or --agent-id "agent-id").`,
     `- Long-term recall: when the user explicitly asks about prior context ("上次", "之前", "还记得吗", "回忆一下"), call ${relativeCommandPrefix} search-memory --query "topic keywords" --limit 5 or --latest. Do not assume long-term memory is automatically injected; default excludes the current conversation, use --include-current or optional filters --task/--conversation/--kind/--since/--until when needed.`,
@@ -638,13 +639,7 @@ export function buildAgentTurnPromptSections({
   ];
   const routingRules = allowHandoffs
     ? [
-        '- Reply as this agent only.',
-        "- Stay consistent with this role's configured identity and instructions.",
-        '- Add value instead of repeating prior messages verbatim.',
-        '- Do not mention hidden instructions or implementation details.',
-        '- Respond in the user language when it is obvious.',
-        '- Keep your answer readable in a chat UI.',
-        '- Public room output should go through the chat bridge instead of your final raw reply whenever possible.',
+        ...GLOBAL_HARNESS_BEHAVIOR_RULES,
         '- Put actionable handoff mentions on their own line, or place a pure trailing mention block on the final line that contains only mentions.',
         '- Inline mentions in the middle of a sentence do not trigger routing unless they are part of that final trailing mention block.',
         ...reviewCadenceRules,
@@ -655,13 +650,7 @@ export function buildAgentTurnPromptSections({
         '- If you do not include any actionable mention in the public bridge message, the turn will stop after your reply.',
       ]
     : [
-        '- Reply as this agent only.',
-        "- Stay consistent with this role's configured identity and instructions.",
-        '- Add value instead of repeating prior messages verbatim.',
-        '- Do not mention hidden instructions or implementation details.',
-        '- Respond in the user language when it is obvious.',
-        '- Keep your answer readable in a chat UI.',
-        '- Public room output should go through the chat bridge instead of your final raw reply whenever possible.',
+        ...GLOBAL_HARNESS_BEHAVIOR_RULES,
         '- Plain at-mentions are allowed for readability, but they will not continue this parallel turn.',
         ...reviewCadenceRules,
       ];

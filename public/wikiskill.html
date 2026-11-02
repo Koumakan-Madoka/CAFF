@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CAFF WikiSkill</title>
+    <script src="/shared/theme.js"></script>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/wikiskill.css" />
+    <script defer src="/shared/icons.js"></script>
+    <script defer src="/shared/api-client.js"></script>
+    <script defer src="/shared/badcase-wiki.js"></script>
+    <script defer src="/wikiskill.js"></script>
+  </head>
+  <body class="management-app" data-page="wikiskill">
+    <div class="management-shell">
+      <nav class="rail" aria-label="主导航">
+        <a class="rail-link" href="/" title="聊天工作台" aria-label="聊天工作台"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-chat"></use></svg></a>
+        <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-users"></use></svg></a>
+        <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-puzzle"></use></svg></a>
+        <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-folder"></use></svg></a>
+        <a class="rail-link" aria-current="page" href="/wikiskill.html" title="WikiSkill" aria-label="WikiSkill"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-file-text"></use></svg></a>
+        <a class="rail-link" href="/metrics.html" title="评测报表" aria-label="评测报表"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-bar-chart"></use></svg></a>
+        <span class="spacer"></span>
+        <button class="rail-button theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="切换为深色主题" title="切换为深色主题"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-moon"></use></svg></button>
+      </nav>
+      <div class="management-main">
+        <main class="wikiskill-content" aria-label="WikiSkill 全局调优">
+          <div id="badcase-wiki-panel"></div>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

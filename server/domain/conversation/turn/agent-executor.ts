@@ -1,10 +1,12 @@
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const { createHttpError } = require('../../../http/http-errors');
 const { createConfiguredModelCatalog } = require('../../models/configured-model-catalog');
 const { createServiceTierState, recordServiceTierRequest, snapshotServiceTier } = require('../../../../lib/service-tier');
 const { inspectModelConfiguration } = require('../../models/model-configuration');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
@@ -13,6 +15,7 @@ const {
   resolveIntegerSettingCandidates,
   resolveSetting,
   resolveSessionPath,
+  resolveSdkStartConfig,
   resolveThinkingSetting,
   sanitizeSessionName,
   startRun,
@@ -62,9 +65,107 @@ const { summarizeModelUsageCalls, summarizeTokenUsage } = require('../../runtime
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
 const { getSessionGoal } = require('../session-goal');
+const { inspectPortableAgentConfig } = require('../../runtime/badcase-capture/portable-inputs');
 
 const HEARTBEAT_EVENT_REASON_LIMIT = 200;
 const TURN_PREVIEW_LENGTH = 180;
+
+// Badcase 采集的 harness 身份（契约 §2.4/§5：回放必须固定 harness/skill 内容版本，
+// 未验证则降级为不完整）。serverVersion 优先取当前代码的 git SHA，不可得时回退
+// package.json 版本；懒计算并缓存，失败返回空串由采集器标记 harness_config_unverified。
+let cachedCaptureServerVersion: string | null = null;
+function resolveCaptureServerVersion() {
+  if (cachedCaptureServerVersion !== null) {
+    return cachedCaptureServerVersion;
+  }
+  let version = '';
+  try {
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      cwd: __dirname,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (sha) {
+      version = `git:${sha}`;
+    }
+  } catch {}
+  if (!version) {
+    try {
+      let dir = __dirname;
+      for (let depth = 0; depth < 6; depth += 1) {
+        const pkgPath = path.join(dir, 'package.json');
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+          if (pkg && pkg.version) {
+            version = `pkg:${String(pkg.version)}`;
+            break;
+          }
+        }
+        dir = path.dirname(dir);
+      }
+    } catch {}
+  }
+  cachedCaptureServerVersion = version;
+  return version;
+}
+
+// 为声明的 skillIds 生成内容快照（id + 来源 + 内容 + sha256），供采集器归档进 CAS，
+// 使回放包自包含、可审计；skill 无法解析时保留空 sha256，由采集器标记不完整。
+function buildCaptureSkillSnapshots(skillIds: any, resolvedSkills: any, seen: any) {
+  const snapshots: any[] = [];
+  const resolvedById = new Map();
+  for (const skill of Array.isArray(resolvedSkills) ? resolvedSkills : []) {
+    if (skill && skill.id && !resolvedById.has(skill.id)) {
+      resolvedById.set(skill.id, skill);
+    }
+  }
+  for (const rawId of Array.isArray(skillIds) ? skillIds : []) {
+    const id = String(rawId || '').trim();
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    const skill = resolvedById.get(id);
+    if (!skill) {
+      snapshots.push({ id, source: '', sha256: '', content: '' });
+      continue;
+    }
+    const content = `${String(skill.skillMarkdown || '')}\n${String(skill.openaiYaml || '')}`;
+    snapshots.push({
+      id,
+      source: String(skill.source || ''),
+      sha256: createHash('sha256').update(content, 'utf8').digest('hex'),
+      content,
+    });
+  }
+  return snapshots;
+}
+
+// 被测 pi 运行时版本（harness 身份的一部分）。懒计算并缓存；不可得时返回空串，
+// 由采集器将 configSnapshot 与声明核对，不存在静默跳过。
+let cachedCapturePiVersion: string | null = null;
+// Preserve native ESM resolution under the CommonJS build. Use a distinct
+// Function source: Node/V8 may cache identical bodies across CJS modules,
+// changing the parent URL of another module's relative dynamic imports.
+const importCaptureMetadata = Function('captureMetadataUrl', 'return import(captureMetadataUrl)');
+async function resolveCapturePiVersion() {
+  if (cachedCapturePiVersion !== null) {
+    return cachedCapturePiVersion;
+  }
+  let version = '';
+  try {
+    // The SDK exports only an ESM import entry, not package.json or a require
+    // entry. Reuse the metadata-only resolver anchored beside pi-sdk-host;
+    // never load the SDK, guess the version from the lockfile, or bypass pins.
+    const moduleUrl = pathToFileURL(require.resolve('../../../../lib/pi-model-config-validator.mjs')).href;
+    const metadata = await importCaptureMetadata(moduleUrl);
+    const source = metadata.resolvePinnedPiModelConfigSource();
+    metadata.assertPinnedPiModelConfigSource(source);
+    version = `pi:${source.codingAgent.version}`;
+  } catch {}
+  cachedCapturePiVersion = version;
+  return version;
+}
 const MAX_PRIVATE_CONTEXT_MESSAGES = 8;
 const MAX_RELATED_MEMORY_SEGMENTS = 5;
 const MAX_RELATED_MEMORY_CANDIDATE_SEGMENTS = 15;
@@ -1426,6 +1527,10 @@ export function createAgentExecutor(options: any = {}) {
     typeof options.onAssistantMessageCompleted === 'function' ? options.onAssistantMessageCompleted : null;
   const enableAutomaticRelatedMemory = options.enableAutomaticRelatedMemory === true;
   const delegationRuntime = options.delegationRuntime || null;
+  // Badcase 采集服务（Goal: badcase capture/replay MVP）。缺省时完全不采集。
+  const badcaseCapture = options.badcaseCapture && typeof options.badcaseCapture.captureTurnCheckpoint === 'function'
+    ? options.badcaseCapture
+    : null;
 
   async function executeConversationAgent({
     runStore,
@@ -2215,135 +2320,267 @@ export function createAgentExecutor(options: any = {}) {
       },
     };
     let handle: any = null;
-    try {
-      handle = startRun(provider, model, prompt, runOptions);
-    } catch (startError) {
-      if (sessionReuseClaim && typeof store.restoreAgentSessionReuse === 'function') {
-        // The run never reached the provider session, so the claimed session is
-        // still clean; restore its reusable snapshot before propagating.
-        try {
-          store.restoreAgentSessionReuse(sessionReuseClaim, nowIso());
-        } catch {}
-        sessionReuseClaim = null;
-      }
-      throw startError;
-    }
-    activeRunHandle = handle;
-    // Tag the run handle with its stage so per-trace stop cancels only this
-    // stage's handle instead of every handle registered on the turn.
-    handle.turnStageAgentId = agent.id;
-    registerTurnHandle(turnState, handle);
-
-    // Close the narrow window between the stage stop request and handle
-    // registration (registerTurnHandle only honors turn-level stops).
-    if (stage.stopRequested && typeof handle.cancel === 'function') {
+    // Badcase 采集挂点：turn 执行前（startRun 之前），此刻 prompt、模型配置、
+    // fresh/resume 模式均已确定，agent 尚未触碰文件系统。采集失败不阻塞用户 turn，
+    // 但失败原因由采集服务诚实记录（不伪造成功检查点）。
+    let badcaseCheckpointId = '';
+    let capturedSdkStartConfig: any = null;
+    if (badcaseCapture) {
       try {
-        handle.cancel(stage.stopReason || 'Stopped by user');
-      } catch {}
+        capturedSdkStartConfig = resolveSdkStartConfig(provider, model, runOptions);
+        // Capture the exact effective cwd used by startRun's SDK descriptor.
+        // Room metadata may be stale relative to the queued execution binding;
+        // it is never a fallback target or authority for a different directory.
+        // The collector still requires this root's own explicit grant and pin.
+        const captureTargetDir = capturedSdkStartConfig.cwd;
+        // Accept synchronous collectors and future asynchronous collectors, but
+        // never cross startRun while a pre-turn capture is still in flight.
+        const captureResult = await badcaseCapture.captureTurnCheckpoint({
+          projectId: String(conversation.projectScopeId || conversation.projectId || '').trim(),
+          targetDir: captureTargetDir,
+          conversationId,
+          turnId,
+          agentId: agent.id,
+          userMessageId: promptUserMessage?.id || '',
+          assistantMessageId: assistantMessage.id,
+          // Match the actual prompt snapshot, never substitute a newer user
+          // message if the source changed while the turn was being prepared.
+          callbackUserMessage: promptUserMessage ? Object.fromEntries(
+            ['id', 'content', 'senderName', 'status', 'createdAt', 'turnId']
+              .filter(key => promptUserMessage[key] !== undefined).map(key => [key, promptUserMessage[key]])) : null,
+          deliveryMode: resumeSession ? 'resume' : 'fresh',
+          prompt,
+          // GPT model-family roles intentionally have no private persona. Bind
+          // their existing routing/rule section as the append-only role body;
+          // this changes capture metadata, not the prompt sent to the SDK.
+          roleSection: deliveredPromptSections.find((section: any) => section.sectionKey === (
+            agent.roleKind === 'model_family' && agent.id === 'role-family-gpt' ? 'rules' : 'private_persona'
+          ))?.content || '',
+          // Use the actual invocation projection, not history attachment markers:
+          // text-only models may intentionally receive no image bytes.
+          images: runOptions.images,
+          controlledValues: {
+            CAFF_CHAT_API_URL: toolBaseUrl,
+            CAFF_CHAT_CALLBACK_TOKEN: toolInvocation.callbackToken,
+            CAFF_CHAT_INVOCATION_ID: toolInvocation.invocationId,
+            CAFF_CHAT_CONVERSATION_ID: conversationId,
+            CAFF_CHAT_TURN_ID: turnId,
+            CAFF_CHAT_TOOLS_PATH: toPortableShellPath(agentToolScriptPath),
+            CAFF_CHAT_TOOLS_RELATIVE_PATH: agentToolRelativePath,
+            PI_AGENT_SANDBOX_DIR: agentSandbox.sandboxDir,
+            PI_AGENT_PRIVATE_DIR: agentSandbox.privateDir,
+          },
+          sessionPath: resumeSession ? resolveSessionPath(sessionName, agentDir) : '',
+          environment: {
+            platform: process.platform,
+            arch: process.arch,
+            node: process.version,
+          },
+          runConfig: {
+            provider: String(provider || ''),
+            model: String(model || ''),
+            modelProfileId: String(agentConfig.profileId || ''),
+            modelProfileName: String(agentConfig.profileName || ''),
+            promptVersion: AGENT_PROMPT_VERSION,
+            skillIds: Array.isArray(agentConfig.skillIds) ? agentConfig.skillIds.slice() : [],
+            conversationSkillIds: Array.isArray(agentConfig.conversationSkillIds) ? agentConfig.conversationSkillIds.slice() : [],
+          },
+          harness: {
+            serverVersion: resolveCaptureServerVersion(),
+            // harness/tool 配置内容固定（GPT 复审 #3）：serverVersion 只是身份标识，
+            // 有效工具/sandbox/prompt 组装版本必须作为内容快照归档进 CAS。
+            configSnapshot: {
+              agentPromptVersion: AGENT_PROMPT_VERSION,
+              toolBridgeEnabled: true,
+              piVersion: await resolveCapturePiVersion(),
+              agentName: String(agent.name || ''),
+              deliveryMode: resumeSession ? 'resume' : 'fresh',
+              // Full credential-free IPC descriptor, not just model/version.
+              // This does NOT archive files referenced by these paths.
+              sdkStartConfig: structuredClone(capturedSdkStartConfig),
+              portableRuntime: inspectPortableAgentConfig(capturedSdkStartConfig),
+            },
+            skillSnapshots: [
+              ...buildCaptureSkillSnapshots(agentConfig.skillIds, resolvedPersonaSkills, new Set()),
+              ...buildCaptureSkillSnapshots(
+                agentConfig.conversationSkillIds,
+                resolvedConversationSkills,
+                new Set(Array.isArray(agentConfig.skillIds) ? agentConfig.skillIds.map((id: any) => String(id || '').trim()) : [])
+              ),
+            ],
+          },
+        });
+        if (captureResult && captureResult.captured === true && captureResult.checkpointId) {
+          badcaseCheckpointId = captureResult.checkpointId;
+        }
+      } catch (captureError: any) {
+        console.error(
+          '[badcase-capture] turn checkpoint failed:',
+          captureError && captureError.message ? captureError.message : captureError
+        );
+      }
     }
-
-    const startedAt = nowIso();
-    let rawReply = '';
     let emptyFinalReplyReuseEvidence: any = null;
-    let lastLiveSessionToolStepId = '';
-    let lastLiveSessionToolSignature = '';
-    const liveSessionAnonymousToolTracker = {
-      nextIndex: 0,
-      activeStepId: '',
-      activeFingerprint: '',
-      activeToolName: '',
-      activeToolKind: '',
-    };
-    const startedMetadata = {
-      ...queuedMetadata,
-      sessionPath: handle.sessionPath || '',
-      streaming: true,
-      toolInvocationId: toolInvocation.invocationId,
-    };
+    try {
+      try {
+        // A user may stop the turn while capture (or its version preflight)
+        // yields. No provider session was touched: use the existing unstarted
+        // failure path to restore a claimed resume row and clean up callbacks.
+        if (turnState.stopRequested || stage.stopRequested) throw new Error('Stopped before agent run started');
+        // Ambient defaults can change while the collector awaits. Do not link
+        // that checkpoint to a run with a different effective SDK descriptor.
+        if (badcaseCheckpointId && capturedSdkStartConfig
+          && JSON.stringify(resolveSdkStartConfig(provider, model, runOptions)) !== JSON.stringify(capturedSdkStartConfig)) {
+          badcaseCheckpointId = '';
+          console.error('[badcase-capture] sdk_start_config_changed');
+        }
+        handle = startRun(provider, model, prompt, runOptions);
+      } catch (startError) {
+        if (sessionReuseClaim && typeof store.restoreAgentSessionReuse === 'function') {
+          // The run never reached the provider session, so the claimed session is
+          // still clean; restore its reusable snapshot before propagating.
+          try {
+            store.restoreAgentSessionReuse(sessionReuseClaim, nowIso());
+          } catch {}
+          sessionReuseClaim = null;
+        }
+        throw startError;
+      }
+      activeRunHandle = handle;
+      // Tag the run handle with its stage so per-trace stop cancels only this
+      // stage's handle instead of every handle registered on the turn.
+      handle.turnStageAgentId = agent.id;
+      registerTurnHandle(turnState, handle);
 
-    stage.runId = handle.runId || null;
-    stage.status = 'running';
-    stage.startedAt = startedAt;
-    stage.endedAt = null;
-    stage.heartbeatCount = 0;
-    stage.replyLength = 0;
-    stage.preview = '';
-    stage.finalContent = '';
-    stage.errorMessage = '';
-    stage.lastTextDeltaAt = null;
-    applyStageCurrentTool(stage, null);
-    turnState.updatedAt = startedAt;
-    syncCurrentTurnAgent(turnState);
+      // Close the narrow window between the stage stop request and handle
+      // registration (registerTurnHandle only honors turn-level stops).
+      if (stage.stopRequested && typeof handle.cancel === 'function') {
+        try {
+          handle.cancel(stage.stopReason || 'Stopped by user');
+        } catch {}
+      }
 
-    const startedMessage = store.updateMessage(assistantMessage.id, {
-      status: 'streaming',
-      taskId: stageTaskId,
-      runId: handle.runId || null,
-      metadata: startedMetadata,
-      contextSnapshot,
-    });
+      const startedAt = nowIso();
+      let rawReply = '';
+      let lastLiveSessionToolStepId = '';
+      let lastLiveSessionToolSignature = '';
+      const liveSessionAnonymousToolTracker = {
+        nextIndex: 0,
+        activeStepId: '',
+        activeFingerprint: '',
+        activeToolName: '',
+        activeToolKind: '',
+      };
+      const startedMetadata = {
+        ...queuedMetadata,
+        sessionPath: handle.sessionPath || '',
+        streaming: true,
+        toolInvocationId: toolInvocation.invocationId,
+        badcaseCheckpointId,
+      };
 
-    runStore.updateTask(stageTaskId, {
-      status: 'running',
-      parentRunId: queueItem.parentRunId || null,
-      runId: handle.runId,
-      sessionPath: handle.sessionPath,
-      startedAt,
-    });
-    runStore.appendTaskEvent(stageTaskId, 'agent_reply_started', {
-      agentId: agent.id,
-      agentName: agent.name,
-      runId: handle.runId,
-      sessionPath: handle.sessionPath,
-      hop,
-      routingMode,
-    });
+      stage.runId = handle.runId || null;
+      stage.status = 'running';
+      stage.startedAt = startedAt;
+      stage.endedAt = null;
+      stage.heartbeatCount = 0;
+      stage.replyLength = 0;
+      stage.preview = '';
+      stage.finalContent = '';
+      stage.errorMessage = '';
+      stage.lastTextDeltaAt = null;
+      applyStageCurrentTool(stage, null);
+      turnState.updatedAt = startedAt;
+      syncCurrentTurnAgent(turnState);
 
-    broadcastEvent('conversation_message_updated', { conversationId, message: startedMessage });
-    emitTurnProgress(turnState);
-
-    handle.on('pi_event', (event: any) => {
-      const liveTool = extractLiveSessionToolFromPiEvent(event && event.piEvent ? event.piEvent : null, {
-        agentDir,
-        createdAt: nowIso(),
-        currentToolName: stage.currentToolName,
-        currentToolKind: stage.currentToolKind,
-        currentToolStepId: stage.currentToolStepId,
-        anonymousTracker: liveSessionAnonymousToolTracker,
+      const startedMessage = store.updateMessage(assistantMessage.id, {
+        status: 'streaming',
+        taskId: stageTaskId,
+        runId: handle.runId || null,
+        metadata: startedMetadata,
+        contextSnapshot,
       });
 
-      if (!liveTool || !liveTool.currentTool) {
-        return;
-      }
+      runStore.updateTask(stageTaskId, {
+        status: 'running',
+        parentRunId: queueItem.parentRunId || null,
+        runId: handle.runId,
+        sessionPath: handle.sessionPath,
+        startedAt,
+      });
+      runStore.appendTaskEvent(stageTaskId, 'agent_reply_started', {
+        agentId: agent.id,
+        agentName: agent.name,
+        runId: handle.runId,
+        sessionPath: handle.sessionPath,
+        hop,
+        routingMode,
+      });
 
-      const rawStep = liveTool.step || null;
-      const step = rawStep
-        ? createToolObservabilityEvent(observabilityTimelineState, rawStep) || rawStep
-        : null;
-      const stepId = step && step.stepId ? String(step.stepId).trim() : '';
-      const stepSignature = liveSessionToolStepSignature(step);
-      const changed = updateStageCurrentTool(stage, turnState, emitTurnProgress, liveTool.currentTool);
-      const detailChanged = Boolean(
-        step &&
-          stepId &&
-          stepSignature &&
-          stepId === lastLiveSessionToolStepId &&
-          stepSignature !== lastLiveSessionToolSignature
-      );
+      broadcastEvent('conversation_message_updated', { conversationId, message: startedMessage });
+      emitTurnProgress(turnState);
 
-      if (stepId && stepSignature) {
-        lastLiveSessionToolStepId = stepId;
-        lastLiveSessionToolSignature = stepSignature;
-      } else if (changed) {
-        lastLiveSessionToolStepId = '';
-        lastLiveSessionToolSignature = '';
-      }
+      handle.on('pi_event', (event: any) => {
+        const liveTool = extractLiveSessionToolFromPiEvent(event && event.piEvent ? event.piEvent : null, {
+          agentDir,
+          createdAt: nowIso(),
+          currentToolName: stage.currentToolName,
+          currentToolKind: stage.currentToolKind,
+          currentToolStepId: stage.currentToolStepId,
+          anonymousTracker: liveSessionAnonymousToolTracker,
+        });
 
-      if (!step) {
-        return;
-      }
+        if (!liveTool || !liveTool.currentTool) {
+          return;
+        }
 
-      if (changed) {
+        const rawStep = liveTool.step || null;
+        const step = rawStep
+          ? createToolObservabilityEvent(observabilityTimelineState, rawStep) || rawStep
+          : null;
+        const stepId = step && step.stepId ? String(step.stepId).trim() : '';
+        const stepSignature = liveSessionToolStepSignature(step);
+        const changed = updateStageCurrentTool(stage, turnState, emitTurnProgress, liveTool.currentTool);
+        const detailChanged = Boolean(
+          step &&
+            stepId &&
+            stepSignature &&
+            stepId === lastLiveSessionToolStepId &&
+            stepSignature !== lastLiveSessionToolSignature
+        );
+
+        if (stepId && stepSignature) {
+          lastLiveSessionToolStepId = stepId;
+          lastLiveSessionToolSignature = stepSignature;
+        } else if (changed) {
+          lastLiveSessionToolStepId = '';
+          lastLiveSessionToolSignature = '';
+        }
+
+        if (!step) {
+          return;
+        }
+
+        if (changed) {
+          broadcastEvent('conversation_tool_event', {
+            conversationId,
+            turnId,
+            taskId: stageTaskId,
+            agentId: agent.id,
+            agentName: agent.name,
+            assistantMessageId: assistantMessage.id,
+            messageId: assistantMessage.id,
+            phase: 'started',
+            step,
+            timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
+          });
+          return;
+        }
+
+        if (!detailChanged) {
+          return;
+        }
+
         broadcastEvent('conversation_tool_event', {
           conversationId,
           turnId,
@@ -2352,30 +2589,11 @@ export function createAgentExecutor(options: any = {}) {
           agentName: agent.name,
           assistantMessageId: assistantMessage.id,
           messageId: assistantMessage.id,
-          phase: 'started',
+          phase: 'updated',
           step,
           timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
         });
-        return;
-      }
-
-      if (!detailChanged) {
-        return;
-      }
-
-      broadcastEvent('conversation_tool_event', {
-        conversationId,
-        turnId,
-        taskId: stageTaskId,
-        agentId: agent.id,
-        agentName: agent.name,
-        assistantMessageId: assistantMessage.id,
-        messageId: assistantMessage.id,
-        phase: 'updated',
-        step,
-        timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
       });
-    });
 
     // Turn time breakdown (contract §8): forward tool execution intervals to
     // the classification pipeline. Enqueue only — the turn path never awaits
@@ -2473,9 +2691,9 @@ export function createAgentExecutor(options: any = {}) {
     handle.on('system_prompt', (event: any) => {
       const systemPrompt = String(event && event.systemPrompt || '').trim();
 
-      if (!systemPrompt) {
-        return;
-      }
+        if (!systemPrompt) {
+          return;
+        }
 
       const phase = String(event && event.phase || '').trim();
       harnessSystemPrompt = systemPrompt;
@@ -2534,81 +2752,80 @@ export function createAgentExecutor(options: any = {}) {
       });
     });
 
-    handle.on('assistant_text_delta', (event: any) => {
-      rawReply += event.delta || '';
-      updateStageCurrentTool(stage, turnState, emitTurnProgress, null);
+      handle.on('assistant_text_delta', (event: any) => {
+        rawReply += event.delta || '';
+        updateStageCurrentTool(stage, turnState, emitTurnProgress, null);
 
-      if (!toolInvocation.publicToolUsed) {
-        return;
-      }
+        if (!toolInvocation.publicToolUsed) {
+          return;
+        }
 
-      const previewText = toolInvocation.lastPublicContent || extractStreamingPublicReplyPreview(rawReply) || '';
-      const deltaTimestamp = nowIso();
-      stage.status = 'running';
-      stage.replyLength = previewText.length;
-      stage.preview = clipText(previewText, TURN_PREVIEW_LENGTH);
-      stage.lastTextDeltaAt = deltaTimestamp;
-      turnState.updatedAt = deltaTimestamp;
-      syncCurrentTurnAgent(turnState);
-      emitTurnProgress(turnState);
-    });
-
-    handle.on('assistant_retry_discarded', (event: any) => {
-      rawReply = String(event && event.reply || '');
-    });
-
-    handle.on('heartbeat', (event: any) => {
-      stage.heartbeatCount = event.count || 0;
-      turnState.updatedAt = nowIso();
-      runStore.appendTaskEvent(stageTaskId, 'agent_reply_heartbeat', {
-        count: event.count,
-        reason: sanitizeReason(event.payload && event.payload.reason),
+        const previewText = toolInvocation.lastPublicContent || extractStreamingPublicReplyPreview(rawReply) || '';
+        const deltaTimestamp = nowIso();
+        stage.status = 'running';
+        stage.replyLength = previewText.length;
+        stage.preview = clipText(previewText, TURN_PREVIEW_LENGTH);
+        stage.lastTextDeltaAt = deltaTimestamp;
+        turnState.updatedAt = deltaTimestamp;
+        syncCurrentTurnAgent(turnState);
+        emitTurnProgress(turnState);
       });
-      emitTurnProgress(turnState);
-    });
 
-    handle.on('run_recovering', (event: any) => {
-      stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
-      applyStageCurrentTool(stage, null);
-      turnState.updatedAt = nowIso();
-      syncCurrentTurnAgent(turnState);
-      runStore.appendTaskEvent(stageTaskId, 'agent_reply_recovering', {
-        reason: {
-          type: String(event.reason && event.reason.type || '').trim(),
-          message: sanitizeReason(event.reason && event.reason.message),
-        },
-        attempt: Number(event.attempt) || 1,
-        toolName: String(event.toolName || '').trim().slice(0, 80),
+      handle.on('assistant_retry_discarded', (event: any) => {
+        rawReply = String(event && event.reply || '');
       });
-      emitTurnProgress(turnState);
-    });
 
-    handle.on('run_recovery_started', (event: any) => {
-      stage.errorMessage = '';
-      turnState.updatedAt = nowIso();
-      syncCurrentTurnAgent(turnState);
-      runStore.appendTaskEvent(stageTaskId, 'agent_reply_recovery_started', {
-        reason: {
-          type: String(event.reason && event.reason.type || '').trim(),
-          message: sanitizeReason(event.reason && event.reason.message),
-        },
-        attempt: Number(event.attempt) || 1,
-        toolName: String(event.toolName || '').trim().slice(0, 80),
+      handle.on('heartbeat', (event: any) => {
+        stage.heartbeatCount = event.count || 0;
+        turnState.updatedAt = nowIso();
+        runStore.appendTaskEvent(stageTaskId, 'agent_reply_heartbeat', {
+          count: event.count,
+          reason: sanitizeReason(event.payload && event.payload.reason),
+        });
+        emitTurnProgress(turnState);
       });
-      emitTurnProgress(turnState);
-    });
 
-    handle.on('run_terminating', (event: any) => {
-      stage.status = 'terminating';
-      stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
-      applyStageCurrentTool(stage, null);
-      turnState.updatedAt = nowIso();
-      syncCurrentTurnAgent(turnState);
-      runStore.appendTaskEvent(stageTaskId, 'agent_reply_terminating', event.reason || null);
-      emitTurnProgress(turnState);
-    });
+      handle.on('run_recovering', (event: any) => {
+        stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
+        applyStageCurrentTool(stage, null);
+        turnState.updatedAt = nowIso();
+        syncCurrentTurnAgent(turnState);
+        runStore.appendTaskEvent(stageTaskId, 'agent_reply_recovering', {
+          reason: {
+            type: String(event.reason && event.reason.type || '').trim(),
+            message: sanitizeReason(event.reason && event.reason.message),
+          },
+          attempt: Number(event.attempt) || 1,
+          toolName: String(event.toolName || '').trim().slice(0, 80),
+        });
+        emitTurnProgress(turnState);
+      });
 
-    try {
+      handle.on('run_recovery_started', (event: any) => {
+        stage.errorMessage = '';
+        turnState.updatedAt = nowIso();
+        syncCurrentTurnAgent(turnState);
+        runStore.appendTaskEvent(stageTaskId, 'agent_reply_recovery_started', {
+          reason: {
+            type: String(event.reason && event.reason.type || '').trim(),
+            message: sanitizeReason(event.reason && event.reason.message),
+          },
+          attempt: Number(event.attempt) || 1,
+          toolName: String(event.toolName || '').trim().slice(0, 80),
+        });
+        emitTurnProgress(turnState);
+      });
+
+      handle.on('run_terminating', (event: any) => {
+        stage.status = 'terminating';
+        stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
+        applyStageCurrentTool(stage, null);
+        turnState.updatedAt = nowIso();
+        syncCurrentTurnAgent(turnState);
+        runStore.appendTaskEvent(stageTaskId, 'agent_reply_terminating', event.reason || null);
+        emitTurnProgress(turnState);
+      });
+
       const result = await handle.resultPromise;
       const resolvedAssistantErrors = Array.isArray(result.assistantErrors)
         ? result.assistantErrors.map((value: any) => String(value || '').trim()).filter(Boolean)
@@ -2717,6 +2934,7 @@ export function createAgentExecutor(options: any = {}) {
       const tokenUsage = summarizeTokenUsage(result.usage);
       const modelUsage = summarizeModelUsageCalls(result.usageCalls);
       const finalMetadata = {
+        badcaseCheckpointId,
         provider,
         model,
         ...serviceTierMetadata(),
@@ -3012,6 +3230,8 @@ export function createAgentExecutor(options: any = {}) {
       const errorValue = error as any;
       const errorMessage = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error');
       const stopRequested = Boolean(turnState.stopRequested || (stage && stage.stopRequested));
+      const failedRunId = (errorValue && errorValue.runId) || (handle && handle.runId) || null;
+      const failedSessionPath = (errorValue && errorValue.sessionPath) || (handle && handle.sessionPath) || '';
       const errorUsage = errorValue && errorValue.usage && typeof errorValue.usage === 'object' && !Array.isArray(errorValue.usage) ? errorValue.usage : null;
       const errorTokenUsage = summarizeTokenUsage(errorUsage);
       const errorModelUsage = summarizeModelUsageCalls(errorValue && errorValue.usageCalls);
@@ -3022,9 +3242,10 @@ export function createAgentExecutor(options: any = {}) {
         content: existingMessage && existingMessage.content !== 'Thinking...' ? existingMessage.content : '',
         status: 'failed',
         taskId: stageTaskId,
-        runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
+        runId: failedRunId,
         errorMessage,
         metadata: {
+          badcaseCheckpointId,
           provider,
           model,
           sessionName,
@@ -3034,7 +3255,7 @@ export function createAgentExecutor(options: any = {}) {
           goalAutoContinue: strictGoalReuse,
           goalId: goal && goal.goalId || null,
           goalRevision: goal && goal.revision || null,
-          sessionPath: errorValue && errorValue.sessionPath ? errorValue.sessionPath : handle.sessionPath || '',
+          sessionPath: failedSessionPath,
           agentSandboxDir: agentSandbox.sandboxDir,
           agentPrivateDir: agentSandbox.privateDir,
           failure: true,
@@ -3066,7 +3287,7 @@ export function createAgentExecutor(options: any = {}) {
       });
 
       stage.status = 'failed';
-      stage.runId = errorValue && errorValue.runId ? errorValue.runId : handle.runId || null;
+      stage.runId = failedRunId;
       stage.replyLength = assistantMessageFailed && assistantMessageFailed.content ? assistantMessageFailed.content.length : 0;
       stage.preview = clipText(
         assistantMessageFailed && assistantMessageFailed.content ? assistantMessageFailed.content : errorMessage,
@@ -3125,14 +3346,14 @@ export function createAgentExecutor(options: any = {}) {
 
       runStore.updateTask(stageTaskId, {
         status: stopRequested ? 'cancelled' : 'failed',
-        runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
+        runId: failedRunId,
         errorMessage,
         endedAt: stage.endedAt,
       });
       runStore.appendTaskEvent(stageTaskId, 'agent_reply_failed', {
         agentId: agent.id,
         agentName: agent.name,
-        runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
+        runId: failedRunId,
         errorMessage,
         invocationFailureKind: invocationFailure.kind,
         invocationFailureCode: invocationFailure.code,

@@ -10,6 +10,7 @@
     <script defer src="/shared/api-client.js"></script>
     <script defer src="/shared/toast.js"></script>
     <script defer src="/shared/management-list.js"></script>
+    <script defer src="/shared/badcase-capture.js"></script>
     <script defer src="/projects.js"></script>
   </head>
   <body class="management-app" data-page="projects">
@@ -19,6 +20,7 @@
         <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-users"></use></svg></a>
         <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-puzzle"></use></svg></a>
         <a class="rail-link" aria-current="page" href="/projects.html" title="项目管理" aria-label="项目管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-folder"></use></svg></a>
+        <a class="rail-link" href="/wikiskill.html" title="WikiSkill" aria-label="WikiSkill"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-file-text"></use></svg></a>
         <a class="rail-link" href="/metrics.html" title="评测报表" aria-label="评测报表"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-bar-chart"></use></svg></a>
         <span class="spacer"></span>
         <button class="rail-button theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="切换为深色主题" title="切换为深色主题">
@@ -87,6 +89,7 @@
               <button id="delete-project-button" class="ghost-button danger" type="button">删除项目</button>
             </div>
           </div>
+          <div id="badcase-capture-panel" class="stack-card" aria-label="项目问题现场采集管理"></div>
         </section>
         </main>
       </div>

@@ -1,0 +1,149 @@
+// Pure bridge from a retained capsule to a production SDK start descriptor.
+// NO filesystem reads, SDK imports, authorizing, model/network or execution.
+// Requires a FULL captured IPC config. Legacy version/model summaries are not
+// converted to defaults. External agent/config/skill roots remain unsupported.
+import crypto from 'node:crypto';
+import { prepareWorktreeReplayInputs } from './worktree-replay-inputs';
+import { planModePreservingReplayCapsule } from './capsule-materialization';
+import { validateSessionV2 } from './session-validator';
+import { planControlledBridgeInputs } from './controlled-bridge-inputs';
+const hash = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
+const fail = (code = 'replay_sdk_config_invalid') => Object.assign(Error(code), { code });
+const object = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const exact = (v: any, keys: string[]) => object(v) && Object.keys(v).sort().join('|') === [...keys].sort().join('|');
+const text = (v: any) => typeof v === 'string' && v.length > 0 && v.trim() === v && !v.includes('\0');
+const CONFIG_KEYS = ['provider', 'model', 'thinking', 'agentDir', 'sessionPath', 'resume', 'cwd', 'heartbeatIntervalMs',
+  'extensionPaths', 'additionalSkillPaths', 'retireUserScopeSkills'];
+const DESTINATION = '/work/restored/snapshot';
+// Initialization-only gate. This is NOT complete turn replay permission. Pending
+// credential substitutions are refused, never stripped or replaced by ambient auth.
+export function planRetainedCaffInitialization(capsule: string, expected: any, worktreeDeclaration: any, declaration: any) {
+  return initialization(planRetainedCaffStart(capsule, expected, worktreeDeclaration, declaration), false);
+}
+// Separate bridge-only preparation. This grants NO turn/model execution. Values
+// are unavailable on host: only the container callback may issue local bindings.
+export function planRetainedCaffBridgeInitialization(capsule: string, expected: any, worktreeDeclaration: any, declaration: any) {
+  return initialization(planRetainedCaffStart(capsule, expected, worktreeDeclaration, declaration), true);
+}
+function initialization(plan: any, bridge: boolean) {
+  if (!Array.isArray(plan.controlledReplacements) || /\{\{[^{}]+\}\}/.test(JSON.stringify(plan.archivedHarness))
+    || (!bridge && (plan.controlledReplacements.length !== 0 || /\{\{[^{}]+\}\}/.test(JSON.stringify([plan.invocation, plan.sessionText]))))) {
+    throw fail('replay_sdk_replacements_unapplied');
+  }
+  const controlledInputs = bridge ? planControlledBridgeInputs(plan) : null;
+  if (bridge && plan.config.resume) {
+    plan.config.sessionPath = '/work/restored/bridge-inputs/session.jsonl';
+    plan.receipt.effectiveConfigHash = hash(JSON.stringify(plan.config));
+  }
+  const sessionEntries = plan.sessionText === null ? [] : plan.sessionText.split('\n').slice(0, -1).map((s: string) => JSON.parse(s));
+  if (sessionEntries.length) {
+    // Recheck the archived validator, including tool/attachment/private-state
+    // dimensions. A forged complete flag must not bypass the original gate.
+    const checked = validateSessionV2(plan.sessionText, { authorizedRoot: '' });
+    if (!checked.ok) throw fail('replay_sdk_session_invalid');
+    if (checked.unverifiedDimensions.length) throw fail('replay_sdk_session_unverified');
+    const header = sessionEntries[0], ids = new Set<string>([header.id]);
+    if (!text(header.id) || !text(header.timestamp)) throw fail('replay_sdk_session_invalid');
+    const types = ['message', 'model_change', 'thinking_level_change', 'compaction', 'branch_summary',
+      'custom', 'custom_message', 'label', 'session_info'];
+    for (const e of sessionEntries.slice(1)) {
+      if (!types.includes(e.type) || !text(e.id) || ids.has(e.id) || !text(e.timestamp)
+        || e.parentId === header.id || (e.parentId !== null && !ids.has(e.parentId))) throw fail('replay_sdk_session_invalid');
+      ids.add(e.id);
+    }
+  }
+  return { ...plan, sessionEntries, ...(bridge ? { controlledInputs } : {}) };
+}
+export function planRetainedCaffStart(capsule: string, expected: any, worktreeDeclaration: any, declaration: any) {
+  const input = prepareWorktreeReplayInputs(capsule, expected, worktreeDeclaration);
+  const material = planModePreservingReplayCapsule(capsule, expected);
+  const cp = JSON.parse(material.files.find(f => f.path === 'materials/checkpoint.json')!.bytes.toString('utf8'));
+  const source = input.harness.sdkStartConfig;
+  if (source === undefined) throw fail('replay_sdk_config_missing');
+  // Older capsules predate Fast; preserve their absent field rather than
+  // rewriting the archived descriptor/hash. New descriptors carry a boolean.
+  const knownConfig = exact(source, CONFIG_KEYS)
+    || (exact(source, [...CONFIG_KEYS, 'fast']) && typeof source.fast === 'boolean');
+  if (!knownConfig || !text(source.provider) || !text(source.model)
+    || typeof source.thinking !== 'string' || !['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(source.thinking)
+    || source.provider !== input.runConfig.provider || source.model !== input.runConfig.model
+    || input.harness.agentPromptVersion !== input.runConfig.promptVersion
+    || !['0.85.1', 'pi:0.85.1'].includes(input.harness.piVersion)
+    || source.resume !== (input.deliveryMode === 'resume')
+    || !text(source.agentDir) || typeof source.sessionPath !== 'string'
+    || (source.resume ? !text(source.sessionPath) : source.sessionPath !== '' && !text(source.sessionPath))
+    || !Number.isSafeInteger(source.heartbeatIntervalMs) || source.heartbeatIntervalMs < 0
+    || typeof source.retireUserScopeSkills !== 'boolean'
+    || !['extensionPaths', 'additionalSkillPaths'].every(k => Array.isArray(source[k]) && source[k].length <= 256
+      && source[k].every(text) && new Set(source[k]).size === source[k].length)) throw fail();
+  // The capture root and production resolver cwd have distinct producers.
+  // Unsupported lexical aliases are a visible blocker, not inferred authority.
+  if (source.cwd !== worktreeDeclaration.sourceRoot) throw fail('replay_sdk_cwd_mismatch');
+  if (!exact(declaration, ['schemaVersion', 'sdkConfigHash', 'bindings']) || declaration.schemaVersion !== 1
+    || declaration.sdkConfigHash !== hash(JSON.stringify(source)) || !Array.isArray(declaration.bindings)
+    || declaration.bindings.length > 515) throw fail('replay_sdk_bindings_invalid');
+  const config = structuredClone(source), seen = new Set<string>();
+  const root = worktreeDeclaration.sourceRoot, separator = worktreeDeclaration.sourcePlatform === 'win32' ? root[2] : '/';
+  // Exact lexical spelling, including Windows case. Never resolve/discover a
+  // path on this host. Every mapped directory must have archived descendants.
+  const mapWorktree = (value: string) => {
+    if (value !== root && !value.startsWith(root + separator)) throw fail('replay_sdk_external_dependency');
+    const suffix = value.slice(root.length).split(separator).join('/');
+    if (suffix && (!/^\/[A-Za-z0-9_.@\-/]+$/.test(suffix)
+      || suffix.slice(1).split('/').some((p: string) => !p || p === '.' || p === '..' || p.length > 255))) throw fail();
+    const relative = suffix.slice(1);
+    if (relative && !Object.keys(cp.files).some(p => p === relative || p.startsWith(relative + '/'))) throw fail('replay_sdk_dependency_missing');
+    return DESTINATION + suffix;
+  };
+  const required = new Map<string, string>([['/cwd', source.cwd], ['/agentDir', source.agentDir]]);
+  if (source.sessionPath) required.set('/sessionPath', source.sessionPath);
+  for (const key of ['extensionPaths', 'additionalSkillPaths']) source[key].forEach((v: string, i: number) => required.set(`/${key}/${i}`, v));
+  for (const b of declaration.bindings) {
+    if (!exact(b, ['pointer', 'sourcePath', 'targetPath']) || !required.has(b.pointer) || seen.has(b.pointer)
+      || b.sourcePath !== required.get(b.pointer)) throw fail('replay_sdk_bindings_invalid');
+    const lexical = b.sourcePath.replaceAll('\\', '/');
+    const components = worktreeDeclaration.sourcePlatform === 'win32'
+      ? (/^[A-Za-z]:\//.test(lexical) ? lexical.slice(3) : '') : (lexical.startsWith('/') ? lexical.slice(1) : '');
+    if (!components || components.split('/').some((p: string) => !p || p === '.' || p === '..'
+      || p.length > 255 || !/^[A-Za-z0-9_.@ -]+$/.test(p) || p.trim() !== p)) throw fail('replay_sdk_bindings_invalid');
+    let target: string;
+    // Production fresh turns also carry a named sessionPath. Keep open() on a
+    // guaranteed-new variant-local destination, never read that source path or
+    // confuse it with the archived resume input. Empty fresh still uses create().
+    if (b.pointer === '/sessionPath') target = source.resume
+      ? '/work/restored/working-inputs/session.jsonl' : '/work/restored/working-inputs/fresh-session.jsonl';
+    else if (b.pointer.startsWith('/extensionPaths/')) {
+      // Only this explicitly selected installed CAFF extension may substitute
+      // for an external distribution path. Other extensions must be archived.
+      const installed = '/work/build/lib/pi-extensions/caff-capabilities.mjs';
+      if (b.targetPath === installed) {
+        if (!lexical.endsWith('/lib/pi-extensions/caff-capabilities.mjs')) throw fail('replay_sdk_bindings_invalid');
+        target = installed;
+      } else target = mapWorktree(b.sourcePath);
+    } else target = mapWorktree(b.sourcePath);
+    if (b.targetPath !== target) throw fail('replay_sdk_bindings_invalid');
+    const array = /^\/(extensionPaths|additionalSkillPaths)\/(\d+)$/.exec(b.pointer);
+    if (array) config[array[1]][Number(array[2])] = target;
+    else config[b.pointer.slice(1)] = target;
+    seen.add(b.pointer);
+  }
+  if (seen.size !== required.size || ['extensionPaths', 'additionalSkillPaths'].some(k => new Set(config[k]).size !== config[k].length)) {
+    throw fail('replay_sdk_bindings_invalid');
+  }
+  if (config.agentDir === DESTINATION) throw fail('replay_sdk_agent_directory_invalid');
+  const agentRelative = config.agentDir.slice(DESTINATION.length + 1);
+  // Never create a synthetic SYSTEM/settings to make an incomplete archive
+  // look executable. Other external inputs still require future archival.
+  if (!cp.files[agentRelative + '/settings.json'] || !cp.files[agentRelative + '/SYSTEM.md']) throw fail('replay_sdk_dependency_missing');
+  if (Object.keys(cp.files).some(p => p.toLowerCase() === (agentRelative + '/auth.json').toLowerCase())) throw fail('replay_sdk_auth_forbidden');
+  return { config, invocation: input.invocation, sessionText: input.sessionText,
+    archivedHarness: structuredClone(input.harness), skillSnapshots: input.skillSnapshots,
+    controlledReplacements: input.controlledReplacements,
+    receipt: { kind: 'retained-caff-start-plan-v1', deliveryMode: input.deliveryMode,
+      capsuleHash: expected.capsuleHash, checkpointChecksum: expected.checkpointChecksum,
+      sdkConfigHash: declaration.sdkConfigHash, effectiveConfigHash: hash(JSON.stringify(config)),
+      runtimeBindingsHash: hash(JSON.stringify(declaration)), worktreeDeclarationHash: input.receipt.declarationHash,
+      invocationHash: input.receipt.invocationHash, sessionHash: input.receipt.sessionHash,
+      sdkInitialized: false, invocationSubmitted: false, launchAuthorized: false,
+      runnable: false, reproduced: false, evaluable: false, strictEvalEligible: false } };
+}

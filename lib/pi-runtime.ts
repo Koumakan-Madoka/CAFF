@@ -433,6 +433,25 @@ function assistantUsageCallsFromState(state: any) {
   })).filter((entry: any) => entry.usage);
 }
 
+// Capture and IPC share the complete, credential-free SDK descriptor. This is
+// configuration only: referenced settings, extensions and skills are NOT read.
+function resolveSdkStartConfig(provider: any, model: any, options: any = {}) {
+  provider = String(provider || '').trim();
+  const agentDir = resolveSetting(options.agentDir, process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
+  return {
+    provider, model: String(model || '').trim(),
+    thinking: resolveThinkingSetting(provider, options.thinking, process.env.PI_THINKING, DEFAULT_THINKING),
+    fast: options.fast === true,
+    agentDir, sessionPath: resolveSessionPath(options.session, agentDir), resume: Boolean(options.resume),
+    cwd: path.resolve(String(options.cwd || process.cwd()).trim() || process.cwd()),
+    heartbeatIntervalMs: resolveIntegerSettingCandidates(
+      [options.heartbeatIntervalMs, process.env.PI_HEARTBEAT_INTERVAL_MS, DEFAULT_HEARTBEAT_INTERVAL_MS], 'heartbeatIntervalMs'),
+    extensionPaths: normalizeExtensionPaths(options.extensionPaths || options.extensions),
+    additionalSkillPaths: normalizeExtensionPaths(options.additionalSkillPaths),
+    retireUserScopeSkills: options.retireUserScopeSkills === true,
+  };
+}
+
 function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   if (!prompt || !String(prompt).trim()) {
     throw new Error('Prompt is required');
@@ -447,13 +466,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   }
 
   const emitter = new EventEmitter();
-  const thinking = resolveThinkingSetting(provider, options.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
-  const agentDir = resolveSetting(options.agentDir, process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
+  const sdkStartConfig = resolveSdkStartConfig(provider, model, options);
+  const { thinking, agentDir, heartbeatIntervalMs, resume, sessionPath, cwd,
+    extensionPaths, additionalSkillPaths, retireUserScopeSkills } = sdkStartConfig;
   const sqlitePath = resolveSetting(options.sqlitePath, process.env.PI_SQLITE_PATH, '');
-  const heartbeatIntervalMs = resolveIntegerSettingCandidates(
-    [options.heartbeatIntervalMs, process.env.PI_HEARTBEAT_INTERVAL_MS, DEFAULT_HEARTBEAT_INTERVAL_MS],
-    'heartbeatIntervalMs'
-  );
   const heartbeatTimeoutMs = resolveIntegerSettingCandidates(
     [options.heartbeatTimeoutMs, process.env.PI_HEARTBEAT_TIMEOUT_MS, DEFAULT_HEARTBEAT_TIMEOUT_MS],
     'heartbeatTimeoutMs'
@@ -488,18 +504,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     throw new Error('terminationSettleMs must be greater than terminateGraceMs');
   }
   const images = Array.isArray(options.images) ? options.images : [];
-  const resume = Boolean(options.resume);
   const toolProgressRecovery = options.toolProgressRecovery === true;
-  const sessionPath = resolveSessionPath(options.session, agentDir);
-  const cwd = path.resolve(String(options.cwd || process.cwd()).trim() || process.cwd());
-  const extensionPaths = normalizeExtensionPaths(options.extensionPaths || options.extensions);
-  // Two-layer skill scoping (docs/engineering/skills/skill-scoping.md):
-  // additionalSkillPaths carries the CAFF contract layer; retireUserScopeSkills
-  // tells the SDK host to drop user-scope (agentDir/skills) skills from the
-  // harness injection so only the contract layer plus the session cwd project
-  // layer reach the model.
-  const additionalSkillPaths = normalizeExtensionPaths(options.additionalSkillPaths);
-  const retireUserScopeSkills = options.retireUserScopeSkills === true;
   const streamOutput = options.streamOutput !== false;
   const stdout = options.stdout || process.stdout;
   const stderr = options.stderr || process.stderr;
@@ -1502,20 +1507,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         type: 'start',
         prompt: String(prompt),
         images,
-        config: {
-          provider: provider || '',
-          model: model || '',
-          thinking: thinking || '',
-          fast: options.fast === true,
-          agentDir,
-          sessionPath: sessionPath || '',
-          resume,
-          cwd,
-          heartbeatIntervalMs,
-          extensionPaths,
-          additionalSkillPaths,
-          retireUserScopeSkills,
-        },
+        config: sdkStartConfig,
       }, (error: any) => {
         if (!error) {
           return;
@@ -1610,6 +1602,7 @@ export {
   resolveIntegerSetting,
   resolveIntegerSettingCandidates,
   resolveSessionPath,
+  resolveSdkStartConfig,
   resolveSetting,
   resolveThinkingSetting,
   sanitizeSessionName,

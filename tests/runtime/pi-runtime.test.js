@@ -601,6 +601,33 @@ test('pi runtime refuses an empty model before opening a run database or SDK hos
   assert.equal(fs.existsSync(sqlitePath), false);
 });
 
+test('actual SDK IPC receives exactly the shared credential-free descriptor for fresh/resume', async t => {
+  if (!requireSpawn(t)) return;
+  const tempDir = withTempDir('caff-sdk-config-ipc-'), capture = path.join(tempDir, 'wire.json');
+  const host = createFakeSdkHost(tempDir, [
+    "import { writeFileSync } from 'node:fs';",
+    "process.on('message', command => {",
+    `  if (command?.type === 'start') { writeFileSync(${JSON.stringify(capture)}, JSON.stringify(command.config));`,
+    "    process.send({type:'pi_event',event:{type:'message_end',message:{role:'assistant',content:[{type:'text',text:'done'}],stopReason:'stop',timestamp:1}}}); }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+  ]);
+  const { runtime, restore } = loadRuntimeWithSdkHost(host);
+  t.after(() => { restore(); fs.rmSync(tempDir, { recursive: true, force: true }); });
+  for (const resume of [false, true]) {
+    const options = { agentDir: tempDir, cwd: tempDir, sqlitePath: path.join(tempDir, 'state.sqlite'),
+      thinking: 'high', heartbeatIntervalMs: 0, heartbeatTimeoutMs: 0, timeoutMs: 5000, terminateGraceMs: 50,
+      extensionPaths: [path.join(tempDir, 'extension.mjs')], additionalSkillPaths: [path.join(tempDir, 'skill')],
+      retireUserScopeSkills: true, session: 'wire-session', resume, streamOutput: false,
+      extraEnv: { HARMLESS_AMBIENT: 'must-not-enter-config' } };
+    const expected = runtime.resolveSdkStartConfig('test-provider', 'test-model', options);
+    const result = await runtime.startRun('test-provider', 'test-model', 'static IPC test', options).resultPromise;
+    assert.equal(result.reply, 'done');
+    assert.deepEqual(JSON.parse(fs.readFileSync(capture, 'utf8')), expected);
+    assert.doesNotMatch(fs.readFileSync(capture, 'utf8'), /must-not-enter-config|sqlitePath|extraEnv/);
+  }
+});
+
 test('pi runtime resolves provider-specific default thinking without overriding explicit values', () => {
   const runtime = require('../../build/lib/pi-runtime');
 

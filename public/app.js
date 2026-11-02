@@ -68,6 +68,17 @@ const conversationDirectory = chatModules.conversationDirectory;
 const connectionStatus = chatModules.createConnectionStatus ? chatModules.createConnectionStatus() : null;
 const streamRecovery = chatModules.createStreamRecovery ? chatModules.createStreamRecovery() : null;
 const fetchJson = shared.fetchJson;
+const badcaseFlagPanel = typeof shared.createBadcaseFlagPanel === 'function'
+  ? shared.createBadcaseFlagPanel({ root: document.getElementById('badcase-flag-dialog'), fetchJson })
+  : null;
+
+function openBadcaseFlag(conversationId, message) {
+  const conversation = state.currentConversation;
+  if (!conversation || conversation.id !== conversationId || message.role !== 'assistant'
+    || !['completed', 'failed', 'cancelled', 'interrupted'].includes(message.status)) return;
+  void badcaseFlagPanel?.open({ projectId: conversation.projectScopeId || conversation.projectId,
+    conversationId, messageId: message.id });
+}
 const fetchFormDataJson = shared.fetchFormDataJson;
 const avatarUtils = shared.avatar || {};
 const modelOptionUtils = shared.modelOptions || {};
@@ -1011,6 +1022,7 @@ function setupChatModules() {
             liveStageForMessage,
             liveStageLabel,
             messageSessionInfo,
+            openBadcaseFlag,
             privateRecipientNames,
             recoverFailedMessage,
             renderMessageBody,
@@ -2703,6 +2715,7 @@ function renderCompactConversationPersonaSettings() {
 }
 
 function renderConversationPane() {
+  badcaseFlagPanel?.syncConversation(state.currentConversation);
   plannerTerminalController.sync(state.currentConversation?.id || '', state.plannerTerminal);
   conversationPaneRenderer.render();
   imageComposerController.syncConversation(state.currentConversation ? state.currentConversation.id : '');
@@ -4411,6 +4424,7 @@ async function hydrateCrossConversationDeliveries(conversation) {
 }
 
 async function loadConversation(conversationId) {
+  badcaseFlagPanel?.close();
   clearAllMessageToolTraceTimers();
 
   if (!conversationId) {

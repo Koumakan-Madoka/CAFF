@@ -31,6 +31,14 @@ const { createRecoveryScribeConfigController } = require('../api/recovery-scribe
 const { createTurnTimeBreakdownJevConfigController } = require('../api/turn-time-breakdown-jev-config-controller');
 const { createJevEnabledResolver, createJevServiceConfigService, readJevClientMaterial } = require('../domain/runtime/jev-service-config');
 const { createProjectsController } = require('../api/projects-controller');
+const { createBadcaseCaptureController } = require('../api/badcase-capture-controller');
+const { createBadcaseFlagsController } = require('../api/badcase-flags-controller');
+const { createBadcaseWikiController } = require('../api/badcase-wiki-controller');
+const { createBadcaseEvaluationsController } = require('../api/badcase-evaluations-controller');
+const { createEvaluationAdminService } = require('../domain/runtime/badcase-capture/evaluation-admin');
+const { createBadcaseFlagService } = require('../domain/runtime/badcase-capture/badcase-flags');
+const { createBadcaseSealingService } = require('../domain/runtime/badcase-capture/sealing-service');
+const { createWikiStore } = require('../domain/runtime/badcase-capture/wiki-store');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createImageUploadController } = require('../api/image-upload-controller');
@@ -46,6 +54,7 @@ const {
 const { resolveToolRelativePath } = require('../http/path-utils');
 const { HOST, PORT, ROOT_DIR, TYPESAFE_MAX_REQUESTS, TYPESAFE_TOKEN_BUDGET } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
+const { createBadcaseCaptureService } = require('../domain/runtime/badcase-capture');
 const { createTurnTimeBreakdownPipeline } = require('../domain/runtime/turn-time-breakdown-pipeline');
 const { createTypeSafeClient } = require('../domain/integrations/typesafe/typesafe-client');
 const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
@@ -172,6 +181,29 @@ export function createServerApp(options: any = {}) {
   }
 
   const store = createChatAppStore({ agentDir, sqlitePath });
+
+  // Badcase 采集服务：默认落盘 <agentDir>/badcase-capture（运行时数据目录，
+  // gitignore）。未显式开启 CapturePolicy 的项目不会进行任何扫描。
+  // Operator-owned extra private roots, never project/HTTP/invocation input.
+  // The service latches them once for Windows preview, discovery and capture;
+  // agentDir (including every agent sandbox) is already protected separately.
+  const badcaseCapture = options.badcaseCapture || createBadcaseCaptureService({
+    agentDir, chatStore: store, privateDirs: options.badcaseCapturePrivateDirs,
+  });
+  // Separate offline declarations: not capture quota, not paid launch permission.
+  const badcaseEvaluations = createEvaluationAdminService({ root: path.join(agentDir, 'badcase-offline-evaluations') });
+  const badcaseFlags = createBadcaseFlagService({ captureRoot: badcaseCapture.captureRoot, captureStore: badcaseCapture.store, chatStore: store });
+  // Wiki is an optional secondary write after a durable annotation. Validate
+  // its layout at use time (including current projects), not during startup:
+  // an unsupported layout must not disable chat or hide a saved annotation.
+  const badcaseWikiStore = {
+    addMarkedCase(input: any) {
+      return createWikiStore({ globalRoot: path.join(agentDir, 'badcase-global'), sourceWorktree: initialProjectDir,
+        sourceWorktrees: projectManager.listProjects().map((p: any) => p.path) }).addMarkedCase(input);
+    },
+  };
+  const badcaseSealing = createBadcaseSealingService({ flags: badcaseFlags, captureStore: badcaseCapture.store, databasePath: store.databasePath,
+    wikiStore: badcaseWikiStore, chatStore: store });
 
   // Crash-recovery sweep: a busy session-reuse claim is only ever held by a
   // live run inside this process, so any busy row visible at startup is
@@ -800,6 +832,7 @@ export function createServerApp(options: any = {}) {
     modelCatalog,
     uploadsDir,
     delegationRuntime,
+    badcaseCapture,
     executeConversationAgent: options.executeConversationAgent,
     beforeStartupDispatch() {
       // Single-process database ownership: recovery has prepared its stale
@@ -1273,6 +1306,57 @@ export function createServerApp(options: any = {}) {
           broadcastEvent,
         })]
       : []),
+    createBadcaseCaptureController({
+      service: badcaseCapture,
+      sessionInputDir: path.join(agentDir, 'named-sessions'),
+      projectManager,
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+    }),
+    createBadcaseFlagsController({
+      service: badcaseFlags,
+      sealingService: badcaseSealing,
+      projectManager,
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+    }),
+    createBadcaseWikiController({
+      globalRoot: path.join(agentDir, 'badcase-global'),
+      sourceWorktree: initialProjectDir,
+      runInduction: options.badcaseWikiInductionRunner || ((input: any) => require('../../../scripts/badcase-capture/wiki-induction.cjs').inductWikiCases({
+        ...input, image: options.badcaseWikiInductionImage, confirmed: true,
+      })),
+      projectManager, host, port, csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+    }),
+    createBadcaseEvaluationsController({
+      service: badcaseEvaluations,
+      projectManager,
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+    }),
     createTurnTimeBreakdownJevConfigController({
       service: createJevServiceConfigService({
         store,

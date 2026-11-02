@@ -265,6 +265,204 @@ function createConversationsControllerHarness(t, options = {}) {
   return { handler, store, broadcastEvents };
 }
 
+test('unsupported Wiki storage cannot prevent server startup or hide a saved annotation', async t => {
+  const root = withTempDir('caff-wiki-startup-');
+  // Existing installations/fixtures may place agent data inside the project.
+  // Wiki must reject that layout, without making unrelated routes unavailable.
+  const app = createServerApp({ host: '127.0.0.1', port: 0, agentDir: root,
+    projectDir: root, sqlitePath: path.join(root, 'chat.sqlite'), uploadsDir: path.join(root, 'uploads') });
+  t.after(async () => { await new Promise(resolve => app.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); });
+  await new Promise(resolve => app.start(resolve));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  assert.equal((await fetch(base + '/api/bootstrap')).status, 200);
+  const wiki = await fetch(base + '/api/wikiskill');
+  assert.equal(wiki.status, 503);
+  assert.equal(fs.existsSync(path.join(root, 'badcase-global')), false);
+  const projectId = (await (await fetch(base + '/api/projects')).json()).activeProjectId;
+  app.store.saveCustomRoleConfig({ id: 'wiki-startup-agent', name: 'Synthetic', personaPrompt: 'test' });
+  app.store.createConversation({ id: 'wiki-startup-room', title: 'Synthetic', participants: ['wiki-startup-agent'], projectScopeId: projectId });
+  app.store.createMessage({ id: 'wiki-startup-message', conversationId: 'wiki-startup-room', role: 'assistant', status: 'completed', agentId: 'wiki-startup-agent', runId: 101, content: 'synthetic' });
+  const route = `/api/projects/${projectId}/conversations/wiki-startup-room/messages/wiki-startup-message/badcase-flag`;
+  const response = await fetch(base + route, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true, actual: 'synthetic problem', expected: 'synthetic expectation' }) });
+  assert.equal(response.status, 201);
+  const marked = await response.json();
+  assert.equal(marked.flag.messageId, 'wiki-startup-message');
+  assert.deepEqual(marked.wikiCase, { error: 'wiki_case_unavailable' });
+  assert.deepEqual((await (await fetch(base + route)).json()).flag, marked.flag);
+  assert.equal(fs.existsSync(path.join(root, 'badcase-global')), false, 'unsupported layout is not silently allowed');
+});
+
+test('create server persists badcase annotations through real HTTP and restart without enabling capture', async (t) => {
+  const tempDir = withTempDir('caff-flags-server-');
+  const projectDir = path.join(tempDir, 'project'); fs.mkdirSync(projectDir);
+  const options = { host: '127.0.0.1', port: 0, agentDir: path.join(tempDir, 'agent'),
+    sqlitePath: path.join(tempDir, 'chat.sqlite'), projectDir };
+  let app = createServerApp(options);
+  let running = false;
+  t.after(async () => {
+    if (running) await new Promise(resolve => app.close(resolve));
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+  await new Promise(resolve => app.start(resolve)); running = true;
+  let baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+  const projectId = (await (await fetch(`${baseUrl}/api/projects`)).json()).activeProjectId;
+  app.store.saveCustomRoleConfig({ id: 'flag-agent', name: 'Flag test', personaPrompt: 'test' });
+  app.store.createConversation({ id: 'flag-room', title: 'Flags', participants: ['flag-agent'], projectScopeId: projectId });
+  app.store.createMessage({ id: 'flag-message', conversationId: 'flag-room', role: 'assistant', status: 'completed', agentId: 'flag-agent', runId: 101, content: 'synthetic report target' });
+  const route = `/api/projects/${projectId}/conversations/flag-room/messages/flag-message/badcase-flag`;
+  const body = JSON.stringify({ confirmed: true, actual: 'wrong file', expected: 'selected file' });
+  // Security negative: the browser helper would silently supply valid CSRF.
+  const denied = await globalThis.fetch(baseUrl + route, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: baseUrl }, body });
+  assert.equal(denied.status, 403);
+  const bootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json();
+  const headers = { 'Content-Type': 'application/json', Origin: baseUrl, 'X-CAFF-CSRF-Token': bootstrap.localAdmin.modelProviders.csrfToken };
+  assert.deepEqual(await (await fetch(baseUrl + route)).json(), { flag: null, seal: null });
+  const created = await fetch(baseUrl + route, { method: 'POST', headers, body });
+  assert.equal(created.status, 201);
+  const first = await created.json();
+  assert.equal(first.flag.checkpointState, 'not_recorded'); assert.equal(first.flag.runId, 101);
+  assert.equal(first.flag.sealState, 'pending'); assert.equal(first.flag.captured, false);
+  assert.equal(first.seal.state, 'unavailable'); assert.equal(first.seal.reason, 'flag_seal_association_incomplete');
+  await new Promise(resolve => app.close(resolve)); running = false;
+  app = createServerApp(options);
+  await new Promise(resolve => app.start(resolve)); running = true;
+  baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+  assert.deepEqual((await (await fetch(baseUrl + route)).json()).flag, first.flag);
+  const nextBootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json();
+  const repeated = await fetch(baseUrl + route, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: baseUrl,
+    'X-CAFF-CSRF-Token': nextBootstrap.localAdmin.modelProviders.csrfToken }, body });
+  assert.equal(repeated.status, 200);
+  const retry = await repeated.json(); assert.equal(retry.created, false); assert.deepEqual(retry.flag, first.flag);
+  assert.equal((await (await fetch(`${baseUrl}/api/projects/${projectId}/badcase-capture`)).json()).policy.status, 'disabled');
+  const { createCaptureStore } = require('../../build/server/domain/runtime/badcase-capture/capture-store');
+  const captureStore = createCaptureStore({ captureRoot: path.join(options.agentDir, 'badcase-capture') });
+  assert.equal(captureStore.listCheckpoints(projectId).length, 0);
+  // Real create-server route, real SQLite reader and file worker; synthetic
+  // checkpoint only, never enable collection or start an agent/model.
+  app.store.createMessage({ id: 'seal-message', conversationId: 'flag-room', role: 'assistant', status: 'completed',
+    agentId: 'flag-agent', turnId: 'seal-turn', taskId: 'seal-task', runId: 102, content: 'synthetic', metadata: { badcaseCheckpointId: 'seal-cp' } });
+  app.store.db.prepare(`INSERT INTO runs (id, agent_dir, cwd, prompt, prompt_length, status, started_at, task_id, assistant_errors_json)
+    VALUES (102, '/not-read', '/not-read', 'not-read', 8, 'succeeded', '2026-01-01', 'seal-task', '[]')`).run();
+  app.store.db.prepare(`INSERT INTO a2a_tasks (id, run_id, kind, status, metadata_json, output_text, created_at, updated_at)
+    VALUES ('seal-task', 102, 'conversation_agent_reply', 'succeeded', ?, 'not-archived', '2026-01-01', '2026-01-01')`)
+    .run(JSON.stringify({ conversationId: 'flag-room', turnId: 'seal-turn', agentId: 'flag-agent' }));
+  captureStore.saveCheckpoint(projectId, { schemaVersion: 1, projectId, conversationId: 'flag-room', checkpointId: 'seal-cp',
+    turnId: 'seal-turn', agentId: 'flag-agent', files: {}, replayInput: { deliveryMode: 'fresh', complete: false, incompleteReasons: ['synthetic'], harness: { skillSnapshots: [] } } });
+  const sealRoute = route.replace('flag-message', 'seal-message');
+  const sealedResponse = await fetch(baseUrl + sealRoute, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: baseUrl,
+    'X-CAFF-CSRF-Token': nextBootstrap.localAdmin.modelProviders.csrfToken }, body });
+  assert.equal(sealedResponse.status, 201);
+  const sealed = await sealedResponse.json(); assert.equal(sealed.seal.state, 'saved_incomplete');
+  assert.equal(sealed.seal.trajectory.reason, 'trajectory_provenance_unverified');
+  assert.deepEqual((await (await fetch(baseUrl + sealRoute)).json()).seal, sealed.seal);
+  assert.ok(captureStore.computeUsage(projectId).bytesByKind.cases > 0);
+  app.store.deleteConversationMessages('flag-room', ['flag-message']);
+  const deleted = await fetch(baseUrl + route); assert.equal(deleted.status, 404);
+  assert.equal((await deleted.json()).issues[0].code, 'flag_message_not_found');
+});
+
+test('create server wires project capture administration without enabling collection', async (t) => {
+  const tempDir = withTempDir('caff-capture-admin-server-');
+  const projectDir = path.join(tempDir, 'project');
+  const agentDir = path.join(tempDir, 'agent');
+  fs.mkdirSync(projectDir);
+  const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
+  const service = createBadcaseCaptureService({ captureRoot: path.join(tempDir, 'capture') });
+  const app = createServerApp({ host: '127.0.0.1', port: 0, agentDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'), projectDir, badcaseCapture: service });
+  t.after(async () => {
+    await new Promise(resolve => app.close(resolve));
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+  await new Promise(resolve => app.start(resolve));
+  const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
+  const projects = await (await fetch(`${baseUrl}/api/projects`)).json();
+  const projectId = projects.activeProjectId;
+  assert.ok(projectId);
+  const endpoint = `${baseUrl}/api/projects/${projectId}/badcase-capture`;
+  const get = await fetch(endpoint);
+  assert.equal(get.status, 200);
+  assert.equal((await get.json()).policy.status, 'disabled');
+  const denied = await globalThis.fetch(`${endpoint}/authorize`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: baseUrl }, body: '{}' });
+  assert.equal(denied.status, 403);
+  assert.equal(service.loadPolicy(projectId).status, 'disabled');
+  const bootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json();
+  const adminHeaders = { 'Content-Type': 'application/json', Origin: baseUrl,
+    'X-CAFF-CSRF-Token': bootstrap.localAdmin.modelProviders.csrfToken };
+  const authorized = await fetch(`${endpoint}/authorize`, { method: 'POST', headers: adminHeaders,
+    body: JSON.stringify({ confirmed: true, authorizedDirs: [projectDir], authorizedInputDirs: [],
+      excludedPatterns: ['.git', 'node_modules'], includedIgnoredPatterns: [] }) });
+  assert.equal(authorized.status, 200);
+  assert.equal((await authorized.json()).policy.status, 'disabled');
+  const saved = await fetch(`${endpoint}/settings`, { method: 'POST', headers: adminHeaders,
+    body: JSON.stringify({ stagingRetentionDays: 2 }) });
+  assert.equal(saved.status, 200);
+  assert.equal(createBadcaseCaptureService({ captureRoot: service.captureRoot }).loadPolicy(projectId).stagingRetentionDays, 2);
+  assert.equal(service.store.listCheckpoints(projectId).length, 0);
+});
+
+// A real lock-directory fixture represents another writer holding the project.
+// Exercise the production router + policy store, not a copied error mapper.
+for (const action of ['settings', 'disable', 'authorize', 'enable']) {
+  test(`capture management ${action} reports writer contention without changing policy and can retry`, async t => {
+    const tempDir = withTempDir('caff-capture-busy-server-');
+    const projectDir = path.join(tempDir, 'project');
+    fs.mkdirSync(projectDir);
+    const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
+    const service = createBadcaseCaptureService({ captureRoot: path.join(tempDir, 'capture') });
+    // Positive estimates only are synthetic; no collector or model is started.
+    service.estimateDirectoryAsync = async () => ({ ok: true, complete: true, totalBytes: 0, fileCount: 0 });
+    const app = createServerApp({ host: '127.0.0.1', port: 0, agentDir: path.join(tempDir, 'agent'),
+      sqlitePath: path.join(tempDir, 'chat.sqlite'), projectDir, badcaseCapture: service });
+    t.after(async () => {
+      await new Promise(resolve => app.close(resolve));
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+    await new Promise(resolve => app.start(resolve));
+    const base = `http://127.0.0.1:${app.server.address().port}`;
+    const projectId = (await (await fetch(`${base}/api/projects`)).json()).activeProjectId;
+    const endpoint = `${base}/api/projects/${projectId}/badcase-capture`;
+    const bootstrap = await (await fetch(`${base}/api/bootstrap`)).json();
+    const headers = { 'Content-Type': 'application/json', Origin: base,
+      'X-CAFF-CSRF-Token': bootstrap.localAdmin.modelProviders.csrfToken };
+    const post = (name, body) => fetch(`${endpoint}/${name}`, { method: 'POST', headers, body: JSON.stringify(body) });
+    const authorization = { confirmed: true, authorizedDirs: [projectDir], authorizedInputDirs: [],
+      excludedPatterns: ['.git'], includedIgnoredPatterns: [] };
+    assert.equal((await post('authorize', authorization)).status, 200);
+    // Disable must preserve an enabled policy on conflict, not silently close it.
+    if (action === 'disable') service.savePolicy(projectId, { ...service.loadPolicy(projectId), status: 'enabled' });
+    const receipt = (await (await post('estimate', {})).json()).estimateId;
+    const body = action === 'settings' ? { stagingRetentionDays: 2 }
+      : action === 'authorize' ? { ...authorization, excludedPatterns: ['.git', '*.log'] }
+        : action === 'enable' ? { confirmed: true, estimateId: receipt } : {};
+    const policyPath = path.join(service.captureRoot, 'projects', projectId, 'policy.json');
+    const before = fs.readFileSync(policyPath);
+    const lock = path.join(service.captureRoot, 'projects', projectId, '.writer-lock');
+    fs.mkdirSync(lock);
+    const response = await post(action, body);
+    const payload = await response.json();
+    assert.deepEqual(fs.readFileSync(policyPath), before, 'conflicting write must leave exact policy bytes unchanged');
+    assert.equal(fs.existsSync(lock), true, 'request must not remove another writer lock');
+    assert.equal(response.status, 409);
+    assert.equal(payload.issues[0].code, 'capture_writer_busy');
+    assert.equal(JSON.stringify(payload).includes(tempDir), false);
+    assert.equal((await fetch(endpoint)).status, 200, 'read-only policy view remains available');
+    fs.rmdirSync(lock);
+    assert.equal((await post('enable', { confirmed: true, estimateId: receipt })).status, 409, 'conflict consumes old receipt');
+    if (action === 'enable') body.estimateId = (await (await post('estimate', {})).json()).estimateId;
+    const retry = await post(action, body);
+    assert.equal(retry.status, 200);
+    const persisted = createBadcaseCaptureService({ captureRoot: service.captureRoot }).loadPolicy(projectId);
+    assert.deepEqual((await retry.json()).policy, persisted);
+    assert.equal(persisted.status, action === 'enable' ? 'enabled' : 'disabled');
+    if (action === 'settings') assert.equal(persisted.stagingRetentionDays, 2);
+    if (action === 'authorize') assert.deepEqual(persisted.excludedPatterns, body.excludedPatterns);
+    assert.equal(service.store.listCheckpoints(projectId).length, 0);
+  });
+}
+
 test('create server wires loopback model-provider administration with bootstrap CSRF', async (t) => {
   const tempDir = withTempDir('caff-model-providers-server-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');

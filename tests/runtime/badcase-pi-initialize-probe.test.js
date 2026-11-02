@@ -1,0 +1,238 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { prepareProbeFiles, manifestFor } = require('../../scripts/badcase-capture/pi-probe-materials.cjs');
+function fixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-probe-materials-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sdk = path.join(root, 'node_modules/@earendil-works/pi-coding-agent');
+  function put(p, text) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); }
+  put(sdk + '/package.json', JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '0.85.1', type: 'module' }));
+  put(sdk + '/dist/bundle/index.js', 'export const synthetic=true;');
+  put(sdk + '/dist/bundle/chunks/chunk.js', '// synthetic dependency');
+  put(sdk + '/dist/modes/interactive/theme/dark.json', '{}');
+  for (const [pkg, version] of [['@earendil-works/chord', '0.85.1'], ['@earendil-works/pi-ai', '0.85.1'], ['typebox', '1.3.7']]) {
+    put(sdk + '/node_modules/' + pkg + '/package.json', JSON.stringify({ name: pkg, version, type: 'module' }));
+  }
+  put(sdk + '/node_modules/@earendil-works/chord/dist/context/index.js', '// context');
+  put(sdk + '/node_modules/typebox/build/esm/index.mjs', '// typebox');
+  return { root, sdk, put };
+}
+test('stages only declared distribution files, stable manifest, and explicit synthetic sessions', t => {
+  const f = fixture(t); f.put(f.sdk + '/auth.json', 'must not copy');
+  f.put(f.sdk + '/node_modules/@earendil-works/chord/private.txt', 'must not copy');
+  const a = prepareProbeFiles(f.root, 'fresh'), b = prepareProbeFiles(f.root, 'resume');
+  assert.equal(a.some(x => x.path.includes('auth.json') || x.path.includes('private.txt')), false);
+  assert.deepEqual(a.find(x => x.path === 'pi-probe-guards.cjs').bytes,
+    fs.readFileSync(path.resolve(__dirname, '../../scripts/badcase-capture/pi-probe-guards.cjs')));
+  assert.equal(a.some(x => x.path === 'resume.jsonl'), false);
+  assert.equal(b.some(x => x.path === 'resume.jsonl'), true);
+  assert.deepEqual(b.find(x => x.path === 'resume.jsonl').bytes, b.find(x => x.path === 'expected-session.jsonl').bytes);
+  assert.deepEqual(a.find(x => x.path === 'expected-session.jsonl').bytes, b.find(x => x.path === 'expected-session.jsonl').bytes);
+  const ma = manifestFor(a), mb = manifestFor(b);
+  assert.equal(ma.runtimeHash, mb.runtimeHash);
+  assert.notEqual(ma.inputHash, mb.inputHash);
+  assert.deepEqual(manifestFor(prepareProbeFiles(f.root, 'fresh')), ma);
+  assert.ok(ma.runtimeBytes > 0); assert.ok(ma.files.length > 4);
+});
+test('missing distributions and wrong pinned versions fail before Docker', t => {
+  const f = fixture(t);
+  for (const pkg of ['', '/node_modules/@earendil-works/pi-ai', '/node_modules/@earendil-works/chord', '/node_modules/typebox']) {
+    const p = f.sdk + pkg + '/package.json', original = fs.readFileSync(p);
+    const metadata = JSON.parse(original); metadata.version = '999.0.0'; fs.writeFileSync(p, JSON.stringify(metadata));
+    assert.throws(() => prepareProbeFiles(f.root, 'fresh'), /probe_dependency_version/); fs.writeFileSync(p, original);
+  }
+  fs.unlinkSync(f.sdk + '/dist/bundle/index.js');
+  assert.throws(() => prepareProbeFiles(f.root, 'fresh'), /probe_dependency_missing/);
+  assert.throws(() => prepareProbeFiles(f.root, 'other'), /probe_mode_invalid/);
+});
+test('rejects filesystem links rather than copying outside the selected distributions', t => {
+  const f = fixture(t), p = f.sdk + '/dist/bundle/chunks/link.js';
+  try { fs.symlinkSync(f.sdk + '/package.json', p); } catch (e) { if (e.code === 'EPERM') return t.skip('symlink privilege unavailable'); throw e; }
+  assert.throws(() => prepareProbeFiles(f.root, 'fresh'), /probe_dependency_type/);
+});
+test('dependency read size is bounded and manifest rejects duplicate/escaping names', t => {
+  const f = fixture(t); f.put(f.sdk + '/dist/bundle/chunks/huge.js', Buffer.alloc(16 * 1024 * 1024 + 1));
+  assert.throws(() => prepareProbeFiles(f.root, 'fresh'), /probe_dependency_size/);
+  assert.throws(() => manifestFor([{ path: '../outside', bytes: Buffer.from('x') }]), /probe_file_invalid/);
+  assert.throws(() => manifestFor([{ path: 'a', bytes: Buffer.from('x') }, { path: 'a', bytes: Buffer.from('y') }]), /probe_file_invalid/);
+});
+test('inspect guard rejects unsafe container configuration and command substitution', async () => {
+  const { isolated } = require('../../scripts/badcase-capture/verify-pi-initialization.cjs');
+  const fakeDocker = require('../helpers/badcase-fake-docker.cjs');
+  const image = { imageId: 'sha256:' + 'a'.repeat(64) }, owner = 'synthetic-owner';
+  const cmd = ['-i', 'PATH=/usr/local/bin:/usr/bin:/bin', 'HOME=/work', 'TMPDIR=/tmp', '/bin/sh', '-c', 'tar --no-same-owner -xf - && timeout -k 2 25 node probe.cjs'];
+  const docker = fakeDocker(image);
+  await docker.run(['create', '--name', 'synthetic', '--label', 'caff.badcase.offline=' + owner, image.imageId, ...cmd]);
+  const base = JSON.parse((await docker.run(['inspect', 'b'.repeat(64)])).stdout)[0];
+  base.Config.Labels = { 'caff.badcase.pi-initialization': owner };
+  assert.doesNotThrow(() => isolated(base, image, owner));
+  for (const change of [
+    c => { c.Image = 'other'; }, c => { c.Config.Labels = {}; }, c => { c.Config.User = '0'; },
+    c => { c.Config.Entrypoint = ['/bin/sh']; }, c => { c.Config.Cmd.push('other'); }, c => { c.Config.WorkingDir = '/'; },
+    c => { c.Config.Volumes = { '/data': {} }; }, c => { c.Mounts = [{ Type: 'bind', Destination: '/work' }]; },
+    c => { c.HostConfig.NetworkMode = 'host'; }, c => { c.HostConfig.ReadonlyRootfs = false; }, c => { c.HostConfig.Privileged = true; },
+    c => { c.HostConfig.CapDrop = []; }, c => { c.HostConfig.CapAdd = ['SYS_ADMIN']; }, c => { c.HostConfig.SecurityOpt = []; },
+    c => { c.HostConfig.Memory = 0; }, c => { c.HostConfig.MemorySwap = -1; }, c => { c.HostConfig.NanoCpus = 0; }, c => { c.HostConfig.PidsLimit = 0; },
+    ...['Binds', 'Mounts', 'VolumesFrom', 'Devices', 'DeviceRequests'].map(k => c => { c.HostConfig[k] = ['unsafe']; }),
+    c => { c.HostConfig.PortBindings = { '80/tcp': [] }; }, c => { c.HostConfig.PidMode = 'host'; }, c => { c.HostConfig.IpcMode = 'host'; },
+    c => { c.HostConfig.LogConfig.Type = 'json-file'; }, c => { c.HostConfig.AutoRemove = true; }, c => { c.HostConfig.RestartPolicy.Name = 'always'; },
+    c => { c.HostConfig.Tmpfs['/tmp'] = 'rw'; },
+  ]) { const c = structuredClone(base); change(c); assert.throws(() => isolated(c, image, owner)); }
+});
+test('native diagnostic work-exec is explicit, inspect-bound, and never changes default or tmp noexec', async () => {
+  const { isolated, runProbe } = require('../../scripts/badcase-capture/verify-pi-initialization.cjs');
+  const image = { imageId: 'sha256:' + 'a'.repeat(64) }, owner = 'synthetic-owner';
+  const fake = require('../helpers/badcase-fake-docker.cjs')(image);
+  await fake.run(['create', '--name', 'synthetic', '--label', 'caff.badcase.pi-initialization=' + owner, image.imageId]);
+  const base = JSON.parse((await fake.run(['inspect', 'b'.repeat(64)])).stdout)[0];
+  base.Config.Labels = { 'caff.badcase.pi-initialization': owner };
+  base.Config.Cmd = ['-i', 'PATH=/usr/local/bin:/usr/bin:/bin', 'HOME=/work', 'TMPDIR=/tmp', '/bin/sh', '-c', 'tar --no-same-owner -xf - && timeout -k 2 25 node probe.cjs'];
+  assert.doesNotThrow(() => isolated(base, image, owner));
+  assert.throws(() => isolated(base, image, owner, true));
+  const exec = structuredClone(base); exec.HostConfig.Tmpfs['/work'] = 'rw,exec,nosuid,nodev,size=64m,uid=65534,gid=65534,mode=0700';
+  assert.doesNotThrow(() => isolated(exec, image, owner, true));
+  assert.throws(() => isolated(exec, image, owner));
+  exec.HostConfig.Tmpfs['/tmp'] = 'rw,exec,size=16m';
+  assert.throws(() => isolated(exec, image, owner, true));
+  let calls = 0;
+  await assert.rejects(runProbe(image, [{ path: 'probe.cjs', bytes: Buffer.from('// inert') }], {
+    executableWork: 'true', runDocker: async () => { calls++; },
+  }), /probe_work_mode_invalid/);
+  assert.equal(calls, 0);
+});
+test('real probe orchestrator uses injected transport and observes before start; observer failure cleans without starting', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-intent-wire-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  // Compile unchanged trusted orchestration with a DENY default transport and fake
+  // tar. No Docker, shell, SDK or model runs on this unit-test path.
+  const Module = require('node:module');
+  const filename = path.resolve(__dirname, '../../scripts/badcase-capture/verify-pi-initialization.cjs');
+  const m = new Module(filename, module); m.filename = filename; m.paths = Module._nodeModulePaths(path.dirname(filename));
+  const nativeRequire = m.require.bind(m);
+  let defaultCalls = 0;
+  m.require = name => name === 'node:child_process' ? { execFileSync: () => Buffer.from('synthetic tar') }
+    : name.endsWith('/badcase-capture/docker-sandbox') ? { runDockerCommand: async () => { defaultCalls++; throw Error('default_transport_forbidden'); } }
+    : nativeRequire(name);
+  m._compile(fs.readFileSync(filename, 'utf8'), filename);
+  const image = { imageId: 'sha256:' + 'a'.repeat(64) };
+  for (const reject of [false, true]) {
+    const events = [];
+    const fake = require('../helpers/badcase-fake-docker.cjs')(image, { change(args, result, state) {
+      events.push(args[0]);
+      if (args[0] === 'inspect') { const c = state.info(); c.Config.Labels = { 'caff.badcase.pi-initialization': state.owner }; result.stdout = JSON.stringify([c]); }
+    } });
+    const options = { runDocker: fake.run,
+      recovery: { directory, target: { socket: 'unix:///var/tmp/caff-image-recovery-test/docker.sock', daemonId: 'dedicated', dataRoot: '/var/tmp/caff-image-recovery-test/data' } },
+      observeIntent: async ref => {
+        events.push('intent'); assert.equal(events.includes('create'), false);
+        const saved = JSON.parse(fs.readFileSync(path.join(directory, ref.owner + '.json')));
+        assert.equal(saved.intent.owner, ref.owner); assert.equal(saved.intent.imageId, image.imageId);
+      }, observeCreated: async (id, owner) => {
+      events.push('observe'); assert.equal(id, 'b'.repeat(64)); assert.ok(owner);
+      assert.equal(events.includes('start'), false);
+      if (reject) throw Error('target_container_missing');
+    }, observeCompleted: async () => { events.push('observe-completed'); assert.equal(events.includes('start'), true); assert.equal(events.includes('rm'), false); },
+      observeRemoved: async () => { events.push('observe-removed'); assert.equal(events.includes('rm'), true); } };
+    const pending = m.exports.runProbe(image, [{ path: 'probe.cjs', bytes: Buffer.from('// inert') }], options);
+    if (reject) { await assert.rejects(pending, /target_container_missing/); assert.equal(events.includes('start'), false); }
+    else { const r = await pending; assert.equal(r.containerId, 'b'.repeat(64)); assert.equal(r.termination, undefined); assert.ok(events.indexOf('observe') < events.indexOf('start')); }
+    assert.equal(events[0], 'intent');
+    assert.ok(events.includes('observe')); assert.ok(events.includes('rm')); assert.equal(events.at(-1), 'observe-removed');
+    assert.equal(events.includes('observe-completed'), !reject);
+  }
+  assert.equal(defaultCalls, 0);
+});
+test('intent publication failure prevents every Docker call', async t => {
+  const Module = require('node:module');
+  const filename = path.resolve(__dirname, '../../scripts/badcase-capture/verify-pi-initialization.cjs');
+  const m = new Module(filename, module); m.filename = filename; m.paths = Module._nodeModulePaths(path.dirname(filename));
+  const nativeRequire = m.require.bind(m);
+  m.require = name => name === 'node:child_process' ? { execFileSync: () => Buffer.from('inert tar') } : nativeRequire(name);
+  m._compile(fs.readFileSync(filename, 'utf8'), filename);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-fsync-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const sync = fs.fsyncSync; let calls = 0;
+  try {
+    fs.fsyncSync = () => { throw Error('intent-not-durable'); };
+    await assert.rejects(m.exports.runProbe({ imageId: 'sha256:' + 'a'.repeat(64) }, [{ path: 'probe.cjs', bytes: Buffer.from('// inert') }], {
+      recovery: { directory, target: { socket: 'unix:///var/tmp/caff-image-recovery-test/docker.sock', daemonId: 'dedicated', dataRoot: '/var/tmp/caff-image-recovery-test/data' } },
+      runDocker: async () => { calls++; throw Error('unexpected-docker'); },
+    }), /intent-not-durable/);
+  } finally { fs.fsyncSync = sync; }
+  assert.equal(calls, 0); assert.equal(fs.readdirSync(directory).length, 1);
+});
+test('deadline stops only the owned container, waits for stop and cleanup, never accepts late success', { timeout: 5000 }, async () => {
+  const Module = require('node:module');
+  const filename = path.resolve(__dirname, '../../scripts/badcase-capture/verify-pi-initialization.cjs');
+  const m = new Module(filename, module); m.filename = filename; m.paths = Module._nodeModulePaths(path.dirname(filename));
+  const nativeRequire = m.require.bind(m);
+  m.require = name => name === 'node:child_process' ? { execFileSync: () => Buffer.from('inert tar') } : nativeRequire(name);
+  m._compile(fs.readFileSync(filename, 'utf8'), filename);
+  const image = { imageId: 'sha256:' + 'a'.repeat(64) };
+  for (const fault of ['', 'owner', 'kill', 'remove', 'late-success', 'starved', 'slow-kill']) {
+    let running = false, finish, fallback, deadlineInspect = false;
+    const events = [];
+    const fake = require('../helpers/badcase-fake-docker.cjs')(image, { async change(args, result, state) {
+      events.push(args[0]);
+      if (args[0] === 'start') {
+        running = true;
+        if (fault === 'starved') {
+          const until = performance.now() + 20; while (performance.now() < until) { /* block timer delivery */ }
+        } else await new Promise(resolve => { finish = resolve; fallback = setTimeout(resolve, 100); });
+        running = false; result.code = 137; result.stdout = 'late result must not escape'; result.stderr = 'late diagnostic must not escape';
+      }
+      if (args[0] === 'inspect') {
+        const c = state.info(); c.Config.Labels = { 'caff.badcase.pi-initialization': state.owner };
+        c.State.Running = running; c.State.ExitCode = events.includes('start') ? 137 : 0;
+        if (running && !deadlineInspect) {
+          deadlineInspect = true;
+          if (fault === 'owner') c.Config.Labels = {};
+          if (fault === 'late-success') { running = false; c.State.Running = false; finish(); }
+        }
+        result.stdout = JSON.stringify([c]);
+      }
+      if (args[0] === 'kill') {
+        assert.deepEqual(args, ['kill', 'b'.repeat(64)]);
+        running = false; finish();
+        if (fault === 'slow-kill') await new Promise(resolve => setTimeout(resolve, 20));
+        events.push('kill-settled');
+        if (fault === 'kill') result.code = 1;
+      }
+      if (args[0] === 'rm') {
+        if (fault === 'remove') result.code = 1;
+        if (fault === 'slow-kill') assert.ok(events.includes('kill-settled'));
+      }
+    } });
+    try {
+      const promise = m.exports.runProbe(image, [{ path: 'probe.cjs', bytes: Buffer.from('// inert') }], {
+        timeoutMs: 10, runDocker: fake.run,
+        observeCompleted: async () => { assert.equal(running, false); events.push('completed'); },
+        observeRemoved: async () => { events.push('removed'); },
+      });
+      if (['owner', 'kill', 'remove'].includes(fault)) await assert.rejects(promise);
+      else {
+        const result = await promise;
+        assert.deepEqual(result.termination, { reason: 'deadline', timeoutMs: 10, stopped: true, removed: true });
+        assert.equal(result.result.failure, 'timeout');
+        assert.equal(result.result.stdout, ''); assert.equal(result.result.stderr, '');
+        assert.equal(events.at(-1), 'removed');
+      }
+      assert.equal(events.includes('kill'), !['owner', 'late-success', 'starved'].includes(fault));
+      assert.ok(events.includes('rm'));
+      assert.equal(fake.calls.find(c => c.args[0] === 'start').options.timeoutMs, 5010);
+    } finally { clearTimeout(fallback); }
+  }
+  for (const timeoutMs of [0, -1, 25001, 1.5, null, '25']) {
+    let calls = 0;
+    await assert.rejects(m.exports.runProbe(image, [], { timeoutMs, runDocker: async () => { calls++; } }), /probe_timeout_invalid/);
+    assert.equal(calls, 0);
+  }
+});
+test('container entry refuses host execution before importing SDK', () => {
+  const { spawnSync } = require('node:child_process');
+  const r = spawnSync(process.execPath, ['scripts/badcase-capture/pi-initialize-probe.cjs'], { encoding: 'utf8' });
+  assert.equal(r.status, 1); assert.equal(r.stdout, ''); assert.equal(r.stderr, 'pi_initialization_probe_failed\n');
+});

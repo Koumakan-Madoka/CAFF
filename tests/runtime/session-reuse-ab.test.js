@@ -205,7 +205,7 @@ function createFakeRunStore() {
   };
 }
 
-function createFakeAgentToolBridge() {
+function createFakeAgentToolBridge(releasedInvocations = []) {
   return {
     createInvocationContext(input) {
       return input;
@@ -222,7 +222,7 @@ function createFakeAgentToolBridge() {
         lastPublicContent: '',
       };
     },
-    unregisterInvocation() {},
+    unregisterInvocation(invocationId) { releasedInvocations.push(invocationId); },
   };
 }
 
@@ -275,11 +275,18 @@ function findAssistantCreate(store) {
   return create;
 }
 
-async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.', promptUserMessage = null }) {
+async function runTurn({ executor, conversation, agent, store, turnId, reply = 'Done.', promptUserMessage = null, persistedRunStore = null, onTurnState = null, projectDir = store.agentDir }) {
   const { createTurnState } = require(require.resolve('../../build/server/domain/conversation/turn/turn-state'));
   const turnState = createTurnState(conversation, turnId);
-  await executor.executeConversationAgent({
-    runStore: createFakeRunStore(),
+  if (onTurnState) onTurnState(turnState);
+  const events = [];
+  const failedReplies = [];
+  const runStore = persistedRunStore || createFakeRunStore();
+  const appendTaskEvent = runStore.appendTaskEvent.bind(runStore);
+  runStore.appendTaskEvent = (...args) => { events.push(args); return appendTaskEvent(...args); };
+  if (persistedRunStore) runStore.createTask({ taskId: `root-${turnId}`, kind: 'conversation_turn', status: 'running' });
+  const outcome = await executor.executeConversationAgent({
+    runStore,
     conversationId: conversation.id,
     turnId: turnState.turnId,
     rootTaskId: `root-${turnId}`,
@@ -290,15 +297,16 @@ async function runTurn({ executor, conversation, agent, store, turnId, reply = '
     agent,
     turnState,
     completedReplies: [],
-    failedReplies: [],
+    failedReplies,
     routingMode: 'mention_queue',
     hop: 1,
     remainingSlots: 0,
     enqueueAgent() {},
     allowHandoffs: true,
     finalStopsTurn: true,
-    projectDir: store.agentDir,
+    projectDir,
   });
+  return { outcome, turnState, events, failedReplies };
 }
 
 function setupExecutorTest(t, { reuseEnabled }) {
@@ -309,6 +317,7 @@ function setupExecutorTest(t, { reuseEnabled }) {
   const originalStartRun = minimalPi.startRun;
   const previousFlag = process.env.PI_CHAT_SESSION_REUSE_ENABLED;
   const captured = [];
+  const releasedInvocations = [];
   // agent-executor destructures startRun at module load, so install a stable
   // dispatcher BEFORE requiring it; createExecutor then swaps the impl.
   let startRunImpl = null;
@@ -340,7 +349,8 @@ function setupExecutorTest(t, { reuseEnabled }) {
   return {
     tempDir,
     captured,
-    createExecutor(store, { onStartRun, runId = 'run-reuse-ab', reply = 'Done.', resultOverrides = {} } = {}) {
+    releasedInvocations,
+    createExecutor(store, { onStartRun, badcaseCapture, runId = 'run-reuse-ab', reply = 'Done.', resultOverrides = {} } = {}) {
       startRunImpl = (provider, model, prompt, options) => {
         const record = { provider, model, prompt, options };
         if (typeof onStartRun === 'function') {
@@ -353,7 +363,8 @@ function setupExecutorTest(t, { reuseEnabled }) {
         store,
         skillRegistry: { resolveSkills: () => [] },
         modeStore: { get: () => null },
-        agentToolBridge: createFakeAgentToolBridge(),
+        agentToolBridge: createFakeAgentToolBridge(releasedInvocations),
+        badcaseCapture,
         agentDir: tempDir,
         sqlitePath: path.join(tempDir, 'chat.sqlite'),
         toolBaseUrl: 'http://127.0.0.1:3100',
@@ -549,6 +560,636 @@ test('reused mode resumes the stored session with only the delta appended and ad
   assert.equal(env.captured[2].options.resume, true);
   assert.match(env.captured[2].prompt, /ARRIVED-DURING-RUN/u);
   assert.equal(env.captured[2].prompt.includes('DELTA-U3-CONTENT'), false);
+});
+
+// This is an executor wiring regression: capture and startRun are stubs. It
+// does not validate session JSONL, archive bytes, run pi, or prove replayability.
+test('resume capture matches the invocation before start; synchronous failure restores the claim and checkpoint link', async (t) => {
+  for (const mode of ['success', 'throw-no-id', 'throw-with-id']) {
+    await t.test(mode, async (t) => {
+      const env = setupExecutorTest(t, { reuseEnabled: true });
+      const { resolveSessionPath } = require('../../build/lib/minimal-pi');
+      const agent = createAgent();
+      const conversation = createConversation(agent);
+      const store = createFakeStore(conversation, { withReuse: true });
+      store.agentDir = env.tempDir;
+      seedUserMessage(store, 'u1', 'HISTORICAL-CAPTURE-CONTENT');
+      const captures = [];
+      const starts = [];
+      const order = [];
+      const badcaseCapture = {
+        captureTurnCheckpoint(input) {
+          order.push('capture');
+          captures.push({ input, reuseRow: store.peekReuseRow() });
+          return { captured: true, checkpointId: `checkpoint-${captures.length}` };
+        },
+      };
+      const executor1 = env.createExecutor(store, {
+        badcaseCapture,
+        onStartRun(record) { order.push('start'); starts.push(record); },
+      });
+      await runTurn({ executor: executor1, conversation, agent, store, turnId: 'turn-capture-fresh' });
+      const saved = store.peekReuseRow();
+      assert.equal(saved.state, 'reusable');
+      const freshMessage = store.listMessages(conversation.id).find((m) => m.role === 'assistant');
+      assert.equal(freshMessage.metadata.badcaseCheckpointId, 'checkpoint-1');
+
+      seedUserMessage(store, 'u2', 'DELTA-CAPTURE-CONTENT');
+      const reuseCallOffset = store.reuseCalls.length;
+      const startError = new Error(`resume synchronous failure: ${mode}`);
+      if (mode === 'throw-with-id') {
+        startError.runId = 'run-resume-start-error';
+        startError.sessionPath = resolveSessionPath(saved.sessionName, env.tempDir);
+      }
+      const executor2 = env.createExecutor(store, {
+        badcaseCapture,
+        onStartRun(record) {
+          order.push('start');
+          starts.push(record);
+          if (mode !== 'success') throw startError;
+        },
+      });
+      const result = await runTurn({ executor: executor2, conversation, agent, store, turnId: 'turn-capture-resume' });
+      // Assertions stay outside stubs: the executor catches capture/start errors.
+      // Throwing an assertion there could otherwise hide a failing observation.
+      assert.deepEqual(order, ['capture', 'start', 'capture', 'start']);
+      assert.equal(captures.length, 2);
+      assert.equal(starts.length, 2);
+      assert.equal(captures[0].input.deliveryMode, 'fresh');
+      assert.equal(captures[0].input.sessionPath, '');
+      // Use the installed ESM package identity, not a fixture-supplied version.
+      assert.equal(captures[0].input.harness.configSnapshot.piVersion, 'pi:0.85.1');
+      assert.equal(captures[0].input.prompt, starts[0].prompt);
+      const input = captures[1].input;
+      const run = starts[1];
+      assert.equal(captures[1].reuseRow.state, 'busy');
+      assert.equal(run.options.resume, true);
+      assert.equal(run.options.session, saved.sessionName);
+      assert.equal(input.deliveryMode, 'resume');
+      assert.equal(input.harness.configSnapshot.deliveryMode, 'resume');
+      assert.equal(input.sessionPath, resolveSessionPath(run.options.session, run.options.agentDir));
+      assert.equal(input.prompt, run.prompt);
+      assert.match(input.prompt, /DELTA-CAPTURE-CONTENT/u);
+      assert.equal(input.prompt.includes('HISTORICAL-CAPTURE-CONTENT'), false);
+      assert.deepEqual(input.images, run.options.images);
+      const { resolveSdkStartConfig } = require('../../build/lib/minimal-pi');
+      for (let i = 0; i < captures.length; i++) {
+        assert.deepEqual(captures[i].input.harness.configSnapshot.sdkStartConfig,
+          resolveSdkStartConfig(starts[i].provider, starts[i].model, starts[i].options));
+      }
+      assert.equal(input.runConfig.provider, run.provider);
+      assert.equal(input.runConfig.model, run.model);
+      assert.equal(input.conversationId, conversation.id);
+      assert.equal(input.turnId, 'turn-capture-resume');
+      assert.equal(input.agentId, agent.id);
+      const message = store.listMessages(conversation.id).filter((m) => m.role === 'assistant').at(-1);
+      assert.equal(message.metadata.badcaseCheckpointId, 'checkpoint-2');
+      assert.equal(message.metadata.sessionReused, true);
+      assert.equal(message.metadata.sessionName, saved.sessionName);
+      assert.deepEqual(env.releasedInvocations, ['invocation-reuse-ab', 'invocation-reuse-ab']);
+      assert.equal(result.turnState.runHandles.size, 0);
+      const eventNames = result.events.map(([, name]) => name);
+      const calls = store.reuseCalls.slice(reuseCallOffset).map(([name]) => name);
+      if (mode === 'success') {
+        assert.equal(message.status, 'completed');
+        assert.deepEqual(calls, ['get', 'claim', 'markReusable']);
+        assert.equal(result.failedReplies.length, 0);
+        assert.equal(eventNames.includes('agent_reply_started'), true);
+      } else {
+        assert.equal(message.status, 'failed');
+        assert.equal(message.errorMessage, startError.message);
+        assert.equal(message.runId, startError.runId || null);
+        assert.equal(message.metadata.sessionPath, startError.sessionPath || '');
+        assert.equal(result.failedReplies.length, 1);
+        assert.equal(result.failedReplies[0].id, message.id);
+        assert.equal(eventNames.includes('agent_reply_started'), false);
+        assert.equal(eventNames.includes('agent_reply_failed'), true);
+        assert.deepEqual(calls, ['get', 'claim', 'restore']);
+        const restored = store.peekReuseRow();
+        // Only restore time may change; the previous cursor/hash/session/usage
+        // must survive, rather than advancing or poisoning an unstarted run.
+        assert.deepEqual({ ...restored, updatedAt: saved.updatedAt }, saved);
+      }
+    });
+  }
+});
+
+test('SDK descriptor drift across awaited capture never associates a stale checkpoint, but does not block the turn', async t => {
+  for (const delivery of ['fresh', 'resume']) for (const drift of [false, true]) {
+    await t.test(`${delivery}/${drift ? 'drift' : 'unchanged'}`, async t => {
+      const previous = process.env.PI_THINKING; process.env.PI_THINKING = '';
+      t.after(() => { if (previous === undefined) delete process.env.PI_THINKING; else process.env.PI_THINKING = previous; });
+      const env = setupExecutorTest(t, { reuseEnabled: true }), agent = createAgent(), conversation = createConversation(agent);
+      agent.runtimeConfig.thinking = '';
+      const store = createFakeStore(conversation, { withReuse: true }); store.agentDir = env.tempDir;
+      seedUserMessage(store, 'u1', 'CONFIG-CAPTURE');
+      if (delivery === 'resume') {
+        await runTurn({ executor: env.createExecutor(store), conversation, agent, store, turnId: 'config-seed' });
+        seedUserMessage(store, 'u2', 'CONFIG-DELTA');
+      }
+      let release, enter, snapshot;
+      const pending = new Promise(resolve => { release = resolve; }), entered = new Promise(resolve => { enter = resolve; });
+      const executor = env.createExecutor(store, { badcaseCapture: { captureTurnCheckpoint(input) {
+        snapshot = structuredClone(input.harness.configSnapshot.sdkStartConfig); enter(); return pending;
+      } } });
+      const running = runTurn({ executor, conversation, agent, store, turnId: 'config-await' });
+      try { await entered; if (drift) process.env.PI_THINKING = 'high'; }
+      finally { release({ captured: true, checkpointId: 'config-cp' }); }
+      await running;
+      const run = env.captured.at(-1), { resolveSdkStartConfig } = require('../../build/lib/minimal-pi');
+      const current = resolveSdkStartConfig(run.provider, run.model, run.options);
+      assert.equal(snapshot.resume, delivery === 'resume');
+      assert.equal(snapshot.thinking, ''); assert.equal(current.thinking, drift ? 'high' : '');
+      const message = store.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+      assert.equal(message.status, 'completed');
+      assert.equal(message.metadata.badcaseCheckpointId || '', drift ? '' : 'config-cp');
+      assert.equal(run.options.resume, delivery === 'resume');
+    });
+  }
+});
+
+test('pre-turn asynchronous capture settles before startRun and preserves fresh/resume, including stop while waiting', async (t) => {
+  for (const delivery of ['fresh', 'resume']) {
+    for (const mode of ['success', 'refusal', 'exception', 'empty', 'stop', 'stop-exception', 'stop-stage']) {
+      await t.test(`${delivery}/${mode}`, async (t) => {
+        const env = setupExecutorTest(t, { reuseEnabled: true });
+        const agent = createAgent(), conversation = createConversation(agent);
+        const worktree = path.join(env.tempDir, 'actual-worktree');
+        fs.mkdirSync(worktree);
+        conversation.worktreePath = path.join(env.tempDir, 'stale-room-root');
+        const store = createFakeStore(conversation, { withReuse: true });
+        // runTurn passes this fixture field as the execution projectDir, while
+        // the real agent/session directory remains env.tempDir. The old test
+        // labelled Room metadata "actual" but started the SDK in its parent.
+        store.agentDir = worktree;
+        seedUserMessage(store, 'u1', 'BEFORE-ASYNC-CAPTURE');
+        let saved;
+        if (delivery === 'resume') {
+          await runTurn({ executor: env.createExecutor(store), conversation, agent, store, turnId: 'seed-async' });
+          saved = store.peekReuseRow();
+          seedUserMessage(store, 'u2', 'ASYNC-RESUME-DELTA');
+        }
+        const startCount = env.captured.length, releases = env.releasedInvocations.length;
+        const reuseOffset = store.reuseCalls.length, order = [], observations = [];
+        let enter, resolveCapture, rejectCapture, turnState;
+        const entered = new Promise(resolve => { enter = resolve; });
+        const pending = new Promise((resolve, reject) => { resolveCapture = resolve; rejectCapture = reject; });
+        // Keep red-first runs from creating an unhandled rejection when the old
+        // executor ignores this promise. The tested promise itself is unchanged.
+        pending.catch(() => {});
+        const executor = env.createExecutor(store, {
+          badcaseCapture: { captureTurnCheckpoint(input) {
+            observations.push(input); order.push('capture-enter'); enter(); return pending;
+          } },
+          onStartRun() { order.push('startRun'); },
+        });
+        const running = runTurn({ executor, conversation, agent, store, turnId: 'turn-async-capture',
+          onTurnState(state) { turnState = state; } });
+        let result;
+        try {
+          await entered;
+          // Advance one event-loop turn, not a wall-clock timing assumption.
+          await new Promise(resolve => setImmediate(resolve));
+          assert.equal(env.captured.length, startCount, 'no provider run before capture settles');
+          assert.deepEqual(order, ['capture-enter']);
+          assert.equal(env.releasedInvocations.length, releases, 'callback remains registered while waiting');
+          assert.equal(observations[0].targetDir, worktree, 'actual SDK cwd, not Room metadata or application/session dir');
+          assert.equal(observations[0].targetDir, observations[0].harness.configSnapshot.sdkStartConfig.cwd);
+          assert.equal(observations[0].deliveryMode, delivery);
+          if (delivery === 'resume') assert.equal(store.peekReuseRow().state, 'busy');
+        } finally {
+          if (mode.startsWith('stop')) {
+            const stoppedState = mode === 'stop-stage' ? turnState.agents.find(stage => stage.agentId === agent.id) : turnState;
+            stoppedState.stopRequested = true; stoppedState.stopReason = 'test stop while capturing';
+          }
+          order.push('capture-settle');
+          if (mode.endsWith('exception')) rejectCapture(new Error('synthetic asynchronous capture failure'));
+          else resolveCapture(mode === 'empty' ? undefined : mode === 'refusal'
+            ? { captured: false, checkpointId: 'must-not-associate', reason: 'synthetic_refusal' }
+            : { captured: true, checkpointId: 'checkpoint-async' });
+          result = await running;
+        }
+        const stopped = mode.startsWith('stop');
+        assert.equal(env.captured.length, startCount + (stopped ? 0 : 1));
+        assert.deepEqual(order, stopped ? ['capture-enter', 'capture-settle'] : ['capture-enter', 'capture-settle', 'startRun']);
+        const message = store.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+        const hasCheckpoint = mode === 'success' || mode === 'stop' || mode === 'stop-stage';
+        assert.equal(message.metadata.badcaseCheckpointId || '', hasCheckpoint ? 'checkpoint-async' : '');
+        assert.equal(message.status, stopped ? 'failed' : 'completed');
+        assert.equal(result.failedReplies.length, 0, 'user stop is cancellation, not a failed agent reply');
+        assert.equal(result.turnState.failedCount, 0);
+        assert.equal(result.turnState.runHandles.size, 0);
+        assert.equal(env.releasedInvocations.length, releases + 1);
+        assert.equal(result.events.some(([, name]) => name === 'agent_reply_started'), !stopped);
+        if (stopped) {
+          assert.equal(message.runId, null);
+          assert.equal(message.errorMessage, 'Stopped before agent run started');
+          assert.equal(result.outcome.terminationReason, mode === 'stop-stage' ? '' : 'stopped_by_user');
+          assert.equal(result.outcome.stopTurn, mode !== 'stop-stage');
+          if (delivery === 'resume') {
+            assert.deepEqual(store.reuseCalls.slice(reuseOffset).map(([name]) => name), ['get', 'claim', 'restore']);
+            assert.deepEqual({ ...store.peekReuseRow(), updatedAt: saved.updatedAt }, saved,
+              'an unstarted resumed session is restored, not advanced or poisoned');
+          }
+        } else {
+          const run = env.captured.at(-1);
+          assert.equal(run.options.resume, delivery === 'resume');
+          assert.equal(run.prompt, observations[0].prompt);
+          assert.equal(observations[0].harness.configSnapshot.deliveryMode, delivery);
+          if (delivery === 'resume') assert.equal(run.options.session, saved.sessionName);
+        }
+      });
+    }
+  }
+});
+
+// Internal Windows collector injection, not the management/service enable path.
+test('Windows native composed collector publishes before real executor fresh/resume start and never associates failed publication',
+  { skip: process.platform !== 'win32' }, async t => {
+  const base = '../../build/server/domain/runtime/badcase-capture/';
+  const { createBadcaseCaptureService } = require(base + 'index');
+  const { createWindowsTurnCollector } = require(base + 'windows-turn-collector');
+  const { resolveSessionPath } = require('../../build/lib/minimal-pi');
+  const { execFileSync } = require('node:child_process');
+  const digest = b => require('node:crypto').createHash('sha256').update(b).digest('hex');
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const projectDir = path.join(env.tempDir, 'project'), captureRoot = path.join(env.tempDir, 'capture'), projectId = 'windows-fixture';
+  fs.mkdirSync(projectDir); fs.mkdirSync(path.join(env.tempDir, 'named-sessions'));
+  const git = (...args) => execFileSync('git', ['-C', projectDir, ...args], { windowsHide: true,
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(env.tempDir, 'absent-global'), GIT_TEMPLATE_DIR: '' } });
+  git('init', '-q'); git('config', 'core.ignorecase', 'false'); fs.writeFileSync(path.join(projectDir, 'file.txt'), 'before fresh'); git('add', 'file.txt');
+  const agent = createAgent(), conversation = createConversation(agent);
+  conversation.projectId = projectId; conversation.worktreePath = projectDir;
+  const store = createFakeStore(conversation, { withReuse: true }); store.agentDir = projectDir;
+  seedUserMessage(store, 'u1', 'WINDOWS-COMPOSED-FRESH');
+  const service = createBadcaseCaptureService({ captureRoot });
+  service.savePolicy(projectId, { authorizedDirs: [projectDir], authorizedInputDirs: [env.tempDir], excludedPatterns: [] });
+  const policy = service.authorizeProject(projectId); assert.equal(policy.status, 'disabled');
+  // Explicit synthetic writer setup only; public Windows enable gate is unchanged.
+  service.store.savePolicy({ ...policy, status: 'enabled' });
+  const nativeCollector = createWindowsTurnCollector({ store: service.store }), pendingCaptures = [];
+  const collector = { captureTurnCheckpoint(input) { const pending = nativeCollector.captureTurnCheckpoint(input); pendingCaptures.push(pending); return pending; } };
+  const bytes = Buffer.from([{ type: 'session', version: 3, id: 's', cwd: projectDir },
+    { type: 'message', id: 'u', parentId: null, message: { role: 'user', content: 'fixture history', timestamp: 1 } }].map(x => JSON.stringify(x)).join('\r\n') + '\r\n');
+  const seen = [];
+  const observe = record => {
+    const cp = service.store.loadLatestCheckpoint(projectId, projectDir); assert.ok(cp, 'manifest on disk before startRun');
+    assert.equal(cp.replayInput.deliveryMode, record.options.resume ? 'resume' : 'fresh');
+    assert.equal(cp.replayInput.complete, false); assert.equal(cp.strictEvalEligible, false);
+    assert.equal(cp.files['file.txt'].hash, digest(record.options.resume ? 'before resume' : 'before fresh'));
+    assert.equal(cp.turnId, record.options.resume ? 'win-resume' : 'win-fresh');
+    if (record.options.resume) assert.deepEqual(service.store.readBlob(projectId, cp.replayInput.sessionBlobHash), bytes);
+    else fs.writeFileSync(resolveSessionPath(record.options.session, record.options.agentDir), bytes);
+    fs.writeFileSync(path.join(projectDir, 'file.txt'), record.options.resume ? 'after resume' : 'before resume');
+    seen.push(cp);
+  };
+  for (const [index, mode] of ['fresh', 'resume'].entries()) {
+    if (index) seedUserMessage(store, 'u2', 'WINDOWS-COMPOSED-DELTA');
+    await runTurn({ executor: env.createExecutor(store, { badcaseCapture: collector, onStartRun: observe }), conversation, agent, store, turnId: `win-${mode}` });
+    await Promise.all(pendingCaptures); // Drain even a deliberately mutated executor before fixture cleanup.
+    const message = store.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+    assert.equal(message.status, 'completed', message.metadata?.errorMessage); assert.equal(message.metadata.badcaseCheckpointId, seen[index].checkpointId);
+  }
+  const old = service.store.loadLatestCheckpoint(projectId, projectDir), save = service.store.saveCheckpoint;
+  service.store.saveCheckpoint = () => { throw Error('PRIVATE_WRITE_SENTINEL'); };
+  seedUserMessage(store, 'u3', 'WINDOWS-PUBLICATION-FAILURE');
+  try {
+    await runTurn({ executor: env.createExecutor(store, { badcaseCapture: collector, onStartRun: () => {
+      assert.equal(service.store.loadLatestCheckpoint(projectId, projectDir).checkpointId, old.checkpointId);
+      assert.equal(service.store.loadPolicy(projectId).status, 'suspended');
+    } }), conversation, agent, store, turnId: 'win-failed-publication' });
+  } finally { await Promise.all(pendingCaptures); service.store.saveCheckpoint = save; }
+  const failedCaptureMessage = store.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+  assert.equal(failedCaptureMessage.status, 'completed'); assert.equal(failedCaptureMessage.metadata.badcaseCheckpointId || '', '');
+  assert.equal(JSON.stringify(failedCaptureMessage).includes('PRIVATE_WRITE_SENTINEL'), false);
+  assert.equal(env.captured.length, 3); assert.equal(fs.existsSync(path.join(captureRoot, 'projects', projectId, '.writer-lock')), false);
+});
+
+// Real collector/CAS/helper/restore, synthetic session and mock startRun/store.
+// This closes the wiring-to-archive gap, not real pi/DB replay acceptance.
+test('real capture service archives pre-start fresh/resume inputs and survives restart', { skip: require('../helpers/capture-capability').capSkip }, async (t) => {
+  const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
+  const { resolveSessionPath } = require('../../build/lib/minimal-pi');
+  const { createHash } = require('node:crypto');
+  const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  for (const mode of ['archived', 'missing-session', 'unauthorized-session']) {
+    await t.test(mode, async (t) => {
+      const env = setupExecutorTest(t, { reuseEnabled: true });
+      const projectId = 'project-real-capture';
+      const projectDir = path.join(env.tempDir, 'project');
+      const sessionDir = path.join(env.tempDir, 'named-sessions');
+      const captureRoot = path.join(env.tempDir, 'capture');
+      fs.mkdirSync(projectDir);
+      fs.mkdirSync(sessionDir);
+      fs.writeFileSync(path.join(projectDir, 'file.txt'), 'before fresh');
+      const agent = createAgent();
+      const conversation = createConversation(agent);
+      conversation.projectId = projectId;
+      conversation.worktreePath = projectDir;
+      const store = createFakeStore(conversation, { withReuse: true });
+      store.agentDir = projectDir;
+      seedUserMessage(store, 'u1', 'HISTORICAL-REAL-CAPTURE');
+      const sessionBytes = Buffer.from([
+        JSON.stringify({ type: 'session', version: 3, id: 'synthetic-session' }),
+        JSON.stringify({ type: 'message', id: 'm1', parentId: 'synthetic-session', message: {
+          role: 'user', content: [{ type: 'text', text: 'ARCHIVED-HISTORY-BEFORE-RESUME' }],
+        } }), '',
+      ].join('\n'));
+      let service = createBadcaseCaptureService({ captureRoot });
+      service.savePolicy(projectId, {
+        status: 'enabled', authorizedDirs: [projectDir], authorizedInputDirs: [sessionDir],
+      });
+      service.authorizeProject(projectId);
+      const observations = [];
+      let sessionPath;
+      const observeStart = (record) => {
+        // Observe persisted bytes before the mock runtime writes anything.
+        const checkpoint = service.store.loadLatestCheckpoint(projectId, projectDir);
+        observations.push({ checkpoint, record });
+        sessionPath = resolveSessionPath(record.options.session, record.options.agentDir);
+        if (!record.options.resume) fs.writeFileSync(sessionPath, sessionBytes);
+        else fs.appendFileSync(sessionPath, 'POST-START-NOT-ARCHIVED\n');
+        fs.writeFileSync(path.join(projectDir, 'file.txt'), record.options.resume ? 'after resume' : 'before resume');
+      };
+      await runTurn({ executor: env.createExecutor(store, { badcaseCapture: service, onStartRun: observeStart }),
+        conversation, agent, store, turnId: 'turn-real-fresh' });
+      assert.equal(observations.length, 1);
+      const fresh = observations[0].checkpoint;
+      assert.ok(fresh, 'real checkpoint must be on disk before startRun');
+      assert.equal(fresh.replayInput.deliveryMode, 'fresh');
+      // This store is an in-memory executor fake, not an authorized SQLite
+      // callback source. File/session capture works; completeness must not lie.
+      assert.equal(fresh.replayInput.complete, false);
+      assert.deepEqual(fresh.replayInput.incompleteReasons, ['callback_input_unavailable']);
+      assert.equal(fresh.replayInput.sessionBlobHash, '');
+      assert.match(service.store.readBlob(projectId, fresh.replayInput.promptBlobHash).toString('utf8'), /HISTORICAL-REAL-CAPTURE/u);
+      assert.equal(fresh.files['file.txt'].hash, digest('before fresh'));
+      const freshMessage = store.listMessages(conversation.id).filter((m) => m.role === 'assistant').at(-1);
+      assert.equal(freshMessage.status, 'completed');
+      assert.equal(freshMessage.metadata.badcaseCheckpointId, fresh.checkpointId);
+      const harness = JSON.parse(service.store.readBlob(projectId, fresh.replayInput.harness.configSnapshotHash));
+      assert.equal(harness.piVersion, 'pi:0.85.1');
+
+      // Recreate the service: policy/pins and prior manifest must come from disk.
+      service = createBadcaseCaptureService({ captureRoot });
+      if (mode === 'missing-session') fs.unlinkSync(sessionPath);
+      if (mode === 'unauthorized-session') {
+        service.savePolicy(projectId, { ...service.loadPolicy(projectId), authorizedInputDirs: [] });
+      }
+      seedUserMessage(store, 'u2', 'DELTA-REAL-CAPTURE');
+      await runTurn({ executor: env.createExecutor(store, { badcaseCapture: service, onStartRun: observeStart }),
+        conversation, agent, store, turnId: 'turn-real-resume' });
+      assert.equal(observations.length, 2);
+      const { checkpoint: resume, record } = observations[1];
+      assert.ok(resume);
+      assert.equal(record.options.resume, true, 'capture degradation must not change invocation mode');
+      assert.equal(resume.replayInput.deliveryMode, 'resume');
+      assert.equal(resume.replayInput.complete, false);
+      assert.ok(resume.replayInput.incompleteReasons.includes('callback_input_unavailable'));
+      if (mode === 'archived') assert.deepEqual(resume.replayInput.incompleteReasons, ['callback_input_unavailable']);
+      assert.equal(resume.files['file.txt'].hash, digest('before resume'));
+      assert.match(record.prompt, /DELTA-REAL-CAPTURE/u);
+      assert.equal(record.prompt.includes('HISTORICAL-REAL-CAPTURE'), false);
+      const archivedPrompt = service.store.readBlob(projectId, resume.replayInput.promptBlobHash).toString('utf8');
+      assert.match(archivedPrompt, /DELTA-REAL-CAPTURE/u);
+      assert.equal(archivedPrompt.includes('HISTORICAL-REAL-CAPTURE'), false);
+      const finalMessage = store.listMessages(conversation.id).filter((m) => m.role === 'assistant').at(-1);
+      assert.equal(finalMessage.status, 'completed');
+      assert.equal(finalMessage.metadata.badcaseCheckpointId, resume.checkpointId);
+      assert.equal(finalMessage.metadata.sessionReused, true);
+      assert.equal(resume.conversationId, conversation.id);
+      assert.equal(resume.turnId, 'turn-real-resume');
+      assert.equal(resume.agentId, agent.id);
+      if (mode === 'archived') {
+        assert.equal(resume.replayInput.sessionBlobHash, digest(sessionBytes));
+        assert.deepEqual(service.store.readBlob(projectId, resume.replayInput.sessionBlobHash), sessionBytes);
+      } else {
+        assert.equal(resume.replayInput.sessionBlobHash, '');
+        assert.ok(resume.replayInput.incompleteReasons.includes(mode === 'missing-session' ? 'session_missing' : 'session_not_authorized'));
+        assert.equal(service.store.hasBlob(projectId, digest(sessionBytes)), false);
+      }
+      // Post-start writes and service recreation cannot mutate archived bytes.
+      const restarted = createBadcaseCaptureService({ captureRoot });
+      assert.deepEqual(restarted.store.loadCheckpoint(projectId, resume.checkpointId), resume);
+      for (const checkpoint of [fresh, resume]) {
+        const restored = [1, 2].map((copy) => {
+          const targetDir = path.join(env.tempDir, `${checkpoint.checkpointId}-${copy}`);
+          const result = restarted.restoreCheckpoint({ projectId, checkpointId: checkpoint.checkpointId, targetDir });
+          assert.equal(result.ok, true);
+          assert.equal(result.replayInputComplete, false);
+          assert.equal(result.strictEvalEligible, false);
+          assert.equal(fs.readFileSync(path.join(targetDir, 'file.txt'), 'utf8'), checkpoint === fresh ? 'before fresh' : 'before resume');
+          return result.restoredFiles;
+        });
+        assert.deepEqual(restored[0], restored[1]);
+      }
+      if (mode === 'archived') assert.deepEqual(restarted.store.readBlob(projectId, resume.replayInput.sessionBlobHash), sessionBytes);
+    });
+  }
+});
+
+// Same-process HTTP/controller + real Linux collector + real SQLite repositories
+// and both sealing workers. Only startRun/bridge/model catalog are synthetic.
+// This is not a real model invocation, browser test, or full app restart.
+test('authorized capture to message seal survives SQLite/service reconstruction with real executor wiring', {
+  skip: process.platform !== 'linux', timeout: 90000,
+}, async t => {
+  const http = require('node:http');
+  const { spawnSync } = require('node:child_process');
+  const { createHash } = require('node:crypto');
+  const load = file => require('../../build/' + file);
+  const { createChatAppStore } = load('lib/chat-app-store');
+  const { createSqliteRunStore } = load('lib/sqlite-store');
+  const { createBadcaseCaptureService } = load('server/domain/runtime/badcase-capture');
+  const { createBadcaseCaptureController } = load('server/api/badcase-capture-controller');
+  const { createBadcaseFlagsController } = load('server/api/badcase-flags-controller');
+  const { createBadcaseFlagService } = load('server/domain/runtime/badcase-capture/badcase-flags');
+  const { createBadcaseSealingService } = load('server/domain/runtime/badcase-capture/sealing-service');
+  const { resolveSessionPath } = load('lib/minimal-pi');
+  let chat, server;
+  // Close DB/listener before setupExecutorTest removes its disposable directory.
+  t.after(async () => { if (server?.listening) await new Promise(resolve => server.close(resolve)); chat?.close(); });
+  const env = setupExecutorTest(t, { reuseEnabled: true });
+  const projectId = 'project-capture-chain', agent = createAgent();
+  const projectDir = path.join(env.tempDir, 'project'), captureRoot = path.join(env.tempDir, 'capture');
+  const sessionDir = path.join(env.tempDir, 'named-sessions');
+  fs.mkdirSync(projectDir); fs.mkdirSync(sessionDir);
+  const target = path.join(projectDir, 'file.txt'); fs.writeFileSync(target, 'before fresh');
+  const dbOptions = { agentDir: env.tempDir, sqlitePath: path.join(env.tempDir, 'chat.sqlite') };
+  chat = createChatAppStore(dbOptions);
+  let capture, captureController, flagsController, base;
+  chat.saveCustomRoleConfig(agent);
+  chat.createConversation({ id: 'conversation-reuse-ab', title: 'Synthetic capture chain', participants: [agent.id], projectScopeId: projectId });
+  const conversation = { ...chat.getConversation('conversation-reuse-ab'), agents: [agent], worktreePath: projectDir };
+  const rebuild = () => {
+    capture = createBadcaseCaptureService({ captureRoot, chatStore: chat });
+    const options = { projectManager: { listProjects: () => [{ id: projectId }] }, host: '127.0.0.1',
+      getAuthority: () => new URL(base).host, csrfToken: 'synthetic-capture-chain' };
+    captureController = createBadcaseCaptureController({ ...options, service: capture });
+    const flags = createBadcaseFlagService({ captureRoot, captureStore: capture.store, chatStore: chat });
+    flagsController = createBadcaseFlagsController({ ...options, service: flags,
+      sealingService: createBadcaseSealingService({ flags, captureStore: capture.store, databasePath: dbOptions.sqlitePath }) });
+  };
+  server = http.createServer(async (req, res) => {
+    try {
+      const args = { req, res, pathname: new URL(req.url, base).pathname };
+      if (await captureController(args) || await flagsController(args)) return;
+      res.writeHead(404); res.end();
+    } catch (e) { res.writeHead(e.statusCode || 500); res.end(JSON.stringify({ issues: e.issues || [] })); }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  base = `http://127.0.0.1:${server.address().port}`; rebuild();
+  const api = async (url, body, status = 200) => {
+    const response = await fetch(base + url, body === undefined ? {} : { method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-caff-csrf-token': 'synthetic-capture-chain' }, body: JSON.stringify(body) });
+    const result = await response.json(); assert.equal(response.status, status, JSON.stringify(result)); return result;
+  };
+  const endpoint = `/api/projects/${projectId}/badcase-capture`;
+  assert.equal((await api(endpoint)).policy.status, 'disabled');
+  await api(endpoint + '/authorize', { confirmed: true, authorizedDirs: [projectDir], authorizedInputDirs: [sessionDir],
+    includedIgnoredPatterns: [], excludedPatterns: ['.git', 'node_modules'], callbackInputAuthorized: true });
+  const estimate = await api(endpoint + '/estimate', {});
+  assert.equal(estimate.complete, true); assert.equal(estimate.totalBytes, Buffer.byteLength('before fresh'));
+  assert.equal(capture.loadPolicy(projectId).status, 'disabled');
+  assert.equal(capture.store.listCheckpoints(projectId).length, 0);
+  await api(endpoint + '/enable', { confirmed: true, estimateId: estimate.estimateId });
+  assert.equal(capture.loadPolicy(projectId).status, 'enabled');
+  const sessionBytes = Buffer.from(JSON.stringify({ type: 'session', version: 3, id: 'chain-session' }) + '\n'
+    + JSON.stringify({ type: 'message', id: 'prior-user', parentId: 'chain-session', message: { role: 'user', content: [{ type: 'text', text: 'synthetic prior input' }] } }) + '\n');
+  const observed = [], messages = [], seals = [];
+  for (const [index, mode] of ['fresh', 'resume'].entries()) {
+    const usageBefore = capture.computeUsage(projectId);
+    const user = chat.createMessage({ id: `u${index + 1}`, conversationId: conversation.id, turnId: `accepted-${mode}`,
+      role: 'user', status: 'completed', content: `synthetic input ${mode}` });
+    const runStore = createSqliteRunStore({ agentDir: env.tempDir, db: chat.db });
+    const executor = env.createExecutor(chat, { badcaseCapture: capture, runId: index + 1,
+      onStartRun(record) {
+        const checkpoint = capture.store.loadLatestCheckpoint(projectId, projectDir);
+        // Collect observations here; assert outside startRun's caught error boundary.
+        const sessionPath = resolveSessionPath(record.options.session, record.options.agentDir);
+        const run = runStore.startRun({ ...record.options, provider: record.provider, model: record.model,
+          prompt: record.prompt, cwd: projectDir, sessionPath, requestedSession: record.options.session, requestedResume: record.options.resume });
+        runStore.finishRun(run.runId, { status: 'succeeded', reply: 'synthetic result', assistantErrors: [] });
+        observed.push({ checkpoint, runId: run.runId, resume: record.options.resume, usage: capture.computeUsage(projectId) });
+        if (index === 0) fs.writeFileSync(sessionPath, sessionBytes);
+        else fs.appendFileSync(sessionPath, 'POST-START-NOT-ARCHIVED\n');
+        fs.writeFileSync(target, index === 0 ? 'before resume' : 'after resume');
+      } });
+    await runTurn({ executor, conversation, agent, store: chat, projectDir, turnId: `chain-${mode}`, promptUserMessage: user, persistedRunStore: runStore });
+    assert.equal(observed.length, index + 1);
+    const observation = observed[index], cp = observation.checkpoint;
+    assert.ok(cp, 'checkpoint must already exist before synthetic startRun');
+    assert.equal(observation.runId, index + 1); assert.equal(observation.resume, index === 1,
+      JSON.stringify(chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1)?.metadata));
+    assert.equal(cp.replayInput.deliveryMode, mode); assert.equal(cp.replayInput.complete, true, JSON.stringify(cp.replayInput.incompleteReasons));
+    const { readCapturedCallbackInput } = load('server/domain/runtime/badcase-capture/callback-input');
+    const callback = readCapturedCallbackInput(cp, hash => capture.store.readBlob(projectId, hash));
+    assert.equal(callback.association.userMessageId, user.id); assert.equal(callback.association.assistantMessageId,
+      chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1).id);
+    assert.equal(cp.files['file.txt'].hash, createHash('sha256').update(`before ${mode}`).digest('hex'));
+    if (index === 1) assert.deepEqual(capture.store.readBlob(projectId, cp.replayInput.sessionBlobHash), sessionBytes);
+    const message = chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+    assert.equal(message.status, 'completed'); assert.equal(message.runId, observation.runId);
+    assert.equal(message.metadata.badcaseCheckpointId, cp.checkpointId);
+    messages.push(message);
+    const url = `/api/projects/${projectId}/conversations/${conversation.id}/messages/${message.id}/badcase-flag`;
+    const body = { confirmed: true, actual: `synthetic ${mode} problem`, expected: 'synthetic expected behavior' };
+    assert.equal((await api(url)).flag, null);
+    const marked = await api(url, body, 201); seals.push(marked);
+    assert.deepEqual(marked.flag.sealAssociation, { projectId, conversationId: conversation.id, messageId: message.id,
+      turnId: message.turnId, agentId: agent.id, checkpointId: cp.checkpointId, taskId: message.taskId, runId: message.runId });
+    assert.equal(marked.seal.state, 'saved_incomplete'); assert.equal(marked.seal.checkpointSaved, true);
+    assert.equal(marked.seal.trajectory.reason, 'trajectory_provenance_unverified', 'real SQLite worker must validate direct associations, not fall back to unavailable');
+    assert.ok(marked.seal.trajectory.totalTaskEventCount > 0);
+    for (const key of ['captured', 'runnable', 'reproduced', 'evaluable', 'strictEvalEligible', 'complete']) assert.equal(marked.seal[key], false);
+    const usage = capture.computeUsage(projectId);
+    assert.equal(observation.usage.totalBytes - usageBefore.totalBytes, cp.stats.totalNewBytes);
+    t.diagnostic(JSON.stringify({ mode, captureNewBytes: cp.stats.totalNewBytes, newBlobBytes: cp.stats.newBlobBytes,
+      newManifestBytes: cp.stats.newManifestBytes, captureDurationMs: cp.stats.durationMs,
+      sessionBytes: mode === 'resume' ? sessionBytes.length : 0, sealAndFlagNewBytes: usage.totalBytes - observation.usage.totalBytes,
+      totalLogicalBytes: usage.totalBytes, synthetic: true, imageBytes: 0 }));
+    const duplicate = await api(url, body);
+    assert.equal(duplicate.created, false); assert.deepEqual(duplicate.seal, marked.seal);
+    assert.deepEqual(capture.computeUsage(projectId), usage);
+    // Close/reopen actual DB and recreate controllers, not in-memory mirrors.
+    chat.close(); chat = createChatAppStore(dbOptions); rebuild();
+    assert.deepEqual((await api(url)).seal, marked.seal);
+    assert.deepEqual(chat.getMessage(message.id), message);
+  }
+  const cases = path.join(captureRoot, 'projects', projectId, 'cases');
+  assert.equal(fs.readdirSync(cases).length, 2);
+  assert.equal(fs.readdirSync(path.join(captureRoot, 'projects', projectId, 'retention')).length, 2);
+  const usageBeforeReader = capture.computeUsage(projectId);
+  // A separate Node process proves reads do not depend on parent caches.
+  chat.close(); chat = null;
+  const child = spawnSync(process.execPath, ['-e', `
+    const {createChatAppStore}=require(${JSON.stringify(require.resolve('../../build/lib/chat-app-store'))});
+    const {createCaptureStore}=require(${JSON.stringify(require.resolve('../../build/server/domain/runtime/badcase-capture/capture-store'))});
+    const {createBadcaseFlagService}=require(${JSON.stringify(require.resolve('../../build/server/domain/runtime/badcase-capture/badcase-flags'))});
+    const {createBadcaseSealingService}=require(${JSON.stringify(require.resolve('../../build/server/domain/runtime/badcase-capture/sealing-service'))});
+    const chat=createChatAppStore(${JSON.stringify(dbOptions)}),captureStore=createCaptureStore({captureRoot:${JSON.stringify(captureRoot)}});
+    try { const flags=createBadcaseFlagService({captureRoot:captureStore.captureRoot,captureStore,chatStore:chat});
+      const service=createBadcaseSealingService({flags,captureStore,databasePath:${JSON.stringify(dbOptions.sqlitePath)}});
+      process.stdout.write(JSON.stringify(${JSON.stringify(messages.map(m => ({ projectId, conversationId: conversation.id, messageId: m.id })))}.map(scope=>service.get(scope))));
+    } finally { chat.close(); }
+  `], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), seals.map(({ flag, seal }) => ({ flag, seal })));
+  chat = createChatAppStore(dbOptions); rebuild();
+  assert.deepEqual(capture.computeUsage(projectId), usageBeforeReader);
+  await api(endpoint + '/disable', {});
+  const beforeDisabled = capture.computeUsage(projectId), count = capture.store.listCheckpoints(projectId).length;
+  const user = chat.createMessage({ id: 'u3', conversationId: conversation.id, role: 'user', status: 'completed', content: 'disabled synthetic turn' });
+  await runTurn({ executor: env.createExecutor(chat, { badcaseCapture: capture, runId: 3 }), conversation, agent, store: chat, projectDir,
+    turnId: 'chain-disabled', promptUserMessage: user });
+  const disabledMessage = chat.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
+  assert.equal(disabledMessage.metadata.badcaseCheckpointId, '');
+  assert.equal(capture.store.listCheckpoints(projectId).length, count);
+  assert.deepEqual(capture.computeUsage(projectId), beforeDisabled);
+  const historical = chat.createMessage({ conversationId: conversation.id, agentId: agent.id, role: 'assistant', status: 'completed', content: 'historical synthetic message' });
+  const historicalUrl = `/api/projects/${projectId}/conversations/${conversation.id}/messages/${historical.id}/badcase-flag`;
+  const missing = await api(historicalUrl, { confirmed: true, actual: 'no checkpoint', expected: 'report missing' }, 201);
+  assert.equal(missing.seal.state, 'unavailable'); assert.equal(missing.seal.checkpointSaved, false);
+  assert.equal(fs.readdirSync(cases).length, 2, 'historical marker must not fabricate a case');
+  for (const [index, cp] of observed.map(o => o.checkpoint).entries()) {
+    const restored = capture.restoreCheckpoint({ projectId, checkpointId: cp.checkpointId, targetDir: path.join(env.tempDir, `restore-${index}`) });
+    assert.equal(restored.ok, true);
+    assert.equal(fs.readFileSync(path.join(env.tempDir, `restore-${index}/file.txt`), 'utf8'), index === 0 ? 'before fresh' : 'before resume');
+  }
+  // A complete collector input is NOT permission to drop the actual CAFF
+  // bridge/replacements to fit the deliberately narrower model launcher.
+  const { prepareOperator } = require('../../scripts/badcase-capture/model-evaluation-operator.cjs');
+  const repo = path.resolve(__dirname, '../..');
+  const sources = {
+    runtimeArchive: require('../../scripts/badcase-capture/runtime-archive.cjs').archiveRuntime(repo, path.join(env.tempDir, 'runtime')),
+    harnessArchive: require('../../scripts/badcase-capture/harness-archive.cjs').archiveHarness(repo, path.join(env.tempDir, 'harness')),
+  };
+  const model = { settings: { provider: 'synthetic', model: 'fixture', contextWindowTokens: 1000, maxOutputTokens: 100, temperature: 0,
+    inputMicroUsdPerMillionTokens: 1000000, outputMicroUsdPerMillionTokens: 1000000, maxRequestBytes: 4096, maxResponseBytes: 4096 },
+    endpoint: { hostname: 'api.example.com', address: '93.184.216.34', path: '/v1/chat/completions', timeoutMs: 1000, maxRequestBytes: 4096, maxResponseBytes: 4096 },
+    maxRequests: 2, tools: [{ type: 'function', function: { name: 'read', description: 'synthetic', parameters: { type: 'object' } } }] };
+  const operatorRoot = path.join(env.tempDir, 'never-approved-model-reviews');
+  for (const [index, message] of messages.entries()) {
+    const cp = observed[index].checkpoint, archived = JSON.stringify(cp);
+    const harnessBytes = capture.store.readBlob(projectId, cp.replayInput.harness.configSnapshotHash);
+    assert.equal(JSON.parse(harnessBytes).toolBridgeEnabled, true);
+    // This synthetic bridge does not embed live callback values in the prompt;
+    // its replacement list can be empty. The full executor configuration has
+    // several unsupported dimensions; this is not an isolated bridge predicate
+    // test (the independent diagnostic suite covers that guard).
+    assert.ok(Array.isArray(cp.replayInput.controlledReplacements));
+    assert.throws(() => prepareOperator({ root: operatorRoot, captureRoot,
+      selection: { id: 'actual-executor-' + index, projectId, conversationId: conversation.id, messageId: message.id },
+      image: { imageId: 'sha256:' + '1'.repeat(64), repositoryDigest: 'node@sha256:' + '2'.repeat(64), architecture: 'amd64', nodeVersion: 'v24.21.0', pythonVersion: 'Python 3.11.2' },
+      sources, roles: { baseline: 'synthetic baseline', candidate: 'synthetic candidate' },
+      rule: { expectedHash: createHash('sha256').update('done').digest('hex'), badcaseHash: createHash('sha256').update('draft').digest('hex') }, model,
+      limits: { repetitions: 1, timeoutMs: 25000, perRunLimitMicroUsd: 2200, totalLimitMicroUsd: 4400 },
+    }), /^Error: sdk_diagnostic_unsupported$/);
+    assert.equal(JSON.stringify(capture.store.loadCheckpoint(projectId, cp.checkpointId)), archived);
+    assert.deepEqual(capture.store.readBlob(projectId, cp.replayInput.harness.configSnapshotHash), harnessBytes);
+    assert.deepEqual((await api(`/api/projects/${projectId}/conversations/${conversation.id}/messages/${message.id}/badcase-flag`)).seal, seals[index].seal);
+  }
+  assert.equal(fs.existsSync(operatorRoot), false, 'rejected preview must not create an approval or dispatch');
 });
 
 test('executor forwards Fast from the resolved config or selected profile, never falls back from profile false', async (t) => {

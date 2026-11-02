@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/styles.css" />
     <script defer src="/shared/icons.js"></script>
     <script defer src="/shared/api-client.js"></script>
+    <script defer src="/shared/badcase-flags.js"></script>
     <script defer src="/shared/model-options.js"></script>
     <script defer src="/shared/avatar.js"></script>
     <script defer src="/shared/toast.js"></script>
@@ -47,12 +48,14 @@
     <script defer src="/app.js"></script>
   </head>
   <body class="chat-app" data-drawer="closed" data-sidebar="closed">
+    <dialog id="badcase-flag-dialog" aria-labelledby="badcase-flag-title"></dialog>
     <div class="app-shell" id="appShell">
       <nav class="rail" aria-label="主导航">
         <a class="rail-link" aria-current="page" href="/" title="聊天工作台" aria-label="聊天工作台"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-chat"></use></svg></a>
         <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-users"></use></svg></a>
         <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-puzzle"></use></svg></a>
         <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-folder"></use></svg></a>
+        <a class="rail-link" href="/wikiskill.html" title="WikiSkill" aria-label="WikiSkill"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-file-text"></use></svg></a>
         <a class="rail-link" href="/metrics.html" title="评测报表" aria-label="评测报表"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-bar-chart"></use></svg></a>
         <span class="spacer"></span>
         <button class="rail-button" id="rail-settings-button" type="button" title="会话设置" aria-label="会话设置"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-settings"></use></svg></button>

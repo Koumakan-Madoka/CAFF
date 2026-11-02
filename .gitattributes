@@ -15,3 +15,5 @@
 *.css text eol=lf
 *.html text eol=lf
 *.txt text eol=lf
+helpers/badcase-capture/capture_helper.py text eol=lf
+server/domain/runtime/badcase-capture/helper-source.ts text eol=lf
