@@ -59,6 +59,8 @@ export function createWindowsTurnCollector(options: any = {}): any {
         replayInput.incompleteReasons = [...new Set([...replayInput.incompleteReasons, 'windows_capture_subset_unverified',
           ...(secretExcludedPaths.length ? ['files_contain_secret'] : [])])];
         if (secretExcludedPaths.length) replayInput.secretExcludedPaths = secretExcludedPaths;
+        const secretRedactedPaths = Object.keys(files.files).filter(p => files.files[p].secretRedacted === true).sort();
+        if (secretRedactedPaths.length) replayInput.secretRedactedPaths = secretRedactedPaths;
         const blobs = new Map(files.blobs);
         for (const plan of prepared.plans) blobs.set(plan.hash, plan.content);
         // Compare only same-scope native observations under this project lease.
@@ -113,7 +115,8 @@ export function createWindowsTurnCollector(options: any = {}): any {
           strictEvalBlockedReason: 'no_independent_consistency_evidence',
           stats: { fileCount: Object.keys(files.files).length,
             totalBytes: Object.values(files.files).reduce((sum: number, f: any) => sum + f.size, 0),
-            secretExcludedFiles: secretExcludedPaths.length, durationMs: performance.now() - started },
+            secretExcludedFiles: secretExcludedPaths.length, secretRedactedFiles: secretRedactedPaths.length,
+            durationMs: performance.now() - started },
         };
         // Last observed deadline is BEFORE publication. Synchronous CAS/JSON
         // writes are non-preemptible; once committed do not pretend rollback.

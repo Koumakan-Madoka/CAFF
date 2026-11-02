@@ -5,7 +5,8 @@
 // ordinary turn collection: metadata-v1 pruning includes otherwise ignored files.
 import { prepareWindowsMetadataScope } from './windows-estimate';
 import { invokeWindowsHelper } from './windows-helper';
-import { containsSecretSentinel } from './secrets';
+import crypto from 'node:crypto';
+import { redactFileSecrets } from './secrets';
 
 export function readWindowsFileCandidate(options: any): any {
   const fail = (reason: string) => ({ ok: false, reason });
@@ -14,24 +15,15 @@ export function readWindowsFileCandidate(options: any): any {
     if (!plan.ok) return fail(plan.reason);
     const result = invokeWindowsHelper('python', plan.helperPath, { ...plan.request, op: 'snapshot' });
     if (!result.ok) return fail(result.reason);
-    // Transport validates ALL bytes/identities/lengths/hashes before any file
-    // is exposed. Apply the existing full-byte sentinel before returning plans
-    // to a trusted CAS writer. No hash/identity of a secret file is retained.
+    // Native transport validates original bytes first. Redact in memory before
+    // returning any CAS plan; never retain the wire buffer or original hash.
     const files: any = Object.create(null), blobs = new Map<string, any>();
     for (const file of result.files) {
-      if (containsSecretSentinel(file.content)) {
-        files[file.path] = { type: 'file', size: Number(file.size), mode: 0o100644, secretExcluded: true };
-      } else {
-        files[file.path] = { type: 'file', size: Number(file.size), mode: 0o100644, hash: file.sha256 };
-        if (!blobs.has(file.sha256)) {
-          // A wire subarray shares the ENTIRE response backing allocation,
-          // including any excluded secrets. Do not return that backing buffer
-          // (or a pooled copy) as a CAS plan. alloc() owns only these safe bytes.
-          const owned = Buffer.alloc(file.content.length);
-          file.content.copy(owned);
-          blobs.set(file.sha256, owned);
-        }
-      }
+      const { content, redactionCount } = redactFileSecrets(file.content);
+      const hash = crypto.createHash('sha256').update(content).digest('hex');
+      files[file.path] = { type: 'file', size: content.length, mode: 0o100644, hash,
+        ...(redactionCount ? { secretRedacted: true, originalSize: Number(file.size), redactionCount } : {}) };
+      if (!blobs.has(hash)) blobs.set(hash, content);
     }
     return { ok: true, reason: '', files, blobs,
       consistency: { method: 'windows_two_content_reads_three_metadata_walks_v1', detectedChange: false },

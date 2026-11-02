@@ -165,7 +165,8 @@ test('R1c: 扫描后、写 CAS 前注入秘密哨兵（TOCTOU），秘密不得�
   authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
-  assert.equal(result.checkpoint.files['clean.txt'].secretExcluded, true, '写时重扫必须检出哨兵并排除');
+  assert.equal(result.checkpoint.files['clean.txt'].secretRedacted, true, '写时重扫必须在落盘前检出并占位替换');
+  assert.equal(service.store.readBlob('project-1', result.checkpoint.files['clean.txt'].hash).toString(), 'injected [*]');
   assert.equal(result.checkpoint.strictEvalEligible, false);
   assert.notEqual(result.checkpoint.consistency.evidence, 'content-verified', '检出异常后不得宣称内容级一致');
   assertNoBlobContains(tempDir, SENTINEL);
@@ -186,8 +187,8 @@ test('R1d: 二进制与超过 16 MiB 的文件不跳过秘密扫描', { skip: ca
   authorize(service, 'project-1', enabledPolicy(projectDir));
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
-  assert.equal(result.checkpoint.files['blob.bin'].secretExcluded, true, '二进制文件须按高置信哨兵集扫描');
-  assert.equal(result.checkpoint.files['big.log'].secretExcluded, true, '大文件不得跳过扫描');
+  assert.equal(result.checkpoint.files['blob.bin'].secretRedacted, true, '二进制文件须按高置信哨兵集扫描');
+  assert.equal(result.checkpoint.files['big.log'].secretRedacted, true, '大文件不得跳过扫描');
   assert.equal(result.checkpoint.strictEvalEligible, false);
   assertNoBlobContains(tempDir, SENTINEL);
 });
@@ -359,7 +360,7 @@ test('R5b: 占用统计计入清单等元数据，与检查点自报新增字节
   assert.equal(after.totalBytes - before.totalBytes, stats.totalNewBytes, '自报新增必须等于实际占用增长（含元数据）');
 });
 
-test('R6: 秘密豁免机制已移除——policy 中的 secretAllowlistPatterns 被忽略，夹具哨兵照常排除', { skip: capSkip }, () => {
+test('R6: 秘密豁免机制已移除——policy 中的 secretAllowlistPatterns 被忽略，夹具哨兵照常脱敏', { skip: capSkip }, () => {
   // GPT 复审 #6：目录级永久豁免会放行后续加入的真实凭据，本阶段移除该机制。
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
@@ -375,9 +376,9 @@ test('R6: 秘密豁免机制已移除——policy 中的 secretAllowlistPatterns
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
   const entry = result.checkpoint.files['fixtures/fake-key.txt'];
-  assert.equal(entry.secretExcluded, true, '命中哨兵一律排除，无豁免路径');
+  assert.equal(entry.secretRedacted, true, '命中哨兵一律脱敏，无豁免路径');
   assert.equal(entry.secretAllowlisted, undefined);
-  assert.equal(entry.hash, undefined, '秘密文件不记录内容 hash');
+  assert.equal(service.store.readBlob('project-1', entry.hash).toString(), 'fake [*] fixture', '仅记录安全字节的 hash');
   assert.equal(result.checkpoint.replayInput.complete, false);
   assertNoBlobContains(tempDir, SENTINEL);
 });
@@ -536,7 +537,7 @@ test('R10: PEM 私钥头在行首/换行后/二进制前缀中必须命中哨兵
   const result = service.captureTurnCheckpoint(captureArgs(projectDir));
   assert.equal(result.captured, true);
   for (const name of ['head.pem', 'mid.pem', 'bin.pem']) {
-    assert.equal(result.checkpoint.files[name].secretExcluded, true, `${name} 必须命中哨兵`);
+    assert.equal(result.checkpoint.files[name].secretRedacted, true, `${name} 必须命中哨兵并保留占位文件`);
   }
   assert.equal(result.checkpoint.replayInput.complete, false);
   assert.equal(result.checkpoint.strictEvalEligible, false);

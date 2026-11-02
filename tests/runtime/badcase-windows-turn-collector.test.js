@@ -303,14 +303,17 @@ test('native Windows files and independently authorized resume enter real publis
   assert.equal(cp.integrity.indexedDeletionEvidence, 'verified_index_visible_ascii_v1');
   assert.equal(cp.replayInput.deliveryMode, 'resume'); assert.equal(cp.replayInput.complete, false);
   assert.deepEqual(reopened.readBlob('p', cp.replayInput.sessionBlobHash), bytes); assert.equal(cp.strictEvalEligible, false);
-  assert.equal(cp.files.tracked.hash, sha('dirty')); assert.equal(cp.files.untracked.hash, sha('new')); assert.equal(cp.files.secret.secretExcluded, true);
+  assert.equal(cp.files.tracked.hash, sha('dirty')); assert.equal(cp.files.untracked.hash, sha('new')); assert.equal(cp.files.secret.secretRedacted, true);
+  assert.deepEqual(cp.replayInput.secretRedactedPaths, ['secret']); assert.equal(cp.stats.secretRedactedFiles, 1);
+  assert.equal(cp.replayInput.incompleteReasons.includes('files_contain_secret'), false);
   assert.equal(reopened.hasBlob('p', sha('sk-SENTINELabcdefghijk')), false);
   const lists = [];
   for (const n of [1, 2]) {
     const dest = path.join(root, `restored-${n}`), restored = restoreCheckpoint({ store: reopened, projectId: 'p', checkpointId: cp.checkpointId, targetDir: dest });
     assert.equal(restored.ok, true, restored.reason); assert.equal(restored.replayInputComplete, false);
     assert.equal(fs.readFileSync(path.join(dest, 'tracked'), 'utf8'), 'dirty'); assert.equal(fs.readFileSync(path.join(dest, 'untracked'), 'utf8'), 'new');
-    assert.equal(fs.existsSync(path.join(dest, 'secret')), false); lists.push(restored.restoredFiles);
+    assert.equal(fs.readFileSync(path.join(dest, 'secret'), 'utf8'), '[*]');
+    assert.equal(restored.redactedFiles[0].byteIdenticalToSource, false); lists.push(restored.restoredFiles);
   }
   assert.deepEqual(lists[0], lists[1]);
   assert.equal(reopened.computeUsage('p').totalBytes, cp.stats.totalNewBytes); assert.equal(fs.existsSync(path.join(captureRoot, 'projects/p/.writer-lock')), false);
@@ -318,7 +321,7 @@ test('native Windows files and independently authorized resume enter real publis
   assert.ok(cp.integrity.knownLimitations.includes('deletion_history_baseline_unavailable'));
 
   // Real content disappears vs selection-only change, ASCII case-only rename,
-  // file->directory replacement, and previous secret omission are distinct.
+  // file->directory replacement, and an actually deleted redacted file are distinct.
   for (const p of ['gone', 'tracked', 'secret', 'becomesDir']) fs.unlinkSync(path.join(target, p));
   fs.mkdirSync(path.join(target, 'becomesDir')); fs.writeFileSync(path.join(target, 'becomesDir/child'), 'new child');
   fs.renameSync(path.join(target, 'CaseBefore'), path.join(target, 'tmp-case'));
@@ -327,7 +330,7 @@ test('native Windows files and independently authorized resume enter real publis
   const next = await collector.captureTurnCheckpoint({ ...input, turnId: 'next' });
   assert.equal(next.captured, true, next.reason);
   const cp2 = createCaptureStore({ captureRoot }).loadCheckpoint('p', next.checkpointId);
-  assert.deepEqual(cp2.deletions, ['gone', 'preMissing', 'tracked']);
+  assert.deepEqual(cp2.deletions, ['gone', 'preMissing', 'secret', 'tracked']);
   assert.equal(cp2.integrity.deletionHistoryBaselineId, cp.checkpointId);
   assert.equal(cp2.integrity.windowsObservationScopeHash, cp.integrity.windowsObservationScopeHash);
   assert.equal(cp2.files.untracked, undefined); assert.equal(fs.existsSync(path.join(target, 'untracked')), true);

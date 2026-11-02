@@ -97,6 +97,12 @@ export function restoreCheckpoint(options: any = {}) {
     mismatches,
     missingSecrets,
     restoredFiles: verification.restoredFiles,
+    // Hash verification concerns archived bytes, not byte equality with the
+    // original source. Legacy excluded files remain missing; never fabricate.
+    redactedFiles: Object.keys(files).filter(p => files[p].secretRedacted === true).sort().map(p => ({
+      path: p, byteIdenticalToSource: false, originalSize: files[p].originalSize,
+      restoredSize: files[p].size, redactionCount: files[p].redactionCount,
+    })),
     uncapturedInScope: Array.isArray(checkpoint.uncaptured) ? checkpoint.uncaptured : [],
     replayInputComplete: checkpoint.replayInput?.complete === true
       && (!checkpoint.uncaptured || checkpoint.uncaptured.length === 0)

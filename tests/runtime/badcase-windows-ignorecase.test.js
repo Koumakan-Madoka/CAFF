@@ -207,7 +207,8 @@ test('native NTFS case-only rename: Git oracle, service fresh/resume publication
       assert.equal(restored.ok, true, restored.reason); lists.push(restored.restoredFiles);
       assert.equal(fs.readFileSync(path.join(targetDir, 'tracked.log'), 'utf8'), 'dirty');
       assert.equal(fs.readFileSync(path.join(targetDir, 'Sub/keep.bin'), 'utf8'), 'dirty');
-      assert.equal(fs.existsSync(path.join(targetDir, 'secret')), false); assert.equal(fs.existsSync(path.join(targetDir, 'Build')), false);
+      assert.equal(fs.readFileSync(path.join(targetDir, 'secret'), 'utf8'), '[*]'); assert.equal(fs.existsSync(path.join(targetDir, 'Build')), false);
+      assert.equal(restored.redactedFiles[0].path, 'secret'); assert.equal(restored.redactedFiles[0].byteIdenticalToSource, false);
     }
     assert.deepEqual(lists[0], lists[1]);
   }

@@ -66,7 +66,8 @@ test('explicit external roots bind gitfile/commondir/backlink before classified 
   assert.equal(r.classification, 'bounded_external_git_subset_v1');
   assert.deepEqual(Object.keys(r.files).sort(), ['.gitignore', 'included.log', 'tracked.log', 'untracked']);
   assert.equal(r.files['tracked.log'].mode, 0o100755); assert.equal(r.files['tracked.log'].hash, hash('dirty'));
-  assert.equal(r.files.untracked.secretExcluded, true); assert.equal(r.blobs.has(hash('sk-SENTINELabcdefghijk')), false);
+  assert.equal(r.files.untracked.secretRedacted, true); assert.equal(r.blobs.has(hash('sk-SENTINELabcdefghijk')), false);
+  assert.equal(r.blobs.get(r.files.untracked.hash).toString(), '[*]');
   assert.equal(r.blobs.get(hash('dirty')).buffer.byteLength, 5);
   assert.deepEqual(h.ops, ['gitMetadata', 'commondir', 'gitdir', 'config', 'index', 'info/exclude', 'selectedSnapshot',
     'gitMetadata', 'commondir', 'gitdir', 'config', 'index', 'info/exclude']);
@@ -261,7 +262,7 @@ test('native linked-worktree classifies independently pinned external inputs, re
   for (const name of ['a', 'b']) {
     const dest = path.join(base, name); const restored = restoreCheckpoint({ store: service.store, projectId: 'p', checkpointId: 'fixture', targetDir: dest });
     assert.equal(restored.ok, true, restored.reason); assert.equal(fs.readFileSync(path.join(dest, 'tracked.log'), 'utf8'), 'dirty');
-    assert.equal(fs.existsSync(path.join(dest, 'secret')), false); assert.equal(fs.existsSync(path.join(dest, 'deleted')), false);
+    assert.equal(fs.readFileSync(path.join(dest, 'secret'), 'utf8'), '[*]'); assert.equal(fs.existsSync(path.join(dest, 'deleted')), false);
   }
   const manifest = dir => fs.readdirSync(dir).sort().map(p => [p, hash(fs.readFileSync(path.join(dir, p)))]);
   assert.deepEqual(manifest(path.join(base, 'a')), manifest(path.join(base, 'b')));
@@ -296,7 +297,9 @@ test('native linked-worktree classifies independently pinned external inputs, re
     const cp = reopenedService.store.loadCheckpoint('p', captured.checkpointId);
     assert.equal(cp.gitMetadata, 'bounded_external_git_subset_v1'); assert.equal(cp.replayInput.deliveryMode, deliveryMode);
     assert.equal(cp.replayInput.complete, false); assert.equal(cp.strictEvalEligible, false);
-    assert.equal(cp.files['tracked.log'].hash, hash('dirty')); assert.equal(cp.files.secret.secretExcluded, true);
+    assert.equal(cp.files['tracked.log'].hash, hash('dirty')); assert.equal(cp.files.secret.secretRedacted, true);
+    assert.deepEqual(cp.replayInput.secretRedactedPaths, ['secret']);
+    assert.equal(cp.replayInput.incompleteReasons.includes('files_contain_secret'), false);
     assert.ok(cp.integrity.knownLimitations.includes('windows_ignorecase_ascii_projection'));
     assert.deepEqual(cp.deletions, ['deleted']);
     assert.equal(cp.integrity.indexedDeletionEvidence, 'verified_index_visible_ascii_v1');
@@ -306,7 +309,7 @@ test('native linked-worktree classifies independently pinned external inputs, re
       const targetDir = path.join(base, `service-${deliveryMode}-${n}`);
       const restored = reopenedService.restoreCheckpoint({ projectId: 'p', checkpointId: cp.checkpointId, targetDir });
       assert.equal(restored.ok, true, restored.reason); restoredLists.push(manifest(targetDir));
-      assert.equal(fs.existsSync(path.join(targetDir, 'secret')), false); assert.equal(fs.existsSync(path.join(targetDir, '.git')), false);
+      assert.equal(fs.readFileSync(path.join(targetDir, 'secret'), 'utf8'), '[*]'); assert.equal(fs.existsSync(path.join(targetDir, '.git')), false);
     }
     assert.deepEqual(restoredLists[0], restoredLists[1]);
   }
