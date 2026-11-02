@@ -9,7 +9,7 @@ const { validPlannerUpgrade } = require('../../build/server/http/planner-termina
 
 function fakeLaunch(children) {
   return () => {
-    const child = new EventEmitter(); child.write = () => {}; child.resize = () => {};
+    const child = new EventEmitter(); child.inputs = []; child.write = data => child.inputs.push(data); child.resize = () => {};
     child.stop = () => child.emit('exit', { exitCode: 0 }); children.push(child); return child;
   };
 }
@@ -109,13 +109,47 @@ test('fragmented aggregate limits and fixed auth deadline are not reset by fragm
   assert.equal(f.app.store.getConversationWithoutMessages(f.room.id).metadata.embeddedPlanner, undefined);
 });
 
-test('idle and missed pong disconnect and retain the same room process', { timeout: 30000 }, async t => {
-  for (const config of [{ idleMs: 60 }, { pingMs: 20, pongMs: 30, idleMs: 1000 }]) {
-    const children = [], f = await fixture(t, { authTimeoutMs: 5000, launch: fakeLaunch(children), ...config });
-    const ws = await attach(f, { autoPong: false }); await once(ws, 'close');
-    const state = await (await fetch(f.base + `/api/conversations/${f.room.id}/planner/state`, { headers: { 'X-CAFF-CSRF-Token': f.auth.token } })).json();
-    assert.equal(state.processState, 'interactive-retained'); assert.equal(children.length, 1);
-  }
+test('authenticated terminal has no application-idle limit or synthetic PTY keepalive', { timeout: 30000 }, async t => {
+  const children = [], f = await fixture(t, { authTimeoutMs: 5000, launch: fakeLaunch(children) });
+  // Virtualize timeout deadlines, not the real WS/network round trips. The
+  // default heartbeat interval remains real; its failure path is tested below.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let ws;
+  try {
+    ws = await attach(f);
+    for (const gap of [15 * 60 * 1000 + 1, 24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000]) {
+      const alive = Promise.race([
+        once(ws, 'pong').then(() => 'pong'),
+        once(ws, 'close').then(() => 'closed'),
+      ]);
+      t.mock.timers.tick(gap);
+      ws.ping();
+      assert.equal(await alive, 'pong', 'idle alone must not close a healthy socket');
+    }
+    assert.deepEqual(children[0].inputs, [], 'keepalive must not inject terminal input');
+  } finally { t.mock.timers.reset(); }
+  const state = await (await fetch(f.base + `/api/conversations/${f.room.id}/planner/state`, { headers: { 'X-CAFF-CSRF-Token': f.auth.token } })).json();
+  assert.equal(state.processState, 'interactive-attached'); assert.equal(children.length, 1);
+  const alive = once(ws, 'pong');
+  ws.send(JSON.stringify({ type: 'input', data: 'still-connected' })); ws.ping(); await alive;
+  assert.deepEqual(children[0].inputs, ['still-connected']);
+});
+
+test('healthy heartbeat traffic keeps an idle terminal attached without PTY input', { timeout: 30000 }, async t => {
+  const children = [], f = await fixture(t, { authTimeoutMs: 5000, launch: fakeLaunch(children), pingMs: 20, pongMs: 100 });
+  const ws = await attach(f);
+  for (let i = 0; i < 3; i++) await once(ws, 'ping');
+  const alive = once(ws, 'pong'); ws.ping(); await alive;
+  assert.equal(ws.readyState, 1); assert.equal(children.length, 1);
+  assert.deepEqual(children[0].inputs, []);
+});
+
+test('missed pong still disconnects and retains the same room process', { timeout: 30000 }, async t => {
+  const children = [], f = await fixture(t, { authTimeoutMs: 5000, launch: fakeLaunch(children), pingMs: 20, pongMs: 30 });
+  const ws = await attach(f, { autoPong: false }); await once(ws, 'close');
+  const state = await (await fetch(f.base + `/api/conversations/${f.room.id}/planner/state`, { headers: { 'X-CAFF-CSRF-Token': f.auth.token } })).json();
+  assert.equal(state.processState, 'interactive-retained'); assert.equal(children.length, 1);
+  const reattached = await attach(f); assert.equal(children.length, 1); reattached.close();
 });
 
 test('outbound buffering closes slow consumers without keeping a replay ring', { timeout: 30000 }, async t => {

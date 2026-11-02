@@ -67,7 +67,7 @@ declare global {
     modelOptions: CaffModelOptionUtils;
     avatar: CaffAvatarUtils;
     createToastController: (element: HTMLElement | null, delayMs?: number) => CaffToastController;
-    copyTextToClipboard?: (text: string) => Promise<void>;
+    copyTextToClipboard?: (text: string, options?: { isCurrent?: () => boolean; onFallback?: (active: boolean) => void }) => Promise<void>;
     safeMarkdown?: CaffSafeMarkdown;
   };
 

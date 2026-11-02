@@ -9,6 +9,7 @@
     planner_terminal_in_use: '另一个页面正在使用这个终端。请先关闭该页面的终端，再手动重连。',
     planner_room_busy: '房间进程正在启动、运行或停止，请稍后手动刷新状态。',
     planner_process_limit: '全局规划者进程已达上限，不会替你停止其他房间。',
+    planner_process_limit_invalid: 'CAFF_PLANNER_MAX_PROCESSES 配置无效：须为正的十进制安全整数（1–9007199254740991，无前导零），未设置默认 4。请修正后按授权流程重启实例；不会回退或启动规划者。',
     planner_workspace_invalid: '房间工作区不可用，请检查绑定；不会自动改用其他目录。',
     planner_cli_version_unsupported: 'Claude Code 版本低于支持下限，请自行更新后按授权流程重启实例。',
     planner_cli_missing: '未找到 Claude Code，请检查本机安装和配置。',
@@ -84,7 +85,7 @@
       q('status').textContent = labels[next] || '暂不可用';
       pane.dataset.connection = next; controls();
     }
-    const client = clientFactory({ screen, onState: setStatus,
+    const client = clientFactory({ screen, onState: setStatus, onNotice: notice,
       onReady(message) { lastCode = ''; notice(message.resumed ? '已续接同一会话；仅显示后续输出，不回放历史。' : '正在初始化同一房间会话；若目录可信，请自行选择 Yes, I trust this folder（默认可能为 No, exit）。CAFF 不会自动确认。'); controls(); },
       onExit(message) { setStatus('exited', message.reasonCode || 'planner_process_exited'); },
       onAttention(message) { if (Number.isSafeInteger(message.unresolvedCount)) { showWakeState({ ...wakeState, pendingCount: message.unresolvedCount, needsUserCount: message.needsUserCount }); notice(`有 ${message.unresolvedCount} 条待处理事项，请读取当前状态；不会注入终端输入。`); } },

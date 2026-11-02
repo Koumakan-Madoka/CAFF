@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), test = require('node:test');
 const { Worker } = require('node:worker_threads');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
+const { migrateChatSchema } = require('../../build/storage/sqlite/migrations');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-planner-room-store-'));
   const options = { agentDir: root, sqlitePath: path.join(root, 'chat.sqlite') };
@@ -54,24 +55,81 @@ test('a missing Room fails gone even if an older/out-of-band delete omitted its 
   assert.throws(() => f.store.replayPlannerRoomCreation(f.retry), e => e.statusCode === 410 && e.code === 'conversation_gone');
 });
 
+test('other SQLite connections keep the immutability guard throughout attention trigger refresh', t => {
+  const f = fixture(t), db = f.store.db;
+  const observer = new (require('better-sqlite3'))(f.options.sqlitePath, { readonly: true });
+  const readTrigger = connection => connection.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='chat_planner_attention_immutable'").get()?.sql;
+  const before = readTrigger(observer), visible = []; assert.ok(before);
+  const exec = db.exec;
+  db.exec = function (sql) {
+    const create = sql.indexOf('CREATE TRIGGER chat_planner_attention_immutable');
+    if (create >= 0) {
+      exec.call(this, sql.slice(0, create));
+      // Force a second connection to read between the DROP and CREATE.
+      visible.push(readTrigger(observer));
+      return exec.call(this, sql.slice(create));
+    }
+    return exec.call(this, sql);
+  };
+  try { migrateChatSchema(db); }
+  finally { db.exec = exec; observer.close(); }
+  assert.deepEqual(visible, [before]);
+  assert.equal(readTrigger(db), before);
+});
+
+test('failed attention trigger refresh preserves the existing immutability guard', t => {
+  const f = fixture(t), db = f.store.db;
+  const readTrigger = () => db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='chat_planner_attention_immutable'").get()?.sql;
+  const before = readTrigger(); assert.ok(before);
+  const exec = db.exec;
+  db.exec = function (sql) {
+    const create = sql.indexOf('CREATE TRIGGER chat_planner_attention_immutable');
+    if (create >= 0) {
+      // A competing connection must never observe this half-refreshed schema.
+      exec.call(this, sql.slice(0, create));
+      throw new Error('synthetic trigger refresh failure');
+    }
+    return exec.call(this, sql);
+  };
+  try { assert.throws(() => migrateChatSchema(db), /synthetic trigger refresh failure/); }
+  finally { db.exec = exec; }
+  assert.equal(readTrigger(), before);
+  migrateChatSchema(db);
+  assert.equal(readTrigger(), before);
+});
+
 test('separate SQLite connections serialize competing creations under a write lock', { timeout: 20000 }, async t => {
   const f = fixture(t), before = f.count('chat_conversations');
   const gate = new SharedArrayBuffer(4), ready = [], results = [];
   const source = `const { parentPort, workerData } = require('node:worker_threads');
     const { createChatAppStore } = require(workerData.modulePath);
-    const store = createChatAppStore(workerData.options);
-    parentPort.postMessage({ kind: 'ready' });
-    Atomics.wait(new Int32Array(workerData.gate), 0, 0);
-    try { const result = store.createPlannerConversation(workerData.input, workerData.retry); store.close(); parentPort.postMessage({ kind: 'result', result }); }
-    catch (error) { store.close(); throw error; }`;
+    let store;
+    try {
+      store = createChatAppStore(workerData.options);
+      parentPort.postMessage({ kind: 'ready' });
+      Atomics.wait(new Int32Array(workerData.gate), 0, 0);
+      const result = store.createPlannerConversation(workerData.input, workerData.retry);
+      parentPort.postMessage({ kind: 'result', result });
+    } catch (error) {
+      parentPort.postMessage({ kind: 'failure', message: error.message, code: error.code, stack: error.stack });
+    } finally { store?.close(); }`;
   for (let i = 0; i < 2; i++) {
     const worker = new Worker(source, { eval: true, workerData: { gate, options: f.options, input: f.input, retry: f.retry,
       modulePath: path.resolve(__dirname, '../../build/lib/chat-app-store.js') } }); f.workers.push(worker);
     let readyResolve, readyReject, resultResolve, resultReject;
     ready.push(new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; }));
     results.push(new Promise((resolve, reject) => { resultResolve = resolve; resultReject = reject; }));
-    worker.on('message', m => { if (m.kind === 'ready') readyResolve(); else if (m.kind === 'result') resultResolve(m.result); });
-    worker.on('error', e => { readyReject(e); resultReject(e); });
+    // Observe both phases immediately, including failures before either worker
+    // is ready, so initialization errors retain their message/stack in CI.
+    results[results.length - 1].catch(() => {});
+    const fail = e => { readyReject(e); resultReject(e); };
+    worker.on('message', m => {
+      if (m.kind === 'ready') readyResolve();
+      else if (m.kind === 'result') resultResolve(m.result);
+      else if (m.kind === 'failure') fail(Object.assign(new Error(m.message), { code: m.code, stack: m.stack }));
+    });
+    worker.on('error', fail);
+    worker.on('exit', code => { if (code) fail(new Error(`SQLite worker exited with code ${code}`)); });
   }
   await Promise.all(ready); Atomics.store(new Int32Array(gate), 0, 1); Atomics.notify(new Int32Array(gate), 0, 2);
   const all = await Promise.all(results);

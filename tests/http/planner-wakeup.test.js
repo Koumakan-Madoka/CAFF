@@ -170,6 +170,39 @@ test('attached and retained PTY suppress print without quota; attention is advis
   assert.equal(a.status, 'needs_user');
   assert.equal(f.launches().length, 1);
 });
+test('configured single slot is shared across rooms: retained PTY defers wake without quota and print blocks another terminal', { timeout: 30000 }, async t => {
+  const previous = process.env.CAFF_PLANNER_MAX_PROCESSES;
+  let f, child;
+  process.env.CAFF_PLANNER_MAX_PROCESSES = '1';
+  try {
+    f = await fixture(t, { mode: 'hang', launch: () => {
+      child = new (require('node:events').EventEmitter)(); child.write = () => {}; child.resize = () => {};
+      child.stop = () => { child.stopped = true; child.emit('exit', { exitCode: 0 }); }; return child;
+    } });
+  } finally {
+    if (previous === undefined) delete process.env.CAFF_PLANNER_MAX_PROCESSES;
+    else process.env.CAFF_PLANNER_MAX_PROCESSES = previous;
+  }
+  const room = () => f.app.store.createConversation({ title: 'Other synthetic room', projectScopeId: f.room.projectScopeId, participants: ['owner'] }).id;
+  async function connect(id) {
+    const ws = new WebSocket(f.base.replace('http:', 'ws:') + `/api/conversations/${id}/planner/terminal`, { headers: { Origin: f.base } });
+    t.after(() => ws.terminate()); await once(ws, 'open');
+    const message = once(ws, 'message'); ws.send(JSON.stringify({ type: 'auth', version: 1, token: f.boot.apiSecurity.csrfToken, cols: 120, rows: 30 }));
+    return { ws, message: JSON.parse((await message)[0]) };
+  }
+  const terminal = await connect(room()); assert.equal(terminal.message.type, 'ready');
+  const detached = once(terminal.ws, 'close'); terminal.ws.send(JSON.stringify({ type: 'detach' })); await detached;
+  await f.call('wakeups', { enabled: true }); f.append();
+  await new Promise(resolve => setTimeout(resolve, 150)); // Several synthetic scheduler retries.
+  assert.equal(f.launches().length, 0); assert.equal((await f.call('state')).body.quota.used, 0);
+  assert.equal((await f.call('state')).body.pendingCount, 1); assert.equal(child.stopped, undefined);
+  child.emit('exit', { exitCode: 0 }); // Only confirmed exit releases the retained slot.
+  await f.wait(() => f.launches().length === 1);
+  assert.equal((await f.call('state')).body.quota.used, 1);
+  assert.equal((await f.call('state')).body.processState, 'headless-running');
+  assert.equal((await connect(room())).message.code, 'planner_process_limit');
+});
+
 for (const mode of ['missing', 'no-finish', 'bad-json', 'bad-init', 'oversize', 'hang'])
   test(`print ${mode} has a durable explicit outcome and never auto-retries`, { timeout: 30000 }, async (t) => {
     const f = await fixture(t, { mode, wallMs: mode === 'hang' ? 100 : 10000 });

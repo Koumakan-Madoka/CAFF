@@ -75,23 +75,14 @@ test('migrateChatSchema emits debug warning when FTS setup fails and debug loggi
   const originalWarn = console.warn;
   const originalFlag = process.env.CAFF_DEBUG_SQLITE_MIGRATIONS;
   const warnings = [];
-  const fakeDb = {
-    prepare() {
-      return {
-        all() {
-          return [];
-        },
-        get() {
-          return null;
-        },
-        run() {},
-      };
-    },
-    exec(sql) {
-      if (String(sql || '').includes('CREATE VIRTUAL TABLE IF NOT EXISTS chat_message_search')) {
-        throw new Error('fts unavailable in test');
-      }
-    },
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  const exec = db.exec;
+  db.exec = function (sql) {
+    if (String(sql || '').includes('CREATE VIRTUAL TABLE IF NOT EXISTS chat_message_search')) {
+      throw new Error('fts unavailable in test');
+    }
+    return exec.call(this, sql);
   };
 
   console.warn = (message) => {
@@ -108,7 +99,7 @@ test('migrateChatSchema emits debug warning when FTS setup fails and debug loggi
     }
   });
 
-  migrateChatSchema(fakeDb);
+  migrateChatSchema(db);
   assert.ok(warnings.some((message) => message.includes('chat_message_search schema setup skipped')));
 });
 

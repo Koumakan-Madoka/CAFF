@@ -109,6 +109,11 @@ test('session-unavailable recovery uses cautious fixed wording and separate conf
   assert.deepEqual(JSON.parse(JSON.stringify(write[1])), { method: 'POST', body: { confirm: true } });
   assert.equal(f.connections.length, 1); assert.ok(f.confirms.every(x => x.includes('UUID')));
   assert.match(f.q('guidance').textContent, /Yes, I trust this folder/);
+  assert.match(f.q('guidance').textContent, /原生普通拖选后，松手自动复制/);
+  assert.match(f.q('guidance').textContent, /1 秒内一次、最多 64 KiB/);
+  assert.match(f.q('guidance').textContent, /Shift 拖动选择/);
+  assert.match(f.q('guidance').textContent, /选中后 Ctrl\+C 复制，无选中时 Ctrl\+C 中断/);
+  assert.match(f.q('guidance').textContent, /Ctrl\+V 粘贴文本/);
 });
 
 for (const [code, text] of [['planner_process_exited', /Claude Code 已退出/], ['planner_process_stopped', /Claude Code 已停止/]]) {
@@ -126,6 +131,19 @@ for (const [code, text] of [['planner_process_exited', /Claude Code 已退出/],
     assert.equal(f.connections.length, 1);
   });
 }
+
+test('invalid startup process limit gives actionable fixed guidance without connecting or recovery controls', async t => {
+  const f = fixture(t);
+  f.state({ available: false, processState: 'absent', reasonCode: 'planner_process_limit_invalid', wakeupAvailable: false });
+  f.pane.sync('room-a', { enabled: true, available: false }); await f.pane.open();
+  assert.equal(f.q('toggle').hidden, false); assert.equal(f.q('status').textContent, '暂不可用');
+  assert.match(f.q('notice').textContent, /CAFF_PLANNER_MAX_PROCESSES/);
+  assert.match(f.q('notice').textContent, /正.*安全整数/); assert.match(f.q('notice').textContent, /默认 4/);
+  assert.match(f.q('notice').textContent, /重启/); assert.match(f.q('notice').textContent, /不会回退/);
+  assert.equal(f.connections.length, 0); assert.equal(f.q('wakeups').disabled, true);
+  assert.equal(f.q('repair').hidden, true); assert.equal(f.q('reinitialize').hidden, true);
+  f.q('reconnect').click(); await tick(); assert.equal(f.connections.length, 0);
+});
 
 test('unknown exit failure retains fixed fallback instead of child output', async t => {
   const f = fixture(t); f.pane.sync('room-a', { enabled: true }); await f.pane.open();
@@ -238,13 +256,28 @@ test('wake-up records use cursor paging, render text not HTML and are cleared on
 
 function clientFixture(t, extra = {}) {
   const dom = new JSDOM('<div id="screen"></div>', { url: 'http://127.0.0.1:45678', runScripts: 'outside-only' }); t.after(() => dom.window.close());
-  const w = dom.window, sockets = [], terminals = [], states = [], exits = [], observations = [];
-  w.TextEncoder = TextEncoder;
+  const w = dom.window, sockets = [], terminals = [], states = [], exits = [], observations = [], copies = [], notices = [];
+  let toolbarFocus = 0;
+  w.TextEncoder = TextEncoder; w.TextDecoder = TextDecoder;
+  w.CaffShared = { copyTextToClipboard: (text, options) => { copies.push(text); return extra.copy ? extra.copy(text, w, options) : Promise.resolve(); } };
   class Terminal {
     constructor(options) { this.options = options; this.unicode = { activeVersion: '6' }; this.cols = 120; this.rows = 30; this.output = []; this.osc = []; this.parser = { registerOscHandler: (id, fn) => { this.osc.push([id, fn]); return { dispose() {} }; } }; terminals.push(this); }
-    loadAddon(addon) { this.addon = addon; addon.activate?.(this); } open() { this.opened = true; } resize(c,r) { this.cols = c; this.rows = r; }
+    loadAddon(addon) { this.addon = addon; addon.activate?.(this); }
+    open(screen) {
+      this.opened = true;
+      if (extra.native) {
+        this.modes = { mouseTrackingMode: 'drag' };
+        this.textarea = w.document.createElement('textarea'); screen.append(this.textarea);
+      }
+    }
+    resize(c,r) { if (r !== this.rows) this.selection = ''; this.cols = c; this.rows = r; }
     onData(fn) { this.input = fn; return { dispose: () => { this.inputDisposed = true; } }; }
-    write(data, done) { this.output.push(data); done(); } dispose() { this.disposed = true; } focus() {}
+    write(data, done) { this.output.push(data); done(); } dispose() { this.disposed = true; }
+    attachCustomKeyEventHandler(fn) { this.keyHandler = fn; }
+    hasSelection() { return !!this.selection; } getSelection() { return this.selection; }
+    getSelectionPosition() { return this.range; }
+    clearSelection() { this.selection = ''; this.cleared = (this.cleared || 0) + 1; }
+    focus() { this.focused = (this.focused || 0) + 1; this.textarea?.focus(); }
   }
   class Socket {
     constructor(url) { this.url = url; this.readyState = 0; this.bufferedAmount = 0; this.sent = []; sockets.push(this); }
@@ -254,17 +287,139 @@ function clientFixture(t, extra = {}) {
       this.closed = true; this.readyState = 3;
     }
   }
-  class FitAddon { proposeDimensions() { return { cols: 100, rows: 35 }; } }
+  class FitAddon { proposeDimensions() { return extra.dimensions ? extra.dimensions() : { cols: 100, rows: 35 }; } }
   class Observer { constructor(fn) { this.fn = fn; observations.push(this); } observe() {} disconnect() { this.disconnected = true; } }
   class UnicodeAddon { activate(term) { assert.equal(term.opened, true); assert.equal(term.options.allowProposedApi, true); term.unicode.activeVersion = '15-graphemes'; } }
   w.UnicodeGraphemesAddon = { UnicodeGraphemesAddon: extra.missingUnicode ? undefined : extra.UnicodeAddon || UnicodeAddon };
   w.eval(read('public/chat/planner-terminal-client.js'));
   const client = w.CaffChat.createPlannerTerminalClient({ screen: w.document.getElementById('screen'), TerminalCtor: Terminal, FitAddonCtor: FitAddon, SocketCtor: Socket,
-    ResizeObserverCtor: Observer, onState: (...args) => states.push(args), onExit: e => exits.push(e) });
+    ResizeObserverCtor: Observer, onState: (...args) => states.push(args), onExit: e => exits.push(e),
+    onNotice: text => { notices.push(text); extra.onNotice?.(text); }, focusToolbar: () => { toolbarFocus++; } });
   t.after(() => client.dispose());
   const ready = s => s.onmessage({ data: JSON.stringify({ type: 'ready', version: 1, historyReplay: false, resumed: false }) });
-  return { w, client, sockets, terminals, states, exits, observations, ready };
+  function key(term, overrides = {}) {
+    const event = new w.KeyboardEvent(overrides.type || 'keydown', { key: 'c', ctrlKey: true, cancelable: true, ...overrides });
+    const result = term.keyHandler(event);
+    // Model xterm's control-character paths; the browser test verifies xterm itself.
+    if (result && event.type === 'keydown' && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
+      if (event.key.toLowerCase() === 'c') term.input('\x03');
+      if (event.key.toLowerCase() === 'v') term.input('\x16');
+    }
+    return { result, event };
+  }
+  return { w, client, sockets, terminals, states, exits, observations, copies, notices, ready, key, get toolbarFocus() { return toolbarFocus; } };
 }
+
+for (const key of ['v', 'V']) {
+  test(`Ctrl+V keydown (${key}) yields to native paste without preventing default or sending ^V`, t => {
+    const f = clientFixture(t); f.client.connect('room-a', 'synthetic');
+    const term = f.terminals[0], s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+    const { result, event } = f.key(term, { key });
+    assert.equal(result, false); assert.equal(event.defaultPrevented, false);
+    assert.equal(s.sent.filter(x => x.type === 'input').length, 0);
+    assert.deepEqual(f.copies, []); assert.equal(f.toolbarFocus, 0);
+  });
+}
+
+test('native-paste key branch leaves other event types, Shift/Alt/Meta combinations and other keys alone', t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic'); const term = f.terminals[0];
+  for (const overrides of [{ type: 'keyup' }, { type: 'keypress' }, { shiftKey: true, key: 'V' },
+    { altKey: true }, { metaKey: true }, { ctrlKey: false, altKey: true },
+    { ctrlKey: false, metaKey: true }, { ctrlKey: false }, { key: 'b' }]) {
+    const { result, event } = f.key(term, { key: 'v', ...overrides });
+    assert.equal(result, true, JSON.stringify(overrides)); assert.equal(event.defaultPrevented, false);
+  }
+  assert.deepEqual(f.copies, []); assert.equal(f.toolbarFocus, 0);
+});
+
+for (const shiftKey of [false, true]) {
+  test(`selected Ctrl+${shiftKey ? 'Shift+' : ''}C copies only selection without input, clears on success and restores terminal focus`, async t => {
+    const f = clientFixture(t); f.client.connect('room-a', 'synthetic');
+    const term = f.terminals[0], s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+    term.selection = '选中的 text\n第二行 🙂';
+    const { result, event } = f.key(term, { shiftKey, key: shiftKey ? 'C' : 'c' });
+    assert.equal(result, false); assert.equal(event.defaultPrevented, true);
+    assert.deepEqual(f.copies, ['选中的 text\n第二行 🙂']);
+    await tick();
+    assert.equal(s.sent.filter(x => x.type === 'input').length, 0);
+    assert.equal(term.selection, ''); assert.equal(term.cleared, 1); assert.equal(term.focused, 1);
+    assert.deepEqual(f.notices, []);
+    // A second Ctrl+C now interrupts instead of copying the previous selection.
+    assert.equal(f.key(term).result, true);
+    assert.equal(s.sent.filter(x => x.type === 'input').at(-1).data, '\x03');
+  });
+}
+
+test('unselected Ctrl+C passes through to xterm; Ctrl+Shift+F6 still returns to toolbar', t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic');
+  const term = f.terminals[0], s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+  const { result, event } = f.key(term);
+  assert.equal(result, true); assert.equal(event.defaultPrevented, false); assert.deepEqual(f.copies, []);
+  assert.equal(s.sent.filter(x => x.type === 'input').at(-1).data, '\x03');
+  assert.equal(f.key(term, { key: 'F6', shiftKey: true }).result, false); assert.equal(f.toolbarFocus, 1);
+});
+
+for (const sync of [false, true]) {
+  test(`clipboard ${sync ? 'throw' : 'rejection'} retains selection, never interrupts and reports fixed notice with focus restored`, async t => {
+    const f = clientFixture(t, { copy: () => { if (sync) throw new Error('private sentinel'); return Promise.reject(new Error('private sentinel')); } });
+    f.client.connect('room-a', 'synthetic'); const term = f.terminals[0], s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+    term.selection = 'keep this'; const { result, event } = f.key(term); await tick();
+    assert.equal(result, false); assert.equal(event.defaultPrevented, true);
+    assert.equal(s.sent.filter(x => x.type === 'input').length, 0);
+    assert.equal(term.selection, 'keep this'); assert.equal(term.cleared, undefined); assert.equal(term.focused, 1);
+    assert.match(f.notices[0], /复制失败/); assert.doesNotMatch(f.notices[0], /private sentinel/);
+    assert.equal(f.states.at(-1)[0], 'attached');
+  });
+}
+
+for (const reject of [false, true]) {
+  test(`clipboard fallback ${reject ? 'failure' : 'success'} sends neither transient focus reports nor interrupt input`, async t => {
+    let term;
+    const f = clientFixture(t, { copy: async () => { term.input('\x1b[O'); if (reject) throw new Error(); } });
+    f.client.connect('room-a', 'synthetic'); term = f.terminals[0]; const s = f.sockets[0]; s.readyState = 1; s.onopen(); f.ready(s);
+    term.selection = 'copy'; const focus = term.focus.bind(term);
+    term.focus = () => { focus(); term.input('\x1b[I'); };
+    assert.equal(f.key(term).result, false); await tick();
+    assert.equal(s.sent.filter(x => x.type === 'input').length, 0);
+    term.input('\x1b[O'); assert.equal(s.sent.filter(x => x.type === 'input').at(-1).data, '\x1b[O');
+  });
+}
+
+test('copy failure retains selection when its notice changes terminal height and xterm clears on row resize', async t => {
+  let rows = 35;
+  const f = clientFixture(t, { copy: async () => { throw new Error(); }, onNotice: () => { rows = 36; }, dimensions: () => ({ cols: 100, rows }) });
+  f.client.connect('room-a', 'synthetic'); const term = f.terminals[0];
+  term.selection = 'keep this'; term.range = { start: { x: 2, y: 1 }, end: { x: 11, y: 1 } };
+  term.select = (x, y, length) => { assert.deepEqual([x, y, length], [2, 1, 9]); term.selection = 'keep this'; };
+  f.key(term); await tick(); f.observations[0].fn();
+  assert.equal(term.rows, 36); assert.equal(term.selection, 'keep this'); assert.equal(term.focused, 1);
+});
+
+test('only Ctrl+C keydown copies selections; keyup, Alt/Cmd combinations and ungated CLI OSC never write', async t => {
+  const f = clientFixture(t); f.client.connect('room-a', 'synthetic'); const term = f.terminals[0]; term.selection = 'selected';
+  for (const event of [{ type: 'keyup' }, { type: 'keypress' }, { altKey: true }, { metaKey: true }, { ctrlKey: false, metaKey: true }, { key: 'x' }]) {
+    assert.equal(f.key(term, event).result, true);
+  }
+  assert.ok(term.osc.every(([, handler]) => handler('arbitrary output') === true));
+  await tick(); assert.deepEqual(f.copies, []);
+});
+
+for (const reject of [false, true]) {
+  test(`late clipboard ${reject ? 'failure' : 'success'} cannot focus/clear or notify a disposed/replaced terminal`, async t => {
+    let settle;
+    const f = clientFixture(t, { copy: () => new Promise((resolve, fail) => { settle = reject ? fail : resolve; }) });
+    f.client.connect('room-a', 'synthetic'); const old = f.terminals[0]; old.selection = 'old'; f.key(old);
+    f.client.connect('room-b', 'synthetic'); settle(); await tick();
+    assert.equal(old.focused, undefined); assert.equal(old.cleared, undefined);
+    assert.equal(f.terminals[1].focused, undefined); assert.deepEqual(f.notices, []);
+  });
+}
+
+test('copy failure notice renders in pane without changing its connection status', async t => {
+  const f = fixture(t); f.pane.sync('room-a', { enabled: true }); await f.pane.open(); f.hooks.onState('attached');
+  f.hooks.onNotice('复制失败，请重试。');
+  assert.equal(f.q('notice').textContent, '复制失败，请重试。'); assert.equal(f.q('status').textContent, '已连接');
+});
 
 test('Unicode grapheme addon is loaded after open, selects 15-graphemes, and survives manual reconnect', t => {
   const f = clientFixture(t);
@@ -373,3 +528,239 @@ test('client ignores stale socket/input after disposal, creates a fresh terminal
   assert.ok(f.observations.every(x => x.disconnected));
   f.client.connect('room-b', 'new-synthetic'); assert.equal(f.sockets.length, 2); assert.equal(f.terminals[1].output.length, 0);
 });
+
+// Unit events below are plain objects delivered to captured listeners. They
+// exercise policy branches, NOT browser trust; the opt-in real-mouse suite proves
+// the actual isTrusted entrance and real clipboard effects.
+function nativeFixture(t, extra = {}) {
+  const f = clientFixture(t, { ...extra, native: true }), w = f.w, screen = w.document.getElementById('screen');
+  const handlers = new Map();
+  let now = 0, visible = true, focused = true, fallbacks = 0;
+  for (const [name, target] of [['screen', screen], ['window', w]]) {
+    const add = target.addEventListener.bind(target);
+    target.addEventListener = (type, fn, ...rest) => { handlers.set(name + ':' + type, fn); add(type, fn, ...rest); };
+  }
+  screen.getClientRects = () => [{ width: 900, height: 450 }];
+  w.document.hasFocus = () => focused;
+  Object.defineProperty(w.document, 'visibilityState', { get: () => visible ? 'visible' : 'hidden' });
+  Object.defineProperty(w.performance, 'now', { value: () => now });
+  if (extra.realHelper) {
+    w.eval(read('public/shared/clipboard.js'));
+    Object.defineProperty(w.navigator, 'clipboard', { value: { writeText: text => {
+      f.copies.push(text); return extra.copy ? extra.copy(text, w) : Promise.resolve();
+    } } });
+    w.document.execCommand = () => { fallbacks++; return extra.fallbackResult !== false; };
+    w.HTMLTextAreaElement.prototype.select = function () { this.focus(); };
+  }
+  const connect = (id = 'room-a') => {
+    f.client.connect(id, 'synthetic'); const socket = f.sockets.at(-1);
+    socket.readyState = 1; socket.onopen(); f.ready(socket); f.terminals.at(-1).focus();
+  };
+  function mouse(type, overrides = {}) {
+    const event = { target: screen, isTrusted: true, button: 0, buttons: type === 'mouseup' ? 0 : 1,
+      clientX: type === 'mousedown' ? 0 : 20, clientY: 0,
+      preventDefault() { assert.fail('observer must not prevent mouse input'); },
+      stopPropagation() { assert.fail('observer must not capture mouse input'); }, ...overrides };
+    handlers.get((type === 'mousedown' ? 'screen' : 'window') + ':' + type)(event);
+  }
+  connect();
+  return { ...f, screen, handlers, connect, mouse,
+    drag(overrides = {}) { for (const type of ['mousedown', 'mousemove', 'mouseup']) mouse(type, overrides); },
+    output(data) { f.sockets.at(-1).onmessage({ data: JSON.stringify({ type: 'output', data }) }); },
+    now: value => { now = value; }, visible: value => { visible = value; }, focused: value => { focused = value; },
+    get fallbacks() { return fallbacks; },
+  };
+}
+const oscCopy = text => '\x1b]52;c;' + Buffer.from(text).toString('base64') + '\x07';
+
+test('native request requires trusted ordinary drag, consumes once, preserves output/selection and never sends input', async t => {
+  const f = nativeFixture(t); const request = oscCopy('中文\nsecond 🙂');
+  f.output(request); assert.deepEqual(f.copies, []);
+  f.drag(); f.output(request); f.output(oscCopy('duplicate'));
+  await tick();
+  assert.deepEqual(f.copies, ['中文\nsecond 🙂']);
+  assert.deepEqual(f.terminals[0].output, [request, request, oscCopy('duplicate')]);
+  assert.equal(f.terminals[0].cleared, undefined);
+  assert.equal(f.sockets[0].sent.filter(x => x.type === 'input').length, 0);
+  assert.ok(f.notices.some(x => x.includes('已复制')));
+  for (const [id, handler] of f.terminals[0].osc) assert.equal(handler('c;?'), true, String(id));
+  assert.equal(f.copies.length, 1);
+});
+
+for (const overrides of [{ isTrusted: false }, { shiftKey: true }, { ctrlKey: true }, { altKey: true }, { metaKey: true }, { button: 2 }, { buttons: 0 }]) {
+  test('native copy refuses non-ordinary/untrusted drag ' + JSON.stringify(overrides), t => {
+    const f = nativeFixture(t); f.drag(overrides); f.output(oscCopy('must not copy'));
+    assert.deepEqual(f.copies, []);
+  });
+}
+
+test('click, release outside screen and non-tracking terminal do not authorize native output', t => {
+  const f = nativeFixture(t);
+  f.mouse('mousedown'); f.mouse('mouseup'); f.output(oscCopy('click'));
+  f.mouse('mousedown'); f.mouse('mousemove'); f.mouse('mouseup', { target: f.w.document.body }); f.output(oscCopy('outside'));
+  f.terminals[0].modes.mouseTrackingMode = 'none'; f.drag(); f.output(oscCopy('host selection'));
+  assert.deepEqual(f.copies, []);
+});
+
+for (const action of ['time', 'blur', 'focusout', 'hidden', 'inert', 'disconnect', 'error', 'exit', 'stop', 'dispose', 'replace', 'new-click', 'cancel']) {
+  test('native grant is revoked or unusable after ' + action, t => {
+    const f = nativeFixture(t); f.drag();
+    const socket = f.sockets[0], oldOutput = socket.onmessage;
+    if (action === 'time') f.now(1000);
+    if (action === 'blur') f.handlers.get('window:blur')({ target: f.w });
+    if (action === 'focusout') f.screen.querySelector('textarea').blur();
+    if (action === 'hidden') f.visible(false);
+    if (action === 'inert') f.screen.setAttribute('inert', '');
+    if (action === 'disconnect') socket.onclose();
+    if (action === 'error') socket.onerror();
+    if (action === 'exit') oldOutput({ data: JSON.stringify({ type: 'exit', reasonCode: 'planner_process_exited' }) });
+    if (action === 'stop') f.client.terminate();
+    if (action === 'dispose') f.client.dispose();
+    if (action === 'replace') f.connect('room-b');
+    if (action === 'new-click') f.mouse('mousedown');
+    if (action === 'cancel') f.handlers.get('window:pointercancel')();
+    oldOutput({ data: JSON.stringify({ type: 'output', data: oscCopy('late') }) });
+    assert.deepEqual(f.copies, []);
+  });
+}
+
+const malformedRequests = [
+  '\x1b]52;c;?\x07', '\x1b]52;p;YQ==\x07', '\x1b]52;;YQ==\x07', '\x1b]52;cp;YQ==\x07',
+  '\x1b]52;c;\x07', '\x1b]52;c;YQ\x07', '\x1b]52;c;YR==\x07', '\x1b]52;c;Y Q==\x07',
+  '\x1b]52;c;YQ==;Yg==\x07', '\x1b]52;c;YQ===\x07', '\x1b]52;c;/w==\x07',
+  '\x1b]52;c;wK8=\x07', '\x1b]52;c;7aCA\x07', oscCopy('   \n'), oscCopy('a\x00b'),
+  oscCopy('a').replace('\x07', '\x1b\\'), oscCopy('a').replace('\x1b]', '\x9d'),
+  oscCopy('a').replace('\x07', '\x9c'), oscCopy('a').replace('\x07', '\x18'),
+  '\x1b]8;;https://invalid.example\x07forged copied 99 chars\x1b]8;;\x07',
+  '\x1bPtmux;' + oscCopy('wrapped') + '\x1b\\',
+  '\x1bPtmux;\x1b' + oscCopy('double escape') + '\x1b\\',
+  '\x1b_' + oscCopy('APC wrapped') + '\x1b\\',
+  '\x90tmux;' + oscCopy('C1 wrapped') + '\x9c',
+];
+for (const [index, request] of malformedRequests.entries()) {
+  test(`native rejects malformed/unsupported OSC fixture ${index} without write/query/input`, t => {
+    const f = nativeFixture(t); f.drag(); f.output(request);
+    assert.deepEqual(f.copies, []);
+    assert.equal(f.sockets[0].sent.filter(x => x.type === 'input').length, 0);
+  });
+}
+
+test('native text cap accepts 64 KiB across frames, rejects overflow and oversized prefix before decode', t => {
+  const f = nativeFixture(t);
+  function chunks(data) { for (let i = 0; i < data.length; i += 15000) f.output(data.slice(i, i + 15000)); }
+  f.drag(); chunks(oscCopy('a'.repeat(65536))); assert.equal(f.copies[0].length, 65536);
+  f.drag(); chunks(oscCopy('b'.repeat(65537))); assert.equal(f.copies.length, 1);
+  let decoded = 0; const decode = f.w.atob.bind(f.w); f.w.atob = data => { decoded++; return decode(data); };
+  f.drag(); chunks('\x1b]52;c;' + 'A'.repeat(200000) + '\x07');
+  assert.equal(decoded, 0); assert.equal(f.copies.length, 1);
+  f.output(oscCopy('next valid')); assert.equal(f.copies.at(-1), 'next valid');
+});
+
+test('native frame splits work but cannot borrow a later grant or renderer-END timing', t => {
+  const f = nativeFixture(t), request = oscCopy('fixed');
+  f.terminals[0].write = data => f.terminals[0].output.push(data); // xterm queue never drains.
+  f.output(request); f.drag(); assert.deepEqual(f.copies, []);
+  for (const cut of [1, 2, 6, request.length - 1]) {
+    f.output(request.slice(0, cut)); f.drag(); f.output(request.slice(cut));
+    assert.deepEqual(f.copies, [], 'pre-grant prefix at split ' + cut);
+  }
+  f.drag(); f.output(request.slice(0, 8)); f.drag(); f.output(request.slice(8));
+  assert.deepEqual(f.copies, [], 'new gesture cannot inherit old prefix');
+  f.drag(); for (const char of request) f.output(char);
+  assert.deepEqual(f.copies, ['fixed']);
+});
+
+test('native window permits the first valid same-stream forgery (accepted risk), not the later genuine request', t => {
+  const f = nativeFixture(t); f.drag();
+  f.output(oscCopy('fixed attacker') + oscCopy('fixed selection'));
+  assert.deepEqual(f.copies, ['fixed attacker']);
+});
+
+for (const action of ['disconnect', 'error', 'blur-return', 'toolbar-return', 'dispose', 'replace', 'hidden-return']) {
+  test('pending native write rejection cannot fallback, focus or notify after ' + action, async t => {
+    let reject;
+    const f = nativeFixture(t, { realHelper: true, copy: () => new Promise((_resolve, fail) => { reject = fail; }) });
+    f.drag(); f.output(oscCopy('fixed pending'));
+    const old = f.terminals[0], before = old.focused;
+    if (action === 'disconnect') f.sockets[0].onclose();
+    if (action === 'error') f.sockets[0].onerror();
+    if (action === 'blur-return') { f.handlers.get('window:blur')({ target: f.w }); old.focus(); }
+    if (action === 'toolbar-return') { old.textarea.blur(); old.focus(); }
+    if (action === 'dispose') f.client.dispose();
+    if (action === 'replace') f.connect('room-b');
+    if (action === 'hidden-return') { f.visible(false); f.w.document.dispatchEvent(new f.w.Event('visibilitychange')); f.visible(true); }
+    const focusAfterAction = old.focused;
+    reject(new Error('synthetic denial')); await tick();
+    assert.equal(f.fallbacks, 0); assert.equal(old.focused, focusAfterAction);
+    assert.deepEqual(f.notices, []); assert.equal(f.copies.length, 1);
+    assert.ok(old.focused >= before);
+  });
+}
+
+for (const fallbackResult of [true, false]) {
+  test('native shared fallback ' + fallbackResult + ' restores only the same view and reports actual outcome', async t => {
+    const f = nativeFixture(t, { realHelper: true, copy: () => Promise.reject(new Error('synthetic')), fallbackResult });
+    f.drag(); f.output(oscCopy('fixed fallback')); await tick();
+    assert.equal(f.fallbacks, 1); assert.equal(f.w.document.activeElement, f.terminals[0].textarea);
+    assert.match(f.notices.at(-1), fallbackResult ? /已复制/ : /复制失败/);
+    assert.equal(f.sockets[0].sent.filter(x => x.type === 'input').length, 0);
+  });
+}
+
+for (const resolveWrite of [true, false]) {
+  test('pending native completion never steals toolbar focus or reports to a replacement view: ' + resolveWrite, async t => {
+    let resolve, reject;
+    const f = nativeFixture(t, { realHelper: true, copy: () => new Promise((yes, no) => { resolve = yes; reject = no; }) });
+    f.drag(); f.output(oscCopy('pending'));
+    const toolbar = f.w.document.createElement('button'); f.w.document.body.append(toolbar); toolbar.focus();
+    if (resolveWrite) resolve(); else reject(new Error('synthetic'));
+    await tick();
+    assert.equal(f.w.document.activeElement, toolbar); assert.deepEqual(f.notices, []); assert.equal(f.fallbacks, 0);
+  });
+}
+
+for (const partialRequest of [false, true]) {
+  test('review R1: grant expiry is silent without a completed OSC request, partial=' + partialRequest, t => {
+    const f = nativeFixture(t), timers = [];
+    // Execute the actual grantTimer callback deterministically, not just advance
+    // performance.now(): the regression is the timer's unsolicited notice.
+    f.w.setTimeout = fn => { timers.push(fn); return timers.length; };
+    f.w.clearTimeout = () => {};
+    f.drag();
+    if (partialRequest) f.output('\x1b]52;c;YQ==');
+    assert.equal(timers.length, 1);
+    f.now(1001); timers[0]();
+    assert.deepEqual(f.notices, []); assert.deepEqual(f.copies, []);
+    if (partialRequest) f.output('\x07'); else f.output(oscCopy('fixed late request'));
+    assert.deepEqual(f.copies, []);
+    assert.match(f.notices.at(-1), /拒绝/);
+    assert.doesNotMatch(f.notices.at(-1), /重新拖选|过期/);
+  });
+}
+
+test('review R2: ungranted OSC 52 refusal does not assume the CLI used drag selection', t => {
+  const f = nativeFixture(t); f.output(oscCopy('fixed non-gesture request'));
+  assert.deepEqual(f.copies, []);
+  assert.match(f.notices.at(-1), /拒绝/);
+  assert.doesNotMatch(f.notices.at(-1), /重新拖选|选区|拖动|过期/);
+});
+
+for (const action of ['mouseup', 'blur', 'toolbar']) {
+  test('review R3: pending Ctrl+C failure remains visible without restoring focus after ' + action, async t => {
+    let reject;
+    const f = nativeFixture(t, { realHelper: true, copy: () => new Promise((_resolve, fail) => { reject = fail; }) });
+    const term = f.terminals[0]; term.selection = 'fixed keyboard selection';
+    assert.equal(f.key(term).result, false);
+    if (action === 'mouseup') f.mouse('mouseup');
+    if (action === 'blur') term.textarea.blur();
+    if (action === 'toolbar') {
+      const toolbar = f.w.document.createElement('button'); f.w.document.body.append(toolbar); toolbar.focus();
+    }
+    const focus = f.w.document.activeElement, focusCount = term.focused;
+    reject(new Error('synthetic denial')); await tick();
+    assert.match(f.notices.at(-1) || '', /复制失败，请重试；选区已保留/);
+    assert.equal(term.selection, 'fixed keyboard selection');
+    assert.equal(f.w.document.activeElement, focus); assert.equal(term.focused, focusCount);
+    assert.equal(f.fallbacks, 0); assert.equal(f.sockets[0].sent.filter(x => x.type === 'input').length, 0);
+  });
+}
