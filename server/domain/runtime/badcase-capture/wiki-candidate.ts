@@ -32,11 +32,10 @@ function assertNoLeak(guidelines: string[], expected: string[], files: any[], un
   };
   const sources = expected.filter(s => typeof s === 'string' && s.trim());
   if (!Array.isArray(files) || files.length > 1024) throw fail('wiki_candidate_invalid');
-  let size = 0;
   for (const file of files) {
     if (!file || typeof file.base64 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)) throw fail('wiki_candidate_invalid');
-    const bytes = Buffer.from(file.base64, 'base64'); size += bytes.length;
-    if (size > 4 * 1024 * 1024 || hash(bytes) !== file.sha256) throw fail('wiki_candidate_invalid');
+    const bytes = Buffer.from(file.base64, 'base64');
+    if (hash(bytes) !== file.sha256) throw fail('wiki_candidate_invalid');
     const start = bytes.length ? combinedBytes.lastIndexOf(bytes) : -1;
     if (start >= 0 && start + bytes.length > unchangedBytes) throw fail('wiki_candidate_leak');
     const text = bytes.toString('utf8');

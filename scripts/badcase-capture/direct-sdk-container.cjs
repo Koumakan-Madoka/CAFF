@@ -32,7 +32,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   // ONLY this one explicitly injected variable while verifying static bytes.
   delete process.env[direct.KEY_ENV];
   let manifest;
-  try { ({ manifest } = require('/work/caff-runtime-bootstrap.cjs').verifyCaffRuntimeStage()); }
+  try { ({ manifest } = require('/work/caff-runtime-bootstrap.cjs').verifyCaffRuntimeStage({ replayWorkspace: true })); }
   finally { process.env[direct.KEY_ENV] = key; }
   const profile = JSON.parse(fs.readFileSync('/work/evaluation-profile.json'));
   const selected = direct.modelProfile(profile);
@@ -44,13 +44,27 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   assert.ok(input.settings === null || input.settings && typeof input.settings === 'object' && !Array.isArray(input.settings));
   assert.ok(input.systemPrompt === null || typeof input.systemPrompt === 'string');
   const cwd = '/work/restored', agentDir = '/work/agent', sessionPath = '/work/session.jsonl';
-  fs.mkdirSync(cwd, { mode: 0o700 }); fs.mkdirSync(agentDir, { mode: 0o700 });
+  assert.ok(input.workspace === undefined || input.workspace === 'replay-workspace');
+  const directoryWorkspace = input.workspace === 'replay-workspace' && input.files.length > 0;
+  if (!directoryWorkspace) fs.mkdirSync(cwd, { mode: 0o700 });
+  fs.mkdirSync(agentDir, { mode: 0o700 });
   const write = (p, b) => fs.writeFileSync(p, b, { flag: 'wx', mode: 0o600 });
+  const names = new Set();
   for (const f of input.files) {
-    assert.ok(typeof f.path === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(f.path) && f.path.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git'));
-    const bytes = Buffer.from(f.base64, 'base64'); assert.equal(bytes.toString('base64'), f.base64); assert.equal(hash(bytes), f.sha256);
-    const target = cwd + '/' + f.path; fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 }); write(target, bytes);
+    assert.ok(typeof f.path === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(f.path) && f.path.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git') && !names.has(f.path));
+    names.add(f.path);
+    let bytes;
+    if (directoryWorkspace) {
+      const source = '/work/replay-workspace/' + f.path, st = fs.lstatSync(source);
+      assert.ok(st.isFile() && !st.isSymbolicLink() && st.size === f.size && f.base64 === undefined);
+      bytes = fs.readFileSync(source); assert.equal(bytes.length, f.size);
+    } else {
+      bytes = Buffer.from(f.base64, 'base64'); assert.equal(bytes.toString('base64'), f.base64);
+      const target = cwd + '/' + f.path; fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 }); write(target, bytes);
+    }
+    assert.equal(hash(bytes), f.sha256);
   }
+  if (directoryWorkspace) fs.renameSync('/work/replay-workspace', cwd);
   const treeHash = () => {
     const rows = [];
     function walk(dir, relative = '') {

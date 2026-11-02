@@ -31,11 +31,11 @@ function prepareTurn(request, candidateRole, promptTarget) {
     // this does NOT set old complete/strict flags to true or repair old cases.
     ensure(r.complete === true && empty(r.incompleteReasons) || r.complete === false
       && r.incompleteReasons?.length === 1 && r.incompleteReasons[0] === 'windows_capture_subset_unverified');
-    let bytes = 0; const blobs = new Map();
+    const blobs = new Map();
     ensure(retained.blobHashes.length <= 8192);
     for (const digest of retained.blobHashes) {
       const b = store.readBlob(association.projectId, digest); ensure(Buffer.isBuffer(b) && hash(b) === digest && !containsSecretSentinel(b));
-      bytes += b.length; ensure(bytes <= 4 * 1024 * 1024); blobs.set(digest, b);
+      blobs.set(digest, b);
     }
     const utf8 = digest => { const b = blobs.get(digest); ensure(b); const s = b.toString('utf8'); ensure(Buffer.from(s).equals(b) && !s.includes('\0')); return s; };
     const snapshot = JSON.parse(utf8(r.harness.configSnapshotHash)), config = snapshot.sdkStartConfig;

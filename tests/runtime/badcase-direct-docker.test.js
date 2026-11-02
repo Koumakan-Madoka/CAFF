@@ -1,13 +1,17 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const { runDirectDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs');
+const { runDirectDockerTask, prepareDirectReplayInput } = require('../../scripts/badcase-capture/direct-docker.cjs');
+const { manifestFor } = require('../../scripts/badcase-capture/pi-probe-materials.cjs');
+const crypto = require('node:crypto');
+const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const image = { imageId: 'sha256:' + '1'.repeat(64), repositoryDigest: 'node@sha256:' + '2'.repeat(64), architecture: 'amd64' };
 const id = '3'.repeat(64), key = 'test-only-direct-evaluation-key-123456';
 function fake({ badIsolation = false, failed = false, leaked = false, timeout = false, lostCreate = false, modelTimeout = false, imageEnv } = {}) {
   const calls = []; let container = null, running = false;
   async function run(args, options = {}) {
-    calls.push({ args: [...args], options });
+    calls.push({ args: [...args], options: { ...options,
+      ...(options.inputFile ? { input: fs.readFileSync(options.inputFile) } : {}) } });
     const ok = data => ({ code: 0, stdout: typeof data === 'string' ? data : JSON.stringify([data]), stderr: '' });
     if (args[0] === 'context') return ok({ Endpoints: { docker: { Host: 'unix:///var/run/docker.sock' } } });
     if (args[0] === 'image') return ok({ Id: image.imageId, RepoDigests: [image.repositoryDigest], Os: 'linux', Architecture: 'amd64', Config: { Env: imageEnv || ['PATH=/bin', 'NODE_VERSION=24.21.0', 'YARN_VERSION=1.22.22'] } });
@@ -40,6 +44,42 @@ test('key inherited by env name only; no host mounts/socket/privileged; receipt 
   assert.equal(c.args[c.args.indexOf('--env') + 1], 'CAFF_BADCASE_MODEL_KEY');
   const start = f.calls.find(c => c.args[0] === 'start'); assert.equal(start.options.input.includes(key), false);
   assert.equal(JSON.stringify(r).includes(key), false);
+});
+test('workspace files are staged as raw directory entries, not base64 inside replay JSON, with hashes bound to the manifest', () => {
+  const bytes = Buffer.alloc(25 * 1024 * 1024, 0x61), input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect.', files: [
+    { path: 'src/large.txt', base64: bytes.toString('base64'), sha256: sha(bytes) }
+  ], sessionText: null, callback: null, settings: null, systemPrompt: null };
+  const staged = prepareDirectReplayInput(input), json = staged.find(f => f.path === 'replay-input.json').bytes;
+  assert.ok(json.length < 4096); assert.equal(json.includes(bytes.subarray(0, 4096)), false);
+  const wire = JSON.parse(json); assert.equal(wire.workspace, 'replay-workspace');
+  assert.deepEqual(wire.files, [{ path: 'src/large.txt', sha256: sha(bytes), size: bytes.length }]);
+  assert.deepEqual(staged.find(f => f.path === 'replay-workspace/src/large.txt').bytes, bytes);
+  assert.equal(input.files[0].base64, bytes.toString('base64'), 'caller input remains unchanged');
+  assert.throws(() => manifestFor(staged), /probe_dependency_size/, 'static-stage default still bounded');
+  const manifest = manifestFor(staged, { replayWorkspace: true });
+  assert.equal(manifest.files.find(f => f.path === 'replay-workspace/src/large.txt').size, bytes.length);
+  const changed = staged.map(f => ({ ...f })); changed.find(f => f.path.startsWith('replay-workspace/')).bytes = Buffer.from('changed');
+  assert.notEqual(manifestFor(changed, { replayWorkspace: true }).inputHash, manifest.inputHash);
+  assert.throws(() => manifestFor([{ path: 'runtime/large', bytes }], { replayWorkspace: true }), /probe_dependency_size/);
+});
+test('workspace staging refuses corrupt encodings, digests, traversal and collisions before Docker', () => {
+  assert.equal(typeof prepareDirectReplayInput, 'function');
+  const file = { path: 'source.txt', base64: Buffer.from('bytes').toString('base64'), sha256: sha('bytes') };
+  const input = { kind: 'prepared-caff-turn-v1', files: [file] };
+  for (const files of [[{ ...file, path: '../escape' }], [{ ...file, path: '.git/config' }], [{ ...file, sha256: '0'.repeat(64) }],
+    [{ ...file, base64: file.base64 + '\n' }], [file, file], [file, { ...file, path: 'source.txt/nested' }]]) {
+    assert.throws(() => prepareDirectReplayInput({ ...input, files }));
+  }
+  assert.throws(() => prepareDirectReplayInput({ ...input, workspace: '/outside' }));
+});
+test('large replay archive streams from an owned temporary file, not a bounded stdout buffer or host mount', async () => {
+  const bytes = Buffer.alloc(25 * 1024 * 1024, 0x61), f = fake();
+  const r = await runDirectDockerTask(image, [...files, { path: 'replay-workspace/large.txt', bytes }], { key, network: 'none', timeoutMs: 1000, runDocker: f.run });
+  assert.equal(r.cleaned, true); assert.equal(f.remaining(), false);
+  const start = f.calls.find(c => c.args[0] === 'start');
+  assert.equal(typeof start.options.inputFile, 'string'); assert.ok(start.options.input.length > bytes.length);
+  assert.equal(fs.existsSync(start.options.inputFile), false, 'owned archive removed after container cleanup');
+  assert.deepEqual(r.isolation.binds, []);
 });
 test('launcher reads explicitly selected key file without staging its path or bytes; missing file never falls back', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-launch-key-')), file = path.join(root, 'private.key');
@@ -87,5 +127,7 @@ test('worker failure and attach timeout never return raw stdout/stderr and remov
     const f = fake(setup); const r = await runDirectDockerTask(image, files, { key, timeoutMs: 1000, runDocker: f.run });
     assert.equal(r.failed, true); assert.equal(r.cleaned, true); assert.equal(f.remaining(), false);
     assert.equal(Object.hasOwn(r, 'stdout'), false); assert.equal(Object.hasOwn(r, 'stderr'), false); assert.equal(JSON.stringify(r).includes(key), false);
+    const start = f.calls.find(c => c.args[0] === 'start');
+    assert.equal(fs.existsSync(start.options.inputFile), false);
   }
 });

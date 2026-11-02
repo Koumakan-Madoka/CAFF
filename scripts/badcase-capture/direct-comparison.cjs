@@ -126,7 +126,7 @@ async function runComparison(config, options = {}) {
   const files = {}, manifests = {};
   for (const variant of ['original', 'candidate']) {
     files[variant] = stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, plan.inputs[variant], fixed.modelProfile);
-    manifests[variant] = manifestFor(files[variant]);
+    manifests[variant] = manifestFor(files[variant], { replayWorkspace: true });
   }
   if (manifests.original.runtimeHash !== manifests.candidate.runtimeHash) throw fail('evaluation_runtime_mismatch');
   const key = validKey(keyReader()); // No persistence or argv/env-file creation.
@@ -150,7 +150,7 @@ async function runComparison(config, options = {}) {
       // fallback if bytes changed after the planned starting point.
       const fresh = prepareComparison(fixed, options);
       if (!fresh.supported || JSON.stringify(fresh.summary) !== JSON.stringify(plan.summary)
-        || manifestFor(stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, fresh.inputs[variant], fixed.modelProfile)).inputHash !== manifests[variant].inputHash) {
+        || manifestFor(stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, fresh.inputs[variant], fixed.modelProfile), { replayWorkspace: true }).inputHash !== manifests[variant].inputHash) {
         throw fail('evaluation_input_changed');
       }
       let task;

@@ -7,20 +7,24 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {} } = {}) {
+async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect the files.', files: files.map(p => ({ path: p,
-    base64: Buffer.from(p).toString('base64'), sha256: crypto.createHash('sha256').update(p).digest('hex') })),
+    base64: Buffer.from(fileBytes[p] ?? p).toString('base64'), sha256: crypto.createHash('sha256').update(fileBytes[p] ?? p).digest('hex') })),
     sessionText: null, settings: null, systemPrompt: null,
     callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: {} } : null,
     ...(fileEvidencePaths === undefined ? {} : { fileEvidencePaths }) };
   fs.writeFileSync(path.join(root, 'evaluation-profile.json'), JSON.stringify(model));
-  fs.writeFileSync(path.join(root, 'replay-input.json'), JSON.stringify(input));
+  if (directoryWorkspace) {
+    const staged = require('../../scripts/badcase-capture/direct-docker.cjs').prepareDirectReplayInput(input);
+    for (const f of staged) { const dest = path.join(root, f.path); fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, f.bytes); }
+  } else fs.writeFileSync(path.join(root, 'replay-input.json'), JSON.stringify(input));
   const mapped = p => { assert.ok(p.startsWith('/work/')); return path.join(root, p.slice(6)); };
   const workerFs = Object.fromEntries(['mkdirSync', 'readFileSync', 'writeFileSync', 'readdirSync', 'lstatSync']
     .map(name => [name, (p, ...args) => fs[name](mapped(p), ...args)]));
   workerFs.existsSync = p => p === '/.dockerenv' || fs.existsSync(mapped(p));
+  workerFs.renameSync = (a, b) => fs.renameSync(mapped(a), mapped(b));
   const observer = { calls: [], complete() {}, fetch: async () => { throw Error('unexpected_network'); } };
   let subscriber, disposed = false, stopped = false;
   const session = { messages: [], model: { provider: 'opencode-go', id: 'deepseek-v4.1-flash' },
@@ -157,6 +161,12 @@ test('worker hashes nested files and same-prefix siblings in the same order as t
   const { receipt, input } = await workerReceipt(t, { files: ['src/index.js', 'src.js', 'a/item.txt', 'a.txt', 'docs/readme.md', 'docs.md'] });
   assert.equal(receipt.beforeHash, expectedTreeHash(input));
   assert.equal(receipt.afterHash, expectedTreeHash(input));
+});
+test('worker consumes a large verified directory workspace without needing file bodies in JSON', async t => {
+  const bytes = Buffer.alloc(25 * 1024 * 1024, 0x61);
+  const { receipt, input } = await workerReceipt(t, { files: ['nested/large.txt', 'plain.txt'],
+    fileBytes: { 'nested/large.txt': bytes }, directoryWorkspace: true });
+  assert.equal(receipt.beforeHash, expectedTreeHash(input)); assert.equal(receipt.afterHash, expectedTreeHash(input));
 });
 test('worker callback reply never falls back to internal SDK text, and source is explicit', async t => {
   const missing = (await workerReceipt(t)).receipt;

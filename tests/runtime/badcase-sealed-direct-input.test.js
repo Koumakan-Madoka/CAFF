@@ -105,6 +105,15 @@ test('family support does not synthesize missing old spans or accept Rules for c
   });
   assert.equal(prepareSealedDirectTurn(otherFamily.request).supported, false);
 });
+test('retained workspace above the old 4 MiB transport cap is prepared without source reads or archive writes', t => {
+  const bytes = Buffer.alloc(17 * 1024 * 1024, 0x61);
+  const f = portable(t, ({ cp, put }) => { cp.files['large.txt'] = { type: 'file', size: bytes.length, hash: put(bytes) }; });
+  const before = fs.readFileSync(f.source), plan = prepareSealedDirectTurn(f.request);
+  assert.equal(plan.supported, true, JSON.stringify(plan));
+  const file = plan.input.files.find(f => f.path === 'large.txt');
+  assert.equal(sha(Buffer.from(file.base64, 'base64')), sha(bytes));
+  assert.deepEqual(fs.readFileSync(f.source), before);
+});
 test('blanket Windows metadata limitation is not a strict certificate; portable/default-resource declaration is still mandatory', t => {
   const f = portable(t, ({ r }) => { r.complete = false; r.incompleteReasons = ['windows_capture_subset_unverified']; });
   assert.equal(prepareSealedDirectTurn(f.request).supported, true);

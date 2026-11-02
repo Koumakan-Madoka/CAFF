@@ -5,18 +5,21 @@ const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 // Shared immutable-stage guard. No capsule restoration, SDK or fixture creation.
-function verifyCaffRuntimeStage() {
+function verifyCaffRuntimeStage({ replayWorkspace = false } = {}) {
   if (process.platform !== 'linux' || process.getuid?.() !== 65534 || process.cwd() !== '/work' || !fs.existsSync('/.dockerenv')
     || Object.keys(process.env).some(k => /^(CAFF_|PI_|OPENAI_|ANTHROPIC_|AWS_|NODE_OPTIONS$|NODE_PATH$|LD_PRELOAD$|LD_LIBRARY_PATH$)/.test(k))) throw Error();
   const m = JSON.parse(fs.readFileSync('manifest.json')), image = JSON.parse(fs.readFileSync('environment.json'));
-  assert.equal(m.schemaVersion, 1); assert.ok(Array.isArray(m.files) && m.files.length <= 4096);
+  assert.equal(m.schemaVersion, 1); assert.ok(Array.isArray(m.files) && m.files.length <= (replayWorkspace ? 5120 : 4096));
   assert.equal(hash(JSON.stringify(m.files)), m.inputHash);
-  const names = new Set(); let total = 0;
+  const names = new Set(); let total = 0, staticCount = 0, workspaceCount = 0;
   for (const f of m.files) {
     assert.ok(typeof f.path === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(f.path)
       && f.path.split('/').every(p => p && p !== '.' && p !== '..') && !names.has(f.path)); names.add(f.path);
-    const st = fs.lstatSync('/work/' + f.path); total += st.size;
-    assert.ok(total <= 16 * 1024 * 1024 && st.isFile() && !st.isSymbolicLink() && st.size === f.size);
+    const st = fs.lstatSync('/work/' + f.path);
+    if (replayWorkspace && f.path.startsWith('replay-workspace/')) workspaceCount++;
+    else { total += st.size; staticCount++; }
+    assert.ok(total <= 16 * 1024 * 1024 && staticCount <= 4096 && workspaceCount <= 1024
+      && st.isFile() && !st.isSymbolicLink() && st.size === f.size);
     assert.equal(hash(fs.readFileSync('/work/' + f.path)), f.sha256);
   }
   assert.equal(hash(JSON.stringify(m.files.filter(f => f.path.startsWith('runtime/')))), m.runtimeHash);

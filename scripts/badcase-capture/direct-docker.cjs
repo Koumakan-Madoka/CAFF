@@ -7,6 +7,24 @@ const { manifestFor } = require('./pi-probe-materials.cjs');
 const { readEvaluationKey, validKey, modelProfile, DEFAULT_PROFILE, KEY_ENV } = require('./direct-model.cjs');
 const { prepareCaffRuntimeFiles } = require('./caff-runtime-wiring.cjs');
 const { readTrustedDistributionFile } = require('./evaluation-bridge-launcher.cjs');
+function prepareDirectReplayInput(input) {
+  assert.equal(input?.kind, 'prepared-caff-turn-v1');
+  assert.equal(input.workspace, undefined);
+  assert.ok(Array.isArray(input.files) && input.files.length <= 1024);
+  const files = [], inventory = input.files.map(f => {
+    assert.ok(typeof f.path === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(f.path)
+      && f.path.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git'));
+    assert.equal(typeof f.base64, 'string');
+    const bytes = Buffer.from(f.base64, 'base64');
+    assert.equal(bytes.toString('base64'), f.base64);
+    assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), f.sha256);
+    files.push({ path: 'replay-workspace/' + f.path, bytes });
+    return { path: f.path, sha256: f.sha256, size: bytes.length };
+  });
+  files.push({ path: 'replay-input.json', bytes: Buffer.from(JSON.stringify({ ...input, files: inventory, workspace: 'replay-workspace' })) });
+  manifestFor(files, { replayWorkspace: true });
+  return files;
+}
 function prepareDirectTurnFiles(repoRoot, dependencyRoot, image, input, profile = DEFAULT_PROFILE) {
   modelProfile(profile);
   assert.equal(input?.kind, 'prepared-caff-turn-v1');
@@ -15,9 +33,9 @@ function prepareDirectTurnFiles(repoRoot, dependencyRoot, image, input, profile 
   for (const [source, destination] of [['direct-model.cjs', 'direct-model.cjs'], ['direct-sdk-container.cjs', 'probe.cjs']]) {
     files.push({ path: destination, bytes: readTrustedDistributionFile(path.resolve(repoRoot), 'scripts/badcase-capture/' + source) });
   }
-  files.push({ path: 'replay-input.json', bytes: Buffer.from(JSON.stringify(input)) });
+  files.push(...prepareDirectReplayInput(input));
   files.push({ path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify(profile)) });
-  manifestFor(files); return files;
+  manifestFor(files, { replayWorkspace: true }); return files;
 }
 const LABEL = 'caff.badcase.direct';
 const WORK = 'rw,exec,nosuid,nodev,size=128m,uid=65534,gid=65534,mode=0700';
@@ -32,7 +50,7 @@ function docker(args, options = {}) {
   for (const k of ['PATH', 'HOME', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP']) if (process.env[k]) env[k] = process.env[k];
   if (options.key !== undefined) env[KEY_ENV] = validKey(options.key);
   return new Promise(resolve => {
-    const output = { stdout: [], stderr: [] }; let size = 0, failure = '', done = false;
+    const output = { stdout: [], stderr: [] }; let size = 0, failure = '', done = false, inputStream;
     const child = spawn('docker', ['--context', 'default', ...args], { env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const stop = reason => { failure ||= reason; child.kill('SIGKILL'); };
     const timer = setTimeout(() => stop('timeout'), options.timeoutMs || 15000);
@@ -40,8 +58,10 @@ function docker(args, options = {}) {
       size += b.length; if (size > 1048576) { stop('output_limit'); return; } output[name].push(b);
     });
     child.on('error', () => { failure = 'spawn'; });
-    child.on('close', code => { if (done) return; done = true; clearTimeout(timer); resolve({ code, stdout: Buffer.concat(output.stdout).toString(), stderr: Buffer.concat(output.stderr).toString(), ...(failure ? { failure } : {}) }); });
-    child.stdin.on('error', () => {}); child.stdin.end(options.input || '');
+    child.on('close', code => { if (done) return; done = true; clearTimeout(timer); inputStream?.destroy(); resolve({ code, stdout: Buffer.concat(output.stdout).toString(), stderr: Buffer.concat(output.stderr).toString(), ...(failure ? { failure } : {}) }); });
+    child.stdin.on('error', () => {});
+    if (options.inputFile) { inputStream = fs.createReadStream(options.inputFile); inputStream.on('error', () => stop('input')); inputStream.pipe(child.stdin); }
+    else child.stdin.end(options.input || '');
   });
 }
 function isolation(c, image, owner, command, network) {
@@ -68,7 +88,7 @@ async function runDirectDockerTask(image, files, options = {}) {
   assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 300000);
   assert.ok(['bridge', 'none'].includes(network));
   if (!options.runDocker && process.platform !== 'linux') throw fail('evaluation_linux_required');
-  const manifest = manifestFor(files); assert.ok(files.some(f => f.path === 'probe.cjs'));
+  const manifest = manifestFor(files, { replayWorkspace: true }); assert.ok(files.some(f => f.path === 'probe.cjs'));
   // No selected key, including an escaped JSON spelling, may be staged.
   for (const f of files) assert.ok(!f.bytes.includes(key) && !f.bytes.includes(JSON.stringify(key).slice(1, -1)), 'evaluation_input_contains_key');
   const run = options.runDocker || docker;
@@ -79,14 +99,18 @@ async function runDirectDockerTask(image, files, options = {}) {
   assert.equal(Object.keys(img.Config.Volumes || {}).length, 0); assert.equal((img.Config.OnBuild || []).length, 0);
   assert.ok(!img.Config.Healthcheck?.Test?.length || img.Config.Healthcheck.Test[0] === 'NONE');
   assert.ok((img.Config.Env || []).every(e => !/^(?:CAFF_|PI_|OPENAI_|ANTHROPIC_|AWS_|NODE_OPTIONS=|NODE_PATH=|LD_|.*(?:KEY|TOKEN|PASSWORD)=)/i.test(e)));
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-direct-')), owner = crypto.randomUUID(), name = 'caff-direct-' + owner;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-direct-')), archiveFile = root + '.tar', owner = crypto.randomUUID(), name = 'caff-direct-' + owner;
   const command = ['-c', 'tar --no-same-owner -xf - && exec timeout -k 2 ' + Math.ceil(timeoutMs / 1000) + ' node probe.cjs'];
   let id = '', created = false, result, proof;
   try {
     for (const f of [...files, { path: 'manifest.json', bytes: Buffer.from(JSON.stringify(manifest)) }]) {
       const target = path.join(root, f.path); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, f.bytes, { flag: 'wx', mode: 0o600 });
     }
-    const archive = execFileSync('tar', ['-C', root, '-cf', '-', '.'], { env: { PATH: process.env.PATH }, maxBuffer: 24 * 1024 * 1024, timeout: 15000 });
+    // The archive contains only already-checked bytes, never the selected key.
+    // Write and stream it instead of buffering tar stdout with a size ceiling.
+    const archiveFd = fs.openSync(archiveFile, 'wx', 0o600);
+    try { execFileSync('tar', ['-C', root, '-cf', '-', '.'], { env: { PATH: process.env.PATH }, stdio: ['ignore', archiveFd, 'pipe'], timeout: 15000 }); }
+    finally { fs.closeSync(archiveFd); }
     created = true;
     const c = await run(['create', '--name', name, '--label', LABEL + '=' + owner, '--pull', 'never', '-i', '--env', KEY_ENV,
       '--network', network, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '1g', '--memory-swap', '1g',
@@ -94,7 +118,7 @@ async function runDirectDockerTask(image, files, options = {}) {
       '--tmpfs', '/work:' + WORK, '--tmpfs', '/tmp:' + TMP, '--entrypoint', '/bin/sh', image.imageId, ...command], { key });
     assert.ok(good(c), 'evaluation_create_failed'); id = c.stdout.trim(); assert.match(id, /^[a-f0-9]{64}$/);
     const pre = one(await run(['inspect', id])); proof = isolation(pre, image, owner, command, network); assert.equal(pre.State.Running, false);
-    result = await run(['start', '-a', '-i', id], { input: archive, timeoutMs: timeoutMs + 5000 });
+    result = await run(['start', '-a', '-i', id], { inputFile: archiveFile, timeoutMs: timeoutMs + 5000 });
     const post = one(await run(['inspect', id])); isolation(post, image, owner, command, network);
     if (!result.failure) { assert.equal(post.State.Running, false); assert.equal(post.State.ExitCode, result.code); }
     // Raw Docker inspect includes runtime env; never return/save that object.
@@ -114,8 +138,8 @@ async function runDirectDockerTask(image, files, options = {}) {
         const remaining = await run(['ps', '-a', '--filter', 'name=^/' + name + '$', '--format', '{{.ID}}']);
         assert.ok(good(remaining) && !remaining.stdout.trim(), 'evaluation_cleanup_failed');
       }
-    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    } finally { fs.rmSync(archiveFile, { force: true }); fs.rmSync(root, { recursive: true, force: true }); }
   }
   return { ...result, containerId: id, cleaned: true, isolation: proof, timeoutMs, inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash };
 }
-module.exports = { prepareDirectTurnFiles, runDirectDockerTask, isolation };
+module.exports = { prepareDirectTurnFiles, prepareDirectReplayInput, runDirectDockerTask, isolation };
