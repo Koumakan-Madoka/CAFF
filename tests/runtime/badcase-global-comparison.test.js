@@ -164,6 +164,29 @@ test('staged receipt/launcher hash drift is fatal, not a replaceable environment
     assert.equal(r.byStage.test.original.attempted, 0); assert.equal(r.callsUnavailable, true);
   });
 });
+test('staged explicit dependency archive/cache/lock/Node drift is fatal, not five environmental replacements', async t => {
+  for (const field of ['archiveHash', 'cacheKey', 'lockHash', 'nodeVersion']) await t.test(field, async t => {
+    const h = setup(t), cacheRoot = path.join(h.root, 'dependency-cache'); fs.mkdirSync(cacheRoot);
+    h.single.image = { ...h.single.image, architecture: 'amd64', nodeVersion: 'v24.21.0' };
+    const pkg = { name: 'synthetic-staged-dependencies', version: '1.0.0' };
+    const file = (path, value) => { const bytes = Buffer.from(JSON.stringify(value)); return { path, base64: bytes.toString('base64'), sha256: sha(bytes) }; };
+    const extras = [file('package.json', pkg), file('package-lock.json', { name: pkg.name, version: pkg.version, lockfileVersion: 3, packages: { '': pkg } })];
+    h.options.prepareTarget = (...args) => { const p = prepareSealedPromptTarget(...args); p.input.files.push(...extras); return p; };
+    const { cacheReplayDependencies } = require('../../scripts/badcase-capture/replay-dependencies.cjs');
+    const input = h.options.prepareTarget(h.single.request, targetId).input, bytes = Buffer.from('synthetic staged cache');
+    await cacheReplayDependencies(input, h.single.image, cacheRoot, { runBuild: async (_image, _files, options) => {
+      fs.writeFileSync(options.outputFile, bytes); return { code: 0, cleaned: true, receipt: { kind: 'npm-replay-dependencies-v1',
+        nodeVersion: h.single.image.nodeVersion, npmVersion: '11.11.1', installCommand: 'npm ci --include=dev --no-audit --no-fund', archiveHash: sha(bytes), modelCalls: 0 } };
+    } });
+    const execute = h.options.execute;
+    h.options.execute = async (...args) => { const task = await execute(...args), wire = JSON.parse(args[1][0].bytes);
+      task.receipt.dependencies = { ...wire.dependencies, installed: true, [field]: 'conflicting-synthetic-identity' }; return task; };
+    const r = await runComparison({ ...h.single, repeats: 10, executionPolicy: 'alternating-valid-v1',
+      dependencies: { kind: 'npm-ci-linux-v1', cacheRoot } }, h.options);
+    assert.equal(h.state.executions, 1); assert.equal(r.fatal, true); assert.equal(r.completed, false);
+    assert.equal(r.runs[0].reason, 'run_evidence_unavailable'); assert.equal(r.modelCallsKnown, 0);
+  });
+});
 test('staged cleanup uncertainty and plaintext/encoded key leaks remain fatal', async t => {
   for (const fault of ['cleanup', 'plaintext', 'encoded']) await t.test(fault, async t => {
     const h = setup(t, { staged: true }), execute = h.options.execute;

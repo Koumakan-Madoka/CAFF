@@ -1,13 +1,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const { runDirectDockerTask, prepareDirectReplayInput } = require('../../scripts/badcase-capture/direct-docker.cjs');
+const { runDirectDockerTask, runDependencyDockerTask, prepareDirectReplayInput } = require('../../scripts/badcase-capture/direct-docker.cjs');
 const { manifestFor } = require('../../scripts/badcase-capture/pi-probe-materials.cjs');
 const crypto = require('node:crypto');
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const image = { imageId: 'sha256:' + '1'.repeat(64), repositoryDigest: 'node@sha256:' + '2'.repeat(64), architecture: 'amd64' };
 const id = '3'.repeat(64), key = 'test-only-direct-evaluation-key-123456';
-function fake({ badIsolation = false, failed = false, leaked = false, timeout = false, lostCreate = false, modelTimeout = false, imageEnv } = {}) {
+function fake({ badIsolation = false, failed = false, leaked = false, timeout = false, lostCreate = false, modelTimeout = false, copyFail = false, imageEnv } = {}) {
   const calls = []; let container = null, running = false;
   async function run(args, options = {}) {
     calls.push({ args: [...args], options: { ...options,
@@ -20,14 +20,18 @@ function fake({ badIsolation = false, failed = false, leaked = false, timeout = 
       container = { Id: id, Image: image.imageId, Config: { Labels: { 'caff.badcase.direct': value('--label').split('=')[1] },
         User: value('--user'), Entrypoint: [value('--entrypoint')], Cmd: args.slice(args.indexOf(image.imageId) + 1), WorkingDir: value('--workdir') },
         HostConfig: { NetworkMode: value('--network'), ReadonlyRootfs: true, Privileged: badIsolation, CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges'],
-          Memory: 1073741824, MemorySwap: 1073741824, NanoCpus: 2000000000, PidsLimit: 128, IpcMode: 'private', LogConfig: { Type: 'none' }, AutoRemove: false,
+          Memory: Number(value('--memory').replace('g', '')) * 1024 ** 3, MemorySwap: Number(value('--memory-swap').replace('g', '')) * 1024 ** 3,
+          NanoCpus: 2000000000, PidsLimit: 128, IpcMode: 'private', LogConfig: { Type: 'none' }, AutoRemove: false,
           RestartPolicy: { Name: 'no' }, Tmpfs: Object.fromEntries(args.flatMap((a, i) => a === '--tmpfs' ? [args[i + 1].split(/:(.*)/s).slice(0, 2)] : [])) },
         Mounts: [{ Type: 'tmpfs', Destination: '/work' }, { Type: 'tmpfs', Destination: '/tmp' }], State: { Running: false, ExitCode: modelTimeout ? 124 : failed ? 1 : 0, OOMKilled: false } };
       return lostCreate ? { code: null, failure: 'timeout', stdout: '', stderr: key } : ok(id + '\n');
     }
     if (args[0] === 'inspect') return container ? ok(container) : { code: 1, stdout: '', stderr: '' };
-    if (args[0] === 'start') { container.State.Running = timeout; return timeout ? { code: null, failure: 'timeout', stdout: key, stderr: key }
+    if (args[0] === 'start') { container.State.Running = timeout;
+      if (options.outputFile) fs.writeFileSync(options.outputFile, copyFail ? 'invalid-artifact-stream' : JSON.stringify({ kind: 'test' }) + '\nsynthetic archive');
+      return timeout ? { code: null, failure: 'timeout', stdout: key, stderr: key }
       : { code: modelTimeout ? 124 : failed ? 1 : 0, stdout: failed ? key : JSON.stringify({ kind: 'test', ...(leaked ? { text: key } : {}) }), stderr: failed ? key : '' }; }
+    if (args[0] === 'cp') { if (copyFail) return { code: 1, stdout: '', stderr: key }; fs.writeFileSync(args[2], 'synthetic archive'); return ok(''); }
     if (args[0] === 'rm') { container = null; running = false; return ok(''); }
     if (args[0] === 'ps') return ok(container ? id : '');
     throw Error('unexpected');
@@ -44,6 +48,27 @@ test('key inherited by env name only; no host mounts/socket/privileged; receipt 
   assert.equal(c.args[c.args.indexOf('--env') + 1], 'CAFF_BADCASE_MODEL_KEY');
   const start = f.calls.find(c => c.args[0] === 'start'); assert.equal(start.options.input.includes(key), false);
   assert.equal(JSON.stringify(r).includes(key), false);
+});
+test('dependency installer streams its archive before tmpfs teardown, never reads/injects account auth, then verifies cleanup', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-deps-test-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'node_modules.tar.gz'), prior = process.env.CAFF_BADCASE_MODEL_KEY_FILE;
+  process.env.CAFF_BADCASE_MODEL_KEY_FILE = path.join(root, 'nonexistent-account-path');
+  try {
+    const f = fake(), result = await runDependencyDockerTask(image, files, { outputFile: file, runDocker: f.run });
+    assert.equal(result.cleaned, true); assert.equal(f.remaining(), false);
+    assert.deepEqual(result.isolation.credentialEnvironmentNames, []); assert.deepEqual(result.isolation.binds, []);
+    const create = f.calls.find(c => c.args[0] === 'create');
+    assert.equal(create.args.includes('--env'), false); assert.equal(create.options.key, undefined);
+    assert.equal(create.args[create.args.indexOf('--memory') + 1], '4g');
+    assert.equal(fs.readFileSync(file, 'utf8'), 'synthetic archive');
+    assert.equal(f.calls.some(c => c.args[0] === 'cp'), false, 'stopped tmpfs cannot supply docker cp artifacts');
+    assert.equal(f.calls.find(c => c.args[0] === 'start').options.outputFile, file);
+    fs.unlinkSync(file);
+    const bad = fake({ copyFail: true });
+    await assert.rejects(runDependencyDockerTask(image, files, { outputFile: file, runDocker: bad.run }), /dependency_artifact_invalid/);
+    assert.equal(bad.remaining(), false); assert.equal(fs.existsSync(file), false);
+  } finally { if (prior === undefined) delete process.env.CAFF_BADCASE_MODEL_KEY_FILE; else process.env.CAFF_BADCASE_MODEL_KEY_FILE = prior; }
 });
 test('workspace files are staged as raw directory entries, not base64 inside replay JSON, with hashes bound to the manifest', () => {
   const bytes = Buffer.alloc(25 * 1024 * 1024, 0x61), input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect.', files: [

@@ -6,16 +6,21 @@
 
 ### 2026-11-02 生产同配置扩展（M1 实现中）
 
-当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。以下已实现文件脱敏、目录传输与无历史 Git 基线准备，不宣称真实 GPT 准入或回放已通过；依赖恢复及凭据链路仍按 Goal 单独验证。
+当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。以下已实现文件脱敏、目录传输、无历史 Git 基线及 Linux npm 依赖缓存，不宣称真实 GPT 准入或回放已通过；GPT 凭据链路仍待实现，真实准入另按 Goal 验证。
 
 - 新采集的纳入范围普通文件：Linux 与 Windows 均在内存中将哨兵命中的值替换为 `[*]`，保留路径、非秘密内容及可得 mode。私钥擦除整个块（缺 END 时擦到文件末尾），二进制/无效 UTF-8 逐字节保留非秘密部分；二进制沿用高置信哨兵子集，不扩大为键值误报。结构化 prompt/session/harness、分类用 Git 元数据和显式/敏感路径排除策略不变。
 - 仅对安全字节计算 CAS hash/size；不存原始秘密内容或其 hash。文件元数据另存 `secretRedacted/originalSize/redactionCount`，检查点记录 `secretRedactedPaths` 及文件数。脱敏本身不新增缺材料原因，也不升级 Windows subset/严格评测资格。
 - 恢复报告 `redactedFiles` 明确列出路径、原/恢复长度、替换次数及 `byteIdenticalToSource:false`；恢复 hash 一致只证明与脱敏归档一致，不证明与源文件逐字节相同。旧 `secretExcluded` 文件仍按旧事实缺失，不回填现场、不改写旧封存；旧缺文件限制仍保留，不因取消体积门槛自动成为可回放。
 - sealed-direct 与候选文件泄漏检查不再因累计 blob 超过 4 MiB 而拒绝，也不跳过大文件的 hash、秘密或字面泄漏检查。宿主的准备对象保留兼容的文件 base64；送入容器的 `replay-input.json` 只含路径/hash/size，文件原始字节单列于 `replay-workspace/`，在容器校验后换名为 `/work/restored`。选定 Key 仍不得进入暂存输入；源目录及旧封存不修改，不挂载宿主目录。
-- direct launcher 的 tar 写入专属临时文件后流送 stdin，不再使用 24 MiB stdout 缓冲上限；成功与失败均删除该临时文件。静态 SDK/工具分发的 16 MiB / 4096 文件保护仍生效，仅 direct 显式放行仓库数据命名空间（≤1024工作文件及6个Git元数据文件），全部字节仍进入输入 manifest/hash。容器 tmpfs/内存/时间等资源限制仍存在；本切片不承诺任意仓库大小都能执行。
+- direct launcher 的 tar 写入专属临时文件后流送 stdin，不再使用 24 MiB stdout 缓冲上限；成功与失败均删除该临时文件。静态 SDK/工具分发的 16 MiB / 4096 文件保护仍生效，仅 direct 显式放行仓库数据命名空间（≤1024工作文件、6个Git元数据文件及1份依赖归档），全部字节仍进入输入 manifest/hash。容器 tmpfs/内存/时间等资源限制仍存在；本切片不承诺任意仓库大小都能执行。
 - 2026-11-02 用户批准的 Git 方案：单例 CLI 可显式配置 `repository: { sourceRoot, head }`；head 必须是操作方已有记录的完整提交 hash，不接受 `HEAD` 等引用，不从当前分支猜测。它是 `explicit-operator-record`，不是声称旧 checkpoint 已记录 HEAD。sourceRoot 须匹配归档工作根且为仓库顶层；源仓库可后来前进，但指定旧对象缺失时拒绝，不退回当前 HEAD。
 - 宿主只读指定提交中归档文件/已确认删除路径的基线 blob，沿用秘密哨兵及可信调用方传入的已知值脱敏，之后才写专属临时目录。其他源文件不纳入 Git 基线，不复制源 `.git`、历史对象、配置、hooks、remote、reflog或凭据；原始 blob 不落盘。固定新根提交/打包只在专属临时仓库执行，按无过滤器的原始字节和原树mode建索引，避免源 `.gitattributes`/宿主换行转换；原仓库、源工作区与旧封存均不修改。工作文件仍来自封存，源 HEAD 只提供 Git 基线，不补造旧缺文件。
 - 恢复的 `.git` 只有**一个新根提交、没有历史提交，HEAD 与原来不同**；保留源/恢复 HEAD、脱敏字节差异及省略文件计数，绑定计划/输入 hash，worker 用真实 Git 命令核验并在逐次 receipt 报告。CLI明确显示此限制。宿主对晚读取到的选定 Key 检查脱敏后、压缩前的 Git 明文；不能用压缩隐藏已知值。完整已知 Key 发现/注入尚随凭据切片实现，不把传参能力说成已完成该链路。运行镜像必须已有 Git，不自动拉取/安装。
+- 依赖为显式选项 `dependencies: { kind: "npm-ci-linux-v1", cacheRoot: "<绝对缓存路径>" }`。先在 Linux/WSL 运行受版本管理的 `node scripts/badcase-capture/cache-replay-dependencies.cjs <绝对单例comparison配置> <绝对缓存目录>`，此入口只校验封存/建缓存，不读模型 Key、不调用模型或改写源/封存；`compare-sealed --plan` 只读校验缓存，不自动安装。此切片尚未向批量配置/Windows入口接线。
+- 缓存未命中时，从封存工作文件及可选脱敏 Git 基线构造一次性、**无账号凭据**的安装容器，在 Linux Node 24 运行 `npm ci --include=dev --no-audit --no-fund`（允许受信项目 lifecycle 脚本）。不执行宿主 npm，不复用宿主 `node_modules`、`.npmrc`、用户/全局配置或认证目录。安装网络经短生命周期 TCP 转发到宿主 `127.0.0.1:17890`，无直连回退；WSL 与 Windows loopback 不互通的布局须由后续 Windows受信入口中转，不能将诊断脚本当成交付入口。桥接网络及 proxy 环境不是恶意 lifecycle 脚本的出口防火墙，仅适用于已批准的受信项目。
+- 仅支持 `package.json` + npm v2/v3 `package-lock.json`，公开 `registry.npmjs.org` HTTPS 下载及已封存的相对本地 package。锁中的有认证/非标准URL、缺本地材料、其他包管理器、`.npmrc`、独立 shrinkwrap 文件均拒绝；npm嵌套/捆绑条目可能缺少 integrity，沿用原lock且在计划/CLI披露数量，不补造校验值。缓存身份绑定全部封存文件/Git hash、package/lock hash、安装器源码、镜像ID/架构、Node版本及安装命令；完成且容器删除确认后才原子发布归档和固定回执，每次读取重新验hash，损坏拒绝、不静默重建。
+- 依赖归档单独流送，不进控制JSON；安装器先输出固定回执行，再在容器仍运行时流出归档（停止后tmpfs已不可取，不用 `docker cp`）。评测容器重新核验归档hash/条目和Node版本后解包到恢复副本，删除临时归档；两变体共享完全相同的缓存身份，逐次回执缺安装证据/身份不符不得评分。工作树hash不含新增的 `.git`/`node_modules` 管理数据，不声称依赖目录的逐字不变。安装最多15分钟，正式turn当前仍1–300秒；依赖恢复不等于已完成真实GPT回放。
+- 实测第0步lock安装时旧 `/tmp` 256MiB 耗尽（ENOSPC），因此 direct launcher（含其归纳调用方）统一为4GiB内存/同额swap上限、`/work` 2GiB、`/tmp` 1GiB tmpfs；仍为2 CPU/128 pids，无宿主挂载/发布端口。隔离投影现记录实际tmpfs及memorySwap。后续生产长轮次配置不以本次依赖测量替代验证。
 
 ### 采集与恢复
 
@@ -104,7 +109,7 @@
 
 ### 容器与评分边界
 
-- 只使用本地已存在、ID/RepoDigest/架构匹配的固定 Linux 镜像，不自动 pull/build。每次新容器：非 root `65534:65534`、只读根、cap-drop ALL、no-new-privileges、非 privileged、1 GiB 内存/同额 swap 上限、2 CPU、128 pids、独立 IPC、超时强停。
+- 只使用本地已存在、ID/RepoDigest/架构匹配的固定 Linux 镜像，不自动 pull/build。每次新容器：非 root `65534:65534`、只读根、cap-drop ALL、no-new-privileges、非 privileged、4 GiB 内存/同额 swap 上限、2 CPU、128 pids、独立 IPC、超时强停。
 - `/work` 与 `/tmp` 为限额 tmpfs；无宿主 bind、生产 DB/凭据目录、Docker socket、设备或发布端口。输入经 stdin tar 放入 tmpfs，工作目录是恢复出的副本。Docker 日志驱动为 none，inspect 只保存脱敏隔离投影，不保存包含环境值的原对象。
 - 真实模型运行使用 bridge 网络；native fetch 观察器只放行选定模型 URL 和容器本地回调。**这不是工具进程的网络出口防火墙**，不承诺阻止任意恶意项目代码外联；本 MVP 只执行用户确认的受信任务（旧只读 trace 或已确认的文件产出任务），不将其用于敌对代码隔离保证。
 - 宿主在容器退出、核验身份/隔离并确认删除后才评分。`pass`/`fail` 为可评分的任务结论，模型/worker/清理失败为 `error`；未执行次数单独列出，不从分母消失。
@@ -136,6 +141,7 @@
 
 - 任意宿主现场在 Linux 的通用恢复、进程内存/后台服务/外部系统状态、权限/ACL/链接/并发原子一致性、`.git`/index/git status 的逐字保真。
 - Git 历史恢复：当前仅从记录 HEAD 的已授权路径脱敏后重建单一根提交，恢复 HEAD 必然不同，没有源历史提交/分支/remote/reflog。依赖历史的任务（例如第0步①“最近在做什么”）复现度会下降；本轮不实现保留历史，也不能把这类回放称为原历史的忠实复现。缺少明确记录的 HEAD、对象不可用、非仓库顶层、纳入范围内的 symlink/submodule 等直接不支持，不以 live HEAD/工作文件兜底。
+- 依赖恢复不支持 npm v1 lock、yarn/pnpm、私有 registry/安装认证、独立 `.npmrc`/shrinkwrap 文件、未封存的本地依赖、宿主/Windows原生依赖直接复用或恶意lifecycle隔离。缓存须由受信操作方预建，不能以cacheHit或合成恢复证明真实封存已准入；Windows中转和批量选项仍待后续接线。
 - 此 MVP 主路径以外的换根、外置 Git 元数据、submodule/嵌套仓库、全局 Git 配置、复杂 ignore 语法；底层保留旧实现不等于本轮承诺其端到端可用。
 - 正式 sealed-direct 入口的 resume、图片、额外技能/外部系统指令/自定义设置或旧缺材料封存。底层 fresh/resume 合成 Docker 演练不冒充这些历史用例已可回放。
 - 旧真实仓库封存中已经由秘密扫描排除了文件（`secretExcludedPaths` 非空），当前 sealed-direct 入口仍不能回放；不补读现场、不改写旧封存。4 MiB 累计 blob 限制已在生产扩展 M1 取消。第0步两条真实 CAFF 用例当时均排除了41个路径、保留材料约16.5 MB，同时触及缺文件和旧体积上限；当时未运行原版或候选，此历史结果不回填为成功。新采集保留占位符文件也不等于这两条旧封存已修复。

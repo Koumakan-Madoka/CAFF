@@ -16,9 +16,9 @@ function manifestFor(files, { replayWorkspace = false } = {}) {
         || f.path.split('/').some(p => !p || p === '.' || p === '..') || names.has(f.path)
         || !Buffer.isBuffer(f.bytes)) throw Error('probe_file_invalid');
     names.add(f.path);
-    if (replayWorkspace && f.path.startsWith('replay-workspace/')) workspaceCount++;
+    if (replayWorkspace && (f.path.startsWith('replay-workspace/') || f.path === 'replay-dependencies.tar.gz')) workspaceCount++;
     else { total += f.bytes.length; staticCount++; }
-    if (total > LIMIT || staticCount > 4096 || workspaceCount > 1030) throw Error('probe_dependency_size');
+    if (total > LIMIT || staticCount > 4096 || workspaceCount > 1031) throw Error('probe_dependency_size');
     return { path: f.path, size: f.bytes.length, sha256: hash(f.bytes) };
   }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   for (const name of names) {

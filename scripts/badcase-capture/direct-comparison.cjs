@@ -5,6 +5,7 @@ const path = require('node:path');
 const { prepareSealedDirectTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
 const { prepareDirectTurnFiles, runDirectDockerTask } = require('./direct-docker.cjs');
 const { prepareReplayGit } = require('./replay-git.cjs');
+const { prepareReplayDependencies } = require('./replay-dependencies.cjs');
 const { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, DEFAULT_PROFILE, DEEPSEEK_PROFILE } = require('./direct-model.cjs');
 const { manifestFor } = require('./pi-probe-materials.cjs');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
@@ -46,7 +47,7 @@ function scoreReadOnlyFiles(receipt, rules, beforeHash) {
 }
 function prepareComparison(config, options = {}) {
   if (!config || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)
     || config.executionPolicy !== undefined && (config.executionPolicy !== 'alternating-valid-v1' || !config.globalWikiCandidate || config.repeats !== 10)
     || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== 1
@@ -114,15 +115,23 @@ function prepareComparison(config, options = {}) {
     repository = prepareReplayGit(config.repository, original.input, { knownValues: options.knownValues || [] });
   }
   const repositoryConfig = repository ? { repository: repository.report, gitFiles: repository.gitFiles } : {};
-  const inputs = { original: { ...original.input, ...evidenceConfig, ...repositoryConfig }, candidate: { ...candidate.input, ...evidenceConfig, ...repositoryConfig } };
+  let dependencyConfig = {};
+  if (config.dependencies !== undefined) {
+    if (!config.dependencies || Object.keys(config.dependencies).sort().join(',') !== 'cacheRoot,kind'
+      || config.dependencies.kind !== 'npm-ci-linux-v1' || !path.isAbsolute(config.dependencies.cacheRoot || '')) throw fail('evaluation_config_invalid');
+    dependencyConfig = prepareReplayDependencies({ ...original.input, ...repositoryConfig }, config.image, config.dependencies.cacheRoot);
+  }
+  const inputs = { original: { ...original.input, ...evidenceConfig, ...repositoryConfig, ...dependencyConfig }, candidate: { ...candidate.input, ...evidenceConfig, ...repositoryConfig, ...dependencyConfig } };
   const summary = { kind: 'sealed-prompt-comparison-v1', caseId: original.provenance.caseId,
     checkpointId: original.provenance.checkpointId, checkpointHash: original.provenance.checkpointHash,
-    commonInputHash: repository || rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig,
-      ...(repository ? { repository: repository.report, gitFileHashes: repository.gitFiles.map(f => ({ path: f.path, sha256: f.sha256 })) } : {}) })) : original.provenance.commonInputHash,
+    commonInputHash: repository || config.dependencies || rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig,
+      ...(repository ? { repository: repository.report, gitFileHashes: repository.gitFiles.map(f => ({ path: f.path, sha256: f.sha256 })) } : {}),
+      ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}) })) : original.provenance.commonInputHash,
     model: profile, repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
     imageId: config.image.imageId, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
-    strictEvalEligible: false, ...(repository ? { repository: repository.report } : {}), ...(wikiCandidate ? { wikiCandidate } : {}),
+    strictEvalEligible: false, ...(repository ? { repository: repository.report } : {}),
+    ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}), ...(wikiCandidate ? { wikiCandidate } : {}),
     ...(globalWikiCandidate ? { targetId: globalWikiCandidate.targetId, globalWikiCandidate } : {}) };
   return { supported: true, inputs, summary, beforeHash: expectedTreeHash(original.input),
     ...(repository ? { checkRepositoryKnownValues: repository.checkKnownValues } : {}) };
@@ -181,6 +190,8 @@ async function runComparison(config, options = {}) {
       const evidenceChanged = [[receipt?.inputHash, manifests[variant].inputHash],
         [receipt?.runtimeHash, manifests[variant].runtimeHash], [receipt?.beforeHash, plan.beforeHash],
         [task?.inputHash, manifests[variant].inputHash], [task?.runtimeHash, manifests[variant].runtimeHash],
+        ...(plan.summary.dependencies ? ['archiveHash', 'cacheKey', 'lockHash', 'nodeVersion']
+          .map(field => [receipt?.dependencies?.[field], plan.summary.dependencies[field]]) : []),
         ...(plan.summary.repository ? [[receipt?.repository?.sourceHead, plan.summary.repository.sourceHead],
           [receipt?.repository?.restoredHead, plan.summary.repository.restoredHead]] : [])]
         .some(([actual, expected]) => actual !== undefined && actual !== expected);
@@ -190,10 +201,14 @@ async function runComparison(config, options = {}) {
         && (!plan.summary.repository || receipt.repository?.gitAvailable === true && receipt.repository?.historyCommitCount === 1
           && receipt.repository?.historyIncluded === false && receipt.repository?.headIdenticalToSource === false
           && receipt.repository?.sourceHead === plan.summary.repository.sourceHead && receipt.repository?.restoredHead === plan.summary.repository.restoredHead)
+        && (!plan.summary.dependencies || receipt.dependencies?.installed === true
+          && receipt.dependencies?.archiveHash === plan.summary.dependencies.archiveHash && receipt.dependencies?.cacheKey === plan.summary.dependencies.cacheKey
+          && receipt.dependencies?.lockHash === plan.summary.dependencies.lockHash && receipt.dependencies?.nodeVersion === plan.summary.dependencies.nodeVersion)
         && Array.isArray(receipt.modelCalls) && receipt.modelCalls.length > 0
         && receipt.modelCalls.every(c => c.model === plan.summary.model && typeof c.success === 'boolean' && Number.isFinite(c.durationMs) && c.durationMs >= 0);
       if (valid) {
         if (plan.summary.repository) row.repository = { ...plan.summary.repository, gitAvailable: true, historyCommitCount: 1 };
+        if (plan.summary.dependencies) row.dependencies = receipt.dependencies;
         row.modelCalls = receipt.modelCalls;
         row.finalText = receipt.finalText;
         row.replySource = ['public', 'internal', 'none'].includes(receipt.replySource) ? receipt.replySource : 'unknown';
@@ -250,6 +265,10 @@ function formatComparison(result) {
   const lines = ['模型：' + result.model];
   if (result.repository) lines.push('Git：脱敏后重建，HEAD不同于源仓库；只有1个基线提交，无历史提交。',
     '源HEAD：' + result.repository.sourceHead, '恢复HEAD：' + result.repository.restoredHead);
+  if (result.dependencies) {
+    lines.push('依赖：Linux npm ci 缓存；lock=' + result.dependencies.lockHash + '，Node=' + result.dependencies.nodeVersion + '。');
+    if (result.dependencies.resolvedWithoutIntegrity) lines.push('限制：lock中' + result.dependencies.resolvedWithoutIntegrity + '条下载记录没有integrity；保留原lock，安装产物另以SHA-256固定。');
+  }
   lines.push('变体\t轮次\t结果\t模型请求\t回复来源');
   for (const r of result.runs || []) {
     lines.push([r.variant, r.iteration, r.status, r.reason === 'run_evidence_unavailable' ? 'unknown' : r.modelCalls.length, r.replySource ?? 'unknown'].join('\t'));

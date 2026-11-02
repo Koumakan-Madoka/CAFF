@@ -80,11 +80,13 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     assert.equal(restoredHead, input.repository.restoredHead); assert.notEqual(restoredHead, input.repository.sourceHead); assert.equal(count, '1');
     repository = { ...input.repository, gitAvailable: true, historyCommitCount: 1 };
   }
+  const dependencies = input.dependencies === undefined ? undefined
+    : require('/work/restore-replay-dependencies.cjs').restoreReplayDependencies(cwd, input.dependencies);
   const treeHash = () => {
     const rows = [];
     function walk(dir, relative = '') {
       for (const name of fs.readdirSync(dir).sort()) {
-        if (relative === '' && name === '.git' && repository) continue;
+        if (relative === '' && (name === '.git' && repository || name === 'node_modules' && dependencies)) continue;
         const p = dir + '/' + name, rel = relative + name, st = fs.lstatSync(p);
         if (st.isDirectory()) walk(p, rel + '/'); else rows.push({ path: rel, type: st.isSymbolicLink() ? 'symlink' : 'file', sha256: st.isFile() ? hash(fs.readFileSync(p)) : null });
       }
@@ -155,7 +157,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       success: !threw && final?.stopReason === 'stop' && observer.calls.length > 0 && observer.calls.every(c => c.success),
       historyMessages: initialHistory.length, historyHash: hash(JSON.stringify(initialHistory)), tools, toolCalls,
       modelCalls: observer.calls, finalText, replySource, beforeHash, afterHash: treeHash(),
-      ...(repository ? { repository } : {}),
+      ...(repository ? { repository } : {}), ...(dependencies ? { dependencies } : {}),
       ...(input.fileEvidencePaths === undefined ? {} : { fileEvidence: collectFileEvidence(cwd, input.fileEvidencePaths, key) }),
       // No worker self-score. The host scores only after container removal.
       scored: false, sealedCheckpointVerified: false };
