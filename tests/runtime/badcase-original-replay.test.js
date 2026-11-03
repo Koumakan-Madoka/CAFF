@@ -66,6 +66,17 @@ test('token measurement accepts reported zeros but not invalid numbers or overfl
   const overflow = tokenUsage([{ usage: { ...zero.usage, totalTokens: Number.MAX_SAFE_INTEGER } }, { usage: { ...zero.usage, totalTokens: 1 } }]);
   assert.equal(overflow.overflow, true); assert.equal(overflow.knownTokens, null); assert.equal(overflow.complete, false);
 });
+test('unsupported preparation reasons survive run/CLI formatting without credentials or arbitrary diagnostic text', async () => {
+  const f = fixture();
+  for (const reason of ['replay_resume_not_supported', 'private diagnostics not allowed']) {
+    const options = { ...f.options, prepare: () => ({ supported: false, reason }) };
+    const result = await runComparison(f.config, options);
+    const expected = reason.startsWith('replay_') ? reason : 'replay_materials_invalid';
+    assert.equal(result.reason, expected); assert.match(formatComparison(result), new RegExp(expected));
+    assert.equal(f.state.keys, 0); assert.equal(f.state.executed, 0); assert.equal(f.state.staged, 0);
+    assert.equal(formatComparison({ supported: false, reason }).includes('private diagnostics'), false);
+  }
+});
 test('unsupported variant sets, hidden candidate selections and alternating policy cannot enter original-only mode', () => {
   const f = fixture();
   for (const patch of [{ variants: [] }, { variants: ['candidate'] }, { variants: ['original', 'candidate', 'original'] },

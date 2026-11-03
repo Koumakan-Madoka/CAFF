@@ -38,7 +38,7 @@
 
 #### M1 原版三次测量（尚未用于真实GPT用例）
 
-- 单例配置 `variants:["original"], repeats:3`，不含 `candidateRole/wikiCandidate/globalWikiCandidate`。计划类型为 `sealed-original-replay-v1`，只准备/校验/执行同一原版输入，没有候选输入、候选分母或采纳结论；默认不填variants仍沿用原版/候选对照。其他variant集合、夹带候选或与交替正式评测策略混用均拒绝。仍须用户确认字面规则及正式run授权，不提供语义自动判分或自动选择/标记用例。
+- 单例配置 `variants:["original"], repeats:3`，不含 `candidateRole/wikiCandidate/globalWikiCandidate`。计划类型为 `sealed-original-replay-v1`，只准备/校验/执行同一原版输入，没有候选输入、候选分母或采纳结论；原版走 `prepareSealedOriginalTurn`，不要求/解释用于候选编辑授权的roleSpan或声明目标片段，原prompt逐字保留，其他材料/安全/配置门禁不变。默认不填variants仍沿用原版/候选对照，角色/目标替换仍须精确有效的封存锚点。其他variant集合、夹带候选或与交替正式评测策略混用均拒绝。仍须用户确认字面规则及正式run授权，不提供语义自动判分或自动选择/标记用例。
 - 原版每次执行前照旧重验封存/静态分发，环境错误立即停止，未运行次数单列，不为了凑足三次自动补跑。逐次输出保留原回复及其public/internal来源，不把内部回复当公开结论；M1真实复现与否仍由该用例的真实输出和已确认规则证明，合成结果不冒充GPT复现。
 - 每次 `durationMs` 是宿主观察的容器创建、恢复、模型turn及清理总耗时，不含前置封存/Git扫描、分发准备或依赖建缓存；每条模型请求原有duration/usage同时保留。`tokenUsage` 仅合计供应方给出的完整非负整数用量，记录knownCalls/callsWithoutUsage/callsUnavailable；缺用量、无回执或溢出明确为不完整/未知，不填零或外推未知调用。已明确报告的零tokens可以保留为零。
 - Codex额外记录独立的 `hostRequestAttempts`（尝试发送次数，不保证供应方接收或扣费），即便worker回执缺失也不误报为“零消耗”。`remainingQuota:null`、`quotaBasis:reported-tokens-only`：没有ChatGPT剩余额度接口证据，不把tokens换算成配额或钱；CLI明确显示剩余额度未知。该测量报告不是额度不足时的自动重试授权，也不是Wiki页面完整交付或采纳依据。
@@ -93,7 +93,7 @@
 
 - 当前正式 MVP 入口为 `scripts/badcase-capture/compare-sealed.cjs`。`--config <绝对路径> --plan` 只准备与校验材料；显式配置安全清单时按上文只读Key作Git扫描，不用于模型认证、不接触 Docker/模型；`--run --confirmed --output <新的绝对路径>` 才执行，输出路径已存在时拒绝覆盖。
 - 配置显式指定封存关联、可信代码/依赖根、固定镜像身份、候选角色、重复次数、规则和超时。`repeats` 为 1–20，超时 1–300 秒，默认每容器 120 秒。新输入/角色/规则不自动复用旧结果。
-- `sealed-direct-input.cjs` 重新读取封存与保留引用，验证所有引用 blob 的 hash、角色片段唯一性/位置、原始运行配置、回调材料及 portable-default-resources 声明。只接受材料完整的 fresh、无图片、无额外技能/外部设置依赖的已声明可移植子集。旧封存不原地修补；不支持时返回 `unsupported_or_missing_replay_materials`，不是空会话 fallback。
+- `sealed-direct-input.cjs` 重新读取封存与保留引用，验证所有引用 blob 的 hash、原始运行配置、回调材料及 portable-default-resources 声明；涉及候选替换才校验角色片段唯一性/位置或声明目标。当前只接受材料完整的 fresh、thinking off、无图片、无额外技能/外部设置依赖的已声明可移植子集。旧封存不原地修补。2026-11-03 起原版、角色候选及全局目标入口保留真实的固定失败码：如 `replay_resume_not_supported`、`replay_recorded_thinking_not_supported`、`replay_secret_excluded_files`、`replay_portable_runtime_not_supported`、`replay_skills_not_supported`；缺检查点/blob/回调、角色锚点损坏、确实缺声明目标等各有独立原因。未知异常只报 `replay_materials_invalid`，不返回原异常/路径/内容；不再把所有材料问题统一当作缺目标片段，也不做空会话fallback。`compare-sealed --plan` JSON和执行的CLI文本保留该失败码；这是准入诊断改进，不表示resume/thinking支持或真实GPT准入已完成。
 - 原变体使用封存 prompt；候选只替换归档时已定位且 hash 匹配的角色指令片段。GPT 模型族角色本来没有自定义 persona，采集仅把它已交付的 `Rules:` 段定位进元数据，不改变 SDK 实际收到的 prompt；候选在这段规则原文后追加已审核准则，身份/会话/工具/技能等其他段不变。旧自定义角色仍使用 `Your private persona instructions:` 段；两种包装分别校验原片段 hash 并保留原包装，不为 GPT 虚构 persona，不为无片段的旧封存补造定位，其他模型族的 Rules 段不在此首个 GPT 子集内。其他归一化输入保持相同，分别记录 checkpoint/common-input/variant/distribution hash，每次运行前重验封存和可信分发未变。执行模型是明确选择的评测配置，当前是 DeepSeek 执行 GPT 角色指令，不冒称 GPT 模型或采集时的原模型。
 - 受控替换仅限已记录的工作根、回调地址/临时身份、会话标识、工具与私有目录变量；未知占位符或替换计数不符拒绝。回调在容器内独立建立，不连接生产会话/DB。公共回复参与评分，不能以最后一条内部 SDK 文本替代已发布内容；未发布时回复为空。worker 记录 `replySource`（`public` / `internal` / `none`），逐次结果/事件与 CLI 展示该来源；缺少可信来源记录时标 `unknown`，不把未知说成未发布。规则只接受 `public`，缺来源的旧 receipt 不重新判为通过。
 - 真正的原 CAFF SDK、工具和扩展在 Docker 内执行，不播放历史工具输出，不在宿主运行被测 agent。可信固定分发包括匹配的 Linux 原生依赖；缺依赖直接失败，不移除工具/扩展绕过。
@@ -156,7 +156,7 @@
 - 用户已在全局存储通过 `wiki-3` 的5条准则，保持原样。首次真实生成因固定目标原文与封存文件已有≥8字符重合而被拒绝，并非新增准则命中；失败与只读诊断保留在 `.tmp/wikiskill-real-candidates/`，不把启发式重合说成已泄漏参考答案。规划者2026-10-31裁决允许上述仅限固定原文内部的豁免；回归先红后绿覆盖既有重合可生成、新增/跨界命中仍拒绝、hash不符直接拒绝，以及确认/批量入口重验。全量检查覆盖该修复和页面、增量归纳、D15分配与D16执行/核验；固定 `178b26a3` 已获 DeepSeek 独立代码 PASS，无P0–P2。之后的操作方后台重跑未改评测内核；新增改动仅为执行记录的只读区分/切换、相关红→绿 UI 回归及契约同步，跑对应定向检查，不重跑已完成的全量清单或模型实验。真实重跑结果按上文单独核验，仍须新增改动的固定SHA增量审查与用户一次性接受。
 - 中途只跑定向检查，收尾对最终固定 SHA 由 DeepSeek 独立审查；发现阻断项再修复、只复审修复。`178b26a3` 的代码审查不能替代后续真实重跑证据，最终增量审查须同时核对两次执行未拼接、门槛接受后才跑测试、全局结果持久化和页面展示。用户最终接受前整体交付仍未完成，不为推进而自动批准、修改已审核准则或追加模型实验。作者自验不替代审查，用户最终接受前不宣称交付完成。
 - 只在本 Room 分支/worktree 实现；生产 3100 不变，不自动合并、推送或部署。历史设计的独立审查归属不因本契约收敛而改变。
-- `c533d58e` 独立审查的 9 项 P3 仅记录：每轮最多 32 次模型请求；仅容忍 `windows_capture_subset_unverified` 这一 incomplete 理由且仍须 portable 声明；角色定位缺失/歧义时原变体也保守拒绝；summary 未单记候选角色 hash/原文；基础设施错误阶段被泛化；旧运行代码 SHA 对应靠人工核字节；凭据环境名是注入声明；旧 fast 为精确分段续跑；隔离投影未直接展示 Tmpfs（执行已断言）。
+- `c533d58e` 独立审查的 9 项 P3 仅记录：每轮最多 32 次模型请求；仅容忍 `windows_capture_subset_unverified` 这一 incomplete 理由且仍须 portable 声明；角色定位缺失/歧义时原变体也保守拒绝；summary 未单记候选角色 hash/原文；基础设施错误阶段被泛化；旧运行代码 SHA 对应靠人工核字节；凭据环境名是注入声明；旧 fast 为精确分段续跑；隔离投影未直接展示 Tmpfs（执行已断言）。其中“原变体也要求角色定位”已于2026-11-03被单边原版无替换入口取代，“基础设施错误阶段被泛化”已新增上述准入具体失败码；旧审查归属及历史结论不改判。
 
 ### 不支持清单
 
@@ -166,7 +166,7 @@
 - 此 MVP 主路径以外的换根、外置 Git 元数据、submodule/嵌套仓库、全局 Git 配置、复杂 ignore 语法；底层保留旧实现不等于本轮承诺其端到端可用。
 - 正式 sealed-direct 入口的 resume、图片、额外技能/外部系统指令/自定义设置或旧缺材料封存。底层 fresh/resume 合成 Docker 演练不冒充这些历史用例已可回放。
 - 旧真实仓库封存中已经由秘密扫描排除了文件（`secretExcludedPaths` 非空），当前 sealed-direct 入口仍不能回放；不补读现场、不改写旧封存。4 MiB 累计 blob 限制已在生产扩展 M1 取消。第0步两条真实 CAFF 用例当时均排除了41个路径、保留材料约16.5 MB，同时触及缺文件和旧体积上限；当时未运行原版或候选，此历史结果不回填为成功。新采集保留占位符文件也不等于这两条旧封存已修复。
-- 已知问题：`compare-sealed --plan` 经全局提示词目标路径遇到材料不完整时，目前一律返回 `unsupported_or_missing_declared_prompt_target`，未区分真实原因，不能据此断言确实缺少目标片段。上一 Goal 仅记录、不修；生产扩展的分原因输出尚未实现。第0步只读材料核验与原始 CLI 输出保留在 `.tmp/wikiskill-ac8-real/`，不是成功回放或复现证据。
+- 历史诊断问题（2026-11-03 已修）：过去 `compare-sealed --plan` 经全局目标路径遇到材料不全一律报 `unsupported_or_missing_declared_prompt_target`，不能据此断言缺目标。当前按上述具体 `replay_*` 原因拒绝，只有目标定位实际失败才报 `replay_declared_prompt_target_missing_or_invalid`。旧封存及第0步当时的只读核验/原始CLI输出不改写，仍保留于 `.tmp/wikiskill-ac8-real/`，不是成功回放或复现证据。
 - 尚未完成真实用例验收的 wiki/候选、固定划分、新字面评分及批量评测链，不因接口或合成测试存在就视为验收通过。不同封存原角色版本不能共用同一个候选；需用户明确另起迭代，不自动适配。未经用户审核自动生效、多轮自动调优、语义自动判分、任意规则插件、自动提分/确定性保证、自动发布或修改生产 prompt 均非本 Goal 承诺。
 - 预分类或增量归纳一次超过20条待处理用例、自动批量补写/重试、模型缺失或编造 entryId 时的自动猜测归属。Windows 页面所在宿主不直接执行 Docker 归纳；真实调用须由受信操作方沿用 Linux/WSL 路径，不能因页面按钮存在就承诺当前宿主可运行。
 - 后台自动定时 GC、任意不可信代码的外联隔离、对同权限宿主/Docker 管理员隐藏容器环境 Key，以及没有可信 worker 记录时的精确供应商计费证明。

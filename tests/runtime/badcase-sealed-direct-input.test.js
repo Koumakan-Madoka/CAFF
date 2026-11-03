@@ -1,6 +1,6 @@
 const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), crypto = require('node:crypto');
 const fixture = require('../helpers/badcase-initialization-fixture.cjs');
-const { prepareSealedDirectTurn } = require('../../scripts/badcase-capture/sealed-direct-input.cjs');
+const { prepareSealedDirectTurn, prepareSealedOriginalTurn } = require('../../scripts/badcase-capture/sealed-direct-input.cjs');
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 function portable(t, change = () => {}) {
   return fixture(t, 'fresh', ({ cp, r, config, put }) => {
@@ -105,6 +105,59 @@ test('family support does not synthesize missing old spans or accept Rules for c
   });
   assert.equal(prepareSealedDirectTurn(otherFamily.request).supported, false);
 });
+test('original-only real sealed preflight does not require or interpret a candidate role span', t => {
+  for (const change of [({ r }) => { delete r.roleSpan; }, ({ r }) => { r.roleSpan.sha256 = '0'.repeat(64); }]) {
+    const f = gptFamily(t, change), before = fs.readFileSync(f.source), original = prepareSealedOriginalTurn(f.request);
+    assert.equal(original.supported, true, JSON.stringify(original));
+    assert.equal(original.input.prompt, f.store.readBlob('p1', f.r.promptBlobHash).toString());
+    assert.equal(original.originalRole, undefined); assert.equal(original.provenance.originalRoleHash, undefined);
+    const { prepareComparison } = require('../../scripts/badcase-capture/direct-comparison.cjs'), path = require('node:path');
+    const config = { request: f.request, variants: ['original'], repeats: 3, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
+      image: { imageId: 'sha256:' + '1'.repeat(64) }, rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } };
+    const plan = prepareComparison(config); assert.equal(plan.supported, true, JSON.stringify(plan));
+    assert.equal(plan.inputs.original.prompt, original.input.prompt); assert.deepEqual(Object.keys(plan.inputs), ['original']);
+    assert.equal(prepareSealedDirectTurn(f.request).supported, false, 'candidate comparison still requires its anchor');
+    assert.deepEqual(fs.readFileSync(f.source), before);
+  }
+});
+test('unsupported sealed inputs report the actual bounded reason through original-only and comparison plans', t => {
+  const cases = [
+    [({ r }) => { r.deliveryMode = 'resume'; }, 'replay_resume_not_supported'],
+    [({ config }) => { config.sdkStartConfig.thinking = 'xhigh'; }, 'replay_recorded_thinking_not_supported'],
+    [({ r }) => { r.invocationImageCount = 1; }, 'replay_invocation_images_not_supported'],
+    [({ config }) => { delete config.portableRuntime; }, 'replay_portable_runtime_not_supported'],
+    [({ r }) => { r.runConfig.skillIds = ['missing']; }, 'replay_skills_not_supported'],
+    [({ r }) => { r.secretExcludedPaths = ['old-missing.txt']; }, 'replay_secret_excluded_files'],
+  ];
+  const { prepareComparison } = require('../../scripts/badcase-capture/direct-comparison.cjs'), path = require('node:path');
+  for (const [change, reason] of cases) {
+    const f = portable(t, change), original = prepareSealedOriginalTurn(f.request);
+    assert.deepEqual(original, { supported: false, reason });
+    const config = { request: f.request, variants: ['original'], repeats: 3, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
+      image: { imageId: 'sha256:' + '1'.repeat(64) }, rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } };
+    assert.deepEqual(prepareComparison(config), { supported: false, reason });
+    delete config.variants; config.candidateRole = 'Use verified facts.';
+    assert.deepEqual(prepareComparison(config), { supported: false, reason });
+  }
+  const broken = portable(t); fs.unlinkSync(broken.blobPath(broken.r.promptBlobHash));
+  const result = prepareSealedOriginalTurn(broken.request);
+  assert.equal(result.supported, false); assert.match(result.reason, /^replay_(checkpoint|blob)_unavailable/);
+  assert.equal(JSON.stringify(result).includes(broken.root), false);
+});
+test('actual CLI --plan exposes the sealed reason and supports unchanged original without a role anchor, with no run', t => {
+  const path = require('node:path'), { execFileSync } = require('node:child_process');
+  for (const invalidThinking of [false, true]) {
+    const f = portable(t, ({ r, config }) => { delete r.roleSpan; if (invalidThinking) config.sdkStartConfig.thinking = 'xhigh'; });
+    const file = path.join(f.root, 'comparison.json'), config = { request: f.request, variants: ['original'], repeats: 3,
+      repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'), image: { imageId: 'sha256:' + '1'.repeat(64) },
+      rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } };
+    fs.writeFileSync(file, JSON.stringify(config));
+    const output = JSON.parse(execFileSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', file, '--plan'], { encoding: 'utf8' }));
+    assert.equal(output.supported, !invalidThinking);
+    if (invalidThinking) assert.equal(output.reason, 'replay_recorded_thinking_not_supported');
+    else { assert.equal(output.preparedOnly, true); assert.equal(output.dockerVerified, false); assert.equal(output.kind, 'sealed-original-replay-v1'); }
+  }
+});
 test('retained workspace above the old 4 MiB transport cap is prepared without source reads or archive writes', t => {
   const bytes = Buffer.alloc(17 * 1024 * 1024, 0x61);
   const f = portable(t, ({ cp, put }) => { cp.files['large.txt'] = { type: 'file', size: bytes.length, hash: put(bytes) }; });
@@ -126,7 +179,8 @@ test('missing/legacy/delta/session/resources/corrupt material stays unsupported,
     ({ r }) => { r.complete = false; r.incompleteReasons = ['harness_config_unverified']; },
     ({ r }) => { r.complete = false; r.incompleteReasons = []; }, ({ r }) => { r.runConfig.skillIds = ['missing']; }];
   for (const change of changes) {
-    const f = portable(t, change); assert.deepEqual(prepareSealedDirectTurn(f.request), { supported: false, reason: 'unsupported_or_missing_replay_materials' });
+    const f = portable(t, change), result = prepareSealedDirectTurn(f.request);
+    assert.equal(result.supported, false); assert.match(result.reason, /^replay_[a-z_]+$/);
   }
   const broken = portable(t); fs.unlinkSync(broken.blobPath(broken.r.promptBlobHash));
   assert.equal(prepareSealedDirectTurn(broken.request).supported, false);

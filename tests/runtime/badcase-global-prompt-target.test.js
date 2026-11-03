@@ -55,6 +55,12 @@ test('global target replacement changes one exact slot, not role instructions, i
     assert.equal(prepareSealedDirectTurn(f.request).supported, false, 'global target does not require an old roleSpan');
   }
 });
+test('global target preflight distinguishes a real target failure from unrelated captured configuration limits', t => {
+  const thinking = captured(t, 'role-family-gpt', ({ config }) => { config.sdkStartConfig.thinking = 'xhigh'; });
+  assert.deepEqual(prepareSealedPromptTarget(thinking.request, targetId), { supported: false, reason: 'replay_recorded_thinking_not_supported' });
+  const missing = captured(t, 'role-family-gpt', ({ r, put, prompt }) => { r.promptBlobHash = r.normalizedPromptHash = put(prompt.replace(oldSharedRules, 'other archived text')); });
+  assert.deepEqual(prepareSealedPromptTarget(missing.request, targetId), { supported: false, reason: 'replay_declared_prompt_target_missing_or_invalid' });
+});
 test('missing, stale, duplicated or non-declared targets remain unsupported without changing the archive', t => {
   const good = captured(t);
   for (const [id, text] of [['unknown', null], [targetId, ''], [targetId, '{{CAFF_CHAT_CALLBACK_TOKEN}}'], [targetId, 'sk-' + 'x'.repeat(32)]]) assert.equal(prepareSealedPromptTarget(good.request, id, text).supported, false);

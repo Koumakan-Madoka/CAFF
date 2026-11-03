@@ -2,7 +2,7 @@
 // No model gateway, auto prompt generation, secret discovery, or self-scoring.
 const crypto = require('node:crypto');
 const path = require('node:path');
-const { prepareSealedDirectTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
+const { prepareSealedDirectTurn, prepareSealedOriginalTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
 const { prepareDirectTurnFiles, runDirectDockerTask, runCodexDockerTask } = require('./direct-docker.cjs');
 const { createCodexTransport, createCodexAccess } = require('./codex-transport.cjs');
 const { createCodexRelayExchange } = require('./codex-mailbox.cjs');
@@ -86,7 +86,7 @@ function prepareComparison(config, options = {}) {
   else if (config.codexAuthFile !== undefined || config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
     || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
   const rules = validateRules(config.rules), knownValues = comparisonKnownValues(config, options);
-  let prepare = options.prepare || prepareSealedDirectTurn, globalWikiCandidate = null, globalState, globalSaved, globalFiles;
+  let prepare = options.prepare || (originalOnly ? prepareSealedOriginalTurn : prepareSealedDirectTurn), globalWikiCandidate = null, globalState, globalSaved, globalFiles;
   if (config.globalWikiCandidate !== undefined) {
     const selection = config.globalWikiCandidate;
     if (!selection || typeof selection !== 'object' || Array.isArray(selection)
@@ -103,7 +103,7 @@ function prepareComparison(config, options = {}) {
     prepare = (request, replacement = null) => prepareTarget(request, globalSaved.targetId, replacement);
   }
   const original = prepare(config.request);
-  if (original.supported !== true) return { supported: false, reason: config.globalWikiCandidate ? 'unsupported_or_missing_declared_prompt_target' : 'unsupported_or_missing_replay_materials' };
+  if (original.supported !== true) return { supported: false, reason: /^replay_[a-z_]+$/.test(original.reason || '') ? original.reason : 'replay_materials_invalid' };
   let candidateRole = config.candidateRole, wikiCandidate = null;
   if (globalSaved) {
     const selected = resolveGlobalWikiCandidate(globalState, globalSaved.id, original.provenance.targetId,
@@ -125,7 +125,7 @@ function prepareComparison(config, options = {}) {
     wikiCandidate = { id: selected.id, versionId: selected.versionId, entryIds: selected.entryIds, candidateRoleHash: selected.candidateRoleHash };
   }
   const candidate = originalOnly ? null : prepare(config.request, candidateRole);
-  if (!originalOnly && candidate.supported !== true) return { supported: false, reason: config.globalWikiCandidate ? 'unsupported_or_missing_declared_prompt_target' : 'unsupported_or_missing_replay_materials' };
+  if (!originalOnly && candidate.supported !== true) return { supported: false, reason: /^replay_[a-z_]+$/.test(candidate.reason || '') ? candidate.reason : 'replay_materials_invalid' };
   if (!originalOnly && (original.provenance.checkpointHash !== candidate.provenance.checkpointHash
     || original.provenance.commonInputHash !== candidate.provenance.commonInputHash)) throw fail('evaluation_start_mismatch');
   if (rules.kind === 'read-only-files-v1') {
@@ -331,7 +331,7 @@ async function runComparison(config, options = {}) {
   } finally { key = undefined; await transport?.close(); }
 }
 function formatComparison(result) {
-  if (!result.supported) return '不可回放：缺材料或超出当前支持范围。\n';
+  if (!result.supported) return '不可回放：' + (/^replay_[a-z_]+$/.test(result.reason || '') ? result.reason : 'replay_materials_invalid') + '。\n';
   const lines = [...(result.kind === 'sealed-original-replay-v1' ? ['原版单边回放：没有候选，不产生采纳结论。'] : []), '模型：' + result.model];
   if (result.modelConfig) lines.push('配置：' + result.modelConfig.api + ' / thinking ' + result.modelConfig.thinking + ' / ' + result.modelConfig.transport + ' / Fast关闭；凭据仅在宿主。');
   if (result.repository) {
