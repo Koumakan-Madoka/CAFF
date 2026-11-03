@@ -95,10 +95,10 @@ test('planning is credential/Docker-free; unsupported and unconfirmed inputs can
   const no = await runComparison(config(), { ...f.options, prepare: () => ({ supported: false }) });
   assert.equal(no.supported, false); assert.equal(f.state.executions, 0); assert.equal(f.state.keys, 0);
 });
-test('Codex cannot enter legacy CLI key injection while host-only authorization wiring is pending', async () => {
+test('Codex cannot enter legacy CLI key injection without an explicitly selected host access source', async () => {
   const f = fakes(), c = { ...config(), modelProfile: 'openai-codex/gpt-6.1-sol' };
-  assert.throws(() => prepareComparison(c, f.options), /evaluation_codex_cli_not_connected/);
-  await assert.rejects(runComparison(c, f.options), /evaluation_codex_cli_not_connected/);
+  assert.throws(() => prepareComparison(c, f.options), /evaluation_codex_auth_source_required/);
+  await assert.rejects(runComparison(c, f.options), /evaluation_codex_auth_source_required/);
   assert.equal(f.state.keys, 0); assert.equal(f.state.executions, 0);
 });
 test('N real-driver slots per variant, per-call rows, host scoring only after cleanup, exact pass totals', async () => {

@@ -3,7 +3,10 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { prepareSealedDirectTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
-const { prepareDirectTurnFiles, runDirectDockerTask } = require('./direct-docker.cjs');
+const { prepareDirectTurnFiles, runDirectDockerTask, runCodexDockerTask } = require('./direct-docker.cjs');
+const { createCodexTransport, createCodexAccess } = require('./codex-transport.cjs');
+const { createCodexRelayExchange } = require('./codex-mailbox.cjs');
+const CODEX_CONFIG = Object.freeze({ api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' });
 const { prepareReplayGit } = require('./replay-git.cjs');
 const { prepareReplayDependencies } = require('./replay-dependencies.cjs');
 const { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, DEFAULT_PROFILE, DEEPSEEK_PROFILE, CODEX_PROFILE } = require('./direct-model.cjs');
@@ -47,7 +50,7 @@ function scoreReadOnlyFiles(receipt, rules, beforeHash) {
 }
 function prepareComparison(config, options = {}) {
   if (!config || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)
     || config.executionPolicy !== undefined && (config.executionPolicy !== 'alternating-valid-v1' || !config.globalWikiCandidate || config.repeats !== 10)
     || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== 1
@@ -56,10 +59,11 @@ function prepareComparison(config, options = {}) {
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')) throw fail('evaluation_config_invalid');
   const profile = config.modelProfile ?? DEFAULT_PROFILE;
   modelProfile(profile);
-  // Low-level native container path is available, but this CLI has not yet
-  // connected host-only authorization/pre-stage checks. Never inject a token.
-  if (profile === CODEX_PROFILE) throw fail('evaluation_codex_cli_not_connected');
-  if (config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
+  if (profile === CODEX_PROFILE) {
+    if (config.keySource !== 'caff-codex-access') throw fail('evaluation_codex_auth_source_required');
+    // Construction validates the explicit path only. --plan never opens it.
+    try { createCodexAccess(config.codexAuthFile).close(); } catch { throw fail('evaluation_codex_auth_source_required'); }
+  } else if (config.codexAuthFile !== undefined || config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
     || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
   const rules = validateRules(config.rules);
   let prepare = options.prepare || prepareSealedDirectTurn, globalWikiCandidate = null, globalState, globalSaved, globalFiles;
@@ -130,7 +134,7 @@ function prepareComparison(config, options = {}) {
     commonInputHash: repository || config.dependencies || rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig,
       ...(repository ? { repository: repository.report, gitFileHashes: repository.gitFiles.map(f => ({ path: f.path, sha256: f.sha256 })) } : {}),
       ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}) })) : original.provenance.commonInputHash,
-    model: profile, repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
+    model: profile, ...(profile === CODEX_PROFILE ? { modelConfig: { ...CODEX_CONFIG } } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
     imageId: config.image.imageId, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
     strictEvalEligible: false, ...(repository ? { repository: repository.report } : {}),
@@ -144,7 +148,11 @@ async function runComparison(config, options = {}) {
   const fixed = structuredClone(config), plan = prepareComparison(fixed, options);
   if (!plan.supported) return { ...plan, runs: [], modelCallsKnown: 0 };
   if (options.confirmed !== true) throw fail('evaluation_confirmation_required');
-  const stage = options.stage || prepareDirectTurnFiles, execute = options.execute || runDirectDockerTask;
+  const native = plan.summary.model === CODEX_PROFILE;
+  // Linux/WSL is mandatory for the real launcher. Never read host auth and
+  // then discover that Windows needs an unimplemented credential handoff.
+  if (native && !options.executeCodex && process.platform !== 'linux') throw fail('evaluation_linux_required');
+  const stage = options.stage || prepareDirectTurnFiles, execute = native ? options.executeCodex || runCodexDockerTask : options.execute || runDirectDockerTask;
   const emit = options.onEvent || (() => {}), keyReader = options.readKey || (fixed.keySource === 'caff-deepseek' ? readCaffDeepseekKey : readEvaluationKey);
   const files = {}, manifests = {};
   for (const variant of ['original', 'candidate']) {
@@ -152,12 +160,25 @@ async function runComparison(config, options = {}) {
     manifests[variant] = manifestFor(files[variant], { replayWorkspace: true });
   }
   if (manifests.original.runtimeHash !== manifests.candidate.runtimeHash) throw fail('evaluation_runtime_mismatch');
-  const key = validKey(keyReader()); // No persistence or argv/env-file creation.
-  // Check sanitized plaintext before compression can hide a late-known key in
-  // Git objects. Such a mismatch stops before any event/Docker/model request.
-  plan.checkRepositoryKnownValues?.([key, ...(options.knownValues || [])]);
-  const leaksKey = value => { const s = JSON.stringify(value) || ''; return s.includes(key) || s.includes(JSON.stringify(key).slice(1, -1)); };
-  if (leaksKey(plan.summary)) throw fail('evaluation_output_contains_key');
+  let transport, sendNativeRequest, key;
+  try {
+  if (native) {
+    transport = (options.createCodexTransport || createCodexTransport)({ authFile: fixed.codexAuthFile, confirmed: true, timeoutMs: fixed.timeoutMs ?? 120000 });
+    transport.inspectAccess(access => { key = access; });
+    sendNativeRequest = createCodexRelayExchange({ fetch: transport.fetch });
+  } else key = validKey(keyReader()); // No persistence or argv/env-file creation.
+  const values = [...new Set([key, ...(options.knownValues || [])])].filter(v => typeof v === 'string' && v);
+  const leaksKey = value => { const s = JSON.stringify(value) || ''; return values.some(v => s.includes(v) || s.includes(JSON.stringify(v).slice(1, -1))); };
+  const leaksBytes = bytes => values.some(v => bytes.includes(v) || bytes.includes(JSON.stringify(v).slice(1, -1)));
+  const checkInputs = prepared => {
+    // Compressed Git must be checked as plaintext; file bodies are base64 in
+    // host preparation, so check decoded bytes as well as structured fields.
+    prepared.checkRepositoryKnownValues?.(values);
+    if (leaksKey(prepared.summary)) throw fail('evaluation_output_contains_key');
+    if (leaksKey(prepared.inputs) || Object.values(prepared.inputs).some(i => i.files.some(f => leaksBytes(Buffer.from(f.base64, 'base64'))))) throw fail('evaluation_input_contains_key');
+  };
+  checkInputs(plan);
+  if (Object.values(files).some(list => list.some(f => leaksBytes(f.bytes)))) throw fail('evaluation_input_contains_key');
   emit({ event: 'plan', ...plan.summary, runtimeHash: manifests.original.runtimeHash });
   const runs = []; let stopped = false, modelCallsKnown = 0, callsUnavailable = false;
   const alternating = fixed.executionPolicy === 'alternating-valid-v1';
@@ -179,11 +200,17 @@ async function runComparison(config, options = {}) {
         || manifestFor(stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, fresh.inputs[variant], fixed.modelProfile), { replayWorkspace: true }).inputHash !== manifests[variant].inputHash) {
         throw fail('evaluation_input_changed');
       }
+      checkInputs(fresh);
       let task;
-      try { task = await execute(fixed.image, files[variant], { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000 }); }
-      catch { task = { failed: true, reason: 'evaluation_failed' }; }
+      try {
+        transport?.inspectAccess(() => {}); // Expiry stops BEFORE another container.
+        task = await execute(fixed.image, files[variant], native
+          ? { sendNativeRequest, network: 'none', timeoutMs: fixed.timeoutMs ?? 120000 }
+          : { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000 });
+      } catch { task = { failed: true, reason: 'evaluation_failed' }; }
+      const environmentReason = transport?.state().reason;
       const encodedLeak = Array.isArray(task?.receipt?.fileEvidence) && task.receipt.fileEvidence.some(f =>
-        typeof f?.base64 === 'string' && Buffer.from(f.base64, 'base64').includes(key));
+        typeof f?.base64 === 'string' && leaksBytes(Buffer.from(f.base64, 'base64')));
       if (leaksKey(task) || encodedLeak) task = { failed: true, reason: 'evaluation_output_contains_key' };
       const receipt = task?.receipt, row = { variant, iteration, status: 'error', checks: null, finalText: '', replySource: 'unknown', modelCalls: [],
         containerId: task?.containerId || null, cleaned: task?.cleaned === true, isolation: task?.isolation || null,
@@ -198,7 +225,8 @@ async function runComparison(config, options = {}) {
         ...(plan.summary.repository ? [[receipt?.repository?.sourceHead, plan.summary.repository.sourceHead],
           [receipt?.repository?.restoredHead, plan.summary.repository.restoredHead]] : [])]
         .some(([actual, expected]) => actual !== undefined && actual !== expected);
-      const valid = !evidenceChanged && !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
+      const modelConfigChanged = native && Object.keys(CODEX_CONFIG).some(k => receipt?.modelConfig?.[k] !== CODEX_CONFIG[k]);
+      const valid = !evidenceChanged && !modelConfigChanged && !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
         && receipt.inputHash === manifests[variant].inputHash && receipt.runtimeHash === manifests[variant].runtimeHash
         && receipt.beforeHash === plan.beforeHash
         && (!plan.summary.repository || receipt.repository?.gitAvailable === true && receipt.repository?.historyCommitCount === 1
@@ -245,11 +273,14 @@ async function runComparison(config, options = {}) {
       }
       if (alternating) {
         fatal = row.reason === 'file_evidence_unavailable' || evidenceChanged
-          || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
+          || modelConfigChanged || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
         // Only environmental errors may consume the five replacement attempts.
         // Evidence/integrity stops propagate to the remaining cases and stages.
         stopped = fatal;
       }
+      // Auth/quota/network terminal states are environmental, never model
+      // failure or eligible replacement attempts. Keep any verified calls.
+      if (environmentReason) { row.status = 'error'; row.checks = null; row.reason = environmentReason; stopped = true; fatal = true; }
       runs.push(row); const { modelCalls: omitted, ...eventRow } = row; emit({ event: 'run', ...eventRow });
   }
   const totals = Object.fromEntries(['original', 'candidate'].map(v => {
@@ -262,19 +293,21 @@ async function runComparison(config, options = {}) {
     ...(alternating ? {fatal} : {}) };
   emit({ event: 'summary', completed: result.completed, totals, modelCallsKnown, callsUnavailable });
   return result;
+  } finally { key = undefined; await transport?.close(); }
 }
 function formatComparison(result) {
   if (!result.supported) return '不可回放：缺材料或超出当前支持范围。\n';
   const lines = ['模型：' + result.model];
+  if (result.modelConfig) lines.push('配置：' + result.modelConfig.api + ' / thinking ' + result.modelConfig.thinking + ' / ' + result.modelConfig.transport + ' / Fast关闭；凭据仅在宿主。');
   if (result.repository) lines.push('Git：脱敏后重建，HEAD不同于源仓库；只有1个基线提交，无历史提交。',
     '源HEAD：' + result.repository.sourceHead, '恢复HEAD：' + result.repository.restoredHead);
   if (result.dependencies) {
     lines.push('依赖：Linux npm ci 缓存；lock=' + result.dependencies.lockHash + '，Node=' + result.dependencies.nodeVersion + '。');
     if (result.dependencies.resolvedWithoutIntegrity) lines.push('限制：lock中' + result.dependencies.resolvedWithoutIntegrity + '条下载记录没有integrity；保留原lock，安装产物另以SHA-256固定。');
   }
-  lines.push('变体\t轮次\t结果\t模型请求\t回复来源');
+  lines.push('变体\t轮次\t结果\t模型请求\t回复来源\t原因');
   for (const r of result.runs || []) {
-    lines.push([r.variant, r.iteration, r.status, r.reason === 'run_evidence_unavailable' ? 'unknown' : r.modelCalls.length, r.replySource ?? 'unknown'].join('\t'));
+    lines.push([r.variant, r.iteration, r.status, r.reason === 'run_evidence_unavailable' ? 'unknown' : r.modelCalls.length, r.replySource ?? 'unknown', r.reason ?? ''].join('\t'));
     for (const [i, c] of r.modelCalls.entries()) lines.push('  #' + (i + 1) + ' ' + c.model + ' ' + Math.round(c.durationMs) + 'ms ' + (c.success ? 'success' : 'failed') + ' usage=' + JSON.stringify(c.usage ?? null));
   }
   for (const v of ['original', 'candidate']) {

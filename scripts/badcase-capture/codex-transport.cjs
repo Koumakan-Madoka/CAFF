@@ -1,6 +1,6 @@
 // Trusted HOST ONLY foundation for Codex replay. Explicit, read-only access
 // lease; no OAuth runtime, refresh field, discovery, writeback or global proxy.
-// This is not yet a compare-sealed driver/credential source (see the contract).
+// compare-sealed uses inspectAccess only on this host, before Docker staging.
 const fs = require('node:fs'), path = require('node:path'), zlib = require('node:zlib');
 const PROFILE = Object.freeze({ model: 'openai-codex/gpt-6.1-sol', api: 'openai-codex-responses', thinking: 'xhigh',
   fast: false, transport: 'sse', endpoint: 'https://chatgpt.com/backend-api/codex/responses', proxy: 'http://127.0.0.1:17890' });
@@ -167,6 +167,16 @@ function createCodexTransport(config, dependencies = {}) {
     } finally { clearTimeout(timer); active = undefined; busy = false; }
   };
   return { fetch: transportFetch, state: () => ({ profile: PROFILE, requests, stopped, closed, reason }),
+    inspectAccess(check) {
+      if (closed) throw fail('transport_closed');
+      if (stopped) throw Object.assign(Error(reason), { code: reason });
+      let access;
+      try { access = credential.get().access; }
+      catch (e) { stopped = true; reason = e.code; throw e; }
+      // Trusted synchronous host input/output checks only; never pass this
+      // callback, credential lease or returned access into a worker or event.
+      check(access);
+    },
     async close() { if (closed) return; closed = true; credential.close(); active?.abort(); await dispatcher?.destroy(); } };
 }
 module.exports = { PROFILE, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, createCodexAccess, createCodexTransport };

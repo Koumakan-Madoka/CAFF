@@ -6,7 +6,7 @@
 
 ### 2026-11-02 生产同配置扩展（M1 实现中）
 
-当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。以下已实现文件脱敏、目录传输、无历史 Git 基线、Linux npm 依赖缓存及 GPT 宿主传输基础模块，不宣称真实 GPT 准入或回放已通过；GPT 低层断网容器已连通合成验证，CLI 授权及凭据准入接线仍待实现，真实准入另按 Goal 验证。
+当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。以下已实现文件脱敏、目录传输、无历史 Git 基线、Linux npm 依赖缓存及 GPT 宿主传输基础模块，不宣称真实 GPT 准入或回放已通过；GPT 断网容器及单例 CLI 已连通合成验证，真实准入另按 Goal 验证。
 
 - 新采集的纳入范围普通文件：Linux 与 Windows 均在内存中将哨兵命中的值替换为 `[*]`，保留路径、非秘密内容及可得 mode。私钥擦除整个块（缺 END 时擦到文件末尾），二进制/无效 UTF-8 逐字节保留非秘密部分；二进制沿用高置信哨兵子集，不扩大为键值误报。结构化 prompt/session/harness、分类用 Git 元数据和显式/敏感路径排除策略不变。
 - 仅对安全字节计算 CAS hash/size；不存原始秘密内容或其 hash。文件元数据另存 `secretRedacted/originalSize/redactionCount`，检查点记录 `secretRedactedPaths` 及文件数。脱敏本身不新增缺材料原因，也不升级 Windows subset/严格评测资格。
@@ -22,15 +22,17 @@
 - 依赖归档单独流送，不进控制JSON；安装器先输出固定回执行，再在容器仍运行时流出归档（停止后tmpfs已不可取，不用 `docker cp`）。评测容器重新核验归档hash/条目和Node版本后解包到恢复副本，删除临时归档；两变体共享完全相同的缓存身份，逐次回执缺安装证据/身份不符不得评分。工作树hash不含新增的 `.git`/`node_modules` 管理数据，不声称依赖目录的逐字不变。安装最多15分钟，正式turn当前仍1–300秒；依赖恢复不等于已完成真实GPT回放。
 - 实测第0步lock安装时旧 `/tmp` 256MiB 耗尽（ENOSPC），因此 direct launcher（含其归纳调用方）统一为4GiB内存/同额swap上限、`/work` 2GiB、`/tmp` 1GiB tmpfs；仍为2 CPU/128 pids，无宿主挂载/发布端口。隔离投影现记录实际tmpfs及memorySwap。后续生产长轮次配置不以本次依赖测量替代验证。
 
-#### GPT 原生 SSE 与宿主转发（尚未接入评测CLI）
+#### GPT 原生 SSE 与宿主转发（单例 CLI 已接线，真实准入未通过）
 
-- `codex-transport.cjs` 仅供受信宿主调用，必须显式确认并指定宿主 `.pi-sandbox/auth.json` 绝对路径；构造不读凭据，首次有效请求才以只读、文件身份核验方式读取。只选择 `openai-codex` 的 `type/access/expires` 及 access JWT 的账号/过期声明，不使用 refresh 字段、不调用 OAuth 运行时、不写回、不自动重读轮换；检查源声明和 JWT 的较早过期时间，过期失败。只在内存保留 access lease；源文件不存在/不合法/链接/过期均不回退环境变量或其他 provider。JWT 本地解码不是签名认证，真实认证由供应方执行。
+- `codex-transport.cjs` 仅供受信宿主调用，必须显式确认并指定宿主 `.pi-sandbox/auth.json` 绝对路径；构造不读凭据，首次宿主预检或有效请求才以只读、文件身份核验方式读取。只选择 `openai-codex` 的 `type/access/expires` 及 access JWT 的账号/过期声明，不使用 refresh 字段、不调用 OAuth 运行时、不写回、不自动重读轮换；检查源声明和 JWT 的较早过期时间，过期失败。只在内存保留 access lease；源文件不存在/不合法/链接/过期均不回退环境变量或其他 provider。JWT 本地解码不是签名认证，真实认证由供应方执行。
 - 固定请求身份为 `openai-codex/gpt-6.1-sol`、原生 `openai-codex-responses`、thinking `xhigh`、Fast 关闭。只接受该模型的 `stream:true/store:false` Responses 请求，拒绝改模型、thinking、service tier、目的端点或未知敏感请求头；宿主替换 Authorization/账号头，其余原生 JSON 或 zstd 请求字节不改写。调用方须选择原生 SSE；本切片不支持 WebSocket，也不宣称与生产自动 WebSocket 传输一致。
 - 每个传输实例使用专属 undici `ProxyAgent`，固定经宿主 `http://127.0.0.1:17890` 请求 `https://chatgpt.com/backend-api/codex/responses`；不依赖全局 dispatcher、NO_PROXY 或代理环境变量，不跟重定向、不直连回退。收到非200、协议错误事件、过期、网络或额度错误即锁闭，后续请求不得发送；错误正文和上游响应头不进入结果，只保留固定错误码。200 SSE 在内存收齐后保留原字节交原生 parser，发送前/返回前检查选定 access 不在正文中泄漏。
 - 为内存与失控响应保护，压缩及解压后模型请求各最多16MiB，响应最多32MiB；这不是仓库传输的旧4MiB上限。单请求显式期限1秒–45分钟，支持调用方中止、销毁专属连接；不代表正式turn已经放宽现有300秒上限。用量由原生 SDK 返回，不把HTTP200当模型成功，也不以token数推算ChatGPT剩余额度。
 - `direct-model.cjs` 的 Codex 路由只引用 worker 的无效身份环境变量，保留 SDK 内置 `gpt-6.1-sol` 原生 descriptor，不用 Chat Completions 兼容配置替代。worker 禁止从环境注入任何模型 Key，在静态输入核验后才创建已过期、无有效签名的公开占位身份；真实 access/账号只在宿主实际发送时补入。强制实际 agent 使用 SSE/xhigh、关闭 agent/provider 自动重试，项目设置不能重新启用 WebSocket/重试；receipt 记录实际模型 API/thinking/transport 与 `credentialDelivery:host-only-mailbox`。
 - `runCodexDockerTask` 是独立低层路径：只允许 `network:none`、没有 credential 环境变量、宿主挂载或发布端口，仍用固定静态分发和一次性 tmpfs。原生请求/响应走既有 Docker-exec mailbox，`codex-mailbox.cjs` 只封装原始二进制字节与允许的请求头，不接受容器指定 URL、Authorization 或账号头。每轮最多32次；mailbox 请求/响应封装各最多4MiB（base64封装使原始模型正文可用额度更小），不是仓库数据传输上限；超限失败，不截断继续。宿主 Docker 控制调用只对 mailbox 显式扩大输出缓冲，其他调用仍默认1MiB。真实发送必须由受信调用方显式提供已授权的宿主 transport，并管理其关闭。
-- 已用合成 access 源与假供应方在真实断网容器走完内置 SDK 的 read 工具循环，核对 xhigh、zstd 原生请求、SSE回复与用量、容器清理/无实际凭据注入；另以合成429确认额度错误只发一次、不自动重试。该探针未含 trace 回调或公开回复，不是封存准入或真实 GPT 复现。**`compare-sealed` 仍以 `evaluation_codex_cli_not_connected` 显式拒绝 Codex**，旧注入 Key 的 launcher 也以 `evaluation_codex_relay_required` 拒绝该 profile，不能误把实际 access 送进容器。批量配置/Windows入口、正式授权/已知值输入检查与终止原因传递尚待接线；未读取真实账号或调用模型。无模型准入通过后仍须暂停，待用户选择并标记真实GPT用例。
+- 单例 `compare-sealed` 配置显式选择 `modelProfile:"openai-codex/gpt-6.1-sol"`、`keySource:"caff-codex-access"`、`codexAuthFile:"<宿主.pi-sandbox/auth.json绝对路径>"`；缺少/混用凭据源拒绝，不从旧 Key 环境回退。`--plan` 仅校验路径形状，不读凭据/启动Docker/请求模型。正式 `--run --confirmed --output <新文件>` 只在 Linux/WSL 进入原生断网 launcher；Windows 直接运行报 `evaluation_linux_required`，不先读 access 再尝试跨命名空间传递。计划和结果绑定实际 API/thinking/Fast/SSE/host-only 配置，不记录 auth 路径或账号。
+- 运行确认后、首个事件或容器之前只读 access，并检查规则/结构化输入、解码后的封存文件、暂存明文，以及 Git 压缩前基线；拒绝选定 access 或可信调用方传入的 `knownValues`。每轮重验封存/静态分发和 access 过期状态；transport 在成功、异常、输出泄漏和事件保存失败后均关闭。worker 必须回传相同模型配置才可评分。选定值不得藏在 base64 文件证据中；固定 auth/quota/proxy 错误保留为逐次环境错误并立即停止，不转为模型不通过或替补重试，CLI显示固定原因。
+- 已用合成 access 源与假供应方在真实断网容器走完内置 SDK 的 read 工具循环，核对 xhigh、zstd 原生请求、SSE回复与用量、容器清理/无实际凭据注入；另以合成429确认额度错误只发一次、不自动重试。探针未含 trace 回调或公开回复，不是封存准入或真实 GPT 复现。旧注入 Key 的 launcher 仍以 `evaluation_codex_relay_required` 拒绝该 profile。全部本机已知值来源读取/注入、用户最新批准的按已知值扫描后保留 Git 历史、M1原版单边3次编排、批量配置及 Windows 入口仍待实现；不能把本切片的选定 access 检查宣称为完整已知 Key 检查。未读取真实账号或调用模型。无模型准入通过后仍须暂停，待用户选择并标记真实GPT用例。
 
 ### 采集与恢复
 
