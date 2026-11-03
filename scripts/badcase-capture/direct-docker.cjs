@@ -21,7 +21,8 @@ function prepareDirectReplayInput(input) {
     assert.equal(bytes.toString('base64'), f.base64);
     assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), f.sha256);
     files.push({ path: 'replay-workspace/' + f.path, bytes });
-    return { path: f.path, sha256: f.sha256, size: bytes.length };
+    assert.ok(f.mode === undefined || Number.isSafeInteger(f.mode) && (f.mode & 0o170000) === 0o100000);
+    return { path: f.path, sha256: f.sha256, size: bytes.length, ...(f.mode === undefined ? {} : { mode: f.mode }) };
   });
   let gitInventory;
   if (input.gitFiles !== undefined) {
@@ -29,9 +30,10 @@ function prepareDirectReplayInput(input) {
     assert.ok((repository?.kind === 'sanitized-root-git-v1' && repository.historyIncluded === false && repository.headIdenticalToSource === false
       || repository?.kind === 'preserved-head-git-v1' && repository.historyIncluded === true && repository.headIdenticalToSource === true)
       && Number.isSafeInteger(repository.historyCommitCount) && repository.historyCommitCount >= 1
-      && Array.isArray(input.gitFiles) && input.gitFiles.length === 6);
+      && Array.isArray(input.gitFiles) && input.gitFiles.length >= 5 && input.gitFiles.length <= 45);
     gitInventory = input.gitFiles.map(f => {
-      assert.match(f.path, /^\.git\/(?:HEAD|config|index|refs\/heads\/replay-baseline|objects\/pack\/pack-[a-f0-9]{40,64}\.(?:pack|idx))$/);
+      assert.match(f.path, /^\.git\/(?:HEAD|config|index|refs\/(?:heads|remotes)\/[A-Za-z0-9_.@/-]+|objects\/pack\/pack-[a-f0-9]{40,64}\.(?:pack|idx))$/);
+      assert.ok(f.path.split('/').every(p => p && p !== '.' && p !== '..'));
       assert.equal(typeof f.base64, 'string');
       const bytes = Buffer.from(f.base64, 'base64'); assert.equal(bytes.toString('base64'), f.base64);
       assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), f.sha256);
@@ -155,7 +157,7 @@ async function runDockerTask(image, files, options, key, dependencyOutput) {
   assert.match(one(await run(['context', 'inspect', 'default'])).Endpoints?.docker?.Host, /^unix:\/\/\/[^\s\0]+$/);
   const img = one(await run(['image', 'inspect', image.imageId]));
   assert.equal(img.Id, image.imageId); assert.equal(img.Os, 'linux'); assert.equal(img.Architecture, image.architecture);
-  assert.ok(img.RepoDigests.includes(image.repositoryDigest));
+  require('./replay-image.cjs').verifyReplayImage(img, image);
   assert.equal(Object.keys(img.Config.Volumes || {}).length, 0); assert.equal((img.Config.OnBuild || []).length, 0);
   assert.ok(!img.Config.Healthcheck?.Test?.length || img.Config.Healthcheck.Test[0] === 'NONE');
   assert.ok((img.Config.Env || []).every(e => !/^(?:CAFF_|PI_|OPENAI_|ANTHROPIC_|AWS_|NODE_OPTIONS=|NODE_PATH=|LD_|.*(?:KEY|TOKEN|PASSWORD)=)/i.test(e)));

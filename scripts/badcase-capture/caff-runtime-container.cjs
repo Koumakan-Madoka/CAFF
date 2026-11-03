@@ -9,7 +9,7 @@ function verifyCaffRuntimeStage({ replayWorkspace = false } = {}) {
   if (process.platform !== 'linux' || process.getuid?.() !== 65534 || process.cwd() !== '/work' || !fs.existsSync('/.dockerenv')
     || Object.keys(process.env).some(k => /^(CAFF_|PI_|OPENAI_|ANTHROPIC_|AWS_|NODE_OPTIONS$|NODE_PATH$|LD_PRELOAD$|LD_LIBRARY_PATH$)/.test(k))) throw Error();
   const m = JSON.parse(fs.readFileSync('manifest.json')), image = JSON.parse(fs.readFileSync('environment.json'));
-  assert.equal(m.schemaVersion, 1); assert.ok(Array.isArray(m.files) && m.files.length <= (replayWorkspace ? 5127 : 4096));
+  assert.equal(m.schemaVersion, 1); assert.ok(Array.isArray(m.files) && m.files.length <= (replayWorkspace ? 5166 : 4096));
   assert.equal(hash(JSON.stringify(m.files)), m.inputHash);
   const names = new Set(); let total = 0, staticCount = 0, workspaceCount = 0;
   for (const f of m.files) {
@@ -18,7 +18,7 @@ function verifyCaffRuntimeStage({ replayWorkspace = false } = {}) {
     const st = fs.lstatSync('/work/' + f.path);
     if (replayWorkspace && (f.path.startsWith('replay-workspace/') || f.path === 'replay-dependencies.tar.gz')) workspaceCount++;
     else { total += st.size; staticCount++; }
-    assert.ok(total <= 16 * 1024 * 1024 && staticCount <= 4096 && workspaceCount <= 1031
+    assert.ok(total <= 16 * 1024 * 1024 && staticCount <= 4096 && workspaceCount <= 1070
       && st.isFile() && !st.isSymbolicLink() && st.size === f.size);
     assert.equal(hash(fs.readFileSync('/work/' + f.path)), f.sha256);
   }

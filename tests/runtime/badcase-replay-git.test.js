@@ -190,6 +190,43 @@ test('empty authorized baseline still creates a valid one-commit Git index witho
   assert.equal(f.git(f.restored, 'rev-list', '--all', '--count').trim(), '1');
   assert.equal(f.git(f.restored, 'ls-tree', '-r', 'HEAD').trim(), ''); assert.equal(snapshot.report.baselineFileCount, 0);
 });
+test('explicit recorded detached refs survive without inventing replay-baseline, only HEAD aliases are allowed', t => {
+  const f = fixture(t); f.git(f.sourceRoot, 'branch', 'develop', f.head);
+  const refState = { head: null, refs: ['refs/heads/develop', 'refs/remotes/origin/develop'], symbolicRefs: { 'refs/remotes/origin/HEAD': 'refs/remotes/origin/develop' } };
+  // Operator supplies independently recorded aliases; no ambient live refs are read.
+  const snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head, refState }, f.input); f.install(snapshot);
+  assert.equal(f.git(f.restored, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'HEAD');
+  assert.equal(f.git(f.restored, 'rev-parse', 'develop').trim(), f.head);
+  assert.equal(f.git(f.restored, 'symbolic-ref', 'refs/remotes/origin/HEAD').trim(), 'refs/remotes/origin/develop');
+  assert.doesNotMatch(f.git(f.restored, 'branch', '--all'), /replay-baseline/);
+  assert.deepEqual(snapshot.report.refState, refState);
+  for (const bad of [{ ...refState, refs: ['refs/heads/../escape'] }, { ...refState, head: 'refs/heads/absent' }, { ...refState, symbolicRefs: { 'refs/remotes/origin/HEAD': 'refs/heads/absent' } }])
+    assert.throws(() => api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head, refState: bad }, f.input));
+});
+test('placeholder-only bytes and excluded files do not manufacture dirt, but real edits/deletions remain visible', t => {
+  const f = fixture(t);
+  const snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, { ...f.input, capturePlatform: 'win32', files: f.input.files.map(x => ({ ...x, mode: 0o100644, secretRedacted: ['secret.txt', 'opaque.txt'].includes(x.path) })) }, { knownValues: [] });
+  f.install(snapshot);
+  const status = f.git(f.restored, 'status', '--porcelain');
+  assert.doesNotMatch(status, /secret\.txt|excluded\.txt/);
+  assert.match(status, /opaque\.txt/, 'arbitrary non-pattern redaction is not trusted without the actual known value');
+  assert.match(status, / M dirty\.txt/); assert.match(status, / D deleted\.txt/); assert.match(status, /\?\? untracked\.txt/);
+  assert.deepEqual(snapshot.report.worktreeAdjustments.assumeUnchanged, ['secret.txt']);
+  assert.deepEqual(snapshot.report.worktreeAdjustments.skipWorktree, ['excluded.txt']);
+  assert.equal(fs.readFileSync(path.join(f.restored, 'secret.txt'), 'utf8'), 'fixture=[*]\n');
+});
+test('redaction flag does not hide a real edit in a redacted file, and attached ref remains attached on fallback', t => {
+  const f = fixture(t); const file = f.input.files.find(f => f.path === 'secret.txt');
+  const bytes = Buffer.from('fixture=[*]\nreal captured change\n');
+  Object.assign(file, { base64: bytes.toString('base64'), sha256: sha(bytes), secretRedacted: true });
+  const snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, f.input); f.install(snapshot);
+  assert.match(f.git(f.restored, 'status', '--porcelain'), / M secret\.txt/);
+  assert.deepEqual(snapshot.report.worktreeAdjustments.assumeUnchanged, []);
+  const refState = { head: 'refs/heads/develop', refs: ['refs/heads/develop'], symbolicRefs: {} };
+  const fallback = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head, refState }, f.input, { knownValues: [opaque] }); f.install(fallback);
+  assert.equal(f.git(f.restored, 'symbolic-ref', 'HEAD').trim(), 'refs/heads/develop');
+  assert.equal(fallback.report.historyIncluded, false); assert.notEqual(fallback.report.restoredHead, f.head);
+});
 test('late-known opaque credential is refused before any model instead of being hidden in a compressed Git object', t => {
   const f = fixture(t), snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, f.input);
   assert.throws(() => snapshot.checkKnownValues([opaque]), e => e.code === 'evaluation_input_contains_key');

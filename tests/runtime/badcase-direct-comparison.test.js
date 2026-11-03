@@ -7,11 +7,11 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings, projectResources, resourceLoaderPatch = {} } = {}) {
+async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings, projectResources, resourceLoaderPatch = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt, files: files.map(p => ({ path: p,
-    base64: Buffer.from(fileBytes[p] ?? p).toString('base64'), sha256: crypto.createHash('sha256').update(fileBytes[p] ?? p).digest('hex') })),
+    base64: Buffer.from(fileBytes[p] ?? p).toString('base64'), sha256: crypto.createHash('sha256').update(fileBytes[p] ?? p).digest('hex'), ...(fileModes[p] === undefined ? {} : { mode: fileModes[p] }) })),
     sessionText, settings: null, systemPrompt: null,
     ...(bindings === undefined ? {} : { bindings }),
     ...(projectResources === undefined ? {} : { projectResources }),
@@ -26,8 +26,10 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
   } else fs.writeFileSync(path.join(root, 'replay-input.json'), JSON.stringify(input));
   fs.mkdirSync(path.join(root, 'tmp'));
   const mapped = p => { assert.ok(p.startsWith('/work/') || p.startsWith('/tmp/')); return path.join(root, p.slice(1).replace(/^work\//, '')); };
-  const workerFs = Object.fromEntries(['mkdirSync', 'readFileSync', 'writeFileSync', 'readdirSync', 'lstatSync']
+  const modeRestorations = [];
+  const workerFs = Object.fromEntries(['mkdirSync', 'readFileSync', 'writeFileSync', 'readdirSync', 'lstatSync', 'chmodSync']
     .map(name => [name, (p, ...args) => fs[name](mapped(p), ...args)]));
+  workerFs.chmodSync = (p, mode) => { modeRestorations.push({ path: p, mode }); fs.chmodSync(mapped(p), mode); };
   workerFs.existsSync = p => p === '/.dockerenv' || fs.existsSync(mapped(p));
   workerFs.renameSync = (a, b) => fs.renameSync(mapped(a), mapped(b));
   const observer = { calls: [], complete() {}, fetch: async () => { throw Error('unexpected_network'); } };
@@ -75,9 +77,15 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
       return { runtime }; } };
   } });
   assert.equal(disposed, true); assert.equal(stopped, withCallback);
-  return { receipt, input, startConfig, callbackLifetimeMs, invocationPrompt,
+  return { receipt, input, startConfig, callbackLifetimeMs, invocationPrompt, modeRestorations,
     workingSessionText: fs.existsSync(path.join(root, 'session.jsonl')) ? fs.readFileSync(path.join(root, 'session.jsonl'), 'utf8') : null, settings: fs.existsSync(path.join(root, 'agent/settings.json')) ? JSON.parse(fs.readFileSync(path.join(root, 'agent/settings.json'))) : null };
 }
+test('actual worker restores captured modes after transport for inline and directory workspaces', async t => {
+  for (const directoryWorkspace of [false, true]) {
+    const result = await workerReceipt(t, { files: ['plain.js', 'executable.sh'], fileModes: { 'plain.js': 0o100644, 'executable.sh': 0o100755 }, directoryWorkspace });
+    assert.deepEqual(result.modeRestorations.map(r => ({ name: r.path.split('/').at(-1), mode: r.mode })), [{ name: 'plain.js', mode: 0o644 }, { name: 'executable.sh', mode: 0o755 }]);
+  }
+});
 function config() {
   return { repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'), request: {}, image: { imageId: 'sha256:' + '1'.repeat(64) },
     repeats: 2, candidateRole: 'Check every file.', rules: { kind: 'read-only-files-v1', readPaths: ['tracked.txt'], absentPaths: ['deleted.txt'], requiredReplyFragments: ['stable file', 'deleted.txt 不存在'] } };

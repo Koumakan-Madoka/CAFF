@@ -75,7 +75,9 @@ function readFixed(root, relative, remaining = 16 * 1024 * 1024) {
 function prepareBridgeFiles(repoRoot, dependencyRoot, image) {
   try {
     // Reuse the image-schema validator without expanding offlineTask's file-path grammar.
-    prepareOfflineTask({ image, entrypoint: 'x.cjs', timeoutMs: 25000,
+    const { localBuild, ...offlineImage } = image;
+    if (localBuild !== undefined && localBuild !== require('./replay-image.cjs').RECIPE) throw Error();
+    prepareOfflineTask({ image: offlineImage, entrypoint: 'x.cjs', timeoutMs: 25000,
       files: [{ path: 'x.cjs', base64: '', sha256: hash('') }] });
     const repo = rootPath(repoRoot), deps = rootPath(dependencyRoot);
     const files = []; let total = 0;

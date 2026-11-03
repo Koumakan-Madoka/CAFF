@@ -16,11 +16,54 @@ function gitEnvironment() {
     GIT_AUTHOR_NAME: 'GPT', GIT_AUTHOR_EMAIL: 'gpt@caff.local', GIT_COMMITTER_NAME: 'GPT', GIT_COMMITTER_EMAIL: 'gpt@caff.local',
     GIT_AUTHOR_DATE: '2000-01-01T00:00:00+00:00', GIT_COMMITTER_DATE: '2000-01-01T00:00:00+00:00' };
 }
+function validRecipe(recipe) {
+  return recipe && Object.keys(recipe).every(k => ['head', 'sourceRoot', 'refState'].includes(k)) && hex(recipe.head)
+    && path.isAbsolute(recipe.sourceRoot || '');
+}
+function applyRefState(directory, recipe, head, git) {
+  const state = recipe.refState;
+  if (state === undefined) { git(directory, ['update-ref', 'refs/heads/replay-baseline', head]); return ['.git/refs/heads/replay-baseline']; }
+  if (!state || Object.keys(state).sort().join(',') !== 'head,refs,symbolicRefs' || !Array.isArray(state.refs)
+    || state.refs.length > 32 || new Set(state.refs).size !== state.refs.length || !state.symbolicRefs || typeof state.symbolicRefs !== 'object' || Array.isArray(state.symbolicRefs)
+    || Object.keys(state.symbolicRefs).length > 8 || !(state.head === null || typeof state.head === 'string'
+      && state.head.startsWith('refs/heads/') && state.refs.includes(state.head))) throw Error();
+  const validRef = ref => typeof ref === 'string' && /^refs\/(heads|remotes)\/[A-Za-z0-9_.@/-]+$/.test(ref)
+    && ref.split('/').every(p => p && p !== '.' && p !== '..') && (git(directory, ['check-ref-format', ref]), true);
+  for (const ref of state.refs) { if (!validRef(ref)) throw Error(); git(directory, ['update-ref', ref, head]); }
+  for (const [ref, target] of Object.entries(state.symbolicRefs)) {
+    if (!validRef(ref) || state.refs.includes(ref) || !state.refs.includes(target)) throw Error();
+    git(directory, ['symbolic-ref', ref, target]);
+  }
+  fs.writeFileSync(path.join(directory, '.git/HEAD'), state.head === null ? head + '\n' : 'ref: ' + state.head + '\n');
+  return [...state.refs, ...Object.keys(state.symbolicRefs)].map(r => '.git/' + r);
+}
+function prepareWorktreeIndex(directory, input, knownValues, git) {
+  const rows = git(directory, ['ls-tree', '-rz', '--full-tree', 'HEAD']).toString().split('\0').filter(Boolean).map(row => {
+    const m = /^(\d{6}) (?:blob|commit) ([a-f0-9]{40,64})\t([\s\S]+)$/.exec(row); if (!m) throw Error();
+    // Git's index validates tree paths. NUL-delimited stdin handles even
+    // excluded non-ASCII names without ever materializing their contents.
+    return { path: m[3], oid: m[2] };
+  });
+  const captured = new Map(input.files.map(f => [f.path, f])), deleted = new Set(input.deletions), assumeUnchanged = [], skipWorktree = [];
+  for (const row of rows) {
+    const file = captured.get(row.path);
+    if (!file && !deleted.has(row.path)) { skipWorktree.push(row.path); continue; }
+    if (file?.secretRedacted !== true) continue;
+    const raw = git(directory, ['cat-file', 'blob', row.oid], { maxBuffer: 64 * 1024 * 1024 });
+    const sanitized = redactFileSecrets(raw, knownValues), bytes = Buffer.from(file.base64, 'base64');
+    // Do not hide a genuine captured edit just because its file was redacted.
+    const normalize = b => input.capturePlatform === 'win32' ? Buffer.from(b.toString('latin1').replace(/\r\n/g, '\n'), 'latin1') : b;
+    if (sanitized.redactionCount > 0 && normalize(sanitized.content).equals(normalize(bytes))) assumeUnchanged.push(row.path);
+  }
+  for (const [flag, names] of [['--assume-unchanged', assumeUnchanged], ['--skip-worktree', skipWorktree]])
+    if (names.length) git(directory, ['update-index', flag, '-z', '--stdin'], { input: names.join('\0') + '\0' });
+  return { assumeUnchanged, skipWorktree, fileMode: input.capturePlatform !== 'win32', autocrlf: input.capturePlatform === 'win32',
+    disclosure: 'Placeholder bytes remain replaced; assume-unchanged masks only placeholder-equivalent files. Excluded files stay absent with skip-worktree. Real edits/deletions are not masked.' };
+}
 function prepareSanitizedReplayGit(recipe, input, { knownValues = [] } = {}) {
   let temporary;
   try {
-    if (!recipe || Object.keys(recipe).sort().join(',') !== 'head,sourceRoot' || !hex(recipe.head)
-      || !path.isAbsolute(recipe.sourceRoot || '') || !Array.isArray(input?.files) || input.files.length > 1024
+    if (!validRecipe(recipe) || !Array.isArray(input?.files) || input.files.length > 1024
       || !Array.isArray(input.deletions) || input.deletions.length > 2048 || !Array.isArray(knownValues)
       || knownValues.some(v => typeof v !== 'string')) throw Error();
     const allowed = new Set([...input.files.map(f => f.path), ...input.deletions]);
@@ -79,14 +122,15 @@ function prepareSanitizedReplayGit(recipe, input, { knownValues = [] } = {}) {
     const tree = git(temporary, ['write-tree']).toString().trim(); if (!hex(tree)) throw Error();
     const restoredHead = git(temporary, ['commit-tree', tree], { input: 'Sanitized replay baseline\n\nSource HEAD: ' + recipe.head + '\n' }).toString().trim();
     if (!hex(restoredHead) || restoredHead === recipe.head) throw Error();
-    git(temporary, ['update-ref', 'refs/heads/replay-baseline', restoredHead]);
+    const refs = applyRefState(temporary, recipe, restoredHead, git);
     git(temporary, ['repack', '-a', '-d', '-q', '--window=0', '--depth=0']);
     const packs = fs.readdirSync(path.join(temporary, '.git/objects/pack')).filter(n => /^pack-[a-f0-9]+\.(pack|idx)$/.test(n)).sort();
     if (packs.length !== 2 || packs[0].split('.')[0] !== packs[1].split('.')[0]) throw Error();
-    const names = ['.git/HEAD', '.git/config', '.git/index', '.git/refs/heads/replay-baseline', ...packs.map(n => '.git/objects/pack/' + n)];
+    const names = ['.git/HEAD', '.git/config', '.git/index', ...refs, ...packs.map(n => '.git/objects/pack/' + n)];
     const gitFiles = names.sort().map(name => { const bytes = fs.readFileSync(path.join(temporary, name)); return { path: name, base64: bytes.toString('base64'), sha256: hash(bytes) }; });
     const report = { kind: 'sanitized-root-git-v1', sourceHead: recipe.head, sourceHeadEvidence: 'explicit-operator-record', restoredHead, historyIncluded: false,
-      headIdenticalToSource: false, baselineFileCount: safe.length, omittedSourceFiles, redactedFiles };
+      headIdenticalToSource: false, baselineFileCount: safe.length, omittedSourceFiles, redactedFiles,
+      ...(recipe.refState === undefined ? {} : { refState: structuredClone(recipe.refState) }) };
     return { gitFiles, report, checkKnownValues(values) {
       if (safe.some(f => values.some(value => typeof value === 'string' && value && f.bytes.includes(value)))) throw fail('evaluation_input_contains_key');
     } };
@@ -96,8 +140,7 @@ function prepareSanitizedReplayGit(recipe, input, { knownValues = [] } = {}) {
 function prepareReplayGit(recipe, input, { knownValues = [] } = {}) {
   let temporary;
   try {
-    if (!recipe || Object.keys(recipe).sort().join(',') !== 'head,sourceRoot' || !hex(recipe.head)
-      || !path.isAbsolute(recipe.sourceRoot || '') || !Array.isArray(input?.files) || input.files.length > 1024
+    if (!validRecipe(recipe) || !Array.isArray(input?.files) || input.files.length > 1024
       || !Array.isArray(input.deletions) || input.deletions.length > 2048 || !Array.isArray(knownValues)
       || knownValues.some(v => typeof v !== 'string') || [...input.files.map(f => f.path), ...input.deletions].some(p => !safePath(p))) throw Error();
     const source = path.resolve(recipe.sourceRoot), stat = fs.lstatSync(source);
@@ -123,19 +166,21 @@ function prepareReplayGit(recipe, input, { knownValues = [] } = {}) {
     const sha256 = recipe.head.length === 64;
     git(temporary, ['init', '-q', '--template=', '--initial-branch=replay-baseline', '--object-format=' + (sha256 ? 'sha256' : 'sha1')]);
     fs.writeFileSync(path.join(temporary, '.git/config'), '[core]\n\trepositoryformatversion = ' + (sha256 ? '1' : '0')
-      + '\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = false\n\tautocrlf = false\n' + (sha256 ? '[extensions]\n\tobjectformat = sha256\n' : ''), { mode: 0o600 });
+      + '\n\tfilemode = ' + (input.capturePlatform === 'win32' ? 'false' : 'true') + '\n\tbare = false\n\tlogallrefupdates = false\n\tautocrlf = ' + (input.capturePlatform === 'win32' ? 'true' : 'false') + '\n' + (sha256 ? '[extensions]\n\tobjectformat = sha256\n' : ''), { mode: 0o600 });
     git(temporary, ['index-pack', '--stdin', '--strict'], { input: pack });
-    git(temporary, ['update-ref', 'refs/heads/replay-baseline', recipe.head]);
+    const refs = applyRefState(temporary, recipe, recipe.head, git);
     // Build the original index without checkout/filtering or writing blob
     // plaintext to host disk. Captured working files remain the only worktree.
     git(temporary, ['read-tree', recipe.head]);
+    const worktreeAdjustments = prepareWorktreeIndex(temporary, input, knownValues, git);
     const packs = fs.readdirSync(path.join(temporary, '.git/objects/pack')).filter(n => /^pack-[a-f0-9]+\.(pack|idx)$/.test(n)).sort();
     if (packs.length !== 2 || packs[0].split('.')[0] !== packs[1].split('.')[0]) throw Error();
-    const names = ['.git/HEAD', '.git/config', '.git/index', '.git/refs/heads/replay-baseline', ...packs.map(n => '.git/objects/pack/' + n)];
+    const names = ['.git/HEAD', '.git/config', '.git/index', ...refs, ...packs.map(n => '.git/objects/pack/' + n)];
     const gitFiles = names.sort().map(name => { const bytes = fs.readFileSync(path.join(temporary, name)); return { path: name, base64: bytes.toString('base64'), sha256: hash(bytes) }; });
     const report = { kind: 'preserved-head-git-v1', sourceHead: recipe.head, sourceHeadEvidence: 'explicit-operator-record', restoredHead: recipe.head,
       historyIncluded: true, headIdenticalToSource: true, historyCommitCount: metadata.commitCount, historyScan: metadata.scan,
-      baselineFileCount: git(temporary, ['ls-files', '-z']).toString().split('\0').filter(Boolean).length, omittedSourceFiles: 0, redactedFiles: [] };
+      baselineFileCount: git(temporary, ['ls-files', '-z']).toString().split('\0').filter(Boolean).length, omittedSourceFiles: 0, redactedFiles: [], worktreeAdjustments,
+      ...(recipe.refState === undefined ? {} : { refState: structuredClone(recipe.refState) }) };
     const checked = new Set(knownValues);
     return { gitFiles, report, checkKnownValues(values) {
       const additional = [...new Set(values)].filter(v => typeof v === 'string' && v && !checked.has(v));

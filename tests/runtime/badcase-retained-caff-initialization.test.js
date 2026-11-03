@@ -66,6 +66,7 @@ test('forged complete flags cannot bypass original session structure/dependency 
 test('staging binds capsule/declarations, production host, restoration closure and new entry without executing them', t => {
   const root = dependencies(t), v = fixture(t, 'resume', 'win32'), before = JSON.stringify(v);
   const files = api().prepareRetainedCaffFiles(repo, root, image, v), m = manifestFor(files);
+  assert.equal(files.filter(f => f.path === 'build/server/domain/runtime/badcase-capture/session-validator.js').length, 1, 'shared runtime already stages session validator');
   assert.ok(m.runtimeBytes > 0); assert.equal(JSON.stringify(v), before);
   for (const [name, value] of [['capsule.json', v.capsule], ['expected.json', JSON.stringify(v.expected)],
     ['worktree.json', JSON.stringify(v.worktree)], ['bindings.json', JSON.stringify(v.bindings)]]) {
@@ -79,6 +80,12 @@ test('staging binds capsule/declarations, production host, restoration closure a
   const entry = files.find(f => f.path === 'probe.cjs').bytes.toString();
   assert.match(entry, /materializeWorktreeReplayInputs/); assert.match(entry, /createSdkRuntime/);
   assert.doesNotMatch(entry, /session\.prompt\(|SettingsManager\.inMemory|resourceLoader\s*:/);
+});
+test('local rg derivative stages with the same strict base image schema and rejects unknown recipes', t => {
+  const root = dependencies(t), v = fixture(t);
+  const files = api().prepareRetainedCaffFiles(repo, root, { ...image, localBuild: 'wikiskill-rg13-v1' }, v);
+  assert.equal(JSON.parse(files.find(f => f.path === 'environment.json').bytes).localBuild, 'wikiskill-rg13-v1');
+  assert.throws(() => api().prepareRetainedCaffFiles(repo, root, { ...image, localBuild: 'unknown' }, v));
 });
 test('transport checks exact manifest and bounded observed hashes, never raw material output or silent mode fallback', async t => {
   const root = dependencies(t), a = api();

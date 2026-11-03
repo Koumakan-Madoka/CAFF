@@ -106,7 +106,8 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
       const f = cp.files[name], b = blobs.get(f.hash);
       ensure(/^[A-Za-z0-9_.@/-]+$/.test(name) && name.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git')
         && f.type === 'file' && !f.secretExcluded && b && b.length === f.size, 'replay_file_record_invalid');
-      return { path: name, base64: b.toString('base64'), sha256: f.hash };
+      return { path: name, base64: b.toString('base64'), sha256: f.hash, mode: f.mode,
+        ...(f.secretRedacted === true ? { secretRedacted: true } : {}) };
     });
     ensure(Array.isArray(cp.deletions) && cp.deletions.every(d => !names.some(n => n === d || n.startsWith(d + '/') || d.startsWith(n + '/'))), 'replay_deletions_invalid');
     const capturedCallback = checked('replay_callback_unavailable_or_invalid', () => readCapturedCallbackInput(cp, digest => blobs.get(digest)));
@@ -120,7 +121,7 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
       ensure(sessionText.split('\n').length - 1 === r.sessionLineCount, 'replay_session_invalid');
     }
     const resourceConfig = projectResources ? { projectResources: checked('replay_project_resources_invalid', () => prepareProjectResources(snapshot.portableRuntime, files, config)) } : {};
-    const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText, systemPrompt: null, settings: null, callback, recordedModelConfig, ...resourceConfig,
+    const input = { kind: 'prepared-caff-turn-v1', capturePlatform: cp.environment?.platform, prompt, files, deletions: [...cp.deletions], sessionText, systemPrompt: null, settings: null, callback, recordedModelConfig, ...resourceConfig,
       bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements } };
     const mapped = checked('replay_controlled_bindings_invalid', () => validateDirectBindings(input.prompt, input.bindings, sessionText));
     if (resume) {

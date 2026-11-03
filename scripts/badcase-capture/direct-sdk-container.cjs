@@ -55,7 +55,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   assert.ok(input.workspace === undefined || input.workspace === 'replay-workspace');
   const gitFiles = input.gitFiles || [];
   assert.ok(Array.isArray(gitFiles) && (gitFiles.length === 0 && input.repository === undefined
-    || gitFiles.length === 6 && Number.isSafeInteger(input.repository?.historyCommitCount) && input.repository.historyCommitCount >= 1
+    || gitFiles.length >= 5 && gitFiles.length <= 45 && Number.isSafeInteger(input.repository?.historyCommitCount) && input.repository.historyCommitCount >= 1
       && (input.repository.kind === 'sanitized-root-git-v1' && input.repository.historyIncluded === false && input.repository.headIdenticalToSource === false
         || input.repository.kind === 'preserved-head-git-v1' && input.repository.historyIncluded === true && input.repository.headIdenticalToSource === true)));
   const directoryWorkspace = input.workspace === 'replay-workspace' && input.files.length + gitFiles.length > 0;
@@ -66,7 +66,8 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   for (const f of [...input.files, ...gitFiles]) {
     const gitFile = gitFiles.includes(f);
     assert.ok(typeof f.path === 'string' && !names.has(f.path) && (gitFile
-      ? /^\.git\/(?:HEAD|config|index|refs\/heads\/replay-baseline|objects\/pack\/pack-[a-f0-9]{40,64}\.(?:pack|idx))$/.test(f.path)
+      ? /^\.git\/(?:HEAD|config|index|refs\/(?:heads|remotes)\/[A-Za-z0-9_.@/-]+|objects\/pack\/pack-[a-f0-9]{40,64}\.(?:pack|idx))$/.test(f.path)
+        && f.path.split('/').every(p => p && p !== '.' && p !== '..')
       : /^[A-Za-z0-9_.@/-]+$/.test(f.path) && f.path.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git')));
     names.add(f.path);
     let bytes;
@@ -79,6 +80,10 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       const target = cwd + '/' + f.path; fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 }); write(target, bytes);
     }
     assert.equal(hash(bytes), f.sha256);
+    if (!gitFile && f.mode !== undefined) {
+      assert.ok(Number.isSafeInteger(f.mode) && (f.mode & 0o170000) === 0o100000);
+      fs.chmodSync((directoryWorkspace ? '/work/replay-workspace' : cwd) + '/' + f.path, f.mode & 0o777);
+    }
   }
   if (directoryWorkspace) fs.renameSync('/work/replay-workspace', cwd);
   let repository;
@@ -89,7 +94,14 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     const restoredHead = git(['rev-parse', '--verify', 'HEAD']), count = git(['rev-list', '--all', '--count']);
     assert.equal(restoredHead, input.repository.restoredHead); assert.equal(count, String(input.repository.historyCommitCount));
     assert.equal(restoredHead === input.repository.sourceHead, input.repository.headIdenticalToSource);
-    repository = { ...input.repository, gitAvailable: true, historyCommitCount: Number(count) };
+    if (input.repository.refState) {
+      const state = input.repository.refState;
+      assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD']), state.head === null ? 'HEAD' : state.head.replace(/^refs\/heads\//, ''));
+      for (const ref of state.refs) assert.equal(git(['rev-parse', '--verify', ref]), restoredHead);
+      for (const [ref, target] of Object.entries(state.symbolicRefs)) assert.equal(git(['symbolic-ref', ref]), target);
+    }
+    repository = { ...input.repository, gitAvailable: true, historyCommitCount: Number(count),
+      initialStatus: git(['status', '--porcelain']), initialBranch: git(['rev-parse', '--abbrev-ref', 'HEAD']) };
   }
   const dependencies = input.dependencies === undefined ? undefined
     : require('/work/restore-replay-dependencies.cjs').restoreReplayDependencies(cwd, input.dependencies);
