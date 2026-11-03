@@ -72,6 +72,16 @@ test('production plan pins complete configuration/rules/restore sources and rech
  h.config.cases[0].repository.head='c'.repeat(40);assert.notEqual(h.plan().summary.planHash,p.summary.planHash);
  h.store.assignCase({caseId:h.marks[1].id,entryId:null,expectedRevision:h.store.read().revision});assert.throws(h.plan,/evaluation_gate_config_invalid/);
 });
+test('production plans explicitly select a registered sample model version; original registration stays unchanged and forged selection is rejected',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const parent=h.store.read().replayCases.find(r=>r.sourceCaseId===controlId),before=structuredClone(parent);
+ const version=h.store.addSampleReplayVersion({sourceCaseId:controlId,parentReplayId:parent.id,request:{...parent.request,captureRoot:path.join(h.config.repoRoot,'new-control-closure'),association:{...parent.request.association,checkpointId:'cp-control-gpt'}},checkpointHash:'c'.repeat(64),sourceModelConfig:{provider:'deepseek',model:'deepseek-v4-flash',thinking:'off',fast:false},unchangedInputHash:sha(JSON.stringify({kind:'synthetic-control-input'}))});
+ h.config.cases.find(c=>c.sourceCaseId===controlId).replayVersionId=version.id;const prepare=h.options.prepareProductionComparison;
+ h.options.prepareProductionComparison=c=>{const result=prepare(c);if(c.request.association.checkpointId==='cp-control-gpt'){result.summary.checkpointHash='c'.repeat(64);result.summary.recordedModelConfig=version.targetModelConfig;result.inputs={original:{kind:'synthetic-control-input',recordedModelConfig:version.targetModelConfig}};}return result;};
+ const p=h.plan();assert.equal(p.prepared.find(c=>c.sourceCaseId===controlId).replayId,version.id);assert.equal(h.calls.find(c=>c.request.association.checkpointId==='cp-control-gpt').request.captureRoot,version.request.captureRoot);assert.deepEqual(h.store.read().replayCases.find(r=>r.sourceCaseId===controlId),before);
+ const result=await fakeExecution(h).run(),saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(result);assert.equal(saved.cases.find(c=>c.sourceCaseId===controlId).replayId,version.id);assert.match(require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(result),/样例.*新版本.*非历史复现/);
+ const changed=structuredClone(result);changed.cases.find(c=>c.sourceCaseId===controlId).comparison.checkpointHash='d'.repeat(64);assert.throws(()=>require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(changed),/wiki_comparison_invalid/);
+ h.config.cases[0].replayVersionId=version.id;assert.throws(h.plan,/wiki_sample_version_invalid/);
+});
 test('trusted staged CLI publishes partial progress before a case finishes and saves the result without another model call',async t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h),file=path.join(h.config.repoRoot,'config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));
  const {main}=require('../../scripts/badcase-capture/compare-wiki-batch.cjs'),{createWikiBatchExecutionStore}=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store');

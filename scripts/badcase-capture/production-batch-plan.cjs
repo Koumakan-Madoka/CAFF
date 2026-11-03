@@ -7,6 +7,7 @@ const {createWikiStore}=require(base+'wiki-store');
 const {resolveGlobalWikiCandidate}=require(base+'wiki-global-candidate');
 const {collectWikiCandidateFiles}=require(base+'wiki-candidate-files');
 const {planWikiEvaluationSuite}=require(base+'wiki-evaluation-suite');
+const {resolveSampleReplayVersion}=require(base+'wiki-sample-replay-version');
 const {prepareComparison,CODEX_CONFIG}=require('./direct-comparison.cjs');
 const {CODEX_PROFILE}=require('./direct-model.cjs');
 const fail=code=>Object.assign(Error(code),{code});
@@ -20,7 +21,7 @@ function prepareProductionBatch(config,options={}){
  if(!saved || saved.status!=='confirmed')throw fail('wiki_candidate_confirmation_required');
  if(saved.target?.kind!=='global-system-prompt')throw fail('evaluation_target_unsupported');
  if(saved.entryIds.length!==1 || saved.entryIds[0]!==config.evaluation.targetEntryId)throw fail('evaluation_gate_config_invalid');
- for(const item of config.cases)if(!item || Object.keys(item).some(k=>!['sourceCaseId','category','repository','dependencies'].includes(k)))throw fail('evaluation_batch_cases_invalid');
+ for(const item of config.cases)if(!item || Object.keys(item).some(k=>!['sourceCaseId','category','repository','dependencies','replayVersionId'].includes(k)))throw fail('evaluation_batch_cases_invalid');
  const suite=planWikiEvaluationSuite(state,config.cases,saved.entryIds[0]);
  // Require a genuine GPT target in each frozen stage. Other model families are
  // visible report-only rows, not GPT failures or favorable denominator slots.
@@ -32,7 +33,9 @@ function prepareProductionBatch(config,options={}){
    && state.cases.find(s=>s.id===id)?.kind==='marked-badcase')))throw fail('evaluation_batch_holdout_exposed');
  const seenSeals=new Set();
  const prepared=suite.cases.map(record=>{
-  const source=state.cases.find(c=>c.id===record.sourceCaseId),replay=state.replayCases.find(c=>c.sourceCaseId===source.id);
+  const source=state.cases.find(c=>c.id===record.sourceCaseId),item=config.cases.find(c=>c.sourceCaseId===source.id);
+  const replay=item.replayVersionId===undefined?state.replayCases.find(c=>c.sourceCaseId===source.id):resolveSampleReplayVersion(state,source.id,item.replayVersionId);
+  if(item.replayVersionId!==undefined&&(record.category!=='control'||item.repository!==undefined||item.dependencies!==undefined))throw fail('evaluation_batch_cases_invalid');
   if(record.reportOnly)return {...record,supported:false,reason:'non_gpt_source_report_only'};
   if(!replay)return {...record,supported:false,reason:'no_sealed_replay'};
   if(replay.category!==record.category || replay.split!==source.split)throw fail('evaluation_batch_cases_invalid');
@@ -40,7 +43,6 @@ function prepareProductionBatch(config,options={}){
   if(seenSeals.has(sealKey))throw fail('evaluation_batch_cases_invalid');seenSeals.add(sealKey);
   if(source.kind==='marked-badcase' && (source.sealedCheckpointId!==a.checkpointId
     || ['projectId','conversationId','messageId','agentId'].some(k=>source.source[k]!==a[k])))throw fail('evaluation_batch_input_changed');
-  const item=config.cases.find(c=>c.sourceCaseId===source.id);
   if(source.kind==='marked-badcase' && (!item.repository || !item.dependencies))throw fail('evaluation_repository_restore_required');
   const comparisonConfig={repoRoot:config.repoRoot,dependencyRoot:config.dependencyRoot,image:config.image,request:replay.request,rules:replay.rules,
     repeats:10,executionPolicy:'alternating-valid-v1',globalWikiCandidate:{...scope,candidateId:candidate.id},
@@ -50,6 +52,10 @@ function prepareProductionBatch(config,options={}){
     ...(item.repository===undefined?{}:{repository:item.repository}),...(item.dependencies===undefined?{}:{dependencies:item.dependencies})};
   const plan=(options.prepareProductionComparison || prepareComparison)(comparisonConfig,options);
   if(plan.supported && plan.summary.checkpointHash!==replay.checkpointHash)throw fail('evaluation_batch_input_changed');
+  if(plan.supported && item.replayVersionId!==undefined){
+   const {recordedModelConfig,fileEvidencePaths,...unchanged}=plan.inputs?.original||{};
+   if(JSON.stringify(recordedModelConfig)!==JSON.stringify(replay.targetModelConfig)||hash(unchanged)!==replay.unchangedInputHash)throw fail('evaluation_batch_input_changed');
+  }
   return {...record,replayId:replay.id,fixture:replay.fixture,...(plan.supported?{supported:true,comparison:plan.summary,comparisonConfig}:{supported:false,reason:plan.reason})};
  });
  const evaluation={kind:'wikiskill-gate-v1',splitPolicy:'d15-frozen-v1',targetEntryId:candidate.entryIds[0],

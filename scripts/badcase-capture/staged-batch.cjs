@@ -74,7 +74,7 @@ function formatStagedBatch(result) {
     `无误伤：原版 ${d.noHarm.original.passed}/${d.noHarm.original.total}，候选 ${d.noHarm.candidate.passed}/${d.noHarm.candidate.total}；少通过 ${d.noHarm.loss} 次，容许 ${d.noHarm.allowedLoss} 次；${d.noHarm.passed?'满足':'不满足'}`];
   for(const stage of ['gate','test']) {
     lines.push(labels[stage]+'（单独统计）','用例\t题型\t状态\t原版通过/有效(错误/未执行)\t候选通过/有效(错误/未执行)');
-    for(const c of result.cases.filter(c=>c.stage===stage)) lines.push([wikiGoalCaseNumber(c.sourceCaseId) ? '#'+wikiGoalCaseNumber(c.sourceCaseId) : c.sourceCaseId,categories[c.category],c.reportOnly?'非GPT来源，仅报告、不计入结论':c.status+(c.reason?' / '+c.reason:''),...['original','candidate'].map(v=>{const t=c.totals[v];return c.reportOnly?'不计入':`${t.passed}/${t.scored}(${t.errors}/${t.notRun})`;})].join('\t'));
+    for(const c of result.cases.filter(c=>c.stage===stage)) lines.push([wikiGoalCaseNumber(c.sourceCaseId) ? '#'+wikiGoalCaseNumber(c.sourceCaseId) : c.sourceCaseId,categories[c.category],c.reportOnly?'非GPT来源，仅报告、不计入结论':c.status+(c.reason?' / '+c.reason:'')+(c.replayId?.startsWith('replay-version-')?' / 样例生产配置新版本，非历史复现':''),...['original','candidate'].map(v=>{const t=c.totals[v];return c.reportOnly?'不计入':`${t.passed}/${t.scored}(${t.errors}/${t.notRun})`;})].join('\t'));
     for(const v of ['original','candidate']) {const t=result.byStage[stage][v];lines.push(`${labels[stage]} ${v}: ${t.passed}/${t.planned} 通过，${t.failed} 失败，${t.errors} 环境错误，${t.notRun} 未执行；有效 ${t.scored}，通过率 ${t.passRate===null?'N/A':(100*t.passRate).toFixed(1)+'%'}`);}
   }
   lines.push(native?'结论绑定上述生产模型与配置，变更后须重跑；字面规则不是语义判断，小样本不保证提分；非GPT来源、探针和其他模式不计入GPT修好结论。':'代理模型 DeepSeek；小样本；题组经原基线筛选，存在挑题偏差；只复现了汇报难懂一类，探针与其他模式只报告。',

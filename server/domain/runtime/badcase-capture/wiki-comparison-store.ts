@@ -8,6 +8,7 @@ import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
 import { projectStagedResult } from './wiki-staged-result';
 import { planWikiEvaluationSuite } from './wiki-evaluation-suite';
+import { resolveSampleReplayVersion } from './wiki-sample-replay-version';
 
 const variants = ['original', 'candidate'];
 const categories = ['reproduction', 'probe', 'control'];
@@ -129,8 +130,13 @@ export function createWikiComparisonStore(options: any) {
           }
         }
         for (const c of payload.cases) {
-          const source = state.cases.find((s: any) => s.id === c.sourceCaseId), replay = state.replayCases.find((s: any) => s.sourceCaseId === c.sourceCaseId);
+          const source = state.cases.find((s: any) => s.id === c.sourceCaseId);
+          const sampleVersion = production && c.replayId?.startsWith('replay-version-');
+          let replay;
+          try { replay = sampleVersion ? resolveSampleReplayVersion(state, c.sourceCaseId, c.replayId) : state.replayCases.find((s: any) => s.sourceCaseId === c.sourceCaseId); }
+          catch { throw fail(); }
           check(source && source.split === c.split);
+          if (sampleVersion) check(c.category === 'control' && c.comparison?.checkpointHash === replay.checkpointHash && c.comparison?.rulesHash === hash(replay.rules));
           if (production && c.reportOnly) check(c.status === 'not-run' && c.reason === 'non_gpt_source_report_only' && !c.runs.length);
           else if (c.replayId) check(replay?.id === c.replayId && replay.category === c.category && replay.split === c.split);
           else check(!replay && (c.status === 'unsupported' || production && c.status === 'not-run'));

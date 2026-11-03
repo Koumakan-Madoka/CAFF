@@ -11,6 +11,7 @@ import { buildWikiCandidate, resolveWikiCandidate } from './wiki-candidate';
 import { assignPatternQuotaSplit, planReplaySplit } from './wiki-split';
 import { validateSealRequest } from './sealed-case';
 import { buildGlobalWikiCandidate, resolveGlobalWikiCandidate } from './wiki-global-candidate';
+import { buildSampleReplayVersion } from './wiki-sample-replay-version';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -148,7 +149,7 @@ export function createWikiStore(options: any) {
   const directory = global ? path.join(captureRoot, 'snapshots') : path.join(captureRoot, 'wiki', projectId!, 'snapshots');
   const identity = global ? { scope: 'global' } : { projectId };
   const fresh = () => ({ schemaVersion: 1, ...identity, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replayCases: [] as any[], replaySplit: null,
-    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[], classifications: [] as any[] });
+    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[], classifications: [] as any[], ...(global ? { replayVersions: [] as any[] } : {}) });
   function read(): any {
     let names: string[];
     try { names = fs.readdirSync(directory); }
@@ -176,6 +177,8 @@ export function createWikiStore(options: any) {
       // migration checksum predates replay registration and must stay stable.
       if (record.replayCases === undefined && global) record.replayCases = [];
       if (record.replayCases !== undefined && !Array.isArray(record.replayCases)) throw Error();
+      if (record.replayVersions === undefined && global) record.replayVersions = [];
+      if (record.replayVersions !== undefined && !Array.isArray(record.replayVersions)) throw Error();
       if (record.replaySplit === undefined) record.replaySplit = null;
       if (record.replaySplit !== null && (typeof record.replaySplit !== 'object' || Array.isArray(record.replaySplit))) throw Error();
       for (const field of ['suggestions', 'caseStates', 'inductionRuns', 'events', 'classifications']) {
@@ -342,6 +345,17 @@ export function createWikiStore(options: any) {
           return saved;
         });
         return { changed, value: savedCases };
+      }).value;
+    },
+    // Trusted offline materializer only, never a web mutation or model override.
+    addSampleReplayVersion(input: any) {
+      if (!global) throw fail('wiki_global_required');
+      return change(state => {
+        const content = buildSampleReplayVersion(state, input), existing = state.replayVersions.find((v: any) => v.id === content.id);
+        if (existing) return { changed: false, value: existing };
+        const saved = { ...content, createdAt: new Date().toISOString() }; state.replayVersions.push(saved);
+        appendEvent(state, { type: 'sample-replay-version', caseIds: [saved.sourceCaseId], replayVersionId: saved.id });
+        return { changed: true, value: saved };
       }).value;
     },
     recordPreclassification(input: any, expectedRevision?: number) {
