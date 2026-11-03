@@ -41,7 +41,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   if (codex) process.env[direct.KEY_ENV] = key;
   const input = JSON.parse(fs.readFileSync('/work/replay-input.json'));
   assert.equal(input.kind, 'prepared-caff-turn-v1'); assert.equal(typeof input.prompt, 'string');
-  assert.ok(input.prompt.trim() && Buffer.byteLength(input.prompt) <= 131072);
+  assert.ok(input.prompt.trim() && Buffer.byteLength(input.prompt) <= 256 * 1024);
   assert.ok(input.sessionText === null || typeof input.sessionText === 'string' && input.sessionText.endsWith('\n'));
   assert.ok(Array.isArray(input.files) && input.files.length <= 1024);
   assert.ok(input.settings === null || input.settings && typeof input.settings === 'object' && !Array.isArray(input.settings));
@@ -115,7 +115,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     if (input.callback !== null) {
       assert.ok(input.callback?.trace && input.callback?.expectedTraceHash && input.callback?.association);
       callback = await require('/work/build/server/domain/runtime/badcase-capture/evaluation-callback').startEvaluationCallback({
-        ...input.callback, directory: '/work/callback', lifetimeMs: 300000 });
+        ...input.callback, directory: '/work/callback', lifetimeMs: 45 * 60 * 1000 });
       Object.assign(process.env, { CAFF_CHAT_API_URL: callback.apiUrl, CAFF_CHAT_INVOCATION_ID: callback.credentials.invocationId,
         CAFF_CHAT_CALLBACK_TOKEN: callback.credentials.callbackToken });
     }

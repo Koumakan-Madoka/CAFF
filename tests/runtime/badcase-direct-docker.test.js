@@ -83,6 +83,14 @@ test('dependency installer streams its archive before tmpfs teardown, never read
     assert.equal(bad.remaining(), false); assert.equal(fs.existsSync(file), false);
   } finally { if (prior === undefined) delete process.env.CAFF_BADCASE_MODEL_KEY_FILE; else process.env.CAFF_BADCASE_MODEL_KEY_FILE = prior; }
 });
+test('45-minute turn ceiling reaches the container watchdog and attach grace without waiting or changing install ceiling', async () => {
+  const f = fake(), result = await runDirectDockerTask(image, files, { key, timeoutMs: 2700000, runDocker: f.run });
+  assert.equal(result.timeoutMs, 2700000); assert.equal(result.cleaned, true);
+  assert.ok(f.calls.find(c => c.args[0] === 'create').args.at(-1).includes('timeout -k 2 2700 node probe.cjs'));
+  assert.equal(f.calls.find(c => c.args[0] === 'start').options.timeoutMs, 2705000);
+  const bad = fake(); await assert.rejects(runDirectDockerTask(image, files, { key, timeoutMs: 2700001, runDocker: bad.run }));
+  assert.equal(bad.calls.length, 0);
+});
 test('workspace files are staged as raw directory entries, not base64 inside replay JSON, with hashes bound to the manifest', () => {
   const bytes = Buffer.alloc(25 * 1024 * 1024, 0x61), input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect.', files: [
     { path: 'src/large.txt', base64: bytes.toString('base64'), sha256: sha(bytes) }

@@ -74,7 +74,7 @@ function prepareComparison(config, options = {}) {
   const originalOnly = Array.isArray(variants) && variants.length === 1 && variants[0] === 'original';
   if (!config || !Array.isArray(variants) || !(originalOnly || variants.length === 2 && variants[0] === 'original' && variants[1] === 'candidate') || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
     || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile', 'knownKeySources', 'variants'].includes(k))
-    || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)
+    || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 45 * 60 * 1000)
     || config.executionPolicy !== undefined && (config.executionPolicy !== 'alternating-valid-v1' || !config.globalWikiCandidate || config.repeats !== 10)
     || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== (originalOnly ? 0 : 1)
     || config.candidateRole !== undefined && (typeof config.candidateRole !== 'string' || !config.candidateRole.trim())
@@ -157,7 +157,7 @@ function prepareComparison(config, options = {}) {
       ...(repository ? { repository: repository.report, gitFileHashes: repository.gitFiles.map(f => ({ path: f.path, sha256: f.sha256 })) } : {}),
       ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}) })) : original.provenance.commonInputHash,
     model: profile, ...(profile === CODEX_PROFILE ? { modelConfig: { ...CODEX_CONFIG } } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
-    imageId: config.image.imageId, rules, rulesHash: hash(JSON.stringify(rules)),
+    imageId: config.image.imageId, timeoutMs: config.timeoutMs ?? 120000, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
     strictEvalEligible: false, ...(repository ? { repository: repository.report } : {}),
     ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}), ...(wikiCandidate ? { wikiCandidate } : {}),
@@ -334,6 +334,7 @@ function formatComparison(result) {
   if (!result.supported) return '不可回放：' + (/^replay_[a-z_]+$/.test(result.reason || '') ? result.reason : 'replay_materials_invalid') + '。\n';
   const lines = [...(result.kind === 'sealed-original-replay-v1' ? ['原版单边回放：没有候选，不产生采纳结论。'] : []), '模型：' + result.model];
   if (result.modelConfig) lines.push('配置：' + result.modelConfig.api + ' / thinking ' + result.modelConfig.thinking + ' / ' + result.modelConfig.transport + ' / Fast关闭；凭据仅在宿主。');
+  if (Number.isSafeInteger(result.timeoutMs)) lines.push('容器时限：' + result.timeoutMs / 1000 + '秒（配置上限，不是已用时）。');
   if (result.repository) {
     lines.push(result.repository.historyIncluded ? 'Git：保留记录HEAD的完整可达历史，HEAD与源记录相同；共' + result.repository.historyCommitCount + '个提交。'
       : 'Git：历史命中本机已知key，脱敏后重建，HEAD不同于源仓库；只有1个基线提交，无历史提交。',

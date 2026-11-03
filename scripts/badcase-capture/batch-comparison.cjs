@@ -19,7 +19,7 @@ function prepareBatch(config, options = {}) {
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')
     || !Number.isSafeInteger(config.repeats ?? 3) || (config.repeats ?? 3) < 1 || (config.repeats ?? 3) > 20
-    || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)) throw fail('evaluation_batch_config_invalid');
+    || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 45 * 60 * 1000)) throw fail('evaluation_batch_config_invalid');
   if (config.globalRoot !== undefined) return prepareGlobalBatch(config, options);
   const state = createWikiStore(config).read(), split = state.replaySplit;
   if (!split) throw fail('evaluation_batch_split_required');

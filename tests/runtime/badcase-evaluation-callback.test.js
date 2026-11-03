@@ -64,6 +64,21 @@ test('real HTTP and existing CLI use the existing bridge with isolated durable S
   }
 });
 
+test('callback supports the 45-minute turn ceiling, survives simulated five minutes, and still expires at its deadline', async t => {
+  const f = fixture(t), s = await start(t, { ...f, lifetimeMs: 2700000 });
+  const { performance } = require('node:perf_hooks'), base = performance.now();
+  t.mock.method(performance, 'now', () => base + 301000);
+  assert.equal((await request(s, 'context')).status, 200);
+  assert.equal((await request(s, 'post-message', { visibility: 'public', content: 'After five simulated minutes.', noFinalize: true })).status, 200);
+  assert.equal(s.readPublicReply(), 'After five simulated minutes.');
+  t.mock.method(performance, 'now', () => base + 2700001);
+  assert.equal((await request(s, 'context')).status, 410);
+  assert.throws(() => s.readPublicReply(), { code: 'evaluation_callback_expired' });
+  t.mock.restoreAll();
+  const directory = path.join(f.root, 'too-long');
+  await assert.rejects(api().startEvaluationCallback({ directory, seed: f.seed, lifetimeMs: 2700001 }), { code: 'evaluation_callback_invalid' });
+  assert.equal(fs.existsSync(directory), false);
+});
 test('same seed in two instances cannot cross-authenticate, read outputs, reuse a directory or choose a database', async t => {
   const f = fixture(t), a = await start(t, f), b = await start(t, { ...f, directory: path.join(f.root, 'second') });
   assert.notEqual(a.apiUrl, b.apiUrl); assert.notDeepEqual(a.credentials, b.credentials);
@@ -176,7 +191,7 @@ test('expiry, finalization and explicit stop revoke the invocation; stop closes 
 
 test('invalid input/secret seed fails before any directory creation; seed is cloned before asynchronous startup', async t => {
   const f = fixture(t);
-  for (const change of [{ seed: null }, { directory: 'relative' }, { lifetimeMs: 0 }, { lifetimeMs: 300001 }, { seed: { ...f.seed, extra: true } },
+  for (const change of [{ seed: null }, { directory: 'relative' }, { lifetimeMs: 0 }, { lifetimeMs: 2700001 }, { seed: { ...f.seed, extra: true } },
     { seed: { ...f.seed, agent: { ...f.seed.agent, id: 'role-family-gpt' } } },
     { seed: { ...f.seed, assistantMessageId: f.seed.userMessage.id } }, { seed: { ...f.seed, userMessage: { ...f.seed.userMessage, content: 'sk-' + 'a'.repeat(80) } } }]) {
     await assert.rejects(api().startEvaluationCallback({ directory: f.directory, seed: f.seed, lifetimeMs: 10000, ...change }), { code: 'evaluation_callback_invalid' }); assert.equal(fs.existsSync(f.directory), false);

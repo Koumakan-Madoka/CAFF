@@ -7,10 +7,10 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model } = {}) {
+async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect the files.', files: files.map(p => ({ path: p,
+  const input = { kind: 'prepared-caff-turn-v1', prompt, files: files.map(p => ({ path: p,
     base64: Buffer.from(fileBytes[p] ?? p).toString('base64'), sha256: crypto.createHash('sha256').update(fileBytes[p] ?? p).digest('hex') })),
     sessionText: null, settings: null, systemPrompt: null,
     ...(repositorySnapshot ? { repository: repositorySnapshot.report, gitFiles: repositorySnapshot.gitFiles } : {}),
@@ -27,11 +27,12 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
   workerFs.existsSync = p => p === '/.dockerenv' || fs.existsSync(mapped(p));
   workerFs.renameSync = (a, b) => fs.renameSync(mapped(a), mapped(b));
   const observer = { calls: [], complete() {}, fetch: async () => { throw Error('unexpected_network'); } };
-  let subscriber, disposed = false, stopped = false, startConfig;
+  let subscriber, disposed = false, stopped = false, startConfig, callbackLifetimeMs, invocationPrompt;
   const selected = require('../../scripts/badcase-capture/direct-model.cjs').modelProfile(profile);
   const session = { messages: [], model: { provider: selected.provider, id: selected.model, api: selected.api || 'openai-completions' }, thinkingLevel: selected.thinking || 'off',
     agent: { transport: 'websocket', state: { tools: Array.from({ length: 10 }, (_, i) => ({ name: 'tool-' + i })) } },
-    bindExtensions: async () => {}, subscribe: f => { subscriber = f; }, prompt: async () => {
+    bindExtensions: async () => {}, subscribe: f => { subscriber = f; }, prompt: async submitted => {
+      invocationPrompt = submitted;
       const message = { role: 'assistant', content: [{ type: 'text', text: 'INTERNAL ONLY: stable file; deleted.txt 不存在' }], stopReason: 'stop' };
       afterTurn(path.join(root, 'restored'));
       session.messages.push(message); observer.calls.push({ model: profile, durationMs: 1, success: true });
@@ -49,9 +50,10 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
     if (name === '/work/codex-mailbox.cjs') return { createCodexMailboxFetch: () => observer.fetch };
     if (name === '/work/build/server/domain/runtime/badcase-capture/secrets') return require('../../build/server/domain/runtime/badcase-capture/secrets');
     if (name === '/work/caff-runtime-bootstrap.cjs') return { verifyCaffRuntimeStage: () => ({ manifest: { inputHash: 'input', runtimeHash: 'runtime' } }) };
-    if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async () => ({
-      apiUrl: 'http://127.0.0.1:1', credentials: { invocationId: 'fixture', callbackToken: 'fixture-only' },
-      readPublicReply: () => published, stop: async () => { stopped = true; } }) };
+    if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async config => {
+      callbackLifetimeMs = config.lifetimeMs;
+      return { apiUrl: 'http://127.0.0.1:1', credentials: { invocationId: 'fixture', callbackToken: 'fixture-only' },
+        readPublicReply: () => published, stop: async () => { stopped = true; } }; } };
     assert.ok(name.startsWith('node:'), name); return require(name);
   };
   const workerModule = { exports: {} }, filename = require.resolve('../../scripts/badcase-capture/direct-sdk-container.cjs');
@@ -63,7 +65,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
     return { normalizeStartCommand: c => c, createSdkRuntime: async (_sdk, config) => { startConfig = config; return { runtime }; } };
   } });
   assert.equal(disposed, true); assert.equal(stopped, withCallback);
-  return { receipt, input, startConfig, settings: fs.existsSync(path.join(root, 'agent/settings.json')) ? JSON.parse(fs.readFileSync(path.join(root, 'agent/settings.json'))) : null };
+  return { receipt, input, startConfig, callbackLifetimeMs, invocationPrompt, settings: fs.existsSync(path.join(root, 'agent/settings.json')) ? JSON.parse(fs.readFileSync(path.join(root, 'agent/settings.json'))) : null };
 }
 function config() {
   return { repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'), request: {}, image: { imageId: 'sha256:' + '1'.repeat(64) },
@@ -170,6 +172,21 @@ test('rubric requires actual reads, exact original tree and reply fragments, not
   assert.equal(scoreReadOnlyFiles(base, c.rules, beforeHash).pass, true);
   for (const patch of [{ toolCalls: [] }, { afterHash: 'different' }, { finalText: 'done' }, { success: false },
     { toolCalls: [...base.toolCalls, { name: 'write', isError: true }] }]) assert.equal(scoreReadOnlyFiles({ ...base, ...patch }, c.rules, beforeHash).pass, false);
+});
+test('turn timeout accepts up to 45 minutes, is bound into plan and reaches the executor unchanged', async () => {
+  const f = fakes(), c = { ...config(), timeoutMs: 2700000 }, execute = f.options.execute;
+  const plan = prepareComparison(c, f.options); assert.equal(plan.summary.timeoutMs, c.timeoutMs);
+  assert.equal(prepareComparison(config(), f.options).summary.timeoutMs, 120000);
+  f.options.execute = (...args) => { assert.equal(args[2].timeoutMs, c.timeoutMs); return execute(...args); };
+  const result = await runComparison(c, f.options); assert.equal(result.completed, true);
+  assert.match(formatComparison(result), /容器时限：2700秒/);
+  for (const timeoutMs of [999, 2700001, Infinity]) assert.throws(() => prepareComparison({ ...c, timeoutMs }, f.options), /evaluation_config_invalid/);
+});
+test('worker accepts the full 256 KiB prompt and keeps public callback valid for the 45-minute ceiling', async t => {
+  const prompt = '中'.repeat(87381) + 'a', r = await workerReceipt(t, { prompt });
+  assert.equal(Buffer.byteLength(prompt), 262144); assert.equal(r.invocationPrompt, prompt);
+  assert.equal(r.input.prompt, prompt); assert.equal(r.callbackLifetimeMs, 2700000); assert.equal(r.receipt.success, true);
+  await assert.rejects(workerReceipt(t, { prompt: prompt + 'a' }), /AssertionError/);
 });
 test('Codex worker uses credential-free mailbox, xhigh native model, SSE and no automatic retry', async t => {
   const { receipt, startConfig, settings } = await workerReceipt(t, { profile: 'openai-codex/gpt-6.1-sol' });

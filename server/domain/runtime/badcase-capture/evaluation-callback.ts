@@ -22,7 +22,7 @@ function validate(input: any) {
   const fromTrace = object(input) && Object.hasOwn(input, 'trace');
   if (!exact(input, fromTrace ? ['directory', 'trace', 'expectedTraceHash', 'association', 'lifetimeMs'] : ['directory', 'seed', 'lifetimeMs'])
     || typeof input.directory !== 'string' || !path.isAbsolute(input.directory)
-    || !Number.isSafeInteger(input.lifetimeMs) || input.lifetimeMs < 1 || input.lifetimeMs > 300000) throw invalid();
+    || !Number.isSafeInteger(input.lifetimeMs) || input.lifetimeMs < 1 || input.lifetimeMs > 45 * 60 * 1000) throw invalid();
   if (fromTrace) {
     const prepared = prepareEvaluationCallbackTrace(input.trace, input.expectedTraceHash, input.association);
     return { directory: path.resolve(input.directory), seed: prepared.seed, trace: prepared.trace,

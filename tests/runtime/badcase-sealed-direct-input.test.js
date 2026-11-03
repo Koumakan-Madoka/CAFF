@@ -158,6 +158,14 @@ test('actual CLI --plan exposes the sealed reason and supports unchanged origina
     else { assert.equal(output.preparedOnly, true); assert.equal(output.dockerVerified, false); assert.equal(output.kind, 'sealed-original-replay-v1'); }
   }
 });
+test('sealed original prompt limit is 256 KiB in UTF-8 bytes, without truncation', t => {
+  for (const size of [131073, 262144, 262145]) {
+    const text = '中'.repeat(Math.floor(size / 3)) + 'a'.repeat(size % 3);
+    const f = portable(t, ({ r, put }) => { r.promptBlobHash = r.normalizedPromptHash = put(text); });
+    const result = prepareSealedOriginalTurn(f.request); assert.equal(result.supported, size <= 262144, JSON.stringify(result));
+    if (result.supported) assert.equal(result.input.prompt, text); else assert.equal(result.reason, 'replay_prompt_size_limit');
+  }
+});
 test('retained workspace above the old 4 MiB transport cap is prepared without source reads or archive writes', t => {
   const bytes = Buffer.alloc(17 * 1024 * 1024, 0x61);
   const f = portable(t, ({ cp, put }) => { cp.files['large.txt'] = { type: 'file', size: bytes.length, hash: put(bytes) }; });

@@ -145,7 +145,7 @@ async function runDependencyDockerTask(image, files, options = {}) {
 }
 async function runDockerTask(image, files, options, key, dependencyOutput) {
   const timeoutMs = options.timeoutMs ?? 120000, network = options.network ?? 'bridge';
-  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= (dependencyOutput ? 900000 : 300000));
+  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= (dependencyOutput ? 900000 : 45 * 60 * 1000));
   assert.ok(['bridge', 'none'].includes(network));
   if (!options.runDocker && process.platform !== 'linux') throw fail('evaluation_linux_required');
   const manifest = manifestFor(files, { replayWorkspace: true }); assert.ok(files.some(f => f.path === 'probe.cjs'));

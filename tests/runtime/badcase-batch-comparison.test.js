@@ -52,6 +52,11 @@ test('planning defaults to 3 repeats, resolves all sealed cases and a frozen hol
   assert.equal(p.summary.cases.every(c => c.comparison.wikiCandidate.candidateRoleHash === h.candidate.candidateRoleHash), true);
   assert.equal(JSON.stringify(p.summary).includes(h.root), false);
 });
+test('batch plans accept the 45-minute turn ceiling and bind it to every prepared case before execution', t => {
+  const h = setup(t); h.config.timeoutMs = 2700000;
+  assert.ok(h.plan().summary.cases.every(c => c.comparison.timeoutMs === 2700000));
+  assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);
+});
 test('batch confirmation binds exact plan hash; a draft candidate or changed rubric fails before Key/model use', async t => {
   const h = setup(t), hash = h.plan().summary.planHash;
   for (const options of [{ confirmed: false, expectedPlanHash: hash }, { confirmed: true }, { confirmed: true, expectedPlanHash: 'a'.repeat(64) }]) {
@@ -154,7 +159,7 @@ test('all frozen source slots are required, with distinct GPT checkpoints and no
   const h = setup(t), copy = () => structuredClone(h.config);
   for (const change of [c => c.cases.pop(), c => c.cases.push(c.cases[0]), c => { c.cases[0].sourceCaseId = 'unknown'; },
     c => { c.cases[0].request.association.agentId = 'Kimi'; }, c => { c.cases[1].request = c.cases[0].request; }, c => { c.candidateRole = 'bypass'; },
-    c => { c.repeats = 0; }, c => { c.timeoutMs = 301000; }]) {
+    c => { c.repeats = 0; }, c => { c.timeoutMs = 2700001; }]) {
     const config = copy(); change(config); assert.throws(() => prepareBatch(config, h.options));
   }
   assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);

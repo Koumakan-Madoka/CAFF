@@ -94,7 +94,7 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
       variantInfo = { originalRole: originalRole.slice(rolePrefix.length) };
       identityInfo = { originalRoleHash: span.sha256 };
     }
-    ensure(Buffer.byteLength(prompt) <= 131072, 'replay_prompt_size_limit');
+    ensure(Buffer.byteLength(prompt) <= 256 * 1024, 'replay_prompt_size_limit');
     const names = Object.keys(cp.files); ensure(names.length <= 1024, 'replay_file_inventory_limit');
     const files = names.sort().map(name => {
       const f = cp.files[name], b = blobs.get(f.hash);
