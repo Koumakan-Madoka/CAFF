@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 const { prepareWikiInduction, inductWikiCases } = require('../../scripts/badcase-capture/wiki-induction.cjs');
-const { classify } = require('../../scripts/badcase-capture/wiki-induction-container.cjs');
+const { classify, buildRequestBody } = require('../../scripts/badcase-capture/wiki-induction-container.cjs');
 const MODEL = 'deepseek/deepseek-v4-flash';
 const key = 'synthetic-incremental-induction-key';
 
@@ -134,6 +134,25 @@ test('worker makes one official request with approved-pattern context and no too
   const body = JSON.parse(calls[0].options.body); assert.equal(body.model, 'deepseek-v4-flash'); assert.equal(body.tools, undefined); assert.equal(body.temperature, 0);
   assert.equal(JSON.parse(body.messages[1].content).approvedEntries[0].id, 'entry-1');
   assert.deepEqual(output.calls[0].usage, { input: 3, output: 2, totalTokens: 5 });
+});
+
+test('induction explicitly types proposal prose and budgets reasoning plus a complete 20-case result', () => {
+  const body = JSON.parse(buildRequestBody({ phase: 'induction', cases: [], approvedEntries: [] }));
+  assert.equal(body.max_tokens, 32768);
+  assert.match(body.messages[0].content, /title、failureMode、symptoms、rootCauseHypothesis、guideline.*字符串/);
+  assert.match(body.messages[0].content, /symptoms 不是数组/);
+  assert.match(body.messages[0].content, /caseIds.*字符串数组/);
+});
+
+test('truncated model JSON is rejected even if a partial results array parses; no invented coverage or retry', async () => {
+  let calls = 0;
+  const output = await classify({ phase: 'induction', cases: [], approvedEntries: [] }, { key, fetchImpl: async () => {
+    calls++;
+    return Response.json({ choices: [{ finish_reason: 'length', message: { content: '{"results":[]}' } }],
+      usage: { prompt_tokens: 4, completion_tokens: 32768, total_tokens: 32772 } });
+  } });
+  assert.equal(output.ok, false); assert.equal(calls, 1);
+  assert.equal(output.calls[0].usage.totalTokens, 32772);
 });
 
 test('room-title backfill is additive, idempotent and does not alter cases, versions or candidates', t => {
