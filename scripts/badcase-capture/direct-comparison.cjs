@@ -7,6 +7,7 @@ const { prepareDirectTurnFiles, runDirectDockerTask, runCodexDockerTask } = requ
 const { createCodexTransport, createCodexAccess } = require('./codex-transport.cjs');
 const { createCodexRelayExchange } = require('./codex-mailbox.cjs');
 const { readKnownKeyValues } = require('./known-key-values.cjs');
+const { tokenUsage } = require('./replay-measurements.cjs');
 const CODEX_CONFIG = Object.freeze({ api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' });
 const { prepareReplayGit } = require('./replay-git.cjs');
 const { prepareReplayDependencies } = require('./replay-dependencies.cjs');
@@ -69,11 +70,13 @@ function comparisonKnownValues(config, options) {
   return [];
 }
 function prepareComparison(config, options = {}) {
-  if (!config || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile', 'knownKeySources'].includes(k))
+  const variants = config?.variants === undefined ? ['original', 'candidate'] : config.variants;
+  const originalOnly = Array.isArray(variants) && variants.length === 1 && variants[0] === 'original';
+  if (!config || !Array.isArray(variants) || !(originalOnly || variants.length === 2 && variants[0] === 'original' && variants[1] === 'candidate') || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile', 'knownKeySources', 'variants'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)
     || config.executionPolicy !== undefined && (config.executionPolicy !== 'alternating-valid-v1' || !config.globalWikiCandidate || config.repeats !== 10)
-    || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== 1
+    || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== (originalOnly ? 0 : 1)
     || config.candidateRole !== undefined && (typeof config.candidateRole !== 'string' || !config.candidateRole.trim())
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')) throw fail('evaluation_config_invalid');
@@ -121,10 +124,10 @@ function prepareComparison(config, options = {}) {
     candidateRole = selected.candidateRole;
     wikiCandidate = { id: selected.id, versionId: selected.versionId, entryIds: selected.entryIds, candidateRoleHash: selected.candidateRoleHash };
   }
-  const candidate = prepare(config.request, candidateRole);
-  if (candidate.supported !== true) return { supported: false, reason: config.globalWikiCandidate ? 'unsupported_or_missing_declared_prompt_target' : 'unsupported_or_missing_replay_materials' };
-  if (original.provenance.checkpointHash !== candidate.provenance.checkpointHash
-    || original.provenance.commonInputHash !== candidate.provenance.commonInputHash) throw fail('evaluation_start_mismatch');
+  const candidate = originalOnly ? null : prepare(config.request, candidateRole);
+  if (!originalOnly && candidate.supported !== true) return { supported: false, reason: config.globalWikiCandidate ? 'unsupported_or_missing_declared_prompt_target' : 'unsupported_or_missing_replay_materials' };
+  if (!originalOnly && (original.provenance.checkpointHash !== candidate.provenance.checkpointHash
+    || original.provenance.commonInputHash !== candidate.provenance.commonInputHash)) throw fail('evaluation_start_mismatch');
   if (rules.kind === 'read-only-files-v1') {
     for (const p of rules.readPaths) if (!original.input.files.some(f => f.path === p)) throw fail('evaluation_rules_invalid');
     for (const p of rules.absentPaths) if (original.input.files.some(f => f.path === p) || !original.input.deletions?.includes(p)) throw fail('evaluation_rules_invalid');
@@ -145,8 +148,10 @@ function prepareComparison(config, options = {}) {
       || config.dependencies.kind !== 'npm-ci-linux-v1' || !path.isAbsolute(config.dependencies.cacheRoot || '')) throw fail('evaluation_config_invalid');
     dependencyConfig = prepareReplayDependencies({ ...original.input, ...repositoryConfig }, config.image, config.dependencies.cacheRoot);
   }
-  const inputs = { original: { ...original.input, ...evidenceConfig, ...repositoryConfig, ...dependencyConfig }, candidate: { ...candidate.input, ...evidenceConfig, ...repositoryConfig, ...dependencyConfig } };
-  const summary = { kind: 'sealed-prompt-comparison-v1', caseId: original.provenance.caseId,
+  const inputs = { original: { ...original.input, ...evidenceConfig, ...repositoryConfig, ...dependencyConfig },
+    ...(candidate ? { candidate: { ...candidate.input, ...evidenceConfig, ...repositoryConfig, ...dependencyConfig } } : {}) };
+  const summary = { kind: originalOnly ? 'sealed-original-replay-v1' : 'sealed-prompt-comparison-v1',
+    ...(config.variants === undefined ? {} : { variants: [...variants] }), caseId: original.provenance.caseId,
     checkpointId: original.provenance.checkpointId, checkpointHash: original.provenance.checkpointHash,
     commonInputHash: repository || config.dependencies || rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig,
       ...(repository ? { repository: repository.report, gitFileHashes: repository.gitFiles.map(f => ({ path: f.path, sha256: f.sha256 })) } : {}),
@@ -177,12 +182,12 @@ async function runComparison(config, options = {}) {
   const native = plan.summary.model === CODEX_PROFILE;
   const stage = options.stage || prepareDirectTurnFiles, execute = native ? options.executeCodex || runCodexDockerTask : options.execute || runDirectDockerTask;
   const emit = options.onEvent || (() => {}), keyReader = options.readKey || (fixed.keySource === 'caff-deepseek' ? readCaffDeepseekKey : readEvaluationKey);
-  const files = {}, manifests = {};
-  for (const variant of ['original', 'candidate']) {
+  const variants = plan.summary.variants || ['original', 'candidate'], files = {}, manifests = {};
+  for (const variant of variants) {
     files[variant] = stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, plan.inputs[variant], fixed.modelProfile);
     manifests[variant] = manifestFor(files[variant], { replayWorkspace: true });
   }
-  if (manifests.original.runtimeHash !== manifests.candidate.runtimeHash) throw fail('evaluation_runtime_mismatch');
+  if (variants.length === 2 && manifests.original.runtimeHash !== manifests.candidate.runtimeHash) throw fail('evaluation_runtime_mismatch');
   let transport, sendNativeRequest, key;
   try {
   if (native) {
@@ -206,7 +211,7 @@ async function runComparison(config, options = {}) {
   emit({ event: 'plan', ...plan.summary, runtimeHash: manifests.original.runtimeHash });
   const runs = []; let stopped = false, modelCallsKnown = 0, callsUnavailable = false;
   const alternating = fixed.executionPolicy === 'alternating-valid-v1';
-  const variants = ['original','candidate'], validCount = v => runs.filter(r=>r.variant===v && r.status!=='error').length;
+  const validCount = v => runs.filter(r=>r.variant===v && r.status!=='error').length;
   const legacySlots = variants.flatMap(variant=>Array.from({length:fixed.repeats},(_,i)=>({variant,iteration:i+1})));
   let cursor=0, nextVariant=0, fatal=false;
   while (!stopped) {
@@ -226,19 +231,21 @@ async function runComparison(config, options = {}) {
       }
       checkInputs(fresh);
       let task;
+      const started = performance.now(), hostBefore = transport?.state().requests;
       try {
         transport?.inspectAccess(() => {}); // Expiry stops BEFORE another container.
         task = await execute(fixed.image, files[variant], native
           ? { sendNativeRequest, network: 'none', timeoutMs: fixed.timeoutMs ?? 120000 }
           : { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000 });
       } catch { task = { failed: true, reason: 'evaluation_failed' }; }
-      const environmentReason = transport?.state().reason;
+      const durationMs = performance.now() - started, environmentReason = transport?.state().reason;
+      const hostRequestAttempts = native ? transport.state().requests - hostBefore : undefined;
       const encodedLeak = Array.isArray(task?.receipt?.fileEvidence) && task.receipt.fileEvidence.some(f =>
         typeof f?.base64 === 'string' && leaksBytes(Buffer.from(f.base64, 'base64')));
       if (leaksKey(task) || encodedLeak) task = { failed: true, reason: 'evaluation_output_contains_key' };
       const receipt = task?.receipt, row = { variant, iteration, status: 'error', checks: null, finalText: '', replySource: 'unknown', modelCalls: [],
         containerId: task?.containerId || null, cleaned: task?.cleaned === true, isolation: task?.isolation || null,
-        inputHash: manifests[variant].inputHash };
+        inputHash: manifests[variant].inputHash, durationMs, ...(native ? { hostRequestAttempts } : {}) };
       // Missing run evidence can be environmental; explicit conflicting hashes
       // are integrity drift and must never be hidden by a replacement attempt.
       const evidenceChanged = [[receipt?.inputHash, manifests[variant].inputHash],
@@ -305,23 +312,27 @@ async function runComparison(config, options = {}) {
       // Auth/quota/network terminal states are environmental, never model
       // failure or eligible replacement attempts. Keep any verified calls.
       if (environmentReason) { row.status = 'error'; row.checks = null; row.reason = environmentReason; stopped = true; fatal = true; }
+      row.tokenUsage = tokenUsage(row.modelCalls, { callsUnavailable: !valid });
       runs.push(row); const { modelCalls: omitted, ...eventRow } = row; emit({ event: 'run', ...eventRow });
   }
-  const totals = Object.fromEntries(['original', 'candidate'].map(v => {
+  const totals = Object.fromEntries(variants.map(v => {
     const rows = runs.filter(r => r.variant === v);
     return [v, { planned: fixed.repeats, attempted: rows.length, passed: rows.filter(r => r.status === 'pass').length,
       failed: rows.filter(r => r.status === 'fail').length, errors: rows.filter(r => r.status === 'error').length,
       notRun: fixed.repeats - (alternating ? rows.filter(r=>r.status!=='error').length : rows.length) }];
   }));
-  const result = { ...plan.summary, supported: true, completed: alternating ? variants.every(v=>validCount(v)===fixed.repeats) : !stopped, runs, totals, modelCallsKnown, callsUnavailable,
+  const measurements = { tokenUsage: tokenUsage(runs.flatMap(r => r.modelCalls), { callsUnavailable }),
+    totalExecutorDurationMs: runs.reduce((sum, r) => sum + r.durationMs, 0),
+    ...(native ? { hostRequestAttempts: transport.state().requests, remainingQuota: null, quotaBasis: 'reported-tokens-only' } : {}) };
+  const result = { ...plan.summary, supported: true, measurements, completed: alternating ? variants.every(v=>validCount(v)===fixed.repeats) : !stopped, runs, totals, modelCallsKnown, callsUnavailable,
     ...(alternating ? {fatal} : {}) };
-  emit({ event: 'summary', completed: result.completed, totals, modelCallsKnown, callsUnavailable });
+  emit({ event: 'summary', completed: result.completed, totals, modelCallsKnown, callsUnavailable, measurements });
   return result;
   } finally { key = undefined; await transport?.close(); }
 }
 function formatComparison(result) {
   if (!result.supported) return '不可回放：缺材料或超出当前支持范围。\n';
-  const lines = ['模型：' + result.model];
+  const lines = [...(result.kind === 'sealed-original-replay-v1' ? ['原版单边回放：没有候选，不产生采纳结论。'] : []), '模型：' + result.model];
   if (result.modelConfig) lines.push('配置：' + result.modelConfig.api + ' / thinking ' + result.modelConfig.thinking + ' / ' + result.modelConfig.transport + ' / Fast关闭；凭据仅在宿主。');
   if (result.repository) {
     lines.push(result.repository.historyIncluded ? 'Git：保留记录HEAD的完整可达历史，HEAD与源记录相同；共' + result.repository.historyCommitCount + '个提交。'
@@ -333,13 +344,18 @@ function formatComparison(result) {
     lines.push('依赖：Linux npm ci 缓存；lock=' + result.dependencies.lockHash + '，Node=' + result.dependencies.nodeVersion + '。');
     if (result.dependencies.resolvedWithoutIntegrity) lines.push('限制：lock中' + result.dependencies.resolvedWithoutIntegrity + '条下载记录没有integrity；保留原lock，安装产物另以SHA-256固定。');
   }
-  lines.push('变体\t轮次\t结果\t模型请求\t回复来源\t原因');
+  lines.push('变体\t轮次\t结果\t模型请求\t回复来源\t原因\t耗时ms\t已知tokens');
   for (const r of result.runs || []) {
-    lines.push([r.variant, r.iteration, r.status, r.reason === 'run_evidence_unavailable' ? 'unknown' : r.modelCalls.length, r.replySource ?? 'unknown', r.reason ?? ''].join('\t'));
+    lines.push([r.variant, r.iteration, r.status, r.reason === 'run_evidence_unavailable' ? 'unknown' : r.modelCalls.length, r.replySource ?? 'unknown', r.reason ?? '', Number.isFinite(r.durationMs) ? Math.round(r.durationMs) : '未知', r.tokenUsage?.knownTokens?.totalTokens ?? '未知'].join('\t'));
     for (const [i, c] of r.modelCalls.entries()) lines.push('  #' + (i + 1) + ' ' + c.model + ' ' + Math.round(c.durationMs) + 'ms ' + (c.success ? 'success' : 'failed') + ' usage=' + JSON.stringify(c.usage ?? null));
   }
   for (const v of ['original', 'candidate']) {
     const t = result.totals?.[v]; if (t) lines.push(v + ': ' + t.passed + '/' + t.planned + ' 通过，' + t.errors + ' 错误，' + t.notRun + ' 未运行');
+  }
+  if (result.measurements) {
+    const usage = result.measurements.tokenUsage;
+    lines.push('已知token合计：' + (usage.knownTokens ? usage.knownTokens.totalTokens : '未知') + '；用量记录 ' + usage.knownCalls + ' 次，缺用量 ' + usage.callsWithoutUsage + ' 次' + (usage.callsUnavailable ? '，存在未知调用' : '') + (usage.complete ? '（完整）' : '（不完整）') + '。');
+    if (result.modelConfig) lines.push('宿主请求尝试：' + result.measurements.hostRequestAttempts + '；剩余额度未知，不把token换算为ChatGPT配额。');
   }
   if (result.completed === false) lines.push('运行未完成；已停止，未自动重试。');
   return lines.join('\n') + '\n';

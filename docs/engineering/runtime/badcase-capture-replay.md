@@ -34,7 +34,14 @@
 - `runCodexDockerTask` 是独立低层路径：只允许 `network:none`、没有 credential 环境变量、宿主挂载或发布端口，仍用固定静态分发和一次性 tmpfs。原生请求/响应走既有 Docker-exec mailbox，`codex-mailbox.cjs` 只封装原始二进制字节与允许的请求头，不接受容器指定 URL、Authorization 或账号头。每轮最多32次；mailbox 请求/响应封装各最多4MiB（base64封装使原始模型正文可用额度更小），不是仓库数据传输上限；超限失败，不截断继续。宿主 Docker 控制调用只对 mailbox 显式扩大输出缓冲，其他调用仍默认1MiB。真实发送必须由受信调用方显式提供已授权的宿主 transport，并管理其关闭。
 - 单例 `compare-sealed` 配置显式选择 `modelProfile:"openai-codex/gpt-6.1-sol"`、`keySource:"caff-codex-access"`、`codexAuthFile:"<宿主.pi-sandbox/auth.json绝对路径>"`；缺少/混用凭据源拒绝，不从旧 Key 环境回退。不含 `knownKeySources` 的 `--plan` 仅校验access路径形状；配置了安全清单时会只读上述本机值以扫描Git，但不会使用它们认证、启动Docker或请求模型。正式 `--run --confirmed --output <新文件>` 只在 Linux/WSL 进入原生断网 launcher；Windows 直接运行报 `evaluation_linux_required`，不先读 access 再尝试跨命名空间传递。计划和结果绑定实际 API/thinking/Fast/SSE/host-only 配置，不记录 auth 路径或账号。
 - 运行确认后、首个事件或容器之前只读 access，并检查规则/结构化输入、解码后的封存文件、暂存明文，以及 Git 压缩前基线；拒绝选定 access 或可信调用方传入的 `knownValues`。每轮重验封存/静态分发和 access 过期状态；transport 在成功、异常、输出泄漏和事件保存失败后均关闭。worker 必须回传相同模型配置才可评分。选定值不得藏在 base64 文件证据中；同一清单也在每次真实原生请求的解压明文/200响应边界检查，避免工具后来从Git元数据等读出的值外发。固定 auth/quota/proxy 错误保留为逐次环境错误并立即停止，不转为模型不通过或替补重试，CLI显示固定原因。
-- 已用合成 access 源与假供应方在真实断网容器走完内置 SDK 的 read 工具循环，核对 xhigh、zstd 原生请求、SSE回复与用量、容器清理/无实际凭据注入；另以合成429确认额度错误只发一次、不自动重试。探针未含 trace 回调或公开回复，不是封存准入或真实 GPT 复现。旧注入 Key 的 launcher 仍以 `evaluation_codex_relay_required` 拒绝该 profile。历史保留/回退与完整已知值清单已用合成材料验证；第0步clone的完整扫描仍等待获准的JEV key只注入受信扫描进程，不能漏扫后宣称安全。M1原版单边3次编排、批量配置及 Windows 入口仍待实现。尚未用真实账号调用模型。无模型准入通过后仍须暂停，待用户选择并标记真实GPT用例。
+- 已用合成 access 源与假供应方在真实断网容器走完内置 SDK 的 read 工具循环，核对 xhigh、zstd 原生请求、SSE回复与用量、容器清理/无实际凭据注入；另以合成429确认额度错误只发一次、不自动重试。探针未含 trace 回调或公开回复，不是封存准入或真实 GPT 复现。旧注入 Key 的 launcher 仍以 `evaluation_codex_relay_required` 拒绝该 profile。历史保留/回退与完整已知值清单已用合成材料验证；第0步clone的完整扫描仍等待获准的JEV key只注入受信扫描进程，不能漏扫后宣称安全。M1原版单边3次编排已用合成材料验证；批量配置及 Windows 入口仍待实现。尚未用真实账号调用模型。无模型准入通过后仍须暂停，待用户选择并标记真实GPT用例。
+
+#### M1 原版三次测量（尚未用于真实GPT用例）
+
+- 单例配置 `variants:["original"], repeats:3`，不含 `candidateRole/wikiCandidate/globalWikiCandidate`。计划类型为 `sealed-original-replay-v1`，只准备/校验/执行同一原版输入，没有候选输入、候选分母或采纳结论；默认不填variants仍沿用原版/候选对照。其他variant集合、夹带候选或与交替正式评测策略混用均拒绝。仍须用户确认字面规则及正式run授权，不提供语义自动判分或自动选择/标记用例。
+- 原版每次执行前照旧重验封存/静态分发，环境错误立即停止，未运行次数单列，不为了凑足三次自动补跑。逐次输出保留原回复及其public/internal来源，不把内部回复当公开结论；M1真实复现与否仍由该用例的真实输出和已确认规则证明，合成结果不冒充GPT复现。
+- 每次 `durationMs` 是宿主观察的容器创建、恢复、模型turn及清理总耗时，不含前置封存/Git扫描、分发准备或依赖建缓存；每条模型请求原有duration/usage同时保留。`tokenUsage` 仅合计供应方给出的完整非负整数用量，记录knownCalls/callsWithoutUsage/callsUnavailable；缺用量、无回执或溢出明确为不完整/未知，不填零或外推未知调用。已明确报告的零tokens可以保留为零。
+- Codex额外记录独立的 `hostRequestAttempts`（尝试发送次数，不保证供应方接收或扣费），即便worker回执缺失也不误报为“零消耗”。`remainingQuota:null`、`quotaBasis:reported-tokens-only`：没有ChatGPT剩余额度接口证据，不把tokens换算成配额或钱；CLI明确显示剩余额度未知。该测量报告不是额度不足时的自动重试授权，也不是Wiki页面完整交付或采纳依据。
 
 ### 采集与恢复
 

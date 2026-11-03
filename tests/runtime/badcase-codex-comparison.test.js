@@ -83,6 +83,23 @@ test('confirmed run uses host-only access/none-network launcher, verifies model 
   assert.equal(f.state.transports[0].state().closed, true); assert.equal(fs.readFileSync(f.authFile, 'utf8'), f.originalAuth);
   assert.equal(JSON.stringify([result, f.state.events]).includes(f.access), false); assert.match(formatComparison(result), /xhigh/);
 });
+test('native original-only three-repeat mode has no candidate and reports attempts without inventing remaining quota', async t => {
+  const f = fixture(t); f.config.variants = ['original']; f.config.repeats = 3; delete f.config.candidateRole;
+  const result = await runComparison(f.config, f.options);
+  assert.equal(result.kind, 'sealed-original-replay-v1'); assert.equal(result.completed, true); assert.equal(f.state.nativeRuns, 3);
+  assert.deepEqual(Object.keys(result.totals), ['original']); assert.ok(result.runs.every(r => r.variant === 'original' && r.hostRequestAttempts === 1));
+  assert.equal(result.measurements.hostRequestAttempts, 3); assert.equal(result.measurements.remainingQuota, null);
+  assert.equal(result.measurements.tokenUsage.knownTokens, null); assert.equal(result.measurements.tokenUsage.callsWithoutUsage, 3);
+  assert.match(formatComparison(result), /剩余额度未知/);
+});
+test('host attempts survive missing worker evidence and are not misreported as zero model consumption', async t => {
+  const f = fixture(t), execute = f.options.executeCodex; f.config.variants = ['original']; f.config.repeats = 3; delete f.config.candidateRole;
+  f.options.executeCodex = async (...args) => { const task = await execute(...args); return { ...task, failed: true, receipt: undefined }; };
+  const result = await runComparison(f.config, f.options);
+  assert.equal(result.completed, false); assert.equal(result.measurements.hostRequestAttempts, 1); assert.equal(result.modelCallsKnown, 0);
+  assert.equal(result.measurements.tokenUsage.complete, false); assert.equal(result.measurements.tokenUsage.callsUnavailable, true);
+  assert.equal(result.measurements.tokenUsage.knownTokens, null); assert.equal(result.totals.original.notRun, 2);
+});
 test('missing/expired access fails before plan event or container, without env fallback', async t => {
   for (const missing of [true, false]) {
     const f = fixture(t, { expired: true }); if (missing) fs.unlinkSync(f.authFile);
