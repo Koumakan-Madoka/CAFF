@@ -27,15 +27,18 @@ function collectFileEvidence(cwd, paths, key) {
 }
 async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   assert.ok(process.platform === 'linux' && process.getuid?.() === 65534 && process.cwd() === '/work' && fs.existsSync('/.dockerenv'));
-  const direct = require('/work/direct-model.cjs'), key = direct.validKey(process.env[direct.KEY_ENV]);
-  // The existing immutable-stage verifier intentionally rejects all auth. Hide
-  // ONLY this one explicitly injected variable while verifying static bytes.
+  const direct = require('/work/direct-model.cjs'), profile = JSON.parse(fs.readFileSync('/work/evaluation-profile.json'));
+  const codex = profile === direct.CODEX_PROFILE;
+  if (codex) assert.equal(process.env[direct.KEY_ENV], undefined, 'codex_container_credential_forbidden');
+  const key = codex ? direct.CODEX_INERT_KEY : direct.validKey(process.env[direct.KEY_ENV]);
+  // The immutable-stage verifier rejects auth. Codex has no injected key at
+  // all; create the public inert SDK identity only AFTER stage verification.
   delete process.env[direct.KEY_ENV];
   let manifest;
   try { ({ manifest } = require('/work/caff-runtime-bootstrap.cjs').verifyCaffRuntimeStage({ replayWorkspace: true })); }
-  finally { process.env[direct.KEY_ENV] = key; }
-  const profile = JSON.parse(fs.readFileSync('/work/evaluation-profile.json'));
+  finally { if (!codex) process.env[direct.KEY_ENV] = key; }
   const selected = direct.modelProfile(profile);
+  if (codex) process.env[direct.KEY_ENV] = key;
   const input = JSON.parse(fs.readFileSync('/work/replay-input.json'));
   assert.equal(input.kind, 'prepared-caff-turn-v1'); assert.equal(typeof input.prompt, 'string');
   assert.ok(input.prompt.trim() && Buffer.byteLength(input.prompt) <= 131072);
@@ -95,7 +98,9 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     return hash(JSON.stringify(rows));
   };
   const beforeHash = treeHash();
-  if (input.settings !== null) write(agentDir + '/settings.json', JSON.stringify(input.settings));
+  const settings = codex ? { ...input.settings, transport: 'sse', retry: { ...input.settings?.retry, enabled: false,
+    provider: { ...input.settings?.retry?.provider, maxRetries: 0 } } } : input.settings;
+  if (settings !== null) write(agentDir + '/settings.json', JSON.stringify(settings));
   if (input.systemPrompt !== null) write(agentDir + '/SYSTEM.md', input.systemPrompt);
   write(agentDir + '/models.json', JSON.stringify(direct.directModelRouting(baseUrl, profile)));
   if (input.sessionText !== null) write(sessionPath, input.sessionText);
@@ -122,17 +127,23 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
         CAFF_CHAT_TOOLS_RELATIVE_PATH: '../build/lib/agent-chat-tools.js', PI_AGENT_SANDBOX_DIR: '/tmp/sandbox', PI_AGENT_PRIVATE_DIR: '/tmp/private' };
       Object.assign(process.env, values); prompt = direct.bindDirectPrompt(prompt, input.bindings, values);
     }
-    observer = direct.observeDirectFetch(originalFetch, { baseUrl, profile, callbackUrl: callback?.apiUrl });
+    const providerFetch = codex ? require('/work/codex-mailbox.cjs').createCodexMailboxFetch({ callbackUrl: callback?.apiUrl, callbackFetch: originalFetch }) : originalFetch;
+    observer = direct.observeDirectFetch(providerFetch, { baseUrl, profile, callbackUrl: callback?.apiUrl });
     globalThis.fetch = observer.fetch;
     const sdk = await loadModule('/work/runtime/dist/bundle/index.js'); assert.equal(sdk.VERSION, '0.85.1');
     const host = await loadModule('/work/build/lib/pi-sdk-host.mjs');
     const config = host.normalizeStartCommand({ type: 'start', prompt, config: {
       cwd, agentDir, sessionPath, resume: input.sessionText !== null, provider: selected.provider, model: selected.model,
-      thinking: 'off', fast: false, extensionPaths: ['/work/build/lib/pi-extensions/caff-capabilities.mjs'],
+      thinking: selected.thinking || 'off', fast: false, extensionPaths: ['/work/build/lib/pi-extensions/caff-capabilities.mjs'],
       additionalSkillPaths: [], retireUserScopeSkills: true } }).config;
     ({ runtime } = await host.createSdkRuntime(sdk, config)); const session = runtime.session;
+    if (codex) {
+      runtime.services.settingsManager.applyOverrides({ retry: { enabled: false, provider: { maxRetries: 0 } } });
+      session.agent.transport = 'sse'; // project-local settings must not enable WebSocket or retries
+    }
     await session.bindExtensions({ mode: 'json', onError: () => extensionErrors.push(true) });
     assert.equal(runtime.modelFallbackMessage, undefined); assert.equal(session.model.provider, selected.provider); assert.equal(session.model.id, selected.model);
+    if (codex) { assert.equal(session.model.api, selected.api); assert.equal(session.thinkingLevel, selected.thinking); }
     assert.equal(runtime.services.resourceLoader.getExtensions().errors.length, 0);
     const initialHistory = input.sessionText === null ? [] : sdk.buildSessionContext(input.sessionText.trimEnd().split('\n').map(JSON.parse).slice(1)).messages;
     assert.deepEqual(session.messages, initialHistory);
@@ -157,6 +168,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       success: !threw && final?.stopReason === 'stop' && observer.calls.length > 0 && observer.calls.every(c => c.success),
       historyMessages: initialHistory.length, historyHash: hash(JSON.stringify(initialHistory)), tools, toolCalls,
       modelCalls: observer.calls, finalText, replySource, beforeHash, afterHash: treeHash(),
+      ...(codex ? { modelConfig: { api: selected.api, thinking: session.thinkingLevel, fast: false, transport: session.agent.transport, credentialDelivery: 'host-only-mailbox' } } : {}),
       ...(repository ? { repository } : {}), ...(dependencies ? { dependencies } : {}),
       ...(input.fileEvidencePaths === undefined ? {} : { fileEvidence: collectFileEvidence(cwd, input.fileEvidencePaths, key) }),
       // No worker self-score. The host scores only after container removal.

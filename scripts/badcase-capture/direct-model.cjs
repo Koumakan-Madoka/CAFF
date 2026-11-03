@@ -30,9 +30,15 @@ function readEvaluationKey(env = process.env) {
 }
 const DEFAULT_PROFILE = PROVIDER + '/' + MODEL;
 const DEEPSEEK_PROFILE = 'deepseek/deepseek-v4-flash';
+const CODEX_PROFILE = 'openai-codex/gpt-6.1-sol';
+// Expired, deliberately invalid signature. Native pi-ai only decodes account
+// routing here; the host substitutes the actual access exclusively in memory.
+const CODEX_INERT_KEY = 'inert.' + Buffer.from(JSON.stringify({ exp: 1,
+  'https://api.openai.com/auth': { chatgpt_account_id: 'caff-replay-inert' } })).toString('base64url') + '.not-a-credential';
 function modelProfile(name = DEFAULT_PROFILE) {
   if (name === DEFAULT_PROFILE) return { provider: PROVIDER, model: MODEL, endpoint: ENDPOINT };
   if (name === DEEPSEEK_PROFILE) return { provider: 'deepseek', model: 'deepseek-v4-flash', endpoint: 'https://api.deepseek.com' };
+  if (name === CODEX_PROFILE) return { provider: 'openai-codex', model: 'gpt-6.1-sol', endpoint: 'https://chatgpt.com/backend-api', api: 'openai-codex-responses', thinking: 'xhigh' };
   throw fail('evaluation_profile_invalid');
 }
 // Host only, explicitly selected by the user. No auth.json scan, shell
@@ -52,6 +58,12 @@ function readCaffDeepseekKey(env = process.env) {
 // Only a variable reference is written to models.json, never the actual key.
 function directModelRouting(baseUrl, profile = DEFAULT_PROFILE) {
   const selected = modelProfile(profile); baseUrl ??= selected.endpoint;
+  if (profile === CODEX_PROFILE) {
+    if (baseUrl !== selected.endpoint) throw fail('evaluation_endpoint_invalid');
+    // Keep the built-in native descriptor/capabilities/costs/context limits.
+    // This env reference resolves only to CODEX_INERT_KEY in the worker.
+    return { providers: { 'openai-codex': { baseUrl, apiKey: '$' + KEY_ENV } } };
+  }
   if (baseUrl !== selected.endpoint && !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/v1$/.test(baseUrl)) throw fail('evaluation_endpoint_invalid');
   return { providers: { [selected.provider]: {
     api: 'openai-completions', baseUrl, apiKey: '$' + KEY_ENV,
@@ -74,7 +86,8 @@ function observeDirectFetch(fetch, { baseUrl, profile = DEFAULT_PROFILE, callbac
   const observed = async (request, options) => {
     const url = typeof request === 'string' || request instanceof URL ? String(request) : request.url;
     if (callbackUrl && new URL(url).origin === callbackUrl) return fetch(request, options);
-    if (url !== baseUrl + '/chat/completions' || failed || calls.length >= maxRequests) throw fail('evaluation_request_blocked');
+    const endpoint = baseUrl + (profile === CODEX_PROFILE ? '/codex/responses' : '/chat/completions');
+    if (url !== endpoint || failed || calls.length >= maxRequests) throw fail('evaluation_request_blocked');
     const start = performance.now();
     const row = { model: selected.provider + '/' + selected.model, durationMs: 0, success: false, httpStatus: null, usage: null };
     calls.push(row); pending = row;
@@ -121,4 +134,4 @@ function bindDirectPrompt(prompt, bindings, values) {
   if (!values || !BINDING_NAMES.every(n => typeof values[n] === 'string' && values[n] && !values[n].includes('{{'))) throw fail('evaluation_bindings_unsupported');
   return prompt.replaceAll(bindings.sourceRoot, '/work/restored').replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, name) => values[name]);
 }
-module.exports = { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, ENDPOINT, PROVIDER, MODEL, KEY_ENV, DEFAULT_PROFILE, DEEPSEEK_PROFILE };
+module.exports = { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, ENDPOINT, PROVIDER, MODEL, KEY_ENV, DEFAULT_PROFILE, DEEPSEEK_PROFILE, CODEX_PROFILE, CODEX_INERT_KEY };

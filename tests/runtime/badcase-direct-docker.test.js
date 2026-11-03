@@ -49,6 +49,19 @@ test('key inherited by env name only; no host mounts/socket/privileged; receipt 
   const start = f.calls.find(c => c.args[0] === 'start'); assert.equal(start.options.input.includes(key), false);
   assert.equal(JSON.stringify(r).includes(key), false);
 });
+test('Codex launcher is explicitly relay-only and has no credential environment or network path', async () => {
+  const codexFiles = [...files, { path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify('openai-codex/gpt-6.1-sol')) }], f = fake();
+  await assert.rejects(runDirectDockerTask(image, codexFiles, { key, runDocker: f.run }), /evaluation_codex_relay_required/);
+  assert.equal(f.calls.length, 0);
+  const { runCodexDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs');
+  assert.equal(typeof runCodexDockerTask, 'function');
+  const r = await runCodexDockerTask(image, codexFiles, { timeoutMs: 1000, runDocker: f.run, sendNativeRequest: async () => { throw Error('no fake requests'); } });
+  assert.equal(r.cleaned, true); assert.equal(f.remaining(), false); assert.equal(r.isolation.network, 'none');
+  assert.deepEqual(r.isolation.credentialEnvironmentNames, []);
+  const create = f.calls.find(c => c.args[0] === 'create'); assert.equal(create.args.includes('--env'), false); assert.equal(create.options.key, undefined);
+  await assert.rejects(runCodexDockerTask(image, codexFiles, { network: 'bridge' }), /evaluation_codex_relay_required/);
+  await assert.rejects(runCodexDockerTask(image, codexFiles, { sendNativeRequest: async () => {}, key }), /evaluation_codex_relay_required/);
+});
 test('dependency installer streams its archive before tmpfs teardown, never reads/injects account auth, then verifies cleanup', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-deps-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

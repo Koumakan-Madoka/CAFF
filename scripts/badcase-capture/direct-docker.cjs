@@ -4,7 +4,9 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const assert = require('node:assert/strict');
 const { spawn, execFileSync } = require('node:child_process');
 const { manifestFor } = require('./pi-probe-materials.cjs');
-const { readEvaluationKey, validKey, modelProfile, DEFAULT_PROFILE, KEY_ENV } = require('./direct-model.cjs');
+const { readEvaluationKey, validKey, modelProfile, DEFAULT_PROFILE, CODEX_PROFILE, KEY_ENV } = require('./direct-model.cjs');
+const { relayDockerTransport } = require('./container-model-relay.cjs');
+const { MAILBOX_LIMITS } = require('./codex-mailbox.cjs');
 const { prepareCaffRuntimeFiles } = require('./caff-runtime-wiring.cjs');
 const { readTrustedDistributionFile } = require('./evaluation-bridge-launcher.cjs');
 function prepareDirectReplayInput(input) {
@@ -57,6 +59,9 @@ function prepareDirectTurnFiles(repoRoot, dependencyRoot, image, input, profile 
   for (const [source, destination] of [['direct-model.cjs', 'direct-model.cjs'], ['direct-sdk-container.cjs', 'probe.cjs'], ['restore-replay-dependencies.cjs', 'restore-replay-dependencies.cjs']]) {
     files.push({ path: destination, bytes: readTrustedDistributionFile(path.resolve(repoRoot), 'scripts/badcase-capture/' + source) });
   }
+  if (profile === CODEX_PROFILE) for (const source of ['codex-mailbox.cjs', 'container-model-adapter.cjs']) {
+    files.push({ path: source, bytes: readTrustedDistributionFile(path.resolve(repoRoot), 'scripts/badcase-capture/' + source) });
+  }
   files.push(...prepareDirectReplayInput(input));
   files.push({ path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify(profile)) });
   manifestFor(files, { replayWorkspace: true }); return files;
@@ -73,6 +78,8 @@ function docker(args, options = {}) {
   const env = {};
   for (const k of ['PATH', 'HOME', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP']) if (process.env[k]) env[k] = process.env[k];
   if (options.key !== undefined) env[KEY_ENV] = validKey(options.key);
+  const maxOutput = options.maxOutput ?? 1048576;
+  assert.ok(Number.isSafeInteger(maxOutput) && maxOutput >= 1 && maxOutput <= 8388736);
   return new Promise(resolve => {
     const output = { stdout: [], stderr: [] }; let size = 0, failure = '', done = false, inputStream;
     const outputFd = options.outputFile ? fs.openSync(options.outputFile, 'wx', 0o600) : undefined;
@@ -81,7 +88,7 @@ function docker(args, options = {}) {
     const timer = setTimeout(() => stop('timeout'), options.timeoutMs || 15000);
     for (const name of ['stdout', 'stderr']) child[name].on('data', b => {
       if (name === 'stdout' && outputFd !== undefined) { try { fs.writeSync(outputFd, b); } catch { stop('artifact_write'); } return; }
-      size += b.length; if (size > 1048576) { stop('output_limit'); return; } output[name].push(b);
+      size += b.length; if (size > maxOutput) { stop('output_limit'); return; } output[name].push(b);
     });
     child.on('error', () => { failure = 'spawn'; });
     child.on('close', code => { if (done) return; done = true; clearTimeout(timer); inputStream?.destroy(); if (outputFd !== undefined) fs.closeSync(outputFd); resolve({ code, stdout: Buffer.concat(output.stdout).toString(), stderr: Buffer.concat(output.stderr).toString(), ...(failure ? { failure } : {}) }); });
@@ -110,8 +117,18 @@ function isolation(c, image, owner, command, network, credential = true) {
     credentialEnvironmentNames: credential ? [KEY_ENV] : [], logDriver: 'none' };
 }
 async function runDirectDockerTask(image, files, options = {}) {
+  if (files.some(f => f.path === 'evaluation-profile.json' && JSON.parse(f.bytes) === CODEX_PROFILE)) throw fail('evaluation_codex_relay_required');
   const key = options.key === undefined ? readEvaluationKey() : validKey(options.key);
   return runDockerTask(image, files, options, key);
+}
+// The caller owns the explicitly approved host-only transport lifetime. This
+// path never reads/injects credentials and cannot use a bridged network.
+async function runCodexDockerTask(image, files, options = {}) {
+  if (typeof options.sendNativeRequest !== 'function' || options.key !== undefined || options.network !== undefined && options.network !== 'none'
+    || !files.some(f => f.path === 'evaluation-profile.json' && JSON.parse(f.bytes) === CODEX_PROFILE)) throw fail('evaluation_codex_relay_required');
+  if (!options.runDocker && process.platform !== 'linux') throw fail('evaluation_linux_required');
+  const run = relayDockerTransport(options.runDocker || docker, options.sendNativeRequest, MAILBOX_LIMITS);
+  return runDockerTask(image, files, { ...options, runDocker: run, network: 'none' }, undefined);
 }
 // Separate credential-free path: never read a provider key and never inject
 // any account environment. Only its fixed archive artifact may be collected.
@@ -194,4 +211,4 @@ async function runDockerTask(image, files, options, key, dependencyOutput) {
   }
   return { ...result, containerId: id, cleaned: true, isolation: proof, timeoutMs, inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash };
 }
-module.exports = { prepareDirectTurnFiles, prepareDirectReplayInput, runDirectDockerTask, runDependencyDockerTask, isolation };
+module.exports = { prepareDirectTurnFiles, prepareDirectReplayInput, runDirectDockerTask, runCodexDockerTask, runDependencyDockerTask, isolation };

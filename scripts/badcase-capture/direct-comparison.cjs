@@ -6,7 +6,7 @@ const { prepareSealedDirectTurn, prepareSealedPromptTarget } = require('./sealed
 const { prepareDirectTurnFiles, runDirectDockerTask } = require('./direct-docker.cjs');
 const { prepareReplayGit } = require('./replay-git.cjs');
 const { prepareReplayDependencies } = require('./replay-dependencies.cjs');
-const { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, DEFAULT_PROFILE, DEEPSEEK_PROFILE } = require('./direct-model.cjs');
+const { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, DEFAULT_PROFILE, DEEPSEEK_PROFILE, CODEX_PROFILE } = require('./direct-model.cjs');
 const { manifestFor } = require('./pi-probe-materials.cjs');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 const { resolveWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-candidate');
@@ -56,6 +56,9 @@ function prepareComparison(config, options = {}) {
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')) throw fail('evaluation_config_invalid');
   const profile = config.modelProfile ?? DEFAULT_PROFILE;
   modelProfile(profile);
+  // Low-level native container path is available, but this CLI has not yet
+  // connected host-only authorization/pre-stage checks. Never inject a token.
+  if (profile === CODEX_PROFILE) throw fail('evaluation_codex_cli_not_connected');
   if (config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
     || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
   const rules = validateRules(config.rules);

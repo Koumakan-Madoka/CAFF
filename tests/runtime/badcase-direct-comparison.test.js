@@ -7,7 +7,7 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {} } = {}) {
+async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect the files.', files: files.map(p => ({ path: p,
@@ -16,7 +16,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
     ...(repositorySnapshot ? { repository: repositorySnapshot.report, gitFiles: repositorySnapshot.gitFiles } : {}),
     callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: {} } : null,
     ...(fileEvidencePaths === undefined ? {} : { fileEvidencePaths }) };
-  fs.writeFileSync(path.join(root, 'evaluation-profile.json'), JSON.stringify(model));
+  fs.writeFileSync(path.join(root, 'evaluation-profile.json'), JSON.stringify(profile));
   if (directoryWorkspace) {
     const staged = require('../../scripts/badcase-capture/direct-docker.cjs').prepareDirectReplayInput(input);
     for (const f of staged) { const dest = path.join(root, f.path); fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, f.bytes); }
@@ -27,16 +27,17 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
   workerFs.existsSync = p => p === '/.dockerenv' || fs.existsSync(mapped(p));
   workerFs.renameSync = (a, b) => fs.renameSync(mapped(a), mapped(b));
   const observer = { calls: [], complete() {}, fetch: async () => { throw Error('unexpected_network'); } };
-  let subscriber, disposed = false, stopped = false;
-  const session = { messages: [], model: { provider: 'opencode-go', id: 'deepseek-v4.1-flash' },
-    agent: { state: { tools: Array.from({ length: 10 }, (_, i) => ({ name: 'tool-' + i })) } },
+  let subscriber, disposed = false, stopped = false, startConfig;
+  const selected = require('../../scripts/badcase-capture/direct-model.cjs').modelProfile(profile);
+  const session = { messages: [], model: { provider: selected.provider, id: selected.model, api: selected.api || 'openai-completions' }, thinkingLevel: selected.thinking || 'off',
+    agent: { transport: 'websocket', state: { tools: Array.from({ length: 10 }, (_, i) => ({ name: 'tool-' + i })) } },
     bindExtensions: async () => {}, subscribe: f => { subscriber = f; }, prompt: async () => {
       const message = { role: 'assistant', content: [{ type: 'text', text: 'INTERNAL ONLY: stable file; deleted.txt 不存在' }], stopReason: 'stop' };
       afterTurn(path.join(root, 'restored'));
-      session.messages.push(message); observer.calls.push({ model, durationMs: 1, success: true });
+      session.messages.push(message); observer.calls.push({ model: profile, durationMs: 1, success: true });
       subscriber({ type: 'message_end', message });
     } };
-  const runtime = { session, services: { resourceLoader: { getExtensions: () => ({ errors: [] }) } }, dispose: async () => { disposed = true; } };
+  const runtime = { session, services: { settingsManager: { applyOverrides: () => {} }, resourceLoader: { getExtensions: () => ({ errors: [] }) } }, dispose: async () => { disposed = true; } };
   const workerRequire = name => {
     if (name === 'node:fs') return workerFs;
     if (name === 'node:child_process') return { execFileSync: (program, args, options) => {
@@ -45,6 +46,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
         { ...options, env: { ...require('../../scripts/badcase-capture/replay-git.cjs').gitEnvironment(), ...options.env, PATH: process.env.PATH, SystemRoot: process.env.SystemRoot } });
     } };
     if (name === '/work/direct-model.cjs') return { ...require('../../scripts/badcase-capture/direct-model.cjs'), observeDirectFetch: () => observer };
+    if (name === '/work/codex-mailbox.cjs') return { createCodexMailboxFetch: () => observer.fetch };
     if (name === '/work/build/server/domain/runtime/badcase-capture/secrets') return require('../../build/server/domain/runtime/badcase-capture/secrets');
     if (name === '/work/caff-runtime-bootstrap.cjs') return { verifyCaffRuntimeStage: () => ({ manifest: { inputHash: 'input', runtimeHash: 'runtime' } }) };
     if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async () => ({
@@ -54,14 +56,14 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
   };
   const workerModule = { exports: {} }, filename = require.resolve('../../scripts/badcase-capture/direct-sdk-container.cjs');
   vm.compileFunction(fs.readFileSync(filename, 'utf8'), ['require', 'module', 'exports', 'process'], { filename })(
-    workerRequire, workerModule, workerModule.exports, { platform: 'linux', getuid: () => 65534, cwd: () => '/work', env: { CAFF_BADCASE_MODEL_KEY: key } });
+    workerRequire, workerModule, workerModule.exports, { platform: 'linux', getuid: () => 65534, cwd: () => '/work', env: profile === 'openai-codex/gpt-6.1-sol' ? {} : { CAFF_BADCASE_MODEL_KEY: key } });
   const receipt = await workerModule.exports.main({ loadModule: async name => {
     if (name === '/work/runtime/dist/bundle/index.js') return { VERSION: '0.85.1' };
     assert.equal(name, '/work/build/lib/pi-sdk-host.mjs');
-    return { normalizeStartCommand: c => c, createSdkRuntime: async () => ({ runtime }) };
+    return { normalizeStartCommand: c => c, createSdkRuntime: async (_sdk, config) => { startConfig = config; return { runtime }; } };
   } });
   assert.equal(disposed, true); assert.equal(stopped, withCallback);
-  return { receipt, input };
+  return { receipt, input, startConfig, settings: fs.existsSync(path.join(root, 'agent/settings.json')) ? JSON.parse(fs.readFileSync(path.join(root, 'agent/settings.json'))) : null };
 }
 function config() {
   return { repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'), request: {}, image: { imageId: 'sha256:' + '1'.repeat(64) },
@@ -92,6 +94,12 @@ test('planning is credential/Docker-free; unsupported and unconfirmed inputs can
   await assert.rejects(runComparison(config(), { ...f.options, confirmed: false }), /confirmation_required/);
   const no = await runComparison(config(), { ...f.options, prepare: () => ({ supported: false }) });
   assert.equal(no.supported, false); assert.equal(f.state.executions, 0); assert.equal(f.state.keys, 0);
+});
+test('Codex cannot enter legacy CLI key injection while host-only authorization wiring is pending', async () => {
+  const f = fakes(), c = { ...config(), modelProfile: 'openai-codex/gpt-6.1-sol' };
+  assert.throws(() => prepareComparison(c, f.options), /evaluation_codex_cli_not_connected/);
+  await assert.rejects(runComparison(c, f.options), /evaluation_codex_cli_not_connected/);
+  assert.equal(f.state.keys, 0); assert.equal(f.state.executions, 0);
 });
 test('N real-driver slots per variant, per-call rows, host scoring only after cleanup, exact pass totals', async () => {
   const f = fakes({ badReply: true }), r = await runComparison(config(), f.options);
@@ -162,6 +170,13 @@ test('rubric requires actual reads, exact original tree and reply fragments, not
   assert.equal(scoreReadOnlyFiles(base, c.rules, beforeHash).pass, true);
   for (const patch of [{ toolCalls: [] }, { afterHash: 'different' }, { finalText: 'done' }, { success: false },
     { toolCalls: [...base.toolCalls, { name: 'write', isError: true }] }]) assert.equal(scoreReadOnlyFiles({ ...base, ...patch }, c.rules, beforeHash).pass, false);
+});
+test('Codex worker uses credential-free mailbox, xhigh native model, SSE and no automatic retry', async t => {
+  const { receipt, startConfig, settings } = await workerReceipt(t, { profile: 'openai-codex/gpt-6.1-sol' });
+  assert.equal(startConfig.provider, 'openai-codex'); assert.equal(startConfig.model, 'gpt-6.1-sol'); assert.equal(startConfig.thinking, 'xhigh');
+  assert.equal(settings.transport, 'sse'); assert.equal(settings.retry.enabled, false); assert.equal(settings.retry.provider.maxRetries, 0);
+  assert.deepEqual(receipt.modelConfig, { api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' });
+  assert.equal(receipt.success, true); assert.equal(receipt.modelCalls[0].model, 'openai-codex/gpt-6.1-sol');
 });
 test('worker hashes nested files and same-prefix siblings in the same order as the host', async t => {
   const { receipt, input } = await workerReceipt(t, { files: ['src/index.js', 'src.js', 'a/item.txt', 'a.txt', 'docs/readme.md', 'docs.md'] });
