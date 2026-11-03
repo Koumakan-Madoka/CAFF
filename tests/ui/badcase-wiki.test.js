@@ -81,6 +81,15 @@ function setup(t, handler) {
     click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
 
+test('voided mark audit remains visible after removing the active case, without an undefined number or HTML execution', async t => {
+  const h = setup(t);
+  h.saved().events.push({ id: 'event-void', type: 'case-mark-voided', caseIds: ['removed-case'], createdAt: '2026-11-03T09:00:00Z', label: '误标作废', reason: '现场无对应测试；用户批准 <script>not-html</script>' });
+  const before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="impact"]');
+  const log = h.root.querySelector('#impact-log');
+  assert.match(log.textContent, /误标作废/); assert.match(log.textContent, /现场无对应测试/);
+  assert.match(log.textContent, /保留旧版本/); assert.doesNotMatch(log.textContent, /#undefined/);
+  assert.equal(log.querySelector('script'), null); assert.deepEqual(h.saved(), before); assert.equal(h.posts().length, 0);
+});
 test('command progress refreshes read-only without resetting wiki edits or presenting original observations as adoption', async t => {
   let finished = false;
   const execution = () => ({ id: 'execution-1', status: finished ? 'completed' : 'running', updatedAt: new Date().toISOString(), plan: { model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh' }, variants: ['original'], repeats: 2 }, current: finished ? null : { variant: 'original', iteration: 1 }, conclusion: finished ? 'original_observation_only' : null,

@@ -24,7 +24,7 @@ function seal(t, { missingTarget = false, resume = false } = {}) {
     r.harness.configSnapshotHash = put(JSON.stringify(config));
   });
 }
-function setup(t, { confirmed = true, tool = false, missingTarget = false, staged = false, resume = false } = {}) {
+function setup(t, { confirmed = true, tool = false, missingTarget = false, staged = false, resume = false, publicReply = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'global-comparison-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const scope = { globalRoot: path.join(root, 'global'), sourceWorktree: path.join(root, 'source') }, store = createWikiStore(scope);
   const sources = store.addTextCases(Array.from({ length: 16 }, (_, n) => ({ source: { origin: 'http://127.0.0.1:3100', projectId: 'history-project-' + n, conversationId: 'history-room', messageId: 'message-' + n, agentId: 'role-family-gpt' }, role: 'GPT', actual: 'Unclear report', expected: 'Unique expected visible outcome number ' + n, message: 'Internal jargon', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }))).cases;
@@ -38,7 +38,8 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
   const v = store.saveDraft({ caseIds: train, model: 'deepseek/deepseek-v4-flash', entries: [{ title: 'Clear', failureMode: 'jargon', symptoms: 'unclear', rootCauseHypothesis: 'audience', guideline, caseIds: train }], unclassified: [] });
   store.review({ versionId: v.id, entryId: v.entries[0].id, expectedRevision: store.read().revision, decision: 'approved' });
   const seals = selected.map(() => seal(t, { missingTarget, resume })), categories = staged ? ['reproduction', 'control', 'control', 'reproduction', 'reproduction', 'probe', 'control'] : ['reproduction', 'reproduction', 'reproduction', 'probe', 'control', 'control', 'control'];
-  const rules = { kind: 'file-literals-v1', files: [{ path: 'REPORT.md', contains: ['RESULT'], notContains: ['TODO'] }] };
+  const rules = publicReply ? { kind: 'public-reply-literals-v1', leadChars: 20, conclusionMarkers: ['done'], forbiddenTerms: ['P2'], forbiddenPatterns: ['commit-hash'] }
+    : { kind: 'file-literals-v1', files: [{ path: 'REPORT.md', contains: ['RESULT'], notContains: ['TODO'] }] };
   for (let i = 0; i < 7; i++) {
     // A missing declared target is still an honestly registered old seal. The
     // global evaluation must mark it unsupported, never fall back to its role.
@@ -67,6 +68,16 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
   const plan = () => prepareBatch(config, options), run = () => runBatch(config, { ...options, expectedPlanHash: plan().summary.planHash });
   return { root, store, sources, split, seals, candidate, config, single, state, options, plan, run, guideline };
 }
+test('registered global replay freezes public reply rules and scores real callback text without file references in input', async t => {
+  const h = setup(t, { publicReply: true });
+  assert.ok(h.store.read().replayCases.every(c => c.rules.kind === 'public-reply-literals-v1'));
+  const p = prepareComparison(h.single, h.options); assert.equal(p.supported, true);
+  assert.equal(p.inputs.original.fileEvidencePaths, undefined);
+  const r = await runComparison(h.single, h.options);
+  assert.equal(r.totals.original.passed, 3); assert.equal(r.totals.candidate.passed, 3);
+  assert.ok(r.runs.every(row => row.replyChecks.conclusionMarker === 'done'));
+  assert.ok(r.runs.every(row => row.fileEvidence === undefined));
+});
 test('D13/D16 global staged suite alternates 10 valid runs, rejects without running tests and has no cross-stage total', async t => {
   const h = setup(t, { staged: true }), before = h.store.read(), p = h.plan();
   assert.equal(p.summary.repeats, 10); assert.equal(p.summary.evaluation.kind, 'wikiskill-gate-v1');

@@ -20,10 +20,12 @@ const { resolveWikiCandidate } = require('../../build/server/domain/runtime/badc
 const { resolveGlobalWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-global-candidate');
 const { collectWikiCandidateFiles } = require('../../build/server/domain/runtime/badcase-capture/wiki-candidate-files');
 const { validateLiteralRules, scoreLiteralFiles } = require('./file-literal-rules.cjs');
+const { validatePublicReplyRules, scorePublicReply } = require('./public-reply-literal-rules.cjs');
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const fail = code => Object.assign(Error(code), { code });
 function validateRules(rules) {
   if (rules?.kind === 'file-literals-v1') return validateLiteralRules(rules);
+  if (rules?.kind === 'public-reply-literals-v1') return validatePublicReplyRules(rules);
   if (!rules || rules.kind !== 'read-only-files-v1'
     || Object.keys(rules).some(k => !['kind', 'readPaths', 'absentPaths', 'requiredReplyFragments'].includes(k))
     || !Array.isArray(rules.absentPaths) || rules.absentPaths.length > 16 || new Set(rules.absentPaths).size !== rules.absentPaths.length
@@ -302,12 +304,14 @@ async function runComparison(config, options = {}) {
         modelCallsKnown += row.modelCalls.length;
         for (const [i, call] of row.modelCalls.entries()) emit({ event: 'model_call', variant, iteration, request: i + 1, ...call });
         if (receipt.success === true && receipt.modelCalls.every(c => c.success)) {
-          const literal = plan.summary.rules.kind === 'file-literals-v1';
-          const score = literal ? scoreLiteralFiles(receipt, plan.summary.rules) : scoreReadOnlyFiles(receipt, plan.summary.rules, plan.beforeHash);
-          if (score.available === false) { row.reason = 'file_evidence_unavailable'; stopped = true; }
+          const literal = plan.summary.rules.kind === 'file-literals-v1', publicReply = plan.summary.rules.kind === 'public-reply-literals-v1';
+          const score = literal ? scoreLiteralFiles(receipt, plan.summary.rules) : publicReply ? scorePublicReply(receipt, plan.summary.rules)
+            : scoreReadOnlyFiles(receipt, plan.summary.rules, plan.beforeHash);
+          if (score.available === false) { row.reason = publicReply ? 'reply_evidence_unavailable' : 'file_evidence_unavailable'; stopped = true; }
           else {
             row.status = score.pass ? 'pass' : 'fail'; row.checks = score.checks;
             if (literal) { row.fileEvidence = receipt.fileEvidence; row.fileChecks = score.details; }
+            if (publicReply) row.replyChecks = score.details;
           }
         } else {
           row.reason = 'model_turn_failed';
@@ -328,7 +332,7 @@ async function runComparison(config, options = {}) {
         }
       }
       if (alternating) {
-        fatal = row.reason === 'file_evidence_unavailable' || evidenceChanged
+        fatal = ['file_evidence_unavailable', 'reply_evidence_unavailable'].includes(row.reason) || evidenceChanged
           || modelConfigChanged || recordedConfigChanged || sessionChanged || resourcesChanged || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
         // Only environmental errors may consume the five replacement attempts.
         // Evidence/integrity stops propagate to the remaining cases and stages.

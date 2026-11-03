@@ -110,6 +110,27 @@ function fakes({ badReply = false, modelError = false, workerError = false, badB
   };
   return { state, input, options: { prepare, stage, execute, confirmed: true, readKey: () => { state.keys++; return key; }, onEvent: e => state.events.push(e) } };
 }
+test('public-reply literal rules stay on the host, score public output, and require reply evidence', async () => {
+  const c = { ...config(), rules: { kind: 'public-reply-literals-v1', leadChars: 30, conclusionMarkers: ['LITERAL_MARKER'], forbiddenTerms: ['P2'], forbiddenPatterns: ['commit-hash'] } };
+  const f = fakes(), execute = f.options.execute;
+  f.options.execute = async (...args) => { const task = await execute(...args); const candidate = JSON.parse(args[1][0].bytes).prompt !== 'original'; task.receipt.finalText = candidate ? 'LITERAL_MARKER P2' : 'LITERAL_MARKER complete'; return task; };
+  const plan = prepareComparison(c, f.options);
+  assert.equal(plan.supported, true); assert.equal(JSON.stringify(plan.inputs).includes('LITERAL_MARKER'), false);
+  const result = await runComparison(c, f.options);
+  assert.equal(result.totals.original.passed, 2); assert.equal(result.totals.candidate.failed, 2);
+  assert.ok(result.runs.every(r => !Object.hasOwn(r, 'fileEvidence')));
+  assert.ok(result.runs.every(r => r.replyChecks));
+  for (const replySource of ['internal', 'none']) {
+    const g = fakes(), go = g.options.execute;
+    g.options.execute = async (...args) => { const task = await go(...args); task.receipt.finalText = 'LITERAL_MARKER complete'; task.receipt.replySource = replySource; return task; };
+    const observed = await runComparison(c, g.options); assert.equal(observed.totals.original.passed, 0); assert.equal(observed.runs[0].status, 'fail');
+  }
+  const missing = fakes(), run = missing.options.execute;
+  missing.options.execute = async (...args) => { const task = await run(...args); delete task.receipt.finalText; return task; };
+  const unavailable = await runComparison(c, missing.options);
+  assert.equal(unavailable.completed, false); assert.equal(unavailable.runs[0].status, 'error'); assert.equal(unavailable.runs[0].reason, 'reply_evidence_unavailable');
+  assert.equal(missing.state.executions, 1);
+});
 test('planning is credential/Docker-free; unsupported and unconfirmed inputs cannot run', async () => {
   const f = fakes(); const p = prepareComparison(config(), f.options); assert.equal(p.supported, true); assert.equal(f.state.keys, 0); assert.equal(f.state.executions, 0);
   await assert.rejects(runComparison(config(), { ...f.options, confirmed: false }), /confirmation_required/);
