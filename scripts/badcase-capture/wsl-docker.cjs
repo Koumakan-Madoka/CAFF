@@ -8,13 +8,16 @@ function validateWslDockerBackend(value) {
     || typeof value.distribution !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value.distribution)) throw fail('evaluation_wsl_backend_invalid');
   return { kind: value.kind, distribution: value.distribution };
 }
+function wslLaunchEnvironment(inherited = process.env) {
+  const env = {};
+  for (const [key, value] of Object.entries(inherited)) if (typeof value === 'string'
+    && /^(?:PATH|SYSTEMROOT|WINDIR|USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP)$/i.test(key)) env[key] = value;
+  return env;
+}
 function createWslDockerRunner(backend, options = {}) {
   const selected = validateWslDockerBackend(backend);
   if ((options.platform ?? process.platform) !== 'win32') throw fail('evaluation_wsl_host_required');
-  const inherited = options.env || process.env, env = {};
-  for (const [key, value] of Object.entries(inherited)) if (typeof value === 'string'
-    && /^(?:PATH|SYSTEMROOT|WINDIR|USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP)$/i.test(key)) env[key] = value;
-  const launch = options.spawn || spawn;
+  const env = wslLaunchEnvironment(options.env), launch = options.spawn || spawn;
   // --exec bypasses all shells/profiles; env -i also removes distro-side env.
   // Explicit empty HOME/config prevent ambient Docker contexts/config/creds.
   const prefix = ['--distribution', selected.distribution, '--exec', '/usr/bin/env', '-i',
@@ -51,4 +54,4 @@ function createWslDockerRunner(backend, options = {}) {
     });
   };
 }
-module.exports = { validateWslDockerBackend, createWslDockerRunner };
+module.exports = { validateWslDockerBackend, createWslDockerRunner, wslLaunchEnvironment };

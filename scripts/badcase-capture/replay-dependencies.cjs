@@ -84,7 +84,8 @@ async function cacheReplayDependencies(input, image, root, options = {}) {
       { path: 'environment.json', bytes: Buffer.from(JSON.stringify(image)) }, { path: 'mode.txt', bytes: Buffer.from('fresh') },
       { path: 'dependency-install.json', bytes: Buffer.from(JSON.stringify({ proxyUrl: options.proxyUrl ?? null, network: options.network ?? 'bridge' })) });
     const result = await (options.runBuild || runDependencyDockerTask)(image, files, {
-      outputFile: path.join(temporary, 'node_modules.tar.gz'), network: options.network ?? 'bridge', timeoutMs: 900000 });
+      outputFile: path.join(temporary, 'node_modules.tar.gz'), network: options.network ?? 'bridge', timeoutMs: 900000,
+      ...(options.runDocker ? { runDocker: options.runDocker } : {}) });
     if (result?.code !== 0 || result.failed || result.cleaned !== true) throw Error();
     const bytes = fs.readFileSync(path.join(temporary, 'node_modules.tar.gz')), r = result.receipt;
     if (r?.kind !== 'npm-replay-dependencies-v1' || r.nodeVersion !== recipe.nodeVersion || r.installCommand !== INSTALL
