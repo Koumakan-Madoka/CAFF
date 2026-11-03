@@ -25,8 +25,11 @@ function prepareDirectReplayInput(input) {
   });
   let gitInventory;
   if (input.gitFiles !== undefined) {
-    assert.ok(input.repository?.kind === 'sanitized-root-git-v1' && input.repository.historyIncluded === false
-      && input.repository.headIdenticalToSource === false && Array.isArray(input.gitFiles) && input.gitFiles.length === 6);
+    const repository = input.repository;
+    assert.ok((repository?.kind === 'sanitized-root-git-v1' && repository.historyIncluded === false && repository.headIdenticalToSource === false
+      || repository?.kind === 'preserved-head-git-v1' && repository.historyIncluded === true && repository.headIdenticalToSource === true)
+      && Number.isSafeInteger(repository.historyCommitCount) && repository.historyCommitCount >= 1
+      && Array.isArray(input.gitFiles) && input.gitFiles.length === 6);
     gitInventory = input.gitFiles.map(f => {
       assert.match(f.path, /^\.git\/(?:HEAD|config|index|refs\/heads\/replay-baseline|objects\/pack\/pack-[a-f0-9]{40,64}\.(?:pack|idx))$/);
       assert.equal(typeof f.base64, 'string');

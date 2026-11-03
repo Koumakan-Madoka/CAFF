@@ -30,9 +30,9 @@ const sse = () => {
       usage: { input_tokens: 20, output_tokens: 5, total_tokens: 25, input_tokens_details: { cached_tokens: 4 } } } }];
   return events.map(e => 'data: ' + JSON.stringify(e) + '\n\n').join('');
 };
-function fakeTransport(f, { send = () => new Response(sse(), { headers: { 'content-type': 'text/event-stream' } }), now = () => epoch } = {}) {
+function fakeTransport(f, { send = () => new Response(sse(), { headers: { 'content-type': 'text/event-stream' } }), now = () => epoch, guard } = {}) {
   const calls = [], agents = [];
-  const transport = load().createCodexTransport(f.config, { now, createDispatcher: uri => {
+  const transport = load().createCodexTransport(f.config, { now, containsKnownValue: guard, createDispatcher: uri => {
     const agent = { uri, destroyed: false, destroy: async () => { agent.destroyed = true; } }; agents.push(agent); return agent;
   }, fetch: async (url, options) => { calls.push({ url, options }); return send(url, options); } });
   return { transport, calls, agents };
@@ -99,6 +99,16 @@ test('expired credential and outgoing/incoming selected-access leaks stop withou
     await assert.rejects(g.transport.fetch(endpoint, q), /evaluation_codex_(input|output)_contains_access/);
     assert.equal(g.calls.length, direction === 'out' ? 0 : 1);
     assert.equal(JSON.stringify(g.transport.state()).includes(f.access), false); await g.transport.close();
+  }
+});
+test('host inventory guard checks actual request/response plaintext, not only the selected access or initial workspace', async t => {
+  const opaque = 'synthetic-other-provider-known-value';
+  for (const direction of ['out', 'in']) {
+    const f = fixture(t), g = fakeTransport(f, { guard: bytes => bytes.includes(opaque), send: () => new Response(sse().replace('synthetic answer', opaque)) });
+    const q = direction === 'out' ? request({ instructions: opaque }) : request();
+    await assert.rejects(g.transport.fetch(endpoint, q), new RegExp('evaluation_codex_' + (direction === 'out' ? 'input' : 'output') + '_contains_known_key'));
+    assert.equal(g.calls.length, direction === 'out' ? 0 : 1); assert.equal(g.transport.state().stopped, true);
+    assert.equal(JSON.stringify(g.transport.state()).includes(opaque), false); await g.transport.close();
   }
 });
 test('auth refusal, exhausted quota, server failure and proxy refusal latch closed; no SDK retry or direct fallback', async t => {

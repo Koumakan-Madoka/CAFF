@@ -1,6 +1,6 @@
-// Trusted host preparation, NOT a source-repository copy. Only authorized
-// snapshot/deletion paths at an explicitly recorded commit are read. Raw source
-// blobs stay in memory; only redacted bytes enter a new history-free Git repo.
+// Trusted host preparation at an explicitly recorded commit. Preserve only
+// reachable Git objects after known-value blob scanning; on a hit, fall back
+// to the prior sanitized authorized-path baseline. Never copy source config.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { redactFileSecrets } = require('../../build/server/domain/runtime/badcase-capture/secrets');
@@ -16,7 +16,7 @@ function gitEnvironment() {
     GIT_AUTHOR_NAME: 'GPT', GIT_AUTHOR_EMAIL: 'gpt@caff.local', GIT_COMMITTER_NAME: 'GPT', GIT_COMMITTER_EMAIL: 'gpt@caff.local',
     GIT_AUTHOR_DATE: '2000-01-01T00:00:00+00:00', GIT_COMMITTER_DATE: '2000-01-01T00:00:00+00:00' };
 }
-function prepareReplayGit(recipe, input, { knownValues = [] } = {}) {
+function prepareSanitizedReplayGit(recipe, input, { knownValues = [] } = {}) {
   let temporary;
   try {
     if (!recipe || Object.keys(recipe).sort().join(',') !== 'head,sourceRoot' || !hex(recipe.head)
@@ -89,6 +89,58 @@ function prepareReplayGit(recipe, input, { knownValues = [] } = {}) {
       headIdenticalToSource: false, baselineFileCount: safe.length, omittedSourceFiles, redactedFiles };
     return { gitFiles, report, checkKnownValues(values) {
       if (safe.some(f => values.some(value => typeof value === 'string' && value && f.bytes.includes(value)))) throw fail('evaluation_input_contains_key');
+    } };
+  } catch { throw fail('evaluation_repository_unavailable_or_invalid'); }
+  finally { if (temporary) fs.rmSync(temporary, { recursive: true, force: true }); }
+}
+function prepareReplayGit(recipe, input, { knownValues = [] } = {}) {
+  let temporary;
+  try {
+    if (!recipe || Object.keys(recipe).sort().join(',') !== 'head,sourceRoot' || !hex(recipe.head)
+      || !path.isAbsolute(recipe.sourceRoot || '') || !Array.isArray(input?.files) || input.files.length > 1024
+      || !Array.isArray(input.deletions) || input.deletions.length > 2048 || !Array.isArray(knownValues)
+      || knownValues.some(v => typeof v !== 'string') || [...input.files.map(f => f.path), ...input.deletions].some(p => !safePath(p))) throw Error();
+    const source = path.resolve(recipe.sourceRoot), stat = fs.lstatSync(source);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(source) !== source) throw Error();
+    const env = gitEnvironment(), git = (cwd, args, options = {}) => execFileSync('git', ['--no-replace-objects', '-C', cwd,
+      '-c', 'protocol.allow=never', '-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'),
+      '-c', 'core.fsmonitor=false', '-c', 'core.autocrlf=false', ...args],
+    { env, windowsHide: true, timeout: 120000, maxBuffer: 8 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], ...options });
+    if (fs.realpathSync(git(source, ['rev-parse', '--show-toplevel']).toString().trim()) !== source
+      || git(source, ['cat-file', '-t', recipe.head]).toString().trim() !== 'commit') throw Error();
+    const { scanGitHistory } = require('./replay-git-history.cjs'), metadata = scanGitHistory({ sourceRoot: source, head: recipe.head }, knownValues);
+    if (metadata.scan.matchCount) {
+      const fallback = prepareSanitizedReplayGit(recipe, input, { knownValues });
+      fallback.report.historyCommitCount = 1; fallback.report.historyScan = metadata.scan;
+      fallback.report.fallbackReason = 'known_key_in_reachable_blob';
+      return fallback;
+    }
+    // Repack precisely the recorded commit's closure, not --all/source packs:
+    // source refs, future/unreachable objects, hooks, config and auth stay out.
+    const pack = git(source, ['pack-objects', '--stdout', '--revs', '--no-reuse-delta', '--no-reuse-object', '--window=0', '--depth=0', '--threads=1', '--compression=6'],
+      { input: recipe.head + '\n', maxBuffer: metadata.objectBytes + metadata.objectCount * 1024 + 1048576 });
+    temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-replay-history-'));
+    const sha256 = recipe.head.length === 64;
+    git(temporary, ['init', '-q', '--template=', '--initial-branch=replay-baseline', '--object-format=' + (sha256 ? 'sha256' : 'sha1')]);
+    fs.writeFileSync(path.join(temporary, '.git/config'), '[core]\n\trepositoryformatversion = ' + (sha256 ? '1' : '0')
+      + '\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = false\n\tautocrlf = false\n' + (sha256 ? '[extensions]\n\tobjectformat = sha256\n' : ''), { mode: 0o600 });
+    git(temporary, ['index-pack', '--stdin', '--strict'], { input: pack });
+    git(temporary, ['update-ref', 'refs/heads/replay-baseline', recipe.head]);
+    // Build the original index without checkout/filtering or writing blob
+    // plaintext to host disk. Captured working files remain the only worktree.
+    git(temporary, ['read-tree', recipe.head]);
+    const packs = fs.readdirSync(path.join(temporary, '.git/objects/pack')).filter(n => /^pack-[a-f0-9]+\.(pack|idx)$/.test(n)).sort();
+    if (packs.length !== 2 || packs[0].split('.')[0] !== packs[1].split('.')[0]) throw Error();
+    const names = ['.git/HEAD', '.git/config', '.git/index', '.git/refs/heads/replay-baseline', ...packs.map(n => '.git/objects/pack/' + n)];
+    const gitFiles = names.sort().map(name => { const bytes = fs.readFileSync(path.join(temporary, name)); return { path: name, base64: bytes.toString('base64'), sha256: hash(bytes) }; });
+    const report = { kind: 'preserved-head-git-v1', sourceHead: recipe.head, sourceHeadEvidence: 'explicit-operator-record', restoredHead: recipe.head,
+      historyIncluded: true, headIdenticalToSource: true, historyCommitCount: metadata.commitCount, historyScan: metadata.scan,
+      baselineFileCount: git(temporary, ['ls-files', '-z']).toString().split('\0').filter(Boolean).length, omittedSourceFiles: 0, redactedFiles: [] };
+    const checked = new Set(knownValues);
+    return { gitFiles, report, checkKnownValues(values) {
+      const additional = [...new Set(values)].filter(v => typeof v === 'string' && v && !checked.has(v));
+      if (additional.length && scanGitHistory({ sourceRoot: source, head: recipe.head }, additional).scan.matchCount) throw fail('evaluation_input_contains_key');
+      additional.forEach(v => checked.add(v));
     } };
   } catch { throw fail('evaluation_repository_unavailable_or_invalid'); }
   finally { if (temporary) fs.rmSync(temporary, { recursive: true, force: true }); }

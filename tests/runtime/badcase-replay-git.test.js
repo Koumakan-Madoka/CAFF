@@ -26,6 +26,60 @@ function fixture(t) {
 }
 function api() { return require('../../scripts/badcase-capture/replay-git.cjs'); }
 
+test('no known-value hit preserves exact recorded HEAD/history and deliberately leaves pattern-only history unchanged', t => {
+  const f = fixture(t), snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, f.input, { knownValues: ['unrelated-synthetic-value'] });
+  f.install(snapshot);
+  assert.equal(snapshot.report.kind, 'preserved-head-git-v1'); assert.equal(snapshot.report.historyIncluded, true);
+  assert.equal(snapshot.report.headIdenticalToSource, true); assert.equal(snapshot.report.restoredHead, f.head);
+  assert.equal(f.git(f.restored, 'rev-parse', 'HEAD').trim(), f.head);
+  assert.equal(f.git(f.restored, 'log', '--format=raw'), f.git(f.sourceRoot, 'log', '--format=raw', f.head));
+  assert.equal(f.git(f.restored, 'show', 'HEAD:secret.txt'), 'fixture=' + fake + '\n');
+  assert.equal(fs.readFileSync(path.join(f.restored, 'secret.txt'), 'utf8'), 'fixture=[*]\n');
+  assert.equal(f.git(f.restored, 'show', 'HEAD~1:old-only.txt'), 'old history must not be copied');
+  assert.equal(snapshot.report.historyScan.matchCount, 0); assert.deepEqual(snapshot.report.historyScan.matchedBlobHashes, []);
+  assert.deepEqual(fs.readFileSync(path.join(f.sourceRoot, '.git/config')), f.configBefore);
+  assert.equal(f.git(f.sourceRoot, 'status', '--porcelain'), f.statusBefore);
+  const again = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, f.input, { knownValues: ['unrelated-synthetic-value'] });
+  assert.deepEqual(again.gitFiles, snapshot.gitFiles);
+});
+test('known key in a deleted historical blob forces sanitized no-history fallback, even outside captured paths', t => {
+  const f = fixture(t), value = 'old history must not be copied';
+  const oldBlob = f.git(f.sourceRoot, 'rev-parse', f.head + '~1:old-only.txt').trim();
+  const snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, f.input, { knownValues: [value] }); f.install(snapshot);
+  assert.equal(snapshot.report.historyIncluded, false); assert.notEqual(snapshot.report.restoredHead, f.head);
+  assert.equal(snapshot.report.fallbackReason, 'known_key_in_reachable_blob');
+  assert.equal(snapshot.report.historyScan.matchCount, 1); assert.deepEqual(snapshot.report.historyScan.matchedBlobHashes, [oldBlob]);
+  assert.equal(f.git(f.restored, 'rev-list', '--count', 'HEAD').trim(), '1');
+  assert.throws(() => f.git(f.restored, 'cat-file', '-t', oldBlob));
+  assert.equal(JSON.stringify(snapshot.report).includes(value), false);
+});
+test('unreachable/future objects and other source refs are neither scanned nor copied into recorded history', t => {
+  const f = fixture(t), value = 'synthetic-future-value-do-not-copy';
+  fs.writeFileSync(path.join(f.sourceRoot, 'future.txt'), value); f.git(f.sourceRoot, 'add', 'future.txt');
+  f.git(f.sourceRoot, '-c', 'user.name=GPT', '-c', 'user.email=gpt@caff.local', 'commit', '-q', '-m', 'future commit');
+  const future = f.git(f.sourceRoot, 'rev-parse', 'HEAD').trim();
+  const snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, f.input, { knownValues: [value] }); f.install(snapshot);
+  assert.equal(snapshot.report.historyIncluded, true); assert.equal(snapshot.report.historyScan.matchCount, 0);
+  assert.equal(f.git(f.restored, 'rev-parse', 'HEAD').trim(), f.head); assert.throws(() => f.git(f.restored, 'cat-file', '-t', future));
+});
+test('history scanner catches known values in binary blobs and repeated/chunk-boundary bytes without recording values', t => {
+  const f = fixture(t), value = 'opaque-synthetic-binary-key-' + 'x'.repeat(300);
+  const bytes = Buffer.concat([Buffer.alloc(65530), Buffer.from(value), Buffer.alloc(65530), Buffer.from(value)]);
+  fs.writeFileSync(path.join(f.sourceRoot, 'binary.dat'), bytes); f.git(f.sourceRoot, 'add', 'binary.dat');
+  f.git(f.sourceRoot, '-c', 'user.name=GPT', '-c', 'user.email=gpt@caff.local', 'commit', '-q', '-m', 'binary fixture');
+  const head = f.git(f.sourceRoot, 'rev-parse', 'HEAD').trim(), blob = f.git(f.sourceRoot, 'rev-parse', 'HEAD:binary.dat').trim();
+  const snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head }, f.input, { knownValues: [value] });
+  assert.equal(snapshot.report.historyIncluded, false); assert.equal(snapshot.report.historyScan.matchCount, 2);
+  assert.deepEqual(snapshot.report.historyScan.matchedBlobHashes, [blob]); assert.equal(JSON.stringify(snapshot.report).includes(value), false);
+});
+test('history hit counts include overlapping occurrences deterministically across stream chunk boundaries', t => {
+  const f = fixture(t), size = 131075, known = 'aaaaa';
+  fs.writeFileSync(path.join(f.sourceRoot, 'repeated.bin'), Buffer.alloc(size, 0x61)); f.git(f.sourceRoot, 'add', 'repeated.bin');
+  f.git(f.sourceRoot, '-c', 'user.name=GPT', '-c', 'user.email=gpt@caff.local', 'commit', '-q', '-m', 'overlap fixture');
+  const head = f.git(f.sourceRoot, 'rev-parse', 'HEAD').trim();
+  const snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head }, f.input, { knownValues: [known] });
+  assert.equal(snapshot.report.historyScan.matchCount, size - known.length + 1);
+});
 test('sanitized Git has exactly one new root commit; git show cannot recover sentinel or explicitly known values', t => {
   const f = fixture(t), snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, f.input, { knownValues: [opaque] });
   f.install(snapshot);
@@ -96,7 +150,8 @@ test('comparison preflight/staging binds the history-free Git report and refuses
   assert.ok(staged.some(f => f.path.startsWith('replay-workspace/.git/objects/pack/')));
   assert.match(formatComparison({ ...plan.summary, supported: true, runs: [] }), /HEAD不同于源仓库.*无历史提交/);
   let executed = false, emitted = false;
-  await assert.rejects(runComparison(config, { prepare, confirmed: true, readKey: () => opaque,
+  assert.throws(() => prepareComparison(config, { prepare }), /evaluation_known_sources_required/);
+  await assert.rejects(runComparison(config, { prepare, knownValues: [], confirmed: true, readKey: () => opaque,
     stage: () => [{ path: 'probe.cjs', bytes: Buffer.from('inert') }], execute: async () => { executed = true; }, onEvent: () => { emitted = true; } }),
   e => e.code === 'evaluation_input_contains_key');
   assert.equal(executed, false); assert.equal(emitted, false);
@@ -130,7 +185,7 @@ test('host requires verified Git receipt matching the prepared baseline, not mer
   }
 });
 test('empty authorized baseline still creates a valid one-commit Git index without fetching excluded files', t => {
-  const f = fixture(t), snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, { files: [], deletions: [] });
+  const f = fixture(t), snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, { files: [], deletions: [] }, { knownValues: [opaque] });
   for (const item of snapshot.gitFiles) { const dest = path.join(f.restored, item.path); fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, Buffer.from(item.base64, 'base64')); }
   assert.equal(f.git(f.restored, 'rev-list', '--all', '--count').trim(), '1');
   assert.equal(f.git(f.restored, 'ls-tree', '-r', 'HEAD').trim(), ''); assert.equal(snapshot.report.baselineFileCount, 0);

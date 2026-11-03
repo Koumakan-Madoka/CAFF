@@ -1,5 +1,6 @@
-// Trusted Linux/WSL operator entry. Plans/caches only; never reads a model key,
-// marks a case, rewrites a sealed checkpoint or submits a model request.
+// Trusted Linux/WSL operator entry. Plans/caches only; explicit Git safety
+// sources may be read in memory. Never authenticates/submits a model request,
+// marks a case or rewrites a sealed checkpoint.
 const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process');
 const { prepareComparison } = require('./direct-comparison.cjs');
 const { cacheReplayDependencies, dependencyRecipe } = require('./replay-dependencies.cjs');

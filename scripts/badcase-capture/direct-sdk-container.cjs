@@ -50,7 +50,9 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   assert.ok(input.workspace === undefined || input.workspace === 'replay-workspace');
   const gitFiles = input.gitFiles || [];
   assert.ok(Array.isArray(gitFiles) && (gitFiles.length === 0 && input.repository === undefined
-    || gitFiles.length === 6 && input.repository?.kind === 'sanitized-root-git-v1' && input.repository.historyIncluded === false && input.repository.headIdenticalToSource === false));
+    || gitFiles.length === 6 && Number.isSafeInteger(input.repository?.historyCommitCount) && input.repository.historyCommitCount >= 1
+      && (input.repository.kind === 'sanitized-root-git-v1' && input.repository.historyIncluded === false && input.repository.headIdenticalToSource === false
+        || input.repository.kind === 'preserved-head-git-v1' && input.repository.historyIncluded === true && input.repository.headIdenticalToSource === true)));
   const directoryWorkspace = input.workspace === 'replay-workspace' && input.files.length + gitFiles.length > 0;
   if (!directoryWorkspace) fs.mkdirSync(cwd, { mode: 0o700 });
   fs.mkdirSync(agentDir, { mode: 0o700 });
@@ -80,8 +82,9 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     const git = args => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 10000, maxBuffer: 65536,
       env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     const restoredHead = git(['rev-parse', '--verify', 'HEAD']), count = git(['rev-list', '--all', '--count']);
-    assert.equal(restoredHead, input.repository.restoredHead); assert.notEqual(restoredHead, input.repository.sourceHead); assert.equal(count, '1');
-    repository = { ...input.repository, gitAvailable: true, historyCommitCount: 1 };
+    assert.equal(restoredHead, input.repository.restoredHead); assert.equal(count, String(input.repository.historyCommitCount));
+    assert.equal(restoredHead === input.repository.sourceHead, input.repository.headIdenticalToSource);
+    repository = { ...input.repository, gitAvailable: true, historyCommitCount: Number(count) };
   }
   const dependencies = input.dependencies === undefined ? undefined
     : require('/work/restore-replay-dependencies.cjs').restoreReplayDependencies(cwd, input.dependencies);

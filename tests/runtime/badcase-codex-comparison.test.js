@@ -25,9 +25,9 @@ function fixture(t, { expired = false, providerStatus = 200 } = {}) {
     stage: (_repo, _deps, _image, data, profile) => { assert.equal(profile, PROFILE.model); return [
       { path: 'probe.cjs', bytes: Buffer.from(JSON.stringify(data)) }, { path: 'runtime/a', bytes: Buffer.from('fixed runtime') } ]; },
     readKey: () => { state.legacyReads++; throw Error('legacy key forbidden'); }, execute: () => { state.legacyRuns++; throw Error('legacy runner forbidden'); },
-    createCodexTransport: cfg => {
+    createCodexTransport: (cfg, guards) => {
       assert.deepEqual(cfg, { authFile, confirmed: true, timeoutMs: 120000 });
-      const transport = createCodexTransport(cfg, { now: () => now, createDispatcher: () => ({ destroy: async () => { state.closed++; } }),
+      const transport = createCodexTransport(cfg, { ...guards, now: () => now, createDispatcher: () => ({ destroy: async () => { state.closed++; } }),
         fetch: async (_url, q) => { state.sends++; assert.equal(q.headers.get('authorization'), 'Bearer ' + access);
           return providerStatus === 200 ? new Response('data: native bytes\n\n') : new Response('{"error":{"code":"usage_limit_reached"}}', { status: providerStatus }); } });
       state.transports.push(transport); return transport;
@@ -57,6 +57,23 @@ test('Codex plan is credential/Docker-free, config is explicit and summary pins 
   for (const patch of [{ keySource: undefined }, { keySource: 'evaluation-env' }, { codexAuthFile: 'relative/auth.json' },
     { codexAuthFile: path.join(path.dirname(f.authFile), 'other.json') }]) assert.throws(() => prepareComparison({ ...f.config, ...patch }, f.options), /evaluation_codex_auth_source_required/);
   assert.throws(() => prepareComparison({ ...f.config, modelProfile: 'deepseek/deepseek-v4-flash', keySource: 'caff-deepseek' }, f.options), /evaluation_config_invalid/);
+});
+test('Windows native run rejects before safety inventory/auth reads as well as before container launch', async t => {
+  if (process.platform !== 'win32') return t.skip('Windows host boundary');
+  const f = fixture(t); fs.unlinkSync(f.authFile);
+  f.config.repository = { sourceRoot: path.dirname(f.authFile), head: 'a'.repeat(40) };
+  f.config.knownKeySources = { sandboxRoot: path.dirname(f.authFile), jevSource: 'TYPESAFE_API_KEY' };
+  const options = { ...f.options }; delete options.executeCodex;
+  await assert.rejects(runComparison(f.config, options), /evaluation_linux_required/);
+  assert.equal(f.state.transports.length, 0); assert.equal(f.state.events.length, 0);
+});
+test('native repository plans require explicit complete known-value sources rather than treating missing JEV as no secrets', async t => {
+  const f = fixture(t); f.config.repository = { sourceRoot: path.dirname(f.authFile), head: 'a'.repeat(40) };
+  assert.throws(() => prepareComparison(f.config, f.options), /evaluation_known_sources_required/);
+  f.config.knownKeySources = { sandboxRoot: path.join(os.tmpdir(), '.pi-sandbox'), jevSource: 'TYPESAFE_API_KEY' };
+  assert.throws(() => prepareComparison(f.config, f.options), /evaluation_known_sources_mismatch/);
+  await assert.rejects(runComparison(f.config, { ...f.options, confirmed: false }), /evaluation_confirmation_required/);
+  assert.equal(f.state.transports.length, 0); assert.equal(f.state.events.length, 0);
 });
 test('confirmed run uses host-only access/none-network launcher, verifies model settings, closes transport, never uses legacy key', async t => {
   const f = fixture(t), result = await runComparison(f.config, f.options);
@@ -101,8 +118,21 @@ test('late-selected access inside compressed Git baseline is refused before even
   git(['init', '-q', '--template=']); fs.writeFileSync(path.join(sourceRoot, 'source.txt'), f.access);
   git(['add', 'source.txt']); git(['commit', '-q', '-m', 'Synthetic baseline']);
   f.config.repository = { sourceRoot, head: git(['rev-parse', 'HEAD']).trim() };
+  f.options.knownValues = []; // Trusted test intentionally delays discovery of access.
   await assert.rejects(runComparison(f.config, f.options), /evaluation_input_contains_key/);
   assert.equal(f.state.nativeRuns, 0); assert.equal(f.state.events.length, 0); assert.equal(f.state.transports[0].state().closed, true);
+});
+test('known-value inventory also blocks credentials discovered by tools at the actual native egress boundary', async t => {
+  const f = fixture(t), opaque = 'synthetic-other-provider-value-at-tool-time'; f.options.knownValues = [opaque];
+  f.options.executeCodex = async (_image, _files, opts) => {
+    f.state.nativeRuns++;
+    await opts.sendNativeRequest(Buffer.from(JSON.stringify({ headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: Buffer.from(JSON.stringify({ model: 'gpt-6.1-sol', input: [], instructions: opaque, stream: true, store: false, reasoning: { effort: 'xhigh' } })).toString('base64') })));
+    throw Error('egress should have been refused');
+  };
+  const result = await runComparison(f.config, f.options);
+  assert.equal(f.state.sends, 0); assert.equal(f.state.nativeRuns, 1); assert.equal(result.runs[0].status, 'error');
+  assert.equal(result.runs[0].reason, 'evaluation_codex_input_contains_known_key'); assert.equal(f.state.transports[0].state().closed, true);
 });
 test('native receipt config mismatch or encoded output leak never scores, and thrown event callback still closes transport', async t => {
   for (const mode of ['config', 'output', 'event']) {

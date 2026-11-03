@@ -6,7 +6,7 @@
 
 ### 2026-11-02 生产同配置扩展（M1 实现中）
 
-当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。以下已实现文件脱敏、目录传输、无历史 Git 基线、Linux npm 依赖缓存及 GPT 宿主传输基础模块，不宣称真实 GPT 准入或回放已通过；GPT 断网容器及单例 CLI 已连通合成验证，真实准入另按 Goal 验证。
+当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。以下已实现文件脱敏、目录传输、已知值扫描后的 Git 历史保留/无历史回退、Linux npm 依赖缓存及 GPT 宿主传输基础模块，不宣称真实 GPT 准入或回放已通过；GPT 断网容器及单例 CLI 已连通合成验证，真实准入另按 Goal 验证。
 
 - 新采集的纳入范围普通文件：Linux 与 Windows 均在内存中将哨兵命中的值替换为 `[*]`，保留路径、非秘密内容及可得 mode。私钥擦除整个块（缺 END 时擦到文件末尾），二进制/无效 UTF-8 逐字节保留非秘密部分；二进制沿用高置信哨兵子集，不扩大为键值误报。结构化 prompt/session/harness、分类用 Git 元数据和显式/敏感路径排除策略不变。
 - 仅对安全字节计算 CAS hash/size；不存原始秘密内容或其 hash。文件元数据另存 `secretRedacted/originalSize/redactionCount`，检查点记录 `secretRedactedPaths` 及文件数。脱敏本身不新增缺材料原因，也不升级 Windows subset/严格评测资格。
@@ -14,9 +14,11 @@
 - sealed-direct 与候选文件泄漏检查不再因累计 blob 超过 4 MiB 而拒绝，也不跳过大文件的 hash、秘密或字面泄漏检查。宿主的准备对象保留兼容的文件 base64；送入容器的 `replay-input.json` 只含路径/hash/size，文件原始字节单列于 `replay-workspace/`，在容器校验后换名为 `/work/restored`。选定 Key 仍不得进入暂存输入；源目录及旧封存不修改，不挂载宿主目录。
 - direct launcher 的 tar 写入专属临时文件后流送 stdin，不再使用 24 MiB stdout 缓冲上限；成功与失败均删除该临时文件。静态 SDK/工具分发的 16 MiB / 4096 文件保护仍生效，仅 direct 显式放行仓库数据命名空间（≤1024工作文件、6个Git元数据文件及1份依赖归档），全部字节仍进入输入 manifest/hash。容器 tmpfs/内存/时间等资源限制仍存在；本切片不承诺任意仓库大小都能执行。
 - 2026-11-02 用户批准的 Git 方案：单例 CLI 可显式配置 `repository: { sourceRoot, head }`；head 必须是操作方已有记录的完整提交 hash，不接受 `HEAD` 等引用，不从当前分支猜测。它是 `explicit-operator-record`，不是声称旧 checkpoint 已记录 HEAD。sourceRoot 须匹配归档工作根且为仓库顶层；源仓库可后来前进，但指定旧对象缺失时拒绝，不退回当前 HEAD。
-- 宿主只读指定提交中归档文件/已确认删除路径的基线 blob，沿用秘密哨兵及可信调用方传入的已知值脱敏，之后才写专属临时目录。其他源文件不纳入 Git 基线，不复制源 `.git`、历史对象、配置、hooks、remote、reflog或凭据；原始 blob 不落盘。固定新根提交/打包只在专属临时仓库执行，按无过滤器的原始字节和原树mode建索引，避免源 `.gitattributes`/宿主换行转换；原仓库、源工作区与旧封存均不修改。工作文件仍来自封存，源 HEAD 只提供 Git 基线，不补造旧缺文件。
-- 恢复的 `.git` 只有**一个新根提交、没有历史提交，HEAD 与原来不同**；保留源/恢复 HEAD、脱敏字节差异及省略文件计数，绑定计划/输入 hash，worker 用真实 Git 命令核验并在逐次 receipt 报告。CLI明确显示此限制。宿主对晚读取到的选定 Key 检查脱敏后、压缩前的 Git 明文；不能用压缩隐藏已知值。完整已知 Key 发现/注入尚随凭据切片实现，不把传参能力说成已完成该链路。运行镜像必须已有 Git，不自动拉取/安装。
-- 依赖为显式选项 `dependencies: { kind: "npm-ci-linux-v1", cacheRoot: "<绝对缓存路径>" }`。先在 Linux/WSL 运行受版本管理的 `node scripts/badcase-capture/cache-replay-dependencies.cjs <绝对单例comparison配置> <绝对缓存目录>`，此入口只校验封存/建缓存，不读模型 Key、不调用模型或改写源/封存；`compare-sealed --plan` 只读校验缓存，不自动安装。此切片尚未向批量配置/Windows入口接线。
+- 2026-11-03 用户改定：**默认保留记录 HEAD 的完整可达历史**。宿主只读遍历该提交可达对象，在独立宿主子进程以匿名 stdin 传入已知值、流式读取全部 blob（包括旧版本、已删除/未封存路径、二进制），逐字节比对本机已知 key 并核验 blob 对象hash；不记录值/原文，只报告 blob数、命中次数及命中对象hash。没有命中才按同一对象身份打包，源 HEAD、父链、`git log`/`git show` 字节保留；只输出六份固定 Git 管理文件，不复制源配置、hooks、remote、reflog、其他refs、未来或不可达对象。浅仓库/缺对象/扫描失败拒绝，不冒称完整历史。
+- 任一可达 blob 命中已知值则回退到此前的 `sanitized-root-git-v1`：只读取封存/已确认删除路径在记录HEAD中的基线，按既有哨兵及已知值脱敏，再重建**一个新根提交、没有历史提交，HEAD 与原来不同**。报告 `fallbackReason:known_key_in_reachable_blob`、命中对象hash、源/恢复HEAD及脱敏字节差异。历史任务的复现度可能下降，CLI明确披露。**git历史只排除本机已知key，不做模式脱敏**；仅像 `sk-`/`apiKey:` 的历史内容原样保留。工作区文件仍来自已脱敏封存，不因保留历史而补造缺文件；原仓库、源工作区与旧封存不改。
+- 无命中历史为 `preserved-head-git-v1`，两种恢复均绑定计划/输入hash，worker实测HEAD及提交数并核验是否与源记录相同；宿主拒绝回执中的身份/历史/计数漂移。晚发现选定Key时仍做压缩前检查，不能用Git压缩隐藏已知值；已确认计划不在执行中偷偷换历史策略。运行镜像必须已有Git，不自动拉取/安装。
+- 单例配置 `knownKeySources:{sandboxRoot:"<宿主.pi-sandbox绝对目录>",jevSource:"TYPESAFE_API_KEY"}` 显式读取 `models.json` 的各 provider.apiKey（可解析简单 `$ENV`，拒绝命令或缺失变量）、`auth.json` 的 key/token/access/refresh 字段，以及只注入本受信进程的 `TYPESAFE_API_KEY`。refresh只作内存字面比对，不认证、不刷新/写回。源文件按只读身份校验，值放不可序列化的内存清单，不进入配置/结果/日志/argv/容器。缺JEV或任何配置源无法读取就拒绝，不当作零秘密；不会为了找JEV而打开3100数据库。任何CLI仓库恢复（包括依赖安装）必须给该配置；Codex的sandboxRoot还须与显式auth源同目录。纯宿主测试可显式注入 `knownValues`，配置JSON不接受秘密值列表。
+- 依赖为显式选项 `dependencies: { kind: "npm-ci-linux-v1", cacheRoot: "<绝对缓存路径>" }`。先在 Linux/WSL 运行受版本管理的 `node scripts/badcase-capture/cache-replay-dependencies.cjs <绝对单例comparison配置> <绝对缓存目录>`，此入口只校验封存/建缓存；有Git恢复时会读显式安全清单作已知值扫描，不用模型Key认证、不调用模型或改写源/封存；`compare-sealed --plan` 只读校验缓存，不自动安装。此切片尚未向批量配置/Windows入口接线。
 - 缓存未命中时，从封存工作文件及可选脱敏 Git 基线构造一次性、**无账号凭据**的安装容器，在 Linux Node 24 运行 `npm ci --include=dev --no-audit --no-fund`（允许受信项目 lifecycle 脚本）。不执行宿主 npm，不复用宿主 `node_modules`、`.npmrc`、用户/全局配置或认证目录。安装网络经短生命周期 TCP 转发到宿主 `127.0.0.1:17890`，无直连回退；WSL 与 Windows loopback 不互通的布局须由后续 Windows受信入口中转，不能将诊断脚本当成交付入口。桥接网络及 proxy 环境不是恶意 lifecycle 脚本的出口防火墙，仅适用于已批准的受信项目。
 - 仅支持 `package.json` + npm v2/v3 `package-lock.json`，公开 `registry.npmjs.org` HTTPS 下载及已封存的相对本地 package。锁中的有认证/非标准URL、缺本地材料、其他包管理器、`.npmrc`、独立 shrinkwrap 文件均拒绝；npm嵌套/捆绑条目可能缺少 integrity，沿用原lock且在计划/CLI披露数量，不补造校验值。缓存身份绑定全部封存文件/Git hash、package/lock hash、安装器源码、镜像ID/架构、Node版本及安装命令；完成且容器删除确认后才原子发布归档和固定回执，每次读取重新验hash，损坏拒绝、不静默重建。
 - 依赖归档单独流送，不进控制JSON；安装器先输出固定回执行，再在容器仍运行时流出归档（停止后tmpfs已不可取，不用 `docker cp`）。评测容器重新核验归档hash/条目和Node版本后解包到恢复副本，删除临时归档；两变体共享完全相同的缓存身份，逐次回执缺安装证据/身份不符不得评分。工作树hash不含新增的 `.git`/`node_modules` 管理数据，不声称依赖目录的逐字不变。安装最多15分钟，正式turn当前仍1–300秒；依赖恢复不等于已完成真实GPT回放。
@@ -30,9 +32,9 @@
 - 为内存与失控响应保护，压缩及解压后模型请求各最多16MiB，响应最多32MiB；这不是仓库传输的旧4MiB上限。单请求显式期限1秒–45分钟，支持调用方中止、销毁专属连接；不代表正式turn已经放宽现有300秒上限。用量由原生 SDK 返回，不把HTTP200当模型成功，也不以token数推算ChatGPT剩余额度。
 - `direct-model.cjs` 的 Codex 路由只引用 worker 的无效身份环境变量，保留 SDK 内置 `gpt-6.1-sol` 原生 descriptor，不用 Chat Completions 兼容配置替代。worker 禁止从环境注入任何模型 Key，在静态输入核验后才创建已过期、无有效签名的公开占位身份；真实 access/账号只在宿主实际发送时补入。强制实际 agent 使用 SSE/xhigh、关闭 agent/provider 自动重试，项目设置不能重新启用 WebSocket/重试；receipt 记录实际模型 API/thinking/transport 与 `credentialDelivery:host-only-mailbox`。
 - `runCodexDockerTask` 是独立低层路径：只允许 `network:none`、没有 credential 环境变量、宿主挂载或发布端口，仍用固定静态分发和一次性 tmpfs。原生请求/响应走既有 Docker-exec mailbox，`codex-mailbox.cjs` 只封装原始二进制字节与允许的请求头，不接受容器指定 URL、Authorization 或账号头。每轮最多32次；mailbox 请求/响应封装各最多4MiB（base64封装使原始模型正文可用额度更小），不是仓库数据传输上限；超限失败，不截断继续。宿主 Docker 控制调用只对 mailbox 显式扩大输出缓冲，其他调用仍默认1MiB。真实发送必须由受信调用方显式提供已授权的宿主 transport，并管理其关闭。
-- 单例 `compare-sealed` 配置显式选择 `modelProfile:"openai-codex/gpt-6.1-sol"`、`keySource:"caff-codex-access"`、`codexAuthFile:"<宿主.pi-sandbox/auth.json绝对路径>"`；缺少/混用凭据源拒绝，不从旧 Key 环境回退。`--plan` 仅校验路径形状，不读凭据/启动Docker/请求模型。正式 `--run --confirmed --output <新文件>` 只在 Linux/WSL 进入原生断网 launcher；Windows 直接运行报 `evaluation_linux_required`，不先读 access 再尝试跨命名空间传递。计划和结果绑定实际 API/thinking/Fast/SSE/host-only 配置，不记录 auth 路径或账号。
-- 运行确认后、首个事件或容器之前只读 access，并检查规则/结构化输入、解码后的封存文件、暂存明文，以及 Git 压缩前基线；拒绝选定 access 或可信调用方传入的 `knownValues`。每轮重验封存/静态分发和 access 过期状态；transport 在成功、异常、输出泄漏和事件保存失败后均关闭。worker 必须回传相同模型配置才可评分。选定值不得藏在 base64 文件证据中；固定 auth/quota/proxy 错误保留为逐次环境错误并立即停止，不转为模型不通过或替补重试，CLI显示固定原因。
-- 已用合成 access 源与假供应方在真实断网容器走完内置 SDK 的 read 工具循环，核对 xhigh、zstd 原生请求、SSE回复与用量、容器清理/无实际凭据注入；另以合成429确认额度错误只发一次、不自动重试。探针未含 trace 回调或公开回复，不是封存准入或真实 GPT 复现。旧注入 Key 的 launcher 仍以 `evaluation_codex_relay_required` 拒绝该 profile。全部本机已知值来源读取/注入、用户最新批准的按已知值扫描后保留 Git 历史、M1原版单边3次编排、批量配置及 Windows 入口仍待实现；不能把本切片的选定 access 检查宣称为完整已知 Key 检查。未读取真实账号或调用模型。无模型准入通过后仍须暂停，待用户选择并标记真实GPT用例。
+- 单例 `compare-sealed` 配置显式选择 `modelProfile:"openai-codex/gpt-6.1-sol"`、`keySource:"caff-codex-access"`、`codexAuthFile:"<宿主.pi-sandbox/auth.json绝对路径>"`；缺少/混用凭据源拒绝，不从旧 Key 环境回退。不含 `knownKeySources` 的 `--plan` 仅校验access路径形状；配置了安全清单时会只读上述本机值以扫描Git，但不会使用它们认证、启动Docker或请求模型。正式 `--run --confirmed --output <新文件>` 只在 Linux/WSL 进入原生断网 launcher；Windows 直接运行报 `evaluation_linux_required`，不先读 access 再尝试跨命名空间传递。计划和结果绑定实际 API/thinking/Fast/SSE/host-only 配置，不记录 auth 路径或账号。
+- 运行确认后、首个事件或容器之前只读 access，并检查规则/结构化输入、解码后的封存文件、暂存明文，以及 Git 压缩前基线；拒绝选定 access 或可信调用方传入的 `knownValues`。每轮重验封存/静态分发和 access 过期状态；transport 在成功、异常、输出泄漏和事件保存失败后均关闭。worker 必须回传相同模型配置才可评分。选定值不得藏在 base64 文件证据中；同一清单也在每次真实原生请求的解压明文/200响应边界检查，避免工具后来从Git元数据等读出的值外发。固定 auth/quota/proxy 错误保留为逐次环境错误并立即停止，不转为模型不通过或替补重试，CLI显示固定原因。
+- 已用合成 access 源与假供应方在真实断网容器走完内置 SDK 的 read 工具循环，核对 xhigh、zstd 原生请求、SSE回复与用量、容器清理/无实际凭据注入；另以合成429确认额度错误只发一次、不自动重试。探针未含 trace 回调或公开回复，不是封存准入或真实 GPT 复现。旧注入 Key 的 launcher 仍以 `evaluation_codex_relay_required` 拒绝该 profile。历史保留/回退与完整已知值清单已用合成材料验证；第0步clone的完整扫描仍等待获准的JEV key只注入受信扫描进程，不能漏扫后宣称安全。M1原版单边3次编排、批量配置及 Windows 入口仍待实现。尚未用真实账号调用模型。无模型准入通过后仍须暂停，待用户选择并标记真实GPT用例。
 
 ### 采集与恢复
 
@@ -82,7 +84,7 @@
 
 ### 可回放子集与对比入口
 
-- 当前正式 MVP 入口为 `scripts/badcase-capture/compare-sealed.cjs`。`--config <绝对路径> --plan` 只准备与校验材料，不读 Key、不接触 Docker/模型；`--run --confirmed --output <新的绝对路径>` 才执行，输出路径已存在时拒绝覆盖。
+- 当前正式 MVP 入口为 `scripts/badcase-capture/compare-sealed.cjs`。`--config <绝对路径> --plan` 只准备与校验材料；显式配置安全清单时按上文只读Key作Git扫描，不用于模型认证、不接触 Docker/模型；`--run --confirmed --output <新的绝对路径>` 才执行，输出路径已存在时拒绝覆盖。
 - 配置显式指定封存关联、可信代码/依赖根、固定镜像身份、候选角色、重复次数、规则和超时。`repeats` 为 1–20，超时 1–300 秒，默认每容器 120 秒。新输入/角色/规则不自动复用旧结果。
 - `sealed-direct-input.cjs` 重新读取封存与保留引用，验证所有引用 blob 的 hash、角色片段唯一性/位置、原始运行配置、回调材料及 portable-default-resources 声明。只接受材料完整的 fresh、无图片、无额外技能/外部设置依赖的已声明可移植子集。旧封存不原地修补；不支持时返回 `unsupported_or_missing_replay_materials`，不是空会话 fallback。
 - 原变体使用封存 prompt；候选只替换归档时已定位且 hash 匹配的角色指令片段。GPT 模型族角色本来没有自定义 persona，采集仅把它已交付的 `Rules:` 段定位进元数据，不改变 SDK 实际收到的 prompt；候选在这段规则原文后追加已审核准则，身份/会话/工具/技能等其他段不变。旧自定义角色仍使用 `Your private persona instructions:` 段；两种包装分别校验原片段 hash 并保留原包装，不为 GPT 虚构 persona，不为无片段的旧封存补造定位，其他模型族的 Rules 段不在此首个 GPT 子集内。其他归一化输入保持相同，分别记录 checkpoint/common-input/variant/distribution hash，每次运行前重验封存和可信分发未变。执行模型是明确选择的评测配置，当前是 DeepSeek 执行 GPT 角色指令，不冒称 GPT 模型或采集时的原模型。
@@ -152,7 +154,7 @@
 ### 不支持清单
 
 - 任意宿主现场在 Linux 的通用恢复、进程内存/后台服务/外部系统状态、权限/ACL/链接/并发原子一致性、`.git`/index/git status 的逐字保真。
-- Git 历史恢复：当前仅从记录 HEAD 的已授权路径脱敏后重建单一根提交，恢复 HEAD 必然不同，没有源历史提交/分支/remote/reflog。依赖历史的任务（例如第0步①“最近在做什么”）复现度会下降；本轮不实现保留历史，也不能把这类回放称为原历史的忠实复现。缺少明确记录的 HEAD、对象不可用、非仓库顶层、纳入范围内的 symlink/submodule 等直接不支持，不以 live HEAD/工作文件兜底。
+- Git 历史恢复：只保留记录 HEAD 的可达对象，**git历史只排除本机已知key，不做模式脱敏**；源分支/标签/remote/reflog及不可达对象不恢复，恢复副本只建 `replay-baseline` 引用。缺明确记录HEAD、浅仓库、缺对象/扫描失败、非顶层仓库、缺完整已知值清单（包括JEV）均拒绝，不以live HEAD/空清单兜底。命中已知值时退回脱敏单根提交，HEAD不同、没有原历史，依赖历史的任务（例如第0步①“最近在做什么”）复现度会下降，不能冒称忠实历史；该回退的授权基线路径仍不支持 symlink/submodule。第0步clone的完整已知值扫描尚待JEV只读来源确认。
 - 依赖恢复不支持 npm v1 lock、yarn/pnpm、私有 registry/安装认证、独立 `.npmrc`/shrinkwrap 文件、未封存的本地依赖、宿主/Windows原生依赖直接复用或恶意lifecycle隔离。缓存须由受信操作方预建，不能以cacheHit或合成恢复证明真实封存已准入；Windows中转和批量选项仍待后续接线。
 - 此 MVP 主路径以外的换根、外置 Git 元数据、submodule/嵌套仓库、全局 Git 配置、复杂 ignore 语法；底层保留旧实现不等于本轮承诺其端到端可用。
 - 正式 sealed-direct 入口的 resume、图片、额外技能/外部系统指令/自定义设置或旧缺材料封存。底层 fresh/resume 合成 Docker 演练不冒充这些历史用例已可回放。

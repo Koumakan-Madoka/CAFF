@@ -127,7 +127,9 @@ function createCodexTransport(config, dependencies = {}) {
     if (busy) throw fail('transport_busy');
     busy = true; let timer, signal, controller;
     try {
-      const q = snapshotRequest(url, options), access = credential.get();
+      const q = snapshotRequest(url, options);
+      if (dependencies.containsKnownValue?.(q.plain)) throw fail('input_contains_known_key');
+      const access = credential.get();
       if (hasAccess(q.plain, access.access) || [...q.headers.values()].some(s => s.includes(access.access))) throw fail('input_contains_access');
       if (options.signal?.aborted) throw fail('request_aborted');
       dispatcher ??= createDispatcher(PROFILE.proxy); // explicit per-request dispatcher; NO_PROXY/global dispatcher never wins
@@ -159,6 +161,7 @@ function createCodexTransport(config, dependencies = {}) {
         return new Response(JSON.stringify({ error: { code: reason, message: reason } }), { status: response.status, headers: { 'content-type': 'application/json' } });
       }
       if (hasAccess(bytes, access.access)) throw fail('output_contains_access');
+      if (dependencies.containsKnownValue?.(bytes)) throw fail('output_contains_known_key');
       const terminal = sseTerminalReason(bytes); if (terminal) stop(terminal);
       return new Response(bytes, { status: 200, headers: { 'content-type': 'text/event-stream' } });
     } catch (e) {
@@ -179,4 +182,4 @@ function createCodexTransport(config, dependencies = {}) {
     },
     async close() { if (closed) return; closed = true; credential.close(); active?.abort(); await dispatcher?.destroy(); } };
 }
-module.exports = { PROFILE, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, createCodexAccess, createCodexTransport };
+module.exports = { PROFILE, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, createCodexAccess, createCodexTransport, readPrivateJson: readAuth };

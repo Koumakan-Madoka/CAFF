@@ -6,6 +6,7 @@ const { prepareSealedDirectTurn, prepareSealedPromptTarget } = require('./sealed
 const { prepareDirectTurnFiles, runDirectDockerTask, runCodexDockerTask } = require('./direct-docker.cjs');
 const { createCodexTransport, createCodexAccess } = require('./codex-transport.cjs');
 const { createCodexRelayExchange } = require('./codex-mailbox.cjs');
+const { readKnownKeyValues } = require('./known-key-values.cjs');
 const CODEX_CONFIG = Object.freeze({ api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' });
 const { prepareReplayGit } = require('./replay-git.cjs');
 const { prepareReplayDependencies } = require('./replay-dependencies.cjs');
@@ -48,9 +49,28 @@ function scoreReadOnlyFiles(receipt, rules, beforeHash) {
   };
   return { pass: Object.values(checks).every(Boolean), checks };
 }
+function validateCodexSource(config) {
+  if (config.keySource !== 'caff-codex-access') throw fail('evaluation_codex_auth_source_required');
+  // Pure path validation, never opens an auth source.
+  try { createCodexAccess(config.codexAuthFile).close(); } catch { throw fail('evaluation_codex_auth_source_required'); }
+}
+function comparisonKnownValues(config, options) {
+  // Only trusted host callers/tests can supply an inventory directly. Config
+  // JSON cannot supply secret values or silently select an empty inventory.
+  if (Object.hasOwn(options, 'knownValues')) {
+    if (!Array.isArray(options.knownValues) || options.knownValues.some(v => typeof v !== 'string')) throw fail('evaluation_config_invalid');
+    return options.knownValues;
+  }
+  if (config?.knownKeySources !== undefined) {
+    if (config.modelProfile === CODEX_PROFILE && path.resolve(config.knownKeySources?.sandboxRoot || '') !== path.dirname(path.resolve(config.codexAuthFile || ''))) throw fail('evaluation_known_sources_mismatch');
+    return readKnownKeyValues(config.knownKeySources).values;
+  }
+  if (config?.repository !== undefined) throw fail('evaluation_known_sources_required');
+  return [];
+}
 function prepareComparison(config, options = {}) {
   if (!config || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile', 'knownKeySources'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 300000)
     || config.executionPolicy !== undefined && (config.executionPolicy !== 'alternating-valid-v1' || !config.globalWikiCandidate || config.repeats !== 10)
     || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== 1
@@ -59,13 +79,10 @@ function prepareComparison(config, options = {}) {
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')) throw fail('evaluation_config_invalid');
   const profile = config.modelProfile ?? DEFAULT_PROFILE;
   modelProfile(profile);
-  if (profile === CODEX_PROFILE) {
-    if (config.keySource !== 'caff-codex-access') throw fail('evaluation_codex_auth_source_required');
-    // Construction validates the explicit path only. --plan never opens it.
-    try { createCodexAccess(config.codexAuthFile).close(); } catch { throw fail('evaluation_codex_auth_source_required'); }
-  } else if (config.codexAuthFile !== undefined || config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
+  if (profile === CODEX_PROFILE) validateCodexSource(config);
+  else if (config.codexAuthFile !== undefined || config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
     || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
-  const rules = validateRules(config.rules);
+  const rules = validateRules(config.rules), knownValues = comparisonKnownValues(config, options);
   let prepare = options.prepare || prepareSealedDirectTurn, globalWikiCandidate = null, globalState, globalSaved, globalFiles;
   if (config.globalWikiCandidate !== undefined) {
     const selection = config.globalWikiCandidate;
@@ -119,7 +136,7 @@ function prepareComparison(config, options = {}) {
     // The operator supplies an independently recorded commit, never an implicit
     // current HEAD. Ordinary source-file bytes are not substituted for capture.
     if (original.input.bindings?.sourceRoot && path.resolve(config.repository?.sourceRoot || '') !== path.resolve(original.input.bindings.sourceRoot)) throw fail('evaluation_repository_source_mismatch');
-    repository = prepareReplayGit(config.repository, original.input, { knownValues: options.knownValues || [] });
+    repository = prepareReplayGit(config.repository, original.input, { knownValues });
   }
   const repositoryConfig = repository ? { repository: repository.report, gitFiles: repository.gitFiles } : {};
   let dependencyConfig = {};
@@ -144,14 +161,20 @@ function prepareComparison(config, options = {}) {
     ...(repository ? { checkRepositoryKnownValues: repository.checkKnownValues } : {}) };
 }
 async function runComparison(config, options = {}) {
-  // A planning call never reads a key or contacts Docker/model services.
-  const fixed = structuredClone(config), plan = prepareComparison(fixed, options);
-  if (!plan.supported) return { ...plan, runs: [], modelCallsKnown: 0 };
+  // Confirmation precedes any safety-inventory read. A separate --plan may
+  // read explicitly configured known-value sources, never authenticate/send.
   if (options.confirmed !== true) throw fail('evaluation_confirmation_required');
+  const fixed = structuredClone(config);
+  // Linux/WSL is mandatory for the real launcher. Enforce this BEFORE either
+  // the safety inventory or authorization can open host credential sources.
+  if (fixed?.modelProfile === CODEX_PROFILE) {
+    validateCodexSource(fixed);
+    if (!options.executeCodex && process.platform !== 'linux') throw fail('evaluation_linux_required');
+  }
+  const effectiveOptions = { ...options, knownValues: comparisonKnownValues(fixed, options) };
+  const plan = prepareComparison(fixed, effectiveOptions);
+  if (!plan.supported) return { ...plan, runs: [], modelCallsKnown: 0 };
   const native = plan.summary.model === CODEX_PROFILE;
-  // Linux/WSL is mandatory for the real launcher. Never read host auth and
-  // then discover that Windows needs an unimplemented credential handoff.
-  if (native && !options.executeCodex && process.platform !== 'linux') throw fail('evaluation_linux_required');
   const stage = options.stage || prepareDirectTurnFiles, execute = native ? options.executeCodex || runCodexDockerTask : options.execute || runDirectDockerTask;
   const emit = options.onEvent || (() => {}), keyReader = options.readKey || (fixed.keySource === 'caff-deepseek' ? readCaffDeepseekKey : readEvaluationKey);
   const files = {}, manifests = {};
@@ -163,11 +186,12 @@ async function runComparison(config, options = {}) {
   let transport, sendNativeRequest, key;
   try {
   if (native) {
-    transport = (options.createCodexTransport || createCodexTransport)({ authFile: fixed.codexAuthFile, confirmed: true, timeoutMs: fixed.timeoutMs ?? 120000 });
+    transport = (options.createCodexTransport || createCodexTransport)({ authFile: fixed.codexAuthFile, confirmed: true, timeoutMs: fixed.timeoutMs ?? 120000 },
+      { containsKnownValue: bytes => effectiveOptions.knownValues.some(v => v && (bytes.includes(v) || bytes.includes(JSON.stringify(v).slice(1, -1)))) });
     transport.inspectAccess(access => { key = access; });
     sendNativeRequest = createCodexRelayExchange({ fetch: transport.fetch });
   } else key = validKey(keyReader()); // No persistence or argv/env-file creation.
-  const values = [...new Set([key, ...(options.knownValues || [])])].filter(v => typeof v === 'string' && v);
+  const values = [...new Set([key, ...effectiveOptions.knownValues])].filter(v => typeof v === 'string' && v);
   const leaksKey = value => { const s = JSON.stringify(value) || ''; return values.some(v => s.includes(v) || s.includes(JSON.stringify(v).slice(1, -1))); };
   const leaksBytes = bytes => values.some(v => bytes.includes(v) || bytes.includes(JSON.stringify(v).slice(1, -1)));
   const checkInputs = prepared => {
@@ -195,7 +219,7 @@ async function runComparison(config, options = {}) {
       } else { const slot=legacySlots[cursor++]; if(!slot) break; ({variant,iteration}=slot); }
       // Recheck seal AND current static distribution; no live-source or fresh
       // fallback if bytes changed after the planned starting point.
-      const fresh = prepareComparison(fixed, options);
+      const fresh = prepareComparison(fixed, effectiveOptions);
       if (!fresh.supported || JSON.stringify(fresh.summary) !== JSON.stringify(plan.summary)
         || manifestFor(stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, fresh.inputs[variant], fixed.modelProfile), { replayWorkspace: true }).inputHash !== manifests[variant].inputHash) {
         throw fail('evaluation_input_changed');
@@ -222,15 +246,15 @@ async function runComparison(config, options = {}) {
         [task?.inputHash, manifests[variant].inputHash], [task?.runtimeHash, manifests[variant].runtimeHash],
         ...(plan.summary.dependencies ? ['archiveHash', 'cacheKey', 'lockHash', 'nodeVersion']
           .map(field => [receipt?.dependencies?.[field], plan.summary.dependencies[field]]) : []),
-        ...(plan.summary.repository ? [[receipt?.repository?.sourceHead, plan.summary.repository.sourceHead],
-          [receipt?.repository?.restoredHead, plan.summary.repository.restoredHead]] : [])]
+        ...(plan.summary.repository ? ['sourceHead', 'restoredHead', 'historyIncluded', 'headIdenticalToSource', 'historyCommitCount']
+          .map(field => [receipt?.repository?.[field], plan.summary.repository[field]]) : [])]
         .some(([actual, expected]) => actual !== undefined && actual !== expected);
       const modelConfigChanged = native && Object.keys(CODEX_CONFIG).some(k => receipt?.modelConfig?.[k] !== CODEX_CONFIG[k]);
       const valid = !evidenceChanged && !modelConfigChanged && !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
         && receipt.inputHash === manifests[variant].inputHash && receipt.runtimeHash === manifests[variant].runtimeHash
         && receipt.beforeHash === plan.beforeHash
-        && (!plan.summary.repository || receipt.repository?.gitAvailable === true && receipt.repository?.historyCommitCount === 1
-          && receipt.repository?.historyIncluded === false && receipt.repository?.headIdenticalToSource === false
+        && (!plan.summary.repository || receipt.repository?.gitAvailable === true && receipt.repository?.historyCommitCount === plan.summary.repository.historyCommitCount
+          && receipt.repository?.historyIncluded === plan.summary.repository.historyIncluded && receipt.repository?.headIdenticalToSource === plan.summary.repository.headIdenticalToSource
           && receipt.repository?.sourceHead === plan.summary.repository.sourceHead && receipt.repository?.restoredHead === plan.summary.repository.restoredHead)
         && (!plan.summary.dependencies || receipt.dependencies?.installed === true
           && receipt.dependencies?.archiveHash === plan.summary.dependencies.archiveHash && receipt.dependencies?.cacheKey === plan.summary.dependencies.cacheKey
@@ -238,7 +262,7 @@ async function runComparison(config, options = {}) {
         && Array.isArray(receipt.modelCalls) && receipt.modelCalls.length > 0
         && receipt.modelCalls.every(c => c.model === plan.summary.model && typeof c.success === 'boolean' && Number.isFinite(c.durationMs) && c.durationMs >= 0);
       if (valid) {
-        if (plan.summary.repository) row.repository = { ...plan.summary.repository, gitAvailable: true, historyCommitCount: 1 };
+        if (plan.summary.repository) row.repository = { ...plan.summary.repository, gitAvailable: true, historyCommitCount: receipt.repository.historyCommitCount };
         if (plan.summary.dependencies) row.dependencies = receipt.dependencies;
         row.modelCalls = receipt.modelCalls;
         row.finalText = receipt.finalText;
@@ -299,8 +323,12 @@ function formatComparison(result) {
   if (!result.supported) return '不可回放：缺材料或超出当前支持范围。\n';
   const lines = ['模型：' + result.model];
   if (result.modelConfig) lines.push('配置：' + result.modelConfig.api + ' / thinking ' + result.modelConfig.thinking + ' / ' + result.modelConfig.transport + ' / Fast关闭；凭据仅在宿主。');
-  if (result.repository) lines.push('Git：脱敏后重建，HEAD不同于源仓库；只有1个基线提交，无历史提交。',
-    '源HEAD：' + result.repository.sourceHead, '恢复HEAD：' + result.repository.restoredHead);
+  if (result.repository) {
+    lines.push(result.repository.historyIncluded ? 'Git：保留记录HEAD的完整可达历史，HEAD与源记录相同；共' + result.repository.historyCommitCount + '个提交。'
+      : 'Git：历史命中本机已知key，脱敏后重建，HEAD不同于源仓库；只有1个基线提交，无历史提交。',
+    '源HEAD：' + result.repository.sourceHead, '恢复HEAD：' + result.repository.restoredHead,
+    '限制：git历史只排除本机已知key，不做模式脱敏。');
+  }
   if (result.dependencies) {
     lines.push('依赖：Linux npm ci 缓存；lock=' + result.dependencies.lockHash + '，Node=' + result.dependencies.nodeVersion + '。');
     if (result.dependencies.resolvedWithoutIntegrity) lines.push('限制：lock中' + result.dependencies.resolvedWithoutIntegrity + '条下载记录没有integrity；保留原lock，安装产物另以SHA-256固定。');
