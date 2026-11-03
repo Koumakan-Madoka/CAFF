@@ -12,10 +12,11 @@ const { prepareBatch, runBatch, formatBatch } = require('../../scripts/badcase-c
 const { manifestFor } = require('../../scripts/badcase-capture/pi-probe-materials.cjs');
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const targetId = 'global-harness-behavior-v1', target = getGlobalPromptTarget(targetId);
-function seal(t, { missingTarget = false } = {}) {
-  return fixture(t, 'fresh', ({ cp, r, config, put }) => {
+function seal(t, { missingTarget = false, resume = false } = {}) {
+  return fixture(t, resume ? 'resume' : 'fresh', ({ cp, r, config, put }) => {
     config.toolBridgeEnabled = true; config.portableRuntime = { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: true };
-    config.sdkStartConfig = { cwd: cp.targetDir, provider: r.runConfig.provider, model: r.runConfig.model, resume: false, thinking: 'off', fast: false, retireUserScopeSkills: true };
+    config.sdkStartConfig = { cwd: cp.targetDir, provider: r.runConfig.provider, model: r.runConfig.model, resume, thinking: 'off', fast: false, retireUserScopeSkills: true };
+    if (resume) r.sessionLineCount = 2;
     r.promptBlobHash = r.normalizedPromptHash = put('Identity: custom actor\nYour private persona instructions:\nKeep this exact role.\n\nRoom work context:\n- Fixture\n\nRules:\n' + (missingTarget ? 'Unsupported old rules.' : target.baseText) + '\n- Preserve routing.\n\nRouting instructions:\n- No handoff.\n\nUser: inspect files.');
     const association = { projectId: cp.projectId, conversationId: cp.conversationId, turnId: cp.turnId, agentId: cp.agentId, userMessageId: 'u1', assistantMessageId: 'msg1' };
     const trace = { schemaVersion: 1, kind: 'caff-evaluation-callback-input-v1', association, assistantCreatedAt: '2026-01-01T00:00:01.000Z', conversation: { title: 'Fixture', type: 'standard', metadata: {} }, participants: [{ id: cp.agentId, name: 'Actor', description: 'Test' }], publicMessages: [{ id: 'u1', turnId: 't0', role: 'user', agentId: null, senderName: 'User', content: 'Inspect files.', status: 'completed', createdAt: '2026-01-01T00:00:00.000Z', publicPostedAt: '', publicPostCount: 0, publicPostMode: '', mentions: [] }], privateMessages: [], pendingDelegations: [] };
@@ -23,7 +24,7 @@ function seal(t, { missingTarget = false } = {}) {
     r.harness.configSnapshotHash = put(JSON.stringify(config));
   });
 }
-function setup(t, { confirmed = true, tool = false, missingTarget = false, staged = false } = {}) {
+function setup(t, { confirmed = true, tool = false, missingTarget = false, staged = false, resume = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'global-comparison-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const scope = { globalRoot: path.join(root, 'global'), sourceWorktree: path.join(root, 'source') }, store = createWikiStore(scope);
   const sources = store.addTextCases(Array.from({ length: 16 }, (_, n) => ({ source: { origin: 'http://127.0.0.1:3100', projectId: 'history-project-' + n, conversationId: 'history-room', messageId: 'message-' + n, agentId: 'role-family-gpt' }, role: 'GPT', actual: 'Unclear report', expected: 'Unique expected visible outcome number ' + n, message: 'Internal jargon', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }))).cases;
@@ -36,7 +37,7 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
   const train = store.read().cases.filter(c => c.split === 'train').map(c => c.id), guideline = '先核实，再用读者能理解的语言说明结论。';
   const v = store.saveDraft({ caseIds: train, model: 'deepseek/deepseek-v4-flash', entries: [{ title: 'Clear', failureMode: 'jargon', symptoms: 'unclear', rootCauseHypothesis: 'audience', guideline, caseIds: train }], unclassified: [] });
   store.review({ versionId: v.id, entryId: v.entries[0].id, expectedRevision: store.read().revision, decision: 'approved' });
-  const seals = selected.map(() => seal(t, { missingTarget })), categories = staged ? ['reproduction', 'control', 'control', 'reproduction', 'reproduction', 'probe', 'control'] : ['reproduction', 'reproduction', 'reproduction', 'probe', 'control', 'control', 'control'];
+  const seals = selected.map(() => seal(t, { missingTarget, resume })), categories = staged ? ['reproduction', 'control', 'control', 'reproduction', 'reproduction', 'probe', 'control'] : ['reproduction', 'reproduction', 'reproduction', 'probe', 'control', 'control', 'control'];
   const rules = { kind: 'file-literals-v1', files: [{ path: 'REPORT.md', contains: ['RESULT'], notContains: ['TODO'] }] };
   for (let i = 0; i < 7; i++) {
     // A missing declared target is still an honestly registered old seal. The
@@ -59,6 +60,7 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
       const m = manifestFor(files), input = JSON.parse(files[0].bytes), failed = state.executions === state.failAt, text = 'RESULT';
       return { code: 0, cleaned: true, containerId: 'a'.repeat(64), isolation: { privileged: false }, receipt: { kind: 'direct-caff-turn-v1', inputHash: m.inputHash, runtimeHash: m.runtimeHash, success: !failed,
         beforeHash: expectedTreeHash(input), afterHash: expectedTreeHash(input), replySource: 'public', finalText: 'done', toolCalls: [], recordedModelConfig: input.recordedModelConfig,
+        ...(input.sessionText ? { replaySession: require('../../scripts/badcase-capture/direct-model.cjs').replaySessionInfo(input.sessionText) } : {}),
         fileEvidence: [{ path: 'REPORT.md', state: 'file', base64: Buffer.from(text).toString('base64'), sha256: sha(text), size: text.length }],
         modelCalls: [{ model: 'deepseek/deepseek-v4-flash', durationMs: 1, success: !failed, usage: null }] } };
     } };
@@ -169,6 +171,16 @@ test('staged recorded thinking evidence missing or changed is fatal, not an envi
     const h = setup(t, { staged: true }), execute = h.options.execute;
     h.options.execute = async (...args) => { const task = await execute(...args);
       if (missing) delete task.receipt.recordedModelConfig; else task.receipt.recordedModelConfig.thinking = 'xhigh'; return task; };
+    const r = await h.run(); assert.equal(h.state.executions, 1); assert.equal(r.completed, false);
+    assert.equal(r.gateDecision.outcome, 'indeterminate'); assert.equal(r.byStage.test.original.attempted, 0);
+    assert.ok(r.cases.filter(c => c.stage === 'gate').slice(1).every(c => c.reason === 'prior_integrity_error'));
+  }
+});
+test('staged resume prefix evidence missing or changed is fatal rather than an environmental replacement', async t => {
+  for (const missing of [true, false]) {
+    const h = setup(t, { staged: true, resume: true }), execute = h.options.execute;
+    h.options.execute = async (...args) => { const task = await execute(...args);
+      if (missing) delete task.receipt.replaySession; else task.receipt.replaySession.prefixHash = '0'.repeat(64); return task; };
     const r = await h.run(); assert.equal(h.state.executions, 1); assert.equal(r.completed, false);
     assert.equal(r.gateDecision.outcome, 'indeterminate'); assert.equal(r.byStage.test.original.attempted, 0);
     assert.ok(r.cases.filter(c => c.stage === 'gate').slice(1).every(c => c.reason === 'prior_integrity_error'));

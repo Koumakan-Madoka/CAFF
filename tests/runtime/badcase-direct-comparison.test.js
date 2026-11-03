@@ -7,22 +7,24 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig } = {}) {
+async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt, files: files.map(p => ({ path: p,
     base64: Buffer.from(fileBytes[p] ?? p).toString('base64'), sha256: crypto.createHash('sha256').update(fileBytes[p] ?? p).digest('hex') })),
-    sessionText: null, settings: null, systemPrompt: null,
+    sessionText, settings: null, systemPrompt: null,
+    ...(bindings === undefined ? {} : { bindings }),
     ...(recordedModelConfig === undefined ? {} : { recordedModelConfig }),
     ...(repositorySnapshot ? { repository: repositorySnapshot.report, gitFiles: repositorySnapshot.gitFiles } : {}),
-    callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: {} } : null,
+    callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: { conversationId: 'c1', turnId: 't1' } } : null,
     ...(fileEvidencePaths === undefined ? {} : { fileEvidencePaths }) };
   fs.writeFileSync(path.join(root, 'evaluation-profile.json'), JSON.stringify(profile));
   if (directoryWorkspace) {
     const staged = require('../../scripts/badcase-capture/direct-docker.cjs').prepareDirectReplayInput(input);
     for (const f of staged) { const dest = path.join(root, f.path); fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, f.bytes); }
   } else fs.writeFileSync(path.join(root, 'replay-input.json'), JSON.stringify(input));
-  const mapped = p => { assert.ok(p.startsWith('/work/')); return path.join(root, p.slice(6)); };
+  fs.mkdirSync(path.join(root, 'tmp'));
+  const mapped = p => { assert.ok(p.startsWith('/work/') || p.startsWith('/tmp/')); return path.join(root, p.slice(1).replace(/^work\//, '')); };
   const workerFs = Object.fromEntries(['mkdirSync', 'readFileSync', 'writeFileSync', 'readdirSync', 'lstatSync']
     .map(name => [name, (p, ...args) => fs[name](mapped(p), ...args)]));
   workerFs.existsSync = p => p === '/.dockerenv' || fs.existsSync(mapped(p));
@@ -50,6 +52,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
     if (name === '/work/direct-model.cjs') return { ...require('../../scripts/badcase-capture/direct-model.cjs'), observeDirectFetch: () => observer };
     if (name === '/work/codex-mailbox.cjs') return { createCodexMailboxFetch: () => observer.fetch };
     if (name === '/work/build/server/domain/runtime/badcase-capture/secrets') return require('../../build/server/domain/runtime/badcase-capture/secrets');
+    if (name === '/work/build/server/domain/runtime/badcase-capture/session-validator') return require('../../build/server/domain/runtime/badcase-capture/session-validator');
     if (name === '/work/caff-runtime-bootstrap.cjs') return { verifyCaffRuntimeStage: () => ({ manifest: { inputHash: 'input', runtimeHash: 'runtime' } }) };
     if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async config => {
       callbackLifetimeMs = config.lifetimeMs;
@@ -61,12 +64,15 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
   vm.compileFunction(fs.readFileSync(filename, 'utf8'), ['require', 'module', 'exports', 'process'], { filename })(
     workerRequire, workerModule, workerModule.exports, { platform: 'linux', getuid: () => 65534, cwd: () => '/work', env: profile === 'openai-codex/gpt-6.1-sol' ? {} : { CAFF_BADCASE_MODEL_KEY: key } });
   const receipt = await workerModule.exports.main({ loadModule: async name => {
-    if (name === '/work/runtime/dist/bundle/index.js') return { VERSION: '0.85.1' };
+    if (name === '/work/runtime/dist/bundle/index.js') return { VERSION: '0.85.1', buildSessionContext: entries => ({ messages: entries.filter(e => e.type === 'message').map(e => e.message) }) };
     assert.equal(name, '/work/build/lib/pi-sdk-host.mjs');
-    return { normalizeStartCommand: c => c, createSdkRuntime: async (_sdk, config) => { startConfig = config; return { runtime }; } };
+    return { normalizeStartCommand: c => c, createSdkRuntime: async (_sdk, config) => { startConfig = config;
+      if (config.resume) session.messages = JSON.parse('[' + fs.readFileSync(mapped(config.sessionPath), 'utf8').trim().split('\n').slice(1).join(',') + ']').filter(e => e.type === 'message').map(e => e.message);
+      return { runtime }; } };
   } });
   assert.equal(disposed, true); assert.equal(stopped, withCallback);
-  return { receipt, input, startConfig, callbackLifetimeMs, invocationPrompt, settings: fs.existsSync(path.join(root, 'agent/settings.json')) ? JSON.parse(fs.readFileSync(path.join(root, 'agent/settings.json'))) : null };
+  return { receipt, input, startConfig, callbackLifetimeMs, invocationPrompt,
+    workingSessionText: fs.existsSync(path.join(root, 'session.jsonl')) ? fs.readFileSync(path.join(root, 'session.jsonl'), 'utf8') : null, settings: fs.existsSync(path.join(root, 'agent/settings.json')) ? JSON.parse(fs.readFileSync(path.join(root, 'agent/settings.json'))) : null };
 }
 function config() {
   return { repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'), request: {}, image: { imageId: 'sha256:' + '1'.repeat(64) },
@@ -211,6 +217,30 @@ test('host requires matching recorded config in worker evidence; missing or chan
       if (mode !== 'missing') task.receipt.recordedModelConfig = { ...recorded, ...(mode === 'changed' ? { thinking: 'xhigh' } : {}) }; return task; };
     const result = await runComparison(config(), f.options);
     assert.equal(result.completed, mode === 'matching'); assert.equal(result.runs[0].status, mode === 'matching' ? 'pass' : 'error');
+    if (mode !== 'matching') { assert.equal(f.state.executions, 1); assert.equal(result.totals.original.passed, 0); }
+  }
+});
+test('actual worker starts resume from the bound exact prefix and reports its archived identity', async t => {
+  const sourceRoot = 'C:\\old\\root', prompt = 'Now {{CAFF_CHAT_API_URL}}';
+  const sessionText = [{ type: 'session', version: 3, id: 'same-id', cwd: sourceRoot },
+    { type: 'message', id: 'm1', parentId: null, message: { role: 'user', content: 'Earlier {{PI_AGENT_PRIVATE_DIR}}', timestamp: 1 } }].map(JSON.stringify).join('\r\n') + '\r\n';
+  const r = await workerReceipt(t, { prompt, sessionText, bindings: { sourceRoot, controlledReplacements: [{ name: 'CAFF_CHAT_API_URL', count: 1 }, { name: 'PI_AGENT_PRIVATE_DIR', count: 1 }] } });
+  assert.equal(r.startConfig.resume, true); assert.equal(r.receipt.historyMessages, 1);
+  assert.deepEqual(r.receipt.replaySession, { deliveryMode: 'resume', prefixHash: crypto.createHash('sha256').update(sessionText).digest('hex'), lineCount: 2 });
+  assert.equal(r.workingSessionText, sessionText.replace(JSON.stringify(sourceRoot), JSON.stringify('/work/restored')).replace('{{PI_AGENT_PRIVATE_DIR}}', '/tmp/private'));
+  assert.equal(r.invocationPrompt, 'Now http://127.0.0.1:1'); assert.equal(r.input.sessionText, sessionText);
+});
+test('missing or conflicting resume receipt never scores and stops subsequent slots', async () => {
+  for (const mode of ['matching', 'missing', 'changed']) {
+    const f = fakes(), prepare = f.options.prepare, execute = f.options.execute;
+    const sessionText = '{"type":"session","version":3,"id":"old","cwd":"/work/restored"}\n';
+    const replaySession = { deliveryMode: 'resume', prefixHash: crypto.createHash('sha256').update(sessionText).digest('hex'), lineCount: 1 };
+    f.options.prepare = (...args) => { const p = prepare(...args); p.input.sessionText = sessionText; return p; };
+    f.options.execute = async (...args) => { const task = await execute(...args);
+      if (mode !== 'missing') task.receipt.replaySession = { ...replaySession, ...(mode === 'changed' ? { deliveryMode: 'fresh' } : {}) }; return task; };
+    const result = await runComparison(config(), f.options);
+    assert.equal(result.completed, mode === 'matching'); assert.equal(result.runs[0].status, mode === 'matching' ? 'pass' : 'error');
+    assert.deepEqual(result.replaySession, replaySession);
     if (mode !== 'matching') { assert.equal(f.state.executions, 1); assert.equal(result.totals.original.passed, 0); }
   }
 });

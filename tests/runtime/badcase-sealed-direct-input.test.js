@@ -2,12 +2,13 @@ const test = require('node:test'), assert = require('node:assert/strict'), fs = 
 const fixture = require('../helpers/badcase-initialization-fixture.cjs');
 const { prepareSealedDirectTurn, prepareSealedOriginalTurn } = require('../../scripts/badcase-capture/sealed-direct-input.cjs');
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
-function portable(t, change = () => {}) {
-  return fixture(t, 'fresh', ({ cp, r, config, put }) => {
+function portable(t, change = () => {}, mode = 'fresh') {
+  return fixture(t, mode, ({ cp, r, config, put }) => {
     config.toolBridgeEnabled = true;
     config.portableRuntime = { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: true };
     config.sdkStartConfig = { cwd: cp.targetDir, provider: r.runConfig.provider, model: r.runConfig.model,
-      resume: false, thinking: 'off', fast: false, retireUserScopeSkills: true };
+      resume: mode === 'resume', thinking: 'off', fast: false, retireUserScopeSkills: true };
+    if (mode === 'resume') r.sessionLineCount = 2;
     const role = 'Your private persona instructions:\nRead only.';
     const prompt = 'header\n\n' + role + '\n\nuser task';
     r.roleSpan = { start: 8, end: 8 + role.length, sha256: sha(role) };
@@ -137,7 +138,7 @@ test('original-only real sealed preflight does not require or interpret a candid
 });
 test('unsupported sealed inputs report the actual bounded reason through original-only and comparison plans', t => {
   const cases = [
-    [({ r }) => { r.deliveryMode = 'resume'; }, 'replay_resume_not_supported'],
+    [({ r }) => { r.deliveryMode = 'resume'; }, 'replay_session_missing'],
     [({ config }) => { config.sdkStartConfig.thinking = 'xhigh'; }, 'replay_recorded_thinking_not_supported'],
     [({ r }) => { r.invocationImageCount = 1; }, 'replay_invocation_images_not_supported'],
     [({ config }) => { delete config.portableRuntime; }, 'replay_portable_runtime_not_supported'],
@@ -207,4 +208,36 @@ test('missing/legacy/delta/session/resources/corrupt material stays unsupported,
   }
   const broken = portable(t); fs.unlinkSync(broken.blobPath(broken.r.promptBlobHash));
   assert.equal(prepareSealedDirectTurn(broken.request).supported, false);
+});
+test('sealed resume original/candidate keep the exact retained prefix, shared input hash and recorded mode', t => {
+  const f = portable(t, ({ r, put }) => {
+    const text = [{ type: 'session', version: 3, id: 'same-old-id', cwd: '/historical/not-mounted' },
+      { type: 'message', id: 'old-user', parentId: null, message: { role: 'user', content: 'Earlier {{CAFF_CHAT_API_URL}}' } }]
+      .map(JSON.stringify).join('\r\n') + '\r\n';
+    r.sessionBlobHash = put(text); r.controlledReplacements = [{ name: 'CAFF_CHAT_API_URL', count: 1 }];
+  }, 'resume');
+  const before = fs.readFileSync(f.source), a = prepareSealedDirectTurn(f.request), b = prepareSealedDirectTurn(f.request, 'Read and verify.');
+  assert.equal(a.supported, true, JSON.stringify(a)); assert.equal(b.supported, true, JSON.stringify(b));
+  assert.equal(a.input.sessionText, f.store.readBlob('p1', f.r.sessionBlobHash).toString());
+  assert.equal(b.input.sessionText, a.input.sessionText); assert.ok(a.input.sessionText.endsWith('\r\n'));
+  assert.equal(a.provenance.commonInputHash, b.provenance.commonInputHash);
+  assert.equal(prepareSealedOriginalTurn(f.request).input.sessionText, a.input.sessionText);
+  const path = require('node:path'), { prepareComparison } = require('../../scripts/badcase-capture/direct-comparison.cjs');
+  const plan = prepareComparison({ request: f.request, variants: ['original'], repeats: 3, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
+    image: { imageId: 'sha256:' + '1'.repeat(64) }, rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } });
+  assert.equal(plan.supported, true, JSON.stringify(plan));
+  assert.deepEqual(plan.summary.replaySession, { deliveryMode: 'resume', prefixHash: f.r.sessionBlobHash, lineCount: 2 });
+  assert.deepEqual(fs.readFileSync(f.source), before);
+});
+test('resume without intact matching session/runtime metadata is refused instead of silently starting fresh', t => {
+  for (const [change, reason] of [
+    [({ r }) => { r.sessionBlobHash = ''; }, 'replay_session_missing'],
+    [({ r, put }) => { r.sessionBlobHash = put('not JSON\n'); }, 'replay_session_invalid'],
+    [({ r }) => { r.sessionLineCount++; }, 'replay_session_invalid'],
+    [({ config }) => { config.sdkStartConfig.resume = false; }, 'replay_runtime_config_mismatch'],
+    [({ config }) => { config.deliveryMode = 'fresh'; }, 'replay_runtime_config_mismatch'],
+    [({ r, put }) => { r.sessionBlobHash = put(JSON.stringify({ type: 'session', version: 3, id: 's', cwd: '/elsewhere' }) + '\n'); r.sessionLineCount = 1; }, 'replay_controlled_bindings_invalid'],
+  ]) {
+    const f = portable(t, change, 'resume'); assert.deepEqual(prepareSealedOriginalTurn(f.request), { supported: false, reason });
+  }
 });

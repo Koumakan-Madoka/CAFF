@@ -10,7 +10,7 @@ export function supportsPortableThinking(config: any): boolean {
 export function inspectPortableAgentConfig(config: any) {
   const result = { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: false };
   try {
-    if (!config || config.resume !== false || !supportsPortableThinking(config) || config.fast === true
+    if (!config || typeof config.resume !== 'boolean' || !supportsPortableThinking(config) || config.fast === true
       || config.retireUserScopeSkills !== true || !path.isAbsolute(config.cwd) || !path.isAbsolute(config.agentDir)
       || !Array.isArray(config.extensionPaths) || config.extensionPaths.length !== 1
       || !config.extensionPaths[0].replaceAll('\\', '/').endsWith('/lib/pi-extensions/caff-capabilities.mjs')

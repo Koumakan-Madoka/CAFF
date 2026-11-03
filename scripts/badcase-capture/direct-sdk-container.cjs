@@ -111,10 +111,10 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   if (settings !== null) write(agentDir + '/settings.json', JSON.stringify(settings));
   if (input.systemPrompt !== null) write(agentDir + '/SYSTEM.md', input.systemPrompt);
   write(agentDir + '/models.json', JSON.stringify(direct.directModelRouting(baseUrl, profile)));
-  if (input.sessionText !== null) write(sessionPath, input.sessionText);
-  else assert.equal(fs.existsSync(sessionPath), false);
+  assert.equal(fs.existsSync(sessionPath), false);
   let runtime, callback, observer, receipt, toolCalls = [], extensionErrors = [];
-  const toolArgs = new Map(); let prompt = input.prompt;
+  const toolArgs = new Map(); let prompt = input.prompt, sessionText = input.sessionText;
+  const replaySession = direct.replaySessionInfo(sessionText);
   const originalFetch = globalThis.fetch;
   try {
     if (input.callback !== null) {
@@ -127,13 +127,19 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     Object.assign(process.env, { PI_OFFLINE: '1', PI_CODING_AGENT_DIR: agentDir, PI_TELEMETRY: '0',
       CAFF_CHAT_TOOLS_PATH: '/work/build/lib/agent-chat-tools.js', CAFF_CHAT_TOOLS_RELATIVE_PATH: '../build/lib/agent-chat-tools.js' });
     if (input.bindings !== undefined) {
-      assert.ok(callback && input.sessionText === null);
+      assert.ok(callback);
       fs.mkdirSync('/tmp/sandbox', { mode: 0o700 }); fs.mkdirSync('/tmp/private', { mode: 0o700 });
       const values = { CAFF_CHAT_API_URL: callback.apiUrl, CAFF_CHAT_INVOCATION_ID: callback.credentials.invocationId,
         CAFF_CHAT_CALLBACK_TOKEN: callback.credentials.callbackToken, CAFF_CHAT_CONVERSATION_ID: input.callback.association.conversationId,
         CAFF_CHAT_TURN_ID: input.callback.association.turnId, CAFF_CHAT_TOOLS_PATH: '/work/build/lib/agent-chat-tools.js',
         CAFF_CHAT_TOOLS_RELATIVE_PATH: '../build/lib/agent-chat-tools.js', PI_AGENT_SANDBOX_DIR: '/tmp/sandbox', PI_AGENT_PRIVATE_DIR: '/tmp/private' };
-      Object.assign(process.env, values); prompt = direct.bindDirectPrompt(prompt, input.bindings, values);
+      Object.assign(process.env, values); ({ prompt, sessionText } = direct.bindDirectInputs(prompt, sessionText, input.bindings, values));
+    }
+    if (sessionText !== null) {
+      const validation = require('/work/build/server/domain/runtime/badcase-capture/session-validator').validateSessionV2(sessionText, { authorizedRoot: cwd });
+      assert.ok(validation.ok && validation.unverifiedDimensions.length === 0);
+      assert.equal(JSON.parse(sessionText.split('\n')[0]).cwd, cwd);
+      write(sessionPath, sessionText);
     }
     const providerFetch = codex ? require('/work/codex-mailbox.cjs').createCodexMailboxFetch({ callbackUrl: callback?.apiUrl, callbackFetch: originalFetch }) : originalFetch;
     observer = direct.observeDirectFetch(providerFetch, { baseUrl, profile, callbackUrl: callback?.apiUrl });
@@ -141,7 +147,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     const sdk = await loadModule('/work/runtime/dist/bundle/index.js'); assert.equal(sdk.VERSION, '0.85.1');
     const host = await loadModule('/work/build/lib/pi-sdk-host.mjs');
     const config = host.normalizeStartCommand({ type: 'start', prompt, config: {
-      cwd, agentDir, sessionPath, resume: input.sessionText !== null, provider: selected.provider, model: selected.model,
+      cwd, agentDir, sessionPath, resume: sessionText !== null, provider: selected.provider, model: selected.model,
       thinking: selected.thinking || 'off', fast: false, extensionPaths: ['/work/build/lib/pi-extensions/caff-capabilities.mjs'],
       additionalSkillPaths: [], retireUserScopeSkills: true } }).config;
     ({ runtime } = await host.createSdkRuntime(sdk, config)); const session = runtime.session;
@@ -153,8 +159,9 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     assert.equal(runtime.modelFallbackMessage, undefined); assert.equal(session.model.provider, selected.provider); assert.equal(session.model.id, selected.model);
     if (codex) { assert.equal(session.model.api, selected.api); assert.equal(session.thinkingLevel, selected.thinking); }
     assert.equal(runtime.services.resourceLoader.getExtensions().errors.length, 0);
-    const initialHistory = input.sessionText === null ? [] : sdk.buildSessionContext(input.sessionText.trimEnd().split('\n').map(JSON.parse).slice(1)).messages;
+    const initialHistory = sessionText === null ? [] : sdk.buildSessionContext(sessionText.trimEnd().split('\n').map(JSON.parse).slice(1)).messages;
     assert.deepEqual(session.messages, initialHistory);
+    if (sessionText !== null) assert.ok(fs.readFileSync(sessionPath, 'utf8').startsWith(sessionText), 'replay_session_prefix_changed');
     const tools = session.agent.state.tools.map(t => t.name); assert.ok(tools.length >= 10);
     session.subscribe(e => {
       if (e.type === 'message_end' && e.message?.role === 'assistant') observer.complete(e.message);
@@ -178,6 +185,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       modelCalls: observer.calls, finalText, replySource, beforeHash, afterHash: treeHash(),
       ...(codex ? { modelConfig: { api: selected.api, thinking: session.thinkingLevel, fast: false, transport: session.agent.transport, credentialDelivery: 'host-only-mailbox' } } : {}),
       ...(input.recordedModelConfig ? { recordedModelConfig: input.recordedModelConfig } : {}),
+      ...(replaySession ? { replaySession } : {}),
       ...(repository ? { repository } : {}), ...(dependencies ? { dependencies } : {}),
       ...(input.fileEvidencePaths === undefined ? {} : { fileEvidence: collectFileEvidence(cwd, input.fileEvidencePaths, key) }),
       // No worker self-score. The host scores only after container removal.

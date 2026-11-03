@@ -10,6 +10,7 @@ const { readSealedCase, validateSealRequest } = require(base + 'sealed-case');
 const { readCapturedCallbackInput } = require(base + 'callback-input');
 const { containsSecretSentinel } = require(base + 'secrets');
 const { supportsPortableThinking } = require(base + 'portable-inputs');
+const { validateSessionV2 } = require(base + 'session-validator');
 const { validateDirectBindings } = require('./direct-model.cjs');
 const { locateGlobalPromptTarget } = require('../../build/lib/agent-prompt-targets');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
@@ -28,8 +29,9 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     ensure(retained, 'replay_checkpoint_unavailable');
     const cp = retained.checkpoint, r = cp.replayInput;
     ensure(r, 'replay_input_unavailable');
-    ensure(r.deliveryMode === 'fresh', r.deliveryMode === 'resume' ? 'replay_resume_not_supported' : 'replay_delivery_mode_invalid');
-    ensure(r.sessionBlobHash === '', 'replay_fresh_session_not_empty');
+    ensure(['fresh', 'resume'].includes(r.deliveryMode), 'replay_delivery_mode_invalid');
+    const resume = r.deliveryMode === 'resume';
+    ensure(resume ? /^[a-f0-9]{64}$/.test(r.sessionBlobHash || '') : r.sessionBlobHash === '', resume ? 'replay_session_missing' : 'replay_fresh_session_not_empty');
     ensure(r.invocationImageCount === 0, 'replay_invocation_images_not_supported');
     ensure(empty(r.unverifiedDimensions), 'replay_unverified_dimensions');
     ensure(cp.uncaptured === undefined || empty(cp.uncaptured), 'replay_uncaptured_files');
@@ -51,8 +53,8 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     const snapshot = checked('replay_runtime_snapshot_invalid', () => JSON.parse(utf8(r.harness?.configSnapshotHash))), config = snapshot.sdkStartConfig;
     ensure(snapshot.portableRuntime?.kind === 'portable-default-resources-v1' && snapshot.portableRuntime.schemaVersion === 1 && snapshot.portableRuntime.supported === true, 'replay_portable_runtime_not_supported');
     ensure(['0.85.1', 'pi:0.85.1'].includes(snapshot.piVersion), 'replay_sdk_version_not_supported');
-    ensure(snapshot.deliveryMode === 'fresh' && snapshot.agentPromptVersion === r.runConfig?.promptVersion && snapshot.toolBridgeEnabled === true, 'replay_runtime_config_mismatch');
-    ensure(config && config.resume === false && config.retireUserScopeSkills === true && config.cwd === cp.targetDir
+    ensure(snapshot.deliveryMode === r.deliveryMode && snapshot.agentPromptVersion === r.runConfig?.promptVersion && snapshot.toolBridgeEnabled === true, 'replay_runtime_config_mismatch');
+    ensure(config && config.resume === resume && config.retireUserScopeSkills === true && config.cwd === cp.targetDir
       && config.provider === r.runConfig.provider && config.model === r.runConfig.model, 'replay_runtime_config_mismatch');
     ensure(supportsPortableThinking(config), 'replay_recorded_thinking_not_supported');
     ensure(config.fast !== true, 'replay_fast_mode_not_supported');
@@ -108,9 +110,19 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     ensure(capturedCallback.association.assistantMessageId === association.messageId, 'replay_callback_association_mismatch');
     const callback = Object.fromEntries(['trace', 'expectedTraceHash', 'association'].map(k => [k, capturedCallback[k]]));
     const recordedModelConfig = { provider: config.provider, model: config.model, thinking: config.thinking, fast: false };
-    const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText: null, systemPrompt: null, settings: null, callback, recordedModelConfig,
+    const sessionText = resume ? utf8(r.sessionBlobHash) : null;
+    if (resume) {
+      ensure(sessionText.endsWith('\n'), 'replay_session_invalid');
+      checked('replay_session_invalid', () => sessionText.trim().split('\n').forEach(line => JSON.parse(line)));
+      ensure(sessionText.split('\n').length - 1 === r.sessionLineCount, 'replay_session_invalid');
+    }
+    const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText, systemPrompt: null, settings: null, callback, recordedModelConfig,
       bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements } };
-    checked('replay_controlled_bindings_invalid', () => validateDirectBindings(input.prompt, input.bindings));
+    const mapped = checked('replay_controlled_bindings_invalid', () => validateDirectBindings(input.prompt, input.bindings, sessionText));
+    if (resume) {
+      const validation = validateSessionV2(mapped.sessionText, { authorizedRoot: '/work/restored' });
+      ensure(validation.ok && empty(validation.unverifiedDimensions), 'replay_session_invalid');
+    }
     return { supported: true, input, ...variantInfo,
       provenance: { caseId: sealed.caseId, checkpointId: cp.checkpointId,
       checkpointHash: hash(JSON.stringify(cp)), ...identityInfo,

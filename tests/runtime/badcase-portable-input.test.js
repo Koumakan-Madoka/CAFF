@@ -32,6 +32,8 @@ test('portable resource declaration only accepts absent external instructions/se
   assert.equal(inspectPortableAgentConfig(config).supported, true);
   const production = { ...config, provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'xhigh' };
   assert.equal(inspectPortableAgentConfig(production).supported, true);
+  assert.equal(inspectPortableAgentConfig({ ...production, resume: true }).supported, true);
+  assert.equal(inspectPortableAgentConfig({ ...config, resume: true }).supported, true);
   for (const patch of [{ provider: 'other' }, { model: 'other' }, { thinking: 'high' }]) {
     assert.equal(inspectPortableAgentConfig({ ...production, ...patch }).supported, false);
   }
@@ -46,7 +48,7 @@ test('portable resource declaration only accepts absent external instructions/se
     fs.mkdirSync(path.join(cwd, '.pi')); assert.equal(inspectPortableAgentConfig(config).supported, false); fs.rmdirSync(path.join(cwd, '.pi'));
     fs.mkdirSync(path.join(cwd, '.agents')); assert.equal(inspectPortableAgentConfig(config).supported, false); fs.rmdirSync(path.join(cwd, '.agents'));
   } finally { fs.readFileSync = original; }
-  for (const changed of [{ resume: true }, { thinking: 'high' }, { fast: true }, { retireUserScopeSkills: false }, { extensionPaths: ['/other/plugin.mjs'] }, { additionalSkillPaths: [top] }]) {
+  for (const changed of [{ resume: 'true' }, { thinking: 'high' }, { fast: true }, { retireUserScopeSkills: false }, { extensionPaths: ['/other/plugin.mjs'] }, { additionalSkillPaths: [top] }]) {
     assert.equal(inspectPortableAgentConfig({ ...config, ...changed }).supported, false);
   }
 });
