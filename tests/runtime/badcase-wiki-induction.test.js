@@ -144,6 +144,16 @@ test('induction explicitly types proposal prose and budgets reasoning plus a com
   assert.match(body.messages[0].content, /caseIds.*字符串数组/);
 });
 
+test('full-coverage output checklist repeats exact ordered IDs after untrusted prose; never merges away a result', () => {
+  const cases = Array.from({ length: 13 }, (_, i) => ({ id: 'case-' + i, message: 'untrusted long context' }));
+  const body = JSON.parse(buildRequestBody({ phase: 'induction', cases, approvedEntries: [] }));
+  const payload = JSON.parse(body.messages[1].content);
+  assert.deepEqual(payload.outputChecklist.requiredCaseIds, cases.map(c => c.id));
+  assert.equal(payload.outputChecklist.resultCount, 13);
+  assert.match(body.messages[0].content, /results\.length.*13/);
+  assert.match(body.messages[0].content, /同模式.*重复.*proposal.*不得.*省略/);
+});
+
 test('truncated model JSON is rejected even if a partial results array parses; no invented coverage or retry', async () => {
   let calls = 0;
   const output = await classify({ phase: 'induction', cases: [], approvedEntries: [] }, { key, fetchImpl: async () => {
