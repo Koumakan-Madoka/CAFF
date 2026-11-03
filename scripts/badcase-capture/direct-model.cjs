@@ -159,9 +159,10 @@ function mapDirectSession(text, sourceRoot, replace) {
         if (!value.startsWith(sourceRoot) || (value !== sourceRoot && !['/', '\\'].includes(value[sourceRoot.length]))) bad();
         mapped = '/work/restored' + value.slice(sourceRoot.length).replaceAll('\\', '/');
       } else {
-        // Do not invent a portable spelling for a Windows child path in prose.
-        if (value.includes(sourceRoot + '\\')) bad();
-        mapped = value.replaceAll(sourceRoot, '/work/restored');
+        // Historical prose is context too: keep an ambiguous Windows child
+        // path verbatim rather than inventing a portable spelling or refusing
+        // the whole prefix. Current-turn dependencies remain unverified.
+        mapped = value.includes(sourceRoot + '\\') ? value : value.replaceAll(sourceRoot, '/work/restored');
       }
       mapped = replace(mapped);
       const token = JSON.stringify(value), start = lines[i].indexOf(token);

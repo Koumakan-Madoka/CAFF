@@ -10,6 +10,8 @@
 
 #### 2026-11-03 M1／M2 实测范围
 
+2026-11-03 用户补充裁决：resume 的 bash／未知工具调用和结果是冻结历史，只作为上下文，不重放、不执行。采集、预检和 worker 均显式按 `historyContext` 校验；工具存在性及历史路径不再作为当前依赖拒绝，图片和未知扩展状态仍拒绝，结构/链/秘密/材料完整性校验不放宽。当前轮次工具仍由真实 SDK 执行。计划及回执注明 `historyTools:context-only-not-executed`、`externalPathDependencies:not-verified`；无法静态判断历史外部路径是否被当前轮次需要，按用户裁决先放行并披露，不宣称恢复外部状态。旧封存的既有 incomplete/缺材料标记不改写。补缺实测在 `.tmp/wikiskill-production-m2/bash-prefix/`：3268 同一新房间第二轮真实 resume，9行前缀含 bash，原生容器回放从历史恢复首轮标记，只执行本轮 Node 命令及公开回复，历史命令未进入本轮工具轨迹，源码未改；这是 M2 补缺，不是候选效果或全量生产成功率。
+
 - M1：3268 的真实 GPT badcase ④，生产配置 `openai-codex/gpt-6.1-sol`、thinking `xhigh`，修复现场后原版独立三次均未测试先请示，且不再追问工作区改动或基线。Git status 与源现场同为空、保持 detached HEAD；41 个占位文件实际仍字节不同，`.env.example` 仍缺失，不能以 status 一致冒称字节等价。无候选或自动评分。证据：`.tmp/wikiskill-production-m1/restoration-q4-rerun/`。
 - M2：仅在 3268 新建同一房间连续两轮，第二轮实际 `sessionReused:true`、`deliveryMode:resume`；前缀 7 行、投影 4 条历史消息。第一轮只使用 read，故属于下文的已验证 session 子集；这不证明含历史 bash／未知工具的任意生产 resume 均可回放。用原生生产 GPT/xhigh 在真实断网容器回放第二轮，回执绑定原 CAS 前缀 hash／行数，恢复并使用第一轮标记，公开回调成功。
 - 长轮次是明确授权的实时时限／工具续接探针：模型实际运行一次 315 秒的无写入 Node 计时命令后继续回复。采集第二轮耗时 376.5 秒，独立容器回放 388.3 秒，均超过五分钟。未延迟或伪造供应方响应；**不宣称单次供应方思考／流持续超过五分钟，也未实测满 45 分钟**。回放 5 次真实供应方请求均 HTTP200，已知累计 64103 token（含缓存及重复上下文），账号剩余额度未知。
@@ -62,7 +64,7 @@
 
 #### Windows 页面预分类与归纳
 
-从干净 clone 安装、隔离启动、配置格式、页面操作及受信评测命令的完整步骤见 [Windows 操作说明](wikiskill-windows.md)。2026-11-03 在 `26b73a50` 的干净 clone/3268 副本实测：真实 Edge 预分类成功，真实 GPT/xhigh 原版命令三次与页面实时进度成功；真实增量归纳返回422 `wiki_model_output_invalid`、未发布、不重试，具体字段原因未确认。AC3/M3仍未完成，不能以合成输出或失败的页面点击代替成功归纳。详见该说明末尾的边界与忽略目录证据。
+从干净 clone 安装、隔离启动、配置格式、页面操作及受信评测命令的完整步骤见 [Windows 操作说明](wikiskill-windows.md)。2026-11-03 在 `26b73a50` 的干净 clone/3268 副本实测：真实 Edge 预分类成功，真实 GPT/xhigh 原版命令三次与页面实时进度成功；真实增量归纳返回422 `wiki_model_output_invalid`、未发布、不重试，具体字段原因未确认。随后获准的一次诊断在私有副本中捕获HTTP原文，已知Key扫描后脱敏保存（本次0替换）：`choices[0].finish_reason:length`、completion_tokens8192，触发worker的非stop拒绝；截断前完整proposal还出现数组symptoms，与存储要求的字符串不符。已先红后绿明确proposal字符串类型、输出预算提高到32768，校验不放宽；修后仅一次真实页面归纳仍返回422 `wiki_model_output_invalid`，没有新版本/建议，未再重试。原422及修后422的原始输出均未捕获，不能把诊断发现冒充它们的具体字段根因。AC3/M3仍未完成，需进一步获准诊断；不能以合成输出或失败点击代替成功归纳。原始诊断仅在忽略私有目录 `.tmp/wikiskill-production-m3/diagnostic-private/`，不得提交。
 
 - 正常服务入口（`npm start` / `createServerApp`）读取操作方显式设置的 `CAFF_BADCASE_WIKI_RUNTIME_CONFIG` **绝对JSON路径**；也可用服务端选项 `badcaseWikiRuntimeConfig` 指定，不接受HTTP输入。无需 `.tmp` 启动器或浏览器提交镜像、路径、Key或候选正文。页面的“预分类”和“增量归纳”仍调用既有 `/api/wikiskill/induct`，保留Host/Origin/CSRF、显式确认、revision、D15定组及训练集边界。
 - runtime JSON仅接受 `image`、`dockerBackend`（Windows必需）、`credentialDir`。`image` 使用与comparison相同的完整固定本地镜像描述（ID/digest、架构、Node/Python版本及localBuild等）；不自动拉取或构建。`dockerBackend` 为 `{ "kind": "windows-wsl-v1", "distribution": "Debian" }`，发行版按本机明确填写。`credentialDir` 为获准读取DeepSeek配置的宿主目录绝对路径（内含models.json，模型仍固定 `deepseek/deepseek-v4-flash`）；文件中不存Key，不将目录覆盖到全局环境，也不借此选择GPT账号源。配置缺失/字段错误、空队列或revision不符不读Key、不调用模型。Linux仍兼容原有受信image选项与Docker路径。
@@ -86,9 +88,9 @@
 #### resume 前缀恢复（已合成验证，真实准入未通过）
 
 - 新采集的 portable 声明不再只因 `resume:true` 拒绝，其他默认资源/技能门禁不变；旧声明与旧封存不重算。sealed-direct 的原版、角色候选和全局目标入口都只从保留引用读取执行前 session CAS，不读 live session、不拼接历史工具输出、不降级 fresh。核对封存 deliveryMode、SDK resume、session hash/行数、v3 头/链和已验证维度；缺失、格式/链损坏、声明不符分别以固定 `replay_session_missing/replay_session_invalid/replay_runtime_config_mismatch` 拒绝。
-- 准备输入原样携带归一化的 session 字节（含 CRLF、IDs、parentId、历史模型/thinking等），两变体前缀相同，纳入 common/input hash。回调占位符清单按 prompt 与 session 合计校验，不能把两个来源的次数混当成单一 prompt。只重绑封存 sourceRoot、允许的回调/工具/私有目录变量；session 中仅改头部 cwd、上下文文本（user/assistant text、custom_message、compaction/branch_summary 的 summary）和 read/write/edit 的 path 字符串，按原 JSON 字符串位置替换，不整份重新序列化。保持其余字节/行尾；身份、模型、thinking签名、工具结果及任意扩展状态不得重绑。JSON转义非标准/位置歧义、未知或结构字段中的占位符、非允许字段中残留源根、Windows prose 中的反斜杠子路径均拒绝，不猜测替换；Windows头部/文件工具绝对路径可映射到容器根。
+- 准备输入原样携带归一化的 session 字节（含 CRLF、IDs、parentId、历史模型/thinking等），两变体前缀相同，纳入 common/input hash。回调占位符清单按 prompt 与 session 合计校验。只按原JSON字符串位置重绑头部cwd和可明确绑定的上下文文本（user/assistant text、custom_message、compaction/branch_summary的summary），不整份重新序列化。**历史工具的参数/结果（含read/write/edit路径、bash/未知工具和bashExecution命令/输出）均不重绑或执行**；其中旧根和模板样文本是冻结上下文，不误当当前执行依赖。Windows prose含子路径而无法确定可移植拼写时也保留原文，不因此拒绝；计划/回执披露外部依赖未核验。身份、模型、thinking签名及未知扩展状态不得重绑；损坏JSON、歧义/未知的可执行绑定和身份字段中残留源根仍拒绝。
 - worker 在容器内回调就绪后生成独立的绑定后 session 副本，重新校验，才交原 CAFF SDK 的显式 `SessionManager.open` 路径；SDK初始化后须与原生 `buildSessionContext` 从该前缀投影出的消息逐项相同，且磁盘前缀未被改写。只执行当前 prompt，不重放其他 agent/用户的中途消息。回执 `replaySession:{deliveryMode:"resume",prefixHash,lineCount}` 绑定归档前缀；宿主缺失/漂移时不评分且停止整批，不消耗环境替补。CLI展示模式/行数/hash，不能以打印计划冒充实际执行。
-- 当前仍沿用已验证 session 子集：图片、未知扩展状态、bash/未知工具或越界路径依赖等 unverified 维度不放行，v1/v2不迁移为v3，缺旧材料不补造。合成封存、VM及断网容器假供应方证据不冒充真实GPT resume验收；项目资源恢复、Windows入口和用户选标真实用例仍待后续验证。
+- 按2026-11-03补充裁决，冻结历史中的bash/未知工具及工具结果不再阻断；不会为旧工具创建执行器或重放命令。图片、未知扩展状态仍不放行，v1/v2不迁移为v3，缺旧材料不补造。历史外部路径是否是当前依赖未做语义识别，先放行并在计划/回执/CLI披露；不补造现场外文件。合成封存/VM证据不冒充真实GPT，真实含bash续接补缺见本节顶部。
 
 #### 仓库内项目资源（已合成验证，外部资源与真实准入未完成）
 
@@ -225,7 +227,7 @@
 - Git 历史恢复：只保留记录 HEAD 的可达对象，**git历史只排除本机已知key，不做模式脱敏**；源配置/remote URL/reflog及不可达对象不恢复；只恢复操作方显式refState内指向该HEAD的heads/remotes别名，未提供则兼容旧 `replay-baseline`，不冒称原ref等价。不同提交的引用/标签及任意source index的暂存状态不恢复。缺明确记录HEAD、浅仓库、缺对象/扫描失败、非顶层仓库、缺完整已知值清单（包括JEV）均拒绝，不以live HEAD/空清单兜底。命中已知值时退回脱敏单根提交，HEAD不同、没有原历史，依赖历史的任务（例如第0步①“最近在做什么”）复现度会下降，不能冒称忠实历史；该回退的授权基线路径仍不支持 symlink/submodule。第0步clone已按获准的三类来源完成全量已知值扫描（800提交/5076 blob/0命中），但这不证明旧封存缺文件已补齐或真实GPT准入通过。
 - 依赖恢复不支持 npm v1 lock、yarn/pnpm、私有 registry/安装认证、独立 `.npmrc`/shrinkwrap 文件、本地依赖/workspace或根安装生命周期脚本（不能满足二文件缓存假设）、宿主/Windows原生依赖直接复用或恶意lifecycle隔离。缓存须由受信操作方预建，不能以cacheHit或合成恢复证明真实封存已准入；Windows单例中转仅支持上述已核对的NAT网关，Linux运行时固定分发已有单独准备入口，批量选项仍待后续接线。
 - 此 MVP 主路径以外的换根、外置 Git 元数据、submodule/嵌套仓库、全局 Git 配置、复杂 ignore 语法；底层保留旧实现不等于本轮承诺其端到端可用。
-- 正式 sealed-direct 入口的图片、额外技能/外部系统指令/自定义设置或旧缺材料封存；resume中未验证的bash/未知工具/外部路径/扩展状态依赖、v1/v2、非允许字段的重绑、歧义JSON或Windows prose中的反斜杠子路径仍拒绝。工具依赖白名单实际为read/write/edit（并非只有只读工具），还须路径在授权范围。2026-11-03 06:42Z获准只读抽样生产最新200份GPT日志（按mtime，非数据库/进程/HTTP）：109份含231个推定续接轮次，231/231（100%）的历史前缀包含bash，均被当前工具子集挡住。推定规则为同日志首个user之后的每个user及其此前按时间顺序的前缀，未核验运行时reuse或分支祖先，不是全量生产比例或所有门禁通过率；采样窗口滑动会改变分母。聚合/hash证据为 `.tmp/wikiskill-production-m3/windows-induction/production-subset-counts.json`，不保存日志正文。不放宽子集；已验证resume只恢复执行前完整前缀，不重放中途消息，M2真实短前缀成功也不代表多数生产历史可回放。
+- 正式sealed-direct入口的图片、额外技能/外部系统指令/自定义设置或旧缺材料封存；resume的未知扩展状态、v1/v2、身份等非允许字段的重绑和歧义JSON仍拒绝。**冻结历史的bash/未知工具、工具结果及历史外部路径不再因此被挡住**；历史参数/结果不执行或重绑，无法判断当前是否仍需外部路径时先放行，明确报告 `externalPathDependencies:not-verified`，不承诺恢复现场外状态。2026-11-03 06:42Z获准只读抽样生产最新200份GPT日志（按mtime，非数据库/进程/HTTP）：109份含231个推定续接轮次，231/231前缀含bash，**在当时旧门禁下**均受阻；该统计促成用户补充裁决，不代表新策略仍全部不支持。推定按同日志user及其此前前缀，未核验运行时reuse/分支祖先，不是全量生产比例；不重新读取生产日志。聚合/hash证据 `.tmp/wikiskill-production-m3/windows-induction/production-subset-counts.json` 不含日志正文。补缺真实续接证据 `.tmp/wikiskill-production-m2/bash-prefix/` 不等于任意生产现场均可恢复。
 - 旧真实仓库封存中已经由秘密扫描排除了文件（`secretExcludedPaths` 非空），当前 sealed-direct 入口仍不能回放；不补读现场、不改写旧封存。4 MiB 累计 blob 限制已在生产扩展 M1 取消。第0步两条真实 CAFF 用例当时均排除了41个路径、保留材料约16.5 MB，同时触及缺文件和旧体积上限；当时未运行原版或候选，此历史结果不回填为成功。新采集保留占位符文件也不等于这两条旧封存已修复。
 - 历史诊断问题（2026-11-03 已修）：过去 `compare-sealed --plan` 经全局目标路径遇到材料不全一律报 `unsupported_or_missing_declared_prompt_target`，不能据此断言缺目标。当前按上述具体 `replay_*` 原因拒绝，只有目标定位实际失败才报 `replay_declared_prompt_target_missing_or_invalid`。旧封存及第0步当时的只读核验/原始CLI输出不改写，仍保留于 `.tmp/wikiskill-ac8-real/`，不是成功回放或复现证据。
 - 尚未完成真实用例验收的 wiki/候选、固定划分、新字面评分及批量评测链，不因接口或合成测试存在就视为验收通过。不同封存原角色版本不能共用同一个候选；需用户明确另起迭代，不自动适配。未经用户审核自动生效、多轮自动调优、语义自动判分、任意规则插件、自动提分/确定性保证、自动发布或修改生产 prompt 均非本 Goal 承诺。

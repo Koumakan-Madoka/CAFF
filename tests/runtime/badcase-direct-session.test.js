@@ -68,6 +68,19 @@ test('frozen bash/unknown calls, results and external paths are inert context, w
   }
 });
 
+test('Windows path prose remains frozen context rather than an unsupported current dependency', () => {
+  const root = 'C:\\old\\root', text = session(root).replace('Earlier {{CAFF_CHAT_API_URL}}', 'Earlier ' + root.replaceAll('\\', '\\\\') + '\\\\outside-file {{CAFF_CHAT_API_URL}}');
+  const bindings = { sourceRoot: root, controlledReplacements: [{ name: names[0], count: 1 }, { name: 'PI_AGENT_PRIVATE_DIR', count: 1 }] };
+  const result = direct.bindDirectInputs('Current task', text, bindings, values);
+  assert.ok(JSON.parse(result.sessionText.split('\n')[1]).message.content.includes(root + '\\outside-file'));
+});
+
+test('CLI discloses inert history tools and unchecked current external-path dependencies', () => {
+  const report = require('../../scripts/badcase-capture/direct-comparison.cjs').formatComparison({ supported: true, replaySession: direct.replaySessionInfo(session('/old/root')) });
+  assert.match(report, /历史工具.*仅作上下文.*不执行/);
+  assert.match(report, /当前.*外部路径.*未核验/);
+});
+
 test('session text substitutions escape callback values as JSON, never as new entries', () => {
   const root = '/old/root', text = session(root), bindings = { sourceRoot: root, controlledReplacements: [{ name: names[0], count: 1 }, { name: 'PI_AGENT_PRIVATE_DIR', count: 1 }] };
   const value = 'quoted "value"\nnot a new session entry';

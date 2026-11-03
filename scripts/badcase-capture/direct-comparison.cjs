@@ -362,7 +362,8 @@ function formatComparison(result) {
   if (result.modelConfig) lines.push('配置：' + result.modelConfig.api + ' / thinking ' + result.modelConfig.thinking + ' / ' + result.modelConfig.transport + ' / Fast关闭；凭据仅在宿主。');
   if (Number.isSafeInteger(result.timeoutMs)) lines.push('容器时限：' + result.timeoutMs / 1000 + '秒（配置上限，不是已用时）。');
   if (result.recordedModelConfig) lines.push('封存配置：' + result.recordedModelConfig.provider + '/' + result.recordedModelConfig.model + ' / thinking ' + result.recordedModelConfig.thinking + '；计划保留该thinking，实际以有效回执为准。');
-  if (result.replaySession) lines.push('封存会话：resume；前缀' + result.replaySession.lineCount + '行，SHA-256=' + result.replaySession.prefixHash + '；只重绑已声明的路径/回调，不重放中途消息。');
+  if (result.replaySession) lines.push('封存会话：resume；前缀' + result.replaySession.lineCount + '行，SHA-256=' + result.replaySession.prefixHash + '；只重绑已声明的上下文/回调，不重放中途消息。',
+    '历史工具（含bash/未知工具及结果）仅作上下文，不执行；当前轮次是否依赖历史外部路径未核验，按用户裁决先放行，不承诺外部状态已恢复。');
   if (result.projectResources) lines.push('项目资源：封存文件' + result.projectResources.fileCount + '个，SHA-256=' + result.projectResources.manifestHash + '；原生SDK发现，缺失/漂移拒绝，未用当前源文件补齐。');
   if (result.repository) {
     lines.push(result.repository.historyIncluded ? 'Git：保留记录HEAD的完整可达历史，HEAD与源记录相同；共' + result.repository.historyCommitCount + '个提交。'
