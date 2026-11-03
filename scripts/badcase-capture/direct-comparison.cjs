@@ -104,6 +104,9 @@ function prepareComparison(config, options = {}) {
   }
   const original = prepare(config.request);
   if (original.supported !== true) return { supported: false, reason: /^replay_[a-z_]+$/.test(original.reason || '') ? original.reason : 'replay_materials_invalid' };
+  if (original.input.recordedModelConfig !== undefined && original.input.recordedModelConfig.thinking !== (modelProfile(profile).thinking || 'off')) {
+    return { supported: false, reason: 'replay_thinking_profile_mismatch' };
+  }
   let candidateRole = config.candidateRole, wikiCandidate = null;
   if (globalSaved) {
     const selected = resolveGlobalWikiCandidate(globalState, globalSaved.id, original.provenance.targetId,
@@ -156,7 +159,8 @@ function prepareComparison(config, options = {}) {
     commonInputHash: repository || config.dependencies || rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig,
       ...(repository ? { repository: repository.report, gitFileHashes: repository.gitFiles.map(f => ({ path: f.path, sha256: f.sha256 })) } : {}),
       ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}) })) : original.provenance.commonInputHash,
-    model: profile, ...(profile === CODEX_PROFILE ? { modelConfig: { ...CODEX_CONFIG } } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
+    model: profile, ...(profile === CODEX_PROFILE ? { modelConfig: { ...CODEX_CONFIG } } : {}),
+    ...(original.input.recordedModelConfig ? { recordedModelConfig: { ...original.input.recordedModelConfig } } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
     imageId: config.image.imageId, timeoutMs: config.timeoutMs ?? 120000, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
     strictEvalEligible: false, ...(repository ? { repository: repository.report } : {}),
@@ -257,7 +261,9 @@ async function runComparison(config, options = {}) {
           .map(field => [receipt?.repository?.[field], plan.summary.repository[field]]) : [])]
         .some(([actual, expected]) => actual !== undefined && actual !== expected);
       const modelConfigChanged = native && Object.keys(CODEX_CONFIG).some(k => receipt?.modelConfig?.[k] !== CODEX_CONFIG[k]);
-      const valid = !evidenceChanged && !modelConfigChanged && !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
+      const recordedConfigChanged = plan.summary.recordedModelConfig && receipt?.kind === 'direct-caff-turn-v1' && Object.keys(plan.summary.recordedModelConfig)
+        .some(k => receipt?.recordedModelConfig?.[k] !== plan.summary.recordedModelConfig[k]);
+      const valid = !evidenceChanged && !modelConfigChanged && !recordedConfigChanged && !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
         && receipt.inputHash === manifests[variant].inputHash && receipt.runtimeHash === manifests[variant].runtimeHash
         && receipt.beforeHash === plan.beforeHash
         && (!plan.summary.repository || receipt.repository?.gitAvailable === true && receipt.repository?.historyCommitCount === plan.summary.repository.historyCommitCount
@@ -304,7 +310,7 @@ async function runComparison(config, options = {}) {
       }
       if (alternating) {
         fatal = row.reason === 'file_evidence_unavailable' || evidenceChanged
-          || modelConfigChanged || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
+          || modelConfigChanged || recordedConfigChanged || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
         // Only environmental errors may consume the five replacement attempts.
         // Evidence/integrity stops propagate to the remaining cases and stages.
         stopped = fatal;
@@ -335,6 +341,7 @@ function formatComparison(result) {
   const lines = [...(result.kind === 'sealed-original-replay-v1' ? ['原版单边回放：没有候选，不产生采纳结论。'] : []), '模型：' + result.model];
   if (result.modelConfig) lines.push('配置：' + result.modelConfig.api + ' / thinking ' + result.modelConfig.thinking + ' / ' + result.modelConfig.transport + ' / Fast关闭；凭据仅在宿主。');
   if (Number.isSafeInteger(result.timeoutMs)) lines.push('容器时限：' + result.timeoutMs / 1000 + '秒（配置上限，不是已用时）。');
+  if (result.recordedModelConfig) lines.push('封存配置：' + result.recordedModelConfig.provider + '/' + result.recordedModelConfig.model + ' / thinking ' + result.recordedModelConfig.thinking + '；计划保留该thinking，实际以有效回执为准。');
   if (result.repository) {
     lines.push(result.repository.historyIncluded ? 'Git：保留记录HEAD的完整可达历史，HEAD与源记录相同；共' + result.repository.historyCommitCount + '个提交。'
       : 'Git：历史命中本机已知key，脱敏后重建，HEAD不同于源仓库；只有1个基线提交，无历史提交。',

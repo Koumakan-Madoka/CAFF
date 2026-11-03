@@ -58,7 +58,7 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
       state.executions++; assert.equal(opts.key, key); assert.equal(opts.network, 'bridge');
       const m = manifestFor(files), input = JSON.parse(files[0].bytes), failed = state.executions === state.failAt, text = 'RESULT';
       return { code: 0, cleaned: true, containerId: 'a'.repeat(64), isolation: { privileged: false }, receipt: { kind: 'direct-caff-turn-v1', inputHash: m.inputHash, runtimeHash: m.runtimeHash, success: !failed,
-        beforeHash: expectedTreeHash(input), afterHash: expectedTreeHash(input), replySource: 'public', finalText: 'done', toolCalls: [],
+        beforeHash: expectedTreeHash(input), afterHash: expectedTreeHash(input), replySource: 'public', finalText: 'done', toolCalls: [], recordedModelConfig: input.recordedModelConfig,
         fileEvidence: [{ path: 'REPORT.md', state: 'file', base64: Buffer.from(text).toString('base64'), sha256: sha(text), size: text.length }],
         modelCalls: [{ model: 'deepseek/deepseek-v4-flash', durationMs: 1, success: !failed, usage: null }] } };
     } };
@@ -163,6 +163,16 @@ test('staged receipt/launcher hash drift is fatal, not a replaceable environment
     assert.equal(r.cases.find(c => c.stage === 'gate').runs[0].reason, 'run_evidence_unavailable');
     assert.equal(r.byStage.test.original.attempted, 0); assert.equal(r.callsUnavailable, true);
   });
+});
+test('staged recorded thinking evidence missing or changed is fatal, not an environmental replacement', async t => {
+  for (const missing of [true, false]) {
+    const h = setup(t, { staged: true }), execute = h.options.execute;
+    h.options.execute = async (...args) => { const task = await execute(...args);
+      if (missing) delete task.receipt.recordedModelConfig; else task.receipt.recordedModelConfig.thinking = 'xhigh'; return task; };
+    const r = await h.run(); assert.equal(h.state.executions, 1); assert.equal(r.completed, false);
+    assert.equal(r.gateDecision.outcome, 'indeterminate'); assert.equal(r.byStage.test.original.attempted, 0);
+    assert.ok(r.cases.filter(c => c.stage === 'gate').slice(1).every(c => c.reason === 'prior_integrity_error'));
+  }
 });
 test('staged explicit dependency archive/cache/lock/Node drift is fatal, not five environmental replacements', async t => {
   for (const field of ['archiveHash', 'cacheKey', 'lockHash', 'nodeVersion']) await t.test(field, async t => {

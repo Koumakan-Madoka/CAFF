@@ -9,6 +9,7 @@ const { createCheckpointRetentionStore } = require(base + 'checkpoint-retention'
 const { readSealedCase, validateSealRequest } = require(base + 'sealed-case');
 const { readCapturedCallbackInput } = require(base + 'callback-input');
 const { containsSecretSentinel } = require(base + 'secrets');
+const { supportsPortableThinking } = require(base + 'portable-inputs');
 const { validateDirectBindings } = require('./direct-model.cjs');
 const { locateGlobalPromptTarget } = require('../../build/lib/agent-prompt-targets');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
@@ -53,7 +54,7 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     ensure(snapshot.deliveryMode === 'fresh' && snapshot.agentPromptVersion === r.runConfig?.promptVersion && snapshot.toolBridgeEnabled === true, 'replay_runtime_config_mismatch');
     ensure(config && config.resume === false && config.retireUserScopeSkills === true && config.cwd === cp.targetDir
       && config.provider === r.runConfig.provider && config.model === r.runConfig.model, 'replay_runtime_config_mismatch');
-    ensure(config.thinking === 'off', 'replay_recorded_thinking_not_supported');
+    ensure(supportsPortableThinking(config), 'replay_recorded_thinking_not_supported');
     ensure(config.fast !== true, 'replay_fast_mode_not_supported');
     ensure(empty(r.runConfig.skillIds) && empty(r.runConfig.conversationSkillIds) && empty(r.harness.skillSnapshots), 'replay_skills_not_supported');
     let prompt = utf8(r.promptBlobHash); ensure(r.normalizedPromptHash === r.promptBlobHash, 'replay_prompt_hash_mismatch');
@@ -106,7 +107,8 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     const capturedCallback = checked('replay_callback_unavailable_or_invalid', () => readCapturedCallbackInput(cp, digest => blobs.get(digest)));
     ensure(capturedCallback.association.assistantMessageId === association.messageId, 'replay_callback_association_mismatch');
     const callback = Object.fromEntries(['trace', 'expectedTraceHash', 'association'].map(k => [k, capturedCallback[k]]));
-    const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText: null, systemPrompt: null, settings: null, callback,
+    const recordedModelConfig = { provider: config.provider, model: config.model, thinking: config.thinking, fast: false };
+    const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText: null, systemPrompt: null, settings: null, callback, recordedModelConfig,
       bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements } };
     checked('replay_controlled_bindings_invalid', () => validateDirectBindings(input.prompt, input.bindings));
     return { supported: true, input, ...variantInfo,

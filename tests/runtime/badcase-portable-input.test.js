@@ -30,6 +30,11 @@ test('portable resource declaration only accepts absent external instructions/se
   const config = { cwd, agentDir, resume: false, thinking: 'off', fast: false, retireUserScopeSkills: true,
     extensionPaths: [path.resolve('lib/pi-extensions/caff-capabilities.mjs')], additionalSkillPaths: [path.join(cwd, '.agents/skills/missing')] };
   assert.equal(inspectPortableAgentConfig(config).supported, true);
+  const production = { ...config, provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'xhigh' };
+  assert.equal(inspectPortableAgentConfig(production).supported, true);
+  for (const patch of [{ provider: 'other' }, { model: 'other' }, { thinking: 'high' }]) {
+    assert.equal(inspectPortableAgentConfig({ ...production, ...patch }).supported, false);
+  }
   const original = fs.readFileSync; fs.readFileSync = () => assert.fail('resource declaration must not read contents');
   try {
     for (const file of ['settings.json', 'SYSTEM.md', 'APPEND_SYSTEM.md', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md', 'extensions']) {

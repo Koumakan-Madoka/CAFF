@@ -7,12 +7,13 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.' } = {}) {
+async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt, files: files.map(p => ({ path: p,
     base64: Buffer.from(fileBytes[p] ?? p).toString('base64'), sha256: crypto.createHash('sha256').update(fileBytes[p] ?? p).digest('hex') })),
     sessionText: null, settings: null, systemPrompt: null,
+    ...(recordedModelConfig === undefined ? {} : { recordedModelConfig }),
     ...(repositorySnapshot ? { repository: repositorySnapshot.report, gitFiles: repositorySnapshot.gitFiles } : {}),
     callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: {} } : null,
     ...(fileEvidencePaths === undefined ? {} : { fileEvidencePaths }) };
@@ -194,6 +195,24 @@ test('Codex worker uses credential-free mailbox, xhigh native model, SSE and no 
   assert.equal(settings.transport, 'sse'); assert.equal(settings.retry.enabled, false); assert.equal(settings.retry.provider.maxRetries, 0);
   assert.deepEqual(receipt.modelConfig, { api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' });
   assert.equal(receipt.success, true); assert.equal(receipt.modelCalls[0].model, 'openai-codex/gpt-6.1-sol');
+});
+test('worker reports the recorded production configuration and refuses silent thinking conversion', async t => {
+  const recorded = { provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'xhigh', fast: false };
+  const r = await workerReceipt(t, { profile: 'openai-codex/gpt-6.1-sol', recordedModelConfig: recorded });
+  assert.deepEqual(JSON.parse(JSON.stringify(r.receipt.recordedModelConfig)), recorded); assert.equal(r.startConfig.thinking, 'xhigh');
+  await assert.rejects(workerReceipt(t, { profile: 'openai-codex/gpt-6.1-sol', recordedModelConfig: { ...recorded, thinking: 'off' } }), /AssertionError/);
+});
+test('host requires matching recorded config in worker evidence; missing or changed thinking never scores', async () => {
+  for (const mode of ['matching', 'missing', 'changed']) {
+    const f = fakes(), prepare = f.options.prepare, execute = f.options.execute;
+    const recorded = { provider: 'anthropic', model: 'claude-sonnet-4-5', thinking: 'off', fast: false };
+    f.options.prepare = (...args) => { const p = prepare(...args); p.input.recordedModelConfig = recorded; return p; };
+    f.options.execute = async (...args) => { const task = await execute(...args);
+      if (mode !== 'missing') task.receipt.recordedModelConfig = { ...recorded, ...(mode === 'changed' ? { thinking: 'xhigh' } : {}) }; return task; };
+    const result = await runComparison(config(), f.options);
+    assert.equal(result.completed, mode === 'matching'); assert.equal(result.runs[0].status, mode === 'matching' ? 'pass' : 'error');
+    if (mode !== 'matching') { assert.equal(f.state.executions, 1); assert.equal(result.totals.original.passed, 0); }
+  }
 });
 test('worker hashes nested files and same-prefix siblings in the same order as the host', async t => {
   const { receipt, input } = await workerReceipt(t, { files: ['src/index.js', 'src.js', 'a/item.txt', 'a.txt', 'docs/readme.md', 'docs.md'] });

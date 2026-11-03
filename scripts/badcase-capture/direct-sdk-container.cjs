@@ -41,6 +41,11 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   if (codex) process.env[direct.KEY_ENV] = key;
   const input = JSON.parse(fs.readFileSync('/work/replay-input.json'));
   assert.equal(input.kind, 'prepared-caff-turn-v1'); assert.equal(typeof input.prompt, 'string');
+  if (input.recordedModelConfig !== undefined) {
+    assert.deepEqual(Object.keys(input.recordedModelConfig).sort(), ['fast', 'model', 'provider', 'thinking']);
+    assert.equal(input.recordedModelConfig.thinking, selected.thinking || 'off');
+    assert.equal(input.recordedModelConfig.fast, false);
+  }
   assert.ok(input.prompt.trim() && Buffer.byteLength(input.prompt) <= 256 * 1024);
   assert.ok(input.sessionText === null || typeof input.sessionText === 'string' && input.sessionText.endsWith('\n'));
   assert.ok(Array.isArray(input.files) && input.files.length <= 1024);
@@ -172,6 +177,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       historyMessages: initialHistory.length, historyHash: hash(JSON.stringify(initialHistory)), tools, toolCalls,
       modelCalls: observer.calls, finalText, replySource, beforeHash, afterHash: treeHash(),
       ...(codex ? { modelConfig: { api: selected.api, thinking: session.thinkingLevel, fast: false, transport: session.agent.transport, credentialDelivery: 'host-only-mailbox' } } : {}),
+      ...(input.recordedModelConfig ? { recordedModelConfig: input.recordedModelConfig } : {}),
       ...(repository ? { repository } : {}), ...(dependencies ? { dependencies } : {}),
       ...(input.fileEvidencePaths === undefined ? {} : { fileEvidence: collectFileEvidence(cwd, input.fileEvidencePaths, key) }),
       // No worker self-score. The host scores only after container removal.

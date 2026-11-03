@@ -66,6 +66,21 @@ test('actual GPT family rules are an appendable role span without inventing a pe
   assert.equal(candidate.provenance.originalRoleHash, original.provenance.originalRoleHash);
   assert.equal(candidate.input.prompt.startsWith('Your visible agent name: GPT\n\n'), true);
 });
+test('production GPT xhigh is recorded in unchanged original and plan; thinking mismatch is refused before execution', t => {
+  const f = gptFamily(t, ({ r, config }) => { r.runConfig.provider = config.sdkStartConfig.provider = 'openai-codex';
+    r.runConfig.model = config.sdkStartConfig.model = 'gpt-6.1-sol'; config.sdkStartConfig.thinking = 'xhigh'; });
+  const recorded = { provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'xhigh', fast: false };
+  const input = prepareSealedOriginalTurn(f.request); assert.equal(input.supported, true, JSON.stringify(input));
+  assert.deepEqual(input.input.recordedModelConfig, recorded);
+  const path = require('node:path'), { prepareComparison } = require('../../scripts/badcase-capture/direct-comparison.cjs');
+  const config = { request: f.request, variants: ['original'], repeats: 3, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
+    image: { imageId: 'sha256:' + '1'.repeat(64) }, modelProfile: 'openai-codex/gpt-6.1-sol', keySource: 'caff-codex-access',
+    codexAuthFile: path.join(f.root, '.pi-sandbox/auth.json'), rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } };
+  const plan = prepareComparison(config); assert.equal(plan.supported, true, JSON.stringify(plan)); assert.deepEqual(plan.summary.recordedModelConfig, recorded);
+  const { modelProfile, keySource, codexAuthFile, ...offConfig } = config;
+  assert.deepEqual(prepareComparison(offConfig), { supported: false, reason: 'replay_thinking_profile_mismatch' });
+  const off = gptFamily(t); assert.deepEqual(prepareComparison({ ...config, request: off.request }), { supported: false, reason: 'replay_thinking_profile_mismatch' });
+});
 test('real sealed family anchor flows through candidate creation, confirmation and original/candidate preflight without injected preparers', t => {
   const f = gptFamily(t);
   const path = require('node:path');
