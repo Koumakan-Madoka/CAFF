@@ -44,7 +44,9 @@
 - stdin/二进制依赖产物流送不增加4MiB材料上限，控制输出仍有独立字节/期限保护；输出文件exclusive-create。进程/控制失败不回退或重试模型。修复relay的退出竞争：inspect后worker停止、exec读失败但attach尚未close时，复核同一个容器已停止后join实际退出码；容器仍运行的exec错误、损坏mailbox及身份不符仍硬失败，不把环境错误冒充模型超时。
 - Windows仓库依赖预建使用同一个受版本管理的 `node scripts/badcase-capture/cache-replay-dependencies.cjs <Windows绝对单例comparison配置> <Windows绝对缓存目录>`，配置必须显式选上述backend；缺backend或非Windows误选时在读取封存/安全清单前拒绝。它不是模型执行命令，不认证/刷新账号、不调用模型，不要求先有Linux运行时dependencyRoot。显式 `dependencies.cacheRoot` 必须与第二参数相同；缓存完成后供相同配置的 `compare-sealed --plan` 只读检查。命中只验本地字节/回执，不启动WSL/代理/npm；损坏命中拒绝而不是静默重装。
 - 缓存未命中时，Windows通过固定 `wsl.exe --distribution <name> --exec /usr/bin/env -i ... ip -4 route show default` 读取单一NAT默认路由，不运行shell/profile、不向WSL透传环境。网关须为Windows本机接口实际持有的RFC1918 IPv4，歧义、公网、loopback、缺失、非本机地址或绑定失败均停止，不猜其他发行版/网卡、不绑定0.0.0.0、不直连回退。仅在该地址开短生命周期随机端口，复用只拨 `127.0.0.1:17890` 的TCP中转；工作结束/失败关闭全部连接和监听。安装仍由同一个WSL Docker runner和无凭据容器内npm执行；产物流回Windows原子缓存，CLI只返回安全缓存/镜像身份和backend，缓存本身不保存代理地址或发行版。此中转是受信本地网络通路，不是认证网关或恶意安装脚本出口防火墙；不支持无该NAT网关的mirrored/特殊网络布局，也不自动改防火墙。
-- 仍须**显式准备匹配容器Node/架构的Linux原生SQLite运行时**，以Windows可读的独立普通目录提供；不能把Windows node_modules当Linux运行时。尚无完整统一运行时准备入口、批量backend或页面预分类/归纳接线，因此不宣称从干净clone已完成AC3或M1准入。合成小项目的真实Windows→WSL/npm安装不是生产仓库依赖验收；合成Windows宿主→真实WSL Docker→假供应方证据不是真实GPT验收；旧仅Linux的其他诊断入口不自动获得这个backend。
+- Linux原生运行时依赖由受版本管理的 `node scripts/badcase-capture/cache-runtime-dependencies.cjs <绝对runtime配置> <绝对runtime缓存目录>` 准备。runtime配置只接受 `{image,dockerBackend?}`：image为已存在、固定ID/digest/Node24/架构/Python版本的完整镜像描述；Windows须选上述backend，Linux不选。执行前按仓库正常流程安装受信分发并build；该命令只读取**自身checkout**的package.json/lock和固定分发清单，不接受JSON指定其他仓库/依赖源、模型或凭据。CLI返回的绝对 `dependencyRoot` 填入comparison配置；仓库现场自己的dependencies缓存仍用上一条独立命令，不能混作运行时缓存。
+- runtime准备复用同一无凭据npm安装/17890代理/原子缓存内核，在容器按自身checkout的完整lock安装，不复用Windows node_modules或执行宿主npm。随后在独立断网容器恢复该安装归档，仅导出 `evaluation-bridge-files.json` 的固定dependencies清单；在容器加载better-sqlite3，内存库查询SQLite版本并关闭。宿主只接收有界JSON文件字节，逐项核验固定路径/数量/base64/hash/包版本/ELF架构和总16MiB静态限额，不在宿主加载任何Linux addon，也不解包容器提供的任意tar。固定目录与安全回执仅在导出成功且容器已确认删除后原子发布；失败清理临时目录，缓存命中重新验证npm归档及全部固定运行时文件，不静默重装损坏命中。缓存身份绑定package/lock、实际npm归档、镜像/Node/架构、导出/恢复/guard源码和固定清单，不记录代理地址、发行版或账号；native验证回执指同一镜像身份下的已有容器实测，不是宿主重新加载。SDK的跨平台JS仍来自本checkout受信已安装分发，运行时仅静态复制。
+- 运行时和现场依赖各有受版本管理的准备入口，但尚未完成批量backend、页面预分类/归纳接线或真实现场准入，因此不宣称从干净clone已完成AC3/M1。合成小项目的真实Windows→WSL/npm安装不是生产仓库依赖验收；固定运行时native探针不是GPT回放；合成Windows宿主→真实WSL Docker→假供应方证据不是真实GPT验收；旧仅Linux的其他诊断入口不自动获得这个backend。
 
 #### 封存thinking绑定（生产xhigh已合成验证，真实准入未通过）
 
@@ -192,7 +194,7 @@
 
 - 任意宿主现场在 Linux 的通用恢复、进程内存/后台服务/外部系统状态、权限/ACL/链接/并发原子一致性、`.git`/index/git status 的逐字保真。
 - Git 历史恢复：只保留记录 HEAD 的可达对象，**git历史只排除本机已知key，不做模式脱敏**；源分支/标签/remote/reflog及不可达对象不恢复，恢复副本只建 `replay-baseline` 引用。缺明确记录HEAD、浅仓库、缺对象/扫描失败、非顶层仓库、缺完整已知值清单（包括JEV）均拒绝，不以live HEAD/空清单兜底。命中已知值时退回脱敏单根提交，HEAD不同、没有原历史，依赖历史的任务（例如第0步①“最近在做什么”）复现度会下降，不能冒称忠实历史；该回退的授权基线路径仍不支持 symlink/submodule。第0步clone已按获准的三类来源完成全量已知值扫描（800提交/5076 blob/0命中），但这不证明旧封存缺文件已补齐或真实GPT准入通过。
-- 依赖恢复不支持 npm v1 lock、yarn/pnpm、私有 registry/安装认证、独立 `.npmrc`/shrinkwrap 文件、未封存的本地依赖、宿主/Windows原生依赖直接复用或恶意lifecycle隔离。缓存须由受信操作方预建，不能以cacheHit或合成恢复证明真实封存已准入；Windows单例中转仅支持上述已核对的NAT网关，Linux运行时准备与批量选项仍待后续接线。
+- 依赖恢复不支持 npm v1 lock、yarn/pnpm、私有 registry/安装认证、独立 `.npmrc`/shrinkwrap 文件、未封存的本地依赖、宿主/Windows原生依赖直接复用或恶意lifecycle隔离。缓存须由受信操作方预建，不能以cacheHit或合成恢复证明真实封存已准入；Windows单例中转仅支持上述已核对的NAT网关，Linux运行时固定分发已有单独准备入口，批量选项仍待后续接线。
 - 此 MVP 主路径以外的换根、外置 Git 元数据、submodule/嵌套仓库、全局 Git 配置、复杂 ignore 语法；底层保留旧实现不等于本轮承诺其端到端可用。
 - 正式 sealed-direct 入口的图片、额外技能/外部系统指令/自定义设置或旧缺材料封存；resume中未验证的bash/未知工具/外部路径/扩展状态依赖、v1/v2、非允许字段的重绑、歧义JSON或Windows prose中的反斜杠子路径仍拒绝。新resume已验证子集只恢复执行前完整前缀，不重放中途消息；合成Docker演练不冒充真实GPT历史用例已可回放。
 - 旧真实仓库封存中已经由秘密扫描排除了文件（`secretExcludedPaths` 非空），当前 sealed-direct 入口仍不能回放；不补读现场、不改写旧封存。4 MiB 累计 blob 限制已在生产扩展 M1 取消。第0步两条真实 CAFF 用例当时均排除了41个路径、保留材料约16.5 MB，同时触及缺文件和旧体积上限；当时未运行原版或候选，此历史结果不回填为成功。新采集保留占位符文件也不等于这两条旧封存已修复。

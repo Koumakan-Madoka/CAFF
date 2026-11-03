@@ -11,8 +11,13 @@ async function main(args = process.argv.slice(2), options = {}) {
   if (args.length !== 2 || args.some(p => !path.isAbsolute(p))) throw Error('evaluation_dependency_cli_invalid');
   const stat = fs.lstatSync(args[0]);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw Error('evaluation_config_invalid');
-  const config = JSON.parse(fs.readFileSync(args[0])), cacheRoot = args[1], platform = options.platform ?? process.platform;
-  if (!config || typeof config !== 'object' || Array.isArray(config)) throw Error('evaluation_config_invalid');
+  return cacheDependencies(JSON.parse(fs.readFileSync(args[0])), args[1], options);
+}
+// Shared trusted installer kernel. The runtime-distribution preparation entry
+// supplies fixed package/lock input here; JSON cannot select a prepare hook.
+async function cacheDependencies(value, cacheRoot, options = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !path.isAbsolute(cacheRoot || '')) throw Error('evaluation_config_invalid');
+  const config = structuredClone(value), platform = options.platform ?? process.platform;
   // Resolve the explicit host/backend before prepareComparison may read any
   // sealed or known-value sources. Runner construction never starts WSL.
   let backend, runDocker;
@@ -50,4 +55,4 @@ if (require.main === module) main().then(r => console.log(JSON.stringify(r))).ca
   const code = e?.code || e?.message;
   console.error(/^evaluation_[a-z_]+$/.test(code) ? code : 'evaluation_dependency_install_failed'); process.exitCode = 1;
 });
-module.exports = { main };
+module.exports = { main, cacheDependencies };
