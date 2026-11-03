@@ -24,10 +24,19 @@ const winSkip = process.platform === 'win32' ? false : 'win32-only test';
 const linuxSkip = process.platform === 'linux' ? capSkip : 'linux-only test';
 
 function makeService(tempDir, serviceOptions = {}) {
-  return createBadcaseCaptureService({
+  const service = createBadcaseCaptureService({
     captureRoot: path.join(tempDir, 'capture-root'),
     ...serviceOptions,
   });
+  if (process.platform === 'linux') {
+    // These are filesystem/session collector unit tests with no Room DB.
+    // Do not let the facade's constructor-owned missing callback source mask
+    // their session-positive assertions. Callback-source facade/consent tests
+    // independently require that missing production state stays incomplete.
+    const { createCollector } = require('../../build/server/domain/runtime/badcase-capture/collector');
+    service.captureTurnCheckpoint = createCollector({ store: service.store, ...serviceOptions }).captureTurnCheckpoint;
+  }
+  return service;
 }
 
 // 普通保存 + 显式授权（钉住根身份）。savePolicy 不再钉住新对象，
