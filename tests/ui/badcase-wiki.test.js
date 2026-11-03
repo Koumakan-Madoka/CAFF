@@ -121,6 +121,19 @@ test('command progress refreshes read-only without resetting wiki edits or prese
   assert.match(text, /2\/2/); assert.match(text, /原版.*不产生采纳结论/); assert.match(text, /字面规则/); assert.doesNotMatch(text, /已采纳|接受候选/);
 });
 
+test('staged progress refreshes gate/test counts, replacements and saved results without mutating wiki edits', async t => {
+  const totals = { original: { planned: 10, attempted: 11, passed: 4, failed: 6, errors: 1, notRun: 0 }, candidate: { planned: 10, attempted: 10, passed: 8, failed: 2, errors: 0, notRun: 0 } };
+  const execution = { id: 'batch-execution-1', status: 'running', updatedAt: new Date().toISOString(), plan: { kind: 'wiki-staged-batch-comparison-v1', model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh', transport: 'sse' }, variants: ['original', 'candidate'], cases: [] }, current: { sourceCaseId: 'c1', stage: 'gate', variant: 'original', iteration: 11 }, gateOutcome: null, summary: { plannedRuns: 60, completedRuns: 21, knownTokens: 14, usageComplete: false, totals, byStage: { gate: totals, test: totals } }, cases: [{ sourceCaseId: 'c1', stage: 'gate', reportOnly: false, totals }, { sourceCaseId: 'c3', stage: 'gate', reportOnly: true, totals }] };
+  const h = setup(t, url => url === '/api/wikiskill/executions' ? { executions: [execution], comparisons: [{ id: 'finished-batch', createdAt: '2026-11-03T10:00:00Z', model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh' }, completed: true, evaluation: { splitPolicy: 'd15-frozen-v1' }, cases: [], modelCallsKnown: 21 }] } : undefined);
+  h.saved().versions[0].entries[0].status = 'draft'; await h.panel.load();
+  const edit = h.root.querySelector('[name="guideline"]'); edit.value = '尚未保存的编辑';
+  await h.panel.refreshExecutions(); assert.equal(h.root.querySelector('[name="guideline"]'), edit); assert.equal(edit.value, '尚未保存的编辑'); assert.equal(h.saved().revision, 3);
+  await h.click('[data-tab="impact"]');
+  const text = h.root.querySelector('#execution-progress').textContent;
+  assert.match(text, /正式批量/); assert.match(text, /门槛/); assert.match(text, /测试/); assert.match(text, /环境.*替补|替补.*环境/); assert.match(text, /非GPT来源.*仅报告/);
+  assert.match(h.root.querySelector('#impact-runs').textContent, /xhigh/); assert.doesNotMatch(text, /字面对照观察，不是正式/); assert.equal(h.posts().length, 0); assert.equal(h.root.querySelector('#execution-progress button'), null);
+});
+
 test('prototype structure defaults to knowledge base, keeps loop tab order and uses real room titles without examples', async t => {
   const h = setup(t); await h.panel.load();
   assert.equal(h.calls.length, 1); assert.equal(h.calls[0].url, '/api/wikiskill'); assert.equal(h.posts().length, 0);

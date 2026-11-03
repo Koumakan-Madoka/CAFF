@@ -72,6 +72,44 @@ test('production plan pins complete configuration/rules/restore sources and rech
  h.config.cases[0].repository.head='c'.repeat(40);assert.notEqual(h.plan().summary.planHash,p.summary.planHash);
  h.store.assignCase({caseId:h.marks[1].id,entryId:null,expectedRevision:h.store.read().revision});assert.throws(h.plan,/evaluation_gate_config_invalid/);
 });
+test('trusted staged CLI publishes partial progress before a case finishes and saves the result without another model call',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h),file=path.join(h.config.repoRoot,'config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));
+ const {main}=require('../../scripts/badcase-capture/compare-wiki-batch.cjs'),{createWikiBatchExecutionStore}=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store');
+ const progress=createWikiBatchExecutionStore(h.config),compare=f.options.runProductionComparison;let observed=0;
+ f.options.runProductionComparison=async(c,o)=>{const r=await compare(c,o);const current=progress.read()[0];assert.equal(current.status,'running');assert.ok(current.summary.completedRuns>=20);observed++;return r;};
+ const write=process.stdout.write;process.stdout.write=()=>true;
+ try{await main(['--config',file,'--plan'],h.options);assert.deepEqual(progress.read(),[]);
+  await assert.rejects(main(['--config',file,'--run','--confirmed','--expected-plan','0'.repeat(64),'--output',output],f.options),/evaluation_batch_confirmation_required/);assert.deepEqual(progress.read(),[]);
+  await main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options);
+ }finally{process.stdout.write=write;}
+ assert.equal(observed,3);const saved=progress.read()[0];assert.equal(saved.status,'completed');assert.equal(saved.gateOutcome,'accepted');assert.equal(saved.summary.completedRuns,60);assert.ok(saved.comparisonId);assert.doesNotMatch(JSON.stringify(saved),/PRIVATE-WORKER/);
+ const evidence=fs.readFileSync(output,'utf8');assert.match(evidence,/page_execution/);assert.match(evidence,/page_execution_finished/);
+});
+test('staged CLI completes a rejected gate with tests unrun and preserves a stopped auth failure without retry',async t=>{
+ for(const mode of ['rejected','auth-failed']){
+  const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h,{improve:false}),file=path.join(h.config.repoRoot,'config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));let attempts=0;
+  if(mode==='auth-failed')f.options.runProductionComparison=async()=>{attempts++;throw Object.assign(Error('PRIVATE-AUTH-BODY'),{code:'evaluation_codex_access_expired'});};
+  const {main}=require('../../scripts/badcase-capture/compare-wiki-batch.cjs'),write=process.stdout.write,exitCode=process.exitCode;process.stdout.write=()=>true;
+  try{await main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options);}finally{process.stdout.write=write;process.exitCode=exitCode;}
+  const progress=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store').createWikiBatchExecutionStore(h.config).read()[0];assert.equal(progress.status,mode==='rejected'?'completed':'stopped');assert.equal(progress.gateOutcome,mode==='rejected'?'rejected':'indeterminate');assert.equal(progress.summary.byStage.test.original.attempted,0);assert.ok(progress.comparisonId);
+  if(mode==='auth-failed')assert.equal(attempts,1);assert.doesNotMatch(fs.readFileSync(output,'utf8'),/PRIVATE-AUTH-BODY/);
+ }
+});
+test('a transient progress write failure stops paid execution, retains fsynced evidence and marks the record failed',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h),file=path.join(h.config.repoRoot,'config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));
+ const {main}=require('../../scripts/badcase-capture/compare-wiki-batch.cjs'),compare=f.options.runProductionComparison,rename=fs.renameSync;let injected=false;
+ f.options.runProductionComparison=async(c,o)=>compare(c,{...o,onEvent:e=>{
+  if(e.event==='run_start'&&!injected){injected=true;fs.renameSync=(...args)=>{fs.renameSync=rename;throw Object.assign(Error('PRIVATE-FILESYSTEM-CAUSE'),{code:'EIO'});};}
+  return o.onEvent(e);
+ }});
+ await assert.rejects(main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options),/evaluation_progress_write_failed/);fs.renameSync=rename;
+ assert.equal(injected,true);assert.equal(f.calls.length,1);const progress=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store').createWikiBatchExecutionStore(h.config).read()[0];assert.equal(progress.status,'failed');assert.equal(progress.summary.completedRuns,0);assert.equal(progress.summary.byStage.test.original.attempted,0);
+ const evidence=fs.readFileSync(output,'utf8');assert.match(evidence,/run_start/);assert.match(evidence,/page_execution_failed/);assert.doesNotMatch(evidence,/PRIVATE-FILESYSTEM-CAUSE/);
+});
+test('CLI output collision starts neither progress nor paid execution',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h),file=path.join(h.config.repoRoot,'config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));fs.writeFileSync(output,'retained');
+ const {main}=require('../../scripts/badcase-capture/compare-wiki-batch.cjs');await assert.rejects(main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options),/EEXIST/);assert.equal(f.calls.length,0);assert.equal(fs.existsSync(path.join(h.config.globalRoot,'batch-executions')),false);assert.equal(fs.readFileSync(output,'utf8'),'retained');
+});
 test('production model never silently falls back to proxy or accepts caller-drawn stages or missing restore declarations',t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);
  for(const patch of [{repeats:3},{keySource:'caff-deepseek'},{evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1',gateCaseIds:[]}}])assert.throws(()=>prepareBatch({...h.config,...patch},h.options),/evaluation_gate_config_invalid/);

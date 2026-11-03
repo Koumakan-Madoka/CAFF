@@ -2,6 +2,7 @@
 const fs = require('node:fs'), path = require('node:path');
 const { prepareBatch, runBatch, formatBatch } = require('./batch-comparison.cjs');
 const { createWikiComparisonStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
+const { createWikiBatchExecutionStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store');
 const fail = code => Object.assign(Error(code), { code });
 function argumentsFor(argv) {
   const args = {};
@@ -25,19 +26,43 @@ async function main(argv = process.argv.slice(2), runtimeOptions = {}) {
   const config = JSON.parse(fs.readFileSync(file, 'utf8')), plan = prepareBatch(config, runtimeOptions);
   if (args['--plan']) { process.stdout.write(JSON.stringify({ preparedOnly: true, dockerVerified: false, ...plan.summary }, null, 2) + '\n'); return; }
   if (plan.summary.planHash !== args['--expected-plan']) throw fail('evaluation_batch_confirmation_required');
+  const progress = plan.summary.evaluation?.splitPolicy === 'd15-frozen-v1' ? createWikiBatchExecutionStore(config) : null;
   const fd = fs.openSync(args['--output'], 'wx', 0o600);
+  let record, timer, publicationFailed = false;
+  const append = event => { fs.writeSync(fd, JSON.stringify(event) + '\n'); fs.fsyncSync(fd); };
   try {
+    if (progress) {
+      record = progress.start(plan.summary);
+      append({ event: 'page_execution', executionId: record.id, planHash: plan.summary.planHash });
+      timer = setInterval(() => { try { progress.heartbeat(record.id); } catch { publicationFailed = true; } }, 5000); timer.unref?.();
+    }
     const result = await runBatch(config, { ...runtimeOptions, confirmed: true, expectedPlanHash: args['--expected-plan'],
-      onEvent: event => { fs.writeSync(fd, JSON.stringify(event) + '\n'); fs.fsyncSync(fd); } });
+      onEvent: event => {
+        if (publicationFailed) throw fail('evaluation_progress_write_failed');
+        try { append(event); if (record) progress.event(record.id, event); }
+        catch (e) { publicationFailed = true; throw e; }
+      } });
+    if (publicationFailed) throw fail('evaluation_progress_write_failed');
     if (result.scope === 'global') {
       // Save incomplete batches too; never lose error/not-run denominators. A
       // failed save leaves the fsynced JSONL intact and must not rerun models.
       const saved = createWikiComparisonStore(config).save(result);
       result.comparisonId = saved.id;
+      if (record) {
+        const finished = progress.finish(record.id, saved);
+        append({ event: 'page_execution_finished', executionId: record.id, comparisonId: saved.id, status: finished.status });
+      }
     }
     process.stdout.write(args['--json'] ? JSON.stringify(result, null, 2) + '\n' : formatBatch(result) + (result.comparisonId ? '已保存全局结果：' + result.comparisonId + '\n' : ''));
     if (!result.completed) process.exitCode = 1;
-  } finally { fs.closeSync(fd); }
+  } catch (e) {
+    const code = /^(evaluation|wiki)_[a-z_]+$/.test(e?.code || '') ? e.code : 'evaluation_batch_failed';
+    if (record) {
+      try { progress.fail(record.id, code); } catch {}
+      append({ event: 'page_execution_failed', executionId: record.id, reason: code });
+    }
+    throw e;
+  } finally { clearInterval(timer); fs.closeSync(fd); }
 }
 if (require.main === module) main().catch(e => {
   const code = /^(evaluation|wiki)_[a-z_]+$/.test(e?.code || '') ? e.code : 'evaluation_batch_failed';

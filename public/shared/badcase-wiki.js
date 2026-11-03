@@ -284,9 +284,18 @@
     }
     function approvedEntriesForSelection() { return entries().filter(e => e.status === 'approved'); }
     /* Evaluation and evolution */
+    function batchExecutionCard(r) {
+      const s = r.summary, label = { running: '执行中', completed: '执行完成', stopped: '执行未完成', failed: '执行失败' }[r.status] || '状态未知';
+      const caseLabel = id => `用例 #${caseById.get(id)?.n || '未关联'}`;
+      const current = r.current ? `${r.current.stage === 'gate' ? '门槛' : '测试'} · ${caseLabel(r.current.sourceCaseId)} · ${r.current.variant === 'original' ? '原版' : '候选'}第 ${r.current.iteration} 次尝试` : '等待下一步';
+      const stale = r.status === 'running' && Date.now() - new Date(r.updatedAt).getTime() > 20000;
+      const counts = totals => ['original','candidate'].map(v => { const t = totals[v]; return `${v === 'original' ? '原版' : '候选'}：通过 ${t.passed}/${t.planned}，不通过 ${t.failed}，环境错误 ${t.errors}，未完成 ${t.notRun}`; }).join('；');
+      return `<section class="command-execution"><h3>正式批量 · ${esc(label)} · 已记录 ${s.completedRuns}/${s.plannedRuns} 次尝试</h3><p>${esc(r.plan.model)} · thinking ${esc(r.plan.modelConfig.thinking)} · ${esc(r.plan.modelConfig.transport)} · Fast关闭</p><p>${esc(current)}</p><p class="hint">每题每版10次有效结果；环境错误允许替补，两版合计最多5次，因此尝试数可能超过计划次数。进度不是采纳结论，正式判定见下方已保存结果，提示词仍须用户手动合入。</p>${stale ? '<p class="hint">进度心跳已过期，可能中断；不自动重跑。</p>' : ''}${['gate','test'].map(stage => `<p><b>${stage === 'gate' ? '门槛' : '测试'}</b> ${esc(counts(s.byStage[stage]))}${stage === 'test' && ['rejected','indeterminate'].includes(r.gateOutcome) ? '；门槛未接受，测试不运行。' : ''}</p>`).join('')}<ul>${r.cases.map(c => `<li>${esc(caseLabel(c.sourceCaseId))} · ${c.stage === 'gate' ? '门槛' : '测试'}：${c.reportOnly ? '非GPT来源，仅报告、不计入结论' : esc(counts(c.totals))}</li>`).join('')}</ul><p class="hint">最后更新 ${esc(fmt(r.updatedAt))}；已知token ${s.knownTokens == null ? '未知' : esc(s.knownTokens)}${s.usageComplete ? '' : '（可能不完整）'}，含缓存及重复上下文；账号剩余额度未知。</p><details><summary>执行标识</summary><p class="mono">${esc(r.id)}</p>${r.reason ? `<p>${esc(r.reason)}</p>` : ''}</details></section>`;
+    }
     function renderExecutionProgress() {
       const records = D?.executions || [];
       $('#execution-progress').innerHTML = `<h2>命令执行进度</h2><p class="hint">由受信命令启动，页面只读；每5秒更新此区域，不会启动模型或覆盖知识库编辑。${progressError ? '进度更新失败，以下保留最后一次记录，请核对命令输出。' : ''}</p>${records.length ? records.map(r => {
+        if (r.plan.kind === 'wiki-staged-batch-comparison-v1') return batchExecutionCard(r);
         const s = r.summary, config = r.plan.modelConfig, original = r.plan.variants.length === 1;
         const source = D.cases.find(c => c.sealedCheckpointId && c.sealedCheckpointId === r.plan.checkpointId);
         const caseLabel = source ? `用例 #${source.n} · ${source.actual}` : `封存 ${r.plan.caseId || '未关联'}`;
@@ -305,7 +314,12 @@
       try {
         const response = await fetchJson('/api/wikiskill/executions');
         if (!Array.isArray(response?.executions)) throw Error('invalid_execution_response');
-        if (seq === generation && D) { D.executions = response.executions; progressError = false; renderExecutionProgress(); }
+        if (response.comparisons !== undefined && !Array.isArray(response.comparisons)) throw Error('invalid_comparison_response');
+        if (seq === generation && D) {
+          D.executions = response.executions; progressError = false;
+          if (response.comparisons) { D.comparisons = response.comparisons; renderImpact(); }
+          else renderExecutionProgress();
+        }
       } catch { if (seq === generation && D) { progressError = true; renderExecutionProgress(); } }
       finally { progressPending = false; }
     }

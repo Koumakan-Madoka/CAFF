@@ -28,7 +28,7 @@ const rejects = (promise, code, status = 422) => assert.rejects(promise, e => e.
 
 test('execution progress endpoint is read-only, guarded and cannot launch evaluations', async t => {
   const h = setup(t), result = await h.invoke(undefined, { pathname: '/api/wikiskill/executions' });
-  assert.deepEqual(result.body, { executions: [] }); assert.equal(fs.existsSync(h.config.globalRoot), false);
+  assert.deepEqual(result.body, { executions: [], comparisons: [] }); assert.equal(fs.existsSync(h.config.globalRoot), false);
   await assert.rejects(h.invoke(undefined, { pathname: '/api/wikiskill/executions', remoteAddress: '10.0.0.1' }), e => e.statusCode === 403 || e.statusCode === 404);
   const store = require('../../build/server/domain/runtime/badcase-capture/wiki-execution-store').createWikiExecutionStore(h.config);
   const record = store.start({ kind: 'sealed-original-replay-v1', variants: ['original'], model: 'deepseek/deepseek-v4-flash', repeats: 1, caseId: 'c1', checkpointHash: 'a'.repeat(64), rulesHash: 'b'.repeat(64) });

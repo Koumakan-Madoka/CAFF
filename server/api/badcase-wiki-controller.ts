@@ -9,6 +9,7 @@ import { collectWikiCandidateFiles } from '../domain/runtime/badcase-capture/wik
 import { createWikiComparisonStore } from '../domain/runtime/badcase-capture/wiki-comparison-store';
 import { wikiDisplayCases } from '../domain/runtime/badcase-capture/wiki-suite';
 import { createWikiExecutionStore } from '../domain/runtime/badcase-capture/wiki-execution-store';
+import { createWikiBatchExecutionStore } from '../domain/runtime/badcase-capture/wiki-batch-execution-store';
 
 // Local candidate preparation/review only. Neither loading, approving a guideline nor
 // confirming a candidate starts a model request or edits a production role.
@@ -55,8 +56,9 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     try {
       const scope = { globalRoot: options.globalRoot, sourceWorktree: options.sourceWorktree,
         sourceWorktrees: options.projectManager?.listProjects().map((p: any) => p.path) || [] };
-      const executions = createWikiExecutionStore(scope);
-      if (match[1] === 'executions') { sendJson(res, 200, { executions: executions.read() }); return true; }
+      const executions = () => [...createWikiExecutionStore(scope).read(), ...createWikiBatchExecutionStore(scope).read()]
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0, 20);
+      if (match[1] === 'executions') { sendJson(res, 200, { executions: executions(), comparisons: createWikiComparisonStore(scope).read() }); return true; }
       const store = createWikiStore(scope);
       if (match[1] === 'review') store.review(input);
       if (match[1] === 'suggestion') store.resolveSuggestion(input);
@@ -75,7 +77,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         else store.confirmGlobalCandidate({ ...input, files });
       }
       const state = store.read();
-      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), comparisons: createWikiComparisonStore(scope).read(), executions: executions.read(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
+      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), comparisons: createWikiComparisonStore(scope).read(), executions: executions(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);
