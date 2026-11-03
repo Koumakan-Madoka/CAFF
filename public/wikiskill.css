@@ -273,4 +273,7 @@ body.management-app[data-page="wikiskill"] .wikiskill-content .btn.primary { bac
 body.management-app[data-page="wikiskill"] .wikiskill-content .btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
 body.management-app[data-page="wikiskill"] .wikiskill-content .btn.ghost { background: transparent; border-color: transparent; color: var(--soft); }
 body.management-app[data-page="wikiskill"] .wikiskill-content .btn.small { min-height: 0; }
+body.management-app[data-page="wikiskill"] .command-execution { border-top: 1px solid var(--border); padding: 12px 0; }
+body.management-app[data-page="wikiskill"] .command-execution h3 { font-size: 15px; margin: 6px 0; }
+body.management-app[data-page="wikiskill"] .command-execution .mono { overflow-wrap: anywhere; }
 @media (max-width: 640px) { body.management-app[data-page="wikiskill"] .wikiskill-content { padding-bottom: 100px; } }

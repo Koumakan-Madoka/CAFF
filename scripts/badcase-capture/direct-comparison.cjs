@@ -246,6 +246,7 @@ async function runComparison(config, options = {}) {
       }
       checkInputs(fresh);
       let task;
+      emit({ event: 'run_start', variant, iteration });
       const started = performance.now(), hostBefore = transport?.state().requests;
       try {
         transport?.inspectAccess(() => {}); // Expiry stops BEFORE another container.

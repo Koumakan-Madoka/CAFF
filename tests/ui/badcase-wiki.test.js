@@ -81,6 +81,27 @@ function setup(t, handler) {
     click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
 
+test('command progress refreshes read-only without resetting wiki edits or presenting original observations as adoption', async t => {
+  let finished = false;
+  const execution = () => ({ id: 'execution-1', status: finished ? 'completed' : 'running', updatedAt: new Date().toISOString(), plan: { model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh' }, variants: ['original'], repeats: 2 }, current: finished ? null : { variant: 'original', iteration: 1 }, conclusion: finished ? 'original_observation_only' : null,
+    summary: { plannedRuns: 2, completedRuns: finished ? 2 : 0, knownTokens: finished ? 14 : null, usageComplete: false, totals: { original: { planned: 2, passed: 1, failed: 1, errors: 0, notRun: finished ? 0 : 2 } } } });
+  const h = setup(t, (url, options) => {
+    if (url === '/api/wikiskill/executions') return { executions: [execution()] };
+    if (options.method === 'POST') return Promise.reject(Error('unknown mutation result'));
+  });
+  h.saved().executions = [execution()]; await h.panel.load(); await h.click('[data-tab="impact"]');
+  assert.match(h.root.querySelector('#execution-progress').textContent, /命令执行|执行进度/);
+  assert.match(h.root.querySelector('#execution-progress').textContent, /xhigh/); assert.match(h.root.querySelector('#execution-progress').textContent, /0\/2/);
+  assert.equal(h.root.querySelector('#execution-progress button'), null, 'no web launch controls');
+  await h.click('[data-tab="wiki"]'); await h.click('[data-induct]');
+  assert.equal(h.root.querySelector('[data-induct]').disabled, true);
+  const posts = h.posts().length; finished = true; await h.panel.refreshExecutions();
+  assert.equal(h.posts().length, posts); assert.equal(h.root.querySelector('[data-induct]').disabled, true, 'progress cannot re-enable writes after an unknown write result');
+  await h.click('[data-tab="impact"]');
+  const text = h.root.querySelector('#execution-progress').textContent;
+  assert.match(text, /2\/2/); assert.match(text, /原版.*不产生采纳结论/); assert.match(text, /字面规则/); assert.doesNotMatch(text, /已采纳|接受候选/);
+});
+
 test('prototype structure defaults to knowledge base, keeps loop tab order and uses real room titles without examples', async t => {
   const h = setup(t); await h.panel.load();
   assert.equal(h.calls.length, 1); assert.equal(h.calls[0].url, '/api/wikiskill'); assert.equal(h.posts().length, 0);

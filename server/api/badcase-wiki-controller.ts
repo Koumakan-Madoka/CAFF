@@ -8,6 +8,7 @@ import { listWikiTargets } from '../domain/runtime/badcase-capture/wiki-targets'
 import { collectWikiCandidateFiles } from '../domain/runtime/badcase-capture/wiki-candidate-files';
 import { createWikiComparisonStore } from '../domain/runtime/badcase-capture/wiki-comparison-store';
 import { wikiDisplayCases } from '../domain/runtime/badcase-capture/wiki-suite';
+import { createWikiExecutionStore } from '../domain/runtime/badcase-capture/wiki-execution-store';
 
 // Local candidate preparation/review only. Neither loading, approving a guideline nor
 // confirming a candidate starts a model request or edits a production role.
@@ -27,14 +28,15 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_model_output_invalid: 422, wiki_generation_failed: 503, wiki_unknown_training_case: 422,
     wiki_training_input_too_large: 422, evaluation_caff_auth_unavailable_or_invalid: 503, evaluation_linux_required: 503,
     wiki_runtime_config_required: 503, wiki_runtime_config_invalid: 503,
-    evaluation_wsl_host_required: 503, evaluation_wsl_backend_invalid: 503,
+    evaluation_wsl_host_required: 503, evaluation_wsl_backend_invalid: 503, wiki_execution_record_invalid: 503,
   };
   return async ({ req, res, pathname }: any) => {
-    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership))?$/);
-    if (!match || (match[1] ? req.method !== 'POST' : req.method !== 'GET')) return false;
-    if (match[1]) guard.assertMutation(req); else guard.assertRead(req);
+    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions))?$/);
+    const readOnly = !match?.[1] || match[1] === 'executions';
+    if (!match || (readOnly ? req.method !== 'GET' : req.method !== 'POST')) return false;
+    if (readOnly) guard.assertRead(req); else guard.assertMutation(req);
     let input;
-    if (match[1]) {
+    if (!readOnly) {
       input = await readRequestJson(req, { bodyLimit: 64 * 1024 });
       const fields: Record<string, string[]> = {
         'confirm-candidate': ['confirmed', 'candidateId', 'candidateRoleHash', 'expectedRevision'],
@@ -53,6 +55,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     try {
       const scope = { globalRoot: options.globalRoot, sourceWorktree: options.sourceWorktree,
         sourceWorktrees: options.projectManager?.listProjects().map((p: any) => p.path) || [] };
+      const executions = createWikiExecutionStore(scope);
+      if (match[1] === 'executions') { sendJson(res, 200, { executions: executions.read() }); return true; }
       const store = createWikiStore(scope);
       if (match[1] === 'review') store.review(input);
       if (match[1] === 'suggestion') store.resolveSuggestion(input);
@@ -71,7 +75,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         else store.confirmGlobalCandidate({ ...input, files });
       }
       const state = store.read();
-      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), comparisons: createWikiComparisonStore(scope).read(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
+      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), comparisons: createWikiComparisonStore(scope).read(), executions: executions.read(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

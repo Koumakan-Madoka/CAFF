@@ -30,7 +30,7 @@
           </div><p class="summary" id="cases-summary"></p><div class="groups" id="cases-body"></div>
         </div></section>
         <section id="view-targets" class="view" role="tabpanel" aria-labelledby="tab-targets" hidden><div class="split"><aside class="index" id="targets-list" aria-label="优化对象"></aside><article class="page" id="target-page" aria-live="polite"></article></div></section>
-        <section id="view-impact" class="view" role="tabpanel" aria-labelledby="tab-impact" hidden><div class="impact-grid"><section class="panel"><h2>对照评测</h2><div id="impact-runs"></div></section><section class="panel"><h2>演进记录</h2><p class="hint">每次归纳、审核、候选和评测结论都记在这里。下次生成候选时参考它，避开已经失败过的改法。</p><ol class="timeline" id="impact-log"></ol></section></div></section>
+        <section id="view-impact" class="view" role="tabpanel" aria-labelledby="tab-impact" hidden><div class="impact-grid"><section class="panel"><div id="execution-progress" aria-live="polite"></div><h2>对照评测</h2><div id="impact-runs"></div></section><section class="panel"><h2>演进记录</h2><p class="hint">每次归纳、审核、候选和评测结论都记在这里。下次生成候选时参考它，避开已经失败过的改法。</p><ol class="timeline" id="impact-log"></ol></section></div></section>
       </main>
     </div><div class="toast" id="toast" role="status" hidden></div>`;
     const $ = selector => root.querySelector(selector);
@@ -61,7 +61,7 @@
     }
     const pill = (map, status) => { const [label, tone] = map[status] || [status, '']; return `<span class="pill ${tone}">${esc(label)}</span>`; };
     const catChip = replay => { const [label, cls] = CATEGORY[replay.category] || [replay.category, '']; return `<span class="chip cat ${cls}">${esc(label)}</span>`; };
-    let D = null, versionId = '', generation = 0, pending = false, writable = false, toastTimer;
+    let D = null, versionId = '', generation = 0, pending = false, writable = false, toastTimer, progressTimer, progressPending = false, progressError = false;
     const state = { view: 'wiki', entryId: '', wikiQ: '', wikiStatus: 'all', casesQ: '', casesGroup: 'all', casesSplit: 'all', casesReplay: false, casesMode: 'group', focusCase: null, targetId: '', comparisonId: '' };
     const VIEWS = ['cases', 'wiki', 'targets', 'impact'];
     let caseById = new Map(), caseByN = new Map(), stateByCase = new Map(), entryById = new Map(), replayBySource = new Map(), targetById = new Map();
@@ -127,16 +127,18 @@
       $('#cnt-cases').textContent = D ? `${D.cases.length} 条` : '—';
       $('#cnt-wiki').textContent = D ? `${entries().length} 条模式` : '—';
       $('#cnt-targets').textContent = D ? `${activeCands().length} 个候选` : '—';
-      $('#cnt-impact').textContent = D ? `${(D.comparisons || []).length} 次评测` : '—';
+      $('#cnt-impact').textContent = D ? `${(D.comparisons || []).length} 次评测${D.executions?.length ? ` · ${D.executions.length} 次命令执行` : ''}` : '—';
       $$('[data-tab]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === state.view)));
       const step = nextStep(); $('#next-text').textContent = step.text; const button = $('#next-go'); button.dataset.go = step.hash;
       if (step.target) button.dataset.target = step.target; else delete button.dataset.target;
       if (step.group) button.dataset.group = step.group; else delete button.dataset.group;
     }
     function render() {
+      clearTimeout(progressTimer);
       renderHeader(); VIEWS.forEach(view => { $('#view-' + view).hidden = view !== state.view; });
       if (!D) { $('#wiki-list').innerHTML = ''; $('#wiki-page').innerHTML = '<p class="muted-note">尚未读取知识库。</p>'; $('#wiki-inbox').innerHTML = ''; $('#wiki-coverage').innerHTML = ''; return; }
       ({ wiki: renderWiki, cases: renderCases, targets: renderTargets, impact: renderImpact })[state.view](); controls();
+      if (state.view === 'impact') scheduleProgress();
     }
     /* Knowledge base */
     function wikiMatch(entry, ts) {
@@ -282,6 +284,31 @@
     }
     function approvedEntriesForSelection() { return entries().filter(e => e.status === 'approved'); }
     /* Evaluation and evolution */
+    function renderExecutionProgress() {
+      const records = D?.executions || [];
+      $('#execution-progress').innerHTML = `<h2>命令执行进度</h2><p class="hint">由受信命令启动，页面只读；每5秒更新此区域，不会启动模型或覆盖知识库编辑。${progressError ? '进度更新失败，以下保留最后一次记录，请核对命令输出。' : ''}</p>${records.length ? records.map(r => {
+        const s = r.summary, config = r.plan.modelConfig, original = r.plan.variants.length === 1;
+        const source = D.cases.find(c => c.sealedCheckpointId && c.sealedCheckpointId === r.plan.checkpointId);
+        const caseLabel = source ? `用例 #${source.n} · ${source.actual}` : `封存 ${r.plan.caseId || '未关联'}`;
+        const stale = r.status === 'running' && Date.now() - new Date(r.updatedAt).getTime() > 20000;
+        const label = { running: '执行中', completed: '执行完成', stopped: '执行未完成', failed: '执行失败' }[r.status] || '状态未知';
+        return `<section class="command-execution"><h3>${esc(label)} · 已记录 ${s.completedRuns}/${s.plannedRuns} 次</h3><p>${esc(caseLabel)}</p><p>${esc(r.plan.model)}${config ? ` · thinking ${esc(config.thinking)} · ${esc(config.transport)} · Fast关闭` : ''}</p><p>${original ? '原版回放，不产生采纳结论。' : '字面对照观察，不是正式门槛采纳结论。'}${r.current ? ` 当前：${r.current.variant === 'original' ? '原版' : '候选'}第 ${esc(r.current.iteration)} 次。` : ''}</p>${stale ? '<p class="hint">进度心跳已过期，可能中断；不据此判模型失败，不自动重跑。</p>' : ''}<p class="hint">最后更新 ${esc(fmt(r.updatedAt))}；账号剩余额度未知。已知token ${s.knownTokens == null ? '未知' : esc(s.knownTokens)}${s.usageComplete ? '' : '（可能不完整）'}，含缓存及重复上下文。</p><ul>${r.plan.variants.map(v => { const t = s.totals[v]; return `<li>${v === 'original' ? '原版' : '候选'}：字面规则通过 ${t.passed}/${t.planned}，不通过 ${t.failed}，环境错误 ${t.errors}，未完成 ${t.notRun}</li>`; }).join('')}</ul><details><summary>执行标识</summary><p class="mono">${esc(r.id)}</p>${r.reason ? `<p>${esc(r.reason)}</p>` : ''}</details></section>`;
+      }).join('') : '<p class="hint">尚无命令执行记录；页面加载不会启动评测。</p>'}`;
+    }
+    function scheduleProgress() {
+      clearTimeout(progressTimer);
+      if (state.view === 'impact' && D) progressTimer = setTimeout(async () => { await refreshExecutions(); scheduleProgress(); }, 5000);
+    }
+    async function refreshExecutions() {
+      if (!D || progressPending) return;
+      const seq = generation; progressPending = true;
+      try {
+        const response = await fetchJson('/api/wikiskill/executions');
+        if (!Array.isArray(response?.executions)) throw Error('invalid_execution_response');
+        if (seq === generation && D) { D.executions = response.executions; progressError = false; renderExecutionProgress(); }
+      } catch { if (seq === generation && D) { progressError = true; renderExecutionProgress(); } }
+      finally { progressPending = false; }
+    }
     function comparisonOrder() { return (D?.comparisons || []).slice().sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)) || String(a.id).localeCompare(String(b.id))); }
     function latestComparison() { return comparisonOrder().at(-1) || null; }
     function selectedComparison() { return (D?.comparisons || []).find(r=>r.id===state.comparisonId) || latestComparison(); }
@@ -304,6 +331,7 @@
       return `<div class="stage-rates">${['original','candidate'].map(v=>{const t=totals[v];return `<p><b>${v==='original'?'原版':'候选'}</b> ${t.passed}/${t.planned} 通过 · 不通过 ${t.failed} · 错误 ${t.errors} · 未运行 ${t.notRun}；有效 ${t.scored}，通过率 ${t.passRate==null?'N/A':(100*t.passRate).toFixed(1)+'%'}</p>`;}).join('')}</div>`;
     }
     function renderImpact() {
+      renderExecutionProgress();
       const order = { reproduction: 0, probe: 1, control: 2 }, result = selectedComparison();
       const reps = D.replayCases.slice().sort((a, b) => order[a.category] - order[b.category] || caseById.get(a.sourceCaseId).n - caseById.get(b.sourceCaseId).n);
       const global = globalTarget(), ready = (D.candidates || []).find(c => c.targetId === global?.id && c.status === 'draft');
@@ -418,6 +446,6 @@
     document.addEventListener('keydown', event => { if (event.key !== '/' || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return; const input = state.view === 'wiki' ? $('#wiki-q') : state.view === 'cases' ? $('#cases-q') : null; if (input) { event.preventDefault(); input.focus(); } });
     window.addEventListener('hashchange', applyHash);
     render(); controls();
-    return { load() { return load().then(() => { if (D) applyHash(); }); } };
+    return { load() { return load().then(() => { if (D) applyHash(); }); }, refreshExecutions };
   };
 })();

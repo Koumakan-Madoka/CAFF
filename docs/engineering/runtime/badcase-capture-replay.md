@@ -67,6 +67,14 @@
 - Windows使用同一固定分类器与请求构造代码：输入/脚本经stdin进一次性**断网**容器，最多一次请求由Docker-exec mailbox回到宿主。宿主要求请求字节与已选择用例构造出的请求完全相同，只拨固定DeepSeek官方端点、显式 `http://127.0.0.1:17890` ProxyAgent；不直连回退、不重试。DeepSeek Key只在宿主内存，WSL进程/容器环境、argv、tar均不含它。容器仍沿用无挂载、只读rootfs、降权、cap-drop、限制资源、身份核验与清理。
 - 供应方响应有512KiB上限；非200错误正文不出宿主，秘密反射、代理失败或超限停止，清理后不发布分类。成功输出经过原有秘密检查、覆盖校验及原子revision门禁才保存。预分类只给建议、普通归纳只建草稿，页面操作不会启动GPT评测或自动批准模式。Windows→真实WSL Docker的合成预分类、归纳及429失败清理证据位于忽略目录 `.tmp/wikiskill-production-m3/windows-induction/`；尚不冒充干净clone或真实页面点击验收。
 
+#### 受信命令与页面执行进度（单例）
+
+- 受版本管理的 Windows/Linux 命令为 `node scripts/badcase-capture/run-wiki-evaluation.cjs --config <绝对JSON路径> --plan`。外层JSON恰含 `globalRoot`（与页面相同的badcase-global绝对路径）、`sourceWorktree`（源worktree绝对路径，存储必须在其外）和 `comparison`（完整既有compare-sealed配置，不含Key原值）。Windows的comparison继续显式指定WSL backend、宿主access来源、固定镜像、Linux依赖缓存和模型配置；不依赖 `.tmp` 脚本。`--plan`不创建执行记录、不认证/调用模型；显式knownKeySources仍可进行获准的只读扫描。
+- 准备后，用一条命令启动：`node scripts/badcase-capture/run-wiki-evaluation.cjs --config <绝对JSON路径> --run --confirmed --expected-plan <刚才输出的planHash> --output <新的绝对JSONL路径>`。计划hash不符、缺显式确认或输出已存在均拒绝，不覆盖、不自动重跑。原始逐次回复、文件证据、模型请求保存在操作方fsync的JSONL；页面只保存严格投影的模型/配置、计划hash、轮次、字面通过数、错误/未完成数、已知token及状态，不保存回复、文件、配置路径或凭据，不改变Wiki revision/审核/组别。
+- 该入口当前支持单例原版或普通字面对照；原版明确标记“不产生采纳结论”，对照也不是正式门槛判定。正式多题/门槛/测试及其环境补跑发布仍由M4接线；此处明确拒绝 `executionPolicy`，不能把补跑次数塞进单例分母。不会因为出现“通过”就自动采纳、修改提示词或更新基线。
+- 页面“评测记录”新增命令执行区；由 `GET /api/wikiskill/executions`（相同本地管理读取门禁）每5秒只读刷新该区，不重新载入知识库编辑，不重新启用因写入结果未知而禁用的按钮。无网页启动/重试接口。CLI每5秒更新心跳；超过20秒未更新仅提示可能中断，不冒充进程存活检查、不计模型失败、不自动续跑。CLI遇到记录/输出写入故障，最多等当前容器结束后停止后续请求，不能为修补页面记录再次调用模型。
+- 进度与最终对照存储相互独立：单次执行使用唯一ID，绝不与另一轮拼接；失败保留已有分母。记录原子替换并校验checksum，损坏时明确拒绝读取。此进度不取代正式两阶段的不可变comparisons记录、最终固定SHA检查和用户接受。
+
 #### 封存thinking绑定（生产xhigh已合成验证，真实准入未通过）
 
 - 采集的portable声明与封存准备复用同一个thinking能力检查：保留off兼容路径，新增准确记录为 `provider:openai-codex/model:gpt-6.1-sol/thinking:xhigh` 的支持；不把其他模型的xhigh或其他thinking猜测为支持，其他资源门禁不变。旧 `portableRuntime.supported:false` 不重算、不改写旧封存或补造外部资源缺席证据。
