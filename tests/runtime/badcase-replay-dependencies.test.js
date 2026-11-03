@@ -17,12 +17,16 @@ function builder(archive, calls) { return async (img, files, options) => {
   calls.push({ img, files, options }); fs.writeFileSync(options.outputFile, archive);
   return { code: 0, cleaned: true, receipt: { kind: 'npm-replay-dependencies-v1', nodeVersion: image.nodeVersion, npmVersion: '11.11.1', installCommand: 'npm ci --include=dev --no-audit --no-fund', archiveHash: hash(archive), modelCalls: 0 } };
 }; }
-test('dependency identity binds captured inputs, lockfile, image and Linux installation policy, never a live host tree', () => {
+test('dependency identity shares package/lock across different worktrees, but binds Linux image and installation policy', () => {
   const original = input(), before = JSON.stringify(original), a = deps.dependencyRecipe(original, image);
   assert.equal(a.kind, 'npm-ci-linux-v1'); assert.equal(a.lockHash, original.files[1].sha256);
   assert.equal(JSON.stringify(original), before);
   const changed = input(); changed.files.push(file('src/version.txt', 'changed'));
-  assert.notEqual(deps.dependencyRecipe(changed, image).cacheKey, a.cacheKey);
+  assert.equal(deps.dependencyRecipe(changed, image).cacheKey, a.cacheKey);
+  changed.gitFiles = [{ path: '.git/HEAD', sha256: hash('different git history') }];
+  assert.equal(deps.dependencyRecipe(changed, image).cacheKey, a.cacheKey);
+  const lockChanged = input(); lockChanged.files[1] = file('package-lock.json', Buffer.from(lockChanged.files[1].base64, 'base64').toString() + '\n');
+  assert.notEqual(deps.dependencyRecipe(lockChanged, image).cacheKey, a.cacheKey);
   assert.notEqual(deps.dependencyRecipe(original, { ...image, imageId: 'sha256:' + '3'.repeat(64) }).cacheKey, a.cacheKey);
   assert.notEqual(deps.dependencyRecipe(original, { ...image, nodeVersion: 'v24.22.0' }).cacheKey, a.cacheKey);
 });
@@ -51,19 +55,27 @@ test('npm shrinkwrapped/bundled lock entries may omit integrity; the gap is disc
 });
 test('cache installs once without account credentials, validates content on every read, never repairs corruption silently', async t => {
   const root = cache(t), v = input(), archive = Buffer.from('synthetic archive bytes'), calls = [];
+  v.files.push(file('src/not-an-install-input.js', 'first worktree'));
   const build = builder(archive, calls);
   const one = await deps.cacheReplayDependencies(v, image, root, { runBuild: build });
   assert.equal(one.cacheHit, false); assert.equal(calls.length, 1);
   assert.equal(calls[0].options.key, undefined); assert.equal(calls[0].files.some(f => f.path === 'replay-workspace/package-lock.json'), true);
-  const two = await deps.cacheReplayDependencies(v, image, root, { runBuild: build });
-  assert.equal(two.cacheHit, true); assert.equal(calls.length, 1);
+  const other = structuredClone(v); other.files.push(file('src/another-worktree.js', 'changed source'));
+  other.gitFiles = [{ path: '.git/HEAD', sha256: hash('other history') }];
+  const two = await deps.cacheReplayDependencies(other, image, root, { runBuild: build });
+  assert.equal(two.cacheHit, true); assert.equal(two.cacheKey, one.cacheKey); assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].files.filter(f => f.path.startsWith('replay-workspace/')).map(f => f.path).sort(),
+    ['replay-workspace/package-lock.json', 'replay-workspace/package.json']);
+  const changedLock = input(); changedLock.files[1] = file('package-lock.json', Buffer.from(changedLock.files[1].base64, 'base64').toString() + '\n');
+  const miss = await deps.cacheReplayDependencies(changedLock, image, root, { runBuild: build });
+  assert.equal(miss.cacheHit, false); assert.notEqual(miss.cacheKey, one.cacheKey); assert.equal(calls.length, 2);
   const read = deps.prepareReplayDependencies(v, image, root);
   assert.deepEqual(Buffer.from(read.dependencyArchive.base64, 'base64'), archive);
   assert.equal(read.dependencies.archiveHash, hash(archive)); assert.equal(read.dependencies.cacheKey, one.cacheKey);
   fs.writeFileSync(path.join(root, one.cacheKey, 'node_modules.tar.gz'), 'corrupt');
   assert.throws(() => deps.prepareReplayDependencies(v, image, root), /dependency_cache_invalid/);
   await assert.rejects(deps.cacheReplayDependencies(v, image, root, { runBuild: build }), /dependency_cache_invalid/);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 test('failed install/cleanup or mismatched archive never publishes a reusable cache', async t => {
   const root = cache(t), v = input(), calls = [];
@@ -159,7 +171,7 @@ test('CLI discloses recorded npm lock entries with no integrity, rather than cla
     lockHash: 'fixed-lock-hash', nodeVersion: 'v24.21.0', resolvedWithoutIntegrity: 3 }, runs: [] });
   assert.match(text, /3条下载记录没有integrity/);
 });
-test('credential-bearing and non-registry URLs never reach npm; captured local package references remain allowed', () => {
+test('two-file installation rejects local package/workspace dependencies and root lifecycle scripts needing uncached source', () => {
   const v = input(), lock = JSON.parse(Buffer.from(v.files[1].base64, 'base64'));
   for (const resolved of ['https://user:inert@example.com/pkg.tgz', 'https://registry.npmjs.org/pkg.tgz?auth=inert',
     'http://registry.npmjs.org/pkg.tgz', 'https://example.com/pkg.tgz', 'file:../outside']) {
@@ -170,7 +182,16 @@ test('credential-bearing and non-registry URLs never reach npm; captured local p
   lock.packages['node_modules/pkg'] = { resolved: 'file:packages/pkg' };
   v.files[1] = file('package-lock.json', JSON.stringify(lock));
   v.files.push(file('packages/pkg/package.json', JSON.stringify({ name: 'pkg', version: '1.0.0' })));
-  assert.doesNotThrow(() => deps.dependencyRecipe(v, image));
+  assert.throws(() => deps.dependencyRecipe(v, image), /dependencies_unsupported/);
+  for (const script of ['preinstall', 'install', 'postinstall', 'prepublish', 'prepare', 'preprepare', 'postprepare']) {
+    const p = input(), pkg = JSON.parse(Buffer.from(p.files[0].base64, 'base64'));
+    pkg.scripts = { [script]: 'node ./scripts/from-worktree.cjs' };
+    p.files[0] = file('package.json', JSON.stringify(pkg));
+    assert.throws(() => deps.dependencyRecipe(p, image), /dependencies_unsupported/);
+  }
+  const workspace = input(), pkg = JSON.parse(Buffer.from(workspace.files[0].base64, 'base64'));
+  pkg.workspaces = ['packages/*']; workspace.files[0] = file('package.json', JSON.stringify(pkg));
+  assert.throws(() => deps.dependencyRecipe(workspace, image), /dependencies_unsupported/);
 });
 test('temporary dependency relay only dials the approved loopback proxy and closes sockets/listener even when work fails', async () => {
   const vm = require('node:vm'), { EventEmitter } = require('node:events');

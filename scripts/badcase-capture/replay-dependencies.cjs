@@ -21,15 +21,19 @@ function dependencyRecipe(input, image) {
     const pkg = JSON.parse(byName.get('package.json')), lock = JSON.parse(byName.get('package-lock.json'));
     if (!pkg || ![2, 3].includes(lock.lockfileVersion) || !lock.packages?.['']
       || pkg.name !== lock.name || pkg.version !== lock.version || pkg.packageManager && !/^npm@/.test(pkg.packageManager)) throw Error();
+    // A two-file cache cannot represent source-dependent root lifecycle scripts,
+    // workspaces or local packages. Reject them rather than reuse stale output.
+    if (pkg.workspaces !== undefined || ['preinstall', 'install', 'postinstall', 'prepublish', 'prepare', 'preprepare', 'postprepare']
+      .some(name => Object.hasOwn(pkg.scripts || {}, name))
+      || ['dependencies', 'devDependencies', 'optionalDependencies'].some(name => Object.values(pkg[name] || {})
+        .some(value => typeof value !== 'string' || /^(?:file:|link:|workspace:)/.test(value)))) throw Error();
     const integrity = s => typeof s === 'string' && /^sha(?:512|256|1)-[A-Za-z0-9+/=]+$/.test(s);
     let resolvedWithoutIntegrity = 0;
-    for (const item of Object.values(lock.packages)) {
+    for (const [name, item] of Object.entries(lock.packages)) {
+      if (item.link || name && !name.startsWith('node_modules/')) throw Error();
       if (item.resolved) {
-        if (item.resolved.startsWith('file:')) {
-          const name = item.resolved.slice(5);
-          if (!/^[A-Za-z0-9_.@/-]+$/.test(name) || name.split('/').some(p => !p || p === '.' || p === '..')
-            || !byName.has(name + '/package.json')) throw Error();
-        } else {
+        if (item.resolved.startsWith('file:')) throw Error();
+        else {
           const u = new URL(item.resolved);
           if (u.protocol !== 'https:' || u.hostname !== 'registry.npmjs.org' || u.port || u.username || u.password || u.search || u.hash
             || item.integrity !== undefined && !integrity(item.integrity)) throw Error();
@@ -40,10 +44,11 @@ function dependencyRecipe(input, image) {
         }
       }
     }
-    const recipe = { kind: 'npm-ci-linux-v1', lockHash: hash(byName.get('package-lock.json')), packageHash: hash(byName.get('package.json')),
+    const recipe = { kind: 'npm-ci-linux-v1', cacheScope: 'package-lock-only-v1', lockHash: hash(byName.get('package-lock.json')), packageHash: hash(byName.get('package.json')),
       imageId: image.imageId, architecture: image.architecture, nodeVersion: image.nodeVersion, installCommand: INSTALL, resolvedWithoutIntegrity,
       installerHash: hash(fs.readFileSync(path.join(__dirname, 'npm-dependencies-container.cjs'))),
-      fileHashes: [...input.files, ...(input.gitFiles || [])].map(f => ({ path: f.path, sha256: f.sha256 })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) };
+      fileHashes: input.files.filter(f => ['package.json', 'package-lock.json'].includes(f.path))
+        .map(f => ({ path: f.path, sha256: f.sha256 })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) };
     return { ...recipe, cacheKey: hash(JSON.stringify(recipe)) };
   } catch { throw fail('evaluation_dependencies_unsupported'); }
 }
@@ -78,7 +83,10 @@ async function cacheReplayDependencies(input, image, root, options = {}) {
   if (fs.existsSync(path.join(root, recipe.cacheKey))) { const hit = readCache(root, recipe); return { cacheHit: true, cacheKey: recipe.cacheKey, ...hit.receipt }; }
   const temporary = fs.mkdtempSync(path.join(root, '.install-'));
   try {
-    const files = prepareDirectReplayInput(input);
+    // Install from exactly the two cache inputs, not arbitrary working files,
+    // Git history, prompts, callbacks or settings from the captured turn.
+    const files = prepareDirectReplayInput({ kind: 'prepared-caff-turn-v1', prompt: 'Dependency installation only.',
+      sessionText: null, deletions: [], files: input.files.filter(f => ['package.json', 'package-lock.json'].includes(f.path)) });
     files.push({ path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'npm-dependencies-container.cjs')) },
       { path: 'caff-runtime-bootstrap.cjs', bytes: fs.readFileSync(path.join(__dirname, 'caff-runtime-container.cjs')) },
       { path: 'environment.json', bytes: Buffer.from(JSON.stringify(image)) }, { path: 'mode.txt', bytes: Buffer.from('fresh') },
