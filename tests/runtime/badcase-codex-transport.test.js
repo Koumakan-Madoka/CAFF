@@ -120,7 +120,7 @@ test('host inventory guard checks actual request/response plaintext, not only th
     assert.equal(JSON.stringify(g.transport.state()).includes(opaque), false); await g.transport.close();
   }
 });
-test('auth refusal, exhausted quota, server failure and proxy refusal latch closed; no SDK retry or direct fallback', async t => {
+test('auth refusal, exhausted quota and HTTP failure latch closed; no SDK retry or direct fallback', async t => {
   for (const [status, code] of [[401, 'access_rejected'], [403, 'access_rejected'], [429, 'quota_exhausted'], [503, 'http_failed']]) {
     const f = fixture(t), g = fakeTransport(f, { send: () => new Response(JSON.stringify({ error: { code: 'insufficient_quota', message: f.access } }), { status }) });
     const r = await g.transport.fetch(endpoint, request()); assert.equal(r.status, status);
@@ -130,7 +130,25 @@ test('auth refusal, exhausted quota, server failure and proxy refusal latch clos
   }
   const f = fixture(t), g = fakeTransport(f, { send: () => { throw Error('ECONNREFUSED ' + f.access); } });
   await assert.rejects(g.transport.fetch(endpoint, request()), /evaluation_codex_proxy_failed/);
-  await assert.rejects(g.transport.fetch(endpoint, request()), /evaluation_codex_transport_stopped/); assert.equal(g.calls.length, 1); await g.transport.close();
+  assert.equal(g.transport.state().stopped, false); assert.equal(g.calls.length, 1, 'no within-turn retry'); await g.transport.close();
+});
+test('single send/read failures are replaceable and expose only allowlisted type/errno, never exception prose or key', async t => {
+  for (const phase of ['send', 'receive']) {
+    const f = fixture(t); let count = 0;
+    const g = fakeTransport(f, { send: () => {
+      if (++count > 1) return new Response(sse());
+      const cause = Object.assign(Error('PRIVATE ' + f.access), { code: 'ECONNRESET', errno: -4077 });
+      const error = new TypeError('PRIVATE-BODY ' + f.access, { cause });
+      if (phase === 'send') throw error;
+      return new Response(new ReadableStream({ start(c) { c.error(error); } }));
+    } });
+    await assert.rejects(g.transport.fetch(endpoint, request()), /evaluation_codex_proxy_failed/);
+    assert.equal(g.calls.length, 1); assert.equal(g.transport.state().stopped, false);
+    assert.deepEqual(g.transport.state().diagnostic, { phase, exceptionType: 'TypeError', causeType: 'Error', code: 'ECONNRESET', errno: -4077 });
+    assert.doesNotMatch(JSON.stringify(g.transport.state()), /PRIVATE/); assert.equal(JSON.stringify(g.transport.state()).includes(f.access), false);
+    g.transport.beginAttempt(); assert.equal(g.transport.state().reason, null); assert.equal(g.transport.state().diagnostic, null);
+    assert.equal((await g.transport.fetch(endpoint, request())).status, 200); assert.equal(g.calls.length, 2); await g.transport.close();
+  }
 });
 test('empty HTTP auth/quota errors retain their status and still stop before another request', async t => {
   for (const [status, reason] of [[401, 'access_rejected'], [429, 'rate_limited']]) {
@@ -202,8 +220,10 @@ test('real undici transport uses only the dedicated proxy dispatcher; proxy CONN
     assert.equal(uri, 'http://127.0.0.1:17890'); return new ProxyAgent({ uri: 'http://127.0.0.1:' + proxy.address().port });
   } });
   await assert.rejects(transport.fetch(endpoint, request()), /evaluation_codex_proxy_failed/);
-  await assert.rejects(transport.fetch(endpoint, request()), /evaluation_codex_transport_stopped/);
-  assert.deepEqual(destinations, ['chatgpt.com:443']); assert.equal(transport.state().requests, 1);
+  assert.equal(transport.state().stopped, false); assert.equal(transport.state().requests, 1);
+  transport.beginAttempt();
+  await assert.rejects(transport.fetch(endpoint, request()), /evaluation_codex_proxy_failed/);
+  assert.deepEqual(destinations, ['chatgpt.com:443', 'chatgpt.com:443']); assert.equal(transport.state().requests, 2);
 });
 test('real pi-ai Codex serializer/parser uses gpt-6.1-sol xhigh, native tool schema, compressed bytes and token usage', async t => {
   const f = fixture(t), g = fakeTransport(f); t.after(() => g.transport.close());

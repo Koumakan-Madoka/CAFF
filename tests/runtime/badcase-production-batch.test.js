@@ -120,6 +120,15 @@ test('CLI output collision starts neither progress nor paid execution',async t=>
  const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h),file=path.join(h.config.repoRoot,'config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));fs.writeFileSync(output,'retained');
  const {main}=require('../../scripts/badcase-capture/compare-wiki-batch.cjs');await assert.rejects(main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options),/EEXIST/);assert.equal(f.calls.length,0);assert.equal(fs.existsSync(path.join(h.config.globalRoot,'batch-executions')),false);assert.equal(fs.readFileSync(output,'utf8'),'retained');
 });
+test('B rules are mechanically derived from the frozen replay fixture, change rules/plan hashes and retain parent rules',t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const old=h.plan(),before=h.store.read();
+ h.config.cases[0].rulesRevision='snapshot-head-exemption-v1';h.config.cases[1].rulesRevision='snapshot-head-exemption-v1';
+ const p=h.plan(),row=p.prepared.find(c=>c.sourceCaseId===h.marks[0].id);
+ assert.equal(row.comparisonConfig.rules.kind,'public-reply-literals-v2');assert.equal(row.comparisonConfig.rules.snapshotHead,before.replayCases.find(r=>r.sourceCaseId===h.marks[0].id).fixture.commit);
+ assert.notEqual(row.comparison.rulesHash,old.prepared.find(c=>c.sourceCaseId===h.marks[0].id).comparison.rulesHash);assert.notEqual(p.summary.planHash,old.summary.planHash);assert.deepEqual(h.store.read(),before);
+ assert.ok(p.summary.disclosures.includes('post_observation_snapshot_head_rule_revision'));
+ h.config.cases[0].repository.head='c'.repeat(40);assert.throws(h.plan,/evaluation_snapshot_head_mismatch/);
+});
 test('production model never silently falls back to proxy or accepts caller-drawn stages or missing restore declarations',t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);
  for(const patch of [{repeats:3},{keySource:'caff-deepseek'},{evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1',gateCaseIds:[]}}])assert.throws(()=>prepareBatch({...h.config,...patch},h.options),/evaluation_gate_config_invalid/);

@@ -85,9 +85,11 @@ test('production result labels model/thinking and report-only rows, without stal
   const h = setup(t), totals = { original: { planned: 10, passed: 4, failed: 6, errors: 0, notRun: 0, scored: 10, passRate: .4 }, candidate: { planned: 10, passed: 8, failed: 2, errors: 0, notRun: 0, scored: 10, passRate: .8 } };
   h.saved().comparisons = [{ id: 'production-1', executionId: 'production-1', createdAt: '2026-11-03T12:00:00Z', model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh', api: 'openai-codex-responses' }, completed: true, evaluation: { splitPolicy: 'd15-frozen-v1' }, modelCallsKnown: 40,
     cases: [{ sourceCaseId: 'c1', stage: 'gate', category: 'reproduction', reportOnly: false, totals }, { sourceCaseId: 'c2', stage: 'test', category: 'control', replayId: 'replay-version-synthetic', reportOnly: false, totals }, { sourceCaseId: 'c3', stage: 'gate', category: 'reproduction', family: 'deepseek', reportOnly: true, totals: { original: { planned: 0, passed: 0 }, candidate: { planned: 0, passed: 0 } } }], byStage: { gate: totals, test: totals } }];
+  h.saved().comparisons[0].disclosures = ['post_observation_snapshot_head_rule_revision'];
   h.saved().replayCases.push({ sourceCaseId: 'c4', task: 'UNRELATED-OLD-TASK', category: 'probe', split: 'train' });
   await h.panel.load(); await h.click('[data-tab="impact"]'); const text = h.root.querySelector('#impact-runs').textContent;
   assert.match(text, /gpt-6.1-sol/); assert.match(text, /xhigh/); assert.match(text, /非GPT来源.*仅报告/); assert.match(text, /不计入/); assert.match(text, /样例.*新版本.*非历史复现/);
+  assert.match(text, /看过结果.*现场快照 SHA.*修正.*作废.*不计入判定/);
   assert.doesNotMatch(text, /代理模型 DeepSeek|不作为采纳依据|UNRELATED-OLD-TASK/); assert.equal(h.posts().length, 0);
 });
 

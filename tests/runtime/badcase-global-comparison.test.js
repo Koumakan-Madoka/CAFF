@@ -128,6 +128,29 @@ test('environment errors are separate attempts, at most five extra per question;
     const saved=createWikiComparisonStore(h.config).save(r); assert.deepEqual(saved.byStage,r.byStage);
   }
 });
+test('native proxy failures use shared replacements only with verified launcher evidence; exhausted budget, missing cleanup and drift stop', async t => {
+  for (const mode of ['recover', 'exhausted', 'cleanup', 'hash']) {
+    const h=setup(t,{staged:true,publicReply:true}),dir=path.join(h.root,'.pi-sandbox');fs.mkdirSync(dir);
+    const profile=require('../../scripts/badcase-capture/codex-transport.cjs').PROFILE;
+    const access='test.'+Buffer.from(JSON.stringify({exp:2000000600,'https://api.openai.com/auth':{chatgpt_account_id:'synthetic'}})).toString('base64url')+'.test';
+    const authFile=path.join(dir,'auth.json');fs.writeFileSync(authFile,JSON.stringify({'openai-codex':{type:'oauth',access,expires:2000000600000}}));
+    Object.assign(h.single,{modelProfile:profile.model,keySource:'caff-codex-access',codexAuthFile:authFile,repeats:10,executionPolicy:'alternating-valid-v1'});
+    h.options.knownValues=[];h.options.prepareTarget=(...args)=>{const p=prepareSealedPromptTarget(...args);p.input.recordedModelConfig={provider:'openai-codex',model:'gpt-6.1-sol',thinking:'xhigh',fast:false};return p;};
+    let sends=0,executions=0;
+    h.options.createCodexTransport=(c,g)=>require('../../scripts/badcase-capture/codex-transport.cjs').createCodexTransport(c,{...g,now:()=>2000000000000,createDispatcher:()=>({destroy:async()=>{}}),fetch:async()=>{if(++sends<=(mode==='exhausted'?6:1))throw Object.assign(new TypeError('PRIVATE '+access),{cause:Object.assign(Error('PRIVATE'),{code:'ECONNRESET'})});return new Response('data: synthetic\n\n');}});
+    h.options.executeCodex=async(_image,files,opts)=>{executions++;const m=manifestFor(files,{replayWorkspace:true}),input=JSON.parse(files[0].bytes);
+      const launcher={containerId:'a'.repeat(64),cleaned:mode!=='cleanup',isolation:{network:'none'},inputHash:mode==='hash'?'0'.repeat(64):m.inputHash,runtimeHash:m.runtimeHash};
+      try{await opts.sendNativeRequest(Buffer.from(JSON.stringify({headers:{'content-type':'application/json',accept:'text/event-stream'},body:Buffer.from(JSON.stringify({model:'gpt-6.1-sol',input:[],stream:true,store:false,reasoning:{effort:'xhigh'}})).toString('base64')})));}
+      catch{return {...launcher,failed:true,reason:'evaluation_codex_proxy_failed'};}
+      return {...launcher,code:0,receipt:{kind:'direct-caff-turn-v1',inputHash:m.inputHash,runtimeHash:m.runtimeHash,beforeHash:expectedTreeHash(input),success:true,recordedModelConfig:input.recordedModelConfig,modelConfig:{api:profile.api,thinking:'xhigh',fast:false,transport:'sse',credentialDelivery:'host-only-mailbox'},modelCalls:[{model:profile.model,success:true,durationMs:1,httpStatus:200,usage:null}],finalText:'done',replySource:'public'}};
+    };
+    const r=await runComparison(h.single,h.options);
+    assert.equal(r.runs[0].status,'error');assert.equal(r.runs[0].reason,'evaluation_codex_proxy_failed');assert.equal(r.runs[0].environmentDiagnostic.exceptionType,'TypeError');assert.equal(r.runs[0].environmentDiagnostic.code,'ECONNRESET');
+    assert.doesNotMatch(JSON.stringify(r),/PRIVATE/);assert.equal(JSON.stringify(r).includes(access),false);
+    if(mode==='recover'){assert.equal(executions,21);assert.equal(r.completed,true);assert.equal(r.fatal,false);assert.equal(r.totals.original.errors,1);assert.equal(r.totals.original.passed,10);assert.equal(r.totals.candidate.passed,10);}
+    else{assert.equal(executions,mode==='exhausted'?6:1);assert.equal(r.fatal,true);assert.equal(r.completed,false);}
+  }
+});
 test('model loop/request ceiling and proven container model timeout count as fail, not retriable environment error', async t=>{
   for(const mode of ['modelLimit','timeout']) {
     const h=setup(t,{staged:true}); stagedDriver(h,{[mode]:true}); const r=await h.run();

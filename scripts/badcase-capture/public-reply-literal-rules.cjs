@@ -15,11 +15,21 @@ function strings(value, limit, empty = true) {
     && value.every(s => typeof s === 'string' && s.trim() && !s.includes('\0') && [...s].length <= 128);
 }
 function validatePublicReplyRules(rules) {
-  if (!rules || Object.keys(rules).sort().join(',') !== 'conclusionMarkers,forbiddenPatterns,forbiddenTerms,kind,leadChars'
-    || rules.kind !== 'public-reply-literals-v1' || !Number.isSafeInteger(rules.leadChars) || rules.leadChars < 1 || rules.leadChars > 2048
+  const revised = rules?.kind === 'public-reply-literals-v2';
+  if (!rules || Object.keys(rules).sort().join(',') !== 'conclusionMarkers,forbiddenPatterns,forbiddenTerms,kind,leadChars' + (revised ? ',snapshotHead' : '')
+    || !['public-reply-literals-v1', 'public-reply-literals-v2'].includes(rules.kind)
+    || revised && !/^[a-f0-9]{40}$/.test(rules.snapshotHead || '')
+    || !Number.isSafeInteger(rules.leadChars) || rules.leadChars < 1 || rules.leadChars > 2048
     || !strings(rules.conclusionMarkers, 32, false) || !strings(rules.forbiddenTerms, 64) || !strings(rules.forbiddenPatterns, 5)
     || rules.forbiddenPatterns.some(p => !Object.hasOwn(PATTERNS, p)) || Buffer.byteLength(JSON.stringify(rules)) > 32768) throw fail();
   return structuredClone(rules);
+}
+// The formal planner supplies the immutable registered scene's commit, never
+// a typed operator whitelist or today's repository HEAD. v1 remains untouched.
+function reviseSnapshotHeadRules(rules, snapshotHead) {
+  validatePublicReplyRules(rules);
+  if (rules.kind !== 'public-reply-literals-v1') throw fail();
+  return validatePublicReplyRules({ ...rules, kind: 'public-reply-literals-v2', snapshotHead });
 }
 function scorePublicReply(receipt, rules) {
   validatePublicReplyRules(rules);
@@ -32,8 +42,13 @@ function scorePublicReply(receipt, rules) {
     if (index >= 0) forbidden.push({ kind: 'term', rule: term, match: term, position: [...text.slice(0, index)].length });
   }
   for (const name of rules.forbiddenPatterns) {
-    const match = PATTERNS[name].exec(text);
-    if (match) forbidden.push({ kind: 'pattern', rule: name, match: match[0], position: [...text.slice(0, match.index)].length });
+    const pattern = PATTERNS[name];
+    const matches = text.matchAll(new RegExp(pattern.source, pattern.flags + 'g'));
+    for (const match of matches) {
+      if (name === 'commit-hash' && rules.kind === 'public-reply-literals-v2'
+        && match[0].length >= 7 && match[0].length <= 40 && rules.snapshotHead.startsWith(match[0].toLowerCase())) continue;
+      forbidden.push({ kind: 'pattern', rule: name, match: match[0], position: [...text.slice(0, match.index)].length }); break;
+    }
   }
   const checks = {
     completed: receipt.success === true && Array.isArray(receipt.modelCalls) && receipt.modelCalls.length > 0 && receipt.modelCalls.every(c => c.success === true),
@@ -44,4 +59,4 @@ function scorePublicReply(receipt, rules) {
   return { available: true, pass: Object.values(checks).every(Boolean), checks,
     details: { leadChars: rules.leadChars, conclusionMarker, forbidden } };
 }
-module.exports = { validatePublicReplyRules, scorePublicReply };
+module.exports = { validatePublicReplyRules, scorePublicReply, reviseSnapshotHeadRules };

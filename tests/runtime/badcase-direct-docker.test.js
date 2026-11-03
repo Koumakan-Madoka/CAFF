@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const image = { imageId: 'sha256:' + '1'.repeat(64), repositoryDigest: 'node@sha256:' + '2'.repeat(64), architecture: 'amd64' };
 const id = '3'.repeat(64), key = 'test-only-direct-evaluation-key-123456';
-function fake({ badIsolation = false, failed = false, leaked = false, timeout = false, lostCreate = false, modelTimeout = false, copyFail = false, imageEnv } = {}) {
+function fake({ badIsolation = false, failed = false, leaked = false, timeout = false, lostCreate = false, modelTimeout = false, copyFail = false, imageEnv, proxyFailure = false, cleanupFailure = false } = {}) {
   const calls = []; let container = null, running = false;
   async function run(args, options = {}) {
     calls.push({ args: [...args], options: { ...options,
@@ -28,11 +28,12 @@ function fake({ badIsolation = false, failed = false, leaked = false, timeout = 
     }
     if (args[0] === 'inspect') return container ? ok(container) : { code: 1, stdout: '', stderr: '' };
     if (args[0] === 'start') { container.State.Running = timeout;
+      if (proxyFailure) throw Object.assign(Error('PRIVATE-PROXY-BODY'), { code: 'evaluation_codex_proxy_failed' });
       if (options.outputFile) fs.writeFileSync(options.outputFile, copyFail ? 'invalid-artifact-stream' : JSON.stringify({ kind: 'test' }) + '\nsynthetic archive');
       return timeout ? { code: null, failure: 'timeout', stdout: key, stderr: key }
       : { code: modelTimeout ? 124 : failed ? 1 : 0, stdout: failed ? key : JSON.stringify({ kind: 'test', ...(leaked ? { text: key } : {}) }), stderr: failed ? key : '' }; }
     if (args[0] === 'cp') { if (copyFail) return { code: 1, stdout: '', stderr: key }; fs.writeFileSync(args[2], 'synthetic archive'); return ok(''); }
-    if (args[0] === 'rm') { container = null; running = false; return ok(''); }
+    if (args[0] === 'rm') { if (cleanupFailure) return { code: 1, stdout: '', stderr: 'private cleanup diagnostic' }; container = null; running = false; return ok(''); }
     if (args[0] === 'ps') return ok(container ? id : '');
     throw Error('unexpected');
   }
@@ -80,6 +81,16 @@ test('Codex launcher is explicitly relay-only and has no credential environment 
   const create = f.calls.find(c => c.args[0] === 'create'); assert.equal(create.args.includes('--env'), false); assert.equal(create.options.key, undefined);
   await assert.rejects(runCodexDockerTask(image, codexFiles, { network: 'bridge' }), /evaluation_codex_relay_required/);
   await assert.rejects(runCodexDockerTask(image, codexFiles, { sendNativeRequest: async () => {}, key }), /evaluation_codex_relay_required/);
+});
+test('proxy failure returns pinned launcher hashes and isolation only after verified cleanup; missing cleanup still throws', async () => {
+  const { runCodexDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs');
+  const input = [...files, { path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify('openai-codex/gpt-6.1-sol')) }];
+  const f = fake({ proxyFailure: true });
+  const r = await runCodexDockerTask(image, input, { timeoutMs: 1000, runDocker: f.run, sendNativeRequest: async () => Buffer.from('{}') });
+  assert.equal(r.reason, 'evaluation_codex_proxy_failed'); assert.equal(r.failed, true); assert.equal(r.cleaned, true); assert.equal(r.containerId, id); assert.equal(r.isolation.network, 'none');
+  assert.equal(r.inputHash, manifestFor(input, { replayWorkspace: true }).inputHash); assert.equal(f.remaining(), false); assert.doesNotMatch(JSON.stringify(r), /PRIVATE/);
+  const g = fake({ proxyFailure: true, cleanupFailure: true });
+  await assert.rejects(runCodexDockerTask(image, input, { timeoutMs: 1000, runDocker: g.run, sendNativeRequest: async () => Buffer.from('{}') }), /evaluation_cleanup_failed/);
 });
 test('host-model launcher preserves network-none/no-credential isolation and requires bounded explicit exchange', async () => {
   const { runHostModelDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs');

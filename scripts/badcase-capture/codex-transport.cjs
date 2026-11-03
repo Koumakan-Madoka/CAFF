@@ -115,6 +115,19 @@ function sseTerminalReason(bytes) {
   }
   return null;
 }
+// Exception names/codes are external strings too. Project only fixed enums
+// and bounded numeric errno, never message/stack/URL/request/cause prose.
+const ERROR_TYPES = new Set(['Error','TypeError','RangeError','DOMException','AbortError','TimeoutError','SocketError','ConnectTimeoutError','HeadersTimeoutError','BodyTimeoutError','AggregateError']);
+const ERROR_CODES = new Set(['ECONNRESET','ECONNREFUSED','ECONNABORTED','EPIPE','ETIMEDOUT','EHOSTUNREACH','ENETUNREACH','ENETDOWN','ENOTFOUND','EAI_AGAIN','EAI_FAIL',
+  'UND_ERR_SOCKET','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT','UND_ERR_ABORTED','UND_ERR_RES_CONTENT_LENGTH_MISMATCH',
+  'CERT_HAS_EXPIRED','CERT_NOT_YET_VALID','UNABLE_TO_VERIFY_LEAF_SIGNATURE','DEPTH_ZERO_SELF_SIGNED_CERT','ERR_TLS_CERT_ALTNAME_INVALID','ERR_SSL_WRONG_VERSION_NUMBER']);
+function networkDiagnostic(error, phase) {
+  const values=[]; for(let e=error,i=0;e && i<4;i++,e=e.cause)values.push(e);
+  const type=e=>ERROR_TYPES.has(e?.name)?e.name:'OtherError';
+  return {phase,exceptionType:type(error),causeType:error?.cause?type(error.cause):null,
+    code:values.map(e=>e.code).find(v=>ERROR_CODES.has(v)) || null,
+    errno:values.map(e=>e.errno).find(v=>Number.isSafeInteger(v) && Math.abs(v)<=65535) ?? null};
+}
 function createCodexTransport(config, dependencies = {}) {
   if (config?.confirmed !== true) throw fail('confirmation_required');
   if (!object(config) || Object.keys(config).some(k => !['authFile', 'confirmed', 'timeoutMs'].includes(k))
@@ -122,7 +135,7 @@ function createCodexTransport(config, dependencies = {}) {
   const credential = createCodexAccess(config.authFile, { now: dependencies.now || Date.now });
   const timeoutMs = config.timeoutMs, send = dependencies.fetch || ((...args) => require('undici').fetch(...args));
   const createDispatcher = dependencies.createDispatcher || (uri => new (require('undici').ProxyAgent)({ uri }));
-  let dispatcher, closed = false, stopped = false, busy = false, active, reason = null, requests = 0;
+  let dispatcher, closed = false, stopped = false, busy = false, active, reason = null, diagnostic = null, requests = 0;
   const stop = code => { stopped = true; reason = 'evaluation_codex_' + code; };
   const transportFetch = async (url, options) => {
     if (closed) throw fail('transport_closed');
@@ -141,15 +154,16 @@ function createCodexTransport(config, dependencies = {}) {
       signal = AbortSignal.any([controller.signal, deadline.signal, ...(options.signal ? [options.signal] : [])]);
       q.headers.set('authorization', 'Bearer ' + access.access); q.headers.set('chatgpt-account-id', access.accountId);
       ++requests;
-      let response, bytes;
+      let response, bytes, phase = 'send';
       try {
         response = await send(PROFILE.endpoint, { method: 'POST', headers: q.headers, body: q.body, signal, dispatcher, redirect: 'error' });
-        bytes = await responseBytes(response, signal);
+        phase = 'receive'; bytes = await responseBytes(response, signal);
       } catch (e) {
         if (closed) throw fail('transport_closed');
         if (options.signal?.aborted) throw fail('request_aborted');
         if (deadline.signal.aborted) throw fail('request_timeout');
         if (['evaluation_codex_response_invalid', 'evaluation_codex_response_too_large'].includes(e?.code)) throw e;
+        diagnostic = networkDiagnostic(e, phase);
         throw fail('proxy_failed');
       }
       // Inspect error bodies solely in memory for a coarse environment reason.
@@ -169,10 +183,16 @@ function createCodexTransport(config, dependencies = {}) {
       return new Response(bytes, { status: 200, headers: { 'content-type': 'text/event-stream' } });
     } catch (e) {
       const code = /^evaluation_codex_[a-z_]+$/.test(e?.code || '') ? e.code : 'evaluation_codex_request_invalid';
-      stopped = true; reason = code; throw Object.assign(Error(code), { code });
+      // A transient send/read failure ends this turn, not the batch. The host
+      // may start another attempt only after its launcher proves cleanup.
+      stopped = code !== 'evaluation_codex_proxy_failed'; reason = code; throw Object.assign(Error(code), { code });
     } finally { clearTimeout(timer); active = undefined; busy = false; }
   };
-  return { fetch: transportFetch, state: () => ({ profile: PROFILE, requests, stopped, closed, reason }),
+  return { fetch: transportFetch, state: () => ({ profile: PROFILE, requests, stopped, closed, reason, diagnostic: diagnostic && { ...diagnostic } }),
+    beginAttempt() {
+      if (closed) throw fail('transport_closed'); if (busy) throw fail('transport_busy');
+      if (!stopped) { reason = null; diagnostic = null; }
+    },
     inspectAccess(check) {
       if (closed) throw fail('transport_closed');
       if (stopped) throw Object.assign(Error(reason), { code: reason });

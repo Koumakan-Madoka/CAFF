@@ -77,6 +77,7 @@ function formatStagedBatch(result) {
     for(const c of result.cases.filter(c=>c.stage===stage)) lines.push([wikiGoalCaseNumber(c.sourceCaseId) ? '#'+wikiGoalCaseNumber(c.sourceCaseId) : c.sourceCaseId,categories[c.category],c.reportOnly?'非GPT来源，仅报告、不计入结论':c.status+(c.reason?' / '+c.reason:'')+(c.replayId?.startsWith('replay-version-')?' / 样例生产配置新版本，非历史复现':''),...['original','candidate'].map(v=>{const t=c.totals[v];return c.reportOnly?'不计入':`${t.passed}/${t.scored}(${t.errors}/${t.notRun})`;})].join('\t'));
     for(const v of ['original','candidate']) {const t=result.byStage[stage][v];lines.push(`${labels[stage]} ${v}: ${t.passed}/${t.planned} 通过，${t.failed} 失败，${t.errors} 环境错误，${t.notRun} 未执行；有效 ${t.scored}，通过率 ${t.passRate===null?'N/A':(100*t.passRate).toFixed(1)+'%'}`);}
   }
+  if(result.disclosures?.includes('post_observation_snapshot_head_rule_revision'))lines.push('看过结果后发现，所有已保存回复都会引用现场快照 SHA，这条规则无法区分原版和候选，因此按用户裁决修正规则；旧轮作废，不计入判定。仅放行各题封存现场记录 HEAD 的7–40位前缀，两版本共用新规则，旧规则与结果保留。');
   lines.push(native?'结论绑定上述生产模型与配置，变更后须重跑；字面规则不是语义判断，小样本不保证提分；非GPT来源、探针和其他模式不计入GPT修好结论。':'代理模型 DeepSeek；小样本；题组经原基线筛选，存在挑题偏差；只复现了汇报难懂一类，探针与其他模式只报告。',
     '环境错误每题原/候选共最多补5次；模型循环、超时、超调用上限计不通过。',
     '测试题仅门槛接受后运行一次；被拒改动及 diff 保留，不自动叠加为基线或修改生产 prompt。',

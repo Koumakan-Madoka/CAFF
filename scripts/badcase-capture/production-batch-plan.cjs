@@ -9,6 +9,7 @@ const {planWikiEvaluationSuite}=require(base+'wiki-evaluation-suite');
 const {resolveSampleReplayVersion}=require(base+'wiki-sample-replay-version');
 const {prepareComparison,CODEX_CONFIG}=require('./direct-comparison.cjs');
 const {CODEX_PROFILE}=require('./direct-model.cjs');
+const {reviseSnapshotHeadRules}=require('./public-reply-literal-rules.cjs');
 const fail=code=>Object.assign(Error(code),{code});
 const {hashJson:hash}=require('./replay-streams.cjs');
 function prepareProductionBatch(config,options={}){
@@ -20,7 +21,8 @@ function prepareProductionBatch(config,options={}){
  if(!saved || saved.status!=='confirmed')throw fail('wiki_candidate_confirmation_required');
  if(saved.target?.kind!=='global-system-prompt')throw fail('evaluation_target_unsupported');
  if(saved.entryIds.length!==1 || saved.entryIds[0]!==config.evaluation.targetEntryId)throw fail('evaluation_gate_config_invalid');
- for(const item of config.cases)if(!item || Object.keys(item).some(k=>!['sourceCaseId','category','repository','dependencies','replayVersionId'].includes(k)))throw fail('evaluation_batch_cases_invalid');
+ for(const item of config.cases)if(!item || Object.keys(item).some(k=>!['sourceCaseId','category','repository','dependencies','replayVersionId','rulesRevision'].includes(k))
+   || item.rulesRevision!==undefined && item.rulesRevision!=='snapshot-head-exemption-v1')throw fail('evaluation_batch_cases_invalid');
  const suite=planWikiEvaluationSuite(state,config.cases,saved.entryIds[0]);
  // Require a genuine GPT target in each frozen stage. Other model families are
  // visible report-only rows, not GPT failures or favorable denominator slots.
@@ -43,7 +45,15 @@ function prepareProductionBatch(config,options={}){
   if(source.kind==='marked-badcase' && (source.sealedCheckpointId!==a.checkpointId
     || ['projectId','conversationId','messageId','agentId'].some(k=>source.source[k]!==a[k])))throw fail('evaluation_batch_input_changed');
   if(source.kind==='marked-badcase' && (!item.repository || !item.dependencies))throw fail('evaluation_repository_restore_required');
-  const comparisonConfig={repoRoot:config.repoRoot,dependencyRoot:config.dependencyRoot,image:config.image,request:replay.request,rules:replay.rules,
+  let rules=replay.rules;
+  if(item.rulesRevision!==undefined){
+   if(source.kind!=='marked-badcase' || rules.kind!=='public-reply-literals-v1')throw fail('evaluation_batch_cases_invalid');
+   // Fixture commit was registered with this sealed checkpoint; never inspect
+   // a live HEAD or accept a caller-written list of favorable hashes.
+   if(item.repository?.head!==replay.fixture.commit)throw fail('evaluation_snapshot_head_mismatch');
+   rules=reviseSnapshotHeadRules(rules,replay.fixture.commit);
+  }
+  const comparisonConfig={repoRoot:config.repoRoot,dependencyRoot:config.dependencyRoot,image:config.image,request:replay.request,rules,
     repeats:10,executionPolicy:'alternating-valid-v1',globalWikiCandidate:{...scope,candidateId:candidate.id},
     modelProfile:CODEX_PROFILE,keySource:config.keySource,codexAuthFile:config.codexAuthFile,knownKeySources:config.knownKeySources,
     ...(config.dockerBackend===undefined?{}:{dockerBackend:config.dockerBackend}),
@@ -65,7 +75,8 @@ function prepareProductionBatch(config,options={}){
   split:{policy:'d15-frozen-v1',caseIds:suite.cases.map(c=>c.sourceCaseId),gateCaseIds:suite.gateCaseIds,testCaseIds:suite.testCaseIds},
   additionalTrainingCaseIds:[],excludedSplitTrainingCaseIds:[],repeats:10,wikiTrainingCount:version.caseIds.length,
   preparedReplayableCount:prepared.filter(c=>c.supported).length,
-  disclosures:['literal_rules_not_semantic_judgment','small_sample','model_configuration_bound','non_gpt_sources_report_only'],
+  disclosures:['literal_rules_not_semantic_judgment','small_sample','model_configuration_bound','non_gpt_sources_report_only',
+   ...(config.cases.some(c=>c.rulesRevision!==undefined)?['post_observation_snapshot_head_rule_revision']:[])],
   cases:prepared.map(({comparisonConfig,...record})=>record)};
  return {summary:{...summary,planHash:hash(summary)},prepared};
 }

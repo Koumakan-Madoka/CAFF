@@ -74,7 +74,10 @@ function relayDockerTransport(runDocker, send, limits) {
       // Never leave an attach or model send running after returning to the ledger.
       await execution;
     }
-    if (failure) throw Error('container_model_relay_failed');
+    if (failure) {
+      if (failure.code === 'evaluation_codex_proxy_failed') throw Object.assign(Error(failure.code), { code: failure.code });
+      throw Error('container_model_relay_failed');
+    }
     return execution;
   };
 }

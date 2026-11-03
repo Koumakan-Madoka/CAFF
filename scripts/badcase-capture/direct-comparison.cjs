@@ -26,7 +26,7 @@ const { hashJson, createKnownValueScanner } = require('./replay-streams.cjs');
 const fail = code => Object.assign(Error(code), { code });
 function validateRules(rules) {
   if (rules?.kind === 'file-literals-v1') return validateLiteralRules(rules);
-  if (rules?.kind === 'public-reply-literals-v1') return validatePublicReplyRules(rules);
+  if (['public-reply-literals-v1', 'public-reply-literals-v2'].includes(rules?.kind)) return validatePublicReplyRules(rules);
   if (!rules || rules.kind !== 'read-only-files-v1'
     || Object.keys(rules).some(k => !['kind', 'readPaths', 'absentPaths', 'requiredReplyFragments'].includes(k))
     || !Array.isArray(rules.absentPaths) || rules.absentPaths.length > 16 || new Set(rules.absentPaths).size !== rules.absentPaths.length
@@ -151,6 +151,7 @@ function prepareComparison(config, options = {}) {
     if (original.input.bindings?.sourceRoot && path.resolve(config.repository?.sourceRoot || '') !== path.resolve(original.input.bindings.sourceRoot)) throw fail('evaluation_repository_source_mismatch');
     repository = prepareReplayGit(config.repository, original.input, { knownValues });
   }
+  if (rules.kind === 'public-reply-literals-v2' && repository?.report.sourceHead !== rules.snapshotHead) throw fail('evaluation_snapshot_head_mismatch');
   const repositoryConfig = repository ? { repository: repository.report, gitFiles: repository.gitFiles } : {};
   let dependencyConfig = {};
   if (config.dependencies !== undefined) {
@@ -255,6 +256,7 @@ async function runComparison(config, options = {}) {
       emit({ event: 'run_start', variant, iteration });
       const started = performance.now(), hostBefore = transport?.state().requests;
       try {
+        transport?.beginAttempt();
         transport?.inspectAccess(() => {}); // Expiry stops BEFORE another container.
         task = await execute(fixed.image, files[variant], native
           ? { sendNativeRequest, network: 'none', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash }
@@ -278,7 +280,11 @@ async function runComparison(config, options = {}) {
         ...(plan.summary.repository ? ['sourceHead', 'restoredHead', 'historyIncluded', 'headIdenticalToSource', 'historyCommitCount']
           .map(field => [receipt?.repository?.[field], plan.summary.repository[field]]) : [])]
         .some(([actual, expected]) => actual !== undefined && actual !== expected);
-      const modelConfigChanged = native && Object.keys(CODEX_CONFIG).some(k => receipt?.modelConfig?.[k] !== CODEX_CONFIG[k]);
+      const recoverableProxy = native && environmentReason === 'evaluation_codex_proxy_failed'
+        && task?.failed === true && task.reason === environmentReason && task.cleaned === true
+        && /^[a-f0-9]{64}$/.test(task.containerId || '') && task.isolation?.network === 'none'
+        && task.inputHash === manifests[variant].inputHash && task.runtimeHash === manifests[variant].runtimeHash;
+      const modelConfigChanged = native && !recoverableProxy && Object.keys(CODEX_CONFIG).some(k => receipt?.modelConfig?.[k] !== CODEX_CONFIG[k]);
       const recordedConfigChanged = plan.summary.recordedModelConfig && receipt?.kind === 'direct-caff-turn-v1' && Object.keys(plan.summary.recordedModelConfig)
         .some(k => receipt?.recordedModelConfig?.[k] !== plan.summary.recordedModelConfig[k]);
       const sessionChanged = plan.summary.replaySession && receipt?.kind === 'direct-caff-turn-v1' && Object.keys(plan.summary.replaySession)
@@ -308,7 +314,7 @@ async function runComparison(config, options = {}) {
         modelCallsKnown += row.modelCalls.length;
         for (const [i, call] of row.modelCalls.entries()) emit({ event: 'model_call', variant, iteration, request: i + 1, ...call });
         if (receipt.success === true && receipt.modelCalls.every(c => c.success)) {
-          const literal = plan.summary.rules.kind === 'file-literals-v1', publicReply = plan.summary.rules.kind === 'public-reply-literals-v1';
+          const literal = plan.summary.rules.kind === 'file-literals-v1', publicReply = ['public-reply-literals-v1', 'public-reply-literals-v2'].includes(plan.summary.rules.kind);
           const score = literal ? scoreLiteralFiles(receipt, plan.summary.rules) : publicReply ? scorePublicReply(receipt, plan.summary.rules)
             : scoreReadOnlyFiles(receipt, plan.summary.rules, plan.beforeHash);
           if (score.available === false) { row.reason = publicReply ? 'reply_evidence_unavailable' : 'file_evidence_unavailable'; stopped = true; }
@@ -342,9 +348,17 @@ async function runComparison(config, options = {}) {
         // Evidence/integrity stops propagate to the remaining cases and stages.
         stopped = fatal;
       }
-      // Auth/quota/network terminal states are environmental, never model
-      // failure or eligible replacement attempts. Keep any verified calls.
-      if (environmentReason) { row.status = 'error'; row.checks = null; row.reason = environmentReason; stopped = true; fatal = true; }
+      // Auth/quota and integrity errors still stop. A single send/read error
+      // may use the shared five replacements only with verified launcher
+      // hashes/isolation/cleanup; missing worker usage stays explicitly unknown.
+      if (environmentReason) {
+        row.status = 'error'; row.checks = null; row.reason = environmentReason;
+        if (transport.state().diagnostic) row.environmentDiagnostic = transport.state().diagnostic;
+        stopped = !alternating || !recoverableProxy || fatal; fatal = stopped;
+      }
+      if (native && alternating && row.status === 'error' && runs.filter(r => r.status === 'error').length >= 5) {
+        stopped = true; fatal = true; row.stopReason = 'environment_replacements_exhausted';
+      }
       row.tokenUsage = tokenUsage(row.modelCalls, { callsUnavailable: !valid });
       runs.push(row); const { modelCalls: omitted, ...eventRow } = row; emit({ event: 'run', ...eventRow });
   }

@@ -201,8 +201,15 @@ async function runDockerTask(image, files, options, key, dependencyOutput) {
       '--tmpfs', '/work:' + WORK, '--tmpfs', '/tmp:' + TMP, '--entrypoint', '/bin/sh', image.imageId, ...command], { key });
     assert.ok(good(c), 'evaluation_create_failed'); id = c.stdout.trim(); assert.match(id, /^[a-f0-9]{64}$/);
     const pre = one(await run(['inspect', id])); proof = isolation(pre, image, owner, command, network, key !== undefined); assert.equal(pre.State.Running, false);
-    result = await run(['start', '-a', '-i', id], { inputFile: archiveFile, timeoutMs: timeoutMs + 5000,
-      ...(dependencyOutput ? { outputFile: dependencyOutput } : {}) });
+    try {
+      result = await run(['start', '-a', '-i', id], { inputFile: archiveFile, timeoutMs: timeoutMs + 5000,
+        ...(dependencyOutput ? { outputFile: dependencyOutput } : {}) });
+    } catch (e) {
+      // Only this fixed host-transport error is recoverable. Still inspect the
+      // exact container, verify isolation and perform/prove cleanup below.
+      if (e?.code !== 'evaluation_codex_proxy_failed') throw e;
+      result = { code: null, failure: e.code };
+    }
     const post = one(await run(['inspect', id])); isolation(post, image, owner, command, network, key !== undefined);
     if (!result.failure) { assert.equal(post.State.Running, false); assert.equal(post.State.ExitCode, result.code); }
     // Raw Docker inspect includes runtime env; never return/save that object.
