@@ -51,10 +51,20 @@ test('unapplied variables and corrupt resume trees refuse before any installed-s
     assert.equal(calls, 0);
   }
 });
-test('forged complete flags cannot bypass original session structure/dependency checks', t => {
-  for (const change of [entries => { entries[3].message.content = [{ type: 'toolCall', id: 'c', name: 'read', arguments: { path: 'source.txt' } }]; },
-    entries => { entries[3].message.content = [{ type: 'toolCall', id: 'c', name: 'bash', arguments: { command: 'pwd' } }]; },
-    entries => { delete entries[3].message.usage; }, entries => { entries[4].type = 'custom'; entries[4].data = { private: true }; },
+test('frozen read/bash/unknown historical calls remain context in retained initialization, not current execution dependencies', t => {
+  for (const name of ['read', 'bash', 'retired-tool']) {
+    const v = fixture(t, 'resume'), call = { type: 'toolCall', id: 'c', name, arguments: { path: '/old/context-only', command: 'historical-command-never-run' } };
+    resign(v, d => { const r = d.checkpoint.replayInput, b = d.blobs.find(b => b.sha256 === r.sessionBlobHash);
+      const entries = Buffer.from(b.base64, 'base64').toString().trim().split('\n').map(JSON.parse);
+      entries[3].message.content = [call];
+      const text = entries.map(JSON.stringify).join('\n') + '\n'; b.base64 = Buffer.from(text).toString('base64'); b.sha256 = hash(text); r.sessionBlobHash = b.sha256; });
+    const p = planner(v);
+    assert.deepEqual(p.sessionEntries[3].message.content, [call]);
+    assert.equal(p.receipt.runnable, false); assert.equal(p.receipt.sdkInitialized, false);
+  }
+});
+test('forged complete flags cannot bypass original session structure/extension checks', t => {
+  for (const change of [entries => { delete entries[3].message.usage; }, entries => { entries[4].type = 'custom'; entries[4].data = { private: true }; },
     entries => { entries[3].id = entries[0].id; }, entries => { entries[2].timestamp = ''; }]) {
     const v = fixture(t, 'resume');
     resign(v, d => { const r = d.checkpoint.replayInput, b = d.blobs.find(b => b.sha256 === r.sessionBlobHash);
