@@ -13,7 +13,10 @@ function readAuth(file) {
   let fd, bytes;
   try {
     const parent = fs.lstatSync(path.dirname(file)), before = fs.lstatSync(file, { bigint: true });
-    if (!parent.isDirectory() || parent.isSymbolicLink() || !before.isFile() || before.nlink !== 1n || before.size < 2n || before.size > 1048576n) throw Error();
+    // The approved auth file may be a regular hardlink. Reading it cannot
+    // mutate aliases; still reject symlinks and verify descriptor/path identity
+    // and content metadata before/after the read (no alias discovery).
+    if (!parent.isDirectory() || parent.isSymbolicLink() || !before.isFile() || before.size < 2n || before.size > 1048576n) throw Error();
     fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
     if (!same(before, fs.fstatSync(fd, { bigint: true }))) throw Error();
     bytes = Buffer.alloc(Number(before.size) + 1); let n = 0;

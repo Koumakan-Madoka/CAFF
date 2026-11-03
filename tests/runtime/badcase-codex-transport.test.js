@@ -62,9 +62,18 @@ test('wrong source, missing provider, invalid/expired access never falls back to
   fs.writeFileSync(f.authFile, '{}'); assert.throws(() => createCodexAccess(f.authFile).get(), /evaluation_codex_access_invalid/);
   fs.unlinkSync(f.authFile); assert.throws(() => createCodexAccess(f.authFile).get(), /evaluation_codex_auth_unavailable/);
 });
-test('auth links are rejected rather than following a mutable or multiply linked source', t => {
+test('approved regular hardlinked auth is read-only and retains inode/content identity without discovering other paths', t => {
   const f = fixture(t), target = path.join(f.root, 'original.json'); fs.renameSync(f.authFile, target);
   try { fs.linkSync(target, f.authFile); } catch (e) { if (['EPERM', 'ENOTSUP'].includes(e.code)) return t.skip(e.code); throw e; }
+  const before = fs.statSync(f.authFile, { bigint: true }), reader = load().createCodexAccess(f.authFile, { now: () => epoch });
+  assert.equal(reader.get().access, f.access); reader.close();
+  assert.deepEqual(fs.readFileSync(f.authFile), Buffer.from(f.bytes)); assert.deepEqual(fs.readFileSync(target), Buffer.from(f.bytes));
+  const after = fs.statSync(f.authFile, { bigint: true });
+  for (const key of ['dev', 'ino', 'nlink', 'size', 'mtimeNs', 'ctimeNs']) assert.equal(after[key], before[key]);
+});
+test('symbolic auth sources are still rejected', t => {
+  const f = fixture(t), target = path.join(f.root, 'original.json'); fs.renameSync(f.authFile, target);
+  try { fs.symlinkSync(target, f.authFile); } catch (e) { if (['EPERM', 'ENOTSUP'].includes(e.code)) return t.skip(e.code); throw e; }
   assert.throws(() => load().createCodexAccess(f.authFile).get(), /evaluation_codex_auth_unavailable/);
 });
 test('native Responses bytes and SSE preserved; fixed endpoint/proxy, credentials replaced only on the host, no redirect', async t => {

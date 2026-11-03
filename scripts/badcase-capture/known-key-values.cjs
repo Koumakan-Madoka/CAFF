@@ -1,17 +1,32 @@
 // Explicit host safety inventory, NOT provider authorization or discovery.
-// No subprocess commands, refresh use, source writeback, credential logs or DB
-// access. JEV must be injected into this trusted process, not read from 3100.
+// No subprocess commands, refresh use, source writeback or credential logs.
+// JEV source is explicit: process env OR the approved read-only SQLite row.
 const fs = require('node:fs'), path = require('node:path');
 const { readPrivateJson } = require('./codex-transport.cjs');
 const fail = () => Object.assign(Error('evaluation_known_keys_unavailable'), { code: 'evaluation_known_keys_unavailable' });
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
-function readKnownKeyValues(config, { env = process.env } = {}) {
+function readJevRow(root, openDatabase) {
+  const file = path.join(root, 'pi-state.sqlite'), before = fs.lstatSync(file, { bigint: true });
+  if (!before.isFile() || before.nlink !== 1n || fs.realpathSync(file) !== file) throw Error();
+  let db;
   try {
-    if (!object(config) || Object.keys(config).sort().join(',') !== 'jevSource,sandboxRoot' || config.jevSource !== 'TYPESAFE_API_KEY'
+    db = openDatabase(file, { readonly: true, fileMustExist: true });
+    // No config store constructor, PRAGMAs, other tables/columns/rows or writes.
+    const row = db.prepare('SELECT api_key FROM chat_system_service_credentials WHERE service_type = ?').get('turn-time-breakdown-jev');
+    const after = fs.lstatSync(file, { bigint: true });
+    if (!after.isFile() || after.nlink !== 1n || before.dev !== after.dev || before.ino !== after.ino
+      || typeof row?.api_key !== 'string' || !row.api_key.trim()) throw Error();
+    return row.api_key;
+  } finally { db?.close(); }
+}
+function readKnownKeyValues(config, { env = process.env, openDatabase = (file, options) => new (require('better-sqlite3'))(file, options) } = {}) {
+  try {
+    if (!object(config) || Object.keys(config).sort().join(',') !== 'jevSource,sandboxRoot' || !['TYPESAFE_API_KEY', 'pi-state.sqlite:turn-time-breakdown-jev'].includes(config.jevSource)
       || !path.isAbsolute(config.sandboxRoot || '') || path.basename(config.sandboxRoot) !== '.pi-sandbox') throw Error();
     const root = path.resolve(config.sandboxRoot), st = fs.lstatSync(root);
     if (!st.isDirectory() || st.isSymbolicLink() || fs.realpathSync(root) !== root) throw Error();
-    if (typeof env.TYPESAFE_API_KEY !== 'string' || !env.TYPESAFE_API_KEY.trim()) throw Error();
+    const jev = config.jevSource === 'pi-state.sqlite:turn-time-breakdown-jev' ? readJevRow(root, openDatabase) : env.TYPESAFE_API_KEY;
+    if (typeof jev !== 'string' || !jev.trim()) throw Error();
     const values = new Set(), add = v => { if (typeof v === 'string' && v) values.add(v); };
     const models = readPrivateJson(path.join(root, 'models.json')), auth = readPrivateJson(path.join(root, 'auth.json'));
     if (!object(models) || !object(models.providers || {}) || !object(auth)) throw Error();
@@ -34,7 +49,7 @@ function readKnownKeyValues(config, { env = process.env } = {}) {
       }
     };
     walk(auth);
-    add(env.TYPESAFE_API_KEY);
+    add(jev);
     return Object.defineProperty({}, 'values', { value: Object.freeze([...values].sort()) });
   } catch { throw fail(); }
 }
