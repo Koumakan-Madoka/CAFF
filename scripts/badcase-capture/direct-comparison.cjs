@@ -6,6 +6,7 @@ const { prepareSealedDirectTurn, prepareSealedOriginalTurn, prepareSealedPromptT
 const { prepareDirectTurnFiles, runDirectDockerTask, runCodexDockerTask } = require('./direct-docker.cjs');
 const { createCodexTransport, createCodexAccess } = require('./codex-transport.cjs');
 const { createCodexRelayExchange } = require('./codex-mailbox.cjs');
+const { validateWslDockerBackend, createWslDockerRunner } = require('./wsl-docker.cjs');
 const { readKnownKeyValues } = require('./known-key-values.cjs');
 const { tokenUsage } = require('./replay-measurements.cjs');
 const { projectResourcesSummary, projectResourcesReceiptMatches } = require('../../build/server/domain/runtime/badcase-capture/project-resources');
@@ -74,7 +75,7 @@ function prepareComparison(config, options = {}) {
   const variants = config?.variants === undefined ? ['original', 'candidate'] : config.variants;
   const originalOnly = Array.isArray(variants) && variants.length === 1 && variants[0] === 'original';
   if (!config || !Array.isArray(variants) || !(originalOnly || variants.length === 2 && variants[0] === 'original' && variants[1] === 'candidate') || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile', 'knownKeySources', 'variants'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile', 'knownKeySources', 'variants', 'dockerBackend'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 45 * 60 * 1000)
     || config.executionPolicy !== undefined && (config.executionPolicy !== 'alternating-valid-v1' || !config.globalWikiCandidate || config.repeats !== 10)
     || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== (originalOnly ? 0 : 1)
@@ -83,8 +84,9 @@ function prepareComparison(config, options = {}) {
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')) throw fail('evaluation_config_invalid');
   const profile = config.modelProfile ?? DEFAULT_PROFILE;
   modelProfile(profile);
+  const dockerBackend = config.dockerBackend === undefined ? null : validateWslDockerBackend(config.dockerBackend);
   if (profile === CODEX_PROFILE) validateCodexSource(config);
-  else if (config.codexAuthFile !== undefined || config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
+  else if (dockerBackend || config.codexAuthFile !== undefined || config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
     || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
   const rules = validateRules(config.rules), knownValues = comparisonKnownValues(config, options);
   let prepare = options.prepare || (originalOnly ? prepareSealedOriginalTurn : prepareSealedDirectTurn), globalWikiCandidate = null, globalState, globalSaved, globalFiles;
@@ -160,7 +162,7 @@ function prepareComparison(config, options = {}) {
     commonInputHash: repository || config.dependencies || rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig,
       ...(repository ? { repository: repository.report, gitFileHashes: repository.gitFiles.map(f => ({ path: f.path, sha256: f.sha256 })) } : {}),
       ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}) })) : original.provenance.commonInputHash,
-    model: profile, ...(profile === CODEX_PROFILE ? { modelConfig: { ...CODEX_CONFIG } } : {}),
+    model: profile, ...(profile === CODEX_PROFILE ? { modelConfig: { ...CODEX_CONFIG } } : {}), ...(dockerBackend ? { dockerBackend } : {}),
     ...(original.input.recordedModelConfig ? { recordedModelConfig: { ...original.input.recordedModelConfig } } : {}),
     ...(original.input.projectResources ? { projectResources: projectResourcesSummary(original.input.projectResources) } : {}),
     ...(original.input.sessionText ? { replaySession: replaySessionInfo(original.input.sessionText) } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
@@ -177,17 +179,22 @@ async function runComparison(config, options = {}) {
   // read explicitly configured known-value sources, never authenticate/send.
   if (options.confirmed !== true) throw fail('evaluation_confirmation_required');
   const fixed = structuredClone(config);
-  // Linux/WSL is mandatory for the real launcher. Enforce this BEFORE either
-  // the safety inventory or authorization can open host credential sources.
+  // Select the explicit host transport BEFORE safety/auth sources can open.
+  // Windows never passes access to a Linux process or silently falls back.
+  let wslDocker;
   if (fixed?.modelProfile === CODEX_PROFILE) {
     validateCodexSource(fixed);
-    if (!options.executeCodex && process.platform !== 'linux') throw fail('evaluation_linux_required');
+    if (fixed.dockerBackend !== undefined) {
+      validateWslDockerBackend(fixed.dockerBackend);
+      if (!options.executeCodex) wslDocker = createWslDockerRunner(fixed.dockerBackend);
+    } else if (!options.executeCodex && process.platform !== 'linux') throw fail('evaluation_linux_required');
   }
   const effectiveOptions = { ...options, knownValues: comparisonKnownValues(fixed, options) };
   const plan = prepareComparison(fixed, effectiveOptions);
   if (!plan.supported) return { ...plan, runs: [], modelCallsKnown: 0 };
   const native = plan.summary.model === CODEX_PROFILE;
-  const stage = options.stage || prepareDirectTurnFiles, execute = native ? options.executeCodex || runCodexDockerTask : options.execute || runDirectDockerTask;
+  const stage = options.stage || prepareDirectTurnFiles, execute = native ? options.executeCodex
+    || (wslDocker ? (image, files, opts) => runCodexDockerTask(image, files, { ...opts, runDocker: wslDocker }) : runCodexDockerTask) : options.execute || runDirectDockerTask;
   const emit = options.onEvent || (() => {}), keyReader = options.readKey || (fixed.keySource === 'caff-deepseek' ? readCaffDeepseekKey : readEvaluationKey);
   const variants = plan.summary.variants || ['original', 'candidate'], files = {}, manifests = {};
   for (const variant of variants) {
@@ -349,6 +356,7 @@ async function runComparison(config, options = {}) {
 function formatComparison(result) {
   if (!result.supported) return '不可回放：' + (/^replay_[a-z_]+$/.test(result.reason || '') ? result.reason : 'replay_materials_invalid') + '。\n';
   const lines = [...(result.kind === 'sealed-original-replay-v1' ? ['原版单边回放：没有候选，不产生采纳结论。'] : []), '模型：' + result.model];
+  if (result.dockerBackend) lines.push('Docker：Windows宿主 → WSL(' + result.dockerBackend.distribution + ')；凭据和供应方连接仅在Windows，材料经stdin，容器断网。');
   if (result.modelConfig) lines.push('配置：' + result.modelConfig.api + ' / thinking ' + result.modelConfig.thinking + ' / ' + result.modelConfig.transport + ' / Fast关闭；凭据仅在宿主。');
   if (Number.isSafeInteger(result.timeoutMs)) lines.push('容器时限：' + result.timeoutMs / 1000 + '秒（配置上限，不是已用时）。');
   if (result.recordedModelConfig) lines.push('封存配置：' + result.recordedModelConfig.provider + '/' + result.recordedModelConfig.model + ' / thinking ' + result.recordedModelConfig.thinking + '；计划保留该thinking，实际以有效回执为准。');

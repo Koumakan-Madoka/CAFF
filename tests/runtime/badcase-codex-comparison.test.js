@@ -58,6 +58,17 @@ test('Codex plan is credential/Docker-free, config is explicit and summary pins 
     { codexAuthFile: path.join(path.dirname(f.authFile), 'other.json') }]) assert.throws(() => prepareComparison({ ...f.config, ...patch }, f.options), /evaluation_codex_auth_source_required/);
   assert.throws(() => prepareComparison({ ...f.config, modelProfile: 'deepseek/deepseek-v4-flash', keySource: 'caff-deepseek' }, f.options), /evaluation_config_invalid/);
 });
+test('explicit Windows/WSL backend is credential-free during planning and bound to the result without touching legacy runners', async t => {
+  const f = fixture(t); f.config.dockerBackend = { kind: 'windows-wsl-v1', distribution: 'Debian' };
+  const plan = prepareComparison(f.config, f.options); assert.equal(plan.supported, true); assert.deepEqual(plan.summary.dockerBackend, f.config.dockerBackend);
+  assert.equal(f.state.transports.length, 0); assert.equal(f.state.nativeRuns, 0);
+  const r = await runComparison(f.config, f.options); assert.equal(r.completed, true); assert.deepEqual(r.dockerBackend, f.config.dockerBackend);
+  assert.match(formatComparison(r), /WSL.*Debian/); assert.equal(f.state.legacyReads, 0); assert.equal(f.state.legacyRuns, 0);
+  for (const dockerBackend of [{ kind: 'auto', distribution: 'Debian' }, { kind: 'windows-wsl-v1', distribution: 'Debian;sh' }]) {
+    assert.throws(() => prepareComparison({ ...f.config, dockerBackend }, f.options), /evaluation_wsl_backend_invalid/);
+  }
+  assert.throws(() => prepareComparison({ ...f.config, modelProfile: 'deepseek/deepseek-v4-flash', keySource: 'caff-deepseek' }, f.options), /evaluation_config_invalid/);
+});
 test('Windows native run rejects before safety inventory/auth reads as well as before container launch', async t => {
   if (process.platform !== 'win32') return t.skip('Windows host boundary');
   const f = fixture(t); fs.unlinkSync(f.authFile);
@@ -66,6 +77,18 @@ test('Windows native run rejects before safety inventory/auth reads as well as b
   const options = { ...f.options }; delete options.executeCodex;
   await assert.rejects(runComparison(f.config, options), /evaluation_linux_required/);
   assert.equal(f.state.transports.length, 0); assert.equal(f.state.events.length, 0);
+});
+test('unsupported WSL host or malformed selection rejects before known-source/auth reads', async t => {
+  const f = fixture(t); fs.unlinkSync(f.authFile);
+  f.config.knownKeySources = { sandboxRoot: path.dirname(f.authFile), jevSource: 'TYPESAFE_API_KEY' };
+  const options = { ...f.options }; delete options.executeCodex;
+  f.config.dockerBackend = { kind: 'windows-wsl-v1', distribution: 'invalid;name' };
+  await assert.rejects(runComparison(f.config, options), /evaluation_wsl_backend_invalid/);
+  if (process.platform !== 'win32') {
+    f.config.dockerBackend.distribution = 'Debian';
+    await assert.rejects(runComparison(f.config, options), /evaluation_wsl_host_required/);
+  }
+  assert.equal(f.state.transports.length, 0); assert.equal(f.state.nativeRuns, 0); assert.equal(f.state.events.length, 0);
 });
 test('native repository plans require explicit complete known-value sources rather than treating missing JEV as no secrets', async t => {
   const f = fixture(t); f.config.repository = { sourceRoot: path.dirname(f.authFile), head: 'a'.repeat(40) };
