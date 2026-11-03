@@ -42,7 +42,7 @@ async function scan(input) {
     if (type === 'commit') commitCount++;
   });
   if (!Number.isSafeInteger(objectBytes) || commitCount < 1) throw Error();
-  const needles = [...new Set(knownValues)].filter(Boolean).map(v => Buffer.from(v)), overlap = Math.max(0, ...needles.map(b => b.length - 1));
+  const needles = [...new Set(knownValues)].filter(Boolean).map(v => Buffer.from(v)), overlap = Math.max(0, ...needles.map(b => b.length));
   const matches = [], state = { index: 0, header: Buffer.alloc(0), current: null, separator: false, matchCount: 0 };
   const consume = data => {
     let at = 0;

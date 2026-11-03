@@ -4,6 +4,7 @@ const { prepareBatch, runBatch, formatBatch } = require('./batch-comparison.cjs'
 const { createWikiComparisonStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
 const { createWikiBatchExecutionStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store');
 const fail = code => Object.assign(Error(code), { code });
+const { jsonChunks } = require('./replay-streams.cjs');
 function argumentsFor(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i++) {
@@ -29,7 +30,7 @@ async function main(argv = process.argv.slice(2), runtimeOptions = {}) {
   const progress = plan.summary.evaluation?.splitPolicy === 'd15-frozen-v1' ? createWikiBatchExecutionStore(config) : null;
   const fd = fs.openSync(args['--output'], 'wx', 0o600);
   let record, timer, publicationFailed = false;
-  const append = event => { fs.writeSync(fd, JSON.stringify(event) + '\n'); fs.fsyncSync(fd); };
+  const append = event => { for (const chunk of jsonChunks(event)) fs.writeSync(fd, chunk); fs.writeSync(fd, '\n'); fs.fsyncSync(fd); };
   try {
     if (progress) {
       record = progress.start(plan.summary);
@@ -53,7 +54,8 @@ async function main(argv = process.argv.slice(2), runtimeOptions = {}) {
         append({ event: 'page_execution_finished', executionId: record.id, comparisonId: saved.id, status: finished.status });
       }
     }
-    process.stdout.write(args['--json'] ? JSON.stringify(result, null, 2) + '\n' : formatBatch(result) + (result.comparisonId ? '已保存全局结果：' + result.comparisonId + '\n' : ''));
+    if (args['--json']) { for (const chunk of jsonChunks(result)) process.stdout.write(chunk); process.stdout.write('\n'); }
+    else process.stdout.write(formatBatch(result) + (result.comparisonId ? '已保存全局结果：' + result.comparisonId + '\n' : ''));
     if (!result.completed) process.exitCode = 1;
   } catch (e) {
     const code = /^(evaluation|wiki)_[a-z_]+$/.test(e?.code || '') ? e.code : 'evaluation_batch_failed';

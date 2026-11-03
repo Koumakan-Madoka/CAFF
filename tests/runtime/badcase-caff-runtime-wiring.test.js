@@ -46,6 +46,8 @@ function bootstrap(options = {}) {
     lstatSync: p => { const b = store.get(absolute(p)); assert.ok(b); const st = { size: b.length, isFile: () => true, isSymbolicLink: () => false };
       return options.stat ? options.stat(p, st) : st; },
     readFileSync: (p, encoding) => { reads.push(p); const b = store.get(absolute(p)); assert.ok(b); return encoding ? b.toString(encoding) : b; },
+    openSync: p => ({ path: absolute(p), offset: 0 }), closeSync: () => {},
+    readSync: (fd, block, offset, length) => { reads.push(fd.path); const b = store.get(fd.path); assert.ok(b); const n = b.copy(block, offset, fd.offset, fd.offset + length); fd.offset += n; return n; },
     mkdirSync: (p, cfg = {}) => { if (dirs.has(p) && !cfg.recursive) throw Error('EEXIST'); dirs.add(p); },
     writeFileSync: (p, b, cfg) => { assert.equal(cfg.flag, 'wx'); assert.equal(cfg.mode, 0o600); assert.equal(store.has(p), false); store.set(p, Buffer.from(b)); },
   };

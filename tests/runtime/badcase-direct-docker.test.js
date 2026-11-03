@@ -49,6 +49,25 @@ test('key inherited by env name only; no host mounts/socket/privileged; receipt 
   const start = f.calls.find(c => c.args[0] === 'start'); assert.equal(start.options.input.includes(key), false);
   assert.equal(JSON.stringify(r).includes(key), false);
 });
+test('file-backed dependencies are chunk-scanned, copied without readFile, and revalidated before create', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-file-backed-test-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sourceFile = path.join(root, 'archive'), bytes = Buffer.from('x'.repeat(65535) + key + 'end'); fs.writeFileSync(sourceFile, bytes);
+  const staged = [...files, { path: 'replay-dependencies.tar.gz', sourceFile }], f = fake();
+  await assert.rejects(runDirectDockerTask(image, staged, { key, runDocker: f.run }), /evaluation_input_contains_key/);
+  assert.equal(f.calls.length, 0);
+  fs.writeFileSync(sourceFile, Buffer.alloc(2 * 1024 * 1024, 97));
+  const m = manifestFor(staged, { replayWorkspace: true }), originalRead = fs.readFileSync;
+  fs.readFileSync = (name, ...args) => { assert.notEqual(name, sourceFile, 'never read entire archive'); return originalRead(name, ...args); };
+  try {
+    const result = await runDirectDockerTask(image, staged, { key, runDocker: f.run, expectedInputHash: m.inputHash });
+    assert.equal(result.inputHash, m.inputHash); assert.equal(result.cleaned, true);
+  } finally { fs.readFileSync = originalRead; }
+  fs.appendFileSync(sourceFile, 'drift'); const stopped = fake();
+  await assert.rejects(runDirectDockerTask(image, staged, { key, runDocker: stopped.run, expectedInputHash: m.inputHash }), /evaluation_input_changed/);
+  assert.equal(stopped.calls.length, 0);
+  assert.throws(() => manifestFor([{ path: 'runtime/not-authorized', sourceFile }], { replayWorkspace: true }), /probe_file_invalid/);
+});
 test('Codex launcher is explicitly relay-only and has no credential environment or network path', async () => {
   const codexFiles = [...files, { path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify('openai-codex/gpt-6.1-sol')) }], f = fake();
   await assert.rejects(runDirectDockerTask(image, codexFiles, { key, runDocker: f.run }), /evaluation_codex_relay_required/);

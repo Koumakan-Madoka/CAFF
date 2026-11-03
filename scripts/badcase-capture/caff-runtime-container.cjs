@@ -4,6 +4,13 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+// Also used by the direct worker/restore code: archive/tree hashes never
+// allocate an entire staged file. Fixed-size reads, no SDK dependencies.
+function hashFile(file) {
+  const fd = fs.openSync(file, 'r'), digest = crypto.createHash('sha256'), block = Buffer.allocUnsafe(65536);
+  try { let n; while ((n = fs.readSync(fd, block, 0, block.length, null))) digest.update(block.subarray(0, n)); return digest.digest('hex'); }
+  finally { fs.closeSync(fd); }
+}
 // Shared immutable-stage guard. No capsule restoration, SDK or fixture creation.
 function verifyCaffRuntimeStage({ replayWorkspace = false } = {}) {
   if (process.platform !== 'linux' || process.getuid?.() !== 65534 || process.cwd() !== '/work' || !fs.existsSync('/.dockerenv')
@@ -20,7 +27,7 @@ function verifyCaffRuntimeStage({ replayWorkspace = false } = {}) {
     else { total += st.size; staticCount++; }
     assert.ok(total <= 16 * 1024 * 1024 && staticCount <= 4096 && workspaceCount <= 1070
       && st.isFile() && !st.isSymbolicLink() && st.size === f.size);
-    assert.equal(hash(fs.readFileSync('/work/' + f.path)), f.sha256);
+    assert.equal(hashFile('/work/' + f.path), f.sha256);
   }
   assert.equal(hash(JSON.stringify(m.files.filter(f => f.path.startsWith('runtime/')))), m.runtimeHash);
   assert.equal(process.version, image.nodeVersion); assert.equal(process.arch, image.architecture === 'amd64' ? 'x64' : 'arm64');
@@ -128,4 +135,4 @@ async function runCaffRuntimeContainer(loadModule = specifier => import(specifie
 if (require.main === module) runCaffRuntimeContainer().then(r => console.log(JSON.stringify(r))).catch(() => {
   process.stderr.write('caff_runtime_container_failed\n'); process.exitCode = 1;
 });
-module.exports = { runCaffRuntimeContainer, verifyCaffRuntimeStage };
+module.exports = { runCaffRuntimeContainer, verifyCaffRuntimeStage, hashFile };

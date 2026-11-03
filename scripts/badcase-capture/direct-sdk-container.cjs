@@ -74,12 +74,12 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     if (directoryWorkspace) {
       const source = '/work/replay-workspace/' + f.path, st = fs.lstatSync(source);
       assert.ok(st.isFile() && !st.isSymbolicLink() && st.size === f.size && f.base64 === undefined);
-      bytes = fs.readFileSync(source); assert.equal(bytes.length, f.size);
+      assert.equal(require('/work/caff-runtime-bootstrap.cjs').hashFile(source), f.sha256);
     } else {
       bytes = Buffer.from(f.base64, 'base64'); assert.equal(bytes.toString('base64'), f.base64);
       const target = cwd + '/' + f.path; fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 }); write(target, bytes);
     }
-    assert.equal(hash(bytes), f.sha256);
+    if (!directoryWorkspace) assert.equal(hash(bytes), f.sha256);
     if (!gitFile && f.mode !== undefined) {
       assert.ok(Number.isSafeInteger(f.mode) && (f.mode & 0o170000) === 0o100000);
       fs.chmodSync((directoryWorkspace ? '/work/replay-workspace' : cwd) + '/' + f.path, f.mode & 0o777);
@@ -111,7 +111,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       for (const name of fs.readdirSync(dir).sort()) {
         if (relative === '' && (name === '.git' && repository || name === 'node_modules' && dependencies)) continue;
         const p = dir + '/' + name, rel = relative + name, st = fs.lstatSync(p);
-        if (st.isDirectory()) walk(p, rel + '/'); else rows.push({ path: rel, type: st.isSymbolicLink() ? 'symlink' : 'file', sha256: st.isFile() ? hash(fs.readFileSync(p)) : null });
+        if (st.isDirectory()) walk(p, rel + '/'); else rows.push({ path: rel, type: st.isSymbolicLink() ? 'symlink' : 'file', sha256: st.isFile() ? require('/work/caff-runtime-bootstrap.cjs').hashFile(p) : null });
       }
     }
     walk(cwd); rows.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);

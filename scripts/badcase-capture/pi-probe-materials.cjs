@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const LIMIT = 16 * 1024 * 1024;
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
+const { hashFile } = require('./replay-streams.cjs');
 function manifestFor(files, { replayWorkspace = false } = {}) {
   // Direct replay keeps captured file bodies outside its JSON control input.
   // Only that explicit data namespace is exempt from the static-runtime cap;
@@ -14,12 +15,15 @@ function manifestFor(files, { replayWorkspace = false } = {}) {
   const inventory = files.map(f => {
     if (!f || typeof f.path !== 'string' || !/^[A-Za-z0-9_.@/-]+$/.test(f.path)
         || f.path.split('/').some(p => !p || p === '.' || p === '..') || names.has(f.path)
-        || !Buffer.isBuffer(f.bytes)) throw Error('probe_file_invalid');
+        || !(Buffer.isBuffer(f.bytes) && f.sourceFile === undefined || replayWorkspace && f.path === 'replay-dependencies.tar.gz'
+          && f.bytes === undefined && path.isAbsolute(f.sourceFile || '') && fs.lstatSync(f.sourceFile).isFile()
+          && !fs.lstatSync(f.sourceFile).isSymbolicLink())) throw Error('probe_file_invalid');
+    const size = f.sourceFile ? fs.statSync(f.sourceFile).size : f.bytes.length;
     names.add(f.path);
     if (replayWorkspace && (f.path.startsWith('replay-workspace/') || f.path === 'replay-dependencies.tar.gz')) workspaceCount++;
-    else { total += f.bytes.length; staticCount++; }
+    else { total += size; staticCount++; }
     if (total > LIMIT || staticCount > 4096 || workspaceCount > 1070) throw Error('probe_dependency_size');
-    return { path: f.path, size: f.bytes.length, sha256: hash(f.bytes) };
+    return { path: f.path, size, sha256: f.sourceFile ? hashFile(f.sourceFile) : hash(f.bytes) };
   }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   for (const name of names) {
     const parts = name.split('/'); parts.pop();

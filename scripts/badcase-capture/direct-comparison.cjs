@@ -22,6 +22,7 @@ const { collectWikiCandidateFiles } = require('../../build/server/domain/runtime
 const { validateLiteralRules, scoreLiteralFiles } = require('./file-literal-rules.cjs');
 const { validatePublicReplyRules, scorePublicReply } = require('./public-reply-literal-rules.cjs');
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
+const { hashJson, createKnownValueScanner } = require('./replay-streams.cjs');
 const fail = code => Object.assign(Error(code), { code });
 function validateRules(rules) {
   if (rules?.kind === 'file-literals-v1') return validateLiteralRules(rules);
@@ -170,7 +171,7 @@ function prepareComparison(config, options = {}) {
     ...(original.input.projectResources ? { projectResources: projectResourcesSummary(original.input.projectResources) } : {}),
     ...(original.input.sessionText ? { replaySession: replaySessionInfo(original.input.sessionText) } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
     imageId: config.image.imageId, timeoutMs: config.timeoutMs ?? 120000, rules, rulesHash: hash(JSON.stringify(rules)),
-    inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
+    inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hashJson(i)])),
     strictEvalEligible: false, ...(repository ? { repository: repository.report } : {}),
     ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}), ...(wikiCandidate ? { wikiCandidate } : {}),
     ...(globalWikiCandidate ? { targetId: globalWikiCandidate.targetId, globalWikiCandidate } : {}) };
@@ -214,17 +215,20 @@ async function runComparison(config, options = {}) {
     sendNativeRequest = createCodexRelayExchange({ fetch: transport.fetch });
   } else key = validKey(keyReader()); // No persistence or argv/env-file creation.
   const values = [...new Set([key, ...effectiveOptions.knownValues])].filter(v => typeof v === 'string' && v);
-  const leaksKey = value => { const s = JSON.stringify(value) || ''; return values.some(v => s.includes(v) || s.includes(JSON.stringify(v).slice(1, -1))); };
-  const leaksBytes = bytes => values.some(v => bytes.includes(v) || bytes.includes(JSON.stringify(v).slice(1, -1)));
+  const scanner = createKnownValueScanner(values), leaksKey = scanner.value, leaksBytes = scanner.bytes;
+  const leaksFile = file => file.sourceFile ? scanner.file(file.sourceFile) : leaksBytes(file.bytes);
   const checkInputs = prepared => {
     // Compressed Git must be checked as plaintext; file bodies are base64 in
     // host preparation, so check decoded bytes as well as structured fields.
     prepared.checkRepositoryKnownValues?.(values);
     if (leaksKey(prepared.summary)) throw fail('evaluation_output_contains_key');
-    if (leaksKey(prepared.inputs) || Object.values(prepared.inputs).some(i => i.files.some(f => leaksBytes(Buffer.from(f.base64, 'base64'))))) throw fail('evaluation_input_contains_key');
+    for (const input of Object.values(prepared.inputs)) {
+      if (leaksKey(input) || [...input.files, ...(input.gitFiles || [])].some(f => scanner.base64(f.base64))
+        || input.dependencyArchive && (input.dependencyArchive.sourceFile ? scanner.file(input.dependencyArchive.sourceFile) : scanner.base64(input.dependencyArchive.base64))) throw fail('evaluation_input_contains_key');
+    }
   };
   checkInputs(plan);
-  if (Object.values(files).some(list => list.some(f => leaksBytes(f.bytes)))) throw fail('evaluation_input_contains_key');
+  if (Object.values(files).some(list => list.some(leaksFile))) throw fail('evaluation_input_contains_key');
   emit({ event: 'plan', ...plan.summary, runtimeHash: manifests.original.runtimeHash });
   const runs = []; let stopped = false, modelCallsKnown = 0, callsUnavailable = false;
   const alternating = fixed.executionPolicy === 'alternating-valid-v1';
@@ -253,13 +257,13 @@ async function runComparison(config, options = {}) {
       try {
         transport?.inspectAccess(() => {}); // Expiry stops BEFORE another container.
         task = await execute(fixed.image, files[variant], native
-          ? { sendNativeRequest, network: 'none', timeoutMs: fixed.timeoutMs ?? 120000 }
-          : { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000 });
+          ? { sendNativeRequest, network: 'none', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash }
+          : { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash });
       } catch { task = { failed: true, reason: 'evaluation_failed' }; }
       const durationMs = performance.now() - started, environmentReason = transport?.state().reason;
       const hostRequestAttempts = native ? transport.state().requests - hostBefore : undefined;
       const encodedLeak = Array.isArray(task?.receipt?.fileEvidence) && task.receipt.fileEvidence.some(f =>
-        typeof f?.base64 === 'string' && leaksBytes(Buffer.from(f.base64, 'base64')));
+        typeof f?.base64 === 'string' && scanner.base64(f.base64));
       if (leaksKey(task) || encodedLeak) task = { failed: true, reason: 'evaluation_output_contains_key' };
       const receipt = task?.receipt, row = { variant, iteration, status: 'error', checks: null, finalText: '', replySource: 'unknown', modelCalls: [],
         containerId: task?.containerId || null, cleaned: task?.cleaned === true, isolation: task?.isolation || null,

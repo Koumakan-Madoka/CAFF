@@ -5,6 +5,7 @@ const { prepareDirectReplayInput, runDependencyDockerTask } = require('./direct-
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const fail = code => Object.assign(Error(code), { code });
 const INSTALL = 'npm ci --include=dev --no-audit --no-fund';
+const { hashFile } = require('./replay-streams.cjs');
 function dependencyRecipe(input, image) {
   try {
     if (input?.kind !== 'prepared-caff-turn-v1' || !Array.isArray(input.files) || input.files.length > 1024
@@ -66,17 +67,17 @@ function readCache(root, recipe) {
     for (const name of ['receipt.json', 'node_modules.tar.gz']) {
       const s = fs.lstatSync(path.join(dir, name)); if (!s.isFile() || s.isSymbolicLink() || !s.size) throw Error();
     }
-    const record = JSON.parse(fs.readFileSync(path.join(dir, 'receipt.json'))), bytes = fs.readFileSync(path.join(dir, 'node_modules.tar.gz'));
+    const record = JSON.parse(fs.readFileSync(path.join(dir, 'receipt.json'))), sourceFile = path.join(dir, 'node_modules.tar.gz');
     if (JSON.stringify(record.recipe) !== JSON.stringify(recipe) || record.receipt?.kind !== 'npm-replay-dependencies-v1'
       || record.receipt.nodeVersion !== recipe.nodeVersion || record.receipt.installCommand !== INSTALL || record.receipt.modelCalls !== 0
-      || !record.receipt.npmVersion || record.receipt.archiveHash !== hash(bytes)) throw Error();
-    return { bytes, receipt: record.receipt };
+      || !record.receipt.npmVersion || record.receipt.archiveHash !== hashFile(sourceFile)) throw Error();
+    return { sourceFile, receipt: record.receipt };
   } catch { throw fail('evaluation_dependency_cache_invalid'); }
 }
 function prepareReplayDependencies(input, image, root) {
-  const recipe = dependencyRecipe(input, image), { bytes, receipt } = readCache(root, recipe), { fileHashes: omitted, ...identity } = recipe;
+  const recipe = dependencyRecipe(input, image), { sourceFile, receipt } = readCache(root, recipe), { fileHashes: omitted, ...identity } = recipe;
   return { dependencies: { ...identity, archiveHash: receipt.archiveHash, npmVersion: receipt.npmVersion },
-    dependencyArchive: { base64: bytes.toString('base64'), sha256: receipt.archiveHash } };
+    dependencyArchive: { sourceFile, sha256: receipt.archiveHash } };
 }
 async function cacheReplayDependencies(input, image, root, options = {}) {
   const recipe = dependencyRecipe(input, image); cacheDirectory(root);
@@ -95,9 +96,9 @@ async function cacheReplayDependencies(input, image, root, options = {}) {
       outputFile: path.join(temporary, 'node_modules.tar.gz'), network: options.network ?? 'bridge', timeoutMs: 900000,
       ...(options.runDocker ? { runDocker: options.runDocker } : {}) });
     if (result?.code !== 0 || result.failed || result.cleaned !== true) throw Error();
-    const bytes = fs.readFileSync(path.join(temporary, 'node_modules.tar.gz')), r = result.receipt;
+    const artifact = path.join(temporary, 'node_modules.tar.gz'), r = result.receipt;
     if (r?.kind !== 'npm-replay-dependencies-v1' || r.nodeVersion !== recipe.nodeVersion || r.installCommand !== INSTALL
-      || r.modelCalls !== 0 || typeof r.npmVersion !== 'string' || !bytes.length || hash(bytes) !== r.archiveHash) throw Error();
+      || r.modelCalls !== 0 || typeof r.npmVersion !== 'string' || !fs.statSync(artifact).size || hashFile(artifact) !== r.archiveHash) throw Error();
     // Persist only the explicit non-secret projection, never raw process output,
     // environment, runtime inspect or a caller's arbitrary receipt properties.
     const receipt = { kind: r.kind, nodeVersion: r.nodeVersion, npmVersion: r.npmVersion, installCommand: INSTALL, archiveHash: r.archiveHash, modelCalls: 0 };

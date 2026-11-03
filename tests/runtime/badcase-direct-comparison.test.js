@@ -59,7 +59,8 @@ async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, di
     if (name === '/work/build/server/domain/runtime/badcase-capture/secrets') return require('../../build/server/domain/runtime/badcase-capture/secrets');
     if (name === '/work/build/server/domain/runtime/badcase-capture/session-validator') return require('../../build/server/domain/runtime/badcase-capture/session-validator');
     if (name === '/work/build/server/domain/runtime/badcase-capture/project-resources') return require('../../build/server/domain/runtime/badcase-capture/project-resources');
-    if (name === '/work/caff-runtime-bootstrap.cjs') return { verifyCaffRuntimeStage: () => ({ manifest: { inputHash: 'input', runtimeHash: 'runtime' } }) };
+    if (name === '/work/caff-runtime-bootstrap.cjs') return { verifyCaffRuntimeStage: () => ({ manifest: { inputHash: 'input', runtimeHash: 'runtime' } }),
+      hashFile: p => require('../../scripts/badcase-capture/replay-streams.cjs').hashFile(mapped(p)) };
     if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async config => {
       callbackLifetimeMs = config.lifetimeMs;
       return { apiUrl: 'http://127.0.0.1:1', credentials: { invocationId: 'fixture', callbackToken: 'fixture-only' },
@@ -130,6 +131,21 @@ test('public-reply literal rules stay on the host, score public output, and requ
   const unavailable = await runComparison(c, missing.options);
   assert.equal(unavailable.completed, false); assert.equal(unavailable.runs[0].status, 'error'); assert.equal(unavailable.runs[0].reason, 'reply_evidence_unavailable');
   assert.equal(missing.state.executions, 1);
+});
+test('known-value guard streams a combined input larger than the V8 string ceiling before execution', async () => {
+  const { constants } = require('node:buffer'), f = fakes(), prepare = f.options.prepare;
+  const chunk = 'x'.repeat(1024 * 1024), padding = Array(Math.ceil(constants.MAX_STRING_LENGTH / chunk.length / 2) + 1).fill(chunk);
+  const original = prepare({}, null).input, candidate = prepare({}, 'candidate').input;
+  original.padding = padding; candidate.padding = padding;
+  assert.throws(() => JSON.stringify({ original, candidate }), RangeError);
+  f.options.prepare = (_request, replacement) => ({ ...prepare({}, replacement), input: replacement ? candidate : original });
+  // Do not serialize large synthetic data into a fake probe. Exercise the real
+  // preflight hashes + known-value guard, then stop at an inert executor.
+  f.options.stage = () => [{ path: 'probe.cjs', bytes: Buffer.from('inert') }];
+  let executions = 0;
+  f.options.execute = async () => { executions++; throw Error('inert_executor_stop'); };
+  const result = await runComparison({ ...config(), repeats: 1 }, f.options);
+  assert.equal(executions, 1); assert.equal(result.runs[0].reason, 'run_evidence_unavailable');
 });
 test('planning is credential/Docker-free; unsupported and unconfirmed inputs cannot run', async () => {
   const f = fakes(); const p = prepareComparison(config(), f.options); assert.equal(p.supported, true); assert.equal(f.state.keys, 0); assert.equal(f.state.executions, 0);

@@ -92,21 +92,17 @@ function prepareSanitizedReplayGit(recipe, input, { knownValues = [] } = {}) {
       rows.push({ path: name, mode, oid, size: Number(size) }); total += Number(size) + 256;
     }
     if (!Number.isSafeInteger(total) || rows.length > 3072) throw Error();
-    // One raw object batch avoids a subprocess per file. No raw content is
-    // written to temp files, archives, logs, error messages or return values.
-    const raw = rows.length ? git(source, ['cat-file', '--batch'], { input: rows.map(r => r.oid).join('\n') + '\n', maxBuffer: Math.max(total + 1, 1024) }) : Buffer.alloc(0);
-    let offset = 0; const safe = [], redactedFiles = [];
+    // Redact one bounded blob at a time, never concatenate the whole tree's
+    // raw secret-bearing contents. Plaintext is still memory-only.
+    const safe = [], redactedFiles = [];
     for (const row of rows) {
-      const end = raw.indexOf(10, offset); if (end < offset) throw Error();
-      if (raw.subarray(offset, end).toString('ascii') !== row.oid + ' blob ' + row.size) throw Error();
-      const start = end + 1; offset = start + row.size + 1;
-      if (raw[offset - 1] !== 10) throw Error();
-      const { content, redactionCount } = redactFileSecrets(raw.subarray(start, offset - 1), knownValues);
+      const raw = git(source, ['cat-file', 'blob', row.oid], { maxBuffer: Math.max(row.size + 1, 1024) });
+      if (raw.length !== row.size) throw Error();
+      const { content, redactionCount } = redactFileSecrets(raw, knownValues);
       safe.push({ path: row.path, mode: row.mode, bytes: content });
       if (redactionCount) redactedFiles.push({ path: row.path, originalSize: row.size, restoredSize: content.length,
         redactionCount, byteIdenticalToSource: false });
     }
-    if (offset !== raw.length) throw Error();
     temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-replay-git-'));
     git(temporary, ['init', '-q', '--template=', '--initial-branch=replay-baseline']);
     // Fixed config: no source remotes, include directives, filters, hooks,
@@ -160,14 +156,19 @@ function prepareReplayGit(recipe, input, { knownValues = [] } = {}) {
     }
     // Repack precisely the recorded commit's closure, not --all/source packs:
     // source refs, future/unreachable objects, hooks, config and auth stay out.
-    const pack = git(source, ['pack-objects', '--stdout', '--revs', '--no-reuse-delta', '--no-reuse-object', '--window=0', '--depth=0', '--threads=1', '--compression=6'],
-      { input: recipe.head + '\n', maxBuffer: metadata.objectBytes + metadata.objectCount * 1024 + 1048576 });
     temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-replay-history-'));
+    const packFile = path.join(temporary, 'reachable.pack'), packOut = fs.openSync(packFile, 'wx', 0o600);
+    try {
+      git(source, ['pack-objects', '--stdout', '--revs', '--no-reuse-delta', '--no-reuse-object', '--window=0', '--depth=0', '--threads=1', '--compression=6'],
+        { input: recipe.head + '\n', stdio: ['pipe', packOut, 'pipe'] });
+    } finally { fs.closeSync(packOut); }
     const sha256 = recipe.head.length === 64;
     git(temporary, ['init', '-q', '--template=', '--initial-branch=replay-baseline', '--object-format=' + (sha256 ? 'sha256' : 'sha1')]);
     fs.writeFileSync(path.join(temporary, '.git/config'), '[core]\n\trepositoryformatversion = ' + (sha256 ? '1' : '0')
       + '\n\tfilemode = ' + (input.capturePlatform === 'win32' ? 'false' : 'true') + '\n\tbare = false\n\tlogallrefupdates = false\n\tautocrlf = ' + (input.capturePlatform === 'win32' ? 'true' : 'false') + '\n' + (sha256 ? '[extensions]\n\tobjectformat = sha256\n' : ''), { mode: 0o600 });
-    git(temporary, ['index-pack', '--stdin', '--strict'], { input: pack });
+    const packIn = fs.openSync(packFile, 'r');
+    try { git(temporary, ['index-pack', '--stdin', '--strict'], { stdio: [packIn, 'pipe', 'pipe'] }); }
+    finally { fs.closeSync(packIn); fs.unlinkSync(packFile); }
     const refs = applyRefState(temporary, recipe, recipe.head, git);
     // Build the original index without checkout/filtering or writing blob
     // plaintext to host disk. Captured working files remain the only worktree.

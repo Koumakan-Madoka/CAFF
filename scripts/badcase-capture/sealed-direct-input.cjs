@@ -15,6 +15,7 @@ const { validateSessionV2 } = require(base + 'session-validator');
 const { validateDirectBindings } = require('./direct-model.cjs');
 const { locateGlobalPromptTarget } = require('../../build/lib/agent-prompt-targets');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
+const { hashJson } = require('./replay-streams.cjs');
 const unsupported = reason => Object.assign(Error(reason), { replayReason: reason });
 const ensure = (value, reason = 'replay_materials_invalid') => { if (!value) throw unsupported(reason); };
 const checked = (reason, work) => { try { return work(); } catch { throw unsupported(reason); } };
@@ -42,13 +43,16 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     // this does NOT set old complete/strict flags to true or repair old cases.
     ensure(r.complete === true && empty(r.incompleteReasons) || r.complete === false
       && r.incompleteReasons?.length === 1 && r.incompleteReasons[0] === 'windows_capture_subset_unverified', 'replay_capture_incomplete');
-    const blobs = new Map();
+    const retainedHashes = new Set(retained.blobHashes);
     ensure(retained.blobHashes.length <= 8192, 'replay_blob_inventory_limit');
     for (const digest of retained.blobHashes) {
       const b = checked('replay_blob_unavailable_or_invalid', () => store.readBlob(association.projectId, digest));
       ensure(Buffer.isBuffer(b) && hash(b) === digest, 'replay_blob_unavailable_or_invalid');
-      ensure(!containsSecretSentinel(b), 'replay_blob_secret_sentinel'); blobs.set(digest, b);
+      ensure(!containsSecretSentinel(b), 'replay_blob_secret_sentinel');
     }
+    // Validate the inventory one blob at a time; do not retain a second copy of
+    // the entire captured scene alongside its per-file transport representation.
+    const blobs = { get(digest) { return retainedHashes.has(digest) ? checked('replay_blob_unavailable_or_invalid', () => store.readBlob(association.projectId, digest)) : undefined; } };
     const utf8 = digest => { const b = blobs.get(digest); ensure(b, 'replay_blob_unavailable_or_invalid'); const s = b.toString('utf8');
       ensure(Buffer.from(s).equals(b) && !s.includes('\0'), 'replay_blob_text_invalid'); return s; };
     const snapshot = checked('replay_runtime_snapshot_invalid', () => JSON.parse(utf8(r.harness?.configSnapshotHash))), config = snapshot.sdkStartConfig;
@@ -130,8 +134,8 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     }
     return { supported: true, input, ...variantInfo,
       provenance: { caseId: sealed.caseId, checkpointId: cp.checkpointId,
-      checkpointHash: hash(JSON.stringify(cp)), ...identityInfo,
-      commonInputHash: hash(JSON.stringify({ ...input, prompt: commonPrompt })),
+      checkpointHash: hashJson(cp), ...identityInfo,
+      commonInputHash: hashJson({ ...input, prompt: commonPrompt }),
       variant: (promptTarget ? promptTarget.replacement === null : candidateRole === null) ? 'original' : 'candidate', strictEvalEligible: false } };
   } catch (e) { return { supported: false, reason: /^replay_[a-z_]+$/.test(e?.replayReason || '') ? e.replayReason : 'replay_materials_invalid' }; }
 }

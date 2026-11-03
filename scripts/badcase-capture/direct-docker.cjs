@@ -9,6 +9,7 @@ const { relayDockerTransport } = require('./container-model-relay.cjs');
 const { MAILBOX_LIMITS } = require('./codex-mailbox.cjs');
 const { prepareCaffRuntimeFiles } = require('./caff-runtime-wiring.cjs');
 const { readTrustedDistributionFile } = require('./evaluation-bridge-launcher.cjs');
+const { hashFile, fileChunks, bufferChunks, writeChunks, createKnownValueScanner } = require('./replay-streams.cjs');
 function prepareDirectReplayInput(input) {
   assert.equal(input?.kind, 'prepared-caff-turn-v1');
   assert.equal(input.workspace, undefined);
@@ -44,11 +45,17 @@ function prepareDirectReplayInput(input) {
   const { dependencyArchive, ...control } = input;
   if (dependencyArchive !== undefined) {
     assert.equal(input.dependencies?.kind, 'npm-ci-linux-v1');
-    const bytes = Buffer.from(dependencyArchive.base64, 'base64');
-    assert.equal(bytes.toString('base64'), dependencyArchive.base64);
-    assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), dependencyArchive.sha256);
     assert.equal(dependencyArchive.sha256, input.dependencies.archiveHash);
-    files.push({ path: 'replay-dependencies.tar.gz', bytes });
+    if (dependencyArchive.sourceFile !== undefined) {
+      assert.equal(dependencyArchive.base64, undefined); assert.ok(path.isAbsolute(dependencyArchive.sourceFile));
+      assert.equal(hashFile(dependencyArchive.sourceFile), dependencyArchive.sha256);
+      files.push({ path: 'replay-dependencies.tar.gz', sourceFile: dependencyArchive.sourceFile });
+    } else {
+      const bytes = Buffer.from(dependencyArchive.base64, 'base64');
+      assert.equal(bytes.toString('base64'), dependencyArchive.base64);
+      assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), dependencyArchive.sha256);
+      files.push({ path: 'replay-dependencies.tar.gz', bytes });
+    }
     control.dependencies = { ...input.dependencies, archivePath: 'replay-dependencies.tar.gz' };
   } else assert.equal(input.dependencies, undefined);
   files.push({ path: 'replay-input.json', bytes: Buffer.from(JSON.stringify({ ...control, files: inventory,
@@ -160,8 +167,12 @@ async function runDockerTask(image, files, options, key, dependencyOutput) {
   assert.ok(['bridge', 'none'].includes(network));
   if (!options.runDocker && process.platform !== 'linux') throw fail('evaluation_linux_required');
   const manifest = manifestFor(files, { replayWorkspace: true }); assert.ok(files.some(f => f.path === 'probe.cjs'));
+  if (options.expectedInputHash !== undefined && options.expectedInputHash !== manifest.inputHash) throw fail('evaluation_input_changed');
   // No selected key, including an escaped JSON spelling, may be staged.
-  if (key !== undefined) for (const f of files) assert.ok(!f.bytes.includes(key) && !f.bytes.includes(JSON.stringify(key).slice(1, -1)), 'evaluation_input_contains_key');
+  if (key !== undefined) {
+    const scan = createKnownValueScanner([key]);
+    for (const f of files) assert.ok(!(f.sourceFile ? scan.file(f.sourceFile) : scan.bytes(f.bytes)), 'evaluation_input_contains_key');
+  }
   const run = options.runDocker || docker;
   assert.match(one(await run(['context', 'inspect', 'default'])).Endpoints?.docker?.Host, /^unix:\/\/\/[^\s\0]+$/);
   const img = one(await run(['image', 'inspect', image.imageId]));
@@ -175,7 +186,8 @@ async function runDockerTask(image, files, options, key, dependencyOutput) {
   let id = '', created = false, result, proof;
   try {
     for (const f of [...files, { path: 'manifest.json', bytes: Buffer.from(JSON.stringify(manifest)) }]) {
-      const target = path.join(root, f.path); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, f.bytes, { flag: 'wx', mode: 0o600 });
+      const target = path.join(root, f.path); fs.mkdirSync(path.dirname(target), { recursive: true }); writeChunks(target, f.sourceFile ? fileChunks(f.sourceFile) : bufferChunks(f.bytes));
+      if (f.sourceFile && hashFile(target) !== manifest.files.find(row => row.path === f.path).sha256) throw fail('evaluation_input_changed');
     }
     // The archive contains only already-checked bytes, never the selected key.
     // Write and stream it instead of buffering tar stdout with a size ceiling.
@@ -203,10 +215,18 @@ async function runDockerTask(image, files, options, key, dependencyOutput) {
         // tmpfs disappears when the container stops. Stream one bounded JSON
         // line followed by archive bytes while it is alive, never docker cp a
         // stopped tmpfs or base64-buffer an archive in worker JSON/stdout logs.
-        const bytes = fs.readFileSync(dependencyOutput), end = bytes.indexOf(10);
-        assert.ok(end > 0 && end <= 8192 && end < bytes.length - 1, 'dependency_artifact_invalid');
-        let receipt; try { receipt = JSON.parse(bytes.subarray(0, end).toString('utf8')); } catch { throw fail('dependency_artifact_invalid'); }
-        fs.writeFileSync(dependencyOutput, bytes.subarray(end + 1)); result = { code: 0, receipt };
+        const fd = fs.openSync(dependencyOutput, 'r'), header = Buffer.alloc(8193);
+        let end;
+        try { const n = fs.readSync(fd, header, 0, header.length, 0); end = header.subarray(0, n).indexOf(10); }
+        finally { fs.closeSync(fd); }
+        assert.ok(end > 0 && end <= 8192 && end < fs.statSync(dependencyOutput).size - 1, 'dependency_artifact_invalid');
+        let receipt; try { receipt = JSON.parse(header.subarray(0, end).toString('utf8')); } catch { throw fail('dependency_artifact_invalid'); }
+        const stripped = dependencyOutput + '.stripped';
+        try {
+          function* body() { let skip = end + 1; for (const chunk of fileChunks(dependencyOutput)) { const start = Math.min(skip, chunk.length); skip -= start; if (start < chunk.length) yield chunk.subarray(start); } }
+          writeChunks(stripped, body()); fs.renameSync(stripped, dependencyOutput);
+        } finally { fs.rmSync(stripped, { force: true }); }
+        result = { code: 0, receipt };
       } else result = { code: 0, receipt: JSON.parse(result.stdout) };
     }
   } finally {

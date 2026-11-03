@@ -70,7 +70,12 @@ test('cache installs once without account credentials, validates content on ever
   const miss = await deps.cacheReplayDependencies(changedLock, image, root, { runBuild: build });
   assert.equal(miss.cacheHit, false); assert.notEqual(miss.cacheKey, one.cacheKey); assert.equal(calls.length, 2);
   const read = deps.prepareReplayDependencies(v, image, root);
-  assert.deepEqual(Buffer.from(read.dependencyArchive.base64, 'base64'), archive);
+  assert.equal(read.dependencyArchive.base64, undefined);
+  assert.deepEqual(fs.readFileSync(read.dependencyArchive.sourceFile), archive);
+  const staged = prepareDirectReplayInput({ ...v, ...read });
+  assert.equal(staged.find(f => f.path === 'replay-dependencies.tar.gz').bytes, undefined);
+  assert.equal(staged.find(f => f.path === 'replay-dependencies.tar.gz').sourceFile, read.dependencyArchive.sourceFile);
+  assert.equal(JSON.stringify(JSON.parse(staged.find(f => f.path === 'replay-input.json').bytes)).includes(root), false);
   assert.equal(read.dependencies.archiveHash, hash(archive)); assert.equal(read.dependencies.cacheKey, one.cacheKey);
   fs.writeFileSync(path.join(root, one.cacheKey, 'node_modules.tar.gz'), 'corrupt');
   assert.throws(() => deps.prepareReplayDependencies(v, image, root), /dependency_cache_invalid/);
@@ -131,6 +136,7 @@ test('dependency restoration verifies archive bytes and safe entries before extr
     module, process, require(name) {
       if (name === 'node:fs') return { existsSync: () => false, readFileSync: () => bytes,
         lstatSync: () => ({ isDirectory: () => true, isSymbolicLink: () => false }), unlinkSync: p => removed.push(p) };
+      if (name === '/work/caff-runtime-bootstrap.cjs') return { hashFile: () => hash(bytes) };
       if (name === 'node:child_process') return { execFileSync(_program, args) { if (args[0] === '-tzf') return Buffer.from(listing); extracted.push(args); return Buffer.alloc(0); } };
       return require(name);
     }

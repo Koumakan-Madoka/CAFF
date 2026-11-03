@@ -1,7 +1,6 @@
 // Production-model D15 planning. Pure preflight: never opens GPT auth, starts
 // containers or mutates a frozen group. Repository/dependency restoration is
 // per task; sample controls do not inherit a real repository's working tree.
-const crypto=require('node:crypto');
 const base='../../build/server/domain/runtime/badcase-capture/';
 const {createWikiStore}=require(base+'wiki-store');
 const {resolveGlobalWikiCandidate}=require(base+'wiki-global-candidate');
@@ -11,7 +10,7 @@ const {resolveSampleReplayVersion}=require(base+'wiki-sample-replay-version');
 const {prepareComparison,CODEX_CONFIG}=require('./direct-comparison.cjs');
 const {CODEX_PROFILE}=require('./direct-model.cjs');
 const fail=code=>Object.assign(Error(code),{code});
-const hash=value=>crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const {hashJson:hash}=require('./replay-streams.cjs');
 function prepareProductionBatch(config,options={}){
  const scope={globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree},state=createWikiStore(scope).read();
  if(config.modelProfile!==CODEX_PROFILE || config.keySource!=='caff-codex-access' || config.repeats!==10

@@ -1,12 +1,12 @@
 // CONTAINER ONLY. A host-verified cache artifact, not an arbitrary user tar.
 // Extraction still rejects absolute/traversal entries and non-node_modules roots.
-const fs = require('node:fs'), cp = require('node:child_process'), crypto = require('node:crypto'), assert = require('node:assert/strict');
+const fs = require('node:fs'), cp = require('node:child_process'), assert = require('node:assert/strict');
 function restoreReplayDependencies(cwd, dependencies) {
   assert.equal(cwd, '/work/restored'); assert.equal(dependencies?.kind, 'npm-ci-linux-v1');
   assert.equal(dependencies.archivePath, 'replay-dependencies.tar.gz'); assert.equal(dependencies.nodeVersion, process.version);
   assert.equal(fs.existsSync(cwd + '/node_modules'), false);
   const archive = '/work/' + dependencies.archivePath;
-  assert.equal(crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex'), dependencies.archiveHash);
+  assert.equal(require('/work/caff-runtime-bootstrap.cjs').hashFile(archive), dependencies.archiveHash);
   const run = args => cp.execFileSync('tar', args, { env: { PATH: process.env.PATH }, timeout: 120000, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   const names = run(['-tzf', archive]).toString('utf8').trimEnd().split('\n');
   assert.ok(names.length && names.every(name => (name === 'node_modules/' || name.startsWith('node_modules/'))
