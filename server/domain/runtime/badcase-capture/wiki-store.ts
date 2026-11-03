@@ -35,12 +35,21 @@ function ids(value: any, allowEmpty = false): string[] {
   if (new Set(result).size !== result.length) throw fail('wiki_invalid_case_ids');
   return result;
 }
-function entry(value: any, allowed: Set<string>) {
-  shape(value, ENTRY_FIELDS);
-  const fields = Object.fromEntries(ENTRY_FIELDS.slice(0, -1).map(k => [k, text(value[k], k === 'title' ? 1024 : 8192)]));
-  if ([...fields.guideline].length > 300) throw fail('wiki_guideline_too_long');
-  const caseIds = ids(value.caseIds);
-  if (caseIds.some(k => !allowed.has(k))) throw fail('wiki_unknown_case');
+// Only static field/rule metadata is attached; never rejected values or prose.
+function atField<T>(field: string, action: () => T): T {
+  try { return action(); }
+  catch (e: any) { if (!e.validationIssue) e.validationIssue = { field, rule: e.code }; throw e; }
+}
+function modelInvalid(field: string, rule: string): never {
+  throw Object.assign(fail('wiki_model_output_invalid'), { validationIssue: { field, rule } });
+}
+function entry(value: any, allowed: Set<string>, field = 'entry') {
+  atField(field, () => shape(value, ENTRY_FIELDS));
+  const fields = Object.fromEntries(ENTRY_FIELDS.slice(0, -1).map(k => [k,
+    atField(field + '.' + k, () => text(value[k], k === 'title' ? 1024 : 8192))]));
+  atField(field + '.guideline', () => { if ([...fields.guideline].length > 300) throw fail('wiki_guideline_too_long'); });
+  const caseIds = atField(field + '.caseIds', () => ids(value.caseIds));
+  atField(field + '.caseIds', () => { if (caseIds.some(k => !allowed.has(k))) throw fail('wiki_unknown_case'); });
   return { ...fields, caseIds };
 }
 function textCase(value: any) {
@@ -357,31 +366,31 @@ export function createWikiStore(options: any) {
         // caller-chosen subset that could change quota allocation order.
         if (preclassify && state.cases.some((c: any) => c.split === null && !selected.has(c.id))) throw fail('wiki_not_pending');
         const base = state.versions.at(-1), approved = new Set((base?.entries || []).filter((e: any) => e.status === 'approved').map((e: any) => e.id));
-        const seen = new Set(), normalized = input.results.map((r: any) => {
-          shape(r, ['caseId', 'kind', 'entryId', 'reason', 'confidence', 'proposal']);
-          const caseId = id(r.caseId);
-          if (!selected.has(caseId) || seen.has(caseId) || !['assign', 'new', 'none'].includes(r.kind)) throw fail('wiki_model_output_invalid');
+        const seen = new Set(), normalized = input.results.map((r: any, index: number) => {
+          const field = `results[${index}]`;
+          atField(field, () => shape(r, ['caseId', 'kind', 'entryId', 'reason', 'confidence', 'proposal']));
+          const caseId = atField(field + '.caseId', () => id(r.caseId));
+          if (!selected.has(caseId) || seen.has(caseId)) modelInvalid(field + '.caseId', 'must_cover_each_input_once');
+          if (!['assign', 'new', 'none'].includes(r.kind)) modelInvalid(field + '.kind', 'must_be_assign_new_or_none');
           seen.add(caseId);
-          const reason = text(r.reason, 2048), confidence = text(r.confidence, 32);
+          const reason = atField(field + '.reason', () => text(r.reason, 2048)), confidence = atField(field + '.confidence', () => text(r.confidence, 32));
           if (r.kind === 'assign') {
-            if (!approved.has(r.entryId) || r.proposal !== undefined) throw fail('wiki_model_output_invalid');
+            if (!approved.has(r.entryId)) modelInvalid(field + '.entryId', 'must_reference_approved_entry');
+            if (r.proposal !== undefined) modelInvalid(field + '.proposal', 'must_be_absent_for_assign');
             return { caseId, kind: r.kind, entryId: id(r.entryId), reason, confidence };
           }
-          if (r.kind === 'none') {
-            if (r.entryId !== undefined || r.proposal !== undefined) throw fail('wiki_model_output_invalid');
+          if (r.kind === 'none' || preclassify) {
+            // Preclassification never learns pattern prose from unallocated cases.
+            if (r.entryId !== undefined) modelInvalid(field + '.entryId', 'must_be_absent_for_none_or_preclassification_new');
+            if (r.proposal !== undefined) modelInvalid(field + '.proposal', 'must_be_absent_for_none_or_preclassification_new');
             return { caseId, kind: r.kind, reason, confidence };
           }
-          if (preclassify) {
-            // Classification is not wiki induction: no new-pattern prose may
-            // be learned from the still-unallocated batch.
-            if (r.entryId !== undefined || r.proposal !== undefined) throw fail('wiki_model_output_invalid');
-            return { caseId, kind: r.kind, reason, confidence };
-          }
-          const proposal = entry(r.proposal, selected);
-          if (!proposal.caseIds.includes(caseId) || r.entryId !== undefined) throw fail('wiki_model_output_invalid');
+          const proposal = entry(r.proposal, selected, field + '.proposal');
+          if (!proposal.caseIds.includes(caseId)) modelInvalid(field + '.proposal.caseIds', 'must_include_own_caseId');
+          if (r.entryId !== undefined) modelInvalid(field + '.entryId', 'must_be_absent_for_new');
           return { caseId, kind: r.kind, reason, confidence, proposal };
         });
-        if (seen.size !== caseIds.length) throw fail('wiki_model_output_invalid');
+        if (seen.size !== caseIds.length) modelInvalid('results', 'must_cover_each_input_once');
         const now = new Date().toISOString();
         const run: any = { id: `induction-${state.revision + 1}-${hash(JSON.stringify({ caseIds, results: normalized, inputHash: input.proof.inputHash })).slice(0, 16)}`,
           createdAt: now, phase, model: MODEL, caseIds: [...caseIds], inputHash: input.proof.inputHash,

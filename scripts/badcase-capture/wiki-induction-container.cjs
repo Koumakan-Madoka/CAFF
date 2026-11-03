@@ -15,6 +15,8 @@ function buildRequestBody(input) {
 async function classify(input, { fetchImpl = globalThis.fetch, key = process.env.CAFF_BADCASE_MODEL_KEY } = {}) {
   const row = { model: MODEL, durationMs: 0, success: false, httpStatus: null, usage: null };
   const start = performance.now();
+  let modelOutput;
+  const invalid = (field, rule) => { throw Object.assign(Error('wiki_model_output_invalid'), { validationIssue: { field, rule } }); };
   try {
     const response = await fetchImpl('https://api.deepseek.com/chat/completions', {
       method: 'POST', redirect: 'error', signal: AbortSignal.timeout(110000),
@@ -30,16 +32,25 @@ async function classify(input, { fetchImpl = globalThis.fetch, key = process.env
         size += value.length; if (size > 512 * 1024) throw Error(); chunks.push(Buffer.from(value));
       }
     } finally { await reader.cancel().catch(() => {}); }
-    const data = JSON.parse(Buffer.concat(chunks).toString('utf8')), usage = data.usage;
+    modelOutput = Buffer.concat(chunks).toString('utf8');
+    let data;
+    try { data = JSON.parse(modelOutput); } catch { invalid('response', 'valid_json_required'); }
+    const usage = data?.usage;
     if (usage && ['prompt_tokens', 'completion_tokens', 'total_tokens'].every(k => Number.isSafeInteger(usage[k]) && usage[k] >= 0)) {
       row.usage = { input: usage.prompt_tokens, output: usage.completion_tokens, totalTokens: usage.total_tokens };
     }
-    if (data.choices?.length !== 1 || data.choices[0].finish_reason !== 'stop' || typeof data.choices[0].message?.content !== 'string') throw Error();
-    const draft = JSON.parse(data.choices[0].message.content);
-    if (!draft || typeof draft !== 'object' || Array.isArray(draft) || Object.keys(draft).join(',') !== 'results' || !Array.isArray(draft.results)) throw Error();
+    if (data?.choices?.length !== 1) invalid('choices', 'exactly_one_choice_required');
+    if (data.choices[0]?.finish_reason !== 'stop') invalid('choices[0].finish_reason', 'must_equal_stop');
+    if (typeof data.choices[0].message?.content !== 'string') invalid('choices[0].message.content', 'must_be_string');
+    let draft;
+    try { draft = JSON.parse(data.choices[0].message.content); } catch { invalid('choices[0].message.content', 'valid_json_required'); }
+    if (!draft || typeof draft !== 'object' || Array.isArray(draft) || Object.keys(draft).join(',') !== 'results') invalid('content', 'only_results_object_required');
+    if (!Array.isArray(draft.results)) invalid('results', 'must_be_array');
     row.success = true;
-    return { ok: true, results: draft.results, calls: [row] };
-  } catch { return { ok: false, reason: 'wiki_model_request_failed', calls: [row] }; }
+    // Transient only: trusted host removes this before events, storage or HTTP.
+    return { ok: true, results: draft.results, calls: [row], modelOutput };
+  } catch (e) { return { ok: false, reason: 'wiki_model_request_failed', calls: [row],
+    ...(modelOutput === undefined ? {} : { modelOutput }), ...(e.validationIssue ? { validationIssue: e.validationIssue } : {}) }; }
   finally { row.durationMs = performance.now() - start; }
 }
 if (require.main === module) {

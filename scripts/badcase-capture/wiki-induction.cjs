@@ -41,19 +41,46 @@ async function inductWikiCases({ store, image, confirmed, expectedRevision, dock
   const key = (options.readKey || readCaffDeepseekKey)();
   const execute = options.execute || (dockerBackend === undefined ? runDirectDockerTask : require('./wiki-host-model.cjs').runWikiHostTask);
   const result = await execute(image, plan.files, { key, timeoutMs: 120000, ...(dockerBackend === undefined ? {} : { dockerBackend }) });
+  const modelOutput = result.receipt?.modelOutput;
+  // Raw output lives in memory until validation completes; never in events,
+  // saved proof, returned data or the controller's generic HTTP errors.
+  if (result.receipt) delete result.receipt.modelOutput;
+  const diagnose = error => {
+    try {
+      const diagnostic = require('./wiki-diagnostics.cjs');
+      (options.writeDiagnostic || (details => diagnostic.writeWikiDiagnostic(details, {
+        ...(options.diagnosticDirectory === undefined ? {} : { directory: options.diagnosticDirectory }),
+        knownValues: [key, ...(options.readDiagnosticValues || diagnostic.readDiagnosticValues)()],
+      })))({ phase: plan.phase, modelOutput, validationIssue: error.validationIssue || { field: 'results', rule: error.code } });
+    } catch {
+      // Best effort only. Never log a private path/body/error or change the
+      // original validation failure. No retry and no successful publication.
+      options.onEvent?.({ type: 'wiki-private-diagnostic-unavailable' });
+    }
+  };
   const serialized = JSON.stringify(result);
   if (serialized.includes(key) || serialized.includes(JSON.stringify(key).slice(1, -1)) || containsSecretSentinel(serialized)) throw fail('wiki_contains_secret');
   const proof = { type: plan.phase === 'preclassification' ? 'wiki-preclassification' : 'wiki-incremental-induction', model: DEEPSEEK_PROFILE, inputHash: plan.inputHash, caseIds: plan.caseIds,
     ...(dockerBackend === undefined ? {} : { dockerBackend }),
     containerId: result.containerId, cleaned: result.cleaned, isolation: result.isolation, calls: result.receipt?.calls ?? null };
   options.onEvent?.(proof);
-  if (result.failed || result.cleaned !== true || result.receipt?.ok !== true || !Array.isArray(result.receipt?.results)) throw fail('wiki_generation_failed');
-  options.onModelOutput?.(result.receipt.results);
-  if (result.receipt.results.length !== plan.caseIds.length) throw fail('wiki_model_output_invalid');
-  const save = plan.phase === 'preclassification' ? store.recordPreclassification.bind(store) : store.recordInduction.bind(store);
-  const saved = save({ caseIds: plan.caseIds, model: DEEPSEEK_PROFILE, results: result.receipt.results,
-    proof: { inputHash: plan.inputHash, calls: result.receipt.calls ?? [], cleaned: result.cleaned,
-      ...(result.containerId === undefined ? {} : { containerId: result.containerId }), ...(result.isolation === undefined ? {} : { isolation: result.isolation }) } }, expectedRevision);
+  let saved;
+  try {
+    if (result.failed || result.cleaned !== true || result.receipt?.ok !== true || !Array.isArray(result.receipt?.results)) {
+      throw Object.assign(fail('wiki_generation_failed'), { validationIssue: result.receipt?.validationIssue });
+    }
+    options.onModelOutput?.(result.receipt.results);
+    if (result.receipt.results.length !== plan.caseIds.length) throw Object.assign(fail('wiki_model_output_invalid'), {
+      validationIssue: { field: 'results', rule: 'must_cover_each_input_once' },
+    });
+    const save = plan.phase === 'preclassification' ? store.recordPreclassification.bind(store) : store.recordInduction.bind(store);
+    saved = save({ caseIds: plan.caseIds, model: DEEPSEEK_PROFILE, results: result.receipt.results,
+      proof: { inputHash: plan.inputHash, calls: result.receipt.calls ?? [], cleaned: result.cleaned,
+        ...(result.containerId === undefined ? {} : { containerId: result.containerId }), ...(result.isolation === undefined ? {} : { isolation: result.isolation }) } }, expectedRevision);
+  } catch (error) {
+    if (error.validationIssue || ['wiki_model_output_invalid', 'wiki_generation_failed'].includes(error.code)) diagnose(error);
+    throw error;
+  }
   options.onEvent?.({ type: 'wiki-induction-saved', runId: saved.run.id, revision: store.read().revision, versionId: saved.version?.id || null });
   return saved;
 }

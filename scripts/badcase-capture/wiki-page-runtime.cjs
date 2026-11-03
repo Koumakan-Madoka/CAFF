@@ -20,6 +20,8 @@ async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
   return (dependencies.induct || require('./wiki-induction.cjs').inductWikiCases)({
     store: input.store, expectedRevision: input.expectedRevision, confirmed: true, image: config.image,
     ...(config.dockerBackend === undefined ? {} : { dockerBackend: config.dockerBackend }),
-  }, { readKey: () => readKey({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }) });
+  }, { readKey: () => readKey({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
+    readDiagnosticValues: () => require('./wiki-diagnostics.cjs').readDiagnosticValues({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
+  });
 }
 module.exports = { runPageInduction };
