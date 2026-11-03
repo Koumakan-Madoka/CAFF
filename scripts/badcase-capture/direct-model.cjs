@@ -118,8 +118,9 @@ function observeDirectFetch(fetch, { baseUrl, profile = DEFAULT_PROFILE, callbac
 }
 const BINDING_NAMES = ['CAFF_CHAT_API_URL', 'CAFF_CHAT_INVOCATION_ID', 'CAFF_CHAT_CALLBACK_TOKEN', 'CAFF_CHAT_CONVERSATION_ID',
   'CAFF_CHAT_TURN_ID', 'CAFF_CHAT_TOOLS_PATH', 'CAFF_CHAT_TOOLS_RELATIVE_PATH', 'PI_AGENT_SANDBOX_DIR', 'PI_AGENT_PRIVATE_DIR'];
-// Lossless JSONL edits: only the header cwd, context text and known file-tool
-// paths may be rebound. Never rewrite IDs, models, signatures or tool results.
+// Lossless JSONL edits: only the header cwd and context prose may be rebound.
+// Historical tool arguments/results remain frozen data, never instructions to
+// execute. External path dependencies are deliberately not inferred.
 function mapDirectSession(text, sourceRoot, replace) {
   const bad = () => { throw fail('evaluation_bindings_unsupported'); };
   if (typeof text !== 'string' || !text.endsWith('\n') || Buffer.byteLength(text) > 64 * 1024 * 1024) bad();
@@ -145,7 +146,6 @@ function mapDirectSession(text, sourceRoot, replace) {
       if (typeof blocks === 'string') fields.push({ value: blocks });
       else if (Array.isArray(blocks)) for (const b of blocks) {
         if (b?.type === 'text' && typeof b.text === 'string') fields.push({ value: b.text });
-        if (b?.type === 'toolCall' && ['read', 'write', 'edit'].includes(b.name) && typeof b.arguments?.path === 'string') fields.push({ value: b.arguments.path, path: true });
       }
     };
     if (entry.type === 'message' && ['user', 'assistant'].includes(entry.message?.role)) content(entry.message.content);
@@ -171,14 +171,24 @@ function mapDirectSession(text, sourceRoot, replace) {
     edits.sort((a, b) => b.start - a.start);
     let checked = lines[i];
     for (const e of edits) checked = checked.slice(0, e.start) + '"checked"' + checked.slice(e.end);
-    residual(JSON.parse(checked));
+    const inspected = JSON.parse(checked);
+    // Mask only the validation copy, never the archived/bound bytes. Old
+    // commands/results may contain old paths and literal template-like text.
+    if (inspected.type === 'message') {
+      const message = inspected.message;
+      if (message?.role === 'assistant' && Array.isArray(message.content)) message.content = message.content.filter(b => b?.type !== 'toolCall');
+      if (message?.role === 'toolResult') message.content = 'frozen historical context';
+      if (message?.role === 'bashExecution') { message.command = 'frozen historical context'; message.output = 'frozen historical context'; }
+    }
+    residual(inspected);
     for (const e of edits) lines[i] = lines[i].slice(0, e.start) + e.replacement + lines[i].slice(e.end);
   }
   return lines.join('\n');
 }
 function replaySessionInfo(text) {
   return text === null || text === undefined ? undefined
-    : { deliveryMode: 'resume', prefixHash: require('node:crypto').createHash('sha256').update(text).digest('hex'), lineCount: text.split('\n').length - 1 };
+    : { deliveryMode: 'resume', prefixHash: require('node:crypto').createHash('sha256').update(text).digest('hex'), lineCount: text.split('\n').length - 1,
+      historyTools: 'context-only-not-executed', externalPathDependencies: 'not-verified' };
 }
 function validateDirectBindings(prompt, bindings, sessionText = null) {
   if (typeof prompt !== 'string' || !bindings || typeof bindings.sourceRoot !== 'string' || !/^(?:[A-Za-z]:[\\\\/]|\/)/.test(bindings.sourceRoot)

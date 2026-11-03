@@ -271,7 +271,8 @@ test('sealed resume original/candidate keep the exact retained prefix, shared in
   const plan = prepareComparison({ request: f.request, variants: ['original'], repeats: 3, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
     image: { imageId: 'sha256:' + '1'.repeat(64) }, rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } });
   assert.equal(plan.supported, true, JSON.stringify(plan));
-  assert.deepEqual(plan.summary.replaySession, { deliveryMode: 'resume', prefixHash: f.r.sessionBlobHash, lineCount: 2 });
+  assert.deepEqual(plan.summary.replaySession, { deliveryMode: 'resume', prefixHash: f.r.sessionBlobHash, lineCount: 2,
+    historyTools: 'context-only-not-executed', externalPathDependencies: 'not-verified' });
   assert.deepEqual(fs.readFileSync(f.source), before);
 });
 test('resume without intact matching session/runtime metadata is refused instead of silently starting fresh', t => {

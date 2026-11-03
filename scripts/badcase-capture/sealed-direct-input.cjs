@@ -125,7 +125,7 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
       bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements } };
     const mapped = checked('replay_controlled_bindings_invalid', () => validateDirectBindings(input.prompt, input.bindings, sessionText));
     if (resume) {
-      const validation = validateSessionV2(mapped.sessionText, { authorizedRoot: '/work/restored' });
+      const validation = validateSessionV2(mapped.sessionText, { authorizedRoot: '/work/restored', historyContext: true });
       ensure(validation.ok && empty(validation.unverifiedDimensions), 'replay_session_invalid');
     }
     return { supported: true, input, ...variantInfo,

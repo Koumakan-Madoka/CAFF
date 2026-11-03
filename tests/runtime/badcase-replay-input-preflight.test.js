@@ -121,7 +121,8 @@ test('resume structure and dependencies are independently revalidated, not trust
       if (which === 'file-tool') session.push({ type: 'message', id: 'x', parentId: 'm1', message: { role: 'assistant', api: 'synthetic', provider: 'synthetic', model: 'no-model-call', usage: {}, stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'tc', name: 'read', arguments: { path: '/synthetic/data.txt' } }] } });
       r.sessionBlobHash = put(session.map(x => JSON.stringify(x)).join('\n'));
     });
-    assert.throws(() => inspectRetainedReplayInputs(h.request), { code: which === 'broken' ? 'replay_session_invalid' : 'replay_session_dependencies_unverified' });
+    if (which === 'file-tool') assert.doesNotThrow(() => inspectRetainedReplayInputs(h.request));
+    else assert.throws(() => inspectRetainedReplayInputs(h.request), { code: which === 'broken' ? 'replay_session_invalid' : 'replay_session_dependencies_unverified' });
   }
 });
 test('replacement inventory aggregates prompt/session counts; it does not reissue values', t => {

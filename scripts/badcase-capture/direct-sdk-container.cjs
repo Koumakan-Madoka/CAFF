@@ -150,7 +150,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       Object.assign(process.env, values); ({ prompt, sessionText } = direct.bindDirectInputs(prompt, sessionText, input.bindings, values));
     }
     if (sessionText !== null) {
-      const validation = require('/work/build/server/domain/runtime/badcase-capture/session-validator').validateSessionV2(sessionText, { authorizedRoot: cwd });
+      const validation = require('/work/build/server/domain/runtime/badcase-capture/session-validator').validateSessionV2(sessionText, { authorizedRoot: cwd, historyContext: true });
       assert.ok(validation.ok && validation.unverifiedDimensions.length === 0);
       assert.equal(JSON.parse(sessionText.split('\n')[0]).cwd, cwd);
       write(sessionPath, sessionText);

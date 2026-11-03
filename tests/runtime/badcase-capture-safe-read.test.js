@@ -324,7 +324,7 @@ test('S7a: 最小已验证子集正例——user+assistant 文本 session 可达
   assert.equal(result.checkpoint.strictEvalEligible, false, 'complete 不等于严格对照资格');
 });
 
-test('S7b: 维度降级——bashExecution/合法 base64 图像/custom 扩展状态/越界工具路径', { skip: linuxSkip }, () => {
+test('S7b: 冻结工具历史不降级；合法 base64 图像/custom 扩展状态仍降级', { skip: linuxSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -341,7 +341,7 @@ test('S7b: 维度降级——bashExecution/合法 base64 图像/custom 扩展状
     // [名称, session 体, 期望 unverified 维度, 是否归档]
     ['bash-execution.jsonl',
       `${HEADER}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"bashExecution","command":"ls -la","output":"ok","exitCode":0,"cancelled":false,"truncated":false,"timestamp":1}}\n`,
-      'unanalyzable_tool_dependencies:bashExecution', true],
+      null, true],
     ['image-valid.jsonl',
       `${HEADER}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":[{"type":"image","data":"${pngBase64}","mimeType":"image/png"}]}}\n`,
       'image_content_unverified', true],
@@ -350,10 +350,10 @@ test('S7b: 维度降级——bashExecution/合法 base64 图像/custom 扩展状
       'extension_state_unverified:myExtension', true],
     ['tool-out-of-scope.jsonl',
       `${HEADER}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"assistant","api":"a","provider":"p","model":"m","usage":{},"stopReason":"toolUse","content":[{"type":"toolCall","id":"t1","name":"read","arguments":{"path":"/etc/hostname"}}]}}\n`,
-      'out_of_scope_path_dependency:read', true],
+      null, true],
     ['tool-bash.jsonl',
       `${HEADER}\n{"type":"message","id":"m1","parentId":"s1","message":{"role":"assistant","api":"a","provider":"p","model":"m","usage":{},"stopReason":"toolUse","content":[{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"ls"}}]}}\n`,
-      'unanalyzable_tool_dependencies:bash', true],
+      null, true],
   ];
 
   let turn = 0;
@@ -367,9 +367,10 @@ test('S7b: 维度降级——bashExecution/合法 base64 图像/custom 扩展状
       sessionPath,
     }));
     assert.equal(result.captured, true, name);
-    assert.equal(result.checkpoint.replayInput.complete, false, name);
-    assert.ok(result.checkpoint.replayInput.unverifiedDimensions.includes(dimension),
+    assert.equal(result.checkpoint.replayInput.complete, dimension === null, name);
+    if (dimension !== null) assert.ok(result.checkpoint.replayInput.unverifiedDimensions.includes(dimension),
       `${name} 期望维度 ${dimension}，实际 ${result.checkpoint.replayInput.unverifiedDimensions.join(',')}`);
+    else assert.deepEqual(result.checkpoint.replayInput.unverifiedDimensions, []);
     if (shouldArchive) {
       assert.ok(result.checkpoint.replayInput.sessionBlobHash, `${name} 可归档但 complete=false`);
     }

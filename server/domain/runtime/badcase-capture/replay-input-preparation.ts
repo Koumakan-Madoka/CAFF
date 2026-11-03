@@ -103,7 +103,7 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
           const sessionReplaced = replaceControlledVariables(sessionText, input.controlledValues);
           replayInput.controlledReplacements = replayInput.controlledReplacements.concat(sessionReplaced.replacements);
           const sessionBuffer = ownedUtf8(sessionReplaced.text);
-          const validation = validateSessionV2(sessionReplaced.text, { authorizedRoot });
+          const validation = validateSessionV2(sessionReplaced.text, { authorizedRoot, historyContext: true });
           replayInput.sessionLineCount = validation.lineCount;
           replayInput.verifiedDimensions = validation.verifiedDimensions;
           replayInput.unverifiedDimensions = validation.unverifiedDimensions;

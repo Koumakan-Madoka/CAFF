@@ -25,7 +25,8 @@
 //   pi-coding-agent messages.d.ts（BashExecutionMessage、CustomMessage）。
 //
 // 明确不宣称：不验证工具存在性、模型行为、图像像素有效性、扩展私有状态语义、
-// bash 自由文本依赖。这些进入 unverifiedDimensions 并使 complete=false。
+// bash 自由文本依赖。默认诊断模式将依赖记为未验证；historyContext 明确
+// 表示冻结历史只作上下文，不重放历史工具，不以历史外部路径阻断当前轮次。
 
 const path = require('node:path');
 
@@ -295,8 +296,7 @@ export function validateSessionV2(text: any, options: any = {}) {
         if (typeof message.cancelled !== 'boolean' || typeof message.truncated !== 'boolean') {
           pushReject('bashexecution_missing_flags');
         }
-        // bash 自由文本的依赖不可静态分析（结构合法也要诚实降级）。
-        pushUnverified('unanalyzable_tool_dependencies:bashExecution');
+        if (!options.historyContext) pushUnverified('unanalyzable_tool_dependencies:bashExecution');
       }
       if (role === 'custom') {
         if (typeof message.customType !== 'string' || !message.customType) {
@@ -364,7 +364,7 @@ export function validateSessionV2(text: any, options: any = {}) {
       }
 
       // assistant toolCall 的文件依赖范围（结构级白名单，无 pi 依据——诚实标注）。
-      if (role === 'assistant' && Array.isArray(message.content)) {
+      if (!options.historyContext && role === 'assistant' && Array.isArray(message.content)) {
         for (const block of message.content) {
           if (block && block.type === 'toolCall') {
             validateToolCallDependencies(block, sessionCwd, options.authorizedRoot, pushUnverified);

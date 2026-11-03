@@ -268,15 +268,33 @@ test('actual worker starts resume from the bound exact prefix and reports its ar
     { type: 'message', id: 'm1', parentId: null, message: { role: 'user', content: 'Earlier {{PI_AGENT_PRIVATE_DIR}}', timestamp: 1 } }].map(JSON.stringify).join('\r\n') + '\r\n';
   const r = await workerReceipt(t, { prompt, sessionText, bindings: { sourceRoot, controlledReplacements: [{ name: 'CAFF_CHAT_API_URL', count: 1 }, { name: 'PI_AGENT_PRIVATE_DIR', count: 1 }] } });
   assert.equal(r.startConfig.resume, true); assert.equal(r.receipt.historyMessages, 1);
-  assert.deepEqual(r.receipt.replaySession, { deliveryMode: 'resume', prefixHash: crypto.createHash('sha256').update(sessionText).digest('hex'), lineCount: 2 });
+  assert.deepEqual(r.receipt.replaySession, require('../../scripts/badcase-capture/direct-model.cjs').replaySessionInfo(sessionText));
   assert.equal(r.workingSessionText, sessionText.replace(JSON.stringify(sourceRoot), JSON.stringify('/work/restored')).replace('{{PI_AGENT_PRIVATE_DIR}}', '/tmp/private'));
   assert.equal(r.invocationPrompt, 'Now http://127.0.0.1:1'); assert.equal(r.input.sessionText, sessionText);
 });
+test('actual worker loads frozen bash and retired tools as context, never current tool executions', async t => {
+  const sourceRoot = '/old/root', entries = [
+    { type: 'session', version: 3, id: 'same-id', cwd: sourceRoot },
+    { type: 'message', id: 'u', parentId: null, message: { role: 'user', content: 'Earlier request', timestamp: 1 } },
+    { type: 'message', id: 'a', parentId: 'u', message: { role: 'assistant', api: 'a', provider: 'p', model: 'm', usage: {}, stopReason: 'toolUse', content: [
+      { type: 'toolCall', id: 'bash-1', name: 'bash', arguments: { command: 'node -e "throw Error(\'historical-only\')" ' + sourceRoot } },
+      { type: 'toolCall', id: 'plugin-1', name: 'retired_plugin', arguments: { path: '/outside/workspace' } },
+    ] } },
+    ...['bash', 'retired_plugin'].map((name, i) => ({ type: 'message', id: 'r' + i, parentId: i ? 'r0' : 'a', message: { role: 'toolResult', toolCallId: i ? 'plugin-1' : 'bash-1', toolName: name, isError: false, content: [{ type: 'text', text: sourceRoot + '/original-result' }] } })),
+  ];
+  const sessionText = entries.map(JSON.stringify).join('\n') + '\n';
+  const result = await workerReceipt(t, { sessionText, bindings: { sourceRoot, controlledReplacements: [] } });
+  assert.equal(result.startConfig.resume, true); assert.equal(result.receipt.historyMessages, 4);
+  assert.deepEqual(result.receipt.toolCalls, []);
+  assert.equal(result.workingSessionText, sessionText.replace(JSON.stringify(sourceRoot), JSON.stringify('/work/restored')));
+  assert.equal(result.invocationPrompt, 'Inspect the files.');
+});
+
 test('missing or conflicting resume receipt never scores and stops subsequent slots', async () => {
   for (const mode of ['matching', 'missing', 'changed']) {
     const f = fakes(), prepare = f.options.prepare, execute = f.options.execute;
     const sessionText = '{"type":"session","version":3,"id":"old","cwd":"/work/restored"}\n';
-    const replaySession = { deliveryMode: 'resume', prefixHash: crypto.createHash('sha256').update(sessionText).digest('hex'), lineCount: 1 };
+    const replaySession = require('../../scripts/badcase-capture/direct-model.cjs').replaySessionInfo(sessionText);
     f.options.prepare = (...args) => { const p = prepare(...args); p.input.sessionText = sessionText; return p; };
     f.options.execute = async (...args) => { const task = await execute(...args);
       if (mode !== 'missing') task.receipt.replaySession = { ...replaySession, ...(mode === 'changed' ? { deliveryMode: 'fresh' } : {}) }; return task; };
