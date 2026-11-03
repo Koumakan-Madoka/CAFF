@@ -206,7 +206,8 @@ test('Windows facade latches one trusted scope for collector and both previews; 
       seen.push(['collector', opts]); return { captureTurnCheckpoint: () => ({ captured: false }) };
     } },
     './windows-estimate': { estimateWindowsDirectory: opts => { seen.push(['sync', opts]); return { ok: true }; },
-      estimateWindowsDirectoryAsync: opts => { seen.push(['async', opts]); return new Promise(r => { release = () => r({ ok: true }); }); } },
+      estimateWindowsDirectoryAsync: () => assert.fail('service must not fall back to raw capacity') },
+    './windows-git-candidate': { estimateWindowsGitDirectoryAsync: opts => { seen.push(['async', opts]); return new Promise(r => { release = () => r({ ok: true }); }); } },
     './windows-git-discovery': { discoverWindowsGitDependencies: opts => { seen.push(['discovery', opts]); return { ok: true }; } },
   }, env);
   const privateDirs = ['C:/private'];
@@ -225,15 +226,10 @@ test('Windows facade latches one trusted scope for collector and both previews; 
     assert.equal(scope.agentDir, 'C:/app');
   }
   assert.notEqual(seen[0][1].privateDirs, privateDirs, 'scope must not borrow caller array');
-  const unsupportedAtStartup = seen[0][1].checkEnvironment;
-  assert.equal(unsupportedAtStartup(), false);
-  Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: 'NUL' });
-  assert.equal(unsupportedAtStartup(), false, 'cannot retrofit a differently configured running instance');
-  api.createBadcaseCaptureService({ captureRoot: base });
-  const supportedAtStartup = seen.at(-1)[1].checkEnvironment;
-  assert.equal(supportedAtStartup(), true);
-  env.GIT_INDEX_FILE = 'C:/another-index'; assert.equal(supportedAtStartup(), false);
-  delete env.GIT_INDEX_FILE; assert.equal(supportedAtStartup(), true);
+  assert.equal(seen[0][1].checkEnvironment, undefined, 'collector must not depend on process-wide Git configuration');
+  env.GIT_INDEX_FILE = 'C:/another-index';
+  const next = service.estimateDirectoryAsync('p', 'C:/work'); release(); assert.equal((await next).ok, true);
+  assert.equal(env.GIT_INDEX_FILE, 'C:/another-index', 'capture cannot rewrite agent Git selectors');
 
   const calls = [];
   const linux = load('linux', { './estimate-process': { runEstimateProcess: opts => { calls.push(opts); return { ok: true }; } } });

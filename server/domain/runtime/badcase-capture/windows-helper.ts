@@ -8,6 +8,7 @@ const { spawnSync, spawn } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
 const { TextDecoder } = require('node:util');
 import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
+import { createWindowsCaptureEnvironment } from './windows-git-environment';
 
 export const WINDOWS_HELPER_LIMITS = Object.freeze({
   requestBytes: 1024 * 1024, headerBytes: 32 * 1024 * 1024,
@@ -180,7 +181,7 @@ export function invokeWindowsHelper(python: string, helperPath: string, request:
       return { ok: false, reason: 'helper_integrity_failed' };
     }
     const result = spawnSync(python, ['-I', '-B', helperPath], {
-      input, encoding: 'buffer', windowsHide: true,
+      input, encoding: 'buffer', windowsHide: true, env: createWindowsCaptureEnvironment(process.env),
       timeout: request.op === 'identity' ? WINDOWS_HELPER_LIMITS.identityTimeoutMs
         : request.op === 'estimate' ? WINDOWS_HELPER_LIMITS.estimateTimeoutMs
           : ['snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput'].includes(request.op) ? WINDOWS_HELPER_LIMITS.snapshotTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
@@ -236,7 +237,8 @@ async function invokeWindowsBoundedContentHelper(python: string, helperPath: str
     return await new Promise(resolve => {
       let child: any;
       try {
-        child = spawn(python, ['-I', '-B', helperPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+        child = spawn(python, ['-I', '-B', helperPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+          env: createWindowsCaptureEnvironment(process.env) });
       } catch { resolve(fail('helper_process_failed')); return; }
       let reason = '', bytes = 0;
       const chunks: any[] = [];
@@ -278,9 +280,12 @@ async function invokeWindowsBoundedContentHelper(python: string, helperPath: str
 // Windows termination targets Node's child process handle, not a recycled PID
 // or taskkill /T. Do not reuse this for helpers which can launch descendants.
 let activeEstimates = 0;
-export async function invokeWindowsEstimateHelper(python: string, helperPath: string, request: any): Promise<any> {
+export async function invokeWindowsEstimateHelper(python: string, helperPath: string, request: any, deadline?: number): Promise<any> {
   const fail = (reason: string) => ({ ok: false, reason });
   if (process.platform !== 'win32') return fail('windows_required');
+  const start = performance.now();
+  if (deadline !== undefined && (!Number.isFinite(deadline) || typeof deadline !== 'number' || deadline <= start)) return fail('estimate_timeout');
+  const expires = Math.min(start + WINDOWS_HELPER_LIMITS.estimateTimeoutMs, deadline ?? Infinity);
   const input = encodeWindowsHelperRequest(request);
   if (!input || request.op !== 'estimate') return fail('request_invalid');
   if (activeEstimates >= 2) return fail('estimate_busy');
@@ -290,13 +295,13 @@ export async function invokeWindowsEstimateHelper(python: string, helperPath: st
         || crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') !== WINDOWS_HELPER_SOURCE_SHA256) {
       return fail('helper_integrity_failed');
     }
+    if (performance.now() >= expires) return fail('estimate_timeout');
     return await new Promise(resolve => {
-      const start = performance.now();
-      const timeout = WINDOWS_HELPER_LIMITS.estimateTimeoutMs;
       const maxOutput = WINDOWS_HELPER_LIMITS.headerBytes + 1; // NO body for estimate
       let child: any;
       try {
-        child = spawn(python, ['-I', '-B', helperPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+        child = spawn(python, ['-I', '-B', helperPath], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+          env: createWindowsCaptureEnvironment(process.env) });
       } catch { resolve(fail('helper_process_failed')); return; }
       let reason = '', bytes = 0;
       const chunks: any[] = [];
@@ -307,7 +312,7 @@ export async function invokeWindowsEstimateHelper(python: string, helperPath: st
         // the process AND both inherited output pipes have closed.
         try { child.kill('SIGKILL'); } catch { reason = 'estimate_cleanup_failed'; }
       };
-      const timer = setTimeout(() => stop('estimate_timeout'), timeout);
+      const timer = setTimeout(() => stop('estimate_timeout'), Math.max(0, expires - performance.now()));
       child.on('error', () => stop('helper_process_failed'));
       child.stdin.on('error', () => { /* checked on close; never log */ });
       child.stdout.on('data', (chunk: any) => {
@@ -320,7 +325,7 @@ export async function invokeWindowsEstimateHelper(python: string, helperPath: st
       child.on('close', (code: any) => {
         clearTimeout(timer);
         if (reason) { resolve(fail(reason)); return; }
-        if (performance.now() - start >= timeout) { resolve(fail('estimate_timeout')); return; }
+        if (performance.now() >= expires) { resolve(fail('estimate_timeout')); return; }
         if (code !== 0) { resolve(fail('helper_process_failed')); return; }
         resolve(parseWindowsHelperResponse(Buffer.concat(chunks), request));
       });

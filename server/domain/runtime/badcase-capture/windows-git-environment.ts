@@ -1,12 +1,13 @@
-// Supported Windows classification environment only. Never discover/read a
-// global/system config, interpret injected Git settings, or change the host's
-// configuration to make a capture pass. An existing differently configured
-// runtime is unsupported; the operator must choose its environment explicitly.
-export function supportsWindowsGitEnvironment(env: any = process.env): boolean {
-  if (!env || typeof env !== 'object') return false;
-  // Git for Windows treats NUL as the empty device. Require explicit disabling
-  // of both ambient layers, not an absent path that could appear later.
-  if (env.GIT_CONFIG_NOSYSTEM !== '1' || env.GIT_CONFIG_GLOBAL !== 'NUL') return false;
-  return Object.keys(env).every(name => !name.toUpperCase().startsWith('GIT_')
-    || ['GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_BASH_PATH'].includes(name));
+// Capture helpers parse independently authorized Git metadata; they do not run
+// git or consume ambient Git config. Keep any Git selectors/config overrides
+// out of THEIR child environment without changing the service/agent runtime.
+// This is configuration isolation, not a general subprocess/secret sandbox.
+export function createWindowsCaptureEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const child: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (!name.toUpperCase().startsWith('GIT_')) child[name] = value;
+  }
+  // Git for Windows treats NUL as the empty device. No global/system file is
+  // read if a future trusted helper needs a Git child; no host file is changed.
+  return { ...child, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: 'NUL', GIT_TERMINAL_PROMPT: '0' };
 }
