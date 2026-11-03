@@ -395,4 +395,4 @@ function formatComparison(result) {
   if (result.completed === false) lines.push('运行未完成；已停止，未自动重试。');
   return lines.join('\n') + '\n';
 }
-module.exports = { prepareComparison, runComparison, scoreReadOnlyFiles, formatComparison, expectedTreeHash, validateRules };
+module.exports = { prepareComparison, runComparison, scoreReadOnlyFiles, formatComparison, expectedTreeHash, validateRules, CODEX_CONFIG };

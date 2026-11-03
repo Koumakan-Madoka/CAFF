@@ -15,13 +15,14 @@ const variants = ['original', 'candidate'];
 function prepareBatch(config, options = {}) {
   if (Number.isSafeInteger(config?.timeoutMs) && config.timeoutMs > 45 * 60 * 1000) throw fail('evaluation_timeout_limit');
   const scopeFields = config?.globalRoot === undefined ? ['captureRoot', 'projectId'] : ['globalRoot'];
-  if (!config || Object.keys(config).some(k => ![...scopeFields, 'sourceWorktree', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases', ...(config.globalRoot !== undefined ? ['evaluation'] : [])].includes(k))
+  if (!config || Object.keys(config).some(k => ![...scopeFields, 'sourceWorktree', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases', ...(config.globalRoot !== undefined ? ['evaluation', 'modelProfile', 'keySource', 'codexAuthFile', 'knownKeySources', 'dockerBackend'] : [])].includes(k))
     || !Array.isArray(config.cases) || !config.cases.length || config.cases.length > 20
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')
     || !Number.isSafeInteger(config.repeats ?? 3) || (config.repeats ?? 3) < 1 || (config.repeats ?? 3) > 20
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 45 * 60 * 1000)) throw fail('evaluation_batch_config_invalid');
-  if (config.globalRoot !== undefined) return prepareGlobalBatch(config, options);
+  if (config.globalRoot !== undefined) return config.modelProfile === undefined
+    ? prepareGlobalBatch(config, options) : require('./production-batch-plan.cjs').prepareProductionBatch(config, options);
   const state = createWikiStore(config).read(), split = state.replaySplit;
   if (!split) throw fail('evaluation_batch_split_required');
   const expectedSplit = planReplaySplit(split.caseIds);
@@ -77,6 +78,9 @@ function prepareBatch(config, options = {}) {
 async function runBatch(config, options = {}) {
   const fixed = structuredClone(config), plan = prepareBatch(fixed, options);
   if (options.confirmed !== true || options.expectedPlanHash !== plan.summary.planHash) throw fail('evaluation_batch_confirmation_required');
+  // The production D15 planner is available before its publication pipeline.
+  // Never spend model quota then discover the page cannot persist this schema.
+  if (plan.summary.evaluation?.splitPolicy === 'd15-frozen-v1') throw fail('evaluation_production_publication_not_ready');
   if (plan.summary.evaluation) return require('./staged-batch.cjs').runStagedBatch(fixed, plan, options);
   const emit = options.onEvent || (() => {}), results = [], executionId = crypto.randomUUID();
   let key, stopped = false, runtimeHash = null;

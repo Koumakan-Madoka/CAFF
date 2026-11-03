@@ -5,6 +5,7 @@ import { createCaptureStore } from './capture-store';
 import { createCheckpointRetentionStore } from './checkpoint-retention';
 import { readSealedCase, validateSealRequest } from './sealed-case';
 import { containsSecretSentinel } from './secrets';
+import { MAX_WIKI_CANDIDATE_FILES } from './wiki-candidate';
 const hash = (value: string | Buffer) => crypto.createHash('sha256').update(value).digest('hex');
 export function collectWikiCandidateFiles(state: any): any[] {
   try {
@@ -24,11 +25,13 @@ export function collectWikiCandidateFiles(state: any): any[] {
         if (!Buffer.isBuffer(bytes) || hash(bytes) !== digest || containsSecretSentinel(bytes)) throw Error();
         blobs.set(digest, bytes);
       }
-      for (const name of Object.keys(retained.checkpoint.files).sort()) {
+      const names = Object.keys(retained.checkpoint.files).sort();
+      if (names.length > 1024) throw Error();
+      for (const name of names) {
         const f = retained.checkpoint.files[name], bytes = blobs.get(f.hash);
         if (f.type !== 'file' || f.secretExcluded || !bytes || bytes.length !== f.size) throw Error();
         files.push({ path: replay.id + '/' + name, base64: bytes.toString('base64'), sha256: f.hash });
-        if (files.length > 1024) throw Error();
+        if (files.length > MAX_WIKI_CANDIDATE_FILES) throw Error();
       }
     }
     return files;
