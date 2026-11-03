@@ -67,6 +67,16 @@ test('successful result discards raw envelope and does not write diagnostics', a
   assert.equal(JSON.stringify(saved).includes('PRIVATE RAW'), false); assert.equal(JSON.stringify(h.store.read()).includes('PRIVATE RAW'), false);
 });
 
+test('diagnostic key inventory uses explicit profile plus memory only and never reads refresh fields', t => {
+  const h = setup(t), { readDiagnosticValues } = require('../../scripts/badcase-capture/wiki-diagnostics.cjs');
+  fs.writeFileSync(path.join(h.root, 'models.json'), JSON.stringify({ providers: { one: { apiKey: '$MODEL_KEY' }, two: { apiKey: 'literal-provider-value' } } }));
+  fs.writeFileSync(path.join(h.root, 'auth.json'), JSON.stringify({ 'openai-codex': { access: 'access-only-value', refresh: 'never-use-refresh' } }));
+  const values = readDiagnosticValues({ PI_CODING_AGENT_DIR: h.root, MODEL_KEY: 'resolved-model-value', EXTRA_TOKEN: 'memory-value' });
+  assert.deepEqual(new Set(values), new Set(['resolved-model-value', 'literal-provider-value', 'access-only-value', 'memory-value']));
+  assert.equal(values.includes('never-use-refresh'), false);
+  assert.throws(() => readDiagnosticValues({ PI_CODING_AGENT_DIR: h.root }), /wiki_diagnostic_storage_invalid/);
+});
+
 test('private diagnostic writer rejects nonignored destinations and redacts escaped and base64 known values', t => {
   const h = setup(t), { writeWikiDiagnostic } = require('../../scripts/badcase-capture/wiki-diagnostics.cjs');
   assert.throws(() => writeWikiDiagnostic({ modelOutput: key, validationIssue: { field: 'x', rule: 'y' } }, { directory: h.root, knownValues: [key] }), /wiki_diagnostic_storage_invalid/);
