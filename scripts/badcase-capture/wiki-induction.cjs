@@ -29,15 +29,22 @@ function prepareWikiInduction(store) {
     { path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'wiki-induction-container.cjs')) },
   ] };
 }
-async function inductWikiCases({ store, image, confirmed, expectedRevision }, options = {}) {
+async function inductWikiCases({ store, image, confirmed, expectedRevision, dockerBackend }, options = {}) {
   if (confirmed !== true) throw fail('wiki_confirmation_required');
   if (!Number.isSafeInteger(expectedRevision) || store.read().revision !== expectedRevision) throw fail('wiki_revision_conflict');
   const plan = prepareWikiInduction(store);
+  // Explicit backend/host errors precede auth access and any Docker action.
+  if (dockerBackend !== undefined) {
+    require('./wsl-docker.cjs').validateWslDockerBackend(dockerBackend);
+    if (!options.execute && process.platform !== 'win32') throw fail('evaluation_wsl_host_required');
+  } else if (!options.execute && process.platform !== 'linux') throw fail('evaluation_linux_required');
   const key = (options.readKey || readCaffDeepseekKey)();
-  const result = await (options.execute || runDirectDockerTask)(image, plan.files, { key, timeoutMs: 120000 });
+  const execute = options.execute || (dockerBackend === undefined ? runDirectDockerTask : require('./wiki-host-model.cjs').runWikiHostTask);
+  const result = await execute(image, plan.files, { key, timeoutMs: 120000, ...(dockerBackend === undefined ? {} : { dockerBackend }) });
   const serialized = JSON.stringify(result);
   if (serialized.includes(key) || serialized.includes(JSON.stringify(key).slice(1, -1)) || containsSecretSentinel(serialized)) throw fail('wiki_contains_secret');
   const proof = { type: plan.phase === 'preclassification' ? 'wiki-preclassification' : 'wiki-incremental-induction', model: DEEPSEEK_PROFILE, inputHash: plan.inputHash, caseIds: plan.caseIds,
+    ...(dockerBackend === undefined ? {} : { dockerBackend }),
     containerId: result.containerId, cleaned: result.cleaned, isolation: result.isolation, calls: result.receipt?.calls ?? null };
   options.onEvent?.(proof);
   if (result.failed || result.cleaned !== true || result.receipt?.ok !== true || !Array.isArray(result.receipt?.results)) throw fail('wiki_generation_failed');
@@ -57,14 +64,14 @@ async function main(args = process.argv.slice(2)) {
   try {
     if (!fs.lstatSync(args[1]).isFile() || fs.statSync(args[1]).size > 1024 * 1024) throw Error();
     config = JSON.parse(fs.readFileSync(args[1], 'utf8'));
-    if (!config || Object.keys(config).some(k => !['globalRoot', 'sourceWorktree', 'image', 'expectedRevision'].includes(k))) throw Error();
+    if (!config || Object.keys(config).some(k => !['globalRoot', 'sourceWorktree', 'image', 'expectedRevision', 'dockerBackend'].includes(k))) throw Error();
   } catch { throw fail('wiki_config_invalid'); }
   const store = createWikiStore(config);
   if (store.read().revision !== config.expectedRevision) throw fail('wiki_revision_conflict');
   prepareWikiInduction(store);
   const fd = fs.openSync(args[4], 'wx', 0o600);
   try {
-    const saved = await inductWikiCases({ store, image: config.image, confirmed: true, expectedRevision: config.expectedRevision }, {
+    const saved = await inductWikiCases({ store, image: config.image, confirmed: true, expectedRevision: config.expectedRevision, dockerBackend: config.dockerBackend }, {
       onEvent: row => { fs.writeSync(fd, JSON.stringify(row) + '\n'); fs.fsyncSync(fd); },
     });
     process.stdout.write(JSON.stringify({ runId: saved.run.id, suggestions: saved.suggestions.length, versionId: saved.version?.id || null }) + '\n');

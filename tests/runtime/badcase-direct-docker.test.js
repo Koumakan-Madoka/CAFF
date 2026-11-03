@@ -62,6 +62,18 @@ test('Codex launcher is explicitly relay-only and has no credential environment 
   await assert.rejects(runCodexDockerTask(image, codexFiles, { network: 'bridge' }), /evaluation_codex_relay_required/);
   await assert.rejects(runCodexDockerTask(image, codexFiles, { sendNativeRequest: async () => {}, key }), /evaluation_codex_relay_required/);
 });
+test('host-model launcher preserves network-none/no-credential isolation and requires bounded explicit exchange', async () => {
+  const { runHostModelDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs');
+  const f = fake(), options = { timeoutMs: 1000, runDocker: f.run, sendNativeRequest: async () => Buffer.from('{}'),
+    limits: { maxRequests: 1, maxRequestBytes: 4096, maxResponseBytes: 4096 } };
+  const r = await runHostModelDockerTask(image, files, options);
+  assert.equal(r.cleaned, true); assert.equal(f.remaining(), false); assert.equal(r.isolation.network, 'none');
+  assert.deepEqual(r.isolation.credentialEnvironmentNames, []);
+  const c = f.calls.find(c => c.args[0] === 'create'); assert.equal(c.options.key, undefined); assert.equal(c.args.includes('--env'), false);
+  for (const extra of [{ key }, { network: 'bridge' }, { sendNativeRequest: undefined }, { limits: undefined }]) {
+    await assert.rejects(runHostModelDockerTask(image, files, { ...options, ...extra }), /evaluation_host_relay_required/);
+  }
+});
 test('dependency installer streams its archive before tmpfs teardown, never reads/injects account auth, then verifies cleanup', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-deps-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

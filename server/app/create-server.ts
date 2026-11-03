@@ -1335,9 +1335,15 @@ export function createServerApp(options: any = {}) {
     createBadcaseWikiController({
       globalRoot: path.join(agentDir, 'badcase-global'),
       sourceWorktree: initialProjectDir,
-      runInduction: options.badcaseWikiInductionRunner || ((input: any) => require('../../../scripts/badcase-capture/wiki-induction.cjs').inductWikiCases({
-        ...input, image: options.badcaseWikiInductionImage, confirmed: true,
-      })),
+      runInduction: options.badcaseWikiInductionRunner || ((input: any) => {
+        const configFile = options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG;
+        if (configFile !== undefined || options.badcaseWikiInductionImage === undefined) {
+          return require('../../../scripts/badcase-capture/wiki-page-runtime.cjs').runPageInduction(input, { configFile });
+        }
+        return require('../../../scripts/badcase-capture/wiki-induction.cjs').inductWikiCases({
+          ...input, image: options.badcaseWikiInductionImage, confirmed: true,
+        });
+      }),
       projectManager, host, port, csrfToken: providerConfigCsrfToken,
       getAuthority() {
         const address = server && server.address();

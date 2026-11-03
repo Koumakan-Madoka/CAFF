@@ -26,6 +26,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_suggestion_not_found: 404, wiki_suggestion_resolved: 409, wiki_suggestion_review_required: 409,
     wiki_model_output_invalid: 422, wiki_generation_failed: 503, wiki_unknown_training_case: 422,
     wiki_training_input_too_large: 422, evaluation_caff_auth_unavailable_or_invalid: 503, evaluation_linux_required: 503,
+    wiki_runtime_config_required: 503, wiki_runtime_config_invalid: 503,
+    evaluation_wsl_host_required: 503, evaluation_wsl_backend_invalid: 503,
   };
   return async ({ req, res, pathname }: any) => {
     const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership))?$/);

@@ -26,6 +26,14 @@ function setup(t) {
 }
 const rejects = (promise, code, status = 422) => assert.rejects(promise, e => e.statusCode === status && e.issues?.[0]?.code === code);
 
+test('page runtime configuration errors are safe actionable codes, never host paths or raw diagnostics', async t => {
+  const h = setup(t);
+  for (const code of ['wiki_runtime_config_required', 'wiki_runtime_config_invalid', 'evaluation_wsl_host_required', 'evaluation_wsl_backend_invalid']) {
+    h.options.runInduction = async () => { throw Object.assign(Error(h.root), { code }); };
+    await rejects(h.invoke({ confirmed: true, expectedRevision: 0 }, { pathname: '/api/wikiskill/induct' }), code, 503);
+  }
+  assert.equal(h.store.read().revision, 0);
+});
 test('GET is read-only and returns the local external collection without filesystem paths', async t => {
   const h = setup(t), result = await h.invoke();
   assert.equal(result.status, 200); assert.equal(result.body.revision, 0); assert.deepEqual(result.body.cases, []);
