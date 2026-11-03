@@ -155,6 +155,11 @@ test('new unexposed sources cannot be silently added or replace frozen test slot
   assert.throws(() => prepareBatch({ ...h.config, cases: [...h.config.cases.filter(c => c.sourceCaseId !== h.split.testCaseIds[0]), extra] }, h.options), /batch_cases_invalid/);
   assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);
 });
+test('batch turn timeout above 45 minutes reports its actual limit before key or execution', t => {
+  const h = setup(t);
+  assert.throws(() => prepareBatch({ ...h.config, timeoutMs: 2700001 }, h.options), { code: 'evaluation_timeout_limit' });
+  assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);
+});
 test('all frozen source slots are required, with distinct GPT checkpoints and no unsupported scope options', t => {
   const h = setup(t), copy = () => structuredClone(h.config);
   for (const change of [c => c.cases.pop(), c => c.cases.push(c.cases[0]), c => { c.cases[0].sourceCaseId = 'unknown'; },

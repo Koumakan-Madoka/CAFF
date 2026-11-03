@@ -199,7 +199,8 @@ test('turn timeout accepts up to 45 minutes, is bound into plan and reaches the 
   f.options.execute = (...args) => { assert.equal(args[2].timeoutMs, c.timeoutMs); return execute(...args); };
   const result = await runComparison(c, f.options); assert.equal(result.completed, true);
   assert.match(formatComparison(result), /容器时限：2700秒/);
-  for (const timeoutMs of [999, 2700001, Infinity]) assert.throws(() => prepareComparison({ ...c, timeoutMs }, f.options), /evaluation_config_invalid/);
+  for (const timeoutMs of [999, Infinity]) assert.throws(() => prepareComparison({ ...c, timeoutMs }, f.options), /evaluation_config_invalid/);
+  assert.throws(() => prepareComparison({ ...c, timeoutMs: 2700001 }, f.options), { code: 'evaluation_timeout_limit' });
 });
 test('worker accepts the full 256 KiB prompt and keeps public callback valid for the 45-minute ceiling', async t => {
   const prompt = '中'.repeat(87381) + 'a', r = await workerReceipt(t, { prompt });

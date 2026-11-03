@@ -192,6 +192,33 @@ test('actual CLI --plan exposes the sealed reason and supports unchanged origina
     else { assert.equal(output.preparedOnly, true); assert.equal(output.dockerVerified, false); assert.equal(output.kind, 'sealed-original-replay-v1'); }
   }
 });
+test('actual CLI reports prompt/session/material/timeout limits without a model or generic target error', t => {
+  const path = require('node:path'), { spawnSync } = require('node:child_process');
+  const cases = [
+    { label: 'prompt-256KiB', change: ({ r, put }) => { r.promptBlobHash = r.normalizedPromptHash = put('a'.repeat(262144)); }, supported: true },
+    { label: 'prompt-over-256KiB', change: ({ r, put }) => { r.promptBlobHash = r.normalizedPromptHash = put('a'.repeat(262145)); }, reason: 'replay_prompt_size_limit' },
+    { label: 'missing-resume-prefix', change: ({ r }) => { r.deliveryMode = 'resume'; }, reason: 'replay_session_missing' },
+    { label: 'corrupt-resume-prefix', mode: 'resume', change: ({ r, put }) => { r.sessionBlobHash = put('not JSON\n'); }, reason: 'replay_session_invalid' },
+    { label: 'missing-retained-blob', after: f => fs.unlinkSync(f.blobPath(f.r.promptBlobHash)), reason: 'replay_blob_unavailable_or_invalid' },
+    { label: 'timeout-45min', timeoutMs: 2700000, supported: true },
+    { label: 'timeout-over-45min', timeoutMs: 2700001, error: 'evaluation_timeout_limit' },
+  ];
+  for (const item of cases) {
+    const f = portable(t, item.change, item.mode); item.after?.(f);
+    const config = { request: f.request, variants: ['original'], repeats: 1, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
+      image: { imageId: 'sha256:' + '1'.repeat(64) }, ...(item.timeoutMs === undefined ? {} : { timeoutMs: item.timeoutMs }),
+      rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } };
+    const file = path.join(f.root, 'cli-limit.json'); fs.writeFileSync(file, JSON.stringify(config));
+    const result = spawnSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', file, '--plan'], { encoding: 'utf8' });
+    const output = JSON.parse(item.error ? result.stderr : result.stdout);
+    t.diagnostic(JSON.stringify({ label: item.label, exitCode: result.status, ...(item.supported ? { supported: output.supported, preparedOnly: output.preparedOnly, timeoutMs: output.timeoutMs } : output) }));
+    assert.equal(result.status, item.error ? 1 : 0, item.label);
+    if (item.error) assert.equal(output.error, item.error);
+    else if (item.reason) assert.deepEqual(output, { supported: false, reason: item.reason });
+    else { assert.equal(output.supported, true); assert.equal(output.preparedOnly, true); assert.equal(output.dockerVerified, false); }
+    assert.doesNotMatch(JSON.stringify(output), /unsupported_or_missing_declared_prompt_target/);
+  }
+});
 test('sealed original prompt limit is 256 KiB in UTF-8 bytes, without truncation', t => {
   for (const size of [131073, 262144, 262145]) {
     const text = '中'.repeat(Math.floor(size / 3)) + 'a'.repeat(size % 3);

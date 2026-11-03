@@ -13,6 +13,7 @@ const fail = code => Object.assign(Error(code), { code });
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const variants = ['original', 'candidate'];
 function prepareBatch(config, options = {}) {
+  if (Number.isSafeInteger(config?.timeoutMs) && config.timeoutMs > 45 * 60 * 1000) throw fail('evaluation_timeout_limit');
   const scopeFields = config?.globalRoot === undefined ? ['captureRoot', 'projectId'] : ['globalRoot'];
   if (!config || Object.keys(config).some(k => ![...scopeFields, 'sourceWorktree', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases', ...(config.globalRoot !== undefined ? ['evaluation'] : [])].includes(k))
     || !Array.isArray(config.cases) || !config.cases.length || config.cases.length > 20

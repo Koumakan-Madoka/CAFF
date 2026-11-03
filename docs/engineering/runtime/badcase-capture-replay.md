@@ -4,9 +4,18 @@
 
 本契约描述 2026-10-30 用户确认的最短路径 MVP、2026-10-31 批准的 WikiSkill 层扩展，以及 2026-11-01 确认的单模式/两阶段评测（Goal `goal_aa132140-e957-4a58-9ed6-d58812370377`）。S0–S3 的固定 SHA `460d0512` 与 wiki 层最后一起由用户一次性接受，旧证据不冒充新增功能证据。旧设计与审查记录保留在 Git 历史和各自 Goal 记录中，不把历史 FAIL 追认为 PASS，也不沿用已取消的网关、双账本或持久付费批准义务。交付与验收证据以当前 Goal 为准；本文件不是另一份任务台账。
 
-### 2026-11-02 生产同配置扩展（M1 实现中）
+### 2026-11-02 生产同配置扩展
 
-当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。以下已实现文件脱敏、目录传输、已知值扫描后的 Git 历史保留/无历史回退、Linux npm 依赖缓存及 GPT 宿主传输基础模块，不宣称真实 GPT 准入或回放已通过；GPT 断网容器及单例 CLI 已连通合成验证，真实准入另按 Goal 验证。
+当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。M1 已于 `e7c28782` 通过规划者独立评审，用户批准进入 M2；并非整个 Goal 已被最终接受。以下早期切片中的“尚未真实准入”等为当时验证边界，当前实测范围以本节记录和 Goal 的独立评审结果为准。
+
+#### 2026-11-03 M1／M2 实测范围
+
+- M1：3268 的真实 GPT badcase ④，生产配置 `openai-codex/gpt-6.1-sol`、thinking `xhigh`，修复现场后原版独立三次均未测试先请示，且不再追问工作区改动或基线。Git status 与源现场同为空、保持 detached HEAD；41 个占位文件实际仍字节不同，`.env.example` 仍缺失，不能以 status 一致冒称字节等价。无候选或自动评分。证据：`.tmp/wikiskill-production-m1/restoration-q4-rerun/`。
+- M2：仅在 3268 新建同一房间连续两轮，第二轮实际 `sessionReused:true`、`deliveryMode:resume`；前缀 7 行、投影 4 条历史消息。第一轮只使用 read，故属于下文的已验证 session 子集；这不证明含历史 bash／未知工具的任意生产 resume 均可回放。用原生生产 GPT/xhigh 在真实断网容器回放第二轮，回执绑定原 CAS 前缀 hash／行数，恢复并使用第一轮标记，公开回调成功。
+- 长轮次是明确授权的实时时限／工具续接探针：模型实际运行一次 315 秒的无写入 Node 计时命令后继续回复。采集第二轮耗时 376.5 秒，独立容器回放 388.3 秒，均超过五分钟。未延迟或伪造供应方响应；**不宣称单次供应方思考／流持续超过五分钟，也未实测满 45 分钟**。回放 5 次真实供应方请求均 HTTP200，已知累计 64103 token（含缓存及重复上下文），账号剩余额度未知。
+- M2 的技术封存只在私有采集副本创建，用于已授权的回放验收；不把正常探针回复标为 badcase，不新增 Wiki 用例、不更改冻结组别、原检查点或 M1 封存。`compare-sealed --plan` 与原始运行／公开回复证据存于 `.tmp/wikiskill-production-m2/`。M2 里程碑仍须独立评审，不据此进入 M3。
+- 提示词按 UTF-8 字节计：262144 字节允许且不截断，262145 字节报 `replay_prompt_size_limit`。缺失／损坏 resume 前缀分别报 `replay_session_missing`／`replay_session_invalid`，丢失保留 blob 报 `replay_blob_unavailable_or_invalid`，不误报缺提示词目标。整数 turn 超时上限 2700000ms；单例和批量配置超过上限在读凭据、封存或执行前报 `evaluation_timeout_limit`，非法类型／不足 1000ms 仍报配置错误。CLI `--plan` 的 `supported:false` 当前退出码仍为 0，调用方必须检查 JSON，不以进程成功替代准入；异常配置退出码为 1。
+- 256KiB／45 分钟边界、回调到期和清理为定向测试证据；真实长轮次仅证明上述约六分钟场景。宿主 access 仅内存、经 17890、不用 refresh，回放容器断网、无账号凭据／宿主挂载；资源仍为 4GiB／2CPU／128pids。不据一条成功样本承诺所有生产轮次、规模或 Linux 不支持的 Windows 行为。
 
 - 新采集的纳入范围普通文件：Linux 与 Windows 均在内存中将哨兵命中的值替换为 `[*]`，保留路径、非秘密内容及可得 mode。私钥擦除整个块（缺 END 时擦到文件末尾），二进制/无效 UTF-8 逐字节保留非秘密部分；二进制沿用高置信哨兵子集，不扩大为键值误报。结构化 prompt/session/harness、分类用 Git 元数据和显式/敏感路径排除策略不变。
 - 仅对安全字节计算 CAS hash/size；不存原始秘密内容或其 hash。文件元数据另存 `secretRedacted/originalSize/redactionCount`，检查点记录 `secretRedactedPaths` 及文件数。脱敏本身不新增缺材料原因，也不升级 Windows subset/严格评测资格。

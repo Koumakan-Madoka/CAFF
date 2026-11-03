@@ -72,6 +72,7 @@ function comparisonKnownValues(config, options) {
   return [];
 }
 function prepareComparison(config, options = {}) {
+  if (Number.isSafeInteger(config?.timeoutMs) && config.timeoutMs > 45 * 60 * 1000) throw fail('evaluation_timeout_limit');
   const variants = config?.variants === undefined ? ['original', 'candidate'] : config.variants;
   const originalOnly = Array.isArray(variants) && variants.length === 1 && variants[0] === 'original';
   if (!config || !Array.isArray(variants) || !(originalOnly || variants.length === 2 && variants[0] === 'original' && variants[1] === 'candidate') || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
