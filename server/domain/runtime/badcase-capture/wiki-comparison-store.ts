@@ -7,6 +7,7 @@ import { createWikiStore } from './wiki-store';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
 import { projectStagedResult } from './wiki-staged-result';
+import { planWikiEvaluationSuite } from './wiki-evaluation-suite';
 
 const variants = ['original', 'candidate'];
 const categories = ['reproduction', 'probe', 'control'];
@@ -23,6 +24,7 @@ function ids(values: any) {
   const result = values.map(identifier); check(new Set(result).size === result.length); return result;
 }
 export function wikiComparisonTotals(cases: any[], repeats: number) {
+  cases = cases.filter(c => c.reportOnly !== true);
   return Object.fromEntries(variants.map(variant => {
     const rows = cases.flatMap(c => c.runs || []).filter(r => r.variant === variant), planned = cases.length * repeats;
     const passed = rows.filter(r => r.status === 'pass').length, failed = rows.filter(r => r.status === 'fail').length, errors = rows.filter(r => r.status === 'error').length;
@@ -115,14 +117,25 @@ export function createWikiComparisonStore(options: any) {
         const state = wiki.read(), candidate = state.candidates.find((c: any) => c.id === payload.candidate.id);
         check(candidate?.kind === 'global-wiki-candidate-v1' && candidate.status === 'confirmed' && candidate.target.kind === 'global-system-prompt');
         for (const k of Object.keys(payload.candidate)) check(JSON.stringify(candidate[k]) === JSON.stringify(payload.candidate[k]));
-        for (const k of Object.keys(payload.split)) check(JSON.stringify(state.replaySplit?.[k]) === JSON.stringify(payload.split[k]));
+        const production = payload.evaluation?.splitPolicy === 'd15-frozen-v1';
+        if (!production) for (const k of Object.keys(payload.split)) check(JSON.stringify(state.replaySplit?.[k]) === JSON.stringify(payload.split[k]));
+        else {
+          const suite = planWikiEvaluationSuite(state, payload.cases, payload.evaluation.targetEntryId);
+          for (const key of ['gateCaseIds', 'testCaseIds', 'targetReproductionCaseIds', 'targetTestReproductionCaseIds', 'reportOnlyCaseIds']) check(JSON.stringify(suite[key]) === JSON.stringify(payload.evaluation[key]));
+          check(JSON.stringify(suite.cases.map((c: any) => c.sourceCaseId)) === JSON.stringify(payload.split.caseIds));
+          for (const record of suite.cases) {
+            const saved = payload.cases.find((c: any) => c.sourceCaseId === record.sourceCaseId);
+            for (const key of ['split', 'stage', 'category', 'family', 'reportOnly', 'targetReproduction', 'classification']) check(JSON.stringify(record[key]) === JSON.stringify(saved?.[key]));
+          }
+        }
         for (const c of payload.cases) {
           const source = state.cases.find((s: any) => s.id === c.sourceCaseId), replay = state.replayCases.find((s: any) => s.sourceCaseId === c.sourceCaseId);
           check(source && source.split === c.split);
-          if (c.replayId) check(replay?.id === c.replayId && replay.category === c.category && replay.split === c.split);
-          else check(c.status === 'unsupported' && !replay);
+          if (production && c.reportOnly) check(c.status === 'not-run' && c.reason === 'non_gpt_source_report_only' && !c.runs.length);
+          else if (c.replayId) check(replay?.id === c.replayId && replay.category === c.category && replay.split === c.split);
+          else check(!replay && (c.status === 'unsupported' || production && c.status === 'not-run'));
         }
-        if (payload.evaluation) {
+        if (payload.evaluation && !production) {
           const e = payload.evaluation, version = state.versions.find((v:any)=>v.id===candidate.versionId);
           check(candidate.entryIds.length===1 && e.targetEntryId===candidate.entryIds[0]);
           const entry=version?.entries.find((e:any)=>e.id===candidate.entryIds[0]);

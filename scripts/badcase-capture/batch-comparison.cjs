@@ -78,9 +78,6 @@ function prepareBatch(config, options = {}) {
 async function runBatch(config, options = {}) {
   const fixed = structuredClone(config), plan = prepareBatch(fixed, options);
   if (options.confirmed !== true || options.expectedPlanHash !== plan.summary.planHash) throw fail('evaluation_batch_confirmation_required');
-  // The production D15 planner is available before its publication pipeline.
-  // Never spend model quota then discover the page cannot persist this schema.
-  if (plan.summary.evaluation?.splitPolicy === 'd15-frozen-v1') throw fail('evaluation_production_publication_not_ready');
   if (plan.summary.evaluation) return require('./staged-batch.cjs').runStagedBatch(fixed, plan, options);
   const emit = options.onEvent || (() => {}), results = [], executionId = crypto.randomUUID();
   let key, stopped = false, runtimeHash = null;

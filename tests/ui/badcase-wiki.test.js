@@ -81,6 +81,16 @@ function setup(t, handler) {
     click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
 
+test('production result labels model/thinking and report-only rows, without stale proxy disclaimers or unrelated tasks', async t => {
+  const h = setup(t), totals = { original: { planned: 10, passed: 4, failed: 6, errors: 0, notRun: 0, scored: 10, passRate: .4 }, candidate: { planned: 10, passed: 8, failed: 2, errors: 0, notRun: 0, scored: 10, passRate: .8 } };
+  h.saved().comparisons = [{ id: 'production-1', executionId: 'production-1', createdAt: '2026-11-03T12:00:00Z', model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh', api: 'openai-codex-responses' }, completed: true, evaluation: { splitPolicy: 'd15-frozen-v1' }, modelCallsKnown: 40,
+    cases: [{ sourceCaseId: 'c1', stage: 'gate', category: 'reproduction', reportOnly: false, totals }, { sourceCaseId: 'c2', stage: 'test', category: 'control', reportOnly: false, totals }, { sourceCaseId: 'c3', stage: 'gate', category: 'reproduction', family: 'deepseek', reportOnly: true, totals: { original: { planned: 0, passed: 0 }, candidate: { planned: 0, passed: 0 } } }], byStage: { gate: totals, test: totals } }];
+  h.saved().replayCases.push({ sourceCaseId: 'c4', task: 'UNRELATED-OLD-TASK', category: 'probe', split: 'train' });
+  await h.panel.load(); await h.click('[data-tab="impact"]'); const text = h.root.querySelector('#impact-runs').textContent;
+  assert.match(text, /gpt-6.1-sol/); assert.match(text, /xhigh/); assert.match(text, /非GPT来源.*仅报告/); assert.match(text, /不计入/);
+  assert.doesNotMatch(text, /代理模型 DeepSeek|不作为采纳依据|UNRELATED-OLD-TASK/); assert.equal(h.posts().length, 0);
+});
+
 test('voided mark audit remains visible after removing the active case, without an undefined number or HTML execution', async t => {
   const h = setup(t);
   h.saved().events.push({ id: 'event-void', type: 'case-mark-voided', caseIds: ['removed-case'], createdAt: '2026-11-03T09:00:00Z', label: '误标作废', reason: '现场无对应测试；用户批准 <script>not-html</script>' });

@@ -36,9 +36,36 @@ test('production planner blocks every unconfirmed holdout before kernel/auth; co
  assert.ok(h.calls.every(c=>c.modelProfile===PROFILE && c.keySource==='caff-codex-access' && c.executionPolicy==='alternating-valid-v1'));
  assert.equal(JSON.stringify(p.summary).includes(h.config.codexAuthFile),false);assert.ok(!p.summary.disclosures.includes('proxy_model_deepseek'));
 });
-test('production plan cannot spend quota before production result publication is implemented',async t=>{
- const h=fixture(t);for(const c of h.marks)h.confirm(c);let auth=0,models=0;
- await assert.rejects(runBatch(h.config,{...h.options,confirmed:true,expectedPlanHash:h.plan().summary.planHash,readKey:()=>{auth++;throw Error('forbidden');},executeCodex:()=>{models++;throw Error('forbidden');}}),/evaluation_production_publication_not_ready/);assert.equal(auth,0);assert.equal(models,0);
+function fakeExecution(h,{improve=true}={}){
+ const events=[],calls=[];let legacyReads=0;
+ const options={...h.options,confirmed:true,expectedPlanHash:h.plan().summary.planHash,onEvent:e=>events.push(e),readKey:()=>{legacyReads++;throw Error('Proxy credential forbidden');},
+  runProductionComparison:async(config,options)=>{calls.push(config);const id=config.request.association.checkpointId,runs=[];options.onEvent({event:'plan',runtimeHash:digest});
+   for(let i=1;i<=10;i++)for(const variant of ['original','candidate']){const row={variant,iteration:i,status:improve&&id==='cp-0'&&variant==='original'?'fail':'pass',replySource:'public',cleaned:true,finalText:'PRIVATE-WORKER-REPLY-NOT-FOR-PAGE',modelCalls:[{model:PROFILE,durationMs:1,success:true}],durationMs:1};runs.push(row);options.onEvent({event:'run_start',variant,iteration:i});options.onEvent({event:'model_call',variant,iteration:i,model:PROFILE});options.onEvent({event:'run',...row});}
+   return {completed:true,runs,modelCallsKnown:20,callsUnavailable:false};}};
+ return {events,calls,options,legacyReads:()=>legacyReads,run:()=>runBatch(h.config,options)};
+}
+test('production staged execution uses only native per-case path, reports other families without pooling and persists safe GPT/config results',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h),r=await f.run();assert.equal(f.legacyReads(),0);assert.equal(f.calls.length,3);assert.equal(r.modelCallsKnown,60);assert.equal(r.gateDecision.outcome,'accepted');assert.equal(r.completed,true);
+ assert.equal(r.byStage.gate.original.planned,20);assert.equal(r.byStage.test.original.planned,10);assert.ok(r.cases.filter(c=>c.reportOnly).every(c=>c.reason==='non_gpt_source_report_only'&&!c.runs.length));
+ const gateAt=f.events.findIndex(e=>e.event==='gate_decision'),testAt=f.events.findIndex(e=>e.event==='run'&&e.stage==='test');assert.ok(gateAt>=0&&testAt>gateAt);
+ const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=store.save(r);assert.equal(saved.model,PROFILE);assert.equal(saved.modelConfig.thinking,'xhigh');assert.deepEqual(store.read()[0],saved);assert.equal(JSON.stringify(saved).includes('PRIVATE-WORKER-REPLY-NOT-FOR-PAGE'),false);assert.equal(saved.byStage.gate.original.planned,20);
+ for(const mutate of [s=>{s.modelConfig.thinking='off';},s=>{s.gateDecision.outcome='rejected';},s=>{s.cases.find(c=>c.sourceCaseId===h.marks[0].id).reportOnly=true;}]){const forged=structuredClone(r);mutate(forged);assert.throws(()=>store.save(forged),/wiki_comparison_invalid/);}
+ const output=require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(r);assert.match(output,/gpt-6.1-sol/);assert.match(output,/xhigh/);assert.doesNotMatch(output,/代理模型 DeepSeek/);
+});
+test('production gate rejection never executes GPT test or non-GPT rows, and saved stages keep separate denominators',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h,{improve:false}),r=await f.run();assert.equal(r.gateDecision.outcome,'rejected');assert.equal(f.calls.length,2);assert.equal(r.completed,true);assert.equal(r.byStage.test.original.attempted,0);assert.equal(r.byStage.test.original.notRun,10);
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);assert.deepEqual(saved.byStage,r.byStage);assert.equal(saved.totals,undefined);
+});
+test('native auth/expiry errors stop the batch, keep a safe cause and never fall back to a proxy or run tests',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h);let calls=0;
+ f.options.runProductionComparison=async()=>{calls++;throw Object.assign(Error('PRIVATE-AUTH-DIAGNOSTIC'),{code:'evaluation_codex_access_expired'});};
+ const r=await f.run();assert.equal(calls,1);assert.equal(f.legacyReads(),0);assert.equal(r.completed,false);assert.equal(r.gateDecision.outcome,'indeterminate');
+ assert.ok(r.cases.some(c=>c.reason==='evaluation_codex_access_expired'));assert.equal(r.byStage.test.original.attempted,0);assert.equal(JSON.stringify(r).includes('PRIVATE-AUTH-DIAGNOSTIC'),false);
+ const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);assert.equal(store.save(r).completed,false);
+});
+test('stale human classification cannot be hidden by forged report-only/source metadata at publication',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const r=await fakeExecution(h).run();h.store.assignCase({caseId:h.marks[0].id,entryId:null,expectedRevision:h.store.read().revision});
+ const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);assert.throws(()=>store.save(r),/wiki_comparison_invalid/);
 });
 test('production plan pins complete configuration/rules/restore sources and rechecks human classification',t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);const p=h.plan();h.config.timeoutMs=2700000;assert.notEqual(h.plan().summary.planHash,p.summary.planHash);

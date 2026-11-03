@@ -2,7 +2,7 @@
 // automatic prompt iteration, or pooling across the gate and test partitions.
 const crypto = require('node:crypto');
 const { runComparison } = require('./direct-comparison.cjs');
-const { validKey, readCaffDeepseekKey } = require('./direct-model.cjs');
+const { validKey, readCaffDeepseekKey, CODEX_PROFILE } = require('./direct-model.cjs');
 const { wikiComparisonTotals: totals } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
 const { decideWikiGate } = require('../../build/server/domain/runtime/badcase-capture/wiki-gate-policy');
 const { wikiGoalCaseNumber } = require('../../build/server/domain/runtime/badcase-capture/wiki-suite');
@@ -10,7 +10,8 @@ const fail = code=>Object.assign(Error(code),{code});
 async function runStagedBatch(config, plan, options) {
   const emit=options.onEvent || (()=>{}), executionId=crypto.randomUUID(), results=[];
   let key, runtimeHash=null, fatal=false;
-  if(plan.prepared.some(c=>c.supported && c.stage==='gate')) {
+  const native=plan.summary.model===CODEX_PROFILE;
+  if(!native && plan.prepared.some(c=>c.supported && c.stage==='gate')) {
     key=validKey((options.readKey || readCaffDeepseekKey)());
     const s=JSON.stringify(plan.summary);
     if(s.includes(key) || s.includes(JSON.stringify(key).slice(1,-1))) throw fail('evaluation_output_contains_key');
@@ -18,15 +19,19 @@ async function runStagedBatch(config, plan, options) {
   emit({event:'batch_plan',...plan.summary,executionId});
   async function executeCase(item, skipReason) {
     let result={sourceCaseId:item.sourceCaseId,split:item.split,stage:item.stage,category:item.category,replayId:item.replayId || null,
+      ...(native ? {family:item.family,reportOnly:item.reportOnly,targetReproduction:item.targetReproduction,
+        ...(item.classification ? {classification:item.classification} : {})} : {}),
       comparison:item.comparison || null,status:'not-run',runs:[],modelCallsKnown:0,callsUnavailable:false};
-    if(skipReason || fatal) result.reason=skipReason || 'prior_integrity_error';
+    if(item.reportOnly) result.reason='non_gpt_source_report_only';
+    else if(skipReason || fatal) result.reason=skipReason || 'prior_integrity_error';
     else if(!item.supported) { result.status='unsupported';result.reason=item.reason; }
     else {
       const runs=[],calls=new Map();
       try {
         const fresh=require('./batch-comparison.cjs').prepareBatch(config,options);
         if(fresh.summary.planHash!==plan.summary.planHash) throw fail('evaluation_batch_input_changed');
-        const comparison=await runComparison(item.comparisonConfig,{...options,confirmed:true,readKey:()=>key,onEvent:event=>{
+        const compare=native ? options.runProductionComparison || runComparison : runComparison;
+        const comparison=await compare(item.comparisonConfig,{...options,confirmed:true,...(native?{}:{readKey:()=>key}),onEvent:event=>{
           if(event.event==='plan') {
             if(runtimeHash!==null && runtimeHash!==event.runtimeHash) throw fail('evaluation_batch_runtime_changed');
             runtimeHash=event.runtimeHash;
@@ -39,10 +44,10 @@ async function runStagedBatch(config, plan, options) {
         result={...result,status:comparison.completed?'completed':'error',runs:comparison.runs,
           modelCallsKnown:comparison.modelCallsKnown,callsUnavailable:comparison.callsUnavailable===true};
         fatal ||= comparison.fatal===true;
-      } catch {
+      } catch (e) {
         // An integrity/staging failure is not a model's failed answer. Preserve
         // known attempts, mark the case incomplete, and stop further execution.
-        result={...result,status:'error',reason:'case_execution_failed',runs,modelCallsKnown:[...calls.values()].reduce((n,a)=>n+a.length,0),callsUnavailable:true};
+        result={...result,status:'error',reason:/^(evaluation|wiki)_[a-z_]+$/.test(e?.code || '')?e.code:'case_execution_failed',runs,modelCallsKnown:[...calls.values()].reduce((n,a)=>n+a.length,0),callsUnavailable:true};
         fatal=true;
       }
     }
@@ -53,7 +58,7 @@ async function runStagedBatch(config, plan, options) {
   const gateDecision=decideWikiGate(results,plan.summary.evaluation.targetReproductionCaseIds,plan.summary.repeats);
   emit({event:'gate_decision',executionId,candidate:plan.summary.candidate,gateDecision});
   for(const item of plan.prepared.filter(c=>c.stage==='test')) await executeCase(item,gateDecision.outcome==='accepted'?null:'gate_'+gateDecision.outcome);
-  const completed=gateDecision.outcome!=='indeterminate' && results.filter(c=>c.stage==='gate' || gateDecision.outcome==='accepted').every(c=>c.status==='completed');
+  const completed=gateDecision.outcome!=='indeterminate' && results.filter(c=>!c.reportOnly && (c.stage==='gate' || gateDecision.outcome==='accepted')).every(c=>c.status==='completed');
   const result={...plan.summary,executionId,runtimeHash,completed,cases:results,gateDecision,
     byStage:Object.fromEntries(['gate','test'].map(s=>[s,totals(results.filter(c=>c.stage===s),plan.summary.repeats)])),
     modelCallsKnown:results.reduce((n,c)=>n+c.modelCallsKnown,0),callsUnavailable:results.some(c=>c.callsUnavailable)};
@@ -61,16 +66,18 @@ async function runStagedBatch(config, plan, options) {
 }
 function formatStagedBatch(result) {
   const labels={gate:'门槛',test:'测试'}, categories={reproduction:'复现题',probe:'探针题',control:'防误伤题'};
-  const d=result.gateDecision, lines=['WikiSkill 单模式两阶段对照（不作为采纳依据）','计划 '+result.planHash,
+  const native=result.model===CODEX_PROFILE;
+  const d=result.gateDecision, lines=[native?'WikiSkill 生产配置单模式两阶段对照':'WikiSkill 单模式两阶段对照（不作为采纳依据）','计划 '+result.planHash,
+    '模型 '+result.model+(native?' / thinking '+result.modelConfig.thinking+' / '+result.modelConfig.api+' / Fast关闭 / SSE':''),
     `门槛判定：${{accepted:'接受',rejected:'拒绝',indeterminate:'无法判定'}[d.outcome]}`,
     `修好：原版 ${d.repair.original.passed}/${d.repair.original.total}，候选 ${d.repair.candidate.passed}/${d.repair.candidate.total}；单侧 Fisher p=${d.repair.pValue ?? 'N/A'} < 0.05；${d.repair.passed?'满足':'不满足'}`,
     `无误伤：原版 ${d.noHarm.original.passed}/${d.noHarm.original.total}，候选 ${d.noHarm.candidate.passed}/${d.noHarm.candidate.total}；少通过 ${d.noHarm.loss} 次，容许 ${d.noHarm.allowedLoss} 次；${d.noHarm.passed?'满足':'不满足'}`];
   for(const stage of ['gate','test']) {
     lines.push(labels[stage]+'（单独统计）','用例\t题型\t状态\t原版通过/有效(错误/未执行)\t候选通过/有效(错误/未执行)');
-    for(const c of result.cases.filter(c=>c.stage===stage)) lines.push([wikiGoalCaseNumber(c.sourceCaseId) ? '#'+wikiGoalCaseNumber(c.sourceCaseId) : c.sourceCaseId,categories[c.category],c.status+(c.reason?' / '+c.reason:''),...['original','candidate'].map(v=>{const t=c.totals[v];return `${t.passed}/${t.scored}(${t.errors}/${t.notRun})`;})].join('\t'));
+    for(const c of result.cases.filter(c=>c.stage===stage)) lines.push([wikiGoalCaseNumber(c.sourceCaseId) ? '#'+wikiGoalCaseNumber(c.sourceCaseId) : c.sourceCaseId,categories[c.category],c.reportOnly?'非GPT来源，仅报告、不计入结论':c.status+(c.reason?' / '+c.reason:''),...['original','candidate'].map(v=>{const t=c.totals[v];return c.reportOnly?'不计入':`${t.passed}/${t.scored}(${t.errors}/${t.notRun})`;})].join('\t'));
     for(const v of ['original','candidate']) {const t=result.byStage[stage][v];lines.push(`${labels[stage]} ${v}: ${t.passed}/${t.planned} 通过，${t.failed} 失败，${t.errors} 环境错误，${t.notRun} 未执行；有效 ${t.scored}，通过率 ${t.passRate===null?'N/A':(100*t.passRate).toFixed(1)+'%'}`);}
   }
-  lines.push('代理模型 DeepSeek；小样本；题组经原基线筛选，存在挑题偏差；只复现了汇报难懂一类，探针与其他模式只报告。',
+  lines.push(native?'结论绑定上述生产模型与配置，变更后须重跑；字面规则不是语义判断，小样本不保证提分；非GPT来源、探针和其他模式不计入GPT修好结论。':'代理模型 DeepSeek；小样本；题组经原基线筛选，存在挑题偏差；只复现了汇报难懂一类，探针与其他模式只报告。',
     '环境错误每题原/候选共最多补5次；模型循环、超时、超调用上限计不通过。',
     '测试题仅门槛接受后运行一次；被拒改动及 diff 保留，不自动叠加为基线或修改生产 prompt。',
     '已记录模型请求 '+result.modelCallsKnown+(result.callsUnavailable?'（存在未知/不完整记录）':''));
