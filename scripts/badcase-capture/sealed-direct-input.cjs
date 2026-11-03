@@ -10,6 +10,7 @@ const { readSealedCase, validateSealRequest } = require(base + 'sealed-case');
 const { readCapturedCallbackInput } = require(base + 'callback-input');
 const { containsSecretSentinel } = require(base + 'secrets');
 const { supportsPortableThinking } = require(base + 'portable-inputs');
+const { prepareProjectResources } = require(base + 'project-resources');
 const { validateSessionV2 } = require(base + 'session-validator');
 const { validateDirectBindings } = require('./direct-model.cjs');
 const { locateGlobalPromptTarget } = require('../../build/lib/agent-prompt-targets');
@@ -51,7 +52,9 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     const utf8 = digest => { const b = blobs.get(digest); ensure(b, 'replay_blob_unavailable_or_invalid'); const s = b.toString('utf8');
       ensure(Buffer.from(s).equals(b) && !s.includes('\0'), 'replay_blob_text_invalid'); return s; };
     const snapshot = checked('replay_runtime_snapshot_invalid', () => JSON.parse(utf8(r.harness?.configSnapshotHash))), config = snapshot.sdkStartConfig;
-    ensure(snapshot.portableRuntime?.kind === 'portable-default-resources-v1' && snapshot.portableRuntime.schemaVersion === 1 && snapshot.portableRuntime.supported === true, 'replay_portable_runtime_not_supported');
+    const projectResources = snapshot.portableRuntime?.kind === 'portable-project-resources-v1';
+    ensure((projectResources || snapshot.portableRuntime?.kind === 'portable-default-resources-v1')
+      && snapshot.portableRuntime.schemaVersion === 1 && snapshot.portableRuntime.supported === true, 'replay_portable_runtime_not_supported');
     ensure(['0.85.1', 'pi:0.85.1'].includes(snapshot.piVersion), 'replay_sdk_version_not_supported');
     ensure(snapshot.deliveryMode === r.deliveryMode && snapshot.agentPromptVersion === r.runConfig?.promptVersion && snapshot.toolBridgeEnabled === true, 'replay_runtime_config_mismatch');
     ensure(config && config.resume === resume && config.retireUserScopeSkills === true && config.cwd === cp.targetDir
@@ -116,7 +119,8 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
       checked('replay_session_invalid', () => sessionText.trim().split('\n').forEach(line => JSON.parse(line)));
       ensure(sessionText.split('\n').length - 1 === r.sessionLineCount, 'replay_session_invalid');
     }
-    const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText, systemPrompt: null, settings: null, callback, recordedModelConfig,
+    const resourceConfig = projectResources ? { projectResources: checked('replay_project_resources_invalid', () => prepareProjectResources(snapshot.portableRuntime, files, config)) } : {};
+    const input = { kind: 'prepared-caff-turn-v1', prompt, files, deletions: [...cp.deletions], sessionText, systemPrompt: null, settings: null, callback, recordedModelConfig, ...resourceConfig,
       bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements } };
     const mapped = checked('replay_controlled_bindings_invalid', () => validateDirectBindings(input.prompt, input.bindings, sessionText));
     if (resume) {

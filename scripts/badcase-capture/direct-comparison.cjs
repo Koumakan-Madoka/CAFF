@@ -8,6 +8,7 @@ const { createCodexTransport, createCodexAccess } = require('./codex-transport.c
 const { createCodexRelayExchange } = require('./codex-mailbox.cjs');
 const { readKnownKeyValues } = require('./known-key-values.cjs');
 const { tokenUsage } = require('./replay-measurements.cjs');
+const { projectResourcesSummary, projectResourcesReceiptMatches } = require('../../build/server/domain/runtime/badcase-capture/project-resources');
 const CODEX_CONFIG = Object.freeze({ api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' });
 const { prepareReplayGit } = require('./replay-git.cjs');
 const { prepareReplayDependencies } = require('./replay-dependencies.cjs');
@@ -161,6 +162,7 @@ function prepareComparison(config, options = {}) {
       ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}) })) : original.provenance.commonInputHash,
     model: profile, ...(profile === CODEX_PROFILE ? { modelConfig: { ...CODEX_CONFIG } } : {}),
     ...(original.input.recordedModelConfig ? { recordedModelConfig: { ...original.input.recordedModelConfig } } : {}),
+    ...(original.input.projectResources ? { projectResources: projectResourcesSummary(original.input.projectResources) } : {}),
     ...(original.input.sessionText ? { replaySession: replaySessionInfo(original.input.sessionText) } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
     imageId: config.image.imageId, timeoutMs: config.timeoutMs ?? 120000, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hash(JSON.stringify(i))])),
@@ -266,7 +268,9 @@ async function runComparison(config, options = {}) {
         .some(k => receipt?.recordedModelConfig?.[k] !== plan.summary.recordedModelConfig[k]);
       const sessionChanged = plan.summary.replaySession && receipt?.kind === 'direct-caff-turn-v1' && Object.keys(plan.summary.replaySession)
         .some(k => receipt?.replaySession?.[k] !== plan.summary.replaySession[k]);
-      const valid = !evidenceChanged && !modelConfigChanged && !recordedConfigChanged && !sessionChanged && !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
+      const resourcesChanged = plan.summary.projectResources && receipt?.kind === 'direct-caff-turn-v1'
+        && !projectResourcesReceiptMatches(plan.summary.projectResources, receipt.projectResources);
+      const valid = !evidenceChanged && !modelConfigChanged && !recordedConfigChanged && !sessionChanged && !resourcesChanged && !task?.failed && task?.code === 0 && task?.cleaned === true && receipt?.kind === 'direct-caff-turn-v1'
         && receipt.inputHash === manifests[variant].inputHash && receipt.runtimeHash === manifests[variant].runtimeHash
         && receipt.beforeHash === plan.beforeHash
         && (!plan.summary.repository || receipt.repository?.gitAvailable === true && receipt.repository?.historyCommitCount === plan.summary.repository.historyCommitCount
@@ -279,6 +283,8 @@ async function runComparison(config, options = {}) {
         && receipt.modelCalls.every(c => c.model === plan.summary.model && typeof c.success === 'boolean' && Number.isFinite(c.durationMs) && c.durationMs >= 0);
       if (valid) {
         if (plan.summary.replaySession) row.replaySession = { ...plan.summary.replaySession };
+        if (plan.summary.projectResources) row.projectResources = { ...plan.summary.projectResources, verified: true,
+          loadedContextFiles: receipt.projectResources.loadedContextFiles, loadedSkills: receipt.projectResources.loadedSkills };
         if (plan.summary.repository) row.repository = { ...plan.summary.repository, gitAvailable: true, historyCommitCount: receipt.repository.historyCommitCount };
         if (plan.summary.dependencies) row.dependencies = receipt.dependencies;
         row.modelCalls = receipt.modelCalls;
@@ -314,7 +320,7 @@ async function runComparison(config, options = {}) {
       }
       if (alternating) {
         fatal = row.reason === 'file_evidence_unavailable' || evidenceChanged
-          || modelConfigChanged || recordedConfigChanged || sessionChanged || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
+          || modelConfigChanged || recordedConfigChanged || sessionChanged || resourcesChanged || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
         // Only environmental errors may consume the five replacement attempts.
         // Evidence/integrity stops propagate to the remaining cases and stages.
         stopped = fatal;
@@ -347,6 +353,7 @@ function formatComparison(result) {
   if (Number.isSafeInteger(result.timeoutMs)) lines.push('容器时限：' + result.timeoutMs / 1000 + '秒（配置上限，不是已用时）。');
   if (result.recordedModelConfig) lines.push('封存配置：' + result.recordedModelConfig.provider + '/' + result.recordedModelConfig.model + ' / thinking ' + result.recordedModelConfig.thinking + '；计划保留该thinking，实际以有效回执为准。');
   if (result.replaySession) lines.push('封存会话：resume；前缀' + result.replaySession.lineCount + '行，SHA-256=' + result.replaySession.prefixHash + '；只重绑已声明的路径/回调，不重放中途消息。');
+  if (result.projectResources) lines.push('项目资源：封存文件' + result.projectResources.fileCount + '个，SHA-256=' + result.projectResources.manifestHash + '；原生SDK发现，缺失/漂移拒绝，未用当前源文件补齐。');
   if (result.repository) {
     lines.push(result.repository.historyIncluded ? 'Git：保留记录HEAD的完整可达历史，HEAD与源记录相同；共' + result.repository.historyCommitCount + '个提交。'
       : 'Git：历史命中本机已知key，脱敏后重建，HEAD不同于源仓库；只有1个基线提交，无历史提交。',

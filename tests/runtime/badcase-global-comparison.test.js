@@ -176,6 +176,19 @@ test('staged recorded thinking evidence missing or changed is fatal, not an envi
     assert.ok(r.cases.filter(c => c.stage === 'gate').slice(1).every(c => c.reason === 'prior_integrity_error'));
   }
 });
+test('staged project-resource evidence missing or changed is fatal, not an environmental replacement', async t => {
+  for (const missing of [true, false]) {
+    const h = setup(t, { staged: true }), execute = h.options.execute;
+    h.options.prepareTarget = (...args) => { const p = prepareSealedPromptTarget(...args);
+      p.input.projectResources = { kind: 'replay-project-resources-v1', manifestHash: '1'.repeat(64), files: [], contextFile: null, skillPaths: [] }; return p; };
+    h.options.execute = async (...args) => { const task = await execute(...args);
+      if (!missing) task.receipt.projectResources = { kind: 'replay-project-resources-v1', manifestHash: '2'.repeat(64), fileCount: 0,
+        contextFile: null, skillPaths: [], verified: true, loadedContextFiles: 0, loadedSkills: 0 }; return task; };
+    const r = await runComparison({ ...h.single, repeats: 10, executionPolicy: 'alternating-valid-v1' }, h.options);
+    assert.equal(h.state.executions, 1); assert.equal(r.fatal, true); assert.equal(r.completed, false);
+    assert.equal(r.runs[0].reason, 'run_evidence_unavailable'); assert.equal(r.totals.original.passed, 0);
+  }
+});
 test('staged resume prefix evidence missing or changed is fatal rather than an environmental replacement', async t => {
   for (const missing of [true, false]) {
     const h = setup(t, { staged: true, resume: true }), execute = h.options.execute;

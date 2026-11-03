@@ -24,6 +24,45 @@ test('role span is bound to the normalized invocation, not a new system prompt; 
   const secret = input(); secret.prompt += ' sk-' + 'x'.repeat(32);
   assert.equal(prepareReplayInput(secret, 'fresh', '/', () => assert.fail()).replayInput.roleSpan ?? null, null);
 });
+test('portable project resources declare a complete in-root inventory and relative explicit skill paths without reading contents', t => {
+  const top = fs.mkdtempSync(path.join(os.tmpdir(), 'portable-project-')), cwd = path.join(top, 'project'), agentDir = path.join(top, 'agent');
+  fs.mkdirSync(cwd); fs.mkdirSync(agentDir); t.after(() => fs.rmSync(top, { recursive: true, force: true }));
+  const paths = ['AGENTS.md', '.agents/skills/demo/SKILL.md', '.agents/skills/demo/references/guide.md', '.pi/skills/other/SKILL.md'];
+  for (const p of paths) { fs.mkdirSync(path.dirname(path.join(cwd, p)), { recursive: true }); fs.writeFileSync(path.join(cwd, p), 'archived instructions'); }
+  const config = { cwd, agentDir, resume: false, thinking: 'off', fast: false, retireUserScopeSkills: true,
+    extensionPaths: [path.resolve('lib/pi-extensions/caff-capabilities.mjs')], additionalSkillPaths: [path.join(cwd, '.agents/skills/demo')] };
+  const read = fs.readFileSync; fs.readFileSync = () => assert.fail('declaration must not read instructions');
+  let declaration;
+  try { declaration = inspectPortableAgentConfig(config); } finally { fs.readFileSync = read; }
+  assert.deepEqual(declaration, { schemaVersion: 1, kind: 'portable-project-resources-v1', supported: true,
+    filePaths: paths.sort(), skillPaths: ['.agents/skills/demo'] });
+  const { prepareProjectResources } = require('../../build/server/domain/runtime/badcase-capture/project-resources');
+  const files = paths.map(p => ({ path: p, sha256: sha('archived instructions') }));
+  const manifest = prepareProjectResources(declaration, files, config);
+  assert.equal(manifest.files.length, 4); assert.equal(manifest.contextFile, 'AGENTS.md');
+  assert.deepEqual(manifest.skillPaths, ['.agents/skills/demo']); assert.match(manifest.manifestHash, /^[a-f0-9]{64}$/);
+  assert.throws(() => prepareProjectResources(declaration, files.slice(1), config), /replay_project_resources_invalid/);
+  assert.throws(() => prepareProjectResources(declaration, [...files, { path: '.pi/settings.json', sha256: sha('{}') }], config), /replay_project_resources_invalid/);
+  assert.throws(() => prepareProjectResources(declaration, files, { ...config, additionalSkillPaths: [top] }), /replay_project_resources_invalid/);
+  for (const name of ['.pi', '.agents', '.PI/skills/hidden/SKILL.md', '.pi/extensions/code.js', 'agents.md']) {
+    assert.throws(() => prepareProjectResources(declaration, [...files, { path: name, sha256: sha('unexpected') }], config), /replay_project_resources_invalid/);
+  }
+  fs.writeFileSync(path.join(cwd, '.pi/settings.json'), '{}'); assert.equal(inspectPortableAgentConfig(config).supported, false); fs.unlinkSync(path.join(cwd, '.pi/settings.json'));
+  const external = path.join(top, 'external'); fs.mkdirSync(external);
+  assert.equal(inspectPortableAgentConfig({ ...config, additionalSkillPaths: [external] }).supported, false);
+  fs.writeFileSync(path.join(top, 'CLAUDE.MD'), 'external context'); assert.equal(inspectPortableAgentConfig(config).supported, false);
+});
+test('project inventory refuses symlinks and excessive resource trees without reading target bytes', { skip: process.platform === 'win32' ? 'symlink creation needs a separately authorized Windows privilege' : false }, t => {
+  const top = fs.mkdtempSync(path.join(os.tmpdir(), 'portable-links-')), cwd = path.join(top, 'project'), agentDir = path.join(top, 'agent');
+  fs.mkdirSync(cwd); fs.mkdirSync(agentDir); t.after(() => fs.rmSync(top, { recursive: true, force: true }));
+  const config = { cwd, agentDir, resume: false, thinking: 'off', fast: false, retireUserScopeSkills: true,
+    extensionPaths: [path.resolve('lib/pi-extensions/caff-capabilities.mjs')], additionalSkillPaths: [] };
+  fs.mkdirSync(path.join(cwd, '.agents/skills/demo'), { recursive: true });
+  fs.symlinkSync(path.join(top, 'outside'), path.join(cwd, '.agents/skills/demo/SKILL.md'));
+  assert.equal(inspectPortableAgentConfig(config).supported, false); fs.unlinkSync(path.join(cwd, '.agents/skills/demo/SKILL.md'));
+  for (let i = 0; i < 1025; i++) fs.writeFileSync(path.join(cwd, '.agents/skills/demo', i + '.md'), 'not read');
+  assert.equal(inspectPortableAgentConfig(config).supported, false);
+});
 test('portable resource declaration only accepts absent external instructions/settings; never reads their content', t => {
   const top = fs.mkdtempSync(path.join(os.tmpdir(), 'portable-config-')), cwd = path.join(top, 'project'), agentDir = path.join(top, 'agent');
   fs.mkdirSync(cwd); fs.mkdirSync(agentDir); t.after(() => fs.rmSync(top, { recursive: true, force: true }));
@@ -45,8 +84,11 @@ test('portable resource declaration only accepts absent external instructions/se
     }
     const ancestor = path.join(top, 'AGENTS.md'); fs.writeFileSync(ancestor, 'external context');
     assert.equal(inspectPortableAgentConfig(config).supported, false); fs.unlinkSync(ancestor);
-    fs.mkdirSync(path.join(cwd, '.pi')); assert.equal(inspectPortableAgentConfig(config).supported, false); fs.rmdirSync(path.join(cwd, '.pi'));
-    fs.mkdirSync(path.join(cwd, '.agents')); assert.equal(inspectPortableAgentConfig(config).supported, false); fs.rmdirSync(path.join(cwd, '.agents'));
+    for (const name of ['.pi', '.agents']) {
+      fs.mkdirSync(path.join(cwd, name)); assert.equal(inspectPortableAgentConfig(config).kind, 'portable-project-resources-v1');
+      fs.writeFileSync(path.join(cwd, name, 'external-resource'), 'not a supported skill root');
+      assert.equal(inspectPortableAgentConfig(config).supported, false); fs.unlinkSync(path.join(cwd, name, 'external-resource')); fs.rmdirSync(path.join(cwd, name));
+    }
   } finally { fs.readFileSync = original; }
   for (const changed of [{ resume: 'true' }, { thinking: 'high' }, { fast: true }, { retireUserScopeSkills: false }, { extensionPaths: ['/other/plugin.mjs'] }, { additionalSkillPaths: [top] }]) {
     assert.equal(inspectPortableAgentConfig({ ...config, ...changed }).supported, false);

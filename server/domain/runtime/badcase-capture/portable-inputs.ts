@@ -1,8 +1,9 @@
-// MVP capability declaration, not a general dependency archiver or a strict
-// replay certificate. Inspect fixed resource names only; never read external
-// instructions/settings. Non-default resources are simply unsupported.
+// Capability declaration, not a strict certificate or an external-file reader.
+// Inventory in-project resources without reading their content. Replay requires
+// every declared file from the independently authorized checkpoint, never cwd.
 import fs from 'node:fs';
 import path from 'node:path';
+import { PROJECT_CONTEXT_NAMES, PROJECT_SKILL_ROOTS, relativeProjectSkillPaths } from './project-resources';
 export function supportsPortableThinking(config: any): boolean {
   return config?.thinking === 'off' || (config?.thinking === 'xhigh'
     && config?.provider === 'openai-codex' && config?.model === 'gpt-6.1-sol');
@@ -16,18 +17,58 @@ export function inspectPortableAgentConfig(config: any) {
       || !config.extensionPaths[0].replaceAll('\\', '/').endsWith('/lib/pi-extensions/caff-capabilities.mjs')
       || !Array.isArray(config.additionalSkillPaths)) return result;
     const present = (p: string) => { try { fs.lstatSync(p); return true; } catch (e: any) { if (e.code === 'ENOENT') return false; throw e; } };
-    for (const name of ['settings.json', 'SYSTEM.md', 'APPEND_SYSTEM.md', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md', 'extensions', 'prompts']) {
+    for (const name of ['settings.json', 'SYSTEM.md', 'APPEND_SYSTEM.md', ...PROJECT_CONTEXT_NAMES, 'extensions', 'prompts']) {
       if (present(path.join(config.agentDir, name))) return result;
     }
-    if (config.additionalSkillPaths.some((p: string) => !path.isAbsolute(p) || present(p))) return result;
-    if (present(path.join(config.cwd, '.pi')) || present(path.join(config.cwd, '.agents'))) return result;
-    // Parent context/resources are not part of the captured worktree. Do not
-    // replace them with an empty loader or silently omit their instructions.
+    // Parent context/resources are not captured. Conservative even when a Git
+    // boundary could suppress some ancestor skills; never drop ancestor text.
     let parent = path.dirname(config.cwd);
     for (;;) {
-      for (const name of ['AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md', '.agents']) if (present(path.join(parent, name))) return result;
+      for (const name of [...PROJECT_CONTEXT_NAMES, '.agents']) if (present(path.join(parent, name))) return result;
       const next = path.dirname(parent); if (next === parent) break; parent = next;
     }
-    return { ...result, supported: true };
+    const filePaths: string[] = []; let entries = 0;
+    const inventory = (relative: string, depth = 0) => {
+      if (++entries > 2048 || depth > 32 || !/^[A-Za-z0-9_.@/-]+$/.test(relative)) throw Error();
+      const target = path.join(config.cwd, relative), st = fs.lstatSync(target);
+      if (st.isSymbolicLink()) throw Error();
+      if (st.isDirectory()) { for (const name of fs.readdirSync(target).sort()) inventory(relative + '/' + name, depth + 1); }
+      else if (st.isFile() && filePaths.length < 1024) filePaths.push(relative);
+      else throw Error();
+    };
+    const rootNames = fs.readdirSync(config.cwd);
+    // Use actual directory spellings: probing both .md/.MD aliases duplicates
+    // the same file on Windows and invents a second resource on Linux replay.
+    if (rootNames.some(name => PROJECT_CONTEXT_NAMES.some(n => n.toLowerCase() === name.toLowerCase()) && !PROJECT_CONTEXT_NAMES.includes(name))) return result;
+    for (const name of rootNames.filter(name => PROJECT_CONTEXT_NAMES.includes(name))) {
+      if (!fs.lstatSync(path.join(config.cwd, name)).isFile()) return result;
+      inventory(name);
+    }
+    let hasProjectRoots = false;
+    for (const root of ['.pi', '.agents']) if (present(path.join(config.cwd, root))) {
+      const st = fs.lstatSync(path.join(config.cwd, root));
+      if (!st.isDirectory() || st.isSymbolicLink() || fs.readdirSync(path.join(config.cwd, root)).some(name => name !== 'skills')) return result;
+      hasProjectRoots = true;
+      const skills = root + '/skills';
+      if (present(path.join(config.cwd, skills))) {
+        if (!fs.lstatSync(path.join(config.cwd, skills)).isDirectory()) return result;
+        inventory(skills);
+      }
+    }
+    const existingSkillPaths = config.additionalSkillPaths.some((p: string) => {
+      if (typeof p !== 'string' || !path.isAbsolute(p)) throw Error(); return present(p);
+    });
+    if (!hasProjectRoots && filePaths.length === 0 && !existingSkillPaths) return { ...result, supported: true };
+    const skillPaths = relativeProjectSkillPaths(config);
+    // Explicit roots must be ordinary project paths too, including ancestors.
+    for (const relative of skillPaths) {
+      const parts = relative.split('/');
+      for (let i = 2; i <= parts.length; i++) {
+        const target = path.join(config.cwd, ...parts.slice(0, i));
+        if (present(target) && fs.lstatSync(target).isSymbolicLink()) return result;
+      }
+    }
+    if (filePaths.some(p => !PROJECT_CONTEXT_NAMES.includes(p) && !PROJECT_SKILL_ROOTS.some(root => p.startsWith(root + '/')))) return result;
+    return { schemaVersion: 1, kind: 'portable-project-resources-v1', supported: true, filePaths: filePaths.sort(), skillPaths };
   } catch { return result; }
 }

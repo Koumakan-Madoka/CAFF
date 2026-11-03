@@ -7,13 +7,14 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings } = {}) {
+async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings, projectResources, resourceLoaderPatch = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt, files: files.map(p => ({ path: p,
     base64: Buffer.from(fileBytes[p] ?? p).toString('base64'), sha256: crypto.createHash('sha256').update(fileBytes[p] ?? p).digest('hex') })),
     sessionText, settings: null, systemPrompt: null,
     ...(bindings === undefined ? {} : { bindings }),
+    ...(projectResources === undefined ? {} : { projectResources }),
     ...(recordedModelConfig === undefined ? {} : { recordedModelConfig }),
     ...(repositorySnapshot ? { repository: repositorySnapshot.report, gitFiles: repositorySnapshot.gitFiles } : {}),
     callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: { conversationId: 'c1', turnId: 't1' } } : null,
@@ -41,7 +42,9 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
       session.messages.push(message); observer.calls.push({ model: profile, durationMs: 1, success: true });
       subscriber({ type: 'message_end', message });
     } };
-  const runtime = { session, services: { settingsManager: { applyOverrides: () => {} }, resourceLoader: { getExtensions: () => ({ errors: [] }) } }, dispose: async () => { disposed = true; } };
+  const runtime = { session, services: { settingsManager: { applyOverrides: () => {} }, resourceLoader: { getExtensions: () => ({ errors: [] }),
+    getAgentsFiles: () => ({ agentsFiles: projectResources?.contextFile ? [{ path: '/work/restored/' + projectResources.contextFile, content: fileBytes[projectResources.contextFile].replace(/^\uFEFF/, '') }] : [] }),
+    getSkills: () => ({ skills: files.filter(p => p.endsWith('/SKILL.md')).map(p => ({ filePath: '/work/restored/' + p })) }), ...resourceLoaderPatch } }, dispose: async () => { disposed = true; } };
   const workerRequire = name => {
     if (name === 'node:fs') return workerFs;
     if (name === 'node:child_process') return { execFileSync: (program, args, options) => {
@@ -53,6 +56,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, directoryWorkspace
     if (name === '/work/codex-mailbox.cjs') return { createCodexMailboxFetch: () => observer.fetch };
     if (name === '/work/build/server/domain/runtime/badcase-capture/secrets') return require('../../build/server/domain/runtime/badcase-capture/secrets');
     if (name === '/work/build/server/domain/runtime/badcase-capture/session-validator') return require('../../build/server/domain/runtime/badcase-capture/session-validator');
+    if (name === '/work/build/server/domain/runtime/badcase-capture/project-resources') return require('../../build/server/domain/runtime/badcase-capture/project-resources');
     if (name === '/work/caff-runtime-bootstrap.cjs') return { verifyCaffRuntimeStage: () => ({ manifest: { inputHash: 'input', runtimeHash: 'runtime' } }) };
     if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async config => {
       callbackLifetimeMs = config.lifetimeMs;
@@ -201,6 +205,35 @@ test('Codex worker uses credential-free mailbox, xhigh native model, SSE and no 
   assert.equal(settings.transport, 'sse'); assert.equal(settings.retry.enabled, false); assert.equal(settings.retry.provider.maxRetries, 0);
   assert.deepEqual(receipt.modelConfig, { api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' });
   assert.equal(receipt.success, true); assert.equal(receipt.modelCalls[0].model, 'openai-codex/gpt-6.1-sol');
+});
+test('worker restores project context and skills with native discovery, binds the inventory receipt, and refuses unexpected loader content', async t => {
+  const { prepareProjectResources, projectResourcesSummary } = require('../../build/server/domain/runtime/badcase-capture/project-resources');
+  const fileBytes = { 'AGENTS.md': '\uFEFFArchived project context\n', '.agents/skills/demo/SKILL.md': '---\nname: demo\ndescription: Archived skill\n---\nBody', '.agents/skills/demo/references/guide.md': 'Archived reference' };
+  const files = Object.keys(fileBytes).sort(), records = files.map(p => ({ path: p, sha256: crypto.createHash('sha256').update(fileBytes[p]).digest('hex') }));
+  const projectResources = prepareProjectResources({ schemaVersion: 1, kind: 'portable-project-resources-v1', supported: true,
+    filePaths: files, skillPaths: ['.agents/skills/demo'] }, records, { cwd: 'C:\\old\\project', additionalSkillPaths: ['C:\\old\\project\\.agents\\skills\\demo'] });
+  for (const directoryWorkspace of [false, true]) {
+    const r = await workerReceipt(t, { files, fileBytes, projectResources, directoryWorkspace });
+    assert.deepEqual(Array.from(r.startConfig.additionalSkillPaths), ['/work/restored/.agents/skills/demo']);
+    assert.deepEqual(JSON.parse(JSON.stringify(r.receipt.projectResources)), { ...projectResourcesSummary(projectResources), verified: true, loadedContextFiles: 1, loadedSkills: 1 });
+  }
+  for (const resourceLoaderPatch of [{ getAgentsFiles: () => ({ agentsFiles: [] }) }, { getAgentsFiles: () => ({ agentsFiles: [{ path: '/work/restored/AGENTS.md', content: 'Current file, not archive' }] }) },
+    { getSkills: () => ({ skills: [{ filePath: '/outside/current/SKILL.md' }] }) }]) {
+    await assert.rejects(workerReceipt(t, { files, fileBytes, projectResources, resourceLoaderPatch }), /replay_project_resources_invalid/);
+  }
+});
+test('host cannot score missing or altered project-resource evidence', async () => {
+  for (const mode of ['matching', 'missing', 'changed']) {
+    const f = fakes(), prepare = f.options.prepare, execute = f.options.execute;
+    const manifest = { kind: 'replay-project-resources-v1', manifestHash: '1'.repeat(64), files: [], contextFile: null, skillPaths: [] };
+    f.options.prepare = (...args) => { const p = prepare(...args); p.input.projectResources = manifest; return p; };
+    f.options.execute = async (...args) => { const task = await execute(...args);
+      if (mode !== 'missing') task.receipt.projectResources = { kind: manifest.kind, manifestHash: mode === 'changed' ? '2'.repeat(64) : manifest.manifestHash,
+        fileCount: 0, contextFile: null, skillPaths: [], verified: true, loadedContextFiles: 0, loadedSkills: 0 }; return task; };
+    const result = await runComparison(config(), f.options);
+    assert.equal(result.completed, mode === 'matching'); assert.equal(result.runs[0].status, mode === 'matching' ? 'pass' : 'error');
+    if (mode !== 'matching') assert.equal(f.state.executions, 1);
+  }
 });
 test('worker reports the recorded production configuration and refuses silent thinking conversion', async t => {
   const recorded = { provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'xhigh', fast: false };

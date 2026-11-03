@@ -67,6 +67,24 @@ test('actual GPT family rules are an appendable role span without inventing a pe
   assert.equal(candidate.provenance.originalRoleHash, original.provenance.originalRoleHash);
   assert.equal(candidate.input.prompt.startsWith('Your visible agent name: GPT\n\n'), true);
 });
+test('sealed in-root resources use retained files only, share identity across variants, and reject inventory drift', t => {
+  const setup = ({ cp, config, put }) => {
+    const names = ['AGENTS.md', '.agents/skills/demo/SKILL.md', '.agents/skills/demo/references/guide.md'];
+    for (const name of names) { const content = name === 'AGENTS.md' ? 'Archived project context' : 'Archived skill bytes'; cp.files[name] = { type: 'file', hash: put(content), size: Buffer.byteLength(content) }; }
+    config.sdkStartConfig.additionalSkillPaths = [cp.targetDir + '/.agents/skills/demo'];
+    config.portableRuntime = { schemaVersion: 1, kind: 'portable-project-resources-v1', supported: true, filePaths: names.sort(), skillPaths: ['.agents/skills/demo'] };
+  };
+  const f = portable(t, setup), before = fs.readFileSync(f.source), a = prepareSealedDirectTurn(f.request), b = prepareSealedDirectTurn(f.request, 'Verify first.');
+  assert.equal(a.supported, true, JSON.stringify(a)); assert.equal(b.supported, true, JSON.stringify(b));
+  assert.equal(a.input.projectResources.contextFile, 'AGENTS.md'); assert.equal(a.input.projectResources.files.length, 3);
+  assert.deepEqual(a.input.projectResources, b.input.projectResources); assert.equal(a.provenance.commonInputHash, b.provenance.commonInputHash);
+  assert.deepEqual(fs.readFileSync(f.source), before);
+  for (const change of [({ cp }) => { delete cp.files['AGENTS.md']; }, ({ config }) => { config.sdkStartConfig.additionalSkillPaths = ['/outside/skill']; },
+    ({ cp, put }) => { cp.files['.pi/settings.json'] = { type: 'file', hash: put('{}'), size: 2 }; }]) {
+    const broken = portable(t, value => { setup(value); change(value); });
+    assert.deepEqual(prepareSealedOriginalTurn(broken.request), { supported: false, reason: 'replay_project_resources_invalid' });
+  }
+});
 test('production GPT xhigh is recorded in unchanged original and plan; thinking mismatch is refused before execution', t => {
   const f = gptFamily(t, ({ r, config }) => { r.runConfig.provider = config.sdkStartConfig.provider = 'openai-codex';
     r.runConfig.model = config.sdkStartConfig.model = 'gpt-6.1-sol'; config.sdkStartConfig.thinking = 'xhigh'; });

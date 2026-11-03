@@ -105,6 +105,8 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     walk(cwd); rows.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
     return hash(JSON.stringify(rows));
   };
+  const resources = input.projectResources === undefined ? null : require('/work/build/server/domain/runtime/badcase-capture/project-resources');
+  if (resources) resources.validateProjectResources(input.projectResources, input.files);
   const beforeHash = treeHash();
   const settings = codex ? { ...input.settings, transport: 'sse', retry: { ...input.settings?.retry, enabled: false,
     provider: { ...input.settings?.retry?.provider, maxRetries: 0 } } } : input.settings;
@@ -112,7 +114,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   if (input.systemPrompt !== null) write(agentDir + '/SYSTEM.md', input.systemPrompt);
   write(agentDir + '/models.json', JSON.stringify(direct.directModelRouting(baseUrl, profile)));
   assert.equal(fs.existsSync(sessionPath), false);
-  let runtime, callback, observer, receipt, toolCalls = [], extensionErrors = [];
+  let runtime, callback, observer, receipt, projectResources, toolCalls = [], extensionErrors = [];
   const toolArgs = new Map(); let prompt = input.prompt, sessionText = input.sessionText;
   const replaySession = direct.replaySessionInfo(sessionText);
   const originalFetch = globalThis.fetch;
@@ -149,7 +151,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     const config = host.normalizeStartCommand({ type: 'start', prompt, config: {
       cwd, agentDir, sessionPath, resume: sessionText !== null, provider: selected.provider, model: selected.model,
       thinking: selected.thinking || 'off', fast: false, extensionPaths: ['/work/build/lib/pi-extensions/caff-capabilities.mjs'],
-      additionalSkillPaths: [], retireUserScopeSkills: true } }).config;
+      additionalSkillPaths: resources ? input.projectResources.skillPaths.map(p => cwd + '/' + p) : [], retireUserScopeSkills: true } }).config;
     ({ runtime } = await host.createSdkRuntime(sdk, config)); const session = runtime.session;
     if (codex) {
       runtime.services.settingsManager.applyOverrides({ retry: { enabled: false, provider: { maxRetries: 0 } } });
@@ -159,6 +161,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     assert.equal(runtime.modelFallbackMessage, undefined); assert.equal(session.model.provider, selected.provider); assert.equal(session.model.id, selected.model);
     if (codex) { assert.equal(session.model.api, selected.api); assert.equal(session.thinkingLevel, selected.thinking); }
     assert.equal(runtime.services.resourceLoader.getExtensions().errors.length, 0);
+    if (resources) projectResources = resources.verifyLoadedProjectResources(input.projectResources, input.files, runtime.services.resourceLoader, cwd);
     const initialHistory = sessionText === null ? [] : sdk.buildSessionContext(sessionText.trimEnd().split('\n').map(JSON.parse).slice(1)).messages;
     assert.deepEqual(session.messages, initialHistory);
     if (sessionText !== null) assert.ok(fs.readFileSync(sessionPath, 'utf8').startsWith(sessionText), 'replay_session_prefix_changed');
@@ -185,7 +188,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       modelCalls: observer.calls, finalText, replySource, beforeHash, afterHash: treeHash(),
       ...(codex ? { modelConfig: { api: selected.api, thinking: session.thinkingLevel, fast: false, transport: session.agent.transport, credentialDelivery: 'host-only-mailbox' } } : {}),
       ...(input.recordedModelConfig ? { recordedModelConfig: input.recordedModelConfig } : {}),
-      ...(replaySession ? { replaySession } : {}),
+      ...(replaySession ? { replaySession } : {}), ...(projectResources ? { projectResources } : {}),
       ...(repository ? { repository } : {}), ...(dependencies ? { dependencies } : {}),
       ...(input.fileEvidencePaths === undefined ? {} : { fileEvidence: collectFileEvidence(cwd, input.fileEvidencePaths, key) }),
       // No worker self-score. The host scores only after container removal.
