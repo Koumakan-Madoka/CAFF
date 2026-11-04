@@ -26,6 +26,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_target_unknown: 422, wiki_candidate_target_mismatch: 409, wiki_candidate_anchor_unsupported: 409,
     wiki_comparison_record_invalid: 409, wiki_comparison_not_found: 404, wiki_comparison_invalid: 422,
     wiki_comparison_review_invalid: 409, wiki_comparison_reviewed: 409, wiki_candidate_not_adopted: 409,
+    wiki_migration_location_invalid: 409,
     wiki_no_pending_cases: 409, wiki_not_pending: 409,
     wiki_experience_invalid: 422, wiki_experience_not_found: 404, wiki_experience_reviewed: 409,
     wiki_experience_conflict: 409, wiki_experience_review_required: 409,
@@ -83,7 +84,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         const state = store.read();
         if (!Number.isSafeInteger(input.expectedRevision)) throw Object.assign(Error(), { code: 'wiki_invalid_input' });
         if (state.revision !== input.expectedRevision) throw Object.assign(Error(), { code: 'wiki_revision_conflict' });
-        const files = collectWikiCandidateFiles(state);
+        const files = collectWikiCandidateFiles(state, scope);
         if (match[1] === 'candidate') store.createGlobalCandidate({ versionId: input.versionId, entryIds: input.entryIds, targetId: input.targetId, files }, input.expectedRevision);
         else store.confirmGlobalCandidate({ ...input, files });
       }

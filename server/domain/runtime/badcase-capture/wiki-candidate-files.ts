@@ -3,15 +3,16 @@
 import crypto from 'node:crypto';
 import { createCaptureStore } from './capture-store';
 import { createCheckpointRetentionStore } from './checkpoint-retention';
-import { readSealedCase, validateSealRequest } from './sealed-case';
+import { readSealedCase } from './sealed-case';
+import { resolveWikiReplayRequest } from './wiki-replay-location';
 import { containsSecretSentinel } from './secrets';
 import { MAX_WIKI_CANDIDATE_FILES } from './wiki-candidate';
 const hash = (value: string | Buffer) => crypto.createHash('sha256').update(value).digest('hex');
-export function collectWikiCandidateFiles(state: any): any[] {
+export function collectWikiCandidateFiles(state: any, options: any = {}): any[] {
   try {
     const files: any[] = [];
     for (const replay of state.replayCases || []) {
-      const { captureRoot, association, flagId } = validateSealRequest(replay.request);
+      const { captureRoot, association, flagId } = resolveWikiReplayRequest(options, replay.request);
       const sealed = readSealedCase({ captureRoot, association, flagId });
       if (!sealed) throw Error();
       const store = createCaptureStore({ captureRoot });

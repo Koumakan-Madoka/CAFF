@@ -19,7 +19,7 @@ function prepareGlobalBatch(config, options = {}) {
   const saved = state.candidates.find(c => c.id === config.candidateId && c.kind === 'global-wiki-candidate-v1');
   if (!saved || saved.status !== 'confirmed') throw fail('wiki_candidate_confirmation_required');
   if (saved.target?.kind !== 'global-system-prompt') throw fail('evaluation_target_unsupported');
-  const candidate = resolveGlobalWikiCandidate(state, saved.id, saved.targetId, saved.baseHash, collectWikiCandidateFiles(state));
+  const candidate = resolveGlobalWikiCandidate(state, saved.id, saved.targetId, saved.baseHash, collectWikiCandidateFiles(state, scope));
   const version = state.versions.find(v => v.id === candidate.versionId);
   if (version.caseIds.some(id => split.testCaseIds.includes(id))) throw fail('evaluation_batch_holdout_exposed');
   const selected = new Map(), sealedIdentities = new Set();

@@ -30,7 +30,7 @@ function prepareProductionBatch(config,options={}){
  // visible report-only rows, not GPT failures or favorable denominator slots.
  if(!suite.targetReproductionCaseIds.length || !suite.targetTestReproductionCaseIds.length
    || !suite.cases.some(c=>c.stage==='gate' && c.category==='control' && !c.reportOnly))throw fail('evaluation_gate_config_invalid');
- const candidate=resolveGlobalWikiCandidate(state,saved.id,saved.targetId,saved.baseHash,(options.collectProductionCandidateFiles || collectWikiCandidateFiles)(state),{allowDraft:options.allowDraftCandidate===true});
+ const candidate=resolveGlobalWikiCandidate(state,saved.id,saved.targetId,saved.baseHash,(options.collectProductionCandidateFiles || collectWikiCandidateFiles)(state,scope),{allowDraft:options.allowDraftCandidate===true});
  const version=state.versions.find(v=>v.id===candidate.versionId);
  if(version.caseIds.some(id=>suite.cases.some(c=>c.sourceCaseId===id && ['gate','test'].includes(c.stage)
    && state.cases.find(s=>s.id===id)?.kind==='marked-badcase')))throw fail('evaluation_batch_holdout_exposed');

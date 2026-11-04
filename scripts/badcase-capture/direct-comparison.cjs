@@ -20,6 +20,7 @@ const { resolveWikiCandidate } = require('../../build/server/domain/runtime/badc
 const { resolveGlobalWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-global-candidate');
 const { resolveWikiBaseline } = require('../../build/server/domain/runtime/badcase-capture/wiki-baseline');
 const { collectWikiCandidateFiles } = require('../../build/server/domain/runtime/badcase-capture/wiki-candidate-files');
+const { resolveWikiReplayRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-replay-location');
 const { validateLiteralRules, scoreLiteralFiles } = require('./file-literal-rules.cjs');
 const { validatePublicReplyRules, scorePublicReply } = require('./public-reply-literal-rules.cjs');
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
@@ -105,13 +106,13 @@ function prepareComparison(config, options = {}) {
     globalSaved = globalState.candidates.find(c => c.id === selection.candidateId && c.kind === 'global-wiki-candidate-v1');
     if (!globalSaved || !(globalSaved.status === 'confirmed' || options.allowDraftCandidate === true && globalSaved.status === 'draft')) throw fail('wiki_candidate_confirmation_required');
     if (globalSaved.target?.kind !== 'global-system-prompt') throw fail('evaluation_target_unsupported');
-    globalFiles = collectWikiCandidateFiles(globalState);
+    globalFiles = collectWikiCandidateFiles(globalState, selection);
     resolveGlobalWikiCandidate(globalState, globalSaved.id, globalSaved.targetId, globalSaved.baseHash, globalFiles, { allowDraft: options.allowDraftCandidate === true });
     baseline = resolveWikiBaseline(globalState, globalSaved.targetId);
     const prepareTarget = options.prepareTarget || prepareSealedPromptTarget;
     // Old seals and newly sealed, manually merged fragments share one baseline.
     // Only the candidate adds a new change; neither arm silently drops history.
-    prepare = (request, replacement = null) => prepareTarget(request, globalSaved.targetId,
+    prepare = (request, replacement = null) => prepareTarget(resolveWikiReplayRequest(selection, request), globalSaved.targetId,
       replacement === null && baseline.fragments.length > 1 ? baseline.target.baseText : replacement, baseline.fragments);
   }
   const original = prepare(config.request);
