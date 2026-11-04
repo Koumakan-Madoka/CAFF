@@ -6,6 +6,7 @@
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const base = '../../build/server/domain/runtime/badcase-capture/';
 const { createWikiStore } = require(base + 'wiki-store');
+const { resolveWikiDataDirectory } = require(base + 'wiki-data-directory');
 const { readSealedCase, validateSealRequest } = require(base + 'sealed-case');
 const { createCaptureStore } = require(base + 'capture-store');
 const { createCheckpointRetentionStore } = require(base + 'checkpoint-retention');
@@ -28,7 +29,7 @@ function inside(a, b) { const r = path.relative(a, b); return !r || !path.isAbso
 function configuration(config) {
   check(config && Object.keys(config).sort().join(',') === 'captureRoots,destinationAgentDir,globalRoot,sourceWorktree', 'wiki_migration_config_invalid');
   check(Array.isArray(config.captureRoots) && config.captureRoots.length <= 100, 'wiki_migration_config_invalid');
-  const fields = [config.globalRoot, config.sourceWorktree, config.destinationAgentDir, ...config.captureRoots];
+  const fields = [config.globalRoot, config.sourceWorktree, resolveWikiDataDirectory(config.destinationAgentDir), ...config.captureRoots];
   check(fields.every(p => typeof p === 'string' && path.isAbsolute(p) && !p.includes('\0')), 'wiki_migration_config_invalid');
   const [globalRoot, sourceWorktree, destinationAgentDir, ...captureRoots] = fields.map(p => path.resolve(p));
   check(new Set(captureRoots).size === captureRoots.length, 'wiki_migration_config_invalid');
@@ -36,7 +37,7 @@ function configuration(config) {
   const sources = [globalRoot, ...captureRoots];
   check(!sources.some(s => inside(s, destinationAgentDir) || inside(destinationAgentDir, s)) && !inside(sourceWorktree, destinationAgentDir), 'wiki_migration_layout_invalid');
   for (let i = 0; i < sources.length; i++) for (let j = i + 1; j < sources.length; j++) check(!inside(sources[i], sources[j]) && !inside(sources[j], sources[i]), 'wiki_migration_layout_invalid');
-  createWikiStore({ globalRoot, sourceWorktree }).read(); // Existing layout boundary.
+  createWikiStore({ globalRoot, sourceWorktree, useConfiguredWikiDataDir: false }).read(); // Source is explicit, not the configured destination.
   check(!fs.existsSync(path.join(globalRoot, 'capture-locations.json')), 'wiki_migration_already_relocated');
   return { globalRoot, sourceWorktree, destinationAgentDir, captureRoots: captureRoots.sort() };
 }
@@ -58,7 +59,8 @@ function prepareMigration(input) {
       check(!fs.readdirSync(path.join(root, 'projects', project)).some(n => n === '.writer-lock' || n === '.writer-recovery'), 'wiki_migration_source_busy_or_invalid');
     }
   }
-  const state = createWikiStore(config).read(); check(state.revision > 0, 'wiki_migration_empty');
+  const sourceScope = { ...config, useConfiguredWikiDataDir: false };
+  const state = createWikiStore(sourceScope).read(); check(state.revision > 0, 'wiki_migration_empty');
   const files = new Map(), requests = [], roots = new Map(config.captureRoots.map(sourceRoot => [sourceRoot, { sourceRoot, directory: sha(sourceRoot) }]));
   const counts = Object.fromEntries(['cases', 'versions', 'candidates', 'experiences', 'baselines', 'comparisonReviews', 'replayCases', 'replayVersions'].map(k => [k, (state[k] || []).length]));
   Object.assign(counts, { snapshots: 0, comparisons: 0, executions: 0, batchExecutions: 0, sealedCases: 0, blobs: 0 });
@@ -87,9 +89,9 @@ function prepareMigration(input) {
     add(file, 'badcase-global/' + dir + '/' + n); counts[count]++;
   }
   // Existing readers validate full page projections as well as byte checksums.
-  require(base + 'wiki-comparison-store').createWikiComparisonStore(config).read();
-  require(base + 'wiki-execution-store').createWikiExecutionStore(config).read();
-  require(base + 'wiki-batch-execution-store').createWikiBatchExecutionStore(config).read();
+  require(base + 'wiki-comparison-store').createWikiComparisonStore(sourceScope).read();
+  require(base + 'wiki-execution-store').createWikiExecutionStore(sourceScope).read();
+  require(base + 'wiki-batch-execution-store').createWikiBatchExecutionStore(sourceScope).read();
   for (const v of state.replayVersions || []) resolveSampleReplayVersion(state, v.sourceCaseId, v.id);
   // Enumerate every seal under explicitly approved roots, including marks not
   // registered as evaluation tasks and seals referenced only by old snapshots.

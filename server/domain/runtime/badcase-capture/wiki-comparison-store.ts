@@ -10,6 +10,7 @@ import { projectStagedResult } from './wiki-staged-result';
 import { planWikiEvaluationSuite } from './wiki-evaluation-suite';
 import { resolveSampleReplayVersion } from './wiki-sample-replay-version';
 import { readWikiComparisonRecord } from './wiki-comparison-record';
+import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { extractWikiLiteralObservations } from './wiki-experience';
 export { wikiComparisonTotals } from './wiki-comparison-totals';
@@ -84,6 +85,7 @@ function projectResult(input: any): any {
     modelCallsKnown, callsUnavailable };
 }
 export function createWikiComparisonStore(options: any) {
+  options = resolveWikiStorageOptions(options);
   check(options?.globalRoot !== undefined);
   const wiki = createWikiStore(options), directory = path.join(options.globalRoot, 'comparisons');
   function readFile(name: string) {

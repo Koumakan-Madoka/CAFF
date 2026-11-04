@@ -4,6 +4,7 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const base='../../build/server/domain/runtime/badcase-capture/';
 const {createWikiStore}=require(base+'wiki-store');
+const {resolveWikiReplayRequest}=require(base+'wiki-replay-location');
 const {createCaptureStore}=require(base+'capture-store');
 const {readSealedCase,saveSealedCase}=require(base+'sealed-case');
 const {createCheckpointRetentionStore}=require(base+'checkpoint-retention');
@@ -15,6 +16,7 @@ function check(v){if(!v)throw fail('evaluation_sample_version_invalid');}
 const withoutModel=input=>{const {recordedModelConfig,...rest}=input;return rest;};
 const disjoint=(a,b)=>{const inside=(x,y)=>{const r=path.relative(x,y);return !r||!path.isAbsolute(r)&&r!=='..'&&!r.startsWith('..'+path.sep);};return !inside(a,b)&&!inside(b,a);};
 function prepareSampleVersions(config,options={}){
+ config=require('../../build/server/domain/runtime/badcase-capture/wiki-data-directory').resolveWikiStorageOptions(config);
  check(config&&Object.keys(config).sort().join(',')==='caseIds,globalRoot,knownKeySources,outputRoot,sourceWorktree');
  check(path.isAbsolute(config.outputRoot||'')&&Array.isArray(config.caseIds)&&config.caseIds.length>0&&config.caseIds.length<=3&&new Set(config.caseIds).size===config.caseIds.length);
  const store=createWikiStore({globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree}),state=store.read();
@@ -22,9 +24,10 @@ function prepareSampleVersions(config,options={}){
  const known=options.knownValues===undefined?readKnownKeyValues(config.knownKeySources).values:options.knownValues;check(Array.isArray(known)&&known.every(v=>typeof v==='string'&&v.length));
  const tasks=config.caseIds.map(sourceCaseId=>{
   const parent=state.replayCases.find(r=>r.sourceCaseId===sourceCaseId);check(parent);
-  check(disjoint(path.resolve(parent.request.captureRoot),path.resolve(config.outputRoot)));
-  const original=prepareSealedOriginalTurn(parent.request);check(original.supported&&original.provenance.checkpointHash===parent.checkpointHash&&original.input.sessionText===null);
-  const source=createCaptureStore({captureRoot:parent.request.captureRoot}),a=parent.request.association,sealed=readSealedCase(parent.request);
+  const sourceRequest=resolveWikiReplayRequest(config,parent.request);
+  for(const root of [parent.request.captureRoot,sourceRequest.captureRoot])check(disjoint(path.resolve(root),path.resolve(config.outputRoot)));
+  const original=prepareSealedOriginalTurn(sourceRequest);check(original.supported&&original.provenance.checkpointHash===parent.checkpointHash&&original.input.sessionText===null);
+  const source=createCaptureStore({captureRoot:sourceRequest.captureRoot}),a=sourceRequest.association,sealed=readSealedCase(sourceRequest);
   const retained=createCheckpointRetentionStore({captureStore:source}).get({projectId:a.projectId,checkpointId:a.checkpointId,conversationId:a.conversationId,turnId:a.turnId,agentId:a.agentId,referenceId:sealed.referenceId});check(retained);
   const checkpoint=structuredClone(retained.checkpoint),r=checkpoint.replayInput,blobs=new Map(retained.blobHashes.map(h=>[h,source.readBlob(a.projectId,h)]));
   const snapshot=JSON.parse(blobs.get(r.harness.configSnapshotHash).toString('utf8'));

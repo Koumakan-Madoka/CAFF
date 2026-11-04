@@ -1334,6 +1334,7 @@ export function createServerApp(options: any = {}) {
     }),
     createBadcaseWikiController({
       globalRoot: path.join(agentDir, 'badcase-global'),
+      instanceCaptureRoot: badcaseCapture.captureRoot,
       sourceWorktree: initialProjectDir,
       runInduction: options.badcaseWikiInductionRunner || ((input: any) => {
         const configFile = options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG;

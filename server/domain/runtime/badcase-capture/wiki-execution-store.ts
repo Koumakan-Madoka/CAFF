@@ -2,6 +2,7 @@
 // never a prompt-adoption decision. No replies, paths, credentials or file bytes.
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveWikiStorageOptions } from './wiki-data-directory';
 import crypto from 'node:crypto';
 import { createWikiStore } from './wiki-store';
 import { withProjectWriteLock } from './project-write-lock';
@@ -49,6 +50,7 @@ function summarize(plan: any, runs: any[]) {
     })) };
 }
 export function createWikiExecutionStore(options: any) {
+  options = resolveWikiStorageOptions(options);
   const wiki = createWikiStore(options), directory = path.join(options.globalRoot, 'executions');
   function readFile(recordId: string) {
     try {

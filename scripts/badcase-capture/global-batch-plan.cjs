@@ -4,6 +4,7 @@
 const crypto = require('node:crypto');
 const base = '../../build/server/domain/runtime/badcase-capture/';
 const { createWikiStore } = require(base + 'wiki-store');
+const { resolveWikiStorageOptions } = require(base + 'wiki-data-directory');
 const { resolveGlobalWikiCandidate } = require(base + 'wiki-global-candidate');
 const { collectWikiCandidateFiles } = require(base + 'wiki-candidate-files');
 const { planReplaySplit } = require(base + 'wiki-split');
@@ -12,6 +13,7 @@ const { DEEPSEEK_PROFILE } = require('./direct-model.cjs');
 const fail = code => Object.assign(Error(code), { code });
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function prepareGlobalBatch(config, options = {}) {
+  config = resolveWikiStorageOptions(config);
   const scope = { globalRoot: config.globalRoot, sourceWorktree: config.sourceWorktree }, state = createWikiStore(scope).read(), split = state.replaySplit;
   if (!split) throw fail('evaluation_batch_split_required');
   const expectedSplit = planReplaySplit(split.caseIds);

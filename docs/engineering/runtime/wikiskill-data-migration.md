@@ -2,6 +2,16 @@
 
 适用于当前全局 WikiSkill 集合迁往**全新的生产布局副本**。不是部署命令，也不授权接触生产数据。旧的 `migrate-global-wiki.cjs` 只处理项目 Wiki→全局 Wiki，不承担本节的封存现场迁移。
 
+## 独立数据目录
+
+实例与受信 Wiki CLI 共用 `CAFF_WIKISKILL_DATA_DIR`：设置时必须是宿主 OS 的**绝对路径**（空值、相对路径或 NUL 拒绝，不回退）；未设置时行为不变，实例仍用 `agentDir`。该目录仍须在 CAFF 源仓库及实例登记的项目目录外，原 `wiki_storage_inside_source` 保护不放宽。不会自动搬迁任何现有数据。
+
+设置后，目录内只有这组 Wiki 数据布局：`badcase-global/`、迁入的 `badcase-capture/imports/` 和根级 `wiki-migration.json`。实例自己新采集的现场**仍在 `<agentDir>/badcase-capture`**，认证、SQLite、模型配置等也不改位置。页面 API、标记后的 Wiki 写入、预分类/归纳、候选、评测记录及受信 Wiki CLI 均经统一解析器选择全局根；已设置的环境变量优先于 CLI JSON 的旧 `globalRoot`。
+
+迁移命令例外地保留 JSON `globalRoot` 为**明确源目录**，绝不让环境变量将源替换为目标；其 `destinationAgentDir` 字段保留兼容，但实际目标优先取 `CAFF_WIKISKILL_DATA_DIR`。计划 hash 绑定解析后的有效目标。未设置时这两个 JSON 字段的原语义不变。运行评测/候选 CLI 时同时设置与实例一致的 `PI_CODING_AGENT_DIR`，使本机新现场解析到正确实例；未设置则沿用服务器默认 agent 目录。
+
+例如 Windows 3100 的 `agentDir` 为仓库内 `.pi-sandbox` 时，可由启动器将 `%LOCALAPPDATA%\\CAFF\\wikiskill` **展开为实际绝对路径**后写入 `CAFF_WIKISKILL_DATA_DIR`（不要把未展开的 `%LOCALAPPDATA%` 字符串直接交给程序）。该变量与 `PI_CODING_AGENT_DIR`、`PI_SQLITE_PATH` 各自独立。部署顺序：配置外置路径 → 迁移并验证 → 重启 → API/两类回放复测；详细审批见[发布手册](wikiskill-release.md)。
+
 ## 入口
 
 先在要发布的固定 SHA 构建：`npm run build`。
@@ -13,7 +23,7 @@
   "globalRoot": "<源 agent 目录>/badcase-global",
   "sourceWorktree": "<当前 CAFF worktree 绝对路径>",
   "captureRoots": ["<明确批准读取的源 captureRoot 绝对路径>"],
-  "destinationAgentDir": "<尚不存在的副本 agent 目录绝对路径>"
+  "destinationAgentDir": "<尚不存在的 Wiki 数据目录绝对路径；未配环境变量时即旧副本 agent 目录>"
 }
 ```
 
@@ -43,7 +53,7 @@
 副本布局：
 
 ```text
-destinationAgentDir/
+CAFF_WIKISKILL_DATA_DIR/               # 未设置时仍是 destinationAgentDir
   wiki-migration.json                 # 原计划和已复制文件 hash 收据
   badcase-global/
     snapshots/ comparisons/ executions/ batch-executions/
@@ -51,14 +61,14 @@ destinationAgentDir/
   badcase-capture/imports/<源根hash>/projects/<projectId>/...
 ```
 
-宿主 `resolveWikiReplayRequest({globalRoot}, request)` 在读取现场前解析映射。页面候选生成/确认、候选 CLI、全局批量/生产批量及其单例内核共用它；不把位置映射作为模型输入，不改变原请求对象。副本根是相对映射推导的，因此整个副本可以一起搬动。
+宿主 `resolveWikiReplayRequest({globalRoot, instanceCaptureRoot?}, request)` 在读取现场前解析映射。页面候选生成/确认、候选 CLI、全局批量/生产批量及其单例内核共用它；不把位置映射作为模型输入，不改变原请求对象。副本根是相对映射推导的，因此整个副本可以一起搬动。
 
-迁移后映射损坏、缺失、未知旧根或副本材料缺失直接拒绝，**不能回退读取仍存在的源现场**。新采集使用副本自身规范 `badcase-capture`；不与导入根合并。受信独立 sealed CLI 若不带 Wiki 上下文，须由操作者用同一解析器得到副本请求，不自动搜索其他目录。
+迁移后映射损坏、缺失、未知旧根或副本材料缺失直接拒绝，**不能回退读取仍存在的源现场**。新采集使用本实例的 `<agentDir>/badcase-capture`，导入现场使用数据目录下的 `badcase-capture/imports/<源根hash>`；两者同时识别、不合并。如果请求根也是历史映射的源根，优先映射到 imports，不以“本机目录”名义读回旧源。未配置独立目录时仍按原有副本相邻 `badcase-capture` 规则解析。受信独立 sealed CLI 若不带 Wiki 上下文，须由操作者用同一解析器得到副本请求，不自动搜索其他目录。
 
 ## 副本验收与后续发布
 
 - 对比源/副本全部集合数量、ID、审核状态与源前后 hash；重复执行验证幂等。
-- 使用副本专属 `PI_CODING_AGENT_DIR`、全新 SQLite、日志、上传目录及未占用端口启动页面；禁用外部集成和模型执行。不要复制 auth.json，页面只读验收不需要凭据。
+- 使用副本专属 `PI_CODING_AGENT_DIR`、全新 SQLite、日志、上传目录及未占用端口启动页面；独立目录布局另设 `CAFF_WIKISKILL_DATA_DIR` 指向已迁移目录。禁用外部集成和模型执行。不要复制 auth.json，页面只读验收不需要凭据。
 - 浏览器检查用例、经验两栏、候选和分门槛/测试结果；不通过网页启动评测。
 - 回放预检使用副本 `globalRoot`。`compare-wiki-batch.cjs --plan` 会重新生成计划 hash；旧执行确认不可沿用。真实仓库恢复还需要显式授权的仓库 clone、固定 HEAD、Linux 依赖缓存及镜像；本迁移不复制活动仓库或把历史 targetDir 改成当前目录。预检不等于重新跑模型。
-- 真正迁入生产、停写备份、目标已有数据的处理、推送/合并/重启/上线复测，均是用户最终接受后的独立发布步骤，须逐项批准；本命令不能直接并入一个已有生产 agent 目录。
+- 真正迁入生产、停写备份、目标已有数据的处理、推送/合并/重启/上线复测，均是用户最终接受后的独立发布步骤，须逐项批准；本命令不能直接并入一个已有生产 agent 或 Wiki 数据目录。

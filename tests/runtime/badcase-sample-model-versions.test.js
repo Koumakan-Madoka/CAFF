@@ -31,6 +31,28 @@ test('offline production fixture versions preserve task/files/rules/input, old s
  const again=materializeSampleVersions(h.config,{...options,confirmed:true,expectedPlanHash:plan.summary.planHash});assert.deepEqual(again,result);assert.equal(h.store.read().revision,state.revision);
  assert.equal(require('../../build/server/domain/runtime/badcase-capture/wiki-sample-replay-version').resolveSampleReplayVersion(state,controlId,version.id).id,version.id);
 });
+test('migrated sample parents read only imports when the original capture root is unavailable',t=>{
+ const h=setup(t),root=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'sample-migration-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const sourceGlobal=path.join(root,'source-global');fs.cpSync(h.scope.globalRoot,sourceGlobal,{recursive:true});
+ const migration=require('../../scripts/badcase-capture/migrate-wiki-layout.cjs'),config={globalRoot:sourceGlobal,sourceWorktree:h.scope.sourceWorktree,captureRoots:[h.f.root],destinationAgentDir:path.join(root,'copy')};
+ const p=migration.prepareMigration(config);migration.migrateWikiLayout(config,{confirmed:true,expectedPlanHash:p.summary.planHash});
+ const old=process.env.CAFF_WIKISKILL_DATA_DIR;process.env.CAFF_WIKISKILL_DATA_DIR=config.destinationAgentDir;
+ const scope={...h.scope,globalRoot:path.join(config.destinationAgentDir,'badcase-global')},store=require('../../build/server/domain/runtime/badcase-capture/wiki-store').createWikiStore(scope),before=store.read();
+ const imported=require('../../build/server/domain/runtime/badcase-capture/wiki-replay-location').resolveWikiReplayRequest(scope,h.parent.request);
+ assert.ok(imported.captureRoot.startsWith(path.join(config.destinationAgentDir,'badcase-capture/imports')+path.sep));
+ const offline=h.f.root+'-offline';fs.renameSync(h.f.root,offline);
+ try{
+  const {prepareSampleVersions,materializeSampleVersions}=require('../../scripts/badcase-capture/prepare-sample-model-versions.cjs'),options={knownValues:[]};
+  const plan=prepareSampleVersions(h.config,options);assert.equal(plan.tasks[0].original.supported,true);assert.equal(plan.tasks[0].original.provenance.checkpointHash,h.parent.checkpointHash);
+  assert.throws(()=>prepareSampleVersions({...h.config,outputRoot:path.join(imported.captureRoot,'derived')},options),/evaluation_sample_version_invalid/);
+  const run=()=>materializeSampleVersions(h.config,{...options,confirmed:true,expectedPlanHash:plan.summary.planHash});
+  assert.deepEqual(run(),run());assert.deepEqual(store.read().replayCases,before.replayCases);
+  assert.deepEqual(plan.tasks[0].original.input,h.prepared.input);assert.equal(fs.existsSync(h.f.root),false,'no old-root reads recreate source directories');
+  fs.renameSync(offline,h.f.root);
+  const blob=h.f.cp.files['source.txt'].hash;fs.unlinkSync(path.join(imported.captureRoot,'projects/p1/blobs',blob.slice(0,2),blob));
+  assert.throws(()=>prepareSampleVersions(h.config,options),/evaluation_sample_version_invalid/,'never fall back to the readable original when imports are damaged');
+ }finally{if(fs.existsSync(offline))fs.renameSync(offline,h.f.root);if(old===undefined)delete process.env.CAFF_WIKISKILL_DATA_DIR;else process.env.CAFF_WIKISKILL_DATA_DIR=old;}
+});
 test('known values, unrelated sources, overlapping output roots and forged parent/version metadata fail before materialization',t=>{
  const h=setup(t),{prepareSampleVersions,materializeSampleVersions}=require('../../scripts/badcase-capture/prepare-sample-model-versions.cjs'),{resolveSampleReplayVersion}=require('../../build/server/domain/runtime/badcase-capture/wiki-sample-replay-version');
  assert.throws(()=>prepareSampleVersions(h.config,{knownValues:['retained bytes']}),/evaluation_output_contains_key/);assert.throws(()=>prepareSampleVersions({...h.config,outputRoot:path.join(h.f.root,'derived')},{knownValues:[]}),/evaluation_sample_version_invalid/);assert.equal(fs.existsSync(h.config.outputRoot),false);

@@ -31,6 +31,11 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
       || !path.isAbsolute(config.globalRoot || '') || !path.isAbsolute(config.sourceWorktree || '') || !config.comparison
       || typeof config.comparison !== 'object' || Array.isArray(config.comparison)) throw Error();
   } catch { throw fail('evaluation_page_config_invalid'); }
+  config = require('../../build/server/domain/runtime/badcase-capture/wiki-data-directory').resolveWikiStorageOptions(config);
+  // The outer wiki context also applies to original-only runs (which have no
+  // globalWikiCandidate to trigger the comparison core's location mapping).
+  if (config.comparison.request) config = { ...config, comparison: { ...config.comparison,
+    request: require('../../build/server/domain/runtime/badcase-capture/wiki-replay-location').resolveWikiReplayRequest(config, config.comparison.request) } };
   // Formal staged/batched publication is a separate milestone. Do not let its
   // replacement attempts silently enter this single-case progress schema.
   if (config.comparison.executionPolicy !== undefined) throw fail('evaluation_page_execution_policy_unsupported');
