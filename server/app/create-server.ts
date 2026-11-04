@@ -198,7 +198,7 @@ export function createServerApp(options: any = {}) {
   // an unsupported layout must not disable chat or hide a saved annotation.
   const badcaseWikiStore = {
     addMarkedCase(input: any) {
-      return createWikiStore({ globalRoot: path.join(agentDir, 'badcase-global'), sourceWorktree: initialProjectDir,
+      return createWikiStore({ agentDir, sourceWorktree: initialProjectDir,
         sourceWorktrees: projectManager.listProjects().map((p: any) => p.path) }).addMarkedCase(input);
     },
   };
@@ -1333,7 +1333,7 @@ export function createServerApp(options: any = {}) {
       },
     }),
     createBadcaseWikiController({
-      globalRoot: path.join(agentDir, 'badcase-global'),
+      agentDir,
       instanceCaptureRoot: badcaseCapture.captureRoot,
       sourceWorktree: initialProjectDir,
       runInduction: options.badcaseWikiInductionRunner || ((input: any) => {

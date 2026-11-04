@@ -38,6 +38,7 @@ test('migrated sample parents read only imports when the original capture root i
  const p=migration.prepareMigration(config);migration.migrateWikiLayout(config,{confirmed:true,expectedPlanHash:p.summary.planHash});
  const old=process.env.CAFF_WIKISKILL_DATA_DIR;process.env.CAFF_WIKISKILL_DATA_DIR=config.destinationAgentDir;
  const scope={...h.scope,globalRoot:path.join(config.destinationAgentDir,'badcase-global')},store=require('../../build/server/domain/runtime/badcase-capture/wiki-store').createWikiStore(scope),before=store.read();
+ h.config={...h.config,...scope}; // Explicit destination, never environment redirection.
  const imported=require('../../build/server/domain/runtime/badcase-capture/wiki-replay-location').resolveWikiReplayRequest(scope,h.parent.request);
  assert.ok(imported.captureRoot.startsWith(path.join(config.destinationAgentDir,'badcase-capture/imports')+path.sep));
  const offline=h.f.root+'-offline';fs.renameSync(h.f.root,offline);

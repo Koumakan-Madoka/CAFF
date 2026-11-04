@@ -4,13 +4,17 @@
 
 ## 独立数据目录
 
-实例与受信 Wiki CLI 共用 `CAFF_WIKISKILL_DATA_DIR`：设置时必须是宿主 OS 的**绝对路径**（空值、相对路径或 NUL 拒绝，不回退）；未设置时行为不变，实例仍用 `agentDir`。该目录仍须在 CAFF 源仓库及实例登记的项目目录外，原 `wiki_storage_inside_source` 保护不放宽。不会自动搬迁任何现有数据。
+`CAFF_WIKISKILL_DATA_DIR` 只用于没有显式根目录时的实例默认路径组装：设置时必须是宿主 OS 的**绝对路径**（空值、相对路径或 NUL 拒绝，不回退）；未设置时行为不变，实例仍用 `agentDir`。显式 `globalRoot`（包括受信 Wiki CLI 的 JSON 配置）或旧项目 `captureRoot` 始终优先，不被环境变量改道，也不校验无关的环境变量值。该目录仍须在 CAFF 源仓库及实例登记的项目目录外，原 `wiki_storage_inside_source` 保护不放宽。不会自动搬迁任何现有数据。
 
-设置后，目录内只有这组 Wiki 数据布局：`badcase-global/`、迁入的 `badcase-capture/imports/` 和根级 `wiki-migration.json`。实例自己新采集的现场**仍在 `<agentDir>/badcase-capture`**，认证、SQLite、模型配置等也不改位置。页面 API、标记后的 Wiki 写入、预分类/归纳、候选、评测记录及受信 Wiki CLI 均经统一解析器选择全局根；已设置的环境变量优先于 CLI JSON 的旧 `globalRoot`。
+设置后，目录内只有这组 Wiki 数据布局：`badcase-global/`、迁入的 `badcase-capture/imports/` 和根级 `wiki-migration.json`。实例自己新采集的现场**仍在 `<agentDir>/badcase-capture`**，认证、SQLite、模型配置等也不改位置。页面 API 和标记后的 Wiki 写入在默认路径组装时解析该配置，随后预分类/归纳、候选和评测记录共用选定的根；受信 Wiki CLI 必须将 JSON 的 `globalRoot` 明确设为页面实际使用的 `badcase-global` 目录，不能靠环境变量覆盖旧路径。
 
 迁移命令例外地保留 JSON `globalRoot` 为**明确源目录**，绝不让环境变量将源替换为目标；其 `destinationAgentDir` 字段保留兼容，但实际目标优先取 `CAFF_WIKISKILL_DATA_DIR`。计划 hash 绑定解析后的有效目标。未设置时这两个 JSON 字段的原语义不变。运行评测/候选 CLI 时同时设置与实例一致的 `PI_CODING_AGENT_DIR`，使本机新现场解析到正确实例；未设置则沿用服务器默认 agent 目录。
 
 例如 Windows 3100 的 `agentDir` 为仓库内 `.pi-sandbox` 时，可由启动器将 `%LOCALAPPDATA%\\CAFF\\wikiskill` **展开为实际绝对路径**后写入 `CAFF_WIKISKILL_DATA_DIR`（不要把未展开的 `%LOCALAPPDATA%` 字符串直接交给程序）。该变量与 `PI_CODING_AGENT_DIR`、`PI_SQLITE_PATH` 各自独立。部署顺序：配置外置路径 → 迁移并验证 → 重启 → API/两类回放复测；详细审批见[发布手册](wikiskill-release.md)。
+
+## 测试入口隔离
+
+所有 npm 测试脚本通过 `scripts/test-entry.cjs` 启动，在加载测试、构建和子进程前清除继承的 `CAFF_WIKISKILL_DATA_DIR`；需要测试配置路径的用例只能自行设置临时目录。此保护不等于文件系统沙箱，也不清理其他实例变量。手动直接运行 `node tests/...` 时必须自行隔离；本 Goal 每条测试命令先将该变量设为新临时目录，再经测试入口启动。其他路径（如 agent、SQLite）也须核实为测试专用，不能复用生产默认值。
 
 ## 入口
 

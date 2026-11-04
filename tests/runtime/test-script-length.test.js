@@ -9,8 +9,16 @@ test('test scripts fit the Windows shell limit and compose planner checks exactl
   for (const name of ['test:fast', 'test:planner-security']) {
     assert.ok(scripts[name].length < 8000, `${name} is ${scripts[name].length} characters; split it using an existing npm sub-suite`);
   }
-  assert.match(scripts['test:fast'], /^npm run check && npm run test:planner-security && /);
-  const expand = name => scripts[name].split(' && ').flatMap(command => {
+  const unwrap = value => {
+    const prefix = 'node scripts/test-entry.cjs ';
+    assert.ok(value.startsWith(prefix), 'npm test entries must sanitize inherited WikiSkill configuration');
+    return JSON.parse(value.slice(prefix.length));
+  };
+  for (const [name, value] of Object.entries(scripts)) {
+    if (name === 'test' || name.startsWith('test:') || name.endsWith(':test')) unwrap(value);
+  }
+  assert.match(unwrap(scripts['test:fast']), /^npm run check && npm run test:planner-security && /);
+  const expand = name => unwrap(scripts[name]).split(' && ').flatMap(command => {
     const match = /^npm run (test:[\w-]+)$/.exec(command);
     return match ? expand(match[1]) : [command];
   });
