@@ -2773,11 +2773,11 @@ function autoDigestCooldownRemainingMs(state: any, timestamp: string, cooldownMs
   const lastAutoDigestMs = normalizeTimestampMs(state && state.lastAutoDigestAt);
   const nowMs = normalizeTimestampMs(timestamp) || Date.now();
 
-  if (lastAutoDigestMs <= 0 || nowMs <= lastAutoDigestMs) {
+  if (lastAutoDigestMs <= 0) {
     return 0;
   }
 
-  return Math.max(0, cooldownMs - (nowMs - lastAutoDigestMs));
+  return Math.max(0, cooldownMs - Math.max(0, nowMs - lastAutoDigestMs));
 }
 
 function autoDigestIdleRemainingMs(sourceMessages: any[], timestamp: string, idleMs: number) {
