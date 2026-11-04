@@ -26,7 +26,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_target_unknown: 422, wiki_candidate_target_mismatch: 409, wiki_candidate_anchor_unsupported: 409,
     wiki_comparison_record_invalid: 409, wiki_comparison_not_found: 404, wiki_comparison_invalid: 422,
     wiki_comparison_review_invalid: 409, wiki_comparison_reviewed: 409, wiki_candidate_not_adopted: 409,
-    wiki_migration_location_invalid: 409,
+    wiki_migration_location_invalid: 409, wiki_data_dir_invalid: 503,
     wiki_no_pending_cases: 409, wiki_not_pending: 409,
     wiki_experience_invalid: 422, wiki_experience_not_found: 404, wiki_experience_reviewed: 409,
     wiki_experience_conflict: 409, wiki_experience_review_required: 409,
@@ -61,7 +61,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       const { confirmed, ...mutation } = input; input = mutation;
     }
     try {
-      const scope = { globalRoot: options.globalRoot, sourceWorktree: options.sourceWorktree,
+      const scope = { globalRoot: options.globalRoot, sourceWorktree: options.sourceWorktree, instanceCaptureRoot: options.instanceCaptureRoot,
         sourceWorktrees: options.projectManager?.listProjects().map((p: any) => p.path) || [] };
       const executions = () => [...createWikiExecutionStore(scope).read(), ...createWikiBatchExecutionStore(scope).read()]
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0, 20);

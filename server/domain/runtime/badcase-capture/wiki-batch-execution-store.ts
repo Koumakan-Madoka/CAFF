@@ -2,6 +2,7 @@
 // operator JSONL; only the separately validated comparison is a formal result.
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveWikiStorageOptions } from './wiki-data-directory';
 import crypto from 'node:crypto';
 import { createWikiStore } from './wiki-store';
 import { withProjectWriteLock } from './project-write-lock';
@@ -72,6 +73,7 @@ function validate(record: any) {
   check(same(record.summary, summarize(record)) && !containsSecretSentinel(JSON.stringify(record)));
 }
 export function createWikiBatchExecutionStore(options: any) {
+  options = resolveWikiStorageOptions(options);
   const wiki = createWikiStore(options), directory = path.join(options.globalRoot, 'batch-executions');
   function readFile(recordId: string) {
     try {

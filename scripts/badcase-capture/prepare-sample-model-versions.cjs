@@ -15,6 +15,7 @@ function check(v){if(!v)throw fail('evaluation_sample_version_invalid');}
 const withoutModel=input=>{const {recordedModelConfig,...rest}=input;return rest;};
 const disjoint=(a,b)=>{const inside=(x,y)=>{const r=path.relative(x,y);return !r||!path.isAbsolute(r)&&r!=='..'&&!r.startsWith('..'+path.sep);};return !inside(a,b)&&!inside(b,a);};
 function prepareSampleVersions(config,options={}){
+ config=require('../../build/server/domain/runtime/badcase-capture/wiki-data-directory').resolveWikiStorageOptions(config);
  check(config&&Object.keys(config).sort().join(',')==='caseIds,globalRoot,knownKeySources,outputRoot,sourceWorktree');
  check(path.isAbsolute(config.outputRoot||'')&&Array.isArray(config.caseIds)&&config.caseIds.length>0&&config.caseIds.length<=3&&new Set(config.caseIds).size===config.caseIds.length);
  const store=createWikiStore({globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree}),state=store.read();

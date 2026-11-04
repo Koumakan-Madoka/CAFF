@@ -13,6 +13,7 @@ import { validateSealRequest } from './sealed-case';
 import { buildGlobalWikiCandidate, resolveGlobalWikiCandidate } from './wiki-global-candidate';
 import { buildSampleReplayVersion } from './wiki-sample-replay-version';
 import { readWikiComparisonRecord } from './wiki-comparison-record';
+import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { projectStagedResult } from './wiki-staged-result';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
@@ -136,6 +137,7 @@ function appendEvent(state: any, event: any) {
 }
 
 export function createWikiStore(options: any) {
+  options = resolveWikiStorageOptions(options);
   const global = options?.globalRoot !== undefined;
   const root = global ? options.globalRoot : options?.captureRoot;
   if (!options || !path.isAbsolute(root || '') || !path.isAbsolute(options.sourceWorktree || '')) throw fail('wiki_root_required');

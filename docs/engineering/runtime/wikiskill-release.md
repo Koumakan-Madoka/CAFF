@@ -11,24 +11,26 @@
 
 ## 2. 批准生产停写和备份（不靠端口猜进程）
 
-操作前明确3100的worktree/branch/SHA、进程和启动器、`PI_CODING_AGENT_DIR`、`PI_SQLITE_PATH`、日志、上传目录、外部集成及回滚位置。核实正在运行的进程归属、所有活动turn和评测；停止新写入并等现有任务结束后，才停该实例。若实际环境与发布记录不符，停止询问。
+操作前明确3100的worktree/branch/SHA、进程和启动器、`PI_CODING_AGENT_DIR`、`PI_SQLITE_PATH`、`CAFF_WIKISKILL_DATA_DIR`（未配置也要记录）、日志、上传目录、外部集成及回滚位置。核实正在运行的进程归属、所有活动turn和评测；停止新写入并等现有任务结束后，才停该实例。若实际环境与发布记录不符，停止询问。
 
 另行批准并校验：
 
-- 生产agent数据（尤其 `badcase-global`、`badcase-capture`、认证/角色/模型配置）及SQLite一致性备份；秘密备份仅存私有位置、不进代码或证据。
+- 生产agent数据（尤其 `badcase-global`、`badcase-capture`、认证/角色/模型配置）、已配置的独立 Wiki 数据目录及SQLite一致性备份；秘密备份仅存私有位置、不进代码或证据。
 - 3268**原始未迁移**集合及所有批准的captureRoots停止写入、全树hash/计数。M6迁入副本不能再次作为此迁移命令的来源；`wiki_migration_already_relocated` 不是可忽略警告。
 - 本机镜像、真实仓库clone/记录HEAD、Linux运行时与现场依赖缓存仍单独保管；迁移不会复制它们，不能删源来“验证独立”。
 
 ## 3. 在生产宿主执行离线迁移命令（先新目录，绝不覆盖3100现有agent）
 
-只在用户单独批准此阶段后，在要发布的代码SHA上构建并准备私有配置：
+只在用户单独批准此阶段后，在要发布的代码SHA上构建并准备私有配置。3100 若仍以仓库内 `E:\\pythonproject\\caff\\.pi-sandbox` 为 agentDir，**必须将 Wiki 全局数据放到仓库外**，不能关闭布局保护。先在批准的启动器/本次迁移进程中设置 `CAFF_WIKISKILL_DATA_DIR` 为例如 `%LOCALAPPDATA%\\CAFF\\wikiskill` 展开后的实际绝对路径；目标必须全新且在所有源项目目录外。只设置此项，不搬 agentDir、认证、SQLite或本实例采集目录。评测 CLI 也使用同一变量及原 `PI_CODING_AGENT_DIR`。
+
+迁移 JSON 中 `globalRoot` 始终是源，`destinationAgentDir` 填这个新 Wiki 数据目录（环境变量已设时实际优先取它），避免配置与环境产生误解：
 
 ```json
 {
   "globalRoot": "<3268原始agent>/badcase-global",
   "sourceWorktree": "<受信CAFF工具checkout绝对路径>",
   "captureRoots": ["<批准的原始captureRoot绝对路径>"],
-  "destinationAgentDir": "<生产宿主上全新相邻staging目录绝对路径>"
+  "destinationAgentDir": "<与 CAFF_WIKISKILL_DATA_DIR 一致的全新绝对路径>"
 }
 ```
 
@@ -43,15 +45,15 @@ node scripts/badcase-capture/migrate-wiki-layout.cjs --config '<绝对migration.
 
 **此命令不合并现有生产集合。** 校验staging后，向用户展示实际生产已有Wiki数据及冲突，单独批准数据切换方案：
 
-- 若保留原生产agentDir，只可在已停写/备份后，将完整新 `badcase-global`、根级 `wiki-migration.json` 及配套 `badcase-capture/imports` 作为一组切换；保留原生产capture的projects、policy及其他数据。已有Wiki历史需保留备份，已有imports/receipt或不能隔离的冲突则停止，另做审查后的合并方案，不能直接覆盖。
+- **推荐保留原生产 agentDir**，将独立 `CAFF_WIKISKILL_DATA_DIR` 指向验收后的完整迁移目录；三项数据始终成组保留，不复制回仓库内 `.pi-sandbox`。原 agentDir 的 capture/projects、policy、认证和其他数据不动。已有 Wiki 历史先备份，不自动合并；目标已有 imports/receipt 或冲突则停止，不能覆盖。原目录外置且未设置此项的旧布局仍可沿用，但源仓库内布局不会因此获准。
 - 或另行批准新的agentDir及角色/配置迁入和启动器切换。离线迁移**不复制**auth、模型配置、SQLite、采集授权，不得把空配置目录直接当生产agent启动；生产原有认证/聊天数据不得被副本替换。
 - 不手改历史快照中的captureRoot、ID或hash。位置映射和根receipt必须随数据保留，否则会拒绝或无法证明不回源。保留staging供同计划幂等复核；切换副本另逐文件校验，不能对现有生产目录重跑迁移当作promote。
 
 ## 4. 批准重启，核对新实例身份
 
-在生产已发布精确SHA安装/构建，使用已确认的生产启动器、端口3100及原聊天SQLite；只变更批准的数据路径与Wiki runtime配置。页面预分类/归纳的显式runtime JSON、WSL发行版和固定镜像照[Windows入口](wikiskill-windows.md)配置，不设置服务全局 `GIT_CONFIG_*`，不迁入3268的SQLite/日志/认证。保留原外部集成策略，不能继承测试环境的变量或打开新的副作用。
+在生产已发布精确SHA安装/构建，使用已确认的生产启动器、端口3100及原聊天SQLite；确认重启进程继承实际绝对路径的 `CAFF_WIKISKILL_DATA_DIR`，只变更批准的这项数据路径与Wiki runtime配置。页面预分类/归纳的显式runtime JSON、WSL发行版和固定镜像照[Windows入口](wikiskill-windows.md)配置，不设置服务全局 `GIT_CONFIG_*`，不迁入3268的SQLite/日志/认证。保留原外部集成策略，不能继承测试环境的变量或打开新的副作用。
 
-启动后核对健康、运行SHA/进程、数据库和agent路径、无意外活动任务；只读检查Wiki用例、经验两栏、候选、M4门槛/测试与未采纳解读。检查导入现场仅从生产副本解析、无回源，重新生成只读plan；旧planHash不作上线执行授权。启动失败或路径/数量/hash不符，按批准的回滚方案恢复旧代码和整组数据，不做破坏性现场修补。
+启动后核对健康、运行SHA/进程、数据库和agent路径、无意外活动任务；确认 `/api/wikiskill` 返回200，再只读检查Wiki用例、经验两栏、候选、M4门槛/测试与未采纳解读。分别检查迁入用例从外置数据目录的 imports 解析、本实例新封存用例从原 agentDir/badcase-capture 解析，两者均通过预检；缺失导入材料必须拒绝、不得回源。重新生成只读plan；旧planHash不作上线执行授权。启动失败或路径/数量/hash不符，按批准的回滚方案恢复旧代码和整组数据，不做破坏性现场修补。
 
 ## 5. 单独批准上线真实GPT复测和模型用量
 

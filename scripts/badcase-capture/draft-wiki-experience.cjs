@@ -25,7 +25,8 @@ function main(args = process.argv.slice(2)) {
   const raw = readJson(args[5], 128 * 1024 * 1024), payload = projectStagedResult(raw, wikiComparisonTotals);
   const comparisonId = 'comparison-' + crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
   if (comparisonId !== args[3] || payload.evaluation?.splitPolicy !== 'd15-frozen-v1') throw fail('wiki_experience_result_mismatch');
-  readWikiComparisonRecord(config.globalRoot, comparisonId, value => projectStagedResult(value, wikiComparisonTotals));
+  const scope = require(base + 'wiki-data-directory').resolveWikiStorageOptions(config);
+  readWikiComparisonRecord(scope.globalRoot, comparisonId, value => projectStagedResult(value, wikiComparisonTotals));
   const draft = store.recordComparisonExperience({ comparisonId, observations: extractWikiLiteralObservations(raw), expectedRevision: revision });
   const summary = { comparisonId, experienceId: draft.id, version: draft.version, status: draft.status, revision: store.read().revision, modelCalls: 0 };
   process.stdout.write(JSON.stringify(summary) + '\n'); return summary;

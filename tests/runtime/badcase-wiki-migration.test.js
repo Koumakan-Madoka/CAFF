@@ -81,6 +81,45 @@ test('missing or damaged relocation metadata never falls back to still-present o
   assert.throws(() => resolveWikiReplayRequest({ globalRoot }, h.replay.request), /wiki_migration_location_invalid/);
   fs.writeFileSync(file, bytes); assert.throws(() => resolveWikiReplayRequest({ globalRoot }, { ...h.replay.request, captureRoot: path.join(h.root, 'unknown') }), /wiki_migration_location_invalid/);
 });
+test('configured external destination migrates source bytes and resolves both imported and instance-local sealed preflights', async t => {
+  const h = setup(t), dataDir = path.join(h.root, 'external-wiki'), agentDir = path.join(h.scope.sourceWorktree, '.pi-sandbox');
+  const before = tree(h.scope.globalRoot), old = { data: process.env.CAFF_WIKISKILL_DATA_DIR, agent: process.env.PI_CODING_AGENT_DIR };
+  process.env.CAFF_WIKISKILL_DATA_DIR = dataDir; process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(() => { for (const [key, value] of [['CAFF_WIKISKILL_DATA_DIR', old.data], ['PI_CODING_AGENT_DIR', old.agent]]) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  const config = { ...h.config, destinationAgentDir: agentDir }, { resolveWikiReplayRequest } = require(base + 'wiki-replay-location');
+  const p = h.migration().prepareMigration(config);
+  assert.equal(p.config.destinationAgentDir, dataDir);
+  const run = () => h.migration().migrateWikiLayout(config, { confirmed: true, expectedPlanHash: p.summary.planHash });
+  assert.equal(run().migrated, true); assert.equal(run().migrated, false); assert.deepEqual(tree(h.scope.globalRoot), before);
+  const configFile = path.join(h.root, 'external-migration.json'); fs.writeFileSync(configFile, JSON.stringify(config));
+  const cli = path.resolve('scripts/badcase-capture/migrate-wiki-layout.cjs');
+  const result = spawnSync(process.execPath, [cli, '--config', configFile, '--run', '--confirmed', '--expected-plan', p.summary.planHash], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout).migrated, false);
+  const scope = { globalRoot: path.join(agentDir, 'badcase-global'), sourceWorktree: h.scope.sourceWorktree };
+  assert.deepEqual(createWikiStore(scope).read(), h.store.read());
+  const imported = resolveWikiReplayRequest(scope, h.replay.request); assert.ok(imported.captureRoot.startsWith(path.join(dataDir, 'badcase-capture/imports') + path.sep));
+  const native = path.join(agentDir, 'badcase-capture'); fs.cpSync(h.seal.root, native, { recursive: true });
+  const localRequest = { ...h.replay.request, captureRoot: native };
+  // Build a new seal/retention in the instance capture store from its checkpoint,
+  // rather than relying on the old import's seal metadata.
+  for (const dir of ['cases', 'retention']) fs.rmSync(path.join(native, 'projects/p1', dir), { recursive: true });
+  require(base + 'sealed-case').saveSealedCase(localRequest);
+  assert.deepEqual(resolveWikiReplayRequest(scope, localRequest), localRequest);
+  const prepare = require('../../scripts/badcase-capture/sealed-direct-input.cjs').prepareSealedOriginalTurn;
+  assert.equal(prepare(imported).supported, true); assert.equal(prepare(resolveWikiReplayRequest(scope, localRequest)).supported, true);
+  const state = createWikiStore(scope).read(); assert.equal(collectWikiCandidateFiles(state, scope).length, 1);
+  const comparison = require('../../scripts/badcase-capture/direct-comparison.cjs').prepareComparison({ request: h.replay.request, globalWikiCandidate: { ...scope, candidateId: h.candidate.id }, repoRoot: h.root, dependencyRoot: h.root, image: { imageId: 'sha256:' + '1'.repeat(64) }, repeats: 1, rules: h.replay.rules, modelProfile: 'deepseek/deepseek-v4-flash', keySource: 'caff-deepseek' });
+  assert.equal(comparison.supported, true);
+  const evaluationFile = path.join(h.root, 'original-evaluation.json');
+  fs.writeFileSync(evaluationFile, JSON.stringify({ ...scope, comparison: { request: h.replay.request, variants: ['original'], repoRoot: h.root, dependencyRoot: h.root, image: { imageId: 'sha256:' + '1'.repeat(64) }, repeats: 1, rules: h.replay.rules, modelProfile: 'deepseek/deepseek-v4-flash', keySource: 'caff-deepseek' } }));
+  const evaluate = () => require('../../scripts/badcase-capture/run-wiki-evaluation.cjs').main(['--config', evaluationFile, '--plan'], { print: () => {} });
+  assert.equal((await evaluate()).supported, true);
+  fs.unlinkSync(path.join(imported.captureRoot, 'projects/p1/blobs', h.seal.cp.files['source.txt'].hash.slice(0, 2), h.seal.cp.files['source.txt'].hash));
+  assert.equal(prepare(resolveWikiReplayRequest(scope, h.replay.request)).supported, false, 'missing import never reads still-present old source');
+  assert.equal((await evaluate()).supported, false, 'original-only evaluation also refuses missing imports instead of reading old source');
+  assert.equal(prepare(resolveWikiReplayRequest(scope, localRequest)).supported, true, 'local scene remains independent');
+  assert.equal(fs.existsSync(path.join(agentDir, 'badcase-global')), false);
+});
 test('confirmation/hash drift and source changes reject without publishing a destination', t => {
   const h = setup(t), p = h.plan();
   assert.throws(() => h.migration().migrateWikiLayout(h.config, { expectedPlanHash: p.summary.planHash }), /wiki_migration_confirmation_required/);

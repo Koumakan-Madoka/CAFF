@@ -5,9 +5,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { validateSealRequest } from './sealed-case';
+import { resolveWikiStorageOptions, resolveWikiInstanceCaptureRoot } from './wiki-data-directory';
 const fail = () => Object.assign(Error('wiki_migration_location_invalid'), { code: 'wiki_migration_location_invalid' });
 const hash = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
 export function resolveWikiReplayRequest(options: any, input: any) {
+  options = resolveWikiStorageOptions(options);
   const request = validateSealRequest(input);
   if (options?.globalRoot === undefined) return request;
   if (!path.isAbsolute(options.globalRoot)) throw fail();
@@ -23,8 +25,9 @@ export function resolveWikiReplayRequest(options: any, input: any) {
     if (envelope.schemaVersion !== 1 || envelope.checksum !== hash(JSON.stringify(record))
       || !record || Object.keys(record).sort().join(',') !== 'kind,roots' || record.kind !== 'wiki-capture-locations-v1'
       || !Array.isArray(record.roots) || record.roots.length > 100) throw Error();
-    const local = path.resolve(options.globalRoot, '..', 'badcase-capture'), names = new Set();
-    let result = path.resolve(request.captureRoot) === local ? local : null;
+    const local = path.resolve(options.globalRoot, '..', 'badcase-capture'), instance = resolveWikiInstanceCaptureRoot(options), names = new Set();
+    const requested = path.resolve(request.captureRoot);
+    let result = requested === local || requested === instance ? requested : null;
     for (const r of record.roots) {
       if (!r || Object.keys(r).sort().join(',') !== 'directory,sourceRoot' || !path.isAbsolute(r.sourceRoot || '')
         || r.sourceRoot.includes('\0') || path.resolve(r.sourceRoot) !== r.sourceRoot || names.has(r.sourceRoot) || r.directory !== hash(r.sourceRoot)) throw Error();

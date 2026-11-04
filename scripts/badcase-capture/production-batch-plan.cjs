@@ -3,6 +3,7 @@
 // per task; sample controls do not inherit a real repository's working tree.
 const base='../../build/server/domain/runtime/badcase-capture/';
 const {createWikiStore}=require(base+'wiki-store');
+const {resolveWikiStorageOptions}=require(base+'wiki-data-directory');
 const {resolveGlobalWikiCandidate}=require(base+'wiki-global-candidate');
 const {collectWikiCandidateFiles}=require(base+'wiki-candidate-files');
 const {planWikiEvaluationSuite}=require(base+'wiki-evaluation-suite');
@@ -15,6 +16,7 @@ const textHash=text=>require('node:crypto').createHash('sha256').update(text).di
 const fail=code=>Object.assign(Error(code),{code});
 const {hashJson:hash}=require('./replay-streams.cjs');
 function prepareProductionBatch(config,options={}){
+ config=resolveWikiStorageOptions(config);
  const scope={globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree},state=createWikiStore(scope).read();
  if(config.modelProfile!==CODEX_PROFILE || config.keySource!=='caff-codex-access' || config.repeats!==10
    || !config.evaluation || Object.keys(config.evaluation).sort().join(',')!=='kind,targetEntryId'

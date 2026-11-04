@@ -97,7 +97,7 @@ function prepareComparison(config, options = {}) {
   const rules = validateRules(config.rules), knownValues = comparisonKnownValues(config, options);
   let prepare = options.prepare || (originalOnly ? prepareSealedOriginalTurn : prepareSealedDirectTurn), globalWikiCandidate = null, globalState, globalSaved, globalFiles, baseline;
   if (config.globalWikiCandidate !== undefined) {
-    const selection = config.globalWikiCandidate;
+    const selection = require('../../build/server/domain/runtime/badcase-capture/wiki-data-directory').resolveWikiStorageOptions(config.globalWikiCandidate);
     if (!selection || typeof selection !== 'object' || Array.isArray(selection)
       || Object.keys(selection).sort().join(',') !== 'candidateId,globalRoot,sourceWorktree'
       || !path.isAbsolute(selection.globalRoot || '') || !path.isAbsolute(selection.sourceWorktree || '')
