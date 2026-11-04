@@ -68,6 +68,23 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
   const plan = () => prepareBatch(config, options), run = () => runBatch(config, { ...options, expectedPlanHash: plan().summary.planHash });
   return { root, store, sources, split, seals, candidate, config, single, state, options, plan, run, guideline };
 }
+test('global batch delegates scene reads through mapped imports while raw roots remain immutable identities', t => {
+  const h = setup(t), destinationAgentDir = path.join(h.root, 'migrated');
+  const migration = require('../../scripts/badcase-capture/migrate-wiki-layout.cjs');
+  const config = { globalRoot: h.config.globalRoot, sourceWorktree: h.config.sourceWorktree, captureRoots: h.seals.map(s => s.root), destinationAgentDir };
+  const plan = migration.prepareMigration(config); migration.migrateWikiLayout(config, { confirmed: true, expectedPlanHash: plan.summary.planHash });
+  const before = h.store.read();
+  for (const s of h.seals) fs.renameSync(s.root, s.root + '-offline');
+  try {
+    let reads = 0;
+    const result = prepareBatch({ ...h.config, globalRoot: path.join(destinationAgentDir, 'badcase-global') }, { ...h.options, prepareTarget: (request, ...args) => {
+      assert.ok(request.captureRoot.startsWith(path.join(destinationAgentDir, 'badcase-capture/imports') + path.sep)); reads++;
+      return prepareSealedPromptTarget(request, ...args);
+    } });
+    assert.equal(result.summary.preparedReplayableCount, 7); assert.equal(reads, 14);
+    assert.deepEqual(h.store.read(), before); assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);
+  } finally { for (const s of h.seals) fs.renameSync(s.root + '-offline', s.root); }
+});
 test('old and manually merged real seals both carry the adopted baseline on both arms, with only one new candidate change', t => {
   const h = setup(t), snapshot = h.store.read(), review = { id: 'review-fixture', comparisonId: 'comparison-' + 'a'.repeat(64), candidateId: h.candidate.id, candidateHash: h.candidate.candidateHash, targetId, decision: 'adopted', baselineChanged: true, createdAt: '2026-11-04T00:00:00Z' };
   // Seed operator-owned adoption metadata; review creation itself is covered by

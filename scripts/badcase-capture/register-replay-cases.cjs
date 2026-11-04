@@ -4,6 +4,7 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
+const { resolveWikiReplayRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-replay-location');
 const { prepareSealedDirectTurn } = require('./sealed-direct-input.cjs');
 const { validateRules } = require('./direct-comparison.cjs');
 const fail = code => Object.assign(Error(code), { code });
@@ -17,7 +18,7 @@ function registerReplayCases(config, confirmed = false, options = {}) {
   // exist at import; evaluation rechecks it, rather than trusting this label.
   for (const c of config.cases) {
     validateRules(c.rules);
-    const prepared = prepare(c.request);
+    const prepared = prepare(resolveWikiReplayRequest(config, c.request));
     if (prepared.supported !== true || prepared.provenance.checkpointHash !== c.checkpointHash) throw fail('wiki_replay_materials_unavailable');
   }
   const replayCases = store.addReplayCases(config.cases);

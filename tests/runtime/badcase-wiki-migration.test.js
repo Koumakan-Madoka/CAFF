@@ -22,7 +22,10 @@ function setup(t) {
     cp.agentId = 'role-family-gpt'; r.runConfig.provider = 'deepseek'; r.runConfig.model = 'deepseek-v4-flash';
     config.toolBridgeEnabled = true; config.portableRuntime = { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: true };
     config.sdkStartConfig = { cwd: cp.targetDir, provider: r.runConfig.provider, model: r.runConfig.model, resume: false, thinking: 'off', fast: false, retireUserScopeSkills: true };
-    r.promptBlobHash = r.normalizedPromptHash = put('Identity: test\n\nRoom work context:\n- Fixture\n\nRules:\n' + getGlobalPromptTarget('global-harness-behavior-v1').baseText + '\n- Preserve routing.\n\nRouting instructions:\n- No handoff.\n\nUser: inspect.');
+    const role = 'Rules:\n' + getGlobalPromptTarget('global-harness-behavior-v1').baseText + '\n- Preserve routing.';
+    const prompt = 'Identity: test\n\nRoom work context:\n- Fixture\n\n' + role + '\n\nRouting instructions:\n- No handoff.\n\nUser: inspect.';
+    r.promptBlobHash = r.normalizedPromptHash = put(prompt);
+    r.roleSpan = { start: prompt.indexOf(role), end: prompt.indexOf(role) + role.length, sha256: sha(role) };
     const association = { projectId: cp.projectId, conversationId: cp.conversationId, turnId: cp.turnId, agentId: cp.agentId, userMessageId: 'u1', assistantMessageId: 'msg1' };
     const trace = { schemaVersion: 1, kind: 'caff-evaluation-callback-input-v1', association, assistantCreatedAt: '2026-01-01T00:00:01.000Z', conversation: { title: 'Fixture', type: 'standard', metadata: {} }, participants: [{ id: cp.agentId, name: 'GPT', description: 'Test' }], publicMessages: [{ id: 'u1', turnId: 't0', role: 'user', agentId: null, senderName: 'User', content: 'Inspect.', status: 'completed', createdAt: '2026-01-01T00:00:00.000Z', publicPostedAt: '', publicPostCount: 0, publicPostMode: '', mentions: [] }], privateMessages: [], pendingDelegations: [] };
     r.callbackInput = { schemaVersion: 1, kind: 'caff-evaluation-callback-input-reference-v1', blobHash: put(JSON.stringify(trace)), association };
@@ -67,11 +70,31 @@ test('migrated requests and candidate/preflight use copied closure without falli
   assert.deepEqual(resolveWikiReplayRequest({ globalRoot: dest }, request), request); assert.deepEqual(h.replay.request.captureRoot, h.seal.root);
   fs.renameSync(h.seal.root, h.seal.root + '-offline'); t.after(() => fs.renameSync(h.seal.root + '-offline', h.seal.root));
   const state = createWikiStore({ ...h.scope, globalRoot: dest }).read(), files = collectWikiCandidateFiles(state, { globalRoot: dest }); assert.equal(files.length, 1);
+  const candidate = require('../../scripts/badcase-capture/create-wiki-candidate.cjs').createCandidate({ ...h.scope, globalRoot: dest,
+    versionId: state.versions[0].id, entryIds: ['entry-1'], targetId: 'global-harness-behavior-v1' });
+  assert.equal(candidate.id, h.candidate.id, 'global candidate CLI delegates all scene reads to the location-aware collector');
   const direct = require('../../scripts/badcase-capture/direct-comparison.cjs').prepareComparison;
   const plan = direct({ request: h.replay.request, globalWikiCandidate: { ...h.scope, globalRoot: dest, candidateId: h.candidate.id }, repoRoot: h.root, dependencyRoot: h.root, image: { imageId: 'sha256:' + '1'.repeat(64) }, repeats: 1, rules: h.replay.rules, modelProfile: 'deepseek/deepseek-v4-flash', keySource: 'caff-deepseek' });
   assert.equal(plan.supported, true); assert.equal(plan.summary.checkpointHash, h.replay.checkpointHash);
   fs.unlinkSync(path.join(request.captureRoot, 'projects/p1/blobs', h.seal.cp.files['source.txt'].hash.slice(0, 2), h.seal.cp.files['source.txt'].hash));
   assert.throws(() => collectWikiCandidateFiles(state, { globalRoot: dest }), /wiki_candidate_anchor_unsupported/);
+});
+test('registration validates imported seals without changing the original path-bound replay identity', t => {
+  const h = setup(t); h.run(); const globalRoot = path.join(h.config.destinationAgentDir, 'badcase-global');
+  const scope = { ...h.scope, globalRoot }, store = createWikiStore(scope), before = store.read();
+  const { registerReplayCases } = require('../../scripts/badcase-capture/register-replay-cases.cjs');
+  const input = Object.fromEntries(['sourceCaseId', 'category', 'task', 'fixture', 'request', 'rules', 'checkpointHash'].map(k => [k, h.replay[k]]));
+  assert.equal(require('../../scripts/badcase-capture/sealed-direct-input.cjs').prepareSealedDirectTurn(input.request).supported, true);
+  const original = h.seal.root, offline = original + '-offline'; fs.renameSync(original, offline);
+  try {
+    const result = registerReplayCases({ ...scope, cases: [input] }, true);
+    assert.deepEqual(result.replayCases, [h.replay]); assert.deepEqual(store.read(), before);
+    const imported = require(base + 'wiki-replay-location').resolveWikiReplayRequest(scope, input.request);
+    const blob = h.seal.cp.files['source.txt'].hash; fs.unlinkSync(path.join(imported.captureRoot, 'projects/p1/blobs', blob.slice(0, 2), blob));
+    assert.throws(() => registerReplayCases({ ...scope, cases: [input] }, true), /wiki_replay_materials_unavailable/);
+    assert.deepEqual(store.read(), before); assert.equal(fs.existsSync(original), false);
+  } finally { fs.renameSync(offline, original); }
+  assert.throws(() => registerReplayCases({ ...scope, cases: [input] }, true), /wiki_replay_materials_unavailable/, 'a still-present original never rescues damaged imports');
 });
 test('missing or damaged relocation metadata never falls back to still-present original scenes', t => {
   const h = setup(t); h.run(); const globalRoot = path.join(h.config.destinationAgentDir, 'badcase-global'), file = path.join(globalRoot, 'capture-locations.json');
