@@ -7,7 +7,7 @@ const {getGlobalPromptTarget}=require('../../build/lib/agent-prompt-targets');
 const {prepareBatch,runBatch}=require('../../scripts/badcase-capture/batch-comparison.cjs');
 const PROFILE='openai-codex/gpt-6.1-sol',digest='a'.repeat(64),controlId='text-7364c69567dcfaa751e631b7dc90ac48f03c9ce3e5d12a0588f7ea93c94338ac';
 const sha=v=>crypto.createHash('sha256').update(v).digest('hex');
-function fixture(t){
+function fixture(t,{controlFiles=false,bareReplies=false}={}){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'production-batch-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const scope={globalRoot:path.join(root,'global'),sourceWorktree:path.join(root,'source')},store=createWikiStore(scope);
  const train=store.addTextCases(Array.from({length:4},(_,n)=>({source:{origin:'http://127.0.0.1:3100',projectId:'old',conversationId:'room',messageId:'m'+n,agentId:'role-family-gpt'},role:'GPT',actual:'jargon',expected:'unique expected '+n,message:'',traceExcerpt:'',traceState:'missing',messageTruncated:false,traceTruncated:false}))).cases;
@@ -19,7 +19,7 @@ function fixture(t){
  // Trusted historical sample fixture, with the exact grandfathered display ID.
  const s=store.read();s.revision++;s.cases.push({id:controlId,kind:'text-only',role:'GPT',split:'train',source:{agentId:'role-family-gpt'},createdAt:'2026-01-01T00:00:00.000Z'});fs.writeFileSync(path.join(scope.globalRoot,'snapshots',String(s.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(s)),record:s}));
  const rules={kind:'public-reply-literals-v1',leadChars:120,conclusionMarkers:['结论'],forbiddenTerms:[],forbiddenPatterns:['priority-code','adr-number','detached-head','commit-hash','acceptance-decision-code']};
- for(const [i,c]of [...marks,store.read().cases.find(c=>c.id===controlId)].entries())store.addReplayCase({sourceCaseId:c.id,category:i<4?'reproduction':'control',task:'Synthetic task',fixture:{commit:'b'.repeat(40),sourceCommit:'b'.repeat(40),sourceSubdirectory:'sample',filesHash:digest},request:{captureRoot:path.join(root,'capture-'+i),association:{projectId:'p1',conversationId:i<4?'room-'+i:'sample-room',messageId:i<4?'msg-'+i:'sample-msg',checkpointId:'cp-'+i,turnId:'turn-'+i,agentId:i<2||i===4?'role-family-gpt':'role-family-deepseek',taskId:'task-'+i,runId:1},flagId:'flag-'+sha('p1\0'+(i<4?'msg-'+i:'sample-msg'))},rules,checkpointHash:digest});
+ for(const [i,c]of [...marks,store.read().cases.find(c=>c.id===controlId)].entries())store.addReplayCase({sourceCaseId:c.id,category:i<4?'reproduction':'control',task:'Synthetic task',fixture:{commit:'b'.repeat(40),sourceCommit:'b'.repeat(40),sourceSubdirectory:'sample',filesHash:digest},request:{captureRoot:path.join(root,'capture-'+i),association:{projectId:'p1',conversationId:i<4?'room-'+i:'sample-room',messageId:i<4?'msg-'+i:'sample-msg',checkpointId:'cp-'+i,turnId:'turn-'+i,agentId:i<2||i===4?'role-family-gpt':'role-family-deepseek',taskId:'task-'+i,runId:1},flagId:'flag-'+sha('p1\0'+(i<4?'msg-'+i:'sample-msg'))},rules:controlFiles&&i===4?{kind:'file-literals-v1',files:[{path:'REPORT.md',contains:['DONE'],notContains:['TODO']}]}:bareReplies?{kind:'completion-public-reply-v1'}:rules,checkpointHash:digest});
  const config={...scope,repoRoot:root,dependencyRoot:root,image:{imageId:'sha256:'+'1'.repeat(64)},candidateId:candidate.id,modelProfile:PROFILE,keySource:'caff-codex-access',codexAuthFile:path.join(root,'.pi-sandbox','auth.json'),knownKeySources:{sandboxRoot:path.join(root,'.pi-sandbox'),jevSource:'TYPESAFE_API_KEY'},repeats:10,evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1'},cases:[...marks.map(c=>({sourceCaseId:c.id,category:'reproduction',repository:{sourceRoot:root,head:'b'.repeat(40)},dependencies:{kind:'npm-ci-linux-v1',cacheRoot:path.join(root,'cache')}})),{sourceCaseId:controlId,category:'control'}]};
  const calls=[];const options={collectProductionCandidateFiles:()=>[],prepareProductionComparison:c=>{calls.push(c);return {supported:true,summary:{checkpointHash:digest,checkpointId:c.request.association.checkpointId,rulesHash:sha(JSON.stringify(c.rules)),model:PROFILE,modelConfig:{api:'openai-codex-responses',thinking:'xhigh',fast:false,transport:'sse',credentialDelivery:'host-only-mailbox'}}};}};
  const confirm=c=>store.assignCase({caseId:c.id,entryId:'entry-1',expectedRevision:store.read().revision});
@@ -272,6 +272,55 @@ test('only reviewed experience becomes candidate input; revisions preserve appro
  const tampered=h.store.read();tampered.candidates.find(c=>c.id===candidate.id).experienceInputs[0].methods+='tamper';assert.throws(()=>resolveGlobalWikiCandidate(tampered,candidate.id,candidate.targetId,candidate.baseHash,[]),/wiki_candidate_target_mismatch/);
  h.store.addTextCases([{source:{origin:'http://127.0.0.1:3100',projectId:'old',conversationId:'feedback-room',messageId:'train-after-approval',agentId:'role-family-gpt'},role:'GPT',actual:'new symptom',expected:'new expectation',message:'TRAIN-ONLY-AFTER-APPROVAL',traceExcerpt:'',traceState:'missing',messageTruncated:false,traceTruncated:false}]);const induction=require('../../scripts/badcase-capture/wiki-induction.cjs').prepareWikiInduction(h.store).files[0].bytes.toString();assert.doesNotMatch(induction,/positiveExamples|有效：先说明结果/);
  assert.throws(()=>h.store.reviewExperience({experienceId:next.id,expectedRevision:h.store.read().revision,decision:'approved'}),/wiki_experience_conflict/);
+});
+function scoringV2Fixture(t,{bareReplies=false}={}) {
+ const h=fixture(t,{controlFiles:true,bareReplies});for(const c of h.marks)h.confirm(c);
+ // This grandfathered synthetic control had no annotation; populate only this
+ // test snapshot, not real wiki records or any historical production reply.
+ const state=h.store.read(),control=state.cases.find(c=>c.id===controlId);control.actual='Unclear';control.expected='Clear';state.revision++;
+ fs.writeFileSync(path.join(h.config.globalRoot,'snapshots',String(state.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(state)),record:state}));
+ const suite=h.plan().prepared.filter(c=>!c.reportOnly),questions=[{id:'q1',question:'Is the result clear?',evidence:'reply'},{id:'q2',question:'Is the next step clear?',evidence:'reply'}];
+ for(const row of suite){const rubric=h.store.saveRubricDraft({caseId:row.sourceCaseId,model:'deepseek/deepseek-v4-flash',questions},h.store.read().revision);h.store.confirmRubric({rubricId:rubric.id,hash:rubric.hash,confirmationRecord:'Synthetic user approval'},h.store.read().revision);h.config.cases.find(c=>c.sourceCaseId===row.sourceCaseId).rubricHash=rubric.hash;}
+ const definition={kind:'wiki-experiment-v1',variants:[{id:'original',promptHash:h.candidate.baseHash},{id:'candidate',promptHash:h.candidate.candidateHash}],
+  runner:{model:PROFILE,settings:{api:'openai-codex-responses',thinking:'xhigh',fast:false,transport:'sse',credentialDelivery:'host-only-mailbox'}},repeats:10,executionPolicy:'alternating-valid-v1',
+  decision:{kind:'wikiskill-gate-v1',alpha:.05,noHarmFraction:.05,minimumAllowedLoss:1,maxExtraAttemptsPerCase:5},
+  judge:{backend:'deepseek',model:'deepseek/deepseek-v4-flash',settings:{},promptHash:sha('synthetic-descriptor-not-a-judge-prompt')},
+  cases:suite.map(c=>({caseId:c.sourceCaseId,stage:c.stage,category:c.category,targetReproduction:c.targetReproduction}))};
+ h.config.experiment={definition};h.options.prepareProductionTask=()=> 'ACTUAL-TRIGGERING-USER-TASK';
+ const prepare=h.options.prepareProductionComparison;h.options.prepareProductionComparison=c=>{const p=prepare(c);p.summary.scoring=require('../../scripts/badcase-capture/wiki-receipt-scoring.cjs').wikiScoringSummary(c.scoring);return p;};
+ const judge={configuration:structuredClone(definition.judge),evaluate:async()=>{throw Error('No real judge call in batch fakes');}};
+ return {...h,judge,definition,pin:()=>{h.config.experiment.plan=h.plan().summary.experiment;return h.plan();}};
+}
+test('v2 batch binds independent experiment and frozen rubrics before execution; original tasks are not synthetic replay labels',t=>{
+ const h=scoringV2Fixture(t),before=h.store.read(),p=h.pin();
+ assert.equal(p.summary.kind,'wiki-staged-batch-comparison-v2');assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v1');assert.deepEqual(h.store.read(),before);
+ assert.equal(p.summary.disclosures.includes('literal_rules_not_semantic_judgment'),false);assert.ok(p.summary.disclosures.includes('literal_metrics_reference_only'));
+ for(const row of p.prepared.filter(c=>c.supported)){assert.equal(row.comparisonConfig.scoring.task,'ACTUAL-TRIGGERING-USER-TASK');assert.equal(row.comparisonConfig.scoring.rubric.hash,row.comparison.scoring.rubricHash);assert.equal(row.comparisonConfig.scoring.expected,h.store.read().cases.find(c=>c.id===row.sourceCaseId).expected);}
+ const control=p.prepared.find(c=>c.sourceCaseId===controlId);assert.equal(control.comparisonConfig.rules.kind,'file-literals-v1');assert.equal(p.summary.experiment.cases.find(c=>c.caseId===controlId).hardAssertionsHash,require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(control.comparisonConfig.rules));
+ assert.equal(JSON.stringify(p.summary).includes('ACTUAL-TRIGGERING-USER-TASK'),false);assert.equal(JSON.stringify(p.summary).includes('Is the result clear?'),false);
+ for(const mutate of [x=>x.definition.runner.settings.thinking='low',x=>x.definition.variants[1].promptHash='f'.repeat(64),x=>x.definition.cases[0].stage=x.definition.cases[0].stage==='test'?'gate':'test',x=>x.config.cases[0].topicExemption={},x=>x.config.cases[0].rulesRevision='snapshot-head-exemption-v1']){const x=scoringV2Fixture(t);mutate(x);assert.throws(x.plan);}
+});
+test('v2 registers and plans new reply-only cases without inventing keyword rules or exemptions',t=>{
+ const h=scoringV2Fixture(t,{bareReplies:true}),p=h.pin();
+ const row=p.prepared.find(c=>c.sourceCaseId===h.marks[0].id);assert.deepEqual(row.comparisonConfig.rules,{kind:'completion-public-reply-v1'});assert.equal(row.comparisonConfig.scoring.rubric.questions.length,2);
+});
+test('v2 batch requires pinned experiment and matching judge before any paid execution or events',async t=>{
+ for(const mode of ['unpinned','missing','changed']){const h=scoringV2Fixture(t);if(mode!=='unpinned')h.pin();const f=fakeExecution(h);if(mode!=='missing')f.options.judge=h.judge;if(mode==='changed')h.judge.configuration.promptHash='f'.repeat(64);
+  await assert.rejects(f.run(),/wiki_(experiment_confirmation_required|judge_adapter_required|judge_binding_changed)/);assert.equal(f.calls.length,0);assert.equal(f.events.length,0);assert.equal(f.legacyReads(),0);}
+});
+test('v2 staged execution keeps gate formula and test boundary, and CLI distinguishes AI scoring from literal reference metrics',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=fakeExecution(h);f.options.judge=h.judge;const r=await f.run();assert.equal(r.gateDecision.outcome,'accepted');assert.equal(f.calls.length,3);
+ assert.ok(f.calls.every(c=>c.scoring.kind==='wiki-score-v2'));const at=f.events.findIndex(e=>e.event==='gate_decision');assert.ok(f.events.findIndex(e=>e.event==='run'&&e.stage==='test')>at);
+ const output=require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(r);assert.match(output,/硬断言.*AI/);assert.match(output,/deepseek-v4-flash/);assert.doesNotMatch(output,/字面规则不是语义判断|主题编号豁免/);
+});
+test('v2 frozen experiment rejects drift in task, rubric, scene and judge configuration before executing a reply',async t=>{
+ for(const change of ['task','rubric','scene','judge']){const h=scoringV2Fixture(t);h.pin();
+  if(change==='task')h.options.prepareProductionTask=()=> 'CHANGED TASK';
+  if(change==='rubric'){const d=h.store.saveRubricDraft({caseId:h.marks[0].id,model:'deepseek/deepseek-v4-flash',questions:[{id:'a',question:'New question?',evidence:'reply'},{id:'b',question:'Another question?',evidence:'reply'}]},h.store.read().revision);h.store.confirmRubric({rubricId:d.id,hash:d.hash,confirmationRecord:'Synthetic approval'},h.store.read().revision);h.config.cases[0].rubricHash=d.hash;}
+  if(change==='scene'){const prepare=h.options.prepareProductionComparison;h.options.prepareProductionComparison=c=>{const p=prepare(c);p.summary.checkpointHash='f'.repeat(64);return p;};}
+  if(change==='judge')h.definition.judge.promptHash='f'.repeat(64);
+  assert.throws(h.plan,/wiki_experiment_changed|evaluation_batch_input_changed/);assert.equal(h.store.read().candidates.length,1);
+ }
 });
 test('production model never silently falls back to proxy or accepts caller-drawn stages or missing restore declarations',t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);

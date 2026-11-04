@@ -38,6 +38,15 @@ test('sealed portable input preserves real start bytes, changes only declared ro
   assert.deepEqual(fs.readFileSync(f.source), before); assert.equal(a.provenance.strictEvalEligible, false);
   for (const role of ['', '{{CAFF_CHAT_CALLBACK_TOKEN}}', 'sk-' + 'x'.repeat(32)]) assert.equal(prepareSealedDirectTurn(f.request, role).supported, false);
 });
+test('experiment scoring task comes only from the validated sealed trigger, not a replay label or runtime prompt', t => {
+  const f = portable(t), { readProductionScoringTask } = require('../../scripts/badcase-capture/production-scoring-plan.cjs');
+  const turn = prepareSealedOriginalTurn(f.request), scope = { globalRoot: require('node:path').join(f.root, 'wiki'), sourceWorktree: require('node:path').join(f.root, 'source') };
+  const replay = { request: f.request, checkpointHash: turn.provenance.checkpointHash, task: 'DO NOT USE OPERATOR TASK LABEL' };
+  assert.equal(readProductionScoringTask(replay, scope), 'Read files.');
+  assert.throws(() => readProductionScoringTask({ ...replay, checkpointHash: 'f'.repeat(64) }, scope), /evaluation_batch_task_unavailable/);
+  const missing = portable(t, ({ r }) => { delete r.callbackInput; });
+  assert.throws(() => readProductionScoringTask({ ...replay, request: missing.request }, scope), /evaluation_batch_task_unavailable/);
+});
 function gptFamily(t, change = () => {}) {
   return portable(t, value => {
     const { cp, r, config, put, trace } = value;

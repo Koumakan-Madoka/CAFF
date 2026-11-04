@@ -385,7 +385,8 @@ export function createWikiStore(options: any) {
         id(fixture.sourceSubdirectory);
         const request = validateSealRequest(structuredClone(input.request));
         const rules = structuredClone(input.rules);
-        if (!rules || !['read-only-files-v1', 'file-literals-v1', 'public-reply-literals-v1'].includes(rules.kind)) throw fail('wiki_invalid_input');
+        if (!rules || !['read-only-files-v1', 'file-literals-v1', 'public-reply-literals-v1', 'completion-public-reply-v1'].includes(rules.kind)) throw fail('wiki_invalid_input');
+        if (rules.kind === 'completion-public-reply-v1') shape(rules, ['kind']);
         return { sourceCaseId, category: input.category, task, fixture, request, rules, checkpointHash: input.checkpointHash };
       });
       return change(state => {
