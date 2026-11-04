@@ -16,7 +16,7 @@ import { readWikiComparisonRecord } from './wiki-comparison-record';
 import { projectStagedResult } from './wiki-staged-result';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
-import { buildWikiExperienceDraft, mergeWikiLiteralObservations } from './wiki-experience';
+import { buildWikiExperienceDraft, mergeWikiLiteralObservations, approvedWikiExperiences, revisedWikiExperience } from './wiki-experience';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -589,6 +589,40 @@ export function createWikiStore(options: any) {
           caseIds, trainingHash: hash(JSON.stringify(cases)), entries: entries.map((e: any, i: number) => ({ id: `entry-${i + 1}`, ...e, status: 'draft' })), unclassified };
         state.versions.push(version);
         return { changed: true, value: version };
+      }).value;
+    },
+    reviseExperience(input: any) {
+      shape(input, ['experienceId', 'expectedRevision']); const experienceId = id(input.experienceId);
+      if (!global || !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const original = state.experiences.find((e: any) => e.id === experienceId);
+        if (!original) throw fail('wiki_experience_not_found');
+        if (!approvedWikiExperiences(state, original.entryId).some(e => e.id === experienceId)) throw fail('wiki_experience_reviewed');
+        const tip = state.experiences.filter((e: any) => e.rootId === original.rootId).at(-1);
+        if (tip.status === 'draft') return { changed: false, value: tip };
+        const next = revisedWikiExperience(tip, { methods: original.methods, positiveExamples: original.positiveExamples });
+        state.experiences.push(next); appendEvent(state, { type: 'experience-revised', experienceId: next.id, entryId: next.entryId });
+        return { changed: true, value: next };
+      }).value;
+    },
+    reviewExperience(input: any) {
+      shape(input, ['experienceId', 'expectedRevision', 'decision', 'patch']); const experienceId = id(input.experienceId);
+      if (!global || !Number.isSafeInteger(input.expectedRevision) || !['save', 'approved', 'rejected'].includes(input.decision)) throw fail('wiki_invalid_input');
+      if (input.patch !== undefined) shape(input.patch, ['methods', 'positiveExamples']);
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        let current = state.experiences.find((e: any) => e.id === experienceId);
+        if (!current) throw fail('wiki_experience_not_found');
+        if (current.status !== 'draft') throw fail('wiki_experience_reviewed');
+        if (state.experiences.filter((e: any) => e.rootId === current.rootId).at(-1).id !== current.id) throw fail('wiki_experience_conflict');
+        const fields = { methods: text(input.patch?.methods ?? current.methods, 16384), positiveExamples: text(input.patch?.positiveExamples ?? current.positiveExamples, 8192) };
+        const edited = fields.methods !== current.methods || fields.positiveExamples !== current.positiveExamples;
+        if (edited) { current = revisedWikiExperience(current, fields); state.experiences.push(current); }
+        if (input.decision !== 'save') { current.status = input.decision; current.reviewedAt = new Date().toISOString(); }
+        if (!edited && input.decision === 'save') return { changed: false, value: current };
+        appendEvent(state, { type: input.decision === 'save' ? 'experience-revised' : 'experience-' + input.decision, experienceId: current.id, entryId: current.entryId });
+        return { changed: true, value: current };
       }).value;
     },
     recordComparisonExperience(input: any) {

@@ -129,6 +129,14 @@ test('an explicit adopted review is labelled as evaluation baseline adoption, ne
   assert.match(h.root.querySelector('#impact-log').textContent, /用户明确采纳.*生产提示词仍须手动合入/);
   await h.click('[data-tab="targets"]'); const card = h.root.querySelector('.cand'); assert.match(card.textContent, /已采纳为评测基线/); assert.equal(card.querySelector('[data-confirm-candidate]'), null); assert.equal(h.posts().length, 0);
 });
+test('experience drafts require explicit review before the mode columns or candidate inputs; revisions do not edit frozen text', async t => {
+ const h=setup(t,(url,options,saved)=>{if(url.endsWith('/experience')&&options.method==='POST'){const e=saved.experiences.find(e=>e.id===options.body.experienceId);assert.equal(options.body.decision,'approved');Object.assign(e,options.body.patch,{status:'approved',reviewedAt:'2026-11-04T03:00:00Z'});saved.revision++;return clone(saved);}return undefined;});
+ h.saved().experiences=[{id:'experience-draft',rootId:'root-1',version:1,parentId:null,entryId:'entry-1',status:'draft',methods:'开头结论率提高；P编号规则可能误判 <script>no-html</script>',positiveExamples:'示意，非回放原文：结论是……。',createdAt:'2026-11-04T02:00:00Z'}];
+ await h.panel.load();assert.match(h.root.querySelector('.experience-draft').textContent,/待审核/);assert.match(h.root.querySelector('[data-experience-methods]').textContent,/尚无已审核/);assert.equal(h.root.querySelector('.experience-draft script'),null);
+ h.root.querySelector('[name="experience-methods"]').value='有效：先给结论；规则教训：避开题目主题。';await h.click('[data-review-experience="experience-draft"][data-decision="approved"]');assert.equal(h.posts().at(-1).url,'/api/wikiskill/experience');assert.equal(h.posts().at(-1).body.expectedRevision,3);
+ assert.match(h.root.querySelector('[data-experience-methods]').textContent,/有效：先给结论/);assert.match(h.root.querySelector('[data-experience-examples]').textContent,/示意，非回放原文/);assert.equal(h.root.querySelector('[name="experience-methods"]'),null);assert.ok(h.root.querySelector('[data-revise-experience="experience-draft"]'));
+ h.saved().candidates[0].experienceInputs=[{id:'experience-draft',version:1,methods:h.saved().experiences[0].methods,positiveExamples:h.saved().experiences[0].positiveExamples}];await h.panel.load();await h.click('[data-tab="targets"]');assert.match(h.root.querySelector('.cand').textContent,/已审核经验输入/);assert.match(h.root.querySelector('.cand').textContent,/规则教训/);
+});
 test('voided mark audit remains visible after removing the active case, without an undefined number or HTML execution', async t => {
   const h = setup(t);
   h.saved().events.push({ id: 'event-void', type: 'case-mark-voided', caseIds: ['removed-case'], createdAt: '2026-11-03T09:00:00Z', label: '误标作废', reason: '现场无对应测试；用户批准 <script>not-html</script>' });

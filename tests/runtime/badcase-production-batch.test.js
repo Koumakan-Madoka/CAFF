@@ -232,6 +232,25 @@ test('an experience write failure retains the immutable result and recovers by r
  assert.equal(injected,true);assert.deepEqual(h.store.read(),before);const saved=comparisons.read()[0];assert.ok(saved);assert.equal(saved.completed,true);
  assert.deepEqual(comparisons.save(r),saved);assert.equal(h.store.read().experiences.length,1);assert.equal(h.store.read().revision,before.revision+1);assert.equal(comparisons.read().length,1);
 });
+test('only reviewed experience becomes candidate input; revisions preserve approved text and existing candidate provenance',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(await fakeExecution(h).run());
+ const before=h.store.read(),draft=before.experiences[0],create={versionId:h.candidate.versionId,entryIds:h.candidate.entryIds,targetId:h.candidate.targetId,files:[]};
+ assert.equal(h.store.createGlobalCandidate(create).experienceInputs,undefined);
+ assert.throws(()=>require('../../build/server/domain/runtime/badcase-capture/wiki-global-candidate').buildGlobalWikiCandidate(h.store.read(),{...create,experienceIds:[draft.id]}),/wiki_experience_review_required/);
+ for(const patch of [{methods:'sk-FAKE_SENTINEL_123456'},{positiveExamples:''},{summary:{}}])assert.throws(()=>h.store.reviewExperience({experienceId:draft.id,expectedRevision:h.store.read().revision,decision:'approved',patch}));
+ const approved=h.store.reviewExperience({experienceId:draft.id,expectedRevision:h.store.read().revision,decision:'approved'});assert.equal(approved.status,'approved');assert.deepEqual(h.store.read().versions,before.versions);assert.deepEqual(h.store.read().baselines,before.baselines);
+ const candidate=h.store.createGlobalCandidate(create);assert.notEqual(candidate.id,h.candidate.id);assert.equal(candidate.candidateText,h.candidate.candidateText);assert.equal(candidate.experienceInputs[0].id,approved.id);assert.equal(candidate.experienceInputs[0].methods,approved.methods);assert.equal(candidate.experienceInputs[0].positiveExamples,approved.positiveExamples);assert.equal(candidate.experienceInputs[0].summary,undefined);
+ h.store.confirmGlobalCandidate({candidateId:candidate.id,candidateHash:candidate.candidateHash,expectedRevision:h.store.read().revision,files:[]});
+ const frozen=structuredClone(approved),revision=h.store.read().revision;
+ assert.throws(()=>h.store.reviewExperience({experienceId:approved.id,expectedRevision:revision,decision:'approved',patch:{methods:'Overwrite'}}),/wiki_experience_reviewed/);
+ const next=h.store.reviseExperience({experienceId:approved.id,expectedRevision:revision});assert.equal(next.status,'draft');assert.equal(next.parentId,approved.id);assert.equal(next.version,2);assert.deepEqual(h.store.read().experiences[0],frozen);
+ const again=h.store.reviseExperience({experienceId:approved.id,expectedRevision:h.store.read().revision});assert.equal(again.id,next.id);
+ const revised=h.store.reviewExperience({experienceId:next.id,expectedRevision:h.store.read().revision,decision:'approved',patch:{methods:'有效：先说明结果与影响；不能把编号规则当语义判断。',positiveExamples:'示意：结论是……；影响是……。'}});assert.equal(revised.status,'approved');assert.equal(revised.version,3);assert.deepEqual(h.store.read().experiences[0],frozen);assert.equal(h.store.read().experiences.find(e=>e.id===next.id).status,'draft');
+ const {resolveGlobalWikiCandidate}=require('../../build/server/domain/runtime/badcase-capture/wiki-global-candidate');assert.equal(resolveGlobalWikiCandidate(h.store.read(),candidate.id,candidate.targetId,candidate.baseHash,[]).experienceInputs[0].id,approved.id);assert.equal(h.store.createGlobalCandidate(create).experienceInputs[0].id,revised.id);
+ const tampered=h.store.read();tampered.candidates.find(c=>c.id===candidate.id).experienceInputs[0].methods+='tamper';assert.throws(()=>resolveGlobalWikiCandidate(tampered,candidate.id,candidate.targetId,candidate.baseHash,[]),/wiki_candidate_target_mismatch/);
+ h.store.addTextCases([{source:{origin:'http://127.0.0.1:3100',projectId:'old',conversationId:'feedback-room',messageId:'train-after-approval',agentId:'role-family-gpt'},role:'GPT',actual:'new symptom',expected:'new expectation',message:'TRAIN-ONLY-AFTER-APPROVAL',traceExcerpt:'',traceState:'missing',messageTruncated:false,traceTruncated:false}]);const induction=require('../../scripts/badcase-capture/wiki-induction.cjs').prepareWikiInduction(h.store).files[0].bytes.toString();assert.doesNotMatch(induction,/positiveExamples|有效：先说明结果/);
+ assert.throws(()=>h.store.reviewExperience({experienceId:next.id,expectedRevision:h.store.read().revision,decision:'approved'}),/wiki_experience_conflict/);
+});
 test('production model never silently falls back to proxy or accepts caller-drawn stages or missing restore declarations',t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);
  for(const patch of [{repeats:3},{keySource:'caff-deepseek'},{evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1',gateCaseIds:[]}}])assert.throws(()=>prepareBatch({...h.config,...patch},h.options),/evaluation_gate_config_invalid/);

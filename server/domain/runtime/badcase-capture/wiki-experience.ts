@@ -4,6 +4,26 @@ import crypto from 'node:crypto';
 import { wikiDisplayCases } from './wiki-suite';
 const hash = (v: any) => crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const fail = (code = 'wiki_experience_invalid') => Object.assign(Error(code), { code });
+export function approvedWikiExperiences(state: any, entryId: string, selectedIds?: string[]) {
+  const all = (state.experiences || []).filter((e: any) => e.entryId === entryId && e.status === 'approved');
+  let selected: any[];
+  if (selectedIds === undefined) {
+    const latest = new Map<string, any>();
+    for (const e of all) if (!latest.has(e.rootId) || latest.get(e.rootId).version < e.version) latest.set(e.rootId, e);
+    selected = [...latest.values()].sort((a, b) => a.rootId.localeCompare(b.rootId));
+  } else {
+    if (!Array.isArray(selectedIds) || selectedIds.length > 1000 || new Set(selectedIds).size !== selectedIds.length) throw fail();
+    selected = selectedIds.map(id => all.find((e: any) => e.id === id));
+    if (selected.some(e => !e)) throw fail('wiki_experience_review_required');
+  }
+  return selected.map(e => ({ id: e.id, rootId: e.rootId, version: e.version, methods: e.methods, positiveExamples: e.positiveExamples }));
+}
+export function revisedWikiExperience(previous: any, fields: any) {
+  const version = previous.version + 1;
+  const { reviewedAt, ...source } = previous;
+  return { ...source, ...fields, id: 'experience-' + hash({ rootId: source.rootId, parentId: source.id, version, fields }),
+    version, parentId: source.id, status: 'draft', createdAt: new Date().toISOString() };
+}
 export function extractWikiLiteralObservations(input: any) {
   const rows: any[] = [];
   for (const c of input.cases || []) if (c.targetReproduction && !c.reportOnly) for (const r of c.runs || []) {

@@ -36,6 +36,16 @@ test('comparison review is explicit, locally guarded and cannot supply results, 
   assert.equal(h.store.read().revision, 0); assert.equal(fs.existsSync(path.join(h.config.globalRoot, 'snapshots')), false);
   assert.equal(fs.existsSync(path.join(h.config.globalRoot, 'comparisons')), false);
 });
+test('experience review is guarded, revision-bound, freezes reviewed text and creates a separate revision draft', async t => {
+ const h=setup(t);h.seed();const s=h.store.read();s.revision++;s.experiences.push({id:'experience-fixture',rootId:'root-fixture',version:1,parentId:null,entryId:'entry-1',status:'draft',methods:'有效：先给结论。',positiveExamples:'示意：结论是……。',createdAt:'2026-11-04T00:00:00Z'});fs.writeFileSync(path.join(h.config.globalRoot,'snapshots',String(s.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:crypto.createHash('sha256').update(JSON.stringify(s)).digest('hex'),record:s}));
+ const route={pathname:'/api/wikiskill/experience'},body={confirmed:true,experienceId:'experience-fixture',expectedRevision:s.revision,decision:'approved'};
+ await rejects(h.invoke({...body,confirmed:false},route),'wiki_confirmation_required');for(const extra of [{observations:[]},{comparisonId:'invented'},{globalRoot:h.root}])await rejects(h.invoke({...body,...extra},route),'wiki_invalid_input');
+ for(const override of [{remoteAddress:'10.0.0.1'},{headers:{origin:'http://evil.test'}},{headers:{'x-caff-csrf-token':''}}])await assert.rejects(h.invoke(body,{...route,...override}),e=>[403,404].includes(e.statusCode));
+ await rejects(h.invoke({...body,expectedRevision:s.revision-1},route),'wiki_revision_conflict',409);await rejects(h.invoke({...body,patch:{methods:'sk-FAKE_SENTINEL_123456'}},route),'wiki_contains_secret');assert.deepEqual(h.store.read(),s);
+ const approved=await h.invoke(body,route);assert.equal(approved.body.experiences[0].status,'approved');const frozen=clone(approved.body.experiences[0]);await rejects(h.invoke({...body,expectedRevision:approved.body.revision,patch:{methods:'overwrite'}},route),'wiki_experience_reviewed',409);
+ const next=await h.invoke({...body,expectedRevision:approved.body.revision,decision:'revise'},route);assert.deepEqual(next.body.experiences[0],frozen);assert.equal(next.body.experiences[1].status,'draft');assert.equal(next.body.experiences[1].parentId,frozen.id);assert.deepEqual(next.body.versions,approved.body.versions);
+ function clone(v){return JSON.parse(JSON.stringify(v));}
+});
 test('execution progress endpoint is read-only, guarded and cannot launch evaluations', async t => {
   const h = setup(t), result = await h.invoke(undefined, { pathname: '/api/wikiskill/executions' });
   assert.deepEqual(result.body, { executions: [], comparisons: [] }); assert.equal(fs.existsSync(h.config.globalRoot), false);
