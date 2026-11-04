@@ -31,6 +31,17 @@ function reviseSnapshotHeadRules(rules, snapshotHead) {
   if (rules.kind !== 'public-reply-literals-v1') throw fail();
   return validatePublicReplyRules({ ...rules, kind: 'public-reply-literals-v2', snapshotHead });
 }
+// A new round may explicitly exempt number-pattern groups whose subject is
+// the task itself. No semantic inference, arbitrary regex or hash exemption.
+// The planner binds the operator's reason to the immutable registered task.
+function reviseTopicNumberRules(rules, patterns) {
+  validatePublicReplyRules(rules);
+  if (!Array.isArray(patterns) || !patterns.length || patterns.length > 3 || new Set(patterns).size !== patterns.length
+    || patterns.some(p => !['priority-code', 'adr-number', 'acceptance-decision-code'].includes(p) || !rules.forbiddenPatterns.includes(p))) {
+    throw Object.assign(Error('evaluation_topic_exemption_invalid'), { code: 'evaluation_topic_exemption_invalid' });
+  }
+  return validatePublicReplyRules({ ...rules, forbiddenPatterns: rules.forbiddenPatterns.filter(p => !patterns.includes(p)) });
+}
 function scorePublicReply(receipt, rules) {
   validatePublicReplyRules(rules);
   if (typeof receipt?.finalText !== 'string' || !['public', 'internal', 'none'].includes(receipt.replySource)) return { available: false };
@@ -59,4 +70,4 @@ function scorePublicReply(receipt, rules) {
   return { available: true, pass: Object.values(checks).every(Boolean), checks,
     details: { leadChars: rules.leadChars, conclusionMarker, forbidden } };
 }
-module.exports = { validatePublicReplyRules, scorePublicReply, reviseSnapshotHeadRules };
+module.exports = { validatePublicReplyRules, scorePublicReply, reviseSnapshotHeadRules, reviseTopicNumberRules };

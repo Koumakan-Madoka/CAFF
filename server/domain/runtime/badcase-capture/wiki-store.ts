@@ -591,6 +591,27 @@ export function createWikiStore(options: any) {
         return { changed: true, value: version };
       }).value;
     },
+    reviseGuideline(input: any) {
+      // Operator-owned wording revision, not model induction. Preserve every
+      // other pattern and the entire approved parent; changed prose is a draft.
+      shape(input, ['versionId', 'entryId', 'guideline', 'expectedRevision']);
+      const versionId = id(input.versionId), entryId = id(input.entryId), guideline = text(input.guideline, 8192);
+      if (!global || !Number.isSafeInteger(input.expectedRevision) || [...guideline].length > 300) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const parent = state.versions.at(-1);
+        if (!parent || parent.id !== versionId) throw fail('wiki_guideline_version_conflict');
+        const current = parent.entries.find((e: any) => e.id === entryId);
+        if (!current || current.status !== 'approved' || current.guideline === guideline) throw fail('wiki_entry_reviewed');
+        const version = { ...structuredClone(parent), id: `wiki-${state.revision + 1}`, createdAt: new Date().toISOString(),
+          origin: 'manual-guideline-revision-v1', parentVersionId: parent.id, revisedEntryId: entryId };
+        const changed = version.entries.find((e: any) => e.id === entryId);
+        changed.guideline = guideline; changed.status = 'draft'; delete changed.reviewedAt;
+        state.versions.push(version);
+        appendEvent(state, { type: 'guideline-revised', versionId: version.id, parentVersionId: parent.id, entryId });
+        return { changed: true, value: version };
+      }).value;
+    },
     reviseExperience(input: any) {
       shape(input, ['experienceId', 'expectedRevision']); const experienceId = id(input.experienceId);
       if (!global || !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');

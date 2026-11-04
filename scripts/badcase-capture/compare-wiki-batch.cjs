@@ -24,7 +24,7 @@ function argumentsFor(argv) {
 async function main(argv = process.argv.slice(2), runtimeOptions = {}) {
   const args = argumentsFor(argv), file = args['--config'];
   if (!fs.lstatSync(file).isFile() || fs.statSync(file).size > 1024 * 1024) throw fail('evaluation_batch_config_invalid');
-  const config = JSON.parse(fs.readFileSync(file, 'utf8')), plan = prepareBatch(config, runtimeOptions);
+  const config = JSON.parse(fs.readFileSync(file, 'utf8')), plan = prepareBatch(config, { ...runtimeOptions, allowDraftCandidate: args['--plan'] === true });
   if (args['--plan']) { process.stdout.write(JSON.stringify({ preparedOnly: true, dockerVerified: false, ...plan.summary }, null, 2) + '\n'); return; }
   if (plan.summary.planHash !== args['--expected-plan']) throw fail('evaluation_batch_confirmation_required');
   const progress = plan.summary.evaluation?.splitPolicy === 'd15-frozen-v1' ? createWikiBatchExecutionStore(config) : null;

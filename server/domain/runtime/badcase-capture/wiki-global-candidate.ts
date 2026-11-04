@@ -30,9 +30,9 @@ export function buildGlobalWikiCandidate(state: any, input: any) {
     diff: buildAppendOnlyWikiDiff(target.baseText, appendedSection, target.id + '.txt'),
     fileHashes: input.files.map((f: any) => ({ path: f.path, sha256: f.sha256 })) };
 }
-export function resolveGlobalWikiCandidate(state: any, candidateId: string, targetId: string, baseHash: string, files: any[]) {
+export function resolveGlobalWikiCandidate(state: any, candidateId: string, targetId: string, baseHash: string, files: any[], options: { allowDraft?: boolean } = {}) {
   const saved = state.candidates?.find((c: any) => c.id === candidateId && c.kind === 'global-wiki-candidate-v1');
-  if (!saved || saved.status !== 'confirmed') throw fail('wiki_candidate_confirmation_required');
+  if (!saved || !(saved.status === 'confirmed' || options.allowDraft === true && saved.status === 'draft')) throw fail('wiki_candidate_confirmation_required');
   assertWikiChangeNotRejected(state, saved);
   const { target } = resolveWikiBaseline(state, targetId);
   if (saved.targetId !== targetId || target.baseHash !== baseHash || saved.baseHash !== baseHash || saved.baseText !== target.baseText) throw fail('wiki_candidate_target_mismatch');

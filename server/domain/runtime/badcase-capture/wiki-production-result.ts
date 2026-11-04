@@ -1,6 +1,7 @@
 // Public production result projection. Full trajectories/replies/paths stay in
 // the exclusive operator evidence file, never this page summary.
 import { decideWikiGate } from './wiki-gate-policy';
+import { containsSecretSentinel } from './secrets';
 const invalid = () => Object.assign(Error('wiki_comparison_invalid'), { code: 'wiki_comparison_invalid' });
 function check(c: any): asserts c { if (!c) throw invalid(); }
 const id = (s: any) => { check(typeof s === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(s)); return s; };
@@ -41,6 +42,14 @@ export function projectProductionResult(input: any, totals: (cases: any[], repea
       const at = c.classification.confirmedAt; check(typeof at === 'string' && Number.isFinite(Date.parse(at)));
       classification = { entryId: c.classification.entryId === null ? null : id(c.classification.entryId), source: c.classification.source, confirmedAt: at };
     }
+    let topicExemption;
+    if (c.topicExemption !== undefined) {
+      const v = c.topicExemption;
+      check(v && Object.keys(v).sort().join(',') === 'patterns,reason,taskHash' && c.category === 'reproduction' && !c.reportOnly);
+      const patterns = ids(v.patterns); check(patterns.length > 0 && patterns.length <= 3 && patterns.every(p => ['priority-code', 'adr-number', 'acceptance-decision-code'].includes(p)));
+      check(typeof v.reason === 'string' && v.reason.trim() && !v.reason.includes('\0') && Buffer.byteLength(v.reason) <= 2048 && !containsSecretSentinel(v.reason));
+      topicExemption = { patterns, taskHash: digest(v.taskHash), reason: v.reason };
+    }
     check(Array.isArray(c.runs) && c.runs.length <= 25 && typeof c.callsUnavailable === 'boolean');
     const attempts: any = { original: 0, candidate: 0 }, scored: any = { original: 0, candidate: 0 }; let next = 'original';
     const runs = c.runs.map((r: any) => {
@@ -57,7 +66,7 @@ export function projectProductionResult(input: any, totals: (cases: any[], repea
     const comparison = c.comparison ? Object.fromEntries(['checkpointId', 'checkpointHash', 'rulesHash', 'planHash'].filter(k => c.comparison[k] !== undefined)
       .map(k => [k, k === 'checkpointId' ? id(c.comparison[k]) : digest(c.comparison[k])])) : null;
     const record = { sourceCaseId, split: c.split, stage: c.stage, category: c.category, family, reportOnly: c.reportOnly, targetReproduction,
-      ...(classification ? { classification } : {}), status: c.status, replayId: c.replayId ? id(c.replayId) : null, comparison,
+      ...(classification ? { classification } : {}), ...(topicExemption ? { topicExemption } : {}), status: c.status, replayId: c.replayId ? id(c.replayId) : null, comparison,
       ...(c.reason === undefined ? {} : { reason: code(c.reason) }), runs, modelCallsKnown: count(c.modelCallsKnown), callsUnavailable: c.callsUnavailable };
     return { ...record, totals: totals([record], 10) };
   });
@@ -76,7 +85,7 @@ export function projectProductionResult(input: any, totals: (cases: any[], repea
   check(ids(input.additionalTrainingCaseIds).length === 0 && ids(input.excludedSplitTrainingCaseIds).length === 0);
   return { kind: input.kind, scope: 'global', evaluation, executionId: id(input.executionId), planHash: digest(input.planHash), configHash: digest(input.configHash),
     runtimeHash: input.runtimeHash === null ? null : digest(input.runtimeHash), model: input.model, modelConfig,
-    candidate: { id: id(candidate.id), targetId: id(candidate.targetId), baseHash: digest(candidate.baseHash), candidateHash: digest(candidate.candidateHash), versionId: id(candidate.versionId), entryIds: ids(candidate.entryIds) },
+    candidate: { id: id(candidate.id), targetId: id(candidate.targetId), baseHash: digest(candidate.baseHash), candidateHash: digest(candidate.candidateHash), versionId: id(candidate.versionId), entryIds: ids(candidate.entryIds), ...(candidate.experienceHash === undefined ? {} : { experienceHash: digest(candidate.experienceHash) }) },
     repeats: 10, split, additionalTrainingCaseIds: ids(input.additionalTrainingCaseIds), excludedSplitTrainingCaseIds: ids(input.excludedSplitTrainingCaseIds),
     wikiTrainingCount: count(input.wikiTrainingCount), preparedReplayableCount, disclosures, completed: input.completed, cases, gateDecision,
     byStage: Object.fromEntries(['gate', 'test'].map(s => [s, totals(cases.filter((c: any) => c.stage === s), 10)])), modelCallsKnown, callsUnavailable };

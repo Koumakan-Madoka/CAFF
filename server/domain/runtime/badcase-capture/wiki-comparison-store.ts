@@ -122,6 +122,15 @@ export function createWikiComparisonStore(options: any) {
           try { replay = sampleVersion ? resolveSampleReplayVersion(state, c.sourceCaseId, c.replayId) : state.replayCases.find((s: any) => s.sourceCaseId === c.sourceCaseId); }
           catch { throw fail(); }
           check(source && source.split === c.split);
+          if (c.topicExemption) {
+            const e = c.topicExemption;
+            check(production && source.kind === 'marked-badcase' && replay && e.taskHash === crypto.createHash('sha256').update(replay.task).digest('hex'));
+            check(replay.rules.kind === 'public-reply-literals-v1' && e.patterns.every((p: string) => replay.rules.forbiddenPatterns.includes(p)));
+            const revised = { ...replay.rules, forbiddenPatterns: replay.rules.forbiddenPatterns.filter((p: string) => !e.patterns.includes(p)) };
+            const snapshotRules = { ...revised, kind: 'public-reply-literals-v2', snapshotHead: replay.fixture.commit };
+            check(c.comparison?.rulesHash === hash(revised) || c.comparison?.rulesHash === hash(snapshotRules));
+            check(payload.disclosures.includes('topic_number_exemption_new_round'));
+          }
           if (sampleVersion) check(c.category === 'control' && c.comparison?.checkpointHash === replay.checkpointHash && c.comparison?.rulesHash === hash(replay.rules));
           if (production && c.reportOnly) check(c.status === 'not-run' && c.reason === 'non_gpt_source_report_only' && !c.runs.length);
           else if (c.replayId) check(replay?.id === c.replayId && replay.category === c.category && replay.split === c.split);

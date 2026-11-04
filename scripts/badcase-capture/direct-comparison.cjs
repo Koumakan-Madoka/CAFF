@@ -103,10 +103,10 @@ function prepareComparison(config, options = {}) {
       || typeof selection.candidateId !== 'string') throw fail('evaluation_config_invalid');
     globalState = createWikiStore({ globalRoot: selection.globalRoot, sourceWorktree: selection.sourceWorktree }).read();
     globalSaved = globalState.candidates.find(c => c.id === selection.candidateId && c.kind === 'global-wiki-candidate-v1');
-    if (!globalSaved || globalSaved.status !== 'confirmed') throw fail('wiki_candidate_confirmation_required');
+    if (!globalSaved || !(globalSaved.status === 'confirmed' || options.allowDraftCandidate === true && globalSaved.status === 'draft')) throw fail('wiki_candidate_confirmation_required');
     if (globalSaved.target?.kind !== 'global-system-prompt') throw fail('evaluation_target_unsupported');
     globalFiles = collectWikiCandidateFiles(globalState);
-    resolveGlobalWikiCandidate(globalState, globalSaved.id, globalSaved.targetId, globalSaved.baseHash, globalFiles);
+    resolveGlobalWikiCandidate(globalState, globalSaved.id, globalSaved.targetId, globalSaved.baseHash, globalFiles, { allowDraft: options.allowDraftCandidate === true });
     baseline = resolveWikiBaseline(globalState, globalSaved.targetId);
     const prepareTarget = options.prepareTarget || prepareSealedPromptTarget;
     // Old seals and newly sealed, manually merged fragments share one baseline.
@@ -123,10 +123,11 @@ function prepareComparison(config, options = {}) {
   if (globalSaved) {
     if (!baseline.fragments.some(f => f.baseHash === original.provenance.originalTargetHash)) throw fail('wiki_candidate_target_mismatch');
     const selected = resolveGlobalWikiCandidate(globalState, globalSaved.id, original.provenance.targetId,
-      globalSaved.baseHash, original.input.files);
+      globalSaved.baseHash, original.input.files, { allowDraft: options.allowDraftCandidate === true });
     candidateRole = selected.candidateText;
     globalWikiCandidate = { id: selected.id, versionId: selected.versionId, entryIds: selected.entryIds,
-      targetId: selected.targetId, baseHash: selected.baseHash, candidateHash: selected.candidateHash };
+      targetId: selected.targetId, baseHash: selected.baseHash, candidateHash: selected.candidateHash,
+      ...(selected.experienceHash ? { experienceHash: selected.experienceHash } : {}) };
   }
   if (config.wikiCandidate !== undefined) {
     const selection = config.wikiCandidate;
@@ -183,6 +184,7 @@ function prepareComparison(config, options = {}) {
       archivedTargetHash: original.provenance.originalTargetHash, alreadyMerged: original.provenance.originalTargetHash === baseline.target.baseHash, appliedToBothVariants: true } } : {}),
     ...(repository ? { repository: repository.report } : {}),
     ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}), ...(wikiCandidate ? { wikiCandidate } : {}),
+    ...(globalSaved?.status === 'draft' ? { candidateConfirmationRequired: true } : {}),
     ...(globalWikiCandidate ? { targetId: globalWikiCandidate.targetId, globalWikiCandidate } : {}) };
   return { supported: true, inputs, summary, beforeHash: expectedTreeHash(original.input),
     ...(repository ? { checkRepositoryKnownValues: repository.checkKnownValues } : {}) };
@@ -203,6 +205,8 @@ async function runComparison(config, options = {}) {
     } else if (!options.executeCodex && process.platform !== 'linux') throw fail('evaluation_linux_required');
   }
   const effectiveOptions = { ...options, knownValues: comparisonKnownValues(fixed, options) };
+  // A draft-preview option can never cross into paid execution.
+  effectiveOptions.allowDraftCandidate = false;
   const plan = prepareComparison(fixed, effectiveOptions);
   if (!plan.supported) return { ...plan, runs: [], modelCallsKnown: 0 };
   const native = plan.summary.model === CODEX_PROFILE;

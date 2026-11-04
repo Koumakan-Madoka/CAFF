@@ -9,7 +9,9 @@ const {planWikiEvaluationSuite}=require(base+'wiki-evaluation-suite');
 const {resolveSampleReplayVersion}=require(base+'wiki-sample-replay-version');
 const {prepareComparison,CODEX_CONFIG}=require('./direct-comparison.cjs');
 const {CODEX_PROFILE}=require('./direct-model.cjs');
-const {reviseSnapshotHeadRules}=require('./public-reply-literal-rules.cjs');
+const {reviseSnapshotHeadRules,reviseTopicNumberRules}=require('./public-reply-literal-rules.cjs');
+const {containsSecretSentinel}=require(base+'secrets');
+const textHash=text=>require('node:crypto').createHash('sha256').update(text).digest('hex');
 const fail=code=>Object.assign(Error(code),{code});
 const {hashJson:hash}=require('./replay-streams.cjs');
 function prepareProductionBatch(config,options={}){
@@ -18,17 +20,17 @@ function prepareProductionBatch(config,options={}){
    || !config.evaluation || Object.keys(config.evaluation).sort().join(',')!=='kind,targetEntryId'
    || config.evaluation.kind!=='wikiskill-gate-v1')throw fail('evaluation_gate_config_invalid');
  const saved=state.candidates.find(c=>c.id===config.candidateId && c.kind==='global-wiki-candidate-v1');
- if(!saved || saved.status!=='confirmed')throw fail('wiki_candidate_confirmation_required');
+ if(!saved || !(saved.status==='confirmed' || options.allowDraftCandidate===true && saved.status==='draft'))throw fail('wiki_candidate_confirmation_required');
  if(saved.target?.kind!=='global-system-prompt')throw fail('evaluation_target_unsupported');
  if(saved.entryIds.length!==1 || saved.entryIds[0]!==config.evaluation.targetEntryId)throw fail('evaluation_gate_config_invalid');
- for(const item of config.cases)if(!item || Object.keys(item).some(k=>!['sourceCaseId','category','repository','dependencies','replayVersionId','rulesRevision'].includes(k))
+ for(const item of config.cases)if(!item || Object.keys(item).some(k=>!['sourceCaseId','category','repository','dependencies','replayVersionId','rulesRevision','topicExemption'].includes(k))
    || item.rulesRevision!==undefined && item.rulesRevision!=='snapshot-head-exemption-v1')throw fail('evaluation_batch_cases_invalid');
  const suite=planWikiEvaluationSuite(state,config.cases,saved.entryIds[0]);
  // Require a genuine GPT target in each frozen stage. Other model families are
  // visible report-only rows, not GPT failures or favorable denominator slots.
  if(!suite.targetReproductionCaseIds.length || !suite.targetTestReproductionCaseIds.length
    || !suite.cases.some(c=>c.stage==='gate' && c.category==='control' && !c.reportOnly))throw fail('evaluation_gate_config_invalid');
- const candidate=resolveGlobalWikiCandidate(state,saved.id,saved.targetId,saved.baseHash,(options.collectProductionCandidateFiles || collectWikiCandidateFiles)(state));
+ const candidate=resolveGlobalWikiCandidate(state,saved.id,saved.targetId,saved.baseHash,(options.collectProductionCandidateFiles || collectWikiCandidateFiles)(state),{allowDraft:options.allowDraftCandidate===true});
  const version=state.versions.find(v=>v.id===candidate.versionId);
  if(version.caseIds.some(id=>suite.cases.some(c=>c.sourceCaseId===id && ['gate','test'].includes(c.stage)
    && state.cases.find(s=>s.id===id)?.kind==='marked-badcase')))throw fail('evaluation_batch_holdout_exposed');
@@ -53,6 +55,14 @@ function prepareProductionBatch(config,options={}){
    if(item.repository?.head!==replay.fixture.commit)throw fail('evaluation_snapshot_head_mismatch');
    rules=reviseSnapshotHeadRules(rules,replay.fixture.commit);
   }
+  let topicExemption;
+  if(item.topicExemption!==undefined){
+   const e=item.topicExemption;
+   if(source.kind!=='marked-badcase' || record.category!=='reproduction' || !e || typeof e!=='object' || Array.isArray(e)
+     || Object.keys(e).sort().join(',')!=='patterns,reason,taskHash' || e.taskHash!==textHash(replay.task)
+     || typeof e.reason!=='string' || !e.reason.trim() || e.reason.includes('\0') || Buffer.byteLength(e.reason)>2048 || containsSecretSentinel(e.reason))throw fail('evaluation_topic_exemption_invalid');
+   rules=reviseTopicNumberRules(rules,e.patterns);topicExemption=structuredClone(e);
+  }
   const comparisonConfig={repoRoot:config.repoRoot,dependencyRoot:config.dependencyRoot,image:config.image,request:replay.request,rules,
     repeats:10,executionPolicy:'alternating-valid-v1',globalWikiCandidate:{...scope,candidateId:candidate.id},
     modelProfile:CODEX_PROFILE,keySource:config.keySource,codexAuthFile:config.codexAuthFile,knownKeySources:config.knownKeySources,
@@ -65,18 +75,20 @@ function prepareProductionBatch(config,options={}){
    const {recordedModelConfig,fileEvidencePaths,...unchanged}=plan.inputs?.original||{};
    if(JSON.stringify(recordedModelConfig)!==JSON.stringify(replay.targetModelConfig)||hash(unchanged)!==replay.unchangedInputHash)throw fail('evaluation_batch_input_changed');
   }
-  return {...record,replayId:replay.id,fixture:replay.fixture,...(plan.supported?{supported:true,comparison:plan.summary,comparisonConfig}:{supported:false,reason:plan.reason})};
+  return {...record,replayId:replay.id,fixture:replay.fixture,...(topicExemption?{topicExemption}:{}),...(plan.supported?{supported:true,comparison:plan.summary,comparisonConfig}:{supported:false,reason:plan.reason})};
  });
  const evaluation={kind:'wikiskill-gate-v1',splitPolicy:'d15-frozen-v1',targetEntryId:candidate.entryIds[0],
   gateCaseIds:suite.gateCaseIds,testCaseIds:suite.testCaseIds,targetReproductionCaseIds:suite.targetReproductionCaseIds,
   targetTestReproductionCaseIds:suite.targetTestReproductionCaseIds,reportOnlyCaseIds:suite.reportOnlyCaseIds,maxExtraAttemptsPerCase:5};
  const summary={kind:'wiki-staged-batch-comparison-v1',scope:'global',evaluation,configHash:hash(config),model:CODEX_PROFILE,modelConfig:{...CODEX_CONFIG},
-  candidate:{id:candidate.id,targetId:candidate.targetId,baseHash:candidate.baseHash,candidateHash:candidate.candidateHash,versionId:candidate.versionId,entryIds:candidate.entryIds},
+  candidate:{id:candidate.id,targetId:candidate.targetId,baseHash:candidate.baseHash,candidateHash:candidate.candidateHash,versionId:candidate.versionId,entryIds:candidate.entryIds,...(candidate.experienceHash?{experienceHash:candidate.experienceHash}:{})},
+  ...(saved.status==='draft'?{candidateConfirmationRequired:true}:{}),
   split:{policy:'d15-frozen-v1',caseIds:suite.cases.map(c=>c.sourceCaseId),gateCaseIds:suite.gateCaseIds,testCaseIds:suite.testCaseIds},
   additionalTrainingCaseIds:[],excludedSplitTrainingCaseIds:[],repeats:10,wikiTrainingCount:version.caseIds.length,
   preparedReplayableCount:prepared.filter(c=>c.supported).length,
   disclosures:['literal_rules_not_semantic_judgment','small_sample','model_configuration_bound','non_gpt_sources_report_only',
-   ...(config.cases.some(c=>c.rulesRevision!==undefined)?['post_observation_snapshot_head_rule_revision']:[])],
+   ...(config.cases.some(c=>c.rulesRevision!==undefined)?['post_observation_snapshot_head_rule_revision']:[]),
+   ...(config.cases.some(c=>c.topicExemption!==undefined)?['topic_number_exemption_new_round']:[])],
   cases:prepared.map(({comparisonConfig,...record})=>record)};
  return {summary:{...summary,planHash:hash(summary)},prepared};
 }

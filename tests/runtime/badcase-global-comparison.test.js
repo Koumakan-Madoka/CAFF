@@ -96,6 +96,12 @@ test('old and manually merged real seals both carry the adopted baseline on both
   assert.equal(prepareComparison({ ...c, request: unknown.request }, h.options).supported, false);
   assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);
 });
+test('real sealed draft preview is read-only and cannot authorize direct execution, even if a caller forwards the preview option', async t => {
+  const h=setup(t,{confirmed:false}),before=h.store.read();
+  assert.throws(()=>prepareComparison(h.single,h.options),/wiki_candidate_confirmation_required/);
+  const p=prepareComparison(h.single,{...h.options,allowDraftCandidate:true});assert.equal(p.supported,true);assert.equal(p.summary.candidateConfirmationRequired,true);assert.ok(p.inputs.candidate.prompt.includes(h.guideline));assert.deepEqual(h.store.read(),before);
+  await assert.rejects(runComparison(h.single,{...h.options,allowDraftCandidate:true}),/wiki_candidate_confirmation_required/);assert.equal(h.state.keys,0);assert.equal(h.state.executions,0);
+});
 test('registered global replay freezes public reply rules and scores real callback text without file references in input', async t => {
   const h = setup(t, { publicReply: true });
   assert.ok(h.store.read().replayCases.every(c => c.rules.kind === 'public-reply-literals-v1'));

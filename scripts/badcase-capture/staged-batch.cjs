@@ -20,7 +20,7 @@ async function runStagedBatch(config, plan, options) {
   async function executeCase(item, skipReason) {
     let result={sourceCaseId:item.sourceCaseId,split:item.split,stage:item.stage,category:item.category,replayId:item.replayId || null,
       ...(native ? {family:item.family,reportOnly:item.reportOnly,targetReproduction:item.targetReproduction,
-        ...(item.classification ? {classification:item.classification} : {})} : {}),
+        ...(item.classification ? {classification:item.classification} : {}),...(item.topicExemption?{topicExemption:item.topicExemption}:{})} : {}),
       comparison:item.comparison || null,status:'not-run',runs:[],modelCallsKnown:0,callsUnavailable:false};
     if(item.reportOnly) result.reason='non_gpt_source_report_only';
     else if(skipReason || fatal) result.reason=skipReason || 'prior_integrity_error';
@@ -78,6 +78,7 @@ function formatStagedBatch(result) {
     for(const v of ['original','candidate']) {const t=result.byStage[stage][v];lines.push(`${labels[stage]} ${v}: ${t.passed}/${t.planned} 通过，${t.failed} 失败，${t.errors} 环境错误，${t.notRun} 未执行；有效 ${t.scored}，通过率 ${t.passRate===null?'N/A':(100*t.passRate).toFixed(1)+'%'}`);}
   }
   if(result.disclosures?.includes('post_observation_snapshot_head_rule_revision'))lines.push('看过结果后发现，所有已保存回复都会引用现场快照 SHA，这条规则无法区分原版和候选，因此按用户裁决修正规则；旧轮作废，不计入判定。仅放行各题封存现场记录 HEAD 的7–40位前缀，两版本共用新规则，旧规则与结果保留。');
+  for(const c of result.cases.filter(c=>c.topicExemption))lines.push(`新轮主题编号豁免 ${wikiGoalCaseNumber(c.sourceCaseId)?'#'+wikiGoalCaseNumber(c.sourceCaseId):c.sourceCaseId}：${c.topicExemption.patterns.join(', ')}；${c.topicExemption.reason}；原版/候选同规则，旧轮不改分。`);
   lines.push(native?'结论绑定上述生产模型与配置，变更后须重跑；字面规则不是语义判断，小样本不保证提分；非GPT来源、探针和其他模式不计入GPT修好结论。':'代理模型 DeepSeek；小样本；题组经原基线筛选，存在挑题偏差；只复现了汇报难懂一类，探针与其他模式只报告。',
     '环境错误每题原/候选共最多补5次；模型循环、超时、超调用上限计不通过。',
     '测试题仅门槛接受后运行一次；被拒改动及 diff 保留，不自动叠加为基线或修改生产 prompt。',

@@ -20,6 +20,17 @@ function treeDigest(root) {
   function walk(dir) { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const file = path.join(dir, e.name); if (e.isDirectory()) walk(file); else result.push([path.relative(root, file), crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')]); } }
   walk(root); return result.sort();
 }
+test('trusted manual guideline revision preserves unrelated reviewed patterns and parent bytes; CLI creates only a draft', t => {
+  const h=setup(t),first=h.seed(h.global),fields=Object.fromEntries(['title','failureMode','symptoms','rootCauseHypothesis','guideline','caseIds'].map(k=>[k,first.entries[0][k]]));
+  const v=h.global.saveDraft({caseIds:first.caseIds,model:first.model,entries:[fields,{...fields,title:'Second',guideline:'Do not expand scope.'}],unclassified:[]});
+  for(const e of v.entries)h.global.review({versionId:v.id,entryId:e.id,expectedRevision:h.global.read().revision,decision:'approved'});
+  const before=h.global.read(),parent=before.versions.at(-1),files=treeDigest(h.globalOptions.globalRoot),cfg=path.join(h.root,'revise.json'),guideline='先说明结果与用户影响。';
+  fs.writeFileSync(cfg,JSON.stringify({...h.globalOptions,versionId:parent.id,entryId:'entry-1',guideline}));const args=['--config',cfg,'--confirmed','--expected-revision',String(before.revision)],main=require('../../scripts/badcase-capture/revise-wiki-guideline.cjs').main,write=process.stdout.write;process.stdout.write=()=>true;
+  try{assert.throws(()=>main(args.slice(0,2)),/wiki_guideline_usage/);assert.throws(()=>main([...args.slice(0,4),String(before.revision-1)]),/wiki_revision_conflict/);const result=main(args);assert.equal(result.status,'draft');assert.equal(result.modelsCalled,0);}finally{process.stdout.write=write;}
+  const after=h.global.read(),next=after.versions.at(-1);assert.equal(after.revision,before.revision+1);assert.deepEqual(after.versions.slice(0,-1),before.versions);assert.deepEqual(next.entries[1],parent.entries[1]);assert.equal(next.entries[0].guideline,guideline);assert.equal(next.entries[0].status,'draft');assert.equal(next.entries[0].reviewedAt,undefined);assert.equal(next.origin,'manual-guideline-revision-v1');assert.deepEqual(next.caseIds,parent.caseIds);for(const f of files)assert.ok(treeDigest(h.globalOptions.globalRoot).some(g=>JSON.stringify(f)===JSON.stringify(g)));
+  for(const patch of [{guideline:'😀'.repeat(301)},{guideline:'sk-FAKE_SENTINEL_123456'},{extra:true}])assert.throws(()=>h.global.reviseGuideline({versionId:next.id,entryId:'entry-2',guideline,expectedRevision:after.revision,...patch}));
+  assert.deepEqual(h.global.read(),after);
+});
 test('global collection has no owning project and works across source projects and restarts', t => {
   const h = setup(t);
   assert.equal(fs.existsSync(h.globalOptions.globalRoot), false);

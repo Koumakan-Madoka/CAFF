@@ -76,7 +76,7 @@ function prepareBatch(config, options = {}) {
   return { summary: { ...summary, planHash: hash(summary) }, prepared };
 }
 async function runBatch(config, options = {}) {
-  const fixed = structuredClone(config), plan = prepareBatch(fixed, options);
+  const fixed = structuredClone(config), plan = prepareBatch(fixed, { ...options, allowDraftCandidate: false });
   if (options.confirmed !== true || options.expectedPlanHash !== plan.summary.planHash) throw fail('evaluation_batch_confirmation_required');
   if (plan.summary.evaluation) return require('./staged-batch.cjs').runStagedBatch(fixed, plan, options);
   const emit = options.onEvent || (() => {}), results = [], executionId = crypto.randomUUID();
