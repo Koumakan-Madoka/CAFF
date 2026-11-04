@@ -107,6 +107,10 @@ test('human interpretation and non-adoption stay separate from the accepted gate
   assert.match(h.root.querySelector('#impact-log').textContent, /相同改动.*重复.*换.*写法/);
   assert.equal(h.root.querySelector('#impact-runs script'), null); assert.equal(h.posts().length, 0); assert.deepEqual(h.saved(), before);
 });
+test('candidate confirmation does not promise old fixed case numbers or authorize a model run; approved experience hash is visible', async t=>{
+ const h=setup(t);h.saved().candidates[0].experienceHash='f'.repeat(64);await h.panel.load();await h.click('[data-tab="targets"]');const text=h.root.querySelector('#target-page').textContent;
+ assert.doesNotMatch(text,/#1\/#2\/#6\/#16|#4\/#10\/#14/);assert.match(text,/何时执行.*用户批准/);assert.ok(text.includes('f'.repeat(64)));assert.equal(h.posts().length,0);
+});
 test('full candidate and accepted baseline text copy verbatim without applying or adopting; rejected text stays historical', async t => {
   const h = setup(t), copied = [];
   h.window.CaffShared.copyTextToClipboard = async text => { copied.push(text); };
