@@ -11,6 +11,7 @@ import { planWikiEvaluationSuite } from './wiki-evaluation-suite';
 import { resolveSampleReplayVersion } from './wiki-sample-replay-version';
 import { readWikiComparisonRecord } from './wiki-comparison-record';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
+import { extractWikiLiteralObservations } from './wiki-experience';
 export { wikiComparisonTotals } from './wiki-comparison-totals';
 
 const variants = ['original', 'candidate'];
@@ -99,7 +100,7 @@ export function createWikiComparisonStore(options: any) {
     },
     save(input: any) {
       const payload = projectResult(input), contentHash = hash(payload), name = contentHash + '.json';
-      return withProjectWriteLock(options.globalRoot, 'global-wiki', () => {
+      const record = withProjectWriteLock(options.globalRoot, 'global-wiki', () => {
         const state = wiki.read(), candidate = state.candidates.find((c: any) => c.id === payload.candidate.id);
         check(candidate?.kind === 'global-wiki-candidate-v1' && candidate.status === 'confirmed' && candidate.target.kind === 'global-system-prompt');
         for (const k of Object.keys(payload.candidate)) check(JSON.stringify(candidate[k]) === JSON.stringify(payload.candidate[k]));
@@ -147,6 +148,11 @@ export function createWikiComparisonStore(options: any) {
         finally { try { fs.unlinkSync(temp); } catch {} }
         return record;
       });
+      // Release the comparison lock before publishing a wiki snapshot under
+      // the same lock key. A draft failure leaves the immutable result intact;
+      // replay publication, never paid execution, can safely recover it.
+      if (record.evaluation?.splitPolicy === 'd15-frozen-v1') wiki.recordComparisonExperience({ comparisonId: record.id, observations: extractWikiLiteralObservations(input) });
+      return record;
     },
   };
 }

@@ -16,6 +16,7 @@ import { readWikiComparisonRecord } from './wiki-comparison-record';
 import { projectStagedResult } from './wiki-staged-result';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
+import { buildWikiExperienceDraft, mergeWikiLiteralObservations } from './wiki-experience';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -153,7 +154,7 @@ export function createWikiStore(options: any) {
   const directory = global ? path.join(captureRoot, 'snapshots') : path.join(captureRoot, 'wiki', projectId!, 'snapshots');
   const identity = global ? { scope: 'global' } : { projectId };
   const fresh = () => ({ schemaVersion: 1, ...identity, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replayCases: [] as any[], replaySplit: null,
-    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[], classifications: [] as any[], ...(global ? { replayVersions: [] as any[], comparisonReviews: [] as any[], baselines: [] as any[] } : {}) });
+    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[], classifications: [] as any[], ...(global ? { replayVersions: [] as any[], comparisonReviews: [] as any[], baselines: [] as any[], experiences: [] as any[] } : {}) });
   function read(): any {
     let names: string[];
     try { names = fs.readdirSync(directory); }
@@ -189,6 +190,8 @@ export function createWikiStore(options: any) {
       if (record.comparisonReviews !== undefined && !Array.isArray(record.comparisonReviews)) throw Error();
       if (global && record.baselines === undefined) record.baselines = [];
       if (record.baselines !== undefined && !Array.isArray(record.baselines)) throw Error();
+      if (global && record.experiences === undefined) record.experiences = [];
+      if (record.experiences !== undefined && !Array.isArray(record.experiences)) throw Error();
       for (const field of ['suggestions', 'caseStates', 'inductionRuns', 'events', 'classifications']) {
         if (record[field] === undefined) record[field] = [];
         if (!Array.isArray(record[field])) throw Error();
@@ -586,6 +589,26 @@ export function createWikiStore(options: any) {
           caseIds, trainingHash: hash(JSON.stringify(cases)), entries: entries.map((e: any, i: number) => ({ id: `entry-${i + 1}`, ...e, status: 'draft' })), unclassified };
         state.versions.push(version);
         return { changed: true, value: version };
+      }).value;
+    },
+    recordComparisonExperience(input: any) {
+      // Trusted result-publication hook, not an HTTP/model-prose import API.
+      shape(input, ['comparisonId', 'observations', 'expectedRevision']); const comparisonId = id(input.comparisonId);
+      if (!global) throw fail('wiki_global_required');
+      if (input.expectedRevision !== undefined && !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (input.expectedRevision !== undefined && input.expectedRevision !== state.revision) throw fail('wiki_revision_conflict');
+        const result = readWikiComparisonRecord(captureRoot, comparisonId, value => projectStagedResult(value, wikiComparisonTotals));
+        if (result.evaluation?.splitPolicy !== 'd15-frozen-v1') throw fail('wiki_experience_invalid');
+        const previous = state.experiences.filter((e: any) => e.comparisonId === comparisonId).at(-1);
+        const observations = mergeWikiLiteralObservations(result, previous?.literalObservations || [], input.observations);
+        const draft = buildWikiExperienceDraft(state, result, observations, previous);
+        // Compact/idempotent result re-saves cannot erase richer evidence, undo
+        // human edits/reviews or create duplicate versions.
+        if (previous?.evidenceHash === draft.evidenceHash) return { changed: false, value: previous };
+        state.experiences.push(draft);
+        appendEvent(state, { type: 'experience-drafted', experienceId: draft.id, comparisonId, entryId: draft.entryId });
+        return { changed: true, value: draft };
       }).value;
     },
     reviewComparison(input: any) {

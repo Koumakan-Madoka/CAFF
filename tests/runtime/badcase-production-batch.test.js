@@ -197,6 +197,41 @@ test('adoption refuses missing tests, a rejected gate and any attempt to rewrite
  else{h.store.reviewComparison({...input,decision:'not-adopted',reason:'user_declined'});assert.throws(()=>h.store.reviewComparison({...input,expectedRevision:h.store.read().revision}),/wiki_comparison_reviewed/);}
  assert.equal(h.store.read().baselines.length,0);}
 });
+test('saving a production evaluation automatically drafts safe literal experience, never approves or copies holdout replies',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h),run=f.options.runProductionComparison;
+ f.options.runProductionComparison=async(c,o)=>{const r=await run(c,o);if(c.request.association.checkpointId==='cp-1')for(const row of r.runs)row.status='fail';return r;};
+ const r=await f.run();for(const c of r.cases.filter(c=>c.targetReproduction))for(const row of c.runs){const open=row.iteration<=(row.variant==='original'?3:c.stage==='test'?8:10);row.checks={conclusionInLead:open,noForbiddenTerms:row.status==='pass'};row.replyChecks={forbidden:row.status==='pass'?[]:[{kind:'pattern',rule:'priority-code',match:'PRIVATE-HOLDOUT-MATCH'}]};row.finalText='PRIVATE-HOLDOUT-REPLY';row.traceExcerpt='PRIVATE-HOLDOUT-TRACE';}
+ const before=h.store.read(),comparisons=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=comparisons.save(r),state=h.store.read();
+ assert.equal(state.experiences.length,1);const draft=state.experiences[0];assert.equal(draft.status,'draft');assert.equal(draft.comparisonId,saved.id);assert.equal(draft.entryId,'entry-1');assert.equal(draft.tracePolicy,'training-only-no-holdout-trajectories');assert.equal(draft.trainingTraceCount,0);
+ assert.match(draft.methods,/开头先给结论/);assert.match(draft.methods,/3\/10.*10\/10/);assert.match(draft.methods,/3\/10.*8\/10/);assert.match(draft.methods,/P 编号.*主题/);assert.match(draft.methods,/不能.*整体/);
+ assert.match(draft.positiveExamples,/示意.*非回放原文/);assert.doesNotMatch(JSON.stringify(draft),/PRIVATE-HOLDOUT|PRIVATE-WORKER|finalText|traceExcerpt|request|base64/);assert.deepEqual(state.versions,before.versions);assert.deepEqual(state.baselines,before.baselines);
+ assert.deepEqual(comparisons.save(r),saved);assert.equal(h.store.read().revision,state.revision);assert.deepEqual(comparisons.save(saved),saved);assert.equal(h.store.read().revision,state.revision);
+ const altered=structuredClone(r);altered.cases.find(c=>c.targetReproduction).runs[0].checks.conclusionInLead=false;assert.throws(()=>comparisons.save(altered),/wiki_experience_evidence_conflict/);assert.equal(h.store.read().revision,state.revision);
+ h.store.addTextCases([{source:{origin:'http://127.0.0.1:3100',projectId:'old',conversationId:'new-room',messageId:'new-train',agentId:'role-family-gpt'},role:'GPT',actual:'fresh symptom',expected:'fresh expectation',message:'TRAIN-ONLY-MESSAGE',traceExcerpt:'TRAIN-ONLY-TRACE',traceState:'available',messageTruncated:false,traceTruncated:false}]);
+ const plan=require('../../scripts/badcase-capture/wiki-induction.cjs').prepareWikiInduction(h.store),input=plan.files.find(f=>f.path==='wiki-induction-input.json').bytes.toString();assert.match(input,/TRAIN-ONLY-TRACE/);assert.doesNotMatch(input,/PRIVATE-HOLDOUT|P 编号|positiveExamples/);
+});
+test('new literal evidence creates a new experience draft version instead of overwriting an existing draft',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const r=await fakeExecution(h).run(),comparisons=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=comparisons.save(r),before=h.store.read();assert.equal(before.experiences.length,1);
+ for(const c of r.cases.filter(c=>c.targetReproduction))for(const row of c.runs){row.checks={conclusionInLead:true,noForbiddenTerms:row.status==='pass'};row.replyChecks={forbidden:row.status==='pass'?[]:[{kind:'pattern',rule:'priority-code',match:'DO-NOT-COPY'}]};}
+ comparisons.save(r);const after=h.store.read();assert.equal(after.experiences.length,2);assert.deepEqual(after.experiences[0],before.experiences[0]);assert.equal(after.experiences[1].parentId,before.experiences[0].id);assert.equal(after.experiences[1].version,2);assert.equal(after.experiences[1].status,'draft');
+ comparisons.save(saved);assert.equal(h.store.read().revision,after.revision);assert.equal(h.store.read().experiences.length,2);
+});
+test('trusted experience recovery checks the exact saved comparison and current revision before any draft write',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const r=await fakeExecution(h).run(),saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r),before=h.store.read();
+ const config=path.join(h.config.repoRoot,'feedback-config.json'),result=path.join(h.config.repoRoot,'feedback-result.json');fs.writeFileSync(config,JSON.stringify({globalRoot:h.config.globalRoot,sourceWorktree:h.config.sourceWorktree}));fs.writeFileSync(result,JSON.stringify(r));
+ const main=require('../../scripts/badcase-capture/draft-wiki-experience.cjs').main,args=['--config',config,'--comparison',saved.id,'--result',result,'--confirmed','--expected-revision',String(before.revision)],write=process.stdout.write;process.stdout.write=()=>true;
+ try{assert.equal(main(args).experienceId,before.experiences[0].id);assert.equal(h.store.read().revision,before.revision);
+ assert.throws(()=>main(args.slice(0,6)),/wiki_experience_usage/);assert.throws(()=>main([...args.slice(0,8),String(before.revision-1)]),/wiki_revision_conflict/);
+ const changed=structuredClone(r);changed.executionId='different-execution';fs.writeFileSync(result,JSON.stringify(changed));assert.throws(()=>main(args),/wiki_experience_result_mismatch/);assert.deepEqual(h.store.read(),before);
+ }finally{process.stdout.write=write;}
+});
+test('an experience write failure retains the immutable result and recovers by re-publication without running a model',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const r=await fakeExecution(h).run(),before=h.store.read(),comparisons=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),link=fs.linkSync;let injected=false;
+ fs.linkSync=(source,target)=>{if(String(target).startsWith(path.join(h.config.globalRoot,'snapshots')+path.sep)){injected=true;throw Error('synthetic-disk-fault');}return link(source,target);};
+ try{assert.throws(()=>comparisons.save(r),/wiki_write_failed/);}finally{fs.linkSync=link;}
+ assert.equal(injected,true);assert.deepEqual(h.store.read(),before);const saved=comparisons.read()[0];assert.ok(saved);assert.equal(saved.completed,true);
+ assert.deepEqual(comparisons.save(r),saved);assert.equal(h.store.read().experiences.length,1);assert.equal(h.store.read().revision,before.revision+1);assert.equal(comparisons.read().length,1);
+});
 test('production model never silently falls back to proxy or accepts caller-drawn stages or missing restore declarations',t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);
  for(const patch of [{repeats:3},{keySource:'caff-deepseek'},{evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1',gateCaseIds:[]}}])assert.throws(()=>prepareBatch({...h.config,...patch},h.options),/evaluation_gate_config_invalid/);
