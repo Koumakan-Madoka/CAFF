@@ -66,6 +66,12 @@ Use this index for Pi runtime, prompt, Agent tool, Goal, and DAG integration cha
 - `badcase-capture-replay.md`: badcase pre-turn checkpoint capture, user flag and
   sealing, CAS storage lifecycle, Docker isolation replay, and baseline/candidate
   prompt evaluation fairness contract
+- `wikiskill-windows.md`: trusted Windows/WSL setup, page induction, single-case
+  and production D15 gate/test commands; no browser execution endpoint
+- `wikiskill-data-migration.md`: read-only source to fresh layout migration,
+  immutable history/sealed closure, idempotency and no-source-fallback mapping
+- `wikiskill-release.md`: separately approved push/merge, production staging
+  migration/data cutover, restart, rollback and real GPT post-release check
 - `runtime-observability.md`: `createRuntimeObservability` counter providers,
   memory sampling/ring buffer, `getRuntimeStats()` probes on orchestrator/bridge/SSE,
   `GET /api/runtime/stats` 501 fail-closed, and lifecycle/overhead contracts

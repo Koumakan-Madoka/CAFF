@@ -6,7 +6,7 @@
 
 1. 按已经授权的固定 SHA 创建本地 clone，`git checkout --detach <SHA>`，核对 `git status --porcelain` 为空。不要在生产 checkout 执行；无需推送。
 2. 在 clone 中执行 `npm ci --include=dev --no-audit --no-fund`、`npm run build`。不要复制 Windows/Linux 另一端的 `node_modules`。安装使用受信依赖及操作方批准的代理，不携带生产集成凭据。
-3. 在 checkout **外**准备本实例的 agent 目录、SQLite、临时目录、HOME、日志和无 Key 的 JSON 配置。新环境默认没有用例；已有数据只能来自明确获准的副本，不能为演示连接生产库。已有快照副本不等于已实现/验证数据迁移。
+3. 在 checkout **外**准备本实例的 agent 目录、SQLite、临时目录、HOME、日志和无 Key 的 JSON 配置。新环境默认没有用例；已有数据只能来自明确获准的副本，不能为演示连接生产库。正式搬迁须使用已验证的[离线迁移命令](wikiskill-data-migration.md)，不能仅复制当前快照而遗漏历史现场。
 4. 服务端口选 3268；先验证没有未知占用。重启前核对原实例 PID、来源、数据库、无活动 turn，再停已证明属于本实例的进程。不按端口猜测杀进程。
 5. 不复制 `.env.local`、`auth.json` 或整个生产 agent 目录。正常服务不必持有 GPT access；独立评测命令按下面的显式路径只读宿主 access。不在 JSON、日志或命令行写任何 Key 原值。
 
@@ -111,9 +111,31 @@ node scripts/badcase-capture/run-wiki-evaluation.cjs --config 'E:/isolated-wiki/
 
 先检查 JSON 的 `supported/preparedOnly` 与模型/xhigh/材料信息；plan 不调用模型。确认当前计划后，第二行就是启动评测的一条命令，输出文件必须不存在。页面 **评测记录** 每5秒更新当前轮次、完成数、字面通过数、已知 token 和状态；无网页启动/重试接口。进度滞后只提示，不擅自续跑。结果与原始 JSONL 的 execution ID 对应。
 
-**原版三次观察不产生采纳结论**；人工观察不能被占位规则的 pass/fail 替代。本入口目前不是正式多题门槛/测试；不混合独立执行、不修改生产提示词、不自动叠加基线。正式评测仍须后续里程碑的冻结题组/评分及用户确认。
+**原版三次观察不产生采纳结论**；人工观察不能被占位规则的 pass/fail 替代。本**单例**入口不是正式多题门槛/测试；正式评测使用下节独立命令。两者都不混合独立执行、不修改生产提示词；只有用户明确采纳正式结果才建立评测基线。
 
-## 6. 保存证据并停止
+## 6. 正式生产门槛／测试（D15）
+
+使用同一个已构建checkout的 `compare-wiki-batch.cjs`，不是上一节的单例外层JSON。生产配置包含：
+
+- `globalRoot/sourceWorktree/candidateId/repoRoot/dependencyRoot/image`：页面对应的集合、已确认全局系统提示词候选、工具checkout及固定Linux分发/镜像。
+- `modelProfile:"openai-codex/gpt-6.1-sol"`、`keySource:"caff-codex-access"`、`codexAuthFile/knownKeySources/dockerBackend`：与单例相同；固定 xhigh、Fast关闭、原生SSE，凭据仅在Windows宿主内存。
+- `repeats:10`、`timeoutMs:2700000`、`evaluation:{"kind":"wikiskill-gate-v1","targetEntryId":"<approved entry ID>"}`。组别从D15冻结数据读取，不能填旧代理模式的gate/test列表。
+- `cases`：保留用户批准的题目，每项含 `sourceCaseId/category`（`reproduction/probe/control`）。真实标记题另填逐题 `repository/dependencies`；样例防误伤题显式填已准备的 `replayVersionId`，不继承真实仓库恢复。只有获批规则修订才填 `rulesRevision:"snapshot-head-exemption-v1"` 或 `topicExemption:{patterns,taskHash,reason}`；不能手写放行SHA或任意规则。
+
+```sh
+node scripts/badcase-capture/compare-wiki-batch.cjs --config 'E:/isolated-wiki/batch.json' --plan
+node scripts/badcase-capture/compare-wiki-batch.cjs --config 'E:/isolated-wiki/batch.json' --run --confirmed --expected-plan '<new planHash>' --output 'E:/isolated-wiki/new-batch.jsonl'
+```
+
+执行前检查全部题目材料、GPT来源、已确认归类、规则/豁免、候选diff和experienceHash。draft可只读生成preview，但 `candidateConfirmationRequired:true` 时不可运行；确认候选后重新生成计划，取得**独立的用户开跑批准**才执行第二行。迁移或配置变化也须新计划/新批准，不能复用旧hash。
+
+每题原版/候选交替，各10次有效；每题两版共享最多5次环境替补，当前执行器串行，不超过3容器并发上限。每题最多25次尝试，环境错误另列、不改变有效分母；缺清理回执、证据漂移、凭据过期/额度错误立即停批。门槛仅在目标复现题单侧Fisher p<0.05且防误伤损失≤max(1,总次数×5%)时接受；接受才运行测试，测试单独报告。非GPT来源只报告，不计入GPT结论。页面每5秒显示阶段/题目/版本/次数、环境错误及完成结果；没有网页启动接口。
+
+**门槛接受不是采纳。** M4实际门槛#19为0/10→6/10（p=0.0054），#16双方10/10；测试#20双方0/10，#10/#14双方10/10。#20开头结论率3/10→8/10，但题目本身讨论P1/P2/P3，两版全部命中冻结禁用规则。只能说修好了#19这一类，不能说模式1整体变好；候选bc807f8a未采纳、基线不变。规则B是在看过作废轮0/4–0/4后修订，旧规则/结果保留、排除、不拼接；正式轮两次网络错误已清理并替补，分母不变。
+
+评测保存后自动产生经验**草稿**，审核后才进入模式页两栏。候选固定读取已审经验，但不会自动改写准则。模式1经验v1已审；第二轮候选050be1fb已确认，计划仅准备，**尚无开跑授权**。第二轮#20的主题编号豁免是新规则/新hash，不回改M4，也不称为未见过的新留出测试。
+
+## 7. 保存证据并停止
 
 记录固定 SHA、干净状态、安装/build 命令、服务 PID/启动日志、隔离路径与健康状态；截图应包括预分类前后、归纳建议、评测运行中和结束。保存 CLI plan/JSONL 与页面执行 ID。日志/截图/JSONL 保存在忽略或私有目录，不提交含原始现场的数据。扫描已获准的已知秘密，不能打印值。
 
@@ -125,4 +147,4 @@ node scripts/badcase-capture/run-wiki-evaluation.cjs --config 'E:/isolated-wiki/
 
 早期真实归纳两次422未保留结果，具体字段与供应方用量仍记未知，不追认。另一次获准诊断发现非stop截断及symptoms数组/字符串不符，已先红后绿明确字段类型、预算提到32768；这不代表已解释未捕获的两次422。原始操作与截图在忽略目录 `.tmp/wikiskill-production-m3/clean-clone/`，不是生产迁移验收。
 
-新增默认私有日志后，`89660051` 在同一干净clone、3268、rev5的13条训练副本中真实页面归纳，精确拒绝 `results / must_cover_each_input_once`（完整stop输出仅12条），零发布、未重试。先红后绿仅给提示词增加末尾精确有序ID/数量清单，不放宽覆盖或字段、不补写结果。`b44e02f8` 修后仅一次真实页面点击HTTP200：37.591秒，DeepSeek一次HTTP200、126802已知token，副本rev5→6，保存13条待审核建议，最新版本共10条草稿（含原有5条）；容器断网/无凭据/无挂载、已清理。页面可选择 `wiki-6` 查看新草稿，不自动审核或合并，不改正式存储。失败原文只在clone本机私有目录，验收证据只保存字段/数量等安全元数据与成功页面/回执，见 `.tmp/wikiskill-production-m3/private-logging/`。新失败原因只修1次即通过；M3待固定SHA的适用全量检查与独立评审，未提前标完成。
+新增默认私有日志后，`89660051` 在同一干净clone、3268、rev5的13条训练副本中真实页面归纳，精确拒绝 `results / must_cover_each_input_once`（完整stop输出仅12条），零发布、未重试。先红后绿仅给提示词增加末尾精确有序ID/数量清单，不放宽覆盖或字段、不补写结果。`b44e02f8` 修后仅一次真实页面点击HTTP200：37.591秒，DeepSeek一次HTTP200、126802已知token，副本rev5→6，保存13条待审核建议，最新版本共10条草稿（含原有5条）；容器断网/无凭据/无挂载、已清理。页面可选择 `wiki-6` 查看新草稿，不自动审核或合并，不改正式存储。失败原文只在clone本机私有目录，验收证据只保存字段/数量等安全元数据与成功页面/回执，见 `.tmp/wikiskill-production-m3/private-logging/`。新失败原因只修1次即通过；M3最终固定SHA `bb876b56` 已经规划者独立评审通过。M4/M5/M6的真实生产批量、经验回流和副本迁移边界见契约与各自Goal证据；不沿用这些早期记录替代S1双平台最终全量。发布顺序见[发布审批步骤](wikiskill-release.md)，本操作说明不授权部署。
