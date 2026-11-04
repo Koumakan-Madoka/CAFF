@@ -118,18 +118,18 @@ test('configured external destination migrates source bytes and resolves both im
   const cli = path.resolve('scripts/badcase-capture/migrate-wiki-layout.cjs');
   const result = spawnSync(process.execPath, [cli, '--config', configFile, '--run', '--confirmed', '--expected-plan', p.summary.planHash], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout).migrated, false);
-  const scope = { globalRoot: path.join(agentDir, 'badcase-global'), sourceWorktree: h.scope.sourceWorktree };
+  const scope = { globalRoot: path.join(dataDir, 'badcase-global'), sourceWorktree: h.scope.sourceWorktree };
   assert.deepEqual(createWikiStore(scope).read(), h.store.read());
   const imported = resolveWikiReplayRequest(scope, h.replay.request); assert.ok(imported.captureRoot.startsWith(path.join(dataDir, 'badcase-capture/imports') + path.sep));
   const native = path.join(agentDir, 'badcase-capture'); fs.cpSync(h.seal.root, native, { recursive: true });
-  const localRequest = { ...h.replay.request, captureRoot: native };
+  const localRequest = { ...h.replay.request, captureRoot: native }, localScope = { ...scope, instanceCaptureRoot: native };
   // Build a new seal/retention in the instance capture store from its checkpoint,
   // rather than relying on the old import's seal metadata.
   for (const dir of ['cases', 'retention']) fs.rmSync(path.join(native, 'projects/p1', dir), { recursive: true });
   require(base + 'sealed-case').saveSealedCase(localRequest);
-  assert.deepEqual(resolveWikiReplayRequest(scope, localRequest), localRequest);
+  assert.deepEqual(resolveWikiReplayRequest(localScope, localRequest), localRequest);
   const prepare = require('../../scripts/badcase-capture/sealed-direct-input.cjs').prepareSealedOriginalTurn;
-  assert.equal(prepare(imported).supported, true); assert.equal(prepare(resolveWikiReplayRequest(scope, localRequest)).supported, true);
+  assert.equal(prepare(imported).supported, true); assert.equal(prepare(resolveWikiReplayRequest(localScope, localRequest)).supported, true);
   const state = createWikiStore(scope).read(); assert.equal(collectWikiCandidateFiles(state, scope).length, 1);
   const comparison = require('../../scripts/badcase-capture/direct-comparison.cjs').prepareComparison({ request: h.replay.request, globalWikiCandidate: { ...scope, candidateId: h.candidate.id }, repoRoot: h.root, dependencyRoot: h.root, image: { imageId: 'sha256:' + '1'.repeat(64) }, repeats: 1, rules: h.replay.rules, modelProfile: 'deepseek/deepseek-v4-flash', keySource: 'caff-deepseek' });
   assert.equal(comparison.supported, true);
@@ -140,7 +140,7 @@ test('configured external destination migrates source bytes and resolves both im
   fs.unlinkSync(path.join(imported.captureRoot, 'projects/p1/blobs', h.seal.cp.files['source.txt'].hash.slice(0, 2), h.seal.cp.files['source.txt'].hash));
   assert.equal(prepare(resolveWikiReplayRequest(scope, h.replay.request)).supported, false, 'missing import never reads still-present old source');
   assert.equal((await evaluate()).supported, false, 'original-only evaluation also refuses missing imports instead of reading old source');
-  assert.equal(prepare(resolveWikiReplayRequest(scope, localRequest)).supported, true, 'local scene remains independent');
+  assert.equal(prepare(resolveWikiReplayRequest(localScope, localRequest)).supported, true, 'local scene remains independent');
   assert.equal(fs.existsSync(path.join(agentDir, 'badcase-global')), false);
 });
 test('confirmation/hash drift and source changes reject without publishing a destination', t => {

@@ -10,6 +10,7 @@ import { createWikiComparisonStore } from '../domain/runtime/badcase-capture/wik
 import { wikiDisplayCases } from '../domain/runtime/badcase-capture/wiki-suite';
 import { createWikiExecutionStore } from '../domain/runtime/badcase-capture/wiki-execution-store';
 import { createWikiBatchExecutionStore } from '../domain/runtime/badcase-capture/wiki-batch-execution-store';
+import { resolveWikiStorageOptions } from '../domain/runtime/badcase-capture/wiki-data-directory';
 
 // Local candidate preparation/review only. Neither loading, approving a guideline nor
 // confirming a candidate starts a model request or edits a production role.
@@ -61,8 +62,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       const { confirmed, ...mutation } = input; input = mutation;
     }
     try {
-      const scope = { globalRoot: options.globalRoot, sourceWorktree: options.sourceWorktree, instanceCaptureRoot: options.instanceCaptureRoot,
-        sourceWorktrees: options.projectManager?.listProjects().map((p: any) => p.path) || [] };
+      const scope = resolveWikiStorageOptions({ agentDir: options.agentDir, globalRoot: options.globalRoot, sourceWorktree: options.sourceWorktree, instanceCaptureRoot: options.instanceCaptureRoot,
+        sourceWorktrees: options.projectManager?.listProjects().map((p: any) => p.path) || [] });
       const executions = () => [...createWikiExecutionStore(scope).read(), ...createWikiBatchExecutionStore(scope).read()]
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0, 20);
       if (match[1] === 'executions') { sendJson(res, 200, { executions: executions(), comparisons: createWikiComparisonStore(scope).read() }); return true; }

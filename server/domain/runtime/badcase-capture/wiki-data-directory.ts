@@ -1,6 +1,6 @@
-// Operator-owned WikiSkill storage selection; never project/HTTP/model input.
-// Explicit migration sources opt out so configuring a destination cannot make
-// the migration read its own output. Unset preserves existing options verbatim.
+// Operator-owned WikiSkill defaults; never project/HTTP/model input.
+// Explicit roots always win. Only default assembly with an agentDir may consult
+// configuration; stores/CLIs must never redirect an explicitly selected root.
 import path from 'node:path';
 const fail = () => Object.assign(Error('wiki_data_dir_invalid'), { code: 'wiki_data_dir_invalid' });
 export function resolveWikiDataDirectory(agentDir: string, env: NodeJS.ProcessEnv = process.env) {
@@ -10,8 +10,10 @@ export function resolveWikiDataDirectory(agentDir: string, env: NodeJS.ProcessEn
   return path.resolve(value);
 }
 export function resolveWikiStorageOptions(options: any, env: NodeJS.ProcessEnv = process.env) {
-  if (options?.globalRoot === undefined || options.useConfiguredWikiDataDir === false || env.CAFF_WIKISKILL_DATA_DIR === undefined) return options;
-  return { ...options, globalRoot: path.join(resolveWikiDataDirectory('', env), 'badcase-global') };
+  if (!options || options.globalRoot !== undefined || options.captureRoot !== undefined || options.agentDir === undefined) return options;
+  const dataDir = resolveWikiDataDirectory(options.agentDir, options.useConfiguredWikiDataDir === false ? {} : env);
+  return { ...options, globalRoot: path.join(dataDir, 'badcase-global'),
+    instanceCaptureRoot: options.instanceCaptureRoot ?? path.resolve(options.agentDir, 'badcase-capture') };
 }
 export function resolveWikiInstanceCaptureRoot(options: any, env: NodeJS.ProcessEnv = process.env) {
   if (options.instanceCaptureRoot !== undefined) {
