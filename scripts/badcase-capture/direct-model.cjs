@@ -30,9 +30,15 @@ function readEvaluationKey(env = process.env) {
 }
 const DEFAULT_PROFILE = PROVIDER + '/' + MODEL;
 const DEEPSEEK_PROFILE = 'deepseek/deepseek-v4-flash';
+const CODEX_PROFILE = 'openai-codex/gpt-6.1-sol';
+// Expired, deliberately invalid signature. Native pi-ai only decodes account
+// routing here; the host substitutes the actual access exclusively in memory.
+const CODEX_INERT_KEY = 'inert.' + Buffer.from(JSON.stringify({ exp: 1,
+  'https://api.openai.com/auth': { chatgpt_account_id: 'caff-replay-inert' } })).toString('base64url') + '.not-a-credential';
 function modelProfile(name = DEFAULT_PROFILE) {
   if (name === DEFAULT_PROFILE) return { provider: PROVIDER, model: MODEL, endpoint: ENDPOINT };
   if (name === DEEPSEEK_PROFILE) return { provider: 'deepseek', model: 'deepseek-v4-flash', endpoint: 'https://api.deepseek.com' };
+  if (name === CODEX_PROFILE) return { provider: 'openai-codex', model: 'gpt-6.1-sol', endpoint: 'https://chatgpt.com/backend-api', api: 'openai-codex-responses', thinking: 'xhigh' };
   throw fail('evaluation_profile_invalid');
 }
 // Host only, explicitly selected by the user. No auth.json scan, shell
@@ -52,6 +58,12 @@ function readCaffDeepseekKey(env = process.env) {
 // Only a variable reference is written to models.json, never the actual key.
 function directModelRouting(baseUrl, profile = DEFAULT_PROFILE) {
   const selected = modelProfile(profile); baseUrl ??= selected.endpoint;
+  if (profile === CODEX_PROFILE) {
+    if (baseUrl !== selected.endpoint) throw fail('evaluation_endpoint_invalid');
+    // Keep the built-in native descriptor/capabilities/costs/context limits.
+    // This env reference resolves only to CODEX_INERT_KEY in the worker.
+    return { providers: { 'openai-codex': { baseUrl, apiKey: '$' + KEY_ENV } } };
+  }
   if (baseUrl !== selected.endpoint && !/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/v1$/.test(baseUrl)) throw fail('evaluation_endpoint_invalid');
   return { providers: { [selected.provider]: {
     api: 'openai-completions', baseUrl, apiKey: '$' + KEY_ENV,
@@ -74,7 +86,8 @@ function observeDirectFetch(fetch, { baseUrl, profile = DEFAULT_PROFILE, callbac
   const observed = async (request, options) => {
     const url = typeof request === 'string' || request instanceof URL ? String(request) : request.url;
     if (callbackUrl && new URL(url).origin === callbackUrl) return fetch(request, options);
-    if (url !== baseUrl + '/chat/completions' || failed || calls.length >= maxRequests) throw fail('evaluation_request_blocked');
+    const endpoint = baseUrl + (profile === CODEX_PROFILE ? '/codex/responses' : '/chat/completions');
+    if (url !== endpoint || failed || calls.length >= maxRequests) throw fail('evaluation_request_blocked');
     const start = performance.now();
     const row = { model: selected.provider + '/' + selected.model, durationMs: 0, success: false, httpStatus: null, usage: null };
     calls.push(row); pending = row;
@@ -105,7 +118,80 @@ function observeDirectFetch(fetch, { baseUrl, profile = DEFAULT_PROFILE, callbac
 }
 const BINDING_NAMES = ['CAFF_CHAT_API_URL', 'CAFF_CHAT_INVOCATION_ID', 'CAFF_CHAT_CALLBACK_TOKEN', 'CAFF_CHAT_CONVERSATION_ID',
   'CAFF_CHAT_TURN_ID', 'CAFF_CHAT_TOOLS_PATH', 'CAFF_CHAT_TOOLS_RELATIVE_PATH', 'PI_AGENT_SANDBOX_DIR', 'PI_AGENT_PRIVATE_DIR'];
-function validateDirectBindings(prompt, bindings) {
+// Lossless JSONL edits: only the header cwd and context prose may be rebound.
+// Historical tool arguments/results remain frozen data, never instructions to
+// execute. External path dependencies are deliberately not inferred.
+function mapDirectSession(text, sourceRoot, replace) {
+  const bad = () => { throw fail('evaluation_bindings_unsupported'); };
+  if (typeof text !== 'string' || !text.endsWith('\n') || Buffer.byteLength(text) > 64 * 1024 * 1024) bad();
+  const lines = text.split('\n'); if (lines.length > 100001) bad();
+  const residual = value => {
+    const stack = [value]; let visited = 0;
+    while (stack.length) {
+      if (++visited > 100000) bad();
+      const v = stack.pop();
+      if (typeof v === 'string') { if (v.includes('{{') || v.includes(sourceRoot)) bad(); }
+      else if (v && typeof v === 'object') {
+        for (const [k, item] of Object.entries(v)) { stack.push(k, item); if (stack.length > 100000) bad(); }
+      }
+    }
+  };
+  for (let i = 0; i < lines.length - 1; i++) {
+    let entry; try { entry = JSON.parse(lines[i]); } catch { bad(); }
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) bad();
+    if (i === 0 && (entry.type !== 'session' || entry.version !== 3 || entry.cwd !== sourceRoot)) bad();
+    const fields = [];
+    if (i === 0) fields.push({ value: entry.cwd, path: true });
+    const content = blocks => {
+      if (typeof blocks === 'string') fields.push({ value: blocks });
+      else if (Array.isArray(blocks)) for (const b of blocks) {
+        if (b?.type === 'text' && typeof b.text === 'string') fields.push({ value: b.text });
+      }
+    };
+    if (entry.type === 'message' && ['user', 'assistant'].includes(entry.message?.role)) content(entry.message.content);
+    if (entry.type === 'custom_message') content(entry.content);
+    if (['compaction', 'branch_summary'].includes(entry.type) && typeof entry.summary === 'string') fields.push({ value: entry.summary });
+    const edits = [];
+    for (const { value, path: isPath } of fields) {
+      if (!value.includes('{{') && !value.includes(sourceRoot)) continue;
+      let mapped = value;
+      if (isPath && value.includes(sourceRoot)) {
+        if (!value.startsWith(sourceRoot) || (value !== sourceRoot && !['/', '\\'].includes(value[sourceRoot.length]))) bad();
+        mapped = '/work/restored' + value.slice(sourceRoot.length).replaceAll('\\', '/');
+      } else {
+        // Historical prose is context too: keep an ambiguous Windows child
+        // path verbatim rather than inventing a portable spelling or refusing
+        // the whole prefix. Current-turn dependencies remain unverified.
+        mapped = value.includes(sourceRoot + '\\') ? value : value.replaceAll(sourceRoot, '/work/restored');
+      }
+      mapped = replace(mapped);
+      const token = JSON.stringify(value), start = lines[i].indexOf(token);
+      if (start < 0 || lines[i].indexOf(token, start + 1) !== -1) bad();
+      edits.push({ start, end: start + token.length, replacement: JSON.stringify(mapped) });
+    }
+    edits.sort((a, b) => b.start - a.start);
+    let checked = lines[i];
+    for (const e of edits) checked = checked.slice(0, e.start) + '"checked"' + checked.slice(e.end);
+    const inspected = JSON.parse(checked);
+    // Mask only the validation copy, never the archived/bound bytes. Old
+    // commands/results may contain old paths and literal template-like text.
+    if (inspected.type === 'message') {
+      const message = inspected.message;
+      if (message?.role === 'assistant' && Array.isArray(message.content)) message.content = message.content.filter(b => b?.type !== 'toolCall');
+      if (message?.role === 'toolResult') message.content = 'frozen historical context';
+      if (message?.role === 'bashExecution') { message.command = 'frozen historical context'; message.output = 'frozen historical context'; }
+    }
+    residual(inspected);
+    for (const e of edits) lines[i] = lines[i].slice(0, e.start) + e.replacement + lines[i].slice(e.end);
+  }
+  return lines.join('\n');
+}
+function replaySessionInfo(text) {
+  return text === null || text === undefined ? undefined
+    : { deliveryMode: 'resume', prefixHash: require('node:crypto').createHash('sha256').update(text).digest('hex'), lineCount: text.split('\n').length - 1,
+      historyTools: 'context-only-not-executed', externalPathDependencies: 'not-verified' };
+}
+function validateDirectBindings(prompt, bindings, sessionText = null) {
   if (typeof prompt !== 'string' || !bindings || typeof bindings.sourceRoot !== 'string' || !/^(?:[A-Za-z]:[\\\\/]|\/)/.test(bindings.sourceRoot)
     || !Array.isArray(bindings.controlledReplacements)) throw fail('evaluation_bindings_unsupported');
   const counts = new Map();
@@ -113,12 +199,21 @@ function validateDirectBindings(prompt, bindings) {
     if (!BINDING_NAMES.includes(r?.name) || !Number.isSafeInteger(r.count) || r.count < 1) throw fail('evaluation_bindings_unsupported');
     counts.set(r.name, (counts.get(r.name) || 0) + r.count);
   }
-  for (const name of BINDING_NAMES) if (prompt.split('{{' + name + '}}').length - 1 !== (counts.get(name) || 0)) throw fail('evaluation_bindings_unsupported');
-  if (prompt.replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, name) => BINDING_NAMES.includes(name) ? '' : '{{').includes('{{')) throw fail('evaluation_bindings_unsupported');
+  const texts = [prompt, sessionText || ''];
+  for (const name of BINDING_NAMES) if (texts.reduce((n, s) => n + s.split('{{' + name + '}}').length - 1, 0) !== (counts.get(name) || 0)) throw fail('evaluation_bindings_unsupported');
+  const check = s => {
+    if (s.replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, name) => BINDING_NAMES.includes(name) ? '' : '{{').includes('{{')) throw fail('evaluation_bindings_unsupported');
+    return s;
+  };
+  check(prompt);
+  return { sessionText: sessionText === null ? null : mapDirectSession(sessionText, bindings.sourceRoot, check) };
 }
-function bindDirectPrompt(prompt, bindings, values) {
-  validateDirectBindings(prompt, bindings);
+function bindDirectInputs(prompt, sessionText, bindings, values) {
+  validateDirectBindings(prompt, bindings, sessionText);
   if (!values || !BINDING_NAMES.every(n => typeof values[n] === 'string' && values[n] && !values[n].includes('{{'))) throw fail('evaluation_bindings_unsupported');
-  return prompt.replaceAll(bindings.sourceRoot, '/work/restored').replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, name) => values[name]);
+  const replace = s => s.replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, name) => values[name]);
+  return { prompt: replace(prompt.replaceAll(bindings.sourceRoot, '/work/restored')),
+    sessionText: sessionText === null ? null : mapDirectSession(sessionText, bindings.sourceRoot, replace) };
 }
-module.exports = { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, ENDPOINT, PROVIDER, MODEL, KEY_ENV, DEFAULT_PROFILE, DEEPSEEK_PROFILE };
+function bindDirectPrompt(prompt, bindings, values) { return bindDirectInputs(prompt, null, bindings, values).prompt; }
+module.exports = { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, bindDirectInputs, replaySessionInfo, ENDPOINT, PROVIDER, MODEL, KEY_ENV, DEFAULT_PROFILE, DEEPSEEK_PROFILE, CODEX_PROFILE, CODEX_INERT_KEY };

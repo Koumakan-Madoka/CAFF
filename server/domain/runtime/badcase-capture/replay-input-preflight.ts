@@ -99,7 +99,7 @@ export function inspectRetainedReplayInputs(input: any) {
     // Do not interpret historical host paths using this inspector's OS, nor
     // pretend a path remapping exists. Until that contract is implemented,
     // even known file-tool dependencies are conservatively unverified.
-    const checked = validateSessionV2(session, { authorizedRoot: '' });
+    const checked = validateSessionV2(session, { authorizedRoot: '', historyContext: true });
     if (!checked.ok) throw fail('replay_session_invalid');
     if (checked.unverifiedDimensions.length) throw fail('replay_session_dependencies_unverified');
     sessionDimensions = checked.verifiedDimensions;

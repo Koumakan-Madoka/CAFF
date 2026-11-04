@@ -12,18 +12,19 @@ const { prepareBatch, runBatch, formatBatch } = require('../../scripts/badcase-c
 const { manifestFor } = require('../../scripts/badcase-capture/pi-probe-materials.cjs');
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const targetId = 'global-harness-behavior-v1', target = getGlobalPromptTarget(targetId);
-function seal(t, { missingTarget = false } = {}) {
-  return fixture(t, 'fresh', ({ cp, r, config, put }) => {
+function seal(t, { missingTarget = false, resume = false, baseText = target.baseText } = {}) {
+  return fixture(t, resume ? 'resume' : 'fresh', ({ cp, r, config, put }) => {
     config.toolBridgeEnabled = true; config.portableRuntime = { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: true };
-    config.sdkStartConfig = { cwd: cp.targetDir, provider: r.runConfig.provider, model: r.runConfig.model, resume: false, thinking: 'off', fast: false, retireUserScopeSkills: true };
-    r.promptBlobHash = r.normalizedPromptHash = put('Identity: custom actor\nYour private persona instructions:\nKeep this exact role.\n\nRoom work context:\n- Fixture\n\nRules:\n' + (missingTarget ? 'Unsupported old rules.' : target.baseText) + '\n- Preserve routing.\n\nRouting instructions:\n- No handoff.\n\nUser: inspect files.');
+    config.sdkStartConfig = { cwd: cp.targetDir, provider: r.runConfig.provider, model: r.runConfig.model, resume, thinking: 'off', fast: false, retireUserScopeSkills: true };
+    if (resume) r.sessionLineCount = 2;
+    r.promptBlobHash = r.normalizedPromptHash = put('Identity: custom actor\nYour private persona instructions:\nKeep this exact role.\n\nRoom work context:\n- Fixture\n\nRules:\n' + (missingTarget ? 'Unsupported old rules.' : baseText) + '\n- Preserve routing.\n\nRouting instructions:\n- No handoff.\n\nUser: inspect files.');
     const association = { projectId: cp.projectId, conversationId: cp.conversationId, turnId: cp.turnId, agentId: cp.agentId, userMessageId: 'u1', assistantMessageId: 'msg1' };
     const trace = { schemaVersion: 1, kind: 'caff-evaluation-callback-input-v1', association, assistantCreatedAt: '2026-01-01T00:00:01.000Z', conversation: { title: 'Fixture', type: 'standard', metadata: {} }, participants: [{ id: cp.agentId, name: 'Actor', description: 'Test' }], publicMessages: [{ id: 'u1', turnId: 't0', role: 'user', agentId: null, senderName: 'User', content: 'Inspect files.', status: 'completed', createdAt: '2026-01-01T00:00:00.000Z', publicPostedAt: '', publicPostCount: 0, publicPostMode: '', mentions: [] }], privateMessages: [], pendingDelegations: [] };
     r.callbackInput = { schemaVersion: 1, kind: 'caff-evaluation-callback-input-reference-v1', blobHash: put(JSON.stringify(trace)), association };
     r.harness.configSnapshotHash = put(JSON.stringify(config));
   });
 }
-function setup(t, { confirmed = true, tool = false, missingTarget = false, staged = false } = {}) {
+function setup(t, { confirmed = true, tool = false, missingTarget = false, staged = false, resume = false, publicReply = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'global-comparison-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const scope = { globalRoot: path.join(root, 'global'), sourceWorktree: path.join(root, 'source') }, store = createWikiStore(scope);
   const sources = store.addTextCases(Array.from({ length: 16 }, (_, n) => ({ source: { origin: 'http://127.0.0.1:3100', projectId: 'history-project-' + n, conversationId: 'history-room', messageId: 'message-' + n, agentId: 'role-family-gpt' }, role: 'GPT', actual: 'Unclear report', expected: 'Unique expected visible outcome number ' + n, message: 'Internal jargon', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }))).cases;
@@ -36,8 +37,9 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
   const train = store.read().cases.filter(c => c.split === 'train').map(c => c.id), guideline = '先核实，再用读者能理解的语言说明结论。';
   const v = store.saveDraft({ caseIds: train, model: 'deepseek/deepseek-v4-flash', entries: [{ title: 'Clear', failureMode: 'jargon', symptoms: 'unclear', rootCauseHypothesis: 'audience', guideline, caseIds: train }], unclassified: [] });
   store.review({ versionId: v.id, entryId: v.entries[0].id, expectedRevision: store.read().revision, decision: 'approved' });
-  const seals = selected.map(() => seal(t, { missingTarget })), categories = staged ? ['reproduction', 'control', 'control', 'reproduction', 'reproduction', 'probe', 'control'] : ['reproduction', 'reproduction', 'reproduction', 'probe', 'control', 'control', 'control'];
-  const rules = { kind: 'file-literals-v1', files: [{ path: 'REPORT.md', contains: ['RESULT'], notContains: ['TODO'] }] };
+  const seals = selected.map(() => seal(t, { missingTarget, resume })), categories = staged ? ['reproduction', 'control', 'control', 'reproduction', 'reproduction', 'probe', 'control'] : ['reproduction', 'reproduction', 'reproduction', 'probe', 'control', 'control', 'control'];
+  const rules = publicReply ? { kind: 'public-reply-literals-v1', leadChars: 20, conclusionMarkers: ['done'], forbiddenTerms: ['P2'], forbiddenPatterns: ['commit-hash'] }
+    : { kind: 'file-literals-v1', files: [{ path: 'REPORT.md', contains: ['RESULT'], notContains: ['TODO'] }] };
   for (let i = 0; i < 7; i++) {
     // A missing declared target is still an honestly registered old seal. The
     // global evaluation must mark it unsupported, never fall back to its role.
@@ -58,13 +60,58 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
       state.executions++; assert.equal(opts.key, key); assert.equal(opts.network, 'bridge');
       const m = manifestFor(files), input = JSON.parse(files[0].bytes), failed = state.executions === state.failAt, text = 'RESULT';
       return { code: 0, cleaned: true, containerId: 'a'.repeat(64), isolation: { privileged: false }, receipt: { kind: 'direct-caff-turn-v1', inputHash: m.inputHash, runtimeHash: m.runtimeHash, success: !failed,
-        beforeHash: expectedTreeHash(input), afterHash: expectedTreeHash(input), replySource: 'public', finalText: 'done', toolCalls: [],
+        beforeHash: expectedTreeHash(input), afterHash: expectedTreeHash(input), replySource: 'public', finalText: 'done', toolCalls: [], recordedModelConfig: input.recordedModelConfig,
+        ...(input.sessionText ? { replaySession: require('../../scripts/badcase-capture/direct-model.cjs').replaySessionInfo(input.sessionText) } : {}),
         fileEvidence: [{ path: 'REPORT.md', state: 'file', base64: Buffer.from(text).toString('base64'), sha256: sha(text), size: text.length }],
         modelCalls: [{ model: 'deepseek/deepseek-v4-flash', durationMs: 1, success: !failed, usage: null }] } };
     } };
   const plan = () => prepareBatch(config, options), run = () => runBatch(config, { ...options, expectedPlanHash: plan().summary.planHash });
   return { root, store, sources, split, seals, candidate, config, single, state, options, plan, run, guideline };
 }
+test('old and manually merged real seals both carry the adopted baseline on both arms, with only one new candidate change', t => {
+  const h = setup(t), snapshot = h.store.read(), review = { id: 'review-fixture', comparisonId: 'comparison-' + 'a'.repeat(64), candidateId: h.candidate.id, candidateHash: h.candidate.candidateHash, targetId, decision: 'adopted', baselineChanged: true, createdAt: '2026-11-04T00:00:00Z' };
+  // Seed operator-owned adoption metadata; review creation itself is covered by
+  // production-batch tests. Target preparation below reads real immutable seals.
+  snapshot.baselines.push(require('../../build/server/domain/runtime/badcase-capture/wiki-baseline').buildWikiBaseline(snapshot, h.candidate, review)); snapshot.comparisonReviews.push(review); snapshot.revision++;
+  fs.writeFileSync(path.join(h.config.globalRoot, 'snapshots', String(snapshot.revision).padStart(12, '0') + '.json'), JSON.stringify({ schemaVersion: 1, checksum: sha(JSON.stringify(snapshot)), record: snapshot }));
+  const train = snapshot.versions[0].caseIds, v = h.store.saveDraft({ caseIds: train, model: 'deepseek/deepseek-v4-flash', entries: [{ title: 'Impact', failureMode: 'jargon', symptoms: 'unclear', rootCauseHypothesis: 'audience', guideline: '先说明用户影响，再按需给出证据。', caseIds: train }], unclassified: [] });
+  h.store.review({ versionId: v.id, entryId: 'entry-1', expectedRevision: h.store.read().revision, decision: 'approved' });
+  const candidate = h.store.createGlobalCandidate({ versionId: v.id, entryIds: ['entry-1'], targetId, files: [] }); h.store.confirmGlobalCandidate({ candidateId: candidate.id, candidateHash: candidate.candidateHash, expectedRevision: h.store.read().revision, files: [] });
+  const c = { ...h.single, globalWikiCandidate: { ...h.single.globalWikiCandidate, candidateId: candidate.id } };
+  const originalSeal = prepareSealedPromptTarget(c.request, targetId).input;
+  const inputs = [];
+  for (const request of [c.request, seal(t, { baseText: h.candidate.candidateText }).request]) {
+    const p = prepareComparison({ ...c, request }, h.options); assert.equal(p.supported, true);
+    assert.equal(p.inputs.original.prompt, originalSeal.prompt.replace(target.baseText, h.candidate.candidateText));
+    assert.equal(p.inputs.candidate.prompt, p.inputs.original.prompt.replace(h.candidate.candidateText, candidate.candidateText));
+    assert.deepEqual({ ...p.inputs.original, prompt: '' }, { ...p.inputs.candidate, prompt: '' });
+    assert.equal(p.inputs.original.prompt.split(h.candidate.appendedSection).length - 1, 1);
+    assert.equal(p.inputs.candidate.prompt.split(h.candidate.appendedSection).length - 1, 1);
+    assert.equal(p.inputs.candidate.prompt.split(candidate.appendedSection).length - 1, 1); inputs.push(p);
+  }
+  assert.equal(inputs[0].inputs.original.prompt, inputs[1].inputs.original.prompt);
+  assert.equal(inputs[0].summary.promptBaseline.alreadyMerged, false); assert.equal(inputs[1].summary.promptBaseline.alreadyMerged, true);
+  assert.equal(inputs[0].summary.promptBaseline.baseHash, h.candidate.candidateHash); assert.equal(inputs[1].summary.promptBaseline.appliedToBothVariants, true);
+  const unknown = seal(t, { baseText: h.candidate.candidateText + '\n\nWikiSkill 已审核准则：\n- 未经采纳。' });
+  assert.equal(prepareComparison({ ...c, request: unknown.request }, h.options).supported, false);
+  assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);
+});
+test('real sealed draft preview is read-only and cannot authorize direct execution, even if a caller forwards the preview option', async t => {
+  const h=setup(t,{confirmed:false}),before=h.store.read();
+  assert.throws(()=>prepareComparison(h.single,h.options),/wiki_candidate_confirmation_required/);
+  const p=prepareComparison(h.single,{...h.options,allowDraftCandidate:true});assert.equal(p.supported,true);assert.equal(p.summary.candidateConfirmationRequired,true);assert.ok(p.inputs.candidate.prompt.includes(h.guideline));assert.deepEqual(h.store.read(),before);
+  await assert.rejects(runComparison(h.single,{...h.options,allowDraftCandidate:true}),/wiki_candidate_confirmation_required/);assert.equal(h.state.keys,0);assert.equal(h.state.executions,0);
+});
+test('registered global replay freezes public reply rules and scores real callback text without file references in input', async t => {
+  const h = setup(t, { publicReply: true });
+  assert.ok(h.store.read().replayCases.every(c => c.rules.kind === 'public-reply-literals-v1'));
+  const p = prepareComparison(h.single, h.options); assert.equal(p.supported, true);
+  assert.equal(p.inputs.original.fileEvidencePaths, undefined);
+  const r = await runComparison(h.single, h.options);
+  assert.equal(r.totals.original.passed, 3); assert.equal(r.totals.candidate.passed, 3);
+  assert.ok(r.runs.every(row => row.replyChecks.conclusionMarker === 'done'));
+  assert.ok(r.runs.every(row => row.fileEvidence === undefined));
+});
 test('D13/D16 global staged suite alternates 10 valid runs, rejects without running tests and has no cross-stage total', async t => {
   const h = setup(t, { staged: true }), before = h.store.read(), p = h.plan();
   assert.equal(p.summary.repeats, 10); assert.equal(p.summary.evaluation.kind, 'wikiskill-gate-v1');
@@ -115,6 +162,29 @@ test('environment errors are separate attempts, at most five extra per question;
     const saved=createWikiComparisonStore(h.config).save(r); assert.deepEqual(saved.byStage,r.byStage);
   }
 });
+test('native proxy failures use shared replacements only with verified launcher evidence; exhausted budget, missing cleanup and drift stop', async t => {
+  for (const mode of ['recover', 'exhausted', 'cleanup', 'hash']) {
+    const h=setup(t,{staged:true,publicReply:true}),dir=path.join(h.root,'.pi-sandbox');fs.mkdirSync(dir);
+    const profile=require('../../scripts/badcase-capture/codex-transport.cjs').PROFILE;
+    const access='test.'+Buffer.from(JSON.stringify({exp:2000000600,'https://api.openai.com/auth':{chatgpt_account_id:'synthetic'}})).toString('base64url')+'.test';
+    const authFile=path.join(dir,'auth.json');fs.writeFileSync(authFile,JSON.stringify({'openai-codex':{type:'oauth',access,expires:2000000600000}}));
+    Object.assign(h.single,{modelProfile:profile.model,keySource:'caff-codex-access',codexAuthFile:authFile,repeats:10,executionPolicy:'alternating-valid-v1'});
+    h.options.knownValues=[];h.options.prepareTarget=(...args)=>{const p=prepareSealedPromptTarget(...args);p.input.recordedModelConfig={provider:'openai-codex',model:'gpt-6.1-sol',thinking:'xhigh',fast:false};return p;};
+    let sends=0,executions=0;
+    h.options.createCodexTransport=(c,g)=>require('../../scripts/badcase-capture/codex-transport.cjs').createCodexTransport(c,{...g,now:()=>2000000000000,createDispatcher:()=>({destroy:async()=>{}}),fetch:async()=>{if(++sends<=(mode==='exhausted'?6:1))throw Object.assign(new TypeError('PRIVATE '+access),{cause:Object.assign(Error('PRIVATE'),{code:'ECONNRESET'})});return new Response('data: synthetic\n\n');}});
+    h.options.executeCodex=async(_image,files,opts)=>{executions++;const m=manifestFor(files,{replayWorkspace:true}),input=JSON.parse(files[0].bytes);
+      const launcher={containerId:'a'.repeat(64),cleaned:mode!=='cleanup',isolation:{network:'none'},inputHash:mode==='hash'?'0'.repeat(64):m.inputHash,runtimeHash:m.runtimeHash};
+      try{await opts.sendNativeRequest(Buffer.from(JSON.stringify({headers:{'content-type':'application/json',accept:'text/event-stream'},body:Buffer.from(JSON.stringify({model:'gpt-6.1-sol',input:[],stream:true,store:false,reasoning:{effort:'xhigh'}})).toString('base64')})));}
+      catch{return {...launcher,failed:true,reason:'evaluation_codex_proxy_failed'};}
+      return {...launcher,code:0,receipt:{kind:'direct-caff-turn-v1',inputHash:m.inputHash,runtimeHash:m.runtimeHash,beforeHash:expectedTreeHash(input),success:true,recordedModelConfig:input.recordedModelConfig,modelConfig:{api:profile.api,thinking:'xhigh',fast:false,transport:'sse',credentialDelivery:'host-only-mailbox'},modelCalls:[{model:profile.model,success:true,durationMs:1,httpStatus:200,usage:null}],finalText:'done',replySource:'public'}};
+    };
+    const r=await runComparison(h.single,h.options);
+    assert.equal(r.runs[0].status,'error');assert.equal(r.runs[0].reason,'evaluation_codex_proxy_failed');assert.equal(r.runs[0].environmentDiagnostic.exceptionType,'TypeError');assert.equal(r.runs[0].environmentDiagnostic.code,'ECONNRESET');
+    assert.doesNotMatch(JSON.stringify(r),/PRIVATE/);assert.equal(JSON.stringify(r).includes(access),false);
+    if(mode==='recover'){assert.equal(executions,21);assert.equal(r.completed,true);assert.equal(r.fatal,false);assert.equal(r.totals.original.errors,1);assert.equal(r.totals.original.passed,10);assert.equal(r.totals.candidate.passed,10);}
+    else{assert.equal(executions,mode==='exhausted'?6:1);assert.equal(r.fatal,true);assert.equal(r.completed,false);}
+  }
+});
 test('model loop/request ceiling and proven container model timeout count as fail, not retriable environment error', async t=>{
   for(const mode of ['modelLimit','timeout']) {
     const h=setup(t,{staged:true}); stagedDriver(h,{[mode]:true}); const r=await h.run();
@@ -162,6 +232,62 @@ test('staged receipt/launcher hash drift is fatal, not a replaceable environment
     assert.equal(h.state.executions, 1); assert.equal(r.gateDecision.outcome, 'indeterminate');
     assert.equal(r.cases.find(c => c.stage === 'gate').runs[0].reason, 'run_evidence_unavailable');
     assert.equal(r.byStage.test.original.attempted, 0); assert.equal(r.callsUnavailable, true);
+  });
+});
+test('staged recorded thinking evidence missing or changed is fatal, not an environmental replacement', async t => {
+  for (const missing of [true, false]) {
+    const h = setup(t, { staged: true }), execute = h.options.execute;
+    h.options.execute = async (...args) => { const task = await execute(...args);
+      if (missing) delete task.receipt.recordedModelConfig; else task.receipt.recordedModelConfig.thinking = 'xhigh'; return task; };
+    const r = await h.run(); assert.equal(h.state.executions, 1); assert.equal(r.completed, false);
+    assert.equal(r.gateDecision.outcome, 'indeterminate'); assert.equal(r.byStage.test.original.attempted, 0);
+    assert.ok(r.cases.filter(c => c.stage === 'gate').slice(1).every(c => c.reason === 'prior_integrity_error'));
+  }
+});
+test('staged project-resource evidence missing or changed is fatal, not an environmental replacement', async t => {
+  for (const missing of [true, false]) {
+    const h = setup(t, { staged: true }), execute = h.options.execute;
+    h.options.prepareTarget = (...args) => { const p = prepareSealedPromptTarget(...args);
+      p.input.projectResources = { kind: 'replay-project-resources-v1', manifestHash: '1'.repeat(64), files: [], contextFile: null, skillPaths: [] }; return p; };
+    h.options.execute = async (...args) => { const task = await execute(...args);
+      if (!missing) task.receipt.projectResources = { kind: 'replay-project-resources-v1', manifestHash: '2'.repeat(64), fileCount: 0,
+        contextFile: null, skillPaths: [], verified: true, loadedContextFiles: 0, loadedSkills: 0 }; return task; };
+    const r = await runComparison({ ...h.single, repeats: 10, executionPolicy: 'alternating-valid-v1' }, h.options);
+    assert.equal(h.state.executions, 1); assert.equal(r.fatal, true); assert.equal(r.completed, false);
+    assert.equal(r.runs[0].reason, 'run_evidence_unavailable'); assert.equal(r.totals.original.passed, 0);
+  }
+});
+test('staged resume prefix evidence missing or changed is fatal rather than an environmental replacement', async t => {
+  for (const missing of [true, false]) {
+    const h = setup(t, { staged: true, resume: true }), execute = h.options.execute;
+    h.options.execute = async (...args) => { const task = await execute(...args);
+      if (missing) delete task.receipt.replaySession; else task.receipt.replaySession.prefixHash = '0'.repeat(64); return task; };
+    const r = await h.run(); assert.equal(h.state.executions, 1); assert.equal(r.completed, false);
+    assert.equal(r.gateDecision.outcome, 'indeterminate'); assert.equal(r.byStage.test.original.attempted, 0);
+    assert.ok(r.cases.filter(c => c.stage === 'gate').slice(1).every(c => c.reason === 'prior_integrity_error'));
+  }
+});
+test('staged explicit dependency archive/cache/lock/Node drift is fatal, not five environmental replacements', async t => {
+  for (const field of ['archiveHash', 'cacheKey', 'lockHash', 'nodeVersion']) await t.test(field, async t => {
+    const h = setup(t), cacheRoot = path.join(h.root, 'dependency-cache'); fs.mkdirSync(cacheRoot);
+    h.single.image = { ...h.single.image, architecture: 'amd64', nodeVersion: 'v24.21.0' };
+    const pkg = { name: 'synthetic-staged-dependencies', version: '1.0.0' };
+    const file = (path, value) => { const bytes = Buffer.from(JSON.stringify(value)); return { path, base64: bytes.toString('base64'), sha256: sha(bytes) }; };
+    const extras = [file('package.json', pkg), file('package-lock.json', { name: pkg.name, version: pkg.version, lockfileVersion: 3, packages: { '': pkg } })];
+    h.options.prepareTarget = (...args) => { const p = prepareSealedPromptTarget(...args); p.input.files.push(...extras); return p; };
+    const { cacheReplayDependencies } = require('../../scripts/badcase-capture/replay-dependencies.cjs');
+    const input = h.options.prepareTarget(h.single.request, targetId).input, bytes = Buffer.from('synthetic staged cache');
+    await cacheReplayDependencies(input, h.single.image, cacheRoot, { runBuild: async (_image, _files, options) => {
+      fs.writeFileSync(options.outputFile, bytes); return { code: 0, cleaned: true, receipt: { kind: 'npm-replay-dependencies-v1',
+        nodeVersion: h.single.image.nodeVersion, npmVersion: '11.11.1', installCommand: 'npm ci --include=dev --no-audit --no-fund', archiveHash: sha(bytes), modelCalls: 0 } };
+    } });
+    const execute = h.options.execute;
+    h.options.execute = async (...args) => { const task = await execute(...args), wire = JSON.parse(args[1][0].bytes);
+      task.receipt.dependencies = { ...wire.dependencies, installed: true, [field]: 'conflicting-synthetic-identity' }; return task; };
+    const r = await runComparison({ ...h.single, repeats: 10, executionPolicy: 'alternating-valid-v1',
+      dependencies: { kind: 'npm-ci-linux-v1', cacheRoot } }, h.options);
+    assert.equal(h.state.executions, 1); assert.equal(r.fatal, true); assert.equal(r.completed, false);
+    assert.equal(r.runs[0].reason, 'run_evidence_unavailable'); assert.equal(r.modelCallsKnown, 0);
   });
 });
 test('staged cleanup uncertainty and plaintext/encoded key leaks remain fatal', async t => {

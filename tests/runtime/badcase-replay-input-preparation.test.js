@@ -108,19 +108,22 @@ test('unverified extension/image dependencies may archive structurally valid byt
   assert.equal(result.replayInput.invocationImageCount, 1); assert.equal(JSON.stringify(result.replayInput).includes('PRIVATE_IMAGE'), false);
 });
 
-test('historical image bytes and tool dependencies retain their validator-specific incomplete dimensions', () => {
+test('frozen tool dependencies are context only; images retain their validator-specific incomplete dimensions', () => {
   const tool = (name, args) => ({ type: 'message', id: 'a', parentId: 'u', message: { role: 'assistant', api: 'a', provider: 'p', model: 'm',
     usage: {}, stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'call', name, arguments: args }] } });
   const cases = [
-    [tool('read', { path: path.resolve(root, '../outside.txt') }), 'out_of_scope_path_dependency:read', true],
-    [tool('bash', { command: 'ls' }), 'unanalyzable_tool_dependencies:bash', true],
+    [tool('read', { path: path.resolve(root, '../outside.txt') }), null, true],
+    [tool('bash', { command: 'ls' }), null, true],
+    [tool('retired_plugin', { arbitrary: 'historical arguments' }), null, true],
     [{ type: 'message', id: 'img', parentId: 'u', message: { role: 'user', content: [{ type: 'image', data: 'YQ==', mimeType: 'image/png' }] } }, 'image_content_unverified', true],
     [{ type: 'message', id: 'img', parentId: 'u', message: { role: 'user', content: [{ type: 'image', data: '???', mimeType: 'image/png' }] } }, 'session_invalid_content_block:line_3:session_attachment_malformed', false],
   ];
   for (const [entry, dimension, archive] of cases) {
     const bytes = session([entry]);
     const result = shared.prepareReplayInput(input(), 'resume', root, read(bytes));
-    assert.equal(result.replayInput.complete, false); assert.ok(result.replayInput.incompleteReasons.includes(dimension), JSON.stringify(result.replayInput));
+    assert.equal(result.replayInput.complete, dimension === null);
+    if (dimension !== null) assert.ok(result.replayInput.incompleteReasons.includes(dimension), JSON.stringify(result.replayInput));
+    else assert.deepEqual(result.replayInput.unverifiedDimensions, []);
     assert.equal(result.replayInput.sessionBlobHash, archive ? sha(bytes) : ''); assertPlans(result);
   }
 });

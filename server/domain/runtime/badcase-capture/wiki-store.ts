@@ -11,6 +11,12 @@ import { buildWikiCandidate, resolveWikiCandidate } from './wiki-candidate';
 import { assignPatternQuotaSplit, planReplaySplit } from './wiki-split';
 import { validateSealRequest } from './sealed-case';
 import { buildGlobalWikiCandidate, resolveGlobalWikiCandidate } from './wiki-global-candidate';
+import { buildSampleReplayVersion } from './wiki-sample-replay-version';
+import { readWikiComparisonRecord } from './wiki-comparison-record';
+import { projectStagedResult } from './wiki-staged-result';
+import { wikiComparisonTotals } from './wiki-comparison-totals';
+import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
+import { buildWikiExperienceDraft, mergeWikiLiteralObservations, approvedWikiExperiences, revisedWikiExperience } from './wiki-experience';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -35,12 +41,21 @@ function ids(value: any, allowEmpty = false): string[] {
   if (new Set(result).size !== result.length) throw fail('wiki_invalid_case_ids');
   return result;
 }
-function entry(value: any, allowed: Set<string>) {
-  shape(value, ENTRY_FIELDS);
-  const fields = Object.fromEntries(ENTRY_FIELDS.slice(0, -1).map(k => [k, text(value[k], k === 'title' ? 1024 : 8192)]));
-  if ([...fields.guideline].length > 300) throw fail('wiki_guideline_too_long');
-  const caseIds = ids(value.caseIds);
-  if (caseIds.some(k => !allowed.has(k))) throw fail('wiki_unknown_case');
+// Only static field/rule metadata is attached; never rejected values or prose.
+function atField<T>(field: string, action: () => T): T {
+  try { return action(); }
+  catch (e: any) { if (!e.validationIssue) e.validationIssue = { field, rule: e.code }; throw e; }
+}
+function modelInvalid(field: string, rule: string): never {
+  throw Object.assign(fail('wiki_model_output_invalid'), { validationIssue: { field, rule } });
+}
+function entry(value: any, allowed: Set<string>, field = 'entry') {
+  atField(field, () => shape(value, ENTRY_FIELDS));
+  const fields = Object.fromEntries(ENTRY_FIELDS.slice(0, -1).map(k => [k,
+    atField(field + '.' + k, () => text(value[k], k === 'title' ? 1024 : 8192))]));
+  atField(field + '.guideline', () => { if ([...fields.guideline].length > 300) throw fail('wiki_guideline_too_long'); });
+  const caseIds = atField(field + '.caseIds', () => ids(value.caseIds));
+  atField(field + '.caseIds', () => { if (caseIds.some(k => !allowed.has(k))) throw fail('wiki_unknown_case'); });
   return { ...fields, caseIds };
 }
 function textCase(value: any) {
@@ -139,7 +154,7 @@ export function createWikiStore(options: any) {
   const directory = global ? path.join(captureRoot, 'snapshots') : path.join(captureRoot, 'wiki', projectId!, 'snapshots');
   const identity = global ? { scope: 'global' } : { projectId };
   const fresh = () => ({ schemaVersion: 1, ...identity, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replayCases: [] as any[], replaySplit: null,
-    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[], classifications: [] as any[] });
+    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[], classifications: [] as any[], ...(global ? { replayVersions: [] as any[], comparisonReviews: [] as any[], baselines: [] as any[], experiences: [] as any[] } : {}) });
   function read(): any {
     let names: string[];
     try { names = fs.readdirSync(directory); }
@@ -167,8 +182,16 @@ export function createWikiStore(options: any) {
       // migration checksum predates replay registration and must stay stable.
       if (record.replayCases === undefined && global) record.replayCases = [];
       if (record.replayCases !== undefined && !Array.isArray(record.replayCases)) throw Error();
+      if (record.replayVersions === undefined && global) record.replayVersions = [];
+      if (record.replayVersions !== undefined && !Array.isArray(record.replayVersions)) throw Error();
       if (record.replaySplit === undefined) record.replaySplit = null;
       if (record.replaySplit !== null && (typeof record.replaySplit !== 'object' || Array.isArray(record.replaySplit))) throw Error();
+      if (global && record.comparisonReviews === undefined) record.comparisonReviews = [];
+      if (record.comparisonReviews !== undefined && !Array.isArray(record.comparisonReviews)) throw Error();
+      if (global && record.baselines === undefined) record.baselines = [];
+      if (record.baselines !== undefined && !Array.isArray(record.baselines)) throw Error();
+      if (global && record.experiences === undefined) record.experiences = [];
+      if (record.experiences !== undefined && !Array.isArray(record.experiences)) throw Error();
       for (const field of ['suggestions', 'caseStates', 'inductionRuns', 'events', 'classifications']) {
         if (record[field] === undefined) record[field] = [];
         if (!Array.isArray(record[field])) throw Error();
@@ -309,7 +332,7 @@ export function createWikiStore(options: any) {
         id(fixture.sourceSubdirectory);
         const request = validateSealRequest(structuredClone(input.request));
         const rules = structuredClone(input.rules);
-        if (!rules || !['read-only-files-v1', 'file-literals-v1'].includes(rules.kind)) throw fail('wiki_invalid_input');
+        if (!rules || !['read-only-files-v1', 'file-literals-v1', 'public-reply-literals-v1'].includes(rules.kind)) throw fail('wiki_invalid_input');
         return { sourceCaseId, category: input.category, task, fixture, request, rules, checkpointHash: input.checkpointHash };
       });
       return change(state => {
@@ -335,6 +358,17 @@ export function createWikiStore(options: any) {
         return { changed, value: savedCases };
       }).value;
     },
+    // Trusted offline materializer only, never a web mutation or model override.
+    addSampleReplayVersion(input: any) {
+      if (!global) throw fail('wiki_global_required');
+      return change(state => {
+        const content = buildSampleReplayVersion(state, input), existing = state.replayVersions.find((v: any) => v.id === content.id);
+        if (existing) return { changed: false, value: existing };
+        const saved = { ...content, createdAt: new Date().toISOString() }; state.replayVersions.push(saved);
+        appendEvent(state, { type: 'sample-replay-version', caseIds: [saved.sourceCaseId], replayVersionId: saved.id });
+        return { changed: true, value: saved };
+      }).value;
+    },
     recordPreclassification(input: any, expectedRevision?: number) {
       return this.recordInduction(input, expectedRevision, 'preclassification');
     },
@@ -357,31 +391,31 @@ export function createWikiStore(options: any) {
         // caller-chosen subset that could change quota allocation order.
         if (preclassify && state.cases.some((c: any) => c.split === null && !selected.has(c.id))) throw fail('wiki_not_pending');
         const base = state.versions.at(-1), approved = new Set((base?.entries || []).filter((e: any) => e.status === 'approved').map((e: any) => e.id));
-        const seen = new Set(), normalized = input.results.map((r: any) => {
-          shape(r, ['caseId', 'kind', 'entryId', 'reason', 'confidence', 'proposal']);
-          const caseId = id(r.caseId);
-          if (!selected.has(caseId) || seen.has(caseId) || !['assign', 'new', 'none'].includes(r.kind)) throw fail('wiki_model_output_invalid');
+        const seen = new Set(), normalized = input.results.map((r: any, index: number) => {
+          const field = `results[${index}]`;
+          atField(field, () => shape(r, ['caseId', 'kind', 'entryId', 'reason', 'confidence', 'proposal']));
+          const caseId = atField(field + '.caseId', () => id(r.caseId));
+          if (!selected.has(caseId) || seen.has(caseId)) modelInvalid(field + '.caseId', 'must_cover_each_input_once');
+          if (!['assign', 'new', 'none'].includes(r.kind)) modelInvalid(field + '.kind', 'must_be_assign_new_or_none');
           seen.add(caseId);
-          const reason = text(r.reason, 2048), confidence = text(r.confidence, 32);
+          const reason = atField(field + '.reason', () => text(r.reason, 2048)), confidence = atField(field + '.confidence', () => text(r.confidence, 32));
           if (r.kind === 'assign') {
-            if (!approved.has(r.entryId) || r.proposal !== undefined) throw fail('wiki_model_output_invalid');
+            if (!approved.has(r.entryId)) modelInvalid(field + '.entryId', 'must_reference_approved_entry');
+            if (r.proposal !== undefined) modelInvalid(field + '.proposal', 'must_be_absent_for_assign');
             return { caseId, kind: r.kind, entryId: id(r.entryId), reason, confidence };
           }
-          if (r.kind === 'none') {
-            if (r.entryId !== undefined || r.proposal !== undefined) throw fail('wiki_model_output_invalid');
+          if (r.kind === 'none' || preclassify) {
+            // Preclassification never learns pattern prose from unallocated cases.
+            if (r.entryId !== undefined) modelInvalid(field + '.entryId', 'must_be_absent_for_none_or_preclassification_new');
+            if (r.proposal !== undefined) modelInvalid(field + '.proposal', 'must_be_absent_for_none_or_preclassification_new');
             return { caseId, kind: r.kind, reason, confidence };
           }
-          if (preclassify) {
-            // Classification is not wiki induction: no new-pattern prose may
-            // be learned from the still-unallocated batch.
-            if (r.entryId !== undefined || r.proposal !== undefined) throw fail('wiki_model_output_invalid');
-            return { caseId, kind: r.kind, reason, confidence };
-          }
-          const proposal = entry(r.proposal, selected);
-          if (!proposal.caseIds.includes(caseId) || r.entryId !== undefined) throw fail('wiki_model_output_invalid');
+          const proposal = entry(r.proposal, selected, field + '.proposal');
+          if (!proposal.caseIds.includes(caseId)) modelInvalid(field + '.proposal.caseIds', 'must_include_own_caseId');
+          if (r.entryId !== undefined) modelInvalid(field + '.entryId', 'must_be_absent_for_new');
           return { caseId, kind: r.kind, reason, confidence, proposal };
         });
-        if (seen.size !== caseIds.length) throw fail('wiki_model_output_invalid');
+        if (seen.size !== caseIds.length) modelInvalid('results', 'must_cover_each_input_once');
         const now = new Date().toISOString();
         const run: any = { id: `induction-${state.revision + 1}-${hash(JSON.stringify({ caseIds, results: normalized, inputHash: input.proof.inputHash })).slice(0, 16)}`,
           createdAt: now, phase, model: MODEL, caseIds: [...caseIds], inputHash: input.proof.inputHash,
@@ -557,10 +591,127 @@ export function createWikiStore(options: any) {
         return { changed: true, value: version };
       }).value;
     },
+    reviseGuideline(input: any) {
+      // Operator-owned wording revision, not model induction. Preserve every
+      // other pattern and the entire approved parent; changed prose is a draft.
+      shape(input, ['versionId', 'entryId', 'guideline', 'expectedRevision']);
+      const versionId = id(input.versionId), entryId = id(input.entryId), guideline = text(input.guideline, 8192);
+      if (!global || !Number.isSafeInteger(input.expectedRevision) || [...guideline].length > 300) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const parent = state.versions.at(-1);
+        if (!parent || parent.id !== versionId) throw fail('wiki_guideline_version_conflict');
+        const current = parent.entries.find((e: any) => e.id === entryId);
+        if (!current || current.status !== 'approved' || current.guideline === guideline) throw fail('wiki_entry_reviewed');
+        const version = { ...structuredClone(parent), id: `wiki-${state.revision + 1}`, createdAt: new Date().toISOString(),
+          origin: 'manual-guideline-revision-v1', parentVersionId: parent.id, revisedEntryId: entryId };
+        const changed = version.entries.find((e: any) => e.id === entryId);
+        changed.guideline = guideline; changed.status = 'draft'; delete changed.reviewedAt;
+        state.versions.push(version);
+        appendEvent(state, { type: 'guideline-revised', versionId: version.id, parentVersionId: parent.id, entryId });
+        return { changed: true, value: version };
+      }).value;
+    },
+    reviseExperience(input: any) {
+      shape(input, ['experienceId', 'expectedRevision']); const experienceId = id(input.experienceId);
+      if (!global || !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const original = state.experiences.find((e: any) => e.id === experienceId);
+        if (!original) throw fail('wiki_experience_not_found');
+        if (!approvedWikiExperiences(state, original.entryId).some(e => e.id === experienceId)) throw fail('wiki_experience_reviewed');
+        const tip = state.experiences.filter((e: any) => e.rootId === original.rootId).at(-1);
+        if (tip.status === 'draft') return { changed: false, value: tip };
+        const next = revisedWikiExperience(tip, { methods: original.methods, positiveExamples: original.positiveExamples });
+        state.experiences.push(next); appendEvent(state, { type: 'experience-revised', experienceId: next.id, entryId: next.entryId });
+        return { changed: true, value: next };
+      }).value;
+    },
+    reviewExperience(input: any) {
+      shape(input, ['experienceId', 'expectedRevision', 'decision', 'patch']); const experienceId = id(input.experienceId);
+      if (!global || !Number.isSafeInteger(input.expectedRevision) || !['save', 'approved', 'rejected'].includes(input.decision)) throw fail('wiki_invalid_input');
+      if (input.patch !== undefined) shape(input.patch, ['methods', 'positiveExamples']);
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        let current = state.experiences.find((e: any) => e.id === experienceId);
+        if (!current) throw fail('wiki_experience_not_found');
+        if (current.status !== 'draft') throw fail('wiki_experience_reviewed');
+        if (state.experiences.filter((e: any) => e.rootId === current.rootId).at(-1).id !== current.id) throw fail('wiki_experience_conflict');
+        const fields = { methods: text(input.patch?.methods ?? current.methods, 16384), positiveExamples: text(input.patch?.positiveExamples ?? current.positiveExamples, 8192) };
+        const edited = fields.methods !== current.methods || fields.positiveExamples !== current.positiveExamples;
+        if (edited) { current = revisedWikiExperience(current, fields); state.experiences.push(current); }
+        if (input.decision !== 'save') { current.status = input.decision; current.reviewedAt = new Date().toISOString(); }
+        if (!edited && input.decision === 'save') return { changed: false, value: current };
+        appendEvent(state, { type: input.decision === 'save' ? 'experience-revised' : 'experience-' + input.decision, experienceId: current.id, entryId: current.entryId });
+        return { changed: true, value: current };
+      }).value;
+    },
+    recordComparisonExperience(input: any) {
+      // Trusted result-publication hook, not an HTTP/model-prose import API.
+      shape(input, ['comparisonId', 'observations', 'expectedRevision']); const comparisonId = id(input.comparisonId);
+      if (!global) throw fail('wiki_global_required');
+      if (input.expectedRevision !== undefined && !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (input.expectedRevision !== undefined && input.expectedRevision !== state.revision) throw fail('wiki_revision_conflict');
+        const result = readWikiComparisonRecord(captureRoot, comparisonId, value => projectStagedResult(value, wikiComparisonTotals));
+        if (result.evaluation?.splitPolicy !== 'd15-frozen-v1') throw fail('wiki_experience_invalid');
+        const previous = state.experiences.filter((e: any) => e.comparisonId === comparisonId).at(-1);
+        const observations = mergeWikiLiteralObservations(result, previous?.literalObservations || [], input.observations);
+        const draft = buildWikiExperienceDraft(state, result, observations, previous);
+        // Compact/idempotent result re-saves cannot erase richer evidence, undo
+        // human edits/reviews or create duplicate versions.
+        if (previous?.evidenceHash === draft.evidenceHash) return { changed: false, value: previous };
+        state.experiences.push(draft);
+        appendEvent(state, { type: 'experience-drafted', experienceId: draft.id, comparisonId, entryId: draft.entryId });
+        return { changed: true, value: draft };
+      }).value;
+    },
+    reviewComparison(input: any) {
+      shape(input, ['comparisonId', 'candidateHash', 'expectedRevision', 'decision', 'reason', 'interpretation']);
+      const comparisonId = id(input.comparisonId), interpretation = text(input.interpretation, 16384);
+      if (!global || !Number.isSafeInteger(input.expectedRevision) || !/^[a-f0-9]{64}$/.test(input.candidateHash)
+        || !(input.decision === 'not-adopted' && ['gate_rejected', 'test_not_passed', 'user_declined'].includes(input.reason)
+          || input.decision === 'adopted' && input.reason === 'user_accepted')) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        // Read the exact stored result, not client aggregates, worker text or a
+        // latest-20 page projection. Human interpretation never changes scoring.
+        const result = readWikiComparisonRecord(captureRoot, comparisonId, value => projectStagedResult(value, wikiComparisonTotals));
+        if (result.evaluation?.splitPolicy !== 'd15-frozen-v1' || !result.completed) throw fail('wiki_comparison_review_invalid');
+        const candidate = state.candidates.find((c: any) => c.id === result.candidate.id && c.kind === 'global-wiki-candidate-v1');
+        if (!candidate || candidate.candidateHash !== input.candidateHash || result.candidate.candidateHash !== input.candidateHash) throw fail('wiki_candidate_not_found');
+        if (input.reason === 'gate_rejected' && result.gateDecision.outcome !== 'rejected'
+          || input.reason === 'test_not_passed' && (result.gateDecision.outcome !== 'accepted'
+            || !result.cases.some((c: any) => c.stage === 'test' && c.targetReproduction && c.totals.candidate.failed > 0))) throw fail('wiki_comparison_review_invalid');
+        const payload = { comparisonId, planHash: result.planHash, candidateId: candidate.id, candidateHash: input.candidateHash,
+          targetId: candidate.targetId, decision: input.decision, reason: input.reason, interpretation,
+          gateOutcome: result.gateDecision.outcome, baselineChanged: input.decision === 'adopted' };
+        const current = state.comparisonReviews.find((r: any) => r.comparisonId === comparisonId);
+        if (current) {
+          const { id: oldId, createdAt, ...old } = current;
+          if (JSON.stringify(old) !== JSON.stringify(payload)) throw fail('wiki_comparison_reviewed');
+          return { changed: false, value: current };
+        }
+        const saved = { id: 'review-' + hash(JSON.stringify(payload)), createdAt: new Date().toISOString(), ...payload };
+        if (input.decision === 'adopted') {
+          // No new automatic test acceptance formula: this is an explicit human
+          // judgment after a completed gate + test report, never a gate side effect.
+          if (result.model !== 'openai-codex/gpt-6.1-sol' || result.modelConfig?.thinking !== 'xhigh' || result.gateDecision.outcome !== 'accepted'
+            || !result.cases.some((c: any) => c.stage === 'test' && c.targetReproduction && !c.reportOnly)
+            || result.cases.some((c: any) => c.stage === 'test' && !c.reportOnly && c.status !== 'completed')) throw fail('wiki_comparison_review_invalid');
+          resolveGlobalWikiCandidate(state, candidate.id, candidate.targetId, candidate.baseHash, []);
+          state.baselines.push(buildWikiBaseline(state, candidate, saved));
+        }
+        state.comparisonReviews.push(saved);
+        appendEvent(state, { type: 'comparison-reviewed', comparisonId, reviewId: saved.id });
+        return { changed: true, value: saved };
+      }).value;
+    },
     createGlobalCandidate(input: any, expectedRevision?: number) {
       return change(state => {
         if (expectedRevision !== undefined && state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
         const candidate = buildGlobalWikiCandidate(state, input);
+        assertWikiChangeNotRejected(state, candidate);
         const existing = state.candidates.find((c: any) => c.id === candidate.id);
         if (existing) return { changed: false, value: existing };
         const saved = { ...candidate, status: 'draft', createdAt: new Date().toISOString() };
@@ -593,7 +744,7 @@ export function createWikiStore(options: any) {
         const current = state.candidates.find((c: any) => c.id === candidateId && c.kind === 'global-wiki-candidate-v1');
         if (!current || current.candidateHash !== input.candidateHash) throw fail('wiki_candidate_not_found');
         if (current.status === 'deprecated') throw fail('wiki_candidate_deprecated');
-        resolveGlobalWikiCandidate({ ...state, candidates: [{ ...current, status: 'confirmed' }] }, current.id, current.targetId, current.baseHash, input.files);
+        resolveGlobalWikiCandidate({ ...state, candidates: state.candidates.map((c: any) => c.id === current.id ? { ...current, status: 'confirmed' } : c) }, current.id, current.targetId, current.baseHash, input.files);
         if (current.status === 'confirmed') return { changed: false, value: current };
         current.status = 'confirmed'; current.confirmedAt = new Date().toISOString();
         return { changed: true, value: current };

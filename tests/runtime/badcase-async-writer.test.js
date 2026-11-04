@@ -214,10 +214,11 @@ test('real Windows async Git candidate under lease publishes to CAS in explicit 
     const targetDir = path.join(h.root, `test-restore-${n}`);
     const result = restoreCheckpoint({ store: h.store, projectId: 'p1', checkpointId: 'cp1', targetDir });
     assert.equal(result.ok, true, result.reason); assert.equal(result.strictEvalEligible, false);
-    assert.equal(result.replayInputComplete, false); assert.deepEqual(result.missingSecrets, ['secret']);
+    assert.equal(result.replayInputComplete, false); assert.deepEqual(result.missingSecrets, []);
+    assert.equal(result.redactedFiles[0].path, 'secret'); assert.equal(result.redactedFiles[0].byteIdenticalToSource, false);
     assert.equal(fs.readFileSync(path.join(targetDir, 'file.txt'), 'utf8'), 'dirty');
     assert.equal(fs.readFileSync(path.join(targetDir, 'untracked'), 'utf8'), 'new');
-    assert.equal(fs.existsSync(path.join(targetDir, 'secret')), false); restored.push(result.restoredFiles);
+    assert.equal(fs.readFileSync(path.join(targetDir, 'secret'), 'utf8'), '[*]'); restored.push(result.restoredFiles);
   }
   assert.deepEqual(restored[0], restored[1]); assert.equal(value.strictEvalEligible, false);
 });

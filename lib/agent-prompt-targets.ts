@@ -22,15 +22,24 @@ export function getGlobalPromptTarget(id: string) {
   return { id: ID, kind: 'global-system-prompt', title: '全局系统提示词 · 共用行为准则',
     sectionKey: 'rules', baseText, baseHash: crypto.createHash('sha256').update(baseText).digest('hex') };
 }
-export function locateGlobalPromptTarget(prompt: string, id: string) {
+export function locateGlobalPromptTarget(prompt: string, id: string, fragments?: { baseText: string; baseHash: string }[]) {
   const target = getGlobalPromptTarget(id), prefix = 'Rules:\n';
-  if (typeof prompt !== 'string') throw fail();
-  const packet = prefix + target.baseText, start = prompt.indexOf(packet);
+  if (typeof prompt !== 'string' || fragments !== undefined && (!Array.isArray(fragments) || !fragments.length || fragments.length > 1000)) throw fail();
+  const variants = fragments || [{ baseText: target.baseText, baseHash: target.baseHash }];
+  for (const v of variants) if (typeof v?.baseText !== 'string' || !v.baseText.trim() || Buffer.byteLength(v.baseText) > 65536
+    || v.baseText.includes('{{') || crypto.createHash('sha256').update(v.baseText).digest('hex') !== v.baseHash) throw fail();
   const context = prompt.indexOf('\n\nRoom work context:\n'), routing = prompt.indexOf('\n\nRouting instructions:\n');
+  // Longest exact, approved variant wins. Otherwise an original-prefix match
+  // would leave an already merged WikiSkill section in the supposedly fixed tail.
+  const matches = variants.map(v => ({ ...v, start: prompt.indexOf(prefix + v.baseText) })).filter(v => v.start >= 0)
+    .sort((a, b) => b.baseText.length - a.baseText.length);
+  const selected = matches[0]; if (!selected) throw fail();
+  const packet = prefix + selected.baseText, start = selected.start, end = start + packet.length;
   // Bind to the harness interval, never a private persona or quoted user task.
   // Duplicate declarations anywhere are ambiguous and remain unsupported.
-  if (context < 0 || routing < 0 || start <= context || start >= routing
-    || prompt.slice(start - 2, start) !== '\n\n' || prompt.indexOf(packet, start + 1) !== -1
-    || prompt[start + packet.length] !== '\n') throw fail();
-  return { ...target, start: start + prefix.length, end: start + packet.length };
+  if (context < 0 || routing < 0 || start <= context || end >= routing
+    || prompt.slice(start - 2, start) !== '\n\n' || prompt[start + packet.length] !== '\n'
+    || matches.some(v => v.start !== start || prompt.indexOf(prefix + v.baseText, start + 1) !== -1)
+    || /^\n\nWikiSkill 已审核准则：/.test(prompt.slice(end))) throw fail();
+  return { ...target, baseText: selected.baseText, baseHash: selected.baseHash, start: start + prefix.length, end };
 }

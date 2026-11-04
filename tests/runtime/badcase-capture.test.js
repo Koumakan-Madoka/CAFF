@@ -326,7 +326,7 @@ test('越界符号链接不跟随；界内符号链接可恢复', { skip: capSki
   assert.ok(restored.mismatches.some((m) => m.path === 'escape-link'));
 });
 
-test('秘密哨兵文件不进入 CAS；prompt 中的受控变量值被占位替换', { skip: capSkip }, () => {
+test('秘密值在进入 CAS 前占位替换并保留文件；prompt 受控变量仍按原规则替换', { skip: capSkip }, () => {
   const tempDir = withTempDir();
   const projectDir = path.join(tempDir, 'project');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -344,8 +344,10 @@ test('秘密哨兵文件不进入 CAS；prompt 中的受控变量值被占位替
     },
   }));
   assert.equal(result.captured, true);
-  assert.equal(result.checkpoint.stats.secretExcludedFiles, 1);
-  assert.deepEqual(result.checkpoint.replayInput.secretExcludedPaths, ['leaky.env']);
+  assert.equal(result.checkpoint.stats.secretExcludedFiles, 0);
+  assert.equal(result.checkpoint.stats.secretRedactedFiles, 1);
+  assert.deepEqual(result.checkpoint.replayInput.secretRedactedPaths, ['leaky.env']);
+  assert.equal(service.store.readBlob('project-1', result.checkpoint.files['leaky.env'].hash).toString(), 'API_KEY=[*]');
 
   // 哨兵绝不出现在 CAS 的任何 blob 中（先扫描后落盘，而非先写后脱敏）
   const blobsRoot = path.join(tempDir, 'capture-root', 'projects', 'project-1', 'blobs');

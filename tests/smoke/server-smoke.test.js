@@ -1950,6 +1950,45 @@ test('conversation digest auto-create falls back to digest timestamps when cover
   assert.equal(createResult.digest.messageRange.toMessageId, 'digest-auto-create-missing-boundary-new-2');
 });
 
+test('conversation digest cooldown handles equal, later and rolled-back fixed clocks', async (t) => {
+  const fixedNow = Date.parse('2026-11-04T03:00:00.000Z');
+  const cooldownMs = 60 * 60 * 1000;
+  for (const [name, offsetMs, expectedRemainingMs] of [
+    ['same millisecond', 0, cooldownMs],
+    ['one millisecond later', 1, cooldownMs - 1],
+    ['clock rolled back', -1, cooldownMs],
+  ]) {
+    await t.test(name, async (t) => {
+      t.mock.timers.enable({ apis: ['Date'], now: fixedNow });
+      const tempDir = withTempDir('caff-auto-digest-clock-');
+      const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'chat.sqlite') });
+      t.after(() => { store.close(); fs.rmSync(tempDir, { recursive: true, force: true }); });
+      const conversation = createSmokeConversation(store, { id: 'digest-clock', title: 'Digest clock' });
+      const options = { autoCreate: true, autoCreateMessageBudget: 4,
+        autoCreateIdleMs: 10 * 60 * 1000, autoCreateCooldownMs: cooldownMs, summaryMode: 'extractive' };
+      const createdAt = new Date(fixedNow - 20 * 60 * 1000).toISOString();
+      const append = start => {
+        for (let index = start; index < start + 4; index += 1) {
+          store.createMessage({ id: `digest-clock-message-${index}`, conversationId: conversation.id,
+            turnId: `digest-clock-turn-${index}`, role: index % 2 ? 'user' : 'assistant',
+            senderName: index % 2 ? 'User' : 'Builder', content: `决定记录摘要并遵守冷却窗口 ${index}`, createdAt });
+        }
+      };
+      append(1);
+      const first = await maybeAutoCreateConversationDigest(store, conversation.id, options);
+      assert.equal(first.autoCreated, true);
+      assert.equal(first.conversation.metadata.conversationDigestState.lastAutoDigestAt, new Date(fixedNow).toISOString());
+      append(5);
+      t.mock.timers.setTime(fixedNow + offsetMs);
+      const second = await maybeAutoCreateConversationDigest(store, conversation.id, options);
+      assert.equal(second.digestChanged, false);
+      assert.equal(second.reason, 'cooldown');
+      assert.equal(second.pendingMessageCount, 4);
+      assert.equal(second.retryAfterMs, expectedRemainingMs);
+    });
+  }
+});
+
 test('conversation digest auto-create respects idle, cooldown, and high-value gates', async (t) => {
   const tempDir = withTempDir('caff-auto-digest-gates-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');

@@ -11,7 +11,7 @@ function createCandidate(config, options = {}) {
     if (Object.keys(config).some(k => !['globalRoot', 'sourceWorktree', 'versionId', 'entryIds', 'targetId'].includes(k))) throw fail('wiki_candidate_invalid');
     const store = createWikiStore({ globalRoot: config.globalRoot, sourceWorktree: config.sourceWorktree });
     return store.createGlobalCandidate({ versionId: config.versionId, entryIds: config.entryIds, targetId: config.targetId,
-      files: collectGlobalCandidateFiles(store.read()) });
+      files: collectGlobalCandidateFiles(store.read(), config) });
   }
   if (!config || Object.keys(config).some(k => !['captureRoot', 'sourceWorktree', 'projectId', 'versionId', 'entryIds', 'request'].includes(k))
     || config.request?.captureRoot !== config.captureRoot || config.request?.association?.projectId !== config.projectId

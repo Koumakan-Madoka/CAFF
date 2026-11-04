@@ -51,10 +51,20 @@ test('unapplied variables and corrupt resume trees refuse before any installed-s
     assert.equal(calls, 0);
   }
 });
-test('forged complete flags cannot bypass original session structure/dependency checks', t => {
-  for (const change of [entries => { entries[3].message.content = [{ type: 'toolCall', id: 'c', name: 'read', arguments: { path: 'source.txt' } }]; },
-    entries => { entries[3].message.content = [{ type: 'toolCall', id: 'c', name: 'bash', arguments: { command: 'pwd' } }]; },
-    entries => { delete entries[3].message.usage; }, entries => { entries[4].type = 'custom'; entries[4].data = { private: true }; },
+test('frozen read/bash/unknown historical calls remain context in retained initialization, not current execution dependencies', t => {
+  for (const name of ['read', 'bash', 'retired-tool']) {
+    const v = fixture(t, 'resume'), call = { type: 'toolCall', id: 'c', name, arguments: { path: '/old/context-only', command: 'historical-command-never-run' } };
+    resign(v, d => { const r = d.checkpoint.replayInput, b = d.blobs.find(b => b.sha256 === r.sessionBlobHash);
+      const entries = Buffer.from(b.base64, 'base64').toString().trim().split('\n').map(JSON.parse);
+      entries[3].message.content = [call];
+      const text = entries.map(JSON.stringify).join('\n') + '\n'; b.base64 = Buffer.from(text).toString('base64'); b.sha256 = hash(text); r.sessionBlobHash = b.sha256; });
+    const p = planner(v);
+    assert.deepEqual(p.sessionEntries[3].message.content, [call]);
+    assert.equal(p.receipt.runnable, false); assert.equal(p.receipt.sdkInitialized, false);
+  }
+});
+test('forged complete flags cannot bypass original session structure/extension checks', t => {
+  for (const change of [entries => { delete entries[3].message.usage; }, entries => { entries[4].type = 'custom'; entries[4].data = { private: true }; },
     entries => { entries[3].id = entries[0].id; }, entries => { entries[2].timestamp = ''; }]) {
     const v = fixture(t, 'resume');
     resign(v, d => { const r = d.checkpoint.replayInput, b = d.blobs.find(b => b.sha256 === r.sessionBlobHash);
@@ -66,6 +76,7 @@ test('forged complete flags cannot bypass original session structure/dependency 
 test('staging binds capsule/declarations, production host, restoration closure and new entry without executing them', t => {
   const root = dependencies(t), v = fixture(t, 'resume', 'win32'), before = JSON.stringify(v);
   const files = api().prepareRetainedCaffFiles(repo, root, image, v), m = manifestFor(files);
+  assert.equal(files.filter(f => f.path === 'build/server/domain/runtime/badcase-capture/session-validator.js').length, 1, 'shared runtime already stages session validator');
   assert.ok(m.runtimeBytes > 0); assert.equal(JSON.stringify(v), before);
   for (const [name, value] of [['capsule.json', v.capsule], ['expected.json', JSON.stringify(v.expected)],
     ['worktree.json', JSON.stringify(v.worktree)], ['bindings.json', JSON.stringify(v.bindings)]]) {
@@ -79,6 +90,12 @@ test('staging binds capsule/declarations, production host, restoration closure a
   const entry = files.find(f => f.path === 'probe.cjs').bytes.toString();
   assert.match(entry, /materializeWorktreeReplayInputs/); assert.match(entry, /createSdkRuntime/);
   assert.doesNotMatch(entry, /session\.prompt\(|SettingsManager\.inMemory|resourceLoader\s*:/);
+});
+test('local rg derivative stages with the same strict base image schema and rejects unknown recipes', t => {
+  const root = dependencies(t), v = fixture(t);
+  const files = api().prepareRetainedCaffFiles(repo, root, { ...image, localBuild: 'wikiskill-rg13-v1' }, v);
+  assert.equal(JSON.parse(files.find(f => f.path === 'environment.json').bytes).localBuild, 'wikiskill-rg13-v1');
+  assert.throws(() => api().prepareRetainedCaffFiles(repo, root, { ...image, localBuild: 'unknown' }, v));
 });
 test('transport checks exact manifest and bounded observed hashes, never raw material output or silent mode fallback', async t => {
   const root = dependencies(t), a = api();

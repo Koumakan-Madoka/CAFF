@@ -7,6 +7,9 @@ const hash = (value: string | Buffer) => crypto.createHash('sha256').update(valu
 // No new persona is invented for the GPT model-family role.
 const PREFIXES = ['Your private persona instructions:\n', 'Rules:\n'];
 const identifier = (value: any) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+// Up to 20 tasks, each with the portable replay limit of 1024 files. A
+// collection-wide single-task ceiling wrongly rejects two real repositories.
+export const MAX_WIKI_CANDIDATE_FILES = 20 * 1024;
 
 // Literal-only guard: complete nonempty values, nonempty lines, and any shared
 // run of >=8 Unicode characters. Shorter paraphrases are NOT semantic detection.
@@ -16,7 +19,8 @@ export function assertWikiGuidelinesNoLeak(guidelines: string[], expected: strin
 
 // Only the global-target builder supplies this base, from the declared catalog.
 // Matches are exempt by occurrence, not by value: copying an old fragment into
-// the addition, or forming one across the seam, must still be rejected.
+// the addition, or adding non-whitespace answer content across the seam, still
+// rejects. Appending separator whitespace alone does not copy base prose.
 export function assertWikiCandidateNoLeak(candidate: string, expected: string[], files: any[], base: { baseText: string; baseHash: string }) {
   if (!base || typeof base.baseText !== 'string' || !base.baseText || hash(base.baseText) !== base.baseHash
     || typeof candidate !== 'string' || !candidate.startsWith(base.baseText)) throw fail('wiki_candidate_target_mismatch');
@@ -28,17 +32,20 @@ function assertNoLeak(guidelines: string[], expected: string[], files: any[], un
   const unchangedBytes = Buffer.byteLength(combined.slice(0, unchangedEnd));
   const newMatch = (fragment: string) => {
     const start = combined.lastIndexOf(fragment);
-    return start >= 0 && start + fragment.length > unchangedEnd;
+    const end = start + fragment.length;
+    return start >= 0 && end > unchangedEnd
+      && (start >= unchangedEnd || combined.slice(unchangedEnd, end).trim().length > 0);
   };
   const sources = expected.filter(s => typeof s === 'string' && s.trim());
-  if (!Array.isArray(files) || files.length > 1024) throw fail('wiki_candidate_invalid');
-  let size = 0;
+  if (!Array.isArray(files) || files.length > MAX_WIKI_CANDIDATE_FILES) throw fail('wiki_candidate_invalid');
   for (const file of files) {
     if (!file || typeof file.base64 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)) throw fail('wiki_candidate_invalid');
-    const bytes = Buffer.from(file.base64, 'base64'); size += bytes.length;
-    if (size > 4 * 1024 * 1024 || hash(bytes) !== file.sha256) throw fail('wiki_candidate_invalid');
+    const bytes = Buffer.from(file.base64, 'base64');
+    if (hash(bytes) !== file.sha256) throw fail('wiki_candidate_invalid');
     const start = bytes.length ? combinedBytes.lastIndexOf(bytes) : -1;
-    if (start >= 0 && start + bytes.length > unchangedBytes) throw fail('wiki_candidate_leak');
+    const end = start + bytes.length;
+    if (start >= 0 && end > unchangedBytes
+      && (start >= unchangedBytes || combinedBytes.subarray(unchangedBytes, end).toString('utf8').trim().length > 0)) throw fail('wiki_candidate_leak');
     const text = bytes.toString('utf8');
     if (Buffer.from(text).equals(bytes) && text.trim()) sources.push(text);
   }

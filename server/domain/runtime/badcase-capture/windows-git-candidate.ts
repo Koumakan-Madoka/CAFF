@@ -12,7 +12,7 @@ import { invokeWindowsHelper, invokeWindowsGitHelper, encodeWindowsHelperRequest
 const { performance } = require('node:perf_hooks');
 import { parseGitIndex, parseGitConfigSubset, parseGitignoreRules, classifyWalkEntries } from './git-classify';
 import { matchesRelativePattern } from './capture-policy';
-import { containsSecretSentinel } from './secrets';
+import { containsSecretSentinel, redactFileSecrets } from './secrets';
 import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
 const { TextDecoder } = require('node:util');
 const crypto = require('node:crypto');
@@ -268,13 +268,11 @@ function* candidateSteps(options: any, preview = false): Generator<any, any, any
     const files: any = Object.create(null), blobs = new Map<string, any>();
     for (const file of snapshot.files) {
       const mode = selected.modes.get(file.path) || 0o100644;
-      if (containsSecretSentinel(file.content)) files[file.path] = { type: 'file', size: Number(file.size), mode, secretExcluded: true };
-      else {
-        files[file.path] = { type: 'file', size: Number(file.size), mode, hash: file.sha256 };
-        if (!blobs.has(file.sha256)) {
-          const owned = Buffer.alloc(file.content.length); file.content.copy(owned); blobs.set(file.sha256, owned);
-        }
-      }
+      const { content, redactionCount } = redactFileSecrets(file.content);
+      const hash = crypto.createHash('sha256').update(content).digest('hex');
+      files[file.path] = { type: 'file', size: content.length, mode, hash,
+        ...(redactionCount ? { secretRedacted: true, originalSize: Number(file.size), redactionCount } : {}) };
+      if (!blobs.has(hash)) blobs.set(hash, content);
     }
     // Ephemeral FULL observed namespace (including ignored/secret files and
     // directories), never the content selection. The scope binds the original

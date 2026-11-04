@@ -1,13 +1,14 @@
 const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), crypto = require('node:crypto');
 const fixture = require('../helpers/badcase-initialization-fixture.cjs');
-const { prepareSealedDirectTurn } = require('../../scripts/badcase-capture/sealed-direct-input.cjs');
+const { prepareSealedDirectTurn, prepareSealedOriginalTurn } = require('../../scripts/badcase-capture/sealed-direct-input.cjs');
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
-function portable(t, change = () => {}) {
-  return fixture(t, 'fresh', ({ cp, r, config, put }) => {
+function portable(t, change = () => {}, mode = 'fresh') {
+  return fixture(t, mode, ({ cp, r, config, put }) => {
     config.toolBridgeEnabled = true;
     config.portableRuntime = { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: true };
     config.sdkStartConfig = { cwd: cp.targetDir, provider: r.runConfig.provider, model: r.runConfig.model,
-      resume: false, thinking: 'off', fast: false, retireUserScopeSkills: true };
+      resume: mode === 'resume', thinking: 'off', fast: false, retireUserScopeSkills: true };
+    if (mode === 'resume') r.sessionLineCount = 2;
     const role = 'Your private persona instructions:\nRead only.';
     const prompt = 'header\n\n' + role + '\n\nuser task';
     r.roleSpan = { start: 8, end: 8 + role.length, sha256: sha(role) };
@@ -66,6 +67,39 @@ test('actual GPT family rules are an appendable role span without inventing a pe
   assert.equal(candidate.provenance.originalRoleHash, original.provenance.originalRoleHash);
   assert.equal(candidate.input.prompt.startsWith('Your visible agent name: GPT\n\n'), true);
 });
+test('sealed in-root resources use retained files only, share identity across variants, and reject inventory drift', t => {
+  const setup = ({ cp, config, put }) => {
+    const names = ['AGENTS.md', '.agents/skills/demo/SKILL.md', '.agents/skills/demo/references/guide.md'];
+    for (const name of names) { const content = name === 'AGENTS.md' ? 'Archived project context' : 'Archived skill bytes'; cp.files[name] = { type: 'file', hash: put(content), size: Buffer.byteLength(content) }; }
+    config.sdkStartConfig.additionalSkillPaths = [cp.targetDir + '/.agents/skills/demo'];
+    config.portableRuntime = { schemaVersion: 1, kind: 'portable-project-resources-v1', supported: true, filePaths: names.sort(), skillPaths: ['.agents/skills/demo'] };
+  };
+  const f = portable(t, setup), before = fs.readFileSync(f.source), a = prepareSealedDirectTurn(f.request), b = prepareSealedDirectTurn(f.request, 'Verify first.');
+  assert.equal(a.supported, true, JSON.stringify(a)); assert.equal(b.supported, true, JSON.stringify(b));
+  assert.equal(a.input.projectResources.contextFile, 'AGENTS.md'); assert.equal(a.input.projectResources.files.length, 3);
+  assert.deepEqual(a.input.projectResources, b.input.projectResources); assert.equal(a.provenance.commonInputHash, b.provenance.commonInputHash);
+  assert.deepEqual(fs.readFileSync(f.source), before);
+  for (const change of [({ cp }) => { delete cp.files['AGENTS.md']; }, ({ config }) => { config.sdkStartConfig.additionalSkillPaths = ['/outside/skill']; },
+    ({ cp, put }) => { cp.files['.pi/settings.json'] = { type: 'file', hash: put('{}'), size: 2 }; }]) {
+    const broken = portable(t, value => { setup(value); change(value); });
+    assert.deepEqual(prepareSealedOriginalTurn(broken.request), { supported: false, reason: 'replay_project_resources_invalid' });
+  }
+});
+test('production GPT xhigh is recorded in unchanged original and plan; thinking mismatch is refused before execution', t => {
+  const f = gptFamily(t, ({ r, config }) => { r.runConfig.provider = config.sdkStartConfig.provider = 'openai-codex';
+    r.runConfig.model = config.sdkStartConfig.model = 'gpt-6.1-sol'; config.sdkStartConfig.thinking = 'xhigh'; });
+  const recorded = { provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'xhigh', fast: false };
+  const input = prepareSealedOriginalTurn(f.request); assert.equal(input.supported, true, JSON.stringify(input));
+  assert.deepEqual(input.input.recordedModelConfig, recorded);
+  const path = require('node:path'), { prepareComparison } = require('../../scripts/badcase-capture/direct-comparison.cjs');
+  const config = { request: f.request, variants: ['original'], repeats: 3, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
+    image: { imageId: 'sha256:' + '1'.repeat(64) }, modelProfile: 'openai-codex/gpt-6.1-sol', keySource: 'caff-codex-access',
+    codexAuthFile: path.join(f.root, '.pi-sandbox/auth.json'), rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } };
+  const plan = prepareComparison(config); assert.equal(plan.supported, true, JSON.stringify(plan)); assert.deepEqual(plan.summary.recordedModelConfig, recorded);
+  const { modelProfile, keySource, codexAuthFile, ...offConfig } = config;
+  assert.deepEqual(prepareComparison(offConfig), { supported: false, reason: 'replay_thinking_profile_mismatch' });
+  const off = gptFamily(t); assert.deepEqual(prepareComparison({ ...config, request: off.request }), { supported: false, reason: 'replay_thinking_profile_mismatch' });
+});
 test('real sealed family anchor flows through candidate creation, confirmation and original/candidate preflight without injected preparers', t => {
   const f = gptFamily(t);
   const path = require('node:path');
@@ -105,6 +139,103 @@ test('family support does not synthesize missing old spans or accept Rules for c
   });
   assert.equal(prepareSealedDirectTurn(otherFamily.request).supported, false);
 });
+test('original-only real sealed preflight does not require or interpret a candidate role span', t => {
+  for (const change of [({ r }) => { delete r.roleSpan; }, ({ r }) => { r.roleSpan.sha256 = '0'.repeat(64); }]) {
+    const f = gptFamily(t, change), before = fs.readFileSync(f.source), original = prepareSealedOriginalTurn(f.request);
+    assert.equal(original.supported, true, JSON.stringify(original));
+    assert.equal(original.input.prompt, f.store.readBlob('p1', f.r.promptBlobHash).toString());
+    assert.equal(original.originalRole, undefined); assert.equal(original.provenance.originalRoleHash, undefined);
+    const { prepareComparison } = require('../../scripts/badcase-capture/direct-comparison.cjs'), path = require('node:path');
+    const config = { request: f.request, variants: ['original'], repeats: 3, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
+      image: { imageId: 'sha256:' + '1'.repeat(64) }, rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } };
+    const plan = prepareComparison(config); assert.equal(plan.supported, true, JSON.stringify(plan));
+    assert.equal(plan.inputs.original.prompt, original.input.prompt); assert.deepEqual(Object.keys(plan.inputs), ['original']);
+    assert.equal(prepareSealedDirectTurn(f.request).supported, false, 'candidate comparison still requires its anchor');
+    assert.deepEqual(fs.readFileSync(f.source), before);
+  }
+});
+test('unsupported sealed inputs report the actual bounded reason through original-only and comparison plans', t => {
+  const cases = [
+    [({ r }) => { r.deliveryMode = 'resume'; }, 'replay_session_missing'],
+    [({ config }) => { config.sdkStartConfig.thinking = 'xhigh'; }, 'replay_recorded_thinking_not_supported'],
+    [({ r }) => { r.invocationImageCount = 1; }, 'replay_invocation_images_not_supported'],
+    [({ config }) => { delete config.portableRuntime; }, 'replay_portable_runtime_not_supported'],
+    [({ r }) => { r.runConfig.skillIds = ['missing']; }, 'replay_skills_not_supported'],
+    [({ r }) => { r.secretExcludedPaths = ['old-missing.txt']; }, 'replay_secret_excluded_files'],
+  ];
+  const { prepareComparison } = require('../../scripts/badcase-capture/direct-comparison.cjs'), path = require('node:path');
+  for (const [change, reason] of cases) {
+    const f = portable(t, change), original = prepareSealedOriginalTurn(f.request);
+    assert.deepEqual(original, { supported: false, reason });
+    const config = { request: f.request, variants: ['original'], repeats: 3, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
+      image: { imageId: 'sha256:' + '1'.repeat(64) }, rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } };
+    assert.deepEqual(prepareComparison(config), { supported: false, reason });
+    delete config.variants; config.candidateRole = 'Use verified facts.';
+    assert.deepEqual(prepareComparison(config), { supported: false, reason });
+  }
+  const broken = portable(t); fs.unlinkSync(broken.blobPath(broken.r.promptBlobHash));
+  const result = prepareSealedOriginalTurn(broken.request);
+  assert.equal(result.supported, false); assert.match(result.reason, /^replay_(checkpoint|blob)_unavailable/);
+  assert.equal(JSON.stringify(result).includes(broken.root), false);
+});
+test('actual CLI --plan exposes the sealed reason and supports unchanged original without a role anchor, with no run', t => {
+  const path = require('node:path'), { execFileSync } = require('node:child_process');
+  for (const invalidThinking of [false, true]) {
+    const f = portable(t, ({ r, config }) => { delete r.roleSpan; if (invalidThinking) config.sdkStartConfig.thinking = 'xhigh'; });
+    const file = path.join(f.root, 'comparison.json'), config = { request: f.request, variants: ['original'], repeats: 3,
+      repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'), image: { imageId: 'sha256:' + '1'.repeat(64) },
+      rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } };
+    fs.writeFileSync(file, JSON.stringify(config));
+    const output = JSON.parse(execFileSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', file, '--plan'], { encoding: 'utf8' }));
+    assert.equal(output.supported, !invalidThinking);
+    if (invalidThinking) assert.equal(output.reason, 'replay_recorded_thinking_not_supported');
+    else { assert.equal(output.preparedOnly, true); assert.equal(output.dockerVerified, false); assert.equal(output.kind, 'sealed-original-replay-v1'); }
+  }
+});
+test('actual CLI reports prompt/session/material/timeout limits without a model or generic target error', t => {
+  const path = require('node:path'), { spawnSync } = require('node:child_process');
+  const cases = [
+    { label: 'prompt-256KiB', change: ({ r, put }) => { r.promptBlobHash = r.normalizedPromptHash = put('a'.repeat(262144)); }, supported: true },
+    { label: 'prompt-over-256KiB', change: ({ r, put }) => { r.promptBlobHash = r.normalizedPromptHash = put('a'.repeat(262145)); }, reason: 'replay_prompt_size_limit' },
+    { label: 'missing-resume-prefix', change: ({ r }) => { r.deliveryMode = 'resume'; }, reason: 'replay_session_missing' },
+    { label: 'corrupt-resume-prefix', mode: 'resume', change: ({ r, put }) => { r.sessionBlobHash = put('not JSON\n'); }, reason: 'replay_session_invalid' },
+    { label: 'missing-retained-blob', after: f => fs.unlinkSync(f.blobPath(f.r.promptBlobHash)), reason: 'replay_blob_unavailable_or_invalid' },
+    { label: 'timeout-45min', timeoutMs: 2700000, supported: true },
+    { label: 'timeout-over-45min', timeoutMs: 2700001, error: 'evaluation_timeout_limit' },
+  ];
+  for (const item of cases) {
+    const f = portable(t, item.change, item.mode); item.after?.(f);
+    const config = { request: f.request, variants: ['original'], repeats: 1, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
+      image: { imageId: 'sha256:' + '1'.repeat(64) }, ...(item.timeoutMs === undefined ? {} : { timeoutMs: item.timeoutMs }),
+      rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } };
+    const file = path.join(f.root, 'cli-limit.json'); fs.writeFileSync(file, JSON.stringify(config));
+    const result = spawnSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', file, '--plan'], { encoding: 'utf8' });
+    const output = JSON.parse(item.error ? result.stderr : result.stdout);
+    t.diagnostic(JSON.stringify({ label: item.label, exitCode: result.status, ...(item.supported ? { supported: output.supported, preparedOnly: output.preparedOnly, timeoutMs: output.timeoutMs } : output) }));
+    assert.equal(result.status, item.error ? 1 : 0, item.label);
+    if (item.error) assert.equal(output.error, item.error);
+    else if (item.reason) assert.deepEqual(output, { supported: false, reason: item.reason });
+    else { assert.equal(output.supported, true); assert.equal(output.preparedOnly, true); assert.equal(output.dockerVerified, false); }
+    assert.doesNotMatch(JSON.stringify(output), /unsupported_or_missing_declared_prompt_target/);
+  }
+});
+test('sealed original prompt limit is 256 KiB in UTF-8 bytes, without truncation', t => {
+  for (const size of [131073, 262144, 262145]) {
+    const text = '中'.repeat(Math.floor(size / 3)) + 'a'.repeat(size % 3);
+    const f = portable(t, ({ r, put }) => { r.promptBlobHash = r.normalizedPromptHash = put(text); });
+    const result = prepareSealedOriginalTurn(f.request); assert.equal(result.supported, size <= 262144, JSON.stringify(result));
+    if (result.supported) assert.equal(result.input.prompt, text); else assert.equal(result.reason, 'replay_prompt_size_limit');
+  }
+});
+test('retained workspace above the old 4 MiB transport cap is prepared without source reads or archive writes', t => {
+  const bytes = Buffer.alloc(17 * 1024 * 1024, 0x61);
+  const f = portable(t, ({ cp, put }) => { cp.files['large.txt'] = { type: 'file', size: bytes.length, hash: put(bytes) }; });
+  const before = fs.readFileSync(f.source), plan = prepareSealedDirectTurn(f.request);
+  assert.equal(plan.supported, true, JSON.stringify(plan));
+  const file = plan.input.files.find(f => f.path === 'large.txt');
+  assert.equal(sha(Buffer.from(file.base64, 'base64')), sha(bytes));
+  assert.deepEqual(fs.readFileSync(f.source), before);
+});
 test('blanket Windows metadata limitation is not a strict certificate; portable/default-resource declaration is still mandatory', t => {
   const f = portable(t, ({ r }) => { r.complete = false; r.incompleteReasons = ['windows_capture_subset_unverified']; });
   assert.equal(prepareSealedDirectTurn(f.request).supported, true);
@@ -117,8 +248,42 @@ test('missing/legacy/delta/session/resources/corrupt material stays unsupported,
     ({ r }) => { r.complete = false; r.incompleteReasons = ['harness_config_unverified']; },
     ({ r }) => { r.complete = false; r.incompleteReasons = []; }, ({ r }) => { r.runConfig.skillIds = ['missing']; }];
   for (const change of changes) {
-    const f = portable(t, change); assert.deepEqual(prepareSealedDirectTurn(f.request), { supported: false, reason: 'unsupported_or_missing_replay_materials' });
+    const f = portable(t, change), result = prepareSealedDirectTurn(f.request);
+    assert.equal(result.supported, false); assert.match(result.reason, /^replay_[a-z_]+$/);
   }
   const broken = portable(t); fs.unlinkSync(broken.blobPath(broken.r.promptBlobHash));
   assert.equal(prepareSealedDirectTurn(broken.request).supported, false);
+});
+test('sealed resume original/candidate keep the exact retained prefix, shared input hash and recorded mode', t => {
+  const f = portable(t, ({ r, put }) => {
+    const text = [{ type: 'session', version: 3, id: 'same-old-id', cwd: '/historical/not-mounted' },
+      { type: 'message', id: 'old-user', parentId: null, message: { role: 'user', content: 'Earlier {{CAFF_CHAT_API_URL}}' } }]
+      .map(JSON.stringify).join('\r\n') + '\r\n';
+    r.sessionBlobHash = put(text); r.controlledReplacements = [{ name: 'CAFF_CHAT_API_URL', count: 1 }];
+  }, 'resume');
+  const before = fs.readFileSync(f.source), a = prepareSealedDirectTurn(f.request), b = prepareSealedDirectTurn(f.request, 'Read and verify.');
+  assert.equal(a.supported, true, JSON.stringify(a)); assert.equal(b.supported, true, JSON.stringify(b));
+  assert.equal(a.input.sessionText, f.store.readBlob('p1', f.r.sessionBlobHash).toString());
+  assert.equal(b.input.sessionText, a.input.sessionText); assert.ok(a.input.sessionText.endsWith('\r\n'));
+  assert.equal(a.provenance.commonInputHash, b.provenance.commonInputHash);
+  assert.equal(prepareSealedOriginalTurn(f.request).input.sessionText, a.input.sessionText);
+  const path = require('node:path'), { prepareComparison } = require('../../scripts/badcase-capture/direct-comparison.cjs');
+  const plan = prepareComparison({ request: f.request, variants: ['original'], repeats: 3, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
+    image: { imageId: 'sha256:' + '1'.repeat(64) }, rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['retained bytes'], notContains: [] }] } });
+  assert.equal(plan.supported, true, JSON.stringify(plan));
+  assert.deepEqual(plan.summary.replaySession, { deliveryMode: 'resume', prefixHash: f.r.sessionBlobHash, lineCount: 2,
+    historyTools: 'context-only-not-executed', externalPathDependencies: 'not-verified' });
+  assert.deepEqual(fs.readFileSync(f.source), before);
+});
+test('resume without intact matching session/runtime metadata is refused instead of silently starting fresh', t => {
+  for (const [change, reason] of [
+    [({ r }) => { r.sessionBlobHash = ''; }, 'replay_session_missing'],
+    [({ r, put }) => { r.sessionBlobHash = put('not JSON\n'); }, 'replay_session_invalid'],
+    [({ r }) => { r.sessionLineCount++; }, 'replay_session_invalid'],
+    [({ config }) => { config.sdkStartConfig.resume = false; }, 'replay_runtime_config_mismatch'],
+    [({ config }) => { config.deliveryMode = 'fresh'; }, 'replay_runtime_config_mismatch'],
+    [({ r, put }) => { r.sessionBlobHash = put(JSON.stringify({ type: 'session', version: 3, id: 's', cwd: '/elsewhere' }) + '\n'); r.sessionLineCount = 1; }, 'replay_controlled_bindings_invalid'],
+  ]) {
+    const f = portable(t, change, 'resume'); assert.deepEqual(prepareSealedOriginalTurn(f.request), { supported: false, reason });
+  }
 });

@@ -4,6 +4,7 @@
 // → <agentDir>/badcase-capture。该目录必须在授权采集目录之外且被 gitignore。
 
 const path = require('node:path');
+const { performance } = require('node:perf_hooks');
 import { normalizeCapturePolicy, matchesRelativePattern, pinAuthorizedDirs, pinKey } from './capture-policy';
 import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
@@ -16,7 +17,6 @@ import { invokeWindowsHelper } from './windows-helper';
 import { estimateWindowsDirectory, estimateWindowsDirectoryAsync } from './windows-estimate';
 import { readPreTurnCallbackInput } from './callback-source';
 import { discoverWindowsGitDependencies } from './windows-git-discovery';
-import { supportsWindowsGitEnvironment } from './windows-git-environment';
 import { estimateWindowsGitDirectoryAsync } from './windows-git-candidate';
 import { selectWindowsExternalGit } from './windows-external-selection';
 
@@ -72,13 +72,12 @@ export function createBadcaseCaptureService(options: any = {}) {
       ? [...privateDirs, ...[process.env.PI_AGENT_SANDBOX_DIR, process.env.PI_AGENT_PRIVATE_DIR].filter(Boolean)]
       : privateDirs };
   })() : null;
-  // Windows enable requires the supported host environment AND a classified
-  // metadata plan. Raw capacity preview never grants capture capability.
-  // Selection is host-platform explicit, never a failed-Windows fallback to Linux.
-  const windowsGitEnvironmentReady = windowsScope ? supportsWindowsGitEnvironment(process.env) : false;
-  const checkWindowsGitEnvironment = () => windowsGitEnvironmentReady && supportsWindowsGitEnvironment(process.env);
+  // Windows enable requires a classified metadata plan, not process-wide Git
+  // overrides. Native readers parse only their independently authorized inputs;
+  // helper child environments are isolated without changing agent Git behavior.
+  // Raw capacity preview never grants capture capability; no Linux fallback.
   const turnCollector = windowsScope
-    ? createWindowsTurnCollector({ store, readCallbackInput, ...windowsScope, checkEnvironment: checkWindowsGitEnvironment }) : collector;
+    ? createWindowsTurnCollector({ store, readCallbackInput, ...windowsScope }) : collector;
 
   return {
     captureRoot,
@@ -189,20 +188,21 @@ export function createBadcaseCaptureService(options: any = {}) {
     // The sync entry below is for workers/offline capture tests only.
     async estimateDirectoryAsync(projectId: any, targetDir: any) {
       if (process.platform === 'win32') {
-        const start = Date.now();
+        const start = Date.now(), deadline = performance.now() + 25000;
         const id = String(projectId || '').trim(), target = String(targetDir || '').trim();
         if (!id || !target) return { ok: false, reason: !id ? 'project_id_missing' : 'target_dir_missing',
           fileCount: 0, totalBytes: 0, durationMs: Date.now() - start };
-        const policy = store.loadPolicy(id), ready = checkWindowsGitEnvironment();
-        const result = ready
-          ? await estimateWindowsGitDirectoryAsync({ captureRoot, ...windowsScope, targetDir: target, policy,
-            externalGit: selectWindowsExternalGit(policy, target) })
-          : await estimateWindowsDirectoryAsync({ captureRoot, ...windowsScope, targetDir: target, policy });
-        const environmentReady = ready && checkWindowsGitEnvironment();
-        return { ...result, captureAvailable: result.ok === true && result.complete === true && environmentReady,
-          ...(result.ok && !environmentReady ? { reason: 'windows_git_environment_unsupported',
-            limitations: [...(result.limitations || []), 'windows_git_environment_unsupported'] } : {}),
-          durationMs: Date.now() - start };
+        const policy = store.loadPolicy(id);
+        const classified = await estimateWindowsGitDirectoryAsync({ captureRoot, ...windowsScope, targetDir: target, policy, deadline,
+          externalGit: selectWindowsExternalGit(policy, target) });
+        if (classified.ok !== true) {
+          // Capacity-only display remains useful for unsupported repositories.
+          // It cannot grant capture, repair classification or erase its reason.
+          const capacity = await estimateWindowsDirectoryAsync({ captureRoot, ...windowsScope, targetDir: target, policy, deadline });
+          return { ...capacity, captureAvailable: false, ...(capacity.ok ? { reason: classified.reason,
+            limitations: [...(capacity.limitations || []), 'git_classification_unavailable'] } : {}), durationMs: Date.now() - start };
+        }
+        return { ...classified, captureAvailable: classified.complete === true, durationMs: Date.now() - start };
       }
       return runEstimateProcess({ captureRoot, projectId: String(projectId || ''), targetDir: String(targetDir || '') });
     },

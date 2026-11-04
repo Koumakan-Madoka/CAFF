@@ -309,7 +309,7 @@ test('server default capture service receives trusted private roots; Windows nat
   }
 });
 
-test('supported Windows native HTTP estimate and separate enable reach the real collector; environment drift cannot enable or publish', { skip: process.platform !== 'win32' }, async t => {
+test('Windows native HTTP classified estimate/enable and capture are independent of agent Git selectors', { skip: process.platform !== 'win32' }, async t => {
   require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
   const h = setup(t), { execFileSync } = require('node:child_process');
   const git = (...args) => execFileSync('git', ['-C', h.target, ...args], { env: process.env, windowsHide: true });
@@ -339,8 +339,10 @@ test('supported Windows native HTTP estimate and separate enable reach the real 
   assert.equal(first.estimates[0].exclusionPolicy, 'windows-git-classified-v1');
   assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
   process.env.GIT_INDEX_FILE = path.join(h.root, 'another-index');
-  assert.equal((await post('enable', { confirmed: true, estimateId: first.estimateId })).status, 409);
-  assert.equal(h.service.loadPolicy('project-test').status, 'disabled'); delete process.env.GIT_INDEX_FILE;
+  assert.equal((await post('enable', { confirmed: true, estimateId: first.estimateId })).status, 200);
+  assert.equal(h.service.loadPolicy('project-test').status, 'enabled');
+  assert.equal(process.env.GIT_INDEX_FILE, path.join(h.root, 'another-index')); delete process.env.GIT_INDEX_FILE;
+  assert.equal((await post('disable', {})).status, 200);
   const second = await (await post('estimate', {})).json(); assert.ok(second.estimateId); assert.notEqual(second.estimateId, first.estimateId);
   assert.equal((await post('enable', { confirmed: true, estimateId: second.estimateId })).status, 200);
   assert.equal(h.service.loadPolicy('project-test').status, 'enabled');
@@ -355,8 +357,9 @@ test('supported Windows native HTTP estimate and separate enable reach the real 
   assert.equal(captured.checkpoint.replayInput.complete, false); assert.equal(captured.checkpoint.strictEvalEligible, false);
   process.env.GIT_DIR = path.join(h.root, 'another-root');
   const drifted = await h.service.captureTurnCheckpoint({ ...input, turnId: 'fixture-drift' });
-  assert.equal(drifted.captured, false); assert.equal(drifted.reason, 'windows_git_environment_unsupported');
-  assert.equal(h.service.store.listCheckpoints('project-test').length, 1); delete process.env.GIT_DIR;
+  assert.equal(drifted.captured, true, drifted.reason);
+  assert.equal(h.service.store.listCheckpoints('project-test').length, 2);
+  assert.equal(process.env.GIT_DIR, path.join(h.root, 'another-root')); delete process.env.GIT_DIR;
   assert.equal((await post('disable', {})).status, 200); assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
 });
 

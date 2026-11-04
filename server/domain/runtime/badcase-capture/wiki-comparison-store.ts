@@ -7,6 +7,12 @@ import { createWikiStore } from './wiki-store';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
 import { projectStagedResult } from './wiki-staged-result';
+import { planWikiEvaluationSuite } from './wiki-evaluation-suite';
+import { resolveSampleReplayVersion } from './wiki-sample-replay-version';
+import { readWikiComparisonRecord } from './wiki-comparison-record';
+import { wikiComparisonTotals } from './wiki-comparison-totals';
+import { extractWikiLiteralObservations } from './wiki-experience';
+export { wikiComparisonTotals } from './wiki-comparison-totals';
 
 const variants = ['original', 'candidate'];
 const categories = ['reproduction', 'probe', 'control'];
@@ -21,15 +27,6 @@ function code(value: any) { check(typeof value === 'string' && /^[a-z_]{1,100}$/
 function ids(values: any) {
   check(Array.isArray(values) && values.length <= 1000);
   const result = values.map(identifier); check(new Set(result).size === result.length); return result;
-}
-export function wikiComparisonTotals(cases: any[], repeats: number) {
-  return Object.fromEntries(variants.map(variant => {
-    const rows = cases.flatMap(c => c.runs || []).filter(r => r.variant === variant), planned = cases.length * repeats;
-    const passed = rows.filter(r => r.status === 'pass').length, failed = rows.filter(r => r.status === 'fail').length, errors = rows.filter(r => r.status === 'error').length;
-    const staged = cases.some(c => c.stage === 'gate' || c.stage === 'test');
-    return [variant, { planned, attempted: rows.length, passed, failed, errors, notRun: planned - (staged ? passed + failed : rows.length),
-      scored: passed + failed, passRate: passed + failed ? passed / (passed + failed) : null, plannedPassRate: planned ? passed / planned : null }];
-  }));
 }
 // Allowlist projection: never serialize arbitrary worker text, paths, file bytes,
 // usage objects, Docker inspect, or caller-supplied aggregate counters.
@@ -90,16 +87,8 @@ export function createWikiComparisonStore(options: any) {
   check(options?.globalRoot !== undefined);
   const wiki = createWikiStore(options), directory = path.join(options.globalRoot, 'comparisons');
   function readFile(name: string) {
-    try {
-      const file = path.join(directory, name), stat = fs.lstatSync(file); check(stat.isFile() && stat.size <= MAX_BYTES);
-      const envelope = JSON.parse(fs.readFileSync(file, 'utf8')), { id, createdAt, ...payload } = envelope.record;
-      check(envelope.schemaVersion === 1 && envelope.checksum === hash(envelope.record));
-      check(id === 'comparison-' + hash(payload) && name === hash(payload) + '.json');
-      check(typeof createdAt === 'string' && new Date(createdAt).toISOString() === createdAt);
-      check(JSON.stringify(projectResult(payload)) === JSON.stringify(payload));
-      check(!containsSecretSentinel(JSON.stringify(envelope.record)));
-      return envelope.record;
-    } catch { throw fail('wiki_comparison_record_invalid'); }
+    try { return readWikiComparisonRecord(options.globalRoot, 'comparison-' + name.slice(0, -5), projectResult); }
+    catch { throw fail('wiki_comparison_record_invalid'); }
   }
   return {
     read() {
@@ -111,18 +100,43 @@ export function createWikiComparisonStore(options: any) {
     },
     save(input: any) {
       const payload = projectResult(input), contentHash = hash(payload), name = contentHash + '.json';
-      return withProjectWriteLock(options.globalRoot, 'global-wiki', () => {
+      const record = withProjectWriteLock(options.globalRoot, 'global-wiki', () => {
         const state = wiki.read(), candidate = state.candidates.find((c: any) => c.id === payload.candidate.id);
         check(candidate?.kind === 'global-wiki-candidate-v1' && candidate.status === 'confirmed' && candidate.target.kind === 'global-system-prompt');
         for (const k of Object.keys(payload.candidate)) check(JSON.stringify(candidate[k]) === JSON.stringify(payload.candidate[k]));
-        for (const k of Object.keys(payload.split)) check(JSON.stringify(state.replaySplit?.[k]) === JSON.stringify(payload.split[k]));
-        for (const c of payload.cases) {
-          const source = state.cases.find((s: any) => s.id === c.sourceCaseId), replay = state.replayCases.find((s: any) => s.sourceCaseId === c.sourceCaseId);
-          check(source && source.split === c.split);
-          if (c.replayId) check(replay?.id === c.replayId && replay.category === c.category && replay.split === c.split);
-          else check(c.status === 'unsupported' && !replay);
+        const production = payload.evaluation?.splitPolicy === 'd15-frozen-v1';
+        if (!production) for (const k of Object.keys(payload.split)) check(JSON.stringify(state.replaySplit?.[k]) === JSON.stringify(payload.split[k]));
+        else {
+          const suite = planWikiEvaluationSuite(state, payload.cases, payload.evaluation.targetEntryId);
+          for (const key of ['gateCaseIds', 'testCaseIds', 'targetReproductionCaseIds', 'targetTestReproductionCaseIds', 'reportOnlyCaseIds']) check(JSON.stringify(suite[key]) === JSON.stringify(payload.evaluation[key]));
+          check(JSON.stringify(suite.cases.map((c: any) => c.sourceCaseId)) === JSON.stringify(payload.split.caseIds));
+          for (const record of suite.cases) {
+            const saved = payload.cases.find((c: any) => c.sourceCaseId === record.sourceCaseId);
+            for (const key of ['split', 'stage', 'category', 'family', 'reportOnly', 'targetReproduction', 'classification']) check(JSON.stringify(record[key]) === JSON.stringify(saved?.[key]));
+          }
         }
-        if (payload.evaluation) {
+        for (const c of payload.cases) {
+          const source = state.cases.find((s: any) => s.id === c.sourceCaseId);
+          const sampleVersion = production && c.replayId?.startsWith('replay-version-');
+          let replay;
+          try { replay = sampleVersion ? resolveSampleReplayVersion(state, c.sourceCaseId, c.replayId) : state.replayCases.find((s: any) => s.sourceCaseId === c.sourceCaseId); }
+          catch { throw fail(); }
+          check(source && source.split === c.split);
+          if (c.topicExemption) {
+            const e = c.topicExemption;
+            check(production && source.kind === 'marked-badcase' && replay && e.taskHash === crypto.createHash('sha256').update(replay.task).digest('hex'));
+            check(replay.rules.kind === 'public-reply-literals-v1' && e.patterns.every((p: string) => replay.rules.forbiddenPatterns.includes(p)));
+            const revised = { ...replay.rules, forbiddenPatterns: replay.rules.forbiddenPatterns.filter((p: string) => !e.patterns.includes(p)) };
+            const snapshotRules = { ...revised, kind: 'public-reply-literals-v2', snapshotHead: replay.fixture.commit };
+            check(c.comparison?.rulesHash === hash(revised) || c.comparison?.rulesHash === hash(snapshotRules));
+            check(payload.disclosures.includes('topic_number_exemption_new_round'));
+          }
+          if (sampleVersion) check(c.category === 'control' && c.comparison?.checkpointHash === replay.checkpointHash && c.comparison?.rulesHash === hash(replay.rules));
+          if (production && c.reportOnly) check(c.status === 'not-run' && c.reason === 'non_gpt_source_report_only' && !c.runs.length);
+          else if (c.replayId) check(replay?.id === c.replayId && replay.category === c.category && replay.split === c.split);
+          else check(!replay && (c.status === 'unsupported' || production && c.status === 'not-run'));
+        }
+        if (payload.evaluation && !production) {
           const e = payload.evaluation, version = state.versions.find((v:any)=>v.id===candidate.versionId);
           check(candidate.entryIds.length===1 && e.targetEntryId===candidate.entryIds[0]);
           const entry=version?.entries.find((e:any)=>e.id===candidate.entryIds[0]);
@@ -143,6 +157,11 @@ export function createWikiComparisonStore(options: any) {
         finally { try { fs.unlinkSync(temp); } catch {} }
         return record;
       });
+      // Release the comparison lock before publishing a wiki snapshot under
+      // the same lock key. A draft failure leaves the immutable result intact;
+      // replay publication, never paid execution, can safely recover it.
+      if (record.evaluation?.splitPolicy === 'd15-frozen-v1') wiki.recordComparisonExperience({ comparisonId: record.id, observations: extractWikiLiteralObservations(input) });
+      return record;
     },
   };
 }

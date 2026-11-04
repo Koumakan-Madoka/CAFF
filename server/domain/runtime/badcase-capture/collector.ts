@@ -15,8 +15,8 @@
 //   NO_XDEV) 完成，解析在内核中相对对象原子发生；路径改名/替换/ABA 与结论无关，
 //   越权内容不会被读取，更不会到达 staging。仅 Linux 支持（内核 >= 5.6 + statx
 //   btime）；win32/darwin 能力探测失败关闭，拒绝采集且零目标内容读取。
-// - 秘密先扫描后落盘：扫描到的内容、最终写入 CAS 的内容都必须过哨兵检测；命中即
-//   拒绝归档该输入并标记输入损失（complete=false）。无大小/二进制跳检，无豁免机制。
+// - 秘密先扫描后落盘：文件在内存中换成占位符后才 hash/写 CAS，记录字节差异；
+//   扫描/写入/复扫使用同一处理。结构化回放输入仍保持原有拒绝策略。
 // - 一致性证据三级都只是"未检测到变化"的检测记录，不是现场一致性证明；v1 无独立
 //   一致性依据，strictEvalEligible 恒为 false（契约 §2.3）。
 // - 采集路径不执行 git（GPT 复审 #1 第七轮）：命令行 -c 黑名单只能禁止 git 执行
@@ -38,7 +38,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 import { authorizeTargetDir, matchesRelativePattern, pathsEqual, isSameOrUnderPathString } from './capture-policy';
-import { containsSecretSentinel } from './secrets';
+import { redactFileSecrets } from './secrets';
 import { detectCaptureCapability, openConstrainedRoot, SAFE_READ_LIMITS } from './safe-read';
 import { prepareReplayInput } from './replay-input-preparation';
 import { withProjectWriteLock } from './project-write-lock';
@@ -513,7 +513,7 @@ export function createCollector(options: any = {}) {
       const reusable = trustMtime
         && previous
         && previous.type === 'file'
-        && previous.secretExcluded !== true
+        && previous.secretExcluded !== true && previous.secretRedacted !== true
         && Number(previous.size) === stat.size
         && Number(previous.mtimeMs) === stat.mtimeMs
         && Number(previous.mode) === stat.mode
@@ -576,17 +576,11 @@ export function createCollector(options: any = {}) {
         unstable.push({ path: relativePath, reason: code });
         continue;
       }
-      const content = result.content;
-      const secretHit = containsSecretSentinel(content);
-      const hash = sha256Buffer(content);
-      // 秘密命中：不记录内容 hash（低熵秘密的 hash 可被暴力反推），只记录排除事实。
-      files[relativePath] = secretHit
-        ? { type: 'file', size: meta.size, mode: meta.mode, mtimeMs: meta.mtimeMs, secretExcluded: true }
-        : { type: 'file', size: meta.size, mode: meta.mode, mtimeMs: meta.mtimeMs, hash };
+      const { content, redactionCount } = redactFileSecrets(result.content);
+      files[relativePath] = { type: 'file', size: content.length, mode: meta.mode, mtimeMs: meta.mtimeMs,
+        hash: sha256Buffer(content),
+        ...(redactionCount ? { secretRedacted: true, originalSize: meta.size, redactionCount } : {}) };
       stats.hashed += 1;
-      if (secretHit) {
-        stats.secretExcluded += 1;
-      }
     }
 
     return finish();
@@ -641,7 +635,7 @@ export function createCollector(options: any = {}) {
         if (!beforeFiles[relativePath] && beforeGaps.some((gap: any) => gap.path === relativePath && gap.reason === code)) continue;
         metaByPath.set(relativePath, `read-unstable:${code}`);
       } else {
-        metaByPath.set(relativePath, containsSecretSentinel(result.content) ? 'secret-excluded' : sha256Buffer(result.content));
+        metaByPath.set(relativePath, sha256Buffer(redactFileSecrets(result.content).content));
       }
     }
 
@@ -905,14 +899,13 @@ export function createCollector(options: any = {}) {
             delete scanResult.files[relativePath];
             continue;
           }
-          const content = result.content;
-          if (containsSecretSentinel(content)) {
-            // TOCTOU 防线：首扫后注入的秘密绝不落盘；标记排除并触发重试。
-            delete entry.hash;
-            entry.secretExcluded = true;
-            scanResult.stats.secretExcluded += 1;
-            writeMismatches.push(relativePath);
-            continue;
+          // Re-scan current bytes before staging. A newly inserted secret is
+          // never written raw, even on the last consistency attempt.
+          const { content, redactionCount } = redactFileSecrets(result.content);
+          if (redactionCount) {
+            entry.secretRedacted = true; entry.originalSize = result.content.length; entry.redactionCount = redactionCount;
+          } else {
+            delete entry.secretRedacted; delete entry.originalSize; delete entry.redactionCount;
           }
           const actualHash = sha256Buffer(content);
           if (actualHash !== entry.hash) {
@@ -1032,6 +1025,8 @@ export function createCollector(options: any = {}) {
         replayInput.complete = false;
         replayInput.incompleteReasons.push('files_contain_secret');
       }
+      const secretRedactedPaths = Object.keys(scanResult.files).filter(name => scanResult.files[name].secretRedacted === true).sort();
+      if (secretRedactedPaths.length) replayInput.secretRedactedPaths = secretRedactedPaths;
       if (scanResult.stats.symlinkEscapes > 0) {
         replayInput.complete = false;
         replayInput.incompleteReasons.push('symlink_escape_present');
@@ -1114,7 +1109,8 @@ export function createCollector(options: any = {}) {
           totalNewBytes: 0,
           hashedFiles: scanResult.stats.hashed,
           reusedHashFiles: scanResult.stats.reusedHash,
-          secretExcludedFiles: scanResult.stats.secretExcluded,
+          secretExcludedFiles: secretExcludedPaths.length,
+          secretRedactedFiles: secretRedactedPaths.length,
           symlinkEscapes: scanResult.stats.symlinkEscapes,
           outOfBoundsFiles: scanResult.stats.outOfBounds,
           readUnstableFiles: scanResult.stats.readUnstable,

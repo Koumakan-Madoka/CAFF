@@ -274,7 +274,9 @@ test('real Windows native async candidate enters the quota publisher and restore
     const restored = restoreCheckpoint({ store: h.store, projectId: 'p1', checkpointId: 'cp1', targetDir });
     assert.equal(restored.ok, true, restored.reason); assert.equal(restored.replayInputComplete, false);
     assert.equal(fs.readFileSync(path.join(targetDir, 'tracked'), 'utf8'), 'dirty');
-    assert.equal(fs.readFileSync(path.join(targetDir, 'new'), 'utf8'), 'new bytes'); assert.equal(fs.existsSync(path.join(targetDir, 'secret')), false);
+    assert.equal(fs.readFileSync(path.join(targetDir, 'new'), 'utf8'), 'new bytes');
+    assert.equal(fs.readFileSync(path.join(targetDir, 'secret'), 'utf8'), '[*]');
+    assert.equal(restored.redactedFiles[0].path, 'secret'); assert.equal(restored.redactedFiles[0].byteIdenticalToSource, false);
   }
   assert.equal(h.store.hasBlob('p1', sha256Hex('sk-SENTINELabcdefghijk')), false);
 });

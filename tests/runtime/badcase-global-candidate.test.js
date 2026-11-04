@@ -98,6 +98,20 @@ test('global operator selects either declared target without changing legacy rol
   fs.writeFileSync(f.blobPath(f.cp.files['source.txt'].hash), 'corrupt');
   assert.throws(() => collectGlobalCandidateFiles(state), code('wiki_candidate_anchor_unsupported'));
 });
+test('large sealed candidate evidence is fully checked beyond the former 4 MiB cap, never skipped', t => {
+  const bytes = Buffer.concat([Buffer.alloc(5 * 1024 * 1024, 0x7a), Buffer.from('LEAKEND8')]);
+  const f = require('../helpers/badcase-initialization-fixture.cjs')(t, 'fresh', ({ cp, put }) => {
+    cp.files['large.txt'] = { type: 'file', size: bytes.length, hash: put(bytes) };
+  });
+  const state = { replayCases: [{ id: 'replay-large', request: f.request, checkpointHash: sha(JSON.stringify(f.cp)) }] };
+  const { collectGlobalCandidateFiles } = require('../../scripts/badcase-capture/create-wiki-candidate.cjs');
+  const files = collectGlobalCandidateFiles(state), target = getWikiTarget('global-harness-behavior-v1');
+  assert.equal(files.find(f => f.path.endsWith('/large.txt')).sha256, sha(bytes));
+  assertWikiCandidateNoLeak(target.baseText + '\nUnique new instructions.', [], files, target);
+  assert.throws(() => assertWikiCandidateNoLeak(target.baseText + '\nLEAKEND8', [], files, target), code('wiki_candidate_leak'));
+  const bad = files.map(f => ({ ...f, sha256: '0'.repeat(64) }));
+  assert.throws(() => assertWikiCandidateNoLeak(target.baseText + '\nUnique new instructions.', [], bad, target), code('wiki_candidate_invalid'));
+});
 test('send-public targets the existing chat bridge description, not an unrelated native tool', t => {
   const target = getWikiTarget('tool-description-send-public');
   const { SEND_PUBLIC_CHAT_BRIDGE_DESCRIPTION } = require('../../build/lib/agent-prompt-targets');

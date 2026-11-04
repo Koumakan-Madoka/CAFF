@@ -19,7 +19,7 @@ function prepareRetainedCaffFiles(repoRoot, dependencyRoot, image, value, bridge
   const copy = (source, destination) => files.push({ path: destination, bytes: readTrustedDistributionFile(path.resolve(repoRoot), source,
     16 * 1024 * 1024 - files.reduce((n, f) => n + f.bytes.length, 0)) });
   copy('scripts/badcase-capture/retained-caff-container.cjs', 'probe.cjs');
-  for (const name of ['capsule-materialization', 'worktree-replay-inputs', 'worktree-replay-materialization', 'caff-replay-start', 'session-validator', 'controlled-bridge-inputs']) {
+  for (const name of ['capsule-materialization', 'worktree-replay-inputs', 'worktree-replay-materialization', 'caff-replay-start', 'controlled-bridge-inputs']) {
     const p = 'build/server/domain/runtime/badcase-capture/' + name + '.js'; copy(p, p);
   }
   for (const [name, text] of [['capsule.json', v.capsule], ['expected.json', JSON.stringify(v.expected)],

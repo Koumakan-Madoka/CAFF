@@ -30,7 +30,8 @@ function fixture(t) {
 function bootstrap(options = {}) {
   const bytes = new Map([['runtime/x', Buffer.from('x')], ['environment.json', Buffer.from(JSON.stringify(image))],
     ['mode.txt', Buffer.from(options.mode || 'fresh')]]);
-  let m = manifestFor([...bytes].map(([path, bytes]) => ({ path, bytes })));
+  if (options.largeWorkspace) bytes.set('replay-workspace/large.txt', Buffer.alloc(25 * 1024 * 1024, 0x61));
+  let m = manifestFor([...bytes].map(([path, bytes]) => ({ path, bytes })), { replayWorkspace: !!options.largeWorkspace });
   if (options.manifest) options.manifest(m, bytes);
   if (options.resign) m.inputHash = crypto.createHash('sha256').update(JSON.stringify(m.files)).digest('hex');
   const store = new Map([...bytes].map(([name, value]) => ['/work/' + name, value]));
@@ -45,6 +46,8 @@ function bootstrap(options = {}) {
     lstatSync: p => { const b = store.get(absolute(p)); assert.ok(b); const st = { size: b.length, isFile: () => true, isSymbolicLink: () => false };
       return options.stat ? options.stat(p, st) : st; },
     readFileSync: (p, encoding) => { reads.push(p); const b = store.get(absolute(p)); assert.ok(b); return encoding ? b.toString(encoding) : b; },
+    openSync: p => ({ path: absolute(p), offset: 0 }), closeSync: () => {},
+    readSync: (fd, block, offset, length) => { reads.push(fd.path); const b = store.get(fd.path); assert.ok(b); const n = b.copy(block, offset, fd.offset, fd.offset + length); fd.offset += n; return n; },
     mkdirSync: (p, cfg = {}) => { if (dirs.has(p) && !cfg.recursive) throw Error('EEXIST'); dirs.add(p); },
     writeFileSync: (p, b, cfg) => { assert.equal(cfg.flag, 'wx'); assert.equal(cfg.mode, 0o600); assert.equal(store.has(p), false); store.set(p, Buffer.from(b)); },
   };
@@ -63,11 +66,19 @@ function bootstrap(options = {}) {
     console: { log: () => assert.fail('no output from imported container module') },
   }, { timeout: 1000 });
   return { run: () => mod.exports.runCaffRuntimeContainer(async name => { loads.push(name); throw Error('inert_sdk_boundary'); }),
+    verifyReplay: () => mod.exports.verifyCaffRuntimeStage({ replayWorkspace: true }),
     store, reads, imports, loads, starts: () => starts, stops: () => stops };
 }
 test('container bootstrap consumes valid material before its SDK boundary and closes owned callback on import failure', async () => {
   const h = bootstrap(); await assert.rejects(h.run(), /inert_sdk_boundary/);
   assert.deepEqual(h.loads, ['/work/runtime/dist/bundle/index.js']); assert.equal(h.starts(), 1); assert.equal(h.stops(), 1);
+});
+test('direct replay verification allows large workspace bytes only with explicit opt-in, still checks every digest', async () => {
+  const h = bootstrap({ largeWorkspace: true });
+  await assert.rejects(h.run(), 'static wiring path must retain its existing byte limit');
+  assert.ok(h.verifyReplay().manifest.files.some(f => f.path === 'replay-workspace/large.txt'));
+  const bad = bootstrap({ largeWorkspace: true, bytes: map => map.set('/work/replay-workspace/large.txt', Buffer.from('tampered')) });
+  assert.throws(() => bad.verifyReplay()); assert.equal(bad.starts(), 0); assert.deepEqual(bad.loads, []);
 });
 test('container bootstrap gates environment before reads, callbacks or SDK imports', async () => {
   for (const options of [{ marker: false }, { process: { platform: 'win32' } }, { process: { getuid: () => 0 } },
@@ -118,6 +129,17 @@ test('stages unchanged production host with its imported Fast module and actual 
     assert.equal(files.filter(f => f.path === 'probe.cjs').length, 1);
     assert.deepEqual(manifestFor(a.prepareCaffRuntimeFiles(repo, root, image, mode)), m);
   }
+});
+test('direct staging separates a large workspace from the actual fixed SDK/runtime distribution', t => {
+  const root = fixture(t), bytes = Buffer.alloc(25 * 1024 * 1024, 0x61);
+  const input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect.', files: [{ path: 'large.txt',
+    base64: bytes.toString('base64'), sha256: crypto.createHash('sha256').update(bytes).digest('hex') }], sessionText: null };
+  const { prepareDirectTurnFiles } = require('../../scripts/badcase-capture/direct-docker.cjs');
+  const staged = prepareDirectTurnFiles(repo, root, image, input), m = manifestFor(staged, { replayWorkspace: true });
+  assert.ok(m.runtimeBytes > 0); assert.equal(staged.filter(f => f.path === 'probe.cjs').length, 1);
+  assert.ok(staged.find(f => f.path === 'replay-input.json').bytes.length < 4096);
+  assert.deepEqual(staged.find(f => f.path === 'replay-workspace/large.txt').bytes, bytes);
+  assert.equal(m.runtimeHash, manifestFor(staged.filter(f => !f.path.startsWith('replay-workspace/'))).runtimeHash);
 });
 test('invalid modes refuse before any source reads and never downgrade resume to fresh', () => {
   const a = api(), original = fs.lstatSync; let reads = 0;

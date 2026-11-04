@@ -7,52 +7,86 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {} } = {}) {
+async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings, projectResources, resourceLoaderPatch = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect the files.', files: files.map(p => ({ path: p,
-    base64: Buffer.from(p).toString('base64'), sha256: crypto.createHash('sha256').update(p).digest('hex') })),
-    sessionText: null, settings: null, systemPrompt: null,
-    callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: {} } : null,
+  const input = { kind: 'prepared-caff-turn-v1', prompt, files: files.map(p => ({ path: p,
+    base64: Buffer.from(fileBytes[p] ?? p).toString('base64'), sha256: crypto.createHash('sha256').update(fileBytes[p] ?? p).digest('hex'), ...(fileModes[p] === undefined ? {} : { mode: fileModes[p] }) })),
+    sessionText, settings: null, systemPrompt: null,
+    ...(bindings === undefined ? {} : { bindings }),
+    ...(projectResources === undefined ? {} : { projectResources }),
+    ...(recordedModelConfig === undefined ? {} : { recordedModelConfig }),
+    ...(repositorySnapshot ? { repository: repositorySnapshot.report, gitFiles: repositorySnapshot.gitFiles } : {}),
+    callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: { conversationId: 'c1', turnId: 't1' } } : null,
     ...(fileEvidencePaths === undefined ? {} : { fileEvidencePaths }) };
-  fs.writeFileSync(path.join(root, 'evaluation-profile.json'), JSON.stringify(model));
-  fs.writeFileSync(path.join(root, 'replay-input.json'), JSON.stringify(input));
-  const mapped = p => { assert.ok(p.startsWith('/work/')); return path.join(root, p.slice(6)); };
-  const workerFs = Object.fromEntries(['mkdirSync', 'readFileSync', 'writeFileSync', 'readdirSync', 'lstatSync']
+  fs.writeFileSync(path.join(root, 'evaluation-profile.json'), JSON.stringify(profile));
+  if (directoryWorkspace) {
+    const staged = require('../../scripts/badcase-capture/direct-docker.cjs').prepareDirectReplayInput(input);
+    for (const f of staged) { const dest = path.join(root, f.path); fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, f.bytes); }
+  } else fs.writeFileSync(path.join(root, 'replay-input.json'), JSON.stringify(input));
+  fs.mkdirSync(path.join(root, 'tmp'));
+  const mapped = p => { assert.ok(p.startsWith('/work/') || p.startsWith('/tmp/')); return path.join(root, p.slice(1).replace(/^work\//, '')); };
+  const modeRestorations = [];
+  const workerFs = Object.fromEntries(['mkdirSync', 'readFileSync', 'writeFileSync', 'readdirSync', 'lstatSync', 'chmodSync']
     .map(name => [name, (p, ...args) => fs[name](mapped(p), ...args)]));
+  workerFs.chmodSync = (p, mode) => { modeRestorations.push({ path: p, mode }); fs.chmodSync(mapped(p), mode); };
   workerFs.existsSync = p => p === '/.dockerenv' || fs.existsSync(mapped(p));
+  workerFs.renameSync = (a, b) => fs.renameSync(mapped(a), mapped(b));
   const observer = { calls: [], complete() {}, fetch: async () => { throw Error('unexpected_network'); } };
-  let subscriber, disposed = false, stopped = false;
-  const session = { messages: [], model: { provider: 'opencode-go', id: 'deepseek-v4.1-flash' },
-    agent: { state: { tools: Array.from({ length: 10 }, (_, i) => ({ name: 'tool-' + i })) } },
-    bindExtensions: async () => {}, subscribe: f => { subscriber = f; }, prompt: async () => {
+  let subscriber, disposed = false, stopped = false, startConfig, callbackLifetimeMs, invocationPrompt;
+  const selected = require('../../scripts/badcase-capture/direct-model.cjs').modelProfile(profile);
+  const session = { messages: [], model: { provider: selected.provider, id: selected.model, api: selected.api || 'openai-completions' }, thinkingLevel: selected.thinking || 'off',
+    agent: { transport: 'websocket', state: { tools: Array.from({ length: 10 }, (_, i) => ({ name: 'tool-' + i })) } },
+    bindExtensions: async () => {}, subscribe: f => { subscriber = f; }, prompt: async submitted => {
+      invocationPrompt = submitted;
       const message = { role: 'assistant', content: [{ type: 'text', text: 'INTERNAL ONLY: stable file; deleted.txt 不存在' }], stopReason: 'stop' };
       afterTurn(path.join(root, 'restored'));
-      session.messages.push(message); observer.calls.push({ model, durationMs: 1, success: true });
+      session.messages.push(message); observer.calls.push({ model: profile, durationMs: 1, success: true });
       subscriber({ type: 'message_end', message });
     } };
-  const runtime = { session, services: { resourceLoader: { getExtensions: () => ({ errors: [] }) } }, dispose: async () => { disposed = true; } };
+  const runtime = { session, services: { settingsManager: { applyOverrides: () => {} }, resourceLoader: { getExtensions: () => ({ errors: [] }),
+    getAgentsFiles: () => ({ agentsFiles: projectResources?.contextFile ? [{ path: '/work/restored/' + projectResources.contextFile, content: fileBytes[projectResources.contextFile].replace(/^\uFEFF/, '') }] : [] }),
+    getSkills: () => ({ skills: files.filter(p => p.endsWith('/SKILL.md')).map(p => ({ filePath: '/work/restored/' + p })) }), ...resourceLoaderPatch } }, dispose: async () => { disposed = true; } };
   const workerRequire = name => {
     if (name === 'node:fs') return workerFs;
+    if (name === 'node:child_process') return { execFileSync: (program, args, options) => {
+      assert.equal(program, 'git'); assert.equal(options.env.CAFF_BADCASE_MODEL_KEY, undefined);
+      return require('node:child_process').execFileSync(program, args.map(a => a === '/work/restored' ? mapped(a) : a),
+        { ...options, env: { ...require('../../scripts/badcase-capture/replay-git.cjs').gitEnvironment(), ...options.env, PATH: process.env.PATH, SystemRoot: process.env.SystemRoot } });
+    } };
     if (name === '/work/direct-model.cjs') return { ...require('../../scripts/badcase-capture/direct-model.cjs'), observeDirectFetch: () => observer };
+    if (name === '/work/codex-mailbox.cjs') return { createCodexMailboxFetch: () => observer.fetch };
     if (name === '/work/build/server/domain/runtime/badcase-capture/secrets') return require('../../build/server/domain/runtime/badcase-capture/secrets');
-    if (name === '/work/caff-runtime-bootstrap.cjs') return { verifyCaffRuntimeStage: () => ({ manifest: { inputHash: 'input', runtimeHash: 'runtime' } }) };
-    if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async () => ({
-      apiUrl: 'http://127.0.0.1:1', credentials: { invocationId: 'fixture', callbackToken: 'fixture-only' },
-      readPublicReply: () => published, stop: async () => { stopped = true; } }) };
+    if (name === '/work/build/server/domain/runtime/badcase-capture/session-validator') return require('../../build/server/domain/runtime/badcase-capture/session-validator');
+    if (name === '/work/build/server/domain/runtime/badcase-capture/project-resources') return require('../../build/server/domain/runtime/badcase-capture/project-resources');
+    if (name === '/work/caff-runtime-bootstrap.cjs') return { verifyCaffRuntimeStage: () => ({ manifest: { inputHash: 'input', runtimeHash: 'runtime' } }),
+      hashFile: p => require('../../scripts/badcase-capture/replay-streams.cjs').hashFile(mapped(p)) };
+    if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async config => {
+      callbackLifetimeMs = config.lifetimeMs;
+      return { apiUrl: 'http://127.0.0.1:1', credentials: { invocationId: 'fixture', callbackToken: 'fixture-only' },
+        readPublicReply: () => published, stop: async () => { stopped = true; } }; } };
     assert.ok(name.startsWith('node:'), name); return require(name);
   };
   const workerModule = { exports: {} }, filename = require.resolve('../../scripts/badcase-capture/direct-sdk-container.cjs');
   vm.compileFunction(fs.readFileSync(filename, 'utf8'), ['require', 'module', 'exports', 'process'], { filename })(
-    workerRequire, workerModule, workerModule.exports, { platform: 'linux', getuid: () => 65534, cwd: () => '/work', env: { CAFF_BADCASE_MODEL_KEY: key } });
+    workerRequire, workerModule, workerModule.exports, { platform: 'linux', getuid: () => 65534, cwd: () => '/work', env: profile === 'openai-codex/gpt-6.1-sol' ? {} : { CAFF_BADCASE_MODEL_KEY: key } });
   const receipt = await workerModule.exports.main({ loadModule: async name => {
-    if (name === '/work/runtime/dist/bundle/index.js') return { VERSION: '0.85.1' };
+    if (name === '/work/runtime/dist/bundle/index.js') return { VERSION: '0.85.1', buildSessionContext: entries => ({ messages: entries.filter(e => e.type === 'message').map(e => e.message) }) };
     assert.equal(name, '/work/build/lib/pi-sdk-host.mjs');
-    return { normalizeStartCommand: c => c, createSdkRuntime: async () => ({ runtime }) };
+    return { normalizeStartCommand: c => c, createSdkRuntime: async (_sdk, config) => { startConfig = config;
+      if (config.resume) session.messages = JSON.parse('[' + fs.readFileSync(mapped(config.sessionPath), 'utf8').trim().split('\n').slice(1).join(',') + ']').filter(e => e.type === 'message').map(e => e.message);
+      return { runtime }; } };
   } });
   assert.equal(disposed, true); assert.equal(stopped, withCallback);
-  return { receipt, input };
+  return { receipt, input, startConfig, callbackLifetimeMs, invocationPrompt, modeRestorations,
+    workingSessionText: fs.existsSync(path.join(root, 'session.jsonl')) ? fs.readFileSync(path.join(root, 'session.jsonl'), 'utf8') : null, settings: fs.existsSync(path.join(root, 'agent/settings.json')) ? JSON.parse(fs.readFileSync(path.join(root, 'agent/settings.json'))) : null };
 }
+test('actual worker restores captured modes after transport for inline and directory workspaces', async t => {
+  for (const directoryWorkspace of [false, true]) {
+    const result = await workerReceipt(t, { files: ['plain.js', 'executable.sh'], fileModes: { 'plain.js': 0o100644, 'executable.sh': 0o100755 }, directoryWorkspace });
+    assert.deepEqual(result.modeRestorations.map(r => ({ name: r.path.split('/').at(-1), mode: r.mode })), [{ name: 'plain.js', mode: 0o644 }, { name: 'executable.sh', mode: 0o755 }]);
+  }
+});
 function config() {
   return { repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'), request: {}, image: { imageId: 'sha256:' + '1'.repeat(64) },
     repeats: 2, candidateRole: 'Check every file.', rules: { kind: 'read-only-files-v1', readPaths: ['tracked.txt'], absentPaths: ['deleted.txt'], requiredReplyFragments: ['stable file', 'deleted.txt 不存在'] } };
@@ -77,11 +111,53 @@ function fakes({ badReply = false, modelError = false, workerError = false, badB
   };
   return { state, input, options: { prepare, stage, execute, confirmed: true, readKey: () => { state.keys++; return key; }, onEvent: e => state.events.push(e) } };
 }
+test('public-reply literal rules stay on the host, score public output, and require reply evidence', async () => {
+  const c = { ...config(), rules: { kind: 'public-reply-literals-v1', leadChars: 30, conclusionMarkers: ['LITERAL_MARKER'], forbiddenTerms: ['P2'], forbiddenPatterns: ['commit-hash'] } };
+  const f = fakes(), execute = f.options.execute;
+  f.options.execute = async (...args) => { const task = await execute(...args); const candidate = JSON.parse(args[1][0].bytes).prompt !== 'original'; task.receipt.finalText = candidate ? 'LITERAL_MARKER P2' : 'LITERAL_MARKER complete'; return task; };
+  const plan = prepareComparison(c, f.options);
+  assert.equal(plan.supported, true); assert.equal(JSON.stringify(plan.inputs).includes('LITERAL_MARKER'), false);
+  const result = await runComparison(c, f.options);
+  assert.equal(result.totals.original.passed, 2); assert.equal(result.totals.candidate.failed, 2);
+  assert.ok(result.runs.every(r => !Object.hasOwn(r, 'fileEvidence')));
+  assert.ok(result.runs.every(r => r.replyChecks));
+  for (const replySource of ['internal', 'none']) {
+    const g = fakes(), go = g.options.execute;
+    g.options.execute = async (...args) => { const task = await go(...args); task.receipt.finalText = 'LITERAL_MARKER complete'; task.receipt.replySource = replySource; return task; };
+    const observed = await runComparison(c, g.options); assert.equal(observed.totals.original.passed, 0); assert.equal(observed.runs[0].status, 'fail');
+  }
+  const missing = fakes(), run = missing.options.execute;
+  missing.options.execute = async (...args) => { const task = await run(...args); delete task.receipt.finalText; return task; };
+  const unavailable = await runComparison(c, missing.options);
+  assert.equal(unavailable.completed, false); assert.equal(unavailable.runs[0].status, 'error'); assert.equal(unavailable.runs[0].reason, 'reply_evidence_unavailable');
+  assert.equal(missing.state.executions, 1);
+});
+test('known-value guard streams a combined input larger than the V8 string ceiling before execution', async () => {
+  const { constants } = require('node:buffer'), f = fakes(), prepare = f.options.prepare;
+  const chunk = 'x'.repeat(1024 * 1024), padding = Array(Math.ceil(constants.MAX_STRING_LENGTH / chunk.length / 2) + 1).fill(chunk);
+  const original = prepare({}, null).input, candidate = prepare({}, 'candidate').input;
+  original.padding = padding; candidate.padding = padding;
+  assert.throws(() => JSON.stringify({ original, candidate }), RangeError);
+  f.options.prepare = (_request, replacement) => ({ ...prepare({}, replacement), input: replacement ? candidate : original });
+  // Do not serialize large synthetic data into a fake probe. Exercise the real
+  // preflight hashes + known-value guard, then stop at an inert executor.
+  f.options.stage = () => [{ path: 'probe.cjs', bytes: Buffer.from('inert') }];
+  let executions = 0;
+  f.options.execute = async () => { executions++; throw Error('inert_executor_stop'); };
+  const result = await runComparison({ ...config(), repeats: 1 }, f.options);
+  assert.equal(executions, 1); assert.equal(result.runs[0].reason, 'run_evidence_unavailable');
+});
 test('planning is credential/Docker-free; unsupported and unconfirmed inputs cannot run', async () => {
   const f = fakes(); const p = prepareComparison(config(), f.options); assert.equal(p.supported, true); assert.equal(f.state.keys, 0); assert.equal(f.state.executions, 0);
   await assert.rejects(runComparison(config(), { ...f.options, confirmed: false }), /confirmation_required/);
   const no = await runComparison(config(), { ...f.options, prepare: () => ({ supported: false }) });
   assert.equal(no.supported, false); assert.equal(f.state.executions, 0); assert.equal(f.state.keys, 0);
+});
+test('Codex cannot enter legacy CLI key injection without an explicitly selected host access source', async () => {
+  const f = fakes(), c = { ...config(), modelProfile: 'openai-codex/gpt-6.1-sol' };
+  assert.throws(() => prepareComparison(c, f.options), /evaluation_codex_auth_source_required/);
+  await assert.rejects(runComparison(c, f.options), /evaluation_codex_auth_source_required/);
+  assert.equal(f.state.keys, 0); assert.equal(f.state.executions, 0);
 });
 test('N real-driver slots per variant, per-call rows, host scoring only after cleanup, exact pass totals', async () => {
   const f = fakes({ badReply: true }), r = await runComparison(config(), f.options);
@@ -153,10 +229,141 @@ test('rubric requires actual reads, exact original tree and reply fragments, not
   for (const patch of [{ toolCalls: [] }, { afterHash: 'different' }, { finalText: 'done' }, { success: false },
     { toolCalls: [...base.toolCalls, { name: 'write', isError: true }] }]) assert.equal(scoreReadOnlyFiles({ ...base, ...patch }, c.rules, beforeHash).pass, false);
 });
+test('turn timeout accepts up to 45 minutes, is bound into plan and reaches the executor unchanged', async () => {
+  const f = fakes(), c = { ...config(), timeoutMs: 2700000 }, execute = f.options.execute;
+  const plan = prepareComparison(c, f.options); assert.equal(plan.summary.timeoutMs, c.timeoutMs);
+  assert.equal(prepareComparison(config(), f.options).summary.timeoutMs, 120000);
+  f.options.execute = (...args) => { assert.equal(args[2].timeoutMs, c.timeoutMs); return execute(...args); };
+  const result = await runComparison(c, f.options); assert.equal(result.completed, true);
+  assert.match(formatComparison(result), /容器时限：2700秒/);
+  for (const timeoutMs of [999, Infinity]) assert.throws(() => prepareComparison({ ...c, timeoutMs }, f.options), /evaluation_config_invalid/);
+  assert.throws(() => prepareComparison({ ...c, timeoutMs: 2700001 }, f.options), { code: 'evaluation_timeout_limit' });
+});
+test('worker accepts the full 256 KiB prompt and keeps public callback valid for the 45-minute ceiling', async t => {
+  const prompt = '中'.repeat(87381) + 'a', r = await workerReceipt(t, { prompt });
+  assert.equal(Buffer.byteLength(prompt), 262144); assert.equal(r.invocationPrompt, prompt);
+  assert.equal(r.input.prompt, prompt); assert.equal(r.callbackLifetimeMs, 2700000); assert.equal(r.receipt.success, true);
+  await assert.rejects(workerReceipt(t, { prompt: prompt + 'a' }), /AssertionError/);
+});
+test('Codex worker uses credential-free mailbox, xhigh native model, SSE and no automatic retry', async t => {
+  const { receipt, startConfig, settings } = await workerReceipt(t, { profile: 'openai-codex/gpt-6.1-sol' });
+  assert.equal(startConfig.provider, 'openai-codex'); assert.equal(startConfig.model, 'gpt-6.1-sol'); assert.equal(startConfig.thinking, 'xhigh');
+  assert.equal(settings.transport, 'sse'); assert.equal(settings.retry.enabled, false); assert.equal(settings.retry.provider.maxRetries, 0);
+  assert.deepEqual(receipt.modelConfig, { api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' });
+  assert.equal(receipt.success, true); assert.equal(receipt.modelCalls[0].model, 'openai-codex/gpt-6.1-sol');
+});
+test('worker restores project context and skills with native discovery, binds the inventory receipt, and refuses unexpected loader content', async t => {
+  const { prepareProjectResources, projectResourcesSummary } = require('../../build/server/domain/runtime/badcase-capture/project-resources');
+  const fileBytes = { 'AGENTS.md': '\uFEFFArchived project context\n', '.agents/skills/demo/SKILL.md': '---\nname: demo\ndescription: Archived skill\n---\nBody', '.agents/skills/demo/references/guide.md': 'Archived reference' };
+  const files = Object.keys(fileBytes).sort(), records = files.map(p => ({ path: p, sha256: crypto.createHash('sha256').update(fileBytes[p]).digest('hex') }));
+  const projectResources = prepareProjectResources({ schemaVersion: 1, kind: 'portable-project-resources-v1', supported: true,
+    filePaths: files, skillPaths: ['.agents/skills/demo'] }, records, { cwd: 'C:\\old\\project', additionalSkillPaths: ['C:\\old\\project\\.agents\\skills\\demo'] });
+  for (const directoryWorkspace of [false, true]) {
+    const r = await workerReceipt(t, { files, fileBytes, projectResources, directoryWorkspace });
+    assert.deepEqual(Array.from(r.startConfig.additionalSkillPaths), ['/work/restored/.agents/skills/demo']);
+    assert.deepEqual(JSON.parse(JSON.stringify(r.receipt.projectResources)), { ...projectResourcesSummary(projectResources), verified: true, loadedContextFiles: 1, loadedSkills: 1 });
+  }
+  for (const resourceLoaderPatch of [{ getAgentsFiles: () => ({ agentsFiles: [] }) }, { getAgentsFiles: () => ({ agentsFiles: [{ path: '/work/restored/AGENTS.md', content: 'Current file, not archive' }] }) },
+    { getSkills: () => ({ skills: [{ filePath: '/outside/current/SKILL.md' }] }) }]) {
+    await assert.rejects(workerReceipt(t, { files, fileBytes, projectResources, resourceLoaderPatch }), /replay_project_resources_invalid/);
+  }
+});
+test('host cannot score missing or altered project-resource evidence', async () => {
+  for (const mode of ['matching', 'missing', 'changed']) {
+    const f = fakes(), prepare = f.options.prepare, execute = f.options.execute;
+    const manifest = { kind: 'replay-project-resources-v1', manifestHash: '1'.repeat(64), files: [], contextFile: null, skillPaths: [] };
+    f.options.prepare = (...args) => { const p = prepare(...args); p.input.projectResources = manifest; return p; };
+    f.options.execute = async (...args) => { const task = await execute(...args);
+      if (mode !== 'missing') task.receipt.projectResources = { kind: manifest.kind, manifestHash: mode === 'changed' ? '2'.repeat(64) : manifest.manifestHash,
+        fileCount: 0, contextFile: null, skillPaths: [], verified: true, loadedContextFiles: 0, loadedSkills: 0 }; return task; };
+    const result = await runComparison(config(), f.options);
+    assert.equal(result.completed, mode === 'matching'); assert.equal(result.runs[0].status, mode === 'matching' ? 'pass' : 'error');
+    if (mode !== 'matching') assert.equal(f.state.executions, 1);
+  }
+});
+test('worker reports the recorded production configuration and refuses silent thinking conversion', async t => {
+  const recorded = { provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'xhigh', fast: false };
+  const r = await workerReceipt(t, { profile: 'openai-codex/gpt-6.1-sol', recordedModelConfig: recorded });
+  assert.deepEqual(JSON.parse(JSON.stringify(r.receipt.recordedModelConfig)), recorded); assert.equal(r.startConfig.thinking, 'xhigh');
+  await assert.rejects(workerReceipt(t, { profile: 'openai-codex/gpt-6.1-sol', recordedModelConfig: { ...recorded, thinking: 'off' } }), /AssertionError/);
+});
+test('host requires matching recorded config in worker evidence; missing or changed thinking never scores', async () => {
+  for (const mode of ['matching', 'missing', 'changed']) {
+    const f = fakes(), prepare = f.options.prepare, execute = f.options.execute;
+    const recorded = { provider: 'anthropic', model: 'claude-sonnet-4-5', thinking: 'off', fast: false };
+    f.options.prepare = (...args) => { const p = prepare(...args); p.input.recordedModelConfig = recorded; return p; };
+    f.options.execute = async (...args) => { const task = await execute(...args);
+      if (mode !== 'missing') task.receipt.recordedModelConfig = { ...recorded, ...(mode === 'changed' ? { thinking: 'xhigh' } : {}) }; return task; };
+    const result = await runComparison(config(), f.options);
+    assert.equal(result.completed, mode === 'matching'); assert.equal(result.runs[0].status, mode === 'matching' ? 'pass' : 'error');
+    if (mode !== 'matching') { assert.equal(f.state.executions, 1); assert.equal(result.totals.original.passed, 0); }
+  }
+});
+test('actual worker starts resume from the bound exact prefix and reports its archived identity', async t => {
+  const sourceRoot = 'C:\\old\\root', prompt = 'Now {{CAFF_CHAT_API_URL}}';
+  const sessionText = [{ type: 'session', version: 3, id: 'same-id', cwd: sourceRoot },
+    { type: 'message', id: 'm1', parentId: null, message: { role: 'user', content: 'Earlier {{PI_AGENT_PRIVATE_DIR}}', timestamp: 1 } }].map(JSON.stringify).join('\r\n') + '\r\n';
+  const r = await workerReceipt(t, { prompt, sessionText, bindings: { sourceRoot, controlledReplacements: [{ name: 'CAFF_CHAT_API_URL', count: 1 }, { name: 'PI_AGENT_PRIVATE_DIR', count: 1 }] } });
+  assert.equal(r.startConfig.resume, true); assert.equal(r.receipt.historyMessages, 1);
+  assert.deepEqual(r.receipt.replaySession, require('../../scripts/badcase-capture/direct-model.cjs').replaySessionInfo(sessionText));
+  assert.equal(r.workingSessionText, sessionText.replace(JSON.stringify(sourceRoot), JSON.stringify('/work/restored')).replace('{{PI_AGENT_PRIVATE_DIR}}', '/tmp/private'));
+  assert.equal(r.invocationPrompt, 'Now http://127.0.0.1:1'); assert.equal(r.input.sessionText, sessionText);
+});
+test('actual worker loads frozen bash and retired tools as context, never current tool executions', async t => {
+  const sourceRoot = '/old/root', entries = [
+    { type: 'session', version: 3, id: 'same-id', cwd: sourceRoot },
+    { type: 'message', id: 'u', parentId: null, message: { role: 'user', content: 'Earlier request', timestamp: 1 } },
+    { type: 'message', id: 'a', parentId: 'u', message: { role: 'assistant', api: 'a', provider: 'p', model: 'm', usage: {}, stopReason: 'toolUse', content: [
+      { type: 'toolCall', id: 'bash-1', name: 'bash', arguments: { command: 'node -e "throw Error(\'historical-only\')" ' + sourceRoot } },
+      { type: 'toolCall', id: 'plugin-1', name: 'retired_plugin', arguments: { path: '/outside/workspace' } },
+    ] } },
+    ...['bash', 'retired_plugin'].map((name, i) => ({ type: 'message', id: 'r' + i, parentId: i ? 'r0' : 'a', message: { role: 'toolResult', toolCallId: i ? 'plugin-1' : 'bash-1', toolName: name, isError: false, content: [{ type: 'text', text: sourceRoot + '/original-result' }] } })),
+  ];
+  const sessionText = entries.map(JSON.stringify).join('\n') + '\n';
+  const result = await workerReceipt(t, { sessionText, bindings: { sourceRoot, controlledReplacements: [] } });
+  assert.equal(result.startConfig.resume, true); assert.equal(result.receipt.historyMessages, 4);
+  assert.deepEqual(result.receipt.toolCalls, []);
+  assert.equal(result.workingSessionText, sessionText.replace(JSON.stringify(sourceRoot), JSON.stringify('/work/restored')));
+  assert.equal(result.invocationPrompt, 'Inspect the files.');
+});
+
+test('missing or conflicting resume receipt never scores and stops subsequent slots', async () => {
+  for (const mode of ['matching', 'missing', 'changed']) {
+    const f = fakes(), prepare = f.options.prepare, execute = f.options.execute;
+    const sessionText = '{"type":"session","version":3,"id":"old","cwd":"/work/restored"}\n';
+    const replaySession = require('../../scripts/badcase-capture/direct-model.cjs').replaySessionInfo(sessionText);
+    f.options.prepare = (...args) => { const p = prepare(...args); p.input.sessionText = sessionText; return p; };
+    f.options.execute = async (...args) => { const task = await execute(...args);
+      if (mode !== 'missing') task.receipt.replaySession = { ...replaySession, ...(mode === 'changed' ? { deliveryMode: 'fresh' } : {}) }; return task; };
+    const result = await runComparison(config(), f.options);
+    assert.equal(result.completed, mode === 'matching'); assert.equal(result.runs[0].status, mode === 'matching' ? 'pass' : 'error');
+    assert.deepEqual(result.replaySession, replaySession);
+    if (mode !== 'matching') { assert.equal(f.state.executions, 1); assert.equal(result.totals.original.passed, 0); }
+  }
+});
 test('worker hashes nested files and same-prefix siblings in the same order as the host', async t => {
   const { receipt, input } = await workerReceipt(t, { files: ['src/index.js', 'src.js', 'a/item.txt', 'a.txt', 'docs/readme.md', 'docs.md'] });
   assert.equal(receipt.beforeHash, expectedTreeHash(input));
   assert.equal(receipt.afterHash, expectedTreeHash(input));
+});
+test('worker consumes a large verified directory workspace without needing file bodies in JSON', async t => {
+  const bytes = Buffer.alloc(25 * 1024 * 1024, 0x61);
+  const { receipt, input } = await workerReceipt(t, { files: ['nested/large.txt', 'plain.txt'],
+    fileBytes: { 'nested/large.txt': bytes }, directoryWorkspace: true });
+  assert.equal(receipt.beforeHash, expectedTreeHash(input)); assert.equal(receipt.afterHash, expectedTreeHash(input));
+});
+test('actual worker verifies preserved Git HEAD and multiple commits, hashing only captured working files', async t => {
+  const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-git-source-'));
+  t.after(() => fs.rmSync(sourceRoot, { recursive: true, force: true }));
+  const { prepareReplayGit, gitEnvironment } = require('../../scripts/badcase-capture/replay-git.cjs');
+  const git = args => require('node:child_process').execFileSync('git', ['-C', sourceRoot, '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args], { env: gitEnvironment(), encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  git(['init', '-q']); fs.writeFileSync(path.join(sourceRoot, 'source.txt'), 'before'); git(['add', 'source.txt']); git(['commit', '-q', '-m', 'unit test source']);
+  git(['commit', '-q', '--allow-empty', '-m', 'second source commit']);
+  const head = git(['rev-parse', 'HEAD']).trim(), repositorySnapshot = prepareReplayGit({ sourceRoot, head }, { files: [{ path: 'source.txt' }], deletions: [] });
+  const { receipt, input } = await workerReceipt(t, { files: ['source.txt'], fileBytes: { 'source.txt': 'captured dirty file' }, directoryWorkspace: true, repositorySnapshot });
+  assert.equal(receipt.repository.gitAvailable, true); assert.equal(receipt.repository.historyCommitCount, 2);
+  assert.equal(receipt.repository.historyIncluded, true); assert.equal(receipt.repository.sourceHead, head);
+  assert.equal(receipt.repository.restoredHead, head); assert.equal(receipt.beforeHash, expectedTreeHash(input));
 });
 test('worker callback reply never falls back to internal SDK text, and source is explicit', async t => {
   const missing = (await workerReceipt(t)).receipt;

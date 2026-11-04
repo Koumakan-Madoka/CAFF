@@ -3,14 +3,16 @@
 import crypto from 'node:crypto';
 import { createCaptureStore } from './capture-store';
 import { createCheckpointRetentionStore } from './checkpoint-retention';
-import { readSealedCase, validateSealRequest } from './sealed-case';
+import { readSealedCase } from './sealed-case';
+import { resolveWikiReplayRequest } from './wiki-replay-location';
 import { containsSecretSentinel } from './secrets';
+import { MAX_WIKI_CANDIDATE_FILES } from './wiki-candidate';
 const hash = (value: string | Buffer) => crypto.createHash('sha256').update(value).digest('hex');
-export function collectWikiCandidateFiles(state: any): any[] {
+export function collectWikiCandidateFiles(state: any, options: any = {}): any[] {
   try {
-    const files: any[] = []; let total = 0;
+    const files: any[] = [];
     for (const replay of state.replayCases || []) {
-      const { captureRoot, association, flagId } = validateSealRequest(replay.request);
+      const { captureRoot, association, flagId } = resolveWikiReplayRequest(options, replay.request);
       const sealed = readSealedCase({ captureRoot, association, flagId });
       if (!sealed) throw Error();
       const store = createCaptureStore({ captureRoot });
@@ -22,15 +24,15 @@ export function collectWikiCandidateFiles(state: any): any[] {
       for (const digest of retained.blobHashes) {
         const bytes = store.readBlob(association.projectId, digest);
         if (!Buffer.isBuffer(bytes) || hash(bytes) !== digest || containsSecretSentinel(bytes)) throw Error();
-        total += bytes.length;
-        if (total > 4 * 1024 * 1024) throw Error();
         blobs.set(digest, bytes);
       }
-      for (const name of Object.keys(retained.checkpoint.files).sort()) {
+      const names = Object.keys(retained.checkpoint.files).sort();
+      if (names.length > 1024) throw Error();
+      for (const name of names) {
         const f = retained.checkpoint.files[name], bytes = blobs.get(f.hash);
         if (f.type !== 'file' || f.secretExcluded || !bytes || bytes.length !== f.size) throw Error();
         files.push({ path: replay.id + '/' + name, base64: bytes.toString('base64'), sha256: f.hash });
-        if (files.length > 1024) throw Error();
+        if (files.length > MAX_WIKI_CANDIDATE_FILES) throw Error();
       }
     }
     return files;

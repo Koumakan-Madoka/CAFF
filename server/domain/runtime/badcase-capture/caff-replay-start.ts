@@ -39,7 +39,7 @@ function initialization(plan: any, bridge: boolean) {
   if (sessionEntries.length) {
     // Recheck the archived validator, including tool/attachment/private-state
     // dimensions. A forged complete flag must not bypass the original gate.
-    const checked = validateSessionV2(plan.sessionText, { authorizedRoot: '' });
+    const checked = validateSessionV2(plan.sessionText, { authorizedRoot: '', historyContext: true });
     if (!checked.ok) throw fail('replay_sdk_session_invalid');
     if (checked.unverifiedDimensions.length) throw fail('replay_sdk_session_unverified');
     const header = sessionEntries[0], ids = new Set<string>([header.id]);

@@ -33,7 +33,14 @@ function relayDockerTransport(runDocker, send, limits) {
         if (!c.State.Running) { await new Promise(r => setTimeout(r, 20)); continue; }
         const read = await runDocker(['exec', id, ...ENV, READ], { timeoutMs: 2000, maxOutput: cap.maxRequestBytes * 2 + 128 });
         if (ended) break;
-        assert.ok(good(read));
+        if (!good(read)) {
+          // The worker may stop after inspect but before exec, while its attach
+          // process is still closing (notably across WSL). Recheck this exact
+          // container and join its real exit; never swallow a live exec error.
+          const after = await inspect();
+          if (!after.State.Running) { await execution; break; }
+          assert.ok(good(read));
+        }
         if (read.stdout) {
           assert.ok(Buffer.byteLength(read.stdout) <= cap.maxRequestBytes * 2 + 128);
           const q = JSON.parse(read.stdout);
@@ -67,7 +74,10 @@ function relayDockerTransport(runDocker, send, limits) {
       // Never leave an attach or model send running after returning to the ledger.
       await execution;
     }
-    if (failure) throw Error('container_model_relay_failed');
+    if (failure) {
+      if (failure.code === 'evaluation_codex_proxy_failed') throw Object.assign(Error(failure.code), { code: failure.code });
+      throw Error('container_model_relay_failed');
+    }
     return execution;
   };
 }

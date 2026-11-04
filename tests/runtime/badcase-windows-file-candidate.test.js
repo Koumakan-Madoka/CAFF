@@ -52,7 +52,7 @@ function isolated({ scope, helper }) {
   return exports;
 }
 
-test('Windows candidate gates scope before transport and excludes all sentinel bytes/hash before any CAS plan', () => {
+test('Windows candidate gates scope, redacts sentinel bytes before CAS plans, and owns safe backing buffers', () => {
   let calls = 0;
   const safe = Buffer.from('safe'), secret = Buffer.from('sk-SENTINELabcdef12345');
   const sharedWire = Buffer.concat([safe, secret]);
@@ -71,12 +71,13 @@ test('Windows candidate gates scope before transport and excludes all sentinel b
   const result = api.readWindowsFileCandidate({ ok: true });
   assert.equal(calls, 1); assert.equal(result.ok, true);
   assert.equal(result.files.__proto__.hash, hash(safe));
-  assert.equal(result.blobs.size, 1); assert.deepEqual(result.blobs.get(hash(safe)), safe);
+  assert.equal(result.blobs.size, 2); assert.deepEqual(result.blobs.get(hash(safe)), safe);
   const retained = result.blobs.get(hash(safe));
   assert.equal(retained.buffer.byteLength, safe.length, 'owned unpooled allocation cannot retain the response backing secret');
   assert.equal(Buffer.from(retained.buffer).includes(secret), false);
-  assert.equal(result.files['private-data'].secretExcluded, true);
-  assert.equal(Object.hasOwn(result.files['private-data'], 'hash'), false);
+  assert.equal(result.files['private-data'].secretRedacted, true);
+  assert.equal(result.files['private-data'].originalSize, secret.length);
+  assert.equal(result.blobs.get(result.files['private-data'].hash).toString(), '[*]');
   assert.equal(result.blobs.has(hash(secret)), false);
   assert.doesNotMatch(JSON.stringify(result), new RegExp(`${secret.toString()}|${hash(secret)}`));
   for (const name of ['complete', 'strictEvalEligible', 'captureAvailable']) assert.equal(result[name], false);
@@ -108,10 +109,10 @@ test('Windows native bounded candidate to real CAS and two restores; incremental
   const before = service.loadPolicy('p'), started = performance.now();
   const result = readWindowsFileCandidate(options());
   assert.equal(result.ok, true, result.reason);
-  assert.equal(result.blobs.size, 3, 'binary/duplicate dedup, empty, Unicode');
-  assert.equal(result.files['hidden-secret'].secretExcluded, true);
+  assert.equal(result.blobs.size, 4, 'binary/duplicate dedup, empty, Unicode, redacted file');
+  assert.equal(result.files['hidden-secret'].secretRedacted, true);
   assert.equal(Object.hasOwn(result.files, '.env'), false);
-  assert.equal(Object.hasOwn(result.files['hidden-secret'], 'hash'), false);
+  assert.equal(result.files['hidden-secret'].hash, hash('[*]'));
   assert.equal(result.strictEvalEligible, false); assert.equal(result.complete, false);
   assert.equal(service.store.listCheckpoints('p').length, 0, 'reader is NOT a turn collector');
   assert.deepEqual(service.loadPolicy('p'), before, 'never enables or re-pins');
@@ -128,10 +129,11 @@ test('Windows native bounded candidate to real CAS and two restores; incremental
     const targetDir = path.join(base, `restored-${n}`);
     const value = restoreCheckpoint({ store, projectId: 'p', checkpointId: 'fixture', targetDir });
     assert.equal(value.ok, true, value.reason); assert.equal(value.strictEvalEligible, false);
-    assert.equal(value.replayInputComplete, false); assert.deepEqual(value.missingSecrets, ['hidden-secret']);
+    assert.equal(value.replayInputComplete, false); assert.deepEqual(value.missingSecrets, []);
+    assert.equal(value.redactedFiles[0].path, 'hidden-secret'); assert.equal(value.redactedFiles[0].byteIdenticalToSource, false);
     assert.deepEqual(fs.readFileSync(path.join(targetDir, 'binary')), content);
     assert.equal(fs.readFileSync(path.join(targetDir, 'nested', '中文😀'), 'utf8'), 'hello');
-    assert.equal(fs.existsSync(path.join(targetDir, 'hidden-secret')), false);
+    assert.equal(fs.readFileSync(path.join(targetDir, 'hidden-secret'), 'utf8'), '[*]');
     restored.push(value.restoredFiles);
   }
   assert.deepEqual(restored[0], restored[1]);
@@ -139,7 +141,7 @@ test('Windows native bounded candidate to real CAS and two restores; incremental
   for (const [digest, bytes] of result.blobs) store.stageBlob('p', 'fixture-repeat', digest, bytes);
   store.commitStaging('p', 'fixture-repeat');
   assert.equal(store.computeUsage('p').bytesByKind.blobs, byteCount);
-  assert.equal(byteCount, 8);
+  assert.equal(byteCount, 11);
   const storageBytes = [];
   function checkStorage(dir) {
     for (const name of fs.readdirSync(dir, { withFileTypes: true })) {

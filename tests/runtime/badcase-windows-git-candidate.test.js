@@ -157,7 +157,8 @@ test('classified selection precedes reads, preserves tracked mode, rescans metad
   assert.deepEqual([...value.observation.presentPaths], first.entries.filter(e => e.path !== '.git' && !e.path.startsWith('.git/')).map(e => e.path));
   assert.ok(value.observation.presentPaths.includes('ignored.log'));
   assert.equal(value.files['tracked.log'].mode, 0o100755);
-  assert.equal(value.files.untracked.secretExcluded, true); assert.equal(value.blobs.has(hash(secret)), false);
+  assert.equal(value.files.untracked.secretRedacted, true); assert.equal(value.blobs.has(hash(secret)), false);
+  assert.equal(value.blobs.get(value.files.untracked.hash).toString(), '[*]');
   assert.equal(value.blobs.get(hash(safe)).buffer.byteLength, 1);
   assert.equal(Buffer.from(value.blobs.get(hash(safe)).buffer).includes(secret), false);
   for (const name of ['complete', 'strictEvalEligible', 'captureAvailable']) assert.equal(value[name], false);
@@ -532,7 +533,8 @@ test('native local Git subset selects dirty/tracked/untracked/explicit ignored, 
   const asyncValue = await readWindowsGitFileCandidateAsync(options()); assert.equal(asyncValue.ok, true, asyncValue.reason);
   assert.deepEqual(asyncValue.files, value.files); assert.deepEqual(asyncValue.blobs, value.blobs);
   assert.ok(asyncValue.limitations.includes('async_git_chain_25s_observed_deadline'));
-  assert.equal(asyncValue.files['secret-sentinel'].secretExcluded, true);
+  assert.equal(asyncValue.files['secret-sentinel'].secretRedacted, true);
+  assert.equal(asyncValue.blobs.get(asyncValue.files['secret-sentinel'].hash).toString(), '[*]');
   assert.equal(asyncValue.blobs.has(hash('sk-SENTINELabcdefghijk')), false);
   const oracle = git('ls-files', '-c', '-o', '--exclude-standard', '-z').split('\0').filter(Boolean).concat('included.log').sort();
   assert.deepEqual(Object.keys(value.files).sort(), oracle);

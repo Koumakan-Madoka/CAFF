@@ -130,6 +130,39 @@ test('relay uses only pinned container ID; duplicate mailbox sequence sends once
   const result = await wrapped(['start', '-a', '-i', id], { timeoutMs: 1000 });
   assert.equal(result.stdout, 'receipt'); assert.equal(sent, 1); assert.equal(delivered, 1); assert.equal(reads, 2);
 });
+test('mailbox read racing with container exit joins the actual attach result instead of inventing a relay failure', async () => {
+  const id = 'a'.repeat(64); let finish, stopped = false, joined = false;
+  const run = async args => {
+    if (args[0] === 'start') return new Promise(resolve => { finish = () => { joined = true; resolve({ code: 124, stdout: '', stderr: '' }); }; });
+    if (args[0] === 'inspect') return { code: 0, stdout: JSON.stringify([{ Id: id, State: { Running: !stopped } }]), stderr: '' };
+    assert.equal(args[0], 'exec'); stopped = true; setImmediate(finish); return { code: 1, stdout: '', stderr: 'container stopped before exec' };
+  };
+  const wrapped = relayDockerTransport(run, async () => assert.fail('no model request'), { maxRequests: 2, maxRequestBytes: 100, maxResponseBytes: 100 });
+  const result = await wrapped(['start', '-a', '-i', id], { timeoutMs: 1000 }); assert.equal(result.code, 124); assert.equal(joined, true);
+});
+test('failed mailbox exec while the container is still running remains a hard relay failure', async () => {
+  const id = 'a'.repeat(64); let finish, killed = false;
+  const run = async args => {
+    if (args[0] === 'start') return new Promise(resolve => { finish = resolve; });
+    if (args[0] === 'inspect') return { code: 0, stdout: JSON.stringify([{ Id: id, State: { Running: !killed } }]), stderr: '' };
+    if (args[0] === 'kill') { killed = true; finish({ code: 137, stdout: '', stderr: '' }); return { code: 0, stdout: '', stderr: '' }; }
+    return { code: 1, stdout: '', stderr: 'unexpected failure while running' };
+  };
+  const wrapped = relayDockerTransport(run, async () => assert.fail(), { maxRequests: 2, maxRequestBytes: 100, maxResponseBytes: 100 });
+  await assert.rejects(wrapped(['start', '-a', '-i', id], { timeoutMs: 1000 }), /container_model_relay_failed/); assert.equal(killed, true);
+});
+test('a transient host send error retains only its fixed code after stopping and joining the owned worker', async () => {
+  const id='a'.repeat(64);let finish,killed=false;
+  const run=async args=>{
+    if(args[0]==='start')return new Promise(resolve=>{finish=resolve;});
+    if(args[0]==='inspect')return {code:0,stdout:JSON.stringify([{Id:id,State:{Running:!killed}}]),stderr:''};
+    if(args[0]==='kill'){killed=true;finish({code:137,stdout:'PRIVATE',stderr:'PRIVATE'});return {code:0,stdout:'',stderr:''};}
+    return {code:0,stdout:JSON.stringify({sequence:1,body:'e30='}),stderr:''};
+  };
+  const relay=relayDockerTransport(run,async()=>{throw Object.assign(Error('PRIVATE-CREDENTIAL'),{code:'evaluation_codex_proxy_failed'});},{maxRequests:2,maxRequestBytes:100,maxResponseBytes:100});
+  await assert.rejects(relay(['start','-a','-i',id],{timeoutMs:1000}),e=>e.code==='evaluation_codex_proxy_failed'&&!JSON.stringify(e).includes('PRIVATE'));
+  assert.equal(killed,true);
+});
 test('malformed/oversized/skipped mailbox requests never reach send and owned process is stopped', async () => {
   for (const request of [{ sequence: 2, body: 'e30=' }, { sequence: 1, body: '!!!' }, { sequence: 1, body: Buffer.alloc(101).toString('base64') }, { sequence: 1, body: 'e30=', extra: true }]) {
     const id = 'a'.repeat(64); let finish, sent = 0, killed = 0;

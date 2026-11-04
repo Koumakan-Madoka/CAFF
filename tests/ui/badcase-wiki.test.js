@@ -81,6 +81,111 @@ function setup(t, handler) {
     click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
 
+test('production result labels model/thinking and report-only rows, without stale proxy disclaimers or unrelated tasks', async t => {
+  const h = setup(t), totals = { original: { planned: 10, passed: 4, failed: 6, errors: 0, notRun: 0, scored: 10, passRate: .4 }, candidate: { planned: 10, passed: 8, failed: 2, errors: 0, notRun: 0, scored: 10, passRate: .8 } };
+  h.saved().comparisons = [{ id: 'production-1', executionId: 'production-1', createdAt: '2026-11-03T12:00:00Z', model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh', api: 'openai-codex-responses' }, completed: true, evaluation: { splitPolicy: 'd15-frozen-v1' }, modelCallsKnown: 40,
+    cases: [{ sourceCaseId: 'c1', stage: 'gate', category: 'reproduction', reportOnly: false, totals }, { sourceCaseId: 'c2', stage: 'test', category: 'control', replayId: 'replay-version-synthetic', reportOnly: false, totals }, { sourceCaseId: 'c3', stage: 'gate', category: 'reproduction', family: 'deepseek', reportOnly: true, totals: { original: { planned: 0, passed: 0 }, candidate: { planned: 0, passed: 0 } } }], byStage: { gate: totals, test: totals } }];
+  h.saved().comparisons[0].disclosures = ['post_observation_snapshot_head_rule_revision','topic_number_exemption_new_round'];
+  h.saved().comparisons[0].cases[0].topicExemption={patterns:['priority-code'],taskHash:'f'.repeat(64),reason:'题目以 P1/P2/P3 为主题 <script>not-run</script>'};
+  h.saved().replayCases.push({ sourceCaseId: 'c4', task: 'UNRELATED-OLD-TASK', category: 'probe', split: 'train' });
+  await h.panel.load(); await h.click('[data-tab="impact"]'); const text = h.root.querySelector('#impact-runs').textContent;
+  assert.match(text, /gpt-6.1-sol/); assert.match(text, /xhigh/); assert.match(text, /非GPT来源.*仅报告/); assert.match(text, /不计入/); assert.match(text, /样例.*新版本.*非历史复现/);
+  assert.match(text, /看过结果.*现场快照 SHA.*修正.*作废.*不计入判定/);
+  assert.match(text,/新轮主题编号豁免.*priority-code.*题目以 P1\/P2\/P3.*旧轮不改分/);assert.equal(h.root.querySelector('#impact-runs script'),null);
+  assert.doesNotMatch(text, /代理模型 DeepSeek|不作为采纳依据|UNRELATED-OLD-TASK/); assert.equal(h.posts().length, 0);
+});
+
+test('human interpretation and non-adoption stay separate from the accepted gate and persist in the timeline', async t => {
+  const h = setup(t);
+  h.saved().comparisons = [{ id: 'comparison-reviewed', createdAt: '2026-11-03T12:00:00Z', completed: true, model: 'openai-codex/gpt-6.1-sol', evaluation: { splitPolicy: 'd15-frozen-v1' }, cases: [], modelCallsKnown: 100 }];
+  const interpretation = '门槛判为接受（#19 原版 0/10，候选 6/10，p=0.0054；#16 两边都是 10/10）。\n测试组的复现题 #20 两边都是 0/10。候选把“开头先给结论”从 3/10 提到了 8/10，但两边 10 次全都用了 P1/P2/P3。\n只能说修好了 #19 这一类，不能说模式 1 整体变好了。\n本轮不采纳候选 bc807f8a，不进生产提示词。 <script>not-executed</script>';
+  h.saved().comparisonReviews = [{ id: 'review-1', comparisonId: 'comparison-reviewed', decision: 'not-adopted', gateOutcome: 'accepted', reason: 'test_not_passed', interpretation, baselineChanged: false, createdAt: '2026-11-04T01:00:00Z' }];
+  const before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="impact"]');
+  const text = h.root.querySelector('#impact-runs').textContent;
+  assert.ok(text.includes(interpretation)); assert.match(text, /未采纳.*基线未改变/);
+  assert.match(h.root.querySelector('#impact-log').textContent, /门槛接受、测试未通过、未采纳/);
+  assert.match(h.root.querySelector('#impact-log').textContent, /相同改动.*重复.*换.*写法/);
+  assert.equal(h.root.querySelector('#impact-runs script'), null); assert.equal(h.posts().length, 0); assert.deepEqual(h.saved(), before);
+});
+test('candidate confirmation does not promise old fixed case numbers or authorize a model run; approved experience hash is visible', async t=>{
+ const h=setup(t);h.saved().candidates[0].experienceHash='f'.repeat(64);await h.panel.load();await h.click('[data-tab="targets"]');const text=h.root.querySelector('#target-page').textContent;
+ assert.doesNotMatch(text,/#1\/#2\/#6\/#16|#4\/#10\/#14/);assert.match(text,/何时执行.*用户批准/);assert.ok(text.includes('f'.repeat(64)));assert.equal(h.posts().length,0);
+});
+test('full candidate and accepted baseline text copy verbatim without applying or adopting; rejected text stays historical', async t => {
+  const h = setup(t), copied = [];
+  h.window.CaffShared.copyTextToClipboard = async text => { copied.push(text); };
+  h.saved().baselines = [{ targetId: 'global-harness-behavior-v1', baseText: 'Shared harness prose.\n\nWikiSkill 已审核准则：\n- 已明确采纳的改法。', baseHash: '1'.repeat(64) }];
+  h.saved().candidates[0].candidateText += '\n<script>not-html</script>';
+  h.saved().comparisonReviews = [{ candidateHash: h.saved().candidates[0].candidateHash, targetId: 'global-harness-behavior-v1', decision: 'not-adopted' }];
+  await h.panel.load(); await h.click('[data-tab="targets"]');
+  assert.equal(h.root.querySelector('[data-final-text="candidate-global"]').textContent, h.saved().candidates[0].candidateText);
+  assert.equal(h.root.querySelector('[data-final-text="candidate-global"] script'), null);
+  const before = clone(h.saved()); await h.click('[data-copy-candidate="candidate-global"]');
+  assert.equal(copied[0], h.saved().candidates[0].candidateText); assert.match(h.root.querySelector('#target-page').textContent, /未采纳.*历史|历史.*未采纳/);
+  await h.click('[data-copy-baseline="global-harness-behavior-v1"]');
+  assert.equal(copied[1], h.saved().baselines[0].baseText); assert.equal(h.posts().length, 0); assert.deepEqual(h.saved(), before);
+  h.window.CaffShared.copyTextToClipboard = async () => { throw Error('denied'); };
+  await h.click('[data-copy-candidate="candidate-global"]'); assert.match(h.root.querySelector('#toast').textContent, /复制失败/); assert.equal(h.posts().length, 0);
+});
+test('an explicit adopted review is labelled as evaluation baseline adoption, never a production write', async t => {
+  const h = setup(t);
+  h.saved().comparisons = [{ id: 'comparison-adopted', createdAt: '2026-11-04T01:00:00Z', completed: true, cases: [], modelCallsKnown: 20 }];
+  h.saved().comparisonReviews = [{ comparisonId: 'comparison-adopted', candidateId: 'candidate-global', candidateHash: h.saved().candidates[0].candidateHash, targetId: 'global-harness-behavior-v1', decision: 'adopted', reason: 'user_accepted', baselineChanged: true, interpretation: '用户明确采纳。', createdAt: '2026-11-04T02:00:00Z' }];
+  await h.panel.load(); await h.click('[data-tab="impact"]'); assert.match(h.root.querySelector('.comparison-review').textContent, /已采纳.*评测基线/);
+  assert.match(h.root.querySelector('#impact-log').textContent, /用户明确采纳.*生产提示词仍须手动合入/);
+  await h.click('[data-tab="targets"]'); const card = h.root.querySelector('.cand'); assert.match(card.textContent, /已采纳为评测基线/); assert.equal(card.querySelector('[data-confirm-candidate]'), null); assert.equal(h.posts().length, 0);
+});
+test('experience drafts require explicit review before the mode columns or candidate inputs; revisions do not edit frozen text', async t => {
+ const h=setup(t,(url,options,saved)=>{if(url.endsWith('/experience')&&options.method==='POST'){const e=saved.experiences.find(e=>e.id===options.body.experienceId);assert.equal(options.body.decision,'approved');Object.assign(e,options.body.patch,{status:'approved',reviewedAt:'2026-11-04T03:00:00Z'});saved.revision++;return clone(saved);}return undefined;});
+ h.saved().experiences=[{id:'experience-draft',rootId:'root-1',version:1,parentId:null,entryId:'entry-1',status:'draft',methods:'开头结论率提高；P编号规则可能误判 <script>no-html</script>',positiveExamples:'示意，非回放原文：结论是……。',createdAt:'2026-11-04T02:00:00Z'}];
+ await h.panel.load();assert.match(h.root.querySelector('.experience-draft').textContent,/待审核/);assert.match(h.root.querySelector('[data-experience-methods]').textContent,/尚无已审核/);assert.equal(h.root.querySelector('.experience-draft script'),null);
+ h.root.querySelector('[name="experience-methods"]').value='有效：先给结论；规则教训：避开题目主题。';await h.click('[data-review-experience="experience-draft"][data-decision="approved"]');assert.equal(h.posts().at(-1).url,'/api/wikiskill/experience');assert.equal(h.posts().at(-1).body.expectedRevision,3);
+ assert.match(h.root.querySelector('[data-experience-methods]').textContent,/有效：先给结论/);assert.match(h.root.querySelector('[data-experience-examples]').textContent,/示意，非回放原文/);assert.equal(h.root.querySelector('[name="experience-methods"]'),null);assert.ok(h.root.querySelector('[data-revise-experience="experience-draft"]'));
+ h.saved().candidates[0].experienceInputs=[{id:'experience-draft',version:1,methods:h.saved().experiences[0].methods,positiveExamples:h.saved().experiences[0].positiveExamples}];await h.panel.load();await h.click('[data-tab="targets"]');assert.match(h.root.querySelector('.cand').textContent,/已审核经验输入/);assert.match(h.root.querySelector('.cand').textContent,/规则教训/);
+});
+test('voided mark audit remains visible after removing the active case, without an undefined number or HTML execution', async t => {
+  const h = setup(t);
+  h.saved().events.push({ id: 'event-void', type: 'case-mark-voided', caseIds: ['removed-case'], createdAt: '2026-11-03T09:00:00Z', label: '误标作废', reason: '现场无对应测试；用户批准 <script>not-html</script>' });
+  const before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="impact"]');
+  const log = h.root.querySelector('#impact-log');
+  assert.match(log.textContent, /误标作废/); assert.match(log.textContent, /现场无对应测试/);
+  assert.match(log.textContent, /保留旧版本/); assert.doesNotMatch(log.textContent, /#undefined/);
+  assert.equal(log.querySelector('script'), null); assert.deepEqual(h.saved(), before); assert.equal(h.posts().length, 0);
+});
+test('command progress refreshes read-only without resetting wiki edits or presenting original observations as adoption', async t => {
+  let finished = false;
+  const execution = () => ({ id: 'execution-1', status: finished ? 'completed' : 'running', updatedAt: new Date().toISOString(), plan: { model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh' }, variants: ['original'], repeats: 2 }, current: finished ? null : { variant: 'original', iteration: 1 }, conclusion: finished ? 'original_observation_only' : null,
+    summary: { plannedRuns: 2, completedRuns: finished ? 2 : 0, knownTokens: finished ? 14 : null, usageComplete: false, totals: { original: { planned: 2, passed: 1, failed: 1, errors: 0, notRun: finished ? 0 : 2 } } } });
+  const h = setup(t, (url, options) => {
+    if (url === '/api/wikiskill/executions') return { executions: [execution()] };
+    if (options.method === 'POST') return Promise.reject(Error('unknown mutation result'));
+  });
+  h.saved().executions = [execution()]; await h.panel.load(); await h.click('[data-tab="impact"]');
+  assert.match(h.root.querySelector('#execution-progress').textContent, /命令执行|执行进度/);
+  assert.match(h.root.querySelector('#execution-progress').textContent, /xhigh/); assert.match(h.root.querySelector('#execution-progress').textContent, /0\/2/);
+  assert.equal(h.root.querySelector('#execution-progress button'), null, 'no web launch controls');
+  await h.click('[data-tab="wiki"]'); await h.click('[data-induct]');
+  assert.equal(h.root.querySelector('[data-induct]').disabled, true);
+  const posts = h.posts().length; finished = true; await h.panel.refreshExecutions();
+  assert.equal(h.posts().length, posts); assert.equal(h.root.querySelector('[data-induct]').disabled, true, 'progress cannot re-enable writes after an unknown write result');
+  await h.click('[data-tab="impact"]');
+  const text = h.root.querySelector('#execution-progress').textContent;
+  assert.match(text, /2\/2/); assert.match(text, /原版.*不产生采纳结论/); assert.match(text, /字面规则/); assert.doesNotMatch(text, /已采纳|接受候选/);
+});
+
+test('staged progress refreshes gate/test counts, replacements and saved results without mutating wiki edits', async t => {
+  const totals = { original: { planned: 10, attempted: 11, passed: 4, failed: 6, errors: 1, notRun: 0 }, candidate: { planned: 10, attempted: 10, passed: 8, failed: 2, errors: 0, notRun: 0 } };
+  const execution = { id: 'batch-execution-1', status: 'running', updatedAt: new Date().toISOString(), plan: { kind: 'wiki-staged-batch-comparison-v1', model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh', transport: 'sse' }, variants: ['original', 'candidate'], cases: [] }, current: { sourceCaseId: 'c1', stage: 'gate', variant: 'original', iteration: 11 }, gateOutcome: null, summary: { plannedRuns: 60, completedRuns: 21, knownTokens: 14, usageComplete: false, totals, byStage: { gate: totals, test: totals } }, cases: [{ sourceCaseId: 'c1', stage: 'gate', reportOnly: false, totals }, { sourceCaseId: 'c3', stage: 'gate', reportOnly: true, totals }] };
+  const h = setup(t, url => url === '/api/wikiskill/executions' ? { executions: [execution], comparisons: [{ id: 'finished-batch', createdAt: '2026-11-03T10:00:00Z', model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh' }, completed: true, evaluation: { splitPolicy: 'd15-frozen-v1' }, cases: [], modelCallsKnown: 21 }] } : undefined);
+  h.saved().versions[0].entries[0].status = 'draft'; await h.panel.load();
+  const edit = h.root.querySelector('[name="guideline"]'); edit.value = '尚未保存的编辑';
+  await h.panel.refreshExecutions(); assert.equal(h.root.querySelector('[name="guideline"]'), edit); assert.equal(edit.value, '尚未保存的编辑'); assert.equal(h.saved().revision, 3);
+  await h.click('[data-tab="impact"]');
+  const text = h.root.querySelector('#execution-progress').textContent;
+  assert.match(text, /正式批量/); assert.match(text, /门槛/); assert.match(text, /测试/); assert.match(text, /环境.*替补|替补.*环境/); assert.match(text, /非GPT来源.*仅报告/);
+  assert.match(h.root.querySelector('#impact-runs').textContent, /xhigh/); assert.doesNotMatch(text, /字面对照观察，不是正式/); assert.equal(h.posts().length, 0); assert.equal(h.root.querySelector('#execution-progress button'), null);
+});
+
 test('prototype structure defaults to knowledge base, keeps loop tab order and uses real room titles without examples', async t => {
   const h = setup(t); await h.panel.load();
   assert.equal(h.calls.length, 1); assert.equal(h.calls[0].url, '/api/wikiskill'); assert.equal(h.posts().length, 0);

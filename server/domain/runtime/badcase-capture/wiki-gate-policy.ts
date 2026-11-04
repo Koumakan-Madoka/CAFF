@@ -10,7 +10,7 @@ export function fisherImprovement(originalPass: number, originalN: number, candi
   return Math.min(1,p);
 }
 export function decideWikiGate(cases: any[], targetReproductionCaseIds: string[], repeats: number) {
-  const gate = cases.filter(c => c.stage === 'gate');
+  const gate = cases.filter(c => c.stage === 'gate' && c.reportOnly !== true);
   const totals = (selected: any[]) => Object.fromEntries(['original','candidate'].map(variant => {
     const runs = selected.flatMap(c=>c.runs || []).filter(r=>r.variant===variant && r.status!=='error');
     return [variant,{ passed:runs.filter(r=>r.status==='pass').length, total:runs.length }];

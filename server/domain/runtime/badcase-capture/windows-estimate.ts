@@ -105,6 +105,6 @@ export async function estimateWindowsDirectoryAsync(options: any): Promise<any> 
   try {
     const plan = prepareWindowsMetadataScope(options);
     if (!plan.ok) return plan;
-    return summarize(await invokeWindowsEstimateHelper('python', plan.helperPath, plan.request));
+    return summarize(await invokeWindowsEstimateHelper('python', plan.helperPath, plan.request, options.deadline));
   } catch { return fail('windows_estimate_unavailable'); }
 }

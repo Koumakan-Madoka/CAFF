@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // CLI only. --plan is read-only; --run requires explicit trace/rule confirmation.
 const fs = require('node:fs'), path = require('node:path');
+const { jsonChunks } = require('./replay-streams.cjs');
 const { prepareComparison, runComparison, formatComparison } = require('./direct-comparison.cjs');
 function argumentsFor(argv) {
   const out = {};
@@ -26,9 +27,10 @@ async function main(argv = process.argv.slice(2)) {
   // Never overwrite an earlier result or persist env/config/key content.
   const fd = fs.openSync(args['--output'], 'wx', 0o600);
   try {
-    const result = await runComparison(config, { confirmed: true, onEvent: event => { fs.writeSync(fd, JSON.stringify(event) + '\n'); fs.fsyncSync(fd); } });
+    const result = await runComparison(config, { confirmed: true, onEvent: event => { for (const chunk of jsonChunks(event)) fs.writeSync(fd, chunk); fs.writeSync(fd, '\n'); fs.fsyncSync(fd); } });
     if (!result.supported) { fs.writeSync(fd, JSON.stringify(result) + '\n'); fs.fsyncSync(fd); }
-    process.stdout.write(args['--json'] ? JSON.stringify(result, null, 2) + '\n' : formatComparison(result));
+    if (args['--json']) { for (const chunk of jsonChunks(result)) process.stdout.write(chunk); process.stdout.write('\n'); }
+    else process.stdout.write(formatComparison(result));
     if (!result.supported || !result.completed) process.exitCode = 1;
   } finally { fs.closeSync(fd); }
 }

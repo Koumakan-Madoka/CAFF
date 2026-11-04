@@ -1,5 +1,5 @@
-// Windows service collector. Management enable requires its separate supported
-// host environment and classified metadata estimate, never a raw capacity scan.
+// Windows service collector. Management enable requires a classified metadata
+// estimate, never a raw capacity scan or service-wide Git configuration.
 // Bounded local/external Git limitations remain: no ambient global Git or
 // independent consistency proof; deletion history requires a comparable prior
 // checkpoint and ASCII namespace. Never advertise complete.
@@ -16,7 +16,6 @@ import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
 export function createWindowsTurnCollector(options: any = {}): any {
   const store = options.store;
   const readCallbackInput = options.readCallbackInput;
-  const checkEnvironment = options.checkEnvironment;
   // Static trusted host configuration, not invocation-controlled exclusions.
   const agentDir = options.agentDir, privateDirs = structuredClone(options.privateDirs === undefined ? [] : options.privateDirs);
   return { async captureTurnCheckpoint(value: any = {}): Promise<any> {
@@ -37,13 +36,11 @@ export function createWindowsTurnCollector(options: any = {}): any {
       const outcome = await withAsyncProjectWriteLease(store.captureRoot, projectId, async writeSync => {
         const policy = structuredClone(store.loadPolicy(projectId));
         if (policy.status !== 'enabled') return failed('policy_not_enabled');
-        if (typeof checkEnvironment === 'function' && checkEnvironment() !== true) return failed('windows_git_environment_unsupported');
         if (performance.now() >= deadline) return failed('windows_capture_timeout');
         const files = await readWindowsGitFileCandidateAsync({ policy, targetDir, captureRoot: store.captureRoot,
           agentDir, privateDirs, deadline, externalGit: selectWindowsExternalGit(policy, targetDir) });
         if (performance.now() >= deadline) return failed('windows_capture_timeout');
         if (!files.ok) return failed(files.reason);
-        if (typeof checkEnvironment === 'function' && checkEnvironment() !== true) return failed('windows_git_environment_unsupported');
         // Native file-root/pin/whole-tree checks succeeded under this lease.
         // Never trust a caller-supplied callback packet when a source is wired.
         if (typeof readCallbackInput === 'function') input.callbackInput = readCallbackInput(input, policy);
@@ -59,6 +56,8 @@ export function createWindowsTurnCollector(options: any = {}): any {
         replayInput.incompleteReasons = [...new Set([...replayInput.incompleteReasons, 'windows_capture_subset_unverified',
           ...(secretExcludedPaths.length ? ['files_contain_secret'] : [])])];
         if (secretExcludedPaths.length) replayInput.secretExcludedPaths = secretExcludedPaths;
+        const secretRedactedPaths = Object.keys(files.files).filter(p => files.files[p].secretRedacted === true).sort();
+        if (secretRedactedPaths.length) replayInput.secretRedactedPaths = secretRedactedPaths;
         const blobs = new Map(files.blobs);
         for (const plan of prepared.plans) blobs.set(plan.hash, plan.content);
         // Compare only same-scope native observations under this project lease.
@@ -94,7 +93,7 @@ export function createWindowsTurnCollector(options: any = {}): any {
         })).digest('hex');
         const limitations = files.limitations.filter((s: string) => !['windows_turn_collector_not_connected',
           'session_and_invocation_not_collected', 'deletion_history_not_collected'].includes(s));
-        limitations.push(...(typeof checkEnvironment === 'function' ? ['global_git_config_explicitly_disabled_in_host_runtime'] : []),
+        limitations.push('git_configuration_isolated_in_capture_helpers',
           'deletion_history_only_from_comparable_previous_checkpoint',
           ...(indexedVerified ? [] : ['tracked_deletions_before_first_checkpoint_not_inferred']),
           'known_comparable_secrets_and_type_replacements_not_inferred', ...(comparable ? [] : ['deletion_history_baseline_unavailable']));
@@ -113,12 +112,12 @@ export function createWindowsTurnCollector(options: any = {}): any {
           strictEvalBlockedReason: 'no_independent_consistency_evidence',
           stats: { fileCount: Object.keys(files.files).length,
             totalBytes: Object.values(files.files).reduce((sum: number, f: any) => sum + f.size, 0),
-            secretExcludedFiles: secretExcludedPaths.length, durationMs: performance.now() - started },
+            secretExcludedFiles: secretExcludedPaths.length, secretRedactedFiles: secretRedactedPaths.length,
+            durationMs: performance.now() - started },
         };
         // Last observed deadline is BEFORE publication. Synchronous CAS/JSON
         // writes are non-preemptible; once committed do not pretend rollback.
         if (performance.now() >= deadline) return failed('windows_capture_timeout');
-        if (typeof checkEnvironment === 'function' && checkEnvironment() !== true) return failed('windows_git_environment_unsupported');
         return writeSync(() => publishPreparedCheckpoint({ store, checkpoint, blobs }));
       });
       // Lease cleanup must also succeed before a checkpoint association escapes.
