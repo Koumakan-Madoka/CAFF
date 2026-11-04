@@ -1,5 +1,5 @@
 // Trusted host preparation at an explicitly recorded commit. Preserve only
-// reachable Git objects after known-value blob scanning; on a hit, fall back
+// reachable Git objects after known-value object scanning; on a hit, fall back
 // to the prior sanitized authorized-path baseline. Never copy source config.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
@@ -151,7 +151,7 @@ function prepareReplayGit(recipe, input, { knownValues = [] } = {}) {
     if (metadata.scan.matchCount) {
       const fallback = prepareSanitizedReplayGit(recipe, input, { knownValues });
       fallback.report.historyCommitCount = 1; fallback.report.historyScan = metadata.scan;
-      fallback.report.fallbackReason = 'known_key_in_reachable_blob';
+      fallback.report.fallbackReason = 'known_key_in_reachable_object';
       return fallback;
     }
     // Repack precisely the recorded commit's closure, not --all/source packs:

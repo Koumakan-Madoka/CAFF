@@ -47,20 +47,82 @@ test('known key in a deleted historical blob forces sanitized no-history fallbac
   const oldBlob = f.git(f.sourceRoot, 'rev-parse', f.head + '~1:old-only.txt').trim();
   const snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, f.input, { knownValues: [value] }); f.install(snapshot);
   assert.equal(snapshot.report.historyIncluded, false); assert.notEqual(snapshot.report.restoredHead, f.head);
-  assert.equal(snapshot.report.fallbackReason, 'known_key_in_reachable_blob');
+  assert.equal(snapshot.report.fallbackReason, 'known_key_in_reachable_object');
   assert.equal(snapshot.report.historyScan.matchCount, 1); assert.deepEqual(snapshot.report.historyScan.matchedBlobHashes, [oldBlob]);
   assert.equal(f.git(f.restored, 'rev-list', '--count', 'HEAD').trim(), '1');
   assert.throws(() => f.git(f.restored, 'cat-file', '-t', oldBlob));
   assert.equal(JSON.stringify(snapshot.report).includes(value), false);
+});
+for (const location of ['commit', 'tag', 'tree']) test('known key in ' + location + ' metadata forces sanitized no-history fallback', t => {
+  const f = fixture(t), value = 'opaque_synthetic_metadata_key_123456';
+  const commit = message => f.git(f.sourceRoot, '-c', 'user.name=GPT', '-c', 'user.email=gpt@caff.local', 'commit', '-q', '--allow-empty', '-m', message);
+  let object;
+  if (location === 'commit') {
+    commit('message contains ' + value); object = f.git(f.sourceRoot, 'rev-parse', 'HEAD').trim();
+  } else if (location === 'tag') {
+    f.git(f.sourceRoot, '-c', 'user.name=GPT', '-c', 'user.email=gpt@caff.local', '-c', 'tag.gpgsign=false', 'tag', '-a', 'metadata-fixture', '-m', 'annotation contains ' + value, f.head);
+    object = f.git(f.sourceRoot, 'rev-parse', 'refs/tags/metadata-fixture').trim();
+  } else {
+    fs.writeFileSync(path.join(f.sourceRoot, value + '.txt'), 'inert content'); f.git(f.sourceRoot, 'add', value + '.txt'); commit('historical filename');
+    object = f.git(f.sourceRoot, 'rev-parse', 'HEAD^{tree}').trim();
+    f.git(f.sourceRoot, 'rm', '-q', value + '.txt'); commit('remove historical filename');
+  }
+  const head = f.git(f.sourceRoot, 'rev-parse', 'HEAD').trim(), recipe = { sourceRoot: f.sourceRoot, head };
+  const before = f.git(f.sourceRoot, 'status', '--porcelain');
+  const { scanGitHistory } = require('../../scripts/badcase-capture/replay-git-history.cjs');
+  const metadata = scanGitHistory(recipe, [value]);
+  assert.equal(metadata.scan.matchCount, 1, location + ' known value must be detected, not treated as a clean history');
+  assert.deepEqual(metadata.scan.matchedObjectHashes, [object]); assert.deepEqual(metadata.scan.matchedBlobHashes, []);
+  const snapshot = api().prepareReplayGit(recipe, f.input, { knownValues: [value] }); f.install(snapshot);
+  assert.equal(snapshot.report.historyIncluded, false); assert.notEqual(snapshot.report.restoredHead, head);
+  assert.equal(snapshot.report.fallbackReason, 'known_key_in_reachable_object');
+  assert.equal(f.git(f.restored, 'rev-list', '--all', '--count').trim(), '1');
+  assert.throws(() => f.git(f.restored, 'cat-file', '-t', object));
+  assert.equal(f.git(f.restored, 'cat-file', '--batch-all-objects', '--batch').includes(value), false);
+  assert.equal(JSON.stringify(metadata).includes(value), false); assert.equal(JSON.stringify(snapshot.report).includes(value), false);
+  const preserved = api().prepareReplayGit(recipe, f.input, { knownValues: [] });
+  assert.equal(preserved.report.historyIncluded, true);
+  assert.throws(() => preserved.checkKnownValues([value]), e => e.code === 'evaluation_input_contains_key');
+  assert.equal(f.git(f.sourceRoot, 'status', '--porcelain'), before);
+  assert.deepEqual(fs.readFileSync(path.join(f.sourceRoot, '.git/config')), f.configBefore);
+});
+for (const target of ['ancestor', 'nested-tag', 'tree', 'blob']) test('history scan includes annotations targeting reachable ' + target + ' objects', t => {
+  const f = fixture(t), value = 'opaque_synthetic_tag_target_key';
+  const tag = (name, message, oid) => f.git(f.sourceRoot, '-c', 'user.name=GPT', '-c', 'user.email=gpt@caff.local', '-c', 'tag.gpgsign=false', 'tag', '-a', name, '-m', message, oid);
+  const oid = f.git(f.sourceRoot, 'rev-parse', target === 'ancestor' ? f.head + '~1' : target === 'tree' ? f.head + '^{tree}' : target === 'blob' ? f.head + ':dirty.txt' : f.head).trim();
+  if (target === 'nested-tag') tag('inner-fixture', 'inert annotation', oid);
+  tag('outer-fixture', value, target === 'nested-tag' ? 'refs/tags/inner-fixture' : oid);
+  const annotation = f.git(f.sourceRoot, 'rev-parse', 'refs/tags/outer-fixture').trim();
+  const snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, f.input, { knownValues: [value] });
+  assert.equal(snapshot.report.historyIncluded, false); assert.equal(snapshot.report.historyScan.matchCount, 1);
+  assert.deepEqual(snapshot.report.historyScan.matchedObjectHashes, [annotation]);
+  assert.deepEqual(snapshot.report.historyScan.matchedBlobHashes, []);
+});
+for (const type of ['commit', 'tag']) test('history scanner streams large ' + type + ' metadata with chunk-boundary overlap', t => {
+  const f = fixture(t), value = 'opaque_synthetic_long_metadata_key_' + 'x'.repeat(300);
+  const message = path.join(f.root, 'message.txt');
+  fs.writeFileSync(message, 'x'.repeat(65530) + value + '\n' + 'x'.repeat(65530) + value + '\n');
+  const identity = ['-c', 'user.name=GPT', '-c', 'user.email=gpt@caff.local'];
+  if (type === 'commit') f.git(f.sourceRoot, ...identity, 'commit', '--allow-empty', '-q', '-F', message);
+  else f.git(f.sourceRoot, ...identity, '-c', 'tag.gpgsign=false', 'tag', '-a', 'large-fixture', '-F', message, f.head);
+  const head = f.git(f.sourceRoot, 'rev-parse', 'HEAD').trim();
+  const object = f.git(f.sourceRoot, 'rev-parse', type === 'commit' ? head : 'refs/tags/large-fixture').trim();
+  const metadata = require('../../scripts/badcase-capture/replay-git-history.cjs').scanGitHistory({ sourceRoot: f.sourceRoot, head }, [value]);
+  assert.equal(metadata.scan.matchCount, 2); assert.deepEqual(metadata.scan.matchedObjectHashes, [object]);
+  assert.equal(metadata.scan.kind, 'known-values-objects-v1'); assert.equal(metadata.scan.objectCount, metadata.objectCount);
+  assert.equal(JSON.stringify(metadata).includes(value), false);
 });
 test('unreachable/future objects and other source refs are neither scanned nor copied into recorded history', t => {
   const f = fixture(t), value = 'synthetic-future-value-do-not-copy';
   fs.writeFileSync(path.join(f.sourceRoot, 'future.txt'), value); f.git(f.sourceRoot, 'add', 'future.txt');
   f.git(f.sourceRoot, '-c', 'user.name=GPT', '-c', 'user.email=gpt@caff.local', 'commit', '-q', '-m', 'future commit');
   const future = f.git(f.sourceRoot, 'rev-parse', 'HEAD').trim();
+  f.git(f.sourceRoot, '-c', 'user.name=GPT', '-c', 'user.email=gpt@caff.local', '-c', 'tag.gpgsign=false', 'tag', '-a', 'future-fixture', '-m', value, future);
+  const futureTag = f.git(f.sourceRoot, 'rev-parse', 'refs/tags/future-fixture').trim();
   const snapshot = api().prepareReplayGit({ sourceRoot: f.sourceRoot, head: f.head }, f.input, { knownValues: [value] }); f.install(snapshot);
   assert.equal(snapshot.report.historyIncluded, true); assert.equal(snapshot.report.historyScan.matchCount, 0);
   assert.equal(f.git(f.restored, 'rev-parse', 'HEAD').trim(), f.head); assert.throws(() => f.git(f.restored, 'cat-file', '-t', future));
+  assert.throws(() => f.git(f.restored, 'cat-file', '-t', futureTag));
 });
 test('history scanner catches known values in binary blobs and repeated/chunk-boundary bytes without recording values', t => {
   const f = fixture(t), value = 'opaque-synthetic-binary-key-' + 'x'.repeat(300);
