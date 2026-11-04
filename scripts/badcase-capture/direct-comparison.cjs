@@ -18,6 +18,7 @@ const { manifestFor } = require('./pi-probe-materials.cjs');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 const { resolveWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-candidate');
 const { resolveGlobalWikiCandidate } = require('../../build/server/domain/runtime/badcase-capture/wiki-global-candidate');
+const { resolveWikiBaseline } = require('../../build/server/domain/runtime/badcase-capture/wiki-baseline');
 const { collectWikiCandidateFiles } = require('../../build/server/domain/runtime/badcase-capture/wiki-candidate-files');
 const { validateLiteralRules, scoreLiteralFiles } = require('./file-literal-rules.cjs');
 const { validatePublicReplyRules, scorePublicReply } = require('./public-reply-literal-rules.cjs');
@@ -93,7 +94,7 @@ function prepareComparison(config, options = {}) {
   else if (dockerBackend || config.codexAuthFile !== undefined || config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
     || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
   const rules = validateRules(config.rules), knownValues = comparisonKnownValues(config, options);
-  let prepare = options.prepare || (originalOnly ? prepareSealedOriginalTurn : prepareSealedDirectTurn), globalWikiCandidate = null, globalState, globalSaved, globalFiles;
+  let prepare = options.prepare || (originalOnly ? prepareSealedOriginalTurn : prepareSealedDirectTurn), globalWikiCandidate = null, globalState, globalSaved, globalFiles, baseline;
   if (config.globalWikiCandidate !== undefined) {
     const selection = config.globalWikiCandidate;
     if (!selection || typeof selection !== 'object' || Array.isArray(selection)
@@ -106,8 +107,12 @@ function prepareComparison(config, options = {}) {
     if (globalSaved.target?.kind !== 'global-system-prompt') throw fail('evaluation_target_unsupported');
     globalFiles = collectWikiCandidateFiles(globalState);
     resolveGlobalWikiCandidate(globalState, globalSaved.id, globalSaved.targetId, globalSaved.baseHash, globalFiles);
+    baseline = resolveWikiBaseline(globalState, globalSaved.targetId);
     const prepareTarget = options.prepareTarget || prepareSealedPromptTarget;
-    prepare = (request, replacement = null) => prepareTarget(request, globalSaved.targetId, replacement);
+    // Old seals and newly sealed, manually merged fragments share one baseline.
+    // Only the candidate adds a new change; neither arm silently drops history.
+    prepare = (request, replacement = null) => prepareTarget(request, globalSaved.targetId,
+      replacement === null && baseline.fragments.length > 1 ? baseline.target.baseText : replacement, baseline.fragments);
   }
   const original = prepare(config.request);
   if (original.supported !== true) return { supported: false, reason: /^replay_[a-z_]+$/.test(original.reason || '') ? original.reason : 'replay_materials_invalid' };
@@ -116,8 +121,9 @@ function prepareComparison(config, options = {}) {
   }
   let candidateRole = config.candidateRole, wikiCandidate = null;
   if (globalSaved) {
+    if (!baseline.fragments.some(f => f.baseHash === original.provenance.originalTargetHash)) throw fail('wiki_candidate_target_mismatch');
     const selected = resolveGlobalWikiCandidate(globalState, globalSaved.id, original.provenance.targetId,
-      original.provenance.originalTargetHash, original.input.files);
+      globalSaved.baseHash, original.input.files);
     candidateRole = selected.candidateText;
     globalWikiCandidate = { id: selected.id, versionId: selected.versionId, entryIds: selected.entryIds,
       targetId: selected.targetId, baseHash: selected.baseHash, candidateHash: selected.candidateHash };
@@ -173,7 +179,9 @@ function prepareComparison(config, options = {}) {
     ...(original.input.sessionText ? { replaySession: replaySessionInfo(original.input.sessionText) } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
     imageId: config.image.imageId, timeoutMs: config.timeoutMs ?? 120000, rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hashJson(i)])),
-    strictEvalEligible: false, ...(repository ? { repository: repository.report } : {}),
+    strictEvalEligible: false, ...(baseline?.fragments.length > 1 ? { promptBaseline: { kind: 'adopted-wiki-baseline-v1', baseHash: baseline.target.baseHash,
+      archivedTargetHash: original.provenance.originalTargetHash, alreadyMerged: original.provenance.originalTargetHash === baseline.target.baseHash, appliedToBothVariants: true } } : {}),
+    ...(repository ? { repository: repository.report } : {}),
     ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}), ...(wikiCandidate ? { wikiCandidate } : {}),
     ...(globalWikiCandidate ? { targetId: globalWikiCandidate.targetId, globalWikiCandidate } : {}) };
   return { supported: true, inputs, summary, beforeHash: expectedTreeHash(original.input),

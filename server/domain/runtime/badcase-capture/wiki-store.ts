@@ -15,6 +15,7 @@ import { buildSampleReplayVersion } from './wiki-sample-replay-version';
 import { readWikiComparisonRecord } from './wiki-comparison-record';
 import { projectStagedResult } from './wiki-staged-result';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
+import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -152,7 +153,7 @@ export function createWikiStore(options: any) {
   const directory = global ? path.join(captureRoot, 'snapshots') : path.join(captureRoot, 'wiki', projectId!, 'snapshots');
   const identity = global ? { scope: 'global' } : { projectId };
   const fresh = () => ({ schemaVersion: 1, ...identity, revision: 0, cases: [] as any[], versions: [] as any[], candidates: [] as any[], replayCases: [] as any[], replaySplit: null,
-    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[], classifications: [] as any[], ...(global ? { replayVersions: [] as any[], comparisonReviews: [] as any[] } : {}) });
+    suggestions: [] as any[], caseStates: [] as any[], inductionRuns: [] as any[], events: [] as any[], classifications: [] as any[], ...(global ? { replayVersions: [] as any[], comparisonReviews: [] as any[], baselines: [] as any[] } : {}) });
   function read(): any {
     let names: string[];
     try { names = fs.readdirSync(directory); }
@@ -186,6 +187,8 @@ export function createWikiStore(options: any) {
       if (record.replaySplit !== null && (typeof record.replaySplit !== 'object' || Array.isArray(record.replaySplit))) throw Error();
       if (global && record.comparisonReviews === undefined) record.comparisonReviews = [];
       if (record.comparisonReviews !== undefined && !Array.isArray(record.comparisonReviews)) throw Error();
+      if (global && record.baselines === undefined) record.baselines = [];
+      if (record.baselines !== undefined && !Array.isArray(record.baselines)) throw Error();
       for (const field of ['suggestions', 'caseStates', 'inductionRuns', 'events', 'classifications']) {
         if (record[field] === undefined) record[field] = [];
         if (!Array.isArray(record[field])) throw Error();
@@ -589,7 +592,8 @@ export function createWikiStore(options: any) {
       shape(input, ['comparisonId', 'candidateHash', 'expectedRevision', 'decision', 'reason', 'interpretation']);
       const comparisonId = id(input.comparisonId), interpretation = text(input.interpretation, 16384);
       if (!global || !Number.isSafeInteger(input.expectedRevision) || !/^[a-f0-9]{64}$/.test(input.candidateHash)
-        || input.decision !== 'not-adopted' || !['gate_rejected', 'test_not_passed', 'user_declined'].includes(input.reason)) throw fail('wiki_invalid_input');
+        || !(input.decision === 'not-adopted' && ['gate_rejected', 'test_not_passed', 'user_declined'].includes(input.reason)
+          || input.decision === 'adopted' && input.reason === 'user_accepted')) throw fail('wiki_invalid_input');
       return change(state => {
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         // Read the exact stored result, not client aggregates, worker text or a
@@ -603,7 +607,7 @@ export function createWikiStore(options: any) {
             || !result.cases.some((c: any) => c.stage === 'test' && c.targetReproduction && c.totals.candidate.failed > 0))) throw fail('wiki_comparison_review_invalid');
         const payload = { comparisonId, planHash: result.planHash, candidateId: candidate.id, candidateHash: input.candidateHash,
           targetId: candidate.targetId, decision: input.decision, reason: input.reason, interpretation,
-          gateOutcome: result.gateDecision.outcome, baselineChanged: false };
+          gateOutcome: result.gateDecision.outcome, baselineChanged: input.decision === 'adopted' };
         const current = state.comparisonReviews.find((r: any) => r.comparisonId === comparisonId);
         if (current) {
           const { id: oldId, createdAt, ...old } = current;
@@ -611,6 +615,15 @@ export function createWikiStore(options: any) {
           return { changed: false, value: current };
         }
         const saved = { id: 'review-' + hash(JSON.stringify(payload)), createdAt: new Date().toISOString(), ...payload };
+        if (input.decision === 'adopted') {
+          // No new automatic test acceptance formula: this is an explicit human
+          // judgment after a completed gate + test report, never a gate side effect.
+          if (result.model !== 'openai-codex/gpt-6.1-sol' || result.modelConfig?.thinking !== 'xhigh' || result.gateDecision.outcome !== 'accepted'
+            || !result.cases.some((c: any) => c.stage === 'test' && c.targetReproduction && !c.reportOnly)
+            || result.cases.some((c: any) => c.stage === 'test' && !c.reportOnly && c.status !== 'completed')) throw fail('wiki_comparison_review_invalid');
+          resolveGlobalWikiCandidate(state, candidate.id, candidate.targetId, candidate.baseHash, []);
+          state.baselines.push(buildWikiBaseline(state, candidate, saved));
+        }
         state.comparisonReviews.push(saved);
         appendEvent(state, { type: 'comparison-reviewed', comparisonId, reviewId: saved.id });
         return { changed: true, value: saved };
@@ -620,7 +633,7 @@ export function createWikiStore(options: any) {
       return change(state => {
         if (expectedRevision !== undefined && state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
         const candidate = buildGlobalWikiCandidate(state, input);
-        if (state.comparisonReviews.some((r: any) => r.decision === 'not-adopted' && r.targetId === candidate.targetId && r.candidateHash === candidate.candidateHash)) throw fail('wiki_candidate_not_adopted');
+        assertWikiChangeNotRejected(state, candidate);
         const existing = state.candidates.find((c: any) => c.id === candidate.id);
         if (existing) return { changed: false, value: existing };
         const saved = { ...candidate, status: 'draft', createdAt: new Date().toISOString() };
@@ -653,7 +666,7 @@ export function createWikiStore(options: any) {
         const current = state.candidates.find((c: any) => c.id === candidateId && c.kind === 'global-wiki-candidate-v1');
         if (!current || current.candidateHash !== input.candidateHash) throw fail('wiki_candidate_not_found');
         if (current.status === 'deprecated') throw fail('wiki_candidate_deprecated');
-        resolveGlobalWikiCandidate({ ...state, candidates: [{ ...current, status: 'confirmed' }] }, current.id, current.targetId, current.baseHash, input.files);
+        resolveGlobalWikiCandidate({ ...state, candidates: state.candidates.map((c: any) => c.id === current.id ? { ...current, status: 'confirmed' } : c) }, current.id, current.targetId, current.baseHash, input.files);
         if (current.status === 'confirmed') return { changed: false, value: current };
         current.status = 'confirmed'; current.confirmedAt = new Date().toISOString();
         return { changed: true, value: current };

@@ -191,9 +191,13 @@
 
 ### 人工采纳裁决（M5 增量）
 
-- 正式结果的 `gateDecision.accepted` 只决定是否进入测试，不等于用户采纳。`POST /api/wikiskill/comparison-review` 受现有本地 Host/Origin/CSRF 和 `confirmed:true` 门禁约束，输入仅为 `comparisonId/candidateHash/expectedRevision/decision/reason/interpretation`。当前只接受 `decision:"not-adopted"`；理由为 `gate_rejected/test_not_passed/user_declined`。服务端按精确 ID 读取已保存、checksum/内容 hash/投影一致的完整生产评测，不接受客户端提供结果、规则、分数或存储路径；`test_not_passed` 须有已接受门槛和测试复现题失败证据。它记录人工裁决，不新增测试判定公式。
+- 正式结果的 `gateDecision.accepted` 只决定是否进入测试，不等于用户采纳。`POST /api/wikiskill/comparison-review` 受现有本地 Host/Origin/CSRF 和 `confirmed:true` 门禁约束，输入仅为 `comparisonId/candidateHash/expectedRevision/decision/reason/interpretation`。`decision:"not-adopted"` 的理由为 `gate_rejected/test_not_passed/user_declined`；`decision:"adopted"` 只配 `reason:"user_accepted"`，由用户明确裁决，不由模型或门槛事件代填。服务端按精确 ID 读取已保存、checksum/内容 hash/投影一致的完整生产评测，不接受客户端提供结果、规则、分数或存储路径；`test_not_passed` 须有已接受门槛和测试复现题失败证据。它记录人工裁决，不新增测试判定公式。
 - 裁决独立追加到不可覆盖的 Wiki 快照 `comparisonReviews`，保留原候选确认状态、原始比较文件、rulesHash、字面分数和组别；不把 `confirmed` 改成采纳。相同裁决在当前 revision 重交幂等，修改已记录裁决或用过期 revision 提交拒绝。页面逐字、纯文本显示人工解读，演进记录注明“门槛接受、测试未通过、未采纳”；基线未改变、生产提示词未修改。
-- 未采纳的精确 `targetId+candidateHash` 不得再次生成、确认或进入新评测计划，换 Wiki 版本/标题也不能绕过；不同写法可重新提草稿，不禁止整个模式。原候选与评测仍可只读查看。此增量尚未开放采纳/基线叠加入口，后续 M5 完成后再统一验收。
+- 未采纳的精确 `targetId+candidateHash` 或同目标相同 `appendedSection` 不得再次生成、确认或进入新评测计划，换 Wiki 版本/标题、叠加其他基线也不能绕过；不同写法可重新提草稿，不禁止整个模式。原候选与评测仍可只读查看。
+- 明确采纳还要求已保存的生产 GPT/xhigh 评测完整执行、门槛接受、目标测试组存在且全部非报告题完成；重新验证 confirmed 候选及其当前基线。测试仍单独报告，不新增自动的测试接受公式，是否采纳由用户结合报告决定；不能修改同一比较已有的未采纳裁决。本轮 `bc807f8a` 的不采纳不可借此改写。采纳与基线链接在同一不可覆盖快照内原子追加，无评测即不能建基线。
+- `baselines` 是 `wiki-baseline-v1` 链，绑定精确 comparison/review/candidate、父 baseHash、完整文本/hash和根声明片段。每次生成、确认、计划重建都校验链接和已采纳裁决；目录中的当前生产片段只允许仍是根原文或链中已采纳全文，未知生产改写拒绝，不暗中换根。下一候选以最新已采纳全文为 baseText，只再追加一个已审核模式；已采纳的相同附录不重复叠加。旧候选、旧结果和旧快照保留，不把确认状态本身变成采纳。
+- 对照准备从不可变封存读取并精确匹配根原文或链中已采纳片段（最长完整匹配、hash一致），两边都替换为同一最新基线，候选仅再追加这一次改动。已手动合入的新封存不会把旧基线当作共同尾部再追加一次。未知 WikiSkill 附录、内容/hash漂移、重复声明、身份/用户引用位置均拒绝；不做模糊匹配或现场补造。共同输入 hash 仍排除这一个完整片段，其余提示词/回调/文件/会话不变。
+- 页面可展开并原样复制候选完整文本和当前已采纳基线的最终文本（复用共享剪贴板帮助器，失败提示手动复制）；未采纳候选显著标明仅历史查看，草稿不冒充生产建议。复制只改本机剪贴板，不请求变更 API、不采纳、不改生产提示词；实际合入仍由用户手动完成。采纳入口目前为受信人工 API，页面不把候选确认按钮改作采纳；M5 的经验回流及真实第二轮计划证据仍待完成后统一验收。
 - 2026-11-04 规划者受用户委托通过 M4（固定 SHA `2fc3a9e3`，独立计划 `156c6024`），同时明确不采纳 `bc807f8a`。门槛 #19 原版0/10、候选6/10（p=0.0054），#16双方10/10；测试 #20 双方0/10，#10/#14双方10/10。#20 的开头结论率原版3/10、候选8/10，但两版各10次都命中 P 编号规则；题目本身讨论按 P1/P2/P3 分阶段的 ADR，规则在测试前冻结，不再改分。结论：只能说修好了 #19 这一类，不能说模式1整体变好了。本轮不叠加基线、不进生产提示词；规则 B 的事后修订及旧轮排除仍按上文完整披露。
 
 ### 模型与凭据

@@ -51,7 +51,7 @@
     const fmt = iso => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
     const latest = list => list.filter(Boolean).sort().slice(-1)[0];
     const ENTRY_STATUS = { approved: ['已通过', 'ok'], draft: ['草稿 · 待审核', 'warn'], rejected: ['已驳回', 'bad'] };
-    const CAND_STATUS = { draft: ['草稿 · 待你确认', 'warn'], confirmed: ['已确认 · 待评测', 'info'], evaluated: ['已评测', 'ok'], deprecated: ['已废弃', ''], 'not-adopted': ['未采纳', 'warn'] };
+    const CAND_STATUS = { draft: ['草稿 · 待你确认', 'warn'], confirmed: ['已确认 · 待评测', 'info'], evaluated: ['已评测', 'ok'], deprecated: ['已废弃', ''], 'not-adopted': ['未采纳', 'warn'], adopted: ['已采纳为评测基线', 'ok'] };
     const CATEGORY = { reproduction: ['复现题', 'repro'], probe: ['探针题', 'probe'], control: ['防误伤题', 'control'] };
     const SPLIT = { train: '训练', gate: '门槛', test: '测试' };
     const displaySet = c => c.split === 'train' && c.evaluationStage === 'gate' ? '训练 · 本轮门槛' : (SPLIT[c.split] || '待预分类');
@@ -268,10 +268,11 @@
     /* Optimization targets */
     function candidateCard(candidate, target) {
       const rejected = (D.comparisonReviews || []).some(r => r.candidateHash === candidate.candidateHash && r.targetId === candidate.targetId && r.decision === 'not-adopted');
+      const adopted = (D.comparisonReviews || []).some(r => r.candidateHash === candidate.candidateHash && r.targetId === candidate.targetId && r.decision === 'adopted');
       const deprecated = candidate.status === 'deprecated', confirmed = candidate.status === 'confirmed', isGlobal = target.kind === 'global-system-prompt';
       const sources = candidate.entryIds.map(id => findEntry(id, candidate.versionId)).filter(x => x.entry);
-      const foot = rejected ? '<p>未采纳，基线未改变；相同改动不重复提出，同类改动可以换个写法再提。原文、diff 和结果保留，不进生产提示词。</p>' : deprecated ? `<button type="button" class="btn" data-confirm-candidate="${esc(candidate.id)}" disabled>已废弃，不能确认</button>` : `<button type="button" class="btn primary" data-confirm-candidate="${esc(candidate.id)}" ${confirmed || pending || !writable ? 'disabled' : ''}>${confirmed ? '已确认' : '确认此候选'}</button><p>${isGlobal ? `确认后由操作方启动对照，每题原版本和候选各跑 10 次真实模型、交替执行。先跑门槛 #1/#2/#6/#16，接受才跑测试 #4/#10/#14；拒绝则不跑测试。结果记入评测记录，不修改生产提示词。` : '工具描述的候选本期只展示，确认后不会自动评测，也不会修改生产配置。'}</p>`;
-      return `<section class="cand${deprecated ? ' is-dep' : ''}"><header class="cand-head"><h3>候选</h3>${pill(CAND_STATUS, rejected ? 'not-adopted' : candidate.status)}<time>${fmt(candidate.createdAt)} 生成</time></header>${deprecated ? `<p class="dep-note">${candidate.deprecationReason === 'multiple_patterns' ? '旧稿合并了多个模式的准则；本轮一次只改一个模式，旧稿已废弃。' : '目标选错了：list_rooms 是列出房间的工具，和“汇报先给结论”这类准则无关。'}原文、diff 和记录保留，不能确认。</p>` : ''}<p class="basis">依据 ${sources.length} 条模式 ${sources.map(({ entry, version }) => entryChip(entry.id, version.id)).join('')}</p><div class="compare"><details class="orig"><summary>原文 ${[...(candidate.target?.baseText || target.baseText || '')].length} 字 · 不改动（展开查看）</summary><pre class="text">${esc(candidate.target?.baseText || target.baseText || '')}</pre></details><div class="added"><h4>在原文末尾新增 ${sources.length} 条准则</h4><ol>${sources.map(({ entry, version }) => `<li><p>${esc(entry.guideline)}</p><a class="src-link" href="#${esc(entry.id)}" data-entry="${esc(entry.id)}" data-version="${esc(version.id)}">来自模式 ${(version.entries.findIndex(e => e.id === entry.id) + 1)} · ${esc(entry.title)}</a></li>`).join('')}</ol></div></div><footer class="cand-foot">${foot}</footer><details class="more"><summary>技术详情</summary><dl class="kv"><div><dt>候选 ID</dt><dd class="mono">${esc(candidate.id)}</dd></div><div><dt>来源版本</dt><dd class="mono">${esc(candidate.versionId)}</dd></div><div><dt>内容 hash</dt><dd class="mono">${esc(candidate.candidateHash)}</dd></div></dl></details></section>`;
+      const foot = adopted ? '<p>用户明确采纳为评测基线；不会自动修改生产，仍由用户手动合入。</p>' : rejected ? '<p>未采纳，基线未改变；相同改动不重复提出，同类改动可以换个写法再提。原文、diff 和结果保留，不进生产提示词。</p>' : deprecated ? `<button type="button" class="btn" data-confirm-candidate="${esc(candidate.id)}" disabled>已废弃，不能确认</button>` : `<button type="button" class="btn primary" data-confirm-candidate="${esc(candidate.id)}" ${confirmed || pending || !writable ? 'disabled' : ''}>${confirmed ? '已确认' : '确认此候选'}</button><p>${isGlobal ? `确认后由操作方启动对照，每题原版本和候选各跑 10 次真实模型、交替执行。先跑门槛 #1/#2/#6/#16，接受才跑测试 #4/#10/#14；拒绝则不跑测试。结果记入评测记录，不修改生产提示词。` : '工具描述的候选本期只展示，确认后不会自动评测，也不会修改生产配置。'}</p>`;
+      return `<section class="cand${deprecated ? ' is-dep' : ''}"><header class="cand-head"><h3>候选</h3>${pill(CAND_STATUS, adopted ? 'adopted' : rejected ? 'not-adopted' : candidate.status)}<time>${fmt(candidate.createdAt)} 生成</time></header>${deprecated ? `<p class="dep-note">${candidate.deprecationReason === 'multiple_patterns' ? '旧稿合并了多个模式的准则；本轮一次只改一个模式，旧稿已废弃。' : '目标选错了：list_rooms 是列出房间的工具，和“汇报先给结论”这类准则无关。'}原文、diff 和记录保留，不能确认。</p>` : ''}<p class="basis">依据 ${sources.length} 条模式 ${sources.map(({ entry, version }) => entryChip(entry.id, version.id)).join('')}</p><div class="compare"><details class="orig"><summary>原文 ${[...(candidate.target?.baseText || target.baseText || '')].length} 字 · 不改动（展开查看）</summary><pre class="text">${esc(candidate.target?.baseText || target.baseText || '')}</pre></details><div class="added"><h4>在原文末尾新增 ${sources.length} 条准则</h4><ol>${sources.map(({ entry, version }) => `<li><p>${esc(entry.guideline)}</p><a class="src-link" href="#${esc(entry.id)}" data-entry="${esc(entry.id)}" data-version="${esc(version.id)}">来自模式 ${(version.entries.findIndex(e => e.id === entry.id) + 1)} · ${esc(entry.title)}</a></li>`).join('')}</ol></div></div><footer class="cand-foot">${foot}</footer><details class="more"><summary>完整文本 · ${rejected ? '未采纳，仅供历史查看' : adopted ? '已采纳，供手动合入' : '待评测/采纳，不是生产建议'}</summary><pre class="text" data-final-text="${esc(candidate.id)}">${esc(candidate.candidateText)}</pre><button type="button" class="btn small" data-copy-candidate="${esc(candidate.id)}">复制完整文本</button><p class="hint">只复制，不修改生产提示词、采纳状态或基线。</p></details><details class="more"><summary>技术详情</summary><dl class="kv"><div><dt>候选 ID</dt><dd class="mono">${esc(candidate.id)}</dd></div><div><dt>来源版本</dt><dd class="mono">${esc(candidate.versionId)}</dd></div><div><dt>内容 hash</dt><dd class="mono">${esc(candidate.candidateHash)}</dd></div></dl></details></section>`;
     }
     function renderTargets() {
       const rank = target => { const cs = candsFor(target.id); return cs.some(c => c.status !== 'deprecated') ? 0 : cs.length ? 1 : 2; };
@@ -279,8 +280,10 @@
       $('#targets-list').innerHTML = [['global-system-prompt', '全局系统提示词'], ['tool-description', '工具描述']].map(([kind, label]) => `<div class="tgroup"><h4>${label}</h4>${D.targets.filter(t => t.kind === kind).sort((a, b) => rank(a) - rank(b)).map(item).join('')}</div>`).join('') + '<p class="side-note">每个候选只改一个对象，其余提示词、角色和工具保持不变。</p>';
       const target = targetById.get(state.targetId) || D.targets[0]; if (!target) { $('#target-page').innerHTML = '<p class="muted-note">尚未声明优化对象。</p>'; return; }
       const candidates = candsFor(target.id).sort((a, b) => Number(a.status === 'deprecated') - Number(b.status === 'deprecated'));
+      const baseline = (D.baselines || []).filter(b => b.targetId === target.id).at(-1);
+      const baselineHtml = baseline ? `<section class="baseline"><h3>当前已采纳评测基线</h3><p class="hint">含历次已采纳改动；下一轮原版和候选都带此基线。生产提示词仍须用户手动合入。</p><details><summary>可复制的最终文本</summary><pre class="text">${esc(baseline.baseText)}</pre><button type="button" class="btn small" data-copy-baseline="${esc(target.id)}">复制最终基线文本</button><p class="mono">${esc(baseline.baseHash)}</p></details></section>` : '<p class="hint">尚无用户采纳的新基线，沿用原始声明片段。</p>';
       const about = target.kind === 'global-system-prompt' ? '所有 agent 每一轮都会读到这段话，改动会影响所有角色。' : 'agent 决定要不要、怎么调用这个工具时，会读这段说明。';
-      $('#target-page').innerHTML = `<nav class="crumb"><a href="#targets" data-go="targets">优化对象</a><span aria-hidden="true">›</span><span>${target.kind === 'global-system-prompt' ? '全局系统提示词' : '工具描述'}</span></nav><header class="page-head"><h2>${esc(targetFull(target))}</h2><p class="lede">${about}</p></header>${candidates.length ? candidates.map(c => candidateCard(c, target)).join('') : '<p class="muted-note">还没有候选。从知识库里选已通过的模式，就能为它生成一份候选。</p>'}
+      $('#target-page').innerHTML = `<nav class="crumb"><a href="#targets" data-go="targets">优化对象</a><span aria-hidden="true">›</span><span>${target.kind === 'global-system-prompt' ? '全局系统提示词' : '工具描述'}</span></nav><header class="page-head"><h2>${esc(targetFull(target))}</h2><p class="lede">${about}</p></header>${baselineHtml}${candidates.length ? candidates.map(c => candidateCard(c, target)).join('') : '<p class="muted-note">还没有候选。从知识库里选已通过的模式，就能为它生成一份候选。</p>'}
         <details class="generator"><summary data-show-generator>从已通过的模式生成候选</summary><p class="hint">一次只选一个已通过模式，准则原样追加到当前对象。生成草稿不会调用模型、启动评测或修改生产配置。</p><div class="entry-picker">${approvedEntriesForSelection().map(e => `<label><input type="radio" name="candidate-pattern" data-candidate-entry="${esc(e.id)}"><span><b>${esc(e.title)}</b><br><span class="hint">${esc(e.guideline)}</span></span></label>`).join('') || '<p class="muted-note">当前版本没有已通过模式。</p>'}</div><div><button type="button" class="btn" data-generate-candidate disabled>生成候选草稿</button></div></details>`;
     }
     function approvedEntriesForSelection() { return entries().filter(e => e.status === 'approved'); }
@@ -344,7 +347,7 @@
     function comparisonReview(result) {
       const review = (D.comparisonReviews || []).find(r => r.comparisonId === result?.id);
       if (!review) return '';
-      return `<section class="comparison-review"><h3>人工裁决：未采纳 · 基线未改变</h3><p class="hint">门槛判定不等于采纳；此裁决不改评分、规则或原始结果。</p><p class="review-interpretation">${esc(review.interpretation)}</p></section>`;
+      return `<section class="comparison-review"><h3>人工裁决：${review.decision === 'adopted' ? '已采纳 · 已叠加为评测基线（生产仍须手动合入）' : '未采纳 · 基线未改变'}</h3><p class="hint">门槛判定不等于采纳；此裁决不改评分、规则或原始结果。</p><p class="review-interpretation">${esc(review.interpretation)}</p></section>`;
     }
     function stageSummary(totals) {
       if (!totals) return '<p class="hint">尚无本阶段的正式统计。</p>';
@@ -386,7 +389,7 @@
         for (const stage of ['gate','test']) {const t=result.byStage?.[stage];if(t)events.push({at:result.createdAt,kind:interrupted?'中断观察':'评测',text:`${label} · ${SPLIT[stage]}${interrupted?'观察（不计入判定）':'结果'}：原版 ${t.original.passed}/${t.original.planned}，候选 ${t.candidate.passed}/${t.candidate.planned}；错误 ${t.original.errors}/${t.candidate.errors}，未运行 ${t.original.notRun}/${t.candidate.notRun}`});}
         if (!result.byStage) events.push({at:result.createdAt,kind:'历史评测',text:`${label}：历史单阶段结果已保存，不作为本轮两阶段判定。`});
       }
-      for (const review of D.comparisonReviews || []) events.push({ at: review.createdAt, kind: '采纳裁决', text: `${review.reason === 'test_not_passed' ? '门槛接受、测试未通过、未采纳' : review.reason === 'gate_rejected' ? '门槛拒绝、未采纳' : '用户未采纳'}；基线未改变。相同改动不重复提出，同类改动可以换个写法再提。${review.interpretation}` });
+      for (const review of D.comparisonReviews || []) events.push({ at: review.createdAt, kind: '采纳裁决', text: `${review.decision === 'adopted' ? '用户明确采纳；已叠加为评测基线，生产提示词仍须手动合入。' : `${review.reason === 'test_not_passed' ? '门槛接受、测试未通过、未采纳' : review.reason === 'gate_rejected' ? '门槛拒绝、未采纳' : '用户未采纳'}；基线未改变。相同改动不重复提出，同类改动可以换个写法再提。`}${review.interpretation}` });
       const explicit = new Set();
       for (const event of D.events || []) {
         if (event.runId) explicit.add(event.runId);
@@ -435,9 +438,16 @@
       if (decision !== 'save' && !confirmAction(`确认${decision === 'approved' ? '通过' : '驳回'}「${patch.title}」？审核后内容冻结。`)) return;
       await mutate('/api/wikiskill/review', { versionId: currentVersion().id, entryId: entry.id, patch, ...(decision === 'save' ? {} : { decision }) }, decision === 'save' ? '草稿已保存。' : '审核结果已保存；未修改生产提示词或启动评测。');
     }
+    async function copyPromptText(value) {
+      const snapshot = D;
+      try { await shared.copyTextToClipboard(value, { isCurrent: () => D === snapshot }); toast('已复制完整文本；未修改生产提示词或采纳状态。'); }
+      catch { toast('复制失败；请展开完整文本手动复制。'); }
+    }
     root.addEventListener('click', event => {
-      const el = event.target.closest('[data-tab],[data-go],[data-entry],[data-case],[data-group],[data-target],[data-q],[data-wiki-status],[data-cases-mode],[data-comparison],[data-induct],[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-confirm-candidate],[data-generate-candidate]');
+      const el = event.target.closest('[data-copy-candidate],[data-copy-baseline],[data-tab],[data-go],[data-entry],[data-case],[data-group],[data-target],[data-q],[data-wiki-status],[data-cases-mode],[data-comparison],[data-induct],[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-confirm-candidate],[data-generate-candidate]');
       if (!el || el.disabled || !D) return;
+      if (el.dataset.copyCandidate) { const c = D.candidates.find(c => c.id === el.dataset.copyCandidate); if (c) void copyPromptText(c.candidateText); return; }
+      if (el.dataset.copyBaseline) { const b = (D.baselines || []).filter(b => b.targetId === el.dataset.copyBaseline).at(-1); if (b) void copyPromptText(b.baseText); return; }
       if (el.dataset.tab) { go(el.dataset.tab); return; }
       if (el.dataset.comparison) { if ((D.comparisons || []).some(r=>r.id===el.dataset.comparison)) { state.comparisonId=el.dataset.comparison; renderImpact(); } return; }
       if (el.dataset.q !== undefined) { state.wikiQ = el.dataset.q; $('#wiki-q').value = state.wikiQ; renderWiki(); $('#wiki-q').focus(); return; }

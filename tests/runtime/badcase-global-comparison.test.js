@@ -12,12 +12,12 @@ const { prepareBatch, runBatch, formatBatch } = require('../../scripts/badcase-c
 const { manifestFor } = require('../../scripts/badcase-capture/pi-probe-materials.cjs');
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const targetId = 'global-harness-behavior-v1', target = getGlobalPromptTarget(targetId);
-function seal(t, { missingTarget = false, resume = false } = {}) {
+function seal(t, { missingTarget = false, resume = false, baseText = target.baseText } = {}) {
   return fixture(t, resume ? 'resume' : 'fresh', ({ cp, r, config, put }) => {
     config.toolBridgeEnabled = true; config.portableRuntime = { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: true };
     config.sdkStartConfig = { cwd: cp.targetDir, provider: r.runConfig.provider, model: r.runConfig.model, resume, thinking: 'off', fast: false, retireUserScopeSkills: true };
     if (resume) r.sessionLineCount = 2;
-    r.promptBlobHash = r.normalizedPromptHash = put('Identity: custom actor\nYour private persona instructions:\nKeep this exact role.\n\nRoom work context:\n- Fixture\n\nRules:\n' + (missingTarget ? 'Unsupported old rules.' : target.baseText) + '\n- Preserve routing.\n\nRouting instructions:\n- No handoff.\n\nUser: inspect files.');
+    r.promptBlobHash = r.normalizedPromptHash = put('Identity: custom actor\nYour private persona instructions:\nKeep this exact role.\n\nRoom work context:\n- Fixture\n\nRules:\n' + (missingTarget ? 'Unsupported old rules.' : baseText) + '\n- Preserve routing.\n\nRouting instructions:\n- No handoff.\n\nUser: inspect files.');
     const association = { projectId: cp.projectId, conversationId: cp.conversationId, turnId: cp.turnId, agentId: cp.agentId, userMessageId: 'u1', assistantMessageId: 'msg1' };
     const trace = { schemaVersion: 1, kind: 'caff-evaluation-callback-input-v1', association, assistantCreatedAt: '2026-01-01T00:00:01.000Z', conversation: { title: 'Fixture', type: 'standard', metadata: {} }, participants: [{ id: cp.agentId, name: 'Actor', description: 'Test' }], publicMessages: [{ id: 'u1', turnId: 't0', role: 'user', agentId: null, senderName: 'User', content: 'Inspect files.', status: 'completed', createdAt: '2026-01-01T00:00:00.000Z', publicPostedAt: '', publicPostCount: 0, publicPostMode: '', mentions: [] }], privateMessages: [], pendingDelegations: [] };
     r.callbackInput = { schemaVersion: 1, kind: 'caff-evaluation-callback-input-reference-v1', blobHash: put(JSON.stringify(trace)), association };
@@ -68,6 +68,34 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
   const plan = () => prepareBatch(config, options), run = () => runBatch(config, { ...options, expectedPlanHash: plan().summary.planHash });
   return { root, store, sources, split, seals, candidate, config, single, state, options, plan, run, guideline };
 }
+test('old and manually merged real seals both carry the adopted baseline on both arms, with only one new candidate change', t => {
+  const h = setup(t), snapshot = h.store.read(), review = { id: 'review-fixture', comparisonId: 'comparison-' + 'a'.repeat(64), candidateId: h.candidate.id, candidateHash: h.candidate.candidateHash, targetId, decision: 'adopted', baselineChanged: true, createdAt: '2026-11-04T00:00:00Z' };
+  // Seed operator-owned adoption metadata; review creation itself is covered by
+  // production-batch tests. Target preparation below reads real immutable seals.
+  snapshot.baselines.push(require('../../build/server/domain/runtime/badcase-capture/wiki-baseline').buildWikiBaseline(snapshot, h.candidate, review)); snapshot.comparisonReviews.push(review); snapshot.revision++;
+  fs.writeFileSync(path.join(h.config.globalRoot, 'snapshots', String(snapshot.revision).padStart(12, '0') + '.json'), JSON.stringify({ schemaVersion: 1, checksum: sha(JSON.stringify(snapshot)), record: snapshot }));
+  const train = snapshot.versions[0].caseIds, v = h.store.saveDraft({ caseIds: train, model: 'deepseek/deepseek-v4-flash', entries: [{ title: 'Impact', failureMode: 'jargon', symptoms: 'unclear', rootCauseHypothesis: 'audience', guideline: '先说明用户影响，再按需给出证据。', caseIds: train }], unclassified: [] });
+  h.store.review({ versionId: v.id, entryId: 'entry-1', expectedRevision: h.store.read().revision, decision: 'approved' });
+  const candidate = h.store.createGlobalCandidate({ versionId: v.id, entryIds: ['entry-1'], targetId, files: [] }); h.store.confirmGlobalCandidate({ candidateId: candidate.id, candidateHash: candidate.candidateHash, expectedRevision: h.store.read().revision, files: [] });
+  const c = { ...h.single, globalWikiCandidate: { ...h.single.globalWikiCandidate, candidateId: candidate.id } };
+  const originalSeal = prepareSealedPromptTarget(c.request, targetId).input;
+  const inputs = [];
+  for (const request of [c.request, seal(t, { baseText: h.candidate.candidateText }).request]) {
+    const p = prepareComparison({ ...c, request }, h.options); assert.equal(p.supported, true);
+    assert.equal(p.inputs.original.prompt, originalSeal.prompt.replace(target.baseText, h.candidate.candidateText));
+    assert.equal(p.inputs.candidate.prompt, p.inputs.original.prompt.replace(h.candidate.candidateText, candidate.candidateText));
+    assert.deepEqual({ ...p.inputs.original, prompt: '' }, { ...p.inputs.candidate, prompt: '' });
+    assert.equal(p.inputs.original.prompt.split(h.candidate.appendedSection).length - 1, 1);
+    assert.equal(p.inputs.candidate.prompt.split(h.candidate.appendedSection).length - 1, 1);
+    assert.equal(p.inputs.candidate.prompt.split(candidate.appendedSection).length - 1, 1); inputs.push(p);
+  }
+  assert.equal(inputs[0].inputs.original.prompt, inputs[1].inputs.original.prompt);
+  assert.equal(inputs[0].summary.promptBaseline.alreadyMerged, false); assert.equal(inputs[1].summary.promptBaseline.alreadyMerged, true);
+  assert.equal(inputs[0].summary.promptBaseline.baseHash, h.candidate.candidateHash); assert.equal(inputs[1].summary.promptBaseline.appliedToBothVariants, true);
+  const unknown = seal(t, { baseText: h.candidate.candidateText + '\n\nWikiSkill 已审核准则：\n- 未经采纳。' });
+  assert.equal(prepareComparison({ ...c, request: unknown.request }, h.options).supported, false);
+  assert.equal(h.state.keys, 0); assert.equal(h.state.executions, 0);
+});
 test('registered global replay freezes public reply rules and scores real callback text without file references in input', async t => {
   const h = setup(t, { publicReply: true });
   assert.ok(h.store.read().replayCases.every(c => c.rules.kind === 'public-reply-literals-v1'));

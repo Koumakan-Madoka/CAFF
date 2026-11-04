@@ -166,6 +166,37 @@ test('comparison review cannot invent a result, change a frozen rubric, adopt im
  assert.throws(()=>h.store.reviewComparison(input),/wiki_comparison_record_invalid/);assert.deepEqual(h.store.read(),before);fs.writeFileSync(file,bytes);
  h.store.reviewComparison(input);assert.equal(h.store.read().comparisonReviews.length,1);
 });
+test('explicit human adoption stacks an immutable baseline, never confirmation or a gate alone; round two changes only its appended guideline',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const r=await fakeExecution(h).run(),comparisons=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=comparisons.save(r);
+ const before=h.store.read(),input={comparisonId:saved.id,candidateHash:h.candidate.candidateHash,expectedRevision:before.revision,decision:'adopted',reason:'user_accepted',interpretation:'用户审核完整结果后明确采纳；生产合入仍须手动。'};
+ assert.equal(before.baselines.length,0);const accepted=h.store.reviewComparison(input),state=h.store.read();assert.equal(accepted.baselineChanged,true);assert.equal(state.baselines.length,1);assert.equal(state.baselines[0].baseText,h.candidate.candidateText);
+ assert.deepEqual(h.store.reviewComparison({...input,expectedRevision:state.revision}),accepted);assert.equal(h.store.read().revision,state.revision);
+ const {resolveWikiBaseline}=require('../../build/server/domain/runtime/badcase-capture/wiki-baseline');
+ for(const corrupt of [s=>{s.baselines[0].parentBaseHash='f'.repeat(64);},s=>{s.baselines[0].baseText+='changed';},s=>{s.comparisonReviews[0].decision='not-adopted';},s=>{s.candidates[0].candidateText+='changed';}]){const forged=structuredClone(state);corrupt(forged);assert.throws(()=>resolveWikiBaseline(forged,h.candidate.targetId),/wiki_candidate_target_mismatch/);}
+ const train=before.versions.find(v=>v.id===h.candidate.versionId).caseIds;
+ const v=h.store.saveDraft({model:'deepseek/deepseek-v4-flash',caseIds:train,entries:[{title:'Clear report',failureMode:'jargon',symptoms:'unclear',rootCauseHypothesis:'audience',guideline:'再用一句话说明用户影响。',caseIds:train}],unclassified:[]});h.store.review({versionId:v.id,entryId:'entry-1',expectedRevision:h.store.read().revision,decision:'approved'});
+ const candidate=h.store.createGlobalCandidate({versionId:v.id,entryIds:['entry-1'],targetId:h.candidate.targetId,files:[]});assert.equal(candidate.baseText,h.candidate.candidateText);assert.equal(candidate.baseHash,h.candidate.candidateHash);assert.equal(candidate.candidateText,candidate.baseText+candidate.appendedSection);assert.equal(candidate.entryIds.length,1);
+ h.store.confirmGlobalCandidate({candidateId:candidate.id,candidateHash:candidate.candidateHash,expectedRevision:h.store.read().revision,files:[]});h.config.candidateId=candidate.id;assert.equal(h.plan().summary.candidate.baseHash,h.candidate.candidateHash);
+ assert.throws(()=>h.store.confirmGlobalCandidate({candidateId:h.candidate.id,candidateHash:h.candidate.candidateHash,expectedRevision:h.store.read().revision,files:[]}),/wiki_candidate_target_mismatch/);
+ const second=comparisons.save(await fakeExecution(h).run());h.store.reviewComparison({comparisonId:second.id,candidateHash:candidate.candidateHash,expectedRevision:h.store.read().revision,decision:'adopted',reason:'user_accepted',interpretation:'用户明确采纳第二轮。'});
+ const stacked=h.store.read();assert.equal(stacked.baselines.length,2);assert.equal(stacked.baselines[1].parentBaseHash,h.candidate.candidateHash);assert.equal(stacked.baselines[1].baseText,candidate.candidateText);assert.deepEqual(stacked.baselines[0],state.baselines[0]);assert.deepEqual(comparisons.read().find(c=>c.id===saved.id),saved);
+});
+test('exact rejected or already accepted appendices cannot be reproposed after a baseline change',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const comparisons=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),old=comparisons.save(await fakeExecution(h).run());
+ h.store.reviewComparison({comparisonId:old.id,candidateHash:h.candidate.candidateHash,expectedRevision:h.store.read().revision,decision:'not-adopted',reason:'user_declined',interpretation:'未采纳此写法。'});
+ const train=h.store.read().versions[0].caseIds,make=guideline=>{const v=h.store.saveDraft({model:'deepseek/deepseek-v4-flash',caseIds:train,entries:[{title:'Report',failureMode:'jargon',symptoms:'unclear',rootCauseHypothesis:'audience',guideline,caseIds:train}],unclassified:[]});h.store.review({versionId:v.id,entryId:'entry-1',expectedRevision:h.store.read().revision,decision:'approved'});return h.store.createGlobalCandidate({versionId:v.id,entryIds:['entry-1'],targetId:h.candidate.targetId,files:[]});};
+ const accepted=make('先用白话概括结果和用户影响。');h.store.confirmGlobalCandidate({candidateId:accepted.id,candidateHash:accepted.candidateHash,expectedRevision:h.store.read().revision,files:[]});h.config.candidateId=accepted.id;
+ const saved=comparisons.save(await fakeExecution(h).run());h.store.reviewComparison({comparisonId:saved.id,candidateHash:accepted.candidateHash,expectedRevision:h.store.read().revision,decision:'adopted',reason:'user_accepted',interpretation:'用户明确采纳不同写法。'});
+ assert.throws(()=>make('先讲结论。'),/wiki_candidate_not_adopted/);assert.throws(()=>make('先用白话概括结果和用户影响。'),/wiki_candidate_already_baseline/);
+ assert.equal(h.store.read().baselines.length,1);
+});
+test('adoption refuses missing tests, a rejected gate and any attempt to rewrite a prior non-adoption',async t=>{
+ for(const reject of [true,false]){const h=fixture(t);for(const c of h.marks)h.confirm(c);const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(await fakeExecution(h,{improve:!reject}).run());
+ const input={comparisonId:saved.id,candidateHash:h.candidate.candidateHash,expectedRevision:h.store.read().revision,decision:'adopted',reason:'user_accepted',interpretation:'用户明确决定。'};
+ if(reject)assert.throws(()=>h.store.reviewComparison(input),/wiki_comparison_review_invalid/);
+ else{h.store.reviewComparison({...input,decision:'not-adopted',reason:'user_declined'});assert.throws(()=>h.store.reviewComparison({...input,expectedRevision:h.store.read().revision}),/wiki_comparison_reviewed/);}
+ assert.equal(h.store.read().baselines.length,0);}
+});
 test('production model never silently falls back to proxy or accepts caller-drawn stages or missing restore declarations',t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);
  for(const patch of [{repeats:3},{keySource:'caff-deepseek'},{evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1',gateCaseIds:[]}}])assert.throws(()=>prepareBatch({...h.config,...patch},h.options),/evaluation_gate_config_invalid/);

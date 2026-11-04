@@ -76,7 +76,7 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
       // Global harness text is independent of the actor/persona/roleSpan. Only
       // an exact declared fragment from the archive is editable; no current
       // prompt/config is substituted when an old archive lacks this fragment.
-      const target = checked('replay_declared_prompt_target_missing_or_invalid', () => locateGlobalPromptTarget(prompt, promptTarget.id)), replacement = promptTarget.replacement;
+      const target = checked('replay_declared_prompt_target_missing_or_invalid', () => locateGlobalPromptTarget(prompt, promptTarget.id, promptTarget.fragments)), replacement = promptTarget.replacement;
       commonPrompt = prompt.slice(0, target.start) + '{{GLOBAL_PROMPT_TARGET}}' + prompt.slice(target.end);
       if (replacement !== null) {
         ensure(typeof replacement === 'string' && replacement.trim() && Buffer.byteLength(replacement) <= 65536
@@ -141,5 +141,5 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
 }
 function prepareSealedDirectTurn(request, candidateRole = null) { return prepareTurn(request, candidateRole, null); }
 function prepareSealedOriginalTurn(request) { return prepareTurn(request, null, null, true); }
-function prepareSealedPromptTarget(request, targetId, replacement = null) { return prepareTurn(request, null, { id: targetId, replacement }); }
+function prepareSealedPromptTarget(request, targetId, replacement = null, fragments) { return prepareTurn(request, null, { id: targetId, replacement, fragments }); }
 module.exports = { prepareSealedDirectTurn, prepareSealedOriginalTurn, prepareSealedPromptTarget };

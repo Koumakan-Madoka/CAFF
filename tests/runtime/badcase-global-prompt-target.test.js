@@ -55,6 +55,26 @@ test('global target replacement changes one exact slot, not role instructions, i
     assert.equal(prepareSealedDirectTurn(f.request).supported, false, 'global target does not require an old roleSpan');
   }
 });
+test('known adopted fragments use the longest exact archived slot; unknown WikiSkill additions never fall back to a prefix', t => {
+  const adopted = oldSharedRules + '\n\nWikiSkill 已审核准则：\n- 先说明结果。';
+  const known = [{ baseText: oldSharedRules, baseHash: hash(oldSharedRules) }, { baseText: adopted, baseHash: hash(adopted) }];
+  const f = captured(t, 'role-family-gpt', ({ r, put, prompt }) => { r.promptBlobHash = r.normalizedPromptHash = put(prompt.replace(oldSharedRules, adopted)); });
+  const original = prepareSealedPromptTarget(f.request, targetId, null, known);
+  assert.equal(original.supported, true); assert.equal(original.baseText, adopted); assert.equal(original.provenance.originalTargetHash, hash(adopted));
+  const next = adopted + '\n\nWikiSkill 已审核准则：\n- 只追加一个变化。';
+  const replaced = prepareSealedPromptTarget(f.request, targetId, next, known);
+  assert.equal(replaced.supported, true); assert.equal(replaced.input.prompt, original.input.prompt.replace(adopted, next));
+  assert.equal(replaced.provenance.commonInputHash, original.provenance.commonInputHash);
+  for (const bad of [undefined, known.slice(0, 1), [{ ...known[1], baseHash: 'f'.repeat(64) }]]) {
+    assert.equal(prepareSealedPromptTarget(f.request, targetId, null, bad).supported, false);
+  }
+  for (const mutation of [adopted + '\n\nWikiSkill 已审核准则：\n- 未采纳的变化。', adopted.replace('先说明结果', '先说明影响')]) {
+    const bad = captured(t, 'role-family-gpt', ({ r, put, prompt }) => { r.promptBlobHash = r.normalizedPromptHash = put(prompt.replace(oldSharedRules, mutation)); });
+    assert.equal(prepareSealedPromptTarget(bad.request, targetId, null, known).supported, false);
+  }
+  const duplicate = captured(t, 'role-family-gpt', ({ r, put, prompt }) => { r.promptBlobHash = r.normalizedPromptHash = put(prompt.replace(oldSharedRules, adopted) + '\n\nRules:\n' + adopted + '\n'); });
+  assert.equal(prepareSealedPromptTarget(duplicate.request, targetId, null, known).supported, false);
+});
 test('global target preflight distinguishes a real target failure from unrelated captured configuration limits', t => {
   const thinking = captured(t, 'role-family-gpt', ({ config }) => { config.sdkStartConfig.thinking = 'xhigh'; });
   assert.deepEqual(prepareSealedPromptTarget(thinking.request, targetId), { supported: false, reason: 'replay_recorded_thinking_not_supported' });

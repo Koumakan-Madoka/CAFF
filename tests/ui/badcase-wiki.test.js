@@ -105,6 +105,30 @@ test('human interpretation and non-adoption stay separate from the accepted gate
   assert.match(h.root.querySelector('#impact-log').textContent, /相同改动.*重复.*换.*写法/);
   assert.equal(h.root.querySelector('#impact-runs script'), null); assert.equal(h.posts().length, 0); assert.deepEqual(h.saved(), before);
 });
+test('full candidate and accepted baseline text copy verbatim without applying or adopting; rejected text stays historical', async t => {
+  const h = setup(t), copied = [];
+  h.window.CaffShared.copyTextToClipboard = async text => { copied.push(text); };
+  h.saved().baselines = [{ targetId: 'global-harness-behavior-v1', baseText: 'Shared harness prose.\n\nWikiSkill 已审核准则：\n- 已明确采纳的改法。', baseHash: '1'.repeat(64) }];
+  h.saved().candidates[0].candidateText += '\n<script>not-html</script>';
+  h.saved().comparisonReviews = [{ candidateHash: h.saved().candidates[0].candidateHash, targetId: 'global-harness-behavior-v1', decision: 'not-adopted' }];
+  await h.panel.load(); await h.click('[data-tab="targets"]');
+  assert.equal(h.root.querySelector('[data-final-text="candidate-global"]').textContent, h.saved().candidates[0].candidateText);
+  assert.equal(h.root.querySelector('[data-final-text="candidate-global"] script'), null);
+  const before = clone(h.saved()); await h.click('[data-copy-candidate="candidate-global"]');
+  assert.equal(copied[0], h.saved().candidates[0].candidateText); assert.match(h.root.querySelector('#target-page').textContent, /未采纳.*历史|历史.*未采纳/);
+  await h.click('[data-copy-baseline="global-harness-behavior-v1"]');
+  assert.equal(copied[1], h.saved().baselines[0].baseText); assert.equal(h.posts().length, 0); assert.deepEqual(h.saved(), before);
+  h.window.CaffShared.copyTextToClipboard = async () => { throw Error('denied'); };
+  await h.click('[data-copy-candidate="candidate-global"]'); assert.match(h.root.querySelector('#toast').textContent, /复制失败/); assert.equal(h.posts().length, 0);
+});
+test('an explicit adopted review is labelled as evaluation baseline adoption, never a production write', async t => {
+  const h = setup(t);
+  h.saved().comparisons = [{ id: 'comparison-adopted', createdAt: '2026-11-04T01:00:00Z', completed: true, cases: [], modelCallsKnown: 20 }];
+  h.saved().comparisonReviews = [{ comparisonId: 'comparison-adopted', candidateId: 'candidate-global', candidateHash: h.saved().candidates[0].candidateHash, targetId: 'global-harness-behavior-v1', decision: 'adopted', reason: 'user_accepted', baselineChanged: true, interpretation: '用户明确采纳。', createdAt: '2026-11-04T02:00:00Z' }];
+  await h.panel.load(); await h.click('[data-tab="impact"]'); assert.match(h.root.querySelector('.comparison-review').textContent, /已采纳.*评测基线/);
+  assert.match(h.root.querySelector('#impact-log').textContent, /用户明确采纳.*生产提示词仍须手动合入/);
+  await h.click('[data-tab="targets"]'); const card = h.root.querySelector('.cand'); assert.match(card.textContent, /已采纳为评测基线/); assert.equal(card.querySelector('[data-confirm-candidate]'), null); assert.equal(h.posts().length, 0);
+});
 test('voided mark audit remains visible after removing the active case, without an undefined number or HTML execution', async t => {
   const h = setup(t);
   h.saved().events.push({ id: 'event-void', type: 'case-mark-voided', caseIds: ['removed-case'], createdAt: '2026-11-03T09:00:00Z', label: '误标作废', reason: '现场无对应测试；用户批准 <script>not-html</script>' });
