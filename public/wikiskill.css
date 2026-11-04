@@ -203,6 +203,8 @@ a.chip:hover { text-decoration: none; border-color: var(--border-strong); }
 .table-wrap { overflow-x: auto; }
 .evaluation-stage { display: grid; gap: 10px; padding: 18px 0; border-top: 1px solid var(--border); }
 .gate-decision { display: grid; gap: 8px; padding: 14px 16px; margin: 14px 0; border-radius: 10px; background: var(--accent-soft); }
+.comparison-review { display: grid; gap: 8px; padding: 14px 16px; margin: 14px 0; border: 1px solid var(--border); border-radius: 10px; }
+.review-interpretation { white-space: pre-wrap; overflow-wrap: anywhere; }
 .stage-rates { display: grid; gap: 6px; font-size: 13px; color: var(--soft); }
 .comparison-history { display: grid; gap: 6px; margin-bottom: 12px; }
 .comparison-history .btn { white-space: normal; text-align: left; min-width: 0; }

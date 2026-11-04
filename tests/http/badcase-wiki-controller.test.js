@@ -26,6 +26,16 @@ function setup(t) {
 }
 const rejects = (promise, code, status = 422) => assert.rejects(promise, e => e.statusCode === status && e.issues?.[0]?.code === code);
 
+test('comparison review is explicit, locally guarded and cannot supply results, rules or adoption', async t => {
+  const h = setup(t), route = { pathname: '/api/wikiskill/comparison-review' };
+  const body = { confirmed: true, comparisonId: 'comparison-' + 'a'.repeat(64), candidateHash: 'b'.repeat(64), expectedRevision: 0, decision: 'not-adopted', reason: 'test_not_passed', interpretation: '门槛接受、测试未通过、未采纳。' };
+  await rejects(h.invoke({ ...body, confirmed: false }, route), 'wiki_confirmation_required');
+  for (const extra of [{ result: {} }, { rules: {} }, { globalRoot: h.root }]) await rejects(h.invoke({ ...body, ...extra }, route), 'wiki_invalid_input');
+  for (const override of [{ remoteAddress: '10.1.1.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) await assert.rejects(h.invoke(body, { ...route, ...override }), e => [403, 404].includes(e.statusCode));
+  await rejects(h.invoke(body, route), 'wiki_comparison_not_found', 404);
+  assert.equal(h.store.read().revision, 0); assert.equal(fs.existsSync(path.join(h.config.globalRoot, 'snapshots')), false);
+  assert.equal(fs.existsSync(path.join(h.config.globalRoot, 'comparisons')), false);
+});
 test('execution progress endpoint is read-only, guarded and cannot launch evaluations', async t => {
   const h = setup(t), result = await h.invoke(undefined, { pathname: '/api/wikiskill/executions' });
   assert.deepEqual(result.body, { executions: [], comparisons: [] }); assert.equal(fs.existsSync(h.config.globalRoot), false);

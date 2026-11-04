@@ -93,6 +93,18 @@ test('production result labels model/thinking and report-only rows, without stal
   assert.doesNotMatch(text, /代理模型 DeepSeek|不作为采纳依据|UNRELATED-OLD-TASK/); assert.equal(h.posts().length, 0);
 });
 
+test('human interpretation and non-adoption stay separate from the accepted gate and persist in the timeline', async t => {
+  const h = setup(t);
+  h.saved().comparisons = [{ id: 'comparison-reviewed', createdAt: '2026-11-03T12:00:00Z', completed: true, model: 'openai-codex/gpt-6.1-sol', evaluation: { splitPolicy: 'd15-frozen-v1' }, cases: [], modelCallsKnown: 100 }];
+  const interpretation = '门槛判为接受（#19 原版 0/10，候选 6/10，p=0.0054；#16 两边都是 10/10）。\n测试组的复现题 #20 两边都是 0/10。候选把“开头先给结论”从 3/10 提到了 8/10，但两边 10 次全都用了 P1/P2/P3。\n只能说修好了 #19 这一类，不能说模式 1 整体变好了。\n本轮不采纳候选 bc807f8a，不进生产提示词。 <script>not-executed</script>';
+  h.saved().comparisonReviews = [{ id: 'review-1', comparisonId: 'comparison-reviewed', decision: 'not-adopted', gateOutcome: 'accepted', reason: 'test_not_passed', interpretation, baselineChanged: false, createdAt: '2026-11-04T01:00:00Z' }];
+  const before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="impact"]');
+  const text = h.root.querySelector('#impact-runs').textContent;
+  assert.ok(text.includes(interpretation)); assert.match(text, /未采纳.*基线未改变/);
+  assert.match(h.root.querySelector('#impact-log').textContent, /门槛接受、测试未通过、未采纳/);
+  assert.match(h.root.querySelector('#impact-log').textContent, /相同改动.*重复.*换.*写法/);
+  assert.equal(h.root.querySelector('#impact-runs script'), null); assert.equal(h.posts().length, 0); assert.deepEqual(h.saved(), before);
+});
 test('voided mark audit remains visible after removing the active case, without an undefined number or HTML execution', async t => {
   const h = setup(t);
   h.saved().events.push({ id: 'event-void', type: 'case-mark-voided', caseIds: ['removed-case'], createdAt: '2026-11-03T09:00:00Z', label: '误标作废', reason: '现场无对应测试；用户批准 <script>not-html</script>' });

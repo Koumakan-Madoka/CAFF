@@ -129,6 +129,43 @@ test('B rules are mechanically derived from the frozen replay fixture, change ru
  assert.ok(p.summary.disclosures.includes('post_observation_snapshot_head_rule_revision'));
  h.config.cases[0].repository.head='c'.repeat(40);assert.throws(h.plan,/evaluation_snapshot_head_mismatch/);
 });
+test('human non-adoption is immutable, distinct from gate acceptance and blocks only the exact rejected proposal',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const f=fakeExecution(h),execute=f.options.runProductionComparison;
+ f.options.runProductionComparison=async(c,o)=>{const r=await execute(c,o);if(c.request.association.checkpointId==='cp-1')for(const row of r.runs)row.status='fail';return r;};
+ const result=await f.run(),comparisons=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=comparisons.save(result);
+ const before=h.store.read(),original=fs.readFileSync(path.join(h.config.globalRoot,'comparisons',saved.id.slice(11)+'.json'));
+ const input={comparisonId:saved.id,candidateHash:h.candidate.candidateHash,expectedRevision:before.revision,decision:'not-adopted',reason:'test_not_passed',interpretation:'门槛接受、测试未通过、未采纳。只能说修好了本题，不能说模式整体变好了。'};
+ assert.equal(result.gateDecision.outcome,'accepted');assert.equal(result.completed,true);
+ const controller=require('../../build/server/api/badcase-wiki-controller').createBadcaseWikiController({...h.config,host:'127.0.0.1',port:4313,csrfToken:'synthetic-csrf'});
+ const req=new(require('node:stream').PassThrough)();req.method='POST';req.socket={remoteAddress:'127.0.0.1'};req.headers={host:'127.0.0.1:4313',origin:'http://127.0.0.1:4313','content-type':'application/json','x-caff-csrf-token':'synthetic-csrf'};let response;
+ const pending=controller({req,pathname:'/api/wikiskill/comparison-review',res:{writeHead(s){assert.equal(s,200);},end(b){response=JSON.parse(b);}}});req.end(JSON.stringify({confirmed:true,...input}));assert.equal(await pending,true);
+ const review=response.comparisonReviews[0];assert.equal(review.decision,'not-adopted');assert.equal(review.gateOutcome,'accepted');assert.equal(review.baselineChanged,false);
+ assert.equal(h.store.read().revision,before.revision+1);assert.deepEqual(h.store.read().versions,before.versions);assert.deepEqual(h.store.read().candidates,before.candidates);
+ assert.deepEqual(comparisons.read()[0],saved);assert.deepEqual(fs.readFileSync(path.join(h.config.globalRoot,'comparisons',saved.id.slice(11)+'.json')),original);
+ assert.deepEqual(createWikiStore(h.config).read().comparisonReviews,[review]);
+ assert.deepEqual(h.store.reviewComparison({...input,expectedRevision:h.store.read().revision}),review);assert.equal(h.store.read().revision,before.revision+1);
+ assert.throws(()=>h.store.reviewComparison({...input,expectedRevision:h.store.read().revision,interpretation:'替换原评审'}),/wiki_comparison_reviewed/);
+ const create={versionId:h.candidate.versionId,entryIds:h.candidate.entryIds,targetId:h.candidate.targetId,files:[]};
+ assert.throws(()=>h.store.createGlobalCandidate(create),/wiki_candidate_not_adopted/);assert.throws(h.plan,/wiki_candidate_not_adopted/);
+ // Different wording, not a blanket ban on the pattern or guideline family.
+ const train=before.versions.find(v=>v.id===h.candidate.versionId).caseIds;
+ const repeated=h.store.saveDraft({model:'deepseek/deepseek-v4-flash',caseIds:train,entries:[{title:'Renamed pattern',failureMode:'jargon',symptoms:'unclear',rootCauseHypothesis:'audience',guideline:'先讲结论。',caseIds:train}],unclassified:[]});
+ h.store.review({versionId:repeated.id,entryId:'entry-1',expectedRevision:h.store.read().revision,decision:'approved'});
+ assert.throws(()=>h.store.createGlobalCandidate({...create,versionId:repeated.id}),/wiki_candidate_not_adopted/);
+ const version=h.store.saveDraft({model:'deepseek/deepseek-v4-flash',caseIds:train,entries:[{title:'Plain report',failureMode:'jargon',symptoms:'unclear',rootCauseHypothesis:'audience',guideline:'先用白话概括结果和影响。',caseIds:train}],unclassified:[]});
+ h.store.review({versionId:version.id,entryId:'entry-1',expectedRevision:h.store.read().revision,decision:'approved'});
+ assert.notEqual(h.store.createGlobalCandidate({...create,versionId:version.id}).candidateHash,h.candidate.candidateHash);
+});
+test('comparison review cannot invent a result, change a frozen rubric, adopt implicitly or overwrite stale state',async t=>{
+ const h=fixture(t);for(const c of h.marks)h.confirm(c);const result=await fakeExecution(h).run(),saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(result),before=h.store.read();
+ const input={comparisonId:saved.id,candidateHash:h.candidate.candidateHash,expectedRevision:before.revision,decision:'not-adopted',reason:'user_declined',interpretation:'用户未采纳；不进入生产。'};
+ for(const patch of [{comparisonId:'comparison-'+'0'.repeat(64)},{candidateHash:'0'.repeat(64)},{expectedRevision:before.revision-1},{decision:'adopted'},{rules:{}},{reason:'test_not_passed'},{interpretation:'sk-FAKE_SENTINEL_123456'}])assert.throws(()=>h.store.reviewComparison({...input,...patch}));
+ assert.deepEqual(h.store.read(),before);
+ const file=path.join(h.config.globalRoot,'comparisons',saved.id.slice(11)+'.json'),bytes=fs.readFileSync(file),envelope=JSON.parse(bytes);
+ envelope.record.modelConfig.thinking='off';fs.writeFileSync(file,JSON.stringify(envelope));
+ assert.throws(()=>h.store.reviewComparison(input),/wiki_comparison_record_invalid/);assert.deepEqual(h.store.read(),before);fs.writeFileSync(file,bytes);
+ h.store.reviewComparison(input);assert.equal(h.store.read().comparisonReviews.length,1);
+});
 test('production model never silently falls back to proxy or accepts caller-drawn stages or missing restore declarations',t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);
  for(const patch of [{repeats:3},{keySource:'caff-deepseek'},{evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1',gateCaseIds:[]}}])assert.throws(()=>prepareBatch({...h.config,...patch},h.options),/evaluation_gate_config_invalid/);

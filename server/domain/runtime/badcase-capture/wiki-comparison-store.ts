@@ -9,6 +9,9 @@ import { containsSecretSentinel } from './secrets';
 import { projectStagedResult } from './wiki-staged-result';
 import { planWikiEvaluationSuite } from './wiki-evaluation-suite';
 import { resolveSampleReplayVersion } from './wiki-sample-replay-version';
+import { readWikiComparisonRecord } from './wiki-comparison-record';
+import { wikiComparisonTotals } from './wiki-comparison-totals';
+export { wikiComparisonTotals } from './wiki-comparison-totals';
 
 const variants = ['original', 'candidate'];
 const categories = ['reproduction', 'probe', 'control'];
@@ -23,16 +26,6 @@ function code(value: any) { check(typeof value === 'string' && /^[a-z_]{1,100}$/
 function ids(values: any) {
   check(Array.isArray(values) && values.length <= 1000);
   const result = values.map(identifier); check(new Set(result).size === result.length); return result;
-}
-export function wikiComparisonTotals(cases: any[], repeats: number) {
-  cases = cases.filter(c => c.reportOnly !== true);
-  return Object.fromEntries(variants.map(variant => {
-    const rows = cases.flatMap(c => c.runs || []).filter(r => r.variant === variant), planned = cases.length * repeats;
-    const passed = rows.filter(r => r.status === 'pass').length, failed = rows.filter(r => r.status === 'fail').length, errors = rows.filter(r => r.status === 'error').length;
-    const staged = cases.some(c => c.stage === 'gate' || c.stage === 'test');
-    return [variant, { planned, attempted: rows.length, passed, failed, errors, notRun: planned - (staged ? passed + failed : rows.length),
-      scored: passed + failed, passRate: passed + failed ? passed / (passed + failed) : null, plannedPassRate: planned ? passed / planned : null }];
-  }));
 }
 // Allowlist projection: never serialize arbitrary worker text, paths, file bytes,
 // usage objects, Docker inspect, or caller-supplied aggregate counters.
@@ -93,16 +86,8 @@ export function createWikiComparisonStore(options: any) {
   check(options?.globalRoot !== undefined);
   const wiki = createWikiStore(options), directory = path.join(options.globalRoot, 'comparisons');
   function readFile(name: string) {
-    try {
-      const file = path.join(directory, name), stat = fs.lstatSync(file); check(stat.isFile() && stat.size <= MAX_BYTES);
-      const envelope = JSON.parse(fs.readFileSync(file, 'utf8')), { id, createdAt, ...payload } = envelope.record;
-      check(envelope.schemaVersion === 1 && envelope.checksum === hash(envelope.record));
-      check(id === 'comparison-' + hash(payload) && name === hash(payload) + '.json');
-      check(typeof createdAt === 'string' && new Date(createdAt).toISOString() === createdAt);
-      check(JSON.stringify(projectResult(payload)) === JSON.stringify(payload));
-      check(!containsSecretSentinel(JSON.stringify(envelope.record)));
-      return envelope.record;
-    } catch { throw fail('wiki_comparison_record_invalid'); }
+    try { return readWikiComparisonRecord(options.globalRoot, 'comparison-' + name.slice(0, -5), projectResult); }
+    catch { throw fail('wiki_comparison_record_invalid'); }
   }
   return {
     read() {

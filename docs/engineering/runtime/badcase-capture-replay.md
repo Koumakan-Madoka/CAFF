@@ -189,6 +189,13 @@
 - 逐用例、总体、训练、留出分别报告原/候选的 planned/attempted/pass/fail/error/notRun。`passRate = pass/(pass+fail)` 仅对可评分项，零分母为 null/N/A；同时保存 `plannedPassRate = pass/planned`，CLI 明示通过/计划、失败、错误、未运行及可评分分母，不能用剔除错误假装整体提分。`completed` 只表示所有计划轮次完成，不等于所有任务通过。准备支持少于6条、wiki训练少于10条会显式披露，不因数量字段存在就满足验收。
 - 该旧角色批量入口仍为操作方 CLI，不提供网页一键启动或结果库；只有上述新全局目标结果可进入 WikiSkill 结果区。输出 JSONL 与 CLI/JSON 汇总作为结果材料。旧链仅合成驱动验证，不冒称新版全局目标已真实运行或用户接受。
 
+### 人工采纳裁决（M5 增量）
+
+- 正式结果的 `gateDecision.accepted` 只决定是否进入测试，不等于用户采纳。`POST /api/wikiskill/comparison-review` 受现有本地 Host/Origin/CSRF 和 `confirmed:true` 门禁约束，输入仅为 `comparisonId/candidateHash/expectedRevision/decision/reason/interpretation`。当前只接受 `decision:"not-adopted"`；理由为 `gate_rejected/test_not_passed/user_declined`。服务端按精确 ID 读取已保存、checksum/内容 hash/投影一致的完整生产评测，不接受客户端提供结果、规则、分数或存储路径；`test_not_passed` 须有已接受门槛和测试复现题失败证据。它记录人工裁决，不新增测试判定公式。
+- 裁决独立追加到不可覆盖的 Wiki 快照 `comparisonReviews`，保留原候选确认状态、原始比较文件、rulesHash、字面分数和组别；不把 `confirmed` 改成采纳。相同裁决在当前 revision 重交幂等，修改已记录裁决或用过期 revision 提交拒绝。页面逐字、纯文本显示人工解读，演进记录注明“门槛接受、测试未通过、未采纳”；基线未改变、生产提示词未修改。
+- 未采纳的精确 `targetId+candidateHash` 不得再次生成、确认或进入新评测计划，换 Wiki 版本/标题也不能绕过；不同写法可重新提草稿，不禁止整个模式。原候选与评测仍可只读查看。此增量尚未开放采纳/基线叠加入口，后续 M5 完成后再统一验收。
+- 2026-11-04 规划者受用户委托通过 M4（固定 SHA `2fc3a9e3`，独立计划 `156c6024`），同时明确不采纳 `bc807f8a`。门槛 #19 原版0/10、候选6/10（p=0.0054），#16双方10/10；测试 #20 双方0/10，#10/#14双方10/10。#20 的开头结论率原版3/10、候选8/10，但两版各10次都命中 P 编号规则；题目本身讨论按 P1/P2/P3 分阶段的 ADR，规则在测试前冻结，不再改分。结论：只能说修好了 #19 这一类，不能说模式1整体变好了。本轮不叠加基线、不进生产提示词；规则 B 的事后修订及旧轮排除仍按上文完整披露。
+
 ### 模型与凭据
 
 - 用户本轮选择 `modelProfile: "deepseek/deepseek-v4-flash"`，与官方 `https://api.deepseek.com` 配套，原/候选同模型、采样和资源条件。旧默认 `opencode-go/deepseek-v4.1-flash` 只为显式旧配置兼容保留，不将 CAFF 的 DeepSeek Key 发往 OpenCode。

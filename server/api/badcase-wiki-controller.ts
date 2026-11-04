@@ -24,7 +24,9 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_candidate_invalid: 422, wiki_candidate_leak: 422, wiki_candidate_not_found: 404, wiki_candidate_deprecated: 409,
     wiki_candidate_approved_required: 409, wiki_candidate_confirmation_required: 409, wiki_candidate_role_mismatch: 409,
     wiki_target_unknown: 422, wiki_candidate_target_mismatch: 409, wiki_candidate_anchor_unsupported: 409,
-    wiki_comparison_record_invalid: 409, wiki_no_pending_cases: 409, wiki_not_pending: 409,
+    wiki_comparison_record_invalid: 409, wiki_comparison_not_found: 404, wiki_comparison_invalid: 422,
+    wiki_comparison_review_invalid: 409, wiki_comparison_reviewed: 409, wiki_candidate_not_adopted: 409,
+    wiki_no_pending_cases: 409, wiki_not_pending: 409,
     wiki_suggestion_not_found: 404, wiki_suggestion_resolved: 409, wiki_suggestion_review_required: 409,
     wiki_model_output_invalid: 422, wiki_generation_failed: 503, wiki_unknown_training_case: 422,
     wiki_training_input_too_large: 422, evaluation_caff_auth_unavailable_or_invalid: 503, evaluation_linux_required: 503,
@@ -32,7 +34,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     evaluation_wsl_host_required: 503, evaluation_wsl_backend_invalid: 503, wiki_execution_record_invalid: 503,
   };
   return async ({ req, res, pathname }: any) => {
-    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions))?$/);
+    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review))?$/);
     const readOnly = !match?.[1] || match[1] === 'executions';
     if (!match || (readOnly ? req.method !== 'GET' : req.method !== 'POST')) return false;
     if (readOnly) guard.assertRead(req); else guard.assertMutation(req);
@@ -47,6 +49,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         suggestion: ['confirmed', 'suggestionId', 'decision', 'expectedRevision'],
         membership: ['confirmed', 'caseId', 'entryId', 'expectedRevision'],
         review: ['confirmed', 'versionId', 'entryId', 'expectedRevision', 'patch', 'decision'],
+        'comparison-review': ['confirmed', 'comparisonId', 'candidateHash', 'expectedRevision', 'decision', 'reason', 'interpretation'],
       };
       if (!input || typeof input !== 'object' || Array.isArray(input)
         || Object.keys(input).some(k => !fields[match[1]].includes(k))) throw issue('wiki_invalid_input');
@@ -61,6 +64,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       if (match[1] === 'executions') { sendJson(res, 200, { executions: executions(), comparisons: createWikiComparisonStore(scope).read() }); return true; }
       const store = createWikiStore(scope);
       if (match[1] === 'review') store.review(input);
+      if (match[1] === 'comparison-review') store.reviewComparison(input);
       if (match[1] === 'suggestion') store.resolveSuggestion(input);
       if (match[1] === 'membership') store.assignCase(input);
       if (match[1] === 'induct') {

@@ -29,6 +29,7 @@ export function buildGlobalWikiCandidate(state: any, input: any) {
 export function resolveGlobalWikiCandidate(state: any, candidateId: string, targetId: string, baseHash: string, files: any[]) {
   const saved = state.candidates?.find((c: any) => c.id === candidateId && c.kind === 'global-wiki-candidate-v1');
   if (!saved || saved.status !== 'confirmed') throw fail('wiki_candidate_confirmation_required');
+  if (state.comparisonReviews?.some((r: any) => r.decision === 'not-adopted' && r.targetId === saved.targetId && r.candidateHash === saved.candidateHash)) throw fail('wiki_candidate_not_adopted');
   const target = getWikiTarget(targetId);
   if (saved.targetId !== targetId || target.baseHash !== baseHash || saved.baseHash !== baseHash || saved.baseText !== target.baseText) throw fail('wiki_candidate_target_mismatch');
   const rebuilt = buildGlobalWikiCandidate(state, { versionId: saved.versionId, entryIds: saved.entryIds, targetId: saved.targetId, files });
