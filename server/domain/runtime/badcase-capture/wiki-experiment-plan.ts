@@ -72,7 +72,33 @@ function checkPlanHash(plan: WikiExperimentPlan) {
   const { planHash, ...payload } = plan;
   ensure(plan.kind === 'wiki-experiment-plan-v1' && plan.repeats === 10 && plan.executionPolicy === 'alternating-valid-v1'
     && wikiValueHash(plan.decision) === wikiValueHash(POLICY) && /^[a-f0-9]{64}$/.test(planHash) && wikiValueHash(payload) === planHash);
+  ensure(Array.isArray(plan.variants) && plan.variants.length === 2);
+  for (const [i, v] of plan.variants.entries()) {
+    wikiExactKeys(v, ['id', 'promptHash']); ensure(v.id === (i === 0 ? 'original' : 'candidate') && /^[a-f0-9]{64}$/.test(v.promptHash));
+  }
+  wikiExactKeys(plan.runner, ['model', 'settings']); wikiRubricText(plan.runner.model, 256); safeJson(plan.runner, 8192);
+  ensure(plan.runner.settings && typeof plan.runner.settings === 'object' && !Array.isArray(plan.runner.settings));
+  for (const [k, v] of Object.entries(plan.runner.settings)) ensure(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(k)
+    && !/^(?:key|apiKey|authorization|password|credential|secret)$/i.test(k)
+    && (v === null || ['string', 'boolean'].includes(typeof v) || typeof v === 'number' && Number.isFinite(v)));
+  ensure(Array.isArray(plan.cases) && plan.cases.length >= 3 && plan.cases.length <= 20 && new Set(plan.cases.map(c => c?.caseId)).size === plan.cases.length);
+  for (const c of plan.cases) {
+    wikiExactKeys(c, ['caseId', 'stage', 'category', 'targetReproduction', 'sceneHash', 'inputHash', 'hardAssertionsHash', 'rubricHash', 'judge']); identifier(c.caseId);
+    ensure(['gate', 'test'].includes(c.stage) && ['reproduction', 'control', 'probe'].includes(c.category) && typeof c.targetReproduction === 'boolean'
+      && (!c.targetReproduction || c.category === 'reproduction'));
+    for (const key of ['sceneHash', 'inputHash', 'hardAssertionsHash', 'rubricHash'] as const) ensure(/^[a-f0-9]{64}$/.test(c[key]));
+    wikiExactKeys(c.judge, ['kind', 'backend', 'model', 'modelHash', 'promptHash', 'rubricHash', 'passes']);
+    ensure(c.judge.kind === 'wiki-judge-binding-v1' && ['deepseek', 'jev'].includes(c.judge.backend) && c.judge.passes === 3
+      && c.judge.rubricHash === c.rubricHash && /^[a-f0-9]{64}$/.test(c.judge.modelHash) && /^[a-f0-9]{64}$/.test(c.judge.promptHash));
+    wikiRubricText(c.judge.model, 256);
+    ensure(c.judge.backend !== 'deepseek' || c.judge.model === 'deepseek/deepseek-v4-flash');
+  }
+  ensure(plan.cases.some(c => c.stage === 'gate' && c.targetReproduction) && plan.cases.some(c => c.stage === 'gate' && c.category === 'control')
+    && plan.cases.some(c => c.stage === 'test' && c.targetReproduction));
+  const first = plan.cases[0].judge;
+  ensure(plan.cases.every(c => ['backend', 'model', 'modelHash', 'promptHash', 'passes'].every(k => (c.judge as any)[k] === (first as any)[k])));
 }
+export function validateWikiExperimentPlan(plan: WikiExperimentPlan): WikiExperimentPlan { checkPlanHash(plan); return structuredClone(plan); }
 export function assertWikiExperimentPlan(plan: WikiExperimentPlan, definition: WikiExperimentDefinition, catalog: WikiExperimentCase[]): void {
   try {
     checkPlanHash(plan);

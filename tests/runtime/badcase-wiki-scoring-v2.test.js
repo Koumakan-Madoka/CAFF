@@ -112,6 +112,24 @@ test('only requested evidence is attached; UTF-8 byte caps and truncation flags 
   assert.equal(ti.evidence.traceSummary.truncated, true);
   assert.equal((await h.score()).status, 'error'); assert.equal(h.calls(), 0);
 });
+test('immutable scoring projection agrees with core outcomes, including early failures and partial/undetermined votes', async () => {
+  const { projectWikiAssessment } = require(base + 'wiki-comparison-scoring');
+  for (const scenario of ['pass', 'hard-fail', 'missing', 'environment', 'undetermined', 'reject', 'tie', 'bad-json', 'late-backend', 'missing-trace']) {
+    const h = setup(scenario === 'missing-trace' ? 'trace' : 'reply'); let n = 0, patch = {};
+    if (scenario === 'hard-fail') patch = { hardAssertions: [{ id: 'files', status: 'fail' }] };
+    if (scenario === 'missing') patch = { hardAssertions: [{ id: 'files', status: 'error' }] };
+    if (scenario === 'environment') patch = { run: { environmentError: true } };
+    if (scenario === 'undetermined') h.judge.evaluate = async () => h.output('undetermined');
+    if (scenario === 'reject') h.judge.evaluate = async () => h.output('not-satisfied');
+    if (scenario === 'tie') h.judge.evaluate = async () => h.output(['satisfied', 'not-satisfied', 'undetermined'][n++]);
+    if (scenario === 'bad-json') h.judge.evaluate = async () => 'not-json';
+    if (scenario === 'late-backend') h.judge.evaluate = async () => { if (++n === 2) throw Error('Synthetic fault'); return h.output(); };
+    const r = await h.score(patch), ids = r.hardAssertions.slice(2).map(a => a.id);
+    assert.deepEqual(projectWikiAssessment(r, h.rubric, h.binding, ids), r, scenario);
+    const changed = structuredClone(r); changed.status = r.status === 'pass' ? 'fail' : 'pass';
+    assert.throws(() => projectWikiAssessment(changed, h.rubric, h.binding, ids));
+  }
+});
 test('frozen rubric, valid hashes, known backends and valid objective check structures are required', async () => {
   const h = setup();
   const { confirmedAt, confirmationRecord, ...draft } = h.rubric;

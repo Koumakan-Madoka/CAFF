@@ -13,6 +13,8 @@ import { readWikiComparisonRecord } from './wiki-comparison-record';
 import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { extractWikiLiteralObservations } from './wiki-experience';
+import { WIKI_COMPARISON_V2_MAX_BYTES, wikiObjectiveRules, wikiObjectiveAssertionIds } from './wiki-comparison-scoring';
+import { resolveFrozenWikiRubric, wikiValueHash } from './wiki-rubric';
 export { wikiComparisonTotals } from './wiki-comparison-totals';
 
 const variants = ['original', 'candidate'];
@@ -32,7 +34,7 @@ function ids(values: any) {
 // Allowlist projection: never serialize arbitrary worker text, paths, file bytes,
 // usage objects, Docker inspect, or caller-supplied aggregate counters.
 function projectResult(input: any): any {
-  if (input?.kind === 'wiki-staged-batch-comparison-v1') return projectStagedResult(input, wikiComparisonTotals);
+  if (['wiki-staged-batch-comparison-v1', 'wiki-staged-batch-comparison-v2'].includes(input?.kind)) return projectStagedResult(input, wikiComparisonTotals);
   check(input?.kind === 'wiki-global-batch-comparison-v1' && input.scope === 'global' && input.model === 'deepseek/deepseek-v4-flash');
   const repeats = count(input.repeats); check(repeats >= 1 && repeats <= 20);
   const candidate = input.candidate;
@@ -133,6 +135,14 @@ export function createWikiComparisonStore(options: any) {
             check(c.comparison?.rulesHash === hash(revised) || c.comparison?.rulesHash === hash(snapshotRules));
             check(payload.disclosures.includes('topic_number_exemption_new_round'));
           }
+          if (payload.kind === 'wiki-staged-batch-comparison-v2' && !c.reportOnly) {
+            check(replay && c.rubric && wikiValueHash(resolveFrozenWikiRubric(state, c.sourceCaseId, c.rubric.hash)) === wikiValueHash(c.rubric));
+            const selection = payload.experiment.cases.find((p: any) => p.caseId === c.sourceCaseId);
+            check(selection && wikiValueHash(c.hardAssertionIds) === wikiValueHash(wikiObjectiveAssertionIds(replay.rules))
+              && selection.hardAssertionsHash === wikiValueHash(wikiObjectiveRules(replay.rules))
+              && c.comparison?.checkpointHash === replay.checkpointHash && c.comparison.rulesHash === hash(replay.rules)
+              && selection.sceneHash === wikiValueHash({ checkpointHash: replay.checkpointHash, fixture: replay.fixture, commonInputHash: c.comparison.commonInputHash ?? null }));
+          }
           if (sampleVersion) check(c.category === 'control' && c.comparison?.checkpointHash === replay.checkpointHash && c.comparison?.rulesHash === hash(replay.rules));
           if (production && c.reportOnly) check(c.status === 'not-run' && c.reason === 'non_gpt_source_report_only' && !c.runs.length);
           else if (c.replayId) check(replay?.id === c.replayId && replay.category === c.category && replay.split === c.split);
@@ -148,7 +158,7 @@ export function createWikiComparisonStore(options: any) {
         if (fs.existsSync(target)) return readFile(name);
         const record = { id: 'comparison-' + contentHash, createdAt: new Date().toISOString(), ...payload };
         const bytes = JSON.stringify({ schemaVersion: 1, checksum: hash(record), record }) + '\n';
-        check(!containsSecretSentinel(bytes) && Buffer.byteLength(bytes) <= MAX_BYTES);
+        check(!containsSecretSentinel(bytes) && Buffer.byteLength(bytes) <= (payload.kind === 'wiki-staged-batch-comparison-v2' ? WIKI_COMPARISON_V2_MAX_BYTES : MAX_BYTES));
         const temp = target + '.tmp-' + crypto.randomUUID();
         try {
           fs.mkdirSync(directory, { recursive: true });
@@ -162,7 +172,7 @@ export function createWikiComparisonStore(options: any) {
       // Release the comparison lock before publishing a wiki snapshot under
       // the same lock key. A draft failure leaves the immutable result intact;
       // replay publication, never paid execution, can safely recover it.
-      if (record.evaluation?.splitPolicy === 'd15-frozen-v1') wiki.recordComparisonExperience({ comparisonId: record.id, observations: extractWikiLiteralObservations(input) });
+      if (record.kind === 'wiki-staged-batch-comparison-v1' && record.evaluation?.splitPolicy === 'd15-frozen-v1') wiki.recordComparisonExperience({ comparisonId: record.id, observations: extractWikiLiteralObservations(input) });
       return record;
     },
   };

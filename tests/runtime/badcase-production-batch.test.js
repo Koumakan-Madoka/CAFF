@@ -322,6 +322,56 @@ test('v2 frozen experiment rejects drift in task, rubric, scene and judge config
   assert.throws(h.plan,/wiki_experiment_changed|evaluation_batch_input_changed/);assert.equal(h.store.read().candidates.length,1);
  }
 });
+function v2Execution(h,settings={}){
+ const f=fakeExecution(h,settings);f.options.judge=h.judge;
+ f.options.runProductionComparison=async(config,options)=>{
+  f.calls.push(config);options.onEvent({event:'plan',runtimeHash:digest});const runs=[];
+  for(let i=1;i<=10;i++)for(const variant of ['original','candidate']){
+   options.onEvent({event:'run_start',variant,iteration:i});options.onEvent({event:'model_call',variant,iteration:i,model:PROFILE});
+   const failed=settings.improve!==false&&config.request.association.checkpointId==='cp-0'&&variant==='original';
+   const assessment=await require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2').scoreWikiRun({rubric:config.scoring.rubric,binding:config.scoring.binding,
+    run:{task:config.scoring.task,expected:config.scoring.expected,completed:true,replySource:'public',publicReply:'RESULT. PRIVATE-WORKER-REPLY-NOT-FOR-PAGE'},hardAssertions:config.rules.kind==='file-literals-v1'?[{id:'files',status:'pass'}]:[],referenceMetrics:{noForbiddenTerms:false}},
+    {configuration:h.judge.configuration,evaluate:async()=>({judgments:config.scoring.rubric.questions.map((q,n)=>({criterionId:q.id,verdict:settings.uncertain?'undetermined':failed&&n===0?'not-satisfied':'satisfied',reason:'Synthetic reasoning',evidence:settings.uncertain?[]:[{source:'reply',text:'RESULT.'}]}))})});
+   const row={variant,iteration:i,status:assessment.status,...(assessment.reason?{reason:assessment.reason}:{}),assessment,replySource:'public',cleaned:true,finalText:'RESULT. PRIVATE-WORKER-REPLY-NOT-FOR-PAGE'};
+   runs.push(row);options.onEvent({event:'run',...row});
+   if(assessment.status==='error')return {completed:false,fatal:true,runs,modelCallsKnown:runs.length,callsUnavailable:false};
+  }
+  return {completed:true,runs,modelCallsKnown:20,callsUnavailable:false};
+ };
+ return f;
+}
+test('v2 immutable publication retains criterion votes/citations/reference metrics, not full replies, and rejects forged judgments',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const r=await v2Execution(h).run(),store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);
+ const saved=store.save(r);assert.equal(saved.kind,'wiki-staged-batch-comparison-v2');assert.deepEqual(store.read()[0],saved);assert.deepEqual(store.save(saved),saved);
+ const c=saved.cases.find(c=>c.sourceCaseId===h.marks[0].id);assert.equal(c.rubric.status,'frozen');assert.equal(c.runs[0].assessment.votes.length,3);assert.equal(c.runs[0].assessment.judgments[0].verdict,'not-satisfied');assert.equal(c.runs[0].assessment.referenceMetrics.noForbiddenTerms,false);
+ const control=saved.cases.find(c=>c.sourceCaseId===controlId);assert.deepEqual(control.hardAssertionIds,['files']);assert.equal(control.runs[0].assessment.hardAssertions.find(a=>a.id==='files').status,'pass');
+ assert.equal(c.runs[0].assessment.votes[0][0].evidence[0].text,'RESULT.');assert.equal(JSON.stringify(saved).includes('PRIVATE-WORKER'),false);assert.equal(h.store.read().experiences.length,0,'v2 must not auto-draft a misleading literal-rule experience');
+ for(const change of [x=>x.cases.find(c=>!c.reportOnly).runs[0].status='pass',x=>x.cases.find(c=>!c.reportOnly).runs[0].assessment.judgments[0].verdict='satisfied',x=>x.experiment.planHash='f'.repeat(64),x=>x.cases.find(c=>!c.reportOnly).comparison.scoring.binding.promptHash='f'.repeat(64),x=>x.cases.find(c=>!c.reportOnly).rubric.questions[0].question='Forged question?',x=>x.cases.find(c=>c.sourceCaseId===controlId).runs[0].assessment.hardAssertions=x.cases.find(c=>c.sourceCaseId===controlId).runs[0].assessment.hardAssertions.filter(a=>a.id!=='files')]){const x=structuredClone(r);change(x);assert.throws(()=>store.save(x));}
+});
+test('v2 uncertain judgments remain immutable errors, stop further cases/tests and never become replacement answers',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{uncertain:true}),r=await f.run();assert.equal(f.calls.length,1);assert.equal(r.completed,false);assert.equal(r.gateDecision.outcome,'indeterminate');
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);
+ assert.equal(saved.byStage.gate.original.scored,0);assert.equal(saved.byStage.gate.original.errors,1);assert.equal(saved.byStage.test.original.attempted,0);
+ assert.equal(saved.cases.flatMap(c=>c.runs)[0].assessment.reason,'judge_undetermined');
+ assert.throws(()=>h.store.recordComparisonExperience({comparisonId:saved.id,observations:[]}),/wiki_experience_invalid/);
+});
+test('v2 CLI writes progress and immutable results end-to-end with fake judge; no replay of model calls on republish',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h),file=path.join(h.config.repoRoot,'v2-config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));
+ const write=process.stdout.write;let text='';process.stdout.write=s=>{text+=s;return true;};
+ try{await require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options);}finally{process.stdout.write=write;}
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).read()[0];assert.equal(saved.kind,'wiki-staged-batch-comparison-v2');assert.match(text,/硬断言.*AI/);
+ const progress=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store').createWikiBatchExecutionStore(h.config).read()[0];assert.equal(progress.status,'completed');assert.equal(progress.plan.scoringKind,'wiki-score-v2');assert.equal(progress.plan.experimentHash,saved.experiment.planHash);assert.equal(progress.summary.completedRuns,60);assert.equal(f.calls.length,3);assert.ok(fs.readFileSync(output,'utf8').includes('page_execution_finished'));
+});
+test('API adds explicit scoring labels without changing old immutable comparison bytes or judgments',async t=>{
+ for(const v2 of [false,true]){const h=v2?scoringV2Fixture(t):fixture(t);if(v2)h.pin();else for(const c of h.marks)h.confirm(c);
+  const r=await (v2?v2Execution(h):fakeExecution(h)).run(),store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=store.save(r);
+  const file=path.join(h.config.globalRoot,'comparisons',saved.id.slice(11)+'.json'),bytes=fs.readFileSync(file),controller=require('../../build/server/api/badcase-wiki-controller').createBadcaseWikiController({...h.config,host:'127.0.0.1',port:4313,csrfToken:'synthetic-csrf'});let response;
+  const req=new(require('node:stream').PassThrough)();req.method='GET';req.socket={remoteAddress:'127.0.0.1'};req.headers={host:'127.0.0.1:4313'};
+  assert.equal(await controller({req,pathname:'/api/wikiskill',res:{writeHead(s){assert.equal(s,200);},end(b){response=JSON.parse(b);}}}),true);
+  const record=response.comparisons[0];assert.equal(record.scoringKind,v2?'wiki-score-v2':'literal-rules-v1');assert.equal(record.scoringLabel,v2?'硬断言＋AI 裁判':'字面规则');
+  const {scoringKind,scoringLabel,...unchanged}=record;assert.deepEqual(unchanged,saved);assert.deepEqual(fs.readFileSync(file),bytes);
+ }
+});
 test('production model never silently falls back to proxy or accepts caller-drawn stages or missing restore declarations',t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);
  for(const patch of [{repeats:3},{keySource:'caff-deepseek'},{evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1',gateCaseIds:[]}}])assert.throws(()=>prepareBatch({...h.config,...patch},h.options),/evaluation_gate_config_invalid/);

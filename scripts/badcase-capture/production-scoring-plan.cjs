@@ -9,6 +9,7 @@ const {prepareEvaluationCallbackTrace}=require(base+'evaluation-trace');
 const {resolveWikiReplayRequest}=require(base+'wiki-replay-location');
 const {prepareSealedOriginalTurn}=require('./sealed-direct-input.cjs');
 const {wikiScoringSummary}=require('./wiki-receipt-scoring.cjs');
+const {wikiObjectiveRules}=require(base+'wiki-comparison-scoring');
 const fail=code=>Object.assign(Error(code),{code});
 const same=(a,b)=>wikiValueHash(a)===wikiValueHash(b);
 function readProductionScoringTask(replay,scope){
@@ -17,13 +18,6 @@ function readProductionScoringTask(replay,scope){
  const callback=turn.input.callback;
  const prepared=prepareEvaluationCallbackTrace(callback.trace,callback.expectedTraceHash,callback.association);
  return prepared.seed.userMessage.content;
-}
-// Only objective checks belong in this hash. Legacy reply markers remain
-// bound by the surrounding batch config but cannot determine semantic pass.
-function objectiveRules(rules){
- if(rules.kind==='file-literals-v1')return structuredClone(rules);
- if(rules.kind==='read-only-files-v1')return {kind:rules.kind,readPaths:rules.readPaths,absentPaths:rules.absentPaths};
- return {kind:'completion-public-reply-v1'};
 }
 function prepareProductionScoring(config,state,candidate,suite,options,modelConfig){
  if(config.experiment===undefined)return null;
@@ -45,7 +39,7 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
    if(!same(comparison.summary.scoring,wikiScoringSummary(scoring)))throw fail('evaluation_batch_input_changed');
    catalog.push({id:source.id,sceneHash:wikiValueHash({checkpointHash:replay.checkpointHash,fixture:replay.fixture,
     commonInputHash:comparison.summary.commonInputHash??null}),task:scoring.task,actual:source.actual,expected:source.expected,
-    hardAssertions:objectiveRules(replay.rules),rubric:scoring.rubric});
+    hardAssertions:wikiObjectiveRules(replay.rules),rubric:scoring.rubric});
   },
   finish(){
    const plan=createWikiExperimentPlan(definition,catalog);

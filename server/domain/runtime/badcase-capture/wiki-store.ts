@@ -708,7 +708,7 @@ export function createWikiStore(options: any) {
       return change(state => {
         if (input.expectedRevision !== undefined && input.expectedRevision !== state.revision) throw fail('wiki_revision_conflict');
         const result = readWikiComparisonRecord(captureRoot, comparisonId, value => projectStagedResult(value, wikiComparisonTotals));
-        if (result.evaluation?.splitPolicy !== 'd15-frozen-v1') throw fail('wiki_experience_invalid');
+        if (result.kind !== 'wiki-staged-batch-comparison-v1' || result.evaluation?.splitPolicy !== 'd15-frozen-v1') throw fail('wiki_experience_invalid');
         const previous = state.experiences.filter((e: any) => e.comparisonId === comparisonId).at(-1);
         const observations = mergeWikiLiteralObservations(result, previous?.literalObservations || [], input.observations);
         const draft = buildWikiExperienceDraft(state, result, observations, previous);

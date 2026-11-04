@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
+import { WIKI_COMPARISON_V2_MAX_BYTES } from './wiki-comparison-scoring';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (value: any) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export function readWikiComparisonRecord(globalRoot: string, comparisonId: string, project: (input: any) => any): any {
@@ -11,9 +12,10 @@ export function readWikiComparisonRecord(globalRoot: string, comparisonId: strin
   const filename = comparisonId.slice('comparison-'.length) + '.json';
   try {
     const file = path.join(globalRoot, 'comparisons', filename), stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.size > 512 * 1024) throw Error();
+    if (!stat.isFile() || stat.size > WIKI_COMPARISON_V2_MAX_BYTES) throw Error();
     const envelope = JSON.parse(fs.readFileSync(file, 'utf8')), { id, createdAt, ...payload } = envelope.record;
-    if (envelope.schemaVersion !== 1 || envelope.checksum !== hash(envelope.record)
+    if (stat.size > (payload.kind === 'wiki-staged-batch-comparison-v2' ? WIKI_COMPARISON_V2_MAX_BYTES : 512 * 1024)
+      || envelope.schemaVersion !== 1 || envelope.checksum !== hash(envelope.record)
       || id !== comparisonId || id !== 'comparison-' + hash(payload)
       || typeof createdAt !== 'string' || new Date(createdAt).toISOString() !== createdAt
       || JSON.stringify(project(payload)) !== JSON.stringify(payload)

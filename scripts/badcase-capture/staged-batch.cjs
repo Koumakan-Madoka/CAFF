@@ -7,6 +7,7 @@ const { wikiComparisonTotals: totals } = require('../../build/server/domain/runt
 const { decideWikiGate } = require('../../build/server/domain/runtime/badcase-capture/wiki-gate-policy');
 const {decideWikiExperimentGate}=require('../../build/server/domain/runtime/badcase-capture/wiki-experiment-plan');
 const {assertWikiScoringJudge}=require('./wiki-receipt-scoring.cjs');
+const {wikiObjectiveAssertionIds}=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-scoring');
 const { wikiGoalCaseNumber } = require('../../build/server/domain/runtime/badcase-capture/wiki-suite');
 const fail = code=>Object.assign(Error(code),{code});
 async function runStagedBatch(config, plan, options) {
@@ -27,6 +28,7 @@ async function runStagedBatch(config, plan, options) {
     let result={sourceCaseId:item.sourceCaseId,split:item.split,stage:item.stage,category:item.category,replayId:item.replayId || null,
       ...(native ? {family:item.family,reportOnly:item.reportOnly,targetReproduction:item.targetReproduction,
         ...(item.classification ? {classification:item.classification} : {}),...(item.topicExemption?{topicExemption:item.topicExemption}:{})} : {}),
+      ...(plan.summary.experiment && item.comparisonConfig?.scoring ? {rubric:item.comparisonConfig.scoring.rubric,hardAssertionIds:wikiObjectiveAssertionIds(item.comparisonConfig.rules)} : {}),
       comparison:item.comparison || null,status:'not-run',runs:[],modelCallsKnown:0,callsUnavailable:false};
     if(item.reportOnly) result.reason='non_gpt_source_report_only';
     else if(skipReason || fatal) result.reason=skipReason || 'prior_integrity_error';
