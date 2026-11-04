@@ -328,18 +328,23 @@ export function createWikiStore(options: any) {
       return state.cases.map((c: any) => caseStateView(state, c.id));
     },
     // A revision is always appended, even when revising a frozen version.
-    saveRubricDraft(input: any, expectedRevision: number) {
-      shape(input, ['caseId', 'model', 'questions']);
+    saveRubricDraft(input: any, expectedRevision: number) { return this.saveRubricDrafts([input], expectedRevision)[0]; },
+    saveRubricDrafts(inputs: any[], expectedRevision: number) {
+      if (!Array.isArray(inputs) || !inputs.length || inputs.length > 20) throw fail('wiki_rubric_invalid');
+      for (const input of inputs) shape(input, ['caseId', 'model', 'questions']);
+      if (new Set(inputs.map(input => input.caseId)).size !== inputs.length) throw fail('wiki_rubric_invalid');
       return change(state => {
         if (!Number.isSafeInteger(expectedRevision) || state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
-        const source = state.cases.find((c: any) => c.id === input.caseId);
-        if (!source) throw fail('wiki_unknown_case');
-        const previous = (state.rubrics || []).filter((v: WikiRubric) => v.caseId === source.id);
-        const rubric = createWikiRubric({ ...input, actual: source.actual, expected: source.expected,
-          version: Math.max(0, ...previous.map((v: WikiRubric) => v.version)) + 1 });
-        (state.rubrics ??= []).push(rubric);
-        appendEvent(state, { type: 'rubric-drafted', caseIds: [source.id], rubricId: rubric.id, hash: rubric.hash });
-        return { changed: true, value: rubric };
+        const rubrics = inputs.map(input => {
+          const source = state.cases.find((c: any) => c.id === input.caseId);
+          if (!source) throw fail('wiki_unknown_case');
+          const previous = (state.rubrics || []).filter((v: WikiRubric) => v.caseId === source.id);
+          return createWikiRubric({ ...input, actual: source.actual, expected: source.expected,
+            version: Math.max(0, ...previous.map((v: WikiRubric) => v.version)) + 1 });
+        });
+        (state.rubrics ??= []).push(...rubrics);
+        for (const rubric of rubrics) appendEvent(state, { type: 'rubric-drafted', caseIds: [rubric.caseId], rubricId: rubric.id, hash: rubric.hash });
+        return { changed: true, value: rubrics };
       }).value;
     },
     confirmRubric(input: any, expectedRevision: number) {
