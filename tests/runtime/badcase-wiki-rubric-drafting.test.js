@@ -34,6 +34,14 @@ test('draft planning is annotation-only, accepts holdouts without induction, and
   assert.deepEqual(JSON.parse(request.messages[1].content).cases.map(c => Object.keys(c).sort()), h.cases.map(() => ['actual', 'expected', 'id']));
   assert.equal(h.counts().reads, 0);
 });
+test('drafting contract preserves user conditions/exceptions and asks for execution evidence rather than trusting prose', () => {
+  const request = JSON.parse(api().buildRubricDraftRequest({ cases: [{ id: 'conditional-case', actual: 'Added machinery',
+    expected: 'Do not add it unless unavoidable and explained beforehand' }] }));
+  const instructions = request.messages[0].content;
+  assert.match(instructions, /保留用户要求中的条件与例外/);
+  assert.match(instructions, /不得拆成无条件禁令/);
+  assert.match(instructions, /执行行为.*trace.*files/);
+});
 test('one authorized request saves all versions as drafts, seals model wording/proof, never confirms them', async t => {
   const h = setup(t), before = h.store.read(), out = await api().draftWikiRubrics(h.args, h.options);
   assert.equal(out.modelOutput, h.output()); assert.equal(out.drafts.length, 2); assert.ok(out.drafts.every(d => d.status === 'draft'));
