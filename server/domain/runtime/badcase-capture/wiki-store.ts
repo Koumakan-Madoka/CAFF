@@ -18,6 +18,7 @@ import { projectStagedResult } from './wiki-staged-result';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
 import { buildWikiExperienceDraft, mergeWikiLiteralObservations, approvedWikiExperiences, revisedWikiExperience } from './wiki-experience';
+import { createWikiRubric, validateWikiRubric, resolveFrozenWikiRubric, wikiRubricSourceHash, type WikiRubric } from './wiki-rubric';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -198,6 +199,17 @@ export function createWikiStore(options: any) {
         if (record[field] === undefined) record[field] = [];
         if (!Array.isArray(record[field])) throw Error();
       }
+      // Optional on old snapshots: do not inject it into migration checksums.
+      if (record.rubrics !== undefined) {
+        if (!Array.isArray(record.rubrics)) throw Error();
+        const seen = new Set<string>();
+        for (const rubric of record.rubrics as WikiRubric[]) {
+          validateWikiRubric(rubric);
+          const key = rubric.caseId + ':' + rubric.version;
+          if (seen.has(key) || !record.cases.some((c: any) => c.id === rubric.caseId)) throw Error();
+          seen.add(key);
+        }
+      }
       return record;
     } catch { throw fail('wiki_record_invalid'); }
   }
@@ -315,6 +327,40 @@ export function createWikiStore(options: any) {
       const state = read();
       return state.cases.map((c: any) => caseStateView(state, c.id));
     },
+    // A revision is always appended, even when revising a frozen version.
+    saveRubricDraft(input: any, expectedRevision: number) {
+      shape(input, ['caseId', 'model', 'questions']);
+      return change(state => {
+        if (!Number.isSafeInteger(expectedRevision) || state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
+        const source = state.cases.find((c: any) => c.id === input.caseId);
+        if (!source) throw fail('wiki_unknown_case');
+        const previous = (state.rubrics || []).filter((v: WikiRubric) => v.caseId === source.id);
+        const rubric = createWikiRubric({ ...input, actual: source.actual, expected: source.expected,
+          version: Math.max(0, ...previous.map((v: WikiRubric) => v.version)) + 1 });
+        (state.rubrics ??= []).push(rubric);
+        appendEvent(state, { type: 'rubric-drafted', caseIds: [source.id], rubricId: rubric.id, hash: rubric.hash });
+        return { changed: true, value: rubric };
+      }).value;
+    },
+    confirmRubric(input: any, expectedRevision: number) {
+      shape(input, ['rubricId', 'hash', 'confirmationRecord']);
+      text(input.confirmationRecord, 4096);
+      return change(state => {
+        if (!Number.isSafeInteger(expectedRevision) || state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
+        const rubric = state.rubrics?.find((v: WikiRubric) => v.id === input.rubricId);
+        if (!rubric) throw fail('wiki_rubric_not_found');
+        validateWikiRubric(rubric);
+        if (rubric.status === 'frozen') throw fail('wiki_rubric_frozen');
+        if (rubric.hash !== input.hash) throw fail('wiki_rubric_hash_changed');
+        const source = state.cases.find((c: any) => c.id === rubric.caseId);
+        if (!source || rubric.sourceHash !== wikiRubricSourceHash(source.actual, source.expected)) throw fail('wiki_rubric_source_changed');
+        Object.assign(rubric, { status: 'frozen', confirmedAt: new Date().toISOString(), confirmationRecord: input.confirmationRecord });
+        validateWikiRubric(rubric, true);
+        appendEvent(state, { type: 'rubric-confirmed', caseIds: [source.id], rubricId: rubric.id, hash: rubric.hash });
+        return { changed: true, value: rubric };
+      }).value;
+    },
+    getFrozenRubric(caseId: string, rubricHash: string) { return resolveFrozenWikiRubric(read(), caseId, rubricHash); },
     // Trusted operator registration, not a user report and not a claim that a
     // historical text-only source had a checkpoint. The CLI verifies the sealed
     // closure/rules first; every evaluation must verify it again before launch.
