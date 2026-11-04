@@ -1,11 +1,30 @@
 // Host-only receipt -> objective assertions/reference metrics -> bound judge.
 // Caller must first verify the executor envelope/isolation/input provenance.
 // No credentials, provider implementation, prompt or automatic paid call here.
-const { scoreWikiRun } = require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2');
+const { scoreWikiRun, bindWikiJudge, validateWikiJudgeBinding } = require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2');
+const { validateWikiRubric, wikiExactKeys, wikiRubricText, wikiValueHash } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
 const { scoreLiteralFiles, parseLiteralEvidence } = require('./file-literal-rules.cjs');
 const { scorePublicReply } = require('./public-reply-literal-rules.cjs');
 const fail = code => Object.assign(Error(code), { code });
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+function validateWikiScoring(value) {
+  wikiExactKeys(value, ['kind', 'rubric', 'binding', 'task', 'expected']);
+  if (value.kind !== 'wiki-score-v2') throw fail('wiki_scoring_config_required');
+  validateWikiRubric(value.rubric, true); validateWikiJudgeBinding(value.binding, value.rubric);
+  wikiRubricText(value.task, 32768); wikiRubricText(value.expected, 8192);
+  return structuredClone(value);
+}
+function wikiScoringSummary(value) {
+  value = validateWikiScoring(value);
+  return { kind: 'wiki-score-v2', configHash: wikiValueHash(value), rubricId: value.rubric.id, rubricVersion: value.rubric.version,
+    rubricHash: value.rubric.hash, binding: value.binding, inputHash: wikiValueHash({ task: value.task, expected: value.expected }) };
+}
+function assertWikiScoringJudge(value, judge) {
+  if (!judge || typeof judge.evaluate !== 'function') throw fail('wiki_judge_adapter_required');
+  try { if (wikiValueHash(value.binding) === wikiValueHash(bindWikiJudge(judge.configuration, value.rubric))) return; }
+  catch { /* Invalid runtime adapter config is drift, not a provider retry. */ }
+  throw fail('wiki_judge_binding_changed');
+}
 function traceSummary(receipt, files) {
   if (!Array.isArray(receipt?.toolCalls) || receipt.toolCalls.some(c => !c || typeof c.name !== 'string' || typeof c.isError !== 'boolean')) return undefined;
   const calls = receipt.toolCalls.map(c => {
@@ -68,4 +87,4 @@ async function scoreWikiReceipt({ receipt, rules, scoring, beforeHash, environme
   }, judge);
   return { ...result, referenceDetails };
 }
-module.exports = { scoreWikiReceipt };
+module.exports = { scoreWikiReceipt, validateWikiScoring, wikiScoringSummary, assertWikiScoringJudge };

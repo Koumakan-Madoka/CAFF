@@ -52,6 +52,16 @@ export function bindWikiJudge(configuration: WikiJudgeConfiguration, rubric: Wik
     modelHash: wikiValueHash({ backend: configuration.backend, model: configuration.model, settings: configuration.settings }),
     promptHash: configuration.promptHash, rubricHash: rubric.hash, passes: 3 };
 }
+export function validateWikiJudgeBinding(binding: WikiJudgeBinding, rubric: WikiRubric): WikiJudgeBinding {
+  validateWikiRubric(rubric, true);
+  wikiExactKeys(binding, ['kind', 'backend', 'model', 'modelHash', 'promptHash', 'rubricHash', 'passes']);
+  if (binding.kind !== 'wiki-judge-binding-v1' || !['deepseek', 'jev'].includes(binding.backend) || binding.passes !== 3
+    || !/^[a-f0-9]{64}$/.test(binding.modelHash) || !/^[a-f0-9]{64}$/.test(binding.promptHash)
+    || binding.rubricHash !== rubric.hash) throw fail('wiki_judge_binding_changed');
+  wikiRubricText(binding.model, 256);
+  if (binding.backend === 'deepseek' && binding.model !== 'deepseek/deepseek-v4-flash') throw fail('wiki_judge_binding_changed');
+  return structuredClone(binding);
+}
 function checkBinding(binding: WikiJudgeBinding, judge: WikiJudgeAdapter, rubric: WikiRubric) {
   // Recomputed before AND after every asynchronous call; no drift is a parse retry.
   try {

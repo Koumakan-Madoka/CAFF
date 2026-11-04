@@ -23,10 +23,12 @@ const { collectWikiCandidateFiles } = require('../../build/server/domain/runtime
 const { resolveWikiReplayRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-replay-location');
 const { validateLiteralRules, scoreLiteralFiles } = require('./file-literal-rules.cjs');
 const { validatePublicReplyRules, scorePublicReply } = require('./public-reply-literal-rules.cjs');
+const { scoreWikiReceipt, validateWikiScoring, wikiScoringSummary, assertWikiScoringJudge } = require('./wiki-receipt-scoring.cjs');
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const { hashJson, createKnownValueScanner } = require('./replay-streams.cjs');
 const fail = code => Object.assign(Error(code), { code });
 function validateRules(rules) {
+  if (rules?.kind === 'completion-public-reply-v1' && Object.keys(rules).join(',') === 'kind') return { kind: rules.kind };
   if (rules?.kind === 'file-literals-v1') return validateLiteralRules(rules);
   if (['public-reply-literals-v1', 'public-reply-literals-v2'].includes(rules?.kind)) return validatePublicReplyRules(rules);
   if (!rules || rules.kind !== 'read-only-files-v1'
@@ -81,7 +83,7 @@ function prepareComparison(config, options = {}) {
   const variants = config?.variants === undefined ? ['original', 'candidate'] : config.variants;
   const originalOnly = Array.isArray(variants) && variants.length === 1 && variants[0] === 'original';
   if (!config || !Array.isArray(variants) || !(originalOnly || variants.length === 2 && variants[0] === 'original' && variants[1] === 'candidate') || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile', 'knownKeySources', 'variants', 'dockerBackend'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile', 'knownKeySources', 'variants', 'dockerBackend', 'scoring'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 45 * 60 * 1000)
     || config.executionPolicy !== undefined && (config.executionPolicy !== 'alternating-valid-v1' || !config.globalWikiCandidate || config.repeats !== 10)
     || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== (originalOnly ? 0 : 1)
@@ -94,7 +96,10 @@ function prepareComparison(config, options = {}) {
   if (profile === CODEX_PROFILE) validateCodexSource(config);
   else if (dockerBackend || config.codexAuthFile !== undefined || config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
     || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
-  const rules = validateRules(config.rules), knownValues = comparisonKnownValues(config, options);
+  const scoring = config.scoring === undefined ? null : validateWikiScoring(config.scoring);
+  const rules = validateRules(config.rules ?? (scoring ? { kind: 'completion-public-reply-v1' } : undefined));
+  if (!scoring && rules.kind === 'completion-public-reply-v1') throw fail('wiki_scoring_config_required');
+  const knownValues = comparisonKnownValues(config, options);
   let prepare = options.prepare || (originalOnly ? prepareSealedOriginalTurn : prepareSealedDirectTurn), globalWikiCandidate = null, globalState, globalSaved, globalFiles, baseline;
   if (config.globalWikiCandidate !== undefined) {
     const selection = require('../../build/server/domain/runtime/badcase-capture/wiki-data-directory').resolveWikiStorageOptions(config.globalWikiCandidate);
@@ -169,7 +174,8 @@ function prepareComparison(config, options = {}) {
   }
   const inputs = { original: { ...original.input, ...evidenceConfig, ...repositoryConfig, ...dependencyConfig },
     ...(candidate ? { candidate: { ...candidate.input, ...evidenceConfig, ...repositoryConfig, ...dependencyConfig } } : {}) };
-  const summary = { kind: originalOnly ? 'sealed-original-replay-v1' : 'sealed-prompt-comparison-v1',
+  const summary = { kind: originalOnly ? (scoring ? 'sealed-original-replay-v2' : 'sealed-original-replay-v1') : (scoring ? 'sealed-prompt-comparison-v2' : 'sealed-prompt-comparison-v1'),
+    ...(scoring ? { scoring: wikiScoringSummary(scoring) } : {}),
     ...(config.variants === undefined ? {} : { variants: [...variants] }), caseId: original.provenance.caseId,
     checkpointId: original.provenance.checkpointId, checkpointHash: original.provenance.checkpointHash,
     commonInputHash: repository || config.dependencies || rules.kind === 'file-literals-v1' ? hash(JSON.stringify({ sealedCommonInputHash: original.provenance.commonInputHash, ...evidenceConfig,
@@ -210,6 +216,7 @@ async function runComparison(config, options = {}) {
   effectiveOptions.allowDraftCandidate = false;
   const plan = prepareComparison(fixed, effectiveOptions);
   if (!plan.supported) return { ...plan, runs: [], modelCallsKnown: 0 };
+  if (fixed.scoring) assertWikiScoringJudge(fixed.scoring, options.judge);
   const native = plan.summary.model === CODEX_PROFILE;
   const stage = options.stage || prepareDirectTurnFiles, execute = native ? options.executeCodex
     || (wslDocker ? (image, files, opts) => runCodexDockerTask(image, files, { ...opts, runDocker: wslDocker }) : runCodexDockerTask) : options.execute || runDirectDockerTask;
@@ -235,6 +242,7 @@ async function runComparison(config, options = {}) {
     // Compressed Git must be checked as plaintext; file bodies are base64 in
     // host preparation, so check decoded bytes as well as structured fields.
     prepared.checkRepositoryKnownValues?.(values);
+    if (fixed.scoring && leaksKey(fixed.scoring)) throw fail('evaluation_input_contains_key');
     if (leaksKey(prepared.summary)) throw fail('evaluation_output_contains_key');
     for (const input of Object.values(prepared.inputs)) {
       if (leaksKey(input) || [...input.files, ...(input.gitFiles || [])].some(f => scanner.base64(f.base64))
@@ -259,6 +267,7 @@ async function runComparison(config, options = {}) {
       } else { const slot=legacySlots[cursor++]; if(!slot) break; ({variant,iteration}=slot); }
       // Recheck seal AND current static distribution; no live-source or fresh
       // fallback if bytes changed after the planned starting point.
+      if (fixed.scoring) assertWikiScoringJudge(fixed.scoring, options.judge);
       const fresh = prepareComparison(fixed, effectiveOptions);
       if (!fresh.supported || JSON.stringify(fresh.summary) !== JSON.stringify(plan.summary)
         || manifestFor(stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, fresh.inputs[variant], fixed.modelProfile), { replayWorkspace: true }).inputHash !== manifests[variant].inputHash) {
@@ -328,20 +337,35 @@ async function runComparison(config, options = {}) {
         for (const [i, call] of row.modelCalls.entries()) emit({ event: 'model_call', variant, iteration, request: i + 1, ...call });
         if (receipt.success === true && receipt.modelCalls.every(c => c.success)) {
           const literal = plan.summary.rules.kind === 'file-literals-v1', publicReply = ['public-reply-literals-v1', 'public-reply-literals-v2'].includes(plan.summary.rules.kind);
-          const score = literal ? scoreLiteralFiles(receipt, plan.summary.rules) : publicReply ? scorePublicReply(receipt, plan.summary.rules)
-            : scoreReadOnlyFiles(receipt, plan.summary.rules, plan.beforeHash);
-          if (score.available === false) { row.reason = publicReply ? 'reply_evidence_unavailable' : 'file_evidence_unavailable'; stopped = true; }
-          else {
-            row.status = score.pass ? 'pass' : 'fail'; row.checks = score.checks;
-            if (literal) { row.fileEvidence = receipt.fileEvidence; row.fileChecks = score.details; }
-            if (publicReply) row.replyChecks = score.details;
+          if (fixed.scoring && environmentReason) {
+            row.reason = environmentReason; stopped = true;
+          } else if (fixed.scoring) {
+            const assessment = await scoreWikiReceipt({ receipt, rules: plan.summary.rules, scoring: fixed.scoring, beforeHash: plan.beforeHash }, options.judge);
+            if (leaksKey(assessment)) throw fail('evaluation_output_contains_key');
+            row.status = assessment.status; row.assessment = assessment;
+            row.checks = Object.fromEntries(assessment.hardAssertions.map(c => [c.id, c.status === 'pass']));
+            if (assessment.reason) row.reason = assessment.reason;
+            if (literal) { row.fileEvidence = receipt.fileEvidence; row.fileChecks = assessment.referenceDetails; }
+            if (publicReply) row.replyChecks = assessment.referenceDetails;
+            // Judge uncertainty/invalid evidence cannot select a replacement
+            // response. Stop this batch; any whole-batch rerun needs approval.
+            if (assessment.status === 'error') { stopped = true; fatal = true; }
+          } else {
+            const score = literal ? scoreLiteralFiles(receipt, plan.summary.rules) : publicReply ? scorePublicReply(receipt, plan.summary.rules)
+              : scoreReadOnlyFiles(receipt, plan.summary.rules, plan.beforeHash);
+            if (score.available === false) { row.reason = publicReply ? 'reply_evidence_unavailable' : 'file_evidence_unavailable'; stopped = true; }
+            else {
+              row.status = score.pass ? 'pass' : 'fail'; row.checks = score.checks;
+              if (literal) { row.fileEvidence = receipt.fileEvidence; row.fileChecks = score.details; }
+              if (publicReply) row.replyChecks = score.details;
+            }
           }
         } else {
           row.reason = 'model_turn_failed';
           // Successful HTTP/tool cycles stopped by the model/request ceiling or
           // HTTP-200 truncation are model failures. Provider/network failures
           // remain environmental errors. Legacy single/role runs still stop.
-          if (alternating && receipt.modelCalls.every(c=>c.success || c.httpStatus===200)) row.status='fail';
+          if ((alternating || fixed.scoring) && receipt.modelCalls.every(c=>c.success || c.httpStatus===200)) row.status='fail';
           else stopped=true;
         }
       } else {
@@ -356,7 +380,7 @@ async function runComparison(config, options = {}) {
       }
       if (alternating) {
         fatal = ['file_evidence_unavailable', 'reply_evidence_unavailable'].includes(row.reason) || evidenceChanged
-          || modelConfigChanged || recordedConfigChanged || sessionChanged || resourcesChanged || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
+          || row.assessment?.status === 'error' || modelConfigChanged || recordedConfigChanged || sessionChanged || resourcesChanged || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
         // Only environmental errors may consume the five replacement attempts.
         // Evidence/integrity stops propagate to the remaining cases and stages.
         stopped = fatal;
@@ -392,7 +416,10 @@ async function runComparison(config, options = {}) {
 }
 function formatComparison(result) {
   if (!result.supported) return '不可回放：' + (/^replay_[a-z_]+$/.test(result.reason || '') ? result.reason : 'replay_materials_invalid') + '。\n';
-  const lines = [...(result.kind === 'sealed-original-replay-v1' ? ['原版单边回放：没有候选，不产生采纳结论。'] : []), '模型：' + result.model];
+  const lines = [...(['sealed-original-replay-v1', 'sealed-original-replay-v2'].includes(result.kind) ? ['原版单边回放：没有候选，不产生采纳结论。'] : []), '模型：' + result.model,
+    result.scoring ? '评分：硬断言＋AI细则裁判；字面指标只作参考。' : '评分：字面规则（旧版）。'];
+  if (result.scoring) lines.push('裁判：' + result.scoring.binding.model + ' / ' + result.scoring.binding.backend + '；每条细则3次取多数。',
+    '细则：v' + result.scoring.rubricVersion + ' / ' + result.scoring.rubricHash + '；判分配置：' + result.scoring.configHash + '。');
   if (result.dockerBackend) lines.push('Docker：Windows宿主 → WSL(' + result.dockerBackend.distribution + ')；凭据和供应方连接仅在Windows，材料经stdin，容器断网。');
   if (result.modelConfig) lines.push('配置：' + result.modelConfig.api + ' / thinking ' + result.modelConfig.thinking + ' / ' + result.modelConfig.transport + ' / Fast关闭；凭据仅在宿主。');
   if (Number.isSafeInteger(result.timeoutMs)) lines.push('容器时限：' + result.timeoutMs / 1000 + '秒（配置上限，不是已用时）。');
