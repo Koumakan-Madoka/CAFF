@@ -2,7 +2,7 @@
 // Neither backend is called by default: real adapters/calibration are a later gate.
 import { containsSecretSentinel } from './secrets';
 import { validateWikiRubric, wikiExactKeys, wikiRubricFail as fail, wikiRubricText, wikiValueHash, type WikiRubric, type WikiRubricQuestion } from './wiki-rubric';
-export type WikiVerdict = 'satisfied' | 'not-satisfied' | 'undetermined';
+export type WikiVerdict = 'satisfied' | 'not-satisfied';
 export type WikiScoreStatus = 'pass' | 'fail' | 'error';
 export interface WikiJudgeConfiguration {
   backend: 'deepseek' | 'jev'; model: string; settings: Record<string, string | boolean | number | null>; promptHash: string;
@@ -30,6 +30,12 @@ export interface WikiScoreResult {
   kind: 'wiki-score-v2'; status: WikiScoreStatus; reason: string | null; binding: WikiJudgeBinding; rubricHash: string;
   hardAssertions: WikiHardAssertion[]; votes: WikiCriterionJudgment[][]; judgments: { criterionId: string; verdict: WikiVerdict; majority: boolean }[];
   referenceMetrics: Record<string, boolean | number | string | null>;
+}
+// A technical judge error consumes this reply's slot, not a new worker reply.
+// Missing evidence and integrity/configuration failures are not in this class.
+export function isWikiJudgeTechnicalError(value: { kind?: string; status?: string; reason?: string | null } | undefined): boolean {
+  return value?.kind === 'wiki-score-v2' && value.status === 'error'
+    && ['judge_backend_failed', 'judge_output_invalid'].includes(value.reason || '');
 }
 function safeText(value: unknown, cap: number, empty = false): asserts value is string {
   if (empty && value === '') return;
@@ -109,8 +115,10 @@ function parseJudgments(output: unknown, input: WikiJudgeInput): WikiCriterionJu
   return input.questions.map(q => {
     const j = value.judgments.find((v: any) => v?.criterionId === q.id);
     wikiExactKeys(j, ['criterionId', 'verdict', 'reason', 'evidence']);
-    if (!['satisfied', 'not-satisfied', 'undetermined'].includes(j.verdict) || !Array.isArray(j.evidence) || j.evidence.length > 8
-      || j.verdict !== 'undetermined' && !j.evidence.length) throw fail('wiki_judge_output_invalid');
+    // Missing evidence can justify a rejection (e.g. the reply omitted a required
+    // explanation), but never a positive assertion. There is no third verdict.
+    if (!['satisfied', 'not-satisfied'].includes(j.verdict) || !Array.isArray(j.evidence) || j.evidence.length > 8
+      || j.verdict === 'satisfied' && !j.evidence.length) throw fail('wiki_judge_output_invalid');
     safeText(j.reason, 2048);
     for (const quote of j.evidence) {
       wikiExactKeys(quote, ['source', 'text', ...(quote?.source === 'file' ? ['path'] : [])]);
@@ -124,9 +132,8 @@ function parseJudgments(output: unknown, input: WikiJudgeInput): WikiCriterionJu
 }
 function aggregateVotes(rubric: WikiRubric, votes: WikiCriterionJudgment[][]): WikiScoreResult['judgments'] {
   return rubric.questions.map((q, i) => {
-    const choices: WikiVerdict[] = ['satisfied', 'not-satisfied', 'undetermined'];
-    const majority = choices.find(v => votes.filter(row => row[i].verdict === v).length >= 2);
-    return { criterionId: q.id, verdict: majority || 'undetermined', majority: majority !== undefined };
+    const verdict: WikiVerdict = votes.filter(row => row[i].verdict === 'satisfied').length >= 2 ? 'satisfied' : 'not-satisfied';
+    return { criterionId: q.id, verdict, majority: true };
   });
 }
 export async function scoreWikiRun(options: {
@@ -169,7 +176,8 @@ export async function scoreWikiRun(options: {
       try { output = await judge.evaluate(structuredClone(input)); }
       catch {
         checkBinding(binding, judge, rubric);
-        return finish('error', 'judge_backend_failed');
+        if (attempt === 1) return finish('error', 'judge_backend_failed');
+        continue;
       }
       checkBinding(binding, judge, rubric);
       try { judgments = parseJudgments(output, input); break; }
@@ -179,6 +187,5 @@ export async function scoreWikiRun(options: {
   }
   result.judgments = aggregateVotes(rubric, result.votes);
   if (result.judgments.some(j => j.verdict === 'not-satisfied')) return finish('fail', 'rubric_not_satisfied');
-  if (result.judgments.some(j => j.verdict === 'undetermined')) return finish('error', 'judge_undetermined');
   return finish('pass', null);
 }

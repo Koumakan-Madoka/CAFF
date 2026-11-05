@@ -24,6 +24,7 @@ const { resolveWikiReplayRequest } = require('../../build/server/domain/runtime/
 const { validateLiteralRules, scoreLiteralFiles } = require('./file-literal-rules.cjs');
 const { validatePublicReplyRules, scorePublicReply } = require('./public-reply-literal-rules.cjs');
 const { scoreWikiReceipt, validateWikiScoring, wikiScoringSummary, assertWikiScoringJudge } = require('./wiki-receipt-scoring.cjs');
+const { isWikiJudgeTechnicalError } = require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2');
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const { hashJson, createKnownValueScanner } = require('./replay-streams.cjs');
 const fail = code => Object.assign(Error(code), { code });
@@ -255,13 +256,16 @@ async function runComparison(config, options = {}) {
   const runs = []; let stopped = false, modelCallsKnown = 0, callsUnavailable = false;
   const alternating = fixed.executionPolicy === 'alternating-valid-v1';
   const validCount = v => runs.filter(r=>r.variant===v && r.status!=='error').length;
+  // Judge retries use the exact saved reply. Once exhausted, that slot is an
+  // error; it cannot buy a different (possibly more favorable) worker answer.
+  const slotCount = v => runs.filter(r=>r.variant===v && (r.status!=='error' || isWikiJudgeTechnicalError(r.assessment))).length;
   const legacySlots = variants.flatMap(variant=>Array.from({length:fixed.repeats},(_,i)=>({variant,iteration:i+1})));
   let cursor=0, nextVariant=0, fatal=false;
   while (!stopped) {
       let variant, iteration;
       if (alternating) {
-        if (runs.length>=2*fixed.repeats+5 || variants.every(v=>validCount(v)===fixed.repeats)) break;
-        if (validCount(variants[nextVariant])===fixed.repeats) nextVariant=1-nextVariant;
+        if (runs.length>=2*fixed.repeats+5 || variants.every(v=>slotCount(v)===fixed.repeats)) break;
+        if (slotCount(variants[nextVariant])===fixed.repeats) nextVariant=1-nextVariant;
         variant=variants[nextVariant]; nextVariant=1-nextVariant;
         iteration=runs.filter(r=>r.variant===variant).length+1;
       } else { const slot=legacySlots[cursor++]; if(!slot) break; ({variant,iteration}=slot); }
@@ -347,9 +351,10 @@ async function runComparison(config, options = {}) {
             if (assessment.reason) row.reason = assessment.reason;
             if (literal) { row.fileEvidence = receipt.fileEvidence; row.fileChecks = assessment.referenceDetails; }
             if (publicReply) row.replyChecks = assessment.referenceDetails;
-            // Judge uncertainty/invalid evidence cannot select a replacement
-            // response. Stop this batch; any whole-batch rerun needs approval.
-            if (assessment.status === 'error') { stopped = true; fatal = true; }
+            // Technical judge failures are already retried on this receipt.
+            // Keep the error and continue other slots; evidence failures still
+            // stop for investigation, as do configuration/integrity exceptions.
+            if (assessment.status === 'error' && !isWikiJudgeTechnicalError(assessment)) { stopped = true; fatal = true; }
           } else {
             const score = literal ? scoreLiteralFiles(receipt, plan.summary.rules) : publicReply ? scorePublicReply(receipt, plan.summary.rules)
               : scoreReadOnlyFiles(receipt, plan.summary.rules, plan.beforeHash);
@@ -380,7 +385,7 @@ async function runComparison(config, options = {}) {
       }
       if (alternating) {
         fatal = ['file_evidence_unavailable', 'reply_evidence_unavailable'].includes(row.reason) || evidenceChanged
-          || row.assessment?.status === 'error' || modelConfigChanged || recordedConfigChanged || sessionChanged || resourcesChanged || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
+          || row.assessment?.status === 'error' && !isWikiJudgeTechnicalError(row.assessment) || modelConfigChanged || recordedConfigChanged || sessionChanged || resourcesChanged || task?.reason==='evaluation_output_contains_key' || task?.cleaned !== true;
         // Only environmental errors may consume the five replacement attempts.
         // Evidence/integrity stops propagate to the remaining cases and stages.
         stopped = fatal;
@@ -393,7 +398,8 @@ async function runComparison(config, options = {}) {
         if (transport.state().diagnostic) row.environmentDiagnostic = transport.state().diagnostic;
         stopped = !alternating || !recoverableProxy || fatal; fatal = stopped;
       }
-      if (native && alternating && row.status === 'error' && runs.filter(r => r.status === 'error').length >= 5) {
+      if (native && alternating && row.status === 'error' && !isWikiJudgeTechnicalError(row.assessment)
+        && runs.filter(r => r.status === 'error' && !isWikiJudgeTechnicalError(r.assessment)).length >= 5) {
         stopped = true; fatal = true; row.stopReason = 'environment_replacements_exhausted';
       }
       row.tokenUsage = tokenUsage(row.modelCalls, { callsUnavailable: !valid });
@@ -408,7 +414,7 @@ async function runComparison(config, options = {}) {
   const measurements = { tokenUsage: tokenUsage(runs.flatMap(r => r.modelCalls), { callsUnavailable }),
     totalExecutorDurationMs: runs.reduce((sum, r) => sum + r.durationMs, 0),
     ...(native ? { hostRequestAttempts: transport.state().requests, remainingQuota: null, quotaBasis: 'reported-tokens-only' } : {}) };
-  const result = { ...plan.summary, supported: true, measurements, completed: alternating ? variants.every(v=>validCount(v)===fixed.repeats) : !stopped, runs, totals, modelCallsKnown, callsUnavailable,
+  const result = { ...plan.summary, supported: true, measurements, completed: alternating ? variants.every(v=>validCount(v)===fixed.repeats) : !stopped && !runs.some(r=>isWikiJudgeTechnicalError(r.assessment)), runs, totals, modelCallsKnown, callsUnavailable,
     ...(alternating ? {fatal} : {}) };
   emit({ event: 'summary', completed: result.completed, totals, modelCallsKnown, callsUnavailable, measurements });
   return result;

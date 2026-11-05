@@ -59,10 +59,40 @@ test('unconfirmed rubric or malformed binding refuses even planning before any e
   const other = fixture(); other.scoring.binding.promptHash = 'invalid';
   assert.throws(() => prepareComparison(other.config, other.options)); assert.equal(other.state.keys, 0);
 });
-test('majority undetermined stops the comparison as error without substituting a more favorable answer', async () => {
-  const h = fixture(); h.judge.evaluate = async () => ({ judgments: h.scoring.rubric.questions.map(q => ({ criterionId: q.id, verdict: 'undetermined', reason: 'Insufficient evidence', evidence: [] })) });
-  const r = await runComparison(h.config, h.options); assert.equal(r.completed, false); assert.equal(h.state.executions, 1);
-  assert.equal(r.runs[0].status, 'error'); assert.equal(r.runs[0].reason, 'judge_undetermined');
+test('insufficient evidence fails the assertion, continues the comparison and never replays a worker', async () => {
+  const h = fixture();
+  h.judge.evaluate = async () => ({ judgments: h.scoring.rubric.questions.map(q => ({ criterionId: q.id, verdict: 'not-satisfied', reason: 'Insufficient evidence', evidence: [] })) });
+  const r = await runComparison(h.config, h.options); assert.equal(r.completed, true); assert.equal(h.state.executions, 2);
+  assert.ok(r.runs.every(row => row.status === 'fail' && row.reason === 'rubric_not_satisfied'));
+});
+test('technical judge errors retry only the saved reply, continue remaining planned slots, and never buy replacement answers', async () => {
+  for (const fault of ['backend', 'parse']) for (const persistent of [false, true]) {
+    const h = fixture(); h.config.repeats = 2;
+    const evaluate = h.judge.evaluate, seen = []; let calls = 0;
+    h.judge.evaluate = async input => {
+      seen.push(structuredClone(input)); const call = ++calls;
+      // Only the first reply fails; later slots must still be executed/scored.
+      if (call === 1 || persistent && call === 2) { if (fault === 'backend') throw Error('private backend fault'); return 'not-json'; }
+      return evaluate(input);
+    };
+    const r = await runComparison(h.config, h.options);
+    assert.equal(h.state.executions, 4, JSON.stringify({ fault, persistent }));
+    assert.equal(r.runs.length, 4); assert.equal(r.runs[0].status, persistent ? 'error' : 'pass');
+    assert.ok(r.runs.slice(1).every(row => row.status === 'pass'));
+    assert.equal(calls, persistent ? 11 : 13); assert.deepEqual(seen[0], seen[1]);
+    assert.equal(r.totals.original.errors, persistent ? 1 : 0); assert.equal(r.totals.candidate.errors, 0);
+    assert.equal(r.completed, !persistent);
+    const totals = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-totals').wikiComparisonTotals([{ runs: r.runs }], 2);
+    assert.equal(totals.original.scored, persistent ? 1 : 2); assert.equal(totals.candidate.scored, 2);
+    assert.equal(JSON.stringify(r).includes('private backend fault'), false);
+  }
+});
+test('missing required evidence still stops for investigation; only judge technical faults are nonfatal', async () => {
+  const h = fixture();
+  h.config.rules = { kind: 'file-literals-v1', files: [{ path: 'a.txt', contains: ['active'], notContains: [] }] };
+  const r = await runComparison(h.config, h.options);
+  assert.equal(h.state.executions, 1); assert.equal(r.completed, false);
+  assert.equal(r.runs[0].reason, 'hard_evidence_missing'); assert.equal(h.state.judgeInputs.length, 0);
 });
 test('hard file failure remains fail without any judge call in the main executor', async () => {
   const h = fixture(); h.config.rules = { kind: 'file-literals-v1', files: [{ path: 'a.txt', contains: ['active'], notContains: [] }] };

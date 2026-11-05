@@ -331,12 +331,15 @@ function v2Execution(h,settings={}){
    const failed=settings.improve!==false&&config.request.association.checkpointId==='cp-0'&&variant==='original';
    const assessment=await require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2').scoreWikiRun({rubric:config.scoring.rubric,binding:config.scoring.binding,
     run:{task:config.scoring.task,expected:config.scoring.expected,completed:true,replySource:'public',publicReply:'RESULT. PRIVATE-WORKER-REPLY-NOT-FOR-PAGE'},hardAssertions:config.rules.kind==='file-literals-v1'?[{id:'files',status:'pass'}]:[],referenceMetrics:{noForbiddenTerms:false}},
-    {configuration:h.judge.configuration,evaluate:async()=>({judgments:config.scoring.rubric.questions.map((q,n)=>({criterionId:q.id,verdict:settings.uncertain?'undetermined':failed&&n===0?'not-satisfied':'satisfied',reason:'Synthetic reasoning',evidence:settings.uncertain?[]:[{source:'reply',text:'RESULT.'}]}))})});
+    {configuration:h.judge.configuration,evaluate:async()=>{
+     if(settings.judgeAllDown||settings.judgeFault&&config.request.association.checkpointId==='cp-0'&&variant==='original'&&i===1){if(settings.judgeFault==='backend')throw Error('PRIVATE-JUDGE-DETAIL');return 'not-json';}
+     return {judgments:config.scoring.rubric.questions.map((q,n)=>({criterionId:q.id,verdict:settings.insufficient||failed&&n===0?'not-satisfied':'satisfied',reason:'Synthetic reasoning',evidence:settings.insufficient?[]:[{source:'reply',text:'RESULT.'}]}))};
+    }});
    const row={variant,iteration:i,status:assessment.status,...(assessment.reason?{reason:assessment.reason}:{}),assessment,replySource:'public',cleaned:true,finalText:'RESULT. PRIVATE-WORKER-REPLY-NOT-FOR-PAGE'};
    runs.push(row);options.onEvent({event:'run',...row});
-   if(assessment.status==='error')return {completed:false,fatal:true,runs,modelCallsKnown:runs.length,callsUnavailable:false};
+   if(assessment.status==='error'&&!['judge_backend_failed','judge_output_invalid'].includes(assessment.reason))return {completed:false,fatal:true,runs,modelCallsKnown:runs.length,callsUnavailable:false};
   }
-  return {completed:true,runs,modelCallsKnown:20,callsUnavailable:false};
+  return {completed:runs.every(r=>r.status!=='error'),fatal:false,runs,modelCallsKnown:20,callsUnavailable:false};
  };
  return f;
 }
@@ -348,12 +351,41 @@ test('v2 immutable publication retains criterion votes/citations/reference metri
  assert.equal(c.runs[0].assessment.votes[0][0].evidence[0].text,'RESULT.');assert.equal(JSON.stringify(saved).includes('PRIVATE-WORKER'),false);assert.equal(h.store.read().experiences.length,0,'v2 must not auto-draft a misleading literal-rule experience');
  for(const change of [x=>x.cases.find(c=>!c.reportOnly).runs[0].status='pass',x=>x.cases.find(c=>!c.reportOnly).runs[0].assessment.judgments[0].verdict='satisfied',x=>x.experiment.planHash='f'.repeat(64),x=>x.cases.find(c=>!c.reportOnly).comparison.scoring.binding.promptHash='f'.repeat(64),x=>x.cases.find(c=>!c.reportOnly).rubric.questions[0].question='Forged question?',x=>x.cases.find(c=>c.sourceCaseId===controlId).runs[0].assessment.hardAssertions=x.cases.find(c=>c.sourceCaseId===controlId).runs[0].assessment.hardAssertions.filter(a=>a.id!=='files')]){const x=structuredClone(r);change(x);assert.throws(()=>store.save(x));}
 });
-test('v2 uncertain judgments remain immutable errors, stop further cases/tests and never become replacement answers',async t=>{
- const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{uncertain:true}),r=await f.run();assert.equal(f.calls.length,1);assert.equal(r.completed,false);assert.equal(r.gateDecision.outcome,'indeterminate');
+test('v2 insufficient evidence is an immutable fail, not an error or replacement answer',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{insufficient:true}),r=await f.run();assert.equal(f.calls.length,2);assert.equal(r.completed,true);assert.equal(r.gateDecision.outcome,'rejected');
  const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);
- assert.equal(saved.byStage.gate.original.scored,0);assert.equal(saved.byStage.gate.original.errors,1);assert.equal(saved.byStage.test.original.attempted,0);
- assert.equal(saved.cases.flatMap(c=>c.runs)[0].assessment.reason,'judge_undetermined');
+ assert.equal(saved.byStage.gate.original.scored,20);assert.equal(saved.byStage.gate.original.failed,20);assert.equal(saved.byStage.gate.original.errors,0);assert.equal(saved.byStage.test.original.attempted,0);
+ assert.equal(saved.cases.flatMap(c=>c.runs)[0].assessment.reason,'rubric_not_satisfied');
  assert.throws(()=>h.store.recordComparisonExperience({comparisonId:saved.id,observations:[]}),/wiki_experience_invalid/);
+});
+test('v2 judge technical failure leaves a denominator gap, continues other gate cases, blocks test, and persists error unchanged',async t=>{
+ for(const judgeFault of ['backend','parse']){
+  const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{judgeFault}),r=await f.run();
+  assert.equal(f.calls.length,2);assert.equal(r.completed,false);assert.equal(r.gateDecision.outcome,'indeterminate');
+  const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);
+  assert.equal(saved.byStage.gate.original.scored,19);assert.equal(saved.byStage.gate.original.errors,1);assert.equal(saved.byStage.gate.original.notRun,1);assert.equal(saved.byStage.gate.candidate.scored,20);assert.equal(saved.byStage.test.original.attempted,0);
+  assert.equal(saved.cases.find(c=>c.sourceCaseId===controlId).status,'completed');
+  assert.equal(saved.cases.flatMap(c=>c.runs)[0].assessment.reason,judgeFault==='backend'?'judge_backend_failed':'judge_output_invalid');
+  assert.equal(JSON.stringify(saved).includes('PRIVATE-JUDGE-DETAIL'),false);
+ }
+});
+test('v2 all-down judge processes both gate cases, preserves all forty errors and never enters test',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{judgeAllDown:true,judgeFault:'backend'}),r=await f.run();
+ assert.equal(f.calls.length,2);assert.equal(r.cases.flatMap(c=>c.runs).length,40);assert.equal(r.completed,false);assert.equal(r.gateDecision.outcome,'indeterminate');
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);
+ assert.equal(saved.byStage.gate.original.errors,20);assert.equal(saved.byStage.gate.candidate.errors,20);assert.equal(saved.byStage.gate.original.scored,0);assert.equal(saved.byStage.test.original.attempted,0);
+});
+test('v2 publication validates occupied judge-error slots separately from recoverable environmental replacements',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const r=await v2Execution(h,{judgeFault:'backend'}).run();
+ const c=r.cases.find(c=>c.sourceCaseId===h.marks[0].id),extra=structuredClone(c.runs[1]);
+ // The first original reply has exhausted judge retries; the first candidate
+ // failed environmentally. Only the candidate may receive an extra reply.
+ delete c.runs[1].assessment;c.runs[1].status='error';c.runs[1].reason='evaluation_codex_proxy_failed';
+ c.runs.push({...extra,iteration:11});c.modelCallsKnown++;r.modelCallsKnown++;
+ const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=store.save(r);
+ assert.equal(saved.cases.find(c=>c.sourceCaseId===h.marks[0].id).runs.length,21);assert.equal(saved.gateDecision.outcome,'indeterminate');
+ const forged=structuredClone(r),last=forged.cases.find(c=>c.sourceCaseId===h.marks[0].id).runs.at(-1);last.variant='original';
+ assert.throws(()=>store.save(forged),'a judge-error slot must not receive a replacement reply');
 });
 test('v2 CLI writes progress and immutable results end-to-end with fake judge; no replay of model calls on republish',async t=>{
  const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h),file=path.join(h.config.repoRoot,'v2-config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));
@@ -361,6 +393,14 @@ test('v2 CLI writes progress and immutable results end-to-end with fake judge; n
  try{await require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options);}finally{process.stdout.write=write;}
  const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).read()[0];assert.equal(saved.kind,'wiki-staged-batch-comparison-v2');assert.match(text,/硬断言.*AI/);
  const progress=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store').createWikiBatchExecutionStore(h.config).read()[0];assert.equal(progress.status,'completed');assert.equal(progress.plan.scoringKind,'wiki-score-v2');assert.equal(progress.plan.experimentHash,saved.experiment.planHash);assert.equal(progress.summary.completedRuns,60);assert.equal(f.calls.length,3);assert.ok(fs.readFileSync(output,'utf8').includes('page_execution_finished'));
+});
+test('v2 CLI publishes all judge errors and remaining gate progress without aborting or executing test',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{judgeAllDown:true,judgeFault:'backend'}),file=path.join(h.config.repoRoot,'judge-down-config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));
+ const write=process.stdout.write,exitCode=process.exitCode;process.stdout.write=()=>true;
+ try{await require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options);}finally{process.stdout.write=write;process.exitCode=exitCode;}
+ const progress=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store').createWikiBatchExecutionStore(h.config).read()[0];
+ assert.equal(progress.status,'stopped');assert.equal(progress.gateOutcome,'indeterminate');assert.equal(progress.summary.completedRuns,40);assert.equal(progress.summary.byStage.gate.original.errors,20);assert.equal(progress.summary.byStage.test.original.attempted,0);assert.ok(progress.comparisonId);assert.equal(f.calls.length,2);
+ assert.match(fs.readFileSync(output,'utf8'),/page_execution_finished/);assert.doesNotMatch(fs.readFileSync(output,'utf8'),/PRIVATE-JUDGE-DETAIL/);
 });
 test('API adds explicit scoring labels without changing old immutable comparison bytes or judgments',async t=>{
  for(const v2 of [false,true]){const h=v2?scoringV2Fixture(t):fixture(t);if(v2)h.pin();else for(const c of h.marks)h.confirm(c);

@@ -1,9 +1,10 @@
-// V2 only: preserve immutable rubric snapshots and checked judgments. The v1
-// structural/gate validator remains unchanged for historical comparison hashes.
+// V2 only: preserve immutable rubric snapshots and checked judgments. Default
+// v1 validation/projection behavior stays unchanged for historical hashes.
 import { projectProductionResult } from './wiki-production-result';
-import { validateWikiExperimentPlan, decideWikiExperimentGate } from './wiki-experiment-plan';
+import { validateWikiExperimentPlan, decideWikiExperimentGate, wikiExperimentRun } from './wiki-experiment-plan';
 import { validateWikiRubric, wikiValueHash } from './wiki-rubric';
 import { projectWikiAssessment, projectWikiScoringSummary } from './wiki-comparison-scoring';
+import { isWikiJudgeTechnicalError } from './wiki-scoring-v2';
 const invalid = () => Object.assign(Error('wiki_comparison_invalid'), { code: 'wiki_comparison_invalid' });
 function check(v: unknown): asserts v { if (!v) throw invalid(); }
 const same = (a: unknown, b: unknown) => wikiValueHash(a) === wikiValueHash(b);
@@ -13,7 +14,8 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
   // Reuse only v1's non-scoring structure checks/formula, never its literal
   // experience generation or pass/fail logic. Nothing here calls a judge.
   const base = projectProductionResult({ ...input, kind: 'wiki-staged-batch-comparison-v1',
-    disclosures: [...input.disclosures.filter((s: string) => s !== 'literal_metrics_reference_only'), 'literal_rules_not_semantic_judgment'] }, totals);
+    disclosures: [...input.disclosures.filter((s: string) => s !== 'literal_metrics_reference_only'), 'literal_rules_not_semantic_judgment'] }, totals,
+    row => row.status === 'error' && isWikiJudgeTechnicalError(row.assessment));
   const experiment = validateWikiExperimentPlan(input.experiment);
   check(same(experiment.runner, { model: base.model, settings: base.modelConfig }) && same(experiment.variants,
     [{ id: 'original', promptHash: base.candidate.baseHash }, { id: 'candidate', promptHash: base.candidate.candidateHash }]));
@@ -44,7 +46,7 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
     return { ...c, comparison, runs, rubric, hardAssertionIds: [...hardAssertionIds] };
   });
   const gate = decideWikiExperimentGate(experiment, cases.filter((c: any) => !c.reportOnly).map((c: any) => ({ caseId: c.sourceCaseId, status: c.status,
-    runs: c.runs.map((r: any) => ({ variant: r.variant, iteration: r.iteration, status: r.status })) })));
+    runs: c.runs.map(wikiExperimentRun) })));
   check(same(gate, base.gateDecision));
   return { ...base, kind: input.kind, disclosures: structuredClone(input.disclosures), experiment, cases };
 }

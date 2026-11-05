@@ -68,6 +68,40 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
   const plan = () => prepareBatch(config, options), run = () => runBatch(config, { ...options, expectedPlanHash: plan().summary.planHash });
   return { root, store, sources, split, seals, candidate, config, single, state, options, plan, run, guideline };
 }
+test('v2 alternating kernel never substitutes judge-error replies and still executes every remaining planned slot', async t => {
+  for (const fault of ['backend', 'parse']) for (const scenario of ['transient', 'persistent', 'mixed', 'all-down']) {
+    const persistent = scenario !== 'transient', allDown = scenario === 'all-down', mixed = scenario === 'mixed';
+    const h = setup(t, { publicReply: true }), execute = h.options.execute;
+    if (mixed) h.options.execute = async (...args) => {
+      const task = await execute(...args);
+      if (h.state.executions === 2) { task.receipt.success = false; task.receipt.modelCalls[0].success = false; task.receipt.modelCalls[0].httpStatus = 503; }
+      return task;
+    };
+    const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+    const { bindWikiJudge } = require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2');
+    const rubric = { ...createWikiRubric({ caseId: 'synthetic', version: 1, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: 'Clear',
+      questions: [{ id: 'a', question: 'The result is clear.', evidence: 'reply' }, { id: 'b', question: 'The impact is clear.', evidence: 'reply' }] }),
+      status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Synthetic approval' };
+    const configuration = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: {}, promptHash: sha('synthetic-not-a-judge-prompt') };
+    const seen = []; let calls = 0;
+    const judge = { configuration, async evaluate(input) {
+      seen.push(structuredClone(input)); const call = ++calls;
+      if (allDown || call === 1 || persistent && call === 2) { if (fault === 'backend') throw Error('PRIVATE-JUDGE-DETAIL'); return 'not-json'; }
+      return { judgments: rubric.questions.map(q => ({ criterionId: q.id, verdict: 'satisfied', reason: 'Synthetic reasoning', evidence: [{ source: 'reply', text: 'done' }] })) };
+    } };
+    const scoring = { kind: 'wiki-score-v2', rubric, binding: bindWikiJudge(configuration, rubric), task: 'Report result.', expected: 'Clear' };
+    const r = await runComparison({ ...h.single, repeats: 10, executionPolicy: 'alternating-valid-v1', scoring }, { ...h.options, judge });
+    assert.equal(h.state.executions, mixed ? 21 : 20); assert.equal(r.runs.length, mixed ? 21 : 20); assert.equal(r.fatal, false); assert.equal(r.completed, !persistent);
+    assert.equal(r.runs[0].status, persistent ? 'error' : 'pass');
+    if (allDown) assert.ok(r.runs.every(row => row.status === 'error'));
+    else assert.ok(r.runs.slice(mixed ? 2 : 1).every(row => row.status === 'pass'));
+    assert.equal(calls, allDown ? 40 : persistent ? 59 : 61); assert.deepEqual(seen[0], seen[1]);
+    assert.deepEqual(r.runs.map(row => row.variant), [...Array.from({ length: 10 }, () => ['original', 'candidate']).flat(), ...(mixed ? ['candidate'] : [])]);
+    assert.equal(r.totals.original.errors, allDown ? 10 : persistent ? 1 : 0); assert.equal(r.totals.candidate.passed, allDown ? 0 : 10);
+    assert.equal(r.totals.original.notRun, allDown ? 10 : persistent ? 1 : 0); assert.equal(r.totals.candidate.notRun, allDown ? 10 : 0);
+    assert.equal(JSON.stringify(r).includes('PRIVATE-JUDGE-DETAIL'), false);
+  }
+});
 test('global batch delegates scene reads through mapped imports while raw roots remain immutable identities', t => {
   const h = setup(t), destinationAgentDir = path.join(h.root, 'migrated');
   const migration = require('../../scripts/badcase-capture/migrate-wiki-layout.cjs');

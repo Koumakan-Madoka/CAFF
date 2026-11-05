@@ -10,7 +10,8 @@ const count = (n: any) => { check(Number.isSafeInteger(n) && n >= 0); return n; 
 const code = (s: any) => { check(typeof s === 'string' && /^[a-z_]{1,100}$/.test(s)); return s; };
 const ids = (a: any): string[] => { check(Array.isArray(a) && a.length <= 1000); const b = a.map(id); check(new Set(b).size === b.length); return b; };
 const same = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
-export function projectProductionResult(input: any, totals: (cases: any[], repeats: number) => any): any {
+export function projectProductionResult(input: any, totals: (cases: any[], repeats: number) => any,
+  consumesErrorSlot: (run: any) => boolean = () => false): any {
   check(input?.kind === 'wiki-staged-batch-comparison-v1' && input.scope === 'global' && input.model === 'openai-codex/gpt-6.1-sol' && input.repeats === 10);
   check(typeof input.completed === 'boolean' && typeof input.callsUnavailable === 'boolean');
   const modelConfig = { api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' };
@@ -51,12 +52,16 @@ export function projectProductionResult(input: any, totals: (cases: any[], repea
       topicExemption = { patterns, taskHash: digest(v.taskHash), reason: v.reason };
     }
     check(Array.isArray(c.runs) && c.runs.length <= 25 && typeof c.callsUnavailable === 'boolean');
-    const attempts: any = { original: 0, candidate: 0 }, scored: any = { original: 0, candidate: 0 }; let next = 'original';
+    const attempts: any = { original: 0, candidate: 0 }, scored: any = { original: 0, candidate: 0 }, slots: any = { original: 0, candidate: 0 }; let next = 'original';
     const runs = c.runs.map((r: any) => {
       check(['original', 'candidate'].includes(r.variant) && ['pass', 'fail', 'error'].includes(r.status));
-      if (scored[next] === 10) next = next === 'original' ? 'candidate' : 'original';
+      if (slots[next] === 10) next = next === 'original' ? 'candidate' : 'original';
       check(r.variant === next); next = next === 'original' ? 'candidate' : 'original';
-      check(r.iteration === ++attempts[r.variant] && scored[r.variant] < 10); if (r.status !== 'error') scored[r.variant]++;
+      check(r.iteration === ++attempts[r.variant] && slots[r.variant] < 10);
+      if (r.status !== 'error') scored[r.variant]++;
+      // V1 keeps its historical valid-count schedule. Only V2 opts into a
+      // terminal judge-error slot, with its assessment validated separately.
+      if (r.status !== 'error' || consumesErrorSlot(r)) slots[r.variant]++;
       return { variant: r.variant, iteration: r.iteration, status: r.status, ...(r.reason === undefined ? {} : { reason: code(r.reason) }),
         replySource: ['public', 'internal', 'none'].includes(r.replySource) ? r.replySource : 'unknown', cleaned: r.cleaned === true };
     });

@@ -2,7 +2,7 @@
 // and execution. D7 delegates to the existing gate formula, never a new metric.
 import { decideWikiGate } from './wiki-gate-policy';
 import { containsSecretSentinel } from './secrets';
-import { bindWikiJudge, type WikiJudgeBinding, type WikiJudgeConfiguration, type WikiScoreStatus } from './wiki-scoring-v2';
+import { bindWikiJudge, isWikiJudgeTechnicalError, type WikiJudgeBinding, type WikiJudgeConfiguration, type WikiScoreStatus } from './wiki-scoring-v2';
 import { validateWikiRubric, wikiExactKeys, wikiRubricFail as fail, wikiRubricSourceHash, wikiRubricText, wikiValueHash, type WikiRubric } from './wiki-rubric';
 const POLICY = Object.freeze({ kind: 'wikiskill-gate-v1', alpha: .05, noHarmFraction: .05, minimumAllowedLoss: 1, maxExtraAttemptsPerCase: 5 });
 interface WikiExperimentSelection { caseId: string; stage: 'gate' | 'test'; category: 'reproduction' | 'control' | 'probe'; targetReproduction: boolean }
@@ -23,7 +23,13 @@ export interface WikiExperimentPlan {
 }
 export interface WikiExperimentCaseResult {
   caseId: string; status: 'completed' | 'error' | 'not-run' | 'unsupported';
-  runs: { variant: 'original' | 'candidate'; iteration: number; status: WikiScoreStatus }[];
+  runs: { variant: 'original' | 'candidate'; iteration: number; status: WikiScoreStatus; judgeError?: true }[];
+}
+// Execution derives this signal from the score; immutable publication first
+// validates that score. No reply, candidate label or provider details enter it.
+export function wikiExperimentRun(row: any): WikiExperimentCaseResult['runs'][number] {
+  return { variant: row.variant, iteration: row.iteration, status: row.status,
+    ...(row.status === 'error' && isWikiJudgeTechnicalError(row.assessment) ? { judgeError: true as const } : {}) };
 }
 function ensure(condition: unknown): asserts condition { if (!condition) throw fail('wiki_experiment_invalid'); }
 function identifier(value: unknown) { ensure(typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)); }
@@ -113,17 +119,20 @@ export function decideWikiExperimentGate(plan: WikiExperimentPlan, results: Wiki
     wikiExactKeys(result, ['caseId', 'status', 'runs']); ensure(plan.cases.some(c => c.caseId === result.caseId));
     ensure(['completed', 'error', 'not-run', 'unsupported'].includes(result.status) && Array.isArray(result.runs) && result.runs.length <= 25);
     ensure(!['not-run', 'unsupported'].includes(result.status) || !result.runs.length);
-    const attempts = { original: 0, candidate: 0 }, scored = { original: 0, candidate: 0 };
-    let next: 'original' | 'candidate' = 'original', errors = 0;
+    const attempts = { original: 0, candidate: 0 }, scored = { original: 0, candidate: 0 }, slots = { original: 0, candidate: 0 };
+    let next: 'original' | 'candidate' = 'original', environmentErrors = 0;
     for (const row of result.runs) {
-      wikiExactKeys(row, ['variant', 'iteration', 'status']);
-      if (scored[next] === 10) next = next === 'original' ? 'candidate' : 'original';
+      wikiExactKeys(row, ['variant', 'iteration', 'status', ...(Object.hasOwn(row, 'judgeError') ? ['judgeError'] : [])]);
+      ensure(!Object.hasOwn(row, 'judgeError') || row.judgeError === true && row.status === 'error');
+      if (slots[next] === 10) next = next === 'original' ? 'candidate' : 'original';
       ensure(row.variant === next && Number.isSafeInteger(row.iteration) && row.iteration === ++attempts[next]
-        && scored[next] < 10 && ['pass', 'fail', 'error'].includes(row.status));
-      if (row.status === 'error') errors++; else scored[next]++;
+        && slots[next] < 10 && ['pass', 'fail', 'error'].includes(row.status));
+      if (row.status === 'error') { if (!row.judgeError) environmentErrors++; }
+      else scored[next]++;
+      if (row.status !== 'error' || row.judgeError) slots[next]++;
       next = next === 'original' ? 'candidate' : 'original';
     }
-    ensure(errors <= 5 && (result.status !== 'completed' || scored.original === 10 && scored.candidate === 10));
+    ensure(environmentErrors <= 5 && (result.status !== 'completed' || scored.original === 10 && scored.candidate === 10));
   }
   const rows = plan.cases.map(c => ({ sourceCaseId: c.caseId, stage: c.stage, category: c.category,
     ...(results.find(r => r.caseId === c.caseId) || { status: 'not-run', runs: [] }) }));

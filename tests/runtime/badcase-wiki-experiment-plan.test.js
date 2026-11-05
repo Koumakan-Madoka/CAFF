@@ -58,6 +58,18 @@ test('D7 gate formula is delegated unchanged and only an accepted gate permits t
   }
   assert.doesNotThrow(() => api().assertWikiExperimentStage(plan, [], 'gate'));
 });
+test('terminal judge errors consume planned slots, not the environmental replacement budget or denominator', () => {
+  const h = fixture(), plan = h.plan(), rows = results(6); rows[0].status = 'error';
+  for (const row of rows[0].runs) { row.status = 'error'; row.judgeError = true; }
+  assert.equal(api().decideWikiExperimentGate(plan, rows).outcome, 'indeterminate');
+  const mixed = results(6); mixed[0].status = 'error'; mixed[0].runs[0] = { variant: 'original', iteration: 1, status: 'error', judgeError: true };
+  mixed[0].runs[1].status = 'error'; mixed[0].runs.push({ variant: 'candidate', iteration: 11, status: 'pass' });
+  assert.equal(api().decideWikiExperimentGate(plan, mixed).outcome, 'indeterminate');
+  mixed[0].runs.at(-1).variant = 'original'; assert.throws(() => api().decideWikiExperimentGate(plan, mixed));
+  for (const patch of [{ status: 'pass', judgeError: true }, { status: 'error', judgeError: false }]) {
+    const invalid = results(6); Object.assign(invalid[0].runs[0], patch); assert.throws(() => api().decideWikiExperimentGate(plan, invalid));
+  }
+});
 test('unavailable evidence/errors never become passes; extra/duplicate results and nonalternating attempts are refused', () => {
   const h = fixture(), plan = h.plan();
   assert.equal(api().decideWikiExperimentGate(plan, []).outcome, 'indeterminate');

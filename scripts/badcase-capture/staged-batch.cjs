@@ -5,7 +5,7 @@ const { runComparison } = require('./direct-comparison.cjs');
 const { validKey, readCaffDeepseekKey, CODEX_PROFILE } = require('./direct-model.cjs');
 const { wikiComparisonTotals: totals } = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store');
 const { decideWikiGate } = require('../../build/server/domain/runtime/badcase-capture/wiki-gate-policy');
-const {decideWikiExperimentGate}=require('../../build/server/domain/runtime/badcase-capture/wiki-experiment-plan');
+const {decideWikiExperimentGate,wikiExperimentRun}=require('../../build/server/domain/runtime/badcase-capture/wiki-experiment-plan');
 const {assertWikiScoringJudge}=require('./wiki-receipt-scoring.cjs');
 const {wikiObjectiveAssertionIds}=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-scoring');
 const { wikiGoalCaseNumber } = require('../../build/server/domain/runtime/badcase-capture/wiki-suite');
@@ -64,7 +64,7 @@ async function runStagedBatch(config, plan, options) {
   }
   for(const item of plan.prepared.filter(c=>c.stage==='gate')) await executeCase(item);
   const gateDecision=plan.summary.experiment?decideWikiExperimentGate(plan.summary.experiment,results.filter(c=>!c.reportOnly).map(c=>({caseId:c.sourceCaseId,status:c.status,
-    runs:c.runs.map(r=>({variant:r.variant,iteration:r.iteration,status:r.status}))}))):decideWikiGate(results,plan.summary.evaluation.targetReproductionCaseIds,plan.summary.repeats);
+    runs:c.runs.map(wikiExperimentRun)}))):decideWikiGate(results,plan.summary.evaluation.targetReproductionCaseIds,plan.summary.repeats);
   emit({event:'gate_decision',executionId,candidate:plan.summary.candidate,gateDecision});
   for(const item of plan.prepared.filter(c=>c.stage==='test')) await executeCase(item,gateDecision.outcome==='accepted'?null:'gate_'+gateDecision.outcome);
   const completed=gateDecision.outcome!=='indeterminate' && results.filter(c=>!c.reportOnly && (c.stage==='gate' || gateDecision.outcome==='accepted')).every(c=>c.status==='completed');

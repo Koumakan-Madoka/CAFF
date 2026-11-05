@@ -41,9 +41,9 @@ export function projectWikiAssessment(v: any, source: WikiRubric, binding: WikiJ
     check(Array.isArray(row) && row.length === rubric.questions.length);
     return row.map((j: any, index: number) => {
       wikiExactKeys(j, ['criterionId', 'verdict', 'reason', 'evidence']);
-      check(j.criterionId === rubric.questions[index].id && ['satisfied', 'not-satisfied', 'undetermined'].includes(j.verdict));
+      check(j.criterionId === rubric.questions[index].id && ['satisfied', 'not-satisfied'].includes(j.verdict));
       wikiRubricText(j.reason, 2048);
-      check(Array.isArray(j.evidence) && j.evidence.length <= 8 && (j.verdict === 'undetermined' || j.evidence.length > 0));
+      check(Array.isArray(j.evidence) && j.evidence.length <= 8 && (j.verdict === 'not-satisfied' || j.evidence.length > 0));
       const evidence = j.evidence.map((q: any) => {
         wikiExactKeys(q, ['source', 'text', ...(q?.source === 'file' ? ['path'] : [])]);
         check(['reply', 'trace', 'file'].includes(q.source) && (q.source !== 'file' || path(q.path))); wikiRubricText(q.text, 4096);
@@ -53,8 +53,8 @@ export function projectWikiAssessment(v: any, source: WikiRubric, binding: WikiJ
     });
   });
   const judgments = votes.length === 3 ? rubric.questions.map((q, i) => {
-    const majority = ['satisfied', 'not-satisfied', 'undetermined'].find(verdict => votes.filter((row: any) => row[i].verdict === verdict).length >= 2);
-    return { criterionId: q.id, verdict: majority || 'undetermined', majority: majority !== undefined };
+    const verdict = votes.filter((row: any) => row[i].verdict === 'satisfied').length >= 2 ? 'satisfied' : 'not-satisfied';
+    return { criterionId: q.id, verdict, majority: true };
   }) : [];
   check(same(v.judgments, judgments));
   const failed = hardAssertions.some((a: any) => a.status === 'fail'), missing = hardAssertions.some((a: any) => a.status === 'error');
@@ -66,7 +66,6 @@ export function projectWikiAssessment(v: any, source: WikiRubric, binding: WikiJ
     status = 'error'; reason = v.reason;
     check(typeof reason === 'string' && ['judge_evidence_unavailable', 'judge_backend_failed', 'judge_output_invalid'].includes(reason) && (reason !== 'judge_evidence_unavailable' || votes.length === 0));
   } else if (judgments.some(j => j.verdict === 'not-satisfied')) { status = 'fail'; reason = 'rubric_not_satisfied'; }
-  else if (judgments.some(j => j.verdict === 'undetermined')) { status = 'error'; reason = 'judge_undetermined'; }
   else { status = 'pass'; reason = null; }
   check(v.status === status && v.reason === reason);
   const referenceMetrics = v.referenceMetrics;
