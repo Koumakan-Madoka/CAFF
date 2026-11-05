@@ -13,7 +13,9 @@ const DEEPSEEK_JUDGE_PROMPT = `你是独立的逐断言裁判，不是执行代�
 执行行为必须依据所要求的 trace 或 file 证据，不把回复自称完成当作已完成的证明。证据标为 truncated 时不能假装看过省略部分。不得用常识或原任务推测不存在的操作。
 每条判定给出简短中文 reason 和 evidence 引用。引用 text 必须是对应证据的连续原文子串，不改写、不省略拼接、不加额外引号。成立必须至少一段原文依据；缺失要求而不成立时允许空引用数组，但须说明缺了什么。每条最多8段引用，每段不超过4096 UTF-8字节。reply 引用 publicReply；trace 引用 evidence.traceSummary.text；file 引用 evidence.files 中对应 path 的 content。
 仅输出一个JSON对象，恰含 judgments 数组。每个输入断言恰好一项，顺序与 questions 相同。每项恰含 criterionId（输入id）、verdict（satisfied或not-satisfied）、reason（非空）、evidence。引用对象恰含 source（reply/trace/file）和 text；file 引用另含 path。不要输出总分、通过与否、markdown、额外字段或其他说明。`;
-const SETTINGS = Object.freeze({ temperature: 0, maxTokens: 8192, responseFormat: 'json_object', stream: false });
+// User-approved equivalent service labels; bind this policy into the settings
+// hash without changing the request model or the semantic judge prompt.
+const SETTINGS = Object.freeze({ temperature: 0, maxTokens: 8192, responseFormat: 'json_object', stream: false, responseModelPolicy: 'deepseek-v4-flash|deepseek-flash' });
 const CONFIGURATION = Object.freeze({ backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: SETTINGS, promptHash: wikiValueHash(DEEPSEEK_JUDGE_PROMPT) });
 function projectInput(input) {
   wikiExactKeys(input, ['task', 'expected', 'questions', 'publicReply', ...(input?.evidence === undefined ? [] : ['evidence'])]);
@@ -56,16 +58,15 @@ function decode(bytes, forbidden) {
   const data = JSON.parse(text);
   const usage = data.usage && ['prompt_tokens', 'completion_tokens', 'total_tokens'].every(k => Number.isSafeInteger(data.usage[k]) && data.usage[k] >= 0)
     ? { input: data.usage.prompt_tokens, output: data.usage.completion_tokens, totalTokens: data.usage.total_tokens } : null;
-  // Never silently reinterpret a retired alias as the approved model. Only
-  // public enumerated labels and numeric usage can escape this failure path.
-  if (data.model !== 'deepseek-v4-flash') return { modelChanged: true, usage,
-    observedModel: data.model === 'deepseek-flash' ? 'deepseek-flash' : 'other' };
+  // Only these two explicitly approved aliases are equivalent. Arbitrary
+  // provider labels cannot escape the failure path; actual accepted labels do.
+  if (!SETTINGS.responseModelPolicy.split('|').includes(data.model)) return { modelChanged: true, usage, observedModel: 'other' };
   if (!Array.isArray(data.choices) || data.choices.length !== 1 || data.choices[0].finish_reason !== 'stop'
     || typeof data.choices[0].message?.content !== 'string') throw fail('wiki_judge_response_invalid');
   const modelOutput = data.choices[0].message.content;
   const parsed = JSON.parse(modelOutput); // Structural judgments/citations are checked by scoreWikiRun.
   if (containsSecretSentinel(modelOutput) || forbidden.some(v => modelOutput.includes(v) || JSON.stringify(parsed).includes(v))) throw fail('wiki_judge_response_invalid');
-  return { modelOutput, usage };
+  return { modelOutput, usage, observedModel: data.model };
 }
 function createDeepseekWikiJudge({ key, maxRequests, onCall = () => {} }, dependencies = {}) {
   validKey(key);
@@ -85,7 +86,7 @@ function createDeepseekWikiJudge({ key, maxRequests, onCall = () => {} }, depend
     finally { try { await transport?.close(); } catch { error = fail('wiki_judge_request_failed'); } }
     onCall({ index, model: CONFIGURATION.model, inputHash: wikiValueHash(projectInput(input)), requestHash: wikiValueHash(body), promptHash: CONFIGURATION.promptHash,
       durationMs: performance.now() - start, success: !error, usage: received?.usage || null,
-      ...(received?.modelChanged ? { observedModel: received.observedModel } : {}),
+      ...(received?.observedModel ? { observedModel: received.observedModel } : {}),
       ...(error ? { error: error.code } : { modelOutput: received.modelOutput }) });
     if (error) throw error;
     return received.modelOutput;

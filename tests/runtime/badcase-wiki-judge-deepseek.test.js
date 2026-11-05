@@ -3,7 +3,7 @@ const api = () => require('../../scripts/badcase-capture/wiki-judge-deepseek.cjs
 const input = { task: 'Report the outcome.', expected: 'Explain plainly.', questions: [{ id: 'q1', question: 'The outcome is explained.', evidence: 'reply' }], publicReply: 'The work is complete.' };
 const output = JSON.stringify({ judgments: [{ criterionId: 'q1', verdict: 'satisfied', reason: 'The outcome is stated.', evidence: [{ source: 'reply', text: input.publicReply }] }] });
 const key = 'synthetic-not-real-key-for-unit-testing';
-function envelope(content = output) { return Buffer.from(JSON.stringify({ status: 200, body: Buffer.from(JSON.stringify({ model: 'deepseek-v4-flash', choices: [{ finish_reason: 'stop', message: { content } }], usage: { prompt_tokens: 30, completion_tokens: 40, total_tokens: 70 } })).toString('base64') })); }
+function envelope(content = output, model = 'deepseek-v4-flash') { return Buffer.from(JSON.stringify({ status: 200, body: Buffer.from(JSON.stringify({ model, choices: [{ finish_reason: 'stop', message: { content } }], usage: { prompt_tokens: 30, completion_tokens: 40, total_tokens: 70 } })).toString('base64') })); }
 function setup(response = () => envelope()) {
   const calls = [], events = []; let closes = 0;
   const judge = api().createDeepseekWikiJudge({ key, maxRequests: 6, onCall: e => events.push(e) }, { createExchange({ expectedBody, key: actual }) {
@@ -24,6 +24,8 @@ test('judge is explicit opt-in, projects blind input, freezes settings and hashe
   assert.ok(Object.isFrozen(h.judge.configuration.settings));
   assert.equal(h.closes(), 1); assert.equal(h.events[0].success, true);
   assert.deepEqual(h.events[0].usage, { input: 30, output: 40, totalTokens: 70 });
+  assert.equal(h.events[0].observedModel, 'deepseek-v4-flash');
+  assert.equal(h.judge.configuration.settings.responseModelPolicy, 'deepseek-v4-flash|deepseek-flash');
 });
 test('adapter rejects extra labels, candidate text, bad evidence and leaked selected key before network', async () => {
   for (const bad of [{ ...input, variant: 'candidate' }, { ...input, candidateGuideline: 'private' }, { ...input, publicReply: key }, { ...input, evidence: { originalResults: [] } }]) {
@@ -44,15 +46,24 @@ test('budget refuses excess calls, and credentials cannot appear in output or ev
   const bad = setup(() => envelope(key)); await assert.rejects(bad.judge.evaluate(input));
   assert.equal(JSON.stringify(bad.events).includes(key), false);
 });
-test('real service model drift is a typed error, retains safe usage, and cannot silently calibrate another model', async () => {
-  const bytes = envelope();
-  const env = JSON.parse(bytes), data = JSON.parse(Buffer.from(env.body, 'base64'));
-  data.model = 'deepseek-flash'; env.body = Buffer.from(JSON.stringify(data)).toString('base64');
-  const h = setup(() => Buffer.from(JSON.stringify(env)));
-  await assert.rejects(h.judge.evaluate(input), e => e.code === 'wiki_judge_model_changed');
-  assert.equal(h.events[0].success, false); assert.equal(h.events[0].error, 'wiki_judge_model_changed');
-  assert.deepEqual(h.events[0].usage, { input: 30, output: 40, totalTokens: 70 });
-  assert.equal(h.events[0].observedModel, 'deepseek-flash');
+test('both user-approved response aliases score identically and retain the actual returned label', async () => {
+  for (const model of ['deepseek-v4-flash', 'deepseek-flash']) {
+    const h = setup(() => envelope(output, model));
+    assert.equal(await h.judge.evaluate(input), output);
+    assert.equal(h.events[0].success, true); assert.equal(h.events[0].observedModel, model);
+    assert.equal(h.events[0].model, 'deepseek/deepseek-v4-flash');
+    assert.deepEqual(h.events[0].usage, { input: 30, output: 40, totalTokens: 70 });
+  }
+});
+test('unapproved models remain typed errors with safe usage and without leaking arbitrary labels', async () => {
+  for (const model of ['deepseek-chat', 'DeepSeek-V4.1-Flash-1017', 'deepseek-flash-other']) {
+    const h = setup(() => envelope(output, model));
+    await assert.rejects(h.judge.evaluate(input), e => e.code === 'wiki_judge_model_changed');
+    assert.equal(h.events[0].success, false); assert.equal(h.events[0].error, 'wiki_judge_model_changed');
+    assert.deepEqual(h.events[0].usage, { input: 30, output: 40, totalTokens: 70 });
+    assert.equal(h.events[0].observedModel, 'other');
+    assert.equal(JSON.stringify(h.events).includes(model), false);
+  }
 });
 test('malformed envelopes, truncated output and wrong model cannot be recorded as successful judgments', async () => {
   for (const response of [Buffer.from('{}'), Buffer.from(JSON.stringify({ status: 403, body: '' })), envelope('not json'), Buffer.from(envelope().toString().replace('200', '201'))]) {
@@ -64,6 +75,6 @@ test('real adapter composes with the common scorer, retaining three cited binary
   const { bindWikiJudge, scoreWikiRun } = require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2');
   const rubric = { ...createWikiRubric({ caseId: 'synthetic', version: 1, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: input.expected,
     scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' }, questions: input.questions }), status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Synthetic only' };
-  const h = setup(); const result = await scoreWikiRun({ rubric, binding: bindWikiJudge(h.judge.configuration, rubric), hardAssertions: [], run: { completed: true, replySource: 'public', publicReply: input.publicReply, task: input.task, expected: input.expected } }, h.judge);
+  const h = setup(() => envelope(output, 'deepseek-flash')); const result = await scoreWikiRun({ rubric, binding: bindWikiJudge(h.judge.configuration, rubric), hardAssertions: [], run: { completed: true, replySource: 'public', publicReply: input.publicReply, task: input.task, expected: input.expected } }, h.judge);
   assert.equal(result.status, 'pass'); assert.equal(result.votes.length, 3); assert.equal(h.calls.length, 3);
 });
