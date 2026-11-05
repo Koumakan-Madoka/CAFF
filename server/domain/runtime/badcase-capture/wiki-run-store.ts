@@ -7,6 +7,15 @@ import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { wikiRunHash } from './wiki-run-replay';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const MAX = 128 * 1024 * 1024;
+// Accounting is a projection of the current user decision, never a rewrite of
+// immutable model request/result packets or their original outcome/hash.
+export function projectWikiRunAccounting(rows: any[], dehydrations: any[] = []) {
+  return rows.map(row => {
+    const current = dehydrations.find(d => d.caseId === row.caseId && d.traceHash === row.traceHash)?.decision;
+    return current?.level === 'reference' && current.supersedesDecisionHash === row.decisionHash
+      ? { ...row, excludedReason: 'user_reclassified_reference', supersededByDecisionHash: current.hash } : row;
+  });
+}
 export function createWikiRunStore(input: any) {
   const options = resolveWikiStorageOptions(input), root = options.globalRoot;
   if (typeof root !== 'string' || !path.isAbsolute(root) || !path.isAbsolute(options.sourceWorktree || '')) throw fail('wiki_root_required');

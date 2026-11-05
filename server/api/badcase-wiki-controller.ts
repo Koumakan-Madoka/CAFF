@@ -5,7 +5,7 @@ import { readRequestJson } from '../http/request-body';
 import { sendJson, sendTextDownload } from '../http/response';
 import { wikiTraceMarkdown } from '../domain/runtime/badcase-capture/wiki-trace-export';
 import { createWikiStore } from '../domain/runtime/badcase-capture/wiki-store';
-import { createWikiRunStore } from '../domain/runtime/badcase-capture/wiki-run-store';
+import { createWikiRunStore, projectWikiRunAccounting } from '../domain/runtime/badcase-capture/wiki-run-store';
 import { listWikiTargets } from '../domain/runtime/badcase-capture/wiki-targets';
 import { collectWikiCandidateFiles } from '../domain/runtime/badcase-capture/wiki-candidate-files';
 import { createWikiComparisonStore } from '../domain/runtime/badcase-capture/wiki-comparison-store';
@@ -121,7 +121,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         else store.confirmGlobalCandidate({ ...input, files });
       }
       const state = store.read();
-      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), runReplays: runs.list(), comparisons: createWikiComparisonStore(scope).read(), executions: executions(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
+      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), runReplays: projectWikiRunAccounting(runs.list(), state.dehydrations), comparisons: createWikiComparisonStore(scope).read(), executions: executions(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

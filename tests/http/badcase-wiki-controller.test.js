@@ -74,6 +74,20 @@ test('dehydration confirmation is explicit, guarded, revision/hash bound and nev
   const done = await h.invoke(body, route); assert.equal(done.body.dehydrations[0].decision.kind, 'single');
   await rejects(h.invoke({ ...body, expectedRevision: done.body.revision, kind: 'throughout', cutStep: null }, route), 'wiki_dehydration_frozen', 409);
   assert.deepEqual(h.store.readCaseTrace(c.id), packet);
+  const decision = done.body.dehydrations[0].decision, runs = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config);
+  const run = runs.reserve({ schemaVersion: 1, kind: 'wikiskill-run-request', variant: { kind: 'original' }, metadata: { caseId: c.id, traceHash: item.traceBundle.hash, decisionHash: decision.hash } });
+  runs.finish(run.id, { outcome: { status: 'unreached', countAsFailure: true }, modelCalls: 1, toolExecutions: 0 });
+  const raw = runs.read(run.id);
+  const withdrawn = h.store.withdrawDehydrationToReference({ caseId: c.id, traceHash: item.traceBundle.hash, recommendationHash: r.hash,
+    previousDecisionHash: decision.hash, reason: '贯穿型且无现场，只作参考', expectedRevision: h.store.read().revision }, { source: 'user-via-planner', reference: 'withdrawal-message' });
+  const after = (await h.invoke()).body;
+  assert.equal(after.dehydrations[0].decision.level, 'reference'); assert.deepEqual(after.dehydrations[0].decisionHistory, [decision]);
+  assert.equal(after.runReplays[0].excludedReason, 'user_reclassified_reference'); assert.equal(after.runReplays[0].supersededByDecisionHash, withdrawn.hash);
+  assert.equal(after.runReplays[0].status, 'unreached');
+  assert.deepEqual((await h.invoke(undefined, { pathname: '/api/wikiskill/cases/' + c.id + '/run-replays/' + run.id })).body, raw);
+  await rejects(h.invoke({ ...body, expectedRevision: after.revision }, route), 'wiki_dehydration_frozen', 409);
+  const controller = createBadcaseWikiController(h.options);
+  assert.equal(await controller({ req: { method: 'POST' }, res: {}, pathname: '/api/wikiskill/dehydration-withdraw' }), false);
 });
 test('comparison review is explicit, locally guarded and cannot supply results, rules or adoption', async t => {
   const h = setup(t), route = { pathname: '/api/wikiskill/comparison-review' };

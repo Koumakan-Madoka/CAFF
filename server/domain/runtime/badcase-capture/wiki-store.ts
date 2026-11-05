@@ -403,6 +403,42 @@ export function createWikiStore(options: any) {
         return { changed: true, value: row.decision };
       }).value;
     },
+    // Exceptional, explicit user withdrawal, not an editor for frozen cuts.
+    // Only run -> reference is allowed; old decisions and packets stay immutable.
+    // Trusted operator only: deliberately not exposed by the HTTP confirmation route.
+    withdrawDehydrationToReference(input: any, confirmation: any) {
+      if (!global) throw fail('wiki_global_required');
+      shape(input, ['caseId', 'traceHash', 'recommendationHash', 'previousDecisionHash', 'reason', 'expectedRevision']);
+      shape(confirmation, ['source', 'reference']);
+      if (confirmation.source !== 'user-via-planner') throw fail('wiki_invalid_input');
+      id(confirmation.reference);
+      const reason = text(input.reason, 2048), provenance = structuredClone(confirmation);
+      return change(state => {
+        if (!Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const c = state.cases.find((v: any) => v.id === id(input.caseId));
+        if (!c) throw fail('wiki_unknown_case');
+        const row = (state.dehydrations || []).find((v: any) => v.caseId === c.id);
+        if (!row?.decision) throw fail('wiki_dehydration_recommendation_required');
+        if (c.traceBundle?.hash !== input.traceHash || row.traceHash !== input.traceHash || row.hash !== input.recommendationHash) throw fail('wiki_dehydration_stale');
+        const previous = row.decision;
+        if (previous.supersedesDecisionHash) {
+          if (previous.supersedesDecisionHash !== input.previousDecisionHash || previous.reason !== reason
+            || previous.confirmation?.source !== provenance.source || previous.confirmation?.reference !== provenance.reference) throw fail('wiki_dehydration_frozen');
+          return { changed: false, value: previous };
+        }
+        if (previous.hash !== input.previousDecisionHash) throw fail('wiki_dehydration_stale');
+        if (c.sealedCheckpointId || previous.kind !== 'single' || previous.level !== 'run') throw fail('wiki_dehydration_ineligible');
+        const value = { schemaVersion: 1, caseId: c.id, traceHash: input.traceHash, recommendationHash: row.hash,
+          kind: 'throughout', cutStep: null, level: 'reference', supersedesDecisionHash: previous.hash, reason,
+          confirmedBy: 'local-user', confirmation: provenance, confirmedAt: new Date().toISOString() };
+        row.decisionHistory = [...(row.decisionHistory || []), previous];
+        row.decision = { ...value, hash: hash(JSON.stringify(value)) };
+        appendEvent(state, { type: 'case-dehydration-withdrawn-to-reference', caseIds: [c.id], traceHash: input.traceHash,
+          previousDecisionHash: previous.hash, decisionHash: row.decision.hash, reason, confirmation: provenance });
+        return { changed: true, value: row.decision };
+      }).value;
+    },
     backfillConversationTitles(values: any[]) {
       if (!global || !Array.isArray(values) || !values.length || values.length > 1000) throw fail('wiki_invalid_input');
       const updates = values.map(value => {

@@ -99,6 +99,29 @@ test('run output loads read-only on expansion, remains literal, and missed decis
   assert.match(d.textContent, /<script>full output<\/script>/); assert.equal(d.querySelector('script'), null);
   assert.match(d.textContent, /write/); assert.equal(h.calls.length, 1);
 });
+test('user reference-only withdrawal keeps prior confirmation and full run visible but excludes them from current funnel and totals', async t => {
+  const h = setup(t, () => ({ reservation: { request: { metadata: { cutStep: 1 } } }, result: { message: { content: [{ type: 'text', text: 'OLD RUN FULL OUTPUT' }] } } }));
+  const first = { kind: 'single', level: 'run', cutStep: 1, hash: 'd'.repeat(64), confirmation: { source: 'user-via-planner', reference: 'first-confirmation' } };
+  const current = { kind: 'throughout', level: 'reference', cutStep: null, hash: 'f'.repeat(64), supersedesDecisionHash: first.hash,
+    reason: '<script>贯穿全程</script>', confirmation: { source: 'user-via-planner', reference: 'user-withdrawal' } };
+  h.data.cases[0].n = 12;
+  h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), request: { state: { steps: [{ step: 1, body: 'plan' }] } },
+    recommendation: { schemaVersion: 2, kindSuggestion: 'single', cutStepSuggestion: 1, cutSource: 'deepseek', answers: { reason: 'original recommendation', evidence: 'plan' } }, decision: current, decisionHistory: [first] }];
+  const oldRun = { id: 'e'.repeat(64), caseId: 'c1', traceHash: 'a'.repeat(64), decisionHash: first.hash, variant: { kind: 'original' }, status: 'unreached', modelCalls: 1, toolExecutions: 0,
+    excludedReason: 'user_reclassified_reference', supersededByDecisionHash: current.hash };
+  h.data.runReplays = [oldRun]; h.panel.render(h.data);
+  const card = h.root.querySelector('[data-case-id="c1"]'); assert.equal(card.closest('[data-actor]').dataset.actor, 'reference');
+  assert.match(card.textContent, /已冻结：贯穿型.*只作参考/); assert.match(card.textContent, /已被用户改判，不计入/);
+  assert.match(card.textContent, /首次确认|历史确认/); assert.match(card.textContent, /first-confirmation/); assert.match(card.textContent, /original recommendation/);
+  assert.match(card.textContent, /<script>贯穿全程<\/script>/); assert.equal(card.querySelector('script'), null);
+  assert.match(h.root.querySelector('[data-run-totals]').textContent, /共 0 次.*未到达决策点 0/);
+  assert.match(h.root.querySelector('[data-run-totals]').textContent, /已被用户改判，不计入.*1 次/);
+  assert.match(h.root.querySelector('[data-lane="run"]').textContent, /只作参考/);
+  assert.equal(h.root.querySelector('[data-lane="run"] .f-step b').textContent, '0');
+  const d = card.querySelector('[data-run-details]'); assert.ok(d); assert.match(d.querySelector('summary').textContent, /已被用户改判，不计入/);
+  d.open = true; d.dispatchEvent(new h.window.Event('toggle')); await tick(); await tick();
+  assert.match(d.textContent, /OLD RUN FULL OUTPUT/); assert.equal(h.calls.length, 1); assert.equal(card.querySelector('[data-dehydration-confirm]'), null);
+});
 test('fallback output explains the exact failure and never presents missing answers as a model judgment', t => {
   const h = setup(t);
   h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), request: { state: { steps: [{ step: 1, body: 'reply' }] } },

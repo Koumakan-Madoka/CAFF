@@ -53,6 +53,37 @@ test('trusted user-via-planner confirmation preserves the original recommendatio
   assert.throws(() => h.store.confirmDehydration(input(), { ...provenance, reference: 'different-message' }), e => e.code === 'wiki_dehydration_frozen');
   assert.equal(h.store.read().revision, revision);
 });
+test('explicit user withdrawal is one-way reference-only, archives the frozen decision and cannot rewrite evidence', t => {
+  const h = setup(t), r = h.save(), first = h.confirm(r), before = h.store.read(), packet = h.store.readCaseTrace(h.c.id);
+  const { createWikiRunStore, projectWikiRunAccounting } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store');
+  const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'withdraw-run-')); t.after(() => fs.rmSync(runRoot, { recursive: true, force: true }));
+  const runs = createWikiRunStore({ globalRoot: path.join(runRoot, 'wiki'), sourceWorktree: path.join(runRoot, 'source') });
+  const reservation = runs.reserve({ schemaVersion: 1, kind: 'wikiskill-run-request', variant: { kind: 'original' }, metadata: { caseId: h.c.id, traceHash: r.traceHash, decisionHash: first.hash } });
+  runs.finish(reservation.id, { outcome: { status: 'unreached', countAsFailure: true }, modelCalls: 1, toolExecutions: 0 });
+  const oldRun = runs.read(reservation.id), provenance = { source: 'user-via-planner', reference: 'user-reference-only' };
+  const input = extra => ({ caseId: h.c.id, traceHash: r.traceHash, recommendationHash: r.hash, previousDecisionHash: first.hash,
+    reason: '排查方向贯穿执行；没有现场，只作参考', expectedRevision: h.store.read().revision, ...extra });
+  assert.throws(() => h.store.withdrawDehydrationToReference(input()), e => e.code === 'wiki_invalid_input');
+  assert.throws(() => h.store.withdrawDehydrationToReference(input({ kind: 'single' }), provenance), e => e.code === 'wiki_invalid_input');
+  assert.throws(() => h.store.withdrawDehydrationToReference(input({ expectedRevision: 0 }), provenance), e => e.code === 'wiki_revision_conflict');
+  for (const field of ['traceHash', 'recommendationHash', 'previousDecisionHash']) assert.throws(() => h.store.withdrawDehydrationToReference(input({ [field]: 'f'.repeat(64) }), provenance), e => e.code === 'wiki_dehydration_stale');
+  assert.deepEqual(h.store.read(), before);
+  const d = h.store.withdrawDehydrationToReference(input(), provenance), row = h.store.getDehydration(h.c.id);
+  assert.equal(d.kind, 'throughout'); assert.equal(d.level, 'reference'); assert.equal(d.cutStep, null);
+  assert.equal(d.supersedesDecisionHash, first.hash); assert.equal(d.reason, input().reason); assert.deepEqual(d.confirmation, provenance);
+  const { hash, ...value } = d; assert.equal(hash, require('node:crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex'));
+  assert.deepEqual(row.decisionHistory, [first]); assert.deepEqual(row.recommendation, r.recommendation); assert.equal(row.hash, r.hash);
+  assert.deepEqual(h.store.readCaseTrace(h.c.id), packet); assert.deepEqual(runs.read(reservation.id), oldRun);
+  const projected = projectWikiRunAccounting(runs.list(), [row]); assert.equal(projected[0].excludedReason, 'user_reclassified_reference');
+  assert.equal(projected[0].supersededByDecisionHash, d.hash); assert.equal(projected[0].status, 'unreached');
+  const revision = h.store.read().revision; assert.deepEqual(h.store.withdrawDehydrationToReference(input(), provenance), d); assert.equal(h.store.read().revision, revision);
+  assert.throws(() => h.store.withdrawDehydrationToReference(input({ reason: 'rewrite' }), provenance), e => e.code === 'wiki_dehydration_frozen');
+  assert.throws(() => h.confirm(r), e => e.code === 'wiki_dehydration_frozen');
+  const { buildWikiRunRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-replay');
+  assert.throws(() => buildWikiRunRequest({ item: h.item(), bundle: packet, decision: d }), e => e.code === 'wiki_run_decision_invalid');
+  const after = h.store.read(); for (const key of ['cases', 'versions', 'replayCases', 'replaySplit', 'comparisonReviews']) assert.deepEqual(after[key], before[key]);
+  assert.equal(after.events.at(-1).type, 'case-dehydration-withdrawn-to-reference');
+});
 test('confirmation rejects stale revision, different trace/recommendation and non-null cuts for throughout/unclear', t => {
   const h = setup(t), r = h.save();
   for (const [extra, code] of [[{ expectedRevision: 0 }, 'wiki_revision_conflict'], [{ traceHash: 'f'.repeat(64) }, 'wiki_dehydration_stale'],
