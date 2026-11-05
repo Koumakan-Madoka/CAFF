@@ -411,6 +411,17 @@ GIT_METADATA_PATHS = frozenset(['.git/config', '.git/index', '.git/commondir', '
 GIT_INPUT_PATHS = frozenset(['config', 'index', 'commondir', 'gitdir', 'config.worktree', 'info/exclude'])
 
 
+def _git_state_source(relative):
+    # Separate Room-registration/HEAD capability; no objects/config/hooks or
+    # pointer expansion. The host binds each independently pinned root.
+    return (relative in ('.git', 'HEAD', 'packed-refs')
+            or (relative.startswith('refs/heads/')
+                and not any(ord(ch) <= 32 or ord(ch) == 127 or ch in '~^:?*[\\' for ch in relative)
+                and '..' not in relative and '@{' not in relative
+                and all(p and not p.startswith('.') and not p.endswith('.') and not p.endswith('.lock')
+                        for p in relative.split('/'))))
+
+
 def _git_source(relative):
     return (relative == '.git' or relative in GIT_METADATA_PATHS
             or relative.split('/')[-1] == '.gitignore')
@@ -467,7 +478,7 @@ def _request(stream):
             keys |= {'expected', 'excluded'}
             if op in ('capture', 'selectedSnapshot'):
                 keys.add('paths')
-        elif op in ('sessionInput', 'gitInput'):
+        elif op in ('sessionInput', 'gitInput', 'gitState'):
             keys |= {'expected', 'path'}
         elif op != 'identity':
             raise Refused('request_invalid')
@@ -479,10 +490,11 @@ def _request(stream):
         suffix = match[2].replace('\\', '/')
         if suffix:
             components(suffix)
-        if op in ('sessionInput', 'gitInput'):
+        if op in ('sessionInput', 'gitInput', 'gitState'):
             if (not _valid_identity(value['expected']) or not isinstance(value['path'], str)
                     or (op == 'sessionInput' and not value['path'].endswith('.jsonl'))
                     or (op == 'gitInput' and value['path'] not in GIT_INPUT_PATHS)
+                    or (op == 'gitState' and not _git_state_source(value['path']))
                     or len(value['path'].encode('utf-8')) > 32768
                     or len(components(value['path'])) > 64):
                 raise Refused('request_invalid')
@@ -556,14 +568,15 @@ def serve(input_stream, output_stream):
             raise Refused('estimate_scope_rejected')
         with Root(request['root'], request.get('expected')) as root:
             header = {'version': 1, 'ok': True, 'identity': root.identity}
-            if request['op'] in ('sessionInput', 'gitInput'):
+            if request['op'] in ('sessionInput', 'gitInput', 'gitState'):
                 # No walk, Git discovery, directory expansion or caller hooks.
                 # gitInput permits only fixed names under its own authorized
                 # root, including binary index. Pointer text never grants access.
                 # Two reads bind the returned bytes to one identity/hash; this
                 # is change detection, not an atomic or ABA-proof snapshot.
-                first = root.read(request['path'], FILE_LIMIT, _canonical=True)
-                second = root.read(request['path'], FILE_LIMIT, _canonical=True)
+                limit = 1024 * 1024 if request['op'] == 'gitState' else FILE_LIMIT
+                first = root.read(request['path'], limit, _canonical=True)
+                second = root.read(request['path'], limit, _canonical=True)
                 if any(first[k] != second[k] for k in ('identity', 'size', 'sha256')):
                     raise Refused('snapshot_changed')
                 header['file'] = {'path': request['path'], 'size': str(first['size']),

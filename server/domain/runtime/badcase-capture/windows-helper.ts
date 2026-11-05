@@ -55,21 +55,26 @@ function validRelative(value: any) {
 }
 const GIT_METADATA_PATHS = new Set(['.git/config', '.git/index', '.git/commondir', '.git/info', '.git/info/exclude']);
 const GIT_INPUT_PATHS = new Set(['config', 'index', 'commondir', 'gitdir', 'config.worktree', 'info/exclude']);
+export function isWindowsGitStatePath(p: string) {
+  return ['.git', 'HEAD', 'packed-refs'].includes(p) || (p.startsWith('refs/heads/') && !/[\x00-\x20\x7f~^:?*\[\\]/.test(p)
+    && !p.includes('..') && !p.includes('@{') && p.split('/').every(s => s && !s.startsWith('.') && !s.endsWith('.') && !s.endsWith('.lock')));
+}
 function gitSource(relative: string) {
   return relative === '.git' || GIT_METADATA_PATHS.has(relative) || relative.split('/').at(-1) === '.gitignore';
 }
 function validRequest(request: any) {
-  if (!request || request.version !== 1 || !['identity', 'capture', 'estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput'].includes(request.op)
+  if (!request || request.version !== 1 || !['identity', 'capture', 'estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput', 'gitState'].includes(request.op)
       || !exact(request, request.op === 'identity' ? ['version', 'op', 'root']
-        : ['sessionInput', 'gitInput'].includes(request.op) ? ['version', 'op', 'root', 'expected', 'path']
+        : ['sessionInput', 'gitInput', 'gitState'].includes(request.op) ? ['version', 'op', 'root', 'expected', 'path']
         : ['estimate', 'snapshot', 'gitMetadata'].includes(request.op) ? ['version', 'op', 'root', 'expected', 'excluded']
           : ['version', 'op', 'root', 'expected', 'excluded', 'paths'])
       || typeof request.root !== 'string' || Buffer.byteLength(request.root) > 32768) return false;
   const match = request.root.match(/^[a-z]:[\\/](.*)$/i);
   if (!match || (match[1] && !validRelative(match[1].replace(/\\/g, '/')))) return false;
   if (request.op === 'identity') return true;
-  if (['sessionInput', 'gitInput'].includes(request.op)) return validIdentity(request.expected) && validRelative(request.path)
-    && (request.op === 'sessionInput' ? request.path.endsWith('.jsonl') : GIT_INPUT_PATHS.has(request.path))
+  if (['sessionInput', 'gitInput', 'gitState'].includes(request.op)) return validIdentity(request.expected) && validRelative(request.path)
+    && (request.op === 'sessionInput' ? request.path.endsWith('.jsonl')
+      : request.op === 'gitState' ? isWindowsGitStatePath(request.path) : GIT_INPUT_PATHS.has(request.path))
     && request.path.split('/').length <= 64;
   return validIdentity(request.expected)
     && Array.isArray(request.excluded) && request.excluded.length <= WINDOWS_HELPER_LIMITS.exclusions
@@ -107,12 +112,12 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
       return exact(header, ['version', 'ok', 'identity']) && offset === stdout.length
         ? { ok: true, identity: header.identity } : bad();
     }
-    if (['sessionInput', 'gitInput'].includes(request.op)) {
+    if (['sessionInput', 'gitInput', 'gitState'].includes(request.op)) {
       const file = header.file;
       if (!exact(header, ['version', 'ok', 'identity', 'file']) || !sameIdentity(header.identity, request.expected)
         || !exact(file, ['path', 'size', 'sha256', 'identity']) || file.path !== request.path
         || !validIdentity(file.identity) || file.identity.volumeSerial !== header.identity.volumeSerial
-        || !decimal(file.size, 0n, BigInt(WINDOWS_HELPER_LIMITS.fileBytes))
+        || !decimal(file.size, 0n, BigInt(request.op === 'gitState' ? 1024 * 1024 : WINDOWS_HELPER_LIMITS.fileBytes))
         || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)
         || stdout.length - offset !== Number(file.size)) return bad();
       const content = stdout.subarray(offset);
@@ -184,7 +189,7 @@ export function invokeWindowsHelper(python: string, helperPath: string, request:
       input, encoding: 'buffer', windowsHide: true, env: createWindowsCaptureEnvironment(process.env),
       timeout: request.op === 'identity' ? WINDOWS_HELPER_LIMITS.identityTimeoutMs
         : request.op === 'estimate' ? WINDOWS_HELPER_LIMITS.estimateTimeoutMs
-          : ['snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput'].includes(request.op) ? WINDOWS_HELPER_LIMITS.snapshotTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
+          : ['snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput', 'gitState'].includes(request.op) ? WINDOWS_HELPER_LIMITS.snapshotTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
       maxBuffer: WINDOWS_HELPER_LIMITS.headerBytes + WINDOWS_HELPER_LIMITS.bodyBytes + 1,
     });
     if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stderr) || result.stderr.length !== 0) {
@@ -214,6 +219,18 @@ export function invokeWindowsSessionHelper(python: string, helperPath: string, r
 // enlarges the Git tree or session transport's operation acceptance sets.
 export function invokeWindowsGitInputHelper(python: string, helperPath: string, request: any, deadline: number): Promise<any> {
   return invokeWindowsBoundedContentHelper(python, helperPath, request, deadline, ['gitInput']);
+}
+
+// Room registration/HEAD reads have a separate narrow operation; no arbitrary
+// metadata path, reference recursion, Git subprocess or classification widening.
+export function invokeWindowsGitStateHelper(python: string, helperPath: string, request: any, deadline: number): Promise<any> {
+  return invokeWindowsBoundedContentHelper(python, helperPath, request, deadline, ['gitState']);
+}
+
+// Ephemeral Room scope derivation must share the turn's existing deadline and
+// helper pool; it must not receive fresh synchronous identity budgets.
+export function invokeWindowsIdentityHelper(python: string, helperPath: string, request: any, deadline: number): Promise<any> {
+  return invokeWindowsBoundedContentHelper(python, helperPath, request, deadline, ['identity']);
 }
 
 async function invokeWindowsBoundedContentHelper(python: string, helperPath: string, request: any, deadline: number, allowedOps: string[]): Promise<any> {

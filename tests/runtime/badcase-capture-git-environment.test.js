@@ -34,11 +34,13 @@ test('every native capture helper launch receives its private Git environment ev
   const request = { version: 1, root: 'C:/repo', expected: identity, excluded: [] };
   await exports.invokeWindowsEstimateHelper('python', 'trusted.py', { ...request, op: 'estimate' });
   for (const [method, op, extra] of [['invokeWindowsGitHelper', 'gitMetadata', { excluded: [] }],
-    ['invokeWindowsSessionHelper', 'sessionInput', { path: 'turn.jsonl' }], ['invokeWindowsGitInputHelper', 'gitInput', { path: 'index' }]]) {
+    ['invokeWindowsSessionHelper', 'sessionInput', { path: 'turn.jsonl' }], ['invokeWindowsGitInputHelper', 'gitInput', { path: 'index' }],
+    ['invokeWindowsGitStateHelper', 'gitState', { path: 'HEAD' }]]) {
     env.GIT_CONFIG_GLOBAL = 'C:/changed-after-first-launch';
     await exports[method]('python', 'trusted.py', { version: 1, root: 'C:/repo', expected: identity, op, ...extra }, performance.now() + 1000);
   }
-  assert.equal(launches.length, 5);
+  await exports.invokeWindowsIdentityHelper('python', 'trusted.py', { version: 1, op: 'identity', root: 'C:/repo' }, performance.now() + 1000);
+  assert.equal(launches.length, 7);
   for (const options of launches) { assert.notEqual(options.env, env); assert.equal(options.env?.GIT_CONFIG_GLOBAL, 'NUL');
     assert.equal(options.env?.GIT_CONFIG_NOSYSTEM, '1'); assert.equal(options.env?.GIT_DIR, undefined); assert.equal(options.env?.git_config_parameters, undefined); }
   assert.equal(JSON.stringify({ ...env, GIT_CONFIG_GLOBAL: 'C:/fixture-global' }), before);

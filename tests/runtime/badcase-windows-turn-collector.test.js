@@ -143,6 +143,35 @@ for (const phase of ['files', 'input', 'before-publish']) test(`one overall dead
   assert.equal(inputCalls, phase === 'files' ? 0 : 1); noLock(h);
 });
 
+test('constructor-owned Room scope is ephemeral, under the same lease, and revalidated before publication', async t => {
+  let h, called = 0, checked = 0;
+  const roots = { metadataRoot: 'C:/main/.git/worktrees/work', commonRoot: 'C:/main/.git' };
+  h = setup(t, { options: { resolveRoomWorktreeScope: async opts => {
+    called++; assert.equal(opts.deadline, 25000); assert.equal(opts.targetDir, 'C:\\worktree');
+    assert.throws(() => withProjectWriteLock(h.root, 'p', () => {}), /capture_writer_busy/);
+    const policy = { ...opts.policy, authorizedDirs: ['C:/worktree'], authorizedInputDirs: Object.values(roots),
+      windowsExternalGit: [{ worktree: 'C:/worktree', ...roots }] };
+    return { ok: true, policy, evidence: { head: 'a'.repeat(40) }, revalidate: async () => {
+      checked++; assert.equal(h.seen.at(-1)[0], 'input'); return true;
+    } };
+  } } });
+  const before = h.store.loadPolicy('p'); h.input.resolveRoomWorktreeScope = 'UNTRUSTED';
+  const result = await collect(h); assert.equal(result.captured, true); assert.equal(called, 1); assert.equal(checked, 1);
+  assert.deepEqual(h.store.loadPolicy('p'), before); assert.equal(result.checkpoint.roomWorktree.head, 'a'.repeat(40));
+  assert.deepEqual(JSON.parse(JSON.stringify(h.seen[0][1].externalGit)), {
+    metadataRoot: path.win32.resolve(roots.metadataRoot), commonRoot: path.win32.resolve(roots.commonRoot) });
+});
+for (const phase of ['derive', 'revalidate']) test(`Room ${phase} consumes the original 25s deadline, never a fresh budget`, async t => {
+  let now = 0;
+  const h = setup(t, { clock: () => now, options: { resolveRoomWorktreeScope: async opts => {
+    assert.equal(opts.deadline, 25000);
+    if (phase === 'derive') { now = 25000; return { get ok() { assert.fail('late scope consumed'); } }; }
+    return { ok: true, policy: opts.policy, evidence: {}, revalidate: async () => { now = 25000; return true; } };
+  } } });
+  assert.equal((await collect(h)).reason, 'windows_capture_timeout');
+  assert.equal(h.seen.some(x => x[0] === 'publish'), false); noLock(h);
+});
+
 test('invalid platform/mode/target/project fails before filesystem lock or readers', async t => {
   const h = setup(t, { platform: 'linux' }); assert.equal((await collect(h)).reason, 'windows_required'); assert.equal(h.seen.length, 0); noLock(h);
   const other = setup(t);

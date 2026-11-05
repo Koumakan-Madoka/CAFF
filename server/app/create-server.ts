@@ -189,6 +189,7 @@ export function createServerApp(options: any = {}) {
   // agentDir (including every agent sandbox) is already protected separately.
   const badcaseCapture = options.badcaseCapture || createBadcaseCaptureService({
     agentDir, chatStore: store, privateDirs: options.badcaseCapturePrivateDirs,
+    getProject: (id: string) => projectManager.listProjects().find((project: any) => project.id === id) || null,
   });
   // Separate offline declarations: not capture quota, not paid launch permission.
   const badcaseEvaluations = createEvaluationAdminService({ root: path.join(agentDir, 'badcase-offline-evaluations') });

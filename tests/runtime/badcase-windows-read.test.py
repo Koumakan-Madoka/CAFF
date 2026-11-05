@@ -33,6 +33,23 @@ class WindowsRead(unittest.TestCase):
         self.outside.mkdir()
         (self.outside / 'sample.bin').write_bytes(b'OUTSIDE_SENTINEL')
 
+    def test_room_git_state_separate_schema_limit_and_no_ref_following(self):
+        request = {**self.session_request(), 'op': 'gitState', 'path': 'HEAD'}
+        (self.root / 'HEAD').write_bytes(b'ref: refs/heads/room/test\n')
+        with patch.object(w.Root, 'walk', side_effect=AssertionError('no walk')):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+        header, body = out.getvalue().split(b'\n', 1)
+        self.assertTrue(json.loads(header)['ok'], header)
+        self.assertEqual(body, b'ref: refs/heads/room/test\n')
+        for name in ['../HEAD', 'refs/heads/../private', 'refs/remotes/origin/main', 'config', 'objects/a', 'HEAD.lock']:
+            with self.subTest(name=name), patch.object(w, 'Root') as unopened:
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'path': name})), out)
+                self.assertEqual(json.loads(out.getvalue())['code'], 'request_invalid')
+                self.assertEqual(unopened.call_count, 0)
+        (self.root / 'packed-refs').write_bytes(b'x' * (1024 * 1024 + 1))
+        out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'path': 'packed-refs'})), out)
+        self.assertEqual(json.loads(out.getvalue())['code'], 'too_large')
+
     def test_git_input_fixed_binary_files_without_walk_or_pointer_expansion(self):
         request = {**self.session_request(), 'op': 'gitInput', 'path': 'index'}
         data = b'DIRC\x00\xff\r\n'

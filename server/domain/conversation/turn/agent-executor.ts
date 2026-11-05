@@ -2331,7 +2331,8 @@ export function createAgentExecutor(options: any = {}) {
         // Capture the exact effective cwd used by startRun's SDK descriptor.
         // Room metadata may be stale relative to the queued execution binding;
         // it is never a fallback target or authority for a different directory.
-        // The collector still requires this root's own explicit grant and pin.
+        // The collector verifies explicit consent or derives project-root
+        // inheritance from its own live Room/project records, never this input.
         const captureTargetDir = capturedSdkStartConfig.cwd;
         // Accept synchronous collectors and future asynchronous collectors, but
         // never cross startRun while a pre-turn capture is still in flight.

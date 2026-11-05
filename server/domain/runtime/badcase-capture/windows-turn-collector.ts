@@ -16,6 +16,7 @@ import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
 export function createWindowsTurnCollector(options: any = {}): any {
   const store = options.store;
   const readCallbackInput = options.readCallbackInput;
+  const resolveRoomWorktreeScope = options.resolveRoomWorktreeScope;
   // Static trusted host configuration, not invocation-controlled exclusions.
   const agentDir = options.agentDir, privateDirs = structuredClone(options.privateDirs === undefined ? [] : options.privateDirs);
   return { async captureTurnCheckpoint(value: any = {}): Promise<any> {
@@ -34,9 +35,20 @@ export function createWindowsTurnCollector(options: any = {}): any {
       // Project lock spans all helper awaits AND durable publication. Other
       // requests never gain ambient reentry; helpers settle through real close.
       const outcome = await withAsyncProjectWriteLease(store.captureRoot, projectId, async writeSync => {
-        const policy = structuredClone(store.loadPolicy(projectId));
+        let policy = structuredClone(store.loadPolicy(projectId));
         if (policy.status !== 'enabled') return failed('policy_not_enabled');
         if (performance.now() >= deadline) return failed('windows_capture_timeout');
+        let roomScope: any = null;
+        // Exact existing grants retain their original behavior. Only a trusted
+        // constructor source may derive inheritance for a different actual cwd.
+        if (!policy.authorizedDirs.some((p: string) => path.win32.resolve(p).toLowerCase() === targetDir.toLowerCase())
+          && typeof resolveRoomWorktreeScope === 'function') {
+          roomScope = await resolveRoomWorktreeScope({ input, policy, targetDir, captureRoot: store.captureRoot,
+            agentDir, privateDirs, deadline });
+          if (performance.now() >= deadline) return failed('windows_capture_timeout');
+          if (!roomScope.ok) return failed(roomScope.reason);
+          policy = roomScope.policy;
+        }
         const files = await readWindowsGitFileCandidateAsync({ policy, targetDir, captureRoot: store.captureRoot,
           agentDir, privateDirs, deadline, externalGit: selectWindowsExternalGit(policy, targetDir) });
         if (performance.now() >= deadline) return failed('windows_capture_timeout');
@@ -102,6 +114,7 @@ export function createWindowsTurnCollector(options: any = {}): any {
           conversationId: String(input.conversationId || ''), turnId: String(input.turnId || ''), agentId: String(input.agentId || ''),
           createdAt: new Date().toISOString(), status: 'staged', files: files.files, deletions, skipped: [], uncaptured: [],
           gitMetadata: files.classification,
+          ...(roomScope ? { roomWorktree: roomScope.evidence } : {}),
           integrity: { algorithm: 'sha256', manifestHash, helperSha256: WINDOWS_HELPER_SOURCE_SHA256, platform: 'win32',
             windowsObservationScopeHash: scopeHash, deletionHistoryBaselineId: comparable ? previous.checkpointId : '',
             indexedDeletionEvidence: indexedVerified ? 'verified_index_visible_ascii_v1' : '',
@@ -117,6 +130,8 @@ export function createWindowsTurnCollector(options: any = {}): any {
         };
         // Last observed deadline is BEFORE publication. Synchronous CAS/JSON
         // writes are non-preemptible; once committed do not pretend rollback.
+        if (roomScope && !await roomScope.revalidate()) return failed(performance.now() >= deadline
+          ? 'windows_capture_timeout' : 'room_worktree_scope_changed');
         if (performance.now() >= deadline) return failed('windows_capture_timeout');
         return writeSync(() => publishPreparedCheckpoint({ store, checkpoint, blobs }));
       });

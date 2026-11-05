@@ -19,6 +19,7 @@ import { readPreTurnCallbackInput } from './callback-source';
 import { discoverWindowsGitDependencies } from './windows-git-discovery';
 import { estimateWindowsGitDirectoryAsync } from './windows-git-candidate';
 import { selectWindowsExternalGit } from './windows-external-selection';
+import { createRoomWorktreeScopeResolver } from './room-worktree-scope';
 
 export function resolveCaptureRoot(options: any = {}) {
   const explicit = String(options.captureRoot || '').trim() || String(process.env.CAFF_BADCASE_CAPTURE_DIR || '').trim();
@@ -77,7 +78,9 @@ export function createBadcaseCaptureService(options: any = {}) {
   // helper child environments are isolated without changing agent Git behavior.
   // Raw capacity preview never grants capture capability; no Linux fallback.
   const turnCollector = windowsScope
-    ? createWindowsTurnCollector({ store, readCallbackInput, ...windowsScope }) : collector;
+    ? createWindowsTurnCollector({ store, readCallbackInput, ...windowsScope,
+      resolveRoomWorktreeScope: typeof sourceStore?.getConversationWithoutMessages === 'function' && typeof options.getProject === 'function'
+        ? createRoomWorktreeScopeResolver({ chatStore: sourceStore, getProject: options.getProject }) : undefined }) : collector;
 
   return {
     captureRoot,
