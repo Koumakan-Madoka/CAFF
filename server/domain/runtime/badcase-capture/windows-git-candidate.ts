@@ -19,11 +19,12 @@ const crypto = require('node:crypto');
 const fail = (reason: string) => ({ ok: false, reason });
 const isGit = (p: string) => p === '.git' || p.startsWith('.git/');
 const signature = (result: any) => crypto.createHash('sha256').update(JSON.stringify({
-  entries: result.entries, files: result.files.map((f: any) => ({
+  entries: result.entries, uncaptured: result.uncaptured || [], files: result.files.map((f: any) => ({
     path: f.path, size: f.size, sha256: f.sha256, identity: f.identity,
   })),
 })).digest('hex');
-const tree = (result: any) => JSON.stringify(result.entries.filter((e: any) => !isGit(e.path)));
+const tree = (result: any) => JSON.stringify({ entries: result.entries.filter((e: any) => !isGit(e.path)),
+  uncaptured: result.uncaptured || [] });
 
 // Git's ASCII case folding is byte-wise, NOT JS/NT Unicode case folding. In
 // ignorecase mode reject non-ASCII paths/patterns and ambiguous component casing
@@ -222,7 +223,10 @@ function* candidateSteps(options: any, preview = false): Generator<any, any, any
     }
     const selected = classify(external ? classificationView(before, externalBefore.sources) : before, included);
     if (!selected.ok) return selected;
-    const absences = indexedAbsences(selected.indexPaths, before.entries, plan.request.excluded);
+    const uncaptured = before.uncaptured || [];
+    // Invalid children are present observations, not evidence of deletion. No
+    // path beneath a skipped directory can be inferred absent from this walk.
+    const absences = indexedAbsences(selected.indexPaths, before.entries, [...plan.request.excluded, ...uncaptured.map((g: any) => g.path)]);
     if (!absences.ok) return absences;
     if (external) {
       externalBefore.signature = externalSignature(externalBefore.sources);
@@ -259,7 +263,10 @@ function* candidateSteps(options: any, preview = false): Generator<any, any, any
       // No ordinary file bytes, plans, hashes or deletion evidence escape the
       // pre-enable path. The service separately verifies its host environment
       // before promoting this metadata plan to captureAvailable.
-      return { ok: true, reason: '', authorized: true, complete: true, uncaptured: [],
+      // complete describes completion of bounded enumeration/classification,
+      // not recoverability. Known unopenable names remain explicit gaps and do
+      // not disable collection of the remaining files; replay gates are intact.
+      return { ok: true, reason: '', authorized: true, complete: true, uncaptured, skippedCount: uncaptured.length,
         fileCount: selected.paths.length, totalBytes: Number(bytes), includesIgnored: false,
         captureAvailable: false, strictEvalEligible: false, exclusionPolicy: 'windows-git-classified-v1',
         limitations: ['no_atomic_snapshot', 'content_not_scanned', 'known_sensitive_names_excluded',
@@ -281,9 +288,9 @@ function* candidateSteps(options: any, preview = false): Generator<any, any, any
     const observation = {
       scopeHash: crypto.createHash('sha256').update(JSON.stringify({ request: plan.request,
         helperSha256: WINDOWS_HELPER_SOURCE_SHA256 })).digest('hex'),
-      presentPaths: before.entries.filter((e: any) => !isGit(e.path)).map((e: any) => e.path),
+      presentPaths: [...before.entries.filter((e: any) => !isGit(e.path)).map((e: any) => e.path), ...uncaptured.map((g: any) => g.path)],
     };
-    return { ok: true, reason: '', files, blobs, observation,
+    return { ok: true, reason: '', files, blobs, observation, uncaptured,
       indexDeletions: absences.paths, indexDeletionsVerified: absences.verified, classification: external ? 'bounded_external_git_subset_v1' : 'bounded_local_git_subset_v1',
       complete: false, strictEvalEligible: false, captureAvailable: false,
       limitations: ['no_atomic_snapshot', 'no_independent_consistency_evidence', 'metadata_aba_residual',

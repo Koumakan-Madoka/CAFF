@@ -449,6 +449,87 @@ class WindowsRead(unittest.TestCase):
         with self.assertRaisesRegex(w.Refused, '^root_closed$'):
             root.read('sub/sample.bin')
 
+    def invalid_file(self, parent, name):
+        # Fixture creation/cleanup ONLY uses the extended spelling. Production
+        # must never open these children, even through native relative handles.
+        filename = '\\\\?\\' + str(parent / name)
+        with open(filename, 'wb') as stream:
+            stream.write(b'INVALID_NAME_CONTENT_MUST_NOT_BE_READ')
+        self.addCleanup(os.unlink, filename)
+
+    def test_invalid_enumerated_names_are_gaps_not_opens_or_whole_tree_failures(self):
+        names = ['NUL', 'nul.txt', 'CON', 'AUX.txt', 'PRN', 'COM1', 'COM9.txt',
+                 'LPT1', 'LPT9.txt', 'tail.', 'tail ']
+        for name in names:
+            self.invalid_file(self.root, name)
+        self.invalid_file(self.root / 'sub', 'nested.')
+        invalid_dir = '\\\\?\\' + str(self.root / 'invalid-dir.')
+        os.mkdir(invalid_dir)
+        self.addCleanup(os.rmdir, invalid_dir)
+        child = invalid_dir + '\\private'
+        with open(child, 'wb') as stream:
+            stream.write(b'INVALID_DIRECTORY_MUST_NOT_BE_TRAVERSED')
+        self.addCleanup(os.unlink, child)
+        gaps = [{'path': p, 'reason': 'windows_reserved_or_invalid_name'}
+                for p in sorted(names + ['sub/nested.', 'invalid-dir.'])]
+        request = self.snapshot_request()
+        opened, reads = [], []
+        opening, reading = w._relative, w.Root.read
+        def observe_open(stack, parent, name, directory):
+            opened.append(name)
+            return opening(stack, parent, name, directory)
+        def observe_read(root, relative, *args, **kwargs):
+            reads.append(relative)
+            return reading(root, relative, *args, **kwargs)
+        for op in ['estimate', 'capture', 'snapshot', 'selectedSnapshot', 'gitMetadata']:
+            selected = {**request, 'op': op}
+            if op in ['capture', 'selectedSnapshot']:
+                selected['paths'] = ['sub/sample.bin']
+            opened.clear(); reads.clear()
+            with self.subTest(op=op), patch.object(w, '_relative', observe_open), patch.object(w.Root, 'read', observe_read):
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(selected)), out)
+                header, body = out.getvalue().split(b'\n', 1); header = json.loads(header)
+                self.assertTrue(header['ok'], header)
+                self.assertEqual(header['uncaptured'], gaps)
+                self.assertEqual([e['path'] for e in header['entries']], ['sub', 'sub/sample.bin'])
+                self.assertEqual(body, b'' if op in ['estimate', 'gitMetadata'] else self.bytes)
+                self.assertFalse(set(names + ['nested.', 'invalid-dir.', 'private']) & set(opened))
+                self.assertEqual(reads, [] if op in ['estimate', 'gitMetadata'] else ['sub/sample.bin'] * (1 if op == 'capture' else 2))
+        with w.Root(str(self.root)) as root:
+            with self.assertRaisesRegex(w.Refused, '^entry_limit$'):
+                root.walk(max_entries=2)  # invalid names must still consume the bound
+            for name in names:
+                with self.subTest(name=name), self.assertRaisesRegex(w.Refused, '^path_invalid$'):
+                    root.read(name)
+
+    def test_invalid_character_names_are_reported_without_opening_and_malformed_records_still_fail(self):
+        import struct
+        names = ['NUL', 'nul.txt', 'tail.', 'tail ', 'x<', 'x>', 'x:', 'x"', 'x|', 'x?', 'x*']
+        for name in names:
+            text = name.encode('utf-16-le')
+            self.assertEqual(w._parse_names(struct.pack('<III', 0, 0, len(text)) + text), [name])
+        with w.Root(str(self.root)) as root:
+            for name in names:
+                with self.subTest(name=name), patch.object(w, '_directory_names', return_value=[name]), patch.object(w, '_relative') as unopened:
+                    gaps = []
+                    self.assertEqual(root.walk(_uncaptured=gaps), [])
+                    self.assertEqual(gaps, [{'path': name, 'reason': 'windows_reserved_or_invalid_name'}])
+                    self.assertEqual(unopened.call_count, 0)
+
+    def test_snapshot_compares_gap_namespace_between_passes(self):
+        self.invalid_file(self.root, 'NUL')
+        request = self.snapshot_request()
+        walk, calls = w.Root.walk, 0
+        def changed(root, *args, **kwargs):
+            nonlocal calls
+            result = walk(root, *args, **kwargs); calls += 1
+            if calls == 2:
+                kwargs['_uncaptured'].clear()  # same safe entries, changed skipped namespace
+            return result
+        with patch.object(w.Root, 'walk', changed):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+        self.assertEqual(json.loads(out.getvalue()), {'version': 1, 'ok': False, 'code': 'snapshot_changed'})
+
     def test_path_aliases_and_escape_rejected(self):
         invalid = ['', '.', '..', '../unauthorized/sample.bin', 'sub/../../unauthorized/sample.bin',
                    '/sample.bin', '//host/share', 'C:/sample.bin', r'sub\sample.bin',
@@ -672,6 +753,7 @@ class WindowsRead(unittest.TestCase):
         for value in [b'', b'x' * 11, struct.pack('<III', 0, 0, 1) + b'x',
                       struct.pack('<III', 0, 0, 100) + b'x' * 2,
                       struct.pack('<III', 0, 0, 2) + b'\x00\xd8', record('../escape'),
+                      record('x\\y'), record('x\x00y'), record('x' * 256),
                       record('a', 4), record('a', 15), record('a', 15) + b'\x00' + record('b'),
                       record('a', 4096), record('')]:
             with self.subTest(value=value), self.assertRaises(w.Refused):

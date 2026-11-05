@@ -132,9 +132,13 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
         && (request.op !== 'gitMetadata' || (typeof e.path === 'string' && gitSource(e.path)))).map((e: any) => e.path) : [])
       : request.paths;
     if (['snapshot', 'gitMetadata', 'selectedSnapshot'].includes(request.op) && paths.length > WINDOWS_HELPER_LIMITS.paths) return bad();
-    if (!exact(header, ['version', 'ok', 'identity', 'entries', 'files'])
+    // Gap-only observations are never content selectors. The optional field
+    // keeps empty manifests byte-compatible; when present its schema is closed.
+    const uncaptured = Object.hasOwn(header, 'uncaptured') ? header.uncaptured : [];
+    if (!exact(header, ['version', 'ok', 'identity', 'entries', 'files', ...(Object.hasOwn(header, 'uncaptured') ? ['uncaptured'] : [])])
+        || !Array.isArray(uncaptured) || !Array.isArray(header.entries)
+        || header.entries.length + uncaptured.length > WINDOWS_HELPER_LIMITS.entries
         || !sameIdentity(header.identity, request.expected)
-        || !Array.isArray(header.entries) || header.entries.length > WINDOWS_HELPER_LIMITS.entries
         || !Array.isArray(header.files) || header.files.length !== paths.length) return bad();
     const entries = new Map<string, any>();
     let previous: any = null;
@@ -154,6 +158,19 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
       if (slash >= 0 && entries.get(entry.path.slice(0, slash))?.type !== 'directory') return bad();
       entries.set(entry.path, entry);
     }
+    previous = null;
+    for (const gap of uncaptured) {
+      if (!exact(gap, ['path', 'reason']) || gap.reason !== 'windows_reserved_or_invalid_name'
+        || typeof gap.path !== 'string' || !gap.path || Buffer.byteLength(gap.path, 'utf8') > 32768
+        || gap.path.split('/').length > 64 || /[\\\x00]/.test(gap.path) || /[\uD800-\uDFFF]/u.test(gap.path)
+        || entries.has(gap.path)) return bad();
+      const slash = gap.path.lastIndexOf('/'), leaf = gap.path.slice(slash + 1), parent = gap.path.slice(0, slash);
+      if (!leaf || leaf.length > 255 || leaf === '.' || leaf === '..' || validRelative(leaf)
+        || (slash >= 0 && (!validRelative(parent) || entries.get(parent)?.type !== 'directory'))) return bad();
+      const encoded = Buffer.from(gap.path, 'utf8');
+      if (previous && Buffer.compare(previous, encoded) >= 0) return bad();
+      previous = encoded;
+    }
     const files: any[] = [];
     let total = 0;
     for (let i = 0; i < header.files.length; i++) {
@@ -171,7 +188,7 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
       if (crypto.createHash('sha256').update(content).digest('hex') !== file.sha256) return bad();
       files.push({ ...file, content });
     }
-    return offset === stdout.length ? { ok: true, identity: header.identity, entries: header.entries, files } : bad();
+    return offset === stdout.length ? { ok: true, identity: header.identity, entries: header.entries, files, uncaptured } : bad();
   } catch { return bad(); }
 }
 

@@ -82,7 +82,8 @@ function summarize(result: any): any {
     if (entry.type === 'file') { total += BigInt(entry.size); count++; }
   }
   if (total > BigInt(Number.MAX_SAFE_INTEGER)) return fail('estimate_size_overflow');
-  return { ok: true, reason: '', authorized: true, complete: true, uncaptured: [],
+  const uncaptured = result.uncaptured || [];
+  return { ok: true, reason: '', authorized: true, complete: true, uncaptured, skippedCount: uncaptured.length,
     fileCount: count, totalBytes: Number(total), includesIgnored: true,
     captureAvailable: false, exclusionPolicy: 'windows-metadata-v1',
     limitations: ['no_atomic_snapshot', 'ignored_included', 'known_sensitive_names_excluded',

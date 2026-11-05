@@ -65,6 +65,27 @@ test('one project grant captures existing and later-created Room worktrees witho
   for (const id of ['existing', 'later']) assert.equal((await h.capture(id)).reason, 'policy_not_enabled');
 });
 
+test('real disposable Room checkpoints persist invalid-name gaps without reading them or losing safe files', native, async t => {
+  const h = fixture(t), cwd = h.add('room'); h.enable();
+  fs.appendFileSync(path.join(cwd, '.gitignore'), 'NUL\nnul.txt\ntail.\n');
+  const paths = ['NUL', 'nul.txt', 'tail.'].map(name => path.toNamespacedPath(path.join(cwd, name)));
+  // Registered after fixture cleanup: remove files here in finally, not a later
+  // after hook (Node runs after hooks in registration order).
+  try {
+    for (const filename of paths) fs.writeFileSync(filename, 'INVALID_NAME_CONTENT_MUST_NOT_BE_READ');
+    fs.writeFileSync(path.join(cwd, 'tracked.txt'), 'dirty');
+    const result = await h.capture('room'); assert.equal(result.captured, true, result.reason);
+    const cp = h.service.store.loadCheckpoint('p', result.checkpointId);
+    assert.deepEqual(cp.uncaptured, ['NUL', 'nul.txt', 'tail.'].map(path => ({ path, reason: 'windows_reserved_or_invalid_name' })));
+    assert.equal(cp.stats.skippedCount, 3);
+    assert.equal(cp.roomWorktree.head, h.head); assert.equal(cp.gitMetadata, 'bounded_external_git_subset_v1');
+    assert.deepEqual(Object.keys(cp.files).sort(), ['.gitignore', 'tracked.txt']);
+    assert.equal(h.service.store.readBlob('p', cp.files['tracked.txt'].hash).toString(), 'dirty');
+    assert.equal(cp.replayInput.complete, false); assert.ok(cp.replayInput.incompleteReasons.includes('files_uncaptured'));
+    assert.equal(cp.strictEvalEligible, false);
+  } finally { for (const filename of paths) if (fs.existsSync(filename)) fs.unlinkSync(filename); }
+});
+
 test('enabled policy with only the previous helper SHA survives upgrade without reauthorization or pin changes', native, async t => {
   const h = fixture(t); h.add('room'); h.enable();
   const saved = h.service.loadPolicy('p');

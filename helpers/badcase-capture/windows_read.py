@@ -169,9 +169,12 @@ def _parse_names(data):
         except UnicodeError:
             raise Refused("enumeration_invalid") from None
         if name not in ('.', '..'):
-            components(name)
-            if '/' in name:
-                raise Refused("path_invalid")
+            # Native names are observations, not selectors. Defer portable-name
+            # validation to walk so an unopenable child can be reported as a
+            # gap. Impossible native separators/NUL and malformed records still
+            # fail closed; none may be reinterpreted as a relative path.
+            if any(ch in name for ch in '/\\\x00') or len(name.encode('utf-16-le')) > 510:
+                raise Refused("enumeration_invalid")
             names.append(name)
         if next_offset == 0:
             return names
@@ -295,7 +298,7 @@ class Root:
             self.stack.close()
         self.stack = self.handle = None
 
-    def walk(self, max_entries=100000, max_depth=64, _after_list=None, excluded=(), _metadata_only=False, _git_metadata=False):
+    def walk(self, max_entries=100000, max_depth=64, _after_list=None, excluded=(), _metadata_only=False, _git_metadata=False, _uncaptured=None):
         """Metadata-only tree enumeration. Not a coherent multi-file snapshot.
 
         Parent handles are held until their subtree completes. Each child is
@@ -308,11 +311,11 @@ class Root:
                 or type(max_depth) is not int or not 1 <= max_depth <= 64):
             raise Refused("limit_invalid")
         prefixes = _excluded_prefixes(excluded)
-        entries = []
+        entries, uncaptured = [], []
 
         def visit(handle, prefix, depth):
             before = _directory_stamp(handle)
-            names = _directory_names(handle, max_entries - len(entries))
+            names = _directory_names(handle, max_entries - len(entries) - len(uncaptured))
             if _after_list is not None:
                 _after_list(prefix)
             for name in sorted(names):
@@ -332,8 +335,16 @@ class Root:
                     continue  # objects/hooks/refs/etc are not opened or listed
                 if depth + 1 > max_depth:
                     raise Refused("depth_limit")
-                if len(entries) >= max_entries:
+                if len(entries) + len(uncaptured) >= max_entries:
                     raise Refused("entry_limit")
+                try:
+                    components(name)
+                except Refused:
+                    # Do NOT stat/open/read/recurse this child, including an
+                    # invalidly named directory. Direct read/request validation
+                    # stays strict. Gaps consume the same enumeration budget.
+                    uncaptured.append({'path': relative, 'reason': 'windows_reserved_or_invalid_name'})
+                    continue
                 with contextlib.ExitStack() as stack:
                     child = _relative(stack, handle, name, None)
                     basic, standard = _check(child, None)
@@ -349,6 +360,8 @@ class Root:
                 raise Refused("directory_changed")
 
         visit(self.handle, '', 0)
+        if _uncaptured is not None:
+            _uncaptured.extend(sorted(uncaptured, key=lambda entry: entry['path']))
         return sorted(entries, key=lambda entry: entry['path'])
 
     def read(self, relative, max_bytes=64 * 1024 * 1024, _after_open=None, expected_identity=None, _canonical=False):
@@ -526,8 +539,10 @@ def _snapshot(root, excluded, paths=None, git_metadata=False):
     The separate metadata operation reads only fixed classification sources.
     """
     def walk():
-        return root.walk(excluded=excluded, _metadata_only=True, _git_metadata=git_metadata)
-    entries = walk()
+        uncaptured = []
+        entries = root.walk(excluded=excluded, _metadata_only=True, _git_metadata=git_metadata, _uncaptured=uncaptured)
+        return entries, uncaptured
+    entries, uncaptured = walk()
     if git_metadata and any(e['path'] in GIT_METADATA_PATHS and e['type'] !=
                             ('directory' if e['path'] == '.git/info' else 'file') for e in entries):
         raise Refused('git_metadata_unsupported')
@@ -548,16 +563,16 @@ def _snapshot(root, excluded, paths=None, git_metadata=False):
         bodies.append(value['content'])
         files.append({'path': entry['path'], 'size': str(value['size']),
                       'sha256': value['sha256'], 'identity': value['identity']})
-    if walk() != entries:
+    if walk() != (entries, uncaptured):
         raise Refused('snapshot_changed')
     for entry, first in zip(selected, files):
         value = root.read(entry['path'], FILE_LIMIT, expected_identity=entry['identity'])
         if (value['size'] != entry['size'] or value['sha256'] != first['sha256']
                 or value['identity'] != first['identity']):
             raise Refused('snapshot_changed')
-    if walk() != entries:
+    if walk() != (entries, uncaptured):
         raise Refused('snapshot_changed')
-    return entries, files, bodies
+    return entries, files, bodies, uncaptured
 
 
 def serve(input_stream, output_stream):
@@ -583,12 +598,17 @@ def serve(input_stream, output_stream):
                                   'sha256': first['sha256'], 'identity': first['identity']}
                 bodies = [first['content']]
             elif request['op'] in ('snapshot', 'gitMetadata', 'selectedSnapshot'):
-                entries, files, bodies = _snapshot(root, request['excluded'],
-                                                  request.get('paths'), request['op'] == 'gitMetadata')
+                entries, files, bodies, uncaptured = _snapshot(root, request['excluded'],
+                                                              request.get('paths'), request['op'] == 'gitMetadata')
                 header['entries'] = [{**e, 'size': str(e['size'])} for e in entries]
                 header['files'] = files
+                if uncaptured:
+                    header['uncaptured'] = uncaptured
             elif request['op'] in ('capture', 'estimate'):
-                entries = root.walk(excluded=request['excluded'], _metadata_only=request['op'] == 'estimate')
+                uncaptured = []
+                entries = root.walk(excluded=request['excluded'], _metadata_only=request['op'] == 'estimate', _uncaptured=uncaptured)
+                if uncaptured:
+                    header['uncaptured'] = uncaptured
                 manifest = {e['path']: e for e in entries if e['type'] == 'file'}
                 # Exact canonical membership prevents case and 8.3 aliases from
                 # opening paths omitted by policy. Preflight ALL before reading.

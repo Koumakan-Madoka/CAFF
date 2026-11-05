@@ -77,6 +77,27 @@ test('Windows response parser preserves binary bodies, empty files and 64-bit st
   invalid(parse(wire({ version: 1, ok: true, identity }), query));
 });
 
+test('enumerated invalid-name gaps use a separate bounded schema and never widen content selectors', () => {
+  const { request, header } = fixture();
+  const names = ['NUL', 'nul.txt', 'sub/tail.', 'sub/tail ', 'x<', 'x>', 'x:', 'x"', 'x|', 'x?', 'x*'].sort();
+  header.uncaptured = names.map(path => ({ path, reason: 'windows_reserved_or_invalid_name' }));
+  const result = parse(wire(header), request);
+  assert.equal(result.ok, true, result.reason);
+  assert.deepEqual(result.uncaptured, header.uncaptured);
+  assert.deepEqual(result.files.map(f => f.path), request.paths);
+  for (const name of names) assert.equal(encode({ ...request, paths: [name] }), null);
+  for (const change of [
+    h => { h.uncaptured = null; }, h => { h.uncaptured[0].reason = 'other'; },
+    h => { h.uncaptured[0].extra = 'untrusted'; }, h => { h.uncaptured[0].size = '1'; },
+    ...['safe', '../escape', 'a/../NUL', 'absent/NUL', 'sub/a/NUL', 'C:/NUL', '/NUL', 'x\\NUL', '.', '..', '\u0000'].map(path => h => { h.uncaptured[0].path = path; }),
+    h => { h.uncaptured.push(h.uncaptured[0]); }, h => { h.uncaptured.reverse(); },
+    h => { h.uncaptured = Array(limits.entries + 1).fill(h.uncaptured[0]); },
+  ]) {
+    const h = structuredClone(header); change(h); invalid(parse(wire(h), request));
+  }
+  assert.equal(parse(wire(fixture().header), request).uncaptured.length, 0);
+});
+
 test('Windows response parser refuses corrupt framing without partial file exposure', () => {
   const { request, header } = fixture();
   for (const body of [content.subarray(0, 4), Buffer.concat([content, Buffer.from('x')]), Buffer.from('wrong')]) {

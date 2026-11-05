@@ -199,6 +199,29 @@ test('classified preview brackets Git sources without ordinary content reads or 
   assert.equal((await run(aggregate)).result.reason, 'too_large');
 });
 
+test('invalid-name gaps survive classified preview/capture and participate in namespace revalidation', async () => {
+  const gaps = [{ path: 'NUL', reason: 'windows_reserved_or_invalid_name' }];
+  const first = metadata({ uncaptured: gaps });
+  const snapshot = { ok: true, entries: first.entries.filter(e => e.path !== '.git' && !e.path.startsWith('.git/')), files: [], uncaptured: gaps };
+  for (const preview of [true, false]) {
+    for (const changeAt of ['', 'selectedSnapshot', 'after']) {
+      let calls = 0;
+      const api = isolated(scope, async (_p, _h, req) => {
+        calls++;
+        return req.op === 'selectedSnapshot' ? { ...snapshot, ...(changeAt === req.op ? { uncaptured: [] } : {}) }
+          : { ...first, ...(changeAt === 'after' && calls > 1 ? { uncaptured: [] } : {}) };
+      });
+      if (preview && changeAt === 'selectedSnapshot') continue;
+      const result = await api[preview ? 'estimateWindowsGitDirectoryAsync' : 'readWindowsGitFileCandidateAsync']({ policy: { includedIgnoredPatterns: [] } });
+      if (changeAt) { assert.equal(result.reason, 'git_metadata_changed'); continue; }
+      assert.equal(result.ok, true, result.reason);
+      assert.deepEqual(JSON.parse(JSON.stringify(result.uncaptured)), gaps);
+      if (preview) { assert.equal(result.skippedCount, 1); assert.equal(result.complete, true, 'bounded enumeration completed with explicit gaps'); }
+      else { assert.ok(result.observation.presentPaths.includes('NUL')); assert.equal(Object.hasOwn(result.files, 'NUL'), false); }
+    }
+  }
+});
+
 function missingCandidate(names, { excluded = [], extra = [], ignoreCase = false, changeAfter = false } = {}) {
   const first = metadata();
   first.files.find(f => f.path === '.git/index').content = gitIndex(names);
@@ -501,6 +524,36 @@ test('async Git transport real sleeper does not block loop, terminates and waits
   }).on('error', reject));
   assert.equal(healthy, 'isolated-ok'); assert.equal(closed, false, 'health completes while child is still alive');
   assert.equal((await pending).reason, 'git_capture_timeout'); assert.equal(closed, true, 'not returned before actual child close');
+});
+
+test('native ignored reserved names do not block project estimate, capacity preview or classified capture', native, async t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-win-invalid-')), invalidPaths = [];
+  t.after(() => { for (const filename of invalidPaths) fs.unlinkSync(filename); fs.rmSync(base, { recursive: true, force: true }); });
+  const root = path.join(base, 'worktree'), captureRoot = path.join(base, 'storage'); fs.mkdirSync(root);
+  const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(base, 'no-global'), GIT_TEMPLATE_DIR: '' } });
+  git('init', '-q'); git('config', 'core.ignorecase', 'false');
+  fs.writeFileSync(path.join(root, '.gitignore'), 'NUL\nnul.txt\ntail.\n');
+  fs.writeFileSync(path.join(root, 'safe.txt'), 'keep'); git('add', '.gitignore', 'safe.txt');
+  const names = ['NUL', 'nul.txt', 'tail.'];
+  for (const name of names) {
+    const filename = path.toNamespacedPath(path.join(root, name));
+    fs.writeFileSync(filename, 'INVALID_NAME_CONTENT_MUST_NOT_BE_READ'); invalidPaths.push(filename);
+  }
+  const service = createBadcaseCaptureService({ captureRoot });
+  service.savePolicy('p', { authorizedDirs: [root], excludedPatterns: [], includedIgnoredPatterns: [] });
+  service.authorizeProject('p');
+  const gaps = names.map(path => ({ path, reason: 'windows_reserved_or_invalid_name' }));
+  for (const estimate of [service.estimateDirectory('p', root), await service.estimateDirectoryAsync('p', root)]) {
+    assert.equal(estimate.ok, true, estimate.reason); assert.equal(estimate.complete, true);
+    assert.equal(estimate.skippedCount, 3); assert.deepEqual(estimate.uncaptured, gaps);
+    assert.equal(estimate.fileCount, 2); assert.equal(estimate.totalBytes, 22);
+    if (estimate.includesIgnored === false) assert.equal(estimate.captureAvailable, true);
+  }
+  const result = await readWindowsGitFileCandidateAsync({ captureRoot, targetDir: root, policy: service.loadPolicy('p') });
+  assert.equal(result.ok, true, result.reason); assert.deepEqual(result.uncaptured, gaps);
+  assert.deepEqual(Object.keys(result.files).sort(), ['.gitignore', 'safe.txt']);
+  assert.equal([...result.blobs.values()].some(b => b.includes('INVALID_NAME_CONTENT_MUST_NOT_BE_READ')), false);
 });
 
 test('native local Git subset selects dirty/tracked/untracked/explicit ignored, blocks external Git metadata', native, async t => {

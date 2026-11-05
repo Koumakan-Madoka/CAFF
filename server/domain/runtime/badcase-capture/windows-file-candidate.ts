@@ -25,7 +25,7 @@ export function readWindowsFileCandidate(options: any): any {
         ...(redactionCount ? { secretRedacted: true, originalSize: Number(file.size), redactionCount } : {}) };
       if (!blobs.has(hash)) blobs.set(hash, content);
     }
-    return { ok: true, reason: '', files, blobs,
+    return { ok: true, reason: '', files, blobs, uncaptured: result.uncaptured || [],
       consistency: { method: 'windows_two_content_reads_three_metadata_walks_v1', detectedChange: false },
       complete: false, strictEvalEligible: false, captureAvailable: false,
       limitations: ['no_atomic_snapshot', 'no_independent_consistency_evidence', 'metadata_aba_residual',

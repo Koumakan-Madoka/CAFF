@@ -101,6 +101,20 @@ test('composition owns one lease through files/input/publication; latches materi
   assert.deepEqual([...cp.deletions], []); assert.equal(h.seen.at(-1)[0], 'publish'); noLock(h);
 });
 
+test('collector persists invalid-name uncaptured gaps while publishing other files, never a complete replay', async t => {
+  const gaps = [{ path: 'NUL', reason: 'windows_reserved_or_invalid_name' }];
+  const h = setup(t, { deps: { './windows-git-candidate': { readWindowsGitFileCandidateAsync: async () => ({ ...candidate(), uncaptured: gaps }) } } });
+  const result = await collect(h);
+  assert.equal(result.captured, true, result.reason);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.checkpoint.uncaptured)), gaps);
+  assert.equal(result.checkpoint.stats.skippedCount, 1);
+  assert.equal(Object.hasOwn(result.checkpoint.files, 'NUL'), false);
+  assert.ok(result.checkpoint.files.file);
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('files_uncaptured'));
+  assert.equal(result.checkpoint.strictEvalEligible, false); noLock(h);
+});
+
 test('lease cleanup rejection after publisher success still withholds the checkpoint association', async t => {
   const original = require(base + 'project-write-lock');
   const h = setup(t, { deps: { './project-write-lock': { withAsyncProjectWriteLease: async (...args) => {

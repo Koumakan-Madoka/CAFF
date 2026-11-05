@@ -62,11 +62,12 @@ export function createWindowsTurnCollector(options: any = {}): any {
         if (!prepared.ok) return failed(prepared.reason);
         const secretExcludedPaths = Object.keys(files.files).filter(p => files.files[p].secretExcluded === true).sort();
         const replayInput = prepared.replayInput;
+        const uncaptured = files.uncaptured || [];
         // A complete input validation must not erase the file candidate's
         // missing classification/environment/consistency dimensions.
         replayInput.complete = false;
         replayInput.incompleteReasons = [...new Set([...replayInput.incompleteReasons, 'windows_capture_subset_unverified',
-          ...(secretExcludedPaths.length ? ['files_contain_secret'] : [])])];
+          ...(secretExcludedPaths.length ? ['files_contain_secret'] : []), ...(uncaptured.length ? ['files_uncaptured'] : [])])];
         if (secretExcludedPaths.length) replayInput.secretExcludedPaths = secretExcludedPaths;
         const secretRedactedPaths = Object.keys(files.files).filter(p => files.files[p].secretRedacted === true).sort();
         if (secretRedactedPaths.length) replayInput.secretRedactedPaths = secretRedactedPaths;
@@ -90,7 +91,8 @@ export function createWindowsTurnCollector(options: any = {}): any {
           && priorFiles && typeof priorFiles === 'object' && !Array.isArray(priorFiles) && Object.keys(priorFiles).every(ascii);
         const present = new Set<string>(comparable ? observation.presentPaths.map((p: string) => p.toLowerCase()) : []);
         const historical: string[] = comparable ? Object.keys(priorFiles).filter(p => priorFiles[p]?.type === 'file'
-          && priorFiles[p].secretExcluded !== true && !present.has(p.toLowerCase())) : [];
+          && priorFiles[p].secretExcluded !== true && !present.has(p.toLowerCase())
+          && !uncaptured.some((g: any) => p.toLowerCase() === g.path.toLowerCase() || p.toLowerCase().startsWith(`${g.path.toLowerCase()}/`))) : [];
         const indexedVerified = files.indexDeletionsVerified === true && Array.isArray(files.indexDeletions);
         const priorSecrets = new Set<string>(comparable ? Object.keys(priorFiles).filter(p => priorFiles[p]?.secretExcluded === true)
           .map(p => p.toLowerCase()) : []);
@@ -112,7 +114,7 @@ export function createWindowsTurnCollector(options: any = {}): any {
         const checkpoint = {
           schemaVersion: 1, checkpointId: crypto.randomUUID(), projectId, targetDir,
           conversationId: String(input.conversationId || ''), turnId: String(input.turnId || ''), agentId: String(input.agentId || ''),
-          createdAt: new Date().toISOString(), status: 'staged', files: files.files, deletions, skipped: [], uncaptured: [],
+          createdAt: new Date().toISOString(), status: 'staged', files: files.files, deletions, skipped: [], uncaptured,
           gitMetadata: files.classification,
           ...(roomScope ? { roomWorktree: roomScope.evidence } : {}),
           integrity: { algorithm: 'sha256', manifestHash, helperSha256: WINDOWS_HELPER_SOURCE_SHA256, platform: 'win32',
@@ -125,7 +127,7 @@ export function createWindowsTurnCollector(options: any = {}): any {
           strictEvalBlockedReason: 'no_independent_consistency_evidence',
           stats: { fileCount: Object.keys(files.files).length,
             totalBytes: Object.values(files.files).reduce((sum: number, f: any) => sum + f.size, 0),
-            secretExcludedFiles: secretExcludedPaths.length, secretRedactedFiles: secretRedactedPaths.length,
+            secretExcludedFiles: secretExcludedPaths.length, secretRedactedFiles: secretRedactedPaths.length, skippedCount: uncaptured.length,
             durationMs: performance.now() - started },
         };
         // Last observed deadline is BEFORE publication. Synchronous CAS/JSON
