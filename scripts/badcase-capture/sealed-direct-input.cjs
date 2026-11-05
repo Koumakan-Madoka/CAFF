@@ -105,7 +105,7 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
       identityInfo = { originalRoleHash: span.sha256 };
     }
     ensure(Buffer.byteLength(prompt) <= 256 * 1024, 'replay_prompt_size_limit');
-    const names = Object.keys(cp.files); ensure(names.length <= 1024, 'replay_file_inventory_limit');
+    const names = Object.keys(cp.files); ensure(names.length <= 8192, 'replay_file_inventory_limit');
     const files = names.sort().map(name => {
       const f = cp.files[name], b = blobs.get(f.hash);
       ensure(/^[A-Za-z0-9_.@/-]+$/.test(name) && name.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git')
