@@ -95,7 +95,11 @@ function prepareComparison(config, options = {}) {
   else if (dockerBackend || config.codexAuthFile !== undefined || config.keySource !== undefined && !['evaluation-env', 'caff-deepseek'].includes(config.keySource)
     || config.keySource === 'caff-deepseek' && profile !== DEEPSEEK_PROFILE) throw fail('evaluation_config_invalid');
   const rules = validateRules(config.rules), knownValues = comparisonKnownValues(config, options);
-  let prepare = options.prepare || (originalOnly ? prepareSealedOriginalTurn : prepareSealedDirectTurn), globalWikiCandidate = null, globalState, globalSaved, globalFiles, baseline;
+  // Host-only literal inventory is not a config JSON secret channel. Legacy
+  // preparation ignores it; v2 needs it when materializing uncaptured HEAD blobs.
+  const replayOptions = config.knownKeySources !== undefined || Object.hasOwn(options, 'knownValues') ? { knownKeyValues: knownValues } : {};
+  let prepare = options.prepare || ((request, candidate) => originalOnly ? prepareSealedOriginalTurn(request, replayOptions)
+    : prepareSealedDirectTurn(request, candidate, replayOptions)), globalWikiCandidate = null, globalState, globalSaved, globalFiles, baseline;
   if (config.globalWikiCandidate !== undefined) {
     const selection = require('../../build/server/domain/runtime/badcase-capture/wiki-data-directory').resolveWikiStorageOptions(config.globalWikiCandidate);
     if (!selection || typeof selection !== 'object' || Array.isArray(selection)
@@ -113,7 +117,7 @@ function prepareComparison(config, options = {}) {
     // Old seals and newly sealed, manually merged fragments share one baseline.
     // Only the candidate adds a new change; neither arm silently drops history.
     prepare = (request, replacement = null) => prepareTarget(resolveWikiReplayRequest(selection, request), globalSaved.targetId,
-      replacement === null && baseline.fragments.length > 1 ? baseline.target.baseText : replacement, baseline.fragments);
+      replacement === null && baseline.fragments.length > 1 ? baseline.target.baseText : replacement, baseline.fragments, replayOptions);
   }
   const original = prepare(config.request);
   if (original.supported !== true) return { supported: false, reason: /^replay_[a-z_]+$/.test(original.reason || '') ? original.reason : 'replay_materials_invalid' };
@@ -157,6 +161,7 @@ function prepareComparison(config, options = {}) {
     // The operator supplies an independently recorded commit, never an implicit
     // current HEAD. Ordinary source-file bytes are not substituted for capture.
     if (original.input.bindings?.sourceRoot && path.resolve(config.repository?.sourceRoot || '') !== path.resolve(original.input.bindings.sourceRoot)) throw fail('evaluation_repository_source_mismatch');
+    if (original.provenance.sourceSnapshot && config.repository?.head !== original.provenance.sourceSnapshot.head) throw fail('evaluation_repository_head_mismatch');
     repository = prepareReplayGit(config.repository, original.input, { knownValues });
   }
   if (rules.kind === 'public-reply-literals-v2' && repository?.report.sourceHead !== rules.snapshotHead) throw fail('evaluation_snapshot_head_mismatch');
@@ -176,6 +181,7 @@ function prepareComparison(config, options = {}) {
       ...(repository ? { repository: repository.report, gitFileHashes: repository.gitFiles.map(f => ({ path: f.path, sha256: f.sha256 })) } : {}),
       ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}) })) : original.provenance.commonInputHash,
     model: profile, ...(profile === CODEX_PROFILE ? { modelConfig: { ...CODEX_CONFIG } } : {}), ...(dockerBackend ? { dockerBackend } : {}),
+    ...(original.provenance.sourceSnapshot ? { sourceSnapshot: { ...original.provenance.sourceSnapshot } } : {}),
     ...(original.input.recordedModelConfig ? { recordedModelConfig: { ...original.input.recordedModelConfig } } : {}),
     ...(original.input.projectResources ? { projectResources: projectResourcesSummary(original.input.projectResources) } : {}),
     ...(original.input.sessionText ? { replaySession: replaySessionInfo(original.input.sessionText) } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),

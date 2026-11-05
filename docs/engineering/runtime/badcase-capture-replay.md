@@ -6,7 +6,7 @@
 
 ### 2026-11-05 本机 Git 快照采集（v2）
 
-新轮次采用 best-effort Git 快照，不再使用下面 v1 历史采集契约的原生读取、目录 pin、防替换或多次扫描校验；不是安全沙箱，也不保证原子一致性。旧格式封存及其回放逻辑保留。本地恢复入口现已支持 v2 的 HEAD 还原；sealed/容器回放接线仍在进行，不能把本地恢复测试当成新格式 `--plan` 或真实实例验收通过。独立 verifier 若仅收到 v2 overlay 清单仍报 `git_snapshot_requires_head_materialization`。
+新轮次采用 best-effort Git 快照，不再使用下面 v1 历史采集契约的原生读取、目录 pin、防替换或多次扫描校验；不是安全沙箱，也不保证原子一致性。旧格式封存及其回放逻辑保留。本地恢复入口现已支持 v2 的 HEAD 还原；sealed 入口已支持默认资源及 cwd 内项目资源的新格式准备/`--plan`，树外 skill 的容器映射仍在进行。定向临时仓库测试不代替真实房间或旧 #19、#20 的验收。独立 verifier 若仅收到 v2 overlay 清单仍报 `git_snapshot_requires_head_materialization`。
 
 - 项目页的 `POST /api/projects/:id/badcase-capture/configure` 开关以已登记项目路径为根，`targetDir` 可省略，若提供必须与项目路径相同。Git 自行解释普通仓库和 `.git` 文件 worktree；本轮实际 cwd 必须为仓库顶层，且与项目根的 `git common dir` 相同。新建 worktree 无需登记或重开。关闭不检查/扫描源目录，已有封存不删除。旧 authorize/estimate/enable 管理入口暂留兼容，但新开关及新轮次不使用这些原生路径。
 - 开启前的 `estimateGitDirectoryAsync` 复用采集器，只做内存预览，不安装 helper、不 pin、不写检查点/CAS。返回 `fileCount`（HEAD 普通文件数加本次未跟踪文件数）、`totalBytes`（本次去重的补丁/overlay/skill 字节，不含 HEAD 基线、session、manifest）、`skippedCount/uncaptured`。`complete:false` 表示存在缺口，不阻止开启；只有预览失败/`captureAvailable:false` 才拒绝。读取页面本身不启动预览。
@@ -17,6 +17,7 @@
 - 用只读 `ls-files --eol -z` 记录实际 CRLF 路径 `crlfPaths`，不按操作系统猜换行。mixed EOL 的 tracked 文件保存完整 `mixed-eol-tracked` overlay，避免 Git 规范化丢失每个 CR 的位置；该额外读取仍服从同一时间预算及单文件上限。查询失败记 `worktree_eol_unavailable` 缺口。恢复先叠加归档 patch，再对没有完整 overlay 的记录路径还原 CRLF；归档 overlay/skill 字节优先。旧中间 v2 没有此元数据时只能按 HEAD 字节恢复，报告 `lineEndingEvidence:legacy-v2-head-bytes`，不宣称输入完整。
 - `materializeGitSnapshot` 用记录的 HEAD 读取 `ls-tree` 与按内存批次的 `cat-file --batch`，在专属临时目录执行 `git apply --binary`，再叠加 overlay、删除与实际 skill；不执行 checkout filters 或 archive export-ignore/subst，不读源工作文件。房间目录已删除时可读记录的 common dir；两个源都不可用或指定 HEAD 对象缺失就明确拒绝，不猜当前 HEAD。临时副本完成后删除，源 index/config/refs 不变。单个 HEAD blob 沿用原回放 64 MiB 上限，不新增仓库总字节门槛。本机已知值在输出内存文件前替换；缺失/损坏 CAS 或不可应用的 patch 明确报错，不返回 overlay-only 成功。
 - `restoreCheckpoint` 只向空隔离目录写入。本轮 cwd 内的 skill 放回对应相对路径；树外 skill 必须另给空的、与目标及源分离的 `projectSkillsDir`，按 `windows/<盘符>/原路径` 或 `posix/原路径` 镜像，回执列 `originalPath/restoredPath/rootKind/fileCount`。不写回真实源 skill。跳过的仓库或 skill 路径保持缺失，不补成过时 HEAD 字节；缺口及脱敏差异继续披露，严格评测资格仍为 false。目标文件按物化清单逐个核对 hash；这只核验归档输出，不证明原子现场或未脱敏原文等价。
+- sealed 准备对 v2 先物化完整 HEAD/补丁/overlay，再交给既有 direct 文件传输与 cwd 内资源清单；不能将稀疏 `cp.files` 直接当作完整现场。v2 不沿用文件形状哨兵拒绝，仅保留本机已知值替换；host 调用方的已知值清单会传入 HEAD 物化，旧 v1 的哨兵和准入逻辑不变。新 plan 回显 `sourceSnapshot:{kind,head,fileCount,lineEndingEvidence}`；缺 HEAD、缺 CAS、无换行证据或缺口明确拒绝。若另给 Git 元数据配方，其 HEAD 必须等于新检查点记录，不接受操作者替成当前提交。树外资源仍拒绝，不降级为无 skill 回放；此切片不修改评分或模型执行逻辑。
 - 项目级 `last-capture.json` 保存最近一次真实尝试的轻量投影：根目录与 room worktree 均覆盖，含 `captured/status/reason/skippedCount` 和新增字节/耗时计数；状态为 `captured/partial/pending_skills/failed`。SDK 资源补齐时更新同一检查点对应的结果，不覆盖后来轮次的结果。关闭及越界调用不抹掉最近结果，HEAD 不可读等失败只写结果，不伪造检查点。页面 GET 只读该投影，不执行 Git 或读 CAS；旧格式没有投影时继续读既有根目录 latest 指针。该状态文件同 policy 一样属于管理元数据，不计入 payload 用量，也不是保留引用。
 - 采集库必须在项目目录之外；部署前由操作方显式设置外置 `CAFF_BADCASE_CAPTURE_DIR` 并按正常发布流程重启。此说明不是移动现有库、修改生产配置或部署的授权。v2 当前尚未完成真实实例/旧新回放验收，不能沿用下面 v1 的历史验收结论。
 

@@ -1,7 +1,8 @@
 // Trusted host preparation for the deliberately small portable MVP subset.
-// Never executes archived code, reads old source paths, fabricates a session,
-// or rewrites a sealed archive. Historical strict-eval certificates are NOT
-// required by this MVP; missing runtime/role/input material still fails closed.
+// Never executes archived code, reads live source working files, fabricates a
+// session or rewrites a seal. v1 uses retained bytes; v2 also reads recorded Git
+// objects and applies data in TEMP. Historical strict-eval certificates are NOT
+// required; missing runtime/role/input material still fails closed.
 const crypto = require('node:crypto');
 const base = '../../build/server/domain/runtime/badcase-capture/';
 const { createCaptureStore } = require(base + 'capture-store');
@@ -11,6 +12,7 @@ const { readCapturedCallbackInput } = require(base + 'callback-input');
 const { containsSecretSentinel } = require(base + 'secrets');
 const { supportsPortableThinking } = require(base + 'portable-inputs');
 const { prepareProjectResources } = require(base + 'project-resources');
+const { materializeGitSnapshot } = require(base + 'git-snapshot-materialization');
 const { validateSessionV2 } = require(base + 'session-validator');
 const { validateDirectBindings } = require('./direct-model.cjs');
 const { locateGlobalPromptTarget } = require('../../build/lib/agent-prompt-targets');
@@ -20,7 +22,7 @@ const unsupported = reason => Object.assign(Error(reason), { replayReason: reaso
 const ensure = (value, reason = 'replay_materials_invalid') => { if (!value) throw unsupported(reason); };
 const checked = (reason, work) => { try { return work(); } catch { throw unsupported(reason); } };
 const empty = v => Array.isArray(v) && v.length === 0;
-function prepareTurn(request, candidateRole, promptTarget, originalOnly = false) {
+function prepareTurn(request, candidateRole, promptTarget, originalOnly = false, replayOptions = {}) {
   try {
     const { captureRoot, association, flagId } = checked('replay_seal_request_invalid', () => validateSealRequest(structuredClone(request)));
     const sealed = checked('replay_sealed_case_unavailable', () => readSealedCase({ captureRoot, association, flagId }));
@@ -29,7 +31,7 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     const scope = Object.fromEntries(['projectId', 'checkpointId', 'conversationId', 'turnId', 'agentId'].map(k => [k, association[k]]));
     const retained = checked('replay_checkpoint_unavailable', () => createCheckpointRetentionStore({ captureStore: store }).get({ ...scope, referenceId: sealed.referenceId }));
     ensure(retained, 'replay_checkpoint_unavailable');
-    const cp = retained.checkpoint, r = cp.replayInput;
+    const cp = retained.checkpoint, r = cp.replayInput, gitSnapshot = cp.schemaVersion === 2;
     ensure(r, 'replay_input_unavailable');
     ensure(['fresh', 'resume'].includes(r.deliveryMode), 'replay_delivery_mode_invalid');
     const resume = r.deliveryMode === 'resume';
@@ -48,7 +50,9 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     for (const digest of retained.blobHashes) {
       const b = checked('replay_blob_unavailable_or_invalid', () => store.readBlob(association.projectId, digest));
       ensure(Buffer.isBuffer(b) && hash(b) === digest, 'replay_blob_unavailable_or_invalid');
-      ensure(!containsSecretSentinel(b), 'replay_blob_secret_sentinel');
+      // v1 retains its historical policy. New capture intentionally preserves
+      // token-shaped examples and replaces only known host literals.
+      ensure(gitSnapshot || !containsSecretSentinel(b), 'replay_blob_secret_sentinel');
     }
     // Validate the inventory one blob at a time; do not retain a second copy of
     // the entire captured scene alongside its per-file transport representation.
@@ -105,13 +109,23 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
       identityInfo = { originalRoleHash: span.sha256 };
     }
     ensure(Buffer.byteLength(prompt) <= 256 * 1024, 'replay_prompt_size_limit');
-    const names = Object.keys(cp.files); ensure(names.length <= 8192, 'replay_file_inventory_limit');
+    let materialized, records = cp.files;
+    if (gitSnapshot) {
+      try { materialized = materializeGitSnapshot({ checkpoint: cp, store, agentDir: process.env.PI_CODING_AGENT_DIR, ...replayOptions }); }
+      catch (e) { throw unsupported(/^git_snapshot_[a-z_]+$/.test(e?.code || '') ? 'replay_' + e.code : 'replay_git_snapshot_unavailable'); }
+      ensure(materialized.lineEndingEvidence === 'captured-eol', 'replay_git_snapshot_eol_unavailable');
+      ensure(materialized.uncaptured.length === 0, 'replay_uncaptured_files');
+      ensure(!materialized.projectSkills.some(s => !s.internal), 'replay_external_project_skills_not_supported');
+      records = materialized.files;
+    }
+    const redacted = new Set(materialized?.redactedFiles.filter(f => !f.scope).map(f => f.path));
+    const names = Object.keys(records); ensure(names.length <= 8192, 'replay_file_inventory_limit');
     const files = names.sort().map(name => {
-      const f = cp.files[name], b = blobs.get(f.hash);
+      const f = records[name], b = gitSnapshot ? f.content : blobs.get(f.hash);
       ensure(/^[A-Za-z0-9_.@/-]+$/.test(name) && name.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git')
         && f.type === 'file' && !f.secretExcluded && b && b.length === f.size, 'replay_file_record_invalid');
       return { path: name, base64: b.toString('base64'), sha256: f.hash, mode: f.mode,
-        ...(f.secretRedacted === true ? { secretRedacted: true } : {}) };
+        ...(f.secretRedacted === true || redacted.has(name) ? { secretRedacted: true } : {}) };
     });
     ensure(Array.isArray(cp.deletions) && cp.deletions.every(d => !names.some(n => n === d || n.startsWith(d + '/') || d.startsWith(n + '/'))), 'replay_deletions_invalid');
     const capturedCallback = checked('replay_callback_unavailable_or_invalid', () => readCapturedCallbackInput(cp, digest => blobs.get(digest)));
@@ -135,11 +149,13 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false)
     return { supported: true, input, ...variantInfo,
       provenance: { caseId: sealed.caseId, checkpointId: cp.checkpointId,
       checkpointHash: hashJson(cp), ...identityInfo,
+      ...(gitSnapshot ? { sourceSnapshot: { kind: cp.gitSnapshot.kind, head: cp.gitSnapshot.head, fileCount: files.length,
+        lineEndingEvidence: materialized.lineEndingEvidence } } : {}),
       commonInputHash: hashJson({ ...input, prompt: commonPrompt }),
       variant: (promptTarget ? promptTarget.replacement === null : candidateRole === null) ? 'original' : 'candidate', strictEvalEligible: false } };
   } catch (e) { return { supported: false, reason: /^replay_[a-z_]+$/.test(e?.replayReason || '') ? e.replayReason : 'replay_materials_invalid' }; }
 }
-function prepareSealedDirectTurn(request, candidateRole = null) { return prepareTurn(request, candidateRole, null); }
-function prepareSealedOriginalTurn(request) { return prepareTurn(request, null, null, true); }
-function prepareSealedPromptTarget(request, targetId, replacement = null, fragments) { return prepareTurn(request, null, { id: targetId, replacement, fragments }); }
+function prepareSealedDirectTurn(request, candidateRole = null, options = {}) { return prepareTurn(request, candidateRole, null, false, options); }
+function prepareSealedOriginalTurn(request, options = {}) { return prepareTurn(request, null, null, true, options); }
+function prepareSealedPromptTarget(request, targetId, replacement = null, fragments, options = {}) { return prepareTurn(request, null, { id: targetId, replacement, fragments }, false, options); }
 module.exports = { prepareSealedDirectTurn, prepareSealedOriginalTurn, prepareSealedPromptTarget };
