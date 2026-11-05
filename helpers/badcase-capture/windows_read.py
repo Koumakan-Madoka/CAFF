@@ -2,7 +2,9 @@
 
 Local drive-absolute NTFS directories only. Open each component relative to a
 held NT directory handle with OBJ_DONT_REPARSE, reject reparse attributes too,
-and omit FILE_SHARE_DELETE to prevent renaming held ancestors. All handles are
+and omit FILE_SHARE_DELETE to prevent renaming held ancestors. Tree enumeration
+skips observed reparse entries before opening them; exact reads still reject.
+All handles are
 closed by ExitStack, including on identity mismatch. No pathname content reads,
 realpath/WSL fallback, UNC, ADS, device namespace, or pathname enumeration.
 
@@ -154,18 +156,22 @@ def _relative(stack, parent, name, directory):
     return handle
 
 
-def _parse_names(data):
-    """Bounded FILE_NAMES_INFORMATION chain; native names never become paths."""
+def _parse_names(data, _attributes=False):
+    """Bounded native record chains; names/attributes are observations only."""
     names, offset = [], 0
+    # FILE_NAMES_INFORMATION=12 for exact canonical membership; tree walks use
+    # FILE_DIRECTORY_INFORMATION=1 to see reparse attributes BEFORE child open.
+    header_size = 64 if _attributes else 12
     while True:
-        if len(data) - offset < 12:
+        if len(data) - offset < header_size:
             raise Refused("enumeration_invalid")
-        next_offset, _, length = struct.unpack_from('<III', data, offset)
-        end = offset + 12 + length
+        next_offset = struct.unpack_from('<I', data, offset)[0]
+        attributes, length = struct.unpack_from('<II', data, offset + (56 if _attributes else 4))
+        end = offset + header_size + length
         if not length or length % 2 or end > len(data):
             raise Refused("enumeration_invalid")
         try:
-            name = data[offset + 12:end].decode('utf-16-le', errors='strict')
+            name = data[offset + header_size:end].decode('utf-16-le', errors='strict')
         except UnicodeError:
             raise Refused("enumeration_invalid") from None
         if name not in ('.', '..'):
@@ -175,23 +181,24 @@ def _parse_names(data):
             # fail closed; none may be reinterpreted as a relative path.
             if any(ch in name for ch in '/\\\x00') or len(name.encode('utf-16-le')) > 510:
                 raise Refused("enumeration_invalid")
-            names.append(name)
+            names.append((name, attributes) if _attributes else name)
         if next_offset == 0:
             return names
-        if next_offset % 4 or next_offset < 12 + length or offset + next_offset >= len(data):
+        if next_offset % (8 if _attributes else 4) or next_offset < header_size + length or offset + next_offset >= len(data):
             raise Refused("enumeration_invalid")
         offset += next_offset
 
 
-def _directory_names(handle, limit):
-    # FileNamesInformation=12. The directory was opened synchronously; no event,
-    # APC or asynchronous completion. Enumerate the held object, not its path.
+def _directory_names(handle, limit, _attributes=False):
+    # The directory was opened synchronously; no event/APC or asynchronous
+    # completion. Enumerate the held object, not its path. Attributes from this
+    # enumeration grant no access; ordinary children are still opened/checked.
     result, seen, restart = [], set(), True
     for _ in range(limit + 3):
         buffer = C.create_string_buffer(64 * 1024)
         io = IoStatus()
         status = nt.NtQueryDirectoryFile(handle, None, None, None, C.byref(io),
-                                         buffer, len(buffer), 12, 0, None, int(restart))
+                                         buffer, len(buffer), 1 if _attributes else 12, 0, None, int(restart))
         restart = False
         if status == -2147483642:  # STATUS_NO_MORE_FILES (0x80000006)
             return result
@@ -199,11 +206,12 @@ def _directory_names(handle, limit):
             raise Refused("enumeration_failed")
         if not 0 < io.Information <= len(buffer):
             raise Refused("enumeration_invalid")
-        for name in _parse_names(buffer.raw[:io.Information]):
+        for entry in _parse_names(buffer.raw[:io.Information], _attributes=_attributes):
+            name = entry[0] if _attributes else entry
             if name in seen:
                 raise Refused("directory_changed")
             seen.add(name)
-            result.append(name)
+            result.append(entry)
             if len(result) > limit:
                 raise Refused("entry_limit")
     raise Refused("enumeration_failed")
@@ -315,10 +323,10 @@ class Root:
 
         def visit(handle, prefix, depth):
             before = _directory_stamp(handle)
-            names = _directory_names(handle, max_entries - len(entries) - len(uncaptured))
+            names = _directory_names(handle, max_entries - len(entries) - len(uncaptured), _attributes=True)
             if _after_list is not None:
                 _after_list(prefix)
-            for name in sorted(names):
+            for name, attributes in sorted(names):
                 relative = prefix + '/' + name if prefix else name
                 # Never open/stat/recurse an excluded child, including reparses.
                 # Parent-directory names are necessarily read to prune children.
@@ -344,6 +352,13 @@ class Root:
                     # invalidly named directory. Direct read/request validation
                     # stays strict. Gaps consume the same enumeration budget.
                     uncaptured.append({'path': relative, 'reason': 'windows_reserved_or_invalid_name'})
+                    continue
+                if attributes & 0x400:  # every FILE_ATTRIBUTE_REPARSE_POINT, regardless of tag
+                    # Do not open, read or follow even the link itself. A stable
+                    # gap is not a file/directory or deletion evidence. If an
+                    # ordinary child becomes a reparse after enumeration, the
+                    # unchanged OBJ_DONT_REPARSE/_check guard still fails closed.
+                    uncaptured.append({'path': relative, 'reason': 'reparse_point_skipped'})
                     continue
                 with contextlib.ExitStack() as stack:
                     child = _relative(stack, handle, name, None)

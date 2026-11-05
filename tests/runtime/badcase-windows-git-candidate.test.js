@@ -199,8 +199,8 @@ test('classified preview brackets Git sources without ordinary content reads or 
   assert.equal((await run(aggregate)).result.reason, 'too_large');
 });
 
-test('invalid-name gaps survive classified preview/capture and participate in namespace revalidation', async () => {
-  const gaps = [{ path: 'NUL', reason: 'windows_reserved_or_invalid_name' }];
+test('invalid-name and reparse gaps survive classified preview/capture and participate in namespace revalidation', async () => {
+  const gaps = [{ path: 'NUL', reason: 'windows_reserved_or_invalid_name' }, { path: 'junction', reason: 'reparse_point_skipped' }];
   const first = metadata({ uncaptured: gaps });
   const snapshot = { ok: true, entries: first.entries.filter(e => e.path !== '.git' && !e.path.startsWith('.git/')), files: [], uncaptured: gaps };
   for (const preview of [true, false]) {
@@ -216,7 +216,7 @@ test('invalid-name gaps survive classified preview/capture and participate in na
       if (changeAt) { assert.equal(result.reason, 'git_metadata_changed'); continue; }
       assert.equal(result.ok, true, result.reason);
       assert.deepEqual(JSON.parse(JSON.stringify(result.uncaptured)), gaps);
-      if (preview) { assert.equal(result.skippedCount, 1); assert.equal(result.complete, true, 'bounded enumeration completed with explicit gaps'); }
+      if (preview) { assert.equal(result.skippedCount, 2); assert.equal(result.complete, true, 'bounded enumeration completed with explicit gaps'); }
       else { assert.ok(result.observation.presentPaths.includes('NUL')); assert.equal(Object.hasOwn(result.files, 'NUL'), false); }
     }
   }
@@ -526,9 +526,13 @@ test('async Git transport real sleeper does not block loop, terminates and waits
   assert.equal((await pending).reason, 'git_capture_timeout'); assert.equal(closed, true, 'not returned before actual child close');
 });
 
-test('native ignored reserved names do not block project estimate, capacity preview or classified capture', native, async t => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-win-invalid-')), invalidPaths = [];
-  t.after(() => { for (const filename of invalidPaths) fs.unlinkSync(filename); fs.rmSync(base, { recursive: true, force: true }); });
+test('native ignored reserved names and junctions do not block project estimate, capacity preview or classified capture', native, async t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-win-invalid-')), invalidPaths = [], links = [];
+  t.after(() => {
+    for (const filename of invalidPaths) fs.unlinkSync(filename);
+    for (const linked of links) fs.rmdirSync(linked); // remove only each fixture junction
+    fs.rmSync(base, { recursive: true, force: true });
+  });
   const root = path.join(base, 'worktree'), captureRoot = path.join(base, 'storage'); fs.mkdirSync(root);
   const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', windowsHide: true,
     env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(base, 'no-global'), GIT_TEMPLATE_DIR: '' } });
@@ -543,17 +547,28 @@ test('native ignored reserved names do not block project estimate, capacity prev
   const service = createBadcaseCaptureService({ captureRoot });
   service.savePolicy('p', { authorizedDirs: [root], excludedPatterns: [], includedIgnoredPatterns: [] });
   service.authorizeProject('p');
-  const gaps = names.map(path => ({ path, reason: 'windows_reserved_or_invalid_name' }));
+  const outside = path.join(base, 'outside'); fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'private.txt'), 'OUTSIDE_LINK_TARGET_MUST_NOT_BE_READ');
+  fs.mkdirSync(path.join(root, 'nested'));
+  const linkedNames = ['junction', 'nested/alias'];
+  for (const relative of linkedNames) {
+    const linked = path.join(root, relative);
+    execFileSync('cmd.exe', ['/d', '/c', 'mklink', '/J', linked, outside], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    links.push(linked);
+  }
+  const gaps = [...names.map(path => ({ path, reason: 'windows_reserved_or_invalid_name' })),
+    ...linkedNames.map(path => ({ path, reason: 'reparse_point_skipped' }))].sort((a, b) => a.path < b.path ? -1 : 1);
   for (const estimate of [service.estimateDirectory('p', root), await service.estimateDirectoryAsync('p', root)]) {
     assert.equal(estimate.ok, true, estimate.reason); assert.equal(estimate.complete, true);
-    assert.equal(estimate.skippedCount, 3); assert.deepEqual(estimate.uncaptured, gaps);
+    assert.equal(estimate.skippedCount, 5); assert.deepEqual(estimate.uncaptured, gaps);
     assert.equal(estimate.fileCount, 2); assert.equal(estimate.totalBytes, 22);
     if (estimate.includesIgnored === false) assert.equal(estimate.captureAvailable, true);
   }
   const result = await readWindowsGitFileCandidateAsync({ captureRoot, targetDir: root, policy: service.loadPolicy('p') });
   assert.equal(result.ok, true, result.reason); assert.deepEqual(result.uncaptured, gaps);
   assert.deepEqual(Object.keys(result.files).sort(), ['.gitignore', 'safe.txt']);
-  assert.equal([...result.blobs.values()].some(b => b.includes('INVALID_NAME_CONTENT_MUST_NOT_BE_READ')), false);
+  assert.equal([...result.blobs.values()].some(b => b.includes('INVALID_NAME_CONTENT_MUST_NOT_BE_READ') || b.includes('OUTSIDE_LINK_TARGET_MUST_NOT_BE_READ')), false);
+  assert.equal(fs.readFileSync(path.join(outside, 'private.txt'), 'utf8'), 'OUTSIDE_LINK_TARGET_MUST_NOT_BE_READ');
 });
 
 test('native local Git subset selects dirty/tracked/untracked/explicit ignored, blocks external Git metadata', native, async t => {

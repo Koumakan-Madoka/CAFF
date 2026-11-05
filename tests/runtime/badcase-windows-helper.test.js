@@ -98,6 +98,30 @@ test('enumerated invalid-name gaps use a separate bounded schema and never widen
   assert.equal(parse(wire(fixture().header), request).uncaptured.length, 0);
 });
 
+test('reparse gaps are bounded non-selectors with valid canonical names, separate from invalid-name gaps', () => {
+  const { request, header } = fixture();
+  header.uncaptured = [
+    { path: 'NUL', reason: 'windows_reserved_or_invalid_name' },
+    { path: 'junction', reason: 'reparse_point_skipped' },
+    { path: 'sub/link', reason: 'reparse_point_skipped' },
+  ];
+  const result = parse(wire(header), request);
+  assert.equal(result.ok, true, result.reason); assert.deepEqual(result.uncaptured, header.uncaptured);
+  assert.deepEqual(result.files.map(f => f.path), request.paths);
+  for (const change of [
+    h => { h.uncaptured[0].reason = 'reparse_point_skipped'; },
+    h => { h.uncaptured[1].reason = 'windows_reserved_or_invalid_name'; },
+    ...['../escape', 'sub/../link', 'absent/link', 'sub/a/link', 'sub/a', 'C:/link', '/link', 'x\\link', '.', '..', 'bad.', 'NUL'].map(path => h => { h.uncaptured[1].path = path; }),
+    h => { h.uncaptured[1].extra = 'untrusted'; }, h => { h.uncaptured[1].reason = 'other'; },
+    h => { h.uncaptured.push(h.uncaptured[1]); }, h => { h.uncaptured.reverse(); },
+    h => { h.uncaptured = Array(limits.entries + 1).fill(h.uncaptured[1]); },
+    h => { h.files[0].path = 'junction'; }, h => { h.entries[0].path = 'junction/child'; },
+  ]) {
+    const h = structuredClone(header); change(h); invalid(parse(wire(h), request));
+  }
+  invalid(parse(wire(header), { ...request, paths: ['junction'] }));
+});
+
 test('Windows response parser refuses corrupt framing without partial file exposure', () => {
   const { request, header } = fixture();
   for (const body of [content.subarray(0, 4), Buffer.concat([content, Buffer.from('x')]), Buffer.from('wrong')]) {

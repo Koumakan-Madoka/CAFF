@@ -160,12 +160,13 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
     }
     previous = null;
     for (const gap of uncaptured) {
-      if (!exact(gap, ['path', 'reason']) || gap.reason !== 'windows_reserved_or_invalid_name'
+      if (!exact(gap, ['path', 'reason']) || !['windows_reserved_or_invalid_name', 'reparse_point_skipped'].includes(gap.reason)
         || typeof gap.path !== 'string' || !gap.path || Buffer.byteLength(gap.path, 'utf8') > 32768
         || gap.path.split('/').length > 64 || /[\\\x00]/.test(gap.path) || /[\uD800-\uDFFF]/u.test(gap.path)
         || entries.has(gap.path)) return bad();
       const slash = gap.path.lastIndexOf('/'), leaf = gap.path.slice(slash + 1), parent = gap.path.slice(0, slash);
-      if (!leaf || leaf.length > 255 || leaf === '.' || leaf === '..' || validRelative(leaf)
+      if (!leaf || leaf.length > 255 || leaf === '.' || leaf === '..'
+        || (gap.reason === 'reparse_point_skipped' ? !validRelative(leaf) : validRelative(leaf))
         || (slash >= 0 && (!validRelative(parent) || entries.get(parent)?.type !== 'directory'))) return bad();
       const encoded = Buffer.from(gap.path, 'utf8');
       if (previous && Buffer.compare(previous, encoded) >= 0) return bad();

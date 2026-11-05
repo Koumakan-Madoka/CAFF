@@ -78,8 +78,13 @@ test('Windows preview prunes known private/credential names at every depth and u
   assert.equal(result.ok, true, result.reason); assert.equal(result.totalBytes, 8); assert.equal(result.fileCount, 3);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SENTINEL|outside/);
   const unsafe = path.join(root, 'not-excluded'); fs.symlinkSync(outside, unsafe, 'junction');
-  try { assert.equal((await service.estimateDirectoryAsync('p', root)).ok, false); }
-  finally { fs.rmdirSync(unsafe); }
+  try {
+    for (const result of [service.estimateDirectory('p', root), await service.estimateDirectoryAsync('p', root)]) {
+      assert.equal(result.ok, true, result.reason); assert.equal(result.fileCount, 3); assert.equal(result.totalBytes, 8);
+      assert.equal(result.skippedCount, 1);
+      assert.deepEqual(result.uncaptured, [{ path: 'not-excluded', reason: 'reparse_point_skipped' }]);
+    }
+  } finally { fs.rmdirSync(unsafe); }
 });
 
 test('Windows preview refuses private roots, wildcards and unpinned input; installs current trusted helper without repinning', native, async t => {

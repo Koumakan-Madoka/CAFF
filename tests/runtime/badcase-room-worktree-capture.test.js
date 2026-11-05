@@ -86,6 +86,48 @@ test('real disposable Room checkpoints persist invalid-name gaps without reading
   } finally { for (const filename of paths) if (fs.existsSync(filename)) fs.unlinkSync(filename); }
 });
 
+test('Room checkpoints skip junctions with explicit gaps; restore never recreates links or prior children', native, async t => {
+  const h = fixture(t), cwd = h.add('room'); h.enable();
+  const outside = path.join(h.temp, 'outside'), nested = path.join(cwd, 'nested');
+  fs.mkdirSync(outside); fs.mkdirSync(nested);
+  fs.writeFileSync(path.join(outside, 'private.txt'), 'OUTSIDE_LINK_TARGET_MUST_NOT_BE_READ');
+  // Prove a formerly tracked child under a later junction is a gap, not a deletion.
+  fs.mkdirSync(path.join(cwd, 'replaced'));
+  fs.writeFileSync(path.join(cwd, 'replaced', 'old.txt'), 'old tracked');
+  h.git(cwd, 'add', 'replaced/old.txt');
+  const baseline = await h.capture('room'); assert.equal(baseline.captured, true, baseline.reason);
+  fs.unlinkSync(path.join(cwd, 'replaced', 'old.txt')); fs.rmdirSync(path.join(cwd, 'replaced'));
+  const linked = ['junction', 'nested/link', 'replaced'];
+  try {
+    for (const relative of linked) execFileSync('cmd.exe', ['/d', '/c', 'mklink', '/J', path.join(cwd, relative), outside],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const gaps = linked.map(path => ({ path, reason: 'reparse_point_skipped' }));
+    fs.writeFileSync(path.join(cwd, 'tracked.txt'), 'dirty');
+    const result = await h.capture('room'); assert.equal(result.captured, true, result.reason);
+    const cp = h.service.store.loadCheckpoint('p', result.checkpointId);
+    assert.deepEqual(cp.uncaptured, gaps); assert.equal(cp.stats.skippedCount, linked.length);
+    assert.deepEqual(Object.keys(cp.files).sort(), ['.gitignore', 'tracked.txt']);
+    assert.equal(cp.deletions.includes('replaced/old.txt'), false);
+    assert.equal(cp.roomWorktree.head, h.head); assert.equal(cp.gitMetadata, 'bounded_external_git_subset_v1');
+    assert.equal(cp.replayInput.complete, false); assert.ok(cp.replayInput.incompleteReasons.includes('files_uncaptured'));
+    assert.equal(cp.strictEvalEligible, false);
+    const sentinelHash = require('node:crypto').createHash('sha256').update('OUTSIDE_LINK_TARGET_MUST_NOT_BE_READ').digest('hex');
+    assert.equal(h.service.store.hasBlob('p', sentinelHash), false);
+    const dest = path.join(h.temp, 'restored');
+    const restored = h.service.restoreCheckpoint({ projectId: 'p', checkpointId: cp.checkpointId, targetDir: dest });
+    assert.equal(restored.ok, true, restored.reason); assert.equal(restored.replayInputComplete, false);
+    assert.equal(fs.readFileSync(path.join(dest, 'tracked.txt'), 'utf8'), 'dirty');
+    for (const relative of linked) assert.equal(fs.existsSync(path.join(dest, relative)), false, relative);
+    assert.equal(fs.existsSync(path.join(dest, 'replaced', 'old.txt')), false);
+    assert.equal(fs.readFileSync(path.join(outside, 'private.txt'), 'utf8'), 'OUTSIDE_LINK_TARGET_MUST_NOT_BE_READ');
+  } finally {
+    for (const relative of linked) {
+      const p = path.join(cwd, relative);
+      if (fs.existsSync(p)) fs.rmdirSync(p);  // unlink fixture junction only
+    }
+  }
+});
+
 test('enabled policy with only the previous helper SHA survives upgrade without reauthorization or pin changes', native, async t => {
   const h = fixture(t); h.add('room'); h.enable();
   const saved = h.service.loadPolicy('p');
