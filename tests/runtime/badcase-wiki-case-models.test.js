@@ -53,8 +53,24 @@ test('independent experiment selects models per case; plan validator accepts het
   }
   h.definition.cases[0].judge = configuration('jev'); assert.throws(h.plan, /wiki_judge_binding_changed/);
 });
-test('assertion drafting instructs declarative binary statements, never yes/no questions', () => {
+test('single-assertion cases bind an experiment and score all three votes without padding', async () => {
+  const h = fixture(), c = h.catalog[0];
+  c.rubric = { ...r.createWikiRubric({ ...c.rubric, actual: c.actual, expected: c.expected, questions: assertions.slice(0, 1) }),
+    status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Synthetic approval of a single requirement' };
+  const plan = h.plan(); assert.deepEqual(e.validateWikiExperimentPlan(plan), plan);
+  let calls = 0;
+  const result = await s.scoreWikiRun({ rubric: c.rubric, binding: s.bindWikiJudge(configuration('deepseek'), c.rubric), hardAssertions: [],
+    run: { completed: true, replySource: 'public', publicReply: 'Clear result.', task: c.task, expected: c.expected } },
+  { configuration: configuration('deepseek'), evaluate: async input => {
+    calls++; assert.deepEqual(input.questions, assertions.slice(0, 1));
+    return { judgments: [{ criterionId: 'a', verdict: 'satisfied', reason: 'The result is explicit.', evidence: [{ source: 'reply', text: 'Clear result.' }] }] };
+  } });
+  assert.equal(result.status, 'pass'); assert.equal(calls, 3); assert.equal(result.judgments.length, 1);
+  assert.deepEqual(result.votes.map(v => v.length), [1, 1, 1]);
+});
+test('assertion drafting instructs 1–4 distinct declarative binary statements and never pads a single requirement', () => {
   const draft = require('../../scripts/badcase-capture/draft-wiki-rubrics.cjs');
   const text = JSON.parse(draft.buildRubricDraftRequest({ cases: [] })).messages[0].content;
-  assert.match(text, /陈述句/); assert.match(text, /成立.*不成立/); assert.doesNotMatch(text, /起草2–4条能答是\/否的中文问题/);
+  assert.match(text, /起草1–4条中文陈述句断言/); assert.match(text, /成立.*不成立/);
+  assert.match(text, /只有一个独立要求时只起草一条/); assert.doesNotMatch(text, /起草2–4条|至少两条/);
 });

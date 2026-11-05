@@ -59,6 +59,15 @@ test('one authorized request saves all versions as drafts, seals model wording/p
   assert.match(out.proof.inputHash, /^[a-f0-9]{64}$/); assert.match(out.proof.requestHash, /^[a-f0-9]{64}$/); assert.equal(out.proof.call.usage.totalTokens, 30);
   assert.equal(JSON.stringify(out).includes(key), false); assert.deepEqual(h.store.read().cases, before.cases);
 });
+test('drafting accepts a single assertion without adding duplicate or unrelated requirements', async t => {
+  const h = setup(t), results = h.cases.map(c => ({ caseId: c.id, questions: [questions[0]] }));
+  const out = await api().draftWikiRubrics(h.args, { ...h.options,
+    createExchange: () => ({ exchange: async () => h.envelope(JSON.stringify({ results })), close: async () => {} }) });
+  assert.equal(out.drafts.length, results.length);
+  for (const draft of out.drafts) {
+    assert.deepEqual(draft.questions, [questions[0]]); assert.equal(draft.status, 'draft'); assert.equal(draft.scoringModel, null);
+  }
+});
 test('unknown/duplicate cases, stale revision and unconfirmed execution fail before credentials/network', async t => {
   const h = setup(t), before = h.store.read();
   for (const patch of [{ caseIds: ['missing'] }, { caseIds: [h.cases[0].id, h.cases[0].id] }, { expectedRevision: 0 }, { confirmed: false }]) {
@@ -70,7 +79,8 @@ test('missing/duplicate/extra case output or invalid later rubric publishes no p
   const h = setup(t), before = h.store.read();
   const rows = JSON.parse(h.output()).results;
   for (const results of [rows.slice(0, 1), [rows[0], rows[0]], [...rows, { caseId: 'extra', questions }],
-    [rows[0], { ...rows[1], questions: questions.slice(0, 1) }], [rows[0], { ...rows[1], approved: true }]]) {
+    [rows[0], { ...rows[1], questions: [] }], [rows[0], { ...rows[1], questions: Array.from({ length: 5 }, (_, i) => ({ ...questions[0], id: 'q' + i })) }],
+    [rows[0], { ...rows[1], approved: true }]]) {
     let sent = 0, closed = 0;
     const options = { ...h.options, createExchange: () => ({ exchange: async () => { sent++; return h.envelope(JSON.stringify({ results })); }, close: async () => { closed++; } }) };
     await assert.rejects(api().draftWikiRubrics(h.args, options)); assert.equal(sent, 1); assert.equal(closed, 1); assert.deepEqual(h.store.read(), before);

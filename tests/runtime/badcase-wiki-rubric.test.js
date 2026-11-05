@@ -37,9 +37,22 @@ test('editing produces a new draft; old frozen content/hash and replay definitio
   assert.deepEqual(h.store.read().replayCases, before.replayCases); assert.deepEqual(h.store.read().cases, before.cases);
   assert.throws(() => h.store.confirmRubric({ rubricId: first.id, hash: first.hash, confirmationRecord: 'Overwrite' }, h.store.read().revision), /wiki_rubric_frozen/);
 });
-test('rubrics validate 2–4 questions, distinct identifiers, known cases/model, revision, content and hash', t => {
+test('one or four distinct assertions save and freeze without padding or changing previous snapshots', t => {
+  const h = setup(t), one = [questions[0]], draft = h.draft(one);
+  const filename = path.join(h.options.globalRoot, 'snapshots', '000000000002.json'), before = fs.readFileSync(filename);
+  const frozen = h.store.confirmRubric({ rubricId: draft.id, hash: draft.hash, confirmationRecord: 'User confirmed one nonduplicate assertion' }, h.store.read().revision);
+  assert.deepEqual(frozen.questions, one); assert.equal(frozen.hash, draft.hash);
+  assert.deepEqual(fs.readFileSync(filename), before);
+  assert.deepEqual(createWikiStore(h.options).getFrozenRubric(h.c.id, draft.hash), frozen);
+  const four = Array.from({ length: 4 }, (_, i) => ({ ...questions[0], id: 'q' + (i + 1), question: 'Distinct observable requirement ' + (i + 1) + '.' }));
+  const next = h.draft(four);
+  assert.equal(next.version, 2); assert.deepEqual(next.questions, four);
+  h.store.confirmRubric({ rubricId: next.id, hash: next.hash, confirmationRecord: 'User confirmed four requirements' }, h.store.read().revision);
+  assert.deepEqual(h.store.getFrozenRubric(h.c.id, draft.hash), frozen);
+});
+test('rubrics validate 1–4 assertions, distinct identifiers, known cases/model, revision, content and hash', t => {
   const h = setup(t), before = h.store.read();
-  for (const q of [[], [questions[0]], [...questions, ...questions, questions[0]], [questions[0], questions[0]],
+  for (const q of [[], Array.from({ length: 5 }, (_, i) => ({ ...questions[0], id: 'q' + i })), [questions[0], questions[0]],
     [{ ...questions[0], evidence: 'unknown' }, questions[1]], [{ ...questions[0], question: '' }, questions[1]],
     [{ ...questions[0], question: 'sk-FAKE_SENTINEL_123456' }, questions[1]], [{ ...questions[0], hidden: true }, questions[1]]]) assert.throws(() => h.draft(q));
   for (const patch of [{ model: 'other/model' }, { caseId: 'missing' }, { status: 'frozen' }]) {

@@ -41,7 +41,7 @@ export function wikiRubricSourceHash(actual: string, expected: string): string {
   return wikiValueHash({ actual, expected });
 }
 export function validateWikiRubricQuestions(value: unknown): WikiRubricQuestion[] {
-  if (!Array.isArray(value) || value.length < 2 || value.length > 4) throw wikiRubricFail('wiki_rubric_invalid');
+  if (!Array.isArray(value) || value.length < 1 || value.length > 4) throw wikiRubricFail('wiki_rubric_invalid');
   for (const q of value) {
     wikiExactKeys(q, ['id', 'question', 'evidence']);
     if (typeof q.id !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(q.id) || !['reply', 'trace', 'files'].includes(q.evidence)) throw wikiRubricFail('wiki_rubric_invalid');
