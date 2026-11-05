@@ -3293,7 +3293,7 @@ textarea {
   gap: 0.7rem;
 }
 
-/* Capture's normal path is a compact wizard, not the raw protocol form. */
+/* Project capture is a single switch; long paths must wrap on mobile. */
 #badcase-capture-panel {
   gap: 0.65rem;
   align-content: start;
@@ -3301,6 +3301,18 @@ textarea {
 
 #badcase-capture-panel :is(h3, p, pre) {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#badcase-capture-panel [data-capture-last] {
+  white-space: pre-line;
+}
+
+#badcase-capture-panel .capture-warning {
+  border-left: 3px solid #ad6b13;
+  padding: 0.5rem 0.7rem;
+  background: rgba(173, 107, 19, 0.08);
 }
 
 #badcase-capture-panel fieldset {

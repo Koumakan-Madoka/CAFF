@@ -1309,6 +1309,10 @@ export function createServerApp(options: any = {}) {
       : []),
     createBadcaseCaptureController({
       service: badcaseCapture,
+      // Instance-owned Room metadata only; never scan another instance's DB.
+      listRoomWorktrees: (projectId: string) => store.listConversations()
+        .filter((room: any) => room.projectScopeId === projectId && room.worktreePath)
+        .map((room: any) => room.worktreePath),
       sessionInputDir: path.join(agentDir, 'named-sessions'),
       projectManager,
       host,

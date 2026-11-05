@@ -7,6 +7,7 @@ import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
 import { realpathOrResolved, isSameOrUnderPathString, pathsEqual } from '../domain/runtime/badcase-capture/capture-policy';
 import { normalizeWindowsExternalGitSelection } from '../domain/runtime/badcase-capture/windows-external-selection';
+import { inspectCaptureCoverage } from '../domain/runtime/badcase-capture/capture-coverage';
 
 // Local administration only, not an agent tool. Under Goal D10 the same OS user
 // is trusted: these guards/confirmation fields do not authenticate a human.
@@ -66,16 +67,32 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
     }
     return value;
   }
-  function state(projectId: string) {
+  function projectLocation(projectId: string) {
+    const project = projectManager.listProjects().find((entry: any) => entry.id === projectId);
+    const projectPath = String(project?.path || '');
+    const root = realpathOrResolved(projectPath), storageRoot = realpathOrResolved(service.captureRoot);
+    const insideProject = isSameOrUnderPathString(root, storageRoot);
+    return { projectPath, storage: { insideProject,
+      overlapsProject: insideProject || isSameOrUnderPathString(storageRoot, root) } };
+  }
+  async function state(projectId: string) {
     // Policy is independently observable even if the inventory is unreadable.
     // Catch only the inventory's sanitized failure, never policy/save errors;
     // a successful mutation must not look failed merely due to its usage view.
     const policy = service.loadPolicy(projectId);
+    const location = projectLocation(projectId);
+    let coverage: any = { roomWorktreeCount: null, reason: 'coverage_unavailable', basis: 'git-registered-room-worktrees' };
+    try {
+      if (typeof options.listRoomWorktrees === 'function') {
+        coverage = await inspectCaptureCoverage(location.projectPath, options.listRoomWorktrees(projectId));
+      }
+    } catch { /* unavailable scope counts never hide policy or block closing */ }
+    const metadata = { ...location, coverage };
     let usage;
     try { usage = service.computeUsage(projectId); }
     catch (error) {
       if (!(error instanceof Error) || error.message !== 'capture_usage_unavailable') throw error;
-      return { policy, usage: null, usageError: 'capture_usage_unavailable', lastCapture: null,
+      return { ...metadata, policy, usage: null, usageError: 'capture_usage_unavailable', lastCapture: null,
         lastCaptureError: 'capture_metrics_unavailable', trustBoundary: 'same_os_user' };
     }
     let lastCapture: any = null;
@@ -84,7 +101,7 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
       if (typeof service.latestCaptureMetrics !== 'function') throw Error();
       lastCapture = service.latestCaptureMetrics(projectId);
     } catch { lastCaptureError = 'capture_metrics_unavailable'; }
-    return { policy, usage, usageError: null, lastCapture, lastCaptureError, trustBoundary: 'same_os_user' };
+    return { ...metadata, policy, usage, usageError: null, lastCapture, lastCaptureError, trustBoundary: 'same_os_user' };
   }
   async function estimates(projectId: string, policy: any, operation: symbol) {
     if (!policy.authorizedDirs.length) throw issue('badcase_capture_not_authorized', 409);
@@ -113,7 +130,7 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
       throw issue('badcase_capture_project_missing', 404);
     }
     if (!service) throw issue('badcase_capture_unavailable', 503);
-    if (!action) { sendJson(res, 200, state(projectId)); return true; }
+    if (!action) { sendJson(res, 200, await state(projectId)); return true; }
     const body = await readRequestJson(req);
     const policy = service.loadPolicy(projectId);
     if (action === 'configure') {
@@ -126,8 +143,9 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
         invalidate(projectId);
         service.savePolicy(projectId, { ...policy, status: 'disabled', suspendReason: '' });
       } else {
-        const project = projectManager.listProjects().find((entry: any) => entry.id === projectId);
-        const targetDir = directories([project?.path], true)[0];
+        const location = projectLocation(projectId);
+        if (location.storage.overlapsProject) throw issue('badcase_capture_storage_overlaps_project');
+        const targetDir = directories([location.projectPath], true)[0];
         if (body.targetDir !== undefined && (typeof body.targetDir !== 'string' || !path.isAbsolute(body.targetDir)
           || !pathsEqual(body.targetDir, targetDir))) throw issue('badcase_capture_target_mismatch');
         const sessionDir = options.sessionInputDir;
@@ -214,7 +232,7 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
         : failed.reason || 'badcase_capture_estimate_incomplete', 409);
       service.savePolicy(projectId, { ...policy, status: 'enabled', suspendReason: '' });
     }
-    sendJson(res, 200, state(projectId));
+    sendJson(res, 200, await state(projectId));
     return true;
   }
   return async context => {
