@@ -37,7 +37,8 @@
     </div><div class="toast" id="toast" role="status" hidden></div>`;
     const $ = selector => root.querySelector(selector);
     const $$ = selector => [...root.querySelectorAll(selector)];
-    const badcases = shared.createBadcasePipeline({ root: $('#view-badcases'), fetchJson });
+    const badcases = shared.createBadcasePipeline({ root: $('#view-badcases'), fetchJson, confirm: confirmAction,
+      onConfirmDecision: body => { void mutate('/api/wikiskill/dehydration-confirm', body, '判断与切点已冻结；未调用模型、改分组或修改冻结轨迹包。'); } });
     const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
     const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, char => ESC[char]);
     const terms = value => String(value || '').toLowerCase().split(/\s+/).filter(Boolean);
@@ -424,6 +425,7 @@
       derive(); render();
     }
     function controls() {
+      badcases.setWritable(!pending && writable);
       root.setAttribute('aria-busy', String(pending));
       $$('[data-induct]').forEach(button => { button.disabled = pending || !writable || !rawPending().length; });
       $$('[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-review-experience],[data-revise-experience],[data-generate-candidate]').forEach(button => { button.disabled = pending || !writable || (button.hasAttribute('data-generate-candidate') && $$('[data-candidate-entry]:checked').length !== 1); });

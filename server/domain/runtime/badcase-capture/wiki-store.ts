@@ -16,6 +16,8 @@ import { readWikiComparisonRecord } from './wiki-comparison-record';
 import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { projectStagedResult } from './wiki-staged-result';
 import { createWikiTraceStore, sameTraceSource, wikiTraceReference } from './wiki-trace';
+import { buildDehydrationPrefix, interpretDehydrationAnswer } from './wiki-dehydration';
+import { wikiGoalCaseNumber } from './wiki-suite';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
 import { buildWikiExperienceDraft, mergeWikiLiteralObservations, approvedWikiExperiences, revisedWikiExperience } from './wiki-experience';
@@ -199,6 +201,7 @@ export function createWikiStore(options: any) {
         if (record[field] === undefined) record[field] = [];
         if (!Array.isArray(record[field])) throw Error();
       }
+      if (record.dehydrations !== undefined && !Array.isArray(record.dehydrations)) throw Error();
       return record;
     } catch { throw fail('wiki_record_invalid'); }
   }
@@ -331,6 +334,64 @@ export function createWikiStore(options: any) {
       if (!c.traceBundle) return null;
       if (!/^[a-f0-9]{64}$/.test(c.traceBundle.hash || '')) throw fail('wiki_trace_invalid');
       return createWikiTraceStore(captureRoot).read(c.source, c.traceBundle.hash);
+    },
+    // Trusted JEV runner entry, never accepts caller-supplied answers over HTTP.
+    saveDehydrationRecommendation(input: any) {
+      if (!global) throw fail('wiki_global_required');
+      const { built, response, expectedRevision } = input;
+      return change(state => {
+        if (!Number.isSafeInteger(expectedRevision)) throw fail('wiki_invalid_input');
+        if (state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
+        const c = state.cases.find((v: any) => v.id === id(built?.caseId));
+        if (!c) throw fail('wiki_unknown_case');
+        if (c.traceBundle?.hash !== built.traceHash || wikiGoalCaseNumber(c.id) !== built.caseNumber) throw fail('wiki_dehydration_stale');
+        const bundle = createWikiTraceStore(captureRoot).read(c.source, c.traceBundle.hash);
+        buildDehydrationPrefix(c, bundle, built.markedStep);
+        const recommendation = interpretDehydrationAnswer(built, response);
+        const content = { schemaVersion: 1, caseId: c.id, caseNumber: built.caseNumber, traceHash: built.traceHash,
+          requestHash: built.requestHash, request: structuredClone(built.request), recommendation };
+        const rows = state.dehydrations || (state.dehydrations = []), old = rows.find((v: any) => v.caseId === c.id);
+        if (old?.decision) throw fail('wiki_dehydration_frozen');
+        if (old) {
+          const { createdAt, hash: oldHash, ...previous } = old;
+          if (JSON.stringify(previous) !== JSON.stringify(content)) throw fail('wiki_dehydration_recommendation_exists');
+          return { changed: false, value: old };
+        }
+        const value = { ...content, createdAt: new Date().toISOString() };
+        const saved = { ...value, hash: hash(JSON.stringify(value)) }; rows.push(saved);
+        appendEvent(state, { type: 'case-dehydration-recommended', caseIds: [c.id], recommendationHash: saved.hash, traceHash: built.traceHash });
+        return { changed: true, value: saved };
+      }).value;
+    },
+    getDehydration(caseId: string) {
+      const state = read();
+      if (!state.cases.some((c: any) => c.id === id(caseId))) throw fail('wiki_unknown_case');
+      return (state.dehydrations || []).find((v: any) => v.caseId === caseId) || null;
+    },
+    confirmDehydration(input: any) {
+      shape(input, ['caseId', 'traceHash', 'recommendationHash', 'kind', 'cutStep', 'expectedRevision']);
+      return change(state => {
+        if (!Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const c = state.cases.find((v: any) => v.id === id(input.caseId));
+        if (!c) throw fail('wiki_unknown_case');
+        const row = (state.dehydrations || []).find((v: any) => v.caseId === c.id);
+        if (!row) throw fail('wiki_dehydration_recommendation_required');
+        if (c.traceBundle?.hash !== input.traceHash || row.traceHash !== input.traceHash || row.hash !== input.recommendationHash) throw fail('wiki_dehydration_stale');
+        if (!['single', 'throughout', 'unclear'].includes(input.kind)) throw fail('wiki_invalid_input');
+        if (row.decision) {
+          if (row.decision.kind !== input.kind || row.decision.cutStep !== input.cutStep) throw fail('wiki_dehydration_frozen');
+          return { changed: false, value: row.decision };
+        }
+        if (input.kind === 'single') buildDehydrationPrefix(c, createWikiTraceStore(captureRoot).read(c.source, input.traceHash), input.cutStep);
+        else if (input.cutStep !== null) throw fail('wiki_dehydration_cut_invalid');
+        const value = { schemaVersion: 1, caseId: c.id, traceHash: input.traceHash, recommendationHash: row.hash,
+          kind: input.kind, cutStep: input.cutStep, level: input.kind === 'single' ? 'run' : c.sealedCheckpointId ? 'trace' : 'reference',
+          confirmedBy: 'local-user', confirmedAt: new Date().toISOString() };
+        row.decision = { ...value, hash: hash(JSON.stringify(value)) };
+        appendEvent(state, { type: 'case-dehydration-confirmed', caseIds: [c.id], decisionHash: row.decision.hash, traceHash: input.traceHash });
+        return { changed: true, value: row.decision };
+      }).value;
     },
     backfillConversationTitles(values: any[]) {
       if (!global || !Array.isArray(values) || !values.length || values.length > 1000) throw fail('wiki_invalid_input');

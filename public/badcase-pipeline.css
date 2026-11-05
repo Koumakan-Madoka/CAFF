@@ -33,6 +33,9 @@
 .badcase-pipeline .steps-detail .k, .badcase-pipeline .st-pending, .badcase-pipeline .st-skip { color: var(--soft); }
 .badcase-pipeline .st-done { color: var(--ok); }
 .badcase-pipeline .st-alt { color: var(--info); }
+.badcase-pipeline .dehydration-panel { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--sunk); }
+.badcase-pipeline .dehydration-panel .field { display: grid; gap: 4px; min-width: 0; }
+.badcase-pipeline .dehydration-panel select { width: 100%; min-width: 0; max-width: 100%; }
 .badcase-pipeline .trace { min-width: 0; }
 .badcase-pipeline .trace > summary { font-weight: 600; }
 .badcase-pipeline .trace-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: 10px 0 6px; }

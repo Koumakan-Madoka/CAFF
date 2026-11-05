@@ -42,6 +42,26 @@ test('case trace GET reads Wiki-owned frozen evidence without source rooms and c
   const controller = createBadcaseWikiController(h.options);
   assert.equal(await controller({ req: { method: 'POST' }, res: {}, pathname: route.pathname }), false);
 });
+test('dehydration confirmation is explicit, guarded, revision/hash bound and never calls a model', async t => {
+  const h = setup(t); h.seed(); const c = h.store.read().cases[0];
+  const packet = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', origin: 'backfill', source: c.source, frozenAt: '2026-11-05T00:00:00Z', complete: false, missingReasons: [], redaction: { policy: 'known_values_only' },
+    markedStep: 1, markedMessage: 'done', actual: c.actual, expected: c.expected, context: { systemPrompt: 'historical', priorSessionEntries: [], trigger: { message: { role: 'user', content: 'verify first' } } },
+    steps: [{ step: 1, output: { role: 'assistant', content: [{ type: 'text', text: 'done' }] }, toolResults: [] }] };
+  h.store.freezeCaseTrace(c.id, packet);
+  const { buildDehydrationRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration');
+  const item = h.store.read().cases[0], built = buildDehydrationRequest({ caseRecord: item, bundle: packet, cause: { source: 'trigger', text: 'verify first' } });
+  const r = h.store.saveDehydrationRecommendation({ built, expectedRevision: h.store.read().revision, response: { model: 'test', answers: {
+    kind: { type: 'choice', choice: 'single', probabilities: { single: .9, throughout: .1 } }, cut: { type: 'choice', choice: 'step_1', probabilities: { step_1: .9, none: .1 } } } } });
+  const route = { pathname: '/api/wikiskill/dehydration-confirm' }, body = { confirmed: true, caseId: c.id, traceHash: item.traceBundle.hash, recommendationHash: r.hash, kind: 'single', cutStep: 1, expectedRevision: h.store.read().revision };
+  assert.equal((await h.invoke()).body.dehydrations[0].decision, undefined);
+  await rejects(h.invoke({ ...body, confirmed: false }, route), 'wiki_confirmation_required');
+  for (const extra of [{ response: {} }, { globalRoot: h.root }, { candidate: {} }]) await rejects(h.invoke({ ...body, ...extra }, route), 'wiki_invalid_input');
+  for (const override of [{ remoteAddress: '10.0.0.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) await assert.rejects(h.invoke(body, { ...route, ...override }));
+  await rejects(h.invoke({ ...body, traceHash: 'f'.repeat(64) }, route), 'wiki_dehydration_stale', 409);
+  const done = await h.invoke(body, route); assert.equal(done.body.dehydrations[0].decision.kind, 'single');
+  await rejects(h.invoke({ ...body, expectedRevision: done.body.revision, kind: 'throughout', cutStep: null }, route), 'wiki_dehydration_frozen', 409);
+  assert.deepEqual(h.store.readCaseTrace(c.id), packet);
+});
 test('comparison review is explicit, locally guarded and cannot supply results, rules or adoption', async t => {
   const h = setup(t), route = { pathname: '/api/wikiskill/comparison-review' };
   const body = { confirmed: true, comparisonId: 'comparison-' + 'a'.repeat(64), candidateHash: 'b'.repeat(64), expectedRevision: 0, decision: 'not-adopted', reason: 'test_not_passed', interpretation: '门槛接受、测试未通过、未采纳。' };

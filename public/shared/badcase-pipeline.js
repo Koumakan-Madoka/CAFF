@@ -1,8 +1,9 @@
 // @ts-check
 (function registerBadcasePipeline() {
   const shared = window.CaffShared || (window.CaffShared = {});
-  // Read-only projection. No JEV, grading, grouping mutations or replay launch.
-  shared.createBadcasePipeline = function ({ root, fetchJson }) {
+  // Loading is read-only. Only an explicit user action freezes a decision;
+  // this component never calls JEV, starts a replay, grades or changes groups.
+  shared.createBadcasePipeline = function ({ root, fetchJson, onConfirmDecision, confirm: confirmAction = message => window.confirm(message) }) {
     const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const words = q => String(q || '').slice(0, 512).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 30);
     const matches = (v, ts) => ts.every(t => String(v).toLowerCase().includes(t));
@@ -35,6 +36,9 @@
     };
     let D = { cases: [], caseStates: [] }, q = '', stage = 'all', model = 'all', mode = 'group';
     const cache = new Map(), expanded = new Set(), queries = new Map();
+    let writable = typeof onConfirmDecision === 'function';
+    const dehydration = c => (D.dehydrations || []).find(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash);
+    const kindLabel = k => ({ single: '单步型', throughout: '贯穿型', unclear: '说不清（按贯穿型）' }[k] || k);
     root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec"><h2>从 badcase 到测试用例</h2><p class="hint">有现场默认走 trace 级；无现场须经 JEV 推荐、你确认后脱水成 run 级。测试组只收 trace 级，门槛中 run 级不超过一半，训练组 run 级只作初筛。旧分组保留，重新分组尚待你确认。</p><div data-funnels></div></section>
       <div class="toolbar"><label class="search"><input data-bc-search type="search" aria-label="搜索 badcase" placeholder="搜索问题、期望、来源房间或编号" autocomplete="off"></label>
       <label class="field">卡在 <select data-bc-stage><option value="all">全部</option><option value="you">等你处理</option><option value="system">系统可以继续</option><option value="scene">现场待接入</option><option value="noscene">无现场（待脱水）</option><option value="dehydrate">脱水</option><option value="source">旧题的来源</option><option value="other">非 GPT 来源</option></select></label>
@@ -45,7 +49,8 @@
     const isGpt = c => /gpt/i.test(c.source?.agentId || c.role || '');
     const hasScene = c => !!c.sealedCheckpointId;
     // Goal B8's three immutable historical sources, not their synthetic tests.
-    const sourceOnly = c => c.kind === 'text-only' && c.split === 'test' && [4, 10, 14].includes(c.n);
+    const sourceOnly = c => [4, 10, 14].includes(c.n);
+    const levelLabel = c => sourceOnly(c) ? '旧题来源' : dehydration(c)?.decision?.level === 'reference' ? '只作参考' : dehydration(c)?.decision?.level === 'run' ? 'run 级 · 决定已冻结' : hasScene(c) ? 'trace 级 · 现场待接入' : 'run 级 · 待脱水确认';
     function backfill(c) {
       const r = c.traceBundle;
       if (!r) return '未归档 · 尚无冻结轨迹包';
@@ -53,11 +58,12 @@
       return r.complete ? '标记时已冻结' : '标记时已冻结 · 存在缺失';
     }
     function plan(c) {
-      const has = hasScene(c), old = sourceOnly(c), other = !isGpt(c), cs = D.caseStates?.find(s => s.caseId === c.id);
+      const has = hasScene(c), old = sourceOnly(c), other = !isGpt(c), cs = D.caseStates?.find(s => s.caseId === c.id), r = dehydration(c), d = r?.decision;
+      const reference = d?.level === 'reference';
       const steps = [
         ['done', c.kind === 'text-only' ? '用户批准的历史导入' : '页面标记'],
         [has ? 'pending' : 'alt', has ? sceneWait + '；已有封存清单不等于现场元数据齐全' : '没有现场；须先确认能否脱水'],
-        [old || has ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : has ? '默认 trace 级；可另选脱水' : 'JEV 推荐待接入；用户确认后冻结判断与切点'],
+        [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '默认 trace 级；可另选脱水' : r ? 'JEV 推荐已生成，等待你确认能否脱水和切点' : 'JEV 推荐尚未生成；用户确认后冻结判断与切点'],
         [cs?.memberships?.length ? 'done' : 'pending', cs?.memberships?.length ? '已有已确认模式标签' : '待归类；不自动改模式'],
         [old ? 'done' : 'pending', old ? '原测试分组保留' : '旧分组保留；分层重新分组待用户确认'],
         ['pending', '评分 v2 待接入：断言及逐条判定由独立 Goal 负责'],
@@ -66,22 +72,34 @@
         ['pending', '前置条件未齐，不宣称已成为合格测试用例'],
       ];
       if (old || other) for (let i = old ? 5 : 2; i < 9; i++) steps[i] = ['skip', old ? '只作旧题来源，不单独入库' : '只报告，不计入 GPT 结论'];
-      const actor = other ? 'other' : old ? 'source' : 'system';
-      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : has ? sceneWait : '等待脱水推荐接入，再请你确认' };
+      if (reference) for (let i = 4; i < 9; i++) steps[i] = ['skip', '无现场且非单步型；只作参考和训练组文字材料，不成为测试用例'];
+      const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : r && !d ? 'you' : 'system';
+      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题' : d ? '脱水决定已冻结，等待原版单次回放；不会自动启动' : r ? '请确认能否脱水与切点；确认后不可修改' : has ? sceneWait : '等待 JEV 推荐，再请你确认' };
     }
     function funnel() {
       const gpt = D.cases.filter(isGpt), tr = gpt.filter(hasScene), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c));
       const lane = (key, title, note, cells) => `<div class="lane" data-lane="${key}"><div class="lane-head"><b>${title}</b><span>${note}</span></div><div class="funnel">${cells.map(([n, l]) => `<div class="f-step ${n ? '' : 'zero'}"><b>${n}</b><span>${l}</span></div>`).join('')}</div></div>`;
       $('[data-funnels]').innerHTML = lane('trace', 'trace 级', '有现场；完整采集能力待合入，不能把封存当作已通过回放检查', [[tr.length, 'GPT 且有封存现场'], [tr.filter(c => c.traceBundle).length, '已冻结轨迹包'], [0, '新版回放检查通过'], [0, '新版断言已冻结'], [0, '本流程合格测试用例']])
-        + lane('run', 'run 级（脱水）', '无现场待脱水，不含 #4、#10、#14 的旧题来源；尚未确认的不是 run 级测试用例', [[rn.length, 'GPT 无现场待脱水'], [rn.filter(c => c.traceBundle?.stepCount).length, '已恢复当轮轨迹'], [rn.filter(c => c.traceBundle?.complete).length, '完整轨迹包'], [0, '用户确认可脱水'], [0, '门槛用例 / 初筛用例']]);
+        + lane('run', 'run 级（脱水）', '无现场待脱水，不含 #4、#10、#14 的旧题来源；尚未确认的不是 run 级测试用例', [[rn.length, 'GPT 无现场待脱水'], [rn.filter(c => c.traceBundle?.stepCount).length, '已恢复当轮轨迹'], [rn.filter(c => c.traceBundle?.complete).length, '完整轨迹包'], [rn.filter(c => dehydration(c)?.decision?.level === 'run').length, '用户确认可脱水'], [0, '门槛用例 / 初筛用例']]);
+    }
+    function dehydrationPanel(c) {
+      const r = dehydration(c); if (!r || sourceOnly(c) || !isGpt(c)) return '';
+      const rec = r.recommendation, d = r.decision;
+      const pct = v => typeof v === 'number' ? (v * 100).toFixed(1) + '%' : '未返回概率';
+      return `<section class="dehydration-panel" data-dehydration="${esc(c.id)}"><h4>能否脱水</h4><p>JEV 建议：${esc(kindLabel(rec.kindSuggestion))}（${pct(rec.kindProbability)}）；建议切点：第 ${rec.cutStepSuggestion} 步（${pct(rec.cutProbability)}${rec.cutSource === 'marked_step_fallback' ? '，未达建议条件，回退到发消息步骤，请你挑选' : ''}）。</p>
+        <details><summary>查看实际 JEV 材料与两题概率</summary><pre class="tl-req">${esc(json({ request: r.request, answers: rec.answers }))}</pre></details>
+        ${d ? `<p class="pill ok">已冻结：${esc(kindLabel(d.kind))}${d.cutStep ? ' · 第 ' + d.cutStep + ' 步' : ''} · ${d.level === 'reference' ? '只作参考' : esc(d.level) + ' 级'}</p><p class="trace-hash mono">决定 SHA-256：${esc(d.hash)}</p>` : `<label class="field">你的判断 <select data-dehydration-kind>${['single', 'throughout', 'unclear'].map(k => `<option value="${k}" ${rec.kindSuggestion === k ? 'selected' : ''}>${esc(kindLabel(k))}</option>`).join('')}</select></label>
+        <label class="field">单步型切点 <select data-dehydration-cut>${r.request.state.steps.map(s => `<option value="${s.step}" ${rec.cutStepSuggestion === s.step ? 'selected' : ''}>第 ${s.step} 步 · ${esc((s.messageBody || s.body).slice(0, 120))}</option>`).join('')}</select></label>
+        <p class="hint">贯穿型或说不清且无现场，只作参考，不成为测试用例。确认后判断与切点永久冻结；此处不启动模型。</p><button type="button" class="btn primary" data-dehydration-confirm="${esc(c.id)}" ${writable ? '' : 'disabled'}>确认并冻结判断与切点</button>`}</section>`;
     }
     function card(c, ts) {
       const p = plan(c), ref = c.traceBundle, tone = ref?.complete ? 'ok' : 'warn';
-      return `<article class="bc" id="bc-${c.n}" data-case-id="${esc(c.id)}"><div class="bc-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4><div class="bc-meta"><span>${isGpt(c) ? 'GPT' : esc(c.role || c.source?.agentId || '其他模型')}</span><span>来自 ${hl(c.source?.conversationTitle || '未命名房间', ts)}</span><span>${splitName[c.split] || '未定组'}${c.split ? '组（旧记录）' : ''}</span><span class="pill ${hasScene(c) ? 'info' : 'warn'}">${sourceOnly(c) ? '旧题来源' : hasScene(c) ? 'trace 级 · 现场待接入' : 'run 级 · 待脱水确认'}</span></div></div>
+      return `<article class="bc" id="bc-${c.n}" data-case-id="${esc(c.id)}"><div class="bc-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4><div class="bc-meta"><span>${isGpt(c) ? 'GPT' : esc(c.role || c.source?.agentId || '其他模型')}</span><span>来自 ${hl(c.source?.conversationTitle || '未命名房间', ts)}</span><span>${splitName[c.split] || '未定组'}${c.split ? '组（旧记录）' : ''}</span><span class="pill ${hasScene(c) ? 'info' : 'warn'}">${levelLabel(c)}</span></div></div>
         <ol class="stepper" aria-label="从标记到入库的步骤">${p.steps.map(([status, text], i) => `<li class="${status}" title="${esc(labels[i] + '：' + text)}"><span class="bar"></span><span class="lab">${labels[i]}</span><span class="sr-only">${esc(text)}</span></li>`).join('')}</ol>
-        <div class="next-line"><span class="who ${p.actor === 'system' ? 'sys' : 'none'}">${p.actor === 'system' ? '系统' : '到此为止'}</span><span>${esc(p.next)}</span></div>
+        <div class="next-line"><span class="who ${p.actor === 'system' ? 'sys' : 'none'}">${p.actor === 'system' ? '系统' : p.actor === 'you' ? '你' : '到此为止'}</span><span>${esc(p.next)}</span></div>
         <div class="chips"><span class="pill ${tone}">${backfill(c)}</span>${hasScene(c) ? `<span class="pill warn">现场：${sceneWait}</span>` : '<span class="pill">无现场</span>'}</div>
         ${ref?.missingReasons?.length ? `<p class="hint">缺失：${ref.missingReasons.map(r => `<span title="${esc(r)}">${esc(reasonLabels[r] || r)}</span>`).join('；')}</p>` : ''}
+        ${dehydrationPanel(c)}
         <details class="more"><summary>详情与步骤说明</summary><p class="case-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</p><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul><div class="muted-note" data-assertion-slot="${esc(c.id)}">评分断言与逐条判定：评分 v2 待接入，本页不生成或冻结评分断言。</div></details>
         <details class="more trace" data-trace-case="${esc(c.id)}" ${expanded.has(c.id) ? 'open' : ''}><summary>轨迹与上下文${ref ? `（${ref.stepCount} 次模型调用）` : ''}</summary><div data-trace-host="${esc(c.id)}"></div></details></article>`;
     }
@@ -153,7 +171,15 @@
       if (el.open) { expanded.add(id); renderTrace(c); void loadTrace(c); } else expanded.delete(id);
     }, true);
     root.addEventListener('click', e => {
-      const el = e.target.closest('[data-bc-mode],[data-trace-retry]'); if (!el) return;
+      const el = e.target.closest('[data-bc-mode],[data-trace-retry],[data-dehydration-confirm]'); if (!el || el.disabled) return;
+      if (el.dataset.dehydrationConfirm) {
+        const c = D.cases.find(c => c.id === el.dataset.dehydrationConfirm), r = c && dehydration(c);
+        if (!writable || !r || r.decision || typeof onConfirmDecision !== 'function') return;
+        const host = el.closest('[data-dehydration]'), kind = host.querySelector('[data-dehydration-kind]').value;
+        const cutStep = kind === 'single' ? Number(host.querySelector('[data-dehydration-cut]').value) : null;
+        if (!confirmAction(`确认冻结 #${c.n}：${kindLabel(kind)}${cutStep ? '，切点第 ' + cutStep + ' 步' : '；' + (hasScene(c) ? '仍走 trace 级' : '无现场，只作参考')}？之后不能修改；不会启动模型。`)) return;
+        onConfirmDecision({ caseId: c.id, traceHash: r.traceHash, recommendationHash: r.hash, kind, cutStep }); return;
+      }
       if (el.dataset.bcMode) { mode = el.dataset.bcMode; renderCards(); }
       if (el.dataset.traceRetry) { const c = D.cases.find(c => c.id === el.dataset.traceRetry); if (c) void loadTrace(c, true); }
     });
@@ -163,7 +189,7 @@
       if (el.hasAttribute('data-trace-search')) { const c = D.cases.find(c => c.id === el.dataset.traceSearch); if (c) { queries.set(c.id, el.value); renderTraceContent(c, el.closest('[data-trace-host]')); } }
     });
     root.addEventListener('change', e => { const el = e.target; if (el.hasAttribute('data-bc-stage')) { stage = el.value; renderCards(); } if (el.hasAttribute('data-bc-model')) { model = el.value; renderCards(); } });
-    return { render(data) { D = data; for (const [id, row] of cache) if (!D.cases.some(c => c.id === id && c.traceBundle?.hash === row.hash)) cache.delete(id); funnel(); renderCards(); },
+    return { setWritable(value) { writable = value && typeof onConfirmDecision === 'function'; root.querySelectorAll('[data-dehydration-confirm]').forEach(b => { b.disabled = !writable; }); }, render(data) { D = data; for (const [id, row] of cache) if (!D.cases.some(c => c.id === id && c.traceBundle?.hash === row.hash)) cache.delete(id); funnel(); renderCards(); },
       focus(n) { q = ''; stage = 'all'; model = 'all'; $('[data-bc-search]').value = ''; $('[data-bc-stage]').value = 'all'; $('[data-bc-model]').value = 'all'; renderCards(); root.querySelector('#bc-' + Number(n))?.scrollIntoView({ block: 'center' }); } };
   };
 })();

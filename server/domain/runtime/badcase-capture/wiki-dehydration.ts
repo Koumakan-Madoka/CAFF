@@ -48,16 +48,16 @@ function stepCard(step: any, knownKeyValues: readonly string[]) {
   const calls = blocks.filter((b: any) => b.type === 'toolCall');
   const results = (step.toolResults || []).map((e: any) => e.message);
   const errors = results.filter((m: any) => m?.isError === true);
+  const sent = calls.find((c: any) => c.name === 'bash' && /\bsend[-_]public\b/.test(c.arguments?.command || ''));
+  const plan = calls.find((c: any) => c.name === 'write' && /(?:plan|design|proposal|spec|prd|adr)(?:[./_-]|$)/i.test(c.arguments?.path || '') && typeof c.arguments?.content === 'string');
   let kind = 'ordinary', body: string;
   if (errors.length) {
     kind = 'error';
     body = errors.map(visible).map((s: string) => {
-      const lines = s.split(/\r?\n/).filter(l => /error|failed|exception|traceback|errno|fatal|panic|not found|permission|错误|失败|拒绝/i.test(l));
+      const lines = s.split(/\r?\n/).filter(l => /error|failed|exception|traceback|errno|fatal|panic|not found|permission|aborted|timed?\s*out|错误|失败|拒绝|超时/i.test(l));
       return lines.length ? lines.join('\n') : s;
     }).join('\n');
   } else {
-    const sent = calls.find((c: any) => c.name === 'bash' && /\bsend[-_]public\b/.test(c.arguments?.command || ''));
-    const plan = calls.find((c: any) => c.name === 'write' && /(?:plan|design|proposal|spec|prd|adr)(?:[./_-]|$)/i.test(c.arguments?.path || '') && typeof c.arguments?.content === 'string');
     if (sent) { kind = 'message'; body = publicBody(sent.arguments.command); }
     else if (plan) { kind = 'plan'; body = plan.arguments.content; }
     else if (visible(step.output)) { kind = 'message'; body = visible(step.output); }
@@ -66,7 +66,11 @@ function stepCard(step: any, knownKeyValues: readonly string[]) {
   // Replace known values BEFORE clipping; otherwise a boundary can retain part
   // of a key. Thinking blocks and tool-result details are never in this input.
   const safe = redactTraceKnownValues({ body }, knownKeyValues).value.body;
-  return { step: step.step, kind, body: kind === 'ordinary' ? safe.slice(0, 120) : kind === 'error' ? safe : longBody(safe) };
+  // A successful send-public ends its tool with "Command aborted" in older
+  // sessions. Preserve its actual message/plan as well as the error evidence.
+  const message = errors.length ? sent ? publicBody(sent.arguments.command) : plan ? plan.arguments.content : visible(step.output) : '';
+  return { step: step.step, kind, body: kind === 'ordinary' ? safe.slice(0, 120) : kind === 'error' ? safe : longBody(safe),
+    ...(message ? { messageBody: longBody(redactTraceKnownValues({ body: message }, knownKeyValues).value.body) } : {}) };
 }
 export function buildDehydrationRequest(input: any) {
   const { caseRecord: item, bundle, cause, knownKeyValues = [] } = input;

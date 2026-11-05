@@ -70,6 +70,12 @@ test('step cards redact before clipping, retain message/plan head 500 tail 300 a
   assert.equal(built.request.state.steps[0].kind, 'ordinary');
   assert.ok(built.request.state.steps[0].body.length <= 120);
 });
+test('a bridge completion reported as Command aborted still keeps the actual sent-message card and the error line', () => {
+  const h = fixture(); h.bundle.steps[1].toolResults[0].message.isError = true;
+  h.bundle.steps[1].toolResults[0].message.content[0].text = '{"ok":true,"message":{"id":"receipt"}}\n\nCommand aborted';
+  const card = api().buildDehydrationRequest(refresh(h)).request.state.steps[1];
+  assert.equal(card.messageBody, 'public reply'); assert.equal(card.body, 'Command aborted'); assert.equal(card.kind, 'error');
+});
 test('eligibility rejects real missing inputs, source-only case identities and source/hash mismatch, not broad legacy flags', () => {
   const h = fixture(); assert.equal(api().dehydrationAvailability(h.caseRecord, h.bundle).eligible, true);
   h.caseRecord.id = ids.four; h.caseRecord.split = 'train';

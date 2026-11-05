@@ -1,7 +1,7 @@
 const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 const { JSDOM } = require('jsdom');
 const tick = () => new Promise(r => setImmediate(r));
-function setup(t, fetcher) {
+function setup(t, fetcher, options = {}) {
   const dom = new JSDOM('<section id="pipeline"></section>', { runScripts: 'outside-only', url: 'http://127.0.0.1/wikiskill.html' });
   t.after(() => dom.window.close()); dom.window.HTMLElement.prototype.scrollIntoView = function() {};
   dom.window.eval(fs.readFileSync(path.resolve(__dirname, '../../public/shared/badcase-pipeline.js'), 'utf8'));
@@ -15,7 +15,7 @@ function setup(t, fetcher) {
     { id: 'c3', n: 4, kind: 'text-only', split: 'test', actual: 'old source', source: { agentId: 'role-family-gpt' } },
     { id: 'c4', n: 17, kind: 'marked-badcase', split: 'train', actual: 'other model', source: { agentId: 'role-family-deepseek' } },
   ], caseStates: [], replayCases: [] };
-  const panel = dom.window.CaffShared.createBadcasePipeline({ root, fetchJson: async url => { calls.push(url); return fetcher ? fetcher(url, packet) : { traceBundle: JSON.parse(JSON.stringify(packet)) }; } });
+  const panel = dom.window.CaffShared.createBadcasePipeline({ root, fetchJson: async url => { calls.push(url); return fetcher ? fetcher(url, packet) : { traceBundle: JSON.parse(JSON.stringify(packet)) }; }, ...options });
   panel.render(data);
   async function expand() { const d = root.querySelector('[data-trace-case="c1"]'); d.open = true; d.dispatchEvent(new dom.window.Event('toggle')); await tick(); await tick(); }
   return { root, data, packet, calls, panel, window: dom.window, expand };
@@ -24,7 +24,7 @@ test('pipeline has truthful stepper, actor groups, two funnels, backfill states 
   const h = setup(t); assert.equal(h.calls.length, 0);
   assert.equal(h.root.querySelectorAll('[data-lane]').length, 2);
   assert.equal(h.root.querySelector('[data-case-id="c1"] .stepper').children.length, 9);
-  for (const text of ['按下一步分组', '旧题的来源', '非 GPT 来源', '回填部分完成', '待采集能力合入', '评分 v2', 'JEV 推荐待接入']) assert.ok(h.root.textContent.includes(text), text);
+  for (const text of ['按下一步分组', '旧题的来源', '非 GPT 来源', '回填部分完成', '待采集能力合入', '评分 v2', 'JEV 推荐尚未生成']) assert.ok(h.root.textContent.includes(text), text);
   assert.doesNotMatch(h.root.textContent, /批准补全|示例.*JEV|已成为测试用例.*[1-9]/);
   assert.equal(h.root.querySelector('[data-case-id="c3"]').closest('[data-actor]').dataset.actor, 'source');
 });
@@ -56,6 +56,23 @@ test('failed reads never fall back to excerpts and allow an explicit retry', asy
   assert.match(trace.textContent, /读取失败/); assert.doesNotMatch(trace.textContent, /private-path|DO NOT USE EXCERPT/);
   failing = false; trace.querySelector('[data-trace-retry]').click(); await tick(); await tick();
   assert.match(trace.textContent, /full model text/); assert.equal(h.calls.length, 2);
+});
+test('recommendation is read-only until an explicit user confirmation, then binds IDs and hashes; declined confirmations never write', t => {
+  const sent = [], prompts = []; let accept = false;
+  const h = setup(t, null, { onConfirmDecision: body => sent.push(body), confirm: message => { prompts.push(message); return accept; } });
+  const r = { caseId: 'c1', traceHash: 'a'.repeat(64), hash: 'c'.repeat(64), request: { state: { steps: [{ step: 1, body: '<script>literal</script> decision' }, { step: 2, body: 'public reply' }] } },
+    recommendation: { kindSuggestion: 'single', kindProbability: .9, cutProbability: .7, cutStepSuggestion: 1, cutSource: 'jev', answers: { kind: { choice: 'single' } } } };
+  h.data.dehydrations = [r]; h.panel.render(h.data);
+  assert.equal(h.calls.length, 0); assert.equal(sent.length, 0); assert.match(h.root.querySelector('[data-actor="you"]').textContent, /请确认能否脱水/);
+  const host = h.root.querySelector('[data-dehydration="c1"]'); assert.equal(host.querySelector('script'), null); assert.match(host.textContent, /90.0%/);
+  host.querySelector('[data-dehydration-confirm]').click(); assert.equal(sent.length, 0); accept = true;
+  host.querySelector('[data-dehydration-cut]').value = '2'; host.querySelector('[data-dehydration-confirm]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c1', traceHash: r.traceHash, recommendationHash: r.hash, kind: 'single', cutStep: 2 }); assert.match(prompts.at(-1), /#1.*第 2 步/);
+  host.querySelector('[data-dehydration-kind]').value = 'throughout'; host.querySelector('[data-dehydration-confirm]').click(); assert.equal(sent[1].cutStep, null);
+  h.panel.setWritable(false); assert.equal(host.querySelector('[data-dehydration-confirm]').disabled, true);
+  r.decision = { kind: 'throughout', level: 'reference', cutStep: null, hash: 'd'.repeat(64) }; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-dehydration-confirm]'), null); assert.equal(h.root.querySelector('[data-case-id="c1"]').closest('[data-actor]').dataset.actor, 'reference');
+  assert.match(h.root.textContent, /已冻结：贯穿型.*只作参考/); assert.equal(h.calls.length, 0);
 });
 test('stale packet responses after a data refresh cannot replace current evidence', async t => {
   const pending = []; const h = setup(t, () => new Promise(r => { pending.push(r); })); await h.expand();
