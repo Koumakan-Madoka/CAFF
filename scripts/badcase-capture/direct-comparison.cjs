@@ -306,10 +306,11 @@ async function runComparison(config, options = {}) {
         ...(plan.summary.repository ? ['sourceHead', 'restoredHead', 'historyIncluded', 'headIdenticalToSource', 'historyCommitCount']
           .map(field => [receipt?.repository?.[field], plan.summary.repository[field]]) : [])]
         .some(([actual, expected]) => actual !== undefined && actual !== expected);
-      const recoverableProxy = native && environmentReason === 'evaluation_codex_proxy_failed'
-        && task?.failed === true && task.reason === environmentReason && task.cleaned === true
-        && /^[a-f0-9]{64}$/.test(task.containerId || '') && task.isolation?.network === 'none'
-        && task.inputHash === manifests[variant].inputHash && task.runtimeHash === manifests[variant].runtimeHash;
+      const verifiedLauncher = native && task?.cleaned === true && /^[a-f0-9]{64}$/.test(task.containerId || '')
+        && task.isolation?.network === 'none' && task.inputHash === manifests[variant].inputHash
+        && task.runtimeHash === manifests[variant].runtimeHash;
+      const recoverableProxy = verifiedLauncher && environmentReason === 'evaluation_codex_proxy_failed'
+        && task?.failed === true && task.reason === environmentReason;
       const modelConfigChanged = native && !recoverableProxy && Object.keys(CODEX_CONFIG).some(k => receipt?.modelConfig?.[k] !== CODEX_CONFIG[k]);
       const recordedConfigChanged = plan.summary.recordedModelConfig && receipt?.kind === 'direct-caff-turn-v1' && Object.keys(plan.summary.recordedModelConfig)
         .some(k => receipt?.recordedModelConfig?.[k] !== plan.summary.recordedModelConfig[k]);
@@ -390,13 +391,19 @@ async function runComparison(config, options = {}) {
         // Evidence/integrity stops propagate to the remaining cases and stages.
         stopped = fatal;
       }
-      // Auth/quota and integrity errors still stop. A single send/read error
-      // may use the shared five replacements only with verified launcher
-      // hashes/isolation/cleanup; missing worker usage stays explicitly unknown.
+      // Unlike a thrown proxy failure, an HTTP gateway error travels back to
+      // the worker. Require its normal verified receipt as well as launcher
+      // cleanup; never waive model/config evidence for an HTTP error.
+      const recoverableGateway = verifiedLauncher && environmentReason === 'evaluation_codex_gateway_unavailable'
+        && valid && receipt.success === false
+        && receipt.modelCalls.some(c => c.success === false && [502, 503, 504].includes(c.httpStatus));
+      // Auth/quota, all other HTTP statuses and integrity errors still stop.
+      // Send/read and gateway errors share the unchanged five replacements;
+      // missing worker usage stays explicitly unknown.
       if (environmentReason) {
         row.status = 'error'; row.checks = null; row.reason = environmentReason;
         if (transport.state().diagnostic) row.environmentDiagnostic = transport.state().diagnostic;
-        stopped = !alternating || !recoverableProxy || fatal; fatal = stopped;
+        stopped = !alternating || !(recoverableProxy || recoverableGateway) || fatal; fatal = stopped;
       }
       if (native && alternating && row.status === 'error' && !isWikiJudgeTechnicalError(row.assessment)
         && runs.filter(r => r.status === 'error' && !isWikiJudgeTechnicalError(r.assessment)).length >= 5) {
