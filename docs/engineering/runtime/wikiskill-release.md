@@ -6,7 +6,7 @@
 
 [冻结轨迹包与脱水契约](wikiskill-trace-bundles.md) 是独立交付：历史只读回填、用户确认、删除与重新分组目前仅在隔离 Wiki 副本生效，不是已经发布到 3100。上线前单独批准数据导入／冲突处理计划；保留生产当前 revision、全部历史快照、traces、run-replays、imports、用户确认及删除事件，核对逐包 hash，不把测试合成 #21、测试 SQLite 或临时 DeepSeek 配置带入生产，也不覆盖正在写入的 Wiki。当前没有可直接向现有生产集合合并这些记录的发布命令；不得把下文整库搬迁命令当作增量合并工具。
 
-本增量 Goal 的最终验证要求 Windows 与 WSL Node 22.19.0 的同 SHA `typecheck/build/test:fast` 及秘密扫描；其固定 SHA 的规划者终审、用户接受以及后续集成／部署仍须分别记录。判分由评分 v2 Goal 负责，两个 Goal 合入后的 run 选题／判分接线另行实现；发布此页面不代表该接线已完成，不自动发起模型调用或重跑历史评测。
+本增量 Goal 的最终验证要求 Windows 与 WSL Node 22.19.0 的同 SHA `typecheck/build`、适用 `test:fast` 及秘密扫描。按用户授权规划者裁决，Windows 完整执行含浏览器 UI 的 `test:fast`；WSL 仅排除[契约明确列出的四个缺浏览器 UI 文件](wikiskill-trace-bundles.md#失败与验证)，其余全部执行。Linux UI 留待另获批准推送后的 PR CI，不冒充当前已通过。其固定 SHA 的规划者终审、用户接受以及后续集成／部署仍须分别记录。判分由评分 v2 Goal 负责，两个 Goal 合入后的 run 选题／判分接线另行实现；发布此页面不代表该接线已完成，不自动发起模型调用或重跑历史评测。
 
 ## 1. 固定交付身份，再批准推送／合并
 
