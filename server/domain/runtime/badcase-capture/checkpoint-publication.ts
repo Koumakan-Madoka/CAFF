@@ -19,6 +19,10 @@ export function publishPreparedCheckpoint(options: any): any {
   const store = options?.store, original = options?.checkpoint;
   if (!store?.captureRoot || !id(original?.projectId) || !id(original?.checkpointId)) return result('checkpoint_material_invalid');
   const projectId = original.projectId;
+  const legacy = original.schemaVersion !== 2;
+  // v2 was sanitized against host-known literals before publication. Legacy
+  // schema-v1 keeps its sentinel checks; don't reject example text in v2.
+  const hasSecret = (bytes: any) => legacy && containsSecretSentinel(bytes);
   try {
     return withProjectWriteLock(store.captureRoot, projectId, () => {
       const policy = store.loadPolicy(projectId);
@@ -29,7 +33,7 @@ export function publishPreparedCheckpoint(options: any): any {
         if (checkpoint.projectId !== projectId || !id(checkpoint.checkpointId)
           || checkpoint.strictEvalEligible !== false || checkpoint.status !== 'staged'
           || typeof checkpoint.targetDir !== 'string' || !path.isAbsolute(checkpoint.targetDir)
-          || containsSecretSentinel(JSON.stringify(checkpoint))) throw Error();
+          || hasSecret(JSON.stringify(checkpoint))) throw Error();
         const references = new Set(checkpointBlobHashes(checkpoint));
         if (!(options.blobs instanceof Map)) throw Error();
         materials = new Map(); missing = new Map();
@@ -37,7 +41,7 @@ export function publishPreparedCheckpoint(options: any): any {
         for (const [digest, content] of options.blobs) {
           if (!references.has(digest) || !Buffer.isBuffer(content)) throw Error();
           const owned = Buffer.alloc(content.length); content.copy(owned);
-          if (hash(owned) !== digest || containsSecretSentinel(owned)) throw Error();
+          if (hash(owned) !== digest || hasSecret(owned)) throw Error();
           materials.set(digest, owned);
         }
         for (const digest of references) {
@@ -45,7 +49,7 @@ export function publishPreparedCheckpoint(options: any): any {
           // same-size corrupt CAS entry may not become a successful reference.
           const existing = store.readBlob(projectId, digest);
           if (existing !== null) {
-            if (!Buffer.isBuffer(existing) || hash(existing) !== digest || containsSecretSentinel(existing)) throw Error();
+            if (!Buffer.isBuffer(existing) || hash(existing) !== digest || hasSecret(existing)) throw Error();
             materials.set(digest, existing);
           } else {
             if (!materials.has(digest)) throw Error();
@@ -77,6 +81,10 @@ export function publishPreparedCheckpoint(options: any): any {
           - store.latestPointerSize(projectId, checkpoint.targetDir);
         const fileHashes = new Set((Object.values(checkpoint.files) as any[])
           .filter(f => f.type === 'file' && f.secretExcluded !== true).map(f => f.hash));
+        if (!legacy) {
+          fileHashes.add(checkpoint.gitSnapshot.patchBlobHash);
+          for (const root of checkpoint.gitSnapshot.projectSkills) for (const file of Object.values(root.files) as any[]) fileHashes.add(file.hash);
+        }
         const replay = checkpoint.replayInput, sessionHash = replay.sessionBlobHash;
         const replayHashes = new Set([replay.promptBlobHash, replay.harness.configSnapshotHash,
           replay.callbackInput?.blobHash, ...replay.harness.skillSnapshots.map((s: any) => s.blobHash)].filter(Boolean));
@@ -121,7 +129,7 @@ export function publishPreparedCheckpoint(options: any): any {
         store.commitStaging(projectId, stagingId);
         for (const [digest, expected] of materials) {
           const bytes = store.readBlob(projectId, digest);
-          if (!Buffer.isBuffer(bytes) || bytes.length !== expected.length || hash(bytes) !== digest || containsSecretSentinel(bytes)) throw Error();
+          if (!Buffer.isBuffer(bytes) || bytes.length !== expected.length || hash(bytes) !== digest || hasSecret(bytes)) throw Error();
         }
         quota(store.computeUsage(projectId).totalBytes, manifestReserve);
         store.saveCheckpoint(projectId, checkpoint);

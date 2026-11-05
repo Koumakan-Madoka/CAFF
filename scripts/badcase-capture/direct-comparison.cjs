@@ -2,6 +2,7 @@
 // No model gateway, auto prompt generation, secret discovery, or self-scoring.
 const crypto = require('node:crypto');
 const path = require('node:path');
+const { isSafeRelativePath } = require('./replay-path.cjs');
 const { prepareSealedDirectTurn, prepareSealedOriginalTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
 const { prepareDirectTurnFiles, runDirectDockerTask, runCodexDockerTask } = require('./direct-docker.cjs');
 const { createCodexTransport, createCodexAccess } = require('./codex-transport.cjs');
@@ -35,9 +36,9 @@ function validateRules(rules) {
   if (!rules || rules.kind !== 'read-only-files-v1'
     || Object.keys(rules).some(k => !['kind', 'readPaths', 'absentPaths', 'requiredReplyFragments'].includes(k))
     || !Array.isArray(rules.absentPaths) || rules.absentPaths.length > 16 || new Set(rules.absentPaths).size !== rules.absentPaths.length
-    || rules.absentPaths.some(p => typeof p !== 'string' || !/^[A-Za-z0-9_.@/-]+$/.test(p) || p.split('/').some(s => !s || s === '.' || s === '..'))
+    || rules.absentPaths.some(p => !isSafeRelativePath(p))
     || !Array.isArray(rules.readPaths) || !rules.readPaths.length || rules.readPaths.length > 16
-    || rules.readPaths.some(p => typeof p !== 'string' || !/^[A-Za-z0-9_.@/-]+$/.test(p) || p.split('/').some(s => !s || s === '.' || s === '..'))
+    || rules.readPaths.some(p => !isSafeRelativePath(p))
     || new Set(rules.readPaths).size !== rules.readPaths.length
     || !Array.isArray(rules.requiredReplyFragments) || !rules.requiredReplyFragments.length || rules.requiredReplyFragments.length > 32
     || rules.requiredReplyFragments.some(s => typeof s !== 'string' || !s.trim() || s.length > 256)) throw fail('evaluation_rules_invalid');
@@ -101,7 +102,11 @@ function prepareComparison(config, options = {}) {
   const rules = validateRules(config.rules ?? (scoring ? { kind: 'completion-public-reply-v1' } : undefined));
   if (!scoring && rules.kind === 'completion-public-reply-v1') throw fail('wiki_scoring_config_required');
   const knownValues = comparisonKnownValues(config, options);
-  let prepare = options.prepare || (originalOnly ? prepareSealedOriginalTurn : prepareSealedDirectTurn), globalWikiCandidate = null, globalState, globalSaved, globalFiles, baseline;
+  // Host-only literal inventory is not a config JSON secret channel. Legacy
+  // preparation ignores it; v2 needs it when materializing uncaptured HEAD blobs.
+  const replayOptions = config.knownKeySources !== undefined || Object.hasOwn(options, 'knownValues') ? { knownKeyValues: knownValues } : {};
+  let prepare = options.prepare || ((request, candidate) => originalOnly ? prepareSealedOriginalTurn(request, replayOptions)
+    : prepareSealedDirectTurn(request, candidate, replayOptions)), globalWikiCandidate = null, globalState, globalSaved, globalFiles, baseline;
   if (config.globalWikiCandidate !== undefined) {
     const selection = require('../../build/server/domain/runtime/badcase-capture/wiki-data-directory').resolveWikiStorageOptions(config.globalWikiCandidate);
     if (!selection || typeof selection !== 'object' || Array.isArray(selection)
@@ -119,7 +124,7 @@ function prepareComparison(config, options = {}) {
     // Old seals and newly sealed, manually merged fragments share one baseline.
     // Only the candidate adds a new change; neither arm silently drops history.
     prepare = (request, replacement = null) => prepareTarget(resolveWikiReplayRequest(selection, request), globalSaved.targetId,
-      replacement === null && baseline.fragments.length > 1 ? baseline.target.baseText : replacement, baseline.fragments);
+      replacement === null && baseline.fragments.length > 1 ? baseline.target.baseText : replacement, baseline.fragments, replayOptions);
   }
   const original = prepare(config.request);
   if (original.supported !== true) return { supported: false, reason: /^replay_[a-z_]+$/.test(original.reason || '') ? original.reason : 'replay_materials_invalid' };
@@ -163,6 +168,7 @@ function prepareComparison(config, options = {}) {
     // The operator supplies an independently recorded commit, never an implicit
     // current HEAD. Ordinary source-file bytes are not substituted for capture.
     if (original.input.bindings?.sourceRoot && path.resolve(config.repository?.sourceRoot || '') !== path.resolve(original.input.bindings.sourceRoot)) throw fail('evaluation_repository_source_mismatch');
+    if (original.provenance.sourceSnapshot && config.repository?.head !== original.provenance.sourceSnapshot.head) throw fail('evaluation_repository_head_mismatch');
     repository = prepareReplayGit(config.repository, original.input, { knownValues });
   }
   if (rules.kind === 'public-reply-literals-v2' && repository?.report.sourceHead !== rules.snapshotHead) throw fail('evaluation_snapshot_head_mismatch');
@@ -183,6 +189,7 @@ function prepareComparison(config, options = {}) {
       ...(repository ? { repository: repository.report, gitFileHashes: repository.gitFiles.map(f => ({ path: f.path, sha256: f.sha256 })) } : {}),
       ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}) })) : original.provenance.commonInputHash,
     model: profile, ...(profile === CODEX_PROFILE ? { modelConfig: { ...CODEX_CONFIG } } : {}), ...(dockerBackend ? { dockerBackend } : {}),
+    ...(original.provenance.sourceSnapshot ? { sourceSnapshot: { ...original.provenance.sourceSnapshot } } : {}),
     ...(original.input.recordedModelConfig ? { recordedModelConfig: { ...original.input.recordedModelConfig } } : {}),
     ...(original.input.projectResources ? { projectResources: projectResourcesSummary(original.input.projectResources) } : {}),
     ...(original.input.sessionText ? { replaySession: replaySessionInfo(original.input.sessionText) } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),

@@ -1,6 +1,7 @@
 // Offline Docker execution primitive. Trusted internal callers only, NOT a replay launcher.
 // No HTTP/model/credential/callback configuration. See contract §4.1.
 import { containsSecretSentinel } from './secrets';
+import { isSafeRelativePath, isSafeDistributionPath } from './replay-path';
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const LABEL = 'caff.badcase.offline';
@@ -15,8 +16,7 @@ function exact(v: any, keys: string[]) {
   return v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).sort().join('|') === [...keys].sort().join('|');
 }
 function relative(v: any): boolean {
-  return typeof v === 'string' && v.length <= 1024 && /^[a-zA-Z0-9_.\-/]+$/.test(v)
-    && v.split('/').every((p: string) => p && p !== '.' && p !== '..' && p.length <= 255);
+  return isSafeDistributionPath(v) && v.length <= 1024 && v.split('/').every(p => p.length <= 255);
 }
 
 export function prepareOfflineTask(input: any) {
@@ -57,6 +57,7 @@ export function prepareOfflineTask(input: any) {
 // Passed as a fixed argument, never evaluated on the host. Root filesystem stays read-only.
 // Restore is exclusively into fresh /work tmpfs, before any user code runs, without symlinks.
 const BOOTSTRAP = `
+const isSafeRelativePath = ${isSafeRelativePath.toString()};
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),cp=require('node:child_process');
 let chunks=[],n=0;
 process.stdin.on('data',b=>{n+=b.length;if(n>33554432)process.exit(78);chunks.push(b)});
@@ -64,7 +65,7 @@ process.stdin.on('end',()=>{try{
  const p=JSON.parse(Buffer.concat(chunks));
  if(process.version!==p.nodeVersion||cp.execFileSync('/usr/bin/python3',['--version'],{encoding:'utf8',timeout:5000}).trim()!==p.pythonVersion)throw Error();
  for(const f of p.files){
-  if(!/^[a-zA-Z0-9_.\\-/]+$/.test(f.path)||f.path.split('/').some(x=>!x||x==='.'||x==='..'))throw Error();
+  if(!isSafeRelativePath(f.path,{allowGit:true,allowNodeModules:true}))throw Error();
   const b=Buffer.from(f.base64,'base64');if(crypto.createHash('sha256').update(b).digest('hex')!==f.sha256)throw Error();
   const dest=path.join('/work',f.path);fs.mkdirSync(path.dirname(dest),{recursive:true,mode:0o700});fs.writeFileSync(dest,b,{flag:'wx',mode:0o600});
  }

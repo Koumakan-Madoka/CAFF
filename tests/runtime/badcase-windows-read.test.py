@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,23 @@ class WindowsRead(unittest.TestCase):
         self.outside = self.base / 'unauthorized'
         self.outside.mkdir()
         (self.outside / 'sample.bin').write_bytes(b'OUTSIDE_SENTINEL')
+
+    def test_room_git_state_separate_schema_limit_and_no_ref_following(self):
+        request = {**self.session_request(), 'op': 'gitState', 'path': 'HEAD'}
+        (self.root / 'HEAD').write_bytes(b'ref: refs/heads/room/test\n')
+        with patch.object(w.Root, 'walk', side_effect=AssertionError('no walk')):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+        header, body = out.getvalue().split(b'\n', 1)
+        self.assertTrue(json.loads(header)['ok'], header)
+        self.assertEqual(body, b'ref: refs/heads/room/test\n')
+        for name in ['../HEAD', 'refs/heads/../private', 'refs/remotes/origin/main', 'config', 'objects/a', 'HEAD.lock']:
+            with self.subTest(name=name), patch.object(w, 'Root') as unopened:
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'path': name})), out)
+                self.assertEqual(json.loads(out.getvalue())['code'], 'request_invalid')
+                self.assertEqual(unopened.call_count, 0)
+        (self.root / 'packed-refs').write_bytes(b'x' * (1024 * 1024 + 1))
+        out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'path': 'packed-refs'})), out)
+        self.assertEqual(json.loads(out.getvalue())['code'], 'too_large')
 
     def test_git_input_fixed_binary_files_without_walk_or_pointer_expansion(self):
         request = {**self.session_request(), 'op': 'gitInput', 'path': 'index'}
@@ -432,6 +450,87 @@ class WindowsRead(unittest.TestCase):
         with self.assertRaisesRegex(w.Refused, '^root_closed$'):
             root.read('sub/sample.bin')
 
+    def invalid_file(self, parent, name):
+        # Fixture creation/cleanup ONLY uses the extended spelling. Production
+        # must never open these children, even through native relative handles.
+        filename = '\\\\?\\' + str(parent / name)
+        with open(filename, 'wb') as stream:
+            stream.write(b'INVALID_NAME_CONTENT_MUST_NOT_BE_READ')
+        self.addCleanup(os.unlink, filename)
+
+    def test_invalid_enumerated_names_are_gaps_not_opens_or_whole_tree_failures(self):
+        names = ['NUL', 'nul.txt', 'CON', 'AUX.txt', 'PRN', 'COM1', 'COM9.txt',
+                 'LPT1', 'LPT9.txt', 'tail.', 'tail ']
+        for name in names:
+            self.invalid_file(self.root, name)
+        self.invalid_file(self.root / 'sub', 'nested.')
+        invalid_dir = '\\\\?\\' + str(self.root / 'invalid-dir.')
+        os.mkdir(invalid_dir)
+        self.addCleanup(os.rmdir, invalid_dir)
+        child = invalid_dir + '\\private'
+        with open(child, 'wb') as stream:
+            stream.write(b'INVALID_DIRECTORY_MUST_NOT_BE_TRAVERSED')
+        self.addCleanup(os.unlink, child)
+        gaps = [{'path': p, 'reason': 'windows_reserved_or_invalid_name'}
+                for p in sorted(names + ['sub/nested.', 'invalid-dir.'])]
+        request = self.snapshot_request()
+        opened, reads = [], []
+        opening, reading = w._relative, w.Root.read
+        def observe_open(stack, parent, name, directory):
+            opened.append(name)
+            return opening(stack, parent, name, directory)
+        def observe_read(root, relative, *args, **kwargs):
+            reads.append(relative)
+            return reading(root, relative, *args, **kwargs)
+        for op in ['estimate', 'capture', 'snapshot', 'selectedSnapshot', 'gitMetadata']:
+            selected = {**request, 'op': op}
+            if op in ['capture', 'selectedSnapshot']:
+                selected['paths'] = ['sub/sample.bin']
+            opened.clear(); reads.clear()
+            with self.subTest(op=op), patch.object(w, '_relative', observe_open), patch.object(w.Root, 'read', observe_read):
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(selected)), out)
+                header, body = out.getvalue().split(b'\n', 1); header = json.loads(header)
+                self.assertTrue(header['ok'], header)
+                self.assertEqual(header['uncaptured'], gaps)
+                self.assertEqual([e['path'] for e in header['entries']], ['sub', 'sub/sample.bin'])
+                self.assertEqual(body, b'' if op in ['estimate', 'gitMetadata'] else self.bytes)
+                self.assertFalse(set(names + ['nested.', 'invalid-dir.', 'private']) & set(opened))
+                self.assertEqual(reads, [] if op in ['estimate', 'gitMetadata'] else ['sub/sample.bin'] * (1 if op == 'capture' else 2))
+        with w.Root(str(self.root)) as root:
+            with self.assertRaisesRegex(w.Refused, '^entry_limit$'):
+                root.walk(max_entries=2)  # invalid names must still consume the bound
+            for name in names:
+                with self.subTest(name=name), self.assertRaisesRegex(w.Refused, '^path_invalid$'):
+                    root.read(name)
+
+    def test_invalid_character_names_are_reported_without_opening_and_malformed_records_still_fail(self):
+        import struct
+        names = ['NUL', 'nul.txt', 'tail.', 'tail ', 'x<', 'x>', 'x:', 'x"', 'x|', 'x?', 'x*']
+        for name in names:
+            text = name.encode('utf-16-le')
+            self.assertEqual(w._parse_names(struct.pack('<III', 0, 0, len(text)) + text), [name])
+        with w.Root(str(self.root)) as root:
+            for name in names:
+                with self.subTest(name=name), patch.object(w, '_directory_names', return_value=[(name, 0)]), patch.object(w, '_relative') as unopened:
+                    gaps = []
+                    self.assertEqual(root.walk(_uncaptured=gaps), [])
+                    self.assertEqual(gaps, [{'path': name, 'reason': 'windows_reserved_or_invalid_name'}])
+                    self.assertEqual(unopened.call_count, 0)
+
+    def test_snapshot_compares_gap_namespace_between_passes(self):
+        self.invalid_file(self.root, 'NUL')
+        request = self.snapshot_request()
+        walk, calls = w.Root.walk, 0
+        def changed(root, *args, **kwargs):
+            nonlocal calls
+            result = walk(root, *args, **kwargs); calls += 1
+            if calls == 2:
+                kwargs['_uncaptured'].clear()  # same safe entries, changed skipped namespace
+            return result
+        with patch.object(w.Root, 'walk', changed):
+            out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(request)), out)
+        self.assertEqual(json.loads(out.getvalue()), {'version': 1, 'ok': False, 'code': 'snapshot_changed'})
+
     def test_path_aliases_and_escape_rejected(self):
         invalid = ['', '.', '..', '../unauthorized/sample.bin', 'sub/../../unauthorized/sample.bin',
                    '/sample.bin', '//host/share', 'C:/sample.bin', r'sub\sample.bin',
@@ -572,7 +671,7 @@ class WindowsRead(unittest.TestCase):
             with self.assertRaisesRegex(w.Refused, '^entry_limit$'):
                 w._directory_names(root.handle, 399)  # native-buffer cap independent of walk cap
 
-    def test_walk_reparse_refused_without_outside_enumeration(self):
+    def test_walk_reparse_skipped_without_open_or_outside_enumeration(self):
         link = self.root / 'junction'
         p = subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(link), str(self.outside)],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
@@ -582,17 +681,80 @@ class WindowsRead(unittest.TestCase):
                 outside_id = outside.identity.copy()
             seen = []
             original_names = w._directory_names
-            def observe(handle, limit):
+            def observe(handle, limit, **kwargs):
                 ident = w.identity(handle)
                 self.assertNotEqual(ident, outside_id, 'enumerated outside object')
                 seen.append(ident)
-                return original_names(handle, limit)
-            with w.Root(str(self.root)) as root, patch.object(w, '_directory_names', side_effect=observe):
-                with self.assertRaises(w.Refused):
-                    root.walk()
+                return original_names(handle, limit, **kwargs)
+            opened, opening = [], w._relative
+            def observe_open(stack, parent, name, directory):
+                opened.append(name)
+                return opening(stack, parent, name, directory)
+            with w.Root(str(self.root)) as root, patch.object(w, '_directory_names', side_effect=observe), patch.object(w, '_relative', observe_open):
+                gaps = []
+                self.assertEqual([e['path'] for e in root.walk(_uncaptured=gaps)], ['sub', 'sub/sample.bin'])
+            self.assertEqual(gaps, [{'path': 'junction', 'reason': 'reparse_point_skipped'}])
+            self.assertNotIn('junction', opened, 'enumerated reparse must not even be opened')
             self.assertTrue(seen)
         finally:
             os.rmdir(link)
+        self.assertEqual((self.outside / 'sample.bin').read_bytes(), b'OUTSIDE_SENTINEL')
+
+    def test_reparse_protocol_gaps_never_read_or_select_link_targets(self):
+        junctions = [self.root / 'junction', self.root / 'sub' / 'nested-link']
+        for linked in junctions:
+            subprocess.run(['cmd', '/d', '/c', 'mklink', '/J', str(linked), str(self.outside)],
+                           check=True, capture_output=True, timeout=10)
+            self.addCleanup(os.rmdir, linked)  # remove only the link, never its target
+        symlinks = []
+        for name, target, directory in [('dir-link', self.outside, True),
+                                        ('file-link', self.outside / 'sample.bin', False),
+                                        ('dangling-link', self.outside / 'absent', False)]:
+            linked = self.root / name
+            try:
+                os.symlink(target, linked, target_is_directory=directory)
+            except OSError as error:
+                if error.winerror != 1314:  # explicitly optional without symlink privilege
+                    raise
+            else:
+                symlinks.append(linked)
+                self.addCleanup(os.rmdir if directory else os.unlink, linked)
+        sys.stderr.write('native reparse fixtures: junctions=2, symlinks=' + str(len(symlinks)) + '\n')
+        names = sorted(p.relative_to(self.root).as_posix() for p in junctions + symlinks)
+        gaps = [{'path': name, 'reason': 'reparse_point_skipped'} for name in names]
+        request = self.snapshot_request()
+        opening, reading = w._relative, w.Root.read
+        opened, reads = [], []
+        def observe_open(stack, parent, name, directory):
+            opened.append(name)
+            return opening(stack, parent, name, directory)
+        def observe_read(root, relative, *args, **kwargs):
+            reads.append(relative)
+            return reading(root, relative, *args, **kwargs)
+        for op in ['estimate', 'capture', 'snapshot', 'selectedSnapshot', 'gitMetadata']:
+            selected = {**request, 'op': op}
+            if op in ['capture', 'selectedSnapshot']:
+                selected['paths'] = ['sub/sample.bin']
+            opened.clear(); reads.clear()
+            with self.subTest(op=op), patch.object(w, '_relative', observe_open), patch.object(w.Root, 'read', observe_read):
+                out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request(selected)), out)
+            header, body = out.getvalue().split(b'\n', 1); header = json.loads(header)
+            self.assertTrue(header['ok'], header)
+            self.assertEqual(header['uncaptured'], gaps)
+            self.assertEqual([e['path'] for e in header['entries']], ['sub', 'sub/sample.bin'])
+            self.assertEqual(body, b'' if op in ['estimate', 'gitMetadata'] else self.bytes)
+            self.assertFalse(set(p.name for p in junctions + symlinks) & set(opened))
+            self.assertNotIn(b'OUTSIDE_SENTINEL', out.getvalue())
+            self.assertEqual(reads, [] if op in ['estimate', 'gitMetadata'] else ['sub/sample.bin'] * (1 if op == 'capture' else 2))
+        for relative in ['junction/sample.bin', 'junction', 'sub/nested-link/sample.bin'] + [p.name for p in symlinks]:
+            for op in ['capture', 'selectedSnapshot']:
+                with self.subTest(relative=relative, op=op), patch.object(w.kernel, 'ReadFile', wraps=w.kernel.ReadFile) as unread:
+                    out = io.BytesIO(); w.serve(io.BytesIO(self.wire_request({**request, 'op': op, 'paths': [relative]})), out)
+                self.assertEqual(json.loads(out.getvalue())['code'], 'path_not_in_manifest')
+                self.assertEqual(unread.call_count, 0, 'preflight rejects before reading any content')
+        with w.Root(str(self.root)) as root:
+            with self.assertRaisesRegex(w.Refused, '^entry_limit$'):
+                root.walk(max_entries=2)  # skipped names consume the same enumeration budget
         self.assertEqual((self.outside / 'sample.bin').read_bytes(), b'OUTSIDE_SENTINEL')
 
     def test_walk_mutation_and_handles_on_failure(self):
@@ -655,6 +817,7 @@ class WindowsRead(unittest.TestCase):
         for value in [b'', b'x' * 11, struct.pack('<III', 0, 0, 1) + b'x',
                       struct.pack('<III', 0, 0, 100) + b'x' * 2,
                       struct.pack('<III', 0, 0, 2) + b'\x00\xd8', record('../escape'),
+                      record('x\\y'), record('x\x00y'), record('x' * 256),
                       record('a', 4), record('a', 15), record('a', 15) + b'\x00' + record('b'),
                       record('a', 4096), record('')]:
             with self.subTest(value=value), self.assertRaises(w.Refused):
@@ -667,9 +830,41 @@ class WindowsRead(unittest.TestCase):
             with patch.object(w.nt, 'NtQueryDirectoryFile', return_value=0):
                 with self.assertRaisesRegex(w.Refused, '^enumeration_invalid$'):
                     root.walk()  # successful status without valid IO bytes is not empty
-            with patch.object(w, '_parse_names', return_value=['duplicate', 'duplicate']):
+            with patch.object(w, '_parse_names', return_value=[('duplicate', 0), ('duplicate', 0)]):
                 with self.assertRaisesRegex(w.Refused, '^directory_changed$'):
                     root.walk()
+
+    def test_directory_attribute_records_are_bounded_and_do_not_infer_target_types(self):
+        def record(name, attributes=0, next_offset=0):
+            text = name.encode('utf-16-le')
+            return struct.pack('<II', next_offset, 0) + bytes(48) + struct.pack('<II', attributes, len(text)) + text
+        for attributes in [0, 0x10, 0x20, 0x400, 0x410, 0x10400, 0xffffffff]:
+            self.assertEqual(w._parse_names(record('link', attributes), _attributes=True), [('link', attributes)])
+        self.assertEqual(w._parse_names(record('.', 0x10, 72) + bytes(6) + record('..', 0x10), _attributes=True), [])
+        self.assertEqual(w._parse_names(record('NUL', 0x400), _attributes=True), [('NUL', 0x400)])
+        for value in [bytes(63), record(''), record('../escape'), record('x\\y'), record('x\x00y'), record('x' * 256),
+                      record('link')[:-1], record('link', next_offset=64), record('link', next_offset=73),
+                      record('link', next_offset=4096), bytes(60) + struct.pack('<I', 1) + b'x',
+                      bytes(60) + struct.pack('<I', 2) + b'\x00\xd8']:
+            with self.subTest(value=value), self.assertRaisesRegex(w.Refused, '^enumeration_invalid$'):
+                w._parse_names(value, _attributes=True)
+
+    def test_any_reparse_attribute_skips_before_open_but_late_reparse_and_other_failures_still_refuse(self):
+        with w.Root(str(self.root)) as root:
+            for attributes in [0x400, 0x410, 0x10400, 0xffffffff]:
+                with self.subTest(attributes=attributes), patch.object(w, '_directory_names', return_value=[('unknown-tag', attributes)]), patch.object(w, '_relative') as unopened:
+                    gaps = []
+                    self.assertEqual(root.walk(_uncaptured=gaps), [])
+                    self.assertEqual(gaps, [{'path': 'unknown-tag', 'reason': 'reparse_point_skipped'}])
+                    self.assertEqual(unopened.call_count, 0)
+            # A rename/reparse race is NOT silently converted to an apparently
+            # stable gap. Only the native enumeration can justify skipping.
+            for reason in ['reparse_rejected', 'relative_open_rejected', 'root_identity_mismatch', 'metadata_unavailable']:
+                with self.subTest(reason=reason), patch.object(w, '_directory_names', return_value=[('ordinary', 0)]), patch.object(w, '_relative', side_effect=w.Refused(reason)):
+                    gaps = []
+                    with self.assertRaisesRegex(w.Refused, '^' + reason + '$'):
+                        root.walk(_uncaptured=gaps)
+                    self.assertEqual(gaps, [])
 
     def test_exclusions_prune_before_open_and_sort_interleaved_names(self):
         (self.root / 'a').mkdir()

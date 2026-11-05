@@ -15,6 +15,7 @@ const { planEvaluation } = require('../../build/server/domain/runtime/badcase-ca
 const { readModelEgress } = require('../../build/server/domain/runtime/badcase-capture/model-egress');
 const { toolChatCompletionsSettings } = require('../../build/server/domain/runtime/badcase-capture/chat-completions-protocol');
 const { containsSecretSentinel } = require('../../build/server/domain/runtime/badcase-capture/secrets');
+const { isSafeRelativePath } = require('./replay-path.cjs');
 const copy = v => JSON.parse(JSON.stringify(v));
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const exact = (v, keys) => v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).sort().join('|') === [...keys].sort().join('|');
@@ -33,7 +34,7 @@ function inputValue(value) {
   const q = copy(value); assert.ok(exact(q, ['prompt', 'files']) && Array.isArray(q.files) && q.files.length <= 128);
   text(q.prompt, 16384); const files = [];
   for (const f of q.files) {
-    assert.ok(exact(f, ['path', 'content']) && typeof f.path === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(f.path)
+    assert.ok(exact(f, ['path', 'content']) && isSafeRelativePath(f.path)
       && f.path.split('/').every(p => p && p !== '.' && p !== '..' && !/^\.(?:git|env)(?:$|\.)/i.test(p)));
     text(f.content, 65536); files.push({ path: f.path, bytes: Buffer.from(f.content) });
   }

@@ -1,5 +1,6 @@
 // Trusted direct-provider helpers. No gateway, automatic auth discovery or persistence.
 const fs = require('node:fs');
+const { isSafeRelativePath } = require('./replay-path.cjs');
 const ENDPOINT = 'https://opencode.ai/zen/go/v1';
 const PROVIDER = 'opencode-go', MODEL = 'deepseek-v4.1-flash';
 const KEY_ENV = 'CAFF_BADCASE_MODEL_KEY';
@@ -121,7 +122,7 @@ const BINDING_NAMES = ['CAFF_CHAT_API_URL', 'CAFF_CHAT_INVOCATION_ID', 'CAFF_CHA
 // Lossless JSONL edits: only the header cwd and context prose may be rebound.
 // Historical tool arguments/results remain frozen data, never instructions to
 // execute. External path dependencies are deliberately not inferred.
-function mapDirectSession(text, sourceRoot, replace) {
+function mapDirectSession(text, sourceRoot, replace, rebindSkills = s => s) {
   const bad = () => { throw fail('evaluation_bindings_unsupported'); };
   if (typeof text !== 'string' || !text.endsWith('\n') || Buffer.byteLength(text) > 64 * 1024 * 1024) bad();
   const lines = text.split('\n'); if (lines.length > 100001) bad();
@@ -153,7 +154,7 @@ function mapDirectSession(text, sourceRoot, replace) {
     if (['compaction', 'branch_summary'].includes(entry.type) && typeof entry.summary === 'string') fields.push({ value: entry.summary });
     const edits = [];
     for (const { value, path: isPath } of fields) {
-      if (!value.includes('{{') && !value.includes(sourceRoot)) continue;
+      if (!value.includes('{{') && !value.includes(sourceRoot) && rebindSkills(value) === value) continue;
       let mapped = value;
       if (isPath && value.includes(sourceRoot)) {
         if (!value.startsWith(sourceRoot) || (value !== sourceRoot && !['/', '\\'].includes(value[sourceRoot.length]))) bad();
@@ -164,7 +165,7 @@ function mapDirectSession(text, sourceRoot, replace) {
         // the whole prefix. Current-turn dependencies remain unverified.
         mapped = value.includes(sourceRoot + '\\') ? value : value.replaceAll(sourceRoot, '/work/restored');
       }
-      mapped = replace(mapped);
+      mapped = replace(rebindSkills(mapped));
       const token = JSON.stringify(value), start = lines[i].indexOf(token);
       if (start < 0 || lines[i].indexOf(token, start + 1) !== -1) bad();
       edits.push({ start, end: start + token.length, replacement: JSON.stringify(mapped) });
@@ -191,9 +192,30 @@ function replaySessionInfo(text) {
     : { deliveryMode: 'resume', prefixHash: require('node:crypto').createHash('sha256').update(text).digest('hex'), lineCount: text.split('\n').length - 1,
       historyTools: 'context-only-not-executed', externalPathDependencies: 'not-verified' };
 }
+// Only recorded project-skill roots may be rebound. Longest root wins; keep
+// sibling prefixes untouched and normalize Windows children for Linux tools.
+function projectSkillRebinder(bindings) {
+  const mappings = bindings.projectSkills ?? [];
+  if (!Array.isArray(mappings) || mappings.length > 8192) throw fail('evaluation_bindings_unsupported');
+  const seen = new Set();
+  const rules = mappings.map(m => {
+    if (typeof m?.sourcePath !== 'string' || !/^(?:[A-Za-z]:[\\/]|\/)/.test(m.sourcePath)
+      || typeof m.relativePath !== 'string' || !m.relativePath
+      || !isSafeRelativePath(m.relativePath)) throw fail('evaluation_bindings_unsupported');
+    const source = m.sourcePath.replaceAll('\\', '/');
+    if (seen.has(source)) throw fail('evaluation_bindings_unsupported'); seen.add(source);
+    const escaped = source.split('/').map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\\\/]');
+    return { source, relativePath: m.relativePath, pattern: new RegExp(escaped + '(?=$|[\\\\/\\s"\'<>),;\\]])(?:[\\\\/][^\\s"\'<>),;\\]]*)?', 'g') };
+  }).sort((a, b) => b.source.length - a.source.length);
+  return text => {
+    for (const r of rules) text = text.replace(r.pattern, match => '/work/restored/' + r.relativePath + match.slice(r.source.length).replaceAll('\\', '/'));
+    return text;
+  };
+}
 function validateDirectBindings(prompt, bindings, sessionText = null) {
   if (typeof prompt !== 'string' || !bindings || typeof bindings.sourceRoot !== 'string' || !/^(?:[A-Za-z]:[\\\\/]|\/)/.test(bindings.sourceRoot)
     || !Array.isArray(bindings.controlledReplacements)) throw fail('evaluation_bindings_unsupported');
+  const rebindSkills = projectSkillRebinder(bindings);
   const counts = new Map();
   for (const r of bindings.controlledReplacements) {
     if (!BINDING_NAMES.includes(r?.name) || !Number.isSafeInteger(r.count) || r.count < 1) throw fail('evaluation_bindings_unsupported');
@@ -206,14 +228,15 @@ function validateDirectBindings(prompt, bindings, sessionText = null) {
     return s;
   };
   check(prompt);
-  return { sessionText: sessionText === null ? null : mapDirectSession(sessionText, bindings.sourceRoot, check) };
+  return { sessionText: sessionText === null ? null : mapDirectSession(sessionText, bindings.sourceRoot, check, rebindSkills) };
 }
 function bindDirectInputs(prompt, sessionText, bindings, values) {
   validateDirectBindings(prompt, bindings, sessionText);
   if (!values || !BINDING_NAMES.every(n => typeof values[n] === 'string' && values[n] && !values[n].includes('{{'))) throw fail('evaluation_bindings_unsupported');
   const replace = s => s.replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, name) => values[name]);
-  return { prompt: replace(prompt.replaceAll(bindings.sourceRoot, '/work/restored')),
-    sessionText: sessionText === null ? null : mapDirectSession(sessionText, bindings.sourceRoot, replace) };
+  const rebindSkills = projectSkillRebinder(bindings);
+  return { prompt: replace(rebindSkills(prompt).replaceAll(bindings.sourceRoot, '/work/restored')),
+    sessionText: sessionText === null ? null : mapDirectSession(sessionText, bindings.sourceRoot, replace, rebindSkills) };
 }
 function bindDirectPrompt(prompt, bindings, values) { return bindDirectInputs(prompt, null, bindings, values).prompt; }
 module.exports = { readEvaluationKey, readCaffDeepseekKey, validKey, modelProfile, directModelRouting, observeDirectFetch, validateDirectBindings, bindDirectPrompt, bindDirectInputs, replaySessionInfo, ENDPOINT, PROVIDER, MODEL, KEY_ENV, DEFAULT_PROFILE, DEEPSEEK_PROFILE, CODEX_PROFILE, CODEX_INERT_KEY };

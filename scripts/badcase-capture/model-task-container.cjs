@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
+const { isSafeDistributionPath } = require('./replay-path.cjs');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 // Diagnostics only: never inspect an exception, SDK content or tool arguments.
 // These labels are not execution/score authority and do not relax any guard.
@@ -16,7 +17,7 @@ let failurePhase = 'bootstrap', requestLimitAttempted = false;
   assert.equal(manifest.schemaVersion, 1); assert.ok(Array.isArray(manifest.files) && manifest.files.length <= 4096);
   let total = 0; const names = new Set();
   for (const f of manifest.files) {
-    assert.ok(/^[A-Za-z0-9_.@/-]+$/.test(f.path) && f.path.split('/').every(p => p && p !== '.' && p !== '..') && !names.has(f.path));
+    assert.ok(isSafeDistributionPath(f.path) && !names.has(f.path));
     names.add(f.path); const st = fs.lstatSync('/work/' + f.path);
     assert.ok(st.isFile() && !st.isSymbolicLink()); total += st.size; assert.ok(total <= 16 * 1024 * 1024);
     verifyMaterialBytes(fs.readFileSync('/work/' + f.path), f);

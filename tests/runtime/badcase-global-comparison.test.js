@@ -104,6 +104,9 @@ test('v2 alternating kernel never substitutes judge-error replies and still exec
 });
 test('global batch delegates scene reads through mapped imports while raw roots remain immutable identities', t => {
   const h = setup(t), destinationAgentDir = path.join(h.root, 'migrated');
+  // Migrations honor the isolated configured data directory. Do not assume
+  // that the agent fallback wins over CAFF_WIKISKILL_DATA_DIR in test runs.
+  const destination = require('../../build/server/domain/runtime/badcase-capture/wiki-data-directory').resolveWikiDataDirectory(destinationAgentDir);
   const migration = require('../../scripts/badcase-capture/migrate-wiki-layout.cjs');
   const config = { globalRoot: h.config.globalRoot, sourceWorktree: h.config.sourceWorktree, captureRoots: h.seals.map(s => s.root), destinationAgentDir };
   const plan = migration.prepareMigration(config); migration.migrateWikiLayout(config, { confirmed: true, expectedPlanHash: plan.summary.planHash });
@@ -111,8 +114,8 @@ test('global batch delegates scene reads through mapped imports while raw roots 
   for (const s of h.seals) fs.renameSync(s.root, s.root + '-offline');
   try {
     let reads = 0;
-    const result = prepareBatch({ ...h.config, globalRoot: path.join(destinationAgentDir, 'badcase-global') }, { ...h.options, prepareTarget: (request, ...args) => {
-      assert.ok(request.captureRoot.startsWith(path.join(destinationAgentDir, 'badcase-capture/imports') + path.sep)); reads++;
+    const result = prepareBatch({ ...h.config, globalRoot: path.join(destination, 'badcase-global') }, { ...h.options, prepareTarget: (request, ...args) => {
+      assert.ok(request.captureRoot.startsWith(path.join(destination, 'badcase-capture/imports') + path.sep)); reads++;
       return prepareSealedPromptTarget(request, ...args);
     } });
     assert.equal(result.summary.preparedReplayableCount, 7); assert.equal(reads, 14);

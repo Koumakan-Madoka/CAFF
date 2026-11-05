@@ -34,11 +34,13 @@ test('every native capture helper launch receives its private Git environment ev
   const request = { version: 1, root: 'C:/repo', expected: identity, excluded: [] };
   await exports.invokeWindowsEstimateHelper('python', 'trusted.py', { ...request, op: 'estimate' });
   for (const [method, op, extra] of [['invokeWindowsGitHelper', 'gitMetadata', { excluded: [] }],
-    ['invokeWindowsSessionHelper', 'sessionInput', { path: 'turn.jsonl' }], ['invokeWindowsGitInputHelper', 'gitInput', { path: 'index' }]]) {
+    ['invokeWindowsSessionHelper', 'sessionInput', { path: 'turn.jsonl' }], ['invokeWindowsGitInputHelper', 'gitInput', { path: 'index' }],
+    ['invokeWindowsGitStateHelper', 'gitState', { path: 'HEAD' }]]) {
     env.GIT_CONFIG_GLOBAL = 'C:/changed-after-first-launch';
     await exports[method]('python', 'trusted.py', { version: 1, root: 'C:/repo', expected: identity, op, ...extra }, performance.now() + 1000);
   }
-  assert.equal(launches.length, 5);
+  await exports.invokeWindowsIdentityHelper('python', 'trusted.py', { version: 1, op: 'identity', root: 'C:/repo' }, performance.now() + 1000);
+  assert.equal(launches.length, 7);
   for (const options of launches) { assert.notEqual(options.env, env); assert.equal(options.env?.GIT_CONFIG_GLOBAL, 'NUL');
     assert.equal(options.env?.GIT_CONFIG_NOSYSTEM, '1'); assert.equal(options.env?.GIT_DIR, undefined); assert.equal(options.env?.git_config_parameters, undefined); }
   assert.equal(JSON.stringify({ ...env, GIT_CONFIG_GLOBAL: 'C:/fixture-global' }), before);
@@ -48,7 +50,7 @@ test('service uses classification without host Git prerequisites; unsupported ca
   const filename = require.resolve(base + 'index'), local = require('node:module').createRequire(filename), exports = {}, env = parentEnv(), before = JSON.stringify(env);
   const seen = []; let collectorOptions, classifiedOk = true, now = 0;
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { exports, structuredClone, process: { platform: 'win32', env }, require: name =>
-    name === 'node:perf_hooks' ? { performance: { now: () => now } } : name === './windows-turn-collector' ? { createWindowsTurnCollector: options => { collectorOptions = options; return {}; } }
+    name === 'node:perf_hooks' ? { performance: { now: () => now } } : name === './git-turn-collector' ? { createGitTurnCollector: options => { collectorOptions = options; return {}; } }
       : name === './windows-git-candidate' ? { estimateWindowsGitDirectoryAsync: async options => { seen.push('classified'); assert.equal(options.deadline, 25000); if (!classifiedOk) now = 24900;
         return classifiedOk ? { ok: true, complete: true } : { ok: false, reason: 'git_metadata_unsupported' }; } }
       : name === './windows-estimate' ? { estimateWindowsDirectoryAsync: async options => { seen.push('raw'); assert.equal(options.deadline, 25000, 'fallback must not gain another 25 seconds');
@@ -74,7 +76,7 @@ test('raw capacity helper honors an earlier shared deadline rather than resettin
   for (const deadline of [24900, NaN, Infinity, '25000']) assert.equal((await exports.invokeWindowsEstimateHelper('python', 'trusted.py', request, deadline)).reason, 'estimate_timeout');
   assert.equal(launches, 1);
 });
-test('native Windows service captures with ordinary global Git config and leaves agent Git behavior unchanged', { skip: process.platform !== 'win32' }, t => {
+test('legacy offline Windows collector isolates ordinary global Git config and leaves agent Git behavior unchanged', { skip: process.platform !== 'win32' }, t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-env-native-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const target = path.join(root, 'repo'), globalFile = path.join(root, 'fixture-global'), ignore = path.join(root, 'fixture-ignore'); fs.mkdirSync(target);
   fs.writeFileSync(ignore, 'global-only.txt\n'); fs.writeFileSync(globalFile, '[user]\nname = fixture-global\n[core]\nexcludesFile = ' + ignore.replaceAll('\\', '/') + '\n');
@@ -85,10 +87,10 @@ test('native Windows service captures with ordinary global Git config and leaves
   fs.writeFileSync(path.join(target, 'ordinary.txt'), 'ordinary'); fs.writeFileSync(path.join(target, 'global-only.txt'), 'capture still sees this file');
   execFileSync('git', ['-C', target, 'add', 'ordinary.txt'], { env, stdio: 'pipe' });
   const code = `const assert=require('node:assert/strict'),fs=require('node:fs'),{execFileSync}=require('node:child_process');
-    const [target,captureRoot,globalFile]=process.argv.slice(1),api=require(${JSON.stringify(require.resolve(base + 'index'))});
+    const [target,captureRoot,globalFile]=process.argv.slice(1),api=require(${JSON.stringify(require.resolve('../helpers/legacy-native-capture'))});
     const git=()=>execFileSync('git',['-C',target,'config','user.name'],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
     const before=JSON.stringify(process.env),globalBytes=fs.readFileSync(globalFile);assert.equal(git(),'fixture-injected');assert.equal(process.env.GIT_CONFIG_NOSYSTEM,undefined);
-    (async()=>{const service=api.createBadcaseCaptureService({captureRoot});service.savePolicy('p',{authorizedDirs:[target],excludedPatterns:[]});
+    (async()=>{const service=api.createLegacyNativeCaptureService({captureRoot});service.savePolicy('p',{authorizedDirs:[target],excludedPatterns:[]});
       const policy=service.authorizeProject('p'),estimate=await service.estimateDirectoryAsync('p',target);assert.equal(estimate.captureAvailable,true,JSON.stringify(estimate));
       service.store.savePolicy({...policy,status:'enabled'});const result=await service.captureTurnCheckpoint({projectId:'p',conversationId:'c',turnId:'t',agentId:'a',targetDir:target,deliveryMode:'fresh',prompt:'synthetic only'});
       assert.equal(result.captured,true,result.reason);assert.ok(result.checkpoint.files['ordinary.txt']);assert.ok(result.checkpoint.files['global-only.txt']);

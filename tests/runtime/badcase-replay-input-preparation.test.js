@@ -210,8 +210,8 @@ test('Windows preparation forwards a shorter outer deadline, caps a longer one a
   assert.equal((await capped.prepareWindowsReplayInput({ ...options(), deadline: 100000 })).ok, true);
 });
 
-test('real Linux collector rejects malformed UTF-8 inside otherwise valid session JSON without archiving replacement bytes', { skip: process.platform !== 'linux' }, t => {
-  const { createBadcaseCaptureService } = require(base + 'index');
+test('legacy Linux collector rejects malformed UTF-8 inside otherwise valid session JSON without archiving replacement bytes', { skip: process.platform !== 'linux' }, t => {
+  const { createLegacyNativeCaptureService: createBadcaseCaptureService } = require('../helpers/legacy-native-capture');
   const { detectCaptureCapability } = require(base + 'safe-read');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-linux-session-utf8-')); t.after(() => fs.rmSync(dir, { recursive: true }));
   const target = path.join(dir, 'target'), sessions = path.join(dir, 'sessions'), captureRoot = path.join(dir, 'capture');

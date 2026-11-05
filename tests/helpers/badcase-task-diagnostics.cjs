@@ -60,6 +60,7 @@ module.exports = async function taskDiagnostic(fault) {
     stderr: { write: s => { stderr += s; } } };
   const modules = {
     'node:fs': mockFs, 'node:crypto': crypto, 'node:assert/strict': assert,
+    './replay-path.cjs': require('../../scripts/badcase-capture/replay-path.cjs'),
     'node:child_process': { execFileSync: () => 'Python 3.11.2\n' }, './pi-probe-guards.cjs': { verifyMaterialBytes() {} },
     './retained-sdk-diagnostic.js': { planRetainedSdkDiagnostic() { fail('input'); return plan; } },
     './capsule-materialization.js': { materializeInitializationCapsule: () => plan.materialized },

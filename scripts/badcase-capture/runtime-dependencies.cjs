@@ -104,6 +104,7 @@ async function cacheRuntimeDependencies(value, cacheRoot, options = {}) {
   try {
     const prepared = { ...input, ...prepareReplayDependencies(input, config.image, npmRoot) };
     const files = prepareDirectReplayInput(prepared);
+    files.push({ path: 'replay-path.cjs', bytes: fs.readFileSync(path.resolve(__dirname, '../../build/server/domain/runtime/badcase-capture/replay-path.js')) });
     files.push({ path: 'probe.cjs', bytes: sources['runtime-dependencies-container.cjs'] },
       { path: 'restore-replay-dependencies.cjs', bytes: sources['restore-replay-dependencies.cjs'] },
       { path: 'caff-runtime-bootstrap.cjs', bytes: sources['caff-runtime-container.cjs'] },

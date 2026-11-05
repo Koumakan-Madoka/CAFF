@@ -2,8 +2,8 @@
 const crypto = require('node:crypto');
 const { containsSecretSentinel } = require('../../build/server/domain/runtime/badcase-capture/secrets');
 const fail = code => Object.assign(Error(code), { code });
-const safePath = p => typeof p === 'string' && p.length <= 512 && /^[A-Za-z0-9_.@/-]+$/.test(p)
-  && p.split('/').every(s => s && s !== '.' && s !== '..' && s !== '.git');
+const { isSafeRelativePath } = require('./replay-path.cjs');
+const safePath = p => isSafeRelativePath(p) && p.length <= 512;
 function validateLiteralRules(rules) {
   if (!rules || rules.kind !== 'file-literals-v1' || Object.keys(rules).sort().join(',') !== 'files,kind'
     || !Array.isArray(rules.files) || !rules.files.length || rules.files.length > 16) throw fail('evaluation_rules_invalid');

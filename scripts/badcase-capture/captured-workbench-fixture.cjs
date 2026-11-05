@@ -1,6 +1,7 @@
-// Verification-only synthetic project. Real management HTTP, collector, SQLite,
-// flag/sealing workers; simulated turn (no host SDK/tools/model). Not imported by
-// the operator CLI or production composition. Cleans only its own temporary root.
+// Verification-only legacy schema-v1 project. Real management HTTP, native
+// collector, SQLite, flag/sealing workers; simulated turn (no host SDK/tools/model).
+// Not imported by the operator CLI or production composition. Cleans only its own
+// temporary root; new production turns use the async Git snapshot collector.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), http = require('node:http');
 const assert = require('node:assert/strict');
 const load = name => require('../../build/' + name);
@@ -20,7 +21,8 @@ module.exports = async function capturedFixture(t, mode, options = {}) {
   const sessionPath = path.join(inputs, 'session.jsonl'); fs.writeFileSync(sessionPath, session);
   const dbOptions = { agentDir: base, sqlitePath: path.join(base, 'synthetic.sqlite') };
   let chat = load('lib/chat-app-store').createChatAppStore(dbOptions), server, authority;
-  const service = load('server/domain/runtime/badcase-capture/index').createBadcaseCaptureService({ captureRoot: root, chatStore: chat });
+  const { createLegacyNativeCaptureService } = require('../../tests/helpers/legacy-native-capture');
+  const service = createLegacyNativeCaptureService({ captureRoot: root, chatStore: chat }, { readCallbackSource: true });
   const common = { host: '127.0.0.1', getAuthority: () => authority, csrfToken: 'synthetic-captured-workbench', projectManager: { listProjects: () => [{ id: 'p1' }] } };
   const capture = load('server/api/badcase-capture-controller').createBadcaseCaptureController({ ...common, service });
   let flagsController;

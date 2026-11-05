@@ -3,11 +3,12 @@
 // Capture capability and collector remain unconnected.
 // A valid response is not proof of a coherent snapshot or a replayable turn.
 const fs = require('node:fs');
+const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync, spawn } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
 const { TextDecoder } = require('node:util');
-import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
+import { WINDOWS_HELPER_SOURCE, WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
 import { createWindowsCaptureEnvironment } from './windows-git-environment';
 
 export const WINDOWS_HELPER_LIMITS = Object.freeze({
@@ -55,21 +56,26 @@ function validRelative(value: any) {
 }
 const GIT_METADATA_PATHS = new Set(['.git/config', '.git/index', '.git/commondir', '.git/info', '.git/info/exclude']);
 const GIT_INPUT_PATHS = new Set(['config', 'index', 'commondir', 'gitdir', 'config.worktree', 'info/exclude']);
+export function isWindowsGitStatePath(p: string) {
+  return ['.git', 'HEAD', 'packed-refs'].includes(p) || (p.startsWith('refs/heads/') && !/[\x00-\x20\x7f~^:?*\[\\]/.test(p)
+    && !p.includes('..') && !p.includes('@{') && p.split('/').every(s => s && !s.startsWith('.') && !s.endsWith('.') && !s.endsWith('.lock')));
+}
 function gitSource(relative: string) {
   return relative === '.git' || GIT_METADATA_PATHS.has(relative) || relative.split('/').at(-1) === '.gitignore';
 }
 function validRequest(request: any) {
-  if (!request || request.version !== 1 || !['identity', 'capture', 'estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput'].includes(request.op)
+  if (!request || request.version !== 1 || !['identity', 'capture', 'estimate', 'snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput', 'gitState'].includes(request.op)
       || !exact(request, request.op === 'identity' ? ['version', 'op', 'root']
-        : ['sessionInput', 'gitInput'].includes(request.op) ? ['version', 'op', 'root', 'expected', 'path']
+        : ['sessionInput', 'gitInput', 'gitState'].includes(request.op) ? ['version', 'op', 'root', 'expected', 'path']
         : ['estimate', 'snapshot', 'gitMetadata'].includes(request.op) ? ['version', 'op', 'root', 'expected', 'excluded']
           : ['version', 'op', 'root', 'expected', 'excluded', 'paths'])
       || typeof request.root !== 'string' || Buffer.byteLength(request.root) > 32768) return false;
   const match = request.root.match(/^[a-z]:[\\/](.*)$/i);
   if (!match || (match[1] && !validRelative(match[1].replace(/\\/g, '/')))) return false;
   if (request.op === 'identity') return true;
-  if (['sessionInput', 'gitInput'].includes(request.op)) return validIdentity(request.expected) && validRelative(request.path)
-    && (request.op === 'sessionInput' ? request.path.endsWith('.jsonl') : GIT_INPUT_PATHS.has(request.path))
+  if (['sessionInput', 'gitInput', 'gitState'].includes(request.op)) return validIdentity(request.expected) && validRelative(request.path)
+    && (request.op === 'sessionInput' ? request.path.endsWith('.jsonl')
+      : request.op === 'gitState' ? isWindowsGitStatePath(request.path) : GIT_INPUT_PATHS.has(request.path))
     && request.path.split('/').length <= 64;
   return validIdentity(request.expected)
     && Array.isArray(request.excluded) && request.excluded.length <= WINDOWS_HELPER_LIMITS.exclusions
@@ -107,12 +113,12 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
       return exact(header, ['version', 'ok', 'identity']) && offset === stdout.length
         ? { ok: true, identity: header.identity } : bad();
     }
-    if (['sessionInput', 'gitInput'].includes(request.op)) {
+    if (['sessionInput', 'gitInput', 'gitState'].includes(request.op)) {
       const file = header.file;
       if (!exact(header, ['version', 'ok', 'identity', 'file']) || !sameIdentity(header.identity, request.expected)
         || !exact(file, ['path', 'size', 'sha256', 'identity']) || file.path !== request.path
         || !validIdentity(file.identity) || file.identity.volumeSerial !== header.identity.volumeSerial
-        || !decimal(file.size, 0n, BigInt(WINDOWS_HELPER_LIMITS.fileBytes))
+        || !decimal(file.size, 0n, BigInt(request.op === 'gitState' ? 1024 * 1024 : WINDOWS_HELPER_LIMITS.fileBytes))
         || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)
         || stdout.length - offset !== Number(file.size)) return bad();
       const content = stdout.subarray(offset);
@@ -126,9 +132,13 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
         && (request.op !== 'gitMetadata' || (typeof e.path === 'string' && gitSource(e.path)))).map((e: any) => e.path) : [])
       : request.paths;
     if (['snapshot', 'gitMetadata', 'selectedSnapshot'].includes(request.op) && paths.length > WINDOWS_HELPER_LIMITS.paths) return bad();
-    if (!exact(header, ['version', 'ok', 'identity', 'entries', 'files'])
+    // Gap-only observations are never content selectors. The optional field
+    // keeps empty manifests byte-compatible; when present its schema is closed.
+    const uncaptured = Object.hasOwn(header, 'uncaptured') ? header.uncaptured : [];
+    if (!exact(header, ['version', 'ok', 'identity', 'entries', 'files', ...(Object.hasOwn(header, 'uncaptured') ? ['uncaptured'] : [])])
+        || !Array.isArray(uncaptured) || !Array.isArray(header.entries)
+        || header.entries.length + uncaptured.length > WINDOWS_HELPER_LIMITS.entries
         || !sameIdentity(header.identity, request.expected)
-        || !Array.isArray(header.entries) || header.entries.length > WINDOWS_HELPER_LIMITS.entries
         || !Array.isArray(header.files) || header.files.length !== paths.length) return bad();
     const entries = new Map<string, any>();
     let previous: any = null;
@@ -148,6 +158,20 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
       if (slash >= 0 && entries.get(entry.path.slice(0, slash))?.type !== 'directory') return bad();
       entries.set(entry.path, entry);
     }
+    previous = null;
+    for (const gap of uncaptured) {
+      if (!exact(gap, ['path', 'reason']) || !['windows_reserved_or_invalid_name', 'reparse_point_skipped'].includes(gap.reason)
+        || typeof gap.path !== 'string' || !gap.path || Buffer.byteLength(gap.path, 'utf8') > 32768
+        || gap.path.split('/').length > 64 || /[\\\x00]/.test(gap.path) || /[\uD800-\uDFFF]/u.test(gap.path)
+        || entries.has(gap.path)) return bad();
+      const slash = gap.path.lastIndexOf('/'), leaf = gap.path.slice(slash + 1), parent = gap.path.slice(0, slash);
+      if (!leaf || leaf.length > 255 || leaf === '.' || leaf === '..'
+        || (gap.reason === 'reparse_point_skipped' ? !validRelative(leaf) : validRelative(leaf))
+        || (slash >= 0 && (!validRelative(parent) || entries.get(parent)?.type !== 'directory'))) return bad();
+      const encoded = Buffer.from(gap.path, 'utf8');
+      if (previous && Buffer.compare(previous, encoded) >= 0) return bad();
+      previous = encoded;
+    }
     const files: any[] = [];
     let total = 0;
     for (let i = 0; i < header.files.length; i++) {
@@ -165,8 +189,29 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
       if (crypto.createHash('sha256').update(content).digest('hex') !== file.sha256) return bad();
       files.push({ ...file, content });
     }
-    return offset === stdout.length ? { ok: true, identity: header.identity, entries: header.entries, files } : bad();
+    return offset === stdout.length ? { ok: true, identity: header.identity, entries: header.entries, files, uncaptured } : bad();
   } catch { return bad(); }
+}
+
+// Deployment upgrades may leave only an earlier content address installed.
+// Install trusted code on first use, independently of project consent/pins.
+// Only the exact storage-local current filename may be created; never repair
+// an existing file or overwrite another SHA. A concurrent incomplete write
+// fails closed for this call and can be retried by a later turn.
+function verifyOrInstallHelper(helperPath: string): boolean {
+  let info: any;
+  try { info = fs.statSync(helperPath); }
+  catch (error: any) {
+    if (error?.code !== 'ENOENT' || !path.isAbsolute(helperPath)
+      || path.basename(path.dirname(helperPath)) !== 'windows-authorization-helper'
+      || path.basename(helperPath) !== `windows_read.${WINDOWS_HELPER_SOURCE_SHA256}.py`) return false;
+    fs.mkdirSync(path.dirname(helperPath), { recursive: true });
+    try { fs.writeFileSync(helperPath, WINDOWS_HELPER_SOURCE, { encoding: 'utf8', flag: 'wx' }); }
+    catch (writeError: any) { if (writeError?.code !== 'EEXIST') throw writeError; }
+    info = fs.statSync(helperPath);
+  }
+  return info.size <= 1024 * 1024
+    && crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') === WINDOWS_HELPER_SOURCE_SHA256;
 }
 
 export function invokeWindowsHelper(python: string, helperPath: string, request: any): any {
@@ -176,15 +221,12 @@ export function invokeWindowsHelper(python: string, helperPath: string, request:
   try {
     // Deployment trusts this host/interpreter and same-OS-user processes; disk
     // verification is not an immutable executable or Python process attestation.
-    if (fs.statSync(helperPath).size > 1024 * 1024
-        || crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') !== WINDOWS_HELPER_SOURCE_SHA256) {
-      return { ok: false, reason: 'helper_integrity_failed' };
-    }
+    if (!verifyOrInstallHelper(helperPath)) return { ok: false, reason: 'helper_integrity_failed' };
     const result = spawnSync(python, ['-I', '-B', helperPath], {
       input, encoding: 'buffer', windowsHide: true, env: createWindowsCaptureEnvironment(process.env),
       timeout: request.op === 'identity' ? WINDOWS_HELPER_LIMITS.identityTimeoutMs
         : request.op === 'estimate' ? WINDOWS_HELPER_LIMITS.estimateTimeoutMs
-          : ['snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput'].includes(request.op) ? WINDOWS_HELPER_LIMITS.snapshotTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
+          : ['snapshot', 'gitMetadata', 'selectedSnapshot', 'sessionInput', 'gitInput', 'gitState'].includes(request.op) ? WINDOWS_HELPER_LIMITS.snapshotTimeoutMs : WINDOWS_HELPER_LIMITS.timeoutMs,
       maxBuffer: WINDOWS_HELPER_LIMITS.headerBytes + WINDOWS_HELPER_LIMITS.bodyBytes + 1,
     });
     if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stderr) || result.stderr.length !== 0) {
@@ -216,6 +258,18 @@ export function invokeWindowsGitInputHelper(python: string, helperPath: string, 
   return invokeWindowsBoundedContentHelper(python, helperPath, request, deadline, ['gitInput']);
 }
 
+// Room registration/HEAD reads have a separate narrow operation; no arbitrary
+// metadata path, reference recursion, Git subprocess or classification widening.
+export function invokeWindowsGitStateHelper(python: string, helperPath: string, request: any, deadline: number): Promise<any> {
+  return invokeWindowsBoundedContentHelper(python, helperPath, request, deadline, ['gitState']);
+}
+
+// Ephemeral Room scope derivation must share the turn's existing deadline and
+// helper pool; it must not receive fresh synchronous identity budgets.
+export function invokeWindowsIdentityHelper(python: string, helperPath: string, request: any, deadline: number): Promise<any> {
+  return invokeWindowsBoundedContentHelper(python, helperPath, request, deadline, ['identity']);
+}
+
 async function invokeWindowsBoundedContentHelper(python: string, helperPath: string, request: any, deadline: number, allowedOps: string[]): Promise<any> {
   const fail = (reason: string) => ({ ok: false, reason });
   if (process.platform !== 'win32') return fail('windows_required');
@@ -228,10 +282,7 @@ async function invokeWindowsBoundedContentHelper(python: string, helperPath: str
   if (activeGitHelpers >= 2) return fail('git_capture_busy');
   activeGitHelpers++;
   try {
-    if (fs.statSync(helperPath).size > 1024 * 1024
-        || crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') !== WINDOWS_HELPER_SOURCE_SHA256) {
-      return fail('helper_integrity_failed');
-    }
+    if (!verifyOrInstallHelper(helperPath)) return fail('helper_integrity_failed');
     const remaining = deadline - performance.now();
     if (remaining <= 0) return fail('git_capture_timeout');
     return await new Promise(resolve => {
@@ -291,10 +342,7 @@ export async function invokeWindowsEstimateHelper(python: string, helperPath: st
   if (activeEstimates >= 2) return fail('estimate_busy');
   activeEstimates++;
   try {
-    if (fs.statSync(helperPath).size > 1024 * 1024
-        || crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') !== WINDOWS_HELPER_SOURCE_SHA256) {
-      return fail('helper_integrity_failed');
-    }
+    if (!verifyOrInstallHelper(helperPath)) return fail('helper_integrity_failed');
     if (performance.now() >= expires) return fail('estimate_timeout');
     return await new Promise(resolve => {
       const maxOutput = WINDOWS_HELPER_LIMITS.headerBytes + 1; // NO body for estimate
