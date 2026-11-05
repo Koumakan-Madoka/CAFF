@@ -9,7 +9,8 @@ function fixture(t, extra = {}) {
   fs.mkdirSync(root); t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
   Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_OPTIONAL_LOCKS: '0' });
-  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const gitBytes = (cwd, args, input) => execFileSync('git', ['-C', cwd, ...args], { env, input, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const git = (cwd, ...args) => gitBytes(cwd, args).toString('utf8').trim();
   const commit = () => { git(root, 'add', '-A'); git(root, '-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'),
     '-c', 'commit.gpgsign=false', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid.local', 'commit', '-qm', 'fixture'); };
   git(root, 'init', '-q'); git(root, 'config', 'core.autocrlf', 'false');
@@ -27,7 +28,7 @@ function fixture(t, extra = {}) {
       if (st.isDirectory()) walk(p, prefix + name + '/'); else if (st.isFile()) files[prefix + name] = hash(fs.readFileSync(p));
     } } walk(directory); return files;
   };
-  return { temp, root, git, commit, head, service, capture, restore, tree };
+  return { temp, root, git, gitBytes, commit, head, service, capture, restore, tree };
 }
 
 test('v2 restores recorded HEAD plus binary/staged/unstaged/delete/untracked state, never the later source tree', async t => {
@@ -69,6 +70,36 @@ test('ordinary Unicode, spaces and dot-prefixed names round-trip without ASCII-o
   h.commit(); const captured = await h.capture(), target = path.join(h.temp, 'restored'), result = h.restore(captured.checkpoint, target);
   assert.equal(result.ok, true, JSON.stringify(result)); assert.deepEqual(h.tree(target), h.tree(h.root));
 });
+
+for (const manifest of ['older gapless', 'new capture']) {
+  test(`${manifest} checkpoint omits raw invalid UTF-8 HEAD names without renaming or losing valid U+FFFD siblings`, async t => {
+    const h = fixture(t), invalid = [[0xff], [0xfe], [0xc0, 0xaf], [0xe2, 0x82]].map(bytes => Buffer.concat([Buffer.from('alias-'), Buffer.from(bytes), Buffer.from('.txt')]));
+    const valid = [...new Set(invalid.map(name => name.toString('utf8'))), '\ufeffbom.txt', '中文.txt'];
+    for (const name of valid) fs.writeFileSync(path.join(h.root, name), 'valid ' + name);
+    h.commit(); const expected = h.tree(h.root), baseline = await h.capture();
+    const oid = h.git(h.root, 'rev-parse', 'HEAD:base.txt');
+    const tree = h.gitBytes(h.root, ['mktree', '-z'], Buffer.concat([h.gitBytes(h.root, ['ls-tree', '-z', 'HEAD']),
+      ...invalid.map(name => Buffer.concat([Buffer.from(`100644 blob ${oid}\t`), name, Buffer.from([0])]))])).toString().trim();
+    const head = h.gitBytes(h.root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid.local', 'commit-tree', tree, '-p', 'HEAD'], Buffer.from('raw tree\n')).toString().trim();
+    h.git(h.root, 'update-ref', 'HEAD', head);
+    if (process.platform !== 'win32') {
+      h.git(h.root, 'read-tree', 'HEAD');
+      for (const name of invalid) fs.writeFileSync(Buffer.concat([Buffer.from(h.root + '/'), name]), 'clean base\n');
+    } else t.diagnostic('Raw Git tree objects exercise materialization on Windows; WSL also creates actual byte-named files');
+    const captured = manifest === 'new capture' ? await h.capture() : baseline;
+    assert.equal(captured.captured, true, captured.reason);
+    const cp = structuredClone(captured.checkpoint);
+    if (manifest === 'older gapless') { cp.gitSnapshot.head = head; cp.uncaptured = []; cp.replayInput.complete = true; }
+    h.service.store.saveCheckpoint('p', cp);
+    const index = fs.readFileSync(path.join(h.root, '.git/index')), target = path.join(h.temp, 'restored'), result = h.restore(cp, target);
+    assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.sourceHead, head);
+    assert.deepEqual(h.tree(target), expected, 'no raw path, replacement alias or diagnostic filename may be written');
+    assert.deepEqual(result.uncapturedInScope.map(g => [g.path, g.reason]).sort(), invalid.map(name => ['invalid-utf8:' + name.toString('hex'), 'invalid_utf8_name']).sort());
+    assert.equal(result.replayInputComplete, false); assert.equal(result.strictEvalEligible, false);
+    for (const name of valid) assert.equal(fs.readFileSync(path.join(target, name), 'utf8'), 'valid ' + name);
+    assert.deepEqual(fs.readFileSync(path.join(h.root, '.git/index')), index);
+  });
+}
 
 test('CRLF clean files and dirty text round-trip without assuming every Windows file has CRLF', async t => {
   const h = fixture(t); h.git(h.root, 'config', 'core.autocrlf', 'true');

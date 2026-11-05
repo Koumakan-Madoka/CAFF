@@ -11,7 +11,27 @@ import { CAPTURE_TIME_LIMIT_MS, createCaptureTimeBudget, isCaptureTimeLimit, typ
 const execute = promisify(execFile);
 export const GIT_SNAPSHOT_LIMITS = { fileBytes: 10 * 1024 * 1024, untrackedBytes: 200 * 1024 * 1024 };
 const hash = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
-const names = (b: Buffer): string[] => b.toString('utf8').split('\0').filter(Boolean);
+// Split NUL records before decoding. A lossy UTF-8 conversion can otherwise
+// alias an unrelated, valid U+FFFD filename. Round-trip validation also preserves
+// a leading BOM (unlike TextDecoder's default). Metadata prefixes are ASCII.
+export function snapshotGitNames(bytes: Buffer, gap: (name: string, reason: string) => void, metadata = false): string[] {
+  const result: string[] = [];
+  for (let start = 0; start < bytes.length;) {
+    let end = bytes.indexOf(0, start); if (end < 0) end = bytes.length;
+    const record = bytes.subarray(start, end); start = end + 1;
+    if (!record.length) continue;
+    const decoded = record.toString('utf8');
+    if (!Buffer.from(decoded, 'utf8').equals(record)) {
+      const rawName = metadata ? record.subarray(record.indexOf(9) + 1) : record;
+      // Diagnostic identity, NOT a replay path: ':' is forbidden by the replay
+      // path validator. Keep raw bytes distinct, never blacklist a valid alias.
+      gap('invalid-utf8:' + rawName.toString('hex'), 'invalid_utf8_name');
+      continue;
+    }
+    result.push(decoded);
+  }
+  return result;
+}
 
 // Explicit -C must win over an SDK/CI shell's repository-routing variables.
 // Normal user Git ignore/config rules remain in effect. Optional locks off:
@@ -207,6 +227,7 @@ export async function collectGitSnapshot(options: any): Promise<any> {
   catch (error) { return { ok: false, reason: isCaptureTimeLimit(error) ? 'capture_time_limit' : 'head_unreadable' }; }
   const archive = createFileArchive({ ...options, budget });
   const { keys, limits, uncaptured, blobs, gap, put, fileEntry, readFile } = archive;
+  const names = (bytes: Buffer, metadata = false) => snapshotGitNames(bytes, gap, metadata);
   const files: any = {};
   const excluded = [...new Set(['.git', 'node_modules', ...(options.excludedPatterns || [])])];
   const inScope = (p: string) => !p.replaceAll('\\', '/').split('/').some(part => part === '.git' || part === 'node_modules')
@@ -216,7 +237,7 @@ export async function collectGitSnapshot(options: any): Promise<any> {
   try {
     try { branch = (await git(['symbolic-ref', '--quiet', '--short', 'HEAD'])).toString('utf8').trim(); } catch { budget.check(); /* detached */ }
     try {
-      for (const record of names(await git(['ls-tree', '-r', '-z', head]))) {
+      for (const record of names(await git(['ls-tree', '-r', '-z', head]), true)) {
         budget.check();
         const tab = record.indexOf('\t'), relative = record.slice(tab + 1), mode = record.slice(0, 6);
         if (tab < 0 || !inScope(relative)) continue;
@@ -228,7 +249,7 @@ export async function collectGitSnapshot(options: any): Promise<any> {
     // instead of assuming all Windows files have CRLF. Mixed EOL needs a full
     // overlay because normalization loses the positions of individual CRs.
     try {
-      for (const record of names(await git(['ls-files', '--eol', '-z']))) {
+      for (const record of names(await git(['ls-files', '--eol', '-z']), true)) {
         const tab = record.indexOf('\t'), relative = record.slice(tab + 1), match = /\bw\/(crlf|mixed)\b/.exec(record.slice(0, tab));
         if (tab < 0 || !inScope(relative) || !match) continue;
         (match[1] === 'crlf' ? crlfPaths : mixedEolPaths).push(relative);

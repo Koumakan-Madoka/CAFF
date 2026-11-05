@@ -12,7 +12,8 @@ function fixture(t, options = {}) {
   const root = path.join(temp, 'repo'); fs.mkdirSync(root);
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' };
   for (const key of Object.keys(env)) if (/^GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES)$/i.test(key)) delete env[key];
-  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const gitBytes = (cwd, args, input) => execFileSync('git', ['-C', cwd, ...args], { env, input, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const git = (cwd, ...args) => gitBytes(cwd, args).toString('utf8').trim();
   git(root, 'init', '-q'); git(root, 'config', 'core.autocrlf', 'false');
   for (const [name, text] of Object.entries({ '.gitignore': 'ignored.txt\n', 'tracked.txt': 'base\n', 'deleted.txt': 'delete me\n', 'staged.txt': 'base\n' })) fs.writeFileSync(path.join(root, name), text);
   git(root, 'add', '.'); git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid.local', 'commit', '-qm', 'base');
@@ -23,7 +24,7 @@ function fixture(t, options = {}) {
   const room = (id, relative = id) => { const dir = path.join(temp, relative); git(root, 'worktree', 'add', '-qb', 'room/' + id, dir); return dir; };
   const capture = (targetDir = root, extra = {}) => service.captureTurnCheckpoint({ projectId: 'p', targetDir, conversationId: 'room', turnId: 'turn', agentId: 'agent',
     deliveryMode: 'fresh', prompt: 'question', runConfig: { provider: 'test', model: 'test', promptVersion: 'test' }, ...extra });
-  return { temp, root, project, service, git, enable, room, capture };
+  return { temp, root, project, service, git, gitBytes, enable, room, capture };
 }
 
 test('project root, existing and new worktrees share one switch without native authorization or Room registration', async t => {
@@ -99,6 +100,62 @@ test('links, invalid Windows names and oversized untracked files are explicit ga
   } finally {
     for (const name of names) { try { fs.unlinkSync(path.toNamespacedPath(path.join(h.root, name))); } catch {} }
   }
+});
+
+for (const inventory of ['head', 'eol', 'changed', 'fallback', 'untracked']) {
+  test(`invalid UTF-8 names in ${inventory} inventory are per-path gaps, never replacement-character aliases`, async t => {
+    const h = fixture(t), { collectGitSnapshot, readSnapshotGit } = require('../../build/server/domain/runtime/badcase-capture/git-snapshot');
+    const invalid = [0xff, 0xfe].map(byte => Buffer.concat([Buffer.from('alias-'), Buffer.from([byte]), Buffer.from('.txt')]));
+    const valid = ['alias-\ufffd.txt', '\ufeffbom.txt', '中文.txt'];
+    for (const name of valid) fs.writeFileSync(path.join(h.root, name), 'valid base\n');
+    h.git(h.root, 'add', '.'); h.git(h.root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid.local', 'commit', '-qm', 'valid names');
+    for (const name of [...valid, 'tracked.txt']) fs.writeFileSync(path.join(h.root, name), 'valid dirty\n');
+    fs.writeFileSync(path.join(h.root, 'safe-new.txt'), 'safe sibling');
+    const oid = h.git(h.root, 'rev-parse', 'HEAD:tracked.txt');
+    const result = await collectGitSnapshot({ targetDir: h.root, knownKeyValues: [], projectSkillPaths: [], async readGit(cwd, args, budget) {
+      if (inventory === 'fallback' && args.includes('--name-only')) throw Error('fixture fallback');
+      const hit = inventory === 'head' ? args[0] === 'ls-tree' : inventory === 'eol' ? args.includes('--eol')
+        : inventory === 'changed' ? args.includes('--name-only') : inventory === 'fallback' ? args.includes('--cached') : args.includes('--others');
+      const bytes = await readSnapshotGit(cwd, args, budget);
+      const prefix = inventory === 'head' ? `100644 blob ${oid}\t` : inventory === 'eol' ? 'i/lf    w/mixed attr/\t' : '';
+      return hit ? Buffer.concat([bytes, ...invalid.map(name => Buffer.concat([Buffer.from(prefix), name, Buffer.from([0])]))]) : bytes;
+    } });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.uncaptured.filter(g => g.reason === 'invalid_utf8_name').map(g => g.path).sort(), invalid.map(name => 'invalid-utf8:' + name.toString('hex')).sort());
+    assert.equal(result.uncaptured.length, 2, 'only raw invalid paths are gaps; valid U+FFFD/BOM/Unicode names remain supported');
+    assert.equal(result.blobs.get(result.files['safe-new.txt'].hash).toString(), 'safe sibling');
+    const patch = result.blobs.get(result.gitSnapshot.patchBlobHash), dest = path.join(h.temp, 'apply');
+    h.git(h.temp, 'clone', '-q', '--no-local', h.root, dest);
+    h.gitBytes(dest, ['apply', '--binary', '-'], patch);
+    for (const name of valid) assert.equal(fs.readFileSync(path.join(dest, name), 'utf8'), 'valid dirty\n', name);
+  });
+}
+
+test('raw non-UTF-8 repository filenames mark capture incomplete while preserving valid siblings', async t => {
+  const h = fixture(t); h.enable();
+  const names = ['clean', 'dirty', 'deleted', 'untracked'].map(prefix => Buffer.concat([Buffer.from(prefix + '-'), Buffer.from([0xff]), Buffer.from('.txt')]));
+  const oid = h.git(h.root, 'rev-parse', 'HEAD:tracked.txt');
+  const tree = h.gitBytes(h.root, ['mktree', '-z'], Buffer.concat([h.gitBytes(h.root, ['ls-tree', '-z', 'HEAD']),
+    ...names.slice(0, 3).map(name => Buffer.concat([Buffer.from(`100644 blob ${oid}\t`), name, Buffer.from([0])]))])).toString().trim();
+  const head = h.gitBytes(h.root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid.local', 'commit-tree', tree, '-p', 'HEAD'], Buffer.from('raw names\n')).toString().trim();
+  h.git(h.root, 'update-ref', 'HEAD', head);
+  if (process.platform !== 'win32') {
+    // POSIX accepts Buffer paths verbatim. Exercise actual HEAD/dirty/delete/
+    // untracked Git output, not a decoded string or a fabricated filename.
+    h.git(h.root, 'read-tree', 'HEAD');
+    for (const [i, name] of names.entries()) if (i !== 2) fs.writeFileSync(Buffer.concat([Buffer.from(h.root + '/'), name]), i === 0 ? 'base\n' : 'RAW_INVALID_NAME_CONTENT');
+  } else t.diagnostic('Windows exercises raw HEAD tree objects; inventory byte seams cover names unavailable in its filesystem');
+  fs.writeFileSync(path.join(h.root, 'valid-\ufffd.txt'), 'valid sibling');
+  const before = h.gitBytes(h.root, ['status', '--porcelain=v1', '-z', '-uall']), index = fs.readFileSync(path.join(h.root, '.git/index'));
+  const captured = await h.capture(); assert.equal(captured.captured, true, captured.reason);
+  const cp = captured.checkpoint, expected = process.platform === 'win32' ? names.slice(0, 3) : names;
+  assert.deepEqual(cp.uncaptured.map(g => [g.path, g.reason]).sort(), expected.map(name => ['invalid-utf8:' + name.toString('hex'), 'invalid_utf8_name']).sort());
+  assert.equal(cp.stats.skippedCount, expected.length); assert.equal(cp.replayInput.complete, false);
+  assert.ok(cp.replayInput.incompleteReasons.includes('files_uncaptured')); assert.deepEqual(cp.deletions, []);
+  assert.deepEqual(Object.keys(cp.files), ['valid-\ufffd.txt']); assert.equal(cp.gitSnapshot.patchBytes, 0);
+  assert.equal(h.service.store.readBlob('p', cp.files['valid-\ufffd.txt'].hash).toString(), 'valid sibling');
+  assert.deepEqual(h.gitBytes(h.root, ['status', '--porcelain=v1', '-z', '-uall']), before);
+  assert.deepEqual(fs.readFileSync(path.join(h.root, '.git/index')), index);
 });
 
 test('known-key literals alone are replaced, not token-like example text; project skill roots retain original paths and bytes', async t => {

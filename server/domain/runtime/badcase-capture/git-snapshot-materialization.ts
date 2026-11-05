@@ -8,7 +8,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { matchesRelativePattern } from './capture-policy';
-import { knownCaptureKeyValues } from './git-snapshot';
+import { knownCaptureKeyValues, snapshotGitNames } from './git-snapshot';
 import { redactKnownKeyValues } from './secrets';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
@@ -99,7 +99,7 @@ export function materializeGitSnapshot(options: any): any {
     let listing: Buffer;
     try { listing = git(source, ['ls-tree', '-rlz', '--full-tree', snapshot.head]); } catch { throw fail('git_snapshot_head_unavailable'); }
     const rows: any[] = [];
-    for (const record of listing.toString('utf8').split('\0').filter(Boolean)) {
+    for (const record of snapshotGitNames(listing, gap, true)) {
       const m = /^(\d{6}) (blob|commit) ([a-f0-9]{40,64})\s+(\d+|-)\t([\s\S]+)$/.exec(record);
       if (!m) throw fail('git_snapshot_tree_invalid');
       const [, mode, type, oid, size, name] = m;
