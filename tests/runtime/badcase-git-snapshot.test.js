@@ -229,6 +229,30 @@ test('snapshot Git honors normal user ignore rules but cannot be redirected by i
   }
 });
 
+test('parallel project turns each publish a checkpoint instead of failing busy during read-only Git work', async t => {
+  const h = fixture(t); h.enable(); const cwd = h.room('parallel-room');
+  const results = await Promise.all([h.capture(h.root, { turnId: 'one' }), h.capture(cwd, { turnId: 'two' }), h.capture(cwd, { turnId: 'three' })]);
+  assert.deepEqual(results.map(r => r.captured), [true, true, true], results.map(r => r.reason).join(','));
+  assert.equal(new Set(results.map(r => r.checkpointId)).size, 3);
+  assert.equal(h.service.store.listCheckpoints('p').length, 3);
+  assert.equal(fs.existsSync(path.join(h.service.captureRoot, 'projects', 'p', '.writer-lock')), false);
+});
+
+test('disable while Git snapshot is reading succeeds immediately and prevents checkpoint publication', async t => {
+  const h = fixture(t); h.enable(); const filename = path.join(h.root, 'pause-point'); fs.writeFileSync(filename, 'fixture');
+  const original = fs.readFileSync; let disabled = false;
+  fs.readFileSync = function(file, ...args) {
+    if (String(file) === filename && !disabled) {
+      h.service.savePolicy('p', { ...h.service.loadPolicy('p'), status: 'disabled' }); disabled = true;
+    }
+    return original.call(this, file, ...args);
+  };
+  let result; try { result = await h.capture(); } finally { fs.readFileSync = original; }
+  assert.equal(disabled, true, 'a long read-only phase must not lock out the project switch');
+  assert.equal(result.captured, false); assert.equal(result.reason, 'policy_not_enabled');
+  assert.equal(h.service.store.listCheckpoints('p').length, 0); assert.equal(h.service.computeUsage('p').blobCount, 0);
+});
+
 test('detached HEAD works; repositories with no readable HEAD fail without blocking callers', async t => {
   const h = fixture(t); h.enable(); h.git(h.root, 'checkout', '--detach', '-q');
   const result = await h.capture(); assert.equal(result.captured, true, result.reason); assert.equal(result.checkpoint.gitSnapshot.branch, '');

@@ -6,7 +6,6 @@ import { pathsEqual } from './capture-policy';
 import { redactKnownKeyValues } from './secrets';
 import { prepareReplayInput } from './replay-input-preparation';
 import { publishPreparedCheckpoint } from './checkpoint-publication';
-import { withAsyncProjectWriteLease } from './project-write-lock';
 import { recordCaptureResult } from './capture-result';
 
 export function createGitTurnCollector(options: any): any {
@@ -19,7 +18,10 @@ export function createGitTurnCollector(options: any): any {
     try {
       // Disabled means no Git command, key inventory, skill read or file scan.
       if (store.loadPolicy(projectId).status !== 'enabled') return failed('policy_not_enabled');
-      const outcome = await withAsyncProjectWriteLease(store.captureRoot, projectId, async writeSync => {
+      // Git/file reads are read-only and best-effort, so they need no storage
+      // lease. Holding one across Git awaits rejected parallel turns and even
+      // blocked the user's off switch. Only synchronous CAS publication locks.
+      const collectAndPublish = async () => {
         const policy = store.loadPolicy(projectId);
         if (policy.status !== 'enabled') return failed('policy_not_enabled');
         const project = typeof options.getProject === 'function' ? options.getProject(projectId) : null;
@@ -69,8 +71,9 @@ export function createGitTurnCollector(options: any): any {
         // Sanitize metadata too (e.g. known values in config/run labels), not
         // arbitrary patterns. Original key values are never a manifest field.
         const safeCheckpoint = JSON.parse(redactKnownKeyValues(Buffer.from(JSON.stringify(cp)), knownKeyValues).content.toString('utf8'));
-        return writeSync(() => publishPreparedCheckpoint({ store, checkpoint: safeCheckpoint, blobs: collected.blobs }));
-      });
+        return publishPreparedCheckpoint({ store, checkpoint: safeCheckpoint, blobs: collected.blobs });
+      };
+      const outcome = await collectAndPublish();
       const result = { ...outcome, durationMs: Date.now() - started };
       recordCaptureResult(options, input, result);
       return result;
