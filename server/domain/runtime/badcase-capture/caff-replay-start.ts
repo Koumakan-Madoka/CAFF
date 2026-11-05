@@ -3,6 +3,7 @@
 // Requires a FULL captured IPC config. Legacy version/model summaries are not
 // converted to defaults. External agent/config/skill roots remain unsupported.
 import crypto from 'node:crypto';
+import { isSafeRelativePath } from './replay-path';
 import { prepareWorktreeReplayInputs } from './worktree-replay-inputs';
 import { planModePreservingReplayCapsule } from './capsule-materialization';
 import { validateSessionV2 } from './session-validator';
@@ -89,8 +90,8 @@ export function planRetainedCaffStart(capsule: string, expected: any, worktreeDe
   const mapWorktree = (value: string) => {
     if (value !== root && !value.startsWith(root + separator)) throw fail('replay_sdk_external_dependency');
     const suffix = value.slice(root.length).split(separator).join('/');
-    if (suffix && (!/^\/[A-Za-z0-9_.@\-/]+$/.test(suffix)
-      || suffix.slice(1).split('/').some((p: string) => !p || p === '.' || p === '..' || p.length > 255))) throw fail();
+    if (suffix && (!isSafeRelativePath(suffix.slice(1))
+      || suffix.slice(1).split('/').some((p: string) => p.length > 255))) throw fail();
     const relative = suffix.slice(1);
     if (relative && !Object.keys(cp.files).some(p => p === relative || p.startsWith(relative + '/'))) throw fail('replay_sdk_dependency_missing');
     return DESTINATION + suffix;
@@ -104,8 +105,7 @@ export function planRetainedCaffStart(capsule: string, expected: any, worktreeDe
     const lexical = b.sourcePath.replaceAll('\\', '/');
     const components = worktreeDeclaration.sourcePlatform === 'win32'
       ? (/^[A-Za-z]:\//.test(lexical) ? lexical.slice(3) : '') : (lexical.startsWith('/') ? lexical.slice(1) : '');
-    if (!components || components.split('/').some((p: string) => !p || p === '.' || p === '..'
-      || p.length > 255 || !/^[A-Za-z0-9_.@ -]+$/.test(p) || p.trim() !== p)) throw fail('replay_sdk_bindings_invalid');
+    if (!isSafeRelativePath(components) || components.split('/').some((p: string) => p.length > 255)) throw fail('replay_sdk_bindings_invalid');
     let target: string;
     // Production fresh turns also carry a named sessionPath. Keep open() on a
     // guaranteed-new variant-local destination, never read that source path or

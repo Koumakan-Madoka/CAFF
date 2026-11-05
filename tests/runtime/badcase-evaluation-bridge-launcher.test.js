@@ -59,6 +59,7 @@ async function entryHarness(files, options = {}) {
   const result = vm.runInNewContext(code, { process: proc, console: { log: s => stdout.push(s) }, require: name => {
     if (name === 'node:fs') return fakeFs;
     if (name === 'node:crypto') return crypto;
+    if (name === './replay-path.cjs') return require('../../scripts/badcase-capture/replay-path.cjs');
     imports.push(name);
     if (name === '/work/node_modules/better-sqlite3') {
       if (options.loadFailure) throw Error('private loader detail');
@@ -112,7 +113,7 @@ test('entry rejects manifest schema/hash/count and runtime identity mismatches b
 });
 test('entry independently rejects resigned invalid paths, duplicates, type/size/hash drift and aggregate overflow', async t => {
   const root = fixture(t), files = api().prepareBridgeFiles(repo, root, image);
-  for (const invalid of ['/escape', '../escape', 'build/../escape', 'build//x', 'build/./x', 'bad name', 'C:/escape']) {
+  for (const invalid of ['/escape', '../escape', 'build/../escape', 'build//x', 'build/./x', 'bad name.', 'C:/escape']) {
     refused(await entryHarness(files, {
       manifest: m => { m.files[0].path = invalid; },
       bytes: map => { map.set('/work/' + invalid, files.find(f => f.path === manifestFor(files).files[0].path).bytes); }, resign: true,
@@ -143,7 +144,7 @@ test('fixed distribution stages only allowlisted files with byte identity; nativ
   fs.writeFileSync(path.join(root, 'node_modules/do-not-read-auth.json'), 'unrelated source must not be read');
   const a = prepareBridgeFiles(repo, root, image), b = prepareBridgeFiles(repo, root, image);
   assert.deepEqual(manifestFor(a), manifestFor(b));
-  assert.equal(a.length, inventory.build.length + inventory.dependencies.length + 3);
+  assert.equal(a.length, inventory.build.length + inventory.dependencies.length + 4);
   assert.equal(a.some(f => f.path.includes('do-not-read')), false);
   assert.ok(a.some(f => f.path === 'build/storage/run/planner-terminal-projection.js'), 'callback SQLite migrations require the merged planner projection module');
   for (const name of inventory.build) assert.deepEqual(a.find(f => f.path === name).bytes, fs.readFileSync(path.join(repo, name)));

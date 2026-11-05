@@ -3,6 +3,7 @@
 // every declared file from the independently authorized checkpoint, never cwd.
 import fs from 'node:fs';
 import path from 'node:path';
+import { isSafeRelativePath } from './replay-path';
 import { PROJECT_CONTEXT_NAMES, PROJECT_SKILL_ROOTS, relativeProjectSkillPaths } from './project-resources';
 export function supportsPortableThinking(config: any): boolean {
   return config?.thinking === 'off' || (config?.thinking === 'xhigh'
@@ -29,7 +30,7 @@ export function inspectPortableAgentConfig(config: any, options: { archivedSkill
     }
     const filePaths: string[] = []; let entries = 0;
     const inventory = (relative: string, depth = 0) => {
-      if (++entries > (options.archivedSkills ? 16384 : 2048) || depth > 32 || !/^[A-Za-z0-9_.@/-]+$/.test(relative)) throw Error();
+      if (++entries > (options.archivedSkills ? 16384 : 2048) || depth > 32 || !isSafeRelativePath(relative)) throw Error();
       const target = path.join(config.cwd, relative), st = fs.lstatSync(target);
       if (st.isSymbolicLink()) throw Error();
       if (st.isDirectory()) { for (const name of fs.readdirSync(target).sort()) inventory(relative + '/' + name, depth + 1); }

@@ -2,6 +2,7 @@
 // credential replacement or dependency-completeness claim. Archives stay intact.
 import crypto from 'node:crypto';
 import { planModePreservingReplayCapsule } from './capsule-materialization';
+import { isSafeRelativePath } from './replay-path';
 const hash = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
 const fail = () => Object.assign(Error('replay_worktree_mapping_invalid'), { code: 'replay_worktree_mapping_invalid' });
 const object = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -10,7 +11,7 @@ const DESTINATION = '/work/restored/snapshot';
 // Deliberately conservative lexical subset. No host resolve/realpath, Windows
 // case folding for authority, UNC/device/drive-relative paths, aliases or dot segments.
 function canonicalPath(v: any, platform: string) {
-  if (typeof v !== 'string' || v.length > 4096 || !/^[\x20-\x7e]+$/.test(v)) throw fail();
+  if (typeof v !== 'string' || v.length > 4096) throw fail();
   let parts: string[];
   if (platform === 'win32') {
     if (!/^[A-Za-z]:[\\/]/.test(v) || (v.includes('\\') && v.includes('/'))) throw fail();
@@ -19,8 +20,7 @@ function canonicalPath(v: any, platform: string) {
     if (!v.startsWith('/') || v.includes('\\')) throw fail();
     parts = v.slice(1).split('/');
   }
-  if (!parts.length || parts.length > 64 || parts.some(p => !p || p === '.' || p === '..' || p.length > 255
-    || !/^[A-Za-z0-9_.@ -]+$/.test(p) || p.trim() !== p || (platform === 'win32' && p.endsWith('.')))) throw fail();
+  if (!parts.length || parts.length > 64 || parts.some(p => p.length > 255 || /~[0-9]/.test(p)) || !isSafeRelativePath(parts.join('/'))) throw fail();
   return v;
 }
 function utf8(b: Buffer | undefined) {

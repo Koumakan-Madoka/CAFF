@@ -20,7 +20,10 @@ function input(count) {
 }
 function loadVm(name, extra) {
   const module = { exports: {} };
-  const context = { module, Buffer, require, process, ...extra };
+  const context = { module, Buffer, process, ...extra, require(name) {
+    if (name === './replay-path.cjs') return require('../../scripts/badcase-capture/replay-path.cjs');
+    return (extra.require || require)(name);
+  } };
   vm.runInNewContext(fs.readFileSync(path.resolve('scripts/badcase-capture', name), 'utf8'), context, { filename: name });
   return module.exports;
 }

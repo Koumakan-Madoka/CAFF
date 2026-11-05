@@ -1,5 +1,6 @@
 // Trusted direct-provider helpers. No gateway, automatic auth discovery or persistence.
 const fs = require('node:fs');
+const { isSafeRelativePath } = require('./replay-path.cjs');
 const ENDPOINT = 'https://opencode.ai/zen/go/v1';
 const PROVIDER = 'opencode-go', MODEL = 'deepseek-v4.1-flash';
 const KEY_ENV = 'CAFF_BADCASE_MODEL_KEY';
@@ -200,7 +201,7 @@ function projectSkillRebinder(bindings) {
   const rules = mappings.map(m => {
     if (typeof m?.sourcePath !== 'string' || !/^(?:[A-Za-z]:[\\/]|\/)/.test(m.sourcePath)
       || typeof m.relativePath !== 'string' || !m.relativePath
-      || !/^[A-Za-z0-9_.@/-]+$/.test(m.relativePath) || m.relativePath.split('/').some(p => !p || p === '.' || p === '..' || p === '.git')) throw fail('evaluation_bindings_unsupported');
+      || !isSafeRelativePath(m.relativePath)) throw fail('evaluation_bindings_unsupported');
     const source = m.sourcePath.replaceAll('\\', '/');
     if (seen.has(source)) throw fail('evaluation_bindings_unsupported'); seen.add(source);
     const escaped = source.split('/').map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\\\/]');

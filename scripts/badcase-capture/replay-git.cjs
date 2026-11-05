@@ -7,7 +7,7 @@ const { redactFileSecrets } = require('../../build/server/domain/runtime/badcase
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const fail = code => Object.assign(Error(code), { code });
 const hex = s => typeof s === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(s);
-const safePath = s => typeof s === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(s) && s.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git');
+const { isSafeRelativePath: safePath } = require('./replay-path.cjs');
 function gitEnvironment() {
   const env = {};
   for (const k of ['PATH', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP']) if (process.env[k]) env[k] = process.env[k];

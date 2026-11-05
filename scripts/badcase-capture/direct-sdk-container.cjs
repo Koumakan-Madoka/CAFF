@@ -3,13 +3,13 @@
 // its caller prepared a complete sealed checkpoint; that is a separate gate.
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict'), crypto = require('node:crypto');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
+const { isSafeRelativePath } = require('./replay-path.cjs');
 function collectFileEvidence(cwd, paths, key) {
   assert.ok(Array.isArray(paths) && paths.length > 0 && paths.length <= 16 && new Set(paths).size === paths.length);
   const { containsSecretSentinel } = require('/work/build/server/domain/runtime/badcase-capture/secrets');
   let total = 0;
   return paths.map(name => {
-    assert.ok(typeof name === 'string' && name.length <= 512 && /^[A-Za-z0-9_.@/-]+$/.test(name)
-      && name.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git'));
+    assert.ok(isSafeRelativePath(name) && name.length <= 512);
     try {
       const parts = name.split('/'); let target = cwd, stat;
       for (const [index, part] of parts.entries()) {
@@ -68,7 +68,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     assert.ok(typeof f.path === 'string' && !names.has(f.path) && (gitFile
       ? /^\.git\/(?:HEAD|config|index|refs\/(?:heads|remotes)\/[A-Za-z0-9_.@/-]+|objects\/pack\/pack-[a-f0-9]{40,64}\.(?:pack|idx))$/.test(f.path)
         && f.path.split('/').every(p => p && p !== '.' && p !== '..')
-      : /^[A-Za-z0-9_.@/-]+$/.test(f.path) && f.path.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git')));
+      : isSafeRelativePath(f.path)));
     names.add(f.path);
     let bytes;
     if (directoryWorkspace) {

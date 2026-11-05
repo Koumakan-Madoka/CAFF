@@ -4,6 +4,7 @@
 // objects and applies data in TEMP. Historical strict-eval certificates are NOT
 // required; missing runtime/role/input material still fails closed.
 const crypto = require('node:crypto');
+const { isSafeRelativePath } = require('./replay-path.cjs');
 const base = '../../build/server/domain/runtime/badcase-capture/';
 const { createCaptureStore } = require(base + 'capture-store');
 const { createCheckpointRetentionStore } = require(base + 'checkpoint-retention');
@@ -123,7 +124,7 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false,
     const names = Object.keys(records); ensure(names.length <= 8192, 'replay_file_inventory_limit');
     let files = names.sort().map(name => {
       const f = records[name], b = gitSnapshot ? f.content : blobs.get(f.hash);
-      ensure(/^[A-Za-z0-9_.@/-]+$/.test(name) && name.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git')
+      ensure(isSafeRelativePath(name)
         && f.type === 'file' && !f.secretExcluded && b && b.length === f.size, 'replay_file_record_invalid');
       return { path: name, base64: b.toString('base64'), sha256: f.hash, mode: f.mode,
         ...(f.secretRedacted === true || redacted.has(name) ? { secretRedacted: true } : {}) };

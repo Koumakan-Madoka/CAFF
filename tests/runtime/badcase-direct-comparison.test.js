@@ -48,6 +48,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, di
     getAgentsFiles: () => ({ agentsFiles: projectResources?.contextFile ? [{ path: '/work/restored/' + projectResources.contextFile, content: fileBytes[projectResources.contextFile].replace(/^\uFEFF/, '') }] : [] }),
     getSkills: () => ({ skills: files.filter(p => p.endsWith('/SKILL.md')).map(p => ({ filePath: '/work/restored/' + p })) }), ...resourceLoaderPatch } }, dispose: async () => { disposed = true; } };
   const workerRequire = name => {
+    if (name === './replay-path.cjs') return require('../../scripts/badcase-capture/replay-path.cjs');
     if (name === 'node:fs') return workerFs;
     if (name === 'node:child_process') return { execFileSync: (program, args, options) => {
       assert.equal(program, 'git'); assert.equal(options.env.CAFF_BADCASE_MODEL_KEY, undefined);

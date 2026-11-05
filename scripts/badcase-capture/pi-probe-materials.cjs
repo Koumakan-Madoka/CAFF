@@ -7,14 +7,14 @@ const crypto = require('node:crypto');
 const LIMIT = 16 * 1024 * 1024;
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const { hashFile } = require('./replay-streams.cjs');
+const { isSafeDistributionPath } = require('./replay-path.cjs');
 function manifestFor(files, { replayWorkspace = false } = {}) {
   // Direct replay keeps captured file bodies outside its JSON control input.
   // Only that explicit data namespace is exempt from the static-runtime cap;
   // all bytes (including workspace bytes) remain in the hashed inventory.
   const names = new Set(); let total = 0, staticCount = 0, workspaceCount = 0;
   const inventory = files.map(f => {
-    if (!f || typeof f.path !== 'string' || !/^[A-Za-z0-9_.@/-]+$/.test(f.path)
-        || f.path.split('/').some(p => !p || p === '.' || p === '..') || names.has(f.path)
+    if (!f || !isSafeDistributionPath(f.path) || names.has(f.path)
         || !(Buffer.isBuffer(f.bytes) && f.sourceFile === undefined || replayWorkspace && f.path === 'replay-dependencies.tar.gz'
           && f.bytes === undefined && path.isAbsolute(f.sourceFile || '') && fs.lstatSync(f.sourceFile).isFile()
           && !fs.lstatSync(f.sourceFile).isSymbolicLink())) throw Error('probe_file_invalid');
@@ -77,6 +77,7 @@ function prepareProbeFiles(repoRoot, mode) {
   if (!['fresh', 'resume'].includes(mode)) throw Error('probe_mode_invalid');
   const files = prepareRuntimeFiles(repoRoot);
   files.push({ path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'pi-initialize-probe.cjs')) });
+  files.push({ path: 'replay-path.cjs', bytes: fs.readFileSync(path.resolve(__dirname, '../../build/server/domain/runtime/badcase-capture/replay-path.js')) });
   files.push({ path: 'pi-probe-guards.cjs', bytes: fs.readFileSync(path.join(__dirname, 'pi-probe-guards.cjs')) });
   files.push({ path: 'mode.txt', bytes: Buffer.from(mode) });
   const session = Buffer.from(syntheticSession()); // single fixture source, also checked inside the container

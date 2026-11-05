@@ -2,6 +2,7 @@
 // Complete original SDK HTTP transport/factory/loader/extensions and tools.
 // Supplier authority and scoring/reference material remain outside the container.
 const fs = require('node:fs'), assert = require('node:assert/strict'), crypto = require('node:crypto');
+const { isSafeRelativePath } = require('./replay-path.cjs');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 async function main() {
   // Refuse host execution BEFORE absolute /work loads, SDK or native imports.
@@ -19,7 +20,7 @@ async function main() {
   fs.mkdirSync(cwd, { mode: 0o700 }); fs.mkdirSync(agentDir, { mode: 0o700 });
   const write = (p, b) => fs.writeFileSync(p, b, { flag: 'wx', mode: 0o600 });
   for (const f of input.files) {
-    assert.ok(/^[A-Za-z0-9_.@/-]+$/.test(f.path) && f.path.split('/').every(p => p && p !== '.' && p !== '..'));
+    assert.ok(isSafeRelativePath(f.path));
     const target = cwd + '/' + f.path; fs.mkdirSync(require('node:path').dirname(target), { recursive: true, mode: 0o700 }); write(target, f.content);
   }
   write(agentDir + '/SYSTEM.md', task.role);

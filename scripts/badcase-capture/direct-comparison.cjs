@@ -2,6 +2,7 @@
 // No model gateway, auto prompt generation, secret discovery, or self-scoring.
 const crypto = require('node:crypto');
 const path = require('node:path');
+const { isSafeRelativePath } = require('./replay-path.cjs');
 const { prepareSealedDirectTurn, prepareSealedOriginalTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
 const { prepareDirectTurnFiles, runDirectDockerTask, runCodexDockerTask } = require('./direct-docker.cjs');
 const { createCodexTransport, createCodexAccess } = require('./codex-transport.cjs');
@@ -32,9 +33,9 @@ function validateRules(rules) {
   if (!rules || rules.kind !== 'read-only-files-v1'
     || Object.keys(rules).some(k => !['kind', 'readPaths', 'absentPaths', 'requiredReplyFragments'].includes(k))
     || !Array.isArray(rules.absentPaths) || rules.absentPaths.length > 16 || new Set(rules.absentPaths).size !== rules.absentPaths.length
-    || rules.absentPaths.some(p => typeof p !== 'string' || !/^[A-Za-z0-9_.@/-]+$/.test(p) || p.split('/').some(s => !s || s === '.' || s === '..'))
+    || rules.absentPaths.some(p => !isSafeRelativePath(p))
     || !Array.isArray(rules.readPaths) || !rules.readPaths.length || rules.readPaths.length > 16
-    || rules.readPaths.some(p => typeof p !== 'string' || !/^[A-Za-z0-9_.@/-]+$/.test(p) || p.split('/').some(s => !s || s === '.' || s === '..'))
+    || rules.readPaths.some(p => !isSafeRelativePath(p))
     || new Set(rules.readPaths).size !== rules.readPaths.length
     || !Array.isArray(rules.requiredReplyFragments) || !rules.requiredReplyFragments.length || rules.requiredReplyFragments.length > 32
     || rules.requiredReplyFragments.some(s => typeof s !== 'string' || !s.trim() || s.length > 256)) throw fail('evaluation_rules_invalid');

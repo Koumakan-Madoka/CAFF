@@ -54,6 +54,7 @@ function bootstrap(options = {}) {
   const mod = { exports: {} }, proc = { platform: 'linux', getuid: () => 65534, cwd: () => '/work', env: {},
     version: image.nodeVersion, arch: 'x64', ...options.process };
   const req = name => {
+    if (name === './replay-path.cjs') return require('../../scripts/badcase-capture/replay-path.cjs');
     if (name === 'node:fs') return fakeFs;
     if (name === 'node:crypto') return crypto;
     if (name === 'node:assert/strict') return assert;
@@ -95,7 +96,7 @@ test('container bootstrap rejects tampering and unsupported modes/identity befor
     { bytes: map => { map.set('/work/runtime/x', Buffer.from('y')); } },
     { manifest: (m, bytes) => { m.files = Array.from({ length: 4097 }, (_, i) => ({ path: 'item-' + i, size: 0, sha256: crypto.createHash('sha256').update('').digest('hex') }));
       for (const f of m.files) bytes.set(f.path, Buffer.alloc(0)); m.runtimeHash = crypto.createHash('sha256').update('[]').digest('hex'); }, resign: true }];
-  for (const invalid of ['/outside', '../outside', 'runtime/./x', 'runtime//x', 'bad name']) cases.push({
+  for (const invalid of ['/outside', '../outside', 'runtime/./x', 'runtime//x', 'bad name.']) cases.push({
     manifest: (m, bytes) => { const f = m.files.find(f => f.path === 'runtime/x'); bytes.set(invalid, bytes.get(f.path)); f.path = invalid;
       m.runtimeHash = crypto.createHash('sha256').update(JSON.stringify(m.files.filter(f => f.path.startsWith('runtime/')))).digest('hex'); }, resign: true,
   });

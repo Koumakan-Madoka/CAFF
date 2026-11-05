@@ -4,6 +4,7 @@
 // - 恢复后重扫目标目录，逐文件比对 hash 与清单；任何不一致 → ok=false，不冒充一致。
 // - 连续两次恢复同一 checkpoint 必须得到相同清单（由测试断言）。
 
+import { isSafeRelativePath } from './replay-path';
 import { materializeGitSnapshot, snapshotSkillLocation } from './git-snapshot-materialization';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -14,6 +15,7 @@ function sha256File(filePath: any) {
 }
 
 function safeJoin(root: any, relativePath: any) {
+  if (!isSafeRelativePath(relativePath)) return null;
   const resolvedRoot = path.resolve(root);
   const resolved = path.resolve(resolvedRoot, relativePath);
   const relative = path.relative(resolvedRoot, resolved);

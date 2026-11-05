@@ -10,11 +10,9 @@ import { execFileSync } from 'node:child_process';
 import { matchesRelativePattern } from './capture-policy';
 import { knownCaptureKeyValues, snapshotGitNames } from './git-snapshot';
 import { redactKnownKeyValues } from './secrets';
+import { isSafeRelativePath as relative } from './replay-path';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
-const relative = (s: any): s is string => typeof s === 'string' && s.length > 0 && !s.includes('\\')
-  && !s.startsWith('/') && s.split('/').every(p => p && p !== '.' && p !== '..' && p.toLowerCase() !== '.git'
-    && !/[ .]$|[<>:"|?*\x00-\x1f]/.test(p) && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
 const within = (p: string, paths: typeof path.posix) => p === '' || p !== '..' && !p.startsWith('../') && !p.startsWith('..\\') && !paths.isAbsolute(p);
 export function snapshotSkillLocation(cwd: string, originalPath: string) {
   const paths = /^[A-Za-z]:[\\/]/.test(originalPath) ? path.win32 : path.posix;

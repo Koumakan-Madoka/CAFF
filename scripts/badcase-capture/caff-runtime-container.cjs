@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+const { isSafeDistributionPath } = require('./replay-path.cjs');
 // Also used by the direct worker/restore code: archive/tree hashes never
 // allocate an entire staged file. Fixed-size reads, no SDK dependencies.
 function hashFile(file) {
@@ -21,8 +22,7 @@ function verifyCaffRuntimeStage({ replayWorkspace = false } = {}) {
   assert.equal(hash(JSON.stringify(m.files)), m.inputHash);
   const names = new Set(); let total = 0, staticCount = 0, workspaceCount = 0;
   for (const f of m.files) {
-    assert.ok(typeof f.path === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(f.path)
-      && f.path.split('/').every(p => p && p !== '.' && p !== '..') && !names.has(f.path)); names.add(f.path);
+    assert.ok(isSafeDistributionPath(f.path) && !names.has(f.path)); names.add(f.path);
     const st = fs.lstatSync('/work/' + f.path);
     if (replayWorkspace && (f.path.startsWith('replay-workspace/') || f.path === 'replay-dependencies.tar.gz')) workspaceCount++;
     else { total += st.size; staticCount++; }

@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 const { archiveHarness, readHarnessArchive, prepareHarnessFiles } = require('../../scripts/badcase-capture/harness-archive.cjs');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const sources = ['scripts/badcase-capture/pi-probe-guards.cjs', 'scripts/badcase-capture/retained-sdk-container.cjs',
-  ...['retained-sdk-diagnostic', 'capsule-materialization', 'secrets'].map(n => `build/server/domain/runtime/badcase-capture/${n}.js`)];
+  ...['retained-sdk-diagnostic', 'capsule-materialization', 'secrets', 'replay-path'].map(n => `build/server/domain/runtime/badcase-capture/${n}.js`)];
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-harness-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -21,13 +21,22 @@ function rewrite(a, change) {
   const bytes = Buffer.from(JSON.stringify(data)); fs.writeFileSync(p, bytes);
   return { ...a, archiveHash: hash(bytes), archiveBytes: bytes.length };
 }
-test('five-file harness survives removal of sources, repeats exactly, and includes guard', t => {
+test('current harness survives removal of sources, repeats exactly, and includes guard/shared path checks', t => {
   const f = fixture(t), a = archiveHarness(f.source, f.destination), b = archiveHarness(f.source, path.join(f.root, 'second'));
   assert.equal(a.archiveHash, b.archiveHash);
   const files = readHarnessArchive(a); assert.deepEqual(files, prepareHarnessFiles(f.source));
-  assert.deepEqual(files.map(x => x.path).sort(), ['capsule-materialization.js', 'pi-probe-guards.cjs', 'probe.cjs', 'retained-sdk-diagnostic.js', 'secrets.js']);
+  assert.deepEqual(files.map(x => x.path).sort(), ['capsule-materialization.js', 'pi-probe-guards.cjs', 'probe.cjs', 'replay-path.cjs', 'replay-path.js', 'retained-sdk-diagnostic.js', 'secrets.js']);
   fs.rmSync(f.source, { recursive: true }); assert.deepEqual(readHarnessArchive(a), files);
   assert.deepEqual(Object.keys(a).sort(), ['archiveBytes', 'archiveHash', 'directory', 'harnessBytes', 'harnessHash']);
+});
+test('legacy five-file archives keep their exact bytes and identity without reading live helpers', t => {
+  const f = fixture(t), current = archiveHarness(f.source, f.destination), file = path.join(current.directory, 'harness.json');
+  const data = JSON.parse(fs.readFileSync(file)); data.files = data.files.filter(f => !f.path.startsWith('replay-path.'));
+  const bytes = Buffer.from(JSON.stringify(data)), files = data.files.map(f => ({ path: f.path, bytes: Buffer.from(f.base64, 'base64') }));
+  const m = require('../../scripts/badcase-capture/pi-probe-materials.cjs').manifestFor(files);
+  const ref = { ...current, archiveHash: hash(bytes), archiveBytes: bytes.length, harnessHash: m.inputHash, harnessBytes: files.reduce((n, f) => n + f.bytes.length, 0) };
+  fs.writeFileSync(file, bytes); fs.rmSync(f.source, { recursive: true });
+  assert.deepEqual(readHarnessArchive(ref), files); assert.deepEqual(fs.readFileSync(file), bytes);
 });
 test('harness rejects missing, changed, malformed or incorrectly pinned bytes', t => {
   const f = fixture(t), a = archiveHarness(f.source, f.destination);
@@ -39,7 +48,7 @@ test('harness rejects missing, changed, malformed or incorrectly pinned bytes', 
   fs.unlinkSync(path.join(a.directory, 'harness.json'));
   assert.throws(() => readHarnessArchive(a), { code: 'harness_archive_invalid' });
 });
-test('schema, base64, hashes and exact five-file inventory are rechecked even with a new outer hash', t => {
+test('schema, base64, hashes and exact supported inventories are rechecked even with a new outer hash', t => {
   for (const change of [d => { d.extra = true; }, d => { d.kind = 'other'; }, d => { d.files.pop(); },
     d => { d.files.push(d.files[0]); }, d => { d.files[0].path = '../escape'; }, d => { d.files[0].extra = true; },
     d => { d.files[0].base64 += '='; }, d => { d.files[0].sha256 = '0'.repeat(64); }, d => { d.files[0].size++; }]) {

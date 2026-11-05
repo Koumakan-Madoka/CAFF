@@ -6,18 +6,26 @@ const fixture = require('../helpers/badcase-initialization-fixture.cjs');
 const { collectGitSnapshot } = require('../../build/server/domain/runtime/badcase-capture/git-snapshot');
 const { prepareSealedOriginalTurn, prepareSealedDirectTurn } = require('../../scripts/badcase-capture/sealed-direct-input.cjs');
 const { prepareComparison } = require('../../scripts/badcase-capture/direct-comparison.cjs');
-async function sealed(t, { knownValues = [], change = () => {}, projectResources = false, externalSkills = false, baseText = 'HEAD base\n' } = {}) {
+async function sealed(t, { knownValues = [], change = () => {}, projectResources = false, externalSkills = false, unicodeFiles = false, baseText = 'HEAD base\n' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'snapshot-sealed-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
   Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_OPTIONAL_LOCKS: '0' });
   const git = (...args) => execFileSync('git', ['-C', root, ...args], { env, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git('init', '-q'); git('config', 'core.autocrlf', 'false');
   fs.writeFileSync(path.join(root, 'base.txt'), baseText); fs.writeFileSync(path.join(root, 'source.txt'), 'before capture\n'); fs.writeFileSync(path.join(root, 'deleted.txt'), 'gone\n');
+  if (unicodeFiles) {
+    fs.mkdirSync(path.join(root, '资料'), { recursive: true });
+    for (const name of ['HEAD 中文 空格.txt', 'dirty 中文 空格.txt']) fs.writeFileSync(path.join(root, '资料', name), 'Unicode base\n');
+  }
   const resourcePaths = ['AGENTS.md', '.agents/skills/local/SKILL.md'];
   if (projectResources) { fs.mkdirSync(path.join(root, '.agents/skills/local'), { recursive: true }); fs.writeFileSync(path.join(root, resourcePaths[0]), 'context'); fs.writeFileSync(path.join(root, resourcePaths[1]), 'skill'); }
   git('add', '-A'); git('-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), '-c', 'commit.gpgsign=false', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid.local', 'commit', '-qm', 'base');
   const head = git('rev-parse', 'HEAD');
   fs.writeFileSync(path.join(root, 'source.txt'), 'captured edit\n' + knownValues.join('\n')); fs.unlinkSync(path.join(root, 'deleted.txt')); fs.writeFileSync(path.join(root, 'untracked.bin'), Buffer.from([0, 255, 1]));
+  if (unicodeFiles) {
+    fs.writeFileSync(path.join(root, '资料/dirty 中文 空格.txt'), 'Unicode dirty\n');
+    fs.writeFileSync(path.join(root, '资料/untracked 新文件 空格.txt'), 'Unicode untracked\n');
+  }
   const external = externalSkills ? fs.mkdtempSync(path.join(os.tmpdir(), 'sealed-external-skills-')) : null;
   const sdkSkills = [], promptSkills = [];
   if (external) {
@@ -74,6 +82,21 @@ test('sealed v2 prepares a complete HEAD tree plus patch/overlays, not only the 
   assert.deepEqual(result.input.deletions, ['deleted.txt']); assert.equal(result.provenance.sourceSnapshot.head, f.head);
   assert.equal(result.provenance.strictEvalEligible, false); assert.deepEqual(fs.readFileSync(f.source), before);
   assert.equal(f.git('status', '--porcelain=v1', '-uall'), liveStatus); assert.equal(sourceBefore, liveStatus);
+});
+
+test('Unicode and spaces survive real Git capture, sealed --plan and the container restoration boundary', async t => {
+  const f = await sealed(t, { unicodeFiles: true }), config = planConfig(f);
+  config.rules.files = [{ path: '资料/dirty 中文 空格.txt', contains: ['Unicode dirty'], notContains: [] }];
+  const file = path.join(f.root, 'unicode-plan.json'); fs.writeFileSync(file, JSON.stringify(config));
+  const plan = JSON.parse(execFileSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', file, '--plan'], { encoding: 'utf8' }));
+  assert.equal(plan.supported, true, JSON.stringify(plan)); assert.equal(plan.preparedOnly, true);
+  const prepared = prepareComparison(config); assert.equal(prepared.supported, true, JSON.stringify(prepared));
+  const input = { ...prepared.inputs.original, callback: null }; delete input.bindings; delete input.recordedModelConfig;
+  const staged = require('../../scripts/badcase-capture/direct-docker.cjs').prepareDirectReplayInput(input);
+  assert.ok(staged.some(f => f.path === 'replay-workspace/资料/untracked 新文件 空格.txt'));
+  const vm = await require('../helpers/badcase-direct-restore-vm.cjs')(t, input);
+  await assert.rejects(vm.run(), e => e === vm.marker); assert.equal(vm.boundary(), true);
+  for (const [name, text] of [['HEAD 中文 空格.txt', 'Unicode base\n'], ['dirty 中文 空格.txt', 'Unicode dirty\n'], ['untracked 新文件 空格.txt', 'Unicode untracked\n']]) assert.equal(vm.file('资料/' + name).toString(), text);
 });
 
 test('v2 known-only policy preserves token-like examples and passes host known literals to HEAD materialization', async t => {

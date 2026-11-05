@@ -2,12 +2,11 @@
 // Never reads current source paths or overrides the native SDK resource loader.
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { isSafeRelativePath as validPath } from './replay-path';
 export const PROJECT_CONTEXT_NAMES = ['AGENTS.override.md', 'AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD'];
 export const PROJECT_SKILL_ROOTS = ['.agents/skills', '.pi/skills'];
 const fail = () => new Error('replay_project_resources_invalid');
 const hash = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
-const validPath = (v: any): v is string => typeof v === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(v)
-  && v.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git');
 export function isProjectResourcePath(name: string): boolean {
   return PROJECT_CONTEXT_NAMES.includes(name) || PROJECT_SKILL_ROOTS.some(root => name.startsWith(root + '/'));
 }
