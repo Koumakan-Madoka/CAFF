@@ -63,6 +63,7 @@ test('checkpoint records pending initialization, then CAS-archives only SDK-sele
   const initial = await h.capture(); assert.equal(initial.captured, true, initial.reason);
   assert.deepEqual(initial.checkpoint.gitSnapshot.projectSkills, [], 'no guesses when runtime inventory is pending');
   assert.ok(initial.checkpoint.replayInput.incompleteReasons.includes('project_skills_pending'));
+  assert.equal(h.service.latestCaptureMetrics('p').status, 'pending_skills');
   const before = h.service.computeUsage('p').totalBytes;
   const skills = [{ name: 'selected', filePath: path.join(selected, 'SKILL.md'), baseDir: selected }];
   const result = await h.service.captureLoadedProjectSkills({ projectId: 'p', checkpointId: initial.checkpointId, skills });
@@ -76,6 +77,8 @@ test('checkpoint records pending initialization, then CAS-archives only SDK-sele
   assert.equal(h.service.store.readBlob('p', cp.gitSnapshot.projectSkills[0].files['SKILL.md'].hash).toString(), 'selected [*]');
   assert.ok(!JSON.stringify(cp).includes(h.key));
   assert.ok(!cp.replayInput.incompleteReasons.includes('project_skills_pending'));
+  assert.equal(h.service.latestCaptureMetrics('p').status, 'captured');
+  assert.equal(h.service.latestCaptureMetrics('p').totalNewBytes, cp.stats.totalNewBytes);
   assert.equal(cp.stats.newBlobBytes, Object.values(cp.stats.blobBytesByKind).reduce((s, n) => s + n, 0));
   assert.equal(cp.stats.totalNewBytes, initial.checkpoint.stats.totalNewBytes + h.service.computeUsage('p').totalBytes - before);
   const usage = h.service.computeUsage('p').totalBytes;
@@ -100,10 +103,19 @@ test('loaded skill anomalies become gaps; root Markdown skills archive only that
   assert.equal(result.captured, true, result.reason);
   const cp = result.checkpoint;
   assert.equal(cp.stats.skippedCount, 2);
+  assert.equal(h.service.latestCaptureMetrics('p').status, 'partial');
+  assert.equal(h.service.latestCaptureMetrics('p').skippedCount, 2);
   assert.deepEqual(cp.uncaptured.map(g => g.reason).sort(), ['file_size_limit', 'reparse_point_skipped']);
   const markdown = cp.gitSnapshot.projectSkills.find(s => s.originalPath === rootMd);
   assert.deepEqual(Object.keys(markdown.files), ['one.md']); assert.equal(markdown.rootKind, 'file');
   assert.equal(cp.replayInput.complete, false);
+});
+
+test('late SDK resource enrichment cannot replace a newer turn result', async t => {
+  const h = fixture(t), first = await h.capture(), second = await h.capture();
+  const previous = h.service.latestCaptureMetrics('p'); assert.equal(previous.checkpointId, second.checkpointId);
+  const result = await h.service.captureLoadedProjectSkills({ projectId: 'p', checkpointId: first.checkpointId, skills: [] });
+  assert.equal(result.captured, true); assert.deepEqual(h.service.latestCaptureMetrics('p'), previous);
 });
 
 test('skill resource budget skips only excess files, and malformed SDK paths are honest gaps', t => {

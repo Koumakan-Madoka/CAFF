@@ -7,6 +7,7 @@ import { redactKnownKeyValues } from './secrets';
 import { prepareReplayInput } from './replay-input-preparation';
 import { publishPreparedCheckpoint } from './checkpoint-publication';
 import { withAsyncProjectWriteLease } from './project-write-lock';
+import { recordCaptureResult } from './capture-result';
 
 export function createGitTurnCollector(options: any): any {
   const store = options.store;
@@ -70,7 +71,13 @@ export function createGitTurnCollector(options: any): any {
         const safeCheckpoint = JSON.parse(redactKnownKeyValues(Buffer.from(JSON.stringify(cp)), knownKeyValues).content.toString('utf8'));
         return writeSync(() => publishPreparedCheckpoint({ store, checkpoint: safeCheckpoint, blobs: collected.blobs }));
       });
-      return { ...outcome, durationMs: Date.now() - started };
-    } catch { return failed('git_snapshot_unavailable'); } // never expose content/keys or block the turn
+      const result = { ...outcome, durationMs: Date.now() - started };
+      recordCaptureResult(options, input, result);
+      return result;
+    } catch {
+      const result = failed('git_snapshot_unavailable');
+      recordCaptureResult(options, input, result);
+      return result; // never expose content/keys or block the turn
+    }
   } };
 }

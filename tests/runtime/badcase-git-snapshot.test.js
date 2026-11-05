@@ -150,6 +150,53 @@ test('known keys in either side of a tracked diff use full sanitized overlays in
   assert.ok(!JSON.stringify(cp).includes(key));
 });
 
+test('latest result follows room checkpoints, survives restart and serves counters without reading snapshot blobs', async t => {
+  const h = fixture(t); h.enable(); const cwd = h.room('metrics-room');
+  fs.writeFileSync(path.join(cwd, 'safe.txt'), 'safe');
+  fs.writeFileSync(path.toNamespacedPath(path.join(cwd, 'nul.txt')), 'skip');
+  let result;
+  try { result = await h.capture(cwd); }
+  finally { fs.unlinkSync(path.toNamespacedPath(path.join(cwd, 'nul.txt'))); }
+  assert.equal(result.captured, true, result.reason);
+  const summary = h.service.latestCaptureMetrics('p');
+  assert.ok(summary, 'project-root-only latest lookup loses room checkpoint results');
+  assert.equal(summary.checkpointId, result.checkpointId); assert.equal(summary.targetDir, cwd);
+  assert.equal(summary.captured, true); assert.equal(summary.status, 'partial'); assert.equal(summary.skippedCount, 1);
+  assert.equal(summary.totalNewBytes, result.checkpoint.stats.totalNewBytes);
+  const restarted = createBadcaseCaptureService({ captureRoot: h.service.captureRoot });
+  restarted.store.readBlob = () => assert.fail('status reads must not read any blob');
+  restarted.store.loadCheckpoint = () => assert.fail('persisted status is a small independent projection');
+  assert.deepEqual(restarted.latestCaptureMetrics('p'), summary);
+  assert.doesNotMatch(JSON.stringify(summary), /patchBlobHash|promptBlobHash|safe\.txt|"uncaptured"|"files"\s*:\s*\{/);
+});
+
+test('readable-HEAD failure is recorded, but disabled and out-of-scope invocations never replace the last real attempt', async t => {
+  const h = fixture(t); h.enable(); const first = await h.capture();
+  const summary = h.service.latestCaptureMetrics('p'); assert.equal(summary?.checkpointId, first.checkpointId);
+  const other = path.join(h.temp, 'other'); h.git(h.temp, 'clone', '-q', '--no-local', h.root, other);
+  const plain = path.join(h.temp, 'plain'), sub = path.join(h.root, 'sub'); fs.mkdirSync(plain); fs.mkdirSync(sub);
+  for (const dir of [other, plain, sub]) { await h.capture(dir); assert.deepEqual(h.service.latestCaptureMetrics('p'), summary); }
+  const branch = h.git(h.root, 'symbolic-ref', 'HEAD'); h.git(h.root, 'symbolic-ref', 'HEAD', 'refs/heads/absent');
+  const result = await h.capture(); assert.equal(result.reason, 'head_unreadable');
+  const failed = h.service.latestCaptureMetrics('p');
+  assert.equal(failed.status, 'failed'); assert.equal(failed.captured, false); assert.equal(failed.reason, 'head_unreadable');
+  assert.equal(failed.checkpointId, ''); assert.equal(failed.totalNewBytes, null);
+  assert.equal(h.service.store.listCheckpoints('p').length, 1, 'failure is not a fabricated checkpoint');
+  h.git(h.root, 'symbolic-ref', 'HEAD', branch);
+  h.service.savePolicy('p', { ...h.service.loadPolicy('p'), status: 'disabled' }); await h.capture();
+  assert.deepEqual(h.service.latestCaptureMetrics('p'), failed);
+  h.enable(); const next = await h.capture(); assert.equal(h.service.latestCaptureMetrics('p').checkpointId, next.checkpointId);
+});
+
+test('status storage errors do not discard a published room checkpoint or expose private exception details', async t => {
+  const h = fixture(t); h.enable(); const cwd = h.room('status-error-room');
+  h.service.store.saveCaptureResult = () => { throw Error('PRIVATE_STATUS_WRITE_FAILURE'); };
+  const result = await h.capture(cwd); assert.equal(result.captured, true, result.reason);
+  assert.ok(h.service.store.loadCheckpoint('p', result.checkpointId));
+  assert.equal(h.service.latestCaptureMetrics('p'), null);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_STATUS_WRITE_FAILURE/);
+});
+
 test('detached HEAD works; repositories with no readable HEAD fail without blocking callers', async t => {
   const h = fixture(t); h.enable(); h.git(h.root, 'checkout', '--detach', '-q');
   const result = await h.capture(); assert.equal(result.captured, true, result.reason); assert.equal(result.checkpoint.gitSnapshot.branch, '');

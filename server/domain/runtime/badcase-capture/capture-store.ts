@@ -229,6 +229,16 @@ export function createCaptureStore(options: any = {}) {
         .sort((a: any, b: any) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
     },
 
+    saveCaptureResult(projectId: any, result: any) {
+      return withProjectWriteLock(captureRoot, projectId, () => {
+        writeJsonAtomic(path.join(projectDir(projectId), 'last-capture.json'), result);
+      });
+    },
+
+    loadCaptureResult(projectId: any) {
+      return safeReadJson(path.join(projectDir(projectId), 'last-capture.json'), null);
+    },
+
     saveLatestCheckpointId(projectId: any, targetDir: any, checkpointId: any) {
       writeJsonAtomic(latestPath(projectId, targetDir), {
         targetDir: path.resolve(String(targetDir || '').trim()),

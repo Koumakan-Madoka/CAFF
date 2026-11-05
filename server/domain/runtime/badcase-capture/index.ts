@@ -11,6 +11,7 @@ import { createCollector } from './collector';
 import { createGitTurnCollector } from './git-turn-collector';
 import { collectGitSnapshot } from './git-snapshot';
 import { captureLoadedProjectSkills } from './loaded-skills';
+import { checkpointCaptureMetrics } from './capture-result';
 import { restoreCheckpoint } from './restore';
 import { runEstimateProcess } from './estimate-process';
 import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
@@ -161,6 +162,11 @@ export function createBadcaseCaptureService(options: any = {}) {
     // Read saved counters only, never re-scan a target or load a file/session
     // blob. Missing legacy counters remain unknown, not fabricated zeroes.
     latestCaptureMetrics(projectId: any) {
+      // v2 records the latest real project attempt, including room worktrees
+      // and failures. No Git lookup or checkpoint/blob reads on this path.
+      const saved = store.loadCaptureResult(projectId);
+      if (saved) return saved;
+      // Legacy snapshots had only per-authorized-root latest pointers.
       const policy = store.loadPolicy(projectId);
       const rows = policy.authorizedDirs.map((root: string) => {
         const cp = store.loadLatestCheckpoint(projectId, root);
@@ -169,16 +175,7 @@ export function createBadcaseCaptureService(options: any = {}) {
           && typeof cp.createdAt === 'string' && Number.isFinite(Date.parse(cp.createdAt)) ? cp : null;
       }).filter(Boolean).sort((a: any, b: any) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
       if (!rows.length) return null;
-      const cp = rows[0], stats = cp.stats || {};
-      const bytes = (v: any) => Number.isSafeInteger(v) && v >= 0 ? v : null;
-      const kinds = stats.blobBytesByKind, names = ['files', 'session', 'replay', 'shared'];
-      const validKinds = kinds && names.every(k => bytes(kinds[k]) !== null)
-        && names.reduce((sum, k) => sum + kinds[k], 0) === bytes(stats.newBlobBytes);
-      return { checkpointId: cp.checkpointId, targetDir: cp.targetDir, createdAt: cp.createdAt,
-        totalNewBytes: bytes(stats.totalNewBytes), newBlobBytes: bytes(stats.newBlobBytes), newManifestBytes: bytes(stats.newManifestBytes),
-        blobBytesByKind: validKinds ? Object.fromEntries(names.map(k => [k, kinds[k]])) : null,
-        sessionBytes: bytes(stats.sessionBytes), preparationDurationMs: cp.integrity?.platform === 'win32'
-          && typeof stats.durationMs === 'number' && Number.isFinite(stats.durationMs) && stats.durationMs >= 0 ? stats.durationMs : null };
+      return checkpointCaptureMetrics(rows[0]);
     },
 
     // New one-switch preview uses the SAME best-effort Git reader as turns.

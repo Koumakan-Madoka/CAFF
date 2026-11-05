@@ -5,6 +5,7 @@ import { collectLoadedProjectSkills, knownCaptureKeyValues } from './git-snapsho
 import { checkpointBlobHashes } from './checkpoint-retention';
 import { withProjectWriteLock } from './project-write-lock';
 import { redactKnownKeyValues } from './secrets';
+import { recordCaptureResult } from './capture-result';
 const jsonBytes = (value: any) => Buffer.byteLength(`${JSON.stringify(value, null, 2)}\n`);
 
 export function captureLoadedProjectSkills(options: any, input: any): any {
@@ -59,7 +60,9 @@ export function captureLoadedProjectSkills(options: any, input: any): any {
       if (store.computeUsage(projectId).totalBytes + newBlobBytes + Math.max(0, delta) > policy.stagingQuotaBytes) return fail('quota_exceeded');
       for (const [digest, bytes] of missing) store.writeBlob(projectId, digest, bytes);
       store.saveCheckpoint(projectId, cp);
-      return { captured: true, checkpointId, checkpoint: cp, reason: '' };
+      const result = { captured: true, checkpointId, checkpoint: cp, reason: '' };
+      recordCaptureResult({ ...options, enrichment: true }, input, result);
+      return result;
     });
   } catch { return fail('project_skills_unavailable'); } // never block or leak content into logs
 }
