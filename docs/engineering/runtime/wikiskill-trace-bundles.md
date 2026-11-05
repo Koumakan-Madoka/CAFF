@@ -4,7 +4,7 @@
 
 轨迹包是 Wiki 拥有的证据，不是聊天 Inspector 的展示投影，也不是现场可回放、已复现或可判分的证明。现有 checkpoint 封存记录仍保留自己的完整性/可回放限制。
 
-本契约覆盖标记入口、轨迹组装、不可覆盖存储和显式授权的只读历史回填操作入口。Badcase 页面、文件导出、DeepSeek 推荐的受信执行入口、页面确认冻结及单次 run 级回放已接入；新分组目前仅生成待用户确认的提议（尚不应用），现场完整元数据仍待后续接入；不能把展示/导出或合成测试当成可回放、可评分或已入库的证明。
+本契约覆盖标记入口、轨迹组装、不可覆盖存储和显式授权的只读历史回填操作入口。Badcase 页面、文件导出、DeepSeek 推荐的受信执行入口、页面确认冻结及单次 run 级回放已接入；新分组先生成提议，明确用户确认后由受信入口应用有效 run 分组并保留冻结 trace 组别；现场完整元数据仍待后续接入；不能把展示/导出或合成测试当成可回放、可评分或已入库的证明。
 
 ## 数据流与签名
 
@@ -103,7 +103,7 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 - 复用现有 host-only `codex-transport.cjs`：只读取明确批准的 `.pi-sandbox/auth.json` access/expires，不读取 refresh 字段用于认证、不刷新、不复制/回写凭据；只向固定 Codex endpoint 经 `http://127.0.0.1:17890` 发请求，无直连/重定向兜底。SDK 只见公开 inert identity，真实 access 在 host transport 内存替换。过期、认证、网络或供应商失败停止，不重试；错误证据只留固定码，不保存上游诊断正文。
 - 在网络调用**前**以请求内容 hash 在 `<globalRoot>/run-replays/<hash>.json` 原子 no-replace 占用一次。结果另写 `<hash>.result.json`，0600、fsync、hash 校验、不可覆盖；128 MiB 上限，不截断。崩溃/写入失败保留 `reserved`（结果未知）占位，不能用重试自动再发。Wiki 旧快照、轨迹包、决定、分组和旧结果不改。此目录是同 OS 用户可信存储，不是防恶意路径替换沙箱。
 - `stop/toolUse` 的完整文本回复，或独立 `bash` 的 send-public 调用（受限字面 heredoc/引号语法，提取正文但绝不执行）标 `reached`（有效输出），保存原文供评分 v2 判分，不代表通过；其他工具调用（即便附有解释文字或同时发消息）、空输出、未识别的发消息语法均标 `invalid`（无效），**不算通过也不算不通过**，单独计数。新结果不再写 `countAsFailure`。请求失败另记 `error`，未知另记 `reserved`；两者也不进入判分分母，不冒充模型失败。不做前缀一致性校验或继续工具循环。
-- `projectWikiRunAccounting` 使用 `single-call-valid-output-v2` 规则，只读地将历史 `unreached` 投影为 `invalid`，移除摘要的旧 `countAsFailure`，不改原始请求/输出包、hash 或旧快照。仅 `reached` 且没有被用户撤回的尝试 `eligibleForScoring=true`。同 caseId/traceHash/decisionHash 的原版有效输出决定 `baselineStatus`（`valid_output|no_valid_output|pending|not_run`）；只有原版有有效输出且未撤回时，`caseEligibleForGateAndScreen=true`。候选输出、别的题/轨迹/决定、历史被撤回的输出不能替代原版证据。这个资格只是必要条件，不表示已确认复现、已分组或评分通过；实际 run 选题接线留待 M4 与评分 v2 接入。
+- `projectWikiRunAccounting` 使用 `single-call-valid-output-v2` 规则，只读地将历史 `unreached` 投影为 `invalid`，移除摘要的旧 `countAsFailure`，不改原始请求/输出包、hash 或旧快照。仅 `reached` 且没有被用户撤回的尝试 `eligibleForScoring=true`。同 caseId/traceHash/decisionHash 的原版有效输出决定 `baselineStatus`（`valid_output|no_valid_output|pending|not_run`）；只有原版有有效输出且未撤回时，`caseEligibleForGateAndScreen=true`。候选输出、别的题/轨迹/决定、历史被撤回的输出不能替代原版证据。这个资格只是必要条件，不表示已确认复现、已分组或评分通过；M4 确认分组会重新核对这项资格；实际 run 选题/判分接线仍待两个 Goal 合入后接入，不能直接沿用历史 `wikiRoundStage` 代替新确认记录。
 - 原版没有有效输出、无法确认复现的题是无效测试用例，不进门槛和训练组初筛。#5/#8 现有两次回放按此只读投影为无效，不补跑；原文/hash 留存，页面明确显示「原版无有效输出」。#12 仍为用户改判后的无现场贯穿型、只作参考；旧回放另标「已被用户改判，不计入」，不混入当前 8 次回放计数。
 - 请求中的当前已知值命中则在占用前拒绝；输出及实际请求体保存前进行同一已知值字面替换，不新增模式/秘密检测。模型请求参数和输出中的工具命令永远是文本数据。
 - `GET /api/wikiskill` 的 `runReplays` 返回真实占位/结果摘要及当前会计资格；`GET /api/wikiskill/cases/:caseId/run-replays/:hash` 沿用本地只读管理门禁，返回 `{ accounting, reservation, result }`。`accounting` 是当前分类投影，后两项为 hash 核验后的原始包；历史包内的旧分类只供审计，不能参与当前计数。来源须与路径用例一致，无 POST 启动接口。
@@ -112,14 +112,17 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 
 确认来源也可由受信操作方在用户明确授权后传入 `{ source: 'user-via-planner', reference: <公开消息ID> }`，等同页面确认，来源和引用进入决定 hash；HTTP 无此字段。相同决定的页面重试不改来源。#8 原 DeepSeek 贯穿型推荐与用户单步型/第5步改判分别保留，冻结后不能再改。
 
-## 删除与分层重分组提议（M4，待用户确认）
+## 删除与分层重分组（M4）
 
 - `deleteCases({caseIds,reason,expectedRevision}, confirmation)` 是受信操作方入口，没有 HTTP 删除路由。只接受 B11 已批准的页面 #7、#9、#11、#13，确认来源必须为 `user-via-planner` 并绑定消息引用。writer 锁内追加一个快照：从活动 `cases` 和待处理归属队列移除，原用例整体保存在 `deletedCases`，记录原因、确认、原编号、时间和 hash，另追加逐条 `case-deleted` 事件。重复同一操作幂等，不允许重新导入/标记让已删除来源复活。
 - 旧快照、已冻结知识库版本/准则文字、脱水决定、旧 `replaySplit`/回放登记、请求/结果文件和轨迹包均不改。活动用例被删除后归纳/脱水/选题按未知用例拒绝；轨迹读取/导出允许按归档来源核对原包，用于审计。知识库证据计数与搜索只使用活动引用，因此模式 5 可显示零条用例，不修改准则原文；模式 2、4 不再把已删引用算作证据。
-- `proposeRegroup({expectedRevision})` 只持久化一次固定提议、内容 hash 与 `case-regroup-proposed` 事件，不更改任何有效分组，也没有页面自动生成/确认/应用接口。用户须先核对 Badcase 页的完整前后对照及 hash；应用留待明确确认后的下一步实现，AC6 仍未完成。
+- `proposeRegroup({expectedRevision})` 只持久化一次固定提议、内容 hash 与 `case-regroup-proposed` 事件，不更改任何有效分组，也没有页面自动生成/确认/应用接口。用户先核对 Badcase 页完整前后对照及 hash；确认后仍保留原提议（包括未采用的 trace 改组），不得事后改写提议内容或 hash。确认后重复提议仅返回原记录，不重新随机。
 - 提议建议沿用既有配额比例：trace / run 两层分别按固定种子 `wikiskill-trace-run-stratified-v1` 和用例 ID 的 SHA-256 排序。trace 用现有整数缺口算法（训练:门槛:测试 2:1:1，同缺按训练→门槛→测试）；run 用其训练:门槛 2:1 投影，同缺取训练，且门槛 run 数不超过 GPT 门槛 trace 数，超额留训练。该比例连同实际结果一起交用户确认，不宣称为 B8 已规定的比例。
 - #4、#10、#14 旧题来源、无现场贯穿型参考、删除项、未确认脱水及没有同题/同轨迹/同冻结决定的原版有效输出者不参与。非 GPT 只报告，不用于满足 GPT 配额。run 资格从不可覆盖请求/结果存储的当前会计重新读取，不接受调用者提交资格、种子或评测结果。输入证据含原组别、轨迹/决定 hash、原版请求/结果 hash，不包含候选、评分或通过率；提议不是已确认复现或判分通过。
-- Badcase 页只读显示数量、逐条原组别/提议组别、不参与原因、固定种子及 hash，明确「尚未生效」。仅两条 GPT trace 时按此建议比例产生训练 1、门槛 1、测试 0；如实披露没有新的 trace 测试题，不用 run 或非 GPT 填空。#4/#10/#14 的旧测试题保持原样。历史材料已有训练/评测暴露，重分组不等于新的盲留出；训练 run 只能淘汰候选，不能作为采纳依据。评分接线和 trace/run 分开报告仍留待两个 Goal 合入后处理，不改判定公式。
+- 用户 2026-11-05 经规划者确认并修正提议：#19 保留门槛、#20 保留测试，不参与重新随机；#20 已作为测试题暴露，评分 v2 重跑仍须保留测试身份，不能挪入训练。只对六条有效无现场 run 应用原随机结果：门槛 #1，训练 #2/#3/#6/#15/#16。门槛 trace/run 各一条，run 正好一半；测试仍为 #20 加 #4/#10/#14 的三道旧题。#5/#8 无效、#12 参考、#4/#10/#14 旧题来源、#17/#18 只报告的身份不变。
+- `confirmRegroup({expectedRevision,proposalHash,preserveTraceSplits:true,reason}, {source:'user-via-planner',reference})` 是受信操作方入口，无 HTTP 应用路由，不接受调用者的分组、种子或资格。明确确认来源、消息引用和调整原因不可省略。writer 锁内重读当前不可覆盖 run 请求/结果并重算原提议全部输入（含旧组别、轨迹/决定/结果 hash）；与原提议逐字不符、revision/hash 不匹配、run 进测试或门槛 run 超过 trace 均拒绝，不静默重分配。固定保留 trace 原组别，只更新六条符合资格 run 的 `cases[].split`，不修改任何 trace/排除项、`replaySplit`、回放登记、旧结果、准则、轨迹包或旧快照。
+- 应用在单个新快照中增加 `regroupConfirmations` 与 `case-regroup-confirmed` 事件。确认记录包含原提议/input hash、原组别/提议组别/确认组别全表、trace 冻结原因、用户调整差异、分层计数、来源/引用/时间及独立内容 hash。相同确认幂等；再次改组/改来源拒绝；发布失败不生效，原快照/文件不改，可在原 revision 重试。原提议与旧快照是旧分组的审计记录，不覆盖或复用历史评测身份。
+- 确认前 Badcase 页明确「尚未生效」；确认后只读显示「用户确认的分组 · 已生效」、两份 hash、来源与调整、原组别/原提议/用户确认三列对照及实际计数，卡片同步有效组别与分组步骤。不再把未采用的 #20→训练提议当成当前组别；原提议仍可展开审计。分组不代表已复现、判分通过或现场可回放。历史材料已有训练/评测暴露，重分组不等于新的盲留出；训练 run 只能淘汰候选，不能作为采纳依据。评分接线和 trace/run 分开报告仍留待两个 Goal 合入后处理，不改判定公式。
 
 ## 失败与验证
 

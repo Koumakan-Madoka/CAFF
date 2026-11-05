@@ -1,7 +1,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
-const { planWikiRegroup } = require('../../build/server/domain/runtime/badcase-capture/wiki-regroup');
+const { planWikiRegroup, planConfirmedWikiRegroup } = require('../../build/server/domain/runtime/badcase-capture/wiki-regroup');
 const hash = v => crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const deletedId = 'text-6d9cbd07278d02cc72a12b5a358aad639d802a632679a43de0752e5eff7a3a92';
 const sourceId = 'text-ea8201f3c1ddf0fa73043f88d2ac6e10eb2d3529ed3140e0a2261a63503cc40b';
@@ -24,6 +24,21 @@ function setup(t) {
   const dir = path.join(options.globalRoot, 'snapshots'); fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, '000000000001.json'), JSON.stringify({ schemaVersion: 1, checksum: hash(f.state), record: f.state }));
   return { ...f, options, store: createWikiStore(options), dir };
+}
+function confirmationFixture(t) {
+  const h = setup(t), state = h.store.read();
+  state.cases.find(c => c.id === 'trace-a').split = 'gate'; state.cases.find(c => c.id === 'trace-b').split = 'test';
+  fs.writeFileSync(path.join(h.dir, '000000000001.json'), JSON.stringify({ schemaVersion: 1, checksum: hash(state), record: state }));
+  const { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store');
+  const runs = createWikiRunStore(h.options);
+  for (const d of state.dehydrations) {
+    const r = runs.reserve({ schemaVersion: 1, kind: 'wikiskill-run-request', variant: { kind: 'original' }, metadata: { caseId: d.caseId, traceHash: d.traceHash, decisionHash: d.decision.hash } });
+    runs.finish(r.id, { outcome: { status: d.caseId === 'invalid' ? 'invalid' : 'reached' }, modelCalls: 1, toolExecutions: 0 });
+  }
+  const proposal = h.store.proposeRegroup({ expectedRevision: 1 });
+  const input = { expectedRevision: h.store.read().revision, proposalHash: proposal.hash, preserveTraceSplits: true, reason: '保留已冻结的 trace 组别，只应用六条 run 分组' };
+  const confirmation = { source: 'user-via-planner', reference: 'user-group-confirmation' };
+  return { ...h, proposal, input, confirmation, runs };
 }
 test('stratified proposal is order-independent, bounded, fixed-seed and contains no evaluation answers', () => {
   const f = fixture(), p = planWikiRegroup(f.state, f.runs);
@@ -77,6 +92,62 @@ test('deletion preserves a frozen trace for audit and a failed snapshot write is
   const link = fs.linkSync; try { fs.linkSync = () => { throw Error('disk failure'); }; assert.throws(() => h.store.deleteCases(input, confirmation), /wiki_write_failed/); } finally { fs.linkSync = link; }
   assert.deepEqual(h.store.read(), before); h.store.deleteCases(input, confirmation);
   assert.deepEqual(h.store.readCaseTrace(deletedId), packet); assert.deepEqual(h.store.read().deletedCases[0].case.traceBundle, c.traceBundle);
+});
+test('confirmed run-only plan keeps trace gate/test frozen and records the user adjustment without mutating the proposal', () => {
+  const f = fixture(); f.state.cases.find(c => c.id === 'trace-a').split = 'gate'; f.state.cases.find(c => c.id === 'trace-b').split = 'test';
+  const proposal = planWikiRegroup(f.state, f.runs), before = structuredClone(proposal), p = planConfirmedWikiRegroup(f.state, f.runs, proposal);
+  assert.deepEqual(proposal, before); assert.equal(p.proposalHash, proposal.hash); assert.equal(p.inputHash, proposal.inputHash);
+  assert.deepEqual(p.counts, { trace: { train: 0, gate: 1, test: 1 }, run: { train: 5, gate: 1, test: 0 } });
+  assert.equal(p.rows.find(r => r.caseId === 'trace-b').confirmedSplit, 'test');
+  assert.equal(p.rows.find(r => r.caseId === 'trace-b').confirmationReason, 'frozen_trace_split');
+  assert.equal(p.rows.find(r => r.caseId === 'invalid').confirmedSplit, null);
+  assert.ok(p.adjustments.some(r => r.level === 'trace' && r.confirmedSplit !== r.proposedSplit));
+  assert.deepEqual(f.state.cases.map(c => c.split), ['gate', 'test', ...Array(11).fill('train')]);
+  const changed = structuredClone(f.state); changed.cases[0].split = 'train';
+  assert.throws(() => planConfirmedWikiRegroup(changed, f.runs, proposal), /wiki_regroup_stale/);
+  const overQuota = structuredClone(f.state); overQuota.cases[0].split = 'test';
+  assert.throws(() => planConfirmedWikiRegroup(overQuota, f.runs, planWikiRegroup(overQuota, f.runs)), /wiki_regroup_quota_invalid/);
+});
+test('confirmation applies only eligible run splits once, binds provenance/hash, and preserves old splits, proposals and run packets', t => {
+  const h = confirmationFixture(t), before = h.store.read(), old = fs.readFileSync(path.join(h.dir, '000000000001.json'));
+  const runPackets = h.runs.list().map(r => h.runs.read(r.id)), saved = h.store.confirmRegroup(h.input, h.confirmation), after = h.store.read();
+  assert.equal(saved.status, 'active'); assert.equal(saved.proposalHash, h.proposal.hash); assert.deepEqual(saved.confirmation, h.confirmation);
+  const { hash: digest, ...content } = saved; assert.equal(digest, hash(content)); assert.equal(saved.preserveTraceSplits, true);
+  assert.equal(after.cases.find(c => c.id === 'trace-a').split, 'gate'); assert.equal(after.cases.find(c => c.id === 'trace-b').split, 'test');
+  assert.equal(after.cases.filter(c => c.id.startsWith('run-') && c.split === 'gate').length, 1);
+  for (const c of after.cases) {
+    const original = before.cases.find(v => v.id === c.id);
+    assert.deepEqual(c, c.id.startsWith('run-') ? { ...original, split: saved.rows.find(r => r.caseId === c.id).confirmedSplit } : original);
+  }
+  for (const key of ['versions', 'replaySplit', 'replayCases', 'dehydrations', 'regroupProposals']) assert.deepEqual(after[key], before[key]);
+  assert.deepEqual(h.runs.list().map(r => h.runs.read(r.id)), runPackets); assert.deepEqual(fs.readFileSync(path.join(h.dir, '000000000001.json')), old);
+  assert.equal(after.regroupConfirmations.length, 1); assert.equal(after.events.at(-1).type, 'case-regroup-confirmed');
+  assert.deepEqual(h.store.confirmRegroup({ ...h.input, expectedRevision: after.revision }, h.confirmation), saved); assert.equal(h.store.read().revision, after.revision);
+  assert.deepEqual(h.store.proposeRegroup({ expectedRevision: after.revision }), h.proposal, 'application cannot silently reshuffle or rewrite the frozen proposal');
+  assert.throws(() => h.store.confirmRegroup({ ...h.input, expectedRevision: after.revision, reason: 'different' }, h.confirmation), /wiki_regroup_frozen/);
+});
+test('confirmation refuses missing consent, caller splits, stale revision/hash/evidence and corrupt proposal without publishing', t => {
+  const h = confirmationFixture(t), before = h.store.read();
+  const call = (input = h.input, confirmation = h.confirmation) => h.store.confirmRegroup(input, confirmation);
+  assert.throws(() => h.store.confirmRegroup(h.input), /wiki_invalid_input/);
+  assert.throws(() => call(h.input, { ...h.confirmation, source: 'automatic' }), /wiki_invalid_input/);
+  assert.throws(() => call({ ...h.input, preserveTraceSplits: false }), /wiki_invalid_input/);
+  assert.throws(() => call({ ...h.input, assignments: [{ caseId: 'invalid', split: 'gate' }] }), /wiki_invalid_input/);
+  assert.throws(() => call({ ...h.input, expectedRevision: 1 }), /wiki_revision_conflict/);
+  assert.throws(() => call({ ...h.input, proposalHash: 'f'.repeat(64) }), /wiki_regroup_stale/);
+  assert.deepEqual(h.store.read(), before);
+  const run = h.runs.list().find(r => r.caseId === 'run-0');
+  const file = path.join(h.options.globalRoot, 'run-replays', run.id + '.result.json'); const bytes = fs.readFileSync(file); fs.unlinkSync(file);
+  assert.throws(() => call(), /wiki_regroup_stale/); assert.deepEqual(h.store.read(), before); fs.writeFileSync(file, bytes);
+  const bad = structuredClone(before); bad.regroupProposals[0].rows.find(r => r.caseId === 'invalid').proposedSplit = 'gate';
+  fs.writeFileSync(path.join(h.dir, String(bad.revision).padStart(12, '0') + '.json'), JSON.stringify({ schemaVersion: 1, checksum: hash(bad), record: bad }));
+  assert.throws(() => call(), /wiki_regroup_stale/); assert.equal(h.store.read().revision, before.revision);
+});
+test('confirmation snapshot publication failure is atomic and retryable without extra model calls', t => {
+  const h = confirmationFixture(t), before = h.store.read(), link = fs.linkSync;
+  try { fs.linkSync = () => { throw Error('disk failure'); }; assert.throws(() => h.store.confirmRegroup(h.input, h.confirmation), /wiki_write_failed/); }
+  finally { fs.linkSync = link; }
+  assert.deepEqual(h.store.read(), before); assert.equal(h.store.confirmRegroup(h.input, h.confirmation).status, 'active');
 });
 test('proposal persistence is trusted-only, idempotent and never changes any active or historical group', t => {
   const h = setup(t), before = h.store.read();

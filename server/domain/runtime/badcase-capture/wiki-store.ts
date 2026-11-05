@@ -18,7 +18,7 @@ import { projectStagedResult } from './wiki-staged-result';
 import { createWikiTraceStore, sameTraceSource, wikiTraceReference } from './wiki-trace';
 import { buildDehydrationPrefix, interpretDehydrationAnswer } from './wiki-dehydration';
 import { wikiGoalCaseNumber } from './wiki-suite';
-import { planWikiRegroup } from './wiki-regroup';
+import { planWikiRegroup, planConfirmedWikiRegroup } from './wiki-regroup';
 import { createWikiRunStore, projectWikiRunAccounting } from './wiki-run-store';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
@@ -203,7 +203,7 @@ export function createWikiStore(options: any) {
         if (record[field] === undefined) record[field] = [];
         if (!Array.isArray(record[field])) throw Error();
       }
-      for (const field of ['dehydrations', 'deletedCases', 'regroupProposals']) if (record[field] !== undefined && !Array.isArray(record[field])) throw Error();
+      for (const field of ['dehydrations', 'deletedCases', 'regroupProposals', 'regroupConfirmations']) if (record[field] !== undefined && !Array.isArray(record[field])) throw Error();
       return record;
     } catch { throw fail('wiki_record_invalid'); }
   }
@@ -480,21 +480,57 @@ export function createWikiStore(options: any) {
       }).value;
     },
     // Operator creates exactly one fixed proposal, never chooses a seed or
-    // submits run eligibility. Approval/application is a later explicit step.
+    // submits run eligibility. Explicit approval/application is separate.
     proposeRegroup(input: any) {
       if (!global) throw fail('wiki_global_required');
       shape(input, ['expectedRevision']);
       return change(state => {
         if (!Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const rows = state.regroupProposals || (state.regroupProposals = []);
+        if (state.regroupConfirmations?.length) return { changed: false, value: rows.at(-1) };
         const accounting = projectWikiRunAccounting(createWikiRunStore(options).list(), state.dehydrations);
-        const proposal = planWikiRegroup(state, accounting), rows = state.regroupProposals || (state.regroupProposals = []);
+        const proposal = planWikiRegroup(state, accounting);
         if (rows.length) {
           if (rows.at(-1).hash !== proposal.hash) throw fail('wiki_regroup_frozen');
           return { changed: false, value: rows.at(-1) };
         }
         const saved = { ...proposal, status: 'proposed', createdAt: new Date().toISOString() }; rows.push(saved);
         appendEvent(state, { type: 'case-regroup-proposed', proposalHash: proposal.hash, inputHash: proposal.inputHash });
+        return { changed: true, value: saved };
+      }).value;
+    },
+    // Trusted operator only, after explicit user confirmation of the original
+    // proposal plus the keep-trace-frozen amendment. No caller-supplied groups,
+    // eligibility or model results; no HTTP application route.
+    confirmRegroup(input: any, confirmation: any) {
+      if (!global) throw fail('wiki_global_required');
+      shape(input, ['expectedRevision', 'proposalHash', 'preserveTraceSplits', 'reason']);
+      shape(confirmation, ['source', 'reference']);
+      if (confirmation.source !== 'user-via-planner' || input.preserveTraceSplits !== true
+        || !/^[a-f0-9]{64}$/.test(input.proposalHash || '') || !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+      id(confirmation.reference);
+      const reason = text(input.reason, 2048), provenance = { source: confirmation.source, reference: confirmation.reference };
+      return change(state => {
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const previous = state.regroupConfirmations?.at(-1);
+        if (previous) {
+          if (previous.proposalHash !== input.proposalHash || previous.reason !== reason
+            || previous.confirmation.source !== provenance.source || previous.confirmation.reference !== provenance.reference) throw fail('wiki_regroup_frozen');
+          return { changed: false, value: previous };
+        }
+        const proposal = state.regroupProposals?.at(-1);
+        if (!proposal || proposal.hash !== input.proposalHash) throw fail('wiki_regroup_stale');
+        const accounting = projectWikiRunAccounting(createWikiRunStore(options).list(), state.dehydrations);
+        const plan = planConfirmedWikiRegroup(state, accounting, proposal);
+        const content = { ...plan, status: 'active', reason, confirmation: provenance, confirmedAt: new Date().toISOString() };
+        const saved = { ...content, hash: hash(JSON.stringify(content)) };
+        for (const row of plan.rows.filter((r: any) => !r.reason && r.level === 'run')) {
+          state.cases.find((c: any) => c.id === row.caseId).split = row.confirmedSplit;
+        }
+        (state.regroupConfirmations || (state.regroupConfirmations = [])).push(saved);
+        appendEvent(state, { type: 'case-regroup-confirmed', proposalHash: proposal.hash, confirmationHash: saved.hash,
+          caseIds: plan.rows.filter((r: any) => !r.reason && r.level === 'run').map((r: any) => r.caseId), confirmation: provenance, reason });
         return { changed: true, value: saved };
       }).value;
     },

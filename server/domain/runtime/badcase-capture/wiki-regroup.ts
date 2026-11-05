@@ -1,4 +1,4 @@
-// Pure proposal only. No group is active until a separately authorized confirmation.
+// Pure plans only. No group is active until a separately authorized confirmation.
 // These two strata use the existing 2:1:1 quota (trace) and its 2:1 train/gate
 // projection (run). A fixed seed ranks IDs, never model quality or candidate results.
 import crypto from 'node:crypto';
@@ -7,6 +7,7 @@ import { wikiDisplayCases, wikiGoalCaseNumber } from './wiki-suite';
 import { wikiSourceFamily } from './wiki-evaluation-suite';
 export const WIKI_REGROUP_SEED = 'wikiskill-trace-run-stratified-v1';
 const hash = (v: any) => crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex');
+const fail = (code: string) => Object.assign(Error(code), { code });
 export function planWikiRegroup(state: any, accounting: any[]) {
   const rows = wikiDisplayCases(state.cases).map(c => {
     const d = (state.dehydrations || []).find((v: any) => v.caseId === c.id && v.traceHash === c.traceBundle?.hash)?.decision;
@@ -45,4 +46,26 @@ export function planWikiRegroup(state: any, accounting: any[]) {
   const inputHash = hash(allRows.map(({ proposedSplit, ...evidence }) => evidence));
   const content = { schemaVersion: 1, policy: 'trace-run-stratified-v1', seed: WIKI_REGROUP_SEED, inputHash, rows: allRows, counts, warnings };
   return { ...content, hash: hash(content) };
+}
+// User-confirmed amendment: existing trace groups are frozen (in particular a
+// previously exposed test must never move to training). Only the proposed run
+// assignments can be applied. Revalidate all source/evidence hashes first.
+export function planConfirmedWikiRegroup(state: any, accounting: any[], proposal: any) {
+  const { status: _status, createdAt: _at, ...original } = proposal;
+  if (JSON.stringify(planWikiRegroup(state, accounting)) !== JSON.stringify(original)) throw fail('wiki_regroup_stale');
+  const counts = { trace: { train: 0, gate: 0, test: 0 }, run: { train: 0, gate: 0, test: 0 } };
+  const rows = proposal.rows.map((r: any) => {
+    const confirmedSplit = r.reason ? null : r.level === 'trace' ? r.previousSplit : r.proposedSplit;
+    if (confirmedSplit !== null) {
+      if (!['train', 'gate', 'test'].includes(confirmedSplit) || !['trace', 'run'].includes(r.level)
+        || r.level === 'run' && confirmedSplit === 'test') throw fail('wiki_regroup_quota_invalid');
+      counts[r.level as 'trace' | 'run'][confirmedSplit as 'train' | 'gate' | 'test']++;
+    }
+    return { ...r, confirmedSplit, confirmationReason: !r.reason && r.level === 'trace' ? 'frozen_trace_split' : r.reason };
+  });
+  if (rows.some((r: any) => !r.reason && r.confirmedSplit === null) || counts.run.gate > counts.trace.gate) throw fail('wiki_regroup_quota_invalid');
+  const adjustments = rows.filter((r: any) => r.confirmedSplit !== r.proposedSplit).map((r: any) => ({ caseId: r.caseId, caseNumber: r.caseNumber,
+    level: r.level, proposedSplit: r.proposedSplit, confirmedSplit: r.confirmedSplit, reason: r.confirmationReason }));
+  return { schemaVersion: 1, policy: 'confirmed-run-only-preserve-trace-v1', proposalHash: proposal.hash, inputHash: proposal.inputHash,
+    preserveTraceSplits: true, rows, counts, adjustments, warnings: ['historical_exposure_not_blind_holdout'] };
 }

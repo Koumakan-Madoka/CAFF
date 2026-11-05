@@ -146,6 +146,29 @@ test('regroup proposal shows before/after and exclusions read-only, never claimi
   assert.match(h.root.querySelector('[data-case-id="c1"]').textContent, /提议：门槛.*尚未生效/);
   assert.equal(panel.querySelector('button'), null, 'no auto-application or intermediate confirmation endpoint');
 });
+test('confirmed grouping shows original proposal, user adjustment and active groups read-only without claiming scoring readiness', t => {
+  const h = setup(t), proposalHash = 'f'.repeat(64), confirmHash = 'e'.repeat(64);
+  h.data.cases[0].split = 'gate';
+  h.data.cases.push({ id: 'trace20', n: 20, sealedCheckpointId: 'cp20', split: 'test', actual: 'frozen test', source: { agentId: 'role-family-gpt' } });
+  const rows = [{ caseId: 'c1', caseNumber: 1, level: 'run', previousSplit: 'train', proposedSplit: 'gate', confirmedSplit: 'gate', reason: null },
+    { caseId: 'c2', caseNumber: 19, level: 'trace', previousSplit: 'gate', proposedSplit: 'gate', confirmedSplit: 'gate', confirmationReason: 'frozen_trace_split', reason: null },
+    { caseId: 'trace20', caseNumber: 20, level: 'trace', previousSplit: 'test', proposedSplit: 'train', confirmedSplit: 'test', confirmationReason: 'frozen_trace_split', reason: null }];
+  h.data.regroupProposals = [{ status: 'proposed', hash: proposalHash, seed: 'fixed-seed', rows, counts: { trace: { train: 1, gate: 1, test: 0 }, run: { train: 0, gate: 1, test: 0 } }, warnings: ['no_new_trace_test'] }];
+  h.data.regroupConfirmations = [{ status: 'active', hash: confirmHash, proposalHash, rows, counts: { trace: { train: 0, gate: 1, test: 1 }, run: { train: 0, gate: 1, test: 0 } },
+    confirmation: { source: 'user-via-planner', reference: '<script>confirmed-message</script>' }, reason: '组别冻结；#20 仍供评分 v2 测试',
+    adjustments: [rows[2]], confirmedAt: '2026-11-05T00:00:00Z' }];
+  h.panel.render(h.data); const panel = h.root.querySelector('[data-regroup-confirmed]'); assert.ok(panel);
+  assert.match(panel.textContent, /用户确认的分组.*已生效/s); assert.ok(panel.textContent.includes(proposalHash)); assert.ok(panel.textContent.includes(confirmHash));
+  assert.match(panel.textContent, /用户经规划者转达/); assert.match(panel.textContent, /原提议/); assert.match(panel.textContent, /保留.*trace.*组别/);
+  const r = [...panel.querySelectorAll('tbody tr')].find(r => r.firstElementChild.textContent === '#20'); assert.match(r.textContent, /测试.*训练.*测试/s);
+  assert.equal(panel.querySelector('script'), null); assert.match(panel.textContent, /<script>confirmed-message<\/script>/);
+  assert.doesNotMatch(panel.textContent, /没有新的 trace 级测试题|分组提议 · 尚未生效/);
+  for (const n of [1, 19, 20]) {
+    const card = h.root.querySelector('#bc-' + n); assert.match(card.textContent, /用户确认.*组/); assert.doesNotMatch(card.textContent, /尚未生效|等待分组|重新分组待用户确认/);
+    assert.equal(card.querySelector('.stepper').children[4].className, 'done');
+  }
+  assert.match(h.root.textContent, /分组不代表.*判分/); assert.equal(h.calls.length, 0); assert.equal(panel.querySelector('button'), null);
+});
 test('stale packet responses after a data refresh cannot replace current evidence', async t => {
   const pending = []; const h = setup(t, () => new Promise(r => { pending.push(r); })); await h.expand();
   h.data.cases[0].traceBundle.hash = 'c'.repeat(64); h.panel.render(h.data);
