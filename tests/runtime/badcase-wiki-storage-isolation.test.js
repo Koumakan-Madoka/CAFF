@@ -43,6 +43,16 @@ test('only default assembly without an explicit root applies configured data sto
   assert.equal(resolveWikiStorageOptions(options, {}).globalRoot, path.join(agentDir, 'badcase-global'));
   assert.throws(() => resolveWikiStorageOptions(options, { CAFF_WIKISKILL_DATA_DIR: 'relative' }), /wiki_data_dir_invalid/);
 });
+test('npm test entry removes inherited capture configuration before running a child', t => {
+  const h = fixture(t), entry = path.resolve('scripts/test-entry.cjs');
+  const probe = path.join(h.root, 'capture-probe.cjs');
+  fs.writeFileSync(probe, "require('node:assert/strict').equal(process.env.CAFF_BADCASE_CAPTURE_DIR, undefined); console.log('capture-isolated');");
+  const command = JSON.stringify(process.execPath) + ' ' + JSON.stringify(probe);
+  const child = spawnSync(process.execPath, [entry, command], { encoding: 'utf8', env: { ...process.env, CAFF_BADCASE_CAPTURE_DIR: h.sentinel } });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /capture-isolated/);
+  assert.deepEqual(fs.readdirSync(h.sentinel), [], 'inherited capture directory must remain completely empty');
+});
 test('npm test entry removes inherited WikiSkill configuration before running a child', t => {
   const h = fixture(t), entry = path.resolve('scripts/test-entry.cjs');
   const probe = path.join(h.root, 'probe.cjs');
