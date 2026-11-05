@@ -63,7 +63,7 @@ function prepareWorktreeIndex(directory, input, knownValues, git) {
 function prepareSanitizedReplayGit(recipe, input, { knownValues = [] } = {}) {
   let temporary;
   try {
-    if (!validRecipe(recipe) || !Array.isArray(input?.files) || input.files.length > 1024
+    if (!validRecipe(recipe) || !Array.isArray(input?.files) || input.files.length > 8192
       || !Array.isArray(input.deletions) || input.deletions.length > 2048 || !Array.isArray(knownValues)
       || knownValues.some(v => typeof v !== 'string')) throw Error();
     const allowed = new Set([...input.files.map(f => f.path), ...input.deletions]);
@@ -91,7 +91,8 @@ function prepareSanitizedReplayGit(recipe, input, { knownValues = [] } = {}) {
         || !Number.isSafeInteger(Number(size)) || Number(size) > 64 * 1024 * 1024) throw Error();
       rows.push({ path: name, mode, oid, size: Number(size) }); total += Number(size) + 256;
     }
-    if (!Number.isSafeInteger(total) || rows.length > 3072) throw Error();
+    // Baseline rows may cover all captured files plus the unchanged deletion budget.
+    if (!Number.isSafeInteger(total) || rows.length > 8192 + 2048) throw Error();
     // Redact one bounded blob at a time, never concatenate the whole tree's
     // raw secret-bearing contents. Plaintext is still memory-only.
     const safe = [], redactedFiles = [];
@@ -136,7 +137,7 @@ function prepareSanitizedReplayGit(recipe, input, { knownValues = [] } = {}) {
 function prepareReplayGit(recipe, input, { knownValues = [] } = {}) {
   let temporary;
   try {
-    if (!validRecipe(recipe) || !Array.isArray(input?.files) || input.files.length > 1024
+    if (!validRecipe(recipe) || !Array.isArray(input?.files) || input.files.length > 8192
       || !Array.isArray(input.deletions) || input.deletions.length > 2048 || !Array.isArray(knownValues)
       || knownValues.some(v => typeof v !== 'string') || [...input.files.map(f => f.path), ...input.deletions].some(p => !safePath(p))) throw Error();
     const source = path.resolve(recipe.sourceRoot), stat = fs.lstatSync(source);

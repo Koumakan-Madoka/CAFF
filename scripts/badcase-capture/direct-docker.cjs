@@ -13,7 +13,7 @@ const { hashFile, fileChunks, bufferChunks, writeChunks, createKnownValueScanner
 function prepareDirectReplayInput(input) {
   assert.equal(input?.kind, 'prepared-caff-turn-v1');
   assert.equal(input.workspace, undefined);
-  assert.ok(Array.isArray(input.files) && input.files.length <= 1024);
+  assert.ok(Array.isArray(input.files) && input.files.length <= 8192);
   const files = [], inventory = input.files.map(f => {
     assert.ok(typeof f.path === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(f.path)
       && f.path.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git'));

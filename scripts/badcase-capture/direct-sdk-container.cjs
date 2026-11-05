@@ -48,7 +48,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   }
   assert.ok(input.prompt.trim() && Buffer.byteLength(input.prompt) <= 256 * 1024);
   assert.ok(input.sessionText === null || typeof input.sessionText === 'string' && input.sessionText.endsWith('\n'));
-  assert.ok(Array.isArray(input.files) && input.files.length <= 1024);
+  assert.ok(Array.isArray(input.files) && input.files.length <= 8192);
   assert.ok(input.settings === null || input.settings && typeof input.settings === 'object' && !Array.isArray(input.settings));
   assert.ok(input.systemPrompt === null || typeof input.systemPrompt === 'string');
   const cwd = '/work/restored', agentDir = '/work/agent', sessionPath = '/work/session.jsonl';

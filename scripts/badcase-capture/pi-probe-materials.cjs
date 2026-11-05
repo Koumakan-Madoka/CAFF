@@ -22,7 +22,8 @@ function manifestFor(files, { replayWorkspace = false } = {}) {
     names.add(f.path);
     if (replayWorkspace && (f.path.startsWith('replay-workspace/') || f.path === 'replay-dependencies.tar.gz')) workspaceCount++;
     else { total += size; staticCount++; }
-    if (total > LIMIT || staticCount > 4096 || workspaceCount > 1070) throw Error('probe_dependency_size');
+    // 8192 working files + at most 45 Git files + one dependency archive.
+    if (total > LIMIT || staticCount > 4096 || workspaceCount > 8192 + 45 + 1) throw Error('probe_dependency_size');
     return { path: f.path, size, sha256: f.sourceFile ? hashFile(f.sourceFile) : hash(f.bytes) };
   }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   for (const name of names) {

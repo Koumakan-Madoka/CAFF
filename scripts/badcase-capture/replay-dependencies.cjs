@@ -8,7 +8,7 @@ const INSTALL = 'npm ci --include=dev --no-audit --no-fund';
 const { hashFile } = require('./replay-streams.cjs');
 function dependencyRecipe(input, image) {
   try {
-    if (input?.kind !== 'prepared-caff-turn-v1' || !Array.isArray(input.files) || input.files.length > 1024
+    if (input?.kind !== 'prepared-caff-turn-v1' || !Array.isArray(input.files) || input.files.length > 8192
       || !/^sha256:[a-f0-9]{64}$/.test(image?.imageId) || !/^v24\.\d+\.\d+$/.test(image.nodeVersion)
       || !['amd64', 'arm64'].includes(image.architecture)) throw Error();
     const byName = new Map();
