@@ -30,7 +30,7 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 新生成包不再添加上述宽泛旧码，分开记录：`context_archive_missing`（没有新版 sections 原文归档）、`system_prompt_missing`（没有当时系统提示词）、`system_prompt_display_redacted`（使用已有模式脱敏历史展示版）、`provider_request_bytes_missing`（未录制供应商原始请求字节）、以及各自的 session/边界/工具结果缺失码。保留旧展示分区的截断标记。`context.systemPromptSource` 区分 `known_value_archive|historical_display|missing`，`providerRequestBytesCaptured` 如实为 false。`complete` 仍判断 B2 所要求的语义轨迹材料；原始供应商请求字节不在 B2 内，只有 `provider_request_bytes_missing` 不使 B2 材料降级，不能把它解读为已录制网络请求。
 
-## 本轮 Git 快照现场（M1）
+## 本轮 Git 快照现场
 
 采集 PR #179 合入后，标记时只读取消息绑定且 project/conversation/turn/agent 一致的 checkpoint；只接受 `schemaVersion: 2`、`gitSnapshot.kind: git-snapshot-v1`。`scene.metadataSource=checkpoint_git_snapshot_v2`；HEAD 和分支直接来自 `gitSnapshot.head/branch`，空分支字符串表示 detached，null 表示未记录，二者不混淆。
 
@@ -82,9 +82,9 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 报告逐条保存 `caseId`、由与页面相同的 `wikiDisplayCases` / `wikiGoalCaseNumber` 得到的 `caseNumber`、`complete|partial|unavailable|already_frozen`、包 hash、步数、缺失原因，另附源文件 hash 对照和查询审计。报告顺序不代表用例编号；不得用遍历计数、导入顺序或调用方的 `n` 字段选题。`partial` 是有当轮步骤但仍缺材料，`unavailable` 是没有可确认的当轮步骤（仍可保留已有上下文/现场）。成功和失败都不改原组别、回放登记或旧快照；已冻结用例重试不再打开来源。实际数据和操作报告留在忽略的临时证据目录，不进入 Git。
 
-## M3 脱水材料、推荐与确认
+## 脱水材料、推荐与确认
 
-`wiki-dehydration.ts` 是纯数据模块，不读文件、凭据或可变房间上下文，不调用模型或工具。目前只实现：
+`wiki-dehydration.ts` 是纯数据模块，不读文件、凭据或可变房间上下文，不调用模型或工具。材料与前缀能力如下，模型调用与存储由后述受信入口负责：
 
 - 身份由 caseId 与冻结包 source/hash 绑定，编号仅由 `wikiGoalCaseNumber` 投影；旧题来源 #4/#10/#14 不允许脱水。判断具体系统提示词、触发消息、前缀和标记步骤是否存在，不因旧 `original_context_unavailable` 或缺耗时就拒绝已有消息前缀。现场用例默认仍走 trace。
 - DeepSeek 请求只投影当时起因、步骤卡片、发出回复、实际问题及期望，最后放能否脱水/切点两题。起因必须选自冻结的本轮输入或当时 Goal，不能从当前 Goal 补造。卡片不含 thinking 或结果 details，先替换已知 key 再裁剪；消息/方案正文保留头 500 尾 300，普通步骤最多 120，错误步骤保留报错行；旧日志中 `send-public` 已发送但工具报 `Command aborted` 时，同时保留 `messageBody`（同样头尾规则），不能让桥接终态吞掉发消息步骤的正文。只询问不晚于发出被标记消息的步骤；大于 254 个切点或 state 超过 64k 时显式拒绝，不静默丢材料。调用方还必须审核脱敏材料后才允许外发。
@@ -99,7 +99,7 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 `POST /api/wikiskill/dehydration-confirm` 使用本地管理 Host/loopback/Origin/CSRF 门禁；闭合字段为 `confirmed, expectedRevision, caseId, traceHash, recommendationHash, kind, cutStep`。客户端必须显式确认，hash/revision 必须对应同一推荐和轨迹包。单步型切点须能构造有效冻结前缀；贯穿型/说不清必须 `cutStep=null`，无现场时冻结为 `reference`，有现场则保留 `trace`。决定另带 `confirmedBy=local-user`、时间、内容 hash 和事件；同决定重试幂等，任何改判/改切点均拒绝，见过评测结果也不能重开。这个用户身份语义依赖本地管理入口与任务授权，不是对同 OS 进程的安全隔离。确认不发起模型、不执行工具、不改组、不生成断言。页面失败或结果未知时停写，刷新核对，不自动重试。
 
-当前批准的历史脱水范围是页面 #1/#2/#3/#5/#6/#8/#12/#15/#16（同时绑定 caseId），不是报告行号。#4/#10/#14 只作旧题来源；缺系统提示词的 #7/#9/#11/#13 按 B11 留到 M4 删除，保留冻结包与历史记录，本阶段不删。带 pi-coding-agent 0.85.1 和固定 caff-capabilities schema 的单次模型回放见下节，不能把推荐/确认当成已回放或判分证据。
+已完成的历史推荐范围是页面 #1/#2/#3/#5/#6/#8/#12/#15/#16（同时绑定 caseId），不是报告行号。9 条推荐及用户确认保留；#8 保留模型贯穿型推荐和用户单步型第 5 步改判；#12 经用户单向撤回 run 资格，冻结为贯穿型／只作参考，原推荐、首次确认和旧回放不删除、不改 hash。当前计入 8 次原版回放，6 有效、#5/#8 两次无效，不补跑；有效不表示评分通过。#4/#10/#14 只作旧题来源；缺系统提示词的 #7/#9/#11/#13 已按 B11 在隔离 Wiki 副本删除，冻结包与历史记录保留，生产尚未导入这些变更。带 pi-coding-agent 0.85.1 和固定 caff-capabilities schema 的单次模型回放见下节，不能把推荐/确认当成已回放或判分证据。
 
 ## run 级回放（不判分）
 
@@ -122,7 +122,7 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 
 确认来源也可由受信操作方在用户明确授权后传入 `{ source: 'user-via-planner', reference: <公开消息ID> }`，等同页面确认，来源和引用进入决定 hash；HTTP 无此字段。相同决定的页面重试不改来源。#8 原 DeepSeek 贯穿型推荐与用户单步型/第5步改判分别保留，冻结后不能再改。
 
-## 删除与分层重分组（M4）
+## 删除与分层重分组
 
 - `deleteCases({caseIds,reason,expectedRevision}, confirmation)` 是受信操作方入口，没有 HTTP 删除路由。只接受 B11 已批准的页面 #7、#9、#11、#13，确认来源必须为 `user-via-planner` 并绑定消息引用。writer 锁内追加一个快照：从活动 `cases` 和待处理归属队列移除，原用例整体保存在 `deletedCases`，记录原因、确认、原编号、时间和 hash，另追加逐条 `case-deleted` 事件。重复同一操作幂等，不允许重新导入/标记让已删除来源复活。
 - 旧快照、已冻结知识库版本/准则文字、脱水决定、旧 `replaySplit`/回放登记、请求/结果文件和轨迹包均不改。活动用例被删除后归纳/脱水/选题按未知用例拒绝；轨迹读取/导出允许按归档来源核对原包，用于审计。知识库证据计数与搜索只使用活动引用，因此模式 5 可显示零条用例，不修改准则原文；模式 2、4 不再把已删引用算作证据。
@@ -134,8 +134,20 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 - 应用在单个新快照中增加 `regroupConfirmations` 与 `case-regroup-confirmed` 事件。确认记录包含原提议/input hash、原组别/提议组别/确认组别全表、trace 冻结原因、用户调整差异、分层计数、来源/引用/时间及独立内容 hash。相同确认幂等；再次改组/改来源拒绝；发布失败不生效，原快照/文件不改，可在原 revision 重试。原提议与旧快照是旧分组的审计记录，不覆盖或复用历史评测身份。
 - 确认前 Badcase 页明确「尚未生效」；确认后只读显示「用户确认的分组 · 已生效」、两份 hash、来源与调整、原组别/原提议/用户确认三列对照及实际计数，卡片同步有效组别与分组步骤。不再把未采用的 #20→训练提议当成当前组别；原提议仍可展开审计。分组不代表已复现、判分通过或现场可回放。历史材料已有训练/评测暴露，重分组不等于新的盲留出；训练 run 只能淘汰候选，不能作为采纳依据。评分接线和 trace/run 分开报告仍留待两个 Goal 合入后处理，不改判定公式。
 
+## 不支持与交付边界
+
+- 不录制供应商原始请求字节；保留的是当时归档的语义上下文和 session 消息。旧系统提示词只有展示版时不还原路径或被遮盖值；历史输出、耗时或现场缺失不补猜。
+- 不做前缀一致性检验、未分类自动聚类、多轮自动迭代，也不修改生产全局提示词。新标记后不自动调用推荐模型、自动确认切点、自动分组或自动启动回放。
+- 无现场 run 只产出一次模型原文和有效／无效计数，不执行工具。有现场 run 执行器未实现，必须拒绝；Git 元数据完整或 checkpoint 存在均不等于可回放。
+- 断言编辑器、裁判、校准、正式重跑及 run 选题／判分接线由评分 v2 Goal 负责；本 Goal 只留页面槽位，不把旧字面判分当成新版证据。训练 run 仅用于淘汰候选，不作采纳依据；未来门槛须分 trace/run 报告，既有判定公式不在此变更。
+- 只验证隔离副本。生产轨迹包导入、删除／分组生效、推送、合并、部署、真实上线复测都须另获批准，见[发布审批](wikiskill-release.md)。用户最终接受与规划者代码评审是不同关卡，不能互相替代。
+
 ## 失败与验证
 
 标记已成功而轨迹写入失败时返回 `trace.error: wiki_trace_unavailable`，不泄露路径/原始异常，不掩盖标记和封存状态。GET 遇到损坏返回 `wiki_trace_invalid`（409），未知 case 沿用 `wiki_unknown_case`；无包返回 null。
 
 定向测试：`badcase-trace.test.js`、`badcase-trace-mark.test.js`、`badcase-wiki-controller.test.js`。覆盖先红后绿、完整长结果、前缀/旁支/续写边界、已知值替换、不可覆盖、原子发布失败恢复、首次失败后拒绝伪造冻结、SQLite 真实消息、删源房间后读取及 HTTP 只读门禁。`badcase-trace-export.test.js` 覆盖 JSON 相等、Markdown 无损重组、只读/远端拒绝、缺包拒绝和仅清单导出；`badcase-pipeline.test.js` 覆盖真实冻结包惰性读取、三段视图、长结果/搜索、转义、失败无摘录兜底、过期响应及来源分组。既有 `badcase-wiki.test.js` 验证原功能未变。`badcase-trace-backfill.test.js` 另覆盖只读选择/查询与复制件、来源变动两次检查、实际 task schema 与关联、旧轮次唯一回复恢复与歧义拒绝、封存轮前材料不冒充当轮输出、大数据库不全量读取、删除来源后的幂等及旧分组保留。相关标记、封存、context snapshot、executor 和 Wiki store 测试作为相邻回归。测试执行必须使用独立临时 Wiki/agent/SQLite 路径并删除继承的 `CAFF_BADCASE_CAPTURE_DIR`。
+
+收尾在提交后的同一固定 SHA 执行 `npm run typecheck`、`npm run build`、`npm run test:fast`（包含前端语法检查及全部 badcase 套件），分别记录 Windows Node 版本和 WSL Node **22.19.0**；平台跳过项与失败不得隐藏。WSL 使用该 SHA 的干净本地副本和 Linux 依赖，不复用 Windows 原生模块。每条测试命令使用新的临时 Wiki/agent/SQLite 根，清除继承的生产采集根和外部集成配置；npm 测试入口另会丢弃继承的 Wiki/采集目的地，这不是操作系统沙箱。
+
+秘密扫描只报告范围、方法和命中数，不保存原值；至少覆盖房间交付相对集成基线的文件及新增 Git 历史对象，另核对已脱敏轨迹／导出证据。已知值清单仅内存使用，不因扫描扩大生产读取授权。B6 的 DeepSeek 隔离配置副本在收尾删除并记录不存在，不触碰生产 `models.json`／GPT 登录。停止已核实 PID、启动命令与隔离路径归属的本房间预览进程，保留数据、截图、hash 和回放结果供评审；不按端口猜测杀进程。原始检查日志及清理回执只留忽略临时目录；Goal evidence 记录固定 SHA、检查摘要、独立审查及最终用户接受。
