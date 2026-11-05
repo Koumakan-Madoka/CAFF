@@ -81,6 +81,18 @@ export function containsSecretSentinel(content: any) {
 // 短占位符不会再次满足“值至少6字节”的哨兵。它不是可恢复的凭据。
 export const SECRET_REDACTION_PLACEHOLDER = '[*]';
 
+// Git snapshot v2: replace only host-known literal values, never heuristics.
+// latin1 preserves arbitrary file bytes; values and original hashes are not returned.
+export function redactKnownKeyValues(value: any, knownValues: string[] = []) {
+  const source = Buffer.isBuffer(value) ? value : Buffer.from(String(value ?? ''), 'utf8');
+  let text = source.toString('latin1'), redactionCount = 0;
+  for (const value of [...new Set(knownValues)].filter(v => typeof v === 'string' && v.length > 0).sort((a, b) => b.length - a.length)) {
+    const parts = text.split(Buffer.from(value, 'utf8').toString('latin1'));
+    if (parts.length > 1) { redactionCount += parts.length - 1; text = parts.join(SECRET_REDACTION_PLACEHOLDER); }
+  }
+  return { content: Buffer.from(text, 'latin1'), redactionCount };
+}
+
 // 文件专用：逐字节保留非秘密内容（latin1 一字节一字符，包含无效 UTF-8）。
 // 只返回拥有独立 backing allocation 的安全字节，不返回原值/原 hash/响应切片。
 // knownValues 仅由可信宿主提供；不发现/读取凭据，也不放宽原来的扫描规则。

@@ -5,14 +5,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
+import { isSafeRelativePath } from './replay-path';
 import { readCapturedCallbackInput } from './callback-input';
 const hash = (b: string | Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 const fail = (code = 'capsule_materials_invalid') => Object.assign(Error(code), { code });
 const object = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v: any, keys: string[]) => object(v) && Object.keys(v).sort().join('|') === keys.sort().join('|');
 const digest = (v: any) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
-const relative = (v: any) => typeof v === 'string' && v.length <= 1000 && /^[A-Za-z0-9_.\-/]+$/.test(v)
-  && v.split('/').every((p: string) => p && p !== '.' && p !== '..' && p.length <= 255);
+const relative = (v: any) => isSafeRelativePath(v) && v.length <= 1000 && v.split('/').every(p => p.length <= 255);
 const LIMIT = 4 * 1024 * 1024;
 
 export function decodeInitializationCapsule(capsule: any, expected: any) {

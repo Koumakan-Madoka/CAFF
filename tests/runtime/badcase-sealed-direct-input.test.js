@@ -23,6 +23,17 @@ function portable(t, change = () => {}, mode = 'fresh') {
     change({ cp, r, config, put, trace }); r.harness.configSnapshotHash = put(JSON.stringify(config));
   });
 }
+for (const count of [1115, 8192, 8193]) test(`sealed file inventory admits CAFF-scale input and enforces 8192 boundary: ${count}`, t => {
+  const f = portable(t, ({ cp, put }) => {
+    const hash = put('inventory payload');
+    cp.files = Object.fromEntries(Array.from({ length: count }, (_, i) => [`files/file-${String(i).padStart(5, '0')}.txt`,
+      { type: 'file', size: 17, mode: 0o100644, hash }]));
+  });
+  const result = prepareSealedOriginalTurn(f.request);
+  if (count > 8192) assert.deepEqual(result, { supported: false, reason: 'replay_file_inventory_limit' });
+  else { assert.equal(result.supported, true, result.reason); assert.equal(result.input.files.length, count); }
+});
+
 test('sealed portable input preserves real start bytes, changes only declared role, and never touches source/archive', t => {
   const f = portable(t), before = fs.readFileSync(f.source);
   const a = prepareSealedDirectTurn(f.request), b = prepareSealedDirectTurn(f.request, 'Read only. Verify each file.');

@@ -28,7 +28,7 @@ function input(v = trace()) {
     harness: { serverVersion: 'test', configSnapshot: { piVersion: '0.85.1', agentPromptVersion: 'v1', toolBridgeEnabled: true, deliveryMode: 'fresh', agentName: 'Archived Agent' } },
     callbackInput: { trace: raw, expectedTraceHash: hash(raw) } };
 }
-function prepared(value = input()) { return prepareReplayInput(value, 'fresh', '/source', () => assert.fail('fresh session read')); }
+function prepared(value = input(), options = {}) { return prepareReplayInput(value, 'fresh', '/source', () => assert.fail('fresh session read'), options); }
 function retained(t, mode = 'fresh', change = () => {}) {
   const p = prepared();
   assert.ok(p.replayInput.callbackInput, 'new channel must archive an explicit callback reference');
@@ -57,6 +57,50 @@ test('explicit callback bytes are validated before planning, scoped to all six s
   assert.deepEqual(ref.association, association()); assert.equal(b.content.toString(), JSON.stringify(trace()));
   const cp = { schemaVersion: 1, ...association(), files: {}, replayInput: result.replayInput };
   assert.ok(checkpointBlobHashes(cp).includes(ref.blobHash));
+});
+
+test('known-only callback plans store only redacted bytes under their recomputed CAS hash and remain replayable', t => {
+  const known = 'fixture-host-known-callback-value-12345', v = trace();
+  v.publicMessages[0].content = 'Observed ' + known + ' twice: ' + known;
+  const value = input(v), before = JSON.stringify(value), result = prepared(value, { knownKeyValues: [known] });
+  const expected = value.callbackInput.trace.replaceAll(known, '[*]'), ref = result.replayInput.callbackInput;
+  assert.ok(ref); assert.equal(result.replayInput.complete, true);
+  const blob = result.plans.find(p => p.hash === ref.blobHash);
+  assert.equal(blob.content.includes(known), false, 'known host values must never enter callback CAS plans');
+  assert.equal(blob.content.toString(), expected); assert.equal(ref.blobHash, hash(blob.content));
+  assert.notEqual(ref.blobHash, value.callbackInput.expectedTraceHash);
+  assert.equal(blob.content.length, Buffer.byteLength(expected)); assert.ok(blob.content.length < Buffer.byteLength(value.callbackInput.trace));
+  assert.equal(blob.content.buffer.byteLength, blob.content.length, 'redacted plans own an exact independent backing');
+  assert.equal(JSON.stringify(value), before, 'redaction must not mutate the caller');
+  const h = fixture(t, 'fresh', ({ r, put }) => { r.callbackInput = ref; assert.equal(put(blob.content), ref.blobHash); });
+  const stored = h.store.readBlob('p1', ref.blobHash);
+  assert.equal(stored.includes(known), false); assert.equal(hash(stored), ref.blobHash);
+  assert.equal(h.store.hasBlob('p1', value.callbackInput.expectedTraceHash), false);
+  const c = prepareRetainedInitializationCapsule(h.request);
+  const replay = plan(c.capsule, { capsuleHash: c.capsuleHash, checkpointChecksum: c.provenance.checkpointChecksum }, association());
+  assert.equal(replay.callbackInput.trace, expected); assert.equal(replay.callbackInput.expectedTraceHash, ref.blobHash);
+});
+
+test('known-only redaction that breaks callback JSON, schema or association marks the dimension incomplete without archiving it', () => {
+  for (const known of ['"schemaVersion":1', 'publicMessages', 'c1']) {
+    const value = input(), result = prepared(value, { knownKeyValues: [known] });
+    assert.equal(result.replayInput.complete, false, known);
+    assert.equal(result.replayInput.callbackInput, undefined);
+    assert.deepEqual(result.replayInput.incompleteReasons, ['callback_input_unavailable']);
+    assert.equal(result.plans.some(p => p.hash === value.callbackInput.expectedTraceHash), false);
+    assert.equal(result.plans.some(p => p.content.toString() === value.callbackInput.trace.replaceAll(known, '[*]')), false);
+  }
+});
+
+test('legacy callback preparation and known-only inputs without a match preserve the exact original reference and bytes', () => {
+  const known = 'fixture-host-known-callback-value-12345', v = trace(); v.publicMessages[0].content = known;
+  const value = input(v), legacy = prepared(value);
+  for (const result of [legacy, prepared(value, { knownKeyValues: [] }), prepared(value, { knownKeyValues: ['another-inert-value'] })]) {
+    assert.equal(result.replayInput.complete, true);
+    assert.deepEqual(result.replayInput.callbackInput, legacy.replayInput.callbackInput);
+    const blob = result.plans.find(p => p.hash === result.replayInput.callbackInput.blobHash);
+    assert.equal(blob.hash, value.callbackInput.expectedTraceHash); assert.equal(blob.content.toString(), value.callbackInput.trace);
+  }
 });
 
 test('all association mismatches, malformed packets and unsupported/secret states are incomplete with no rejected bytes or hashes', () => {

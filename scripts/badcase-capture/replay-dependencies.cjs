@@ -5,15 +5,16 @@ const { prepareDirectReplayInput, runDependencyDockerTask } = require('./direct-
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const fail = code => Object.assign(Error(code), { code });
 const INSTALL = 'npm ci --include=dev --no-audit --no-fund';
+const { isSafeRelativePath } = require('./replay-path.cjs');
 const { hashFile } = require('./replay-streams.cjs');
 function dependencyRecipe(input, image) {
   try {
-    if (input?.kind !== 'prepared-caff-turn-v1' || !Array.isArray(input.files) || input.files.length > 1024
+    if (input?.kind !== 'prepared-caff-turn-v1' || !Array.isArray(input.files) || input.files.length > 8192
       || !/^sha256:[a-f0-9]{64}$/.test(image?.imageId) || !/^v24\.\d+\.\d+$/.test(image.nodeVersion)
       || !['amd64', 'arm64'].includes(image.architecture)) throw Error();
     const byName = new Map();
     for (const f of input.files) {
-      if (!/^[A-Za-z0-9_.@/-]+$/.test(f.path) || f.path.split('/').some(p => !p || p === '.' || p === '..' || p === '.git' || p === 'node_modules')
+      if (!isSafeRelativePath(f.path)
         || byName.has(f.path) || /(?:^|\/)(?:\.npmrc|yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json)$/.test(f.path)) throw Error();
       const bytes = Buffer.from(f.base64, 'base64');
       if (bytes.toString('base64') !== f.base64 || hash(bytes) !== f.sha256) throw Error();
@@ -88,6 +89,7 @@ async function cacheReplayDependencies(input, image, root, options = {}) {
     // Git history, prompts, callbacks or settings from the captured turn.
     const files = prepareDirectReplayInput({ kind: 'prepared-caff-turn-v1', prompt: 'Dependency installation only.',
       sessionText: null, deletions: [], files: input.files.filter(f => ['package.json', 'package-lock.json'].includes(f.path)) });
+    files.push({ path: 'replay-path.cjs', bytes: fs.readFileSync(path.resolve(__dirname, '../../build/server/domain/runtime/badcase-capture/replay-path.js')) });
     files.push({ path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'npm-dependencies-container.cjs')) },
       { path: 'caff-runtime-bootstrap.cjs', bytes: fs.readFileSync(path.join(__dirname, 'caff-runtime-container.cjs')) },
       { path: 'environment.json', bytes: Buffer.from(JSON.stringify(image)) }, { path: 'mode.txt', bytes: Buffer.from('fresh') },

@@ -52,6 +52,41 @@ test('portable project resources declare a complete in-root inventory and relati
   assert.equal(inspectPortableAgentConfig({ ...config, additionalSkillPaths: [external] }).supported, false);
   fs.writeFileSync(path.join(top, 'CLAUDE.MD'), 'external context'); assert.equal(inspectPortableAgentConfig(config).supported, false);
 });
+test('captured-skill declaration inventories only cwd and preserves explicit roots without reading skill content', t => {
+  const top = fs.mkdtempSync(path.join(os.tmpdir(), 'portable-captured-')), cwd = path.join(top, 'room'), agentDir = path.join(top, 'agent'), external = path.join(top, 'project/.agents/skills/demo');
+  for (const p of [cwd, agentDir, external]) fs.mkdirSync(p, { recursive: true });
+  t.after(() => fs.rmSync(top, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'context'); fs.writeFileSync(path.join(external, 'SKILL.md'), 'external instructions');
+  const config = { cwd, agentDir, resume: false, thinking: 'off', fast: false, retireUserScopeSkills: true,
+    extensionPaths: [path.resolve('lib/pi-extensions/caff-capabilities.mjs')], additionalSkillPaths: [external] };
+  const read = fs.readFileSync; fs.readFileSync = () => assert.fail('declaration must not read instructions');
+  try {
+    assert.deepEqual(inspectPortableAgentConfig(config, { archivedSkills: true }), { schemaVersion: 1,
+      kind: 'portable-captured-project-resources-v1', supported: true, filePaths: ['AGENTS.md'], skillPaths: [external] });
+    assert.equal(inspectPortableAgentConfig(config).supported, false, 'legacy declaration is unchanged');
+    for (const patch of [{ fast: true }, { additionalSkillPaths: ['relative'] }, { extensionPaths: ['/other/plugin.mjs'] }]) {
+      assert.equal(inspectPortableAgentConfig({ ...config, ...patch }, { archivedSkills: true }).supported, false);
+    }
+    fs.writeFileSync(path.join(agentDir, 'settings.json'), '{}');
+    assert.equal(inspectPortableAgentConfig(config, { archivedSkills: true }).supported, false);
+  } finally { fs.readFileSync = read; }
+});
+
+test('captured declaration and manifest accept over 1024 archived resource files without changing the legacy subset', t => {
+  const top = fs.mkdtempSync(path.join(os.tmpdir(), 'portable-resource-count-')), cwd = path.join(top, 'room'), agentDir = path.join(top, 'agent');
+  const skills = path.join(cwd, '.agents/skills/demo'); fs.mkdirSync(skills, { recursive: true }); fs.mkdirSync(agentDir);
+  t.after(() => fs.rmSync(top, { recursive: true, force: true }));
+  const files = Array.from({ length: 1025 }, (_, i) => ({ path: '.agents/skills/demo/' + i + '.md', sha256: sha('bytes') }));
+  for (const f of files) fs.writeFileSync(path.join(cwd, f.path), 'bytes');
+  const config = { cwd, agentDir, resume: false, thinking: 'off', fast: false, retireUserScopeSkills: true,
+    extensionPaths: [path.resolve('lib/pi-extensions/caff-capabilities.mjs')], additionalSkillPaths: [] };
+  assert.equal(inspectPortableAgentConfig(config).supported, false);
+  const declaration = inspectPortableAgentConfig(config, { archivedSkills: true }); assert.equal(declaration.supported, true);
+  const prepared = require('../../build/server/domain/runtime/badcase-capture/project-resources').prepareCapturedProjectResources(declaration, files, config,
+    { targetDir: cwd, gitSnapshot: { skillInventoryStatus: 'loaded', sdkLoadedSkills: [], promptLoadedSkills: [] } }, { projectSkills: [] });
+  assert.equal(prepared.manifest.files.length, 1025);
+});
+
 test('project inventory refuses symlinks and excessive resource trees without reading target bytes', { skip: process.platform === 'win32' ? 'symlink creation needs a separately authorized Windows privilege' : false }, t => {
   const top = fs.mkdtempSync(path.join(os.tmpdir(), 'portable-links-')), cwd = path.join(top, 'project'), agentDir = path.join(top, 'agent');
   fs.mkdirSync(cwd); fs.mkdirSync(agentDir); t.after(() => fs.rmSync(top, { recursive: true, force: true }));

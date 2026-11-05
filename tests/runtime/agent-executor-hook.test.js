@@ -380,9 +380,7 @@ test('pre-turn capture handles refusal/exception/disabled policy and preserves a
   }
 });
 
-test('Windows executor captures only the actual SDK worktree under its own authorization, never the stale Room root',
-  { skip: process.platform !== 'win32' }, async t => {
-  require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
+test('executor captures only the actual SDK repository covered by its project, never the stale Room root', async t => {
   for (const authorized of ['stale', 'actual', 'unbound']) await t.test(authorized, async t => {
     const tempDir = withTempDir('caff-capture-actual-cwd-');
     const minimalPi = require('../../build/lib/minimal-pi');
@@ -400,18 +398,18 @@ test('Windows executor captures only the actual SDK worktree under its own autho
     for (const [name, dir] of Object.entries(dirs)) {
       require('node:child_process').execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', dir], { env: gitEnv, stdio: 'pipe' });
       fs.writeFileSync(path.join(dir, 'file.txt'), name + '-worktree\n');
-      require('node:child_process').execFileSync('git', ['-C', dir, 'add', 'file.txt'], { env: gitEnv, stdio: 'pipe' });
+      require('node:child_process').execFileSync('git', ['-C', dir, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid.local',
+        'commit', '--allow-empty', '-qm', 'base'], { env: gitEnv, stdio: 'pipe' });
     }
     const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
     const service = createBadcaseCaptureService({ captureRoot: path.join(tempDir, 'capture') });
-    // Own fixtures only: raw enabled state does not open the management gate.
-    service.savePolicy('project-cwd', { authorizedDirs: [dirs[authorized === 'unbound' ? 'stale' : authorized]], excludedPatterns: ['node_modules'] });
-    service.authorizeProject('project-cwd');
-    service.savePolicy('project-cwd', { ...service.loadPolicy('project-cwd'), status: 'enabled' });
+    // New turns do not authorize/pin/install native helpers. Each project has
+    // one enabled switch; the actual target must share its Git common dir.
+    service.savePolicy('project-cwd', { status: 'enabled', authorizedDirs: [dirs[authorized === 'unbound' ? 'stale' : authorized]], excludedPatterns: ['node_modules'] });
     const before = service.loadPolicy('project-cwd');
     minimalPi.startRun = (_provider, _model, _prompt, options) => {
       order.push('startRun'); runOptions = options;
-      assert.ok(outcome, 'the real native collector must settle before the stubbed run');
+      assert.ok(outcome, 'the real Git collector must settle before the stubbed run');
       return createRunHandle('Normal reply.');
     };
     delete require.cache[executorPath];
@@ -443,7 +441,7 @@ test('Windows executor captures only the actual SDK worktree under its own autho
     assert.deepEqual(service.loadPolicy('project-cwd'), before, 'a target change cannot grant or re-pin roots');
     assert.equal(service.store.loadLatestCheckpoint('project-cwd', dirs.stale), null);
     if (authorized !== 'actual') {
-      assert.equal(outcome.captured, false); assert.equal(outcome.reason, 'dir_not_authorized');
+      assert.equal(outcome.captured, false); assert.equal(outcome.reason, 'repository_not_covered');
       assert.equal(service.store.loadLatestCheckpoint('project-cwd', expectedCwd), null);
       assert.equal(service.computeUsage('project-cwd').blobCount, 0);
       assert.equal(store.messageWrites.updates.some(({ patch }) => Boolean(patch.metadata?.badcaseCheckpointId)), false);
@@ -454,7 +452,9 @@ test('Windows executor captures only the actual SDK worktree under its own autho
       assert.equal(checkpoint.files['file.txt'].hash, require('node:crypto').createHash('sha256').update('actual-worktree\n').digest('hex'));
       assert.equal(store.messageWrites.updates.find(({ patch }) => patch.metadata?.badcaseCheckpointId)?.patch.metadata.badcaseCheckpointId,
         checkpoint.checkpointId);
-      assert.equal(checkpoint.replayInput.complete, false, 'the Windows input-completeness gate is not changed by root binding');
+      assert.equal(checkpoint.schemaVersion, 2);
+      assert.equal(checkpoint.replayInput.complete, false, 'a stubbed SDK has not reported loaded skills');
+      assert.ok(checkpoint.replayInput.incompleteReasons.includes('project_skills_pending'));
       assert.equal(checkpoint.strictEvalEligible, false);
     }
   });
@@ -1175,18 +1175,28 @@ test('agent executor sends the prevalidated runtime config without env fallback 
   assert.equal(familyCheckpointInput.agentId, 'role-family-gpt');
 });
 
-test('agent executor pins session and capture to the actual cwd, not stale Room worktree metadata, with the contract skills', async (t) => {
+test('agent executor pins session and capture to the actual cwd and awaits the actual SDK skill inventory', async (t) => {
   const tempDir = withTempDir('caff-agent-executor-skill-scoping-');
   const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
   const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
   const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
   const minimalPi = require(minimalPiPath);
   const originalStartRun = minimalPi.startRun;
-  let captured = null;
-
+  let captured = null, skillInput = null;
+  const actualSkills = [{ name: 'selected', filePath: path.join(tempDir, 'external-project', 'selected', 'SKILL.md') }];
+  const projectSkillDir = path.join(tempDir, 'target-project', '.codex', 'skills', 'project-aux');
+  const projectPromptSkill = { id: 'project-aux', name: 'project-aux', description: 'Project helper',
+    path: projectSkillDir, source: path.dirname(projectSkillDir), readOnly: true, skillMarkdown: 'Project helper', openaiYaml: '' };
+  const order = [];
   minimalPi.startRun = (provider, model, prompt, options) => {
-    captured = { provider, model, prompt, options };
-    return createRunHandle('Done.');
+    captured = { provider, model, prompt, options }; order.push('initializeSdk');
+    const handle = createRunHandle('Done.');
+    handle.resultPromise = (async () => {
+      assert.equal(typeof options.beforePrompt, 'function');
+      await options.beforePrompt({ skills: actualSkills }); order.push('prompt');
+      return { reply: 'Done.', runId: handle.runId, sessionPath: '' };
+    })();
+    return handle;
   };
   delete require.cache[agentExecutorPath];
 
@@ -1207,10 +1217,10 @@ test('agent executor pins session and capture to the actual cwd, not stale Room 
     name: 'Scoping Agent',
     description: 'Exercises the two-layer skill scoping run options.',
     personaPrompt: 'Read files without modifying them.',
-    skillIds: [],
+    skillIds: ['project-aux'],
   };
   const conversation = {
-    id: 'conversation-skill-scoping',
+    id: 'conversation-skill-scoping', projectScopeId: 'project-skill-scoping',
     worktreePath: path.join(tempDir, 'stale-room-worktree'),
     title: 'Skill Scoping',
     type: 'standard',
@@ -1220,7 +1230,7 @@ test('agent executor pins session and capture to the actual cwd, not stale Room 
   const store = createFakeStore(conversation);
   const executor = createAgentExecutor({
     store,
-    skillRegistry: { resolveSkills: () => [] },
+    skillRegistry: { resolveSkills: ids => ids.includes('project-aux') ? [projectPromptSkill] : [] },
     modeStore: { get: () => null },
     agentToolBridge: createFakeAgentToolBridge(),
     agentDir: tempDir,
@@ -1230,8 +1240,11 @@ test('agent executor pins session and capture to the actual cwd, not stale Room 
     agentToolRelativePath: './lib/agent-chat-tools.js',
     piCapabilityExtensionPath: path.join(tempDir, 'caff-capabilities.mjs'),
     badcaseCapture: { captureTurnCheckpoint(input) {
-      checkpointInput = input;
+      checkpointInput = input; order.push('repositoryCapture');
       return { captured: true, checkpointId: 'checkpoint-actual-cwd' };
+    }, async captureLoadedProjectSkills(input) {
+      skillInput = input; await new Promise(resolve => setImmediate(resolve)); order.push('skillsSaved');
+      return { captured: true };
     } },
   });
   const turnState = createTurnState(conversation, 'turn-skill-scoping');
@@ -1267,6 +1280,11 @@ test('agent executor pins session and capture to the actual cwd, not stale Room 
     CONTRACT_SKILL_IDS
   );
   assert.equal(captured.options.metadata.sessionProjectDir, projectDir);
+  assert.deepEqual(order, ['repositoryCapture', 'initializeSdk', 'skillsSaved', 'prompt']);
+  assert.deepEqual(checkpointInput.projectSkillPaths, []); assert.equal(checkpointInput.projectSkillsPending, true);
+  const explicitSkill = { name: 'project-aux', filePath: path.join(projectSkillDir, 'SKILL.md'), baseDir: projectSkillDir };
+  assert.deepEqual(skillInput, { projectId: 'project-skill-scoping', checkpointId: 'checkpoint-actual-cwd', skills: [...actualSkills, explicitSkill],
+    sdkSkills: actualSkills, promptSkills: [explicitSkill] });
   assert.equal(checkpointInput.targetDir, projectDir);
   assert.equal(checkpointInput.targetDir, checkpointInput.harness.configSnapshot.sdkStartConfig.cwd);
   assert.equal(checkpointInput.roleSection, 'Your private persona instructions:\nRead files without modifying them.');

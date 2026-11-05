@@ -7,14 +7,14 @@ const crypto = require('node:crypto');
 const LIMIT = 16 * 1024 * 1024;
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const { hashFile } = require('./replay-streams.cjs');
+const { isSafeDistributionPath } = require('./replay-path.cjs');
 function manifestFor(files, { replayWorkspace = false } = {}) {
   // Direct replay keeps captured file bodies outside its JSON control input.
   // Only that explicit data namespace is exempt from the static-runtime cap;
   // all bytes (including workspace bytes) remain in the hashed inventory.
   const names = new Set(); let total = 0, staticCount = 0, workspaceCount = 0;
   const inventory = files.map(f => {
-    if (!f || typeof f.path !== 'string' || !/^[A-Za-z0-9_.@/-]+$/.test(f.path)
-        || f.path.split('/').some(p => !p || p === '.' || p === '..') || names.has(f.path)
+    if (!f || !isSafeDistributionPath(f.path) || names.has(f.path)
         || !(Buffer.isBuffer(f.bytes) && f.sourceFile === undefined || replayWorkspace && f.path === 'replay-dependencies.tar.gz'
           && f.bytes === undefined && path.isAbsolute(f.sourceFile || '') && fs.lstatSync(f.sourceFile).isFile()
           && !fs.lstatSync(f.sourceFile).isSymbolicLink())) throw Error('probe_file_invalid');
@@ -22,7 +22,8 @@ function manifestFor(files, { replayWorkspace = false } = {}) {
     names.add(f.path);
     if (replayWorkspace && (f.path.startsWith('replay-workspace/') || f.path === 'replay-dependencies.tar.gz')) workspaceCount++;
     else { total += size; staticCount++; }
-    if (total > LIMIT || staticCount > 4096 || workspaceCount > 1070) throw Error('probe_dependency_size');
+    // 8192 working files + at most 45 Git files + one dependency archive.
+    if (total > LIMIT || staticCount > 4096 || workspaceCount > 8192 + 45 + 1) throw Error('probe_dependency_size');
     return { path: f.path, size, sha256: f.sourceFile ? hashFile(f.sourceFile) : hash(f.bytes) };
   }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   for (const name of names) {
@@ -76,6 +77,7 @@ function prepareProbeFiles(repoRoot, mode) {
   if (!['fresh', 'resume'].includes(mode)) throw Error('probe_mode_invalid');
   const files = prepareRuntimeFiles(repoRoot);
   files.push({ path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'pi-initialize-probe.cjs')) });
+  files.push({ path: 'replay-path.cjs', bytes: fs.readFileSync(path.resolve(__dirname, '../../build/server/domain/runtime/badcase-capture/replay-path.js')) });
   files.push({ path: 'pi-probe-guards.cjs', bytes: fs.readFileSync(path.join(__dirname, 'pi-probe-guards.cjs')) });
   files.push({ path: 'mode.txt', bytes: Buffer.from(mode) });
   const session = Buffer.from(syntheticSession()); // single fixture source, also checked inside the container

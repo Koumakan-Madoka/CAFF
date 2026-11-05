@@ -31,7 +31,7 @@ function scope(input: any) {
 // synthesized and not silently changed from resume to fresh.
 export function checkpointBlobHashes(checkpoint: any): string[] {
   const invalid = () => { throw fail('retention_manifest_invalid'); };
-  if (!object(checkpoint) || checkpoint.schemaVersion !== 1 || !object(checkpoint.files)
+  if (!object(checkpoint) || ![1, 2].includes(checkpoint.schemaVersion) || !object(checkpoint.files)
     || !object(checkpoint.replayInput)) invalid();
   const hashes = new Set<string>();
   const add = (value: any, optional = false) => {
@@ -43,6 +43,19 @@ export function checkpointBlobHashes(checkpoint: any): string[] {
     if (!object(entry) || !['file', 'symlink'].includes(entry.type)) invalid();
     if (entry.type === 'file' && entry.secretExcluded !== true) add(entry.hash);
     else if (entry.hash !== undefined && entry.hash !== '') invalid();
+  }
+  if (checkpoint.schemaVersion === 2) {
+    const git = checkpoint.gitSnapshot;
+    if (!object(git) || git.kind !== 'git-snapshot-v1' || typeof git.head !== 'string' || !/^[a-f0-9]{40,64}$/.test(git.head)
+      || typeof git.sourceRepository !== 'string' || !Array.isArray(git.projectSkills)) invalid();
+    add(git.patchBlobHash);
+    for (const root of git.projectSkills) {
+      if (!object(root) || typeof root.originalPath !== 'string' || !object(root.files)) invalid();
+      for (const file of Object.values(root.files) as any[]) {
+        if (!object(file) || file.type !== 'file') invalid();
+        add(file.hash);
+      }
+    }
   }
   const replay = checkpoint.replayInput;
   if (!['fresh', 'resume'].includes(replay.deliveryMode) || typeof replay.complete !== 'boolean'
@@ -119,7 +132,7 @@ export function createCheckpointRetentionStore(options: any) {
       catch { throw fail('retention_blob_unreadable'); }
       if (!Buffer.isBuffer(content)) throw fail('retention_blob_missing');
       if (hash(content) !== blobHash) throw fail('retention_blob_corrupt');
-      if (containsSecretSentinel(content)) throw fail('retention_contains_secret');
+      if (checkpoint.schemaVersion === 1 && containsSecretSentinel(content)) throw fail('retention_contains_secret');
       if (blobHash === callbackHash) callbackBytes = content;
     }
     if (Object.hasOwn(checkpoint.replayInput, 'callbackInput')) {
@@ -148,7 +161,7 @@ export function createCheckpointRetentionStore(options: any) {
       const record = { schemaVersion: 1, kind: 'checkpoint-retention', ...input,
         createdAt: new Date().toISOString(), checkpoint, blobHashes };
       const serialized = JSON.stringify(record);
-      if (containsSecretSentinel(serialized)) throw fail('retention_contains_secret');
+      if (checkpoint.schemaVersion === 1 && containsSecretSentinel(serialized)) throw fail('retention_contains_secret');
       const bytes = `${JSON.stringify({ schemaVersion: 1, checksum: hash(serialized), record })}\n`;
       if (Buffer.byteLength(bytes) > MAX_RECORD_BYTES) throw fail('retention_record_too_large');
       // Verify every distinct referenced blob, not just existence or size. A

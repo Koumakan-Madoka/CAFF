@@ -291,7 +291,7 @@ test('real concurrent processes converge or conflict with one immutable winner',
   }
 });
 test('real Linux collector manifests can be retained and restored twice after source manifest deletion', { skip: process.platform !== 'linux', timeout: 20000 }, t => {
-  const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture/index');
+  const { createLegacyNativeCaptureService: createBadcaseCaptureService } = require('../helpers/legacy-native-capture');
   const { restoreCheckpoint } = require('../../build/server/domain/runtime/badcase-capture/restore');
   const { execFileSync } = require('node:child_process');
   const h = setup(t), target = path.join(h.root, 'source'); fs.mkdirSync(target);

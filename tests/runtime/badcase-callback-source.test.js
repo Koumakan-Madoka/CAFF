@@ -126,20 +126,22 @@ test('no truncation: oversized raw input or more than 2048 public messages is re
 });
 
 
-test('native host service authorized source → actual file collector → CAS → restart keeps distinct turn IDs and exact callback state (owned fixtures only)',
+test('Git snapshot facade authorized source → CAS → restart keeps distinct turn IDs and exact callback state (owned fixtures only)',
   { skip: !['win32', 'linux'].includes(process.platform) }, async t => {
   require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
-  const h = fixture(t), target = path.join(h.root, 'worktree'), sessions = path.join(h.root, 'sessions'), captureRoot = path.join(h.root, 'capture');
-  fs.mkdirSync(target); fs.mkdirSync(sessions);
-  const git = (...args) => require('node:child_process').execFileSync('git', ['-C', target, ...args], { windowsHide: true,
-    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(h.root, 'absent-global'), GIT_TEMPLATE_DIR: '' } });
-  git('init', '-q'); git('config', 'core.ignorecase', 'false');
-  fs.writeFileSync(path.join(target, 'tracked'), 'original'); git('add', 'tracked');
-  fs.writeFileSync(path.join(target, 'tracked'), 'dirty'); fs.writeFileSync(path.join(target, 'untracked'), 'new');
+  const h = fixture(t), target = path.join(h.root, 'worktree'), agentDir = path.join(h.root, 'agent'), sessions = path.join(agentDir, 'named-sessions'), captureRoot = path.join(h.root, 'capture');
+  fs.mkdirSync(target); fs.mkdirSync(sessions, { recursive: true });
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
+  Object.assign(gitEnv, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(h.root, 'absent-global'), GIT_TEMPLATE_DIR: '' });
+  const git = (...args) => require('node:child_process').execFileSync('git', ['-C', target, ...args], { windowsHide: true, env: gitEnv });
+  git('init', '-q'); git('config', 'core.ignorecase', 'false'); git('config', 'core.autocrlf', 'false');
+  fs.writeFileSync(path.join(target, 'tracked'), 'original\n'); git('add', 'tracked');
+  git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid.local', 'commit', '-qm', 'readable HEAD');
+  fs.writeFileSync(path.join(target, 'tracked'), 'dirty\n'); fs.writeFileSync(path.join(target, 'untracked'), 'new');
   fs.writeFileSync(path.join(target, '.gitignore'), '');
   const { createBadcaseCaptureService } = require(base + 'index');
   const { readCapturedCallbackInput } = require(base + 'callback-input');
-  const service = createBadcaseCaptureService({ captureRoot, chatStore: h.store });
+  const service = createBadcaseCaptureService({ captureRoot, agentDir, chatStore: h.store });
   service.savePolicy('p1', { authorizedDirs: [target], authorizedInputDirs: [sessions], excludedPatterns: [] }, { authorizeCallbackInput: true });
   const policy = service.authorizeProject('p1'); assert.equal(policy.status, 'disabled');
   const sessionPath = path.join(sessions, 'turn.jsonl');
@@ -150,8 +152,8 @@ test('native host service authorized source → actual file collector → CAS �
     harness: { serverVersion: 'test', configSnapshot: { toolBridgeEnabled: true, agentName: h.agent.name, agentPromptVersion: 'v1', deliveryMode: mode, piVersion: '0.85.1' }, skillSnapshots: [] },
     callbackInput: { trace: 'UNTRUSTED_PACKET_MUST_NOT_WIN' } });
   assert.equal((await service.captureTurnCheckpoint(value('fresh'))).reason, 'policy_not_enabled');
-  // Only the throwaway fixture uses raw enabled. Never a management bypass for
-  // an existing project; Windows estimate/enable remains closed.
+  // Only the throwaway fixture uses raw enabled. The real management switch
+  // and automatic common-dir coverage are tested in badcase-git-configure.
   service.store.savePolicy({ ...policy, status: 'enabled' });
   for (const mode of ['fresh', 'resume']) {
     const result = await service.captureTurnCheckpoint(value(mode)); assert.equal(result.captured, true, result.reason);
@@ -159,13 +161,32 @@ test('native host service authorized source → actual file collector → CAS �
     assert.ok(cp.replayInput.callbackInput, 'service must archive its constructor-owned authorized source');
     const captured = readCapturedCallbackInput(cp, hash => reopened.store.readBlob('p1', hash));
     assert.equal(captured.trace, h.capture().trace); assert.equal(cp.replayInput.deliveryMode, mode);
-    if (process.platform === 'win32') assert.equal(cp.replayInput.complete, false);
+    assert.equal(cp.schemaVersion, 2); assert.equal(cp.gitSnapshot.kind, 'git-snapshot-v1');
     assert.equal(cp.strictEvalEligible, false);
-    assert.equal(cp.files.tracked.hash, crypto.createHash('sha256').update('dirty').digest('hex'));
+    assert.match(reopened.store.readBlob('p1', cp.gitSnapshot.patchBlobHash).toString(), /\+dirty/);
+    assert.equal(cp.files.untracked.hash, crypto.createHash('sha256').update('new').digest('hex'));
     assert.equal(captured.association.userMessageId, h.input.userMessageId); assert.equal(captured.association.assistantMessageId, h.input.assistantMessageId);
     if (mode === 'resume') assert.deepEqual(reopened.store.readBlob('p1', cp.replayInput.sessionBlobHash), fs.readFileSync(sessionPath));
     else assert.equal(cp.replayInput.sessionBlobHash, '');
-    assert.ok(cp.integrity.knownLimitations.includes('callback_sqlite_snapshot_not_atomic_with_files'));
+    assert.ok(cp.integrity.knownLimitations.includes('no_atomic_snapshot'));
+  }
+  // The v2 Git turn collector must sanitize its constructor-owned callback
+  // source before CAS publication, not merely its prompt/config metadata.
+  const known = 'fixture-host-known-source-value-12345';
+  h.store.updateMessage('old', { content: 'Earlier ' + known });
+  const rawCallback = h.capture(), expectedTrace = rawCallback.trace.replaceAll(known, '[*]');
+  const rawHash = rawCallback.expectedTraceHash, expectedHash = crypto.createHash('sha256').update(expectedTrace).digest('hex');
+  const safeService = createBadcaseCaptureService({ captureRoot, agentDir, chatStore: h.store, getKnownKeyValues: () => [known] });
+  for (const mode of ['fresh', 'resume']) {
+    const result = await safeService.captureTurnCheckpoint(value(mode)); assert.equal(result.captured, true, result.reason);
+    const reopened = createBadcaseCaptureService({ captureRoot }), cp = reopened.store.loadCheckpoint('p1', result.checkpointId);
+    assert.equal(cp.replayInput.callbackInput.blobHash, expectedHash);
+    const bytes = reopened.store.readBlob('p1', expectedHash);
+    assert.equal(bytes.includes(known), false); assert.equal(bytes.toString(), expectedTrace);
+    assert.equal(bytes.length, Buffer.byteLength(expectedTrace)); assert.equal(reopened.store.hasBlob('p1', rawHash), false);
+    assert.equal(cp.stats.newBlobBytes, mode === 'fresh' ? bytes.length : 0, 'account only redacted bytes, deduplicating the second callback');
+    assert.equal(readCapturedCallbackInput(cp, h => reopened.store.readBlob('p1', h)).trace, expectedTrace);
+    assert.equal(h.capture().trace, rawCallback.trace, 'source Room state remains unchanged');
   }
   const noSource = createBadcaseCaptureService({ captureRoot });
   const supplied = { ...value('fresh'), callbackInput: h.capture() };

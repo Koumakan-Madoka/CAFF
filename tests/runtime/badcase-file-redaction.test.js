@@ -67,7 +67,8 @@ test('Linux collector stores and restores placeholders, not secrets, without tre
   const target = path.join(root, 'source'); fs.mkdirSync(target);
   const original = Buffer.from('API_KEY=' + secret + '\nkeep=yes\n');
   fs.writeFileSync(path.join(target, 'settings.txt'), original);
-  const service = require('../../build/server/domain/runtime/badcase-capture').createBadcaseCaptureService({ captureRoot: path.join(root, 'capture') });
+  // Native v1 pattern-redaction/restore compatibility, not v2 known-key-only behavior.
+  const service = require('../helpers/legacy-native-capture').createLegacyNativeCaptureService({ captureRoot: path.join(root, 'capture') });
   service.savePolicy('p', { status: 'enabled', authorizedDirs: [target], authorizedInputDirs: [] }); service.authorizeProject('p');
   const result = service.captureTurnCheckpoint({ projectId: 'p', targetDir: target, conversationId: 'c', turnId: 't', agentId: 'a',
     deliveryMode: 'fresh', prompt: 'Read settings.', controlledValues: {}, runConfig: { provider: 'test', model: 'test', promptVersion: 'v1' },

@@ -6,7 +6,7 @@
 
 `CAFF_WIKISKILL_DATA_DIR` 只用于没有显式根目录时的实例默认路径组装：设置时必须是宿主 OS 的**绝对路径**（空值、相对路径或 NUL 拒绝，不回退）；未设置时行为不变，实例仍用 `agentDir`。显式 `globalRoot`（包括受信 Wiki CLI 的 JSON 配置）或旧项目 `captureRoot` 始终优先，不被环境变量改道，也不校验无关的环境变量值。该目录仍须在 CAFF 源仓库及实例登记的项目目录外，原 `wiki_storage_inside_source` 保护不放宽。不会自动搬迁任何现有数据。
 
-设置后，目录内只有这组 Wiki 数据布局：`badcase-global/`、迁入的 `badcase-capture/imports/` 和根级 `wiki-migration.json`。实例自己新采集的现场**仍在 `<agentDir>/badcase-capture`**，认证、SQLite、模型配置等也不改位置。页面 API 和标记后的 Wiki 写入在默认路径组装时解析该配置，随后预分类/归纳、候选和评测记录共用选定的根；受信 Wiki CLI 必须将 JSON 的 `globalRoot` 明确设为页面实际使用的 `badcase-global` 目录，不能靠环境变量覆盖旧路径。
+设置后，目录内只有这组 Wiki 数据布局：`badcase-global/`、迁入的 `badcase-capture/imports/` 和根级 `wiki-migration.json`。实例自己新采集的现场由独立采集根配置决定（服务端显式 `captureRoot` → `CAFF_BADCASE_CAPTURE_DIR` → 默认 `<agentDir>/badcase-capture`），本 Wiki 变量不移动采集库，认证、SQLite、模型配置等也不改位置。2026-11-05 的 Git 快照采集库外置步骤见[采集契约 v2 部署操作](badcase-capture-replay.md#v2-部署操作另行批准后当前未执行)，不是本迁移命令的职责。页面 API 和标记后的 Wiki 写入在默认路径组装时解析该配置，随后预分类/归纳、候选和评测记录共用选定的根；受信 Wiki CLI 必须将 JSON 的 `globalRoot` 明确设为页面实际使用的 `badcase-global` 目录，不能靠环境变量覆盖旧路径。
 
 迁移命令例外地保留 JSON `globalRoot` 为**明确源目录**，绝不让环境变量将源替换为目标；其 `destinationAgentDir` 字段保留兼容，但实际目标优先取 `CAFF_WIKISKILL_DATA_DIR`。计划 hash 绑定解析后的有效目标。未设置时这两个 JSON 字段的原语义不变。运行评测/候选 CLI 时同时设置与实例一致的 `PI_CODING_AGENT_DIR`，使本机新现场解析到正确实例；未设置则沿用服务器默认 agent 目录。
 
@@ -67,7 +67,7 @@ CAFF_WIKISKILL_DATA_DIR/               # 未设置时仍是 destinationAgentDir
 
 宿主 `resolveWikiReplayRequest({globalRoot, instanceCaptureRoot?}, request)` 在读取现场前解析映射。页面候选生成/确认、候选 CLI、全局批量/生产批量及其单例内核共用它；不把位置映射作为模型输入，不改变原请求对象。副本根是相对映射推导的，因此整个副本可以一起搬动。
 
-迁移后映射损坏、缺失、未知旧根或副本材料缺失直接拒绝，**不能回退读取仍存在的源现场**。新采集使用本实例的 `<agentDir>/badcase-capture`，导入现场使用数据目录下的 `badcase-capture/imports/<源根hash>`；两者同时识别、不合并。如果请求根也是历史映射的源根，优先映射到 imports，不以“本机目录”名义读回旧源。未配置独立目录时仍按原有副本相邻 `badcase-capture` 规则解析。受信独立 sealed CLI 若不带 Wiki 上下文，须由操作者用同一解析器得到副本请求，不自动搜索其他目录。
+迁移后映射损坏、缺失、未知旧根或副本材料缺失直接拒绝，**不能回退读取仍存在的源现场**。新采集使用本实例实际配置的采集根（默认 `<agentDir>/badcase-capture`），导入现场使用数据目录下的 `badcase-capture/imports/<源根hash>`；两者同时识别、不合并。如果请求根也是历史映射的源根，优先映射到 imports，不以“本机目录”名义读回旧源。未配置独立目录时仍按原有副本相邻 `badcase-capture` 规则解析。受信独立 sealed CLI 若不带 Wiki 上下文，须由操作者用同一解析器得到副本请求，不自动搜索其他目录。
 
 ## 副本验收与后续发布
 

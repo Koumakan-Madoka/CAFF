@@ -8,7 +8,10 @@ const { performance } = require('node:perf_hooks');
 import { normalizeCapturePolicy, matchesRelativePattern, pinAuthorizedDirs, pinKey } from './capture-policy';
 import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
-import { createWindowsTurnCollector } from './windows-turn-collector';
+import { createGitTurnCollector } from './git-turn-collector';
+import { collectGitSnapshot } from './git-snapshot';
+import { captureLoadedProjectSkills } from './loaded-skills';
+import { checkpointCaptureMetrics } from './capture-result';
 import { restoreCheckpoint } from './restore';
 import { runEstimateProcess } from './estimate-process';
 import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
@@ -72,12 +75,11 @@ export function createBadcaseCaptureService(options: any = {}) {
       ? [...privateDirs, ...[process.env.PI_AGENT_SANDBOX_DIR, process.env.PI_AGENT_PRIVATE_DIR].filter(Boolean)]
       : privateDirs };
   })() : null;
-  // Windows enable requires a classified metadata plan, not process-wide Git
-  // overrides. Native readers parse only their independently authorized inputs;
-  // helper child environments are isolated without changing agent Git behavior.
-  // Raw capacity preview never grants capture capability; no Linux fallback.
-  const turnCollector = windowsScope
-    ? createWindowsTurnCollector({ store, readCallbackInput, ...windowsScope }) : collector;
+  // Every NEW turn, on all platforms, uses the simple Git snapshot format.
+  // Native v1 readers stay available only for legacy/offline compatibility.
+  const turnCollector = createGitTurnCollector({ store, readCallbackInput,
+    getProject: options.getProject, agentDir: options.agentDir, getKnownKeyValues: options.getKnownKeyValues,
+    captureNow: options.captureNow, captureTimeLimitMs: options.captureTimeLimitMs });
 
   return {
     captureRoot,
@@ -146,8 +148,13 @@ export function createBadcaseCaptureService(options: any = {}) {
       return turnCollector.captureTurnCheckpoint(input);
     },
 
+    captureLoadedProjectSkills(input: any) {
+      return captureLoadedProjectSkills({ store, agentDir: options.agentDir, getKnownKeyValues: options.getKnownKeyValues,
+        captureNow: options.captureNow }, input);
+    },
+
     restoreCheckpoint(input: any) {
-      return restoreCheckpoint({ ...input, store });
+      return restoreCheckpoint({ ...input, store, agentDir: options.agentDir, getKnownKeyValues: options.getKnownKeyValues });
     },
 
     computeUsage(projectId: any) {
@@ -157,6 +164,11 @@ export function createBadcaseCaptureService(options: any = {}) {
     // Read saved counters only, never re-scan a target or load a file/session
     // blob. Missing legacy counters remain unknown, not fabricated zeroes.
     latestCaptureMetrics(projectId: any) {
+      // v2 records the latest real project attempt, including room worktrees
+      // and failures. No Git lookup or checkpoint/blob reads on this path.
+      const saved = store.loadCaptureResult(projectId);
+      if (saved) return saved;
+      // Legacy snapshots had only per-authorized-root latest pointers.
       const policy = store.loadPolicy(projectId);
       const rows = policy.authorizedDirs.map((root: string) => {
         const cp = store.loadLatestCheckpoint(projectId, root);
@@ -165,18 +177,31 @@ export function createBadcaseCaptureService(options: any = {}) {
           && typeof cp.createdAt === 'string' && Number.isFinite(Date.parse(cp.createdAt)) ? cp : null;
       }).filter(Boolean).sort((a: any, b: any) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
       if (!rows.length) return null;
-      const cp = rows[0], stats = cp.stats || {};
-      const bytes = (v: any) => Number.isSafeInteger(v) && v >= 0 ? v : null;
-      const kinds = stats.blobBytesByKind, names = ['files', 'session', 'replay', 'shared'];
-      const validKinds = kinds && names.every(k => bytes(kinds[k]) !== null)
-        && names.reduce((sum, k) => sum + kinds[k], 0) === bytes(stats.newBlobBytes);
-      return { checkpointId: cp.checkpointId, targetDir: cp.targetDir, createdAt: cp.createdAt,
-        totalNewBytes: bytes(stats.totalNewBytes), newBlobBytes: bytes(stats.newBlobBytes), newManifestBytes: bytes(stats.newManifestBytes),
-        blobBytesByKind: validKinds ? Object.fromEntries(names.map(k => [k, kinds[k]])) : null,
-        sessionBytes: bytes(stats.sessionBytes), preparationDurationMs: cp.integrity?.platform === 'win32'
-          && typeof stats.durationMs === 'number' && Number.isFinite(stats.durationMs) && stats.durationMs >= 0 ? stats.durationMs : null };
+      return checkpointCaptureMetrics(rows[0]);
     },
 
+    // New one-switch preview uses the SAME best-effort Git reader as turns.
+    // No helper install/pin/receipt and no CAS/checkpoint writes. `complete`
+    // describes gaps, not permission to enable: skipped entries are allowed.
+    async estimateGitDirectoryAsync(projectId: any, targetDir: any) {
+      const started = Date.now();
+      const fail = (reason: string) => ({ ok: false, reason, captureAvailable: false, complete: false,
+        fileCount: 0, totalBytes: 0, skippedCount: 0, uncaptured: [], durationMs: Date.now() - started });
+      if (!String(projectId || '').trim()) return fail('project_id_missing');
+      if (!String(targetDir || '').trim()) return fail('target_dir_missing');
+      try {
+        const snapshot = await collectGitSnapshot({ targetDir, excludedPatterns: store.loadPolicy(projectId).excludedPatterns });
+        if (!snapshot.ok) return fail(snapshot.reason);
+        return { ok: true, reason: '', captureAvailable: true, complete: snapshot.uncaptured.length === 0,
+          includesIgnored: false, exclusionPolicy: 'git-snapshot-v1',
+          fileCount: snapshot.gitSnapshot.baseFileCount + Object.values(snapshot.files).filter((f: any) => f.origin === 'untracked').length,
+          totalBytes: [...snapshot.blobs.values()].reduce((sum: number, bytes: any) => sum + bytes.length, 0),
+          skippedCount: snapshot.uncaptured.length, uncaptured: snapshot.uncaptured, durationMs: Date.now() - started };
+      } catch { return fail('git_snapshot_unavailable'); }
+    },
+
+    // Legacy native administrative/offline APIs below are not used by configure
+    // or by new turns. Kept during migration for existing native-reader tests.
     discoverGitDependenciesAsync(projectId: any, targetDir: any) {
       return discoverWindowsGitDependencies({ captureRoot, ...windowsScope,
         targetDir, policy: store.loadPolicy(projectId) });

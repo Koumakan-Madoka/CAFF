@@ -2,6 +2,7 @@
 // CAFF stage; actual SDK/tools run ONLY in the container. No approval/gateway.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const assert = require('node:assert/strict');
+const { isSafeRelativePath } = require('./replay-path.cjs');
 const { spawn, execFileSync } = require('node:child_process');
 const { manifestFor } = require('./pi-probe-materials.cjs');
 const { readEvaluationKey, validKey, modelProfile, DEFAULT_PROFILE, CODEX_PROFILE, KEY_ENV } = require('./direct-model.cjs');
@@ -13,10 +14,9 @@ const { hashFile, fileChunks, bufferChunks, writeChunks, createKnownValueScanner
 function prepareDirectReplayInput(input) {
   assert.equal(input?.kind, 'prepared-caff-turn-v1');
   assert.equal(input.workspace, undefined);
-  assert.ok(Array.isArray(input.files) && input.files.length <= 1024);
+  assert.ok(Array.isArray(input.files) && input.files.length <= 8192);
   const files = [], inventory = input.files.map(f => {
-    assert.ok(typeof f.path === 'string' && /^[A-Za-z0-9_.@/-]+$/.test(f.path)
-      && f.path.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git'));
+    assert.ok(isSafeRelativePath(f.path));
     assert.equal(typeof f.base64, 'string');
     const bytes = Buffer.from(f.base64, 'base64');
     assert.equal(bytes.toString('base64'), f.base64);

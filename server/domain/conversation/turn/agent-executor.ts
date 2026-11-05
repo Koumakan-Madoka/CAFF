@@ -2334,13 +2334,18 @@ export function createAgentExecutor(options: any = {}) {
         // Capture the exact effective cwd used by startRun's SDK descriptor.
         // Room metadata may be stale relative to the queued execution binding;
         // it is never a fallback target or authority for a different directory.
-        // The collector still requires this root's own explicit grant and pin.
+        // The collector checks its project switch and Git common-directory
+        // relationship, not stale Room metadata or per-worktree grants.
         const captureTargetDir = capturedSdkStartConfig.cwd;
         // Accept synchronous collectors and future asynchronous collectors, but
         // never cross startRun while a pre-turn capture is still in flight.
         const captureResult = await badcaseCapture.captureTurnCheckpoint({
           projectId: String(conversation.projectScopeId || conversation.projectId || '').trim(),
           targetDir: captureTargetDir,
+          // SDK-selected resources arrive after initialization, before prompt.
+          // Do not label cwd/default/contract directory guesses as loaded skills.
+          projectSkillPaths: [],
+          projectSkillsPending: true,
           conversationId,
           turnId,
           agentId: agent.id,
@@ -2401,7 +2406,7 @@ export function createAgentExecutor(options: any = {}) {
               // Full credential-free IPC descriptor, not just model/version.
               // This does NOT archive files referenced by these paths.
               sdkStartConfig: structuredClone(capturedSdkStartConfig),
-              portableRuntime: inspectPortableAgentConfig(capturedSdkStartConfig),
+              portableRuntime: inspectPortableAgentConfig(capturedSdkStartConfig, { archivedSkills: true }),
             },
             skillSnapshots: [
               ...buildCaptureSkillSnapshots(agentConfig.skillIds, resolvedPersonaSkills, new Set()),
@@ -2436,6 +2441,23 @@ export function createAgentExecutor(options: any = {}) {
           && JSON.stringify(resolveSdkStartConfig(provider, model, runOptions)) !== JSON.stringify(capturedSdkStartConfig)) {
           badcaseCheckpointId = '';
           console.error('[badcase-capture] sdk_start_config_changed');
+        }
+        if (badcaseCheckpointId && typeof badcaseCapture?.captureLoadedProjectSkills === 'function') {
+          runOptions.beforePrompt = async ({ skills }: any) => {
+            // Explicit project skills already resolved into CAFF's prompt may
+            // also come from .codex/skills, which is not SDK default discovery.
+            // Keep those resources too; retired local user-scope copies are
+            // still represented only by their existing harness text snapshots.
+            const promptSkills = [...resolvedPersonaSkills, ...resolvedConversationSkills]
+              .filter(skill => path.isAbsolute(String(skill.source || '')) && path.isAbsolute(String(skill.path || '')))
+              .map(skill => ({ name: skill.name || skill.id, filePath: path.join(skill.path, 'SKILL.md'), baseDir: skill.path }));
+            const loaded = Array.isArray(skills) ? [...new Map([...skills, ...promptSkills].map(skill => [skill.filePath, skill])).values()] : null;
+            const result = await badcaseCapture.captureLoadedProjectSkills({
+              projectId: String(conversation.projectScopeId || conversation.projectId || '').trim(),
+              checkpointId: badcaseCheckpointId, skills: loaded, sdkSkills: skills, promptSkills,
+            });
+            if (!result?.captured) console.error('[badcase-capture] project skills not saved:', result?.reason || 'project_skills_unavailable');
+          };
         }
         handle = startRun(provider, model, prompt, runOptions);
       } catch (startError) {
