@@ -74,6 +74,19 @@ test('recommendation is read-only until an explicit user confirmation, then bind
   assert.equal(h.root.querySelector('[data-dehydration-confirm]'), null); assert.equal(h.root.querySelector('[data-case-id="c1"]').closest('[data-actor]').dataset.actor, 'reference');
   assert.match(h.root.textContent, /已冻结：贯穿型.*只作参考/); assert.equal(h.calls.length, 0);
 });
+test('frozen user override shows planner provenance without replacing the original DeepSeek judgment', t => {
+  const h = setup(t);
+  h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), request: { state: { steps: [{ step: 1, body: 'reply' }] } },
+    recommendation: { schemaVersion: 2, kindSuggestion: 'throughout', cutStepSuggestion: 1, cutSource: 'marked_step_fallback', fallbackReason: 'not_single', evidenceVerified: false,
+      answers: { kind: '贯穿型', cutStep: '无', reason: '整段取向', evidence: '' } },
+    decision: { kind: 'single', level: 'run', cutStep: 1, hash: 'd'.repeat(64), confirmation: { source: 'user-via-planner', reference: '<script>message</script>' } } }];
+  h.panel.render(h.data);
+  const host = h.root.querySelector('[data-dehydration="c1"]');
+  assert.match(host.textContent, /DeepSeek 建议：贯穿型/); assert.match(host.textContent, /已冻结：单步型.*第 1 步/);
+  assert.match(host.textContent, /确认来源：用户经规划者转达/); assert.match(host.textContent, /用户改判/);
+  assert.match(host.textContent, /<script>message<\/script>/); assert.equal(host.querySelector('script'), null);
+  assert.equal(host.querySelector('[data-dehydration-confirm]'), null); assert.equal(h.calls.length, 0);
+});
 test('fallback output explains the exact failure and never presents missing answers as a model judgment', t => {
   const h = setup(t);
   h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), request: { state: { steps: [{ step: 1, body: 'reply' }] } },

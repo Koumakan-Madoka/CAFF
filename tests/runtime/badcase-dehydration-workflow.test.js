@@ -31,6 +31,28 @@ test('recommendation and immutable user decision bind case, trace and request; o
   assert.deepEqual(h.store.readCaseTrace(h.c.id), packet);
   assert.deepEqual(h.store.getDehydration(h.c.id).decision, d);
 });
+test('trusted user-via-planner confirmation preserves the original recommendation, hashes provenance and cannot rewrite it', t => {
+  const h = setup(t);
+  h.response.attempts[0].content = JSON.stringify({ kind: '贯穿型', cutStep: '无', reason: '贯穿整段过程', evidence: '' });
+  const r = h.save(), original = structuredClone(r);
+  const input = () => ({ caseId: h.c.id, traceHash: h.item().traceBundle.hash, recommendationHash: r.hash,
+    kind: 'single', cutStep: 1, expectedRevision: h.store.read().revision });
+  const provenance = { source: 'user-via-planner', reference: 'message-user-confirmation' };
+  // HTTP-shaped input cannot choose its own provenance.
+  assert.throws(() => h.store.confirmDehydration({ ...input(), confirmation: provenance }), e => e.code === 'wiki_invalid_input');
+  assert.throws(() => h.store.confirmDehydration(input(), { source: 'invented' }), e => e.code === 'wiki_invalid_input');
+  const d = h.store.confirmDehydration(input(), provenance);
+  assert.deepEqual(d.confirmation, provenance); assert.equal(d.confirmedBy, 'local-user');
+  assert.equal(d.kind, 'single'); assert.equal(d.level, 'run');
+  const { hash, ...value } = d;
+  assert.equal(hash, require('node:crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex'));
+  const { decision, ...saved } = h.store.getDehydration(h.c.id); assert.deepEqual(saved, original);
+  const revision = h.store.read().revision;
+  assert.deepEqual(h.store.confirmDehydration(input(), provenance), d);
+  assert.deepEqual(h.store.confirmDehydration(input()), d); // page retries do not relabel provenance
+  assert.throws(() => h.store.confirmDehydration(input(), { ...provenance, reference: 'different-message' }), e => e.code === 'wiki_dehydration_frozen');
+  assert.equal(h.store.read().revision, revision);
+});
 test('confirmation rejects stale revision, different trace/recommendation and non-null cuts for throughout/unclear', t => {
   const h = setup(t), r = h.save();
   for (const [extra, code] of [[{ expectedRevision: 0 }, 'wiki_revision_conflict'], [{ traceHash: 'f'.repeat(64) }, 'wiki_dehydration_stale'],

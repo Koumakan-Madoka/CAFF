@@ -368,8 +368,16 @@ export function createWikiStore(options: any) {
       if (!state.cases.some((c: any) => c.id === id(caseId))) throw fail('wiki_unknown_case');
       return (state.dehydrations || []).find((v: any) => v.caseId === caseId) || null;
     },
-    confirmDehydration(input: any) {
+    // Provenance is a trusted operator argument, not part of the HTTP body.
+    // A relayed user decision is equivalent to page confirmation, not an AI vote.
+    confirmDehydration(input: any, confirmation?: any) {
       shape(input, ['caseId', 'traceHash', 'recommendationHash', 'kind', 'cutStep', 'expectedRevision']);
+      if (confirmation !== undefined) {
+        shape(confirmation, ['source', 'reference']);
+        if (confirmation.source !== 'user-via-planner' || typeof confirmation.reference !== 'string') throw fail('wiki_invalid_input');
+        id(confirmation.reference);
+      }
+      const provenance = confirmation === undefined ? { source: 'badcase-page' } : structuredClone(confirmation);
       return change(state => {
         if (!Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
@@ -380,14 +388,16 @@ export function createWikiStore(options: any) {
         if (c.traceBundle?.hash !== input.traceHash || row.traceHash !== input.traceHash || row.hash !== input.recommendationHash) throw fail('wiki_dehydration_stale');
         if (!['single', 'throughout', 'unclear'].includes(input.kind)) throw fail('wiki_invalid_input');
         if (row.decision) {
-          if (row.decision.kind !== input.kind || row.decision.cutStep !== input.cutStep) throw fail('wiki_dehydration_frozen');
+          if (row.decision.kind !== input.kind || row.decision.cutStep !== input.cutStep
+            || confirmation !== undefined && (row.decision.confirmation?.source !== provenance.source
+              || row.decision.confirmation?.reference !== provenance.reference)) throw fail('wiki_dehydration_frozen');
           return { changed: false, value: row.decision };
         }
         if (input.kind === 'single') buildDehydrationPrefix(c, createWikiTraceStore(captureRoot).read(c.source, input.traceHash), input.cutStep);
         else if (input.cutStep !== null) throw fail('wiki_dehydration_cut_invalid');
         const value = { schemaVersion: 1, caseId: c.id, traceHash: input.traceHash, recommendationHash: row.hash,
           kind: input.kind, cutStep: input.cutStep, level: input.kind === 'single' ? 'run' : c.sealedCheckpointId ? 'trace' : 'reference',
-          confirmedBy: 'local-user', confirmedAt: new Date().toISOString() };
+          confirmedBy: 'local-user', confirmation: provenance, confirmedAt: new Date().toISOString() };
         row.decision = { ...value, hash: hash(JSON.stringify(value)) };
         appendEvent(state, { type: 'case-dehydration-confirmed', caseIds: [c.id], decisionHash: row.decision.hash, traceHash: input.traceHash });
         return { changed: true, value: row.decision };
