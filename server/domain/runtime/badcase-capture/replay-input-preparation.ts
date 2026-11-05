@@ -59,7 +59,16 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
   // a production DB capture hook or a grant to read public/private Room state.
   if (Object.hasOwn(input, 'callbackInput')) {
     try {
-      const callback = prepareCapturedCallbackInput(input);
+      let callback = prepareCapturedCallbackInput(input);
+      if (knownOnly) {
+        const content = safe(callback.content);
+        // Rehash only the archived bytes and revalidate JSON/schema/association.
+        // A literal replacement may break structured input; then omit this
+        // dimension rather than persisting either invalid bytes or the source.
+        callback = prepareCapturedCallbackInput({ ...input, callbackInput: {
+          trace: content.toString('utf8'), expectedTraceHash: hash(content),
+        } });
+      }
       replayInput.callbackInput = callback.reference;
       plans.push({ hash: callback.reference.blobHash, content: callback.content });
     } catch {

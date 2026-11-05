@@ -170,6 +170,24 @@ test('Git snapshot facade authorized source → CAS → restart keeps distinct t
     else assert.equal(cp.replayInput.sessionBlobHash, '');
     assert.ok(cp.integrity.knownLimitations.includes('no_atomic_snapshot'));
   }
+  // The v2 Git turn collector must sanitize its constructor-owned callback
+  // source before CAS publication, not merely its prompt/config metadata.
+  const known = 'fixture-host-known-source-value-12345';
+  h.store.updateMessage('old', { content: 'Earlier ' + known });
+  const rawCallback = h.capture(), expectedTrace = rawCallback.trace.replaceAll(known, '[*]');
+  const rawHash = rawCallback.expectedTraceHash, expectedHash = crypto.createHash('sha256').update(expectedTrace).digest('hex');
+  const safeService = createBadcaseCaptureService({ captureRoot, chatStore: h.store, getKnownKeyValues: () => [known] });
+  for (const mode of ['fresh', 'resume']) {
+    const result = await safeService.captureTurnCheckpoint(value(mode)); assert.equal(result.captured, true, result.reason);
+    const reopened = createBadcaseCaptureService({ captureRoot }), cp = reopened.store.loadCheckpoint('p1', result.checkpointId);
+    assert.equal(cp.replayInput.callbackInput.blobHash, expectedHash);
+    const bytes = reopened.store.readBlob('p1', expectedHash);
+    assert.equal(bytes.includes(known), false); assert.equal(bytes.toString(), expectedTrace);
+    assert.equal(bytes.length, Buffer.byteLength(expectedTrace)); assert.equal(reopened.store.hasBlob('p1', rawHash), false);
+    assert.equal(cp.stats.newBlobBytes, mode === 'fresh' ? bytes.length : 0, 'account only redacted bytes, deduplicating the second callback');
+    assert.equal(readCapturedCallbackInput(cp, h => reopened.store.readBlob('p1', h)).trace, expectedTrace);
+    assert.equal(h.capture().trace, rawCallback.trace, 'source Room state remains unchanged');
+  }
   const noSource = createBadcaseCaptureService({ captureRoot });
   const supplied = { ...value('fresh'), callbackInput: h.capture() };
   const noSourceResult = await noSource.captureTurnCheckpoint(supplied);
