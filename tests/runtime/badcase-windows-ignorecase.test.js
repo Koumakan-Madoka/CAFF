@@ -148,11 +148,12 @@ test('bounded ASCII wildcard, negation, directory and nested rules match real Gi
   }
 });
 
-test('native NTFS case-only rename: Git oracle, service fresh/resume publication and two restores (fixture only)',
+test('legacy native NTFS case-only rename: Git oracle, fresh/resume publication and two restores (fixture only)',
   { skip: process.platform !== 'win32' }, async t => {
   require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
   const os = require('node:os'), { execFileSync } = require('node:child_process');
-  const { createBadcaseCaptureService } = require(base), { createCaptureStore } = require(base + 'capture-store');
+  const { createLegacyNativeCaptureService: createBadcaseCaptureService } = require('../helpers/legacy-native-capture');
+  const { createCaptureStore } = require(base + 'capture-store');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-ignorecase-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const work = path.join(root, 'work'), sessions = path.join(root, 'sessions'), captureRoot = path.join(root, 'capture');
   fs.mkdirSync(work); fs.mkdirSync(sessions);

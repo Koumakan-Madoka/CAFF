@@ -223,7 +223,7 @@ test('external read chain stops at every failure/late result and bounds aggregat
   assert.equal((await h.run()).reason, 'git_external_input_limit'); assert.ok(!h.ops.includes('selectedSnapshot'));
 });
 
-test('native linked-worktree classifies independently pinned external inputs, restores twice, refuses changed binding', {
+test('legacy offline linked-worktree classifies independently pinned external inputs, restores twice, refuses changed binding', {
   skip: process.platform !== 'win32' ? 'real Windows NTFS required' : false,
 }, async t => {
   require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
@@ -240,7 +240,7 @@ test('native linked-worktree classifies independently pinned external inputs, re
   const externalGit = { metadataRoot: path.join(main, '.git', 'worktrees', 'work'), commonRoot: path.join(main, '.git') };
   fs.mkdirSync(path.join(externalGit.commonRoot, 'info'), { recursive: true }); fs.writeFileSync(path.join(externalGit.commonRoot, 'info/exclude'), '*.tmp\r\n');
   fs.writeFileSync(path.join(work, 'private.tmp'), 'exclude');
-  const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
+  const { createLegacyNativeCaptureService: createBadcaseCaptureService } = require('../helpers/legacy-native-capture');
   const service = createBadcaseCaptureService({ captureRoot });
   service.savePolicy('p', { authorizedDirs: [work], authorizedInputDirs: Object.values(externalGit), excludedPatterns: [], includedIgnoredPatterns: ['included.log'] });
   service.authorizeProject('p');
@@ -270,8 +270,8 @@ test('native linked-worktree classifies independently pinned external inputs, re
     safeBlobBytes: [...r.blobs.values()].reduce((n, b) => n + b.length, 0), classification: r.classification,
     complete: r.complete, strictEvalEligible: r.strictEvalEligible, captureAvailable: r.captureAvailable }));
   assert.equal(service.loadPolicy('p').status, 'disabled'); assert.equal(service.store.listCheckpoints('p').length, 1, 'only the explicit test writer persisted a fixture');
-  // Real service selection (not collector injection), real async publication,
-  // only a self-built fixture with test-only enabled status. Management remains closed.
+  // Explicit retained native v1 collector, real async publication/restore.
+  // Not evidence that the new turn facade still selects external native inputs.
   const serviceRoot = path.join(base, 'service-storage'), sessions = path.join(base, 'sessions'); fs.mkdirSync(sessions);
   const selectedService = createBadcaseCaptureService({ captureRoot: serviceRoot });
   selectedService.savePolicy('p', { authorizedDirs: [work], authorizedInputDirs: [...Object.values(externalGit), sessions],

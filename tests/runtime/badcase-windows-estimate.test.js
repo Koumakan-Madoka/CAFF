@@ -193,7 +193,7 @@ test('native preview keeps startup sandbox/private aliases excluded after ambien
   }
 });
 
-test('Windows facade latches one trusted scope for collector and both previews; Linux does not consume Windows-only scope', async t => {
+test('legacy Windows previews latch scope; new Git turns and Linux do not consume Windows-only private scope', async t => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-winpreview-scope-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const filename = path.resolve(__dirname, '../../build/server/domain/runtime/badcase-capture/index.js');
@@ -207,11 +207,12 @@ test('Windows facade latches one trusted scope for collector and both previews; 
     return api;
   };
   const seen = [];
-  let release;
+  let release, gitCollectorOptions;
   const env = { PI_AGENT_SANDBOX_DIR: 'C:/host-sandbox', PI_AGENT_PRIVATE_DIR: 'C:/host-private' };
   const api = load('win32', {
-    './windows-turn-collector': { createWindowsTurnCollector: opts => {
-      seen.push(['collector', opts]); return { captureTurnCheckpoint: () => ({ captured: false }) };
+    './windows-turn-collector': { createWindowsTurnCollector: () => assert.fail('new turns must not construct the retired collector') },
+    './git-turn-collector': { createGitTurnCollector: opts => {
+      gitCollectorOptions = opts; return { captureTurnCheckpoint: () => ({ captured: false }) };
     } },
     './windows-estimate': { estimateWindowsDirectory: opts => { seen.push(['sync', opts]); return { ok: true }; },
       estimateWindowsDirectoryAsync: () => assert.fail('service must not fall back to raw capacity') },
@@ -228,13 +229,15 @@ test('Windows facade latches one trusted scope for collector and both previews; 
   const pending = service.estimateDirectoryAsync('p', 'C:/work');
   privateDirs.push('C:/later'); options.agentDir = 'C:/later';
   release(); assert.equal((await pending).ok, true);
-  assert.deepEqual(seen.map(([name]) => name), ['collector', 'discovery', 'sync', 'async']);
+  assert.deepEqual(seen.map(([name]) => name), ['discovery', 'sync', 'async']);
+  assert.equal(gitCollectorOptions.agentDir, 'C:/app');
+  assert.equal(gitCollectorOptions.privateDirs, undefined, 'v2 has no native pin/private-scope protocol');
   for (const [, scope] of seen) {
     assert.deepEqual(Array.from(scope.privateDirs || []), ['C:/private', 'C:/host-sandbox', 'C:/host-private']);
     assert.equal(scope.agentDir, 'C:/app');
   }
   assert.notEqual(seen[0][1].privateDirs, privateDirs, 'scope must not borrow caller array');
-  assert.equal(seen[0][1].checkEnvironment, undefined, 'collector must not depend on process-wide Git configuration');
+  assert.equal(gitCollectorOptions.checkEnvironment, undefined, 'collector must not depend on process-wide Git configuration');
   env.GIT_INDEX_FILE = 'C:/another-index';
   const next = service.estimateDirectoryAsync('p', 'C:/work'); release(); assert.equal((await next).ok, true);
   assert.equal(env.GIT_INDEX_FILE, 'C:/another-index', 'capture cannot rewrite agent Git selectors');

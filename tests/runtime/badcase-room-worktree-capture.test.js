@@ -1,9 +1,10 @@
-// Native Windows regression: project consent is inherited only by the actual
-// bound Room cwd. All repositories, policy and external metadata are disposable.
+// Retained OFFLINE native Windows v1 regressions, not new turn behavior.
+// The new facade's common-dir/v2 coverage is in badcase-git-snapshot.test.js.
+// All repositories, policy and external metadata below are disposable.
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
+const { createLegacyNativeCaptureService: createBadcaseCaptureService } = require('../helpers/legacy-native-capture');
 const { createWindowsCaptureEnvironment } = require('../../build/server/domain/runtime/badcase-capture/windows-git-environment');
 const native = { skip: process.platform !== 'win32' };
 function fixture(t) {

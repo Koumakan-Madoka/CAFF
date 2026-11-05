@@ -187,7 +187,7 @@ test('CLI requires exact rules, confirmation and stopped-writer declaration', t 
 test('Linux collector: aged unmarked retires, retained and latest remain restorable after separate GC', { skip: process.platform !== 'linux', timeout: 30000 }, t => {
   const h = setup(t), source = path.join(h.root, 'source'); fs.mkdirSync(source);
   require('node:child_process').execFileSync('git', ['init', '-q', source]);
-  const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture/index');
+  const { createLegacyNativeCaptureService: createBadcaseCaptureService } = require('../helpers/legacy-native-capture');
   const { restoreCheckpoint } = require('../../build/server/domain/runtime/badcase-capture/restore');
   const service = createBadcaseCaptureService({ captureRoot: path.join(h.root, 'actual-cas') });
   service.savePolicy('p1', { status: 'enabled', authorizedDirs: [source] }); service.authorizeProject('p1');

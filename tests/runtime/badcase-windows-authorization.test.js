@@ -11,6 +11,8 @@ const { isolateWindowsCaptureEnvironment } = require('../helpers/windows-capture
 function temp(t) {
   isolateWindowsCaptureEnvironment(t);
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-winauth-'));
+  // The new facade must not discover an unrelated ancestor repo for a plain fixture.
+  process.env.GIT_CEILING_DIRECTORIES = base;
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const root = path.join(base, 'worktree'), inputs = path.join(base, 'inputs'), captureRoot = path.join(base, 'storage');
   fs.mkdirSync(root); fs.mkdirSync(inputs);
@@ -47,7 +49,7 @@ test('Windows explicit authorization persists exact native pins across service r
   assert.equal(preview.captureAvailable, false, 'collector remains closed');
   restarted.savePolicy('p', { ...policy, status: 'enabled' });
   const capture = await restarted.captureTurnCheckpoint({ projectId: 'p', targetDir: root, deliveryMode: 'fresh' });
-  assert.equal(capture.captured, false); assert.equal(capture.reason, 'git_metadata_unsupported');
+  assert.equal(capture.captured, false); assert.equal(capture.reason, 'not_git_repository', 'new facade uses Git, not the retired native classifier');
   assert.equal(restarted.store.listCheckpoints('p').length, 0, 'unclassified empty directory is not captured');
 });
 

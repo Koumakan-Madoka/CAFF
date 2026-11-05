@@ -20,7 +20,7 @@ function fixture(t, options = {}) {
   const service = createBadcaseCaptureService({ captureRoot: path.join(temp, 'capture'), agentDir: path.join(temp, 'agent'),
     getProject: id => id === 'p' ? project : null, ...options });
   const enable = () => service.store.savePolicy({ projectId: 'p', status: 'enabled', authorizedDirs: [root] });
-  const room = id => { const dir = path.join(temp, id); git(root, 'worktree', 'add', '-qb', 'room/' + id, dir); return dir; };
+  const room = (id, relative = id) => { const dir = path.join(temp, relative); git(root, 'worktree', 'add', '-qb', 'room/' + id, dir); return dir; };
   const capture = (targetDir = root, extra = {}) => service.captureTurnCheckpoint({ projectId: 'p', targetDir, conversationId: 'room', turnId: 'turn', agentId: 'agent',
     deliveryMode: 'fresh', prompt: 'question', runConfig: { provider: 'test', model: 'test', promptVersion: 'test' }, ...extra });
   return { temp, root, project, service, git, enable, room, capture };
@@ -39,6 +39,13 @@ test('project root, existing and new worktrees share one switch without native a
   }
   h.service.savePolicy('p', { ...saved, status: 'disabled' });
   for (const cwd of [h.root, old]) assert.equal((await h.capture(cwd)).reason, 'policy_not_enabled');
+});
+
+test('new coverage is common-dir based even for a DAG-style worktree with no Room binding record', async t => {
+  const h = fixture(t), cwd = h.room('dag-node', 'repo/.worktrees/dag/plan/node'); h.enable();
+  const result = await h.capture(cwd); assert.equal(result.captured, true, result.reason);
+  assert.equal(result.checkpoint.gitSnapshot.commonDir, path.join(h.root, '.git'));
+  assert.equal(result.checkpoint.schemaVersion, 2);
 });
 
 test('unrelated repositories, non-Git paths and root subdirectories never publish snapshots', async t => {
@@ -195,6 +202,31 @@ test('status storage errors do not discard a published room checkpoint or expose
   assert.ok(h.service.store.loadCheckpoint('p', result.checkpointId));
   assert.equal(h.service.latestCaptureMetrics('p'), null);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE_STATUS_WRITE_FAILURE/);
+});
+
+test('snapshot Git honors normal user ignore rules but cannot be redirected by inherited repository variables', async t => {
+  const h = fixture(t, { getKnownKeyValues: () => [] }); h.enable();
+  const other = path.join(h.temp, 'other'); h.git(h.temp, 'clone', '-q', '--no-local', h.root, other);
+  const ignore = path.join(h.temp, 'global-ignore'), config = path.join(h.temp, 'global-config');
+  fs.writeFileSync(ignore, 'global-only.txt\n');
+  fs.writeFileSync(config, '[core]\nexcludesFile = ' + ignore.replaceAll('\\', '/') + '\n');
+  fs.writeFileSync(path.join(h.root, 'global-only.txt'), 'ignored by Git'); fs.writeFileSync(path.join(h.root, 'ordinary.txt'), 'ordinary');
+  const index = fs.readFileSync(path.join(h.root, '.git', 'index'));
+  const updates = { GIT_DIR: path.join(other, '.git'), GIT_COMMON_DIR: path.join(other, '.git'), GIT_WORK_TREE: other,
+    GIT_INDEX_FILE: path.join(h.temp, 'absent-index'), GIT_CONFIG_GLOBAL: config, GIT_CONFIG_NOSYSTEM: '1' };
+  const previous = Object.fromEntries(Object.keys(updates).map(k => [k, process.env[k]]));
+  Object.assign(process.env, updates);
+  try {
+    const before = JSON.stringify(process.env), result = await h.capture(); assert.equal(result.captured, true, result.reason);
+    assert.deepEqual(Object.keys(result.checkpoint.files), ['ordinary.txt']);
+    assert.equal(result.checkpoint.gitSnapshot.sourceRepository, h.root);
+    assert.equal(JSON.stringify(process.env), before, 'only Git child environments change');
+    assert.deepEqual(fs.readFileSync(path.join(h.root, '.git', 'index')), index);
+    assert.equal(fs.existsSync(updates.GIT_INDEX_FILE), false);
+    assert.equal(fs.readFileSync(ignore, 'utf8'), 'global-only.txt\n');
+  } finally {
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
 });
 
 test('detached HEAD works; repositories with no readable HEAD fail without blocking callers', async t => {
