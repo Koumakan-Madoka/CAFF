@@ -8,13 +8,13 @@ import { createReplayRunReferenceStore } from './run-references';
 import { inspectRetainedReplayInputs } from './replay-input-preflight';
 import { readSealedCase, validateSealRequest } from './sealed-case';
 import { containsSecretSentinel } from './secrets';
+import { isSafeRelativePath } from './replay-path';
 import { withProjectWriteLock } from './project-write-lock';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (b: string | Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 const LIMIT = 4 * 1024 * 1024; // Encoded capsule budget; reserve space for separately trusted SDK files.
 function relative(v: any): boolean {
-  return typeof v === 'string' && v.length <= 1000 && /^[A-Za-z0-9_.\-/]+$/.test(v)
-    && v.split('/').every((p: string) => p && p !== '.' && p !== '..' && p.length <= 255);
+  return isSafeRelativePath(v) && v.length <= 1000 && v.split('/').every(p => p.length <= 255);
 }
 export function prepareRetainedInitializationCapsule(input: any) {
   if (!input || typeof input !== 'object' || Array.isArray(input)

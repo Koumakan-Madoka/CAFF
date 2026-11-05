@@ -77,6 +77,51 @@ test('Windows response parser preserves binary bodies, empty files and 64-bit st
   invalid(parse(wire({ version: 1, ok: true, identity }), query));
 });
 
+test('enumerated invalid-name gaps use a separate bounded schema and never widen content selectors', () => {
+  const { request, header } = fixture();
+  const names = ['NUL', 'nul.txt', 'sub/tail.', 'sub/tail ', 'x<', 'x>', 'x:', 'x"', 'x|', 'x?', 'x*'].sort();
+  header.uncaptured = names.map(path => ({ path, reason: 'windows_reserved_or_invalid_name' }));
+  const result = parse(wire(header), request);
+  assert.equal(result.ok, true, result.reason);
+  assert.deepEqual(result.uncaptured, header.uncaptured);
+  assert.deepEqual(result.files.map(f => f.path), request.paths);
+  for (const name of names) assert.equal(encode({ ...request, paths: [name] }), null);
+  for (const change of [
+    h => { h.uncaptured = null; }, h => { h.uncaptured[0].reason = 'other'; },
+    h => { h.uncaptured[0].extra = 'untrusted'; }, h => { h.uncaptured[0].size = '1'; },
+    ...['safe', '../escape', 'a/../NUL', 'absent/NUL', 'sub/a/NUL', 'C:/NUL', '/NUL', 'x\\NUL', '.', '..', '\u0000'].map(path => h => { h.uncaptured[0].path = path; }),
+    h => { h.uncaptured.push(h.uncaptured[0]); }, h => { h.uncaptured.reverse(); },
+    h => { h.uncaptured = Array(limits.entries + 1).fill(h.uncaptured[0]); },
+  ]) {
+    const h = structuredClone(header); change(h); invalid(parse(wire(h), request));
+  }
+  assert.equal(parse(wire(fixture().header), request).uncaptured.length, 0);
+});
+
+test('reparse gaps are bounded non-selectors with valid canonical names, separate from invalid-name gaps', () => {
+  const { request, header } = fixture();
+  header.uncaptured = [
+    { path: 'NUL', reason: 'windows_reserved_or_invalid_name' },
+    { path: 'junction', reason: 'reparse_point_skipped' },
+    { path: 'sub/link', reason: 'reparse_point_skipped' },
+  ];
+  const result = parse(wire(header), request);
+  assert.equal(result.ok, true, result.reason); assert.deepEqual(result.uncaptured, header.uncaptured);
+  assert.deepEqual(result.files.map(f => f.path), request.paths);
+  for (const change of [
+    h => { h.uncaptured[0].reason = 'reparse_point_skipped'; },
+    h => { h.uncaptured[1].reason = 'windows_reserved_or_invalid_name'; },
+    ...['../escape', 'sub/../link', 'absent/link', 'sub/a/link', 'sub/a', 'C:/link', '/link', 'x\\link', '.', '..', 'bad.', 'NUL'].map(path => h => { h.uncaptured[1].path = path; }),
+    h => { h.uncaptured[1].extra = 'untrusted'; }, h => { h.uncaptured[1].reason = 'other'; },
+    h => { h.uncaptured.push(h.uncaptured[1]); }, h => { h.uncaptured.reverse(); },
+    h => { h.uncaptured = Array(limits.entries + 1).fill(h.uncaptured[1]); },
+    h => { h.files[0].path = 'junction'; }, h => { h.entries[0].path = 'junction/child'; },
+  ]) {
+    const h = structuredClone(header); change(h); invalid(parse(wire(h), request));
+  }
+  invalid(parse(wire(header), { ...request, paths: ['junction'] }));
+});
+
 test('Windows response parser refuses corrupt framing without partial file exposure', () => {
   const { request, header } = fixture();
   for (const body of [content.subarray(0, 4), Buffer.concat([content, Buffer.from('x')]), Buffer.from('wrong')]) {
@@ -186,6 +231,39 @@ test('Windows process boundary verifies source, sends pins only on stdin and dis
     .invokeWindowsHelper('python', 'helper', request).reason, 'helper_integrity_failed');
   assert.equal(isolatedTransport({ platform: 'linux', child, disk: { statSync() { throw new Error('must not touch'); } } })
     .invokeWindowsHelper('python', 'helper', request).reason, 'windows_required');
+});
+
+test('current helper installation is exclusive, verified after write and never overwrites existing content', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-helper-upgrade-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const request = { version: 1, op: 'identity', root: 'C:/authorized' };
+  for (const scenario of ['new', 'race-valid', 'race-corrupt', 'write-corrupt', 'existing-corrupt', 'wrong-name']) {
+    const dir = path.join(root, scenario, 'windows-authorization-helper'); fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `windows_read.${scenario === 'wrong-name' ? '0'.repeat(64) : WINDOWS_HELPER_SOURCE_SHA256}.py`);
+    if (scenario === 'existing-corrupt') fs.writeFileSync(file, 'do not repair');
+    let writes = 0, spawns = 0;
+    const api = isolatedTransport({ disk: { ...fs, writeFileSync(target, bytes, options) {
+      writes++; assert.equal(target, file); assert.equal(options.flag, 'wx');
+      assert.equal(bytes, WINDOWS_HELPER_SOURCE);
+      if (scenario.startsWith('race-')) {
+        fs.writeFileSync(target, scenario === 'race-valid' ? bytes : 'incomplete concurrent write', { flag: 'wx' });
+        throw Object.assign(Error('race'), { code: 'EEXIST' });
+      }
+      fs.writeFileSync(target, scenario === 'write-corrupt' ? 'bad write' : bytes, options);
+    } }, child: { spawnSync() { spawns++; return { status: 0,
+      stdout: wire({ version: 1, ok: true, identity }, Buffer.alloc(0)), stderr: Buffer.alloc(0) }; } } });
+    const good = ['new', 'race-valid'].includes(scenario);
+    assert.equal(api.invokeWindowsHelper('python', file, request).ok, good, scenario);
+    assert.equal(writes, ['existing-corrupt', 'wrong-name'].includes(scenario) ? 0 : 1);
+    assert.equal(spawns, good ? 1 : 0, 'corrupt/misaddressed helper must never run');
+    if (good) {
+      const mtime = fs.statSync(file).mtimeMs;
+      assert.equal(api.invokeWindowsHelper('python', file, request).ok, true);
+      assert.equal(writes, 1); assert.equal(fs.statSync(file).mtimeMs, mtime);
+    }
+    if (scenario === 'existing-corrupt') assert.equal(fs.readFileSync(file, 'utf8'), 'do not repair');
+    if (scenario === 'wrong-name') assert.equal(fs.existsSync(file), false);
+  }
 });
 
 test('Windows identity operations have a separate bounded management timeout', () => {

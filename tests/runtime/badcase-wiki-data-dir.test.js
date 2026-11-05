@@ -12,41 +12,43 @@ function layout(t, configured = true) {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cleanup = [];
   t.after(async () => { for (const fn of cleanup) await fn(); for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } fs.rmSync(root, { recursive: true, force: true }); });
-  return { root, sourceWorktree, agentDir, dataDir, cleanup, scope: { globalRoot: path.join(agentDir, 'badcase-global'), sourceWorktree } };
+  return { root, sourceWorktree, agentDir, dataDir, cleanup, defaults: { agentDir, sourceWorktree }, scope: { globalRoot: path.join(agentDir, 'badcase-global'), sourceWorktree } };
 }
 test('external data directory is shared by wiki snapshots and every progress store', t => {
   const h = layout(t), { createWikiStore } = require(base + 'wiki-store');
-  const store = createWikiStore(h.scope); assert.equal(store.read().revision, 0);
+  const store = createWikiStore(h.defaults); assert.equal(store.read().revision, 0);
   store.addTextCases([{ source: { origin: 'http://127.0.0.1:3100', projectId: 'p', conversationId: 'c', messageId: 'm', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'unclear', expected: 'clear', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }]);
   assert.equal(fs.existsSync(path.join(h.dataDir, 'badcase-global/snapshots/000000000001.json')), true);
   assert.equal(fs.existsSync(h.scope.globalRoot), false);
-  const progress = require(base + 'wiki-execution-store').createWikiExecutionStore(h.scope);
+  const progress = require(base + 'wiki-execution-store').createWikiExecutionStore(h.defaults);
   const p = { kind: 'sealed-original-replay-v1', model: 'deepseek/deepseek-v4-flash', repeats: 1, variants: ['original'], caseId: 'case-fixture', checkpointId: 'cp1', checkpointHash: 'a'.repeat(64), rulesHash: 'b'.repeat(64) };
   const r = progress.start(p); progress.fail(r.id, 'evaluation_failed');
   assert.equal(fs.existsSync(path.join(h.dataDir, 'badcase-global/executions', r.id + '.json')), true);
-  assert.deepEqual(require(base + 'wiki-comparison-store').createWikiComparisonStore(h.scope).read(), []);
-  assert.deepEqual(require(base + 'wiki-batch-execution-store').createWikiBatchExecutionStore(h.scope).read(), []);
+  assert.deepEqual(require(base + 'wiki-comparison-store').createWikiComparisonStore(h.defaults).read(), []);
+  assert.deepEqual(require(base + 'wiki-batch-execution-store').createWikiBatchExecutionStore(h.defaults).read(), []);
 });
-test('evaluation command publishes into the configured wiki directory, not its legacy JSON globalRoot', async t => {
+test('evaluation command respects its explicit JSON globalRoot despite configured defaults', async t => {
   const h = layout(t), file = path.join(h.root, 'evaluation.json'), output = path.join(h.root, 'evidence.jsonl');
-  fs.writeFileSync(file, JSON.stringify({ ...h.scope, comparison: {} }));
+  const globalRoot = path.join(h.root, 'explicit-global');
+  fs.writeFileSync(file, JSON.stringify({ ...h.scope, globalRoot, comparison: {} }));
   const summary = { kind: 'sealed-original-replay-v1', model: 'deepseek/deepseek-v4-flash', repeats: 1, variants: ['original'], caseId: 'case-fixture', checkpointId: 'cp1', checkpointHash: 'a'.repeat(64), rulesHash: 'b'.repeat(64) };
   const main = require('../../scripts/badcase-capture/run-wiki-evaluation.cjs').main;
   const deps = { prepare: () => ({ supported: true, summary }), print: () => {}, run: async () => { throw Object.assign(Error('synthetic'), { code: 'evaluation_failed' }); } };
   const plan = await main(['--config', file, '--plan'], deps);
   await assert.rejects(main(['--config', file, '--run', '--confirmed', '--expected-plan', plan.planHash, '--output', output], deps), /evaluation_failed/);
-  assert.equal(fs.readdirSync(path.join(h.dataDir, 'badcase-global/executions')).length, 1);
+  assert.equal(fs.readdirSync(path.join(globalRoot, 'executions')).length, 1);
+  assert.equal(fs.existsSync(h.dataDir), false);
   assert.equal(fs.existsSync(h.scope.globalRoot), false);
 });
 test('configured data directory inside a source still fails the existing boundary', t => {
   const h = layout(t); process.env.CAFF_WIKISKILL_DATA_DIR = path.join(h.sourceWorktree, 'wiki-data');
-  assert.throws(() => require(base + 'wiki-store').createWikiStore(h.scope), /wiki_storage_inside_source/);
+  assert.throws(() => require(base + 'wiki-store').createWikiStore(h.defaults), /wiki_storage_inside_source/);
 });
 test('configured directory must be absolute; invalid values never fall back to agentDir', t => {
   const h = layout(t);
   for (const value of ['relative/wiki', '', 'bad\0path']) {
     process.env.CAFF_WIKISKILL_DATA_DIR = value;
-    assert.throws(() => require(base + 'wiki-store').createWikiStore({ ...h.scope, globalRoot: path.join(h.root, 'legacy') }), /wiki_data_dir_invalid/);
+    assert.throws(() => require(base + 'wiki-store').createWikiStore(h.defaults), /wiki_data_dir_invalid/);
   }
 });
 test('real API and marked-case writes use external wiki data while capture stays in the instance agentDir', async t => {

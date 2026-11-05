@@ -1,6 +1,7 @@
 // CONTAINER ONLY. Export a fixed trusted runtime subset, never the project's
 // arbitrary npm tree. Native SQLite is opened/queried/closed here, not on host.
 const fs = require('node:fs'), crypto = require('node:crypto'), assert = require('node:assert/strict');
+const { isSafeRelativePath } = require('./replay-path.cjs');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function main() {
   const { image } = require('/work/caff-runtime-bootstrap.cjs').verifyCaffRuntimeStage({ replayWorkspace: true });
@@ -10,7 +11,7 @@ function main() {
   const inventory = JSON.parse(fs.readFileSync('/work/runtime-dependency-inventory.json'));
   let total = 0;
   const files = inventory.dependencies.map(name => {
-    assert.ok(typeof name === 'string' && name.startsWith('node_modules/') && /^[A-Za-z0-9_.@/-]+$/.test(name)
+    assert.ok(isSafeRelativePath(name, { allowNodeModules: true }) && name.startsWith('node_modules/')
       && name.split('/').every(part => part && part !== '.' && part !== '..'));
     let current = '/work/restored';
     for (const part of name.split('/').slice(0, -1)) { current += '/' + part; const st = fs.lstatSync(current); assert.ok(st.isDirectory() && !st.isSymbolicLink()); }

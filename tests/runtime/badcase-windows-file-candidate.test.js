@@ -165,14 +165,17 @@ test('Windows native bounded candidate to real CAS and two restores; incremental
     strictEvalEligible: false, notTurnCapture: true }));
 });
 
-test('Windows native candidate rejects unpinned/switch root, replacement, junction and tampered installed helper', native, t => {
+test('Windows native candidate rejects unpinned/switch root, replacement and tampering; junction is a non-followed gap', native, t => {
   const { base, root, captureRoot, service, options } = setup(t);
   assert.equal(readWindowsFileCandidate({ ...options(), targetDir: path.join(root, 'nested') }).ok, false);
   assert.equal(readWindowsFileCandidate({ ...options(), policy: { ...service.loadPolicy('p'), authorizedDirPins: {} } }).ok, false);
   const outside = path.join(base, 'outside'); fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'x'), 'OUTSIDE_SENTINEL');
   const link = path.join(root, 'alias'); fs.symlinkSync(outside, link, 'junction');
-  try { assert.equal(readWindowsFileCandidate(options()).ok, false); }
-  finally { fs.rmdirSync(link); }
+  try {
+    const partial = readWindowsFileCandidate(options()); assert.equal(partial.ok, true, partial.reason);
+    assert.deepEqual(partial.uncaptured, [{ path: 'alias', reason: 'reparse_point_skipped' }]);
+    assert.equal(partial.files.alias, undefined); assert.equal(partial.blobs.has(hash('OUTSIDE_SENTINEL')), false);
+  } finally { fs.rmdirSync(link); }
   fs.renameSync(root, path.join(base, 'old')); fs.mkdirSync(root);
   assert.equal(readWindowsFileCandidate(options()).reason, 'root_identity_mismatch');
   service.authorizeProject('p');

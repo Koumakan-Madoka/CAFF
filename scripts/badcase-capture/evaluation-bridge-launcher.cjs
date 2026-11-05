@@ -24,6 +24,7 @@ function bridgeReceipt(m, image) {
 const entry = `
 const fs=require('node:fs'),crypto=require('node:crypto');
 const hash=b=>crypto.createHash('sha256').update(b).digest('hex');
+const {isSafeDistributionPath}=require('./replay-path.cjs');
 (async()=>{
  if(process.platform!=='linux'||process.getuid?.()!==65534||process.cwd()!=='/work'||!fs.existsSync('/.dockerenv')
    ||Object.keys(process.env).some(k=>/^(CAFF_|PI_|OPENAI_|ANTHROPIC_|AWS_|NODE_OPTIONS$|NODE_PATH$|LD_PRELOAD$|LD_LIBRARY_PATH$)/.test(k)))throw Error();
@@ -32,7 +33,7 @@ const hash=b=>crypto.createHash('sha256').update(b).digest('hex');
    ||process.version!==image.nodeVersion||process.arch!==(image.architecture==='amd64'?'x64':'arm64'))throw Error();
  let total=0;const names=new Set();
  for(const f of m.files){
-  if(typeof f.path!=='string'||!/^[A-Za-z0-9_.@/-]+$/.test(f.path)||f.path.split('/').some(p=>!p||p==='.'||p==='..')||names.has(f.path))throw Error();
+  if(!isSafeDistributionPath(f.path)||names.has(f.path))throw Error();
   names.add(f.path);const st=fs.lstatSync('/work/'+f.path);total+=st.size;
   if(total>16777216||!st.isFile()||st.isSymbolicLink()||st.size!==f.size||hash(fs.readFileSync('/work/'+f.path))!==f.sha256)throw Error();
  }
@@ -86,6 +87,7 @@ function prepareBridgeFiles(repoRoot, dependencyRoot, image) {
       files.push({ path: destination, bytes });
     };
     for (const name of inventory.build) copy(repo, name);
+    copy(repo, 'build/server/domain/runtime/badcase-capture/replay-path.js', 'replay-path.cjs');
     for (const name of inventory.dependencies) copy(deps, name);
     for (const [name, expected] of Object.entries(inventory.packages)) {
       const p = JSON.parse(files.find(f => f.path === name).bytes);

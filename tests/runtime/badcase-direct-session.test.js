@@ -75,6 +75,35 @@ test('Windows path prose remains frozen context rather than an unsupported curre
   assert.ok(JSON.parse(result.sessionText.split('\n')[1]).message.content.includes(root + '\\outside-file'));
 });
 
+test('recorded skill roots bind POSIX/Windows prompt and history prose, not sibling prefixes or historical tools', () => {
+  for (const skillRoot of ['/project/.agents/skills/demo', 'E:\\project\\.agents\\skills\\demo']) {
+    const root = '/old/root', child = skillRoot + (skillRoot.startsWith('/') ? '/' : '\\') + 'references' + (skillRoot.startsWith('/') ? '/' : '\\') + 'guide.md';
+    const entries = session(root).trimEnd().split('\n').map(JSON.parse);
+    entries[1].message.content = 'Earlier {{CAFF_CHAT_API_URL}} ' + child;
+    entries[2].message.content[1].arguments.path = child;
+    const text = entries.map(JSON.stringify).join('\r\n') + '\r\n';
+    const bindings = { sourceRoot: root, controlledReplacements: [{ name: names[0], count: 1 }, { name: 'PI_AGENT_PRIVATE_DIR', count: 1 }],
+      projectSkills: [{ sourcePath: skillRoot, relativePath: '.caff-replay-skills/mirror/demo' }] };
+    const result = direct.bindDirectInputs('Read ' + child + ' and ' + skillRoot + '-sibling', text, bindings, values);
+    assert.equal(result.prompt, 'Read /work/restored/.caff-replay-skills/mirror/demo/references/guide.md and ' + skillRoot + '-sibling');
+    const mapped = result.sessionText.trimEnd().split('\n').map(JSON.parse);
+    assert.equal(mapped[1].message.content, 'Earlier isolated-CAFF_CHAT_API_URL /work/restored/.caff-replay-skills/mirror/demo/references/guide.md');
+    assert.deepEqual(mapped[2].message.content[1], entries[2].message.content[1]);
+    assert.equal(result.sessionText.includes('\r\n'), true);
+    for (const bad of [{ sourcePath: 'relative', relativePath: '.caff-replay-skills/x' }, { sourcePath: skillRoot, relativePath: '../outside' },
+      { sourcePath: skillRoot, relativePath: '.caff-replay-skills/../../outside' }]) {
+      assert.throws(() => direct.validateDirectBindings('task', { ...bindings, projectSkills: [bad] }), /bindings_unsupported/);
+    }
+  }
+});
+
+test('in-cwd captured skill bindings normalize Windows children before the general cwd substitution', () => {
+  const sourceRoot = 'E:\\project', skillRoot = sourceRoot + '\\.agents\\skills\\demo';
+  const bindings = { sourceRoot, controlledReplacements: [], projectSkills: [{ sourcePath: skillRoot, relativePath: '.agents/skills/demo' }] };
+  const prompt = 'Read ' + skillRoot + '\\references\\guide.md';
+  assert.equal(direct.bindDirectInputs(prompt, null, bindings, values).prompt, 'Read /work/restored/.agents/skills/demo/references/guide.md');
+});
+
 test('CLI discloses inert history tools and unchecked current external-path dependencies', () => {
   const report = require('../../scripts/badcase-capture/direct-comparison.cjs').formatComparison({ supported: true, replaySession: direct.replaySessionInfo(session('/old/root')) });
   assert.match(report, /历史工具.*仅作上下文.*不执行/);

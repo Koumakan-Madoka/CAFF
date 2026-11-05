@@ -105,6 +105,7 @@ test('actual exporter body verifies stage/restore before native query/close; fai
         prepare(sql) { assert.equal(sql, 'select sqlite_version() as version'); return { get: () => { failAt('query'); return { version: '3.51.2' }; } }; }
         close() { failAt('close'); }
       }; }
+      if (name === './replay-path.cjs') return require('../../scripts/badcase-capture/replay-path.cjs');
       return require(name);
     } });
     if (failure) {

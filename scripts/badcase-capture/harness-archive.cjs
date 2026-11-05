@@ -7,12 +7,16 @@ const crypto = require('node:crypto');
 const { manifestFor } = require('./pi-probe-materials.cjs');
 const MAX = 2 * 1024 * 1024, CONTENT_MAX = 1024 * 1024;
 const sourcePaths = Object.freeze({
+  'replay-path.js': 'build/server/domain/runtime/badcase-capture/replay-path.js',
+  'replay-path.cjs': 'build/server/domain/runtime/badcase-capture/replay-path.js',
   'pi-probe-guards.cjs': 'scripts/badcase-capture/pi-probe-guards.cjs',
   'probe.cjs': 'scripts/badcase-capture/retained-sdk-container.cjs',
   ...Object.fromEntries(['retained-sdk-diagnostic', 'capsule-materialization', 'secrets']
     .map(n => [n + '.js', 'build/server/domain/runtime/badcase-capture/' + n + '.js'])),
 });
 const names = Object.keys(sourcePaths).sort();
+// Existing archives retain their original five-file inventory and hashes.
+const legacyNames = names.filter(n => !['replay-path.js', 'replay-path.cjs'].includes(n));
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const digest = s => typeof s === 'string' && /^[a-f0-9]{64}$/.test(s);
 const exact = (v, keys) => v && typeof v === 'object' && !Array.isArray(v)
@@ -35,7 +39,7 @@ function readBounded(file, limit, expectedSize) {
 }
 function verifyFiles(files) {
   const m = manifestFor(files);
-  if (files.length !== names.length || files.map(f => f.path).sort().join(',') !== names.join(',')) throw Error('scope');
+  if (![names, legacyNames].some(expected => files.length === expected.length && files.map(f => f.path).sort().join(',') === expected.join(','))) throw Error('scope');
   const bytes = files.reduce((n, f) => n + f.bytes.length, 0);
   if (bytes <= 0 || bytes > CONTENT_MAX) throw Error('size');
   return { harnessHash: m.inputHash, harnessBytes: bytes };
@@ -54,7 +58,7 @@ function decode(bytes, ref) {
   if (bytes.length !== ref.archiveBytes || hash(bytes) !== ref.archiveHash) throw Error('identity');
   const d = JSON.parse(bytes);
   if (!exact(d, ['schemaVersion', 'kind', 'files']) || d.schemaVersion !== 1 || d.kind !== 'trusted-container-harness'
-    || !Array.isArray(d.files) || d.files.length !== names.length) throw Error('schema');
+    || !Array.isArray(d.files) || ![names.length, legacyNames.length].includes(d.files.length)) throw Error('schema');
   let total = 0;
   const files = d.files.map(f => {
     if (!exact(f, ['path', 'size', 'sha256', 'base64']) || !Number.isSafeInteger(f.size) || f.size < 0

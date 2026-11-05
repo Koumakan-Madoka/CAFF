@@ -42,6 +42,7 @@
     "build/server/domain/runtime/badcase-capture/evaluation-trace.js",
     "build/server/domain/runtime/badcase-capture/callback-input.js",
     "build/server/domain/runtime/badcase-capture/secrets.js",
+    "build/server/domain/runtime/badcase-capture/replay-path.js",
     "build/server/domain/runtime/badcase-capture/session-validator.js",
     "build/server/domain/runtime/badcase-capture/project-resources.js",
     "build/server/domain/runtime/message-tool-trace.js",

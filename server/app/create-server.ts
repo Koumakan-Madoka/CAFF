@@ -189,6 +189,7 @@ export function createServerApp(options: any = {}) {
   // agentDir (including every agent sandbox) is already protected separately.
   const badcaseCapture = options.badcaseCapture || createBadcaseCaptureService({
     agentDir, chatStore: store, privateDirs: options.badcaseCapturePrivateDirs,
+    getProject: (id: string) => projectManager.listProjects().find((project: any) => project.id === id) || null,
   });
   // Separate offline declarations: not capture quota, not paid launch permission.
   const badcaseEvaluations = createEvaluationAdminService({ root: path.join(agentDir, 'badcase-offline-evaluations') });
@@ -198,7 +199,7 @@ export function createServerApp(options: any = {}) {
   // an unsupported layout must not disable chat or hide a saved annotation.
   const badcaseWikiStore = {
     addMarkedCase(input: any) {
-      return createWikiStore({ globalRoot: path.join(agentDir, 'badcase-global'), sourceWorktree: initialProjectDir,
+      return createWikiStore({ agentDir, sourceWorktree: initialProjectDir,
         sourceWorktrees: projectManager.listProjects().map((p: any) => p.path) }).addMarkedCase(input);
     },
   };
@@ -1308,6 +1309,10 @@ export function createServerApp(options: any = {}) {
       : []),
     createBadcaseCaptureController({
       service: badcaseCapture,
+      // Instance-owned Room metadata only; never scan another instance's DB.
+      listRoomWorktrees: (projectId: string) => store.listConversations()
+        .filter((room: any) => room.projectScopeId === projectId && room.worktreePath)
+        .map((room: any) => room.worktreePath),
       sessionInputDir: path.join(agentDir, 'named-sessions'),
       projectManager,
       host,
@@ -1333,7 +1338,7 @@ export function createServerApp(options: any = {}) {
       },
     }),
     createBadcaseWikiController({
-      globalRoot: path.join(agentDir, 'badcase-global'),
+      agentDir,
       instanceCaptureRoot: badcaseCapture.captureRoot,
       sourceWorktree: initialProjectDir,
       runInduction: options.badcaseWikiInductionRunner || ((input: any) => {

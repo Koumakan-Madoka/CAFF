@@ -10,9 +10,10 @@ const { execFileSync, spawn } = require('node:child_process');
 
 const { withTempDir } = require('../helpers/temp-dir');
 const { capSkip } = require('../helpers/capture-capability');
+// Retained offline v1 protections, not the new turn's v2 contract.
 const {
-  createBadcaseCaptureService,
-} = require('../../build/server/domain/runtime/badcase-capture/index');
+  createLegacyNativeCaptureService: createBadcaseCaptureService,
+} = require('../helpers/legacy-native-capture');
 
 const SENTINEL = 'sk-testsecret0123456789abcdef';
 

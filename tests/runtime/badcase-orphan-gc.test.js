@@ -213,7 +213,7 @@ test('abrupt GC process death keeps pins and a fail-closed lease, with no automa
 test('Linux real collector checkpoints survive orphan collection and restore identical bytes', { skip: process.platform !== 'linux', timeout: 30000 }, t => {
   const h = setup(t), target = path.join(h.root, 'source'); fs.mkdirSync(target);
   require('node:child_process').execFileSync('git', ['init', '-q', target]); fs.writeFileSync(path.join(target, 'file.txt'), 'original source');
-  const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture/index');
+  const { createLegacyNativeCaptureService: createBadcaseCaptureService } = require('../helpers/legacy-native-capture');
   const { restoreCheckpoint } = require('../../build/server/domain/runtime/badcase-capture/restore');
   const service = createBadcaseCaptureService({ captureRoot: path.join(h.root, 'actual-cas') });
   service.savePolicy('p1', { status: 'enabled', authorizedDirs: [target] }); service.authorizeProject('p1');

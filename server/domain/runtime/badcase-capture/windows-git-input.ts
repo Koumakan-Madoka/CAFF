@@ -7,14 +7,22 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
-import { encodeWindowsHelperRequest, invokeWindowsGitInputHelper } from './windows-helper';
+import { encodeWindowsHelperRequest, invokeWindowsGitInputHelper, invokeWindowsGitStateHelper } from './windows-helper';
 import { containsSecretSentinel } from './secrets';
 const fail = (reason: string) => ({ ok: false, reason });
 const absolute = (p: any) => typeof p === 'string' && /^[a-z]:[\\/]/i.test(p);
 const normalized = (p: string) => path.win32.resolve(p).replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
 const under = (root: string, target: string) => target === root || target.startsWith(`${root}/`);
 
-export async function readWindowsGitMetadataInput(options: any = {}): Promise<any> {
+export function readWindowsGitMetadataInput(options: any = {}): Promise<any> {
+  return readInput(options, 'gitInput');
+}
+// Separate capability for the trusted Room scope compiler. The native protocol
+// independently caps .git/HEAD/branch/packed-refs to 1 MiB, never follows refs.
+export function readWindowsGitStateInput(options: any = {}): Promise<any> {
+  return readInput(options, 'gitState');
+}
+async function readInput(options: any, op: string): Promise<any> {
   const started = performance.now();
   if (options.deadline !== undefined && (typeof options.deadline !== 'number' || !Number.isFinite(options.deadline))) return fail('git_input_deadline_invalid');
   const deadline = Math.min(started + 25000, options.deadline ?? Infinity);
@@ -30,7 +38,7 @@ export async function readWindowsGitMetadataInput(options: any = {}): Promise<an
     if (!dir) return fail('git_input_not_authorized');
     const pin = policy?.authorizedInputPins?.[path.win32.resolve(dir).toLowerCase()];
     if (!pin?.identity || !absolute(pin.realpath) || normalized(pin.realpath) !== rootKey) return fail('git_input_root_unpinned');
-    const request = { version: 1, op: 'gitInput', root, expected: structuredClone(pin.identity), path: options.metadataPath };
+    const request = { version: 1, op, root, expected: structuredClone(pin.identity), path: options.metadataPath };
     if (!encodeWindowsHelperRequest(request)) return fail('git_input_not_authorized');
     const target = path.win32.join(root, request.path), targetKey = normalized(target);
     // Canonical metadata is used only to REJECT aliases; NT receives literal
@@ -50,7 +58,8 @@ export async function readWindowsGitMetadataInput(options: any = {}): Promise<an
     }
     if (performance.now() >= deadline) return fail('git_input_timeout');
     const helperPath = path.join(options.captureRoot, 'windows-authorization-helper', `windows_read.${WINDOWS_HELPER_SOURCE_SHA256}.py`);
-    const result = await invokeWindowsGitInputHelper('python', helperPath, request, deadline);
+    const helper = op === 'gitState' ? invokeWindowsGitStateHelper : invokeWindowsGitInputHelper;
+    const result = await helper('python', helperPath, request, deadline);
     if (performance.now() >= deadline) return fail('git_input_timeout');
     if (!result.ok || !Buffer.isBuffer(result.file?.content)) return fail('git_input_unavailable');
     const bytes = result.file.content;

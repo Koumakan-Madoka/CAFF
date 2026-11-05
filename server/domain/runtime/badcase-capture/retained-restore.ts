@@ -9,12 +9,12 @@ import { withProjectWriteLock } from './project-write-lock';
 import { prepareOfflineTask, runOfflineDockerTask } from './docker-sandbox';
 import { containsSecretSentinel } from './secrets';
 import crypto from 'node:crypto';
+import { isSafeRelativePath } from './replay-path';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (b: string | Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 const object = (v: any) => v && typeof v === 'object' && !Array.isArray(v);
 function relative(p: any) {
-  return typeof p === 'string' && p.length <= 1000 && /^[a-zA-Z0-9_.\-/]+$/.test(p)
-    && p.split('/').every((s: string) => s && s !== '.' && s !== '..' && s.length <= 255);
+  return isSafeRelativePath(p) && p.length <= 1000 && p.split('/').every(s => s.length <= 255);
 }
 function file(path: string, bytes: Buffer | string) {
   const b = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);

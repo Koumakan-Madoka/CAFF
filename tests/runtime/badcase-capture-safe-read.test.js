@@ -15,9 +15,10 @@ const { execFileSync } = require('node:child_process');
 
 const { withTempDir } = require('../helpers/temp-dir');
 const { capability, capSkip } = require('../helpers/capture-capability');
+// Explicit offline v1 filesystem/session units; v2 never selects this path.
 const {
-  createBadcaseCaptureService,
-} = require('../../build/server/domain/runtime/badcase-capture/index');
+  createLegacyNativeCaptureService: createBadcaseCaptureService,
+} = require('../helpers/legacy-native-capture');
 const { detectCaptureCapability } = require('../../build/server/domain/runtime/badcase-capture/safe-read');
 
 const winSkip = process.platform === 'win32' ? false : 'win32-only test';
@@ -28,14 +29,6 @@ function makeService(tempDir, serviceOptions = {}) {
     captureRoot: path.join(tempDir, 'capture-root'),
     ...serviceOptions,
   });
-  if (process.platform === 'linux') {
-    // These are filesystem/session collector unit tests with no Room DB.
-    // Do not let the facade's constructor-owned missing callback source mask
-    // their session-positive assertions. Callback-source facade/consent tests
-    // independently require that missing production state stays incomplete.
-    const { createCollector } = require('../../build/server/domain/runtime/badcase-capture/collector');
-    service.captureTurnCheckpoint = createCollector({ store: service.store, ...serviceOptions }).captureTurnCheckpoint;
-  }
   return service;
 }
 

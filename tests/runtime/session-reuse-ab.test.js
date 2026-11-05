@@ -867,8 +867,9 @@ test('Windows native composed collector publishes before real executor fresh/res
 
 // Real collector/CAS/helper/restore, synthetic session and mock startRun/store.
 // This closes the wiring-to-archive gap, not real pi/DB replay acceptance.
-test('real capture service archives pre-start fresh/resume inputs and survives restart', { skip: require('../helpers/capture-capability').capSkip }, async (t) => {
-  const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
+test('legacy native capture archives pre-start fresh/resume inputs and survives restart', { skip: require('../helpers/capture-capability').capSkip }, async (t) => {
+  const { createLegacyNativeCaptureService } = require('../helpers/legacy-native-capture');
+  const createBadcaseCaptureService = options => createLegacyNativeCaptureService(options, { readCallbackSource: true });
   const { resolveSessionPath } = require('../../build/lib/minimal-pi');
   const { createHash } = require('node:crypto');
   const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -991,7 +992,7 @@ test('real capture service archives pre-start fresh/resume inputs and survives r
 // Same-process HTTP/controller + real Linux collector + real SQLite repositories
 // and both sealing workers. Only startRun/bridge/model catalog are synthetic.
 // This is not a real model invocation, browser test, or full app restart.
-test('authorized capture to message seal survives SQLite/service reconstruction with real executor wiring', {
+test('legacy native capture to message seal survives SQLite/service reconstruction with real executor wiring', {
   skip: process.platform !== 'linux', timeout: 90000,
 }, async t => {
   const http = require('node:http');
@@ -1000,7 +1001,8 @@ test('authorized capture to message seal survives SQLite/service reconstruction 
   const load = file => require('../../build/' + file);
   const { createChatAppStore } = load('lib/chat-app-store');
   const { createSqliteRunStore } = load('lib/sqlite-store');
-  const { createBadcaseCaptureService } = load('server/domain/runtime/badcase-capture');
+  const { createLegacyNativeCaptureService } = require('../helpers/legacy-native-capture');
+  const createBadcaseCaptureService = options => createLegacyNativeCaptureService(options, { readCallbackSource: true });
   const { createBadcaseCaptureController } = load('server/api/badcase-capture-controller');
   const { createBadcaseFlagsController } = load('server/api/badcase-flags-controller');
   const { createBadcaseFlagService } = load('server/domain/runtime/badcase-capture/badcase-flags');

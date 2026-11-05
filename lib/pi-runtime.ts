@@ -1251,6 +1251,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
     addProcessHandler('exit', () => terminateProcessTree(child, true, true));
 
+    let beforePromptHandled = false;
     child.on('message', (message: any) => {
       if (settled) return;
       if (!message || typeof message !== 'object') {
@@ -1271,6 +1272,22 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       if (message.type === 'ready') {
         refreshHeartbeatTimeout();
+        return;
+      }
+
+      if (message.type === 'before_prompt') {
+        if (beforePromptHandled || terminating) return;
+        beforePromptHandled = true;
+        refreshHeartbeatTimeout();
+        void Promise.resolve().then(() => options.beforePrompt?.({ skills: message.skills })).catch(() => {
+          // Resource capture is best-effort. Do not expose errors/paths/keys or
+          // prevent the model from running when a collector cannot persist.
+          emit('capture_warning', { code: 'project_skills_unavailable' });
+        }).finally(() => {
+          if (settled || terminating || !child?.connected) return;
+          try { child.send({ type: 'continue_prompt' }, () => {}); }
+          catch { /* the host may have disconnected while capture finished */ }
+        });
         return;
       }
 
@@ -1507,6 +1524,9 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         type: 'start',
         prompt: String(prompt),
         images,
+        // Transport-only acknowledgement gate; not an SDK/replay descriptor
+        // field, and entirely absent when capture is disabled or unavailable.
+        ...(typeof options.beforePrompt === 'function' ? { awaitBeforePrompt: true } : {}),
         config: sdkStartConfig,
       }, (error: any) => {
         if (!error) {

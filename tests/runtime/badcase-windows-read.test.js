@@ -14,7 +14,7 @@ test('Windows NTFS constrained-read primitive (real native handles)', {
   });
   assert.ifError(run.error);
   assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stderr, /Ran 30 tests/);
+  assert.match(run.stderr, /Ran 37 tests/);
   assert.match(run.stderr, /\nOK\s*$/);
   assert.doesNotMatch(run.stderr, /skipped=/);
 });

@@ -6,9 +6,11 @@ const { execFileSync } = require('node:child_process');
 
 const { withTempDir } = require('../helpers/temp-dir');
 const { capSkip } = require('../helpers/capture-capability');
+// Native v1 compatibility units. New facade behavior is covered by
+// badcase-git-snapshot.test.js with real Git repositories and async capture.
 const {
-  createBadcaseCaptureService,
-} = require('../../build/server/domain/runtime/badcase-capture/index');
+  createLegacyNativeCaptureService: createBadcaseCaptureService,
+} = require('../helpers/legacy-native-capture');
 const {
   normalizeCapturePolicy,
   isAuthorizedDir,
