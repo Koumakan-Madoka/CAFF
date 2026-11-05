@@ -46,5 +46,9 @@
 .badcase-pipeline .trace-value > summary { overflow-wrap: anywhere; }
 .badcase-pipeline .tl-req { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 var(--font-mono); background: var(--sunk); border-radius: 6px; padding: 8px 10px; max-height: 400px; overflow: auto; }
 .badcase-pipeline .row-actions a { text-decoration: none; }
+.badcase-pipeline [data-regroup-proposal] { min-width: 0; overflow-wrap: anywhere; padding: 14px; border: 1px solid var(--border); border-radius: 10px; }
+.badcase-pipeline .regroup-table { max-width: 100%; overflow-x: auto; }
+.badcase-pipeline .regroup-table table { width: 100%; font-size: 12px; border-collapse: collapse; }
+.badcase-pipeline .regroup-table th, .badcase-pipeline .regroup-table td { padding: 6px; text-align: left; border-bottom: 1px solid var(--border); min-width: 3em; }
 @media (max-width: 700px) { .badcase-pipeline .stepper { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .badcase-pipeline .funnel { grid-template-columns: repeat(2, minmax(0, 1fr)); } .badcase-pipeline .bc { padding: 12px; } }

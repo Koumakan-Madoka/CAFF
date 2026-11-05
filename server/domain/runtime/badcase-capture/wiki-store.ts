@@ -18,6 +18,8 @@ import { projectStagedResult } from './wiki-staged-result';
 import { createWikiTraceStore, sameTraceSource, wikiTraceReference } from './wiki-trace';
 import { buildDehydrationPrefix, interpretDehydrationAnswer } from './wiki-dehydration';
 import { wikiGoalCaseNumber } from './wiki-suite';
+import { planWikiRegroup } from './wiki-regroup';
+import { createWikiRunStore, projectWikiRunAccounting } from './wiki-run-store';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
 import { buildWikiExperienceDraft, mergeWikiLiteralObservations, approvedWikiExperiences, revisedWikiExperience } from './wiki-experience';
@@ -201,7 +203,7 @@ export function createWikiStore(options: any) {
         if (record[field] === undefined) record[field] = [];
         if (!Array.isArray(record[field])) throw Error();
       }
-      if (record.dehydrations !== undefined && !Array.isArray(record.dehydrations)) throw Error();
+      for (const field of ['dehydrations', 'deletedCases', 'regroupProposals']) if (record[field] !== undefined && !Array.isArray(record[field])) throw Error();
       return record;
     } catch { throw fail('wiki_record_invalid'); }
   }
@@ -251,6 +253,7 @@ export function createWikiStore(options: any) {
       const result = change(state => {
         const now = new Date().toISOString(), batch: any[] = []; let created = 0, updated = 0;
         for (const candidate of normalized) {
+          if ((state.deletedCases || []).some((v: any) => v.case.id === candidate.id)) throw fail('wiki_case_deleted');
           const existing = state.cases.find((c: any) => c.id === candidate.id);
           if (existing) {
             // The operator may have frozen this source case into the holdout
@@ -274,6 +277,8 @@ export function createWikiStore(options: any) {
       if (!global) throw fail('wiki_global_required');
       const candidate = markedCase(value);
       const result = change(state => {
+        if ((state.deletedCases || []).some((v: any) => v.case.id === candidate.id
+          || v.case.source.conversationId === candidate.source.conversationId && v.case.source.messageId === candidate.source.messageId)) throw fail('wiki_case_deleted');
         const existing = state.cases.find((c: any) => c.id === candidate.id
           || (c.source.conversationId === candidate.source.conversationId && c.source.messageId === candidate.source.messageId));
         if (existing) {
@@ -329,7 +334,8 @@ export function createWikiStore(options: any) {
     readCaseTrace(caseId: string) {
       if (!global) throw fail('wiki_global_required');
       id(caseId);
-      const c = read().cases.find((v: any) => v.id === caseId);
+      const state = read();
+      const c = state.cases.find((v: any) => v.id === caseId) || (state.deletedCases || []).find((v: any) => v.case.id === caseId)?.case;
       if (!c) throw fail('wiki_unknown_case');
       if (!c.traceBundle) return null;
       if (!/^[a-f0-9]{64}$/.test(c.traceBundle.hash || '')) throw fail('wiki_trace_invalid');
@@ -437,6 +443,59 @@ export function createWikiStore(options: any) {
         appendEvent(state, { type: 'case-dehydration-withdrawn-to-reference', caseIds: [c.id], traceHash: input.traceHash,
           previousDecisionHash: previous.hash, decisionHash: row.decision.hash, reason, confirmation: provenance });
         return { changed: true, value: row.decision };
+      }).value;
+    },
+    // User-approved B11 retirement, not a public delete API. Originals remain
+    // in old snapshots and this audit archive; packet and evaluation files are untouched.
+    deleteCases(input: any, confirmation: any) {
+      if (!global) throw fail('wiki_global_required');
+      shape(input, ['caseIds', 'reason', 'expectedRevision']);
+      shape(confirmation, ['source', 'reference']);
+      if (confirmation.source !== 'user-via-planner') throw fail('wiki_invalid_input');
+      id(confirmation.reference);
+      const selected = ids(input.caseIds), reason = text(input.reason, 2048);
+      if (selected.some(k => ![7, 9, 11, 13].includes(wikiGoalCaseNumber(k)!))) throw fail('wiki_deletion_not_approved');
+      return change(state => {
+        if (!Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const archive = state.deletedCases || (state.deletedCases = []);
+        let changed = false;
+        for (const caseId of selected) {
+          const old = archive.find((v: any) => v.case.id === caseId);
+          if (old) {
+            if (old.reason !== reason || JSON.stringify(old.confirmation) !== JSON.stringify(confirmation)) throw fail('wiki_case_deleted');
+            continue;
+          }
+          const c = state.cases.find((v: any) => v.id === caseId);
+          if (!c) throw fail('wiki_unknown_case');
+          const record = { case: c, caseNumber: wikiGoalCaseNumber(c.id), reason, confirmation: structuredClone(confirmation), deletedAt: new Date().toISOString() };
+          const saved = { ...record, hash: hash(JSON.stringify(record)) }; archive.push(saved);
+          state.cases = state.cases.filter((v: any) => v.id !== caseId);
+          // Remove only active work queues, not frozen knowledge/decisions/results.
+          for (const field of ['caseStates', 'suggestions', 'classifications']) state[field] = state[field].filter((v: any) => v.caseId !== caseId);
+          appendEvent(state, { type: 'case-deleted', caseIds: [caseId], caseNumbers: [saved.caseNumber], reason, confirmation: saved.confirmation, deletionHash: saved.hash });
+          changed = true;
+        }
+        return { changed, value: archive.filter((v: any) => selected.includes(v.case.id)) };
+      }).value;
+    },
+    // Operator creates exactly one fixed proposal, never chooses a seed or
+    // submits run eligibility. Approval/application is a later explicit step.
+    proposeRegroup(input: any) {
+      if (!global) throw fail('wiki_global_required');
+      shape(input, ['expectedRevision']);
+      return change(state => {
+        if (!Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const accounting = projectWikiRunAccounting(createWikiRunStore(options).list(), state.dehydrations);
+        const proposal = planWikiRegroup(state, accounting), rows = state.regroupProposals || (state.regroupProposals = []);
+        if (rows.length) {
+          if (rows.at(-1).hash !== proposal.hash) throw fail('wiki_regroup_frozen');
+          return { changed: false, value: rows.at(-1) };
+        }
+        const saved = { ...proposal, status: 'proposed', createdAt: new Date().toISOString() }; rows.push(saved);
+        appendEvent(state, { type: 'case-regroup-proposed', proposalHash: proposal.hash, inputHash: proposal.inputHash });
+        return { changed: true, value: saved };
       }).value;
     },
     backfillConversationTitles(values: any[]) {

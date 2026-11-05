@@ -82,6 +82,15 @@ function setup(t, handler) {
     click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
 
+test('deleted evidence disappears from knowledge counts/search while the frozen guideline and deletion audit remain', async t => {
+  const h = setup(t), s = h.saved(); s.cases = s.cases.filter(c => c.id !== 'c1'); s.caseStates = s.caseStates.filter(c => c.caseId !== 'c1');
+  s.events.push({ type: 'case-deleted', caseIds: ['c1'], caseNumbers: [7], reason: '<script>缺系统提示词</script>', createdAt: '2026-11-05T00:00:00Z' });
+  const version = clone(s.versions); await h.panel.load();
+  assert.match(h.root.querySelector('#wiki-list').textContent, /0 条用例/); assert.match(h.root.querySelector('#wiki-page').textContent, /暂无活动用例；准则文字保留/);
+  assert.match(h.root.querySelector('#wiki-page').textContent, /先完成用户明确要求/); assert.deepEqual(s.versions, version);
+  await h.click('[data-tab="impact"]'); assert.match(h.root.querySelector('#impact-log').textContent, /#7.*缺系统提示词.*冻结轨迹包、旧分组和历史结果保留/);
+  assert.equal(h.root.querySelector('#impact-log script'), null); assert.equal(h.posts().length, 0);
+});
 test('production result labels model/thinking and report-only rows, without stale proxy disclaimers or unrelated tasks', async t => {
   const h = setup(t), totals = { original: { planned: 10, passed: 4, failed: 6, errors: 0, notRun: 0, scored: 10, passRate: .4 }, candidate: { planned: 10, passed: 8, failed: 2, errors: 0, notRun: 0, scored: 10, passRate: .8 } };
   h.saved().comparisons = [{ id: 'production-1', executionId: 'production-1', createdAt: '2026-11-03T12:00:00Z', model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh', api: 'openai-codex-responses' }, completed: true, evaluation: { splitPolicy: 'd15-frozen-v1' }, modelCallsKnown: 40,

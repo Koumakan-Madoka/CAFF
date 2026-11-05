@@ -134,6 +134,18 @@ test('fallback output explains the exact failure and never presents missing answ
   h.data.dehydrations[0].recommendation.fallbackReason = 'evidence_mismatch'; h.panel.render(h.data);
   assert.match(h.root.textContent, /依据与该步卡片原文不匹配/); assert.equal(h.calls.length, 0);
 });
+test('regroup proposal shows before/after and exclusions read-only, never claiming a new group is active', t => {
+  const h = setup(t); h.data.regroupProposals = [{ status: 'proposed', hash: 'f'.repeat(64), seed: 'fixed-seed', policy: 'trace-run-stratified-v1',
+    counts: { trace: { train: 1, gate: 1, test: 0 }, run: { train: 5, gate: 1, test: 0 } }, warnings: ['no_new_trace_test'],
+    rows: [{ caseId: 'c1', caseNumber: 1, level: 'run', previousSplit: 'train', proposedSplit: 'gate', reason: null },
+      { caseId: 'deleted-case', caseNumber: 7, previousSplit: 'train', proposedSplit: null, reason: 'deleted_missing_system_prompt' }] }];
+  h.panel.render(h.data); const panel = h.root.querySelector('[data-regroup-proposal]'); assert.ok(panel);
+  assert.match(panel.textContent, /分组提议.*尚未生效/s); assert.match(panel.textContent, /分组前后对照/);
+  assert.match(panel.textContent, /没有新的 trace 级测试题/); assert.match(panel.textContent, /#7.*删除/s);
+  assert.equal(h.data.cases[0].split, 'train'); assert.equal(h.calls.length, 0);
+  assert.match(h.root.querySelector('[data-case-id="c1"]').textContent, /提议：门槛.*尚未生效/);
+  assert.equal(panel.querySelector('button'), null, 'no auto-application or intermediate confirmation endpoint');
+});
 test('stale packet responses after a data refresh cannot replace current evidence', async t => {
   const pending = []; const h = setup(t, () => new Promise(r => { pending.push(r); })); await h.expand();
   h.data.cases[0].traceBundle.hash = 'c'.repeat(64); h.panel.render(h.data);

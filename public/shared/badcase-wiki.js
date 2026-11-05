@@ -153,7 +153,7 @@
     function wikiMatch(entry, ts) {
       if (!ts.length) return { ok: true, why: [] };
       const fields = [['标题', entry.title], ['失败模式', entry.failureMode], ['症状', entry.symptoms], ['根因', entry.rootCauseHypothesis], ['准则', entry.guideline]]
-        .concat(entry.caseIds.map(id => { const c = caseById.get(id); return [`用例 #${c?.n || '?'}`, `${c?.actual || ''} ${c?.expected || ''}`]; }));
+        .concat(entry.caseIds.filter(id => caseById.has(id)).map(id => { const c = caseById.get(id); return [`用例 #${c?.n || '?'}`, `${c?.actual || ''} ${c?.expected || ''}`]; }));
       const has = (value, term) => String(value).toLowerCase().includes(term);
       const ok = ts.every(t => fields.some(([, value]) => has(value, t)));
       return { ok, why: ok ? fields.filter(([, value]) => ts.some(t => has(value, t))).map(([key]) => key) : [] };
@@ -161,7 +161,7 @@
     function evidenceIds(entry) {
       const ids = new Set(entry.caseIds);
       if (currentVersion()?.id === latestVersion()?.id) for (const c of D.cases.filter(c => c.split === 'train')) for (const m of caseState(c).memberships || []) if (m.entryId === entry.id) ids.add(c.id);
-      return [...ids];
+      return [...ids].filter(id => caseById.has(id));
     }
     const replaysFor = entry => (D.replayCases || []).filter(r => evidenceIds(entry).includes(r.sourceCaseId));
     const candsUsing = entryId => (D.candidates || []).filter(c => c.kind === 'global-wiki-candidate-v1' && c.entryIds.includes(entryId));
@@ -212,7 +212,7 @@
       return `<nav class="crumb"><a href="#wiki" data-go="wiki">知识库</a><span aria-hidden="true">›</span><span>${proposal ? '新模式提议' : `模式 ${entry.n} / ${entries().length}`}</span></nav>
         <header class="page-head"><h2>${hl(entry.title, ts)}</h2><div class="page-meta">${pill(ENTRY_STATUS, entry.status)}<span>${esc(currentVersion().id)} ${currentVersion().origin==='manual-guideline-revision-v1'?'人工准则修订':'归纳'}</span>${entry.reviewedAt ? `<span>${fmt(entry.reviewedAt)} 通过审核</span>` : ''}</div>${proposal ? '<p class="muted-note">现有模式解释不了关联用例，所以模型提议新建这一条。通过审核后才能用于候选；确认前不会改变用例归属。</p>' : ''}${editor ? `<div class="page-actions"><button type="button" class="btn primary" data-review="approved">通过</button><button type="button" class="btn" data-review="save">保存草稿</button><button type="button" class="btn ghost" data-review="rejected">驳回</button></div>` : '<p class="muted-note">已审核条目已冻结；增量归纳和手动归属不会改写这条内容。</p>'}</header>
         ${editor ? editForm(entry) : `<dl class="facts"><div><dt>失败模式</dt><dd>${hl(entry.failureMode, ts)}</dd></div><div><dt>典型症状</dt><dd>${hl(entry.symptoms, ts)}</dd></div><div><dt>根因假设</dt><dd>${hl(entry.rootCauseHypothesis, ts)}</dd></div></dl><section class="guideline" aria-label="准则"><h3>准则</h3><p class="hint">${entry.status === 'approved' ? '这句话可以用于生成候选提示词' : '通过审核后，这句话才可以写进候选提示词'}</p><p class="gl-text">${hl(entry.guideline, ts)}</p></section>`}
-        ${experiencePanel(entry)}<section class="block"><div class="block-head"><h3>证据用例 <span class="count">${ids.length}</span></h3><a class="hint" href="#cases" data-group="${esc(entry.id)}">在用例页按此模式查看</a></div>${ids.length ? `<ul class="evidence">${ids.map(id => caseById.get(id)).filter(Boolean).map(c => evidenceRow(c, ts)).join('')}</ul>` : '<p class="muted-note">还没有确认归属的证据用例。</p>'}</section>
+        ${experiencePanel(entry)}<section class="block"><div class="block-head"><h3>证据用例 <span class="count">${ids.length}</span></h3><a class="hint" href="#cases" data-group="${esc(entry.id)}">在用例页按此模式查看</a></div>${ids.length ? `<ul class="evidence">${ids.map(id => caseById.get(id)).filter(Boolean).map(c => evidenceRow(c, ts)).join('')}</ul>` : '<p class="muted-note">暂无活动用例；准则文字保留，已删除的历史引用不计入。</p>'}</section>
         ${suggestions.length ? `<section class="block"><div class="block-head"><h3>建议加入的用例 <span class="count">${suggestions.length}</span></h3><span class="hint">你确认后才算证据</span></div><ul class="evidence">${suggestions.map(suggestRow).join('')}</ul></section>` : ''}
         <section class="block"><div class="block-head"><h3>回放题 <span class="count">${reps.length}</span></h3><span class="hint">评测时用这些题检验这条准则</span></div>${reps.length ? `<ul class="replays">${reps.map(r => { const c = caseById.get(r.sourceCaseId), totals = comparisonCase(r); return `<li>${catChip(r)}<span class="task">“${esc(r.task)}”<span class="res"> · 用例 #${c?.n} · 本轮${SPLIT[replayStage(r)]}</span></span><span class="res">原版 ${score(totals, 'original')} · 候选 ${score(totals, 'candidate')}</span></li>`; }).join('')}</ul>` : '<p class="muted-note">这个模式还没有回放题，评测暂时验证不了这条准则。</p>'}</section>
         <section class="block"><div class="block-head"><h3>用在哪些候选 <span class="count">${cands.length}</span></h3></div>${cands.length ? `<ul class="uses">${cands.map(c => { const target = targetById.get(c.targetId); return `<li><a href="#targets" data-target="${esc(c.targetId)}">${esc(targetFull(target))}</a>${pill(CAND_STATUS, c.status)}<span class="res">${fmt(c.createdAt)}</span></li>`; }).join('')}</ul>` : '<p class="muted-note">还没有候选用到这条准则。</p>'}</section>`;
@@ -408,11 +408,12 @@
       const explicit = new Set();
       for (const event of D.events || []) {
         if (event.runId) explicit.add(event.runId);
-        const caseNumbers = (event.caseIds || []).map(id => caseById.has(id) ? '#' + caseById.get(id).n : '已作废用例').join(' ');
+        const caseNumbers = event.type === 'case-deleted' ? (event.caseNumbers || []).map(n => '#' + n).join(' ') : (event.caseIds || []).map(id => caseById.has(id) ? '#' + caseById.get(id).n : '已作废用例').join(' ');
         if (event.type === 'case-mark-voided') events.push({ at: event.createdAt, kind: '误标作废', text: `误标作废 ${caseNumbers}：${event.reason || ''}；保留旧版本，组别不重分。` });
         const labels = { 'case-marked': ['标记', `新用例已入库 ${caseNumbers}（${event.split == null ? '待预分类' : '保留原定组'}）`], 'case-preclassified': ['定组', `预分类并冻结 ${caseNumbers} · ${SPLIT[event.split] || ''}`], 'preclassification-run': ['预分类', `模型完成预分类 ${caseNumbers}；归类待确认`], 'classification-confirmed': ['归类', `已确认归类 ${caseNumbers}（不参与归纳）`], 'classification-rejected': ['归类', `否决预分类归属 ${caseNumbers}（可改归类）`], 'induction-run': ['归纳', `模型完成一次增量归纳 ${caseNumbers}；只保存建议`], 'suggestion-confirmed': ['归属', `确认模型建议 ${caseNumbers}`], 'suggestion-rejected': ['归属', `否决模型建议 ${caseNumbers}`], 'manual-assigned': ['归属', `手动归入模式 ${caseNumbers}`], 'manual-removed': ['归属', `手动移出模式 ${caseNumbers}`] };
         const label = labels[event.type]; if (label) events.push({ at: event.createdAt, kind: label[0], text: label[1] });
       }
+      for (const deletion of (D.events || []).filter(e => e.type === 'case-deleted')) events.push({ at: deletion.createdAt, kind: '删除', text: `${(deletion.caseNumbers || []).map(n => '#' + n).join(' ')}：${deletion.reason}；冻结轨迹包、旧分组和历史结果保留` });
       for (const run of D.inductionRuns || []) if (!explicit.has(run.id)) events.push({ at: run.createdAt, kind: '归纳', text: `模型完成一次增量归纳（${run.caseIds.length} 条用例）；只保存建议` });
       events.sort((a, b) => String(b.at).localeCompare(String(a.at)));
       $('#impact-log').innerHTML = `<li class="now"><time>现在</time><span><span class="kind">等待</span>${esc(nextStep().text)}</span></li>` + events.map(event => `<li><time>${fmt(event.at)}</time><span><span class="kind">${esc(event.kind)}</span>${esc(event.text)}</span></li>`).join('');

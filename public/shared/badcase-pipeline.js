@@ -43,7 +43,7 @@
     const activeRuns = c => dehydration(c)?.decision?.level === 'run' ? caseRuns(c).filter(r => !excludedRun(c, r)) : [];
     const baselineMissing = c => activeRuns(c).some(r => r.baselineStatus === 'no_valid_output');
     const kindLabel = k => ({ single: '单步型', throughout: '贯穿型', unclear: '说不清（按贯穿型）' }[k] || k);
-    root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec"><h2>从 badcase 到测试用例</h2><p class="hint">有现场默认走 trace 级；无现场须经 DeepSeek 推荐、你确认后脱水成 run 级。测试组只收 trace 级，门槛中 run 级不超过一半，训练组 run 级只作初筛。旧分组保留，重新分组尚待你确认。</p><div data-funnels></div></section>
+    root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec"><h2>从 badcase 到测试用例</h2><p class="hint">有现场默认走 trace 级；无现场须经 DeepSeek 推荐、你确认后脱水成 run 级。测试组只收 trace 级，门槛中 run 级不超过一半，训练组 run 级只作初筛。旧分组保留，重新分组尚待你确认。</p><div data-funnels></div></section><div data-regroup-host></div>
       <div class="toolbar"><label class="search"><input data-bc-search type="search" aria-label="搜索 badcase" placeholder="搜索问题、期望、来源房间或编号" autocomplete="off"></label>
       <label class="field">卡在 <select data-bc-stage><option value="all">全部</option><option value="you">等你处理</option><option value="system">系统可以继续</option><option value="scene">现场待接入</option><option value="noscene">无现场（待脱水）</option><option value="dehydrate">脱水</option><option value="source">旧题的来源</option><option value="reference">只作参考</option><option value="invalid">无效测试用例</option><option value="other">非 GPT 来源</option></select></label>
       <label class="field">模型 <select data-bc-model><option value="all">全部</option><option value="gpt">GPT</option><option value="other">非 GPT</option></select></label>
@@ -89,6 +89,16 @@
       const runs = gpt.flatMap(activeRuns), excluded = gpt.flatMap(c => caseRuns(c).filter(r => excludedRun(c, r)));
       if (runs.length || excluded.length) $('[data-funnels]').insertAdjacentHTML('beforeend', `<p data-run-totals>单次 run 回放共 ${runs.length} 次：有效输出 ${runs.filter(r => r.status === 'reached').length}；无效 ${runs.filter(r => r.status === 'invalid').length}（不算通过也不算不通过）；请求失败 ${runs.filter(r => r.status === 'error').length}；结果未知 ${runs.filter(r => r.status === 'reserved').length}。有效输出不代表判分通过。原版无有效输出 ${gpt.filter(baselineMissing).length} 题，不进门槛和初筛。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次（原文保留）。` : ''}</p>`);
     }
+    function regroupPanel() {
+      const p = (D.regroupProposals || []).at(-1), host = $('[data-regroup-host]');
+      if (!p) { host.innerHTML = ''; return; }
+      const reasons = { deleted_missing_system_prompt: '已删除：缺当时系统提示词，不脱水也不作参考', legacy_test_source: '旧题来源，不参与新分组，旧测试题保留',
+        reference_only: '只作参考，不成为测试用例', non_gpt_report_only: '非 GPT 来源，仅报告，不占 GPT 配额',
+        baseline_no_valid_output: '原版无有效输出，不进门槛和初筛', baseline_pending: '尚无有效原版证据，不参与新分组', dehydration_not_confirmed: '脱水尚未确认，不参与新分组' };
+      host.innerHTML = `<section class="sec" data-regroup-proposal><h2>分组提议 · 尚未生效</h2><p>请核对分组前后对照，再在对话中确认这一份提议的 hash；当前没有改变任何有效组别，不会自动确认或启动评测。</p><p class="trace-hash mono">提议 SHA-256：${esc(p.hash)}<br>固定种子：${esc(p.seed)}</p><p>建议按 trace / run 两层随机排序：trace 沿用现有训练:门槛:测试 2:1:1 配额，run 用训练:门槛 2:1 配额，并将门槛 run 数限制为不超过门槛 trace 数。超额 run 留训练，仅作淘汰初筛，不作采纳依据。</p><p>提议数量：${['trace', 'run'].map(level => `${level}：训练 ${esc(p.counts[level].train)} / 门槛 ${esc(p.counts[level].gate)} / 测试 ${esc(p.counts[level].test)}`).join('；')}。非 GPT 不计入配额。</p>
+        ${(p.warnings || []).includes('no_new_trace_test') ? '<p class="muted-note">样本不足：这份提议没有新的 trace 级测试题；不拿 run 级或非 GPT 来源填充测试组，#4、#10、#14 的旧题保持不变。</p>' : ''}<p class="hint">这些历史材料已有训练或评测暴露；重新分组不等于获得未见过的留出数据。有现场仍待采集能力合入，分组不代表已经能回放或判分。</p>
+        <details open><summary>分组前后对照（含不参与项）</summary><div class="regroup-table"><table><thead><tr><th>编号</th><th>层级</th><th>原组别</th><th>提议组别</th><th>说明</th></tr></thead><tbody>${[...p.rows].sort((a,b) => a.caseNumber-b.caseNumber).map(r => `<tr><td>#${esc(r.caseNumber)}</td><td>${esc(r.level || '—')}</td><td>${esc(splitName[r.previousSplit] || '未定组')}</td><td>${esc(splitName[r.proposedSplit] || '不参与')}</td><td>${esc(r.reason ? reasons[r.reason] || r.reason : r.level === 'run' && r.proposedSplit === 'train' ? '只作初筛；不能作为采纳依据' : '待用户确认；未判分')}</td></tr>`).join('')}</tbody></table></div></details></section>`;
+    }
     function replayPanel(c) {
       const rows = caseRuns(c), active = activeRuns(c), excluded = rows.filter(r => excludedRun(c, r)); if (!rows.length) return '';
       const labels = { reached: '有效输出（未判分）', invalid: '无效 · 不算通过也不算不通过', error: '请求失败（不冒充模型答案）', reserved: '已占用 · 结果未知，不自动重试' };
@@ -125,6 +135,7 @@
         <div class="next-line"><span class="who ${p.actor === 'system' ? 'sys' : 'none'}">${p.actor === 'system' ? '系统' : p.actor === 'you' ? '你' : '到此为止'}</span><span>${esc(p.next)}</span></div>
         <div class="chips"><span class="pill ${tone}">${backfill(c)}</span>${hasScene(c) ? `<span class="pill warn">现场：${sceneWait}</span>` : '<span class="pill">无现场</span>'}</div>
         ${ref?.missingReasons?.length ? `<p class="hint">缺失：${ref.missingReasons.map(r => `<span title="${esc(r)}">${esc(reasonLabels[r] || r)}</span>`).join('；')}</p>` : ''}
+        ${(D.regroupProposals || []).at(-1)?.rows?.find(r => r.caseId === c.id)?.proposedSplit ? `<p class="pill warn">提议：${esc(splitName[D.regroupProposals.at(-1).rows.find(r => r.caseId === c.id).proposedSplit])} · 尚未生效；旧组别保留</p>` : ''}
         ${dehydrationPanel(c)}${replayPanel(c)}
         <details class="more"><summary>详情与步骤说明</summary><p class="case-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</p><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul><div class="muted-note" data-assertion-slot="${esc(c.id)}">评分断言与逐条判定：评分 v2 待接入，本页不生成或冻结评分断言。</div></details>
         <details class="more trace" data-trace-case="${esc(c.id)}" ${expanded.has(c.id) ? 'open' : ''}><summary>轨迹与上下文${ref ? `（${ref.stepCount} 次模型调用）` : ''}</summary><div data-trace-host="${esc(c.id)}"></div></details></article>`;
@@ -217,7 +228,7 @@
       if (el.hasAttribute('data-trace-search')) { const c = D.cases.find(c => c.id === el.dataset.traceSearch); if (c) { queries.set(c.id, el.value); renderTraceContent(c, el.closest('[data-trace-host]')); } }
     });
     root.addEventListener('change', e => { const el = e.target; if (el.hasAttribute('data-bc-stage')) { stage = el.value; renderCards(); } if (el.hasAttribute('data-bc-model')) { model = el.value; renderCards(); } });
-    return { setWritable(value) { writable = value && typeof onConfirmDecision === 'function'; root.querySelectorAll('[data-dehydration-confirm]').forEach(b => { b.disabled = !writable; }); }, render(data) { D = data; for (const [id, row] of cache) if (!D.cases.some(c => c.id === id && c.traceBundle?.hash === row.hash)) cache.delete(id); funnel(); renderCards(); },
+    return { setWritable(value) { writable = value && typeof onConfirmDecision === 'function'; root.querySelectorAll('[data-dehydration-confirm]').forEach(b => { b.disabled = !writable; }); }, render(data) { D = data; for (const [id, row] of cache) if (!D.cases.some(c => c.id === id && c.traceBundle?.hash === row.hash)) cache.delete(id); funnel(); regroupPanel(); renderCards(); },
       focus(n) { q = ''; stage = 'all'; model = 'all'; $('[data-bc-search]').value = ''; $('[data-bc-stage]').value = 'all'; $('[data-bc-model]').value = 'all'; renderCards(); root.querySelector('#bc-' + Number(n))?.scrollIntoView({ block: 'center' }); } };
   };
 })();
