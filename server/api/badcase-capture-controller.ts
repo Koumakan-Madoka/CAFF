@@ -1,12 +1,11 @@
 import path from 'node:path';
-import fs from 'node:fs';
 import crypto from 'node:crypto';
 import type { RouteHandler } from '../http/router';
 import { createHttpError } from '../http/http-errors';
 import { createLocalAdminGuard } from '../http/local-admin-guard';
 import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
-import { realpathOrResolved, isSameOrUnderPathString } from '../domain/runtime/badcase-capture/capture-policy';
+import { realpathOrResolved, isSameOrUnderPathString, pathsEqual } from '../domain/runtime/badcase-capture/capture-policy';
 import { normalizeWindowsExternalGitSelection } from '../domain/runtime/badcase-capture/windows-external-selection';
 
 // Local administration only, not an agent tool. Under Goal D10 the same OS user
@@ -118,8 +117,8 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
     const body = await readRequestJson(req);
     const policy = service.loadPolicy(projectId);
     if (action === 'configure') {
-      // MVP: one directory + one explicit switch. Reuse the existing pin and
-      // estimate path; never make external Git layouts implicitly authorized.
+      // One project switch. Git interprets roots/worktrees; no native helper,
+      // identity pin or external-Git selection participates in the new path.
       fields(body, ['confirmed', 'targetDir', 'enabled']);
       confirmed(body);
       if (typeof body.enabled !== 'boolean') throw issue('badcase_capture_invalid_body');
@@ -127,24 +126,22 @@ export function createBadcaseCaptureController(options: any = {}): RouteHandler<
         invalidate(projectId);
         service.savePolicy(projectId, { ...policy, status: 'disabled', suspendReason: '' });
       } else {
-        const targetDir = directories([body.targetDir], true)[0];
-        let git;
-        try { git = fs.lstatSync(path.join(targetDir, '.git')); } catch {}
-        if (!git?.isDirectory() || git.isSymbolicLink()) throw issue('badcase_capture_layout_unsupported');
+        const project = projectManager.listProjects().find((entry: any) => entry.id === projectId);
+        const targetDir = directories([project?.path], true)[0];
+        if (body.targetDir !== undefined && (typeof body.targetDir !== 'string' || !path.isAbsolute(body.targetDir)
+          || !pathsEqual(body.targetDir, targetDir))) throw issue('badcase_capture_target_mismatch');
         const sessionDir = options.sessionInputDir;
         if (typeof sessionDir !== 'string' || !path.isAbsolute(sessionDir)) throw issue('badcase_capture_unavailable', 503);
-        fs.mkdirSync(sessionDir, { recursive: true });
         const operation = invalidate(projectId);
         service.savePolicy(projectId, { ...policy, authorizedDirs: [targetDir],
           authorizedInputDirs: directories([sessionDir], false), windowsExternalGit: [],
-          includedIgnoredPatterns: [], excludedPatterns: policy.excludedPatterns.filter((p: string) => p !== '.git'),
-          status: 'disabled', suspendReason: '' }, { authorizeCallbackInput: true });
-        service.authorizeProject(projectId);
-        const pinned = service.loadPolicy(projectId);
-        const failed = (await estimates(projectId, pinned, operation)).find((r: any) => r.ok !== true || r.complete !== true || r.captureAvailable === false);
-        assertCurrent(projectId, operation, pinned);
-        if (failed) throw issue(failed.reason || 'badcase_capture_collector_unavailable', 409);
-        service.savePolicy(projectId, { ...pinned, status: 'enabled', suspendReason: '' });
+          includedIgnoredPatterns: [], status: 'disabled', suspendReason: '' }, { authorizeCallbackInput: true });
+        const pending = service.loadPolicy(projectId);
+        const preview = await service.estimateGitDirectoryAsync(projectId, targetDir);
+        assertCurrent(projectId, operation, pending);
+        if (!preview.ok || preview.captureAvailable === false) throw issue(preview.reason || 'badcase_capture_collector_unavailable', 409);
+        // A gap is displayed as skipped, never a whole-project enable failure.
+        service.savePolicy(projectId, { ...pending, status: 'enabled', suspendReason: '' });
       }
     } else if (action === 'authorize') {
       fields(body, ['confirmed', 'authorizedDirs', 'authorizedInputDirs', 'includedIgnoredPatterns', 'excludedPatterns', 'windowsExternalGit', 'callbackInputAuthorized']);

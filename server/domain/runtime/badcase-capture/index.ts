@@ -9,6 +9,7 @@ import { normalizeCapturePolicy, matchesRelativePattern, pinAuthorizedDirs, pinK
 import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
 import { createGitTurnCollector } from './git-turn-collector';
+import { collectGitSnapshot } from './git-snapshot';
 import { restoreCheckpoint } from './restore';
 import { runEstimateProcess } from './estimate-process';
 import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
@@ -175,6 +176,28 @@ export function createBadcaseCaptureService(options: any = {}) {
           && typeof stats.durationMs === 'number' && Number.isFinite(stats.durationMs) && stats.durationMs >= 0 ? stats.durationMs : null };
     },
 
+    // New one-switch preview uses the SAME best-effort Git reader as turns.
+    // No helper install/pin/receipt and no CAS/checkpoint writes. `complete`
+    // describes gaps, not permission to enable: skipped entries are allowed.
+    async estimateGitDirectoryAsync(projectId: any, targetDir: any) {
+      const started = Date.now();
+      const fail = (reason: string) => ({ ok: false, reason, captureAvailable: false, complete: false,
+        fileCount: 0, totalBytes: 0, skippedCount: 0, uncaptured: [], durationMs: Date.now() - started });
+      if (!String(projectId || '').trim()) return fail('project_id_missing');
+      if (!String(targetDir || '').trim()) return fail('target_dir_missing');
+      try {
+        const snapshot = await collectGitSnapshot({ targetDir, excludedPatterns: store.loadPolicy(projectId).excludedPatterns });
+        if (!snapshot.ok) return fail(snapshot.reason);
+        return { ok: true, reason: '', captureAvailable: true, complete: snapshot.uncaptured.length === 0,
+          includesIgnored: false, exclusionPolicy: 'git-snapshot-v1',
+          fileCount: snapshot.gitSnapshot.baseFileCount + Object.values(snapshot.files).filter((f: any) => f.origin === 'untracked').length,
+          totalBytes: [...snapshot.blobs.values()].reduce((sum: number, bytes: any) => sum + bytes.length, 0),
+          skippedCount: snapshot.uncaptured.length, uncaptured: snapshot.uncaptured, durationMs: Date.now() - started };
+      } catch { return fail('git_snapshot_unavailable'); }
+    },
+
+    // Legacy native administrative/offline APIs below are not used by configure
+    // or by new turns. Kept during migration for existing native-reader tests.
     discoverGitDependenciesAsync(projectId: any, targetDir: any) {
       return discoverWindowsGitDependencies({ captureRoot, ...windowsScope,
         targetDir, policy: store.loadPolicy(projectId) });

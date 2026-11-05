@@ -4,6 +4,17 @@
 
 本契约描述 2026-10-30 用户确认的最短路径 MVP、2026-10-31 批准的 WikiSkill 层扩展，以及 2026-11-01 确认的单模式/两阶段评测（Goal `goal_aa132140-e957-4a58-9ed6-d58812370377`）。S0–S3 的固定 SHA `460d0512` 与 wiki 层最后一起由用户一次性接受，旧证据不冒充新增功能证据。旧设计与审查记录保留在 Git 历史和各自 Goal 记录中，不把历史 FAIL 追认为 PASS，也不沿用已取消的网关、双账本或持久付费批准义务。交付与验收证据以当前 Goal 为准；本文件不是另一份任务台账。
 
+### 2026-11-05 本机 Git 快照采集（v2）
+
+新轮次采用 best-effort Git 快照，不再使用下面 v1 历史采集契约的原生读取、目录 pin、防替换或多次扫描校验；不是安全沙箱，也不保证原子一致性。旧格式封存及其回放逻辑保留。新格式的恢复/回放接线另行实现；当前旧恢复入口对 v2 明确报 `git_snapshot_requires_head_materialization`，不能把仅恢复 overlay 当成完整现场。
+
+- 项目页的 `POST /api/projects/:id/badcase-capture/configure` 开关以已登记项目路径为根，`targetDir` 可省略，若提供必须与项目路径相同。Git 自行解释普通仓库和 `.git` 文件 worktree；本轮实际 cwd 必须为仓库顶层，且与项目根的 `git common dir` 相同。新建 worktree 无需登记或重开。关闭不检查/扫描源目录，已有封存不删除。旧 authorize/estimate/enable 管理入口暂留兼容，但新开关及新轮次不使用这些原生路径。
+- 开启前的 `estimateGitDirectoryAsync` 复用采集器，只做内存预览，不安装 helper、不 pin、不写检查点/CAS。返回 `fileCount`（HEAD 普通文件数加本次未跟踪文件数）、`totalBytes`（本次去重的补丁/overlay/skill 字节，不含 HEAD 基线、session、manifest）、`skippedCount/uncaptured`。`complete:false` 表示存在缺口，不阻止开启；只有预览失败/`captureAvailable:false` 才拒绝。读取页面本身不启动预览。
+- 只读 Git 查询 HEAD/分支/common dir、`diff --binary HEAD`（暂存、未暂存、删除的合并效果）及 `ls-files --others --exclude-standard -z`。为逐项隔离异常，先取变更路径，再按路径取 binary diff 拼接；禁用外部 diff/textconv。设置 `GIT_OPTIONAL_LOCKS=0`，不刷新/修改源 index、状态、文件或 refs。未跟踪文件遵循 Git ignore；默认排除 `.git`、`node_modules`。不支持 submodule、嵌套仓库、非 Git 目录；不保留暂存/未暂存的区分。
+- 单文件 10 MiB，单次未跟踪合计 200 MiB。链接/junction、保留/非法名、读失败、长路径、超限等逐项跳过，`uncaptured/skipped` 和 `stats.skippedCount` 记录原因；不跟随链接，不把缺口称为完整现场。非仓库或无法读取 HEAD 不生成检查点；采集失败不阻塞正常 turn。只对本机已知 key 原值作 `[*]` 替换，不使用旧秘密哨兵；为避免替换破坏 patch，命中已知值的 tracked 改动改存完整脱敏 overlay 或删除记录。
+- 检查点 `schemaVersion:2`、`gitSnapshot.kind:"git-snapshot-v1"`；`gitSnapshot` 含 `sourceRepository/commonDir/head/branch/patchBlobHash/patchBytes/baseFileCount/untrackedBytes/excludedPatterns/projectSkills`。补丁和普通文件均复用项目 CAS；`files` 是未跟踪/脱敏 tracked overlay，不是完整工作树。`deletions` 记录已知删除；`projectSkills[]` 以 `originalPath` 和相对路径 `files` 归档 skill 及资源，纳入保留引用闭包。当前来源为 SDK 显式 skill 路径及 cwd 默认 skill 根，实际加载清单尚须补齐，不声称已覆盖所有 SDK 发现路径。
+- 采集库必须在项目目录之外；部署前由操作方显式设置外置 `CAFF_BADCASE_CAPTURE_DIR` 并按正常发布流程重启。此说明不是移动现有库、修改生产配置或部署的授权。v2 当前尚未完成真实实例/旧新回放验收，不能沿用下面 v1 的历史验收结论。
+
 ### 2026-11-02 生产同配置扩展
 
 当前 Goal 为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。M1–M6 已通过规划者独立里程碑评审：真实 GPT/xhigh 现场回放、resume、Windows 页面和命令、正式两阶段评测、基线/经验回流及副本迁移均有证据。S1 最终固定 SHA 的双平台全量检查、DeepSeek 审查和用户最终接受仍须独立完成；未部署。当前操作入口见 [Windows 操作说明](wikiskill-windows.md)、[迁移契约](wikiskill-data-migration.md) 和 [发布审批步骤](wikiskill-release.md)。下面明确标为历史的样例/代理模型结果只保留当时的验证边界，不代替生产评测。
@@ -109,7 +120,7 @@
 - 每次 `durationMs` 是宿主观察的容器创建、恢复、模型turn及清理总耗时，不含前置封存/Git扫描、分发准备或依赖建缓存；每条模型请求原有duration/usage同时保留。`tokenUsage` 仅合计供应方给出的完整非负整数用量，记录knownCalls/callsWithoutUsage/callsUnavailable；缺用量、无回执或溢出明确为不完整/未知，不填零或外推未知调用。已明确报告的零tokens可以保留为零。
 - Codex额外记录独立的 `hostRequestAttempts`（尝试发送次数，不保证供应方接收或扣费），即便worker回执缺失也不误报为“零消耗”。`remainingQuota:null`、`quotaBasis:reported-tokens-only`：没有ChatGPT剩余额度接口证据，不把tokens换算成配额或钱；CLI明确显示剩余额度未知。该测量报告不是额度不足时的自动重试授权，也不是Wiki页面完整交付或采纳依据。
 
-### 采集与恢复
+### 旧格式（v1）采集与恢复（历史契约）
 
 - 仅在项目显式开启采集后工作。`projects.html` 正常入口为选择工作目录和开关；读取页面不自动授权、开启或扫描内容。管理请求沿用 loopback/Host/Origin/CSRF 门禁，信任同一 OS 用户，不是人类身份认证或抵御同权限进程的沙箱。
 - `agent-executor.ts` 在本轮 prompt、实际 SDK cwd 和 session 选择确定后、`startRun` 前保存检查点。范围是该 turn 实际 worktree，不根据可能陈旧的 Room 路径猜测，也不是每次工具调用前快照。关闭后不再主动采集，既有封存不删除。

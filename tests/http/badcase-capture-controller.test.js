@@ -32,39 +32,35 @@ function setup(t) {
   const captureRoot = path.join(root, 'cas');
   const service = createBadcaseCaptureService({ captureRoot });
   let now = 1000;
-  const options = { service, projectManager: { listProjects: () => [{ id: 'project-test' }] }, host: '127.0.0.1', port: 4313, csrfToken: 'test-csrf', now: () => now };
+  const options = { service, projectManager: { listProjects: () => [{ id: 'project-test', path: target }] }, host: '127.0.0.1', port: 4313, csrfToken: 'test-csrf', now: () => now };
   return { root, target, captureRoot, service, options, controller: createBadcaseCaptureController(options), advance: () => { now += 11 * 60 * 1000; } };
 }
 const rejects = (fn, code, status = 422) => assert.rejects(fn, e => e.statusCode === status && e.issues?.[0]?.code === code);
 const authorization = target => ({ confirmed: true, authorizedDirs: [target], authorizedInputDirs: [], includedIgnoredPatterns: [], excludedPatterns: ['.git', 'node_modules'] });
 
-test('compact configure authorizes directory and instance sessions, checks estimate, then enables; disable does not read source', async t => {
+test('compact configure uses Git preview without native authorization; disable does not read source', async t => {
   const h = setup(t), sessions = path.join(h.root, 'sessions');
-  fs.mkdirSync(path.join(h.target, '.git'));
-  h.service.authorizeProject = () => h.service.loadPolicy('project-test');
-  const scans = fakeEstimates(h);
+  h.service.authorizeProject = () => assert.fail('new configure must not pin roots');
+  const scans = fakeEstimates(h); h.service.estimateGitDirectoryAsync = h.service.estimateDirectoryAsync;
   const controller = createBadcaseCaptureController({ ...h.options, sessionInputDir: sessions });
   const enabled = await invoke(controller, 'configure', { confirmed: true, targetDir: h.target, enabled: true });
   assert.equal(enabled.body.policy.status, 'enabled');
   assert.deepEqual(enabled.body.policy.authorizedDirs, [h.target]);
   assert.deepEqual(enabled.body.policy.authorizedInputDirs, [sessions]);
   assert.equal(enabled.body.policy.callbackInputAuthorized, true);
-  assert.equal(enabled.body.policy.excludedPatterns.includes('.git'), false);
+  assert.equal(enabled.body.policy.excludedPatterns.includes('.git'), true);
   assert.deepEqual(enabled.body.policy.windowsExternalGit, []);
   assert.equal(scans.length, 1);
   const disabled = await invoke(controller, 'configure', { confirmed: true, enabled: false });
   assert.equal(disabled.body.policy.status, 'disabled'); assert.equal(scans.length, 1);
 });
-test('compact configure rejects unconfirmed/external Git and failed estimates leave capture off', async t => {
+test('compact configure rejects unconfirmed requests and failed Git previews leave capture off', async t => {
   const h = setup(t), controller = createBadcaseCaptureController({ ...h.options, sessionInputDir: path.join(h.root, 'sessions') });
   const body = { confirmed: true, enabled: true, targetDir: h.target };
   await rejects(() => invoke(controller, 'configure', { ...body, confirmed: false }), 'badcase_capture_confirmation_required');
-  fs.writeFileSync(path.join(h.target, '.git'), 'gitdir: elsewhere');
-  await rejects(() => invoke(controller, 'configure', body), 'badcase_capture_layout_unsupported');
-  fs.unlinkSync(path.join(h.target, '.git')); fs.mkdirSync(path.join(h.target, '.git'));
-  h.service.authorizeProject = () => h.service.loadPolicy('project-test');
-  h.service.estimateDirectoryAsync = () => ({ ok: false, reason: 'git_metadata_unsupported' });
-  await rejects(() => invoke(controller, 'configure', body), 'git_metadata_unsupported', 409);
+  h.service.authorizeProject = () => assert.fail('new configure must not pin roots');
+  h.service.estimateGitDirectoryAsync = () => ({ ok: false, reason: 'not_git_repository' });
+  await rejects(() => invoke(controller, 'configure', body), 'not_git_repository', 409);
   assert.equal(h.service.loadPolicy('project-test').status, 'disabled');
 });
 
@@ -309,11 +305,12 @@ test('server default capture service receives trusted private roots; Windows nat
   }
 });
 
-test('Windows native HTTP classified estimate/enable and capture are independent of agent Git selectors', { skip: process.platform !== 'win32' }, async t => {
+test('legacy Windows HTTP preview remains isolated; new turns use Git snapshots and ignore agent Git selectors', { skip: process.platform !== 'win32' }, async t => {
   require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
   const h = setup(t), { execFileSync } = require('node:child_process');
   const git = (...args) => execFileSync('git', ['-C', h.target, ...args], { env: process.env, windowsHide: true });
   git('init', '-q'); git('config', 'core.ignorecase', 'true'); git('add', 'hello.txt');
+  git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid.local', 'commit', '-qm', 'base');
   fs.writeFileSync(path.join(h.target, 'hello.txt'), 'dirty'); fs.writeFileSync(path.join(h.target, '.gitignore'), '*.log\n');
   fs.writeFileSync(path.join(h.target, 'untracked'), 'new'); fs.writeFileSync(path.join(h.target, 'included.log'), 'include');
   fs.writeFileSync(path.join(h.target, 'ignored.log'), 'IGNORE_NOT_AUTHORIZED'); fs.writeFileSync(path.join(h.target, '.env'), 'SECRET_NOT_AUTHORIZED');
@@ -351,9 +348,13 @@ test('Windows native HTTP classified estimate/enable and capture are independent
   const input = { projectId: 'project-test', conversationId: 'fixture-c', turnId: 'fixture-t', agentId: 'fixture-a', targetDir: h.target,
     deliveryMode: 'fresh', prompt: 'question', runConfig: { provider: 'test', model: 'test', skillIds: [], conversationSkillIds: [] },
     harness: { configSnapshot: { toolBridgeEnabled: true, deliveryMode: 'fresh', piVersion: '0.85.1' }, skillSnapshots: [] } };
+  const previewOps = ops.length;
   const captured = await h.service.captureTurnCheckpoint(input); assert.equal(captured.captured, true, captured.reason);
-  assert.ok(ops.includes('selectedSnapshot')); assert.equal(captured.checkpoint.files['ignored.log'], undefined);
-  assert.equal(captured.checkpoint.files['.env'], undefined); assert.equal(captured.checkpoint.files['.git'], undefined);
+  assert.equal(captured.checkpoint.schemaVersion, 2); assert.equal(ops.length, previewOps, 'new turns never invoke the native helper');
+  assert.equal(captured.checkpoint.files['ignored.log'], undefined);
+  assert.equal(h.service.store.readBlob('project-test', captured.checkpoint.files['.env'].hash).toString(), 'SECRET_NOT_AUTHORIZED',
+    'v2 uses known-key literal substitution only, not legacy filename/pattern exclusions');
+  assert.equal(captured.checkpoint.files['.git'], undefined);
   assert.equal(captured.checkpoint.replayInput.complete, false); assert.equal(captured.checkpoint.strictEvalEligible, false);
   process.env.GIT_DIR = path.join(h.root, 'another-root');
   const drifted = await h.service.captureTurnCheckpoint({ ...input, turnId: 'fixture-drift' });

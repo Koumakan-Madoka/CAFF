@@ -16,7 +16,7 @@ const names = (b: Buffer): string[] => b.toString('utf8').split('\0').filter(Boo
 // Normal user Git ignore/config rules remain in effect. Optional locks off:
 // even an incidental Git index refresh must not write to the captured source.
 export async function readSnapshotGit(cwd: string, args: string[]): Promise<Buffer> {
-  const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' };
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' };
   for (const key of Object.keys(env)) if (/^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES)$/i.test(key)) delete env[key];
   const result = await execute('git', ['--no-pager', '-C', cwd, ...args], {
     env, encoding: 'buffer', windowsHide: true, maxBuffer: 256 * 1024 * 1024, timeout: 25000,

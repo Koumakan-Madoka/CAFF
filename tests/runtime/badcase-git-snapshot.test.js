@@ -6,6 +6,9 @@ const { createBadcaseCaptureService } = require('../../build/server/domain/runti
 function fixture(t, options = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-git-snapshot-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const ceiling = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = temp;
+  t.after(() => { if (ceiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES; else process.env.GIT_CEILING_DIRECTORIES = ceiling; });
   const root = path.join(temp, 'repo'); fs.mkdirSync(root);
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' };
   for (const key of Object.keys(env)) if (/^GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES)$/i.test(key)) delete env[key];
