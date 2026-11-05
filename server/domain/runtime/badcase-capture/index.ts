@@ -154,7 +154,7 @@ export function createBadcaseCaptureService(options: any = {}) {
     },
 
     restoreCheckpoint(input: any) {
-      return restoreCheckpoint({ ...input, store });
+      return restoreCheckpoint({ ...input, store, agentDir: options.agentDir, getKnownKeyValues: options.getKnownKeyValues });
     },
 
     computeUsage(projectId: any) {

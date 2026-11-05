@@ -212,7 +212,7 @@ export async function collectGitSnapshot(options: any): Promise<any> {
   const inScope = (p: string) => !p.replaceAll('\\', '/').split('/').some(part => part === '.git' || part === 'node_modules')
     && !matchesRelativePattern(p, excluded);
   let branch = '', baseFileCount = 0, untrackedBytes = 0, projectSkills: any[] = [];
-  const patches: Buffer[] = [], deletions: string[] = [];
+  const patches: Buffer[] = [], deletions: string[] = [], crlfPaths: string[] = [], mixedEolPaths: string[] = [];
   try {
     try { branch = (await git(['symbolic-ref', '--quiet', '--short', 'HEAD'])).toString('utf8').trim(); } catch { budget.check(); /* detached */ }
     try {
@@ -224,6 +224,16 @@ export async function collectGitSnapshot(options: any): Promise<any> {
         else baseFileCount++;
       }
     } catch { budget.check(); gap('.', 'head_inventory_unavailable'); }
+    // HEAD blobs and diff use Git's normalized bytes. Record actual CRLF paths
+    // instead of assuming all Windows files have CRLF. Mixed EOL needs a full
+    // overlay because normalization loses the positions of individual CRs.
+    try {
+      for (const record of names(await git(['ls-files', '--eol', '-z']))) {
+        const tab = record.indexOf('\t'), relative = record.slice(tab + 1), match = /\bw\/(crlf|mixed)\b/.exec(record.slice(0, tab));
+        if (tab < 0 || !inScope(relative) || !match) continue;
+        (match[1] === 'crlf' ? crlfPaths : mixedEolPaths).push(relative);
+      }
+    } catch { budget.check(); gap('.', 'worktree_eol_unavailable'); }
     let changed: string[] = [];
     try { changed = names(await git(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', 'HEAD', '--'])); }
     catch {
@@ -256,6 +266,11 @@ export async function collectGitSnapshot(options: any): Promise<any> {
         if (!current && patch.length) deletions.push(relative);
       } catch { budget.check(); gap(relative, 'git_diff_unavailable'); }
     }
+    for (const relative of mixedEolPaths) {
+      if (files[relative] || deletions.includes(relative)) continue;
+      const current = readFile(cwd, relative);
+      if (current) files[relative] = fileEntry(current.bytes, current.stat, 'mixed-eol-tracked');
+    }
     let untracked: string[] = [];
     try { untracked = names(await git(['ls-files', '--others', '--exclude-standard', '-z'])); }
     catch { budget.check(); gap('.', 'untracked_inventory_unavailable'); }
@@ -283,6 +298,6 @@ export async function collectGitSnapshot(options: any): Promise<any> {
   uncaptured.sort((a, b) => (a.scope || '').localeCompare(b.scope || '') || a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason));
   return { ok: true, files, deletions: deletions.sort(), uncaptured, blobs,
     gitSnapshot: { kind: 'git-snapshot-v1', sourceRepository: repository.root, commonDir: repository.commonDir, head, branch,
-      patchBlobHash, patchBytes: patch.length, baseFileCount, untrackedBytes, excludedPatterns: excluded, projectSkills,
+      patchBlobHash, patchBytes: patch.length, baseFileCount, untrackedBytes, crlfPaths: crlfPaths.sort(), excludedPatterns: excluded, projectSkills,
       captureTimeRemainingMs: budget.remainingMs() } };
 }
