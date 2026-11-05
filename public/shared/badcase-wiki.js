@@ -289,6 +289,7 @@
         html = visibleGroups.length ? visibleGroups.map(group => `<section class="group"><div class="group-head"><h3>${esc(group.title)}</h3><span class="gcount">${group.items.length} 条</span>${group.link ? `<a href="#${esc(group.link)}" data-entry="${esc(group.link)}">打开模式页</a>` : ''}${group.action ? `<button type="button" class="btn small" data-induct ${!rawPending().length || pending || !writable ? 'disabled' : ''}>${preclassificationPending().length ? '预分类并定组' : '用模型归纳新用例'}</button>` : ''}</div>${group.note ? `<p class="group-note">${esc(group.note)}</p>` : ''}${group.items.length ? `<div class="case-grid">${group.items.map(c => caseCard(c, ts)).join('')}</div>` : ''}</section>`).join('') : '<p class="muted-note">没有符合条件的用例。</p>';
       }
       $('#cases-body').innerHTML = html;
+      controls(); // Layout/filter/search renders replace controls; preserve eligibility and write locks.
       if (state.focusCase) { const el = $('#c-' + state.focusCase); state.focusCase = null; if (el) { el.scrollIntoView({ block: 'center', behavior: 'auto' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1900); } }
     }
     /* Optimization targets */

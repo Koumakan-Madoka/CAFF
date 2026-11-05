@@ -125,6 +125,22 @@ test('AI assertion drafting is explicit, annotation-only and never freezes or ch
   assert.match(h.root.querySelector('#c-1 [data-rubric-panel]').textContent, /尚无校准达标/); assert.equal(h.root.querySelector('#c-1 [data-freeze-rubric]').disabled, true);
   assert.equal(h.root.querySelector('#c-1 [data-rubric-panel] script'), null); assert.equal(h.saved().rubrics[0].status, 'draft');
 });
+test('case layout and filters reapply assertion eligibility and failed-write locks after rerender', async t => {
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  const h = setup(t, (_url, options) => { if (options.method === 'POST') throw Error('synthetic-rejection'); });
+  h.saved().rubrics = [createWikiRubric({ caseId: 'c1', version: 1, model: 'deepseek/deepseek-v4-flash', actual: h.saved().cases[0].actual, expected: h.saved().cases[0].expected,
+    questions: [{ id: 'q1', question: '回复先给结论。', evidence: 'reply' }] })];
+  h.saved().eligibleJudges = [];
+  await h.panel.load(); await h.click('[data-tab="cases"]'); await h.click('[data-cases-mode="list"]');
+  const panel = () => h.root.querySelector('#c-1 [data-rubric-panel]');
+  assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, true, 'layout switch cannot enable a draft with no eligible model');
+  await h.click('#c-1 [data-save-rubric]'); assert.equal(h.posts().length, 1);
+  await h.click('[data-cases-mode="group"]');
+  for (const el of panel().querySelectorAll('textarea,select,button')) assert.equal(el.disabled, true, el.outerHTML);
+  const filter = h.root.querySelector('#cases-split'); filter.value = 'train'; filter.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  for (const el of panel().querySelectorAll('textarea,select,button')) assert.equal(el.disabled, true, el.outerHTML);
+  assert.equal(h.posts().length, 1, 'rerenders never retry a failed write');
+});
 test('v2 results show frozen assertions, three-vote citations, hard failures, technical errors and reference-only metrics', async t => {
   const h = setup(t, (url, _options, saved) => url === '/api/wikiskill/executions' ? { executions: [], comparisons: clone(saved.comparisons) } : undefined), rubric = { version: 5, hash: 'a'.repeat(64), scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' }, questions: [{ id: 'q1', question: '冻结时的断言。', evidence: 'reply' }] };
   const binding = { backend: 'deepseek', model: rubric.scoringModel.model, promptHash: 'b'.repeat(64), modelHash: 'c'.repeat(64) };
