@@ -51,7 +51,8 @@ async function sealed(t, { knownValues = [], change = () => {}, projectResources
     config.portableRuntime = projectResources ? { schemaVersion: 1, kind: 'portable-project-resources-v1', supported: true,
       filePaths: [...resourcePaths].sort(), skillPaths: ['.agents/skills/local'] } : { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: true };
     config.sdkStartConfig = { cwd: root, provider: r.runConfig.provider, model: r.runConfig.model, resume: false, thinking: 'off', fast: false,
-      retireUserScopeSkills: true, additionalSkillPaths: external ? sdkSkills.map(s => s.baseDir) : projectResources ? [path.join(root, '.agents/skills/local')] : [] };
+      retireUserScopeSkills: true, extensionPaths: [path.resolve('lib/pi-extensions/caff-capabilities.mjs')],
+      additionalSkillPaths: external ? sdkSkills.map(s => s.baseDir) : projectResources ? [path.join(root, '.agents/skills/local')] : [] };
     if (external) {
       const agentDir = path.join(external, 'agent'); fs.mkdirSync(agentDir);
       Object.assign(config.sdkStartConfig, { agentDir, extensionPaths: [path.resolve('lib/pi-extensions/caff-capabilities.mjs')] });
@@ -217,8 +218,8 @@ for (const reason of ['session_missing', 'project_skills_pending', 'capture_time
 });
 
 for (const [label, change, reason] of [
-  ['unsupported runtime declaration', ({ config }) => { config.portableRuntime.supported = false; }, 'replay_portable_runtime_not_supported'],
-  ['Fast enabled', ({ config }) => { config.sdkStartConfig.fast = true; }, 'replay_fast_mode_not_supported'],
+  ['unsupported thinking', ({ config }) => { config.sdkStartConfig.thinking = 'high'; }, 'replay_recorded_thinking_not_supported'],
+  ['unsupported extension', ({ config }) => { config.sdkStartConfig.extensionPaths = ['/other/plugin.mjs']; }, 'replay_extensions_not_supported'],
   ['unverified dimensions', ({ r }) => { r.unverifiedDimensions = ['unknown']; }, 'replay_unverified_dimensions'],
   ['invocation images', ({ r }) => { r.invocationImageCount = 1; }, 'replay_invocation_images_not_supported'],
 ]) test('v2 allowed callback/file gaps do not waive ' + label, async t => {
@@ -227,6 +228,25 @@ for (const [label, change, reason] of [
     state.cp.uncaptured = [{ path: 'untracked.bin', reason: 'file_unreadable' }]; change(state);
   } });
   assert.deepEqual(prepareSealedOriginalTurn(f.request), { supported: false, reason });
+});
+
+test('already captured v2 false runtime and Fast are disclosed, never rewritten or used to waive thinking/extensions', async t => {
+  const f = await sealed(t, { change({ cp, r, config, put }) {
+    config.portableRuntime.supported = false; config.sdkStartConfig.fast = true;
+    cp.files['.pi/settings.json'] = { type: 'file', hash: put('{}'), size: 2, mode: 0o100644, origin: 'untracked' };
+    Object.assign(cp.gitSnapshot, { skillInventoryStatus: 'loaded', sdkLoadedSkills: [], promptLoadedSkills: [] });
+    config.sdkStartConfig.extensionPaths = [path.resolve('lib/pi-extensions/caff-capabilities.mjs')];
+    r.complete = false; r.incompleteReasons = ['callback_input_unavailable']; delete r.callbackInput;
+    cp.uncaptured = [{ path: 'untracked.bin', reason: 'file_unreadable' }];
+  } });
+  const original = JSON.stringify(f.cp), result = prepareSealedOriginalTurn(f.request); assert.equal(result.supported, true, JSON.stringify(result));
+  assert.equal(result.input.recordedModelConfig.fast, false); assert.equal(JSON.stringify(f.cp), original);
+  assert.equal(result.input.files.some(f => f.path === '.pi/settings.json'), false);
+  assert.ok(result.provenance.captureDisclosures.portableGaps.some(g => g.path === '.pi/settings.json' && g.reason === 'project_resource_not_replayed'));
+  for (const reason of ['portable_runtime_unverified', 'fast_mode_not_replayed']) assert.ok(result.provenance.captureDisclosures.portableGaps.some(g => g.reason === reason), reason);
+  const file = path.join(f.root, 'portable-plan.json'); fs.writeFileSync(file, JSON.stringify(planConfig(f)));
+  const plan = JSON.parse(execFileSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', file, '--plan'], { encoding: 'utf8' }));
+  assert.equal(plan.supported, true, JSON.stringify(plan)); assert.deepEqual(plan.captureDisclosures, result.provenance.captureDisclosures);
 });
 
 test('v2 does not discard corrupt callback material even when a historical unavailable marker is present', async t => {

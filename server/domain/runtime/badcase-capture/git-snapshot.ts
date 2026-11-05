@@ -201,7 +201,13 @@ export function collectLoadedProjectSkills(options: any): any {
     loadedSkills.push({ name: String(skill.name || ''), filePath, baseDir });
     roots.push(path.basename(filePath).toLowerCase() === 'skill.md' ? baseDir : filePath);
   }
-  return { loadedSkills, projectSkills: archiveProjectSkills(roots, archive), uncaptured: archive.uncaptured, blobs: archive.blobs,
+  const loadedContexts: any[] | undefined = Array.isArray(options.contextFiles) ? [] : undefined;
+  for (const context of options.contextFiles || []) {
+    if (typeof context?.path !== 'string' || !path.isAbsolute(context.path)) { archive.gap('.', 'context_path_invalid', 'sdk'); continue; }
+    const filePath = path.resolve(context.path);
+    loadedContexts!.push({ filePath }); roots.push(filePath); // a file, never its parent directory
+  }
+  return { loadedSkills, ...(loadedContexts ? { loadedContexts } : {}), projectSkills: archiveProjectSkills(roots, archive), uncaptured: archive.uncaptured, blobs: archive.blobs,
     captureTimeRemainingMs: archive.budget.remainingMs() };
 }
 

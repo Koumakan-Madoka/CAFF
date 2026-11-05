@@ -408,9 +408,10 @@ function formatComparison(result) {
   if (result.replaySession) lines.push('封存会话：resume；前缀' + result.replaySession.lineCount + '行，SHA-256=' + result.replaySession.prefixHash + '；只重绑已声明的上下文/回调，不重放中途消息。',
     '历史工具（含bash/未知工具及结果）仅作上下文，不执行；当前轮次是否依赖历史外部路径未核验，按用户裁决先放行，不承诺外部状态已恢复。');
   if (result.captureDisclosures) {
-    const { roomRecord, uncaptured } = result.captureDisclosures;
+    const { roomRecord, uncaptured, portableGaps = [] } = result.captureDisclosures;
     if (!roomRecord.available) lines.push('披露：房间记录不可用；仅创建明确标记的隔离回调占位，不还原原房间历史。');
     else if (roomRecord.omissions) lines.push('披露：房间公开记录按尽力而为保存；省略计数=' + JSON.stringify(roomRecord.omissions));
+    for (const gap of portableGaps) lines.push('可移植缺口：' + JSON.stringify(gap.path) + '；原因=' + JSON.stringify(gap.reason));
     for (const gap of uncaptured) lines.push('跳过文件：' + JSON.stringify(gap.path) + '；原因=' + JSON.stringify(gap.reason) + (gap.scope ? '；范围=' + JSON.stringify(gap.scope) : ''));
     if (!roomRecord.available || uncaptured.length) lines.push('该现场有已披露缺口，不代表完整还原。');
   }

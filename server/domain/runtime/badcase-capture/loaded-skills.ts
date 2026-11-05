@@ -26,7 +26,7 @@ export function captureLoadedProjectSkills(options: any, input: any): any {
         captureTimeLimitMs: cp.gitSnapshot.captureTimeRemainingMs ?? Math.max(0, CAPTURE_TIME_LIMIT_MS - cp.stats.durationMs) });
       const keys = typeof options.getKnownKeyValues === 'function' ? options.getKnownKeyValues() : knownCaptureKeyValues(options.agentDir);
       const available = Array.isArray(input.skills);
-      const collected = collectLoadedProjectSkills({ skills: available ? input.skills : [], knownKeyValues: keys, budget });
+      const collected = collectLoadedProjectSkills({ skills: available ? input.skills : [], contextFiles: input.contextFiles, knownKeyValues: keys, budget });
       // Same resource bytes may serve both origins, but replay must not turn a
       // prompt-only skill into a newly SDK-discovered skill. Never infer these
       // source lists from an older caller's already-merged inventory.
@@ -44,6 +44,7 @@ export function captureLoadedProjectSkills(options: any, input: any): any {
       };
       const sdkLoadedSkills = originInventory(input.sdkSkills), promptLoadedSkills = originInventory(input.promptSkills);
       cp.gitSnapshot = { ...cp.gitSnapshot, loadedSkills: collected.loadedSkills, projectSkills: collected.projectSkills,
+        ...(collected.loadedContexts === undefined ? {} : { loadedContexts: collected.loadedContexts }),
         ...(sdkLoadedSkills === undefined ? {} : { sdkLoadedSkills }), ...(promptLoadedSkills === undefined ? {} : { promptLoadedSkills }),
         captureTimeRemainingMs: collected.captureTimeRemainingMs,
         skillInventoryStatus: available ? 'loaded' : 'unavailable' };
