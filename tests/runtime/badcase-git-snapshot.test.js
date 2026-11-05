@@ -158,6 +158,21 @@ test('raw non-UTF-8 repository filenames mark capture incomplete while preservin
   assert.deepEqual(fs.readFileSync(path.join(h.root, '.git/index')), index);
 });
 
+test('index assume-unchanged and skip-worktree flags are disclosed gaps, never silently restored as clean HEAD bytes', async t => {
+  const h = fixture(t); h.enable();
+  h.git(h.root, 'update-index', '--assume-unchanged', '--', 'tracked.txt');
+  h.git(h.root, 'update-index', '--skip-worktree', '--', 'staged.txt');
+  fs.writeFileSync(path.join(h.root, 'tracked.txt'), 'hidden dirty');
+  fs.writeFileSync(path.join(h.root, 'staged.txt'), 'hidden sparse dirty');
+  const index = fs.readFileSync(path.join(h.root, '.git/index'));
+  const captured = await h.capture(); assert.equal(captured.captured, true);
+  assert.deepEqual(captured.checkpoint.uncaptured.map(g => [g.path, g.reason]).sort(), [['staged.txt', 'index_skip_worktree'], ['tracked.txt', 'index_assume_unchanged']]);
+  assert.ok(captured.checkpoint.replayInput.incompleteReasons.includes('files_uncaptured'));
+  const restored = require('../../build/server/domain/runtime/badcase-capture/git-snapshot-materialization').materializeGitSnapshot({ checkpoint: captured.checkpoint, store: h.service.store, knownKeyValues: [] });
+  assert.equal(restored.files['tracked.txt'], undefined); assert.equal(restored.files['staged.txt'], undefined);
+  assert.ok(restored.files['deleted.txt']); assert.deepEqual(fs.readFileSync(path.join(h.root, '.git/index')), index);
+});
+
 test('known-key literals alone are replaced, not token-like example text; project skill roots retain original paths and bytes', async t => {
   const known = 'local-known-value-12345', h = fixture(t, { getKnownKeyValues: () => [known] }); h.enable();
   const skills = path.join(h.root, '.agents', 'skills', 'local'); fs.mkdirSync(skills, { recursive: true });

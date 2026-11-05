@@ -174,6 +174,16 @@ test('known-value guard streams a combined input larger than the V8 string ceili
   const result = await runComparison({ ...config(), repeats: 1 }, f.options);
   assert.equal(executions, 1); assert.equal(result.runs[0].reason, 'run_evidence_unavailable');
 });
+test('v2 capture omissions persist through plan, JSON result and human-readable result without being called complete', async () => {
+  const f = fakes(), original = f.options.prepare;
+  const disclosures = { roomRecord: { available: false, reason: 'callback_input_unavailable', replayMode: 'isolated-placeholder-not-original-history' },
+    uncaptured: [{ path: 'omitted 中文.txt', reason: 'index_assume_unchanged' }], incompleteReasons: ['callback_input_unavailable', 'files_uncaptured'] };
+  f.options.prepare = (...args) => { const p = original(...args); p.provenance.captureDisclosures = disclosures; return p; };
+  assert.deepEqual(prepareComparison(config(), f.options).summary.captureDisclosures, disclosures);
+  const result = await runComparison(config(), f.options); assert.deepEqual(result.captureDisclosures, disclosures);
+  const text = formatComparison(result); assert.match(text, /房间记录不可用/); assert.match(text, /omitted 中文.txt/); assert.match(text, /index_assume_unchanged/);
+});
+
 test('planning is credential/Docker-free; unsupported and unconfirmed inputs cannot run', async () => {
   const f = fakes(); const p = prepareComparison(config(), f.options); assert.equal(p.supported, true); assert.equal(f.state.keys, 0); assert.equal(f.state.executions, 0);
   await assert.rejects(runComparison(config(), { ...f.options, confirmed: false }), /confirmation_required/);

@@ -32,6 +32,14 @@ function sensitive(v: any, depth = 0): boolean {
   }
   return false;
 }
+export const callbackOmissionCounts = ['privateMessages', 'delegations', 'delegationMessages', 'mediaParts', 'truncatedMessages', 'truncatedBytes', 'unsupportedMessages', 'metadataOmitted'];
+export function validateCallbackOmissions(value: any) {
+  if (!exact(value, [...callbackOmissionCounts, 'roomHistoryUnavailable'])
+    || !callbackOmissionCounts.every(k => Number.isSafeInteger(value[k]) && value[k] >= 0)
+    || typeof value.roomHistoryUnavailable !== 'boolean') throw fail();
+  return value;
+}
+
 /** Trusted callers supply independently authorized pre-turn state and exact
  * association/hash. A hash is integrity, NOT proof of origin or consent. Missing
  * private/delegation/attachment semantics must never be silently approximated.
@@ -42,8 +50,10 @@ export function prepareEvaluationCallbackTrace(raw: any, expectedHash: any, expe
   if (typeof expectedHash !== 'string' || !/^[a-f0-9]{64}$/.test(expectedHash)
     || crypto.createHash('sha256').update(raw).digest('hex') !== expectedHash) throw fail('evaluation_trace_hash_mismatch');
   let v: any; try { v = JSON.parse(raw); } catch { throw fail(); }
-  if (!exact(v, ['schemaVersion', 'kind', 'association', 'assistantCreatedAt', 'conversation', 'participants', 'publicMessages', 'privateMessages', 'pendingDelegations'])
-    || v.schemaVersion !== 1 || v.kind !== 'caff-evaluation-callback-input-v1'
+  const bestEffort = v?.schemaVersion === 2 && v?.kind === 'caff-evaluation-callback-input-v2';
+  if (bestEffort) validateCallbackOmissions(v.omissions);
+  if (!exact(v, ['schemaVersion', 'kind', 'association', 'assistantCreatedAt', 'conversation', 'participants', 'publicMessages', 'privateMessages', 'pendingDelegations', ...(bestEffort ? ['omissions'] : [])])
+    || !bestEffort && (v.schemaVersion !== 1 || v.kind !== 'caff-evaluation-callback-input-v1')
     || !exact(v.association, associationKeys) || !associationKeys.every(k => id(v.association[k]))
     || !exact(expectedAssociation, associationKeys) || !associationKeys.every(k => v.association[k] === expectedAssociation[k])) throw fail('evaluation_trace_association_mismatch');
   if (!Array.isArray(v.privateMessages) || !Array.isArray(v.pendingDelegations)) throw fail();
@@ -80,10 +90,13 @@ export function prepareEvaluationCallbackTrace(raw: any, expectedHash: any, expe
   // association.turnId belongs to the executing assistant; queued users keep
   // their original accepted-message turnId, already validated as a public row.
   if (!user || user.role !== 'user' || !user.content.trim()) throw fail('evaluation_trace_association_mismatch');
-  if (sensitive(v)) throw fail('evaluation_trace_sensitive');
+  // v2 public text is intentionally NOT classified by appearance. Its trusted
+  // capture boundary redacts only known host literals; schema/hash checks stay.
+  if (!bestEffort && sensitive(v)) throw fail('evaluation_trace_sensitive');
   return { trace: v, seed: { conversationId: v.association.conversationId, turnId: v.association.turnId,
     agent: { id: active.id, name: active.name }, userMessage: { id: user.id, content: user.content }, assistantMessageId: v.association.assistantMessageId },
     receipt: { kind: 'evaluation-callback-trace-receipt-v1', traceHash: expectedHash,
       association: { ...v.association }, publicMessageCount: v.publicMessages.length, participantCount: v.participants.length,
-      privateStateSupported: false, faithfulReplay: false, strictEvalEligible: false } };
+      privateStateSupported: false, faithfulReplay: false, strictEvalEligible: false,
+      ...(bestEffort ? { omissions: { ...v.omissions }, roomHistoryUnavailable: v.omissions.roomHistoryUnavailable } : {}) } };
 }
