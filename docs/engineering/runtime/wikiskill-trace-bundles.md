@@ -70,7 +70,18 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 `sealed` 只读取选定 checkpoint 清单及其明确引用且 hash 验证通过的 prompt/session/callback blobs。核对 checkpoint、callback 与用例的关联。封存的 replay 输入是**轮前前缀**，不是当轮模型输出；保存在 `context.retained`（`sealed_pre_turn_inputs`），与真正的 `context.trigger/priorSessionEntries/steps` 分开。当轮未录制则标 `sealed_marked_turn_not_recorded`，不访问它们的线上会话补造。现场只保存文件清单。旧清单未记 HEAD/branch 时保留 null 和原因。
 
-报告逐条保存 `complete|partial|unavailable|already_frozen`、包 hash、步数、缺失原因，另附源文件 hash 对照和查询审计。`partial` 是有当轮步骤但仍缺材料，`unavailable` 是没有可确认的当轮步骤（仍可保留已有上下文/现场）。成功和失败都不改原组别、回放登记或旧快照；已冻结用例重试不再打开来源。实际数据和操作报告留在忽略的临时证据目录，不进入 Git。
+报告逐条保存 `caseId`、由与页面相同的 `wikiDisplayCases` / `wikiGoalCaseNumber` 得到的 `caseNumber`、`complete|partial|unavailable|already_frozen`、包 hash、步数、缺失原因，另附源文件 hash 对照和查询审计。报告顺序不代表用例编号；不得用遍历计数、导入顺序或调用方的 `n` 字段选题。`partial` 是有当轮步骤但仍缺材料，`unavailable` 是没有可确认的当轮步骤（仍可保留已有上下文/现场）。成功和失败都不改原组别、回放登记或旧快照；已冻结用例重试不再打开来源。实际数据和操作报告留在忽略的临时证据目录，不进入 Git。
+
+## M3 脱水基础模块（尚未接入运行入口）
+
+`wiki-dehydration.ts` 是纯数据模块，不读文件、凭据或可变房间上下文，不调用 JEV/模型或工具。目前只实现：
+
+- 身份由 caseId 与冻结包 source/hash 绑定，编号仅由 `wikiGoalCaseNumber` 投影；旧题来源 #4/#10/#14 不允许脱水。判断具体系统提示词、触发消息、前缀和标记步骤是否存在，不因旧 `original_context_unavailable` 或缺耗时就拒绝已有消息前缀。现场用例默认仍走 trace。
+- JEV 请求只投影当时起因、步骤卡片、发出回复、实际问题及期望，最后放能否脱水/切点两题。起因必须选自冻结的本轮输入或当时 Goal，不能从当前 Goal 补造。卡片不含 thinking 或结果 details，先替换已知 key 再裁剪；消息/方案正文保留头 500 尾 300，普通步骤最多 120，错误步骤保留报错行。只询问不晚于发出被标记消息的步骤；大于 254 个切点或 state 超过 64k 时显式拒绝，不静默丢材料。调用方还必须审核脱敏材料后才允许外发。
+- 两题概率分别使用最高概率，阈值为 ≥0.65；缺概率不伪造数值。低把握分类按说不清处理；非单步、无切点或切点低把握时只提供发消息步骤的回退值，均须用户确认，不自动冻结。
+- 切点前缀只含冻结的续用消息、本轮输入、切点前的模型输出及完整结果，既不含切点输出也不含之后记账。历史展示版系统提示词和路径占位原样保留，metadata 明记「系统提示词为历史展示版，路径行已占位」。缺前置工具结果、无法解释的压缩前缀或越界切点拒绝，不用当前上下文兜底。
+
+确认持久化、页面、实际 JEV 调用、带固定版本工具 schema 的单次模型回放及结果存储仍未接入；本模块本身不能启动回放、确认用例资格或产出判分。当前批准先推进的用例仅为页面 #1/#2/#3/#5/#16，其他用例等待用户裁定；不删除任何用例。
 
 ## 失败与验证
 

@@ -4,6 +4,7 @@
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 const { buildWikiTraceBundle, wikiTraceReference } = require('../../build/server/domain/runtime/badcase-capture/wiki-trace');
+const { wikiDisplayCases } = require('../../build/server/domain/runtime/badcase-capture/wiki-suite');
 const fail = code => Object.assign(Error(code), { code });
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const MAX = 128 * 1024 * 1024;
@@ -61,6 +62,13 @@ function recoverBounds(text, reply) {
     }
     return { sessionAssistantStartIndex: assistants.indexOf(chain[0]), sessionAssistantEndIndex: end };
   } catch { return null; }
+}
+function projectBackfillResults(results, cases) {
+  const numbers = new Map(wikiDisplayCases(cases).map(c => [c.id, c.displayNumber]));
+  return results.map(result => {
+    if (!numbers.has(result.caseId)) throw fail('wiki_backfill_selection_invalid');
+    return { ...result, caseNumber: numbers.get(result.caseId) };
+  });
 }
 function backfillWikiTraces({ config, confirmed, knownKeyValues,
   openDatabase = (file, options) => new (require('better-sqlite3'))(file, options) }) {
@@ -203,7 +211,7 @@ function backfillWikiTraces({ config, confirmed, knownKeyValues,
     const packet = store.readCaseTrace(item.id), reference = wikiTraceReference(packet);
     return { caseId: item.id, status: existing ? 'already_frozen' : packet.complete ? 'complete' : packet.steps.length ? 'partial' : 'unavailable', ...reference };
   });
-  return { schemaVersion: 1, frozenAt, results, audit };
+  return { schemaVersion: 1, frozenAt, results: projectBackfillResults(results, cases), audit };
 }
 async function main(args = process.argv.slice(2)) {
   if (args.length !== 3 || args[0] !== '--config' || !path.isAbsolute(args[1]) || args[2] !== '--confirmed') throw fail('wiki_backfill_usage');
@@ -218,4 +226,4 @@ if (require.main === module) main().catch(e => {
   const code = /^(?:wiki_[a-z_]+|evaluation_known_keys_unavailable)$/.test(e.code || '') ? e.code : 'wiki_backfill_failed';
   process.stderr.write(JSON.stringify({ error: code }) + '\n'); process.exitCode = 1;
 });
-module.exports = { backfillWikiTraces, copyReadOnlyFile, main };
+module.exports = { backfillWikiTraces, copyReadOnlyFile, projectBackfillResults, main };

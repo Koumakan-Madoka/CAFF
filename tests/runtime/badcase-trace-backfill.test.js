@@ -2,7 +2,7 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const Database = require('better-sqlite3');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
-const { backfillWikiTraces, copyReadOnlyFile } = require('../../scripts/badcase-capture/backfill-wiki-traces.cjs');
+const { backfillWikiTraces, copyReadOnlyFile, projectBackfillResults } = require('../../scripts/badcase-capture/backfill-wiki-traces.cjs');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-backfill-test-'));
@@ -36,6 +36,8 @@ test('approved keyed read-only backfill copies before parsing, keeps source hash
   const h = fixture(t), before = fs.readFileSync(h.dbFile), old = h.store.read();
   const report = run(h), packet = h.store.readCaseTrace(h.item.id);
   assert.equal(report.results[0].status, 'complete');
+  assert.equal(report.results[0].caseNumber, 1);
+  assert.equal(report.results[0].caseId, h.item.id);
   assert.equal(packet.origin, 'backfill'); assert.equal(packet.steps.length, 1);
   assert.doesNotMatch(JSON.stringify(packet), /inert-known-value/);
   assert.deepEqual(fs.readFileSync(h.dbFile), before);
@@ -48,6 +50,14 @@ test('approved keyed read-only backfill copies before parsing, keeps source hash
   }
   assert.equal(h.store.read().cases[0].split, old.cases[0].split);
   assert.deepEqual(h.store.read().replayCases, old.replayCases);
+});
+test('backfill report numbers come from canonical source IDs, never result order or supplied ordinals', () => {
+  const one = 'text-3ff896480224fea1cde010370be091785529db0b1b18d8b5e0648a0a4f15aa89';
+  const six = 'text-cd864c2eb09ede39cd520b18e36a0d8e02b244b6a8dde3db2390bba65e48c940';
+  const cases = [{ id: six, n: 1 }, { id: one, n: 2 }], before = structuredClone(cases);
+  const projected = projectBackfillResults([{ caseId: six, hash: 'six' }, { caseId: one, hash: 'one' }], cases);
+  assert.deepEqual(projected.map(r => [r.caseId, r.caseNumber]), [[six, 6], [one, 1]]);
+  assert.deepEqual(cases, before);
 });
 test('task fallback uses real task schema and verifies its stored association', t => {
   const h = fixture(t), db = new Database(h.dbFile);
