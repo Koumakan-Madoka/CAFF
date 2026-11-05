@@ -8,7 +8,7 @@
     const storageAdvice = '请将 CAFF_BADCASE_CAPTURE_DIR 设为项目目录外的绝对路径，并重启本实例。已有现场不会自动搬迁，请保留旧采集库。';
     root.innerHTML = `
       <h3>保存问题现场</h3>
-      <p class="muted">开启后，每轮执行前保存 Git HEAD、相对 HEAD 的改动补丁、未跟踪文件及实际加载的项目 skill，并保存本轮回放输入（含 session 历史和本项目公共文本上下文）。只替换本机已知 key 的原值，不保证发现其他秘密。</p>
+      <p class="muted">开启后，每轮开始前记下代码版本、未提交的改动和新文件，也保存实际加载的项目 skill 和本轮回放输入（含 session 历史、本项目公共文本上下文）。只替换本机已知 key 的原值，不保证发现其他秘密。</p>
       <p data-capture-directory class="muted"></p>
       <div class="button-row"><button type="button" role="switch" aria-checked="false" data-capture-action="toggle">开启采集</button>
       <button type="button" class="ghost-button" data-capture-action="refresh">刷新状态</button></div>
@@ -30,6 +30,13 @@
       root.setAttribute('aria-busy', String(pending));
     }
     const nonnegative = value => Number.isSafeInteger(value) && value >= 0;
+    function formatBytes(value) {
+      if (!nonnegative(value)) return '未知';
+      if (value < 1000) return `${value} B`;
+      const divisor = value >= 1e9 ? 1e9 : value >= 1e6 ? 1e6 : 1e3;
+      const unit = divisor === 1e9 ? 'GB' : divisor === 1e6 ? 'MB' : 'KB';
+      return `${(value / divisor).toFixed(1).replace(/\.0$/, '')} ${unit}`;
+    }
     function show(result) {
       if (!result?.policy || !['enabled', 'disabled', 'suspended'].includes(result.policy.status)
         || (!result.usage && result.usageError !== 'capture_usage_unavailable')) throw new Error('采集状态无效');
@@ -45,7 +52,7 @@
       storage.hidden = result.storage?.overlapsProject !== true;
       storage.textContent = storage.hidden ? '' : `${result.storage.insideProject ? '采集库位于项目目录内' : '采集库与项目目录重叠'}，不能开启采集。${storageAdvice}`;
       element('[data-capture-usage]').textContent = result.usage
-        ? `已保存现场占用：${result.usage.totalBytes} B` : '现场占用未知，请检查存储后刷新。';
+        ? `已保存现场占用：${formatBytes(result.usage.totalBytes)}` : '现场占用未知，请检查存储后刷新。';
       const data = result.lastCapture;
       const labels = { captured: '已保存', partial: '部分保存', pending_skills: '等待 skill 归档', failed: '采集失败' };
       if (!data) {
@@ -54,7 +61,7 @@
         const timestamp = Number.isFinite(Date.parse(data.createdAt)) ? new Date(data.createdAt).toLocaleString() : '时间未知';
         element('[data-capture-last]').textContent = `最近采集：${labels[data.status] || '已保存（旧记录）'} · ${timestamp}`
           + `\n跳过：${nonnegative(data.skippedCount) ? data.skippedCount : '未知'} 项`
-          + (nonnegative(data.totalNewBytes) ? ` · 新增 ${data.totalNewBytes} B` : '')
+          + (nonnegative(data.totalNewBytes) ? ` · 新增 ${formatBytes(data.totalNewBytes)}` : '')
           + (typeof data.preparationDurationMs === 'number' && Number.isFinite(data.preparationDurationMs) && data.preparationDurationMs >= 0 ? ` · ${Math.round(data.preparationDurationMs)} ms` : '')
           + (data.targetDir ? `\n目录：${data.targetDir}` : '') + (data.reason ? `\n原因：${data.reason}` : '');
       }

@@ -31,11 +31,21 @@ test('one switch uses the registered project path as read-only text, no director
   assert.equal(h.root.querySelectorAll('input, textarea, details').length, 0);
   assert.match(h.root.querySelector('[data-capture-directory]').textContent, /\/repo/);
   assert.doesNotMatch(h.root.textContent, /legacy-other-dir|不支持外置 Git|凭据和私有目录不保存/);
+  assert.match(h.root.textContent, /每轮开始前记下代码版本、未提交的改动和新文件/);
   assert.equal(h.root.querySelectorAll('[role="switch"]').length, 1);
   assert.equal(h.button('toggle').getAttribute('aria-checked'), 'false');
   assert.match(h.root.textContent, /321 B/); assert.match(h.root.textContent, /尚无采集记录/);
   assert.match(h.root.querySelector('[data-capture-coverage]').textContent, /2.*房间|房间.*2/);
 });
+for (const [bytes, label] of [[0, '0 B'], [999, '999 B'], [1000, '1 KB'], [1500, '1.5 KB'], [1000000, '1 MB'], [22800000, '22.8 MB'], [1000000000, '1 GB']]) {
+  test('usage and last checkpoint format bytes as ' + label, async t => {
+    const h = setup(t, url => url.endsWith('/badcase-capture') ? { ...state(), usage: { totalBytes: bytes },
+      lastCapture: { status: 'captured', createdAt: '2026-11-05T01:00:00Z', skippedCount: 0, totalNewBytes: bytes } } : undefined);
+    await h.panel.select({ id: 'a' });
+    assert.equal(h.root.querySelector('[data-capture-usage]').textContent, '已保存现场占用：' + label);
+    assert.ok(h.root.querySelector('[data-capture-last]').textContent.includes('新增 ' + label));
+  });
+}
 test('enable confirms project/worktree/skill/session/public scope and posts one switch with CSRF', async t => {
   const h = setup(t); await h.panel.select({ id: 'a', name: 'A', path: '/repo' }); await h.click('toggle');
   assert.equal(h.confirmations.length, 1);
