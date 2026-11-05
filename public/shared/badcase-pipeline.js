@@ -35,9 +35,10 @@
       checkpoint_missing: '未找到原现场清单', checkpoint_unreadable: '原现场清单无法读取', source_message_missing: '未找到原消息', marked_message_truncated: '原回复存档被截断',
     };
     let D = { cases: [], caseStates: [] }, q = '', stage = 'all', model = 'all', mode = 'group';
-    const cache = new Map(), expanded = new Set(), queries = new Map();
+    const cache = new Map(), expanded = new Set(), queries = new Map(), runCache = new Map();
     let writable = typeof onConfirmDecision === 'function';
     const dehydration = c => (D.dehydrations || []).find(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash);
+    const caseRuns = c => (D.runReplays || []).filter(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash && r.decisionHash === dehydration(c)?.decision?.hash);
     const kindLabel = k => ({ single: '单步型', throughout: '贯穿型', unclear: '说不清（按贯穿型）' }[k] || k);
     root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec"><h2>从 badcase 到测试用例</h2><p class="hint">有现场默认走 trace 级；无现场须经 DeepSeek 推荐、你确认后脱水成 run 级。测试组只收 trace 级，门槛中 run 级不超过一半，训练组 run 级只作初筛。旧分组保留，重新分组尚待你确认。</p><div data-funnels></div></section>
       <div class="toolbar"><label class="search"><input data-bc-search type="search" aria-label="搜索 badcase" placeholder="搜索问题、期望、来源房间或编号" autocomplete="off"></label>
@@ -59,7 +60,7 @@
     }
     function plan(c) {
       const has = hasScene(c), old = sourceOnly(c), other = !isGpt(c), cs = D.caseStates?.find(s => s.caseId === c.id), r = dehydration(c), d = r?.decision;
-      const reference = d?.level === 'reference';
+      const reference = d?.level === 'reference', replayed = caseRuns(c).some(r => r.status === 'reached' || r.status === 'unreached');
       const steps = [
         ['done', c.kind === 'text-only' ? '用户批准的历史导入' : '页面标记'],
         [has ? 'pending' : 'alt', has ? sceneWait + '；已有封存清单不等于现场元数据齐全' : '没有现场；须先确认能否脱水'],
@@ -67,20 +68,36 @@
         [cs?.memberships?.length ? 'done' : 'pending', cs?.memberships?.length ? '已有已确认模式标签' : '待归类；不自动改模式'],
         [old ? 'done' : 'pending', old ? '原测试分组保留' : '旧分组保留；分层重新分组待用户确认'],
         ['pending', '评分 v2 待接入：断言及逐条判定由独立 Goal 负责'],
-        ['pending', '待检查冻结输入；旧回放登记不等于本流程检查通过'],
-        ['pending', '待原版复现；旧字面评分不作新版入库证据'],
+        [replayed ? 'done' : 'pending', replayed ? '已用冻结切点前缀单次调用；未执行工具，不做前缀一致性检验' : '待检查冻结输入；旧回放登记不等于本流程检查通过'],
+        [replayed ? 'alt' : 'pending', replayed ? '单次回放原文已保存；是否复现及判分由评分 v2 接入后判断' : '待原版复现；旧字面评分不作新版入库证据'],
         ['pending', '前置条件未齐，不宣称已成为合格测试用例'],
       ];
       if (old || other) for (let i = old ? 5 : 2; i < 9; i++) steps[i] = ['skip', old ? '只作旧题来源，不单独入库' : '只报告，不计入 GPT 结论'];
       if (reference) for (let i = 4; i < 9; i++) steps[i] = ['skip', '无现场且非单步型；只作参考和训练组文字材料，不成为测试用例'];
       const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : r && !d ? 'you' : 'system';
-      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题' : d ? '脱水决定已冻结，等待原版单次回放；不会自动启动' : r ? '请确认能否脱水与切点；确认后不可修改' : has ? sceneWait : '等待 DeepSeek 推荐，再请你确认' };
+      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题' : d ? replayed ? '回放原文已保存，等待分组和评分 v2；本页不判分' : '脱水决定已冻结，等待原版单次回放；不会自动启动' : r ? '请确认能否脱水与切点；确认后不可修改' : has ? sceneWait : '等待 DeepSeek 推荐，再请你确认' };
     }
     function funnel() {
       const gpt = D.cases.filter(isGpt), tr = gpt.filter(hasScene), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c));
       const lane = (key, title, note, cells) => `<div class="lane" data-lane="${key}"><div class="lane-head"><b>${title}</b><span>${note}</span></div><div class="funnel">${cells.map(([n, l]) => `<div class="f-step ${n ? '' : 'zero'}"><b>${n}</b><span>${l}</span></div>`).join('')}</div></div>`;
       $('[data-funnels]').innerHTML = lane('trace', 'trace 级', '有现场；完整采集能力待合入，不能把封存当作已通过回放检查', [[tr.length, 'GPT 且有封存现场'], [tr.filter(c => c.traceBundle).length, '已冻结轨迹包'], [0, '新版回放检查通过'], [0, '新版断言已冻结'], [0, '本流程合格测试用例']])
         + lane('run', 'run 级（脱水）', '无现场待脱水，不含 #4、#10、#14 的旧题来源；尚未确认的不是 run 级测试用例', [[rn.length, 'GPT 无现场待脱水'], [rn.filter(c => c.traceBundle?.stepCount).length, '已恢复当轮轨迹'], [rn.filter(c => c.traceBundle?.complete).length, '完整轨迹包'], [rn.filter(c => dehydration(c)?.decision?.level === 'run').length, '用户确认可脱水'], [0, '门槛用例 / 初筛用例']]);
+      const runs = gpt.flatMap(caseRuns);
+      if (runs.length) $('[data-funnels]').insertAdjacentHTML('beforeend', `<p data-run-totals>单次 run 回放共 ${runs.length} 次：已到达 ${runs.filter(r => r.status === 'reached').length}；未到达决策点 ${runs.filter(r => r.status === 'unreached').length}（按不通过计）；请求失败 ${runs.filter(r => r.status === 'error').length}；结果未知 ${runs.filter(r => r.status === 'reserved').length}。到达不代表判分通过。</p>`);
+    }
+    function replayPanel(c) {
+      const rows = caseRuns(c); if (!rows.length) return '';
+      const labels = { reached: '已到达决策点（未判分）', unreached: '未到达决策点 · 按不通过计', error: '请求失败（不冒充模型答案）', reserved: '已占用 · 结果未知，不自动重试' };
+      return `<section class="dehydration-panel" data-run-panel="${esc(c.id)}"><h4>单次 run 级回放</h4><p>已到达 ${rows.filter(r => r.status === 'reached').length} · 未到达决策点 ${rows.filter(r => r.status === 'unreached').length} · 请求失败 ${rows.filter(r => r.status === 'error').length} · 结果未知 ${rows.filter(r => r.status === 'reserved').length}。这里只报告原文和计数，尚未接入判分。</p>${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>${r.variant.kind === 'original' ? '原版' : '候选 ' + esc(r.variant.id)} · ${esc(labels[r.status] || r.status)} · 查看完整输出及实际请求</summary><p>${esc(r.model)} · thinking ${esc(r.thinking)} · 模型调用 ${r.modelCalls ?? '未知'} · 工具执行 ${r.toolExecutions ?? '未知'}</p><p class="trace-hash mono">请求 SHA-256：${esc(r.id)}<br>结果 SHA-256：${esc(r.resultHash || '未取得')}</p><div data-run-body></div></details>`).join('')}</section>`;
+    }
+    async function loadRun(details) {
+      const id = details.dataset.runDetails, caseId = details.dataset.runCase, host = details.querySelector('[data-run-body]');
+      const render = row => { host.textContent = ''; const pre = document.createElement('pre'); pre.className = 'tl-req'; pre.textContent = row.state === 'ready' ? json(row.packet) : row.state === 'error' ? '回放记录读取失败；未使用其他结果兜底。' : '正在读取完整回放记录…'; host.appendChild(pre); };
+      if (runCache.has(id)) { render(runCache.get(id)); return; }
+      const row = { state: 'loading', packet: null }; runCache.set(id, row); render(row);
+      try { const packet = await fetchJson('/api/wikiskill/cases/' + encodeURIComponent(caseId) + '/run-replays/' + encodeURIComponent(id)); if (!packet?.reservation) throw Error(); row.packet = packet; row.state = 'ready'; }
+      catch { row.state = 'error'; runCache.delete(id); }
+      if (details.isConnected) render(row);
     }
     function dehydrationPanel(c) {
       const r = dehydration(c); if (!r || sourceOnly(c) || !isGpt(c)) return '';
@@ -101,7 +118,7 @@
         <div class="next-line"><span class="who ${p.actor === 'system' ? 'sys' : 'none'}">${p.actor === 'system' ? '系统' : p.actor === 'you' ? '你' : '到此为止'}</span><span>${esc(p.next)}</span></div>
         <div class="chips"><span class="pill ${tone}">${backfill(c)}</span>${hasScene(c) ? `<span class="pill warn">现场：${sceneWait}</span>` : '<span class="pill">无现场</span>'}</div>
         ${ref?.missingReasons?.length ? `<p class="hint">缺失：${ref.missingReasons.map(r => `<span title="${esc(r)}">${esc(reasonLabels[r] || r)}</span>`).join('；')}</p>` : ''}
-        ${dehydrationPanel(c)}
+        ${dehydrationPanel(c)}${replayPanel(c)}
         <details class="more"><summary>详情与步骤说明</summary><p class="case-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</p><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul><div class="muted-note" data-assertion-slot="${esc(c.id)}">评分断言与逐条判定：评分 v2 待接入，本页不生成或冻结评分断言。</div></details>
         <details class="more trace" data-trace-case="${esc(c.id)}" ${expanded.has(c.id) ? 'open' : ''}><summary>轨迹与上下文${ref ? `（${ref.stepCount} 次模型调用）` : ''}</summary><div data-trace-host="${esc(c.id)}"></div></details></article>`;
     }
@@ -168,7 +185,9 @@
       if (expanded.has(c.id)) renderTrace(c);
     }
     root.addEventListener('toggle', e => {
-      const el = e.target; if (!el.matches('[data-trace-case]')) return;
+      const el = e.target;
+      if (el.matches('[data-run-details]')) { if (el.open) void loadRun(el); return; }
+      if (!el.matches('[data-trace-case]')) return;
       const id = el.dataset.traceCase, c = D.cases.find(c => c.id === id); if (!c) return;
       if (el.open) { expanded.add(id); renderTrace(c); void loadTrace(c); } else expanded.delete(id);
     }, true);

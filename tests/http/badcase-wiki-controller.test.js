@@ -42,6 +42,20 @@ test('case trace GET reads Wiki-owned frozen evidence without source rooms and c
   const controller = createBadcaseWikiController(h.options);
   assert.equal(await controller({ req: { method: 'POST' }, res: {}, pathname: route.pathname }), false);
 });
+test('run replay results are guarded read-only packets; GET/list cannot launch or execute tools', async t => {
+  const h = setup(t); h.seed(); const c = h.store.read().cases[0];
+  const runs = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config);
+  const request = { schemaVersion: 1, kind: 'wikiskill-run-request', model: 'openai-codex/gpt-6.1-sol', thinking: 'xhigh', variant: { kind: 'original' }, context: { tools: [] }, metadata: { caseId: c.id, traceHash: 'a'.repeat(64), decisionHash: 'b'.repeat(64) } };
+  const r = runs.reserve(request); runs.finish(r.id, { message: { content: [{ type: 'text', text: 'FULL OUTPUT' }] }, outcome: { status: 'unreached', countAsFailure: true }, modelCalls: 1, toolExecutions: 0 });
+  assert.equal((await h.invoke()).body.runReplays[0].status, 'unreached');
+  const route = { pathname: '/api/wikiskill/cases/' + c.id + '/run-replays/' + r.id };
+  const revision = h.store.read().revision;
+  assert.equal((await h.invoke(undefined, route)).body.result.message.content[0].text, 'FULL OUTPUT');
+  assert.equal(h.store.read().revision, revision);
+  await assert.rejects(h.invoke(undefined, { ...route, remoteAddress: '10.0.0.1' }), e => [403, 404].includes(e.statusCode));
+  await rejects(h.invoke(undefined, { pathname: '/api/wikiskill/cases/unknown/run-replays/' + r.id }), 'wiki_unknown_case', 422);
+  assert.equal(await createBadcaseWikiController(h.options)({ req: { method: 'POST' }, res: {}, pathname: route.pathname }), false);
+});
 test('dehydration confirmation is explicit, guarded, revision/hash bound and never calls a model', async t => {
   const h = setup(t); h.seed(); const c = h.store.read().cases[0];
   const packet = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', origin: 'backfill', source: c.source, frozenAt: '2026-11-05T00:00:00Z', complete: false, missingReasons: [], redaction: { policy: 'known_values_only' },

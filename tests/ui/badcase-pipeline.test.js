@@ -87,6 +87,18 @@ test('frozen user override shows planner provenance without replacing the origin
   assert.match(host.textContent, /<script>message<\/script>/); assert.equal(host.querySelector('script'), null);
   assert.equal(host.querySelector('[data-dehydration-confirm]'), null); assert.equal(h.calls.length, 0);
 });
+test('run output loads read-only on expansion, remains literal, and missed decision points are counted separately from errors', async t => {
+  const h = setup(t, url => ({ reservation: { request: { context: { tools: [{ name: 'write' }] } } }, result: { message: { content: [{ type: 'text', text: '<script>full output</script>' }] } } }));
+  const r = { id: 'e'.repeat(64), caseId: 'c1', traceHash: 'a'.repeat(64), decisionHash: 'd'.repeat(64), variant: { kind: 'original' }, status: 'unreached', model: 'openai-codex/gpt-6.1-sol', thinking: 'xhigh', resultHash: 'f'.repeat(64), modelCalls: 1, toolExecutions: 0 };
+  h.data.runReplays = [r, { ...r, id: '1'.repeat(64), status: 'error' }];
+  h.data.dehydrations = [{ caseId: 'c1', traceHash: r.traceHash, recommendation: { kindSuggestion: 'single' }, request: { state: { steps: [] } }, decision: { kind: 'single', level: 'run', hash: r.decisionHash } }];
+  h.panel.render(h.data); assert.equal(h.calls.length, 0);
+  assert.match(h.root.textContent, /未到达决策点 1/); assert.match(h.root.textContent, /请求失败 1/); assert.match(h.root.textContent, /按不通过计/);
+  const d = h.root.querySelector('[data-run-details]'); d.open = true; d.dispatchEvent(new h.window.Event('toggle')); await tick(); await tick();
+  assert.equal(h.calls[0], '/api/wikiskill/cases/c1/run-replays/' + r.id);
+  assert.match(d.textContent, /<script>full output<\/script>/); assert.equal(d.querySelector('script'), null);
+  assert.match(d.textContent, /write/); assert.equal(h.calls.length, 1);
+});
 test('fallback output explains the exact failure and never presents missing answers as a model judgment', t => {
   const h = setup(t);
   h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), request: { state: { steps: [{ step: 1, body: 'reply' }] } },

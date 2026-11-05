@@ -1,0 +1,94 @@
+const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
+const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
+const api = () => require('../../build/server/domain/runtime/badcase-capture/wiki-run-replay');
+const hash = v => crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex');
+function setup(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-run-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const options = { globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source') }, store = createWikiStore(options);
+  const c = store.addMarkedCase({ source: { projectId: null, conversationId: 'room', conversationTitle: 'room', messageId: 'm', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'wrong', expected: 'right', message: 'reply', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false }).case;
+  const bundle = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', source: c.source, origin: 'mark', frozenAt: '2026-11-05T00:00:00Z', complete: false, missingReasons: [], redaction: { policy: 'known_values_only' }, markedStep: 2,
+    markedMessage: 'reply', actual: 'wrong', expected: 'right', context: { systemPrompt: 'historical [REDACTED]', systemPromptSource: 'historical_display', priorSessionEntries: [], trigger: { type: 'message', message: { role: 'user', content: 'solve this' } } },
+    steps: [{ step: 1, output: { role: 'assistant', content: [{ type: 'toolCall', id: 'call', name: 'read', arguments: { path: 'file' } }] }, toolResults: [{ message: { role: 'toolResult', toolCallId: 'call', content: [{ type: 'text', text: 'full result' }] } }] }, { step: 2, output: { role: 'assistant', content: [{ type: 'text', text: 'CUT OUTPUT MUST NOT ENTER' }] }, toolResults: [] }] };
+  store.freezeCaseTrace(c.id, bundle);
+  const { buildDehydrationRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration');
+  const item = () => store.read().cases.find(v => v.id === c.id), built = buildDehydrationRequest({ caseRecord: item(), bundle, cause: { source: 'trigger', text: 'solve this' } });
+  const rec = store.saveDehydrationRecommendation({ built, response: { model: 'deepseek/deepseek-v4-flash', attempts: [{ finishReason: 'stop', content: JSON.stringify({ kind: '单步型', cutStep: 2, reason: 'reply', evidence: 'CUT OUTPUT' }) }] }, expectedRevision: store.read().revision });
+  const decision = store.confirmDehydration({ caseId: c.id, traceHash: item().traceBundle.hash, recommendationHash: rec.hash, kind: 'single', cutStep: 2, expectedRevision: store.read().revision });
+  const toolset = { codingAgentVersion: '0.85.1', capabilitiesSha: 'a'.repeat(40), capabilitiesFileHash: 'b'.repeat(64), definitions: [{ name: 'read', description: 'read', parameters: { type: 'object' } }, { name: 'bash', description: 'bash', parameters: { type: 'object' } }] };
+  const request = () => api().buildWikiRunRequest({ item: item(), bundle, decision, toolset });
+  return { options, root, store, c, item, bundle, decision, toolset, request };
+}
+const output = (content, stopReason = 'stop') => ({ role: 'assistant', content, stopReason, model: 'gpt-6.1-sol', provider: 'openai-codex' });
+test('request binds frozen decision and exact pre-cut history; only schemas, no executors or future evidence', t => {
+  const h = setup(t), q = h.request();
+  assert.equal(q.model, 'openai-codex/gpt-6.1-sol'); assert.equal(q.thinking, 'xhigh'); assert.equal(q.metadata.decisionHash, h.decision.hash);
+  assert.equal(q.context.systemPrompt, 'historical [REDACTED]'); assert.equal(q.context.messages.at(-1).content[0].text, 'full result');
+  assert.equal(q.context.tools.length, 2); assert.equal(q.metadata.toolset.codingAgentVersion, '0.85.1'); assert.doesNotMatch(JSON.stringify(q), /CUT OUTPUT|wrong|right/);
+  h.toolset.definitions[0].execute = () => { throw Error('MUST NEVER EXECUTE'); };
+  assert.throws(h.request, e => e.code === 'wiki_run_tools_invalid');
+  h.toolset.definitions[0].execute = undefined; delete h.toolset.definitions[0].execute;
+  h.decision.cutStep = 1; assert.throws(h.request, e => e.code === 'wiki_run_decision_invalid');
+});
+test('one-step classification requires a reply or a standalone public-message call; other tool use always misses', () => {
+  const classify = api().classifyWikiRunOutput;
+  assert.equal(classify(output([{ type: 'text', text: 'full reply' }])).status, 'reached');
+  const send = { type: 'toolCall', id: 's', name: 'bash', arguments: { command: "cat <<'EOF' | node \"$CAFF_CHAT_TOOLS_PATH\" send-public --content-stdin\nfull <script>reply</script>\nEOF" } };
+  assert.equal(classify(output([send], 'toolUse')).reply, 'full <script>reply</script>');
+  for (const content of [[{ ...send, arguments: { command: "echo 'send-public --content nope'" } }], [send, { type: 'toolCall', name: 'read', arguments: {} }], [{ type: 'text', text: 'I will inspect' }, { type: 'toolCall', name: 'bash', arguments: { command: 'ls' } }], []]) {
+    const r = classify(output(content, content.length ? 'toolUse' : 'stop')); assert.equal(r.status, 'unreached'); assert.equal(r.countAsFailure, true);
+  }
+});
+test('durable reservation prevents duplicate sends after success, failure, crash or competing calls; old wiki state stays identical', async t => {
+  const h = setup(t), { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store');
+  const runs = createWikiRunStore(h.options), before = h.store.read(), q = h.request(); let calls = 0, release;
+  const input = { store: h.store, runs, caseId: h.c.id, toolset: h.toolset, approvedRequestHash: hash(q) };
+  const pending = api().replayWikiRun(input, { client: { complete: async request => { calls++; assert.deepEqual(request, q); return new Promise(r => release = r); } } });
+  await assert.rejects(api().replayWikiRun(input, { client: { complete() { calls++; } } }), e => e.code === 'wiki_run_already_reserved');
+  release({ message: output([{ type: 'text', text: 'FULL output ' + 'x'.repeat(10000) }]), networkRequests: 1, durationMs: 12 });
+  const row = await pending; assert.equal(calls, 1); assert.equal(row.outcome.status, 'reached'); assert.equal(row.toolExecutions, 0); assert.equal(row.modelCalls, 1);
+  assert.equal(runs.list()[0].resultHash, hash(row)); assert.deepEqual(runs.read(row.id).result, row);
+  await assert.rejects(api().replayWikiRun(input, { client: { complete() { calls++; } } }), e => e.code === 'wiki_run_already_reserved');
+  assert.deepEqual(h.store.read(), before); assert.deepEqual(h.store.readCaseTrace(h.c.id), h.bundle);
+  const file = path.join(h.options.globalRoot, 'run-replays', row.id + '.result.json'); const env = JSON.parse(fs.readFileSync(file)); env.result.message.content = [];
+  fs.writeFileSync(file, JSON.stringify(env)); assert.throws(() => runs.read(row.id), e => e.code === 'wiki_run_record_invalid');
+});
+test('a failed request is recorded once with a safe code and never retried; output known values are replaced', async t => {
+  const { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store');
+  for (const failing of [false, true]) {
+    const h = setup(t), runs = createWikiRunStore(h.options); let calls = 0;
+    const r = await api().replayWikiRun({ store: h.store, runs, caseId: h.c.id, toolset: h.toolset, approvedRequestHash: hash(h.request()) }, { knownKeyValues: ['synthetic-private-value'], client: { async complete() {
+      calls++; if (failing) throw Error('synthetic-private-value');
+      return { message: output([{ type: 'text', text: 'synthetic-private-value' }]), networkRequests: 1, durationMs: 1 };
+    } } });
+    assert.equal(calls, 1); assert.doesNotMatch(JSON.stringify(r), /synthetic-private-value/); assert.equal(r.outcome.status, failing ? 'error' : 'reached');
+    assert.equal(runs.list().length, 1); assert.equal(runs.read(r.id).result.outcome.status, r.outcome.status);
+  }
+});
+test('candidate can replace only one approved global slot; remainder of frozen prefix and tools stay exact', t => {
+  const h = setup(t), { getGlobalPromptTarget } = require('../../build/lib/agent-prompt-targets'), target = getGlobalPromptTarget('global-harness-behavior-v1');
+  const bundle = structuredClone(h.bundle), item = structuredClone(h.item()), decision = structuredClone(h.decision);
+  bundle.context.trigger.message.content = 'input\n\nRoom work context:\noriginal\n\nRules:\n' + target.baseText + '\n- Extra unchanged rule\n\nRouting instructions:\noriginal tail';
+  item.traceBundle.hash = hash(bundle); decision.traceHash = item.traceBundle.hash; const { hash: ignored, ...value } = decision; decision.hash = hash(value);
+  const input = { item, bundle, decision, toolset: h.toolset }, original = api().buildWikiRunRequest(input);
+  const candidate = { id: 'approved', targetId: target.id, baseText: target.baseText, baseHash: target.baseHash, replacement: 'NEW GLOBAL ONLY' };
+  const changed = api().buildWikiRunRequest({ ...input, candidate });
+  assert.equal(changed.context.systemPrompt, original.context.systemPrompt); assert.deepEqual(changed.context.tools, original.context.tools);
+  assert.equal(changed.context.messages[0].content.replace('NEW GLOBAL ONLY', target.baseText), original.context.messages[0].content);
+  assert.deepEqual(changed.context.messages.slice(1), original.context.messages.slice(1));
+  assert.throws(() => api().buildWikiRunRequest({ ...input, candidate: { ...candidate, baseHash: 'f'.repeat(64) } }), e => e.code === 'wiki_run_candidate_invalid');
+});
+test('crashed reservations remain unknown and cannot send again; known values in input block before creating a claim', async t => {
+  const h = setup(t), { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store'), runs = createWikiRunStore(h.options), q = h.request();
+  const input = { store: h.store, runs, caseId: h.c.id, toolset: h.toolset, approvedRequestHash: hash(q) }; let calls = 0;
+  await assert.rejects(api().replayWikiRun(input, { knownKeyValues: ['historical'], client: { complete() { calls++; } } }), e => e.code === 'wiki_run_input_contains_known_key');
+  assert.equal(runs.list().length, 0); runs.reserve(q); assert.equal(runs.list()[0].status, 'reserved');
+  await assert.rejects(api().replayWikiRun(input, { client: { complete() { calls++; } } }), e => e.code === 'wiki_run_already_reserved'); assert.equal(calls, 0);
+});
+test('unconfirmed/stale requests are rejected before reservation or network', async t => {
+  const h = setup(t), { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store'), runs = createWikiRunStore(h.options);
+  let calls = 0;
+  await assert.rejects(api().replayWikiRun({ store: h.store, runs, caseId: h.c.id, toolset: h.toolset, approvedRequestHash: 'f'.repeat(64) }, { client: { complete() { calls++; } } }), e => e.code === 'wiki_run_stale');
+  assert.equal(calls, 0); assert.equal(runs.list().length, 0);
+  h.decision.level = 'reference'; const { hash: ignored, ...value } = h.decision; h.decision.hash = hash(value);
+  assert.throws(h.request, e => e.code === 'wiki_run_decision_invalid');
+});

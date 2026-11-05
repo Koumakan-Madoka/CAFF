@@ -5,6 +5,7 @@ import { readRequestJson } from '../http/request-body';
 import { sendJson, sendTextDownload } from '../http/response';
 import { wikiTraceMarkdown } from '../domain/runtime/badcase-capture/wiki-trace-export';
 import { createWikiStore } from '../domain/runtime/badcase-capture/wiki-store';
+import { createWikiRunStore } from '../domain/runtime/badcase-capture/wiki-run-store';
 import { listWikiTargets } from '../domain/runtime/badcase-capture/wiki-targets';
 import { collectWikiCandidateFiles } from '../domain/runtime/badcase-capture/wiki-candidate-files';
 import { createWikiComparisonStore } from '../domain/runtime/badcase-capture/wiki-comparison-store';
@@ -24,6 +25,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_invalid_case_ids: 422, wiki_revision_conflict: 409, wiki_entry_reviewed: 409, wiki_entry_not_found: 404,
     wiki_collection_too_large: 422, wiki_record_invalid: 409, wiki_write_failed: 503, capture_writer_busy: 409,
     wiki_trace_invalid: 409, wiki_trace_association_mismatch: 409, wiki_trace_missing: 404,
+    wiki_run_record_invalid: 409, wiki_run_not_found: 404,
     wiki_dehydration_frozen: 409, wiki_dehydration_stale: 409, wiki_dehydration_recommendation_required: 409,
     wiki_dehydration_ineligible: 422, wiki_dehydration_cut_invalid: 422, wiki_dehydration_prefix_unavailable: 422,
     wiki_candidate_invalid: 422, wiki_candidate_already_baseline: 409, wiki_candidate_leak: 422, wiki_candidate_not_found: 404, wiki_candidate_deprecated: 409,
@@ -43,9 +45,10 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
   };
   return async ({ req, res, pathname }: any) => {
     const traceMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/trace(?:\/export\.(json|md))?$/);
+    const runMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/run-replays\/([a-f0-9]{64})$/);
     const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|dehydration-confirm))?$/)
-      || (traceMatch ? [pathname, 'case-trace'] : null);
-    const readOnly = !match?.[1] || ['executions', 'case-trace'].includes(match[1]);
+      || (traceMatch ? [pathname, 'case-trace'] : runMatch ? [pathname, 'run-replay'] : null);
+    const readOnly = !match?.[1] || ['executions', 'case-trace', 'run-replay'].includes(match[1]);
     if (!match || (readOnly ? req.method !== 'GET' : req.method !== 'POST')) return false;
     if (readOnly) guard.assertRead(req); else guard.assertMutation(req);
     let input;
@@ -74,7 +77,15 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       const executions = () => [...createWikiExecutionStore(scope).read(), ...createWikiBatchExecutionStore(scope).read()]
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0, 20);
       if (match[1] === 'executions') { sendJson(res, 200, { executions: executions(), comparisons: createWikiComparisonStore(scope).read() }); return true; }
-      const store = createWikiStore(scope);
+      const store = createWikiStore(scope), runs = createWikiRunStore(scope);
+      if (runMatch) {
+        let caseId;
+        try { caseId = decodeURIComponent(runMatch[1]); } catch { throw Object.assign(Error(), { code: 'wiki_invalid_identifier' }); }
+        if (!store.read().cases.some((c: any) => c.id === caseId)) throw Object.assign(Error(), { code: 'wiki_unknown_case' });
+        const packet = runs.read(runMatch[2]);
+        if (packet.reservation.request.metadata.caseId !== caseId) throw Object.assign(Error(), { code: 'wiki_run_not_found' });
+        sendJson(res, 200, packet); return true;
+      }
       if (traceMatch) {
         let caseId;
         try { caseId = decodeURIComponent(traceMatch[1]); } catch { throw Object.assign(Error(), { code: 'wiki_invalid_identifier' }); }
@@ -110,7 +121,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         else store.confirmGlobalCandidate({ ...input, files });
       }
       const state = store.read();
-      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), comparisons: createWikiComparisonStore(scope).read(), executions: executions(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
+      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), runReplays: runs.list(), comparisons: createWikiComparisonStore(scope).read(), executions: executions(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);
