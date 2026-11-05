@@ -26,6 +26,49 @@ function setup(t) {
 }
 const rejects = (promise, code, status = 422) => assert.rejects(promise, e => e.statusCode === status && e.issues?.[0]?.code === code);
 
+test('rubric APIs append versions and freeze exact eligible model/hash without touching older versions', async t => {
+  const h = setup(t); h.seed(); const { configFile, frozen } = require('../helpers/wiki-judge-catalog.cjs')(h.root);
+  h.options.judgeCatalogFile = configFile;
+  const caseId = h.store.read().cases[0].id, questions = [{ id: 'q1', question: '回复给出已验证的结论。', evidence: 'reply' }];
+  const route = { pathname: '/api/wikiskill/rubric' }, confirmRoute = { pathname: '/api/wikiskill/confirm-rubric' };
+  const body = { confirmed: true, expectedRevision: 2, caseId, questions, scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' } };
+  const get = await h.invoke(); assert.equal(get.body.eligibleJudges.length, 1); assert.equal(get.body.eligibleJudges[0].freezeHash, frozen.hash);
+  for (const extra of [{ eligible: true }, { configurationHash: frozen.configurationHash }, { globalRoot: h.root }]) await rejects(h.invoke({ ...body, ...extra }, route), 'wiki_invalid_input');
+  await rejects(h.invoke({ ...body, scoringModel: { backend: 'jev', model: 'jev-latest' } }, route), 'wiki_judge_not_eligible', 409);
+  await rejects(h.invoke({ ...body, expectedRevision: 0 }, route), 'wiki_revision_conflict', 409);
+  const saved = await h.invoke(body, route), rubric = saved.body.rubrics[0]; assert.equal(rubric.status, 'draft'); assert.equal(rubric.scoringModel.backend, 'deepseek');
+  const confirm = { confirmed: true, expectedRevision: 3, rubricId: rubric.id, hash: rubric.hash };
+  await rejects(h.invoke({ ...confirm, hash: 'a'.repeat(64) }, confirmRoute), 'wiki_rubric_hash_changed', 409);
+  const result = await h.invoke(confirm, confirmRoute); assert.equal(result.body.rubrics[0].status, 'frozen');
+  const old = clone(result.body.rubrics[0]);
+  const revised = await h.invoke({ ...body, expectedRevision: 4, questions: [{ ...questions[0], question: '回复先给已验证的结论。' }] }, route);
+  assert.deepEqual(revised.body.rubrics[0], old); assert.equal(revised.body.rubrics[1].version, old.version + 1);
+  assert.equal(revised.body.rubrics[1].status, 'draft'); assert.notEqual(revised.body.rubrics[1].hash, old.hash);
+  assert.deepEqual(h.store.read().versions, get.body.versions);
+  function clone(v) { return JSON.parse(JSON.stringify(v)); }
+});
+test('rubric mutation guards and closed schemas reject before paid draft calls; GET never invokes them', async t => {
+  const h = setup(t); h.seed(); let calls = 0;
+  h.options.runRubricDraft = async ({ store, caseId, expectedRevision, scope }) => {
+    calls++; assert.equal(scope.globalRoot, h.config.globalRoot);
+    store.saveRubricDraft({ caseId, model: 'deepseek/deepseek-v4-flash', questions: [{ id: 'q1', question: '回复提供依据。', evidence: 'reply' }] }, expectedRevision);
+  };
+  const body = { confirmed: true, expectedRevision: 2, caseId: h.store.read().cases[0].id }, route = { pathname: '/api/wikiskill/draft-rubric' };
+  await h.invoke(); assert.equal(calls, 0);
+  for (const extra of [{ tasks: {} }, { model: 'gpt' }, { credentialDir: h.root }, { confirmed: false }, { expectedRevision: 0 }, { caseId: 'missing' }]) await assert.rejects(h.invoke({ ...body, ...extra }, route));
+  for (const override of [{ remoteAddress: '10.1.1.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) await assert.rejects(h.invoke(body, { ...route, ...override }));
+  assert.equal(calls, 0); assert.equal(h.store.read().revision, 2);
+  const out = await h.invoke(body, route); assert.equal(calls, 1); assert.equal(out.body.rubrics[0].status, 'draft'); assert.equal(out.body.rubrics[0].scoringModel, null);
+});
+test('without an operator eligibility catalog manual drafting works but model selection/freeze fail closed', async t => {
+  const h = setup(t); h.seed(); const caseId = h.store.read().cases[0].id;
+  assert.deepEqual((await h.invoke()).body.eligibleJudges, []);
+  const body = { confirmed: true, expectedRevision: 2, caseId, questions: [{ id: 'q1', question: '回复提供依据。', evidence: 'reply' }], scoringModel: null };
+  const out = await h.invoke(body, { pathname: '/api/wikiskill/rubric' }), rubric = out.body.rubrics[0];
+  await rejects(h.invoke({ confirmed: true, expectedRevision: 3, rubricId: rubric.id, hash: rubric.hash }, { pathname: '/api/wikiskill/confirm-rubric' }), 'wiki_judge_not_eligible', 409);
+  assert.equal(h.store.read().revision, 3);
+});
+
 test('comparison review is explicit, locally guarded and cannot supply results, rules or adoption', async t => {
   const h = setup(t), route = { pathname: '/api/wikiskill/comparison-review' };
   const body = { confirmed: true, comparisonId: 'comparison-' + 'a'.repeat(64), candidateHash: 'b'.repeat(64), expectedRevision: 0, decision: 'not-adopted', reason: 'test_not_passed', interpretation: '门槛接受、测试未通过、未采纳。' };

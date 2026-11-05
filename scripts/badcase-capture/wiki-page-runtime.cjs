@@ -2,7 +2,7 @@
 // Config stores image/backend/auth-directory selection only, not credentials.
 const fs = require('node:fs'), path = require('node:path');
 const fail = code => Object.assign(Error(code), { code });
-async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
+function readPageRuntimeConfig(configFile) {
   if (configFile === undefined) throw fail('wiki_runtime_config_required');
   let config;
   try {
@@ -16,6 +16,10 @@ async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
       || typeof config.credentialDir !== 'string' || !path.isAbsolute(config.credentialDir)) throw Error();
     if (config.dockerBackend !== undefined) require('./wsl-docker.cjs').validateWslDockerBackend(config.dockerBackend);
   } catch { throw fail('wiki_runtime_config_invalid'); }
+  return config;
+}
+async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
+  const config = readPageRuntimeConfig(configFile);
   const readKey = dependencies.readKey || require('./direct-model.cjs').readCaffDeepseekKey;
   return (dependencies.induct || require('./wiki-induction.cjs').inductWikiCases)({
     store: input.store, expectedRevision: input.expectedRevision, confirmed: true, image: config.image,
@@ -24,4 +28,4 @@ async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
     readDiagnosticValues: () => require('./wiki-diagnostics.cjs').readDiagnosticValues({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
   });
 }
-module.exports = { runPageInduction };
+module.exports = { runPageInduction, readPageRuntimeConfig };

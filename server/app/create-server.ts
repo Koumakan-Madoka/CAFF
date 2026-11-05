@@ -1336,6 +1336,11 @@ export function createServerApp(options: any = {}) {
       agentDir,
       instanceCaptureRoot: badcaseCapture.captureRoot,
       sourceWorktree: initialProjectDir,
+      judgeCatalogFile: options.badcaseWikiJudgeCatalogFile ?? process.env.CAFF_WIKISKILL_JUDGES_CONFIG,
+      runRubricDraft: options.badcaseWikiRubricDraftRunner || ((input: any) => {
+        const configFile = options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG;
+        return require('../../../scripts/badcase-capture/wiki-rubric-page-runtime.cjs').runPageRubricDraft(input, { configFile });
+      }),
       runInduction: options.badcaseWikiInductionRunner || ((input: any) => {
         const configFile = options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG;
         if (configFile !== undefined || options.badcaseWikiInductionImage === undefined) {

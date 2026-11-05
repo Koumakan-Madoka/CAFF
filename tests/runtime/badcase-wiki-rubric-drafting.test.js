@@ -123,6 +123,39 @@ test('failed durable-original-output hook prevents any draft publication', async
   await assert.rejects(api().draftWikiRubrics(h.args, { ...h.options, onGenerated: () => { throw Error('synthetic disk failure'); } }), /synthetic disk failure/);
   assert.deepEqual(h.store.read(), before); assert.equal(h.counts().closes, 1);
 });
+test('page drafting uses operator runtime and explicit missing task; stale requests never reach config/auth', async t => {
+  const h = setup(t), { runPageRubricDraft } = require('../../scripts/badcase-capture/wiki-rubric-page-runtime.cjs');
+  const input = { store: h.store, caseId: h.cases[0].id, expectedRevision: h.store.read().revision, scope: h.config };
+  const configFile = path.join(h.root, 'runtime.json');
+  fs.writeFileSync(configFile, JSON.stringify({ image: { imageId: 'sha256:' + 'a'.repeat(64), architecture: 'amd64' }, credentialDir: h.args.credentialDir }));
+  let calls = 0;
+  await assert.rejects(runPageRubricDraft({ ...input, expectedRevision: 0 }, {}), { code: 'wiki_revision_conflict' });
+  await assert.rejects(runPageRubricDraft(input, {}), { code: 'wiki_runtime_config_required' });
+  const out = await runPageRubricDraft(input, { configFile }, { draft: async args => {
+    calls++; assert.equal(args.credentialDir, h.args.credentialDir); assert.equal(args.confirmed, true); assert.deepEqual(args.tasks, {});
+    return api().draftWikiRubrics(args, { ...h.options, createExchange: () => ({ exchange: async body => {
+      const cases = JSON.parse(JSON.parse(body).messages[1].content).cases;
+      assert.equal(cases.length, 1); assert.equal(cases[0].task, null);
+      return h.envelope(JSON.stringify({ results: [{ caseId: args.caseIds[0], questions }] }));
+    }, close: async () => {} }) });
+  } });
+  assert.equal(calls, 1); assert.equal(out.drafts[0].status, 'draft'); assert.equal(out.drafts[0].scoringModel, null);
+});
+test('page drafting reads registered original task, never the replay label or source reply', async t => {
+  const h = setup(t), { runPageRubricDraft } = require('../../scripts/badcase-capture/wiki-rubric-page-runtime.cjs');
+  const replay = { sourceCaseId: h.cases[0].id, task: 'OPERATOR-LABEL-NOT-ORIGINAL' };
+  const originalStore = h.store, store = { ...originalStore, read: () => ({ ...originalStore.read(), replayCases: [replay] }) };
+  const configFile = path.join(h.root, 'runtime.json');
+  fs.writeFileSync(configFile, JSON.stringify({ image: { imageId: 'sha256:' + 'a'.repeat(64), architecture: 'amd64' }, credentialDir: h.args.credentialDir }));
+  await runPageRubricDraft({ store, caseId: h.cases[0].id, expectedRevision: store.read().revision, scope: h.config }, { configFile }, {
+    readTask: (selected, scope) => { assert.deepEqual(selected, replay); assert.equal(scope, h.config); return 'ACTUAL-ORIGINAL-TASK'; },
+    draft: args => { assert.deepEqual(args.tasks, { [h.cases[0].id]: 'ACTUAL-ORIGINAL-TASK' }); assert.equal(JSON.stringify(args.tasks).includes('OPERATOR-LABEL'), false); },
+  });
+  await assert.rejects(runPageRubricDraft({ store, caseId: h.cases[0].id, expectedRevision: store.read().revision, scope: h.config }, { configFile }, {
+    readTask: () => { throw Object.assign(Error(), { code: 'evaluation_batch_task_unavailable' }); }, draft: () => assert.fail('must not invent missing task'),
+  }), { code: 'evaluation_batch_task_unavailable' });
+});
+
 test('rubric batch store mutation is atomic with invalid later questions and refuses duplicate case versions', t => {
   const h = setup(t), before = h.store.read();
   assert.equal(typeof h.store.saveRubricDrafts, 'function');

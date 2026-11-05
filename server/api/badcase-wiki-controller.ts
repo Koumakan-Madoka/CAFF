@@ -12,6 +12,8 @@ import { wikiDisplayCases } from '../domain/runtime/badcase-capture/wiki-suite';
 import { createWikiExecutionStore } from '../domain/runtime/badcase-capture/wiki-execution-store';
 import { createWikiBatchExecutionStore } from '../domain/runtime/badcase-capture/wiki-batch-execution-store';
 import { resolveWikiStorageOptions } from '../domain/runtime/badcase-capture/wiki-data-directory';
+import { assertWikiEligibleModel, readWikiEligibleJudges } from '../domain/runtime/badcase-capture/wiki-judge-catalog';
+import { WIKI_RUBRIC_MODEL } from '../domain/runtime/badcase-capture/wiki-rubric';
 
 // Local candidate preparation/review only. Neither loading, approving a guideline nor
 // confirming a candidate starts a model request or edits a production role.
@@ -37,13 +39,18 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_training_input_too_large: 422, evaluation_caff_auth_unavailable_or_invalid: 503, evaluation_linux_required: 503,
     wiki_runtime_config_required: 503, wiki_runtime_config_invalid: 503,
     evaluation_wsl_host_required: 503, evaluation_wsl_backend_invalid: 503, wiki_execution_record_invalid: 503,
+    wiki_rubric_invalid: 422, wiki_rubric_assertion_required: 422, wiki_rubric_model_invalid: 422,
+    wiki_rubric_not_found: 404, wiki_rubric_frozen: 409, wiki_rubric_hash_changed: 409, wiki_rubric_source_changed: 409,
+    wiki_judge_not_eligible: 409, wiki_judge_catalog_invalid: 503,
+    wiki_rubric_drafting_unavailable: 503, wiki_rubric_model_output_invalid: 422, wiki_rubric_request_failed: 503,
+    evaluation_batch_task_unavailable: 409,
   };
   return async ({ req, res, pathname }: any) => {
-    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience))?$/);
+    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|rubric|draft-rubric|confirm-rubric))?$/);
     const readOnly = !match?.[1] || match[1] === 'executions';
     if (!match || (readOnly ? req.method !== 'GET' : req.method !== 'POST')) return false;
     if (readOnly) guard.assertRead(req); else guard.assertMutation(req);
-    let input;
+    let input: any;
     if (!readOnly) {
       input = await readRequestJson(req, { bodyLimit: 64 * 1024 });
       const fields: Record<string, string[]> = {
@@ -56,6 +63,9 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         review: ['confirmed', 'versionId', 'entryId', 'expectedRevision', 'patch', 'decision'],
         'comparison-review': ['confirmed', 'comparisonId', 'candidateHash', 'expectedRevision', 'decision', 'reason', 'interpretation'],
         experience: ['confirmed', 'experienceId', 'expectedRevision', 'decision', 'patch'],
+        rubric: ['confirmed', 'caseId', 'questions', 'scoringModel', 'expectedRevision'],
+        'draft-rubric': ['confirmed', 'caseId', 'expectedRevision'],
+        'confirm-rubric': ['confirmed', 'rubricId', 'hash', 'expectedRevision'],
       };
       if (!input || typeof input !== 'object' || Array.isArray(input)
         || Object.keys(input).some(k => !fields[match[1]].includes(k))) throw issue('wiki_invalid_input');
@@ -69,6 +79,28 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0, 20);
       if (match[1] === 'executions') { sendJson(res, 200, { executions: executions(), comparisons: createWikiComparisonStore(scope).read().map(wikiComparisonDisplay) }); return true; }
       const store = createWikiStore(scope);
+      const eligibleJudges = readWikiEligibleJudges(options.judgeCatalogFile);
+      if (['rubric', 'draft-rubric', 'confirm-rubric'].includes(match[1])) {
+        const state = store.read();
+        if (!Number.isSafeInteger(input.expectedRevision)) throw Object.assign(Error(), { code: 'wiki_invalid_input' });
+        if (input.expectedRevision !== state.revision) throw Object.assign(Error(), { code: 'wiki_revision_conflict' });
+        if (match[1] === 'confirm-rubric') {
+          const rubric = state.rubrics?.find((r: any) => r.id === input.rubricId);
+          if (!rubric) throw Object.assign(Error(), { code: 'wiki_rubric_not_found' });
+          assertWikiEligibleModel(rubric.scoringModel, eligibleJudges);
+          store.confirmRubric({ rubricId: input.rubricId, hash: input.hash,
+            confirmationRecord: 'WikiSkill 页面明确确认断言全文及所选打分模型（同 OS 用户管理边界）。' }, input.expectedRevision);
+        } else {
+          if (!state.cases.some((c: any) => c.id === input.caseId)) throw Object.assign(Error(), { code: 'wiki_unknown_case' });
+          if (match[1] === 'rubric') {
+            if (input.scoringModel != null) assertWikiEligibleModel(input.scoringModel, eligibleJudges);
+            store.saveRubricDraft({ caseId: input.caseId, questions: input.questions, scoringModel: input.scoringModel ?? null, model: WIKI_RUBRIC_MODEL }, input.expectedRevision);
+          } else {
+            if (typeof options.runRubricDraft !== 'function') throw Object.assign(Error(), { code: 'wiki_rubric_drafting_unavailable' });
+            await options.runRubricDraft({ store, caseId: input.caseId, expectedRevision: input.expectedRevision, scope });
+          }
+        }
+      }
       if (match[1] === 'review') store.review(input);
       if (match[1] === 'comparison-review') store.reviewComparison(input);
       if (match[1] === 'experience') {
@@ -91,7 +123,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         else store.confirmGlobalCandidate({ ...input, files });
       }
       const state = store.read();
-      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), comparisons: createWikiComparisonStore(scope).read().map(wikiComparisonDisplay), executions: executions(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
+      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), comparisons: createWikiComparisonStore(scope).read().map(wikiComparisonDisplay), executions: executions(), targets: listWikiTargets(), eligibleJudges, trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

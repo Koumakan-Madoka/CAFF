@@ -81,6 +81,71 @@ function setup(t, handler) {
     click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
 
+test('assertion editor saves manual changes as new versions, offers eligible models only and freezes the saved hash explicitly', async t => {
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  const h = setup(t, (url, options, saved) => {
+    if (options.method !== 'POST' || !['/api/wikiskill/rubric', '/api/wikiskill/confirm-rubric'].includes(url)) return undefined;
+    if (url.endsWith('/rubric')) {
+      const source = saved.cases.find(c => c.id === options.body.caseId);
+      saved.rubrics.push(createWikiRubric({ ...options.body, model: 'deepseek/deepseek-v4-flash', version: saved.rubrics.length + 1, actual: source.actual, expected: source.expected }));
+    } else Object.assign(saved.rubrics.find(r => r.id === options.body.rubricId), { status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'synthetic-page-confirmation' });
+    saved.revision++; return clone(saved);
+  });
+  h.saved().rubrics = []; h.saved().eligibleJudges = [{ backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', configurationHash: 'a'.repeat(64), freezeHash: 'b'.repeat(64), promptHash: 'c'.repeat(64) }];
+  await h.panel.load(); await h.click('[data-tab="cases"]');
+  const panel = () => h.root.querySelector('#c-1 [data-rubric-panel]');
+  assert.ok(panel()); assert.equal(panel().querySelectorAll('[data-rubric-model] option').length, 2); assert.doesNotMatch(panel().querySelector('[data-rubric-model]').textContent, /JEV|GPT/);
+  const question = panel().querySelector('[data-rubric-question]'); question.value = '回复先给结论。'; question.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  const select = panel().querySelector('[data-rubric-model]'); select.value = 'deepseek'; select.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  await h.click('#c-1 [data-save-rubric]'); const post = h.posts().at(-1);
+  assert.equal(post.url, '/api/wikiskill/rubric'); assert.equal(post.body.expectedRevision, 3); assert.equal(post.body.questions[0].question, question.value);
+  assert.deepEqual(clone(post.body.scoringModel), { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' });
+  assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, false);
+  const changed = panel().querySelector('[data-rubric-question]'); changed.value = '尚未保存的修订。'; changed.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, true, 'unsaved text must not freeze an older hash');
+  changed.value = '回复先给结论。'; changed.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  h.accept(false); await h.click('#c-1 [data-freeze-rubric]'); assert.equal(h.posts().length, 1);
+  h.accept(true); await h.click('#c-1 [data-freeze-rubric]'); const frozen = clone(h.saved().rubrics[0]);
+  assert.equal(h.posts().at(-1).body.hash, frozen.hash); assert.match(panel().textContent, /已冻结/); assert.equal(panel().querySelector('[data-rubric-question]'), null);
+  await h.click('#c-1 [data-edit-rubric]'); await h.click('#c-1 [data-add-assertion]'); assert.equal(panel().querySelectorAll('[data-rubric-question]').length, 2);
+  const second = panel().querySelectorAll('[data-rubric-question]')[1]; second.value = '回复解释依据。'; second.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  await h.click('#c-1 [data-save-rubric]'); assert.deepEqual(h.saved().rubrics[0], frozen); assert.equal(h.saved().rubrics[1].version, 2);
+});
+test('AI assertion drafting is explicit, annotation-only and never freezes or chooses an ineligible model', async t => {
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  const h = setup(t, (url, options, saved) => {
+    if (url !== '/api/wikiskill/draft-rubric' || options.method !== 'POST') return undefined;
+    saved.rubrics = [createWikiRubric({ caseId: options.body.caseId, version: 1, model: 'deepseek/deepseek-v4-flash', actual: saved.cases[0].actual, expected: saved.cases[0].expected,
+      questions: [{ id: 'q1', question: '回复说明结论 <script>not-html</script>。', evidence: 'reply' }] })]; saved.revision++; return clone(saved);
+  });
+  h.saved().eligibleJudges = []; await h.panel.load(); await h.click('[data-tab="cases"]');
+  h.accept(false); await h.click('#c-1 [data-draft-rubric]'); assert.equal(h.posts().length, 0);
+  h.accept(true); await h.click('#c-1 [data-draft-rubric]');
+  assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, expectedRevision: 3, caseId: 'c1' });
+  assert.match(h.root.querySelector('#c-1 [data-rubric-panel]').textContent, /尚无校准达标/); assert.equal(h.root.querySelector('#c-1 [data-freeze-rubric]').disabled, true);
+  assert.equal(h.root.querySelector('#c-1 [data-rubric-panel] script'), null); assert.equal(h.saved().rubrics[0].status, 'draft');
+});
+test('v2 results show frozen assertions, three-vote citations, hard failures, technical errors and reference-only metrics', async t => {
+  const h = setup(t, (url, _options, saved) => url === '/api/wikiskill/executions' ? { executions: [], comparisons: clone(saved.comparisons) } : undefined), rubric = { version: 5, hash: 'a'.repeat(64), scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' }, questions: [{ id: 'q1', question: '冻结时的断言。', evidence: 'reply' }] };
+  const binding = { backend: 'deepseek', model: rubric.scoringModel.model, promptHash: 'b'.repeat(64), modelHash: 'c'.repeat(64) };
+  const verdict = 'not-satisfied', votes = [0, 1, 2].map(() => [{ criterionId: 'q1', verdict, reason: '缺少使用者影响 <script>not-html</script>', evidence: [{ source: 'reply', text: '新增功能 <img src=x onerror=bad()>' }] }]);
+  const assessment = { status: 'fail', reason: 'rubric_not_satisfied', binding, hardAssertions: [{ id: 'completed', status: 'pass' }, { id: 'publicReply', status: 'pass' }], judgments: [{ criterionId: 'q1', verdict, majority: true }], votes, referenceMetrics: { noForbiddenTerms: false, conclusionInLead: true } };
+  const totals = { original: { planned: 10, passed: 0, failed: 1, errors: 1, notRun: 9 }, candidate: { planned: 10, passed: 0, failed: 1, errors: 0, notRun: 9 } };
+  h.saved().rubrics = [{ ...rubric, questions: [{ ...rubric.questions[0], question: '当前编辑器的新断言不应进入旧结果' }] }];
+  h.saved().comparisons = [{ id: 'scored-v2', kind: 'wiki-staged-batch-comparison-v2', createdAt: '2026-11-05T01:00:00Z', completed: false, model: 'openai-codex/gpt-6.1-sol', evaluation: { splitPolicy: 'd15-frozen-v1' }, experiment: { planHash: 'd'.repeat(64) }, modelCallsKnown: 4,
+    cases: [{ sourceCaseId: 'c1', category: 'reproduction', stage: 'gate', totals, rubric, comparison: { scoring: { binding } }, runs: [
+      { variant: 'original', iteration: 1, status: 'fail', assessment },
+      { variant: 'original', iteration: 2, status: 'error', reason: 'judge_backend_failed', assessment: { ...assessment, status: 'error', reason: 'judge_backend_failed', votes: [], judgments: [] } },
+      { variant: 'candidate', iteration: 1, status: 'fail', assessment: { ...assessment, reason: 'hard_assertion_failed', votes: [], judgments: [], hardAssertions: [{ id: 'completed', status: 'fail' }, { id: 'publicReply', status: 'pass' }] } },
+    ] }] }];
+  await h.panel.load(); await h.click('[data-tab="impact"]'); const results = h.root.querySelector('#impact-runs'), text = results.textContent;
+  for (const literal of ['硬断言＋AI', '冻结时的断言', '不成立', '缺少使用者影响', '新增功能', '参考字面指标', '不决定通过', 'judge_backend_failed', 'hard_assertion_failed', binding.promptHash, 'd'.repeat(64)]) assert.ok(text.includes(literal), literal);
+  assert.doesNotMatch(text, /当前编辑器的新断言|字面规则不是语义判断/); assert.equal(results.querySelector('script,img'), null); assert.equal(h.posts().length, 0);
+  const expanded = results.querySelector('.assertion-results'); expanded.open = true;
+  await h.panel.refreshExecutions(); assert.equal(results.querySelector('.assertion-results'), expanded, 'unchanged polling must not collapse the evidence being read'); assert.equal(expanded.open, true);
+  h.saved().comparisons[0].kind = 'wiki-staged-batch-comparison-v1'; await h.panel.load(); await h.click('[data-tab="impact"]'); assert.match(h.root.querySelector('#impact-runs').textContent, /字面规则/);
+});
+
 test('production result labels model/thinking and report-only rows, without stale proxy disclaimers or unrelated tasks', async t => {
   const h = setup(t), totals = { original: { planned: 10, passed: 4, failed: 6, errors: 0, notRun: 0, scored: 10, passRate: .4 }, candidate: { planned: 10, passed: 8, failed: 2, errors: 0, notRun: 0, scored: 10, passRate: .8 } };
   h.saved().comparisons = [{ id: 'production-1', executionId: 'production-1', createdAt: '2026-11-03T12:00:00Z', model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh', api: 'openai-codex-responses' }, completed: true, evaluation: { splitPolicy: 'd15-frozen-v1' }, modelCallsKnown: 40,

@@ -239,6 +239,24 @@ table.runs { width: 100%; border-collapse: collapse; font-size: 13.5px; min-widt
 .toast { position: fixed; left: 50%; transform: translateX(-50%); z-index: 20; bottom: calc(16px + env(safe-area-inset-bottom,0px)); max-width: min(92vw,540px); background: var(--text); color: var(--canvas); padding: 9px 14px; border-radius: 10px; font-size: 13px; box-shadow: var(--shadow); }
 @media (min-width: 861px) { .index { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; padding: 2px 4px 8px 2px; } }
 @media (max-width: 960px) { .impact-grid { grid-template-columns: minmax(0,1fr); } }
+/* Case-owned scoring editor and immutable result excerpts only. */
+.rubric-panel, .assertion-results { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-wrap: anywhere; }
+.rubric-panel > summary, .assertion-results > summary, .judge-vote > summary, .assertion-run > summary { cursor: pointer; font-weight: 600; }
+.rubric-panel[open] > :not(summary), .assertion-results[open] > :not(summary) { margin-top: 10px; }
+.rubric-editor, .assertion-field { display: grid; gap: 10px; }
+.assertion-field { border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+.rubric-editor label { display: grid; gap: 4px; }
+.rubric-editor textarea, .rubric-editor select { width: 100%; max-width: 100%; background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
+.rubric-editor textarea { resize: vertical; min-height: 70px; }
+.rubric-version { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.rubric-panel .mono, .assertion-results .mono, #impact-runs > .mono { overflow-wrap: anywhere; white-space: pre-wrap; }
+.assertion-run { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.assertion-judgments { padding-left: 22px; }
+.assertion-judgments > li, .judge-vote { margin: 10px 0; }
+.judge-quote { margin: 8px 0; border-left: 3px solid var(--border-strong); padding-left: 10px; }
+.judge-quote figcaption { font-size: 12px; color: var(--soft); }
+.judge-quote blockquote { white-space: pre-wrap; margin: 4px 0; overflow-wrap: anywhere; }
+
 @media (max-width: 860px) { .split { grid-template-columns: minmax(0,1fr); } }
 @media (max-width: 640px) {
   body.management-app[data-page="wikiskill"] .wikiskill-content { padding: 12px 10px 42px; }
