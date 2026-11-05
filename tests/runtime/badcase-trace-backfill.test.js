@@ -108,7 +108,9 @@ test('missing session and original context are explicit, not a synthetic reconst
   db.exec('DELETE FROM chat_message_context_snapshots'); db.close(); fs.unlinkSync(h.file);
   const report = run(h); assert.equal(report.results[0].status, 'unavailable');
   assert.ok(report.results[0].missingReasons.includes('session_missing'));
-  assert.ok(report.results[0].missingReasons.includes('original_context_unavailable'));
+  assert.ok(report.results[0].missingReasons.includes('context_archive_missing'));
+  assert.ok(report.results[0].missingReasons.includes('system_prompt_missing'));
+  assert.ok(!report.results[0].missingReasons.includes('original_context_unavailable'));
 });
 test('sealed sources retain verified pre-turn material but never invent the marked run', t => {
   const h = fixture(t), captureRoot = path.join(h.root, 'sealed-copy'), pr = path.join(captureRoot, 'projects', 'project');

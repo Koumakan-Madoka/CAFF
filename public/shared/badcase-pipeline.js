@@ -18,7 +18,9 @@
     const splitName = { train: '训练', gate: '门槛', test: '测试' };
     const sceneWait = '待接入 · 待采集能力合入';
     const reasonLabels = {
-      original_context_unavailable: '未保存当时的原始上下文', system_prompt_missing: '未保存当时的系统提示词',
+      original_context_unavailable: '没有新版上下文归档；本轮输入和续用前轮已从会话日志恢复',
+      context_archive_missing: '没有新版上下文归档', system_prompt_missing: '未保存当时的系统提示词',
+      system_prompt_display_redacted: '系统提示词为历史展示版，路径行已占位', provider_request_bytes_missing: '未保存供应商请求原始字节',
       context_truncated: '原上下文曾被截断', model_duration_missing: '未记录逐次模型耗时', model_usage_missing: '未记录模型用量',
       turn_end_inferred_from_usage: '旧轮次终点按调用次数推导', turn_bounds_recovered_from_unique_reply: '旧轮次按唯一回复及父链恢复',
       turn_bounds_missing: '缺少可确认的轮次边界', turn_bounds_invalid: '轮次边界与日志不符', session_missing: '没有对应会话日志',

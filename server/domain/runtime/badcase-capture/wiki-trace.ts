@@ -107,9 +107,20 @@ function sceneInventory(checkpoint: any) {
 export function buildWikiTraceBundle(input: any) {
   const source = traceSourceIdentity(input.source), missing: string[] = [...(input.missingReasons || [])];
   const original = input.snapshot?.archiveContext;
-  const sections = original?.sections || (input.snapshot?.sections || []).map((s: any) => ({ sectionKey: s.sectionKey, content: s.displayContent || '', originalUnavailable: true }));
-  if (!original?.sections) missing.push('original_context_unavailable');
-  if (!sections.some((s: any) => s.sectionKey === 'harness_prompt' && s.content)) missing.push('system_prompt_missing');
+  const archived = Array.isArray(original?.sections);
+  const sections = archived ? original.sections : (input.snapshot?.sections || []).map((s: any) => ({
+    sectionKey: s.sectionKey, content: s.displayContent || '', originalUnavailable: true,
+    displayRedacted: s.redacted === true, truncated: s.truncated === true,
+  }));
+  // This is about the sections archive, NOT the trigger/reused messages which
+  // are recovered independently from the session below. Never migrate old packets.
+  if (!archived) missing.push('context_archive_missing');
+  const system = sections.find((s: any) => s.sectionKey === 'harness_prompt' && s.content);
+  if (!system) missing.push('system_prompt_missing');
+  else if (!archived && system.displayRedacted) missing.push('system_prompt_display_redacted');
+  // We record semantic inputs, never claim to have captured provider wire bytes.
+  // These bytes are not required by B2 and their absence alone is informational.
+  missing.push('provider_request_bytes_missing');
   if (sections.some((s: any) => s.truncated)) missing.push('context_truncated');
   let parsed: any = null;
   try { parsed = parseTurn(input.sessionText, input.message?.metadata); }
@@ -153,10 +164,12 @@ export function buildWikiTraceBundle(input: any) {
   if (scene && !scene.head) missing.push('scene_head_not_recorded');
   if (scene && !scene.branch) missing.push('scene_branch_not_recorded');
   const raw = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', source, frozenAt: input.frozenAt,
-    origin: input.origin, complete: missing.length === 0, missingReasons: [...new Set(missing)],
+    origin: input.origin, complete: missing.every(reason => reason === 'provider_request_bytes_missing'), missingReasons: [...new Set(missing)],
     markedMessage: reply, actual: input.actual ?? '', expected: input.expected ?? '', markedStep,
     context: { snapshotId: input.snapshot?.snapshotId ?? null, sections,
-      systemPrompt: sections.find((s: any) => s.sectionKey === 'harness_prompt')?.content ?? null,
+      systemPrompt: system?.content ?? null,
+      systemPromptSource: system ? archived ? 'known_value_archive' : 'historical_display' : 'missing',
+      providerRequestBytesCaptured: false,
       trigger: parsed?.trigger ?? null, priorSessionEntries: parsed?.prior || [],
       skillSections: sections.filter((s: any) => /skills/.test(s.sectionKey)), loadedSkillPaths: [...skillPaths],
       ...(input.retained == null ? {} : { retained: input.retained }) },

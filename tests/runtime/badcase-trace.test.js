@@ -97,9 +97,50 @@ test('missing originals and redacted Inspector snapshots stay explicit, never cl
     snapshot: { sections: [{ sectionKey: 'harness_prompt', displayContent: 'already [REDACTED]', redacted: true }] } });
   assert.equal(packet.complete, false);
   assert.ok(packet.missingReasons.includes('session_missing'));
-  assert.ok(packet.missingReasons.includes('original_context_unavailable'));
+  assert.ok(packet.missingReasons.includes('context_archive_missing'));
+  assert.ok(packet.missingReasons.includes('system_prompt_display_redacted'));
+  assert.ok(packet.missingReasons.includes('provider_request_bytes_missing'));
+  assert.ok(!packet.missingReasons.includes('original_context_unavailable'));
   assert.equal(packet.markedStep, null);
   assert.equal(packet.context.sections[0].content, 'already [REDACTED]');
+});
+test('missing archive does not mean the recovered trigger and reused prefix are missing', t => {
+  const h = fixture(t);
+  const packet = trace().buildWikiTraceBundle({ ...h.input,
+    snapshot: { sections: [{ sectionKey: 'harness_prompt', displayContent: 'historical cwd [REDACTED]', redacted: true, truncated: false }] } });
+  assert.equal(packet.context.trigger.message.content, 'do this turn');
+  assert.equal(packet.context.priorSessionEntries[0].message.content, 'previous user');
+  assert.equal(packet.context.systemPrompt, 'historical cwd [REDACTED]');
+  assert.ok(packet.missingReasons.includes('context_archive_missing'));
+  assert.ok(packet.missingReasons.includes('system_prompt_display_redacted'));
+  assert.ok(!packet.missingReasons.includes('system_prompt_missing'));
+  assert.ok(!packet.missingReasons.includes('original_context_unavailable'));
+  const absent = trace().buildWikiTraceBundle({ ...h.input, snapshot: null });
+  assert.ok(absent.missingReasons.includes('system_prompt_missing'));
+  assert.ok(!absent.missingReasons.includes('system_prompt_display_redacted'));
+});
+test('provider wire bytes are explicitly not captured, without making B2-complete content incomplete', t => {
+  const packet = trace().buildWikiTraceBundle(fixture(t).input);
+  assert.ok(packet.missingReasons.includes('provider_request_bytes_missing'));
+  assert.equal(packet.complete, true); // B2 requires semantic inputs, not provider transport bytes.
+  assert.ok(!packet.missingReasons.includes('system_prompt_display_redacted'));
+});
+test('fallback display sections retain their original truncation disclosure', t => {
+  const h = fixture(t);
+  const packet = trace().buildWikiTraceBundle({ ...h.input,
+    snapshot: { sections: [{ sectionKey: 'harness_prompt', displayContent: 'partial display', truncated: true }] } });
+  assert.ok(packet.missingReasons.includes('context_truncated'));
+});
+test('new reason codes never migrate or rehash an already-frozen legacy packet', t => {
+  const h = fixture(t), legacy = trace().buildWikiTraceBundle(h.input);
+  legacy.complete = false; legacy.missingReasons = ['original_context_unavailable'];
+  const frozen = h.store.freezeCaseTrace(h.item.id, legacy);
+  const before = fs.readFileSync(path.join(h.root, 'wiki/traces', fs.readdirSync(path.join(h.root, 'wiki/traces'))[0]));
+  const updated = trace().buildWikiTraceBundle(h.input);
+  assert.ok(!updated.missingReasons.includes('original_context_unavailable'));
+  assert.equal(h.store.freezeCaseTrace(h.item.id, updated).traceBundle.hash, frozen.traceBundle.hash);
+  assert.deepEqual(h.store.readCaseTrace(h.item.id), legacy);
+  assert.deepEqual(fs.readFileSync(path.join(h.root, 'wiki/traces', fs.readdirSync(path.join(h.root, 'wiki/traces'))[0])), before);
 });
 test('known-only replacement is literal, handles JSON escaping and leaves unrecognized patterns unchanged', () => {
   const original = { content: 'password=not-a-known-value sk-SYNTHETIC_UNRECOGNIZED', nested: ['key"\\\nvalue'] };

@@ -28,6 +28,15 @@ test('pipeline has truthful stepper, actor groups, two funnels, backfill states 
   assert.doesNotMatch(h.root.textContent, /批准补全|示例.*JEV|已成为测试用例.*[1-9]/);
   assert.equal(h.root.querySelector('[data-case-id="c3"]').closest('[data-actor]').dataset.actor, 'source');
 });
+test('legacy context reason means missing newer archive, not missing recovered input or reused turns', t => {
+  const h = setup(t);
+  assert.match(h.root.textContent, /没有新版上下文归档；本轮输入和续用前轮已从会话日志恢复/);
+  assert.doesNotMatch(h.root.textContent, /未保存当时的原始上下文/);
+  h.data.cases[0].traceBundle.missingReasons = ['context_archive_missing', 'system_prompt_display_redacted', 'provider_request_bytes_missing'];
+  h.panel.render(h.data);
+  for (const text of ['没有新版上下文归档', '系统提示词为历史展示版', '未保存供应商请求原始字节']) assert.ok(h.root.textContent.includes(text), text);
+  assert.equal(h.calls.length, 0);
+});
 test('expand fetches frozen packet lazily, shows full output/results and exports only from its read-only endpoints', async t => {
   const h = setup(t); await h.expand(); assert.equal(h.calls.length, 1); assert.equal(h.calls[0], '/api/wikiskill/cases/c1/trace');
   const trace = h.root.querySelector('[data-trace-case="c1"]');

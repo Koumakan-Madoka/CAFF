@@ -26,7 +26,9 @@
 
 Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最大 128 MiB；拒绝界外路径/链接目标和无效 UTF-8。仅接受 v3 JSONL，验证 ID 唯一、父链可解析。用冻结的起止计数选择本轮分支；保留这一分支的前缀，不含续写的下一轮或旁支。只凭 usage 推导的旧轮次终点会明确标 `turn_end_inferred_from_usage`，不冒充精确采集。
 
-旧 Inspector 快照只有 `displayContent` 时可以展示已有材料，但必须标 `original_context_unavailable`；不能从 `[REDACTED]` 还原原文或声称完整。
+旧 Inspector 快照只有 `displayContent` 时仍可展示已有材料，不能从 `[REDACTED]` 还原原文或声称逐字原始请求。旧冻结包的 `original_context_unavailable` 只表示没有新版 `archiveContext.sections`，不意味着从 session 恢复的本轮输入和续用前轮缺失；已冻结包、hash 和导出原文不作迁移。页面对旧码解释为「没有新版上下文归档；本轮输入和续用前轮已从会话日志恢复」，session 本身缺失时另有明确缺失码。
+
+新生成包不再添加上述宽泛旧码，分开记录：`context_archive_missing`（没有新版 sections 原文归档）、`system_prompt_missing`（没有当时系统提示词）、`system_prompt_display_redacted`（使用已有模式脱敏历史展示版）、`provider_request_bytes_missing`（未录制供应商原始请求字节）、以及各自的 session/边界/工具结果缺失码。保留旧展示分区的截断标记。`context.systemPromptSource` 区分 `known_value_archive|historical_display|missing`，`providerRequestBytesCaptured` 如实为 false。`complete` 仍判断 B2 所要求的语义轨迹材料；原始供应商请求字节不在 B2 内，只有 `provider_request_bytes_missing` 不使 B2 材料降级，不能把它解读为已录制网络请求。
 
 ## 已知值替换与存储
 
