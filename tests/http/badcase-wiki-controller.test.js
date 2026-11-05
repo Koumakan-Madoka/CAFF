@@ -50,8 +50,7 @@ test('dehydration confirmation is explicit, guarded, revision/hash bound and nev
   h.store.freezeCaseTrace(c.id, packet);
   const { buildDehydrationRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration');
   const item = h.store.read().cases[0], built = buildDehydrationRequest({ caseRecord: item, bundle: packet, cause: { source: 'trigger', text: 'verify first' } });
-  const r = h.store.saveDehydrationRecommendation({ built, expectedRevision: h.store.read().revision, response: { model: 'test', answers: {
-    kind: { type: 'choice', choice: 'single', probabilities: { single: .9, throughout: .1 } }, cut: { type: 'choice', choice: 'step_1', probabilities: { step_1: .9, none: .1 } } } } });
+  const r = h.store.saveDehydrationRecommendation({ built, expectedRevision: h.store.read().revision, response: { model: 'deepseek/deepseek-v4-flash', attempts: [{ content: JSON.stringify({ kind: '单步型', cutStep: 1, reason: '本步决定', evidence: 'done' }), finishReason: 'stop' }] } });
   const route = { pathname: '/api/wikiskill/dehydration-confirm' }, body = { confirmed: true, caseId: c.id, traceHash: item.traceBundle.hash, recommendationHash: r.hash, kind: 'single', cutStep: 1, expectedRevision: h.store.read().revision };
   assert.equal((await h.invoke()).body.dehydrations[0].decision, undefined);
   await rejects(h.invoke({ ...body, confirmed: false }, route), 'wiki_confirmation_required');

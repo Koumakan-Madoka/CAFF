@@ -2,7 +2,7 @@
 (function registerBadcasePipeline() {
   const shared = window.CaffShared || (window.CaffShared = {});
   // Loading is read-only. Only an explicit user action freezes a decision;
-  // this component never calls JEV, starts a replay, grades or changes groups.
+  // this component never calls a model, starts a replay, grades or changes groups.
   shared.createBadcasePipeline = function ({ root, fetchJson, onConfirmDecision, confirm: confirmAction = message => window.confirm(message) }) {
     const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const words = q => String(q || '').slice(0, 512).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 30);
@@ -39,7 +39,7 @@
     let writable = typeof onConfirmDecision === 'function';
     const dehydration = c => (D.dehydrations || []).find(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash);
     const kindLabel = k => ({ single: '单步型', throughout: '贯穿型', unclear: '说不清（按贯穿型）' }[k] || k);
-    root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec"><h2>从 badcase 到测试用例</h2><p class="hint">有现场默认走 trace 级；无现场须经 JEV 推荐、你确认后脱水成 run 级。测试组只收 trace 级，门槛中 run 级不超过一半，训练组 run 级只作初筛。旧分组保留，重新分组尚待你确认。</p><div data-funnels></div></section>
+    root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec"><h2>从 badcase 到测试用例</h2><p class="hint">有现场默认走 trace 级；无现场须经 DeepSeek 推荐、你确认后脱水成 run 级。测试组只收 trace 级，门槛中 run 级不超过一半，训练组 run 级只作初筛。旧分组保留，重新分组尚待你确认。</p><div data-funnels></div></section>
       <div class="toolbar"><label class="search"><input data-bc-search type="search" aria-label="搜索 badcase" placeholder="搜索问题、期望、来源房间或编号" autocomplete="off"></label>
       <label class="field">卡在 <select data-bc-stage><option value="all">全部</option><option value="you">等你处理</option><option value="system">系统可以继续</option><option value="scene">现场待接入</option><option value="noscene">无现场（待脱水）</option><option value="dehydrate">脱水</option><option value="source">旧题的来源</option><option value="other">非 GPT 来源</option></select></label>
       <label class="field">模型 <select data-bc-model><option value="all">全部</option><option value="gpt">GPT</option><option value="other">非 GPT</option></select></label>
@@ -63,7 +63,7 @@
       const steps = [
         ['done', c.kind === 'text-only' ? '用户批准的历史导入' : '页面标记'],
         [has ? 'pending' : 'alt', has ? sceneWait + '；已有封存清单不等于现场元数据齐全' : '没有现场；须先确认能否脱水'],
-        [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '默认 trace 级；可另选脱水' : r ? 'JEV 推荐已生成，等待你确认能否脱水和切点' : 'JEV 推荐尚未生成；用户确认后冻结判断与切点'],
+        [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '默认 trace 级；可另选脱水' : r ? 'DeepSeek 推荐已生成，等待你确认能否脱水和切点' : 'DeepSeek 推荐尚未生成；用户确认后冻结判断与切点'],
         [cs?.memberships?.length ? 'done' : 'pending', cs?.memberships?.length ? '已有已确认模式标签' : '待归类；不自动改模式'],
         [old ? 'done' : 'pending', old ? '原测试分组保留' : '旧分组保留；分层重新分组待用户确认'],
         ['pending', '评分 v2 待接入：断言及逐条判定由独立 Goal 负责'],
@@ -74,7 +74,7 @@
       if (old || other) for (let i = old ? 5 : 2; i < 9; i++) steps[i] = ['skip', old ? '只作旧题来源，不单独入库' : '只报告，不计入 GPT 结论'];
       if (reference) for (let i = 4; i < 9; i++) steps[i] = ['skip', '无现场且非单步型；只作参考和训练组文字材料，不成为测试用例'];
       const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : r && !d ? 'you' : 'system';
-      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题' : d ? '脱水决定已冻结，等待原版单次回放；不会自动启动' : r ? '请确认能否脱水与切点；确认后不可修改' : has ? sceneWait : '等待 JEV 推荐，再请你确认' };
+      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题' : d ? '脱水决定已冻结，等待原版单次回放；不会自动启动' : r ? '请确认能否脱水与切点；确认后不可修改' : has ? sceneWait : '等待 DeepSeek 推荐，再请你确认' };
     }
     function funnel() {
       const gpt = D.cases.filter(isGpt), tr = gpt.filter(hasScene), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c));
@@ -85,9 +85,11 @@
     function dehydrationPanel(c) {
       const r = dehydration(c); if (!r || sourceOnly(c) || !isGpt(c)) return '';
       const rec = r.recommendation, d = r.decision;
-      const pct = v => typeof v === 'number' ? (v * 100).toFixed(1) + '%' : '未返回概率';
-      return `<section class="dehydration-panel" data-dehydration="${esc(c.id)}"><h4>能否脱水</h4><p>JEV 建议：${esc(kindLabel(rec.kindSuggestion))}（${pct(rec.kindProbability)}）；建议切点：第 ${rec.cutStepSuggestion} 步（${pct(rec.cutProbability)}${rec.cutSource === 'marked_step_fallback' ? '，未达建议条件，回退到发消息步骤，请你挑选' : ''}）。</p>
-        <details><summary>查看实际 JEV 材料与两题概率</summary><pre class="tl-req">${esc(json({ request: r.request, answers: rec.answers }))}</pre></details>
+      const fallbackLabel = { parse_failed: '两次输出仍无法解析', evidence_mismatch: '依据与该步卡片原文不匹配', no_cut: '未给出切点', unclear: '模型说不清', not_single: '模型判断为贯穿型' };
+      const provider = rec.schemaVersion === 2 ? 'DeepSeek' : '历史 JEV';
+      return `<section class="dehydration-panel" data-dehydration="${esc(c.id)}"><h4>能否脱水</h4><p>${provider} 建议：${esc(kindLabel(rec.kindSuggestion))}；建议切点：第 ${rec.cutStepSuggestion} 步${rec.cutSource === 'marked_step_fallback' ? `（${esc(fallbackLabel[rec.fallbackReason] || '未达建议条件')}，回退到发消息步骤，请你挑选）` : ''}。</p>
+        ${rec.schemaVersion === 2 ? `<p>理由：${esc(rec.answers?.reason || '未取得可解析答案，不代表模型给出了判断')}</p><p>原文依据：${esc(rec.answers?.evidence || '未提供')}（${rec.evidenceVerified ? '程序已核对为该步卡片原文的子串' : '未核验通过'}）</p>` : ''}
+        <details><summary>查看实际推荐材料与完整输出</summary><pre class="tl-req">${esc(json({ request: r.request, answers: rec.answers, attempts: rec.attempts }))}</pre></details>
         ${d ? `<p class="pill ok">已冻结：${esc(kindLabel(d.kind))}${d.cutStep ? ' · 第 ' + d.cutStep + ' 步' : ''} · ${d.level === 'reference' ? '只作参考' : esc(d.level) + ' 级'}</p><p class="trace-hash mono">决定 SHA-256：${esc(d.hash)}</p>` : `<label class="field">你的判断 <select data-dehydration-kind>${['single', 'throughout', 'unclear'].map(k => `<option value="${k}" ${rec.kindSuggestion === k ? 'selected' : ''}>${esc(kindLabel(k))}</option>`).join('')}</select></label>
         <label class="field">单步型切点 <select data-dehydration-cut>${r.request.state.steps.map(s => `<option value="${s.step}" ${rec.cutStepSuggestion === s.step ? 'selected' : ''}>第 ${s.step} 步 · ${esc((s.messageBody || s.body).slice(0, 120))}</option>`).join('')}</select></label>
         <p class="hint">贯穿型或说不清且无现场，只作参考，不成为测试用例。确认后判断与切点永久冻结；此处不启动模型。</p><button type="button" class="btn primary" data-dehydration-confirm="${esc(c.id)}" ${writable ? '' : 'disabled'}>确认并冻结判断与切点</button>`}</section>`;

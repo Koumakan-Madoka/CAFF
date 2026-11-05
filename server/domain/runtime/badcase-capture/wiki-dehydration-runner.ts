@@ -1,9 +1,10 @@
-import { buildDehydrationRequest } from './wiki-dehydration';
+import { buildDehydrationRequest, DEHYDRATION_MODEL, interpretDehydrationAnswer } from './wiki-dehydration';
 import { redactTraceKnownValues } from './wiki-trace';
 const fail = (code: string) => Object.assign(Error(code), { code });
 // Caller must approve the exact redacted projection before any external send.
 // Credentials/client stay injected and in memory; there is no tool executor,
-// production DB opener, credential refresh, automatic retry or logging here.
+// production DB opener, credential refresh or logging. Only JSON/schema parse
+// failure gets one identical retry; network errors and bad evidence do not.
 const active = new WeakSet<object>();
 export async function recommendDehydration(input: any, options: any) {
   const { store, caseId, expectedRevision, approvedRequestHash, cause } = input;
@@ -19,13 +20,32 @@ export async function recommendDehydration(input: any, options: any) {
     return previous;
   }
   if (active.has(store)) throw fail('wiki_dehydration_busy');
-  if (typeof options.client?.ask !== 'function') throw fail('wiki_dehydration_jev_unavailable');
+  if (typeof options.client?.ask !== 'function') throw fail('wiki_dehydration_model_unavailable');
   active.add(store);
   try {
-    let response;
-    try { response = await options.client.ask(built.request); }
-    catch { throw fail('wiki_dehydration_jev_failed'); }
-    // Revision/trace binding is checked AGAIN after the network boundary.
-    return store.saveDehydrationRecommendation({ built, response: redactTraceKnownValues(response, options.knownKeyValues || []).value, expectedRevision });
+    const response: any = { model: DEHYDRATION_MODEL, attempts: [] };
+    for (let n = 0; n < 2; n++) {
+      if (store.read().revision !== expectedRevision) throw fail('wiki_revision_conflict');
+      let attempt;
+      try { attempt = await options.client.ask(structuredClone(built.request)); }
+      catch { throw fail('wiki_dehydration_model_failed'); }
+      const safe = redactTraceKnownValues(attempt, options.knownKeyValues || []).value;
+      // A JSON answer can escape known bytes (e.g. \\uXXXX). Replace after
+      // decoding as well, before any parsed answer can enter Wiki storage.
+      if (typeof safe?.content === 'string') {
+        let decoded;
+        try { decoded = JSON.parse(safe.content); } catch { /* Preserve malformed output for the bounded retry. */ }
+        if (decoded !== undefined) {
+          const replaced = redactTraceKnownValues(decoded, options.knownKeyValues || []);
+          if (replaced.count) safe.content = JSON.stringify(replaced.value);
+        }
+      }
+      response.attempts.push(safe);
+      if (store.read().revision !== expectedRevision) throw fail('wiki_revision_conflict');
+      try { interpretDehydrationAnswer(built, response); break; }
+      catch (e: any) { if (e.code !== 'wiki_dehydration_answer_invalid' || n === 1) throw e; }
+    }
+    // Revision/trace binding is checked AGAIN inside the writer lock.
+    return store.saveDehydrationRecommendation({ built, response, expectedRevision });
   } finally { active.delete(store); }
 }

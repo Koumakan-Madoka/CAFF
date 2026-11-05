@@ -29,11 +29,8 @@ function fixture() {
   return { bundle, caseRecord, cause, knownKeyValues: ['sensitive-test-needle'] };
 }
 function refresh(h) { h.caseRecord.traceBundle.hash = sha(h.bundle); return h; }
-function answer(kind = 'single', cut = 'step_1', kp = .8, cp = .8) {
-  return { model: 'jev-test', answers: {
-    kind: { type: 'choice', choice: kind, probabilities: { single: kind === 'single' ? kp : .1, throughout: kind === 'throughout' ? kp : .1, unclear: kind === 'unclear' ? kp : .1 } },
-    cut: { type: 'choice', choice: cut, probabilities: { step_1: cut === 'step_1' ? cp : .1, step_2: cut === 'step_2' ? cp : .1, none: cut === 'none' ? cp : .1 } },
-  } };
+function answer(kind = '单步型', cutStep = 1, evidence = 'read', reason = '这一步做对就能避免问题') {
+  return { model: 'deepseek/deepseek-v4-flash', attempts: [{ content: JSON.stringify({ kind, cutStep, reason, evidence }), finishReason: 'stop' }] };
 }
 test('request uses exactly the B6 fields, two questions last, and canonical page numbering instead of caller row ordinals', () => {
   const h = fixture(), before = structuredClone(h), built = api().buildDehydrationRequest(h);
@@ -42,8 +39,9 @@ test('request uses exactly the B6 fields, two questions last, and canonical page
   assert.deepEqual(Object.keys(built.request), ['state', 'questions']);
   assert.deepEqual(Object.keys(built.request.state), ['cause', 'steps', 'reply', 'actual', 'expected']);
   assert.deepEqual(Object.keys(built.request.questions), ['kind', 'cut']);
-  assert.deepEqual(Object.keys(built.request.questions.kind.criteria), ['single', 'throughout', 'unclear']);
-  assert.deepEqual(Object.keys(built.request.questions.cut.criteria), ['step_1', 'step_2', 'none']);
+  assert.match(built.request.questions.kind, /能不能指出一步/);
+  assert.match(built.request.questions.cut, /JSON.*kind.*cutStep.*reason.*evidence/);
+  assert.doesNotMatch(JSON.stringify(built.request.questions), /probabilities|criteria/);
   assert.equal(built.request.state.cause, h.cause.text);
   const wire = JSON.stringify(built.request);
   assert.doesNotMatch(wire, /THOUGHT_MUST|PRIVATE_BOOKKEEPING|CURRENT_CANDIDATE|CURRENT_RESULTS|sensitive-test-needle|"split"/);
@@ -102,18 +100,23 @@ test('cause must come from the frozen trigger or contemporaneous Goal, never cur
   h.bundle.context.priorSessionEntries[1].message.content = 'CAFF rules\n\nSession goal:\nObjective: made up current objective\n\nConversation history:\nother messages';
   assert.equal(api().buildDehydrationRequest(refresh(h)).request.state.cause, h.cause.text);
 });
-test('only highest probabilities >= .65 recommend a single step; none/unclear/low/missing probabilities use marked-step fallback', () => {
+test('DeepSeek JSON needs exact nonempty card evidence, never invented probabilities; none/unclear/bad evidence fall back', () => {
   const built = api().buildDehydrationRequest(fixture());
-  let r = api().interpretDehydrationAnswer(built, answer('single', 'step_1', .65, .65));
-  assert.equal(r.kindSuggestion, 'single'); assert.equal(r.cutStepSuggestion, 1); assert.equal(r.cutSource, 'jev');
-  for (const a of [answer('single', 'none'), answer('single', 'step_1', .8, .64), answer('throughout'), answer('unclear')]) {
-    r = api().interpretDehydrationAnswer(built, a); assert.equal(r.cutStepSuggestion, 2); assert.equal(r.cutSource, 'marked_step_fallback');
+  let r = api().interpretDehydrationAnswer(built, answer());
+  assert.equal(r.kindSuggestion, 'single'); assert.equal(r.cutStepSuggestion, 1); assert.equal(r.cutSource, 'deepseek');
+  assert.equal(r.evidenceVerified, true); assert.equal(r.answers.reason, '这一步做对就能避免问题');
+  assert.equal(r.kindProbability, undefined); assert.equal(r.cutProbability, undefined);
+  for (const [a, why] of [[answer('single'), 'parse_failed'], [answer('单步型', '无', ''), 'no_cut'],
+    [answer('贯穿型', '无', ''), 'not_single'], [answer('说不清', 1), 'unclear'],
+    [answer('单步型', 1, 'paraphrased read tool'), 'evidence_mismatch'], [answer('单步型', 1, ''), 'evidence_mismatch']]) {
+    if (why === 'parse_failed') { assert.throws(() => api().interpretDehydrationAnswer(built, a), e => e.code === 'wiki_dehydration_answer_invalid'); continue; }
+    r = api().interpretDehydrationAnswer(built, a); assert.equal(r.cutStepSuggestion, 2); assert.equal(r.cutSource, 'marked_step_fallback'); assert.equal(r.fallbackReason, why);
   }
-  r = api().interpretDehydrationAnswer(built, answer('single', 'step_1', .64)); assert.equal(r.kindSuggestion, 'unclear');
-  const noProb = answer(); delete noProb.answers.kind.probabilities; delete noProb.answers.cut.probabilities;
-  r = api().interpretDehydrationAnswer(built, noProb); assert.equal(r.kindProbability, null); assert.equal(r.cutProbability, null); assert.equal(r.kindSuggestion, 'unclear');
-  const bad = answer(); bad.answers.cut.probabilities.step_99 = .9;
-  assert.throws(() => api().interpretDehydrationAnswer(built, bad), e => e.code === 'wiki_dehydration_answer_invalid');
+  r = api().interpretDehydrationAnswer(built, answer('单步型', 2, 'public reply')); assert.equal(r.evidenceVerified, true);
+  assert.throws(() => api().interpretDehydrationAnswer(built, answer('单步型', 3)), e => e.code === 'wiki_dehydration_answer_invalid');
+  const failed = { model: 'deepseek/deepseek-v4-flash', attempts: [{ content: 'not json' }, { content: '{"kind":"单步型"}' }] };
+  r = api().interpretDehydrationAnswer(built, failed); assert.equal(r.kindSuggestion, 'unclear'); assert.equal(r.answers, null); assert.equal(r.fallbackReason, 'parse_failed'); assert.equal(r.cutStepSuggestion, 2);
+  assert.throws(() => api().interpretDehydrationAnswer({ ...built, requestHash: 'f'.repeat(64) }, answer()), e => e.code === 'wiki_dehydration_input_invalid');
 });
 test('prefix contains exactly retained messages, trigger and pre-cut calls/results, with historical display paths unchanged', () => {
   const h = fixture(), before = structuredClone(h.bundle), p = api().buildDehydrationPrefix(h.caseRecord, h.bundle, 2);

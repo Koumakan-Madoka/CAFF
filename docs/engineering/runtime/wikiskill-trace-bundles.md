@@ -4,7 +4,7 @@
 
 轨迹包是 Wiki 拥有的证据，不是聊天 Inspector 的展示投影，也不是现场可回放、已复现或可判分的证明。现有 checkpoint 封存记录仍保留自己的完整性/可回放限制。
 
-本契约覆盖标记入口、轨迹组装、不可覆盖存储和显式授权的只读历史回填操作入口。Badcase 页面、文件导出、JEV 推荐的受信执行入口及页面确认冻结已接入；run 级回放、新分组及现场完整元数据仍待后续接入；不能把展示/导出或合成测试当成可回放、可评分或已入库的证明。
+本契约覆盖标记入口、轨迹组装、不可覆盖存储和显式授权的只读历史回填操作入口。Badcase 页面、文件导出、DeepSeek 推荐的受信执行入口及页面确认冻结已接入；run 级回放、新分组及现场完整元数据仍待后续接入；不能把展示/导出或合成测试当成可回放、可评分或已入库的证明。
 
 ## 数据流与签名
 
@@ -42,7 +42,7 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 ## Badcase 页与导出
 
-独立页签位于 WikiSkill 顶部的 Badcase，`#badcases` 可直达，`#bc-<显示编号>` 可定位。原知识库默认页和「用例」的归类/旧回放题入口保留。页面使用 `public/shared/badcase-pipeline.js` 的独立组件（加载只读，确认须用户动作），避免侵入评分 v2 的编辑器；每张卡片仅预留 `data-assertion-slot`，不伪造断言、JEV 建议、分组确认或新版评测结果。
+独立页签位于 WikiSkill 顶部的 Badcase，`#badcases` 可直达，`#bc-<显示编号>` 可定位。原知识库默认页和「用例」的归类/旧回放题入口保留。页面使用 `public/shared/badcase-pipeline.js` 的独立组件（加载只读，确认须用户动作），避免侵入评分 v2 的编辑器；每张卡片仅预留 `data-assertion-slot`，不伪造断言、模型建议、分组确认或新版评测结果。
 
 - 九步：标记、现场、脱水、归类、分组、断言、回放检查、原版复现、入库。按下一步责任方分组，可切换列表；支持问题/期望/来源/编号搜索和阶段、模型筛选。保留 #4、#10、#14 的旧题来源身份，不把样例仓库当原现场。非 GPT 来源单列，只报告。
 - trace / run 两条漏斗分别展示实际封存、归档及用户确认可脱水的计数；尚未接入的新版检查/断言/入库计数显式为零，不把旧字面评测或 replay 登记当作通过证据。`run 级 · 待脱水确认` 不是已经获得测试资格。
@@ -74,16 +74,18 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 ## M3 脱水材料、推荐与确认
 
-`wiki-dehydration.ts` 是纯数据模块，不读文件、凭据或可变房间上下文，不调用 JEV/模型或工具。目前只实现：
+`wiki-dehydration.ts` 是纯数据模块，不读文件、凭据或可变房间上下文，不调用模型或工具。目前只实现：
 
 - 身份由 caseId 与冻结包 source/hash 绑定，编号仅由 `wikiGoalCaseNumber` 投影；旧题来源 #4/#10/#14 不允许脱水。判断具体系统提示词、触发消息、前缀和标记步骤是否存在，不因旧 `original_context_unavailable` 或缺耗时就拒绝已有消息前缀。现场用例默认仍走 trace。
-- JEV 请求只投影当时起因、步骤卡片、发出回复、实际问题及期望，最后放能否脱水/切点两题。起因必须选自冻结的本轮输入或当时 Goal，不能从当前 Goal 补造。卡片不含 thinking 或结果 details，先替换已知 key 再裁剪；消息/方案正文保留头 500 尾 300，普通步骤最多 120，错误步骤保留报错行；旧日志中 `send-public` 已发送但工具报 `Command aborted` 时，同时保留 `messageBody`（同样头尾规则），不能让桥接终态吞掉发消息步骤的正文。只询问不晚于发出被标记消息的步骤；大于 254 个切点或 state 超过 64k 时显式拒绝，不静默丢材料。调用方还必须审核脱敏材料后才允许外发。
-- 两题概率分别使用最高概率，阈值为 ≥0.65；缺概率不伪造数值。低把握分类按说不清处理；非单步、无切点或切点低把握时只提供发消息步骤的回退值，均须用户确认，不自动冻结。
+- DeepSeek 请求只投影当时起因、步骤卡片、发出回复、实际问题及期望，最后放能否脱水/切点两题。起因必须选自冻结的本轮输入或当时 Goal，不能从当前 Goal 补造。卡片不含 thinking 或结果 details，先替换已知 key 再裁剪；消息/方案正文保留头 500 尾 300，普通步骤最多 120，错误步骤保留报错行；旧日志中 `send-public` 已发送但工具报 `Command aborted` 时，同时保留 `messageBody`（同样头尾规则），不能让桥接终态吞掉发消息步骤的正文。只询问不晚于发出被标记消息的步骤；大于 254 个切点或 state 超过 64k 时显式拒绝，不静默丢材料。调用方还必须审核脱敏材料后才允许外发。
+- 用户 2026-11-05 批准由 DeepSeek v4 flash 替代组织停用的 JEV（旧 JEV 结果与冻结包不迁移）。输出为严格 JSON，恰含 `kind`（单步型/贯穿型/说不清）、`cutStep`（卡片整数步号或“无”）、`reason`（一句理由）、`evidence`（从该步 body/messageBody 原样摘的非空依据，无切点则为空）。程序核对依据必须是所选卡片原文子串，不接受改写、别步或发出回复字段里的文字来冒充。没有概率字段，不编造把握程度。JSON/字段解析失败重试一次完全相同请求；两次仍失败显式 `parse_failed`、答案为 null。依据不匹配、无切点、非单步或说不清都只提供发消息步骤回退值并展示原因，均须用户确认，不自动冻结。
 - 切点前缀只含冻结的续用消息、本轮输入、切点前的模型输出及完整结果，既不含切点输出也不含之后记账。历史展示版系统提示词和路径占位原样保留，metadata 明记「系统提示词为历史展示版，路径行已占位」。缺前置工具结果、无法解释的压缩前缀或越界切点拒绝，不用当前上下文兜底。
 
-`recommendDehydration(input, { client, knownKeyValues })` 是受信操作入口，不开放 HTTP 上传材料/答案或任意源路径。调用方须先检查同一 `buildDehydrationRequest` 的脱敏投影，并传 `approvedRequestHash`；核对 revision、caseId、traceHash 后只调用一次 `client.ask`，客户端必须另设网络预算（实际任务每题独立 client、maxRequests=1，连重试也不能增加网络调用）。异常只报告固定码，不回显上游正文或凭据。网络返回后再次在 writer-lock 内核对 revision/hash；失败不伪造推荐。已经保存的同请求只返回原记录、不重复外发；更换请求或答案不覆盖首份推荐。JEV key/client/已知值清单仅在内存；调用方负责只读连接批准的系统服务凭据源，不能写入隔离配置或日志。
+`recommendDehydration(input, { client, knownKeyValues })` 是受信操作入口，不开放 HTTP 上传材料/答案或任意源路径。调用方须先检查同一 `buildDehydrationRequest` 的脱敏投影，并传 `approvedRequestHash`。核对 revision、caseId、traceHash 后调用 `client.ask`；每条最多两次且仅解析失败允许第二次。并发占用同 store 拒绝，首次网络返回后检查 revision 再决定是否重试；writer-lock 内再核对 revision/hash。HTTP/网络拒绝立即停止，不重试、不保存伪造答案。已经保存的同请求只返回原记录、不重复外发；更换请求或答案不覆盖首份推荐。输出字符串及解析后的 JSON 字符串均作已知值替换，异常只报告固定码，不回显上游正文或凭据。
 
-`saveDehydrationRecommendation` 在新的 Wiki 快照 `dehydrations` 中保存实际请求、两题概率、建议、时间及独立 hash。不修改用例内容、冻结轨迹包/hash、旧组别、旧回放登记和历史结果。页面显示完整脱敏请求、概率与切点卡片，按「等你处理」分组，不读取候选或判分结果参与推荐。
+`createDehydrationClient({ key, fetchImpl })` 不发现/刷新/写入凭据、不构造 SDK 会话。固定使用与预分类相同的 `https://api.deepseek.com/chat/completions`、`deepseek-v4-flash`、temperature=0、max_tokens=32768、非流式 JSON 对象输出、110 秒超时，单条最多两次；请求不带工具。调用方显式提供该服务的 fetch/dispatcher，无直连兜底或重定向。返回只保存 content、finishReason、状态、耗时和 usage，不保存供应商信封/思考。响应上限 512 KiB，拒绝 key 回显。按照 B6 仅只读取得 3100 `models.json` 的 deepseek provider，写入隔离 agent 配置；不复制其他 provider/auth 或写回生产，key 不进入日志、证据、提交，Goal 收尾删除隔离凭据。
+
+`saveDehydrationRecommendation` 在新的 Wiki 快照 `dehydrations` 中保存实际脱敏请求、JSON 原文/解析字段、依据核验、回退原因、尝试用量、建议、时间及独立 hash。不修改用例内容、冻结轨迹包/hash、旧组别、旧回放登记和历史结果。页面显示理由、原文依据/核验、切点卡片和完整脱敏请求/输出，按「等你处理」分组，不读取候选或判分结果参与推荐。
 
 `POST /api/wikiskill/dehydration-confirm` 使用本地管理 Host/loopback/Origin/CSRF 门禁；闭合字段为 `confirmed, expectedRevision, caseId, traceHash, recommendationHash, kind, cutStep`。客户端必须显式确认，hash/revision 必须对应同一推荐和轨迹包。单步型切点须能构造有效冻结前缀；贯穿型/说不清必须 `cutStep=null`，无现场时冻结为 `reference`，有现场则保留 `trace`。决定另带 `confirmedBy=local-user`、时间、内容 hash 和事件；同决定重试幂等，任何改判/改切点均拒绝，见过评测结果也不能重开。这个用户身份语义依赖本地管理入口与任务授权，不是对同 OS 进程的安全隔离。确认不发起模型、不执行工具、不改组、不生成断言。页面失败或结果未知时停写，刷新核对，不自动重试。
 

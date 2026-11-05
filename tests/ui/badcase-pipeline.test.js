@@ -24,7 +24,7 @@ test('pipeline has truthful stepper, actor groups, two funnels, backfill states 
   const h = setup(t); assert.equal(h.calls.length, 0);
   assert.equal(h.root.querySelectorAll('[data-lane]').length, 2);
   assert.equal(h.root.querySelector('[data-case-id="c1"] .stepper').children.length, 9);
-  for (const text of ['按下一步分组', '旧题的来源', '非 GPT 来源', '回填部分完成', '待采集能力合入', '评分 v2', 'JEV 推荐尚未生成']) assert.ok(h.root.textContent.includes(text), text);
+  for (const text of ['按下一步分组', '旧题的来源', '非 GPT 来源', '回填部分完成', '待采集能力合入', '评分 v2', 'DeepSeek 推荐尚未生成']) assert.ok(h.root.textContent.includes(text), text);
   assert.doesNotMatch(h.root.textContent, /批准补全|示例.*JEV|已成为测试用例.*[1-9]/);
   assert.equal(h.root.querySelector('[data-case-id="c3"]').closest('[data-actor]').dataset.actor, 'source');
 });
@@ -61,10 +61,10 @@ test('recommendation is read-only until an explicit user confirmation, then bind
   const sent = [], prompts = []; let accept = false;
   const h = setup(t, null, { onConfirmDecision: body => sent.push(body), confirm: message => { prompts.push(message); return accept; } });
   const r = { caseId: 'c1', traceHash: 'a'.repeat(64), hash: 'c'.repeat(64), request: { state: { steps: [{ step: 1, body: '<script>literal</script> decision' }, { step: 2, body: 'public reply' }] } },
-    recommendation: { kindSuggestion: 'single', kindProbability: .9, cutProbability: .7, cutStepSuggestion: 1, cutSource: 'jev', answers: { kind: { choice: 'single' } } } };
+    recommendation: { schemaVersion: 2, kindSuggestion: 'single', evidenceVerified: true, cutStepSuggestion: 1, cutSource: 'deepseek', answers: { kind: '单步型', reason: '<script>reason</script>', evidence: '<script>literal</script>' } } };
   h.data.dehydrations = [r]; h.panel.render(h.data);
   assert.equal(h.calls.length, 0); assert.equal(sent.length, 0); assert.match(h.root.querySelector('[data-actor="you"]').textContent, /请确认能否脱水/);
-  const host = h.root.querySelector('[data-dehydration="c1"]'); assert.equal(host.querySelector('script'), null); assert.match(host.textContent, /90.0%/);
+  const host = h.root.querySelector('[data-dehydration="c1"]'); assert.equal(host.querySelector('script'), null); assert.match(host.textContent, /DeepSeek 建议/); assert.match(host.textContent, /程序已核对为该步卡片原文的子串/); assert.doesNotMatch(host.textContent, /90.0%|概率/);
   host.querySelector('[data-dehydration-confirm]').click(); assert.equal(sent.length, 0); accept = true;
   host.querySelector('[data-dehydration-cut]').value = '2'; host.querySelector('[data-dehydration-confirm]').click();
   assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c1', traceHash: r.traceHash, recommendationHash: r.hash, kind: 'single', cutStep: 2 }); assert.match(prompts.at(-1), /#1.*第 2 步/);
@@ -73,6 +73,15 @@ test('recommendation is read-only until an explicit user confirmation, then bind
   r.decision = { kind: 'throughout', level: 'reference', cutStep: null, hash: 'd'.repeat(64) }; h.panel.render(h.data);
   assert.equal(h.root.querySelector('[data-dehydration-confirm]'), null); assert.equal(h.root.querySelector('[data-case-id="c1"]').closest('[data-actor]').dataset.actor, 'reference');
   assert.match(h.root.textContent, /已冻结：贯穿型.*只作参考/); assert.equal(h.calls.length, 0);
+});
+test('fallback output explains the exact failure and never presents missing answers as a model judgment', t => {
+  const h = setup(t);
+  h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), request: { state: { steps: [{ step: 1, body: 'reply' }] } },
+    recommendation: { schemaVersion: 2, kindSuggestion: 'unclear', cutStepSuggestion: 1, cutSource: 'marked_step_fallback', fallbackReason: 'parse_failed', evidenceVerified: false, answers: null } }];
+  h.panel.render(h.data); assert.match(h.root.textContent, /两次输出仍无法解析.*回退到发消息步骤，请你挑选/);
+  assert.match(h.root.textContent, /未取得可解析答案，不代表模型给出了判断/); assert.doesNotMatch(h.root.textContent, /概率/);
+  h.data.dehydrations[0].recommendation.fallbackReason = 'evidence_mismatch'; h.panel.render(h.data);
+  assert.match(h.root.textContent, /依据与该步卡片原文不匹配/); assert.equal(h.calls.length, 0);
 });
 test('stale packet responses after a data refresh cannot replace current evidence', async t => {
   const pending = []; const h = setup(t, () => new Promise(r => { pending.push(r); })); await h.expand();

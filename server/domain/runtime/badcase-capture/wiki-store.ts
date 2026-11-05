@@ -335,7 +335,7 @@ export function createWikiStore(options: any) {
       if (!/^[a-f0-9]{64}$/.test(c.traceBundle.hash || '')) throw fail('wiki_trace_invalid');
       return createWikiTraceStore(captureRoot).read(c.source, c.traceBundle.hash);
     },
-    // Trusted JEV runner entry, never accepts caller-supplied answers over HTTP.
+    // Trusted recommendation runner entry, never accepts caller-supplied answers over HTTP.
     saveDehydrationRecommendation(input: any) {
       if (!global) throw fail('wiki_global_required');
       const { built, response, expectedRevision } = input;
@@ -348,7 +348,7 @@ export function createWikiStore(options: any) {
         const bundle = createWikiTraceStore(captureRoot).read(c.source, c.traceBundle.hash);
         buildDehydrationPrefix(c, bundle, built.markedStep);
         const recommendation = interpretDehydrationAnswer(built, response);
-        const content = { schemaVersion: 1, caseId: c.id, caseNumber: built.caseNumber, traceHash: built.traceHash,
+        const content = { schemaVersion: 2, caseId: c.id, caseNumber: built.caseNumber, traceHash: built.traceHash,
           requestHash: built.requestHash, request: structuredClone(built.request), recommendation };
         const rows = state.dehydrations || (state.dehydrations = []), old = rows.find((v: any) => v.caseId === c.id);
         if (old?.decision) throw fail('wiki_dehydration_frozen');
