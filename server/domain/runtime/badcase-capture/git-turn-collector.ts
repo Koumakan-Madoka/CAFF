@@ -45,6 +45,10 @@ export function createGitTurnCollector(options: any): any {
         if (collected.uncaptured.length) {
           replayInput.complete = false; replayInput.incompleteReasons.push('files_uncaptured');
         }
+        if (input.projectSkillsPending === true) {
+          collected.gitSnapshot.skillInventoryStatus = 'pending';
+          replayInput.complete = false; replayInput.incompleteReasons.push('project_skills_pending');
+        }
         for (const plan of plans) collected.blobs.set(plan.hash, plan.content);
         const cp: any = {
           schemaVersion: 2, checkpointId: crypto.randomUUID(), projectId, targetDir,

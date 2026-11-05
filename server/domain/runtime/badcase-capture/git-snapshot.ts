@@ -81,17 +81,9 @@ export function knownCaptureKeyValues(agentDir?: string): string[] {
   return [...values];
 }
 
-export async function collectGitSnapshot(options: any): Promise<any> {
-  const cwd = path.resolve(options.targetDir), repository = await inspectSnapshotRepository(cwd);
-  if (!repository.ok) return repository;
-  let head: string;
-  try { head = (await readSnapshotGit(cwd, ['rev-parse', '--verify', 'HEAD^{commit}'])).toString('utf8').trim(); }
-  catch { return { ok: false, reason: 'head_unreadable' }; }
+function createFileArchive(options: any) {
   const keys: string[] = options.knownKeyValues || [], limits = { ...GIT_SNAPSHOT_LIMITS, ...options.limits };
-  const excluded = [...new Set(['.git', 'node_modules', ...(options.excludedPatterns || [])])];
-  const inScope = (p: string) => !p.replaceAll('\\', '/').split('/').some(part => part === '.git' || part === 'node_modules')
-    && !matchesRelativePattern(p, excluded);
-  const uncaptured: any[] = [], gapKeys = new Set<string>(), blobs = new Map<string, Buffer>(), files: any = {};
+  const uncaptured: any[] = [], gapKeys = new Set<string>(), blobs = new Map<string, Buffer>();
   const gap = (p: string, reason: string, scope = 'repository') => {
     const key = `${scope}:${p}:${reason}`;
     if (!gapKeys.has(key)) { gapKeys.add(key); uncaptured.push({ path: p, reason, ...(scope !== 'repository' ? { scope } : {}) }); }
@@ -115,6 +107,67 @@ export async function collectGitSnapshot(options: any): Promise<any> {
       return { bytes, stat: info.stat };
     } catch (error: any) { gap(relative, error.code === 'ENAMETOOLONG' ? 'path_too_long' : 'file_unreadable', scope); return null; }
   };
+  return { keys, limits, uncaptured, blobs, gap, put, fileEntry, readFile };
+}
+
+function archiveProjectSkills(roots: string[], archive: ReturnType<typeof createFileArchive>): any[] {
+  const { gap, readFile, fileEntry, limits } = archive;
+  const projectSkills: any[] = [];
+  let totalBytes = 0;
+  for (const originalPath of [...new Set<string>(roots.filter(p => typeof p === 'string' && path.isAbsolute(p)).map(p => path.resolve(p)))]) {
+    const archived: any = {}, scope = originalPath;
+    let rootKind = 'directory';
+    const walk = (root: string, relative: string) => {
+      const info = inspectFile(root, relative);
+      if (info.reason) { gap(info.path, info.reason, scope); return; }
+      if (info.absolute === originalPath) rootKind = info.stat.isDirectory() ? 'directory' : 'file';
+      if (info.stat.isDirectory()) {
+        let children: string[];
+        try { children = fs.readdirSync(info.absolute).sort(); } catch { gap(relative, 'directory_unreadable', scope); return; }
+        for (const child of children) if (child !== '.git' && child !== 'node_modules') walk(root, `${relative}/${child}`);
+      } else {
+        if (totalBytes + info.stat.size > limits.untrackedBytes) { gap(relative, 'skill_total_size_limit', scope); return; }
+        const file = readFile(root, relative, scope);
+        if (file) {
+          if (totalBytes + file.bytes.length > limits.untrackedBytes) { gap(relative, 'skill_total_size_limit', scope); return; }
+          totalBytes += file.bytes.length;
+          archived[path.relative(originalPath, info.absolute).replaceAll('\\', '/') || path.basename(originalPath)] = fileEntry(file.bytes, file.stat, 'project-skill');
+        }
+      }
+    };
+    walk(path.parse(originalPath).root, path.relative(path.parse(originalPath).root, originalPath).replaceAll('\\', '/'));
+    projectSkills.push({ originalPath, rootKind, files: archived });
+  }
+  return projectSkills;
+}
+
+// The runtime supplies its post-filter SDK list, not discovery roots guessed
+// from cwd. A root Markdown skill is one file, not its entire parent directory.
+export function collectLoadedProjectSkills(options: any): any {
+  const archive = createFileArchive(options), loadedSkills: any[] = [], roots: string[] = [];
+  for (const skill of options.skills || []) {
+    if (typeof skill?.filePath !== 'string' || !path.isAbsolute(skill.filePath)) {
+      archive.gap('.', 'project_skill_path_invalid', 'sdk'); continue;
+    }
+    const filePath = path.resolve(skill.filePath), baseDir = path.dirname(filePath);
+    loadedSkills.push({ name: String(skill.name || ''), filePath, baseDir });
+    roots.push(path.basename(filePath).toLowerCase() === 'skill.md' ? baseDir : filePath);
+  }
+  return { loadedSkills, projectSkills: archiveProjectSkills(roots, archive), uncaptured: archive.uncaptured, blobs: archive.blobs };
+}
+
+export async function collectGitSnapshot(options: any): Promise<any> {
+  const cwd = path.resolve(options.targetDir), repository = await inspectSnapshotRepository(cwd);
+  if (!repository.ok) return repository;
+  let head: string;
+  try { head = (await readSnapshotGit(cwd, ['rev-parse', '--verify', 'HEAD^{commit}'])).toString('utf8').trim(); }
+  catch { return { ok: false, reason: 'head_unreadable' }; }
+  const archive = createFileArchive(options);
+  const { keys, limits, uncaptured, blobs, gap, put, fileEntry, readFile } = archive;
+  const files: any = {};
+  const excluded = [...new Set(['.git', 'node_modules', ...(options.excludedPatterns || [])])];
+  const inScope = (p: string) => !p.replaceAll('\\', '/').split('/').some(part => part === '.git' || part === 'node_modules')
+    && !matchesRelativePattern(p, excluded);
   let branch = '', baseFileCount = 0;
   try { branch = (await readSnapshotGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).toString('utf8').trim(); } catch { /* detached */ }
   try {
@@ -168,30 +221,12 @@ export async function collectGitSnapshot(options: any): Promise<any> {
     if (untrackedBytes + file.bytes.length > limits.untrackedBytes) { gap(relative, 'untracked_total_size_limit'); continue; }
     untrackedBytes += file.bytes.length; files[relative] = fileEntry(file.bytes, file.stat, 'untracked');
   }
-  // Resource roots come from the exact SDK start descriptor (explicit contract
-  // roots) and the session project's default discovery roots. No home/agent
-  // scope skills are reintroduced. Preserve resource files, not just SKILL.md.
-  const config = options.sdkStartConfig || {}, roots = [...(Array.isArray(options.projectSkillPaths) ? options.projectSkillPaths : []),
-    ...['.agents/skills', '.pi/skills'].map(p => path.join(cwd, p)), ...(config.additionalSkillPaths || [])];
-  const projectSkills: any[] = [];
-  for (const originalPath of [...new Set<string>(roots.filter((p: any) => typeof p === 'string' && path.isAbsolute(p)).map((p: string) => path.resolve(p)))]) {
-    if (!fs.existsSync(originalPath)) continue;
-    const archived: any = {}, scope = originalPath;
-    const walk = (root: string, relative: string) => {
-      const info = inspectFile(root, relative);
-      if (info.reason) { gap(info.path, info.reason, scope); return; }
-      if (info.stat.isDirectory()) {
-        let children: string[];
-        try { children = fs.readdirSync(info.absolute).sort(); } catch { gap(relative, 'directory_unreadable', scope); return; }
-        for (const child of children) if (child !== '.git' && child !== 'node_modules') walk(root, `${relative}/${child}`);
-      } else {
-        const file = readFile(root, relative, scope);
-        if (file) archived[path.relative(originalPath, info.absolute).replaceAll('\\', '/') || path.basename(originalPath)] = fileEntry(file.bytes, file.stat, 'project-skill');
-      }
-    };
-    walk(path.parse(originalPath).root, path.relative(path.parse(originalPath).root, originalPath).replaceAll('\\', '/'));
-    projectSkills.push({ originalPath, files: archived });
-  }
+  // Live turns pass [] and fill this from the SDK's actual loaded list before
+  // prompting. Explicit roots remain useful for offline snapshots/previews.
+  const config = options.sdkStartConfig || {};
+  const roots = Array.isArray(options.projectSkillPaths) ? options.projectSkillPaths
+    : [...['.agents/skills', '.pi/skills'].map(p => path.join(cwd, p)), ...(config.additionalSkillPaths || [])].filter(p => fs.existsSync(p));
+  const projectSkills = archiveProjectSkills(roots, archive);
   const patch = Buffer.concat(patches), patchBlobHash = put(patch);
   uncaptured.sort((a, b) => (a.scope || '').localeCompare(b.scope || '') || a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason));
   return { ok: true, files, deletions: deletions.sort(), uncaptured, blobs,

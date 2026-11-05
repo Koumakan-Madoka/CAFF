@@ -13,6 +13,39 @@ function createFakeSdkHost(baseDir, scriptLines) {
   return hostPath;
 }
 
+test('resource callback is awaited before the SDK host may prompt, and capture exceptions still release it', async t => {
+  if (!requireSpawn(t)) return;
+  for (const fails of [false, true]) await t.test(fails ? 'capture exception' : 'capture success', async t => {
+    const tempDir = withTempDir('caff-preprompt-');
+    const host = createFakeSdkHost(tempDir, [
+      "process.on('message', c => {",
+      " if(c.type==='abort') process.exit(0);",
+      " if(c.type==='start') {",
+      "  if(c.awaitBeforePrompt!==true || 'beforePrompt' in c.config || 'awaitBeforePrompt' in c.config) process.exit(3);",
+      "  process.send({type:'before_prompt',skills:[{name:'actual',filePath:'/project/actual/SKILL.md',baseDir:'/project/actual'}]});",
+      " }",
+      " if(c.type==='continue_prompt') {",
+      "  process.send({type:'pi_event',event:{type:'message_end',message:{role:'assistant',stopReason:'stop',content:[{type:'text',text:'released'}],timestamp:1}}});",
+      "  setTimeout(()=>process.exit(0),20);",
+      " }",
+      "});",
+    ]);
+    const { runtime, restore } = loadRuntimeWithSdkHost(host);
+    let handle, completed = false, callbackCount = 0;
+    t.after(() => { handle?.cancel('cleanup'); restore(); fs.rmSync(tempDir, { recursive: true, force: true }); });
+    handle = runtime.startRun('test-provider', 'test-model', 'test', { agentDir: tempDir, sqlitePath: path.join(tempDir, 'run.sqlite'),
+      heartbeatIntervalMs: 0, streamOutput: false, timeoutMs: 5000,
+      async beforePrompt(inventory) {
+        callbackCount++; assert.equal(inventory.skills[0].name, 'actual');
+        await new Promise(resolve => setImmediate(resolve)); completed = true;
+        if (fails) throw Error('private details must not be reported');
+      } });
+    handle.on('assistant_message', () => assert.equal(completed, true));
+    const result = await handle.resultPromise;
+    assert.equal(result.reply, 'released'); assert.equal(callbackCount, 1);
+  });
+});
+
 test('Fast IPC evidence attaches to the correct call, resets before pre-provider failure and survives errors', async (t) => {
   if (!requireSpawn(t)) return;
   const tempDir = withTempDir('caff-fast-ipc-');

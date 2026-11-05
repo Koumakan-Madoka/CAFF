@@ -10,6 +10,7 @@ import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
 import { createGitTurnCollector } from './git-turn-collector';
 import { collectGitSnapshot } from './git-snapshot';
+import { captureLoadedProjectSkills } from './loaded-skills';
 import { restoreCheckpoint } from './restore';
 import { runEstimateProcess } from './estimate-process';
 import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
@@ -143,6 +144,10 @@ export function createBadcaseCaptureService(options: any = {}) {
 
     captureTurnCheckpoint(input: any) {
       return turnCollector.captureTurnCheckpoint(input);
+    },
+
+    captureLoadedProjectSkills(input: any) {
+      return captureLoadedProjectSkills({ store, agentDir: options.agentDir, getKnownKeyValues: options.getKnownKeyValues }, input);
     },
 
     restoreCheckpoint(input: any) {
