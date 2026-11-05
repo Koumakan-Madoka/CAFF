@@ -1,0 +1,47 @@
+/* Badcase pipeline follows the approved prototype; no grading editor styles. */
+.badcase-pipeline .sec { display: grid; gap: 10px; }
+.badcase-pipeline .hint { color: var(--soft); font-size: 12.5px; overflow-wrap: anywhere; }
+.badcase-pipeline .lane { display: grid; gap: 6px; margin-top: 12px; }
+.badcase-pipeline .lane-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 13px; }
+.badcase-pipeline .lane-head span { color: var(--soft); font-size: 12.5px; }
+.badcase-pipeline .funnel { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.badcase-pipeline .f-step { min-width: 0; display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; background: var(--raised); border: 1px solid var(--border); }
+.badcase-pipeline .f-step b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.badcase-pipeline .f-step span { font-size: 12px; color: var(--soft); }
+.badcase-pipeline .f-step.zero b { color: var(--bad); }
+.badcase-pipeline .stepper { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 4px; }
+.badcase-pipeline .stepper li { display: grid; gap: 3px; min-width: 0; }
+.badcase-pipeline .stepper .bar { height: 6px; border-radius: 3px; background: var(--sunk); }
+.badcase-pipeline .stepper .lab { font-size: 11.5px; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badcase-pipeline .stepper .done .bar { background: var(--ok); }
+.badcase-pipeline .stepper .pending .bar { background: var(--border-strong); }
+.badcase-pipeline .stepper .alt .bar { background: var(--info); }
+.badcase-pipeline .stepper .skip .bar { background: repeating-linear-gradient(90deg, var(--border) 0 4px, transparent 4px 8px); }
+.badcase-pipeline .stepper .skip .lab { opacity: .6; }
+.badcase-pipeline .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.badcase-pipeline .bc-list { display: grid; gap: 10px; }
+.badcase-pipeline .bc { display: grid; gap: 10px; align-content: start; background: var(--raised); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.badcase-pipeline .bc-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; }
+.badcase-pipeline .bc-head h4 { font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+.badcase-pipeline .bc-meta { grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12.5px; color: var(--soft); overflow-wrap: anywhere; }
+.badcase-pipeline .next-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; }
+.badcase-pipeline .who { font-size: 12px; font-weight: 650; padding: 0 8px; border-radius: 999px; line-height: 1.7; }
+.badcase-pipeline .who.sys { background: var(--info-soft); color: var(--info); }
+.badcase-pipeline .who.none { background: var(--sunk); color: var(--soft); }
+.badcase-pipeline .steps-detail { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.badcase-pipeline .steps-detail li { display: grid; grid-template-columns: 5.5em minmax(0, 1fr); gap: 8px; }
+.badcase-pipeline .steps-detail .k, .badcase-pipeline .st-pending, .badcase-pipeline .st-skip { color: var(--soft); }
+.badcase-pipeline .st-done { color: var(--ok); }
+.badcase-pipeline .st-alt { color: var(--info); }
+.badcase-pipeline .trace { min-width: 0; }
+.badcase-pipeline .trace > summary { font-weight: 600; }
+.badcase-pipeline .trace-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: 10px 0 6px; }
+.badcase-pipeline .trace-hash { overflow-wrap: anywhere; color: var(--soft); margin-bottom: 8px; }
+.badcase-pipeline .trace-section { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.badcase-pipeline .trace-section > summary { font-size: 14px; font-weight: 650; color: var(--text); }
+.badcase-pipeline .trace-value { margin-top: 6px; }
+.badcase-pipeline .trace-value > summary { overflow-wrap: anywhere; }
+.badcase-pipeline .tl-req { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 var(--font-mono); background: var(--sunk); border-radius: 6px; padding: 8px 10px; max-height: 400px; overflow: auto; }
+.badcase-pipeline .row-actions a { text-decoration: none; }
+@media (max-width: 700px) { .badcase-pipeline .stepper { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .badcase-pipeline .funnel { grid-template-columns: repeat(2, minmax(0, 1fr)); } .badcase-pipeline .bc { padding: 12px; } }

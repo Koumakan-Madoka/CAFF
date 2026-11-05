@@ -10,13 +10,15 @@
         <p class="lede">用例沉淀成知识库里的模式；通过审核的模式用来改写提示词和工具描述；评测结论再记回知识库，供下一轮参考。</p>
         <div class="next" role="status"><span class="next-label">下一步</span><span class="next-text" id="next-text">正在读取真实数据…</span><button type="button" class="btn small" id="next-go">去处理</button><button type="button" class="btn small ghost" id="wsk-refresh">刷新</button></div>
         <nav aria-label="WikiSkill 分区"><div class="tabs" role="tablist">
-          <button type="button" class="tab" role="tab" id="tab-cases" data-tab="cases"><span class="t-name">用例</span><span class="t-count" id="cnt-cases"></span><span class="t-sub">原始经验</span></button><span class="arrow" aria-hidden="true">→</span>
+          <button type="button" class="tab" role="tab" id="tab-badcases" data-tab="badcases"><span class="t-name">Badcase</span><span class="t-count" id="cnt-badcases"></span><span class="t-sub">标记的问题与完整轨迹</span></button><span class="arrow" aria-hidden="true">→</span>
           <button type="button" class="tab" role="tab" id="tab-wiki" data-tab="wiki"><span class="t-name">知识库</span><span class="t-count" id="cnt-wiki"></span><span class="t-sub">归纳出的模式</span></button><span class="arrow" aria-hidden="true">→</span>
+          <button type="button" class="tab" role="tab" id="tab-cases" data-tab="cases"><span class="t-name">用例</span><span class="t-count" id="cnt-cases"></span><span class="t-sub">归类与旧回放题</span></button><span class="arrow" aria-hidden="true">→</span>
           <button type="button" class="tab" role="tab" id="tab-targets" data-tab="targets"><span class="t-name">优化对象</span><span class="t-count" id="cnt-targets"></span><span class="t-sub">提示词与工具描述</span></button><span class="arrow" aria-hidden="true">→</span>
           <button type="button" class="tab" role="tab" id="tab-impact" data-tab="impact"><span class="t-name">评测记录</span><span class="t-count" id="cnt-impact"></span><span class="t-sub">效果与演进</span></button><span class="loop" aria-hidden="true">↺ 评测结论记回知识库</span>
         </div></nav>
       </header>
       <main>
+        <section id="view-badcases" class="view" role="tabpanel" aria-labelledby="tab-badcases" hidden></section>
         <section id="view-wiki" class="view" role="tabpanel" aria-labelledby="tab-wiki"><div class="split">
           <aside class="index" aria-label="知识库目录"><div class="inbox" id="wiki-inbox"></div>
             <label class="search"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"></circle><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"></path></svg><input id="wiki-q" type="search" placeholder="搜索模式、症状、准则或用例原话" autocomplete="off" aria-label="搜索知识库"><kbd aria-hidden="true">/</kbd></label>
@@ -35,6 +37,7 @@
     </div><div class="toast" id="toast" role="status" hidden></div>`;
     const $ = selector => root.querySelector(selector);
     const $$ = selector => [...root.querySelectorAll(selector)];
+    const badcases = shared.createBadcasePipeline({ root: $('#view-badcases'), fetchJson });
     const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
     const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, char => ESC[char]);
     const terms = value => String(value || '').toLowerCase().split(/\s+/).filter(Boolean);
@@ -63,7 +66,7 @@
     const catChip = replay => { const [label, cls] = CATEGORY[replay.category] || [replay.category, '']; return `<span class="chip cat ${cls}">${esc(label)}</span>`; };
     let D = null, versionId = '', generation = 0, pending = false, writable = false, toastTimer, progressTimer, progressPending = false, progressError = false;
     const state = { view: 'wiki', entryId: '', wikiQ: '', wikiStatus: 'all', casesQ: '', casesGroup: 'all', casesSplit: 'all', casesReplay: false, casesMode: 'group', focusCase: null, targetId: '', comparisonId: '' };
-    const VIEWS = ['cases', 'wiki', 'targets', 'impact'];
+    const VIEWS = ['badcases', 'wiki', 'cases', 'targets', 'impact'];
     let caseById = new Map(), caseByN = new Map(), stateByCase = new Map(), entryById = new Map(), replayBySource = new Map(), targetById = new Map();
     const currentVersion = () => D?.versions.find(v => v.id === versionId) || D?.versions.at(-1) || null;
     const latestVersion = () => D?.versions.at(-1) || null;
@@ -122,11 +125,13 @@
       const h = decodeURIComponent(location.hash.slice(1));
       if (VIEWS.includes(h)) state.view = h;
       else if ((D.versions || []).some(v => v.entries.some(e => e.id === h))) { state.view = 'wiki'; state.entryId = h; }
+      else if (/^bc-\d+$/.test(h) && caseByN.has(Number(h.slice(3)))) { state.view = 'badcases'; render(); badcases.focus(Number(h.slice(3))); return; }
       else if (/^case-\d+$/.test(h) && caseByN.has(Number(h.slice(5)))) { Object.assign(state, { view: 'cases', casesQ: '', casesGroup: 'all', casesSplit: 'all', casesReplay: false, focusCase: Number(h.slice(5)) }); $('#cases-q').value = ''; }
       else state.view = 'wiki';
       render();
     }
     function renderHeader() {
+      $('#cnt-badcases').textContent = D ? `${D.cases.length} 条` : '—';
       $('#cnt-cases').textContent = D ? `${D.cases.length} 条` : '—';
       $('#cnt-wiki').textContent = D ? `${entries().length} 条模式` : '—';
       $('#cnt-targets').textContent = D ? `${activeCands().length} 个候选` : '—';
@@ -140,7 +145,7 @@
       clearTimeout(progressTimer);
       renderHeader(); VIEWS.forEach(view => { $('#view-' + view).hidden = view !== state.view; });
       if (!D) { $('#wiki-list').innerHTML = ''; $('#wiki-page').innerHTML = '<p class="muted-note">尚未读取知识库。</p>'; $('#wiki-inbox').innerHTML = ''; $('#wiki-coverage').innerHTML = ''; return; }
-      ({ wiki: renderWiki, cases: renderCases, targets: renderTargets, impact: renderImpact })[state.view](); controls();
+      ({ badcases: () => badcases.render(D), wiki: renderWiki, cases: renderCases, targets: renderTargets, impact: renderImpact })[state.view](); controls();
       if (state.view === 'impact') scheduleProgress();
     }
     /* Knowledge base */
@@ -493,7 +498,7 @@
     $('#wiki-q').addEventListener('input', event => { state.wikiQ = event.target.value; renderWiki(); });
     $('#cases-q').addEventListener('input', event => { state.casesQ = event.target.value; renderCases(); });
     $('#wsk-refresh').addEventListener('click', () => { void load(); });
-    document.addEventListener('keydown', event => { if (event.key !== '/' || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return; const input = state.view === 'wiki' ? $('#wiki-q') : state.view === 'cases' ? $('#cases-q') : null; if (input) { event.preventDefault(); input.focus(); } });
+    document.addEventListener('keydown', event => { if (event.key !== '/' || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return; const input = state.view === 'badcases' ? $('#view-badcases [data-bc-search]') : state.view === 'wiki' ? $('#wiki-q') : state.view === 'cases' ? $('#cases-q') : null; if (input) { event.preventDefault(); input.focus(); } });
     window.addEventListener('hashchange', applyHash);
     render(); controls();
     return { load() { return load().then(() => { if (D) applyHash(); }); }, refreshExecutions };

@@ -96,7 +96,9 @@ function sceneInventory(checkpoint: any) {
   // Allowlist metadata; never copy CAS/file bytes or live-worktree contents.
   const files = Array.isArray(checkpoint.files) ? checkpoint.files
     : Object.entries(checkpoint.files || {}).map(([p, f]: [string, any]) => ({ ...f, path: p }));
-  return { checkpointId: checkpoint.checkpointId ?? null, head: checkpoint.git?.head ?? checkpoint.gitMetadata?.head ?? checkpoint.head ?? null,
+  return { checkpointId: checkpoint.checkpointId ?? null,
+    metadataStatus: 'pending_capture_integration', // PR #179 source contract is not integrated yet; never infer live Git state.
+    head: checkpoint.git?.head ?? checkpoint.gitMetadata?.head ?? checkpoint.head ?? null,
     branch: checkpoint.git?.branch ?? checkpoint.gitMetadata?.branch ?? checkpoint.branch ?? null,
     files: files.map((f: any) => Object.fromEntries(['path', 'status', 'category', 'type', 'size', 'mode', 'deleted', 'tracked', 'untracked', 'reason'].filter(k => f[k] !== undefined).map(k => [k, f[k]]))),
     deletions: checkpoint.deletions || [], skipped: checkpoint.skipped || checkpoint.excluded || [],
@@ -147,6 +149,7 @@ export function buildWikiTraceBundle(input: any) {
     }
   }
   const scene = sceneInventory(input.checkpoint);
+  if (scene) missing.push('scene_metadata_pending_capture_integration');
   if (scene && !scene.head) missing.push('scene_head_not_recorded');
   if (scene && !scene.branch) missing.push('scene_branch_not_recorded');
   const raw = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', source, frozenAt: input.frozenAt,

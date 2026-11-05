@@ -41,6 +41,7 @@ function setup(t, handler) {
   t.after(() => dom.window.close());
   dom.window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {} });
   dom.window.HTMLElement.prototype.scrollIntoView = function () {};
+  dom.window.eval(fs.readFileSync(path.resolve(__dirname, '../../public/shared/badcase-pipeline.js'), 'utf8'));
   dom.window.eval(fs.readFileSync(path.resolve(__dirname, '../../public/shared/badcase-wiki.js'), 'utf8'));
   const root = dom.window.document.getElementById('panel'), calls = [], confirms = [];
   let accepted = true, saved = data();
@@ -189,7 +190,7 @@ test('staged progress refreshes gate/test counts, replacements and saved results
 test('prototype structure defaults to knowledge base, keeps loop tab order and uses real room titles without examples', async t => {
   const h = setup(t); await h.panel.load();
   assert.equal(h.calls.length, 1); assert.equal(h.calls[0].url, '/api/wikiskill'); assert.equal(h.posts().length, 0);
-  assert.deepEqual([...h.root.querySelectorAll('[data-tab]')].map(b => b.dataset.tab), ['cases', 'wiki', 'targets', 'impact']);
+  assert.deepEqual([...h.root.querySelectorAll('[data-tab]')].map(b => b.dataset.tab), ['badcases', 'wiki', 'cases', 'targets', 'impact']);
   assert.equal(h.root.querySelector('[data-tab="wiki"]').getAttribute('aria-selected'), 'true');
   assert.equal(h.root.querySelector('#view-wiki').hidden, false); assert.equal(h.root.querySelector('#view-cases').hidden, true);
   assert.match(h.root.querySelector('#next-text').textContent, /确认全局提示词候选/);

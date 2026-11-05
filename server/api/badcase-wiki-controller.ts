@@ -2,7 +2,8 @@ import type { RouteHandler } from '../http/router';
 import { createHttpError } from '../http/http-errors';
 import { createLocalAdminGuard } from '../http/local-admin-guard';
 import { readRequestJson } from '../http/request-body';
-import { sendJson } from '../http/response';
+import { sendJson, sendTextDownload } from '../http/response';
+import { wikiTraceMarkdown } from '../domain/runtime/badcase-capture/wiki-trace-export';
 import { createWikiStore } from '../domain/runtime/badcase-capture/wiki-store';
 import { listWikiTargets } from '../domain/runtime/badcase-capture/wiki-targets';
 import { collectWikiCandidateFiles } from '../domain/runtime/badcase-capture/wiki-candidate-files';
@@ -22,7 +23,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_guideline_too_long: 422, wiki_membership_edit_unsupported: 422, wiki_unknown_case: 422,
     wiki_invalid_case_ids: 422, wiki_revision_conflict: 409, wiki_entry_reviewed: 409, wiki_entry_not_found: 404,
     wiki_collection_too_large: 422, wiki_record_invalid: 409, wiki_write_failed: 503, capture_writer_busy: 409,
-    wiki_trace_invalid: 409, wiki_trace_association_mismatch: 409,
+    wiki_trace_invalid: 409, wiki_trace_association_mismatch: 409, wiki_trace_missing: 404,
     wiki_candidate_invalid: 422, wiki_candidate_already_baseline: 409, wiki_candidate_leak: 422, wiki_candidate_not_found: 404, wiki_candidate_deprecated: 409,
     wiki_candidate_approved_required: 409, wiki_candidate_confirmation_required: 409, wiki_candidate_role_mismatch: 409,
     wiki_target_unknown: 422, wiki_candidate_target_mismatch: 409, wiki_candidate_anchor_unsupported: 409,
@@ -39,7 +40,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     evaluation_wsl_host_required: 503, evaluation_wsl_backend_invalid: 503, wiki_execution_record_invalid: 503,
   };
   return async ({ req, res, pathname }: any) => {
-    const traceMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/trace$/);
+    const traceMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/trace(?:\/export\.(json|md))?$/);
     const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience))?$/)
       || (traceMatch ? [pathname, 'case-trace'] : null);
     const readOnly = !match?.[1] || ['executions', 'case-trace'].includes(match[1]);
@@ -74,7 +75,13 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       if (traceMatch) {
         let caseId;
         try { caseId = decodeURIComponent(traceMatch[1]); } catch { throw Object.assign(Error(), { code: 'wiki_invalid_identifier' }); }
-        sendJson(res, 200, { traceBundle: store.readCaseTrace(caseId) });
+        const packet = store.readCaseTrace(caseId);
+        if (traceMatch[2]) {
+          if (!packet) throw Object.assign(Error(), { code: 'wiki_trace_missing' });
+          const json = traceMatch[2] === 'json';
+          sendTextDownload(res, json ? JSON.stringify(packet, null, 2) + '\n' : wikiTraceMarkdown(packet),
+            `badcase-${caseId}-trace.${traceMatch[2]}`, json ? 'application/json; charset=utf-8' : 'text/markdown; charset=utf-8');
+        } else sendJson(res, 200, { traceBundle: packet });
         return true;
       }
       if (match[1] === 'review') store.review(input);
