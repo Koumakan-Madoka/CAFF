@@ -8,7 +8,7 @@ const { performance } = require('node:perf_hooks');
 import { normalizeCapturePolicy, matchesRelativePattern, pinAuthorizedDirs, pinKey } from './capture-policy';
 import { createCaptureStore } from './capture-store';
 import { createCollector } from './collector';
-import { createWindowsTurnCollector } from './windows-turn-collector';
+import { createGitTurnCollector } from './git-turn-collector';
 import { restoreCheckpoint } from './restore';
 import { runEstimateProcess } from './estimate-process';
 import { detectCaptureCapability, statxDirectoryIdentity } from './safe-read';
@@ -19,7 +19,6 @@ import { readPreTurnCallbackInput } from './callback-source';
 import { discoverWindowsGitDependencies } from './windows-git-discovery';
 import { estimateWindowsGitDirectoryAsync } from './windows-git-candidate';
 import { selectWindowsExternalGit } from './windows-external-selection';
-import { createRoomWorktreeScopeResolver } from './room-worktree-scope';
 
 export function resolveCaptureRoot(options: any = {}) {
   const explicit = String(options.captureRoot || '').trim() || String(process.env.CAFF_BADCASE_CAPTURE_DIR || '').trim();
@@ -73,14 +72,10 @@ export function createBadcaseCaptureService(options: any = {}) {
       ? [...privateDirs, ...[process.env.PI_AGENT_SANDBOX_DIR, process.env.PI_AGENT_PRIVATE_DIR].filter(Boolean)]
       : privateDirs };
   })() : null;
-  // Windows enable requires a classified metadata plan, not process-wide Git
-  // overrides. Native readers parse only their independently authorized inputs;
-  // helper child environments are isolated without changing agent Git behavior.
-  // Raw capacity preview never grants capture capability; no Linux fallback.
-  const turnCollector = windowsScope
-    ? createWindowsTurnCollector({ store, readCallbackInput, ...windowsScope,
-      resolveRoomWorktreeScope: typeof sourceStore?.getConversationWithoutMessages === 'function' && typeof options.getProject === 'function'
-        ? createRoomWorktreeScopeResolver({ chatStore: sourceStore, getProject: options.getProject }) : undefined }) : collector;
+  // Every NEW turn, on all platforms, uses the simple Git snapshot format.
+  // Native v1 readers stay available only for legacy/offline compatibility.
+  const turnCollector = createGitTurnCollector({ store, readCallbackInput,
+    getProject: options.getProject, agentDir: options.agentDir, getKnownKeyValues: options.getKnownKeyValues });
 
   return {
     captureRoot,

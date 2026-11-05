@@ -3,7 +3,7 @@
 // A complete input does not confer file consistency or strict replay eligibility.
 import crypto from 'node:crypto';
 import { TextDecoder } from 'node:util';
-import { containsSecretSentinel, replaceControlledVariables } from './secrets';
+import { containsSecretSentinel, replaceControlledVariables, redactKnownKeyValues } from './secrets';
 import { validateSessionV2, PI_VERSION_PIN } from './session-validator';
 import { prepareCapturedCallbackInput } from './callback-input';
 
@@ -36,7 +36,12 @@ function isValidConfigSnapshot(value: any) {
     && CONFIG_SNAPSHOT_REQUIRED_KEYS.every(([key, check]: any) => check(value[key]));
 }
 
-export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot: any, readSession: (inputPath: string) => any) {
+export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot: any, readSession: (inputPath: string) => any, options: any = {}) {
+  // Legacy sealed material retains its original rules. New Git snapshots use
+  // only the host's known literals; example-shaped tokens are ordinary text.
+  const knownOnly = Array.isArray(options.knownKeyValues);
+  const safe = (bytes: Buffer) => knownOnly ? redactKnownKeyValues(bytes, options.knownKeyValues).content : bytes;
+  const hasSecret = (bytes: Buffer) => !knownOnly && containsSecretSentinel(bytes);
   if (deliveryMode !== 'fresh' && deliveryMode !== 'resume') throw new Error('replay_input_invalid');
   const replayInput: any = {
     deliveryMode, complete: true, incompleteReasons: [] as string[], verifiedDimensions: [] as string[],
@@ -70,8 +75,8 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
 
   const replaced = replaceControlledVariables(String(input.prompt || ''), input.controlledValues);
   replayInput.controlledReplacements = replaced.replacements;
-  const promptBuffer = ownedUtf8(replaced.text);
-  if (containsSecretSentinel(promptBuffer)) markIncomplete('prompt_contains_secret');
+  const promptBuffer = safe(ownedUtf8(replaced.text));
+  if (hasSecret(promptBuffer)) markIncomplete('prompt_contains_secret');
   else {
     const promptHash = hash(promptBuffer);
     plans.push({ hash: promptHash, content: promptBuffer });
@@ -79,9 +84,9 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
     // Bind the actual delivered CAFF role section, not a newly invented SYSTEM
     // prompt. Delta/legacy/ambiguous inputs have no replaceable role span.
     if (typeof input.roleSection === 'string' && input.roleSection.trim()) {
-      const role = replaceControlledVariables(input.roleSection.trim(), input.controlledValues).text;
-      const start = replaced.text.indexOf(role);
-      if (start >= 0 && replaced.text.indexOf(role, start + 1) === -1) {
+      const role = safe(ownedUtf8(replaceControlledVariables(input.roleSection.trim(), input.controlledValues).text)).toString('utf8');
+      const archivedPrompt = promptBuffer.toString('utf8'), start = archivedPrompt.indexOf(role);
+      if (start >= 0 && archivedPrompt.indexOf(role, start + 1) === -1) {
         replayInput.roleSpan = { start, end: start + role.length, sha256: hash(ownedUtf8(role)) };
       }
     }
@@ -102,13 +107,13 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
         if (sessionText !== undefined) {
           const sessionReplaced = replaceControlledVariables(sessionText, input.controlledValues);
           replayInput.controlledReplacements = replayInput.controlledReplacements.concat(sessionReplaced.replacements);
-          const sessionBuffer = ownedUtf8(sessionReplaced.text);
+          const sessionBuffer = safe(ownedUtf8(sessionReplaced.text));
           const validation = validateSessionV2(sessionReplaced.text, { authorizedRoot, historyContext: true });
           replayInput.sessionLineCount = validation.lineCount;
           replayInput.verifiedDimensions = validation.verifiedDimensions;
           replayInput.unverifiedDimensions = validation.unverifiedDimensions;
           if (!validation.ok) markIncomplete(validation.reason);
-          if (containsSecretSentinel(sessionBuffer)) markIncomplete('session_contains_secret');
+          if (hasSecret(sessionBuffer)) markIncomplete('session_contains_secret');
           if (validation.ok && !replayInput.incompleteReasons.includes('session_contains_secret')) {
             const sessionHash = hash(sessionBuffer);
             plans.push({ hash: sessionHash, content: sessionBuffer }); replayInput.sessionBlobHash = sessionHash;
@@ -125,8 +130,8 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
   if (!replayInput.harness.serverVersion) markIncomplete('harness_config_unverified');
   const configSnapshot = harnessInput.configSnapshot;
   if (isValidConfigSnapshot(configSnapshot)) {
-    const configBuffer = ownedUtf8(JSON.stringify(configSnapshot));
-    if (containsSecretSentinel(configBuffer)) markIncomplete('harness_config_contains_secret');
+    const configBuffer = safe(ownedUtf8(JSON.stringify(configSnapshot)));
+    if (hasSecret(configBuffer)) markIncomplete('harness_config_contains_secret');
     else {
       const configHash = hash(configBuffer); plans.push({ hash: configHash, content: configBuffer });
       replayInput.harness.configSnapshotHash = configHash;
@@ -154,9 +159,10 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
     if (!declaredSha || typeof snap.content !== 'string') continue;
     const contentBuffer = ownedUtf8(snap.content), actualSha = hash(contentBuffer);
     if (actualSha !== declaredSha) { markIncomplete(`skill_snapshot_hash_mismatch:${id}`); continue; }
-    if (containsSecretSentinel(contentBuffer)) { markIncomplete(`skill_contains_secret:${id}`); continue; }
-    plans.push({ hash: actualSha, content: contentBuffer });
-    replayInput.harness.skillSnapshots.push({ id, source: String(snap.source || '').trim(), sha256: actualSha, blobHash: actualSha });
+    if (hasSecret(contentBuffer)) { markIncomplete(`skill_contains_secret:${id}`); continue; }
+    const archivedContent = safe(contentBuffer), archivedSha = hash(archivedContent);
+    plans.push({ hash: archivedSha, content: archivedContent });
+    replayInput.harness.skillSnapshots.push({ id, source: String(snap.source || '').trim(), sha256: archivedSha, blobHash: archivedSha });
     archivedSkillIds.add(id);
   }
   for (const id of declaredSkillIds) {

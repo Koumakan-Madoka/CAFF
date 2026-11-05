@@ -34,6 +34,9 @@ export function restoreCheckpoint(options: any = {}) {
   if (!checkpoint) {
     return fail('checkpoint_not_found');
   }
+  // v2 files are overlays, NOT a complete tree. R1 supplies HEAD-based
+  // materialization; the legacy restorer must never report overlay-only success.
+  if (checkpoint.schemaVersion === 2) return fail('git_snapshot_requires_head_materialization');
 
   fs.mkdirSync(targetDir, { recursive: true });
   const preexisting = fs.readdirSync(targetDir);
