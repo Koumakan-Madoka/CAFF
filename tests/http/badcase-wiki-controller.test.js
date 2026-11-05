@@ -26,6 +26,22 @@ function setup(t) {
 }
 const rejects = (promise, code, status = 422) => assert.rejects(promise, e => e.statusCode === status && e.issues?.[0]?.code === code);
 
+test('case trace GET reads Wiki-owned frozen evidence without source rooms and cannot mutate or select paths', async t => {
+  const h = setup(t); h.seed();
+  const item = h.store.read().cases[0];
+  const { buildWikiTraceBundle } = require('../../build/server/domain/runtime/badcase-capture/wiki-trace');
+  const packet = buildWikiTraceBundle({ source: item.source, frozenAt: '2026-11-05T00:00:00Z', origin: 'backfill', message: { content: item.message } });
+  const route = { pathname: '/api/wikiskill/cases/' + item.id + '/trace' };
+  assert.deepEqual((await h.invoke(undefined, route)).body, { traceBundle: null });
+  h.store.freezeCaseTrace(item.id, packet);
+  const revision = h.store.read().revision;
+  assert.deepEqual((await h.invoke(undefined, route)).body, { traceBundle: packet });
+  assert.equal(h.store.read().revision, revision);
+  await assert.rejects(h.invoke(undefined, { ...route, remoteAddress: '10.0.0.1' }), e => [403, 404].includes(e.statusCode));
+  await rejects(h.invoke(undefined, { pathname: '/api/wikiskill/cases/unknown/trace' }), 'wiki_unknown_case', 422);
+  const controller = createBadcaseWikiController(h.options);
+  assert.equal(await controller({ req: { method: 'POST' }, res: {}, pathname: route.pathname }), false);
+});
 test('comparison review is explicit, locally guarded and cannot supply results, rules or adoption', async t => {
   const h = setup(t), route = { pathname: '/api/wikiskill/comparison-review' };
   const body = { confirmed: true, comparisonId: 'comparison-' + 'a'.repeat(64), candidateHash: 'b'.repeat(64), expectedRevision: 0, decision: 'not-adopted', reason: 'test_not_passed', interpretation: '门槛接受、测试未通过、未采纳。' };

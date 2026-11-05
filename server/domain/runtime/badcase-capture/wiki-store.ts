@@ -15,6 +15,7 @@ import { buildSampleReplayVersion } from './wiki-sample-replay-version';
 import { readWikiComparisonRecord } from './wiki-comparison-record';
 import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { projectStagedResult } from './wiki-staged-result';
+import { createWikiTraceStore, sameTraceSource, wikiTraceReference } from './wiki-trace';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
 import { buildWikiExperienceDraft, mergeWikiLiteralObservations, approvedWikiExperiences, revisedWikiExperience } from './wiki-experience';
@@ -255,7 +256,7 @@ export function createWikiStore(options: any) {
             if (!existing.source.conversationTitle && candidate.source.conversationTitle) {
               existing.source.conversationTitle = candidate.source.conversationTitle; updated++;
             }
-            const { createdAt, split, ...content } = existing, { split: initialSplit, ...original } = candidate;
+            const { createdAt, split, traceBundle, ...content } = existing, { split: initialSplit, ...original } = candidate;
             if (JSON.stringify(content) !== JSON.stringify(original)) throw fail('wiki_case_conflict');
             batch.push(existing);
           } else {
@@ -288,6 +289,48 @@ export function createWikiStore(options: any) {
         return { changed: true, value: { created: true, case: saved } };
       });
       return { ...result.value, revision: result.revision };
+    },
+    // Internal mark/backfill entry point. No HTTP client supplies packets or
+    // paths. The packet is immutable even when a later seal retry succeeds.
+    freezeCaseTrace(caseId: string, bundle: any) {
+      if (!global) throw fail('wiki_global_required');
+      id(caseId);
+      const result = change(state => {
+        const c = state.cases.find((v: any) => v.id === caseId);
+        if (!c) throw fail('wiki_unknown_case');
+        if (!sameTraceSource(c.source, bundle?.source)) throw fail('wiki_trace_association_mismatch');
+        const traces = createWikiTraceStore(captureRoot);
+        if (c.traceBundle) {
+          if (!/^[a-f0-9]{64}$/.test(c.traceBundle.hash || '')) throw fail('wiki_trace_invalid');
+          traces.read(c.source, c.traceBundle.hash);
+          return { changed: false, value: { created: false, traceBundle: c.traceBundle } };
+        }
+        // A crash between packet publication and snapshot attachment leaves a
+        // recoverable first-writer packet, not permission to overwrite it.
+        const frozen = traces.freeze(bundle);
+        c.traceBundle = wikiTraceReference(frozen.bundle);
+        appendEvent(state, { type: 'case-trace-frozen', caseIds: [c.id], traceHash: c.traceBundle.hash });
+        return { changed: true, value: { created: frozen.created, traceBundle: c.traceBundle } };
+      });
+      return { ...result.value, revision: result.revision };
+    },
+    recoverCaseTrace(caseId: string) {
+      if (!global) throw fail('wiki_global_required');
+      id(caseId);
+      const c = read().cases.find((v: any) => v.id === caseId);
+      if (!c) throw fail('wiki_unknown_case');
+      const packet = createWikiTraceStore(captureRoot).read(c.source, c.traceBundle?.hash);
+      if (!packet) throw fail('wiki_trace_first_mark_unavailable');
+      return this.freezeCaseTrace(caseId, packet);
+    },
+    readCaseTrace(caseId: string) {
+      if (!global) throw fail('wiki_global_required');
+      id(caseId);
+      const c = read().cases.find((v: any) => v.id === caseId);
+      if (!c) throw fail('wiki_unknown_case');
+      if (!c.traceBundle) return null;
+      if (!/^[a-f0-9]{64}$/.test(c.traceBundle.hash || '')) throw fail('wiki_trace_invalid');
+      return createWikiTraceStore(captureRoot).read(c.source, c.traceBundle.hash);
     },
     backfillConversationTitles(values: any[]) {
       if (!global || !Array.isArray(values) || !values.length || values.length > 1000) throw fail('wiki_invalid_input');

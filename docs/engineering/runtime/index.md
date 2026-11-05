@@ -66,6 +66,8 @@ Use this index for Pi runtime, prompt, Agent tool, Goal, and DAG integration cha
 - `badcase-capture-replay.md`: badcase pre-turn checkpoint capture, user flag and
   sealing, CAS storage lifecycle, Docker isolation replay, and baseline/candidate
   prompt evaluation fairness contract
+- `wikiskill-trace-bundles.md`: mark-time Wiki-owned immutable trace packets,
+  known-value-only replacement, session bounds, partial evidence and read API
 - `wikiskill-windows.md`: trusted Windows/WSL setup, page induction, single-case
   and production D15 gate/test commands; no browser execution endpoint
 - `wikiskill-data-migration.md`: read-only source to fresh layout migration,

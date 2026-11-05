@@ -42,6 +42,13 @@ export function createBadcaseSealingService(options: any) {
       // Annotation failures retain their existing HTTP error semantics. No seal
       // dependency can roll back or hide a successfully persisted annotation.
       const marked = flags.mark(input);
+      // Freeze before the first await: a resumed session, source deletion or
+      // slow checkpoint seal cannot change the packet selected at first mark.
+      let trace;
+      if (typeof options.freezeTrace === 'function') {
+        try { trace = options.freezeTrace(input, marked.flag, marked.created); }
+        catch { trace = { error: 'wiki_trace_unavailable' }; }
+      }
       const key = marked.flag.flagId;
       if (!inFlight.has(key)) {
         const task = Promise.resolve().then(async () => {
@@ -85,7 +92,7 @@ export function createBadcaseSealingService(options: any) {
           wikiCase = { error: 'wiki_case_unavailable' };
         }
       }
-      return { ...marked, ...(wikiCase ? { wikiCase } : {}), seal };
+      return { ...marked, ...(wikiCase ? { wikiCase } : {}), ...(trace ? { trace } : {}), seal };
     },
   };
 }
