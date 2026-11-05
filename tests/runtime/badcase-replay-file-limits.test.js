@@ -7,7 +7,8 @@ const { dependencyRecipe } = require('../../scripts/badcase-capture/replay-depen
 const { prepareReplayGit } = require('../../scripts/badcase-capture/replay-git.cjs');
 const { manifestFor } = require('../../scripts/badcase-capture/pi-probe-materials.cjs');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
-const image = { imageId: 'sha256:' + '1'.repeat(64), nodeVersion: process.version, architecture: 'amd64' };
+// Replay image identity is fixed; the test host may run a different Node version.
+const image = { imageId: 'sha256:' + '1'.repeat(64), nodeVersion: 'v24.21.0', architecture: 'amd64' };
 const record = (name, text = 'x') => ({ path: name, base64: Buffer.from(text).toString('base64'), sha256: hash(text), mode: 0o100644 });
 function input(count) {
   const pkg = { name: 'inert-file-limit', version: '1.0.0' };
@@ -23,7 +24,7 @@ function loadVm(name, extra) {
   vm.runInNewContext(fs.readFileSync(path.resolve('scripts/badcase-capture', name), 'utf8'), context, { filename: name });
   return module.exports;
 }
-const linux = env => ({ platform: 'linux', getuid: () => 65534, cwd: () => '/work', version: process.version, arch: 'x64', env });
+const linux = env => ({ platform: 'linux', getuid: () => 65534, cwd: () => '/work', version: image.nodeVersion, arch: 'x64', env });
 
 for (const count of [1115, 8192, 8193]) {
   test(`direct host staging file limit: ${count}`, () => {
