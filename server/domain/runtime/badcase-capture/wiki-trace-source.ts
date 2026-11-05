@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { buildWikiTraceBundle, traceSourceIdentity } from './wiki-trace';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const MAX_SESSION_BYTES = 128 * 1024 * 1024;
@@ -82,6 +84,31 @@ export function readTraceSession(agentDir: string, sessionPath: string) {
     throw fail(['session_outside_instance', 'session_too_large', 'session_invalid'].includes(e.code) ? e.code : 'session_unreadable');
   }
 }
+// v2 stores ordinary tracked changes in a CAS patch, not cp.files. Ask Git to
+// LIST that frozen patch's paths only: no apply, source checkout, index or refs.
+// Git handles quoted/Unicode/binary names; no hand-written diff header parser.
+export function readTraceSceneChanges(captureStore: any, checkpoint: any): string[] | null {
+  if (checkpoint?.schemaVersion !== 2 || checkpoint.gitSnapshot?.kind !== 'git-snapshot-v1') return null;
+  try {
+    const digest = checkpoint.gitSnapshot.patchBlobHash;
+    if (!/^[a-f0-9]{64}$/.test(digest || '')) return null;
+    const bytes = captureStore.readBlob(checkpoint.projectId, digest);
+    if (!Buffer.isBuffer(bytes) || bytes.length > MAX_SESSION_BYTES
+      || crypto.createHash('sha256').update(bytes).digest('hex') !== digest) return null;
+    if (!bytes.length) return [];
+    const names = execFileSync('git', ['-c', 'core.fsmonitor=false', 'apply', '--numstat', '-z', '--'], {
+      input: bytes, encoding: 'buffer', windowsHide: true, timeout: 10000, maxBuffer: MAX_SESSION_BYTES,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const text = names.toString('utf8');
+    if (!Buffer.from(text).equals(names) || !text.endsWith('\0')) return null;
+    return text.slice(0, -1).split('\0').map(line => {
+      const match = /^(?:\d+|-)\t(?:\d+|-)\t([\s\S]+)$/.exec(line);
+      if (!match) throw Error();
+      return match[1];
+    });
+  } catch { return null; } // Missing/corrupt patch is a disclosed gap, never live Git fallback.
+}
 function excerpt(value: string) {
   if (typeof value !== 'string') throw fail('wiki_source_invalid');
   const bytes = Buffer.from(value);
@@ -132,7 +159,7 @@ export function freezeMarkedCaseTrace(options: any, input: any, flag: any, first
   }
   const knownKeyValues = options.knownKeyValues().values;
   const bundle = buildWikiTraceBundle({ source, frozenAt: flag.createdAt, origin: 'mark', message: { ...message, metadata },
-    actual: input.actual, expected: input.expected, sessionText, checkpoint, modelUsage,
+    actual: input.actual, expected: input.expected, sessionText, checkpoint, sceneChanges: readTraceSceneChanges(options.captureStore, checkpoint), modelUsage,
     snapshot: chat.getMessageContextSnapshot?.(message.id), timeline: chat.getMessageObservabilityTimeline?.(message.id), knownKeyValues, missingReasons: missing });
   return { ...options.wikiStore.freezeCaseTrace(item.id, bundle), caseId: item.id };
 }

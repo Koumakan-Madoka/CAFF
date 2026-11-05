@@ -142,6 +142,23 @@ test('new reason codes never migrate or rehash an already-frozen legacy packet',
   assert.deepEqual(h.store.readCaseTrace(h.item.id), legacy);
   assert.deepEqual(fs.readFileSync(path.join(h.root, 'wiki/traces', fs.readdirSync(path.join(h.root, 'wiki/traces'))[0])), before);
 });
+test('v2 scene inventory is metadata-only, never guesses current Git and distinguishes detached/partial/missing evidence', t => {
+  const h = fixture(t), checkpoint = { schemaVersion: 2, checkpointId: 'cp', files: {}, deletions: [], skipped: [], uncaptured: [],
+    gitSnapshot: { kind: 'git-snapshot-v1', head: 'b'.repeat(40), branch: 'room/test', excludedPatterns: ['node_modules/**'], skillInventoryStatus: 'loaded', loadedSkills: [] } };
+  const packet = trace().buildWikiTraceBundle({ ...h.input, checkpoint, sceneChanges: [] });
+  assert.equal(packet.complete, true); assert.equal(packet.scene.metadataStatus, 'recorded');
+  assert.equal(packet.scene.branch, 'room/test'); assert.equal(packet.scene.detached, false); assert.deepEqual(packet.scene.changes, []);
+  assert.ok(!packet.missingReasons.some(r => /scene_/.test(r)));
+  const noPatch = trace().buildWikiTraceBundle({ ...h.input, checkpoint });
+  assert.equal(noPatch.complete, false); assert.equal(noPatch.scene.changes, null);
+  assert.ok(noPatch.missingReasons.includes('scene_changes_not_recorded'));
+  const legacy = trace().buildWikiTraceBundle({ ...h.input, checkpoint: { schemaVersion: 1, checkpointId: 'old', files: {} } });
+  assert.equal(legacy.scene.metadataStatus, 'missing'); assert.equal(legacy.scene.head, null);
+  assert.ok(legacy.missingReasons.includes('scene_git_snapshot_missing'));
+  const frozen = h.store.freezeCaseTrace(h.item.id, legacy);
+  assert.equal(h.store.freezeCaseTrace(h.item.id, packet).traceBundle.hash, frozen.traceBundle.hash);
+  assert.deepEqual(h.store.readCaseTrace(h.item.id), legacy);
+});
 test('known-only replacement is literal, handles JSON escaping and leaves unrecognized patterns unchanged', () => {
   const original = { content: 'password=not-a-known-value sk-SYNTHETIC_UNRECOGNIZED', nested: ['key"\\\nvalue'] };
   const safe = trace().redactTraceKnownValues(original, ['key"\\\nvalue']);

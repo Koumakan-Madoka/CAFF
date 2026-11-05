@@ -17,7 +17,8 @@
     const labels = ['标记', '现场', '脱水', '归类', '分组', '断言', '回放检查', '原版复现', '入库'];
     const names = { you: '等你处理', system: '系统可以继续', source: '旧题的来源', reference: '只作参考', invalid: '无效测试用例', other: '非 GPT 来源' };
     const splitName = { train: '训练', gate: '门槛', test: '测试' };
-    const sceneWait = '待接入 · 待采集能力合入';
+    const sceneLabel = scene => scene?.metadataStatus === 'recorded' ? '现场元数据已冻结' : scene?.metadataStatus === 'partial' ? '现场部分记录 · 缺口已披露' : '历史现场元数据缺失';
+    const sceneNote = c => sceneLabel(c.traceBundle?.scene);
     const reasonLabels = {
       original_context_unavailable: '没有新版上下文归档；本轮输入和续用前轮已从会话日志恢复',
       context_archive_missing: '没有新版上下文归档', system_prompt_missing: '未保存当时的系统提示词',
@@ -30,7 +31,9 @@
       model_outputs_missing: '没有可确认的当轮模型输出', marked_step_unresolved: '无法定位发出被标记消息的步骤',
       tool_result_missing: '工具结果未保存齐全', orphan_tool_result: '存在无法关联到调用的工具结果',
       sealed_marked_turn_not_recorded: '封存材料未录制被标记的这一轮', sealed_prompt_may_have_controlled_replacements: '封存提示词可能含回放路径占位符',
-      scene_metadata_pending_capture_integration: '现场元数据待采集能力合入',
+      scene_metadata_pending_capture_integration: '旧包当时等待采集接入；历史现场元数据未记录（旧包不改）',
+      scene_git_snapshot_missing: '旧检查点没有 Git 快照元数据', scene_changes_not_recorded: '无法从冻结补丁取得改动清单',
+      scene_files_skipped: '现场有跳过项，详见清单', scene_loaded_skills_missing: '实际加载 skill 清单未录齐',
       scene_head_not_recorded: '现场未记录历史提交', scene_branch_not_recorded: '现场未记录历史分支',
       checkpoint_missing: '未找到原现场清单', checkpoint_unreadable: '原现场清单无法读取', source_message_missing: '未找到原消息', marked_message_truncated: '原回复存档被截断',
     };
@@ -47,7 +50,7 @@
     const confirmedGroup = c => activeGrouping()?.rows?.find(r => r.caseId === c.id && !r.reason && r.confirmedSplit);
     root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec"><h2>从 badcase 到测试用例</h2><p class="hint">有现场默认走 trace 级；无现场须经 DeepSeek 推荐、你确认后脱水成 run 级。测试组只收 trace 级，门槛中 run 级不超过一半，训练组 run 级只作初筛。分组只在用户确认后生效，旧记录保留。</p><div data-funnels></div></section><div data-regroup-host></div>
       <div class="toolbar"><label class="search"><input data-bc-search type="search" aria-label="搜索 badcase" placeholder="搜索问题、期望、来源房间或编号" autocomplete="off"></label>
-      <label class="field">卡在 <select data-bc-stage><option value="all">全部</option><option value="you">等你处理</option><option value="system">系统可以继续</option><option value="scene">现场待接入</option><option value="noscene">无现场（待脱水）</option><option value="dehydrate">脱水</option><option value="source">旧题的来源</option><option value="reference">只作参考</option><option value="invalid">无效测试用例</option><option value="other">非 GPT 来源</option></select></label>
+      <label class="field">卡在 <select data-bc-stage><option value="all">全部</option><option value="you">等你处理</option><option value="system">系统可以继续</option><option value="scene">有封存现场</option><option value="noscene">无现场（待脱水）</option><option value="dehydrate">脱水</option><option value="source">旧题的来源</option><option value="reference">只作参考</option><option value="invalid">无效测试用例</option><option value="other">非 GPT 来源</option></select></label>
       <label class="field">模型 <select data-bc-model><option value="all">全部</option><option value="gpt">GPT</option><option value="other">非 GPT</option></select></label>
       <div class="seg" role="radiogroup" aria-label="Badcase 显示方式"><button type="button" role="radio" data-bc-mode="group" aria-checked="true">按下一步分组</button><button type="button" role="radio" data-bc-mode="list" aria-checked="false">列表</button></div></div>
       <p class="summary" data-bc-summary></p><div class="groups" data-bc-body></div></div>`;
@@ -56,7 +59,7 @@
     const hasScene = c => !!c.sealedCheckpointId;
     // Goal B8's three immutable historical sources, not their synthetic tests.
     const sourceOnly = c => [4, 10, 14].includes(c.n);
-    const levelLabel = c => sourceOnly(c) ? '旧题来源' : dehydration(c)?.decision?.level === 'reference' ? '只作参考' : dehydration(c)?.decision?.level === 'run' ? baselineMissing(c) ? 'run 级 · 原版无有效输出' : 'run 级 · 决定已冻结' : hasScene(c) ? 'trace 级 · 现场待接入' : 'run 级 · 待脱水确认';
+    const levelLabel = c => sourceOnly(c) ? '旧题来源' : dehydration(c)?.decision?.level === 'reference' ? '只作参考' : dehydration(c)?.decision?.level === 'run' ? baselineMissing(c) ? 'run 级 · 原版无有效输出' : 'run 级 · 决定已冻结' : hasScene(c) ? 'trace 级 · ' + sceneNote(c) : 'run 级 · 待脱水确认';
     function backfill(c) {
       const r = c.traceBundle;
       if (!r) return '未归档 · 尚无冻结轨迹包';
@@ -68,7 +71,7 @@
       const reference = d?.level === 'reference', invalidCase = baselineMissing(c), replayed = activeRuns(c).some(r => r.status === 'reached' || r.status === 'invalid');
       const steps = [
         ['done', c.kind === 'text-only' ? '用户批准的历史导入' : '页面标记'],
-        [has ? 'pending' : 'alt', has ? sceneWait + '；已有封存清单不等于现场元数据齐全' : '没有现场；须先确认能否脱水'],
+        [has ? c.traceBundle?.scene?.metadataStatus === 'recorded' ? 'done' : 'pending' : 'alt', has ? sceneNote(c) + '；元数据不等于已通过回放检查' : '没有现场；须先确认能否脱水'],
         [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '默认 trace 级；可另选脱水' : r ? 'DeepSeek 推荐已生成，等待你确认能否脱水和切点' : 'DeepSeek 推荐尚未生成；用户确认后冻结判断与切点'],
         [cs?.memberships?.length ? 'done' : 'pending', cs?.memberships?.length ? '已有已确认模式标签' : '待归类；不自动改模式'],
         [old || confirmedGroup(c) ? 'done' : 'pending', old ? '原测试分组保留' : confirmedGroup(c) ? `用户确认的${splitName[confirmedGroup(c).confirmedSplit]}组已生效；原提议和旧分组记录保留` : '旧分组保留；分层重新分组待用户确认'],
@@ -81,12 +84,12 @@
       if (reference) for (let i = 4; i < 9; i++) steps[i] = ['skip', '无现场且非单步型；只作参考和训练组文字材料，不成为测试用例'];
       if (invalidCase && !reference && !old && !other) for (const i of [4, 5, 7, 8]) steps[i] = ['skip', '原版无有效输出：无效测试用例，不进门槛和初筛；不算通过也不算不通过'];
       const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : r && !d ? 'you' : 'system';
-      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题' : invalidCase ? '原版无有效输出：无效测试用例，不进门槛和初筛；保留原文，不自动补跑' : d ? replayed ? confirmedGroup(c) ? '分组已由用户确认，回放原文保留，等待评分 v2；本页不判分' : '回放原文已保存，等待分组和评分 v2；本页不判分' : '脱水决定已冻结，等待原版单次回放；不会自动启动' : r ? '请确认能否脱水与切点；确认后不可修改' : has ? sceneWait : '等待 DeepSeek 推荐，再请你确认' };
+      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题' : invalidCase ? '原版无有效输出：无效测试用例，不进门槛和初筛；保留原文，不自动补跑' : d ? replayed ? confirmedGroup(c) ? '分组已由用户确认，回放原文保留，等待评分 v2；本页不判分' : '回放原文已保存，等待分组和评分 v2；本页不判分' : '脱水决定已冻结，等待原版单次回放；不会自动启动' : r ? '请确认能否脱水与切点；确认后不可修改' : has ? sceneNote(c) + '；默认 trace 级，等待回放检查与评分 v2；可另选脱水' : '等待 DeepSeek 推荐，再请你确认' };
     }
     function funnel() {
       const gpt = D.cases.filter(isGpt), tr = gpt.filter(hasScene), refs = gpt.filter(c => dehydration(c)?.decision?.level === 'reference'), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c) && !refs.includes(c));
       const lane = (key, title, note, cells) => `<div class="lane" data-lane="${key}"><div class="lane-head"><b>${title}</b><span>${note}</span></div><div class="funnel">${cells.map(([n, l]) => `<div class="f-step ${n ? '' : 'zero'}"><b>${n}</b><span>${l}</span></div>`).join('')}</div></div>`;
-      $('[data-funnels]').innerHTML = lane('trace', 'trace 级', '有现场；完整采集能力待合入，不能把封存当作已通过回放检查', [[tr.length, 'GPT 且有封存现场'], [tr.filter(c => c.traceBundle).length, '已冻结轨迹包'], [0, '新版回放检查通过'], [0, '新版断言已冻结'], [0, '本流程合格测试用例']])
+      $('[data-funnels]').innerHTML = lane('trace', 'trace 级', '有现场；新标记读取本轮 Git 快照，历史缺失不补猜，不能把封存当作已通过回放检查', [[tr.length, 'GPT 且有封存现场'], [tr.filter(c => c.traceBundle).length, '已冻结轨迹包'], [0, '新版回放检查通过'], [0, '新版断言已冻结'], [0, '本流程合格测试用例']])
         + lane('run', 'run 级（脱水）', `无现场待脱水，不含 #4、#10、#14 的旧题来源；只作参考 ${refs.length} 条不计入；尚未确认的不是 run 级测试用例`, [[rn.length, 'GPT 无现场待脱水'], [rn.filter(c => c.traceBundle?.stepCount).length, '已恢复当轮轨迹'], [rn.filter(c => c.traceBundle?.complete).length, '完整轨迹包'], [rn.filter(c => dehydration(c)?.decision?.level === 'run').length, '用户确认可脱水'], [0, '本流程合格测试用例']]);
       const runs = gpt.flatMap(activeRuns), excluded = gpt.flatMap(c => caseRuns(c).filter(r => excludedRun(c, r)));
       if (runs.length || excluded.length) $('[data-funnels]').insertAdjacentHTML('beforeend', `<p data-run-totals>单次 run 回放共 ${runs.length} 次：有效输出 ${runs.filter(r => r.status === 'reached').length}；无效 ${runs.filter(r => r.status === 'invalid').length}（不算通过也不算不通过）；请求失败 ${runs.filter(r => r.status === 'error').length}；结果未知 ${runs.filter(r => r.status === 'reserved').length}。有效输出不代表判分通过。原版无有效输出 ${gpt.filter(baselineMissing).length} 题，不进门槛和初筛。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次（原文保留）。` : ''}</p>`);
@@ -99,13 +102,13 @@
         baseline_no_valid_output: '原版无有效输出，不进门槛和初筛', baseline_pending: '尚无有效原版证据，不参与新分组', dehydration_not_confirmed: '脱水尚未确认，不参与新分组' };
       const active = activeGrouping();
       if (active?.proposalHash === p.hash) {
-        host.innerHTML = `<section class="sec" data-regroup-confirmed><h2>用户确认的分组 · 已生效</h2><p>保留已有 trace 的冻结组别；只对有效 run 用例应用原提议的随机结果。旧分组、原提议、用户调整和历史评测结果均保留，不自动启动评测。</p><p class="trace-hash mono">原提议 SHA-256：${esc(p.hash)}<br>确认 SHA-256：${esc(active.hash)}<br>固定种子：${esc(p.seed)}</p><p>确认来源：${active.confirmation?.source === 'user-via-planner' ? '用户经规划者转达' : '用户确认'} · ${esc(active.confirmation?.reference)} · ${esc(active.confirmedAt)}</p><p>用户调整：${esc(active.reason)}</p><p>生效数量：${['trace', 'run'].map(level => `${level}：训练 ${esc(active.counts[level].train)} / 门槛 ${esc(active.counts[level].gate)} / 测试 ${esc(active.counts[level].test)}`).join('；')}。门槛 run 不超过一半，测试只收 trace；非 GPT 不计入配额。#4、#10、#14 的旧测试题不动。</p><p class="hint">分组不代表已复现、判分通过或可以回放。有现场仍待采集能力合入；历史暴露不等于新的盲留出。训练 run 只作淘汰初筛，不能作为采纳依据。</p>
+        host.innerHTML = `<section class="sec" data-regroup-confirmed><h2>用户确认的分组 · 已生效</h2><p>保留已有 trace 的冻结组别；只对有效 run 用例应用原提议的随机结果。旧分组、原提议、用户调整和历史评测结果均保留，不自动启动评测。</p><p class="trace-hash mono">原提议 SHA-256：${esc(p.hash)}<br>确认 SHA-256：${esc(active.hash)}<br>固定种子：${esc(p.seed)}</p><p>确认来源：${active.confirmation?.source === 'user-via-planner' ? '用户经规划者转达' : '用户确认'} · ${esc(active.confirmation?.reference)} · ${esc(active.confirmedAt)}</p><p>用户调整：${esc(active.reason)}</p><p>生效数量：${['trace', 'run'].map(level => `${level}：训练 ${esc(active.counts[level].train)} / 门槛 ${esc(active.counts[level].gate)} / 测试 ${esc(active.counts[level].test)}`).join('；')}。门槛 run 不超过一半，测试只收 trace；非 GPT 不计入配额。#4、#10、#14 的旧测试题不动。</p><p class="hint">分组不代表已复现、判分通过或可以回放。现场是否齐全以各条冻结清单为准；历史暴露不等于新的盲留出。训练 run 只作淘汰初筛，不能作为采纳依据。</p>
           <details open><summary>分组前后对照（含原提议与用户调整）</summary><div class="regroup-table"><table><thead><tr><th>编号</th><th>层级</th><th>原组别</th><th>原提议</th><th>用户确认</th><th>说明</th></tr></thead><tbody>${[...active.rows].sort((a,b) => a.caseNumber-b.caseNumber).map(r => `<tr><td>#${esc(r.caseNumber)}</td><td>${esc(({source: '旧题来源', reference: '只作参考'})[r.level] || r.level || '—')}</td><td>${esc(splitName[r.previousSplit] || '未定组')}</td><td>${esc(splitName[r.proposedSplit] || '不参与')}</td><td>${esc(splitName[r.confirmedSplit] || '不参与')}</td><td>${esc(r.confirmationReason === 'frozen_trace_split' ? '保留原 trace 冻结组别，不参与重分组' : r.reason ? reasons[r.reason] || r.reason : r.confirmedSplit === 'train' ? '只作初筛；不能作为采纳依据' : '用户已确认；未判分')}</td></tr>`).join('')}</tbody></table></div></details>
           <details><summary>原提议与用户调整记录（审计）</summary><pre class="tl-req">${esc(json({ proposal: p, adjustments: active.adjustments }))}</pre></details></section>`;
         return;
       }
       host.innerHTML = `<section class="sec" data-regroup-proposal><h2>分组提议 · 尚未生效</h2><p>请核对分组前后对照，再在对话中确认这一份提议的 hash；当前没有改变任何有效组别，不会自动确认或启动评测。</p><p class="trace-hash mono">提议 SHA-256：${esc(p.hash)}<br>固定种子：${esc(p.seed)}</p><p>建议按 trace / run 两层随机排序：trace 沿用现有训练:门槛:测试 2:1:1 配额，run 用训练:门槛 2:1 配额，并将门槛 run 数限制为不超过门槛 trace 数。超额 run 留训练，仅作淘汰初筛，不作采纳依据。</p><p>提议数量：${['trace', 'run'].map(level => `${level}：训练 ${esc(p.counts[level].train)} / 门槛 ${esc(p.counts[level].gate)} / 测试 ${esc(p.counts[level].test)}`).join('；')}。非 GPT 不计入配额。</p>
-        ${(p.warnings || []).includes('no_new_trace_test') ? '<p class="muted-note">样本不足：这份提议没有新的 trace 级测试题；不拿 run 级或非 GPT 来源填充测试组，#4、#10、#14 的旧题保持不变。</p>' : ''}<p class="hint">这些历史材料已有训练或评测暴露；重新分组不等于获得未见过的留出数据。有现场仍待采集能力合入，分组不代表已经能回放或判分。</p>
+        ${(p.warnings || []).includes('no_new_trace_test') ? '<p class="muted-note">样本不足：这份提议没有新的 trace 级测试题；不拿 run 级或非 GPT 来源填充测试组，#4、#10、#14 的旧题保持不变。</p>' : ''}<p class="hint">这些历史材料已有训练或评测暴露；重新分组不等于获得未见过的留出数据。现场是否齐全以各条冻结清单为准，分组不代表已经能回放或判分。</p>
         <details open><summary>分组前后对照（含不参与项）</summary><div class="regroup-table"><table><thead><tr><th>编号</th><th>层级</th><th>原组别</th><th>提议组别</th><th>说明</th></tr></thead><tbody>${[...p.rows].sort((a,b) => a.caseNumber-b.caseNumber).map(r => `<tr><td>#${esc(r.caseNumber)}</td><td>${esc(({source: '旧题来源', reference: '只作参考'})[r.level] || r.level || '—')}</td><td>${esc(splitName[r.previousSplit] || '未定组')}</td><td>${esc(splitName[r.proposedSplit] || '不参与')}</td><td>${esc(r.reason ? reasons[r.reason] || r.reason : r.level === 'run' && r.proposedSplit === 'train' ? '只作初筛；不能作为采纳依据' : '待用户确认；未判分')}</td></tr>`).join('')}</tbody></table></div></details></section>`;
     }
     function replayPanel(c) {
@@ -142,7 +145,7 @@
       return `<article class="bc" id="bc-${c.n}" data-case-id="${esc(c.id)}"><div class="bc-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4><div class="bc-meta"><span>${isGpt(c) ? 'GPT' : esc(c.role || c.source?.agentId || '其他模型')}</span><span>来自 ${hl(c.source?.conversationTitle || '未命名房间', ts)}</span><span>${confirmedGroup(c) ? '用户确认：' + splitName[confirmedGroup(c).confirmedSplit] + '组' : (splitName[c.split] || '未定组') + (c.split ? '组（旧记录）' : '')}</span><span class="pill ${hasScene(c) ? 'info' : 'warn'}">${levelLabel(c)}</span></div></div>
         <ol class="stepper" aria-label="从标记到入库的步骤">${p.steps.map(([status, text], i) => `<li class="${status}" title="${esc(labels[i] + '：' + text)}"><span class="bar"></span><span class="lab">${labels[i]}</span><span class="sr-only">${esc(text)}</span></li>`).join('')}</ol>
         <div class="next-line"><span class="who ${p.actor === 'system' ? 'sys' : 'none'}">${p.actor === 'system' ? '系统' : p.actor === 'you' ? '你' : '到此为止'}</span><span>${esc(p.next)}</span></div>
-        <div class="chips"><span class="pill ${tone}">${backfill(c)}</span>${hasScene(c) ? `<span class="pill warn">现场：${sceneWait}</span>` : '<span class="pill">无现场</span>'}</div>
+        <div class="chips"><span class="pill ${tone}">${backfill(c)}</span>${hasScene(c) ? `<span class="pill warn">现场：${esc(sceneNote(c))}</span>` : '<span class="pill">无现场</span>'}</div>
         ${ref?.missingReasons?.length ? `<p class="hint">缺失：${ref.missingReasons.map(r => `<span title="${esc(r)}">${esc(reasonLabels[r] || r)}</span>`).join('；')}</p>` : ''}
         ${confirmedGroup(c) ? `<p class="pill ok">用户确认：${esc(splitName[confirmedGroup(c).confirmedSplit])}组 · 已生效；旧记录保留</p>` : !activeGrouping() && (D.regroupProposals || []).at(-1)?.rows?.find(r => r.caseId === c.id)?.proposedSplit ? `<p class="pill warn">提议：${esc(splitName[D.regroupProposals.at(-1).rows.find(r => r.caseId === c.id).proposedSplit])} · 尚未生效；旧组别保留</p>` : ''}
         ${dehydrationPanel(c)}${replayPanel(c)}
@@ -194,7 +197,7 @@
       const ts = words(queries.get(c.id)), sections = chunks(packet); let hits = 0;
       const html = sections.map(s => {
         const blocks = s.blocks.map(b => ({ ...b, text: json(b.value ?? null) })).filter(b => !ts.length || matches(b.label + ' ' + b.text, ts)); hits += blocks.length;
-        return `<details class="trace-section" data-trace-section="${s.key}" ${ts.length && blocks.length ? 'open' : ''}><summary>${s.label}${ts.length ? ` · ${blocks.length} 处匹配` : ''}</summary>${s.key === 'scene' ? `<p class="hint">${hasScene(c) ? sceneWait + '。下方仅展示已有冻结清单，不宣称历史元数据齐全或能回放。' : '没有现场；旧题的样例仓库不当作原现场。'}</p>` : ''}${blocks.map(b => `<details class="trace-value" ${b.text.length <= 800 || ts.length ? 'open' : ''}><summary>${esc(b.label)} · ${b.text.length.toLocaleString()} 字符${b.text.length > 800 ? '（长内容默认折叠）' : ''}</summary><pre class="tl-req">${hl(b.text, ts)}</pre></details>`).join('') || '<p class="hint">没有匹配内容。</p>'}</details>`;
+        return `<details class="trace-section" data-trace-section="${s.key}" ${ts.length && blocks.length ? 'open' : ''}><summary>${s.label}${ts.length ? ` · ${blocks.length} 处匹配` : ''}</summary>${s.key === 'scene' ? `<p class="hint">${hasScene(c) ? sceneLabel(packet.scene) + '。下方仅展示冻结清单；旧包不改，不从当前 Git 推断历史，也不宣称已能回放。' : '没有现场；旧题的样例仓库不当作原现场。'}</p>` : ''}${blocks.map(b => `<details class="trace-value" ${b.text.length <= 800 || ts.length ? 'open' : ''}><summary>${esc(b.label)} · ${b.text.length.toLocaleString()} 字符${b.text.length > 800 ? '（长内容默认折叠）' : ''}</summary><pre class="tl-req">${hl(b.text, ts)}</pre></details>`).join('') || '<p class="hint">没有匹配内容。</p>'}</details>`;
       }).join('');
       host.querySelector('[data-trace-content]').innerHTML = html; host.querySelector('[data-trace-matches]').textContent = ts.length ? `${hits} 处匹配（按内容块）；显示命中块的完整原文` : '搜索仅在本条冻结包内进行；长内容默认折叠，可展开查看全文。';
     }

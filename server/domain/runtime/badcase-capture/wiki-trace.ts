@@ -91,18 +91,28 @@ function parseTurn(text: any, metadata: any) {
   if (triggerIndex < 0 || chain.slice(triggerIndex + 1).some(e => e.type === 'message' && e.message?.role === 'user')) throw fail('turn_trigger_missing');
   return { prior: chain.slice(0, triggerIndex), trigger: chain[triggerIndex], turn: chain.slice(triggerIndex + 1) };
 }
-function sceneInventory(checkpoint: any) {
+function sceneInventory(checkpoint: any, patchPaths: any) {
   if (!checkpoint) return null;
-  // Allowlist metadata; never copy CAS/file bytes or live-worktree contents.
+  // Allowlist metadata; never copy patch/file/skill bodies or read live state.
+  const pick = (v: any, keys: string[]) => Object.fromEntries(keys.filter(k => v?.[k] !== undefined).map(k => [k, v[k]]));
   const files = Array.isArray(checkpoint.files) ? checkpoint.files
     : Object.entries(checkpoint.files || {}).map(([p, f]: [string, any]) => ({ ...f, path: p }));
-  return { checkpointId: checkpoint.checkpointId ?? null,
-    metadataStatus: 'pending_capture_integration', // PR #179 source contract is not integrated yet; never infer live Git state.
-    head: checkpoint.git?.head ?? checkpoint.gitMetadata?.head ?? checkpoint.head ?? null,
-    branch: checkpoint.git?.branch ?? checkpoint.gitMetadata?.branch ?? checkpoint.branch ?? null,
-    files: files.map((f: any) => Object.fromEntries(['path', 'status', 'category', 'type', 'size', 'mode', 'deleted', 'tracked', 'untracked', 'reason'].filter(k => f[k] !== undefined).map(k => [k, f[k]]))),
-    deletions: checkpoint.deletions || [], skipped: checkpoint.skipped || checkpoint.excluded || [],
-    uncaptured: checkpoint.uncaptured || [], gitStatus: checkpoint.git?.status ?? null };
+  const snapshot = checkpoint.schemaVersion === 2 && checkpoint.gitSnapshot?.kind === 'git-snapshot-v1' ? checkpoint.gitSnapshot : null;
+  const head = snapshot?.head ?? null, branch = typeof snapshot?.branch === 'string' ? snapshot.branch : null;
+  const skipped = (checkpoint.skipped || []).map((s: any) => pick(s, ['path', 'reason', 'scope']));
+  const uncaptured = (checkpoint.uncaptured || []).map((s: any) => pick(s, ['path', 'reason', 'scope']));
+  const changes = snapshot && Array.isArray(patchPaths) ? [...new Set<string>([...patchPaths,
+    ...files.filter((f: any) => ['redacted-tracked', 'mixed-eol-tracked'].includes(f.origin)).map((f: any) => f.path), ...(checkpoint.deletions || [])])].sort() : null;
+  return { checkpointId: checkpoint.checkpointId ?? null, checkpointSchemaVersion: checkpoint.schemaVersion ?? null,
+    metadataSource: snapshot ? 'checkpoint_git_snapshot_v2' : 'legacy_checkpoint',
+    metadataStatus: !snapshot ? 'missing' : !head || branch === null || changes === null || skipped.length || uncaptured.length ? 'partial' : 'recorded',
+    head, branch, detached: branch === null ? null : branch === '', changes,
+    untracked: snapshot ? files.filter((f: any) => f.origin === 'untracked').map((f: any) => f.path).sort() : null,
+    excludedPatterns: snapshot?.excludedPatterns ?? null,
+    files: files.map((f: any) => pick(f, ['path', 'status', 'category', 'type', 'size', 'mode', 'origin', 'deleted', 'tracked', 'untracked', 'reason'])),
+    deletions: checkpoint.deletions || [], skipped, uncaptured,
+    // v2 deliberately does not preserve staged-vs-unstaged status.
+    gitStatus: null };
 }
 export function buildWikiTraceBundle(input: any) {
   const source = traceSourceIdentity(input.source), missing: string[] = [...(input.missingReasons || [])];
@@ -159,10 +169,17 @@ export function buildWikiTraceBundle(input: any) {
       if (block.type === 'toolCall' && block.name === 'read' && /(?:^|[\\/])SKILL\.md$/i.test(block.arguments?.path || '')) skillPaths.add(block.arguments.path);
     }
   }
-  const scene = sceneInventory(input.checkpoint);
-  if (scene) missing.push('scene_metadata_pending_capture_integration');
+  const snapshot = input.checkpoint?.schemaVersion === 2 ? input.checkpoint.gitSnapshot : null;
+  const skills = (items: any) => Array.isArray(items) ? items.map((s: any) => Object.fromEntries(['name', 'filePath', 'baseDir'].filter(k => typeof s?.[k] === 'string').map(k => [k, s[k]]))) : null;
+  const loaded = skills(snapshot?.loadedSkills);
+  if (snapshot && (snapshot.skillInventoryStatus !== 'loaded' || loaded === null)) missing.push('scene_loaded_skills_missing');
+  for (const skill of loaded || []) if (skill.filePath) skillPaths.add(skill.filePath);
+  const scene = sceneInventory(input.checkpoint, input.sceneChanges);
+  if (scene && scene.metadataSource !== 'checkpoint_git_snapshot_v2') missing.push('scene_git_snapshot_missing');
   if (scene && !scene.head) missing.push('scene_head_not_recorded');
-  if (scene && !scene.branch) missing.push('scene_branch_not_recorded');
+  if (scene && scene.branch === null) missing.push('scene_branch_not_recorded');
+  if (scene && scene.changes === null) missing.push('scene_changes_not_recorded');
+  if (scene && (scene.skipped.length || scene.uncaptured.length)) missing.push('scene_files_skipped');
   const raw = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', source, frozenAt: input.frozenAt,
     origin: input.origin, complete: missing.every(reason => reason === 'provider_request_bytes_missing'), missingReasons: [...new Set(missing)],
     markedMessage: reply, actual: input.actual ?? '', expected: input.expected ?? '', markedStep,
@@ -172,6 +189,8 @@ export function buildWikiTraceBundle(input: any) {
       providerRequestBytesCaptured: false,
       trigger: parsed?.trigger ?? null, priorSessionEntries: parsed?.prior || [],
       skillSections: sections.filter((s: any) => /skills/.test(s.sectionKey)), loadedSkillPaths: [...skillPaths],
+      ...(snapshot ? { captureLoadedSkills: { status: snapshot.skillInventoryStatus ?? 'unavailable', loaded,
+        sdk: skills(snapshot.sdkLoadedSkills), prompt: skills(snapshot.promptLoadedSkills) } } : {}),
       ...(input.retained == null ? {} : { retained: input.retained }) },
     steps, metrics: { modelUsage: input.modelUsage ?? null, timeline: input.timeline ?? null }, scene,
     redaction: { policy: 'known_values_only', count: 0 } };
@@ -228,5 +247,7 @@ export function createWikiTraceStore(globalRoot: string) {
 }
 export function wikiTraceReference(bundle: any) {
   return { schemaVersion: 1, hash: hash(JSON.stringify(bundle)), frozenAt: bundle.frozenAt, origin: bundle.origin,
-    complete: bundle.complete, missingReasons: bundle.missingReasons, stepCount: bundle.steps.length, markedStep: bundle.markedStep };
+    complete: bundle.complete, missingReasons: bundle.missingReasons, stepCount: bundle.steps.length, markedStep: bundle.markedStep,
+    ...(bundle.scene ? { scene: { metadataStatus: bundle.scene.metadataStatus, metadataSource: bundle.scene.metadataSource,
+      skippedCount: bundle.scene.skipped.length, head: bundle.scene.head, branch: bundle.scene.branch } } : {}) };
 }

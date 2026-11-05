@@ -81,6 +81,30 @@ test('retry after initial source failure never mislabels later mutable input as 
   assert.equal(retry.trace.error, 'wiki_trace_unavailable');
   assert.equal(h.wiki.read().cases[0].traceBundle, undefined);
 });
+test('mark freezes v2 checkpoint HEAD, detached branch, patch paths, overlays, skipped files and actual loaded skills without file bodies', async t => {
+  const h = setup(t); h.createMessage();
+  const crypto = require('node:crypto'), patch = Buffer.from('diff --git a/tracked.txt b/tracked.txt\nindex 7898192..6178079 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-a\n+b\n');
+  const cp = { schemaVersion: 2, checkpointId: 'cp-v2', projectId: 'project-a', conversationId: 'room-a', turnId: h.chat.getMessage('message-a').turnId, agentId: 'agent-a',
+    gitSnapshot: { kind: 'git-snapshot-v1', head: 'a'.repeat(40), branch: '', patchBlobHash: crypto.createHash('sha256').update(patch).digest('hex'), patchBytes: patch.length,
+      excludedPatterns: ['node_modules/**'], skillInventoryStatus: 'loaded', loadedSkills: [{ name: 'test-skill', filePath: '/test/SKILL.md', baseDir: '/test', content: 'NEVER COPY' }] },
+    files: { 'new synthetic-local-access.txt': { type: 'file', size: 4, origin: 'untracked', content: 'NEVER COPY' },
+      'redacted.txt': { type: 'file', size: 3, origin: 'redacted-tracked' } }, deletions: ['deleted.txt'], skipped: [{ path: 'large.txt', reason: 'file_size_limit', content: 'NEVER COPY' }], uncaptured: [{ path: 'large.txt', reason: 'file_size_limit' }] };
+  h.chat.updateMessage('message-a', { metadata: { ...h.chat.getMessage('message-a').metadata, badcaseCheckpointId: cp.checkpointId } });
+  h.captureStore.loadCheckpoint = (p, id) => { assert.equal(p, cp.projectId); assert.equal(id, cp.checkpointId); return cp; };
+  let reads = 0;
+  h.captureStore.readBlob = (p, digest) => { assert.equal(p, cp.projectId); assert.equal(digest, cp.gitSnapshot.patchBlobHash); reads++; return patch; };
+  const result = sourceModule().freezeMarkedCaseTrace({ wikiStore: h.wiki, chatStore: h.chat, captureStore: h.captureStore, agentDir: h.agentDir, knownKeyValues: h.known }, h.input, { createdAt: new Date().toISOString() }, true);
+  const packet = h.wiki.readCaseTrace(result.caseId), scene = packet.scene;
+  assert.equal(scene.metadataSource, 'checkpoint_git_snapshot_v2'); assert.equal(scene.metadataStatus, 'partial');
+  assert.equal(scene.head, cp.gitSnapshot.head); assert.equal(scene.branch, ''); assert.equal(scene.detached, true);
+  assert.deepEqual(scene.changes, ['deleted.txt', 'redacted.txt', 'tracked.txt']);
+  assert.deepEqual(scene.untracked, ['new [*].txt']); assert.deepEqual(scene.excludedPatterns, ['node_modules/**']);
+  assert.deepEqual(scene.skipped, [{ path: 'large.txt', reason: 'file_size_limit' }]); assert.equal(reads, 1);
+  assert.deepEqual(packet.context.loadedSkillPaths, ['/test/SKILL.md']); assert.equal(packet.context.captureLoadedSkills.loaded[0].name, 'test-skill');
+  assert.doesNotMatch(JSON.stringify(packet), /NEVER COPY|synthetic-local-access|diff --git|scene_metadata_pending_capture_integration|scene_branch_not_recorded/);
+  sourceModule().freezeMarkedCaseTrace({ wikiStore: h.wiki, chatStore: h.chat }, h.input, { createdAt: new Date().toISOString() }, false);
+  assert.equal(reads, 1); assert.deepEqual(h.wiki.readCaseTrace(result.caseId), packet);
+});
 test('model timing recorder only records assistant calls, preserves failed-call timing and never stores content', () => {
   let now = 10;
   const recorder = sourceModule().createTraceModelTimingRecorder(() => now);
@@ -92,6 +116,18 @@ test('model timing recorder only records assistant calls, preserves failed-call 
   now = 80; recorder.observe({ type: 'message_end', message: { role: 'assistant', stopReason: 'error' } });
   assert.equal(recorder.snapshot()[1].durationMs, 30);
   assert.doesNotMatch(JSON.stringify(recorder.snapshot()), /do not store/);
+});
+test('frozen patch path listing preserves Git-quoted tabs and rejects missing/corrupt blobs without a live fallback', () => {
+  const crypto = require('node:crypto');
+  const bytes = Buffer.from('diff --git "a/tab\\tname.txt" "b/tab\\tname.txt"\n--- "a/tab\\tname.txt"\n+++ "b/tab\\tname.txt"\n@@ -1 +1 @@\n-a\n+b\n');
+  const cp = { schemaVersion: 2, projectId: 'p', gitSnapshot: { kind: 'git-snapshot-v1', patchBlobHash: crypto.createHash('sha256').update(bytes).digest('hex') } };
+  const read = sourceModule().readTraceSceneChanges;
+  assert.deepEqual(read({ readBlob: () => bytes }, cp), ['tab\tname.txt']);
+  assert.equal(read({ readBlob: () => Buffer.from('corrupt') }, cp), null);
+  assert.equal(read({ readBlob: () => { throw Error('source must not be queried'); } }, cp), null);
+  assert.equal(read({}, { schemaVersion: 1 }), null);
+  const badPatch = Buffer.from('not a patch'), bad = { ...cp, gitSnapshot: { ...cp.gitSnapshot, patchBlobHash: crypto.createHash('sha256').update(badPatch).digest('hex') } };
+  assert.equal(read({ readBlob: () => badPatch }, bad), null);
 });
 test('known inventory is nonserializable, read-only, and rejects executable key sources', t => {
   const h=setup(t), inventory=h.known();

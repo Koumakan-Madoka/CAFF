@@ -22,8 +22,8 @@ function setup(t) {
 }
 test('JSON and Markdown downloads contain exactly the frozen packet, are read-only and scene-manifest-only', async t => {
   const h = setup(t);
-  assert.equal(h.packet.scene.metadataStatus, 'pending_capture_integration');
-  assert.ok(h.packet.missingReasons.includes('scene_metadata_pending_capture_integration'));
+  assert.equal(h.packet.scene.metadataStatus, 'missing');
+  assert.ok(h.packet.missingReasons.includes('scene_git_snapshot_missing'));
   h.store.freezeCaseTrace(h.c.id, h.packet); const revision = h.store.read().revision;
   const json = await h.get('json'); assert.equal(json.handled, true); assert.equal(json.status, 200);
   assert.deepEqual(JSON.parse(json.text), h.packet); assert.match(json.headers['Content-Disposition'], /attachment;.*\.json/);

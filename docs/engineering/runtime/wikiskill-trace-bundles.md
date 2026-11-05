@@ -4,7 +4,7 @@
 
 轨迹包是 Wiki 拥有的证据，不是聊天 Inspector 的展示投影，也不是现场可回放、已复现或可判分的证明。现有 checkpoint 封存记录仍保留自己的完整性/可回放限制。
 
-本契约覆盖标记入口、轨迹组装、不可覆盖存储和显式授权的只读历史回填操作入口。Badcase 页面、文件导出、DeepSeek 推荐的受信执行入口、页面确认冻结及单次 run 级回放已接入；新分组先生成提议，明确用户确认后由受信入口应用有效 run 分组并保留冻结 trace 组别；现场完整元数据仍待后续接入；不能把展示/导出或合成测试当成可回放、可评分或已入库的证明。
+本契约覆盖标记入口、轨迹组装、不可覆盖存储和显式授权的只读历史回填操作入口。Badcase 页面、文件导出、DeepSeek 推荐的受信执行入口、页面确认冻结及单次 run 级回放已接入；新分组先生成提议，明确用户确认后由受信入口应用有效 run 分组并保留冻结 trace 组别；新标记的现场元数据已从本轮 schemaVersion 2 检查点接入，旧检查点缺失如实披露；不能把展示/导出或合成测试当成可回放、可评分或已入库的证明。
 
 ## 数据流与签名
 
@@ -21,7 +21,7 @@
 - `context`：原始上下文 sections、系统提示词、实际 session 用户输入、已保留的 session 前缀条目、技能 sections，以及在前缀/本轮中观察到的 `read(.../SKILL.md)` 路径。
 - `steps`：本轮所有 assistant 模型输出（不是摘录），调用参数、对应完整 `toolResult` 消息（含 details）、原始 usage 和已记录的模型耗时。工具实际返回给模型的截断标记保留；不按输出里出现的临时路径额外读取文件。
 - `markedMessage`、实际问题、期望表现和发出消息的 `markedStep`。优先匹配携带公开回复的 `send-public` 调用，再匹配直接文本；无法定位保留 null，不能把最后一个内部记账步骤冒充公开回复步骤。
-- `scene`：已有 checkpoint 的文件清单、删除/跳过/未采集项，以及已记录的 HEAD/分支/状态。只投影清单，不读取或导出现场文件内容、不事后运行 Git 补造历史元数据。
+- `scene`：只投影本轮 checkpoint 的现场元数据，具体见下节；不导出现场文件正文，不读取当前 worktree 或运行 Git 补造历史状态。
 - `complete` 与 `missingReasons`：缺少原始上下文、session、精确轮次边界、输出/结果、耗时、usage、发消息步骤或已有现场的 HEAD/分支时明确降级。
 
 Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最大 128 MiB；拒绝界外路径/链接目标和无效 UTF-8。仅接受 v3 JSONL，验证 ID 唯一、父链可解析。用冻结的起止计数选择本轮分支；保留这一分支的前缀，不含续写的下一轮或旁支。只凭 usage 推导的旧轮次终点会明确标 `turn_end_inferred_from_usage`，不冒充精确采集。
@@ -29,6 +29,16 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 旧 Inspector 快照只有 `displayContent` 时仍可展示已有材料，不能从 `[REDACTED]` 还原原文或声称逐字原始请求。旧冻结包的 `original_context_unavailable` 只表示没有新版 `archiveContext.sections`，不意味着从 session 恢复的本轮输入和续用前轮缺失；已冻结包、hash 和导出原文不作迁移。页面对旧码解释为「没有新版上下文归档；本轮输入和续用前轮已从会话日志恢复」，session 本身缺失时另有明确缺失码。
 
 新生成包不再添加上述宽泛旧码，分开记录：`context_archive_missing`（没有新版 sections 原文归档）、`system_prompt_missing`（没有当时系统提示词）、`system_prompt_display_redacted`（使用已有模式脱敏历史展示版）、`provider_request_bytes_missing`（未录制供应商原始请求字节）、以及各自的 session/边界/工具结果缺失码。保留旧展示分区的截断标记。`context.systemPromptSource` 区分 `known_value_archive|historical_display|missing`，`providerRequestBytesCaptured` 如实为 false。`complete` 仍判断 B2 所要求的语义轨迹材料；原始供应商请求字节不在 B2 内，只有 `provider_request_bytes_missing` 不使 B2 材料降级，不能把它解读为已录制网络请求。
+
+## 本轮 Git 快照现场（M1）
+
+采集 PR #179 合入后，标记时只读取消息绑定且 project/conversation/turn/agent 一致的 checkpoint；只接受 `schemaVersion: 2`、`gitSnapshot.kind: git-snapshot-v1`。`scene.metadataSource=checkpoint_git_snapshot_v2`；HEAD 和分支直接来自 `gitSnapshot.head/branch`，空分支字符串表示 detached，null 表示未记录，二者不混淆。
+
+- `changes` 是冻结 patch 的路径，加上 `redacted-tracked` / `mixed-eol-tracked` 覆盖文件和明确删除项，去重排序。patch 只从本实例 CAS 按 hash 读取，校验 SHA-256 和 128 MiB 上限；`git apply --numstat -z` **只列清单，不应用**，保留 Unicode/引号/制表符等 Git 路径语义。读取/解析失败则为 null 和 `scene_changes_not_recorded`，不回退当前 Git。
+- `untracked` 只取检查点 `files` 中 `origin=untracked` 的路径；`files` 仅白名单元数据（含 origin），不含 hash 指向的正文、patch 正文或 skill 资源。另保留删除、跳过、未采集项及排除规则；跳过项仅 path/reason/scope。有跳过/未采集、HEAD/分支或改动清单缺失时为 `metadataStatus=partial`，无 v2 快照为 `missing`，齐全才为 `recorded`。这是清单完整性，不是原子采集/可回放证明；v2 不保留 staged/unstaged 区分，`gitStatus=null`。
+- `context.captureLoadedSkills` 投影该检查点的实际 loaded/sdk/prompt 名单（仅 name/filePath/baseDir）及采集状态，合并已记录的加载路径；不复制技能正文。名单未完成明确 `scene_loaded_skills_missing`。所有新字段和路径仍在写包前做相同已知值替换。
+- Wiki 引用只增加现场状态/来源、HEAD/分支和跳过数摘要，供卡片展示；展开/搜索/JSON/Markdown 始终读取同一冻结包。旧包不迁移、不重新计算引用，也不据当前仓库、baseline 或轮前输入推断现场。
+- #17–#20 只核验 B3 已复制的各自封存 checkpoint；若没有 v2 gitSnapshot，页面如实显示历史缺失并保留已有文件清单，不改变旧包及历史评测结果。这不是重新读取线上会话或其他 worktree 的授权。
 
 ## 已知值替换与存储
 
@@ -47,7 +57,7 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 - 九步：标记、现场、脱水、归类、分组、断言、回放检查、原版复现、入库。按下一步责任方分组，可切换列表；支持问题/期望/来源/编号搜索和阶段、模型筛选。保留 #4、#10、#14 的旧题来源身份，不把样例仓库当原现场。非 GPT 来源单列，只报告。
 - trace / run 两条漏斗分别展示实际封存、归档及用户确认可脱水的计数；尚未接入的新版检查/断言/入库计数显式为零，不把旧字面评测或 replay 登记当作通过证据。`run 级 · 待脱水确认` 不是已经获得测试资格。
 - 每条的回填状态来自 `case.traceBundle` 引用和缺失原因，提供白话缺失说明（原机器码保留在 title 和包内）。没有批准按钮；读取页面不会重跑回填、模型或任何写接口。
-- 现场统一显示「待接入 · 待采集能力合入」，已有包仅展示冻结的旧清单/null 与缺失理由。2026-11-05 规划者确认：等采集 PR #179 合入 develop、房间合入 origin/develop 后再接完整 HEAD/分支/改动/未跟踪/跳过项；不据当前 HEAD 或 baseline 猜历史，不改已冻结旧包 hash，AC1 保持 pending。新组装包的现场另带 `metadataStatus: pending_capture_integration` 和 `scene_metadata_pending_capture_integration` 缺失码；旧冻结包不补写字段，页面仍明确展示待接入状态。
+- 现场按冻结证据显示「现场元数据已冻结」「现场部分记录 · 缺口已披露」或「历史现场元数据缺失」，不再统一显示等待采集合入。有现场默认 trace 级，可另选脱水；元数据齐全也不代表已通过回放检查。旧包的 `pending_capture_integration` / `scene_metadata_pending_capture_integration` 仅解释为当时未接入且历史元数据未记录，不改包、引用或 hash。
 - 「轨迹与上下文」首次展开才 GET 对应冻结包，不使用 `message` 或 `traceExcerpt` 兜底。三段可展开：上下文逐字段、逐次模型输出/完整参数/完整工具结果/耗时与用量、现场清单。原包内容以文本/JSON 显示而非 HTML；长块（>800 字符）默认折叠，展开仍保留完整原文。支持在本包所有三段内搜索、高亮并展开命中块；搜索不截断导出。缓存按 case ID + 引用 hash 隔离，刷新后的过期响应丢弃，失败只提供显式重试。
 - `GET /api/wikiskill/cases/:caseId/trace/export.json` 与 `/trace/export.md` 沿用同一本地只读管理门禁和 hash 验证。响应为 attachment、no-store；无包返回 `wiki_trace_missing`（404），损坏仍拒绝（409）。JSON 是冻结包自身（仅排版差异），没有导出时间/当前分组等附加字段。Markdown 以包信息、上下文、逐步轨迹、用量、现场组织 JSON 代码块；每个字段保留，可由各块无损重组原包，动态围栏避免正文反引号破坏结构。两种格式均不访问源房间、路径或现场文件正文，不二次脱敏/推断/截断。
 

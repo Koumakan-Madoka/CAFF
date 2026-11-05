@@ -24,7 +24,7 @@ test('pipeline has truthful stepper, actor groups, two funnels, backfill states 
   const h = setup(t); assert.equal(h.calls.length, 0);
   assert.equal(h.root.querySelectorAll('[data-lane]').length, 2);
   assert.equal(h.root.querySelector('[data-case-id="c1"] .stepper').children.length, 9);
-  for (const text of ['按下一步分组', '旧题的来源', '非 GPT 来源', '回填部分完成', '待采集能力合入', '评分 v2', 'DeepSeek 推荐尚未生成']) assert.ok(h.root.textContent.includes(text), text);
+  for (const text of ['按下一步分组', '旧题的来源', '非 GPT 来源', '回填部分完成', '历史现场元数据缺失', '评分 v2', 'DeepSeek 推荐尚未生成']) assert.ok(h.root.textContent.includes(text), text);
   assert.doesNotMatch(h.root.textContent, /批准补全|示例.*JEV|已成为测试用例.*[1-9]/);
   assert.equal(h.root.querySelector('[data-case-id="c3"]').closest('[data-actor]').dataset.actor, 'source');
 });
@@ -168,6 +168,21 @@ test('confirmed grouping shows original proposal, user adjustment and active gro
     assert.equal(card.querySelector('.stepper').children[4].className, 'done');
   }
   assert.match(h.root.textContent, /分组不代表.*判分/); assert.equal(h.calls.length, 0); assert.equal(panel.querySelector('button'), null);
+});
+test('new checkpoint metadata is shown separately from legacy missing fields and never claims replay success', t => {
+  const h = setup(t);
+  h.data.cases[1].traceBundle.scene = { metadataStatus: 'recorded', metadataSource: 'checkpoint_git_snapshot_v2', head: 'a'.repeat(40), branch: 'room/test', skippedCount: 0 };
+  h.panel.render(h.data);
+  const card = h.root.querySelector('[data-case-id="c2"]');
+  assert.match(card.textContent, /现场元数据已冻结/); assert.doesNotMatch(card.textContent, /待采集能力合入|现场待接入/);
+  assert.equal(card.querySelector('.stepper').children[1].className, 'done');
+  assert.equal(card.closest('[data-actor]').dataset.actor, 'system');
+  assert.match(card.querySelector('.next-line').textContent, /默认 trace 级/);
+  assert.doesNotMatch(card.querySelector('.next-line').textContent, /请确认能否脱水/);
+  assert.match(h.root.querySelector('[data-lane="trace"]').textContent, /不能把封存当作已通过回放检查/);
+  h.data.cases[1].traceBundle.scene.metadataStatus = 'partial'; h.panel.render(h.data);
+  assert.match(h.root.querySelector('[data-case-id="c2"]').textContent, /现场部分记录/);
+  assert.equal(h.calls.length, 0);
 });
 test('stale packet responses after a data refresh cannot replace current evidence', async t => {
   const pending = []; const h = setup(t, () => new Promise(r => { pending.push(r); })); await h.expand();
