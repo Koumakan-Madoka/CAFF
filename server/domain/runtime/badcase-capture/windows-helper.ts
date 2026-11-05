@@ -3,11 +3,12 @@
 // Capture capability and collector remain unconnected.
 // A valid response is not proof of a coherent snapshot or a replayable turn.
 const fs = require('node:fs');
+const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync, spawn } = require('node:child_process');
 const { performance } = require('node:perf_hooks');
 const { TextDecoder } = require('node:util');
-import { WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
+import { WINDOWS_HELPER_SOURCE, WINDOWS_HELPER_SOURCE_SHA256 } from './windows-helper-source';
 import { createWindowsCaptureEnvironment } from './windows-git-environment';
 
 export const WINDOWS_HELPER_LIMITS = Object.freeze({
@@ -174,6 +175,27 @@ export function parseWindowsHelperResponse(stdout: any, request: any): any {
   } catch { return bad(); }
 }
 
+// Deployment upgrades may leave only an earlier content address installed.
+// Install trusted code on first use, independently of project consent/pins.
+// Only the exact storage-local current filename may be created; never repair
+// an existing file or overwrite another SHA. A concurrent incomplete write
+// fails closed for this call and can be retried by a later turn.
+function verifyOrInstallHelper(helperPath: string): boolean {
+  let info: any;
+  try { info = fs.statSync(helperPath); }
+  catch (error: any) {
+    if (error?.code !== 'ENOENT' || !path.isAbsolute(helperPath)
+      || path.basename(path.dirname(helperPath)) !== 'windows-authorization-helper'
+      || path.basename(helperPath) !== `windows_read.${WINDOWS_HELPER_SOURCE_SHA256}.py`) return false;
+    fs.mkdirSync(path.dirname(helperPath), { recursive: true });
+    try { fs.writeFileSync(helperPath, WINDOWS_HELPER_SOURCE, { encoding: 'utf8', flag: 'wx' }); }
+    catch (writeError: any) { if (writeError?.code !== 'EEXIST') throw writeError; }
+    info = fs.statSync(helperPath);
+  }
+  return info.size <= 1024 * 1024
+    && crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') === WINDOWS_HELPER_SOURCE_SHA256;
+}
+
 export function invokeWindowsHelper(python: string, helperPath: string, request: any): any {
   if (process.platform !== 'win32') return { ok: false, reason: 'windows_required' };
   const input = encodeWindowsHelperRequest(request);
@@ -181,10 +203,7 @@ export function invokeWindowsHelper(python: string, helperPath: string, request:
   try {
     // Deployment trusts this host/interpreter and same-OS-user processes; disk
     // verification is not an immutable executable or Python process attestation.
-    if (fs.statSync(helperPath).size > 1024 * 1024
-        || crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') !== WINDOWS_HELPER_SOURCE_SHA256) {
-      return { ok: false, reason: 'helper_integrity_failed' };
-    }
+    if (!verifyOrInstallHelper(helperPath)) return { ok: false, reason: 'helper_integrity_failed' };
     const result = spawnSync(python, ['-I', '-B', helperPath], {
       input, encoding: 'buffer', windowsHide: true, env: createWindowsCaptureEnvironment(process.env),
       timeout: request.op === 'identity' ? WINDOWS_HELPER_LIMITS.identityTimeoutMs
@@ -245,10 +264,7 @@ async function invokeWindowsBoundedContentHelper(python: string, helperPath: str
   if (activeGitHelpers >= 2) return fail('git_capture_busy');
   activeGitHelpers++;
   try {
-    if (fs.statSync(helperPath).size > 1024 * 1024
-        || crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') !== WINDOWS_HELPER_SOURCE_SHA256) {
-      return fail('helper_integrity_failed');
-    }
+    if (!verifyOrInstallHelper(helperPath)) return fail('helper_integrity_failed');
     const remaining = deadline - performance.now();
     if (remaining <= 0) return fail('git_capture_timeout');
     return await new Promise(resolve => {
@@ -308,10 +324,7 @@ export async function invokeWindowsEstimateHelper(python: string, helperPath: st
   if (activeEstimates >= 2) return fail('estimate_busy');
   activeEstimates++;
   try {
-    if (fs.statSync(helperPath).size > 1024 * 1024
-        || crypto.createHash('sha256').update(fs.readFileSync(helperPath)).digest('hex') !== WINDOWS_HELPER_SOURCE_SHA256) {
-      return fail('helper_integrity_failed');
-    }
+    if (!verifyOrInstallHelper(helperPath)) return fail('helper_integrity_failed');
     if (performance.now() >= expires) return fail('estimate_timeout');
     return await new Promise(resolve => {
       const maxOutput = WINDOWS_HELPER_LIMITS.headerBytes + 1; // NO body for estimate

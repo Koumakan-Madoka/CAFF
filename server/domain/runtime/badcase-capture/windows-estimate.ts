@@ -1,7 +1,6 @@
 // Windows pre-enable metadata preview, NOT capture. Only exact persisted native
 // roots; never follow an alias as the helper target, enumerate using Node,
-// read content, install or
-// re-pin. The estimate protocol enforces versioned sensitive-name pruning at
+// read content or re-pin. The estimate protocol enforces versioned sensitive-name pruning at
 // every depth BEFORE opening children. Unknown secret names are not detectable
 // from metadata; this preview must not be promoted to a content collector.
 const path = require('node:path');
@@ -94,8 +93,8 @@ export function estimateWindowsDirectory(options: any): any {
   try {
     const plan = prepareWindowsMetadataScope(options);
     if (!plan.ok) return plan;
-    // Explicit authorization installed this exact source. Preview may NOT
-    // install/repair/re-authorize it. Fixed PATH python is trusted host TCB;
+    // Transport may idempotently install this release's trusted helper, never
+    // repair a changed file or re-authorize. Fixed PATH python is trusted host TCB;
     // python3-only installations fail closed, never silently switch runtimes.
     return summarize(invokeWindowsHelper('python', plan.helperPath, plan.request));
   } catch { return fail('windows_estimate_unavailable'); }

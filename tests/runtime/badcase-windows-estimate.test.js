@@ -82,7 +82,7 @@ test('Windows preview prunes known private/credential names at every depth and u
   finally { fs.rmdirSync(unsafe); }
 });
 
-test('Windows preview refuses private roots, policy wildcards, unpinned input and missing installed helper', native, async t => {
+test('Windows preview refuses private roots, wildcards and unpinned input; installs current trusted helper without repinning', native, async t => {
   const { base, root, captureRoot, service } = setup(t);
   service.authorizeProject('p');
   service.savePolicy('p', { ...service.loadPolicy('p'), excludedPatterns: ['**/private'] });
@@ -96,7 +96,10 @@ test('Windows preview refuses private roots, policy wildcards, unpinned input an
   service.authorizeProject('p');
   const helperDir = path.join(captureRoot, 'windows-authorization-helper');
   const helper = fs.readdirSync(helperDir).find(n => n.endsWith('.py')); fs.unlinkSync(path.join(helperDir, helper));
-  assert.equal((await service.estimateDirectoryAsync('p', root)).ok, false, 'estimate must not silently install/re-authorize');
+  const policy = service.loadPolicy('p');
+  assert.equal((await service.estimateDirectoryAsync('p', root)).ok, true, 'trusted code installation is not authorization');
+  assert.ok(fs.existsSync(path.join(helperDir, helper)));
+  assert.deepEqual(service.loadPolicy('p'), policy, 'no consent or identity changes');
 });
 
 for (const method of ['estimateDirectory', 'estimateDirectoryAsync']) {

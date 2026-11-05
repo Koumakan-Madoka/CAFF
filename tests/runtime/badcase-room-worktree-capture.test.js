@@ -65,6 +65,38 @@ test('one project grant captures existing and later-created Room worktrees witho
   for (const id of ['existing', 'later']) assert.equal((await h.capture(id)).reason, 'policy_not_enabled');
 });
 
+test('enabled policy with only the previous helper SHA survives upgrade without reauthorization or pin changes', native, async t => {
+  const h = fixture(t); h.add('room'); h.enable();
+  const saved = h.service.loadPolicy('p');
+  const { WINDOWS_HELPER_SOURCE, WINDOWS_HELPER_SOURCE_SHA256 } = require('../../build/server/domain/runtime/badcase-capture/windows-helper-source');
+  const crypto = require('node:crypto');
+  // Simulate the prior release's different content address. Never execute it;
+  // the upgrade must install the trusted current source, not use old protocol.
+  const oldSource = `${WINDOWS_HELPER_SOURCE}\n# previous release\n`;
+  const oldSha = crypto.createHash('sha256').update(oldSource).digest('hex');
+  assert.notEqual(oldSha, WINDOWS_HELPER_SOURCE_SHA256);
+  const dir = path.join(h.service.captureRoot, 'windows-authorization-helper');
+  const current = path.join(dir, `windows_read.${WINDOWS_HELPER_SOURCE_SHA256}.py`);
+  const previous = path.join(dir, `windows_read.${oldSha}.py`);
+  fs.writeFileSync(previous, oldSource, { flag: 'wx' }); fs.unlinkSync(current);
+  assert.deepEqual(fs.readdirSync(dir), [path.basename(previous)], 'only the old release is installed');
+  const oldMtime = fs.statSync(previous).mtimeMs;
+  const result = await h.capture('room');
+  assert.equal(result.captured, true, result.reason);
+  assert.equal(fs.readFileSync(current, 'utf8'), WINDOWS_HELPER_SOURCE);
+  assert.equal(fs.readFileSync(previous, 'utf8'), oldSource);
+  assert.equal(fs.statSync(previous).mtimeMs, oldMtime);
+  const mtime = fs.statSync(current).mtimeMs;
+  assert.equal((await h.capture('room')).captured, true);
+  assert.equal(fs.statSync(current).mtimeMs, mtime, 'verified helper reused without rewrite');
+  assert.deepEqual(h.service.loadPolicy('p'), saved, 'enabled state, consent and every pin unchanged');
+  fs.appendFileSync(current, '\n# tampered\n');
+  const corrupt = fs.readFileSync(current);
+  assert.equal((await h.capture('room')).captured, false, 'never repair an existing untrusted file');
+  assert.deepEqual(fs.readFileSync(current), corrupt);
+  assert.deepEqual(h.service.loadPolicy('p'), saved);
+});
+
 for (const kind of ['unbound', 'foreign-project', 'dag', 'dag-worktree', 'cwd-mismatch', 'subdir', 'other-repo', 'other-repo-worktree',
   'forged-gitdir', 'forged-commondir', 'forged-backlink', 'unregistered', 'project-not-root']) {
   test(`Room inheritance rejects ${kind} without publishing a checkpoint`, native, async t => {

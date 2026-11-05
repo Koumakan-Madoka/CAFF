@@ -188,6 +188,39 @@ test('Windows process boundary verifies source, sends pins only on stdin and dis
     .invokeWindowsHelper('python', 'helper', request).reason, 'windows_required');
 });
 
+test('current helper installation is exclusive, verified after write and never overwrites existing content', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-helper-upgrade-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const request = { version: 1, op: 'identity', root: 'C:/authorized' };
+  for (const scenario of ['new', 'race-valid', 'race-corrupt', 'write-corrupt', 'existing-corrupt', 'wrong-name']) {
+    const dir = path.join(root, scenario, 'windows-authorization-helper'); fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `windows_read.${scenario === 'wrong-name' ? '0'.repeat(64) : WINDOWS_HELPER_SOURCE_SHA256}.py`);
+    if (scenario === 'existing-corrupt') fs.writeFileSync(file, 'do not repair');
+    let writes = 0, spawns = 0;
+    const api = isolatedTransport({ disk: { ...fs, writeFileSync(target, bytes, options) {
+      writes++; assert.equal(target, file); assert.equal(options.flag, 'wx');
+      assert.equal(bytes, WINDOWS_HELPER_SOURCE);
+      if (scenario.startsWith('race-')) {
+        fs.writeFileSync(target, scenario === 'race-valid' ? bytes : 'incomplete concurrent write', { flag: 'wx' });
+        throw Object.assign(Error('race'), { code: 'EEXIST' });
+      }
+      fs.writeFileSync(target, scenario === 'write-corrupt' ? 'bad write' : bytes, options);
+    } }, child: { spawnSync() { spawns++; return { status: 0,
+      stdout: wire({ version: 1, ok: true, identity }, Buffer.alloc(0)), stderr: Buffer.alloc(0) }; } } });
+    const good = ['new', 'race-valid'].includes(scenario);
+    assert.equal(api.invokeWindowsHelper('python', file, request).ok, good, scenario);
+    assert.equal(writes, ['existing-corrupt', 'wrong-name'].includes(scenario) ? 0 : 1);
+    assert.equal(spawns, good ? 1 : 0, 'corrupt/misaddressed helper must never run');
+    if (good) {
+      const mtime = fs.statSync(file).mtimeMs;
+      assert.equal(api.invokeWindowsHelper('python', file, request).ok, true);
+      assert.equal(writes, 1); assert.equal(fs.statSync(file).mtimeMs, mtime);
+    }
+    if (scenario === 'existing-corrupt') assert.equal(fs.readFileSync(file, 'utf8'), 'do not repair');
+    if (scenario === 'wrong-name') assert.equal(fs.existsSync(file), false);
+  }
+});
+
 test('Windows identity operations have a separate bounded management timeout', () => {
   const request = { version: 1, op: 'identity', root: 'C:/authorized' };
   const api = isolatedTransport({

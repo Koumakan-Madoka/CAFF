@@ -115,6 +115,7 @@
 - `agent-executor.ts` 在本轮 prompt、实际 SDK cwd 和 session 选择确定后、`startRun` 前保存检查点。范围是该 turn 实际 worktree，不根据可能陈旧的 Room 路径猜测，也不是每次工具调用前快照。关闭后不再主动采集，既有封存不删除。
 - 保存纳入范围的已跟踪文件、脏内容、未跟踪文件及删除/缺席状态；遵循显式排除、内存秘密占位替换和 ignored 纳入策略。Git 分类元数据不作为恢复出的 `.git`，私有/凭据目录不能因“整个 worktree”被纳入。内容按 SHA-256 存 CAS，清单引用内容；恢复仅写入专属新空目录，不修改真实仓库，不从 HEAD 补回已删除文件。
 - 保存归一化 prompt、执行配置、声明的角色片段及可用的执行前 session。resume 缺少 session 不得退回 fresh。采集失败或材料缺失不伪造检查点、完整性或可回放状态；正常 turn 与采集成功不是同一事实。
+- Windows helper 升级不需要重新授权：使用前按当前可信源码 SHA-256 幂等安装到采集库内 `windows-authorization-helper/windows_read.<SHA>.py`，仅以 `wx` 创建缺失的当前版本，写后及每次使用前校验 SHA。已存在且校验通过则直接复用；校验失败拒绝，不修复或覆盖当前文件，不覆盖其他 SHA，不更改项目授权、开启状态或 pin。并发安装观察到未写完的文件时本次失败关闭，后续轮次可重新校验；安装仍计入原有采集时限。
 - Windows 主路径使用已有原生采集实现。2026-11-03 起不再要求服务/agent 全局设置 `GIT_CONFIG_*`：采集只解析独立授权的 index/config/ignore 字节，不运行git、不读系统/用户Git配置。每次原生Python helper启动都复制当时环境，去掉全部大小写拼写的 `GIT_*`，仅在该子进程设置 `GIT_CONFIG_NOSYSTEM=1/GIT_CONFIG_GLOBAL=NUL/GIT_TERMINAL_PROMPT=0`；不写回process.env或任何Git配置文件，普通agent的Git选择器/用户配置保持原样。这只是采集配置隔离，不是通用子进程或秘密沙箱。
 - Windows异步管理预估总是先走相同授权/私有根边界的Git分类预检，是否可开启不再取决于服务启动或运行时的Git环境。分类成功且完整才有 `captureAvailable:true`；分类不支持时仍可给出只读原始容量，保留分类失败原因和 `git_classification_unavailable`，强制 `captureAvailable:false`，不把容量扫描当采集许可。分类与容量预览共享同一个25秒单调时钟截止点，失败后不另获25秒预算；超时不给部分成功。原有显式授权、pin、估算凭据和单独enable不变；采集每轮仍重验实际元数据。新检查点以 `git_configuration_isolated_in_capture_helpers` 说明隔离，不再声称宿主全局配置已禁用；旧封存记录不改。不同平台的读取实现不能互相充当验证证据。
 - 容量是逻辑落盘字节，不是物理分配块/空闲空间保证。UI 区分最近检查点新增文件、session、其他回放内容、共享 CAS、清单成本；缺少旧统计时显示未知，镜像成本不在其中。检查点发布前耗时不等于整个 turn 耗时。
