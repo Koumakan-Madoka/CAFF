@@ -23,6 +23,28 @@ function safeJoin(root: any, relativePath: any) {
   return resolved;
 }
 
+// Resolve even not-yet-created destinations through their nearest existing
+// ancestor. Inspect every existing component too: a lexical child of an empty
+// target may otherwise be reached through a source-pointing symlink/junction.
+// These are preflight checks, not protection against concurrent replacement.
+function inspectRestorePath(value: string, rejectLinks = false) {
+  const absolute = path.resolve(value), suffix: string[] = [];
+  let current = absolute, existing = '', linked = false;
+  while (true) {
+    try {
+      const stat = fs.lstatSync(current);
+      if (!existing) existing = current;
+      if (stat.isSymbolicLink()) linked = true;
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') throw error;
+      if (!existing) suffix.unshift(path.basename(current));
+    }
+    const parent = path.dirname(current); if (parent === current) break; current = parent;
+  }
+  // A dangling link must be refused too, without trying to resolve its target.
+  return { linked, realPath: linked && rejectLinks ? absolute : path.resolve(fs.realpathSync(existing), ...suffix) };
+}
+
 export function restoreCheckpoint(options: any = {}) {
   const store = options.store;
   const projectId = String(options.projectId || '').trim();
@@ -123,9 +145,12 @@ function restoreGitSnapshotCheckpoint(options: any, checkpoint: any, targetDir: 
     const external = skills.some((s: any) => !s.internal);
     if (external && !options.projectSkillsDir) return fail('project_skills_target_required');
     const skillDir = options.projectSkillsDir ? path.resolve(options.projectSkillsDir) : '';
-    const sources = [checkpoint.targetDir, checkpoint.gitSnapshot.sourceRepository, checkpoint.gitSnapshot.commonDir, ...skillRoots.map((s: any) => s.originalPath)].filter(Boolean);
-    for (const dest of [targetDir, ...(skillDir ? [skillDir] : [])]) {
-      if (sources.some(source => { const rel = path.relative(path.resolve(source), dest); return rel === '' || rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel); })) {
+    const destinations = [targetDir, ...(skillDir ? [skillDir] : [])].map(dest => inspectRestorePath(dest, true));
+    if (destinations.some(dest => dest.linked)) return fail('restore_target_linked_ancestor');
+    const sources = [checkpoint.targetDir, checkpoint.gitSnapshot.sourceRepository, checkpoint.gitSnapshot.commonDir, ...skillRoots.map((s: any) => s.originalPath)]
+      .filter(Boolean).map(source => inspectRestorePath(source).realPath);
+    for (const { realPath: dest } of destinations) {
+      if (sources.some(source => { const rel = path.relative(source, dest); return rel === '' || rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel); })) {
         return fail('restore_target_overlaps_source');
       }
       if (fs.existsSync(dest) && (fs.lstatSync(dest).isSymbolicLink() || !fs.lstatSync(dest).isDirectory() || fs.readdirSync(dest).length)) return fail('target_dir_not_empty');
@@ -133,7 +158,7 @@ function restoreGitSnapshotCheckpoint(options: any, checkpoint: any, targetDir: 
     // Keep the two writable roots disjoint; no private helper directories are
     // allowed to pollute a restored project tree or overwrite source paths.
     if (skillDir) {
-      const rel = path.relative(targetDir, skillDir), back = path.relative(skillDir, targetDir);
+      const rel = path.relative(destinations[0].realPath, destinations[1].realPath), back = path.relative(destinations[1].realPath, destinations[0].realPath);
       if (!rel || !rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel)
         || !back.startsWith('..' + path.sep) && back !== '..' && !path.isAbsolute(back)) return fail('restore_targets_overlap');
     }

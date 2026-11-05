@@ -329,6 +329,91 @@ test('an in-flight Git process gets only the remaining time and its timeout cann
   } finally { childProcess.execFile = exec; require.cache[filename] = cached; }
 });
 
+test('snapshot Git never executes a configured fsmonitor hook', async t => {
+  const h = fixture(t); h.enable();
+  const marker = path.join(h.temp, 'fsmonitor-ran'), hook = path.join(h.root, '.git', 'fixture-fsmonitor');
+  fs.writeFileSync(hook, '#!/bin/sh\nprintf ran > "' + marker.replaceAll('\\', '/') + '"\nprintf "fixture-token\\0/\\0"\n', { mode: 0o755 });
+  h.git(h.root, 'config', 'core.fsmonitor', hook.replaceAll('\\', '/'));
+  h.git(h.root, 'status', '--porcelain');
+  assert.equal(fs.existsSync(marker), true, 'positive control: Git really executes this fixture hook');
+  fs.unlinkSync(marker);
+  const index = fs.readFileSync(path.join(h.root, '.git', 'index'));
+  const result = await h.capture(); assert.equal(result.captured, true, result.reason);
+  assert.equal(fs.existsSync(marker), false, 'read-only capture must disable executable fsmonitor');
+  assert.deepEqual(fs.readFileSync(path.join(h.root, '.git', 'index')), index);
+});
+
+test('snapshot Git overrides ambient lazy fetching for every child without changing the parent environment', async () => {
+  const childProcess = require('node:child_process'), { promisify } = require('node:util');
+  const filename = require.resolve('../../build/server/domain/runtime/badcase-capture/git-snapshot');
+  const cached = require.cache[filename], original = childProcess.execFile, previous = process.env.GIT_NO_LAZY_FETCH;
+  const calls = [], fake = () => assert.fail('use promisified execution');
+  fake[promisify.custom] = async (_file, args, options) => { calls.push({ args, env: options.env }); return { stdout: Buffer.from('inert') }; };
+  try {
+    process.env.GIT_NO_LAZY_FETCH = '0'; childProcess.execFile = fake; delete require.cache[filename];
+    const { readSnapshotGit } = require(filename);
+    for (const args of [['rev-parse', 'HEAD'], ['show', 'HEAD:missing.txt'], ['diff', '--binary', 'HEAD']]) await readSnapshotGit('.', args);
+    assert.equal(calls.length, 3);
+    for (const call of calls) assert.equal(call.env.GIT_NO_LAZY_FETCH, '1');
+    assert.equal(process.env.GIT_NO_LAZY_FETCH, '0');
+  } finally {
+    childProcess.execFile = original; require.cache[filename] = cached;
+    if (previous === undefined) delete process.env.GIT_NO_LAZY_FETCH; else process.env.GIT_NO_LAZY_FETCH = previous;
+  }
+});
+
+test('a missing tracked Git object is a per-file gap, not a failed capture or lost safe sibling', async t => {
+  const h = fixture(t), { collectGitSnapshot, readSnapshotGit } = require('../../build/server/domain/runtime/badcase-capture/git-snapshot');
+  fs.writeFileSync(path.join(h.root, 'tracked.txt'), 'dirty\n'); fs.writeFileSync(path.join(h.root, 'safe-new'), 'safe');
+  const result = await collectGitSnapshot({ targetDir: h.root, knownKeyValues: [], projectSkillPaths: [], readGit(cwd, args, budget) {
+    if (args.includes('--binary')) throw Error('fixture missing object');
+    return readSnapshotGit(cwd, args, budget);
+  } });
+  assert.equal(result.ok, true); assert.deepEqual(result.uncaptured, [{ path: 'tracked.txt', reason: 'git_diff_unavailable' }]);
+  assert.equal(result.blobs.get(result.files['safe-new'].hash).toString(), 'safe');
+});
+
+for (const kind of ['outside', 'sibling-prefix', 'file-link', 'directory-link', 'internal-directory-link', 'root-link']) {
+  test(`resume session refuses ${kind} without reading or archiving its bytes`, async t => {
+    const h = fixture(t); h.enable();
+    const agent = path.join(h.temp, 'agent'), sessions = path.join(agent, 'named-sessions'); fs.mkdirSync(sessions, { recursive: true });
+    const text = [{ type: 'session', version: 3, id: 'fixture-session', cwd: h.root },
+      { type: 'message', id: 'u', parentId: null, message: { role: 'user', content: 'OUTSIDE_SESSION_BYTES', timestamp: 1 } }].map(v => JSON.stringify(v)).join('\n') + '\n';
+    const outside = path.join(h.temp, 'other-sessions'); fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'turn.jsonl'), text);
+    let session = path.join(outside, 'turn.jsonl'), simulatedLink = false;
+    if (kind === 'sibling-prefix') { fs.mkdirSync(sessions + '-other'); session = path.join(sessions + '-other', 'turn.jsonl'); fs.writeFileSync(session, text); }
+    if (kind === 'file-link') {
+      session = path.join(sessions, 'linked.jsonl');
+      try { fs.symlinkSync(path.join(outside, 'turn.jsonl'), session, 'file'); }
+      catch (e) { if (process.platform !== 'win32' || e.code !== 'EPERM') throw e; simulatedLink = true; fs.writeFileSync(session, text); t.diagnostic('Windows file-link metadata seam; native directory junction cases still run'); }
+    }
+    if (kind === 'directory-link' || kind === 'internal-directory-link') {
+      let destination = outside;
+      if (kind === 'internal-directory-link') { destination = path.join(sessions, 'real'); fs.mkdirSync(destination); fs.writeFileSync(path.join(destination, 'turn.jsonl'), text); }
+      fs.symlinkSync(destination, path.join(sessions, 'alias'), process.platform === 'win32' ? 'junction' : 'dir'); session = path.join(sessions, 'alias/turn.jsonl');
+    }
+    if (kind === 'root-link') { fs.rmdirSync(sessions); fs.symlinkSync(outside, sessions, process.platform === 'win32' ? 'junction' : 'dir'); session = path.join(sessions, 'turn.jsonl'); }
+    const read = fs.readFileSync, lstat = fs.lstatSync; let reads = 0;
+    fs.readFileSync = function(file, ...args) { if (String(file) === session) reads++; return read.call(this, file, ...args); };
+    if (simulatedLink) fs.lstatSync = function(file, ...args) { const stat = lstat.call(this, file, ...args); if (String(file) === session) stat.isSymbolicLink = () => true; return stat; };
+    let result;
+    try { result = await h.capture(h.root, { deliveryMode: 'resume', sessionPath: session }); }
+    finally { fs.readFileSync = read; fs.lstatSync = lstat; }
+    assert.equal(result.captured, true, result.reason); assert.equal(result.checkpoint.replayInput.sessionBlobHash, '');
+    assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('session_outside_named_sessions'));
+    assert.equal(result.checkpoint.replayInput.complete, false); assert.equal(reads, 0);
+    const digest = require('node:crypto').createHash('sha256').update(text).digest('hex'); assert.equal(h.service.store.hasBlob('p', digest), false);
+  });
+}
+
+test('resume accepts an ordinary in-root named session and archives its exact bytes', async t => {
+  const h = fixture(t); h.enable(); const sessions = path.join(h.temp, 'agent/named-sessions'); fs.mkdirSync(sessions, { recursive: true });
+  const session = path.join(sessions, 'turn.jsonl'), text = [{ type: 'session', version: 3, id: 'ordinary', cwd: h.root },
+    { type: 'message', id: 'u', parentId: null, message: { role: 'user', content: 'ordinary history', timestamp: 1 } }].map(v => JSON.stringify(v)).join('\n') + '\n'; fs.writeFileSync(session, text);
+  const result = await h.capture(h.root, { deliveryMode: 'resume', sessionPath: session }); assert.equal(result.captured, true, result.reason);
+  assert.ok(result.checkpoint.replayInput.sessionBlobHash); assert.deepEqual(h.service.store.readBlob('p', result.checkpoint.replayInput.sessionBlobHash), Buffer.from(text));
+});
+
 test('detached HEAD works; repositories with no readable HEAD fail without blocking callers', async t => {
   const h = fixture(t); h.enable(); h.git(h.root, 'checkout', '--detach', '-q');
   const result = await h.capture(); assert.equal(result.captured, true, result.reason); assert.equal(result.checkpoint.gitSnapshot.branch, '');

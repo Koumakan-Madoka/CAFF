@@ -18,10 +18,10 @@ const names = (b: Buffer): string[] => b.toString('utf8').split('\0').filter(Boo
 // even an incidental Git index refresh must not write to the captured source.
 export async function readSnapshotGit(cwd: string, args: string[], budget?: CaptureTimeBudget): Promise<Buffer> {
   budget?.check();
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1' };
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_LITERAL_PATHSPECS: '1', GIT_NO_LAZY_FETCH: '1' };
   for (const key of Object.keys(env)) if (/^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES)$/i.test(key)) delete env[key];
   try {
-    const result = await execute('git', ['--no-pager', '-C', cwd, ...args], {
+    const result = await execute('git', ['--no-pager', '-C', cwd, '-c', 'core.fsmonitor=false', ...args], {
       env, encoding: 'buffer', windowsHide: true, maxBuffer: 256 * 1024 * 1024,
       timeout: budget ? Math.max(1, Math.ceil(budget.remainingMs())) : CAPTURE_TIME_LIMIT_MS,
     });

@@ -11,6 +11,9 @@ import { createCaptureTimeBudget, isCaptureTimeLimit } from './capture-time-budg
 
 export function createGitTurnCollector(options: any): any {
   const store = options.store;
+  // Constructor-owned instance boundary, never an invocation-supplied root.
+  const sessionsDir = typeof options.agentDir === 'string' && options.agentDir.trim()
+    ? path.resolve(options.agentDir, 'named-sessions') : '';
   return { async captureTurnCheckpoint(input: any = {}): Promise<any> {
     const started = Date.now();
     const failed = (reason: string) => ({ captured: false, checkpointId: '', reason, durationMs: Date.now() - started });
@@ -46,7 +49,15 @@ export function createGitTurnCollector(options: any): any {
         const { replayInput, plans } = prepareReplayInput(preparedInput, input.deliveryMode === 'resume' ? 'resume' : 'fresh', targetDir, filename => {
           if (budget.remainingMs() === 0) return { ok: false, reason: 'capture_time_limit' };
           try {
-            const content = fs.readFileSync(filename);
+            if (!sessionsDir || !path.isAbsolute(filename)) return { ok: false, reason: 'session_outside_named_sessions' };
+            const realRoot = fs.realpathSync(sessionsDir), realFile = fs.realpathSync(filename);
+            const rel = path.relative(realRoot, realFile), stat = fs.lstatSync(filename);
+            // Ordinary best-effort metadata checks, not an atomic/no-race claim.
+            // Equality also rejects linked ancestors, even links back in-root.
+            if (!rel || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)
+              || !pathsEqual(realRoot, sessionsDir) || !pathsEqual(realFile, filename)
+              || stat.isSymbolicLink() || !stat.isFile()) return { ok: false, reason: 'session_outside_named_sessions' };
+            const content = fs.readFileSync(realFile);
             return budget.remainingMs() > 0 ? { ok: true, content } : { ok: false, reason: 'capture_time_limit' };
           } catch { return { ok: false, reason: 'session_unreadable' }; }
         }, { knownKeyValues });

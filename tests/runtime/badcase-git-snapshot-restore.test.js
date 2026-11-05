@@ -185,6 +185,41 @@ test('nonempty or source-overlapping destinations are rejected without modificat
   assert.equal(h.restore(captured.checkpoint, inSource).reason, 'restore_target_overlaps_source'); assert.equal(fs.existsSync(inSource), false);
 });
 
+for (const field of ['targetDir', 'projectSkillsDir']) for (const destination of ['source', 'outside']) {
+  test(`restore refuses linked ancestors of ${field} pointing ${destination} before any writes`, async t => {
+    const h = fixture(t), skill = path.join(h.temp, 'external-skill'); fs.mkdirSync(skill); fs.writeFileSync(path.join(skill, 'SKILL.md'), 'inert skill');
+    const captured = await h.capture(h.root, { projectSkillPaths: [skill] }); assert.equal(captured.captured, true, captured.reason);
+    const outside = path.join(h.temp, 'outside'); fs.mkdirSync(outside);
+    const alias = path.join(h.temp, 'alias'); fs.symlinkSync(destination === 'source' ? h.root : outside, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const target = field === 'targetDir' ? path.join(alias, 'not-yet-created/project') : path.join(h.temp, 'restored');
+    const mirror = field === 'projectSkillsDir' ? path.join(alias, 'not-yet-created/skills') : path.join(h.temp, 'skill-mirror');
+    const before = h.tree(h.root), index = fs.readFileSync(path.join(h.root, '.git/index'));
+    const result = h.restore(captured.checkpoint, target, { projectSkillsDir: mirror });
+    assert.equal(result.ok, false); assert.equal(result.reason, 'restore_target_linked_ancestor');
+    assert.equal(fs.existsSync(target), false); assert.equal(fs.existsSync(mirror), false);
+    assert.deepEqual(h.tree(h.root), before); assert.deepEqual(fs.readFileSync(path.join(h.root, '.git/index')), index); assert.deepEqual(fs.readdirSync(outside), []);
+  });
+}
+
+test('canonical source aliases cannot hide overlap with an otherwise ordinary destination', async t => {
+  const h = fixture(t), captured = await h.capture(), alias = path.join(h.temp, 'source-alias');
+  fs.symlinkSync(h.root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const cp = structuredClone(captured.checkpoint); cp.targetDir = cp.gitSnapshot.sourceRepository = alias; cp.gitSnapshot.commonDir = path.join(alias, '.git'); h.service.store.saveCheckpoint('p', cp);
+  const target = path.join(h.root, 'must-not-create'), result = h.restore(cp, target);
+  assert.equal(result.ok, false); assert.equal(result.reason, 'restore_target_overlaps_source'); assert.equal(fs.existsSync(target), false);
+});
+
+test('one unchanged HEAD blob over 64 MiB is a disclosed omission, not a failed checkpoint restore', async t => {
+  const h = fixture(t), large = path.join(h.root, 'large.bin');
+  fs.writeFileSync(large, Buffer.alloc(64 * 1024 * 1024 + 1)); h.commit();
+  const captured = await h.capture(); assert.equal(captured.captured, true, captured.reason); assert.deepEqual(captured.checkpoint.files, {});
+  const target = path.join(h.temp, 'restored'), result = h.restore(captured.checkpoint, target);
+  assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(fs.existsSync(path.join(target, 'large.bin')), false);
+  assert.ok(result.uncapturedInScope.some(g => g.path === 'large.bin' && g.reason === 'file_size_limit'));
+  assert.equal(result.replayInputComplete, false); assert.equal(result.strictEvalEligible, false);
+  assert.equal(fs.readFileSync(path.join(target, 'base.txt'), 'utf8'), 'clean base\n'); assert.equal(fs.statSync(large).size, 64 * 1024 * 1024 + 1);
+});
+
 test('missing HEAD or corrupt/missing patch/overlay blobs fail explicitly before writing a target', async t => {
   const h = fixture(t); fs.writeFileSync(path.join(h.root, 'new.txt'), 'untracked'); const captured = await h.capture();
   const original = captured.checkpoint;

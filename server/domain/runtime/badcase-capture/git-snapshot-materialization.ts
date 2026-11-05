@@ -106,7 +106,10 @@ export function materializeGitSnapshot(options: any): any {
       if (excluded(name) || skipped(name)) continue;
       if (!relative(name)) { gap(name, 'windows_reserved_or_invalid_name'); continue; }
       if (mode === '120000' || mode === '160000' || type !== 'blob') { gap(name, mode === '120000' ? 'reparse_point_skipped' : 'submodule_unsupported'); continue; }
-      if (!['100644', '100755'].includes(mode) || !Number.isSafeInteger(Number(size)) || Number(size) > 64 * 1024 * 1024) throw fail('git_snapshot_file_size_limit');
+      if (!['100644', '100755'].includes(mode) || !Number.isSafeInteger(Number(size))) throw fail('git_snapshot_file_size_limit');
+      // Clean HEAD blobs were not read during capture. A single oversized one
+      // is a disclosed omission, just like a skipped dirty/untracked file.
+      if (Number(size) > 64 * 1024 * 1024) { gap(name, 'file_size_limit'); continue; }
       rows.push({ name, oid, size: Number(size), mode: mode === '100755' ? 0o100755 : 0o100644 });
     }
     // Bound memory per batch, not total repository bytes. Every ordinary HEAD

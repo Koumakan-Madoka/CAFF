@@ -129,8 +129,8 @@ test('no truncation: oversized raw input or more than 2048 public messages is re
 test('Git snapshot facade authorized source → CAS → restart keeps distinct turn IDs and exact callback state (owned fixtures only)',
   { skip: !['win32', 'linux'].includes(process.platform) }, async t => {
   require('../helpers/windows-capture-environment').isolateWindowsCaptureEnvironment(t);
-  const h = fixture(t), target = path.join(h.root, 'worktree'), sessions = path.join(h.root, 'sessions'), captureRoot = path.join(h.root, 'capture');
-  fs.mkdirSync(target); fs.mkdirSync(sessions);
+  const h = fixture(t), target = path.join(h.root, 'worktree'), agentDir = path.join(h.root, 'agent'), sessions = path.join(agentDir, 'named-sessions'), captureRoot = path.join(h.root, 'capture');
+  fs.mkdirSync(target); fs.mkdirSync(sessions, { recursive: true });
   const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
   Object.assign(gitEnv, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(h.root, 'absent-global'), GIT_TEMPLATE_DIR: '' });
   const git = (...args) => require('node:child_process').execFileSync('git', ['-C', target, ...args], { windowsHide: true, env: gitEnv });
@@ -141,7 +141,7 @@ test('Git snapshot facade authorized source → CAS → restart keeps distinct t
   fs.writeFileSync(path.join(target, '.gitignore'), '');
   const { createBadcaseCaptureService } = require(base + 'index');
   const { readCapturedCallbackInput } = require(base + 'callback-input');
-  const service = createBadcaseCaptureService({ captureRoot, chatStore: h.store });
+  const service = createBadcaseCaptureService({ captureRoot, agentDir, chatStore: h.store });
   service.savePolicy('p1', { authorizedDirs: [target], authorizedInputDirs: [sessions], excludedPatterns: [] }, { authorizeCallbackInput: true });
   const policy = service.authorizeProject('p1'); assert.equal(policy.status, 'disabled');
   const sessionPath = path.join(sessions, 'turn.jsonl');
@@ -176,7 +176,7 @@ test('Git snapshot facade authorized source → CAS → restart keeps distinct t
   h.store.updateMessage('old', { content: 'Earlier ' + known });
   const rawCallback = h.capture(), expectedTrace = rawCallback.trace.replaceAll(known, '[*]');
   const rawHash = rawCallback.expectedTraceHash, expectedHash = crypto.createHash('sha256').update(expectedTrace).digest('hex');
-  const safeService = createBadcaseCaptureService({ captureRoot, chatStore: h.store, getKnownKeyValues: () => [known] });
+  const safeService = createBadcaseCaptureService({ captureRoot, agentDir, chatStore: h.store, getKnownKeyValues: () => [known] });
   for (const mode of ['fresh', 'resume']) {
     const result = await safeService.captureTurnCheckpoint(value(mode)); assert.equal(result.captured, true, result.reason);
     const reopened = createBadcaseCaptureService({ captureRoot }), cp = reopened.store.loadCheckpoint('p1', result.checkpointId);
