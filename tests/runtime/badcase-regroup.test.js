@@ -35,6 +35,7 @@ test('stratified proposal is order-independent, bounded, fixed-seed and contains
   assert.ok(p.counts.run.gate <= p.counts.trace.gate); assert.ok(p.warnings.includes('no_new_trace_test'));
   for (const id of [sourceId, 'reference', 'other', 'invalid']) assert.equal(p.rows.find(r => r.caseId === id).proposedSplit, null);
   assert.equal(p.rows.find(r => r.caseId === 'invalid').reason, 'baseline_no_valid_output');
+  assert.equal(p.rows.find(r => r.caseId === 'reference').level, 'reference'); assert.equal(p.rows.find(r => r.caseId === sourceId).level, 'source');
   assert.deepEqual(planWikiRegroup({ ...f.state, candidates: ['CANDIDATE MUST NOT ENTER'], comparisons: ['GRADE MUST NOT ENTER'] }, f.runs), p);
   assert.doesNotMatch(JSON.stringify(p), /CANDIDATE MUST|GRADE MUST/);
 });

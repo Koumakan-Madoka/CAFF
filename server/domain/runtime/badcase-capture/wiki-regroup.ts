@@ -19,7 +19,7 @@ export function planWikiRegroup(state: any, accounting: any[]) {
       : !c.sealedCheckpointId && d?.level !== 'run' ? 'dehydration_not_confirmed'
       : !c.sealedCheckpointId && !valid ? originals.some(r => r.baselineStatus === 'no_valid_output') ? 'baseline_no_valid_output' : 'baseline_pending'
       : null;
-    return { caseId: c.id, caseNumber: c.displayNumber, previousSplit: c.split, level: c.sealedCheckpointId ? 'trace' : 'run',
+    return { caseId: c.id, caseNumber: c.displayNumber, previousSplit: c.split, level: reason === 'legacy_test_source' ? 'source' : reason === 'reference_only' ? 'reference' : c.sealedCheckpointId ? 'trace' : 'run',
       traceHash: c.traceBundle?.hash || null, checkpointId: c.sealedCheckpointId || null, decisionHash: d?.hash || null,
       originalEvidence: originals.map(r => ({ id: r.id, resultHash: r.resultHash, baselineStatus: r.baselineStatus })),
       proposedSplit: null as 'train' | 'gate' | 'test' | null, reason };
