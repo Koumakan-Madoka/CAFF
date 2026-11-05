@@ -87,13 +87,16 @@ test('frozen user override shows planner provenance without replacing the origin
   assert.match(host.textContent, /<script>message<\/script>/); assert.equal(host.querySelector('script'), null);
   assert.equal(host.querySelector('[data-dehydration-confirm]'), null); assert.equal(h.calls.length, 0);
 });
-test('run output loads read-only on expansion, remains literal, and missed decision points are counted separately from errors', async t => {
+test('run output loads read-only; invalid attempts never fail and original-without-valid-output cases are excluded', async t => {
   const h = setup(t, url => ({ reservation: { request: { context: { tools: [{ name: 'write' }] } } }, result: { message: { content: [{ type: 'text', text: '<script>full output</script>' }] } } }));
-  const r = { id: 'e'.repeat(64), caseId: 'c1', traceHash: 'a'.repeat(64), decisionHash: 'd'.repeat(64), variant: { kind: 'original' }, status: 'unreached', model: 'openai-codex/gpt-6.1-sol', thinking: 'xhigh', resultHash: 'f'.repeat(64), modelCalls: 1, toolExecutions: 0 };
+  const r = { id: 'e'.repeat(64), caseId: 'c1', traceHash: 'a'.repeat(64), decisionHash: 'd'.repeat(64), variant: { kind: 'original' }, status: 'invalid', baselineStatus: 'no_valid_output', eligibleForScoring: false, caseEligibleForGateAndScreen: false, model: 'openai-codex/gpt-6.1-sol', thinking: 'xhigh', resultHash: 'f'.repeat(64), modelCalls: 1, toolExecutions: 0 };
   h.data.runReplays = [r, { ...r, id: '1'.repeat(64), status: 'error' }];
   h.data.dehydrations = [{ caseId: 'c1', traceHash: r.traceHash, recommendation: { kindSuggestion: 'single' }, request: { state: { steps: [] } }, decision: { kind: 'single', level: 'run', hash: r.decisionHash } }];
   h.panel.render(h.data); assert.equal(h.calls.length, 0);
-  assert.match(h.root.textContent, /未到达决策点 1/); assert.match(h.root.textContent, /请求失败 1/); assert.match(h.root.textContent, /按不通过计/);
+  assert.match(h.root.textContent, /无效 1/); assert.match(h.root.textContent, /请求失败 1/); assert.match(h.root.textContent, /不算通过也不算不通过/);
+  assert.match(h.root.textContent, /原版无有效输出/); assert.match(h.root.textContent, /不进门槛和初筛/); assert.doesNotMatch(h.root.textContent, /未到达|按不通过计/);
+  assert.equal(h.root.querySelector('[data-case-id="c1"] .stepper').children[7].className, 'skip');
+  assert.ok(h.root.querySelector('[data-run-export="json"]')); assert.ok(h.root.querySelector('[data-run-export="md"]'));
   const d = h.root.querySelector('[data-run-details]'); d.open = true; d.dispatchEvent(new h.window.Event('toggle')); await tick(); await tick();
   assert.equal(h.calls[0], '/api/wikiskill/cases/c1/run-replays/' + r.id);
   assert.match(d.textContent, /<script>full output<\/script>/); assert.equal(d.querySelector('script'), null);
@@ -107,14 +110,14 @@ test('user reference-only withdrawal keeps prior confirmation and full run visib
   h.data.cases[0].n = 12;
   h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), request: { state: { steps: [{ step: 1, body: 'plan' }] } },
     recommendation: { schemaVersion: 2, kindSuggestion: 'single', cutStepSuggestion: 1, cutSource: 'deepseek', answers: { reason: 'original recommendation', evidence: 'plan' } }, decision: current, decisionHistory: [first] }];
-  const oldRun = { id: 'e'.repeat(64), caseId: 'c1', traceHash: 'a'.repeat(64), decisionHash: first.hash, variant: { kind: 'original' }, status: 'unreached', modelCalls: 1, toolExecutions: 0,
+  const oldRun = { id: 'e'.repeat(64), caseId: 'c1', traceHash: 'a'.repeat(64), decisionHash: first.hash, variant: { kind: 'original' }, status: 'invalid', modelCalls: 1, toolExecutions: 0,
     excludedReason: 'user_reclassified_reference', supersededByDecisionHash: current.hash };
   h.data.runReplays = [oldRun]; h.panel.render(h.data);
   const card = h.root.querySelector('[data-case-id="c1"]'); assert.equal(card.closest('[data-actor]').dataset.actor, 'reference');
   assert.match(card.textContent, /已冻结：贯穿型.*只作参考/); assert.match(card.textContent, /已被用户改判，不计入/);
   assert.match(card.textContent, /首次确认|历史确认/); assert.match(card.textContent, /first-confirmation/); assert.match(card.textContent, /original recommendation/);
   assert.match(card.textContent, /<script>贯穿全程<\/script>/); assert.equal(card.querySelector('script'), null);
-  assert.match(h.root.querySelector('[data-run-totals]').textContent, /共 0 次.*未到达决策点 0/);
+  assert.match(h.root.querySelector('[data-run-totals]').textContent, /共 0 次.*无效 0/);
   assert.match(h.root.querySelector('[data-run-totals]').textContent, /已被用户改判，不计入.*1 次/);
   assert.match(h.root.querySelector('[data-lane="run"]').textContent, /只作参考/);
   assert.equal(h.root.querySelector('[data-lane="run"] .f-step b').textContent, '0');

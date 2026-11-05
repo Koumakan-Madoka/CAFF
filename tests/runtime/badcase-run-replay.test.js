@@ -29,13 +29,13 @@ test('request binds frozen decision and exact pre-cut history; only schemas, no 
   h.toolset.definitions[0].execute = undefined; delete h.toolset.definitions[0].execute;
   h.decision.cutStep = 1; assert.throws(h.request, e => e.code === 'wiki_run_decision_invalid');
 });
-test('one-step classification requires a reply or a standalone public-message call; other tool use always misses', () => {
+test('one-step classification accepts replies; other tool use and empty output are invalid, never failures', () => {
   const classify = api().classifyWikiRunOutput;
   assert.equal(classify(output([{ type: 'text', text: 'full reply' }])).status, 'reached');
   const send = { type: 'toolCall', id: 's', name: 'bash', arguments: { command: "cat <<'EOF' | node \"$CAFF_CHAT_TOOLS_PATH\" send-public --content-stdin\nfull <script>reply</script>\nEOF" } };
   assert.equal(classify(output([send], 'toolUse')).reply, 'full <script>reply</script>');
   for (const content of [[{ ...send, arguments: { command: "echo 'send-public --content nope'" } }], [send, { type: 'toolCall', name: 'read', arguments: {} }], [{ type: 'text', text: 'I will inspect' }, { type: 'toolCall', name: 'bash', arguments: { command: 'ls' } }], []]) {
-    const r = classify(output(content, content.length ? 'toolUse' : 'stop')); assert.equal(r.status, 'unreached'); assert.equal(r.countAsFailure, true);
+    const r = classify(output(content, content.length ? 'toolUse' : 'stop')); assert.equal(r.status, 'invalid'); assert.equal(Object.hasOwn(r, 'countAsFailure'), false); assert.equal(r.reply, null);
   }
 });
 test('durable reservation prevents duplicate sends after success, failure, crash or competing calls; old wiki state stays identical', async t => {
@@ -61,6 +61,7 @@ test('a failed request is recorded once with a safe code and never retried; outp
       return { message: output([{ type: 'text', text: 'synthetic-private-value' }]), networkRequests: 1, durationMs: 1 };
     } } });
     assert.equal(calls, 1); assert.doesNotMatch(JSON.stringify(r), /synthetic-private-value/); assert.equal(r.outcome.status, failing ? 'error' : 'reached');
+    assert.equal(Object.hasOwn(r.outcome, 'countAsFailure'), false);
     assert.equal(runs.list().length, 1); assert.equal(runs.read(r.id).result.outcome.status, r.outcome.status);
   }
 });
@@ -83,6 +84,10 @@ test('crashed reservations remain unknown and cannot send again; known values in
   await assert.rejects(api().replayWikiRun(input, { knownKeyValues: ['historical'], client: { complete() { calls++; } } }), e => e.code === 'wiki_run_input_contains_known_key');
   assert.equal(runs.list().length, 0); runs.reserve(q); assert.equal(runs.list()[0].status, 'reserved');
   await assert.rejects(api().replayWikiRun(input, { client: { complete() { calls++; } } }), e => e.code === 'wiki_run_already_reserved'); assert.equal(calls, 0);
+});
+test('scene-backed run cannot silently use the single-call no-executor implementation', t => {
+  const h = setup(t);
+  assert.throws(() => api().buildWikiRunRequest({ item: { ...h.item(), sealedCheckpointId: 'scene' }, bundle: h.bundle, decision: h.decision, toolset: h.toolset }), e => e.code === 'wiki_run_scene_unsupported');
 });
 test('unconfirmed/stale requests are rejected before reservation or network', async t => {
   const h = setup(t), { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store'), runs = createWikiRunStore(h.options);

@@ -9,6 +9,9 @@ export const wikiRunHash = (v: any) => crypto.createHash('sha256').update(JSON.s
 export const WIKI_RUN_MODEL = 'openai-codex/gpt-6.1-sol';
 function validHash(v: any, n = 64) { return typeof v === 'string' && new RegExp(`^[a-f0-9]{${n}}$`).test(v); }
 export function buildWikiRunRequest({ item, bundle, decision, toolset, candidate }: any) {
+  // Scene-backed runs require real execution to natural turn end (B7).
+  // This no-executor implementation must never silently stand in for them.
+  if (item?.sealedCheckpointId) throw fail('wiki_run_scene_unsupported');
   const { hash: decisionHash, ...value } = decision || {};
   if (!validHash(decisionHash) || wikiRunHash(value) !== decisionHash || decision.caseId !== item.id
     || decision.traceHash !== item.traceBundle?.hash || decision.kind !== 'single' || decision.level !== 'run') throw fail('wiki_run_decision_invalid');
@@ -56,13 +59,13 @@ function publicMessage(call: any): string | null {
   return quoted ? quoted[1] ?? quoted[2] : null;
 }
 export function classifyWikiRunOutput(message: any) {
-  if (message?.role !== 'assistant' || !['stop', 'toolUse'].includes(message.stopReason) || !Array.isArray(message.content)) return { status: 'error', reason: 'model_failed', reply: null, countAsFailure: true };
+  if (message?.role !== 'assistant' || !['stop', 'toolUse'].includes(message.stopReason) || !Array.isArray(message.content)) return { status: 'error', reason: 'model_failed', reply: null };
   const calls = message.content.filter((b: any) => b.type === 'toolCall');
   const text = message.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
   const sent = calls.map(publicMessage);
   const reached = calls.length ? sent.every((s: any) => typeof s === 'string' && s.trim()) : !!text.trim();
-  return { status: reached ? 'reached' : 'unreached', reason: reached ? null : calls.length ? 'other_tool_requested' : 'empty_reply',
-    reply: reached ? calls.length ? sent.join('\n') : text : null, countAsFailure: !reached };
+  return { status: reached ? 'reached' : 'invalid', reason: reached ? null : calls.length ? 'other_tool_requested' : 'empty_reply',
+    reply: reached ? calls.length ? sent.join('\n') : text : null };
 }
 export async function replayWikiRun(input: any, options: any) {
   const { store, runs, caseId, toolset, candidate, approvedRequestHash } = input;
@@ -85,7 +88,7 @@ export async function replayWikiRun(input: any, options: any) {
       wireRequest: response.wireRequest ? redactTraceKnownValues(response.wireRequest, options.knownKeyValues || []).value : null };
   } catch {
     // No upstream prose, body, path or credentials in error evidence. Never retry.
-    result = { message: null, outcome: { status: 'error', reason: 'model_request_failed', reply: null, countAsFailure: true }, modelCalls: null, durationMs: null };
+    result = { message: null, outcome: { status: 'error', reason: 'model_request_failed', reply: null }, modelCalls: null, durationMs: null };
   }
   return runs.finish(reservation.id, { ...result, toolExecutions: 0 });
 }

@@ -18,7 +18,7 @@ function setup(t) {
     const req = new PassThrough(); req.method = body === undefined ? 'GET' : 'POST'; req.socket = { remoteAddress: overrides.remoteAddress || '127.0.0.1' };
     req.headers = { host: '127.0.0.1:4313', origin: 'http://127.0.0.1:4313', 'content-type': 'application/json', 'x-caff-csrf-token': 'synthetic-csrf', ...overrides.headers };
     let result;
-    const res = { writeHead(status) { this.status = status; }, end(bytes) { result = { status: this.status, body: JSON.parse(bytes) }; } };
+    const res = { writeHead(status, headers) { this.status = status; this.headers = headers; }, end(bytes) { result = { status: this.status, headers: this.headers, body: overrides.text ? String(bytes) : JSON.parse(bytes) }; } };
     const pending = controller({ req, res, pathname: overrides.pathname || '/api/wikiskill' + (body === undefined ? '' : '/review') });
     req.end(body === undefined ? undefined : JSON.stringify(body)); assert.equal(await pending, true); return result;
   }
@@ -47,14 +47,36 @@ test('run replay results are guarded read-only packets; GET/list cannot launch o
   const runs = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config);
   const request = { schemaVersion: 1, kind: 'wikiskill-run-request', model: 'openai-codex/gpt-6.1-sol', thinking: 'xhigh', variant: { kind: 'original' }, context: { tools: [] }, metadata: { caseId: c.id, traceHash: 'a'.repeat(64), decisionHash: 'b'.repeat(64) } };
   const r = runs.reserve(request); runs.finish(r.id, { message: { content: [{ type: 'text', text: 'FULL OUTPUT' }] }, outcome: { status: 'unreached', countAsFailure: true }, modelCalls: 1, toolExecutions: 0 });
-  assert.equal((await h.invoke()).body.runReplays[0].status, 'unreached');
+  const summary = (await h.invoke()).body.runReplays[0]; assert.equal(summary.status, 'invalid'); assert.equal(summary.eligibleForScoring, false);
+  assert.equal(summary.baselineStatus, 'no_valid_output'); assert.equal(summary.caseEligibleForGateAndScreen, false); assert.equal(Object.hasOwn(summary, 'countAsFailure'), false);
   const route = { pathname: '/api/wikiskill/cases/' + c.id + '/run-replays/' + r.id };
   const revision = h.store.read().revision;
-  assert.equal((await h.invoke(undefined, route)).body.result.message.content[0].text, 'FULL OUTPUT');
+  const packet = (await h.invoke(undefined, route)).body;
+  assert.equal(packet.result.message.content[0].text, 'FULL OUTPUT'); assert.equal(packet.result.outcome.status, 'unreached');
+  assert.equal(packet.accounting.status, 'invalid'); assert.equal(packet.accounting.resultHash, summary.resultHash);
   assert.equal(h.store.read().revision, revision);
   await assert.rejects(h.invoke(undefined, { ...route, remoteAddress: '10.0.0.1' }), e => [403, 404].includes(e.statusCode));
   await rejects(h.invoke(undefined, { pathname: '/api/wikiskill/cases/unknown/run-replays/' + r.id }), 'wiki_unknown_case', 422);
   assert.equal(await createBadcaseWikiController(h.options)({ req: { method: 'POST' }, res: {}, pathname: route.pathname }), false);
+});
+test('run JSON and Markdown exports share current accounting, retain original hashes and are guarded read-only', async t => {
+  const h = setup(t); h.seed(); const c = h.store.read().cases[0];
+  const runs = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config);
+  const r = runs.reserve({ schemaVersion: 1, kind: 'wikiskill-run-request', variant: { kind: 'original' }, metadata: { caseId: c.id, traceHash: 'trace', decisionHash: 'decision' } });
+  const result = runs.finish(r.id, { message: { content: [{ type: 'toolCall', name: 'bash', arguments: { command: 'DO NOT EXECUTE ```json' } }] }, outcome: { status: 'unreached', countAsFailure: true }, modelCalls: 1, toolExecutions: 0 });
+  const base = '/api/wikiskill/cases/' + c.id + '/run-replays/' + r.id, before = h.store.read();
+  const detail = (await h.invoke(undefined, { pathname: base })).body;
+  const json = await h.invoke(undefined, { pathname: base + '/export.json' });
+  const md = await h.invoke(undefined, { pathname: base + '/export.md', text: true });
+  assert.deepEqual(json.body, detail); assert.equal(json.body.accounting.status, 'invalid'); assert.equal(json.body.accounting.caseEligibleForGateAndScreen, false);
+  assert.deepEqual(json.body.result, result); assert.equal(json.headers['Cache-Control'], 'no-store'); assert.match(json.headers['Content-Disposition'], /attachment/);
+  assert.match(md.body, /无效，不算通过也不算不通过/); assert.match(md.body, /原版无有效输出.*不进门槛和初筛/);
+  const block = md.body.match(/(`{4,})json\n([\s\S]*)\n\1/); assert.ok(block); assert.deepEqual(JSON.parse(block[2]), detail);
+  for (const ext of ['json', 'md']) {
+    await assert.rejects(h.invoke(undefined, { pathname: base + '/export.' + ext, remoteAddress: '10.0.0.1' }), e => [403, 404].includes(e.statusCode));
+    assert.equal(await createBadcaseWikiController(h.options)({ req: { method: 'POST' }, res: {}, pathname: base + '/export.' + ext }), false);
+  }
+  assert.deepEqual(h.store.read(), before); assert.deepEqual(runs.read(r.id).result, result);
 });
 test('dehydration confirmation is explicit, guarded, revision/hash bound and never calls a model', async t => {
   const h = setup(t); h.seed(); const c = h.store.read().cases[0];
@@ -83,8 +105,9 @@ test('dehydration confirmation is explicit, guarded, revision/hash bound and nev
   const after = (await h.invoke()).body;
   assert.equal(after.dehydrations[0].decision.level, 'reference'); assert.deepEqual(after.dehydrations[0].decisionHistory, [decision]);
   assert.equal(after.runReplays[0].excludedReason, 'user_reclassified_reference'); assert.equal(after.runReplays[0].supersededByDecisionHash, withdrawn.hash);
-  assert.equal(after.runReplays[0].status, 'unreached');
-  assert.deepEqual((await h.invoke(undefined, { pathname: '/api/wikiskill/cases/' + c.id + '/run-replays/' + run.id })).body, raw);
+  assert.equal(after.runReplays[0].status, 'invalid'); assert.equal(after.runReplays[0].eligibleForScoring, false);
+  const detail = (await h.invoke(undefined, { pathname: '/api/wikiskill/cases/' + c.id + '/run-replays/' + run.id })).body;
+  assert.deepEqual({ reservation: detail.reservation, result: detail.result }, raw); assert.equal(detail.accounting.excludedReason, 'user_reclassified_reference');
   await rejects(h.invoke({ ...body, expectedRevision: after.revision }, route), 'wiki_dehydration_frozen', 409);
   const controller = createBadcaseWikiController(h.options);
   assert.equal(await controller({ req: { method: 'POST' }, res: {}, pathname: '/api/wikiskill/dehydration-withdraw' }), false);

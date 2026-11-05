@@ -91,7 +91,9 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 当前批准的历史脱水范围是页面 #1/#2/#3/#5/#6/#8/#12/#15/#16（同时绑定 caseId），不是报告行号。#4/#10/#14 只作旧题来源；缺系统提示词的 #7/#9/#11/#13 按 B11 留到 M4 删除，保留冻结包与历史记录，本阶段不删。带 pi-coding-agent 0.85.1 和固定 caff-capabilities schema 的单次模型回放见下节，不能把推荐/确认当成已回放或判分证据。
 
-## 单次 run 级回放（不判分）
+## run 级回放（不判分）
+
+run 级用于控制成本：**从用户冻结的切点开始**，而不是从本轮开头重跑。没有现场时只请求一次模型，不执行新工具；有现场时应恢复现场、从切点真实执行工具到本轮自然结束再判分。本 Goal 没有有现场的 run 用例（#19/#20 走 trace），暂不实现该执行器；`buildWikiRunRequest` 对带 `sealedCheckpointId` 的用例返回 `wiki_run_scene_unsupported`，不能用无工具单次请求冒充。
 
 受信入口 `replayWikiRun({ store, runs, caseId, toolset, approvedRequestHash, candidate? }, { client, knownKeyValues? })` 不开放 HTTP 启动、任意前缀上传或答案上传。调用前由操作方核对同一请求 hash，并明确获得外发/调用授权。只接受已冻结 `single/run` 决定，核对决定 hash、用例和轨迹包 hash，逐字读取 `buildDehydrationPrefix` 的切点之前前缀；不附实际问题、期望、推荐、候选结果、旧分组或判分信息。系统提示词历史展示版/路径占位不回填，续用消息及前置完整工具结果保留。
 
@@ -100,9 +102,13 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 - `createWikiRunClient` 直接调用嵌套 pi-ai 的 Codex 单次 `stream`，不创建 Agent/Session，不加载技能/当前房间，不接任何工具执行器。固定 `openai-codex/gpt-6.1-sol`、thinking xhigh、SSE、store=false、无 service tier、maxRetries=0；另有 fetch 一次预算。旧 SDK 内置目录没有该新模型 ID，使用最小原生 wire descriptor（直接发送用户批准的 ID，不回退其他模型）；不据该描述符推算价格，保存 token 用量但移除虚构 cost。实际序列化的请求体（无认证头）与完整 assistant 输出随结果保存。
 - 复用现有 host-only `codex-transport.cjs`：只读取明确批准的 `.pi-sandbox/auth.json` access/expires，不读取 refresh 字段用于认证、不刷新、不复制/回写凭据；只向固定 Codex endpoint 经 `http://127.0.0.1:17890` 发请求，无直连/重定向兜底。SDK 只见公开 inert identity，真实 access 在 host transport 内存替换。过期、认证、网络或供应商失败停止，不重试；错误证据只留固定码，不保存上游诊断正文。
 - 在网络调用**前**以请求内容 hash 在 `<globalRoot>/run-replays/<hash>.json` 原子 no-replace 占用一次。结果另写 `<hash>.result.json`，0600、fsync、hash 校验、不可覆盖；128 MiB 上限，不截断。崩溃/写入失败保留 `reserved`（结果未知）占位，不能用重试自动再发。Wiki 旧快照、轨迹包、决定、分组和旧结果不改。此目录是同 OS 用户可信存储，不是防恶意路径替换沙箱。
-- `stop/toolUse` 的完整文本回复，或独立 `bash` 的 send-public 调用（受限字面 heredoc/引号语法，提取正文但绝不执行）标 `reached`，不代表评分通过；任何其他工具调用，即便附有解释文字/同时发消息，也标 `unreached`（未到达决策点），`countAsFailure=true` 并单独计数。空输出同样不通过。请求失败另记 `error`，未知另记 `reserved`，不冒充模型判断。未识别的发消息语法保守按未到达处理。不做前缀一致性校验或继续工具循环。
+- `stop/toolUse` 的完整文本回复，或独立 `bash` 的 send-public 调用（受限字面 heredoc/引号语法，提取正文但绝不执行）标 `reached`（有效输出），保存原文供评分 v2 判分，不代表通过；其他工具调用（即便附有解释文字或同时发消息）、空输出、未识别的发消息语法均标 `invalid`（无效），**不算通过也不算不通过**，单独计数。新结果不再写 `countAsFailure`。请求失败另记 `error`，未知另记 `reserved`；两者也不进入判分分母，不冒充模型失败。不做前缀一致性校验或继续工具循环。
+- `projectWikiRunAccounting` 使用 `single-call-valid-output-v2` 规则，只读地将历史 `unreached` 投影为 `invalid`，移除摘要的旧 `countAsFailure`，不改原始请求/输出包、hash 或旧快照。仅 `reached` 且没有被用户撤回的尝试 `eligibleForScoring=true`。同 caseId/traceHash/decisionHash 的原版有效输出决定 `baselineStatus`（`valid_output|no_valid_output|pending|not_run`）；只有原版有有效输出且未撤回时，`caseEligibleForGateAndScreen=true`。候选输出、别的题/轨迹/决定、历史被撤回的输出不能替代原版证据。这个资格只是必要条件，不表示已确认复现、已分组或评分通过；实际 run 选题接线留待 M4 与评分 v2 接入。
+- 原版没有有效输出、无法确认复现的题是无效测试用例，不进门槛和训练组初筛。#5/#8 现有两次回放按此只读投影为无效，不补跑；原文/hash 留存，页面明确显示「原版无有效输出」。#12 仍为用户改判后的无现场贯穿型、只作参考；旧回放另标「已被用户改判，不计入」，不混入当前 8 次回放计数。
 - 请求中的当前已知值命中则在占用前拒绝；输出及实际请求体保存前进行同一已知值字面替换，不新增模式/秘密检测。模型请求参数和输出中的工具命令永远是文本数据。
-- `GET /api/wikiskill` 的 `runReplays` 只返回真实占位/结果摘要；`GET /api/wikiskill/cases/:caseId/run-replays/:hash` 沿用本地只读管理门禁，返回核验过的 `{ reservation, result }`，来源须与路径用例一致。无 POST 启动接口。Badcase 页分总体/逐条显示到达、未到达、请求失败和未知次数，点击才读取完整请求/输出，全文转义、不截断、不执行工具、无页面模型请求。断言/复现结论仍由评分 v2 负责。
+- `GET /api/wikiskill` 的 `runReplays` 返回真实占位/结果摘要及当前会计资格；`GET /api/wikiskill/cases/:caseId/run-replays/:hash` 沿用本地只读管理门禁，返回 `{ accounting, reservation, result }`。`accounting` 是当前分类投影，后两项为 hash 核验后的原始包；历史包内的旧分类只供审计，不能参与当前计数。来源须与路径用例一致，无 POST 启动接口。
+- 回放详情的 `/export.json|export.md` 导出相同三项；当前分类、原版无有效输出和用户撤回措辞与页面一致，原始包及 hash 不改。Markdown 用动态 JSON 围栏保留全文，可无损重组；两种格式均为 attachment/no-store、本地只读门禁，不调用模型或工具。原轨迹包的 JSON/Markdown 导出仍只包含冻结轨迹包，绝不加入当前分类或改写冻结内容。
+- Badcase 页分总体/逐条显示有效输出、无效、请求失败和未知次数；原版无有效输出另列「无效测试用例」，跳过分组/断言/原版复现/入库，不显示为不通过。点击才读取完整请求/输出，全文转义、不截断、不执行工具、无页面模型请求。断言/复现结论仍由评分 v2 负责。
 
 确认来源也可由受信操作方在用户明确授权后传入 `{ source: 'user-via-planner', reference: <公开消息ID> }`，等同页面确认，来源和引用进入决定 hash；HTTP 无此字段。相同决定的页面重试不改来源。#8 原 DeepSeek 贯穿型推荐与用户单步型/第5步改判分别保留，冻结后不能再改。
 

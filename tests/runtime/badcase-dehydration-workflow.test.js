@@ -75,7 +75,7 @@ test('explicit user withdrawal is one-way reference-only, archives the frozen de
   assert.deepEqual(row.decisionHistory, [first]); assert.deepEqual(row.recommendation, r.recommendation); assert.equal(row.hash, r.hash);
   assert.deepEqual(h.store.readCaseTrace(h.c.id), packet); assert.deepEqual(runs.read(reservation.id), oldRun);
   const projected = projectWikiRunAccounting(runs.list(), [row]); assert.equal(projected[0].excludedReason, 'user_reclassified_reference');
-  assert.equal(projected[0].supersededByDecisionHash, d.hash); assert.equal(projected[0].status, 'unreached');
+  assert.equal(projected[0].supersededByDecisionHash, d.hash); assert.equal(projected[0].status, 'invalid'); assert.equal(projected[0].eligibleForScoring, false);
   const revision = h.store.read().revision; assert.deepEqual(h.store.withdrawDehydrationToReference(input(), provenance), d); assert.equal(h.store.read().revision, revision);
   assert.throws(() => h.store.withdrawDehydrationToReference(input({ reason: 'rewrite' }), provenance), e => e.code === 'wiki_dehydration_frozen');
   assert.throws(() => h.confirm(r), e => e.code === 'wiki_dehydration_frozen');

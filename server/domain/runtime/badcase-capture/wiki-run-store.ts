@@ -7,13 +7,23 @@ import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { wikiRunHash } from './wiki-run-replay';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const MAX = 128 * 1024 * 1024;
-// Accounting is a projection of the current user decision, never a rewrite of
-// immutable model request/result packets or their original outcome/hash.
+// Current B7 accounting is a read-only projection. In particular, legacy
+// unreached/countAsFailure results keep their original bytes and hashes.
 export function projectWikiRunAccounting(rows: any[], dehydrations: any[] = []) {
-  return rows.map(row => {
+  const normalized = rows.map(({ countAsFailure: _legacy, ...row }) => {
     const current = dehydrations.find(d => d.caseId === row.caseId && d.traceHash === row.traceHash)?.decision;
-    return current?.level === 'reference' && current.supersedesDecisionHash === row.decisionHash
-      ? { ...row, excludedReason: 'user_reclassified_reference', supersededByDecisionHash: current.hash } : row;
+    return { ...row, status: row.status === 'unreached' ? 'invalid' : row.status,
+      ...(current?.level === 'reference' && current.supersedesDecisionHash === row.decisionHash
+        ? { excludedReason: 'user_reclassified_reference', supersededByDecisionHash: current.hash } : {}) };
+  });
+  return normalized.map(row => {
+    const originals = normalized.filter(r => !r.excludedReason && r.variant?.kind === 'original'
+      && r.caseId === row.caseId && r.traceHash === row.traceHash && r.decisionHash === row.decisionHash);
+    const baselineStatus = originals.some(r => r.status === 'reached') ? 'valid_output'
+      : originals.some(r => r.status === 'reserved') ? 'pending' : originals.length ? 'no_valid_output' : 'not_run';
+    return { ...row, accountingPolicy: 'single-call-valid-output-v2',
+      eligibleForScoring: !row.excludedReason && row.status === 'reached', baselineStatus,
+      caseEligibleForGateAndScreen: !row.excludedReason && baselineStatus === 'valid_output' };
   });
 }
 export function createWikiRunStore(input: any) {
@@ -69,11 +79,12 @@ export function createWikiRunStore(input: any) {
     read,
     list(caseId?: string) {
       let names: string[]; try { names = fs.readdirSync(directory); } catch (e: any) { if (e.code === 'ENOENT') return []; throw fail('wiki_run_record_invalid'); }
-      return names.filter(n => /^[a-f0-9]{64}\.json$/.test(n)).map(n => read(n.slice(0, 64))).filter(v => caseId === undefined || v.reservation.request.metadata.caseId === caseId)
+      const rows = names.filter(n => /^[a-f0-9]{64}\.json$/.test(n)).map(n => read(n.slice(0, 64))).filter(v => caseId === undefined || v.reservation.request.metadata.caseId === caseId)
         .map(({ reservation: r, result: v }) => ({ id: r.id, caseId: r.request.metadata.caseId, caseNumber: r.request.metadata.caseNumber,
           traceHash: r.request.metadata.traceHash, decisionHash: r.request.metadata.decisionHash, variant: r.request.variant,
           model: r.request.model, thinking: r.request.thinking, createdAt: r.createdAt, status: v?.outcome?.status || 'reserved',
-          resultHash: v ? wikiRunHash(v) : null, modelCalls: v?.modelCalls ?? null, toolExecutions: v?.toolExecutions ?? null, countAsFailure: v?.outcome?.countAsFailure ?? null }));
+          resultHash: v ? wikiRunHash(v) : null, modelCalls: v?.modelCalls ?? null, toolExecutions: v?.toolExecutions ?? null }));
+      return projectWikiRunAccounting(rows);
     },
   };
 }

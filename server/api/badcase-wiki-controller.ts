@@ -6,6 +6,7 @@ import { sendJson, sendTextDownload } from '../http/response';
 import { wikiTraceMarkdown } from '../domain/runtime/badcase-capture/wiki-trace-export';
 import { createWikiStore } from '../domain/runtime/badcase-capture/wiki-store';
 import { createWikiRunStore, projectWikiRunAccounting } from '../domain/runtime/badcase-capture/wiki-run-store';
+import { wikiRunMarkdown } from '../domain/runtime/badcase-capture/wiki-run-export';
 import { listWikiTargets } from '../domain/runtime/badcase-capture/wiki-targets';
 import { collectWikiCandidateFiles } from '../domain/runtime/badcase-capture/wiki-candidate-files';
 import { createWikiComparisonStore } from '../domain/runtime/badcase-capture/wiki-comparison-store';
@@ -45,7 +46,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
   };
   return async ({ req, res, pathname }: any) => {
     const traceMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/trace(?:\/export\.(json|md))?$/);
-    const runMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/run-replays\/([a-f0-9]{64})$/);
+    const runMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/run-replays\/([a-f0-9]{64})(?:\/export\.(json|md))?$/);
     const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|dehydration-confirm))?$/)
       || (traceMatch ? [pathname, 'case-trace'] : runMatch ? [pathname, 'run-replay'] : null);
     const readOnly = !match?.[1] || ['executions', 'case-trace', 'run-replay'].includes(match[1]);
@@ -84,7 +85,14 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         if (!store.read().cases.some((c: any) => c.id === caseId)) throw Object.assign(Error(), { code: 'wiki_unknown_case' });
         const packet = runs.read(runMatch[2]);
         if (packet.reservation.request.metadata.caseId !== caseId) throw Object.assign(Error(), { code: 'wiki_run_not_found' });
-        sendJson(res, 200, packet); return true;
+        const accounting = projectWikiRunAccounting(runs.list(caseId), store.read().dehydrations).find(r => r.id === runMatch[2]);
+        const view = { accounting, ...packet };
+        if (runMatch[3]) {
+          const json = runMatch[3] === 'json';
+          sendTextDownload(res, json ? JSON.stringify(view, null, 2) + '\n' : wikiRunMarkdown(view),
+            `badcase-${caseId}-run-${runMatch[2]}.${runMatch[3]}`, json ? 'application/json; charset=utf-8' : 'text/markdown; charset=utf-8');
+        } else sendJson(res, 200, view);
+        return true;
       }
       if (traceMatch) {
         let caseId;
