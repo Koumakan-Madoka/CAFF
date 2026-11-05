@@ -18,7 +18,7 @@ function fixture() {
 
 // Observe the actual constrained-root boundary, not a fake estimator. Each test
 // restores the shared export; node:test runs these top-level tests sequentially.
-function observeRoots(run) {
+async function observeRoots(run) {
   const original = safeRead.openConstrainedRoot;
   const counts = { open: 0, walk: 0, read: 0 };
   safeRead.openConstrainedRoot = (...args) => {
@@ -30,7 +30,7 @@ function observeRoots(run) {
       readBatch(...params) { counts.read++; return root.readBatch(...params); },
     };
   };
-  try { run(counts); } finally { safeRead.openConstrainedRoot = original; }
+  try { await run(counts); } finally { safeRead.openConstrainedRoot = original; }
 }
 
 function assertDenied(result, reason) {
@@ -40,9 +40,9 @@ function assertDenied(result, reason) {
   assert.equal(result.totalBytes, 0);
 }
 
-test('estimate authorization: unlisted, unpinned and input-only roots never open or enumerate', () => {
+test('estimate authorization: unlisted, unpinned and input-only roots never open or enumerate', async () => {
   const { service, target } = fixture();
-  observeRoots((counts) => {
+  await observeRoots((counts) => {
     assertDenied(service.estimateDirectory('p', target), 'dir_not_authorized');
     service.savePolicy('p', { status: 'disabled', authorizedDirs: [target] });
     assertDenied(service.estimateDirectory('p', target), 'authorized_root_unpinned');
@@ -54,22 +54,22 @@ test('estimate authorization: unlisted, unpinned and input-only roots never open
   });
 });
 
-test('estimate authorization: missing identifiers do not fall back to cwd', () => {
+test('estimate authorization: missing identifiers do not fall back to cwd', async () => {
   const { service, target } = fixture();
-  observeRoots((counts) => {
+  await observeRoots((counts) => {
     assertDenied(service.estimateDirectory('', target), 'project_id_missing');
     assertDenied(service.estimateDirectory('p', ''), 'target_dir_missing');
     assert.deepEqual(counts, { open: 0, walk: 0, read: 0 });
   });
 });
 
-test('estimate authorization: durable pin permits disabled preview without enabling capture or reading content', { skip: capSkip }, () => {
+test('estimate authorization: durable pin permits disabled preview without enabling capture or reading content', { skip: capSkip }, async () => {
   const { service, target, options } = fixture();
   service.savePolicy('p', { status: 'disabled', authorizedDirs: [target] });
   service.authorizeProject('p');
   const policy = service.loadPolicy('p');
   const restarted = createBadcaseCaptureService(options);
-  observeRoots((counts) => {
+  await observeRoots(async (counts) => {
     const result = restarted.estimateDirectory('p', target);
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.authorized, true);
@@ -80,13 +80,13 @@ test('estimate authorization: durable pin permits disabled preview without enabl
     assert.deepEqual(counts, { open: 1, walk: 1, read: 0 });
     assert.deepEqual(restarted.loadPolicy('p'), policy);
     assert.equal(restarted.computeUsage('p').totalBytes, 0);
-    assert.equal(restarted.captureTurnCheckpoint({ projectId: 'p', targetDir: target }).reason, 'policy_not_enabled');
+    assert.equal((await restarted.captureTurnCheckpoint({ projectId: 'p', targetDir: target })).reason, 'policy_not_enabled');
     assert.equal(restarted.store.listCheckpoints('p').length, 0);
     assert.deepEqual(counts, { open: 1, walk: 1, read: 0 });
   });
 });
 
-test('estimate authorization: replaced object rejected before walk; ordinary save cannot re-pin', { skip: capSkip }, () => {
+test('estimate authorization: replaced object rejected before walk; ordinary save cannot re-pin', { skip: capSkip }, async () => {
   const { service, target } = fixture();
   service.savePolicy('p', { status: 'disabled', authorizedDirs: [target] });
   service.authorizeProject('p');
@@ -94,7 +94,7 @@ test('estimate authorization: replaced object rejected before walk; ordinary sav
   fs.renameSync(target, target + '-original');
   fs.mkdirSync(target);
   fs.writeFileSync(path.join(target, 'outside.txt'), 'not authorized');
-  observeRoots((counts) => {
+  await observeRoots((counts) => {
     assertDenied(service.estimateDirectory('p', target), 'authorized_root_replaced');
     service.savePolicy('p', { ...prior, stagingRetentionDays: 8 });
     assert.deepEqual(service.loadPolicy('p').authorizedDirPins, prior.authorizedDirPins);
@@ -110,11 +110,11 @@ test('estimate authorization: replaced object rejected before walk; ordinary sav
   });
 });
 
-test('estimate authorization: descendant and missing identity fail closed', { skip: capSkip }, () => {
+test('estimate authorization: descendant and missing identity fail closed', { skip: capSkip }, async () => {
   const { service, target } = fixture();
   service.savePolicy('p', { status: 'disabled', authorizedDirs: [target] });
   service.authorizeProject('p');
-  observeRoots((counts) => {
+  await observeRoots((counts) => {
     assertDenied(service.estimateDirectory('p', path.join(target, 'sub')), 'target_must_be_authorized_root');
     const policy = service.loadPolicy('p');
     for (const pin of Object.values(policy.authorizedDirPins)) delete pin.identity;
@@ -180,7 +180,7 @@ test('estimate authorization: mid-walk root swap keeps enumeration on the author
   assertDenied(service.estimateDirectory('p', target), 'authorized_root_replaced');
 });
 
-test('estimate authorization: swap after path authorization cannot enumerate a different root fd', { skip: capSkip }, () => {
+test('estimate authorization: swap after path authorization cannot enumerate a different root fd', { skip: capSkip }, async () => {
   const { service, target } = fixture();
   service.savePolicy('p', { status: 'disabled', authorizedDirs: [target] });
   service.authorizeProject('p');
@@ -196,7 +196,7 @@ test('estimate authorization: swap after path authorization cannot enumerate a d
     return originalOpen.call(this, file, ...args);
   };
   try {
-    observeRoots((counts) => {
+    await observeRoots((counts) => {
       assertDenied(service.estimateDirectory('p', target), 'authorized_root_replaced');
       assert.equal(swapped, true, 'must reach coordinated fd-open swap');
       assert.deepEqual(counts, { open: 1, walk: 0, read: 0 });
