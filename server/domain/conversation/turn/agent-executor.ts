@@ -2403,7 +2403,7 @@ export function createAgentExecutor(options: any = {}) {
               // Full credential-free IPC descriptor, not just model/version.
               // This does NOT archive files referenced by these paths.
               sdkStartConfig: structuredClone(capturedSdkStartConfig),
-              portableRuntime: inspectPortableAgentConfig(capturedSdkStartConfig),
+              portableRuntime: inspectPortableAgentConfig(capturedSdkStartConfig, { archivedSkills: true }),
             },
             skillSnapshots: [
               ...buildCaptureSkillSnapshots(agentConfig.skillIds, resolvedPersonaSkills, new Set()),

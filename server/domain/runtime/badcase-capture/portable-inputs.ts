@@ -8,7 +8,7 @@ export function supportsPortableThinking(config: any): boolean {
   return config?.thinking === 'off' || (config?.thinking === 'xhigh'
     && config?.provider === 'openai-codex' && config?.model === 'gpt-6.1-sol');
 }
-export function inspectPortableAgentConfig(config: any) {
+export function inspectPortableAgentConfig(config: any, options: { archivedSkills?: boolean } = {}) {
   const result = { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: false };
   try {
     if (!config || typeof config.resume !== 'boolean' || !supportsPortableThinking(config) || config.fast === true
@@ -29,11 +29,11 @@ export function inspectPortableAgentConfig(config: any) {
     }
     const filePaths: string[] = []; let entries = 0;
     const inventory = (relative: string, depth = 0) => {
-      if (++entries > 2048 || depth > 32 || !/^[A-Za-z0-9_.@/-]+$/.test(relative)) throw Error();
+      if (++entries > (options.archivedSkills ? 16384 : 2048) || depth > 32 || !/^[A-Za-z0-9_.@/-]+$/.test(relative)) throw Error();
       const target = path.join(config.cwd, relative), st = fs.lstatSync(target);
       if (st.isSymbolicLink()) throw Error();
       if (st.isDirectory()) { for (const name of fs.readdirSync(target).sort()) inventory(relative + '/' + name, depth + 1); }
-      else if (st.isFile() && filePaths.length < 1024) filePaths.push(relative);
+      else if (st.isFile() && filePaths.length < (options.archivedSkills ? 8192 : 1024)) filePaths.push(relative);
       else throw Error();
     };
     const rootNames = fs.readdirSync(config.cwd);
@@ -58,6 +58,14 @@ export function inspectPortableAgentConfig(config: any) {
     const existingSkillPaths = config.additionalSkillPaths.some((p: string) => {
       if (typeof p !== 'string' || !path.isAbsolute(p)) throw Error(); return present(p);
     });
+    // New Git checkpoints archive the actual post-load skill list separately.
+    // Declare only the cwd inventory here; external resources must come from
+    // those captured bytes, never a replay-time scan of these live paths.
+    if (options.archivedSkills === true) {
+      if (config.additionalSkillPaths.some((p: any) => typeof p !== 'string' || !path.isAbsolute(p))) return result;
+      return { schemaVersion: 1, kind: 'portable-captured-project-resources-v1', supported: true,
+        filePaths: filePaths.sort(), skillPaths: [...config.additionalSkillPaths] };
+    }
     if (!hasProjectRoots && filePaths.length === 0 && !existingSkillPaths) return { ...result, supported: true };
     const skillPaths = relativeProjectSkillPaths(config);
     // Explicit roots must be ordinary project paths too, including ancestors.

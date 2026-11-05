@@ -6,7 +6,7 @@ const fixture = require('../helpers/badcase-initialization-fixture.cjs');
 const { collectGitSnapshot } = require('../../build/server/domain/runtime/badcase-capture/git-snapshot');
 const { prepareSealedOriginalTurn, prepareSealedDirectTurn } = require('../../scripts/badcase-capture/sealed-direct-input.cjs');
 const { prepareComparison } = require('../../scripts/badcase-capture/direct-comparison.cjs');
-async function sealed(t, { knownValues = [], change = () => {}, projectResources = false, baseText = 'HEAD base\n' } = {}) {
+async function sealed(t, { knownValues = [], change = () => {}, projectResources = false, externalSkills = false, baseText = 'HEAD base\n' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'snapshot-sealed-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
   Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_OPTIONAL_LOCKS: '0' });
@@ -18,8 +18,24 @@ async function sealed(t, { knownValues = [], change = () => {}, projectResources
   git('add', '-A'); git('-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), '-c', 'commit.gpgsign=false', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid.local', 'commit', '-qm', 'base');
   const head = git('rev-parse', 'HEAD');
   fs.writeFileSync(path.join(root, 'source.txt'), 'captured edit\n' + knownValues.join('\n')); fs.unlinkSync(path.join(root, 'deleted.txt')); fs.writeFileSync(path.join(root, 'untracked.bin'), Buffer.from([0, 255, 1]));
-  const snapshot = await collectGitSnapshot({ targetDir: root, knownKeyValues: knownValues, projectSkillPaths: projectResources ? [path.join(root, '.agents/skills/local')] : [] });
+  const external = externalSkills ? fs.mkdtempSync(path.join(os.tmpdir(), 'sealed-external-skills-')) : null;
+  const sdkSkills = [], promptSkills = [];
+  if (external) {
+    t.after(() => fs.rmSync(external, { recursive: true, force: true }));
+    for (const name of ['sdk', 'prompt', 'both']) {
+      const baseDir = path.join(external, name), filePath = path.join(baseDir, 'SKILL.md');
+      fs.mkdirSync(path.join(baseDir, 'references'), { recursive: true });
+      fs.writeFileSync(filePath, `---\nname: ${name}\ndescription: Fixture ${name}\n---\nRead references/guide.md\n`);
+      fs.writeFileSync(path.join(baseDir, 'references/guide.md'), 'archived ' + name);
+      const skill = { name, filePath, baseDir };
+      if (name !== 'prompt') sdkSkills.push(skill);
+      if (name !== 'sdk') promptSkills.push(skill);
+    }
+  }
+  const snapshot = await collectGitSnapshot({ targetDir: root, knownKeyValues: knownValues,
+    projectSkillPaths: external ? ['sdk', 'prompt', 'both'].map(n => path.join(external, n)) : projectResources ? [path.join(root, '.agents/skills/local')] : [] });
   assert.equal(snapshot.ok, true, snapshot.reason);
+  if (external) Object.assign(snapshot.gitSnapshot, { skillInventoryStatus: 'loaded', loadedSkills: [...new Map([...sdkSkills, ...promptSkills].map(s => [s.filePath, s])).values()], sdkLoadedSkills: sdkSkills, promptLoadedSkills: promptSkills });
   const f = fixture(t, 'fresh', ({ cp, r, config, put }) => {
     cp.schemaVersion = 2; cp.targetDir = root; cp.gitSnapshot = snapshot.gitSnapshot; cp.files = snapshot.files; cp.deletions = snapshot.deletions; cp.uncaptured = snapshot.uncaptured;
     for (const bytes of snapshot.blobs.values()) put(bytes);
@@ -27,7 +43,13 @@ async function sealed(t, { knownValues = [], change = () => {}, projectResources
     config.portableRuntime = projectResources ? { schemaVersion: 1, kind: 'portable-project-resources-v1', supported: true,
       filePaths: [...resourcePaths].sort(), skillPaths: ['.agents/skills/local'] } : { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: true };
     config.sdkStartConfig = { cwd: root, provider: r.runConfig.provider, model: r.runConfig.model, resume: false, thinking: 'off', fast: false,
-      retireUserScopeSkills: true, additionalSkillPaths: projectResources ? [path.join(root, '.agents/skills/local')] : [] };
+      retireUserScopeSkills: true, additionalSkillPaths: external ? sdkSkills.map(s => s.baseDir) : projectResources ? [path.join(root, '.agents/skills/local')] : [] };
+    if (external) {
+      const agentDir = path.join(external, 'agent'); fs.mkdirSync(agentDir);
+      Object.assign(config.sdkStartConfig, { agentDir, extensionPaths: [path.resolve('lib/pi-extensions/caff-capabilities.mjs')] });
+      config.portableRuntime = require('../../build/server/domain/runtime/badcase-capture/portable-inputs').inspectPortableAgentConfig(config.sdkStartConfig, { archivedSkills: true });
+      r.promptBlobHash = r.normalizedPromptHash = put('Read ' + promptSkills.map(s => s.filePath).join(' and '));
+    }
     const association = { projectId: 'p1', conversationId: 'c1', turnId: 't1', agentId: 'a1', userMessageId: 'u1', assistantMessageId: 'msg1' };
     const trace = { schemaVersion: 1, kind: 'caff-evaluation-callback-input-v1', association, assistantCreatedAt: '2026-01-01T00:00:01.000Z',
       conversation: { title: 'Synthetic', type: 'standard', metadata: {} }, participants: [{ id: 'a1', name: config.agentName, description: 'Synthetic' }], publicMessages: [
@@ -36,7 +58,7 @@ async function sealed(t, { knownValues = [], change = () => {}, projectResources
     r.callbackInput = { schemaVersion: 1, kind: 'caff-evaluation-callback-input-reference-v1', blobHash: put(JSON.stringify(trace)), association };
     change({ cp, r, config, put }); r.harness.configSnapshotHash = put(JSON.stringify(config));
   });
-  return { ...f, repositoryRoot: root, head, git };
+  return { ...f, repositoryRoot: root, head, git, external, sdkSkills, promptSkills };
 }
 const planConfig = f => ({ request: f.request, variants: ['original'], repeats: 1, repoRoot: path.resolve('.'), dependencyRoot: path.resolve('.'),
   image: { imageId: 'sha256:' + '1'.repeat(64) }, rules: { kind: 'file-literals-v1', files: [{ path: 'source.txt', contains: ['captured edit'], notContains: [] }] } });
@@ -83,6 +105,55 @@ test('in-cwd v2 skills use materialized files and the existing resource manifest
   const f = await sealed(t, { projectResources: true }), result = prepareSealedOriginalTurn(f.request);
   assert.equal(result.supported, true, JSON.stringify(result)); assert.deepEqual(result.input.projectResources.skillPaths, ['.agents/skills/local']);
   assert.equal(result.input.projectResources.files.length, 2); assert.equal(result.input.projectResources.contextFile, 'AGENTS.md');
+});
+
+test('v2 external skills are mirrored from captured bytes, bind original paths and preserve SDK/prompt origins', async t => {
+  const f = await sealed(t, { externalSkills: true });
+  // Source files may disappear after sealing: no current bytes may fill a gap.
+  fs.rmSync(f.external, { recursive: true, force: true });
+  const result = prepareSealedOriginalTurn(f.request); assert.equal(result.supported, true, JSON.stringify(result));
+  const manifest = result.input.projectResources;
+  assert.equal(manifest.kind, 'replay-captured-project-resources-v1');
+  assert.equal(manifest.skills.length, 3); assert.equal(manifest.skillPaths.length, 2);
+  assert.equal(manifest.skills.filter(s => s.origins.includes('sdk')).length, 2);
+  assert.equal(manifest.skills.filter(s => s.origins.includes('prompt')).length, 2);
+  const prompt = manifest.skills.find(s => s.name === 'prompt');
+  assert.equal(manifest.skillPaths.includes(prompt.path), false);
+  for (const skill of manifest.skills) {
+    assert.ok(result.input.files.some(f => f.path === skill.path));
+    const guide = result.input.files.find(f => f.path === skill.path.replace(/SKILL.md$/, 'references/guide.md'));
+    assert.equal(Buffer.from(guide.base64, 'base64').toString(), 'archived ' + skill.name);
+  }
+  assert.equal(result.input.bindings.projectSkills.length, 3);
+  const values = Object.fromEntries(['CAFF_CHAT_API_URL', 'CAFF_CHAT_INVOCATION_ID', 'CAFF_CHAT_CALLBACK_TOKEN', 'CAFF_CHAT_CONVERSATION_ID', 'CAFF_CHAT_TURN_ID', 'CAFF_CHAT_TOOLS_PATH', 'CAFF_CHAT_TOOLS_RELATIVE_PATH', 'PI_AGENT_SANDBOX_DIR', 'PI_AGENT_PRIVATE_DIR'].map(n => [n, 'isolated']));
+  const bound = require('../../scripts/badcase-capture/direct-model.cjs').bindDirectInputs(result.input.prompt, null, result.input.bindings, values);
+  assert.ok(bound.prompt.includes('/work/restored/' + prompt.path)); assert.equal(bound.prompt.includes(f.external), false);
+  const plan = prepareComparison(planConfig(f)); assert.equal(plan.supported, true, JSON.stringify(plan));
+  const configFile = path.join(f.root, 'external-plan.json'); fs.writeFileSync(configFile, JSON.stringify(planConfig(f)));
+  const cliPlan = JSON.parse(execFileSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', configFile, '--plan'], { encoding: 'utf8' }));
+  assert.equal(cliPlan.supported, true, JSON.stringify(cliPlan)); assert.equal(cliPlan.projectResources.fileCount, 6);
+  // Native SDK skill discovery, no runtime/model/auth initialization. Only the
+  // archived SDK origins become additional paths; prompt-only bytes stay data.
+  const cwd = path.join(f.root, 'native-loader'); fs.mkdirSync(cwd);
+  for (const entry of result.input.files) {
+    const dest = path.join(cwd, entry.path); fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, Buffer.from(entry.base64, 'base64'));
+  }
+  const sdk = await import('@earendil-works/pi-coding-agent');
+  const loaded = sdk.loadSkills({ cwd, agentDir: path.join(f.root, 'empty-agent'), includeDefaults: false, skillPaths: manifest.skillPaths.map(p => path.join(cwd, p)) });
+  assert.deepEqual(loaded.skills.map(s => s.name).sort(), ['both', 'sdk']);
+  const portableSkills = loaded.skills.map(s => ({ ...s, filePath: s.filePath.replaceAll('\\', '/') }));
+  const verified = require('../../build/server/domain/runtime/badcase-capture/project-resources').verifyLoadedProjectResources(manifest, result.input.files,
+    { getAgentsFiles: () => ({ agentsFiles: [] }), getSkills: () => ({ skills: portableSkills }) }, cwd.replaceAll('\\', '/'));
+  assert.equal(verified.loadedSkills, 2);
+});
+
+for (const [label, change] of [
+  ['missing SDK origin evidence', ({ cp }) => { delete cp.gitSnapshot.sdkLoadedSkills; }],
+  ['missing prompt origin evidence', ({ cp }) => { delete cp.gitSnapshot.promptLoadedSkills; }],
+  ['unarchived loaded skill', ({ cp }) => { cp.gitSnapshot.sdkLoadedSkills[0].filePath += '.missing'; }],
+]) test('v2 refuses ' + label + ' instead of guessing skill discovery', async t => {
+  const f = await sealed(t, { externalSkills: true, change });
+  assert.deepEqual(prepareSealedOriginalTurn(f.request), { supported: false, reason: 'replay_project_resources_invalid' });
 });
 
 test('v2 optional Git metadata must use its recorded HEAD, never a later operator-selected commit', async t => {

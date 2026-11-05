@@ -11,7 +11,7 @@ const { readSealedCase, validateSealRequest } = require(base + 'sealed-case');
 const { readCapturedCallbackInput } = require(base + 'callback-input');
 const { containsSecretSentinel } = require(base + 'secrets');
 const { supportsPortableThinking } = require(base + 'portable-inputs');
-const { prepareProjectResources } = require(base + 'project-resources');
+const { prepareProjectResources, prepareCapturedProjectResources } = require(base + 'project-resources');
 const { materializeGitSnapshot } = require(base + 'git-snapshot-materialization');
 const { validateSessionV2 } = require(base + 'session-validator');
 const { validateDirectBindings } = require('./direct-model.cjs');
@@ -61,7 +61,8 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false,
       ensure(Buffer.from(s).equals(b) && !s.includes('\0'), 'replay_blob_text_invalid'); return s; };
     const snapshot = checked('replay_runtime_snapshot_invalid', () => JSON.parse(utf8(r.harness?.configSnapshotHash))), config = snapshot.sdkStartConfig;
     const projectResources = snapshot.portableRuntime?.kind === 'portable-project-resources-v1';
-    ensure((projectResources || snapshot.portableRuntime?.kind === 'portable-default-resources-v1')
+    const capturedResources = gitSnapshot && snapshot.portableRuntime?.kind === 'portable-captured-project-resources-v1';
+    ensure((projectResources || capturedResources || snapshot.portableRuntime?.kind === 'portable-default-resources-v1')
       && snapshot.portableRuntime.schemaVersion === 1 && snapshot.portableRuntime.supported === true, 'replay_portable_runtime_not_supported');
     ensure(['0.85.1', 'pi:0.85.1'].includes(snapshot.piVersion), 'replay_sdk_version_not_supported');
     ensure(snapshot.deliveryMode === r.deliveryMode && snapshot.agentPromptVersion === r.runConfig?.promptVersion && snapshot.toolBridgeEnabled === true, 'replay_runtime_config_mismatch');
@@ -115,12 +116,12 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false,
       catch (e) { throw unsupported(/^git_snapshot_[a-z_]+$/.test(e?.code || '') ? 'replay_' + e.code : 'replay_git_snapshot_unavailable'); }
       ensure(materialized.lineEndingEvidence === 'captured-eol', 'replay_git_snapshot_eol_unavailable');
       ensure(materialized.uncaptured.length === 0, 'replay_uncaptured_files');
-      ensure(!materialized.projectSkills.some(s => !s.internal), 'replay_external_project_skills_not_supported');
+      ensure(capturedResources || !materialized.projectSkills.some(s => !s.internal), 'replay_external_project_skills_not_supported');
       records = materialized.files;
     }
     const redacted = new Set(materialized?.redactedFiles.filter(f => !f.scope).map(f => f.path));
     const names = Object.keys(records); ensure(names.length <= 8192, 'replay_file_inventory_limit');
-    const files = names.sort().map(name => {
+    let files = names.sort().map(name => {
       const f = records[name], b = gitSnapshot ? f.content : blobs.get(f.hash);
       ensure(/^[A-Za-z0-9_.@/-]+$/.test(name) && name.split('/').every(p => p && p !== '.' && p !== '..' && p !== '.git')
         && f.type === 'file' && !f.secretExcluded && b && b.length === f.size, 'replay_file_record_invalid');
@@ -138,9 +139,13 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false,
       checked('replay_session_invalid', () => sessionText.trim().split('\n').forEach(line => JSON.parse(line)));
       ensure(sessionText.split('\n').length - 1 === r.sessionLineCount, 'replay_session_invalid');
     }
-    const resourceConfig = projectResources ? { projectResources: checked('replay_project_resources_invalid', () => prepareProjectResources(snapshot.portableRuntime, files, config)) } : {};
+    const captured = capturedResources ? checked('replay_project_resources_invalid', () => prepareCapturedProjectResources(snapshot.portableRuntime, files, config, cp, materialized)) : null;
+    if (captured) files = captured.files;
+    ensure(files.length <= 8192, 'replay_file_inventory_limit');
+    const resourceConfig = captured ? { projectResources: captured.manifest } : projectResources ? { projectResources: checked('replay_project_resources_invalid', () => prepareProjectResources(snapshot.portableRuntime, files, config)) } : {};
     const input = { kind: 'prepared-caff-turn-v1', capturePlatform: cp.environment?.platform, prompt, files, deletions: [...cp.deletions], sessionText, systemPrompt: null, settings: null, callback, recordedModelConfig, ...resourceConfig,
-      bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements } };
+      bindings: { sourceRoot: cp.targetDir, controlledReplacements: r.controlledReplacements,
+        ...(captured?.bindings.length ? { projectSkills: captured.bindings } : {}) } };
     const mapped = checked('replay_controlled_bindings_invalid', () => validateDirectBindings(input.prompt, input.bindings, sessionText));
     if (resume) {
       const validation = validateSessionV2(mapped.sessionText, { authorizedRoot: '/work/restored', historyContext: true });

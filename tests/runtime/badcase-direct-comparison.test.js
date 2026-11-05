@@ -81,6 +81,32 @@ async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, di
   return { receipt, input, startConfig, callbackLifetimeMs, invocationPrompt, modeRestorations,
     workingSessionText: fs.existsSync(path.join(root, 'session.jsonl')) ? fs.readFileSync(path.join(root, 'session.jsonl'), 'utf8') : null, settings: fs.existsSync(path.join(root, 'agent/settings.json')) ? JSON.parse(fs.readFileSync(path.join(root, 'agent/settings.json'))) : null };
 }
+test('actual worker passes only captured SDK origins and rejects missing/extra/renamed discoveries for both transports', async t => {
+  const { prepareCapturedProjectResources, projectResourcesSummary } = require('../../build/server/domain/runtime/badcase-capture/project-resources');
+  const sdkSkills = [], promptSkills = [], projectSkills = [];
+  for (const name of ['sdk', 'prompt', 'both']) {
+    const originalPath = '/project/.agents/skills/' + name, skill = { name, filePath: originalPath + '/SKILL.md' };
+    if (name !== 'prompt') sdkSkills.push(skill); if (name !== 'sdk') promptSkills.push(skill);
+    const content = Buffer.from(name);
+    projectSkills.push({ originalPath, rootKind: 'directory', internal: false, relativePath: 'posix/project/.agents/skills/' + name,
+      files: { 'SKILL.md': { content, hash: crypto.createHash('sha256').update(content).digest('hex'), mode: 0o100644 } } });
+  }
+  const prepared = prepareCapturedProjectResources({ schemaVersion: 1, kind: 'portable-captured-project-resources-v1', supported: true, filePaths: [], skillPaths: [] },
+    [], { additionalSkillPaths: [] }, { targetDir: '/room', gitSnapshot: { skillInventoryStatus: 'loaded', sdkLoadedSkills: sdkSkills, promptLoadedSkills: promptSkills } }, { projectSkills });
+  const manifest = prepared.manifest, files = prepared.files.map(f => f.path), fileBytes = Object.fromEntries(prepared.files.map(f => [f.path, Buffer.from(f.base64, 'base64').toString()]));
+  const nativeSkills = manifest.skills.filter(s => s.origins.includes('sdk')).map(s => ({ name: s.sdkName, filePath: '/work/restored/' + s.path }));
+  for (const directoryWorkspace of [false, true]) {
+    const options = { files, fileBytes, projectResources: manifest, directoryWorkspace, resourceLoaderPatch: { getSkills: () => ({ skills: nativeSkills }) } };
+    const r = await workerReceipt(t, options);
+    assert.deepEqual(r.startConfig.additionalSkillPaths, manifest.skillPaths.map(p => '/work/restored/' + p));
+    assert.deepEqual(JSON.parse(JSON.stringify(r.receipt.projectResources)), { ...projectResourcesSummary(manifest), verified: true, loadedContextFiles: 0, loadedSkills: 2 });
+    for (const skills of [nativeSkills.slice(1), [...nativeSkills, { name: 'prompt', filePath: '/work/restored/' + manifest.skills.find(s => s.name === 'prompt').path }],
+      nativeSkills.map(s => ({ ...s, name: s.name + '-changed' }))]) {
+      await assert.rejects(workerReceipt(t, { ...options, resourceLoaderPatch: { getSkills: () => ({ skills }) } }), /replay_project_resources_invalid/);
+    }
+  }
+});
+
 test('actual worker restores captured modes after transport for inline and directory workspaces', async t => {
   for (const directoryWorkspace of [false, true]) {
     const result = await workerReceipt(t, { files: ['plain.js', 'executable.sh'], fileModes: { 'plain.js': 0o100644, 'executable.sh': 0o100755 }, directoryWorkspace });
