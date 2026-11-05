@@ -4,7 +4,7 @@
 
 轨迹包是 Wiki 拥有的证据，不是聊天 Inspector 的展示投影，也不是现场可回放、已复现或可判分的证明。现有 checkpoint 封存记录仍保留自己的完整性/可回放限制。
 
-本契约覆盖标记入口、轨迹组装和不可覆盖存储。历史回填操作入口、Badcase 页面和文件导出、脱水确认、run 级回放及新分组另行接入；不能把这里的 API 和合成测试当成那些功能已交付。
+本契约覆盖标记入口、轨迹组装、不可覆盖存储和显式授权的只读历史回填操作入口。Badcase 页面和文件导出、脱水确认、run 级回放及新分组另行接入；不能把这里的 API 和合成测试当成那些功能已交付。
 
 ## 数据流与签名
 
@@ -38,8 +38,29 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 - 同来源先到者冻结，重试验证并返回原包，既不读取续写 session 也不改 hash。包已发布但快照附加失败时，`recoverCaseTrace` 只附加已有包。首次标记没留下包时，重试不能把后来内容标成原标记时采集，必须明确报告未归档；历史补全应走单独授权的回填路径。
 - Wiki 自有目录不属于 checkpoint TTL/GC；删源房间不影响已有包。删除/清理 Wiki 存储不在此接口内。
 
+## 只读历史回填
+
+操作入口：`node scripts/badcase-capture/backfill-wiki-traces.cjs --config <绝对路径> --confirmed`。这不是 HTTP 上传入口，也不是生产导入/部署授权。必须先编译当前代码，并准备 Wiki 数据的独立副本。
+
+配置字段（不允许额外字段）：
+
+- `globalRoot`：将被修改的 Wiki **副本**；`sourceWorktree`：当前房间工作树。
+- `sourceAgentDir`、`sourceDatabase`：显式批准的源 agent 目录和 SQLite 文件，不扫描其他实例。
+- `scratchDir`：空的、独立的临时目录。原始日志/选定行的复制件可能含敏感内容，不得提交或公开；仅报告、hash 和脱敏包可用作公开证据。
+- `selections`：1–20 个唯一的 `{ caseId, mode: 'live' }` 或 `{ caseId, mode: 'sealed', captureRoot }`。`captureRoot` 必须是已复制的封存库，不跟随 manifest 内的原 worktree 路径。
+
+所有写入根必须彼此独立，且不得与源 agent、数据库所在目录、工作树或封存库嵌套。调用方负责确认 Wiki 是副本；工具不是文件系统沙箱。CLI 使用显式源的既有只读 known-key inventory（含 JEV 指定行），仅内存保存；不复制凭据、不刷新/回写、不调用模型。
+
+`live` 仅接受已存在的 3100 GPT text-only 用例。SQLite 使用 `readonly: true, fileMustExist: true`，不构造 ChatStore、不迁移、不执行 PRAGMA 或写 SQL。仅按选择的 message ID 和已关联的 task ID 查询 message/context/usage/task 行；task 的 room/agent/turn 关联必须一致。每一行先复制到临时 `.row` 文件再解析；session 只接受该源 `named-sessions` 中的普通 `.jsonl`，先复制再解析。源文件复制前后和副本 SHA-256 必须一致，处理完全部复制件、发布任何包之前再次核对源 hash；变动则整批停止，不发布包。数据库本身不复制、不全文件读取/hash（活跃 WAL 数据库的文件 hash 不能证明只读）；报告列出只读打开参数和逐条参数化 SELECT。源日志最大 128 MiB，数据库不受这个复制上限限制。
+
+旧消息缺精确轮次终点时，可按已有 usage 推导并标记 `turn_end_inferred_from_usage`。缺边界时仅允许用 **唯一逐字匹配的公开回复** 及 JSONL 父链恢复所在用户轮次；分支或重复回复存在歧义则不推测，成功恢复也标记 `turn_bounds_recovered_from_unique_reply`。这两种均属历史补全，不冒充标记时采集。旧 Inspector 快照缺原文、缺系统提示词/模型耗时等继续逐项记录，不能因找到了输出就称完整。
+
+`sealed` 只读取选定 checkpoint 清单及其明确引用且 hash 验证通过的 prompt/session/callback blobs。核对 checkpoint、callback 与用例的关联。封存的 replay 输入是**轮前前缀**，不是当轮模型输出；保存在 `context.retained`（`sealed_pre_turn_inputs`），与真正的 `context.trigger/priorSessionEntries/steps` 分开。当轮未录制则标 `sealed_marked_turn_not_recorded`，不访问它们的线上会话补造。现场只保存文件清单。旧清单未记 HEAD/branch 时保留 null 和原因。
+
+报告逐条保存 `complete|partial|unavailable|already_frozen`、包 hash、步数、缺失原因，另附源文件 hash 对照和查询审计。`partial` 是有当轮步骤但仍缺材料，`unavailable` 是没有可确认的当轮步骤（仍可保留已有上下文/现场）。成功和失败都不改原组别、回放登记或旧快照；已冻结用例重试不再打开来源。实际数据和操作报告留在忽略的临时证据目录，不进入 Git。
+
 ## 失败与验证
 
 标记已成功而轨迹写入失败时返回 `trace.error: wiki_trace_unavailable`，不泄露路径/原始异常，不掩盖标记和封存状态。GET 遇到损坏返回 `wiki_trace_invalid`（409），未知 case 沿用 `wiki_unknown_case`；无包返回 null。
 
-定向测试：`badcase-trace.test.js`、`badcase-trace-mark.test.js`、`badcase-wiki-controller.test.js`。覆盖先红后绿、完整长结果、前缀/旁支/续写边界、已知值替换、不可覆盖、原子发布失败恢复、首次失败后拒绝伪造冻结、SQLite 真实消息、删源房间后读取及 HTTP 只读门禁。相关标记、封存、context snapshot、executor 和 Wiki store 测试作为相邻回归。测试执行必须使用独立临时 Wiki/agent/SQLite 路径并删除继承的 `CAFF_BADCASE_CAPTURE_DIR`。
+定向测试：`badcase-trace.test.js`、`badcase-trace-mark.test.js`、`badcase-wiki-controller.test.js`。覆盖先红后绿、完整长结果、前缀/旁支/续写边界、已知值替换、不可覆盖、原子发布失败恢复、首次失败后拒绝伪造冻结、SQLite 真实消息、删源房间后读取及 HTTP 只读门禁。`badcase-trace-backfill.test.js` 另覆盖只读选择/查询与复制件、来源变动两次检查、实际 task schema 与关联、旧轮次唯一回复恢复与歧义拒绝、封存轮前材料不冒充当轮输出、大数据库不全量读取、删除来源后的幂等及旧分组保留。相关标记、封存、context snapshot、executor 和 Wiki store 测试作为相邻回归。测试执行必须使用独立临时 Wiki/agent/SQLite 路径并删除继承的 `CAFF_BADCASE_CAPTURE_DIR`。

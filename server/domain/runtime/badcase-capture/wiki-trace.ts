@@ -155,7 +155,8 @@ export function buildWikiTraceBundle(input: any) {
     context: { snapshotId: input.snapshot?.snapshotId ?? null, sections,
       systemPrompt: sections.find((s: any) => s.sectionKey === 'harness_prompt')?.content ?? null,
       trigger: parsed?.trigger ?? null, priorSessionEntries: parsed?.prior || [],
-      skillSections: sections.filter((s: any) => /skills/.test(s.sectionKey)), loadedSkillPaths: [...skillPaths] },
+      skillSections: sections.filter((s: any) => /skills/.test(s.sectionKey)), loadedSkillPaths: [...skillPaths],
+      ...(input.retained == null ? {} : { retained: input.retained }) },
     steps, metrics: { modelUsage: input.modelUsage ?? null, timeline: input.timeline ?? null }, scene,
     redaction: { policy: 'known_values_only', count: 0 } };
   const safe = redactTraceKnownValues(raw, input.knownKeyValues || []);
