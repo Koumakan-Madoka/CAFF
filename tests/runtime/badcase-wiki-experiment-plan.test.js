@@ -6,8 +6,8 @@ function fixture() {
   const { createWikiRubric } = require(base + 'wiki-rubric');
   const catalog = ['repair', 'control', 'held'].map(id => ({ id, sceneHash: hash('scene-' + id), task: 'Task ' + id, actual: 'Unclear', expected: 'Clear result',
     hardAssertions: { kind: 'synthetic-objective-checks', files: ['a.txt'] }, rubric: { ...createWikiRubric({ caseId: id, version: 1,
-      model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: 'Clear result', questions: [
-        { id: 'q1', question: 'Is the result clear?', evidence: 'reply' }, { id: 'q2', question: 'Is the next step clear?', evidence: 'reply' },
+      model: 'deepseek/deepseek-v4-flash', scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' }, actual: 'Unclear', expected: 'Clear result', questions: [
+        { id: 'q1', question: 'The result is clear.', evidence: 'reply' }, { id: 'q2', question: 'The next step is clear.', evidence: 'reply' },
       ] }), status: 'frozen', confirmedAt: '2026-11-04T00:00:00.000Z', confirmationRecord: 'Synthetic user confirmation' } }));
   const definition = { kind: 'wiki-experiment-v1', variants: [{ id: 'original', promptHash: hash('original') }, { id: 'candidate', promptHash: hash('candidate') }],
     runner: { model: 'openai-codex/gpt-6.1-sol', settings: { thinking: 'xhigh', fast: false } }, repeats: 10, executionPolicy: 'alternating-valid-v1',
@@ -24,7 +24,7 @@ const results = repaired => [{ caseId: 'repair', status: 'completed', runs: runs
 test('independent plan binds version inputs, runner, objective checks, rubric and judge without mutating case registration', () => {
   const h = fixture(), before = structuredClone(h.catalog), plan = h.plan();
   assert.match(plan.planHash, /^[a-f0-9]{64}$/); assert.equal(plan.cases.length, 3); assert.equal(plan.cases[0].judge.rubricHash, h.catalog[0].rubric.hash);
-  assert.deepEqual(h.catalog, before); assert.equal(JSON.stringify(plan).includes('Is the result clear?'), false);
+  assert.deepEqual(h.catalog, before); assert.equal(JSON.stringify(plan).includes('The result is clear.'), false);
   h.definition.runner.settings.thinking = 'low'; assert.equal(plan.runner.settings.thinking, 'xhigh');
 });
 test('plan rejects draft rubrics, mismatched source/case identity, duplicates, invalid partitions and policy drift', () => {

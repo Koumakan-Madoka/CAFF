@@ -79,7 +79,7 @@ test('v2 alternating kernel never substitutes judge-error replies and still exec
     };
     const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
     const { bindWikiJudge } = require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2');
-    const rubric = { ...createWikiRubric({ caseId: 'synthetic', version: 1, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: 'Clear',
+    const rubric = { ...createWikiRubric({ caseId: 'synthetic', version: 1, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: 'Clear', scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' },
       questions: [{ id: 'a', question: 'The result is clear.', evidence: 'reply' }, { id: 'b', question: 'The impact is clear.', evidence: 'reply' }] }),
       status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Synthetic approval' };
     const configuration = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: {}, promptHash: sha('synthetic-not-a-judge-prompt') };

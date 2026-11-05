@@ -6,9 +6,10 @@ const digest = s => crypto.createHash('sha256').update(s).digest('hex');
 const api = () => require(base + 'wiki-scoring-v2');
 function setup(evidence = 'reply', backend = 'deepseek') {
   const { createWikiRubric } = require(base + 'wiki-rubric');
-  const rubric = { ...createWikiRubric({ caseId: 'case-1', version: 1, model: 'deepseek/deepseek-v4-flash',
+  const scoringModel = { backend, model: backend === 'deepseek' ? 'deepseek/deepseek-v4-flash' : 'jev-latest' };
+  const rubric = { ...createWikiRubric({ caseId: 'case-1', version: 1, model: 'deepseek/deepseek-v4-flash', scoringModel,
     actual: 'Unclear', expected: 'Clear result', questions: [
-      { id: 'q1', question: 'Is the result clear?', evidence }, { id: 'q2', question: 'Is the next step clear?', evidence: 'reply' },
+      { id: 'q1', question: 'The result is clear.', evidence }, { id: 'q2', question: 'The next step is clear.', evidence: 'reply' },
     ] }), status: 'frozen', confirmedAt: '2026-11-04T00:00:00.000Z', confirmationRecord: 'Synthetic user confirmation' };
   const configuration = { backend, model: backend === 'deepseek' ? 'deepseek/deepseek-v4-flash' : 'jev-latest', settings: { temperature: 0 }, promptHash: digest('synthetic-placeholder-not-a-judge-prompt') };
   const binding = api().bindWikiJudge(configuration, rubric);
@@ -56,7 +57,7 @@ test('AC1: model, settings, prompt and rubric hash drift each refuse scoring bef
 test('a new valid rubric version still requires a new plan binding, rather than just a self-consistent hash', async () => {
   const h = setup(), { createWikiRubric } = require(base + 'wiki-rubric');
   const next = { ...createWikiRubric({ caseId: h.rubric.caseId, version: 2, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear',
-    expected: 'Clear result', questions: h.rubric.questions }), status: 'frozen', confirmedAt: h.rubric.confirmedAt, confirmationRecord: 'User confirmed v2' };
+    expected: 'Clear result', questions: h.rubric.questions, scoringModel: h.rubric.scoringModel }), status: 'frozen', confirmedAt: h.rubric.confirmedAt, confirmationRecord: 'User confirmed v2' };
   await assert.rejects(h.score({ rubric: next }), /wiki_judge_binding_changed/); assert.equal(h.calls(), 0);
 });
 test('hard completion/public reply checks and explicit unavailable evidence short-circuit without judge calls', async () => {

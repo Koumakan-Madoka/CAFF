@@ -4,8 +4,8 @@ const api = () => require('../../scripts/badcase-capture/wiki-receipt-scoring.cj
 const hash = s => crypto.createHash('sha256').update(s).digest('hex');
 function fixture(evidence = 'reply') {
   const { createWikiRubric } = require(base + 'wiki-rubric'), { bindWikiJudge } = require(base + 'wiki-scoring-v2');
-  const rubric = { ...createWikiRubric({ caseId: 'case', version: 1, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: 'Clear result',
-    questions: [{ id: 'q1', question: 'Is the result clear?', evidence }, { id: 'q2', question: 'Is the next step clear?', evidence: 'reply' }] }),
+  const rubric = { ...createWikiRubric({ caseId: 'case', version: 1, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: 'Clear result', scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' },
+    questions: [{ id: 'q1', question: 'The result is clear.', evidence }, { id: 'q2', question: 'The next step is clear.', evidence: 'reply' }] }),
     status: 'frozen', confirmedAt: '2026-11-04T00:00:00.000Z', confirmationRecord: 'Synthetic user approval' };
   const configuration = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: {}, promptHash: hash('synthetic-not-a-judge-prompt') };
   const binding = bindWikiJudge(configuration, rubric), seen = [];

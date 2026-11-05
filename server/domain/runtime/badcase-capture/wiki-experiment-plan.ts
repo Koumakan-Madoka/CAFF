@@ -5,20 +5,20 @@ import { containsSecretSentinel } from './secrets';
 import { bindWikiJudge, isWikiJudgeTechnicalError, type WikiJudgeBinding, type WikiJudgeConfiguration, type WikiScoreStatus } from './wiki-scoring-v2';
 import { validateWikiRubric, wikiExactKeys, wikiRubricFail as fail, wikiRubricSourceHash, wikiRubricText, wikiValueHash, type WikiRubric } from './wiki-rubric';
 const POLICY = Object.freeze({ kind: 'wikiskill-gate-v1', alpha: .05, noHarmFraction: .05, minimumAllowedLoss: 1, maxExtraAttemptsPerCase: 5 });
-interface WikiExperimentSelection { caseId: string; stage: 'gate' | 'test'; category: 'reproduction' | 'control' | 'probe'; targetReproduction: boolean }
+interface WikiExperimentSelection { caseId: string; stage: 'gate' | 'test'; category: 'reproduction' | 'control' | 'probe'; targetReproduction: boolean; judge?: WikiJudgeConfiguration }
 export interface WikiExperimentCase {
   id: string; sceneHash: string; task: string; actual: string; expected: string; hardAssertions: unknown; rubric: WikiRubric;
 }
 export interface WikiExperimentDefinition {
-  kind: 'wiki-experiment-v1'; variants: { id: 'original' | 'candidate'; promptHash: string }[];
+  kind: 'wiki-experiment-v1' | 'wiki-experiment-v2'; variants: { id: 'original' | 'candidate'; promptHash: string }[];
   runner: { model: string; settings: Record<string, string | number | boolean | null> };
   repeats: 10; executionPolicy: 'alternating-valid-v1'; decision: typeof POLICY;
-  judge: WikiJudgeConfiguration; cases: WikiExperimentSelection[];
+  judge?: WikiJudgeConfiguration; cases: WikiExperimentSelection[];
 }
 export interface WikiExperimentPlan {
-  kind: 'wiki-experiment-plan-v1'; variants: WikiExperimentDefinition['variants']; runner: WikiExperimentDefinition['runner'];
+  kind: 'wiki-experiment-plan-v1' | 'wiki-experiment-plan-v2'; variants: WikiExperimentDefinition['variants']; runner: WikiExperimentDefinition['runner'];
   repeats: 10; executionPolicy: 'alternating-valid-v1'; decision: typeof POLICY;
-  cases: (WikiExperimentSelection & { sceneHash: string; inputHash: string; hardAssertionsHash: string; rubricHash: string; judge: WikiJudgeBinding })[];
+  cases: (Omit<WikiExperimentSelection, 'judge'> & { sceneHash: string; inputHash: string; hardAssertionsHash: string; rubricHash: string; judge: WikiJudgeBinding })[];
   planHash: string;
 }
 export interface WikiExperimentCaseResult {
@@ -38,8 +38,9 @@ function safeJson(value: unknown, cap: number) {
   const text = JSON.stringify(value); ensure(Buffer.byteLength(text) <= cap && !containsSecretSentinel(text));
 }
 export function createWikiExperimentPlan(definition: WikiExperimentDefinition, catalog: WikiExperimentCase[]): WikiExperimentPlan {
-  wikiExactKeys(definition, ['kind', 'variants', 'runner', 'repeats', 'executionPolicy', 'decision', 'judge', 'cases']);
-  ensure(definition.kind === 'wiki-experiment-v1' && definition.repeats === 10 && definition.executionPolicy === 'alternating-valid-v1'
+  const perCase = definition?.kind === 'wiki-experiment-v2';
+  wikiExactKeys(definition, ['kind', 'variants', 'runner', 'repeats', 'executionPolicy', 'decision', ...(!perCase ? ['judge'] : []), 'cases']);
+  ensure(['wiki-experiment-v1', 'wiki-experiment-v2'].includes(definition.kind) && definition.repeats === 10 && definition.executionPolicy === 'alternating-valid-v1'
     && wikiValueHash(definition.decision) === wikiValueHash(POLICY));
   ensure(Array.isArray(definition.variants) && definition.variants.length === 2);
   for (const [i, v] of definition.variants.entries()) {
@@ -55,7 +56,7 @@ export function createWikiExperimentPlan(definition: WikiExperimentDefinition, c
   ensure(Array.isArray(definition.cases) && definition.cases.length >= 3 && definition.cases.length <= 20
     && new Set(definition.cases.map(c => c?.caseId)).size === definition.cases.length);
   const cases = definition.cases.map(selection => {
-    wikiExactKeys(selection, ['caseId', 'stage', 'category', 'targetReproduction']); identifier(selection.caseId);
+    wikiExactKeys(selection, ['caseId', 'stage', 'category', 'targetReproduction', ...(perCase ? ['judge'] : [])]); identifier(selection.caseId);
     ensure(['gate', 'test'].includes(selection.stage) && ['reproduction', 'control', 'probe'].includes(selection.category)
       && typeof selection.targetReproduction === 'boolean' && (!selection.targetReproduction || selection.category === 'reproduction'));
     const source = catalog.find(c => c.id === selection.caseId); ensure(source);
@@ -64,19 +65,21 @@ export function createWikiExperimentPlan(definition: WikiExperimentDefinition, c
     wikiRubricText(source.task, 32768); wikiRubricText(source.expected, 8192); safeJson(source.hardAssertions, 32768);
     const rubric = validateWikiRubric(source.rubric, true);
     ensure(rubric.caseId === source.id && rubric.sourceHash === wikiRubricSourceHash(source.actual, source.expected));
-    return { ...structuredClone(selection), sceneHash: source.sceneHash, inputHash: wikiValueHash({ task: source.task, expected: source.expected }),
-      hardAssertionsHash: wikiValueHash(source.hardAssertions), rubricHash: rubric.hash, judge: bindWikiJudge(definition.judge, rubric) };
+    if (perCase) ensure(rubric.kind === 'wiki-rubric-v2');
+    const { judge: selectedJudge, ...partition } = selection;
+    return { ...structuredClone(partition), sceneHash: source.sceneHash, inputHash: wikiValueHash({ task: source.task, expected: source.expected }),
+      hardAssertionsHash: wikiValueHash(source.hardAssertions), rubricHash: rubric.hash, judge: bindWikiJudge((perCase ? selectedJudge : definition.judge)!, rubric) };
   });
   ensure(cases.some(c => c.stage === 'gate' && c.targetReproduction) && cases.some(c => c.stage === 'gate' && c.category === 'control')
     && cases.some(c => c.stage === 'test' && c.targetReproduction));
-  const payload = { kind: 'wiki-experiment-plan-v1' as const, variants: structuredClone(definition.variants), runner: structuredClone(definition.runner),
+  const payload = { kind: (perCase ? 'wiki-experiment-plan-v2' : 'wiki-experiment-plan-v1') as WikiExperimentPlan['kind'], variants: structuredClone(definition.variants), runner: structuredClone(definition.runner),
     repeats: 10 as const, executionPolicy: 'alternating-valid-v1' as const, decision: { ...POLICY }, cases };
   return { ...payload, planHash: wikiValueHash(payload) };
 }
 function checkPlanHash(plan: WikiExperimentPlan) {
   wikiExactKeys(plan, ['kind', 'variants', 'runner', 'repeats', 'executionPolicy', 'decision', 'cases', 'planHash']);
   const { planHash, ...payload } = plan;
-  ensure(plan.kind === 'wiki-experiment-plan-v1' && plan.repeats === 10 && plan.executionPolicy === 'alternating-valid-v1'
+  ensure(['wiki-experiment-plan-v1', 'wiki-experiment-plan-v2'].includes(plan.kind) && plan.repeats === 10 && plan.executionPolicy === 'alternating-valid-v1'
     && wikiValueHash(plan.decision) === wikiValueHash(POLICY) && /^[a-f0-9]{64}$/.test(planHash) && wikiValueHash(payload) === planHash);
   ensure(Array.isArray(plan.variants) && plan.variants.length === 2);
   for (const [i, v] of plan.variants.entries()) {
@@ -101,8 +104,12 @@ function checkPlanHash(plan: WikiExperimentPlan) {
   }
   ensure(plan.cases.some(c => c.stage === 'gate' && c.targetReproduction) && plan.cases.some(c => c.stage === 'gate' && c.category === 'control')
     && plan.cases.some(c => c.stage === 'test' && c.targetReproduction));
-  const first = plan.cases[0].judge;
-  ensure(plan.cases.every(c => ['backend', 'model', 'modelHash', 'promptHash', 'passes'].every(k => (c.judge as any)[k] === (first as any)[k])));
+  // Historical v1 plans had one shared judge. V2 binds one judge per case,
+  // shared by that case's original/candidate runs, not across the experiment.
+  if (plan.kind === 'wiki-experiment-plan-v1') {
+    const first = plan.cases[0].judge;
+    ensure(plan.cases.every(c => ['backend', 'model', 'modelHash', 'promptHash', 'passes'].every(k => (c.judge as any)[k] === (first as any)[k])));
+  }
 }
 export function validateWikiExperimentPlan(plan: WikiExperimentPlan): WikiExperimentPlan { checkPlanHash(plan); return structuredClone(plan); }
 export function assertWikiExperimentPlan(plan: WikiExperimentPlan, definition: WikiExperimentDefinition, catalog: WikiExperimentCase[]): void {

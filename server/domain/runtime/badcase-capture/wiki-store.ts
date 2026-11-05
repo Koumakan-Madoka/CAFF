@@ -331,7 +331,7 @@ export function createWikiStore(options: any) {
     saveRubricDraft(input: any, expectedRevision: number) { return this.saveRubricDrafts([input], expectedRevision)[0]; },
     saveRubricDrafts(inputs: any[], expectedRevision: number) {
       if (!Array.isArray(inputs) || !inputs.length || inputs.length > 20) throw fail('wiki_rubric_invalid');
-      for (const input of inputs) shape(input, ['caseId', 'model', 'questions']);
+      for (const input of inputs) shape(input, ['caseId', 'model', 'questions', ...(Object.hasOwn(input || {}, 'scoringModel') ? ['scoringModel'] : [])]);
       if (new Set(inputs.map(input => input.caseId)).size !== inputs.length) throw fail('wiki_rubric_invalid');
       return change(state => {
         if (!Number.isSafeInteger(expectedRevision) || state.revision !== expectedRevision) throw fail('wiki_revision_conflict');

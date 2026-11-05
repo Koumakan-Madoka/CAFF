@@ -11,9 +11,11 @@ const {wikiObjectiveAssertionIds}=require('../../build/server/domain/runtime/bad
 const { wikiGoalCaseNumber } = require('../../build/server/domain/runtime/badcase-capture/wiki-suite');
 const fail = code=>Object.assign(Error(code),{code});
 async function runStagedBatch(config, plan, options) {
+  const judgeFor=item=>plan.summary.experiment?.kind==='wiki-experiment-plan-v2'
+    ? (Object.hasOwn(options.judges || {},item.sourceCaseId)?options.judges[item.sourceCaseId]:undefined) : options.judge;
   if(plan.summary.experiment){
     if(!config.experiment?.plan)throw fail('wiki_experiment_confirmation_required');
-    for(const c of plan.prepared.filter(c=>c.supported))assertWikiScoringJudge(c.comparisonConfig.scoring,options.judge);
+    for(const c of plan.prepared.filter(c=>c.supported))assertWikiScoringJudge(c.comparisonConfig.scoring,judgeFor(c));
   }
   const emit=options.onEvent || (()=>{}), executionId=crypto.randomUUID(), results=[];
   let key, runtimeHash=null, fatal=false;
@@ -39,7 +41,7 @@ async function runStagedBatch(config, plan, options) {
         const fresh=require('./batch-comparison.cjs').prepareBatch(config,options);
         if(fresh.summary.planHash!==plan.summary.planHash) throw fail('evaluation_batch_input_changed');
         const compare=native ? options.runProductionComparison || runComparison : runComparison;
-        const comparison=await compare(item.comparisonConfig,{...options,confirmed:true,...(native?{}:{readKey:()=>key}),onEvent:event=>{
+        const comparison=await compare(item.comparisonConfig,{...options,...(plan.summary.experiment?{judge:judgeFor(item)}:{}),confirmed:true,...(native?{}:{readKey:()=>key}),onEvent:event=>{
           if(event.event==='plan') {
             if(runtimeHash!==null && runtimeHash!==event.runtimeHash) throw fail('evaluation_batch_runtime_changed');
             runtimeHash=event.runtimeHash;
@@ -82,10 +84,9 @@ function formatStagedBatch(result) {
     `修好：原版 ${d.repair.original.passed}/${d.repair.original.total}，候选 ${d.repair.candidate.passed}/${d.repair.candidate.total}；单侧 Fisher p=${d.repair.pValue ?? 'N/A'} < 0.05；${d.repair.passed?'满足':'不满足'}`,
     `无误伤：原版 ${d.noHarm.original.passed}/${d.noHarm.original.total}，候选 ${d.noHarm.candidate.passed}/${d.noHarm.candidate.total}；少通过 ${d.noHarm.loss} 次，容许 ${d.noHarm.allowedLoss} 次；${d.noHarm.passed?'满足':'不满足'}`];
   if(result.experiment){
-    const judge=result.experiment.cases[0].judge;
-    lines.push('评分：硬断言＋AI 裁判；字面指标仅供参考','实验 '+result.experiment.planHash,
-      '裁判 '+judge.backend+' / '+judge.model+' / modelHash '+judge.modelHash+' / promptHash '+judge.promptHash);
-    for(const c of result.experiment.cases)lines.push('细则 '+c.caseId+' / '+c.rubricHash);
+    lines.push('评分：硬断言＋AI 裁判；字面指标仅供参考','实验 '+result.experiment.planHash);
+    for(const c of result.experiment.cases)lines.push('断言 '+c.caseId+' / '+c.rubricHash+'；裁判 '+c.judge.backend+' / '+c.judge.model
+      +' / modelHash '+c.judge.modelHash+' / promptHash '+c.judge.promptHash);
   }else lines.push('评分：字面规则');
   for(const stage of ['gate','test']) {
     lines.push(labels[stage]+'（单独统计）','用例\t题型\t状态\t原版通过/有效(错误/未执行)\t候选通过/有效(错误/未执行)');

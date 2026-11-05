@@ -3,8 +3,8 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 const MODEL = 'deepseek/deepseek-v4-flash';
 const questions = [
-  { id: 'q1', question: 'Does the reply state the result clearly?', evidence: 'reply' },
-  { id: 'q2', question: 'Does the reply explain the next step?', evidence: 'reply' },
+  { id: 'q1', question: 'The reply states the result clearly.', evidence: 'reply' },
+  { id: 'q2', question: 'The reply explains the next step.', evidence: 'reply' },
 ];
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-rubric-'));
@@ -14,7 +14,7 @@ function setup(t) {
   const c = store.addTextCases([{ source: { origin: 'http://127.0.0.1:3100', projectId: 'p', conversationId: 'c', messageId: 'm', agentId: 'role-family-gpt' },
     role: 'GPT', actual: 'Unclear result', expected: 'State the result and next step', message: 'Historical bad reply', traceExcerpt: '',
     traceState: 'missing', messageTruncated: false, traceTruncated: false }]).cases[0];
-  const draft = (q = questions, revision = store.read().revision) => store.saveRubricDraft({ caseId: c.id, model: MODEL, questions: q }, revision);
+  const draft = (q = questions, revision = store.read().revision) => store.saveRubricDraft({ caseId: c.id, model: MODEL, scoringModel: { backend: 'deepseek', model: MODEL }, questions: q }, revision);
   return { root, store, options, c, draft };
 }
 test('rubric draft is versioned, requires explicit human confirmation and preserves old snapshot bytes', t => {
@@ -31,7 +31,7 @@ test('rubric draft is versioned, requires explicit human confirmation and preser
 test('editing produces a new draft; old frozen content/hash and replay definitions never change', t => {
   const h = setup(t), v1 = h.draft();
   const first = h.store.confirmRubric({ rubricId: v1.id, hash: v1.hash, confirmationRecord: 'User confirmed v1' }, h.store.read().revision);
-  const before = h.store.read(), v2 = h.draft([{ ...questions[0], question: 'Does the opening state the result?' }, questions[1]]);
+  const before = h.store.read(), v2 = h.draft([{ ...questions[0], question: 'The opening states the result.' }, questions[1]]);
   assert.equal(v2.version, 2); assert.notEqual(v2.hash, first.hash);
   assert.deepEqual(h.store.getFrozenRubric(h.c.id, first.hash), first);
   assert.deepEqual(h.store.read().replayCases, before.replayCases); assert.deepEqual(h.store.read().cases, before.cases);

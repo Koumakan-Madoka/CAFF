@@ -26,13 +26,15 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
  const definition=experiment.definition,catalog=[],scope={globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree};
  const selections=suite.cases.filter(c=>!c.reportOnly).map(c=>({caseId:c.sourceCaseId,stage:c.stage,category:c.category,targetReproduction:c.targetReproduction}));
  if(!same(definition?.variants,[{id:'original',promptHash:candidate.baseHash},{id:'candidate',promptHash:candidate.candidateHash}])
-   || !same(definition?.runner,{model:config.modelProfile,settings:modelConfig}) || !same(definition?.cases,selections))throw fail('wiki_experiment_changed');
+   || !same(definition?.runner,{model:config.modelProfile,settings:modelConfig})
+   || !same(definition?.cases?.map(({judge,...selection})=>selection),selections))throw fail('wiki_experiment_changed');
  return {
   forCase(source,replay,item){
    if(item.topicExemption!==undefined || item.rulesRevision!==undefined)throw fail('evaluation_batch_cases_invalid');
    const rubric=resolveFrozenWikiRubric(state,source.id,item.rubricHash);
    const task=(options.prepareProductionTask || readProductionScoringTask)(replay,scope);
-   return {kind:'wiki-score-v2',rubric,binding:bindWikiJudge(definition.judge,rubric),task,expected:source.expected};
+   const judge=definition.kind==='wiki-experiment-v2'?definition.cases.find(c=>c.caseId===source.id)?.judge:definition.judge;
+   return {kind:'wiki-score-v2',rubric,binding:bindWikiJudge(judge,rubric),task,expected:source.expected};
   },
   recordCase(source,replay,comparison,scoring){
    if(!comparison.supported)throw fail('evaluation_batch_task_unavailable');

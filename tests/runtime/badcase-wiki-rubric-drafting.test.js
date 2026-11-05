@@ -3,8 +3,8 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 const api = () => require('../../scripts/badcase-capture/draft-wiki-rubrics.cjs');
 const questions = [
-  { id: 'q1', question: 'Does the reply state the result?', evidence: 'reply' },
-  { id: 'q2', question: 'Does the reply explain the next step?', evidence: 'reply' },
+  { id: 'q1', question: 'The reply states the result.', evidence: 'reply' },
+  { id: 'q2', question: 'The reply explains the next step.', evidence: 'reply' },
 ];
 const key = 'synthetic-drafting-key-no-real-access';
 function setup(t, count = 2) {
@@ -31,8 +31,15 @@ test('draft planning is annotation-only, accepts holdouts without induction, and
   const text = JSON.stringify(plan); assert.equal(text.includes('HISTORICAL_REPLY'), false); assert.equal(text.includes('HISTORICAL_TRACE'), false);
   const request = JSON.parse(plan.body); assert.equal(request.model, 'deepseek-v4-flash'); assert.equal(request.temperature, 0);
   assert.equal(request.max_tokens, 32768); assert.equal(request.stream, false); assert.deepEqual(request.response_format, { type: 'json_object' });
-  assert.deepEqual(JSON.parse(request.messages[1].content).cases.map(c => Object.keys(c).sort()), h.cases.map(() => ['actual', 'expected', 'id']));
+  assert.deepEqual(JSON.parse(request.messages[1].content).cases.map(c => Object.keys(c).sort()), h.cases.map(() => ['actual', 'expected', 'id', 'task']));
   assert.equal(h.counts().reads, 0);
+});
+test('draft input includes supplied original task or explicit null, never a historical answer or invented task', t => {
+  const h = setup(t), tasks = { [h.cases[0].id]: 'ACTUAL-TRIGGERING-USER-MESSAGE' };
+  const plan = api().prepareWikiRubricDraft(h.store, h.args.caseIds, h.args.expectedRevision, tasks), cases = JSON.parse(JSON.parse(plan.body).messages[1].content).cases;
+  assert.equal(cases[0].task, tasks[h.cases[0].id]); assert.equal(cases[1].task, null);
+  assert.notEqual(plan.inputHash, api().prepareWikiRubricDraft(h.store, h.args.caseIds, h.args.expectedRevision).inputHash);
+  assert.throws(() => api().prepareWikiRubricDraft(h.store, h.args.caseIds, h.args.expectedRevision, { missing: 'fake' }));
 });
 test('drafting contract preserves user conditions/exceptions and asks for execution evidence rather than trusting prose', () => {
   const request = JSON.parse(api().buildRubricDraftRequest({ cases: [{ id: 'conditional-case', actual: 'Added machinery',
@@ -40,7 +47,10 @@ test('drafting contract preserves user conditions/exceptions and asks for execut
   const instructions = request.messages[0].content;
   assert.match(instructions, /保留用户要求中的条件与例外/);
   assert.match(instructions, /不得拆成无条件禁令/);
+  assert.match(instructions, /未做该行为，或者确有必要且已事先说明/);
   assert.match(instructions, /执行行为.*trace.*files/);
+  assert.match(instructions, /不重复.*硬断言/);
+  assert.match(instructions, /每项期望要求/);
 });
 test('one authorized request saves all versions as drafts, seals model wording/proof, never confirms them', async t => {
   const h = setup(t), before = h.store.read(), out = await api().draftWikiRubrics(h.args, h.options);

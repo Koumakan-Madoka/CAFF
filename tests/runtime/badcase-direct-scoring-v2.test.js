@@ -6,8 +6,8 @@ const { bindWikiJudge } = require('../../build/server/domain/runtime/badcase-cap
 const hash = s => crypto.createHash('sha256').update(s).digest('hex');
 function fixture() {
   const key = 'synthetic-v2-executor-key-not-real', model = 'opencode-go/deepseek-v4.1-flash';
-  const rubric = { ...createWikiRubric({ caseId: 'source-case', version: 1, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: 'Clear result',
-    questions: [{ id: 'q1', question: 'Is the result clear?', evidence: 'reply' }, { id: 'q2', question: 'Is the next step clear?', evidence: 'reply' }] }),
+  const rubric = { ...createWikiRubric({ caseId: 'source-case', version: 1, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: 'Clear result', scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' },
+    questions: [{ id: 'q1', question: 'The result is clear.', evidence: 'reply' }, { id: 'q2', question: 'The next step is clear.', evidence: 'reply' }] }),
     status: 'frozen', confirmedAt: '2026-11-04T00:00:00.000Z', confirmationRecord: 'Synthetic approval' };
   const configuration = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: {}, promptHash: hash('synthetic-not-a-judge-prompt') };
   const scoring = { kind: 'wiki-score-v2', rubric, binding: bindWikiJudge(configuration, rubric), task: 'Explain what is ready and what is next.', expected: 'Clear result' };

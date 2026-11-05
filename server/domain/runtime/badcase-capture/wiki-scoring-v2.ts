@@ -44,6 +44,7 @@ function safeText(value: unknown, cap: number, empty = false): asserts value is 
 export function bindWikiJudge(configuration: WikiJudgeConfiguration, rubric: WikiRubric): WikiJudgeBinding {
   validateWikiRubric(rubric, true);
   wikiExactKeys(configuration, ['backend', 'model', 'settings', 'promptHash']);
+  if (rubric.kind === 'wiki-rubric-v2' && (rubric.scoringModel?.backend !== configuration.backend || rubric.scoringModel?.model !== configuration.model)) throw fail('wiki_judge_binding_changed');
   if (!['deepseek', 'jev'].includes(configuration.backend) || !/^[a-f0-9]{64}$/.test(configuration.promptHash)
     || !configuration.settings || typeof configuration.settings !== 'object' || Array.isArray(configuration.settings)
     || Object.keys(configuration.settings).length > 32) throw fail('wiki_judge_config_invalid');
@@ -63,7 +64,8 @@ export function validateWikiJudgeBinding(binding: WikiJudgeBinding, rubric: Wiki
   wikiExactKeys(binding, ['kind', 'backend', 'model', 'modelHash', 'promptHash', 'rubricHash', 'passes']);
   if (binding.kind !== 'wiki-judge-binding-v1' || !['deepseek', 'jev'].includes(binding.backend) || binding.passes !== 3
     || !/^[a-f0-9]{64}$/.test(binding.modelHash) || !/^[a-f0-9]{64}$/.test(binding.promptHash)
-    || binding.rubricHash !== rubric.hash) throw fail('wiki_judge_binding_changed');
+    || binding.rubricHash !== rubric.hash || rubric.kind === 'wiki-rubric-v2'
+      && (rubric.scoringModel?.backend !== binding.backend || rubric.scoringModel?.model !== binding.model)) throw fail('wiki_judge_binding_changed');
   wikiRubricText(binding.model, 256);
   if (binding.backend === 'deepseek' && binding.model !== 'deepseek/deepseek-v4-flash') throw fail('wiki_judge_binding_changed');
   return structuredClone(binding);
