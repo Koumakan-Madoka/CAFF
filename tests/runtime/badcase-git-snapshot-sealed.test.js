@@ -127,7 +127,12 @@ test('v2 external skills are mirrored from captured bytes, bind original paths a
   assert.equal(result.input.bindings.projectSkills.length, 3);
   const values = Object.fromEntries(['CAFF_CHAT_API_URL', 'CAFF_CHAT_INVOCATION_ID', 'CAFF_CHAT_CALLBACK_TOKEN', 'CAFF_CHAT_CONVERSATION_ID', 'CAFF_CHAT_TURN_ID', 'CAFF_CHAT_TOOLS_PATH', 'CAFF_CHAT_TOOLS_RELATIVE_PATH', 'PI_AGENT_SANDBOX_DIR', 'PI_AGENT_PRIVATE_DIR'].map(n => [n, 'isolated']));
   const bound = require('../../scripts/badcase-capture/direct-model.cjs').bindDirectInputs(result.input.prompt, null, result.input.bindings, values);
-  assert.ok(bound.prompt.includes('/work/restored/' + prompt.path)); assert.equal(bound.prompt.includes(f.external), false);
+  const mirroredPaths = f.promptSkills.map(skill => '/work/restored/' + manifest.skills.find(s => s.name === skill.name).path);
+  assert.equal(bound.prompt, 'Read ' + mirroredPaths.join(' and '));
+  // POSIX mirrors contain the original absolute path under posix/. Remove only
+  // complete expected replay paths before checking for leaked source paths.
+  const unmappedPrompt = mirroredPaths.reduce((text, mirror) => text.replaceAll(mirror, ''), bound.prompt);
+  assert.equal(unmappedPrompt.includes(f.external), false);
   const plan = prepareComparison(planConfig(f)); assert.equal(plan.supported, true, JSON.stringify(plan));
   const configFile = path.join(f.root, 'external-plan.json'); fs.writeFileSync(configFile, JSON.stringify(planConfig(f)));
   const cliPlan = JSON.parse(execFileSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', configFile, '--plan'], { encoding: 'utf8' }));
