@@ -90,6 +90,38 @@ test('checkpoint records pending initialization, then CAS-archives only SDK-sele
   assert.ok(retained.reference.blobHashes.includes(cp.gitSnapshot.projectSkills[0].files['reference.txt'].hash));
 });
 
+test('SDK-native and CAFF prompt skill origins stay distinct without duplicating archived resources', async t => {
+  const h = fixture(t), root = path.join(h.temp, 'skills'); fs.mkdirSync(root);
+  const make = name => { const baseDir = path.join(root, name); fs.mkdirSync(baseDir); const filePath = path.join(baseDir, 'SKILL.md');
+    fs.writeFileSync(filePath, name); return { name, filePath, baseDir }; };
+  const sdk = make('sdk-native'), prompt = make('prompt-explicit'), shared = make('both');
+  const sdkShared = { ...shared, name: 'sdk-frontmatter-name' }, promptShared = { ...shared, name: 'prompt-registry-id' };
+  const initial = await h.capture(), inputs = { projectId: 'p', checkpointId: initial.checkpointId, skills: [sdk, prompt, promptShared],
+    sdkSkills: [sdk, sdkShared], promptSkills: [prompt, promptShared] };
+  const result = h.service.captureLoadedProjectSkills(inputs); assert.equal(result.captured, true, result.reason);
+  const snapshot = result.checkpoint.gitSnapshot;
+  assert.deepEqual(snapshot.loadedSkills, [sdk, prompt, promptShared]); assert.deepEqual(snapshot.sdkLoadedSkills, [sdk, sdkShared]);
+  assert.deepEqual(snapshot.promptLoadedSkills, [prompt, promptShared]); assert.equal(snapshot.projectSkills.length, 3);
+  assert.equal(snapshot.projectSkills.filter(s => s.originalPath === shared.baseDir).length, 1, 'one byte archive even for a dual-origin skill');
+  const before = JSON.stringify(result.checkpoint);
+  inputs.sdkSkills.push(prompt); inputs.promptSkills.length = 0;
+  assert.equal(JSON.stringify(h.service.store.loadCheckpoint('p', initial.checkpointId)), before, 'origin evidence is detached from mutable inputs');
+});
+
+test('old enrichment callers do not fabricate origin evidence from their merged list', async t => {
+  const h = fixture(t), initial = await h.capture();
+  const result = h.service.captureLoadedProjectSkills({ projectId: 'p', checkpointId: initial.checkpointId, skills: [] });
+  assert.equal(result.captured, true); assert.equal(Object.hasOwn(result.checkpoint.gitSnapshot, 'sdkLoadedSkills'), false);
+  assert.equal(Object.hasOwn(result.checkpoint.gitSnapshot, 'promptLoadedSkills'), false);
+});
+
+test('an observed empty SDK/prompt inventory is recorded as empty, distinct from unknown origins', async t => {
+  const h = fixture(t), initial = await h.capture();
+  const result = h.service.captureLoadedProjectSkills({ projectId: 'p', checkpointId: initial.checkpointId, skills: [], sdkSkills: [], promptSkills: [] });
+  assert.equal(result.captured, true); assert.deepEqual(result.checkpoint.gitSnapshot.sdkLoadedSkills, []);
+  assert.deepEqual(result.checkpoint.gitSnapshot.promptLoadedSkills, []);
+});
+
 test('loaded skill anomalies become gaps; root Markdown skills archive only that file, never their entire parent', async t => {
   const h = fixture(t), selected = path.join(h.temp, 'skills', 'selected'); fs.mkdirSync(selected, { recursive: true });
   fs.writeFileSync(path.join(selected, 'SKILL.md'), 'selected'); fs.writeFileSync(path.join(selected, 'large'), Buffer.alloc(10 * 1024 * 1024 + 1));

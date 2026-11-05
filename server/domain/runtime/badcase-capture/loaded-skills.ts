@@ -1,6 +1,7 @@
 // The repository snapshot is already published before startRun. Enrich that
 // same staged checkpoint after SDK discovery but before its first prompt.
 // No second Git scan, no new checkpoint, no claim of atomic consistency.
+import path from 'node:path';
 import { collectLoadedProjectSkills, knownCaptureKeyValues } from './git-snapshot';
 import { checkpointBlobHashes } from './checkpoint-retention';
 import { withProjectWriteLock } from './project-write-lock';
@@ -26,7 +27,24 @@ export function captureLoadedProjectSkills(options: any, input: any): any {
       const keys = typeof options.getKnownKeyValues === 'function' ? options.getKnownKeyValues() : knownCaptureKeyValues(options.agentDir);
       const available = Array.isArray(input.skills);
       const collected = collectLoadedProjectSkills({ skills: available ? input.skills : [], knownKeyValues: keys, budget });
+      // Same resource bytes may serve both origins, but replay must not turn a
+      // prompt-only skill into a newly SDK-discovered skill. Never infer these
+      // source lists from an older caller's already-merged inventory.
+      const originInventory = (list: any): any[] | undefined => {
+        if (!Array.isArray(list)) return undefined;
+        const indexed = new Map<string, any>(collected.loadedSkills.map((s: any) => [s.filePath, s]));
+        const selected = new Map<string, any>();
+        for (const skill of list) {
+          if (typeof skill?.filePath !== 'string' || !path.isAbsolute(skill.filePath)) return undefined;
+          const filePath = path.resolve(skill.filePath), record = indexed.get(filePath);
+          if (!record) return undefined;
+          selected.set(filePath, { ...record, name: String(skill.name || '') });
+        }
+        return [...selected.values()];
+      };
+      const sdkLoadedSkills = originInventory(input.sdkSkills), promptLoadedSkills = originInventory(input.promptSkills);
       cp.gitSnapshot = { ...cp.gitSnapshot, loadedSkills: collected.loadedSkills, projectSkills: collected.projectSkills,
+        ...(sdkLoadedSkills === undefined ? {} : { sdkLoadedSkills }), ...(promptLoadedSkills === undefined ? {} : { promptLoadedSkills }),
         captureTimeRemainingMs: collected.captureTimeRemainingMs,
         skillInventoryStatus: available ? 'loaded' : 'unavailable' };
       cp.uncaptured.push(...collected.uncaptured);

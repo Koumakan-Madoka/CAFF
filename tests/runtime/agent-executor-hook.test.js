@@ -1282,8 +1282,9 @@ test('agent executor pins session and capture to the actual cwd and awaits the a
   assert.equal(captured.options.metadata.sessionProjectDir, projectDir);
   assert.deepEqual(order, ['repositoryCapture', 'initializeSdk', 'skillsSaved', 'prompt']);
   assert.deepEqual(checkpointInput.projectSkillPaths, []); assert.equal(checkpointInput.projectSkillsPending, true);
-  assert.deepEqual(skillInput, { projectId: 'project-skill-scoping', checkpointId: 'checkpoint-actual-cwd', skills: [...actualSkills,
-    { name: 'project-aux', filePath: path.join(projectSkillDir, 'SKILL.md'), baseDir: projectSkillDir }] });
+  const explicitSkill = { name: 'project-aux', filePath: path.join(projectSkillDir, 'SKILL.md'), baseDir: projectSkillDir };
+  assert.deepEqual(skillInput, { projectId: 'project-skill-scoping', checkpointId: 'checkpoint-actual-cwd', skills: [...actualSkills, explicitSkill],
+    sdkSkills: actualSkills, promptSkills: [explicitSkill] });
   assert.equal(checkpointInput.targetDir, projectDir);
   assert.equal(checkpointInput.targetDir, checkpointInput.harness.configSnapshot.sdkStartConfig.cwd);
   assert.equal(checkpointInput.roleSection, 'Your private persona instructions:\nRead files without modifying them.');

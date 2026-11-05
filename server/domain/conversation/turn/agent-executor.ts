@@ -2451,7 +2451,7 @@ export function createAgentExecutor(options: any = {}) {
             const loaded = Array.isArray(skills) ? [...new Map([...skills, ...promptSkills].map(skill => [skill.filePath, skill])).values()] : null;
             const result = await badcaseCapture.captureLoadedProjectSkills({
               projectId: String(conversation.projectScopeId || conversation.projectId || '').trim(),
-              checkpointId: badcaseCheckpointId, skills: loaded,
+              checkpointId: badcaseCheckpointId, skills: loaded, sdkSkills: skills, promptSkills,
             });
             if (!result?.captured) console.error('[badcase-capture] project skills not saved:', result?.reason || 'project_skills_unavailable');
           };
