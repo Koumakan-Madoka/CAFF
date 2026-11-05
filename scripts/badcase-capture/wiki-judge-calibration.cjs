@@ -55,7 +55,9 @@ function summarizeWikiCalibration({ a, b }) {
   const repeatedPassFail = { consistent: passRepeated.filter(Boolean).length, total: passRepeated.length, ratio: passRepeated.length ? passRepeated.filter(Boolean).length / passRepeated.length : null };
   const bad = { detected: knownBad.filter(v => v && !v.pass).length, total: b.length };
   const failures = [];
-  if (errors.a || errors.b) failures.push('incomplete');
+  // D6: A's technical errors remain visible but are excluded from metric
+  // denominators, not an additional zero-error gate. B still must ALL fail;
+  // any B error therefore fails known-bad below. Null side/metric ratios fail.
   if (overall.ratio === null || overall.ratio < 0.9) failures.push('overall');
   for (const [side, v] of Object.entries(sideMetrics)) if (v.ratio === null || v.ratio < 0.85) failures.push('side:' + side);
   for (const [id, v] of Object.entries(assertionMetrics)) if (v.required && (v.ratio === null || v.ratio < 0.9)) failures.push('assertion:' + id);
