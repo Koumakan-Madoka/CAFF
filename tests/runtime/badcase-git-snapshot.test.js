@@ -253,6 +253,82 @@ test('disable while Git snapshot is reading succeeds immediately and prevents ch
   assert.equal(h.service.store.listCheckpoints('p').length, 0); assert.equal(h.service.computeUsage('p').blobCount, 0);
 });
 
+test('one 15-second budget stops file scanning, publishes a partial checkpoint and releases the caller', async t => {
+  let now = 0;
+  const h = fixture(t, { captureNow: () => now }); h.enable();
+  for (const name of ['a-safe.txt', 'b-slow.txt', 'c-not-read.txt']) fs.writeFileSync(path.join(h.root, name), name);
+  const session = path.join(h.temp, 'do-not-read-session.jsonl'); fs.writeFileSync(session, 'not read');
+  const read = fs.readFileSync, reads = []; let sessionReads = 0;
+  fs.readFileSync = function(filename, ...args) {
+    if (String(filename) === session) sessionReads++;
+    if (path.dirname(String(filename)) === h.root) reads.push(path.basename(String(filename)));
+    const bytes = read.call(this, filename, ...args);
+    if (String(filename) === path.join(h.root, 'b-slow.txt')) now += 16000;
+    return bytes;
+  };
+  let result; try { result = await h.capture(h.root, { deliveryMode: 'resume', sessionPath: session }); } finally { fs.readFileSync = read; }
+  assert.equal(result.captured, true, result.reason);
+  assert.ok(result.checkpoint.uncaptured.some(g => g.reason === 'capture_time_limit'));
+  assert.ok(result.checkpoint.replayInput.incompleteReasons.includes('capture_time_limit'));
+  assert.equal(result.checkpoint.replayInput.complete, false);
+  assert.ok(!reads.includes('c-not-read.txt'), 'no more source reads once the shared budget is exhausted');
+  assert.equal(sessionReads, 0, 'do not start session IO after the capture budget expires');
+  assert.deepEqual(Object.keys(result.checkpoint.files), ['a-safe.txt'], 'keep the already-archived prefix');
+  assert.equal(h.service.store.readBlob('p', result.checkpoint.files['a-safe.txt'].hash).toString(), 'a-safe.txt');
+  assert.equal(h.service.latestCaptureMetrics('p').status, 'partial');
+  assert.equal(h.service.loadPolicy('p').status, 'enabled', 'timeout is not a suspension');
+});
+
+test('failed name-only diff fallback stops its per-file Git work at the overall budget, not at N command timeouts', async t => {
+  const h = fixture(t), { collectGitSnapshot, readSnapshotGit } = require('../../build/server/domain/runtime/badcase-capture/git-snapshot');
+  let now = 0; const calls = [];
+  const result = await collectGitSnapshot({ targetDir: h.root, knownKeyValues: ['nonmatching-fixture-value'], captureNow: () => now,
+    readGit: async (cwd, args, budget) => {
+      calls.push(args);
+      if (args.includes('--name-only')) throw Error('fixture name-only failure');
+      if (args[0] === 'show') now += 8000;
+      return readSnapshotGit(cwd, args, budget);
+    } });
+  assert.equal(result.ok, true);
+  assert.ok(calls.some(args => args.includes('--cached')), 'exercise the expensive fallback');
+  assert.equal(calls.filter(args => args[0] === 'show').length, 2, 'stop the fallback before all tracked paths');
+  assert.ok(result.uncaptured.some(g => g.reason === 'capture_time_limit'));
+  assert.ok(!calls.some(args => args.includes('--others')), 'do not start a new phase after timeout');
+});
+
+test('timeout before repository/HEAD is known records failure without inventing a restorable checkpoint', async t => {
+  const h = fixture(t, { captureTimeLimitMs: 0 }); h.enable();
+  const result = await h.capture();
+  assert.equal(result.captured, false); assert.equal(result.reason, 'capture_time_limit');
+  assert.equal(h.service.store.listCheckpoints('p').length, 0);
+  assert.equal(h.service.latestCaptureMetrics('p').reason, 'capture_time_limit');
+  assert.equal(h.service.loadPolicy('p').status, 'enabled');
+  const { collectGitSnapshot } = require('../../build/server/domain/runtime/badcase-capture/git-snapshot');
+  assert.deepEqual(await collectGitSnapshot({ targetDir: h.root, captureTimeLimitMs: 0 }), { ok: false, reason: 'capture_time_limit' });
+});
+
+test('an in-flight Git process gets only the remaining time and its timeout cannot become a fallback scan', async () => {
+  const childProcess = require('node:child_process'), { promisify } = require('node:util');
+  const filename = require.resolve('../../build/server/domain/runtime/badcase-capture/git-snapshot');
+  const cached = require.cache[filename], exec = childProcess.execFile;
+  const { createCaptureTimeBudget } = require('../../build/server/domain/runtime/badcase-capture/capture-time-budget');
+  let now = 0, calls = 0;
+  const budget = createCaptureTimeBudget({ captureNow: () => now }); now = 14000;
+  const fake = () => assert.fail('use promisified execution');
+  fake[promisify.custom] = async (_file, _args, options) => {
+    calls++; assert.equal(options.timeout, 1000, 'not another 15/25 seconds per child');
+    throw Object.assign(Error('fixture timeout'), { killed: true, signal: 'SIGTERM' });
+  };
+  try {
+    childProcess.execFile = fake; delete require.cache[filename];
+    const { readSnapshotGit } = require(filename);
+    await assert.rejects(readSnapshotGit('.', ['diff'], budget), { code: 'capture_time_limit' });
+    assert.equal(budget.remainingMs(), 0);
+    await assert.rejects(readSnapshotGit('.', ['ls-files', '--cached'], budget), { code: 'capture_time_limit' });
+    assert.equal(calls, 1, 'expired capture must not launch another Git command');
+  } finally { childProcess.execFile = exec; require.cache[filename] = cached; }
+});
+
 test('detached HEAD works; repositories with no readable HEAD fail without blocking callers', async t => {
   const h = fixture(t); h.enable(); h.git(h.root, 'checkout', '--detach', '-q');
   const result = await h.capture(); assert.equal(result.captured, true, result.reason); assert.equal(result.checkpoint.gitSnapshot.branch, '');

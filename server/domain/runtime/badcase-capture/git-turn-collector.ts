@@ -7,6 +7,7 @@ import { redactKnownKeyValues } from './secrets';
 import { prepareReplayInput } from './replay-input-preparation';
 import { publishPreparedCheckpoint } from './checkpoint-publication';
 import { recordCaptureResult } from './capture-result';
+import { createCaptureTimeBudget, isCaptureTimeLimit } from './capture-time-budget';
 
 export function createGitTurnCollector(options: any): any {
   const store = options.store;
@@ -21,6 +22,7 @@ export function createGitTurnCollector(options: any): any {
       // Git/file reads are read-only and best-effort, so they need no storage
       // lease. Holding one across Git awaits rejected parallel turns and even
       // blocked the user's off switch. Only synchronous CAS publication locks.
+      const budget = createCaptureTimeBudget(options);
       const collectAndPublish = async () => {
         const policy = store.loadPolicy(projectId);
         if (policy.status !== 'enabled') return failed('policy_not_enabled');
@@ -28,25 +30,35 @@ export function createGitTurnCollector(options: any): any {
         const root = project?.path || policy.authorizedDirs[0];
         if (!root) return failed('project_root_missing');
         const targetDir = path.resolve(String(input.targetDir || '.'));
-        const source = await inspectSnapshotRepository(root), target = await inspectSnapshotRepository(targetDir);
+        const source = await inspectSnapshotRepository(root, budget), target = await inspectSnapshotRepository(targetDir, budget);
         if (!target.ok) return failed(target.reason);
         if (!source.ok || !pathsEqual(source.commonDir, target.commonDir)) return failed('repository_not_covered');
         const knownKeyValues = typeof options.getKnownKeyValues === 'function'
           ? options.getKnownKeyValues() : knownCaptureKeyValues(options.agentDir);
-        const collected = await collectGitSnapshot({ targetDir, knownKeyValues, excludedPatterns: policy.excludedPatterns,
+        const collected = await collectGitSnapshot({ targetDir, knownKeyValues, budget, repository: target, excludedPatterns: policy.excludedPatterns,
           sdkStartConfig: input.harness?.configSnapshot?.sdkStartConfig, projectSkillPaths: input.projectSkillPaths });
         if (!collected.ok) return failed(collected.reason);
         let callbackInput: any;
         if (typeof options.readCallbackInput === 'function') {
-          try { callbackInput = options.readCallbackInput(input, policy); } catch { callbackInput = null; }
+          try { callbackInput = budget.remainingMs() > 0 ? options.readCallbackInput(input, policy) : null; } catch { callbackInput = null; }
         }
         const preparedInput = typeof options.readCallbackInput === 'function' ? { ...input, callbackInput } : input;
         const { replayInput, plans } = prepareReplayInput(preparedInput, input.deliveryMode === 'resume' ? 'resume' : 'fresh', targetDir, filename => {
-          try { return { ok: true, content: fs.readFileSync(filename) }; }
-          catch { return { ok: false, reason: 'session_unreadable' }; }
+          if (budget.remainingMs() === 0) return { ok: false, reason: 'capture_time_limit' };
+          try {
+            const content = fs.readFileSync(filename);
+            return budget.remainingMs() > 0 ? { ok: true, content } : { ok: false, reason: 'capture_time_limit' };
+          } catch { return { ok: false, reason: 'session_unreadable' }; }
         }, { knownKeyValues });
+        if (budget.remainingMs() === 0 && !collected.uncaptured.some((g: any) => g.reason === 'capture_time_limit')) {
+          collected.uncaptured.push({ path: '.', reason: 'capture_time_limit' });
+        }
+        collected.gitSnapshot.captureTimeRemainingMs = budget.remainingMs();
         if (collected.uncaptured.length) {
           replayInput.complete = false; replayInput.incompleteReasons.push('files_uncaptured');
+          if (collected.uncaptured.some((g: any) => g.reason === 'capture_time_limit') && !replayInput.incompleteReasons.includes('capture_time_limit')) {
+            replayInput.incompleteReasons.push('capture_time_limit');
+          }
         }
         if (input.projectSkillsPending === true) {
           collected.gitSnapshot.skillInventoryStatus = 'pending';
@@ -77,8 +89,8 @@ export function createGitTurnCollector(options: any): any {
       const result = { ...outcome, durationMs: Date.now() - started };
       recordCaptureResult(options, input, result);
       return result;
-    } catch {
-      const result = failed('git_snapshot_unavailable');
+    } catch (error) {
+      const result = failed(isCaptureTimeLimit(error) ? 'capture_time_limit' : 'git_snapshot_unavailable');
       recordCaptureResult(options, input, result);
       return result; // never expose content/keys or block the turn
     }

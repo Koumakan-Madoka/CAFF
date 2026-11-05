@@ -6,6 +6,7 @@ import { checkpointBlobHashes } from './checkpoint-retention';
 import { withProjectWriteLock } from './project-write-lock';
 import { redactKnownKeyValues } from './secrets';
 import { recordCaptureResult } from './capture-result';
+import { CAPTURE_TIME_LIMIT_MS, createCaptureTimeBudget } from './capture-time-budget';
 const jsonBytes = (value: any) => Buffer.byteLength(`${JSON.stringify(value, null, 2)}\n`);
 
 export function captureLoadedProjectSkills(options: any, input: any): any {
@@ -20,10 +21,13 @@ export function captureLoadedProjectSkills(options: any, input: any): any {
       if (cp?.schemaVersion !== 2 || cp.projectId !== projectId || cp.status !== 'staged') return fail('checkpoint_missing');
       if (cp.gitSnapshot.skillInventoryStatus !== 'pending') return { captured: true, checkpointId, checkpoint: cp, reason: '' };
       const started = Date.now(), oldBytes = jsonBytes(cp), oldStats = { ...cp.stats }, oldHashes = new Set(checkpointBlobHashes(cp));
+      const budget = createCaptureTimeBudget({ captureNow: options.captureNow,
+        captureTimeLimitMs: cp.gitSnapshot.captureTimeRemainingMs ?? Math.max(0, CAPTURE_TIME_LIMIT_MS - cp.stats.durationMs) });
       const keys = typeof options.getKnownKeyValues === 'function' ? options.getKnownKeyValues() : knownCaptureKeyValues(options.agentDir);
       const available = Array.isArray(input.skills);
-      const collected = collectLoadedProjectSkills({ skills: available ? input.skills : [], knownKeyValues: keys });
+      const collected = collectLoadedProjectSkills({ skills: available ? input.skills : [], knownKeyValues: keys, budget });
       cp.gitSnapshot = { ...cp.gitSnapshot, loadedSkills: collected.loadedSkills, projectSkills: collected.projectSkills,
+        captureTimeRemainingMs: collected.captureTimeRemainingMs,
         skillInventoryStatus: available ? 'loaded' : 'unavailable' };
       cp.uncaptured.push(...collected.uncaptured);
       if (!available) cp.uncaptured.push({ path: '.', scope: 'sdk', reason: 'project_skills_unavailable' });
@@ -31,6 +35,7 @@ export function captureLoadedProjectSkills(options: any, input: any): any {
       const reasons = cp.replayInput.incompleteReasons.filter((r: string) => r !== 'project_skills_pending');
       if (!available) reasons.push('project_skills_unavailable');
       if (collected.uncaptured.length && !reasons.includes('files_uncaptured')) reasons.push('files_uncaptured');
+      if (collected.uncaptured.some((g: any) => g.reason === 'capture_time_limit')) reasons.push('capture_time_limit');
       cp.replayInput.incompleteReasons = [...new Set(reasons)];
       cp.replayInput.complete = cp.replayInput.incompleteReasons.length === 0;
       const missing = new Map<string, Buffer>();

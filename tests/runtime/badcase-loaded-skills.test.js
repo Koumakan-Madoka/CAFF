@@ -34,7 +34,7 @@ test('SDK host waits for resource capture before model invocation, using the loa
 test('SDK host abort during the capture wait never starts a model invocation', async t => hostFixture(t, { abort: true }));
 test('SDK inventory read failure is explicit and does not block the turn', async t => hostFixture(t, { inventoryFails: true }));
 
-function fixture(t) {
+function fixture(t, options = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-loaded-skills-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const root = path.join(temp, 'repo'); fs.mkdirSync(root);
@@ -46,7 +46,7 @@ function fixture(t) {
   const { createBadcaseCaptureService } = require('../../build/server/domain/runtime/badcase-capture');
   const key = 'fixture-known-actual-value-56789';
   const service = createBadcaseCaptureService({ captureRoot: path.join(temp, 'capture'), agentDir: path.join(temp, 'agent'),
-    getKnownKeyValues: () => [key], getProject: () => ({ id: 'p', path: root }) });
+    getKnownKeyValues: () => [key], getProject: () => ({ id: 'p', path: root }), ...options });
   service.store.savePolicy({ projectId: 'p', status: 'enabled', authorizedDirs: [root] });
   const capture = () => service.captureTurnCheckpoint({ projectId: 'p', targetDir: root, turnId: 'turn', agentId: 'agent', conversationId: 'room',
     prompt: 'test', runConfig: {}, projectSkillPaths: [], projectSkillsPending: true,
@@ -126,6 +126,45 @@ test('skill resource budget skips only excess files, and malformed SDK paths are
     limits: { untrackedBytes: 8 } });
   assert.deepEqual(Object.keys(result.projectSkills[0].files), ['SKILL.md', 'a']);
   assert.deepEqual(result.uncaptured.map(g => g.reason).sort(), ['project_skill_path_invalid', 'skill_total_size_limit']);
+});
+
+test('SDK archiving spends only the repository budget remainder and returns a durable partial checkpoint on timeout', async t => {
+  let now = 0;
+  const h = fixture(t, { captureNow: () => now });
+  const selected = path.join(h.temp, 'skill'); fs.mkdirSync(selected);
+  fs.writeFileSync(path.join(selected, 'SKILL.md'), 'skill');
+  fs.writeFileSync(path.join(selected, 'a-slow.txt'), 'slow'); fs.writeFileSync(path.join(selected, 'b-not-read.txt'), 'never read');
+  fs.writeFileSync(path.join(h.root, 'slow.txt'), 'repository file');
+  const read = fs.readFileSync, reads = [];
+  fs.readFileSync = function(filename, ...args) {
+    const bytes = read.call(this, filename, ...args);
+    if (String(filename) === path.join(h.root, 'slow.txt')) now += 10000;
+    if (path.dirname(String(filename)) === selected) reads.push(path.basename(String(filename)));
+    if (String(filename) === path.join(selected, 'a-slow.txt')) now += 6000;
+    return bytes;
+  };
+  let initial, result;
+  try {
+    initial = await h.capture();
+    // SDK initialization is not capture work. The remaining allowance, rather
+    // than a fresh 15 seconds or startup elapsed time, belongs to skill IO.
+    now += 100000;
+    result = await h.service.captureLoadedProjectSkills({ projectId: 'p', checkpointId: initial.checkpointId,
+      skills: [{ name: 'selected', filePath: path.join(selected, 'SKILL.md') }] });
+  } finally { fs.readFileSync = read; }
+  assert.equal(result.captured, true, result.reason);
+  const cp = result.checkpoint;
+  assert.equal(initial.checkpoint.gitSnapshot.captureTimeRemainingMs, 5000);
+  assert.deepEqual(reads, ['SKILL.md', 'a-slow.txt'], 'the skill phase must not get a fresh 15-second budget');
+  assert.deepEqual(Object.keys(cp.gitSnapshot.projectSkills[0].files), ['SKILL.md'], 'keep the resource prefix on timeout');
+  assert.equal(cp.gitSnapshot.skillInventoryStatus, 'loaded', 'inventory was available, resource capture was partial');
+  assert.ok(cp.uncaptured.some(g => g.reason === 'capture_time_limit'));
+  assert.ok(cp.replayInput.incompleteReasons.includes('capture_time_limit'));
+  assert.ok(!cp.replayInput.incompleteReasons.includes('project_skills_pending'));
+  assert.equal(cp.replayInput.complete, false);
+  assert.equal(cp.gitSnapshot.captureTimeRemainingMs, 0);
+  assert.equal(h.service.latestCaptureMetrics('p').status, 'partial');
+  assert.equal(h.service.loadPolicy('p').status, 'enabled');
 });
 
 test('missing SDK inventory is explicit, and disabling while SDK initializes prevents all resource reads', async t => {

@@ -78,7 +78,8 @@ export function createBadcaseCaptureService(options: any = {}) {
   // Every NEW turn, on all platforms, uses the simple Git snapshot format.
   // Native v1 readers stay available only for legacy/offline compatibility.
   const turnCollector = createGitTurnCollector({ store, readCallbackInput,
-    getProject: options.getProject, agentDir: options.agentDir, getKnownKeyValues: options.getKnownKeyValues });
+    getProject: options.getProject, agentDir: options.agentDir, getKnownKeyValues: options.getKnownKeyValues,
+    captureNow: options.captureNow, captureTimeLimitMs: options.captureTimeLimitMs });
 
   return {
     captureRoot,
@@ -148,7 +149,8 @@ export function createBadcaseCaptureService(options: any = {}) {
     },
 
     captureLoadedProjectSkills(input: any) {
-      return captureLoadedProjectSkills({ store, agentDir: options.agentDir, getKnownKeyValues: options.getKnownKeyValues }, input);
+      return captureLoadedProjectSkills({ store, agentDir: options.agentDir, getKnownKeyValues: options.getKnownKeyValues,
+        captureNow: options.captureNow }, input);
     },
 
     restoreCheckpoint(input: any) {
