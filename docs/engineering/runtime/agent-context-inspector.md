@@ -23,6 +23,7 @@
 ### 3. Contracts
 
 - Snapshot capture happens after prompt sections are assembled and before `startRun(...)` is invoked.
+- Normal Agent writes additionally supply `archiveKnownKeyValues` for the internal [Wiki trace source](wikiskill-trace-bundles.md). The detail snapshot may contain known-value-only `archiveContext.sections`; Inspector materialization, summaries and Markdown never return that internal field. Existing Inspector pattern redaction remains separate. If the known-value inventory fails, original contents are not persisted and the archive records an explicit unavailable reason.
 - Queued message creation persists the message and snapshot in one SQLite transaction. Streaming/tool/completed/failed updates carrying the same immutable `snapshotId` must not rewrite the snapshot row.
 - Detail/export and list reads are table-first with legacy metadata fallback. The list is driven by a single bounded `chat_messages` cursor query, never `getConversation()` or unbounded `listMessages()`.
 - The exact prompt sent to the model must be produced from the same **delivered** sections object passed into `createAgentContextSnapshot`; do not rebuild prompt context a second time for snapshot capture. Fresh runs use the complete prompt sections. Resume runs replace the fresh candidate sections with one `session_delta` section (`source=session/resume-delta`) and derive the actual appended user prompt from that section; cursor-prefix history must not reappear in the current snapshot.

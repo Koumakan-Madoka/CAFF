@@ -61,6 +61,7 @@ const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { createBrowserCliSessionName, resolveBrowserCliPath } = require('./browser-cli');
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
 const { createLiveSessionToolStep, countSessionAssistantMessages } = require('../../runtime/message-tool-trace');
+const { readTraceKnownKeyValues, createTraceModelTimingRecorder } = require('../../runtime/badcase-capture/wiki-trace-source');
 const { summarizeModelUsageCalls, summarizeTokenUsage } = require('../../runtime/token-usage');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
@@ -1951,6 +1952,7 @@ export function createAgentExecutor(options: any = {}) {
       promptVersion: AGENT_PROMPT_VERSION,
       deliveryMode: resumeSession ? 'resume' : 'fresh',
       retainedSessionPrefix,
+      archiveKnownKeyValues: () => readTraceKnownKeyValues({ agentDir, chatStore: store }),
       sections: harnessSystemPrompt
         ? [
             // The harness (pi) system prompt is what the model receives as
@@ -2320,6 +2322,7 @@ export function createAgentExecutor(options: any = {}) {
       },
     };
     let handle: any = null;
+    const badcaseModelTimings = createTraceModelTimingRecorder();
     // Badcase 采集挂点：turn 执行前（startRun 之前），此刻 prompt、模型配置、
     // fresh/resume 模式均已确定，agent 尚未触碰文件系统。采集失败不阻塞用户 turn，
     // 但失败原因由采集服务诚实记录（不伪造成功检查点）。
@@ -2440,7 +2443,7 @@ export function createAgentExecutor(options: any = {}) {
           console.error('[badcase-capture] sdk_start_config_changed');
         }
         if (badcaseCheckpointId && typeof badcaseCapture?.captureLoadedProjectSkills === 'function') {
-          runOptions.beforePrompt = async ({ skills }: any) => {
+          runOptions.beforePrompt = async ({ skills, contextFiles }: any) => {
             // Explicit project skills already resolved into CAFF's prompt may
             // also come from .codex/skills, which is not SDK default discovery.
             // Keep those resources too; retired local user-scope copies are
@@ -2451,7 +2454,7 @@ export function createAgentExecutor(options: any = {}) {
             const loaded = Array.isArray(skills) ? [...new Map([...skills, ...promptSkills].map(skill => [skill.filePath, skill])).values()] : null;
             const result = await badcaseCapture.captureLoadedProjectSkills({
               projectId: String(conversation.projectScopeId || conversation.projectId || '').trim(),
-              checkpointId: badcaseCheckpointId, skills: loaded, sdkSkills: skills, promptSkills,
+              checkpointId: badcaseCheckpointId, skills: loaded, sdkSkills: skills, promptSkills, contextFiles,
             });
             if (!result?.captured) console.error('[badcase-capture] project skills not saved:', result?.reason || 'project_skills_unavailable');
           };
@@ -2621,6 +2624,7 @@ export function createAgentExecutor(options: any = {}) {
     // the classification pipeline. Enqueue only — the turn path never awaits
     // classification or storage.
     const toolExecutionStarts = new Map<string, any>();
+    handle.on('pi_event', (event: any) => badcaseModelTimings.observe(event?.piEvent));
     let turnBreakdownStarted = false;
 
     if (turnTimeBreakdownPipeline) {
@@ -2711,9 +2715,9 @@ export function createAgentExecutor(options: any = {}) {
     }
 
     handle.on('system_prompt', (event: any) => {
-      const systemPrompt = String(event && event.systemPrompt || '').trim();
+      const systemPrompt = String(event && event.systemPrompt || '');
 
-        if (!systemPrompt) {
+        if (!systemPrompt.trim()) {
           return;
         }
 
@@ -2964,6 +2968,9 @@ export function createAgentExecutor(options: any = {}) {
         heartbeatCount: result.heartbeatCount || 0,
         sessionName,
         sessionScope: 'agent_turn',
+        sessionAssistantStartIndex,
+        sessionAssistantEndIndex: countSessionAssistantMessages(result.sessionPath || handle.sessionPath || '', agentDir),
+        badcaseModelTimings: badcaseModelTimings.snapshot(),
         sessionReused: resumeSession,
         sessionReuseReason: sessionReuseDecision.reason,
         goalAutoContinue: strictGoalReuse,
@@ -3272,6 +3279,9 @@ export function createAgentExecutor(options: any = {}) {
           model,
           sessionName,
           sessionScope: 'agent_turn',
+          sessionAssistantStartIndex,
+          sessionAssistantEndIndex: countSessionAssistantMessages(failedSessionPath, agentDir),
+          badcaseModelTimings: badcaseModelTimings.snapshot(),
           sessionReused: resumeSession,
           sessionReuseReason: sessionReuseDecision.reason,
           goalAutoContinue: strictGoalReuse,

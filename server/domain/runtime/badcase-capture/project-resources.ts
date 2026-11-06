@@ -59,22 +59,24 @@ export function validateProjectResources(manifest: any, files: any[]) {
 }
 export function projectResourcesSummary(manifest: any) {
   return { kind: manifest.kind, manifestHash: manifest.manifestHash, fileCount: manifest.files.length,
-    contextFile: manifest.contextFile, skillPaths: [...manifest.skillPaths] };
+    contextFile: manifest.contextFile, skillPaths: [...manifest.skillPaths],
+    ...(Array.isArray(manifest.contextFiles) ? { contextFiles: [...manifest.contextFiles] } : {}) };
 }
 export function projectResourcesReceiptMatches(summary: any, receipt: any): boolean {
   return receipt?.verified === true && ['kind', 'manifestHash', 'fileCount', 'contextFile'].every(k => receipt[k] === summary[k])
     && JSON.stringify(receipt.skillPaths) === JSON.stringify(summary.skillPaths)
-    && receipt.loadedContextFiles === (summary.contextFile ? 1 : 0)
+    && receipt.loadedContextFiles === (summary.contextFiles ? summary.contextFiles.length : summary.contextFile ? 1 : 0)
     && Number.isSafeInteger(receipt.loadedSkills) && receipt.loadedSkills >= 0 && receipt.loadedSkills <= summary.fileCount;
 }
 export function verifyLoadedProjectResources(manifest: any, files: any[], loader: any, cwd: string) {
   validateProjectResources(manifest, files);
   const context = loader.getAgentsFiles().agentsFiles, skills = loader.getSkills().skills;
-  if (!Array.isArray(context) || !Array.isArray(skills) || context.length !== (manifest.contextFile ? 1 : 0)) throw fail();
+  const contextPaths = manifest.contextFiles || (manifest.contextFile ? [manifest.contextFile] : []);
+  if (!Array.isArray(context) || !Array.isArray(skills) || context.length !== contextPaths.length) throw fail();
   const recordFor = (p: any) => typeof p === 'string' && p.startsWith(cwd + '/') && manifest.files.find((f: any) => cwd + '/' + f.path === p);
   for (const entry of context) {
     const record = recordFor(entry.path);
-    if (!record || record.path !== manifest.contextFile || typeof entry.content !== 'string'
+    if (!record || !contextPaths.includes(record.path) || typeof entry.content !== 'string'
       || ![hash(entry.content), hash('\uFEFF' + entry.content)].includes(record.sha256)) throw fail();
   }
   if (skills.some((skill: any) => !recordFor(skill.filePath)) || new Set(skills.map((s: any) => s.filePath)).size !== skills.length) throw fail();
@@ -89,7 +91,7 @@ export function verifyLoadedProjectResources(manifest: any, files: any[], loader
 const MIRROR = '.caff-replay-skills/';
 const byPath = (a: any, b: any) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 const capturedContent = (m: any) => ({ kind: 'replay-captured-project-resources-v1', files: m.files, skillPaths: m.skillPaths,
-  contextFile: m.contextFile, skills: m.skills });
+  contextFile: m.contextFile, skills: m.skills, ...(Array.isArray(m.contextFiles) ? { contextFiles: m.contextFiles } : {}) });
 
 // Host-only preparation: receive materialized archived bytes, never open an
 // original skill path. Reuse the normal file transport for detached mirrors;
@@ -135,17 +137,28 @@ export function prepareCapturedProjectResources(declaration: any, files: any[], 
     }
   }
   const skills = [...observed.values()].sort(byPath), skillPaths = skills.filter(s => s.origins.includes('sdk')).map(s => s.path);
+  const portableGaps: any[] = [];
+  const contexts: string[] | undefined = Array.isArray(snapshot.loadedContexts) ? [] : undefined;
+  for (const context of snapshot.loadedContexts || []) {
+    const dest = locations.get(normalized(context.filePath));
+    if (!dest) portableGaps.push({ path: context.filePath, reason: 'context_file_not_archived' });
+    else if (!contexts!.includes(dest)) contexts!.push(dest);
+  }
   const content = capturedContent({ files: [...records.values()].sort(byPath), skillPaths, skills,
-    contextFile: PROJECT_CONTEXT_NAMES.find(p => declaration.filePaths.includes(p)) || null });
+    contextFile: PROJECT_CONTEXT_NAMES.find(p => declaration.filePaths.includes(p)) || null,
+    ...(contexts ? { contextFiles: contexts } : {}) });
   const manifest = { ...content, manifestHash: hash(JSON.stringify(content)) };
   validateCapturedProjectResources(manifest, transported);
-  return { manifest, files: transported.sort(byPath), bindings };
+  return { manifest, files: transported.sort(byPath), bindings, portableGaps };
 }
 
 function validateCapturedProjectResources(manifest: any, files: any[]) {
   if (!Array.isArray(manifest.files) || manifest.files.length > 8192 || !Array.isArray(manifest.skills) || manifest.skills.length > 8192
     || !Array.isArray(manifest.skillPaths) || manifest.contextFile !== null && !PROJECT_CONTEXT_NAMES.includes(manifest.contextFile)
     || hash(JSON.stringify(capturedContent(manifest))) !== manifest.manifestHash) throw fail();
+  if (manifest.contextFiles !== undefined && (!Array.isArray(manifest.contextFiles) || manifest.contextFiles.length > 8192
+    || new Set(manifest.contextFiles).size !== manifest.contextFiles.length
+    || manifest.contextFiles.some((p: any) => !validPath(p) || !manifest.files.some((f: any) => f.path === p)))) throw fail();
   const indexed = new Map(files.map(f => [f.path, f]));
   const names = manifest.files.map((f: any) => f.path);
   if (new Set(names).size !== names.length || JSON.stringify(names) !== JSON.stringify([...names].sort())) throw fail();
@@ -164,4 +177,23 @@ function validateCapturedProjectResources(manifest: any, files: any[]) {
   }
   if (JSON.stringify(manifest.skillPaths) !== JSON.stringify(manifest.skills.filter((s: any) => s.origins.includes('sdk')).map((s: any) => s.path))) throw fail();
   return manifest;
+}
+
+/** Worker-only SDK facade: install the captured context view before the host
+ * creates the session/system prompt. It never reads original or ambient paths.
+ * Old manifests without an observed list retain their native loader behavior. */
+export function sdkWithCapturedContexts(sdk: any, manifest: any, files: any[], cwd: string, readContent?: (name: string) => Buffer) {
+  if (!Array.isArray(manifest?.contextFiles)) return sdk;
+  const context = manifest.contextFiles.map((name: string) => {
+    const record = files.find(f => f.path === name);
+    if (!record || !validPath(name)) throw fail();
+    const bytes = readContent ? readContent(name) : Buffer.from(record.base64, 'base64'), content = bytes.toString('utf8');
+    if (!Buffer.from(content).equals(bytes) || hash(content) !== record.sha256 || content.includes('\0')) throw fail();
+    return { path: cwd + '/' + name, content: content.replace(/^\uFEFF/, '') };
+  });
+  return { ...sdk, async createAgentSessionServices(options: any) {
+    const services = await sdk.createAgentSessionServices(options);
+    services.resourceLoader.getAgentsFiles = () => ({ agentsFiles: context.map((entry: any) => ({ ...entry })) });
+    return services;
+  } };
 }

@@ -41,6 +41,7 @@ function setup(t, handler) {
   t.after(() => dom.window.close());
   dom.window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {} });
   dom.window.HTMLElement.prototype.scrollIntoView = function () {};
+  dom.window.eval(fs.readFileSync(path.resolve(__dirname, '../../public/shared/badcase-pipeline.js'), 'utf8'));
   dom.window.eval(fs.readFileSync(path.resolve(__dirname, '../../public/shared/badcase-wiki.js'), 'utf8'));
   const root = dom.window.document.getElementById('panel'), calls = [], confirms = [];
   let accepted = true, saved = data();
@@ -162,6 +163,35 @@ test('v2 results show frozen assertions, three-vote citations, hard failures, te
   h.saved().comparisons[0].kind = 'wiki-staged-batch-comparison-v1'; await h.panel.load(); await h.click('[data-tab="impact"]'); assert.match(h.root.querySelector('#impact-runs').textContent, /字面规则/);
 });
 
+test('Badcase request action reaches the guarded case API once, disables during send, then shows confirmation without auto-freezing', async t => {
+  let release;
+  const h = setup(t, (url, options, saved) => {
+    if (options.method === 'POST' && url.endsWith('/dehydration/recommend')) return new Promise(r => { release = () => {
+      saved.revision++; saved.cases[0].dehydrationRecommendation = { eligible: false };
+      saved.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), hash: 'c'.repeat(64), request: { state: { steps: [{ step: 1, body: 'reply' }] } },
+        recommendation: { schemaVersion: 2, retryPolicy: 'manual', kindSuggestion: 'single', cutStepSuggestion: 1, cutSource: 'deepseek', evidenceVerified: true, answers: { reason: '本步决定', evidence: 'reply' }, attempts: [] } }];
+      r(clone(saved));
+    }; });
+  });
+  h.saved().cases[0].traceBundle = { hash: 'a'.repeat(64), stepCount: 1 };
+  h.saved().cases[0].dehydrationRecommendation = { eligible: true };
+  await h.panel.load(); await h.click('[data-tab="badcases"]'); assert.equal(h.posts().length, 0);
+  const button = h.root.querySelector('[data-dehydration-recommend="c1"]'); button.click(); button.click();
+  assert.equal(h.posts().length, 1); assert.equal(button.disabled, true);
+  assert.equal(h.posts()[0].url, '/api/wikiskill/cases/c1/dehydration/recommend');
+  assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, expectedRevision: 3, traceHash: 'a'.repeat(64) });
+  release(); await tick(); await tick(); assert.ok(h.root.querySelector('[data-dehydration-confirm="c1"]'));
+  assert.equal(h.root.querySelector('[data-dehydration-recommend="c1"]'), null); assert.equal(h.posts().length, 1);
+});
+test('deleted evidence disappears from knowledge counts/search while the frozen guideline and deletion audit remain', async t => {
+  const h = setup(t), s = h.saved(); s.cases = s.cases.filter(c => c.id !== 'c1'); s.caseStates = s.caseStates.filter(c => c.caseId !== 'c1');
+  s.events.push({ type: 'case-deleted', caseIds: ['c1'], caseNumbers: [7], reason: '<script>缺系统提示词</script>', createdAt: '2026-11-05T00:00:00Z' });
+  const version = clone(s.versions); await h.panel.load();
+  assert.match(h.root.querySelector('#wiki-list').textContent, /0 条用例/); assert.match(h.root.querySelector('#wiki-page').textContent, /暂无活动用例；准则文字保留/);
+  assert.match(h.root.querySelector('#wiki-page').textContent, /先完成用户明确要求/); assert.deepEqual(s.versions, version);
+  await h.click('[data-tab="impact"]'); assert.match(h.root.querySelector('#impact-log').textContent, /#7.*缺系统提示词.*冻结轨迹包、旧分组和历史结果保留/);
+  assert.equal(h.root.querySelector('#impact-log script'), null); assert.equal(h.posts().length, 0);
+});
 test('production result labels model/thinking and report-only rows, without stale proxy disclaimers or unrelated tasks', async t => {
   const h = setup(t), totals = { original: { planned: 10, passed: 4, failed: 6, errors: 0, notRun: 0, scored: 10, passRate: .4 }, candidate: { planned: 10, passed: 8, failed: 2, errors: 0, notRun: 0, scored: 10, passRate: .8 } };
   h.saved().comparisons = [{ id: 'production-1', executionId: 'production-1', createdAt: '2026-11-03T12:00:00Z', model: 'openai-codex/gpt-6.1-sol', modelConfig: { thinking: 'xhigh', api: 'openai-codex-responses' }, completed: true, evaluation: { splitPolicy: 'd15-frozen-v1' }, modelCallsKnown: 40,
@@ -270,7 +300,7 @@ test('staged progress refreshes gate/test counts, replacements and saved results
 test('prototype structure defaults to knowledge base, keeps loop tab order and uses real room titles without examples', async t => {
   const h = setup(t); await h.panel.load();
   assert.equal(h.calls.length, 1); assert.equal(h.calls[0].url, '/api/wikiskill'); assert.equal(h.posts().length, 0);
-  assert.deepEqual([...h.root.querySelectorAll('[data-tab]')].map(b => b.dataset.tab), ['cases', 'wiki', 'targets', 'impact']);
+  assert.deepEqual([...h.root.querySelectorAll('[data-tab]')].map(b => b.dataset.tab), ['badcases', 'wiki', 'cases', 'targets', 'impact']);
   assert.equal(h.root.querySelector('[data-tab="wiki"]').getAttribute('aria-selected'), 'true');
   assert.equal(h.root.querySelector('#view-wiki').hidden, false); assert.equal(h.root.querySelector('#view-cases').hidden, true);
   assert.match(h.root.querySelector('#next-text').textContent, /确认全局提示词候选/);

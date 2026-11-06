@@ -18,7 +18,7 @@ function setup(t) {
     const req = new PassThrough(); req.method = body === undefined ? 'GET' : 'POST'; req.socket = { remoteAddress: overrides.remoteAddress || '127.0.0.1' };
     req.headers = { host: '127.0.0.1:4313', origin: 'http://127.0.0.1:4313', 'content-type': 'application/json', 'x-caff-csrf-token': 'synthetic-csrf', ...overrides.headers };
     let result;
-    const res = { writeHead(status) { this.status = status; }, end(bytes) { result = { status: this.status, body: JSON.parse(bytes) }; } };
+    const res = { writeHead(status, headers) { this.status = status; this.headers = headers; }, end(bytes) { result = { status: this.status, headers: this.headers, body: overrides.text ? String(bytes) : JSON.parse(bytes) }; } };
     const pending = controller({ req, res, pathname: overrides.pathname || '/api/wikiskill' + (body === undefined ? '' : '/review') });
     req.end(body === undefined ? undefined : JSON.stringify(body)); assert.equal(await pending, true); return result;
   }
@@ -69,6 +69,110 @@ test('without an operator eligibility catalog manual drafting works but model se
   assert.equal(h.store.read().revision, 3);
 });
 
+test('archived cases retain frozen rubrics and remain readable without changing old snapshots', async t => {
+  const h = setup(t); h.seed();
+  const deletedId = 'text-6d9cbd07278d02cc72a12b5a358aad639d802a632679a43de0752e5eff7a3a92';
+  const state = h.store.read(), previousId = state.cases[0].id;
+  const seeded = JSON.parse(JSON.stringify(state).split(previousId).join(deletedId));
+  const snapshot = path.join(h.config.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+  fs.writeFileSync(snapshot, JSON.stringify({ schemaVersion: 1, checksum: crypto.createHash('sha256').update(JSON.stringify(seeded)).digest('hex'), record: seeded }));
+  const rubric = h.store.saveRubricDraft({ caseId: deletedId, model: 'deepseek/deepseek-v4-flash', scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' },
+    questions: [{ id: 'q1', question: '回复提供核验依据。', evidence: 'reply' }] }, state.revision);
+  h.store.confirmRubric({ rubricId: rubric.id, hash: rubric.hash, confirmationRecord: 'synthetic explicit confirmation' }, h.store.read().revision);
+  const before = h.store.read(), oldBytes = fs.readFileSync(snapshot);
+  h.store.deleteCases({ caseIds: [deletedId], reason: 'user-approved missing historical prompt', expectedRevision: before.revision }, { source: 'user-via-planner', reference: 'synthetic-deletion' });
+  const after = (await h.invoke()).body;
+  assert.equal(after.cases.some(c => c.id === deletedId), false);
+  assert.deepEqual(after.deletedCases[0].case, before.cases[0]);
+  assert.deepEqual(after.rubrics, before.rubrics);
+  assert.deepEqual(fs.readFileSync(snapshot), oldBytes);
+});
+test('case trace GET reads Wiki-owned frozen evidence without source rooms and cannot mutate or select paths', async t => {
+  const h = setup(t); h.seed();
+  const item = h.store.read().cases[0];
+  const { buildWikiTraceBundle } = require('../../build/server/domain/runtime/badcase-capture/wiki-trace');
+  const packet = buildWikiTraceBundle({ source: item.source, frozenAt: '2026-11-05T00:00:00Z', origin: 'backfill', message: { content: item.message } });
+  const route = { pathname: '/api/wikiskill/cases/' + item.id + '/trace' };
+  assert.deepEqual((await h.invoke(undefined, route)).body, { traceBundle: null });
+  h.store.freezeCaseTrace(item.id, packet);
+  const revision = h.store.read().revision;
+  assert.deepEqual((await h.invoke(undefined, route)).body, { traceBundle: packet });
+  assert.equal(h.store.read().revision, revision);
+  await assert.rejects(h.invoke(undefined, { ...route, remoteAddress: '10.0.0.1' }), e => [403, 404].includes(e.statusCode));
+  await rejects(h.invoke(undefined, { pathname: '/api/wikiskill/cases/unknown/trace' }), 'wiki_unknown_case', 422);
+  const controller = createBadcaseWikiController(h.options);
+  assert.equal(await controller({ req: { method: 'POST' }, res: {}, pathname: route.pathname }), false);
+});
+test('run replay results are guarded read-only packets; GET/list cannot launch or execute tools', async t => {
+  const h = setup(t); h.seed(); const c = h.store.read().cases[0];
+  const runs = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config);
+  const request = { schemaVersion: 1, kind: 'wikiskill-run-request', model: 'openai-codex/gpt-6.1-sol', thinking: 'xhigh', variant: { kind: 'original' }, context: { tools: [] }, metadata: { caseId: c.id, traceHash: 'a'.repeat(64), decisionHash: 'b'.repeat(64) } };
+  const r = runs.reserve(request); runs.finish(r.id, { message: { content: [{ type: 'text', text: 'FULL OUTPUT' }] }, outcome: { status: 'unreached', countAsFailure: true }, modelCalls: 1, toolExecutions: 0 });
+  const summary = (await h.invoke()).body.runReplays[0]; assert.equal(summary.status, 'invalid'); assert.equal(summary.eligibleForScoring, false);
+  assert.equal(summary.baselineStatus, 'no_valid_output'); assert.equal(summary.caseEligibleForGateAndScreen, false); assert.equal(Object.hasOwn(summary, 'countAsFailure'), false);
+  const route = { pathname: '/api/wikiskill/cases/' + c.id + '/run-replays/' + r.id };
+  const revision = h.store.read().revision;
+  const packet = (await h.invoke(undefined, route)).body;
+  assert.equal(packet.result.message.content[0].text, 'FULL OUTPUT'); assert.equal(packet.result.outcome.status, 'unreached');
+  assert.equal(packet.accounting.status, 'invalid'); assert.equal(packet.accounting.resultHash, summary.resultHash);
+  assert.equal(h.store.read().revision, revision);
+  await assert.rejects(h.invoke(undefined, { ...route, remoteAddress: '10.0.0.1' }), e => [403, 404].includes(e.statusCode));
+  await rejects(h.invoke(undefined, { pathname: '/api/wikiskill/cases/unknown/run-replays/' + r.id }), 'wiki_unknown_case', 422);
+  assert.equal(await createBadcaseWikiController(h.options)({ req: { method: 'POST' }, res: {}, pathname: route.pathname }), false);
+});
+test('run JSON and Markdown exports share current accounting, retain original hashes and are guarded read-only', async t => {
+  const h = setup(t); h.seed(); const c = h.store.read().cases[0];
+  const runs = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config);
+  const r = runs.reserve({ schemaVersion: 1, kind: 'wikiskill-run-request', variant: { kind: 'original' }, metadata: { caseId: c.id, traceHash: 'trace', decisionHash: 'decision' } });
+  const result = runs.finish(r.id, { message: { content: [{ type: 'toolCall', name: 'bash', arguments: { command: 'DO NOT EXECUTE ```json' } }] }, outcome: { status: 'unreached', countAsFailure: true }, modelCalls: 1, toolExecutions: 0 });
+  const base = '/api/wikiskill/cases/' + c.id + '/run-replays/' + r.id, before = h.store.read();
+  const detail = (await h.invoke(undefined, { pathname: base })).body;
+  const json = await h.invoke(undefined, { pathname: base + '/export.json' });
+  const md = await h.invoke(undefined, { pathname: base + '/export.md', text: true });
+  assert.deepEqual(json.body, detail); assert.equal(json.body.accounting.status, 'invalid'); assert.equal(json.body.accounting.caseEligibleForGateAndScreen, false);
+  assert.deepEqual(json.body.result, result); assert.equal(json.headers['Cache-Control'], 'no-store'); assert.match(json.headers['Content-Disposition'], /attachment/);
+  assert.match(md.body, /无效，不算通过也不算不通过/); assert.match(md.body, /原版无有效输出.*不进门槛和初筛/);
+  const block = md.body.match(/(`{4,})json\n([\s\S]*)\n\1/); assert.ok(block); assert.deepEqual(JSON.parse(block[2]), detail);
+  for (const ext of ['json', 'md']) {
+    await assert.rejects(h.invoke(undefined, { pathname: base + '/export.' + ext, remoteAddress: '10.0.0.1' }), e => [403, 404].includes(e.statusCode));
+    assert.equal(await createBadcaseWikiController(h.options)({ req: { method: 'POST' }, res: {}, pathname: base + '/export.' + ext }), false);
+  }
+  assert.deepEqual(h.store.read(), before); assert.deepEqual(runs.read(r.id).result, result);
+});
+test('dehydration confirmation is explicit, guarded, revision/hash bound and never calls a model', async t => {
+  const h = setup(t); h.seed(); const c = h.store.read().cases[0];
+  const packet = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', origin: 'backfill', source: c.source, frozenAt: '2026-11-05T00:00:00Z', complete: false, missingReasons: [], redaction: { policy: 'known_values_only' },
+    markedStep: 1, markedMessage: 'done', actual: c.actual, expected: c.expected, context: { systemPrompt: 'historical', priorSessionEntries: [], trigger: { message: { role: 'user', content: 'verify first' } } },
+    steps: [{ step: 1, output: { role: 'assistant', content: [{ type: 'text', text: 'done' }] }, toolResults: [] }] };
+  h.store.freezeCaseTrace(c.id, packet);
+  const { buildDehydrationRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration');
+  const item = h.store.read().cases[0], built = buildDehydrationRequest({ caseRecord: item, bundle: packet, cause: { source: 'trigger', text: 'verify first' } });
+  const r = h.store.saveDehydrationRecommendation({ built, expectedRevision: h.store.read().revision, response: { model: 'deepseek/deepseek-v4-flash', attempts: [{ content: JSON.stringify({ kind: '单步型', cutStep: 1, reason: '本步决定', evidence: 'done' }), finishReason: 'stop' }] } });
+  const route = { pathname: '/api/wikiskill/dehydration-confirm' }, body = { confirmed: true, caseId: c.id, traceHash: item.traceBundle.hash, recommendationHash: r.hash, kind: 'single', cutStep: 1, expectedRevision: h.store.read().revision };
+  assert.equal((await h.invoke()).body.dehydrations[0].decision, undefined);
+  await rejects(h.invoke({ ...body, confirmed: false }, route), 'wiki_confirmation_required');
+  for (const extra of [{ response: {} }, { globalRoot: h.root }, { candidate: {} }]) await rejects(h.invoke({ ...body, ...extra }, route), 'wiki_invalid_input');
+  for (const override of [{ remoteAddress: '10.0.0.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) await assert.rejects(h.invoke(body, { ...route, ...override }));
+  await rejects(h.invoke({ ...body, traceHash: 'f'.repeat(64) }, route), 'wiki_dehydration_stale', 409);
+  const done = await h.invoke(body, route); assert.equal(done.body.dehydrations[0].decision.kind, 'single');
+  await rejects(h.invoke({ ...body, expectedRevision: done.body.revision, kind: 'throughout', cutStep: null }, route), 'wiki_dehydration_frozen', 409);
+  assert.deepEqual(h.store.readCaseTrace(c.id), packet);
+  const decision = done.body.dehydrations[0].decision, runs = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config);
+  const run = runs.reserve({ schemaVersion: 1, kind: 'wikiskill-run-request', variant: { kind: 'original' }, metadata: { caseId: c.id, traceHash: item.traceBundle.hash, decisionHash: decision.hash } });
+  runs.finish(run.id, { outcome: { status: 'unreached', countAsFailure: true }, modelCalls: 1, toolExecutions: 0 });
+  const raw = runs.read(run.id);
+  const withdrawn = h.store.withdrawDehydrationToReference({ caseId: c.id, traceHash: item.traceBundle.hash, recommendationHash: r.hash,
+    previousDecisionHash: decision.hash, reason: '贯穿型且无现场，只作参考', expectedRevision: h.store.read().revision }, { source: 'user-via-planner', reference: 'withdrawal-message' });
+  const after = (await h.invoke()).body;
+  assert.equal(after.dehydrations[0].decision.level, 'reference'); assert.deepEqual(after.dehydrations[0].decisionHistory, [decision]);
+  assert.equal(after.runReplays[0].excludedReason, 'user_reclassified_reference'); assert.equal(after.runReplays[0].supersededByDecisionHash, withdrawn.hash);
+  assert.equal(after.runReplays[0].status, 'invalid'); assert.equal(after.runReplays[0].eligibleForScoring, false);
+  const detail = (await h.invoke(undefined, { pathname: '/api/wikiskill/cases/' + c.id + '/run-replays/' + run.id })).body;
+  assert.deepEqual({ reservation: detail.reservation, result: detail.result }, raw); assert.equal(detail.accounting.excludedReason, 'user_reclassified_reference');
+  await rejects(h.invoke({ ...body, expectedRevision: after.revision }, route), 'wiki_dehydration_frozen', 409);
+  const controller = createBadcaseWikiController(h.options);
+  assert.equal(await controller({ req: { method: 'POST' }, res: {}, pathname: '/api/wikiskill/dehydration-withdraw' }), false);
+});
 test('comparison review is explicit, locally guarded and cannot supply results, rules or adoption', async t => {
   const h = setup(t), route = { pathname: '/api/wikiskill/comparison-review' };
   const body = { confirmed: true, comparisonId: 'comparison-' + 'a'.repeat(64), candidateHash: 'b'.repeat(64), expectedRevision: 0, decision: 'not-adopted', reason: 'test_not_passed', interpretation: '门槛接受、测试未通过、未采纳。' };

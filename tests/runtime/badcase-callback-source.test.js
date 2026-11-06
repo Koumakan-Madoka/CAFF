@@ -160,7 +160,7 @@ test('Git snapshot facade authorized source → CAS → restart keeps distinct t
     const reopened = createBadcaseCaptureService({ captureRoot }), cp = reopened.store.loadCheckpoint('p1', result.checkpointId);
     assert.ok(cp.replayInput.callbackInput, 'service must archive its constructor-owned authorized source');
     const captured = readCapturedCallbackInput(cp, hash => reopened.store.readBlob('p1', hash));
-    assert.equal(captured.trace, h.capture().trace); assert.equal(cp.replayInput.deliveryMode, mode);
+    assert.equal(captured.trace, read(h.store, h.input, h.policy, { knownOnly: true }).trace); assert.equal(cp.replayInput.deliveryMode, mode);
     assert.equal(cp.schemaVersion, 2); assert.equal(cp.gitSnapshot.kind, 'git-snapshot-v1');
     assert.equal(cp.strictEvalEligible, false);
     assert.match(reopened.store.readBlob('p1', cp.gitSnapshot.patchBlobHash).toString(), /\+dirty/);
@@ -174,7 +174,7 @@ test('Git snapshot facade authorized source → CAS → restart keeps distinct t
   // source before CAS publication, not merely its prompt/config metadata.
   const known = 'fixture-host-known-source-value-12345';
   h.store.updateMessage('old', { content: 'Earlier ' + known });
-  const rawCallback = h.capture(), expectedTrace = rawCallback.trace.replaceAll(known, '[*]');
+  const rawCallback = read(h.store, h.input, h.policy, { knownOnly: true }), expectedTrace = rawCallback.trace.replaceAll(known, '[*]');
   const rawHash = rawCallback.expectedTraceHash, expectedHash = crypto.createHash('sha256').update(expectedTrace).digest('hex');
   const safeService = createBadcaseCaptureService({ captureRoot, agentDir, chatStore: h.store, getKnownKeyValues: () => [known] });
   for (const mode of ['fresh', 'resume']) {
@@ -186,7 +186,7 @@ test('Git snapshot facade authorized source → CAS → restart keeps distinct t
     assert.equal(bytes.length, Buffer.byteLength(expectedTrace)); assert.equal(reopened.store.hasBlob('p1', rawHash), false);
     assert.equal(cp.stats.newBlobBytes, mode === 'fresh' ? bytes.length : 0, 'account only redacted bytes, deduplicating the second callback');
     assert.equal(readCapturedCallbackInput(cp, h => reopened.store.readBlob('p1', h)).trace, expectedTrace);
-    assert.equal(h.capture().trace, rawCallback.trace, 'source Room state remains unchanged');
+    assert.equal(read(h.store, h.input, h.policy, { knownOnly: true }).trace, rawCallback.trace, 'source Room state remains unchanged');
   }
   const noSource = createBadcaseCaptureService({ captureRoot });
   const supplied = { ...value('fresh'), callbackInput: h.capture() };
@@ -305,4 +305,45 @@ test('raw header/participant limits, visibility aliases, malformed text blocks a
   h.store.db.prepare('UPDATE chat_agents SET description=? WHERE id=?').run('x'.repeat(32 * (128 + 4096) + 1), h.agent.id);
   assert.equal(h.capture(), null); h.store.db.prepare('UPDATE chat_agents SET description=? WHERE id=?').run(h.agent.description, h.agent.id);
   assert.ok(h.capture());
+});
+
+// v2 deliberately projects only public text; the legacy reader above stays strict.
+test('v2 keeps public text through private/delegation/media/sensitive history, disclosing omissions without reading private bodies', t => {
+  const h=fixture(t), capture=()=>read(h.store,h.input,h.policy,{knownOnly:true});
+  h.store.createPrivateMessage({id:'priv',conversationId:'c1',turnId:'t1',senderAgentId:h.agent.id,senderName:h.agent.name,recipientAgentIds:[h.agent.id],content:'PRIVATE_CANARY_NEVER_SELECT',metadata:{}});
+  h.store.db.prepare("UPDATE chat_private_messages SET created_at='2025-01-01T00:00:00.000Z' WHERE id='priv'").run();
+  h.store.createAgentDelegation({ id: 'v2-del', idempotencyScope: 'scope', idempotencyKey: 'v2', kind: 'group', aggregation: 'all',
+    requesterConversationId: 'c1', requesterAgentId: h.agent.id, requesterAgentName: h.agent.name, requesterInvocationId: 'inv1', requesterTurnId: 't1',
+    recipientConversationId: 'c1', recipientAgentId: h.agent.id, recipientAgentName: h.agent.name, request: { text: 'DELEGATION_BODY_NEVER_SELECT' }, status: 'queued',
+    createdAt: '2025-01-01T00:00:00.000Z', updatedAt: '2025-01-01T00:00:00.000Z' });
+  for(const [id,metadata] of [['hidden',{privateOnly:true}],['task',{delegationId:'done'}]]) h.store.createMessage({id,conversationId:'c1',turnId:'old-turn',role:'user',senderName:'You',content:'EXCLUDED_CANARY',status:'completed',metadata,createdAt:'2025-01-01T00:00:00.000Z'});
+  h.store.db.prepare('UPDATE chat_messages SET content=?,metadata_json=? WHERE id=?').run('api_key=EXAMPLE sk-EXAMPLE_SECRET_NOT_A_REAL_KEY',JSON.stringify({contentBlocks:[{type:'text',text:'kept'},{type:'image',imageId:'x'}],attachments:[{path:'never-read'}]}),'old');
+  const queries=[],original=h.store.db.prepare.bind(h.store.db);h.store.db.prepare=sql=>{queries.push(sql);return original(sql)};
+  const packet=capture();assert.ok(packet);const trace=JSON.parse(packet.trace);
+  assert.equal(trace.schemaVersion,2);assert.equal(trace.publicMessages.length,2);assert.match(trace.publicMessages[0].content,/api_key=EXAMPLE/);
+  assert.equal(trace.omissions.privateMessages,2);assert.equal(trace.omissions.delegations,1);assert.equal(trace.omissions.delegationMessages,1);assert.equal(trace.omissions.mediaParts,2);
+  assert.equal(packet.trace.includes('EXCLUDED_CANARY'),false);assert.equal(packet.trace.includes('PRIVATE_CANARY'),false);
+  assert.equal(queries.some(q=>/SELECT[^]*\bcontent\b[^]*FROM chat_private_messages/i.test(q)),false);
+  assert.equal(h.capture(),null,'legacy still rejects the same source');
+});
+
+test('v2 retains newest bounded public history and the exact current user identity when limits are exceeded', t=>{
+  const h=fixture(t); const insert=h.store.db.prepare(`INSERT INTO chat_messages (id,conversation_id,turn_id,role,sender_name,content,status,metadata_json,created_at,updated_at) VALUES (?, 'c1','history','user','You',?,'completed','{}','2026-01-01T00:00:01.500Z','2026-01-01T00:00:01.500Z')`);
+  h.store.db.transaction(()=>{for(let i=0;i<2055;i++)insert.run('new-'+String(i).padStart(5,'0'),'中'.repeat(12000));})();
+  const packet=read(h.store,h.input,h.policy,{knownOnly:true});assert.ok(packet);const trace=JSON.parse(packet.trace);
+  assert.ok(trace.publicMessages.length<=2048);assert.ok(Buffer.byteLength(packet.trace)<=4*1024*1024);
+  assert.ok(trace.publicMessages.some(m=>m.id==='user'&&m.content==='Question'));
+  assert.ok(trace.publicMessages.some(m=>m.id==='new-02054'));assert.ok(trace.omissions.truncatedMessages>0);assert.ok(trace.omissions.truncatedBytes>0);
+  assert.equal(h.capture(),null);h.input.callbackUserMessage.content='drift';assert.equal(read(h.store,h.input,h.policy,{knownOnly:true}),null);
+});
+
+test('v2 callback projection is rehashed after known-key redaction, and remains readable only as a v2 checkpoint',t=>{
+  const h=fixture(t), known='v2-host-known-fixture-value';h.store.updateMessage('old',{content:'secret='+known+' api_key=example'});
+  const packet=read(h.store,h.input,h.policy,{knownOnly:true});assert.ok(packet);
+  const input={...h.input,callbackInput:packet,prompt:'prompt',runConfig:{},harness:{}};
+  const prepared=require(base+'replay-input-preparation').prepareReplayInput(input,'fresh',h.root,()=>null,{knownKeyValues:[known]});
+  const ref=prepared.replayInput.callbackInput;assert.ok(ref);assert.deepEqual(ref.omissions,JSON.parse(packet.trace).omissions);
+  const blob=prepared.plans.find(p=>p.hash===ref.blobHash).content;assert.equal(blob.includes(known),false);assert.equal(crypto.createHash('sha256').update(blob).digest('hex'),ref.blobHash);
+  const cp={schemaVersion:2,...h.input,replayInput:prepared.replayInput};const reader=require(base+'callback-input').readCapturedCallbackInput;
+  assert.ok(reader(cp,()=>blob));assert.throws(()=>reader({...cp,schemaVersion:1},()=>blob));
 });

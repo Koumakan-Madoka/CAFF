@@ -28,4 +28,21 @@ async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
     readDiagnosticValues: () => require('./wiki-diagnostics.cjs').readDiagnosticValues({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
   });
 }
-module.exports = { runPageInduction, readPageRuntimeConfig };
+// Host-only, explicit single-shot action. Uses the SAME operator runtime/auth
+// selection as preclassification; no Docker/tools, credential copy or writeback.
+async function runPageDehydration(input, { configFile } = {}, dependencies = {}) {
+  const { preparePageDehydration, recommendDehydration } = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration-runner');
+  const prepared = preparePageDehydration(input); // preflight before config/auth/network
+  const config = readPageRuntimeConfig(configFile), env = { ...process.env, PI_CODING_AGENT_DIR: config.credentialDir };
+  const key = (dependencies.readKey || require('./direct-model.cjs').readCaffDeepseekKey)(env);
+  const knownKeyValues = [...(dependencies.readKnownValues || require('./wiki-diagnostics.cjs').readDiagnosticValues)(env), key];
+  const { buildDehydrationRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration');
+  const built = buildDehydrationRequest({ caseRecord: input.store.read().cases.find(c => c.id === input.caseId), bundle: input.store.readCaseTrace(input.caseId), cause: prepared.cause, knownKeyValues });
+  const dispatcher = (dependencies.createDispatcher || (uri => new (require('undici').ProxyAgent)({ uri })))('http://127.0.0.1:17890');
+  try {
+    const client = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration-client').createDehydrationClient({ key, maxRequests: 1,
+      fetchImpl: (url, options) => (dependencies.fetch || require('undici').fetch)(url, { ...options, dispatcher }) });
+    return await recommendDehydration({ ...prepared, approvedRequestHash: built.requestHash }, { client, knownKeyValues, retryPolicy: 'manual' });
+  } finally { await dispatcher.destroy(); }
+}
+module.exports = { runPageInduction, runPageDehydration, readPageRuntimeConfig };

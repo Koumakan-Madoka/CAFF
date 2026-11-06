@@ -197,14 +197,14 @@ export function createServerApp(options: any = {}) {
   // Wiki is an optional secondary write after a durable annotation. Validate
   // its layout at use time (including current projects), not during startup:
   // an unsupported layout must not disable chat or hide a saved annotation.
-  const badcaseWikiStore = {
-    addMarkedCase(input: any) {
-      return createWikiStore({ agentDir, sourceWorktree: initialProjectDir,
-        sourceWorktrees: projectManager.listProjects().map((p: any) => p.path) }).addMarkedCase(input);
-    },
-  };
+  const openBadcaseWikiStore = () => createWikiStore({ agentDir, sourceWorktree: initialProjectDir,
+    sourceWorktrees: projectManager.listProjects().map((p: any) => p.path) });
+  const badcaseWikiStore = { addMarkedCase: (input: any) => openBadcaseWikiStore().addMarkedCase(input) };
+  const { freezeMarkedCaseTrace, readTraceKnownKeyValues } = require('../domain/runtime/badcase-capture/wiki-trace-source');
   const badcaseSealing = createBadcaseSealingService({ flags: badcaseFlags, captureStore: badcaseCapture.store, databasePath: store.databasePath,
-    wikiStore: badcaseWikiStore, chatStore: store });
+    wikiStore: badcaseWikiStore, chatStore: store,
+    freezeTrace: (input: any, flag: any, firstMark: boolean) => freezeMarkedCaseTrace({ wikiStore: openBadcaseWikiStore(), chatStore: store,
+      captureStore: badcaseCapture.store, agentDir, knownKeyValues: () => readTraceKnownKeyValues({ agentDir, chatStore: store }) }, input, flag, firstMark) });
 
   // Crash-recovery sweep: a busy session-reuse claim is only ever held by a
   // live run inside this process, so any busy row visible at startup is
@@ -1346,6 +1346,10 @@ export function createServerApp(options: any = {}) {
         const configFile = options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG;
         return require('../../../scripts/badcase-capture/wiki-rubric-page-runtime.cjs').runPageRubricDraft(input, { configFile });
       }),
+      runDehydration: options.badcaseWikiDehydrationRunner || ((input: any) =>
+        require('../../../scripts/badcase-capture/wiki-page-runtime.cjs').runPageDehydration(input, {
+          configFile: options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG,
+        })),
       runInduction: options.badcaseWikiInductionRunner || ((input: any) => {
         const configFile = options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG;
         if (configFile !== undefined || options.badcaseWikiInductionImage === undefined) {

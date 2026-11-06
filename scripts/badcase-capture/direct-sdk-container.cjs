@@ -164,7 +164,8 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       cwd, agentDir, sessionPath, resume: sessionText !== null, provider: selected.provider, model: selected.model,
       thinking: selected.thinking || 'off', fast: false, extensionPaths: ['/work/build/lib/pi-extensions/caff-capabilities.mjs'],
       additionalSkillPaths: resources ? input.projectResources.skillPaths.map(p => cwd + '/' + p) : [], retireUserScopeSkills: true } }).config;
-    ({ runtime } = await host.createSdkRuntime(sdk, config)); const session = runtime.session;
+    const replaySdk = resources ? resources.sdkWithCapturedContexts(sdk, input.projectResources, input.files, cwd, name => fs.readFileSync(cwd + '/' + name)) : sdk;
+    ({ runtime } = await host.createSdkRuntime(replaySdk, config)); const session = runtime.session;
     if (codex) {
       runtime.services.settingsManager.applyOverrides({ retry: { enabled: false, provider: { maxRetries: 0 } } });
       session.agent.transport = 'sse'; // project-local settings must not enable WebSocket or retries

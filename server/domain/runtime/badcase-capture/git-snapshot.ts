@@ -201,7 +201,13 @@ export function collectLoadedProjectSkills(options: any): any {
     loadedSkills.push({ name: String(skill.name || ''), filePath, baseDir });
     roots.push(path.basename(filePath).toLowerCase() === 'skill.md' ? baseDir : filePath);
   }
-  return { loadedSkills, projectSkills: archiveProjectSkills(roots, archive), uncaptured: archive.uncaptured, blobs: archive.blobs,
+  const loadedContexts: any[] | undefined = Array.isArray(options.contextFiles) ? [] : undefined;
+  for (const context of options.contextFiles || []) {
+    if (typeof context?.path !== 'string' || !path.isAbsolute(context.path)) { archive.gap('.', 'context_path_invalid', 'sdk'); continue; }
+    const filePath = path.resolve(context.path);
+    loadedContexts!.push({ filePath }); roots.push(filePath); // a file, never its parent directory
+  }
+  return { loadedSkills, ...(loadedContexts ? { loadedContexts } : {}), projectSkills: archiveProjectSkills(roots, archive), uncaptured: archive.uncaptured, blobs: archive.blobs,
     captureTimeRemainingMs: archive.budget.remainingMs() };
 }
 
@@ -245,6 +251,23 @@ export async function collectGitSnapshot(options: any): Promise<any> {
         else baseFileCount++;
       }
     } catch { budget.check(); gap('.', 'head_inventory_unavailable'); }
+    // Git deliberately hides these worktree paths from ordinary diff/status.
+    // Do not refresh/reset their index flags or pretend HEAD is their content.
+    try {
+      const flags = await git(['ls-files', '-v', '-z']);
+      for (let start = 0; start < flags.length;) {
+        let end = flags.indexOf(0, start); if (end < 0) end = flags.length;
+        const record = flags.subarray(start, end); start = end + 1;
+        if (record.length < 3) continue;
+        const tag = String.fromCharCode(record[0]);
+        if (!/[a-z]/.test(tag) && tag !== 'S') continue;
+        for (const name of names(Buffer.concat([record.subarray(2), Buffer.from([0])]))) if (inScope(name)) {
+          if (/[a-z]/.test(tag)) gap(name, 'index_assume_unchanged');
+          if (tag.toUpperCase() === 'S') gap(name, 'index_skip_worktree');
+        }
+      }
+    } catch { budget.check(); gap('.', 'index_flags_unavailable'); }
+    const hidden = (p: string) => uncaptured.some(g => !g.scope && g.path === p && /^index_/.test(g.reason));
     // HEAD blobs and diff use Git's normalized bytes. Record actual CRLF paths
     // instead of assuming all Windows files have CRLF. Mixed EOL needs a full
     // overlay because normalization loses the positions of individual CRs.
@@ -265,6 +288,7 @@ export async function collectGitSnapshot(options: any): Promise<any> {
       catch { budget.check(); gap('.', 'tracked_inventory_unavailable'); }
     }
     for (const relative of [...new Set(changed)].sort().filter(inScope)) {
+      if (hidden(relative)) continue;
       const info = inspectFile(cwd, relative, budget);
       if (info.reason && info.reason !== 'missing') { gap(info.path, info.reason); continue; }
       if (!info.reason && (!info.stat.isFile() || info.stat.size > limits.fileBytes)) {
@@ -288,7 +312,7 @@ export async function collectGitSnapshot(options: any): Promise<any> {
       } catch { budget.check(); gap(relative, 'git_diff_unavailable'); }
     }
     for (const relative of mixedEolPaths) {
-      if (files[relative] || deletions.includes(relative)) continue;
+      if (hidden(relative) || files[relative] || deletions.includes(relative)) continue;
       const current = readFile(cwd, relative);
       if (current) files[relative] = fileEntry(current.bytes, current.stat, 'mixed-eol-tracked');
     }

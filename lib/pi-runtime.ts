@@ -1279,7 +1279,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         if (beforePromptHandled || terminating) return;
         beforePromptHandled = true;
         refreshHeartbeatTimeout();
-        void Promise.resolve().then(() => options.beforePrompt?.({ skills: message.skills })).catch(() => {
+        void Promise.resolve().then(() => options.beforePrompt?.({ skills: message.skills, contextFiles: message.contextFiles })).catch(() => {
           // Resource capture is best-effort. Do not expose errors/paths/keys or
           // prevent the model from running when a collector cannot persist.
           emit('capture_warning', { code: 'project_skills_unavailable' });
