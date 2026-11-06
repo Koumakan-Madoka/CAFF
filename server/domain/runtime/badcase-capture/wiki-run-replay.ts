@@ -81,7 +81,9 @@ export async function replayWikiRun(input: any, options: any) {
   if (redactTraceKnownValues(request, options.knownKeyValues || []).count) throw fail('wiki_run_input_contains_known_key');
   // Durable claim BEFORE network. A crash leaves an explicit reserved/unknown
   // attempt; retry cannot silently make another model request for this input.
-  const reservation = runs.reserve(request);
+  // Formal repeats claim a unique batch/iteration OUTSIDE the model request.
+  // Legacy one-shot callers retain request-hash identity and cannot resend it.
+  const reservation = runs.reserve(request, input.attempt);
   let result: any;
   try {
     const response = await options.client.complete(structuredClone(request));
