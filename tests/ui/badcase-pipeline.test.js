@@ -177,12 +177,20 @@ test('new checkpoint metadata is shown separately from legacy missing fields and
   assert.match(card.textContent, /现场元数据已冻结/); assert.doesNotMatch(card.textContent, /待采集能力合入|现场待接入/);
   assert.equal(card.querySelector('.stepper').children[1].className, 'done');
   assert.equal(card.closest('[data-actor]').dataset.actor, 'system');
-  assert.match(card.querySelector('.next-line').textContent, /默认 trace 级/);
+  assert.match(card.querySelector('.next-line').textContent, /有现场，走 trace 级/);
   assert.doesNotMatch(card.querySelector('.next-line').textContent, /请确认能否脱水/);
   assert.match(h.root.querySelector('[data-lane="trace"]').textContent, /不能把封存当作已通过回放检查/);
   h.data.cases[1].traceBundle.scene.metadataStatus = 'partial'; h.panel.render(h.data);
   assert.match(h.root.querySelector('[data-case-id="c2"]').textContent, /现场部分记录/);
   assert.equal(h.calls.length, 0);
+});
+test('sealed scenes show trace-only guidance and never offer recommendation even with stale eligibility', t => {
+  const sent = [], h = setup(t, null, { onRequestRecommendation: body => sent.push(body), confirm: () => true });
+  h.data.cases[1].dehydrationRecommendation = { eligible: true }; // stale server projection cannot reopen the action
+  h.panel.render(h.data); const card = h.root.querySelector('[data-case-id="c2"]');
+  assert.equal(card.querySelector('[data-dehydration-recommend]'), null);
+  assert.match(card.textContent, /有现场，走 trace 级/); assert.doesNotMatch(card.textContent, /可另选脱水/);
+  assert.equal(sent.length, 0); assert.equal(h.calls.length, 0);
 });
 test('request button is explicit, eligibility-bound, read-only when disabled and never sends automatically', t => {
   const sent = []; let accept = false;

@@ -72,7 +72,7 @@
       const steps = [
         ['done', c.kind === 'text-only' ? '用户批准的历史导入' : '页面标记'],
         [has ? c.traceBundle?.scene?.metadataStatus === 'recorded' ? 'done' : 'pending' : 'alt', has ? sceneNote(c) + '；元数据不等于已通过回放检查' : '没有现场；须先确认能否脱水'],
-        [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '默认 trace 级；可另选脱水' : r ? 'DeepSeek 推荐已生成，等待你确认能否脱水和切点' : 'DeepSeek 推荐尚未生成；用户确认后冻结判断与切点'],
+        [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '有现场，走 trace 级；现场 run 级回放尚未实现，暂不开放脱水' : r ? 'DeepSeek 推荐已生成，等待你确认能否脱水和切点' : 'DeepSeek 推荐尚未生成；用户确认后冻结判断与切点'],
         [cs?.memberships?.length ? 'done' : 'pending', cs?.memberships?.length ? '已有已确认模式标签' : '待归类；不自动改模式'],
         [old || confirmedGroup(c) ? 'done' : 'pending', old ? '原测试分组保留' : confirmedGroup(c) ? `用户确认的${splitName[confirmedGroup(c).confirmedSplit]}组已生效；原提议和旧分组记录保留` : '旧分组保留；分层重新分组待用户确认'],
         ['pending', '评分 v2 待接入：断言及逐条判定由独立 Goal 负责'],
@@ -84,7 +84,7 @@
       if (reference) for (let i = 4; i < 9; i++) steps[i] = ['skip', '无现场且非单步型；只作参考和训练组文字材料，不成为测试用例'];
       if (invalidCase && !reference && !old && !other) for (const i of [4, 5, 7, 8]) steps[i] = ['skip', '原版无有效输出：无效测试用例，不进门槛和初筛；不算通过也不算不通过'];
       const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : r && !d ? 'you' : 'system';
-      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题' : invalidCase ? '原版无有效输出：无效测试用例，不进门槛和初筛；保留原文，不自动补跑' : d ? replayed ? confirmedGroup(c) ? '分组已由用户确认，回放原文保留，等待评分 v2；本页不判分' : '回放原文已保存，等待分组和评分 v2；本页不判分' : '脱水决定已冻结，等待原版单次回放；不会自动启动' : r ? '请确认能否脱水与切点；确认后不可修改' : has ? sceneNote(c) + '；默认 trace 级，等待回放检查与评分 v2；可另选脱水' : '等待 DeepSeek 推荐，再请你确认' };
+      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题' : invalidCase ? '原版无有效输出：无效测试用例，不进门槛和初筛；保留原文，不自动补跑' : d ? replayed ? confirmedGroup(c) ? '分组已由用户确认，回放原文保留，等待评分 v2；本页不判分' : '回放原文已保存，等待分组和评分 v2；本页不判分' : '脱水决定已冻结，等待原版单次回放；不会自动启动' : r ? '请确认能否脱水与切点；确认后不可修改' : has ? sceneNote(c) + '；有现场，走 trace 级，等待回放检查与评分 v2；暂不开放脱水' : '等待 DeepSeek 推荐，再请你确认' };
     }
     function funnel() {
       const gpt = D.cases.filter(isGpt), tr = gpt.filter(hasScene), refs = gpt.filter(c => dehydration(c)?.decision?.level === 'reference'), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c) && !refs.includes(c));
@@ -127,7 +127,7 @@
       if (details.isConnected) render(row);
     }
     function requestButton(c, r) {
-      if (!c.traceBundle || c.source?.agentId !== 'role-family-gpt' || sourceOnly(c) || r?.decision || !c.dehydrationRecommendation?.eligible) return '';
+      if (hasScene(c) || !c.traceBundle || c.source?.agentId !== 'role-family-gpt' || sourceOnly(c) || r?.decision || !c.dehydrationRecommendation?.eligible) return '';
       return `<p class="hint">每次点击只请求一次 DeepSeek；不会执行工具或自动确认。</p><button type="button" class="btn" data-dehydration-recommend="${esc(c.id)}" ${writable && typeof onRequestRecommendation === 'function' ? '' : 'disabled'}>${r ? '再次请求推荐' : '请求推荐'}</button>`;
     }
     function dehydrationPanel(c) {
@@ -235,7 +235,7 @@
       const el = e.target.closest('[data-bc-mode],[data-trace-retry],[data-dehydration-confirm],[data-dehydration-recommend]'); if (!el || el.disabled) return;
       if (el.dataset.dehydrationRecommend) {
         const c = D.cases.find(c => c.id === el.dataset.dehydrationRecommend), r = c && dehydration(c);
-        if (!writable || !c?.dehydrationRecommendation?.eligible || r?.decision || typeof onRequestRecommendation !== 'function') return;
+        if (!writable || !c || hasScene(c) || !c.dehydrationRecommendation?.eligible || r?.decision || typeof onRequestRecommendation !== 'function') return;
         if (!confirmAction(`为 #${c.n} 请求一次 DeepSeek 推荐？将发送冻结的起因、步骤卡片、回复和问题/期望；不自动重试或确认。`)) return;
         onRequestRecommendation({ caseId: c.id, traceHash: c.traceBundle.hash, ...(r ? { retryOf: r.hash } : {}) }); return;
       }

@@ -403,6 +403,8 @@ export function createWikiStore(options: any) {
               || row.decision.confirmation?.reference !== provenance.reference)) throw fail('wiki_dehydration_frozen');
           return { changed: false, value: row.decision };
         }
+        // Scene run replay is not implemented; never freeze a new unreachable run.
+        if (input.kind === 'single' && c.sealedCheckpointId) throw fail('wiki_dehydration_scene_run_unsupported');
         if (input.kind === 'single') buildDehydrationPrefix(c, createWikiTraceStore(captureRoot).read(c.source, input.traceHash), input.cutStep);
         else if (input.cutStep !== null) throw fail('wiki_dehydration_cut_invalid');
         const value = { schemaVersion: 1, caseId: c.id, traceHash: input.traceHash, recommendationHash: row.hash,

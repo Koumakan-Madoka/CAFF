@@ -57,7 +57,7 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 - 九步：标记、现场、脱水、归类、分组、断言、回放检查、原版复现、入库。按下一步责任方分组，可切换列表；支持问题/期望/来源/编号搜索和阶段、模型筛选。保留 #4、#10、#14 的旧题来源身份，不把样例仓库当原现场。非 GPT 来源单列，只报告。
 - trace / run 两条漏斗分别展示实际封存、归档及用户确认可脱水的计数；尚未接入的新版检查/断言/入库计数显式为零，不把旧字面评测或 replay 登记当作通过证据。`run 级 · 待脱水确认` 不是已经获得测试资格。
 - 每条的回填状态来自 `case.traceBundle` 引用和缺失原因，提供白话缺失说明（原机器码保留在 title 和包内）。没有批准按钮；读取页面不会重跑回填、模型或任何写接口。
-- 现场按冻结证据显示「现场元数据已冻结」「现场部分记录 · 缺口已披露」或「历史现场元数据缺失」，不再统一显示等待采集合入。有现场默认 trace 级，可另选脱水；元数据齐全也不代表已通过回放检查。旧包的 `pending_capture_integration` / `scene_metadata_pending_capture_integration` 仅解释为当时未接入且历史元数据未记录，不改包、引用或 hash。
+- 现场按冻结证据显示「现场元数据已冻结」「现场部分记录 · 缺口已披露」或「历史现场元数据缺失」，不再统一显示等待采集合入。有现场显示「有现场，走 trace 级」，暂不显示「请求推荐」按钮或开放脱水；须等现场 run 级执行器实现后再放开。元数据齐全也不代表已通过回放检查。旧包的 `pending_capture_integration` / `scene_metadata_pending_capture_integration` 仅解释为当时未接入且历史元数据未记录，不改包、引用或 hash。
 - 「轨迹与上下文」首次展开才 GET 对应冻结包，不使用 `message` 或 `traceExcerpt` 兜底。三段可展开：上下文逐字段、逐次模型输出/完整参数/完整工具结果/耗时与用量、现场清单。原包内容以文本/JSON 显示而非 HTML；长块（>800 字符）默认折叠，展开仍保留完整原文。支持在本包所有三段内搜索、高亮并展开命中块；搜索不截断导出。缓存按 case ID + 引用 hash 隔离，刷新后的过期响应丢弃，失败只提供显式重试。
 - `GET /api/wikiskill/cases/:caseId/trace/export.json` 与 `/trace/export.md` 沿用同一本地只读管理门禁和 hash 验证。响应为 attachment、no-store；无包返回 `wiki_trace_missing`（404），损坏仍拒绝（409）。JSON 是冻结包自身（仅排版差异），没有导出时间/当前分组等附加字段。Markdown 以包信息、上下文、逐步轨迹、用量、现场组织 JSON 代码块；每个字段保留，可由各块无损重组原包，动态围栏避免正文反引号破坏结构。两种格式均不访问源房间、路径或现场文件正文，不二次脱敏/推断/截断。
 
@@ -93,7 +93,7 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 `recommendDehydration(input, { client, knownKeyValues })` 是受信操作入口，不开放 HTTP 上传材料/答案或任意源路径。调用方须先检查同一 `buildDehydrationRequest` 的脱敏投影，并传 `approvedRequestHash`。核对 revision、caseId、traceHash 后调用 `client.ask`；每条最多两次且仅解析失败允许第二次。并发占用同 store 拒绝，首次网络返回后检查 revision 再决定是否重试；writer-lock 内再核对 revision/hash。HTTP/网络拒绝立即停止，不重试、不保存伪造答案。已经保存的同请求只返回原记录、不重复外发；更换请求或答案不覆盖首份推荐。输出字符串及解析后的 JSON 字符串均作已知值替换，异常只报告固定码，不回显上游正文或凭据。
 
-`POST /api/wikiskill/cases/:id/dehydration/recommend` 是页面的受信操作入口，使用 local-admin 的 Host/loopback/Origin/CSRF 守卫。闭合字段只有 `confirmed: true, expectedRevision, traceHash` 及可选 `retryOf`（上一份推荐 hash）；不能上传起因、答案、模型、key、路径或运行时配置。只允许活动的 GPT 来源、非 #4/#10/#14 旧题来源、具有冻结轨迹包且尚未冻结判断的用例；删除、缺输入、无效前缀、过期 revision/hash 在读取凭据前拒绝。有现场仍默认 trace，用户也可明确选择推荐。起因仅从冻结触发消息中提取；fresh 输入剥离提示词及其他历史，续用输入剥离 delta 包装，不读取当前房间或候选/分组/结果。
+`POST /api/wikiskill/cases/:id/dehydration/recommend` 是页面的受信操作入口，使用 local-admin 的 Host/loopback/Origin/CSRF 守卫。闭合字段只有 `confirmed: true, expectedRevision, traceHash` 及可选 `retryOf`（上一份推荐 hash）；不能上传起因、答案、模型、key、路径或运行时配置。只允许活动的 GPT 来源、非 #4/#10/#14 旧题来源、无 `sealedCheckpointId`、具有冻结轨迹包且尚未冻结判断的用例；有现场、删除、缺输入、无效前缀、过期 revision/hash 在读取凭据前拒绝。有现场的推荐请求返回 `wiki_dehydration_ineligible`（422），页面即使拿到过期资格也不显示按钮。起因仅从冻结触发消息中提取；fresh 输入剥离提示词及其他历史，续用输入剥离 delta 包装，不读取当前房间或候选/分组/结果。
 
 Badcase 页在「脱水」步骤为尚无推荐的合资格用例显示「请求推荐」。一次点击只发一次模型请求（传输亦有一次预算），不执行工具、不自动冻结、不改组。按存储根目录和 caseId 的进程内占用拒绝并发请求（包括不同 controller/store 对象）；已保存推荐后的重复请求为 409。新页面推荐的解析失败仅允许携带当前 `retryOf` 明确再请求一次，成功或其他回退原因不可重新请求，冻结后任何推荐请求均拒绝。第二份推荐**追加**到 `dehydrations` 并绑定 `retryOf`，第一份 JSON 原文、请求、hash 原样保留，页面可展开此前推荐；确认、回放计数和分组读取最后一份记录，不覆盖旧推荐或既有决定。失败或响应未知时页面停写，须刷新核对，不自动重发；进程内占用不承诺跨进程或崩溃后的计费请求去重。
 
@@ -103,13 +103,13 @@ Badcase 页在「脱水」步骤为尚无推荐的合资格用例显示「请求
 
 `saveDehydrationRecommendation` 在新的 Wiki 快照 `dehydrations` 中保存实际脱敏请求、JSON 原文/解析字段、依据核验、回退原因、尝试用量、建议、时间及独立 hash。不修改用例内容、冻结轨迹包/hash、旧组别、旧回放登记和历史结果。页面显示理由、原文依据/核验、切点卡片和完整脱敏请求/输出，按「等你处理」分组，不读取候选或判分结果参与推荐。
 
-`POST /api/wikiskill/dehydration-confirm` 使用本地管理 Host/loopback/Origin/CSRF 门禁；闭合字段为 `confirmed, expectedRevision, caseId, traceHash, recommendationHash, kind, cutStep`。客户端必须显式确认，hash/revision 必须对应同一推荐和轨迹包。单步型切点须能构造有效冻结前缀；贯穿型/说不清必须 `cutStep=null`，无现场时冻结为 `reference`，有现场则保留 `trace`。决定另带 `confirmedBy=local-user`、时间、内容 hash 和事件；同决定重试幂等，任何改判/改切点均拒绝，见过评测结果也不能重开。这个用户身份语义依赖本地管理入口与任务授权，不是对同 OS 进程的安全隔离。确认不发起模型、不执行工具、不改组、不生成断言。页面失败或结果未知时停写，刷新核对，不自动重试。
+`POST /api/wikiskill/dehydration-confirm` 使用本地管理 Host/loopback/Origin/CSRF 门禁；闭合字段为 `confirmed, expectedRevision, caseId, traceHash, recommendationHash, kind, cutStep`。客户端必须显式确认，hash/revision 必须对应同一推荐和轨迹包。现场 run 级回放尚未实现，具有 `sealedCheckpointId` 的用例不能新确认 `single`，返回 `wiki_dehydration_scene_run_unsupported`（409），不增加快照或写入决定；等现场执行器实现后再放开。已有推荐、冻结决定、轨迹包及 hash 不迁移或改写（当前 9 条历史推荐均无现场），已有同决定的幂等读取不重冻结。无现场单步型切点须能构造有效冻结前缀；贯穿型/说不清必须 `cutStep=null`，无现场时冻结为 `reference`，有现场则保留 `trace`。决定另带 `confirmedBy=local-user`、时间、内容 hash 和事件；同决定重试幂等，任何改判/改切点均拒绝，见过评测结果也不能重开。这个用户身份语义依赖本地管理入口与任务授权，不是对同 OS 进程的安全隔离。确认不发起模型、不执行工具、不改组、不生成断言。页面失败或结果未知时停写，刷新核对，不自动重试。
 
 已完成的历史推荐范围是页面 #1/#2/#3/#5/#6/#8/#12/#15/#16（同时绑定 caseId），不是报告行号。9 条推荐及用户确认保留；#8 保留模型贯穿型推荐和用户单步型第 5 步改判；#12 经用户单向撤回 run 资格，冻结为贯穿型／只作参考，原推荐、首次确认和旧回放不删除、不改 hash。当前计入 8 次原版回放，6 有效、#5/#8 两次无效，不补跑；有效不表示评分通过。#4/#10/#14 只作旧题来源；缺系统提示词的 #7/#9/#11/#13 已按 B11 在隔离 Wiki 副本删除，冻结包与历史记录保留，生产尚未导入这些变更。带 pi-coding-agent 0.85.1 和固定 caff-capabilities schema 的单次模型回放见下节，不能把推荐/确认当成已回放或判分证据。
 
 ## run 级回放（不判分）
 
-run 级用于控制成本：**从用户冻结的切点开始**，而不是从本轮开头重跑。没有现场时只请求一次模型，不执行新工具；有现场时应恢复现场、从切点真实执行工具到本轮自然结束再判分。本 Goal 没有有现场的 run 用例（#19/#20 走 trace），暂不实现该执行器；`buildWikiRunRequest` 对带 `sealedCheckpointId` 的用例返回 `wiki_run_scene_unsupported`，不能用无工具单次请求冒充。
+run 级用于控制成本：**从用户冻结的切点开始**，而不是从本轮开头重跑。没有现场时只请求一次模型，不执行新工具；有现场时应恢复现场、从切点真实执行工具到本轮自然结束再判分。本 Goal 没有有现场的 run 用例（#19/#20 走 trace），暂不实现该执行器；因此推荐资格暂时排除现场用例，确认入口也拒绝为其新冻结 single/run，不能先冻结成没有执行路径的 run 题；`buildWikiRunRequest` 对带 `sealedCheckpointId` 的用例返回 `wiki_run_scene_unsupported`，不能用无工具单次请求冒充。
 
 受信入口 `replayWikiRun({ store, runs, caseId, toolset, approvedRequestHash, candidate? }, { client, knownKeyValues? })` 不开放 HTTP 启动、任意前缀上传或答案上传。调用前由操作方核对同一请求 hash，并明确获得外发/调用授权。只接受已冻结 `single/run` 决定，核对决定 hash、用例和轨迹包 hash，逐字读取 `buildDehydrationPrefix` 的切点之前前缀；不附实际问题、期望、推荐、候选结果、旧分组或判分信息。系统提示词历史展示版/路径占位不回填，续用消息及前置完整工具结果保留。
 

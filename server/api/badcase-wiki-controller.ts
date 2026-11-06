@@ -35,7 +35,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_dehydration_ineligible: 422, wiki_dehydration_cut_invalid: 422, wiki_dehydration_prefix_unavailable: 422,
     wiki_dehydration_busy: 409, wiki_dehydration_recommendation_exists: 409, wiki_case_deleted: 409,
     wiki_dehydration_cause_invalid: 422, wiki_dehydration_input_too_large: 422,
-    wiki_dehydration_model_unavailable: 503, wiki_dehydration_model_failed: 503,
+    wiki_dehydration_model_unavailable: 503, wiki_dehydration_model_failed: 503, wiki_dehydration_scene_run_unsupported: 409,
     wiki_candidate_invalid: 422, wiki_candidate_already_baseline: 409, wiki_candidate_leak: 422, wiki_candidate_not_found: 404, wiki_candidate_deprecated: 409,
     wiki_candidate_approved_required: 409, wiki_candidate_confirmation_required: 409, wiki_candidate_role_mismatch: 409,
     wiki_target_unknown: 422, wiki_candidate_target_mismatch: 409, wiki_candidate_anchor_unsupported: 409,

@@ -8,7 +8,7 @@ const fail = (code: string) => Object.assign(Error(code), { code });
 // failure gets one identical retry; the page uses manual policy and one call.
 // One manual retry is allowed only for a new page parse failure. Old rows stay immutable.
 export function pageRecommendationAvailability(item: any, previous: any) {
-  const eligible = !!item?.traceBundle && item?.source?.agentId === 'role-family-gpt'
+  const eligible = !!item?.traceBundle && !item?.sealedCheckpointId && item?.source?.agentId === 'role-family-gpt'
     && ![4, 10, 14].includes(wikiGoalCaseNumber(item?.id)!) && !previous?.decision
     && (!previous || previous.recommendation?.retryPolicy === 'manual' && previous.recommendation?.fallbackReason === 'parse_failed' && !previous.retryOf);
   return { eligible };

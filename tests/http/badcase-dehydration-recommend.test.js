@@ -8,7 +8,7 @@ function setup(t, mode = 'valid') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-recommend-api-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const scope = { globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source') }, store = createWikiStore(scope);
   const c = store.addMarkedCase({ source: { projectId: null, conversationId: 'room', conversationTitle: 'Synthetic room', messageId: 'marked', agentId: mode === 'other' ? 'role-family-deepseek' : 'role-family-gpt' },
-    role: 'GPT', actual: 'wrong', expected: 'right', message: 'reply', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false }).case;
+    role: 'GPT', actual: 'wrong', expected: 'right', message: 'reply', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false, ...(mode === 'scene' ? { sealedCheckpointId: 'sealed-synthetic' } : {}) }).case;
   const packet = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', origin: 'mark', source: c.source, frozenAt: '2026-11-06T00:00:00Z', complete: false, missingReasons: [], redaction: { policy: 'known_values_only' },
     markedStep: 1, markedMessage: 'reply', actual: 'wrong', expected: 'right', context: { systemPrompt: 'system', priorSessionEntries: [], trigger: { message: { role: 'user', content: 'solve this' } } },
     steps: [{ step: 1, output: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] }, toolResults: [] }] };
@@ -64,6 +64,28 @@ test('eligible new mark sends exactly once with runtime-only config, stores reco
   h.store.confirmDehydration({ caseId: h.c.id, traceHash: row.traceHash, recommendationHash: row.hash, kind: 'single', cutStep: 1, expectedRevision: h.store.read().revision });
   await rejects(h.invoke(), 'wiki_dehydration_frozen', 409);
   assert.equal(h.calls, 1); assert.deepEqual(h.store.readCaseTrace(h.c.id), before);
+});
+test('sealed scenes cannot request a recommendation; API projection excludes them before runtime/auth/network', async t => {
+  const h = setup(t, 'scene'), before = h.store.read(), packet = h.store.readCaseTrace(h.c.id);
+  await rejects(h.invoke(), 'wiki_dehydration_ineligible', 422);
+  assert.equal(h.opens, 0); assert.equal(h.calls, 0);
+  const view = await h.invoke(undefined, { method: 'GET', pathname: '/api/wikiskill' });
+  assert.equal(view.body.cases[0].dehydrationRecommendation.eligible, false);
+  assert.deepEqual(h.store.read(), before); assert.deepEqual(h.store.readCaseTrace(h.c.id), packet);
+});
+test('sealed legacy recommendation cannot freeze single/run through HTTP or direct store; non-single remains trace', async t => {
+  const h = setup(t, 'scene');
+  // Existing recommendation fixture only: no model call and no migration of old data.
+  const item = h.store.read().cases[0], built = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration').buildDehydrationRequest({ caseRecord: item, bundle: h.packet, cause: { source: 'trigger', text: 'solve this' } });
+  const row = h.store.saveDehydrationRecommendation({ built, expectedRevision: h.store.read().revision, response: { model: 'deepseek/deepseek-v4-flash', attempts: [{ content: JSON.stringify({ kind: '单步型', cutStep: 1, reason: '本步决定', evidence: 'reply' }), finishReason: 'stop' }] } });
+  const before = h.store.read(), input = { caseId: h.c.id, traceHash: row.traceHash, recommendationHash: row.hash, kind: 'single', cutStep: 1, expectedRevision: before.revision };
+  assert.throws(() => h.store.confirmDehydration(input), e => e.code === 'wiki_dehydration_scene_run_unsupported');
+  await rejects(h.invoke({ confirmed: true, ...input }, { pathname: '/api/wikiskill/dehydration-confirm' }), 'wiki_dehydration_scene_run_unsupported', 409);
+  assert.deepEqual(h.store.read(), before); assert.equal(h.store.getDehydration(h.c.id).decision, undefined);
+  const result = await h.invoke({ confirmed: true, ...input, kind: 'throughout', cutStep: null }, { pathname: '/api/wikiskill/dehydration-confirm' });
+  assert.equal(result.body.dehydrations[0].decision.level, 'trace');
+  const { decision, ...unchanged } = result.body.dehydrations[0]; assert.deepEqual(unchanged, row);
+  assert.equal(h.calls, 0); assert.equal(h.opens, 0);
 });
 test('missing trace, non-GPT, old sources and deleted cases cannot reach runtime', async t => {
   for (const mode of ['missing', 'other', 'source', 'deleted']) {
