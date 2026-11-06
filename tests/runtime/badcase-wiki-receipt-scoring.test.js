@@ -9,7 +9,11 @@ function fixture(evidence = 'reply') {
     status: 'frozen', confirmedAt: '2026-11-04T00:00:00.000Z', confirmationRecord: 'Synthetic user approval' };
   const configuration = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: {}, promptHash: hash('synthetic-not-a-judge-prompt') };
   const binding = bindWikiJudge(configuration, rubric), seen = [];
-  const judge = { configuration, async evaluate(input) { seen.push(input); return { judgments: rubric.questions.map(q => ({ criterionId: q.id, verdict: 'satisfied', reason: 'Synthetic assessment', evidence: [{ source: 'reply', text: 'Ready.' }] })) }; } };
+  const judge = { configuration, async evaluate(input) { seen.push(input); return { judgments: rubric.questions.map(q => ({ criterionId: q.id, verdict: 'satisfied', reason: 'Synthetic assessment', evidence: [
+    q.evidence === 'trace' ? { source: 'trace', text: input.evidence.traceSummary.text }
+      : q.evidence === 'files' ? { source: 'file', path: input.evidence.files[0].path, text: input.evidence.files[0].content }
+        : { source: 'reply', text: 'Ready.' },
+  ] })) }; } };
   const receipt = { success: true, finalText: 'Ready. Next, test P1.', replySource: 'public', modelCalls: [{ success: true }], beforeHash: hash('tree'), afterHash: hash('tree'),
     toolCalls: [{ name: 'read', args: { path: '/work/restored/a.txt' }, isError: false }] };
   const scoring = { rubric, binding, task: 'Explain the result', expected: 'Clear result' };

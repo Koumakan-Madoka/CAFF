@@ -129,6 +129,10 @@ function parseJudgments(output: unknown, input: WikiJudgeInput): WikiCriterionJu
         : quote.source === 'file' ? input.evidence?.files?.find(f => f.path === quote.path)?.content : undefined;
       if (typeof source !== 'string' || !source.includes(quote.text)) throw fail('wiki_judge_output_invalid');
     }
+    // All citations above are verified, including the path for file evidence.
+    // Positive execution claims need the configured source, not self-report alone.
+    const requiredSource = q.evidence === 'files' ? 'file' : q.evidence;
+    if (j.verdict === 'satisfied' && !j.evidence.some((quote: WikiJudgeCitation) => quote.source === requiredSource)) throw fail('wiki_judge_output_invalid');
     return structuredClone(j);
   });
 }

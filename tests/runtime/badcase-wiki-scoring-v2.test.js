@@ -135,6 +135,71 @@ test('binding mutation during a successful or failed asynchronous vote is fatal,
     await assert.rejects(h.score(), /wiki_judge_binding_changed/); assert.equal(calls, 1);
   }
 });
+function citationFixture(primary) {
+  const h = setup(primary), { createWikiRubric } = require(base + 'wiki-rubric');
+  const rubric = { ...createWikiRubric({ ...h.rubric, actual: 'Unclear', expected: 'Clear result', questions: [
+    { id: 'q1', question: 'The required behavior is evidenced.', evidence: primary },
+    { id: 'q2', question: 'The trace shows the operation.', evidence: 'trace' },
+    { id: 'q3', question: 'The file shows the outcome.', evidence: 'files' },
+    { id: 'q4', question: 'The reply explains the outcome.', evidence: 'reply' },
+  ] }), status: 'frozen', confirmedAt: h.rubric.confirmedAt, confirmationRecord: h.rubric.confirmationRecord };
+  const run = { ...h.run, traceSummary: 'Verified tool operation.', files: [{ path: 'result.txt', content: 'Verified file outcome.' }] };
+  const citations = { reply: { source: 'reply', text: 'The fix is ready.' }, trace: { source: 'trace', text: run.traceSummary },
+    files: { source: 'file', path: 'result.txt', text: run.files[0].content } };
+  const output = () => ({ judgments: rubric.questions.map(q => ({ criterionId: q.id, verdict: 'satisfied', reason: 'Synthetic assessment', evidence: [structuredClone(citations[q.evidence])] })) });
+  const binding = api().bindWikiJudge(h.configuration, rubric), score = evaluate => api().scoreWikiRun({ rubric, binding, run, hardAssertions: [] }, { configuration: h.configuration, evaluate });
+  return { rubric, binding, run, citations, output, score };
+}
+test('satisfied requires a citation from the configured source, not merely any other available source', async () => {
+  for (const required of ['reply', 'trace', 'files']) for (const other of ['reply', 'trace', 'files'].filter(s => s !== required)) {
+    const h = citationFixture(required); let calls = 0;
+    const result = await h.score(async () => { calls++; const row = h.output(); row.judgments[0].evidence = [h.citations[other]]; return row; });
+    assert.equal(result.status, 'error', required + ' cannot use only ' + other); assert.equal(result.reason, 'judge_output_invalid');
+    assert.equal(calls, 2); assert.deepEqual(result.votes, []); assert.deepEqual(result.judgments, []); assert(api().isWikiJudgeTechnicalError(result));
+    const totals = require(base + 'wiki-comparison-totals').wikiComparisonTotals([{ runs: [{ variant: 'original', ...result }] }], 1);
+    assert.equal(totals.original.errors, 1); assert.equal(totals.original.scored, 0); assert.equal(totals.original.failed, 0);
+  }
+});
+test('one matching citation suffices and additional provided sources are allowed, independent of citation order', async () => {
+  for (const required of ['reply', 'trace', 'files']) {
+    const h = citationFixture(required); let calls = 0;
+    const result = await h.score(async () => { calls++; const row = h.output(); row.judgments[0].evidence = [...Object.keys(h.citations).filter(s => s !== required).map(s => h.citations[s]), h.citations[required]]; return row; });
+    assert.equal(result.status, 'pass'); assert.equal(calls, 3);
+  }
+});
+test('file citations still require a supplied path and every extra citation must remain an exact original substring', async () => {
+  for (const bad of [{ source: 'file', path: 'missing.txt', text: 'Verified file outcome.' }, { source: 'trace', text: 'invented operation' }]) {
+    const h = citationFixture('files'); let calls = 0;
+    const result = await h.score(async () => { calls++; const row = h.output(); row.judgments[0].evidence.push(bad); return row; });
+    assert.equal(result.status, 'error'); assert.equal(result.reason, 'judge_output_invalid'); assert.equal(calls, 2);
+  }
+});
+test('not-satisfied still allows empty evidence or valid quotes from another provided source', async () => {
+  for (const required of ['reply', 'trace', 'files']) for (const empty of [true, false]) {
+    const h = citationFixture(required); let calls = 0;
+    const result = await h.score(async () => { calls++; const row = h.output(); row.judgments[0].verdict = 'not-satisfied';
+      row.judgments[0].evidence = empty ? [] : [h.citations[required === 'reply' ? 'trace' : 'reply']]; return row; });
+    assert.equal(result.status, 'fail'); assert.equal(result.reason, 'rubric_not_satisfied'); assert.equal(calls, 3);
+  }
+});
+test('source mismatches retry the same frozen input once per vote and preserve prior accepted votes', async () => {
+  for (const persistent of [false, true]) {
+    const h = citationFixture('trace'), seen = []; let calls = 0;
+    const result = await h.score(async input => { seen.push(structuredClone(input)); const row = h.output();
+      if (++calls === 2 || persistent && calls === 3) row.judgments[0].evidence = [h.citations.reply]; return row; });
+    assert.equal(result.status, persistent ? 'error' : 'pass'); assert.equal(result.reason, persistent ? 'judge_output_invalid' : null);
+    assert.equal(calls, persistent ? 3 : 4); assert.equal(result.votes.length, persistent ? 1 : 3);
+    assert(seen.every(input => JSON.stringify(input) === JSON.stringify(api().buildWikiJudgeInput(h.run, h.rubric))));
+  }
+});
+test('historical comparison projection preserves pre-fix votes without reapplying new source validation', () => {
+  const h = citationFixture('trace'), votes = Array.from({ length: 3 }, () => { const row = h.output(); row.judgments[0].evidence = [h.citations.reply]; return row.judgments; });
+  const legacy = { kind: 'wiki-score-v2', status: 'pass', reason: null, binding: h.binding, rubricHash: h.rubric.hash,
+    hardAssertions: [{ id: 'completed', status: 'pass' }, { id: 'publicReply', status: 'pass' }], votes,
+    judgments: h.rubric.questions.map(q => ({ criterionId: q.id, verdict: 'satisfied', majority: true })), referenceMetrics: {} };
+  const before = JSON.stringify(legacy), projected = require(base + 'wiki-comparison-scoring').projectWikiAssessment(legacy, h.rubric, h.binding, []);
+  assert.deepEqual(projected, legacy); assert.equal(JSON.stringify(legacy), before);
+});
 test('only requested evidence is attached; UTF-8 byte caps and truncation flags are explicit', async () => {
   const h = setup('files'), run = { ...h.run, traceSummary: 'unneeded', files: Array.from({ length: 6 }, (_, i) => ({ path: `src/f${i}.txt`, content: '字'.repeat(30000) })) };
   const input = api().buildWikiJudgeInput(run, h.rubric);

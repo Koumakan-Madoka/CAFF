@@ -87,6 +87,21 @@ test('technical judge errors retry only the saved reply, continue remaining plan
     assert.equal(JSON.stringify(r).includes('private backend fault'), false);
   }
 });
+test('reply-only self-claims cannot satisfy trace assertions; source errors stay technical and do not replay workers', async () => {
+  const h = fixture(); h.config.repeats = 2;
+  const rubric = { ...createWikiRubric({ ...h.scoring.rubric, actual: 'Unclear', expected: 'Clear result',
+    questions: h.scoring.rubric.questions.map(q => ({ ...q, evidence: q.id === 'q1' ? 'trace' : 'reply' })) }),
+    status: 'frozen', confirmedAt: h.scoring.rubric.confirmedAt, confirmationRecord: h.scoring.rubric.confirmationRecord };
+  h.scoring.rubric = rubric; h.scoring.binding = bindWikiJudge(h.judge.configuration, rubric);
+  // The existing mock returns only reply citations even though trace is provided.
+  const result = await runComparison(h.config, h.options);
+  assert.equal(h.state.executions, 4); assert.equal(h.state.judgeInputs.length, 8); assert.equal(result.completed, false);
+  assert(result.runs.every(r => r.status === 'error' && r.reason === 'judge_output_invalid'));
+  assert.equal(result.totals.original.errors, 2); assert.equal(result.totals.candidate.errors, 2);
+  const totals = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-totals').wikiComparisonTotals([{ runs: result.runs }], 2);
+  assert.equal(totals.original.scored, 0); assert.equal(totals.candidate.scored, 0);
+  for (let i = 0; i < 8; i += 2) assert.deepEqual(h.state.judgeInputs[i], h.state.judgeInputs[i + 1]);
+});
 test('missing required evidence still stops for investigation; only judge technical faults are nonfatal', async () => {
   const h = fixture();
   h.config.rules = { kind: 'file-literals-v1', files: [{ path: 'a.txt', contains: ['active'], notContains: [] }] };
