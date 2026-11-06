@@ -352,6 +352,71 @@ test('pinned run plan detects tool/prefix request drift and never substitutes th
  assert.equal(h.plan().prepared.find(c=>c.sourceCaseId===h.sourceCaseId).comparisonConfig.scoring.task,h.task);assert.equal(sceneTasks,2);
  h.options.runToolset.definitions[0].description+=' changed';assert.throws(h.plan,{code:'wiki_experiment_changed'});
 });
+function singleCallKernel(h,statuses={},judgeFault=false) {
+ const p=h.pin(),item=p.prepared.find(c=>c.sourceCaseId===h.sourceCaseId),requests=[],events=[];let closed=0,judged=0;
+ const judge={configuration:h.judges[h.sourceCaseId].configuration,evaluate:async input=>{judged++;assert.ok(!Object.hasOwn(input,'variant'));assert.ok(!Object.hasOwn(input,'evidence'));
+  if(judgeFault&&judged<=2)return 'not-json';
+  return {judgments:input.questions.map(q=>({criterionId:q.id,verdict:'satisfied',reason:'Synthetic clear reply',evidence:[{source:'reply',text:'Clear result.'}]}))};}};
+ const options={confirmed:true,executionId:'1b947e3a-88c8-4a52-a9e1-c32dcd8c99df',experimentPlanHash:p.summary.experiment.planHash,knownValues:[],judge,onEvent:e=>events.push(e),
+  createRunClient:async()=>{let reason=null;return {state:()=>({reason}),close:async()=>{closed++;},complete:async request=>{
+   const n=requests.length;requests.push(structuredClone(request));const status=statuses[n];
+   if(status==='error'){reason='evaluation_codex_proxy_failed';throw Error('PRIVATE NETWORK DETAILS');}
+   if(status==='auth'){reason='evaluation_codex_access_rejected';throw Error('PRIVATE AUTH DETAILS');}
+   const content=status==='invalid'?[{type:'toolCall',name:'read',arguments:{path:'DO-NOT-EXECUTE'}}]:status==='empty'?[]:[{type:'text',text:'Clear result.'}];
+   return {networkRequests:1,durationMs:2,message:{role:'assistant',stopReason:status==='invalid'?'toolUse':'stop',content,usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2}}};
+  }};}};
+ return {p,item,requests,events,options,closed:()=>closed,judged:()=>judged,run:()=>require('../../scripts/badcase-capture/single-call-comparison.cjs').runSingleCallComparison(item.comparisonConfig,options)};
+}
+test('formal run kernel alternates ten valid outputs each, makes one call per claim and only scores public replies',async t=>{
+ const h=runBatchFixture(t),f=singleCallKernel(h),before=h.store.read(),r=await f.run();
+ assert.equal(r.completed,true);assert.equal(r.fatal,false);assert.equal(r.runs.length,20);assert.equal(f.requests.length,20);assert.equal(f.closed(),20);assert.equal(f.judged(),60);
+ assert.deepEqual(r.runs.map(r=>r.variant),Array.from({length:10},()=>['original','candidate']).flat());
+ assert.ok(r.runs.every(r=>r.status==='pass'&&r.toolExecutions===0&&r.assessment.votes.length===3));
+ for(const v of ['original','candidate'])assert.equal(new Set(f.requests.filter(q=>q.variant.kind===v).map(q=>require('../../build/server/domain/runtime/badcase-capture/wiki-run-replay').wikiRunHash(q))).size,1);
+ assert.equal(r.modelCallsKnown,20);assert.equal(r.callsUnavailable,false);assert.deepEqual(h.store.read(),before);
+ assert.doesNotMatch(JSON.stringify(r),/PRIVATE NETWORK|PRIVATE AUTH/);
+ await assert.rejects(f.run(),{code:'wiki_run_already_reserved'});assert.equal(f.requests.length,20,'the same batch cannot silently send its claims again');
+});
+test('formal run invalid tools/empty replies and transient errors share replacements, retain raw packets and never enter valid scores',async t=>{
+ const h=runBatchFixture(t),f=singleCallKernel(h,{0:'invalid',1:'error',2:'empty',3:'error'}),r=await f.run();
+ assert.equal(r.completed,true);assert.equal(r.runs.length,24);assert.equal(f.requests.length,24);assert.equal(f.closed(),24);assert.equal(f.judged(),60);
+ assert.equal(r.runs.filter(r=>r.status==='invalid').length,2);assert.equal(r.runs.filter(r=>r.status==='error').length,2);assert.equal(r.runs.filter(r=>r.status==='pass').length,20);
+ assert.equal(r.runs[0].assessment,undefined);assert.equal(r.runs[1].assessment,undefined);
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config).read(r.runs[0].runReplayId);
+ assert.equal(saved.result.message.content[0].name,'read');assert.equal(saved.result.toolExecutions,0);
+});
+test('formal run stops incomplete at shared replacement cap and stops immediately on auth failures without refreshing or switching',async t=>{
+ for(const status of ['invalid','error','auth']){
+  const h=runBatchFixture(t),f=singleCallKernel(h,Object.fromEntries(Array.from({length:6},(_,i)=>[i,status]))),r=await f.run();
+  assert.equal(r.completed,false);assert.equal(f.requests.length,status==='auth'?1:5);assert.equal(f.judged(),0);assert.equal(r.fatal,status==='auth');
+  assert.ok(r.runs.every(r=>!['pass','fail'].includes(r.status)));assert.doesNotMatch(JSON.stringify(r),/PRIVATE/);
+ }
+});
+test('formal run judge error consumes its existing output slot, while confirmation/request drift rejects before auth or requests',async t=>{
+ const h=runBatchFixture(t),f=singleCallKernel(h,{},true),r=await f.run();assert.equal(r.completed,false);assert.equal(r.runs.length,20);assert.equal(f.requests.length,20);
+ assert.equal(r.runs[0].status,'error');assert.equal(r.runs[0].assessment.reason,'judge_output_invalid');assert.equal(r.fatal,false);
+ for(const change of ['confirmation','request']){
+  const x=runBatchFixture(t),g=singleCallKernel(x);if(change==='confirmation')g.options.confirmed=false;else g.item.comparisonConfig.originalRequestHash='f'.repeat(64);
+  await assert.rejects(g.run(),/wiki_run_(confirmation_required|stale)/);assert.equal(g.requests.length,0);
+ }
+});
+test('formal run preserves safe auth-construction failure and already-generated replies on judge-binding drift, without further calls',async t=>{
+ const h=runBatchFixture(t),f=singleCallKernel(h);f.options.createRunClient=async()=>{throw Object.assign(Error('PRIVATE AUTH TEXT'),{code:'evaluation_codex_access_expired'});};
+ const auth=await f.run();assert.equal(auth.fatal,true);assert.equal(auth.runs.length,1);assert.equal(auth.runs[0].reason,'evaluation_codex_access_expired');assert.equal(f.requests.length,0);assert.doesNotMatch(JSON.stringify(auth),/PRIVATE/);
+ const x=runBatchFixture(t),g=singleCallKernel(x);g.options.judge.evaluate=async()=>{g.options.judge.configuration.settings.temperature=1;return {};};
+ const drift=await g.run();assert.equal(drift.fatal,true);assert.equal(drift.runs.length,1);assert.equal(drift.runs[0].reason,'wiki_judge_binding_changed');assert.equal(g.requests.length,1);assert.equal(g.closed(),1);
+});
+test('mixed staged execution routes run cases to the no-tool kernel, trace cases to the existing executor and tests only after pooled acceptance',async t=>{
+ const h=runBatchFixture(t);h.pin();const f=v2Execution(h);let oneShotCalls=0;
+ h.judges[h.sourceCaseId].evaluate=async input=>({judgments:input.questions.map(q=>({criterionId:q.id,verdict:input.publicReply==='Clear result.'?'satisfied':'not-satisfied',reason:'Synthetic result clarity',evidence:[{source:'reply',text:input.publicReply}]}))});
+ f.options.knownValues=[];f.options.createRunClient=async()=>({state:()=>({reason:null}),close:async()=>{},complete:async request=>{oneShotCalls++;return {networkRequests:1,durationMs:1,
+  message:{role:'assistant',stopReason:'stop',content:[{type:'text',text:request.variant.kind==='original'?'Unclear result.':'Clear result.'}]}};}});
+ const r=await f.run();assert.equal(r.completed,true);assert.equal(r.gateDecision.outcome,'accepted');assert.equal(oneShotCalls,20);assert.equal(f.calls.length,2);
+ const run=r.cases.find(c=>c.sourceCaseId===h.sourceCaseId);assert.equal(run.execution.level,'run');assert.equal(run.totals.original.invalid,0);assert.equal(run.totals.original.failed,10);assert.equal(run.totals.candidate.passed,10);
+ assert.equal(r.gateDecision.byLevel.run.original.total,10);assert.equal(r.gateDecision.byLevel.trace.original.total,10);
+ const at=f.events.findIndex(e=>e.event==='gate_decision');assert.ok(f.events.findIndex(e=>e.event==='run'&&e.stage==='test')>at);
+ const text=require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(r);assert.match(text,/trace 级/);assert.match(text,/run 级/);assert.match(text,/无效/);
+});
 test('v2 batch binds independent experiment and frozen rubrics before execution; original tasks are not synthetic replay labels',t=>{
  const h=scoringV2Fixture(t),before=h.store.read(),p=h.pin();
  assert.equal(p.summary.kind,'wiki-staged-batch-comparison-v2');assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v1');assert.deepEqual(h.store.read(),before);
