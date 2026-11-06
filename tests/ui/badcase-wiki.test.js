@@ -483,6 +483,18 @@ test('D14/D15 display Goal numbers and train/gate/test without changing stored s
   assert.doesNotMatch(h.root.querySelector('#view-cases').textContent,/entry-1|entry-999/);assert.equal(h.posts().length,0);
   assert.equal(h.saved().cases[0].split,'train');
 });
+test('mixed run results and live progress show invalid counts and trace/run reports without inventing a sealed replay',async t=>{
+ const t1={planned:10,attempted:11,passed:0,failed:10,errors:0,invalid:1,notRun:0,scored:10,passRate:0},t2={...t1,attempted:10,passed:6,failed:4,invalid:0,passRate:.6},totals={original:t1,candidate:t2};
+ const paired={original:{passed:0,total:10,invalid:1,errors:0},candidate:{passed:6,total:10,invalid:0,errors:0}};
+ const result={id:'mixed',createdAt:'2026-11-06T10:00:00Z',kind:'wiki-staged-batch-comparison-v2',evaluation:{splitPolicy:'d15-frozen-v1'},model:'openai-codex/gpt-6.1-sol',modelCallsKnown:21,completed:true,
+  gateDecision:{outcome:'accepted',repair:{...paired,pValue:.0054,passed:true},noHarm:{original:{passed:10,total:10},candidate:{passed:10,total:10},loss:0,allowedLoss:1,passed:true},byLevel:{trace:{...paired},run:{...paired}}},byStage:{gate:totals},
+  cases:[{sourceCaseId:'c1',stage:'gate',category:'reproduction',execution:{level:'run'},status:'completed',totals,rubric:{version:1,hash:'f'.repeat(64)},runs:[{variant:'original',iteration:1,status:'invalid',reason:'other_tool_requested'}]}]};
+ const h=setup(t);h.saved().replayCases=[];h.saved().comparisons=[result];h.saved().executions=[{id:'batch-execution-mixed',status:'running',updatedAt:new Date().toISOString(),
+  plan:{kind:'wiki-staged-batch-comparison-v2',model:result.model,modelConfig:{thinking:'xhigh',transport:'sse'},scoringKind:'wiki-score-v2',cases:[]},current:null,summary:{plannedRuns:20,completedRuns:21,knownTokens:42,usageComplete:true,totals,byStage:{gate:totals,test:totals}},cases:[{sourceCaseId:'c1',stage:'gate',totals}]}];
+ await h.panel.load();await h.click('[data-tab="impact"]');const text=h.root.querySelector('#impact-runs').textContent;
+ for(const s of ['trace 级门槛','run 级门槛','无效 1','冻结前缀单次决策','无效（不进有效分母）'])assert.ok(text.includes(s),s);
+ assert.doesNotMatch(text,/未登记可回放封存/);assert.match(h.root.querySelector('#execution-progress').textContent,/无效 1/);assert.equal(h.posts().length,0);
+});
 test('D16 impact separates gate/test rates, shows mechanical inputs and a durable rejection event with tests unexecuted',async t=>{
   const totals={original:{passed:0,planned:10,failed:10,errors:1,notRun:0,scored:10,passRate:0},candidate:{passed:4,planned:10,failed:6,errors:0,notRun:0,scored:10,passRate:.4}};
   const zero={original:{passed:0,planned:10,failed:0,errors:0,notRun:10,scored:0,passRate:null},candidate:{passed:0,planned:10,failed:0,errors:0,notRun:10,scored:0,passRate:null}};

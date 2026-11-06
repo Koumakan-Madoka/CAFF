@@ -443,6 +443,23 @@ test('replacement-exhausted mixed results publish incomplete without converting 
  assert.equal(c.totals.original.scored,0);assert.equal(c.totals.original.failed,0);assert.equal(c.totals.original.invalid,3);assert.equal(c.totals.candidate.invalid,2);assert.equal(saved.gateDecision.outcome,'indeterminate');
  assert.ok(saved.cases.filter(c=>c.stage==='test'&&!c.reportOnly).every(c=>c.status==='not-run'));
 });
+test('mixed CLI persists live run provenance/invalid counts and independently validated completed results without raw replies',async t=>{
+ const h=runBatchFixture(t),f=mixedExecution(h,{0:'invalid',1:'error'}),file=path.join(h.config.repoRoot,'run-cli.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));
+ const write=process.stdout.write;process.stdout.write=()=>true;
+ try{await require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options);}finally{process.stdout.write=write;}
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).read()[0],progress=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store').createWikiBatchExecutionStore(h.config).read()[0];
+ assert.equal(progress.status,'completed');assert.equal(progress.summary.completedRuns,62);assert.equal(progress.plan.cases.find(c=>c.sourceCaseId===h.sourceCaseId).execution.level,'run');
+ assert.equal(progress.summary.byStage.gate.original.invalid,1);assert.equal(progress.summary.byStage.gate.candidate.errors,1);assert.equal(progress.summary.totals.original.invalid,1);
+ assert.equal(progress.comparisonId,saved.id);assert.equal(saved.gateDecision.outcome,'accepted');assert.equal(f.oneShotCalls(),22);assert.ok(fs.readFileSync(output,'utf8').includes('page_execution_finished'));
+ assert.doesNotMatch(JSON.stringify(progress),/PRIVATE-RUN-REPLY|PRIVATE-FILE/);
+});
+test('mixed CLI publishes replacement-exhausted progress as stopped, preserving invalid rather than failed counts',async t=>{
+ const h=runBatchFixture(t),f=mixedExecution(h,Object.fromEntries(Array.from({length:6},(_,i)=>[i,'invalid']))),file=path.join(h.config.repoRoot,'run-incomplete.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));
+ const write=process.stdout.write,exitCode=process.exitCode;process.stdout.write=()=>true;
+ try{await require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options);}finally{process.stdout.write=write;process.exitCode=exitCode;}
+ const progress=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store').createWikiBatchExecutionStore(h.config).read()[0],c=progress.cases.find(c=>c.sourceCaseId===h.sourceCaseId);
+ assert.equal(progress.status,'stopped');assert.equal(progress.gateOutcome,'indeterminate');assert.equal(c.totals.original.invalid,3);assert.equal(c.totals.candidate.invalid,2);assert.equal(c.totals.original.failed,0);assert.ok(progress.comparisonId);
+});
 test('v2 batch binds independent experiment and frozen rubrics before execution; original tasks are not synthetic replay labels',t=>{
  const h=scoringV2Fixture(t),before=h.store.read(),p=h.pin();
  assert.equal(p.summary.kind,'wiki-staged-batch-comparison-v2');assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v1');assert.deepEqual(h.store.read(),before);
