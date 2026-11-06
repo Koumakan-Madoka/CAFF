@@ -35,6 +35,16 @@ test('pattern labels require explicit consent, bind the displayed hash, and supp
   h.panel.setWritable(false); assert.equal(host.querySelector('[data-pattern-confirm]').disabled, true);
   assert.equal(h.data.cases.find(c => c.id === 'c3').split, 'test');
 });
+test('assigned-label blockers are shown verbatim and suppress all first-split confirmation buttons', t => {
+  const sent = [], h = setup(t, null, { onConfirmInitialSplit: body => sent.push(body), confirm: () => true });
+  h.data.initialSplitProposal = { hash: 'd'.repeat(64), seed: 'fixed', blockingReason: 'assigned_pattern_labels_unconfirmed', blockingMessage: '先确认 #1 的模式标签', blockers: [{ caseId: 'c1', caseNumber: 1 }], rows: [], patterns: [] };
+  h.panel.render(h.data);
+  const host = h.root.querySelector('[data-initial-split]'); assert.ok(host);
+  assert.match(host.textContent, /先确认 #1 的模式标签/);
+  assert.equal(host.querySelector('[data-initial-split-confirm]'), null);
+  assert.equal(sent.length, 0); assert.equal(h.calls.length, 0);
+});
+
 test('initial split preview never activates groups until explicit per-pattern hash-bound confirmation', t => {
   let accept = false; const sent = [];
   const h = setup(t, null, { onConfirmInitialSplit: body => sent.push(body), confirm: () => accept });

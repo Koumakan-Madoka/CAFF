@@ -553,6 +553,7 @@ export function createWikiStore(options: any) {
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         const accounting = projectWikiRunAccounting(createWikiRunStore(options).list(), state.dehydrations);
         const proposal = planWikiInitialSplit(state, accounting);
+        if (proposal.blockers.length) throw fail('wiki_initial_split_labels_required');
         if (proposal.hash !== input.proposalHash) throw fail('wiki_initial_split_stale');
         const pattern = proposal.patterns.find(p => p.patternKey === input.patternKey);
         const rows = pattern?.rows.filter(r => r.proposedSplit) || [];

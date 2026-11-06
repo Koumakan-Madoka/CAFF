@@ -103,6 +103,10 @@
     function initialSplitPanel() {
       const p = D.initialSplitProposal, host = $('[data-initial-split-host]');
       if (!p) { host.innerHTML = ''; return; }
+      if (p.blockers?.length) {
+        host.innerHTML = `<section class="sec" data-initial-split data-initial-split-blocked><h2>新用例首次分组 · 暂停提议</h2><p role="alert">${esc(p.blockingMessage)}</p><p>已有组别的 GPT 用例尚有模式标签待确认，配额占用还不完整。先补齐上面列出的标签，再提议任何模式的新用例分组；不会改变已有组别或启动回放。</p></section>`;
+        return;
+      }
       const caseName = r => { const c = D.cases.find(c => c.id === r.caseId); return `#${c?.n || r.caseNumber || '?'} · ${c?.actual || r.caseId}`; };
       const patternName = key => key === 'unclassified' ? '未归入现有模式' : (D.casePatterns || []).flatMap(r => r.options || []).find(e => e.entryId === key)?.title || key;
       const pending = p.patterns.filter(pattern => pattern.rows.some(r => r.proposedSplit));

@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { WIKI_REGROUP_SEED } from './wiki-regroup';
 import { assignPatternQuotaSplit } from './wiki-split';
 import { wikiSourceFamily } from './wiki-evaluation-suite';
-import { wikiGoalCaseNumber } from './wiki-suite';
+import { wikiGoalCaseNumber, wikiDisplayCases } from './wiki-suite';
 const hash = (v: any) => crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const emptyCounts = () => ({ trace: { train: 0, gate: 0, test: 0 }, run: { train: 0, gate: 0, test: 0 } });
 export function projectWikiPatternLabels(state: any) {
@@ -29,6 +29,14 @@ export function projectWikiPatternLabels(state: any) {
 }
 export function planWikiInitialSplit(state: any, accounting: any[]) {
   const labels = new Map(projectWikiPatternLabels(state).map((r: any) => [r.caseId, r]));
+  // Unknown labels on existing groups hide quota occupancy. Do not allocate
+  // any pattern until those labels are known, or a later label confirmation
+  // could silently take its run gate count above the frozen trace capacity.
+  const displayNumbers = new Map<string, number>(wikiDisplayCases(state.cases).map(c => [c.id, c.displayNumber]));
+  const blockers = (state.cases as any[]).filter(c => ['train', 'gate', 'test'].includes(c.split) && wikiSourceFamily(c) === 'GPT'
+    && ![4, 10, 14].includes(wikiGoalCaseNumber(c.id)!) && !(labels.get(c.id) as any).confirmed)
+    .map(c => ({ caseId: c.id, caseNumber: displayNumbers.get(c.id)!, reason: 'pattern_label_unconfirmed' }))
+    .sort((a, b) => a.caseNumber - b.caseNumber || a.caseId.localeCompare(b.caseId));
   const rows = (state.cases as any[]).map((c: any) => {
     const label: any = labels.get(c.id);
     const decision = (state.dehydrations || []).findLast((r: any) => r.caseId === c.id && r.traceHash === c.traceBundle?.hash)?.decision;
@@ -57,6 +65,7 @@ export function planWikiInitialSplit(state: any, accounting: any[]) {
     }
     const existingCounts = structuredClone(counts);
     for (const level of ['trace', 'run'] as const) {
+      if (blockers.length) continue;
       const ranked = members.filter(r => !r.reason && r.previousSplit === null && r.level === level)
         .map(r => ({ r, rank: hash([WIKI_REGROUP_SEED, level, r.caseId]) }))
         .sort((a, b) => a.rank.localeCompare(b.rank) || a.r.caseId.localeCompare(b.r.caseId));
@@ -70,6 +79,8 @@ export function planWikiInitialSplit(state: any, accounting: any[]) {
     return { patternKey, existingCounts, counts, rows: members };
   });
   const inputHash = hash(rows.map(({ proposedSplit, ...evidence }) => evidence));
-  const content = { schemaVersion: 1, policy: 'initial-per-pattern-trace-run-v1', seed: WIKI_REGROUP_SEED, inputHash, rows, patterns };
+  const content = { schemaVersion: 1, policy: 'initial-per-pattern-trace-run-v1', seed: WIKI_REGROUP_SEED, inputHash, rows, patterns,
+    blockingReason: blockers.length ? 'assigned_pattern_labels_unconfirmed' : null,
+    blockingMessage: blockers.length ? `先确认 ${blockers.map(r => '#' + r.caseNumber).join('、')} 的模式标签` : null, blockers };
   return { ...content, hash: hash(content) };
 }

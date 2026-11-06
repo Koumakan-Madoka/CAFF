@@ -48,7 +48,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_migration_location_invalid: 409, wiki_data_dir_invalid: 503,
     wiki_no_pending_cases: 409, wiki_not_pending: 409,
     wiki_pattern_label_frozen: 409, wiki_pattern_label_stale: 409,
-    wiki_initial_split_stale: 409, wiki_initial_split_empty: 409, wiki_regroup_quota_invalid: 409,
+    wiki_initial_split_stale: 409, wiki_initial_split_empty: 409, wiki_initial_split_labels_required: 409, wiki_regroup_quota_invalid: 409,
     wiki_experience_invalid: 422, wiki_experience_not_found: 404, wiki_experience_reviewed: 409,
     wiki_experience_conflict: 409, wiki_experience_review_required: 409,
     wiki_suggestion_not_found: 404, wiki_suggestion_resolved: 409, wiki_suggestion_review_required: 409,

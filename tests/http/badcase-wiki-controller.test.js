@@ -56,6 +56,21 @@ test('pattern label and initial split confirmations are local-admin/CSRF guarded
   assert.equal(calls, 0); assert.deepEqual(h.store.read().versions, before.versions);
 });
 
+test('assigned GPT label gaps block the first-split HTTP endpoint with a distinct error until labels are confirmed', async t => {
+  const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
+  const gap = h.store.addTextCases([{ source: { origin: 'http://127.0.0.1:3100', projectId: 'p1', conversationId: 'c1', messageId: 'assigned-unlabelled', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'synthetic assigned but unlabelled', expected: 'synthetic expectation', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }]).cases[0];
+  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic', conversationTitle: 'synthetic', messageId: 'new-label-gap', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'new issue', expected: 'expected', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'cp-new' }).case;
+  let get = await h.invoke(); const own = get.body.casePatterns.find(r => r.caseId === c.id);
+  await h.invoke({ confirmed: true, caseId: c.id, entryId: 'entry-1', labelHash: own.labelHash, expectedRevision: get.body.revision }, { pathname: '/api/wikiskill/pattern-label-confirm' });
+  const before = h.store.read(); get = await h.invoke(); const p = get.body.initialSplitProposal;
+  await rejects(h.invoke({ confirmed: true, proposalHash: p.hash, patternKey: 'entry-1', expectedRevision: before.revision }, { pathname: '/api/wikiskill/initial-split-confirm' }), 'wiki_initial_split_labels_required', 409);
+  assert.deepEqual(h.store.read(), before); assert.equal(p.blockers[0].caseId, gap.id);
+  const label = get.body.casePatterns.find(r => r.caseId === gap.id);
+  const labelled = await h.invoke({ confirmed: true, caseId: gap.id, entryId: 'entry-1', labelHash: label.labelHash, expectedRevision: before.revision }, { pathname: '/api/wikiskill/pattern-label-confirm' });
+  const done = await h.invoke({ confirmed: true, proposalHash: labelled.body.initialSplitProposal.hash, patternKey: 'entry-1', expectedRevision: labelled.body.revision }, { pathname: '/api/wikiskill/initial-split-confirm' });
+  assert.equal(done.body.cases.find(v => v.id === c.id).split, 'train');
+});
+
 test('legacy gate/test labels confirm independently of induction and never move their frozen groups', async t => {
   const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
   h.store.addTextCases(Array.from({ length: 5 }, (_, i) => ({ source: { origin: 'http://127.0.0.1:3100', projectId: 'p1', conversationId: 'c1', messageId: 'extra-' + i, agentId: 'role-family-gpt' }, role: 'GPT', actual: 'synthetic holdout', expected: 'synthetic expectation', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false })));

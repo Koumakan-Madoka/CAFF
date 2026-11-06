@@ -29,6 +29,9 @@ function setup(t, count = 4) {
     const proposal = planWikiInitialSplit(store.read(), []);
     return store.confirmInitialSplit({ proposalHash: proposal.hash, patternKey, expectedRevision: store.read().revision });
   }
+  // These old fixtures intentionally link each training case to two approved
+  // patterns. Resolve their ambiguous labels before exercising new allocation.
+  for (const c of cases) confirm(c);
   return { store, config, cases, mark, result, record, confirm, allocate };
 }
 test('D15 integer quota deficits and ties: 4/0/0 -> gate,test,gate,test,train', () => {

@@ -49,6 +49,51 @@ function setup(t) {
   }
   return { ...f, root, options, directory, publish, store, runs };
 }
+function missingAssignedLabelFixture() {
+  const f = fixture(), heldId = 'text-3ff896480224fea1cde010370be091785529db0b1b18d8b5e0648a0a4f15aa89';
+  const selected = ['p1-trace-0', 'p1-run-0', 'p1-run-1', 'p1-run-2', 'p1-run-3', 'p2-trace-0'];
+  f.state.cases = f.state.cases.filter(c => selected.includes(c.id)).map(c => ({ ...c,
+    id: c.id === 'p1-run-3' ? heldId : c.id, split: c.id === 'p1-trace-0' || c.id === 'p1-run-3' ? 'gate' : ['p1-run-2', 'p2-trace-0'].includes(c.id) ? null : 'train' }));
+  f.state.classifications = f.state.classifications.filter(c => selected.includes(c.caseId) && c.caseId !== 'p1-run-3');
+  f.state.dehydrations = f.state.dehydrations.filter(d => selected.includes(d.caseId)).map(d => ({ ...d, caseId: d.caseId === 'p1-run-3' ? heldId : d.caseId }));
+  f.runs = f.runs.filter(r => selected.includes(r.caseId)).map(r => ({ ...r, caseId: r.caseId === 'p1-run-3' ? heldId : r.caseId }));
+  return { ...f, heldId };
+}
+test('an assigned GPT case without a confirmed label blocks all proposals until its label is confirmed (#1 run gate regression)', () => {
+  const { planWikiInitialSplit } = require(modulePath), f = missingAssignedLabelFixture(), p = planWikiInitialSplit(f.state, f.runs);
+  // Before the fix, the unknown #1 gate run was ignored and this new run went
+  // to gate, producing run gate 2 > trace gate 1 after #1 was labelled later.
+  assert.equal(p.rows.find(r => r.caseId === 'p1-run-2').proposedSplit, null);
+  assert.equal(p.rows.every(r => r.proposedSplit === null), true, 'the label gap blocks other patterns too');
+  assert.equal(p.blockingReason, 'assigned_pattern_labels_unconfirmed');
+  assert.deepEqual(p.blockers.map(r => [r.caseId, r.caseNumber]), [[f.heldId, 1]]);
+  assert.equal(p.blockingMessage, '先确认 #1 的模式标签');
+  const labelled = structuredClone(f.state); labelled.classifications.push({ caseId: f.heldId, entryId: 'entry-1', source: 'manual' });
+  const q = planWikiInitialSplit(labelled, f.runs); assert.deepEqual(q.blockers, []);
+  assert.equal(q.rows.find(r => r.caseId === 'p1-run-2').proposedSplit, 'train');
+  assert.equal(q.patterns[0].counts.run.gate, 1); assert.equal(q.patterns[0].counts.trace.gate, 1);
+  // The historical source-only cases and non-GPT cases are never quota members
+  // and therefore must not hold the entire allocation workflow hostage.
+  for (const id of ['text-ea8201f3c1ddf0fa73043f88d2ac6e10eb2d3529ed3140e0a2261a63503cc40b', 'text-26793884ceebb064ff09ebd41f4ce3b88771af2f9a8c0838ea41f52f71f4cb41', 'text-1c6e58c2f58ac57383a1910cd01dd96b4b6c2989078d6963b83284a4a8abaa47', 'non-gpt']) {
+    const extra = { ...labelled.cases[0], id, source: { agentId: id === 'non-gpt' ? 'role-family-kimi' : 'role-family-gpt' } };
+    const exempt = planWikiInitialSplit({ ...labelled, cases: [...labelled.cases, extra] }, f.runs);
+    assert.deepEqual(exempt.blockers, []); assert.equal(exempt.rows.find(r => r.caseId === 'p1-run-2').proposedSplit, 'train');
+  }
+});
+test('confirmation rejects a blocked label-gap proposal with an explicit error and no snapshot, then works after label consent', t => {
+  const { planWikiInitialSplit, projectWikiPatternLabels } = require(modulePath), h = setup(t), f = missingAssignedLabelFixture(); h.publish(f.state);
+  const d = f.state.dehydrations.find(d => d.caseId === f.heldId), run = h.runs.reserve({ schemaVersion: 1, kind: 'wikiskill-run-request', variant: { kind: 'original' }, metadata: { caseId: d.caseId, traceHash: d.traceHash, decisionHash: d.decision.hash } });
+  h.runs.finish(run.id, { outcome: { status: 'reached' }, modelCalls: 1, toolExecutions: 0 });
+  const before = h.store.read(), p = planWikiInitialSplit(before, h.runs.list());
+  assert.throws(() => h.store.confirmInitialSplit({ expectedRevision: before.revision, proposalHash: p.hash, patternKey: 'entry-1' }), /wiki_initial_split_labels_required/);
+  assert.deepEqual(h.store.read(), before);
+  h.store.confirmPatternLabel({ caseId: f.heldId, entryId: 'entry-1', labelHash: projectWikiPatternLabels(before).find(r => r.caseId === f.heldId).labelHash, expectedRevision: before.revision });
+  const q = planWikiInitialSplit(h.store.read(), h.runs.list());
+  h.store.confirmInitialSplit({ expectedRevision: h.store.read().revision, proposalHash: q.hash, patternKey: 'entry-1' });
+  assert.equal(h.store.read().cases.find(c => c.id === 'p1-run-2').split, 'train');
+  assert.equal(h.store.read().cases.find(c => c.id === f.heldId).split, 'gate');
+});
+
 test('initial allocation is deterministic, per confirmed pattern, and excludes all ineligible pending cases', () => {
   const { planWikiInitialSplit } = require(modulePath), f = fixture(), p = planWikiInitialSplit(f.state, f.runs);
   assert.deepEqual(planWikiInitialSplit({ ...f.state, cases: [...f.state.cases].reverse(), classifications: [...f.state.classifications].reverse() }, [...f.runs].reverse()), p);
