@@ -497,8 +497,8 @@ test('D16 impact separates gate/test rates, shows mechanical inputs and a durabl
   const chip=h.root.querySelector('.runs [data-entry="entry-1"]');assert.equal(chip.textContent,'模式 1');assert.match(chip.title,/未经要求引入额外机制/);
   const rows=[...h.root.querySelectorAll('#impact-log li')],policies=rows.filter(li=>li.querySelector('.kind')?.textContent==='规则');
   assert.equal(policies.length,2);
-  const current=policies.find(li=>li.textContent.includes('现行规则')),superseded=policies.find(li=>li.textContent.includes('旧规则'));
-  assert.ok(current);assert.match(current.querySelector('time').textContent,/11-02/);assert.match(current.textContent,/先待预分类.*按模式配额.*训练50%.*门槛25%.*测试25%.*组别冻结/);assert.doesNotMatch(current.textContent,/hash/);
+  const historical=policies.find(li=>li.textContent.includes('历史规则')),superseded=policies.find(li=>li.textContent.includes('旧规则'));
+  assert.ok(historical);assert.match(historical.querySelector('time').textContent,/11-02/);assert.match(historical.textContent,/已由首次分组确认流程替代.*先待预分类.*按模式配额.*训练50%.*门槛25%.*测试25%.*组别冻结/);assert.doesNotMatch(historical.textContent,/hash/);
   assert.ok(superseded);assert.match(superseded.querySelector('time').textContent,/11-01/);assert.match(superseded.textContent,/旧规则.*2026-11-02.*已被取代.*固定 hash/);
   const imported=rows.find(li=>li.querySelector('.kind')?.textContent==='用例');assert.doesNotMatch(imported.textContent,/固定 hash|50%|25%/);
   assert.equal(h.posts().length,0);

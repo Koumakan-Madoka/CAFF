@@ -20,6 +20,37 @@ function setup(t, fetcher, options = {}) {
   async function expand() { const d = root.querySelector('[data-trace-case="c1"]'); d.open = true; d.dispatchEvent(new dom.window.Event('toggle')); await tick(); await tick(); }
   return { root, data, packet, calls, panel, window: dom.window, expand };
 }
+test('pattern labels require explicit consent, bind the displayed hash, and support legacy holdouts and unclassified without learning', t => {
+  const sent = [], prompts = []; let accept = false;
+  const h = setup(t, null, { onConfirmPatternLabel: body => sent.push(body), confirm: message => { prompts.push(message); return accept; } });
+  h.data.casePatterns = ['c1', 'c3'].map(caseId => ({ caseId, confirmed: false, entryId: null, patternKey: null, labelHash: 'c'.repeat(64), options: [{ entryId: 'entry-1', title: '<script>pattern</script>' }] }));
+  h.panel.render(h.data); assert.equal(sent.length, 0); assert.equal(h.calls.length, 0);
+  const host = h.root.querySelector('[data-pattern-label="c3"]'); assert.ok(host); assert.equal(host.querySelector('script'), null);
+  const select = host.querySelector('[data-pattern-entry]'); assert.ok([...select.options].some(o => o.textContent === '未归入现有模式'));
+  select.value = 'entry-1'; host.querySelector('[data-pattern-confirm]').click(); assert.equal(sent.length, 0);
+  accept = true; host.querySelector('[data-pattern-confirm]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c3', entryId: 'entry-1', labelHash: 'c'.repeat(64) });
+  assert.match(prompts.at(-1), /不改组别.*不.*归纳/);
+  select.value = ''; host.querySelector('[data-pattern-confirm]').click(); assert.equal(sent[1].entryId, null);
+  h.panel.setWritable(false); assert.equal(host.querySelector('[data-pattern-confirm]').disabled, true);
+  assert.equal(h.data.cases.find(c => c.id === 'c3').split, 'test');
+});
+test('initial split preview never activates groups until explicit per-pattern hash-bound confirmation', t => {
+  let accept = false; const sent = [];
+  const h = setup(t, null, { onConfirmInitialSplit: body => sent.push(body), confirm: () => accept });
+  h.data.cases[0].split = h.data.cases[1].split = null;
+  const rows = [{ caseId: 'c1', patternKey: 'entry-1', level: 'run', previousSplit: null, proposedSplit: 'train' }, { caseId: 'c2', patternKey: 'entry-1', level: 'trace', previousSplit: null, proposedSplit: 'gate' }];
+  h.data.casePatterns = rows.map(r => ({ caseId: r.caseId, confirmed: true, entryId: 'entry-1', patternKey: 'entry-1', options: [{ entryId: 'entry-1', title: '模式一' }] }));
+  h.data.initialSplitProposal = { hash: 'd'.repeat(64), seed: 'fixed', rows, patterns: [{ patternKey: 'entry-1', rows, counts: { trace: { train: 0, gate: 1, test: 0 }, run: { train: 1, gate: 0, test: 0 } } }] };
+  h.panel.render(h.data); assert.equal(h.calls.length, 0); assert.equal(sent.length, 0);
+  const host = h.root.querySelector('[data-initial-split]'); assert.ok(host); assert.match(host.textContent, /尚未生效|你确认后/);
+  host.querySelector('[data-initial-split-confirm]').click(); assert.equal(sent.length, 0);
+  accept = true; host.querySelector('[data-initial-split-confirm]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { proposalHash: 'd'.repeat(64), patternKey: 'entry-1' });
+  assert.equal(h.data.cases[0].split, null); assert.equal(h.data.cases[1].split, null);
+  h.panel.setWritable(false); assert.equal(host.querySelector('[data-initial-split-confirm]').disabled, true);
+});
+
 test('pipeline has truthful stepper, actor groups, two funnels, backfill states and source-only exclusions without writes', t => {
   const h = setup(t); assert.equal(h.calls.length, 0);
   assert.equal(h.root.querySelectorAll('[data-lane]').length, 2);

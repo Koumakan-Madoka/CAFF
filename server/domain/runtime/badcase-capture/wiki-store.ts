@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
 import { buildWikiCandidate, resolveWikiCandidate } from './wiki-candidate';
-import { assignPatternQuotaSplit, planReplaySplit } from './wiki-split';
+import { planReplaySplit } from './wiki-split';
 import { validateSealRequest } from './sealed-case';
 import { buildGlobalWikiCandidate, resolveGlobalWikiCandidate } from './wiki-global-candidate';
 import { buildSampleReplayVersion } from './wiki-sample-replay-version';
@@ -19,6 +19,7 @@ import { createWikiTraceStore, sameTraceSource, wikiTraceReference } from './wik
 import { buildDehydrationPrefix, interpretDehydrationAnswer } from './wiki-dehydration';
 import { wikiGoalCaseNumber } from './wiki-suite';
 import { planWikiRegroup, planConfirmedWikiRegroup } from './wiki-regroup';
+import { planWikiInitialSplit, projectWikiPatternLabels } from './wiki-initial-split';
 import { createWikiRunStore, projectWikiRunAccounting } from './wiki-run-store';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
@@ -109,7 +110,11 @@ function initialMemberships(state: any, caseId: string) {
 function caseStateView(state: any, caseId: string) {
   const c = state.cases.find((item: any) => item.id === caseId);
   if (!c) throw fail('wiki_unknown_case');
-  if (c.split === null) return { caseId, status: 'pending-preclassification', memberships: [], reason: '', updatedAt: c.createdAt };
+  if (c.split === null) {
+    const label = projectWikiPatternLabels(state).find((r: any) => r.caseId === caseId);
+    return { caseId, status: label.confirmed ? 'pending-allocation' : c.preclassification ? 'classification-pending' : 'pending-preclassification',
+      memberships: [], reason: c.preclassification?.reason || '', updatedAt: c.preclassification?.createdAt || c.createdAt };
+  }
   if (c.split !== 'train') {
     if (c.preclassification) {
       const confirmed = (state.classifications || []).find((v: any) => v.caseId === caseId);
@@ -226,7 +231,7 @@ export function createWikiStore(options: any) {
           seen.add(key);
         }
       }
-      for (const field of ['dehydrations', 'deletedCases', 'regroupProposals', 'regroupConfirmations']) if (record[field] !== undefined && !Array.isArray(record[field])) throw Error();
+      for (const field of ['dehydrations', 'deletedCases', 'regroupProposals', 'regroupConfirmations', 'patternLabels', 'initialSplitConfirmations']) if (record[field] !== undefined && !Array.isArray(record[field])) throw Error();
       return record;
     } catch { throw fail('wiki_record_invalid'); }
   }
@@ -508,6 +513,63 @@ export function createWikiStore(options: any) {
         return { changed, value: archive.filter((v: any) => selected.includes(v.case.id)) };
       }).value;
     },
+    // Page consent only records a pattern label, never induction membership or
+    // a group. Legacy confirmed labels and frozen records are not rewritten.
+    confirmPatternLabel(input: any) {
+      if (!global) throw fail('wiki_global_required');
+      shape(input, ['caseId', 'entryId', 'labelHash', 'expectedRevision']);
+      id(input.caseId); if (input.entryId !== null) id(input.entryId);
+      if (!/^[a-f0-9]{64}$/.test(input.labelHash || '') || !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+      return change(state => {
+        const previous = state.patternLabels?.find((r: any) => r.caseId === input.caseId);
+        if (previous) {
+          if (previous.entryId !== input.entryId || previous.labelHash !== input.labelHash) throw fail('wiki_pattern_label_frozen');
+          return { changed: false, value: previous };
+        }
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const label = projectWikiPatternLabels(state).find((r: any) => r.caseId === input.caseId);
+        if (!label) throw fail('wiki_unknown_case');
+        if (label.labelHash !== input.labelHash) throw fail('wiki_pattern_label_stale');
+        if (input.entryId !== null && !label.options.some((e: any) => e.entryId === input.entryId)) throw fail('wiki_entry_not_found');
+        if (label.confirmed && label.entryId !== input.entryId) throw fail('wiki_pattern_label_frozen');
+        const content = { caseId: input.caseId, entryId: input.entryId, labelHash: input.labelHash, source: 'badcase-page',
+          confirmedRevision: state.revision, confirmedAt: new Date().toISOString() };
+        const saved = { ...content, hash: hash(JSON.stringify(content)) };
+        (state.patternLabels || (state.patternLabels = [])).push(saved);
+        appendEvent(state, { type: 'pattern-label-confirmed', caseIds: [input.caseId], entryId: input.entryId, labelHash: saved.hash });
+        return { changed: true, value: saved };
+      }).value;
+    },
+    // Preview is a pure projection. Exact consent freezes its full proposal
+    // alongside the selected pattern; only still-unassigned cases can change.
+    confirmInitialSplit(input: any) {
+      if (!global) throw fail('wiki_global_required');
+      shape(input, ['proposalHash', 'patternKey', 'expectedRevision']);
+      id(input.patternKey);
+      if (!/^[a-f0-9]{64}$/.test(input.proposalHash || '') || !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+      return change(state => {
+        const previous = state.initialSplitConfirmations?.find((r: any) => r.proposal.hash === input.proposalHash && r.patternKey === input.patternKey);
+        if (previous) return { changed: false, value: previous };
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        const accounting = projectWikiRunAccounting(createWikiRunStore(options).list(), state.dehydrations);
+        const proposal = planWikiInitialSplit(state, accounting);
+        if (proposal.hash !== input.proposalHash) throw fail('wiki_initial_split_stale');
+        const pattern = proposal.patterns.find(p => p.patternKey === input.patternKey);
+        const rows = pattern?.rows.filter(r => r.proposedSplit) || [];
+        if (!rows.length) throw fail('wiki_initial_split_empty');
+        if (pattern!.counts.run.gate > pattern!.counts.trace.gate || pattern!.counts.run.test) throw fail('wiki_regroup_quota_invalid');
+        for (const row of rows) {
+          const c = state.cases.find((c: any) => c.id === row.caseId);
+          if (c.split !== null || row.level === 'run' && row.proposedSplit === 'test') throw fail('wiki_initial_split_stale');
+          c.split = row.proposedSplit;
+        }
+        const content = { proposal, patternKey: input.patternKey, confirmedRevision: state.revision, source: 'badcase-page', confirmedAt: new Date().toISOString() };
+        const saved = { ...content, hash: hash(JSON.stringify(content)) };
+        (state.initialSplitConfirmations || (state.initialSplitConfirmations = [])).push(saved);
+        appendEvent(state, { type: 'initial-split-confirmed', caseIds: rows.map(r => r.caseId), patternKey: input.patternKey, proposalHash: proposal.hash, confirmationHash: saved.hash });
+        return { changed: true, value: saved };
+      }).value;
+    },
     // Operator creates exactly one fixed proposal, never chooses a seed or
     // submits run eligibility. Explicit approval/application is separate.
     proposeRegroup(input: any) {
@@ -703,12 +765,12 @@ export function createWikiStore(options: any) {
         const preclassify = phase === 'preclassification';
         for (const caseId of caseIds) {
           const c = state.cases.find((item: any) => item.id === caseId);
-          if (!c || (preclassify ? c.split !== null || c.kind !== 'marked-badcase'
+          if (!c || (preclassify ? c.split !== null || caseStateView(state, caseId).status !== 'pending-preclassification' || c.kind !== 'marked-badcase'
             : c.split !== 'train' || caseStateView(state, caseId).status !== 'pending')) throw fail('wiki_not_pending');
         }
         // A preclassification run owns the complete pending batch, never a
         // caller-chosen subset that could change quota allocation order.
-        if (preclassify && state.cases.some((c: any) => c.split === null && !selected.has(c.id))) throw fail('wiki_not_pending');
+        if (preclassify && state.cases.some((c: any) => caseStateView(state, c.id).status === 'pending-preclassification' && !selected.has(c.id))) throw fail('wiki_not_pending');
         const base = state.versions.at(-1), approved = new Set((base?.entries || []).filter((e: any) => e.status === 'approved').map((e: any) => e.id));
         const seen = new Set(), normalized = input.results.map((r: any, index: number) => {
           const field = `results[${index}]`;
@@ -746,17 +808,10 @@ export function createWikiStore(options: any) {
             a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
           for (const c of ordered) {
             const r = normalized.find((v: any) => v.caseId === c.id)!;
-            let split: 'train' | 'gate' | 'test' = 'train';
-            if (r.kind === 'assign' && c.sealedCheckpointId) {
-              const linked = new Set(base.entries.find((e: any) => e.id === r.entryId && e.status === 'approved').caseIds);
-              const counts = { train: 0, gate: 0, test: 0 };
-              for (const previous of state.cases) if (Object.hasOwn(counts, previous.split)
-                && (previous.preclassification?.entryId === r.entryId || linked.has(previous.id))) counts[previous.split as keyof typeof counts]++;
-              split = assignPatternQuotaSplit(counts);
-            }
-            c.split = split;
+            // Model output proposes only a label. Allocation is a separate,
+            // deterministic per-pattern preview after explicit label consent.
             c.preclassification = { ...structuredClone(r), runId: run.id, createdAt: now };
-            appendEvent(state, { type: 'case-preclassified', caseIds: [c.id], runId: run.id, split, kind: r.kind, reason: r.reason, ...(r.entryId ? { entryId: r.entryId } : {}) });
+            appendEvent(state, { type: 'case-preclassified', caseIds: [c.id], runId: run.id, split: null, kind: r.kind, reason: r.reason, ...(r.entryId ? { entryId: r.entryId } : {}) });
           }
         }
         const trainingCaseIds = caseIds.filter(k => state.cases.find((c: any) => c.id === k).split === 'train');

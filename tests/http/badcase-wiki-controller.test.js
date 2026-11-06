@@ -26,6 +26,48 @@ function setup(t) {
 }
 const rejects = (promise, code, status = 422) => assert.rejects(promise, e => e.statusCode === status && e.issues?.[0]?.code === code);
 
+test('pattern label and initial split confirmations are local-admin/CSRF guarded, closed and hash/revision bound without model calls', async t => {
+  const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
+  let calls = 0; h.options.runInduction = h.options.runDehydration = h.options.runRubricDraft = async () => { calls++; };
+  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic', conversationTitle: 'synthetic', messageId: 'new', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'new issue', expected: 'expected', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'cp-new' }).case;
+  const before = h.store.read(), get = await h.invoke();
+  assert.equal(h.store.read().revision, before.revision, 'GET only projects a proposal');
+  const label = get.body.casePatterns.find(r => r.caseId === c.id);
+  const labelBody = { confirmed: true, caseId: c.id, entryId: v.entries[0].id, labelHash: label.labelHash, expectedRevision: before.revision }, labelRoute = { pathname: '/api/wikiskill/pattern-label-confirm' };
+  for (const override of [{ remoteAddress: '10.1.1.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) await assert.rejects(h.invoke(labelBody, { ...labelRoute, ...override }));
+  await rejects(h.invoke({ ...labelBody, confirmed: false }, labelRoute), 'wiki_confirmation_required');
+  await rejects(h.invoke({ ...labelBody, split: 'gate' }, labelRoute), 'wiki_invalid_input');
+  await rejects(h.invoke({ ...labelBody, expectedRevision: 0 }, labelRoute), 'wiki_revision_conflict', 409);
+  await rejects(h.invoke({ ...labelBody, labelHash: 'f'.repeat(64) }, labelRoute), 'wiki_pattern_label_stale', 409);
+  const labelled = await h.invoke(labelBody, labelRoute);
+  assert.equal(labelled.body.cases.find(v => v.id === c.id).split, null);
+  assert.deepEqual(labelled.body.versions, before.versions);
+  const p = labelled.body.initialSplitProposal;
+  const body = { confirmed: true, proposalHash: p.hash, patternKey: v.entries[0].id, expectedRevision: labelled.body.revision }, route = { pathname: '/api/wikiskill/initial-split-confirm' };
+  for (const override of [{ remoteAddress: '10.1.1.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) await assert.rejects(h.invoke(body, { ...route, ...override }));
+  await rejects(h.invoke({ ...body, confirmed: false }, route), 'wiki_confirmation_required');
+  for (const extra of [{ assignments: [] }, { seed: 'caller-picked' }, { eligible: true }]) await rejects(h.invoke({ ...body, ...extra }, route), 'wiki_invalid_input');
+  await rejects(h.invoke({ ...body, expectedRevision: 0 }, route), 'wiki_revision_conflict', 409);
+  await rejects(h.invoke({ ...body, proposalHash: 'f'.repeat(64) }, route), 'wiki_initial_split_stale', 409);
+  const done = await h.invoke(body, route), revision = done.body.revision;
+  assert.equal(done.body.cases.find(v => v.id === c.id).split, 'train');
+  assert.equal(done.body.initialSplitConfirmations.length, 1);
+  assert.equal((await h.invoke(body, route)).body.revision, revision, 'exact network retry is idempotent');
+  assert.equal(calls, 0); assert.deepEqual(h.store.read().versions, before.versions);
+});
+
+test('legacy gate/test labels confirm independently of induction and never move their frozen groups', async t => {
+  const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
+  h.store.addTextCases(Array.from({ length: 5 }, (_, i) => ({ source: { origin: 'http://127.0.0.1:3100', projectId: 'p1', conversationId: 'c1', messageId: 'extra-' + i, agentId: 'role-family-gpt' }, role: 'GPT', actual: 'synthetic holdout', expected: 'synthetic expectation', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false })));
+  h.store.setReplaySplit({ caseIds: h.store.read().cases.map(c => c.id) });
+  const before = h.store.read(), c = before.cases.find(c => c.split === 'test'), response = await h.invoke(), label = response.body.casePatterns.find(r => r.caseId === c.id);
+  assert.equal(label.confirmed, false);
+  const body = { confirmed: true, caseId: c.id, entryId: v.entries[0].id, labelHash: label.labelHash, expectedRevision: before.revision };
+  const done = await h.invoke(body, { pathname: '/api/wikiskill/pattern-label-confirm' });
+  for (const key of ['cases', 'caseStates', 'versions', 'replaySplit']) assert.deepEqual(h.store.read()[key], before[key]);
+  assert.equal(done.body.patternLabels.length, 1);
+});
+
 test('rubric APIs append versions and freeze exact eligible model/hash without touching older versions', async t => {
   const h = setup(t); h.seed(); const { configFile, frozen } = require('../helpers/wiki-judge-catalog.cjs')(h.root);
   h.options.judgeCatalogFile = configFile;
@@ -381,16 +423,19 @@ test('incremental induction and membership endpoints persist suggestions and pro
       results: [{ caseId: marked.case.id, kind: 'assign', entryId: 'entry-1', reason: '症状一致', confidence: '高' }] }, expectedRevision);
   };
   const induction = await h.invoke({ confirmed: true, expectedRevision: 4 }, { pathname: '/api/wikiskill/induct' });
-  assert.equal(calls, 1); assert.equal(induction.body.caseStates.find(s => s.caseId === marked.case.id).status, 'suggested');
+  assert.equal(calls, 1); assert.equal(induction.body.caseStates.find(s => s.caseId === marked.case.id).status, 'classification-pending');
+  assert.equal(induction.body.cases.find(c => c.id === marked.case.id).split, null);
   const suggestion = induction.body.suggestions[0];
   await rejects(h.invoke({ confirmed: true, expectedRevision: 5, model: 'other' }, { pathname: '/api/wikiskill/induct' }), 'wiki_invalid_input');
   assert.equal(calls, 1);
   const accepted = await h.invoke({ confirmed: true, suggestionId: suggestion.id, decision: 'accepted', expectedRevision: 5 }, { pathname: '/api/wikiskill/suggestion' });
-  assert.equal(accepted.body.caseStates.find(s => s.caseId === marked.case.id).memberships[0].source, 'model-confirmed');
+  assert.equal(accepted.body.classifications.find(s => s.caseId === marked.case.id).source, 'model-confirmed');
+  assert.equal(accepted.body.caseStates.find(s => s.caseId === marked.case.id).status, 'pending-allocation');
   await h.invoke({ confirmed: true, caseId: marked.case.id, entryId: null, expectedRevision: 6 }, { pathname: '/api/wikiskill/membership' });
   const manual = await h.invoke({ confirmed: true, caseId: marked.case.id, entryId: 'entry-1', expectedRevision: 7 }, { pathname: '/api/wikiskill/membership' });
-  assert.equal(manual.body.caseStates.find(s => s.caseId === marked.case.id).memberships[0].source, 'manual');
-  assert.equal(createWikiStore(h.config).getCaseStates().find(s => s.caseId === marked.case.id).memberships[0].source, 'manual');
+  assert.equal(manual.body.classifications.find(s => s.caseId === marked.case.id).source, 'manual');
+  assert.equal(createWikiStore(h.config).read().classifications.find(s => s.caseId === marked.case.id).source, 'manual');
+  assert.equal(manual.body.cases.find(c => c.id === marked.case.id).split, null, 'non-GPT mark remains report-only');
   assert.equal(manual.body.events.some(e => e.type === 'preclassification-run'), true);
 });
 
