@@ -35,6 +35,57 @@ test('pipeline statuses are a read-only addition to Wiki GET and do not start an
   assert.equal(calls, 0); assert.deepEqual(h.store.read(), before);
 });
 
+test('GET never prepares/materializes sealed inputs, starts git, creates scratch directories or computes cache misses', async t => {
+  const h = setup(t); h.seed();
+  const state = h.store.read(), c = state.cases[0]; c.sealedCheckpointId = 'synthetic-v2-checkpoint';
+  state.replayCases = [{ id: 'replay-synthetic-v2', sourceCaseId: c.id, checkpointHash: 'a'.repeat(64), request: { association: { checkpointId: c.sealedCheckpointId } } }];
+  const file = path.join(h.config.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: crypto.createHash('sha256').update(JSON.stringify(state)).digest('hex'), record: state }));
+  const sealed = require('../../scripts/badcase-capture/sealed-direct-input.cjs'), child = require('node:child_process');
+  const materializer = require('../../build/server/domain/runtime/badcase-capture/git-snapshot-materialization');
+  const originalMaterialize = materializer.materializeGitSnapshot;
+  const originalPrepare = sealed.prepareSealedOriginalTurn, originalExec = child.execFileSync, originalTemp = fs.mkdtempSync;
+  let inspections = 0, preparations = 0, materializations = 0, execs = 0, temps = 0;
+  h.options.inspectReplay = ({ replay }) => {
+    inspections++;
+    return require('../../scripts/badcase-capture/wiki-page-runtime.cjs').inspectPageReplay({ replay, scope: h.config }, { resolve: () => ({ synthetic: true }) });
+  };
+  sealed.prepareSealedOriginalTurn = () => { preparations++; return { supported: true, provenance: { checkpointHash: 'a'.repeat(64) } }; };
+  child.execFileSync = () => { execs++; throw Error('GET must not start git'); };
+  fs.mkdtempSync = () => { temps++; throw Error('GET must not create scratch'); };
+  materializer.materializeGitSnapshot = () => { materializations++; throw Error('GET must not materialize'); };
+  let result;
+  try { result = await h.invoke(); await h.invoke(); }
+  finally { sealed.prepareSealedOriginalTurn = originalPrepare; materializer.materializeGitSnapshot = originalMaterialize; child.execFileSync = originalExec; fs.mkdtempSync = originalTemp; }
+  assert.deepEqual({ inspections, preparations, materializations, execs, temps }, { inspections: 0, preparations: 0, materializations: 0, execs: 0, temps: 0 });
+  assert.equal(result.body.pipelineStates[0].replay.status, 'pending');
+  assert.deepEqual(h.store.read(), state);
+  assert.equal(fs.existsSync(path.join(h.config.globalRoot, 'pipeline-prechecks')), false, 'GET cannot create even a cache directory');
+});
+
+test('GET and confirmation refresh only read offline prechecks; cache failures are pending, not computed or silently supported', async t => {
+  const h = setup(t); h.seed();
+  const state = h.store.read(), c = state.cases[0]; c.sealedCheckpointId = 'cp-cached';
+  state.replayCases = [{ id: 'replay-cached', sourceCaseId: c.id, checkpointHash: 'b'.repeat(64), request: { association: { checkpointId: 'cp-cached' } } }];
+  const snapshot = path.join(h.config.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+  fs.writeFileSync(snapshot, JSON.stringify({ schemaVersion: 1, checksum: crypto.createHash('sha256').update(JSON.stringify(state)).digest('hex'), record: state }));
+  const { createWikiPipelinePrecheckStore, cacheWikiPipelineInputs } = require('../../build/server/domain/runtime/badcase-capture/wiki-pipeline-prechecks');
+  let checks = 0;
+  const cache = createWikiPipelinePrecheckStore(h.config), readers = { cache, inspectReplay: replay => { checks++; return { supported: true, checkpointHash: replay.checkpointHash }; } };
+  cacheWikiPipelineInputs(state, readers); cacheWikiPipelineInputs(state, readers); assert.equal(checks, 1);
+  h.options.inspectReplay = () => { throw Error('not an HTTP dependency'); };
+  const directory = path.join(h.config.globalRoot, 'pipeline-prechecks'), files = fs.readdirSync(directory), bytes = files.map(f => fs.readFileSync(path.join(directory, f)));
+  const first = await h.invoke(); assert.equal(first.body.pipelineStates[0].replay.status, 'supported');
+  const label = first.body.casePatterns[0];
+  const confirmed = await h.invoke({ confirmed: true, expectedRevision: state.revision, caseId: c.id, entryId: null, labelHash: label.labelHash }, { pathname: '/api/wikiskill/pattern-label-confirm' });
+  assert.equal(confirmed.body.pipelineStates[0].replay.status, 'supported');
+  assert.equal((await h.invoke()).body.pipelineStates[0].replay.status, 'supported');
+  assert.equal(checks, 1); assert.deepEqual(fs.readdirSync(directory), files);
+  for (let i = 0; i < files.length; i++) assert.deepEqual(fs.readFileSync(path.join(directory, files[i])), bytes[i]);
+  fs.writeFileSync(path.join(directory, files[0]), 'corrupt');
+  assert.equal((await h.invoke()).body.pipelineStates[0].replay.status, 'pending'); assert.equal(checks, 1);
+});
+
 test('pattern label and initial split confirmations are local-admin/CSRF guarded, closed and hash/revision bound without model calls', async t => {
   const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
   let calls = 0; h.options.runInduction = h.options.runDehydration = h.options.runRubricDraft = async () => { calls++; };

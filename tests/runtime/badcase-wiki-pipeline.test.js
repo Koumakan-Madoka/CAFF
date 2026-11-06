@@ -109,6 +109,82 @@ test('run prefix check uses the actual frozen builder, not a reply/step count or
   h.state.dehydrations[0].decision.hash = H('f');
   assert.equal(inspectWikiPipelineInputs(h.state, { readTrace: () => { throw Error('should reject before read'); } })[0].reason, 'wiki_run_decision_invalid');
 });
+test('offline prechecks persist immutable trace/run results; repeated commands and new store objects never recompute', t => {
+  const fs = require('node:fs'), path = require('node:path');
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'caff-prechecks-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const scope = { globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source') };
+  const { createWikiPipelinePrecheckStore, cacheWikiPipelineInputs, readWikiPipelineInputs, WIKI_PIPELINE_PRECHECK_RULES } = require('../../build/server/domain/runtime/badcase-capture/wiki-pipeline-prechecks');
+  const h = fixture(), cache = createWikiPipelinePrecheckStore(scope); let prepared = 0;
+  assert.equal(readWikiPipelineInputs(h.state, cache)[0].status, 'pending');
+  assert.equal(fs.existsSync(scope.globalRoot), false, 'cache reads never create directories');
+  const readers = { cache, inspectReplay: replay => { prepared++; return { supported: true, checkpointHash: replay.checkpointHash }; } };
+  const first = cacheWikiPipelineInputs(h.state, readers); assert.equal(first[0].status, 'supported');
+  const bytes = fs.readdirSync(path.join(scope.globalRoot, 'pipeline-prechecks')).filter(f => f.endsWith('.json')).map(f => fs.readFileSync(path.join(scope.globalRoot, 'pipeline-prechecks', f), 'utf8'));
+  cacheWikiPipelineInputs(h.state, { ...readers, cache: createWikiPipelinePrecheckStore(scope) });
+  assert.equal(prepared, 1); assert.equal(readWikiPipelineInputs(h.state, cache)[0].status, 'supported');
+  h.replay.checkpointHash = H('c'); assert.equal(readWikiPipelineInputs(h.state, cache)[0].status, 'pending');
+  cacheWikiPipelineInputs(h.state, readers); assert.equal(prepared, 2);
+  h.replay.id = 'replay-new'; assert.equal(readWikiPipelineInputs(h.state, cache)[0].status, 'pending');
+  assert.equal(readWikiPipelineInputs(h.state, createWikiPipelinePrecheckStore(scope, WIKI_PIPELINE_PRECHECK_RULES + '-next'))[0].status, 'pending');
+  for (const text of bytes) assert.ok(fs.readdirSync(path.join(scope.globalRoot, 'pipeline-prechecks')).some(f => f.endsWith('.json') && fs.readFileSync(path.join(scope.globalRoot, 'pipeline-prechecks', f), 'utf8') === text));
+  const r = runFixture(); let traceReads = 0;
+  const runReaders = { cache, readTrace: () => { traceReads++; throw Object.assign(Error('private diagnostics'), { code: 'wiki_dehydration_prefix_unavailable' }); } };
+  assert.equal(readWikiPipelineInputs(r.state, cache)[0].status, 'pending');
+  assert.equal(cacheWikiPipelineInputs(r.state, runReaders)[0].status, 'unsupported');
+  cacheWikiPipelineInputs(r.state, { ...runReaders, cache: createWikiPipelinePrecheckStore(scope) });
+  assert.equal(traceReads, 1, 'run prefix build/trace read only once even for unsupported inputs');
+  const runStatus = readWikiPipelineInputs(r.state, cache)[0]; assert.equal(runStatus.reason, 'wiki_dehydration_prefix_unavailable'); assert.doesNotMatch(JSON.stringify(runStatus), /private diagnostics/);
+  r.d.hash = H('f'); assert.equal(readWikiPipelineInputs(r.state, cache)[0].status, 'pending');
+  r.c.traceBundle.hash = r.state.dehydrations[0].traceHash = r.d.traceHash = H('e'); assert.equal(readWikiPipelineInputs(r.state, cache)[0].status, 'pending');
+  const good = runFixture(), bundle = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', source: good.c.source, markedStep: 1, context: { systemPrompt: 'frozen system text', priorSessionEntries: [], trigger: { message: { role: 'user', content: 'frozen task' } } }, steps: [{ step: 1, output: { role: 'assistant', content: [{ type: 'text', text: 'excluded' }] } }] };
+  good.c.traceBundle.hash = good.state.dehydrations[0].traceHash = good.d.traceHash = wikiRunHash(bundle);
+  const { hash: ignored, ...decisionValue } = good.d; good.d.hash = wikiRunHash(decisionValue);
+  let goodReads = 0; const goodReaders = { cache, readTrace: () => { goodReads++; return bundle; } };
+  assert.equal(cacheWikiPipelineInputs(good.state, goodReaders)[0].status, 'supported');
+  cacheWikiPipelineInputs(good.state, goodReaders); assert.equal(goodReads, 1);
+  assert.equal(readWikiPipelineInputs(good.state, cache)[0].status, 'supported');
+});
+
+test('offline precheck command requires explicit closed config/confirmation and GET reads published results without recomputation', async t => {
+  const fs = require('node:fs'), path = require('node:path');
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'caff-precheck-cli-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const config = path.join(root, 'config.json'), scope = { globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source') };
+  fs.writeFileSync(config, JSON.stringify(scope));
+  const { main } = require('../../scripts/badcase-capture/precheck-wiki-pipeline.cjs'); let opened = 0, prepared = 0;
+  const h = fixture(), before = JSON.stringify(h.state), deps = { print: () => {}, createStore: () => { opened++; return { read: () => h.state, readCaseTrace: () => { throw Error('not run'); } }; }, inspectReplay: ({ replay }) => { prepared++; return { supported: false, reason: 'replay_materials_invalid' }; } };
+  for (const args of [['--config', config], ['--confirmed'], ['--config', config, '--confirmed', '--run'], ['--config', config, '--config', config, '--confirmed']]) assert.throws(() => main(args, deps));
+  assert.equal(opened, 0);
+  const args = ['--config', config, '--confirmed'];
+  assert.equal(main(args, deps)[0].status, 'unsupported'); assert.equal(main(args, deps)[0].status, 'unsupported'); assert.equal(prepared, 1);
+  assert.equal(JSON.stringify(h.state), before);
+  fs.writeFileSync(config, JSON.stringify({ ...scope, credentialDir: root })); assert.throws(() => main(args, deps));
+});
+
+test('corrupt/foreign cache records fail closed without overwriting or retrying expensive work; active operator lock prevents duplicate computation', t => {
+  const fs = require('node:fs'), path = require('node:path');
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'caff-precheck-invalid-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const scope = { globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source') };
+  const { createWikiPipelinePrecheckStore, cacheWikiPipelineInputs, readWikiPipelineInputs, WIKI_PIPELINE_PRECHECK_RULES } = require('../../build/server/domain/runtime/badcase-capture/wiki-pipeline-prechecks');
+  const h = fixture(), cache = createWikiPipelinePrecheckStore(scope); let computations = 0;
+  const readers = { cache, inspectReplay: replay => { computations++; return { supported: true, checkpointHash: replay.checkpointHash }; } };
+  const binding = { rules: WIKI_PIPELINE_PRECHECK_RULES, level: 'trace', replayId: h.replay.id, checkpointHash: h.replay.checkpointHash }, id = wikiRunHash(binding);
+  const lease = require('../../build/server/domain/runtime/badcase-capture/project-write-lock').acquireProjectWriteLease(scope.globalRoot, 'precheck-' + id);
+  try { assert.throws(() => cacheWikiPipelineInputs(h.state, readers), e => e.code === 'capture_writer_busy'); assert.equal(computations, 0); }
+  finally { lease.release(); }
+  cacheWikiPipelineInputs(h.state, readers); assert.equal(computations, 1);
+  const file = path.join(scope.globalRoot, 'pipeline-prechecks', id + '.json'), envelope = JSON.parse(fs.readFileSync(file, 'utf8'));
+  for (const mutate of [
+    v => v.hash = H('f'),
+    v => { v.record.identity.checkpointHash = H('e'); v.hash = wikiRunHash(v.record); },
+    v => { v.record.result.prompt = 'private prompt must not escape'; v.hash = wikiRunHash(v.record); },
+  ]) {
+    const bad = structuredClone(envelope); mutate(bad); const bytes = JSON.stringify(bad); fs.writeFileSync(file, bytes);
+    assert.equal(readWikiPipelineInputs(h.state, cache)[0].status, 'pending');
+    assert.throws(() => cacheWikiPipelineInputs(h.state, readers), e => e.code === 'wiki_pipeline_precheck_invalid');
+    assert.equal(computations, 1); assert.equal(fs.readFileSync(file, 'utf8'), bytes);
+  }
+});
+
 test('unassigned, non-GPT, legacy sources and reference-only do not enter library; scene always wins over stale run decision', () => {
   const h = fixture(); h.c.split = null; assert.equal(project(h).inLibrary, false);
   h.c.split = 'gate'; h.c.source.agentId = 'role-family-deepseek'; assert.equal(project(h).stopReason, 'report_only'); assert.equal(project(h).inLibrary, false);

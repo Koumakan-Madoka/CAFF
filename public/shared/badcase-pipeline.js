@@ -85,7 +85,7 @@
     function replayText(c) {
       const r = pipeline(c).replay;
       return r.status === 'supported' ? hasScene(c) ? '封存现场回放预检通过（supported）；不是一次新的执行或复现' : `冻结前缀可构造请求（切点第 ${r.cutStep} 步）；工具定义在正式执行前校验，不执行工具`
-        : r.status === 'unsupported' ? `回放检查未通过：${r.reason || '冻结材料不可用'}；不会自动修复或重跑` : hasScene(c) ? '待封存现场回放预检；存在现场不等于检查通过' : '待检查冻结切点前缀；没有可用检查证据';
+        : r.status === 'unsupported' ? `回放检查未通过：${r.reason || '冻结材料不可用'}；不会自动修复或重跑` : hasScene(c) ? '待回放预检：封存现场尚无预检记录；由受信操作方离线检查，本页不还原现场' : '待回放预检：冻结切点前缀尚无预检记录；由受信操作方离线检查，本页不构造请求';
     }
     function originalText(c) {
       const o = pipeline(c).original;

@@ -1342,7 +1342,6 @@ export function createServerApp(options: any = {}) {
       instanceCaptureRoot: badcaseCapture.captureRoot,
       sourceWorktree: initialProjectDir,
       judgeCatalogFile: options.badcaseWikiJudgeCatalogFile ?? process.env.CAFF_WIKISKILL_JUDGES_CONFIG,
-      inspectReplay: (input: any) => require('../../../scripts/badcase-capture/wiki-page-runtime.cjs').inspectPageReplay(input),
       runRubricDraft: options.badcaseWikiRubricDraftRunner || ((input: any) => {
         const configFile = options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG;
         return require('../../../scripts/badcase-capture/wiki-rubric-page-runtime.cjs').runPageRubricDraft(input, { configFile });

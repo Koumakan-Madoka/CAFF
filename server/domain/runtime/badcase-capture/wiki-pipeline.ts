@@ -7,8 +7,9 @@ import { wikiRubricSourceHash } from './wiki-rubric';
 import { buildDehydrationPrefix } from './wiki-dehydration';
 import { wikiRunHash } from './wiki-run-replay';
 
-// Trusted readers only; no request-supplied path, toolset, model or source data.
-// The trace adapter returns a small result, never prepared file/prompt contents.
+// OFFLINE operator only: trace checks may restore a git snapshot; run checks
+// read/build the frozen prefix. HTTP must use readWikiPipelineInputs/cache only.
+// Trusted readers; return no prepared file/prompt contents.
 export function inspectWikiPipelineInputs(state: any, readers: any) {
   return state.cases.flatMap((c: any) => {
     if (wikiSourceFamily(c) !== 'GPT' || [4, 10, 14].includes(wikiGoalCaseNumber(c.id)!)) return [];

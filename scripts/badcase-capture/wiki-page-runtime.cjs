@@ -45,10 +45,11 @@ async function runPageDehydration(input, { configFile } = {}, dependencies = {})
     return await recommendDehydration({ ...prepared, approvedRequestHash: built.requestHash }, { client, knownKeyValues, retryPolicy: 'manual' });
   } finally { await dispatcher.destroy(); }
 }
-// Read-only preflight: reuses the real sealed-input supported check, not the
-// packet's complete flag or the mere existence of a checkpoint. V2 may use its
-// existing isolated TEMP materialization; it does not launch a replay/model,
-// open credentials or rewrite captured evidence. Return no prepared contents.
+// OFFLINE operator preflight only. Never wire into an HTTP request handler:
+// v2 restores an isolated TEMP git snapshot synchronously. Reuses the real input
+// check, not a complete flag/checkpoint existence. No replay/model/auth/network;
+// v2 uses the instance's read-only known-value inventory for redaction. No
+// captured-evidence rewrite. Only the small result is cached for the page.
 function inspectPageReplay({ replay, scope }, dependencies = {}) {
   const resolve = dependencies.resolve || require('../../build/server/domain/runtime/badcase-capture/wiki-replay-location').resolveWikiReplayRequest;
   const prepare = dependencies.prepare || require('./sealed-direct-input.cjs').prepareSealedOriginalTurn;

@@ -61,6 +61,17 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 - 「轨迹与上下文」首次展开才 GET 对应冻结包，不使用 `message` 或 `traceExcerpt` 兜底。三段可展开：上下文逐字段、逐次模型输出/完整参数/完整工具结果/耗时与用量、现场清单。原包内容以文本/JSON 显示而非 HTML；长块（>800 字符）默认折叠，展开仍保留完整原文。支持在本包所有三段内搜索、高亮并展开命中块；搜索不截断导出。缓存按 case ID + 引用 hash 隔离，刷新后的过期响应丢弃，失败只提供显式重试。
 - `GET /api/wikiskill/cases/:caseId/trace/export.json` 与 `/trace/export.md` 沿用同一本地只读管理门禁和 hash 验证。响应为 attachment、no-store；无包返回 `wiki_trace_missing`（404），损坏仍拒绝（409）。JSON 是冻结包自身（仅排版差异），没有导出时间/当前分组等附加字段。Markdown 以包信息、上下文、逐步轨迹、用量、现场组织 JSON 代码块；每个字段保留，可由各块无损重组原包，动态围栏避免正文反引号破坏结构。两种格式均不访问源房间、路径或现场文件正文，不二次脱敏/推断/截断。
 
+### 页面回放预检缓存（trace / run）
+
+`GET /api/wikiskill`（以及确认后的页面刷新）只读取小型不可变预检记录。**不得**在 HTTP 路径调用 `prepareSealedOriginalTurn`、`materializeGitSnapshot`、Git 子进程或创建临时目录；也不在请求中读取轨迹包并调用 `buildDehydrationPrefix` 来补算 run 预检。没有当前身份／规则版本的缓存，或缓存损坏时，显示「待回放预检」，不冒充 supported，也不自动重算。现有原版复现口径不变：当前冻结断言下，最近匹配批次只要有一次原版 fail 即已复现，同时显示 pass/fail 数；不拼接批次。
+
+受信操作方在 **HTTP 进程之外**运行 `node scripts/badcase-capture/precheck-wiki-pipeline.cjs --config <绝对路径> --confirmed`。配置闭合为 `{globalRoot, sourceWorktree}`，均须绝对路径，Wiki 不得位于 sourceWorktree 内。先 build；只使用该任务已批准的 Wiki 和封存库（隔离验证使用副本），不会从页面启动。这个命令不是读取生产、复制其他现场或写生产数据的授权。无模型请求、工具执行或评测；trace 重用真实封存输入准备（v2 可在离线命令进程中还原临时 Git 现场），run 重用冻结前缀构造器。v2 沿用本实例 `PI_CODING_AGENT_DIR`／环境的已知值只读清单，供现场字面替换；不认证、不刷新、复制或回写凭据。操作方须隔离这些环境变量，不得指向未获批准的生产配置。
+
+- trace 的键是 `(replay.id, checkpointHash, 预检规则版本)`；run 的键是 `(traceHash, decisionHash, 预检规则版本)`，同样跨进程长期复用。当前规则版本 `sealed-prefix-precheck-v1`；封存输入／前缀准入规则改变必须递增，不覆盖历史记录。
+- `<globalRoot>/pipeline-prechecks/<身份 SHA-256>.json` 只保存身份、`supported|unsupported` 和白名单原因码，不保存文件、提示词、请求正文或原始异常。读取检查 envelope hash、身份和闭合结果字段，单份最多 8 KiB。缓存只表示输入可准备，不证明模型已执行、通过断言或入库。
+- 计算前取得该身份的跨进程 writer-lock，锁内重读缓存；同一封存或前缀的 supported／unsupported 都只计算一次。写入为 0600、fsync、hardlink no-replace，旧记录与 Wiki revision／分组／轨迹包不变。崩溃遗留锁需受信离线恢复，不按年龄自动回收；损坏记录不覆盖、不重算。目录祖先仍属同 OS 用户可信存储，不是安全沙箱。
+- 不选择在封存回调／服务器后台执行：避免增加聊天封存延迟和后台任务生命周期；代价是操作方须显式填充缓存，新题在此之前如实待预检。自动化测试覆盖 GET 零准备／还原／Git／临时目录、确认刷新只读、真实 v2 离线准备只运行一次、run 正负结果缓存、键／版本失效、损坏拒绝和锁占用。
+
 ## 只读历史回填
 
 操作入口：`node scripts/badcase-capture/backfill-wiki-traces.cjs --config <绝对路径> --confirmed`。这不是 HTTP 上传入口，也不是生产导入/部署授权。必须先编译当前代码，并准备 Wiki 数据的独立副本。

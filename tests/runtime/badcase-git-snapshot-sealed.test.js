@@ -85,6 +85,22 @@ test('sealed v2 prepares a complete HEAD tree plus patch/overlays, not only the 
   assert.equal(f.git('status', '--porcelain=v1', '-uall'), liveStatus); assert.equal(sourceBefore, liveStatus);
 });
 
+test('offline Wiki precheck materializes a real v2 git scene once, and subsequent page cache reads never restore it', async t => {
+  const f = await sealed(t), { wikiRunHash } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-replay');
+  const { createWikiPipelinePrecheckStore, cacheWikiPipelineInputs, readWikiPipelineInputs } = require('../../build/server/domain/runtime/badcase-capture/wiki-pipeline-prechecks');
+  const { inspectPageReplay } = require('../../scripts/badcase-capture/wiki-page-runtime.cjs');
+  const scope = { globalRoot: path.join(f.root, 'wiki'), sourceWorktree: f.repositoryRoot };
+  const c = { id: 'case-v2', source: { agentId: 'role-family-gpt' }, sealedCheckpointId: f.cp.checkpointId };
+  const state = { cases: [c], replayCases: [{ id: 'replay-v2', sourceCaseId: c.id, checkpointHash: wikiRunHash(f.cp), request: f.request }] };
+  const before = fs.readFileSync(f.source), cache = createWikiPipelinePrecheckStore(scope); let prepared = 0;
+  const readers = { cache, inspectReplay: replay => inspectPageReplay({ replay, scope }, { prepare: request => { prepared++; return prepareSealedOriginalTurn(request); } }) };
+  assert.equal(readWikiPipelineInputs(state, cache)[0].status, 'pending');
+  const checked = cacheWikiPipelineInputs(state, readers); assert.equal(checked[0].status, 'supported', JSON.stringify(checked));
+  cacheWikiPipelineInputs(state, { ...readers, cache: createWikiPipelinePrecheckStore(scope) });
+  for (let i = 0; i < 3; i++) assert.equal(readWikiPipelineInputs(state, createWikiPipelinePrecheckStore(scope))[0].status, 'supported');
+  assert.equal(prepared, 1); assert.deepEqual(fs.readFileSync(f.source), before);
+});
+
 test('Unicode and spaces survive real Git capture, sealed --plan and the container restoration boundary', async t => {
   const f = await sealed(t, { unicodeFiles: true }), config = planConfig(f);
   config.rules.files = [{ path: '资料/dirty 中文 空格.txt', contains: ['Unicode dirty'], notContains: [] }];
