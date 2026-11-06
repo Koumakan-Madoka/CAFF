@@ -51,7 +51,8 @@ async function sealed(t, { knownValues = [], change = () => {}, projectResources
     config.portableRuntime = projectResources ? { schemaVersion: 1, kind: 'portable-project-resources-v1', supported: true,
       filePaths: [...resourcePaths].sort(), skillPaths: ['.agents/skills/local'] } : { schemaVersion: 1, kind: 'portable-default-resources-v1', supported: true };
     config.sdkStartConfig = { cwd: root, provider: r.runConfig.provider, model: r.runConfig.model, resume: false, thinking: 'off', fast: false,
-      retireUserScopeSkills: true, additionalSkillPaths: external ? sdkSkills.map(s => s.baseDir) : projectResources ? [path.join(root, '.agents/skills/local')] : [] };
+      retireUserScopeSkills: true, extensionPaths: [path.resolve('lib/pi-extensions/caff-capabilities.mjs')],
+      additionalSkillPaths: external ? sdkSkills.map(s => s.baseDir) : projectResources ? [path.join(root, '.agents/skills/local')] : [] };
     if (external) {
       const agentDir = path.join(external, 'agent'); fs.mkdirSync(agentDir);
       Object.assign(config.sdkStartConfig, { agentDir, extensionPaths: [path.resolve('lib/pi-extensions/caff-capabilities.mjs')] });
@@ -195,6 +196,65 @@ test('v2 optional Git metadata must use its recorded HEAD, never a later operato
   assert.ok(plan.inputs.original.gitFiles.length >= 5);
 });
 
+test('v2 permits disclosed file gaps and missing room records through --plan and isolated callback startup', async t => {
+  const f = await sealed(t, { change({ cp, r }) {
+    cp.uncaptured = [{ path: 'untracked.bin', reason: 'file_unreadable' }];
+    delete r.callbackInput; r.complete = false; r.incompleteReasons = ['callback_input_unavailable', 'files_uncaptured'];
+  } });
+  const result = prepareSealedOriginalTurn(f.request); assert.equal(result.supported, true, JSON.stringify(result));
+  assert.deepEqual(result.provenance.captureDisclosures.uncaptured, f.cp.uncaptured);
+  assert.equal(result.provenance.captureDisclosures.roomRecord.available, false);
+  assert.equal(result.input.files.some(f => f.path === 'untracked.bin'), false);
+  const config = planConfig(f), file = path.join(f.root, 'partial-plan.json'); fs.writeFileSync(file, JSON.stringify(config));
+  const plan = JSON.parse(execFileSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', file, '--plan'], { encoding: 'utf8' }));
+  assert.equal(plan.supported, true, JSON.stringify(plan)); assert.deepEqual(plan.captureDisclosures, result.provenance.captureDisclosures);
+  const callback = await require('../../build/server/domain/runtime/badcase-capture/evaluation-callback').startEvaluationCallback({ ...result.input.callback, directory: path.join(f.root, 'isolated-callback'), lifetimeMs: 30000 });
+  try { assert.equal(callback.traceReceipt.roomHistoryUnavailable, true); } finally { await callback.stop(); }
+});
+
+for (const reason of ['session_missing', 'project_skills_pending', 'capture_time_limit', 'invocation_images_not_archived', 'harness_config_unverified']) test('v2 still refuses unrelated incomplete dimension ' + reason, async t => {
+  const f = await sealed(t, { change({ r }) { r.complete = false; r.incompleteReasons = ['callback_input_unavailable', reason]; delete r.callbackInput; } });
+  assert.deepEqual(prepareSealedOriginalTurn(f.request), { supported: false, reason: 'replay_capture_incomplete' });
+});
+
+for (const [label, change, reason] of [
+  ['unsupported thinking', ({ config }) => { config.sdkStartConfig.thinking = 'high'; }, 'replay_recorded_thinking_not_supported'],
+  ['unsupported extension', ({ config }) => { config.sdkStartConfig.extensionPaths = ['/other/plugin.mjs']; }, 'replay_extensions_not_supported'],
+  ['unverified dimensions', ({ r }) => { r.unverifiedDimensions = ['unknown']; }, 'replay_unverified_dimensions'],
+  ['invocation images', ({ r }) => { r.invocationImageCount = 1; }, 'replay_invocation_images_not_supported'],
+]) test('v2 allowed callback/file gaps do not waive ' + label, async t => {
+  const f = await sealed(t, { change(state) {
+    state.r.complete = false; state.r.incompleteReasons = ['callback_input_unavailable', 'files_uncaptured']; delete state.r.callbackInput;
+    state.cp.uncaptured = [{ path: 'untracked.bin', reason: 'file_unreadable' }]; change(state);
+  } });
+  assert.deepEqual(prepareSealedOriginalTurn(f.request), { supported: false, reason });
+});
+
+test('already captured v2 false runtime and Fast are disclosed, never rewritten or used to waive thinking/extensions', async t => {
+  const f = await sealed(t, { change({ cp, r, config, put }) {
+    config.portableRuntime.supported = false; config.sdkStartConfig.fast = true;
+    cp.files['.pi/settings.json'] = { type: 'file', hash: put('{}'), size: 2, mode: 0o100644, origin: 'untracked' };
+    Object.assign(cp.gitSnapshot, { skillInventoryStatus: 'loaded', sdkLoadedSkills: [], promptLoadedSkills: [] });
+    config.sdkStartConfig.extensionPaths = [path.resolve('lib/pi-extensions/caff-capabilities.mjs')];
+    r.complete = false; r.incompleteReasons = ['callback_input_unavailable']; delete r.callbackInput;
+    cp.uncaptured = [{ path: 'untracked.bin', reason: 'file_unreadable' }];
+  } });
+  const original = JSON.stringify(f.cp), result = prepareSealedOriginalTurn(f.request); assert.equal(result.supported, true, JSON.stringify(result));
+  assert.equal(result.input.recordedModelConfig.fast, false); assert.equal(JSON.stringify(f.cp), original);
+  assert.equal(result.input.files.some(f => f.path === '.pi/settings.json'), false);
+  assert.ok(result.provenance.captureDisclosures.portableGaps.some(g => g.path === '.pi/settings.json' && g.reason === 'project_resource_not_replayed'));
+  for (const reason of ['portable_runtime_unverified', 'fast_mode_not_replayed']) assert.ok(result.provenance.captureDisclosures.portableGaps.some(g => g.reason === reason), reason);
+  const file = path.join(f.root, 'portable-plan.json'); fs.writeFileSync(file, JSON.stringify(planConfig(f)));
+  const plan = JSON.parse(execFileSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', file, '--plan'], { encoding: 'utf8' }));
+  assert.equal(plan.supported, true, JSON.stringify(plan)); assert.deepEqual(plan.captureDisclosures, result.provenance.captureDisclosures);
+});
+
+test('v2 does not discard corrupt callback material even when a historical unavailable marker is present', async t => {
+  const f = await sealed(t, { change({ r }) { r.complete = false; r.incompleteReasons = ['callback_input_unavailable']; } });
+  fs.writeFileSync(f.blobPath(f.r.callbackInput.blobHash), 'corrupt archive');
+  assert.equal(prepareSealedOriginalTurn(f.request).supported, false);
+});
+
 test('actual compare-sealed --plan accepts a fresh v2 checkpoint without starting Docker or reading model credentials', async t => {
   const f = await sealed(t), file = path.join(f.root, 'plan.json'); fs.writeFileSync(file, JSON.stringify(planConfig(f)));
   const result = JSON.parse(execFileSync(process.execPath, [path.resolve('scripts/badcase-capture/compare-sealed.cjs'), '--config', file, '--plan'], { encoding: 'utf8' }));
@@ -207,7 +267,6 @@ for (const [label, change, reason] of [
   ['missing HEAD', ({ cp }) => { cp.gitSnapshot.head = '0'.repeat(40); }, 'replay_git_snapshot_head_unavailable'],
   ['missing patch', () => {}, 'replay_blob_unavailable_or_invalid'],
   ['legacy v2 missing EOL evidence', ({ cp }) => { delete cp.gitSnapshot.crlfPaths; }, 'replay_git_snapshot_eol_unavailable'],
-  ['skipped file', ({ cp }) => { cp.uncaptured = [{ path: 'source.txt', reason: 'file_unreadable' }]; }, 'replay_uncaptured_files'],
 ]) test(`v2 refuses ${label} with an explicit reason, never overlay-only success`, async t => {
   const f = await sealed(t, { change });
   if (label === 'missing patch') fs.unlinkSync(f.blobPath(f.cp.gitSnapshot.patchBlobHash));

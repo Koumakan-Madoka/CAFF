@@ -64,11 +64,14 @@ test('captured-skill declaration inventories only cwd and preserves explicit roo
     assert.deepEqual(inspectPortableAgentConfig(config, { archivedSkills: true }), { schemaVersion: 1,
       kind: 'portable-captured-project-resources-v1', supported: true, filePaths: ['AGENTS.md'], skillPaths: [external] });
     assert.equal(inspectPortableAgentConfig(config).supported, false, 'legacy declaration is unchanged');
-    for (const patch of [{ fast: true }, { additionalSkillPaths: ['relative'] }, { extensionPaths: ['/other/plugin.mjs'] }]) {
+    const fast = inspectPortableAgentConfig({ ...config, fast: true }, { archivedSkills: true });
+    assert.equal(fast.supported, true); assert.ok(fast.portableGaps.some(g => g.reason === 'fast_mode_not_replayed'));
+    for (const patch of [{ additionalSkillPaths: ['relative'] }, { extensionPaths: ['/other/plugin.mjs'] }]) {
       assert.equal(inspectPortableAgentConfig({ ...config, ...patch }, { archivedSkills: true }).supported, false);
     }
     fs.writeFileSync(path.join(agentDir, 'settings.json'), '{}');
-    assert.equal(inspectPortableAgentConfig(config, { archivedSkills: true }).supported, false);
+    const partial = inspectPortableAgentConfig(config, { archivedSkills: true });
+    assert.equal(partial.supported, true); assert.ok(partial.portableGaps.some(g => g.reason === 'agent_resource_not_archived'));
   } finally { fs.readFileSync = read; }
 });
 

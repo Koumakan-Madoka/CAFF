@@ -1,8 +1,10 @@
 // Trusted pre-turn SQLite source reader. This is NOT an agent authorization
 // API. The caller supplies the already file-authorized, locked project policy.
-// Never discover a DB/path, read private bodies, truncate history or log errors.
+// Never discover a DB/path, read private bodies or log errors. Legacy v1 never
+// truncates history; explicit knownOnly callers use the separate v2 projection.
 import crypto from 'node:crypto';
 import { prepareEvaluationCallbackTrace } from './evaluation-trace';
+import { readPublicCallbackInputV2 } from './callback-source-v2';
 import { isRoutableConversationAgent } from '../../roles/system-actor-catalog';
 const id = (v: any) => typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(v);
 const keys = ['projectId', 'conversationId', 'turnId', 'agentId', 'userMessageId', 'assistantMessageId'];
@@ -13,7 +15,7 @@ const unavailable = () => { throw Error('callback_source_unavailable'); };
  * synchronous read transaction (no await); this is a SQLite snapshot, NOT an
  * atomic snapshot with the separately observed worktree/session.
  */
-export function readPreTurnCallbackInput(store: any, input: any, policy: any): any {
+export function readPreTurnCallbackInput(store: any, input: any, policy: any, options: any = {}): any {
   // Before touching the source DB, including its property getter.
   if (policy?.status !== 'enabled' || policy.callbackInputAuthorized !== true
     || policy.projectId !== input?.projectId || !keys.every(k => id(input?.[k]))
@@ -24,6 +26,7 @@ export function readPreTurnCallbackInput(store: any, input: any, policy: any): a
     const db = store?.db;
     if (!db || db.inTransaction) return null; // never borrow a writable transaction
     return db.transaction(() => {
+      if (options.knownOnly === true) return readPublicCallbackInputV2(db, input);
       // Project scope before any text or role configuration is selected. Public
       // metadata is independently authorized, bounded and later secret-scanned.
       const head = db.prepare(`SELECT id, project_scope_id, type, length(CAST(metadata_json AS BLOB)) AS bytes, length(CAST(title AS BLOB)) AS titleBytes

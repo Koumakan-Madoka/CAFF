@@ -12,7 +12,8 @@ async function hostFixture(t, { abort = false, inventoryFails = false } = {}) {
   const skill = { name: 'selected', filePath: path.resolve('project/.agents/skills/selected/SKILL.md'), baseDir: path.resolve('project/.agents/skills/selected') };
   Object.assign(processMock, { connected: true, versions: { node: process.versions.node }, platform: process.platform,
     stderr: { write() {} }, send(message, cb) { sent.push(message); cb(); }, disconnect() { this.connected = false; } });
-  const runtime = { services: { resourceLoader: { getSkills() { if (inventoryFails) throw Error('unavailable'); return { skills: [skill] }; } } },
+  const runtime = { services: { resourceLoader: { getSkills() { if (inventoryFails) throw Error('unavailable'); return { skills: [skill] }; },
+    getAgentsFiles() { return { agentsFiles: [{ path: path.resolve('project/AGENTS.md'), content: 'not sent over IPC' }] }; } } },
     session: { sessionFile: '', async bindExtensions() {}, subscribe() { return () => {}; },
       async prompt() { calls.push('prompt'); }, async waitForIdle() {}, async abort() { calls.push('abort'); } },
     setRebindSession() {}, async dispose() { calls.push('dispose'); } };
@@ -25,6 +26,7 @@ async function hostFixture(t, { abort = false, inventoryFails = false } = {}) {
   assert.ok(inventory, 'actual loaded inventory must be reported before prompting');
   assert.deepEqual(calls, [], 'no model/tool invocation while the parent archives resources');
   assert.deepEqual(inventory.skills, inventoryFails ? null : [skill]);
+  assert.deepEqual(inventory.contextFiles, [{ path: path.resolve('project/AGENTS.md') }]);
   processMock.emit('message', { type: abort ? 'abort' : 'continue_prompt' });
   for (let i = 0; i < 20 && processMock.connected; i++) await tick();
   assert.equal(calls.includes('prompt'), !abort);
@@ -88,6 +90,23 @@ test('checkpoint records pending initialization, then CAS-archives only SDK-sele
   const retained = createCheckpointRetentionStore({ captureStore: h.service.store }).retain({ projectId: 'p', checkpointId: cp.checkpointId,
     conversationId: 'room', turnId: 'turn', agentId: 'agent', referenceId: 'fixture' });
   assert.ok(retained.reference.blobHashes.includes(cp.gitSnapshot.projectSkills[0].files['reference.txt'].hash));
+});
+
+test('actual loaded external context survives checkpoint CAS retention, materialization and the replay manifest', async t => {
+  const h = fixture(t), filePath = path.join(h.temp, 'AGENTS.md'); fs.writeFileSync(filePath, 'context ' + h.key);
+  const initial = await h.capture(), result = h.service.captureLoadedProjectSkills({ projectId: 'p', checkpointId: initial.checkpointId,
+    skills: [], sdkSkills: [], promptSkills: [], contextFiles: [{ path: filePath }] });
+  assert.equal(result.captured, true, result.reason); const cp = result.checkpoint;
+  assert.deepEqual(cp.gitSnapshot.loadedContexts, [{ filePath }]);
+  const root = cp.gitSnapshot.projectSkills.find(s => s.originalPath === filePath); assert.ok(root);
+  const { checkpointBlobHashes } = require('../../build/server/domain/runtime/badcase-capture/checkpoint-retention');
+  assert.ok(checkpointBlobHashes(cp).includes(root.files['AGENTS.md'].hash));
+  const materialized = require('../../build/server/domain/runtime/badcase-capture/git-snapshot-materialization').materializeGitSnapshot({ checkpoint: cp, store: h.service.store, knownKeyValues: [] });
+  const files = Object.entries(materialized.files).map(([name, f]) => ({ path: name, sha256: f.hash, base64: f.content.toString('base64') }));
+  const resources = require('../../build/server/domain/runtime/badcase-capture/project-resources');
+  const prepared = resources.prepareCapturedProjectResources({ schemaVersion: 1, kind: 'portable-captured-project-resources-v1', supported: true, filePaths: [], skillPaths: [] }, files, { additionalSkillPaths: [] }, cp, materialized);
+  assert.equal(prepared.manifest.contextFiles.length, 1); const context = prepared.files.find(f => f.path === prepared.manifest.contextFiles[0]);
+  assert.equal(Buffer.from(context.base64, 'base64').toString(), 'context [*]');
 });
 
 test('SDK-native and CAFF prompt skill origins stay distinct without duplicating archived resources', async t => {

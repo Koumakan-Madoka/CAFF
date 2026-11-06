@@ -183,6 +183,7 @@ function prepareComparison(config, options = {}) {
       ...(dependencyConfig.dependencies ? { dependencies: dependencyConfig.dependencies } : {}) })) : original.provenance.commonInputHash,
     model: profile, ...(profile === CODEX_PROFILE ? { modelConfig: { ...CODEX_CONFIG } } : {}), ...(dockerBackend ? { dockerBackend } : {}),
     ...(original.provenance.sourceSnapshot ? { sourceSnapshot: { ...original.provenance.sourceSnapshot } } : {}),
+    ...(original.provenance.captureDisclosures ? { captureDisclosures: structuredClone(original.provenance.captureDisclosures) } : {}),
     ...(original.input.recordedModelConfig ? { recordedModelConfig: { ...original.input.recordedModelConfig } } : {}),
     ...(original.input.projectResources ? { projectResources: projectResourcesSummary(original.input.projectResources) } : {}),
     ...(original.input.sessionText ? { replaySession: replaySessionInfo(original.input.sessionText) } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
@@ -406,6 +407,14 @@ function formatComparison(result) {
   if (result.recordedModelConfig) lines.push('封存配置：' + result.recordedModelConfig.provider + '/' + result.recordedModelConfig.model + ' / thinking ' + result.recordedModelConfig.thinking + '；计划保留该thinking，实际以有效回执为准。');
   if (result.replaySession) lines.push('封存会话：resume；前缀' + result.replaySession.lineCount + '行，SHA-256=' + result.replaySession.prefixHash + '；只重绑已声明的上下文/回调，不重放中途消息。',
     '历史工具（含bash/未知工具及结果）仅作上下文，不执行；当前轮次是否依赖历史外部路径未核验，按用户裁决先放行，不承诺外部状态已恢复。');
+  if (result.captureDisclosures) {
+    const { roomRecord, uncaptured, portableGaps = [] } = result.captureDisclosures;
+    if (!roomRecord.available) lines.push('披露：房间记录不可用；仅创建明确标记的隔离回调占位，不还原原房间历史。');
+    else if (roomRecord.omissions) lines.push('披露：房间公开记录按尽力而为保存；省略计数=' + JSON.stringify(roomRecord.omissions));
+    for (const gap of portableGaps) lines.push('可移植缺口：' + JSON.stringify(gap.path) + '；原因=' + JSON.stringify(gap.reason));
+    for (const gap of uncaptured) lines.push('跳过文件：' + JSON.stringify(gap.path) + '；原因=' + JSON.stringify(gap.reason) + (gap.scope ? '；范围=' + JSON.stringify(gap.scope) : ''));
+    if (!roomRecord.available || uncaptured.length) lines.push('该现场有已披露缺口，不代表完整还原。');
+  }
   if (result.projectResources) lines.push('项目资源：封存文件' + result.projectResources.fileCount + '个，SHA-256=' + result.projectResources.manifestHash + '；原生SDK发现，缺失/漂移拒绝，未用当前源文件补齐。');
   if (result.repository) {
     lines.push(result.repository.historyIncluded ? 'Git：保留记录HEAD的完整可达历史，HEAD与源记录相同；共' + result.repository.historyCommitCount + '个提交。'

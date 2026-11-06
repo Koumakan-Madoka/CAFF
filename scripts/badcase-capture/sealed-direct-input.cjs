@@ -9,10 +9,10 @@ const base = '../../build/server/domain/runtime/badcase-capture/';
 const { createCaptureStore } = require(base + 'capture-store');
 const { createCheckpointRetentionStore } = require(base + 'checkpoint-retention');
 const { readSealedCase, validateSealRequest } = require(base + 'sealed-case');
-const { readCapturedCallbackInput } = require(base + 'callback-input');
+const { readCapturedCallbackInput, unavailableCallbackInputV2 } = require(base + 'callback-input');
 const { containsSecretSentinel } = require(base + 'secrets');
-const { supportsPortableThinking } = require(base + 'portable-inputs');
-const { prepareProjectResources, prepareCapturedProjectResources } = require(base + 'project-resources');
+const { supportsPortableThinking, supportsPortableExtensions } = require(base + 'portable-inputs');
+const { prepareProjectResources, prepareCapturedProjectResources, isProjectResourcePath, PROJECT_CONTEXT_NAMES } = require(base + 'project-resources');
 const { materializeGitSnapshot } = require(base + 'git-snapshot-materialization');
 const { validateSessionV2 } = require(base + 'session-validator');
 const { validateDirectBindings } = require('./direct-model.cjs');
@@ -39,13 +39,16 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false,
     ensure(resume ? /^[a-f0-9]{64}$/.test(r.sessionBlobHash || '') : r.sessionBlobHash === '', resume ? 'replay_session_missing' : 'replay_fresh_session_not_empty');
     ensure(r.invocationImageCount === 0, 'replay_invocation_images_not_supported');
     ensure(empty(r.unverifiedDimensions), 'replay_unverified_dimensions');
-    ensure(cp.uncaptured === undefined || empty(cp.uncaptured), 'replay_uncaptured_files');
+    ensure(gitSnapshot ? cp.uncaptured === undefined || Array.isArray(cp.uncaptured) : cp.uncaptured === undefined || empty(cp.uncaptured), 'replay_uncaptured_files');
     ensure(r.secretExcludedPaths === undefined || empty(r.secretExcludedPaths), 'replay_secret_excluded_files');
     // Windows' blanket subset marker includes non-goals (ACLs/concurrency/etc).
     // Only the explicitly declared portable/default-resource subset is allowed;
     // this does NOT set old complete/strict flags to true or repair old cases.
+    const allowedIncomplete = gitSnapshot ? ['callback_input_unavailable', 'files_uncaptured', 'windows_capture_subset_unverified'] : ['windows_capture_subset_unverified'];
     ensure(r.complete === true && empty(r.incompleteReasons) || r.complete === false
-      && r.incompleteReasons?.length === 1 && r.incompleteReasons[0] === 'windows_capture_subset_unverified', 'replay_capture_incomplete');
+      && Array.isArray(r.incompleteReasons) && r.incompleteReasons.length > 0
+      && r.incompleteReasons.every(reason => allowedIncomplete.includes(reason))
+      && (gitSnapshot || r.incompleteReasons.length === 1), 'replay_capture_incomplete');
     const retainedHashes = new Set(retained.blobHashes);
     ensure(retained.blobHashes.length <= 8192, 'replay_blob_inventory_limit');
     for (const digest of retained.blobHashes) {
@@ -62,15 +65,24 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false,
       ensure(Buffer.from(s).equals(b) && !s.includes('\0'), 'replay_blob_text_invalid'); return s; };
     const snapshot = checked('replay_runtime_snapshot_invalid', () => JSON.parse(utf8(r.harness?.configSnapshotHash))), config = snapshot.sdkStartConfig;
     const projectResources = snapshot.portableRuntime?.kind === 'portable-project-resources-v1';
-    const capturedResources = gitSnapshot && snapshot.portableRuntime?.kind === 'portable-captured-project-resources-v1';
-    ensure((projectResources || capturedResources || snapshot.portableRuntime?.kind === 'portable-default-resources-v1')
-      && snapshot.portableRuntime.schemaVersion === 1 && snapshot.portableRuntime.supported === true, 'replay_portable_runtime_not_supported');
+    const declaredCaptured = gitSnapshot && snapshot.portableRuntime?.kind === 'portable-captured-project-resources-v1';
+    const unverifiedPortable = gitSnapshot && snapshot.portableRuntime?.supported === false;
+    const capturedResources = declaredCaptured || unverifiedPortable;
+    ensure((projectResources || declaredCaptured || snapshot.portableRuntime?.kind === 'portable-default-resources-v1')
+      && snapshot.portableRuntime.schemaVersion === 1 && (snapshot.portableRuntime.supported === true || unverifiedPortable), 'replay_portable_runtime_not_supported');
+    const portableGaps = gitSnapshot ? structuredClone(snapshot.portableRuntime.portableGaps || []) : [];
+    ensure(Array.isArray(portableGaps) && portableGaps.every(g => g && typeof g.path === 'string' && typeof g.reason === 'string'), 'replay_portable_runtime_not_supported');
+    const portableGap = (path, reason) => { if (!portableGaps.some(g => g.path === path && g.reason === reason)) portableGaps.push({ path, reason }); };
+    if (unverifiedPortable) portableGap('.', 'portable_runtime_unverified');
+    if (gitSnapshot && config?.fast === true) portableGap('.', 'fast_mode_not_replayed');
+    if (gitSnapshot && !Array.isArray(cp.gitSnapshot.loadedContexts)) portableGap('.', 'context_inventory_unavailable');
     ensure(['0.85.1', 'pi:0.85.1'].includes(snapshot.piVersion), 'replay_sdk_version_not_supported');
     ensure(snapshot.deliveryMode === r.deliveryMode && snapshot.agentPromptVersion === r.runConfig?.promptVersion && snapshot.toolBridgeEnabled === true, 'replay_runtime_config_mismatch');
     ensure(config && config.resume === resume && config.retireUserScopeSkills === true && config.cwd === cp.targetDir
       && config.provider === r.runConfig.provider && config.model === r.runConfig.model, 'replay_runtime_config_mismatch');
     ensure(supportsPortableThinking(config), 'replay_recorded_thinking_not_supported');
-    ensure(config.fast !== true, 'replay_fast_mode_not_supported');
+    ensure(gitSnapshot || config.fast !== true, 'replay_fast_mode_not_supported');
+    ensure(!gitSnapshot || supportsPortableExtensions(config), 'replay_extensions_not_supported');
     ensure(empty(r.runConfig.skillIds) && empty(r.runConfig.conversationSkillIds) && empty(r.harness.skillSnapshots), 'replay_skills_not_supported');
     let prompt = utf8(r.promptBlobHash); ensure(r.normalizedPromptHash === r.promptBlobHash, 'replay_prompt_hash_mismatch');
     let commonPrompt, variantInfo, identityInfo;
@@ -116,9 +128,19 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false,
       try { materialized = materializeGitSnapshot({ checkpoint: cp, store, agentDir: process.env.PI_CODING_AGENT_DIR, ...replayOptions }); }
       catch (e) { throw unsupported(/^git_snapshot_[a-z_]+$/.test(e?.code || '') ? 'replay_' + e.code : 'replay_git_snapshot_unavailable'); }
       ensure(materialized.lineEndingEvidence === 'captured-eol', 'replay_git_snapshot_eol_unavailable');
-      ensure(materialized.uncaptured.length === 0, 'replay_uncaptured_files');
       ensure(capturedResources || !materialized.projectSkills.some(s => !s.internal), 'replay_external_project_skills_not_supported');
       records = materialized.files;
+    }
+    // Never let unarchived project settings/extensions auto-load in the worker.
+    // Keep their absence explicit rather than substituting ambient behavior.
+    if (gitSnapshot && (unverifiedPortable || portableGaps.length)) {
+      for (const name of Object.keys(records)) {
+        const root = name.split('/')[0], lower = root.toLowerCase();
+        const nonportable = portableGaps.some(g => g.reason === 'project_resource_not_replayed' && (name === g.path || name.startsWith(g.path + '/')))
+          || ((lower === '.pi' || lower === '.agents') && !name.startsWith(lower + '/skills/'))
+          || PROJECT_CONTEXT_NAMES.some(p => p.toLowerCase() === lower) && !PROJECT_CONTEXT_NAMES.includes(root);
+        if (nonportable) { delete records[name]; portableGap(name, 'project_resource_not_replayed'); }
+      }
     }
     const redacted = new Set(materialized?.redactedFiles.filter(f => !f.scope).map(f => f.path));
     const names = Object.keys(records); ensure(names.length <= 8192, 'replay_file_inventory_limit');
@@ -130,8 +152,15 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false,
         ...(f.secretRedacted === true || redacted.has(name) ? { secretRedacted: true } : {}) };
     });
     ensure(Array.isArray(cp.deletions) && cp.deletions.every(d => !names.some(n => n === d || n.startsWith(d + '/') || d.startsWith(n + '/'))), 'replay_deletions_invalid');
-    const capturedCallback = checked('replay_callback_unavailable_or_invalid', () => readCapturedCallbackInput(cp, digest => blobs.get(digest)));
+    const callbackUnavailable = gitSnapshot && !Object.hasOwn(r, 'callbackInput') && r.incompleteReasons.includes('callback_input_unavailable');
+    const capturedCallback = checked('replay_callback_unavailable_or_invalid', () => callbackUnavailable
+      ? unavailableCallbackInputV2(cp, association.messageId, snapshot.agentName)
+      : readCapturedCallbackInput(cp, digest => blobs.get(digest)));
     ensure(capturedCallback.association.assistantMessageId === association.messageId, 'replay_callback_association_mismatch');
+    const captureDisclosures = gitSnapshot ? { roomRecord: { available: !callbackUnavailable,
+      ...(callbackUnavailable ? { reason: 'callback_input_unavailable', replayMode: 'isolated-placeholder-not-original-history' }
+        : capturedCallback.receipt?.omissions ? { omissions: capturedCallback.receipt.omissions } : {}) },
+      uncaptured: structuredClone(materialized.uncaptured), portableGaps, incompleteReasons: [...r.incompleteReasons] } : undefined;
     const callback = Object.fromEntries(['trace', 'expectedTraceHash', 'association'].map(k => [k, capturedCallback[k]]));
     const recordedModelConfig = { provider: config.provider, model: config.model, thinking: config.thinking, fast: false };
     const sessionText = resume ? utf8(r.sessionBlobHash) : null;
@@ -140,8 +169,11 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false,
       checked('replay_session_invalid', () => sessionText.trim().split('\n').forEach(line => JSON.parse(line)));
       ensure(sessionText.split('\n').length - 1 === r.sessionLineCount, 'replay_session_invalid');
     }
-    const captured = capturedResources ? checked('replay_project_resources_invalid', () => prepareCapturedProjectResources(snapshot.portableRuntime, files, config, cp, materialized)) : null;
-    if (captured) files = captured.files;
+    const declaration = capturedResources && (unverifiedPortable || portableGaps.length) ? { schemaVersion: 1,
+      kind: 'portable-captured-project-resources-v1', supported: true,
+      filePaths: files.filter(f => isProjectResourcePath(f.path)).map(f => f.path).sort(), skillPaths: config.additionalSkillPaths } : snapshot.portableRuntime;
+    const captured = capturedResources ? checked('replay_project_resources_invalid', () => prepareCapturedProjectResources(declaration, files, config, cp, materialized)) : null;
+    if (captured) { files = captured.files; for (const gap of captured.portableGaps) portableGap(gap.path, gap.reason); }
     ensure(files.length <= 8192, 'replay_file_inventory_limit');
     const resourceConfig = captured ? { projectResources: captured.manifest } : projectResources ? { projectResources: checked('replay_project_resources_invalid', () => prepareProjectResources(snapshot.portableRuntime, files, config)) } : {};
     const input = { kind: 'prepared-caff-turn-v1', capturePlatform: cp.environment?.platform, prompt, files, deletions: [...cp.deletions], sessionText, systemPrompt: null, settings: null, callback, recordedModelConfig, ...resourceConfig,
@@ -154,6 +186,7 @@ function prepareTurn(request, candidateRole, promptTarget, originalOnly = false,
     }
     return { supported: true, input, ...variantInfo,
       provenance: { caseId: sealed.caseId, checkpointId: cp.checkpointId,
+      ...(captureDisclosures ? { captureDisclosures } : {}),
       checkpointHash: hashJson(cp), ...identityInfo,
       ...(gitSnapshot ? { sourceSnapshot: { kind: cp.gitSnapshot.kind, head: cp.gitSnapshot.head, fileCount: files.length,
         lineEndingEvidence: materialized.lineEndingEvidence } } : {}),

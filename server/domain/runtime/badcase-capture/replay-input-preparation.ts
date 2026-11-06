@@ -59,7 +59,7 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
   // a production DB capture hook or a grant to read public/private Room state.
   if (Object.hasOwn(input, 'callbackInput')) {
     try {
-      let callback = prepareCapturedCallbackInput(input);
+      let callback = prepareCapturedCallbackInput(input, { knownOnly });
       if (knownOnly) {
         const content = safe(callback.content);
         // Rehash only the archived bytes and revalidate JSON/schema/association.
@@ -67,7 +67,7 @@ export function prepareReplayInput(input: any, deliveryMode: any, authorizedRoot
         // dimension rather than persisting either invalid bytes or the source.
         callback = prepareCapturedCallbackInput({ ...input, callbackInput: {
           trace: content.toString('utf8'), expectedTraceHash: hash(content),
-        } });
+        } }, { knownOnly });
       }
       replayInput.callbackInput = callback.reference;
       plans.push({ hash: callback.reference.blobHash, content: callback.content });

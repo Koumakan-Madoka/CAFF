@@ -1184,6 +1184,7 @@ test('agent executor pins session and capture to the actual cwd and awaits the a
   const originalStartRun = minimalPi.startRun;
   let captured = null, skillInput = null;
   const actualSkills = [{ name: 'selected', filePath: path.join(tempDir, 'external-project', 'selected', 'SKILL.md') }];
+  const contextFiles = [{ path: path.join(tempDir, 'target-project', 'AGENTS.md') }];
   const projectSkillDir = path.join(tempDir, 'target-project', '.codex', 'skills', 'project-aux');
   const projectPromptSkill = { id: 'project-aux', name: 'project-aux', description: 'Project helper',
     path: projectSkillDir, source: path.dirname(projectSkillDir), readOnly: true, skillMarkdown: 'Project helper', openaiYaml: '' };
@@ -1193,7 +1194,7 @@ test('agent executor pins session and capture to the actual cwd and awaits the a
     const handle = createRunHandle('Done.');
     handle.resultPromise = (async () => {
       assert.equal(typeof options.beforePrompt, 'function');
-      await options.beforePrompt({ skills: actualSkills }); order.push('prompt');
+      await options.beforePrompt({ skills: actualSkills, contextFiles }); order.push('prompt');
       return { reply: 'Done.', runId: handle.runId, sessionPath: '' };
     })();
     return handle;
@@ -1284,7 +1285,7 @@ test('agent executor pins session and capture to the actual cwd and awaits the a
   assert.deepEqual(checkpointInput.projectSkillPaths, []); assert.equal(checkpointInput.projectSkillsPending, true);
   const explicitSkill = { name: 'project-aux', filePath: path.join(projectSkillDir, 'SKILL.md'), baseDir: projectSkillDir };
   assert.deepEqual(skillInput, { projectId: 'project-skill-scoping', checkpointId: 'checkpoint-actual-cwd', skills: [...actualSkills, explicitSkill],
-    sdkSkills: actualSkills, promptSkills: [explicitSkill] });
+    sdkSkills: actualSkills, promptSkills: [explicitSkill], contextFiles });
   assert.equal(checkpointInput.targetDir, projectDir);
   assert.equal(checkpointInput.targetDir, checkpointInput.harness.configSnapshot.sdkStartConfig.cwd);
   assert.equal(checkpointInput.roleSection, 'Your private persona instructions:\nRead files without modifying them.');

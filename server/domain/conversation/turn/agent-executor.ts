@@ -2440,7 +2440,7 @@ export function createAgentExecutor(options: any = {}) {
           console.error('[badcase-capture] sdk_start_config_changed');
         }
         if (badcaseCheckpointId && typeof badcaseCapture?.captureLoadedProjectSkills === 'function') {
-          runOptions.beforePrompt = async ({ skills }: any) => {
+          runOptions.beforePrompt = async ({ skills, contextFiles }: any) => {
             // Explicit project skills already resolved into CAFF's prompt may
             // also come from .codex/skills, which is not SDK default discovery.
             // Keep those resources too; retired local user-scope copies are
@@ -2451,7 +2451,7 @@ export function createAgentExecutor(options: any = {}) {
             const loaded = Array.isArray(skills) ? [...new Map([...skills, ...promptSkills].map(skill => [skill.filePath, skill])).values()] : null;
             const result = await badcaseCapture.captureLoadedProjectSkills({
               projectId: String(conversation.projectScopeId || conversation.projectId || '').trim(),
-              checkpointId: badcaseCheckpointId, skills: loaded, sdkSkills: skills, promptSkills,
+              checkpointId: badcaseCheckpointId, skills: loaded, sdkSkills: skills, promptSkills, contextFiles,
             });
             if (!result?.captured) console.error('[badcase-capture] project skills not saved:', result?.reason || 'project_skills_unavailable');
           };
