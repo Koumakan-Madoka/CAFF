@@ -184,6 +184,34 @@ test('new checkpoint metadata is shown separately from legacy missing fields and
   assert.match(h.root.querySelector('[data-case-id="c2"]').textContent, /现场部分记录/);
   assert.equal(h.calls.length, 0);
 });
+test('request button is explicit, eligibility-bound, read-only when disabled and never sends automatically', t => {
+  const sent = []; let accept = false;
+  const h = setup(t, null, { onRequestRecommendation: body => sent.push(body), confirm: () => accept });
+  h.data.cases[0].dehydrationRecommendation = { eligible: true };
+  h.panel.render(h.data);
+  const button = h.root.querySelector('[data-dehydration-recommend="c1"]'); assert.ok(button); assert.equal(button.textContent, '请求推荐');
+  assert.equal(h.root.querySelector('[data-dehydration-recommend="c3"]'), null); assert.equal(h.root.querySelector('[data-dehydration-recommend="c4"]'), null);
+  assert.equal(sent.length, 0); button.click(); assert.equal(sent.length, 0); accept = true; button.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c1', traceHash: 'a'.repeat(64) });
+  h.panel.setWritable(false); assert.equal(button.disabled, true); button.click(); assert.equal(sent.length, 1);
+  h.data.cases[0].dehydrationRecommendation = { eligible: false }; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-dehydration-recommend="c1"]'), null); assert.equal(h.calls.length, 0);
+});
+test('one failed parse offers fallback confirmation OR one manual retry and retains earlier raw evidence', t => {
+  const sent = [], h = setup(t, null, { onRequestRecommendation: body => sent.push(body), onConfirmDecision() {}, confirm: () => true });
+  h.data.cases[0].dehydrationRecommendation = { eligible: true };
+  const first = { caseId: 'c1', traceHash: 'a'.repeat(64), hash: 'c'.repeat(64), request: { state: { steps: [{ step: 1, body: 'reply' }] } },
+    recommendation: { schemaVersion: 2, retryPolicy: 'manual', kindSuggestion: 'unclear', cutStepSuggestion: 1, cutSource: 'marked_step_fallback', fallbackReason: 'parse_failed', answers: null, attempts: [{ content: 'REAL INVALID JSON' }] } };
+  h.data.dehydrations = [first]; h.panel.render(h.data);
+  assert.match(h.root.textContent, /本次输出无法解析/); assert.match(h.root.textContent, /默认切在发消息那一步/);
+  assert.ok(h.root.querySelector('[data-dehydration-confirm]')); h.root.querySelector('[data-dehydration-recommend]').click();
+  assert.equal(sent[0].retryOf, first.hash); assert.equal(sent.length, 1);
+  h.data.dehydrations.push({ ...first, hash: 'd'.repeat(64), retryOf: first.hash });
+  h.data.cases[0].dehydrationRecommendation = { eligible: false }; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-dehydration-recommend]'), null); assert.match(h.root.textContent, /此前推荐.*保留/s);
+  assert.ok(h.root.textContent.includes(first.hash)); assert.match(h.root.textContent, /REAL INVALID JSON/);
+  assert.equal(h.calls.length, 0);
+});
 test('stale packet responses after a data refresh cannot replace current evidence', async t => {
   const pending = []; const h = setup(t, () => new Promise(r => { pending.push(r); })); await h.expand();
   h.data.cases[0].traceBundle.hash = 'c'.repeat(64); h.panel.render(h.data);

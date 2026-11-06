@@ -2,7 +2,7 @@
 // Config stores image/backend/auth-directory selection only, not credentials.
 const fs = require('node:fs'), path = require('node:path');
 const fail = code => Object.assign(Error(code), { code });
-async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
+function readPageRuntimeConfig(configFile) {
   if (configFile === undefined) throw fail('wiki_runtime_config_required');
   let config;
   try {
@@ -16,6 +16,10 @@ async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
       || typeof config.credentialDir !== 'string' || !path.isAbsolute(config.credentialDir)) throw Error();
     if (config.dockerBackend !== undefined) require('./wsl-docker.cjs').validateWslDockerBackend(config.dockerBackend);
   } catch { throw fail('wiki_runtime_config_invalid'); }
+  return config;
+}
+async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
+  const config = readPageRuntimeConfig(configFile);
   const readKey = dependencies.readKey || require('./direct-model.cjs').readCaffDeepseekKey;
   return (dependencies.induct || require('./wiki-induction.cjs').inductWikiCases)({
     store: input.store, expectedRevision: input.expectedRevision, confirmed: true, image: config.image,
@@ -24,4 +28,21 @@ async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
     readDiagnosticValues: () => require('./wiki-diagnostics.cjs').readDiagnosticValues({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
   });
 }
-module.exports = { runPageInduction };
+// Host-only, explicit single-shot action. Uses the SAME operator runtime/auth
+// selection as preclassification; no Docker/tools, credential copy or writeback.
+async function runPageDehydration(input, { configFile } = {}, dependencies = {}) {
+  const { preparePageDehydration, recommendDehydration } = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration-runner');
+  const prepared = preparePageDehydration(input); // preflight before config/auth/network
+  const config = readPageRuntimeConfig(configFile), env = { ...process.env, PI_CODING_AGENT_DIR: config.credentialDir };
+  const key = (dependencies.readKey || require('./direct-model.cjs').readCaffDeepseekKey)(env);
+  const knownKeyValues = [...(dependencies.readKnownValues || require('./wiki-diagnostics.cjs').readDiagnosticValues)(env), key];
+  const { buildDehydrationRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration');
+  const built = buildDehydrationRequest({ caseRecord: input.store.read().cases.find(c => c.id === input.caseId), bundle: input.store.readCaseTrace(input.caseId), cause: prepared.cause, knownKeyValues });
+  const dispatcher = (dependencies.createDispatcher || (uri => new (require('undici').ProxyAgent)({ uri })))('http://127.0.0.1:17890');
+  try {
+    const client = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration-client').createDehydrationClient({ key, maxRequests: 1,
+      fetchImpl: (url, options) => (dependencies.fetch || require('undici').fetch)(url, { ...options, dispatcher }) });
+    return await recommendDehydration({ ...prepared, approvedRequestHash: built.requestHash }, { client, knownKeyValues, retryPolicy: 'manual' });
+  } finally { await dispatcher.destroy(); }
+}
+module.exports = { runPageInduction, runPageDehydration };

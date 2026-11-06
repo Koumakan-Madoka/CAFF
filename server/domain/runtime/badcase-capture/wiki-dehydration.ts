@@ -32,6 +32,24 @@ function assertBound(item: any, bundle: any) {
     || !/^[a-f0-9]{64}$/.test(item?.traceBundle?.hash || '') || hash(bundle) !== item.traceBundle.hash) throw fail('wiki_trace_invalid');
   if (!dehydrationAvailability(item, bundle, true).eligible) throw fail('wiki_dehydration_ineligible');
 }
+// Select only frozen turn cause, never the current Goal, candidates or results.
+// Fresh CAFF prompts carry history; resumed prompts carry only the new-message delta.
+export function pageDehydrationCause(bundle: any) {
+  let text = visible(bundle?.context?.trigger?.message);
+  const history = /(?:^|\n)Conversation history:\r?\n/.exec(text);
+  if (history) text = text.slice(history.index + history[0].length).split(/\r?\n\r?\n(?:Turn routing state:|Write your reply now\.)/)[0];
+  else if (text.startsWith('New messages since your last reply:\n')) text = text.slice('New messages since your last reply:\n'.length).split('\nPrivate mailbox messages since your last reply:')[0];
+  const users = [...text.matchAll(/(?:^|\n\n)User(?: \[failed\])?(?: -> (?:<mention:[^>\n]+>|[^:\n])+)?: /g)];
+  if (users.length) {
+    text = text.slice(users.at(-1)!.index! + users.at(-1)![0].length);
+    // A later agent may be the trigger. Do not append its historical replies,
+    // candidate prose or evaluation reports to the last user's cause.
+    text = text.split(/\r?\n\r?\n[^\n:]{1,120}(?:<mention:[^>\n]+>[^\n:]*)?: /)[0];
+  }
+  // Wrapped prompts without a recoverable message fail closed rather than send all context.
+  if (!text.trim() || text.startsWith('You are participating in a shared local multi-agent conversation workspace.')) throw fail('wiki_dehydration_cause_invalid');
+  return { source: 'trigger', text: text.trim() };
+}
 function longBody(value: string) {
   return value.length <= 800 ? value : value.slice(0, 500) + '\n…[中间省略]…\n' + value.slice(-300);
 }
@@ -115,14 +133,14 @@ export function interpretDehydrationAnswer(built: any, response: any) {
   const attempts = response.attempts;
   let answers = null;
   try { answers = parseAnswer(built, attempts.at(-1)); }
-  catch (e) { if (attempts.length < 2) throw e; }
+  catch (e) { if (attempts.length < 2 && response.retryPolicy !== 'manual') throw e; }
   const card = answers && built.request.state.steps.find((s: any) => s.step === answers.cutStep);
   const evidenceVerified = !!(card && answers.evidence.trim() && [card.body, card.messageBody].some(s => typeof s === 'string' && s.includes(answers.evidence)));
   const kindSuggestion = answers ? KINDS[answers.kind] : 'unclear';
   const fallbackReason = !answers ? 'parse_failed' : kindSuggestion === 'unclear' ? 'unclear' : kindSuggestion !== 'single' ? 'not_single'
     : answers.cutStep === '无' ? 'no_cut' : !evidenceVerified ? 'evidence_mismatch' : null;
   return { schemaVersion: 2, caseId: built.caseId, traceHash: built.traceHash, requestHash: built.requestHash,
-    model: DEHYDRATION_MODEL, answers, attempts: structuredClone(attempts), kindSuggestion, evidenceVerified, fallbackReason,
+    model: DEHYDRATION_MODEL, ...(response.retryPolicy === 'manual' ? { retryPolicy: 'manual' } : {}), answers, attempts: structuredClone(attempts), kindSuggestion, evidenceVerified, fallbackReason,
     cutStepSuggestion: fallbackReason ? built.markedStep : answers.cutStep,
     cutSource: fallbackReason ? 'marked_step_fallback' : 'deepseek', requiresUserConfirmation: true };
 }

@@ -38,6 +38,7 @@
     const $ = selector => root.querySelector(selector);
     const $$ = selector => [...root.querySelectorAll(selector)];
     const badcases = shared.createBadcasePipeline({ root: $('#view-badcases'), fetchJson, confirm: confirmAction,
+      onRequestRecommendation: ({ caseId, ...body }) => { void mutate('/api/wikiskill/cases/' + encodeURIComponent(caseId) + '/dehydration/recommend', body, '单次推荐输出已保存；请核对后确认，解析失败不会自动重试。'); },
       onConfirmDecision: body => { void mutate('/api/wikiskill/dehydration-confirm', body, '判断与切点已冻结；未调用模型、改分组或修改冻结轨迹包。'); } });
     const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
     const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, char => ESC[char]);

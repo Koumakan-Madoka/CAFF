@@ -47,6 +47,16 @@ test('request uses exactly the B6 fields, two questions last, and canonical page
   assert.doesNotMatch(wire, /THOUGHT_MUST|PRIVATE_BOOKKEEPING|CURRENT_CANDIDATE|CURRENT_RESULTS|sensitive-test-needle|"split"/);
   assert.deepEqual(h, before);
 });
+test('page cause uses only the frozen user message, stripping fresh/delta wrappers and unrelated history', () => {
+  const h = fixture(), { pageDehydrationCause } = api();
+  assert.equal(pageDehydrationCause(h.bundle).text, 'investigate this behavior');
+  h.bundle.context.trigger.message.content = 'CAFF static context\nCURRENT_CANDIDATE\n\nConversation history:\nUser: old question\n\nGPT: OLD_RESULTS\n\nUser -> <mention:GPT>: investigate this behavior\n\nTurn routing state:\ntrigger\n\nWrite your reply now.';
+  const cause = pageDehydrationCause(h.bundle); assert.deepEqual(cause, { source: 'trigger', text: 'investigate this behavior' });
+  const built = api().buildDehydrationRequest({ ...refresh(h), cause });
+  assert.doesNotMatch(JSON.stringify(built.request), /CURRENT_CANDIDATE|OLD_RESULTS|old question|routing state/);
+  h.bundle.context.trigger.message.content = 'New messages since your last reply:\nUser: investigate this behavior\n\nGPT: CURRENT_CANDIDATE and OLD_RESULTS\n\nPlanner: continue';
+  assert.equal(pageDehydrationCause(h.bundle).text, 'investigate this behavior');
+});
 test('step cards redact before clipping, retain message/plan head 500 tail 300 and actual error lines', () => {
   const h = fixture();
   h.bundle.steps[0].output.content = [{ type: 'toolCall', id: 'call', name: 'write', arguments: { path: 'design-plan.md', content: 'A'.repeat(500) + 'OMITTED' + 'Z'.repeat(300) } }];

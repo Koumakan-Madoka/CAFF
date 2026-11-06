@@ -11,7 +11,7 @@ const MAX = 128 * 1024 * 1024;
 // unreached/countAsFailure results keep their original bytes and hashes.
 export function projectWikiRunAccounting(rows: any[], dehydrations: any[] = []) {
   const normalized = rows.map(({ countAsFailure: _legacy, ...row }) => {
-    const current = dehydrations.find(d => d.caseId === row.caseId && d.traceHash === row.traceHash)?.decision;
+    const current = dehydrations.slice().reverse().find(d => d.caseId === row.caseId && d.traceHash === row.traceHash)?.decision;
     return { ...row, status: row.status === 'unreached' ? 'invalid' : row.status,
       ...(current?.level === 'reference' && current.supersedesDecisionHash === row.decisionHash
         ? { excludedReason: 'user_reclassified_reference', supersededByDecisionHash: current.hash } : {}) };

@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { RouteHandler } from '../http/router';
 import { createHttpError } from '../http/http-errors';
 import { createLocalAdminGuard } from '../http/local-admin-guard';
@@ -15,8 +16,11 @@ import { createWikiExecutionStore } from '../domain/runtime/badcase-capture/wiki
 import { createWikiBatchExecutionStore } from '../domain/runtime/badcase-capture/wiki-batch-execution-store';
 import { resolveWikiStorageOptions } from '../domain/runtime/badcase-capture/wiki-data-directory';
 
-// Local candidate preparation/review only. Neither loading, approving a guideline nor
-// confirming a candidate starts a model request or edits a production role.
+import { preparePageDehydration, pageRecommendationAvailability } from '../domain/runtime/badcase-capture/wiki-dehydration-runner';
+// Per-storage, per-case latch spans separate controller/store objects in this instance.
+const recommending = new Set<string>();
+// Loading and confirmation never call models. Only explicit guarded recommendation
+// and induction actions can send; neither edits a production role.
 export function createBadcaseWikiController(options: any = {}): RouteHandler<any> {
   const guard = createLocalAdminGuard({ ...options, issuePrefix: 'badcase_wiki' });
   const issue = (code: string, status = 422) => createHttpError(status, 'Wiki request was rejected', { issues: [{ code, path: 'wiki' }] });
@@ -29,6 +33,9 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_run_record_invalid: 409, wiki_run_not_found: 404,
     wiki_dehydration_frozen: 409, wiki_dehydration_stale: 409, wiki_dehydration_recommendation_required: 409,
     wiki_dehydration_ineligible: 422, wiki_dehydration_cut_invalid: 422, wiki_dehydration_prefix_unavailable: 422,
+    wiki_dehydration_busy: 409, wiki_dehydration_recommendation_exists: 409, wiki_case_deleted: 409,
+    wiki_dehydration_cause_invalid: 422, wiki_dehydration_input_too_large: 422,
+    wiki_dehydration_model_unavailable: 503, wiki_dehydration_model_failed: 503,
     wiki_candidate_invalid: 422, wiki_candidate_already_baseline: 409, wiki_candidate_leak: 422, wiki_candidate_not_found: 404, wiki_candidate_deprecated: 409,
     wiki_candidate_approved_required: 409, wiki_candidate_confirmation_required: 409, wiki_candidate_role_mismatch: 409,
     wiki_target_unknown: 422, wiki_candidate_target_mismatch: 409, wiki_candidate_anchor_unsupported: 409,
@@ -45,10 +52,11 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     evaluation_wsl_host_required: 503, evaluation_wsl_backend_invalid: 503, wiki_execution_record_invalid: 503,
   };
   return async ({ req, res, pathname }: any) => {
+    const recommendMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/dehydration\/recommend$/);
     const traceMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/trace(?:\/export\.(json|md))?$/);
     const runMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/run-replays\/([a-f0-9]{64})(?:\/export\.(json|md))?$/);
     const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|dehydration-confirm))?$/)
-      || (traceMatch ? [pathname, 'case-trace'] : runMatch ? [pathname, 'run-replay'] : null);
+      || (traceMatch ? [pathname, 'case-trace'] : runMatch ? [pathname, 'run-replay'] : recommendMatch ? [pathname, 'dehydration-recommend'] : null);
     const readOnly = !match?.[1] || ['executions', 'case-trace', 'run-replay'].includes(match[1]);
     if (!match || (readOnly ? req.method !== 'GET' : req.method !== 'POST')) return false;
     if (readOnly) guard.assertRead(req); else guard.assertMutation(req);
@@ -66,6 +74,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         'comparison-review': ['confirmed', 'comparisonId', 'candidateHash', 'expectedRevision', 'decision', 'reason', 'interpretation'],
         experience: ['confirmed', 'experienceId', 'expectedRevision', 'decision', 'patch'],
         'dehydration-confirm': ['confirmed', 'caseId', 'traceHash', 'recommendationHash', 'kind', 'cutStep', 'expectedRevision'],
+        'dehydration-recommend': ['confirmed', 'expectedRevision', 'traceHash', 'retryOf'],
       };
       if (!input || typeof input !== 'object' || Array.isArray(input)
         || Object.keys(input).some(k => !fields[match[1]].includes(k))) throw issue('wiki_invalid_input');
@@ -106,6 +115,18 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         } else sendJson(res, 200, { traceBundle: packet });
         return true;
       }
+      if (recommendMatch) {
+        let caseId;
+        try { caseId = decodeURIComponent(recommendMatch[1]); } catch { throw Object.assign(Error(), { code: 'wiki_invalid_identifier' }); }
+        if (input.retryOf !== undefined && (typeof input.retryOf !== 'string' || !/^[a-f0-9]{64}$/.test(input.retryOf))) throw Object.assign(Error(), { code: 'wiki_invalid_input' });
+        const key = path.resolve(scope.globalRoot) + ':' + caseId;
+        if (recommending.has(key)) throw Object.assign(Error(), { code: 'wiki_dehydration_busy' });
+        preparePageDehydration({ store, caseId, ...input });
+        if (typeof options.runDehydration !== 'function') throw Object.assign(Error(), { code: 'wiki_dehydration_model_unavailable' });
+        recommending.add(key);
+        try { await options.runDehydration({ store, caseId, ...input }); }
+        finally { recommending.delete(key); }
+      }
       if (match[1] === 'dehydration-confirm') store.confirmDehydration(input);
       if (match[1] === 'review') store.review(input);
       if (match[1] === 'comparison-review') store.reviewComparison(input);
@@ -129,7 +150,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         else store.confirmGlobalCandidate({ ...input, files });
       }
       const state = store.read();
-      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases), caseStates: store.getCaseStates(), runReplays: projectWikiRunAccounting(runs.list(), state.dehydrations), comparisons: createWikiComparisonStore(scope).read(), executions: executions(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
+      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases).map((c: any) => ({ ...c, dehydrationRecommendation: pageRecommendationAvailability(c, (state.dehydrations || []).findLast((r: any) => r.caseId === c.id)) })), caseStates: store.getCaseStates(), runReplays: projectWikiRunAccounting(runs.list(), state.dehydrations), comparisons: createWikiComparisonStore(scope).read(), executions: executions(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

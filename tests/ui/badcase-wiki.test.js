@@ -82,6 +82,26 @@ function setup(t, handler) {
     click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
 
+test('Badcase request action reaches the guarded case API once, disables during send, then shows confirmation without auto-freezing', async t => {
+  let release;
+  const h = setup(t, (url, options, saved) => {
+    if (options.method === 'POST' && url.endsWith('/dehydration/recommend')) return new Promise(r => { release = () => {
+      saved.revision++; saved.cases[0].dehydrationRecommendation = { eligible: false };
+      saved.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), hash: 'c'.repeat(64), request: { state: { steps: [{ step: 1, body: 'reply' }] } },
+        recommendation: { schemaVersion: 2, retryPolicy: 'manual', kindSuggestion: 'single', cutStepSuggestion: 1, cutSource: 'deepseek', evidenceVerified: true, answers: { reason: '本步决定', evidence: 'reply' }, attempts: [] } }];
+      r(clone(saved));
+    }; });
+  });
+  h.saved().cases[0].traceBundle = { hash: 'a'.repeat(64), stepCount: 1 };
+  h.saved().cases[0].dehydrationRecommendation = { eligible: true };
+  await h.panel.load(); await h.click('[data-tab="badcases"]'); assert.equal(h.posts().length, 0);
+  const button = h.root.querySelector('[data-dehydration-recommend="c1"]'); button.click(); button.click();
+  assert.equal(h.posts().length, 1); assert.equal(button.disabled, true);
+  assert.equal(h.posts()[0].url, '/api/wikiskill/cases/c1/dehydration/recommend');
+  assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, expectedRevision: 3, traceHash: 'a'.repeat(64) });
+  release(); await tick(); await tick(); assert.ok(h.root.querySelector('[data-dehydration-confirm="c1"]'));
+  assert.equal(h.root.querySelector('[data-dehydration-recommend="c1"]'), null); assert.equal(h.posts().length, 1);
+});
 test('deleted evidence disappears from knowledge counts/search while the frozen guideline and deletion audit remain', async t => {
   const h = setup(t), s = h.saved(); s.cases = s.cases.filter(c => c.id !== 'c1'); s.caseStates = s.caseStates.filter(c => c.caseId !== 'c1');
   s.events.push({ type: 'case-deleted', caseIds: ['c1'], caseNumbers: [7], reason: '<script>缺系统提示词</script>', createdAt: '2026-11-05T00:00:00Z' });

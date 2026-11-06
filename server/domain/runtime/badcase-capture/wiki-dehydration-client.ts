@@ -9,14 +9,15 @@ export function dehydrationRequestBody(request: any) {
       { role: 'user', content: JSON.stringify(request) },
     ] });
 }
-export function createDehydrationClient(options: { key: string; fetchImpl: typeof fetch }) {
-  const { key, fetchImpl } = options;
+export function createDehydrationClient(options: { key: string; fetchImpl: typeof fetch; maxRequests?: number }) {
+  const { key, fetchImpl, maxRequests = 2 } = options;
+  if (![1, 2].includes(maxRequests)) throw fail('wiki_dehydration_client_invalid');
   if (typeof key !== 'string' || !/^[\x21-\x7e]{16,4096}$/.test(key) || typeof fetchImpl !== 'function') throw fail('wiki_dehydration_client_invalid');
   let used = 0;
   return {
     model: DEHYDRATION_MODEL,
     async ask(request: any) {
-      if (++used > 2) throw fail('wiki_dehydration_budget_exhausted');
+      if (++used > maxRequests) throw fail('wiki_dehydration_budget_exhausted');
       const body = dehydrationRequestBody(request);
       const escapedKey = JSON.stringify(key).slice(1, -1);
       if (body.includes(key) || body.includes(escapedKey) || Buffer.byteLength(body) > 4 * 1024 * 1024) throw fail('wiki_dehydration_request_invalid');

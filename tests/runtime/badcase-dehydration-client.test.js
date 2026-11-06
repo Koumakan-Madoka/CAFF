@@ -17,6 +17,11 @@ test('DeepSeek transport is pinned to preclassification settings, explicit auth/
   await client.ask(request); await assert.rejects(client.ask(request), e => e.code === 'wiki_dehydration_budget_exhausted'); assert.equal(calls, 2);
   assert.doesNotMatch(dehydrationRequestBody(request), /Authorization|Bearer/);
 });
+test('page transport has a hard single-send budget even if its caller asks again', async () => {
+  let calls = 0; const client = createDehydrationClient({ key, maxRequests: 1, fetchImpl: async () => { calls++; return completion('invalid JSON'); } });
+  assert.equal((await client.ask(request)).content, 'invalid JSON');
+  await assert.rejects(client.ask(request), e => e.code === 'wiki_dehydration_budget_exhausted'); assert.equal(calls, 1);
+});
 test('HTTP/network failures never echo upstream bodies or retry; malformed envelopes remain parse failures; request/key echoes are blocked', async () => {
   for (const [fetchImpl, code] of [[async () => new Response(key, { status: 403 }), 'wiki_dehydration_http_failed'],
     [async () => { throw Error(key); }, 'wiki_dehydration_network_failed'], [async () => completion(key), 'wiki_dehydration_response_invalid'],

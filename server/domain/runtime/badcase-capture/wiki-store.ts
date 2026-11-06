@@ -344,7 +344,7 @@ export function createWikiStore(options: any) {
     // Trusted recommendation runner entry, never accepts caller-supplied answers over HTTP.
     saveDehydrationRecommendation(input: any) {
       if (!global) throw fail('wiki_global_required');
-      const { built, response, expectedRevision } = input;
+      const { built, response, expectedRevision, retryOf } = input;
       return change(state => {
         if (!Number.isSafeInteger(expectedRevision)) throw fail('wiki_invalid_input');
         if (state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
@@ -355,10 +355,14 @@ export function createWikiStore(options: any) {
         buildDehydrationPrefix(c, bundle, built.markedStep);
         const recommendation = interpretDehydrationAnswer(built, response);
         const content = { schemaVersion: 2, caseId: c.id, caseNumber: built.caseNumber, traceHash: built.traceHash,
-          requestHash: built.requestHash, request: structuredClone(built.request), recommendation };
-        const rows = state.dehydrations || (state.dehydrations = []), old = rows.find((v: any) => v.caseId === c.id);
-        if (old?.decision) throw fail('wiki_dehydration_frozen');
-        if (old) {
+          requestHash: built.requestHash, request: structuredClone(built.request), recommendation,
+          ...(retryOf === undefined ? {} : { retryOf }) };
+        const rows = state.dehydrations || (state.dehydrations = []), old = rows.findLast((v: any) => v.caseId === c.id);
+        if (rows.some((v: any) => v.caseId === c.id && v.decision)) throw fail('wiki_dehydration_frozen');
+        if (retryOf !== undefined && (!old || old.hash !== retryOf || old.retryOf || old.requestHash !== built.requestHash
+          || old.traceHash !== built.traceHash || old.recommendation?.retryPolicy !== 'manual' || old.recommendation?.fallbackReason !== 'parse_failed'
+          || recommendation.retryPolicy !== 'manual')) throw fail('wiki_dehydration_recommendation_exists');
+        if (old && retryOf === undefined) {
           const { createdAt, hash: oldHash, ...previous } = old;
           if (JSON.stringify(previous) !== JSON.stringify(content)) throw fail('wiki_dehydration_recommendation_exists');
           return { changed: false, value: old };
@@ -372,7 +376,7 @@ export function createWikiStore(options: any) {
     getDehydration(caseId: string) {
       const state = read();
       if (!state.cases.some((c: any) => c.id === id(caseId))) throw fail('wiki_unknown_case');
-      return (state.dehydrations || []).find((v: any) => v.caseId === caseId) || null;
+      return (state.dehydrations || []).findLast((v: any) => v.caseId === caseId) || null;
     },
     // Provenance is a trusted operator argument, not part of the HTTP body.
     // A relayed user decision is equivalent to page confirmation, not an AI vote.
@@ -389,7 +393,7 @@ export function createWikiStore(options: any) {
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         const c = state.cases.find((v: any) => v.id === id(input.caseId));
         if (!c) throw fail('wiki_unknown_case');
-        const row = (state.dehydrations || []).find((v: any) => v.caseId === c.id);
+        const row = (state.dehydrations || []).findLast((v: any) => v.caseId === c.id);
         if (!row) throw fail('wiki_dehydration_recommendation_required');
         if (c.traceBundle?.hash !== input.traceHash || row.traceHash !== input.traceHash || row.hash !== input.recommendationHash) throw fail('wiki_dehydration_stale');
         if (!['single', 'throughout', 'unclear'].includes(input.kind)) throw fail('wiki_invalid_input');
@@ -424,7 +428,7 @@ export function createWikiStore(options: any) {
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         const c = state.cases.find((v: any) => v.id === id(input.caseId));
         if (!c) throw fail('wiki_unknown_case');
-        const row = (state.dehydrations || []).find((v: any) => v.caseId === c.id);
+        const row = (state.dehydrations || []).findLast((v: any) => v.caseId === c.id);
         if (!row?.decision) throw fail('wiki_dehydration_recommendation_required');
         if (c.traceBundle?.hash !== input.traceHash || row.traceHash !== input.traceHash || row.hash !== input.recommendationHash) throw fail('wiki_dehydration_stale');
         const previous = row.decision;

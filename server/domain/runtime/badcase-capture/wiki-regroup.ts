@@ -10,7 +10,7 @@ const hash = (v: any) => crypto.createHash('sha256').update(JSON.stringify(v)).d
 const fail = (code: string) => Object.assign(Error(code), { code });
 export function planWikiRegroup(state: any, accounting: any[]) {
   const rows = wikiDisplayCases(state.cases).map(c => {
-    const d = (state.dehydrations || []).find((v: any) => v.caseId === c.id && v.traceHash === c.traceBundle?.hash)?.decision;
+    const d = (state.dehydrations || []).findLast((v: any) => v.caseId === c.id && v.traceHash === c.traceBundle?.hash)?.decision;
     const originals = accounting.filter(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash && r.decisionHash === d?.hash
       && r.variant?.kind === 'original' && !r.excludedReason).sort((a, b) => a.id.localeCompare(b.id));
     const valid = originals.some(r => r.baselineStatus === 'valid_output' && r.caseEligibleForGateAndScreen === true);

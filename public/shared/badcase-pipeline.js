@@ -1,9 +1,9 @@
 // @ts-check
 (function registerBadcasePipeline() {
   const shared = window.CaffShared || (window.CaffShared = {});
-  // Loading is read-only. Only an explicit user action freezes a decision;
-  // this component never calls a model, starts a replay, grades or changes groups.
-  shared.createBadcasePipeline = function ({ root, fetchJson, onConfirmDecision, confirm: confirmAction = message => window.confirm(message) }) {
+  // Loading is read-only. Only explicit guarded actions request a recommendation
+  // or freeze a decision; no automatic calls, retries, replay, grading or regrouping.
+  shared.createBadcasePipeline = function ({ root, fetchJson, onConfirmDecision, onRequestRecommendation, confirm: confirmAction = message => window.confirm(message) }) {
     const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const words = q => String(q || '').slice(0, 512).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 30);
     const matches = (v, ts) => ts.every(t => String(v).toLowerCase().includes(t));
@@ -39,8 +39,8 @@
     };
     let D = { cases: [], caseStates: [] }, q = '', stage = 'all', model = 'all', mode = 'group';
     const cache = new Map(), expanded = new Set(), queries = new Map(), runCache = new Map();
-    let writable = typeof onConfirmDecision === 'function';
-    const dehydration = c => (D.dehydrations || []).find(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash);
+    let writable = typeof onConfirmDecision === 'function' || typeof onRequestRecommendation === 'function';
+    const dehydration = c => (D.dehydrations || []).findLast(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash);
     const excludedRun = (c, r) => dehydration(c)?.decision?.level === 'reference' && dehydration(c)?.decision?.supersedesDecisionHash === r.decisionHash;
     const caseRuns = c => (D.runReplays || []).filter(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash && (r.decisionHash === dehydration(c)?.decision?.hash || excludedRun(c, r)));
     const activeRuns = c => dehydration(c)?.decision?.level === 'run' ? caseRuns(c).filter(r => !excludedRun(c, r)) : [];
@@ -126,19 +126,29 @@
       catch { row.state = 'error'; runCache.delete(id); }
       if (details.isConnected) render(row);
     }
+    function requestButton(c, r) {
+      if (!c.traceBundle || c.source?.agentId !== 'role-family-gpt' || sourceOnly(c) || r?.decision || !c.dehydrationRecommendation?.eligible) return '';
+      return `<p class="hint">每次点击只请求一次 DeepSeek；不会执行工具或自动确认。</p><button type="button" class="btn" data-dehydration-recommend="${esc(c.id)}" ${writable && typeof onRequestRecommendation === 'function' ? '' : 'disabled'}>${r ? '再次请求推荐' : '请求推荐'}</button>`;
+    }
     function dehydrationPanel(c) {
-      const r = dehydration(c); if (!r || sourceOnly(c) || !isGpt(c)) return '';
+      const r = dehydration(c); if (sourceOnly(c) || !isGpt(c)) return '';
+      if (!r) { const button = requestButton(c, r); return button ? `<section class="dehydration-panel" data-dehydration="${esc(c.id)}"><h4>脱水 · 能否脱水</h4>${button}</section>` : ''; }
       const rec = r.recommendation, d = r.decision;
       const fallbackLabel = { parse_failed: '两次输出仍无法解析', evidence_mismatch: '依据与该步卡片原文不匹配', no_cut: '未给出切点', unclear: '模型说不清', not_single: '模型判断为贯穿型' };
       const provider = rec.schemaVersion === 2 ? 'DeepSeek' : '历史 JEV';
-      return `<section class="dehydration-panel" data-dehydration="${esc(c.id)}"><h4>能否脱水</h4>${d?.supersedesDecisionHash ? '<p class="pill warn">原推荐与历史确认已被用户改判，不计入；原文和 hash 保留。</p>' : ''}<p>${provider} 建议：${esc(kindLabel(rec.kindSuggestion))}；建议切点：第 ${rec.cutStepSuggestion} 步${rec.cutSource === 'marked_step_fallback' ? `（${esc(fallbackLabel[rec.fallbackReason] || '未达建议条件')}，回退到发消息步骤${d ? '；用户决定见下方' : '，请你挑选'}）` : ''}。</p>
+      if (rec.retryPolicy === 'manual') fallbackLabel.parse_failed = '本次输出无法解析';
+      const history = (D.dehydrations || []).filter(old => old.caseId === c.id && old.traceHash === r.traceHash && old.hash !== r.hash);
+      return `<section class="dehydration-panel" data-dehydration="${esc(c.id)}"><h4>能否脱水</h4>${d?.supersedesDecisionHash ? '<p class="pill warn">原推荐与历史确认已被用户改判，不计入；原文和 hash 保留。</p>' : ''}<p>${rec.schemaVersion === 2 && !rec.answers ? '未取得可解析的 DeepSeek 判断；回退切点：第 ' : provider + ' 建议：' + esc(kindLabel(rec.kindSuggestion)) + '；建议切点：第 '}${rec.cutStepSuggestion} 步${rec.cutSource === 'marked_step_fallback' ? `（${esc(fallbackLabel[rec.fallbackReason] || '未达建议条件')}，回退到发消息步骤${d ? '；用户决定见下方' : '，请你挑选'}）` : ''}。</p>
         ${rec.schemaVersion === 2 ? `<p>理由：${esc(rec.answers?.reason || '未取得可解析答案，不代表模型给出了判断')}</p><p>原文依据：${esc(rec.answers?.evidence || '未提供')}（${rec.evidenceVerified ? '程序已核对为该步卡片原文的子串' : '未核验通过'}）</p>` : ''}
         <details><summary>查看实际推荐材料与完整输出</summary><pre class="tl-req">${esc(json({ request: r.request, answers: rec.answers, attempts: rec.attempts }))}</pre></details>
+        ${history.map(old => `<details data-recommendation-history><summary>此前推荐 · 原文与 hash 保留</summary><pre class="tl-req">${esc(json(old))}</pre></details>`).join('')}
+        ${!d && rec.retryPolicy === 'manual' && rec.fallbackReason === 'parse_failed' ? '<p class="hint">没有取得模型判断；回退方案默认切在发消息那一步。请自行选择判断与切点后确认，或手动再次请求推荐（最多一次）；不会自动重试。</p>' : ''}
+        ${requestButton(c, r)}
         ${(r.decisionHistory || []).map(old => `<details data-decision-history><summary>历史确认 · 已被用户改判，不计入</summary><pre class="tl-req">${esc(json(old))}</pre></details>`).join('')}
         ${d?.reason ? `<p>用户改判原因：${esc(d.reason)}</p>` : ''}
         ${d ? `<p class="pill ok">已冻结：${esc(kindLabel(d.kind))}${d.cutStep ? ' · 第 ' + d.cutStep + ' 步' : ''} · ${d.level === 'reference' ? '只作参考' : esc(d.level) + ' 级'}</p><p class="trace-hash mono">决定 SHA-256：${esc(d.hash)}</p><p>确认来源：${d.confirmation?.source === 'user-via-planner' ? '用户经规划者转达' : '用户在 Badcase 页确认'}${d.confirmation?.reference ? ` · ${esc(d.confirmation.reference)}` : ''}${d.kind !== rec.kindSuggestion || d.kind === 'single' && d.cutStep !== rec.cutStepSuggestion ? ' · 用户改判（原推荐保留在上方）' : ''}</p>` : `<label class="field">你的判断 <select data-dehydration-kind>${['single', 'throughout', 'unclear'].map(k => `<option value="${k}" ${rec.kindSuggestion === k ? 'selected' : ''}>${esc(kindLabel(k))}</option>`).join('')}</select></label>
         <label class="field">单步型切点 <select data-dehydration-cut>${r.request.state.steps.map(s => `<option value="${s.step}" ${rec.cutStepSuggestion === s.step ? 'selected' : ''}>第 ${s.step} 步 · ${esc((s.messageBody || s.body).slice(0, 120))}</option>`).join('')}</select></label>
-        <p class="hint">贯穿型或说不清且无现场，只作参考，不成为测试用例。确认后判断与切点永久冻结；此处不启动模型。</p><button type="button" class="btn primary" data-dehydration-confirm="${esc(c.id)}" ${writable ? '' : 'disabled'}>确认并冻结判断与切点</button>`}</section>`;
+        <p class="hint">贯穿型或说不清且无现场，只作参考，不成为测试用例。确认后判断与切点永久冻结；此处不启动模型。</p><button type="button" class="btn primary" data-dehydration-confirm="${esc(c.id)}" ${writable && typeof onConfirmDecision === 'function' ? '' : 'disabled'}>确认并冻结判断与切点</button>`}</section>`;
     }
     function card(c, ts) {
       const p = plan(c), ref = c.traceBundle, tone = ref?.complete ? 'ok' : 'warn';
@@ -222,7 +232,13 @@
       if (el.open) { expanded.add(id); renderTrace(c); void loadTrace(c); } else expanded.delete(id);
     }, true);
     root.addEventListener('click', e => {
-      const el = e.target.closest('[data-bc-mode],[data-trace-retry],[data-dehydration-confirm]'); if (!el || el.disabled) return;
+      const el = e.target.closest('[data-bc-mode],[data-trace-retry],[data-dehydration-confirm],[data-dehydration-recommend]'); if (!el || el.disabled) return;
+      if (el.dataset.dehydrationRecommend) {
+        const c = D.cases.find(c => c.id === el.dataset.dehydrationRecommend), r = c && dehydration(c);
+        if (!writable || !c?.dehydrationRecommendation?.eligible || r?.decision || typeof onRequestRecommendation !== 'function') return;
+        if (!confirmAction(`为 #${c.n} 请求一次 DeepSeek 推荐？将发送冻结的起因、步骤卡片、回复和问题/期望；不自动重试或确认。`)) return;
+        onRequestRecommendation({ caseId: c.id, traceHash: c.traceBundle.hash, ...(r ? { retryOf: r.hash } : {}) }); return;
+      }
       if (el.dataset.dehydrationConfirm) {
         const c = D.cases.find(c => c.id === el.dataset.dehydrationConfirm), r = c && dehydration(c);
         if (!writable || !r || r.decision || typeof onConfirmDecision !== 'function') return;
@@ -240,7 +256,7 @@
       if (el.hasAttribute('data-trace-search')) { const c = D.cases.find(c => c.id === el.dataset.traceSearch); if (c) { queries.set(c.id, el.value); renderTraceContent(c, el.closest('[data-trace-host]')); } }
     });
     root.addEventListener('change', e => { const el = e.target; if (el.hasAttribute('data-bc-stage')) { stage = el.value; renderCards(); } if (el.hasAttribute('data-bc-model')) { model = el.value; renderCards(); } });
-    return { setWritable(value) { writable = value && typeof onConfirmDecision === 'function'; root.querySelectorAll('[data-dehydration-confirm]').forEach(b => { b.disabled = !writable; }); }, render(data) { D = data; for (const [id, row] of cache) if (!D.cases.some(c => c.id === id && c.traceBundle?.hash === row.hash)) cache.delete(id); funnel(); regroupPanel(); renderCards(); },
+    return { setWritable(value) { writable = !!value; root.querySelectorAll('[data-dehydration-confirm]').forEach(b => { b.disabled = !writable || typeof onConfirmDecision !== 'function'; }); root.querySelectorAll('[data-dehydration-recommend]').forEach(b => { b.disabled = !writable || typeof onRequestRecommendation !== 'function'; }); }, render(data) { D = data; for (const [id, row] of cache) if (!D.cases.some(c => c.id === id && c.traceBundle?.hash === row.hash)) cache.delete(id); funnel(); regroupPanel(); renderCards(); },
       focus(n) { q = ''; stage = 'all'; model = 'all'; $('[data-bc-search]').value = ''; $('[data-bc-stage]').value = 'all'; $('[data-bc-model]').value = 'all'; renderCards(); root.querySelector('#bc-' + Number(n))?.scrollIntoView({ block: 'center' }); } };
   };
 })();
