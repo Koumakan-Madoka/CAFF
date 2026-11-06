@@ -29,7 +29,7 @@ body.management-app[data-page="wikiskill"] .wikiskill-content {
 .wikiskill-content :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-radius: 6px; }
 .wikiskill-content mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1px; }
 .wikiskill-content .mono { font-family: var(--font-mono); font-size: 12.5px; }
-.wsk-shell { max-width: 1240px; margin: 0 auto; display: grid; gap: 16px; }
+.wsk-shell { max-width: 1680px; margin: 0 auto; display: grid; gap: 16px; }
 .top { display: grid; gap: 12px; }
 .title-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
 .title-row h1 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; }

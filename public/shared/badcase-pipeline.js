@@ -15,7 +15,8 @@
     }
     const json = v => JSON.stringify(v, null, 2);
     const labels = ['标记', '现场', '脱水', '归类', '分组', '断言', '回放检查', '原版复现', '入库'];
-    const names = { you: '等你处理', system: '系统可以继续', library: '已入库', source: '旧题的来源', reference: '只作参考', invalid: '无效测试用例', other: '非 GPT 来源' };
+    const names = { you: '等你处理', system: '系统可以继续', library: '已入库', stop: '到此为止' };
+    const actorBucket = actor => ['you', 'system', 'library'].includes(actor) ? actor : 'stop';
     const splitName = { train: '训练', gate: '门槛', test: '测试' };
     const sceneLabel = scene => scene?.metadataStatus === 'recorded' ? '现场元数据已冻结' : scene?.metadataStatus === 'partial' ? '现场部分记录 · 缺口已披露' : '历史现场元数据缺失';
     const sceneNote = c => sceneLabel(c.traceBundle?.scene);
@@ -38,8 +39,9 @@
       scene_head_not_recorded: '现场未记录历史提交', scene_branch_not_recorded: '现场未记录历史分支',
       checkpoint_missing: '未找到原现场清单', checkpoint_unreadable: '原现场清单无法读取', source_message_missing: '未找到原消息', marked_message_truncated: '原回复存档被截断',
     };
-    let D = { cases: [], caseStates: [] }, q = '', stage = 'all', model = 'all', mode = 'group';
+    let D = { cases: [], caseStates: [] }, q = '', stage = 'all', model = 'all', currentPattern = null, selected = null;
     const cache = new Map(), expanded = new Set(), queries = new Map(), runCache = new Map();
+    let detailSignature = null;
     let writable = [onConfirmDecision, onRequestRecommendation, onConfirmPatternLabel, onConfirmInitialSplit].some(fn => typeof fn === 'function');
     const dehydration = c => (D.dehydrations || []).findLast(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash);
     const excludedRun = (c, r) => dehydration(c)?.decision?.level === 'reference' && dehydration(c)?.decision?.supersedesDecisionHash === r.decisionHash;
@@ -54,12 +56,14 @@
     };
     const patternLabel = c => (D.casePatterns || []).find(r => r.caseId === c.id);
     const splitProposal = c => D.initialSplitProposal?.rows.find(r => r.caseId === c.id && r.proposedSplit);
-    root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec"><h2>从 badcase 到测试用例</h2><p class="hint">有现场默认走 trace 级；无现场须经 DeepSeek 推荐、你确认后脱水成 run 级。测试组只收 trace 级，门槛中 run 级不超过一半，训练组 run 级只作初筛。分组只在用户确认后生效，旧记录保留。</p><div data-funnels></div></section><div data-initial-split-host></div><div data-regroup-host></div>
-      <div class="toolbar"><label class="search"><input data-bc-search type="search" aria-label="搜索 badcase" placeholder="搜索问题、期望、来源房间或编号" autocomplete="off"></label>
-      <label class="field">卡在 <select data-bc-stage><option value="all">全部</option><option value="you">等你处理</option><option value="system">系统可以继续</option><option value="scene">有封存现场</option><option value="noscene">无现场（待脱水）</option><option value="dehydrate">脱水</option><option value="source">旧题的来源</option><option value="reference">只作参考</option><option value="invalid">无效测试用例</option><option value="other">非 GPT 来源</option></select></label>
-      <label class="field">模型 <select data-bc-model><option value="all">全部</option><option value="gpt">GPT</option><option value="other">非 GPT</option></select></label>
-      <div class="seg" role="radiogroup" aria-label="Badcase 显示方式"><button type="button" role="radio" data-bc-mode="group" aria-checked="true">按下一步分组</button><button type="button" role="radio" data-bc-mode="list" aria-checked="false">列表</button></div></div>
-      <p class="summary" data-bc-summary></p><div class="groups" data-bc-body></div></div>`;
+    root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec bc-panel"><h2>从 badcase 到测试用例</h2>
+      <div class="howline" aria-label="trace 级还是 run 级怎么定"><span class="how-step">系统自动：这一轮有现场吗</span><span>→ 有：<b>trace 级</b></span><span>｜没有：DeepSeek 推荐 → <b>你决定</b></span><span>→ 单步型：<b>run 级</b></span><span>贯穿型 / 说不清：只作参考</span></div>
+      <details><summary class="hint">展开说明</summary><p class="hint">现场在这一轮开始前自动封存。有现场一律走 trace，从这一轮开头执行到自然结束；有现场的 run 执行器尚未实现。无现场经 DeepSeek 推荐、你确认后冻结判断和切点，run 在切点上只调一次模型，不执行工具。原版始终无有效回复的是无效测试用例，不算通过也不算不通过。测试只收 trace；门槛 run 不超过 trace。训练组初筛暂未启用。分组确认不启动回放或评测。</p></details><div class="lanes" data-funnels></div></section>
+      <section class="sec bc-panel" data-grouping></section>
+      <div class="bc-master-detail"><section class="bc-panel bc-index" aria-label="Badcase 列表"><label class="search"><input data-bc-search type="search" aria-label="搜索 badcase" placeholder="搜索问题、期望、来源房间或编号" autocomplete="off"></label>
+      <div class="seg" role="radiogroup" aria-label="按下一步筛选">${[['all', '全部'], ['you', '等你'], ['system', '系统'], ['library', '已入库'], ['stop', '到此为止']].map(([key, name]) => `<button type="button" data-bc-filter="${key}" aria-checked="${key === 'all'}" role="radio">${name}</button>`).join('')}</div>
+      <details><summary class="hint">更多筛选</summary><label class="field">模型 <select data-bc-model><option value="all">全部</option><option value="gpt">GPT</option><option value="other">非 GPT</option></select></label></details>
+      <p class="hint" data-list-pattern></p><p class="summary" data-bc-summary></p><div class="bc-rows" data-bc-body></div></section><section class="bc-detail" data-bc-detail aria-label="选中用例详情" aria-live="polite"></section></div></div>`;
     const $ = s => root.querySelector(s);
     const isGpt = c => /gpt/i.test(c.source?.agentId || c.role || '');
     const hasScene = c => !!c.sealedCheckpointId;
@@ -100,7 +104,7 @@
         [has ? c.traceBundle?.scene?.metadataStatus === 'recorded' ? 'done' : 'pending' : 'alt', has ? sceneNote(c) + '；元数据不等于已通过回放检查' : '没有现场；须先确认能否脱水'],
         [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '有现场，走 trace 级；现场 run 级回放尚未实现，暂不开放脱水' : r ? 'DeepSeek 推荐已生成，等待你确认能否脱水和切点' : 'DeepSeek 推荐尚未生成；用户确认后冻结判断与切点'],
         [patternLabel(c)?.confirmed || cs?.memberships?.length ? 'done' : 'pending', patternLabel(c)?.confirmed ? patternLabel(c).entryId ? '已有已确认模式标签' : '已确认：未归入现有模式' : cs?.memberships?.length ? '已有已确认模式标签' : '待确认模式标签；不自动改模式或加入归纳'],
-        [old || confirmedGroup(c) ? 'done' : 'pending', old ? '原测试分组保留' : confirmedGroup(c) ? `用户确认的${splitName[confirmedGroup(c).confirmedSplit]}组已生效；原提议和旧分组记录保留` : splitProposal(c) ? `提议：${splitName[splitProposal(c).proposedSplit]}组，等你确认后冻结` : !splitName[c.split] ? '待分配；模式标签及有效原版证据齐备后，按模式提议分组' : '旧分组保留；分层重新分组待用户确认'],
+        [old || splitName[c.split] ? 'done' : 'pending', old ? '原测试分组保留' : confirmedGroup(c) ? `用户确认的${splitName[confirmedGroup(c).confirmedSplit]}组已生效；原提议和旧分组记录保留` : splitProposal(c) ? `提议：${splitName[splitProposal(c).proposedSplit]}组，等你确认后冻结` : !splitName[c.split] ? '待分配；模式标签及有效原版证据齐备后，按模式提议分组' : `已有${splitName[c.split]}组保留，不重新分配`],
         [status.assertion.status === 'frozen' ? 'done' : ['incompatible', 'stale'].includes(status.assertion.status) ? 'warn' : 'pending', assertionText(c)],
         [status.replay.status === 'supported' ? 'done' : status.replay.status === 'unsupported' ? 'warn' : 'pending', replayText(c)],
         [status.original.reproduced ? 'done' : status.original.unscored || status.original.valid ? 'alt' : 'pending', originalText(c)],
@@ -130,42 +134,56 @@
       const runs = gpt.flatMap(activeRuns), excluded = gpt.flatMap(c => caseRuns(c).filter(r => excludedRun(c, r)));
       if (runs.length || excluded.length) $('[data-funnels]').insertAdjacentHTML('beforeend', `<p data-run-totals>单次 run 回放共 ${runs.length} 次：有效输出 ${runs.filter(r => r.status === 'reached').length}；无效 ${runs.filter(r => r.status === 'invalid').length}（不算通过也不算不通过）；请求失败 ${runs.filter(r => r.status === 'error').length}；结果未知 ${runs.filter(r => r.status === 'reserved').length}。有效输出不代表判分通过。原版无有效输出 ${gpt.filter(baselineMissing).length} 题，不进门槛和初筛。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次（原文保留）。` : ''}</p>`);
     }
-    function initialSplitPanel() {
-      const p = D.initialSplitProposal, host = $('[data-initial-split-host]');
-      if (!p) { host.innerHTML = ''; return; }
-      if (p.blockers?.length) {
-        host.innerHTML = `<section class="sec" data-initial-split data-initial-split-blocked><h2>新用例首次分组 · 暂停提议</h2><p role="alert">${esc(p.blockingMessage)}</p><p>已有组别的 GPT 用例尚有模式标签待确认，配额占用还不完整。先补齐上面列出的标签，再提议任何模式的新用例分组；不会改变已有组别或启动回放。</p></section>`;
-        return;
+    const patternKey = c => { const p = patternLabel(c); return p?.confirmed ? p.patternKey || p.entryId || 'unclassified' : 'pending'; };
+    function patterns() {
+      const options = new Map([...(D.versions?.at(-1)?.entries || []).filter(e => e.status === 'approved').map(e => [e.id, e.title]), ...(D.casePatterns || []).flatMap(r => r.options || []).map(e => [e.entryId, e.title])]);
+      options.set('unclassified', '未归入现有模式'); options.set('pending', '模式标签待确认');
+      return [...options].map(([key, title]) => ({ key, title, cases: D.cases.filter(c => patternKey(c) === key) }));
+    }
+    function boardRow(c) {
+      const row = D.initialSplitProposal?.rows.find(r => r.caseId === c.id);
+      const reason = !isGpt(c) ? 'non_gpt_report_only' : sourceOnly(c) ? 'legacy_test_source' : !hasScene(c) && dehydration(c)?.decision?.level === 'reference' ? 'reference_only' : baselineMissing(c) ? 'baseline_no_valid_output' : row?.reason;
+      const out = reason && !['legacy_test_source', 'pattern_label_unconfirmed'].includes(reason);
+      return { c, reason, level: sourceOnly(c) ? 'old' : hasScene(c) ? 'trace' : dehydration(c)?.decision?.level === 'run' ? 'run' : 'pending',
+        group: out ? 'out' : splitName[c.split] ? c.split : row?.proposedSplit || 'out', prop: !out && !c.split && !!row?.proposedSplit };
+    }
+    function readiness(cases) {
+      const ready = cases.filter(c => pipeline(c).inLibrary && isGpt(c) && !sourceOnly(c));
+      const gate = ready.filter(c => c.split === 'gate'), test = ready.filter(c => c.split === 'test' && hasScene(c));
+      const control = D.cases.some(c => !cases.includes(c) && c.split === 'gate' && pipeline(c).inLibrary && isGpt(c) && !sourceOnly(c) && patternKey(c) !== 'pending');
+      const missing = [!gate.length && '可用门槛题', !test.length && '可用 trace 测试题', !control && '其他模式的可用防误伤题'].filter(Boolean);
+      return missing.length ? '尚不能评测候选：缺' + missing.join('、') : '有可用门槛、测试和其他模式的防误伤题；正式计划仍须预检';
+    }
+    function groupingPanel() {
+      const all = patterns(), host = $('[data-grouping]'), p = D.initialSplitProposal;
+      if (currentPattern === null || !all.some(x => x.key === currentPattern) && currentPattern !== 'all') currentPattern = all.find(x => x.cases.length)?.key || 'unclassified';
+      const tab = (key, title, count) => `<button type="button" role="radio" data-bc-pattern="${esc(key)}" aria-checked="${currentPattern === key}">${esc(title)}${count == null ? '' : ` <small>${count}</small>`}</button>`;
+      let body;
+      if (currentPattern === 'all') {
+        body = `<div class="bc-matrix-wrap"><table class="bc-matrix" data-pattern-overview><thead><tr><th>模式</th><th>训练</th><th>门槛</th><th>测试</th><th>不参与 / 待分配</th><th>能评测候选吗</th></tr></thead><tbody>${all.map(x => {
+          const rows = x.cases.map(boardRow);
+          return `<tr><th><button type="button" class="btn small" data-bc-pattern="${esc(x.key)}">${esc(x.title)}</button></th>${['train', 'gate', 'test', 'out'].map(g => `<td>${rows.filter(r => r.group === g && !r.prop).length}${rows.some(r => r.group === g && r.prop) ? ` + ${rows.filter(r => r.group === g && r.prop).length} 提议` : ''}</td>`).join('')}<td>${esc(readiness(x.cases))}</td></tr>`;
+        }).join('')}</tbody></table></div><p class="hint">总览只给数量；点击模式看分组，不混摆不同模式的用例。提议尚未生效；分组不等于可回放或已复现。</p>`;
+      } else {
+        const x = all.find(x => x.key === currentPattern), rows = x.cases.map(boardRow), pattern = p?.patterns.find(v => v.patternKey === currentPattern);
+        const counts = pattern?.existingCounts || ['trace', 'run'].reduce((acc, level) => ({ ...acc, [level]: Object.fromEntries(['train', 'gate', 'test'].map(g => [g, rows.filter(r => r.level === level && r.group === g && !r.prop && !r.reason).length])) }), {});
+        const reasons = { non_gpt_report_only: '非 GPT 来源：只报告，不占配额', reference_only: '只作参考', baseline_no_valid_output: '无效测试用例：原版无有效输出', baseline_pending: '暂不参与：原版还没有有效回复', dehydration_not_confirmed: '脱水尚未确认', pattern_label_unconfirmed: '模式标签待确认，不占模式配额' };
+        const chip = r => `<button type="button" class="cc ${r.level}${r.prop ? ' prop' : ''}${patternKey(r.c) === 'pending' ? ' unl' : ''}" data-bc-pick="${esc(r.c.id)}" title="${esc(r.c.actual)}"><b>#${r.c.n}</b><span>${esc(r.c.actual)}</span>${r.prop ? '<small>提议</small>' : ''}</button>`;
+        body = `<h3>${esc(x.title)}</h3><p class="hint" data-board-quotas>配额按已确认模式计算：trace 训练:门槛:测试 2:1:1；run 训练:门槛 2:1；本模式门槛 run 不超过 trace。${['trace', 'run'].map(level => `${level}：${['train', 'gate', 'test'].map(g => `${splitName[g]} ${counts[level][g]}${pattern?.counts && pattern.counts[level][g] !== counts[level][g] ? ' → ' + pattern.counts[level][g] : ''}`).join(' / ')}`).join('；')}。旧题来源不占配额，已有组别不变。</p>
+          <div class="bc-board">${['train', 'gate', 'test', 'out'].map(g => `<section class="bc-column ${g === 'out' ? 'out' : ''}" data-board-column="${g}"><h4>${splitName[g] || '不参与 / 待分配'}</h4>${g === 'out' ? rows.filter(r => r.group === g).map(r => `<div class="bc-out-row">${chip(r)}<span class="hint">${esc(reasons[r.reason] || '待分配：尚无满足条件的提议')}</span></div>`).join('') || '<span class="hint">—</span>' : ['trace', 'run', 'old', 'pending'].map(level => { const members = rows.filter(r => r.group === g && r.level === level); return members.length ? `<div class="bc-level-row"><span class="hint">${{ old: '旧题来源（不改）', pending: '层级待确认' }[level] || level}</span><div class="chips">${members.map(chip).join('')}</div></div>` : ''; }).join('') || '<span class="hint">—</span>'}</section>`).join('')}</div>
+          <p class="hint" data-board-readiness>${esc(readiness(x.cases))}</p>
+          <div data-initial-split>${!p?.blockers?.length && pattern?.rows.some(r => r.proposedSplit) ? `<p>虚线是新用例的提议，尚未生效；你确认后才冻结。</p><button type="button" class="btn primary" data-initial-split-confirm="${esc(currentPattern)}" ${writable && typeof onConfirmInitialSplit === 'function' ? '' : 'disabled'}>确认此模式的新用例分组</button>` : '<p class="hint">目前没有满足条件的待确认分组提议；系统不自动改组。</p>'}</div>
+          ${x.cases.filter(c => patternLabel(c) && !patternLabel(c).confirmed).map(c => `<div class="bc-label-confirm"><b>#${c.n} ${esc(c.actual)}</b>${patternPanel(c)}</div>`).join('')}`;
       }
-      const caseName = r => { const c = D.cases.find(c => c.id === r.caseId); return `#${c?.n || r.caseNumber || '?'} · ${c?.actual || r.caseId}`; };
-      const patternName = key => key === 'unclassified' ? '未归入现有模式' : (D.casePatterns || []).flatMap(r => r.options || []).find(e => e.entryId === key)?.title || key;
-      const pending = p.patterns.filter(pattern => pattern.rows.some(r => r.proposedSplit));
-      host.innerHTML = `<section class="sec" data-initial-split><h2>新用例首次分组</h2><p>按已确认的模式分别计算配额；系统只提议，你确认后才生效。已有组别不变。无现场用例须先取得有效原版单次输出；本页不会启动回放。</p>${pending.map(pattern => `<section class="dehydration-panel"><h3>${esc(patternName(pattern.patternKey))}</h3><p>配额：trace 训练:门槛:测试 2:1:1；run 训练:门槛 2:1，门槛 run 不超过本模式 trace。</p><p>确认后数量：${['trace', 'run'].map(level => `${level} 训练 ${pattern.counts[level].train} / 门槛 ${pattern.counts[level].gate} / 测试 ${pattern.counts[level].test}`).join('；')}</p><ul>${pattern.rows.filter(r => r.proposedSplit).map(r => `<li>${esc(caseName(r))} · ${esc(r.level)} · 提议：${esc(splitName[r.proposedSplit])}（尚未生效）</li>`).join('')}</ul><button type="button" class="btn primary" data-initial-split-confirm="${esc(pattern.patternKey)}" ${writable && typeof onConfirmInitialSplit === 'function' ? '' : 'disabled'}>确认此模式的新用例分组</button></section>`).join('') || '<p>目前没有满足条件的待确认分组提议；尚未确认模式标签的用例不占配额。</p>'}<details><summary>首次分组审计（hash、固定种子与历史确认）</summary><pre class="tl-req">${esc(json({ hash: p.hash, seed: p.seed, confirmations: D.initialSplitConfirmations || [] }))}</pre></details></section>`;
+      host.innerHTML = `<h2>分组</h2><p class="hint">先选模式，再看本模式的分组。实线是已生效的组别；紫色虚线是首次分组提议。测试只收 trace；训练组初筛暂未启用。</p><div class="seg pat-seg" role="radiogroup" aria-label="模式">${all.map(x => tab(x.key, x.title, x.cases.length)).join('')}${tab('all', '全部模式（总览）')}</div>
+        ${p?.blockers?.length ? `<div data-initial-split-blocked role="alert"><p>${esc(p.blockingMessage)}</p><p class="hint">已有组别的活动 GPT 用例标签尚未确认，整体暂停首次分组提议和确认；请选「模式标签待确认」补齐，不改变已有组别。</p></div>` : ''}${body}
+        <details data-group-audit><summary>变化记录与审计信息（默认折叠）</summary><p class="hint">旧分组、提议、确认及其原文保留。旧提议不在此重新确认；这里没有自动应用或启动评测的入口。</p><pre class="tl-req">${esc(json({ initialProposal: p, initialConfirmations: D.initialSplitConfirmations || [], proposals: D.regroupProposals || [], confirmations: D.regroupConfirmations || [] }))}</pre></details>`;
     }
     function patternPanel(c) {
       const label = patternLabel(c); if (!label) return '';
       const title = label.options.find(e => e.entryId === label.entryId)?.title || '未归入现有模式';
       if (label.confirmed) return `<p class="pill ok" data-pattern-label="${esc(c.id)}">模式标签已确认：${esc(title)} · 不改变组别和归纳成员</p>`;
       return `<section class="dehydration-panel" data-pattern-label="${esc(c.id)}"><h4>确认模式标签</h4><p>仅记录标签，不改组别、不加入归纳成员；门槛和测试旧题也可补确认。</p><label class="field">模式 <select data-pattern-entry><option value="">未归入现有模式</option>${label.options.map(e => `<option value="${esc(e.entryId)}" ${c.preclassification?.entryId === e.entryId ? 'selected' : ''}>${esc(e.title)}</option>`).join('')}</select></label>${c.preclassification ? '<p class="hint">默认选择来自预分类建议；尚未经你确认。</p>' : ''}<button type="button" class="btn primary" data-pattern-confirm="${esc(c.id)}" ${writable && typeof onConfirmPatternLabel === 'function' ? '' : 'disabled'}>确认模式标签</button></section>`;
-    }
-    function regroupPanel() {
-      const p = (D.regroupProposals || []).at(-1), host = $('[data-regroup-host]');
-      const pending = D.cases.filter(c => !splitName[c.split]);
-      const pendingHtml = !D.initialSplitProposal && pending.length ? `<section class="sec" data-regroup-pending><h2>待分配 · ${pending.length} 条</h2><p>尚未分配组别，不参与本次重新分组，不占配额；留待后续分组流程，本页不自动分配。</p><ul>${pending.map(c => `<li>#${esc(c.n)} · ${esc(c.actual)}</li>`).join('')}</ul></section>` : '';
-      if (!p) { host.innerHTML = pendingHtml; return; }
-      const reasons = { deleted_missing_system_prompt: '已删除：缺当时系统提示词，不脱水也不作参考', legacy_test_source: '旧题来源，不参与新分组，旧测试题保留',
-        reference_only: '只作参考，不成为测试用例', non_gpt_report_only: '非 GPT 来源，仅报告，不占 GPT 配额',
-        baseline_no_valid_output: '原版无有效输出，不进门槛和初筛', baseline_pending: '尚无有效原版证据，不参与新分组', dehydration_not_confirmed: '脱水尚未确认，不参与新分组' };
-      const active = activeGrouping();
-      if (active?.proposalHash === p.hash) {
-        host.innerHTML = pendingHtml + `<section class="sec" data-regroup-confirmed><h2>用户确认的分组 · 已生效</h2><p>保留已有 trace 的冻结组别；只对有效 run 用例应用原提议的随机结果。旧分组、原提议、用户调整和历史评测结果均保留，不自动启动评测。</p><p class="trace-hash mono">原提议 SHA-256：${esc(p.hash)}<br>确认 SHA-256：${esc(active.hash)}<br>固定种子：${esc(p.seed)}</p><p>确认来源：${active.confirmation?.source === 'user-via-planner' ? '用户经规划者转达' : '用户确认'} · ${esc(active.confirmation?.reference)} · ${esc(active.confirmedAt)}</p><p>用户调整：${esc(active.reason)}</p><p>生效数量：${['trace', 'run'].map(level => `${level}：训练 ${esc(active.counts[level].train)} / 门槛 ${esc(active.counts[level].gate)} / 测试 ${esc(active.counts[level].test)}`).join('；')}。门槛 run 不超过一半，测试只收 trace；非 GPT 不计入配额。#4、#10、#14 的旧测试题不动。</p><p class="hint">分组不代表已复现、判分通过或可以回放。现场是否齐全以各条冻结清单为准；历史暴露不等于新的盲留出。训练 run 只作淘汰初筛，不能作为采纳依据。</p>
-          <details open><summary>分组前后对照（含原提议与用户调整）</summary><div class="regroup-table"><table><thead><tr><th>编号</th><th>层级</th><th>原组别</th><th>原提议</th><th>用户确认</th><th>说明</th></tr></thead><tbody>${[...active.rows].sort((a,b) => a.caseNumber-b.caseNumber).map(r => `<tr><td>#${esc(r.caseNumber)}</td><td>${esc(({source: '旧题来源', reference: '只作参考'})[r.level] || r.level || '—')}</td><td>${esc(splitName[r.previousSplit] || '未定组')}</td><td>${esc(splitName[r.proposedSplit] || '不参与')}</td><td>${esc(splitName[r.confirmedSplit] || '不参与')}</td><td>${esc(r.confirmationReason === 'frozen_trace_split' ? '保留原 trace 冻结组别，不参与重分组' : r.reason ? reasons[r.reason] || r.reason : r.confirmedSplit === 'train' ? '只作初筛；不能作为采纳依据' : '用户已确认；未判分')}</td></tr>`).join('')}</tbody></table></div></details>
-          <details><summary>原提议与用户调整记录（审计）</summary><pre class="tl-req">${esc(json({ proposal: p, adjustments: active.adjustments }))}</pre></details></section>`;
-        return;
-      }
-      host.innerHTML = pendingHtml + `<section class="sec" data-regroup-proposal><h2>分组提议 · 尚未生效</h2><p>请核对分组前后对照，再在对话中确认这一份提议的 hash；当前没有改变任何有效组别，不会自动确认或启动评测。</p><p class="trace-hash mono">提议 SHA-256：${esc(p.hash)}<br>固定种子：${esc(p.seed)}</p><p>建议按 trace / run 两层随机排序：trace 沿用现有训练:门槛:测试 2:1:1 配额，run 用训练:门槛 2:1 配额，并将门槛 run 数限制为不超过门槛 trace 数。超额 run 留训练，仅作淘汰初筛，不作采纳依据。</p><p>提议数量：${['trace', 'run'].map(level => `${level}：训练 ${esc(p.counts[level].train)} / 门槛 ${esc(p.counts[level].gate)} / 测试 ${esc(p.counts[level].test)}`).join('；')}。非 GPT 不计入配额。</p>
-        ${(p.warnings || []).includes('no_new_trace_test') ? '<p class="muted-note">样本不足：这份提议没有新的 trace 级测试题；不拿 run 级或非 GPT 来源填充测试组，#4、#10、#14 的旧题保持不变。</p>' : ''}<p class="hint">这些历史材料已有训练或评测暴露；重新分组不等于获得未见过的留出数据。现场是否齐全以各条冻结清单为准，分组不代表已经能回放或判分。</p>
-        <details open><summary>分组前后对照（含不参与项）</summary><div class="regroup-table"><table><thead><tr><th>编号</th><th>层级</th><th>原组别</th><th>提议组别</th><th>说明</th></tr></thead><tbody>${[...p.rows].sort((a,b) => a.caseNumber-b.caseNumber).map(r => `<tr><td>#${esc(r.caseNumber)}</td><td>${esc(({source: '旧题来源', reference: '只作参考'})[r.level] || r.level || '—')}</td><td>${esc(splitName[r.previousSplit] || '未定组')}</td><td>${esc(splitName[r.proposedSplit] || '不参与')}</td><td>${esc(r.reason ? reasons[r.reason] || r.reason : r.level === 'run' && r.proposedSplit === 'train' ? '只作初筛；不能作为采纳依据' : '待用户确认；未判分')}</td></tr>`).join('')}</tbody></table></div></details></section>`;
     }
     function replayPanel(c) {
       const rows = caseRuns(c), active = activeRuns(c), excluded = rows.filter(r => excludedRun(c, r)); if (!rows.length) return '';
@@ -208,30 +226,46 @@
     }
     function card(c, ts) {
       const p = plan(c), ref = c.traceBundle, tone = ref?.complete ? 'ok' : 'warn';
-      return `<article class="bc" id="bc-${c.n}" data-case-id="${esc(c.id)}"><div class="bc-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4><div class="bc-meta"><span>${isGpt(c) ? 'GPT' : esc(c.role || c.source?.agentId || '其他模型')}</span><span>来自 ${hl(c.source?.conversationTitle || '未命名房间', ts)}</span><span>${confirmedGroup(c) ? '用户确认：' + splitName[confirmedGroup(c).confirmedSplit] + '组' : (splitName[c.split] || '待分配') + (c.split ? '组（旧记录）' : '')}</span><span class="pill ${hasScene(c) ? 'info' : 'warn'}">${levelLabel(c)}</span></div></div>
+      return `<article class="bc" id="bc-${c.n}" data-case-id="${esc(c.id)}" data-actor="${p.actor}"><div class="bc-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4><div class="bc-meta"><span>${isGpt(c) ? 'GPT' : esc(c.role || c.source?.agentId || '其他模型')}</span><span>来自 ${hl(c.source?.conversationTitle || '未命名房间', ts)}</span><span>${confirmedGroup(c) ? '用户确认：' + splitName[confirmedGroup(c).confirmedSplit] + '组' : (splitName[c.split] || '待分配') + (c.split ? '组（旧记录）' : '')}</span><span class="pill ${hasScene(c) ? 'info' : 'warn'}">${levelLabel(c)}</span></div></div>
         <ol class="stepper" aria-label="从标记到入库的步骤">${p.steps.map(([status, text], i) => `<li class="${status}" title="${esc(labels[i] + '：' + text)}"><span class="bar"></span><span class="lab">${labels[i]}</span><span class="sr-only">${esc(text)}</span></li>`).join('')}</ol>
-        <div class="next-line"><span class="who ${p.actor === 'system' ? 'sys' : 'none'}">${p.actor === 'system' ? '系统' : p.actor === 'you' ? '你' : '到此为止'}</span><span>${esc(p.next)}</span></div>
+        <div class="next-line"><span class="who ${p.actor === 'system' ? 'sys' : p.actor === 'you' ? 'you' : 'none'}">${p.actor === 'system' ? '系统' : p.actor === 'you' ? '你' : p.actor === 'library' ? '已入库' : '到此为止'}</span><span>${esc(p.next)}</span></div>
         <div class="chips"><span class="pill ${tone}">${backfill(c)}</span>${hasScene(c) ? `<span class="pill warn">现场：${esc(sceneNote(c))}</span>` : '<span class="pill">无现场</span>'}</div>
         ${ref?.missingReasons?.length ? `<p class="hint">缺失：${ref.missingReasons.map(r => `<span title="${esc(r)}">${esc(reasonLabels[r] || r)}</span>`).join('；')}</p>` : ''}
-        ${confirmedGroup(c) ? `<p class="pill ok">用户确认：${esc(splitName[confirmedGroup(c).confirmedSplit])}组 · 已生效；旧记录保留</p>` : !activeGrouping() && (D.regroupProposals || []).at(-1)?.rows?.find(r => r.caseId === c.id)?.proposedSplit ? `<p class="pill warn">提议：${esc(splitName[D.regroupProposals.at(-1).rows.find(r => r.caseId === c.id).proposedSplit])} · 尚未生效；旧组别保留</p>` : ''}
-        ${patternPanel(c)}${dehydrationPanel(c)}${assertionPanel(c)}${replayPanel(c)}
-        <details class="more"><summary>详情与步骤说明</summary><p class="case-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</p><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul></details>
+        ${confirmedGroup(c) ? `<p class="pill ok">用户确认：${esc(splitName[confirmedGroup(c).confirmedSplit])}组 · 已生效；旧记录保留</p>` : ''}
+        ${patternLabel(c) && !patternLabel(c).confirmed || splitProposal(c) ? `<button type="button" class="btn small" data-bc-go-group>去分组区确认标签或分组</button>` : ''}
+        ${dehydration(c)?.decision ? `<details class="more"><summary>脱水决定与推荐记录（已冻结）</summary>${dehydrationPanel(c)}</details>` : dehydrationPanel(c)}
+        <div class="bc-detail-grid"><section class="bc-card"><h4>九步说明</h4><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul></section>
+        <div class="bc-detail-stack"><section class="bc-card"><h4>问题与期望</h4><p>${hl(c.actual, ts)}</p><p class="case-exp"><span class="lbl">期望</span> ${hl(c.expected, ts)}</p></section>${assertionPanel(c)}<section class="bc-card"><h4>复现与回放</h4><p>${esc(replayText(c))}</p><p>${esc(originalText(c))}</p><p>${esc(backfill(c))}</p>${replayPanel(c)}</section></div></div>
         <details class="more trace" data-trace-case="${esc(c.id)}" ${expanded.has(c.id) ? 'open' : ''}><summary>轨迹与上下文${ref ? `（${ref.stepCount} 次模型调用）` : ''}</summary><div data-trace-host="${esc(c.id)}"></div></details></article>`;
     }
     function renderCards() {
-      const ts = words(q), visible = D.cases.filter(c => {
-        const p = plan(c); return matches([c.actual, c.expected, c.source?.conversationTitle, '#' + c.n].join(' '), ts)
-          && (model === 'all' || (model === 'gpt') === isGpt(c))
-          && (stage === 'all' || stage === p.actor || (stage === 'scene' && hasScene(c)) || (stage === 'noscene' && !hasScene(c)) || (stage === 'dehydrate' && !hasScene(c) && !sourceOnly(c) && isGpt(c)));
-      });
-      $('[data-bc-summary]').textContent = `显示 ${visible.length} / ${D.cases.length} 条 · 回填状态来自冻结包，缺失不补造；不会自动调用模型或改分组。`;
-      $('[data-bc-body]').innerHTML = mode === 'list' ? `<div class="bc-list">${visible.map(c => card(c, ts)).join('')}</div>` : Object.entries(names).map(([key, title]) => {
-        const rows = visible.filter(c => plan(c).actor === key);
-        return rows.length || key === 'reference' ? `<section class="group" data-actor="${key}"><div class="group-head"><h3>${title}</h3><span class="gcount">${rows.length} 条</span></div>${rows.length ? `<div class="bc-list">${rows.map(c => card(c, ts)).join('')}</div>` : '<p class="muted-note">尚无确认属于此类的用例。</p>'}</section>` : '';
-      }).join('');
-      if (!visible.length) $('[data-bc-body]').innerHTML = '<p class="muted-note">没有符合条件的 badcase。</p>';
-      for (const c of visible) if (expanded.has(c.id)) { renderTrace(c); void loadTrace(c); }
-      root.querySelectorAll('[data-bc-mode]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.bcMode === mode)));
+      const ts = words(q), visible = D.cases.filter(c => matches([c.actual, c.expected, c.source?.conversationTitle, '#' + c.n].join(' '), ts)
+        && (currentPattern === 'all' || patternKey(c) === currentPattern) && (model === 'all' || (model === 'gpt') === isGpt(c))
+        && (stage === 'all' || stage === actorBucket(plan(c).actor)));
+      if (!visible.some(c => c.id === selected)) selected = visible[0]?.id || null;
+      $('[data-list-pattern]').textContent = currentPattern === 'all' ? '显示全部模式（在上方切换）' : '只显示：' + patterns().find(x => x.key === currentPattern)?.title;
+      $('[data-bc-summary]').textContent = `显示 ${visible.length} / ${D.cases.length} 条 · 按下一步分组；不自动调用模型或改分组。`;
+      $('[data-bc-body]').innerHTML = Object.entries(names).map(([key, title]) => {
+        const rows = visible.filter(c => actorBucket(plan(c).actor) === key);
+        return rows.length ? `<div class="bc-row-group"><b>${title}</b><span>${rows.length}</span></div>${rows.map(c => {
+          const p = plan(c);
+          return `<button type="button" class="bc-row" data-bc-row="${esc(c.id)}" aria-current="${selected === c.id}" title="${esc(p.next)}"><span class="n">#${c.n}</span><span class="t">${hl(c.actual, ts)}</span><span class="who ${p.actor === 'system' ? 'sys' : p.actor === 'you' ? 'you' : 'none'}">${p.actor === 'you' ? '你' : p.actor === 'system' ? '系统' : p.actor === 'library' ? '已入库' : '到此为止'}</span><span class="m">${esc(levelLabel(c))} · ${esc(splitName[c.split] || '待分配')}</span><span class="mini" aria-label="九步进度">${p.steps.map(([status, text], i) => `<i class="${status}" title="${esc(labels[i] + '：' + text)}"></i>`).join('')}</span></button>`;
+        }).join('')}` : '';
+      }).join('') || '<p class="muted-note">没有符合条件的 badcase。</p>';
+      const c = visible.find(c => c.id === selected), detail = $('[data-bc-detail]');
+      // Keep the selected viewer DOM (search, disclosures, scroll) during list-only changes.
+      const signature = c && json([c, pipeline(c), dehydration(c), caseRuns(c), patternLabel(c), confirmedGroup(c), splitProposal(c), ts]);
+      if (detailSignature !== signature) {
+        detail.innerHTML = c ? card(c, ts) : '<p class="muted-note">请选择符合筛选条件的用例。</p>'; detailSignature = signature; detail.scrollTop = 0;
+        if (c && expanded.has(c.id)) { renderTrace(c); void loadTrace(c); }
+      }
+      root.querySelectorAll('[data-bc-filter]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.bcFilter === stage)));
+    }
+    function pickCase(id) {
+      const c = D.cases.find(c => c.id === id); if (!c) return;
+      selected = id; currentPattern = patternKey(c); q = ''; stage = 'all'; model = 'all';
+      $('[data-bc-search]').value = ''; $('[data-bc-model]').value = 'all'; groupingPanel(); renderCards();
+      $('[data-bc-detail]').scrollIntoView({ block: 'start' });
     }
     function chunks(packet) {
       const { context, steps, metrics, scene, ...meta } = packet;
@@ -288,7 +322,12 @@
       if (el.open) { expanded.add(id); renderTrace(c); void loadTrace(c); } else expanded.delete(id);
     }, true);
     root.addEventListener('click', e => {
-      const el = e.target.closest('[data-bc-mode],[data-trace-retry],[data-dehydration-confirm],[data-dehydration-recommend],[data-pattern-confirm],[data-initial-split-confirm]'); if (!el || el.disabled) return;
+      const el = e.target.closest('[data-bc-pattern],[data-bc-row],[data-bc-pick],[data-bc-filter],[data-bc-go-group],[data-trace-retry],[data-dehydration-confirm],[data-dehydration-recommend],[data-pattern-confirm],[data-initial-split-confirm]'); if (!el || el.disabled) return;
+      if (el.dataset.bcPattern) { currentPattern = el.dataset.bcPattern; groupingPanel(); renderCards(); return; }
+      if (el.dataset.bcRow) { selected = el.dataset.bcRow; renderCards(); return; }
+      if (el.dataset.bcPick) { pickCase(el.dataset.bcPick); return; }
+      if (el.dataset.bcFilter) { stage = el.dataset.bcFilter; renderCards(); return; }
+      if (el.hasAttribute('data-bc-go-group')) { currentPattern = patternKey(D.cases.find(c => c.id === selected)); groupingPanel(); $('[data-grouping]').scrollIntoView({ block: 'start' }); return; }
       if (el.dataset.patternConfirm) {
         const c = D.cases.find(c => c.id === el.dataset.patternConfirm), label = c && patternLabel(c);
         if (!writable || !label || label.confirmed || typeof onConfirmPatternLabel !== 'function') return;
@@ -299,7 +338,7 @@
       }
       if (el.dataset.initialSplitConfirm) {
         const p = D.initialSplitProposal, patternKey = el.dataset.initialSplitConfirm, pattern = p?.patterns.find(r => r.patternKey === patternKey);
-        if (!writable || !pattern || typeof onConfirmInitialSplit !== 'function') return;
+        if (!writable || !pattern || p.blockers?.length || typeof onConfirmInitialSplit !== 'function') return;
         const rows = pattern.rows.filter(r => r.proposedSplit);
         if (!rows.length || !confirmAction(`确认冻结以下新用例的首次分组？已有组别不变，不启动回放或评测。\n${rows.map(r => '#' + (D.cases.find(c => c.id === r.caseId)?.n || r.caseNumber) + ' · ' + r.level + ' → ' + splitName[r.proposedSplit]).join('\n')}\n提议 hash：${p.hash}`)) return;
         onConfirmInitialSplit({ proposalHash: p.hash, patternKey }); return;
@@ -318,7 +357,6 @@
         if (!confirmAction(`确认冻结 #${c.n}：${kindLabel(kind)}${cutStep ? '，切点第 ' + cutStep + ' 步' : '；' + (hasScene(c) ? '仍走 trace 级' : '无现场，只作参考')}？之后不能修改；不会启动模型。`)) return;
         onConfirmDecision({ caseId: c.id, traceHash: r.traceHash, recommendationHash: r.hash, kind, cutStep }); return;
       }
-      if (el.dataset.bcMode) { mode = el.dataset.bcMode; renderCards(); }
       if (el.dataset.traceRetry) { const c = D.cases.find(c => c.id === el.dataset.traceRetry); if (c) void loadTrace(c, true); }
     });
     root.addEventListener('input', e => {
@@ -326,8 +364,8 @@
       if (el.hasAttribute('data-bc-search')) { q = el.value; renderCards(); }
       if (el.hasAttribute('data-trace-search')) { const c = D.cases.find(c => c.id === el.dataset.traceSearch); if (c) { queries.set(c.id, el.value); renderTraceContent(c, el.closest('[data-trace-host]')); } }
     });
-    root.addEventListener('change', e => { const el = e.target; if (el.hasAttribute('data-bc-stage')) { stage = el.value; renderCards(); } if (el.hasAttribute('data-bc-model')) { model = el.value; renderCards(); } });
-    return { setWritable(value) { writable = !!value; root.querySelectorAll('[data-dehydration-confirm]').forEach(b => { b.disabled = !writable || typeof onConfirmDecision !== 'function'; }); root.querySelectorAll('[data-dehydration-recommend]').forEach(b => { b.disabled = !writable || typeof onRequestRecommendation !== 'function'; }); root.querySelectorAll('[data-pattern-confirm]').forEach(b => { b.disabled = !writable || typeof onConfirmPatternLabel !== 'function'; }); root.querySelectorAll('[data-initial-split-confirm]').forEach(b => { b.disabled = !writable || typeof onConfirmInitialSplit !== 'function'; }); }, render(data) { D = data; for (const [id, row] of cache) if (!D.cases.some(c => c.id === id && c.traceBundle?.hash === row.hash)) cache.delete(id); funnel(); initialSplitPanel(); regroupPanel(); renderCards(); },
-      focus(n) { q = ''; stage = 'all'; model = 'all'; $('[data-bc-search]').value = ''; $('[data-bc-stage]').value = 'all'; $('[data-bc-model]').value = 'all'; renderCards(); root.querySelector('#bc-' + Number(n))?.scrollIntoView({ block: 'center' }); } };
+    root.addEventListener('change', e => { const el = e.target; if (el.hasAttribute('data-bc-model')) { model = el.value; renderCards(); } });
+    return { setWritable(value) { writable = !!value; root.querySelectorAll('[data-dehydration-confirm]').forEach(b => { b.disabled = !writable || typeof onConfirmDecision !== 'function'; }); root.querySelectorAll('[data-dehydration-recommend]').forEach(b => { b.disabled = !writable || typeof onRequestRecommendation !== 'function'; }); root.querySelectorAll('[data-pattern-confirm]').forEach(b => { b.disabled = !writable || typeof onConfirmPatternLabel !== 'function'; }); root.querySelectorAll('[data-initial-split-confirm]').forEach(b => { b.disabled = !writable || typeof onConfirmInitialSplit !== 'function'; }); }, render(data) { D = data; for (const [id, row] of cache) if (!D.cases.some(c => c.id === id && c.traceBundle?.hash === row.hash)) cache.delete(id); funnel(); groupingPanel(); renderCards(); },
+      focus(n) { const c = D.cases.find(c => c.n === Number(n)); if (c) pickCase(c.id); } };
   };
 })();
