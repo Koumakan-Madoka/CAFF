@@ -302,6 +302,56 @@ function scoringV2Fixture(t,{bareReplies=false,perCaseModels=false}={}) {
  const judge=adapter(configuration(suite[0].sourceCaseId)),judges=Object.fromEntries(suite.map(c=>[c.sourceCaseId,adapter(configuration(c.sourceCaseId))]));
  return {...h,judge,judges,definition,catalog,pin:()=>{h.config.experiment.plan=h.plan().summary.experiment;return h.plan();}};
 }
+function runBatchFixture(t,{baseline=true,slot=true}={}) {
+ const h=scoringV2Fixture(t,{perCaseModels:true}),sourceCaseId=h.marks[0].id;
+ const s=h.store.read();delete s.cases.find(c=>c.id===sourceCaseId).sealedCheckpointId;s.replayCases=s.replayCases.filter(r=>r.sourceCaseId!==sourceCaseId);s.revision++;
+ fs.writeFileSync(path.join(h.config.globalRoot,'snapshots',String(s.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(s)),record:s}));
+ const source=h.store.read().cases.find(c=>c.id===sourceCaseId),target=getGlobalPromptTarget('global-harness-behavior-v1');
+ const task='RUN-FROZEN-USER-TASK',bundle={schemaVersion:1,kind:'wikiskill-trace-bundle',source:source.source,origin:'mark',frozenAt:'2026-11-06T00:00:00Z',complete:false,missingReasons:[],redaction:{policy:'known_values_only'},markedStep:1,
+  markedMessage:'old reply',actual:source.actual,expected:source.expected,context:{systemPrompt:slot?'prefix\n\nRoom work context:\nfrozen\n\nRules:\n'+target.baseText+'\n- Extra unchanged rule\n\nRouting instructions:\nfrozen tail':'no candidate slot',systemPromptSource:'historical_display',priorSessionEntries:[],trigger:{type:'message',message:{role:'user',content:task}}},
+  steps:[{step:1,output:{role:'assistant',content:[{type:'text',text:'old reply'}]},toolResults:[]}]};
+ h.store.freezeCaseTrace(sourceCaseId,bundle);
+ const item=()=>h.store.read().cases.find(c=>c.id===sourceCaseId),built=require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration').buildDehydrationRequest({caseRecord:item(),bundle,cause:{source:'trigger',text:task}});
+ const rec=h.store.saveDehydrationRecommendation({built,response:{model:'deepseek/deepseek-v4-flash',attempts:[{finishReason:'stop',content:JSON.stringify({kind:'单步型',cutStep:1,reason:'reply',evidence:'old reply'})}]},expectedRevision:h.store.read().revision});
+ const decision=h.store.confirmDehydration({caseId:sourceCaseId,traceHash:item().traceBundle.hash,recommendationHash:rec.hash,kind:'single',cutStep:1,expectedRevision:h.store.read().revision});
+ const toolset={codingAgentVersion:'0.85.1',capabilitiesSha:'a'.repeat(40),capabilitiesFileHash:'b'.repeat(64),definitions:[{name:'bash',description:'synthetic bash',parameters:{type:'object'}}]};
+ const {buildWikiRunRequest,wikiRunHash}=require('../../build/server/domain/runtime/badcase-capture/wiki-run-replay');
+ const request=buildWikiRunRequest({item:item(),bundle,decision,toolset}),runs=require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config);
+ if(baseline){const claim=runs.reserve(request);runs.finish(claim.id,{outcome:{status:baseline==='invalid'?'invalid':'reached',reply:baseline==='invalid'?null:'synthetic original reply'},message:null,modelCalls:1,toolExecutions:0});}
+ const selection=h.config.cases.find(c=>c.sourceCaseId===sourceCaseId);delete selection.repository;delete selection.dependencies;
+ h.options.runToolset=toolset;h.calls.length=0;
+ return {...h,sourceCaseId,item,bundle,decision,toolset,task,request,requestHash:wikiRunHash(request)};
+}
+test('production preflight plans no-scene run with frozen prefix and trusted tools, without requiring a replay or restore sources',t=>{
+ const h=runBatchFixture(t),before=h.store.read(),p=h.pin(),row=p.prepared.find(c=>c.sourceCaseId===h.sourceCaseId),binding=p.summary.experiment.cases.find(c=>c.caseId===h.sourceCaseId);
+ assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v3');assert.equal(row.supported,true);assert.equal(row.execution.level,'run');
+ assert.deepEqual(binding.execution,{level:'run',traceBundleHash:h.item().traceBundle.hash,dehydrationHash:h.decision.hash,requestHash:h.requestHash});
+ assert.equal(row.comparisonConfig.kind,'wikiskill-run-comparison-v1');assert.equal(row.comparisonConfig.scoring.task,h.task);
+ assert.equal(row.comparisonConfig.originalRequestHash,h.requestHash);assert.match(row.comparisonConfig.candidateRequestHash,/^[a-f0-9]{64}$/);
+ assert.notEqual(row.comparisonConfig.candidateRequestHash,h.requestHash);
+ assert.equal(JSON.stringify(p.summary).includes(h.task),false);assert.equal(JSON.stringify(p.summary).includes(h.config.codexAuthFile),false);
+ assert.equal(h.calls.length,4,'two preflights each prepare only the two scene-backed trace cases');assert.deepEqual(h.store.read(),before);
+});
+test('run preflight accepts the Badcase-page pattern label without legacy preclassification or training membership',t=>{
+ const h=runBatchFixture(t),state=h.store.read(),label=require('../../build/server/domain/runtime/badcase-capture/wiki-initial-split').projectWikiPatternLabels(state).find(c=>c.caseId===h.sourceCaseId);
+ h.store.confirmPatternLabel({caseId:h.sourceCaseId,entryId:'entry-1',labelHash:label.labelHash,expectedRevision:state.revision});
+ const s=h.store.read();delete s.cases.find(c=>c.id===h.sourceCaseId).preclassification;s.classifications=s.classifications.filter(c=>c.caseId!==h.sourceCaseId);s.revision++;
+ fs.writeFileSync(path.join(h.config.globalRoot,'snapshots',String(s.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(s)),record:s}));
+ const before=h.store.read(),p=h.plan(),row=p.prepared.find(c=>c.sourceCaseId===h.sourceCaseId);
+ assert.equal(row.supported,true);assert.equal(row.targetReproduction,true);assert.equal(row.classification.source,'manual');assert.deepEqual(h.store.read(),before);
+ assert.ok(!before.versions.some(v=>v.caseIds.includes(h.sourceCaseId)));
+});
+test('run preflight rejects missing/invalid original output, tools, candidate slot, or scene-only options before model/auth',t=>{
+ for(const baseline of [false,'invalid']){const h=runBatchFixture(t,{baseline});assert.throws(h.plan,{code:'wiki_run_baseline_required'});}
+ const slot=runBatchFixture(t,{slot:false});assert.throws(slot.plan,{code:'wiki_run_candidate_invalid'});
+ const noTools=runBatchFixture(t);delete noTools.options.runToolset;assert.throws(noTools.plan,{code:'wiki_run_tools_invalid'});
+ for(const patch of [{repository:{}},{dependencies:{}},{replayVersionId:'not-a-run-version'}]){const h=runBatchFixture(t);Object.assign(h.config.cases.find(c=>c.sourceCaseId===h.sourceCaseId),patch);assert.throws(h.plan,{code:'evaluation_batch_cases_invalid'});}
+});
+test('pinned run plan detects tool/prefix request drift and never substitutes the scene task helper',t=>{
+ const h=runBatchFixture(t);h.pin();let sceneTasks=0;h.options.prepareProductionTask=()=>{sceneTasks++;return 'ACTUAL-TRIGGERING-USER-TASK';};
+ assert.equal(h.plan().prepared.find(c=>c.sourceCaseId===h.sourceCaseId).comparisonConfig.scoring.task,h.task);assert.equal(sceneTasks,2);
+ h.options.runToolset.definitions[0].description+=' changed';assert.throws(h.plan,{code:'wiki_experiment_changed'});
+});
 test('v2 batch binds independent experiment and frozen rubrics before execution; original tasks are not synthetic replay labels',t=>{
  const h=scoringV2Fixture(t),before=h.store.read(),p=h.pin();
  assert.equal(p.summary.kind,'wiki-staged-batch-comparison-v2');assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v1');assert.deepEqual(h.store.read(),before);

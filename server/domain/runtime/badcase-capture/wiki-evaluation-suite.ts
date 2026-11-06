@@ -9,8 +9,16 @@ export function wikiSourceFamily(source: any): string | null {
   if (typeof agent === 'string' && agent.startsWith('role-family-')) return agent.slice('role-family-'.length);
   return source?.kind !== 'marked-badcase' && source?.role === 'GPT' ? 'GPT' : null;
 }
+function confirmedPatternLabel(state: any, caseId: string): any {
+  const label = state.patternLabels?.find((c: any) => c.caseId === caseId);
+  return label?.source === 'badcase-page' && typeof label.confirmedAt === 'string' && Number.isFinite(Date.parse(label.confirmedAt)) ? label : null;
+}
 export function wikiConfirmedClassification(state: any, source: any): any {
-  const saved = (state.classifications || []).find((c: any) => c.caseId === source.id);
+  const label = confirmedPatternLabel(state, source.id);
+  // A page label is manual confirmation, not membership in the learned entry.
+  // Prefer existing classification provenance so old rows stay byte-compatible.
+  const saved = (state.classifications || []).find((c: any) => c.caseId === source.id)
+    || (label ? { caseId: source.id, entryId: label.entryId, source: 'manual', confirmedAt: label.confirmedAt } : null);
   if (!saved || !['manual', 'model-confirmed'].includes(saved.source)
     || typeof saved.confirmedAt !== 'string' || !Number.isFinite(Date.parse(saved.confirmedAt))) throw fail('wiki_classification_confirmation_required');
   if (saved.entryId !== null && !state.versions.at(-1)?.entries.some((e: any) => e.id === saved.entryId && e.status === 'approved')) throw fail('wiki_classification_confirmation_required');
@@ -28,7 +36,7 @@ export function planWikiEvaluationSuite(state: any, selections: any[], targetEnt
     if (!source) throw fail('evaluation_batch_cases_invalid');
     const marked = source.kind === 'marked-badcase';
     const stage = marked ? source.split : wikiRoundStage(source.id);
-    if (!['gate', 'test'].includes(stage) || marked && !source.preclassification) throw fail('evaluation_batch_split_invalid');
+    if (!['gate', 'test'].includes(stage) || marked && !source.preclassification && !confirmedPatternLabel(state, source.id)) throw fail('evaluation_batch_split_invalid');
     let classification = null;
     if (marked && item.category === 'reproduction') classification = wikiConfirmedClassification(state, source);
     const legacyEntry = state.versions.at(-1)?.entries.find((e: any) => e.id === targetEntryId && e.status === 'approved');

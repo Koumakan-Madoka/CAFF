@@ -15,6 +15,14 @@ test('D15 official suite refuses pending classification for both gate and test; 
  const before=structuredClone(h.state),p=h.plan();assert.deepEqual(h.state,before);assert.deepEqual(p.targetReproductionCaseIds,[h.a.id]);assert.deepEqual(p.targetTestReproductionCaseIds,[h.b.id]);assert.deepEqual(p.reportOnlyCaseIds,[h.other.id]);
  assert.equal(p.cases.find(c=>c.sourceCaseId===h.a.id).classification.source,'manual');
 });
+test('Badcase-page confirmed labels unlock frozen holdouts without legacy preclassification and do not add learning members',()=>{
+ const h=fixture();for(const c of h.state.cases)h.confirm(c);h.state.classifications=h.state.classifications.filter(c=>c.caseId!==h.a.id);delete h.a.preclassification;
+ h.state.patternLabels=[{caseId:h.a.id,entryId:'entry-1',source:'badcase-page',confirmedAt:'2026-11-06T00:00:00.000Z'}];
+ const before=structuredClone(h.state),p=h.plan();assert.deepEqual(p.targetReproductionCaseIds,[h.a.id]);assert.deepEqual(h.state,before);
+ assert.deepEqual(p.cases.find(c=>c.sourceCaseId===h.a.id).classification,{entryId:'entry-1',source:'manual',confirmedAt:'2026-11-06T00:00:00.000Z'});
+ h.state.patternLabels[0].entryId=null;assert.deepEqual(h.plan().targetReproductionCaseIds,[]);
+ for(const patch of [{source:'model'},{confirmedAt:'not-a-date'}]){const x=fixture();for(const c of x.state.cases)x.confirm(c);delete x.a.preclassification;x.state.classifications=x.state.classifications.filter(c=>c.caseId!==x.a.id);x.state.patternLabels=[{caseId:x.a.id,entryId:'entry-1',source:'badcase-page',confirmedAt:'2026-11-06T00:00:00.000Z',...patch}];assert.throws(x.plan);}
+});
 test('authoritative agent family recognizes role-family-gpt and never promotes DeepSeek with a GPT display label',()=>{
  const h=fixture();assert.equal(wikiSourceFamily(h.a),'GPT');assert.equal(wikiSourceFamily(h.other),'deepseek');assert.equal(wikiSourceFamily({role:'GPT',source:{agentId:'legacy-custom'}}),'GPT');assert.equal(wikiSourceFamily({kind:'marked-badcase',role:'GPT',source:{agentId:'unknown'}}),null);
  for(const c of h.state.cases)h.confirm(c);h.state.classifications[0].entryId='entry-2';const p=h.plan();assert.deepEqual(p.targetReproductionCaseIds,[]);assert.ok(!p.cases.find(c=>c.sourceCaseId===h.a.id).targetReproduction);
