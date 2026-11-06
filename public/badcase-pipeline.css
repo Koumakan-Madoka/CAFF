@@ -16,6 +16,7 @@
 .badcase-pipeline .stepper .done .bar { background: var(--ok); }
 .badcase-pipeline .stepper .pending .bar { background: var(--border-strong); }
 .badcase-pipeline .stepper .alt .bar { background: var(--info); }
+.badcase-pipeline .stepper .warn .bar { background: var(--warn); }
 .badcase-pipeline .stepper .skip .bar { background: repeating-linear-gradient(90deg, var(--border) 0 4px, transparent 4px 8px); }
 .badcase-pipeline .stepper .skip .lab { opacity: .6; }
 .badcase-pipeline .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -33,6 +34,8 @@
 .badcase-pipeline .steps-detail .k, .badcase-pipeline .st-pending, .badcase-pipeline .st-skip { color: var(--soft); }
 .badcase-pipeline .st-done { color: var(--ok); }
 .badcase-pipeline .st-alt { color: var(--info); }
+.badcase-pipeline .st-warn { color: var(--warn); }
+.badcase-pipeline .assertion-readonly { border-left: 3px solid var(--info); padding: 4px 8px; background: var(--raised); overflow-wrap: anywhere; }
 .badcase-pipeline .dehydration-panel { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--sunk); }
 .badcase-pipeline .dehydration-panel .field { display: grid; gap: 4px; min-width: 0; }
 .badcase-pipeline .dehydration-panel select { width: 100%; min-width: 0; max-width: 100%; }

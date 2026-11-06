@@ -19,6 +19,7 @@ import { resolveWikiStorageOptions } from '../domain/runtime/badcase-capture/wik
 import { assertWikiEligibleModel, readWikiEligibleJudges } from '../domain/runtime/badcase-capture/wiki-judge-catalog';
 import { WIKI_RUBRIC_MODEL } from '../domain/runtime/badcase-capture/wiki-rubric';
 import { planWikiInitialSplit, projectWikiPatternLabels } from '../domain/runtime/badcase-capture/wiki-initial-split';
+import { inspectWikiPipelineInputs, projectWikiPipelineStates } from '../domain/runtime/badcase-capture/wiki-pipeline';
 
 import { preparePageDehydration, pageRecommendationAvailability } from '../domain/runtime/badcase-capture/wiki-dehydration-runner';
 // Per-storage, per-case latch spans separate controller/store objects in this instance.
@@ -202,7 +203,11 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         return { ...c, dehydrationRecommendation: availability };
       });
       const runReplays = projectWikiRunAccounting(runs.list(), state.dehydrations);
-      sendJson(res, 200, { ...state, cases, caseStates: store.getCaseStates(), casePatterns: projectWikiPatternLabels(state), initialSplitProposal: planWikiInitialSplit(state, runReplays), runReplays, comparisons: createWikiComparisonStore(scope).read().map(wikiComparisonDisplay), executions: executions(), targets: listWikiTargets(), eligibleJudges, trustBoundary: 'same_os_user' });
+      const comparisons = createWikiComparisonStore(scope).read().map(wikiComparisonDisplay);
+      const replayChecks = inspectWikiPipelineInputs(state, { readTrace: (id: string) => store.readCaseTrace(id),
+        ...(typeof options.inspectReplay === 'function' ? { inspectReplay: (replay: any) => options.inspectReplay({ replay, scope }) } : {}) });
+      const pipelineStates = projectWikiPipelineStates({ state, comparisons, runReplays, replayChecks });
+      sendJson(res, 200, { ...state, cases, caseStates: store.getCaseStates(), casePatterns: projectWikiPatternLabels(state), initialSplitProposal: planWikiInitialSplit(state, runReplays), runReplays, pipelineStates, comparisons, executions: executions(), targets: listWikiTargets(), eligibleJudges, trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

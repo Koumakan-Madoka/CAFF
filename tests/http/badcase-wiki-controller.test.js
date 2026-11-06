@@ -26,6 +26,15 @@ function setup(t) {
 }
 const rejects = (promise, code, status = 422) => assert.rejects(promise, e => e.statusCode === status && e.issues?.[0]?.code === code);
 
+test('pipeline statuses are a read-only addition to Wiki GET and do not start any configured model runner', async t => {
+  const h = setup(t); h.seed(); const before = h.store.read();
+  let calls = 0; h.options.runInduction = h.options.runDehydration = h.options.runRubricDraft = () => { calls++; throw Error('must not run'); };
+  const result = await h.invoke();
+  assert.equal(result.body.pipelineStates.length, before.cases.length);
+  for (const row of result.body.pipelineStates) { assert.equal(row.assertion.status, 'missing'); assert.equal(row.original.valid, 0); assert.equal(row.inLibrary, false); }
+  assert.equal(calls, 0); assert.deepEqual(h.store.read(), before);
+});
+
 test('pattern label and initial split confirmations are local-admin/CSRF guarded, closed and hash/revision bound without model calls', async t => {
   const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
   let calls = 0; h.options.runInduction = h.options.runDehydration = h.options.runRubricDraft = async () => { calls++; };

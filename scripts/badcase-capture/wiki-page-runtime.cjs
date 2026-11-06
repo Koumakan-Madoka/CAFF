@@ -45,4 +45,17 @@ async function runPageDehydration(input, { configFile } = {}, dependencies = {})
     return await recommendDehydration({ ...prepared, approvedRequestHash: built.requestHash }, { client, knownKeyValues, retryPolicy: 'manual' });
   } finally { await dispatcher.destroy(); }
 }
-module.exports = { runPageInduction, runPageDehydration, readPageRuntimeConfig };
+// Read-only preflight: reuses the real sealed-input supported check, not the
+// packet's complete flag or the mere existence of a checkpoint. V2 may use its
+// existing isolated TEMP materialization; it does not launch a replay/model,
+// open credentials or rewrite captured evidence. Return no prepared contents.
+function inspectPageReplay({ replay, scope }, dependencies = {}) {
+  const resolve = dependencies.resolve || require('../../build/server/domain/runtime/badcase-capture/wiki-replay-location').resolveWikiReplayRequest;
+  const prepare = dependencies.prepare || require('./sealed-direct-input.cjs').prepareSealedOriginalTurn;
+  try {
+    const result = prepare(resolve(scope, replay.request));
+    if (result?.supported === true && result.provenance?.checkpointHash === replay.checkpointHash) return { supported: true, checkpointHash: replay.checkpointHash };
+    return { supported: false, reason: /^replay_[a-z_]+$/.test(result?.reason || '') ? result.reason : 'replay_check_failed' };
+  } catch { return { supported: false, reason: 'replay_check_failed' }; }
+}
+module.exports = { runPageInduction, runPageDehydration, readPageRuntimeConfig, inspectPageReplay };

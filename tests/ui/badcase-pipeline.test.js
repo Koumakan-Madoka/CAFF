@@ -20,6 +20,31 @@ function setup(t, fetcher, options = {}) {
   async function expand() { const d = root.querySelector('[data-trace-case="c1"]'); d.open = true; d.dispatchEvent(new dom.window.Event('toggle')); await tick(); await tick(); }
   return { root, data, packet, calls, panel, window: dom.window, expand };
 }
+test('steps 6–9 and funnels use the actual pipeline projection; frozen assertions stay read-only with a case-editor link', t => {
+  const h = setup(t), row = (caseId, level) => ({ caseId, level, stopReason: null, assertion: { status: 'frozen', version: 3, model: 'deepseek/deepseek-v4-flash', questions: [{ id: 'q1', question: '<script>plain conclusion</script>', evidence: 'reply' }] }, replay: { status: 'supported', cutStep: 1 }, original: { valid: 10, pass: 0, fail: 10, unscored: 0, invalid: 2, errors: 1, reproduced: true, comparisonId: 'comparison-real' }, inLibrary: true });
+  h.data.pipelineStates = [row('c1', 'run'), row('c2', 'trace')];
+  h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), decision: { level: 'run', kind: 'single', cutStep: 1 }, recommendation: {}, request: { state: { steps: [] } } }];
+  h.panel.render(h.data);
+  const card = h.root.querySelector('[data-case-id="c1"]');
+  assert.deepEqual([...card.querySelector('.stepper').children].slice(5).map(li => li.className), ['done', 'done', 'done', 'done']);
+  assert.match(card.textContent, /已冻结 v3.*deepseek\/deepseek-v4-flash/); assert.match(card.textContent, /原版.*0.*10.*已复现/s);
+  assert.equal(card.querySelector('[data-assertion-slot] script'), null); assert.match(card.querySelector('[data-assertion-slot]').textContent, /<script>plain conclusion<\/script>/);
+  assert.equal(card.querySelector('[data-assertion-slot] a').getAttribute('href'), '#case-1');
+  assert.equal(card.querySelector('[data-draft-rubric],[data-freeze-rubric],[data-start-replay]'), null);
+  assert.deepEqual([...h.root.querySelectorAll('[data-lane="trace"] .f-step b')].map(el => +el.textContent), [1, 1, 1, 1, 1]);
+  assert.deepEqual([...h.root.querySelectorAll('[data-lane="run"] .f-step b')].map(el => +el.textContent), [1, 1, 1, 1, 1]);
+  assert.doesNotMatch(h.root.textContent, /评分 v2 待接入|评分 v2 接入后|尚未接入判分|等待评分 v2/); assert.equal(h.calls.length, 0);
+});
+test('missing assertions, incompatible run evidence, pending reproduction and unscored raw replies are distinct, never fake library readiness', t => {
+  const h = setup(t); const row = { caseId: 'c1', level: 'run', stopReason: null, assertion: { status: 'missing', version: null, questions: [] }, replay: { status: 'pending' }, original: { valid: 0, unscored: 1, invalid: 0, errors: 0, reproduced: false }, inLibrary: false };
+  h.data.pipelineStates = [row]; h.panel.render(h.data); let card = h.root.querySelector('[data-case-id="c1"]');
+  assert.match(card.textContent, /没有冻结.*断言/); assert.match(card.textContent, /待复现/); assert.match(card.textContent, /有效.*1.*待判分/);
+  assert.equal(card.querySelector('.stepper').children[8].className, 'pending');
+  row.assertion = { status: 'incompatible', version: 1, model: 'deepseek/deepseek-v4-flash', questions: [{ id: 'q1', question: 'continued', evidence: 'trace' }] };
+  h.panel.render(h.data); card = h.root.querySelector('[data-case-id="c1"]');
+  assert.equal(card.querySelector('.stepper').children[5].className, 'warn'); assert.match(card.textContent, /run 级.*只能.*回复.*另存.*版/s);
+  assert.equal(card.querySelector('.stepper').children[8].className, 'pending'); assert.equal(h.calls.length, 0);
+});
 test('pattern labels require explicit consent, bind the displayed hash, and support legacy holdouts and unclassified without learning', t => {
   const sent = [], prompts = []; let accept = false;
   const h = setup(t, null, { onConfirmPatternLabel: body => sent.push(body), confirm: message => { prompts.push(message); return accept; } });

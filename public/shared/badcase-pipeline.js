@@ -15,7 +15,7 @@
     }
     const json = v => JSON.stringify(v, null, 2);
     const labels = ['标记', '现场', '脱水', '归类', '分组', '断言', '回放检查', '原版复现', '入库'];
-    const names = { you: '等你处理', system: '系统可以继续', source: '旧题的来源', reference: '只作参考', invalid: '无效测试用例', other: '非 GPT 来源' };
+    const names = { you: '等你处理', system: '系统可以继续', library: '已入库', source: '旧题的来源', reference: '只作参考', invalid: '无效测试用例', other: '非 GPT 来源' };
     const splitName = { train: '训练', gate: '门槛', test: '测试' };
     const sceneLabel = scene => scene?.metadataStatus === 'recorded' ? '现场元数据已冻结' : scene?.metadataStatus === 'partial' ? '现场部分记录 · 缺口已披露' : '历史现场元数据缺失';
     const sceneNote = c => sceneLabel(c.traceBundle?.scene);
@@ -45,7 +45,7 @@
     const excludedRun = (c, r) => dehydration(c)?.decision?.level === 'reference' && dehydration(c)?.decision?.supersedesDecisionHash === r.decisionHash;
     const caseRuns = c => (D.runReplays || []).filter(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash && (r.decisionHash === dehydration(c)?.decision?.hash || excludedRun(c, r)));
     const activeRuns = c => dehydration(c)?.decision?.level === 'run' ? caseRuns(c).filter(r => !excludedRun(c, r)) : [];
-    const baselineMissing = c => activeRuns(c).some(r => r.baselineStatus === 'no_valid_output');
+    const baselineMissing = c => { const row = (D.pipelineStates || []).find(r => r.caseId === c.id); return row ? row.stopReason === 'invalid_baseline' : activeRuns(c).some(r => r.baselineStatus === 'no_valid_output'); };
     const kindLabel = k => ({ single: '单步型', throughout: '贯穿型', unclear: '说不清（按贯穿型）' }[k] || k);
     const activeGrouping = () => (D.regroupConfirmations || []).findLast(r => r.status === 'active');
     const confirmedGroup = c => {
@@ -65,38 +65,68 @@
     const hasScene = c => !!c.sealedCheckpointId;
     // Goal B8's three immutable historical sources, not their synthetic tests.
     const sourceOnly = c => [4, 10, 14].includes(c.n);
-    const levelLabel = c => sourceOnly(c) ? '旧题来源' : dehydration(c)?.decision?.level === 'reference' ? '只作参考' : dehydration(c)?.decision?.level === 'run' ? baselineMissing(c) ? 'run 级 · 原版无有效输出' : 'run 级 · 决定已冻结' : hasScene(c) ? 'trace 级 · ' + sceneNote(c) : 'run 级 · 待脱水确认';
+    const levelLabel = c => sourceOnly(c) ? '旧题来源' : hasScene(c) ? 'trace 级 · ' + sceneNote(c) : dehydration(c)?.decision?.level === 'reference' ? '只作参考' : dehydration(c)?.decision?.level === 'run' ? baselineMissing(c) ? 'run 级 · 原版无有效输出' : 'run 级 · 决定已冻结' : '待确认层级（无现场）';
     function backfill(c) {
       const r = c.traceBundle;
       if (!r) return '未归档 · 尚无冻结轨迹包';
       if (r.origin === 'backfill') return r.complete ? '回填完成' : r.stepCount ? '回填部分完成 · 存在缺失' : '无法回填当轮输出 · 已记录原因';
       return r.complete ? '标记时已冻结' : '标记时已冻结 · 存在缺失';
     }
+    const pipeline = c => (D.pipelineStates || []).find(r => r.caseId === c.id) || { assertion: { status: 'missing', version: null, model: null, questions: [] }, replay: { status: 'pending' }, original: { valid: 0, unscored: 0, invalid: 0, errors: 0, reproduced: false }, inLibrary: false };
+    function assertionText(c) {
+      const a = pipeline(c).assertion;
+      const prefix = a.version ? `已冻结 v${a.version} · ${a.questions.length} 条 · ${a.model || '打分模型未记录'}` : '还没有冻结的断言；可去「用例」页起草并确认';
+      return prefix + (a.status === 'incompatible' ? '；run 级只能以回复为依据，需另存一版；旧版保留' : a.status === 'stale' ? '；问题或期望已变，需另存一版' : '') + (a.draftVersion ? `；另有 v${a.draftVersion} 草稿待确认` : '');
+    }
+    function replayText(c) {
+      const r = pipeline(c).replay;
+      return r.status === 'supported' ? hasScene(c) ? '封存现场回放预检通过（supported）；不是一次新的执行或复现' : `冻结前缀可构造请求（切点第 ${r.cutStep} 步）；工具定义在正式执行前校验，不执行工具`
+        : r.status === 'unsupported' ? `回放检查未通过：${r.reason || '冻结材料不可用'}；不会自动修复或重跑` : hasScene(c) ? '待封存现场回放预检；存在现场不等于检查通过' : '待检查冻结切点前缀；没有可用检查证据';
+    }
+    function originalText(c) {
+      const o = pipeline(c).original;
+      return o.valid ? `原版 ${o.pass}/${o.valid} 通过 · ${o.fail} 不通过 · 无效 ${o.invalid} · 错误 ${o.errors}；${o.reproduced ? '已复现问题' : '未复现问题（原版均通过）'}；仅此批次，不拼接其他执行`
+        : `待复现：${o.unscored ? `原版有效输出 ${o.unscored} 次 · 待判分` : '还没有与当前冻结断言匹配的有效原版判分'}；无效 ${o.invalid} · 请求/评分错误 ${o.errors}${o.unknown ? ' · 结果未知 ' + o.unknown : ''}；有效输出不等于通过`;
+    }
+    function assertionPanel(c) {
+      const a = pipeline(c).assertion;
+      return `<section class="dehydration-panel" data-assertion-slot="${esc(c.id)}"><h4>断言 · 评分 v2</h4><p>${esc(assertionText(c))}</p>${a.questions.map(q => `<div class="assertion-readonly"><b>${esc(q.id)}</b> · 依据：${esc({ reply: '回复', trace: '轨迹', files: '文件' }[q.evidence] || q.evidence)}<p>${esc(q.question)}</p></div>`).join('')}<a class="btn small" href="#case-${c.n}">去「用例」页${a.version ? '查看或另存断言' : '起草断言'}</a><p class="hint">这里只读展示冻结版本；跳转不调用模型或启动评测。</p></section>`;
+    }
     function plan(c) {
       const has = hasScene(c), old = sourceOnly(c), other = !isGpt(c), cs = D.caseStates?.find(s => s.caseId === c.id), r = dehydration(c), d = r?.decision;
-      const reference = d?.level === 'reference', invalidCase = baselineMissing(c), replayed = activeRuns(c).some(r => r.status === 'reached' || r.status === 'invalid');
+      const status = pipeline(c), reference = !has && d?.level === 'reference', invalidCase = !has && baselineMissing(c);
       const steps = [
         ['done', c.kind === 'text-only' ? '用户批准的历史导入' : '页面标记'],
         [has ? c.traceBundle?.scene?.metadataStatus === 'recorded' ? 'done' : 'pending' : 'alt', has ? sceneNote(c) + '；元数据不等于已通过回放检查' : '没有现场；须先确认能否脱水'],
         [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '有现场，走 trace 级；现场 run 级回放尚未实现，暂不开放脱水' : r ? 'DeepSeek 推荐已生成，等待你确认能否脱水和切点' : 'DeepSeek 推荐尚未生成；用户确认后冻结判断与切点'],
         [patternLabel(c)?.confirmed || cs?.memberships?.length ? 'done' : 'pending', patternLabel(c)?.confirmed ? patternLabel(c).entryId ? '已有已确认模式标签' : '已确认：未归入现有模式' : cs?.memberships?.length ? '已有已确认模式标签' : '待确认模式标签；不自动改模式或加入归纳'],
         [old || confirmedGroup(c) ? 'done' : 'pending', old ? '原测试分组保留' : confirmedGroup(c) ? `用户确认的${splitName[confirmedGroup(c).confirmedSplit]}组已生效；原提议和旧分组记录保留` : splitProposal(c) ? `提议：${splitName[splitProposal(c).proposedSplit]}组，等你确认后冻结` : !splitName[c.split] ? '待分配；模式标签及有效原版证据齐备后，按模式提议分组' : '旧分组保留；分层重新分组待用户确认'],
-        ['pending', '评分 v2 待接入：断言及逐条判定由独立 Goal 负责'],
-        [replayed ? 'done' : 'pending', replayed ? '已用冻结切点前缀单次调用；未执行工具，不做前缀一致性检验' : '待检查冻结输入；旧回放登记不等于本流程检查通过'],
-        [replayed ? 'alt' : 'pending', replayed ? '单次回放原文已保存；是否复现及判分由评分 v2 接入后判断' : '待原版复现；旧字面评分不作新版入库证据'],
-        ['pending', '前置条件未齐，不宣称已成为合格测试用例'],
+        [status.assertion.status === 'frozen' ? 'done' : ['incompatible', 'stale'].includes(status.assertion.status) ? 'warn' : 'pending', assertionText(c)],
+        [status.replay.status === 'supported' ? 'done' : status.replay.status === 'unsupported' ? 'warn' : 'pending', replayText(c)],
+        [status.original.reproduced ? 'done' : status.original.unscored || status.original.valid ? 'alt' : 'pending', originalText(c)],
+        [status.inLibrary ? 'done' : 'pending', status.inLibrary ? `${splitName[c.split]}组 · ${has ? 'trace' : 'run'} 级 · 已分组、断言冻结、回放检查通过、原版问题已复现；不表示采纳候选` : '尚未入库；须已分组、断言已冻结、回放检查通过且原版问题已复现'],
       ];
       if (old || other) for (let i = old ? 5 : 2; i < 9; i++) steps[i] = ['skip', old ? '只作旧题来源，不单独入库' : '只报告，不计入 GPT 结论'];
       if (reference) for (let i = 4; i < 9; i++) steps[i] = ['skip', '无现场且非单步型；只作参考和训练组文字材料，不成为测试用例'];
       if (invalidCase && !reference && !old && !other) for (const i of [4, 5, 7, 8]) steps[i] = ['skip', '原版无有效输出：无效测试用例，不进门槛和初筛；不算通过也不算不通过'];
-      const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : r && !d ? 'you' : 'system';
-      return { steps, actor, next: other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题' : invalidCase ? '原版无有效输出：无效测试用例，不进门槛和初筛；保留原文，不自动补跑' : d ? replayed ? confirmedGroup(c) ? '分组已由用户确认，回放原文保留，等待评分 v2；本页不判分' : '回放原文已保存，等待分组和评分 v2；本页不判分' : '脱水决定已冻结，等待原版单次回放；不会自动启动' : r ? '请确认能否脱水与切点；确认后不可修改' : has ? sceneNote(c) + '；有现场，走 trace 级，等待回放检查与评分 v2；暂不开放脱水' : '等待 DeepSeek 推荐，再请你确认' };
+      const labelPending = patternLabel(c) && !patternLabel(c).confirmed;
+      const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : status.inLibrary ? 'library' : r && !d || labelPending || splitProposal(c) ? 'you' : 'system';
+      const next = other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题'
+        : invalidCase ? '原版无有效输出：无效测试用例，不进门槛和初筛；保留原文，不自动补跑'
+        : status.inLibrary ? `${splitName[c.split]}组${has ? ' trace' : ' run'} 级测试用例，等待候选；本页不启动评测`
+        : r && !d ? '请确认能否脱水与切点；确认后不可修改'
+        : labelPending ? '请确认模式标签；仅记录标签，不改组别和归纳成员'
+        : splitProposal(c) ? '请核对并确认此模式的新用例分组'
+        : has ? sceneNote(c) + '；有现场，走 trace 级；' + (status.replay.status !== 'supported' ? replayText(c) : status.assertion.status !== 'frozen' ? assertionText(c) : originalText(c))
+        : !d ? '等待 DeepSeek 推荐，再请你确认'
+        : status.assertion.status !== 'frozen' ? assertionText(c) : originalText(c);
+      return { steps, actor, next };
     }
     function funnel() {
-      const gpt = D.cases.filter(isGpt), tr = gpt.filter(hasScene), refs = gpt.filter(c => dehydration(c)?.decision?.level === 'reference'), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c) && !refs.includes(c));
+      const gpt = D.cases.filter(isGpt), tr = gpt.filter(c => hasScene(c) && !sourceOnly(c)), refs = gpt.filter(c => !hasScene(c) && dehydration(c)?.decision?.level === 'reference'), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c) && dehydration(c)?.decision?.level === 'run');
       const lane = (key, title, note, cells) => `<div class="lane" data-lane="${key}"><div class="lane-head"><b>${title}</b><span>${note}</span></div><div class="funnel">${cells.map(([n, l]) => `<div class="f-step ${n ? '' : 'zero'}"><b>${n}</b><span>${l}</span></div>`).join('')}</div></div>`;
-      $('[data-funnels]').innerHTML = lane('trace', 'trace 级', '有现场；新标记读取本轮 Git 快照，历史缺失不补猜，不能把封存当作已通过回放检查', [[tr.length, 'GPT 且有封存现场'], [tr.filter(c => c.traceBundle).length, '已冻结轨迹包'], [0, '新版回放检查通过'], [0, '新版断言已冻结'], [0, '本流程合格测试用例']])
-        + lane('run', 'run 级（脱水）', `无现场待脱水，不含 #4、#10、#14 的旧题来源；只作参考 ${refs.length} 条不计入；尚未确认的不是 run 级测试用例`, [[rn.length, 'GPT 无现场待脱水'], [rn.filter(c => c.traceBundle?.stepCount).length, '已恢复当轮轨迹'], [rn.filter(c => c.traceBundle?.complete).length, '完整轨迹包'], [rn.filter(c => dehydration(c)?.decision?.level === 'run').length, '用户确认可脱水'], [0, '本流程合格测试用例']]);
+      $('[data-funnels]').innerHTML = lane('trace', 'trace 级', '有现场；从这一轮开头执行到自然结束；不能把封存当作已通过回放检查', [[tr.length, 'GPT 且有封存现场'], [tr.filter(c => c.traceBundle).length, '已冻结轨迹包'], [tr.filter(c => pipeline(c).replay.status === 'supported').length, '回放检查通过'], [tr.filter(c => pipeline(c).assertion.status === 'frozen').length, '断言已冻结'], [tr.filter(c => pipeline(c).inLibrary).length, '已入库']])
+        + lane('run', 'run 级（脱水）', `无现场；冻结切点只调一次模型；只作参考 ${refs.length} 条不计入，未确认的也不计入`, [[rn.length, '用户确认可脱水'], [rn.filter(c => pipeline(c).replay.status === 'supported').length, '前缀可构造请求'], [rn.filter(c => pipeline(c).original.outputs || pipeline(c).original.valid || pipeline(c).original.unscored).length, '原版有有效输出'], [rn.filter(c => pipeline(c).assertion.status === 'frozen').length, '断言已冻结（依据回复）'], [rn.filter(c => pipeline(c).inLibrary).length, '已入库']]);
       const runs = gpt.flatMap(activeRuns), excluded = gpt.flatMap(c => caseRuns(c).filter(r => excludedRun(c, r)));
       if (runs.length || excluded.length) $('[data-funnels]').insertAdjacentHTML('beforeend', `<p data-run-totals>单次 run 回放共 ${runs.length} 次：有效输出 ${runs.filter(r => r.status === 'reached').length}；无效 ${runs.filter(r => r.status === 'invalid').length}（不算通过也不算不通过）；请求失败 ${runs.filter(r => r.status === 'error').length}；结果未知 ${runs.filter(r => r.status === 'reserved').length}。有效输出不代表判分通过。原版无有效输出 ${gpt.filter(baselineMissing).length} 题，不进门槛和初筛。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次（原文保留）。` : ''}</p>`);
     }
@@ -140,7 +170,7 @@
     function replayPanel(c) {
       const rows = caseRuns(c), active = activeRuns(c), excluded = rows.filter(r => excludedRun(c, r)); if (!rows.length) return '';
       const labels = { reached: '有效输出（未判分）', invalid: '无效 · 不算通过也不算不通过', error: '请求失败（不冒充模型答案）', reserved: '已占用 · 结果未知，不自动重试' };
-      return `<section class="dehydration-panel" data-run-panel="${esc(c.id)}"><h4>单次 run 级回放</h4>${baselineMissing(c) ? '<p class="pill warn">原版无有效输出：无效测试用例，不进门槛和初筛。</p>' : ''}<p>有效输出 ${active.filter(r => r.status === 'reached').length} · 无效 ${active.filter(r => r.status === 'invalid').length}（不算通过也不算不通过） · 请求失败 ${active.filter(r => r.status === 'error').length} · 结果未知 ${active.filter(r => r.status === 'reserved').length}。这里只报告原文和计数，尚未接入判分。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次。` : ''}</p>${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>${r.variant.kind === 'original' ? '原版' : '候选 ' + esc(r.variant.id)} · ${excludedRun(c, r) ? '已被用户改判，不计入（历史回放）' : esc(labels[r.status] || r.status)} · 查看完整输出及实际请求</summary><p>${esc(r.model)} · thinking ${esc(r.thinking)} · 模型调用 ${r.modelCalls ?? '未知'} · 工具执行 ${r.toolExecutions ?? '未知'}</p><p class="trace-hash mono">请求 SHA-256：${esc(r.id)}<br>结果 SHA-256：${esc(r.resultHash || '未取得')}</p><p class="hint">当前分类以 accounting 为准；原始包中的历史分类只供审计，不参与当前计数。</p><p>${['json', 'md'].map(format => `<a class="btn small" data-run-export="${format}" href="/api/wikiskill/cases/${encodeURIComponent(c.id)}/run-replays/${encodeURIComponent(r.id)}/export.${format}" download>导出回放 ${format === 'json' ? 'JSON' : 'Markdown'}</a>`).join(' ')}</p><div data-run-body></div></details>`).join('')}</section>`;
+      return `<section class="dehydration-panel" data-run-panel="${esc(c.id)}"><h4>单次 run 级回放</h4>${baselineMissing(c) ? '<p class="pill warn">原版无有效输出：无效测试用例，不进门槛和初筛。</p>' : ''}<p>有效输出 ${active.filter(r => r.status === 'reached').length} · 无效 ${active.filter(r => r.status === 'invalid').length}（不算通过也不算不通过） · 请求失败 ${active.filter(r => r.status === 'error').length} · 结果未知 ${active.filter(r => r.status === 'reserved').length}。单次原始回放不表示判分通过；正式判分见「原版复现」，不在本页重新判分。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次。` : ''}</p>${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>${r.variant.kind === 'original' ? '原版' : '候选 ' + esc(r.variant.id)} · ${excludedRun(c, r) ? '已被用户改判，不计入（历史回放）' : esc(labels[r.status] || r.status)} · 查看完整输出及实际请求</summary><p>${esc(r.model)} · thinking ${esc(r.thinking)} · 模型调用 ${r.modelCalls ?? '未知'} · 工具执行 ${r.toolExecutions ?? '未知'}</p><p class="trace-hash mono">请求 SHA-256：${esc(r.id)}<br>结果 SHA-256：${esc(r.resultHash || '未取得')}</p><p class="hint">当前分类以 accounting 为准；原始包中的历史分类只供审计，不参与当前计数。</p><p>${['json', 'md'].map(format => `<a class="btn small" data-run-export="${format}" href="/api/wikiskill/cases/${encodeURIComponent(c.id)}/run-replays/${encodeURIComponent(r.id)}/export.${format}" download>导出回放 ${format === 'json' ? 'JSON' : 'Markdown'}</a>`).join(' ')}</p><div data-run-body></div></details>`).join('')}</section>`;
     }
     async function loadRun(details) {
       if (!details.isConnected) return;
@@ -184,8 +214,8 @@
         <div class="chips"><span class="pill ${tone}">${backfill(c)}</span>${hasScene(c) ? `<span class="pill warn">现场：${esc(sceneNote(c))}</span>` : '<span class="pill">无现场</span>'}</div>
         ${ref?.missingReasons?.length ? `<p class="hint">缺失：${ref.missingReasons.map(r => `<span title="${esc(r)}">${esc(reasonLabels[r] || r)}</span>`).join('；')}</p>` : ''}
         ${confirmedGroup(c) ? `<p class="pill ok">用户确认：${esc(splitName[confirmedGroup(c).confirmedSplit])}组 · 已生效；旧记录保留</p>` : !activeGrouping() && (D.regroupProposals || []).at(-1)?.rows?.find(r => r.caseId === c.id)?.proposedSplit ? `<p class="pill warn">提议：${esc(splitName[D.regroupProposals.at(-1).rows.find(r => r.caseId === c.id).proposedSplit])} · 尚未生效；旧组别保留</p>` : ''}
-        ${patternPanel(c)}${dehydrationPanel(c)}${replayPanel(c)}
-        <details class="more"><summary>详情与步骤说明</summary><p class="case-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</p><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul><div class="muted-note" data-assertion-slot="${esc(c.id)}">评分断言与逐条判定：评分 v2 待接入，本页不生成或冻结评分断言。</div></details>
+        ${patternPanel(c)}${dehydrationPanel(c)}${assertionPanel(c)}${replayPanel(c)}
+        <details class="more"><summary>详情与步骤说明</summary><p class="case-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</p><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul></details>
         <details class="more trace" data-trace-case="${esc(c.id)}" ${expanded.has(c.id) ? 'open' : ''}><summary>轨迹与上下文${ref ? `（${ref.stepCount} 次模型调用）` : ''}</summary><div data-trace-host="${esc(c.id)}"></div></details></article>`;
     }
     function renderCards() {
