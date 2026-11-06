@@ -28,7 +28,7 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 旧 Inspector 快照只有 `displayContent` 时仍可展示已有材料，不能从 `[REDACTED]` 还原原文或声称逐字原始请求。旧冻结包的 `original_context_unavailable` 只表示没有新版 `archiveContext.sections`，不意味着从 session 恢复的本轮输入和续用前轮缺失；已冻结包、hash 和导出原文不作迁移。页面对旧码解释为「没有新版上下文归档；本轮输入和续用前轮已从会话日志恢复」，session 本身缺失时另有明确缺失码。
 
-新生成包不再添加上述宽泛旧码，分开记录：`context_archive_missing`（没有新版 sections 原文归档）、`system_prompt_missing`（没有当时系统提示词）、`system_prompt_display_redacted`（使用已有模式脱敏历史展示版）、`provider_request_bytes_missing`（未录制供应商原始请求字节）、以及各自的 session/边界/工具结果缺失码。保留旧展示分区的截断标记。`context.systemPromptSource` 区分 `known_value_archive|historical_display|missing`，`providerRequestBytesCaptured` 如实为 false。`complete` 仍判断 B2 所要求的语义轨迹材料；原始供应商请求字节不在 B2 内，只有 `provider_request_bytes_missing` 不使 B2 材料降级，不能把它解读为已录制网络请求。
+新生成包不再添加上述宽泛旧码，分开记录：`context_archive_missing`（没有新版 sections 原文归档）、`system_prompt_missing`（没有当时系统提示词）、`system_prompt_display_redacted`（使用已有模式脱敏历史展示版）、`provider_request_bytes_missing`（未录制供应商原始请求字节）、以及各自的 session/边界/工具结果缺失码。保留旧展示分区的截断标记。如果快照的 `archiveContext.unavailableReason` 表示原文归档失败（例如 `known_key_inventory_unavailable`），其 Inspector 占位文字**不是**历史系统提示词：新包写 `system_prompt_unavailable`、`context.systemPrompt=null`、`systemPromptSource=unavailable`，并在 `context.archiveUnavailableReason` 保留具体原因，展示 sections 仅供缺失审计。`context.systemPromptSource` 区分 `known_value_archive|historical_display|missing|unavailable`，`providerRequestBytesCaptured` 如实为 false。`complete` 仍判断 B2 所要求的语义轨迹材料；原始供应商请求字节不在 B2 内，只有 `provider_request_bytes_missing` 不使 B2 材料降级，不能把它解读为已录制网络请求。
 
 ## 本轮 Git 快照现场
 
@@ -86,7 +86,7 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 `wiki-dehydration.ts` 是纯数据模块，不读文件、凭据或可变房间上下文，不调用模型或工具。材料与前缀能力如下，模型调用与存储由后述受信入口负责：
 
-- 身份由 caseId 与冻结包 source/hash 绑定，编号仅由 `wikiGoalCaseNumber` 投影；旧题来源 #4/#10/#14 不允许脱水。判断具体系统提示词、触发消息、前缀和标记步骤是否存在，不因旧 `original_context_unavailable` 或缺耗时就拒绝已有消息前缀。现场用例默认仍走 trace。
+- 身份由 caseId 与冻结包 source/hash 绑定，编号仅由 `wikiGoalCaseNumber` 投影；旧题来源 #4/#10/#14 不允许脱水。判断具体系统提示词、触发消息、前缀和标记步骤是否存在，不因旧 `original_context_unavailable` 或缺耗时就拒绝已有消息前缀。现场用例默认仍走 trace。缺少真实系统提示词（包括归档失败或旧包误存的 `【上下文未归档：已知 key 清单不可用】` 占位文字）直接判为不可推荐，页面不提供请求按钮；构造切点前缀同样拒绝，故 `confirmDehydration(single)` 和 run 回放均返回 `wiki_dehydration_ineligible`，不冻结或回放占位前缀。历史展示版的正常路径脱敏不是这种整段缺失，仍按原批准边界使用；不改旧包、推荐、决定和 hash。
 - DeepSeek 请求只投影当时起因、步骤卡片、发出回复、实际问题及期望，最后放能否脱水/切点两题。起因必须选自冻结的本轮输入或当时 Goal，不能从当前 Goal 补造。卡片不含 thinking 或结果 details，先替换已知 key 再裁剪；消息/方案正文保留头 500 尾 300，普通步骤最多 120，错误步骤保留报错行；旧日志中 `send-public` 已发送但工具报 `Command aborted` 时，同时保留 `messageBody`（同样头尾规则），不能让桥接终态吞掉发消息步骤的正文。只询问不晚于发出被标记消息的步骤；大于 254 个切点或 state 超过 64k 时显式拒绝，不静默丢材料。离线操作方须审核脱敏材料后才允许外发；页面入口由用户明确点击并确认授权发送这一条冻结投影，加载页面不外发。
 - 用户 2026-11-05 批准由 DeepSeek v4 flash 替代组织停用的 JEV（旧 JEV 结果与冻结包不迁移）。输出为严格 JSON，恰含 `kind`（单步型/贯穿型/说不清）、`cutStep`（卡片整数步号或“无”）、`reason`（一句理由）、`evidence`（从该步 body/messageBody 原样摘的非空依据，无切点则为空）。程序核对依据必须是所选卡片原文子串，不接受改写、别步或发出回复字段里的文字来冒充。没有概率字段，不编造把握程度。离线受信调用保留 B6 的解析失败自动重试一次规则；**页面入口不自动重试**：一次 JSON/字段解析失败即保存真实输出，显式 `parse_failed`、答案为 null，默认回退到发消息步骤。用户可自行选择判断与切点接受该回退，或明确再点一次请求推荐，完成 B6 的一次重试。依据不匹配、无切点、非单步或说不清都只提供发消息步骤回退值并展示原因，均须用户确认，不自动冻结。
 - 切点前缀只含冻结的续用消息、本轮输入、切点前的模型输出及完整结果，既不含切点输出也不含之后记账。历史展示版系统提示词和路径占位原样保留，metadata 明记「系统提示词为历史展示版，路径行已占位」。缺前置工具结果、无法解释的压缩前缀或越界切点拒绝，不用当前上下文兜底。
@@ -133,6 +133,7 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 - `deleteCases({caseIds,reason,expectedRevision}, confirmation)` 是受信操作方入口，没有 HTTP 删除路由。只接受 B11 已批准的页面 #7、#9、#11、#13，确认来源必须为 `user-via-planner` 并绑定消息引用。writer 锁内追加一个快照：从活动 `cases` 和待处理归属队列移除，原用例整体保存在 `deletedCases`，记录原因、确认、原编号、时间和 hash，另追加逐条 `case-deleted` 事件。重复同一操作幂等，不允许重新导入/标记让已删除来源复活。
 - 旧快照、已冻结知识库版本/准则文字、脱水决定、旧 `replaySplit`/回放登记、请求/结果文件和轨迹包均不改。活动用例被删除后归纳/脱水/选题按未知用例拒绝；轨迹读取/导出允许按归档来源核对原包，用于审计。知识库证据计数与搜索只使用活动引用，因此模式 5 可显示零条用例，不修改准则原文；模式 2、4 不再把已删引用算作证据。
 - `proposeRegroup({expectedRevision})` 只持久化一次固定提议、内容 hash 与 `case-regroup-proposed` 事件，不更改任何有效分组，也没有页面自动生成/确认/应用接口。用户先核对 Badcase 页完整前后对照及 hash；确认后仍保留原提议（包括未采用的 trace 改组），不得事后改写提议内容或 hash。确认后重复提议仅返回原记录，不重新随机。
+- 尚未分配有效 `split`（`train|gate|test`，尤其新标记的 `split=null`）的活动用例不进入提议 rows、输入 hash 或配额。页面独立列为「待分配」，即使尚无提议或已有确认也可看见，留给后续首次分组流程；不自动分配。选择**提议前排除**而不是增加作废/再生成入口：重新分组只保留既有 trace 组别，null 没有可保留组别，提前排除即可避免冻住必然无法确认的提议，也不开放通过重复随机挑组。提议后新增未分配用例同样不改变本次输入，已有可确认提议不因此卡住；已有提议和确认不迁移。
 - 提议建议沿用既有配额比例：trace / run 两层分别按固定种子 `wikiskill-trace-run-stratified-v1` 和用例 ID 的 SHA-256 排序。trace 用现有整数缺口算法（训练:门槛:测试 2:1:1，同缺按训练→门槛→测试）；run 用其训练:门槛 2:1 投影，同缺取训练，且门槛 run 数不超过 GPT 门槛 trace 数，超额留训练。该比例连同实际结果一起交用户确认，不宣称为 B8 已规定的比例。
 - #4、#10、#14 旧题来源、无现场贯穿型参考、删除项、未确认脱水及没有同题/同轨迹/同冻结决定的原版有效输出者不参与。非 GPT 只报告，不用于满足 GPT 配额。run 资格从不可覆盖请求/结果存储的当前会计重新读取，不接受调用者提交资格、种子或评测结果。输入证据含原组别、轨迹/决定 hash、原版请求/结果 hash，不包含候选、评分或通过率；提议不是已确认复现或判分通过。
 - 用户 2026-11-05 经规划者确认并修正提议：#19 保留门槛、#20 保留测试，不参与重新随机；#20 已作为测试题暴露，评分 v2 重跑仍须保留测试身份，不能挪入训练。只对六条有效无现场 run 应用原随机结果：门槛 #1，训练 #2/#3/#6/#15/#16。门槛 trace/run 各一条，run 正好一半；测试仍为 #20 加 #4/#10/#14 的三道旧题。#5/#8 无效、#12 参考、#4/#10/#14 旧题来源、#17/#18 只报告的身份不变。

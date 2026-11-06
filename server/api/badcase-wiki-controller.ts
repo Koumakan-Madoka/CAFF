@@ -150,7 +150,18 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         else store.confirmGlobalCandidate({ ...input, files });
       }
       const state = store.read();
-      sendJson(res, 200, { ...state, cases: wikiDisplayCases(state.cases).map((c: any) => ({ ...c, dehydrationRecommendation: pageRecommendationAvailability(c, (state.dehydrations || []).findLast((r: any) => r.caseId === c.id)) })), caseStates: store.getCaseStates(), runReplays: projectWikiRunAccounting(runs.list(), state.dehydrations), comparisons: createWikiComparisonStore(scope).read(), executions: executions(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
+      const cases = wikiDisplayCases(state.cases).map((c: any) => {
+        const previous = (state.dehydrations || []).findLast((r: any) => r.caseId === c.id);
+        let availability = pageRecommendationAvailability(c, previous);
+        if (availability.eligible) {
+          // Old packets may contain an archive-failure placeholder without a
+          // reason code. Verify frozen inputs before offering a paid action.
+          try { availability = pageRecommendationAvailability(c, previous, store.readCaseTrace(c.id)); }
+          catch { availability = { eligible: false }; }
+        }
+        return { ...c, dehydrationRecommendation: availability };
+      });
+      sendJson(res, 200, { ...state, cases, caseStates: store.getCaseStates(), runReplays: projectWikiRunAccounting(runs.list(), state.dehydrations), comparisons: createWikiComparisonStore(scope).read(), executions: executions(), targets: listWikiTargets(), trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

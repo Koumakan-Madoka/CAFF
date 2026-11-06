@@ -19,7 +19,13 @@ export function dehydrationAvailability(item: any, bundle: any, includeScene = f
   if ([4, 10, 14].includes(caseNumber!)) return no('historical_source_only');
   if (item?.sealedCheckpointId && !includeScene) return no('trace_default');
   if (!bundle) return no('trace_missing');
-  if (typeof bundle.context?.systemPrompt !== 'string' || !bundle.context.systemPrompt.trim()) return no('system_prompt_missing');
+  // Include pre-fix frozen packets which promoted the explicit archive-failure
+  // placeholder to a nonempty systemPrompt. Reject them without rewriting hashes.
+  if (bundle.context?.archiveUnavailableReason || bundle.context?.systemPromptSource === 'unavailable'
+    || bundle.missingReasons?.includes('system_prompt_unavailable')
+    || typeof bundle.context?.systemPrompt === 'string' && bundle.context.systemPrompt.trim() === '【上下文未归档：已知 key 清单不可用】') return no('system_prompt_unavailable');
+  if (typeof bundle.context?.systemPrompt !== 'string' || !bundle.context.systemPrompt.trim()
+    || bundle.context?.systemPromptSource === 'missing' || bundle.missingReasons?.includes('system_prompt_missing')) return no('system_prompt_missing');
   if (bundle.context?.trigger?.message?.role !== 'user') return no('turn_trigger_missing');
   if (!Array.isArray(bundle.context?.priorSessionEntries)) return no('session_prefix_missing');
   if (!Array.isArray(bundle.steps) || !Number.isSafeInteger(bundle.markedStep) || bundle.markedStep < 1 || bundle.markedStep > bundle.steps.length

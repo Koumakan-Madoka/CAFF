@@ -99,6 +99,19 @@ test('eligibility rejects real missing inputs, source-only case identities and s
   const stale = fixture(); stale.bundle.markedMessage += 'changed';
   assert.throws(() => api().buildDehydrationRequest(stale), e => e.code === 'wiki_trace_invalid');
 });
+test('unavailable system prompts and pre-fix placeholder packets cannot be recommended or replayed', () => {
+  for (const patch of [{ missingReasons: ['system_prompt_unavailable'] },
+    { context: { archiveUnavailableReason: 'known_key_inventory_unavailable' } },
+    { context: { systemPromptSource: 'unavailable' } },
+    { context: { systemPrompt: '【上下文未归档：已知 key 清单不可用】' } }]) {
+    const h = fixture(); Object.assign(h.bundle, patch.context ? {} : patch); Object.assign(h.bundle.context, patch.context);
+    refresh(h); const before = structuredClone(h.bundle);
+    assert.equal(api().dehydrationAvailability(h.caseRecord, h.bundle).reason, 'system_prompt_unavailable');
+    assert.throws(() => api().buildDehydrationRequest(h), e => e.code === 'wiki_dehydration_ineligible');
+    assert.throws(() => api().buildDehydrationPrefix(h.caseRecord, h.bundle, 1), e => e.code === 'wiki_dehydration_ineligible');
+    assert.deepEqual(h.bundle, before, 'old packets remain immutable');
+  }
+});
 test('cause must come from the frozen trigger or contemporaneous Goal, never current mutable context', () => {
   const h = fixture(); h.cause = { source: 'goal', text: 'fix this behavior' };
   assert.equal(api().buildDehydrationRequest(h).request.state.cause, 'fix this behavior');

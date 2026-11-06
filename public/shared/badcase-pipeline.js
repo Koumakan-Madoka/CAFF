@@ -22,6 +22,7 @@
     const reasonLabels = {
       original_context_unavailable: '没有新版上下文归档；本轮输入和续用前轮已从会话日志恢复',
       context_archive_missing: '没有新版上下文归档', system_prompt_missing: '未保存当时的系统提示词',
+      system_prompt_unavailable: '系统提示词不可用：原文归档失败，占位文字不能用于脱水或回放',
       system_prompt_display_redacted: '系统提示词为历史展示版，路径行已占位', provider_request_bytes_missing: '未保存供应商请求原始字节',
       context_truncated: '原上下文曾被截断', model_duration_missing: '未记录逐次模型耗时', model_usage_missing: '未记录模型用量',
       turn_end_inferred_from_usage: '旧轮次终点按调用次数推导', turn_bounds_recovered_from_unique_reply: '旧轮次按唯一回复及父链恢复',
@@ -74,7 +75,7 @@
         [has ? c.traceBundle?.scene?.metadataStatus === 'recorded' ? 'done' : 'pending' : 'alt', has ? sceneNote(c) + '；元数据不等于已通过回放检查' : '没有现场；须先确认能否脱水'],
         [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '有现场，走 trace 级；现场 run 级回放尚未实现，暂不开放脱水' : r ? 'DeepSeek 推荐已生成，等待你确认能否脱水和切点' : 'DeepSeek 推荐尚未生成；用户确认后冻结判断与切点'],
         [cs?.memberships?.length ? 'done' : 'pending', cs?.memberships?.length ? '已有已确认模式标签' : '待归类；不自动改模式'],
-        [old || confirmedGroup(c) ? 'done' : 'pending', old ? '原测试分组保留' : confirmedGroup(c) ? `用户确认的${splitName[confirmedGroup(c).confirmedSplit]}组已生效；原提议和旧分组记录保留` : '旧分组保留；分层重新分组待用户确认'],
+        [old || confirmedGroup(c) ? 'done' : 'pending', old ? '原测试分组保留' : confirmedGroup(c) ? `用户确认的${splitName[confirmedGroup(c).confirmedSplit]}组已生效；原提议和旧分组记录保留` : !splitName[c.split] ? '待分配；不参与本次重新分组，留待后续分组流程' : '旧分组保留；分层重新分组待用户确认'],
         ['pending', '评分 v2 待接入：断言及逐条判定由独立 Goal 负责'],
         [replayed ? 'done' : 'pending', replayed ? '已用冻结切点前缀单次调用；未执行工具，不做前缀一致性检验' : '待检查冻结输入；旧回放登记不等于本流程检查通过'],
         [replayed ? 'alt' : 'pending', replayed ? '单次回放原文已保存；是否复现及判分由评分 v2 接入后判断' : '待原版复现；旧字面评分不作新版入库证据'],
@@ -96,18 +97,20 @@
     }
     function regroupPanel() {
       const p = (D.regroupProposals || []).at(-1), host = $('[data-regroup-host]');
-      if (!p) { host.innerHTML = ''; return; }
+      const pending = D.cases.filter(c => !splitName[c.split]);
+      const pendingHtml = pending.length ? `<section class="sec" data-regroup-pending><h2>待分配 · ${pending.length} 条</h2><p>尚未分配组别，不参与本次重新分组，不占配额；留待后续分组流程，本页不自动分配。</p><ul>${pending.map(c => `<li>#${esc(c.n)} · ${esc(c.actual)}</li>`).join('')}</ul></section>` : '';
+      if (!p) { host.innerHTML = pendingHtml; return; }
       const reasons = { deleted_missing_system_prompt: '已删除：缺当时系统提示词，不脱水也不作参考', legacy_test_source: '旧题来源，不参与新分组，旧测试题保留',
         reference_only: '只作参考，不成为测试用例', non_gpt_report_only: '非 GPT 来源，仅报告，不占 GPT 配额',
         baseline_no_valid_output: '原版无有效输出，不进门槛和初筛', baseline_pending: '尚无有效原版证据，不参与新分组', dehydration_not_confirmed: '脱水尚未确认，不参与新分组' };
       const active = activeGrouping();
       if (active?.proposalHash === p.hash) {
-        host.innerHTML = `<section class="sec" data-regroup-confirmed><h2>用户确认的分组 · 已生效</h2><p>保留已有 trace 的冻结组别；只对有效 run 用例应用原提议的随机结果。旧分组、原提议、用户调整和历史评测结果均保留，不自动启动评测。</p><p class="trace-hash mono">原提议 SHA-256：${esc(p.hash)}<br>确认 SHA-256：${esc(active.hash)}<br>固定种子：${esc(p.seed)}</p><p>确认来源：${active.confirmation?.source === 'user-via-planner' ? '用户经规划者转达' : '用户确认'} · ${esc(active.confirmation?.reference)} · ${esc(active.confirmedAt)}</p><p>用户调整：${esc(active.reason)}</p><p>生效数量：${['trace', 'run'].map(level => `${level}：训练 ${esc(active.counts[level].train)} / 门槛 ${esc(active.counts[level].gate)} / 测试 ${esc(active.counts[level].test)}`).join('；')}。门槛 run 不超过一半，测试只收 trace；非 GPT 不计入配额。#4、#10、#14 的旧测试题不动。</p><p class="hint">分组不代表已复现、判分通过或可以回放。现场是否齐全以各条冻结清单为准；历史暴露不等于新的盲留出。训练 run 只作淘汰初筛，不能作为采纳依据。</p>
+        host.innerHTML = pendingHtml + `<section class="sec" data-regroup-confirmed><h2>用户确认的分组 · 已生效</h2><p>保留已有 trace 的冻结组别；只对有效 run 用例应用原提议的随机结果。旧分组、原提议、用户调整和历史评测结果均保留，不自动启动评测。</p><p class="trace-hash mono">原提议 SHA-256：${esc(p.hash)}<br>确认 SHA-256：${esc(active.hash)}<br>固定种子：${esc(p.seed)}</p><p>确认来源：${active.confirmation?.source === 'user-via-planner' ? '用户经规划者转达' : '用户确认'} · ${esc(active.confirmation?.reference)} · ${esc(active.confirmedAt)}</p><p>用户调整：${esc(active.reason)}</p><p>生效数量：${['trace', 'run'].map(level => `${level}：训练 ${esc(active.counts[level].train)} / 门槛 ${esc(active.counts[level].gate)} / 测试 ${esc(active.counts[level].test)}`).join('；')}。门槛 run 不超过一半，测试只收 trace；非 GPT 不计入配额。#4、#10、#14 的旧测试题不动。</p><p class="hint">分组不代表已复现、判分通过或可以回放。现场是否齐全以各条冻结清单为准；历史暴露不等于新的盲留出。训练 run 只作淘汰初筛，不能作为采纳依据。</p>
           <details open><summary>分组前后对照（含原提议与用户调整）</summary><div class="regroup-table"><table><thead><tr><th>编号</th><th>层级</th><th>原组别</th><th>原提议</th><th>用户确认</th><th>说明</th></tr></thead><tbody>${[...active.rows].sort((a,b) => a.caseNumber-b.caseNumber).map(r => `<tr><td>#${esc(r.caseNumber)}</td><td>${esc(({source: '旧题来源', reference: '只作参考'})[r.level] || r.level || '—')}</td><td>${esc(splitName[r.previousSplit] || '未定组')}</td><td>${esc(splitName[r.proposedSplit] || '不参与')}</td><td>${esc(splitName[r.confirmedSplit] || '不参与')}</td><td>${esc(r.confirmationReason === 'frozen_trace_split' ? '保留原 trace 冻结组别，不参与重分组' : r.reason ? reasons[r.reason] || r.reason : r.confirmedSplit === 'train' ? '只作初筛；不能作为采纳依据' : '用户已确认；未判分')}</td></tr>`).join('')}</tbody></table></div></details>
           <details><summary>原提议与用户调整记录（审计）</summary><pre class="tl-req">${esc(json({ proposal: p, adjustments: active.adjustments }))}</pre></details></section>`;
         return;
       }
-      host.innerHTML = `<section class="sec" data-regroup-proposal><h2>分组提议 · 尚未生效</h2><p>请核对分组前后对照，再在对话中确认这一份提议的 hash；当前没有改变任何有效组别，不会自动确认或启动评测。</p><p class="trace-hash mono">提议 SHA-256：${esc(p.hash)}<br>固定种子：${esc(p.seed)}</p><p>建议按 trace / run 两层随机排序：trace 沿用现有训练:门槛:测试 2:1:1 配额，run 用训练:门槛 2:1 配额，并将门槛 run 数限制为不超过门槛 trace 数。超额 run 留训练，仅作淘汰初筛，不作采纳依据。</p><p>提议数量：${['trace', 'run'].map(level => `${level}：训练 ${esc(p.counts[level].train)} / 门槛 ${esc(p.counts[level].gate)} / 测试 ${esc(p.counts[level].test)}`).join('；')}。非 GPT 不计入配额。</p>
+      host.innerHTML = pendingHtml + `<section class="sec" data-regroup-proposal><h2>分组提议 · 尚未生效</h2><p>请核对分组前后对照，再在对话中确认这一份提议的 hash；当前没有改变任何有效组别，不会自动确认或启动评测。</p><p class="trace-hash mono">提议 SHA-256：${esc(p.hash)}<br>固定种子：${esc(p.seed)}</p><p>建议按 trace / run 两层随机排序：trace 沿用现有训练:门槛:测试 2:1:1 配额，run 用训练:门槛 2:1 配额，并将门槛 run 数限制为不超过门槛 trace 数。超额 run 留训练，仅作淘汰初筛，不作采纳依据。</p><p>提议数量：${['trace', 'run'].map(level => `${level}：训练 ${esc(p.counts[level].train)} / 门槛 ${esc(p.counts[level].gate)} / 测试 ${esc(p.counts[level].test)}`).join('；')}。非 GPT 不计入配额。</p>
         ${(p.warnings || []).includes('no_new_trace_test') ? '<p class="muted-note">样本不足：这份提议没有新的 trace 级测试题；不拿 run 级或非 GPT 来源填充测试组，#4、#10、#14 的旧题保持不变。</p>' : ''}<p class="hint">这些历史材料已有训练或评测暴露；重新分组不等于获得未见过的留出数据。现场是否齐全以各条冻结清单为准，分组不代表已经能回放或判分。</p>
         <details open><summary>分组前后对照（含不参与项）</summary><div class="regroup-table"><table><thead><tr><th>编号</th><th>层级</th><th>原组别</th><th>提议组别</th><th>说明</th></tr></thead><tbody>${[...p.rows].sort((a,b) => a.caseNumber-b.caseNumber).map(r => `<tr><td>#${esc(r.caseNumber)}</td><td>${esc(({source: '旧题来源', reference: '只作参考'})[r.level] || r.level || '—')}</td><td>${esc(splitName[r.previousSplit] || '未定组')}</td><td>${esc(splitName[r.proposedSplit] || '不参与')}</td><td>${esc(r.reason ? reasons[r.reason] || r.reason : r.level === 'run' && r.proposedSplit === 'train' ? '只作初筛；不能作为采纳依据' : '待用户确认；未判分')}</td></tr>`).join('')}</tbody></table></div></details></section>`;
     }
@@ -152,7 +155,7 @@
     }
     function card(c, ts) {
       const p = plan(c), ref = c.traceBundle, tone = ref?.complete ? 'ok' : 'warn';
-      return `<article class="bc" id="bc-${c.n}" data-case-id="${esc(c.id)}"><div class="bc-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4><div class="bc-meta"><span>${isGpt(c) ? 'GPT' : esc(c.role || c.source?.agentId || '其他模型')}</span><span>来自 ${hl(c.source?.conversationTitle || '未命名房间', ts)}</span><span>${confirmedGroup(c) ? '用户确认：' + splitName[confirmedGroup(c).confirmedSplit] + '组' : (splitName[c.split] || '未定组') + (c.split ? '组（旧记录）' : '')}</span><span class="pill ${hasScene(c) ? 'info' : 'warn'}">${levelLabel(c)}</span></div></div>
+      return `<article class="bc" id="bc-${c.n}" data-case-id="${esc(c.id)}"><div class="bc-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4><div class="bc-meta"><span>${isGpt(c) ? 'GPT' : esc(c.role || c.source?.agentId || '其他模型')}</span><span>来自 ${hl(c.source?.conversationTitle || '未命名房间', ts)}</span><span>${confirmedGroup(c) ? '用户确认：' + splitName[confirmedGroup(c).confirmedSplit] + '组' : (splitName[c.split] || '待分配') + (c.split ? '组（旧记录）' : '')}</span><span class="pill ${hasScene(c) ? 'info' : 'warn'}">${levelLabel(c)}</span></div></div>
         <ol class="stepper" aria-label="从标记到入库的步骤">${p.steps.map(([status, text], i) => `<li class="${status}" title="${esc(labels[i] + '：' + text)}"><span class="bar"></span><span class="lab">${labels[i]}</span><span class="sr-only">${esc(text)}</span></li>`).join('')}</ol>
         <div class="next-line"><span class="who ${p.actor === 'system' ? 'sys' : 'none'}">${p.actor === 'system' ? '系统' : p.actor === 'you' ? '你' : '到此为止'}</span><span>${esc(p.next)}</span></div>
         <div class="chips"><span class="pill ${tone}">${backfill(c)}</span>${hasScene(c) ? `<span class="pill warn">现场：${esc(sceneNote(c))}</span>` : '<span class="pill">无现场</span>'}</div>

@@ -1,4 +1,4 @@
-import { buildDehydrationRequest, buildDehydrationPrefix, DEHYDRATION_MODEL, interpretDehydrationAnswer, pageDehydrationCause } from './wiki-dehydration';
+import { buildDehydrationRequest, buildDehydrationPrefix, DEHYDRATION_MODEL, dehydrationAvailability, interpretDehydrationAnswer, pageDehydrationCause } from './wiki-dehydration';
 import { wikiGoalCaseNumber } from './wiki-suite';
 import { redactTraceKnownValues } from './wiki-trace';
 const fail = (code: string) => Object.assign(Error(code), { code });
@@ -7,8 +7,10 @@ const fail = (code: string) => Object.assign(Error(code), { code });
 // production DB opener, credential refresh or logging. Offline JSON/schema parse
 // failure gets one identical retry; the page uses manual policy and one call.
 // One manual retry is allowed only for a new page parse failure. Old rows stay immutable.
-export function pageRecommendationAvailability(item: any, previous: any) {
+export function pageRecommendationAvailability(item: any, previous: any, bundle?: any) {
   const eligible = !!item?.traceBundle && !item?.sealedCheckpointId && item?.source?.agentId === 'role-family-gpt'
+    && !item.traceBundle.missingReasons?.some((r: string) => ['system_prompt_missing', 'system_prompt_unavailable'].includes(r))
+    && (bundle === undefined || dehydrationAvailability(item, bundle).eligible)
     && ![4, 10, 14].includes(wikiGoalCaseNumber(item?.id)!) && !previous?.decision
     && (!previous || previous.recommendation?.retryPolicy === 'manual' && previous.recommendation?.fallbackReason === 'parse_failed' && !previous.retryOf);
   return { eligible };

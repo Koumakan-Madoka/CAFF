@@ -125,8 +125,12 @@ export function buildWikiTraceBundle(input: any) {
   // This is about the sections archive, NOT the trigger/reused messages which
   // are recovered independently from the session below. Never migrate old packets.
   if (!archived) missing.push('context_archive_missing');
-  const system = sections.find((s: any) => s.sectionKey === 'harness_prompt' && s.content);
-  if (!system) missing.push('system_prompt_missing');
+  // An explicitly failed archive contains Inspector placeholders, not a
+  // historical display prompt. Never promote those strings into replay input.
+  const archiveUnavailableReason = original?.unavailableReason || null;
+  const system = archiveUnavailableReason ? null : sections.find((s: any) => s.sectionKey === 'harness_prompt' && s.content);
+  if (archiveUnavailableReason) missing.push('system_prompt_unavailable');
+  else if (!system) missing.push('system_prompt_missing');
   else if (!archived && system.displayRedacted) missing.push('system_prompt_display_redacted');
   // We record semantic inputs, never claim to have captured provider wire bytes.
   // These bytes are not required by B2 and their absence alone is informational.
@@ -185,7 +189,8 @@ export function buildWikiTraceBundle(input: any) {
     markedMessage: reply, actual: input.actual ?? '', expected: input.expected ?? '', markedStep,
     context: { snapshotId: input.snapshot?.snapshotId ?? null, sections,
       systemPrompt: system?.content ?? null,
-      systemPromptSource: system ? archived ? 'known_value_archive' : 'historical_display' : 'missing',
+      systemPromptSource: archiveUnavailableReason ? 'unavailable' : system ? archived ? 'known_value_archive' : 'historical_display' : 'missing',
+      ...(archiveUnavailableReason ? { archiveUnavailableReason } : {}),
       providerRequestBytesCaptured: false,
       trigger: parsed?.trigger ?? null, priorSessionEntries: parsed?.prior || [],
       skillSections: sections.filter((s: any) => /skills/.test(s.sectionKey)), loadedSkillPaths: [...skillPaths],

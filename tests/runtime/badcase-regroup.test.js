@@ -25,9 +25,10 @@ function setup(t) {
   fs.writeFileSync(path.join(dir, '000000000001.json'), JSON.stringify({ schemaVersion: 1, checksum: hash(f.state), record: f.state }));
   return { ...f, options, store: createWikiStore(options), dir };
 }
-function confirmationFixture(t) {
+function confirmationFixture(t, unassigned = false) {
   const h = setup(t), state = h.store.read();
   state.cases.find(c => c.id === 'trace-a').split = 'gate'; state.cases.find(c => c.id === 'trace-b').split = 'test';
+  if (unassigned) state.cases.push({ ...state.cases[0], id: 'new-scene', sealedCheckpointId: 'new-scene', split: null });
   fs.writeFileSync(path.join(h.dir, '000000000001.json'), JSON.stringify({ schemaVersion: 1, checksum: hash(state), record: state }));
   const { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store');
   const runs = createWikiRunStore(h.options);
@@ -53,6 +54,24 @@ test('stratified proposal is order-independent, bounded, fixed-seed and contains
   assert.equal(p.rows.find(r => r.caseId === 'reference').level, 'reference'); assert.equal(p.rows.find(r => r.caseId === sourceId).level, 'source');
   assert.deepEqual(planWikiRegroup({ ...f.state, candidates: ['CANDIDATE MUST NOT ENTER'], comparisons: ['GRADE MUST NOT ENTER'] }, f.runs), p);
   assert.doesNotMatch(JSON.stringify(p), /CANDIDATE MUST|GRADE MUST/);
+});
+test('unassigned cases never enter proposal rows, evidence hashes or quota; unrelated confirmation stays valid', () => {
+  const f = fixture(); f.state.cases[0].split = 'gate'; f.state.cases[1].split = 'test';
+  const proposal = planWikiRegroup(f.state, f.runs), extra = { ...f.state.cases[0], id: 'new-scene', split: null };
+  const updated = { ...f.state, cases: [...f.state.cases, extra, { ...extra, id: 'new-run', sealedCheckpointId: null }] };
+  assert.deepEqual(planWikiRegroup(updated, f.runs), proposal);
+  const confirmed = planConfirmedWikiRegroup(updated, f.runs, proposal);
+  assert.equal(confirmed.rows.some(r => r.caseId.startsWith('new-')), false);
+  assert.equal(confirmed.counts.run.gate <= confirmed.counts.trace.gate, true);
+});
+test('a pending trace case cannot permanently freeze a failed regroup proposal or receive an accidental split', t => {
+  const h = confirmationFixture(t, true), before = h.store.read();
+  assert.equal(h.proposal.rows.some(r => r.caseId === 'new-scene'), false);
+  assert.deepEqual(h.store.proposeRegroup({ expectedRevision: before.revision }), h.proposal);
+  const saved = h.store.confirmRegroup(h.input, h.confirmation);
+  assert.equal(saved.status, 'active');
+  assert.equal(h.store.read().cases.find(c => c.id === 'new-scene').split, null);
+  assert.deepEqual(h.store.read().regroupProposals[0], h.proposal);
 });
 test('run gate quota cannot be supplied by non-GPT scenes; candidate/foreign-decision outputs cannot unlock runs', () => {
   const f = fixture(); f.state.cases = f.state.cases.filter(c => !c.id.startsWith('trace-'));

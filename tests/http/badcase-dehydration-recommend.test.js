@@ -12,6 +12,12 @@ function setup(t, mode = 'valid') {
   const packet = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', origin: 'mark', source: c.source, frozenAt: '2026-11-06T00:00:00Z', complete: false, missingReasons: [], redaction: { policy: 'known_values_only' },
     markedStep: 1, markedMessage: 'reply', actual: 'wrong', expected: 'right', context: { systemPrompt: 'system', priorSessionEntries: [], trigger: { message: { role: 'user', content: 'solve this' } } },
     steps: [{ step: 1, output: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] }, toolResults: [] }] };
+  if (mode === 'unavailable') packet.context.systemPrompt = '【上下文未归档：已知 key 清单不可用】'; // pre-fix frozen packet
+  if (mode === 'no-prompt') packet.context.systemPrompt = null;
+  if (mode === 'unavailable-metadata') {
+    packet.context.systemPrompt = null; packet.context.systemPromptSource = 'unavailable';
+    packet.context.archiveUnavailableReason = 'known_key_inventory_unavailable'; packet.missingReasons = ['system_prompt_unavailable'];
+  }
   if (mode !== 'missing') store.freezeCaseTrace(c.id, packet);
   const credentialDir = path.join(root, 'agent'), configFile = path.join(root, 'runtime.json'), key = 'synthetic-recommend-only-key';
   fs.mkdirSync(credentialDir); fs.writeFileSync(path.join(credentialDir, 'models.json'), JSON.stringify({ providers: { deepseek: { api: 'openai-completions', baseUrl: 'https://api.deepseek.com', apiKey: key, models: [{ id: 'deepseek-v4-flash' }] } } }));
@@ -86,6 +92,24 @@ test('sealed legacy recommendation cannot freeze single/run through HTTP or dire
   assert.equal(result.body.dehydrations[0].decision.level, 'trace');
   const { decision, ...unchanged } = result.body.dehydrations[0]; assert.deepEqual(unchanged, row);
   assert.equal(h.calls, 0); assert.equal(h.opens, 0);
+});
+test('missing or unavailable real system prompt rejects recommendation and legacy single confirmation without writes', async t => {
+  for (const mode of ['unavailable', 'unavailable-metadata', 'no-prompt']) {
+    const h = setup(t, mode);
+    await rejects(h.invoke(), 'wiki_dehydration_ineligible', 422);
+    const view = await h.invoke(undefined, { method: 'GET', pathname: '/api/wikiskill' });
+    assert.equal(view.body.cases[0].dehydrationRecommendation.eligible, false);
+    // Seed the legacy recommendation that the pre-fix implementation could save.
+    const state = h.store.read(), packet = h.store.readCaseTrace(h.c.id);
+    const row = { caseId: h.c.id, traceHash: state.cases[0].traceBundle.hash, hash: 'c'.repeat(64) };
+    state.dehydrations = [row]; state.revision++;
+    fs.writeFileSync(path.join(h.scope.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json'), JSON.stringify({ schemaVersion: 1, checksum: require('node:crypto').createHash('sha256').update(JSON.stringify(state)).digest('hex'), record: state }));
+    const before = h.store.read(), input = { caseId: h.c.id, traceHash: row.traceHash, recommendationHash: row.hash, kind: 'single', cutStep: 1, expectedRevision: before.revision };
+    assert.throws(() => h.store.confirmDehydration(input), e => e.code === 'wiki_dehydration_ineligible');
+    await rejects(h.invoke({ confirmed: true, ...input }, { pathname: '/api/wikiskill/dehydration-confirm' }), 'wiki_dehydration_ineligible', 422);
+    assert.deepEqual(h.store.read(), before); assert.deepEqual(h.store.readCaseTrace(h.c.id), packet);
+    assert.equal(h.opens, 0); assert.equal(h.calls, 0);
+  }
 });
 test('missing trace, non-GPT, old sources and deleted cases cannot reach runtime', async t => {
   for (const mode of ['missing', 'other', 'source', 'deleted']) {

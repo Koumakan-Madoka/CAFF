@@ -119,6 +119,21 @@ test('missing archive does not mean the recovered trigger and reused prefix are 
   assert.ok(absent.missingReasons.includes('system_prompt_missing'));
   assert.ok(!absent.missingReasons.includes('system_prompt_display_redacted'));
 });
+test('failed known-key inventory records unavailable system prompt, never promotes the Inspector placeholder', t => {
+  const h = fixture(t);
+  const { createAgentContextSnapshot } = require('../../build/server/domain/conversation/turn/context-snapshot');
+  const snapshot = createAgentContextSnapshot({ sections: [{ sectionKey: 'harness_prompt', content: 'REAL PROMPT MUST NOT PERSIST' }],
+    archiveKnownKeyValues() { throw Error('inventory unreadable'); } });
+  assert.equal(snapshot.archiveContext.unavailableReason, 'known_key_inventory_unavailable');
+  const packet = trace().buildWikiTraceBundle({ ...h.input, snapshot });
+  assert.equal(packet.context.systemPrompt, null);
+  assert.equal(packet.context.systemPromptSource, 'unavailable');
+  assert.equal(packet.context.archiveUnavailableReason, 'known_key_inventory_unavailable');
+  assert.ok(packet.missingReasons.includes('system_prompt_unavailable'));
+  assert.equal(packet.complete, false);
+  assert.match(packet.context.sections[0].content, /上下文未归档/);
+  assert.doesNotMatch(JSON.stringify(packet), /REAL PROMPT MUST NOT PERSIST/);
+});
 test('provider wire bytes are explicitly not captured, without making B2-complete content incomplete', t => {
   const packet = trace().buildWikiTraceBundle(fixture(t).input);
   assert.ok(packet.missingReasons.includes('provider_request_bytes_missing'));

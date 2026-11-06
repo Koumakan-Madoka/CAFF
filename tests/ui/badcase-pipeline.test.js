@@ -146,6 +146,22 @@ test('regroup proposal shows before/after and exclusions read-only, never claimi
   assert.match(h.root.querySelector('[data-case-id="c1"]').textContent, /提议：门槛.*尚未生效/);
   assert.equal(panel.querySelector('button'), null, 'no auto-application or intermediate confirmation endpoint');
 });
+test('unassigned cases are separately listed before/after a proposal, never described as participating or confirmed', t => {
+  const h = setup(t); h.data.cases[1].split = null; h.data.cases[1].actual = '<script>pending scene</script>';
+  h.panel.render(h.data);
+  const pending = () => h.root.querySelector('[data-regroup-pending]');
+  assert.ok(pending()); assert.match(pending().textContent, /待分配.*#19/s);
+  assert.match(pending().textContent, /不参与本次重新分组/); assert.equal(pending().querySelector('script'), null);
+  const card = h.root.querySelector('[data-case-id="c2"]');
+  assert.match(card.querySelector('.bc-meta').textContent, /待分配/);
+  assert.match(card.querySelector('.steps-detail').textContent, /待分配/);
+  h.data.regroupProposals = [{ hash: 'f'.repeat(64), seed: 'fixed', rows: [], warnings: [], counts: { trace: { train: 0, gate: 0, test: 0 }, run: { train: 0, gate: 0, test: 0 } } }];
+  h.panel.render(h.data);
+  assert.ok(pending()); assert.equal(h.root.querySelector('[data-regroup-proposal] tbody').children.length, 0);
+  h.data.regroupConfirmations = [{ status: 'active', hash: 'e'.repeat(64), proposalHash: 'f'.repeat(64), rows: [], counts: h.data.regroupProposals[0].counts, confirmation: {} }];
+  h.panel.render(h.data); assert.ok(pending()); assert.match(pending().textContent, /后续分组流程/);
+  assert.equal(h.data.cases[1].split, null); assert.equal(h.calls.length, 0);
+});
 test('confirmed grouping shows original proposal, user adjustment and active groups read-only without claiming scoring readiness', t => {
   const h = setup(t), proposalHash = 'f'.repeat(64), confirmHash = 'e'.repeat(64);
   h.data.cases[0].split = 'gate';
@@ -204,6 +220,15 @@ test('request button is explicit, eligibility-bound, read-only when disabled and
   h.panel.setWritable(false); assert.equal(button.disabled, true); button.click(); assert.equal(sent.length, 1);
   h.data.cases[0].dehydrationRecommendation = { eligible: false }; h.panel.render(h.data);
   assert.equal(h.root.querySelector('[data-dehydration-recommend="c1"]'), null); assert.equal(h.calls.length, 0);
+});
+test('unavailable system prompt is disclosed and an ineligible case has no recommendation button', t => {
+  const sent = [], h = setup(t, null, { onRequestRecommendation: body => sent.push(body) });
+  h.data.cases[0].dehydrationRecommendation = { eligible: false };
+  h.data.cases[0].traceBundle.missingReasons = ['system_prompt_unavailable']; h.panel.render(h.data);
+  const card = h.root.querySelector('[data-case-id="c1"]');
+  assert.match(card.textContent, /系统提示词不可用.*占位文字不能用于脱水或回放/);
+  assert.equal(card.querySelector('[data-dehydration-recommend]'), null);
+  assert.equal(sent.length, 0); assert.equal(h.calls.length, 0);
 });
 test('one failed parse offers fallback confirmation OR one manual retry and retains earlier raw evidence', t => {
   const sent = [], h = setup(t, null, { onRequestRecommendation: body => sent.push(body), onConfirmDecision() {}, confirm: () => true });
