@@ -114,17 +114,21 @@
       if (reference) for (let i = 4; i < 9; i++) steps[i] = ['skip', '无现场且非单步型；只作参考和训练组文字材料，不成为测试用例'];
       if (invalidCase && !reference && !old && !other) for (const i of [4, 5, 7, 8]) steps[i] = ['skip', '原版无有效输出：无效测试用例，不进门槛和初筛；不算通过也不算不通过'];
       const labelPending = patternLabel(c) && !patternLabel(c).confirmed;
-      const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : status.inLibrary ? 'library' : r && !d || labelPending || splitProposal(c) ? 'you' : 'system';
+      const baselinePending = !has && d?.level === 'run' && !status.original.outputs && !status.original.valid && !status.original.unscored && !invalidCase;
+      const needsAssertion = status.assertion.status !== 'frozen' && (has || d?.level === 'run' && !baselinePending);
+      const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : r && !d || labelPending || splitProposal(c) ? 'you' : needsAssertion ? 'you' : status.inLibrary ? 'library' : 'system';
       const next = other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题'
         : invalidCase ? '原版无有效输出：无效测试用例，不进门槛和初筛；保留原文，不自动补跑'
-        : status.inLibrary ? `${splitName[c.split]}组${has ? ' trace' : ' run'} 级测试用例，等待候选；本页不启动评测`
         : r && !d ? '请确认能否脱水与切点；确认后不可修改'
         : labelPending ? '请确认模式标签；仅记录标签，不改组别和归纳成员'
         : splitProposal(c) ? '请核对并确认此模式的新用例分组'
+        : baselinePending ? '等待受信操作方取得原版有效输出；每批调用前须经规划者向用户确认，本页不启动回放'
+        : needsAssertion ? (has ? sceneNote(c) + '；有现场，走 trace 级；' : '') + assertionText(c)
+        : status.inLibrary ? `${splitName[c.split]}组${has ? ' trace' : ' run'} 级测试用例，等待候选；本页不启动评测`
         : has ? sceneNote(c) + '；有现场，走 trace 级；' + (status.replay.status !== 'supported' ? replayText(c) : status.assertion.status !== 'frozen' ? assertionText(c) : originalText(c))
         : !d ? '等待 DeepSeek 推荐，再请你确认'
         : status.assertion.status !== 'frozen' ? assertionText(c) : originalText(c);
-      return { steps, actor, next };
+      return { steps, actor, next, action: labelPending || splitProposal(c) ? 'group' : actor === 'you' && needsAssertion && !(r && !d) ? 'assertion' : null };
     }
     function funnel() {
       const gpt = D.cases.filter(isGpt), tr = gpt.filter(c => hasScene(c) && !sourceOnly(c)), refs = gpt.filter(c => !hasScene(c) && dehydration(c)?.decision?.level === 'reference'), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c) && dehydration(c)?.decision?.level === 'run');
@@ -229,11 +233,10 @@
       const p = plan(c), ref = c.traceBundle, tone = ref?.complete ? 'ok' : 'warn';
       return `<article class="bc" id="bc-${c.n}" data-case-id="${esc(c.id)}" data-actor="${p.actor}"><div class="bc-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4><div class="bc-meta"><span>${isGpt(c) ? 'GPT' : esc(c.role || c.source?.agentId || '其他模型')}</span><span>来自 ${hl(c.source?.conversationTitle || '未命名房间', ts)}</span><span>${confirmedGroup(c) ? '用户确认：' + splitName[confirmedGroup(c).confirmedSplit] + '组' : (splitName[c.split] || '待分配') + (c.split ? '组（旧记录）' : '')}</span><span class="pill ${hasScene(c) ? 'info' : 'warn'}">${levelLabel(c)}</span></div></div>
         <ol class="stepper" aria-label="从标记到入库的步骤">${p.steps.map(([status, text], i) => `<li class="${status}" title="${esc(labels[i] + '：' + text)}"><span class="bar"></span><span class="lab">${labels[i]}</span><span class="sr-only">${esc(text)}</span></li>`).join('')}</ol>
-        <div class="next-line"><span class="who ${p.actor === 'system' ? 'sys' : p.actor === 'you' ? 'you' : 'none'}">${p.actor === 'system' ? '系统' : p.actor === 'you' ? '你' : p.actor === 'library' ? '已入库' : '到此为止'}</span><span>${esc(p.next)}</span></div>
+        <div class="next-line"><span class="who ${p.actor === 'system' ? 'sys' : p.actor === 'you' ? 'you' : 'none'}">${p.actor === 'system' ? '系统' : p.actor === 'you' ? '你' : p.actor === 'library' ? '已入库' : '到此为止'}</span><span>${esc(p.next)}</span>${p.action === 'assertion' ? `<a class="btn small" href="#case-${c.n}">去「用例」页${pipeline(c).assertion.version ? '查看或另存断言' : '起草断言'}</a>` : p.action === 'group' ? '<button type="button" class="btn small" data-bc-go-group>去分组区确认标签或分组</button>' : ''}</div>
         <div class="chips"><span class="pill ${tone}">${backfill(c)}</span>${hasScene(c) ? `<span class="pill warn">现场：${esc(sceneNote(c))}</span>` : '<span class="pill">无现场</span>'}</div>
         ${ref?.missingReasons?.length ? `<p class="hint">缺失：${ref.missingReasons.map(r => `<span title="${esc(r)}">${esc(reasonLabels[r] || r)}</span>`).join('；')}</p>` : ''}
         ${confirmedGroup(c) ? `<p class="pill ok">用户确认：${esc(splitName[confirmedGroup(c).confirmedSplit])}组 · 已生效；旧记录保留</p>` : ''}
-        ${patternLabel(c) && !patternLabel(c).confirmed || splitProposal(c) ? `<button type="button" class="btn small" data-bc-go-group>去分组区确认标签或分组</button>` : ''}
         ${dehydration(c)?.decision ? `<details class="more"><summary>脱水决定与推荐记录（已冻结）</summary>${dehydrationPanel(c)}</details>` : dehydrationPanel(c)}
         <div class="bc-detail-grid"><section class="bc-card"><h4>九步说明</h4><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul></section>
         <div class="bc-detail-stack"><section class="bc-card"><h4>问题与期望</h4><p>${hl(c.actual, ts)}</p><p class="case-exp"><span class="lbl">期望</span> ${hl(c.expected, ts)}</p></section>${assertionPanel(c)}<section class="bc-card"><h4>复现与回放</h4><p>${esc(replayText(c))}</p><p>${esc(originalText(c))}</p><p>${esc(backfill(c))}</p>${replayPanel(c)}</section></div></div>
@@ -324,8 +327,8 @@
     }, true);
     root.addEventListener('click', e => {
       const el = e.target.closest('[data-bc-pattern],[data-bc-row],[data-bc-pick],[data-bc-filter],[data-bc-go-group],[data-trace-retry],[data-dehydration-confirm],[data-dehydration-recommend],[data-pattern-confirm],[data-initial-split-confirm]'); if (!el || el.disabled) return;
-      if (el.dataset.bcPattern) { currentPattern = el.dataset.bcPattern; groupingPanel(); renderCards(); return; }
-      if (el.dataset.bcRow) { selected = el.dataset.bcRow; renderCards(); return; }
+      if (el.dataset.bcPattern) { const focused = el === document.activeElement; currentPattern = el.dataset.bcPattern; groupingPanel(); renderCards(); if (focused) [...root.querySelectorAll('.pat-seg [data-bc-pattern]')].find(b => b.dataset.bcPattern === currentPattern)?.focus({ preventScroll: true }); return; }
+      if (el.dataset.bcRow) { const focused = el === document.activeElement; selected = el.dataset.bcRow; renderCards(); if (focused) [...root.querySelectorAll('[data-bc-row]')].find(b => b.dataset.bcRow === selected)?.focus({ preventScroll: true }); return; }
       if (el.dataset.bcPick) { pickCase(el.dataset.bcPick); return; }
       if (el.dataset.bcFilter) { stage = el.dataset.bcFilter; renderCards(); return; }
       if (el.hasAttribute('data-bc-go-group')) { currentPattern = patternKey(D.cases.find(c => c.id === selected)); groupingPanel(); $('[data-grouping]').scrollIntoView({ block: 'start' }); return; }
@@ -359,6 +362,14 @@
         onConfirmDecision({ caseId: c.id, traceHash: r.traceHash, recommendationHash: r.hash, kind, cutStep }); return;
       }
       if (el.dataset.traceRetry) { const c = D.cases.find(c => c.id === el.dataset.traceRetry); if (c) void loadTrace(c, true); }
+    });
+    root.addEventListener('keydown', e => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key) || !e.target.matches('button[role="radio"]')) return;
+      const group = e.target.closest('[role="radiogroup"]'); if (!group) return;
+      const buttons = [...group.querySelectorAll('button[role="radio"]')].filter(b => !b.disabled), at = buttons.indexOf(e.target);
+      if (at < 0) return; e.preventDefault();
+      const index = e.key === 'Home' ? 0 : e.key === 'End' ? buttons.length - 1 : (at + (['ArrowLeft', 'ArrowUp'].includes(e.key) ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[index].focus(); buttons[index].click();
     });
     root.addEventListener('input', e => {
       const el = e.target;

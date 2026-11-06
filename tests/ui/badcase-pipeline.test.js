@@ -261,7 +261,7 @@ test('new checkpoint metadata is shown separately from legacy missing fields and
   const card = h.root.querySelector('[data-case-id="c2"]');
   assert.match(card.textContent, /现场元数据已冻结/); assert.doesNotMatch(card.textContent, /待采集能力合入|现场待接入/);
   assert.equal(card.querySelector('.stepper').children[1].className, 'done');
-  assert.equal(card.closest('[data-actor]').dataset.actor, 'system');
+  assert.equal(card.closest('[data-actor]').dataset.actor, 'you', 'missing assertion still needs user drafting/confirmation');
   assert.match(card.querySelector('.next-line').textContent, /有现场，走 trace 级/);
   assert.doesNotMatch(card.querySelector('.next-line').textContent, /请确认能否脱水/);
   assert.match(h.root.querySelector('[data-lane="trace"]').textContent, /不能把封存当作已通过回放检查/);
@@ -358,6 +358,27 @@ test('board gate counts do not claim readiness from grouping alone or treat lega
   assert.equal(h.root.querySelectorAll('[data-bc-row]').length, 2);
   h.panel.focus(19); assert.equal(h.root.querySelector('[data-case-id]').dataset.caseId, 'c2');
   assert.equal(h.root.querySelector('[data-bc-filter="all"]').getAttribute('aria-checked'), 'true');
+});
+test('next actor asks the user to freeze missing/incompatible assertions, not a system that cannot act; labels precede library', t => {
+  const h = setup(t); h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), decision: { kind: 'single', level: 'run', cutStep: 1 }, recommendation: {}, request: { state: { steps: [] } } }];
+  const row = { caseId: 'c1', assertion: { status: 'missing', version: null, questions: [] }, replay: { status: 'supported', cutStep: 1 }, original: { valid: 0, unscored: 1, outputs: 1, invalid: 0, errors: 0, reproduced: false }, inLibrary: false };
+  h.data.pipelineStates = [row]; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'you');
+  assert.equal(h.root.querySelector('.next-line a').getAttribute('href'), '#case-1'); assert.equal(h.calls.length, 0);
+  row.assertion = { status: 'incompatible', version: 1, model: 'fixture', questions: [{ id: 'q1', question: 'test', evidence: 'trace' }] }; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'you');
+  row.assertion.status = 'frozen'; row.inLibrary = true; h.data.casePatterns = [{ caseId: 'c1', confirmed: false, options: [], labelHash: 'a'.repeat(64) }]; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'you'); assert.match(h.root.querySelector('.next-line').textContent, /确认模式标签/);
+  row.inLibrary = false; row.assertion.status = 'missing'; row.original.outputs = row.original.unscored = 0; h.data.casePatterns = []; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'system'); assert.match(h.root.querySelector('.next-line').textContent, /原版.*有效输出|受信操作方/);
+});
+test('selection rerenders retain keyboard focus and mode/filter radios support arrow navigation', t => {
+  const h = setup(t), button = h.root.querySelector('[data-bc-row="c2"]'); button.focus(); button.click();
+  assert.equal(h.window.document.activeElement.dataset.bcRow, 'c2');
+  const first = h.root.querySelector('[data-bc-filter="all"]'); first.focus(); first.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  assert.equal(h.window.document.activeElement.dataset.bcFilter, 'you'); assert.equal(h.window.document.activeElement.getAttribute('aria-checked'), 'true');
+  const pending = h.root.querySelector('[data-bc-pattern="pending"]'); pending.focus(); pending.click();
+  assert.equal(h.window.document.activeElement.dataset.bcPattern, 'pending');
 });
 test('candidate-readiness overview never treats unconfirmed labels as an eligible mode, even with old ready results', t => {
   const h = setup(t), scene = h.data.cases[1]; h.data.cases = [scene, { ...scene, id: 'test-ready', n: 30, split: 'test' }, { ...scene, id: 'control-ready', n: 31 }];
