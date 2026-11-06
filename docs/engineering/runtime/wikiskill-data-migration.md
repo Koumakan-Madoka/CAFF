@@ -14,7 +14,7 @@
 
 ## 测试入口隔离
 
-所有 npm 测试脚本通过 `scripts/test-entry.cjs` 启动，在加载测试、构建和子进程前清除继承的 `CAFF_WIKISKILL_DATA_DIR`；需要测试配置路径的用例只能自行设置临时目录。此保护不等于文件系统沙箱，也不清理其他实例变量。手动直接运行 `node tests/...` 时必须自行隔离；本 Goal 每条测试命令先将该变量设为新临时目录，再经测试入口启动。其他路径（如 agent、SQLite）也须核实为测试专用，不能复用生产默认值。
+所有 npm 测试脚本通过 `scripts/test-entry.cjs` 启动，在加载测试、构建和子进程前清除继承的 `CAFF_WIKISKILL_DATA_DIR`、`CAFF_BADCASE_CAPTURE_DIR`；需要测试配置路径的用例只能自行设置临时目录。此保护不等于文件系统沙箱，也不清理其他所有实例变量。手动直接运行 `node tests/...` 时必须自行隔离；每条测试命令先将 Wiki、capture、agent、SQLite 指向测试专用临时目录，再经测试入口启动，不能复用生产默认值。
 
 ## 入口
 
@@ -43,7 +43,7 @@
 ## 迁移边界与完整性
 
 - 源只读；不写源锁、不“修复”源数据、不清理。应暂停源业务写入；发现进行中的评测、写锁/恢复锁、临时快照或来源变化直接拒绝。只读页面可继续访问。
-- 保留全部 `snapshots/`、`comparisons/`、`executions/`、`batch-executions/`，不受页面最近20份的显示窗口限制。用例、模式、归类/审核、经验版本、候选、基线链、演进裁决都随原始快照逐字节保留。
+- 保留全部 `snapshots/`、`comparisons/`、`executions/`、`batch-executions/`，不受页面最近20份的显示窗口限制。用例、模式、归类/审核、经验版本、候选、基线链、演进裁决都随原始快照逐字节保留。[评分 v2](wikiskill-scoring.md) 的断言版本、逐题模型、冻结/确认 hash 与新旧比较一同保留；迁移不重判旧字面结果、不重新确认断言。裁判 eligibility catalog/相邻冻结配置是操作方另行管理的外部配置，不在这组数据迁移内，不复制凭据；新实例须单独配置并核验，否则没有可选打分模型。
 - 对明确列出的各采集根枚举全部 `cases/`，包括未登记为回放题、作废题及只出现在旧快照的封存。复制其 seal、retention、已有对应 flag/checkpoint，以及 retention 枚举的全部 CAS blob；重新核对 checkpoint/blob hash。保留原来确实缺失的材料，不提升任何 runnable/complete/strict 标记。
 - 不复制采集开关/policy、latest、未封存检查点、暂存/锁/回收目录、认证/模型配置、聊天 SQLite、原工作仓库、运行日志、宿主依赖缓存或 Docker 镜像。操作方 `--output` JSONL/截图等原始验收证据仍单独保管，不把它们冒充页面数据。
 - 先构建相邻临时目录，核对每个副本文件，重新清点源以防漂移，最后原子 rename 发布整个副本。失败不发布目标，留下本命令的 `.migration-*` 诊断目录；不自动删除任何目录。源与目标不可重叠、目标不可位于 sourceWorktree 内，静态 symlink/junction 不支持。

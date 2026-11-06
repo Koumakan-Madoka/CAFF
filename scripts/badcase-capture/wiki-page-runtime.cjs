@@ -45,4 +45,4 @@ async function runPageDehydration(input, { configFile } = {}, dependencies = {})
     return await recommendDehydration({ ...prepared, approvedRequestHash: built.requestHash }, { client, knownKeyValues, retryPolicy: 'manual' });
   } finally { await dispatcher.destroy(); }
 }
-module.exports = { runPageInduction, runPageDehydration };
+module.exports = { runPageInduction, runPageDehydration, readPageRuntimeConfig };

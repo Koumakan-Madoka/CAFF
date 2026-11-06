@@ -121,7 +121,8 @@ test('host inventory guard checks actual request/response plaintext, not only th
   }
 });
 test('auth refusal, exhausted quota and HTTP failure latch closed; no SDK retry or direct fallback', async t => {
-  for (const [status, code] of [[401, 'access_rejected'], [403, 'access_rejected'], [429, 'quota_exhausted'], [503, 'http_failed']]) {
+  for (const [status, code] of [[401, 'access_rejected'], [403, 'access_rejected'], [429, 'quota_exhausted'],
+    ...[301, 307, 400, 404, 408, 500, 501, 505, 529].map(status => [status, 'http_failed'])]) {
     const f = fixture(t), g = fakeTransport(f, { send: () => new Response(JSON.stringify({ error: { code: 'insufficient_quota', message: f.access } }), { status }) });
     const r = await g.transport.fetch(endpoint, request()); assert.equal(r.status, status);
     const text = await r.text(); assert.match(text, new RegExp('evaluation_codex_' + code)); assert.equal(text.includes(f.access), false);
@@ -131,6 +132,24 @@ test('auth refusal, exhausted quota and HTTP failure latch closed; no SDK retry 
   const f = fixture(t), g = fakeTransport(f, { send: () => { throw Error('ECONNREFUSED ' + f.access); } });
   await assert.rejects(g.transport.fetch(endpoint, request()), /evaluation_codex_proxy_failed/);
   assert.equal(g.transport.state().stopped, false); assert.equal(g.calls.length, 1, 'no within-turn retry'); await g.transport.close();
+});
+test('only upstream 502/503/504 permit a new host attempt, preserving status without exposing bodies or retrying within the turn', async t => {
+  for (const status of [502, 503, 504]) {
+    const f = fixture(t); let sends = 0;
+    const g = fakeTransport(f, { send: () => ++sends === 1
+      ? new Response(JSON.stringify({ error: { code: 'PRIVATE-UPSTREAM', message: f.access } }), { status })
+      : new Response(sse()) });
+    const response = await g.transport.fetch(endpoint, request());
+    assert.equal(response.status, status); assert.equal(g.calls.length, 1, 'no within-turn retry');
+    assert.deepEqual(await response.json(), { error: { code: 'evaluation_codex_gateway_unavailable', message: 'evaluation_codex_gateway_unavailable' } });
+    assert.equal(g.transport.state().reason, 'evaluation_codex_gateway_unavailable');
+    assert.equal(g.transport.state().stopped, false);
+    assert.doesNotMatch(JSON.stringify(g.transport.state()), /PRIVATE-UPSTREAM/);
+    assert.equal(JSON.stringify(g.transport.state()).includes(f.access), false);
+    g.transport.beginAttempt(); assert.equal(g.transport.state().reason, null);
+    assert.equal((await g.transport.fetch(endpoint, request())).status, 200); assert.equal(g.calls.length, 2);
+    assert.equal(fs.readFileSync(f.authFile, 'utf8'), f.bytes); await g.transport.close();
+  }
 });
 test('single send/read failures are replaceable and expose only allowlisted type/errno, never exception prose or key', async t => {
   for (const phase of ['send', 'receive']) {
@@ -167,6 +186,21 @@ test('HTTP-200 SSE quota error stops, but ordinary answer text mentioning quota 
   await assert.rejects(h.transport.fetch(endpoint, request()), /evaluation_codex_transport_stopped/); await h.transport.close();
   const normal = fakeTransport(f, { send: () => new Response(sse().replaceAll('synthetic answer', 'usage_limit_reached')) });
   await normal.transport.fetch(endpoint, request()); assert.equal(normal.transport.state().reason, null); await normal.transport.close();
+});
+test('real pi-ai Codex parser does not retry an upstream gateway error inside a turn', async t => {
+  const { OPENAI_CODEX_MODELS } = await import('@earendil-works/pi-ai/providers/openai-codex.models');
+  const { streamSimple } = await import('@earendil-works/pi-ai/api/openai-codex-responses');
+  const { normalizeContext } = await import('@earendil-works/pi-ai/utils/transcript');
+  for (const status of [502, 503, 504]) {
+    const f = fixture(t), g = fakeTransport(f, { send: () => new Response('PRIVATE-UPSTREAM', { status }) });
+    const output = await streamSimple(OPENAI_CODEX_MODELS['gpt-6.1-sol'], normalizeContext({ systemPrompt: 'Synthetic system.',
+      messages: [{ role: 'user', content: 'Synthetic task.', timestamp: 1 }] }),
+    { apiKey: jwt(), fetch: g.transport.fetch, transport: 'sse', reasoning: 'xhigh', maxRetries: 0 }).result();
+    assert.equal(output.stopReason, 'error'); assert.equal(g.calls.length, 1);
+    assert.equal(g.transport.state().reason, 'evaluation_codex_gateway_unavailable');
+    assert.equal(g.transport.state().stopped, false); assert.doesNotMatch(output.errorMessage, /PRIVATE-UPSTREAM/);
+    await g.transport.close();
+  }
 });
 test('caller abort, close and request deadline cancel in-flight sends and destroy the dedicated dispatcher', async t => {
   for (const mode of ['abort', 'close', 'timeout']) {

@@ -23,6 +23,7 @@ import { createWikiRunStore, projectWikiRunAccounting } from './wiki-run-store';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
 import { buildWikiExperienceDraft, mergeWikiLiteralObservations, approvedWikiExperiences, revisedWikiExperience } from './wiki-experience';
+import { createWikiRubric, validateWikiRubric, resolveFrozenWikiRubric, wikiRubricSourceHash, type WikiRubric } from './wiki-rubric';
 
 const fail = (code: string) => Object.assign(Error(code), { code });
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -141,6 +142,15 @@ function appendEvent(state: any, event: any) {
   state.events.push(saved); return saved;
 }
 
+function assertRubricFileEvidence(state: any, rubric: WikiRubric) {
+  // The receipt scorer collects standalone file text only for file-literals-v1.
+  // Apply at write/confirmation time, not while reading immutable old versions.
+  if (rubric.questions.some(q => q.evidence === 'files')
+    && state.replayCases?.find((c: any) => c.sourceCaseId === rubric.caseId)?.rules?.kind !== 'file-literals-v1') {
+    throw fail('wiki_rubric_files_unavailable');
+  }
+}
+
 export function createWikiStore(options: any) {
   options = resolveWikiStorageOptions(options);
   const global = options?.globalRoot !== undefined;
@@ -202,6 +212,19 @@ export function createWikiStore(options: any) {
       for (const field of ['suggestions', 'caseStates', 'inductionRuns', 'events', 'classifications']) {
         if (record[field] === undefined) record[field] = [];
         if (!Array.isArray(record[field])) throw Error();
+      }
+      // Optional on old snapshots: do not inject it into migration checksums.
+      if (record.rubrics !== undefined) {
+        if (!Array.isArray(record.rubrics)) throw Error();
+        const seen = new Set<string>();
+        for (const rubric of record.rubrics as WikiRubric[]) {
+          validateWikiRubric(rubric);
+          const key = rubric.caseId + ':' + rubric.version;
+          // Deletion archives the case, not its frozen scoring history.
+          if (seen.has(key) || !(record.cases.some((c: any) => c.id === rubric.caseId)
+            || (record.deletedCases || []).some((v: any) => v.case?.id === rubric.caseId))) throw Error();
+          seen.add(key);
+        }
       }
       for (const field of ['dehydrations', 'deletedCases', 'regroupProposals', 'regroupConfirmations']) if (record[field] !== undefined && !Array.isArray(record[field])) throw Error();
       return record;
@@ -566,6 +589,48 @@ export function createWikiStore(options: any) {
       const state = read();
       return state.cases.map((c: any) => caseStateView(state, c.id));
     },
+    // A revision is always appended, even when revising a frozen version.
+    saveRubricDraft(input: any, expectedRevision: number) { return this.saveRubricDrafts([input], expectedRevision)[0]; },
+    saveRubricDrafts(inputs: any[], expectedRevision: number) {
+      if (!Array.isArray(inputs) || !inputs.length || inputs.length > 20) throw fail('wiki_rubric_invalid');
+      for (const input of inputs) shape(input, ['caseId', 'model', 'questions', ...(Object.hasOwn(input || {}, 'scoringModel') ? ['scoringModel'] : [])]);
+      if (new Set(inputs.map(input => input.caseId)).size !== inputs.length) throw fail('wiki_rubric_invalid');
+      return change(state => {
+        if (!Number.isSafeInteger(expectedRevision) || state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
+        const rubrics = inputs.map(input => {
+          const source = state.cases.find((c: any) => c.id === input.caseId);
+          if (!source) throw fail('wiki_unknown_case');
+          const previous = (state.rubrics || []).filter((v: WikiRubric) => v.caseId === source.id);
+          const rubric = createWikiRubric({ ...input, actual: source.actual, expected: source.expected,
+            version: Math.max(0, ...previous.map((v: WikiRubric) => v.version)) + 1 });
+          assertRubricFileEvidence(state, rubric);
+          return rubric;
+        });
+        (state.rubrics ??= []).push(...rubrics);
+        for (const rubric of rubrics) appendEvent(state, { type: 'rubric-drafted', caseIds: [rubric.caseId], rubricId: rubric.id, hash: rubric.hash });
+        return { changed: true, value: rubrics };
+      }).value;
+    },
+    confirmRubric(input: any, expectedRevision: number) {
+      shape(input, ['rubricId', 'hash', 'confirmationRecord']);
+      text(input.confirmationRecord, 4096);
+      return change(state => {
+        if (!Number.isSafeInteger(expectedRevision) || state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
+        const rubric = state.rubrics?.find((v: WikiRubric) => v.id === input.rubricId);
+        if (!rubric) throw fail('wiki_rubric_not_found');
+        validateWikiRubric(rubric);
+        if (rubric.status === 'frozen') throw fail('wiki_rubric_frozen');
+        if (rubric.hash !== input.hash) throw fail('wiki_rubric_hash_changed');
+        const source = state.cases.find((c: any) => c.id === rubric.caseId);
+        if (!source || rubric.sourceHash !== wikiRubricSourceHash(source.actual, source.expected)) throw fail('wiki_rubric_source_changed');
+        assertRubricFileEvidence(state, rubric);
+        Object.assign(rubric, { status: 'frozen', confirmedAt: new Date().toISOString(), confirmationRecord: input.confirmationRecord });
+        validateWikiRubric(rubric, true);
+        appendEvent(state, { type: 'rubric-confirmed', caseIds: [source.id], rubricId: rubric.id, hash: rubric.hash });
+        return { changed: true, value: rubric };
+      }).value;
+    },
+    getFrozenRubric(caseId: string, rubricHash: string) { return resolveFrozenWikiRubric(read(), caseId, rubricHash); },
     // Trusted operator registration, not a user report and not a claim that a
     // historical text-only source had a checkpoint. The CLI verifies the sealed
     // closure/rules first; every evaluation must verify it again before launch.
@@ -585,7 +650,8 @@ export function createWikiStore(options: any) {
         id(fixture.sourceSubdirectory);
         const request = validateSealRequest(structuredClone(input.request));
         const rules = structuredClone(input.rules);
-        if (!rules || !['read-only-files-v1', 'file-literals-v1', 'public-reply-literals-v1'].includes(rules.kind)) throw fail('wiki_invalid_input');
+        if (!rules || !['read-only-files-v1', 'file-literals-v1', 'public-reply-literals-v1', 'completion-public-reply-v1'].includes(rules.kind)) throw fail('wiki_invalid_input');
+        if (rules.kind === 'completion-public-reply-v1') shape(rules, ['kind']);
         return { sourceCaseId, category: input.category, task, fixture, request, rules, checkpointHash: input.checkpointHash };
       });
       return change(state => {
@@ -907,7 +973,7 @@ export function createWikiStore(options: any) {
       return change(state => {
         if (input.expectedRevision !== undefined && input.expectedRevision !== state.revision) throw fail('wiki_revision_conflict');
         const result = readWikiComparisonRecord(captureRoot, comparisonId, value => projectStagedResult(value, wikiComparisonTotals));
-        if (result.evaluation?.splitPolicy !== 'd15-frozen-v1') throw fail('wiki_experience_invalid');
+        if (result.kind !== 'wiki-staged-batch-comparison-v1' || result.evaluation?.splitPolicy !== 'd15-frozen-v1') throw fail('wiki_experience_invalid');
         const previous = state.experiences.filter((e: any) => e.comparisonId === comparisonId).at(-1);
         const observations = mergeWikiLiteralObservations(result, previous?.literalObservations || [], input.observations);
         const draft = buildWikiExperienceDraft(state, result, observations, previous);

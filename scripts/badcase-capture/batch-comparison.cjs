@@ -15,12 +15,13 @@ const variants = ['original', 'candidate'];
 function prepareBatch(config, options = {}) {
   if (Number.isSafeInteger(config?.timeoutMs) && config.timeoutMs > 45 * 60 * 1000) throw fail('evaluation_timeout_limit');
   const scopeFields = config?.globalRoot === undefined ? ['captureRoot', 'projectId'] : ['globalRoot'];
-  if (!config || Object.keys(config).some(k => ![...scopeFields, 'sourceWorktree', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases', ...(config.globalRoot !== undefined ? ['evaluation', 'modelProfile', 'keySource', 'codexAuthFile', 'knownKeySources', 'dockerBackend'] : [])].includes(k))
+  if (!config || Object.keys(config).some(k => ![...scopeFields, 'sourceWorktree', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases', ...(config.globalRoot !== undefined ? ['evaluation', 'modelProfile', 'keySource', 'codexAuthFile', 'knownKeySources', 'dockerBackend', 'experiment'] : [])].includes(k))
     || !Array.isArray(config.cases) || !config.cases.length || config.cases.length > 20
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')
     || !Number.isSafeInteger(config.repeats ?? 3) || (config.repeats ?? 3) < 1 || (config.repeats ?? 3) > 20
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 45 * 60 * 1000)) throw fail('evaluation_batch_config_invalid');
+  if (config.experiment !== undefined && config.modelProfile !== require('./direct-model.cjs').CODEX_PROFILE) throw fail('evaluation_batch_config_invalid');
   if (config.globalRoot !== undefined) return config.modelProfile === undefined
     ? prepareGlobalBatch(config, options) : require('./production-batch-plan.cjs').prepareProductionBatch(config, options);
   const state = createWikiStore(config).read(), split = state.replaySplit;

@@ -68,6 +68,40 @@ function setup(t, { confirmed = true, tool = false, missingTarget = false, stage
   const plan = () => prepareBatch(config, options), run = () => runBatch(config, { ...options, expectedPlanHash: plan().summary.planHash });
   return { root, store, sources, split, seals, candidate, config, single, state, options, plan, run, guideline };
 }
+test('v2 alternating kernel never substitutes judge-error replies and still executes every remaining planned slot', async t => {
+  for (const fault of ['backend', 'parse']) for (const scenario of ['transient', 'persistent', 'mixed', 'all-down']) {
+    const persistent = scenario !== 'transient', allDown = scenario === 'all-down', mixed = scenario === 'mixed';
+    const h = setup(t, { publicReply: true }), execute = h.options.execute;
+    if (mixed) h.options.execute = async (...args) => {
+      const task = await execute(...args);
+      if (h.state.executions === 2) { task.receipt.success = false; task.receipt.modelCalls[0].success = false; task.receipt.modelCalls[0].httpStatus = 503; }
+      return task;
+    };
+    const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+    const { bindWikiJudge } = require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2');
+    const rubric = { ...createWikiRubric({ caseId: 'synthetic', version: 1, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: 'Clear', scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' },
+      questions: [{ id: 'a', question: 'The result is clear.', evidence: 'reply' }, { id: 'b', question: 'The impact is clear.', evidence: 'reply' }] }),
+      status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Synthetic approval' };
+    const configuration = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: {}, promptHash: sha('synthetic-not-a-judge-prompt') };
+    const seen = []; let calls = 0;
+    const judge = { configuration, async evaluate(input) {
+      seen.push(structuredClone(input)); const call = ++calls;
+      if (allDown || call === 1 || persistent && call === 2) { if (fault === 'backend') throw Error('PRIVATE-JUDGE-DETAIL'); return 'not-json'; }
+      return { judgments: rubric.questions.map(q => ({ criterionId: q.id, verdict: 'satisfied', reason: 'Synthetic reasoning', evidence: [{ source: 'reply', text: 'done' }] })) };
+    } };
+    const scoring = { kind: 'wiki-score-v2', rubric, binding: bindWikiJudge(configuration, rubric), task: 'Report result.', expected: 'Clear' };
+    const r = await runComparison({ ...h.single, repeats: 10, executionPolicy: 'alternating-valid-v1', scoring }, { ...h.options, judge });
+    assert.equal(h.state.executions, mixed ? 21 : 20); assert.equal(r.runs.length, mixed ? 21 : 20); assert.equal(r.fatal, false); assert.equal(r.completed, !persistent);
+    assert.equal(r.runs[0].status, persistent ? 'error' : 'pass');
+    if (allDown) assert.ok(r.runs.every(row => row.status === 'error'));
+    else assert.ok(r.runs.slice(mixed ? 2 : 1).every(row => row.status === 'pass'));
+    assert.equal(calls, allDown ? 40 : persistent ? 59 : 61); assert.deepEqual(seen[0], seen[1]);
+    assert.deepEqual(r.runs.map(row => row.variant), [...Array.from({ length: 10 }, () => ['original', 'candidate']).flat(), ...(mixed ? ['candidate'] : [])]);
+    assert.equal(r.totals.original.errors, allDown ? 10 : persistent ? 1 : 0); assert.equal(r.totals.candidate.passed, allDown ? 0 : 10);
+    assert.equal(r.totals.original.notRun, allDown ? 10 : persistent ? 1 : 0); assert.equal(r.totals.candidate.notRun, allDown ? 10 : 0);
+    assert.equal(JSON.stringify(r).includes('PRIVATE-JUDGE-DETAIL'), false);
+  }
+});
 test('global batch delegates scene reads through mapped imports while raw roots remain immutable identities', t => {
   const h = setup(t), destinationAgentDir = path.join(h.root, 'migrated');
   // Migrations honor the isolated configured data directory. Do not assume
@@ -204,6 +238,78 @@ test('native proxy failures use shared replacements only with verified launcher 
     if(mode==='recover'){assert.equal(executions,21);assert.equal(r.completed,true);assert.equal(r.fatal,false);assert.equal(r.totals.original.errors,1);assert.equal(r.totals.original.passed,10);assert.equal(r.totals.candidate.passed,10);}
     else{assert.equal(executions,mode==='exhausted'?6:1);assert.equal(r.fatal,true);assert.equal(r.completed,false);}
   }
+});
+test('native upstream 502/503/504 alone share the five environment replacements after launcher and receipt verification', async t => {
+  const gateways = [502, 503, 504];
+  for (const status of [...gateways, 401, 403, 429, 408, 500, 529]) for (const mode of gateways.includes(status)
+    ? ['recover', 'v2', 'five-shared', 'exhausted', 'cleanup', 'input', 'runtime', 'network', 'identity', 'config', 'receipt', 'call-status', 'leak', 'legacy']
+    : ['fatal']) await t.test(status + '/' + mode, async t => {
+    const h = setup(t, { publicReply: true }), dir = path.join(h.root, '.pi-sandbox'); fs.mkdirSync(dir);
+    const { PROFILE, createCodexTransport } = require('../../scripts/badcase-capture/codex-transport.cjs');
+    const access = 'test.' + Buffer.from(JSON.stringify({ exp: 2000000600, 'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic' } })).toString('base64url') + '.test';
+    const authFile = path.join(dir, 'auth.json'); fs.writeFileSync(authFile, JSON.stringify({ 'openai-codex': { type: 'oauth', access, expires: 2000000600000 } }));
+    Object.assign(h.single, { modelProfile: PROFILE.model, keySource: 'caff-codex-access', codexAuthFile: authFile,
+      repeats: mode === 'legacy' ? 3 : 10, ...(mode === 'legacy' ? {} : { executionPolicy: 'alternating-valid-v1' }) });
+    h.options.knownValues = [];
+    h.options.prepareTarget = (...args) => { const p = prepareSealedPromptTarget(...args);
+      p.input.recordedModelConfig = { provider: 'openai-codex', model: 'gpt-6.1-sol', thinking: 'xhigh', fast: false }; return p; };
+    const failureCount = mode === 'exhausted' ? 6 : mode === 'five-shared' ? 5 : 1;
+    let sends = 0, executions = 0, judgeCalls = 0;
+    if (mode === 'v2') {
+      const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+      const { bindWikiJudge } = require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2');
+      const configuration = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: {}, promptHash: sha('synthetic-prompt') };
+      const rubric = { ...createWikiRubric({ caseId: 'synthetic', version: 1, model: configuration.model, actual: 'Unclear', expected: 'Clear',
+        scoringModel: { backend: configuration.backend, model: configuration.model }, questions: [{ id: 'q1', question: 'The result is clear.', evidence: 'reply' }] }),
+        status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Synthetic approval' };
+      h.single.scoring = { kind: 'wiki-score-v2', rubric, binding: bindWikiJudge(configuration, rubric), task: 'Report result.', expected: 'Clear' };
+      h.options.judge = { configuration, async evaluate() { ++judgeCalls; return { judgments: [{ criterionId: 'q1', verdict: 'satisfied', reason: 'Synthetic', evidence: [{ source: 'reply', text: 'done' }] }] }; } };
+    }
+    h.options.createCodexTransport = (config, guards) => createCodexTransport(config, { ...guards, now: () => 2000000000000,
+      createDispatcher: () => ({ destroy: async () => {} }), fetch: async () => {
+        ++sends;
+        if (mode === 'five-shared' && sends === 1) throw Object.assign(new TypeError('PRIVATE ' + access), { cause: { code: 'ECONNRESET' } });
+        return sends <= failureCount ? new Response('PRIVATE ' + access, { status }) : new Response('data: synthetic\n\n');
+      } });
+    h.options.executeCodex = async (_image, files, options) => {
+      ++executions;
+      const manifest = manifestFor(files, { replayWorkspace: true }), input = JSON.parse(files[0].bytes);
+      const launcher = { containerId: mode === 'identity' ? null : 'a'.repeat(64), cleaned: mode !== 'cleanup',
+        isolation: { network: mode === 'network' ? 'bridge' : 'none' },
+        inputHash: mode === 'input' ? '0'.repeat(64) : manifest.inputHash, runtimeHash: mode === 'runtime' ? '0'.repeat(64) : manifest.runtimeHash };
+      let response;
+      try { response = JSON.parse(await options.sendNativeRequest(Buffer.from(JSON.stringify({ headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+        body: Buffer.from(JSON.stringify({ model: 'gpt-6.1-sol', input: [], stream: true, store: false, reasoning: { effort: 'xhigh' } })).toString('base64') })))); }
+      catch { return { ...launcher, failed: true, reason: 'evaluation_codex_proxy_failed' }; }
+      if (mode === 'receipt') return { ...launcher, failed: true, reason: 'worker_failed' };
+      const success = response.status === 200;
+      return { ...launcher, code: 0, receipt: { kind: 'direct-caff-turn-v1', inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash,
+        beforeHash: expectedTreeHash(input), success, recordedModelConfig: input.recordedModelConfig,
+        modelConfig: { api: PROFILE.api, thinking: mode === 'config' ? 'off' : 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' },
+        modelCalls: [{ model: PROFILE.model, success, durationMs: 1, httpStatus: mode === 'call-status' ? 200 : response.status, usage: null }],
+        finalText: mode === 'leak' ? access : 'done', replySource: 'public' } };
+    };
+    const result = await runComparison(h.single, h.options), complete = ['recover', 'v2', 'five-shared'].includes(mode);
+    assert.equal(result.completed, complete); assert.equal(executions, complete ? 20 + failureCount : mode === 'exhausted' ? 6 : 1);
+    assert.equal(sends, executions, 'each attempt makes one request, with no internal retries');
+    assert.equal(result.maxExtraAttemptsPerCase, mode === 'legacy' ? undefined : 5);
+    if (mode !== 'legacy') assert.equal(result.fatal, !complete);
+    assert.ok(result.runs.slice(0, failureCount).every(r => r.status === 'error'));
+    const expectedReason = gateways.includes(status) ? 'gateway_unavailable' : status === 401 || status === 403 ? 'access_rejected' : status === 429 ? 'rate_limited' : 'http_failed';
+    assert.equal(result.runs[mode === 'five-shared' ? 1 : 0].reason, 'evaluation_codex_' + expectedReason);
+    assert.equal(result.runs.some(r => r.status === 'fail'), false, 'gateway errors never become model fails');
+    if (complete) {
+      assert.equal(result.totals.original.passed, 10); assert.equal(result.totals.candidate.passed, 10);
+      assert.equal(result.totals.original.errors + result.totals.candidate.errors, failureCount);
+      assert.equal(result.totals.original.notRun + result.totals.candidate.notRun, 0);
+      assert.deepEqual(result.runs.slice(0, 20).map(r => r.variant), Array.from({ length: 10 }, () => ['original', 'candidate']).flat());
+      assert.equal(result.measurements.tokenUsage.complete, false, 'missing usage is not invented');
+    }
+    if (mode === 'v2') assert.equal(judgeCalls, 60, 'only the twenty completed replies reach the three-vote judge');
+    if (mode === 'exhausted') assert.equal(result.runs.at(-1).stopReason, 'environment_replacements_exhausted');
+    assert.equal(JSON.stringify([result, h.state.events]).includes(access), false);
+    assert.doesNotMatch(JSON.stringify([result, h.state.events]), /PRIVATE/);
+  });
 });
 test('model loop/request ceiling and proven container model timeout count as fail, not retriable environment error', async t=>{
   for(const mode of ['modelLimit','timeout']) {

@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { createWikiStore } from './wiki-store';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
+import { validateWikiExperimentPlan } from './wiki-experiment-plan';
 const fail = (code = 'wiki_execution_invalid') => Object.assign(Error(code), { code });
 function check(v: any): asserts v { if (!v) throw fail(); }
 const same = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
@@ -16,7 +17,8 @@ const count = (v: any) => { check(Number.isSafeInteger(v) && v >= 0); return v; 
 const reason = (v: any) => /^(evaluation|wiki)_[a-z_]{1,100}$/.test(v || '') ? v : 'evaluation_failed';
 const variants = ['original', 'candidate'];
 function projectPlan(v: any) {
-  check(v?.kind === 'wiki-staged-batch-comparison-v1' && v.model === 'openai-codex/gpt-6.1-sol' && v.repeats === 10);
+  const v2 = v?.kind === 'wiki-staged-batch-comparison-v2';
+  check((v2 || v?.kind === 'wiki-staged-batch-comparison-v1') && v.model === 'openai-codex/gpt-6.1-sol' && v.repeats === 10);
   const modelConfig = { api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' };
   check(same(v.modelConfig, modelConfig));
   check(Array.isArray(v.cases) && v.cases.length > 0 && v.cases.length <= 20);
@@ -25,7 +27,10 @@ function projectPlan(v: any) {
     return { sourceCaseId: id(c.sourceCaseId), stage: c.stage, category: c.category, reportOnly: c.reportOnly };
   });
   check(new Set(cases.map((c: any) => c.sourceCaseId)).size === cases.length);
-  return { kind: v.kind, model: v.model, modelConfig, variants: [...variants], repeats: 10, cases };
+  const experimentHash = v2 ? (v.experiment === undefined ? v.experimentHash : validateWikiExperimentPlan(v.experiment).planHash) : undefined;
+  if (v2) check(typeof experimentHash === 'string' && /^[a-f0-9]{64}$/.test(experimentHash) && (v.scoringKind === undefined || v.scoringKind === 'wiki-score-v2'));
+  return { kind: v.kind, model: v.model, modelConfig, variants: [...variants], repeats: 10, cases,
+    ...(v2 ? { scoringKind: 'wiki-score-v2', experimentHash } : {}) };
 }
 const empty = (planned: number) => ({ planned, attempted: 0, passed: 0, failed: 0, errors: 0, notRun: planned });
 function summarize(record: any) {
@@ -150,6 +155,7 @@ export function createWikiBatchExecutionStore(options: any) {
       return update(recordId, r => {
         check(saved.model === r.plan.model && saved.planHash === r.planHash && typeof saved.completed === 'boolean' && saved.gateDecision?.outcome === r.gateOutcome);
         check(r.current === null && r.cases.every((c: any) => c.status !== 'pending'));
+        if (r.plan.scoringKind === 'wiki-score-v2') check(saved.kind === r.plan.kind && saved.experiment?.planHash === r.plan.experimentHash);
         r.comparisonId = id(saved.id); r.status = saved.completed ? 'completed' : 'stopped';
       });
     },

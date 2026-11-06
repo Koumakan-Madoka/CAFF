@@ -26,6 +26,90 @@ function setup(t) {
 }
 const rejects = (promise, code, status = 422) => assert.rejects(promise, e => e.statusCode === status && e.issues?.[0]?.code === code);
 
+test('rubric APIs append versions and freeze exact eligible model/hash without touching older versions', async t => {
+  const h = setup(t); h.seed(); const { configFile, frozen } = require('../helpers/wiki-judge-catalog.cjs')(h.root);
+  h.options.judgeCatalogFile = configFile;
+  const caseId = h.store.read().cases[0].id, questions = [{ id: 'q1', question: '回复给出已验证的结论。', evidence: 'reply' }];
+  const route = { pathname: '/api/wikiskill/rubric' }, confirmRoute = { pathname: '/api/wikiskill/confirm-rubric' };
+  const body = { confirmed: true, expectedRevision: 2, caseId, questions, scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' } };
+  const get = await h.invoke(); assert.equal(get.body.eligibleJudges.length, 1); assert.equal(get.body.eligibleJudges[0].freezeHash, frozen.hash);
+  for (const extra of [{ eligible: true }, { configurationHash: frozen.configurationHash }, { globalRoot: h.root }]) await rejects(h.invoke({ ...body, ...extra }, route), 'wiki_invalid_input');
+  await rejects(h.invoke({ ...body, scoringModel: { backend: 'jev', model: 'jev-latest' } }, route), 'wiki_judge_not_eligible', 409);
+  await rejects(h.invoke({ ...body, expectedRevision: 0 }, route), 'wiki_revision_conflict', 409);
+  const saved = await h.invoke(body, route), rubric = saved.body.rubrics[0]; assert.equal(rubric.status, 'draft'); assert.equal(rubric.scoringModel.backend, 'deepseek');
+  const confirm = { confirmed: true, expectedRevision: 3, rubricId: rubric.id, hash: rubric.hash };
+  await rejects(h.invoke({ ...confirm, hash: 'a'.repeat(64) }, confirmRoute), 'wiki_rubric_hash_changed', 409);
+  const result = await h.invoke(confirm, confirmRoute); assert.equal(result.body.rubrics[0].status, 'frozen');
+  const old = clone(result.body.rubrics[0]);
+  const revised = await h.invoke({ ...body, expectedRevision: 4, questions: [{ ...questions[0], question: '回复先给已验证的结论。' }] }, route);
+  assert.deepEqual(revised.body.rubrics[0], old); assert.equal(revised.body.rubrics[1].version, old.version + 1);
+  assert.equal(revised.body.rubrics[1].status, 'draft'); assert.notEqual(revised.body.rubrics[1].hash, old.hash);
+  assert.deepEqual(h.store.read().versions, get.body.versions);
+  function clone(v) { return JSON.parse(JSON.stringify(v)); }
+});
+test('rubric mutation guards and closed schemas reject before paid draft calls; GET never invokes them', async t => {
+  const h = setup(t); h.seed(); let calls = 0;
+  h.options.runRubricDraft = async ({ store, caseId, expectedRevision, scope }) => {
+    calls++; assert.equal(scope.globalRoot, h.config.globalRoot);
+    store.saveRubricDraft({ caseId, model: 'deepseek/deepseek-v4-flash', questions: [{ id: 'q1', question: '回复提供依据。', evidence: 'reply' }] }, expectedRevision);
+  };
+  const body = { confirmed: true, expectedRevision: 2, caseId: h.store.read().cases[0].id }, route = { pathname: '/api/wikiskill/draft-rubric' };
+  await h.invoke(); assert.equal(calls, 0);
+  for (const extra of [{ tasks: {} }, { model: 'gpt' }, { credentialDir: h.root }, { confirmed: false }, { expectedRevision: 0 }, { caseId: 'missing' }]) await assert.rejects(h.invoke({ ...body, ...extra }, route));
+  for (const override of [{ remoteAddress: '10.1.1.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) await assert.rejects(h.invoke(body, { ...route, ...override }));
+  assert.equal(calls, 0); assert.equal(h.store.read().revision, 2);
+  const out = await h.invoke(body, route); assert.equal(calls, 1); assert.equal(out.body.rubrics[0].status, 'draft'); assert.equal(out.body.rubrics[0].scoringModel, null);
+});
+test('without an operator eligibility catalog manual drafting works but model selection/freeze fail closed', async t => {
+  const h = setup(t); h.seed(); const caseId = h.store.read().cases[0].id;
+  assert.deepEqual((await h.invoke()).body.eligibleJudges, []);
+  const body = { confirmed: true, expectedRevision: 2, caseId, questions: [{ id: 'q1', question: '回复提供依据。', evidence: 'reply' }], scoringModel: null };
+  const out = await h.invoke(body, { pathname: '/api/wikiskill/rubric' }), rubric = out.body.rubrics[0];
+  await rejects(h.invoke({ confirmed: true, expectedRevision: 3, rubricId: rubric.id, hash: rubric.hash }, { pathname: '/api/wikiskill/confirm-rubric' }), 'wiki_judge_not_eligible', 409);
+  assert.equal(h.store.read().revision, 3);
+});
+
+test('manual and AI draft APIs return an explicit 422 for unsupported file evidence without a mutation', async t => {
+  const h = setup(t); h.seed(); const before = h.store.read(), caseId = before.cases[0].id;
+  const questions = [{ id: 'q1', question: '文件说明核验结果。', evidence: 'files' }];
+  await rejects(h.invoke({ confirmed: true, expectedRevision: before.revision, caseId, questions, scoringModel: null },
+    { pathname: '/api/wikiskill/rubric' }), 'wiki_rubric_files_unavailable');
+  h.options.runRubricDraft = async ({ store, caseId, expectedRevision }) => store.saveRubricDraft({ caseId, questions, model: 'deepseek/deepseek-v4-flash' }, expectedRevision);
+  await rejects(h.invoke({ confirmed: true, expectedRevision: before.revision, caseId }, { pathname: '/api/wikiskill/draft-rubric' }), 'wiki_rubric_files_unavailable');
+  assert.deepEqual(h.store.read(), before);
+});
+test('freeze API rechecks file evidence on a pre-fix draft and preserves its snapshot', async t => {
+  const h = setup(t); h.seed(); h.options.judgeCatalogFile = require('../helpers/wiki-judge-catalog.cjs')(h.root).configFile;
+  const before = h.store.read(), source = before.cases[0];
+  const rubric = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').createWikiRubric({ caseId: source.id, version: 1,
+    model: 'deepseek/deepseek-v4-flash', scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' }, actual: source.actual, expected: source.expected,
+    questions: [{ id: 'q1', question: '文件说明核验结果。', evidence: 'files' }] });
+  const file = path.join(h.config.globalRoot, 'snapshots', String(before.revision).padStart(12, '0') + '.json');
+  before.rubrics = [rubric];
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: crypto.createHash('sha256').update(JSON.stringify(before)).digest('hex'), record: before }));
+  const bytes = fs.readFileSync(file);
+  await rejects(h.invoke({ confirmed: true, expectedRevision: before.revision, rubricId: rubric.id, hash: rubric.hash },
+    { pathname: '/api/wikiskill/confirm-rubric' }), 'wiki_rubric_files_unavailable');
+  assert.deepEqual(h.store.read(), before); assert.deepEqual(fs.readFileSync(file), bytes);
+});
+test('archived cases retain frozen rubrics and remain readable without changing old snapshots', async t => {
+  const h = setup(t); h.seed();
+  const deletedId = 'text-6d9cbd07278d02cc72a12b5a358aad639d802a632679a43de0752e5eff7a3a92';
+  const state = h.store.read(), previousId = state.cases[0].id;
+  const seeded = JSON.parse(JSON.stringify(state).split(previousId).join(deletedId));
+  const snapshot = path.join(h.config.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+  fs.writeFileSync(snapshot, JSON.stringify({ schemaVersion: 1, checksum: crypto.createHash('sha256').update(JSON.stringify(seeded)).digest('hex'), record: seeded }));
+  const rubric = h.store.saveRubricDraft({ caseId: deletedId, model: 'deepseek/deepseek-v4-flash', scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' },
+    questions: [{ id: 'q1', question: '回复提供核验依据。', evidence: 'reply' }] }, state.revision);
+  h.store.confirmRubric({ rubricId: rubric.id, hash: rubric.hash, confirmationRecord: 'synthetic explicit confirmation' }, h.store.read().revision);
+  const before = h.store.read(), oldBytes = fs.readFileSync(snapshot);
+  h.store.deleteCases({ caseIds: [deletedId], reason: 'user-approved missing historical prompt', expectedRevision: before.revision }, { source: 'user-via-planner', reference: 'synthetic-deletion' });
+  const after = (await h.invoke()).body;
+  assert.equal(after.cases.some(c => c.id === deletedId), false);
+  assert.deepEqual(after.deletedCases[0].case, before.cases[0]);
+  assert.deepEqual(after.rubrics, before.rubrics);
+  assert.deepEqual(fs.readFileSync(snapshot), oldBytes);
+});
 test('case trace GET reads Wiki-owned frozen evidence without source rooms and cannot mutate or select paths', async t => {
   const h = setup(t); h.seed();
   const item = h.store.read().cases[0];

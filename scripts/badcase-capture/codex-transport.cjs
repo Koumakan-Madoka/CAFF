@@ -169,12 +169,16 @@ function createCodexTransport(config, dependencies = {}) {
       // Inspect error bodies solely in memory for a coarse environment reason.
       // Never return raw non-200 errors, response headers, auth or account data.
       if (response.status !== 200) {
-        let code = response.status === 401 || response.status === 403 ? 'access_rejected' : 'http_failed';
+        let code = response.status === 401 || response.status === 403 ? 'access_rejected'
+          : [502, 503, 504].includes(response.status) ? 'gateway_unavailable' : 'http_failed';
         if (response.status === 429) {
           let error; try { error = JSON.parse(bytes.toString('utf8')).error; } catch {}
           code = quotaCode(error?.code || error?.type) ? 'quota_exhausted' : 'rate_limited';
         }
-        stop(code);
+        // No in-turn retry. Only the host's bounded alternating policy may
+        // replace a gateway-failed turn after verified launcher cleanup.
+        if (code === 'gateway_unavailable') reason = 'evaluation_codex_' + code;
+        else stop(code);
         return new Response(JSON.stringify({ error: { code: reason, message: reason } }), { status: response.status, headers: { 'content-type': 'application/json' } });
       }
       if (hasAccess(bytes, access.access)) throw fail('output_contains_access');

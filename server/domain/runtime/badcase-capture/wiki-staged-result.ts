@@ -2,6 +2,7 @@
 // arbitrary worker fields or caller-provided aggregate/decision conclusions.
 import { decideWikiGate } from './wiki-gate-policy';
 import { projectProductionResult } from './wiki-production-result';
+import { projectProductionResultV2 } from './wiki-production-result-v2';
 const fail=()=>Object.assign(Error('wiki_comparison_invalid'),{code:'wiki_comparison_invalid'});
 function check(c:any):asserts c {if(!c) throw fail();}
 const id=(s:any)=>{check(typeof s==='string' && /^[A-Za-z0-9_-]{1,128}$/.test(s));return s;};
@@ -10,6 +11,7 @@ const count=(n:any)=>{check(Number.isSafeInteger(n) && n>=0);return n;};
 const code=(s:any)=>{check(typeof s==='string' && /^[a-z_]{1,100}$/.test(s));return s;};
 const ids=(a:any)=>{check(Array.isArray(a) && a.length<=1000);const b=a.map(id);check(new Set(b).size===b.length);return b;};
 export function projectStagedResult(input:any,totals:(cases:any[],repeats:number)=>any):any {
+  if (input?.kind === 'wiki-staged-batch-comparison-v2') return projectProductionResultV2(input, totals);
   if (input?.evaluation?.splitPolicy === 'd15-frozen-v1') return projectProductionResult(input, totals);
   check(input.scope==='global' && input.model==='deepseek/deepseek-v4-flash' && input.repeats===10);
   check(typeof input.completed==='boolean' && typeof input.callsUnavailable==='boolean');

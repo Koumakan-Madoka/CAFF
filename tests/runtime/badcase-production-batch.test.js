@@ -7,7 +7,7 @@ const {getGlobalPromptTarget}=require('../../build/lib/agent-prompt-targets');
 const {prepareBatch,runBatch}=require('../../scripts/badcase-capture/batch-comparison.cjs');
 const PROFILE='openai-codex/gpt-6.1-sol',digest='a'.repeat(64),controlId='text-7364c69567dcfaa751e631b7dc90ac48f03c9ce3e5d12a0588f7ea93c94338ac';
 const sha=v=>crypto.createHash('sha256').update(v).digest('hex');
-function fixture(t){
+function fixture(t,{controlFiles=false,bareReplies=false}={}){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'production-batch-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const scope={globalRoot:path.join(root,'global'),sourceWorktree:path.join(root,'source')},store=createWikiStore(scope);
  const train=store.addTextCases(Array.from({length:4},(_,n)=>({source:{origin:'http://127.0.0.1:3100',projectId:'old',conversationId:'room',messageId:'m'+n,agentId:'role-family-gpt'},role:'GPT',actual:'jargon',expected:'unique expected '+n,message:'',traceExcerpt:'',traceState:'missing',messageTruncated:false,traceTruncated:false}))).cases;
@@ -19,7 +19,7 @@ function fixture(t){
  // Trusted historical sample fixture, with the exact grandfathered display ID.
  const s=store.read();s.revision++;s.cases.push({id:controlId,kind:'text-only',role:'GPT',split:'train',source:{agentId:'role-family-gpt'},createdAt:'2026-01-01T00:00:00.000Z'});fs.writeFileSync(path.join(scope.globalRoot,'snapshots',String(s.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(s)),record:s}));
  const rules={kind:'public-reply-literals-v1',leadChars:120,conclusionMarkers:['结论'],forbiddenTerms:[],forbiddenPatterns:['priority-code','adr-number','detached-head','commit-hash','acceptance-decision-code']};
- for(const [i,c]of [...marks,store.read().cases.find(c=>c.id===controlId)].entries())store.addReplayCase({sourceCaseId:c.id,category:i<4?'reproduction':'control',task:'Synthetic task',fixture:{commit:'b'.repeat(40),sourceCommit:'b'.repeat(40),sourceSubdirectory:'sample',filesHash:digest},request:{captureRoot:path.join(root,'capture-'+i),association:{projectId:'p1',conversationId:i<4?'room-'+i:'sample-room',messageId:i<4?'msg-'+i:'sample-msg',checkpointId:'cp-'+i,turnId:'turn-'+i,agentId:i<2||i===4?'role-family-gpt':'role-family-deepseek',taskId:'task-'+i,runId:1},flagId:'flag-'+sha('p1\0'+(i<4?'msg-'+i:'sample-msg'))},rules,checkpointHash:digest});
+ for(const [i,c]of [...marks,store.read().cases.find(c=>c.id===controlId)].entries())store.addReplayCase({sourceCaseId:c.id,category:i<4?'reproduction':'control',task:'Synthetic task',fixture:{commit:'b'.repeat(40),sourceCommit:'b'.repeat(40),sourceSubdirectory:'sample',filesHash:digest},request:{captureRoot:path.join(root,'capture-'+i),association:{projectId:'p1',conversationId:i<4?'room-'+i:'sample-room',messageId:i<4?'msg-'+i:'sample-msg',checkpointId:'cp-'+i,turnId:'turn-'+i,agentId:i<2||i===4?'role-family-gpt':'role-family-deepseek',taskId:'task-'+i,runId:1},flagId:'flag-'+sha('p1\0'+(i<4?'msg-'+i:'sample-msg'))},rules:controlFiles&&i===4?{kind:'file-literals-v1',files:[{path:'REPORT.md',contains:['DONE'],notContains:['TODO']}]}:bareReplies?{kind:'completion-public-reply-v1'}:rules,checkpointHash:digest});
  const config={...scope,repoRoot:root,dependencyRoot:root,image:{imageId:'sha256:'+'1'.repeat(64)},candidateId:candidate.id,modelProfile:PROFILE,keySource:'caff-codex-access',codexAuthFile:path.join(root,'.pi-sandbox','auth.json'),knownKeySources:{sandboxRoot:path.join(root,'.pi-sandbox'),jevSource:'TYPESAFE_API_KEY'},repeats:10,evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1'},cases:[...marks.map(c=>({sourceCaseId:c.id,category:'reproduction',repository:{sourceRoot:root,head:'b'.repeat(40)},dependencies:{kind:'npm-ci-linux-v1',cacheRoot:path.join(root,'cache')}})),{sourceCaseId:controlId,category:'control'}]};
  const calls=[];const options={collectProductionCandidateFiles:()=>[],prepareProductionComparison:c=>{calls.push(c);return {supported:true,summary:{checkpointHash:digest,checkpointId:c.request.association.checkpointId,rulesHash:sha(JSON.stringify(c.rules)),model:PROFILE,modelConfig:{api:'openai-codex-responses',thinking:'xhigh',fast:false,transport:'sse',credentialDelivery:'host-only-mailbox'}}};}};
  const confirm=c=>store.assignCase({caseId:c.id,entryId:'entry-1',expectedRevision:store.read().revision});
@@ -272,6 +272,192 @@ test('only reviewed experience becomes candidate input; revisions preserve appro
  const tampered=h.store.read();tampered.candidates.find(c=>c.id===candidate.id).experienceInputs[0].methods+='tamper';assert.throws(()=>resolveGlobalWikiCandidate(tampered,candidate.id,candidate.targetId,candidate.baseHash,[]),/wiki_candidate_target_mismatch/);
  h.store.addTextCases([{source:{origin:'http://127.0.0.1:3100',projectId:'old',conversationId:'feedback-room',messageId:'train-after-approval',agentId:'role-family-gpt'},role:'GPT',actual:'new symptom',expected:'new expectation',message:'TRAIN-ONLY-AFTER-APPROVAL',traceExcerpt:'',traceState:'missing',messageTruncated:false,traceTruncated:false}]);const induction=require('../../scripts/badcase-capture/wiki-induction.cjs').prepareWikiInduction(h.store).files[0].bytes.toString();assert.doesNotMatch(induction,/positiveExamples|有效：先说明结果/);
  assert.throws(()=>h.store.reviewExperience({experienceId:next.id,expectedRevision:h.store.read().revision,decision:'approved'}),/wiki_experience_conflict/);
+});
+function scoringV2Fixture(t,{bareReplies=false,perCaseModels=false}={}) {
+ const h=fixture(t,{controlFiles:true,bareReplies});for(const c of h.marks)h.confirm(c);
+ // This grandfathered synthetic control had no annotation; populate only this
+ // test snapshot, not real wiki records or any historical production reply.
+ const state=h.store.read(),control=state.cases.find(c=>c.id===controlId);control.actual='Unclear';control.expected='Clear';state.revision++;
+ fs.writeFileSync(path.join(h.config.globalRoot,'snapshots',String(state.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(state)),record:state}));
+ const suite=h.plan().prepared.filter(c=>!c.reportOnly),questions=[{id:'q1',question:'The result is clear.',evidence:'reply'},{id:'q2',question:'The next step is clear.',evidence:'reply'}];
+ const modelFor=id=>perCaseModels&&id===controlId?{backend:'jev',model:'jev-latest'}:{backend:'deepseek',model:'deepseek/deepseek-v4-flash'};
+ const configuration=id=>({...modelFor(id),settings:{},promptHash:require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash('synthetic-descriptor-not-a-judge-prompt-'+modelFor(id).backend)});
+ for(const row of suite){const rubric=h.store.saveRubricDraft({caseId:row.sourceCaseId,model:'deepseek/deepseek-v4-flash',scoringModel:modelFor(row.sourceCaseId),questions},h.store.read().revision);h.store.confirmRubric({rubricId:rubric.id,hash:rubric.hash,confirmationRecord:'Synthetic user approval'},h.store.read().revision);h.config.cases.find(c=>c.sourceCaseId===row.sourceCaseId).rubricHash=rubric.hash;}
+ const definition={kind:perCaseModels?'wiki-experiment-v2':'wiki-experiment-v1',variants:[{id:'original',promptHash:h.candidate.baseHash},{id:'candidate',promptHash:h.candidate.candidateHash}],
+  runner:{model:PROFILE,settings:{api:'openai-codex-responses',thinking:'xhigh',fast:false,transport:'sse',credentialDelivery:'host-only-mailbox'}},repeats:10,executionPolicy:'alternating-valid-v1',
+  decision:{kind:'wikiskill-gate-v1',alpha:.05,noHarmFraction:.05,minimumAllowedLoss:1,maxExtraAttemptsPerCase:5},
+  ...(!perCaseModels?{judge:configuration(suite[0].sourceCaseId)}:{}),
+  cases:suite.map(c=>({caseId:c.sourceCaseId,stage:c.stage,category:c.category,targetReproduction:c.targetReproduction,...(perCaseModels?{judge:configuration(c.sourceCaseId)}:{})}))};
+ const catalogRoot=path.join(h.config.repoRoot,'judges');fs.mkdirSync(catalogRoot);
+ const catalog=require('../helpers/wiki-judge-catalog.cjs')(catalogRoot,[suite[0].sourceCaseId,...(perCaseModels?[controlId]:[])].map(id=>({configuration:configuration(id),prompt:'synthetic-descriptor-not-a-judge-prompt-'+modelFor(id).backend})));
+ const previous=process.env.CAFF_WIKISKILL_JUDGES_CONFIG;process.env.CAFF_WIKISKILL_JUDGES_CONFIG=catalog.configFile;
+ t.after(()=>{if(previous===undefined)delete process.env.CAFF_WIKISKILL_JUDGES_CONFIG;else process.env.CAFF_WIKISKILL_JUDGES_CONFIG=previous;});
+ h.config.experiment={definition};h.options.prepareProductionTask=()=> 'ACTUAL-TRIGGERING-USER-TASK';
+ const prepare=h.options.prepareProductionComparison;h.options.prepareProductionComparison=c=>{const p=prepare(c);p.summary.scoring=require('../../scripts/badcase-capture/wiki-receipt-scoring.cjs').wikiScoringSummary(c.scoring);return p;};
+ const adapter=c=>({configuration:structuredClone(c),evaluate:async()=>{throw Error('No real judge call in batch fakes');}});
+ const judge=adapter(configuration(suite[0].sourceCaseId)),judges=Object.fromEntries(suite.map(c=>[c.sourceCaseId,adapter(configuration(c.sourceCaseId))]));
+ return {...h,judge,judges,definition,catalog,pin:()=>{h.config.experiment.plan=h.plan().summary.experiment;return h.plan();}};
+}
+test('v2 batch binds independent experiment and frozen rubrics before execution; original tasks are not synthetic replay labels',t=>{
+ const h=scoringV2Fixture(t),before=h.store.read(),p=h.pin();
+ assert.equal(p.summary.kind,'wiki-staged-batch-comparison-v2');assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v1');assert.deepEqual(h.store.read(),before);
+ assert.equal(p.summary.disclosures.includes('literal_rules_not_semantic_judgment'),false);assert.ok(p.summary.disclosures.includes('literal_metrics_reference_only'));
+ for(const row of p.prepared.filter(c=>c.supported)){assert.equal(row.comparisonConfig.scoring.task,'ACTUAL-TRIGGERING-USER-TASK');assert.equal(row.comparisonConfig.scoring.rubric.hash,row.comparison.scoring.rubricHash);assert.equal(row.comparisonConfig.scoring.expected,h.store.read().cases.find(c=>c.id===row.sourceCaseId).expected);}
+ const control=p.prepared.find(c=>c.sourceCaseId===controlId);assert.equal(control.comparisonConfig.rules.kind,'file-literals-v1');assert.equal(p.summary.experiment.cases.find(c=>c.caseId===controlId).hardAssertionsHash,require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(control.comparisonConfig.rules));
+ assert.equal(JSON.stringify(p.summary).includes('ACTUAL-TRIGGERING-USER-TASK'),false);assert.equal(JSON.stringify(p.summary).includes('The result is clear.'),false);
+ for(const mutate of [x=>x.definition.runner.settings.thinking='low',x=>x.definition.variants[1].promptHash='f'.repeat(64),x=>x.definition.cases[0].stage=x.definition.cases[0].stage==='test'?'gate':'test',x=>x.config.cases[0].topicExemption={},x=>x.config.cases[0].rulesRevision='snapshot-head-exemption-v1']){const x=scoringV2Fixture(t);mutate(x);assert.throws(x.plan);}
+});
+test('formal planning refuses uncalibrated settings/prompt even when adapters and a self-pinned plan match',async t=>{
+ for(const perCaseModels of [false,true])for(const field of ['settings','promptHash']){
+  const h=scoringV2Fixture(t,{perCaseModels}),p=h.pin();h.calls.length=0;
+  const selected=perCaseModels?h.definition.cases.find(c=>c.caseId===controlId).judge:h.definition.judge;
+  if(field==='settings')selected.settings.temperature=1;else selected.promptHash=sha('uncalibrated prompt');
+  const changed=require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2').bindWikiJudge(selected,h.store.read().rubrics.find(r=>r.caseId===(perCaseModels?controlId:h.definition.cases[0].caseId)));
+  // A caller can rehash its own plan; this must not replace calibration authority.
+  const plan=structuredClone(p.summary.experiment);
+  for(const c of plan.cases)if(!perCaseModels||c.caseId===controlId){c.judge={...changed,rubricHash:c.rubricHash};h.judges[c.caseId].configuration=structuredClone(selected);}
+  const {planHash,...payload}=plan;plan.planHash=require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(payload);h.config.experiment.plan=plan;
+  if(!perCaseModels)h.judge.configuration=structuredClone(selected);
+  assert.throws(h.plan,{code:'wiki_judge_not_eligible'});assert.equal(h.calls.length,0);
+  const events=[];let workers=0,auth=0;
+  await assert.rejects(runBatch(h.config,{...h.options,confirmed:true,expectedPlanHash:p.summary.planHash,judge:h.judge,judges:h.judges,onEvent:e=>events.push(e),readKey:()=>{auth++;},runProductionComparison:async()=>{workers++;}}),{code:'wiki_judge_not_eligible'});
+  assert.equal(workers,0);assert.equal(auth,0);assert.equal(events.length,0);
+ }
+});
+test('formal planning rejects missing/unreadable catalogs and rechecks eligibility on execution',async t=>{
+ for(const mode of ['missing','unreadable','invalid']){
+  const h=scoringV2Fixture(t),p=h.pin();h.calls.length=0;
+  if(mode==='missing')delete process.env.CAFF_WIKISKILL_JUDGES_CONFIG;
+  else if(mode==='unreadable')process.env.CAFF_WIKISKILL_JUDGES_CONFIG=path.join(h.config.repoRoot,'absent.json');
+  else{h.catalog.frozen.eligibility.passed=false;h.catalog.save();}
+  const code=mode==='missing'?'wiki_judge_not_eligible':'wiki_judge_catalog_invalid';
+  assert.throws(h.plan,{code});assert.equal(h.calls.length,0);
+  const f=v2Execution({...h,plan:()=>p});await assert.rejects(f.run(),{code});assert.equal(f.calls.length,0);assert.equal(f.events.length,0);
+ }
+});
+test('per-case models route to the frozen adapter for both variants, publish mixed judges and print each configuration',async t=>{
+ const h=scoringV2Fixture(t,{perCaseModels:true});const p=h.pin();assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v2');
+ const f=v2Execution(h),r=await f.run();assert.equal(r.gateDecision.outcome,'accepted');assert.equal(f.calls.length,3);
+ for(const c of r.cases.filter(c=>!c.reportOnly)){const expected=c.sourceCaseId===controlId?'jev':'deepseek';assert.ok(c.runs.every(run=>run.assessment.binding.backend===expected));assert.equal(new Set(c.runs.map(run=>JSON.stringify(run.assessment.binding))).size,1);}
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);assert.deepEqual(saved.experiment,r.experiment);
+ const output=require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(saved);assert.match(output,/jev-latest/);assert.match(output,/deepseek-v4-flash/);
+});
+test('per-case missing or wrong adapter refuses before any event or paid replay, never falls back to a global judge',async t=>{
+ for(const mode of ['missing','wrong','hash']){const h=scoringV2Fixture(t,{perCaseModels:true});h.pin();const f=v2Execution(h);
+  if(mode==='missing')delete f.options.judges[controlId];else if(mode==='wrong')f.options.judges[controlId]=h.judge;else f.options.judges[controlId].configuration.promptHash='f'.repeat(64);
+  await assert.rejects(f.run(),/wiki_(judge_adapter_required|judge_binding_changed)/);assert.equal(f.calls.length,0);assert.equal(f.events.length,0);}
+});
+test('v2 registers and plans new reply-only cases without inventing keyword rules or exemptions',t=>{
+ const h=scoringV2Fixture(t,{bareReplies:true}),p=h.pin();
+ const row=p.prepared.find(c=>c.sourceCaseId===h.marks[0].id);assert.deepEqual(row.comparisonConfig.rules,{kind:'completion-public-reply-v1'});assert.equal(row.comparisonConfig.scoring.rubric.questions.length,2);
+});
+test('v2 batch requires pinned experiment and matching judge before any paid execution or events',async t=>{
+ for(const mode of ['unpinned','missing','changed']){const h=scoringV2Fixture(t);if(mode!=='unpinned')h.pin();const f=fakeExecution(h);if(mode!=='missing')f.options.judge=h.judge;if(mode==='changed')h.judge.configuration.promptHash='f'.repeat(64);
+  await assert.rejects(f.run(),/wiki_(experiment_confirmation_required|judge_adapter_required|judge_binding_changed)/);assert.equal(f.calls.length,0);assert.equal(f.events.length,0);assert.equal(f.legacyReads(),0);}
+});
+test('v2 staged execution keeps gate formula and test boundary, and CLI distinguishes AI scoring from literal reference metrics',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=fakeExecution(h);f.options.judge=h.judge;const r=await f.run();assert.equal(r.gateDecision.outcome,'accepted');assert.equal(f.calls.length,3);
+ assert.ok(f.calls.every(c=>c.scoring.kind==='wiki-score-v2'));const at=f.events.findIndex(e=>e.event==='gate_decision');assert.ok(f.events.findIndex(e=>e.event==='run'&&e.stage==='test')>at);
+ const output=require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(r);assert.match(output,/硬断言.*AI/);assert.match(output,/deepseek-v4-flash/);assert.doesNotMatch(output,/字面规则不是语义判断|主题编号豁免/);
+});
+test('v2 frozen experiment rejects drift in task, rubric, scene and judge configuration before executing a reply',async t=>{
+ for(const change of ['task','rubric','scene','judge']){const h=scoringV2Fixture(t);h.pin();
+  if(change==='task')h.options.prepareProductionTask=()=> 'CHANGED TASK';
+  if(change==='rubric'){const d=h.store.saveRubricDraft({caseId:h.marks[0].id,model:'deepseek/deepseek-v4-flash',scoringModel:{backend:'deepseek',model:'deepseek/deepseek-v4-flash'},questions:[{id:'a',question:'New assertion.',evidence:'reply'},{id:'b',question:'Another assertion.',evidence:'reply'}]},h.store.read().revision);h.store.confirmRubric({rubricId:d.id,hash:d.hash,confirmationRecord:'Synthetic approval'},h.store.read().revision);h.config.cases[0].rubricHash=d.hash;}
+  if(change==='scene'){const prepare=h.options.prepareProductionComparison;h.options.prepareProductionComparison=c=>{const p=prepare(c);p.summary.checkpointHash='f'.repeat(64);return p;};}
+  if(change==='judge')h.definition.judge.promptHash='f'.repeat(64);
+  assert.throws(h.plan,/wiki_experiment_changed|evaluation_batch_input_changed|wiki_judge_not_eligible/);assert.equal(h.store.read().candidates.length,1);
+ }
+});
+function v2Execution(h,settings={}){
+ const f=fakeExecution(h,settings);f.options.judge=h.judge;f.options.judges=h.judges;
+ f.options.runProductionComparison=async(config,options)=>{
+  f.calls.push(config);options.onEvent({event:'plan',runtimeHash:digest});const runs=[];
+  for(let i=1;i<=10;i++)for(const variant of ['original','candidate']){
+   options.onEvent({event:'run_start',variant,iteration:i});options.onEvent({event:'model_call',variant,iteration:i,model:PROFILE});
+   const failed=settings.improve!==false&&config.request.association.checkpointId==='cp-0'&&variant==='original';
+   const assessment=await require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2').scoreWikiRun({rubric:config.scoring.rubric,binding:config.scoring.binding,
+    run:{task:config.scoring.task,expected:config.scoring.expected,completed:true,replySource:'public',publicReply:'RESULT. PRIVATE-WORKER-REPLY-NOT-FOR-PAGE'},hardAssertions:config.rules.kind==='file-literals-v1'?[{id:'files',status:'pass'}]:[],referenceMetrics:{noForbiddenTerms:false}},
+    {configuration:options.judge.configuration,evaluate:async()=>{
+     if(settings.judgeAllDown||settings.judgeFault&&config.request.association.checkpointId==='cp-0'&&variant==='original'&&i===1){if(settings.judgeFault==='backend')throw Error('PRIVATE-JUDGE-DETAIL');return 'not-json';}
+     return {judgments:config.scoring.rubric.questions.map((q,n)=>({criterionId:q.id,verdict:settings.insufficient||failed&&n===0?'not-satisfied':'satisfied',reason:'Synthetic reasoning',evidence:settings.insufficient?[]:[{source:'reply',text:'RESULT.'}]}))};
+    }});
+   const row={variant,iteration:i,status:assessment.status,...(assessment.reason?{reason:assessment.reason}:{}),assessment,replySource:'public',cleaned:true,finalText:'RESULT. PRIVATE-WORKER-REPLY-NOT-FOR-PAGE'};
+   runs.push(row);options.onEvent({event:'run',...row});
+   if(assessment.status==='error'&&!['judge_backend_failed','judge_output_invalid'].includes(assessment.reason))return {completed:false,fatal:true,runs,modelCallsKnown:runs.length,callsUnavailable:false};
+  }
+  return {completed:runs.every(r=>r.status!=='error'),fatal:false,runs,modelCallsKnown:20,callsUnavailable:false};
+ };
+ return f;
+}
+test('v2 immutable publication retains criterion votes/citations/reference metrics, not full replies, and rejects forged judgments',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const r=await v2Execution(h).run(),store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);
+ const saved=store.save(r);assert.equal(saved.kind,'wiki-staged-batch-comparison-v2');assert.deepEqual(store.read()[0],saved);assert.deepEqual(store.save(saved),saved);
+ const c=saved.cases.find(c=>c.sourceCaseId===h.marks[0].id);assert.equal(c.rubric.status,'frozen');assert.equal(c.runs[0].assessment.votes.length,3);assert.equal(c.runs[0].assessment.judgments[0].verdict,'not-satisfied');assert.equal(c.runs[0].assessment.referenceMetrics.noForbiddenTerms,false);
+ const control=saved.cases.find(c=>c.sourceCaseId===controlId);assert.deepEqual(control.hardAssertionIds,['files']);assert.equal(control.runs[0].assessment.hardAssertions.find(a=>a.id==='files').status,'pass');
+ assert.equal(c.runs[0].assessment.votes[0][0].evidence[0].text,'RESULT.');assert.equal(JSON.stringify(saved).includes('PRIVATE-WORKER'),false);assert.equal(h.store.read().experiences.length,0,'v2 must not auto-draft a misleading literal-rule experience');
+ for(const change of [x=>x.cases.find(c=>!c.reportOnly).runs[0].status='pass',x=>x.cases.find(c=>!c.reportOnly).runs[0].assessment.judgments[0].verdict='satisfied',x=>x.experiment.planHash='f'.repeat(64),x=>x.cases.find(c=>!c.reportOnly).comparison.scoring.binding.promptHash='f'.repeat(64),x=>x.cases.find(c=>!c.reportOnly).rubric.questions[0].question='Forged question?',x=>x.cases.find(c=>c.sourceCaseId===controlId).runs[0].assessment.hardAssertions=x.cases.find(c=>c.sourceCaseId===controlId).runs[0].assessment.hardAssertions.filter(a=>a.id!=='files')]){const x=structuredClone(r);change(x);assert.throws(()=>store.save(x));}
+});
+test('v2 insufficient evidence is an immutable fail, not an error or replacement answer',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{insufficient:true}),r=await f.run();assert.equal(f.calls.length,2);assert.equal(r.completed,true);assert.equal(r.gateDecision.outcome,'rejected');
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);
+ assert.equal(saved.byStage.gate.original.scored,20);assert.equal(saved.byStage.gate.original.failed,20);assert.equal(saved.byStage.gate.original.errors,0);assert.equal(saved.byStage.test.original.attempted,0);
+ assert.equal(saved.cases.flatMap(c=>c.runs)[0].assessment.reason,'rubric_not_satisfied');
+ assert.throws(()=>h.store.recordComparisonExperience({comparisonId:saved.id,observations:[]}),/wiki_experience_invalid/);
+});
+test('v2 judge technical failure leaves a denominator gap, continues other gate cases, blocks test, and persists error unchanged',async t=>{
+ for(const judgeFault of ['backend','parse']){
+  const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{judgeFault}),r=await f.run();
+  assert.equal(f.calls.length,2);assert.equal(r.completed,false);assert.equal(r.gateDecision.outcome,'indeterminate');
+  const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);
+  assert.equal(saved.byStage.gate.original.scored,19);assert.equal(saved.byStage.gate.original.errors,1);assert.equal(saved.byStage.gate.original.notRun,1);assert.equal(saved.byStage.gate.candidate.scored,20);assert.equal(saved.byStage.test.original.attempted,0);
+  assert.equal(saved.cases.find(c=>c.sourceCaseId===controlId).status,'completed');
+  assert.equal(saved.cases.flatMap(c=>c.runs)[0].assessment.reason,judgeFault==='backend'?'judge_backend_failed':'judge_output_invalid');
+  assert.equal(JSON.stringify(saved).includes('PRIVATE-JUDGE-DETAIL'),false);
+ }
+});
+test('v2 all-down judge processes both gate cases, preserves all forty errors and never enters test',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{judgeAllDown:true,judgeFault:'backend'}),r=await f.run();
+ assert.equal(f.calls.length,2);assert.equal(r.cases.flatMap(c=>c.runs).length,40);assert.equal(r.completed,false);assert.equal(r.gateDecision.outcome,'indeterminate');
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);
+ assert.equal(saved.byStage.gate.original.errors,20);assert.equal(saved.byStage.gate.candidate.errors,20);assert.equal(saved.byStage.gate.original.scored,0);assert.equal(saved.byStage.test.original.attempted,0);
+});
+test('v2 publication validates occupied judge-error slots separately from recoverable environmental replacements',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const r=await v2Execution(h,{judgeFault:'backend'}).run();
+ const c=r.cases.find(c=>c.sourceCaseId===h.marks[0].id),extra=structuredClone(c.runs[1]);
+ // The first original reply has exhausted judge retries; the first candidate
+ // failed environmentally. Only the candidate may receive an extra reply.
+ delete c.runs[1].assessment;c.runs[1].status='error';c.runs[1].reason='evaluation_codex_proxy_failed';
+ c.runs.push({...extra,iteration:11});c.modelCallsKnown++;r.modelCallsKnown++;
+ const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=store.save(r);
+ assert.equal(saved.cases.find(c=>c.sourceCaseId===h.marks[0].id).runs.length,21);assert.equal(saved.gateDecision.outcome,'indeterminate');
+ const forged=structuredClone(r),last=forged.cases.find(c=>c.sourceCaseId===h.marks[0].id).runs.at(-1);last.variant='original';
+ assert.throws(()=>store.save(forged),'a judge-error slot must not receive a replacement reply');
+});
+test('v2 CLI writes progress and immutable results end-to-end with fake judge; no replay of model calls on republish',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h),file=path.join(h.config.repoRoot,'v2-config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));
+ const write=process.stdout.write;let text='';process.stdout.write=s=>{text+=s;return true;};
+ try{await require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options);}finally{process.stdout.write=write;}
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).read()[0];assert.equal(saved.kind,'wiki-staged-batch-comparison-v2');assert.match(text,/硬断言.*AI/);
+ const progress=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store').createWikiBatchExecutionStore(h.config).read()[0];assert.equal(progress.status,'completed');assert.equal(progress.plan.scoringKind,'wiki-score-v2');assert.equal(progress.plan.experimentHash,saved.experiment.planHash);assert.equal(progress.summary.completedRuns,60);assert.equal(f.calls.length,3);assert.ok(fs.readFileSync(output,'utf8').includes('page_execution_finished'));
+});
+test('v2 CLI publishes all judge errors and remaining gate progress without aborting or executing test',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{judgeAllDown:true,judgeFault:'backend'}),file=path.join(h.config.repoRoot,'judge-down-config.json'),output=file+'.jsonl';fs.writeFileSync(file,JSON.stringify(h.config));
+ const write=process.stdout.write,exitCode=process.exitCode;process.stdout.write=()=>true;
+ try{await require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config',file,'--run','--confirmed','--expected-plan',h.plan().summary.planHash,'--output',output],f.options);}finally{process.stdout.write=write;process.exitCode=exitCode;}
+ const progress=require('../../build/server/domain/runtime/badcase-capture/wiki-batch-execution-store').createWikiBatchExecutionStore(h.config).read()[0];
+ assert.equal(progress.status,'stopped');assert.equal(progress.gateOutcome,'indeterminate');assert.equal(progress.summary.completedRuns,40);assert.equal(progress.summary.byStage.gate.original.errors,20);assert.equal(progress.summary.byStage.test.original.attempted,0);assert.ok(progress.comparisonId);assert.equal(f.calls.length,2);
+ assert.match(fs.readFileSync(output,'utf8'),/page_execution_finished/);assert.doesNotMatch(fs.readFileSync(output,'utf8'),/PRIVATE-JUDGE-DETAIL/);
+});
+test('API adds explicit scoring labels without changing old immutable comparison bytes or judgments',async t=>{
+ for(const v2 of [false,true]){const h=v2?scoringV2Fixture(t):fixture(t);if(v2)h.pin();else for(const c of h.marks)h.confirm(c);
+  const r=await (v2?v2Execution(h):fakeExecution(h)).run(),store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=store.save(r);
+  const file=path.join(h.config.globalRoot,'comparisons',saved.id.slice(11)+'.json'),bytes=fs.readFileSync(file),controller=require('../../build/server/api/badcase-wiki-controller').createBadcaseWikiController({...h.config,host:'127.0.0.1',port:4313,csrfToken:'synthetic-csrf'});let response;
+  const req=new(require('node:stream').PassThrough)();req.method='GET';req.socket={remoteAddress:'127.0.0.1'};req.headers={host:'127.0.0.1:4313'};
+  assert.equal(await controller({req,pathname:'/api/wikiskill',res:{writeHead(s){assert.equal(s,200);},end(b){response=JSON.parse(b);}}}),true);
+  const record=response.comparisons[0];assert.equal(record.scoringKind,v2?'wiki-score-v2':'literal-rules-v1');assert.equal(record.scoringLabel,v2?'硬断言＋AI 裁判':'字面规则');
+  const {scoringKind,scoringLabel,...unchanged}=record;assert.deepEqual(unchanged,saved);assert.deepEqual(fs.readFileSync(file),bytes);
+ }
 });
 test('production model never silently falls back to proxy or accepts caller-drawn stages or missing restore declarations',t=>{
  const h=fixture(t);for(const c of h.marks)h.confirm(c);
