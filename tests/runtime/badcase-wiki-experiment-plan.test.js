@@ -1,8 +1,9 @@
 const test = require('node:test'), assert = require('node:assert/strict'), crypto = require('node:crypto');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const base = '../../build/server/domain/runtime/badcase-capture/';
 const api = () => require(base + 'wiki-experiment-plan');
 const hash = s => crypto.createHash('sha256').update(s).digest('hex');
-function fixture() {
+function fixture(t) {
   const { createWikiRubric } = require(base + 'wiki-rubric');
   const catalog = ['repair', 'control', 'held'].map(id => ({ id, sceneHash: hash('scene-' + id), task: 'Task ' + id, actual: 'Unclear', expected: 'Clear result',
     hardAssertions: { kind: 'synthetic-objective-checks', files: ['a.txt'] }, rubric: { ...createWikiRubric({ caseId: id, version: 1,
@@ -12,22 +13,45 @@ function fixture() {
   const definition = { kind: 'wiki-experiment-v1', variants: [{ id: 'original', promptHash: hash('original') }, { id: 'candidate', promptHash: hash('candidate') }],
     runner: { model: 'openai-codex/gpt-6.1-sol', settings: { thinking: 'xhigh', fast: false } }, repeats: 10, executionPolicy: 'alternating-valid-v1',
     decision: { kind: 'wikiskill-gate-v1', alpha: .05, noHarmFraction: .05, minimumAllowedLoss: 1, maxExtraAttemptsPerCase: 5 },
-    judge: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: { temperature: 0 }, promptHash: hash('synthetic-not-a-judge-prompt') },
+    judge: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: { temperature: 0 }, promptHash: require(base + 'wiki-rubric').wikiValueHash('synthetic-not-a-judge-prompt') },
     cases: [{ caseId: 'repair', stage: 'gate', category: 'reproduction', targetReproduction: true },
       { caseId: 'control', stage: 'gate', category: 'control', targetReproduction: false },
       { caseId: 'held', stage: 'test', category: 'reproduction', targetReproduction: true }] };
-  return { catalog, definition, plan: () => api().createWikiExperimentPlan(definition, catalog) };
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-plan-judges-')), previous = process.env.CAFF_WIKISKILL_JUDGES_CONFIG;
+  const judges = require('../helpers/wiki-judge-catalog.cjs')(root, [{ configuration: definition.judge, prompt: 'synthetic-not-a-judge-prompt' }]);
+  process.env.CAFF_WIKISKILL_JUDGES_CONFIG = judges.configFile;
+  t.after(() => { if (previous === undefined) delete process.env.CAFF_WIKISKILL_JUDGES_CONFIG; else process.env.CAFF_WIKISKILL_JUDGES_CONFIG = previous; fs.rmSync(root, { recursive: true, force: true }); });
+  return { catalog, definition, judges, plan: () => api().createWikiExperimentPlan(definition, catalog) };
 }
 const runs = (original, candidate) => Array.from({ length: 10 }, (_, i) => ['original', 'candidate'].map(variant => ({ variant, iteration: i + 1,
   status: i < (variant === 'original' ? original : candidate) ? 'pass' : 'fail' }))).flat();
 const results = repaired => [{ caseId: 'repair', status: 'completed', runs: runs(0, repaired) }, { caseId: 'control', status: 'completed', runs: runs(10, 10) }];
-test('independent plan binds version inputs, runner, objective checks, rubric and judge without mutating case registration', () => {
-  const h = fixture(), before = structuredClone(h.catalog), plan = h.plan();
+test('independent plan binds version inputs, runner, objective checks, rubric and judge without mutating case registration', t => {
+  const h = fixture(t), before = structuredClone(h.catalog), plan = h.plan();
   assert.match(plan.planHash, /^[a-f0-9]{64}$/); assert.equal(plan.cases.length, 3); assert.equal(plan.cases[0].judge.rubricHash, h.catalog[0].rubric.hash);
   assert.deepEqual(h.catalog, before); assert.equal(JSON.stringify(plan).includes('The result is clear.'), false);
   h.definition.runner.settings.thinking = 'low'; assert.equal(plan.runner.settings.thinking, 'xhigh');
 });
-test('plan rejects draft rubrics, mismatched source/case identity, duplicates, invalid partitions and policy drift', () => {
+test('new plans require the entire eligible frozen configuration, not just backend/model', t => {
+  for (const mutate of [h => h.definition.judge.settings.temperature = 1,
+    h => h.definition.judge.settings.maxTokens = 1024, h => h.definition.judge.promptHash = hash('uncalibrated prompt')]) {
+    const h = fixture(t); mutate(h);
+    assert.throws(h.plan, { code: 'wiki_judge_not_eligible' });
+  }
+});
+test('new plans fail closed without a readable valid catalog; old plans remain readable independently', t => {
+  const h = fixture(t), plan = h.plan();
+  for (const file of [undefined, path.join(path.dirname(h.judges.configFile), 'absent.json')]) {
+    if (file === undefined) delete process.env.CAFF_WIKISKILL_JUDGES_CONFIG; else process.env.CAFF_WIKISKILL_JUDGES_CONFIG = file;
+    assert.throws(h.plan, { code: file === undefined ? 'wiki_judge_not_eligible' : 'wiki_judge_catalog_invalid' });
+    assert.deepEqual(api().validateWikiExperimentPlan(plan), plan);
+  }
+  process.env.CAFF_WIKISKILL_JUDGES_CONFIG = h.judges.configFile;
+  h.judges.frozen.configuration.settings.temperature = 1; h.judges.save();
+  assert.throws(h.plan, { code: 'wiki_judge_catalog_invalid' });
+  assert.deepEqual(api().validateWikiExperimentPlan(plan), plan);
+});
+test('plan rejects draft rubrics, mismatched source/case identity, duplicates, invalid partitions and policy drift', t => {
   assert.equal(typeof api().createWikiExperimentPlan, 'function');
   for (const mutate of [
     h => { const { confirmedAt, confirmationRecord, ...draft } = h.catalog[0].rubric; h.catalog[0].rubric = { ...draft, status: 'draft' }; },
@@ -35,20 +59,20 @@ test('plan rejects draft rubrics, mismatched source/case identity, duplicates, i
     h => h.definition.cases.push(h.definition.cases[0]), h => h.definition.cases[1].targetReproduction = true,
     h => h.definition.cases[2].stage = 'gate', h => h.definition.repeats = 9, h => h.definition.decision.alpha = .1,
     h => h.definition.variants[1].id = 'original', h => h.definition.variants[1].promptHash = 'invalid',
-  ]) { const h = fixture(); mutate(h); assert.throws(h.plan); }
+  ]) { const h = fixture(t); mutate(h); assert.throws(h.plan); }
 });
-test('any bound experiment or case drift refuses reuse, including correctly rehashed plan tampering', () => {
+test('any bound experiment or case drift refuses reuse, including correctly rehashed plan tampering', t => {
   for (const mutate of [h => h.catalog[0].task += ' changed', h => h.catalog[0].sceneHash = hash('new-scene'), h => h.catalog[0].hardAssertions.files.push('b.txt'),
     h => h.definition.judge.promptHash = hash('new prompt'), h => h.definition.judge.settings.temperature = 1,
     h => h.definition.runner.settings.thinking = 'low', h => h.definition.variants[1].promptHash = hash('new candidate')]) {
-    const h = fixture(), plan = h.plan(); mutate(h); assert.throws(() => api().assertWikiExperimentPlan(plan, h.definition, h.catalog), /wiki_experiment_changed/);
+    const h = fixture(t), plan = h.plan(); mutate(h); assert.throws(() => api().assertWikiExperimentPlan(plan, h.definition, h.catalog), /wiki_experiment_changed/);
   }
-  const h = fixture(), plan = h.plan(); plan.cases[0].rubricHash = hash('changed');
+  const h = fixture(t), plan = h.plan(); plan.cases[0].rubricHash = hash('changed');
   const { planHash, ...payload } = plan; plan.planHash = require(base + 'wiki-rubric').wikiValueHash(payload);
   assert.throws(() => api().assertWikiExperimentPlan(plan, h.definition, h.catalog), /wiki_experiment_changed/);
 });
-test('D7 gate formula is delegated unchanged and only an accepted gate permits test execution', () => {
-  const h = fixture(), plan = h.plan(), { decideWikiGate } = require(base + 'wiki-gate-policy');
+test('D7 gate formula is delegated unchanged and only an accepted gate permits test execution', t => {
+  const h = fixture(t), plan = h.plan(), { decideWikiGate } = require(base + 'wiki-gate-policy');
   for (const n of [0, 4, 6, 10]) {
     const rows = results(n), actual = api().decideWikiExperimentGate(plan, rows);
     const legacy = decideWikiGate(rows.map(r => ({ ...r, sourceCaseId: r.caseId, stage: 'gate', category: r.caseId === 'repair' ? 'reproduction' : 'control' })), ['repair'], 10);
@@ -58,8 +82,8 @@ test('D7 gate formula is delegated unchanged and only an accepted gate permits t
   }
   assert.doesNotThrow(() => api().assertWikiExperimentStage(plan, [], 'gate'));
 });
-test('terminal judge errors consume planned slots, not the environmental replacement budget or denominator', () => {
-  const h = fixture(), plan = h.plan(), rows = results(6); rows[0].status = 'error';
+test('terminal judge errors consume planned slots, not the environmental replacement budget or denominator', t => {
+  const h = fixture(t), plan = h.plan(), rows = results(6); rows[0].status = 'error';
   for (const row of rows[0].runs) { row.status = 'error'; row.judgeError = true; }
   assert.equal(api().decideWikiExperimentGate(plan, rows).outcome, 'indeterminate');
   const mixed = results(6); mixed[0].status = 'error'; mixed[0].runs[0] = { variant: 'original', iteration: 1, status: 'error', judgeError: true };
@@ -70,8 +94,8 @@ test('terminal judge errors consume planned slots, not the environmental replace
     const invalid = results(6); Object.assign(invalid[0].runs[0], patch); assert.throws(() => api().decideWikiExperimentGate(plan, invalid));
   }
 });
-test('unavailable evidence/errors never become passes; extra/duplicate results and nonalternating attempts are refused', () => {
-  const h = fixture(), plan = h.plan();
+test('unavailable evidence/errors never become passes; extra/duplicate results and nonalternating attempts are refused', t => {
+  const h = fixture(t), plan = h.plan();
   assert.equal(api().decideWikiExperimentGate(plan, []).outcome, 'indeterminate');
   const incomplete = results(6); incomplete[0].status = 'error'; incomplete[0].runs[0].status = 'error';
   assert.equal(api().decideWikiExperimentGate(plan, incomplete).outcome, 'indeterminate');

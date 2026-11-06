@@ -5,6 +5,7 @@ const base='../../build/server/domain/runtime/badcase-capture/';
 const {createWikiExperimentPlan,assertWikiExperimentPlan}=require(base+'wiki-experiment-plan');
 const {resolveFrozenWikiRubric,wikiExactKeys,wikiValueHash}=require(base+'wiki-rubric');
 const {bindWikiJudge}=require(base+'wiki-scoring-v2');
+const {readWikiEligibleJudges,assertWikiEligibleConfiguration}=require(base+'wiki-judge-catalog');
 const {prepareEvaluationCallbackTrace}=require(base+'evaluation-trace');
 const {resolveWikiReplayRequest}=require(base+'wiki-replay-location');
 const {prepareSealedOriginalTurn}=require('./sealed-direct-input.cjs');
@@ -28,6 +29,8 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
  if(!same(definition?.variants,[{id:'original',promptHash:candidate.baseHash},{id:'candidate',promptHash:candidate.candidateHash}])
    || !same(definition?.runner,{model:config.modelProfile,settings:modelConfig})
    || !same(definition?.cases?.map(({judge,...selection})=>selection),selections))throw fail('wiki_experiment_changed');
+ const eligibleJudges=readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG);
+ for(const selection of definition.cases)assertWikiEligibleConfiguration(definition.kind==='wiki-experiment-v2'?selection.judge:definition.judge,eligibleJudges);
  return {
   forCase(source,replay,item){
    if(item.topicExemption!==undefined || item.rulesRevision!==undefined)throw fail('evaluation_batch_cases_invalid');

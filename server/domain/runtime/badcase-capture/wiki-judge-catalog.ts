@@ -3,6 +3,7 @@
 // Hashes detect drift; they are not authentication against the same OS user.
 import fs from 'node:fs';
 import path from 'node:path';
+import type { WikiJudgeConfiguration } from './wiki-scoring-v2';
 import { validateWikiScoringModel, wikiExactKeys, wikiRubricText, wikiValueHash, type WikiScoringModel } from './wiki-rubric';
 export interface WikiEligibleJudge extends WikiScoringModel { configurationHash: string; freezeHash: string; promptHash: string }
 const invalid = () => Object.assign(Error('wiki_judge_catalog_invalid'), { code: 'wiki_judge_catalog_invalid' });
@@ -54,4 +55,13 @@ export function assertWikiEligibleModel(value: WikiScoringModel | null | undefin
     throw Object.assign(Error('wiki_judge_not_eligible'), { code: 'wiki_judge_not_eligible' });
   }
   validateWikiScoringModel(value);
+}
+// Selection by identity is sufficient for the rubric editor, not for scoring.
+// Formal plans must use exactly the configuration that earned eligibility.
+export function assertWikiEligibleConfiguration(value: WikiJudgeConfiguration, judges: WikiEligibleJudge[]) {
+  assertWikiEligibleModel(value && { backend: value.backend, model: value.model }, judges);
+  if (!judges.some(j => j.backend === value.backend && j.model === value.model
+    && j.configurationHash === wikiValueHash(value) && j.promptHash === value.promptHash)) {
+    throw Object.assign(Error('wiki_judge_not_eligible'), { code: 'wiki_judge_not_eligible' });
+  }
 }

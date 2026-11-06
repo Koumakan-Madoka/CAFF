@@ -2,6 +2,7 @@
 // and execution. D7 delegates to the existing gate formula, never a new metric.
 import { decideWikiGate } from './wiki-gate-policy';
 import { containsSecretSentinel } from './secrets';
+import { assertWikiEligibleConfiguration, readWikiEligibleJudges } from './wiki-judge-catalog';
 import { bindWikiJudge, isWikiJudgeTechnicalError, type WikiJudgeBinding, type WikiJudgeConfiguration, type WikiScoreStatus } from './wiki-scoring-v2';
 import { validateWikiRubric, wikiExactKeys, wikiRubricFail as fail, wikiRubricSourceHash, wikiRubricText, wikiValueHash, type WikiRubric } from './wiki-rubric';
 const POLICY = Object.freeze({ kind: 'wikiskill-gate-v1', alpha: .05, noHarmFraction: .05, minimumAllowedLoss: 1, maxExtraAttemptsPerCase: 5 });
@@ -55,6 +56,7 @@ export function createWikiExperimentPlan(definition: WikiExperimentDefinition, c
   ensure(Array.isArray(catalog) && new Set(catalog.map(c => c?.id)).size === catalog.length);
   ensure(Array.isArray(definition.cases) && definition.cases.length >= 3 && definition.cases.length <= 20
     && new Set(definition.cases.map(c => c?.caseId)).size === definition.cases.length);
+  const eligibleJudges = readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG);
   const cases = definition.cases.map(selection => {
     wikiExactKeys(selection, ['caseId', 'stage', 'category', 'targetReproduction', ...(perCase ? ['judge'] : [])]); identifier(selection.caseId);
     ensure(['gate', 'test'].includes(selection.stage) && ['reproduction', 'control', 'probe'].includes(selection.category)
@@ -67,8 +69,10 @@ export function createWikiExperimentPlan(definition: WikiExperimentDefinition, c
     ensure(rubric.caseId === source.id && rubric.sourceHash === wikiRubricSourceHash(source.actual, source.expected));
     if (perCase) ensure(rubric.kind === 'wiki-rubric-v2');
     const { judge: selectedJudge, ...partition } = selection;
+    const configuration = (perCase ? selectedJudge : definition.judge)!, judge = bindWikiJudge(configuration, rubric);
+    assertWikiEligibleConfiguration(configuration, eligibleJudges);
     return { ...structuredClone(partition), sceneHash: source.sceneHash, inputHash: wikiValueHash({ task: source.task, expected: source.expected }),
-      hardAssertionsHash: wikiValueHash(source.hardAssertions), rubricHash: rubric.hash, judge: bindWikiJudge((perCase ? selectedJudge : definition.judge)!, rubric) };
+      hardAssertionsHash: wikiValueHash(source.hardAssertions), rubricHash: rubric.hash, judge };
   });
   ensure(cases.some(c => c.stage === 'gate' && c.targetReproduction) && cases.some(c => c.stage === 'gate' && c.category === 'control')
     && cases.some(c => c.stage === 'test' && c.targetReproduction));

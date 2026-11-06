@@ -45,6 +45,7 @@
 
 - `wiki-experiment-v2` 逐题配置 judge，生成 `wiki-experiment-plan-v2`；兼容旧单裁判 v1 计划。计划绑定两版提示词 hash、被测模型/设置、题目现场/原任务/硬断言/断言 hash，以及每题裁判 backend/model、settings 的 `modelHash`、`promptHash`、`rubricHash` 和 `passes:3`。任何漂移均拒绝，不沿用旧确认。
 - 正式生产批量配置的 `experiment:{definition,plan?}` 与用例登记分离；`cases` 显式选冻结 `rubricHash`。先规划，再将生成的实验 plan 固定到配置，实际执行必须持有该计划。v2 **拒绝** `rulesRevision/topicExemption`；#20 可使用编号但须解释，不再靠豁免规则评分。
+- 新建正式计划（含单裁判 v1、逐题 v2）以及正式批量预检/执行，使用现有 `readWikiEligibleJudges` 从 `CAFF_WIKISKILL_JUDGES_CONFIG` 只读加载名单及冻结文件。每题不仅 backend/model 必须可选，整份 judge 配置（含 `settings/promptHash`）的 `wikiValueHash` 还须等于该条 `configurationHash`，且 `promptHash` 相同；不接受仅同名、调用方自行改设置/提示词并重算计划 hash 的未校准配置。不匹配或未配置名单返回 `wiki_judge_not_eligible`，名单/冻结文件不可读、无效或漂移返回 `wiki_judge_catalog_invalid`；均在付费回放前拒绝，不作裁判输出重试。没有新增配置入口、模型回退或资格豁免。旧计划/比较的纯读取、显示与完整性校验不依赖当前名单，不重判或修改旧记录。
 - 仍使用 `compare-wiki-batch.cjs` 的 `--plan`、`--run --confirmed --expected-plan <hash> --output <新JSONL>`。实际 AI 裁判须由受信宿主显式注入逐题 `judges` 适配器；JSON 不承载凭据、任意可执行模块或自动凭据搜索。**裸 CLI 不会自动创建真实裁判**，缺适配器在付费回放前拒绝。M4 由明确批准的宿主启动器注入冻结 DeepSeek，再调用同一 CLI `main`/执行内核；不是网页启动功能或通用无人值守命令。
 - DeepSeek 真实适配器仅在宿主内存持 Key，固定官方端点及 `127.0.0.1:17890` 代理，不直连/换模型/换凭据；有显式请求预算。页面起草另复用已批准的 runtime credentialDir；起草不是校准，也不把草稿自动注册成可选裁判。
 - 每题每版10个回复槽位，交替执行。目标复现题通过数合计用单侧 Fisher `p<0.05`；防误伤少通过数不超过 `max(1,总次数×5%)`。有效次数不足时门槛无法判定；门槛接受才运行测试。测试复现题不过不能采纳；门槛接受本身不等于采纳。
@@ -95,5 +96,7 @@
 引用故障是可复现的表示边界，不是简单“轨迹太长”：#10的文件正文嵌在 JSON 字符串形式的 trace 中，裁判多次误选未提供的独立 file 来源，或引用解码/转义层级不同的片段；最终8次输出无效、1次后端失败。#14两次输出无效均在同回复重试恢复、最终error为0。两题证据均未截断。代码不作模糊匹配、跨来源补搜、自动去转义或“引用意思对就算过”。
 
 2026-11-06 对 M4 `judge-calls.jsonl` 的313次原始调用与100份输入做只读复核（未重判）：与规划者统计一致，只有 #10 有10条判成立时未引用要求的轨迹（q1=3、q2=7）；#16、#14、#19、#20 的判成立均引用了要求的来源。这10条 #10 原始输出因其他引用错误原本就未进入已接受票，已接受票均有有效的指定来源引文，故门槛接受、测试 #20 不过、候选不采纳及 #10 不完整的原结论均不变。本次仅收紧新评分的代码校验，不改冻结裁判提示词、配置或 hash，不重新校准（#19 q1 的 reply 依据不变），不重判或改写旧比较、证据及其页面展示。
+
+2026-11-06 对 M4 再次只读复核：五题实验定义的整份 judge 配置均等于 `m2/freeze/deepseek-configuration.json`，其 `configurationHash` 为 `a00de3b07faf458982cc57dc1bfccfcd0338bf2b0bd181f84b593a4587810131`，与可用名单一致。五题计划的 `modelHash` 均为 `a05f4beb2b2350caded6cbbf3dfc9c3c2bc8726e3f9ab39cd576bf519f15ae6b`（按现有协议只对 backend/model/settings 求 hash，不等于整份配置 hash）；五题 `promptHash` 及313次原始裁判调用的 `promptHash` 均为冻结的 `4f5bc856f365f4fef7d697f9d5265c2148cbcf7cd41ad6c6961973b00fe72f58`。与规划者复核一致，此次资格校验不影响 M4 的门槛/测试结论；原计划、证据和比较记录原样保留，不重新校准或重判。
 
 未来可另行讨论独立 typed 文件证据，或稳定证据 ID＋偏移，由代码提取连续原文；必须有回归、重新冻结/校准和新正式计划，不能用来补判本批。上述证据表示协议改造不在本次引用来源校验修复范围内。也不支持任意评分插件、未经校准自动选裁判、网页启动回放、自动发布/改生产提示词或无人值守多轮迭代；Badcase 页、轨迹包和脱水属于其他 Goal。

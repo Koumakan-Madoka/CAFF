@@ -281,18 +281,22 @@ function scoringV2Fixture(t,{bareReplies=false,perCaseModels=false}={}) {
  fs.writeFileSync(path.join(h.config.globalRoot,'snapshots',String(state.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(state)),record:state}));
  const suite=h.plan().prepared.filter(c=>!c.reportOnly),questions=[{id:'q1',question:'The result is clear.',evidence:'reply'},{id:'q2',question:'The next step is clear.',evidence:'reply'}];
  const modelFor=id=>perCaseModels&&id===controlId?{backend:'jev',model:'jev-latest'}:{backend:'deepseek',model:'deepseek/deepseek-v4-flash'};
- const configuration=id=>({...modelFor(id),settings:{},promptHash:sha('synthetic-descriptor-not-a-judge-prompt-'+modelFor(id).backend)});
+ const configuration=id=>({...modelFor(id),settings:{},promptHash:require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash('synthetic-descriptor-not-a-judge-prompt-'+modelFor(id).backend)});
  for(const row of suite){const rubric=h.store.saveRubricDraft({caseId:row.sourceCaseId,model:'deepseek/deepseek-v4-flash',scoringModel:modelFor(row.sourceCaseId),questions},h.store.read().revision);h.store.confirmRubric({rubricId:rubric.id,hash:rubric.hash,confirmationRecord:'Synthetic user approval'},h.store.read().revision);h.config.cases.find(c=>c.sourceCaseId===row.sourceCaseId).rubricHash=rubric.hash;}
  const definition={kind:perCaseModels?'wiki-experiment-v2':'wiki-experiment-v1',variants:[{id:'original',promptHash:h.candidate.baseHash},{id:'candidate',promptHash:h.candidate.candidateHash}],
   runner:{model:PROFILE,settings:{api:'openai-codex-responses',thinking:'xhigh',fast:false,transport:'sse',credentialDelivery:'host-only-mailbox'}},repeats:10,executionPolicy:'alternating-valid-v1',
   decision:{kind:'wikiskill-gate-v1',alpha:.05,noHarmFraction:.05,minimumAllowedLoss:1,maxExtraAttemptsPerCase:5},
   ...(!perCaseModels?{judge:configuration(suite[0].sourceCaseId)}:{}),
   cases:suite.map(c=>({caseId:c.sourceCaseId,stage:c.stage,category:c.category,targetReproduction:c.targetReproduction,...(perCaseModels?{judge:configuration(c.sourceCaseId)}:{})}))};
+ const catalogRoot=path.join(h.config.repoRoot,'judges');fs.mkdirSync(catalogRoot);
+ const catalog=require('../helpers/wiki-judge-catalog.cjs')(catalogRoot,[suite[0].sourceCaseId,...(perCaseModels?[controlId]:[])].map(id=>({configuration:configuration(id),prompt:'synthetic-descriptor-not-a-judge-prompt-'+modelFor(id).backend})));
+ const previous=process.env.CAFF_WIKISKILL_JUDGES_CONFIG;process.env.CAFF_WIKISKILL_JUDGES_CONFIG=catalog.configFile;
+ t.after(()=>{if(previous===undefined)delete process.env.CAFF_WIKISKILL_JUDGES_CONFIG;else process.env.CAFF_WIKISKILL_JUDGES_CONFIG=previous;});
  h.config.experiment={definition};h.options.prepareProductionTask=()=> 'ACTUAL-TRIGGERING-USER-TASK';
  const prepare=h.options.prepareProductionComparison;h.options.prepareProductionComparison=c=>{const p=prepare(c);p.summary.scoring=require('../../scripts/badcase-capture/wiki-receipt-scoring.cjs').wikiScoringSummary(c.scoring);return p;};
  const adapter=c=>({configuration:structuredClone(c),evaluate:async()=>{throw Error('No real judge call in batch fakes');}});
  const judge=adapter(configuration(suite[0].sourceCaseId)),judges=Object.fromEntries(suite.map(c=>[c.sourceCaseId,adapter(configuration(c.sourceCaseId))]));
- return {...h,judge,judges,definition,pin:()=>{h.config.experiment.plan=h.plan().summary.experiment;return h.plan();}};
+ return {...h,judge,judges,definition,catalog,pin:()=>{h.config.experiment.plan=h.plan().summary.experiment;return h.plan();}};
 }
 test('v2 batch binds independent experiment and frozen rubrics before execution; original tasks are not synthetic replay labels',t=>{
  const h=scoringV2Fixture(t),before=h.store.read(),p=h.pin();
@@ -302,6 +306,34 @@ test('v2 batch binds independent experiment and frozen rubrics before execution;
  const control=p.prepared.find(c=>c.sourceCaseId===controlId);assert.equal(control.comparisonConfig.rules.kind,'file-literals-v1');assert.equal(p.summary.experiment.cases.find(c=>c.caseId===controlId).hardAssertionsHash,require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(control.comparisonConfig.rules));
  assert.equal(JSON.stringify(p.summary).includes('ACTUAL-TRIGGERING-USER-TASK'),false);assert.equal(JSON.stringify(p.summary).includes('The result is clear.'),false);
  for(const mutate of [x=>x.definition.runner.settings.thinking='low',x=>x.definition.variants[1].promptHash='f'.repeat(64),x=>x.definition.cases[0].stage=x.definition.cases[0].stage==='test'?'gate':'test',x=>x.config.cases[0].topicExemption={},x=>x.config.cases[0].rulesRevision='snapshot-head-exemption-v1']){const x=scoringV2Fixture(t);mutate(x);assert.throws(x.plan);}
+});
+test('formal planning refuses uncalibrated settings/prompt even when adapters and a self-pinned plan match',async t=>{
+ for(const perCaseModels of [false,true])for(const field of ['settings','promptHash']){
+  const h=scoringV2Fixture(t,{perCaseModels}),p=h.pin();h.calls.length=0;
+  const selected=perCaseModels?h.definition.cases.find(c=>c.caseId===controlId).judge:h.definition.judge;
+  if(field==='settings')selected.settings.temperature=1;else selected.promptHash=sha('uncalibrated prompt');
+  const changed=require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2').bindWikiJudge(selected,h.store.read().rubrics.find(r=>r.caseId===(perCaseModels?controlId:h.definition.cases[0].caseId)));
+  // A caller can rehash its own plan; this must not replace calibration authority.
+  const plan=structuredClone(p.summary.experiment);
+  for(const c of plan.cases)if(!perCaseModels||c.caseId===controlId){c.judge={...changed,rubricHash:c.rubricHash};h.judges[c.caseId].configuration=structuredClone(selected);}
+  const {planHash,...payload}=plan;plan.planHash=require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(payload);h.config.experiment.plan=plan;
+  if(!perCaseModels)h.judge.configuration=structuredClone(selected);
+  assert.throws(h.plan,{code:'wiki_judge_not_eligible'});assert.equal(h.calls.length,0);
+  const events=[];let workers=0,auth=0;
+  await assert.rejects(runBatch(h.config,{...h.options,confirmed:true,expectedPlanHash:p.summary.planHash,judge:h.judge,judges:h.judges,onEvent:e=>events.push(e),readKey:()=>{auth++;},runProductionComparison:async()=>{workers++;}}),{code:'wiki_judge_not_eligible'});
+  assert.equal(workers,0);assert.equal(auth,0);assert.equal(events.length,0);
+ }
+});
+test('formal planning rejects missing/unreadable catalogs and rechecks eligibility on execution',async t=>{
+ for(const mode of ['missing','unreadable','invalid']){
+  const h=scoringV2Fixture(t),p=h.pin();h.calls.length=0;
+  if(mode==='missing')delete process.env.CAFF_WIKISKILL_JUDGES_CONFIG;
+  else if(mode==='unreadable')process.env.CAFF_WIKISKILL_JUDGES_CONFIG=path.join(h.config.repoRoot,'absent.json');
+  else{h.catalog.frozen.eligibility.passed=false;h.catalog.save();}
+  const code=mode==='missing'?'wiki_judge_not_eligible':'wiki_judge_catalog_invalid';
+  assert.throws(h.plan,{code});assert.equal(h.calls.length,0);
+  const f=v2Execution({...h,plan:()=>p});await assert.rejects(f.run(),{code});assert.equal(f.calls.length,0);assert.equal(f.events.length,0);
+ }
 });
 test('per-case models route to the frozen adapter for both variants, publish mixed judges and print each configuration',async t=>{
  const h=scoringV2Fixture(t,{perCaseModels:true});const p=h.pin();assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v2');
@@ -334,7 +366,7 @@ test('v2 frozen experiment rejects drift in task, rubric, scene and judge config
   if(change==='rubric'){const d=h.store.saveRubricDraft({caseId:h.marks[0].id,model:'deepseek/deepseek-v4-flash',scoringModel:{backend:'deepseek',model:'deepseek/deepseek-v4-flash'},questions:[{id:'a',question:'New assertion.',evidence:'reply'},{id:'b',question:'Another assertion.',evidence:'reply'}]},h.store.read().revision);h.store.confirmRubric({rubricId:d.id,hash:d.hash,confirmationRecord:'Synthetic approval'},h.store.read().revision);h.config.cases[0].rubricHash=d.hash;}
   if(change==='scene'){const prepare=h.options.prepareProductionComparison;h.options.prepareProductionComparison=c=>{const p=prepare(c);p.summary.checkpointHash='f'.repeat(64);return p;};}
   if(change==='judge')h.definition.judge.promptHash='f'.repeat(64);
-  assert.throws(h.plan,/wiki_experiment_changed|evaluation_batch_input_changed/);assert.equal(h.store.read().candidates.length,1);
+  assert.throws(h.plan,/wiki_experiment_changed|evaluation_batch_input_changed|wiki_judge_not_eligible/);assert.equal(h.store.read().candidates.length,1);
  }
 });
 function v2Execution(h,settings={}){

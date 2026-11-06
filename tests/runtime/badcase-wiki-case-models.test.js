@@ -5,7 +5,7 @@ const r = require(base + 'wiki-rubric'), s = require(base + 'wiki-scoring-v2'), 
 const models = { deepseek: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' }, jev: { backend: 'jev', model: 'jev-latest' } };
 const assertions = [{ id: 'a', question: '回复直接给出结论。', evidence: 'reply' }, { id: 'b', question: '回复说明结论的影响。', evidence: 'reply' }];
 const configuration = backend => ({ ...models[backend], settings: {}, promptHash: r.wikiValueHash('synthetic-' + backend + '-descriptor-not-a-judge-prompt') });
-function fixture() {
+function fixture(t) {
   const catalog = ['repair', 'control', 'held'].map((id, i) => ({ id, sceneHash: r.wikiValueHash(id), task: 'Report result', actual: 'Unclear', expected: 'Clear', hardAssertions: {},
     rubric: { ...r.createWikiRubric({ caseId: id, version: 1, model: r.WIKI_RUBRIC_MODEL, actual: 'Unclear', expected: 'Clear', questions: assertions, scoringModel: models[i === 1 ? 'jev' : 'deepseek'] }),
       status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Synthetic human approval' } }));
@@ -13,10 +13,14 @@ function fixture() {
     runner: { model: 'openai-codex/gpt-6.1-sol', settings: {} }, repeats: 10, executionPolicy: 'alternating-valid-v1',
     decision: { kind: 'wikiskill-gate-v1', alpha: .05, noHarmFraction: .05, minimumAllowedLoss: 1, maxExtraAttemptsPerCase: 5 },
     cases: catalog.map((c, i) => ({ caseId: c.id, stage: i === 2 ? 'test' : 'gate', category: i === 1 ? 'control' : 'reproduction', targetReproduction: i !== 1, judge: configuration(i === 1 ? 'jev' : 'deepseek') })) };
-  return { catalog, definition, plan: () => e.createWikiExperimentPlan(definition, catalog) };
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-case-judges-')), previous = process.env.CAFF_WIKISKILL_JUDGES_CONFIG;
+  const judges = require('../helpers/wiki-judge-catalog.cjs')(root, ['deepseek', 'jev'].map(backend => ({ configuration: configuration(backend), prompt: 'synthetic-' + backend + '-descriptor-not-a-judge-prompt' })));
+  process.env.CAFF_WIKISKILL_JUDGES_CONFIG = judges.configFile;
+  t.after(() => { if (previous === undefined) delete process.env.CAFF_WIKISKILL_JUDGES_CONFIG; else process.env.CAFF_WIKISKILL_JUDGES_CONFIG = previous; fs.rmSync(root, { recursive: true, force: true }); });
+  return { catalog, definition, judges, plan: () => e.createWikiExperimentPlan(definition, catalog) };
 }
-test('assertion v2 freezes selected scoring model in content hash, distinct from drafting model', () => {
-  const h = fixture(), a = h.catalog[0].rubric;
+test('assertion v2 freezes selected scoring model in content hash, distinct from drafting model', t => {
+  const h = fixture(t), a = h.catalog[0].rubric;
   assert.equal(a.kind, 'wiki-rubric-v2'); assert.deepEqual(a.scoringModel, models.deepseek);
   const b = r.createWikiRubric({ ...a, actual: 'Unclear', expected: 'Clear', scoringModel: models.jev });
   assert.notEqual(a.hash, b.hash); assert.equal(b.model, r.WIKI_RUBRIC_MODEL);
@@ -45,16 +49,28 @@ test('store model selection creates a new immutable version, confirmation cannot
   assert.deepEqual(store.getFrozenRubric(c.id, b.hash), frozen); assert.equal(store.read().rubrics[0].status, 'draft');
   assert.throws(() => store.confirmRubric({ rubricId: b.id, hash: b.hash, confirmationRecord: 'Change', scoringModel: models.deepseek }, store.read().revision));
 });
-test('independent experiment selects models per case; plan validator accepts heterogeneous judges but refuses same-case configuration drift', () => {
-  const h = fixture(), p = h.plan(); assert.equal(p.kind, 'wiki-experiment-plan-v2'); assert.deepEqual(p.cases.map(c => c.judge.backend), ['deepseek', 'jev', 'deepseek']);
+test('independent experiment selects models per case; plan validator accepts heterogeneous judges but refuses same-case configuration drift', t => {
+  const h = fixture(t), p = h.plan(); assert.equal(p.kind, 'wiki-experiment-plan-v2'); assert.deepEqual(p.cases.map(c => c.judge.backend), ['deepseek', 'jev', 'deepseek']);
   assert.deepEqual(e.validateWikiExperimentPlan(p), p); e.assertWikiExperimentPlan(p, h.definition, h.catalog);
   for (const mutate of [x => x.definition.cases[0].judge = configuration('jev'), x => x.definition.cases[1].judge.promptHash = r.wikiValueHash('changed'), x => x.definition.cases[1].judge.settings.temperature = 1]) {
-    const x = fixture(), old = x.plan(); mutate(x); assert.throws(() => e.assertWikiExperimentPlan(old, x.definition, x.catalog), /wiki_experiment_changed/);
+    const x = fixture(t), old = x.plan(); mutate(x); assert.throws(() => e.assertWikiExperimentPlan(old, x.definition, x.catalog), /wiki_experiment_changed/);
   }
   h.definition.cases[0].judge = configuration('jev'); assert.throws(h.plan, /wiki_judge_binding_changed/);
 });
-test('single-assertion cases bind an experiment and score all three votes without padding', async () => {
-  const h = fixture(), c = h.catalog[0];
+test('per-case experiment checks every selected judge against its own frozen configuration', t => {
+  for (const index of [0, 1, 2]) for (const field of ['settings', 'promptHash']) {
+    const h = fixture(t);
+    if (field === 'settings') h.definition.cases[index].judge.settings.temperature = 1;
+    else h.definition.cases[index].judge.promptHash = r.wikiValueHash('uncalibrated');
+    assert.throws(h.plan, { code: 'wiki_judge_not_eligible' });
+  }
+  const h = fixture(t), before = structuredClone(h.definition);
+  h.judges.manifest.judges.splice(1, 1); h.judges.save();
+  assert.throws(h.plan, { code: 'wiki_judge_not_eligible' });
+  assert.deepEqual(h.definition, before);
+});
+test('single-assertion cases bind an experiment and score all three votes without padding', async t => {
+  const h = fixture(t), c = h.catalog[0];
   c.rubric = { ...r.createWikiRubric({ ...c.rubric, actual: c.actual, expected: c.expected, questions: assertions.slice(0, 1) }),
     status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Synthetic approval of a single requirement' };
   const plan = h.plan(); assert.deepEqual(e.validateWikiExperimentPlan(plan), plan);
