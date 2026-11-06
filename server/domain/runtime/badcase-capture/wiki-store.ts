@@ -147,6 +147,15 @@ function appendEvent(state: any, event: any) {
   state.events.push(saved); return saved;
 }
 
+function assertRubricRunEvidence(state: any, rubric: WikiRubric) {
+  const source = state.cases.find((c: any) => c.id === rubric.caseId);
+  const decision = (state.dehydrations || []).findLast((d: any) => d.caseId === rubric.caseId && d.traceHash === source?.traceBundle?.hash)?.decision;
+  // No-executor runs produce only a reply; they cannot supply execution/file
+  // evidence. Enforce for new freezes, never while reading old frozen records.
+  if (!source?.sealedCheckpointId && decision?.level === 'run' && rubric.questions.some(q => q.evidence !== 'reply')) {
+    throw fail('wiki_rubric_run_evidence_invalid');
+  }
+}
 function assertRubricFileEvidence(state: any, rubric: WikiRubric) {
   // The receipt scorer collects standalone file text only for file-literals-v1.
   // Apply at write/confirmation time, not while reading immutable old versions.
@@ -686,6 +695,7 @@ export function createWikiStore(options: any) {
         if (rubric.hash !== input.hash) throw fail('wiki_rubric_hash_changed');
         const source = state.cases.find((c: any) => c.id === rubric.caseId);
         if (!source || rubric.sourceHash !== wikiRubricSourceHash(source.actual, source.expected)) throw fail('wiki_rubric_source_changed');
+        assertRubricRunEvidence(state, rubric);
         assertRubricFileEvidence(state, rubric);
         Object.assign(rubric, { status: 'frozen', confirmedAt: new Date().toISOString(), confirmationRecord: input.confirmationRecord });
         validateWikiRubric(rubric, true);

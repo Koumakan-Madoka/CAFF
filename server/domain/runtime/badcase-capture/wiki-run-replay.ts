@@ -33,8 +33,11 @@ export function buildWikiRunRequest({ item, bundle, decision, toolset, candidate
       || candidate.targetId !== 'global-harness-behavior-v1' || typeof candidate.replacement !== 'string' || !candidate.replacement.trim()
       || Buffer.byteLength(candidate.replacement) > 65536) throw fail('wiki_run_candidate_invalid');
     const slots: any[] = [], scan = (text: any, set: (text: string) => void) => {
-      if (typeof text !== 'string') return;
-      let slot; try { slot = locateGlobalPromptTarget(text, candidate.targetId, [{ baseText: candidate.baseText, baseHash: candidate.baseHash }]); } catch { return; }
+      if (typeof text !== 'string' || !text.includes('Rules:\n' + candidate.baseText)) return;
+      // A declaration that exists but is ambiguous/invalid must not disappear
+      // from the count just because another prefix segment has a valid slot.
+      let slot; try { slot = locateGlobalPromptTarget(text, candidate.targetId, [{ baseText: candidate.baseText, baseHash: candidate.baseHash }]); }
+      catch { throw fail('wiki_run_candidate_invalid'); }
       slots.push(() => set(text.slice(0, slot.start) + candidate.replacement + text.slice(slot.end)));
     };
     scan(context.systemPrompt, s => context.systemPrompt = s);

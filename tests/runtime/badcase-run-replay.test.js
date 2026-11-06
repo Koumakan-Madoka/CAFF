@@ -78,6 +78,39 @@ test('candidate can replace only one approved global slot; remainder of frozen p
   assert.deepEqual(changed.context.messages.slice(1), original.context.messages.slice(1));
   assert.throws(() => api().buildWikiRunRequest({ ...input, candidate: { ...candidate, baseHash: 'f'.repeat(64) } }), e => e.code === 'wiki_run_candidate_invalid');
 });
+test('candidate rejects duplicate global declarations even when another prefix segment has one valid slot', t => {
+  const h = setup(t), target = require('../../build/lib/agent-prompt-targets').getGlobalPromptTarget('global-harness-behavior-v1');
+  const slot = 'prefix\n\nRoom work context:\noriginal\n\nRules:\n' + target.baseText + '\n- Unchanged rule\n\nRouting instructions:\ntail';
+  const duplicate = slot + '\n\nRules:\n' + target.baseText + '\n';
+  const candidate = { id: 'approved', targetId: target.id, baseText: target.baseText, baseHash: target.baseHash, replacement: 'NEW GLOBAL ONLY' };
+  for (const [system, user] of [[duplicate, slot], [slot, duplicate], [slot, slot], ['no target', 'no target']]) {
+    const bundle = structuredClone(h.bundle), item = structuredClone(h.item()), decision = structuredClone(h.decision);
+    bundle.context.systemPrompt = system; bundle.context.trigger.message.content = user;
+    item.traceBundle.hash = hash(bundle); decision.traceHash = item.traceBundle.hash; const { hash: ignored, ...content } = decision; decision.hash = hash(content);
+    assert.throws(() => api().buildWikiRunRequest({ item, bundle, decision, toolset: h.toolset, candidate }), { code: 'wiki_run_candidate_invalid' });
+  }
+});
+test('run rubrics reject trace and files on freeze, while reply freezes and historical frozen records stay readable', t => {
+  for (const evidence of ['trace', 'files', 'reply']) {
+    const h = setup(t), state = h.store.read(), item = h.item(), model = 'deepseek/deepseek-v4-flash';
+    const rubric = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').createWikiRubric({ caseId: item.id, version: 1, actual: item.actual, expected: item.expected,
+      model, scoringModel: { backend: 'deepseek', model }, questions: [{ id: 'q1', question: 'The reply states a concrete result.', evidence }] });
+    // A historical draft may predate the run decision. Read remains compatible;
+    // the new freeze must enforce the execution's actual evidence surface.
+    state.rubrics = [rubric]; const file = path.join(h.options.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: hash(state), record: state }));
+    const before = h.store.read(), bytes = fs.readFileSync(file), confirm = () => h.store.confirmRubric({ rubricId: rubric.id, hash: rubric.hash, confirmationRecord: 'Synthetic user consent' }, before.revision);
+    if (evidence === 'reply') assert.equal(confirm().status, 'frozen');
+    else {
+      assert.throws(confirm, { code: 'wiki_rubric_run_evidence_invalid' }); assert.deepEqual(h.store.read(), before);
+      Object.assign(rubric, { status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Historical approval' });
+      fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: hash(state), record: state }));
+      assert.deepEqual(createWikiStore(h.options).getFrozenRubric(item.id, rubric.hash), rubric, 'old versions are readable without migration or re-judging');
+    }
+    if (evidence === 'reply') assert.deepEqual(fs.readFileSync(file), bytes, 'old snapshot bytes unchanged');
+  }
+});
+
 test('crashed reservations remain unknown and cannot send again; known values in input block before creating a claim', async t => {
   const h = setup(t), { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store'), runs = createWikiRunStore(h.options), q = h.request();
   const input = { store: h.store, runs, caseId: h.c.id, toolset: h.toolset, approvedRequestHash: hash(q) }; let calls = 0;

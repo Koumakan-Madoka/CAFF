@@ -56,7 +56,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_training_input_too_large: 422, evaluation_caff_auth_unavailable_or_invalid: 503, evaluation_linux_required: 503,
     wiki_runtime_config_required: 503, wiki_runtime_config_invalid: 503,
     evaluation_wsl_host_required: 503, evaluation_wsl_backend_invalid: 503, wiki_execution_record_invalid: 503,
-    wiki_rubric_invalid: 422, wiki_rubric_assertion_required: 422, wiki_rubric_model_invalid: 422, wiki_rubric_files_unavailable: 422,
+    wiki_rubric_invalid: 422, wiki_rubric_assertion_required: 422, wiki_rubric_model_invalid: 422, wiki_rubric_files_unavailable: 422, wiki_rubric_run_evidence_invalid: 422,
     wiki_rubric_not_found: 404, wiki_rubric_frozen: 409, wiki_rubric_hash_changed: 409, wiki_rubric_source_changed: 409,
     wiki_judge_not_eligible: 409, wiki_judge_catalog_invalid: 503,
     wiki_rubric_drafting_unavailable: 503, wiki_rubric_model_output_invalid: 422, wiki_rubric_request_failed: 503,
