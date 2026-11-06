@@ -86,6 +86,14 @@ test('missing/duplicate/extra case output or invalid later rubric publishes no p
     await assert.rejects(api().draftWikiRubrics(h.args, options)); assert.equal(sent, 1); assert.equal(closed, 1); assert.deepEqual(h.store.read(), before);
   }
 });
+test('AI drafting rejects unavailable file evidence in a later case without publishing any partial drafts', async t => {
+  const h = setup(t), before = h.store.read(), results = JSON.parse(h.output()).results;
+  results[1].questions = [{ ...questions[0], evidence: 'files' }];
+  await assert.rejects(api().draftWikiRubrics(h.args, { ...h.options,
+    createExchange: () => ({ exchange: async () => h.envelope(JSON.stringify({ results })), close: async () => {} }) }),
+  { code: 'wiki_rubric_files_unavailable' });
+  assert.deepEqual(h.store.read(), before);
+});
 test('truncated/malformed/reflected-key responses fail closed without retry, logs or stored model output', async t => {
   const h = setup(t), before = h.store.read();
   for (const response of [h.envelope(h.output(), 'length'), h.envelope('not-json'), h.envelope(key),

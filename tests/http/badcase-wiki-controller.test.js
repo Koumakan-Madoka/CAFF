@@ -69,6 +69,29 @@ test('without an operator eligibility catalog manual drafting works but model se
   assert.equal(h.store.read().revision, 3);
 });
 
+test('manual and AI draft APIs return an explicit 422 for unsupported file evidence without a mutation', async t => {
+  const h = setup(t); h.seed(); const before = h.store.read(), caseId = before.cases[0].id;
+  const questions = [{ id: 'q1', question: '文件说明核验结果。', evidence: 'files' }];
+  await rejects(h.invoke({ confirmed: true, expectedRevision: before.revision, caseId, questions, scoringModel: null },
+    { pathname: '/api/wikiskill/rubric' }), 'wiki_rubric_files_unavailable');
+  h.options.runRubricDraft = async ({ store, caseId, expectedRevision }) => store.saveRubricDraft({ caseId, questions, model: 'deepseek/deepseek-v4-flash' }, expectedRevision);
+  await rejects(h.invoke({ confirmed: true, expectedRevision: before.revision, caseId }, { pathname: '/api/wikiskill/draft-rubric' }), 'wiki_rubric_files_unavailable');
+  assert.deepEqual(h.store.read(), before);
+});
+test('freeze API rechecks file evidence on a pre-fix draft and preserves its snapshot', async t => {
+  const h = setup(t); h.seed(); h.options.judgeCatalogFile = require('../helpers/wiki-judge-catalog.cjs')(h.root).configFile;
+  const before = h.store.read(), source = before.cases[0];
+  const rubric = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').createWikiRubric({ caseId: source.id, version: 1,
+    model: 'deepseek/deepseek-v4-flash', scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' }, actual: source.actual, expected: source.expected,
+    questions: [{ id: 'q1', question: '文件说明核验结果。', evidence: 'files' }] });
+  const file = path.join(h.config.globalRoot, 'snapshots', String(before.revision).padStart(12, '0') + '.json');
+  before.rubrics = [rubric];
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: crypto.createHash('sha256').update(JSON.stringify(before)).digest('hex'), record: before }));
+  const bytes = fs.readFileSync(file);
+  await rejects(h.invoke({ confirmed: true, expectedRevision: before.revision, rubricId: rubric.id, hash: rubric.hash },
+    { pathname: '/api/wikiskill/confirm-rubric' }), 'wiki_rubric_files_unavailable');
+  assert.deepEqual(h.store.read(), before); assert.deepEqual(fs.readFileSync(file), bytes);
+});
 test('archived cases retain frozen rubrics and remain readable without changing old snapshots', async t => {
   const h = setup(t); h.seed();
   const deletedId = 'text-6d9cbd07278d02cc72a12b5a358aad639d802a632679a43de0752e5eff7a3a92';

@@ -1,5 +1,5 @@
 const test = require('node:test'), assert = require('node:assert/strict');
-const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 const MODEL = 'deepseek/deepseek-v4-flash';
 const questions = [
@@ -15,8 +15,56 @@ function setup(t) {
     role: 'GPT', actual: 'Unclear result', expected: 'State the result and next step', message: 'Historical bad reply', traceExcerpt: '',
     traceState: 'missing', messageTruncated: false, traceTruncated: false }]).cases[0];
   const draft = (q = questions, revision = store.read().revision) => store.saveRubricDraft({ caseId: c.id, model: MODEL, scoringModel: { backend: 'deepseek', model: MODEL }, questions: q }, revision);
-  return { root, store, options, c, draft };
+  const register = rules => {
+    store.setReplaySplit({ caseIds: [c.id] });
+    return store.addReplayCase({ sourceCaseId: c.id, category: 'control', task: 'Report the result.',
+      fixture: { commit: 'a'.repeat(40), sourceCommit: 'b'.repeat(40), sourceSubdirectory: 'R1', filesHash: 'c'.repeat(64) },
+      request: { captureRoot: path.join(root, 'capture'), flagId: 'flag-' + crypto.createHash('sha256').update('p\0m').digest('hex'),
+        association: { projectId: 'p', conversationId: 'c', messageId: 'm', turnId: 't', agentId: 'role-family-gpt', taskId: 'task', checkpointId: 'cp', runId: 1 } },
+      rules, checkpointHash: 'd'.repeat(64) });
+  };
+  return { root, store, options, c, draft, register };
 }
+function seedHistoricalRubric(h, status) {
+  // Simulate an otherwise valid pre-fix snapshot, not a current write API.
+  const state = h.store.read(), file = path.join(h.options.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+  const rubric = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').createWikiRubric({ caseId: h.c.id, version: 1,
+    model: MODEL, scoringModel: { backend: 'deepseek', model: MODEL }, actual: h.c.actual, expected: h.c.expected,
+    questions: [{ ...questions[0], evidence: 'files' }] });
+  if (status === 'frozen') Object.assign(rubric, { status, confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Historical user approval' });
+  state.rubrics = [rubric];
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: crypto.createHash('sha256').update(JSON.stringify(state)).digest('hex'), record: state }));
+  return { rubric, file, bytes: fs.readFileSync(file) };
+}
+test('file assertions are rejected atomically unless this case registers file-literals-v1 collection', t => {
+  for (const rules of [null, { kind: 'completion-public-reply-v1' },
+    { kind: 'read-only-files-v1', readPaths: ['a.txt'], absentPaths: [], requiredReplyFragments: ['Ready'] },
+    { kind: 'public-reply-literals-v1', leadChars: 20, conclusionMarkers: ['Ready'], forbiddenTerms: [], forbiddenPatterns: [] }]) {
+    const h = setup(t); if (rules) h.register(rules);
+    const before = h.store.read();
+    assert.throws(() => h.draft([{ ...questions[0], evidence: 'files' }]), { code: 'wiki_rubric_files_unavailable' });
+    assert.deepEqual(h.store.read(), before);
+    const draft = h.draft([{ ...questions[0], evidence: 'trace' }, questions[1]]);
+    assert.equal(h.store.confirmRubric({ rubricId: draft.id, hash: draft.hash, confirmationRecord: 'Trace and reply remain supported' }, h.store.read().revision).status, 'frozen');
+  }
+});
+test('file-literals cases can save and freeze mixed file/trace/reply assertions unchanged', t => {
+  const h = setup(t); h.register({ kind: 'file-literals-v1', files: [{ path: 'a.txt', contains: ['Ready'], notContains: [] }] });
+  const q = [{ ...questions[0], evidence: 'files' }, { ...questions[1], evidence: 'trace' }, { ...questions[0], id: 'q3' }], draft = h.draft(q);
+  const frozen = h.store.confirmRubric({ rubricId: draft.id, hash: draft.hash, confirmationRecord: 'User confirmed file-backed assertions' }, h.store.read().revision);
+  assert.equal(frozen.hash, draft.hash); assert.deepEqual(frozen.questions, q);
+  assert.deepEqual(createWikiStore(h.options).getFrozenRubric(h.c.id, frozen.hash), frozen);
+});
+test('confirmation rechecks file capability for historical drafts without rewriting them', t => {
+  const h = setup(t), { rubric, file, bytes } = seedHistoricalRubric(h, 'draft'), before = h.store.read();
+  assert.throws(() => h.store.confirmRubric({ rubricId: rubric.id, hash: rubric.hash, confirmationRecord: 'New confirmation' }, before.revision), { code: 'wiki_rubric_files_unavailable' });
+  assert.deepEqual(h.store.read(), before); assert.deepEqual(fs.readFileSync(file), bytes);
+});
+test('historical frozen file assertions remain readable with their original hash and bytes, without migration', t => {
+  const h = setup(t), { rubric, file, bytes } = seedHistoricalRubric(h, 'frozen');
+  assert.deepEqual(createWikiStore(h.options).getFrozenRubric(h.c.id, rubric.hash), rubric);
+  assert.deepEqual(fs.readFileSync(file), bytes);
+});
 test('rubric draft is versioned, requires explicit human confirmation and preserves old snapshot bytes', t => {
   const h = setup(t), v1 = h.draft();
   assert.equal(v1.version, 1); assert.equal(v1.status, 'draft'); assert.match(v1.hash, /^[a-f0-9]{64}$/);

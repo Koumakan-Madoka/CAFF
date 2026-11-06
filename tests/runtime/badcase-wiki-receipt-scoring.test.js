@@ -65,6 +65,13 @@ test('requested file evidence is decoded/verified before judging and remains ref
   const h = fixture('files'); h.receipt.fileEvidence = [file()]; assert.equal((await h.score(fileRules)).status, 'pass');
   assert.equal(h.seen[0].evidence.files[0].content, 'active'); assert.equal(h.seen[0].evidence.traceSummary, undefined);
 });
+test('non-file rules cannot supply requested files even when an arbitrary receipt contains them', async () => {
+  for (const rules of [{ kind: 'completion-public-reply-v1' }, readRules, fixture().publicRules]) {
+    const h = fixture('files'); h.receipt.fileEvidence = [file()];
+    const result = await h.score(rules);
+    assert.equal(result.status, 'error'); assert.equal(result.reason, 'judge_evidence_unavailable'); assert.equal(h.seen.length, 0);
+  }
+});
 test('no trace/evidence is invented and environment/model completion keep their distinct outcomes', async () => {
   const h = fixture('trace'); delete h.receipt.toolCalls;
   assert.equal((await h.score()).status, 'error'); assert.equal(h.seen.length, 0);

@@ -112,6 +112,25 @@ test('assertion editor saves manual changes as new versions, offers eligible mod
   const second = panel().querySelectorAll('[data-rubric-question]')[1]; second.value = '回复解释依据。'; second.dispatchEvent(new h.window.Event('input', { bubbles: true }));
   await h.click('#c-1 [data-save-rubric]'); assert.deepEqual(h.saved().rubrics[0], frozen); assert.equal(h.saved().rubrics[1].version, 2);
 });
+test('assertion editor offers file evidence only for the same case with file-literals collection', async t => {
+  const h = setup(t);
+  h.saved().replayCases = [
+    { ...h.saved().replayCases[0], rules: { kind: 'file-literals-v1' } },
+    { ...h.saved().replayCases[1], rules: { kind: 'read-only-files-v1' } },
+    { sourceCaseId: 'c3', rules: { kind: 'public-reply-literals-v1' }, fixture: {}, request: { association: {} } },
+    { sourceCaseId: 'c4', rules: { kind: 'completion-public-reply-v1' }, fixture: {}, request: { association: {} } },
+  ];
+  await h.panel.load(); await h.click('[data-tab="cases"]');
+  for (let i = 1; i <= 5; i++) {
+    const values = [...h.root.querySelectorAll(`#c-${i} [data-rubric-evidence] option`)].map(o => o.value);
+    assert.deepEqual(values, i === 1 ? ['reply', 'trace', 'files'] : ['reply', 'trace'], 'case ' + i);
+  }
+  const question = h.root.querySelector('#c-1 [data-rubric-question]'); question.value = '文件呈现核验依据。'; question.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  const select = h.root.querySelector('#c-1 [data-rubric-evidence]'); select.value = 'files'; select.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  await h.click('#c-1 [data-save-rubric]'); assert.equal(h.posts().at(-1).body.questions[0].evidence, 'files');
+  await h.click('[data-cases-mode="list"]');
+  assert.equal(h.root.querySelector('#c-2 [data-rubric-evidence] option[value="files"]'), null);
+});
 test('AI assertion drafting is explicit, annotation-only and never freezes or chooses an ineligible model', async t => {
   const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
   const h = setup(t, (url, options, saved) => {

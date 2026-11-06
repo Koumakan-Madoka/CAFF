@@ -142,6 +142,15 @@ function appendEvent(state: any, event: any) {
   state.events.push(saved); return saved;
 }
 
+function assertRubricFileEvidence(state: any, rubric: WikiRubric) {
+  // The receipt scorer collects standalone file text only for file-literals-v1.
+  // Apply at write/confirmation time, not while reading immutable old versions.
+  if (rubric.questions.some(q => q.evidence === 'files')
+    && state.replayCases?.find((c: any) => c.sourceCaseId === rubric.caseId)?.rules?.kind !== 'file-literals-v1') {
+    throw fail('wiki_rubric_files_unavailable');
+  }
+}
+
 export function createWikiStore(options: any) {
   options = resolveWikiStorageOptions(options);
   const global = options?.globalRoot !== undefined;
@@ -592,8 +601,10 @@ export function createWikiStore(options: any) {
           const source = state.cases.find((c: any) => c.id === input.caseId);
           if (!source) throw fail('wiki_unknown_case');
           const previous = (state.rubrics || []).filter((v: WikiRubric) => v.caseId === source.id);
-          return createWikiRubric({ ...input, actual: source.actual, expected: source.expected,
+          const rubric = createWikiRubric({ ...input, actual: source.actual, expected: source.expected,
             version: Math.max(0, ...previous.map((v: WikiRubric) => v.version)) + 1 });
+          assertRubricFileEvidence(state, rubric);
+          return rubric;
         });
         (state.rubrics ??= []).push(...rubrics);
         for (const rubric of rubrics) appendEvent(state, { type: 'rubric-drafted', caseIds: [rubric.caseId], rubricId: rubric.id, hash: rubric.hash });
@@ -612,6 +623,7 @@ export function createWikiStore(options: any) {
         if (rubric.hash !== input.hash) throw fail('wiki_rubric_hash_changed');
         const source = state.cases.find((c: any) => c.id === rubric.caseId);
         if (!source || rubric.sourceHash !== wikiRubricSourceHash(source.actual, source.expected)) throw fail('wiki_rubric_source_changed');
+        assertRubricFileEvidence(state, rubric);
         Object.assign(rubric, { status: 'frozen', confirmedAt: new Date().toISOString(), confirmationRecord: input.confirmationRecord });
         validateWikiRubric(rubric, true);
         appendEvent(state, { type: 'rubric-confirmed', caseIds: [source.id], rubricId: rubric.id, hash: rubric.hash });
