@@ -813,7 +813,9 @@ test('Windows native composed collector publishes before real executor fresh/res
   const { execFileSync } = require('node:child_process');
   const digest = b => require('node:crypto').createHash('sha256').update(b).digest('hex');
   const env = setupExecutorTest(t, { reuseEnabled: true });
-  const projectDir = path.join(env.tempDir, 'project'), captureRoot = path.join(env.tempDir, 'capture'), projectId = 'windows-fixture';
+  // Deliberately collide with the controlled resume turn ID, regardless of TEMP.
+  // S1's win-resume temp root exposed this pre-existing fixture assumption.
+  const projectDir = path.join(env.tempDir, 'win-resume-project'), captureRoot = path.join(env.tempDir, 'capture'), projectId = 'windows-fixture';
   fs.mkdirSync(projectDir); fs.mkdirSync(path.join(env.tempDir, 'named-sessions'));
   const git = (...args) => execFileSync('git', ['-C', projectDir, ...args], { windowsHide: true,
     env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(env.tempDir, 'absent-global'), GIT_TEMPLATE_DIR: '' } });
@@ -831,6 +833,12 @@ test('Windows native composed collector publishes before real executor fresh/res
   const collector = { captureTurnCheckpoint(input) { const pending = nativeCollector.captureTurnCheckpoint(input); pendingCaptures.push(pending); return pending; } };
   const bytes = Buffer.from([{ type: 'session', version: 3, id: 's', cwd: projectDir },
     { type: 'message', id: 'u', parentId: null, message: { role: 'user', content: 'fixture history', timestamp: 1 } }].map(x => JSON.stringify(x)).join('\r\n') + '\r\n');
+  // Independent byte oracle: only the literal controlled turn value changes;
+  // all JSONL framing, line endings, unrelated fields and source bytes survive.
+  const expectedResumeBytes = Buffer.from(bytes.toString('utf8').split('win-resume').join('{{CAFF_CHAT_TURN_ID}}'));
+  const expectedSessionTurnReplacements = bytes.toString('utf8').split('win-resume').length - 1;
+  assert.ok(expectedSessionTurnReplacements > 0);
+  assert.notDeepEqual(expectedResumeBytes, bytes);
   const seen = [];
   const observe = record => {
     const cp = service.store.loadLatestCheckpoint(projectId, projectDir); assert.ok(cp, 'manifest on disk before startRun');
@@ -838,8 +846,12 @@ test('Windows native composed collector publishes before real executor fresh/res
     assert.equal(cp.replayInput.complete, false); assert.equal(cp.strictEvalEligible, false);
     assert.equal(cp.files['file.txt'].hash, digest(record.options.resume ? 'before resume' : 'before fresh'));
     assert.equal(cp.turnId, record.options.resume ? 'win-resume' : 'win-fresh');
-    if (record.options.resume) assert.deepEqual(service.store.readBlob(projectId, cp.replayInput.sessionBlobHash), bytes);
-    else fs.writeFileSync(resolveSessionPath(record.options.session, record.options.agentDir), bytes);
+    if (record.options.resume) {
+      assert.deepEqual(service.store.readBlob(projectId, cp.replayInput.sessionBlobHash), expectedResumeBytes);
+      assert.equal(cp.replayInput.sessionBlobHash, digest(expectedResumeBytes));
+      assert.ok(cp.replayInput.controlledReplacements.some(r => r.name === 'CAFF_CHAT_TURN_ID' && r.count === expectedSessionTurnReplacements));
+      assert.deepEqual(fs.readFileSync(resolveSessionPath(record.options.session, record.options.agentDir)), bytes);
+    } else fs.writeFileSync(resolveSessionPath(record.options.session, record.options.agentDir), bytes);
     fs.writeFileSync(path.join(projectDir, 'file.txt'), record.options.resume ? 'after resume' : 'before resume');
     seen.push(cp);
   };
@@ -848,7 +860,7 @@ test('Windows native composed collector publishes before real executor fresh/res
     await runTurn({ executor: env.createExecutor(store, { badcaseCapture: collector, onStartRun: observe }), conversation, agent, store, turnId: `win-${mode}` });
     await Promise.all(pendingCaptures); // Drain even a deliberately mutated executor before fixture cleanup.
     const message = store.listMessages(conversation.id).filter(m => m.role === 'assistant').at(-1);
-    assert.equal(message.status, 'completed', message.metadata?.errorMessage); assert.equal(message.metadata.badcaseCheckpointId, seen[index].checkpointId);
+    assert.equal(message.status, 'completed', message.errorMessage); assert.equal(message.metadata.badcaseCheckpointId, seen[index].checkpointId);
   }
   const old = service.store.loadLatestCheckpoint(projectId, projectDir), save = service.store.saveCheckpoint;
   service.store.saveCheckpoint = () => { throw Error('PRIVATE_WRITE_SENTINEL'); };

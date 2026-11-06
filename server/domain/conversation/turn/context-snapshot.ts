@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { redactTraceKnownValues } from '../../runtime/badcase-capture/wiki-trace';
 
 const SNAPSHOT_SCHEMA_VERSION = 2;
 const APPROX_CHARS_PER_TOKEN = 4;
@@ -268,7 +269,21 @@ function sectionIsTruncated(section: ContextPromptSectionInput) {
 export function createAgentContextSnapshot(input: any = {}) {
   const deliveryMode = normalizeDeliveryMode(input.deliveryMode, 'fresh');
   const retainedSessionPrefix = normalizeRetainedSessionPrefix(input.retainedSessionPrefix, deliveryMode);
-  const sections = (Array.isArray(input.sections) ? input.sections : [])
+  let snapshotSections = Array.isArray(input.sections) ? input.sections : [];
+  let archiveContext: any;
+  if (typeof input.archiveKnownKeyValues === 'function') {
+    try {
+      const safe = redactTraceKnownValues(snapshotSections, input.archiveKnownKeyValues().values);
+      archiveContext = { sections: safe.value, redactionCount: safe.count, policy: 'known_values_only' };
+      snapshotSections = safe.value;
+    } catch {
+      // Never break chat or persist unchecked original content when the
+      // instance's known-value inventory cannot be read. Missing is explicit.
+      archiveContext = { unavailableReason: 'known_key_inventory_unavailable' };
+      snapshotSections = snapshotSections.map((s: any) => ({ ...s, content: '【上下文未归档：已知 key 清单不可用】' }));
+    }
+  }
+  const sections = snapshotSections
     .filter((section: any) => section && String(section.content || '').trim())
     .map((section: ContextPromptSectionInput, index: number) => {
       const sectionKey = normalizeKey(section.sectionKey || `section_${index + 1}`);
@@ -330,6 +345,7 @@ export function createAgentContextSnapshot(input: any = {}) {
     totalApproxTokens,
     totalByteSize,
     sections,
+    ...(archiveContext ? { archiveContext } : {}),
   };
 }
 
