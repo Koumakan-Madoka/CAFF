@@ -148,6 +148,7 @@
         group: out ? 'out' : splitName[c.split] ? c.split : row?.proposedSplit || 'out', prop: !out && !c.split && !!row?.proposedSplit };
     }
     function readiness(cases) {
+      if (cases.some(c => patternKey(c) === 'pending')) return '尚不能评测候选：先确认模式标签；旧的分组和结果不等于归类已确认';
       const ready = cases.filter(c => pipeline(c).inLibrary && isGpt(c) && !sourceOnly(c));
       const gate = ready.filter(c => c.split === 'gate'), test = ready.filter(c => c.split === 'test' && hasScene(c));
       const control = D.cases.some(c => !cases.includes(c) && c.split === 'gate' && pipeline(c).inLibrary && isGpt(c) && !sourceOnly(c) && patternKey(c) !== 'pending');
