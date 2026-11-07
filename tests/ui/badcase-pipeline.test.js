@@ -38,12 +38,41 @@ test('steps 6–9 and funnels use the actual pipeline projection; frozen asserti
 test('missing assertions, incompatible run evidence, pending reproduction and unscored raw replies are distinct, never fake library readiness', t => {
   const h = setup(t); const row = { caseId: 'c1', level: 'run', stopReason: null, assertion: { status: 'missing', version: null, questions: [] }, replay: { status: 'pending' }, original: { valid: 0, unscored: 1, invalid: 0, errors: 0, reproduced: false }, inLibrary: false };
   h.data.pipelineStates = [row]; h.panel.render(h.data); let card = h.root.querySelector('[data-case-id="c1"]');
-  assert.match(card.textContent, /没有冻结.*断言/); assert.match(card.textContent, /待复现/); assert.match(card.textContent, /有效.*1.*待判分/);
+  assert.match(card.textContent, /没有冻结.*断言/); assert.match(card.textContent, /待判分.*有效.*1/); assert.doesNotMatch(card.textContent, /待复现/);
   assert.equal(card.querySelector('.stepper').children[8].className, 'pending');
   row.assertion = { status: 'incompatible', version: 1, model: 'deepseek/deepseek-v4-flash', questions: [{ id: 'q1', question: 'continued', evidence: 'trace' }] };
   h.panel.render(h.data); card = h.root.querySelector('[data-case-id="c1"]');
   assert.equal(card.querySelector('.stepper').children[5].className, 'warn'); assert.match(card.textContent, /run 级.*只能.*回复.*另存.*版/s);
   assert.equal(card.querySelector('.stepper').children[8].className, 'pending'); assert.equal(h.calls.length, 0);
+});
+test('minority/tied failures show counts and the unmet majority condition, never claim all originals passed', t => {
+  const h = setup(t), row = { caseId: 'c2', level: 'trace', assertion: { status: 'frozen', version: 1, questions: [] }, replay: { status: 'supported' }, original: { valid: 10, pass: 9, fail: 1, unscored: 0, invalid: 2, errors: 1, reproduced: false }, inLibrary: false };
+  h.data.pipelineStates = [row];
+  for (const [pass, fail] of [[9, 1], [5, 5]]) {
+    Object.assign(row.original, { pass, fail }); h.panel.render(h.data); h.panel.focus(19);
+    const card = h.root.querySelector('[data-case-id="c2"]');
+    assert.ok(card.textContent.includes(`原版 ${pass}/10 通过 · ${fail} 不通过`));
+    assert.match(card.textContent, /不通过未超过有效次数的一半/); assert.doesNotMatch(card.textContent, /原版均通过|已复现问题/);
+    assert.notEqual(card.querySelector('.stepper').children[7].className, 'done');
+    assert.equal(card.querySelector('.stepper').children[8].className, 'pending');
+  }
+  assert.equal(h.calls.length, 0);
+});
+test('unscored run output says awaiting scoring only; freezing or loading never promises or starts automatic scoring', t => {
+  const h = setup(t);
+  h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), decision: { hash: 'd'.repeat(64), kind: 'single', level: 'run', cutStep: 1 }, recommendation: {}, request: { state: { steps: [] } } }];
+  h.data.runReplays = [{ id: 'run-raw', caseId: 'c1', traceHash: 'a'.repeat(64), decisionHash: 'd'.repeat(64), status: 'reached', variant: { kind: 'original' } }];
+  const row = { caseId: 'c1', level: 'run', assertion: { status: 'frozen', version: 4, questions: [{ id: 'q1', question: 'The reply is plain.', evidence: 'reply' }] }, replay: { status: 'supported', cutStep: 1 }, original: { valid: 0, outputs: 1, unscored: 1, invalid: 0, errors: 0, reproduced: false }, inLibrary: false };
+  h.data.pipelineStates = [row]; h.panel.render(h.data);
+  const card = h.root.querySelector('[data-case-id="c1"]');
+  assert.match(card.querySelector('.next-line').textContent, /待判分/); assert.doesNotMatch(card.textContent, /待复现|已复现问题/);
+  assert.match(card.querySelector('[data-run-details] summary').textContent, /待判分/);
+  assert.notEqual(card.querySelector('.stepper').children[7].className, 'done');
+  assert.equal(card.querySelector('.stepper').children[8].className, 'pending');
+  assert.doesNotMatch(h.root.textContent, /冻结后系统会.*判分|冻结后.*自动判分|系统会自动.*评分/);
+  assert.equal(card.querySelector('[data-draft-rubric],[data-freeze-rubric],[data-start-replay]'), null); assert.equal(h.calls.length, 0);
+  row.original.outputs = row.original.unscored = 0; h.data.runReplays = []; h.panel.render(h.data);
+  assert.match(h.root.querySelector('.next-line').textContent, /待复现|受信操作方/);
 });
 test('pattern labels require explicit consent, bind the displayed hash, and support legacy holdouts and unclassified without learning', t => {
   const sent = [], prompts = []; let accept = false;

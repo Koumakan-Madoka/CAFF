@@ -112,6 +112,54 @@ test('assertion editor saves manual changes as new versions, offers eligible mod
   const second = panel().querySelectorAll('[data-rubric-question]')[1]; second.value = '回复解释依据。'; second.dispatchEvent(new h.window.Event('input', { bubbles: true }));
   await h.click('#c-1 [data-save-rubric]'); assert.deepEqual(h.saved().rubrics[0], frozen); assert.equal(h.saved().rubrics[1].version, 2);
 });
+test('freeze button explains each disabled condition beside it and preserves the existing eligibility rules', async t => {
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  const model = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' };
+  for (const scenario of ['unsaved', 'no-model', 'ineligible', 'frozen', 'dirty-text', 'dirty-model', 'eligible']) {
+    const h = setup(t), c = h.saved().cases[0];
+    h.saved().eligibleJudges = [model];
+    const rubric = createWikiRubric({ caseId: c.id, actual: c.actual, expected: c.expected, version: 1, model: model.model, questions: [{ id: 'q1', question: '回复先给结论。', evidence: 'reply' }], scoringModel: scenario === 'no-model' || scenario === 'dirty-model' ? null : scenario === 'ineligible' ? { backend: 'jev', model: 'jev-latest' } : model });
+    if (scenario === 'frozen') rubric.status = 'frozen';
+    h.saved().rubrics = scenario === 'unsaved' ? [] : [rubric];
+    await h.panel.load(); await h.click('[data-tab="cases"]');
+    if (scenario === 'frozen') await h.click('#c-1 [data-edit-rubric]');
+    const panel = h.root.querySelector('#c-1 [data-rubric-panel]');
+    if (scenario === 'dirty-text') {
+      const input = panel.querySelector('[data-rubric-question]'); input.value = '尚未保存的修订。'; input.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+    }
+    if (scenario === 'dirty-model') {
+      const select = panel.querySelector('[data-rubric-model]'); select.value = 'deepseek'; select.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+    }
+    const button = panel.querySelector('[data-freeze-rubric]'), reason = button.parentElement.querySelector('[data-freeze-rubric-reason]');
+    assert.ok(reason, `${scenario}: a visible adjacent explanation is required, not only a tooltip`);
+    assert.equal(button.disabled, scenario !== 'eligible'); assert.equal(reason.hidden, scenario === 'eligible');
+    assert.equal(button.getAttribute('aria-describedby'), reason.id);
+    const expected = { unsaved: /尚未保存草稿/, 'no-model': /未选择打分模型.*保存/, ineligible: /打分模型.*不在.*达标/, frozen: /最新.*不是草稿.*新草稿/, 'dirty-text': /未保存的修改.*保存/, 'dirty-model': /未保存的修改.*打分模型.*保存/ };
+    if (expected[scenario]) assert.match(reason.textContent, expected[scenario], scenario);
+    else assert.equal(reason.textContent, '');
+    if (button.disabled) { button.click(); await tick(); assert.equal(h.posts().length, 0, scenario); }
+    await h.click('[data-cases-mode="list"]');
+    const rerendered = h.root.querySelector('#c-1 [data-freeze-rubric-reason]');
+    assert.equal(rerendered.hidden, scenario === 'eligible');
+    if (expected[scenario]) assert.match(rerendered.textContent, expected[scenario]);
+  }
+});
+test('freeze reason tracks pending and failed writes without enabling or retrying them', async t => {
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  let rejectWrite;
+  const h = setup(t, (_url, options) => options.method === 'POST' ? new Promise((_resolve, reject) => { rejectWrite = reject; }) : undefined);
+  const c = h.saved().cases[0], model = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' };
+  h.saved().eligibleJudges = [model]; h.saved().rubrics = [createWikiRubric({ caseId: c.id, actual: c.actual, expected: c.expected, version: 1, model: model.model, questions: [{ id: 'q1', question: '回复先给结论。', evidence: 'reply' }], scoringModel: model })];
+  await h.panel.load(); await h.click('[data-tab="cases"]'); await h.click('#c-1 [data-save-rubric]');
+  const panel = () => h.root.querySelector('#c-1 [data-rubric-panel]');
+  assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, true);
+  assert.match(panel().querySelector('[data-freeze-rubric-reason]')?.textContent || '', /正在.*请稍候/);
+  rejectWrite(Error('synthetic-rejection')); await tick(); await tick();
+  assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, true);
+  assert.match(panel().querySelector('[data-freeze-rubric-reason]').textContent, /不可写.*刷新/);
+  await h.click('[data-cases-mode="list"]');
+  assert.match(panel().querySelector('[data-freeze-rubric-reason]').textContent, /不可写.*刷新/); assert.equal(h.posts().length, 1);
+});
 test('assertion editor offers file evidence only for the same case with file-literals collection', async t => {
   const h = setup(t);
   h.saved().replayCases = [

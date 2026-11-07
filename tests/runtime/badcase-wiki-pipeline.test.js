@@ -8,7 +8,7 @@ function fixture() {
   const rubric = { ...createWikiRubric({ caseId: c.id, actual: c.actual, expected: c.expected, model: 'deepseek/deepseek-v4-flash', version: 1, questions: [{ id: 'q1', question: 'The reply opens with a plain conclusion.', evidence: 'reply' }], scoringModel: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' } }), status: 'frozen', confirmedAt: '2026-11-06T00:00:00.000Z', confirmationRecord: 'synthetic consent' };
   const replay = { id: 'replay-1', sourceCaseId: c.id, checkpointHash: H('b'), request: { association: { checkpointId: 'cp' } } };
   const state = { cases: [c], rubrics: [rubric], replayCases: [replay], versions: [], dehydrations: [] };
-  const comparison = { id: 'comparison-1', createdAt: '2026-11-06T01:00:00.000Z', kind: 'wiki-staged-batch-comparison-v2', model: 'openai-codex/gpt-6.1-sol', cases: [{ sourceCaseId: c.id, replayId: replay.id, comparison: { checkpointHash: replay.checkpointHash }, rubric, runs: [{ variant: 'original', status: 'fail' }, { variant: 'original', status: 'pass' }, { variant: 'original', status: 'error' }, { variant: 'candidate', status: 'fail' }] }] };
+  const comparison = { id: 'comparison-1', createdAt: '2026-11-06T01:00:00.000Z', kind: 'wiki-staged-batch-comparison-v2', model: 'openai-codex/gpt-6.1-sol', cases: [{ sourceCaseId: c.id, replayId: replay.id, comparison: { checkpointHash: replay.checkpointHash }, rubric, runs: [{ variant: 'original', status: 'fail' }, { variant: 'original', status: 'fail' }, { variant: 'original', status: 'pass' }, { variant: 'original', status: 'error' }, { variant: 'candidate', status: 'fail' }] }] };
   const checks = [{ caseId: c.id, level: 'trace', status: 'supported', checkpointHash: replay.checkpointHash }];
   return { c, rubric, replay, state, comparison, checks };
 }
@@ -17,7 +17,7 @@ test('pipeline projects frozen assertions, real replay support and one independe
   const h = fixture(), before = JSON.stringify(h), row = project(h);
   assert.equal(row.assertion.status, 'frozen'); assert.equal(row.assertion.version, 1); assert.equal(row.assertion.model, 'deepseek/deepseek-v4-flash');
   assert.deepEqual(row.assertion.questions, h.rubric.questions); assert.equal(row.replay.status, 'supported');
-  assert.equal(row.original.valid, 2); assert.equal(row.original.pass, 1); assert.equal(row.original.fail, 1); assert.equal(row.original.errors, 1);
+  assert.equal(row.original.valid, 3); assert.equal(row.original.pass, 1); assert.equal(row.original.fail, 2); assert.equal(row.original.errors, 1);
   assert.equal(row.original.reproduced, true); assert.equal(row.original.comparisonId, h.comparison.id); assert.equal(row.inLibrary, true);
   assert.equal(JSON.stringify(h), before);
 });
@@ -54,9 +54,25 @@ function runFixture() {
   h.comparison.cases[0].execution = { level: 'run', traceBundleHash: run.traceHash, dehydrationHash: run.decisionHash };
   return { ...h, d, run };
 }
+test('trace and run reproduction requires strictly more than half of valid original scores to fail, without pooling other statuses', () => {
+  for (const make of [fixture, runFixture]) for (const [pass, fail, expected] of [[0, 0, false], [10, 0, false], [9, 1, false], [1, 1, false], [5, 5, false], [4, 6, true], [1, 2, true], [0, 1, true]]) {
+    const h = make();
+    h.comparison.cases[0].runs = [
+      ...Array.from({ length: pass }, () => ({ variant: 'original', status: 'pass' })),
+      ...Array.from({ length: fail }, () => ({ variant: 'original', status: 'fail' })),
+      ...['invalid', 'error', 'not-run'].flatMap(status => Array.from({ length: 10 }, () => ({ variant: 'original', status }))),
+      ...Array.from({ length: 10 }, () => ({ variant: 'candidate', status: 'fail' })),
+    ];
+    const before = JSON.stringify(h), row = project(h);
+    assert.equal(row.original.valid, pass + fail);
+    assert.equal(row.original.reproduced, expected, `${row.level}: pass ${pass}, fail ${fail}`);
+    assert.equal(row.inLibrary, expected, `${row.level}: library eligibility follows reproduction`);
+    assert.equal(JSON.stringify(h), before);
+  }
+});
 test('run original raw outputs are unscored, candidate-only/error/reserved records do not create invalid baselines', () => {
   const h = runFixture(), row = project(h, { comparisons: [], runReplays: [h.run, { ...h.run, status: 'invalid' }, { ...h.run, status: 'error' }] });
-  assert.equal(row.original.unscored, 1); assert.equal(row.original.invalid, 1); assert.equal(row.original.errors, 1); assert.equal(row.original.valid, 0); assert.equal(row.inLibrary, false);
+  assert.equal(row.original.reproduced, false); assert.equal(row.original.unscored, 1); assert.equal(row.original.invalid, 1); assert.equal(row.original.errors, 1); assert.equal(row.original.valid, 0); assert.equal(row.inLibrary, false);
   for (const rows of [[{ ...h.run, variant: { kind: 'candidate' }, status: 'invalid' }], [{ ...h.run, status: 'error' }], [{ ...h.run, status: 'reserved' }]]) assert.notEqual(project(h, { comparisons: [], runReplays: rows }).stopReason, 'invalid_baseline');
   assert.equal(project(h, { comparisons: [], runReplays: [{ ...h.run, status: 'invalid', baselineStatus: 'no_valid_output' }] }).stopReason, 'invalid_baseline');
   assert.equal(project(h, { runReplays: [h.run] }).inLibrary, true);

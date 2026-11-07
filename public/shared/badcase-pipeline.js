@@ -89,12 +89,12 @@
     }
     function originalText(c) {
       const o = pipeline(c).original;
-      return o.valid ? `原版 ${o.pass}/${o.valid} 通过 · ${o.fail} 不通过 · 无效 ${o.invalid} · 错误 ${o.errors}；${o.reproduced ? '已复现问题' : '未复现问题（原版均通过）'}；仅此批次，不拼接其他执行`
-        : `待复现：${o.unscored ? `原版有效输出 ${o.unscored} 次 · 待判分` : '还没有与当前冻结断言匹配的有效原版判分'}；无效 ${o.invalid} · 请求/评分错误 ${o.errors}${o.unknown ? ' · 结果未知 ' + o.unknown : ''}；有效输出不等于通过`;
+      return o.valid ? `原版 ${o.pass}/${o.valid} 通过 · ${o.fail} 不通过 · 无效 ${o.invalid} · 错误 ${o.errors}；${o.reproduced ? '已复现问题（不通过超过有效次数的一半）' : '未达到复现条件（不通过未超过有效次数的一半）'}；仅此批次，不拼接其他执行`
+        : `${o.unscored ? `待判分：原版有效输出 ${o.unscored} 次` : '待复现：还没有与当前冻结断言匹配的有效原版判分'}；无效 ${o.invalid} · 请求/评分错误 ${o.errors}${o.unknown ? ' · 结果未知 ' + o.unknown : ''}；有效输出不等于通过`;
     }
     function assertionPanel(c) {
       const a = pipeline(c).assertion;
-      return `<section class="dehydration-panel" data-assertion-slot="${esc(c.id)}"><h4>断言 · 评分 v2</h4><p>${esc(assertionText(c))}</p>${a.questions.map(q => `<div class="assertion-readonly"><b>${esc(q.id)}</b> · 依据：${esc({ reply: '回复', trace: '轨迹', files: '文件' }[q.evidence] || q.evidence)}<p>${esc(q.question)}</p></div>`).join('')}<a class="btn small" href="#case-${c.n}">去「用例」页${a.version ? '查看或另存断言' : '起草断言'}</a><p class="hint">这里只读展示冻结版本；跳转不调用模型或启动评测。</p></section>`;
+      return `<section class="dehydration-panel" data-assertion-slot="${esc(c.id)}"><h4>断言 · 评分 v2</h4><p>${esc(assertionText(c))}</p>${a.questions.map(q => `<div class="assertion-readonly"><b>${esc(q.id)}</b> · 依据：${esc({ reply: '回复', trace: '轨迹', files: '文件' }[q.evidence] || q.evidence)}<p>${esc(q.question)}</p></div>`).join('')}<a class="btn small" href="#case-${c.n}">去「用例」页${a.version ? '查看或另存断言' : '起草断言'}</a><p class="hint">这里只读展示冻结版本；跳转不调用模型或启动评测。冻结断言不会自动启动判分；「原版复现」只反映已有评测结果。</p></section>`;
     }
     function plan(c) {
       const has = hasScene(c), old = sourceOnly(c), other = !isGpt(c), cs = D.caseStates?.find(s => s.caseId === c.id), r = dehydration(c), d = r?.decision;
@@ -192,7 +192,7 @@
     }
     function replayPanel(c) {
       const rows = caseRuns(c), active = activeRuns(c), excluded = rows.filter(r => excludedRun(c, r)); if (!rows.length) return '';
-      const labels = { reached: '有效输出（未判分）', invalid: '无效 · 不算通过也不算不通过', error: '请求失败（不冒充模型答案）', reserved: '已占用 · 结果未知，不自动重试' };
+      const labels = { reached: '有效输出（待判分）', invalid: '无效 · 不算通过也不算不通过', error: '请求失败（不冒充模型答案）', reserved: '已占用 · 结果未知，不自动重试' };
       return `<section class="dehydration-panel" data-run-panel="${esc(c.id)}"><h4>单次 run 级回放</h4>${baselineMissing(c) ? '<p class="pill warn">原版无有效输出：无效测试用例，不进门槛和初筛。</p>' : ''}<p>有效输出 ${active.filter(r => r.status === 'reached').length} · 无效 ${active.filter(r => r.status === 'invalid').length}（不算通过也不算不通过） · 请求失败 ${active.filter(r => r.status === 'error').length} · 结果未知 ${active.filter(r => r.status === 'reserved').length}。单次原始回放不表示判分通过；正式判分见「原版复现」，不在本页重新判分。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次。` : ''}</p>${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>${r.variant.kind === 'original' ? '原版' : '候选 ' + esc(r.variant.id)} · ${excludedRun(c, r) ? '已被用户改判，不计入（历史回放）' : esc(labels[r.status] || r.status)} · 查看完整输出及实际请求</summary><p>${esc(r.model)} · thinking ${esc(r.thinking)} · 模型调用 ${r.modelCalls ?? '未知'} · 工具执行 ${r.toolExecutions ?? '未知'}</p><p class="trace-hash mono">请求 SHA-256：${esc(r.id)}<br>结果 SHA-256：${esc(r.resultHash || '未取得')}</p><p class="hint">当前分类以 accounting 为准；原始包中的历史分类只供审计，不参与当前计数。</p><p>${['json', 'md'].map(format => `<a class="btn small" data-run-export="${format}" href="/api/wikiskill/cases/${encodeURIComponent(c.id)}/run-replays/${encodeURIComponent(r.id)}/export.${format}" download>导出回放 ${format === 'json' ? 'JSON' : 'Markdown'}</a>`).join(' ')}</p><div data-run-body></div></details>`).join('')}</section>`;
     }
     async function loadRun(details) {

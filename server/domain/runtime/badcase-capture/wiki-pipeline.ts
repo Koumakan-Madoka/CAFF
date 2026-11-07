@@ -1,6 +1,7 @@
 // Read-only page projection over already verified Wiki records. No scoring,
 // model calls, regrouping or mutation. A raw reply is not a reproduced failure;
-// only an original v2 fail under the current frozen rubric can prove that.
+// only a strict majority of valid original v2 scores failing under the current
+// frozen rubric can prove that. This projects existing results; it starts no checks.
 import { wikiGoalCaseNumber } from './wiki-suite';
 import { wikiSourceFamily } from './wiki-evaluation-suite';
 import { wikiRubricSourceHash } from './wiki-rubric';
@@ -72,7 +73,7 @@ export function projectWikiPipelineStates({ state, comparisons = [], runReplays 
     const runs = match?.row.runs.filter((r: any) => r.variant === 'original') || [];
     const pass = runs.filter((r: any) => r.status === 'pass').length, fail = runs.filter((r: any) => r.status === 'fail').length;
     const original = { source: match ? 'comparison' : originals.length ? 'run-replay' : null, comparisonId: match?.batch.id ?? null,
-      valid: pass + fail, pass, fail, reproduced: fail > 0, outputs: level === 'run' ? originals.filter((r: any) => r.status === 'reached').length : pass + fail,
+      valid: pass + fail, pass, fail, reproduced: fail > (pass + fail) / 2, outputs: level === 'run' ? originals.filter((r: any) => r.status === 'reached').length : pass + fail,
       unscored: match ? 0 : originals.filter((r: any) => r.status === 'reached').length,
       invalid: (match ? runs : originals).filter((r: any) => r.status === 'invalid').length,
       errors: (match ? runs : originals).filter((r: any) => r.status === 'error').length,
