@@ -4,7 +4,7 @@
 
 轨迹包是 Wiki 拥有的证据，不是聊天 Inspector 的展示投影，也不是现场可回放、已复现或可判分的证明。现有 checkpoint 封存记录仍保留自己的完整性/可回放限制。
 
-本契约覆盖标记入口、轨迹组装、不可覆盖存储和显式授权的只读历史回填操作入口。Badcase 页面、文件导出、DeepSeek 推荐的受信执行入口、页面确认冻结及单次 run 级回放已接入；新分组先生成提议，明确用户确认后由受信入口应用有效 run 分组并保留冻结 trace 组别；新标记的现场元数据已从本轮 schemaVersion 2 检查点接入，旧检查点缺失如实披露；不能把展示/导出或合成测试当成可回放、可评分或已入库的证明。
+本契约描述截至 2026-11-07 的代码行为，不代表已部署或已获最终接受。覆盖标记、不可覆盖轨迹、授权历史回填、脱水、按模式首次分组、Badcase 页、离线预检，以及无现场 run 的单次执行；正式计划/判分见[评分契约](wikiskill-scoring.md)。历史重分组保留原确认和冻结 trace 组别，新题另走首次分组，不重新随机旧题。新标记的现场元数据来自 schemaVersion 2 检查点，旧缺失如实披露；不能把展示、导出、元数据齐全或合成测试当成可回放、已复现或已入库的证明。
 
 ## 数据流与签名
 
@@ -52,10 +52,12 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 ## Badcase 页与导出
 
-独立页签位于 WikiSkill 顶部的 Badcase，`#badcases` 可直达，`#bc-<显示编号>` 可定位。原知识库默认页和「用例」的归类/旧回放题入口保留。页面使用 `public/shared/badcase-pipeline.js` 的独立组件（加载只读，确认须用户动作），避免侵入评分 v2 的编辑器；每张卡片仅预留 `data-assertion-slot`，不伪造断言、模型建议、分组确认或新版评测结果。
+独立页签位于 WikiSkill 顶部的 Badcase，`#badcases` 可直达，`#bc-<显示编号>` 可定位。原知识库默认页和「用例」的归类/旧回放题入口保留。页面使用 `public/shared/badcase-pipeline.js` 的独立组件（加载只读，确认须用户动作），断言编辑仍在「用例」页；详情只读展示真实冻结版本、模型及断言，不伪造模型建议、确认或评测结果。
 
-- 九步：标记、现场、脱水、归类、分组、断言、回放检查、原版复现、入库。按下一步责任方分组，可切换列表；支持问题/期望/来源/编号搜索和阶段、模型筛选。保留 #4、#10、#14 的旧题来源身份，不把样例仓库当原现场。非 GPT 来源单列，只报告。
-- trace / run 两条漏斗分别展示实际封存、归档及用户确认可脱水的计数；尚未接入的新版检查/断言/入库计数显式为零，不把旧字面评测或 replay 登记当作通过证据。`run 级 · 待脱水确认` 不是已经获得测试资格。
+- 九步：标记、现场、脱水、归类、分组、断言、回放检查、原版复现、入库。约 1680px 最大内容区；左列表支持搜索及「等你、系统、已入库、到此为止」筛选，右侧选中详情在管理页内层滚动容器中固定并独立滚动；≤980px 上下排列。保留 #4、#10、#14 旧题来源身份，不把样例仓库当原现场；非 GPT 只报告。
+- 分组区先选模式，再显示训练/门槛/测试/不参与四栏；实线为已生效，虚线为新提议，两种确认入口并入看板。全部模式只给数量和候选可评测性，不混排各模式用例；模式选择同时过滤列表。旧对照表改为默认折叠的审计信息。
+- 层级说明默认一行、可展开；trace/run 漏斗并排，断言、预检、复现及入库计数来自 `pipelineStates`，不把旧字面评测或 replay 登记当作通过。断言区显示冻结版本/模型/依据，run 非 reply 明确不兼容；无缓存待预检，无已判分结果待复现，有原始 run 回复但无匹配正式评分仅显示「待判分」。
+- 原版复现仅取最近一个匹配当前冻结断言和执行身份的评分 v2 批次，不拼接：有效数为 pass+fail，fail 严格超过一半才算已复现；平票、无效、错误、未知及原始未判分回复均不证明复现。入库还须有效分组、冻结兼容断言及预检 supported。独立操作方诊断不冒充正式门槛记录。
 - 每条的回填状态来自 `case.traceBundle` 引用和缺失原因，提供白话缺失说明（原机器码保留在 title 和包内）。没有批准按钮；读取页面不会重跑回填、模型或任何写接口。
 - 现场按冻结证据显示「现场元数据已冻结」「现场部分记录 · 缺口已披露」或「历史现场元数据缺失」，不再统一显示等待采集合入。有现场显示「有现场，走 trace 级」，暂不显示「请求推荐」按钮或开放脱水；须等现场 run 级执行器实现后再放开。元数据齐全也不代表已通过回放检查。旧包的 `pending_capture_integration` / `scene_metadata_pending_capture_integration` 仅解释为当时未接入且历史元数据未记录，不改包、引用或 hash。
 - 「轨迹与上下文」首次展开才 GET 对应冻结包，不使用 `message` 或 `traceExcerpt` 兜底。三段可展开：上下文逐字段、逐次模型输出/完整参数/完整工具结果/耗时与用量、现场清单。原包内容以文本/JSON 显示而非 HTML；长块（>800 字符）默认折叠，展开仍保留完整原文。支持在本包所有三段内搜索、高亮并展开命中块；搜索不截断导出。缓存按 case ID + 引用 hash 隔离，刷新后的过期响应丢弃，失败只提供显式重试。
@@ -63,9 +65,9 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 ### 页面回放预检缓存（trace / run）
 
-`GET /api/wikiskill`（以及确认后的页面刷新）只读取小型不可变预检记录。**不得**在 HTTP 路径调用 `prepareSealedOriginalTurn`、`materializeGitSnapshot`、Git 子进程或创建临时目录；也不在请求中读取轨迹包并调用 `buildDehydrationPrefix` 来补算 run 预检。没有当前身份／规则版本的缓存，或缓存损坏时，显示「待回放预检」，不冒充 supported，也不自动重算。现有原版复现口径不变：当前冻结断言下，最近匹配批次只要有一次原版 fail 即已复现，同时显示 pass/fail 数；不拼接批次。
+`GET /api/wikiskill`（以及确认后的页面刷新）只读取小型不可变预检记录。**不得**在 HTTP 路径调用 `prepareSealedOriginalTurn`、`materializeGitSnapshot`、Git 子进程或创建临时目录；也不在请求中读取轨迹包并调用 `buildDehydrationPrefix` 来补算 run 预检。没有当前身份／规则版本的缓存，或缓存损坏时，显示「待回放预检」，不冒充 supported，也不自动重算。原版复现按上节的有效判分严格多数口径显示 pass/fail，不拼接批次，也不因离线预检成功自动调用模型或判分。
 
-受信操作方在 **HTTP 进程之外**运行 `node scripts/badcase-capture/precheck-wiki-pipeline.cjs --config <绝对路径> --confirmed`。配置闭合为 `{globalRoot, sourceWorktree}`，均须绝对路径，Wiki 不得位于 sourceWorktree 内。先 build；只使用该任务已批准的 Wiki 和封存库（隔离验证使用副本），不会从页面启动。这个命令不是读取生产、复制其他现场或写生产数据的授权。无模型请求、工具执行或评测；trace 重用真实封存输入准备（v2 可在离线命令进程中还原临时 Git 现场），run 重用冻结前缀构造器。v2 沿用本实例 `PI_CODING_AGENT_DIR`／环境的已知值只读清单，供现场字面替换；不认证、不刷新、复制或回写凭据。操作方须隔离这些环境变量，不得指向未获批准的生产配置。
+受信操作方在 **HTTP 进程之外**运行 `node scripts/badcase-capture/precheck-wiki-pipeline.cjs --config <绝对路径> --confirmed`。配置闭合为 `{globalRoot, sourceWorktree}`，均须绝对路径，Wiki 不得位于 sourceWorktree 内。先 build；只使用该任务已批准的 Wiki 和封存库（隔离验证使用副本），不会从页面启动。这个命令不是读取生产、复制其他现场或写生产数据的授权。无模型请求、工具执行或评测；trace 重用真实封存输入准备（v2 可在离线命令进程中还原临时 Git 现场），run 重用冻结前缀构造器。v2 沿用本实例 `PI_CODING_AGENT_DIR`／环境的已知值只读清单，供现场字面替换；不认证、不刷新、复制或回写凭据。操作方须隔离这些环境变量，不得指向未获批准的生产配置。CLI 只接受 `--config` 和 `--confirmed`；配置为普通 JSON 文件（≤16 KiB，不跟随符号链接），无任意模块/路径扩展字段。成功打印 `{rules,results}`，参数/配置/缓存/锁错误只打印固定错误码并非零退出；它只增加获准 Wiki 的缓存文件，不推进 Wiki revision。
 
 - trace 的键是 `(replay.id, checkpointHash, 预检规则版本)`；run 的键是 `(traceHash, decisionHash, 预检规则版本)`，同样跨进程长期复用。当前规则版本 `sealed-prefix-precheck-v1`；封存输入／前缀准入规则改变必须递增，不覆盖历史记录。
 - `<globalRoot>/pipeline-prechecks/<身份 SHA-256>.json` 只保存身份、`supported|unsupported` 和白名单原因码，不保存文件、提示词、请求正文或原始异常。读取检查 envelope hash、身份和闭合结果字段，单份最多 8 KiB。缓存只表示输入可准备，不证明模型已执行、通过断言或入库。
@@ -116,9 +118,9 @@ Badcase 页在「脱水」步骤为尚无推荐的合资格用例显示「请求
 
 `POST /api/wikiskill/dehydration-confirm` 使用本地管理 Host/loopback/Origin/CSRF 门禁；闭合字段为 `confirmed, expectedRevision, caseId, traceHash, recommendationHash, kind, cutStep`。客户端必须显式确认，hash/revision 必须对应同一推荐和轨迹包。现场 run 级回放尚未实现，具有 `sealedCheckpointId` 的用例不能新确认 `single`，返回 `wiki_dehydration_scene_run_unsupported`（409），不增加快照或写入决定；等现场执行器实现后再放开。已有推荐、冻结决定、轨迹包及 hash 不迁移或改写（当前 9 条历史推荐均无现场），已有同决定的幂等读取不重冻结。无现场单步型切点须能构造有效冻结前缀；贯穿型/说不清必须 `cutStep=null`，无现场时冻结为 `reference`，有现场则保留 `trace`。决定另带 `confirmedBy=local-user`、时间、内容 hash 和事件；同决定重试幂等，任何改判/改切点均拒绝，见过评测结果也不能重开。这个用户身份语义依赖本地管理入口与任务授权，不是对同 OS 进程的安全隔离。确认不发起模型、不执行工具、不改组、不生成断言。页面失败或结果未知时停写，刷新核对，不自动重试。
 
-已完成的历史推荐范围是页面 #1/#2/#3/#5/#6/#8/#12/#15/#16（同时绑定 caseId），不是报告行号。9 条推荐及用户确认保留；#8 保留模型贯穿型推荐和用户单步型第 5 步改判；#12 经用户单向撤回 run 资格，冻结为贯穿型／只作参考，原推荐、首次确认和旧回放不删除、不改 hash。当前计入 8 次原版回放，6 有效、#5/#8 两次无效，不补跑；有效不表示评分通过。#4/#10/#14 只作旧题来源；缺系统提示词的 #7/#9/#11/#13 已按 B11 在隔离 Wiki 副本删除，冻结包与历史记录保留，生产尚未导入这些变更。带 pi-coding-agent 0.85.1 和固定 caff-capabilities schema 的单次模型回放见下节，不能把推荐/确认当成已回放或判分证据。
+已完成的历史推荐范围是页面 #1/#2/#3/#5/#6/#8/#12/#15/#16（同时绑定 caseId），不是报告行号。9 条推荐及用户确认保留；#8 保留模型贯穿型推荐和用户单步型第 5 步改判；#12 经用户单向撤回 run 资格，冻结为贯穿型／只作参考，原推荐、首次确认和旧回放不删除、不改 hash。该历史批准批次计入 8 次原版回放，6 有效、#5/#8 两次无效，不补跑；有效不表示评分通过。#4/#10/#14 只作旧题来源；缺系统提示词的 #7/#9/#11/#13 当时按 B11 在隔离 Wiki 副本删除，冻结包与历史记录保留。生产实际修订、后续导入与接受记录以对应 Goal 为准，本段不是当前线上状态声明。带 pi-coding-agent 0.85.1 和固定 caff-capabilities schema 的单次模型回放见下节，不能把推荐/确认当成已回放或判分证据。
 
-## run 级回放（不判分）
+## run 级单次回放与正式评分接线
 
 run 级用于控制成本：**从用户冻结的切点开始**，而不是从本轮开头重跑。没有现场时只请求一次模型，不执行新工具；有现场时应恢复现场、从切点真实执行工具到本轮自然结束再判分。本 Goal 没有有现场的 run 用例（#19/#20 走 trace），暂不实现该执行器；因此推荐资格暂时排除现场用例，确认入口也拒绝为其新冻结 single/run，不能先冻结成没有执行路径的 run 题；`buildWikiRunRequest` 对带 `sealedCheckpointId` 的用例返回 `wiki_run_scene_unsupported`，不能用无工具单次请求冒充。
 
@@ -128,9 +130,9 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 - 工具仅为名称、说明、参数 schema；拒绝额外字段/execute。`loadWikiRunTools` 固定校验 pi-coding-agent 及其嵌套 pi-ai 为 0.85.1，基础四工具使用 definition factories；拦截固定 SHA 的 caff-capabilities 注册只取上述三个字段，不挂执行器，不调用 facade。SHA、文件 hash、版本及定义 hash 随请求保存。
 - `createWikiRunClient` 直接调用嵌套 pi-ai 的 Codex 单次 `stream`，不创建 Agent/Session，不加载技能/当前房间，不接任何工具执行器。固定 `openai-codex/gpt-6.1-sol`、thinking xhigh、SSE、store=false、无 service tier、maxRetries=0；另有 fetch 一次预算。旧 SDK 内置目录没有该新模型 ID，使用最小原生 wire descriptor（直接发送用户批准的 ID，不回退其他模型）；不据该描述符推算价格，保存 token 用量但移除虚构 cost。实际序列化的请求体（无认证头）与完整 assistant 输出随结果保存。
 - 复用现有 host-only `codex-transport.cjs`：只读取明确批准的 `.pi-sandbox/auth.json` access/expires，不读取 refresh 字段用于认证、不刷新、不复制/回写凭据；只向固定 Codex endpoint 经 `http://127.0.0.1:17890` 发请求，无直连/重定向兜底。SDK 只见公开 inert identity，真实 access 在 host transport 内存替换。过期、认证、网络或供应商失败停止，不重试；错误证据只留固定码，不保存上游诊断正文。
-- 在网络调用**前**以请求内容 hash 在 `<globalRoot>/run-replays/<hash>.json` 原子 no-replace 占用一次。结果另写 `<hash>.result.json`，0600、fsync、hash 校验、不可覆盖；128 MiB 上限，不截断。崩溃/写入失败保留 `reserved`（结果未知）占位，不能用重试自动再发。Wiki 旧快照、轨迹包、决定、分组和旧结果不改。此目录是同 OS 用户可信存储，不是防恶意路径替换沙箱。
+- 在网络调用**前**于 `<globalRoot>/run-replays/<id>.json` 原子 no-replace 占用。旧单次入口以请求 hash 为 id；正式重复尝试传入 `attempt:{planHash,executionId,iteration}`，id 绑定该计划/执行/题目/版本/迭代槽位，请求 hash 另存。相同槽位即使请求变化也不能再次发送。结果另写 `<id>.result.json`，0600、fsync、hash 校验、不可覆盖；128 MiB 上限，不截断。崩溃/写入失败保留 `reserved`（结果未知）占位，不能用重试自动再发。Wiki 旧快照、轨迹包、决定、分组和旧结果不改。此目录是同 OS 用户可信存储，不是防恶意路径替换沙箱。
 - `stop/toolUse` 的完整文本回复，或独立 `bash` 的 send-public 调用（受限字面 heredoc/引号语法，提取正文但绝不执行）标 `reached`（有效输出），保存原文供评分 v2 判分，不代表通过；其他工具调用（即便附有解释文字或同时发消息）、空输出、未识别的发消息语法均标 `invalid`（无效），**不算通过也不算不通过**，单独计数。新结果不再写 `countAsFailure`。请求失败另记 `error`，未知另记 `reserved`；两者也不进入判分分母，不冒充模型失败。不做前缀一致性校验或继续工具循环。
-- `projectWikiRunAccounting` 使用 `single-call-valid-output-v2` 规则，只读地将历史 `unreached` 投影为 `invalid`，移除摘要的旧 `countAsFailure`，不改原始请求/输出包、hash 或旧快照。仅 `reached` 且没有被用户撤回的尝试 `eligibleForScoring=true`。同 caseId/traceHash/decisionHash 的原版有效输出决定 `baselineStatus`（`valid_output|no_valid_output|pending|not_run`）；只有原版有有效输出且未撤回时，`caseEligibleForGateAndScreen=true`。候选输出、别的题/轨迹/决定、历史被撤回的输出不能替代原版证据。这个资格只是必要条件，不表示已确认复现、已分组或评分通过；M4 确认分组会重新核对这项资格；实际 run 选题/判分接线仍待两个 Goal 合入后接入，不能直接沿用历史 `wikiRoundStage` 代替新确认记录。
+- `projectWikiRunAccounting` 使用 `single-call-valid-output-v2` 规则，只读地将历史 `unreached` 投影为 `invalid`，移除摘要的旧 `countAsFailure`，不改原始请求/输出包、hash 或旧快照。仅 `reached` 且没有被用户撤回的尝试 `eligibleForScoring=true`。同 caseId/traceHash/decisionHash 的原版有效输出决定 `baselineStatus`（`valid_output|no_valid_output|pending|not_run`）；只有原版有有效输出且未撤回时，`caseEligibleForGateAndScreen=true`。候选输出、别的题/轨迹/决定、历史被撤回的输出不能替代原版证据。这个资格只是必要条件，不表示已确认复现、已分组或评分通过；M4 确认分组会重新核对这项资格；正式 run 选题/执行/评分已接入独立实验计划，仍须满足其模式标签、冻结分组、reply 断言、门槛 run≤trace 等门禁，不能直接沿用历史 `wikiRoundStage` 代替新确认记录。
 - 原版没有有效输出、无法确认复现的题是无效测试用例，不进门槛和训练组初筛。#5/#8 现有两次回放按此只读投影为无效，不补跑；原文/hash 留存，页面明确显示「原版无有效输出」。#12 仍为用户改判后的无现场贯穿型、只作参考；旧回放另标「已被用户改判，不计入」，不混入当前 8 次回放计数。
 - 请求中的当前已知值命中则在占用前拒绝；输出及实际请求体保存前进行同一已知值字面替换，不新增模式/秘密检测。模型请求参数和输出中的工具命令永远是文本数据。
 - `GET /api/wikiskill` 的 `runReplays` 返回真实占位/结果摘要及当前会计资格；`GET /api/wikiskill/cases/:caseId/run-replays/:hash` 沿用本地只读管理门禁，返回 `{ accounting, reservation, result }`。`accounting` 是当前分类投影，后两项为 hash 核验后的原始包；历史包内的旧分类只供审计，不能参与当前计数。来源须与路径用例一致，无 POST 启动接口。
@@ -139,7 +141,16 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 
 确认来源也可由受信操作方在用户明确授权后传入 `{ source: 'user-via-planner', reference: <公开消息ID> }`，等同页面确认，来源和引用进入决定 hash；HTTP 无此字段。相同决定的页面重试不改来源。#8 原 DeepSeek 贯穿型推荐与用户单步型/第5步改判分别保留，冻结后不能再改。
 
-## 删除与分层重分组
+## 模式标签与首次分组（新题）
+
+`projectWikiPatternLabels` 只投影已确认标签。旧门槛/测试题也可补标签（#1/#4/#10/#14）；可选现有模式或「未归入现有模式」。标签确认只记标签，不增加归纳成员、不改组别。
+
+- `POST /api/wikiskill/pattern-label-confirm` 闭合字段为 `confirmed,caseId,entryId,labelHash,expectedRevision`；`entryId=null` 表示未归入现有模式。`POST /api/wikiskill/initial-split-confirm` 闭合字段为 `confirmed,proposalHash,patternKey,expectedRevision`。两者均要求明确确认、local-admin 的 Host/loopback/Origin/CSRF、当前 hash/revision；HTTP 不接受种子、组别或模型答案。已有相同确认幂等，不覆盖旧确认/分组/归纳。
+- GET 只提议：仅活动 GPT、`split=null`、模式已确认者参与。有现场进入 trace；无现场必须已有冻结 single/run 决定且原版在同轨迹/决定下至少一次有效单次输出。参考、原版无有效输出、删除、旧题来源、非 GPT 和标签未确认者排除。已分组的活动 GPT 非旧题若仍缺标签，首次分组全局拒绝 `wiki_initial_split_labels_required`，列出题号，避免漏算配额；#4/#10/#14 和非 GPT 不构成此阻塞。
+- `planWikiInitialSplit` 按确认模式分别计算固定种子、用例 ID SHA-256 排序及整数配额缺口：trace 训练:门槛:测试=2:1:1，run 训练:门槛=2:1，同缺按训练优先；各模式门槛 run 不超过 trace，测试只收 trace。已有组别计入配额但一律不动。2026-11-05 的旧重分组是全局分层，不按模式；下节是历史协议，不回算或改写。
+- 确认在 writer-lock 内重核当前提议/hash/revision/资格，仅冻结选中模式尚未分配的行；没有自动随机重分或调用模型。无现场原版回放由经批准的受信操作方执行，页面没有回放/评测启动按钮。
+
+## 删除与分层重分组（历史协议，不用于新题首次分组）
 
 - `deleteCases({caseIds,reason,expectedRevision}, confirmation)` 是受信操作方入口，没有 HTTP 删除路由。只接受 B11 已批准的页面 #7、#9、#11、#13，确认来源必须为 `user-via-planner` 并绑定消息引用。writer 锁内追加一个快照：从活动 `cases` 和待处理归属队列移除，原用例整体保存在 `deletedCases`，记录原因、确认、原编号、时间和 hash，另追加逐条 `case-deleted` 事件。重复同一操作幂等，不允许重新导入/标记让已删除来源复活。
 - 旧快照、已冻结知识库版本/准则文字、脱水决定、旧 `replaySplit`/回放登记、请求/结果文件和轨迹包均不改。活动用例被删除后归纳/脱水/选题按未知用例拒绝；轨迹读取/导出允许按归档来源核对原包，用于审计。知识库证据计数与搜索只使用活动引用，因此模式 5 可显示零条用例，不修改准则原文；模式 2、4 不再把已删引用算作证据。
@@ -150,14 +161,15 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 - 用户 2026-11-05 经规划者确认并修正提议：#19 保留门槛、#20 保留测试，不参与重新随机；#20 已作为测试题暴露，评分 v2 重跑仍须保留测试身份，不能挪入训练。只对六条有效无现场 run 应用原随机结果：门槛 #1，训练 #2/#3/#6/#15/#16。门槛 trace/run 各一条，run 正好一半；测试仍为 #20 加 #4/#10/#14 的三道旧题。#5/#8 无效、#12 参考、#4/#10/#14 旧题来源、#17/#18 只报告的身份不变。
 - `confirmRegroup({expectedRevision,proposalHash,preserveTraceSplits:true,reason}, {source:'user-via-planner',reference})` 是受信操作方入口，无 HTTP 应用路由，不接受调用者的分组、种子或资格。明确确认来源、消息引用和调整原因不可省略。writer 锁内重读当前不可覆盖 run 请求/结果并重算原提议全部输入（含旧组别、轨迹/决定/结果 hash）；与原提议逐字不符、revision/hash 不匹配、run 进测试或门槛 run 超过 trace 均拒绝，不静默重分配。固定保留 trace 原组别，只更新六条符合资格 run 的 `cases[].split`，不修改任何 trace/排除项、`replaySplit`、回放登记、旧结果、准则、轨迹包或旧快照。
 - 应用在单个新快照中增加 `regroupConfirmations` 与 `case-regroup-confirmed` 事件。确认记录包含原提议/input hash、原组别/提议组别/确认组别全表、trace 冻结原因、用户调整差异、分层计数、来源/引用/时间及独立内容 hash。相同确认幂等；再次改组/改来源拒绝；发布失败不生效，原快照/文件不改，可在原 revision 重试。原提议与旧快照是旧分组的审计记录，不覆盖或复用历史评测身份。
-- 确认前 Badcase 页明确「尚未生效」；确认后只读显示「用户确认的分组 · 已生效」、两份 hash、来源与调整、原组别/原提议/用户确认三列对照及实际计数，卡片同步有效组别与分组步骤。不再把未采用的 #20→训练提议当成当前组别；原提议仍可展开审计。分组不代表已复现、判分通过或现场可回放。历史材料已有训练/评测暴露，重分组不等于新的盲留出；训练 run 只能淘汰候选，不能作为采纳依据。评分接线和 trace/run 分开报告仍留待两个 Goal 合入后处理，不改判定公式。
+- 确认前 Badcase 页明确「尚未生效」；确认后只读显示「用户确认的分组 · 已生效」、两份 hash、来源与调整、原组别/原提议/用户确认对照及实际计数（现收在默认折叠审计区），详情同步有效组别与分组步骤。不再把未采用的 #20→训练提议当成当前组别；原提议仍可展开审计。分组不代表已复现、判分通过或现场可回放。历史材料已有训练/评测暴露，重分组不等于新的盲留出；训练 run 只能淘汰候选，不能作为采纳依据。正式新计划已接入 run 并分 trace/run 报告，旧确认与历史结果原样读取，判定公式不变，见评分契约。
 
 ## 不支持与交付边界
 
 - 不录制供应商原始请求字节；保留的是当时归档的语义上下文和 session 消息。旧系统提示词只有展示版时不还原路径或被遮盖值；历史输出、耗时或现场缺失不补猜。
 - 不做前缀一致性检验、未分类自动聚类、多轮自动迭代，也不修改生产全局提示词。新标记后不自动调用推荐模型、自动确认切点、自动分组或自动启动回放。
-- 无现场 run 只产出一次模型原文和有效／无效计数，不执行工具。有现场 run 执行器未实现，必须拒绝；Git 元数据完整或 checkpoint 存在均不等于可回放。
-- 断言编辑器、裁判、校准、正式重跑及 run 选题／判分接线由评分 v2 Goal 负责；本 Goal 只留页面槽位，不把旧字面判分当成新版证据。训练 run 仅用于淘汰候选，不作采纳依据；未来门槛须分 trace/run 报告，既有判定公式不在此变更。
+- 无现场 run 每次尝试只请求一次模型，不执行工具；正式执行交替收集两版各10次有效输出并接评分 v2。有现场 run 执行器未实现，必须拒绝；有现场的题走 trace，Git 元数据完整或 checkpoint 存在均不等于可回放。
+- 不做训练组 run 初筛、不重新校准或新增裁判/JEV、不做轨迹嵌文件的统一证据面改造；不把旧字面判分当成新版证据。测试拒绝 run，门槛分 trace/run 报告但不改公式。
+- **N5 后续项**：断言冻结后先跑原版3–5次、由多数不通过决定能否正式评测，尚未实现，留待后续独立 Goal。冻结断言不会自动判分，离线预检不会启动回放；当前「已复现」只投影已有正式评分结果，不能承诺冻结后系统会自动判分。
 - 只验证隔离副本。生产轨迹包导入、删除／分组生效、推送、合并、部署、真实上线复测都须另获批准，见[发布审批](wikiskill-release.md)。用户最终接受与规划者代码评审是不同关卡，不能互相替代。
 
 ## 失败与验证
