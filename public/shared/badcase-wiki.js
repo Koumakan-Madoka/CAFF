@@ -480,7 +480,16 @@
       $$('[data-confirm-candidate]').forEach(button => { const candidate = D?.candidates.find(c => c.id === button.dataset.confirmCandidate); button.disabled = pending || !writable || candidate?.status !== 'draft'; });
       $$('.edit-form textarea').forEach(input => { input.disabled = pending || !writable; });
       $$('[data-rubric-panel]').forEach(panel => {
-        const c = caseById.get(panel.dataset.rubricPanel), r = latestRubric(c), edit = rubricEdit(c), locked = pending || !writable;
+        const c = caseById.get(panel.dataset.rubricPanel);
+        // A refresh clears D/maps before fetching, but old editor DOM can remain.
+        // Lock that stale panel without reading rubric state (also on GET failure).
+        if (!D || !c) {
+          panel.querySelectorAll('textarea,select,button').forEach(el => { el.disabled = true; });
+          const reason = panel.querySelector('[data-freeze-rubric-reason]');
+          if (reason) { reason.textContent = pending ? '正在读取，请稍候。' : '当前不可写；请刷新核对后再操作。'; reason.hidden = false; }
+          return;
+        }
+        const r = latestRubric(c), edit = rubricEdit(c), locked = pending || !writable;
         panel.querySelectorAll('textarea,select,[data-edit-rubric],[data-save-rubric],[data-draft-rubric],[data-discard-rubric-edit]').forEach(el => { el.disabled = locked; });
         const add = panel.querySelector('[data-add-assertion]'); if (add) add.disabled = locked || edit.questions.length >= 4;
         panel.querySelectorAll('[data-remove-assertion]').forEach(el => { el.disabled = locked || edit.questions.length <= 1; });

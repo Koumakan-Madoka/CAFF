@@ -160,6 +160,48 @@ test('freeze reason tracks pending and failed writes without enabling or retryin
   await h.click('[data-cases-mode="list"]');
   assert.match(panel().querySelector('[data-freeze-rubric-reason]').textContent, /不可写.*刷新/); assert.equal(h.posts().length, 1);
 });
+test('refreshing an already rendered Cases editor locks during GET, finishes and preserves unsaved edits without model calls', async t => {
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  for (const view of ['cases', 'wiki']) {
+    let finishRead, defer = false;
+    const h = setup(t, (url, options) => url === '/api/wikiskill' && options.method !== 'POST' && defer ? new Promise(resolve => { finishRead = resolve; }) : undefined);
+    const c = h.saved().cases[0], model = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' };
+    h.saved().eligibleJudges = [model]; h.saved().rubrics = [createWikiRubric({ caseId: c.id, actual: c.actual, expected: c.expected, version: 1, model: model.model, questions: [{ id: 'q1', question: '回复先给结论。', evidence: 'reply' }], scoringModel: model })];
+    await h.panel.load(); await h.click('[data-tab="cases"]');
+    const input = h.root.querySelector('#c-1 [data-rubric-question]'); input.value = '本地尚未保存的断言。'; input.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+    if (view === 'wiki') await h.click('[data-tab="wiki"]');
+    defer = true; await h.click('#wsk-refresh');
+    assert.equal(typeof finishRead, 'function', 'refresh must reach GET even with existing visible or hidden rubric panels');
+    assert.equal(h.root.getAttribute('aria-busy'), 'true'); assert.equal(h.root.querySelector('#wsk-refresh').disabled, true);
+    for (const el of h.root.querySelectorAll('#c-1 [data-rubric-panel] textarea,#c-1 [data-rubric-panel] select,#c-1 [data-rubric-panel] button')) assert.equal(el.disabled, true);
+    assert.match(h.root.querySelector('#c-1 [data-freeze-rubric-reason]').textContent, /正在读取/);
+    finishRead(clone(h.saved())); await tick(); await tick();
+    assert.equal(h.root.getAttribute('aria-busy'), 'false'); assert.equal(h.root.querySelector('#wsk-refresh').disabled, false);
+    if (view === 'wiki') await h.click('[data-tab="cases"]');
+    assert.equal(h.root.querySelector('#c-1 [data-rubric-question]').value, '本地尚未保存的断言。');
+    assert.equal(h.root.querySelector('#c-1 [data-save-rubric]').disabled, false);
+    assert.equal(h.root.querySelector('#c-1 [data-freeze-rubric]').disabled, true, 'refresh must not freeze an unsaved edit');
+    assert.match(h.root.querySelector('#c-1 [data-freeze-rubric-reason]').textContent, /未保存的修改/);
+    assert.equal(h.posts().length, 0); assert.deepEqual(h.calls.map(c => c.url), ['/api/wikiskill', '/api/wikiskill']);
+  }
+});
+test('failed Cases refresh releases the busy lock, keeps writes closed and permits an explicit successful refresh', async t => {
+  let failNext = false;
+  const h = setup(t, (url, options) => { if (url === '/api/wikiskill' && options.method !== 'POST' && failNext) throw Error('synthetic-read-failure'); });
+  await h.panel.load(); await h.click('[data-tab="cases"]');
+  const input = h.root.querySelector('#c-1 [data-rubric-question]'); input.value = '读取失败也保留本地编辑。'; input.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  failNext = true; await h.click('#wsk-refresh');
+  assert.equal(h.root.getAttribute('aria-busy'), 'false'); assert.equal(h.root.querySelector('#wsk-refresh').disabled, false);
+  assert.match(h.root.querySelector('#toast').textContent, /读取失败/);
+  assert.equal(h.root.querySelector('#c-1 [data-save-rubric]').disabled, true);
+  const reason = h.root.querySelector('#c-1 [data-freeze-rubric-reason]'); assert.equal(reason.hidden, false); assert.match(reason.textContent, /不可写.*刷新/);
+  assert.equal(h.posts().length, 0); assert.equal(h.calls.length, 2, 'failure must not trigger retries');
+  failNext = false; await h.click('#wsk-refresh');
+  assert.equal(h.root.getAttribute('aria-busy'), 'false'); assert.equal(h.root.querySelector('#wsk-refresh').disabled, false);
+  assert.equal(h.root.querySelector('#c-1 [data-rubric-question]').value, '读取失败也保留本地编辑。');
+  assert.equal(h.root.querySelector('#c-1 [data-save-rubric]').disabled, false);
+  assert.equal(h.posts().length, 0); assert.equal(h.calls.length, 3);
+});
 test('assertion editor offers file evidence only for the same case with file-literals collection', async t => {
   const h = setup(t);
   h.saved().replayCases = [
