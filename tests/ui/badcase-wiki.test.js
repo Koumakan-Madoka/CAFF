@@ -638,6 +638,13 @@ test('user prose and search highlighting stay text-only; failed writes disable m
   await h.panel.load(); assert.equal(h.root.querySelector('[data-induct]').disabled, false);
 });
 
+test('WikiSkill removes only its outer cap and centers the 1680px content inside the management main', () => {
+  const css = fs.readFileSync(path.resolve(__dirname, '../../public/wikiskill.css'), 'utf8');
+  assert.match(css, /body\.management-app\[data-page="wikiskill"\]\s+\.management-shell\s*\{\s*width:\s*100%;\s*\}/,
+    'the shared 1520px cap must not constrain WikiSkill');
+  assert.match(css, /\.wsk-shell\s*\{[^}]*max-width:\s*1680px;[^}]*margin:\s*0 auto;/);
+});
+
 test('standalone navigation, projects capture-only boundary and responsive prototype CSS remain in force', () => {
   const read = file => fs.readFileSync(path.resolve(__dirname, '../../public/' + file), 'utf8');
   for (const page of ['index', 'personas', 'skills', 'projects', 'metrics', 'wikiskill']) assert.match(read(page + '.html'), /href="\/wikiskill.html"/);
