@@ -111,12 +111,85 @@ test('Badcase label writes re-read full state and the next consent uses new revi
   s.casePatterns = s.cases.map(c => ({ caseId: c.id, confirmed: false, labelHash: 'd'.repeat(64), options: [], pendingOptions: [] }));
   await h.panel.load(); h.window.location.hash = '#bc-21'; h.window.dispatchEvent(new h.window.Event('hashchange')); await tick();
   const host = () => h.root.querySelector('[data-bc-detail] [data-pattern-label]');
-  host().querySelector('[data-pattern-name]').value = '先核验约束'; await h.click('[data-bc-detail] [data-pattern-confirm]'); await h.click('[data-bc-detail] [data-pattern-lock]');
+  host().querySelector('[data-pattern-name]').value = '先核验约束'; host().querySelector('[data-pattern-scope]').value = '先核验工具约束'; await h.click('[data-bc-detail] [data-pattern-confirm]'); await h.click('[data-bc-detail] [data-pattern-lock]');
   assert.equal(h.posts().length, 1); assert.equal(h.posts()[0].body.expectedRevision, 3);
   const at = h.calls.findIndex(c => c.method === 'POST'); assert.equal(h.calls[at + 1].url, '/api/wikiskill'); assert.notEqual(h.calls[at + 1].method, 'POST');
   await h.click('[data-bc-row="c4"]'); await h.click('[data-bc-detail] [data-pattern-confirm]'); await h.click('[data-bc-detail] [data-pattern-lock]');
   const second = h.posts()[1]; assert.equal(second.body.expectedRevision, 4); assert.equal(second.body.labelHash, 'e'.repeat(64)); assert.deepEqual(clone(second.body.pendingPattern), { id: 'pending-1' });
   assert.equal(h.confirms.length, 0);
+});
+
+for (const preclassified of [true, false]) test(`${preclassified ? 'separate proposals' : 'preclassification with proposals'} write through the guarded route, re-GET full state and bind a later group confirmation`, async t => {
+  const h = setup(t, (url, options, saved) => {
+    if (options.method !== 'POST') return undefined;
+    if (url.endsWith(preclassified ? '/category-propose' : '/induct')) {
+      saved.cases[0].preclassification = { kind: 'new', reason: '归类依据' };
+      saved.categoryProposalViews = [{ hash: 'a'.repeat(64), name: '调用前检查', scope: '参数约束', status: 'pending', members: [{ caseId: 'c1', reason: '同属约束问题', canConfirm: true }] }];
+      saved.casePatterns[0].labelHash = 'e'.repeat(64);
+    } else if (url.endsWith('/category-confirm')) {
+      saved.categoryProposalViews[0].status = 'accepted'; saved.pendingPatterns = [{ id: 'pending-1', name: options.body.name, scope: options.body.scope }];
+      Object.assign(saved.casePatterns[0], { confirmed: true, patternKey: 'pending-1', pendingPatternId: 'pending-1', pendingPatternName: options.body.name });
+    } else if (!url.endsWith('/category-reject')) return undefined;
+    saved.revision++; return { ok: true };
+  });
+  const s = h.saved(); s.cases = s.cases.slice(0, 1); Object.assign(s.cases[0], { kind: 'marked-badcase', split: null, displayNumber: 21 });
+  if (preclassified) s.cases[0].preclassification = { kind: 'new', reason: '归类依据' };
+  s.caseStates = [{ caseId: 'c1', status: preclassified ? 'pending-allocation' : 'pending-preclassification', memberships: [] }]; s.suggestions = [];
+  s.casePatterns = [{ caseId: 'c1', confirmed: false, labelHash: 'd'.repeat(64), options: [], pendingOptions: [] }];
+  await h.panel.load(); await h.click('[data-tab="badcases"]');
+  await h.click(preclassified ? '[data-categories] [data-propose-categories]' : '[data-preclassify]');
+  assert.equal(h.posts()[0].url, '/api/wikiskill/' + (preclassified ? 'category-propose' : 'induct')); assert.equal(h.posts()[0].body.expectedRevision, 3); assert.equal(h.posts()[0].body.confirmed, true);
+  assert.ok(h.root.querySelector('[data-category-card]')); assert.match(h.root.querySelector('#next-text').textContent, /类别提议/); h.root.querySelector('[data-category-name]').value = '修改类别';
+  h.root.querySelector('[data-category-name]').dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  await h.click('[data-category-ask]'); await h.click('[data-category-lock]');
+  assert.equal(h.posts()[1].url, '/api/wikiskill/category-confirm'); assert.equal(h.posts()[1].body.expectedRevision, 4); assert.equal(h.posts()[1].body.members[0].labelHash, 'e'.repeat(64));
+  for (const [i, call] of h.calls.entries()) if (call.method === 'POST') assert.equal(h.calls[i + 1].url, '/api/wikiskill');
+  assert.equal(h.confirms.length, 0);
+});
+test('category draft rejection re-GETs before regenerating, and approval posts only edited content without browser consent', async t => {
+  const h = setup(t, (url, options, saved) => {
+    if (options.method !== 'POST') return undefined;
+    if (url.endsWith('/review')) Object.assign(saved.versions.at(-1).entries.at(-1), options.body.patch, { status: options.body.decision });
+    else if (url.endsWith('/category-induct')) saved.versions.push({ id: 'wiki-5', entries: [{ ...saved.versions.at(-1).entries.at(-1), id: 'draft-next', status: 'draft' }] });
+    else return undefined;
+    saved.revision++; return { ok: true };
+  });
+  const s = h.saved(); s.suggestions = []; s.cases = s.cases.slice(0, 1); Object.assign(s.cases[0], { kind: 'marked-badcase', split: 'train', displayNumber: 21 });
+  s.pendingPatterns = [{ id: 'pending-1', name: '调用前检查', scope: '不参与归纳的范围' }];
+  s.casePatterns = [{ caseId: 'c1', confirmed: true, patternKey: 'pending-1', pendingPatternId: 'pending-1', pendingPatternName: '调用前检查' }];
+  s.versions.push({ id: 'wiki-4', entries: [{ ...clone(approvedEntry), id: 'draft-category', title: '调用前检查', status: 'draft', sourcePendingPatternId: 'pending-1', categoryReviewRequired: true }] });
+  await h.panel.load(); await h.click('[data-tab="badcases"]'); h.root.querySelector('[data-bc-pattern="pending-1"]').click();
+  await h.click('[data-category-reinduct]'); assert.deepEqual(h.posts().map(p => p.url), ['/api/wikiskill/review', '/api/wikiskill/category-induct']);
+  assert.equal(h.posts()[0].body.expectedRevision, 3); assert.equal(h.posts()[1].body.expectedRevision, 4); assert.equal(h.posts()[0].body.pendingPatternId, undefined);
+  const guideline = h.root.querySelector('[data-category-field="guideline"]'); guideline.value = '先检查修改内容。'; guideline.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  await h.click('[data-category-approve]'); assert.equal(h.posts().length, 2); await h.click('[data-category-review-lock]');
+  assert.equal(h.posts()[2].body.entryId, 'draft-next'); assert.equal(h.posts()[2].body.expectedRevision, 5); assert.equal(h.posts()[2].body.patch.guideline, '先检查修改内容。');
+  assert.equal(h.posts()[2].body.patch.title, undefined); assert.equal(h.posts()[2].body.patch.scope, undefined); assert.equal(h.confirms.length, 0);
+  for (const [i, call] of h.calls.entries()) if (call.method === 'POST') assert.equal(h.calls[i + 1].url, '/api/wikiskill');
+});
+
+test('failed category rejection never regenerates or retries and leaves all writes disabled until explicit refresh', async t => {
+  const h = setup(t, (url, options) => { if (url === '/api/wikiskill/review' && options.method === 'POST') throw Error('synthetic refusal'); });
+  const s = h.saved(); s.cases = s.cases.slice(0, 1); s.suggestions = [];
+  s.pendingPatterns = [{ id: 'pending-1', name: '调用前检查' }]; s.casePatterns = [{ caseId: 'c1', confirmed: true, pendingPatternId: 'pending-1', pendingPatternName: '调用前检查', patternKey: 'pending-1' }];
+  s.versions.push({ id: 'wiki-4', entries: [{ ...clone(approvedEntry), id: 'draft-category', title: '调用前检查', status: 'draft', categoryReviewRequired: true, sourcePendingPatternId: 'pending-1' }] });
+  await h.panel.load(); await h.click('[data-tab="badcases"]'); h.root.querySelector('[data-bc-pattern="pending-1"]').click();
+  await h.click('[data-category-reinduct]'); assert.deepEqual(h.posts().map(p => p.url), ['/api/wikiskill/review']); assert.equal(h.root.querySelector('[data-category-reinduct]').disabled, true); assert.match(h.root.querySelector('#toast').textContent, /被拒绝、失败或结果未知/);
+});
+
+test('knowledge category drafts keep identity fixed and use invalidatable inline approval; category-only training is excluded from global induction', async t => {
+  const h = setup(t), s = h.saved(); s.suggestions = [];
+  s.cases = s.cases.slice(0, 1); s.caseStates = [{ caseId: 'c1', status: 'pending', memberships: [] }];
+  s.pendingPatterns = [{ id: 'pending-1', name: '调用前检查' }]; s.patternLabels = [{ caseId: 'c1', pendingPatternId: 'pending-1', source: 'badcase-page' }];
+  s.casePatterns = [{ caseId: 'c1', confirmed: true, source: 'badcase-page', pendingPatternId: 'pending-1', pendingPatternName: '调用前检查' }];
+  s.versions.push({ id: 'wiki-4', entries: [{ ...clone(approvedEntry), id: 'draft-category', title: '调用前检查', status: 'draft', categoryReviewRequired: true, sourcePendingPatternId: 'pending-1' }] });
+  await h.panel.load(); await h.click('[data-entry="draft-category"]');
+  assert.equal(h.root.querySelector('[name="title"]').readOnly, true);
+  assert.equal(h.root.querySelector('[data-induct]'), null, 'category members must not advertise a global induction that the store rejects');
+  await h.click('[data-review="approved"]'); assert.equal(h.posts().length, 0); assert.equal(h.confirms.length, 0); assert.ok(h.root.querySelector('[data-wiki-category-consent]'));
+  const field = h.root.querySelector('[name="symptoms"]'); field.value = '修改过的表现'; field.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  assert.equal(h.root.querySelector('[data-wiki-category-consent]'), null);
+  await h.click('[data-review="approved"]'); await h.click('[data-wiki-category-lock]'); assert.equal(h.posts().length, 1); assert.equal(h.posts()[0].body.patch.title, undefined); assert.equal(h.posts()[0].body.patch.symptoms, '修改过的表现'); assert.equal(h.confirms.length, 0);
 });
 
 test('assertion editor saves manual changes as new versions, offers eligible models only and freezes the saved hash explicitly', async t => {

@@ -98,9 +98,10 @@ test('new-mode suggestions default to pending create/join, validate names and bi
   assert.equal(host().querySelector('[data-pattern-kind]:checked').value, 'pending'); assert.equal(host().querySelector('[data-pattern-pending-mode]:checked').value, 'create');
   assert.match(host().textContent, /预分类建议：新模式.*把握：高.*<b>check constraints<\/b>/s); assert.equal(host().querySelector('b b'), null);
   for (const name of ['', '字'.repeat(41), 'Approved']) { host().querySelector('[data-pattern-name]').value = name; host().querySelector('[data-pattern-confirm]').click(); assert.ok(host().querySelector('[data-label-error]')); assert.equal(host().querySelector('[data-pattern-lock]'), null); }
-  host().querySelector('[data-pattern-name]').value = '先检查约束'; host().querySelector('[data-pattern-confirm]').click();
-  assert.match(host().querySelector('[data-label-consent]').textContent, /先检查约束.*自己的组.*关联之后/s); assert.equal(sent.length, 0);
-  host().querySelector('[data-pattern-lock]').click(); assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c2', pendingPattern: { name: '先检查约束' }, labelHash: 'c'.repeat(64) });
+  host().querySelector('[data-pattern-name]').value = '先检查约束'; host().querySelector('[data-pattern-confirm]').click(); assert.match(host().querySelector('[data-label-error]').textContent, /范围/);
+  host().querySelector('[data-pattern-scope]').value = '调用带前置条件的工具前不检查约束'; host().querySelector('[data-pattern-confirm]').click();
+  assert.match(host().querySelector('[data-label-consent]').textContent, /先检查约束.*自己的组.*自动成为正式模式/s); assert.equal(sent.length, 0);
+  host().querySelector('[data-pattern-lock]').click(); assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c2', pendingPattern: { name: '先检查约束', scope: '调用带前置条件的工具前不检查约束' }, labelHash: 'c'.repeat(64) });
   h.data.casePatterns[0].labelHash = 'd'.repeat(64); h.data.casePatterns[0].pendingOptions = [{ id: 'pending-1', name: '先检查约束', entryId: null }];
   h.panel.render(h.data); assert.equal(host().querySelector('[data-label-consent]'), null); assert.equal(host().querySelector('[data-pattern-pending-mode]:checked').value, 'join');
   host().querySelector('[data-pattern-confirm]').click(); host().querySelector('[data-pattern-lock]').click();
@@ -125,7 +126,7 @@ for (const linked of [true, false]) test(`joining a ${linked ? 'linked' : 'unlin
   assert.equal(consent.querySelector('b').textContent, `确认后不能改：#19 → 待归纳新模式「${name}」${linked ? `（已关联到「${title}」）` : ''}`);
   assert.equal(consent.querySelector('span').textContent, linked
     ? `它会直接在「${title}」里按配额分组；门槛和测试用例评测「${title}」的候选时算目标复现题。`
-    : '它会在这个新模式自己的组里分组；新模式归纳并审核通过、你关联之后，才算那个模式的用例。');
+    : '它会在这个新模式自己的组里分组；之后只用训练组归纳模式内容，你审核通过后自动成为正式模式，门槛和测试成为它的目标复现题。');
   assert.equal(consent.querySelector('script, b b, span b'), null);
   if (linked) assert.doesNotMatch(consent.textContent, /自己的组|关联之后|归纳并审核通过/);
   assert.equal(sent.length, 0); host().querySelector('[data-pattern-lock]').click();
@@ -145,7 +146,7 @@ test('pending boards warn without blocking and offer immutable inline linking pl
   assert.equal(h.root.querySelector('[data-grouping] script'), null);
   h.data.cases[0].kind = 'marked-badcase'; h.data.cases[0].split = 'gate'; h.data.cases[1].split = 'test';
   h.data.casePatterns[1] = { ...h.data.casePatterns[0], caseId: 'c2' }; h.data.initialSplitProposal = { rows: [], patterns: [] }; h.panel.render(h.data);
-  assert.match(h.root.querySelector('[data-pending-next]').textContent, /知识库.*训练.*归纳.*审核/s); assert.equal(h.root.querySelector('[data-pending-link]'), null);
+  assert.match(h.root.querySelector('[data-pending-next]').textContent, /训练.*归纳.*审核.*自动.*知识库/s); assert.equal(h.root.querySelector('[data-pending-link]'), null);
   h.data.versions = [{ entries: [{ id: 'entry-1', title: 'Approved constraints', status: 'approved', caseIds: [] }] }]; h.panel.render(h.data);
   const select = h.root.querySelector('[data-pending-link-entry]'); select.value = 'entry-1'; select.dispatchEvent(new h.window.Event('change', { bubbles: true }));
   h.root.querySelector('[data-pending-link]').click(); assert.equal(sent.length, 0);
@@ -172,13 +173,13 @@ test('unrelated approved patterns have an empty link default and a disabled norm
   assert.equal(h.select().options[0].value, ''); assert.equal(h.select().options[0].textContent, '选择已通过的模式…');
   assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true);
   h.panel.setWritable(false); h.panel.setWritable(true); assert.equal(h.button().disabled, true);
-  assert.match(h.root.querySelector('[data-pending-link-panel]').firstElementChild.textContent, /下一步.*知识库.*训练.*归纳.*审核/s);
+  assert.match(h.root.querySelector('[data-pending-link-panel]').firstElementChild.textContent, /上方.*训练.*归纳.*审核.*知识库/s);
   assert.ok(h.button().closest('.row-actions'), 'link action must not stretch as a direct grid child');
   h.button().disabled = false; h.button().click(); assert.equal(h.root.querySelector('[data-link-consent]'), null); assert.equal(h.sent.length, 0);
   h.select().value = 'unrelated'; h.select().dispatchEvent(new h.window.Event('change', { bubbles: true })); assert.equal(h.button().disabled, false);
   h.select().value = ''; h.select().dispatchEvent(new h.window.Event('change', { bubbles: true })); assert.equal(h.button().disabled, true);
 });
-test('a unique approved pattern derived from group training cases is first, annotated and selected, but remains read-only guarded', t => {
+test('a unique training-derived approved pattern is first and annotated, but secondary manual linking still requires explicit selection', t => {
   const h = pendingBoard(t, [
     { id: 'unrelated', title: 'Unrelated', status: 'approved', caseIds: [] },
     { id: 'heldout-only', title: 'Heldout only', status: 'approved', caseIds: ['c2', 'c3'] },
@@ -190,7 +191,8 @@ test('a unique approved pattern derived from group training cases is first, anno
   const note = h.root.querySelector('[data-pending-link-derived]');
   assert.ok(note, 'training-derived recommendation must remain readable outside the narrow native select');
   assert.equal(note.textContent, '「<b>Derived pattern</b>」（用本组训练用例归纳出）'); assert.equal(note.querySelector('b'), null);
-  assert.equal(h.select().value, 'derived'); assert.equal(h.button().disabled, false);
+  assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true);
+  h.select().value = 'derived'; h.select().dispatchEvent(new h.window.Event('change', { bubbles: true }));
   h.panel.setWritable(false); assert.equal(h.button().disabled, true); h.panel.setWritable(true); assert.equal(h.button().disabled, false);
   h.button().click(); assert.match(h.root.querySelector('[data-link-consent]').textContent, /Derived pattern/);
   h.root.querySelector('[data-pending-link-lock]').click(); assert.deepEqual(JSON.parse(JSON.stringify(h.sent)), [{ pendingPatternId: 'pending-1', entryId: 'derived' }]);
@@ -208,6 +210,100 @@ test('multiple training-derived approved patterns sort first without selecting a
   h.data.versions[0].entries = h.data.versions[0].entries.slice(0, 1); h.panel.render(h.data);
   assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true); assert.doesNotMatch(h.select().textContent, /用本组训练用例归纳出/);
   assert.equal(h.root.querySelector('[data-pending-link-derived]'), null);
+});
+
+function categoryFixture(t, callbacks = {}) {
+  const sent = [], h = setup(t, null, { onConfirmCategory: body => sent.push(body), ...callbacks });
+  h.data.revision = 7;
+  h.data.cases = Array.from({ length: 4 }, (_, i) => ({ id: 'new-' + i, n: 21 + i, role: 'GPT', kind: 'marked-badcase', split: null, actual: '<b>约束问题' + i + '</b>', expected: '先检查', sealedCheckpointId: 'cp-' + i, source: { agentId: 'role-family-gpt' }, preclassification: { kind: 'new', reason: '新类别' } }));
+  h.data.casePatterns = h.data.cases.map((c, i) => ({ caseId: c.id, confirmed: false, labelHash: String(i).repeat(64), options: [], pendingOptions: [] }));
+  h.data.categoryProposalViews = [{ hash: 'a'.repeat(64), name: '调用前检查', scope: '<script>范围只供归类</script>', status: 'pending', members: h.data.cases.slice(0, 3).map((c, i) => ({ caseId: c.id, reason: '理由' + i, canConfirm: i !== 2, unavailableReason: i === 2 ? 'wiki_pattern_label_frozen' : null })) },
+    { hash: 'b'.repeat(64), name: '另一类', scope: '另一范围', status: 'pending', members: [{ caseId: 'new-3', reason: '理由3', canConfirm: true }] }];
+  h.panel.render(h.data); h.panel.focus(21);
+  return { ...h, sent, card: () => h.root.querySelector('[data-category-card]') };
+}
+const inputEvent = (h, el, value) => { el.value = value; el.dispatchEvent(new h.window.Event('input', { bubbles: true })); };
+test('category cards are above grouping, editable and member/hash bound with stale members disabled and inline consent invalidation', t => {
+  const h = categoryFixture(t);
+  assert.equal(h.root.querySelectorAll('[data-category-card]').length, 2);
+  assert.ok(h.root.querySelector('[data-categories]').compareDocumentPosition(h.root.querySelector('[data-grouping]')) & h.window.Node.DOCUMENT_POSITION_FOLLOWING);
+  assert.equal(h.card().querySelector('script'), null); assert.match(h.card().textContent, /这段说明会被谁用到.*生成候选.*不读/s);
+  const disabled = h.card().querySelector('[data-category-member="new-2"]'); assert.equal(disabled.disabled, true); assert.equal(disabled.checked, false); assert.match(h.card().textContent, /wiki_pattern_label_frozen/);
+  assert.match(h.root.querySelector('[data-bc-detail]').textContent, /上方.*类别提议/);
+  inputEvent(h, h.card().querySelector('[data-category-name]'), '改过的类别'); inputEvent(h, h.card().querySelector('[data-category-scope]'), '改过的范围');
+  h.card().querySelector('[data-category-ask]').click(); assert.equal(h.sent.length, 0); assert.match(h.card().querySelector('[data-category-consent]').textContent, /#21.*#22.*改过的类别.*训练.*审核.*正式模式/s);
+  inputEvent(h, h.card().querySelector('[data-category-name]'), '再次改名'); assert.equal(h.card().querySelector('[data-category-consent]'), null);
+  const member = h.card().querySelector('[data-category-member="new-1"]'); member.checked = false; member.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  h.panel.focus(22); assert.ok(h.root.querySelector('[data-bc-detail] [data-pattern-kind]'), 'unchecked member returns to the single-label form');
+  h.card().querySelector('[data-category-ask]').click(); h.card().querySelector('[data-category-lock]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.sent)), [{ proposalHash: 'a'.repeat(64), name: '再次改名', scope: '改过的范围', members: [{ caseId: 'new-0', labelHash: '0'.repeat(64) }] }]);
+  h.panel.render(h.data); assert.equal(h.card().querySelector('[data-category-consent]'), null);
+});
+test('a proposal joining an already linked category keeps existing identity read-only and names the resolved formal pattern in consent', t => {
+  const h = categoryFixture(t); h.data.pendingPatterns = [{ id: 'pending-linked', name: '已有类别', scope: '已有范围' }];
+  h.data.pendingPatternLinks = [{ pendingPatternId: 'pending-linked', entryId: 'entry-1' }]; h.data.versions = [{ entries: [{ id: 'entry-1', title: '正式约束模式', status: 'approved' }] }];
+  Object.assign(h.data.categoryProposalViews[0], { pendingPatternId: 'pending-linked', name: '已有类别', scope: '已有范围' }); h.panel.render(h.data);
+  assert.equal(h.card().querySelector('[data-category-name]').readOnly, true); assert.equal(h.card().querySelector('[data-category-scope]').readOnly, true);
+  h.card().querySelector('[data-category-ask]').click(); assert.match(h.card().querySelector('[data-category-consent]').textContent, /直接在「正式约束模式」.*目标复现题/s);
+  assert.doesNotMatch(h.card().querySelector('[data-category-consent]').textContent, /类别自动成为正式模式/);
+});
+test('single-label manual creation requires scope and changing scope invalidates consent; joined categories display scope and members', t => {
+  const sent = [], h = setup(t, null, { onConfirmPatternLabel: b => sent.push(b) }); h.data.cases[1].split = null; h.data.cases[1].preclassification = { kind: 'new' };
+  h.data.casePatterns = [{ caseId: 'c2', confirmed: false, labelHash: 'c'.repeat(64), options: [], pendingOptions: [] }]; h.panel.render(h.data); h.panel.focus(19);
+  const host = () => h.root.querySelector('[data-bc-detail] [data-pattern-label]'); host().querySelector('[data-pattern-name]').value = '手动类别';
+  for (const value of ['', '字'.repeat(121)]) { host().querySelector('[data-pattern-scope]').value = value; host().querySelector('[data-pattern-confirm]').click(); assert.equal(host().querySelector('[data-pattern-lock]'), null); }
+  inputEvent(h, host().querySelector('[data-pattern-scope]'), '可泛化范围'); host().querySelector('[data-pattern-confirm]').click(); assert.ok(host().querySelector('[data-label-consent]'));
+  inputEvent(h, host().querySelector('[data-pattern-scope]'), '修改范围'); assert.equal(host().querySelector('[data-label-consent]'), null); assert.equal(sent.length, 0);
+  h.data.pendingPatterns = [{ id: 'pending-1', name: '已有类别', scope: '<b>可见范围</b>' }]; h.data.casePatterns[0].pendingOptions = [{ ...h.data.pendingPatterns[0], entryId: null }];
+  h.data.casePatterns.push({ caseId: 'c1', pendingPatternId: 'pending-1', confirmed: true, pendingPatternName: '已有类别', patternKey: 'pending-1' }); h.panel.render(h.data);
+  assert.match(host().querySelector('[data-pending-description]').textContent, /范围：<b>可见范围<\/b>.*成员：#1/s); assert.equal(host().querySelector('[data-pending-description] b'), null); assert.equal(host().querySelector('[data-pattern-scope]'), null, 'join must not show empty create-only fields');
+});
+test('category validation, rejection, and read-only controls never send partial or automatic consent', t => {
+  const rejected = [], h = categoryFixture(t, { onRejectCategory: b => rejected.push(b) });
+  for (const value of ['', '字'.repeat(41)]) { inputEvent(h, h.card().querySelector('[data-category-name]'), value); h.card().querySelector('[data-category-ask]').click(); assert.ok(h.card().querySelector('[data-category-error]')); assert.equal(h.card().querySelector('[data-category-lock]'), null); }
+  inputEvent(h, h.card().querySelector('[data-category-name]'), '合法类别'); inputEvent(h, h.card().querySelector('[data-category-scope]'), '字'.repeat(121)); h.card().querySelector('[data-category-ask]').click(); assert.ok(h.card().querySelector('[data-category-error]'));
+  h.panel.setWritable(false); for (const el of h.card().querySelectorAll('input,textarea,button')) assert.equal(el.disabled, true);
+  h.card().querySelector('[data-category-reject]').click(); assert.equal(rejected.length, 0);
+  h.panel.setWritable(true); assert.equal(h.card().querySelector('[data-category-member="new-2"]').disabled, true);
+  h.card().querySelector('[data-category-reject]').click(); assert.deepEqual(JSON.parse(JSON.stringify(rejected)), [{ proposalHash: 'a'.repeat(64) }]); assert.equal(h.sent.length, 0);
+});
+test('separate category proposal entry names its full eligible batch, never repeats while every member has a pending proposal', t => {
+  let calls = 0; const h = categoryFixture(t, { onProposeCategories: () => calls++ });
+  assert.equal(h.root.querySelector('[data-propose-categories]'), null);
+  h.data.categoryProposalViews = []; h.panel.render(h.data);
+  assert.match(h.root.querySelector('[data-categories]').textContent, /#21.*#22.*#23.*#24/s);
+  assert.equal(h.root.querySelectorAll('[data-propose-categories]').length, 2); assert.equal(calls, 0);
+  h.panel.setWritable(false); assert.equal(h.root.querySelector('[data-propose-categories]').disabled, true); h.panel.setWritable(true); h.root.querySelector('[data-propose-categories]').click(); assert.equal(calls, 1);
+});
+test('accepted identity stays visible above grouping, with review-first next actions and a formal-pattern status after automatic approval', t => {
+  const h = categoryFixture(t); h.data.categoryProposalViews = [];
+  h.data.pendingPatterns = [{ id: 'pending-1', name: '调用前检查', scope: '类别范围', sourceProposalHash: 'a'.repeat(64) }];
+  h.data.cases.forEach((c, i) => { c.split = ['train', 'train', 'gate', 'test'][i]; Object.assign(h.data.casePatterns[i], { confirmed: true, pendingPatternId: 'pending-1', pendingPatternName: '调用前检查', patternKey: 'pending-1' }); });
+  h.panel.render(h.data); assert.match(h.root.querySelector('[data-category-locked]').textContent, /已确认.*调用前检查.*类别范围.*#21.*#24/s);
+  assert.match(h.root.querySelector('[data-bc-detail] .next-line').textContent, /分组区.*归纳.*审核/s); assert.equal(h.root.querySelector('[data-bc-detail] [data-bc-go-assertion]'), null);
+  h.panel.focus(23); assert.match(h.root.querySelector('[data-bc-detail] .next-line').textContent, /等.*审核/);
+  h.data.pendingPatternLinks = [{ pendingPatternId: 'pending-1', entryId: 'entry-1' }]; h.data.versions = [{ entries: [{ id: 'entry-1', title: '调用前检查', status: 'approved' }] }]; h.panel.render(h.data);
+  assert.match(h.root.querySelector('[data-category-locked]').textContent, /已成为正式模式/);
+});
+test('category-limited induction shows sources, four editable draft fields, Unicode count and inline approval invalidated on edits', t => {
+  const reviewed = [], induced = [], h = categoryFixture(t, { onInductCategory: b => induced.push(b), onReviewCategory: b => reviewed.push(b) });
+  h.data.categoryProposalViews = []; h.data.pendingPatterns = [{ id: 'pending-1', name: '调用前检查', scope: '范围' }];
+  h.data.cases.forEach((c, i) => { c.split = ['train', 'train', 'gate', 'test'][i]; Object.assign(h.data.casePatterns[i], { confirmed: true, pendingPatternId: 'pending-1', pendingPatternName: '调用前检查', patternKey: 'pending-1' }); });
+  h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="pending-1"]').click();
+  assert.match(h.root.querySelector('[data-category-induction]').textContent, /给模型：训练组 #21、#22.*不给：门槛 #23、测试 #24/s);
+  const manual = h.root.querySelector('[data-manual-link]'); assert.equal(manual.open, false); assert.match(manual.querySelector('summary').textContent, /其他操作：这一类其实是已有模式/);
+  h.root.querySelector('[data-category-induct]').click(); assert.deepEqual(JSON.parse(JSON.stringify(induced)), [{ pendingPatternId: 'pending-1' }]);
+  h.data.versions = [{ id: 'wiki-2', entries: [{ id: 'draft-1', title: '调用前检查', status: 'draft', sourcePendingPatternId: 'pending-1', categoryReviewRequired: true, caseIds: ['new-0', 'new-1'], failureMode: '失败', symptoms: '表现', rootCauseHypothesis: '假设', guideline: '调用前检查。' }] }]; h.panel.render(h.data);
+  const draft = () => h.root.querySelector('[data-category-draft]'); assert.equal(draft().querySelectorAll('textarea').length, 4);
+  inputEvent(h, draft().querySelector('[data-category-field="guideline"]'), '😀'.repeat(301)); assert.match(draft().querySelector('[data-guideline-count]').textContent, /301.*300/); draft().querySelector('[data-category-approve]').click(); assert.equal(draft().querySelector('[data-category-review-lock]'), null);
+  inputEvent(h, draft().querySelector('[data-category-field="guideline"]'), '先检查约束。'); draft().querySelector('[data-category-approve]').click(); assert.match(draft().querySelector('[data-category-review-consent]').textContent, /正式模式.*#23.*#24/s);
+  inputEvent(h, draft().querySelector('[data-category-field="symptoms"]'), '修改表现'); assert.equal(draft().querySelector('[data-category-review-consent]'), null);
+  draft().querySelector('[data-category-approve]').click(); h.panel.setWritable(false); assert.equal(draft().querySelector('[data-category-review-lock]').disabled, true); h.panel.setWritable(true);
+  draft().querySelector('[data-category-review-lock]').click(); assert.deepEqual(JSON.parse(JSON.stringify(reviewed)), [{ pendingPatternId: 'pending-1', versionId: 'wiki-2', entryId: 'draft-1', decision: 'approved', patch: { failureMode: '失败', symptoms: '修改表现', rootCauseHypothesis: '假设', guideline: '先检查约束。' } }]);
+  h.panel.render(h.data); draft().querySelector('[data-category-reinduct]').click(); assert.equal(reviewed.at(-1).decision, 'rejected');
+  h.data.versions[0].entries[0].caseIds = ['new-0']; h.panel.render(h.data);
+  assert.match(draft().textContent, /成员.*改变.*重新归纳/); assert.equal(draft().querySelector('[data-category-approve]').disabled, true); assert.equal(draft().querySelector('[data-category-reinduct]').disabled, false);
+  assert.match(draft().querySelector('.bc-category-sources').textContent, /给模型：训练组 #21 的/); assert.doesNotMatch(draft().querySelector('.bc-category-sources').textContent, /#22/);
 });
 
 test('Badcase preclassification button names the whole pending batch and is read-only locked', t => {
