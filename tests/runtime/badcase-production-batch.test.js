@@ -363,10 +363,39 @@ function singleCallKernel(h,statuses={},judgeFault=false) {
    if(status==='error'){reason='evaluation_codex_proxy_failed';throw Error('PRIVATE NETWORK DETAILS');}
    if(status==='auth'){reason='evaluation_codex_access_rejected';throw Error('PRIVATE AUTH DETAILS');}
    const content=status==='invalid'?[{type:'toolCall',name:'read',arguments:{path:'DO-NOT-EXECUTE'}}]:status==='empty'?[]:[{type:'text',text:'Clear result.'}];
-   return {networkRequests:1,durationMs:2,message:{role:'assistant',stopReason:status==='invalid'?'toolUse':'stop',content,usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2}}};
+   return {networkRequests:1,durationMs:2,wireRequest:require('../../build/server/domain/runtime/badcase-capture/wiki-run-wire').buildWikiRunWireRequest(request),message:{role:'assistant',stopReason:status==='invalid'?'toolUse':'stop',content,usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2}}};
   }};}};
  return {p,item,requests,events,options,closed:()=>closed,judged:()=>judged,run:()=>require('../../scripts/badcase-capture/single-call-comparison.cjs').runSingleCallComparison(item.comparisonConfig,options)};
 }
+test('formal run missing or drifted wire proof is fatal before judging, never a replacement',async t=>{
+ for(const drift of ['missing','model','instructions','input','tools','reasoning']){
+  const h=runBatchFixture(t),f=singleCallKernel(h),create=f.options.createRunClient;
+  f.options.createRunClient=async()=>{const client=await create(),complete=client.complete;client.complete=async request=>{
+   const response=await complete(request);
+   if(drift==='missing')delete response.wireRequest;
+   else {response.wireRequest=structuredClone(response.wireRequest||{});response.wireRequest[drift]='DIFFERENT-WIRE-CONTENT';}
+   return response;
+  };return client;};
+  const r=await f.run();assert.equal(r.fatal,true,drift);assert.equal(r.completed,false);assert.equal(f.requests.length,1);assert.equal(f.closed(),1);assert.equal(f.judged(),0);
+  assert.equal(r.runs[0].status,'error');assert.equal(r.runs[0].reason,drift==='missing'?'wiki_run_wire_request_missing':'wiki_run_wire_request_mismatch');
+  assert.equal(r.runs[0].assessment,undefined);assert.equal(r.modelCallsKnown,1);assert.equal(r.runs[0].tokenUsage.knownTokens.totalTokens,2);
+  const packet=require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config).read(r.runs[0].runReplayId);
+  assert.equal(packet.result.modelCalls,1);assert.equal(packet.result.message.content[0].text,'Clear result.');
+ }
+});
+test('run publication independently rejects missing or drifted actual wire bodies even with valid packet hashes',async t=>{
+ const h=runBatchFixture(t),f=mixedExecution(h),r=await f.run(),c=r.cases.find(c=>c.sourceCaseId===h.sourceCaseId),row=c.runs[0];
+ const file=path.join(h.config.globalRoot,'run-replays',row.runReplayId+'.result.json'),bytes=fs.readFileSync(file),original=JSON.parse(bytes);
+ const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);
+ for(const drift of ['missing','instructions','input','tools','reasoning']){
+  const envelope=structuredClone(original);
+  if(drift==='missing')delete envelope.result.wireRequest;
+  else {envelope.result.wireRequest=structuredClone(envelope.result.wireRequest||{});envelope.result.wireRequest[drift]='DIFFERENT-WIRE-CONTENT';}
+  envelope.hash=require('../../build/server/domain/runtime/badcase-capture/wiki-run-replay').wikiRunHash(envelope.result);
+  fs.writeFileSync(file,JSON.stringify(envelope));assert.throws(()=>store.save(r),{code:'wiki_comparison_invalid'},drift);
+ }
+ fs.writeFileSync(file,bytes);assert.ok(store.save(r).id);
+});
 test('formal run kernel alternates ten valid outputs each, makes one call per claim and only scores public replies',async t=>{
  const h=runBatchFixture(t),f=singleCallKernel(h),before=h.store.read(),r=await f.run();
  assert.equal(r.completed,true);assert.equal(r.fatal,false);assert.equal(r.runs.length,20);assert.equal(f.requests.length,20);assert.equal(f.closed(),20);assert.equal(f.judged(),60);
@@ -411,7 +440,7 @@ function mixedExecution(h,statuses={}){
  h.judges[h.sourceCaseId].evaluate=async input=>({judgments:input.questions.map(q=>({criterionId:q.id,verdict:input.publicReply.startsWith('Clear result.')?'satisfied':'not-satisfied',reason:'Synthetic result clarity',evidence:[{source:'reply',text:input.publicReply.split(' PRIVATE-')[0]}]}))});
  f.options.knownValues=[];f.options.createRunClient=async()=>{let reason=null;return {state:()=>({reason}),close:async()=>{},complete:async request=>{
   const status=statuses[oneShotCalls++];if(status==='error'){reason='evaluation_codex_proxy_failed';throw Error('PRIVATE-REQUEST-ERROR');}
-  return {networkRequests:1,durationMs:1,message:{role:'assistant',stopReason:status==='invalid'?'toolUse':'stop',
+  return {networkRequests:1,durationMs:1,wireRequest:require('../../build/server/domain/runtime/badcase-capture/wiki-run-wire').buildWikiRunWireRequest(request),message:{role:'assistant',stopReason:status==='invalid'?'toolUse':'stop',
    content:status==='invalid'?[{type:'toolCall',name:'read',arguments:{path:'PRIVATE-FILE'}}]:[{type:'text',text:(request.variant.kind==='original'?'Unclear result.':'Clear result.')+' PRIVATE-RUN-REPLY'}],usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2}}};
  }}};return {...f,oneShotCalls:()=>oneShotCalls};
 }

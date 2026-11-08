@@ -24,9 +24,7 @@ async function loadWikiRunTools({ sourceWorktree, capabilitiesSha }) {
 }
 // Minimal native wire descriptor: no model catalog/network/auth discovery and
 // no inferred prices. The caller's approved ID is sent verbatim (no fallback).
-const MODEL = Object.freeze({ id: 'gpt-6.1-sol', name: 'gpt-6.1-sol', provider: 'openai-codex', api: 'openai-codex-responses',
-  baseUrl: 'https://chatgpt.com/backend-api', reasoning: true, input: ['text', 'image'], contextWindow: 1048576, maxTokens: 128000,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsStrictMode: false, supportsOpenAIGrammarTools: false } });
+const { WIKI_RUN_WIRE_MODEL: MODEL } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-wire');
 async function createWikiRunClient({ authFile, knownKeyValues = [], timeoutMs = 600000 }, dependencies = {}) {
   const transport = (dependencies.createTransport || createCodexTransport)({ authFile, confirmed: true, timeoutMs }, {
     containsKnownValue: bytes => knownKeyValues.some(v => v && (bytes.includes(v) || bytes.includes(JSON.stringify(v).slice(1, -1)))), ...dependencies.transport });

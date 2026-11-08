@@ -12,6 +12,7 @@ const {redactTraceKnownValues}=require(base+'wiki-trace');
 const {validateWikiScoring,assertWikiScoringJudge}=require('./wiki-receipt-scoring.cjs');
 const {readKnownKeyValues}=require('./known-key-values.cjs');
 const {createWikiRunClient}=require('./wiki-run-client.cjs');
+const {verifyWikiRunWireRequest}=require(base+'wiki-run-wire');
 const {tokenUsage}=require('./replay-measurements.cjs');
 const fail=code=>Object.assign(Error(code),{code});
 const safeCode=(code,fallback)=>typeof code==='string'&&/^(?:evaluation_codex_|wiki_)[a-z_]{1,80}$/.test(code)?code:fallback;
@@ -78,7 +79,11 @@ async function runSingleCallComparison(config,options={}){
    cleaned:!cleanupFailed,toolExecutions:0,durationMs:Date.now()-started,modelCalls:calls,
    tokenUsage:tokenUsage(calls,{callsUnavailable:packet.modelCalls!==1}),finalText:packet.outcome.reply};
   for(const call of calls)emit({event:'model_call',variant,iteration,...call});
-  if(cleanupFailed||stateInvalid){row.reason=cleanupFailed?'wiki_run_client_cleanup_failed':'wiki_run_client_state_invalid';fatal=true;}
+  // Read the durable frozen request, never trust client-mutated input. A wire
+  // proof failure preserves the raw packet/usage but cannot be scored or retried.
+  const wireInvalid=packet.modelCalls===1&&!verifyWikiRunWireRequest(packets.read(packet.id).reservation.request,packet.wireRequest,values);
+  if(wireInvalid){row.reason=packet.wireRequest?'wiki_run_wire_request_mismatch':'wiki_run_wire_request_missing';row.status='error';fatal=true;}
+  else if(cleanupFailed||stateInvalid){row.reason=cleanupFailed?'wiki_run_client_cleanup_failed':'wiki_run_client_state_invalid';fatal=true;}
   else if(packet.outcome.status==='reached'){
    try{
     row.assessment=await scoreWikiRun({rubric:scoring.rubric,binding:scoring.binding,hardAssertions:[],

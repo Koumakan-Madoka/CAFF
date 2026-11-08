@@ -3,6 +3,7 @@
 import { createWikiRunStore } from './wiki-run-store';
 import { buildWikiRunRequest, classifyWikiRunOutput, wikiRunHash } from './wiki-run-replay';
 import { resolveFrozenWikiRubric, wikiValueHash } from './wiki-rubric';
+import { verifyWikiRunWireRequest } from './wiki-run-wire';
 const fail = () => Object.assign(Error('wiki_comparison_invalid'), { code: 'wiki_comparison_invalid' });
 function check(v: any): asserts v { if (!v) throw fail(); }
 const same = (a: any, b: any) => wikiValueHash(a) === wikiValueHash(b);
@@ -28,6 +29,7 @@ export function verifyWikiRunPublication(wiki: any, options: any, payload: any, 
         ...(row.variant === 'candidate' ? { candidate: { id: candidate.id, targetId: candidate.targetId, baseText: candidate.baseText,
           baseHash: candidate.baseHash, replacement: candidate.candidateText } } : {}) });
       check(wikiRunHash(rebuilt) === row.requestHash);
+      if (result.modelCalls === 1) check(verifyWikiRunWireRequest(rebuilt, result.wireRequest, options.knownKeyValues || []));
       if (result.message) check(same(classifyWikiRunOutput(result.message), result.outcome));
       if (row.status === 'invalid') check(result.outcome.status === 'invalid' && row.assessment === undefined);
       else if (row.status === 'pass' || row.status === 'fail' || row.assessment !== undefined) check(result.outcome.status === 'reached');

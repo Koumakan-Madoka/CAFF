@@ -25,6 +25,37 @@ test('native serializer/parser makes exactly one proxied SSE request with xhigh 
   assert.doesNotMatch(JSON.stringify(r), /MUST-NOT-USE|synthetic-account|test\./); assert.equal(fs.readFileSync(f.authFile, 'utf8'), f.bytes);
   await assert.rejects(client.complete(q), e => e.code === 'wiki_run_budget_exhausted'); assert.equal(calls, 1);
 });
+test('offline expected wire matches SDK serialization with ordered cross-provider history and schemas', async t => {
+  const { buildWikiRunWireRequest, verifyWikiRunWireRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-wire');
+  const f=fixture(t),q=request();
+  q.context.tools.push({name:'read',description:'second schema',parameters:{type:'object',properties:{path:{type:'string'}}}});
+  q.context.messages.push({role:'assistant',provider:'anthropic',api:'anthropic-messages',model:'foreign',stopReason:'toolUse',content:[
+    {type:'thinking',thinking:'retained foreign reasoning'}, {type:'text',text:'before call'},
+    {type:'toolCall',id:'call:1|item.with.dots',name:'write',arguments:{content:'quoted "text"\nnext'}}]},
+    {role:'toolResult',toolCallId:'call:1|item.with.dots',toolName:'write',content:[{type:'text',text:'tool result'}]},
+    {role:'user',content:[{type:'text',text:'last user message'}]});
+  const before=structuredClone(q);let wire;
+  const client=await createWikiRunClient({authFile:f.authFile},{transport:{createDispatcher:()=>({destroy:async()=>{}}),async fetch(url,options){
+    wire=JSON.parse(String(options.headers.get('content-encoding')==='zstd'?zlib.zstdDecompressSync(options.body):options.body));
+    return new Response(sse(),{headers:{'content-type':'text/event-stream'}});
+  }}});t.after(()=>client.close());
+  const r=await client.complete(q),expected=buildWikiRunWireRequest(q);
+  assert.deepEqual(JSON.parse(JSON.stringify(expected)),wire);assert.equal(verifyWikiRunWireRequest(q,r.wireRequest),true);
+  assert.deepEqual(buildWikiRunWireRequest(q),expected);assert.deepEqual(q,before);
+  assert.equal(expected.input.filter(m=>m.type==='function_call').length,1);assert.equal(expected.input.filter(m=>m.type==='function_call_output').length,1);
+  for(const mutate of [x=>x.model='other',x=>x.instructions+='changed',x=>x.input.reverse(),x=>x.input[0].content[0].text+='changed',
+    x=>x.tools[0].name='other',x=>x.tools.reverse(),x=>x.tools[0].parameters.properties.content.type='number',x=>x.reasoning.effort='low',
+    x=>x.reasoning.summary='none',x=>x.tool_choice='none',x=>x.parallel_tool_calls=false,x=>x.store=true,x=>x.stream=false,
+    x=>x.text.verbosity='high',x=>x.include=[],x=>x.temperature=1,x=>x.prompt_cache_key='unexpected',x=>delete x.input]){
+    const altered=structuredClone(wire);mutate(altered);assert.equal(verifyWikiRunWireRequest(q,altered),false);
+  }
+  for(const missing of [null,undefined,{},[],false])assert.equal(verifyWikiRunWireRequest(q,missing),false);
+  // Identical known-value replacement on BOTH sides, including escaped strings.
+  const key='synthetic-quote"\nvalue',withKnown=structuredClone(q);withKnown.context.systemPrompt+=key;
+  const safe=buildWikiRunWireRequest(q);safe.instructions=withKnown.context.systemPrompt.replace(key,'[*]');
+  assert.equal(verifyWikiRunWireRequest(withKnown,safe,[key]),true);assert.equal(verifyWikiRunWireRequest(withKnown,safe),false);
+  assert.deepEqual(q,before);
+});
 test('provider/network failure cannot trigger retries, an auth refresh or diagnostic leaks', async t => {
   const f = fixture(t); let calls = 0;
   const client = await createWikiRunClient({ authFile: f.authFile }, { transport: { createDispatcher: () => ({ destroy: async () => {} }), async fetch() { calls++; return new Response('PRIVATE UPSTREAM BODY', { status: 503 }); } } });
