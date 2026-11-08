@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const { fixture, setup, hash, legacyId } = require('../helpers/wiki-pending-patterns.cjs');
 const base = '../../build/server/domain/runtime/badcase-capture/';
 const { projectWikiPatternLabels: labels, planWikiInitialSplit: split } = require(base + 'wiki-initial-split');
-const { planWikiEvaluationSuite: suite } = require(base + 'wiki-evaluation-suite');
+const { planWikiEvaluationSuite: suite, wikiConfirmedClassification } = require(base + 'wiki-evaluation-suite');
 const immutable = state => Object.fromEntries(['cases', 'versions', 'classifications', 'caseStates', 'replayCases', 'replaySplit',
   'regroupProposals', 'regroupConfirmations', 'dehydrations', 'rubrics'].map(k => [k, JSON.stringify(state[k])]));
 function labelGroup(h, caseIds, name) {
@@ -55,6 +55,100 @@ test('create/join/none/approved label consent is atomic, immutable and exact rep
   assert.throws(() => h.confirm('new-3', { pendingPattern: { id: pending.id } }), /wiki_pattern_label_frozen/);
   assert.deepEqual(immutable(h.store.read()), immutable(before));
 });
+
+// A frozen page label must also fence the pre-existing classification paths.
+function frozenPageCases(t, kind, allocated = true) {
+  const h = setup(t), seeded = h.store.read();
+  for (const c of seeded.cases.filter(c => c.id.startsWith('new-'))) {
+    c.preclassification = { ...c.preclassification, kind: 'assign', entryId: 'entry-2' };
+    seeded.suggestions.push({ id: 'suggestion-' + c.id, caseId: c.id, kind: 'assign', entryId: 'entry-2',
+      status: 'pending', reason: 'Synthetic existing-mode suggestion', createdAt: c.createdAt });
+  }
+  seeded.revision++; h.publish(seeded);
+  const caseIds = ['new-1', 'new-2', 'new-3', 'new-4'];
+  const key = kind === 'pending' ? labelGroup(h, caseIds, '先检查工具约束') : kind === 'approved' ? 'entry-1' : 'unclassified';
+  if (kind !== 'pending') for (const caseId of caseIds) h.confirm(caseId, { entryId: kind === 'approved' ? 'entry-1' : null });
+  if (allocated) allocate(h, key);
+  return { ...h, key, holdouts: h.store.read().cases.filter(c => c.id.startsWith('new-') && c.split !== 'train') };
+}
+for (const kind of ['approved', 'pending', 'none']) {
+  test(`${kind} page-labelled gate/test cases are confirmed, not legacy pending classifications`, t => {
+    const h = frozenPageCases(t, kind), before = h.bytes();
+    for (const c of h.holdouts) {
+      const view = h.store.getCaseStates().find(v => v.caseId === c.id);
+      assert.equal(view.status, 'classification-confirmed');
+      assert.deepEqual(view.memberships.map(m => m.entryId), kind === 'approved' ? ['entry-1'] : []);
+      if (kind === 'pending') assert.match(view.reason, /待归纳.*先检查工具约束/);
+      assert.equal(view.updatedAt, h.store.read().patternLabels.find(r => r.caseId === c.id).confirmedAt);
+    }
+    assert.deepEqual(h.bytes(), before, 'view projection must not publish or rewrite records');
+    if (kind === 'pending') {
+      h.store.linkPendingPattern({ pendingPatternId: h.key, entryId: 'entry-1', expectedRevision: h.store.read().revision });
+      for (const c of h.holdouts) {
+        const view = h.store.getCaseStates().find(v => v.caseId === c.id);
+        assert.equal(view.status, 'classification-confirmed'); assert.deepEqual(view.memberships.map(m => m.entryId), ['entry-1']);
+      }
+    }
+    // Labels also confirm historical holdouts that have no preclassification.
+    const state = h.store.read();
+    for (const c of state.cases.filter(c => h.holdouts.some(v => v.id === c.id))) delete c.preclassification;
+    state.revision++; h.publish(state);
+    assert.ok(h.holdouts.every(c => h.store.getCaseStates().find(v => v.caseId === c.id).status === 'classification-confirmed'));
+  });
+
+  test(`${kind} page labels reject legacy manual membership before and after allocation with no writes`, t => {
+    const h = frozenPageCases(t, kind), before = h.store.read();
+    const selections = h.holdouts.map(c => ({ sourceCaseId: c.id, category: 'reproduction' })), targets = suite(before, selections, 'entry-1');
+    assert.equal(targets.targetReproductionCaseIds.length, kind === 'approved' ? 1 : 0);
+    // A labelled but not-yet-allocated case is non-training too.
+    for (const group of [h, frozenPageCases(t, kind, false)]) {
+      const state = group.store.read(), bytes = group.bytes();
+      for (const c of group.holdouts) for (const entryId of ['entry-1', 'entry-2', null]) {
+        assert.throws(() => group.store.assignCase({ caseId: c.id, entryId, expectedRevision: state.revision }), /wiki_pattern_label_frozen/);
+        assert.deepEqual(group.bytes(), bytes); assert.deepEqual(group.store.read(), state);
+      }
+    }
+    assert.deepEqual(suite(h.store.read(), selections, 'entry-1'), targets);
+    const train = before.cases.find(c => c.id.startsWith('new-') && c.split === 'train');
+    h.store.assignCase({ caseId: train.id, entryId: 'entry-2', expectedRevision: before.revision });
+    assert.equal(h.store.getCaseStates().find(v => v.caseId === train.id).memberships[0].entryId, 'entry-2', 'training membership rules stay unchanged');
+    assert.equal(JSON.stringify(h.store.read().patternLabels), JSON.stringify(before.patternLabels));
+  });
+
+  test(`${kind} page labels reject accepting or rejecting old assign suggestions without resolving or writing`, t => {
+    for (const h of [frozenPageCases(t, kind), frozenPageCases(t, kind, false)]) {
+      const before = h.store.read(), bytes = h.bytes();
+      for (const c of h.holdouts) for (const decision of ['accepted', 'rejected']) {
+        assert.throws(() => h.store.resolveSuggestion({ suggestionId: 'suggestion-' + c.id, decision, expectedRevision: before.revision }), /wiki_pattern_label_frozen/);
+        assert.deepEqual(h.store.read(), before); assert.deepEqual(h.bytes(), bytes);
+      }
+    }
+  });
+
+  test(`${kind} page/classification overlap fails closed on resolved identity mismatch and preserves matching provenance`, t => {
+    const h = frozenPageCases(t, kind), source = h.holdouts.find(c => c.split === 'gate');
+    const check = () => {
+      const state = h.store.read(), entryId = labels(state).find(r => r.caseId === source.id).entryId;
+      const saved = { caseId: source.id, entryId, source: 'model-confirmed', confirmedAt: '2026-11-08T01:00:00.000Z' };
+      state.classifications.push(saved);
+      const bytes = JSON.stringify(state);
+      assert.deepEqual(wikiConfirmedClassification(state, source), saved);
+      suite(state, [{ sourceCaseId: source.id, category: 'reproduction' }], 'entry-1');
+      assert.equal(JSON.stringify(state), bytes);
+      for (const mismatch of [null, 'entry-1', 'entry-2'].filter(id => id !== entryId)) {
+        saved.entryId = mismatch; const before = JSON.stringify(state);
+        assert.throws(() => wikiConfirmedClassification(state, source), /wiki_classification_confirmation_required/);
+        assert.throws(() => suite(state, [{ sourceCaseId: source.id, category: 'reproduction' }], 'entry-1'), /wiki_classification_confirmation_required/);
+        assert.equal(JSON.stringify(state), before);
+      }
+    };
+    check();
+    if (kind === 'pending') {
+      h.store.linkPendingPattern({ pendingPatternId: h.key, entryId: 'entry-1', expectedRevision: h.store.read().revision });
+      check();
+    }
+  });
+}
 
 test('pending names, selection schemas, revision and label hash fail closed without orphan records', t => {
   const h = setup(t); labelGroup(h, ['new-1'], 'Existing pending');

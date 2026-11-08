@@ -17,11 +17,13 @@ function confirmedPatternLabel(state: any, caseId: string): any {
 export function wikiConfirmedClassification(state: any, source: any): any {
   const label = confirmedPatternLabel(state, source.id);
   // A page label is manual confirmation, not membership in the learned entry.
-  // Prefer existing classification provenance so old rows stay byte-compatible.
+  // Pending labels resolve through their immutable link without rewriting data.
   const manual = label ? { caseId: source.id, entryId: resolveWikiPatternLabel(state, label).entryId, source: 'manual', confirmedAt: label.confirmedAt } : null;
-  // A pending pattern is explicitly confirmed but not yet a target. Its link
-  // resolves only at projection time, without modifying old classifications.
-  const saved = label?.pendingPatternId ? manual : (state.classifications || []).find((c: any) => c.caseId === source.id) || manual;
+  const classification = (state.classifications || []).find((c: any) => c.caseId === source.id);
+  // Conflicting confirmations cannot silently change a frozen target identity.
+  if (manual && classification && manual.entryId !== classification.entryId) throw fail('wiki_classification_confirmation_required');
+  // Preserve existing provenance only when both confirmations agree.
+  const saved = classification || manual;
   if (!saved || !['manual', 'model-confirmed'].includes(saved.source)
     || typeof saved.confirmedAt !== 'string' || !Number.isFinite(Date.parse(saved.confirmedAt))) throw fail('wiki_classification_confirmation_required');
   if (saved.entryId !== null && !state.versions.at(-1)?.entries.some((e: any) => e.id === saved.entryId && e.status === 'approved')) throw fail('wiki_classification_confirmation_required');

@@ -157,6 +157,35 @@ test('pending label and link endpoints enforce local-admin/CSRF, closed consent 
   assert.equal(calls, 0);
 });
 
+test('page-labelled holdouts project confirmed status and both legacy HTTP writers return frozen without writes', async t => {
+  const { fixture, hash } = require('../helpers/wiki-pending-patterns.cjs');
+  const { projectWikiPatternLabels, planWikiInitialSplit } = require('../../build/server/domain/runtime/badcase-capture/wiki-initial-split');
+  for (const kind of ['approved', 'pending']) {
+    const h = setup(t), state = fixture();
+    for (const c of state.cases.filter(c => c.id.startsWith('new-'))) state.suggestions.push({
+      id: 'suggestion-' + c.id, caseId: c.id, kind: 'assign', entryId: 'entry-2', status: 'pending', createdAt: c.createdAt });
+    const directory = path.join(h.config.globalRoot, 'snapshots'); fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, String(state.revision).padStart(12, '0') + '.json'), JSON.stringify({ schemaVersion: 1, checksum: hash(state), record: state }));
+    let pendingPatternId;
+    for (const c of state.cases.filter(c => c.id.startsWith('new-'))) {
+      const current = h.store.read(), label = projectWikiPatternLabels(current).find(r => r.caseId === c.id);
+      const choice = kind === 'approved' ? { entryId: 'entry-1' } : { pendingPattern: pendingPatternId ? { id: pendingPatternId } : { name: '先核验工具约束' } };
+      const saved = h.store.confirmPatternLabel({ caseId: c.id, labelHash: label.labelHash, expectedRevision: current.revision, ...choice });
+      pendingPatternId = saved.pendingPatternId;
+    }
+    const current = h.store.read(), proposal = planWikiInitialSplit(current, []);
+    h.store.confirmInitialSplit({ proposalHash: proposal.hash, patternKey: pendingPatternId || 'entry-1', expectedRevision: current.revision });
+    const before = h.store.read(), files = () => Object.fromEntries(fs.readdirSync(directory).map(f => [f, fs.readFileSync(path.join(directory, f), 'utf8')])), bytes = files();
+    const view = (await h.invoke()).body.caseStates;
+    for (const c of before.cases.filter(c => c.id.startsWith('new-') && c.split !== 'train')) {
+      assert.equal(view.find(v => v.caseId === c.id).status, 'classification-confirmed');
+      await rejects(h.invoke({ confirmed: true, caseId: c.id, entryId: 'entry-2', expectedRevision: before.revision }, { pathname: '/api/wikiskill/membership' }), 'wiki_pattern_label_frozen', 409);
+      await rejects(h.invoke({ confirmed: true, suggestionId: 'suggestion-' + c.id, decision: 'accepted', expectedRevision: before.revision }, { pathname: '/api/wikiskill/suggestion' }), 'wiki_pattern_label_frozen', 409);
+      assert.deepEqual(h.store.read(), before); assert.deepEqual(files(), bytes);
+    }
+  }
+});
+
 test('assigned GPT label gaps block the first-split HTTP endpoint with a distinct error until labels are confirmed', async t => {
   const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
   const gap = h.store.addTextCases([{ source: { origin: 'http://127.0.0.1:3100', projectId: 'p1', conversationId: 'c1', messageId: 'assigned-unlabelled', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'synthetic assigned but unlabelled', expected: 'synthetic expectation', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }]).cases[0];

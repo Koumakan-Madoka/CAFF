@@ -20,6 +20,7 @@ import { buildDehydrationPrefix, interpretDehydrationAnswer } from './wiki-dehyd
 import { wikiGoalCaseNumber } from './wiki-suite';
 import { planWikiRegroup, planConfirmedWikiRegroup } from './wiki-regroup';
 import { planWikiInitialSplit, projectWikiPatternLabels } from './wiki-initial-split';
+import { resolveWikiPatternLabel } from './wiki-pattern-label';
 import { createWikiRunStore, projectWikiRunAccounting } from './wiki-run-store';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
@@ -116,6 +117,14 @@ function caseStateView(state: any, caseId: string) {
       memberships: [], reason: c.preclassification?.reason || '', updatedAt: c.preclassification?.createdAt || c.createdAt };
   }
   if (c.split !== 'train') {
+    const label = state.patternLabels?.find((r: any) => r.caseId === caseId && r.source === 'badcase-page');
+    if (label) {
+      const resolved = resolveWikiPatternLabel(state, label);
+      return { caseId, status: 'classification-confirmed',
+        memberships: resolved.entryId ? [{ entryId: resolved.entryId, source: 'manual', at: label.confirmedAt }] : [],
+        reason: resolved.pendingPatternId && resolved.entryId === null ? `待归纳新模式「${resolved.pendingPatternName}」尚未关联已通过模式` : '',
+        updatedAt: label.confirmedAt };
+    }
     if (c.preclassification) {
       const confirmed = (state.classifications || []).find((v: any) => v.caseId === caseId);
       return { caseId, status: confirmed ? 'classification-confirmed' : 'classification-pending',
@@ -937,6 +946,7 @@ export function createWikiStore(options: any) {
         const current = caseStateView(state, suggestion.caseId), now = new Date().toISOString();
         const c = state.cases.find((v: any) => v.id === suggestion.caseId);
         if (c.split !== 'train') {
+          if (state.patternLabels?.some((r: any) => r.caseId === c.id && r.source === 'badcase-page')) throw fail('wiki_pattern_label_frozen');
           if (!c.preclassification || suggestion.kind !== 'assign') throw fail('wiki_unknown_training_case');
           if (input.decision === 'accepted') {
             if (!state.versions.at(-1)?.entries.some((e: any) => e.id === suggestion.entryId && e.status === 'approved')) throw fail('wiki_entry_not_found');
@@ -972,6 +982,7 @@ export function createWikiStore(options: any) {
         const now = new Date().toISOString();
         const c = state.cases.find((v: any) => v.id === caseId);
         if (c.split !== 'train') {
+          if (state.patternLabels?.some((r: any) => r.caseId === caseId && r.source === 'badcase-page')) throw fail('wiki_pattern_label_frozen');
           if (!c.preclassification) throw fail('wiki_unknown_training_case');
           if (input.entryId !== null && !state.versions.at(-1)?.entries.some((e: any) => e.id === input.entryId && e.status === 'approved')) throw fail('wiki_entry_not_found');
           saveClassification(state, caseId, input.entryId, 'manual', now);
